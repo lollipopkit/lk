@@ -1,12 +1,29 @@
 use anyhow::Context;
 use std::path::{Component, Path};
 
-use crate::analyzer::LkrAnalyzer;
+use crate::analyzer::LkAnalyzer;
 
 pub(crate) fn try_cli_analyze() -> anyhow::Result<Option<String>> {
     let args: Vec<String> = std::env::args().collect();
     if args.len() <= 1 {
         return Ok(None);
+    }
+
+    if let Some(i) = args.iter().position(|a| a == "--semantic-tokens-check") {
+        let path = args.get(i + 1).cloned().ok_or_else(|| {
+            anyhow::anyhow!(
+                "Usage: lk-lsp --semantic-tokens-check <relative-file-path>\n  --semantic-tokens-check <file> : Validate semantic tokens and print JSON summary"
+            )
+        })?;
+        let content = read_file_content(&path)?;
+        let analyzer = LkAnalyzer::new();
+        let tokens = analyzer.generate_semantic_tokens(&content);
+        let summary = analyzer.validate_semantic_tokens(&content, &tokens);
+        let output = serde_json::json!({
+            "file": path,
+            "summary": summary,
+        });
+        return Ok(Some(serde_json::to_string_pretty(&output)?));
     }
 
     if let Some(i) = args.iter().position(|a| a == "--analyze") {
@@ -16,13 +33,13 @@ pub(crate) fn try_cli_analyze() -> anyhow::Result<Option<String>> {
         }
 
         let path = args.get(path_index).cloned().ok_or_else(|| {
-            anyhow::anyhow!("Usage: lkr-lsp --analyze [--errors-only] <relative-file-path>\n  --analyze <file>     : Full analysis with JSON output\n  --errors-only        : Show only errors in simple format")
+            anyhow::anyhow!("Usage: lk-lsp --analyze [--errors-only] <relative-file-path>\n  --analyze <file>     : Full analysis with JSON output\n  --errors-only        : Show only errors in simple format")
         })?;
 
         let errors_only = args.iter().any(|a| a == "--errors-only");
         let content = read_file_content(&path)?;
 
-        let mut analyzer = LkrAnalyzer::new();
+        let mut analyzer = LkAnalyzer::new();
         let analysis = analyzer.analyze(&content);
 
         if errors_only {

@@ -1,0 +1,23 @@
+{
+  "name": "lk-lang-website",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "typesafe-i18n": "typesafe-i18n --no-watch",
+    "build": "bun run typesafe-i18n && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@lucide/svelte": "^1.11.0",
+    "typesafe-i18n": "^5.27.1"
+  },
+  "devDependencies": {
+    "@tsconfig/svelte": "^5.0.6",
+    "@sveltejs/vite-plugin-svelte": "^7.0.0",
+    "svelte": "^5.55.5",
+    "typescript": "^6.0.3",
+    "vite": "^8.0.10"
+  }
+}

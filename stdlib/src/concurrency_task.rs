@@ -1,17 +1,17 @@
-//! Concurrency module for LKR
+//! Task module for LK concurrency.
 //!
-//! Provides Go-style concurrency primitives including tasks, channels, and synchronization.
+//! Module exports use RuntimeNative. Global concurrency helpers in
+//! `stdlib::register_stdlib_concurrency_globals` are migrated separately.
 
-use anyhow::{Result, anyhow};
-use lkr_core::{
-    module::{self, Module},
+use anyhow::{Result, anyhow, bail};
+use lk_core::{
+    module::{self, ModuleProvider, RuntimeNativeExport, runtime_export_from_plain_native_entries},
     rt,
-    val::{TaskValue, Val},
-    vm::VmContext,
+    val::{HeapStore, HeapValue, RuntimeVal, TaskValue},
+    vm::{NativeArgs, NativeEntry, NativeFunction, NativeRuntime, RuntimeExport},
 };
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
-/// Task module - provides task management functions
 #[derive(Debug)]
 pub struct TaskModule;
 
@@ -21,7 +21,7 @@ impl Default for TaskModule {
     }
 }
 
-impl Module for TaskModule {
+impl ModuleProvider for TaskModule {
     fn name(&self) -> &str {
         "task"
     }
@@ -35,23 +35,29 @@ impl Module for TaskModule {
     }
 
     fn register(&self, registry: &mut module::ModuleRegistry) -> Result<()> {
-        let exports = self.exports();
-        for (name, value) in exports {
-            registry.register_builtin(&format!("{}::{}", self.name(), name), value);
-        }
+        registry.register_runtime_builtin("task::await", NativeFunction::Plain(task_await), 1);
+        registry.register_runtime_builtin("task::try_await", NativeFunction::Plain(task_try_await), 1);
+        registry.register_runtime_builtin(
+            "task::join_all",
+            NativeFunction::Plain(task_join_all),
+            NativeEntry::VARIADIC,
+        );
+        registry.register_runtime_builtin("task::sleep", NativeFunction::Plain(task_sleep), 1);
+        registry.register_runtime_builtin("task::spawn_blocking", NativeFunction::Plain(task_spawn_blocking), 1);
         Ok(())
     }
 
-    fn exports(&self) -> HashMap<String, Val> {
-        let mut functions = HashMap::new();
-
-        functions.insert("await".to_string(), Val::RustFunction(task_await));
-        functions.insert("try_await".to_string(), Val::RustFunction(task_try_await));
-        functions.insert("join_all".to_string(), Val::RustFunction(task_join_all));
-        functions.insert("sleep".to_string(), Val::RustFunction(task_sleep));
-        functions.insert("spawn_blocking".to_string(), Val::RustFunction(task_spawn_blocking));
-
-        functions
+    fn runtime_exports(&self) -> Result<RuntimeExport> {
+        Ok(runtime_export_from_plain_native_entries(
+            &[
+                RuntimeNativeExport::plain("await", task_await, 1),
+                RuntimeNativeExport::plain("try_await", task_try_await, 1),
+                RuntimeNativeExport::plain("join_all", task_join_all, NativeEntry::VARIADIC),
+                RuntimeNativeExport::plain("sleep", task_sleep, 1),
+                RuntimeNativeExport::plain("spawn_blocking", task_spawn_blocking, 1),
+            ],
+            &[],
+        ))
     }
 }
 
@@ -61,117 +67,211 @@ impl TaskModule {
     }
 }
 
-/// Await a task to complete and return its result
-fn task_await(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
-    if args.len() != 1 {
-        return Err(anyhow!("task::await() expects exactly 1 argument"));
+fn expect_arity(args: NativeArgs<'_>, expected: usize, name: &str) -> Result<()> {
+    if args.len() == expected {
+        return Ok(());
     }
-
-    match &args[0] {
-        Val::Task(task) => match rt::with_runtime(|runtime| runtime.block_on(runtime.join_task(task.id))) {
-            Ok(result) => Ok(result),
-            Err(e) => Err(anyhow!("Failed to await task: {}", e)),
-        },
-        _ => Err(anyhow!("task::await() expects a Task argument")),
-    }
+    bail!(
+        "{name} expects exactly {expected} argument{}",
+        if expected == 1 { "" } else { "s" }
+    )
 }
 
-/// Try to await a task, returning None if not ready
-fn task_try_await(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
-    if args.len() != 1 {
-        return Err(anyhow!("task::try_await() expects exactly 1 argument"));
-    }
-
-    match &args[0] {
-        Val::Task(task) => {
-            // In the current implementation, we don't have non-blocking await
-            // For now, just check if we have a pre-computed value
-            match &task.value {
-                Some(val) => Ok(Val::List(vec![Val::Bool(true), val.clone()].into())),
-                None => Ok(Val::List(vec![Val::Bool(false), Val::Nil].into())),
-            }
-        }
-        _ => Err(anyhow!("task::try_await() expects a Task argument")),
-    }
-}
-
-/// Join multiple tasks and return their results as a list
-fn task_join_all(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
-    if args.is_empty() {
-        return Ok(Val::List(vec![].into()));
-    }
-
-    let mut results = Vec::new();
-
-    for arg in args {
-        match arg {
-            Val::Task(task) => match rt::with_runtime(|runtime| runtime.block_on(runtime.join_task(task.id))) {
-                Ok(result) => results.push(result),
-                Err(e) => return Err(anyhow!("Failed to await task: {}", e)),
-            },
-            _ => return Err(anyhow!("task::join_all() expects Task arguments")),
-        }
-    }
-
-    Ok(Val::List(results.into()))
-}
-
-/// Sleep for the specified duration in milliseconds
-fn task_sleep(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
-    if args.len() != 1 {
-        return Err(anyhow!("task::sleep() expects exactly 1 argument"));
-    }
-
-    let duration_ms = match &args[0] {
-        Val::Int(ms) => *ms,
-        Val::Float(ms) => *ms as i64,
-        _ => return Err(anyhow!("task::sleep() expects a numeric argument")),
+fn task_arg(value: &RuntimeVal, heap: &HeapStore, name: &str) -> Result<Arc<TaskValue>> {
+    let RuntimeVal::Obj(handle) = value else {
+        bail!("{name} expects a Task argument");
     };
+    let value = heap
+        .get(*handle)
+        .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?;
+    match value {
+        HeapValue::Task(task) => Ok(task.clone()),
+        other => Err(anyhow!("{name} expects a Task argument, got {}", other.type_name())),
+    }
+}
 
-    match rt::with_runtime(|runtime| {
+fn numeric_millis(value: &RuntimeVal, name: &str) -> Result<i64> {
+    match value {
+        RuntimeVal::Int(value) => Ok(*value),
+        RuntimeVal::Float(value) => Ok(*value as i64),
+        other => Err(anyhow!("{name} expects a numeric argument, got {:?}", other.kind())),
+    }
+}
+
+fn is_callable(value: &RuntimeVal, heap: &HeapStore) -> Result<bool> {
+    let RuntimeVal::Obj(handle) = value else {
+        return Ok(false);
+    };
+    let value = heap
+        .get(*handle)
+        .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?;
+    Ok(matches!(value, HeapValue::Callable(_)))
+}
+
+fn task_await(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+    expect_arity(args, 1, "task.await()")?;
+    let task = task_arg(args.get(0).expect("checked arity"), runtime.heap(), "task.await()")?;
+    let value = rt::with_runtime(|rt| rt.block_on(rt.join_task(task.id)))
+        .map_err(|err| anyhow!("Failed to await task: {err}"))?;
+    value.into_value(runtime.heap_mut())
+}
+
+fn task_try_await(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+    expect_arity(args, 1, "task.try_await()")?;
+    let task = task_arg(args.get(0).expect("checked arity"), runtime.heap(), "task.try_await()")?;
+    let value = match &task.value {
+        Some(value) => value.clone_value_into(runtime.heap_mut())?,
+        None => RuntimeVal::Nil,
+    };
+    Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(
+        lk_core::val::TypedList::Mixed(vec![RuntimeVal::Bool(task.value.is_some()), value]),
+    ))))
+}
+
+fn task_join_all(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+    let mut values = Vec::with_capacity(args.len());
+    for arg in args.as_slice() {
+        let task = task_arg(arg, runtime.heap(), "task.join_all()")?;
+        let value = rt::with_runtime(|rt| rt.block_on(rt.join_task(task.id)))
+            .map_err(|err| anyhow!("Failed to await task: {err}"))?;
+        values.push(value.into_value(runtime.heap_mut())?);
+    }
+    let list = crate::typed_list_from_values(values, runtime.heap());
+    Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(list))))
+}
+
+fn task_sleep(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+    expect_arity(args, 1, "task.sleep()")?;
+    let duration_ms = numeric_millis(args.get(0).expect("checked arity"), "task.sleep()")?;
+    rt::with_runtime(|rt| {
         let duration = std::time::Duration::from_millis(duration_ms as u64);
-        runtime.block_on(async {
+        rt.block_on(async {
             tokio::time::sleep(duration).await;
-            Ok(Val::Nil)
+            Ok(RuntimeVal::Nil)
         })
-    }) {
-        Ok(result) => Ok(result),
-        Err(e) => Err(anyhow!("Failed to sleep: {}", e)),
-    }
+    })
+    .map_err(|err| anyhow!("Failed to sleep: {err}"))
 }
 
-/// Spawn a blocking task (CPU-intensive work)
-fn task_spawn_blocking(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
-    if args.len() != 1 {
-        return Err(anyhow!("task::spawn_blocking() expects exactly 1 argument"));
+fn task_spawn_blocking(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+    expect_arity(args, 1, "task.spawn_blocking()")?;
+    if !is_callable(args.get(0).expect("checked arity"), runtime.heap())? {
+        bail!("task.spawn_blocking() expects a function argument");
     }
-
-    // Extract the function from the argument
-    let _func = match &args[0] {
-        Val::RustFunction(f) => *f,
-        Val::Closure(_) => {
-            return Err(anyhow!("task::spawn_blocking() does not support closures yet"));
-        }
-        _ => {
-            return Err(anyhow!("task::spawn_blocking() expects a function argument"));
-        }
-    };
-
-    // Note: This is a simplified implementation that doesn't capture env
-    // In a full implementation, we'd need to handle the lifetime issues
-    match rt::with_runtime(|runtime| {
-        let future = async move {
-            // For now, execute with empty args - ctx handling would need proper lifetime management
-            // TODO: Fix this when we have proper VmContext cloning/serialization
-            Err(anyhow!("task::spawn_blocking() needs VmContext lifetime management"))
-            // func(&[], ctx)
-        };
-        runtime.spawn(future)
-    }) {
-        Ok(task_id) => Ok(Val::Task(Arc::new(TaskValue {
+    let task_id = rt::with_runtime(|rt| {
+        let future = async move { Err(anyhow!("task.spawn_blocking() needs VmContext lifetime management")) };
+        rt.spawn(future)
+    })
+    .map_err(|err| anyhow!("Failed to spawn blocking task: {err}"))?;
+    Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::Task(Arc::new(
+        TaskValue {
             id: task_id,
             value: None,
-        }))),
-        Err(e) => Err(anyhow!("Failed to spawn blocking task: {}", e)),
+        },
+    )))))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lk_core::{rt::RuntimePayload, vm::RuntimeModuleState};
+
+    fn task_native(name: &str) -> Result<(u16, NativeFunction)> {
+        crate::runtime_native::runtime_native_export(&TaskModule::new(), name)
+    }
+
+    fn call(name: &str, args: &[RuntimeVal], state: &mut RuntimeModuleState) -> Result<RuntimeVal> {
+        let (_, function) = task_native(name)?;
+        let NativeFunction::Plain(function) = function else {
+            bail!("{name} must use plain RuntimeNative");
+        };
+        let mut runtime = NativeRuntime::new(state, None, None);
+        function(NativeArgs::new(args), &mut runtime)
+    }
+
+    fn resolved_task(value: RuntimeVal, heap: &mut HeapStore) -> RuntimeVal {
+        let payload = RuntimePayload::new(value, HeapStore::new());
+        RuntimeVal::Obj(heap.alloc(HeapValue::Task(Arc::new(TaskValue {
+            id: 0,
+            value: Some(payload),
+        }))))
+    }
+
+    fn expect_list(value: &RuntimeVal, heap: &HeapStore) -> Vec<RuntimeVal> {
+        let RuntimeVal::Obj(handle) = value else {
+            panic!("expected runtime list object");
+        };
+        let Some(HeapValue::List(list)) = heap.get(*handle) else {
+            panic!("expected runtime list heap value");
+        };
+        match list {
+            lk_core::val::TypedList::Mixed(values) => values.clone(),
+            lk_core::val::TypedList::Int(values) => values.iter().copied().map(RuntimeVal::Int).collect(),
+            lk_core::val::TypedList::Float(values) => values.iter().copied().map(RuntimeVal::Float).collect(),
+            lk_core::val::TypedList::Bool(values) => values.iter().copied().map(RuntimeVal::Bool).collect(),
+            lk_core::val::TypedList::String(values) => values
+                .iter()
+                .map(|value| RuntimeVal::ShortStr(lk_core::val::ShortStr::new(value).expect("short test string")))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn task_exports_use_runtime_native() -> Result<()> {
+        for name in ["await", "try_await", "join_all", "sleep", "spawn_blocking"] {
+            let (_, function) = task_native(name)?;
+            assert!(matches!(function, NativeFunction::Plain(_)));
+        }
+        assert_eq!(task_native("join_all")?.0, lk_core::vm::NativeEntry::VARIADIC);
+        Ok(())
+    }
+
+    #[test]
+    fn task_try_await_uses_runtime_task_value() -> Result<()> {
+        let mut state = RuntimeModuleState::default();
+        let task = resolved_task(RuntimeVal::Int(42), state.heap_mut());
+        let result = call("try_await", &[task], &mut state)?;
+        assert_eq!(
+            expect_list(&result, state.heap()),
+            vec![RuntimeVal::Bool(true), RuntimeVal::Int(42)]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn task_join_all_empty_returns_empty_list() -> Result<()> {
+        let mut state = RuntimeModuleState::default();
+        let result = call("join_all", &[], &mut state)?;
+        assert_eq!(expect_list(&result, state.heap()), Vec::<RuntimeVal>::new());
+        Ok(())
+    }
+
+    #[test]
+    fn task_sleep_accepts_zero_duration() -> Result<()> {
+        let mut state = RuntimeModuleState::default();
+        assert_eq!(call("sleep", &[RuntimeVal::Int(0)], &mut state)?, RuntimeVal::Nil);
+        Ok(())
+    }
+
+    #[test]
+    fn task_spawn_blocking_rejects_non_callable() {
+        let mut state = RuntimeModuleState::default();
+        let err = call("spawn_blocking", &[RuntimeVal::Int(1)], &mut state).expect_err("non-callable should fail");
+        assert!(err.to_string().contains("expects a function"));
+    }
+
+    #[test]
+    fn task_try_await_pending_returns_false_nil() -> Result<()> {
+        let mut state = RuntimeModuleState::default();
+        let task = RuntimeVal::Obj(state.heap_mut().alloc(HeapValue::Task(Arc::new(TaskValue {
+            id: 999_999,
+            value: None,
+        }))));
+        let result = call("try_await", &[task], &mut state)?;
+        assert_eq!(
+            expect_list(&result, state.heap()),
+            vec![RuntimeVal::Bool(false), RuntimeVal::Nil]
+        );
+        Ok(())
     }
 }

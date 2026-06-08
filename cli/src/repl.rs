@@ -1,15 +1,16 @@
 use rustyline::{DefaultEditor, error::ReadlineError};
 use std::sync::Arc;
 
-use lkr_core::{
+use lk_core::{
     module::ModuleRegistry,
     rt,
     stmt::{ModuleResolver, StmtParser},
     token::Tokenizer,
     typ::TypeChecker,
-    val::Val,
-    vm::{Vm, VmContext, compile_program},
+    vm::VmContext,
 };
+
+use crate::diagnostic;
 
 fn print_repl_help() {
     eprintln!("Commands: :quit | :exit | :q, :help");
@@ -109,18 +110,17 @@ pub fn run(_is_statement_mode: bool) -> anyhow::Result<()> {
     // Initialize runtime
 
     if let Err(e) = rt::init_runtime() {
-        eprintln!("Warning: Failed to initialize runtime: {}", e);
+        diagnostic::warning(format_args!("Failed to initialize runtime: {}", e));
     }
 
     // Prepare stdlib and environment (persist across statements)
     let mut registry = ModuleRegistry::new();
-    lkr_stdlib::register_stdlib_globals(&mut registry);
-    lkr_stdlib::register_stdlib_modules(&mut registry)?;
+    lk_stdlib::register_stdlib_globals(&mut registry);
+    lk_stdlib::register_stdlib_modules(&mut registry)?;
     let resolver = Arc::new(ModuleResolver::with_registry(registry));
     let mut env = VmContext::new()
         .with_resolver(resolver)
         .with_type_checker(Some(TypeChecker::new_strict()));
-    let mut vm = Vm::new();
 
     // In-memory line editor with history and arrow key support
     let mut rl = DefaultEditor::new()?;
@@ -209,18 +209,15 @@ pub fn run(_is_statement_mode: bool) -> anyhow::Result<()> {
             let (tokens, spans) = match Tokenizer::tokenize_enhanced_with_spans(&src) {
                 Ok((tokens, spans)) => (tokens, spans),
                 Err(parse_err) => {
-                    eprintln!("Error: {}", parse_err);
+                    diagnostic::parse_error(&parse_err, &src);
                     continue;
                 }
             };
 
             let mut parser = StmtParser::new_with_spans(&tokens, &spans);
             match parser.parse_program_with_enhanced_errors(&src) {
-                Ok(program) => {
-                    let function = compile_program(&program);
-                    vm.exec_with(&function, &mut env, None)
-                }
-                Err(_parse_err) => {
+                Ok(program) => program.execute_with_ctx(&mut env),
+                Err(parse_err) => {
                     // Attempt to treat input as expression: println((<src>));
                     // Normalize to avoid tokenizer merging '+'/'-' with following digits in binary contexts.
                     let normalized = normalize_binary_signs(&src);
@@ -229,18 +226,15 @@ pub fn run(_is_statement_mode: bool) -> anyhow::Result<()> {
                         Ok((wtoks, wspans)) => {
                             let mut wparser = StmtParser::new_with_spans(&wtoks, &wspans);
                             match wparser.parse_program_with_enhanced_errors(&wrapped) {
-                                Ok(wprog) => {
-                                    let function = compile_program(&wprog);
-                                    vm.exec_with(&function, &mut env, None)
-                                }
-                                Err(perr) => {
-                                    eprintln!("Error: {}", perr);
+                                Ok(wprog) => wprog.execute_with_ctx(&mut env),
+                                Err(_expr_err) => {
+                                    diagnostic::parse_error(&parse_err, &src);
                                     continue;
                                 }
                             }
                         }
-                        Err(terr) => {
-                            eprintln!("Error: {}", terr);
+                        Err(_expr_err) => {
+                            diagnostic::parse_error(&parse_err, &src);
                             continue;
                         }
                     }
@@ -250,11 +244,11 @@ pub fn run(_is_statement_mode: bool) -> anyhow::Result<()> {
 
         match result {
             Ok(res) => {
-                if !matches!(res, Val::Nil) {
-                    println!("{}", res.display_string(Some(&env)));
+                if !res.first_return_is_nil() {
+                    println!("{}", res.display_first_return());
                 }
             }
-            Err(e) => eprintln!("Error: {}", e),
+            Err(e) => diagnostic::error(&e),
         }
     }
 }

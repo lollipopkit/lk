@@ -1,0 +1,65 @@
+// Struct, Trait, and impl demo
+
+// 1. Define structs
+struct Point { x: Int, y: Int }
+struct Rect { w: Int, h: Int }
+struct Circle { r: Int }
+
+// 2. Instantiate structs
+let p = Point { x: 3, y: 4 };
+assert(p.x == 3);
+assert(p.y == 4);
+
+let r = Rect { w: 10, h: 20 };
+assert(r.w == 10);
+
+let c = Circle { r: 5 };
+assert(c.r == 5);
+
+// 3. Struct with optional field
+struct User { id: Int, name: String?, active: Bool }
+let u1 = User { id: 1, name: "Alice", active: true };
+let u2 = User { id: 2, active: false };
+assert(u1.name == "Alice");
+assert(u2.name == nil);
+assert(u2.active == false);
+
+// 4. Trait definition and implementation
+trait Area {
+  fn area(self) -> Int;
+}
+
+impl Area for Rect {
+  fn area(self) -> Int { return self.w * self.h; }
+}
+
+assert(r.area() == 200);
+
+// 5. Multiple traits
+trait Describe {
+  fn describe(self) -> String;
+}
+
+impl Describe for Rect {
+  fn describe(self) -> String { return "Rect(${self.w}x${self.h})"; }
+}
+assert(r.describe() == "Rect(10x20)");
+
+// 6. Same trait, different types
+impl Area for Circle {
+  fn area(self) -> Int { return 3 * self.r * self.r; } // approximate
+}
+let c_area = c.area();
+assert(c_area == 75);
+
+impl Describe for Circle {
+  fn describe(self) -> String { return "Circle(r=${self.r})"; }
+}
+assert(c.describe() == "Circle(r=5)");
+
+// 7. Struct in collections
+let shapes = [Rect { w: 3, h: 4 }, Circle { r: 10 }];
+let areas = shapes.map(|s| s.area());
+assert(areas == [12, 300]);
+
+println("struct_trait: all assertions passed");

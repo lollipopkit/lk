@@ -1,0 +1,57 @@
+// String operations demo
+
+// 1. Length and emptiness
+assert("hello".len() == 5);
+assert("".is_empty());
+assert(!"hi".is_empty());
+
+// 2. Case conversion
+assert("Hello World".lower() == "hello world");
+assert("Hello World".upper() == "HELLO WORLD");
+
+// 3. Trimming
+assert("  spaced  ".trim() == "spaced");
+
+// 4. Prefix / suffix / contains / find
+let url = "https://example.com";
+assert(url.starts_with("https"));
+assert(url.ends_with(".com"));
+assert(url.contains("example"));
+assert("the quick brown fox".find("quick") == 4);
+
+// 5. Replace
+assert("hello world".replace("world", "LK") == "hello LK");
+
+// 6. Split and join
+let parts = "red,green,blue".split(",");
+assert(parts == ["red", "green", "blue"]);
+assert(parts.join(" | ") == "red | green | blue");
+
+// 7. Substring
+assert("abcdef".substring(1, 3) == "bcd");
+
+// 8. Reverse and repeat
+assert("stressed".reverse() == "desserts");
+assert("ha".repeat(3) == "hahaha");
+
+// 9. Chars
+let chars = "abc".chars();
+assert(chars == ["a", "b", "c"]);
+
+// 10. String concatenation with +
+assert("Hello" + ", " + "World!" == "Hello, World!");
+
+// 11. Template string interpolation
+let name = "LK";
+let greeting = "Hello, ${name}!";
+assert(greeting == "Hello, LK!");
+
+// 12. Raw strings (no escape processing)
+let raw = r"No \n escapes here";
+assert(raw == "No \\n escapes here");
+
+// 13. Multi-line raw string with hashes
+let json_like = r#"{ "key": "value" }"#;
+assert(json_like == "{ \"key\": \"value\" }");
+
+println("string_methods: all assertions passed");

@@ -41,37 +41,23 @@ mod tests {
 
     #[test]
     fn test_type_parsing_optional() {
-        // ?Int
-        if let Some(Type::Optional(inner)) = Type::parse("?Int") {
-            assert_eq!(*inner, Type::Int);
-        } else {
-            panic!("Expected ?Int");
-        }
+        assert!(Type::parse("?Int").is_none());
 
-        // Int? (suffix form)
+        // Int?
         if let Some(Type::Optional(inner)) = Type::parse("Int?") {
             assert_eq!(*inner, Type::Int);
         } else {
             panic!("Expected Int?");
         }
 
-        // ?List<String>
-        if let Some(Type::Optional(inner)) = Type::parse("?List<String>") {
-            if let Type::List(list_inner) = inner.as_ref() {
-                assert_eq!(**list_inner, Type::String);
-            } else {
-                panic!("Expected Optional<List<String>>");
-            }
-        } else {
-            panic!("Expected ?List<String>");
-        }
+        assert!(Type::parse("?List<String>").is_none());
 
-        // List<String>? (suffix form)
+        // List<String>?
         if let Some(Type::Optional(inner)) = Type::parse("List<String>?") {
             if let Type::List(list_inner) = inner.as_ref() {
                 assert_eq!(**list_inner, Type::String);
             } else {
-                panic!("Expected Optional<List<String>> (suffix)");
+                panic!("Expected Optional<List<String>>");
             }
         } else {
             panic!("Expected List<String>?");
@@ -241,7 +227,7 @@ mod tests {
         assert!(matches!(tokens[4], crate::token::Token::FnArrow));
 
         // Test complex type annotation
-        let tokens = Tokenizer::tokenize("let x: ?List<Int | String> = nil;").unwrap();
+        let tokens = Tokenizer::tokenize("let x: List<Int | String>? = nil;").unwrap();
         // Should contain Question, List identifier, Lt, Int, Pipe, String, Gt, etc.
         assert!(tokens.iter().any(|t| matches!(t, crate::token::Token::Question)));
         assert!(tokens.iter().any(|t| matches!(t, crate::token::Token::Pipe)));

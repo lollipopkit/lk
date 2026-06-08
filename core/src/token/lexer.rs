@@ -32,6 +32,8 @@ pub enum Token {
     In,                // in
     And,               // &&
     Or,                // ||
+    BitAnd,            // &
+    BitNot,            // ~
     Not,               // !
     Add,               // +
     Sub,               // -
@@ -59,8 +61,8 @@ pub enum Token {
     Default,  // default
     // Concurrency keywords
     Select, // select
-    // Import keywords
-    Import, // import
+    // Module-use keywords
+    Use,    // use
     From,   // from
     As,     // as
     // Type system keywords
@@ -482,7 +484,7 @@ impl<'a> Tokenizer<'a> {
 
     // Note: backtick-delimited template strings are not supported anymore.
 
-    /// Note: legacy '@' context access has been removed.
+    /// Note: '@' context access has been removed.
     fn parse_num(&mut self) -> Result<()> {
         let mut num = String::new();
         let start_pos = self.current_position();
@@ -653,8 +655,8 @@ impl<'a> Tokenizer<'a> {
             self.push_span_only(Token::Fn, sp);
             return Ok(());
         }
-        if let Some(sp) = match_kw(self, "import") {
-            self.push_span_only(Token::Import, sp);
+        if let Some(sp) = match_kw(self, "use") {
+            self.push_span_only(Token::Use, sp);
             return Ok(());
         }
         if let Some(sp) = match_kw(self, "from") {
@@ -706,7 +708,7 @@ impl<'a> Tokenizer<'a> {
         self.parse_id()
     }
 
-    // legacy '@' list parser removed
+    // Removed '@' list parser.
 
     fn parse_int(&mut self) -> Result<()> {
         // Record span for integers parsed in contexts like a.0 or .123
@@ -870,7 +872,10 @@ impl<'a> Tokenizer<'a> {
                     self.push_with_span(Token::And, start, end);
                     Ok(())
                 } else {
-                    Err(anyhow!(self.err("Expect '&&'")))
+                    self.advance_char();
+                    let end = self.current_position();
+                    self.push_with_span(Token::BitAnd, start, end);
+                    Ok(())
                 }
             }
             '|' => {
@@ -921,8 +926,7 @@ impl<'a> Tokenizer<'a> {
             '+' => {
                 let next = self.chars.get(self.idx + 1);
                 if let Some(&c) = next {
-                    // Treat '+<digits>' or '+.<digits>' as a signed number regardless of context
-                    if c.is_ascii_digit() || c == '.' {
+                    if self.signed_number_can_start() && (c.is_ascii_digit() || c == '.') {
                         return self.parse_num();
                     }
                 }
@@ -941,8 +945,7 @@ impl<'a> Tokenizer<'a> {
             '-' => {
                 let next = self.chars.get(self.idx + 1);
                 if let Some(&c) = next {
-                    // Treat '-<digits>' or '-.<digits>' as a signed number regardless of context
-                    if c.is_ascii_digit() || c == '.' {
+                    if self.signed_number_can_start() && (c.is_ascii_digit() || c == '.') {
                         return self.parse_num();
                     }
                 }
@@ -1009,7 +1012,7 @@ impl<'a> Tokenizer<'a> {
                     Ok(())
                 }
             }
-            // '@' legacy context access removed; treat as unknown punctuation
+            // Removed '@' context access; treat as unknown punctuation.
             '=' => {
                 let start = self.current_position();
                 if self.expect("==") {
@@ -1039,6 +1042,13 @@ impl<'a> Tokenizer<'a> {
                     self.push_with_span(Token::Not, start, end);
                     Ok(())
                 }
+            }
+            '~' => {
+                let start = self.current_position();
+                self.advance_char();
+                let end = self.current_position();
+                self.push_with_span(Token::BitNot, start, end);
+                Ok(())
             }
             '>' => {
                 let start = self.current_position();
@@ -1095,10 +1105,10 @@ impl<'a> Tokenizer<'a> {
                 '0'..='9' => {
                     self.parse_num()?;
                 }
-                // Keywords: true false nil if else while let break continue return goto fn for as ...
+                // Keywords: true false nil if else while let break continue return goto fn for use as ...
                 // Also: go, select/case/default
                 // NOTE: include starting letters for all keywords so they route to parse_keywords.
-                't' | 'f' | 'n' | 'i' | 'e' | 'w' | 'l' | 'b' | 'c' | 'g' | 's' | 'd' | 'a' | 'm' => {
+                't' | 'f' | 'n' | 'i' | 'e' | 'w' | 'l' | 'b' | 'c' | 'g' | 's' | 'd' | 'a' | 'm' | 'u' => {
                     self.parse_keywords()?;
                 }
                 _ => {
@@ -1128,6 +1138,7 @@ impl<'a> Tokenizer<'a> {
                 | ';'
                 | '&'
                 | '|'
+                | '~'
                 | '+'
                 | '-'
                 | '*'
@@ -1137,6 +1148,57 @@ impl<'a> Tokenizer<'a> {
                 | '!'
                 | '>'
                 | '<'
+        )
+    }
+
+    fn signed_number_can_start(&self) -> bool {
+        let Some(previous) = self.tokens.last() else {
+            return true;
+        };
+        matches!(
+            previous,
+            Token::LParen
+                | Token::LBrace
+                | Token::LBracket
+                | Token::Comma
+                | Token::Colon
+                | Token::Semicolon
+                | Token::Assign
+                | Token::AddAssign
+                | Token::SubAssign
+                | Token::MulAssign
+                | Token::DivAssign
+                | Token::ModAssign
+                | Token::Eq
+                | Token::Ne
+                | Token::Gt
+                | Token::Lt
+                | Token::Ge
+                | Token::Le
+                | Token::In
+                | Token::And
+                | Token::Or
+                | Token::BitAnd
+                | Token::Not
+                | Token::Add
+                | Token::Sub
+                | Token::Mul
+                | Token::Div
+                | Token::Mod
+                | Token::Arrow
+                | Token::LeftArrow
+                | Token::NullishCoalescing
+                | Token::Range
+                | Token::RangeInclusive
+                | Token::If
+                | Token::While
+                | Token::Let
+                | Token::Const
+                | Token::Return
+                | Token::For
+                | Token::Case
+                | Token::Default
+                | Token::Question
         )
     }
 }

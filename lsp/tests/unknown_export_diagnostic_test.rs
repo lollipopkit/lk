@@ -1,12 +1,12 @@
-use lkr_lsp::analyzer::LkrAnalyzer;
+use lk_lsp::analyzer::LkAnalyzer;
 use tower_lsp::lsp_types::DiagnosticSeverity;
 
 #[test]
 fn test_unknown_export_import_diagnostic() {
-    let mut analyzer = LkrAnalyzer::new();
+    let mut analyzer = LkAnalyzer::new();
     let code = r#"
-        import { sqrt, not_exist } from math;
-        import { bogus } from string;
+        use { sqrt, not_exist } from math;
+        use { bogus } from string;
     "#;
     let res = analyzer.analyze(code);
     // Should have ERROR diagnostics for the unknown exports

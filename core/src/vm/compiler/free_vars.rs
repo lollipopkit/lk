@@ -1,334 +1,213 @@
-use std::collections::BTreeSet;
+use std::collections::HashSet;
 
 use crate::{
-    expr::{Expr, MatchArm, Pattern, SelectCase, SelectPattern, TemplateStringPart},
-    stmt::{ForPattern, Stmt},
+    expr::{Expr, Pattern, SelectPattern, TemplateStringPart},
+    stmt::{NamedParamDecl, Stmt},
 };
 
-pub(crate) struct FreeVarCollector {
-    scopes: Vec<BTreeSet<String>>,
-    free: BTreeSet<String>,
+pub(super) fn collect_function_free_vars(
+    params: &[String],
+    named_params: &[NamedParamDecl],
+    body: &Stmt,
+) -> Vec<String> {
+    let mut bound = HashSet::with_capacity(params.len() + named_params.len());
+    bound.extend(params.iter().cloned());
+    bound.extend(named_params.iter().map(|param| param.name.clone()));
+
+    let mut free = Vec::new();
+    for param in named_params {
+        if let Some(default) = &param.default {
+            collect_expr_free_vars(default, &mut bound, &mut free);
+        }
+    }
+    collect_single_stmt_free_vars(body, &mut bound, &mut free);
+    free
 }
 
-impl FreeVarCollector {
-    pub(crate) fn new() -> Self {
-        Self {
-            scopes: vec![BTreeSet::new()],
-            free: BTreeSet::new(),
+pub(super) fn collect_expr_free_vars(expr: &Expr, bound: &mut HashSet<String>, free: &mut Vec<String>) {
+    match expr {
+        Expr::Var(name) => {
+            if !bound.contains(name) {
+                free.push(name.clone());
+            }
         }
-    }
-
-    pub(crate) fn declare<S: Into<String>>(&mut self, name: S) {
-        if let Some(scope) = self.scopes.last_mut() {
-            scope.insert(name.into());
+        Expr::Bin(lhs, _, rhs)
+        | Expr::And(lhs, rhs)
+        | Expr::Or(lhs, rhs)
+        | Expr::NullishCoalescing(lhs, rhs)
+        | Expr::Access(lhs, rhs)
+        | Expr::OptionalAccess(lhs, rhs) => {
+            collect_expr_free_vars(lhs, bound, free);
+            collect_expr_free_vars(rhs, bound, free);
         }
-    }
-
-    pub(crate) fn with_scope<F>(&mut self, f: F)
-    where
-        F: FnOnce(&mut Self),
-    {
-        self.scopes.push(BTreeSet::new());
-        f(self);
-        self.scopes.pop();
-    }
-
-    pub(crate) fn mark_use(&mut self, name: &str) {
-        if !self.is_local(name) {
-            self.free.insert(name.to_string());
+        Expr::CallExpr(callee, args) => {
+            collect_expr_free_vars(callee, bound, free);
+            for arg in args {
+                collect_expr_free_vars(arg, bound, free);
+            }
         }
-    }
-
-    pub(crate) fn is_local(&self, name: &str) -> bool {
-        self.scopes.iter().rev().any(|scope| scope.contains(name))
-    }
-
-    pub(crate) fn visit_stmt(&mut self, stmt: &Stmt) {
-        match stmt {
-            Stmt::Block { statements } => {
-                self.with_scope(|collector| {
-                    for s in statements {
-                        collector.visit_stmt(s);
+        Expr::Unary(_, inner) | Expr::Paren(inner) => collect_expr_free_vars(inner, bound, free),
+        Expr::Conditional(condition, then_expr, else_expr) => {
+            collect_expr_free_vars(condition, bound, free);
+            collect_expr_free_vars(then_expr, bound, free);
+            collect_expr_free_vars(else_expr, bound, free);
+        }
+        Expr::List(values) => {
+            for value in values {
+                collect_expr_free_vars(value, bound, free);
+            }
+        }
+        Expr::Map(entries) => {
+            for (key, value) in entries {
+                collect_expr_free_vars(key, bound, free);
+                collect_expr_free_vars(value, bound, free);
+            }
+        }
+        Expr::StructLiteral { fields, .. } => {
+            for (_, value) in fields {
+                collect_expr_free_vars(value, bound, free);
+            }
+        }
+        Expr::Call(name, args) => {
+            if !bound.contains(name) {
+                free.push(name.clone());
+            }
+            for arg in args {
+                collect_expr_free_vars(arg, bound, free);
+            }
+        }
+        Expr::CallNamed(callee, positional, named) => {
+            collect_expr_free_vars(callee, bound, free);
+            for arg in positional {
+                collect_expr_free_vars(arg, bound, free);
+            }
+            for (_, arg) in named {
+                collect_expr_free_vars(arg, bound, free);
+            }
+        }
+        Expr::Range { start, end, step, .. } => {
+            for value in [start, end, step].into_iter().flatten() {
+                collect_expr_free_vars(value, bound, free);
+            }
+        }
+        Expr::Select { cases, default_case } => {
+            for case in cases {
+                match &case.pattern {
+                    SelectPattern::Recv { channel, .. } => collect_expr_free_vars(channel, bound, free),
+                    SelectPattern::Send { channel, value } => {
+                        collect_expr_free_vars(channel, bound, free);
+                        collect_expr_free_vars(value, bound, free);
                     }
-                });
+                }
+                if let Some(guard) = &case.guard {
+                    collect_expr_free_vars(guard, bound, free);
+                }
+                collect_expr_free_vars(&case.body, bound, free);
             }
+            if let Some(default_case) = default_case {
+                collect_expr_free_vars(default_case, bound, free);
+            }
+        }
+        Expr::TemplateString(parts) => {
+            for part in parts {
+                if let TemplateStringPart::Expr(expr) = part {
+                    collect_expr_free_vars(expr, bound, free);
+                }
+            }
+        }
+        Expr::Closure { params, body } => {
+            let mut nested_bound = bound.clone();
+            nested_bound.extend(params.iter().cloned());
+            collect_expr_free_vars(body, &mut nested_bound, free);
+        }
+        Expr::Block(statements) => collect_stmt_free_vars(statements, bound, free),
+        Expr::Match { value, arms } => {
+            collect_expr_free_vars(value, bound, free);
+            for arm in arms {
+                let mut arm_bound = bound.clone();
+                collect_pattern_bound_vars(&arm.pattern, &mut arm_bound);
+                collect_expr_free_vars(&arm.body, &mut arm_bound, free);
+            }
+        }
+        Expr::Literal(_) => {}
+    }
+}
+
+fn collect_stmt_free_vars(statements: &[Box<Stmt>], bound: &mut HashSet<String>, free: &mut Vec<String>) {
+    for stmt in statements {
+        match stmt.as_ref() {
+            Stmt::Expr(expr) => collect_expr_free_vars(expr, bound, free),
+            Stmt::Return { value: Some(value) } => collect_expr_free_vars(value, bound, free),
+            Stmt::Return { value: None } | Stmt::Empty | Stmt::Break | Stmt::Continue => {}
             Stmt::Let { pattern, value, .. } => {
-                self.visit_expr(value);
-                self.bind_pattern(pattern);
-            }
-            Stmt::Assign { name, value, .. } => {
-                self.visit_expr(value);
-                self.mark_use(name);
-            }
-            Stmt::CompoundAssign { name, value, .. } => {
-                self.visit_expr(value);
-                self.mark_use(name);
+                collect_expr_free_vars(value, bound, free);
+                collect_pattern_bound_vars(pattern, bound);
             }
             Stmt::Define { name, value } => {
-                self.visit_expr(value);
-                self.declare(name);
+                collect_expr_free_vars(value, bound, free);
+                bound.insert(name.clone());
+            }
+            Stmt::Assign { name, value, .. } | Stmt::CompoundAssign { name, value, .. } => {
+                if !bound.contains(name) {
+                    free.push(name.clone());
+                }
+                collect_expr_free_vars(value, bound, free);
             }
             Stmt::If {
                 condition,
                 then_stmt,
                 else_stmt,
             } => {
-                self.visit_expr(condition);
-                self.with_scope(|collector| collector.visit_stmt(then_stmt));
+                collect_expr_free_vars(condition, bound, free);
+                collect_single_stmt_free_vars(then_stmt, &mut bound.clone(), free);
                 if let Some(else_stmt) = else_stmt {
-                    self.with_scope(|collector| collector.visit_stmt(else_stmt));
-                }
-            }
-            Stmt::IfLet {
-                pattern,
-                value,
-                then_stmt,
-                else_stmt,
-            } => {
-                self.visit_expr(value);
-                self.with_scope(|collector| {
-                    collector.bind_pattern(pattern);
-                    collector.visit_stmt(then_stmt);
-                });
-                if let Some(else_stmt) = else_stmt {
-                    self.with_scope(|collector| collector.visit_stmt(else_stmt));
+                    collect_single_stmt_free_vars(else_stmt, &mut bound.clone(), free);
                 }
             }
             Stmt::While { condition, body } => {
-                self.visit_expr(condition);
-                self.with_scope(|collector| collector.visit_stmt(body));
+                collect_expr_free_vars(condition, bound, free);
+                collect_single_stmt_free_vars(body, &mut bound.clone(), free);
             }
-            Stmt::WhileLet { pattern, value, body } => {
-                self.visit_expr(value);
-                self.with_scope(|collector| {
-                    collector.bind_pattern(pattern);
-                    collector.visit_stmt(body);
-                });
-            }
-            Stmt::For {
-                pattern,
-                iterable,
-                body,
-            } => {
-                self.visit_expr(iterable);
-                self.with_scope(|collector| {
-                    collector.bind_for_pattern(pattern);
-                    collector.visit_stmt(body);
-                });
-            }
-            Stmt::Return { value } => {
-                if let Some(expr) = value {
-                    self.visit_expr(expr);
-                }
-            }
-            Stmt::Expr(expr) => {
-                self.visit_expr(expr);
-            }
+            Stmt::Block { statements } => collect_stmt_free_vars(statements, &mut bound.clone(), free),
             Stmt::Function { name, .. } => {
-                self.declare(name);
+                bound.insert(name.clone());
             }
-            Stmt::Struct { name, .. } | Stmt::TypeAlias { name, .. } | Stmt::Trait { name, .. } => {
-                self.declare(name);
-            }
-            Stmt::Impl { methods, .. } => {
-                for method in methods {
-                    self.visit_stmt(method);
-                }
-            }
-            Stmt::Import(_) | Stmt::Break | Stmt::Continue | Stmt::Empty => {}
+            _ => {}
         }
     }
+}
 
-    pub(crate) fn visit_expr(&mut self, expr: &Expr) {
-        match expr {
-            Expr::Bin(l, _, r) | Expr::And(l, r) | Expr::Or(l, r) | Expr::NullishCoalescing(l, r) => {
-                self.visit_expr(l);
-                self.visit_expr(r);
-            }
-            Expr::Unary(_, e) | Expr::Paren(e) => self.visit_expr(e),
-            Expr::Conditional(c, t, e) => {
-                self.visit_expr(c);
-                self.visit_expr(t);
-                self.visit_expr(e);
-            }
-            Expr::Access(base, field) | Expr::OptionalAccess(base, field) => {
-                self.visit_expr(base);
-                self.visit_expr(field);
-            }
-            Expr::List(items) => {
-                for item in items {
-                    self.visit_expr(item);
-                }
-            }
-            Expr::Map(entries) => {
-                for (k, v) in entries {
-                    self.visit_expr(k);
-                    self.visit_expr(v);
-                }
-            }
-            Expr::StructLiteral { fields, .. } => {
-                for (_, expr) in fields {
-                    self.visit_expr(expr);
-                }
-            }
-            Expr::Var(name) => self.mark_use(name),
-            Expr::Call(name, args) => {
-                self.mark_use(name);
-                for arg in args {
-                    self.visit_expr(arg);
-                }
-            }
-            Expr::CallExpr(callee, args) => {
-                self.visit_expr(callee);
-                for arg in args {
-                    self.visit_expr(arg);
-                }
-            }
-            Expr::CallNamed(callee, positional, named) => {
-                self.visit_expr(callee);
-                for arg in positional {
-                    self.visit_expr(arg);
-                }
-                for (_, expr) in named {
-                    self.visit_expr(expr);
-                }
-            }
-            Expr::Range { start, end, step, .. } => {
-                if let Some(s) = start {
-                    self.visit_expr(s);
-                }
-                if let Some(e) = end {
-                    self.visit_expr(e);
-                }
-                if let Some(st) = step {
-                    self.visit_expr(st);
-                }
-            }
-            Expr::Select { cases, default_case } => {
-                for case in cases {
-                    self.visit_select_case(case);
-                }
-                if let Some(default) = default_case {
-                    self.visit_expr(default);
-                }
-            }
-            Expr::TemplateString(parts) => {
-                for part in parts {
-                    if let TemplateStringPart::Expr(expr) = part {
-                        self.visit_expr(expr);
-                    }
-                }
-            }
-            Expr::Closure { .. } => {}
-            Expr::Match { value, arms } => {
-                self.visit_expr(value);
-                for MatchArm { pattern, body } in arms {
-                    self.with_scope(|collector| {
-                        collector.bind_pattern(pattern);
-                        collector.visit_expr(body);
-                    });
-                }
-            }
-            Expr::Val(_) => {}
+fn collect_single_stmt_free_vars(stmt: &Stmt, bound: &mut HashSet<String>, free: &mut Vec<String>) {
+    collect_stmt_free_vars(&[Box::new(stmt.clone())], bound, free);
+}
+
+fn collect_pattern_bound_vars(pattern: &Pattern, bound: &mut HashSet<String>) {
+    match pattern {
+        Pattern::Variable(name) => {
+            bound.insert(name.clone());
         }
-    }
-
-    fn visit_select_case(&mut self, case: &SelectCase) {
-        self.with_scope(|collector| {
-            match &case.pattern {
-                SelectPattern::Recv { binding, channel } => {
-                    collector.visit_expr(channel);
-                    if let Some(name) = binding {
-                        collector.declare(name);
-                    }
-                }
-                SelectPattern::Send { channel, value } => {
-                    collector.visit_expr(channel);
-                    collector.visit_expr(value);
-                }
+        Pattern::List { patterns, rest } => {
+            for pattern in patterns {
+                collect_pattern_bound_vars(pattern, bound);
             }
-            if let Some(guard) = &case.guard {
-                collector.visit_expr(guard);
-            }
-            collector.visit_expr(&case.body);
-        });
-    }
-
-    fn bind_pattern(&mut self, pattern: &Pattern) {
-        match pattern {
-            Pattern::Variable(name) => {
-                self.declare(name);
-            }
-            Pattern::List { patterns, rest } => {
-                for p in patterns {
-                    self.bind_pattern(p);
-                }
-                if let Some(rest_name) = rest {
-                    self.declare(rest_name);
-                }
-            }
-            Pattern::Map { patterns, rest } => {
-                for (_, p) in patterns {
-                    self.bind_pattern(p);
-                }
-                if let Some(rest_name) = rest {
-                    self.declare(rest_name);
-                }
-            }
-            Pattern::Or(alternatives) => {
-                let mut names = BTreeSet::new();
-                for alt in alternatives {
-                    let mut inner = FreeVarCollector::new();
-                    inner.bind_pattern(alt);
-                    if let Some(scope) = inner.scopes.last() {
-                        names.extend(scope.iter().cloned());
-                    }
-                }
-                for name in names {
-                    self.declare(name);
-                }
-            }
-            Pattern::Guard { pattern, guard } => {
-                self.bind_pattern(pattern);
-                self.visit_expr(guard);
-            }
-            Pattern::Range { start, end, .. } => {
-                self.visit_expr(start);
-                self.visit_expr(end);
-            }
-            Pattern::Literal(_) | Pattern::Wildcard => {}
-        }
-    }
-
-    fn bind_for_pattern(&mut self, pattern: &ForPattern) {
-        match pattern {
-            ForPattern::Variable(name) => {
-                self.declare(name);
-            }
-            ForPattern::Ignore => {}
-            ForPattern::Tuple(patterns) => {
-                for pat in patterns {
-                    self.bind_for_pattern(pat);
-                }
-            }
-            ForPattern::Array { patterns, rest } => {
-                for pat in patterns {
-                    self.bind_for_pattern(pat);
-                }
-                if let Some(rest_name) = rest {
-                    self.declare(rest_name);
-                }
-            }
-            ForPattern::Object(fields) => {
-                for (name, pat) in fields {
-                    self.declare(name);
-                    self.bind_for_pattern(pat);
-                }
+            if let Some(rest) = rest {
+                bound.insert(rest.clone());
             }
         }
-    }
-
-    pub(crate) fn into_sorted_vec(self) -> Vec<String> {
-        self.free.into_iter().collect()
+        Pattern::Map { patterns, rest } => {
+            for (_, pattern) in patterns {
+                collect_pattern_bound_vars(pattern, bound);
+            }
+            if let Some(rest) = rest {
+                bound.insert(rest.clone());
+            }
+        }
+        Pattern::Or(patterns) => {
+            for pattern in patterns {
+                collect_pattern_bound_vars(pattern, bound);
+            }
+        }
+        Pattern::Guard { pattern, .. } => collect_pattern_bound_vars(pattern, bound),
+        Pattern::Literal(_) | Pattern::Wildcard | Pattern::Range { .. } => {}
     }
 }

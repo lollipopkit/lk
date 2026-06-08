@@ -1,0 +1,137 @@
+{
+  "fn": {
+    "prefix": "fn",
+    "body": ["fn ${1:name}(${2:params}) {", "\t$0", "}"],
+    "description": "Function definition"
+  },
+  "fn_typed": {
+    "prefix": "fnt",
+    "body": ["fn ${1:name}(${2:params}) -> ${3:Type} {", "\t$0", "}"],
+    "description": "Function definition with return type"
+  },
+  "fn_named": {
+    "prefix": "fnn",
+    "body": ["fn ${1:name}(${2:positional}, {${3:named}: ${4:Type}${5: = ${6:default}}}) {", "\t$0", "}"],
+    "description": "Function with named parameters"
+  },
+  "if": {
+    "prefix": "if",
+    "body": ["if (${1:condition}) {", "\t$0", "}"],
+    "description": "If statement"
+  },
+  "if_else": {
+    "prefix": "ife",
+    "body": ["if (${1:condition}) {", "\t$2", "} else {", "\t$0", "}"],
+    "description": "If-else statement"
+  },
+  "if_let": {
+    "prefix": "ifl",
+    "body": ["if let ${1:pattern} = ${2:expr} {", "\t$0", "}"],
+    "description": "If-let pattern matching"
+  },
+  "while": {
+    "prefix": "while",
+    "body": ["while (${1:condition}) {", "\t$0", "}"],
+    "description": "While loop"
+  },
+  "while_let": {
+    "prefix": "whilel",
+    "body": ["while let ${1:pattern} = ${2:expr} {", "\t$0", "}"],
+    "description": "While-let pattern matching loop"
+  },
+  "for_in": {
+    "prefix": "for",
+    "body": ["for ${1:item} in ${2:iterable} {", "\t$0", "}"],
+    "description": "For-in loop"
+  },
+  "let": {
+    "prefix": "let",
+    "body": ["let ${1:name} = ${2:value};"],
+    "description": "Variable declaration"
+  },
+  "let_typed": {
+    "prefix": "lett",
+    "body": ["let ${1:name}: ${2:Type} = ${3:value};"],
+    "description": "Variable declaration with type annotation"
+  },
+  "match": {
+    "prefix": "match",
+    "body": ["match ${1:value} {", "\t${2:pattern} => ${3:expr},", "\t_ => ${4:default},", "}"],
+    "description": "Match expression"
+  },
+  "struct": {
+    "prefix": "struct",
+    "body": ["struct ${1:Name} {", "\t${2:field}: ${3:Type},", "}"],
+    "description": "Struct definition"
+  },
+  "use": {
+    "prefix": "use",
+    "body": ["use ${1:module};"],
+    "description": "Use module"
+  },
+  "use_from": {
+    "prefix": "usef",
+    "body": ["use { ${1:items} } from ${2:module};"],
+    "description": "Use items from module"
+  },
+  "use_as": {
+    "prefix": "usea",
+    "body": ["use ${1:module} as ${2:alias};"],
+    "description": "Use module with alias"
+  },
+  "closure": {
+    "prefix": "cl",
+    "body": ["|${1:params}| ${2:expr}"],
+    "description": "Closure expression"
+  },
+  "ternary": {
+    "prefix": "ter",
+    "body": ["${1:condition} ? ${2:then} : ${3:else}"],
+    "description": "Ternary expression"
+  },
+  "nullish": {
+    "prefix": "nc",
+    "body": ["${1:value} ?? ${2:default}"],
+    "description": "Nullish coalescing"
+  },
+  "println": {
+    "prefix": "pl",
+    "body": ["println(\"${1:%s}\", ${2:args});"],
+    "description": "Print formatted line"
+  },
+  "print": {
+    "prefix": "pr",
+    "body": ["print(\"${1:%s}\", ${2:args});"],
+    "description": "Print formatted"
+  },
+  "range": {
+    "prefix": "rng",
+    "body": ["${1:start}..${2:end}"],
+    "description": "Range expression"
+  },
+  "range_inclusive": {
+    "prefix": "rngi",
+    "body": ["${1:start}..=${2:end}"],
+    "description": "Inclusive range expression"
+  },
+  "chan": {
+    "prefix": "chan",
+    "body": ["let ${1:ch} = chan(${2:capacity});"],
+    "description": "Create channel"
+  },
+  "spawn": {
+    "prefix": "spawn",
+    "body": ["let ${1:task} = spawn(|| ${2:expr});"],
+    "description": "Spawn task"
+  },
+  "select": {
+    "prefix": "sel",
+    "body": ["select {", "\tcase ${1:expr} => ${2:handler},", "\tdefault => ${3:fallback},", "}"],
+    "description": "Select expression"
+  },
+  "test_fn": {
+    "prefix": "testfn",
+    "body": ["fn test_${1:name}() {", "\tlet ${2:actual} = ${3:expr};", "\tassert(${2:actual} == ${4:expected});", "}"],
+    "description": "Test function pattern"
+  }
+}

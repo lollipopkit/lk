@@ -1,4 +1,4 @@
-use lkr_core::{
+use lk_core::{
     ast::Parser as ExprParser,
     stmt::{self, stmt_parser::StmtParser, ImportStmt, Stmt},
     token::{self, Tokenizer},
@@ -8,7 +8,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tower_lsp::lsp_types::*;
 
-// Re-implement the analyzer for testing since we can't import from lkr_lsp
+// Re-implement the analyzer for testing since we can't use from lk_lsp
 #[derive(Debug, Clone)]
 pub struct AnalysisResult {
     pub diagnostics: Vec<Diagnostic>,
@@ -17,9 +17,9 @@ pub struct AnalysisResult {
 }
 
 #[derive(Default)]
-pub struct LkrAnalyzer;
+pub struct LkAnalyzer;
 
-impl LkrAnalyzer {
+impl LkAnalyzer {
     pub fn new() -> Self {
         Self
     }
@@ -39,7 +39,7 @@ impl LkrAnalyzer {
                     Range::new(Position::new(0, 0), Position::new(0, content.len() as u32)),
                     Some(DiagnosticSeverity::ERROR),
                     None,
-                    Some("lkr".to_string()),
+                    Some("lk".to_string()),
                     format!("Tokenization error: {}", tokenize_err),
                     None,
                     None,
@@ -57,7 +57,7 @@ impl LkrAnalyzer {
                 // Add expression symbol
                 let symbol = DocumentSymbol {
                     name: "expression".to_string(),
-                    detail: Some("LKR Expression".to_string()),
+                    detail: Some("LK Expression".to_string()),
                     kind: SymbolKind::CONSTANT,
                     tags: None,
                     #[allow(deprecated)]
@@ -82,7 +82,7 @@ impl LkrAnalyzer {
                             Range::new(Position::new(0, 0), Position::new(0, content.len() as u32)),
                             Some(DiagnosticSeverity::ERROR),
                             None,
-                            Some("lkr".to_string()),
+                            Some("lk".to_string()),
                             format!("Parse error - Expression: {}, Statement: {}", expr_err, stmt_err),
                             None,
                             None,
@@ -96,24 +96,59 @@ impl LkrAnalyzer {
     }
 
     fn analyze_statements(&self, statements: &[Box<Stmt>], result: &mut AnalysisResult) {
+        fn collect_pattern_vars(pattern: &lk_core::expr::Pattern, out: &mut Vec<String>) {
+            match pattern {
+                lk_core::expr::Pattern::Variable(name) => out.push(name.clone()),
+                lk_core::expr::Pattern::List { patterns, rest } => {
+                    for pattern in patterns {
+                        collect_pattern_vars(pattern, out);
+                    }
+                    if let Some(rest_var) = rest {
+                        out.push(rest_var.clone());
+                    }
+                }
+                lk_core::expr::Pattern::Map { patterns, rest } => {
+                    for (_, pattern) in patterns {
+                        collect_pattern_vars(pattern, out);
+                    }
+                    if let Some(rest_var) = rest {
+                        out.push(rest_var.clone());
+                    }
+                }
+                lk_core::expr::Pattern::Or(patterns) => {
+                    for pattern in patterns {
+                        collect_pattern_vars(pattern, out);
+                    }
+                }
+                lk_core::expr::Pattern::Guard { pattern, .. } => collect_pattern_vars(pattern, out),
+                lk_core::expr::Pattern::Literal(_)
+                | lk_core::expr::Pattern::Wildcard
+                | lk_core::expr::Pattern::Range { .. } => {}
+            }
+        }
+
+        let mut variables = Vec::new();
+        let mut imports = Vec::new();
+
         for (i, stmt) in statements.iter().enumerate() {
             match stmt.as_ref() {
                 Stmt::Let { pattern, .. } => {
-                    // Extract variable names from pattern and create symbols for each
-                    if let Some(variables) = lkr_lsp::analyzer::extract_variables_from_pattern(pattern) {
-                        for var_name in variables {
-                            result.symbols.push(DocumentSymbol {
-                                name: var_name.clone(),
-                                detail: Some("Variable declaration".to_string()),
-                                kind: SymbolKind::VARIABLE,
-                                tags: None,
-                                #[allow(deprecated)]
-                                deprecated: None,
-                                range: Range::new(Position::new(i as u32, 0), Position::new(i as u32, 100)),
-                                selection_range: Range::new(Position::new(i as u32, 0), Position::new(i as u32, 100)),
-                                children: None,
-                            });
-                        }
+                    let mut names = Vec::new();
+                    collect_pattern_vars(pattern, &mut names);
+                    names.sort();
+                    names.dedup();
+                    for var_name in names {
+                        variables.push(DocumentSymbol {
+                            name: var_name,
+                            detail: Some("Variable declaration".to_string()),
+                            kind: SymbolKind::VARIABLE,
+                            tags: None,
+                            #[allow(deprecated)]
+                            deprecated: None,
+                            range: Range::new(Position::new(i as u32, 0), Position::new(i as u32, 100)),
+                            selection_range: Range::new(Position::new(i as u32, 0), Position::new(i as u32, 100)),
+                            children: None,
+                        });
                     }
                 }
                 Stmt::Function { name, params, .. } => {
@@ -143,9 +178,9 @@ impl LkrAnalyzer {
                         },
                         ImportStmt::ModuleAlias { module, .. } => module.clone(),
                     };
-                    result.symbols.push(DocumentSymbol {
-                        name: format!("import {}", import_name),
-                        detail: Some("Import statement".to_string()),
+                    imports.push(DocumentSymbol {
+                        name: format!("use {}", import_name),
+                        detail: Some("Use statement".to_string()),
                         kind: SymbolKind::MODULE,
                         tags: None,
                         #[allow(deprecated)]
@@ -157,6 +192,34 @@ impl LkrAnalyzer {
                 }
                 _ => {}
             }
+        }
+
+        if !variables.is_empty() {
+            result.symbols.push(DocumentSymbol {
+                name: "Variables".to_string(),
+                detail: None,
+                kind: SymbolKind::NAMESPACE,
+                tags: None,
+                #[allow(deprecated)]
+                deprecated: None,
+                range: Range::new(Position::new(0, 0), Position::new(0, 100)),
+                selection_range: Range::new(Position::new(0, 0), Position::new(0, 0)),
+                children: Some(variables),
+            });
+        }
+
+        if !imports.is_empty() {
+            result.symbols.push(DocumentSymbol {
+                name: "Imports".to_string(),
+                detail: None,
+                kind: SymbolKind::NAMESPACE,
+                tags: None,
+                #[allow(deprecated)]
+                deprecated: None,
+                range: Range::new(Position::new(0, 0), Position::new(0, 100)),
+                selection_range: Range::new(Position::new(0, 0), Position::new(0, 0)),
+                children: Some(imports),
+            });
         }
     }
 
@@ -198,7 +261,7 @@ use url::Url;
 // Test helper to create a mock language server
 struct TestLanguageServer {
     documents: Arc<RwLock<HashMap<Url, TestDocument>>>,
-    analyzer: LkrAnalyzer,
+    analyzer: LkAnalyzer,
 }
 
 struct TestDocument {
@@ -211,7 +274,7 @@ impl TestLanguageServer {
     fn new() -> Self {
         Self {
             documents: Arc::new(RwLock::new(HashMap::new())),
-            analyzer: LkrAnalyzer::new(),
+            analyzer: LkAnalyzer::new(),
         }
     }
 
@@ -290,7 +353,7 @@ impl TestLanguageServer {
             T::Return => "Keyword: return".to_string(),
             T::Struct => "Keyword: struct".to_string(),
             T::Fn => "Keyword: fn".to_string(),
-            T::Import => "Keyword: import".to_string(),
+            T::Use => "Keyword: use".to_string(),
             T::From => "Keyword: from".to_string(),
             T::Const => "Keyword: const".to_string(),
             T::As => "Keyword: as".to_string(),
@@ -310,6 +373,8 @@ impl TestLanguageServer {
             T::Mul => "Operator: *".to_string(),
             T::Div => "Operator: /".to_string(),
             T::Mod => "Operator: %".to_string(),
+            T::BitAnd => "Operator: &".to_string(),
+            T::BitNot => "Operator: ~".to_string(),
             T::Dot => "Accessor: .".to_string(),
             T::Colon => "Symbol: :".to_string(),
             T::Comma => "Symbol: ,".to_string(),
@@ -351,9 +416,9 @@ impl TestLanguageServer {
     fn get_completions(&self) -> Vec<CompletionItem> {
         let mut items = Vec::new();
 
-        // LKR keywords
+        // LK keywords
         let keywords = [
-            "if", "else", "while", "let", "fn", "return", "break", "continue", "import", "from", "as", "go", "select",
+            "if", "else", "while", "let", "fn", "return", "break", "continue", "use", "from", "as", "go", "select",
             "case", "default", "true", "false", "nil", "struct", "const", "for", "in", "spawn", "chan", "send", "recv",
             "type",
         ];
@@ -362,7 +427,7 @@ impl TestLanguageServer {
             items.push(CompletionItem {
                 label: keyword.to_string(),
                 kind: Some(CompletionItemKind::KEYWORD),
-                detail: Some("LKR keyword".to_string()),
+                detail: Some("LK keyword".to_string()),
                 ..Default::default()
             });
         }
@@ -376,7 +441,7 @@ impl TestLanguageServer {
             items.push(CompletionItem {
                 label: op.to_string(),
                 kind: Some(CompletionItemKind::OPERATOR),
-                detail: Some("LKR operator".to_string()),
+                detail: Some("LK operator".to_string()),
                 ..Default::default()
             });
         }
@@ -412,7 +477,7 @@ impl TestLanguageServer {
 #[tokio::test]
 async fn test_lsp_expression_validation() {
     let server = TestLanguageServer::new();
-    let uri = Url::parse("file:///test.lkr").unwrap();
+    let uri = Url::parse("file:///test.lk").unwrap();
 
     // Test valid expression
     server
@@ -433,7 +498,7 @@ async fn test_lsp_expression_validation() {
 #[tokio::test]
 async fn test_lsp_validate_missing_document_returns_empty() {
     let server = TestLanguageServer::new();
-    let uri = Url::parse("file:///not_opened.lkr").unwrap();
+    let uri = Url::parse("file:///not_opened.lk").unwrap();
 
     let diagnostics = server.validate_document(&uri).await;
     assert!(diagnostics.is_empty(), "expected no diagnostics for unopened document");
@@ -442,10 +507,10 @@ async fn test_lsp_validate_missing_document_returns_empty() {
 #[tokio::test]
 async fn test_lsp_statement_validation() {
     let server = TestLanguageServer::new();
-    let uri = Url::parse("file:///program.lkr").unwrap();
+    let uri = Url::parse("file:///program.lk").unwrap();
 
     let program = r#"
-        import math;
+        use math;
         let user_level = req.user.level;
         fn calculate_score(base) {
             return math.sqrt(base * user_level);
@@ -468,7 +533,7 @@ async fn test_lsp_statement_validation() {
 #[tokio::test]
 async fn test_lsp_hover_for_whitespace_document_is_none() {
     let server = TestLanguageServer::new();
-    let uri = Url::parse("file:///blank.lkr").unwrap();
+    let uri = Url::parse("file:///blank.lk").unwrap();
 
     server.open_document(uri.clone(), "    \n\t\n".to_string(), 1).await;
     let hover = server.get_hover_info(&uri).await;
@@ -478,7 +543,7 @@ async fn test_lsp_hover_for_whitespace_document_is_none() {
 #[tokio::test]
 async fn test_lsp_hover_functionality() {
     let server = TestLanguageServer::new();
-    let uri = Url::parse("file:///test.lkr").unwrap();
+    let uri = Url::parse("file:///test.lk").unwrap();
 
     // Test hover with identifier roots
     server
@@ -503,7 +568,7 @@ async fn test_lsp_hover_functionality() {
 
     // Test hover with statements (symbols)
     let program = r#"
-        import math;
+        use math;
         let result = math.sqrt(42);
         fn test() { return result; }
     "#;
@@ -513,7 +578,7 @@ async fn test_lsp_hover_functionality() {
 
     let hover = hover.unwrap();
     if let HoverContents::Scalar(MarkedString::String(content)) = hover.contents {
-        // The first non-whitespace token in this program should be the 'import' keyword
+        // The first non-whitespace token in this program should be the 'use' keyword
         assert!(content.contains("Keyword:"));
     } else {
         panic!("Expected string hover content");
@@ -532,14 +597,14 @@ async fn test_lsp_completion_functionality() {
     assert!(labels.contains(&&"if".to_string()));
     assert!(labels.contains(&&"let".to_string()));
     assert!(labels.contains(&&"fn".to_string()));
-    assert!(labels.contains(&&"import".to_string()));
+    assert!(labels.contains(&&"use".to_string()));
 
     // Check for operators
     assert!(labels.contains(&&"==".to_string()));
     assert!(labels.contains(&&"&&".to_string()));
     assert!(labels.contains(&&"||".to_string()));
 
-    // Check for common access root identifier (no legacy '@')
+    // Check for common access root identifier.
     assert!(labels.contains(&&"req".to_string()));
 
     // Verify completion kinds
@@ -565,11 +630,11 @@ async fn test_lsp_completion_functionality() {
 #[tokio::test]
 async fn test_lsp_document_symbols() {
     let server = TestLanguageServer::new();
-    let uri = Url::parse("file:///program.lkr").unwrap();
+    let uri = Url::parse("file:///program.lk").unwrap();
 
     let program = r#"
-        import math;
-        import string;
+        use math;
+        use string;
         
         let global_var = 42;
         
@@ -591,31 +656,45 @@ async fn test_lsp_document_symbols() {
     assert!(symbols.is_some());
 
     let symbols = symbols.unwrap();
-    assert!(symbols.len() >= 6); // 2 imports, 3 lets, 2 functions
+    assert!(symbols.len() >= 4); // Imports, Variables, and 2 functions
 
     let symbol_names: Vec<&String> = symbols.iter().map(|s| &s.name).collect();
-    assert!(symbol_names.contains(&&"import math".to_string()));
-    assert!(symbol_names.contains(&&"import string".to_string()));
-    assert!(symbol_names.contains(&&"global_var".to_string()));
+    assert!(symbol_names.contains(&&"Imports".to_string()));
+    assert!(symbol_names.contains(&&"Variables".to_string()));
     assert!(symbol_names.contains(&&"process_data".to_string()));
     assert!(symbol_names.contains(&&"main".to_string()));
 
     // Check symbol kinds
-    let import_symbols: Vec<_> = symbols.iter().filter(|s| s.kind == SymbolKind::MODULE).collect();
-    assert_eq!(import_symbols.len(), 2);
+    let imports = symbols.iter().find(|s| s.name == "Imports").expect("Imports group");
+    let import_names: Vec<&String> = imports
+        .children
+        .as_ref()
+        .expect("use children")
+        .iter()
+        .map(|s| &s.name)
+        .collect();
+    assert!(import_names.contains(&&"use math".to_string()));
+    assert!(import_names.contains(&&"use string".to_string()));
 
     let function_symbols: Vec<_> = symbols.iter().filter(|s| s.kind == SymbolKind::FUNCTION).collect();
     assert_eq!(function_symbols.len(), 2);
 
-    let variable_symbols: Vec<_> = symbols.iter().filter(|s| s.kind == SymbolKind::VARIABLE).collect();
-    // Only top-level variables are detected in our simple analyzer
-    assert!(variable_symbols.len() >= 2); // At least global_var and final_result
+    let variables = symbols.iter().find(|s| s.name == "Variables").expect("Variables group");
+    let variable_names: Vec<&String> = variables
+        .children
+        .as_ref()
+        .expect("variable children")
+        .iter()
+        .map(|s| &s.name)
+        .collect();
+    assert!(variable_names.contains(&&"global_var".to_string()));
+    assert!(variable_names.contains(&&"final_result".to_string()));
 }
 
 #[tokio::test]
 async fn test_lsp_document_symbols_for_closed_document() {
     let server = TestLanguageServer::new();
-    let uri = Url::parse("file:///missing_symbols.lkr").unwrap();
+    let uri = Url::parse("file:///missing_symbols.lk").unwrap();
 
     let symbols = server.get_document_symbols(&uri).await;
     assert!(symbols.is_none(), "expected None for symbols on unopened document");
@@ -623,7 +702,7 @@ async fn test_lsp_document_symbols_for_closed_document() {
 
 #[tokio::test]
 async fn test_lsp_var_completions() {
-    let analyzer = LkrAnalyzer::new();
+    let analyzer = LkAnalyzer::new();
 
     // Test context completions with "req" prefix
     let completions = analyzer.get_var_completions("req");
@@ -643,12 +722,12 @@ async fn test_lsp_var_completions() {
 #[tokio::test]
 async fn test_lsp_complex_program_analysis() {
     let server = TestLanguageServer::new();
-    let uri = Url::parse("file:///complex.lkr").unwrap();
+    let uri = Url::parse("file:///complex.lk").unwrap();
 
     let complex_program = r#"
-        import math;
-        import string;
-        import datetime;
+        use math;
+        use string;
+        use datetime;
         
         let user_level = req.user.level;
         let user_name = req.user.name;
@@ -694,20 +773,34 @@ async fn test_lsp_complex_program_analysis() {
     assert!(symbols.is_some());
     let symbols = symbols.unwrap();
 
-    // Should have imports, variables, functions
-    assert!(symbols.len() >= 6);
+    // Should have grouped imports, grouped variables, and functions
+    assert!(symbols.len() >= 4);
 
     let symbol_names: Vec<&String> = symbols.iter().map(|s| &s.name).collect();
 
-    // Check imports
-    assert!(symbol_names.contains(&&"import math".to_string()));
-    assert!(symbol_names.contains(&&"import string".to_string()));
-    assert!(symbol_names.contains(&&"import datetime".to_string()));
+    let imports = symbols.iter().find(|s| s.name == "Imports").expect("Imports group");
+    let import_names: Vec<&String> = imports
+        .children
+        .as_ref()
+        .expect("use children")
+        .iter()
+        .map(|s| &s.name)
+        .collect();
+    assert!(import_names.contains(&&"use math".to_string()));
+    assert!(import_names.contains(&&"use string".to_string()));
+    assert!(import_names.contains(&&"use datetime".to_string()));
 
-    // Check variables
-    assert!(symbol_names.contains(&&"user_level".to_string()));
-    assert!(symbol_names.contains(&&"user_name".to_string()));
-    assert!(symbol_names.contains(&&"record_id".to_string()));
+    let variables = symbols.iter().find(|s| s.name == "Variables").expect("Variables group");
+    let variable_names: Vec<&String> = variables
+        .children
+        .as_ref()
+        .expect("variable children")
+        .iter()
+        .map(|s| &s.name)
+        .collect();
+    assert!(variable_names.contains(&&"user_level".to_string()));
+    assert!(variable_names.contains(&&"user_name".to_string()));
+    assert!(variable_names.contains(&&"record_id".to_string()));
 
     // Check functions
     assert!(symbol_names.contains(&&"validate_access".to_string()));
@@ -735,7 +828,7 @@ async fn test_lsp_complex_program_analysis() {
 #[tokio::test]
 async fn test_lsp_error_recovery() {
     let server = TestLanguageServer::new();
-    let uri = Url::parse("file:///error_test.lkr").unwrap();
+    let uri = Url::parse("file:///error_test.lk").unwrap();
 
     // Test various error conditions
     let error_cases = [

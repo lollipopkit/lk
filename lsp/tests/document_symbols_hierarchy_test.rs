@@ -1,4 +1,4 @@
-use lkr_lsp::analyzer::LkrAnalyzer;
+use lk_lsp::analyzer::LkAnalyzer;
 use tower_lsp::lsp_types::{DocumentSymbol, SymbolKind};
 
 fn get_symbol<'a>(symbols: &'a [DocumentSymbol], name: &str) -> Option<&'a DocumentSymbol> {
@@ -22,9 +22,9 @@ fn list_child_names(parent: &DocumentSymbol) -> Vec<String> {
 
 #[test]
 fn test_function_symbol_hierarchy_with_groups_and_labels() {
-    let mut analyzer = LkrAnalyzer::new();
+    let mut analyzer = LkAnalyzer::new();
     let code = r#"
-        import math;
+        use math;
 
         let a: Int = 1;
 
@@ -37,24 +37,22 @@ fn test_function_symbol_hierarchy_with_groups_and_labels() {
     let res = analyzer.analyze(code);
     assert!(!res.symbols.is_empty());
 
-    // Top-level Imports container with child import symbol(s)
+    // Top-level Imports container with child use symbol(s)
     let imports = get_symbol(&res.symbols, "Imports").expect("Imports container present");
     assert_eq!(imports.kind, SymbolKind::NAMESPACE);
     let import_kids = list_child_names(imports);
     assert!(
-        import_kids.iter().any(|n| n == "import math"),
+        import_kids.iter().any(|n| n == "use math"),
         "imports children: {:?}",
         import_kids
     );
 
-    // Top-level Variables container and individual variable
+    // Top-level Variables container
     let vars = get_symbol(&res.symbols, "Variables").expect("Variables container present");
     assert_eq!(vars.kind, SymbolKind::NAMESPACE);
     let var_kids = list_child_names(vars);
     assert!(var_kids.iter().any(|n| n == "a"), "variables children: {:?}", var_kids);
-    // Backward compatibility: individual variable still present at top level
-    let top_var = get_symbol(&res.symbols, "a").expect("top-level variable symbol present");
-    assert_eq!(top_var.kind, SymbolKind::VARIABLE);
+    assert!(get_symbol(&res.symbols, "a").is_none());
 
     // Function hierarchy: outer -> { Parameters, Locals, inner }
     let top_names: Vec<&String> = res.symbols.iter().map(|s| &s.name).collect();
@@ -84,7 +82,7 @@ fn test_function_symbol_hierarchy_with_groups_and_labels() {
 
 #[test]
 fn test_nested_function_appears_under_parent() {
-    let mut analyzer = LkrAnalyzer::new();
+    let mut analyzer = LkAnalyzer::new();
     let code = r#"
         fn outer(a: Int) -> Int {
             let x: Int = 1;
@@ -141,10 +139,10 @@ fn test_nested_function_appears_under_parent() {
 
 #[test]
 fn test_toplevel_grouped_containers() {
-    let mut analyzer = LkrAnalyzer::new();
+    let mut analyzer = LkAnalyzer::new();
     let code = r#"
-        import math;
-        import { sqrt, sin } from math;
+        use math;
+        use { sqrt, sin } from math;
 
         let x = 1;
         let y = 2;
@@ -157,16 +155,16 @@ fn test_toplevel_grouped_containers() {
         res.diagnostics
     );
 
-    // Imports container contains each import as a child; exact label per analyzer
+    // Imports container contains each use as a child; exact label per analyzer
     let imports = get_symbol(&res.symbols, "Imports").expect("Imports container present");
     let import_names = list_child_names(imports);
     assert!(
-        import_names.iter().any(|n| n == "import math"),
+        import_names.iter().any(|n| n == "use math"),
         "imports: {:?}",
         import_names
     );
     assert!(
-        import_names.iter().any(|n| n == "import {…} from math"),
+        import_names.iter().any(|n| n == "use {…} from math"),
         "imports: {:?}",
         import_names
     );
@@ -176,9 +174,8 @@ fn test_toplevel_grouped_containers() {
     let var_names = list_child_names(vars);
     assert!(var_names.iter().any(|n| n == "x"), "vars: {:?}", var_names);
     assert!(var_names.iter().any(|n| n == "y"), "vars: {:?}", var_names);
-    // Individual variables still present at top-level
-    assert!(get_symbol(&res.symbols, "x").is_some());
-    assert!(get_symbol(&res.symbols, "y").is_some());
+    assert!(get_symbol(&res.symbols, "x").is_none());
+    assert!(get_symbol(&res.symbols, "y").is_none());
 
     // No top-level labels in this program
 }

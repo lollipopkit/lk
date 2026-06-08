@@ -10,6 +10,7 @@ mod signature;
 mod state;
 mod text;
 mod utils;
+mod workspace_cache;
 
 pub use entry::run;
 pub use inlay_hints::compute_inlay_hints;

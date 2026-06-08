@@ -1,9 +1,9 @@
-use lkr_lsp::analyzer::LkrAnalyzer;
+use lk_lsp::analyzer::LkAnalyzer;
 use tower_lsp::lsp_types::DiagnosticSeverity;
 
 #[test]
 fn reports_numeric_operand_diagnostic() {
-    let mut analyzer = LkrAnalyzer::new();
+    let mut analyzer = LkAnalyzer::new();
     let code = r#"
         let result = "foo" - 1;
     "#;

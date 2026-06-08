@@ -1,14 +1,10 @@
 use anyhow::Result;
-use lkr_core::module::Module;
-use lkr_core::val::Val;
-use lkr_core::val::de;
-use lkr_core::vm::VmContext;
-use std::collections::HashMap;
+use lk_core::module::{ModuleProvider, RuntimeNativeExport, runtime_export_from_plain_native_entries};
+use lk_core::val::{RuntimeVal, de};
+use lk_core::vm::{NativeArgs, NativeRuntime, RuntimeExport};
 
 #[derive(Debug)]
-pub struct JsonModule {
-    functions: HashMap<String, Val>,
-}
+pub struct JsonModule;
 
 impl Default for JsonModule {
     fn default() -> Self {
@@ -18,33 +14,68 @@ impl Default for JsonModule {
 
 impl JsonModule {
     pub fn new() -> Self {
-        let mut functions = HashMap::new();
-        functions.insert("parse".to_string(), Val::RustFunction(parse));
-        JsonModule { functions }
+        Self
     }
 }
 
-impl Module for JsonModule {
+impl ModuleProvider for JsonModule {
     fn name(&self) -> &str {
         "json"
     }
 
-    fn register(&self, _registry: &mut lkr_core::module::ModuleRegistry) -> Result<()> {
+    fn register(&self, _registry: &mut lk_core::module::ModuleRegistry) -> Result<()> {
         Ok(())
     }
 
-    fn exports(&self) -> HashMap<String, Val> {
-        self.functions.clone()
+    fn runtime_exports(&self) -> Result<RuntimeExport> {
+        Ok(runtime_export_from_plain_native_entries(
+            &[RuntimeNativeExport::plain("parse", parse, 1)],
+            &[],
+        ))
     }
 }
 
-fn parse(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
-    if args.len() != 1 {
-        return Err(anyhow::anyhow!("json.parse(data) requires 1 argument"));
-    }
-    let s: String = match &args[0] {
-        Val::Str(s) => s.as_ref().to_string(),
-        v => v.to_string(),
+fn parse(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+    crate::runtime_native::parse_format(args, runtime, "json.parse", de::Format::Json)
+}
+
+#[cfg(test)]
+mod tests {
+    use lk_core::{
+        val::{HeapValue, RuntimeVal},
+        vm::{NativeArgs, NativeFunction, NativeRuntime, RuntimeModuleState},
     };
-    de::parse_with_format(&s, Some(de::Format::Json))
+
+    use crate::runtime_native::runtime_string_value;
+
+    use super::JsonModule;
+
+    #[test]
+    fn json_parse_exports_runtime_native() {
+        let (arity, _) =
+            crate::runtime_native::runtime_native_export(&JsonModule::new(), "parse").expect("parse export");
+        assert_eq!(arity, 1);
+    }
+
+    #[test]
+    fn json_parse_decodes_into_runtime_values() {
+        let (_, function) =
+            crate::runtime_native::runtime_native_export(&JsonModule::new(), "parse").expect("parse export");
+        let NativeFunction::Plain(function) = function else {
+            panic!("parse must be plain RuntimeNative");
+        };
+
+        let mut state = RuntimeModuleState::default();
+        let input = runtime_string_value(r#"{"answer": 42}"#, state.heap_mut());
+        let mut runtime = NativeRuntime::new(&mut state, None, None);
+        let result = function(NativeArgs::new(&[input]), &mut runtime).expect("parse");
+
+        let RuntimeVal::Obj(handle) = result else {
+            panic!("json.parse should return runtime object");
+        };
+        let Some(HeapValue::Map(map)) = runtime.heap().get(handle) else {
+            panic!("json.parse should return runtime map");
+        };
+        assert_eq!(map.get_str("answer"), Some(RuntimeVal::Int(42)));
+    }
 }

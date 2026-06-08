@@ -296,6 +296,14 @@ impl<'a> StmtParser<'a> {
     }
 
     pub(super) fn parse_inline_expr_until_named_delim(&mut self) -> Result<Expr> {
+        self.parse_inline_expr_until_delim(false)
+    }
+
+    pub(super) fn parse_inline_expr_until_param_delim(&mut self) -> Result<Expr> {
+        self.parse_inline_expr_until_delim(true)
+    }
+
+    fn parse_inline_expr_until_delim(&mut self, stop_at_rparen: bool) -> Result<Expr> {
         let start_pos = self.pos;
         let mut end_pos = start_pos;
         let mut paren: i32 = 0;
@@ -308,12 +316,14 @@ impl<'a> StmtParser<'a> {
                     paren += 1;
                     end_pos += 1;
                 }
-                Token::RParen => {
-                    if paren > 0 {
-                        paren -= 1;
-                    }
+                Token::RParen if paren > 0 => {
+                    paren -= 1;
                     end_pos += 1;
                 }
+                Token::RParen if stop_at_rparen && paren == 0 && bracket == 0 && brace == 0 => {
+                    break;
+                }
+                Token::RParen => end_pos += 1,
                 Token::LBracket => {
                     bracket += 1;
                     end_pos += 1;
@@ -351,20 +361,10 @@ impl<'a> StmtParser<'a> {
     }
 
     pub(super) fn err(&self, msg: &str) -> String {
-        let r_idx = if self.pos + 5 < self.len {
-            self.pos + 5
+        let ctx = if let Some(c) = self.tokens.get(self.pos) {
+            format!("found {:?}", c)
         } else {
-            self.len
-        };
-        let l_idx = self.pos.saturating_sub(5);
-        let r_idx = if r_idx > self.len { self.len } else { r_idx };
-        let chars = &self.tokens[l_idx..r_idx];
-        let chars: Vec<_> = chars.iter().collect();
-        let c = self.tokens.get(self.pos);
-        let ctx = if let Some(c) = c {
-            format!("'{:?}' at index {}, near '{:?}'", c, self.pos, chars)
-        } else {
-            format!("at end, near '{:?}'", chars)
+            "found end of input".to_string()
         };
         format!("Syntax error: {} ({})", msg, ctx)
     }

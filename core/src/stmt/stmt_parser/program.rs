@@ -198,11 +198,12 @@ impl<'a> StmtParser<'a> {
         }
 
         match &self.tokens[self.pos] {
-            Token::Import => self.parse_import_stmt(),
+            Token::Use => self.parse_import_stmt(),
             Token::If => self.parse_if_stmt(),
             Token::While => self.parse_while_stmt(),
             Token::For => self.parse_for_stmt(),
             Token::Struct => self.parse_struct_stmt(),
+            Token::Type => self.parse_type_alias_stmt(),
             Token::Trait => self.parse_trait_stmt(),
             Token::Impl => self.parse_impl_stmt(),
             Token::Let => self.parse_let_stmt(),
@@ -216,6 +217,10 @@ impl<'a> StmtParser<'a> {
                 // 优先解析短声明 `id := expr` 以避免与标签 `id:` 冲突
                 if self.peek_ahead(1) == Some(&Token::Colon) && self.peek_ahead(2) == Some(&Token::Assign) {
                     self.parse_define_stmt_with_id(id.clone())
+                } else if matches!(self.peek_ahead(1), Some(Token::LBracket | Token::Dot))
+                    && let Some(stmt) = self.try_parse_access_assign_stmt_with_id(id.clone())?
+                {
+                    Ok(stmt)
                 } else if self.peek_ahead(1) == Some(&Token::Assign) {
                     // 赋值 (id = expr;)
                     self.parse_assign_stmt_with_id(id.clone())

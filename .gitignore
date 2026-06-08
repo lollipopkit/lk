@@ -2,7 +2,17 @@ target
 
 flamegraph.svg
 
-*.lkrb
+*.lkm
 *.ll
 *.o
 *.elf
+
+vsc-ext/*/node_modules/
+vsc-ext/*/*.vsix
+website/node_modules/
+website/dist/
+
+lk-lsp-debug.log
+main
+
+lua-5.5.0/

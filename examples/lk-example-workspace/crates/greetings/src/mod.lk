@@ -1,0 +1,3 @@
+fn message(name: String) -> String {
+    return "hello, ${name}";
+}

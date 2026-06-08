@@ -1,198 +1,123 @@
-# LLVM 后端
+# LLVM Backend
 
-## 实现清单
+The current LLVM target uses `ModuleArtifact` as its input boundary. A small
+native-lowerable subset of entry functions can return an `i64`, `f64`, `bool`,
+`nil`, short string, long string literal, simple const list, or simple const map
+from scalar loads, integer/float arithmetic, integer and float comparisons,
+mixed integer/float arithmetic promotion for float opcodes,
+simple `Test` / `Jmp` control flow including source-level conditional, match with range/guard/or patterns,
+range `for` including inclusive/negative-step ranges and `break` / `continue`, static-list `for`, static-string `for`, and static-map entry `for` expressions/statements, static template string `ToString` / `ConcatString` chains, static nullish/logical short-circuit expressions, static
+int/float/string comparison folding, bool/nil `Not` and equality checks, static const list/map shape checks, static string/list/map
+length, static string/list/map `GetIndex`, static string/list `SliceFrom`, static string/list/map `Contains`,
+static list/map equality, static object identity equality, static map rest
+destructuring including source-level static `if let` list/map destructuring, static object construction and field access, static list/map/object
+`SetIndex`, static `NewList` / `NewMap` / `NewRange` construction,
+simple scalar module global slots used by top-level variables, static scalar and statically
+displayable string/list/map truthiness branches, static success-path `TryBegin` / `TryEnd`, static truthiness `Not`, and
+straight-line static string globals and string equality checks.
+Control-flow block lowering also supports the covered template-string equality
+shape where dynamic `Text` parts are compared against a static string literal,
+including dynamic string and integer interpolations, plus static string/list
+`Contains` inside branchy source such as assertions.
+Straight-line entry functions can also
+inline simple direct function calls when positional arguments and the callee
+return value stay within those statically displayable values, including
+caller-side f64/bool/nil/string arguments, callee-local i64/f64 arithmetic,
+callee i64/f64 comparisons, callee static string equality, callee static
+list/map equality, callee static string/list `SliceFrom`, callee static
+string/list/map/object `GetIndex`, string/list/map `Contains`, callee static `SetIndex`, callee static `NewList` / `NewMap`,
+static `CallNamed` with fully supplied named arguments, reads from
+static module globals, callee static `MapRest` / `NewRange`, and callee writes back to
+static module globals, callee static i64 branch selection, callee static
+truthiness branch selection, static closure construction with `UpvalCell` capture loads/stores,
+entry/callee static `TryBegin` / `TryEnd` success paths, static handler-local
+`Raise`, source-level static optional access, and callee `bool` / `nil` returns.
+For that covered subset,
+`lk compile llvm FILE.lk` writes `FILE.ll` with a direct native `main`.
+Native `print` / `println` lowering covers static formatted calls with multiple
+`{}` placeholders when the argument values remain statically represented by the
+block compiler.
+Native stdlib lowering includes static OS string helpers for
+`os.hostname()`, `os.arch()`, `os.os()`, `os.dir_current()`, `os.dir_temp()`,
+`os.dir_list(path)`, plus `os.env.get(name[, default])`, `os.clock()`, and
+`os.epoch()`. These are lowered directly as native constants or C runtime calls
+for the currently covered scalar/string shapes.
+Static direct-call folding may also recover immutable heap-const list arguments
+inside the same basic block, which covers statically bounded recursive list
+methods such as `list.skip(1)` without lowering through the VM runtime.
+Self-recursive function hinting tries scalar and list-like parameter profiles, so
+recursive helpers with mixed signatures such as `contains(List<Int>, Int) ->
+Bool` can be classified without falling back to the VM runtime.
+Dynamic native containers are represented as monomorphized layouts instead of a
+tagged runtime value. The current covered layouts include `List<i64>`,
+`List<f64>`, `List<bool>`, pointer/text lists, text-length lists used by joins,
+`Map<str,i64>`, `Map<str,f64>`, `Map<str,bool>`, `Map<str,str>`,
+`Map<i64,i64>`, `Map<i64,f64>`, `Map<i64,bool>`, and `Map<i64,str>`;
+static string lists can be indexed with a dynamic `i64` index and lower to
+direct string pointer selection. Covered dynamic lists, dynamic pair lists
+including `StrPtr,F64` and `I64,F64` field layouts, and dynamic maps can be
+displayed as direct returns and as nested `ArgList` return elements without
+falling back to the VM runtime.
+String-valued dynamic map writes copy runtime text through `strdup` before
+storing into ptr slots, so loop-local template buffers do not alias later
+iterations.
+For `Map<i64,i64/f64/bool/str>` and `Map<str,i64/f64/bool/str>`, `map.has` and
+`map.delete` also lower natively: delete materializes a fresh dynamic map
+storage for the returned `without` map and preserves the removed value. Missing
+dynamic map `get` results carry a present bit for integer, float, bool, and
+string pointer values, including receiver-method calls such as
+`without.get("missing")`, so nested returns print `nil` instead of the zero
+value. Dynamic `Map<str,str>` also has ptr-value set, direct index, values,
+display, and missing `get` lowering, with runtime text copied through `strdup`
+before it is stored. Optional scalar map-get results can be recovered into
+`ArgList` returns without falling back to the VM runtime.
+`DynamicList<i64>` and `DynamicList<bool>` also support monomorphized
+`list.contains`, `list.index_of`, `list.reverse`, `list.pop`, `list.push`,
+`list.slice`, `list.insert`, `list.remove_at`, and `list.set` lowering through
+i64-slot helpers while preserving element-specific return/display shape,
+including nested `[new_list, old_value]` returns. `List<bool>` also lowers
+receiver `concat([false])` and module `list.sort(xs)` through the same i64-slot
+ABI, with bool-specific display shape preserved at returns.
+`DynamicList<f64>` and dynamic pointer/string lists support the same module
+mutator family from register-recovered builtin calls, including `list.slice`,
+`list.insert`, `list.remove_at`, `list.set`, and `list.push`; f64 paths use
+double-list helpers and string paths use ptr-list helpers. This path is intentionally
+kept distinct from static `List<i64>` module folding: only storage rooted at
+`NewList`, `ListPush`, or an empty `LoadHeapConst []` is treated as mutable
+dynamic storage, so non-empty static heap lists continue to use static module
+helper folding.
 
-完整路线图如下，`[x]` 表示已完成的项目：
+Non-nil scalar returns are printed through `printf` using the same user-facing
+spellings as the VM path for the covered values. A nil return is silent, matching
+the CLI VM path. Unsupported shapes are rejected with a compile error; LLVM
+output must not embed a serialized `.lkm` payload or call back into the
+bytecode VM.
 
-- [x] 复用现有 VM Lowering，提供 `compile_program_to_llvm` / `compile_function_to_llvm` 入口。
-- [x] 将基础算术、比较、局部寄存器读写与 `ret` 指令翻译为 LLVM IR。
-- [x] 支持短路逻辑与空合并相关指令（`JmpFalseSet` / `JmpTrueSet`、`NullishPick`、`JmpIfNil` / `JmpIfNotNil`）。
-- [x] 接入 `opt` 可选优化流程，CLI 支持 `--opt-level` 与 `--skip-opt`。
-- [x] CLI 集成：`lkr compile llvm FILE` 输出 `.ll`，可选保留 `.unopt.ll`。
-- [x] CLI 增加 `lkr compile exe FILE`，串联 `llc` 与系统链接器生成 ELF 可执行文件。
-- [x] 新增单元测试覆盖上述指令翻译路径（`core/src/llvm/tests.rs`）。
-- [ ] 扩展字节码指令映射（集合构造、全局/捕获访问、函数调用等）。
-- [ ] 引入运行时 Helper 或内联策略以处理字符串、列表、映射等复杂类型。
-- [ ] 追加 LLVM Bitcode/Object 文件生成与链接流程。
-- [ ] 构建性能回归基准，验证 LLVM 后端相较 VM 的收益。
-- [ ] 将 LLVM 生成与验证纳入 CI / 发布流水线。
+Native integer and float division/modulo preserve the VM divisor-zero boundary:
+static folding refuses zero divisors, and scalar block lowering emits a
+divisor-zero guard instead of directly relying on LLVM `sdiv`, `fdiv`, or `frem`
+semantics.
 
-## 架构概览
+Control-flow scalar block lowering must treat static branch facts as path-local.
+When a statically known `Test` has an untaken target that is also a merge point,
+the merge remains reachable and must not be skipped. For values loaded before a
+control-flow boundary, the backend may recover narrowly proven immutable shapes
+such as heap-const integer lists for native list indexing and membership checks,
+but it must not preserve arbitrary mutable register facts across branches.
 
-1. **复用字节码编译结果**：通过既有的 `compile_program` 获取 `vm::Function`，避免重复 AST 降级逻辑。
-2. **块级翻译**：`lkr_core::llvm::LlvmBackend` 逐基本块遍历 VM 指令，输出文本 LLVM IR（统一使用 `i64`、不透明指针），保持原始控制流结构。
-3. **可选优化**：后端可调用 `opt`（来源为 `llvm-tools-preview` 组件或 `LKR_LLVM_OPT` 环境变量指定路径）生成优化版 IR，与原始 IR 并存。
+Executable output uses the same `ModuleArtifact` compile-time boundary:
 
-```
-Program (AST) ──compile_program──▶ vm::Function ──LLVM translator──▶ module.ll
-                                                                             │
-                                                                             └─opt（可选）──▶ module.ll / module.unopt.ll
-```
-
-## 支持范围
-
-- 常量类型：当前支持 `Int`、`Float`、`Bool`、`Str`、`Nil`，统一编码为 `i64`（为避免与普通整数冲突，`Nil` / `false` / `true` 分别使用接近 `i64::MIN` 的哨兵值 `-9223372036854775808`、`-9223372036854775807`、`-9223372036854775806`，浮点/字符串常量以位转换写入堆栈；为了让编码保持单射，编译期会拒绝与哨兵值相等的整数常量）。其他常量类型会报错提示。详见下文“值表示策略对比”章节对各方案的详细权衡。
-- 核心指令：`LoadK`、`Move`、`LoadLocal`、`StoreLocal`、算术（`Add` / `Sub` / `Mul` / `Div` / `Mod` 以及特化指令 `AddInt` / `SubInt` / `MulInt` / `ModInt` / `AddFloat` / `SubFloat` / `MulFloat` / `DivFloat` / `ModFloat`）、比较（`Cmp*`）、布尔/字符串/全局工具（`ToBool` / `Not` / `ToStr` / `LoadGlobal` / `DefineGlobal` / `Len` / `ToIter`）、集合构造（`BuildList` / `BuildMap`）、成员/切片操作（`In`、`ListSlice`）、索引访问（`Access` / `AccessK` / `Index` / `IndexK`）、函数调用（`Call`）、短路/空合并控制（`JmpFalseSet`、`JmpTrueSet`、`NullishPick`、`JmpIfNil`、`JmpIfNotNil`）、无条件/条件跳转（`Jmp`、`JmpFalse`）、`Ret`。
-- 控制流：保留原有编译器生成的结构化分支（如 `if` / `else`），每个基本块以 `br` 或 `ret` 终止，满足 LLVM 校验器需求。
-
-运行时接口：当 IR 需要字符串常量、全局读写、集合构造或 `ToStr` / `Call` 等操作时，会自动声明 `declare i64 @lkr_rt_intern_string(ptr, i64)`、`declare i64 @lkr_rt_to_string(i64)`、`declare i64 @lkr_rt_load_global(i64)`、`declare void @lkr_rt_define_global(i64, i64)`、`declare i64 @lkr_rt_build_list(ptr, i64)`、`declare i64 @lkr_rt_call(i64, ptr, i64, i64)`、`declare i64 @lkr_rt_in(i64, i64)`、`declare i64 @lkr_rt_list_slice(i64, i64)` 等 helper，并在入口块中生成对应的调用。自 2025-10 起，main stub 还会注入 `lkr_rt_begin_session` / `lkr_rt_register_search_path` / `lkr_rt_register_bundled_module` / `lkr_rt_register_imports` / `lkr_rt_apply_imports`，用于在原生可执行文件中重放模块导入、预注册打包的 LKRB 模块以及初始化标准库。
-
-这些符号由 `core/src/llvm/runtime.rs` 提供：模块内部维护一个 `VmContext`、字符串 interner 以及句柄表，将 LLVM 传入的 64-bit 编码值翻译回 `Val` 并重用既有 VM 语义（列表/字典构造、`ToIter` 等）。`lkr compile exe` 会在编译阶段遍历 AST，借助 `ModuleBundler` 提前编译文件类导入，序列化导入语句，并将二进制 LKRB 片段作为 LLVM 全局常量嵌入；运行时由上述 helper 逐个注册，从而在没有 VM 的情况下也能复现模块解析流程和 `execute_imports` 语义。
-
-为了满足链接需求，CLI 会自动构建并链接 `liblkr_core.a` 与 `liblkr_stdlib.a`：前者导出所有 `lkr_rt_*` helper，后者提供 `lkr_stdlib_register_*` 桥接函数以注入内置模块/全局。需要本地 `cargo`、LLVM 工具链（`llc` 等）以及静态链接器均可用。
-
-发布二进制版 CLI 时，务必把上述静态库一起打包（例如 `bin/lkr`、`lib/liblkr_core.a`、`lib/liblkr_stdlib.a`）。运行时会首先尝试从 `LKR_RUNTIME_LIB_DIR` 指定的目录、或可执行文件旁的 `lib/`、`lib/<target-triple>/` 及其 `release` / `debug` 子目录复用这些库，只有在找不到时才回退到 `cargo build`。这样即便目标机器上没有完整的 Rust 工具链，也能执行 `lkr compile exe`。
-
-### 值表示策略对比
-
-#### 方案 A：纯 `i64` + 哨兵值（现状）
-- **优点**：
-  - 与既有 VM 求值模型一致，LLVM 后端可以复用栈布局与运行时 ABI。
-  - 所有指令与 helper 仅需处理单一寄存器宽度，汇编与链接流程最简单。
-- **缺点**：
-  - 需要保留哨兵常量，整数域被迫排除几个值，扩展更多类型会继续占用特殊编码。
-  - 对读取方而言类型信息隐式存在，调试与错误诊断不直观。
-  - LLVM 难以根据具体类型做优化（如针对 `i1`/`double` 的专用指令）。
-- **适用场景**：原型阶段或追求最小改动的发布迭代。
-
-#### 方案 B：NaN-boxing / 指针打标
-- **优点**：
-  - 仍保持 64-bit 宽度，整数/指针无需牺牲取值范围；可以快速用位运算判断类型。
-  - LLVM IR 中可继续沿用 `i64` 或 `double`，不必重写过多栈操作。
-- **缺点**：
-  - 依赖 IEEE-754 `double` 的 NaN 表示，跨不同架构或日后扩展到 32-bit 平台需额外验证。
-  - 语义上仍是“隐式类型”，只是换成了更灵活的哨兵形式，调试体验改善有限。
-  - 指针需要保证低位空闲（对非 8 字节对齐的对象不适用），运行时需维护更多约束。
-- **适用场景**：追求性能同时愿意承担平台假设的场合。
-
-#### 方案 C：显式 `Value` 结构（如 `struct { i8 tag; i64 payload; }`）
-- **优点**：
-  - 类型信息显式存储，避免哨兵冲突，扩展新类型只需新增枚举 tag。
-  - LLVM 可通过 tag 做 switch，优化机会更明确，调试输出也更友好。
-  - 运行时与 VM 的互操作可通过 `#[repr(C)]` 结构统一，语义清晰。
-- **缺点**：
-  - 栈/寄存器操作需处理结构体（`alloca` + `load`/`store`），对性能有额外负担。
-  - 现有 helper、列表/字典构造逻辑都需同步适配新的布局。
-  - 需要重写常量加载、算术指令等 lowering，代码 churn 较大。
-- **适用场景**：准备投入一次性重构、换取更高语义清晰度和可扩展性的版本。
-
-#### 方案 D：LLVM 层面强类型化
-- **优点**：
-  - 直接使用 `i1`、`i64`、`double`、`ptr` 等原生类型，LLVM 能以最优形式优化算术与分支。
-  - 运行时 ABI 可针对每种类型定制，避免多余装箱。
-  - 语言后续增加代数数据类型、记录等，都可以沿用 LLVM 原语组合。
-- **缺点**：
-  - 需要重写求值栈与寄存器分配，算术/集合操作必须显式做类型收敛与转换。
-  - VM ↔ LLVM 的互操作复杂度显著上升，调试工具、运行时 helper 均需重新设计。
-  - 目前的 `lkr_rt_*` API 基于统一字宽，需要引入新的 FFI 层做拆装箱。
-- **适用场景**：作为长期目标，在 LLVM 后端成为主路径且弱化 VM 依赖时。
-
-#### 推荐方案：显式 `Value` 结构
-- 在保证类型安全、调试友好的前提下，不依赖浮点格式假设，也不再牺牲整数域。
-- 扩展路径清晰，可在 `tag` 中预留空间以支持后续的集合、函数闭包等复合值。
-- 可与 VM 共存：先在 LLVM 后端落地 `Value` 结构，通过适配层将其映射回 VM 的 `Val`，再逐步推广到 VM 本身，形成统一的中间表示。
-- 后续工作指引：
-  1. 在 `core/src/llvm/runtime.rs` 定义 `#[repr(C)] struct Value { tag: u8, payload: u64 }`，实现与现有 `Val` 之间的转换。
-  2. 更新常量加载与算术/比较 lowering，通过 tag 判断路径，在类型不匹配时调用运行时错误分支。
-  3. 调整所有 `lkr_rt_*` helper 的签名与实现，使其接受/返回新的 `Value` 结构，并在链接文档中同步 ABI 说明。
-  4. 增补单元测试与端到端用例，覆盖 tag 判别、跨语言 FFI 等关键路径。
-
-在该方案完全实施之前，可继续沿用方案 A，并在诊断信息中提示哨兵冲突风险，为迁移提供过渡期提示。
-
-### 当前限制
-
-- 尚未覆盖闭包、捕获、具名参数调用、原生函数等动态特性，遇到此类指令会返回 `unsupported opcode`。
-- 不支持多返回值与具名参数调用。
-- 目前仅输出文本 IR，对象文件/可执行文件的生成将放在后续里程碑。
-
-## 命令行使用
-
-```
-lkr compile llvm path/to/file.lkr [--opt-level {O0|O1|O2|O3}] [--skip-opt] [--target-triple TRIPLE]
-lkr compile exe path/to/file.lkr [--opt-level {O0|O1|O2|O3}] [--skip-opt] [--target-triple TRIPLE] [--output PATH]
-```
-
-- `llvm`：生成 `file.ll`。若启用优化，优化后的 IR 写入 `file.ll`，未优化版本写入 `file.unopt.ll`。
-- `--opt-level`：设置 `opt` 的优化级别，默认 `O2`。
-- `--skip-opt`：跳过 `opt` 流程，适合尚未安装 LLVM 工具链的环境。
-- `--target-triple`：覆盖模块的 target triple，同时传递给 `llc` / 链接器。
-- `--output`：仅对 `compile exe` 生效，指定最终 ELF 输出路径（默认 `<源文件名>.elf`）。
-
-工具查找顺序：
-
-| 功能 | 环境变量优先级 | 备用来源 |
-| ---- | -------------- | -------- |
-| `opt` | `LKR_LLVM_OPT` | `llvm-tools-preview` / 系统 `PATH` |
-| `llc` | `LKR_LLVM_LLC` | `llvm-tools-preview` / 系统 `PATH` |
-| 链接器 | `LKR_CC` → `CC` → `cc` | 系统 `PATH` |
-
-`compile exe` 会先调用 LLVM 后端生成 `.ll`（同样在需要时保留 `.unopt.ll`），然后执行：
-
-1. `llc -filetype=obj` → 生成目标文件 `<name>.o`（尊重 `--target-triple`）。
-2. `cc` / `clang` / `LKR_CC` → 链接生成 ELF，可通过 `--output` 改写目标路径。
-
-生成的 IR 会自动附加一个最小化的 `main` Stub（调用 `@lkr_entry` 并忽略返回值），方便直接链接成可执行文件。
-
-示例：
-
-```
-$ lkr compile examples/arith.lkr --emit llvm --opt-level O1
-Emitted LLVM IR to examples/arith.ll (optimised, opt-level O1)
-Preserved unoptimised IR at examples/arith.unopt.ll
-
-$ lkr compile exe examples/arith.lkr --target-triple x86_64-unknown-linux-gnu
-Emitted ELF executable to examples/arith.elf (opt-level O2, LLVM IR at examples/arith.ll)
+```sh
+lk compile exe FILE.lk
 ```
 
-## 作为库调用
+For native-lowerable shapes, the CLI compiles the direct LLVM IR to a native
+executable with `clang` and links the typed `lkrt` native runtime static
+library. Unsupported shapes fail before executable emission; the CLI no longer
+generates a host executable launcher.
 
-```rust
-use lkr_core::{
-    llvm::{compile_function_to_llvm, LlvmBackendOptions, OptLevel},
-    vm::compile_program,
-};
-
-let program = parser.parse_program(...)?;
-let func = compile_program(&program);
-let artifact = compile_function_to_llvm(
-    &func,
-    "lkr_entry",
-    LlvmBackendOptions {
-        module_name: "example".into(),
-        opt_level: OptLevel::O3,
-        ..Default::default()
-    },
-)?;
-println!("{}", artifact.module.ir);
-```
-
-当 `artifact.optimised_ir` 为 `Some` 时，表示已成功调用 `opt` 并返回优化后的文本 IR。
-
-## 测试与验证
-
-- 单元测试：`cargo test -p lkr-core llvm::tests`，覆盖算术、分支、短路逻辑、空合并与判空跳转。
-- CLI 冒烟：`cargo run -p lkr-cli -- compile llvm path/to/file.lkr --skip-opt`，在缺少 LLVM 工具链的环境中验证端到端流程。
-- 翻译器会校验跳转目标，遇到无效控制流会直接报错并中止生成，避免生成非法 CFG。
-
-## 后续工作
-
-- 扩展更多指令映射（列表/字典构造、全局绑定、闭包捕获、函数调用等）。
-- 引入逃逸分析驱动的调用约定，与工作流 B 协同优化。
-- 在本地和 CI 中加入性能基准，比较 VM 与 LLVM 后端执行表现。
-- 将 LLVM 生成与验证纳入 CI / 发布流水线。
-
-### 缺失特性规划
-
-1. **运行时符号实现**
-   - [x] 在 `core/src/llvm/` 下新增 `runtime.rs`，实现 `lkr_rt_in`、`lkr_rt_list_slice` 等 helper，并明确 64-bit 值编码（立即数、句柄、标记位）。
-   - [x] 以 `#[no_mangle] extern "C"` 暴露接口，复用 `VmContext` 与 stdlib 逻辑，确保 AOT 链接阶段符号可解析。
-2. **链接链路完善**
-   - [ ] 在 `Cargo.toml` 启用 `staticlib` / `cdylib` 输出，`lkr compile exe` 自动链接 runtime。
-   - [ ] 在 `docs/llvm/linker.md` 同步记录最终链接命令、依赖工具与环境变量约定。
-3. **剩余指令覆盖**
-   - [ ] 支持闭包捕获与构造（`LoadCapture`、`MakeClosure`）。
-   - [ ] 支持具名参数调用（`CallNamed`）与多返回值下的寄存器写回策略。
-   - [ ] 处理任务、通道、迭代器等高阶运行时值的编码、判等与 helper。
-4. **验证与基准**
-   - [ ] 添加端到端 AOT 测试（生成 `.ll` → `.o` → 可执行文件并运行），并集成到 CI。
-   - [ ] 构建性能基准，对比 LLVM 后端与 VM 路径的吞吐与延迟。
+Future native AOT work must continue expanding this `ModuleArtifact` lowering
+surface without adding a VM runtime bridge. The final executable may link Rust
+`std`, libc/libm, and `lkrt`, but it must not embed a serialized `.lkm` payload,
+`ModuleArtifact`, the bytecode executor, `VmContext`, parser, type checker, or
+compiler. See `docs/llvm/native-stdlib.md` for the native stdlib boundary.

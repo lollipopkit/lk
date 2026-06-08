@@ -1,23 +1,30 @@
-pub type FastHashMap<K, V> = rustc_hash::FxHashMap<K, V>;
+pub type FastHashMap<K, V> = hashbrown::HashMap<K, V, rustc_hash::FxBuildHasher>;
 
-pub type FastHashSet<K> = rustc_hash::FxHashSet<K>;
+pub type FastHashSet<K> = hashbrown::HashSet<K, rustc_hash::FxBuildHasher>;
 
 #[inline]
 pub fn fast_hash_map_new<K, V>() -> FastHashMap<K, V> {
-    rustc_hash::FxHashMap::default()
+    hashbrown::HashMap::default()
 }
 
 #[inline]
 pub fn fast_hash_map_with_capacity<K, V>(capacity: usize) -> FastHashMap<K, V> {
-    rustc_hash::FxHashMap::with_capacity_and_hasher(capacity, Default::default())
+    hashbrown::HashMap::with_capacity_and_hasher(capacity, Default::default())
 }
 
 #[inline]
 pub fn fast_hash_set_new<K>() -> FastHashSet<K> {
-    rustc_hash::FxHashSet::default()
+    hashbrown::HashSet::default()
 }
 
 #[inline]
 pub fn fast_hash_set_with_capacity<K>(capacity: usize) -> FastHashSet<K> {
-    rustc_hash::FxHashSet::with_capacity_and_hasher(capacity, Default::default())
+    hashbrown::HashSet::with_capacity_and_hasher(capacity, Default::default())
+}
+
+#[inline]
+pub fn fast_hash_map_from_iter<K: Eq + std::hash::Hash, V, I: IntoIterator<Item = (K, V)>>(
+    iter: I,
+) -> FastHashMap<K, V> {
+    iter.into_iter().collect()
 }

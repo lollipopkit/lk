@@ -1,728 +1,1470 @@
-use super::encoding::{self, BOOL_FALSE_LITERAL};
 use super::*;
-use crate::expr::Expr;
-use crate::stmt::{Program, Stmt};
-use crate::val::Val;
-use crate::vm::{Function, Op};
+use crate::{
+    stmt::import::ImportStmt,
+    stmt::stmt_parser::StmtParser,
+    token::Tokenizer,
+    vm::{
+        Compiler, ConstHeapValueData, ConstPoolData, ConstRuntimeValueData, FunctionData, Instr,
+        MODULE_ARTIFACT_VERSION, ModuleArtifact, ModuleData, Opcode, RuntimeMapKeyData,
+    },
+};
 
 #[test]
-fn emits_addition_ir() {
-    let func = Function {
-        consts: vec![Val::Int(40), Val::Int(2)],
-        code: vec![
-            Op::LoadK(0, 0),
-            Op::LoadK(1, 1),
-            Op::Add(2, 0, 1),
-            Op::Ret { base: 2, retc: 1 },
-        ],
-        n_regs: 3,
-        protos: Vec::new(),
-        param_regs: Vec::new(),
-        named_param_regs: Vec::new(),
-        named_param_layout: Vec::new(),
-        pattern_plans: Vec::new(),
-        code32: None,
-        bc32_decoded: None,
-        analysis: None,
+fn llvm_backend_allows_unused_import_metadata_for_native_shape() {
+    let artifact = ModuleArtifact {
+        format: "lk.module".to_string(),
+        version: MODULE_ARTIFACT_VERSION,
+        imports: vec![ImportStmt::Module {
+            module: "os".to_string(),
+        }],
+        module: ModuleData {
+            entry: 0,
+            globals: Vec::new(),
+            functions: vec![FunctionData {
+                consts: ConstPoolData {
+                    ints: Vec::new(),
+                    floats: Vec::new(),
+                    strings: Vec::new(),
+                    heap_values: Vec::new(),
+                },
+                code: vec![Instr::abc(Opcode::Return, 0, 0, 0).raw()],
+                performance: Default::default(),
+                register_count: 1,
+                param_count: 0,
+                positional_param_count: 0,
+                param_names: Vec::new(),
+                capture_count: 0,
+            }],
+        },
     };
 
-    let options = LlvmBackendOptions {
-        run_optimizations: false,
-        ..LlvmBackendOptions::default()
-    };
-    let artifact = compile_function_to_llvm(&func, "add", options).expect("LLVM backend should succeed");
-    let ir = artifact.module.ir;
-    assert!(
-        ir.contains("call i64 @lkr_rt_add"),
-        "expected runtime add helper in IR:\n{}",
-        ir
-    );
-    assert!(ir.contains("ret i64"), "expected return in IR:\n{}", ir);
+    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm artifact");
+
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
 }
 
 #[test]
-fn emits_branching_ir() {
-    let program = Program::new(vec![Box::new(Stmt::If {
-        condition: Box::new(Expr::Val(Val::Bool(true))),
-        then_stmt: Box::new(Stmt::Return {
-            value: Some(Box::new(Expr::Val(Val::Int(1)))),
-        }),
-        else_stmt: Some(Box::new(Stmt::Return {
-            value: Some(Box::new(Expr::Val(Val::Int(0)))),
-        })),
-    })])
-    .expect("program");
+fn llvm_backend_lowers_static_println_runtime_global_without_shell() {
+    let source = r#"
+        println(40 + 2);
+        return 7;
+    "#;
+    let tokens = Tokenizer::tokenize(source).expect("tokens");
+    let program = StmtParser::new(&tokens).parse_program().expect("program");
+    let module =
+        Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["println"]).expect("compile module");
+    let artifact = ModuleArtifact::new(Vec::new(), &module).expect("artifact");
 
-    let options = LlvmBackendOptions {
-        run_optimizations: false,
-        ..LlvmBackendOptions::default()
-    };
-    let artifact = compile_program_to_llvm(&program, options).expect("LLVM backend should succeed");
-    let ir = artifact.module.ir;
-    assert!(ir.contains("icmp"), "expected condition lowering via icmp:\n{}", ir);
-    assert!(ir.contains("br i1"), "expected conditional branch lowering:\n{}", ir);
+    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm artifact");
+
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
+    assert!(artifact.module.ir.contains("@lk_str_fmt"));
+    assert!(artifact.module.ir.contains("i64 7"));
 }
 
 #[test]
-fn lowers_short_circuit_and() {
-    let func = Function {
-        consts: vec![Val::Bool(true), Val::Bool(false)],
-        code: vec![
-            Op::LoadK(0, 0),
-            Op::JmpFalseSet { r: 0, dst: 2, ofs: 3 },
-            Op::LoadK(1, 1),
-            Op::ToBool(2, 1),
-            Op::Ret { base: 2, retc: 1 },
-            Op::Ret { base: 2, retc: 1 },
-        ],
-        n_regs: 3,
-        protos: Vec::new(),
-        param_regs: Vec::new(),
-        named_param_regs: Vec::new(),
-        named_param_layout: Vec::new(),
-        pattern_plans: Vec::new(),
-        code32: None,
-        bc32_decoded: None,
-        analysis: None,
+fn llvm_backend_reports_imported_runtime_globals_as_unsupported_native_shape() {
+    let artifact = ModuleArtifact {
+        format: "lk.module".to_string(),
+        version: MODULE_ARTIFACT_VERSION,
+        imports: vec![ImportStmt::Module {
+            module: "process".to_string(),
+        }],
+        module: ModuleData {
+            entry: 0,
+            globals: vec!["process".to_string()],
+            functions: vec![FunctionData {
+                consts: ConstPoolData {
+                    ints: Vec::new(),
+                    floats: Vec::new(),
+                    strings: Vec::new(),
+                    heap_values: Vec::new(),
+                },
+                code: vec![
+                    Instr::abx(Opcode::GetGlobal, 0, 0).raw(),
+                    Instr::abc(Opcode::Return, 0, 1, 0).raw(),
+                ],
+                performance: Default::default(),
+                register_count: 1,
+                param_count: 0,
+                positional_param_count: 0,
+                param_names: Vec::new(),
+                capture_count: 0,
+            }],
+        },
     };
 
-    let options = LlvmBackendOptions {
-        run_optimizations: false,
-        ..LlvmBackendOptions::default()
-    };
-    let artifact = compile_function_to_llvm(&func, "and_gate", options).expect("LLVM backend should succeed");
-    let ir = artifact.module.ir;
+    let err = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default())
+        .expect_err("runtime globals must be rejected without native runtime seeding");
+
+    let message = err.to_string();
     assert!(
-        ir.contains("and_false"),
-        "expected AND short-circuit label in IR:\n{}",
-        ir
+        message.contains("runtime globals are not native-lowerable yet"),
+        "{message}"
     );
-    let expected_false = format!("store i64 {}", BOOL_FALSE_LITERAL);
-    assert!(ir.contains(&expected_false), "expected false assignment in IR:\n{}", ir);
+    assert!(message.contains("process"), "{message}");
+    assert!(!message.contains("lk_rt_run_module_json"), "{message}");
 }
 
 #[test]
-fn to_bool_compares_against_sentinels() {
-    let func = Function {
-        consts: vec![Val::Int(0)],
-        code: vec![Op::LoadK(0, 0), Op::ToBool(1, 0), Op::Ret { base: 1, retc: 1 }],
-        n_regs: 2,
-        protos: Vec::new(),
-        param_regs: Vec::new(),
-        named_param_regs: Vec::new(),
-        named_param_layout: Vec::new(),
-        pattern_plans: Vec::new(),
-        code32: None,
-        bc32_decoded: None,
-        analysis: None,
+fn llvm_backend_lowers_os_clock_and_epoch_without_shell() {
+    let artifact = ModuleArtifact {
+        format: "lk.module".to_string(),
+        version: MODULE_ARTIFACT_VERSION,
+        imports: vec![ImportStmt::Module {
+            module: "os".to_string(),
+        }],
+        module: ModuleData {
+            entry: 0,
+            globals: vec!["os".to_string()],
+            functions: vec![FunctionData {
+                consts: ConstPoolData {
+                    ints: Vec::new(),
+                    floats: Vec::new(),
+                    strings: vec!["clock".to_string(), "epoch".to_string()],
+                    heap_values: Vec::new(),
+                },
+                code: vec![
+                    Instr::abx(Opcode::GetGlobal, 1, 0).raw(),
+                    Instr::abx(Opcode::LoadString, 2, 0).raw(),
+                    Instr::abc(Opcode::GetIndex, 3, 1, 2).raw(),
+                    Instr::abc(Opcode::Move, 4, 3, 0).raw(),
+                    Instr::abc(Opcode::Call, 4, 4, 0).raw(),
+                    Instr::abx(Opcode::GetGlobal, 2, 0).raw(),
+                    Instr::abx(Opcode::LoadString, 3, 1).raw(),
+                    Instr::abc(Opcode::GetIndex, 4, 2, 3).raw(),
+                    Instr::abc(Opcode::Move, 5, 4, 0).raw(),
+                    Instr::abc(Opcode::Call, 5, 5, 0).raw(),
+                    Instr::abc(Opcode::Move, 1, 5, 0).raw(),
+                    Instr::abc(Opcode::SubInt, 2, 1, 1).raw(),
+                    Instr::abc(Opcode::Return, 2, 1, 0).raw(),
+                ],
+                performance: Default::default(),
+                register_count: 6,
+                param_count: 0,
+                positional_param_count: 0,
+                param_names: Vec::new(),
+                capture_count: 0,
+            }],
+        },
     };
 
-    let options = LlvmBackendOptions {
-        run_optimizations: false,
-        ..LlvmBackendOptions::default()
-    };
-    let artifact = compile_function_to_llvm(&func, "truthy_int", options).expect("LLVM backend should succeed");
-    let ir = artifact.module.ir;
+    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm artifact");
 
-    assert!(ir.contains(encoding::BOOL_FALSE_LITERAL));
-    assert!(ir.contains(encoding::NIL_LITERAL));
-
-    for line in ir.lines().filter(|line| line.contains("icmp eq i64")) {
-        assert!(
-            line.contains(encoding::BOOL_FALSE_LITERAL) || line.contains(encoding::NIL_LITERAL),
-            "unexpected equality comparison found in IR: {line}"
-        );
-    }
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
+    assert!(artifact.module.ir.contains("declare i64 @clock()"));
+    assert!(artifact.module.ir.contains("declare i64 @time(ptr)"));
 }
 
 #[test]
-fn lowers_nullish_pick() {
-    let func = Function {
-        consts: vec![Val::Int(7), Val::Int(42)],
-        code: vec![
-            Op::LoadK(0, 0),
-            Op::NullishPick { l: 0, dst: 1, ofs: 2 },
-            Op::LoadK(1, 1),
-            Op::Ret { base: 1, retc: 1 },
-            Op::Ret { base: 1, retc: 1 },
-        ],
-        n_regs: 2,
-        protos: Vec::new(),
-        param_regs: Vec::new(),
-        named_param_regs: Vec::new(),
-        named_param_layout: Vec::new(),
-        pattern_plans: Vec::new(),
-        code32: None,
-        bc32_decoded: None,
-        analysis: None,
+fn llvm_backend_lowers_os_string_builtin_without_shell() {
+    let artifact = ModuleArtifact {
+        format: "lk.module".to_string(),
+        version: MODULE_ARTIFACT_VERSION,
+        imports: vec![ImportStmt::Module {
+            module: "os".to_string(),
+        }],
+        module: ModuleData {
+            entry: 0,
+            globals: vec!["os".to_string()],
+            functions: vec![FunctionData {
+                consts: ConstPoolData {
+                    ints: Vec::new(),
+                    floats: Vec::new(),
+                    strings: vec!["hostname".to_string()],
+                    heap_values: Vec::new(),
+                },
+                code: vec![
+                    Instr::abx(Opcode::GetGlobal, 0, 0).raw(),
+                    Instr::abx(Opcode::LoadString, 1, 0).raw(),
+                    Instr::abc(Opcode::GetIndex, 2, 0, 1).raw(),
+                    Instr::abc(Opcode::Move, 3, 2, 0).raw(),
+                    Instr::abc(Opcode::Call, 3, 3, 0).raw(),
+                    Instr::abc(Opcode::Return, 3, 1, 0).raw(),
+                ],
+                performance: Default::default(),
+                register_count: 4,
+                param_count: 0,
+                positional_param_count: 0,
+                param_names: Vec::new(),
+                capture_count: 0,
+            }],
+        },
     };
 
-    let options = LlvmBackendOptions {
-        run_optimizations: false,
-        ..LlvmBackendOptions::default()
-    };
-    let artifact = compile_function_to_llvm(&func, "nullish", options).expect("LLVM backend should succeed");
-    let ir = artifact.module.ir;
-    assert!(
-        ir.contains("nullish_taken"),
-        "expected nullish taken label in IR:\n{}",
-        ir
-    );
-    assert!(ir.contains("br label"), "expected branching structure in IR:\n{}", ir);
+    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm artifact");
+
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
+    assert!(artifact.module.ir.contains("lk-host"));
+    assert!(artifact.module.ir.contains("@lk_str_fmt"));
 }
 
 #[test]
-fn lowers_jmp_if_nil() {
-    let func = Function {
-        consts: vec![Val::Int(1), Val::Int(2)],
-        code: vec![
-            Op::JmpIfNil(0, 2),
-            Op::LoadK(1, 0),
-            Op::Ret { base: 1, retc: 1 },
-            Op::LoadK(1, 1),
-            Op::Ret { base: 1, retc: 1 },
-        ],
-        n_regs: 2,
-        protos: Vec::new(),
-        param_regs: Vec::new(),
-        named_param_regs: Vec::new(),
-        named_param_layout: Vec::new(),
-        pattern_plans: Vec::new(),
-        code32: None,
-        bc32_decoded: None,
-        analysis: None,
+fn llvm_backend_lowers_i64_instr_arithmetic_ops_without_shell() {
+    let artifact = ModuleArtifact {
+        format: "lk.module".to_string(),
+        version: MODULE_ARTIFACT_VERSION,
+        imports: Vec::new(),
+        module: ModuleData {
+            entry: 0,
+            globals: Vec::new(),
+            functions: vec![FunctionData {
+                consts: ConstPoolData {
+                    ints: vec![20, 6, 3],
+                    floats: Vec::new(),
+                    strings: Vec::new(),
+                    heap_values: Vec::new(),
+                },
+                code: vec![
+                    Instr::abx(Opcode::LoadInt, 0, 0).raw(),
+                    Instr::abx(Opcode::LoadInt, 1, 1).raw(),
+                    Instr::abx(Opcode::LoadInt, 2, 2).raw(),
+                    Instr::abc(Opcode::DivInt, 3, 0, 1).raw(),
+                    Instr::abc(Opcode::ModInt, 4, 0, 1).raw(),
+                    Instr::abc(Opcode::MulInt, 5, 4, 2).raw(),
+                    Instr::abc(Opcode::AddInt, 6, 3, 5).raw(),
+                    Instr::abc(Opcode::SubInt, 7, 6, 2).raw(),
+                    Instr::abc(Opcode::Return, 7, 1, 0).raw(),
+                ],
+                performance: Default::default(),
+                register_count: 8,
+                param_count: 0,
+                positional_param_count: 0,
+                param_names: Vec::new(),
+                capture_count: 0,
+            }],
+        },
     };
 
-    let options = LlvmBackendOptions {
-        run_optimizations: false,
-        ..LlvmBackendOptions::default()
-    };
-    let artifact = compile_function_to_llvm(&func, "maybe", options).expect("LLVM backend should succeed");
-    let ir = artifact.module.ir;
-    assert!(ir.contains("isnil"), "expected nil comparison in IR:\n{}", ir);
-    assert!(ir.contains("br i1"), "expected conditional branch in IR:\n{}", ir);
+    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm artifact");
+
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
+    assert!(artifact.module.ir.contains("@lk_i64_fmt"));
+    assert!(artifact.module.ir.contains("i64 6"));
 }
 
 #[test]
-fn lowers_for_range_loop() {
-    let func = Function {
-        consts: vec![Val::Int(0), Val::Int(3)],
-        code: vec![
-            Op::LoadK(0, 0), // idx start
-            Op::LoadK(1, 1), // limit
-            Op::ForRangePrep {
-                idx: 0,
-                limit: 1,
-                step: 2,
-                inclusive: false,
-                explicit: false,
-            },
-            Op::ForRangeLoop {
-                idx: 0,
-                limit: 1,
-                step: 2,
-                inclusive: false,
-                ofs: 1,
-            },
-            Op::ForRangeStep {
-                idx: 0,
-                step: 2,
-                back_ofs: -2,
-            },
-            Op::Ret { base: 0, retc: 1 },
-        ],
-        n_regs: 3,
-        protos: Vec::new(),
-        param_regs: Vec::new(),
-        named_param_regs: Vec::new(),
-        named_param_layout: Vec::new(),
-        pattern_plans: Vec::new(),
-        code32: None,
-        bc32_decoded: None,
-        analysis: None,
+fn llvm_backend_lowers_i64_compare_and_branch_without_shell() {
+    let artifact = ModuleArtifact {
+        format: "lk.module".to_string(),
+        version: MODULE_ARTIFACT_VERSION,
+        imports: Vec::new(),
+        module: ModuleData {
+            entry: 0,
+            globals: Vec::new(),
+            functions: vec![FunctionData {
+                consts: ConstPoolData {
+                    ints: vec![4, 9, 100, 200],
+                    floats: Vec::new(),
+                    strings: Vec::new(),
+                    heap_values: Vec::new(),
+                },
+                code: vec![
+                    Instr::abx(Opcode::LoadInt, 0, 0).raw(),
+                    Instr::abx(Opcode::LoadInt, 1, 1).raw(),
+                    Instr::abc(Opcode::CmpLtInt, 2, 0, 1).raw(),
+                    Instr::abc(Opcode::Test, 2, 1, 2).raw(),
+                    Instr::abx(Opcode::LoadInt, 3, 2).raw(),
+                    Instr::sj(Opcode::Jmp, 1).raw(),
+                    Instr::abx(Opcode::LoadInt, 3, 3).raw(),
+                    Instr::abc(Opcode::Return, 3, 1, 0).raw(),
+                ],
+                performance: Default::default(),
+                register_count: 4,
+                param_count: 0,
+                positional_param_count: 0,
+                param_names: Vec::new(),
+                capture_count: 0,
+            }],
+        },
     };
 
-    let options = LlvmBackendOptions {
-        run_optimizations: false,
-        ..LlvmBackendOptions::default()
-    };
-    let artifact = compile_function_to_llvm(&func, "for_range", options).expect("LLVM backend should succeed");
-    let ir = artifact.module.ir;
-    assert!(ir.contains("forprep_step"), "expected step selection in IR:\n{}", ir);
-    assert!(
-        ir.contains("forguard_cont"),
-        "expected guard continuation selection in IR:\n{}",
-        ir
-    );
-    assert!(ir.contains("forstep_next"), "expected loop increment in IR:\n{}", ir);
+    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm artifact");
+
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(artifact.module.ir.contains("icmp slt i64"));
+    assert!(artifact.module.ir.contains("br i1 %"));
+    assert!(artifact.module.ir.contains("label %bb4"));
+    assert!(artifact.module.ir.contains("label %bb6"));
+    assert!(artifact.module.ir.contains("call i32 (ptr, ...) @printf"));
 }
 
 #[test]
-fn lowers_specialised_int_ops() {
-    let func = Function {
-        consts: vec![Val::Int(10), Val::Int(4)],
-        code: vec![
-            Op::LoadK(0, 0),
-            Op::LoadK(1, 1),
-            Op::AddInt(2, 0, 1),
-            Op::ModInt(3, 0, 1),
-            Op::Ret { base: 2, retc: 1 },
-        ],
-        n_regs: 4,
-        protos: Vec::new(),
-        param_regs: Vec::new(),
-        named_param_regs: Vec::new(),
-        named_param_layout: Vec::new(),
-        pattern_plans: Vec::new(),
-        code32: None,
-        bc32_decoded: None,
-        analysis: None,
-    };
+fn llvm_backend_lowers_source_if_i64_branch_without_shell() {
+    let source = r#"
+            if (4 < 9) {
+                return 100;
+            } else {
+                return 200;
+            }
+        "#;
+    let tokens = Tokenizer::tokenize(source).expect("tokens");
+    let program = StmtParser::new(&tokens).parse_program().expect("program");
 
-    let options = LlvmBackendOptions {
-        run_optimizations: false,
-        ..LlvmBackendOptions::default()
-    };
-    let artifact = compile_function_to_llvm(&func, "ints", options).expect("LLVM backend should succeed");
-    let ir = artifact.module.ir;
-    assert!(
-        ir.contains("srem i64"),
-        "expected integer remainder lowering in IR:\n{}",
-        ir
-    );
-    assert!(ir.contains("add i64"), "expected integer add lowering in IR:\n{}", ir);
+    let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
+
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(artifact.module.ir.contains("icmp "));
+    assert!(artifact.module.ir.contains("br i1 %"));
 }
 
 #[test]
-fn lowers_float_ops() {
-    let func = Function {
-        consts: vec![Val::Float(1.5), Val::Float(2.25)],
-        code: vec![
-            Op::LoadK(0, 0),
-            Op::LoadK(1, 1),
-            Op::AddFloat(2, 0, 1),
-            Op::Ret { base: 2, retc: 1 },
-        ],
-        n_regs: 3,
-        protos: Vec::new(),
-        param_regs: Vec::new(),
-        named_param_regs: Vec::new(),
-        named_param_layout: Vec::new(),
-        pattern_plans: Vec::new(),
-        code32: None,
-        bc32_decoded: None,
-        analysis: None,
-    };
+fn llvm_backend_lowers_source_if_i64_truthy_branch_without_shell() {
+    let source = r#"
+            if 0 {
+                return 100;
+            } else {
+                return 200;
+            }
+        "#;
+    let tokens = Tokenizer::tokenize(source).expect("tokens");
+    let program = StmtParser::new(&tokens).parse_program().expect("program");
 
-    let options = LlvmBackendOptions {
-        run_optimizations: false,
-        ..LlvmBackendOptions::default()
-    };
-    let artifact = compile_function_to_llvm(&func, "float_add", options).expect("LLVM backend should succeed");
-    let ir = artifact.module.ir;
-    assert!(
-        ir.contains("fadd double"),
-        "expected float addition lowering in IR:\n{}",
-        ir
-    );
-    assert!(
-        ir.contains("bitcast double 0x3FF8000000000000 to i64"),
-        "expected first float constant lowering via bitcast in IR:\n{}",
-        ir
-    );
-    assert!(
-        ir.contains("bitcast double 0x4002000000000000 to i64"),
-        "expected second float constant lowering via bitcast in IR:\n{}",
-        ir
-    );
+    let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
+
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
+    assert!(artifact.module.ir.contains("br label %bb"));
+    assert!(artifact.module.ir.contains("i64 100"));
 }
 
 #[test]
-fn lowers_string_constants() {
-    let func = Function {
-        consts: vec![Val::Str("hello".into())],
-        code: vec![Op::LoadK(0, 0), Op::Ret { base: 0, retc: 1 }],
-        n_regs: 1,
-        protos: Vec::new(),
-        param_regs: Vec::new(),
-        named_param_regs: Vec::new(),
-        named_param_layout: Vec::new(),
-        pattern_plans: Vec::new(),
-        code32: None,
-        bc32_decoded: None,
-        analysis: None,
-    };
+fn llvm_backend_lowers_source_if_nil_falsy_branch_without_shell() {
+    let source = r#"
+            if nil {
+                return 100;
+            } else {
+                return 200;
+            }
+        "#;
+    let tokens = Tokenizer::tokenize(source).expect("tokens");
+    let program = StmtParser::new(&tokens).parse_program().expect("program");
 
-    let options = LlvmBackendOptions {
-        run_optimizations: false,
-        ..LlvmBackendOptions::default()
-    };
-    let artifact = compile_function_to_llvm(&func, "strings", options).expect("LLVM backend should succeed");
-    let ir = artifact.module.ir;
-    assert!(ir.contains("@.str"), "expected string global definition in IR:\n{}", ir);
-    assert!(
-        ir.contains("call i64 @lkr_rt_intern_string"),
-        "expected string interning helper call in IR:\n{}",
-        ir
-    );
-    assert!(
-        ir.contains("getelementptr inbounds"),
-        "expected GEP when materialising string literal in IR:\n{}",
-        ir
-    );
+    let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
+
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
+    assert!(artifact.module.ir.contains("br label %bb"));
+    assert!(artifact.module.ir.contains("i64 200"));
 }
 
 #[test]
-fn lowers_to_string_helper() {
-    let func = Function {
-        consts: vec![Val::Int(42)],
-        code: vec![Op::LoadK(0, 0), Op::ToStr(1, 0), Op::Ret { base: 1, retc: 1 }],
-        n_regs: 2,
-        protos: Vec::new(),
-        param_regs: Vec::new(),
-        named_param_regs: Vec::new(),
-        named_param_layout: Vec::new(),
-        pattern_plans: Vec::new(),
-        code32: None,
-        bc32_decoded: None,
-        analysis: None,
-    };
+fn llvm_backend_lowers_source_if_static_string_truthy_branch_without_shell() {
+    let source = r#"
+            if "ok" {
+                return 100;
+            } else {
+                return 200;
+            }
+        "#;
+    let tokens = Tokenizer::tokenize(source).expect("tokens");
+    let program = StmtParser::new(&tokens).parse_program().expect("program");
 
-    let options = LlvmBackendOptions {
-        run_optimizations: false,
-        ..LlvmBackendOptions::default()
-    };
-    let artifact = compile_function_to_llvm(&func, "tostr", options).expect("LLVM backend should succeed");
-    let ir = artifact.module.ir;
-    assert!(
-        ir.contains("call i64 @lkr_rt_to_string"),
-        "expected call into runtime to_string helper in IR:\n{}",
-        ir
-    );
+    let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
+
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
+    assert!(artifact.module.ir.contains("i64 100"));
+    assert!(!artifact.module.ir.contains("i64 200"));
 }
 
 #[test]
-fn lowers_load_global() {
-    let func = Function {
-        consts: vec![Val::Str("g".into())],
-        code: vec![Op::LoadGlobal(0, 0), Op::Ret { base: 0, retc: 1 }],
-        n_regs: 1,
-        protos: Vec::new(),
-        param_regs: Vec::new(),
-        named_param_regs: Vec::new(),
-        named_param_layout: Vec::new(),
-        pattern_plans: Vec::new(),
-        code32: None,
-        bc32_decoded: None,
-        analysis: None,
-    };
+fn llvm_backend_lowers_source_if_static_list_truthy_branch_without_shell() {
+    let source = r#"
+            if [1, 2, 3] {
+                return 100;
+            } else {
+                return 200;
+            }
+        "#;
+    let tokens = Tokenizer::tokenize(source).expect("tokens");
+    let program = StmtParser::new(&tokens).parse_program().expect("program");
 
-    let options = LlvmBackendOptions {
-        run_optimizations: false,
-        ..LlvmBackendOptions::default()
-    };
-    let artifact = compile_function_to_llvm(&func, "load_global", options).expect("LLVM backend should succeed");
-    let ir = artifact.module.ir;
-    assert!(
-        ir.contains("call i64 @lkr_rt_intern_string"),
-        "expected string interning before global load in IR:\n{}",
-        ir
-    );
-    assert!(
-        ir.contains("call i64 @lkr_rt_load_global"),
-        "expected runtime load_global helper call in IR:\n{}",
-        ir
-    );
+    let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
+
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
+    assert!(artifact.module.ir.contains("i64 100"));
+    assert!(!artifact.module.ir.contains("i64 200"));
 }
 
 #[test]
-fn lowers_define_global() {
-    let func = Function {
-        consts: vec![Val::Str("g".into()), Val::Int(1)],
-        code: vec![Op::LoadK(1, 1), Op::DefineGlobal(0, 1), Op::Ret { base: 0, retc: 0 }],
-        n_regs: 2,
-        protos: Vec::new(),
-        param_regs: Vec::new(),
-        named_param_regs: Vec::new(),
-        named_param_layout: Vec::new(),
-        pattern_plans: Vec::new(),
-        code32: None,
-        bc32_decoded: None,
-        analysis: None,
-    };
+fn llvm_backend_lowers_source_static_nullish_coalescing_without_shell() {
+    let source = r#"
+            let missing = nil;
+            let found = 7;
+            return (missing ?? 40) + (found ?? 2);
+        "#;
+    let tokens = Tokenizer::tokenize(source).expect("tokens");
+    let program = StmtParser::new(&tokens).parse_program().expect("program");
 
-    let options = LlvmBackendOptions {
-        run_optimizations: false,
-        ..LlvmBackendOptions::default()
-    };
-    let artifact = compile_function_to_llvm(&func, "define_global", options).expect("LLVM backend should succeed");
-    let ir = artifact.module.ir;
-    assert!(
-        ir.contains("call i64 @lkr_rt_intern_string"),
-        "expected string interning before defining global in IR:\n{}",
-        ir
-    );
-    assert!(
-        ir.contains("call void @lkr_rt_define_global"),
-        "expected runtime define_global helper call in IR:\n{}",
-        ir
-    );
+    let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
+
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
+    assert!(artifact.module.ir.contains("@lk_i64_fmt"));
+    assert!(artifact.module.ir.contains("add i64"));
+    assert!(artifact.module.ir.contains("br i1 %"));
 }
 
 #[test]
-fn lowers_build_list() {
-    let func = Function {
-        consts: vec![],
-        code: vec![
-            Op::BuildList {
-                dst: 0,
-                base: 1,
-                len: 2,
-            },
-            Op::Ret { base: 0, retc: 1 },
-        ],
-        n_regs: 3,
-        protos: Vec::new(),
-        param_regs: Vec::new(),
-        named_param_regs: Vec::new(),
-        named_param_layout: Vec::new(),
-        pattern_plans: Vec::new(),
-        code32: None,
-        bc32_decoded: None,
-        analysis: None,
-    };
+fn llvm_backend_lowers_source_static_logical_short_circuit_without_shell() {
+    let source = r#"
+            let a = false && [1, 2, 3];
+            let b = true || [4, 5, 6];
+            if a { return 10; }
+            if b { return 20; }
+            return 30;
+        "#;
+    let tokens = Tokenizer::tokenize(source).expect("tokens");
+    let program = StmtParser::new(&tokens).parse_program().expect("program");
 
-    let options = LlvmBackendOptions {
-        run_optimizations: false,
-        ..LlvmBackendOptions::default()
-    };
-    let artifact = compile_function_to_llvm(&func, "build_list", options).expect("LLVM backend should succeed");
-    let ir = artifact.module.ir;
-    assert!(
-        ir.contains("alloca [2 x i64]"),
-        "expected stack buffer allocation for list elements in IR:\n{}",
-        ir
-    );
-    assert!(
-        ir.contains("call i64 @lkr_rt_build_list"),
-        "expected runtime build_list helper call in IR:\n{}",
-        ir
-    );
+    let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
+
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
+    assert!(artifact.module.ir.contains("@lk_i64_fmt"));
+    assert!(artifact.module.ir.contains("br i1 %"));
+    assert!(artifact.module.ir.contains("i64 20"));
 }
 
 #[test]
-fn lowers_call_instruction() {
-    let func = Function {
-        consts: vec![],
-        code: vec![
-            Op::Call {
-                f: 0,
-                base: 1,
-                argc: 2,
-                retc: 1,
-            },
-            Op::Ret { base: 1, retc: 1 },
-        ],
-        n_regs: 4,
-        protos: Vec::new(),
-        param_regs: Vec::new(),
-        named_param_regs: Vec::new(),
-        named_param_layout: Vec::new(),
-        pattern_plans: Vec::new(),
-        code32: None,
-        bc32_decoded: None,
-        analysis: None,
-    };
+fn llvm_backend_lowers_source_while_i64_loop_without_shell() {
+    let source = r#"
+            let i = 0;
+            let sum = 0;
+            while (i < 4) {
+                sum = sum + i;
+                i = i + 1;
+            }
+            return sum;
+        "#;
+    let tokens = Tokenizer::tokenize(source).expect("tokens");
+    let program = StmtParser::new(&tokens).parse_program().expect("program");
 
-    let options = LlvmBackendOptions {
-        run_optimizations: false,
-        ..LlvmBackendOptions::default()
-    };
-    let artifact = compile_function_to_llvm(&func, "call", options).expect("LLVM backend should succeed");
-    let ir = artifact.module.ir;
-    assert!(
-        ir.contains("alloca [2 x i64]"),
-        "expected argument buffer allocation for call in IR:\n{}",
-        ir
-    );
-    assert!(
-        ir.contains("call i64 @lkr_rt_call"),
-        "expected runtime call helper invocation in IR:\n{}",
-        ir
-    );
+    let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
+
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
+    assert!(artifact.module.ir.contains("icmp "));
+    assert!(!artifact.module.ir.contains("%g0.slot = alloca"));
+    assert!(artifact.module.ir.contains("%r0.slot = alloca i64"));
+    assert!(artifact.module.ir.contains("br label %bb"));
 }
 
 #[test]
-fn lowers_build_map_and_access() {
-    let func = Function {
-        consts: vec![Val::Str("key".into()), Val::Int(1)],
-        code: vec![
-            Op::LoadK(0, 1),
-            Op::BuildMap {
-                dst: 1,
-                base: 2,
-                len: 1,
-            },
-            Op::AccessK(2, 1, 0),
-            Op::Ret { base: 2, retc: 1 },
-        ],
-        n_regs: 4,
-        protos: Vec::new(),
-        param_regs: Vec::new(),
-        named_param_regs: Vec::new(),
-        named_param_layout: Vec::new(),
-        pattern_plans: Vec::new(),
-        code32: None,
-        bc32_decoded: None,
-        analysis: None,
-    };
+fn llvm_backend_lowers_source_not_and_is_nil_without_shell() {
+    let source = r#"
+            let missing = nil;
+            let ok = !(1 < 2);
+            if (missing == nil) {
+                return ok;
+            }
+            return true;
+        "#;
+    let tokens = Tokenizer::tokenize(source).expect("tokens");
+    let program = StmtParser::new(&tokens).parse_program().expect("program");
 
-    let options = LlvmBackendOptions {
-        run_optimizations: false,
-        ..LlvmBackendOptions::default()
-    };
-    let artifact = compile_function_to_llvm(&func, "map_access", options).expect("LLVM backend should succeed");
-    let ir = artifact.module.ir;
-    assert!(
-        ir.contains("call i64 @lkr_rt_build_map"),
-        "expected runtime build_map helper call in IR:\n{}",
-        ir
-    );
-    assert!(
-        ir.contains("call i64 @lkr_rt_access"),
-        "expected runtime access helper call in IR:\n{}",
-        ir
-    );
+    let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
+
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
+    assert!(artifact.module.ir.contains("icmp eq i64"));
+    assert!(artifact.module.ir.contains("@lk_bool_false"));
 }
 
 #[test]
-fn lowers_index_and_len() {
-    let func = Function {
-        consts: vec![Val::Int(3)],
-        code: vec![
-            Op::Len { dst: 0, src: 1 },
-            Op::IndexK(1, 2, 0),
-            Op::Ret { base: 0, retc: 1 },
-        ],
-        n_regs: 3,
-        protos: Vec::new(),
-        param_regs: Vec::new(),
-        named_param_regs: Vec::new(),
-        named_param_layout: Vec::new(),
-        pattern_plans: Vec::new(),
-        code32: None,
-        bc32_decoded: None,
-        analysis: None,
-    };
+fn llvm_backend_lowers_nil_return_without_artifact_shell() {
+    let tokens = Tokenizer::tokenize("return nil;").expect("tokens");
+    let program = StmtParser::new(&tokens).parse_program().expect("program");
 
-    let options = LlvmBackendOptions {
-        run_optimizations: false,
-        ..LlvmBackendOptions::default()
-    };
-    let artifact = compile_function_to_llvm(&func, "index_len", options).expect("LLVM backend should succeed");
-    let ir = artifact.module.ir;
-    assert!(
-        ir.contains("call i64 @lkr_rt_len"),
-        "expected runtime len helper call in IR:\n{}",
-        ir
-    );
-    assert!(
-        ir.contains("call i64 @lkr_rt_index"),
-        "expected runtime index helper call in IR:\n{}",
-        ir
-    );
+    let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
+
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
+    assert!(artifact.module.ir.contains("@lk_nil_text"));
+    assert!(artifact.module.ir.contains("@lk_str_fmt"));
 }
 
 #[test]
-fn lowers_in_membership() {
-    let func = Function {
-        consts: vec![],
-        code: vec![Op::In(0, 1, 2), Op::Ret { base: 0, retc: 1 }],
-        n_regs: 3,
-        protos: Vec::new(),
-        param_regs: Vec::new(),
-        named_param_regs: Vec::new(),
-        named_param_layout: Vec::new(),
-        pattern_plans: Vec::new(),
-        code32: None,
-        bc32_decoded: None,
-        analysis: None,
-    };
+fn llvm_backend_lowers_static_function_return_display_without_artifact_shell() {
+    let tokens = Tokenizer::tokenize("fn f() { return 1; }\nreturn f;").expect("tokens");
+    let program = StmtParser::new(&tokens).parse_program().expect("program");
 
-    let options = LlvmBackendOptions {
-        run_optimizations: false,
-        ..LlvmBackendOptions::default()
-    };
-    let artifact = compile_function_to_llvm(&func, "contains", options).expect("LLVM backend should succeed");
-    let ir = artifact.module.ir;
-    assert!(
-        ir.contains("call i64 @lkr_rt_in"),
-        "expected runtime membership helper call in IR:\n{}",
-        ir
-    );
+    let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
+
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
+    assert!(artifact.module.ir.contains("@lk_str_fmt"));
+    assert!(artifact.module.ir.contains("c\"<fn #1(0 captures)>\\00\""));
 }
 
 #[test]
-fn lowers_list_slice() {
-    let func = Function {
-        consts: vec![],
-        code: vec![
-            Op::ListSlice {
-                dst: 0,
-                src: 1,
-                start: 2,
-            },
-            Op::Ret { base: 0, retc: 1 },
-        ],
-        n_regs: 3,
-        protos: Vec::new(),
-        param_regs: Vec::new(),
-        named_param_regs: Vec::new(),
-        named_param_layout: Vec::new(),
-        pattern_plans: Vec::new(),
-        code32: None,
-        bc32_decoded: None,
-        analysis: None,
+fn llvm_backend_lowers_static_builtin_return_display_without_artifact_shell() {
+    let artifact = ModuleArtifact {
+        format: "lk.module".to_string(),
+        version: MODULE_ARTIFACT_VERSION,
+        imports: Vec::new(),
+        module: ModuleData {
+            entry: 0,
+            globals: vec!["print".to_string()],
+            functions: vec![FunctionData {
+                consts: ConstPoolData {
+                    ints: Vec::new(),
+                    floats: Vec::new(),
+                    strings: Vec::new(),
+                    heap_values: Vec::new(),
+                },
+                code: vec![
+                    Instr::abx(Opcode::GetGlobal, 0, 0).raw(),
+                    Instr::abc(Opcode::Return, 0, 1, 0).raw(),
+                ],
+                performance: Default::default(),
+                register_count: 1,
+                param_count: 0,
+                positional_param_count: 0,
+                param_names: Vec::new(),
+                capture_count: 0,
+            }],
+        },
     };
 
-    let options = LlvmBackendOptions {
-        run_optimizations: false,
-        ..LlvmBackendOptions::default()
-    };
-    let artifact = compile_function_to_llvm(&func, "list_slice", options).expect("LLVM backend should succeed");
-    let ir = artifact.module.ir;
-    assert!(
-        ir.contains("call i64 @lkr_rt_list_slice"),
-        "expected runtime list_slice helper call in IR:\n{}",
-        ir
-    );
+    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm artifact");
+
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
+    assert!(artifact.module.ir.contains("@lk_str_fmt"));
+    assert!(artifact.module.ir.contains("c\"<native fn print(...)>\\00\""));
 }
 
 #[test]
-fn lowers_to_iter() {
-    let func = Function {
-        consts: vec![],
-        code: vec![Op::ToIter { dst: 0, src: 1 }, Op::Ret { base: 0, retc: 1 }],
-        n_regs: 2,
-        protos: Vec::new(),
-        param_regs: Vec::new(),
-        named_param_regs: Vec::new(),
-        named_param_layout: Vec::new(),
-        pattern_plans: Vec::new(),
-        code32: None,
-        bc32_decoded: None,
-        analysis: None,
+fn llvm_backend_lowers_static_module_builtin_return_display_without_artifact_shell() {
+    let artifact = ModuleArtifact {
+        format: "lk.module".to_string(),
+        version: MODULE_ARTIFACT_VERSION,
+        imports: Vec::new(),
+        module: ModuleData {
+            entry: 0,
+            globals: vec!["math".to_string()],
+            functions: vec![FunctionData {
+                consts: ConstPoolData {
+                    ints: Vec::new(),
+                    floats: Vec::new(),
+                    strings: vec!["abs".to_string()],
+                    heap_values: Vec::new(),
+                },
+                code: vec![
+                    Instr::abx(Opcode::GetGlobal, 0, 0).raw(),
+                    Instr::abx(Opcode::LoadString, 1, 0).raw(),
+                    Instr::abc(Opcode::GetIndex, 2, 0, 1).raw(),
+                    Instr::abc(Opcode::Return, 2, 1, 0).raw(),
+                ],
+                performance: Default::default(),
+                register_count: 3,
+                param_count: 0,
+                positional_param_count: 0,
+                param_names: Vec::new(),
+                capture_count: 0,
+            }],
+        },
     };
 
-    let options = LlvmBackendOptions {
-        run_optimizations: false,
-        ..LlvmBackendOptions::default()
-    };
-    let artifact = compile_function_to_llvm(&func, "to_iter", options).expect("LLVM backend should succeed");
-    let ir = artifact.module.ir;
-    assert!(
-        ir.contains("call i64 @lkr_rt_to_iter"),
-        "expected runtime to_iter helper call in IR:\n{}",
-        ir
-    );
+    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm artifact");
+
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
+    assert!(artifact.module.ir.contains("@lk_str_fmt"));
+    assert!(artifact.module.ir.contains("c\"<native fn abs(1 args)>\\00\""));
 }
+
+#[test]
+fn llvm_backend_lowers_simple_const_list_return_without_artifact_shell() {
+    let tokens = Tokenizer::tokenize("return [1, true, \"longer-than-short\"];").expect("tokens");
+    let program = StmtParser::new(&tokens).parse_program().expect("program");
+
+    let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
+
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
+    assert!(artifact.module.ir.contains("@lk_str_fmt"));
+    assert!(artifact.module.ir.contains("@lk_const_heap_list_0"));
+    assert!(artifact.module.ir.contains("c\"[1, true, longer-than-short]\\00\""));
+}
+
+#[test]
+fn llvm_backend_lowers_static_const_list_is_list_without_artifact_shell() {
+    let artifact = ModuleArtifact {
+        format: "lk.module".to_string(),
+        version: MODULE_ARTIFACT_VERSION,
+        imports: Vec::new(),
+        module: ModuleData {
+            entry: 0,
+            globals: Vec::new(),
+            functions: vec![FunctionData {
+                consts: ConstPoolData {
+                    ints: Vec::new(),
+                    floats: Vec::new(),
+                    strings: Vec::new(),
+                    heap_values: vec![ConstHeapValueData::List(vec![ConstRuntimeValueData::Int(1)])],
+                },
+                code: vec![
+                    Instr::abx(Opcode::LoadHeapConst, 0, 0).raw(),
+                    Instr::abc(Opcode::IsList, 1, 0, 0).raw(),
+                    Instr::abc(Opcode::Return, 1, 1, 0).raw(),
+                ],
+                performance: Default::default(),
+                register_count: 2,
+                param_count: 0,
+                positional_param_count: 0,
+                param_names: Vec::new(),
+                capture_count: 0,
+            }],
+        },
+    };
+
+    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm");
+
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
+    assert!(artifact.module.ir.contains("@lk_bool_true"));
+    assert!(artifact.module.ir.contains("i64 1"));
+}
+
+#[test]
+fn llvm_backend_lowers_static_string_is_list_like_vm_without_artifact_shell() {
+    let artifact = ModuleArtifact {
+        format: "lk.module".to_string(),
+        version: MODULE_ARTIFACT_VERSION,
+        imports: Vec::new(),
+        module: ModuleData {
+            entry: 0,
+            globals: Vec::new(),
+            functions: vec![FunctionData {
+                consts: ConstPoolData {
+                    ints: Vec::new(),
+                    floats: Vec::new(),
+                    strings: vec!["ab".to_string()],
+                    heap_values: Vec::new(),
+                },
+                code: vec![
+                    Instr::abx(Opcode::LoadString, 0, 0).raw(),
+                    Instr::abc(Opcode::IsList, 1, 0, 0).raw(),
+                    Instr::abc(Opcode::Return, 1, 1, 0).raw(),
+                ],
+                performance: Default::default(),
+                register_count: 2,
+                param_count: 0,
+                positional_param_count: 0,
+                param_names: Vec::new(),
+                capture_count: 0,
+            }],
+        },
+    };
+
+    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm");
+
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
+    assert!(artifact.module.ir.contains("@lk_bool_true"));
+    assert!(artifact.module.ir.contains("i64 1"));
+}
+
+#[test]
+fn llvm_backend_lowers_static_const_list_len_without_artifact_shell() {
+    let artifact = ModuleArtifact {
+        format: "lk.module".to_string(),
+        version: MODULE_ARTIFACT_VERSION,
+        imports: Vec::new(),
+        module: ModuleData {
+            entry: 0,
+            globals: Vec::new(),
+            functions: vec![FunctionData {
+                consts: ConstPoolData {
+                    ints: Vec::new(),
+                    floats: Vec::new(),
+                    strings: Vec::new(),
+                    heap_values: vec![ConstHeapValueData::List(vec![
+                        ConstRuntimeValueData::Int(1),
+                        ConstRuntimeValueData::Int(2),
+                    ])],
+                },
+                code: vec![
+                    Instr::abx(Opcode::LoadHeapConst, 0, 0).raw(),
+                    Instr::abc(Opcode::Len, 1, 0, 0).raw(),
+                    Instr::abc(Opcode::Return, 1, 1, 0).raw(),
+                ],
+                performance: Default::default(),
+                register_count: 2,
+                param_count: 0,
+                positional_param_count: 0,
+                param_names: Vec::new(),
+                capture_count: 0,
+            }],
+        },
+    };
+
+    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm");
+
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
+    assert!(artifact.module.ir.contains("@lk_i64_fmt"));
+    assert!(artifact.module.ir.contains("i64 2"));
+}
+
+#[test]
+fn llvm_backend_lowers_static_const_list_get_index_without_artifact_shell() {
+    let artifact = ModuleArtifact {
+        format: "lk.module".to_string(),
+        version: MODULE_ARTIFACT_VERSION,
+        imports: Vec::new(),
+        module: ModuleData {
+            entry: 0,
+            globals: Vec::new(),
+            functions: vec![FunctionData {
+                consts: ConstPoolData {
+                    ints: vec![1],
+                    floats: Vec::new(),
+                    strings: Vec::new(),
+                    heap_values: vec![ConstHeapValueData::List(vec![
+                        ConstRuntimeValueData::Int(10),
+                        ConstRuntimeValueData::Int(20),
+                    ])],
+                },
+                code: vec![
+                    Instr::abx(Opcode::LoadHeapConst, 0, 0).raw(),
+                    Instr::abx(Opcode::LoadInt, 1, 0).raw(),
+                    Instr::abc(Opcode::GetIndex, 2, 0, 1).raw(),
+                    Instr::abc(Opcode::Return, 2, 1, 0).raw(),
+                ],
+                performance: Default::default(),
+                register_count: 3,
+                param_count: 0,
+                positional_param_count: 0,
+                param_names: Vec::new(),
+                capture_count: 0,
+            }],
+        },
+    };
+
+    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm");
+
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
+    assert!(artifact.module.ir.contains("@lk_i64_fmt"));
+    assert!(artifact.module.ir.contains("i64 20"));
+}
+
+#[test]
+fn llvm_backend_lowers_source_const_list_get_index_without_artifact_shell() {
+    let tokens = Tokenizer::tokenize("return [10, 20].1;").expect("tokens");
+    let program = StmtParser::new(&tokens).parse_program().expect("program");
+
+    let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
+
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
+    assert!(artifact.module.ir.contains("@lk_i64_fmt"));
+    assert!(artifact.module.ir.contains("i64 20"));
+}
+
+#[test]
+fn llvm_backend_lowers_source_const_list_len_without_artifact_shell() {
+    let tokens = Tokenizer::tokenize("return [1, 2].len();").expect("tokens");
+    let program = StmtParser::new(&tokens).parse_program().expect("program");
+
+    let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
+
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
+    assert!(artifact.module.ir.contains("@lk_i64_fmt"));
+    assert!(artifact.module.ir.contains("i64 2"));
+}
+
+#[test]
+fn llvm_backend_lowers_static_const_map_is_map_without_artifact_shell() {
+    let artifact = ModuleArtifact {
+        format: "lk.module".to_string(),
+        version: MODULE_ARTIFACT_VERSION,
+        imports: Vec::new(),
+        module: ModuleData {
+            entry: 0,
+            globals: Vec::new(),
+            functions: vec![FunctionData {
+                consts: ConstPoolData {
+                    ints: Vec::new(),
+                    floats: Vec::new(),
+                    strings: Vec::new(),
+                    heap_values: vec![ConstHeapValueData::Map(vec![(
+                        RuntimeMapKeyData::String("a".to_string()),
+                        ConstRuntimeValueData::Int(1),
+                    )])],
+                },
+                code: vec![
+                    Instr::abx(Opcode::LoadHeapConst, 0, 0).raw(),
+                    Instr::abc(Opcode::IsMap, 1, 0, 0).raw(),
+                    Instr::abc(Opcode::Return, 1, 1, 0).raw(),
+                ],
+                performance: Default::default(),
+                register_count: 2,
+                param_count: 0,
+                positional_param_count: 0,
+                param_names: Vec::new(),
+                capture_count: 0,
+            }],
+        },
+    };
+
+    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm");
+
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
+    assert!(artifact.module.ir.contains("@lk_bool_true"));
+    assert!(artifact.module.ir.contains("i64 1"));
+}
+
+#[test]
+fn llvm_backend_lowers_static_const_map_len_without_artifact_shell() {
+    let artifact = ModuleArtifact {
+        format: "lk.module".to_string(),
+        version: MODULE_ARTIFACT_VERSION,
+        imports: Vec::new(),
+        module: ModuleData {
+            entry: 0,
+            globals: Vec::new(),
+            functions: vec![FunctionData {
+                consts: ConstPoolData {
+                    ints: Vec::new(),
+                    floats: Vec::new(),
+                    strings: Vec::new(),
+                    heap_values: vec![ConstHeapValueData::Map(vec![
+                        (
+                            RuntimeMapKeyData::ShortStr("a".to_string()),
+                            ConstRuntimeValueData::Int(1),
+                        ),
+                        (
+                            RuntimeMapKeyData::ShortStr("b".to_string()),
+                            ConstRuntimeValueData::Int(2),
+                        ),
+                    ])],
+                },
+                code: vec![
+                    Instr::abx(Opcode::LoadHeapConst, 0, 0).raw(),
+                    Instr::abc(Opcode::Len, 1, 0, 0).raw(),
+                    Instr::abc(Opcode::Return, 1, 1, 0).raw(),
+                ],
+                performance: Default::default(),
+                register_count: 2,
+                param_count: 0,
+                positional_param_count: 0,
+                param_names: Vec::new(),
+                capture_count: 0,
+            }],
+        },
+    };
+
+    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm");
+
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
+    assert!(artifact.module.ir.contains("@lk_i64_fmt"));
+    assert!(artifact.module.ir.contains("i64 2"));
+}
+
+#[test]
+fn llvm_backend_lowers_static_const_map_get_index_without_artifact_shell() {
+    let artifact = ModuleArtifact {
+        format: "lk.module".to_string(),
+        version: MODULE_ARTIFACT_VERSION,
+        imports: Vec::new(),
+        module: ModuleData {
+            entry: 0,
+            globals: Vec::new(),
+            functions: vec![FunctionData {
+                consts: ConstPoolData {
+                    ints: Vec::new(),
+                    floats: Vec::new(),
+                    strings: vec!["b".to_string()],
+                    heap_values: vec![ConstHeapValueData::Map(vec![
+                        (
+                            RuntimeMapKeyData::ShortStr("a".to_string()),
+                            ConstRuntimeValueData::Int(1),
+                        ),
+                        (
+                            RuntimeMapKeyData::ShortStr("b".to_string()),
+                            ConstRuntimeValueData::Int(2),
+                        ),
+                    ])],
+                },
+                code: vec![
+                    Instr::abx(Opcode::LoadHeapConst, 0, 0).raw(),
+                    Instr::abx(Opcode::LoadString, 1, 0).raw(),
+                    Instr::abc(Opcode::GetIndex, 2, 0, 1).raw(),
+                    Instr::abc(Opcode::Return, 2, 1, 0).raw(),
+                ],
+                performance: Default::default(),
+                register_count: 3,
+                param_count: 0,
+                positional_param_count: 0,
+                param_names: Vec::new(),
+                capture_count: 0,
+            }],
+        },
+    };
+
+    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm");
+
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
+    assert!(artifact.module.ir.contains("@lk_i64_fmt"));
+    assert!(artifact.module.ir.contains("i64 2"));
+}
+
+#[test]
+fn llvm_backend_lowers_static_const_map_rest_without_artifact_shell() {
+    let artifact = ModuleArtifact {
+        format: "lk.module".to_string(),
+        version: MODULE_ARTIFACT_VERSION,
+        imports: Vec::new(),
+        module: ModuleData {
+            entry: 0,
+            globals: Vec::new(),
+            functions: vec![FunctionData {
+                consts: ConstPoolData {
+                    ints: Vec::new(),
+                    floats: Vec::new(),
+                    strings: vec!["a".to_string()],
+                    heap_values: vec![ConstHeapValueData::Map(vec![
+                        (
+                            RuntimeMapKeyData::ShortStr("a".to_string()),
+                            ConstRuntimeValueData::Int(1),
+                        ),
+                        (
+                            RuntimeMapKeyData::ShortStr("b".to_string()),
+                            ConstRuntimeValueData::Int(2),
+                        ),
+                    ])],
+                },
+                code: vec![
+                    Instr::abx(Opcode::LoadHeapConst, 0, 0).raw(),
+                    Instr::abx(Opcode::LoadString, 1, 0).raw(),
+                    Instr::abc(Opcode::MapRest, 2, 0, 1).raw(),
+                    Instr::abc(Opcode::Return, 2, 1, 0).raw(),
+                ],
+                performance: Default::default(),
+                register_count: 3,
+                param_count: 0,
+                positional_param_count: 0,
+                param_names: Vec::new(),
+                capture_count: 0,
+            }],
+        },
+    };
+
+    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm");
+
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
+    assert!(artifact.module.ir.contains("@lk_str_fmt"));
+    assert!(artifact.module.ir.contains("@lk_map_rest_"));
+    assert!(artifact.module.ir.contains("c\"{b: 2}\\00\""));
+}
+
+#[test]
+fn llvm_backend_lowers_static_map_to_iter_without_artifact_shell() {
+    let artifact = ModuleArtifact {
+        format: "lk.module".to_string(),
+        version: MODULE_ARTIFACT_VERSION,
+        imports: Vec::new(),
+        module: ModuleData {
+            entry: 0,
+            globals: Vec::new(),
+            functions: vec![FunctionData {
+                consts: ConstPoolData {
+                    ints: Vec::new(),
+                    floats: Vec::new(),
+                    strings: Vec::new(),
+                    heap_values: vec![ConstHeapValueData::Map(vec![
+                        (
+                            RuntimeMapKeyData::ShortStr("a".to_string()),
+                            ConstRuntimeValueData::Int(1),
+                        ),
+                        (
+                            RuntimeMapKeyData::ShortStr("b".to_string()),
+                            ConstRuntimeValueData::Int(2),
+                        ),
+                    ])],
+                },
+                code: vec![
+                    Instr::abx(Opcode::LoadHeapConst, 0, 0).raw(),
+                    Instr::abc(Opcode::ToIter, 1, 0, 0).raw(),
+                    Instr::abc(Opcode::Return, 1, 1, 0).raw(),
+                ],
+                performance: Default::default(),
+                register_count: 2,
+                param_count: 0,
+                positional_param_count: 0,
+                param_names: Vec::new(),
+                capture_count: 0,
+            }],
+        },
+    };
+
+    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm");
+
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
+    assert!(artifact.module.ir.contains("@lk_str_fmt"));
+    assert!(artifact.module.ir.contains("@lk_to_iter_"));
+    assert!(artifact.module.ir.contains("c\"[[a, 1], [b, 2]]\\00\""));
+}
+
+#[test]
+fn llvm_backend_lowers_static_string_to_iter_without_artifact_shell() {
+    let tokens = Tokenizer::tokenize(r#"return "ab";"#).expect("tokens");
+    let program = StmtParser::new(&tokens).parse_program().expect("program");
+    let module = crate::vm::Compiler::compile_module(&program).expect("module");
+    let mut artifact = ModuleArtifact::new(Vec::new(), &module).expect("artifact");
+    artifact.module.functions[0]
+        .code
+        .insert(1, Instr::abc(Opcode::ToIter, 0, 0, 0).raw());
+
+    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm");
+
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
+    assert!(artifact.module.ir.contains("@lk_str_fmt"));
+    assert!(artifact.module.ir.contains("c\"[a, b]\\00\""));
+}
+
+#[test]
+fn llvm_backend_lowers_source_const_map_get_index_without_artifact_shell() {
+    let tokens = Tokenizer::tokenize(r#"return {"a": 1, "b": 2}.b;"#).expect("tokens");
+    let program = StmtParser::new(&tokens).parse_program().expect("program");
+
+    let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
+
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
+    assert!(artifact.module.ir.contains("@lk_i64_fmt"));
+    assert!(artifact.module.ir.contains("i64 2"));
+}
+
+#[test]
+fn llvm_backend_lowers_source_const_list_equality_without_artifact_shell() {
+    let tokens = Tokenizer::tokenize("return [[1, 2], [3, 4]] == [[1, 2], [3, 4]];").expect("tokens");
+    let program = StmtParser::new(&tokens).parse_program().expect("program");
+
+    let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
+
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
+    assert!(artifact.module.ir.contains("@lk_bool_true"));
+    assert!(artifact.module.ir.contains("i64 1"));
+}
+
+#[test]
+fn llvm_backend_lowers_source_const_map_inequality_without_artifact_shell() {
+    let tokens =
+        Tokenizer::tokenize(r#"return {"user": {"name": "Alice"}} != {"user": {"name": "Bob"}};"#).expect("tokens");
+    let program = StmtParser::new(&tokens).parse_program().expect("program");
+
+    let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
+
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
+    assert!(artifact.module.ir.contains("@lk_bool_true"));
+    assert!(artifact.module.ir.contains("i64 1"));
+}
+
+#[test]
+fn llvm_backend_lowers_static_const_contains_without_artifact_shell() {
+    let artifact = ModuleArtifact {
+        format: "lk.module".to_string(),
+        version: MODULE_ARTIFACT_VERSION,
+        imports: Vec::new(),
+        module: ModuleData {
+            entry: 0,
+            globals: Vec::new(),
+            functions: vec![FunctionData {
+                consts: ConstPoolData {
+                    ints: vec![2],
+                    floats: Vec::new(),
+                    strings: Vec::new(),
+                    heap_values: vec![ConstHeapValueData::List(vec![
+                        ConstRuntimeValueData::Int(1),
+                        ConstRuntimeValueData::Int(2),
+                    ])],
+                },
+                code: vec![
+                    Instr::abx(Opcode::LoadInt, 0, 0).raw(),
+                    Instr::abx(Opcode::LoadHeapConst, 1, 0).raw(),
+                    Instr::abc(Opcode::Contains, 2, 0, 1).raw(),
+                    Instr::abc(Opcode::Return, 2, 1, 0).raw(),
+                ],
+                performance: Default::default(),
+                register_count: 3,
+                param_count: 0,
+                positional_param_count: 0,
+                param_names: Vec::new(),
+                capture_count: 0,
+            }],
+        },
+    };
+
+    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm");
+
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
+    assert!(artifact.module.ir.contains("@lk_bool_true"));
+    assert!(artifact.module.ir.contains("i64 1"));
+}
+
+#[test]
+fn llvm_backend_lowers_source_const_contains_without_artifact_shell() {
+    let tokens = Tokenizer::tokenize("return 2 in [1, 2];").expect("tokens");
+    let program = StmtParser::new(&tokens).parse_program().expect("program");
+
+    let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
+
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
+    assert!(artifact.module.ir.contains("@lk_bool_true"));
+    assert!(artifact.module.ir.contains("i64 1"));
+}
+
+#[test]
+fn llvm_backend_lowers_source_static_string_contains_without_artifact_shell() {
+    let tokens = Tokenizer::tokenize(r#"return "bc" in "abcd";"#).expect("tokens");
+    let program = StmtParser::new(&tokens).parse_program().expect("program");
+
+    let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
+
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
+    assert!(artifact.module.ir.contains("@lk_bool_true"));
+    assert!(artifact.module.ir.contains("i64 1"));
+}
+
+#[test]
+fn llvm_backend_lowers_source_const_map_contains_without_artifact_shell() {
+    let tokens = Tokenizer::tokenize(r#"return "b" in {"a": 1, "b": 2};"#).expect("tokens");
+    let program = StmtParser::new(&tokens).parse_program().expect("program");
+
+    let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
+
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
+    assert!(artifact.module.ir.contains("@lk_bool_true"));
+    assert!(artifact.module.ir.contains("i64 1"));
+}
+
+#[test]
+fn llvm_backend_lowers_static_string_slice_from_without_artifact_shell() {
+    let artifact = ModuleArtifact {
+        format: "lk.module".to_string(),
+        version: MODULE_ARTIFACT_VERSION,
+        imports: Vec::new(),
+        module: ModuleData {
+            entry: 0,
+            globals: Vec::new(),
+            functions: vec![FunctionData {
+                consts: ConstPoolData {
+                    ints: vec![2],
+                    floats: Vec::new(),
+                    strings: Vec::new(),
+                    heap_values: vec![ConstHeapValueData::LongString("hello".to_string())],
+                },
+                code: vec![
+                    Instr::abx(Opcode::LoadHeapConst, 0, 0).raw(),
+                    Instr::abx(Opcode::LoadInt, 1, 0).raw(),
+                    Instr::abc(Opcode::SliceFrom, 2, 0, 1).raw(),
+                    Instr::abc(Opcode::Return, 2, 1, 0).raw(),
+                ],
+                performance: Default::default(),
+                register_count: 3,
+                param_count: 0,
+                positional_param_count: 0,
+                param_names: Vec::new(),
+                capture_count: 0,
+            }],
+        },
+    };
+
+    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm");
+
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
+    assert!(artifact.module.ir.contains("@lk_str_fmt"));
+    assert!(artifact.module.ir.contains("c\"llo\\00\""));
+}
+
+#[test]
+fn llvm_backend_lowers_static_new_list_without_artifact_shell() {
+    let artifact = ModuleArtifact {
+        format: "lk.module".to_string(),
+        version: MODULE_ARTIFACT_VERSION,
+        imports: Vec::new(),
+        module: ModuleData {
+            entry: 0,
+            globals: Vec::new(),
+            functions: vec![FunctionData {
+                consts: ConstPoolData {
+                    ints: vec![1],
+                    floats: Vec::new(),
+                    strings: vec!["ok".to_string()],
+                    heap_values: Vec::new(),
+                },
+                code: vec![
+                    Instr::abx(Opcode::LoadInt, 0, 0).raw(),
+                    Instr::abx(Opcode::LoadString, 1, 0).raw(),
+                    Instr::abc(Opcode::LoadBool, 2, 1, 0).raw(),
+                    Instr::abc(Opcode::NewList, 3, 0, 3).raw(),
+                    Instr::abc(Opcode::Return, 3, 1, 0).raw(),
+                ],
+                performance: Default::default(),
+                register_count: 4,
+                param_count: 0,
+                positional_param_count: 0,
+                param_names: Vec::new(),
+                capture_count: 0,
+            }],
+        },
+    };
+
+    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm");
+
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
+    assert!(artifact.module.ir.contains("@lk_str_fmt"));
+    assert!(artifact.module.ir.contains("c\"[1, ok, true]\\00\""));
+}
+
+#[test]
+fn llvm_backend_lowers_static_new_range_without_artifact_shell() {
+    let tokens = Tokenizer::tokenize("return 5..=1..0 - 2;").expect("tokens");
+    let program = StmtParser::new(&tokens).parse_program().expect("program");
+
+    let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
+
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
+    assert!(artifact.module.ir.contains("@lk_str_fmt"));
+    assert!(artifact.module.ir.contains("@lk_new_range_"));
+    assert!(artifact.module.ir.contains("c\"[5, 3, 1]\\00\""));
+}
+
+#[test]
+fn llvm_backend_lowers_direct_function_call_static_list_slice_from_without_shell() {
+    let artifact = ModuleArtifact {
+        format: "lk.module".to_string(),
+        version: MODULE_ARTIFACT_VERSION,
+        imports: Vec::new(),
+        module: ModuleData {
+            entry: 0,
+            globals: Vec::new(),
+            functions: vec![
+                FunctionData {
+                    consts: ConstPoolData {
+                        ints: Vec::new(),
+                        floats: Vec::new(),
+                        strings: Vec::new(),
+                        heap_values: vec![ConstHeapValueData::List(vec![
+                            ConstRuntimeValueData::Int(1),
+                            ConstRuntimeValueData::Int(2),
+                            ConstRuntimeValueData::Int(3),
+                        ])],
+                    },
+                    code: vec![
+                        Instr::abx(Opcode::LoadFunction, 0, 1).raw(),
+                        Instr::abx(Opcode::LoadHeapConst, 1, 0).raw(),
+                        Instr::abc(Opcode::Call, 0, 0, 1).raw(),
+                        Instr::abc(Opcode::Return, 0, 1, 0).raw(),
+                    ],
+                    performance: Default::default(),
+                    register_count: 2,
+                    param_count: 0,
+                    positional_param_count: 0,
+                    param_names: Vec::new(),
+                    capture_count: 0,
+                },
+                FunctionData {
+                    consts: ConstPoolData {
+                        ints: vec![1],
+                        floats: Vec::new(),
+                        strings: Vec::new(),
+                        heap_values: Vec::new(),
+                    },
+                    code: vec![
+                        Instr::abx(Opcode::LoadInt, 1, 0).raw(),
+                        Instr::abc(Opcode::SliceFrom, 2, 0, 1).raw(),
+                        Instr::abc(Opcode::Return, 2, 1, 0).raw(),
+                    ],
+                    performance: Default::default(),
+                    register_count: 3,
+                    param_count: 1,
+                    positional_param_count: 1,
+                    param_names: vec!["xs".to_string()],
+                    capture_count: 0,
+                },
+            ],
+        },
+    };
+
+    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm");
+
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
+    assert!(artifact.module.ir.contains("@lk_str_fmt"));
+    assert!(artifact.module.ir.contains("c\"[2, 3]\\00\""));
+}
+
+#[test]
+fn llvm_backend_lowers_direct_function_call_static_new_list_without_shell() {
+    let artifact = ModuleArtifact {
+        format: "lk.module".to_string(),
+        version: MODULE_ARTIFACT_VERSION,
+        imports: Vec::new(),
+        module: ModuleData {
+            entry: 0,
+            globals: Vec::new(),
+            functions: vec![
+                FunctionData {
+                    consts: ConstPoolData {
+                        ints: vec![1],
+                        floats: Vec::new(),
+                        strings: Vec::new(),
+                        heap_values: Vec::new(),
+                    },
+                    code: vec![
+                        Instr::abx(Opcode::LoadFunction, 0, 1).raw(),
+                        Instr::abx(Opcode::LoadInt, 1, 0).raw(),
+                        Instr::abc(Opcode::Call, 0, 0, 1).raw(),
+                        Instr::abc(Opcode::Return, 0, 1, 0).raw(),
+                    ],
+                    performance: Default::default(),
+                    register_count: 2,
+                    param_count: 0,
+                    positional_param_count: 0,
+                    param_names: Vec::new(),
+                    capture_count: 0,
+                },
+                FunctionData {
+                    consts: ConstPoolData {
+                        ints: vec![2],
+                        floats: Vec::new(),
+                        strings: Vec::new(),
+                        heap_values: Vec::new(),
+                    },
+                    code: vec![
+                        Instr::abx(Opcode::LoadInt, 1, 0).raw(),
+                        Instr::abc(Opcode::NewList, 2, 0, 2).raw(),
+                        Instr::abc(Opcode::Return, 2, 1, 0).raw(),
+                    ],
+                    performance: Default::default(),
+                    register_count: 3,
+                    param_count: 1,
+                    positional_param_count: 1,
+                    param_names: vec!["x".to_string()],
+                    capture_count: 0,
+                },
+            ],
+        },
+    };
+
+    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm");
+
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
+    assert!(artifact.module.ir.contains("@lk_str_fmt"));
+    assert!(artifact.module.ir.contains("c\"[1, 2]\\00\""));
+}
+
+#[test]
+fn llvm_backend_lowers_static_try_success_path_without_artifact_shell() {
+    let artifact = ModuleArtifact {
+        format: "lk.module".to_string(),
+        version: MODULE_ARTIFACT_VERSION,
+        imports: Vec::new(),
+        module: ModuleData {
+            entry: 0,
+            globals: Vec::new(),
+            functions: vec![FunctionData {
+                consts: ConstPoolData {
+                    ints: vec![42],
+                    floats: Vec::new(),
+                    strings: Vec::new(),
+                    heap_values: Vec::new(),
+                },
+                code: vec![
+                    Instr::as_bx(Opcode::TryBegin, 0, 3).raw(),
+                    Instr::abx(Opcode::LoadInt, 1, 0).raw(),
+                    Instr::ax(Opcode::TryEnd, 0).raw(),
+                    Instr::abc(Opcode::Return, 1, 1, 0).raw(),
+                ],
+                performance: Default::default(),
+                register_count: 2,
+                param_count: 0,
+                positional_param_count: 0,
+                param_names: Vec::new(),
+                capture_count: 0,
+            }],
+        },
+    };
+
+    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm");
+
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
+    assert!(artifact.module.ir.contains("@lk_i64_fmt"));
+    assert!(artifact.module.ir.contains("i64 42"));
+}
+
+#[test]
+fn llvm_backend_lowers_static_raise_handler_path_without_artifact_shell() {
+    let artifact = ModuleArtifact {
+        format: "lk.module".to_string(),
+        version: MODULE_ARTIFACT_VERSION,
+        imports: Vec::new(),
+        module: ModuleData {
+            entry: 0,
+            globals: Vec::new(),
+            functions: vec![FunctionData {
+                consts: ConstPoolData {
+                    ints: Vec::new(),
+                    floats: Vec::new(),
+                    strings: vec!["boom".to_string()],
+                    heap_values: Vec::new(),
+                },
+                code: vec![
+                    Instr::as_bx(Opcode::TryBegin, 0, 1).raw(),
+                    Instr::abx(Opcode::Raise, 0, 0).raw(),
+                    Instr::abc(Opcode::Return, 0, 1, 0).raw(),
+                ],
+                performance: Default::default(),
+                register_count: 1,
+                param_count: 0,
+                positional_param_count: 0,
+                param_names: Vec::new(),
+                capture_count: 0,
+            }],
+        },
+    };
+
+    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm");
+
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
+    assert!(artifact.module.ir.contains("@lk_str_fmt"));
+    assert!(artifact.module.ir.contains("c\"<value>\\00\""));
+}
+
+mod basic;
+mod direct_calls;
+mod modules;
+mod objects;
+mod strings;

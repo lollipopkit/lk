@@ -1,6 +1,6 @@
 use super::*;
 
-impl LkrAnalyzer {
+impl LkAnalyzer {
     /// Scan function blocks in source order: name, name span, body token range, and param spans.
     pub(crate) fn scan_function_blocks(tokens: &[token::Token], spans: &[Span]) -> Vec<FnBlockInfo> {
         use token::Token as T;
@@ -299,25 +299,25 @@ impl LkrAnalyzer {
         groups
     }
 
-    /// Collect import symbols via token scanning and produce per-import DocumentSymbols.
+    /// Collect use symbols via token scanning and produce per-use DocumentSymbols.
     pub(crate) fn collect_import_symbols_via_tokens(tokens: &[token::Token], spans: &[Span]) -> Vec<DocumentSymbol> {
         use token::Token as T;
         use tower_lsp::lsp_types::{DocumentSymbol, Position, Range, SymbolKind};
         let mut out: Vec<DocumentSymbol> = Vec::new();
         let mut i = 0usize;
         while i < tokens.len() {
-            if !matches!(tokens[i], T::Import) {
+            if !matches!(tokens[i], T::Use) {
                 i += 1;
                 continue;
             }
             let start_idx = i;
             let mut j = i + 1;
-            let mut label = String::from("import");
+            let mut label = String::from("use");
             // Derive a short label based on common forms
             if let Some(tok) = tokens.get(j) {
                 match tok {
                     T::Str(s) => {
-                        label = format!("import \"{}\"", s);
+                        label = format!("use \"{}\"", s);
                         j += 1;
                     }
                     T::LBrace => {
@@ -328,21 +328,21 @@ impl LkrAnalyzer {
                         }
                         if j + 1 < tokens.len() {
                             if let T::Id(m) = &tokens[j + 1] {
-                                label = format!("import {{…}} from {}", m);
+                                label = format!("use {{…}} from {}", m);
                             } else {
-                                label = "import {…}".to_string();
+                                label = "use {…}".to_string();
                             }
                         }
                     }
                     T::Id(m) => {
                         // maybe alias form later
-                        label = format!("import {}", m);
+                        label = format!("use {}", m);
                         // peek for 'as <alias>'
                         let mut k = j + 1;
                         if matches!(tokens.get(k), Some(T::As)) {
                             k += 1;
                             if let Some(T::Id(a)) = tokens.get(k) {
-                                label = format!("import {} as {}", m, a);
+                                label = format!("use {} as {}", m, a);
                             }
                         }
                     }
@@ -361,7 +361,7 @@ impl LkrAnalyzer {
                 );
                 out.push(DocumentSymbol {
                     name: label,
-                    detail: Some("Import statement".to_string()),
+                    detail: Some("Use statement".to_string()),
                     kind: SymbolKind::MODULE,
                     tags: None,
                     #[allow(deprecated)]
@@ -603,15 +603,7 @@ impl LkrAnalyzer {
 
     /// List exports for a given stdlib module name
     pub fn list_module_exports(&self, module: &str) -> Option<Vec<String>> {
-        match self.registry.get_module(module) {
-            Ok(m) => {
-                let exports = m.exports();
-                let mut keys: Vec<String> = exports.keys().cloned().collect();
-                keys.sort();
-                Some(keys)
-            }
-            Err(_) => None,
-        }
+        self.module_export_names(module)
     }
 
     /// Collect imported module aliases from the given content.
@@ -644,28 +636,28 @@ impl LkrAnalyzer {
             if let Stmt::Import(import_stmt) = stmt.as_ref() {
                 match import_stmt {
                     ImportStmt::Module { module } => {
-                        // import math; -> alias is module name
+                        // use math; -> alias is module name
                         map.insert(module.clone(), module.clone());
                     }
                     ImportStmt::ModuleAlias { module, alias } => {
-                        // import math as m; -> alias maps to module
+                        // use math as m; -> alias maps to module
                         map.insert(alias.clone(), module.clone());
                     }
                     ImportStmt::Namespace { alias, source } => {
                         if let stmt::ImportSource::Module(name) = source {
-                            // import * as m from math; -> alias maps to module
+                            // use * as m from math; -> alias maps to module
                             map.insert(alias.clone(), name.clone());
                         }
                     }
                     ImportStmt::Items { source, .. } => {
-                        // import { sqrt } from math; -> does not create a module alias
+                        // use { sqrt } from math; -> does not create a module alias
                         // We could track individual items in the future
                         if let stmt::ImportSource::Module(_name) = source {
                             // no alias to insert
                         }
                     }
                     ImportStmt::File { .. } => {
-                        // File imports are not stdlib modules; ignore here
+                        // File uses are not stdlib modules; ignore here
                     }
                 }
             }
@@ -864,7 +856,7 @@ impl LkrAnalyzer {
                         range,
                         Some(DiagnosticSeverity::ERROR),
                         None,
-                        Some("lkr".to_string()),
+                        Some("lk".to_string()),
                         format!("Tokenization error: {}", parse_err.message),
                         None,
                         None,
@@ -908,7 +900,7 @@ impl LkrAnalyzer {
                                         range,
                                         Some(DiagnosticSeverity::ERROR),
                                         None,
-                                        Some("lkr".to_string()),
+                                        Some("lk".to_string()),
                                         ee.message.clone(),
                                         None,
                                         None,
@@ -938,7 +930,7 @@ impl LkrAnalyzer {
                                         range,
                                         Some(DiagnosticSeverity::ERROR),
                                         None,
-                                        Some("lkr".to_string()),
+                                        Some("lk".to_string()),
                                         stmt_err.message.clone(),
                                         None,
                                         None,
@@ -991,7 +983,7 @@ impl LkrAnalyzer {
                         range,
                         Some(DiagnosticSeverity::ERROR),
                         None,
-                        Some("lkr".to_string()),
+                        Some("lk".to_string()),
                         format!("Tokenization error: {}", parse_err.message),
                         None,
                         None,
@@ -1030,7 +1022,7 @@ impl LkrAnalyzer {
                                         range,
                                         Some(DiagnosticSeverity::ERROR),
                                         None,
-                                        Some("lkr".to_string()),
+                                        Some("lk".to_string()),
                                         ee.message.clone(),
                                         None,
                                         None,
@@ -1054,7 +1046,7 @@ impl LkrAnalyzer {
                                     range,
                                     Some(DiagnosticSeverity::ERROR),
                                     None,
-                                    Some("lkr".to_string()),
+                                    Some("lk".to_string()),
                                     parse_err.message.clone(),
                                     None,
                                     None,
@@ -1087,12 +1079,12 @@ impl LkrAnalyzer {
                     range,
                     Some(DiagnosticSeverity::ERROR),
                     None,
-                    Some("lkr".to_string()),
+                    Some("lk".to_string()),
                     err.to_string(),
                     None,
                     None,
                 );
-                diagnostic.code = Some(NumberOrString::String("lkr_type_error".to_string()));
+                diagnostic.code = Some(NumberOrString::String("lk_type_error".to_string()));
                 vec![diagnostic]
             }
         }
@@ -1123,24 +1115,24 @@ impl LkrAnalyzer {
             Expr::Var(name) => {
                 Self::find_token_range(tokens, spans, |tok| matches!(tok, token::Token::Id(id) if id == name))
             }
-            Expr::Val(val) => match val {
-                val::Val::Str(s) => Self::find_token_range(
+            Expr::Literal(val) => match val {
+                value if value.as_str().is_some() => Self::find_token_range(
                     tokens,
                     spans,
-                    |tok| matches!(tok, token::Token::Str(lit) if lit == s.as_ref()),
+                    |tok| matches!(tok, token::Token::Str(lit) if Some(lit.as_str()) == value.as_str()),
                 ),
-                val::Val::Int(i) => {
+                val::LiteralVal::Int(i) => {
                     Self::find_token_range(tokens, spans, |tok| matches!(tok, token::Token::Int(n) if n == i))
                 }
-                val::Val::Float(f) => Self::find_token_range(
+                val::LiteralVal::Float(f) => Self::find_token_range(
                     tokens,
                     spans,
                     |tok| matches!(tok, token::Token::Float(n) if (*n - *f).abs() < f64::EPSILON),
                 ),
-                val::Val::Bool(b) => {
+                val::LiteralVal::Bool(b) => {
                     Self::find_token_range(tokens, spans, |tok| matches!(tok, token::Token::Bool(n) if n == b))
                 }
-                val::Val::Nil => Self::find_token_range(tokens, spans, |tok| matches!(tok, token::Token::Nil)),
+                val::LiteralVal::Nil => Self::find_token_range(tokens, spans, |tok| matches!(tok, token::Token::Nil)),
                 _ => None,
             },
             Expr::Paren(inner) => Self::range_for_expr(inner, tokens, spans),
@@ -1182,34 +1174,6 @@ impl LkrAnalyzer {
             }
         }
         Range::new(Position::new(0, 0), Position::new(0, 0))
-    }
-
-    pub(crate) fn analyze_statements(&self, statements: &[Box<Stmt>], result: &mut AnalysisResult) {
-        for (i, stmt) in statements.iter().enumerate() {
-            match stmt.as_ref() {
-                Stmt::Let { pattern, .. } => {
-                    // Extract variable names from pattern and create symbols for each
-                    if let Some(variables) = extract_variables_from_pattern(pattern) {
-                        for var_name in variables {
-                            result.symbols.push(DocumentSymbol {
-                                name: var_name.clone(),
-                                detail: Some("Variable declaration".to_string()),
-                                kind: SymbolKind::VARIABLE,
-                                tags: None,
-                                #[allow(deprecated)]
-                                deprecated: None,
-                                range: Range::new(Position::new(i as u32, 0), Position::new(i as u32, 100)),
-                                selection_range: Range::new(Position::new(i as u32, 0), Position::new(i as u32, 100)),
-                                children: None,
-                            });
-                        }
-                    }
-                }
-                Stmt::Function { .. } => {}
-                Stmt::Import(_import_stmt) => { /* imports are grouped via token scan later */ }
-                _ => {}
-            }
-        }
     }
 
     pub(crate) fn dedup_diagnostics(&self, diagnostics: &mut Vec<Diagnostic>) {

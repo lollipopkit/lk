@@ -1,0 +1,52 @@
+// Practical JSON data processing demo
+
+use json;
+
+// Simulate receiving a JSON payload (single-line string)
+let payload = "{ \"users\": [{ \"id\": 1, \"name\": \"Alice\", \"scores\": [95, 87, 92] }, { \"id\": 2, \"name\": \"Bob\", \"scores\": [78, 85, 90] }, { \"id\": 3, \"name\": \"Carol\", \"scores\": [100, 95, 98] }]}";
+
+// Parse the JSON
+let data = json.parse(payload);
+assert(data.users.len() == 3);
+
+// 1. Find all user names
+let names = data.users.map(|u| u.name);
+assert(names == ["Alice", "Bob", "Carol"]);
+
+// 2. Compute average score per user
+fn avg_score(user) {
+  return user.scores.reduce(0, |a, b| a + b) / user.scores.len();
+}
+let averages = data.users.map(|u| avg_score(u));
+assert(averages[0] > 90);
+assert(averages[2] >= 97);
+
+// 3. Filter users with average > 90
+let top_users = data.users.filter(|u| avg_score(u) > 90).map(|u| u.name);
+assert(top_users == ["Alice", "Carol"]);
+
+// 4. Find the highest single score across all users
+fn my_max(a, b) {
+  if (a > b) { return a; }
+  return b;
+}
+fn max_score(users) {
+  let all_scores = [];
+  for u in users {
+    for s in u.scores {
+      all_scores.push(s);
+    }
+  }
+  return all_scores.reduce(0, |a, b| my_max(a, b));
+}
+assert(max_score(data.users) == 100);
+
+// 5. Compute total scores per user as pairs
+fn user_total(u) {
+  return u.scores.reduce(0, |a, b| a + b);
+}
+let summaries = data.users.map(|u| [u.name, user_total(u)]);
+assert(summaries[0] == ["Alice", 274]);
+assert(summaries[1] == ["Bob", 253]);
+
+println("json_process: all assertions passed");

@@ -1,7 +1,13 @@
-use crate::val::Val;
+use crate::util::fast_map::fast_hash_map_new;
+use crate::{
+    val::{CallableValue, HeapStore, HeapValue, RuntimeVal, TypedMap},
+    vm::{ContextNativeFunction, Module, NativeFunction, PlainNativeFunction, RuntimeExport, RuntimeModuleState},
+};
 use anyhow::{Result, anyhow};
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
 /// Central module registry inspired by Lua's linit.c
 ///
@@ -9,15 +15,21 @@ use std::sync::{Arc, Mutex};
 /// a Lua-like module loading system with feature-based compilation.
 #[derive(Debug)]
 pub struct ModuleRegistry {
-    modules: HashMap<String, Box<dyn Module>>,
-    builtin_functions: HashMap<String, Val>,
-    cache: Mutex<HashMap<String, Val>>,
+    modules: HashMap<String, Box<dyn ModuleProvider>>,
+    runtime_builtin_functions: HashMap<Arc<str>, RuntimeExport>,
 }
 
 impl PartialEq for ModuleRegistry {
     fn eq(&self, other: &Self) -> bool {
-        // Compare only the builtin functions, ignoring modules and cache
-        self.builtin_functions == other.builtin_functions
+        // RuntimeExport carries shared state and is not value-comparable.
+        // Resolver equality only needs stable registry shape for cache/debug use.
+        self.modules.len() == other.modules.len()
+            && self.modules.keys().all(|name| other.modules.contains_key(name))
+            && self.runtime_builtin_functions.len() == other.runtime_builtin_functions.len()
+            && self
+                .runtime_builtin_functions
+                .keys()
+                .all(|name| other.runtime_builtin_functions.contains_key(name))
     }
 }
 
@@ -26,8 +38,7 @@ impl ModuleRegistry {
     pub fn new() -> Self {
         let mut registry = Self {
             modules: HashMap::new(),
-            builtin_functions: HashMap::new(),
-            cache: Mutex::new(HashMap::new()),
+            runtime_builtin_functions: HashMap::new(),
         };
 
         registry.register_core_modules();
@@ -43,7 +54,7 @@ impl ModuleRegistry {
     }
 
     /// Register a module with the registry
-    pub fn register_module(&mut self, name: &str, module: Box<dyn Module>) -> Result<()> {
+    pub fn register_module(&mut self, name: &str, module: Box<dyn ModuleProvider>) -> Result<()> {
         if module.enabled() {
             module.register(self)?;
         }
@@ -53,11 +64,16 @@ impl ModuleRegistry {
     }
 
     /// Get a module by name
-    pub fn get_module(&self, name: &str) -> Result<&dyn Module> {
+    pub fn get_module(&self, name: &str) -> Result<&dyn ModuleProvider> {
         self.modules
             .get(name)
             .map(|boxed| boxed.as_ref())
             .ok_or_else(|| anyhow!("Module '{}' not found", name))
+    }
+
+    /// Resolve a registered module as a VM runtime export.
+    pub fn get_runtime_module(&self, name: &str) -> Result<RuntimeExport> {
+        self.get_module(name)?.runtime_exports()
     }
 
     /// Get all registered module names
@@ -65,35 +81,18 @@ impl ModuleRegistry {
         self.modules.keys().cloned().collect()
     }
 
-    /// Register a builtin function globally
-    pub fn register_builtin(&mut self, name: &str, func: Val) {
-        self.builtin_functions.insert(name.to_string(), func);
+    /// Register a VM-native builtin globally.
+    pub fn register_runtime_builtin(&mut self, name: &str, function: NativeFunction, arity: u16) {
+        let value = runtime_export_from_runtime_native(name, function.clone(), arity);
+        self.runtime_builtin_functions.insert(Arc::<str>::from(name), value);
     }
 
-    /// Get a builtin function by name
-    pub fn get_builtin(&self, name: &str) -> Option<&Val> {
-        self.builtin_functions.get(name)
+    pub fn get_runtime_builtin(&self, name: &str) -> Option<&RuntimeExport> {
+        self.runtime_builtin_functions.get(name)
     }
 
-    /// Get all builtin functions
-    pub fn get_all_builtins(&self) -> &HashMap<String, Val> {
-        &self.builtin_functions
-    }
-
-    /// Cache a module value for performance
-    pub fn cache_module(&self, name: &str, value: Val) {
-        if let Ok(mut cache) = self.cache.lock() {
-            cache.insert(name.to_string(), value);
-        }
-    }
-
-    /// Get cached module value
-    pub fn get_cached_module(&self, name: &str) -> Option<Val> {
-        if let Ok(cache) = self.cache.lock() {
-            cache.get(name).cloned()
-        } else {
-            None
-        }
+    pub fn get_all_runtime_builtins(&self) -> &HashMap<Arc<str>, RuntimeExport> {
+        &self.runtime_builtin_functions
     }
 }
 
@@ -107,7 +106,7 @@ impl Default for ModuleRegistry {
 ///
 /// Each module implements this trait to provide its functionality
 /// in a standardized way, similar to how Lua's standard libraries work.
-pub trait Module: Send + Sync + std::fmt::Debug {
+pub trait ModuleProvider: Send + Sync + std::fmt::Debug {
     /// Get the module name
     fn name(&self) -> &str;
 
@@ -129,8 +128,8 @@ pub trait Module: Send + Sync + std::fmt::Debug {
     /// Register the module's exports with the registry
     fn register(&self, registry: &mut ModuleRegistry) -> Result<()>;
 
-    /// Get all exports from this module
-    fn exports(&self) -> HashMap<String, Val>;
+    /// Get exports in the canonical VM runtime representation.
+    fn runtime_exports(&self) -> Result<RuntimeExport>;
 
     /// Initialize the module (called once when loaded)
     fn init(&self) -> Result<()> {
@@ -153,104 +152,76 @@ pub trait Module: Send + Sync + std::fmt::Debug {
     }
 }
 
-/// Enhanced import context with Lua-like module loading
-///
-/// Provides a Lua-like `require` function for loading modules
-/// with caching and search path support.
-#[derive(Debug, Clone)]
-pub struct ImportContext {
-    registry: Arc<ModuleRegistry>,
-    loaded_modules: HashMap<String, Val>,
-    search_paths: Vec<String>,
+#[derive(Clone)]
+pub struct RuntimeNativeExport {
+    pub name: &'static str,
+    pub function: NativeFunction,
+    pub arity: u16,
 }
 
-impl ImportContext {
-    /// Create a new import context
-    pub fn new(registry: Arc<ModuleRegistry>) -> Self {
+impl RuntimeNativeExport {
+    pub const fn plain(name: &'static str, function: PlainNativeFunction, arity: u16) -> Self {
         Self {
-            registry,
-            loaded_modules: HashMap::new(),
-            search_paths: vec!["./modules".to_string(), "./lib".to_string(), ".".to_string()],
+            name,
+            function: NativeFunction::Plain(function),
+            arity,
         }
     }
 
-    /// Lua-like require function for loading modules
-    pub fn require(&mut self, module_name: &str) -> Result<Val> {
-        // Check cache first
-        if let Some(module) = self.loaded_modules.get(module_name) {
-            return Ok(module.clone());
+    pub const fn full_state(name: &'static str, function: ContextNativeFunction, arity: u16) -> Self {
+        Self {
+            name,
+            function: NativeFunction::FullState(function),
+            arity,
         }
-
-        // Check registry cache
-        if let Some(cached) = self.registry.get_cached_module(module_name) {
-            self.loaded_modules.insert(module_name.to_string(), cached.clone());
-            return Ok(cached);
-        }
-
-        // Load the module
-        let module = self.load_module(module_name)?;
-
-        // Cache the module
-        self.loaded_modules.insert(module_name.to_string(), module.clone());
-        self.registry.cache_module(module_name, module.clone());
-
-        Ok(module)
-    }
-
-    /// Load a module by name
-    fn load_module(&self, module_name: &str) -> Result<Val> {
-        let module_def = self.registry.get_module(module_name)?;
-
-        // Initialize the module
-        module_def.init()?;
-
-        // Get module exports as a map
-        let exports = module_def.exports();
-        let module_value = Val::from(exports);
-
-        Ok(module_value)
-    }
-
-    /// Add a search path for module resolution
-    pub fn add_search_path(&mut self, path: String) {
-        self.search_paths.push(path);
-    }
-
-    /// Get all loaded modules
-    pub fn get_loaded_modules(&self) -> &HashMap<String, Val> {
-        &self.loaded_modules
-    }
-
-    /// Check if a module is loaded
-    pub fn is_module_loaded(&self, module_name: &str) -> bool {
-        self.loaded_modules.contains_key(module_name)
-    }
-
-    /// Unload a module
-    pub fn unload_module(&mut self, module_name: &str) -> Result<()> {
-        if self.loaded_modules.remove(module_name).is_some() {
-            // Note: In a real implementation, we might want to call cleanup
-            // on the module here, but for now we just remove it from cache
-        }
-        Ok(())
-    }
-
-    /// Get module metadata
-    pub fn get_module_metadata(&self, module_name: &str) -> Result<HashMap<String, String>> {
-        let module = self.registry.get_module(module_name)?;
-        Ok(module.metadata())
-    }
-
-    /// List all available modules
-    pub fn list_modules(&self) -> Vec<String> {
-        self.registry.get_module_names()
     }
 }
 
-impl Default for ImportContext {
-    fn default() -> Self {
-        Self::new(Arc::new(ModuleRegistry::new()))
+#[derive(Clone)]
+pub struct RuntimeValueExport {
+    pub name: &'static str,
+    pub value: RuntimeVal,
+}
+
+impl RuntimeValueExport {
+    pub const fn new(name: &'static str, value: RuntimeVal) -> Self {
+        Self { name, value }
     }
+}
+
+pub fn runtime_export_from_plain_native_entries(
+    natives: &[RuntimeNativeExport],
+    values: &[RuntimeValueExport],
+) -> RuntimeExport {
+    let mut heap = HeapStore::new();
+    let mut entries = fast_hash_map_new();
+    for native in natives {
+        let value = RuntimeVal::Obj(heap.alloc(HeapValue::Callable(CallableValue::RuntimeNative {
+            name: Arc::<str>::from(native.name),
+            arity: native.arity,
+            function: native.function.clone(),
+        })));
+        entries.insert(Arc::<str>::from(native.name), value);
+    }
+    for value in values {
+        entries.insert(Arc::<str>::from(value.name), value.value.clone());
+    }
+    let value = RuntimeVal::Obj(heap.alloc(HeapValue::Map(TypedMap::StringMixed(entries))));
+    RuntimeExport::new(
+        value,
+        Arc::new(Mutex::new(RuntimeModuleState::new(heap, Vec::new()))),
+        Arc::new(Module::default()),
+    )
+}
+
+pub fn runtime_export_from_runtime_native(name: &str, function: NativeFunction, arity: u16) -> RuntimeExport {
+    let mut heap = HeapStore::new();
+    let value = RuntimeVal::Obj(heap.alloc(HeapValue::Callable(CallableValue::RuntimeNative {
+        name: Arc::<str>::from(name),
+        arity,
+        function,
+    })));
+    RuntimeExport::from_value(value, heap)
 }
 
 #[cfg(test)]
@@ -263,15 +234,5 @@ mod tests {
         // Just test that the registry can be created without panicking
         // The stdlib modules are now registered externally
         assert!(registry.get_module_names().is_empty());
-    }
-
-    #[test]
-    fn test_import_context() {
-        let registry = Arc::new(ModuleRegistry::new());
-        let mut ctx = ImportContext::new(registry);
-
-        // For now, just test that the context works without stdlib modules
-        let result = ctx.require("nonexistent");
-        assert!(result.is_err());
     }
 }

@@ -1,0 +1,43 @@
+// JSON parse demo
+
+use json;
+
+// 1. Parse a JSON object
+let raw = "{ \"name\": \"Alice\", \"age\": 30, \"active\": true }";
+let data = json.parse(raw);
+assert(data.name == "Alice");
+assert(data.age == 30);
+assert(data.active == true);
+
+// 2. Parse a JSON array
+let arr_raw = "[1, 2, 3, 4, 5]";
+let arr = json.parse(arr_raw);
+assert(arr.len() == 5);
+assert(arr[0] == 1);
+
+// 3. Nested JSON
+let nested = "{ \"user\": { \"name\": \"Bob\", \"scores\": [95, 87, 92] } }";
+let obj = json.parse(nested);
+assert(obj.user.name == "Bob");
+assert(obj.user.scores.len() == 3);
+
+// 4. Parse null and boolean
+let null_json = "{ \"value\": null }";
+let null_obj = json.parse(null_json);
+assert(null_obj.value == nil);
+
+// 5. JSON number types
+let num_json = "{ \"int\": 42, \"float\": 3.14 }";
+let num_obj = json.parse(num_json);
+assert(num_obj.int == 42);
+assert(num_obj.float > 3.0);
+assert(num_obj.float < 4.0);
+
+// 6. Process JSON data — compute average score
+let scores_json = "{ \"name\": \"Carol\", \"scores\": [88, 92, 79, 95, 100] }";
+let student = json.parse(scores_json);
+let avg = student.scores.reduce(0, |acc, s| acc + s) / student.scores.len();
+assert(avg > 88);
+assert(avg < 92);
+
+println("json_demo: all assertions passed");

@@ -1,3 +1,3 @@
 pub mod analyzer;
 
-pub use analyzer::LkrAnalyzer;
+pub use analyzer::LkAnalyzer;

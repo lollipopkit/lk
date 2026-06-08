@@ -1,9 +1,20 @@
-use lkr_core::perf::scenarios::prepare_script_scenarios;
-use lkr_core::vm::Compiler;
-use lkr_core::stmt::{StmtParser, Stmt};
-use lkr_core::token::Tokenizer;
+use lk_core::vm::{Compiler, Module, disassemble_module};
+use std::path::PathBuf;
 
-const FIB_SCRIPT: &str = include_str!("../../examples/fib.lkr");
+const FIB_SCRIPT: &str = r#"
+fn iterative(n) {
+    let a = 0;
+    let b = 1;
+    let i = 0;
+    while (i < n) {
+        let next = a + b;
+        a = b;
+        b = next;
+        i = i + 1;
+    }
+    return a;
+}
+"#;
 
 const REPL_SEQUENCE_SCRIPT: &str = r#"
 let total = 0;
@@ -26,30 +37,30 @@ while (i < 200) {
 return total;
 "#;
 
-fn compile_script(source: &str) -> lkr_core::vm::Function {
-    let (tokens, spans) = Tokenizer::tokenize_enhanced_with_spans(source).unwrap();
-    let mut parser = StmtParser::new_with_spans(&tokens, &spans);
-    let program = parser.parse_program_with_enhanced_errors(source).unwrap();
-    let block = Stmt::Block { statements: program.statements };
-    Compiler::new().compile_stmt(&block)
+fn compile_script(source: &str) -> Module {
+    Compiler::compile_source_module(source).unwrap()
 }
 
 fn main() {
+    if let Some(path) = std::env::args_os().nth(1) {
+        let path = PathBuf::from(path);
+        let script =
+            std::fs::read_to_string(&path).unwrap_or_else(|err| panic!("failed to read {}: {err}", path.display()));
+        dump_function(&path.display().to_string(), &compile_script(&script));
+        return;
+    }
+
     for (name, script) in [
         ("script_fib", FIB_SCRIPT.to_string() + "\nreturn iterative(30);\n"),
         ("repl_sequence", REPL_SEQUENCE_SCRIPT.to_string()),
         ("numeric_reduction", NUMERIC_REDUCTION_SCRIPT.to_string()),
     ] {
-        println!("=== {} ===", name);
         let func = compile_script(&script);
-        println!("n_regs: {}", func.n_regs);
-        println!("code len: {}", func.code.len());
-        if let Some(code32) = &func.code32 {
-            println!("code32 len: {}", code32.len());
-        }
-        for (i, op) in func.code.iter().enumerate() {
-            println!("  {:4}: {:?}", i, op);
-        }
-        println!();
+        dump_function(name, &func);
     }
+}
+
+fn dump_function(name: &str, module: &Module) {
+    println!("=== {} ===", name);
+    println!("{}", disassemble_module(module));
 }

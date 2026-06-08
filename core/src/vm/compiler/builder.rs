@@ -1,480 +1,563 @@
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
+use anyhow::{Result, anyhow, bail};
+
+use crate::vm::analysis::{
+    PerfCompareTestBranchFact, PerfContainerFact, PerfControlFlowFacts, PerfFusedBoolBranchFact, PerfLocalCopyFact,
+    PerfRegisterCopyFact, PerfRegisterFact, PerfValueFact, PerfValueKind, PerformanceFacts,
 };
 
-use super::driver::Compiler;
-use super::free_vars::FreeVarCollector;
-use crate::resolve::slots::FunctionLayout;
-use crate::{
-    expr::Expr,
-    op::BinOp,
-    stmt::{NamedParamDecl, Stmt},
-    typ::{NumericClass, NumericHierarchy},
-    val::{ClosureCapture, ClosureInit, ClosureValue, Type, Val},
-    vm::{
-        Bc32Function, CaptureSpec, ClosureProto, Function, FunctionAnalysis, NamedParamLayoutEntry, Op, PatternBinding,
-        PatternPlan, context::VmContext,
-    },
-};
+use super::{Compiler, ConstHeapValue, Function, Instr, Opcode, support::*};
 
-pub(crate) struct FunctionBuilder {
-    pub consts: Vec<Val>,
-    pub code: Vec<Op>,
-    pub n_regs: u16,
-    pub vars: HashMap<String, u16>,
-    pub protos: Vec<ClosureProto>,
-    pub param_regs: Vec<u16>,
-    pub named_param_regs: Vec<u16>,
-    pub named_param_layout: Vec<NamedParamLayoutEntry>,
-    pub pattern_plans: Vec<PatternPlan>,
-    pub const_bindings: HashMap<String, Val>,
-    pub const_scope_stack: Vec<Vec<String>>,
-    pub const_env: VmContext,
-    pub global_defs: HashSet<String>,
-    var_scope_stack: Vec<Vec<(String, Option<u16>)>>,
-    pub capture_indices: HashMap<String, u16>,
-    pub break_locations: Vec<usize>,
-    pub continue_locations: Vec<usize>,
-    pub loop_depth: usize,
-    pub analysis: Option<FunctionAnalysis>,
-    pub const_names: HashSet<String>,
-    expr_type_hints: Option<HashMap<usize, Type>>,
-    /// Registers known to hold Map values (set when initialized from {} or map exprs).
-    /// Used to safely emit MapSet opcode in compile_method_call.
-    pub(crate) map_locals: HashSet<u16>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ArithFlavor {
-    Int,
-    Float,
-    Any,
-}
-
-fn collect_pattern_names(pattern: &crate::expr::Pattern, out: &mut Vec<String>) {
-    use crate::expr::Pattern;
-    match pattern {
-        Pattern::Variable(name) => out.push(name.clone()),
-        Pattern::List { patterns, rest } => {
-            for sub in patterns {
-                collect_pattern_names(sub, out);
-            }
-            if let Some(rest_name) = rest {
-                out.push(rest_name.clone());
-            }
-        }
-        Pattern::Map { patterns, rest } => {
-            for (_, sub) in patterns {
-                collect_pattern_names(sub, out);
-            }
-            if let Some(rest_name) = rest {
-                out.push(rest_name.clone());
-            }
-        }
-        Pattern::Or(alternatives) => {
-            for alt in alternatives {
-                collect_pattern_names(alt, out);
-            }
-        }
-        Pattern::Guard { pattern, .. } => {
-            collect_pattern_names(pattern, out);
-        }
-        Pattern::Literal(_) | Pattern::Wildcard | Pattern::Range { .. } => {}
-    }
-}
-
-impl FunctionBuilder {
-    pub fn new() -> Self {
-        Self::new_with_captures(&[])
-    }
-
-    pub fn new_with_captures(captures: &[CaptureSpec]) -> Self {
-        let mut builder = Self {
-            consts: Vec::new(),
-            code: Vec::new(),
-            n_regs: 0,
-            vars: HashMap::new(),
-            protos: Vec::new(),
-            param_regs: Vec::new(),
-            named_param_regs: Vec::new(),
-            named_param_layout: Vec::new(),
-            pattern_plans: Vec::new(),
-            const_bindings: HashMap::new(),
-            const_scope_stack: vec![Vec::new()],
-            const_env: VmContext::new(),
-            global_defs: HashSet::new(),
-            var_scope_stack: Vec::new(),
-            capture_indices: HashMap::new(),
-            break_locations: Vec::new(),
-            continue_locations: Vec::new(),
-            loop_depth: 0,
-            analysis: None,
-            const_names: HashSet::new(),
-            expr_type_hints: None,
-            map_locals: HashSet::new(),
-        };
-        for (idx, cap) in captures.iter().enumerate() {
-            let name = match cap {
-                CaptureSpec::Register { name, .. } | CaptureSpec::Const { name, .. } | CaptureSpec::Global { name } => {
-                    name
-                }
-            };
-            builder.capture_indices.insert(name.clone(), idx as u16);
-        }
-        builder
-    }
-
-    pub fn set_expr_type_hints(&mut self, hints: HashMap<usize, Type>) {
-        self.expr_type_hints = Some(hints);
-    }
-
-    fn expr_type_hint(&self, expr: &Expr) -> Option<&Type> {
-        let key = expr as *const Expr as usize;
-        self.expr_type_hints.as_ref().and_then(|map| map.get(&key))
-    }
-
-    fn numeric_class_hint(&self, expr: &Expr) -> Option<NumericClass> {
-        self.expr_type_hint(expr).and_then(NumericHierarchy::classify)
-    }
-
-    pub(crate) fn select_arith_flavor(&self, op: &BinOp, left: &Expr, right: &Expr, whole: &Expr) -> ArithFlavor {
-        if matches!(op, BinOp::Div) {
-            return ArithFlavor::Float;
-        }
-
-        let result_class = self.numeric_class_hint(whole);
-        let left_class = self.numeric_class_hint(left);
-        let right_class = self.numeric_class_hint(right);
-
-        match result_class {
-            Some(NumericClass::Float) => ArithFlavor::Float,
-            Some(NumericClass::Int) => {
-                if left_class == Some(NumericClass::Int) && right_class == Some(NumericClass::Int) {
-                    ArithFlavor::Int
-                } else {
-                    ArithFlavor::Any
-                }
-            }
-            Some(NumericClass::Boxed) | None => {
-                if left_class == Some(NumericClass::Float) || right_class == Some(NumericClass::Float) {
-                    ArithFlavor::Float
-                } else if left_class == Some(NumericClass::Int) && right_class == Some(NumericClass::Int) {
-                    ArithFlavor::Int
-                } else {
-                    ArithFlavor::Any
-                }
-            }
-        }
-    }
-
-    pub fn set_analysis(&mut self, analysis: Option<FunctionAnalysis>) {
-        self.analysis = analysis;
-    }
-
-    pub fn apply_slot_layout(&mut self, layout: &FunctionLayout) {
-        self.n_regs = self.n_regs.max(layout.total_locals);
-        for decl in &layout.decls {
-            self.vars.insert(decl.name.clone(), decl.index);
-        }
-    }
-
-    pub fn build_named_param_layout(&mut self, named_params: &[NamedParamDecl]) {
-        self.named_param_layout.clear();
-        if named_params.is_empty() {
-            return;
-        }
-        for (idx, decl) in named_params.iter().enumerate() {
-            let const_idx = self.k(Val::Str(decl.name.clone().into()));
-            let dest = self.named_param_regs.get(idx).copied().unwrap_or(0);
-            let default_index = decl.default.as_ref().map(|_| idx as u16);
-            self.named_param_layout.push(NamedParamLayoutEntry {
-                name_const_idx: const_idx,
-                dest_reg: dest,
-                default_index,
-            });
-        }
-    }
-
-    pub fn finish(self) -> Function {
-        let mut f = Function {
-            consts: self.consts,
-            code: self.code,
-            n_regs: self.n_regs,
-            protos: self.protos,
-            param_regs: self.param_regs,
-            named_param_regs: self.named_param_regs,
-            named_param_layout: self.named_param_layout,
-            pattern_plans: self.pattern_plans,
-            code32: None,
-            bc32_decoded: None,
-            analysis: self.analysis,
-        };
-
-        // Peephole: fuse CmpLtImm + JmpFalse into CmpLtImmJmp
-        super::peephole::peephole_fuse_cmp_jmp(&mut f.code);
-
-        if let Some(packed) = Bc32Function::try_from_function(&f) {
-            let decoded = packed.decoded;
-            f.code32 = Some(packed.code32);
-            f.bc32_decoded = decoded;
-        }
-
-        f
-    }
-
-    pub fn emit(&mut self, op: Op) {
-        self.code.push(op);
-    }
-
-    pub fn alloc(&mut self) -> u16 {
-        let r = self.n_regs;
-        self.n_regs = self.n_regs.saturating_add(1);
-        r
-    }
-
-    pub fn k(&mut self, v: Val) -> u16 {
-        if let Some((i, _)) = self.consts.iter().enumerate().find(|(_, x)| *x == &v) {
-            i as u16
-        } else {
-            self.consts.push(v);
-            (self.consts.len() - 1) as u16
-        }
-    }
-
-    pub fn get_or_define(&mut self, name: &str) -> u16 {
-        if let Some(&i) = self.vars.get(name) {
-            i
-        } else {
-            let idx = self.alloc();
-            self.vars.insert(name.to_string(), idx);
-            idx
-        }
-    }
-
-    pub fn lookup(&self, name: &str) -> Option<u16> {
-        self.vars.get(name).copied()
-    }
-
-    pub fn register_pattern_plan(&mut self, pattern: &crate::expr::Pattern) -> u16 {
-        let mut names = Vec::new();
-        collect_pattern_names(pattern, &mut names);
-        let mut seen = HashSet::new();
-        let mut bindings = Vec::new();
-        for name in names {
-            if seen.insert(name.clone()) {
-                let reg = self.get_or_define(&name);
-                bindings.push(PatternBinding { name, reg });
-            }
-        }
-        let idx = self.pattern_plans.len();
-        self.pattern_plans.push(PatternPlan {
-            pattern: pattern.clone(),
-            bindings,
-        });
-        idx as u16
-    }
-
-    pub fn push_var_scope(&mut self) {
-        self.var_scope_stack.push(Vec::new());
-    }
-
-    pub fn pop_var_scope(&mut self) {
-        if let Some(entries) = self.var_scope_stack.pop() {
-            for (name, prev) in entries.into_iter().rev() {
-                match prev {
-                    Some(idx) => {
-                        self.vars.insert(name, idx);
-                    }
-                    None => {
-                        self.vars.remove(&name);
-                    }
-                }
-            }
-        }
-    }
-
-    pub fn define_scoped_var(&mut self, name: &str) -> u16 {
-        debug_assert!(
-            self.var_scope_stack.last().is_some(),
-            "define_scoped_var called without an active var scope"
-        );
-        let reg = self.alloc();
-        let prev = self.vars.insert(name.to_string(), reg);
-        if let Some(scope) = self.var_scope_stack.last_mut() {
-            scope.push((name.to_string(), prev));
+impl Compiler {
+    #[inline]
+    pub(super) fn alloc_reg(&mut self) -> u16 {
+        let reg = self.next_reg;
+        self.next_reg = self.next_reg.checked_add(1).expect("Compiler register overflow");
+        if self.next_reg > self.peak_reg {
+            self.peak_reg = self.next_reg;
         }
         reg
     }
 
-    /// Define a variable that already has a register assigned (e.g., from expr result).
-    /// Records the scope stack entry so the variable is properly unwound.
-    pub fn define_var_as(&mut self, name: &str, reg: u16) {
-        let prev = self.vars.insert(name.to_string(), reg);
-        if let Some(scope) = self.var_scope_stack.last_mut() {
-            scope.push((name.to_string(), prev));
+    pub(super) fn alloc_regs(&mut self, count: usize) -> Result<u16> {
+        let count = u16::try_from(count).map_err(|_| anyhow!("Compiler register block too large: {count}"))?;
+        let base = self.next_reg;
+        self.next_reg = self
+            .next_reg
+            .checked_add(count)
+            .ok_or_else(|| anyhow!("Compiler register overflow"))?;
+        if self.next_reg > self.peak_reg {
+            self.peak_reg = self.next_reg;
         }
+        Ok(base)
+    }
+
+    pub(super) fn live_register_floor(&self) -> u16 {
+        self.locals
+            .values()
+            .copied()
+            .max()
+            .map_or(self.function.param_count, |reg| reg + 1)
+            .max(self.function.param_count)
+            .max(self.loop_cached_literal_register_floor())
     }
 
     #[inline]
-    pub fn var_scope_depth(&self) -> usize {
-        self.var_scope_stack.len()
+    pub(super) fn emit(&mut self, instr: Instr) {
+        self.function.code.push(instr);
     }
 
-    pub fn emit_function_closure(
-        &mut self,
-        name: Option<&str>,
-        params: &[String],
-        named_params: &[NamedParamDecl],
-        body: &Stmt,
-        register_const: bool,
-    ) -> u16 {
-        if register_const && let Some(func_name) = name {
-            self.register_function_const_env(func_name, params, named_params, body);
-        }
-
-        let proto_idx = self.protos.len() as u16;
-        let captures = self.collect_captures(name, params, named_params, body);
-        let compiled = Compiler::new().compile_function_with_captures(params, named_params, body, &captures);
-        let default_funcs: Vec<Option<Function>> = named_params
-            .iter()
-            .map(|decl| {
-                decl.default.as_ref().map(|expr| {
-                    Compiler::new().compile_default_expr_with_captures(params, named_params, expr, &captures)
-                })
-            })
-            .collect();
-
-        self.protos.push(ClosureProto {
-            self_name: name.map(|n| n.to_string()),
-            params: params.to_vec(),
-            named_params: named_params.to_vec(),
-            default_funcs,
-            func: Some(Box::new(compiled)),
-            body: body.clone(),
-            captures,
-        });
-
-        let dst = self.alloc();
-        self.emit(Op::MakeClosure { dst, proto: proto_idx });
-        dst
+    pub(super) fn emit_move(&mut self, dst: u16, src: u16, context: &str) -> Result<()> {
+        self.emit_move_with_policy(dst, src, context, false)
     }
 
-    pub fn collect_captures(
-        &mut self,
-        self_name: Option<&str>,
-        params: &[String],
-        named_params: &[NamedParamDecl],
-        body: &Stmt,
-    ) -> Vec<CaptureSpec> {
-        let mut collector = FreeVarCollector::new();
-        if let Some(name) = self_name {
-            collector.declare(name);
+    pub(super) fn emit_move_with_policy(&mut self, dst: u16, src: u16, context: &str, move_source: bool) -> Result<()> {
+        if dst == src {
+            return Ok(());
         }
-        for param in params {
-            collector.declare(param);
+        let pc = self.function.code.len();
+        self.emit(Instr::abc(
+            Opcode::Move,
+            checked_u8(&format!("{context} dst"), dst)?,
+            checked_u8(&format!("{context} src"), src)?,
+            0,
+        ));
+        self.function
+            .performance
+            .set_register_copy_fact(pc, PerfRegisterCopyFact { move_source });
+        if self.function.performance.is_local_slot(dst) {
+            self.function
+                .performance
+                .set_local_copy_fact(pc, PerfLocalCopyFact { move_source });
         }
-        for decl in named_params {
-            collector.declare(&decl.name);
-            if let Some(default) = &decl.default {
-                collector.visit_expr(default);
-            }
-        }
-        collector.visit_stmt(body);
-        collector
-            .into_sorted_vec()
-            .into_iter()
-            .map(|name| {
-                if let Some(&reg) = self.vars.get(&name) {
-                    if self.global_defs.contains(&name) {
-                        CaptureSpec::Global { name }
-                    } else {
-                        CaptureSpec::Register { name, src: reg }
-                    }
-                } else if let Some(val) = self.const_bindings.get(&name) {
-                    let kidx = self.k(val.clone());
-                    CaptureSpec::Const { name, kidx }
-                } else {
-                    CaptureSpec::Global { name }
+        self.function.performance.copy_register_fact(dst, src);
+        Ok(())
+    }
+
+    pub(super) fn insert_local(&mut self, name: impl Into<String>, reg: u16) -> Option<u16> {
+        let name = name.into();
+        self.single_char_string_locals.remove(&name);
+        self.function.performance.mark_local_slot(reg);
+        self.locals.insert(name, reg)
+    }
+
+    pub(super) fn local_slot_is_shared(&self, reg: u16) -> bool {
+        let mut count = 0;
+        for slot in self.locals.values().copied() {
+            if slot == reg {
+                count += 1;
+                if count > 1 {
+                    return true;
                 }
-            })
-            .collect()
-    }
-
-    pub(crate) fn record_const_pattern_names(&mut self, pattern: &crate::expr::Pattern) {
-        let mut names = Vec::new();
-        collect_pattern_names(pattern, &mut names);
-        for name in names {
-            self.const_names.insert(name);
-        }
-    }
-
-    pub(crate) fn store_named(&mut self, name: &str, idx: u16, src: u16) {
-        if self.const_names.contains(name) {
-            let msg = format!("Cannot assign to const variable '{}'", name);
-            let msg_idx = self.k(Val::Str(msg.into()));
-            self.emit(Op::Raise { err_kidx: msg_idx });
-        } else {
-            self.emit(Op::StoreLocal(idx, src));
-        }
-    }
-
-    fn register_function_const_env(
-        &mut self,
-        name: &str,
-        params: &[String],
-        named_params: &[NamedParamDecl],
-        body: &Stmt,
-    ) {
-        let mut func_val = Val::Closure(Arc::new(ClosureValue::new(ClosureInit {
-            params: Arc::new(params.to_vec()),
-            named_params: Arc::new(named_params.to_vec()),
-            body: Arc::new(body.clone()),
-            env: Arc::new(self.const_env.clone()),
-            upvalues: Arc::new(Vec::<Val>::new()),
-            captures: ClosureCapture::empty(),
-            capture_specs: Arc::new(Vec::new()),
-            default_funcs: Arc::new(Vec::new()),
-            debug_name: Some(name.to_string()),
-            debug_location: None,
-        })));
-        if let Val::Closure(closure_arc) = &mut func_val
-            && let Some(closure) = Arc::get_mut(closure_arc)
-            && let Some(env_mut) = Arc::get_mut(&mut closure.env)
-        {
-            let env_ptr: *mut VmContext = env_mut;
-            let clone_for_env = func_val.clone();
-            unsafe {
-                (*env_ptr).set(name.to_string(), clone_for_env);
             }
         }
-        self.const_env.set(name.to_string(), func_val);
+        false
     }
 
-    /// Check if an expression contains a function call or other effects that make
-    /// it unsafe to keep the result in the expression's own register.
-    pub(crate) fn expr_contains_call(e: &Expr) -> bool {
-        match e {
-            Expr::Call(_, _) => true,
-            Expr::CallNamed(_, _, _) => true,
-            Expr::CallExpr(_, _) => true,
-            Expr::Bin(l, _, r) => Self::expr_contains_call(l) || Self::expr_contains_call(r),
-            Expr::Unary(_, inner) => Self::expr_contains_call(inner),
-            Expr::Paren(inner) => Self::expr_contains_call(inner),
-            Expr::Access(obj, field) => Self::expr_contains_call(obj) || Self::expr_contains_call(field),
-            Expr::OptionalAccess(obj, field) => Self::expr_contains_call(obj) || Self::expr_contains_call(field),
-            Expr::List(elems) => elems.iter().any(|e| Self::expr_contains_call(e)),
-            Expr::Map(pairs) => pairs.iter().any(|(k, v)| Self::expr_contains_call(k) || Self::expr_contains_call(v)),
-            Expr::Conditional(c, t, e) => Self::expr_contains_call(c) || Self::expr_contains_call(t) || Self::expr_contains_call(e),
-            Expr::And(l, r) => Self::expr_contains_call(l) || Self::expr_contains_call(r),
-            Expr::Or(l, r) => Self::expr_contains_call(l) || Self::expr_contains_call(r),
-            Expr::NullishCoalescing(l, r) => Self::expr_contains_call(l) || Self::expr_contains_call(r),
-            Expr::Select { .. } => true,
-            Expr::Closure { .. } => true,
-            Expr::StructLiteral { .. } => true,
-            Expr::Match { .. } => true,
-            Expr::TemplateString(_) => true,
-            _ => false,
+    pub(super) fn local_write_slot(&mut self, reg: u16) -> (u16, bool) {
+        if !self.local_slot_is_shared(reg) && !self.is_loop_cached_literal_register(reg) {
+            return (reg, false);
         }
+        let new_reg = self.alloc_reg();
+        self.function.performance.mark_local_slot(new_reg);
+        (new_reg, true)
+    }
+
+    pub(super) fn mark_last_dead_write(&mut self) {
+        if let Some(pc) = self.function.code.len().checked_sub(1) {
+            self.function.performance.set_dead_write_fact(pc);
+        }
+    }
+
+    pub(super) fn is_current_local_slot(&self, reg: u16) -> bool {
+        self.locals.values().any(|slot| *slot == reg)
+            || self.is_loop_cached_literal_register(reg)
+            || self.single_char_string_locals.values().any(|slot| *slot == reg)
+    }
+
+    pub(super) fn emit_test_placeholder(&mut self, condition: u16) -> Result<usize> {
+        let pc = self.function.code.len();
+        self.emit(Instr::abc(Opcode::Test, checked_u8("test condition", condition)?, 1, 1));
+        self.emit(Instr::sj(Opcode::Jmp, 0));
+        Ok(pc)
+    }
+
+    pub(super) fn emit_jmp_placeholder(&mut self) -> usize {
+        let pc = self.function.code.len();
+        self.emit(Instr::sj(Opcode::Jmp, 0));
+        pc
+    }
+
+    pub(super) fn emit_branch_placeholder(&mut self, opcode: Opcode, condition: u16) -> Result<usize> {
+        let pc = self.function.code.len();
+        self.emit(Instr::as_bx(opcode, checked_u8("branch condition", condition)?, 0));
+        Ok(pc)
+    }
+
+    pub(super) fn emit_i4_branch_placeholder(
+        &mut self,
+        opcode: Opcode,
+        condition: u16,
+        immediate: u8,
+    ) -> Result<usize> {
+        let pc = self.function.code.len();
+        self.emit(Instr::branch_i4(
+            opcode,
+            checked_u8("i4 branch condition", condition)?,
+            immediate,
+            0,
+        ));
+        Ok(pc)
+    }
+
+    pub(super) fn emit_compare_test_placeholder(
+        &mut self,
+        opcode: Opcode,
+        lhs: u16,
+        rhs: u16,
+        jump_when: bool,
+    ) -> Result<usize> {
+        let pc = self.function.code.len();
+        self.emit(Instr::abc(
+            opcode,
+            checked_u8("compare lhs", lhs)?,
+            checked_u8("compare rhs", rhs)?,
+            u8::from(jump_when),
+        ));
+        self.emit(Instr::sj(Opcode::Jmp, 0));
+        Ok(pc)
+    }
+
+    pub(super) fn emit_compare_test_immediate_placeholder(
+        &mut self,
+        opcode: Opcode,
+        lhs: u16,
+        rhs: i8,
+        jump_when: bool,
+    ) -> Result<usize> {
+        let pc = self.function.code.len();
+        self.emit(Instr::abc(
+            opcode,
+            checked_u8("compare lhs", lhs)?,
+            u8::from(jump_when),
+            rhs as u8,
+        ));
+        self.emit(Instr::sj(Opcode::Jmp, 0));
+        Ok(pc)
+    }
+
+    pub(super) fn emit_compare_test_pair_immediate_placeholder(
+        &mut self,
+        lhs: u16,
+        lhs_rhs: u8,
+        rhs: u16,
+        rhs_rhs: u8,
+    ) -> Result<usize> {
+        let pc = self.function.code.len();
+        self.emit(Instr::abc(
+            Opcode::TestEqIntI2,
+            checked_u8("pair compare lhs", lhs)?,
+            checked_u8("pair compare rhs", rhs)?,
+            pack_u4_pair(lhs_rhs, rhs_rhs),
+        ));
+        self.emit(Instr::sj(Opcode::Jmp, 0));
+        Ok(pc)
+    }
+
+    pub(super) fn emit_raise(&mut self, message: &str) -> Result<()> {
+        let const_index = self.push_string(message)?;
+        self.emit(Instr::abx(Opcode::Raise, 0, const_index));
+        Ok(())
+    }
+
+    pub(super) fn emit_pattern_assert(&mut self, condition: u16) -> Result<()> {
+        let skip_raise = self.emit_test_placeholder(condition)?;
+        self.emit_raise("Pattern does not match value")?;
+        let end = self.function.code.len();
+        self.patch_test_true_jump(skip_raise, end)
+    }
+
+    pub(super) fn patch_test_false_jump(&mut self, pc: usize, target: usize) -> Result<()> {
+        self.patch_test_jump(pc, target, 1)
+    }
+
+    pub(super) fn patch_test_true_jump(&mut self, pc: usize, target: usize) -> Result<()> {
+        self.patch_test_jump(pc, target, 0)
+    }
+
+    fn patch_test_jump(&mut self, pc: usize, target: usize, expected: u8) -> Result<()> {
+        let instr = *self
+            .function
+            .code
+            .get(pc)
+            .ok_or_else(|| anyhow!("Compiler test patch pc {pc} out of bounds"))?;
+        if instr.opcode() != Opcode::Test {
+            bail!("Compiler expected Test at patch pc {pc}");
+        }
+        let test_b: u8 = 1 - expected;
+        self.function.code[pc] = Instr::abc(Opcode::Test, instr.a(), test_b, 1);
+        self.patch_jmp(pc + 1, target)
+    }
+
+    pub(super) fn patch_jmp(&mut self, pc: usize, target: usize) -> Result<()> {
+        let instr = *self
+            .function
+            .code
+            .get(pc)
+            .ok_or_else(|| anyhow!("Compiler jump patch pc {pc} out of bounds"))?;
+        if instr.opcode() != Opcode::Jmp {
+            bail!("Compiler expected Jmp at patch pc {pc}");
+        }
+        self.function.code[pc] = Instr::sj(Opcode::Jmp, jump_offset(pc, target)?);
+        Ok(())
+    }
+
+    pub(super) fn patch_branch(&mut self, pc: usize, target: usize) -> Result<()> {
+        let instr = *self
+            .function
+            .code
+            .get(pc)
+            .ok_or_else(|| anyhow!("Compiler branch patch pc {pc} out of bounds"))?;
+        if !matches!(
+            instr.opcode(),
+            Opcode::BrFalse
+                | Opcode::BrTrue
+                | Opcode::BrNil
+                | Opcode::BrNotNil
+                | Opcode::BrEqZeroInt
+                | Opcode::BrNeZeroInt
+        ) {
+            bail!("Compiler expected branch at patch pc {pc}");
+        }
+        self.function.code[pc] = Instr::as_bx(instr.opcode(), instr.a(), jump_offset(pc, target)? as i16);
+        Ok(())
+    }
+
+    pub(super) fn patch_i4_branch(&mut self, pc: usize, target: usize) -> Result<()> {
+        let instr = *self
+            .function
+            .code
+            .get(pc)
+            .ok_or_else(|| anyhow!("Compiler i4 branch patch pc {pc} out of bounds"))?;
+        if !matches!(
+            instr.opcode(),
+            Opcode::BrEqIntI4 | Opcode::BrNeIntI4 | Opcode::BrModEqZeroIntI4 | Opcode::BrModNeZeroIntI4
+        ) {
+            bail!("Compiler expected i4 branch at patch pc {pc}");
+        }
+        let offset = jump_offset(pc, target)?;
+        if !(-2048..=2047).contains(&offset) {
+            bail!("Compiler i4 branch offset {offset} out of range at pc {pc}");
+        }
+        self.function.code[pc] =
+            Instr::branch_i4(instr.opcode(), instr.a(), instr.branch_i4_immediate(), offset as i16);
+        Ok(())
+    }
+
+    pub(super) fn patch_compare_test_jump(&mut self, pc: usize, target: usize) -> Result<()> {
+        let instr = *self
+            .function
+            .code
+            .get(pc)
+            .ok_or_else(|| anyhow!("Compiler compare-test patch pc {pc} out of bounds"))?;
+        if !instr.opcode().is_compare_test() {
+            bail!("Compiler expected compare-test at patch pc {pc}");
+        }
+        self.patch_jmp(pc + 1, target)
+    }
+
+    pub(super) fn push_int(&mut self, value: i64) -> Result<u16> {
+        self.function.consts.push_int(value)
+    }
+
+    pub(super) fn push_float(&mut self, value: f64) -> Result<u16> {
+        self.function.consts.push_float(value)
+    }
+
+    pub(super) fn push_string(&mut self, value: &str) -> Result<u16> {
+        self.function.consts.push_string(value)
+    }
+
+    pub(super) fn push_heap_value(&mut self, value: ConstHeapValue) -> Result<u16> {
+        self.function.consts.push_heap_value(value)
+    }
+
+    pub(super) fn emit_return(&mut self, base: u16) -> Result<()> {
+        self.emit(Instr::abc(Opcode::Return1, checked_u8("return base", base)?, 0, 0));
+        self.emitted_return = true;
+        Ok(())
+    }
+
+    pub(super) fn emit_empty_return(&mut self) {
+        self.emit(Instr::abc(Opcode::Return0, 0, 0, 0));
+        self.emitted_return = true;
+    }
+
+    pub(super) fn set_register_kind(&mut self, reg: u16, kind: PerfValueKind) {
+        self.function.performance.set_register_kind(reg, kind);
+    }
+
+    pub(super) fn set_register_list_fact(&mut self, reg: u16, fact: PerfContainerFact) {
+        let register = PerfRegisterFact {
+            value: PerfValueFact {
+                kind: PerfValueKind::List,
+                ..PerfValueFact::default()
+            },
+            list: Some(fact),
+            ..PerfRegisterFact::default()
+        };
+        self.function.performance.set_register_fact(reg, register);
+    }
+
+    pub(super) fn set_register_map_fact(&mut self, reg: u16, fact: PerfContainerFact) {
+        let register = PerfRegisterFact {
+            value: PerfValueFact {
+                kind: PerfValueKind::Map,
+                ..PerfValueFact::default()
+            },
+            map: Some(fact),
+            ..PerfRegisterFact::default()
+        };
+        self.function.performance.set_register_fact(reg, register);
+    }
+
+    pub(super) fn finish(&mut self) -> Result<Function> {
+        self.function.register_count = self.peak_reg;
+        let control_flow = build_control_flow_facts(&self.function.code, &self.function.performance)?;
+        self.function.performance.set_control_flow_facts(control_flow);
+        Ok(std::mem::take(&mut self.function))
+    }
+}
+
+fn build_control_flow_facts(code: &[Instr], performance: &PerformanceFacts) -> Result<PerfControlFlowFacts> {
+    if code.is_empty() {
+        return Ok(PerfControlFlowFacts::default());
+    }
+
+    let mut branch_targets = vec![false; code.len()];
+    let mut block_starts = vec![false; code.len()];
+    let mut fused_bool_branches = vec![None; code.len()];
+    let mut compare_test_branches = vec![None; code.len()];
+    block_starts[0] = true;
+
+    for (pc, instr) in code.iter().copied().enumerate() {
+        if let Some(fact) = fused_bool_branch_fact(code, pc, instr) {
+            fused_bool_branches[pc] = Some(fact);
+        }
+        match instr.opcode() {
+            Opcode::Test => {
+                mark_target(pc + 1, code.len(), &mut branch_targets, &mut block_starts)?;
+                mark_relative_target(
+                    pc,
+                    instr.c() as i8 as i32,
+                    code.len(),
+                    &mut branch_targets,
+                    &mut block_starts,
+                )?;
+            }
+            Opcode::BrFalse
+            | Opcode::BrTrue
+            | Opcode::BrNil
+            | Opcode::BrNotNil
+            | Opcode::BrEqZeroInt
+            | Opcode::BrNeZeroInt => {
+                mark_relative_target(
+                    pc,
+                    instr.sbx() as i32,
+                    code.len(),
+                    &mut branch_targets,
+                    &mut block_starts,
+                )?;
+                mark_block_start(pc + 1, code.len(), &mut block_starts);
+            }
+            Opcode::BrEqIntI4 | Opcode::BrNeIntI4 | Opcode::BrModEqZeroIntI4 | Opcode::BrModNeZeroIntI4 => {
+                mark_relative_target(
+                    pc,
+                    instr.branch_i4_offset() as i32,
+                    code.len(),
+                    &mut branch_targets,
+                    &mut block_starts,
+                )?;
+                mark_block_start(pc + 1, code.len(), &mut block_starts);
+            }
+            opcode if opcode.is_compare_test() => {
+                let jmp = code
+                    .get(pc + 1)
+                    .copied()
+                    .ok_or_else(|| anyhow!("Compiler compare-test missing Jmp at pc {pc}"))?;
+                if jmp.opcode() != Opcode::Jmp {
+                    bail!("Compiler compare-test expected Jmp at pc {}", pc + 1);
+                }
+                let target_pc = relative_target(pc + 1, jmp.sj_arg(), code.len())?;
+                compare_test_branches[pc] = Some(PerfCompareTestBranchFact { target_pc });
+                mark_target(target_pc, code.len(), &mut branch_targets, &mut block_starts)?;
+                mark_block_start(pc + 2, code.len(), &mut block_starts);
+            }
+            Opcode::Jmp => {
+                mark_relative_target(pc, instr.sj_arg(), code.len(), &mut branch_targets, &mut block_starts)?;
+                mark_block_start(pc + 1, code.len(), &mut block_starts);
+            }
+            Opcode::ForLoopI => {
+                let fact = performance
+                    .for_loop(pc)
+                    .ok_or_else(|| anyhow!("Compiler ForLoopI missing performance fact at pc {pc}"))?;
+                mark_relative_target(pc, fact.jump_offset, code.len(), &mut branch_targets, &mut block_starts)?;
+                mark_block_start(pc + 1, code.len(), &mut block_starts);
+            }
+            Opcode::TryBegin => {
+                mark_relative_target(
+                    pc,
+                    instr.sbx() as i32,
+                    code.len(),
+                    &mut branch_targets,
+                    &mut block_starts,
+                )?;
+                mark_block_start(pc + 1, code.len(), &mut block_starts);
+            }
+            opcode if opcode.is_return() || opcode == Opcode::Raise => {
+                mark_block_start(pc + 1, code.len(), &mut block_starts);
+            }
+            _ => {}
+        }
+    }
+
+    let mut block_ids = vec![0; code.len()];
+    let mut current_block = 0_u32;
+    for pc in 0..code.len() {
+        if block_starts[pc] && pc != 0 {
+            current_block = current_block
+                .checked_add(1)
+                .ok_or_else(|| anyhow!("Compiler control-flow block id overflow"))?;
+        }
+        block_ids[pc] = current_block;
+    }
+
+    Ok(PerfControlFlowFacts {
+        block_ids,
+        branch_targets,
+        fused_bool_branches,
+        compare_test_branches,
+    })
+}
+
+fn fused_bool_branch_fact(code: &[Instr], pc: usize, instr: Instr) -> Option<PerfFusedBoolBranchFact> {
+    if !opcode_writes_bool_result(instr.opcode()) {
+        return None;
+    }
+    let branch = code.get(pc + 1).copied()?;
+    if branch.a() != instr.a() {
+        return None;
+    }
+    if branch.opcode() == Opcode::BrFalse || branch.opcode() == Opcode::BrTrue {
+        return Some(PerfFusedBoolBranchFact {
+            result_reg: instr.a(),
+            jump_when: branch.opcode() == Opcode::BrTrue,
+            jump_offset: branch.sbx() as i32,
+            jump_base_pc_delta: 1,
+            fallthrough_pc_delta: 2,
+        });
+    }
+    if branch.opcode() != Opcode::Test || branch.c() != 1 {
+        return None;
+    }
+    let jmp = code.get(pc + 2).copied()?;
+    (jmp.opcode() == Opcode::Jmp).then_some(PerfFusedBoolBranchFact {
+        result_reg: instr.a(),
+        jump_when: branch.b() != 0,
+        jump_offset: jmp.sj_arg(),
+        jump_base_pc_delta: 2,
+        fallthrough_pc_delta: 3,
+    })
+}
+
+fn opcode_writes_bool_result(opcode: Opcode) -> bool {
+    matches!(
+        opcode,
+        Opcode::Not
+            | Opcode::IsNil
+            | Opcode::IsList
+            | Opcode::IsMap
+            | Opcode::CmpInt
+            | Opcode::CmpNeInt
+            | Opcode::CmpLtInt
+            | Opcode::CmpLeInt
+            | Opcode::CmpGtInt
+            | Opcode::CmpGeInt
+            | Opcode::Contains
+    )
+}
+
+fn mark_relative_target(
+    pc: usize,
+    offset: i32,
+    len: usize,
+    branch_targets: &mut [bool],
+    block_starts: &mut [bool],
+) -> Result<()> {
+    let target = relative_target(pc, offset, len)?;
+    mark_target(target, len, branch_targets, block_starts)
+}
+
+fn relative_target(pc: usize, offset: i32, len: usize) -> Result<usize> {
+    let target = pc as i64 + 1 + offset as i64;
+    if target < 0 || target > len as i64 {
+        bail!("Compiler branch target {target} out of bounds at pc {pc}");
+    }
+    Ok(target as usize)
+}
+
+fn mark_target(target: usize, len: usize, branch_targets: &mut [bool], block_starts: &mut [bool]) -> Result<()> {
+    if target > len {
+        bail!("Compiler branch target {target} out of bounds");
+    }
+    if target < len {
+        branch_targets[target] = true;
+        block_starts[target] = true;
+    }
+    Ok(())
+}
+
+fn mark_block_start(pc: usize, len: usize, block_starts: &mut [bool]) {
+    if pc < len {
+        block_starts[pc] = true;
     }
 }

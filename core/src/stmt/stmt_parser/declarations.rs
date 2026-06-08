@@ -3,6 +3,23 @@ use crate::{stmt::Stmt, token::Token, val::Type};
 use anyhow::{Result, anyhow};
 
 impl<'a> StmtParser<'a> {
+    pub fn parse_type_alias_stmt(&mut self) -> Result<Stmt> {
+        self.expect_token(Token::Type)?;
+
+        let name = if let Token::Id(id) = &self.tokens[self.pos] {
+            let n = id.clone();
+            self.pos += 1;
+            n
+        } else {
+            return Err(anyhow!(self.err("Expected type alias name after 'type'")));
+        };
+
+        self.expect_token(Token::Assign)?;
+        let target = self.parse_inline_type_until_semicolon()?;
+        self.expect_token(Token::Semicolon)?;
+        Ok(Stmt::TypeAlias { name, target })
+    }
+
     pub fn parse_struct_stmt(&mut self) -> Result<Stmt> {
         self.expect_token(Token::Struct)?;
 

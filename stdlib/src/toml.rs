@@ -1,15 +1,12 @@
 use anyhow::Result;
-use lkr_core::{
-    module::{self, Module},
-    val::{Val, de},
-    vm::VmContext,
+use lk_core::{
+    module::{self, ModuleProvider, RuntimeNativeExport, runtime_export_from_plain_native_entries},
+    val::{RuntimeVal, de},
+    vm::{NativeArgs, NativeRuntime, RuntimeExport},
 };
-use std::collections::HashMap;
 
 #[derive(Debug)]
-pub struct TomlModule {
-    functions: HashMap<String, Val>,
-}
+pub struct TomlModule;
 
 impl Default for TomlModule {
     fn default() -> Self {
@@ -19,13 +16,11 @@ impl Default for TomlModule {
 
 impl TomlModule {
     pub fn new() -> Self {
-        let mut functions = HashMap::new();
-        functions.insert("parse".to_string(), Val::RustFunction(parse));
-        TomlModule { functions }
+        Self
     }
 }
 
-impl Module for TomlModule {
+impl ModuleProvider for TomlModule {
     fn name(&self) -> &str {
         "toml"
     }
@@ -34,18 +29,55 @@ impl Module for TomlModule {
         Ok(())
     }
 
-    fn exports(&self) -> HashMap<String, Val> {
-        self.functions.clone()
+    fn runtime_exports(&self) -> Result<RuntimeExport> {
+        Ok(runtime_export_from_plain_native_entries(
+            &[RuntimeNativeExport::plain("parse", parse, 1)],
+            &[],
+        ))
     }
 }
 
-fn parse(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
-    if args.len() != 1 {
-        return Err(anyhow::anyhow!("toml.parse(data) requires 1 argument"));
-    }
-    let s: String = match &args[0] {
-        Val::Str(s) => s.as_ref().to_string(),
-        v => v.to_string(),
+fn parse(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+    crate::runtime_native::parse_format(args, runtime, "toml.parse", de::Format::Toml)
+}
+
+#[cfg(test)]
+mod tests {
+    use lk_core::{
+        val::{HeapValue, RuntimeVal},
+        vm::{NativeArgs, NativeFunction, NativeRuntime, RuntimeModuleState},
     };
-    de::parse_with_format(&s, Some(de::Format::Toml))
+
+    use crate::runtime_native::runtime_string_value;
+
+    use super::TomlModule;
+
+    #[test]
+    fn toml_parse_exports_runtime_native() {
+        let (arity, _) =
+            crate::runtime_native::runtime_native_export(&TomlModule::new(), "parse").expect("parse export");
+        assert_eq!(arity, 1);
+    }
+
+    #[test]
+    fn toml_parse_decodes_into_runtime_values() {
+        let (_, function) =
+            crate::runtime_native::runtime_native_export(&TomlModule::new(), "parse").expect("parse export");
+        let NativeFunction::Plain(function) = function else {
+            panic!("parse must be plain RuntimeNative");
+        };
+
+        let mut state = RuntimeModuleState::default();
+        let input = runtime_string_value("answer = 42", state.heap_mut());
+        let mut runtime = NativeRuntime::new(&mut state, None, None);
+        let result = function(NativeArgs::new(&[input]), &mut runtime).expect("parse");
+
+        let RuntimeVal::Obj(handle) = result else {
+            panic!("toml.parse should return runtime object");
+        };
+        let Some(HeapValue::Map(map)) = runtime.heap().get(handle) else {
+            panic!("toml.parse should return runtime map");
+        };
+        assert_eq!(map.get_str("answer"), Some(RuntimeVal::Int(42)));
+    }
 }

@@ -2,7 +2,7 @@ use regex::Regex;
 use ropey::Rope;
 use tower_lsp::lsp_types::{Position, TextDocumentContentChangeEvent};
 
-use lkr_core::token::{Span as CoreSpan, Token as CoreToken};
+use lk_core::token::{Span as CoreSpan, Token as CoreToken};
 
 // Convert LSP UTF-16 position to Rope char index (scalar values), clamped to the end of the line.
 pub(crate) fn position_to_char_idx(text: &Rope, pos: Position) -> usize {
@@ -213,23 +213,21 @@ pub(crate) fn collect_named_keys_in_args(slice: &str) -> Vec<String> {
                 i += 1;
             }
             _ => {
-                if paren == 1 {
-                    if bytes[i].is_ascii_alphabetic() || bytes[i] == b'_' {
-                        let start = i;
+                if paren == 1 && (bytes[i].is_ascii_alphabetic() || bytes[i] == b'_') {
+                    let start = i;
+                    i += 1;
+                    while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
                         i += 1;
-                        while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
-                            i += 1;
-                        }
-                        let end = i;
-                        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
-                            i += 1;
-                        }
-                        if i < bytes.len() && bytes[i] == b':' {
-                            let name = &slice[start..end];
-                            out.push(name.to_string());
-                        }
-                        continue;
                     }
+                    let end = i;
+                    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+                        i += 1;
+                    }
+                    if i < bytes.len() && bytes[i] == b':' {
+                        let name = &slice[start..end];
+                        out.push(name.to_string());
+                    }
+                    continue;
                 }
                 i += 1;
             }

@@ -1,0 +1,142 @@
+// Functional programming utilities — implemented in pure LK.
+
+// ── Composition ───────────────────────────────────────────
+
+/// Right-to-left function composition: compose(f, g)(x) == f(g(x))
+fn compose(f, g) {
+  return |x| f(g(x));
+}
+
+/// Left-to-right function composition (pipe): pipe(f, g)(x) == g(f(x))
+fn pipe(f, g) {
+  return |x| g(f(x));
+}
+
+/// Compose many functions right-to-left.
+fn compose_all(fns) {
+  return fns.reduce(|acc, f| compose(acc, f));
+}
+
+/// Pipeline many functions left-to-right.
+fn pipe_all(fns) {
+  return fns.reduce(|acc, f| pipe(acc, f));
+}
+
+// ── Currying & Partial Application ────────────────────────
+
+/// Create a curried version of a 2-arg function.
+fn curry2(f) {
+  return |a| |b| f(a, b);
+}
+
+/// Create a curried version of a 3-arg function.
+fn curry3(f) {
+  return |a| |b| |c| f(a, b, c);
+}
+
+/// Partial application: fix the first argument of a 2-arg function.
+fn partial1(f, a) {
+  return |b| f(a, b);
+}
+
+/// Partial application: fix the first two arguments of a 3-arg function.
+fn partial2(f, a, b) {
+  return |c| f(a, b, c);
+}
+
+// ── Identity & Constant ───────────────────────────────────
+
+/// Identity function.
+fn id(x) { return x; }
+
+/// Constant function — always returns `value`, ignoring its argument.
+fn constant(value) {
+  return |_x| value;
+}
+
+// ── Predicates ────────────────────────────────────────────
+
+/// Logical negation of a predicate.
+fn complement(pred) {
+  return |x| !pred(x);
+}
+
+/// Conjunction of two predicates.
+fn both(pred1, pred2) {
+  return |x| pred1(x) && pred2(x);
+}
+
+/// Disjunction of two predicates.
+fn either(pred1, pred2) {
+  return |x| pred1(x) || pred2(x);
+}
+
+// ── Higher-order list operations ──────────────────────────
+
+/// Apply a function N times, starting from the initial value.
+fn iterate(n, init, f) {
+  let result = init;
+  let i = 0;
+  while (i < n) {
+    result = f(result);
+    i += 1;
+  }
+  return result;
+}
+
+/// Scan (like reduce but returns all intermediate results).
+fn scan(list, init, f) {
+  let results = [];
+  let acc = init;
+  results.push(acc);
+  for item in list {
+    acc = f(acc, item);
+    results.push(acc);
+  }
+  return results;
+}
+
+/// Partition a list into two lists based on a predicate.
+fn partition(list, pred) {
+  let pass = [];
+  let fail = [];
+  for item in list {
+    if pred(item) { pass.push(item); }
+    else { fail.push(item); }
+  }
+  return [pass, fail];
+}
+
+/// Zip with a combining function.
+fn zip_with(list1, list2, f) {
+  let result = [];
+  let len = list1.len();
+  if list2.len() < len { len = list2.len(); }
+  let i = 0;
+  while (i < len) {
+    result.push(f(list1[i], list2[i]));
+    i += 1;
+  }
+  return result;
+}
+
+// ── Memoization ───────────────────────────────────────────
+
+/// Simple memoize for pure functions (single arg, string-coercible keys).
+fn memoize(f) {
+  let cache = {};
+  return |arg| {
+    if cache.has(arg) { return cache[arg]; }
+    let result = f(arg);
+    cache[arg] = result;
+    return result;
+  };
+}
+
+// ── Tap / Side effects ────────────────────────────────────
+
+/// Tap: execute a side-effect function and return the original value.
+fn tap(value, f) {
+  f(value);
+  return value;
+}

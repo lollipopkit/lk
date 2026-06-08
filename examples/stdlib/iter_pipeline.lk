@@ -1,0 +1,65 @@
+// Iterator and stream pipeline demo
+
+use iter;
+
+// 1. iter.range — generate number sequences
+let r1 = iter.range(5);        // [0,1,2,3,4]
+assert(r1 == [0, 1, 2, 3, 4]);
+
+let r2 = iter.range(2, 6);     // [2,3,4,5]
+assert(r2 == [2, 3, 4, 5]);
+
+let r3 = iter.range(0, 10, 2); // [0,2,4,6,8]
+assert(r3 == [0, 2, 4, 6, 8]);
+
+// 2. iter module functions
+let xs = [1, 2, 3, 4, 5];
+
+let m1 = iter.map(xs, |x| x * 3);
+assert(m1 == [3, 6, 9, 12, 15]);
+
+let f1 = iter.filter(xs, |x| x > 3);
+assert(f1 == [4, 5]);
+
+// 3. enumerate — index + value pairs
+let indexed = iter.enumerate(["a", "b", "c"]);
+assert(indexed == [[0, "a"], [1, "b"], [2, "c"]]);
+
+// 4. zip — pair elements from two lists
+let zipped = iter.zip([1, 2, 3], ["x", "y"]);
+assert(zipped == [[1, "x"], [2, "y"]]);
+
+// 5. take / skip via iter module
+let taken = iter.take(xs, 3);
+assert(taken == [1, 2, 3]);
+let skipped = iter.skip(xs, 3);
+assert(skipped == [4, 5]);
+
+// 6. chain — concatenate two lists
+let chained = iter.chain([1, 2], [3, 4]);
+assert(chained == [1, 2, 3, 4]);
+
+// 7. flatten — one-level deep
+let left = [1, 2];
+let middle = [3];
+let right = [4, 5];
+let flat = iter.flatten([left, middle, right]);
+assert(flat == [1, 2, 3, 4, 5]);
+
+// 8. unique — deduplicate
+let uniq = iter.unique([3, 1, 4, 1, 5, 9, 2, 6, 5]);
+assert(uniq == [3, 1, 4, 5, 9, 2, 6]);
+
+// 9. chunk — split into groups
+let chunks = iter.chunk([1, 2, 3, 4, 5], 2);
+assert(chunks.len() == 3);
+
+// 10. Pipeline: generate -> filter -> map -> reduce
+let pipeline_src = iter.range(1, 20);
+let pipeline_even = iter.filter(pipeline_src, |x| x % 2 == 0);
+let pipeline_squares = iter.map(pipeline_even, |x| x * x);
+let pipeline = iter.reduce(pipeline_squares, 0, |acc, x| acc + x);
+// Even squares 1..19: 4+16+36+64+100+144+196+256+324 = 1140
+assert(pipeline == 1140);
+
+println("iter_pipeline: all assertions passed");

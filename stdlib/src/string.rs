@@ -1,17 +1,17 @@
-use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Arc;
 
-use anyhow::{Result, anyhow};
-use lkr_core::{
-    module::{Module, ModuleRegistry},
-    val::{Val, methods::register_method},
-    vm::VmContext,
+use anyhow::{Result, anyhow, bail};
+use lk_core::{
+    module::{ModuleProvider, ModuleRegistry, RuntimeNativeExport, runtime_export_from_plain_native_entries},
+    val::{HeapStore, HeapValue, RuntimeVal, TypedList},
+    vm::{NativeArgs, NativeEntry, NativeRuntime, RuntimeExport},
 };
 
+use crate::runtime_native::{runtime_display_value, runtime_string_arg, runtime_string_value};
+
 #[derive(Debug)]
-pub struct StringModule {
-    functions: HashMap<String, Val>,
-}
+pub struct StringModule;
 
 impl Default for StringModule {
     fn default() -> Self {
@@ -21,244 +21,96 @@ impl Default for StringModule {
 
 impl StringModule {
     pub fn new() -> Self {
-        let mut functions = HashMap::new();
-
-        // Register string functions as Rust functions
-        functions.insert("len".to_string(), Val::RustFunction(Self::len));
-        functions.insert("lower".to_string(), Val::RustFunction(Self::lower));
-        functions.insert("upper".to_string(), Val::RustFunction(Self::upper));
-        functions.insert("trim".to_string(), Val::RustFunction(Self::trim));
-        functions.insert("starts_with".to_string(), Val::RustFunction(Self::starts_with));
-        functions.insert("ends_with".to_string(), Val::RustFunction(Self::ends_with));
-        functions.insert("contains".to_string(), Val::RustFunction(Self::contains));
-        functions.insert("replace".to_string(), Val::RustFunctionNamed(Self::replace));
-        functions.insert("substring".to_string(), Val::RustFunction(Self::substring));
-        functions.insert("split".to_string(), Val::RustFunction(Self::split));
-        functions.insert("join".to_string(), Val::RustFunction(Self::join));
-        functions.insert("reverse".to_string(), Val::RustFunction(Self::reverse));
-        functions.insert("repeat".to_string(), Val::RustFunction(Self::repeat));
-        functions.insert("char".to_string(), Val::RustFunction(Self::char_at));
-        functions.insert("byte".to_string(), Val::RustFunction(Self::byte_at));
-        functions.insert("chars".to_string(), Val::RustFunction(Self::chars));
-        functions.insert("find".to_string(), Val::RustFunction(Self::find));
-        functions.insert("is_empty".to_string(), Val::RustFunction(Self::is_empty));
-        functions.insert("format".to_string(), Val::RustFunction(Self::format));
-
-        // Also register as meta-methods for String type
-        register_method("String", "len", Self::len);
-        register_method("String", "lower", Self::lower);
-        register_method("String", "upper", Self::upper);
-        register_method("String", "trim", Self::trim);
-        register_method("String", "starts_with", Self::starts_with);
-        register_method("String", "ends_with", Self::ends_with);
-        register_method("String", "contains", Self::contains);
-        register_method("String", "replace", Self::replace_method);
-        register_method("String", "substring", Self::substring);
-        register_method("String", "split", Self::split);
-        register_method("String", "join", Self::join);
-
-        register_method("String", "reverse", Self::reverse);
-        register_method("String", "repeat", Self::repeat);
-        register_method("String", "char", Self::char_at);
-        register_method("String", "byte", Self::byte_at);
-        register_method("String", "chars", Self::chars);
-        register_method("String", "find", Self::find);
-        register_method("String", "is_empty", Self::is_empty);
-
-        Self { functions }
+        Self
     }
 
-    /// Get string length
-    fn len(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
-        if args.len() != 1 {
-            return Err(anyhow!("len() takes exactly 1 argument"));
-        }
-
-        match &args[0] {
-            Val::Str(s) => Ok(Val::Int(s.len() as i64)),
-            _ => Err(anyhow!("len() argument must be a string")),
-        }
+    fn len(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let value = one_string(args, runtime, "len()")?;
+        Ok(RuntimeVal::Int(value.len() as i64))
     }
 
-    /// Convert to lowercase
-    fn lower(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
-        if args.len() != 1 {
-            return Err(anyhow!("lower() takes exactly 1 argument"));
-        }
-
-        match &args[0] {
-            Val::Str(s) => Ok(Val::Str(s.to_lowercase().into())),
-            _ => Err(anyhow!("lower() argument must be a string")),
-        }
+    fn lower(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let value = one_string(args, runtime, "lower()")?;
+        Ok(runtime_string_value(&value.to_lowercase(), runtime.heap_mut()))
     }
 
-    /// Convert to uppercase
-    fn upper(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
-        if args.len() != 1 {
-            return Err(anyhow!("upper() takes exactly 1 argument"));
-        }
-
-        match &args[0] {
-            Val::Str(s) => Ok(Val::Str(s.to_uppercase().into())),
-            _ => Err(anyhow!("upper() argument must be a string")),
-        }
+    fn upper(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let value = one_string(args, runtime, "upper()")?;
+        Ok(runtime_string_value(&value.to_uppercase(), runtime.heap_mut()))
     }
 
-    /// Trim whitespace from both ends
-    fn trim(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
-        if args.len() != 1 {
-            return Err(anyhow!("trim() takes exactly 1 argument"));
-        }
-
-        match &args[0] {
-            Val::Str(s) => Ok(Val::Str(s.trim().into())),
-            _ => Err(anyhow!("trim() argument must be a string")),
-        }
+    fn trim(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let value = one_string(args, runtime, "trim()")?;
+        Ok(runtime_string_value(value.trim(), runtime.heap_mut()))
     }
 
-    /// Check if string starts with prefix
-    fn starts_with(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
-        if args.len() != 2 {
-            return Err(anyhow!("starts_with() takes exactly 2 arguments: string, prefix"));
-        }
-
-        let string = match &args[0] {
-            Val::Str(s) => &**s,
-            _ => {
-                return Err(anyhow!("starts_with() first argument must be a string"));
-            }
-        };
-
-        let prefix = match &args[1] {
-            Val::Str(p) => &**p,
-            _ => {
-                return Err(anyhow!("starts_with() second argument must be a string"));
-            }
-        };
-
-        Ok(Val::Bool(string.starts_with(prefix)))
+    fn starts_with(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let (value, prefix) = two_strings(args, runtime, "starts_with()")?;
+        Ok(RuntimeVal::Bool(value.starts_with(prefix.as_ref())))
     }
 
-    /// Check if string ends with suffix
-    fn ends_with(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
-        if args.len() != 2 {
-            return Err(anyhow!("ends_with() takes exactly 2 arguments: string, suffix"));
-        }
-
-        let string = match &args[0] {
-            Val::Str(s) => &**s,
-            _ => {
-                return Err(anyhow!("ends_with() first argument must be a string"));
-            }
-        };
-
-        let suffix = match &args[1] {
-            Val::Str(s) => &**s,
-            _ => {
-                return Err(anyhow!("ends_with() second argument must be a string"));
-            }
-        };
-
-        Ok(Val::Bool(string.ends_with(suffix)))
+    fn ends_with(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let (value, suffix) = two_strings(args, runtime, "ends_with()")?;
+        Ok(RuntimeVal::Bool(value.ends_with(suffix.as_ref())))
     }
 
-    /// Check if string contains substring
-    fn contains(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
-        if args.len() != 2 {
-            return Err(anyhow!("contains() takes exactly 2 arguments: string, substring"));
-        }
-
-        let string = match &args[0] {
-            Val::Str(s) => &**s,
-            _ => {
-                return Err(anyhow!("contains() first argument must be a string"));
-            }
-        };
-
-        let substring = match &args[1] {
-            Val::Str(s) => &**s,
-            _ => {
-                return Err(anyhow!("contains() second argument must be a string"));
-            }
-        };
-
-        Ok(Val::Bool(string.contains(substring)))
+    fn contains(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let (value, needle) = two_strings(args, runtime, "contains()")?;
+        Ok(RuntimeVal::Bool(value.contains(needle.as_ref())))
     }
 
-    /// Replace occurrences of substring with support for named parameters.
-    /// Usage examples:
-    /// - string.replace("foo", "o", "a")                // legacy positional API (replaces all)
-    /// - string.replace("foo", pattern: "o", with: "a") // named API (defaults to first occurrence)
-    /// - string.replace("foo", pattern: "o", with: "a", all: true)
-    fn replace(pos: &[Val], named: &[(String, Val)], _ctx: &mut VmContext) -> Result<Val> {
+    fn replace(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let pos = args.as_slice();
         if pos.is_empty() {
-            return Err(anyhow!(
-                "replace() requires at least the source string as the first argument"
-            ));
+            bail!("replace() requires at least the source string as the first argument");
         }
         if pos.len() > 4 {
-            return Err(anyhow!(
-                "replace() received too many positional arguments (expected at most 4)"
-            ));
+            bail!("replace() received too many positional arguments (expected at most 4)");
         }
 
-        let extract_str = |val: &Val, ctx: &str| -> Result<String> {
-            match val {
-                Val::Str(s) => Ok(s.as_ref().to_string()),
-                _ => Err(anyhow!("replace() {} must be a string", ctx)),
-            }
-        };
-        let extract_bool = |val: &Val, ctx: &str| -> Result<bool> {
-            match val {
-                Val::Bool(b) => Ok(*b),
-                _ => Err(anyhow!("replace() {} must be a boolean", ctx)),
-            }
-        };
-
-        let source = match &pos[0] {
-            Val::Str(s) => s.as_ref().to_string(),
-            _ => return Err(anyhow!("replace() first argument must be a string")),
-        };
-
-        let mut pattern: Option<String> = None;
-        let mut with: Option<String> = None;
-        let mut all_flag: Option<bool> = None;
+        let source = runtime_string_arg(&pos[0], runtime.heap(), "replace() first argument")?;
+        let mut pattern = None;
+        let mut with = None;
+        let mut all_flag = None;
         let mut used_named_core = false;
 
         if pos.len() >= 2 {
-            pattern = Some(extract_str(&pos[1], "second argument (pattern)")?);
+            pattern = Some(runtime_string_arg(
+                &pos[1],
+                runtime.heap(),
+                "replace() second argument (pattern)",
+            )?);
         }
         if pos.len() >= 3 {
-            with = Some(extract_str(&pos[2], "third argument (with)")?);
+            with = Some(runtime_string_arg(
+                &pos[2],
+                runtime.heap(),
+                "replace() third argument (with)",
+            )?);
         }
         if pos.len() >= 4 {
-            all_flag = Some(extract_bool(&pos[3], "fourth argument (all flag)")?);
+            all_flag = Some(bool_arg(&pos[3], "replace() fourth argument (all flag)")?);
         }
 
-        use std::collections::HashSet;
-        let mut seen: HashSet<&str> = HashSet::with_capacity(named.len());
-        for (name, value) in named {
-            let key = name.as_str();
-            if !seen.insert(key) {
-                return Err(anyhow!("replace() received duplicate named argument '{}'", name));
+        let mut seen = HashSet::with_capacity(args.named_len());
+        args.try_for_each_named(runtime.heap(), |name, value| {
+            if !seen.insert(name.to_string()) {
+                bail!("replace() received duplicate named argument '{}'", name);
             }
-            match key {
+            match name {
                 "pattern" => {
-                    pattern = Some(extract_str(value, "named 'pattern'")?);
+                    pattern = Some(runtime_string_arg(value, runtime.heap(), "replace() named 'pattern'")?);
                     used_named_core = true;
                 }
                 "with" => {
-                    with = Some(extract_str(value, "named 'with'")?);
+                    with = Some(runtime_string_arg(value, runtime.heap(), "replace() named 'with'")?);
                     used_named_core = true;
                 }
-                "all" => {
-                    all_flag = Some(extract_bool(value, "named 'all'")?);
-                }
-                other => {
-                    return Err(anyhow!("replace() does not accept named argument '{}'", other));
-                }
+                "all" => all_flag = Some(bool_arg(value, "replace() named 'all'")?),
+                other => bail!("replace() does not accept named argument '{}'", other),
             }
-        }
+            Ok(())
+        })?;
 
         let pattern = pattern.ok_or_else(|| {
             anyhow!("replace() requires a pattern string (provide it positionally or via named 'pattern')")
@@ -266,278 +118,312 @@ impl StringModule {
         let with = with.ok_or_else(|| {
             anyhow!("replace() requires a replacement string (provide it positionally or via named 'with')")
         })?;
-
-        let default_all = !used_named_core;
-        let all = all_flag.unwrap_or(default_all);
-
+        let all = all_flag.unwrap_or(!used_named_core);
         let result = if all {
-            source.replace(pattern.as_str(), with.as_str())
+            source.replace(pattern.as_ref(), with.as_ref())
         } else {
-            source.replacen(pattern.as_str(), with.as_str(), 1)
+            source.replacen(pattern.as_ref(), with.as_ref(), 1)
         };
-
-        Ok(Val::Str(result.into()))
+        Ok(runtime_string_value(&result, runtime.heap_mut()))
     }
 
-    fn replace_method(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
-        Self::replace(args, &[], ctx)
+    fn substring(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        expect_arity(args, 3, "substring()")?;
+        let values = args.as_slice();
+        let value = runtime_string_arg(&values[0], runtime.heap(), "substring() first argument")?;
+        let start = usize_arg(&values[1], "substring() second argument")?;
+        let length = usize_arg(&values[2], "substring() third argument")?;
+        if start > value.len() {
+            bail!("substring() start index out of bounds");
+        }
+        let end = std::cmp::min(start + length, value.len());
+        Ok(runtime_string_value(&value[start..end], runtime.heap_mut()))
     }
 
-    /// Extract substring
-    fn substring(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
-        if args.len() != 3 {
-            return Err(anyhow!("substring() takes exactly 3 arguments: string, start, length"));
-        }
-
-        let string = match &args[0] {
-            Val::Str(s) => &**s,
-            _ => {
-                return Err(anyhow!("substring() first argument must be a string"));
+    fn split(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let (value, delimiter) = two_strings(args, runtime, "split()")?;
+        let mut parts = Vec::new();
+        if delimiter.is_empty() {
+            for value in value.chars() {
+                parts.push(Arc::<str>::from(value.to_string()));
             }
-        };
-
-        let start = match &args[1] {
-            Val::Int(i) => *i as usize,
-            _ => {
-                return Err(anyhow!("substring() second argument must be an integer"));
-            }
-        };
-
-        let length = match &args[2] {
-            Val::Int(i) => *i as usize,
-            _ => {
-                return Err(anyhow!("substring() third argument must be an integer"));
-            }
-        };
-
-        if start > string.len() {
-            return Err(anyhow!("substring() start index out of bounds"));
-        }
-
-        let end = std::cmp::min(start + length, string.len());
-        Ok(Val::Str(string[start..end].into()))
-    }
-
-    /// Split string by delimiter
-    fn split(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
-        if args.len() != 2 {
-            return Err(anyhow!("split() takes exactly 2 arguments: string, delimiter"));
-        }
-
-        let string = match &args[0] {
-            Val::Str(s) => &**s,
-            _ => return Err(anyhow!("split() first argument must be a string")),
-        };
-
-        let delimiter = match &args[1] {
-            Val::Str(d) => &**d,
-            _ => return Err(anyhow!("split() second argument must be a string")),
-        };
-
-        let parts: Vec<Val> = if delimiter.is_empty() {
-            string.chars().map(|c| Val::Str(c.to_string().into())).collect()
         } else {
-            string.split(delimiter).map(|s| Val::Str(s.into())).collect()
-        };
-
-        Ok(Val::List(Arc::from(parts)))
-    }
-
-    /// Reverse a string
-    fn reverse(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
-        if args.len() != 1 {
-            return Err(anyhow!("reverse() takes exactly 1 argument"));
-        }
-        match &args[0] {
-            Val::Str(s) => Ok(Val::Str(s.chars().rev().collect::<String>().into())),
-            _ => Err(anyhow!("reverse() argument must be a string")),
-        }
-    }
-
-    /// Repeat a string n times
-    fn repeat(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
-        if args.len() != 2 {
-            return Err(anyhow!("repeat() takes exactly 2 arguments: string, count"));
-        }
-        let s = match &args[0] {
-            Val::Str(s) => &**s,
-            _ => return Err(anyhow!("repeat() first argument must be a string")),
-        };
-        let n = match &args[1] {
-            Val::Int(i) => *i,
-            _ => return Err(anyhow!("repeat() second argument must be an integer")),
-        };
-        if n < 0 {
-            return Err(anyhow!("repeat() count must be non-negative"));
-        }
-        Ok(Val::Str(s.repeat(n as usize).into()))
-    }
-
-    /// Get character at index (returns single-char string)
-    fn char_at(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
-        if args.len() != 2 {
-            return Err(anyhow!("char() takes exactly 2 arguments: string, index"));
-        }
-        let s = match &args[0] {
-            Val::Str(s) => &**s,
-            _ => return Err(anyhow!("char() first argument must be a string")),
-        };
-        let idx = match &args[1] {
-            Val::Int(i) => *i as usize,
-            _ => return Err(anyhow!("char() second argument must be an integer")),
-        };
-        match s.chars().nth(idx) {
-            Some(c) => Ok(Val::Str(c.to_string().into())),
-            None => Ok(Val::Nil),
-        }
-    }
-
-    /// Get byte value of character at index
-    fn byte_at(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
-        if args.len() != 2 {
-            return Err(anyhow!("byte() takes exactly 2 arguments: string, index"));
-        }
-        let s = match &args[0] {
-            Val::Str(s) => &**s,
-            _ => return Err(anyhow!("byte() first argument must be a string")),
-        };
-        let idx = match &args[1] {
-            Val::Int(i) => *i as usize,
-            _ => return Err(anyhow!("byte() second argument must be an integer")),
-        };
-        match s.as_bytes().get(idx) {
-            Some(b) => Ok(Val::Int(*b as i64)),
-            None => Ok(Val::Nil),
-        }
-    }
-
-    /// Convert string to list of characters
-    fn chars(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
-        if args.len() != 1 {
-            return Err(anyhow!("chars() takes exactly 1 argument"));
-        }
-        match &args[0] {
-            Val::Str(s) => {
-                let list: Vec<Val> = s.chars().map(|c| Val::Str(c.to_string().into())).collect();
-                Ok(Val::List(Arc::from(list)))
+            for value in value.split(delimiter.as_ref()) {
+                parts.push(Arc::<str>::from(value));
             }
-            _ => Err(anyhow!("chars() argument must be a string")),
         }
+        Ok(RuntimeVal::Obj(
+            runtime.heap_mut().alloc(HeapValue::List(TypedList::String(parts))),
+        ))
     }
 
-    /// Find substring position (returns index or nil)
-    fn find(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn join(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        expect_arity(args, 2, "join()")?;
+        let values = args.as_slice();
+        let strings = string_list_arg(&values[0], runtime.heap(), "join() first argument")?;
+        let delimiter = runtime_string_arg(&values[1], runtime.heap(), "join() second argument")?;
+        Ok(runtime_string_value(
+            &strings.join(delimiter.as_ref()),
+            runtime.heap_mut(),
+        ))
+    }
+
+    fn reverse(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let value = one_string(args, runtime, "reverse()")?;
+        let mut reversed = String::new();
+        for value in value.chars().rev() {
+            reversed.push(value);
+        }
+        Ok(runtime_string_value(&reversed, runtime.heap_mut()))
+    }
+
+    fn repeat(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        expect_arity(args, 2, "repeat()")?;
+        let values = args.as_slice();
+        let value = runtime_string_arg(&values[0], runtime.heap(), "repeat() first argument")?;
+        let count = int_arg(&values[1], "repeat() second argument")?;
+        if count < 0 {
+            bail!("repeat() count must be non-negative");
+        }
+        Ok(runtime_string_value(&value.repeat(count as usize), runtime.heap_mut()))
+    }
+
+    fn char_at(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        expect_arity(args, 2, "char()")?;
+        let values = args.as_slice();
+        let value = runtime_string_arg(&values[0], runtime.heap(), "char() first argument")?;
+        let index = usize_arg(&values[1], "char() second argument")?;
+        Ok(value.chars().nth(index).map_or(RuntimeVal::Nil, |value| {
+            runtime_string_value(&value.to_string(), runtime.heap_mut())
+        }))
+    }
+
+    fn byte_at(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        expect_arity(args, 2, "byte()")?;
+        let values = args.as_slice();
+        let value = runtime_string_arg(&values[0], runtime.heap(), "byte() first argument")?;
+        let index = usize_arg(&values[1], "byte() second argument")?;
+        Ok(value
+            .as_bytes()
+            .get(index)
+            .map_or(RuntimeVal::Nil, |value| RuntimeVal::Int(*value as i64)))
+    }
+
+    fn chars(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let value = one_string(args, runtime, "chars()")?;
+        let mut chars = Vec::new();
+        for value in value.chars() {
+            chars.push(Arc::<str>::from(value.to_string()));
+        }
+        Ok(RuntimeVal::Obj(
+            runtime.heap_mut().alloc(HeapValue::List(TypedList::String(chars))),
+        ))
+    }
+
+    fn find(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         if args.len() != 2 && args.len() != 3 {
-            return Err(anyhow!("find() takes 2 or 3 arguments: string, pattern[, start]"));
+            bail!("find() takes 2 or 3 arguments: string, pattern[, start]");
         }
-        let s = match &args[0] {
-            Val::Str(s) => &**s,
-            _ => return Err(anyhow!("find() first argument must be a string")),
-        };
-        let pattern = match &args[1] {
-            Val::Str(p) => &**p,
-            _ => return Err(anyhow!("find() second argument must be a string")),
-        };
-        let start = if args.len() >= 3 {
-            match &args[2] {
-                Val::Int(i) => *i as usize,
-                _ => return Err(anyhow!("find() third argument must be an integer")),
-            }
+        let values = args.as_slice();
+        let value = runtime_string_arg(&values[0], runtime.heap(), "find() first argument")?;
+        let pattern = runtime_string_arg(&values[1], runtime.heap(), "find() second argument")?;
+        let start = if values.len() == 3 {
+            usize_arg(&values[2], "find() third argument")?
         } else {
             0
         };
-        if start > s.len() {
-            return Ok(Val::Nil);
+        if start > value.len() {
+            return Ok(RuntimeVal::Nil);
         }
-        match s[start..].find(pattern) {
-            Some(idx) => Ok(Val::Int((start + idx) as i64)),
-            None => Ok(Val::Nil),
-        }
+        Ok(value[start..]
+            .find(pattern.as_ref())
+            .map_or(RuntimeVal::Nil, |index| RuntimeVal::Int((start + index) as i64)))
     }
 
-    /// Check if string is empty
-    fn is_empty(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
-        if args.len() != 1 {
-            return Err(anyhow!("is_empty() takes exactly 1 argument"));
-        }
-        match &args[0] {
-            Val::Str(s) => Ok(Val::Bool(s.is_empty())),
-            _ => Err(anyhow!("is_empty() argument must be a string")),
-        }
+    fn is_empty(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let value = one_string(args, runtime, "is_empty()")?;
+        Ok(RuntimeVal::Bool(value.is_empty()))
     }
 
-    /// Format string (simple positional formatting)
-    fn format(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
+    fn format(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         if args.is_empty() {
-            return Err(anyhow!("format() requires at least 1 argument (format string)"));
+            bail!("format() requires at least 1 argument (format string)");
         }
-        let fmt = match &args[0] {
-            Val::Str(s) => s.clone(),
-            _ => return Err(anyhow!("format() first argument must be a string")),
-        };
-        let rest = &args[1..];
+        let values = args.as_slice();
+        let fmt = runtime_string_arg(&values[0], runtime.heap(), "format() first argument")?;
+        let rest = &values[1..];
         let mut out = String::with_capacity(fmt.len());
-        let chars: Vec<char> = fmt.chars().collect();
-        let mut i = 0usize;
-        let mut arg_idx = 0usize;
-        while i < chars.len() {
-            if chars[i] == '{' && i + 1 < chars.len() && chars[i + 1] == '}' {
-                if arg_idx < rest.len() {
-                    out.push_str(&rest[arg_idx].display_string(Some(ctx)));
-                    arg_idx += 1;
+        let mut chars = fmt.chars().peekable();
+        let mut arg_index = 0usize;
+        while let Some(ch) = chars.next() {
+            if ch == '{' && chars.peek() == Some(&'}') {
+                chars.next();
+                if arg_index < rest.len() {
+                    out.push_str(&runtime_display_value(&rest[arg_index], runtime.heap())?);
+                    arg_index += 1;
                 } else {
                     out.push_str("{}");
                 }
-                i += 2;
             } else {
-                out.push(chars[i]);
-                i += 1;
+                out.push(ch);
             }
         }
-        // Append any remaining args
-        if arg_idx < rest.len() {
+        if arg_index < rest.len() {
             if !out.is_empty() {
                 out.push(' ');
             }
-            for (j, v) in rest[arg_idx..].iter().enumerate() {
-                if j > 0 {
+            for (index, value) in rest[arg_index..].iter().enumerate() {
+                if index > 0 {
                     out.push(' ');
                 }
-                out.push_str(&v.display_string(Some(ctx)));
+                out.push_str(&runtime_display_value(value, runtime.heap())?);
             }
         }
-        Ok(Val::Str(out.into()))
+        Ok(runtime_string_value(&out, runtime.heap_mut()))
     }
 
-    /// Join list of strings with delimiter
-    fn join(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
-        if args.len() != 2 {
-            return Err(anyhow!("join() takes exactly 2 arguments: list, delimiter"));
+    fn strip(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let (value, pattern) = two_strings(args, runtime, "strip()")?;
+        Ok(value
+            .strip_prefix(pattern.as_ref())
+            .or_else(|| value.strip_suffix(pattern.as_ref()))
+            .map_or(RuntimeVal::Nil, |s| runtime_string_value(s, runtime.heap_mut())))
+    }
+
+    fn strip_prefix(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let (value, prefix) = two_strings(args, runtime, "strip_prefix()")?;
+        Ok(value
+            .strip_prefix(prefix.as_ref())
+            .map_or(RuntimeVal::Nil, |s| runtime_string_value(s, runtime.heap_mut())))
+    }
+
+    fn strip_suffix(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let (value, suffix) = two_strings(args, runtime, "strip_suffix()")?;
+        Ok(value
+            .strip_suffix(suffix.as_ref())
+            .map_or(RuntimeVal::Nil, |s| runtime_string_value(s, runtime.heap_mut())))
+    }
+
+    fn count(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let (value, pattern) = two_strings(args, runtime, "count()")?;
+        if pattern.is_empty() {
+            // Count empty pattern matches between each char + at start and end
+            return Ok(RuntimeVal::Int(value.len() as i64 + 1));
         }
+        Ok(RuntimeVal::Int(value.matches(pattern.as_ref()).count() as i64))
+    }
 
-        let list = match &args[0] {
-            Val::List(l) => &**l,
-            _ => return Err(anyhow!("join() first argument must be a list")),
+    fn pad_left(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        if args.len() < 2 || args.len() > 3 {
+            bail!("pad_left() takes 2 or 3 arguments: string, width[, fill]");
+        }
+        let values = args.as_slice();
+        let value = runtime_string_arg(&values[0], runtime.heap(), "pad_left() string")?;
+        let width = usize_arg(&values[1], "pad_left() width")?;
+        let fill = if values.len() >= 3 {
+            let f = runtime_string_arg(&values[2], runtime.heap(), "pad_left() fill")?;
+            if f.is_empty() {
+                bail!("pad_left() fill must not be empty");
+            }
+            f.to_string()
+        } else {
+            " ".to_string()
         };
+        if width <= value.len() {
+            return Ok(runtime_string_value(value.as_ref(), runtime.heap_mut()));
+        }
+        let needed = width - value.len();
+        let pad = fill.repeat(needed / fill.len() + 1);
+        let padded = format!("{}{}", &pad[pad.len() - needed..], value.as_ref());
+        Ok(runtime_string_value(&padded, runtime.heap_mut()))
+    }
 
-        let delimiter = match &args[1] {
-            Val::Str(d) => &**d,
-            _ => return Err(anyhow!("join() second argument must be a string")),
+    fn pad_right(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        if args.len() < 2 || args.len() > 3 {
+            bail!("pad_right() takes 2 or 3 arguments: string, width[, fill]");
+        }
+        let values = args.as_slice();
+        let value = runtime_string_arg(&values[0], runtime.heap(), "pad_right() string")?;
+        let width = usize_arg(&values[1], "pad_right() width")?;
+        let fill = if values.len() >= 3 {
+            let f = runtime_string_arg(&values[2], runtime.heap(), "pad_right() fill")?;
+            if f.is_empty() {
+                bail!("pad_right() fill must not be empty");
+            }
+            f.to_string()
+        } else {
+            " ".to_string()
         };
+        if width <= value.len() {
+            return Ok(runtime_string_value(value.as_ref(), runtime.heap_mut()));
+        }
+        let needed = width - value.len();
+        let pad = fill.repeat(needed / fill.len() + 1);
+        let padded = format!("{}{}", value.as_ref(), &pad[..needed]);
+        Ok(runtime_string_value(&padded, runtime.heap_mut()))
+    }
 
-        let mut strings = Vec::new();
-        for item in list {
-            match item {
-                Val::Str(s) => strings.push(&**s),
-                _ => return Err(anyhow!("join() list must contain only strings")),
+    fn to_int(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        expect_arity(args, 1, "to_int()")?;
+        match &args.as_slice()[0] {
+            RuntimeVal::Int(v) => Ok(RuntimeVal::Int(*v)),
+            RuntimeVal::Float(v) => Ok(RuntimeVal::Int(*v as i64)),
+            RuntimeVal::Bool(v) => Ok(RuntimeVal::Int(if *v { 1 } else { 0 })),
+            _ => bail!("to_int() argument must be a number or bool"),
+        }
+    }
+
+    fn to_float(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        expect_arity(args, 1, "to_float()")?;
+        match &args.as_slice()[0] {
+            RuntimeVal::Float(v) => Ok(RuntimeVal::Float(*v)),
+            RuntimeVal::Int(v) => Ok(RuntimeVal::Float(*v as f64)),
+            RuntimeVal::Bool(v) => Ok(RuntimeVal::Float(if *v { 1.0 } else { 0.0 })),
+            _ => bail!("to_float() argument must be a number or bool"),
+        }
+    }
+
+    fn title(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let value = one_string(args, runtime, "title()")?;
+        let mut result = String::with_capacity(value.len());
+        let mut capitalize_next = true;
+        for ch in value.chars() {
+            if ch.is_whitespace() {
+                capitalize_next = true;
+                result.push(ch);
+            } else if capitalize_next {
+                for c in ch.to_uppercase() {
+                    result.push(c);
+                }
+                capitalize_next = false;
+            } else {
+                for c in ch.to_lowercase() {
+                    result.push(c);
+                }
             }
         }
+        Ok(runtime_string_value(&result, runtime.heap_mut()))
+    }
 
-        Ok(Val::Str(strings.join(delimiter).into()))
+    fn capitalize(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let value = one_string(args, runtime, "capitalize()")?;
+        let mut chars = value.chars();
+        let mut result = String::with_capacity(value.len());
+        if let Some(first) = chars.next() {
+            for c in first.to_uppercase() {
+                result.push(c);
+            }
+        }
+        for ch in chars {
+            for c in ch.to_lowercase() {
+                result.push(c);
+            }
+        }
+        Ok(runtime_string_value(&result, runtime.heap_mut()))
     }
 }
 
-impl Module for StringModule {
+impl ModuleProvider for StringModule {
     fn name(&self) -> &str {
         "string"
     }
@@ -547,11 +433,120 @@ impl Module for StringModule {
     }
 
     fn register(&self, _registry: &mut ModuleRegistry) -> Result<()> {
-        // Don't register functions globally - they should be accessed via module.function()
         Ok(())
     }
 
-    fn exports(&self) -> HashMap<String, Val> {
-        self.functions.clone()
+    fn runtime_exports(&self) -> Result<RuntimeExport> {
+        Ok(runtime_export_from_plain_native_entries(
+            &[
+                RuntimeNativeExport::plain("len", Self::len, 1),
+                RuntimeNativeExport::plain("lower", Self::lower, 1),
+                RuntimeNativeExport::plain("upper", Self::upper, 1),
+                RuntimeNativeExport::plain("trim", Self::trim, 1),
+                RuntimeNativeExport::plain("starts_with", Self::starts_with, 2),
+                RuntimeNativeExport::plain("ends_with", Self::ends_with, 2),
+                RuntimeNativeExport::plain("contains", Self::contains, 2),
+                RuntimeNativeExport::plain("replace", Self::replace, NativeEntry::VARIADIC),
+                RuntimeNativeExport::plain("substring", Self::substring, 3),
+                RuntimeNativeExport::plain("split", Self::split, 2),
+                RuntimeNativeExport::plain("join", Self::join, 2),
+                RuntimeNativeExport::plain("reverse", Self::reverse, 1),
+                RuntimeNativeExport::plain("repeat", Self::repeat, 2),
+                RuntimeNativeExport::plain("char", Self::char_at, 2),
+                RuntimeNativeExport::plain("byte", Self::byte_at, 2),
+                RuntimeNativeExport::plain("chars", Self::chars, 1),
+                RuntimeNativeExport::plain("find", Self::find, NativeEntry::VARIADIC),
+                RuntimeNativeExport::plain("is_empty", Self::is_empty, 1),
+                RuntimeNativeExport::plain("format", Self::format, NativeEntry::VARIADIC),
+                RuntimeNativeExport::plain("strip", Self::strip, 2),
+                RuntimeNativeExport::plain("strip_prefix", Self::strip_prefix, 2),
+                RuntimeNativeExport::plain("strip_suffix", Self::strip_suffix, 2),
+                RuntimeNativeExport::plain("count", Self::count, 2),
+                RuntimeNativeExport::plain("pad_left", Self::pad_left, 3),
+                RuntimeNativeExport::plain("pad_right", Self::pad_right, 3),
+                RuntimeNativeExport::plain("to_int", Self::to_int, 1),
+                RuntimeNativeExport::plain("to_float", Self::to_float, 1),
+                RuntimeNativeExport::plain("title", Self::title, 1),
+                RuntimeNativeExport::plain("capitalize", Self::capitalize, 1),
+            ],
+            &[],
+        ))
+    }
+}
+
+fn expect_arity(args: NativeArgs<'_>, expected: usize, name: &str) -> Result<()> {
+    if args.len() == expected {
+        Ok(())
+    } else {
+        bail!(
+            "{name} takes exactly {expected} argument{}",
+            if expected == 1 { "" } else { "s" }
+        )
+    }
+}
+
+fn one_string(args: NativeArgs<'_>, runtime: &NativeRuntime<'_>, name: &str) -> Result<Arc<str>> {
+    expect_arity(args, 1, name)?;
+    runtime_string_arg(&args.as_slice()[0], runtime.heap(), name)
+}
+
+fn two_strings(args: NativeArgs<'_>, runtime: &NativeRuntime<'_>, name: &str) -> Result<(Arc<str>, Arc<str>)> {
+    expect_arity(args, 2, name)?;
+    let values = args.as_slice();
+    Ok((
+        runtime_string_arg(&values[0], runtime.heap(), name)?,
+        runtime_string_arg(&values[1], runtime.heap(), name)?,
+    ))
+}
+
+fn int_arg(value: &RuntimeVal, context: &str) -> Result<i64> {
+    match value {
+        RuntimeVal::Int(value) => Ok(*value),
+        _ => Err(anyhow!("{context} must be an integer")),
+    }
+}
+
+fn usize_arg(value: &RuntimeVal, context: &str) -> Result<usize> {
+    let value = int_arg(value, context)?;
+    if value < 0 {
+        bail!("{context} must be non-negative");
+    }
+    Ok(value as usize)
+}
+
+fn bool_arg(value: &RuntimeVal, context: &str) -> Result<bool> {
+    match value {
+        RuntimeVal::Bool(value) => Ok(*value),
+        _ => Err(anyhow!("{context} must be a boolean")),
+    }
+}
+
+fn string_list_arg(value: &RuntimeVal, heap: &HeapStore, context: &str) -> Result<Vec<String>> {
+    let RuntimeVal::Obj(handle) = value else {
+        bail!("{context} must be a list");
+    };
+    let Some(HeapValue::List(list)) = heap.get(*handle) else {
+        bail!("{context} must be a list");
+    };
+    match list {
+        TypedList::String(values) => {
+            let mut out = Vec::with_capacity(values.len());
+            for value in values {
+                out.push(value.to_string());
+            }
+            Ok(out)
+        }
+        TypedList::Mixed(values) => {
+            let mut out = Vec::with_capacity(values.len());
+            for value in values {
+                out.push(
+                    runtime_string_arg(value, heap, context)
+                        .map(|value| value.to_string())
+                        .map_err(|_| anyhow!("join() list must contain only strings"))?,
+                );
+            }
+            Ok(out)
+        }
+        _ => Err(anyhow!("join() list must contain only strings")),
     }
 }

@@ -1,0 +1,57 @@
+// Map operations demo
+
+// 1. Map creation and access — keys must be quoted strings in map literals
+let person = { "name": "Alice", "age": 30, "active": true };
+assert(person.name == "Alice");
+assert(person["age"] == 30);
+
+// 2. Map methods
+assert(person.len() == 3);
+assert(person.has("name"));
+assert(!person.has("email"));
+
+// 3. Keys and values
+let keys = person.keys();
+let vals = person.values();
+assert(keys.len() == 3);
+assert(vals.len() == 3);
+
+// 4. Nested maps
+let config = {
+  "db": { "host": "localhost", "port": 5432 },
+  "cache": { "ttl": 300 },
+};
+assert(config.db.host == "localhost");
+assert(config.db["port"] == 5432);
+
+// 5. Map get (safe access, returns nil for missing keys)
+assert(person.get("name") == "Alice");
+assert(person.get("missing") == nil);
+
+// 6. Using map.set / map.delete for immutable updates
+use map;
+let m = { "a": 1, "b": 2 };
+let m_with_c = map.set(m, "c", 3);
+assert(m_with_c.has("c"));
+assert(m_with_c.len() == 3);
+let del_result = map.delete(m_with_c, "a");
+let m_without_a = del_result[0]; // delete returns [updated_map, removed_value]
+assert(!m_without_a.has("a"));
+assert(m_without_a.len() == 2);
+
+// 7. map.mutate — batch mutations with a closure guard
+let m2 = { "x": 10, "y": 20 };
+let result = map.mutate(m2, |guard| guard.set("z", 30));
+let updated = result[0];
+assert(updated.has("z"));
+assert(updated.len() == 3);
+
+// 8. Map iteration (yields [key, value] pairs)
+let inventory = { "apples": 10, "bananas": 5, "cherries": 20 };
+let total_items = 0;
+for pair in inventory {
+  total_items += pair[1];
+}
+assert(total_items == 35);
+
+println("map_demo: all assertions passed");

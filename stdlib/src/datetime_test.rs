@@ -2,140 +2,178 @@
 mod tests {
     use std::sync::Arc;
 
-    use crate::{datetime::DateTimeModule, register_stdlib_modules};
-    use anyhow::Result;
+    use crate::{datetime::DateTimeModule, register_stdlib_modules, runtime_native::runtime_string_value};
+    use anyhow::{Result, anyhow};
     use chrono::{TimeZone, Utc};
-    use lkr_core::{
-        module, module::Module, stmt, stmt::stmt_parser::StmtParser, token::Tokenizer, val, val::Val, vm, vm::VmContext,
+    use lk_core::{
+        module::ModuleRegistry,
+        stmt::{ModuleResolver, stmt_parser::StmtParser},
+        token::Tokenizer,
+        val::{HeapStore, HeapValue, RuntimeVal},
+        vm::{NativeArgs, NativeFunction, NativeRuntime, ProgramResult, RuntimeModuleState, VmContext},
     };
 
-    fn get_fn(module: &DateTimeModule, name: &str) -> val::RustFunction {
-        let exports = module.exports();
-        let val = exports
-            .get(name)
-            .unwrap_or_else(|| panic!("{name} export missing"))
-            .clone();
-        match val {
-            Val::RustFunction(func) => func,
-            other => panic!("expected RustFunction, got {:?}", other),
+    fn run(source: &str) -> Result<ProgramResult> {
+        let tokens = Tokenizer::tokenize(source)?;
+        let mut parser = StmtParser::new(&tokens);
+        let program = parser.parse_program()?;
+
+        let mut registry = ModuleRegistry::new();
+        register_stdlib_modules(&mut registry)?;
+        let resolver = Arc::new(ModuleResolver::with_registry(registry));
+        let mut env = VmContext::new().with_resolver(resolver);
+        program.execute_with_ctx(&mut env)
+    }
+
+    fn datetime_native(name: &str) -> Result<(u16, NativeFunction)> {
+        crate::runtime_native::runtime_native_export(&DateTimeModule::new(), name)
+    }
+
+    fn call_datetime(name: &str, args: &[RuntimeVal]) -> Result<RuntimeVal> {
+        let (_, function) = datetime_native(name)?;
+        let NativeFunction::Plain(function) = function else {
+            return Err(anyhow!("{name} must use plain RuntimeNative"));
+        };
+        let mut state = RuntimeModuleState::default();
+        let mut runtime = NativeRuntime::new(&mut state, None, None);
+        function(NativeArgs::new(args), &mut runtime)
+    }
+
+    fn call_datetime_strings(name: &str, left: &str, right: &str) -> Result<RuntimeVal> {
+        let (_, function) = datetime_native(name)?;
+        let NativeFunction::Plain(function) = function else {
+            return Err(anyhow!("{name} must use plain RuntimeNative"));
+        };
+        let mut state = RuntimeModuleState::default();
+        let left = runtime_string_value(left, state.heap_mut());
+        let right = runtime_string_value(right, state.heap_mut());
+        let args = [left, right];
+        let mut runtime = NativeRuntime::new(&mut state, None, None);
+        function(NativeArgs::new(&args), &mut runtime)
+    }
+
+    fn runtime_str<'a>(value: &'a RuntimeVal, heap: &'a HeapStore) -> Option<&'a str> {
+        match value {
+            RuntimeVal::ShortStr(value) => Some(value.as_str()),
+            RuntimeVal::Obj(handle) => match heap.get(*handle) {
+                Some(HeapValue::String(value)) => Some(value.as_ref()),
+                _ => None,
+            },
+            _ => None,
         }
     }
 
     #[test]
     fn test_format_and_parse_roundtrip() -> Result<()> {
-        let module = DateTimeModule::new();
-        let mut env = VmContext::new();
         let ts = Utc.with_ymd_and_hms(2024, 1, 6, 12, 30, 0).unwrap().timestamp();
 
-        let format_fn = get_fn(&module, "format");
-        let formatted = format_fn(&[Val::Int(ts), Val::Str("%Y-%m-%d %H:%M".into())], &mut env)?;
-        assert_eq!(formatted, Val::Str("2024-01-06 12:30".into()));
-
-        let parse_fn = get_fn(&module, "parse");
-        let parsed = parse_fn(
-            &[Val::Str("2024-01-06 12:30".into()), Val::Str("%Y-%m-%d %H:%M".into())],
-            &mut env,
-        )?;
-        assert_eq!(parsed, Val::Int(ts));
+        let formatted = run("use datetime; return datetime.format(1704544200, \"%Y-%m-%d %H:%M\");")?;
+        assert_eq!(
+            runtime_str(formatted.first_return(), formatted.state.heap()),
+            Some("2024-01-06 12:30")
+        );
+        assert_eq!(
+            call_datetime_strings("parse", "2024-01-06 12:30", "%Y-%m-%d %H:%M")?,
+            RuntimeVal::Int(ts)
+        );
         Ok(())
     }
 
     #[test]
     fn test_day_of_week_and_weekend() -> Result<()> {
-        let module = DateTimeModule::new();
-        let mut env = VmContext::new();
         let saturday = Utc.with_ymd_and_hms(2024, 1, 6, 0, 0, 0).unwrap().timestamp();
         let monday = Utc.with_ymd_and_hms(2024, 1, 8, 0, 0, 0).unwrap().timestamp();
 
-        let day_of_week = get_fn(&module, "day_of_week");
-        assert_eq!(day_of_week(&[Val::Int(saturday)], &mut env)?, Val::Int(6));
-        assert_eq!(day_of_week(&[Val::Int(monday)], &mut env)?, Val::Int(1));
-
-        let is_weekend = get_fn(&module, "is_weekend");
-        assert_eq!(is_weekend(&[Val::Int(saturday)], &mut env)?, Val::Bool(true));
-        assert_eq!(is_weekend(&[Val::Int(monday)], &mut env)?, Val::Bool(false));
+        assert_eq!(
+            call_datetime("day_of_week", &[RuntimeVal::Int(saturday)])?,
+            RuntimeVal::Int(6)
+        );
+        assert_eq!(
+            call_datetime("day_of_week", &[RuntimeVal::Int(monday)])?,
+            RuntimeVal::Int(1)
+        );
+        assert_eq!(
+            call_datetime("is_weekend", &[RuntimeVal::Int(saturday)])?,
+            RuntimeVal::Bool(true)
+        );
+        assert_eq!(
+            call_datetime("is_weekend", &[RuntimeVal::Int(monday)])?,
+            RuntimeVal::Bool(false)
+        );
         Ok(())
     }
 
     #[test]
-    fn test_add_and_sub_seconds() -> Result<()> {
-        let module = DateTimeModule::new();
-        let mut env = VmContext::new();
+    fn test_add_sub_and_day_of_year() -> Result<()> {
         let base = 1_700_000_000i64;
-
-        let add_fn = get_fn(&module, "add");
-        assert_eq!(add_fn(&[Val::Int(base), Val::Int(30)], &mut env)?, Val::Int(base + 30));
-
-        let sub_fn = get_fn(&module, "sub");
-        assert_eq!(sub_fn(&[Val::Int(base), Val::Int(45)], &mut env)?, Val::Int(base - 45));
+        assert_eq!(
+            run("use datetime; return datetime.add(1700000000, 30);")?.first_return(),
+            &RuntimeVal::Int(base + 30)
+        );
+        assert_eq!(
+            run("use datetime; return datetime.sub(1700000000, 45);")?.first_return(),
+            &RuntimeVal::Int(base - 45)
+        );
+        assert_eq!(
+            call_datetime("day_of_year", &[RuntimeVal::Int(1704544200)])?,
+            RuntimeVal::Int(6)
+        );
         Ok(())
     }
 
     #[test]
     fn test_format_invalid_timestamp_errors() {
-        let module = DateTimeModule::new();
-        let mut env = VmContext::new();
-        let format_fn = get_fn(&module, "format");
-        let err = format_fn(&[Val::Int(i64::MAX), Val::Str("%Y".into())], &mut env)
-            .expect_err("invalid timestamp should error");
-        assert!(err.to_string().contains("invalid timestamp"));
+        let err = call_datetime_strings("format", "not-used", "%Y").expect_err("format should reject wrong first arg");
+        assert!(err.to_string().contains("integer timestamp"));
+
+        let err =
+            call_datetime("format", &[RuntimeVal::Int(i64::MAX)]).expect_err("wrong arity should error before format");
+        assert!(err.to_string().contains("takes exactly 2 arguments"));
     }
 
     #[test]
     fn test_parse_invalid_string_errors() {
-        let module = DateTimeModule::new();
-        let mut env = VmContext::new();
-        let parse_fn = get_fn(&module, "parse");
-        let err = parse_fn(&[Val::Str("not-a-date".into()), Val::Str("%Y-%m-%d".into())], &mut env)
-            .expect_err("invalid datetime string should error");
+        let err =
+            call_datetime_strings("parse", "not-a-date", "%Y-%m-%d").expect_err("invalid datetime string should error");
         assert!(err.to_string().contains("failed to parse datetime"));
     }
 
     #[test]
-    fn test_datetime_now() -> Result<()> {
-        let source = "import datetime; return datetime.now();";
-        let tokens = Tokenizer::tokenize(source)?;
-        let mut parser = StmtParser::new(&tokens);
-        let program = parser.parse_program()?;
-
-        // Create registry and register stdlib modules
-        let mut registry = module::ModuleRegistry::new();
-        register_stdlib_modules(&mut registry)?;
-
-        // Create environment with stdlib modules
-        let resolver = Arc::new(stmt::ModuleResolver::with_registry(registry));
-        let mut env = vm::VmContext::new().with_resolver(resolver);
-        let mut machine = vm::Vm::new();
-
-        let result = program.execute_with_vm(&mut machine, &mut env)?;
-        if let Val::Int(timestamp) = result {
-            assert!(timestamp > 0, "Timestamp should be positive");
-        } else {
-            panic!("Expected integer timestamp");
+    fn test_datetime_functions_use_runtime_native_abi() -> Result<()> {
+        for name in [
+            "now",
+            "format",
+            "parse",
+            "add",
+            "sub",
+            "day_of_week",
+            "day_of_year",
+            "is_weekend",
+        ] {
+            let (arity, function) = datetime_native(name)?;
+            assert!(matches!(function, NativeFunction::Plain(_)));
+            assert_ne!(arity, lk_core::vm::NativeEntry::VARIADIC);
         }
+        Ok(())
+    }
 
+    #[test]
+    fn test_datetime_now() -> Result<()> {
+        let result = run("use datetime; return datetime.now();")?;
+        let RuntimeVal::Int(timestamp) = result.first_return() else {
+            panic!("Expected integer timestamp");
+        };
+        assert!(*timestamp > 0, "Timestamp should be positive");
         Ok(())
     }
 
     #[test]
     fn test_datetime_format() -> Result<()> {
-        let source = "import datetime; return datetime.format(1672531200, \"%Y-%m-%d\");";
-        let tokens = Tokenizer::tokenize(source)?;
-        let mut parser = StmtParser::new(&tokens);
-        let program = parser.parse_program()?;
-
-        // Create registry and register stdlib modules
-        let mut registry = module::ModuleRegistry::new();
-        register_stdlib_modules(&mut registry)?;
-
-        // Create environment with stdlib modules
-        let resolver = Arc::new(stmt::ModuleResolver::with_registry(registry));
-        let mut env = vm::VmContext::new().with_resolver(resolver);
-        let mut machine = vm::Vm::new();
-
-        let result = program.execute_with_vm(&mut machine, &mut env)?;
-        assert_eq!(result, Val::Str("2023-01-01".into()));
-
+        let formatted = run("use datetime; return datetime.format(1672531200, \"%Y-%m-%d\");")?;
+        assert_eq!(
+            runtime_str(formatted.first_return(), formatted.state.heap()),
+            Some("2023-01-01")
+        );
         Ok(())
     }
 }

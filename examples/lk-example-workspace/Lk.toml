@@ -1,0 +1,6 @@
+[workspace]
+members = ["crates/*", "apps/*"]
+
+[workspace.dependencies]
+mathlib = { path = "crates/mathlib" }
+greetings = { path = "crates/greetings" }

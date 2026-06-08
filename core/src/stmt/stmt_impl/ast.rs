@@ -1,14 +1,11 @@
 use crate::{
     expr::{Expr, Pattern},
-    op::BinOp,
-    stmt::{
-        ImportStmt,
-        import::{collect_program_imports, execute_imports},
-    },
+    operator::BinOp,
+    stmt::ImportStmt,
     token::Span,
     typ::TypeChecker,
-    val::{Type, Val},
-    vm::{Vm, VmContext, compile_program},
+    val::Type,
+    vm::VmContext,
 };
 use anyhow::Result;
 
@@ -46,7 +43,7 @@ pub struct NamedParamDecl {
 /// 语法设计：
 /// program  ::= statement*
 /// statement ::= import_stmt | if_stmt | while_stmt | let_stmt | assign_stmt | break_stmt | continue_stmt | return_stmt | fn_stmt | expr_stmt | block_stmt
-/// import_stmt ::= 'import' import_spec ';'
+/// import_stmt ::= 'use' import_spec ';'
 /// if_stmt  ::= 'if' '(' expr ')' statement ['else' statement]
 /// while_stmt ::= 'while' '(' expr ')' statement
 /// let_stmt ::= 'let' id [':' type] '=' expr ';'
@@ -59,7 +56,7 @@ pub struct NamedParamDecl {
 /// block_stmt ::= '{' statement* '}'
 #[derive(Debug, Clone, PartialEq)]
 pub enum Stmt {
-    /// import statement
+    /// use statement
     Import(ImportStmt),
     /// if (condition) then_stmt [else else_stmt]
     If {
@@ -168,24 +165,14 @@ impl Program {
         Ok(Program { statements })
     }
 
-    pub fn execute(&self) -> Result<Val> {
-        let mut vm = Vm::new();
+    pub fn execute(&self) -> Result<crate::vm::ProgramResult> {
         let mut ctx = VmContext::new();
-        self.execute_with_vm(&mut vm, &mut ctx)
+        self.execute_with_ctx(&mut ctx)
     }
 
-    pub fn execute_with_ctx(&self, ctx: &mut VmContext) -> Result<Val> {
-        let mut vm = Vm::new();
-        self.execute_with_vm(&mut vm, ctx)
-    }
-
-    pub fn execute_with_vm(&self, vm: &mut Vm, ctx: &mut VmContext) -> Result<Val> {
+    pub fn execute_with_ctx(&self, ctx: &mut VmContext) -> Result<crate::vm::ProgramResult> {
         let mut type_checker = TypeChecker::new();
         self.type_check(&mut type_checker)?;
-        let imports = collect_program_imports(self);
-        let resolver = ctx.resolver().clone();
-        execute_imports(&imports, resolver.as_ref(), ctx)?;
-        let function = compile_program(self);
-        vm.exec_with(&function, ctx, None)
+        crate::vm::execute_program_with_ctx(self, ctx)
     }
 }

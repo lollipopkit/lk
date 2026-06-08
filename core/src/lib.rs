@@ -1,7 +1,8 @@
 pub mod ast;
 pub mod expr;
 pub mod module;
-mod op;
+mod operator;
+pub mod package;
 pub mod rt;
 pub mod stmt;
 pub mod token;
@@ -9,11 +10,10 @@ pub mod typ;
 pub mod util;
 pub mod val;
 
-// Register bytecode VM is always available now
+// Canonical Instr VM.
 pub mod vm;
 
 // Name resolution to slot indices
-pub mod perf;
 pub mod resolve;
 
 #[cfg(feature = "llvm")]

@@ -1,0 +1,68 @@
+// Operators and expressions demo
+
+// 1. Arithmetic
+assert(2 + 3 == 5);
+assert(10 - 4 == 6);
+assert(3 * 7 == 21);
+assert(15 / 4 > 3.7);
+assert(15 / 4 < 3.8);
+assert(15 % 4 == 3);
+assert(-5 + 5 == 0);
+
+// 2. Comparison
+assert(1 < 2);
+assert(2 > 1);
+assert(1 <= 1);
+assert(1 >= 1);
+assert(1 == 1);
+assert(1 != 2);
+
+// 3. Logical
+assert(true && true);
+assert(!(true && false));
+assert(true || false);
+assert(!false);
+assert(!true == false);
+
+// 4. String operations
+assert("a" + "b" == "ab");
+assert("ell" in "hello");
+assert(!("xyz" in "hello"));
+
+// 5. List membership with in
+assert(3 in [1, 2, 3, 4]);
+assert(!("x" in [1, 2, 3]));
+
+// 6. Nullish coalescing ??
+let x = nil;
+assert((x ?? 42) == 42);
+assert((1 ?? 42) == 1);
+
+// 7. Compound assignment
+let v = 10;
+v += 5;
+assert(v == 15);
+v -= 3;
+assert(v == 12);
+v *= 2;
+assert(v == 24);
+v %= 4;
+assert(v == 0);
+
+// 8. Short definition :=
+y := 100;
+assert(y == 100);
+
+// 9. Operator precedence
+// * before +:
+assert(2 + 3 * 4 == 14);
+// && before ||:
+assert(true || false && false);
+
+// 10. Numeric auto-promotion (Int → Float)
+let int_val = 40;
+let float_val = int_val + 2.5;
+assert(float_val > 42.0);
+assert(float_val < 43.0);
+
+println("operators: all assertions passed");

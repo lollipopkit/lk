@@ -1,9 +1,9 @@
-use lkr_lsp::analyzer::LkrAnalyzer;
+use lk_lsp::analyzer::LkAnalyzer;
 use tower_lsp::lsp_types::DiagnosticSeverity;
 
 #[test]
 fn test_expression_error_position() {
-    let mut analyzer = LkrAnalyzer::new();
+    let mut analyzer = LkAnalyzer::new();
 
     // Test unterminated string - error should be at the end of line
     let code = "req.user.name == 'unterminated string";
@@ -23,7 +23,7 @@ fn test_expression_error_position() {
 
 #[test]
 fn test_statement_error_position() {
-    let mut analyzer = LkrAnalyzer::new();
+    let mut analyzer = LkAnalyzer::new();
 
     // Test invalid statement syntax
     let code = r#"
@@ -50,7 +50,7 @@ if (x == 5 {  // Missing closing parenthesis
 
 #[test]
 fn test_multiline_error_position() {
-    let mut analyzer = LkrAnalyzer::new();
+    let mut analyzer = LkAnalyzer::new();
 
     let code = r#"let user = req.user;
 let role = user.role;
@@ -76,7 +76,7 @@ return invalid;"#;
 
 #[test]
 fn test_simple_syntax_error_position() {
-    let mut analyzer = LkrAnalyzer::new();
+    let mut analyzer = LkAnalyzer::new();
 
     // Test with simple syntax error - missing quote
     let code = "req.user.name == 'admin"; // Missing closing quote
@@ -95,7 +95,7 @@ fn test_simple_syntax_error_position() {
 
 #[test]
 fn test_multiple_errors_position() {
-    let mut analyzer = LkrAnalyzer::new();
+    let mut analyzer = LkAnalyzer::new();
 
     // Test with multiple errors in the code
     let code = r#"let user = req.user;

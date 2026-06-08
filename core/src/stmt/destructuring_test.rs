@@ -4,14 +4,29 @@ mod tests {
         expr::{Expr, Pattern},
         stmt::{Program, Stmt, run_program_default, stmt_parser::StmtParser},
         token::Tokenizer,
-        val::Val,
+        val::{LiteralVal, RuntimeVal, ShortStr},
+        vm::ProgramResult,
     };
-    use std::sync::Arc;
+
+    fn list_expr(values: Vec<Expr>) -> Expr {
+        Expr::List(values.into_iter().map(Box::new).collect())
+    }
 
     fn parse_program(source: &str) -> Program {
         let tokens = Tokenizer::tokenize(source).expect("Failed to tokenize");
         let mut parser = StmtParser::new(&tokens);
         parser.parse_program().expect("Failed to parse program")
+    }
+
+    fn expect_return_int(result: &ProgramResult, expected: i64) {
+        assert_eq!(result.first_return(), &RuntimeVal::Int(expected));
+    }
+
+    fn expect_return_str(result: &ProgramResult, expected: &str) {
+        assert_eq!(
+            result.first_return(),
+            &RuntimeVal::ShortStr(ShortStr::new(expected).expect("short test string"))
+        );
     }
 
     #[test]
@@ -25,7 +40,7 @@ mod tests {
         let program = parse_program(program);
         let result = run_program_default(&program).unwrap();
 
-        assert_eq!(result, Val::Int(42));
+        expect_return_int(&result, 42);
     }
 
     #[test]
@@ -39,7 +54,7 @@ mod tests {
         let program = parse_program(program);
         let result = run_program_default(&program).unwrap();
 
-        assert_eq!(result, Val::Int(6));
+        expect_return_int(&result, 6);
     }
 
     #[test]
@@ -53,7 +68,7 @@ mod tests {
         let program = parse_program(program);
         let result = run_program_default(&program).unwrap();
 
-        assert_eq!(result, Val::Int(3)); // 1 + 2
+        expect_return_int(&result, 3); // 1 + 2
     }
 
     #[test]
@@ -67,7 +82,7 @@ mod tests {
         let program = parse_program(program);
         let result = run_program_default(&program).unwrap();
 
-        assert_eq!(result, Val::Str(Arc::from("Alice")));
+        expect_return_str(&result, "Alice");
     }
 
     #[test]
@@ -81,7 +96,7 @@ mod tests {
         let program = parse_program(program);
         let result = run_program_default(&program).unwrap();
 
-        assert_eq!(result, Val::Str(Arc::from("Bob")));
+        expect_return_str(&result, "Bob");
     }
 
     #[test]
@@ -95,7 +110,7 @@ mod tests {
         let program = parse_program(program);
         let result = run_program_default(&program).unwrap();
 
-        assert_eq!(result, Val::Int(43));
+        expect_return_int(&result, 43);
     }
 
     #[test]
@@ -109,7 +124,7 @@ mod tests {
         let program = parse_program(program);
         let result = run_program_default(&program).unwrap();
 
-        assert_eq!(result, Val::Int(20));
+        expect_return_int(&result, 20);
     }
 
     #[test]
@@ -138,7 +153,7 @@ mod tests {
         let program = parse_program(program);
         let result = run_program_default(&program).unwrap();
 
-        assert_eq!(result, Val::Int(3));
+        expect_return_int(&result, 3);
     }
 
     #[test]
@@ -153,10 +168,7 @@ mod tests {
         let result = run_program_default(&program).unwrap();
 
         // Should concatenate first two characters
-        match result {
-            Val::Str(s) => assert_eq!(s.as_ref(), "he"),
-            _ => panic!("Expected string result"),
-        }
+        expect_return_str(&result, "he");
     }
 
     #[test]
@@ -170,7 +182,7 @@ mod tests {
         let program = parse_program(program);
         let result = run_program_default(&program).unwrap();
 
-        assert_eq!(result, Val::Int(42));
+        expect_return_int(&result, 42);
     }
 
     #[test]
@@ -184,7 +196,7 @@ mod tests {
         let program = parse_program(program);
         let result = run_program_default(&program).unwrap();
 
-        assert_eq!(result, Val::Str(Arc::from("success")));
+        expect_return_str(&result, "success");
     }
 
     #[test]
@@ -198,7 +210,7 @@ mod tests {
         let program = parse_program(program);
         let result = run_program_default(&program).unwrap();
 
-        assert_eq!(result, Val::Str(Arc::from("success")));
+        expect_return_str(&result, "success");
     }
 
     #[test]
@@ -213,11 +225,11 @@ mod tests {
                 rest: Some("rest".to_string()),
             },
             type_annotation: None,
-            value: Box::new(Expr::Val(Val::List(Arc::from(vec![
-                Val::Int(1),
-                Val::Int(2),
-                Val::Int(3),
-            ])))),
+            value: Box::new(list_expr(vec![
+                Expr::Literal(LiteralVal::Int(1)),
+                Expr::Literal(LiteralVal::Int(2)),
+                Expr::Literal(LiteralVal::Int(3)),
+            ])),
             span: None,
             is_const: false,
         };
@@ -244,8 +256,8 @@ mod tests {
                     (
                         "age".to_string(),
                         Pattern::Range {
-                            start: Box::new(Expr::Val(Val::Int(0))),
-                            end: Box::new(Expr::Val(Val::Int(120))),
+                            start: Box::new(Expr::Literal(LiteralVal::Int(0))),
+                            end: Box::new(Expr::Literal(LiteralVal::Int(120))),
                             inclusive: true,
                         },
                     ),
@@ -253,7 +265,7 @@ mod tests {
                 rest: None,
             },
             type_annotation: None,
-            value: Box::new(Expr::Val(Val::Map(Arc::new(Default::default())))),
+            value: Box::new(Expr::Map(vec![])),
             span: None,
             is_const: false,
         };

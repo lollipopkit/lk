@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use dashmap::DashMap;
@@ -7,9 +8,10 @@ use tokio::sync::Semaphore;
 use tower_lsp::lsp_types::{CompletionItem, CompletionItemKind, InlayHint, SemanticToken, Url};
 use tower_lsp::Client;
 
-use crate::analyzer::{AnalysisResult, LkrAnalyzer};
+use super::workspace_cache::WorkspaceCache;
+use crate::analyzer::{AnalysisResult, LkAnalyzer};
 
-/// In-memory representation of an open LKR document and its cached LSP artifacts.
+/// In-memory representation of an open LK document and its cached LSP artifacts.
 #[derive(Debug, Default)]
 pub(crate) struct Document {
     pub(crate) content: Rope,
@@ -26,31 +28,36 @@ pub(crate) struct Document {
 }
 
 /// Primary LSP server state shared across handlers.
-pub(crate) struct LkrLanguageServer {
+pub(crate) struct LkLanguageServer {
     pub(crate) client: Client,
     pub(crate) documents: Arc<DashMap<Url, Document>>,
-    pub(crate) analyzer: Mutex<LkrAnalyzer>,
+    pub(crate) analyzer: Mutex<LkAnalyzer>,
     pub(crate) config: Mutex<super::config::ServerConfig>,
+    // Shared limiter for all heavy analysis work (diagnostics, hover-derived lookups, etc.).
     pub(crate) compute_limiter: Mutex<Arc<Semaphore>>,
+    pub(crate) workspace_root: Mutex<Option<PathBuf>>,
+    pub(crate) workspace_cache: Arc<WorkspaceCache>,
 }
 
-impl LkrLanguageServer {
+impl LkLanguageServer {
     pub(crate) fn new(client: Client) -> Self {
         Self {
             client,
             documents: Arc::new(DashMap::new()),
-            analyzer: Mutex::new(LkrAnalyzer::new()),
+            analyzer: Mutex::new(LkAnalyzer::new()),
             config: Mutex::new(super::config::ServerConfig::default()),
             compute_limiter: Mutex::new(Arc::new(Semaphore::new(2))),
+            workspace_root: Mutex::new(None),
+            workspace_cache: Arc::new(WorkspaceCache::default()),
         }
     }
 
     pub(crate) fn get_completions(&self) -> Vec<CompletionItem> {
         let mut items = Vec::new();
 
-        // LKR keywords
+        // LK keywords
         let keywords = [
-            "if", "else", "while", "let", "fn", "return", "break", "continue", "import", "from", "as", "go", "select",
+            "if", "else", "while", "let", "fn", "return", "break", "continue", "use", "from", "as", "go", "select",
             "case", "default", "true", "false", "nil", "spawn", "chan", "send", "recv",
         ];
 
@@ -58,7 +65,7 @@ impl LkrLanguageServer {
             items.push(CompletionItem {
                 label: keyword.to_string(),
                 kind: Some(CompletionItemKind::KEYWORD),
-                detail: Some("LKR keyword".to_string()),
+                detail: Some("LK keyword".to_string()),
                 ..Default::default()
             });
         }
@@ -69,7 +76,7 @@ impl LkrLanguageServer {
             items.push(CompletionItem {
                 label: op.to_string(),
                 kind: Some(CompletionItemKind::OPERATOR),
-                detail: Some("LKR operator".to_string()),
+                detail: Some("LK operator".to_string()),
                 ..Default::default()
             });
         }

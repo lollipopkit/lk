@@ -375,7 +375,7 @@ impl ResolverCore {
 
     fn resolve_expr(&mut self, expr: &Expr) {
         match expr {
-            Expr::Val(_) => {}
+            Expr::Literal(_) => {}
             Expr::StructLiteral { fields, .. } => {
                 for (_k, v) in fields {
                     self.resolve_expr(v);
@@ -494,7 +494,17 @@ impl ResolverCore {
                     for p in params {
                         this.current_fn().define(p.clone(), true);
                     }
-                    this.resolve_stmt(&Stmt::Expr(body.clone()), &mut Vec::new());
+                    match body.as_ref() {
+                        Expr::Block(statements) => {
+                            this.resolve_stmt(
+                                &Stmt::Block {
+                                    statements: statements.clone(),
+                                },
+                                &mut Vec::new(),
+                            );
+                        }
+                        _ => this.resolve_stmt(&Stmt::Expr(body.clone()), &mut Vec::new()),
+                    }
                 });
                 // Attach as an anonymous child of the current function
                 if let Some(parent_ctx) = self.fn_stack.last_mut() {
@@ -510,6 +520,7 @@ impl ResolverCore {
                     self.current_fn().pop_block();
                 }
             }
+            Expr::Block(_) => {}
         }
     }
 

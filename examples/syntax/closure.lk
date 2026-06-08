@@ -1,0 +1,49 @@
+// Closure and higher-order function demo
+
+// 1. Basic closures
+let double = |x| x * 2;
+let square = |x| x * x;
+assert(double(5) == 10);
+assert(square(4) == 16);
+
+// 2. Multi-parameter closure
+let add = |a, b| a + b;
+assert(add(3, 7) == 10);
+
+// 3. Closures capture enclosing variables
+let factor = 3;
+let scale = |x| x * factor;
+assert(scale(4) == 12);
+
+// 4. Closures as arguments (higher-order functions)
+let apply = |f, x| f(x);
+assert(apply(double, 7) == 14);
+assert(apply(square, 5) == 25);
+
+// 5. Returning closures from functions
+fn multiplier(n) {
+  return |x| x * n;
+}
+let triple = multiplier(3);
+let quintuple = multiplier(5);
+assert(triple(4) == 12);
+assert(quintuple(4) == 20);
+
+// 6. Closure with list methods
+let nums = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+let evens = nums.filter(|x| x % 2 == 0);
+let doubled = nums.map(|x| x * 2);
+let total = nums.reduce(0, |acc, x| acc + x);
+assert(evens == [2, 4, 6, 8, 10]);
+assert(doubled == [2, 4, 6, 8, 10, 12, 14, 16, 18, 20]);
+assert(total == 55);
+
+// 7. Composing operations with a helper function
+fn process_list(xs) {
+  let filtered = xs.filter(|x| x > 3);
+  let mapped = filtered.map(|x| x * x);
+  return mapped.reduce(0, |a, b| a + b);
+}
+assert(process_list([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]) == 371);
+
+println("closure: all assertions passed");

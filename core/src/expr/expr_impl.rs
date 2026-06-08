@@ -1,19 +1,15 @@
-use crate::rt::{SelectOperation, with_runtime};
 use crate::{
     ast::Parser,
-    op::{BinOp, UnaryOp},
-    stmt::Stmt,
+    operator::{BinOp, UnaryOp},
     token::Tokenizer,
     typ::TypeChecker,
-    val::{ClosureCapture, ClosureInit, ClosureValue, ObjectValue, Type, Val, methods::find_method_for_val},
-    vm::VmContext,
+    val::{LiteralVal, Type},
 };
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use dashmap::DashMap;
 use once_cell::sync::Lazy;
-use serde::{Deserialize, Serialize};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     fmt::{Debug, Display},
     sync::Arc,
 };
@@ -34,7 +30,7 @@ use std::{
 /// map     ::= '{' [expr ':' expr {',' expr ':' expr}] '}'
 ///
 /// Select case pattern for select statements
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum SelectPattern {
     /// recv(channel) pattern with optional binding
     Recv {
@@ -45,14 +41,14 @@ pub enum SelectPattern {
     Send { channel: Box<Expr>, value: Box<Expr> },
 }
 /// Select case: case pattern => expr
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SelectCase {
     pub pattern: SelectPattern,
     pub guard: Option<Box<Expr>>, // Optional guard expression
     pub body: Box<Expr>,
 }
 /// Template string part: either a literal string or an interpolated expression
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum TemplateStringPart {
     /// String literal part
     Literal(String),
@@ -64,10 +60,10 @@ impl Expr {
     // Default value-to-string conversion handled inline where needed.
 }
 /// Pattern matching pattern for match expressions
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Pattern {
     /// Literal pattern: matches exact values (1, "hello", true)
-    Literal(Val),
+    Literal(LiteralVal),
     /// Variable pattern: binds any value to a variable (x)
     Variable(String),
     /// Wildcard pattern: matches anything, no binding (_)
@@ -94,220 +90,10 @@ pub enum Pattern {
     },
 }
 /// Match arm: pattern => expression
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct MatchArm {
     pub pattern: Pattern,
     pub body: Box<Expr>,
-}
-impl std::fmt::Display for Pattern {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Pattern::Literal(val) => write!(f, "{}", val),
-            Pattern::Variable(name) => write!(f, "{}", name),
-            Pattern::Wildcard => write!(f, "_"),
-            Pattern::List { patterns, rest } => {
-                write!(f, "[")?;
-                for (i, pattern) in patterns.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "{}", pattern)?;
-                }
-                if let Some(rest_name) = rest {
-                    if !patterns.is_empty() {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "..{}", rest_name)?;
-                }
-                write!(f, "]")
-            }
-            Pattern::Map { patterns, rest } => {
-                write!(f, "{{")?;
-                for (i, (key, pattern)) in patterns.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "\"{}\": {}", key, pattern)?;
-                }
-                if let Some(rest_name) = rest {
-                    if !patterns.is_empty() {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "..{}", rest_name)?;
-                }
-                write!(f, "}}")
-            }
-            Pattern::Or(patterns) => {
-                for (i, pattern) in patterns.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, " | ")?;
-                    }
-                    write!(f, "{}", pattern)?;
-                }
-                Ok(())
-            }
-            Pattern::Guard { pattern, guard } => {
-                write!(f, "{} if {}", pattern, guard)
-            }
-            Pattern::Range { start, end, inclusive } => {
-                let op = if *inclusive { "..=" } else { ".." };
-                write!(f, "{}{}{}", start, op, end)
-            }
-        }
-    }
-}
-impl Pattern {
-    /// Check if this pattern matches a value, returning bindings if it matches
-    /// Returns Ok(Some(bindings)) on match, Ok(None) on no match, Err on error
-    pub fn matches(&self, value: &Val, ctx: Option<&VmContext>) -> Result<Option<Vec<(String, Val)>>> {
-        let mut bindings = Vec::new();
-        if self.matches_impl(value, &mut bindings, ctx)? {
-            Ok(Some(bindings))
-        } else {
-            Ok(None)
-        }
-    }
-    fn matches_impl(&self, value: &Val, bindings: &mut Vec<(String, Val)>, ctx: Option<&VmContext>) -> Result<bool> {
-        match self {
-            Pattern::Literal(pattern_val) => Ok(value == pattern_val),
-            Pattern::Variable(name) => {
-                bindings.push((name.clone(), value.clone()));
-                Ok(true)
-            }
-            Pattern::Wildcard => Ok(true),
-            Pattern::List { patterns, rest } => {
-                let list_items: Vec<Val> = match value {
-                    Val::List(list) => (*list).to_vec(),
-                    Val::Str(s) => {
-                        // Convert string to list of character strings for destructuring
-                        s.chars().map(|c| Val::Str(c.to_string().into())).collect::<Vec<_>>()
-                    }
-                    _ => return Ok(false),
-                };
-                // Check if we have enough elements for non-rest patterns
-                if patterns.len() > list_items.len() && rest.is_none() {
-                    return Ok(false);
-                }
-                // Match each pattern against corresponding list element
-                for (i, pattern) in patterns.iter().enumerate() {
-                    if i >= list_items.len() {
-                        return Ok(false);
-                    }
-                    if !pattern.matches_impl(&list_items[i], bindings, ctx)? {
-                        return Ok(false);
-                    }
-                }
-                // Bind rest elements if specified
-                if let Some(rest_name) = rest {
-                    let rest_items: Vec<Val> = list_items.iter().skip(patterns.len()).cloned().collect();
-                    bindings.push((rest_name.clone(), Val::List(Arc::from(rest_items))));
-                } else if patterns.len() != list_items.len() {
-                    // No rest pattern but lengths don't match
-                    return Ok(false);
-                }
-                Ok(true)
-            }
-            Pattern::Map { patterns, rest } => {
-                if let Val::Map(map) = value {
-                    let map_ref = map.as_ref();
-                    // Match each pattern against corresponding map field
-                    for (key, pattern) in patterns {
-                        if let Some(field_val) = map_ref.get(key.as_str()) {
-                            if !pattern.matches_impl(field_val, bindings, ctx)? {
-                                return Ok(false);
-                            }
-                        } else {
-                            return Ok(false); // Required key not found
-                        }
-                    }
-                    // Bind remaining fields if specified
-                    if let Some(rest_name) = rest {
-                        let matched_keys: HashSet<&str> = patterns.iter().map(|(k, _)| k.as_str()).collect();
-                        let rest_map: HashMap<String, Val> = map_ref
-                            .iter()
-                            .filter(|(k, _)| !matched_keys.contains(k.as_ref()))
-                            .map(|(k, v)| (k.to_string(), v.clone()))
-                            .collect();
-                        bindings.push((rest_name.clone(), rest_map.into()));
-                    }
-                    Ok(true)
-                } else {
-                    Ok(false)
-                }
-            }
-            Pattern::Or(patterns) => {
-                for pattern in patterns {
-                    let mut temp_bindings = Vec::new();
-                    if pattern.matches_impl(value, &mut temp_bindings, ctx)? {
-                        bindings.extend(temp_bindings);
-                        return Ok(true);
-                    }
-                }
-                Ok(false)
-            }
-            Pattern::Guard { pattern, guard } => {
-                let mut temp_bindings = Vec::new();
-                if pattern.matches_impl(value, &mut temp_bindings, ctx)? {
-                    // Evaluate guard in provided VmContext with temporary bindings
-                    if let Some(_ctx_ref) = ctx {
-                        let mut temp_ctx = _ctx_ref.clone();
-                        temp_ctx.push_scope();
-                        for (n, v) in &temp_bindings {
-                            temp_ctx.set(n.clone(), v.clone());
-                        }
-                        let guard_result = guard.eval_with_ctx(&mut temp_ctx)?;
-                        temp_ctx.pop_scope();
-                        if let Val::Bool(true) = guard_result {
-                            bindings.extend(temp_bindings);
-                            Ok(true)
-                        } else {
-                            Ok(false)
-                        }
-                    } else if !temp_bindings.is_empty() {
-                        Err(anyhow!("Guard conditions with bindings require evaluation context"))
-                    } else {
-                        let guard_result = if let Some(mut ctx_ref) = ctx.cloned() {
-                            guard.eval_with_ctx(&mut ctx_ref)?
-                        } else {
-                            return Err(anyhow!("Guard evaluation requires context"));
-                        }; // degenerate case, no bindings
-                        if let Val::Bool(true) = guard_result {
-                            Ok(true)
-                        } else {
-                            Ok(false)
-                        }
-                    }
-                } else {
-                    Ok(false)
-                }
-            }
-            Pattern::Range { start, end, inclusive } => {
-                if let Some(mut ctx_ref) = ctx.cloned() {
-                    let start_val = start.eval_with_ctx(&mut ctx_ref)?;
-                    let end_val = end.eval_with_ctx(&mut ctx_ref)?;
-                    match (value, &start_val, &end_val) {
-                        (Val::Int(v), Val::Int(s), Val::Int(e)) => {
-                            if *inclusive {
-                                Ok(*v >= *s && *v <= *e)
-                            } else {
-                                Ok(*v >= *s && *v < *e)
-                            }
-                        }
-                        (Val::Float(v), Val::Float(s), Val::Float(e)) => {
-                            if *inclusive {
-                                Ok(*v >= *s && *v <= *e)
-                            } else {
-                                Ok(*v >= *s && *v < *e)
-                            }
-                        }
-                        _ => Ok(false),
-                    }
-                } else {
-                    Err(anyhow!("Range pattern evaluation requires context"))
-                }
-            }
-        }
-    }
 }
 /// Details:
 /// - No implicit context
@@ -327,12 +113,12 @@ impl Pattern {
 ///
 /// Examples:
 /// - `{ "age": 20 }.age >= 18`
-/// - `import json; let data = json.parse(io.read()); data.user.name == "Alice"` (in statements)
+/// - `use json; let data = json.parse(io.read()); data.user.name == "Alice"` (in statements)
 /// - `[1, 2, 3]`
 /// - `{"name": "John", "age": 30}`
 /// - `[1, 2, 3].1`
 /// - `{"name": "Alice"}.name`
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
     /// expr == expr
     Bin(Box<Expr>, BinOp, Box<Expr>),
@@ -388,19 +174,16 @@ pub enum Expr {
         params: Vec<String>,
         body: Box<Expr>,
     },
+    /// Expression-level block, primarily for multi-statement closure bodies.
+    Block(Vec<Box<crate::stmt::Stmt>>),
     /// Match expression: match value { pattern => expr, ... }
     Match {
         value: Box<Expr>,
         arms: Vec<MatchArm>,
     },
-    Val(Val),
+    Literal(LiteralVal),
 }
 impl Expr {
-    pub fn eval(&self) -> Result<Val> {
-        let mut ctx = VmContext::new();
-        self.eval_with_ctx(&mut ctx)
-    }
-
     /// Get the identifier roots referenced by the expression.
     pub fn requested_ctx(&self) -> HashSet<String> {
         let mut names = HashSet::new();
@@ -417,7 +200,7 @@ impl Expr {
                 t.collect_ctx_names(names);
                 e.collect_ctx_names(names);
             }
-            // legacy '@' context access removed
+            // Removed '@' context access.
             Expr::Access(expr, field) => {
                 expr.collect_ctx_names(names);
                 field.collect_ctx_names(names);
@@ -520,6 +303,7 @@ impl Expr {
             Expr::Closure { params: _, body } => {
                 body.collect_ctx_names(names);
             }
+            Expr::Block(_) => {}
             Expr::Match { value, arms } => {
                 value.collect_ctx_names(names);
                 for arm in arms {
@@ -536,11 +320,10 @@ impl Expr {
                 }
             }
             // Only collect string values when they are actual identifier roots, not field names
-            Expr::Val(_) => {} // Receive operator: collect from inner expression
+            Expr::Literal(_) => {} // Receive operator: collect from inner expression
         }
     }
     /// Cached parsing: parse expression string and return a shared Arc<Expr>.
-    /// Use `parse_cached` if you need an owned `Expr` value.
     pub fn parse_cached_arc(expression: &str) -> Result<Arc<Expr>> {
         use dashmap::mapref::entry::Entry;
         // Global static cache: Key is expression string, Value is parsed Expr wrapped in Arc
@@ -561,38 +344,23 @@ impl Expr {
             Entry::Occupied(o) => o.get().clone(),
         })
     }
-    /// Backwards-compatible helper that returns an owned `Expr` by cloning
-    /// the shared cached AST. Prefer `parse_cached_arc` for performance.
-    pub fn parse_cached(expression: &str) -> Result<Expr> {
-        Ok(Self::parse_cached_arc(expression)?.as_ref().clone())
-    }
-    /// Constant folding: calculate pure constant sub-expressions as Val constants
+    /// Constant folding: calculate pure constant sub-expressions as LiteralVal constants
     pub(crate) fn fold_constants(self) -> Expr {
         match self {
-            Expr::Val(_) => self, // Constant value, return directly
+            Expr::Literal(_) => self, // Constant value, return directly
             Expr::Bin(l_box, op, r_box) => {
                 // Recursively fold left and right sub-expressions
                 let left = (*l_box).fold_constants();
                 let right = (*r_box).fold_constants();
                 // Try to calculate binary expression as constant
-                if let (Expr::Val(lval), Expr::Val(rval)) = (&left, &right) {
+                if let (Expr::Literal(lval), Expr::Literal(rval)) = (&left, &right) {
                     if op.is_arith() {
-                        // Arithmetic operation constant folding
-                        let result = match op {
-                            BinOp::Add => (lval as &Val) + (rval as &Val),
-                            BinOp::Sub => (lval as &Val) - (rval as &Val),
-                            BinOp::Mul => (lval as &Val) * (rval as &Val),
-                            BinOp::Div => (lval as &Val) / (rval as &Val),
-                            BinOp::Mod => (lval as &Val) % (rval as &Val),
-                            _ => unreachable!(),
-                        };
-                        if let Ok(result_val) = result {
-                            return Expr::Val(result_val);
+                        if let Some(result_val) = fold_literal_arith(lval, &op, rval) {
+                            return Expr::Literal(result_val);
                         }
                     } else if op.is_cmp() {
-                        // Comparison/contains operation constant folding
-                        if let Ok(res_bool) = op.cmp(lval, rval) {
-                            return Expr::Val(Val::Bool(res_bool));
+                        if let Some(res_bool) = op.cmp_literals(lval, rval) {
+                            return Expr::Literal(LiteralVal::Bool(res_bool));
                         }
                     }
                     // Other cases (like type mismatch) don't fold, keep expression form
@@ -604,7 +372,7 @@ impl Expr {
                 let c = (*c_box).fold_constants();
                 let t = (*t_box).fold_constants();
                 let e = (*e_box).fold_constants();
-                if let Expr::Val(Val::Bool(b)) = c {
+                if let Expr::Literal(LiteralVal::Bool(b)) = c {
                     return if b { t } else { e };
                 }
                 Expr::Conditional(Box::new(c), Box::new(t), Box::new(e))
@@ -612,143 +380,100 @@ impl Expr {
             Expr::Unary(op, expr_box) => {
                 let inner = (*expr_box).fold_constants();
                 // Constant folding: !expr, if expr is boolean constant then calculate result
-                if let Expr::Val(Val::Bool(b)) = &inner {
-                    return Expr::Val(Val::Bool(!*b));
+                if let Expr::Literal(LiteralVal::Bool(b)) = &inner {
+                    return Expr::Literal(LiteralVal::Bool(!*b));
                 }
                 Expr::Unary(op, Box::new(inner))
             }
             Expr::And(e1_box, e2_box) => {
                 let e1 = (*e1_box).fold_constants();
                 // Short-circuit constant false: left side constant false, then entire AND is constant false
-                if let Expr::Val(Val::Bool(false)) = e1 {
-                    return Expr::Val(Val::Bool(false));
+                if let Expr::Literal(LiteralVal::Bool(false)) = e1 {
+                    return Expr::Literal(LiteralVal::Bool(false));
                 }
                 let e2 = (*e2_box).fold_constants();
                 // Short-circuit constant true: left side constant true, then return right side expression result
-                if let Expr::Val(Val::Bool(true)) = e1 {
+                if let Expr::Literal(LiteralVal::Bool(true)) = e1 {
                     return e2;
                 }
                 // Both folded, if both are boolean constants then can further fold
-                if let (Expr::Val(Val::Bool(b1)), Expr::Val(Val::Bool(b2))) = (&e1, &e2) {
-                    return Expr::Val(Val::Bool(*b1 && *b2));
+                if let (Expr::Literal(LiteralVal::Bool(b1)), Expr::Literal(LiteralVal::Bool(b2))) = (&e1, &e2) {
+                    return Expr::Literal(LiteralVal::Bool(*b1 && *b2));
                 }
                 Expr::And(Box::new(e1), Box::new(e2))
             }
             Expr::Or(e1_box, e2_box) => {
                 let e1 = (*e1_box).fold_constants();
-                if let Expr::Val(Val::Bool(true)) = e1 {
+                if let Expr::Literal(LiteralVal::Bool(true)) = e1 {
                     // Left side constant true, OR expression is constant true
-                    return Expr::Val(Val::Bool(true));
+                    return Expr::Literal(LiteralVal::Bool(true));
                 }
                 let e2 = (*e2_box).fold_constants();
-                if let Expr::Val(Val::Bool(false)) = e1 {
+                if let Expr::Literal(LiteralVal::Bool(false)) = e1 {
                     // Left side constant false, OR result depends on right side
                     return e2;
                 }
-                if let (Expr::Val(Val::Bool(b1)), Expr::Val(Val::Bool(b2))) = (&e1, &e2) {
-                    return Expr::Val(Val::Bool(*b1 || *b2));
+                if let (Expr::Literal(LiteralVal::Bool(b1)), Expr::Literal(LiteralVal::Bool(b2))) = (&e1, &e2) {
+                    return Expr::Literal(LiteralVal::Bool(*b1 || *b2));
                 }
                 Expr::Or(Box::new(e1), Box::new(e2))
             }
             Expr::NullishCoalescing(e1_box, e2_box) => {
                 let e1 = (*e1_box).fold_constants();
                 // If left side is constant not nil, return it
-                if let Expr::Val(v) = &e1
-                    && *v != Val::Nil
+                if let Expr::Literal(v) = &e1
+                    && *v != LiteralVal::Nil
                 {
                     return e1;
                 }
                 let e2 = (*e2_box).fold_constants();
                 // If left side is constant nil, return right side
-                if let Expr::Val(Val::Nil) = e1 {
+                if let Expr::Literal(LiteralVal::Nil) = e1 {
                     return e2;
                 }
                 Expr::NullishCoalescing(Box::new(e1), Box::new(e2))
             }
-            // legacy '@' context access removed
+            // Removed '@' context access.
             Expr::Access(base_box, field_box) => {
                 let base = (*base_box).fold_constants();
                 let field = (*field_box).fold_constants();
-                if let (Expr::Val(base_val), Expr::Val(field_val)) = (&base, &field) {
+                if let (Expr::Literal(base_val), Expr::Literal(field_val)) = (&base, &field) {
                     // Important: preserve Access when the field is a string literal so that
                     // subsequent call syntax (e.g. foo.bar()) can be intercepted for meta-method dispatch.
                     // This avoids turning `foo.bar` into a concrete value (e.g. Int), which would
                     // later cause `foo.bar()` to attempt calling a non-function value.
-                    if matches!(field_val, Val::Str(_)) {
+                    if field_val.as_str().is_some() {
                         return Expr::Access(Box::new(base.clone()), Box::new(field.clone()));
                     }
-                    // For non-string fields (e.g. numeric indices), fold direct access where possible
-                    if let Some(res_val) = base_val.access(field_val) {
-                        return Expr::Val(res_val);
-                    } else {
-                        return Expr::Val(Val::Nil);
-                    }
+                    let _ = (base_val, field_val);
                 }
                 Expr::Access(Box::new(base), Box::new(field))
             }
             Expr::OptionalAccess(base_box, field_box) => {
                 let base = (*base_box).fold_constants();
                 let field = (*field_box).fold_constants();
-                if let (Expr::Val(base_val), Expr::Val(field_val)) = (&base, &field) {
+                if let (Expr::Literal(base_val), Expr::Literal(field_val)) = (&base, &field) {
                     // Preserve OptionalAccess when field is a string literal to allow potential
                     // optional method-call sugar like `obj?.method()` to be handled later.
-                    if matches!(field_val, Val::Str(_)) {
+                    if field_val.as_str().is_some() {
                         return Expr::OptionalAccess(Box::new(base.clone()), Box::new(field.clone()));
                     }
-                    // Direct access to constant structure with optional chaining
-                    if base_val == &Val::Nil {
-                        return Expr::Val(Val::Nil);
+                    if base_val == &LiteralVal::Nil {
+                        return Expr::Literal(LiteralVal::Nil);
                     }
-                    if let Some(res_val) = base_val.access(field_val) {
-                        return Expr::Val(res_val);
-                    } else {
-                        return Expr::Val(Val::Nil);
-                    }
+                    let _ = field_val;
                 }
                 Expr::OptionalAccess(Box::new(base), Box::new(field))
             }
             Expr::List(exprs) => {
-                // List constant folding: if all elements are constants then fold to one Val::List
                 let folded_elems: Vec<Expr> = exprs.into_iter().map(|e| e.fold_constants()).collect();
-                if folded_elems.iter().all(|e| matches!(e, Expr::Val(_))) {
-                    // Extract all constant values as new list elements
-                    let const_vals: Vec<Val> = folded_elems
-                        .into_iter()
-                        .map(|e| if let Expr::Val(v) = e { v } else { unreachable!() })
-                        .collect();
-                    return Expr::Val(Val::List(Arc::from(const_vals)));
-                }
                 Expr::List(folded_elems.into_iter().map(Box::new).collect())
             }
             Expr::Map(pairs) => {
-                // Map constant folding: if all keys and values are constants, then construct constant Map
                 let folded_pairs: Vec<(Box<Expr>, Box<Expr>)> = pairs
                     .into_iter()
                     .map(|(k, v)| (Box::new(k.fold_constants()), Box::new(v.fold_constants())))
                     .collect();
-                if folded_pairs
-                    .iter()
-                    .all(|(k, v)| matches!(&**k, Expr::Val(_)) && matches!(&**v, Expr::Val(_)))
-                {
-                    let mut const_map = HashMap::with_capacity(folded_pairs.len());
-                    for (k_expr, v_expr) in &folded_pairs {
-                        if let (Expr::Val(k_val), Expr::Val(v_val)) = (&**k_expr, &**v_expr) {
-                            // Convert key to string (only allow basic type keys)
-                            let key_str = match k_val {
-                                Val::Str(s) => s.as_ref().to_string(),
-                                Val::Int(i) => i.to_string(),
-                                Val::Float(f) => f.to_string(),
-                                Val::Bool(b) => b.to_string(),
-                                _ => {
-                                    // Map key must be basic type, if Nil/List/Map appears, don't fold entire Map
-                                    return Expr::Map(folded_pairs);
-                                }
-                            };
-                            const_map.insert(key_str, v_val.clone());
-                        }
-                    }
-                    return Expr::Val(Val::from(const_map));
-                }
                 Expr::Map(folded_pairs)
             }
             Expr::Paren(expr_box) => {
@@ -829,24 +554,18 @@ impl Expr {
                         TemplateStringPart::Literal(s) => TemplateStringPart::Literal(s),
                         TemplateStringPart::Expr(expr) => {
                             let folded_expr = expr.fold_constants();
-                            if let Expr::Val(val) = folded_expr {
+                            if let Expr::Literal(val) = folded_expr {
                                 // Convert constant value to string
-                                let str_val = match val {
-                                    Val::Str(s) => s.as_ref().to_string(),
-                                    Val::Int(i) => i.to_string(),
-                                    Val::Float(f) => f.to_string(),
-                                    Val::Bool(b) => b.to_string(),
-                                    Val::Nil => "nil".to_string(),
-                                    Val::List(l) => format!("{:?}", l),
-                                    Val::Map(m) => format!("{:?}", m),
-                                    Val::Object(_) => format!("{:?}", val),
-                                    Val::Task(_) => format!("{:?}", val),
-                                    Val::Channel(_) => format!("{:?}", val),
-                                    Val::Stream(_) | Val::StreamCursor(_) => format!("{:?}", val),
-                                    Val::Iterator(_) => "[Iterator]".to_string(),
-                                    Val::MutationGuard(_) => "[MutationGuard]".to_string(),
-                                    Val::Closure(_) => "[Closure]".to_string(),
-                                    Val::RustFunction(_) | Val::RustFunctionNamed(_) => "[Function]".to_string(),
+                                let str_val = match val.as_str() {
+                                    Some(s) => s.to_string(),
+                                    None => match val {
+                                        LiteralVal::Int(i) => i.to_string(),
+                                        LiteralVal::Float(f) => f.to_string(),
+                                        LiteralVal::Bool(b) => b.to_string(),
+                                        LiteralVal::Nil => "nil".to_string(),
+                                        LiteralVal::String(_) => format!("{:?}", val),
+                                        LiteralVal::ShortStr(_) => unreachable!("string handled above"),
+                                    },
                                 };
                                 TemplateStringPart::Literal(str_val)
                             } else {
@@ -870,7 +589,7 @@ impl Expr {
                             }
                         })
                         .collect::<String>();
-                    return Expr::Val(Val::Str(Arc::from(result)));
+                    return Expr::Literal(LiteralVal::from_str(&result));
                 }
                 Expr::TemplateString(folded_parts)
             }
@@ -881,6 +600,7 @@ impl Expr {
                     body: Box::new(body.fold_constants()),
                 }
             }
+            Expr::Block(statements) => Expr::Block(statements),
             Expr::Match { value, arms } => {
                 // Match expressions cannot be fully folded without runtime evaluation
                 // but we can fold the value and arm bodies
@@ -910,18 +630,7 @@ impl Expr {
         }
     }
 }
-impl TryInto<Val> for &Expr {
-    type Error = anyhow::Error;
-    fn try_into(self) -> Result<Val> {
-        match self {
-            Expr::Val(val) => Ok(val.clone()), // Clone necessary as eval returns owned Val
-            _ => {
-                let msg = format!("Can't convert Expr::{:?} to Val", self);
-                Err(anyhow!(msg))
-            }
-        }
-    }
-}
+
 fn into_expr<S: AsRef<str>>(s: S) -> Result<Expr> {
     let tokens = Tokenizer::tokenize(s.as_ref())?;
     let expr = Parser::new(&tokens).parse()?;
@@ -948,7 +657,7 @@ impl Display for Expr {
             Expr::And(left, right) => write!(f, "{left} && {right}"),
             Expr::Or(left, right) => write!(f, "{left} || {right}"),
             Expr::NullishCoalescing(left, right) => write!(f, "{left} ?? {right}"),
-            // legacy '@' context access removed
+            // Removed '@' context access.
             Expr::Access(expr, field) => write!(f, "{}.{}", expr, field),
             Expr::OptionalAccess(expr, field) => write!(f, "{}?.{}", expr, field),
             Expr::List(exprs) => {
@@ -1051,6 +760,7 @@ impl Display for Expr {
                 let params_str = params.join(", ");
                 write!(f, "|{}| {}", params_str, body)
             }
+            Expr::Block(_) => write!(f, "{{ ... }}"),
             Expr::Match { value, arms } => {
                 write!(f, "match {} {{", value)?;
                 for (i, arm) in arms.iter().enumerate() {
@@ -1071,486 +781,135 @@ impl Display for Expr {
                 }
                 write!(f, "}}")
             }
-            Expr::Val(val) => write!(f, "{}", val),
+            Expr::Literal(val) => write!(f, "{}", val),
         }
     }
 }
-impl From<Val> for Expr {
-    fn from(val: Val) -> Self {
-        Expr::Val(val)
+
+fn fold_literal_arith(lhs: &LiteralVal, op: &BinOp, rhs: &LiteralVal) -> Option<LiteralVal> {
+    match op {
+        BinOp::Add => fold_literal_add(lhs, rhs),
+        BinOp::Sub => fold_literal_numeric(lhs, rhs, |a, b| a - b, |a, b| a - b),
+        BinOp::Mul => fold_literal_mul(lhs, rhs),
+        BinOp::Div => fold_literal_div(lhs, rhs),
+        BinOp::Mod => fold_literal_mod(lhs, rhs),
+        _ => None,
     }
 }
+
+fn fold_literal_add(lhs: &LiteralVal, rhs: &LiteralVal) -> Option<LiteralVal> {
+    match (lhs, rhs) {
+        (LiteralVal::Int(a), LiteralVal::Int(b)) => Some(LiteralVal::Int(a + b)),
+        (LiteralVal::Float(a), LiteralVal::Float(b)) => Some(LiteralVal::Float(a + b)),
+        (LiteralVal::Float(a), LiteralVal::Int(b)) => Some(LiteralVal::Float(a + *b as f64)),
+        (LiteralVal::Int(a), LiteralVal::Float(b)) => Some(LiteralVal::Float(*a as f64 + b)),
+        (lhs, rhs) if lhs.as_str().is_some() && rhs.as_str().is_some() => Some(LiteralVal::concat_strings(
+            lhs.as_str().expect("checked string"),
+            rhs.as_str().expect("checked string"),
+        )),
+        (lhs, LiteralVal::Int(value)) if lhs.as_str().is_some() => {
+            let mut buf = itoa::Buffer::new();
+            Some(LiteralVal::concat_strings(
+                lhs.as_str().expect("checked string"),
+                buf.format(*value),
+            ))
+        }
+        (lhs, LiteralVal::Float(value)) if lhs.as_str().is_some() => {
+            let mut buf = ryu::Buffer::new();
+            Some(LiteralVal::concat_strings(
+                lhs.as_str().expect("checked string"),
+                buf.format(*value),
+            ))
+        }
+        (LiteralVal::Int(value), rhs) if rhs.as_str().is_some() => {
+            let mut buf = itoa::Buffer::new();
+            Some(LiteralVal::concat_strings(
+                buf.format(*value),
+                rhs.as_str().expect("checked string"),
+            ))
+        }
+        (LiteralVal::Float(value), rhs) if rhs.as_str().is_some() => {
+            let mut buf = ryu::Buffer::new();
+            Some(LiteralVal::concat_strings(
+                buf.format(*value),
+                rhs.as_str().expect("checked string"),
+            ))
+        }
+        _ => None,
+    }
+}
+
+fn fold_literal_mul(lhs: &LiteralVal, rhs: &LiteralVal) -> Option<LiteralVal> {
+    match (lhs, rhs) {
+        (left, LiteralVal::Int(count)) if left.as_str().is_some() => {
+            Some(repeat_literal_string(left.as_str()?, *count))
+        }
+        (LiteralVal::Int(count), right) if right.as_str().is_some() => {
+            Some(repeat_literal_string(right.as_str()?, *count))
+        }
+        _ => fold_literal_numeric(lhs, rhs, |a, b| a * b, |a, b| a * b),
+    }
+}
+
+fn repeat_literal_string(value: &str, count: i64) -> LiteralVal {
+    if count <= 0 {
+        LiteralVal::from_str("")
+    } else {
+        LiteralVal::from_str(&value.repeat(count as usize))
+    }
+}
+
+fn fold_literal_div(lhs: &LiteralVal, rhs: &LiteralVal) -> Option<LiteralVal> {
+    if literal_is_zero(rhs) {
+        return None;
+    }
+
+    match (lhs, rhs) {
+        (LiteralVal::Int(a), LiteralVal::Int(b)) => {
+            let result = (*a as f64) / (*b as f64);
+            if result.fract() == 0.0 {
+                Some(LiteralVal::Int(result as i64))
+            } else {
+                Some(LiteralVal::Float(result))
+            }
+        }
+        _ => fold_literal_numeric(lhs, rhs, |a, b| a / b, |a, b| a / b),
+    }
+}
+
+fn fold_literal_mod(lhs: &LiteralVal, rhs: &LiteralVal) -> Option<LiteralVal> {
+    if literal_is_zero(rhs) {
+        return None;
+    }
+    fold_literal_numeric(lhs, rhs, |a, b| a % b, |a, b| a % b)
+}
+
+fn literal_is_zero(value: &LiteralVal) -> bool {
+    match value {
+        LiteralVal::Int(value) => *value == 0,
+        LiteralVal::Float(value) => *value == 0.0,
+        _ => false,
+    }
+}
+
+fn fold_literal_numeric(
+    lhs: &LiteralVal,
+    rhs: &LiteralVal,
+    int_op: fn(i64, i64) -> i64,
+    float_op: fn(f64, f64) -> f64,
+) -> Option<LiteralVal> {
+    match (lhs, rhs) {
+        (LiteralVal::Int(a), LiteralVal::Int(b)) => Some(LiteralVal::Int(int_op(*a, *b))),
+        (LiteralVal::Float(a), LiteralVal::Float(b)) => Some(LiteralVal::Float(float_op(*a, *b))),
+        (LiteralVal::Float(a), LiteralVal::Int(b)) => Some(LiteralVal::Float(float_op(*a, *b as f64))),
+        (LiteralVal::Int(a), LiteralVal::Float(b)) => Some(LiteralVal::Float(float_op(*a as f64, *b))),
+        _ => None,
+    }
+}
+
 impl Expr {
     /// 静态类型检查表达式
     pub fn type_check(&self, type_checker: &mut TypeChecker) -> Result<Type> {
         type_checker.check_expr(self)
-    }
-    /// 使用 VmContext 进行表达式求值（统一接口）
-    ///
-    /// 渐进收敛：优先使用 ctx 语义处理常见分支；未覆盖的场景回退到旧实现。
-    pub fn eval_with_ctx(&self, ctx: &mut VmContext) -> Result<Val> {
-        match self {
-            // 变量解析：查找顺序
-            // 1) 本地/全局作用域
-            // 2) 导入上下文符号（import 语句）
-            // 3) 模块解析器注册的内置函数（如测试环境中的 spawn/chan）
-            Expr::Var(name) => {
-                if let Some(v) = ctx.get(name).cloned() {
-                    Ok(v)
-                } else if let Some(v) = ctx.import_context().get_symbol(name) {
-                    Ok(v.clone())
-                } else if let Some(v) = ctx.resolver().get_builtin(name) {
-                    Ok(v.clone())
-                } else {
-                    Err(anyhow!("Undefined variable: {}", name))
-                }
-            }
-            // 括号表达式
-            Expr::Paren(expr) => expr.eval_with_ctx(ctx),
-            // 字面量列表
-            Expr::List(items) => {
-                let mut out = Vec::with_capacity(items.len());
-                for e in items {
-                    out.push(e.eval_with_ctx(ctx)?);
-                }
-                Ok(Val::List(Arc::from(out)))
-            }
-            // 字面量 Map（键统一为字符串）
-            Expr::Map(pairs) => {
-                let mut map = HashMap::with_capacity(pairs.len());
-                for (k, v) in pairs {
-                    let key_val = k.eval_with_ctx(ctx)?;
-                    let val_val = v.eval_with_ctx(ctx)?;
-                    let key_str = match key_val {
-                        Val::Str(s) => s.as_ref().to_string(),
-                        Val::Int(i) => i.to_string(),
-                        Val::Float(f) => f.to_string(),
-                        Val::Bool(b) => b.to_string(),
-                        other => return Err(anyhow!("Map key must be primitive, got: {:?}", other)),
-                    };
-                    map.insert(key_str, val_val);
-                }
-                Ok(Val::from(map))
-            }
-            // 结构体字面量（字段求值）
-            Expr::StructLiteral { name, fields } => {
-                let mut hm = HashMap::with_capacity(fields.len());
-                for (k, vexpr) in fields {
-                    hm.insert(k.clone(), vexpr.eval_with_ctx(ctx)?);
-                }
-                Ok(Val::Object(Arc::new(ObjectValue {
-                    type_name: name.clone().into(),
-                    fields: Arc::new(hm),
-                })))
-            }
-            // 二元运算（使用已有 BinOp::eval_vals 以统一算术与比较语义）
-            Expr::Bin(l, op, r) => {
-                let lval = l.eval_with_ctx(ctx)?;
-                let rval = r.eval_with_ctx(ctx)?;
-                // 直接复用 BinOp 上的值级运算实现，覆盖：
-                // - 算术：+ - * / %
-                // - 比较：== != < <= > >= in
-                op.eval_vals(&lval, &rval)
-            }
-            // 逻辑与/或/空合并（短路）
-            Expr::And(l, r) => {
-                let lv = l.eval_with_ctx(ctx)?;
-                let is_truthy = !matches!(lv, Val::Bool(false) | Val::Nil);
-                if is_truthy {
-                    r.eval_with_ctx(ctx)
-                } else {
-                    Ok(Val::Bool(false))
-                }
-            }
-            Expr::Or(l, r) => {
-                let lv = l.eval_with_ctx(ctx)?;
-                let is_truthy = !matches!(lv, Val::Bool(false) | Val::Nil);
-                if is_truthy {
-                    Ok(Val::Bool(true))
-                } else {
-                    r.eval_with_ctx(ctx)
-                }
-            }
-            Expr::NullishCoalescing(l, r) => {
-                let lv = l.eval_with_ctx(ctx)?;
-                if matches!(lv, Val::Nil) {
-                    r.eval_with_ctx(ctx)
-                } else {
-                    Ok(lv)
-                }
-            }
-            // 模板字符串
-            Expr::TemplateString(parts) => {
-                let mut s = String::new();
-                for p in parts {
-                    match p {
-                        TemplateStringPart::Literal(t) => s.push_str(t),
-                        TemplateStringPart::Expr(e) => s.push_str(&e.eval_with_ctx(ctx)?.display_string(Some(ctx))),
-                    }
-                }
-                Ok(Val::Str(Arc::from(s)))
-            }
-            // 属性访问 / 下标访问
-            Expr::Access(expr, field) => {
-                let val = expr.eval_with_ctx(ctx)?;
-                let field_val = field.eval_with_ctx(ctx)?;
-                Ok(val.access(&field_val).unwrap_or(Val::Nil))
-            }
-            // 可选访问
-            Expr::OptionalAccess(expr, field) => {
-                let val = expr.eval_with_ctx(ctx)?;
-                if matches!(val, Val::Nil) {
-                    return Ok(Val::Nil);
-                }
-                let field_val = field.eval_with_ctx(ctx)?;
-                Ok(val.access(&field_val).unwrap_or(Val::Nil))
-            }
-            // 函数调用：按名称
-            Expr::Call(func_name, args) => {
-                // Resolve callee with same fallback strategy as variable lookup
-                let func_val = if let Some(v) = ctx.get(func_name).cloned() {
-                    v
-                } else if let Some(v) = ctx.import_context().get_symbol(func_name) {
-                    v.clone()
-                } else if let Some(v) = ctx.resolver().get_builtin(func_name) {
-                    v.clone()
-                } else {
-                    return Err(anyhow!("Undefined function: {}", func_name));
-                };
-                let mut argv = Vec::with_capacity(args.len());
-                for a in args {
-                    argv.push(a.eval_with_ctx(ctx)?);
-                }
-                func_val.call(&argv, ctx)
-            }
-            // 函数调用：通用 callee 表达式（含方法糖）
-            Expr::CallExpr(callee, args) => {
-                // 方法糖：obj.method(...)
-                if let Expr::Access(obj_expr, field_expr) = callee.as_ref() {
-                    let obj_val = obj_expr.eval_with_ctx(ctx)?;
-                    let field_val = field_expr.eval_with_ctx(ctx)?;
-                    if let Val::Str(method_name) = field_val {
-                        // 1) 直接属性可调用；若属性是非函数且无实参调用，则返回该属性值（如 list.len() -> list.len）
-                        if let Some(prop_val) = obj_val.access(&Val::Str(method_name.clone())) {
-                            match prop_val {
-                                Val::Closure(_) | Val::RustFunction(_) | Val::RustFunctionNamed(_) => {
-                                    let mut argv = Vec::with_capacity(args.len());
-                                    for a in args {
-                                        argv.push(a.eval_with_ctx(ctx)?);
-                                    }
-                                    return prop_val.call(&argv, ctx);
-                                }
-                                other => {
-                                    if args.is_empty() {
-                                        return Ok(other);
-                                    }
-                                    // fall through to meta-method lookup for non-empty args
-                                }
-                            }
-                        }
-                        // 2) 检查 trait 实现 - 先评估参数再检查 trait 以避免借用冲突
-                        let mut full_args = Vec::with_capacity(args.len() + 1);
-                        full_args.push(obj_val.clone());
-                        for a in args {
-                            full_args.push(a.eval_with_ctx(ctx)?);
-                        }
-
-                        // 优先检查 trait 实现
-                        if let Some(tc) = ctx.type_checker() {
-                            let obj_type = obj_val.dispatch_type();
-                            if let Some(method_val) = tc.registry().get_method(&obj_type, method_name.as_ref()) {
-                                return method_val.clone().call(&full_args, ctx);
-                            }
-                        }
-
-                        // 回退到内置方法注册
-                        if let Some(func) = find_method_for_val(&obj_val, method_name.as_ref()) {
-                            let func_val = Val::RustFunction(func);
-                            return func_val.call(&full_args, ctx);
-                        }
-
-                        return Err(anyhow!("{} has no method '{}'", obj_val.type_name(), method_name));
-                    }
-                }
-                // 普通 callee
-                let callee_val = callee.eval_with_ctx(ctx)?;
-                match callee_val {
-                    Val::Closure(_) | Val::RustFunction(_) | Val::RustFunctionNamed(_) => {
-                        let mut argv = Vec::with_capacity(args.len());
-                        for a in args {
-                            argv.push(a.eval_with_ctx(ctx)?);
-                        }
-                        callee_val.call(&argv, ctx)
-                    }
-                    other => Err(anyhow!("{} is not a function", other.type_name())),
-                }
-            }
-            // 具名参数调用（含方法糖）
-            Expr::CallNamed(callee, pos_args, named_args) => {
-                // 方法糖：obj.method(...)
-                if let Expr::Access(obj_expr, field_expr) = callee.as_ref() {
-                    let obj_val = obj_expr.eval_with_ctx(ctx)?;
-                    let field_val = field_expr.eval_with_ctx(ctx)?;
-                    if let Val::Str(method_name) = field_val {
-                        // 1) 直接属性可调用
-                        if let Some(prop_val) = obj_val.access(&Val::Str(method_name.clone())) {
-                            match prop_val {
-                                Val::Closure(_) | Val::RustFunctionNamed(_) => {
-                                    let mut pos = Vec::with_capacity(pos_args.len());
-                                    for a in pos_args {
-                                        pos.push(a.eval_with_ctx(ctx)?);
-                                    }
-                                    let mut named: Vec<(String, Val)> = Vec::with_capacity(named_args.len());
-                                    for (n, e) in named_args {
-                                        named.push((n.clone(), e.eval_with_ctx(ctx)?));
-                                    }
-                                    return prop_val.call_named(&pos, &named, ctx);
-                                }
-                                Val::RustFunction(_) => {
-                                    if !named_args.is_empty() {
-                                        return Err(anyhow!("Named arguments are not supported for native functions"));
-                                    }
-                                    let mut argv = Vec::with_capacity(pos_args.len());
-                                    for a in pos_args {
-                                        argv.push(a.eval_with_ctx(ctx)?);
-                                    }
-                                    return prop_val.call(&argv, ctx);
-                                }
-                                other => {
-                                    if pos_args.is_empty() && named_args.is_empty() {
-                                        return Ok(other);
-                                    }
-                                    // fall through to meta-method lookup otherwise
-                                }
-                            }
-                        }
-                        // 2) 检查 trait 实现 - 先评估参数避免借用冲突（仅支持非具名）
-                        if !named_args.is_empty() {
-                            // trait 方法不支持具名参数，先检查避免评估工作
-                            if let Some(tc) = ctx.type_checker() {
-                                let obj_type = obj_val.dispatch_type();
-                                if tc.registry().get_method(&obj_type, method_name.as_ref()).is_some() {
-                                    return Err(anyhow!("Named arguments are not supported for trait methods"));
-                                }
-                            }
-                        }
-
-                        // 评估所有参数
-                        let mut full_args = Vec::with_capacity(pos_args.len() + 1);
-                        full_args.push(obj_val.clone());
-                        for a in pos_args {
-                            full_args.push(a.eval_with_ctx(ctx)?);
-                        }
-
-                        // 检查 trait 实现
-                        if let Some(tc) = ctx.type_checker() {
-                            let obj_type = obj_val.dispatch_type();
-                            if let Some(method_val) = tc.registry().get_method(&obj_type, method_name.as_ref()) {
-                                return method_val.clone().call(&full_args, ctx);
-                            }
-                        }
-
-                        // 回退到内置方法
-                        if let Some(func) = find_method_for_val(&obj_val, method_name.as_ref()) {
-                            let func_val = Val::RustFunction(func);
-                            return func_val.call(&full_args, ctx);
-                        }
-
-                        return Err(anyhow!("{} has no method '{}'", obj_val.type_name(), method_name));
-                    }
-                }
-                // 普通 callee
-                let callee_val = callee.eval_with_ctx(ctx)?;
-                let mut pos = Vec::with_capacity(pos_args.len());
-                for a in pos_args {
-                    pos.push(a.eval_with_ctx(ctx)?);
-                }
-                let mut named: Vec<(String, Val)> = Vec::with_capacity(named_args.len());
-                for (n, e) in named_args {
-                    named.push((n.clone(), e.eval_with_ctx(ctx)?));
-                }
-                callee_val.call_named(&pos, &named, ctx)
-            }
-            // 范围表达式：生成列表值
-            Expr::Range {
-                start,
-                end,
-                inclusive,
-                step,
-            } => {
-                let start_val = match start {
-                    Some(expr) => expr.eval_with_ctx(ctx)?,
-                    None => Val::Int(0),
-                };
-                let end_val = match end {
-                    Some(expr) => expr.eval_with_ctx(ctx)?,
-                    None => return Err(anyhow!("Open-ended ranges not supported in for loops")),
-                };
-                let step_val = match step {
-                    Some(expr) => Some(expr.eval_with_ctx(ctx)?),
-                    None => None,
-                };
-                match (start_val, end_val, step_val) {
-                    (Val::Int(s), Val::Int(e), None) => {
-                        let range: Vec<Val> = if *inclusive {
-                            (s..=e).map(Val::Int).collect()
-                        } else {
-                            (s..e).map(Val::Int).collect()
-                        };
-                        Ok(Val::List(range.into()))
-                    }
-                    (Val::Int(mut i), Val::Int(e), Some(Val::Int(st))) => {
-                        if st == 0 {
-                            return Err(anyhow!("Range step cannot be zero"));
-                        }
-                        let mut out: Vec<Val> = Vec::new();
-                        if st > 0 {
-                            if *inclusive {
-                                while i <= e {
-                                    out.push(Val::Int(i));
-                                    i += st;
-                                }
-                            } else {
-                                while i < e {
-                                    out.push(Val::Int(i));
-                                    i += st;
-                                }
-                            }
-                        } else if *inclusive {
-                            while i >= e {
-                                out.push(Val::Int(i));
-                                i += st;
-                            }
-                        } else {
-                            while i > e {
-                                out.push(Val::Int(i));
-                                i += st;
-                            }
-                        }
-                        Ok(Val::List(out.into()))
-                    }
-                    (_, _, Some(_)) => Err(anyhow!("Range step must be an integer")),
-                    _ => Err(anyhow!("Range bounds must be integers")),
-                }
-            }
-            // select 表达式
-            Expr::Select { cases, default_case } => {
-                let mut select_op = SelectOperation::new();
-                let mut bindings: Vec<Option<String>> = Vec::with_capacity(cases.len());
-                for (idx, case) in cases.iter().enumerate() {
-                    // guard
-                    if let Some(g) = &case.guard {
-                        match g.eval_with_ctx(ctx)? {
-                            Val::Bool(true) => {}
-                            Val::Bool(false) => {
-                                bindings.push(None);
-                                continue;
-                            }
-                            other => {
-                                return Err(anyhow!("Select guard must be Bool, got {:?}", other));
-                            }
-                        }
-                    }
-                    match &case.pattern {
-                        SelectPattern::Recv { binding, channel } => {
-                            let channel_val = channel.eval_with_ctx(ctx)?;
-                            let channel_id = if let Val::Channel(channel) = channel_val {
-                                channel.id
-                            } else {
-                                return Err(anyhow!("recv() target is not a channel"));
-                            };
-                            select_op.add_recv(idx, channel_id);
-                            bindings.push(binding.clone());
-                        }
-                        SelectPattern::Send { channel, value } => {
-                            let channel_val = channel.eval_with_ctx(ctx)?;
-                            let value_val = value.eval_with_ctx(ctx)?;
-                            let channel_id = if let Val::Channel(channel) = channel_val {
-                                channel.id
-                            } else {
-                                return Err(anyhow!("send() target is not a channel"));
-                            };
-                            select_op.add_send(idx, channel_id, value_val);
-                            bindings.push(None);
-                        }
-                    }
-                }
-                let has_default = default_case.is_some();
-                if select_op.is_empty() && !has_default {
-                    return Ok(Val::Nil);
-                }
-                let select_result = with_runtime(|runtime| runtime.block_on(select_op.execute(runtime, has_default)))?;
-                if select_result.is_default {
-                    if let Some(default_expr) = default_case {
-                        return default_expr.eval_with_ctx(ctx);
-                    }
-                    return Ok(Val::Nil);
-                }
-                let case_index = select_result
-                    .case_index
-                    .ok_or_else(|| anyhow!("Select returned no case index"))?;
-                let selected_case = cases
-                    .get(case_index)
-                    .ok_or_else(|| anyhow!("Invalid select case index"))?;
-                if let Some(name) = bindings.get(case_index).cloned().flatten()
-                    && let Some((_ok, payload)) = select_result.recv_payload
-                {
-                    ctx.push_scope();
-                    ctx.set(name, payload);
-                    let result = selected_case.body.eval_with_ctx(ctx);
-                    ctx.pop_scope();
-                    return result;
-                }
-                selected_case.body.eval_with_ctx(ctx)
-            }
-            // 匹配表达式
-            Expr::Match { value, arms } => {
-                let match_val = value.eval_with_ctx(ctx)?;
-                for arm in arms {
-                    if let Some(bindings) = Pattern::matches(&arm.pattern, &match_val, Some(ctx))? {
-                        ctx.push_scope();
-                        for (name, val) in bindings {
-                            ctx.set(name, val);
-                        }
-                        let result = arm.body.eval_with_ctx(ctx);
-                        ctx.pop_scope();
-                        return result;
-                    }
-                }
-                Err(anyhow!("No pattern matched in match expression"))
-            }
-            // 一元运算
-            Expr::Unary(op, expr) => {
-                let val = expr.eval_with_ctx(ctx)?;
-                op.eval_val(&val)
-            }
-            // 条件表达式
-            Expr::Conditional(cond, then_expr, else_expr) => {
-                let cv = cond.eval_with_ctx(ctx)?;
-                match cv {
-                    Val::Bool(true) => then_expr.eval_with_ctx(ctx),
-                    Val::Bool(false) => else_expr.eval_with_ctx(ctx),
-                    _ => Err(anyhow!("Ternary condition must be Bool, got: {:?}", cv)),
-                }
-            }
-            // 闭包表达式
-            Expr::Closure { params, body } => {
-                let stmt = Stmt::Expr(body.clone());
-                Ok(Val::Closure(Arc::new(ClosureValue::new(ClosureInit {
-                    params: Arc::new(params.clone()),
-                    named_params: Arc::new(Vec::new()),
-                    body: Arc::new(stmt),
-                    env: Arc::new(VmContext::new()),
-                    upvalues: Arc::new(Vec::new()),
-                    captures: ClosureCapture::empty(),
-                    capture_specs: Arc::new(Vec::new()),
-                    default_funcs: Arc::new(Vec::new()),
-                    debug_name: None,
-                    debug_location: None,
-                }))))
-            }
-            // 字面量值
-            Expr::Val(val) => Ok(val.clone()),
-        }
     }
 }

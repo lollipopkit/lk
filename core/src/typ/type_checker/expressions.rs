@@ -1,8 +1,10 @@
+mod calls;
+
 use super::{NamedParamSig, TypeChecker};
 use crate::expr::{Expr, SelectCase, SelectPattern, TemplateStringPart};
-use crate::op::{BinOp, UnaryOp};
+use crate::operator::{BinOp, UnaryOp};
 use crate::typ::{NumericClass, NumericHierarchy};
-use crate::val::{FunctionNamedParamType, Type, Val};
+use crate::val::{FunctionNamedParamType, LiteralVal, Type};
 use anyhow::Result;
 use std::collections::HashMap;
 
@@ -27,6 +29,10 @@ impl TypeChecker {
                     Ok(())
                 }
             }
+            // Box<T> from numeric-hierarchy arithmetic on Any values — unwrap and re-check inner.
+            // Box<Any> results from arithmetic like `native_fn() - native_fn()` where the native
+            // return type is unresolvable at compile time; treat it the same as Any.
+            Type::Boxed(inner) => self.enforce_int_type(expr, *inner, context),
             other => Err(Self::type_err(
                 &format!("{context} must be Int"),
                 Some(Type::Int),
@@ -36,18 +42,68 @@ impl TypeChecker {
         }
     }
 
-    /// Type check an expression and record its inferred type
+    /// Enforce that a type is Bool, adding a constraint for type variables.
+    fn enforce_bool_type(&mut self, ty: &Type, expr: &Expr) -> Result<()> {
+        let resolved = self.resolve_aliases(ty);
+        match &resolved {
+            Type::Bool => Ok(()),
+            Type::Variable(_) => {
+                self.inference_engine.add_constraint(ty.clone(), Type::Bool);
+                Ok(())
+            }
+            Type::Any => {
+                if self.strict_any() {
+                    Err(Self::type_err(
+                        &format!("Expected boolean type"),
+                        Some(Type::Bool),
+                        Some(ty.clone()),
+                        Some(expr.clone()),
+                    ))
+                } else {
+                    Ok(())
+                }
+            }
+            Type::Union(variants) => {
+                // Accept union if any variant is Bool, Nil, or Variable (falsy-aware)
+                if variants
+                    .iter()
+                    .any(|v| matches!(v, Type::Bool | Type::Nil | Type::Variable(_) | Type::Any))
+                {
+                    // Add constraints for each Variable variant
+                    for v in variants {
+                        if matches!(v, Type::Variable(_)) {
+                            self.inference_engine.add_constraint(v.clone(), Type::Bool);
+                        }
+                    }
+                    Ok(())
+                } else {
+                    Err(Self::type_err(
+                        &format!("Expected boolean type"),
+                        Some(Type::Bool),
+                        Some(ty.clone()),
+                        Some(expr.clone()),
+                    ))
+                }
+            }
+            other => Err(Self::type_err(
+                &format!("Expected boolean type"),
+                Some(Type::Bool),
+                Some(other.clone()),
+                Some(expr.clone()),
+            )),
+        }
+    }
+
+    /// Type check an expression.
     pub fn check_expr(&mut self, expr: &Expr) -> Result<Type> {
-        let ty = self.check_expr_inner(expr)?;
-        self.record_expr_type(expr, &ty);
-        Ok(ty)
+        self.check_expr_inner(expr)
     }
 
     /// Internal expression checker without recording.
     fn check_expr_inner(&mut self, expr: &Expr) -> Result<Type> {
         match expr {
-            // Literals (via Val enum)
-            Expr::Val(val) => self.check_literal(val),
+            // Literals (via LiteralVal enum)
+            Expr::Literal(val) => self.check_literal(val),
 
             // Variables
             Expr::Var(name) => self.check_identifier(name),
@@ -61,13 +117,8 @@ impl TypeChecker {
             Expr::Unary(op, expr) => self.check_unary_op(op, expr),
 
             // Collections
-            Expr::List(items) => self.check_list(&items.iter().map(|i| i.as_ref().clone()).collect::<Vec<_>>()),
-            Expr::Map(pairs) => self.check_map(
-                &pairs
-                    .iter()
-                    .map(|(k, v)| (k.as_ref().clone(), v.as_ref().clone()))
-                    .collect::<Vec<_>>(),
-            ),
+            Expr::List(items) => self.check_list(items),
+            Expr::Map(pairs) => self.check_map(pairs),
             Expr::StructLiteral { name, fields } => {
                 // If struct is known, enforce field presence and types; otherwise, accept as named type
                 if let Some(sd) = self.registry.get_struct(name) {
@@ -140,11 +191,9 @@ impl TypeChecker {
             Expr::Call(func, args) => {
                 // For Call with string name, create a variable expression for the function
                 let func_expr = Expr::Var(func.clone());
-                self.check_function_call(&func_expr, &args.iter().map(|a| a.as_ref().clone()).collect::<Vec<_>>())
+                self.check_function_call(&func_expr, args)
             }
-            Expr::CallExpr(func_expr, args) => {
-                self.check_function_call(func_expr, &args.iter().map(|a| a.as_ref().clone()).collect::<Vec<_>>())
-            }
+            Expr::CallExpr(func_expr, args) => self.check_function_call(func_expr, args),
             Expr::CallNamed(callee, pos_args, named_args) => {
                 // Struct constructor sugar: TypeName(field: expr, ...)
                 if let Expr::Var(name) = callee.as_ref()
@@ -438,6 +487,7 @@ impl TypeChecker {
                     .ok_or_else(|| Self::type_err("Match expression has no arms", None, None, Some(expr.clone())))
             }
             Expr::Paren(expr) => self.check_expr(expr),
+            Expr::Block(_) => Ok(Type::Any),
         }
     }
 
@@ -479,7 +529,7 @@ impl TypeChecker {
         Ok(var_type)
     }
 
-    // Legacy '@' context access removed
+    // Removed '@' context access.
 
     /// Check binary operation types
     fn check_binary_op_with_types(
@@ -503,10 +553,25 @@ impl TypeChecker {
                     self.check_numeric_bin_op(left_expr, &left_type, right_expr, &right_type, op)
                 }
             }
+            BinOp::Mul if self.is_string_like(&left_type) || self.is_string_like(&right_type) => {
+                let left_string = self.is_string_like(&left_type);
+                let right_string = self.is_string_like(&right_type);
+                let left_int = matches!(self.resolve_aliases(&left_type), Type::Int);
+                let right_int = matches!(self.resolve_aliases(&right_type), Type::Int);
+                if (left_string && right_int) || (left_int && right_string) {
+                    Ok(Type::String)
+                } else {
+                    self.check_numeric_bin_op(left_expr, &left_type, right_expr, &right_type, op)
+                }
+            }
             BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
                 self.check_numeric_bin_op(left_expr, &left_type, right_expr, &right_type, op)
             }
-            BinOp::Eq | BinOp::Ne => Ok(Type::Bool),
+            BinOp::Eq | BinOp::Ne => {
+                self.inference_engine
+                    .add_constraint(left_type.clone(), right_type.clone());
+                Ok(Type::Bool)
+            }
             BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
                 self.ensure_numeric_operand(&left_type, left_expr, "左侧")?;
                 self.ensure_numeric_operand(&right_type, right_expr, "右侧")?;
@@ -537,10 +602,9 @@ impl TypeChecker {
         }
 
         let mut acc_type = self.check_expr(current)?;
-        for (node_expr, left_expr, op, right_expr) in chain.into_iter().rev() {
+        for (_, left_expr, op, right_expr) in chain.into_iter().rev() {
             let right_type = self.check_expr(right_expr)?;
             acc_type = self.check_binary_op_with_types(left_expr, acc_type, op, right_expr, right_type)?;
-            self.record_expr_type(node_expr, &acc_type);
         }
         Ok(acc_type)
     }
@@ -675,22 +739,8 @@ impl TypeChecker {
         let right_type = self.check_expr(right)?;
 
         // Both operands must be boolean
-        if left_type != Type::Bool {
-            return Err(Self::type_err(
-                "Expected boolean type for logical operation",
-                Some(Type::Bool),
-                Some(left_type),
-                None,
-            ));
-        }
-        if right_type != Type::Bool {
-            return Err(Self::type_err(
-                "Expected boolean type for logical operation",
-                Some(Type::Bool),
-                Some(right_type),
-                None,
-            ));
-        }
+        self.enforce_bool_type(&left_type, left)?;
+        self.enforce_bool_type(&right_type, right)?;
 
         Ok(result_type)
     }
@@ -701,13 +751,8 @@ impl TypeChecker {
 
         match op {
             UnaryOp::Not => {
-                if expr_type != Type::Bool {
-                    return Err(Self::type_err(
-                        "Expected boolean type for '!' operator",
-                        Some(Type::Bool),
-                        Some(expr_type),
-                        None,
-                    ));
+                if matches!(self.resolve_aliases(&expr_type), Type::Variable(_)) {
+                    self.inference_engine.add_constraint(expr_type, Type::Any);
                 }
                 Ok(Type::Bool)
             }
@@ -715,27 +760,31 @@ impl TypeChecker {
     }
 
     /// Check list literal type
-    fn check_list(&mut self, items: &[Expr]) -> Result<Type> {
+    fn check_list(&mut self, items: &[Box<Expr>]) -> Result<Type> {
         if items.is_empty() {
             // Empty list, infer element type later
             let elem_type = self.inference_engine.fresh_type_var();
             return Ok(Type::List(Box::new(elem_type)));
         }
 
-        // Collect element types and build a normalized union when heterogeneous
-        let mut elems: Vec<Type> = Vec::with_capacity(items.len());
+        let mut item_types: Vec<Type> = Vec::with_capacity(items.len());
         for item in items {
-            let t = self.check_expr(item)?;
-            match t {
-                Type::Union(ts) => elems.extend(ts.into_iter()),
-                other => elems.push(other),
-            }
+            item_types.push(self.check_expr(item)?);
+        }
+        if item_types.windows(2).any(|pair| pair[0] != pair[1]) {
+            return Ok(Type::Tuple(item_types));
         }
 
         // Deduplicate and produce a stable order by display string
         use std::collections::BTreeMap;
         let mut by_key: BTreeMap<String, Type> = BTreeMap::new();
-        for ty in elems {
+        for ty in item_types {
+            if let Type::Union(types) = ty {
+                for inner in types {
+                    by_key.entry(inner.display()).or_insert(inner);
+                }
+                continue;
+            }
             by_key.entry(ty.display()).or_insert(ty);
         }
         let mut uniq: Vec<Type> = by_key.into_values().collect();
@@ -749,7 +798,7 @@ impl TypeChecker {
     }
 
     /// Check map literal type
-    fn check_map(&mut self, pairs: &[(Expr, Expr)]) -> Result<Type> {
+    fn check_map(&mut self, pairs: &[(Box<Expr>, Box<Expr>)]) -> Result<Type> {
         if pairs.is_empty() {
             // Empty map, infer key/value types later
             let key_type = self.inference_engine.fresh_type_var();
@@ -811,8 +860,8 @@ impl TypeChecker {
         };
 
         let field_name = match field {
-            Expr::Val(Val::Str(name)) => name.as_ref().to_string(),
-            Expr::Val(Val::Int(idx)) => idx.to_string(),
+            Expr::Literal(val) if val.as_str().is_some() => val.as_str().unwrap().to_string(),
+            Expr::Literal(LiteralVal::Int(idx)) => idx.to_string(),
             _ => {
                 return Err(Self::type_err(
                     "Struct field access requires a literal field name",
@@ -847,8 +896,12 @@ impl TypeChecker {
 
         match &resolved_expr_type {
             Type::List(elem_type) => {
-                // Field must be integer index
-                if field_type != Type::Int {
+                // Slice: list[range] returns same list type
+                if matches!(&field, Expr::Range { .. }) {
+                    return Ok(Type::List(elem_type.clone()));
+                }
+                // Field must be integer index (Any/Box<Any> accepted for dynamic dispatch)
+                if !self.is_assignable(&field_type, &Type::Int) {
                     return Err(Self::type_err(
                         "List index must be integer",
                         Some(Type::Int),
@@ -860,7 +913,7 @@ impl TypeChecker {
             }
             Type::Tuple(elems) => {
                 // Field must be integer index; if it's a literal index, pick that element
-                if field_type != Type::Int {
+                if !self.is_assignable(&field_type, &Type::Int) {
                     return Err(Self::type_err(
                         "Tuple index must be integer",
                         Some(Type::Int),
@@ -869,14 +922,14 @@ impl TypeChecker {
                     ));
                 }
                 // Try literal extraction
-                if let Expr::Val(Val::Int(i)) = field {
+                if let Expr::Literal(LiteralVal::Int(i)) = field {
                     let idx = *i as usize;
                     if idx < elems.len() {
                         return Ok(elems[idx].clone());
                     }
                 }
                 // Fallback: unknown index -> union of all element types
-                let u = Type::Union(elems.to_vec());
+                let u = Type::Union(elems.iter().cloned().collect());
                 Ok(u)
             }
             Type::Map(key_type, value_type) => {
@@ -884,8 +937,40 @@ impl TypeChecker {
                 self.inference_engine.add_constraint((**key_type).clone(), field_type);
                 Ok((**value_type).clone())
             }
+            Type::String => {
+                // Slice: str[range] returns String
+                if matches!(&field, Expr::Range { .. }) {
+                    return Ok(Type::String);
+                }
+                // Char access: str[idx] returns String
+                if self.is_assignable(&field_type, &Type::Int) {
+                    return Ok(Type::String);
+                }
+                return Err(Self::type_err(
+                    "String index must be integer or range",
+                    Some(Type::Int),
+                    Some(field_type),
+                    None,
+                ));
+            }
             Type::Named(name) => self.struct_field_type(name, field),
-            Type::Any | Type::Variable(_) => Ok(Type::Any),
+            Type::Variable(_) => {
+                if matches!(&field, Expr::Range { .. }) {
+                    let elem_type = self.inference_engine.fresh_type_var();
+                    self.inference_engine
+                        .add_constraint(expr_type, Type::List(Box::new(elem_type.clone())));
+                    return Ok(Type::List(Box::new(elem_type)));
+                }
+                if self.is_assignable(&field_type, &Type::Int) || field_type.contains_variables() {
+                    let elem_type = self.inference_engine.fresh_type_var();
+                    self.inference_engine
+                        .add_constraint(expr_type, Type::List(Box::new(elem_type.clone())));
+                    self.enforce_int_type(field, field_type, "List index")?;
+                    return Ok(elem_type);
+                }
+                Ok(Type::Any)
+            }
+            Type::Any | Type::Nil => Ok(Type::Any),
             Type::Union(variants) => {
                 let mut collected: Vec<Type> = Vec::new();
                 for variant in variants {
@@ -906,6 +991,70 @@ impl TypeChecker {
                 Some(expr_type),
                 None,
             )),
+        }
+    }
+
+    fn check_builtin_container_method(
+        &mut self,
+        receiver_ty: &Type,
+        method: &str,
+        args: &[Box<Expr>],
+        func: &Expr,
+    ) -> Result<Option<Type>> {
+        match method {
+            "len" => {
+                let resolved_receiver = self.resolve_aliases(receiver_ty);
+                let known_container = matches!(
+                    &resolved_receiver,
+                    Type::List(_) | Type::Map(_, _) | Type::String | Type::Tuple(_) | Type::Variable(_)
+                );
+                if !known_container {
+                    return Ok(None);
+                }
+                if !args.is_empty() {
+                    if matches!(&resolved_receiver, Type::Variable(_)) {
+                        return Ok(None);
+                    }
+                    return Err(Self::type_err(
+                        "Method len expects 0 arguments",
+                        None,
+                        None,
+                        Some(func.clone()),
+                    ));
+                }
+                Ok(Some(Type::Int))
+            }
+            "skip" | "take" => {
+                let resolved_receiver = self.resolve_aliases(receiver_ty);
+                if !matches!(&resolved_receiver, Type::List(_) | Type::Variable(_)) {
+                    return Ok(None);
+                }
+                if args.len() != 1 {
+                    if matches!(&resolved_receiver, Type::Variable(_)) {
+                        return Ok(None);
+                    }
+                    return Err(Self::type_err(
+                        &format!("Method {method} expects 1 argument"),
+                        None,
+                        None,
+                        Some(func.clone()),
+                    ));
+                }
+                let count_ty = self.check_expr(&args[0])?;
+                self.enforce_int_type(args[0].as_ref(), count_ty, "List slice count")?;
+
+                match resolved_receiver {
+                    Type::List(elem_type) => Ok(Some(Type::List(elem_type))),
+                    Type::Variable(_) => {
+                        let elem_type = self.inference_engine.fresh_type_var();
+                        self.inference_engine
+                            .add_constraint(receiver_ty.clone(), Type::List(Box::new(elem_type.clone())));
+                        Ok(Some(Type::List(Box::new(elem_type))))
+                    }
+                    _ => Ok(None),
+                }
+            }
+            _ => Ok(None),
         }
     }
 
@@ -938,7 +1087,7 @@ impl TypeChecker {
                 match resolved_inner {
                     Type::List(elem_type) => {
                         let field_ty = self.check_expr(field)?;
-                        if field_ty != Type::Int {
+                        if !self.is_assignable(&field_ty, &Type::Int) {
                             return Err(Self::type_err(
                                 "List index must be integer",
                                 Some(Type::Int),
@@ -955,7 +1104,7 @@ impl TypeChecker {
                     }
                     Type::Tuple(elems) => {
                         let field_ty = self.check_expr(field)?;
-                        if field_ty != Type::Int {
+                        if !self.is_assignable(&field_ty, &Type::Int) {
                             return Err(Self::type_err(
                                 "Tuple index must be integer",
                                 Some(Type::Int),
@@ -963,7 +1112,7 @@ impl TypeChecker {
                                 None,
                             ));
                         }
-                        if let Expr::Val(Val::Int(i)) = field {
+                        if let Expr::Literal(LiteralVal::Int(i)) = field {
                             let idx = *i as usize;
                             if idx < elems.len() {
                                 return Ok(Type::Optional(Box::new(elems[idx].clone())));
@@ -985,244 +1134,6 @@ impl TypeChecker {
             }
             Type::Nil => Ok(Type::Nil),
             _ => self.check_access(expr, field),
-        }
-    }
-
-    /// Check function call type
-    fn check_function_call(&mut self, func: &Expr, args: &[Expr]) -> Result<Type> {
-        if let Expr::Access(obj_expr, field_expr) = func {
-            let receiver_ty = self.check_expr(obj_expr)?;
-            if let Expr::Val(Val::Str(name)) = field_expr.as_ref() {
-                if let Some(Type::Function {
-                    params,
-                    named_params,
-                    return_type,
-                }) = self.get_method_sig(&receiver_ty, name.as_ref())
-                {
-                    if params.is_empty() {
-                        return Err(Self::type_err(
-                            "Method signature missing receiver parameter",
-                            None,
-                            None,
-                            Some(func.clone()),
-                        ));
-                    }
-                    let mut params_iter = params.into_iter();
-                    let self_param = params_iter.next().unwrap();
-                    self.inference_engine.add_constraint(self_param, receiver_ty.clone());
-
-                    let remaining_params: Vec<Type> = params_iter.collect();
-                    if remaining_params.len() != args.len() {
-                        return Err(Self::type_err(
-                            &format!("Method expects {} arguments", remaining_params.len()),
-                            None,
-                            None,
-                            None,
-                        ));
-                    }
-                    for (param_type, arg) in remaining_params.iter().zip(args.iter()) {
-                        let arg_type = self.check_expr(arg)?;
-                        self.inference_engine.add_constraint(param_type.clone(), arg_type);
-                    }
-                    for decl in named_params {
-                        let is_optional = matches!(decl.ty, Type::Optional(_)) || decl.has_default;
-                        if !is_optional {
-                            return Err(Self::type_err(
-                                &format!("Missing required named argument: {}", decl.name),
-                                None,
-                                None,
-                                None,
-                            ));
-                        }
-                    }
-                    return Ok(*return_type);
-                } else {
-                    // Dynamic method invocation without a registered signature: allow call but treat as `Any`.
-                    for arg in args {
-                        self.check_expr(arg)?;
-                    }
-                    return Ok(Type::Any);
-                }
-            }
-        }
-
-        if let Expr::Var(name) = func {
-            match name.as_str() {
-                "chan" => {
-                    if args.is_empty() || args.len() > 2 {
-                        return Err(Self::type_err("chan() expects 1 or 2 arguments", None, None, None));
-                    }
-                    let capacity_ty = self.check_expr(&args[0])?;
-                    self.enforce_int_type(&args[0], capacity_ty, "chan capacity")?;
-                    if args.len() == 2 {
-                        let type_arg_ty = self.check_expr(&args[1])?;
-                        if self.resolve_aliases(&type_arg_ty) != Type::String {
-                            return Err(Self::type_err(
-                                "chan() type hint must be String when provided",
-                                Some(Type::String),
-                                Some(type_arg_ty),
-                                Some(args[1].clone()),
-                            ));
-                        }
-                    }
-                    return Ok(Type::Channel(Box::new(Type::Any)));
-                }
-                "send" => {
-                    if args.len() != 2 {
-                        return Err(Self::type_err("send() expects 2 arguments", None, None, None));
-                    }
-                    let channel_ty = self.check_expr(&args[0])?;
-                    let value_ty = self.check_expr(&args[1])?;
-                    match self.resolve_aliases(&channel_ty) {
-                        Type::Channel(inner) => {
-                            self.inference_engine.add_constraint((*inner).clone(), value_ty);
-                            return Ok(Type::Nil);
-                        }
-                        other => {
-                            return Err(Self::type_err(
-                                "send() pattern requires a channel",
-                                Some(Type::Channel(Box::new(Type::Any))),
-                                Some(other),
-                                Some(args[0].clone()),
-                            ));
-                        }
-                    }
-                }
-                "recv" => {
-                    if args.len() != 1 {
-                        return Err(Self::type_err("recv() expects exactly 1 argument", None, None, None));
-                    }
-                    let channel_ty = self.check_expr(&args[0])?;
-                    return match self.resolve_aliases(&channel_ty) {
-                        Type::Channel(inner) => Ok((*inner).clone()),
-                        other => Err(Self::type_err(
-                            "recv() pattern requires a channel",
-                            Some(Type::Channel(Box::new(Type::Any))),
-                            Some(other),
-                            Some(args[0].clone()),
-                        )),
-                    };
-                }
-                "spawn" => {
-                    if args.len() != 1 {
-                        return Err(Self::type_err("spawn() expects exactly 1 argument", None, None, None));
-                    }
-                    let callable_ty = self.check_expr(&args[0])?;
-                    match self.resolve_aliases(&callable_ty) {
-                        Type::Function { .. } => {}
-                        Type::Any | Type::Variable(_) => {
-                            let expected = Type::Function {
-                                params: Vec::new(),
-                                named_params: Vec::new(),
-                                return_type: Box::new(Type::Any),
-                            };
-                            self.inference_engine.add_constraint(callable_ty, expected);
-                        }
-                        other => {
-                            return Err(Self::type_err(
-                                "spawn() expects a function or closure",
-                                None,
-                                Some(other),
-                                Some(args[0].clone()),
-                            ));
-                        }
-                    }
-                    return Ok(Type::Task(Box::new(Type::Any)));
-                }
-                _ => {}
-            }
-        }
-
-        let func_type = self.check_expr(func)?;
-        let resolved = self.resolve_aliases(&func_type);
-
-        if let Some((params, named_params, return_type)) = match resolved.clone() {
-            Type::Function {
-                params,
-                named_params,
-                return_type,
-            } => Some((params, named_params, return_type)),
-            Type::Optional(inner) => match *inner {
-                Type::Function {
-                    params,
-                    named_params,
-                    return_type,
-                } => Some((params, named_params, return_type)),
-                _ => None,
-            },
-            _ => None,
-        } {
-            if params.len() != args.len() {
-                return Err(Self::type_err(
-                    &format!("Function expects {} arguments", params.len()),
-                    None,
-                    None,
-                    None,
-                ));
-            }
-
-            for (param_type, arg) in params.iter().zip(args.iter()) {
-                let arg_type = self.check_expr(arg)?;
-                self.inference_engine.add_constraint(param_type.clone(), arg_type);
-            }
-
-            for decl in &named_params {
-                let is_optional = matches!(decl.ty, Type::Optional(_)) || decl.has_default;
-                if !is_optional {
-                    return Err(Self::type_err(
-                        &format!("Missing required named argument: {}", decl.name),
-                        None,
-                        None,
-                        None,
-                    ));
-                }
-            }
-
-            return Ok(*return_type);
-        }
-
-        match resolved {
-            Type::Any | Type::Variable(_) => {
-                for arg in args {
-                    self.check_expr(arg)?;
-                }
-                Ok(Type::Any)
-            }
-            Type::Union(variants) => {
-                let mut saw_function = false;
-                for variant in variants {
-                    match variant {
-                        Type::Function { .. } => {
-                            saw_function = true;
-                            break;
-                        }
-                        Type::Optional(inner) if matches!(*inner, Type::Function { .. }) => {
-                            saw_function = true;
-                            break;
-                        }
-                        _ => {}
-                    }
-                }
-                if saw_function {
-                    for arg in args {
-                        self.check_expr(arg)?;
-                    }
-                    Ok(Type::Any)
-                } else {
-                    Err(Self::type_err(
-                        "Cannot call non-function type",
-                        None,
-                        Some(func_type),
-                        None,
-                    ))
-                }
-            }
-            _ => Err(Self::type_err(
-                "Cannot call non-function type",
-                None,
-                Some(func_type),
-                None,
-            )),
         }
     }
 
@@ -1336,90 +1247,28 @@ impl TypeChecker {
     }
 
     /// Check literal value type
-    fn check_literal(&mut self, val: &Val) -> Result<Type> {
+    fn check_literal(&mut self, val: &LiteralVal) -> Result<Type> {
         match val {
-            Val::Nil => Ok(Type::Nil),
-            Val::Bool(_) => Ok(Type::Bool),
-            Val::Int(_) => Ok(Type::Int),
-            Val::Float(_) => Ok(Type::Float),
-            Val::Str(_) => Ok(Type::String),
-            Val::List(items) => {
-                if items.is_empty() {
-                    let elem_type = self.registry.fresh_type_var();
-                    Ok(Type::List(Box::new(elem_type)))
-                } else {
-                    let first_type = self.infer_list_element_type(&items[0])?;
-                    Ok(Type::List(Box::new(first_type)))
-                }
-            }
-            Val::Map(map) => {
-                if map.is_empty() {
-                    let key_type = self.registry.fresh_type_var();
-                    let value_type = self.registry.fresh_type_var();
-                    Ok(Type::Map(Box::new(key_type), Box::new(value_type)))
-                } else {
-                    let (_first_key, first_value) = map.iter().next().unwrap();
-                    let key_type = Type::String; // Map keys are always strings
-                    let value_type = self.infer_val_type(first_value)?;
-                    Ok(Type::Map(Box::new(key_type), Box::new(value_type)))
-                }
-            }
-            // Other types return Any for now
-            Val::Closure(_) => Ok(Type::Any),
-            Val::RustFunction(_) | Val::RustFunctionNamed(_) => Ok(Type::Any),
-            Val::Task(_) => Ok(Type::Any),
-            Val::Channel(_) => Ok(Type::Any),
-            Val::Stream(_) => Ok(Type::Any),
-            Val::StreamCursor(_) => Ok(Type::Any),
-            Val::Iterator(_) => Ok(Type::Any),
-            Val::MutationGuard(_) => Ok(Type::Any),
-            Val::Object(_) => Ok(Type::Any),
+            LiteralVal::Nil => Ok(Type::Nil),
+            LiteralVal::Bool(_) => Ok(Type::Bool),
+            LiteralVal::Int(_) => Ok(Type::Int),
+            LiteralVal::Float(_) => Ok(Type::Float),
+            LiteralVal::ShortStr(_) => Ok(Type::String),
+            value if value.as_str().is_some() => Ok(Type::String),
+            LiteralVal::String(_) => Ok(Type::String),
         }
     }
 
-    /// Infer type from a Val (for use in literal checking)
-    pub(super) fn infer_val_type(&mut self, val: &Val) -> Result<Type> {
+    /// Infer type from a LiteralVal (for use in literal checking)
+    pub(super) fn infer_val_type(&mut self, val: &LiteralVal) -> Result<Type> {
         match val {
-            Val::Nil => Ok(Type::Nil),
-            Val::Bool(_) => Ok(Type::Bool),
-            Val::Int(_) => Ok(Type::Int),
-            Val::Float(_) => Ok(Type::Float),
-            Val::Str(_) => Ok(Type::String),
-            Val::List(items) => {
-                if items.is_empty() {
-                    let elem_type = self.registry.fresh_type_var();
-                    Ok(Type::List(Box::new(elem_type)))
-                } else {
-                    let elem_type = self.infer_list_element_type(&items[0])?;
-                    Ok(Type::List(Box::new(elem_type)))
-                }
-            }
-            Val::Map(map) => {
-                if map.is_empty() {
-                    let key_type = self.registry.fresh_type_var();
-                    let value_type = self.registry.fresh_type_var();
-                    Ok(Type::Map(Box::new(key_type), Box::new(value_type)))
-                } else {
-                    let (_first_key, first_value) = map.iter().next().unwrap();
-                    let key_type = Type::String; // Map keys are always strings
-                    let value_type = self.infer_val_type(first_value)?;
-                    Ok(Type::Map(Box::new(key_type), Box::new(value_type)))
-                }
-            }
-            Val::Closure(_) => Ok(Type::Any),
-            Val::RustFunction(_) | Val::RustFunctionNamed(_) => Ok(Type::Any),
-            Val::Task(_) => Ok(Type::Any),
-            Val::Channel(_) => Ok(Type::Any),
-            Val::Stream(_) => Ok(Type::Any),
-            Val::StreamCursor(_) => Ok(Type::Any),
-            Val::Iterator(_) => Ok(Type::Any),
-            Val::MutationGuard(_) => Ok(Type::Any),
-            Val::Object(_) => Ok(Type::Any),
+            LiteralVal::Nil => Ok(Type::Nil),
+            LiteralVal::Bool(_) => Ok(Type::Bool),
+            LiteralVal::Int(_) => Ok(Type::Int),
+            LiteralVal::Float(_) => Ok(Type::Float),
+            LiteralVal::ShortStr(_) => Ok(Type::String),
+            value if value.as_str().is_some() => Ok(Type::String),
+            LiteralVal::String(_) => Ok(Type::String),
         }
-    }
-
-    /// Infer list element type from a Val
-    fn infer_list_element_type(&mut self, item: &Val) -> Result<Type> {
-        self.infer_val_type(item)
     }
 }

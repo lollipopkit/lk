@@ -1,0 +1,91 @@
+// Sorting and searching algorithms demo
+
+// 1. Insertion sort (using reduce to avoid if-block scoping issues)
+fn insert_sorted(sorted, item) {
+  let i = 0;
+  while (i < sorted.len() && sorted[i] < item) {
+    i += 1;
+  }
+  return sorted.take(i).concat([item]).concat(sorted.skip(i));
+}
+
+fn insertion_sort(xs) {
+  return xs.reduce([], |sorted, item| insert_sorted(sorted, item));
+}
+
+let unsorted = [5, 3, 8, 1, 9, 2, 7, 4, 6];
+let sorted = insertion_sort(unsorted);
+assert(sorted == [1, 2, 3, 4, 5, 6, 7, 8, 9]);
+
+// 2. Sort descending — reverse the result
+fn reverse_list(xs) {
+  return xs.reduce([], |acc, x| [x].concat(acc));
+}
+let desc = reverse_list(sorted);
+assert(desc == [9, 8, 7, 6, 5, 4, 3, 2, 1]);
+
+// 3. Sort strings
+let words = ["banana", "apple", "cherry", "date"];
+let sorted_words = insertion_sort(words);
+assert(sorted_words == ["apple", "banana", "cherry", "date"]);
+
+// 4. Linear search
+fn linear_search(xs, target) {
+  let i = 0;
+  while (i < xs.len()) {
+    if (xs[i] == target) { return i; }
+    i += 1;
+  }
+  return -1;
+}
+assert(linear_search(sorted, 5) == 4);
+assert(linear_search(sorted, 99) == -1);
+
+// 5. Min/max finder using reduce
+fn my_min(a, b) {
+  if (a < b) { return a; }
+  return b;
+}
+fn my_max(a, b) {
+  if (a > b) { return a; }
+  return b;
+}
+let min_val = unsorted.reduce(unsorted[0], |a, b| my_min(a, b));
+let max_val = unsorted.reduce(unsorted[0], |a, b| my_max(a, b));
+assert(min_val == 1);
+assert(max_val == 9);
+
+// 6. Remove duplicates + sort
+let with_dupes = [3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5];
+let sorted_unique = insertion_sort(with_dupes.unique());
+assert(sorted_unique == [1, 2, 3, 4, 5, 6, 9]);
+
+// 7. Merge sort style: merge two sorted lists
+fn merge(a, b) {
+  let result = [];
+  let i = 0;
+  let j = 0;
+  while (i < a.len() && j < b.len()) {
+    if (a[i] <= b[j]) {
+      result.push(a[i]);
+      i += 1;
+    } else {
+      result.push(b[j]);
+      j += 1;
+    }
+  }
+  // Append remaining
+  while (i < a.len()) {
+    result.push(a[i]);
+    i += 1;
+  }
+  while (j < b.len()) {
+    result.push(b[j]);
+    j += 1;
+  }
+  return result;
+}
+let merged = merge([1, 3, 5], [2, 4, 6]);
+assert(merged == [1, 2, 3, 4, 5, 6]);
+
+println("sort_search: all assertions passed");

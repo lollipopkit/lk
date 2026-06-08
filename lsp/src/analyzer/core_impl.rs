@@ -1,6 +1,7 @@
 use super::*;
+use std::time::Instant;
 
-impl LkrAnalyzer {
+impl LkAnalyzer {
     /// Collect user-defined function named-parameter declarations from the current document.
     /// Returns a map: function name -> list of NamedParamDecl (from core AST).
     pub fn collect_fn_named_param_decls(&mut self, content: &str) -> Arc<HashMap<String, Vec<NamedParamDecl>>> {
@@ -107,7 +108,7 @@ impl LkrAnalyzer {
                             range,
                             Some(DiagnosticSeverity::ERROR),
                             None,
-                            Some("lkr".to_string()),
+                            Some("lk".to_string()),
                             format!("Duplicate named argument: {}", name),
                             None,
                             None,
@@ -127,7 +128,7 @@ impl LkrAnalyzer {
                             range,
                             Some(DiagnosticSeverity::ERROR),
                             None,
-                            Some("lkr".to_string()),
+                            Some("lk".to_string()),
                             format!("Unknown named argument: {}", name),
                             None,
                             None,
@@ -149,7 +150,7 @@ impl LkrAnalyzer {
                         range,
                         Some(DiagnosticSeverity::ERROR),
                         None,
-                        Some("lkr".to_string()),
+                        Some("lk".to_string()),
                         format!("Missing required named argument: {}", decl.name),
                         None,
                         None,
@@ -172,15 +173,17 @@ impl LkrAnalyzer {
             // Empty registry; populated only in `new()` when needed for stdlib-aware features
             registry: ModuleRegistry::new(),
             base_dir: None,
+            package_modules: HashMap::new(),
+            missing_packages: HashSet::new(),
         }
     }
-    /// Create a new LKR analyzer
+    /// Create a new LK analyzer
     pub fn new() -> Self {
         // Initialize a registry preloaded with stdlib modules and globals
         let mut registry = ModuleRegistry::new();
         // Register stdlib globals and modules so LSP can recognize them
-        lkr_stdlib::register_stdlib_globals(&mut registry);
-        if let Err(err) = lkr_stdlib::register_stdlib_modules(&mut registry) {
+        lk_stdlib::register_stdlib_globals(&mut registry);
+        if let Err(err) = lk_stdlib::register_stdlib_modules(&mut registry) {
             tracing::error!("failed to register stdlib modules: {:#}", err);
         }
 
@@ -189,6 +192,8 @@ impl LkrAnalyzer {
             completion_cache: None,
             registry,
             base_dir: None,
+            package_modules: HashMap::new(),
+            missing_packages: HashSet::new(),
         }
     }
 
@@ -573,23 +578,47 @@ impl LkrAnalyzer {
 
     /// Set the base directory used for resolving file imports
     pub fn set_base_dir(&mut self, base: PathBuf) {
+        if let Ok(Some(graph)) = PackageGraph::discover(&base) {
+            self.package_modules = graph
+                .modules
+                .into_iter()
+                .map(|module| (module.name, module.root))
+                .collect();
+            self.missing_packages = graph.missing.into_iter().collect();
+        }
         self.base_dir = Some(base);
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn set_package_context(
+        &mut self,
+        base: PathBuf,
+        package_modules: HashMap<String, PathBuf>,
+        missing_packages: HashSet<String>,
+    ) {
+        self.base_dir = Some(base);
+        self.package_modules = package_modules;
+        self.missing_packages = missing_packages;
     }
 
     /// Scan tokens to add diagnostics for unknown stdlib modules and unknown exports with precise spans
     fn add_import_diagnostics(&self, tokens: &[token::Token], spans: &[Span], result: &mut AnalysisResult) {
+        use std::collections::HashMap;
         use token::Token as T;
 
+        let mut file_exists_cache: HashMap<String, bool> = HashMap::new();
         let mut i = 0usize;
         while i < tokens.len() {
             match &tokens[i] {
-                T::Import => {
+                T::Use => {
                     let mut j = i + 1;
                     match tokens.get(j) {
                         Some(T::Str(path)) => {
-                            // import "file"; -> check existence
-                            let exists = self.file_exists(path);
-                            if !exists {
+                            // use "file"; -> check existence
+                            let exists = file_exists_cache
+                                .entry(path.clone())
+                                .or_insert_with(|| self.file_exists(path));
+                            if !*exists {
                                 // Diagnostic on the string span (includes quotes)
                                 if j < spans.len() {
                                     let sp = &spans[j];
@@ -601,12 +630,12 @@ impl LkrAnalyzer {
                                         range,
                                         Some(DiagnosticSeverity::ERROR),
                                         None,
-                                        Some("lkr".to_string()),
+                                        Some("lk".to_string()),
                                         format!("File not found: {}", path),
                                         None,
                                         None,
                                     );
-                                    d.code = Some(NumberOrString::String("lkr_file_not_found".to_string()));
+                                    d.code = Some(NumberOrString::String("lk_file_not_found".to_string()));
                                     result.diagnostics.push(d);
                                 }
                             }
@@ -618,7 +647,7 @@ impl LkrAnalyzer {
                             continue;
                         }
                         Some(T::LBrace) => {
-                            // import { a, b as c } from module;
+                            // use { a, b as c } from module;
                             j += 1; // after '{'
                             let mut item_indices: Vec<usize> = Vec::new();
                             while j < tokens.len() {
@@ -653,11 +682,12 @@ impl LkrAnalyzer {
                                 if let T::Id(mod_name) = &tokens[j] {
                                     if self.registry.get_module(mod_name).is_ok() {
                                         // Validate each item against module exports
-                                        if let Ok(m) = self.registry.get_module(mod_name) {
-                                            let exports = m.exports();
+                                        if let Some(exports) = self.module_export_names(mod_name) {
                                             for idx in item_indices {
                                                 if let T::Id(item_name) = &tokens[idx] {
-                                                    if !exports.contains_key(item_name) && idx < spans.len() {
+                                                    if !exports.iter().any(|export| export == item_name)
+                                                        && idx < spans.len()
+                                                    {
                                                         let sp = &spans[idx];
                                                         let range = Range::new(
                                                             Position::new(
@@ -673,7 +703,7 @@ impl LkrAnalyzer {
                                                             range,
                                                             Some(DiagnosticSeverity::ERROR),
                                                             None,
-                                                            Some("lkr".to_string()),
+                                                            Some("lk".to_string()),
                                                             format!(
                                                                 "Unknown export '{}' from module '{}'",
                                                                 item_name, mod_name
@@ -685,7 +715,7 @@ impl LkrAnalyzer {
                                                 }
                                             }
                                         }
-                                    } else if j < spans.len() {
+                                    } else if !self.package_modules.contains_key(mod_name) && j < spans.len() {
                                         let sp = &spans[j];
                                         let range = Range::new(
                                             Position::new(sp.start.line - 1, sp.start.column.saturating_sub(1)),
@@ -695,8 +725,8 @@ impl LkrAnalyzer {
                                             range,
                                             Some(DiagnosticSeverity::ERROR),
                                             None,
-                                            Some("lkr".to_string()),
-                                            format!("Unknown module: {}", mod_name),
+                                            Some("lk".to_string()),
+                                            self.module_diagnostic_message(mod_name),
                                             None,
                                             None,
                                         ));
@@ -711,7 +741,7 @@ impl LkrAnalyzer {
                             continue;
                         }
                         Some(T::Mul) => {
-                            // import * as alias from module;
+                            // use * as alias from module;
                             // seek 'from' then module id
                             while j < tokens.len() && !matches!(tokens[j], T::From) {
                                 j += 1;
@@ -719,7 +749,10 @@ impl LkrAnalyzer {
                             if j + 1 < tokens.len() {
                                 j += 1;
                                 if let T::Id(mod_name) = &tokens[j] {
-                                    if self.registry.get_module(mod_name).is_err() && j < spans.len() {
+                                    if self.registry.get_module(mod_name).is_err()
+                                        && !self.package_modules.contains_key(mod_name)
+                                        && j < spans.len()
+                                    {
                                         let sp = &spans[j];
                                         let range = Range::new(
                                             Position::new(sp.start.line - 1, sp.start.column.saturating_sub(1)),
@@ -729,8 +762,8 @@ impl LkrAnalyzer {
                                             range,
                                             Some(DiagnosticSeverity::ERROR),
                                             None,
-                                            Some("lkr".to_string()),
-                                            format!("Unknown module: {}", mod_name),
+                                            Some("lk".to_string()),
+                                            self.module_diagnostic_message(mod_name),
                                             None,
                                             None,
                                         ));
@@ -745,9 +778,12 @@ impl LkrAnalyzer {
                             continue;
                         }
                         Some(T::Id(mod_name)) => {
-                            // import module [as alias]?;
+                            // use module [as alias]?;
                             let mod_idx = j;
-                            if self.registry.get_module(mod_name).is_err() && mod_idx < spans.len() {
+                            if self.registry.get_module(mod_name).is_err()
+                                && !self.package_modules.contains_key(mod_name)
+                                && mod_idx < spans.len()
+                            {
                                 let sp = &spans[mod_idx];
                                 let range = Range::new(
                                     Position::new(sp.start.line - 1, sp.start.column.saturating_sub(1)),
@@ -757,8 +793,8 @@ impl LkrAnalyzer {
                                     range,
                                     Some(DiagnosticSeverity::ERROR),
                                     None,
-                                    Some("lkr".to_string()),
-                                    format!("Unknown module: {}", mod_name),
+                                    Some("lk".to_string()),
+                                    self.module_diagnostic_message(mod_name),
                                     None,
                                     None,
                                 ));
@@ -783,27 +819,50 @@ impl LkrAnalyzer {
     }
 
     fn file_exists(&self, rel: &str) -> bool {
+        let start = Instant::now();
         // Absolute path: use as-is
         let path = Path::new(rel);
-        if path.is_absolute() {
-            return path.exists();
-        }
-        let base = self.base_dir.as_ref().cloned().unwrap_or_else(|| PathBuf::from("."));
-        let candidates = [base.clone(), base.join("lib"), base.join("modules")];
-        for dir in candidates.iter() {
-            let p = dir.join(rel);
-            if p.exists() {
-                return true;
-            }
-            // Try with .lkr appended if missing extension
-            if p.extension().is_none() {
-                let with_ext = p.with_extension("lkr");
-                if with_ext.exists() {
+        let exists = if path.is_absolute() {
+            path.exists()
+        } else {
+            let base = self.base_dir.as_ref().cloned().unwrap_or_else(|| PathBuf::from("."));
+            let candidates = [base.clone(), base.join("lib"), base.join("modules")];
+            candidates.iter().any(|dir| {
+                let p = dir.join(rel);
+                if p.exists() {
                     return true;
                 }
-            }
+                // Try with .lk appended if missing extension
+                if p.extension().is_none() {
+                    let with_ext = p.with_extension("lk");
+                    if with_ext.exists() {
+                        return true;
+                    }
+                }
+                false
+            })
+        };
+
+        let elapsed = start.elapsed().as_millis();
+        if elapsed > 2 {
+            tracing::debug!(
+                operation = "analyzer.file_exists",
+                path = %rel,
+                exists = exists,
+                duration_ms = elapsed,
+                "LSP analyzer file existence check",
+            );
         }
-        false
+
+        exists
+    }
+
+    fn module_diagnostic_message(&self, name: &str) -> String {
+        if self.missing_packages.contains(name) {
+            format!("Package not fetched: {} (run `lk pkg fetch`)", name)
+        } else {
+            format!("Unknown module: {}", name)
+        }
     }
 
     /// Tokenize with spans, using an internal cache keyed by full content string.
@@ -825,7 +884,7 @@ impl LkrAnalyzer {
         Ok(entry)
     }
 
-    /// Analyze LKR code and return diagnostics, symbols, and identifier roots
+    /// Analyze LK code and return diagnostics, symbols, and identifier roots
     pub fn analyze(&mut self, content: &str) -> AnalysisResult {
         let mut result = AnalysisResult {
             diagnostics: Vec::new(),
@@ -857,7 +916,7 @@ impl LkrAnalyzer {
                     range,
                     Some(DiagnosticSeverity::ERROR),
                     None,
-                    Some("lkr".to_string()),
+                    Some("lk".to_string()),
                     format!("Tokenization error: {}", parse_err.message),
                     None,
                     None,
@@ -877,7 +936,7 @@ impl LkrAnalyzer {
                 // Add expression symbol
                 let symbol = DocumentSymbol {
                     name: "expression".to_string(),
-                    detail: Some("LKR Expression".to_string()),
+                    detail: Some("LK Expression".to_string()),
                     kind: SymbolKind::CONSTANT,
                     tags: None,
                     #[allow(deprecated)]
@@ -892,7 +951,7 @@ impl LkrAnalyzer {
                 let id_diagnostics = self.validate_identifier_access(expr, None);
                 result.diagnostics.extend(id_diagnostics);
 
-                // Even for expressions, scan for import diagnostics (typically none)
+                // Even for expressions, scan for use diagnostics (typically none)
                 self.add_import_diagnostics(tokens, spans, &mut result);
                 // Named-args diagnostics on expressions that contain calls
                 let nad = self.collect_named_call_diagnostics(content, tokens, spans);
@@ -907,8 +966,6 @@ impl LkrAnalyzer {
                 match token_entry.parse_program_arc(content) {
                     Ok(program_arc) => {
                         let program = program_arc.as_ref();
-                        // Analyze statements for symbols and identifier roots
-                        self.analyze_statements(&program.statements, &mut result);
                         // Integrate slot-based symbols (parameters/locals) for richer outline
                         let mut resolver = SlotResolver::new();
                         let resolution = resolver.resolve_program_slots(program);
@@ -917,8 +974,6 @@ impl LkrAnalyzer {
                         // Top-level variable declarations (outside functions), grouped
                         let top_level_vars = Self::collect_decl_symbols(&enriched);
                         if !top_level_vars.is_empty() {
-                            // Keep individual variables at top-level for backward compatibility
-                            result.symbols.extend(top_level_vars.clone());
                             let (range_start, range_end) = (
                                 top_level_vars
                                     .first()
@@ -946,8 +1001,6 @@ impl LkrAnalyzer {
                         // Top-level imports grouped
                         let import_syms = Self::collect_import_symbols_via_tokens(tokens, spans);
                         if !import_syms.is_empty() {
-                            // Keep individual imports at top-level for backward compatibility
-                            result.symbols.extend(import_syms.clone());
                             let (range_start, range_end) = (
                                 import_syms
                                     .first()
@@ -984,7 +1037,7 @@ impl LkrAnalyzer {
                         }
 
                         // Labels syntax is not supported; no label symbols at top-level
-                        // Add precise import diagnostics using tokens/spans
+                        // Add precise use diagnostics using tokens/spans
                         self.add_import_diagnostics(tokens, spans, &mut result);
 
                         // Run type checking to surface semantic diagnostics (e.g., numeric operand errors)
@@ -1016,7 +1069,7 @@ impl LkrAnalyzer {
                                     range,
                                     Some(DiagnosticSeverity::ERROR),
                                     None,
-                                    Some("lkr".to_string()),
+                                    Some("lk".to_string()),
                                     e.message,
                                     None,
                                     None,
@@ -1026,7 +1079,7 @@ impl LkrAnalyzer {
 
                         // First, attempt recovering parse to collect multiple errors with precise spans
                         let mut recover_parser = StmtParser::new_with_spans(tokens, spans);
-                        let (stmts, errs) = recover_parser.parse_program_recovering_with_enhanced_errors(content);
+                        let (_stmts, errs) = recover_parser.parse_program_recovering_with_enhanced_errors(content);
                         if !errs.is_empty() {
                             for e in errs {
                                 let range = if let Some(span) = &e.span {
@@ -1040,15 +1093,13 @@ impl LkrAnalyzer {
                                     range,
                                     Some(DiagnosticSeverity::ERROR),
                                     None,
-                                    Some("lkr".to_string()),
+                                    Some("lk".to_string()),
                                     e.message,
                                     None,
                                     None,
                                 ));
                             }
-                            // Even with errors, analyze statements to surface symbols and identifier roots
-                            self.analyze_statements(&stmts, &mut result);
-                            // And add precise import diagnostics using tokens/spans
+                            // And add precise use diagnostics using tokens/spans
                             self.add_import_diagnostics(tokens, spans, &mut result);
                             // Named-args diagnostics (best-effort on partially parsed code)
                             let nad = self.collect_named_call_diagnostics(content, tokens, spans);
@@ -1089,7 +1140,7 @@ impl LkrAnalyzer {
                                 range,
                                 Some(DiagnosticSeverity::ERROR),
                                 None,
-                                Some("lkr".to_string()),
+                                Some("lk".to_string()),
                                 parse_err.message.clone(),
                                 None,
                                 None,
@@ -1097,7 +1148,7 @@ impl LkrAnalyzer {
                         }
 
                         result.diagnostics.extend(collected);
-                        // Also attempt import diagnostics if tokens parsed
+                        // Also attempt use diagnostics if tokens parsed
                         self.add_import_diagnostics(tokens, spans, &mut result);
                     }
                 }
@@ -1125,7 +1176,7 @@ impl LkrAnalyzer {
                             Range::new(Position::new(0, 0), Position::new(0, 0)),
                             Some(DiagnosticSeverity::ERROR),
                             None,
-                            Some("lkr".to_string()),
+                            Some("lk".to_string()),
                             err.to_string(),
                             None,
                             None,
@@ -1209,7 +1260,7 @@ impl LkrAnalyzer {
             for (pname, pspan) in fb.param_spans.iter() {
                 pool.entry(pname.clone()).or_default().push(pspan.clone());
             }
-            let locals = LkrAnalyzer::scan_decl_spans_in_range(tokens, spans, fb.body_start_idx, fb.body_end_idx);
+            let locals = LkAnalyzer::scan_decl_spans_in_range(tokens, spans, fb.body_start_idx, fb.body_end_idx);
             for (n, sp) in locals {
                 pool.entry(n).or_default().push(sp);
             }

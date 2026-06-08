@@ -1,8 +1,66 @@
-use super::{LkrAnalyzer, MAX_TOKENS_PER_DOC, MAX_TOKENS_PER_RANGE};
+use super::{LkAnalyzer, MAX_TOKENS_PER_DOC, MAX_TOKENS_PER_RANGE};
+use serde::Serialize;
+use std::collections::BTreeMap;
 use tower_lsp::lsp_types::{Range, SemanticToken};
 
-impl LkrAnalyzer {
-    /// Generate semantic tokens for LKR code (optimized version)
+const SEMANTIC_TOKEN_TYPE_COUNT: u32 = 11;
+const SEMANTIC_TOKEN_MODIFIER_COUNT: u32 = 4;
+const KEYWORD_IDX: u32 = 1;
+const VARIABLE_IDX: u32 = 2;
+const OPERATOR_IDX: u32 = 6;
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SemanticTokenValidationSummary {
+    pub valid: bool,
+    pub token_count: usize,
+    pub errors: Vec<String>,
+    pub token_type_counts: BTreeMap<u32, usize>,
+    pub modifier_bitset_counts: BTreeMap<u32, usize>,
+    pub max_line: u32,
+    pub max_start: u32,
+    pub max_length: u32,
+}
+
+fn semantic_keyword_token(identifier: &str) -> Option<u32> {
+    match identifier {
+        "if" | "else" | "while" | "for" | "in" | "fn" | "return" | "break" | "continue" | "use" | "from" | "as"
+        | "match" | "case" | "default" | "select" | "type" | "trait" | "impl" | "true" | "false" | "nil" | "spawn"
+        | "chan" | "send" | "recv" => Some(KEYWORD_IDX),
+        _ => None,
+    }
+}
+
+fn semantic_operator_len(chars: &[char], index: usize) -> Option<usize> {
+    let current = *chars.get(index)?;
+    let next = chars.get(index + 1).copied();
+    let third = chars.get(index + 2).copied();
+
+    match (current, next, third) {
+        ('.', Some('.'), Some('=')) => Some(3),
+        ('=', Some('='), _)
+        | ('!', Some('='), _)
+        | ('<', Some('='), _)
+        | ('>', Some('='), _)
+        | ('&', Some('&'), _)
+        | ('|', Some('|'), _)
+        | ('-', Some('>'), _)
+        | ('=', Some('>'), _)
+        | ('<', Some('-'), _)
+        | ('?', Some('?'), _)
+        | ('?', Some('.'), _)
+        | ('.', Some('.'), _)
+        | ('+', Some('='), _)
+        | ('-', Some('='), _)
+        | ('*', Some('='), _)
+        | ('/', Some('='), _)
+        | ('%', Some('='), _) => Some(2),
+        ('|', _, _) => Some(1),
+        _ => None,
+    }
+}
+
+impl LkAnalyzer {
+    /// Generate semantic tokens for LK code (optimized version)
     pub fn generate_semantic_tokens(&self, content: &str) -> Vec<SemanticToken> {
         // Early return for empty content
         if content.trim().is_empty() {
@@ -15,12 +73,9 @@ impl LkrAnalyzer {
 
         // Define the legend indices (must match the legend in main.rs)
         const COMMENT_IDX: u32 = 0;
-        const KEYWORD_IDX: u32 = 1;
-        const VARIABLE_IDX: u32 = 2;
         const FUNCTION_IDX: u32 = 3;
         const STRING_IDX: u32 = 4;
         const NUMBER_IDX: u32 = 5;
-        const OPERATOR_IDX: u32 = 6;
 
         let lines: Vec<&str> = content.lines().collect();
 
@@ -104,7 +159,7 @@ impl LkrAnalyzer {
                     continue;
                 }
 
-                // Handle hash-style comments (# ...) for legacy compatibility
+                // Handle hash-style comments (# ...).
                 if c == '#' {
                     let comment_start = char_index;
                     // Everything to end of line is a comment
@@ -154,13 +209,14 @@ impl LkrAnalyzer {
 
                     let identifier: String = chars[ident_start..char_index].iter().collect();
 
+                    // Let TextMate scopes drive declaration keyword colors so themes
+                    // can render `let`/`const` consistently with Rust-style grammars.
+                    if matches!(identifier.as_str(), "let" | "const" | "_") {
+                        continue;
+                    }
+
                     // Check for keywords
-                    let mut token_idx = match identifier.as_str() {
-                        "if" | "else" | "while" | "let" | "fn" | "return" | "break" | "continue" | "import"
-                        | "from" | "as" | "go" | "select" | "case" | "default" | "true" | "false" | "nil" | "spawn"
-                        | "chan" | "send" | "recv" => KEYWORD_IDX,
-                        _ => VARIABLE_IDX,
-                    };
+                    let mut token_idx = semantic_keyword_token(&identifier).unwrap_or(VARIABLE_IDX);
 
                     // If next non-whitespace char is '(', treat as function identifier
                     if token_idx == VARIABLE_IDX {
@@ -177,37 +233,9 @@ impl LkrAnalyzer {
                     continue;
                 }
 
-                // Legacy '@' context access removed; treat '@' as punctuation
-
-                // Handle operators - only tokenize multi-character operators to reduce density
-                if c == '=' || c == '!' || c == '<' || c == '>' || c == '&' || c == '|' || c == '-' {
-                    let op_start = char_index;
-
-                    // Handle multi-character operators only
-                    if char_index + 1 < len {
-                        let next_char = chars[char_index + 1];
-                        match (c, next_char) {
-                            ('=', '=')
-                            | ('!', '=')
-                            | ('<', '=')
-                            | ('>', '=')
-                            | ('&', '&')
-                            | ('|', '|')
-                            | ('-', '>') => {
-                                char_index += 2;
-                                tokens.push(self.create_token(line_number, op_start, 2, OPERATOR_IDX, 0));
-                                continue;
-                            }
-                            _ => {
-                                // Skip single-character operators entirely
-                                char_index += 1;
-                                continue;
-                            }
-                        }
-                    }
-
-                    // Skip single character operators
-                    char_index += 1;
+                if let Some(op_len) = semantic_operator_len(&chars, char_index) {
+                    tokens.push(self.create_token(line_number, char_index, op_len, OPERATOR_IDX, 0));
+                    char_index += op_len;
                     continue;
                 }
 
@@ -288,12 +316,9 @@ impl LkrAnalyzer {
 
         // Define the legend indices (must match the legend in main.rs)
         const COMMENT_IDX: u32 = 0;
-        const KEYWORD_IDX: u32 = 1;
-        const VARIABLE_IDX: u32 = 2;
         const FUNCTION_IDX: u32 = 3;
         const STRING_IDX: u32 = 4;
         const NUMBER_IDX: u32 = 5;
-        const OPERATOR_IDX: u32 = 6;
 
         let lines: Vec<&str> = content_slice.lines().collect();
         if lines.is_empty() {
@@ -438,12 +463,14 @@ impl LkrAnalyzer {
                         j += 1;
                     }
                     let slice: &str = &line[ident_start..j];
-                    let mut token_idx = match slice {
-                        "if" | "else" | "while" | "let" | "fn" | "return" | "break" | "continue" | "import"
-                        | "from" | "as" | "go" | "select" | "case" | "default" | "true" | "false" | "nil" | "spawn"
-                        | "chan" | "send" | "recv" => KEYWORD_IDX,
-                        _ => VARIABLE_IDX,
-                    };
+                    // Let TextMate scopes drive declaration keyword colors so themes
+                    // can render `let`/`const` consistently with Rust-style grammars.
+                    if matches!(slice, "let" | "const" | "_") {
+                        char_index = j;
+                        continue;
+                    }
+
+                    let mut token_idx = semantic_keyword_token(slice).unwrap_or(VARIABLE_IDX);
                     // Detect function call by peeking next non-whitespace char
                     if token_idx == VARIABLE_IDX {
                         let mut k = j;
@@ -466,41 +493,16 @@ impl LkrAnalyzer {
                     continue;
                 }
 
-                // Legacy '@' context access removed; treat '@' as punctuation
-
-                // Operators - only tokenize multi-character operators to reduce density
-                if "=!<>|&-".contains(c) {
-                    let op_start = char_index;
-                    if char_index + 1 < len {
-                        let next_char = chars[char_index + 1];
-                        match (c, next_char) {
-                            ('=', '=')
-                            | ('!', '=')
-                            | ('<', '=')
-                            | ('>', '=')
-                            | ('&', '&')
-                            | ('|', '|')
-                            | ('-', '>') => {
-                                let start = op_start.max(start_char_bound);
-                                if start < end_char_bound {
-                                    let capped_len_total = (op_start + 2).saturating_sub(start);
-                                    if capped_len_total > 0 {
-                                        let capped_len = capped_len_total.min(end_char_bound.saturating_sub(start));
-                                        tokens.push(self.create_token(line_number, start, capped_len, OPERATOR_IDX, 0));
-                                    }
-                                }
-                                char_index += 2;
-                                continue;
-                            }
-                            _ => {
-                                // Skip single-character operators entirely
-                                char_index += 1;
-                                continue;
-                            }
+                if let Some(op_len) = semantic_operator_len(&chars, char_index) {
+                    let start = char_index.max(start_char_bound);
+                    if start < end_char_bound {
+                        let capped_len_total = (char_index + op_len).saturating_sub(start);
+                        if capped_len_total > 0 {
+                            let capped_len = capped_len_total.min(end_char_bound.saturating_sub(start));
+                            tokens.push(self.create_token(line_number, start, capped_len, OPERATOR_IDX, 0));
                         }
                     }
-                    // Skip single character operators
-                    char_index += 1;
+                    char_index += op_len;
                     continue;
                 }
 
@@ -544,6 +546,90 @@ impl LkrAnalyzer {
             first = false;
         }
         result
+    }
+
+    pub fn validate_semantic_tokens(&self, content: &str, tokens: &[SemanticToken]) -> SemanticTokenValidationSummary {
+        let line_lengths: Vec<u32> = content
+            .lines()
+            .map(|line| line.chars().map(|ch| ch.len_utf16() as u32).sum())
+            .collect();
+        let allowed_modifier_bits = if SEMANTIC_TOKEN_MODIFIER_COUNT == 32 {
+            u32::MAX
+        } else {
+            (1u32 << SEMANTIC_TOKEN_MODIFIER_COUNT) - 1
+        };
+
+        let mut errors = Vec::new();
+        let mut token_type_counts = BTreeMap::new();
+        let mut modifier_bitset_counts = BTreeMap::new();
+        let mut line = 0u32;
+        let mut start = 0u32;
+        let mut max_line = 0u32;
+        let mut max_start = 0u32;
+        let mut max_length = 0u32;
+
+        for (idx, token) in tokens.iter().enumerate() {
+            if idx == 0 {
+                line = token.delta_line;
+                start = token.delta_start;
+            } else if token.delta_line == 0 {
+                start = start.saturating_add(token.delta_start);
+            } else {
+                line = line.saturating_add(token.delta_line);
+                start = token.delta_start;
+            }
+
+            *token_type_counts.entry(token.token_type).or_insert(0) += 1;
+            *modifier_bitset_counts.entry(token.token_modifiers_bitset).or_insert(0) += 1;
+            max_line = max_line.max(line);
+            max_start = max_start.max(start);
+            max_length = max_length.max(token.length);
+
+            if token.length == 0 {
+                errors.push(format!("token {idx}: length must be greater than 0"));
+            }
+            if token.token_type >= SEMANTIC_TOKEN_TYPE_COUNT {
+                errors.push(format!(
+                    "token {idx}: token_type {} exceeds legend size {}",
+                    token.token_type, SEMANTIC_TOKEN_TYPE_COUNT
+                ));
+            }
+            if token.token_modifiers_bitset & !allowed_modifier_bits != 0 {
+                errors.push(format!(
+                    "token {idx}: modifier bitset {} contains undeclared modifiers",
+                    token.token_modifiers_bitset
+                ));
+            }
+
+            let Some(line_len) = line_lengths.get(line as usize).copied() else {
+                errors.push(format!("token {idx}: line {line} is outside document"));
+                continue;
+            };
+            if start > line_len {
+                errors.push(format!(
+                    "token {idx}: start {start} exceeds line {line} length {line_len}"
+                ));
+                continue;
+            }
+            if start.saturating_add(token.length) > line_len {
+                errors.push(format!(
+                    "token {idx}: range {}..{} exceeds line {line} length {line_len}",
+                    start,
+                    start.saturating_add(token.length)
+                ));
+            }
+        }
+
+        SemanticTokenValidationSummary {
+            valid: errors.is_empty(),
+            token_count: tokens.len(),
+            errors,
+            token_type_counts,
+            modifier_bitset_counts,
+            max_line,
+            max_start,
+            max_length,
+        }
     }
 
     fn create_token(

@@ -1,8 +1,9 @@
-use lkr_core::{
+use lk_core::{
     ast,
     ast::Parser as ExprParser,
     expr::Expr,
     module::ModuleRegistry,
+    package::PackageGraph,
     resolve,
     resolve::slots::{FunctionLayout, SlotResolver},
     stmt,
@@ -13,7 +14,7 @@ use lkr_core::{
     typ::TypeChecker,
     val,
 };
-use lkr_core::{stmt::NamedParamDecl, util::fast_map::FastHashMap};
+use lk_core::{stmt::NamedParamDecl, util::fast_map::FastHashMap};
 use once_cell::sync::OnceCell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -26,9 +27,9 @@ mod core_impl;
 mod semantic_tokens;
 #[cfg(test)]
 mod tests;
-mod utils;
 
-pub use utils::extract_variables_from_pattern;
+#[allow(unused_imports)]
+pub use semantic_tokens::SemanticTokenValidationSummary;
 
 // Soft limits to keep LSP responsive on large/broken files
 const MAX_SCAN_LINES: usize = 400; // max lines to line-scan
@@ -38,7 +39,7 @@ const MAX_DIAGNOSTICS: usize = 200; // cap diagnostics volume
 pub(super) const MAX_TOKENS_PER_DOC: usize = 20_000; // hard ceiling for full-document tokens
 pub(super) const MAX_TOKENS_PER_RANGE: usize = 8_000; // hard ceiling for range tokens
 
-/// Result of analyzing LKR code, containing diagnostics, symbols, and identifier roots
+/// Result of analyzing LK code, containing diagnostics, symbols, and identifier roots
 #[derive(Debug, Clone)]
 pub struct AnalysisResult {
     pub diagnostics: Vec<Diagnostic>,
@@ -46,7 +47,7 @@ pub struct AnalysisResult {
     pub identifier_roots: HashSet<String>,
 }
 
-/// LKR Language analyzer for providing LSP functionality
+/// LK Language analyzer for providing LSP functionality
 pub(crate) struct TokenCacheEntry {
     pub(crate) tokens: Arc<[token::Token]>,
     pub(crate) spans: Arc<[Span]>,
@@ -66,7 +67,7 @@ impl TokenCacheEntry {
         }
     }
 
-    fn parse_program_arc(&self, content: &str) -> std::result::Result<Arc<Program>, lkr_core::token::ParseError> {
+    fn parse_program_arc(&self, content: &str) -> std::result::Result<Arc<Program>, lk_core::token::ParseError> {
         self.program_ast
             .get_or_try_init(|| {
                 let mut parser = StmtParser::new_with_spans(self.tokens.as_ref(), self.spans.as_ref());
@@ -95,7 +96,7 @@ pub(crate) struct FnBlockInfo {
 }
 
 #[derive(Default)]
-pub struct LkrAnalyzer {
+pub struct LkAnalyzer {
     // Cache for tokenization results to avoid re-tokenizing same content
     token_cache: FastHashMap<String, Arc<TokenCacheEntry>>,
     // Cache for completion items that don't change
@@ -104,4 +105,7 @@ pub struct LkrAnalyzer {
     registry: ModuleRegistry,
     // Base directory for resolving relative file imports
     base_dir: Option<PathBuf>,
+    // Package modules available from Lk.toml workspace/dependencies
+    package_modules: HashMap<String, PathBuf>,
+    missing_packages: HashSet<String>,
 }

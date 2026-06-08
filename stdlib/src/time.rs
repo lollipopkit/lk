@@ -1,19 +1,17 @@
-//! Time module for LKR concurrency
+//! Time module for LK concurrency.
 //!
-//! Provides timing and scheduling functions for concurrent operations.
+//! Module-level functions use RuntimeNative.
 
-use anyhow::{Result, anyhow};
-use lkr_core::{
-    module,
-    module::Module,
-    rt::with_runtime,
-    val::{self, ChannelValue, Val},
-    vm::VmContext,
+use anyhow::{Result, anyhow, bail};
+use lk_core::{
+    module::{self, ModuleProvider, RuntimeNativeExport, runtime_export_from_plain_native_entries},
+    rt::{RuntimePayload, with_runtime},
+    val::{ChannelValue, HeapValue, RuntimeVal, Type},
+    vm::{NativeArgs, NativeFunction, NativeRuntime, RuntimeExport},
 };
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use std::{collections::HashMap, sync::Arc};
 
-/// Time module - provides timing functions
 #[derive(Debug)]
 pub struct TimeModule;
 
@@ -23,7 +21,7 @@ impl Default for TimeModule {
     }
 }
 
-impl Module for TimeModule {
+impl ModuleProvider for TimeModule {
     fn name(&self) -> &str {
         "time"
     }
@@ -37,23 +35,25 @@ impl Module for TimeModule {
     }
 
     fn register(&self, registry: &mut module::ModuleRegistry) -> Result<()> {
-        let exports = self.exports();
-        for (name, value) in exports {
-            registry.register_builtin(&format!("{}::{}", self.name(), name), value);
-        }
+        registry.register_runtime_builtin("time::sleep", NativeFunction::Plain(time_sleep), 1);
+        registry.register_runtime_builtin("time::timeout", NativeFunction::Plain(time_timeout), 1);
+        registry.register_runtime_builtin("time::after", NativeFunction::Plain(time_after), 1);
+        registry.register_runtime_builtin("time::now", NativeFunction::Plain(time_now), 0);
+        registry.register_runtime_builtin("time::since", NativeFunction::Plain(time_since), 2);
         Ok(())
     }
 
-    fn exports(&self) -> HashMap<String, Val> {
-        let mut functions = HashMap::new();
-
-        functions.insert("sleep".to_string(), Val::RustFunction(time_sleep));
-        functions.insert("timeout".to_string(), Val::RustFunction(time_timeout));
-        functions.insert("after".to_string(), Val::RustFunction(time_after));
-        functions.insert("now".to_string(), Val::RustFunction(time_now));
-        functions.insert("since".to_string(), Val::RustFunction(time_since));
-
-        functions
+    fn runtime_exports(&self) -> Result<RuntimeExport> {
+        Ok(runtime_export_from_plain_native_entries(
+            &[
+                RuntimeNativeExport::plain("sleep", time_sleep, 1),
+                RuntimeNativeExport::plain("timeout", time_timeout, 1),
+                RuntimeNativeExport::plain("after", time_after, 1),
+                RuntimeNativeExport::plain("now", time_now, 0),
+                RuntimeNativeExport::plain("since", time_since, 2),
+            ],
+            &[],
+        ))
     }
 }
 
@@ -63,147 +63,158 @@ impl TimeModule {
     }
 }
 
-/// Sleep for the specified duration in milliseconds
-fn time_sleep(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
-    if args.len() != 1 {
-        return Err(anyhow!("time::sleep() expects exactly 1 argument"));
+fn expect_arity(args: NativeArgs<'_>, expected: usize, name: &str) -> Result<()> {
+    if args.len() == expected {
+        return Ok(());
     }
+    bail!(
+        "{name} expects exactly {expected} argument{}",
+        if expected == 1 { "" } else { "s" }
+    )
+}
 
-    let duration_ms = match &args[0] {
-        Val::Int(ms) => *ms,
-        Val::Float(ms) => *ms as i64,
-        _ => return Err(anyhow!("time::sleep() expects a numeric argument")),
-    };
+fn numeric_millis(value: &RuntimeVal, name: &str) -> Result<i64> {
+    match value {
+        RuntimeVal::Int(ms) => Ok(*ms),
+        RuntimeVal::Float(ms) => Ok(*ms as i64),
+        other => Err(anyhow!("{name} expects a numeric argument, got {:?}", other.kind())),
+    }
+}
 
-    match with_runtime(|runtime| {
+fn epoch_millis() -> i64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64
+}
+
+fn runtime_channel(id: u64, capacity: i64, inner_type: Type, runtime: &mut NativeRuntime<'_>) -> RuntimeVal {
+    RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::Channel(Arc::new(ChannelValue {
+        id,
+        capacity: Some(capacity),
+        inner_type,
+    }))))
+}
+
+fn time_sleep(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+    expect_arity(args, 1, "time.sleep()")?;
+    let duration_ms = numeric_millis(args.get(0).expect("checked arity"), "time.sleep()")?;
+    with_runtime(|runtime| {
         let duration = Duration::from_millis(duration_ms as u64);
         runtime.block_on(async {
             tokio::time::sleep(duration).await;
-            Ok(Val::Nil)
+            Ok(RuntimeVal::Nil)
         })
-    }) {
-        Ok(result) => Ok(result),
-        Err(e) => Err(anyhow!("Failed to sleep: {}", e)),
-    }
+    })
+    .map_err(|err| anyhow!("Failed to sleep: {err}"))
 }
 
-/// Create a timeout channel that fires after the specified duration
-fn time_timeout(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
-    if args.len() != 1 {
-        return Err(anyhow!("time::timeout() expects exactly 1 argument"));
-    }
+fn time_timeout(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+    expect_arity(args, 1, "time.timeout()")?;
+    let duration_ms = numeric_millis(args.get(0).expect("checked arity"), "time.timeout()")?;
+    let channel_id = spawn_timer(duration_ms, RuntimeVal::Nil)?;
+    Ok(runtime_channel(channel_id, 1, Type::Nil, runtime))
+}
 
-    let duration_ms = match &args[0] {
-        Val::Int(ms) => *ms,
-        Val::Float(ms) => *ms as i64,
-        _ => return Err(anyhow!("time::timeout() expects a numeric argument")),
-    };
+fn time_after(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+    expect_arity(args, 1, "time.after()")?;
+    let duration_ms = numeric_millis(args.get(0).expect("checked arity"), "time.after()")?;
+    let channel_id = spawn_timer(duration_ms, RuntimeVal::Int(epoch_millis()))?;
+    Ok(runtime_channel(channel_id, 1, Type::Int, runtime))
+}
 
-    match with_runtime(|runtime| {
-        let duration = Duration::from_millis(duration_ms as u64);
+fn time_now(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+    expect_arity(args, 0, "time.now()")?;
+    Ok(RuntimeVal::Int(epoch_millis()))
+}
 
-        // Create a channel for the timeout
+fn time_since(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+    expect_arity(args, 2, "time.since()")?;
+    let values = args.as_slice();
+    let start = numeric_millis(&values[0], "time.since()")?;
+    let end = numeric_millis(&values[1], "time.since()")?;
+    Ok(RuntimeVal::Int(end - start))
+}
+
+fn spawn_timer(duration_ms: i64, payload: RuntimeVal) -> Result<u64> {
+    with_runtime(|runtime| {
         let channel_id = runtime.create_channel(Some(1))?;
-
-        // Get the channel ID before moving into the async block
-        let timeout_channel_id = channel_id;
-
-        // Spawn a task to send a signal after the timeout
         let future = async move {
-            tokio::time::sleep(duration).await;
-            // Use a new runtime reference to send the signal
-            match with_runtime(|rt| rt.try_send(timeout_channel_id, Val::Nil)) {
-                Ok(_success) => Ok(Val::Nil),
-                Err(e) => Err(anyhow!("Failed to send timeout signal: {}", e)),
-            }
+            tokio::time::sleep(Duration::from_millis(duration_ms as u64)).await;
+            let value = match payload {
+                RuntimeVal::Nil => RuntimePayload::nil(),
+                RuntimeVal::Int(_) => {
+                    RuntimePayload::new(RuntimeVal::Int(epoch_millis()), lk_core::val::HeapStore::new())
+                }
+                other => return Err(anyhow!("unsupported timer payload {:?}", other.kind())),
+            };
+            with_runtime(|runtime| runtime.try_send(channel_id, value))
+                .map_err(|err| anyhow!("Failed to send timer signal: {err}"))?;
+            Ok(RuntimePayload::nil())
         };
-
         runtime.spawn(future)?;
-
-        Ok(Val::Channel(Arc::new(ChannelValue {
-            id: channel_id,
-            capacity: Some(1),
-            inner_type: val::Type::Nil,
-        })))
-    }) {
-        Ok(channel) => Ok(channel),
-        Err(e) => Err(anyhow!("Failed to create timeout: {}", e)),
-    }
+        Ok(channel_id)
+    })
+    .map_err(|err| anyhow!("Failed to create timer: {err}"))
 }
 
-/// Create a one-shot timer that fires after the specified duration
-fn time_after(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
-    if args.len() != 1 {
-        return Err(anyhow!("time::after() expects exactly 1 argument"));
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lk_core::vm::{NativeFunction, RuntimeModuleState};
+
+    fn time_native(name: &str) -> Result<(u16, NativeFunction)> {
+        crate::runtime_native::runtime_native_export(&TimeModule::new(), name)
     }
 
-    let duration_ms = match &args[0] {
-        Val::Int(ms) => *ms,
-        Val::Float(ms) => *ms as i64,
-        _ => return Err(anyhow!("time::after() expects a numeric argument")),
-    };
-
-    match with_runtime(|runtime| {
-        let duration = Duration::from_millis(duration_ms as u64);
-
-        // Create a channel for the timer
-        let channel_id = runtime.create_channel(Some(1))?;
-
-        // Get the channel ID before moving into the async block
-        let timer_channel_id = channel_id;
-
-        // Spawn a task to send the current time after the duration
-        let future = async move {
-            tokio::time::sleep(duration).await;
-            let current_time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64;
-            match with_runtime(|rt| rt.try_send(timer_channel_id, Val::Int(current_time))) {
-                Ok(_success) => Ok(Val::Nil),
-                Err(e) => Err(anyhow!("Failed to send timer signal: {}", e)),
-            }
+    fn call(name: &str, args: &[RuntimeVal], state: &mut RuntimeModuleState) -> Result<RuntimeVal> {
+        let (_, function) = time_native(name)?;
+        let NativeFunction::Plain(function) = function else {
+            bail!("{name} must use plain RuntimeNative");
         };
-
-        runtime.spawn(future)?;
-
-        Ok(Val::Channel(Arc::new(ChannelValue {
-            id: channel_id,
-            capacity: Some(1),
-            inner_type: val::Type::Int,
-        })))
-    }) {
-        Ok(channel) => Ok(channel),
-        Err(e) => Err(anyhow!("Failed to create timer: {}", e)),
-    }
-}
-
-/// Get the current time in milliseconds since Unix epoch
-fn time_now(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
-    if !args.is_empty() {
-        return Err(anyhow!("time::now() expects no arguments"));
+        let mut runtime = NativeRuntime::new(state, None, None);
+        function(NativeArgs::new(args), &mut runtime)
     }
 
-    let current_time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64;
-
-    Ok(Val::Int(current_time))
-}
-
-/// Calculate the duration between two timestamps in milliseconds
-fn time_since(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
-    if args.len() != 2 {
-        return Err(anyhow!("time::since() expects exactly 2 arguments"));
+    #[test]
+    fn time_exports_use_runtime_native() -> Result<()> {
+        for name in ["sleep", "timeout", "after", "now", "since"] {
+            let (arity, function) = time_native(name)?;
+            assert!(matches!(function, NativeFunction::Plain(_)));
+            assert_ne!(arity, lk_core::vm::NativeEntry::VARIADIC);
+        }
+        Ok(())
     }
 
-    let start_time = match &args[0] {
-        Val::Int(ms) => *ms,
-        Val::Float(ms) => *ms as i64,
-        _ => return Err(anyhow!("time::since() expects numeric arguments")),
-    };
+    #[test]
+    fn time_now_and_since_return_runtime_ints() -> Result<()> {
+        let mut state = RuntimeModuleState::default();
+        assert!(matches!(call("now", &[], &mut state)?, RuntimeVal::Int(value) if value > 0));
+        assert_eq!(
+            call("since", &[RuntimeVal::Int(100), RuntimeVal::Float(175.0)], &mut state)?,
+            RuntimeVal::Int(75)
+        );
+        Ok(())
+    }
 
-    let end_time = match &args[1] {
-        Val::Int(ms) => *ms,
-        Val::Float(ms) => *ms as i64,
-        _ => return Err(anyhow!("time::since() expects numeric arguments")),
-    };
+    #[test]
+    fn time_timeout_and_after_return_channels() -> Result<()> {
+        let mut state = RuntimeModuleState::default();
+        for (name, expected_type) in [("timeout", Type::Nil), ("after", Type::Int)] {
+            let value = call(name, &[RuntimeVal::Int(0)], &mut state)?;
+            let RuntimeVal::Obj(handle) = value else {
+                panic!("{name} should return heap channel");
+            };
+            let HeapValue::Channel(channel) = state.heap().get(handle).expect("channel object") else {
+                panic!("{name} should return Channel");
+            };
+            assert_eq!(channel.capacity, Some(1));
+            assert_eq!(channel.inner_type, expected_type);
+        }
+        Ok(())
+    }
 
-    let duration = end_time - start_time;
-    Ok(Val::Int(duration))
+    #[test]
+    fn time_sleep_accepts_zero_duration() -> Result<()> {
+        let mut state = RuntimeModuleState::default();
+        assert_eq!(call("sleep", &[RuntimeVal::Int(0)], &mut state)?, RuntimeVal::Nil);
+        Ok(())
+    }
 }

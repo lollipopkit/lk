@@ -1,20 +1,27 @@
 [package]
-name = "lkr-stdlib"
-description = "Standard library for LKR (Query Check Language)"
+name = "lk-stdlib"
+description = "Standard library for LK"
 version = "0.1.3"
 edition = "2024"
 authors = ["lollipopkit <a@lpkt.cn>"]
 license = "Apache-2.0"
 
 [lib]
-name = "lkr_stdlib"
+name = "lk_stdlib"
 crate-type = ["rlib", "staticlib"]
 
+[features]
+default = []
+
 [dependencies]
-lkr-core = { path = "../core", default-features = false }
+lk-core = { path = "../core", default-features = false }
 anyhow = { workspace = true }
+arcstr = { workspace = true }
 chrono = { workspace = true }
 tokio = { workspace = true }
 once_cell = { workspace = true }
 dashmap = { workspace = true }
 tracing = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+toml = { workspace = true }

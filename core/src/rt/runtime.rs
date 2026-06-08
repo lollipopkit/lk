@@ -10,21 +10,54 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::{Mutex as TokioMutex, mpsc};
 use tokio::task::JoinHandle;
 
-use crate::val::Val;
+use crate::val::{HeapStore, RuntimeVal};
+
+#[derive(Clone, Debug)]
+pub struct RuntimePayload {
+    pub value: RuntimeVal,
+    pub heap: HeapStore,
+}
+
+impl RuntimePayload {
+    pub fn new(value: RuntimeVal, heap: HeapStore) -> Self {
+        Self { value, heap }
+    }
+
+    pub fn copy_from_value(value: &RuntimeVal, heap: &HeapStore) -> Result<Self> {
+        let mut payload_heap = HeapStore::new();
+        let value = crate::vm::copy_runtime_value(value, heap, &mut payload_heap)?;
+        Ok(Self::new(value, payload_heap))
+    }
+
+    pub fn into_value(self, heap: &mut HeapStore) -> Result<RuntimeVal> {
+        crate::vm::copy_runtime_value(&self.value, &self.heap, heap)
+    }
+
+    pub fn clone_value_into(&self, heap: &mut HeapStore) -> Result<RuntimeVal> {
+        crate::vm::copy_runtime_value(&self.value, &self.heap, heap)
+    }
+
+    pub fn nil() -> Self {
+        Self {
+            value: RuntimeVal::Nil,
+            heap: HeapStore::new(),
+        }
+    }
+}
 
 /// Task handle for spawned concurrent tasks
 #[derive(Debug)]
 pub struct Task {
     pub id: u64,
-    pub handle: JoinHandle<Result<Val>>,
-    pub result: Option<Result<Val>>,
+    pub handle: JoinHandle<Result<RuntimePayload>>,
+    pub result: Option<Result<RuntimePayload>>,
 }
 
 /// Channel sender wrapper to handle both bounded and unbounded channels
 #[derive(Debug)]
 pub enum ChannelSender {
-    Bounded(mpsc::Sender<Val>),
-    Unbounded(mpsc::UnboundedSender<Val>),
+    Bounded(mpsc::Sender<RuntimePayload>),
+    Unbounded(mpsc::UnboundedSender<RuntimePayload>),
 }
 
 impl ChannelSender {
@@ -39,8 +72,8 @@ impl ChannelSender {
 /// Channel receiver wrapper to handle both bounded and unbounded channels
 #[derive(Debug)]
 pub enum ChannelReceiver {
-    Bounded(mpsc::Receiver<Val>),
-    Unbounded(mpsc::UnboundedReceiver<Val>),
+    Bounded(mpsc::Receiver<RuntimePayload>),
+    Unbounded(mpsc::UnboundedReceiver<RuntimePayload>),
 }
 
 /// Channel for inter-task communication
@@ -99,7 +132,7 @@ impl Runtime {
     /// Spawn a new task
     pub fn spawn<F>(&self, future: F) -> Result<u64>
     where
-        F: std::future::Future<Output = Result<Val>> + Send + 'static,
+        F: std::future::Future<Output = Result<RuntimePayload>> + Send + 'static,
     {
         let task_id = {
             let mut next_id = self.next_task_id.lock().unwrap();
@@ -132,7 +165,7 @@ impl Runtime {
         };
 
         let channel = if let Some(cap) = capacity {
-            let (sender, receiver) = mpsc::channel::<Val>(cap);
+            let (sender, receiver) = mpsc::channel::<RuntimePayload>(cap);
             Channel {
                 id: channel_id,
                 capacity: Some(cap),
@@ -141,7 +174,7 @@ impl Runtime {
                 closed: Arc::new(AtomicBool::new(false)),
             }
         } else {
-            let (sender, receiver) = mpsc::unbounded_channel::<Val>();
+            let (sender, receiver) = mpsc::unbounded_channel::<RuntimePayload>();
             Channel {
                 id: channel_id,
                 capacity: None,
@@ -158,7 +191,7 @@ impl Runtime {
     }
 
     /// Attempt to send a value without blocking.
-    pub fn try_send(&self, channel_id: u64, value: Val) -> Result<bool> {
+    pub fn try_send(&self, channel_id: u64, value: RuntimePayload) -> Result<bool> {
         let (sender, closed_flag) = {
             let channels = self.channels.lock().unwrap();
             let channel = channels.get(&channel_id).ok_or_else(|| anyhow!("Channel not found"))?;
@@ -185,7 +218,7 @@ impl Runtime {
     }
 
     /// Send a value to a channel, awaiting until it can be delivered or the channel closes.
-    pub async fn send_async(&self, channel_id: u64, value: Val) -> Result<bool> {
+    pub async fn send_async(&self, channel_id: u64, value: RuntimePayload) -> Result<bool> {
         let (sender, closed_flag) = {
             let channels = self.channels.lock().unwrap();
             let channel = channels.get(&channel_id).ok_or_else(|| anyhow!("Channel not found"))?;
@@ -211,7 +244,7 @@ impl Runtime {
     }
 
     /// Try to receive a value without blocking. Returns None if no value is ready.
-    pub fn try_recv(&self, channel_id: u64) -> Result<Option<(bool, Val)>> {
+    pub fn try_recv(&self, channel_id: u64) -> Result<Option<(bool, RuntimePayload)>> {
         let (receiver_arc, closed_flag) = {
             let channels = self.channels.lock().unwrap();
             let channel = channels.get(&channel_id).ok_or_else(|| anyhow!("Channel not found"))?;
@@ -228,28 +261,28 @@ impl Runtime {
                 Ok(value) => Some((true, value)),
                 Err(mpsc::error::TryRecvError::Empty) => {
                     if closed_flag.load(Ordering::SeqCst) {
-                        Some((false, Val::Nil))
+                        Some((false, RuntimePayload::nil()))
                     } else {
                         None
                     }
                 }
                 Err(mpsc::error::TryRecvError::Disconnected) => {
                     closed_flag.store(true, Ordering::SeqCst);
-                    Some((false, Val::Nil))
+                    Some((false, RuntimePayload::nil()))
                 }
             },
             ChannelReceiver::Unbounded(recv) => match recv.try_recv() {
                 Ok(value) => Some((true, value)),
                 Err(mpsc::error::TryRecvError::Empty) => {
                     if closed_flag.load(Ordering::SeqCst) {
-                        Some((false, Val::Nil))
+                        Some((false, RuntimePayload::nil()))
                     } else {
                         None
                     }
                 }
                 Err(mpsc::error::TryRecvError::Disconnected) => {
                     closed_flag.store(true, Ordering::SeqCst);
-                    Some((false, Val::Nil))
+                    Some((false, RuntimePayload::nil()))
                 }
             },
         };
@@ -258,7 +291,7 @@ impl Runtime {
     }
 
     /// Receive a value from a channel, waiting until a value is available or the channel closes.
-    pub async fn recv_async(&self, channel_id: u64) -> Result<(bool, Val)> {
+    pub async fn recv_async(&self, channel_id: u64) -> Result<(bool, RuntimePayload)> {
         let (receiver_arc, closed_flag) = {
             let channels = self.channels.lock().unwrap();
             let channel = channels.get(&channel_id).ok_or_else(|| anyhow!("Channel not found"))?;
@@ -275,7 +308,7 @@ impl Runtime {
             Some(value) => Ok((true, value)),
             None => {
                 closed_flag.store(true, Ordering::SeqCst);
-                Ok((false, Val::Nil))
+                Ok((false, RuntimePayload::nil()))
             }
         }
     }
@@ -292,7 +325,7 @@ impl Runtime {
     }
 
     /// Wait for a task to complete
-    pub async fn join_task(&self, task_id: u64) -> Result<Val> {
+    pub async fn join_task(&self, task_id: u64) -> Result<RuntimePayload> {
         let mut task = {
             let mut tasks = self.tasks.lock().unwrap();
             tasks.remove(&task_id).ok_or_else(|| anyhow!("Task not found"))?
@@ -368,7 +401,7 @@ fn drop_runtime_arc(runtime: Arc<Runtime>) {
 }
 
 fn create_runtime() -> Result<Runtime> {
-    if std::env::var("LKR_SINGLE_THREAD").is_ok() {
+    if std::env::var("LK_SINGLE_THREAD").is_ok() {
         return Runtime::new_current_thread();
     }
 
@@ -428,7 +461,7 @@ where
 #[derive(Debug, Clone)]
 pub struct SelectResult {
     pub case_index: Option<usize>,
-    pub recv_payload: Option<(bool, Val)>,
+    pub recv_payload: Option<(bool, RuntimePayload)>,
     pub is_default: bool,
 }
 
@@ -441,7 +474,7 @@ pub enum SelectArm {
     Send {
         case_index: usize,
         channel_id: u64,
-        value: Val,
+        value: RuntimePayload,
     },
 }
 
@@ -465,7 +498,7 @@ impl SelectOperation {
         self.arms.push(SelectArm::Recv { case_index, channel_id });
     }
 
-    pub fn add_send(&mut self, case_index: usize, channel_id: u64, value: Val) {
+    pub fn add_send(&mut self, case_index: usize, channel_id: u64, value: RuntimePayload) {
         self.arms.push(SelectArm::Send {
             case_index,
             channel_id,

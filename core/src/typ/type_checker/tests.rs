@@ -1,26 +1,34 @@
 use super::*;
 use crate::{
     expr::Pattern,
-    op::BinOp,
+    operator::BinOp,
     stmt::{ForPattern, Stmt},
-    val::Val,
+    val::LiteralVal,
 };
 
 #[test]
 fn test_literal_types() {
     let mut checker = TypeChecker::new();
 
-    assert_eq!(checker.check_expr(&Expr::Val(Val::Nil)).unwrap(), Type::Nil);
-    assert_eq!(checker.check_expr(&Expr::Val(Val::Bool(true))).unwrap(), Type::Bool);
-    assert_eq!(checker.check_expr(&Expr::Val(Val::Int(42))).unwrap(), Type::Int);
+    assert_eq!(checker.check_expr(&Expr::Literal(LiteralVal::Nil)).unwrap(), Type::Nil);
+    assert_eq!(
+        checker.check_expr(&Expr::Literal(LiteralVal::Bool(true))).unwrap(),
+        Type::Bool
+    );
+    assert_eq!(
+        checker.check_expr(&Expr::Literal(LiteralVal::Int(42))).unwrap(),
+        Type::Int
+    );
     assert_eq!(
         checker
-            .check_expr(&Expr::Val(Val::Float(std::f64::consts::PI)))
+            .check_expr(&Expr::Literal(LiteralVal::Float(std::f64::consts::PI)))
             .unwrap(),
         Type::Float
     );
     assert_eq!(
-        checker.check_expr(&Expr::Val(Val::Str("hello".into()))).unwrap(),
+        checker
+            .check_expr(&Expr::Literal(LiteralVal::from_str("hello")))
+            .unwrap(),
         Type::String
     );
 }
@@ -30,9 +38,9 @@ fn test_binary_operations() {
     let mut checker = TypeChecker::new();
 
     let add_expr = Expr::Bin(
-        Box::new(Expr::Val(Val::Int(1))),
+        Box::new(Expr::Literal(LiteralVal::Int(1))),
         BinOp::Add,
-        Box::new(Expr::Val(Val::Int(2))),
+        Box::new(Expr::Literal(LiteralVal::Int(2))),
     );
 
     let result_type = checker.check_expr(&add_expr).unwrap();
@@ -44,9 +52,9 @@ fn test_binary_operations() {
 fn test_string_addition_type() {
     let mut checker = TypeChecker::new();
     let add_expr = Expr::Bin(
-        Box::new(Expr::Val(Val::Str("a".into()))),
+        Box::new(Expr::Literal(LiteralVal::from_str("a"))),
         BinOp::Add,
-        Box::new(Expr::Val(Val::Str("b".into()))),
+        Box::new(Expr::Literal(LiteralVal::from_str("b"))),
     );
     let result_type = checker.check_expr(&add_expr).unwrap();
     assert!(matches!(result_type, Type::String));
@@ -56,9 +64,9 @@ fn test_string_addition_type() {
 fn test_numeric_auto_promotion() {
     let mut checker = TypeChecker::new();
     let add_expr = Expr::Bin(
-        Box::new(Expr::Val(Val::Int(1))),
+        Box::new(Expr::Literal(LiteralVal::Int(1))),
         BinOp::Add,
-        Box::new(Expr::Val(Val::Float(1.5))),
+        Box::new(Expr::Literal(LiteralVal::Float(1.5))),
     );
     let result_type = checker.check_expr(&add_expr).unwrap();
     assert_eq!(result_type, Type::Float);
@@ -68,9 +76,9 @@ fn test_numeric_auto_promotion() {
 fn test_division_promotes_float() {
     let mut checker = TypeChecker::new();
     let div_expr = Expr::Bin(
-        Box::new(Expr::Val(Val::Int(3))),
+        Box::new(Expr::Literal(LiteralVal::Int(3))),
         BinOp::Div,
-        Box::new(Expr::Val(Val::Int(2))),
+        Box::new(Expr::Literal(LiteralVal::Int(2))),
     );
     let result_type = checker.check_expr(&div_expr).unwrap();
     assert_eq!(result_type, Type::Float);
@@ -80,9 +88,9 @@ fn test_division_promotes_float() {
 fn test_numeric_type_error_message() {
     let mut checker = TypeChecker::new();
     let bad_expr = Expr::Bin(
-        Box::new(Expr::Val(Val::Str("bad".into()))),
+        Box::new(Expr::Literal(LiteralVal::from_str("bad"))),
         BinOp::Mul,
-        Box::new(Expr::Val(Val::Bool(true))),
+        Box::new(Expr::Literal(LiteralVal::Bool(true))),
     );
     let err = checker.check_expr(&bad_expr).unwrap_err();
     assert!(err.to_string().contains("must by numeric types"));
@@ -93,9 +101,9 @@ fn test_list_types() {
     let mut checker = TypeChecker::new();
 
     let list_expr = Expr::List(vec![
-        Box::new(Expr::Val(Val::Int(1))),
-        Box::new(Expr::Val(Val::Int(2))),
-        Box::new(Expr::Val(Val::Int(3))),
+        Box::new(Expr::Literal(LiteralVal::Int(1))),
+        Box::new(Expr::Literal(LiteralVal::Int(2))),
+        Box::new(Expr::Literal(LiteralVal::Int(3))),
     ]);
 
     let result_type = checker.check_expr(&list_expr).unwrap();
@@ -107,12 +115,61 @@ fn test_list_types() {
 }
 
 #[test]
+fn test_index_infers_unannotated_list_element_type() {
+    let mut checker = TypeChecker::new();
+    let xs_ty = checker.fresh_type_var();
+    checker.add_local_type("xs".to_string(), xs_ty.clone());
+
+    let expr = Expr::Bin(
+        Box::new(Expr::Access(
+            Box::new(Expr::Var("xs".to_string())),
+            Box::new(Expr::Literal(LiteralVal::Int(0))),
+        )),
+        BinOp::Add,
+        Box::new(Expr::Literal(LiteralVal::Int(1))),
+    );
+
+    assert_eq!(checker.check_expr(&expr).unwrap(), Type::Int);
+    let subs = checker.solve_constraints().unwrap();
+    let resolved_xs = checker.apply_substitutions(xs_ty, &subs);
+    assert_eq!(resolved_xs, Type::List(Box::new(Type::Int)));
+}
+
+#[test]
+fn test_skip_infers_unannotated_list_type() {
+    let mut checker = TypeChecker::new();
+    let xs_ty = checker.fresh_type_var();
+    checker.add_local_type("xs".to_string(), xs_ty.clone());
+
+    let skip_call = Expr::CallExpr(
+        Box::new(Expr::Access(
+            Box::new(Expr::Var("xs".to_string())),
+            Box::new(Expr::Literal(LiteralVal::from_str("skip"))),
+        )),
+        vec![Box::new(Expr::Literal(LiteralVal::Int(1)))],
+    );
+    let expr = Expr::Bin(
+        Box::new(Expr::Access(
+            Box::new(skip_call),
+            Box::new(Expr::Literal(LiteralVal::Int(0))),
+        )),
+        BinOp::Add,
+        Box::new(Expr::Literal(LiteralVal::Int(1))),
+    );
+
+    assert_eq!(checker.check_expr(&expr).unwrap(), Type::Int);
+    let subs = checker.solve_constraints().unwrap();
+    let resolved_xs = checker.apply_substitutions(xs_ty, &subs);
+    assert_eq!(resolved_xs, Type::List(Box::new(Type::Int)));
+}
+
+#[test]
 fn test_type_mismatch_error() {
     let mut checker = TypeChecker::new();
 
     let logical_expr = Expr::And(
-        Box::new(Expr::Val(Val::Int(1))), // Should be Bool
-        Box::new(Expr::Val(Val::Bool(true))),
+        Box::new(Expr::Literal(LiteralVal::Int(1))), // Should be Bool
+        Box::new(Expr::Literal(LiteralVal::Bool(true))),
     );
 
     let result = checker.check_expr(&logical_expr);
@@ -129,7 +186,7 @@ fn test_let_statement_type_checking() {
     let let_stmt = Stmt::Let {
         pattern: Pattern::Variable("x".to_string()),
         type_annotation: Some(Type::Int),
-        value: Box::new(Expr::Val(Val::Int(42))),
+        value: Box::new(Expr::Literal(LiteralVal::Int(42))),
         span: None,
         is_const: false,
     };
@@ -141,7 +198,7 @@ fn test_let_statement_type_checking() {
     let let_stmt_mismatch = Stmt::Let {
         pattern: Pattern::Variable("y".to_string()),
         type_annotation: Some(Type::String),
-        value: Box::new(Expr::Val(Val::Int(42))), // Int assigned to String
+        value: Box::new(Expr::Literal(LiteralVal::Int(42))), // Int assigned to String
         span: None,
         is_const: false,
     };
@@ -164,7 +221,7 @@ fn test_assignment_type_checking() {
     let let_stmt = Stmt::Let {
         pattern: Pattern::Variable("x".to_string()),
         type_annotation: Some(Type::Int),
-        value: Box::new(Expr::Val(Val::Int(42))),
+        value: Box::new(Expr::Literal(LiteralVal::Int(42))),
         span: None,
         is_const: false,
     };
@@ -173,7 +230,7 @@ fn test_assignment_type_checking() {
     // Test valid assignment
     let assign_stmt = Stmt::Assign {
         name: "x".to_string(),
-        value: Box::new(Expr::Val(Val::Int(100))),
+        value: Box::new(Expr::Literal(LiteralVal::Int(100))),
         span: None,
     };
     assert!(assign_stmt.type_check(&mut checker).is_ok());
@@ -181,7 +238,7 @@ fn test_assignment_type_checking() {
     // Test invalid assignment
     let assign_stmt_invalid = Stmt::Assign {
         name: "x".to_string(),
-        value: Box::new(Expr::Val(Val::Str("hello".into()))), // String assigned to Int
+        value: Box::new(Expr::Literal(LiteralVal::from_str("hello"))), // String assigned to Int
         span: None,
     };
     let result = assign_stmt_invalid.type_check(&mut checker);
@@ -196,7 +253,7 @@ fn test_const_assignment_type_error() {
     let const_stmt = Stmt::Let {
         pattern: Pattern::Variable("x".to_string()),
         type_annotation: Some(Type::Int),
-        value: Box::new(Expr::Val(Val::Int(1))),
+        value: Box::new(Expr::Literal(LiteralVal::Int(1))),
         span: None,
         is_const: true,
     };
@@ -206,7 +263,7 @@ fn test_const_assignment_type_error() {
 
     let assign_stmt = Stmt::Assign {
         name: "x".to_string(),
-        value: Box::new(Expr::Val(Val::Int(2))),
+        value: Box::new(Expr::Literal(LiteralVal::Int(2))),
         span: None,
     };
     let result = assign_stmt.type_check(&mut checker);
@@ -220,11 +277,11 @@ fn test_if_statement_type_checking() {
 
     // Test if statement with boolean condition
     let if_stmt = Stmt::If {
-        condition: Box::new(Expr::Val(Val::Bool(true))),
+        condition: Box::new(Expr::Literal(LiteralVal::Bool(true))),
         then_stmt: Box::new(Stmt::Let {
             pattern: Pattern::Variable("x".to_string()),
             type_annotation: None,
-            value: Box::new(Expr::Val(Val::Int(42))),
+            value: Box::new(Expr::Literal(LiteralVal::Int(42))),
             span: None,
             is_const: false,
         }),
@@ -234,19 +291,17 @@ fn test_if_statement_type_checking() {
 
     // Test if statement with non-boolean condition
     let if_stmt_invalid = Stmt::If {
-        condition: Box::new(Expr::Val(Val::Int(42))), // Int instead of Bool
+        condition: Box::new(Expr::Literal(LiteralVal::Int(42))), // Int instead of Bool
         then_stmt: Box::new(Stmt::Let {
             pattern: Pattern::Variable("x".to_string()),
             type_annotation: None,
-            value: Box::new(Expr::Val(Val::Int(42))),
+            value: Box::new(Expr::Literal(LiteralVal::Int(42))),
             span: None,
             is_const: false,
         }),
         else_stmt: None,
     };
-    let result = if_stmt_invalid.type_check(&mut checker);
-    assert!(result.is_err());
-    assert!(result.unwrap_err().to_string().contains("If condition must be Bool"));
+    assert!(if_stmt_invalid.type_check(&mut checker).is_ok());
 }
 
 #[test]
@@ -255,19 +310,17 @@ fn test_while_statement_type_checking() {
 
     // Test while statement with boolean condition
     let while_stmt = Stmt::While {
-        condition: Box::new(Expr::Val(Val::Bool(true))),
-        body: Box::new(Stmt::Expr(Box::new(Expr::Val(Val::Int(42))))),
+        condition: Box::new(Expr::Literal(LiteralVal::Bool(true))),
+        body: Box::new(Stmt::Expr(Box::new(Expr::Literal(LiteralVal::Int(42))))),
     };
     assert!(while_stmt.type_check(&mut checker).is_ok());
 
     // Test while statement with non-boolean condition
     let while_stmt_invalid = Stmt::While {
-        condition: Box::new(Expr::Val(Val::Int(42))), // Int instead of Bool
-        body: Box::new(Stmt::Expr(Box::new(Expr::Val(Val::Int(42))))),
+        condition: Box::new(Expr::Literal(LiteralVal::Int(42))), // Int instead of Bool
+        body: Box::new(Stmt::Expr(Box::new(Expr::Literal(LiteralVal::Int(42))))),
     };
-    let result = while_stmt_invalid.type_check(&mut checker);
-    assert!(result.is_err());
-    assert!(result.unwrap_err().to_string().contains("While condition must be Bool"));
+    assert!(while_stmt_invalid.type_check(&mut checker).is_ok());
 }
 
 #[test]
@@ -278,18 +331,18 @@ fn test_for_statement_type_checking() {
     let for_stmt = Stmt::For {
         pattern: ForPattern::Variable("item".to_string()),
         iterable: Box::new(Expr::List(vec![
-            Box::new(Expr::Val(Val::Int(1))),
-            Box::new(Expr::Val(Val::Int(2))),
+            Box::new(Expr::Literal(LiteralVal::Int(1))),
+            Box::new(Expr::Literal(LiteralVal::Int(2))),
         ])),
-        body: Box::new(Stmt::Expr(Box::new(Expr::Val(Val::Nil)))),
+        body: Box::new(Stmt::Expr(Box::new(Expr::Literal(LiteralVal::Nil)))),
     };
     assert!(for_stmt.type_check(&mut checker).is_ok());
 
     // Test for statement with non-iterable
     let for_stmt_invalid = Stmt::For {
         pattern: ForPattern::Variable("item".to_string()),
-        iterable: Box::new(Expr::Val(Val::Int(42))), // Int is not iterable
-        body: Box::new(Stmt::Expr(Box::new(Expr::Val(Val::Nil)))),
+        iterable: Box::new(Expr::Literal(LiteralVal::Int(42))), // Int is not iterable
+        body: Box::new(Stmt::Expr(Box::new(Expr::Literal(LiteralVal::Nil)))),
     };
     let result = for_stmt_invalid.type_check(&mut checker);
     assert!(result.is_err());
