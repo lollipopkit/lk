@@ -1,0 +1,25 @@
+[package]
+name = "lk-stdlib-web"
+description = "Browser-safe standard library subset for LK"
+version = "0.1.3"
+edition = "2024"
+authors = ["lollipopkit <a@lpkt.cn>"]
+license = "Apache-2.0"
+
+[lib]
+name = "lk_stdlib_web"
+crate-type = ["rlib"]
+
+[dependencies]
+anyhow = { workspace = true }
+lk-core = { path = "../../core", default-features = false }
+lk-stdlib-bytes = { path = "../crates/bytes" }
+lk-stdlib-common = { path = "../common" }
+lk-stdlib-encoding = { path = "../crates/encoding" }
+lk-stdlib-hash = { path = "../crates/hash" }
+lk-stdlib-iter = { path = "../crates/iter" }
+lk-stdlib-math = { path = "../crates/math" }
+lk-stdlib-path = { path = "../crates/path" }
+lk-stdlib-regex = { path = "../crates/regex" }
+lk-stdlib-slice = { path = "../crates/slice" }
+lk-stdlib-string = { path = "../crates/string" }

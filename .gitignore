@@ -11,6 +11,7 @@ vsc-ext/*/node_modules/
 vsc-ext/*/*.vsix
 website/node_modules/
 website/dist/
+website/src/wasm/pkg/
 
 lk-lsp-debug.log
 main

@@ -46,6 +46,7 @@ Run any example: `lk examples/syntax/closure.lk`
 
 - Rust-inspired syntax with first-class named parameters
 - Deterministic bytecode VM with optional concurrency runtime
+- Browser-playground wasm facade with a safe stdlib subset
 - Batteries-included standard library and LSP-backed tooling
 - Project website source lives in `website/` and powers [lang.lollipopkit.com](https://lang.lollipopkit.com).
 
@@ -86,6 +87,19 @@ assert_eq!(result.display_first_return(), "true");
 - Create packages and manage dependencies: `lk init`, `lk pkg add`, `lk pkg fetch`, `lk pkg tree` (see [docs/packages.md](docs/packages.md))
 
 Note: command-line paths must be relative and sanitized.
+
+#### Website and wasm playground
+
+The website lives in `website/` and includes a `/try` route that lazy-loads the LK wasm runtime.
+
+```bash
+cd website
+bun run build
+```
+
+`bun run build` first runs `wasm-pack build ../wasm --target web --out-dir ../website/src/wasm/pkg --release`, then regenerates i18n types and builds the Vite app. The generated `website/src/wasm/pkg/` directory is ignored and should not be committed.
+
+The browser playground supports single-file execution with stdout capture, return-value display, parse/runtime diagnostics, and an instruction step limit. It intentionally exposes only the browser-safe stdlib subset; native modules such as `fs`, `io`, `net`, `process`, `env`, `os`, `task`, and `chan` are reported as unavailable in the browser.
 
 #### VS Code
 

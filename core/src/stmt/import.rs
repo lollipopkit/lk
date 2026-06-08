@@ -151,8 +151,9 @@ impl ModuleResolver {
     }
 
     pub fn resolve_runtime_module(&self, name: &str) -> Result<RuntimeExport> {
-        if let Ok(module) = self.stdlib_registry.get_runtime_module(name) {
-            return Ok(module);
+        match self.stdlib_registry.get_module(name) {
+            Ok(module) => return module.runtime_exports(),
+            Err(_) => {}
         }
         let Some(root) = self.package_modules.get(name) else {
             return Err(anyhow!("Module '{}' not found", name));

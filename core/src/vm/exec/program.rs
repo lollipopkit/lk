@@ -41,6 +41,15 @@ pub fn execute_program_with_ctx(program: &Program, ctx: &mut VmContext) -> Resul
     execute_compiled_module_with_ctx(module, ctx)
 }
 
+pub fn execute_program_with_ctx_and_budget(
+    program: &Program,
+    ctx: &mut VmContext,
+    instruction_budget: u64,
+) -> Result<ProgramResult> {
+    let module = compile_program_module_with_ctx(program, ctx)?;
+    execute_compiled_module_with_ctx_and_budget(module, ctx, instruction_budget)
+}
+
 pub fn execute_module_artifact_with_ctx(artifact: ModuleArtifact, ctx: &mut VmContext) -> Result<ProgramResult> {
     let imports = artifact.imports.clone();
     let resolver = ctx.resolver().clone();
@@ -50,18 +59,34 @@ pub fn execute_module_artifact_with_ctx(artifact: ModuleArtifact, ctx: &mut VmCo
 }
 
 pub fn execute_compiled_module_with_ctx(module: Arc<crate::vm::Module>, ctx: &mut VmContext) -> Result<ProgramResult> {
+    execute_compiled_module_with_ctx_inner(module, ctx, None)
+}
+
+fn execute_compiled_module_with_ctx_and_budget(
+    module: Arc<crate::vm::Module>,
+    ctx: &mut VmContext,
+    instruction_budget: u64,
+) -> Result<ProgramResult> {
+    execute_compiled_module_with_ctx_inner(module, ctx, Some(instruction_budget))
+}
+
+fn execute_compiled_module_with_ctx_inner(
+    module: Arc<crate::vm::Module>,
+    ctx: &mut VmContext,
+    instruction_budget: Option<u64>,
+) -> Result<ProgramResult> {
     let mut seed_heap = HeapStore::new();
     let globals = seed_module_globals(&module.globals, ctx, &mut seed_heap)?;
     let register_count = module
         .entry_function()
         .map(|function| function.register_count)
         .unwrap_or_default();
-    let result = Executor::new(register_count).run_shared_module_with_globals_and_heap_and_ctx(
-        Arc::clone(&module),
-        globals,
-        seed_heap,
-        ctx,
-    )?;
+    let mut executor = Executor::new(register_count);
+    if let Some(instruction_budget) = instruction_budget {
+        executor = executor.with_instruction_budget(instruction_budget);
+    }
+    let result =
+        executor.run_shared_module_with_globals_and_heap_and_ctx(Arc::clone(&module), globals, seed_heap, ctx)?;
     Ok(ProgramResult {
         returns: result.returns,
         state: result.state,
