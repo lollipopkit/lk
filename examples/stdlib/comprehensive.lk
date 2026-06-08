@@ -5,6 +5,7 @@ use func;
 use string;
 use list;
 use os;
+use io/file;
 
 // Math new features
 assert(math.hypot(3.0, 4.0) > 4.99);
@@ -32,7 +33,7 @@ assert(string.capitalize("hello world") == "Hello world");
 assert(string.title("hello world") == "Hello World");
 
 // OS new features
-assert(os.file_exists("/tmp"));
+assert(file.exists("/tmp"));
 assert(os.path_sep() != "");
 
 // alg module

@@ -30,8 +30,8 @@ This document describes the LK language as implemented in this repository (parse
 
 ### Input and Variables
 - There is no implicit runtime context. Identifiers must be defined in the lexical environment (e.g., via `let` in statements, function params, or module uses).
-- Read external input explicitly with stdlib: `io.read()` (string). Parse manually: `json.parse(...)`, `yaml.parse(...)`, `toml.parse(...)`.
-- Example: `use io; use json; let data = json.parse(io.read()); return data.req.user.id == 1;`
+- Read external input explicitly with stdlib: `std.read_to_string(std.stdin())` after `use io/std;`. Parse manually: `json.parse(...)`, `yaml.parse(...)`, `toml.parse(...)`.
+- Example: `use io/std; use json; let data = json.parse(std.read_to_string(std.stdin())); return data.req.user.id == 1;`
 
 ### Constants
 - `const name = expr;` - like `let` but immutable. Attempting to reassign a `const` variable is a runtime error.
@@ -166,11 +166,13 @@ Used in `match`, `if let`, `while let`, and `let` destructuring.
 ### Uses
 - Forms:
   - `use math;` - stdlib module as a namespace
+  - `use io/file;` - nested stdlib module as a namespace named `file`
   - `use "path/to/file.lk";` - file module as a namespace (name is the file stem)
   - `use { abs, sqrt } from math;` - selected items
   - `use { f as g } from "m.lk";` - with alias
   - `use * as m from math;` - namespace alias
   - `use math as m;` - module alias
+- Bare module uses bind the last path segment: `use net/tcp;` defines `tcp`.
 
 - File use resolution and safety:
   - Files are not automatically visible to each other. Use every cross-file dependency explicitly.
@@ -213,10 +215,10 @@ use "d/d1";    // c/d/d1.lk, available as d1
 
 ## Builtins and Stdlib
 - Builtin globals: `print(fmt, ...args)`, `println(fmt, ...args)`, `panic([msg])`, `assert(cond[, msg])`, `assert_eq(actual, expected[, msg])`, `assert_ne(actual, expected[, msg])`, `typeof(value)`.
-- `typeof(value)` returns the runtime type name as a string: `"Int"`, `"Float"`, `"String"`, `"Bool"`, `"Nil"`, `"List"`, `"Map"`, or the struct type name.
+- `typeof(value)` returns the runtime type name as a string: `"Int"`, `"Float"`, `"String"`, `"Bool"`, `"Nil"`, `"List"`, `"Map"`, `"Slice"`, resource names such as `"File"`/`"TcpStream"`, or the struct type name.
 
 ### Stdlib Modules
-Use as needed: `math`, `string`, `list`, `map`, `iter`, `stream`, `datetime`, `os`, `io`, `json`, `yaml`, `toml`, `tcp`. LK-source modules: `alg`, `collections`, `func`, `math_ext`. With `concurrency` feature: `task`, `chan`, `time`.
+Use as needed: `math`, `string`, `list`, `map`, `iter`, `stream`, `datetime`, `os`, `io/std`, `io/file`, `net/socket`, `net/tcp`, `net/udp`, `slice`, `json`, `yaml`, `toml`. LK-source modules: `alg`, `collections`, `func`, `math_ext`. With `concurrency` feature: `task`, `chan`, `time`.
 
 - `math`: constants `pi`, `e`, `inf`, `nan`, `max_int`, `min_int`, `max_float`, `epsilon`; functions `abs`, `sqrt`, `floor`, `ceil`, `round`, `min`, `max`, `pow`, `exp`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `log`, `log10`, `log2`, `clamp`, `random`, `hypot`, `cbrt`, `sinh`, `cosh`, `tanh`, `trunc`, `fract`, `sign`, `to_int`, `to_float`, `is_nan`, `is_inf`.
 - `string`: methods (see meta-methods below).
@@ -225,12 +227,16 @@ Use as needed: `math`, `string`, `list`, `map`, `iter`, `stream`, `datetime`, `o
 - `iter`: module-level list utilities only: `range([start,] end [, step])`, `enumerate(list)`, `zip(list1, list2)`, `take(list, n)`, `skip(list, n)`, `chain(list1, list2)`, `flatten(list)`, `unique(list)`, `chunk(list, size)`, and higher-order ops `map(list, fn)`, `filter(list, fn)`, `reduce(list, init, fn)`.
 - `stream`: module-level lazy pipelines. `stream.from_list(list)`, `stream.range(start, end)`, `stream.iterate(seed, fn)`, `stream.repeat(val)`, `stream.from_channel(ch)`, `stream.map(s, fn)`, `stream.filter(s, fn)`, `stream.take(s, n)`, `stream.skip(s, n)`, `stream.chain(a, b)`, `stream.subscribe(s)`, `stream.next(cursor)`, `stream.collect(stream_or_cursor)`, `stream.next_block(cursor[, timeout_ms])`, `stream.collect_block(stream_or_cursor[, n][, timeout_ms])`.
 - `datetime`: `now()` (microseconds), `format(secs, fmt)`, `parse(str, fmt)`, `add(secs, delta)`, `sub(secs, delta)`, `day_of_week(secs)`, `day_of_year(secs)`, `is_weekend(secs)`.
-- `os`: `hostname()`, `arch()`, `os()`, `clock()`, `time()`, `epoch()`, `exit(code)`, `exec(cmd, args?, stream?)`, `env_get(key, default?)`, `env`, `dir_current()`, `dir_temp()`, `dir_list(path)`, `file_read(path)`, `file_write(path, content)`, `file_append(path, content)`, `file_exists(path)`, `file_size(path)`, `file_delete(path)`, `mkdir(path)`, `path_join(parts...)`, `path_sep()`.
-- `io`: `io.read()` (stdin), `io.stdin_read([bytes])`, `io.stdin_read_line()`, `io.stdin_read_all()`, `io.stdout_write(s)`, `io.stdout_writeln(s)`, `io.stdout_flush()`, `io.stderr_write(s)`, `io.stderr_writeln(s)`, `io.stderr_flush()`.
+- `os`: `hostname()`, `arch()`, `os()`, `clock()`, `time()`, `epoch()`, `exit(code)`, `exec(cmd, args?, stream?)`, `env_get(key, default?)`, `env`, `dir_current()`, `dir_temp()`, `dir_list(path)`, `mkdir(path)`, `path_join(parts...)`, `path_sep()`.
+- `io/std`: `stdin()`, `stdout()`, `stderr()`, `read_to_string(reader)`, `read_line(reader)`, `write(writer, data)`, `writeln(writer, data)`, `flush(writer)`.
+- `io/file`: `open(path, mode)`, `create(path)`, `read(path)`, `write(path, data)`, `append(path, data)`, `exists(path)`, `size(path)`, `remove(path)`, `read_to_string(file)`, `write_all(file, data)`, `flush(file)`, `close(file)`.
+- `slice`: `from_list(list)`, `from_string(str)`, `len(slice)`, `is_empty(slice)`, `get(slice, index)`, `sub(slice, start[, end])`, `to_list(slice)`, `to_string(slice)`.
 - `json`: `json.parse(string)`.
 - `yaml`: `yaml.parse(string)`.
 - `toml`: `toml.parse(string)`.
-- `tcp`: `tcp.connect(host, port)`, `tcp.bind(host, port)`, `tcp.accept(listener)`, `tcp.write(conn, data)`, `tcp.read(conn, len?)`, `tcp.close(conn)`.
+- `net/socket`: `addr(host, port)`, `close(resource)`.
+- `net/tcp`: `connect(addr)`, `bind(addr)`, `accept(listener)`, `write(stream, data)`, `read(stream, len?)`, `close(resource)`, plus `connect_task`, `accept_task`, `read_task`, `write_task`.
+- `net/udp`: `bind(addr)`, `recv_from(socket, len?)`, `send_to(socket, data, addr)`, plus `recv_from_task`, `send_to_task`.
 - `time` (concurrency): `time.now()`, `time.sleep(ms)`, `time.timeout(ms)`, `time.after(ms)`, `time.since(start, end)`.
 
 #### LK-Source Stdlib Modules
@@ -333,7 +339,7 @@ statement    ::= import_stmt | if_stmt | if_let_stmt | while_stmt | while_let_st
                | fn_stmt | struct_stmt | trait_stmt | impl_stmt | expr_stmt | block_stmt
 
 import_stmt  ::= 'use' ( module | string | items_from_source | namespace_import | module_alias ) ';'
-module       ::= identifier
+module       ::= identifier { '/' identifier }
 string       ::= string_literal
 items_from_source ::= '{' import_item { ',' import_item } '}' 'from' ( module | string )
 import_item  ::= id [ 'as' id ]

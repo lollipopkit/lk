@@ -1079,6 +1079,10 @@ fn runtime_access(receiver: &RuntimeVal, field: &str, heap: &mut HeapStore) -> a
                 HeapValue::String(value) => RuntimeAccess::Ready(runtime_string_access(value.as_ref(), field)),
                 HeapValue::List(values) => RuntimeAccess::Ready(runtime_list_access(values, field)),
                 HeapValue::Map(values) => RuntimeAccess::Ready(values.get_str(field)),
+                HeapValue::Slice(slice) => match field {
+                    "len" => RuntimeAccess::Ready(Some(RuntimeVal::Int(slice.len as i64))),
+                    _ => RuntimeAccess::Ready(None),
+                },
                 HeapValue::Object(object) => RuntimeAccess::Ready(object.get_field(field)),
                 HeapValue::Task(task) if field == "value" => match &task.value {
                     Some(value) => RuntimeAccess::CopyPayload(value.clone()),
@@ -1305,6 +1309,8 @@ fn heap_dispatch_type(value: &HeapValue) -> Type {
             params: vec![stream.inner_type.clone()],
         },
         HeapValue::StreamCursor(_) => Type::Named("StreamCursor".to_string()),
+        HeapValue::Slice(_) => Type::Named("Slice".to_string()),
+        HeapValue::Resource(resource) => Type::Named(resource.kind.to_string()),
         HeapValue::Object(object) => Type::Named(object.type_name.to_string()),
         HeapValue::UpvalCell(_) => Type::Any,
         HeapValue::ErrorVal(_) => Type::Named("Error".to_string()),

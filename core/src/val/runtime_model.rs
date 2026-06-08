@@ -6,7 +6,7 @@
 use crate::util::fast_map::{FastHashMap, fast_hash_map_from_iter, fast_hash_map_new};
 use std::sync::Arc;
 
-use super::values::{ChannelValue, ShortStr, StreamCursorValue, StreamValue, TaskValue};
+use super::values::{ChannelValue, ResourceValue, ShortStr, SliceValue, StreamCursorValue, StreamValue, TaskValue};
 
 mod heap;
 
@@ -79,6 +79,8 @@ pub enum HeapValue {
     Channel(Arc<ChannelValue>),
     Stream(Arc<StreamValue>),
     StreamCursor(Arc<StreamCursorValue>),
+    Slice(Arc<SliceValue>),
+    Resource(Arc<ResourceValue>),
     Object(RuntimeObject),
     UpvalCell(RuntimeVal),
     ErrorVal(ErrorVal),
@@ -96,6 +98,8 @@ impl HeapValue {
             Self::Channel(_) => "Channel",
             Self::Stream(_) => "Stream",
             Self::StreamCursor(_) => "StreamCursor",
+            Self::Slice(_) => "Slice",
+            Self::Resource(resource) => resource.kind,
             Self::Object(_) => "Object",
             Self::UpvalCell(_) => "UpvalCell",
             Self::ErrorVal(_) => "Error",

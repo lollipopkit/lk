@@ -98,7 +98,7 @@ pub struct MatchArm {
 /// Details:
 /// - No implicit context
 ///   + Identifiers must be defined in the lexical environment (e.g., via `let` in statements).
-///   + There is no implicit runtime context lookup. Read with `io.read()` and parse with `json/yaml/toml` modules when needed.
+///   + There is no implicit runtime context lookup. Read with `std.read_to_string(std.stdin())` from `io/std` and parse with `json/yaml/toml` modules when needed.
 /// - int / float are considered as `i64 / f64`.
 /// - bool can be `true` or `false`.
 /// - String
@@ -113,7 +113,7 @@ pub struct MatchArm {
 ///
 /// Examples:
 /// - `{ "age": 20 }.age >= 18`
-/// - `use json; let data = json.parse(io.read()); data.user.name == "Alice"` (in statements)
+/// - `use io/std; use json; let data = json.parse(std.read_to_string(std.stdin())); data.user.name == "Alice"` (in statements)
 /// - `[1, 2, 3]`
 /// - `{"name": "John", "age": 30}`
 /// - `[1, 2, 3].1`

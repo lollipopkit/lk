@@ -1310,6 +1310,13 @@ fn copy_heap_value(value: &HeapValue, source_heap: &HeapStore, dest_heap: &mut H
         HeapValue::Channel(value) => HeapValue::Channel(value.clone()),
         HeapValue::Stream(value) => HeapValue::Stream(value.clone()),
         HeapValue::StreamCursor(value) => HeapValue::StreamCursor(value.clone()),
+        HeapValue::Slice(value) => HeapValue::Slice(Arc::new(crate::val::SliceValue {
+            source: copy_runtime_value(&value.source, source_heap, dest_heap)?,
+            kind: value.kind,
+            start: value.start,
+            len: value.len,
+        })),
+        HeapValue::Resource(value) => HeapValue::Resource(value.clone()),
         HeapValue::UpvalCell(value) => HeapValue::UpvalCell(copy_runtime_value(&value, source_heap, dest_heap)?),
         HeapValue::ErrorVal(error) => HeapValue::ErrorVal(crate::val::ErrorVal {
             message: Arc::clone(&error.message),

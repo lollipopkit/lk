@@ -1,17 +1,22 @@
 pub mod concurrency_chan;
 pub mod concurrency_task;
 pub mod datetime;
-pub mod io;
+pub mod io_file;
+pub mod io_std;
 pub mod iter;
 pub mod json;
 pub mod list;
 pub mod map;
 pub mod math;
+pub mod net_socket;
+pub mod net_tcp;
+pub mod net_udp;
 pub mod os;
+mod resource;
 mod runtime_native;
+pub mod slice;
 pub mod stream;
 pub mod string;
-pub mod tcp;
 pub mod time;
 pub mod toml;
 pub mod yaml;
@@ -27,11 +32,11 @@ mod math_test;
 #[cfg(test)]
 mod os_test;
 #[cfg(test)]
+mod stdlib_runtime_test;
+#[cfg(test)]
 mod stream_test;
 #[cfg(test)]
 mod string_test;
-#[cfg(test)]
-mod tcp_test;
 
 use anyhow::{Result, anyhow};
 use lk_core::{
@@ -54,8 +59,26 @@ use runtime_native::runtime_display_value;
 /// Register all stdlib modules with the given registry
 pub fn register_stdlib_modules(registry: &mut ModuleRegistry) -> Result<()> {
     for name in [
-        "io", "json", "yaml", "toml", "iter", "math", "string", "list", "map", "datetime", "os", "tcp", "stream",
-        "task", "chan", "time",
+        "io/std",
+        "io/file",
+        "json",
+        "yaml",
+        "toml",
+        "iter",
+        "math",
+        "string",
+        "list",
+        "map",
+        "datetime",
+        "os",
+        "net/socket",
+        "net/tcp",
+        "net/udp",
+        "slice",
+        "stream",
+        "task",
+        "chan",
+        "time",
     ] {
         register_stdlib_module_by_name(registry, name)?;
     }
@@ -73,7 +96,8 @@ pub fn register_stdlib_modules_named(registry: &mut ModuleRegistry, names: &[Str
 
 fn register_stdlib_module_by_name(registry: &mut ModuleRegistry, name: &str) -> Result<()> {
     match name {
-        "io" => registry.register_module("io", Box::new(io::IoModule::new()))?,
+        "io/std" => registry.register_module("io/std", Box::new(io_std::IoStdModule::new()))?,
+        "io/file" => registry.register_module("io/file", Box::new(io_file::IoFileModule::new()))?,
         "json" => registry.register_module("json", Box::new(json::JsonModule::new()))?,
         "yaml" => registry.register_module("yaml", Box::new(yaml::YamlModule::new()))?,
         "toml" => registry.register_module("toml", Box::new(toml::TomlModule::new()))?,
@@ -84,7 +108,10 @@ fn register_stdlib_module_by_name(registry: &mut ModuleRegistry, name: &str) -> 
         "map" => registry.register_module("map", Box::new(map::MapModule::new()))?,
         "datetime" => registry.register_module("datetime", Box::new(datetime::DateTimeModule::new()))?,
         "os" => registry.register_module("os", Box::new(os::OsModule::new()))?,
-        "tcp" => registry.register_module("tcp", Box::new(tcp::TcpModule::new()))?,
+        "net/socket" => registry.register_module("net/socket", Box::new(net_socket::NetSocketModule::new()))?,
+        "net/tcp" => registry.register_module("net/tcp", Box::new(net_tcp::NetTcpModule::new()))?,
+        "net/udp" => registry.register_module("net/udp", Box::new(net_udp::NetUdpModule::new()))?,
+        "slice" => registry.register_module("slice", Box::new(slice::SliceModule::new()))?,
         "stream" => registry.register_module("stream", Box::new(stream::StreamModule::new()))?,
         "task" => registry.register_module("task", Box::new(concurrency_task::TaskModule::new()))?,
         "chan" => registry.register_module("chan", Box::new(concurrency_chan::ChannelModule::new()))?,
@@ -95,7 +122,8 @@ fn register_stdlib_module_by_name(registry: &mut ModuleRegistry, name: &str) -> 
 }
 
 pub fn register_stdlib_module_io(registry: &mut ModuleRegistry) -> Result<()> {
-    registry.register_module("io", Box::new(io::IoModule::new()))
+    registry.register_module("io/std", Box::new(io_std::IoStdModule::new()))?;
+    registry.register_module("io/file", Box::new(io_file::IoFileModule::new()))
 }
 
 pub fn register_stdlib_module_json(registry: &mut ModuleRegistry) -> Result<()> {
@@ -139,7 +167,7 @@ pub fn register_stdlib_module_os(registry: &mut ModuleRegistry) -> Result<()> {
 }
 
 pub fn register_stdlib_module_tcp(registry: &mut ModuleRegistry) -> Result<()> {
-    registry.register_module("tcp", Box::new(tcp::TcpModule::new()))
+    registry.register_module("net/tcp", Box::new(net_tcp::NetTcpModule::new()))
 }
 
 pub fn register_stdlib_module_stream(registry: &mut ModuleRegistry) -> Result<()> {

@@ -122,6 +122,19 @@ fn import_heap_value(
         HeapValue::Channel(value) => HeapValue::Channel(Arc::clone(value)),
         HeapValue::Stream(value) => HeapValue::Stream(Arc::clone(value)),
         HeapValue::StreamCursor(value) => HeapValue::StreamCursor(Arc::clone(value)),
+        HeapValue::Slice(value) => HeapValue::Slice(Arc::new(crate::val::SliceValue {
+            source: import_runtime_value(
+                &value.source,
+                source_heap,
+                dest_heap,
+                source_module,
+                source_state.clone(),
+            )?,
+            kind: value.kind,
+            start: value.start,
+            len: value.len,
+        })),
+        HeapValue::Resource(value) => HeapValue::Resource(Arc::clone(value)),
         HeapValue::UpvalCell(value) => HeapValue::UpvalCell(import_runtime_value(
             value,
             source_heap,

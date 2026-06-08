@@ -1,5 +1,4 @@
 mod arg_list_methods;
-mod io;
 mod iter_methods;
 mod list_methods;
 mod map_methods;
@@ -20,7 +19,6 @@ use super::{
 };
 use crate::vm::{ConstHeapValueData, ConstRuntimeValueData, RuntimeMapKeyData};
 use arg_list_methods::emit_native_arg_list_method;
-use io::emit_native_stderr_value;
 use iter_methods::{emit_native_iter_builtin, emit_native_iter_module_method};
 use list_methods::{emit_native_list_builtin, emit_native_static_list_method};
 use map_methods::emit_native_map_builtin;
@@ -100,83 +98,12 @@ pub(super) fn emit_native_builtin_call(
         | NativeBuiltin::IterEnumerate
         | NativeBuiltin::IterZip => return emit_native_iter_builtin(builtin, args, ssa_index),
         NativeBuiltin::IterMap | NativeBuiltin::IterFilter | NativeBuiltin::IterReduce => return None,
-        NativeBuiltin::IoStdoutWrite => {
-            if args.len() != 1 {
-                return None;
-            }
-            emit_native_print_value(body, args.first()?, false)?;
-            return Some(NativeStraightlineValue::Nil);
-        }
-        NativeBuiltin::IoStderrWrite => {
-            if args.len() != 1 {
-                return None;
-            }
-            emit_native_stderr_value(body, args.first()?, false)?;
-            return Some(NativeStraightlineValue::Nil);
-        }
-        NativeBuiltin::IoStdoutWriteln => {
-            if args.len() != 1 {
-                return None;
-            }
-            emit_native_print_value(body, args.first()?, true)?;
-            return Some(NativeStraightlineValue::Nil);
-        }
-        NativeBuiltin::IoStderrWriteln => {
-            if args.len() != 1 {
-                return None;
-            }
-            emit_native_stderr_value(body, args.first()?, true)?;
-            return Some(NativeStraightlineValue::Nil);
-        }
-        NativeBuiltin::IoStdoutFlush => {
-            if args.is_empty() {
-                body.push_str("  call i32 @fflush(ptr null)\n");
-                return Some(NativeStraightlineValue::Nil);
-            }
-            return None;
-        }
-        NativeBuiltin::IoStderrFlush => {
-            if args.is_empty() {
-                return Some(NativeStraightlineValue::Nil);
-            }
-            return None;
-        }
-        NativeBuiltin::IoRead => {
-            if args.is_empty() {
-                return Some(native_static_string_value(""));
-            }
-            return None;
-        }
         NativeBuiltin::JsonParse | NativeBuiltin::TomlParse | NativeBuiltin::YamlParse => {
             return emit_native_static_parse_builtin(builtin, args);
         }
         NativeBuiltin::TimeNow => return emit_native_time_now(body, args, ssa_index),
         NativeBuiltin::TimeSleep => return emit_native_time_sleep(body, args, ssa_index),
         NativeBuiltin::TimeSince => return emit_native_time_since(body, args, ssa_index),
-        NativeBuiltin::TcpConnect => {
-            if args.len() == 2 {
-                return Some(NativeStraightlineValue::I64("1".to_string()));
-            }
-            return None;
-        }
-        NativeBuiltin::TcpWrite => {
-            if let [_, NativeStraightlineValue::String { value, .. }] = args {
-                return Some(NativeStraightlineValue::I64(value.len().to_string()));
-            }
-            return None;
-        }
-        NativeBuiltin::TcpRead => {
-            if args.len() == 2 {
-                return Some(native_static_string_value("HTTP/1.0 200 OK\r\n\r\n"));
-            }
-            return None;
-        }
-        NativeBuiltin::TcpClose => {
-            if args.len() == 1 {
-                return Some(NativeStraightlineValue::Bool("1".to_string()));
-            }
-            return None;
-        }
         NativeBuiltin::Chan => {
             if args.len() == 1 {
                 return Some(NativeStraightlineValue::Channel { elements: Vec::new() });

@@ -31,8 +31,8 @@
 
 ### 输入与变量
 - 没有隐式运行时上下文。标识符必须在词法环境中定义（例如通过语句中的 `let`、函数参数或模块 `use`）。
-- 通过标准库显式读取外部输入：`io.read()`（字符串）。手动解析：`json.parse(...)`、`yaml.parse(...)`、`toml.parse(...)`。
-- 示例：`use io; use json; let data = json.parse(io.read()); return data.req.user.id == 1;`
+- 通过标准库显式读取外部输入：`use io/std;` 后使用 `std.read_to_string(std.stdin())`。手动解析：`json.parse(...)`、`yaml.parse(...)`、`toml.parse(...)`。
+- 示例：`use io/std; use json; let data = json.parse(std.read_to_string(std.stdin())); return data.req.user.id == 1;`
 
 ### 常量
 - `const name = expr;` —— 类似 `let`，但不可变。尝试重新赋值 `const` 变量会在运行时错误。
@@ -167,11 +167,13 @@
 ### Use 导入
 - 形式：
   - `use math;` —— 标准库模块作为命名空间。
+  - `use io/file;` —— 嵌套标准库模块作为名为 `file` 的命名空间。
   - `use "path/to/file.lk";` —— 文件模块作为命名空间（名称来自文件名）。
   - `use { abs, sqrt } from math;` —— 选择性导入。
   - `use { f as g } from "m.lk";` —— 带别名。
   - `use * as m from math;` —— 命名空间别名。
   - `use math as m;` —— 模块别名。
+- 裸模块导入绑定最后一个路径段：`use net/tcp;` 会定义 `tcp`。
 
 - 文件导入与安全：
   - 文件不会自动对外可见。跨文件依赖必须显式 `use`。
@@ -214,10 +216,10 @@ use "d/d1";    // c/d/d1.lk，导出名为 d1
 
 ## 内置与标准库
 - 全局内置：`print(fmt, ...args)`、`println(fmt, ...args)`、`panic([msg])`、`assert(cond[, msg])`、`assert_eq(actual, expected[, msg])`、`assert_ne(actual, expected[, msg])`、`typeof(value)`。
-- `typeof(value)` 返回运行时类型名字符串：`"Int"`、`"Float"`、`"String"`、`"Bool"`、`"Nil"`、`"List"`、`"Map"` 或结构体类型名。
+- `typeof(value)` 返回运行时类型名字符串：`"Int"`、`"Float"`、`"String"`、`"Bool"`、`"Nil"`、`"List"`、`"Map"`、`"Slice"`、`"File"`/`"TcpStream"` 等 resource 类型名，或结构体类型名。
 
 ### 标准库模块
-按需导入：`math`、`string`、`list`、`map`、`iter`、`stream`、`datetime`、`os`、`io`、`json`、`yaml`、`toml`、`tcp`。LK 源码模块：`alg`、`collections`、`func`、`math_ext`。启用 `concurrency` 后支持：`task`、`chan`、`time`。
+按需导入：`math`、`string`、`list`、`map`、`iter`、`stream`、`datetime`、`os`、`io/std`、`io/file`、`net/socket`、`net/tcp`、`net/udp`、`slice`、`json`、`yaml`、`toml`。LK 源码模块：`alg`、`collections`、`func`、`math_ext`。启用 `concurrency` 后支持：`task`、`chan`、`time`。
 
 - `math`：常量 `pi`、`e`、`inf`、`nan`、`max_int`、`min_int`、`max_float`、`epsilon`；函数 `abs`、`sqrt`、`floor`、`ceil`、`round`、`min`、`max`、`pow`、`exp`、`sin`、`cos`、`tan`、`asin`、`acos`、`atan`、`atan2`、`log`、`log10`、`log2`、`clamp`、`random`、`hypot`、`cbrt`、`sinh`、`cosh`、`tanh`、`trunc`、`fract`、`sign`、`to_int`、`to_float`、`is_nan`、`is_inf`。
 - `string`：方法（见下方元方法）。
@@ -226,12 +228,16 @@ use "d/d1";    // c/d/d1.lk，导出名为 d1
 - `iter`：仅提供模块级列表工具：`range([start,] end [, step])`、`enumerate(list)`、`zip(list1, list2)`、`take(list, n)`、`skip(list, n)`、`chain(list1, list2)`、`flatten(list)`、`unique(list)`、`chunk(list, size)`，以及高阶操作 `map(list, fn)`、`filter(list, fn)`、`reduce(list, init, fn)`。
 - `stream`：模块级懒执行管道。`stream.from_list(list)`、`stream.range(start, end)`、`stream.iterate(seed, fn)`、`stream.repeat(val)`、`stream.from_channel(ch)`、`stream.map(s, fn)`、`stream.filter(s, fn)`、`stream.take(s, n)`、`stream.skip(s, n)`、`stream.chain(a, b)`、`stream.subscribe(s)`、`stream.next(cursor)`、`stream.collect(stream_or_cursor)`、`stream.next_block(cursor[, timeout_ms])`、`stream.collect_block(stream_or_cursor[, n][, timeout_ms])`。
 - `datetime`：`now()`（微秒）、`format(secs, fmt)`、`parse(str, fmt)`、`add(secs, delta)`、`sub(secs, delta)`、`day_of_week(secs)`、`day_of_year(secs)`、`is_weekend(secs)`。
-- `os`：`hostname()`、`arch()`、`os()`、`clock()`、`time()`、`epoch()`、`exit(code)`、`exec(cmd, args?, stream?)`、`env_get(key, default?)`、`env`、`dir_current()`、`dir_temp()`、`dir_list(path)`、`file_read(path)`、`file_write(path, content)`、`file_append(path, content)`、`file_exists(path)`、`file_size(path)`、`file_delete(path)`、`mkdir(path)`、`path_join(parts...)`、`path_sep()`。
-- `io`：`io.read()`（stdin）、`io.stdin_read([bytpes])`、`io.stdin_read_line()`、`io.stdin_read_all()`、`io.stdout_write(s)`、`io.stdout_writeln(s)`、`io.stdout_flush()`、`io.stderr_write(s)`、`io.stderr_writeln(s)`、`io.stderr_flush()`。
+- `os`：`hostname()`、`arch()`、`os()`、`clock()`、`time()`、`epoch()`、`exit(code)`、`exec(cmd, args?, stream?)`、`env_get(key, default?)`、`env`、`dir_current()`、`dir_temp()`、`dir_list(path)`、`mkdir(path)`、`path_join(parts...)`、`path_sep()`。
+- `io/std`：`stdin()`、`stdout()`、`stderr()`、`read_to_string(reader)`、`read_line(reader)`、`write(writer, data)`、`writeln(writer, data)`、`flush(writer)`。
+- `io/file`：`open(path, mode)`、`create(path)`、`read(path)`、`write(path, data)`、`append(path, data)`、`exists(path)`、`size(path)`、`remove(path)`、`read_to_string(file)`、`write_all(file, data)`、`flush(file)`、`close(file)`。
+- `slice`：`from_list(list)`、`from_string(str)`、`len(slice)`、`is_empty(slice)`、`get(slice, index)`、`sub(slice, start[, end])`、`to_list(slice)`、`to_string(slice)`。
 - `json`：`json.parse(string)`。
 - `yaml`：`yaml.parse(string)`。
 - `toml`：`toml.parse(string)`。
-- `tcp`：`tcp.connect(host, port)`、`tcp.bind(host, port)`、`tcp.accept(listener)`、`tcp.write(conn, data)`、`tcp.read(conn, len?)`、`tcp.close(conn)`。
+- `net/socket`：`addr(host, port)`、`close(resource)`。
+- `net/tcp`：`connect(addr)`、`bind(addr)`、`accept(listener)`、`write(stream, data)`、`read(stream, len?)`、`close(resource)`，以及 `connect_task`、`accept_task`、`read_task`、`write_task`。
+- `net/udp`：`bind(addr)`、`recv_from(socket, len?)`、`send_to(socket, data, addr)`，以及 `recv_from_task`、`send_to_task`。
 - `time`（并发）：`time.now()`、`time.sleep(ms)`、`time.timeout(ms)`、`time.after(ms)`、`time.since(start, end)`。
 
 #### LK 源码标准库模块
@@ -334,7 +340,7 @@ statement    ::= import_stmt | if_stmt | if_let_stmt | while_stmt | while_let_st
                | fn_stmt | struct_stmt | trait_stmt | impl_stmt | expr_stmt | block_stmt
 
 import_stmt  ::= 'use' ( module | string | items_from_source | namespace_import | module_alias ) ';'
-module       ::= identifier
+module       ::= identifier { '/' identifier }
 string       ::= string_literal
 items_from_source ::= '{' import_item { ',' import_item } '}' 'from' ( module | string )
 import_item  ::= id [ 'as' id ]

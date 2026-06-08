@@ -62,9 +62,9 @@ pub enum Token {
     // Concurrency keywords
     Select, // select
     // Module-use keywords
-    Use,    // use
-    From,   // from
-    As,     // as
+    Use,  // use
+    From, // from
+    As,   // as
     // Type system keywords
     Type,   // type (for type aliases)
     Struct, // struct

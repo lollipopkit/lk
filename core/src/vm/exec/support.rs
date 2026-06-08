@@ -332,6 +332,8 @@ pub(super) fn heap_kind(value: &HeapValue) -> &'static str {
         HeapValue::Channel(_) => "Channel",
         HeapValue::Stream(_) => "Stream",
         HeapValue::StreamCursor(_) => "StreamCursor",
+        HeapValue::Slice(_) => "Slice",
+        HeapValue::Resource(resource) => resource.kind,
         HeapValue::Object(_) => "Object",
         HeapValue::UpvalCell(_) => "UpvalCell",
         HeapValue::ErrorVal(_) => "Error",

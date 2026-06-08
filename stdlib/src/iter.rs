@@ -1093,9 +1093,7 @@ mod tests {
             vec![RuntimeVal::Int(2), RuntimeVal::Int(4), RuntimeVal::Int(6)]
         );
         assert_eq!(
-            expect_return_list(&run(
-                "use iter; return iter.filter([1,2,3,4], fn(x) => x % 2 == 0);"
-            )?),
+            expect_return_list(&run("use iter; return iter.filter([1,2,3,4], fn(x) => x % 2 == 0);")?),
             vec![RuntimeVal::Int(2), RuntimeVal::Int(4)]
         );
         assert_eq!(

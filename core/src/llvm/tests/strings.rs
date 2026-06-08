@@ -919,27 +919,6 @@ fn llvm_backend_lowers_iter_flatten_mixed_arglist_without_shell() {
 }
 
 #[test]
-fn llvm_backend_lowers_io_stderr_to_fd_two_without_shell() {
-    let source = r#"
-        use io;
-        io.stderr_write("warn");
-        io.stderr_writeln("line");
-        io.stderr_flush();
-    "#;
-    let tokens = Tokenizer::tokenize(source).expect("tokens");
-    let program = StmtParser::new(&tokens).parse_program().expect("program");
-
-    let module =
-        Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["io"]).expect("compile module");
-    let module = ModuleArtifact::new(collect_program_imports(&program), &module).expect("artifact");
-    let artifact = compile_module_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
-
-    assert!(!artifact.module.ir.contains("@lk_module_json"));
-    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
-    assert!(artifact.module.ir.contains("call i64 @write(i32 2"));
-}
-
-#[test]
 fn llvm_backend_lowers_for_destructured_string_list_compare_without_shell() {
     let source = r#"
         fn assert(cond) { if (!cond) { panic("assertion failed"); } }

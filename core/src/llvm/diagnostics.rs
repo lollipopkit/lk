@@ -344,7 +344,7 @@ fn imported_global_names(imports: &[ImportStmt]) -> Vec<String> {
     let mut names = Vec::new();
     for import in imports {
         match import {
-            ImportStmt::Module { module } => names.push(module.clone()),
+            ImportStmt::Module { module } => names.push(crate::stmt::import::default_module_binding(module)),
             ImportStmt::File { path } => names.push(import_file_global_name(path)),
             ImportStmt::Items { items, .. } => {
                 for item in items {

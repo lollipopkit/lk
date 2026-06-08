@@ -34,6 +34,45 @@ pub struct StreamCursorValue {
     pub roots: Vec<RuntimeVal>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SliceKind {
+    List,
+    String,
+}
+
+#[derive(Debug, Clone)]
+pub struct SliceValue {
+    pub source: RuntimeVal,
+    pub kind: SliceKind,
+    pub start: usize,
+    pub len: usize,
+}
+
+#[derive(Clone)]
+pub struct ResourceValue {
+    pub kind: &'static str,
+    pub handle: Arc<std::sync::Mutex<ResourceHandle>>,
+}
+
+impl Debug for ResourceValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ResourceValue")
+            .field("kind", &self.kind)
+            .finish_non_exhaustive()
+    }
+}
+
+pub enum ResourceHandle {
+    File(std::fs::File),
+    Stdin,
+    Stdout,
+    Stderr,
+    TcpStream(std::net::TcpStream),
+    TcpListener(std::net::TcpListener),
+    UdpSocket(std::net::UdpSocket),
+    Closed,
+}
+
 #[derive(Debug, Clone, Default)]
 pub enum LiteralVal {
     /// AST inline short string literal.

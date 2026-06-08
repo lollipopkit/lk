@@ -1,11 +1,13 @@
 // TCP networking demo
 // Shows basic connect/write/read/close pattern
 
-use tcp;
+use net/socket;
+use net/tcp;
 
 // 1. Connect to a remote server
-let conn = tcp.connect("example.com", 80);
-assert(conn > 0);
+let addr = socket.addr("example.com", 80);
+let conn = tcp.connect(addr);
+assert(conn != nil);
 
 // 2. Send an HTTP request
 let request = "GET / HTTP/1.0\r\nHost: example.com\r\n\r\n";

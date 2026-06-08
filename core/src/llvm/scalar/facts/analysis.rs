@@ -38,15 +38,6 @@ pub(in crate::llvm) fn native_builtin_return_kind_dynamic(
             | NativeBuiltin::DatetimeSub,
         ) => Some(NativeScalarKind::I64),
         NativeStraightlineValue::Builtin(NativeBuiltin::DatetimeFormat) => Some(NativeScalarKind::StrPtr),
-        NativeStraightlineValue::Builtin(
-            NativeBuiltin::IoStdoutWrite
-            | NativeBuiltin::IoStdoutWriteln
-            | NativeBuiltin::IoStderrWrite
-            | NativeBuiltin::IoStderrWriteln
-            | NativeBuiltin::IoStderrFlush
-            | NativeBuiltin::IoStdoutFlush,
-        ) => Some(NativeScalarKind::Nil),
-        NativeStraightlineValue::Builtin(NativeBuiltin::IoRead) => Some(NativeScalarKind::StrPtr),
         NativeStraightlineValue::Builtin(NativeBuiltin::IterRange)
             if arg_count == 1 || arg_count == 2 || arg_count == 3 =>
         {
@@ -74,11 +65,6 @@ pub(in crate::llvm) fn native_builtin_return_kind_dynamic(
         NativeStraightlineValue::Builtin(NativeBuiltin::TimeNow) if arg_count == 0 => Some(NativeScalarKind::I64),
         NativeStraightlineValue::Builtin(NativeBuiltin::TimeSleep) if arg_count == 1 => Some(NativeScalarKind::Nil),
         NativeStraightlineValue::Builtin(NativeBuiltin::TimeSince) if arg_count == 2 => Some(NativeScalarKind::I64),
-        NativeStraightlineValue::Builtin(NativeBuiltin::TcpConnect | NativeBuiltin::TcpWrite) => {
-            Some(NativeScalarKind::I64)
-        }
-        NativeStraightlineValue::Builtin(NativeBuiltin::TcpRead) => Some(NativeScalarKind::StrPtr),
-        NativeStraightlineValue::Builtin(NativeBuiltin::TcpClose) => Some(NativeScalarKind::Bool),
         NativeStraightlineValue::Builtin(NativeBuiltin::StreamFromList | NativeBuiltin::StreamCollect) => {
             Some(NativeScalarKind::I64)
         }
@@ -190,25 +176,11 @@ pub(in crate::llvm) fn native_builtin_return_kind(
         ) => Some(NativeScalarKind::I64),
         NativeStraightlineValue::Builtin(NativeBuiltin::DatetimeFormat) => Some(NativeScalarKind::StrPtr),
         NativeStraightlineValue::Builtin(
-            NativeBuiltin::IoStdoutWrite
-            | NativeBuiltin::IoStdoutWriteln
-            | NativeBuiltin::IoStderrWrite
-            | NativeBuiltin::IoStderrWriteln
-            | NativeBuiltin::IoStderrFlush
-            | NativeBuiltin::IoStdoutFlush,
-        ) => Some(NativeScalarKind::Nil),
-        NativeStraightlineValue::Builtin(NativeBuiltin::IoRead) => Some(NativeScalarKind::StrPtr),
-        NativeStraightlineValue::Builtin(
             NativeBuiltin::JsonParse | NativeBuiltin::TomlParse | NativeBuiltin::YamlParse,
         ) if args.len() == 1 => Some(NativeScalarKind::I64),
         NativeStraightlineValue::Builtin(NativeBuiltin::TimeNow) if args.is_empty() => Some(NativeScalarKind::I64),
         NativeStraightlineValue::Builtin(NativeBuiltin::TimeSleep) if args.len() == 1 => Some(NativeScalarKind::Nil),
         NativeStraightlineValue::Builtin(NativeBuiltin::TimeSince) if args.len() == 2 => Some(NativeScalarKind::I64),
-        NativeStraightlineValue::Builtin(NativeBuiltin::TcpConnect | NativeBuiltin::TcpWrite) => {
-            Some(NativeScalarKind::I64)
-        }
-        NativeStraightlineValue::Builtin(NativeBuiltin::TcpRead) => Some(NativeScalarKind::StrPtr),
-        NativeStraightlineValue::Builtin(NativeBuiltin::TcpClose) => Some(NativeScalarKind::Bool),
         NativeStraightlineValue::Builtin(NativeBuiltin::StreamFromList | NativeBuiltin::StreamCollect) => {
             Some(NativeScalarKind::I64)
         }
