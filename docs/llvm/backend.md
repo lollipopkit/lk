@@ -37,11 +37,11 @@ For that covered subset,
 Native `print` / `println` lowering covers static formatted calls with multiple
 `{}` placeholders when the argument values remain statically represented by the
 block compiler.
-Native stdlib lowering includes static OS string helpers for
-`os.hostname()`, `os.arch()`, `os.os()`, `os.dir_current()`, `os.dir_temp()`,
-`os.dir_list(path)`, plus `os.env.get(name[, default])`, `os.clock()`, and
-`os.epoch()`. These are lowered directly as native constants or C runtime calls
-for the currently covered scalar/string shapes.
+Native stdlib lowering includes static OS string helpers for `os.hostname()`,
+`os.arch()`, `os.os()`, plus `os.clock()` and `os.epoch()`. Filesystem,
+environment, and process APIs now live in `fs`, `env`, `path`, and `process`;
+LLVM coverage for those modules should be added as typed native helpers instead
+of routing through the VM runtime.
 Static direct-call folding may also recover immutable heap-const list arguments
 inside the same basic block, which covers statically bounded recursive list
 methods such as `xs.skip(1)` without lowering through the VM runtime.

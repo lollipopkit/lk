@@ -1,8 +1,7 @@
 // YAML and TOML parsing demo
 // Note: these modules parse strings into LK maps
 
-use yaml;
-use toml;
+use { yaml, toml } from encoding;
 
 // 1. Parse a simple YAML document
 let yml = "name: LK\nversion: 2\nstable: true\n";

@@ -7,19 +7,26 @@ members = [
     "stdlib/crates/bytes",
     "stdlib/crates/chan",
     "stdlib/crates/datetime",
+    "stdlib/crates/encoding",
+    "stdlib/crates/env",
+    "stdlib/crates/fs",
+    "stdlib/crates/hash",
+    "stdlib/crates/http",
     "stdlib/crates/io",
     "stdlib/crates/iter",
-    "stdlib/crates/json",
     "stdlib/crates/math",
     "stdlib/crates/net",
     "stdlib/crates/os",
+    "stdlib/crates/path",
+    "stdlib/crates/process",
+    "stdlib/crates/random",
+    "stdlib/crates/regex",
     "stdlib/crates/slice",
     "stdlib/crates/stream",
     "stdlib/crates/string",
     "stdlib/crates/task",
     "stdlib/crates/time",
-    "stdlib/crates/toml",
-    "stdlib/crates/yaml",
+    "stdlib/crates/uuid",
     "lkrt",
     "lsp",
     "tree-sitter-lk",
@@ -40,9 +47,16 @@ serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 serde_yaml = "0"
 toml = "1"
+base64 = "0.22"
+crc32fast = "1"
+hex = "0.4"
 once_cell = "1"
 chrono = "0"
 sanitize-filename = "0"
+rand = "0.9"
+regex = "1"
+sha1 = "0.10"
+sha2 = "0.10"
 tokio = { version = "1", features = [
     "rt-multi-thread",
     "macros",
@@ -57,6 +71,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tempfile = "3"
 llvm-tools = "0.1"
 arcstr = { version = "1", features = ["serde"] }
+ureq = "2"
+url = "2"
+uuid = { version = "1", features = ["v4"] }
 
 [profile.release]
 panic = "abort"

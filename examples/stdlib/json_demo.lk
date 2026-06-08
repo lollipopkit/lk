@@ -1,6 +1,6 @@
 // JSON parse demo
 
-use json;
+use { json } from encoding;
 
 // 1. Parse a JSON object
 let raw = "{ \"name\": \"Alice\", \"age\": 30, \"active\": true }";
