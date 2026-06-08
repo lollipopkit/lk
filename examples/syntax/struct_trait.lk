@@ -1,9 +1,5 @@
 // Struct, Trait, and impl demo
 
-fn assert(cond) {
-  if (!cond) { panic("assertion failed"); }
-}
-
 // 1. Define structs
 struct Point { x: Int, y: Int }
 struct Rect { w: Int, h: Int }

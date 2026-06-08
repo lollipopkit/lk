@@ -4,10 +4,6 @@
 use yaml;
 use toml;
 
-fn assert(cond) {
-  if (!cond) { panic("assertion failed"); }
-}
-
 // 1. Parse a simple YAML document
 let yml = "name: LK\nversion: 2\nstable: true\n";
 let yml_data = yaml.parse(yml);

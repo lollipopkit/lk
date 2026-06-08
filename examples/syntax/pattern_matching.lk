@@ -1,9 +1,5 @@
 // Pattern matching with if let / while let / let destructuring
 
-fn assert(cond) {
-  if (!cond) { panic("assertion failed"); }
-}
-
 // 1. let with simple list destructuring
 let [a, b] = [10, 20];
 assert(a == 10);

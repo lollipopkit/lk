@@ -2,71 +2,70 @@ use math;
 use alg;
 use collections;
 use func;
-use assert_;
 use string;
 use list;
 use os;
 
 // Math new features
-assert_.assert(math.hypot(3.0, 4.0) > 4.99);
-assert_.assert(math.hypot(3.0, 4.0) < 5.01);
-assert_.assert(math.cbrt(27.0) > 2.99);
-assert_.assert(math.cbrt(27.0) < 3.01);
-assert_.assert(math.sign(-42) == -1);
-assert_.assert(math.is_nan(math.nan));
-assert_.assert(!math.is_nan(1.0));
+assert(math.hypot(3.0, 4.0) > 4.99);
+assert(math.hypot(3.0, 4.0) < 5.01);
+assert(math.cbrt(27.0) > 2.99);
+assert(math.cbrt(27.0) < 3.01);
+assert(math.sign(-42) == -1);
+assert(math.is_nan(math.nan));
+assert(!math.is_nan(1.0));
 
 // List new features
 let xs = [3, 1, 4, 1, 5, 9, 2, 6];
-assert_.assert_eq(xs.sort(), [1, 1, 2, 3, 4, 5, 6, 9]);
-assert_.assert_eq([1, 2, 3].reverse(), [3, 2, 1]);
-assert_.assert([1, 2, 3].contains(2));
-assert_.assert(![1, 2, 3].contains(4));
-assert_.assert([1, 2, 3].is_empty() == false);
-assert_.assert([].is_empty());
+assert_eq(xs.sort(), [1, 1, 2, 3, 4, 5, 6, 9]);
+assert_eq([1, 2, 3].reverse(), [3, 2, 1]);
+assert([1, 2, 3].contains(2));
+assert(![1, 2, 3].contains(4));
+assert([1, 2, 3].is_empty() == false);
+assert([].is_empty());
 
 // String new features
-assert_.assert(string.strip_prefix("hello world", "hello ") == "world");
-assert_.assert(string.strip_suffix("hello.txt", ".txt") == "hello");
-assert_.assert_eq(string.count("abcabc", "abc"), 2);
-assert_.assert(string.capitalize("hello world") == "Hello world");
-assert_.assert(string.title("hello world") == "Hello World");
+assert(string.strip_prefix("hello world", "hello ") == "world");
+assert(string.strip_suffix("hello.txt", ".txt") == "hello");
+assert_eq(string.count("abcabc", "abc"), 2);
+assert(string.capitalize("hello world") == "Hello world");
+assert(string.title("hello world") == "Hello World");
 
 // OS new features
-assert_.assert(os.file_exists("/tmp"));
-assert_.assert(os.path_sep() != "");
+assert(os.file_exists("/tmp"));
+assert(os.path_sep() != "");
 
 // alg module
-assert_.assert_eq(alg.gcd(12, 8), 4);
-assert_.assert_eq(alg.lcm(4, 6), 12);
-assert_.assert(alg.is_prime(7));
-assert_.assert(!alg.is_prime(4));
-assert_.assert_eq(alg.fib(10), 55);
-assert_.assert_eq(alg.factorial(5), 120);
-assert_.assert_eq(alg.comb(10, 3), 120);
+assert_eq(alg.gcd(12, 8), 4);
+assert_eq(alg.lcm(4, 6), 12);
+assert(alg.is_prime(7));
+assert(!alg.is_prime(4));
+assert_eq(alg.fib(10), 55);
+assert_eq(alg.factorial(5), 120);
+assert_eq(alg.comb(10, 3), 120);
 
 // collections - stack
 let s = collections.stack();
 s = collections.stack_push(s, 1);
 s = collections.stack_push(s, 2);
 s = collections.stack_push(s, 3);
-assert_.assert_eq(collections.stack_peek(s), 3);
-assert_.assert_eq(collections.stack_len(s), 3);
+assert_eq(collections.stack_peek(s), 3);
+assert_eq(collections.stack_len(s), 3);
 
 // collections - set
 let my_set = collections.set();
 my_set = collections.set_add(my_set, "a");
 my_set = collections.set_add(my_set, "b");
 my_set = collections.set_add(my_set, "a"); // duplicate
-assert_.assert(collections.set_has(my_set, "a"));
-assert_.assert_eq(collections.set_len(my_set), 2);
+assert(collections.set_has(my_set, "a"));
+assert_eq(collections.set_len(my_set), 2);
 
 // func module
 let add = |a, b| a + b;
 let add3 = func.curry2(add)(3);
-assert_.assert_eq(add3(4), 7);
+assert_eq(add3(4), 7);
 let double = func.compose(|x| x * 2, |x| x + 1);
-assert_.assert_eq(double(3), 8);  // (3+1)*2 = 8
-assert_.assert_eq(func.id(42), 42);
+assert_eq(double(3), 8);  // (3+1)*2 = 8
+assert_eq(func.id(42), 42);
 
 println("stdlib comprehensive test: all assertions passed");

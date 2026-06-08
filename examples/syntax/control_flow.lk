@@ -1,9 +1,5 @@
 // Control flow demo: if, while, for, break, continue
 
-fn assert(cond) {
-  if (!cond) { panic("assertion failed"); }
-}
-
 // 1. If / else
 let x = 10;
 if (x > 5) {

@@ -1,9 +1,5 @@
 // String operations demo
 
-fn assert(cond) {
-  if (!cond) { panic("assertion failed"); }
-}
-
 // 1. Length and emptiness
 assert("hello".len() == 5);
 assert("".is_empty());

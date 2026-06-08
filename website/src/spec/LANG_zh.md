@@ -213,11 +213,11 @@ use "d/d1";    // c/d/d1.lk，导出名为 d1
 - 包管理命令和清单示例见 `docs/packages.md`。可运行的 workspace 示例见 `examples/lk-example-workspace`。
 
 ## 内置与标准库
-- 全局内置：`print(fmt, ...args)`、`println(fmt, ...args)`、`panic([msg])`、`typeof(value)`。
+- 全局内置：`print(fmt, ...args)`、`println(fmt, ...args)`、`panic([msg])`、`assert(cond[, msg])`、`assert_eq(actual, expected[, msg])`、`assert_ne(actual, expected[, msg])`、`typeof(value)`。
 - `typeof(value)` 返回运行时类型名字符串：`"Int"`、`"Float"`、`"String"`、`"Bool"`、`"Nil"`、`"List"`、`"Map"` 或结构体类型名。
 
 ### 标准库模块
-按需导入：`math`、`string`、`list`、`map`、`iter`、`stream`、`datetime`、`os`、`io`、`json`、`yaml`、`toml`、`tcp`。LK 源码模块：`alg`、`collections`、`func`、`assert`、`math_ext`。启用 `concurrency` 后支持：`task`、`chan`、`time`。
+按需导入：`math`、`string`、`list`、`map`、`iter`、`stream`、`datetime`、`os`、`io`、`json`、`yaml`、`toml`、`tcp`。LK 源码模块：`alg`、`collections`、`func`、`math_ext`。启用 `concurrency` 后支持：`task`、`chan`、`time`。
 
 - `math`：常量 `pi`、`e`、`inf`、`nan`、`max_int`、`min_int`、`max_float`、`epsilon`；函数 `abs`、`sqrt`、`floor`、`ceil`、`round`、`min`、`max`、`pow`、`exp`、`sin`、`cos`、`tan`、`asin`、`acos`、`atan`、`atan2`、`log`、`log10`、`log2`、`clamp`、`random`、`hypot`、`cbrt`、`sinh`、`cosh`、`tanh`、`trunc`、`fract`、`sign`、`to_int`、`to_float`、`is_nan`、`is_inf`。
 - `string`：方法（见下方元方法）。
@@ -240,7 +240,6 @@ use "d/d1";    // c/d/d1.lk，导出名为 d1
 - `alg`：排序（`insertion_sort`、`merge_sort`、`quick_sort`）、搜索（`binary_search`、`linear_search`、`bisect`）、经典算法（`gcd`、`lcm`、`is_prime`、`sieve`、`fib`、`factorial`、`comb`、`pow_int`）、字符串算法（`kmp_search`、`kmp_table`）、`shuffle`、`bisect`。
 - `collections`：`stack`/`stack_push`/`stack_pop`/`stack_peek`/`stack_is_empty`/`stack_len`、`queue`/`queue_push`/`queue_pop`/`queue_peek`/`queue_is_empty`/`queue_len`、`set`/`set_add`/`set_remove`/`set_has`/`set_values`/`set_len`/`set_union`/`set_intersection`/`set_difference`/`set_symmetric_difference`、`heap`/`heap_push`/`heap_pop`/`heap_peek`/`heap_len`/`heap_is_empty`、`deque`/`deque_push_front`/`deque_push_back`/`deque_pop_front`/`deque_pop_back`/`deque_peek_front`/`deque_peek_back`/`deque_len`/`deque_is_empty`。
 - `func`：`compose`、`pipe`、`compose_all`、`pipe_all`、`curry2`、`curry3`、`partial1`、`partial2`、`id`、`constant`、`complement`、`both`、`either`、`iterate`、`unfold`、`scan`、`group_by`、`count_by`、`partition`、`flat_map`、`zip_with`、`memoize`、`tap`。
-- `assert`：`assert(cond, msg?)`、`assert_eq(actual, expected, msg?)`、`assert_ne(actual, expected, msg?)`、`assert_nil(value, msg?)`、`assert_not_nil(value, msg?)`、`assert_approx(actual, expected, epsilon?, msg?)`、`assert_false(cond, msg?)`。
 - `math_ext`：`ext_gcd`、`pow_mod`、`mod_inverse`、`totient`、`divisor_count`、`divisor_sum`、`perm`、`collatz_len`、`triangular`、`pentagonal`、`hexagonal`、`is_perfect`、`catalan`、`sign`、`clamp`、`lerp`、`inverse_lerp`、`map_range`。从 `alg` 重新导出 `gcd`、`lcm`、`is_prime`、`factorial`、`comb`。
 
 ### 元方法（可直接通过 `value.method()` 使用，无需导入）

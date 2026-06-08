@@ -2,10 +2,6 @@
 
 use json;
 
-fn assert(cond) {
-  if (!cond) { panic("assertion failed"); }
-}
-
 // 1. Parse a JSON object
 let raw = "{ \"name\": \"Alice\", \"age\": 30, \"active\": true }";
 let data = json.parse(raw);

@@ -212,11 +212,11 @@ use "d/d1";    // c/d/d1.lk, available as d1
 - See `docs/packages.md` for package manager commands and manifest examples. The runnable workspace example lives in `examples/lk-example-workspace`.
 
 ## Builtins and Stdlib
-- Builtin globals: `print(fmt, ...args)`, `println(fmt, ...args)`, `panic([msg])`, `typeof(value)`.
+- Builtin globals: `print(fmt, ...args)`, `println(fmt, ...args)`, `panic([msg])`, `assert(cond[, msg])`, `assert_eq(actual, expected[, msg])`, `assert_ne(actual, expected[, msg])`, `typeof(value)`.
 - `typeof(value)` returns the runtime type name as a string: `"Int"`, `"Float"`, `"String"`, `"Bool"`, `"Nil"`, `"List"`, `"Map"`, or the struct type name.
 
 ### Stdlib Modules
-Use as needed: `math`, `string`, `list`, `map`, `iter`, `stream`, `datetime`, `os`, `io`, `json`, `yaml`, `toml`, `tcp`. LK-source modules: `alg`, `collections`, `func`, `assert`, `math_ext`. With `concurrency` feature: `task`, `chan`, `time`.
+Use as needed: `math`, `string`, `list`, `map`, `iter`, `stream`, `datetime`, `os`, `io`, `json`, `yaml`, `toml`, `tcp`. LK-source modules: `alg`, `collections`, `func`, `math_ext`. With `concurrency` feature: `task`, `chan`, `time`.
 
 - `math`: constants `pi`, `e`, `inf`, `nan`, `max_int`, `min_int`, `max_float`, `epsilon`; functions `abs`, `sqrt`, `floor`, `ceil`, `round`, `min`, `max`, `pow`, `exp`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `log`, `log10`, `log2`, `clamp`, `random`, `hypot`, `cbrt`, `sinh`, `cosh`, `tanh`, `trunc`, `fract`, `sign`, `to_int`, `to_float`, `is_nan`, `is_inf`.
 - `string`: methods (see meta-methods below).
@@ -239,7 +239,6 @@ These modules are written in LK itself and complement the Rust-native modules wi
 - `alg`: Sorting (`insertion_sort`, `merge_sort`, `quick_sort`), searching (`binary_search`, `linear_search`, `bisect`), classic algorithms (`gcd`, `lcm`, `is_prime`, `sieve`, `fib`, `factorial`, `comb`, `pow_int`), string algorithms (`kmp_search`, `kmp_table`), `shuffle`, `bisect`.
 - `collections`: `stack`/`stack_push`/`stack_pop`/`stack_peek`/`stack_is_empty`/`stack_len`, `queue`/`queue_push`/`queue_pop`/`queue_peek`/`queue_is_empty`/`queue_len`, `set`/`set_add`/`set_remove`/`set_has`/`set_values`/`set_len`/`set_union`/`set_intersection`/`set_difference`/`set_symmetric_difference`, `heap`/`heap_push`/`heap_pop`/`heap_peek`/`heap_len`/`heap_is_empty`, `deque`/`deque_push_front`/`deque_push_back`/`deque_pop_front`/`deque_pop_back`/`deque_peek_front`/`deque_peek_back`/`deque_len`/`deque_is_empty`.
 - `func`: `compose`, `pipe`, `compose_all`, `pipe_all`, `curry2`, `curry3`, `partial1`, `partial2`, `id`, `constant`, `complement`, `both`, `either`, `iterate`, `unfold`, `scan`, `group_by`, `count_by`, `partition`, `flat_map`, `zip_with`, `memoize`, `tap`.
-- `assert`: `assert(cond, msg?)`, `assert_eq(actual, expected, msg?)`, `assert_ne(actual, expected, msg?)`, `assert_nil(value, msg?)`, `assert_not_nil(value, msg?)`, `assert_approx(actual, expected, epsilon?, msg?)`, `assert_false(cond, msg?)`.
 - `math_ext`: `ext_gcd`, `pow_mod`, `mod_inverse`, `totient`, `divisor_count`, `divisor_sum`, `perm`, `collatz_len`, `triangular`, `pentagonal`, `hexagonal`, `is_perfect`, `catalan`, `sign`, `clamp`, `lerp`, `inverse_lerp`, `map_range`. Re-exports `gcd`, `lcm`, `is_prime`, `factorial`, `comb` from `alg`.
 
 ### Meta-methods (usable as `value.method()` without importing)

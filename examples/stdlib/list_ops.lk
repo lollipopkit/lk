@@ -1,9 +1,5 @@
 // List operations deep dive
 
-fn assert(cond) {
-  if (!cond) { panic("assertion failed"); }
-}
-
 // 1. Creation and indexing
 let xs = [10, 20, 30, 40, 50];
 assert(xs[0] == 10);

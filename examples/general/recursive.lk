@@ -1,9 +1,5 @@
 // Recursive function demo
 
-fn assert(cond) {
-  if (!cond) { panic("assertion failed"); }
-}
-
 // 1. Classic recursive factorial
 fn factorial(n) {
   if (n <= 1) { return 1; }

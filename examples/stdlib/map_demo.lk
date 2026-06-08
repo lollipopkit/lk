@@ -1,9 +1,5 @@
 // Map operations demo
 
-fn assert(cond) {
-  if (!cond) { panic("assertion failed"); }
-}
-
 // 1. Map creation and access — keys must be quoted strings in map literals
 let person = { "name": "Alice", "age": 30, "active": true };
 assert(person.name == "Alice");

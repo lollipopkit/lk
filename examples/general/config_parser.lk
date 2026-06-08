@@ -4,10 +4,6 @@ use json;
 use yaml;
 use toml;
 
-fn assert(cond) {
-  if (!cond) { panic("assertion failed"); }
-}
-
 // Simulate reading different config file formats
 
 // 1. JSON config

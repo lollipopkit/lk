@@ -1,9 +1,5 @@
 // Sorting and searching algorithms demo
 
-fn assert(cond) {
-  if (!cond) { panic("assertion failed"); }
-}
-
 // 1. Insertion sort (using reduce to avoid if-block scoping issues)
 fn insert_sorted(sorted, item) {
   let i = 0;

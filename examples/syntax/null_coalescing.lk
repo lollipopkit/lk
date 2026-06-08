@@ -1,9 +1,5 @@
 // Nullish coalescing and null-safety patterns demo
 
-fn assert(cond) {
-  if (!cond) { panic("assertion failed"); }
-}
-
 // 1. ?? (nullish coalescing) — returns left if non-nil, else right
 let a = nil;
 let b = a ?? "default";

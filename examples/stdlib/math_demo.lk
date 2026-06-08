@@ -2,10 +2,6 @@
 
 use math;
 
-fn assert(cond) {
-  if (!cond) { panic("assertion failed"); }
-}
-
 // 1. Constants
 assert(math.pi > 3.14);
 assert(math.e > 2.71);

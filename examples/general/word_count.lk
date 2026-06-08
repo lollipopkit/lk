@@ -1,9 +1,5 @@
 // Word frequency counter — a practical text processing example
 
-fn assert(cond) {
-  if (!cond) { panic("assertion failed"); }
-}
-
 // Input text
 let text = "the quick brown fox jumps over the lazy dog the fox was quick";
 

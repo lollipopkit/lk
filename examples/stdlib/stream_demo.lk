@@ -3,10 +3,6 @@
 
 use stream;
 
-fn assert(cond) {
-  if (!cond) { panic("assertion failed"); }
-}
-
 // 1. Create a stream from a list
 let s1 = stream.from_list([10, 20, 30, 40, 50]);
 let collected1 = stream.collect(s1);

@@ -1,12 +1,5 @@
 // Error handling patterns in LK
 // LK uses nil to signal absence and ?? for defaults
-// Note: avoid assert(cond); — the named-arg call can corrupt
-// subsequent function returns in the same file (known VM bug).
-// Use simple assert(cond) instead.
-
-fn assert(cond) {
-  if (!cond) { panic("assertion failed"); }
-}
 
 // 1. Return nil on failure
 fn safe_divide(a, b) {

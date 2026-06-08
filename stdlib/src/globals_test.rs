@@ -5,30 +5,31 @@ mod tests {
     use anyhow::Result;
     use lk_core::{
         module, stmt,
+        stmt::import::ModuleResolver,
         stmt::stmt_parser::StmtParser,
         token::Tokenizer,
         val::{CallableValue, HeapValue, RuntimeVal, TypedList},
         vm::{self, NativeFunction},
     };
 
-    #[test]
-    fn test_global_printf_and_panic_available() -> Result<()> {
-        // Program uses print/println (globals) and returns a value
-        let source = "print(\"hello {}\", 1); println(\" world\"); return 42;";
+    fn execute_with_stdlib_globals(source: &str) -> Result<lk_core::vm::ProgramResult> {
         let tokens = Tokenizer::tokenize(source)?;
         let mut parser = StmtParser::new(&tokens);
         let program = parser.parse_program()?;
 
-        // Create registry, register modules + globals
         let mut registry = module::ModuleRegistry::new();
         crate::register_stdlib_modules(&mut registry)?;
         crate::register_stdlib_globals(&mut registry);
 
-        // Create environment with this registry
         let resolver = Arc::new(stmt::ModuleResolver::with_registry(registry));
         let mut env = vm::VmContext::new().with_resolver(resolver);
+        program.execute_with_ctx(&mut env)
+    }
 
-        let result = program.execute_with_ctx(&mut env)?;
+    #[test]
+    fn test_global_printf_and_panic_available() -> Result<()> {
+        // Program uses print/println (globals) and returns a value
+        let result = execute_with_stdlib_globals("print(\"hello {}\", 1); println(\" world\"); return 42;")?;
         assert_eq!(result.first_return(), &RuntimeVal::Int(42));
         Ok(())
     }
@@ -64,6 +65,9 @@ mod tests {
             "print",
             "println",
             "panic",
+            "assert",
+            "assert_eq",
+            "assert_ne",
             "spawn",
             "chan",
             "send",
@@ -81,12 +85,99 @@ mod tests {
             else {
                 panic!("{name} should use RuntimeNative");
             };
-            if matches!(name, "print" | "println" | "panic") {
+            if matches!(
+                name,
+                "print" | "println" | "panic" | "assert" | "assert_eq" | "assert_ne"
+            ) {
                 assert!(matches!(function, NativeFunction::FullState(_)));
             } else {
                 assert!(matches!(function, NativeFunction::Plain(_)));
             }
         }
+    }
+
+    #[test]
+    fn test_global_assertions_execute_without_use() -> Result<()> {
+        let source = r#"
+            assert(true);
+            assert(1);
+            assert("ok");
+            assert_eq(1, 1.0);
+            assert_eq(["a", 2], ["a", 2.0]);
+            assert_eq({"a": 1, "b": ["x"]}, {"b": ["x"], "a": 1.0});
+            assert_ne(1, 2);
+            return 42;
+        "#;
+        let result = execute_with_stdlib_globals(source)?;
+        assert_eq!(result.first_return(), &RuntimeVal::Int(42));
+        Ok(())
+    }
+
+    #[test]
+    fn test_global_assertions_panic_on_failure() {
+        for (source, expected) in [
+            ("assert(false);", "assertion failed"),
+            ("assert(nil, \"missing\");", "assertion failed: missing"),
+            ("assert_eq(1, 2);", "assertion failed: expected 2, got 1"),
+            (
+                "assert_eq(1, 2, \"math broke\");",
+                "assertion failed: expected 2, got 1 - math broke",
+            ),
+            ("assert_ne(1, 1);", "assertion failed: values should not be equal"),
+            (
+                "assert_ne(1, 1, \"duplicate\");",
+                "assertion failed: values should not be equal - duplicate",
+            ),
+        ] {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                execute_with_stdlib_globals(source).expect("program should panic during execution");
+            }));
+            let payload = result.expect_err("expected assertion panic");
+            let message = if let Some(message) = payload.downcast_ref::<String>() {
+                message.as_str()
+            } else if let Some(message) = payload.downcast_ref::<&str>() {
+                message
+            } else {
+                ""
+            };
+            assert!(
+                message.contains(expected),
+                "panic for source `{source}` should contain `{expected}`, got `{message}`"
+            );
+        }
+    }
+
+    #[test]
+    fn test_global_assertions_reject_bad_arity_and_named_args() {
+        for (source, expected) in [
+            ("assert();", "assert() expects 1 or 2 arguments"),
+            ("assert(true, \"ok\", \"extra\");", "assert() expects 1 or 2 arguments"),
+            ("assert_eq(1);", "assert_eq() expects 2 or 3 arguments"),
+            (
+                "assert_eq(1, 1, \"ok\", \"extra\");",
+                "assert_eq() expects 2 or 3 arguments",
+            ),
+            ("assert_ne(1);", "assert_ne() expects 2 or 3 arguments"),
+            (
+                "assert(cond: true);",
+                "Compiler missing named-call signature for `assert`",
+            ),
+        ] {
+            let err = execute_with_stdlib_globals(source).expect_err("expected assertion argument error");
+            assert!(
+                err.to_string().contains(expected),
+                "error for source `{source}` should contain `{expected}`, got `{err}`"
+            );
+        }
+    }
+
+    #[test]
+    fn test_assert_lk_modules_are_not_registered() {
+        let mut resolver = ModuleResolver::new();
+        crate::register_stdlib_lk_modules(&mut resolver).expect("register lk stdlib modules");
+
+        assert!(resolver.resolve_runtime_module("assert").is_err());
+        assert!(resolver.resolve_runtime_module("assert_").is_err());
     }
 
     #[test]

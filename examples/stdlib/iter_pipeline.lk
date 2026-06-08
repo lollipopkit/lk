@@ -2,10 +2,6 @@
 
 use iter;
 
-fn assert(cond) {
-  if (!cond) { panic("assertion failed"); }
-}
-
 // 1. iter.range — generate number sequences
 let r1 = iter.range(5);        // [0,1,2,3,4]
 assert(r1 == [0, 1, 2, 3, 4]);

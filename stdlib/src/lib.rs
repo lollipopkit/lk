@@ -38,7 +38,10 @@ use lk_core::{
     module::ModuleRegistry,
     rt::{self, RuntimePayload},
     val,
-    val::{CallableValue, ChannelValue, HeapRef, HeapStore, HeapValue, RuntimeVal, TaskValue, Type, TypedList},
+    val::{
+        CallableValue, ChannelValue, HeapRef, HeapStore, HeapValue, RuntimeMapKey, RuntimeVal, TaskValue, Type,
+        TypedList, TypedMap,
+    },
     vm::{
         NativeArgs, NativeEntry, NativeFunction, NativeRuntime, call_runtime_callable_runtime,
         call_runtime_value_runtime_with_receiver,
@@ -159,10 +162,16 @@ pub fn register_stdlib_module_time(registry: &mut ModuleRegistry) -> Result<()> 
 /// - print(fmt, ...args): print formatted text without newline; returns nil
 /// - println(fmt, ...args): print formatted text with newline; returns nil
 /// - panic([msg]): raise a runtime error with optional message and backtrace
+/// - assert(cond[, msg]): panic unless cond is truthy
+/// - assert_eq(actual, expected[, msg]): panic unless values are equal
+/// - assert_ne(actual, expected[, msg]): panic unless values are not equal
 pub fn register_stdlib_core_globals(registry: &mut ModuleRegistry) {
     register_runtime_builtin_full_state(registry, "print", print, NativeEntry::VARIADIC);
     register_runtime_builtin_full_state(registry, "println", println, NativeEntry::VARIADIC);
     register_runtime_builtin_full_state(registry, "panic", panic, NativeEntry::VARIADIC);
+    register_runtime_builtin_full_state(registry, "assert", assert, NativeEntry::VARIADIC);
+    register_runtime_builtin_full_state(registry, "assert_eq", assert_eq, NativeEntry::VARIADIC);
+    register_runtime_builtin_full_state(registry, "assert_ne", assert_ne, NativeEntry::VARIADIC);
 }
 
 pub fn register_stdlib_concurrency_globals(registry: &mut ModuleRegistry) {
@@ -213,6 +222,75 @@ fn panic(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Runtim
     msg.push_str("\nBacktrace:\n");
     msg.push_str(&format!("{}", bt));
     panic!("{}", msg);
+}
+
+fn assert(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+    expect_assert_args(args, 1, 2, "assert")?;
+    let values = args.as_slice();
+    if assert_truthy(&values[0]) {
+        return Ok(RuntimeVal::Nil);
+    }
+    let message = if let Some(message) = values.get(1) {
+        format!("assertion failed: {}", runtime_display(message, runtime)?)
+    } else {
+        "assertion failed".to_string()
+    };
+    panic_runtime_message(message);
+}
+
+fn assert_eq(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+    expect_assert_args(args, 2, 3, "assert_eq")?;
+    let values = args.as_slice();
+    if runtime_values_equal(&values[0], &values[1], runtime.heap())? {
+        return Ok(RuntimeVal::Nil);
+    }
+    let actual = runtime_display(&values[0], runtime)?;
+    let expected = runtime_display(&values[1], runtime)?;
+    let mut message = format!("assertion failed: expected {expected}, got {actual}");
+    if let Some(extra) = values.get(2) {
+        message.push_str(" - ");
+        message.push_str(&runtime_display(extra, runtime)?);
+    }
+    panic_runtime_message(message);
+}
+
+fn assert_ne(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+    expect_assert_args(args, 2, 3, "assert_ne")?;
+    let values = args.as_slice();
+    if !runtime_values_equal(&values[0], &values[1], runtime.heap())? {
+        return Ok(RuntimeVal::Nil);
+    }
+    let mut message = "assertion failed: values should not be equal".to_string();
+    if let Some(extra) = values.get(2) {
+        message.push_str(" - ");
+        message.push_str(&runtime_display(extra, runtime)?);
+    }
+    panic_runtime_message(message);
+}
+
+fn expect_assert_args(args: NativeArgs<'_>, min: usize, max: usize, name: &str) -> Result<()> {
+    if args.has_named() {
+        return Err(anyhow!("{name}() does not accept named arguments"));
+    }
+    let len = args.len();
+    if (min..=max).contains(&len) {
+        Ok(())
+    } else if min == max {
+        Err(anyhow!("{name}() expects exactly {min} arguments"))
+    } else {
+        Err(anyhow!("{name}() expects {min} or {max} arguments"))
+    }
+}
+
+fn assert_truthy(value: &RuntimeVal) -> bool {
+    !matches!(value, RuntimeVal::Nil | RuntimeVal::Bool(false))
+}
+
+fn panic_runtime_message(mut message: String) -> ! {
+    let bt = std::backtrace::Backtrace::force_capture();
+    message.push_str("\nBacktrace:\n");
+    message.push_str(&format!("{}", bt));
+    panic!("{}", message);
 }
 
 fn spawn(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
@@ -440,6 +518,209 @@ fn runtime_display(value: &RuntimeVal, runtime: &mut NativeRuntime<'_>) -> Resul
         return Ok(value);
     }
     runtime_display_value(value, runtime.heap())
+}
+
+fn runtime_values_equal(left: &RuntimeVal, right: &RuntimeVal, heap: &HeapStore) -> Result<bool> {
+    Ok(match (left, right) {
+        (RuntimeVal::Nil, RuntimeVal::Nil) => true,
+        (RuntimeVal::Bool(left), RuntimeVal::Bool(right)) => left == right,
+        (RuntimeVal::Int(left), RuntimeVal::Int(right)) => left == right,
+        (RuntimeVal::Float(left), RuntimeVal::Float(right)) => left == right,
+        (RuntimeVal::Int(left), RuntimeVal::Float(right)) => *left as f64 == *right,
+        (RuntimeVal::Float(left), RuntimeVal::Int(right)) => *left == *right as f64,
+        (RuntimeVal::Obj(left), RuntimeVal::Obj(right)) if left == right => true,
+        (RuntimeVal::Obj(left), RuntimeVal::Obj(right)) => {
+            let left = heap
+                .get(*left)
+                .ok_or_else(|| anyhow!("heap object {} out of bounds", left.index()))?;
+            let right = heap
+                .get(*right)
+                .ok_or_else(|| anyhow!("heap object {} out of bounds", right.index()))?;
+            heap_values_equal(left, right, heap)?
+        }
+        _ => match (
+            runtime_value_to_string(left, heap)?,
+            runtime_value_to_string(right, heap)?,
+        ) {
+            (Some(left), Some(right)) => left == right,
+            _ => false,
+        },
+    })
+}
+
+fn heap_values_equal(left: &HeapValue, right: &HeapValue, heap: &HeapStore) -> Result<bool> {
+    Ok(match (left, right) {
+        (HeapValue::String(left), HeapValue::String(right)) => left == right,
+        (HeapValue::List(left), HeapValue::List(right)) => typed_lists_equal(left, right, heap)?,
+        (HeapValue::Map(left), HeapValue::Map(right)) => typed_maps_equal(left, right, heap)?,
+        _ => false,
+    })
+}
+
+fn runtime_value_to_string(value: &RuntimeVal, heap: &HeapStore) -> Result<Option<Arc<str>>> {
+    match value {
+        RuntimeVal::ShortStr(value) => Ok(Some(Arc::<str>::from(value.as_str()))),
+        RuntimeVal::Obj(handle) => match heap
+            .get(*handle)
+            .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
+        {
+            HeapValue::String(value) => Ok(Some(value.clone())),
+            _ => Ok(None),
+        },
+        _ => Ok(None),
+    }
+}
+
+fn typed_lists_equal(left: &TypedList, right: &TypedList, heap: &HeapStore) -> Result<bool> {
+    if left.len() != right.len() {
+        return Ok(false);
+    }
+    match (left, right) {
+        (TypedList::Int(left), TypedList::Int(right)) => return Ok(left == right),
+        (TypedList::Float(left), TypedList::Float(right)) => return Ok(left == right),
+        (TypedList::Bool(left), TypedList::Bool(right)) => return Ok(left == right),
+        (TypedList::String(left), TypedList::String(right)) => return Ok(left == right),
+        _ => {}
+    }
+    for index in 0..left.len() {
+        if !typed_list_items_equal(left, index, right, index, heap)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn typed_list_items_equal(
+    left: &TypedList,
+    left_index: usize,
+    right: &TypedList,
+    right_index: usize,
+    heap: &HeapStore,
+) -> Result<bool> {
+    match (left, right) {
+        (TypedList::Mixed(left), TypedList::Mixed(right)) => {
+            runtime_values_equal(&left[left_index], &right[right_index], heap)
+        }
+        (TypedList::Mixed(left), TypedList::String(right)) => {
+            runtime_value_equals_string(&left[left_index], &right[right_index], heap)
+        }
+        (TypedList::String(left), TypedList::Mixed(right)) => {
+            runtime_value_equals_string(&right[right_index], &left[left_index], heap)
+        }
+        (TypedList::Int(left), _) => {
+            typed_list_runtime_item_equal(RuntimeVal::Int(left[left_index]), right, right_index, heap)
+        }
+        (TypedList::Float(left), _) => {
+            typed_list_runtime_item_equal(RuntimeVal::Float(left[left_index]), right, right_index, heap)
+        }
+        (TypedList::Bool(left), _) => {
+            typed_list_runtime_item_equal(RuntimeVal::Bool(left[left_index]), right, right_index, heap)
+        }
+        (TypedList::String(left), _) => typed_list_string_item_equal(&left[left_index], right, right_index, heap),
+        (TypedList::Mixed(left), _) => {
+            typed_list_runtime_item_equal(left[left_index].clone(), right, right_index, heap)
+        }
+    }
+}
+
+fn typed_list_runtime_item_equal(
+    value: RuntimeVal,
+    right: &TypedList,
+    right_index: usize,
+    heap: &HeapStore,
+) -> Result<bool> {
+    match right {
+        TypedList::Mixed(right) => runtime_values_equal(&value, &right[right_index], heap),
+        TypedList::Int(right) => runtime_values_equal(&value, &RuntimeVal::Int(right[right_index]), heap),
+        TypedList::Float(right) => runtime_values_equal(&value, &RuntimeVal::Float(right[right_index]), heap),
+        TypedList::Bool(right) => runtime_values_equal(&value, &RuntimeVal::Bool(right[right_index]), heap),
+        TypedList::String(right) => runtime_value_equals_string(&value, &right[right_index], heap),
+    }
+}
+
+fn typed_list_string_item_equal(
+    left: &Arc<str>,
+    right: &TypedList,
+    right_index: usize,
+    heap: &HeapStore,
+) -> Result<bool> {
+    match right {
+        TypedList::Mixed(right) => runtime_value_equals_string(&right[right_index], left, heap),
+        TypedList::String(right) => Ok(left == &right[right_index]),
+        _ => Ok(false),
+    }
+}
+
+fn runtime_value_equals_string(value: &RuntimeVal, expected: &str, heap: &HeapStore) -> Result<bool> {
+    Ok(match value {
+        RuntimeVal::ShortStr(value) => value.as_str() == expected,
+        RuntimeVal::Obj(handle) => matches!(
+            heap.get(*handle)
+                .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?,
+            HeapValue::String(value) if value.as_ref() == expected
+        ),
+        _ => false,
+    })
+}
+
+fn typed_maps_equal(left: &TypedMap, right: &TypedMap, heap: &HeapStore) -> Result<bool> {
+    if left.len() != right.len() {
+        return Ok(false);
+    }
+    match left {
+        TypedMap::Mixed(entries) => {
+            for (key, value) in entries {
+                if !typed_map_value_equal(right, key, value, heap)? {
+                    return Ok(false);
+                }
+            }
+        }
+        TypedMap::StringMixed(entries) => {
+            for (key, value) in entries {
+                let key = RuntimeMapKey::String(key.clone());
+                if !typed_map_value_equal(right, &key, value, heap)? {
+                    return Ok(false);
+                }
+            }
+        }
+        TypedMap::StringInt(entries) => {
+            for (key, value) in entries {
+                let key = RuntimeMapKey::String(key.clone());
+                if !typed_map_value_equal(right, &key, &RuntimeVal::Int(*value), heap)? {
+                    return Ok(false);
+                }
+            }
+        }
+        TypedMap::StringFloat(entries) => {
+            for (key, value) in entries {
+                let key = RuntimeMapKey::String(key.clone());
+                if !typed_map_value_equal(right, &key, &RuntimeVal::Float(*value), heap)? {
+                    return Ok(false);
+                }
+            }
+        }
+        TypedMap::StringBool(entries) => {
+            for (key, value) in entries {
+                let key = RuntimeMapKey::String(key.clone());
+                if !typed_map_value_equal(right, &key, &RuntimeVal::Bool(*value), heap)? {
+                    return Ok(false);
+                }
+            }
+        }
+    }
+    Ok(true)
+}
+
+fn typed_map_value_equal(
+    right: &TypedMap,
+    key: &RuntimeMapKey,
+    left_value: &RuntimeVal,
+    heap: &HeapStore,
+) -> Result<bool> {
+    let Some(right_value) = right.get(key) else {
+        return Ok(false);
+    };
+    runtime_values_equal(left_value, &right_value, heap)
 }
 
 fn runtime_display_show(value: &RuntimeVal, runtime: &mut NativeRuntime<'_>) -> Result<Option<String>> {
@@ -689,8 +970,6 @@ pub fn stdlib_lk_modules() -> Vec<(&'static str, &'static str)> {
         ("alg", "alg"),
         ("collections", "collections"),
         ("func", "func"),
-        ("assert", "assert"),
-        ("assert_", "assert"),
         ("math_ext", "math_ext"),
     ]
 }

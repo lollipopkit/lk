@@ -2,10 +2,6 @@
 
 use io;
 
-fn assert(cond) {
-  if (!cond) { panic("assertion failed"); }
-}
-
 // 1. Write to stdout
 io.stdout_write("Hello via io.stdout.write\n");
 io.stdout_writeln("Writeln adds a trailing newline");

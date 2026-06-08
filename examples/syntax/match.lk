@@ -1,10 +1,6 @@
 // Match expression demo
 // Shows literal, wildcard, or-pattern, and bool matching
 
-fn assert(cond) {
-  if (!cond) { panic("assertion failed"); }
-}
-
 // 1. Literal patterns
 let grade = match "A" {
   "A" => "Excellent",

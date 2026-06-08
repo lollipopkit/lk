@@ -1,9 +1,5 @@
 // Operators and expressions demo
 
-fn assert(cond) {
-  if (!cond) { panic("assertion failed"); }
-}
-
 // 1. Arithmetic
 assert(2 + 3 == 5);
 assert(10 - 4 == 6);

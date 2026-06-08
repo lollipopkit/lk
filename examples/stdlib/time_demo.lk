@@ -2,10 +2,6 @@
 
 use time;
 
-fn assert(cond) {
-  if (!cond) { panic("assertion failed"); }
-}
-
 // 1. Get current time (milliseconds since epoch)
 let t1 = time.now();
 assert(t1 > 0);

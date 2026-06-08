@@ -1,9 +1,5 @@
 // For-loop with patterns demo
 
-fn assert(cond) {
-  if (!cond) { panic("assertion failed"); }
-}
-
 // 1. Simple variable binding
 let sum = 0;
 for x in [10, 20, 30] { sum += x; }

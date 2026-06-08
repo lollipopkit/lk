@@ -3,10 +3,6 @@
 
 use tcp;
 
-fn assert(cond) {
-  if (!cond) { panic("assertion failed"); }
-}
-
 // 1. Connect to a remote server
 let conn = tcp.connect("example.com", 80);
 assert(conn > 0);

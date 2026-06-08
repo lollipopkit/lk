@@ -3,10 +3,6 @@
 use datetime;
 use math;
 
-fn assert(cond) {
-  if (!cond) { panic("assertion failed"); }
-}
-
 // datetime.now() returns microseconds; most functions need integer seconds
 let now_us = datetime.now();
 let now_secs = math.floor(now_us / 1000000);

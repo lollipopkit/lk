@@ -2,10 +2,6 @@
 // Shows all use syntaxes: module, selective, alias, namespace, module alias
 // Run from project root: lk examples/syntax/use_forms.lk
 
-fn assert(cond) {
-  if (!cond) { panic("assertion failed"); }
-}
-
 // 1. Use stdlib module as namespace
 use math;
 assert(math.floor(3.7) == 3);

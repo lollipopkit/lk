@@ -1,9 +1,5 @@
 // Closure and higher-order function demo
 
-fn assert(cond) {
-  if (!cond) { panic("assertion failed"); }
-}
-
 // 1. Basic closures
 let double = |x| x * 2;
 let square = |x| x * x;
