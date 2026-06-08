@@ -77,8 +77,13 @@ fn has(args: NativeArgs<'_>, runtime: &mut lk_core::vm::NativeRuntime<'_>) -> Re
 fn vars(args: NativeArgs<'_>, runtime: &mut lk_core::vm::NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 0, "env.vars()")?;
     let mut map = fast_hash_map_new();
-    for (key, value) in std::env::vars() {
-        map.insert(Arc::<str>::from(key), runtime_string_value(&value, runtime.heap_mut()));
+    for (key, value) in std::env::vars_os() {
+        let key = key.to_string_lossy();
+        let value = value.to_string_lossy();
+        map.insert(
+            Arc::<str>::from(key.as_ref()),
+            runtime_string_value(&value, runtime.heap_mut()),
+        );
     }
     Ok(RuntimeVal::Obj(
         runtime.heap_mut().alloc(HeapValue::Map(TypedMap::StringMixed(map))),

@@ -31,7 +31,7 @@ assert(string.capitalize("hello world") == "Hello world");
 assert(string.title("hello world") == "Hello World");
 
 // OS new features
-assert(fs.exists("/tmp"));
+assert(fs.exists(fs.temp_dir()));
 assert(path.sep() != "");
 
 // Builtin Set

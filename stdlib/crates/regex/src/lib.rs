@@ -124,11 +124,17 @@ fn regex_text(args: NativeArgs<'_>, runtime: &NativeRuntime<'_>, name: &str) -> 
 
 fn cached_regex(value: &RuntimeVal, runtime: &NativeRuntime<'_>, context: &str) -> Result<regex::Regex> {
     let pattern = runtime_string_arg(value, runtime.heap(), context)?;
+    {
+        let cache = CACHE.lock().map_err(|_| anyhow!("regex cache lock poisoned"))?;
+        if let Some(regex) = cache.get(pattern.as_ref()) {
+            return Ok(regex.clone());
+        }
+    }
+    let regex = regex::Regex::new(pattern.as_ref()).map_err(|err| anyhow!("invalid regex: {err}"))?;
     let mut cache = CACHE.lock().map_err(|_| anyhow!("regex cache lock poisoned"))?;
     if let Some(regex) = cache.get(pattern.as_ref()) {
         return Ok(regex.clone());
     }
-    let regex = regex::Regex::new(pattern.as_ref()).map_err(|err| anyhow!("invalid regex: {err}"))?;
     if cache.len() >= 128 {
         cache.clear();
     }

@@ -17,7 +17,7 @@ assert(os_name != nil);
 
 // 2. Environment variables
 let path_val = env.get_or("PATH", "");
-assert(path_val != nil);
+assert(path_val != "");
 
 // env.set/unset disabled in VM runtime - skip
 

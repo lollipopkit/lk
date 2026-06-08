@@ -642,6 +642,25 @@ fn compiler_lowers_map_get_module_call_to_get_index() {
 }
 
 #[test]
+fn compiler_errors_on_map_get_missing_receiver_in_call() {
+    let program = parse_program(
+        r#"
+        fn id(value) {
+            return value;
+        }
+        return id(map.get("x"));
+        "#,
+    );
+    let err = Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["map"])
+        .expect_err("map.get missing receiver must not lower as method get");
+
+    assert!(
+        err.to_string().contains("map.get"),
+        "expected map.get arity error, got {err}"
+    );
+}
+
+#[test]
 fn compiler_lowers_map_get_method_call_to_get_index() {
     let program = parse_program(
         r#"

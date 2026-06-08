@@ -43,6 +43,9 @@ mod tests {
         let mut file = td.clone();
         file.push("data.txt");
         writeln!(File::create(&file)?, "hello")?;
+        let cleanup_dir = td.clone();
+        let file = file.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"");
+        let td = td.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"");
 
         let src = format!(
             r#"
@@ -62,8 +65,7 @@ mod tests {
             }}
             return fs.read_dir("{}");
             "#,
-            file.to_string_lossy(),
-            td.to_string_lossy()
+            file, td
         );
         let out = run(&src)?;
         let TypedList::String(entries) = runtime_list(out.first_return(), out.state.heap()) else {
@@ -71,7 +73,7 @@ mod tests {
         };
         assert!(entries.iter().any(|entry| entry.as_ref() == "data.txt"));
 
-        let _ = std::fs::remove_dir_all(td);
+        let _ = std::fs::remove_dir_all(cleanup_dir);
         Ok(())
     }
 
@@ -93,6 +95,7 @@ mod tests {
                 && regex.is_match("[0-9]+", "a12")
                 && regex.find("[0-9]+", "a12").text == "12"
                 && random.int(1, 3) >= 1
+                && random.int(1, 3) <= 3
                 && uuid.is_valid(id)
                 && encoding.url.query_parse("a=1&b=two").b == "two";
             "#)?;

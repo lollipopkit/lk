@@ -73,7 +73,11 @@ fn set_cwd(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Runt
 
 fn exit(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 1, "process.exit()")?;
-    let code = int_arg(args.get(0).expect("checked arity"), "process.exit code")? as i32;
+    let code = int_arg(args.get(0).expect("checked arity"), "process.exit code")?;
+    if code < i64::from(i32::MIN) || code > i64::from(i32::MAX) {
+        bail!("process.exit code must fit in i32, got {code}");
+    }
+    let code = code as i32;
     std::process::exit(code);
 }
 

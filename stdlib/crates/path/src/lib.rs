@@ -108,7 +108,9 @@ fn normalize(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Ru
         match component {
             Component::CurDir => {}
             Component::ParentDir => {
-                out.pop();
+                if !out.pop() {
+                    out.push(component.as_os_str());
+                }
             }
             other => out.push(other.as_os_str()),
         }

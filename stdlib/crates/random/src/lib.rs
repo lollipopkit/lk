@@ -144,7 +144,9 @@ fn int_arg(value: &RuntimeVal, context: &str) -> Result<i64> {
 
 fn usize_arg(value: &RuntimeVal, context: &str) -> Result<usize> {
     match value {
-        RuntimeVal::Int(value) if *value >= 0 => Ok(*value as usize),
+        RuntimeVal::Int(value) if *value >= 0 => {
+            usize::try_from(*value).map_err(|_| anyhow::anyhow!("{context} exceeds usize::MAX, got {value}"))
+        }
         other => bail!("{context} expects non-negative Int, got {:?}", other.kind()),
     }
 }
