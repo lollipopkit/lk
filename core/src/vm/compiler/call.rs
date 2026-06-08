@@ -6,7 +6,8 @@ use crate::{
     expr::Expr,
     val::LiteralVal,
     vm::analysis::{
-        PerfCallFact, PerfCallTargetKind, PerfContainerMoveFact, PerfIndexTargetKind, PerfValueKind, PerformanceFacts,
+        PerfCallFact, PerfCallTargetKind, PerfContainerFact, PerfContainerMoveFact, PerfIndexTargetKind, PerfValueKind,
+        PerformanceFacts,
     },
 };
 
@@ -350,6 +351,30 @@ impl Compiler {
                 move_value,
             },
         );
+        if self.function.performance.value_kind(target_reg) == PerfValueKind::List {
+            let pushed_kind = self.function.performance.value_kind(value_reg);
+            let previous = self
+                .function
+                .performance
+                .register(target_reg)
+                .and_then(|fact| fact.list);
+            let value_kind = if previous.is_some_and(|fact| fact.adoptable && fact.known_len == Some(0)) {
+                pushed_kind
+            } else {
+                previous
+                    .map(|fact| fact.value_kind)
+                    .unwrap_or(PerfValueKind::Unknown)
+                    .join(pushed_kind)
+            };
+            self.set_register_list_fact(
+                target_reg,
+                PerfContainerFact {
+                    value_kind,
+                    known_len: None,
+                    adoptable: false,
+                },
+            );
+        }
         Ok(target_reg)
     }
 

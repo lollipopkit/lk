@@ -25,7 +25,18 @@ pub(in crate::llvm) fn control_flow_static_boundaries(code: &[Instr]) -> Vec<boo
     let mut boundaries = vec![false; code.len()];
     for (pc, instr) in code.iter().copied().enumerate() {
         match instr.opcode() {
-            Opcode::Jmp | Opcode::Test | Opcode::BrFalse | Opcode::BrTrue | Opcode::BrNil | Opcode::BrNotNil
+            Opcode::Jmp
+            | Opcode::Test
+            | Opcode::BrFalse
+            | Opcode::BrTrue
+            | Opcode::BrNil
+            | Opcode::BrNotNil
+            | Opcode::BrEqZeroInt
+            | Opcode::BrNeZeroInt
+            | Opcode::BrEqIntI4
+            | Opcode::BrNeIntI4
+            | Opcode::BrModEqZeroIntI4
+            | Opcode::BrModNeZeroIntI4
                 if !instr.opcode().is_compare_test() =>
             {
                 if instr.opcode() != Opcode::Jmp && pc + 1 < code.len() {
@@ -66,8 +77,14 @@ fn branch_target(code: &[Instr], pc: usize, instr: Instr) -> Option<usize> {
     match instr.opcode() {
         Opcode::Jmp => native_relative_target(pc, instr.sj_arg(), code.len()),
         Opcode::Test => native_relative_target(pc, instr.c() as i8 as i32, code.len()),
-        Opcode::BrFalse | Opcode::BrTrue | Opcode::BrNil | Opcode::BrNotNil => {
-            native_relative_target(pc, instr.sbx() as i32, code.len())
+        Opcode::BrFalse
+        | Opcode::BrTrue
+        | Opcode::BrNil
+        | Opcode::BrNotNil
+        | Opcode::BrEqZeroInt
+        | Opcode::BrNeZeroInt => native_relative_target(pc, instr.sbx() as i32, code.len()),
+        Opcode::BrEqIntI4 | Opcode::BrNeIntI4 | Opcode::BrModEqZeroIntI4 | Opcode::BrModNeZeroIntI4 => {
+            native_relative_target(pc, instr.branch_i4_offset() as i32, code.len())
         }
         opcode if opcode.is_compare_test() => {
             let jmp = code.get(pc + 1).copied()?;
@@ -117,12 +134,15 @@ pub(in crate::llvm) fn local_register_kind_before(code: &[Instr], pc: usize, reg
             Opcode::LoadInt
             | Opcode::AddInt
             | Opcode::AddIntI
+            | Opcode::MinInt
+            | Opcode::MaxInt
             | Opcode::MulIntI
             | Opcode::ModIntI
             | Opcode::SubInt
             | Opcode::MulInt
             | Opcode::DivInt
             | Opcode::ModInt
+            | Opcode::AddMulInt
             | Opcode::Len
             | Opcode::ForLoopI => Some(NativeScalarKind::I64),
             Opcode::LoadFloat => Some(NativeScalarKind::F64),
@@ -1061,6 +1081,12 @@ pub(in crate::llvm) fn emit_inline_i64_binary_block(
         Opcode::AddInt => ir.push_str(&format!("  {out} = add i64 {lhs}, {rhs}\n")),
         Opcode::SubInt => ir.push_str(&format!("  {out} = sub i64 {lhs}, {rhs}\n")),
         Opcode::MulInt => ir.push_str(&format!("  {out} = mul i64 {lhs}, {rhs}\n")),
+        Opcode::MinInt | Opcode::MaxInt => {
+            let pred = if instr.opcode() == Opcode::MinInt { "slt" } else { "sgt" };
+            let cond = next_tmp(tmp_index);
+            ir.push_str(&format!("  {cond} = icmp {pred} i64 {lhs}, {rhs}\n"));
+            ir.push_str(&format!("  {out} = select i1 {cond}, i64 {lhs}, i64 {rhs}\n"));
+        }
         Opcode::DivInt => {
             let zero = next_tmp(tmp_index);
             let label = format!("call{call_pc}.div_ok_{}", out.trim_start_matches('%'));
@@ -1079,6 +1105,25 @@ pub(in crate::llvm) fn emit_inline_i64_binary_block(
         }
         _ => unreachable!("checked by caller"),
     }
+    ir.push_str(&format!("  store i64 {out}, ptr %call{call_pc}.r{}.slot\n", instr.a()));
+}
+
+pub(in crate::llvm) fn emit_inline_i64_add_mul_block(
+    ir: &mut String,
+    call_pc: usize,
+    instr: Instr,
+    tmp_index: &mut usize,
+) {
+    let acc = next_tmp(tmp_index);
+    let lhs = next_tmp(tmp_index);
+    let rhs = next_tmp(tmp_index);
+    let product = next_tmp(tmp_index);
+    let out = next_tmp(tmp_index);
+    ir.push_str(&format!("  {acc} = load i64, ptr %call{call_pc}.r{}.slot\n", instr.a()));
+    ir.push_str(&format!("  {lhs} = load i64, ptr %call{call_pc}.r{}.slot\n", instr.b()));
+    ir.push_str(&format!("  {rhs} = load i64, ptr %call{call_pc}.r{}.slot\n", instr.c()));
+    ir.push_str(&format!("  {product} = mul i64 {lhs}, {rhs}\n"));
+    ir.push_str(&format!("  {out} = add i64 {acc}, {product}\n"));
     ir.push_str(&format!("  store i64 {out}, ptr %call{call_pc}.r{}.slot\n", instr.a()));
 }
 

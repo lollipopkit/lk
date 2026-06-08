@@ -189,12 +189,7 @@ impl Compiler {
     }
 
     pub(super) fn lower_program_statements(&mut self, program: &Program) -> Result<()> {
-        for stmt in &program.statements {
-            self.lower_stmt(stmt)?;
-            if self.emitted_return {
-                break;
-            }
-        }
+        self.lower_stmt_sequence(&program.statements)?;
         if !self.emitted_return {
             self.emit_empty_return();
         }

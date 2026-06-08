@@ -55,6 +55,33 @@ fn compiler_lowers_small_int_literal_mul_mod_to_int_immediates() {
 }
 
 #[test]
+fn compiler_lowers_commuted_small_int_add_mul_to_int_immediates() {
+    let function = compile_source(
+        r#"
+        let value = 10;
+        let offset = 2 + value;
+        let scaled = 3 * offset;
+        return scaled;
+        "#,
+    )
+    .expect("compile source");
+
+    assert!(
+        function.code.iter().any(|instr| instr.opcode() == Opcode::AddIntI),
+        "commuted small integer add literal should lower to AddIntI: {:?}",
+        function.code
+    );
+    assert!(
+        function.code.iter().any(|instr| instr.opcode() == Opcode::MulIntI),
+        "commuted small integer multiply literal should lower to MulIntI: {:?}",
+        function.code
+    );
+
+    let result = execute(&function).expect("execute");
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(36)]);
+}
+
+#[test]
 fn compiler_accumulates_int_add_chain_into_compound_target() {
     let function = compile_source(
         r#"
@@ -71,14 +98,14 @@ fn compiler_accumulates_int_add_chain_into_compound_target() {
     )
     .expect("compile source");
 
-    let add_count = function
+    let add_mul_count = function
         .code
         .iter()
-        .filter(|instr| instr.opcode() == Opcode::AddInt)
+        .filter(|instr| instr.opcode() == Opcode::AddMulInt)
         .count();
     assert_eq!(
-        add_count, 3,
-        "compound add chain should avoid materializing intermediate add nodes: {:?}",
+        add_mul_count, 3,
+        "compound add chain should fuse integer multiply terms into AddMulInt: {:?}",
         function.code
     );
 
@@ -116,14 +143,14 @@ fn compiler_reuses_preloaded_loop_const_for_folded_compound_add_term() {
     )
     .expect("compile source");
 
-    let mul_count = function
+    let add_mul_count = function
         .code
         .iter()
-        .filter(|instr| matches!(instr.opcode(), Opcode::MulInt | Opcode::MulIntI))
+        .filter(|instr| instr.opcode() == Opcode::AddMulInt)
         .count();
     assert_eq!(
-        mul_count, 1,
-        "cached literal product should fold to a preloaded loop const: {:?}",
+        add_mul_count, 2,
+        "compound add terms should use AddMulInt inside loop body: {:?}",
         function.code
     );
 
@@ -156,14 +183,14 @@ fn compiler_accumulates_global_int_add_chain_before_set_global() {
         .find(|function| function.code.iter().any(|instr| instr.opcode() == Opcode::GetGlobal))
         .expect("function with global compound assignment");
 
-    let add_count = function
+    let add_mul_count = function
         .code
         .iter()
-        .filter(|instr| instr.opcode() == Opcode::AddInt)
+        .filter(|instr| instr.opcode() == Opcode::AddMulInt)
         .count();
     assert_eq!(
-        add_count, 3,
-        "global compound add chain should avoid materializing intermediate add nodes: {:?}",
+        add_mul_count, 3,
+        "global compound add chain should fuse integer multiply terms into AddMulInt: {:?}",
         function.code
     );
     assert!(

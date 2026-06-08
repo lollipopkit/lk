@@ -107,6 +107,40 @@ fn compiler_template_string_uses_concat_n_for_three_or_more_parts() {
 }
 
 #[test]
+fn compiler_lowers_template_expression_parts_directly_into_concat_window() {
+    let function = compile_source(
+        r#"
+        let x = 42;
+        let key = "id:${x % 97}:${x * 2}";
+        return key;
+        "#,
+    )
+    .expect("compile source");
+
+    let concat = function
+        .code
+        .iter()
+        .find(|instr| instr.opcode() == Opcode::ConcatN)
+        .expect("ConcatN");
+    let start = concat.b();
+    let end = start + concat.c();
+    let window_moves = function
+        .code
+        .iter()
+        .filter(|instr| instr.opcode() == Opcode::Move && instr.a() >= start && instr.a() < end)
+        .count();
+
+    assert_eq!(
+        window_moves, 0,
+        "template arithmetic parts should lower directly into the ConcatN window: {:?}",
+        function.code
+    );
+
+    let result = execute(&function).expect("execute");
+    assert_eq!(returned_string(&result), "id:42:84");
+}
+
+#[test]
 fn compiler_template_string_preserves_to_string_for_single_expression() {
     let function = compile_source(
         r#"

@@ -256,7 +256,14 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                     return Ok(None);
                 }
             }
-            Opcode::AddInt | Opcode::SubInt | Opcode::MulInt | Opcode::DivInt | Opcode::ModInt => {
+            Opcode::AddInt
+            | Opcode::SubInt
+            | Opcode::MulInt
+            | Opcode::DivInt
+            | Opcode::ModInt
+            | Opcode::MinInt
+            | Opcode::MaxInt
+            | Opcode::AddMulInt => {
                 if !emit_int_arithmetic_block(
                     &mut ir,
                     code,
@@ -327,7 +334,17 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                     return Ok(None);
                 }
             }
-            Opcode::Test | Opcode::BrFalse | Opcode::BrTrue | Opcode::BrNil | Opcode::BrNotNil => {
+            Opcode::Test
+            | Opcode::BrFalse
+            | Opcode::BrTrue
+            | Opcode::BrNil
+            | Opcode::BrNotNil
+            | Opcode::BrEqZeroInt
+            | Opcode::BrNeZeroInt
+            | Opcode::BrEqIntI4
+            | Opcode::BrNeIntI4
+            | Opcode::BrModEqZeroIntI4
+            | Opcode::BrModNeZeroIntI4 => {
                 if !emit_test_block(
                     &mut ir,
                     &mut skip_static_pcs,

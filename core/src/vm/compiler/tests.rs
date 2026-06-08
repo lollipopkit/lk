@@ -232,6 +232,195 @@ fn compiler_elides_compound_assignment_self_move() {
 }
 
 #[test]
+fn compiler_lowers_int_min_max_update_if() {
+    let function = compile_source(
+        r#"
+        let min_price = 100;
+        let price = 42;
+        if price < min_price {
+            min_price = price;
+        }
+        let best = 7;
+        let profit = 19;
+        if profit > best {
+            best = profit;
+        }
+        return min_price + best;
+        "#,
+    )
+    .expect("compile source");
+
+    assert!(
+        function.code.iter().any(|instr| instr.opcode() == Opcode::MinInt),
+        "min update should lower to MinInt: {:?}",
+        function.code
+    );
+    assert!(
+        function.code.iter().any(|instr| instr.opcode() == Opcode::MaxInt),
+        "max update should lower to MaxInt: {:?}",
+        function.code
+    );
+
+    let result = execute(&function).expect("execute");
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(61)]);
+}
+
+#[test]
+fn compiler_lowers_zero_int_conditions_to_direct_branches() {
+    let function = compile_source(
+        r#"
+        let a = 25;
+        let b = 15;
+        while (b != 0) {
+            let t = a % b;
+            a = b;
+            b = t;
+        }
+        let marker = 0;
+        if (a == 0) {
+            marker += 100;
+        }
+        if (a != 0) {
+            marker += 7;
+        }
+        return (a * 10) + marker;
+        "#,
+    )
+    .expect("compile source");
+
+    assert!(
+        function.code.iter().any(|instr| instr.opcode() == Opcode::BrEqZeroInt),
+        "not-equal-zero false edge should lower to BrEqZeroInt: {:?}",
+        function.code
+    );
+    assert!(
+        function.code.iter().any(|instr| instr.opcode() == Opcode::BrNeZeroInt),
+        "equal-zero false edge should lower to BrNeZeroInt: {:?}",
+        function.code
+    );
+
+    let result = execute(&function).expect("execute");
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(57)]);
+}
+
+#[test]
+fn compiler_lowers_small_int_conditions_to_direct_branches() {
+    let function = compile_source(
+        r#"
+        let state = 2;
+        let event = 3;
+        let score = 0;
+        if (state == 2) {
+            score += 10;
+        } else {
+            score += 100;
+        }
+        if (event != 3) {
+            score += 1000;
+        } else {
+            score += 7;
+        }
+        while (state != 5) {
+            state += 1;
+        }
+        return score + state;
+        "#,
+    )
+    .expect("compile source");
+
+    assert!(
+        function.code.iter().any(|instr| instr.opcode() == Opcode::BrEqIntI4),
+        "not-equal-small-int false edge should lower to BrEqIntI4: {:?}",
+        function.code
+    );
+    assert!(
+        function.code.iter().any(|instr| instr.opcode() == Opcode::BrNeIntI4),
+        "equal-small-int false edge should lower to BrNeIntI4: {:?}",
+        function.code
+    );
+
+    let result = execute(&function).expect("execute");
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(22)]);
+}
+
+#[test]
+fn compiler_lowers_small_int_modulo_zero_conditions_to_direct_branches() {
+    let function = compile_source(
+        r#"
+        let i = 1;
+        let score = 0;
+        while (i != 18) {
+            if ((i % 3) == 0) {
+                score += 10;
+            }
+            if ((i % 5) != 0) {
+                score += 1;
+            }
+            i += 1;
+        }
+        return score;
+        "#,
+    )
+    .expect("compile source");
+
+    assert!(
+        function
+            .code
+            .iter()
+            .any(|instr| instr.opcode() == Opcode::BrModNeZeroIntI4),
+        "equal-modulo-zero false edge should lower to BrModNeZeroIntI4: {:?}",
+        function.code
+    );
+    assert!(
+        function
+            .code
+            .iter()
+            .any(|instr| instr.opcode() == Opcode::BrModEqZeroIntI4),
+        "not-equal-modulo-zero false edge should lower to BrModEqZeroIntI4: {:?}",
+        function.code
+    );
+
+    let result = execute(&function).expect("execute");
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(64)]);
+}
+
+#[test]
+fn compiler_sinks_default_assign_into_if_chain_else() {
+    let function = compile_source(
+        r#"
+        let state = 2;
+        let event = 1;
+        if (state == 2) {
+            event = 3;
+        } else if (state == 3) {
+            event = 4;
+        }
+        return event;
+        "#,
+    )
+    .expect("compile source");
+
+    let first_branch = function
+        .code
+        .iter()
+        .position(|instr| matches!(instr.opcode(), Opcode::BrNeIntI4 | Opcode::TestEqIntI))
+        .expect("expected first state branch");
+    let event_default_write = function
+        .code
+        .iter()
+        .position(|instr| instr.opcode() == Opcode::LoadInt && instr.a() == 1)
+        .expect("expected default event write in final else");
+    assert!(
+        event_default_write > first_branch,
+        "default write should be sunk after the branch chain: {:?}",
+        function.code
+    );
+
+    let result = execute(&function).expect("execute");
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(3)]);
+}
+
+#[test]
 fn compiler_rebinds_simple_local_assignment_without_move() {
     let function = compile_source(
         r#"
@@ -592,6 +781,47 @@ fn compiler_lowers_map_get_directly_into_destination() {
         "map.get should not emit GetIndex/GetFieldK followed by a destination Move: {:?}",
         function.code
     );
+}
+
+#[test]
+fn compiler_lowers_access_directly_into_destination() {
+    let function = compile_source(
+        r#"
+        let values = [10, 20, 30];
+        let index = 1;
+        let item = values[index];
+        let settings = {"mode": 7};
+        let mode = settings["mode"];
+        return item + mode;
+        "#,
+    )
+    .expect("compile source");
+
+    let item_get = function
+        .code
+        .iter()
+        .find(|instr| matches!(instr.opcode(), Opcode::GetIndex | Opcode::GetList) && instr.a() == 2)
+        .expect("expected list access to write into item local");
+    assert_eq!(item_get.a(), 2);
+
+    let mode_get = function
+        .code
+        .iter()
+        .find(|instr| matches!(instr.opcode(), Opcode::GetIndex | Opcode::GetFieldK) && instr.a() == 4)
+        .expect("expected map access to write into mode local");
+    assert_eq!(mode_get.a(), 4);
+
+    assert!(
+        !function.code.windows(2).any(|window| matches!(
+            window[0].opcode(),
+            Opcode::GetIndex | Opcode::GetList | Opcode::GetFieldK
+        ) && window[1].opcode() == Opcode::Move),
+        "access lowering should not emit GetIndex/GetList/GetFieldK followed by destination Move: {:?}",
+        function.code
+    );
+
+    let result = execute(&function).expect("execute");
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(27)]);
 }
 
 #[test]
@@ -1030,6 +1260,34 @@ fn compiler_lowers_direct_function_call_through_module() {
     let result = execute_module(&module).expect("execute module");
 
     assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
+}
+
+#[test]
+fn compiler_direct_call_immediate_arithmetic_uses_callee_frame() {
+    let module = compile_source_module(
+        r#"
+        fn classify(n) {
+            for _ in 1..=0 {
+            }
+            let x = 3;
+            return x + 1;
+        }
+
+        return classify(3);
+        "#,
+    )
+    .expect("compile module");
+    let classify = &module.functions[1];
+
+    assert!(
+        classify.code.iter().any(|instr| instr.opcode() == Opcode::AddIntI),
+        "callee should use immediate arithmetic in its own frame: {:?}",
+        classify.code
+    );
+
+    let result = execute_module(&module).expect("execute module");
+
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(4)]);
 }
 
 #[test]

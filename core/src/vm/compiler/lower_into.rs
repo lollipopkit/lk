@@ -56,6 +56,15 @@ impl Compiler {
             }
             Expr::Bin(lhs, op, rhs) => {
                 let static_flavor = super::support::numeric_flavor(lhs, op, rhs);
+                if static_flavor == super::support::NumericFlavor::Int
+                    && let Some(immediate) = super::support::commuted_int_immediate_operand(op, lhs)
+                {
+                    let rhs = self.lower_readonly_operand(rhs)?;
+                    if self.function.performance.value_kind(rhs) == PerfValueKind::Int {
+                        self.emit_int_immediate_to_register(dst, op, rhs, immediate)?;
+                        return Ok(true);
+                    }
+                }
                 let lhs = self.lower_readonly_operand(lhs)?;
                 if let Some(immediate) = super::support::int_immediate_operand(op, rhs)
                     && self.function.performance.value_kind(lhs) == PerfValueKind::Int
@@ -78,6 +87,10 @@ impl Compiler {
             }
             Expr::CallExpr(callee, args) if self.is_external_module_call(callee, args, "map", "get", 2) => {
                 self.lower_map_get_function_call_to_register(dst, args)?;
+                Ok(true)
+            }
+            Expr::Access(target, key) => {
+                self.lower_access_to_register(dst, target, key)?;
                 Ok(true)
             }
             _ => Ok(false),

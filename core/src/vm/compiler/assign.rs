@@ -149,23 +149,18 @@ impl Compiler {
             return Ok(false);
         }
 
-        let (dst, rebind_dst) = self.local_write_slot(lhs);
+        if self.local_slot_is_shared(lhs) || self.is_loop_cached_literal_register(lhs) {
+            return Ok(false);
+        }
+        let dst = lhs;
         let mut acc = lhs;
         for term in terms {
-            let term = if let Some(value) = self.cached_loop_int_expr_value(term) {
-                if let Some(reg) = self.cached_loop_literal(&LiteralVal::Int(value)) {
-                    reg
-                } else {
-                    self.lower_readonly_operand(term)?
-                }
-            } else {
-                self.lower_readonly_operand(term)?
-            };
+            if acc == dst && self.try_emit_add_mul_term(dst, term)? {
+                continue;
+            }
+            let term = self.lower_additive_term_operand(term)?;
             self.emit_bin_op_to_register_with_flavor(dst, &BinOp::Add, acc, term, NumericFlavor::Int)?;
             acc = dst;
-        }
-        if rebind_dst {
-            self.insert_local(name.to_string(), dst);
         }
         Ok(true)
     }
@@ -187,19 +182,42 @@ impl Compiler {
         let dst = self.emit_get_global(slot)?;
         let mut acc = dst;
         for term in terms {
-            let term = if let Some(value) = self.cached_loop_int_expr_value(term) {
-                if let Some(reg) = self.cached_loop_literal(&LiteralVal::Int(value)) {
-                    reg
-                } else {
-                    self.lower_readonly_operand(term)?
-                }
-            } else {
-                self.lower_readonly_operand(term)?
-            };
+            if acc == dst && self.try_emit_add_mul_term(dst, term)? {
+                continue;
+            }
+            let term = self.lower_additive_term_operand(term)?;
             self.emit_bin_op_to_register_with_flavor(dst, &BinOp::Add, acc, term, NumericFlavor::Int)?;
             acc = dst;
         }
         self.emit_set_global_with_policy(dst, slot, true)?;
+        Ok(true)
+    }
+
+    fn lower_additive_term_operand(&mut self, term: &Expr) -> Result<u16> {
+        if let Some(value) = self.cached_loop_int_expr_value(term)
+            && let Some(reg) = self.cached_loop_literal(&LiteralVal::Int(value))
+        {
+            return Ok(reg);
+        }
+        self.lower_readonly_operand(term)
+    }
+
+    fn try_emit_add_mul_term(&mut self, acc: u16, term: &Expr) -> Result<bool> {
+        let Expr::Bin(lhs, BinOp::Mul, rhs) = strip_parens(term) else {
+            return Ok(false);
+        };
+        if numeric_flavor(lhs, &BinOp::Mul, rhs) != NumericFlavor::Int {
+            return Ok(false);
+        }
+        let lhs = self.lower_additive_term_operand(lhs)?;
+        let rhs = self.lower_additive_term_operand(rhs)?;
+        self.emit(Instr::abc(
+            Opcode::AddMulInt,
+            checked_u8("add-mul accumulator", acc)?,
+            checked_u8("add-mul lhs", lhs)?,
+            checked_u8("add-mul rhs", rhs)?,
+        ));
+        self.set_register_kind(acc, PerfValueKind::Int);
         Ok(true)
     }
 
@@ -316,6 +334,13 @@ fn collect_add_terms<'a>(expr: &'a Expr, terms: &mut Vec<&'a Expr>) {
             collect_add_terms(rhs, terms);
         }
         _ => terms.push(expr),
+    }
+}
+
+fn strip_parens(expr: &Expr) -> &Expr {
+    match expr {
+        Expr::Paren(inner) => strip_parens(inner),
+        _ => expr,
     }
 }
 

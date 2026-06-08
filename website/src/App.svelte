@@ -194,8 +194,8 @@ let total = iter.reduce(iter.range(0, 10, 2), 0, |acc, n| acc + n);`,
   $: technicalCommands = getTechnicalCommands(locale)
   $: performanceMetric =
     locale === 'zh-CN'
-      ? '当前 workload suite：默认 bytecode VM 约 1.03x vs Lua，显式 native/AOT 路径约 0.35x vs Lua。'
-      : 'Current workload suite: the default bytecode VM is about 1.03x vs Lua; explicit native/AOT paths are about 0.35x vs Lua.'
+      ? '当前 workload suite：默认 bytecode VM 最新复验约 0.79-0.81x vs Lua；supported native/AOT shapes 历史约 0.35x vs Lua。'
+      : 'Current workload suite: the latest default bytecode VM validation is about 0.79-0.81x vs Lua; supported native/AOT shapes have historically measured about 0.35x vs Lua.'
   $: compileStripRuntime = locale === 'zh-CN' ? 'bytecode VM' : 'bytecode VM'
 
   function getRuntimeRows(activeLocale: Locales | undefined): RuntimeRow[] {
@@ -238,7 +238,7 @@ let total = iter.reduce(iter.range(0, 10, 2), 0, |acc, n| acc + n);`,
         {
           icon: Braces,
           title: 'Opcode specialization',
-          body: '当前 opcode 与 lowering 优化面向通用 operand shape，用于减少解释器里的重复 materialization 和临时寄存器搬运。',
+          body: '当前 opcode 与 lowering 优化面向通用 operand shape，用于减少解释器里的重复 materialization、zero/small-int branch 和临时寄存器搬运。',
         },
         {
           icon: Code2,
@@ -259,10 +259,10 @@ let total = iter.reduce(iter.range(0, 10, 2), 0, |acc, n| acc + n);`,
         title: 'The VM remains deterministic',
         body: 'The bytecode VM is the default correctness oracle and diagnostic execution path. Set `LK_NATIVE_RUN=1` only when you want cached native execution.',
       },
-      {
-        icon: Braces,
-        title: 'Opcode specialization targets shared shapes',
-        body: 'Current optimization focuses on general operand shapes and lowering: Int immediates, compare-test, nil branches, field keys, ConcatN, Return0/Return1, and fewer temporary-register moves.',
+        {
+          icon: Braces,
+          title: 'Opcode specialization targets shared shapes',
+          body: 'Current optimization focuses on general operand shapes and lowering: Int immediates, min/max update, compare-test, nil and zero branches, field keys, ConcatN, Return0/Return1, and fewer temporary-register moves.',
       },
       {
         icon: Code2,
@@ -290,22 +290,30 @@ let total = iter.reduce(iter.range(0, 10, 2), 0, |acc, n| acc + n);`,
           title: 'Opcode specialization 只覆盖通用 operand shape。',
           body: '当前优化避免 workload-specific fused opcode，优先消除 register materialization、typed fallback 污染和重复 control-flow 解析。',
           items: [
-            '`AddIntI`、`MulIntI`、`ModIntI` 覆盖 small-int literal RHS arithmetic。',
+            '`AddIntI`、`MulIntI`、`ModIntI` 覆盖 small-int literal RHS arithmetic；`AddIntI` / `MulIntI` 也覆盖 facts-confirmed `literal + x` / `literal * x` commuted immediate shape。',
+            '`AddMulInt` 覆盖 facts-confirmed compound integer multiply-add accumulator shape。',
+            '`MinInt` / `MaxInt` 覆盖 facts-confirmed integer min/max update branch。',
             '`BrNil` / `BrNotNil` 覆盖 condition-context nilness branch。',
+            '`BrEqZeroInt` / `BrNeZeroInt` 覆盖 facts-confirmed zero-compare false edge。',
+            '`BrEqIntI4` / `BrNeIntI4` 覆盖 facts-confirmed `0..15` small-int equality false edge。',
+            '`BrModEqZeroIntI4` / `BrModNeZeroIntI4` 覆盖 facts-confirmed `(x % K) == 0` / `(x % K) != 0` divisibility guard，`K` 为 `1..15`。',
             '`TestEqIntI` / `TestNeIntI` 覆盖 facts-confirmed Int 与 i8 literal equality compare-test。',
-            '`TestEqIntI2` 覆盖 small-int pair condition；`Move2` 覆盖相邻本地赋值链；`GetFieldK` / `SetFieldK`、`ConcatN`、`Return0` / `Return1` 覆盖通用 field、string concat 和 return shape。',
-            '`math.floor(Int-like)` 与外部 `map.get` 支持 direct-to-destination lowering，减少 `Move dst, temp`。',
+            '`TestEqIntI2` 覆盖 small-int pair condition；`Move2` 覆盖相邻本地赋值链；`ListPush` 传播 list element kind，typed int-list `GetIndex` 直读 Int backing，facts-confirmed `List<Int> + Int key` 发射 `GetList`；`ModInt` / `ModIntI` 后接同寄存器 zero branch 时跳过下一次 dispatch；nil branch、zero branch、small-int branch/test 与普通 compare-test 后接 `Move + Jmp` 或单条 `Move` 时跳过对应后继 dispatch；`GetFieldK` 后接同寄存器 nilness branch 时直接应用分支并处理 default `Move`；连续 `Move` dispatch 使用 tight next-op check；template literal parts 会进入 loop scalar const cache；`GetFieldK` / `SetFieldK`、`ConcatN`、`Return0` / `Return1` 覆盖通用 field、string concat 和 return shape。',
+            'known string key 读取空 `TypedMap::Mixed` 时直接返回 `nil`，减少 sparse map/default lookup 的 `RuntimeMapKey` 构造和 `generic_map_lookup`。',
+            'compiler 会把安全的 `let/assign x = default; if-chain { x = value }` 重排为 synthetic final else default，减少分支命中路径上的 default overwrite。',
+            '`math.floor(Int-like)`、外部 `map.get` 和普通 indexed access 支持 direct-to-destination lowering，减少 `Move dst, temp`。',
           ],
         },
         {
           kicker: 'Benchmark evidence',
           title: 'VM 是默认路径，native/AOT 是独立性能路径。',
-          body: '当前 workload suite 的验证命令默认采用 `RUNS=3 EXTRA_RUNS=5`。显式 native/AOT 路径约 `0.35x` vs Lua；默认 bytecode VM 最新复验为 `1.029x` vs Lua。',
+          body: '当前 workload suite 的验证命令默认采用 `RUNS=3 EXTRA_RUNS=5`。默认 bytecode VM 最新复验为 `0.793x` / `0.808x` vs Lua；supported native/AOT shapes 历史约 `0.35x` vs Lua。',
           items: [
             '默认 `lk FILE` 与 `LK_FORCE_VM=1` 都是解释器语义；`LK_NATIVE_RUN=1` 才进入 cached native。',
-            'VM/AOT/Lua checksum 保持一致，避免只看 timing。',
-            'immediate compare-test A/B 为 `1.077x` vs `1.081x`，收益小但覆盖真实 compare shape。',
-            '本轮 direct-to-destination lowering 后，全 workload 静态 `Move` 降到 `345`。',
+            '当前 full-suite AOT smoke 仍需补 dynamic-map `GetIndex` native lowering；VM checksum 仍作为默认路径校验。',
+            '`AddMulInt` 在 static coverage 中覆盖 `10` 处 compound-add multiply term；当前全 workload instructions 为 `1952`，`AddIntI=58`，`BrModNeZeroIntI4=21`，`GetList=6`，`GetIndex=62`。',
+            '`BrNeIntI4` 把 small-int branch chain 收成单条 branch；branch-body peephole 继续减少 nil branch、zero branch、small-int branch/test、field default 与普通 compare-test 的 `Move + Jmp` 和单条 `Move` dispatch。',
+            'empty `TypedMap::Mixed` fast path 让 `config_defaults_merge` A/B 从 `1.383x` 改到 `1.204x`；全 workload静态 `Move` 为 `341`。',
           ],
         },
       ]
@@ -327,22 +335,30 @@ let total = iter.reduce(iter.range(0, 10, 2), 0, |acc, n| acc + n);`,
         title: 'Opcode specialization targets shared operand shapes.',
         body: 'Current optimization avoids workload-specific fused opcodes and focuses on removing register materialization, typed fallback pollution, and repeated control-flow decoding.',
         items: [
-          '`AddIntI`, `MulIntI`, and `ModIntI` cover small-int literal RHS arithmetic.',
+          '`AddIntI`, `MulIntI`, and `ModIntI` cover small-int literal RHS arithmetic; `AddIntI` / `MulIntI` also cover facts-confirmed `literal + x` / `literal * x` commuted immediate shapes.',
+          '`AddMulInt` covers facts-confirmed compound integer multiply-add accumulator shapes.',
+          '`MinInt` / `MaxInt` cover facts-confirmed integer min/max update branches.',
           '`BrNil` / `BrNotNil` cover condition-context nilness branches.',
+          '`BrEqZeroInt` / `BrNeZeroInt` cover facts-confirmed zero-compare false edges.',
+          '`BrEqIntI4` / `BrNeIntI4` cover facts-confirmed `0..15` small-int equality false edges.',
+          '`BrModEqZeroIntI4` / `BrModNeZeroIntI4` cover facts-confirmed `(x % K) == 0` / `(x % K) != 0` divisibility guards for `K` in `1..15`.',
           '`TestEqIntI` / `TestNeIntI` cover facts-confirmed Int and i8 literal equality compare-test shapes.',
-          '`TestEqIntI2` covers small-int pair conditions; `Move2` covers adjacent local assignment chains; `GetFieldK` / `SetFieldK`, `ConcatN`, and `Return0` / `Return1` cover general field, string concat, and return shapes.',
-          '`math.floor(Int-like)` and external `map.get` use direct-to-destination lowering to reduce `Move dst, temp`.',
+          '`TestEqIntI2` covers small-int pair conditions; `Move2` covers adjacent local assignment chains; `ListPush` propagates list element kind, typed int-list `GetIndex` reads go straight to the Int backing, and facts-confirmed `List<Int> + Int key` emits `GetList`; `ModInt` / `ModIntI` followed by a same-register zero branch skips the next dispatch; nil branches, zero branches, small-int branch/test, and ordinary compare-test bodies shaped as `Move + Jmp` or a single `Move` skip the following dispatch; `GetFieldK` followed by a same-register nilness branch applies that branch and default `Move` inside the field-read arm; continuous `Move` dispatch uses a tight next-op check; template literal parts enter the loop scalar const cache; `GetFieldK` / `SetFieldK`, `ConcatN`, and `Return0` / `Return1` cover general field, string concat, and return shapes.',
+          'Known string key lookup on empty `TypedMap::Mixed` now returns `nil` directly, reducing `RuntimeMapKey` construction and `generic_map_lookup` for sparse map/default reads.',
+          'The compiler sinks safe `let/assign x = default; if-chain { x = value }` shapes into a synthetic final `else` default to reduce default overwrites on taken branch paths.',
+          '`math.floor(Int-like)`, external `map.get`, and plain indexed access use direct-to-destination lowering to reduce `Move dst, temp`.',
         ],
       },
       {
         kicker: 'Benchmark evidence',
         title: 'The VM is the default path; native/AOT is a separate performance path.',
-        body: 'The current workload suite uses `RUNS=3 EXTRA_RUNS=5` by default. Explicit native/AOT paths are about `0.35x` vs Lua; the latest default bytecode VM validation is `1.029x` vs Lua.',
+        body: 'The current workload suite uses `RUNS=3 EXTRA_RUNS=5` by default. The latest default bytecode VM validation is `0.793x` / `0.808x` vs Lua; supported native/AOT shapes have historically measured about `0.35x` vs Lua.',
         items: [
           'Default `lk FILE` and `LK_FORCE_VM=1` both use interpreter semantics; `LK_NATIVE_RUN=1` enters cached native execution.',
-          'VM/AOT/Lua checksum validation stays aligned, so timing is not the only signal.',
-          'Immediate compare-test A/B measured `1.077x` vs `1.081x`: small benefit, real compare-shape coverage.',
-          'After this direct-to-destination lowering pass, static `Move` count across the workload is down to `345`.',
+          'Current full-suite AOT smoke still needs dynamic-map `GetIndex` native lowering; VM checksum validation remains the default-path gate.',
+          '`AddMulInt` covers `10` compound-add multiply terms in static coverage; current workload instructions are `1952`, with `AddIntI=58`, `BrModNeZeroIntI4=21`, `GetList=6`, and `GetIndex=62`.',
+          '`BrNeIntI4` collapses small-int branch chains into one branch; the branch-body peephole further reduces `Move + Jmp` and single-`Move` dispatch in nil branch, zero branch, field-default, small-int branch/test, and ordinary compare-test fallthrough bodies.',
+          'The empty `TypedMap::Mixed` fast path moves `config_defaults_merge` from `1.383x` to `1.204x` in A/B validation; static `Move` count across the workload is `341`.',
         ],
       },
     ]
@@ -354,7 +370,7 @@ let total = iter.reduce(iter.range(0, 10, 2), 0, |acc, n| acc + n);`,
         'lk FILE',
         'LK_NATIVE_RUN=1 lk FILE',
         'lk compile exe FILE',
-        'LK_FORCE_VM=1 RUN_AOT=0 RUNS=3 EXTRA_RUNS=5 bash bench/run_workload_bench.sh',
+        'RUN_AOT=0 RUNS=3 EXTRA_RUNS=5 bash bench/run_workload_bench.sh',
       ]
     }
 
@@ -362,7 +378,7 @@ let total = iter.reduce(iter.range(0, 10, 2), 0, |acc, n| acc + n);`,
       'lk FILE',
       'LK_NATIVE_RUN=1 lk FILE',
       'lk compile exe FILE',
-      'LK_FORCE_VM=1 RUN_AOT=0 RUNS=3 EXTRA_RUNS=5 bash bench/run_workload_bench.sh',
+      'RUN_AOT=0 RUNS=3 EXTRA_RUNS=5 bash bench/run_workload_bench.sh',
     ]
   }
 
@@ -954,7 +970,9 @@ let total = iter.reduce(iter.range(0, 10, 2), 0, |acc, n| acc + n);`,
             <span>03</span>
             <p>{locale === 'zh-CN' ? '性能路径' : 'Performance Path'}</p>
           </div>
-          <h2 id="performance-title">{locale === 'zh-CN' ? '默认快，VM 可验证。' : 'Fast by default, verifiable by VM.'}</h2>
+          <h2 id="performance-title">
+            {locale === 'zh-CN' ? '默认 VM，native 显式加速。' : 'VM by default, native by opt-in.'}
+          </h2>
         </div>
         <p>
           {locale === 'zh-CN'

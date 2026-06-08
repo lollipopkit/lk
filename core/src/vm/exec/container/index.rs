@@ -55,6 +55,35 @@ impl Executor {
     }
 
     #[inline(always)]
+    pub(in crate::vm::exec) fn try_get_known_int_list_index(&self, target_reg: u8, key_reg: u8) -> Option<RuntimeVal> {
+        let RuntimeVal::Obj(handle) = self.read_unchecked(target_reg) else {
+            return None;
+        };
+        let RuntimeVal::Int(index) = self.read_unchecked(key_reg) else {
+            return None;
+        };
+        let Some(HeapValue::List(TypedList::Int(values))) = self.state.heap.get(*handle) else {
+            return None;
+        };
+        let index = if *index < 0 {
+            let index = values.len() as i64 + *index;
+            if index < 0 {
+                return Some(RuntimeVal::Nil);
+            }
+            index as usize
+        } else {
+            *index as usize
+        };
+        Some(
+            values
+                .get(index)
+                .copied()
+                .map(RuntimeVal::Int)
+                .unwrap_or(RuntimeVal::Nil),
+        )
+    }
+
+    #[inline(always)]
     pub(in crate::vm::exec) fn get_index(
         &mut self,
         pc: usize,
@@ -408,7 +437,13 @@ impl Executor {
 #[inline(always)]
 fn get_string_map_direct(map: &TypedMap, key: &str) -> Option<RuntimeVal> {
     match map {
-        TypedMap::Mixed(_) => None,
+        TypedMap::Mixed(values) => {
+            if values.is_empty() {
+                Some(RuntimeVal::Nil)
+            } else {
+                None
+            }
+        }
         TypedMap::StringMixed(values) => Some(values.get(key).cloned().unwrap_or(RuntimeVal::Nil)),
         TypedMap::StringInt(values) => Some(values.get(key).copied().map(RuntimeVal::Int).unwrap_or(RuntimeVal::Nil)),
         TypedMap::StringFloat(values) => Some(
@@ -425,5 +460,28 @@ fn get_string_map_direct(map: &TypedMap, key: &str) -> Option<RuntimeVal> {
                 .map(RuntimeVal::Bool)
                 .unwrap_or(RuntimeVal::Nil),
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::get_string_map_direct;
+    use crate::util::fast_map::{fast_hash_map_from_iter, fast_hash_map_new};
+    use crate::val::{RuntimeMapKey, RuntimeVal, ShortStr, TypedMap};
+
+    #[test]
+    fn direct_string_map_lookup_returns_nil_for_empty_mixed_map() {
+        let map = TypedMap::Mixed(fast_hash_map_new());
+
+        assert_eq!(get_string_map_direct(&map, "missing"), Some(RuntimeVal::Nil));
+    }
+
+    #[test]
+    fn direct_string_map_lookup_keeps_non_empty_mixed_map_on_generic_path() {
+        let key = RuntimeMapKey::ShortStr(ShortStr::new("present").expect("short key"));
+        let map = TypedMap::Mixed(fast_hash_map_from_iter([(key, RuntimeVal::Int(1))]));
+
+        assert_eq!(get_string_map_direct(&map, "missing"), None);
+        assert_eq!(get_string_map_direct(&map, "present"), None);
     }
 }

@@ -43,8 +43,7 @@ use anyhow::{Result, anyhow, bail};
 use crate::val::{HeapStore, HeapValue, RuntimeMapKey, RuntimeVal, TypedList, TypedMap, typed_map_from_entries};
 
 use super::{
-    CallWindow, Function, Instr, Module, NativeEntry, Opcode, RegisterIndex, RuntimeExport, RuntimeModuleState,
-    VmContext,
+    CallWindow, Function, Module, NativeEntry, Opcode, RegisterIndex, RuntimeExport, RuntimeModuleState, VmContext,
     analysis::{
         PerfIndexTargetKind, VmCallMetric, VmContainerMetric, VmRegisterWriteSource, record_call_op_known_enabled,
         record_container_op_known_enabled, vm_runtime_metrics_enabled,
@@ -530,7 +529,7 @@ impl Executor {
                     let value = *self.read_unchecked(instr.b());
                     self.write_unchecked(instr.a(), value);
                     self.pc += 1;
-                    if !matches!(code.get(self.pc).copied().map(Instr::opcode), Some(Opcode::Move)) {
+                    if self.pc >= code.len() || code[self.pc].opcode() != Opcode::Move {
                         break;
                     }
                 },
@@ -581,8 +580,8 @@ impl Executor {
                     }
                 }
                 Opcode::AddIntI => {
-                    let dst = instr.a() as usize;
-                    let lhs_idx = instr.b() as usize;
+                    let dst = self.frame_base + instr.a() as usize;
+                    let lhs_idx = self.frame_base + instr.b() as usize;
                     match &self.state.stack[lhs_idx] {
                         RuntimeVal::Int(lhs) => {
                             self.state.stack[dst] = RuntimeVal::Int(lhs.wrapping_add(instr.sc() as i64));
@@ -593,8 +592,8 @@ impl Executor {
                     }
                 }
                 Opcode::MulIntI => {
-                    let dst = instr.a() as usize;
-                    let lhs_idx = instr.b() as usize;
+                    let dst = self.frame_base + instr.a() as usize;
+                    let lhs_idx = self.frame_base + instr.b() as usize;
                     match &self.state.stack[lhs_idx] {
                         RuntimeVal::Int(lhs) => {
                             self.state.stack[dst] = RuntimeVal::Int(lhs.wrapping_mul(instr.sc() as i64));
@@ -605,19 +604,72 @@ impl Executor {
                     }
                 }
                 Opcode::ModIntI => {
-                    let dst = instr.a() as usize;
-                    let lhs_idx = instr.b() as usize;
+                    let dst = self.frame_base + instr.a() as usize;
+                    let lhs_idx = self.frame_base + instr.b() as usize;
                     let rhs = instr.sc() as i64;
                     if rhs == 0 {
                         bail!("ModIntI divisor is zero");
                     }
                     match &self.state.stack[lhs_idx] {
                         RuntimeVal::Int(lhs) => {
-                            self.state.stack[dst] = RuntimeVal::Int(*lhs % rhs);
+                            let value = *lhs % rhs;
+                            self.state.stack[dst] = RuntimeVal::Int(value);
+                            profile.record_write_source(VmRegisterWriteSource::Arithmetic, collect_metrics);
+                            if !self.try_apply_next_zero_branch_for_written_int(code, instr.a(), value) {
+                                self.pc += 1;
+                            }
+                        }
+                        lhs => bail!("ModIntI expected Int lhs, got {:?}", lhs.kind()),
+                    }
+                }
+                Opcode::MinInt => {
+                    let (dst, lhs_idx, rhs_idx) = self.stack_abc_unchecked(instr);
+                    match (&self.state.stack[lhs_idx], &self.state.stack[rhs_idx]) {
+                        (RuntimeVal::Int(lhs), RuntimeVal::Int(rhs)) => {
+                            self.state.stack[dst] = RuntimeVal::Int((*lhs).min(*rhs));
                             profile.record_write_source(VmRegisterWriteSource::Arithmetic, collect_metrics);
                             self.pc += 1;
                         }
-                        lhs => bail!("ModIntI expected Int lhs, got {:?}", lhs.kind()),
+                        (lhs, rhs) => bail!(
+                            "MinInt expected Int operands, got {:?} and {:?}",
+                            lhs.kind(),
+                            rhs.kind()
+                        ),
+                    }
+                }
+                Opcode::MaxInt => {
+                    let (dst, lhs_idx, rhs_idx) = self.stack_abc_unchecked(instr);
+                    match (&self.state.stack[lhs_idx], &self.state.stack[rhs_idx]) {
+                        (RuntimeVal::Int(lhs), RuntimeVal::Int(rhs)) => {
+                            self.state.stack[dst] = RuntimeVal::Int((*lhs).max(*rhs));
+                            profile.record_write_source(VmRegisterWriteSource::Arithmetic, collect_metrics);
+                            self.pc += 1;
+                        }
+                        (lhs, rhs) => bail!(
+                            "MaxInt expected Int operands, got {:?} and {:?}",
+                            lhs.kind(),
+                            rhs.kind()
+                        ),
+                    }
+                }
+                Opcode::AddMulInt => {
+                    let (acc_idx, lhs_idx, rhs_idx) = self.stack_abc_unchecked(instr);
+                    match (
+                        &self.state.stack[acc_idx],
+                        &self.state.stack[lhs_idx],
+                        &self.state.stack[rhs_idx],
+                    ) {
+                        (RuntimeVal::Int(acc), RuntimeVal::Int(lhs), RuntimeVal::Int(rhs)) => {
+                            self.state.stack[acc_idx] = RuntimeVal::Int(acc.wrapping_add(lhs.wrapping_mul(*rhs)));
+                            profile.record_write_source(VmRegisterWriteSource::Arithmetic, collect_metrics);
+                            self.pc += 1;
+                        }
+                        (acc, lhs, rhs) => bail!(
+                            "AddMulInt expected Int operands, got {:?}, {:?}, and {:?}",
+                            acc.kind(),
+                            lhs.kind(),
+                            rhs.kind()
+                        ),
                     }
                 }
                 Opcode::SubInt => {
@@ -676,9 +728,12 @@ impl Executor {
                     match (lhs, rhs) {
                         (RuntimeVal::Int(_), RuntimeVal::Int(0)) => bail!("ModInt divisor is zero"),
                         (RuntimeVal::Int(l), RuntimeVal::Int(r)) => {
-                            self.state.stack[dst] = RuntimeVal::Int(*l % *r);
+                            let value = *l % *r;
+                            self.state.stack[dst] = RuntimeVal::Int(value);
                             profile.record_write_source(VmRegisterWriteSource::Arithmetic, collect_metrics);
-                            self.pc += 1;
+                            if !self.try_apply_next_zero_branch_for_written_int(code, instr.a(), value) {
+                                self.pc += 1;
+                            }
                         }
                         _ => {
                             self.dynamic_mod(instr)?;
@@ -901,7 +956,7 @@ impl Executor {
                     let index = self.stack_index_unchecked(instr.a());
                     if matches!(self.state.stack[index], RuntimeVal::Nil) {
                         self.pc = self.relative_pc_unchecked(instr.sbx() as i32);
-                    } else {
+                    } else if !self.try_apply_fallthrough_move_jump(code) {
                         self.pc += 1;
                     }
                 }
@@ -909,8 +964,102 @@ impl Executor {
                     let index = self.stack_index_unchecked(instr.a());
                     if !matches!(self.state.stack[index], RuntimeVal::Nil) {
                         self.pc = self.relative_pc_unchecked(instr.sbx() as i32);
-                    } else {
+                    } else if !self.try_apply_fallthrough_move_jump(code) {
                         self.pc += 1;
+                    }
+                }
+                Opcode::BrEqZeroInt => {
+                    let index = self.stack_index_unchecked(instr.a());
+                    match &self.state.stack[index] {
+                        RuntimeVal::Int(value) if *value == 0 => {
+                            self.pc = self.relative_pc_unchecked(instr.sbx() as i32);
+                        }
+                        RuntimeVal::Int(_) => {
+                            if !self.try_apply_fallthrough_move_jump(code) {
+                                self.pc += 1;
+                            }
+                        }
+                        value => bail!("BrEqZeroInt expected Int operand, got {:?}", value.kind()),
+                    }
+                }
+                Opcode::BrNeZeroInt => {
+                    let index = self.stack_index_unchecked(instr.a());
+                    match &self.state.stack[index] {
+                        RuntimeVal::Int(value) if *value != 0 => {
+                            self.pc = self.relative_pc_unchecked(instr.sbx() as i32);
+                        }
+                        RuntimeVal::Int(_) => {
+                            if !self.try_apply_fallthrough_move_jump(code) {
+                                self.pc += 1;
+                            }
+                        }
+                        value => bail!("BrNeZeroInt expected Int operand, got {:?}", value.kind()),
+                    }
+                }
+                Opcode::BrEqIntI4 => {
+                    let index = self.stack_index_unchecked(instr.a());
+                    let rhs = i64::from(instr.branch_i4_immediate());
+                    match &self.state.stack[index] {
+                        RuntimeVal::Int(value) if *value == rhs => {
+                            self.pc = self.relative_pc_unchecked(instr.branch_i4_offset() as i32);
+                        }
+                        RuntimeVal::Int(_) => {
+                            if !self.try_apply_fallthrough_move_jump(code) {
+                                self.pc += 1;
+                            }
+                        }
+                        value => bail!("BrEqIntI4 expected Int operand, got {:?}", value.kind()),
+                    }
+                }
+                Opcode::BrNeIntI4 => {
+                    let index = self.stack_index_unchecked(instr.a());
+                    let rhs = i64::from(instr.branch_i4_immediate());
+                    match &self.state.stack[index] {
+                        RuntimeVal::Int(value) if *value != rhs => {
+                            self.pc = self.relative_pc_unchecked(instr.branch_i4_offset() as i32);
+                        }
+                        RuntimeVal::Int(_) => {
+                            if !self.try_apply_fallthrough_move_jump(code) {
+                                self.pc += 1;
+                            }
+                        }
+                        value => bail!("BrNeIntI4 expected Int operand, got {:?}", value.kind()),
+                    }
+                }
+                Opcode::BrModEqZeroIntI4 => {
+                    let index = self.stack_index_unchecked(instr.a());
+                    let divisor = i64::from(instr.branch_i4_immediate());
+                    if divisor == 0 {
+                        bail!("BrModEqZeroIntI4 divisor is zero");
+                    }
+                    match &self.state.stack[index] {
+                        RuntimeVal::Int(value) if *value % divisor == 0 => {
+                            self.pc = self.relative_pc_unchecked(instr.branch_i4_offset() as i32);
+                        }
+                        RuntimeVal::Int(_) => {
+                            if !self.try_apply_fallthrough_move_jump(code) {
+                                self.pc += 1;
+                            }
+                        }
+                        value => bail!("BrModEqZeroIntI4 expected Int operand, got {:?}", value.kind()),
+                    }
+                }
+                Opcode::BrModNeZeroIntI4 => {
+                    let index = self.stack_index_unchecked(instr.a());
+                    let divisor = i64::from(instr.branch_i4_immediate());
+                    if divisor == 0 {
+                        bail!("BrModNeZeroIntI4 divisor is zero");
+                    }
+                    match &self.state.stack[index] {
+                        RuntimeVal::Int(value) if *value % divisor != 0 => {
+                            self.pc = self.relative_pc_unchecked(instr.branch_i4_offset() as i32);
+                        }
+                        RuntimeVal::Int(_) => {
+                            if !self.try_apply_fallthrough_move_jump(code) {
+                                self.pc += 1;
+                            }
+                        }
+                        value => bail!("BrModNeZeroIntI4 expected Int operand, got {:?}", value.kind()),
                     }
                 }
                 Opcode::TestEqInt => {
@@ -1102,13 +1251,21 @@ impl Executor {
                     if collect_metrics {
                         record_container_op_known_enabled(index_metric_kind(index_fact));
                     }
-                    if index_fact.is_some_and(|fact| fact.target_kind == PerfIndexTargetKind::List)
-                        && let Some(value) = self.try_get_known_list_index(instr.b(), instr.c())
+                    if let Some(fact) = index_fact
+                        && fact.target_kind == PerfIndexTargetKind::List
                     {
-                        self.write_unchecked(instr.a(), value);
-                        profile.record_write_source(VmRegisterWriteSource::Index, collect_metrics);
-                        self.pc += 1;
-                        continue;
+                        let value = if fact.value_kind == crate::vm::analysis::PerfValueKind::Int {
+                            self.try_get_known_int_list_index(instr.b(), instr.c())
+                                .or_else(|| self.try_get_known_list_index(instr.b(), instr.c()))
+                        } else {
+                            self.try_get_known_list_index(instr.b(), instr.c())
+                        };
+                        if let Some(value) = value {
+                            self.write_unchecked(instr.a(), value);
+                            profile.record_write_source(VmRegisterWriteSource::Index, collect_metrics);
+                            self.pc += 1;
+                            continue;
+                        }
                     }
                     let value = self.get_index(
                         self.pc,
@@ -1140,13 +1297,18 @@ impl Executor {
                     )?;
                     self.write_unchecked(instr.a(), value);
                     profile.record_write_source(VmRegisterWriteSource::Index, collect_metrics);
-                    self.pc += 1;
+                    let written = *self.read_unchecked(instr.a());
+                    if !self.try_apply_next_nil_branch_for_written_value(code, instr.a(), &written) {
+                        self.pc += 1;
+                    }
                 }
                 Opcode::GetList => {
                     if collect_metrics {
                         record_container_op_known_enabled(VmContainerMetric::List);
                     }
-                    let value = if let Some(value) = self.try_get_known_list_index(instr.b(), instr.c()) {
+                    let value = if let Some(value) = self.try_get_known_int_list_index(instr.b(), instr.c()) {
+                        value
+                    } else if let Some(value) = self.try_get_known_list_index(instr.b(), instr.c()) {
                         value
                     } else {
                         self.get_list_index(instr.b(), instr.c())?

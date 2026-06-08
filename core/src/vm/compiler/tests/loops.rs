@@ -536,10 +536,10 @@ fn compiler_while_licm_hoists_constant_loads_out_of_loop() {
         .position(|instr| {
             matches!(
                 instr.opcode(),
-                Opcode::CmpNeInt | Opcode::TestNeInt | Opcode::TestNeIntI
+                Opcode::CmpNeInt | Opcode::TestNeInt | Opcode::TestNeIntI | Opcode::BrEqZeroInt | Opcode::BrNeZeroInt
             )
         })
-        .expect("expected CmpNeInt/TestNeInt/TestNeIntI");
+        .expect("expected CmpNeInt/TestNeInt/TestNeIntI/zero branch");
 
     // Find the Jmp that goes backward (loop back)
     let jmp_back_idx = function
@@ -748,6 +748,58 @@ fn compiler_range_loop_caches_direct_inline_body_literals() {
 
     let result = execute_module(&module).expect("execute module");
     assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(10)]);
+}
+
+#[test]
+fn compiler_caches_template_literal_parts_before_loop_body() {
+    let function = compile_source(
+        r#"
+        let i = 0;
+        let total = 0;
+        while (i < 4) {
+            let key = "order-${i}";
+            total += key.len();
+            i += 1;
+        }
+        return total;
+        "#,
+    )
+    .expect("compile source");
+
+    let cmp_pc = function
+        .code
+        .iter()
+        .position(|instr| {
+            matches!(
+                instr.opcode(),
+                Opcode::CmpLtInt | Opcode::TestLtInt | Opcode::TestLtIntI
+            )
+        })
+        .expect("expected while condition");
+    let loop_target = first_backward_loop_target_after(&function, cmp_pc) as usize;
+    let prefix_loads = function
+        .code
+        .iter()
+        .enumerate()
+        .filter(|(_, instr)| {
+            instr.opcode() == Opcode::LoadString && function.consts.string(instr.bx()) == Some("order-")
+        })
+        .map(|(pc, _)| pc)
+        .collect::<Vec<_>>();
+
+    assert!(
+        !prefix_loads.is_empty(),
+        "template literal prefix should be cached as a loop scalar const: {:?}",
+        function.code
+    );
+    assert!(
+        prefix_loads.iter().all(|pc| *pc < loop_target),
+        "template literal prefix should not be loaded inside the loop body: {:?}",
+        function.code
+    );
+
+    let result = execute(&function).expect("execute");
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(28)]);
 }
 
 fn first_backward_loop_target_after(function: &Function, pc: usize) -> i64 {

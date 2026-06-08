@@ -954,7 +954,7 @@ fn compiler_lowers_condition_int_literal_compare_to_immediate_test() {
         if 2 < lhs {
             value += 10;
         }
-        if lhs != 3 {
+        if lhs != 37 {
             value += 100;
         } else {
             value += 1000;
@@ -996,7 +996,7 @@ fn compiler_lowers_condition_int_literal_compare_to_immediate_test() {
     }
 
     let result = execute(&function).expect("execute");
-    assert_eq!(result.returns, vec![RuntimeVal::Int(1011)]);
+    assert_eq!(result.returns, vec![RuntimeVal::Int(111)]);
 }
 
 #[test]

@@ -216,6 +216,15 @@ pub enum Opcode {
     TestGeIntI = 88,
     Move2 = 89,
     TestEqIntI2 = 90,
+    MinInt = 91,
+    MaxInt = 92,
+    BrEqZeroInt = 93,
+    BrNeZeroInt = 94,
+    BrEqIntI4 = 95,
+    BrNeIntI4 = 96,
+    AddMulInt = 97,
+    BrModEqZeroIntI4 = 98,
+    BrModNeZeroIntI4 = 99,
 }
 
 impl Opcode {
@@ -316,6 +325,15 @@ impl Opcode {
             88 => Some(Self::TestGeIntI),
             89 => Some(Self::Move2),
             90 => Some(Self::TestEqIntI2),
+            91 => Some(Self::MinInt),
+            92 => Some(Self::MaxInt),
+            93 => Some(Self::BrEqZeroInt),
+            94 => Some(Self::BrNeZeroInt),
+            95 => Some(Self::BrEqIntI4),
+            96 => Some(Self::BrNeIntI4),
+            97 => Some(Self::AddMulInt),
+            98 => Some(Self::BrModEqZeroIntI4),
+            99 => Some(Self::BrModNeZeroIntI4),
             _ => None,
         }
     }
@@ -346,8 +364,18 @@ impl Opcode {
                 | Self::LoadCapture
                 | Self::LoadFunction
                 | Self::LoadNative
-                | Self::CallNamed => InstrFormat::Abx,
-                Self::TryBegin | Self::BrFalse | Self::BrTrue | Self::BrNil | Self::BrNotNil => InstrFormat::AsBx,
+                | Self::CallNamed
+                | Self::BrEqIntI4
+                | Self::BrNeIntI4
+                | Self::BrModEqZeroIntI4
+                | Self::BrModNeZeroIntI4 => InstrFormat::Abx,
+                Self::TryBegin
+                | Self::BrFalse
+                | Self::BrTrue
+                | Self::BrNil
+                | Self::BrNotNil
+                | Self::BrEqZeroInt
+                | Self::BrNeZeroInt => InstrFormat::AsBx,
                 Self::TryEnd | Self::Wide => InstrFormat::Ax,
                 _ => InstrFormat::Abc,
             },
@@ -415,6 +443,9 @@ impl Instr {
     const B_MASK: u32 = 0xFF;
     const C_MASK: u32 = 0xFF;
     const BX_MASK: u32 = 0xFFFF;
+    const I4_BRANCH_IMMEDIATE_SHIFT: u32 = 12;
+    const I4_BRANCH_OFFSET_MASK: u16 = 0x0FFF;
+    const I4_BRANCH_OFFSET_BIAS: i32 = 1 << 11;
     const AX_MASK: u32 = (1 << 25) - 1;
     const SJ_MASK: u32 = Self::AX_MASK;
     const SBX_BIAS: i32 = (Self::BX_MASK as i32) >> 1;
@@ -460,6 +491,18 @@ impl Instr {
             ((op as u32) << Self::OP_SHIFT)
                 | ((a as u32) << Self::A_SHIFT)
                 | (((bx as u32) & Self::BX_MASK) << Self::BX_SHIFT),
+        )
+    }
+
+    #[inline]
+    pub const fn branch_i4(op: Opcode, a: u8, immediate: u8, offset: i16) -> Self {
+        let encoded = (offset as i32 + Self::I4_BRANCH_OFFSET_BIAS) as u16;
+        debug_assert!(immediate <= 0x0F);
+        debug_assert!(encoded <= Self::I4_BRANCH_OFFSET_MASK);
+        Self::abx(
+            op,
+            a,
+            ((immediate as u16) << Self::I4_BRANCH_IMMEDIATE_SHIFT) | (encoded & Self::I4_BRANCH_OFFSET_MASK),
         )
     }
 
@@ -518,6 +561,16 @@ impl Instr {
     }
 
     #[inline]
+    pub const fn branch_i4_immediate(self) -> u8 {
+        (self.bx() >> Self::I4_BRANCH_IMMEDIATE_SHIFT) as u8
+    }
+
+    #[inline]
+    pub const fn branch_i4_offset(self) -> i16 {
+        ((self.bx() & Self::I4_BRANCH_OFFSET_MASK) as i32 - Self::I4_BRANCH_OFFSET_BIAS) as i16
+    }
+
+    #[inline]
     pub const fn ax_arg(self) -> u32 {
         (self.0 >> Self::AX_SHIFT) & Self::AX_MASK
     }
@@ -543,6 +596,18 @@ impl Instr {
     }
 
     pub fn disassemble(self) -> String {
+        if matches!(
+            self.opcode(),
+            Opcode::BrEqIntI4 | Opcode::BrNeIntI4 | Opcode::BrModEqZeroIntI4 | Opcode::BrModNeZeroIntI4
+        ) {
+            return format!(
+                "{:?} r{} {} {}",
+                self.opcode(),
+                self.a(),
+                self.branch_i4_immediate(),
+                self.branch_i4_offset()
+            );
+        }
         match self.format() {
             InstrFormat::Abc => format!("{:?} r{} r{} r{}", self.opcode(), self.a(), self.b(), self.c()),
             InstrFormat::Abx => format!("{:?} r{} #{}", self.opcode(), self.a(), self.bx()),
@@ -678,6 +743,23 @@ mod tests {
         assert_eq!(load.bx(), 12_345);
         assert_eq!(handler.format(), InstrFormat::AsBx);
         assert_eq!(handler.sbx(), -123);
+    }
+
+    #[test]
+    fn i4_branch_packs_immediate_and_offset_readably() {
+        let branch = Instr::branch_i4(Opcode::BrNeIntI4, 7, 3, -12);
+
+        assert_eq!(branch.format(), InstrFormat::Abx);
+        assert_eq!(branch.a(), 7);
+        assert_eq!(branch.branch_i4_immediate(), 3);
+        assert_eq!(branch.branch_i4_offset(), -12);
+        assert_eq!(branch.disassemble(), "BrNeIntI4 r7 3 -12");
+
+        let mod_branch = Instr::branch_i4(Opcode::BrModEqZeroIntI4, 4, 5, 9);
+        assert_eq!(mod_branch.format(), InstrFormat::Abx);
+        assert_eq!(mod_branch.branch_i4_immediate(), 5);
+        assert_eq!(mod_branch.branch_i4_offset(), 9);
+        assert_eq!(mod_branch.disassemble(), "BrModEqZeroIntI4 r4 5 9");
     }
 
     #[test]

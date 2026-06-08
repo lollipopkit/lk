@@ -7,24 +7,47 @@ pub(in crate::llvm) fn emit_i64_binary_block(ir: &mut String, instr: Instr, tmp_
     let lhs = next_tmp(tmp_index);
     let rhs = next_tmp(tmp_index);
     let out = next_tmp(tmp_index);
-    let zero = next_tmp(tmp_index);
-    let ok_label = format!("divisor_ok_{}", *tmp_index);
     let op = match instr.opcode() {
         Opcode::AddInt => "add",
         Opcode::SubInt => "sub",
         Opcode::MulInt => "mul",
         Opcode::DivInt => "sdiv",
         Opcode::ModInt => "srem",
+        Opcode::MinInt | Opcode::MaxInt => "select",
         _ => unreachable!("opcode matched by caller"),
     };
     ir.push_str(&format!("  {lhs} = load i64, ptr %r{}.slot\n", instr.b()));
     ir.push_str(&format!("  {rhs} = load i64, ptr %r{}.slot\n", instr.c()));
     if matches!(instr.opcode(), Opcode::DivInt | Opcode::ModInt) {
+        let zero = next_tmp(tmp_index);
+        let ok_label = format!("divisor_ok_{}", *tmp_index);
         ir.push_str(&format!("  {zero} = icmp eq i64 {rhs}, 0\n"));
         ir.push_str(&format!("  br i1 {zero}, label %lk_divisor_zero, label %{ok_label}\n"));
         ir.push_str(&format!("{ok_label}:\n"));
     }
-    ir.push_str(&format!("  {out} = {op} i64 {lhs}, {rhs}\n"));
+    if matches!(instr.opcode(), Opcode::MinInt | Opcode::MaxInt) {
+        let pred = if instr.opcode() == Opcode::MinInt { "slt" } else { "sgt" };
+        let cond = next_tmp(tmp_index);
+        ir.push_str(&format!("  {cond} = icmp {pred} i64 {lhs}, {rhs}\n"));
+        ir.push_str(&format!("  {out} = select i1 {cond}, i64 {lhs}, i64 {rhs}\n"));
+    } else {
+        ir.push_str(&format!("  {out} = {op} i64 {lhs}, {rhs}\n"));
+    }
+    ir.push_str(&format!("  store i64 {out}, ptr %r{}.slot\n", instr.a()));
+    ir.push_str(&format!("  store i64 1, ptr %r{}.present.slot\n", instr.a()));
+}
+
+pub(in crate::llvm) fn emit_i64_add_mul_block(ir: &mut String, instr: Instr, tmp_index: &mut usize) {
+    let acc = next_tmp(tmp_index);
+    let lhs = next_tmp(tmp_index);
+    let rhs = next_tmp(tmp_index);
+    let product = next_tmp(tmp_index);
+    let out = next_tmp(tmp_index);
+    ir.push_str(&format!("  {acc} = load i64, ptr %r{}.slot\n", instr.a()));
+    ir.push_str(&format!("  {lhs} = load i64, ptr %r{}.slot\n", instr.b()));
+    ir.push_str(&format!("  {rhs} = load i64, ptr %r{}.slot\n", instr.c()));
+    ir.push_str(&format!("  {product} = mul i64 {lhs}, {rhs}\n"));
+    ir.push_str(&format!("  {out} = add i64 {acc}, {product}\n"));
     ir.push_str(&format!("  store i64 {out}, ptr %r{}.slot\n", instr.a()));
     ir.push_str(&format!("  store i64 1, ptr %r{}.present.slot\n", instr.a()));
 }

@@ -195,12 +195,15 @@ fn compiler_inlines_direct_function_with_while_loop() {
         .position(|instr| {
             matches!(
                 instr.opcode(),
-                Opcode::CmpNeInt | Opcode::TestNeInt | Opcode::TestNeIntI
+                Opcode::CmpNeInt | Opcode::TestNeInt | Opcode::TestNeIntI | Opcode::BrEqZeroInt | Opcode::BrNeZeroInt
             )
         })
-        .expect("inlined gcd loop should compare b != 0");
+        .expect("inlined gcd loop should compare/branch on b != 0");
     let loop_target = first_backward_jmp_target_after(entry, cmp_pc);
-    if entry.code[cmp_pc].opcode() == Opcode::TestNeIntI {
+    if matches!(
+        entry.code[cmp_pc].opcode(),
+        Opcode::TestNeIntI | Opcode::BrEqZeroInt | Opcode::BrNeZeroInt
+    ) {
         assert!(loop_target >= cmp_pc as i64);
     } else {
         let zero_load_pc = entry
@@ -490,6 +493,17 @@ fn compiler_lowers_push_method_to_list_push_without_list_concat() {
         !function.code.iter().any(|instr| instr.opcode() == Opcode::NewList),
         "method push should not materialize one-element lists"
     );
+    let get_index_pc = function
+        .code
+        .iter()
+        .position(|instr| matches!(instr.opcode(), Opcode::GetIndex | Opcode::GetList))
+        .expect("GetIndex/GetList");
+    let index_fact = function
+        .performance
+        .index_op(get_index_pc)
+        .expect("GetIndex performance fact");
+    assert_eq!(index_fact.target_kind, crate::vm::analysis::PerfIndexTargetKind::List);
+    assert_eq!(index_fact.value_kind, crate::vm::analysis::PerfValueKind::Int);
     let result = execute(&function).expect("execute");
     assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
 }

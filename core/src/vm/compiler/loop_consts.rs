@@ -278,8 +278,15 @@ fn collect_expr_scalar_consts(expr: &Expr, keys: &mut Vec<ScalarLoopConstKey>) {
         }
         Expr::TemplateString(parts) => {
             for part in parts {
-                if let crate::expr::TemplateStringPart::Expr(expr) = part {
-                    collect_expr_scalar_consts(expr, keys);
+                match part {
+                    crate::expr::TemplateStringPart::Literal(value) => {
+                        if let Some(key) =
+                            ShortStr::new(value).map(|_| ScalarLoopConstKey::ShortString(value.to_owned()))
+                        {
+                            keys.push(key);
+                        }
+                    }
+                    crate::expr::TemplateStringPart::Expr(expr) => collect_expr_scalar_consts(expr, keys),
                 }
             }
         }
@@ -661,8 +668,17 @@ fn collect_expr_inline_call_scalar_consts(
         }
         Expr::TemplateString(parts) => {
             for part in parts {
-                if let crate::expr::TemplateStringPart::Expr(expr) = part {
-                    collect_expr_inline_call_scalar_consts(expr, bodies, visiting, keys);
+                match part {
+                    crate::expr::TemplateStringPart::Literal(value) => {
+                        if let Some(key) =
+                            ShortStr::new(value).map(|_| ScalarLoopConstKey::ShortString(value.to_owned()))
+                        {
+                            keys.push(key);
+                        }
+                    }
+                    crate::expr::TemplateStringPart::Expr(expr) => {
+                        collect_expr_inline_call_scalar_consts(expr, bodies, visiting, keys);
+                    }
                 }
             }
         }

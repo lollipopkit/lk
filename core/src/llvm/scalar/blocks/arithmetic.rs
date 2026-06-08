@@ -8,7 +8,7 @@ use crate::{
                 three_regs_in_bounds,
             },
             contains::{local_static_heap_const_before, text_value_from_trusted_reg},
-            emit::{emit_i64_binary_block, emit_i64_immediate_block},
+            emit::{emit_i64_add_mul_block, emit_i64_binary_block, emit_i64_immediate_block},
             facts::{NativeScalarFacts, NativeScalarKind},
         },
         straightline_value::{NativeStraightlineValue, native_static_i64_binary},
@@ -33,6 +33,11 @@ pub(super) fn emit_int_arithmetic_block(
         return false;
     }
     static_regs[instr.a() as usize] = None;
+    if instr.opcode() == Opcode::AddMulInt {
+        emit_i64_add_mul_block(ir, instr, tmp_index);
+        emit_branch_to_next(ir, pc, code.len());
+        return true;
+    }
     if emit_static_list_concat_block(code, heap_values, pc, instr, static_regs) {
         emit_branch_to_next(ir, pc, code.len());
         return true;
@@ -67,6 +72,8 @@ pub(super) fn emit_int_arithmetic_block(
     }
     if i64_slot_kind(lhs) && i64_slot_kind(rhs) {
         emit_i64_binary_block(ir, instr, tmp_index);
+    } else if matches!(instr.opcode(), Opcode::MinInt | Opcode::MaxInt) {
+        return false;
     } else if lhs.is_numeric() && rhs.is_numeric() {
         emit_mixed_numeric_int_opcode_block(ir, "", instr, lhs, rhs, tmp_index);
     } else {

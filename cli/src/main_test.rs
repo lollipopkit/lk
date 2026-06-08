@@ -117,6 +117,19 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "llvm")]
+    #[test]
+    fn direct_source_execution_defaults_to_vm_and_native_is_opt_in() {
+        assert!(!native_run_enabled_from_flags(false, false, false, false));
+        assert!(native_run_enabled_from_flags(false, false, false, true));
+        assert!(!native_run_enabled_from_flags(true, false, false, false));
+        assert!(!native_run_enabled_from_flags(false, true, false, false));
+        assert!(!native_run_enabled_from_flags(false, false, true, false));
+        assert!(!native_run_enabled_from_flags(true, false, false, true));
+        assert!(!native_run_enabled_from_flags(false, true, false, true));
+        assert!(!native_run_enabled_from_flags(false, false, true, true));
+    }
+
     #[test]
     fn test_cli_args_compile_default_target_is_none() {
         let args = CliArgs::try_parse_from(["lk", "compile", "foo.lk"]).expect("should parse default compile");

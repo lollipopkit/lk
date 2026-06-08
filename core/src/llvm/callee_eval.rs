@@ -232,7 +232,47 @@ pub(super) fn native_straightline_function_return(
                 };
                 *global = Some(value);
             }
-            Opcode::AddInt | Opcode::SubInt | Opcode::MulInt | Opcode::DivInt | Opcode::ModInt => {
+            Opcode::AddInt
+            | Opcode::SubInt
+            | Opcode::MulInt
+            | Opcode::DivInt
+            | Opcode::ModInt
+            | Opcode::MinInt
+            | Opcode::MaxInt
+            | Opcode::AddMulInt => {
+                if instr.opcode() == Opcode::AddMulInt {
+                    let Some(NativeStraightlineValue::I64(acc)) = regs.get(instr.a() as usize).and_then(Clone::clone)
+                    else {
+                        return Ok(None);
+                    };
+                    let Some(NativeStraightlineValue::I64(lhs)) = regs.get(instr.b() as usize).and_then(Clone::clone)
+                    else {
+                        return Ok(None);
+                    };
+                    let Some(NativeStraightlineValue::I64(rhs)) = regs.get(instr.c() as usize).and_then(Clone::clone)
+                    else {
+                        return Ok(None);
+                    };
+                    let name = if let (Ok(acc), Ok(lhs), Ok(rhs)) =
+                        (acc.parse::<i64>(), lhs.parse::<i64>(), rhs.parse::<i64>())
+                    {
+                        acc.wrapping_add(lhs.wrapping_mul(rhs)).to_string()
+                    } else {
+                        let product = format!("%f{function_index}_r{}_{}", instr.a(), *ssa_index);
+                        *ssa_index += 1;
+                        let name = format!("%f{function_index}_r{}_{}", instr.a(), *ssa_index);
+                        *ssa_index += 1;
+                        body.push_str(&format!("  {product} = mul i64 {lhs}, {rhs}\n"));
+                        body.push_str(&format!("  {name} = add i64 {acc}, {product}\n"));
+                        name
+                    };
+                    if instr.a() as usize >= regs.len() {
+                        return Ok(None);
+                    }
+                    regs[instr.a() as usize] = Some(NativeStraightlineValue::I64(name));
+                    pc = next_pc;
+                    continue;
+                }
                 if instr.opcode() == Opcode::AddInt
                     && let (
                         Some(NativeStraightlineValue::String { value: lhs, .. }),
@@ -276,11 +316,20 @@ pub(super) fn native_straightline_function_return(
                         Opcode::MulInt => "mul",
                         Opcode::DivInt => "sdiv",
                         Opcode::ModInt => "srem",
+                        Opcode::MinInt | Opcode::MaxInt => "select",
                         _ => unreachable!("opcode matched above"),
                     };
                     let name = format!("%f{function_index}_r{}_{}", instr.a(), *ssa_index);
                     *ssa_index += 1;
-                    body.push_str(&format!("  {name} = {op} i64 {lhs}, {rhs}\n"));
+                    if matches!(instr.opcode(), Opcode::MinInt | Opcode::MaxInt) {
+                        let pred = if instr.opcode() == Opcode::MinInt { "slt" } else { "sgt" };
+                        let cond = format!("%f{function_index}_r{}_{}", instr.a(), *ssa_index);
+                        *ssa_index += 1;
+                        body.push_str(&format!("  {cond} = icmp {pred} i64 {lhs}, {rhs}\n"));
+                        body.push_str(&format!("  {name} = {op} i1 {cond}, i64 {lhs}, i64 {rhs}\n"));
+                    } else {
+                        body.push_str(&format!("  {name} = {op} i64 {lhs}, {rhs}\n"));
+                    }
                     name
                 };
                 if instr.a() as usize >= regs.len() {
@@ -966,6 +1015,79 @@ pub(super) fn native_straightline_function_return(
                     };
                 next_pc = if truthy { truthy_target } else { falsy_target };
             }
+            Opcode::BrNil | Opcode::BrNotNil => {
+                let Some(value) = regs.get(instr.a() as usize).and_then(Clone::clone) else {
+                    return Ok(None);
+                };
+                let is_nil = matches!(value, NativeStraightlineValue::Nil);
+                let Some(taken) = native_relative_target(pc, instr.sbx() as i32, code.len()) else {
+                    return Ok(None);
+                };
+                let branch =
+                    (instr.opcode() == Opcode::BrNil && is_nil) || (instr.opcode() == Opcode::BrNotNil && !is_nil);
+                next_pc = if branch { taken } else { pc + 1 };
+            }
+            Opcode::BrEqZeroInt
+            | Opcode::BrNeZeroInt
+            | Opcode::BrEqIntI4
+            | Opcode::BrNeIntI4
+            | Opcode::BrModEqZeroIntI4
+            | Opcode::BrModNeZeroIntI4 => {
+                let Some(lhs) = regs.get(instr.a() as usize).and_then(Clone::clone) else {
+                    return Ok(None);
+                };
+                let (compare_opcode, rhs, offset, divisor) = match instr.opcode() {
+                    Opcode::BrEqZeroInt => (Opcode::CmpInt, 0, instr.sbx() as i32, None),
+                    Opcode::BrNeZeroInt => (Opcode::CmpNeInt, 0, instr.sbx() as i32, None),
+                    Opcode::BrEqIntI4 => (
+                        Opcode::CmpInt,
+                        instr.branch_i4_immediate(),
+                        instr.branch_i4_offset() as i32,
+                        None,
+                    ),
+                    Opcode::BrNeIntI4 => (
+                        Opcode::CmpNeInt,
+                        instr.branch_i4_immediate(),
+                        instr.branch_i4_offset() as i32,
+                        None,
+                    ),
+                    Opcode::BrModEqZeroIntI4 => (
+                        Opcode::CmpInt,
+                        0,
+                        instr.branch_i4_offset() as i32,
+                        Some(instr.branch_i4_immediate()),
+                    ),
+                    Opcode::BrModNeZeroIntI4 => (
+                        Opcode::CmpNeInt,
+                        0,
+                        instr.branch_i4_offset() as i32,
+                        Some(instr.branch_i4_immediate()),
+                    ),
+                    _ => return Ok(None),
+                };
+                let lhs = if let Some(divisor) = divisor {
+                    let NativeStraightlineValue::I64(raw) = lhs else {
+                        return Ok(None);
+                    };
+                    let Ok(value) = raw.parse::<i64>() else {
+                        return Ok(None);
+                    };
+                    if divisor == 0 {
+                        return Ok(None);
+                    }
+                    NativeStraightlineValue::I64((value % i64::from(divisor)).to_string())
+                } else {
+                    lhs
+                };
+                let rhs = NativeStraightlineValue::I64(rhs.to_string());
+                let Some(branch) = native_static_compare_bool(&lhs, &rhs, compare_opcode) else {
+                    return Ok(None);
+                };
+                let Some(taken) = native_relative_target(pc, offset, code.len()) else {
+                    return Ok(None);
+                };
+                next_pc = if branch { taken } else { pc + 1 };
+            }
             Opcode::Jmp => {
                 let Some(target) = native_relative_target(pc, instr.sj_arg(), code.len()) else {
                     return Ok(None);
@@ -1145,7 +1267,20 @@ pub(super) fn native_direct_call_static_return_value(
     if code.iter().any(|instr| {
         matches!(
             instr.opcode(),
-            Opcode::Test | Opcode::BrFalse | Opcode::BrTrue | Opcode::Jmp | Opcode::CallDirect | Opcode::CallNamed
+            Opcode::Test
+                | Opcode::BrFalse
+                | Opcode::BrTrue
+                | Opcode::BrNil
+                | Opcode::BrNotNil
+                | Opcode::BrEqZeroInt
+                | Opcode::BrNeZeroInt
+                | Opcode::BrEqIntI4
+                | Opcode::BrNeIntI4
+                | Opcode::BrModEqZeroIntI4
+                | Opcode::BrModNeZeroIntI4
+                | Opcode::Jmp
+                | Opcode::CallDirect
+                | Opcode::CallNamed
         )
     }) {
         return None;

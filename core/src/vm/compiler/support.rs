@@ -528,6 +528,18 @@ pub(super) fn int_immediate_operand(op: &BinOp, expr: &Expr) -> Option<i8> {
     }
 }
 
+pub(super) fn commuted_int_immediate_operand(op: &BinOp, expr: &Expr) -> Option<i8> {
+    let value = match expr {
+        Expr::Paren(inner) => return commuted_int_immediate_operand(op, inner),
+        Expr::Literal(crate::val::LiteralVal::Int(value)) => *value,
+        _ => return None,
+    };
+    match op {
+        BinOp::Add | BinOp::Mul => i8::try_from(value).ok(),
+        _ => None,
+    }
+}
+
 pub(super) fn numeric_flavor(lhs: &Expr, op: &BinOp, rhs: &Expr) -> NumericFlavor {
     if op.is_arith() && (expr_is_statically_float(lhs) || expr_is_statically_float(rhs)) {
         NumericFlavor::Float

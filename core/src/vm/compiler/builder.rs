@@ -133,6 +133,22 @@ impl Compiler {
         Ok(pc)
     }
 
+    pub(super) fn emit_i4_branch_placeholder(
+        &mut self,
+        opcode: Opcode,
+        condition: u16,
+        immediate: u8,
+    ) -> Result<usize> {
+        let pc = self.function.code.len();
+        self.emit(Instr::branch_i4(
+            opcode,
+            checked_u8("i4 branch condition", condition)?,
+            immediate,
+            0,
+        ));
+        Ok(pc)
+    }
+
     pub(super) fn emit_compare_test_placeholder(
         &mut self,
         opcode: Opcode,
@@ -243,11 +259,37 @@ impl Compiler {
             .ok_or_else(|| anyhow!("Compiler branch patch pc {pc} out of bounds"))?;
         if !matches!(
             instr.opcode(),
-            Opcode::BrFalse | Opcode::BrTrue | Opcode::BrNil | Opcode::BrNotNil
+            Opcode::BrFalse
+                | Opcode::BrTrue
+                | Opcode::BrNil
+                | Opcode::BrNotNil
+                | Opcode::BrEqZeroInt
+                | Opcode::BrNeZeroInt
         ) {
             bail!("Compiler expected branch at patch pc {pc}");
         }
         self.function.code[pc] = Instr::as_bx(instr.opcode(), instr.a(), jump_offset(pc, target)? as i16);
+        Ok(())
+    }
+
+    pub(super) fn patch_i4_branch(&mut self, pc: usize, target: usize) -> Result<()> {
+        let instr = *self
+            .function
+            .code
+            .get(pc)
+            .ok_or_else(|| anyhow!("Compiler i4 branch patch pc {pc} out of bounds"))?;
+        if !matches!(
+            instr.opcode(),
+            Opcode::BrEqIntI4 | Opcode::BrNeIntI4 | Opcode::BrModEqZeroIntI4 | Opcode::BrModNeZeroIntI4
+        ) {
+            bail!("Compiler expected i4 branch at patch pc {pc}");
+        }
+        let offset = jump_offset(pc, target)?;
+        if !(-2048..=2047).contains(&offset) {
+            bail!("Compiler i4 branch offset {offset} out of range at pc {pc}");
+        }
+        self.function.code[pc] =
+            Instr::branch_i4(instr.opcode(), instr.a(), instr.branch_i4_immediate(), offset as i16);
         Ok(())
     }
 
@@ -352,10 +394,25 @@ fn build_control_flow_facts(code: &[Instr], performance: &PerformanceFacts) -> R
                     &mut block_starts,
                 )?;
             }
-            Opcode::BrFalse | Opcode::BrTrue | Opcode::BrNil | Opcode::BrNotNil => {
+            Opcode::BrFalse
+            | Opcode::BrTrue
+            | Opcode::BrNil
+            | Opcode::BrNotNil
+            | Opcode::BrEqZeroInt
+            | Opcode::BrNeZeroInt => {
                 mark_relative_target(
                     pc,
                     instr.sbx() as i32,
+                    code.len(),
+                    &mut branch_targets,
+                    &mut block_starts,
+                )?;
+                mark_block_start(pc + 1, code.len(), &mut block_starts);
+            }
+            Opcode::BrEqIntI4 | Opcode::BrNeIntI4 | Opcode::BrModEqZeroIntI4 | Opcode::BrModNeZeroIntI4 => {
+                mark_relative_target(
+                    pc,
+                    instr.branch_i4_offset() as i32,
                     code.len(),
                     &mut branch_targets,
                     &mut block_starts,

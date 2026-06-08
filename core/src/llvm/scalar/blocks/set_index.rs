@@ -447,7 +447,13 @@ fn local_static_i64_expr_before(
             }
             Opcode::GetIndex => local_static_object_index(target, code, strings, prev_pc, prev.c()),
             Opcode::GetFieldK => local_static_object_field(target, strings, prev),
-            Opcode::AddInt | Opcode::SubInt | Opcode::MulInt | Opcode::DivInt | Opcode::ModInt => {
+            Opcode::AddInt
+            | Opcode::SubInt
+            | Opcode::MulInt
+            | Opcode::DivInt
+            | Opcode::ModInt
+            | Opcode::MinInt
+            | Opcode::MaxInt => {
                 let NativeStraightlineValue::I64(lhs) =
                     static_i64_operand(target, static_regs, code, int_consts, strings, prev_pc, prev.b())?
                 else {

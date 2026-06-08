@@ -9,7 +9,7 @@ use crate::llvm::{
     },
     ir_text::{native_label, native_relative_target, next_tmp},
     scalar::block_helpers::local_register_kind_before,
-    scalar::emit::{emit_i64_binary_block, emit_numeric_compare_block},
+    scalar::emit::{emit_i64_add_mul_block, emit_i64_binary_block, emit_numeric_compare_block},
     scalar::facts::NativeScalarKind,
     straightline_value::{NativeBuiltin, NativeListElementKind, NativeStraightlineValue, native_static_global},
 };
@@ -173,6 +173,45 @@ fn compile_native_i64_list_subfunction_profile(
                 ));
                 emitted_terminator = true;
             }
+            Opcode::BrEqZeroInt
+            | Opcode::BrNeZeroInt
+            | Opcode::BrEqIntI4
+            | Opcode::BrNeIntI4
+            | Opcode::BrModEqZeroIntI4
+            | Opcode::BrModNeZeroIntI4 => {
+                let Some((taken, fallthrough)) = direct_branch_targets(pc, instr, code_len) else {
+                    return Ok(None);
+                };
+                let value = next_tmp(&mut tmp_index);
+                let cond = next_tmp(&mut tmp_index);
+                let (pred, rhs, rem) = match instr.opcode() {
+                    Opcode::BrEqZeroInt => ("eq", 0, None),
+                    Opcode::BrNeZeroInt => ("ne", 0, None),
+                    Opcode::BrEqIntI4 => ("eq", instr.branch_i4_immediate(), None),
+                    Opcode::BrNeIntI4 => ("ne", instr.branch_i4_immediate(), None),
+                    Opcode::BrModEqZeroIntI4 => ("eq", 0, Some(instr.branch_i4_immediate())),
+                    Opcode::BrModNeZeroIntI4 => ("ne", 0, Some(instr.branch_i4_immediate())),
+                    _ => return Ok(None),
+                };
+                ir.push_str(&format!("  {value} = load i64, ptr %r{}.slot\n", instr.a()));
+                let compare_value = if let Some(divisor) = rem {
+                    if divisor == 0 {
+                        return Ok(None);
+                    }
+                    let rem_value = next_tmp(&mut tmp_index);
+                    ir.push_str(&format!("  {rem_value} = srem i64 {value}, {divisor}\n"));
+                    rem_value
+                } else {
+                    value.clone()
+                };
+                ir.push_str(&format!("  {cond} = icmp {pred} i64 {compare_value}, {rhs}\n"));
+                ir.push_str(&format!(
+                    "  br i1 {cond}, label {}, label {}\n",
+                    native_label(taken, code_len),
+                    native_label(fallthrough, code_len)
+                ));
+                emitted_terminator = true;
+            }
             opcode if opcode.is_compare_test() => {
                 let lhs = next_tmp(&mut tmp_index);
                 let cond = next_tmp(&mut tmp_index);
@@ -268,8 +307,19 @@ fn compile_native_i64_list_subfunction_profile(
                 ir.push_str(&format!("  store i64 {len}, ptr %r{}.slot\n", instr.a()));
                 static_regs[instr.a() as usize] = None;
             }
-            Opcode::AddInt | Opcode::SubInt | Opcode::MulInt | Opcode::DivInt | Opcode::ModInt => {
-                emit_i64_binary_block(&mut ir, instr, &mut tmp_index);
+            Opcode::AddInt
+            | Opcode::SubInt
+            | Opcode::MulInt
+            | Opcode::DivInt
+            | Opcode::ModInt
+            | Opcode::MinInt
+            | Opcode::MaxInt
+            | Opcode::AddMulInt => {
+                if instr.opcode() == Opcode::AddMulInt {
+                    emit_i64_add_mul_block(&mut ir, instr, &mut tmp_index);
+                } else {
+                    emit_i64_binary_block(&mut ir, instr, &mut tmp_index);
+                }
                 static_regs[instr.a() as usize] = None;
             }
             Opcode::CmpInt
@@ -610,6 +660,19 @@ fn find_block_targets(code: &[Instr], code_len: usize) -> Vec<usize> {
                     targets.push(falsy);
                 }
             }
+            Opcode::BrNil
+            | Opcode::BrNotNil
+            | Opcode::BrEqZeroInt
+            | Opcode::BrNeZeroInt
+            | Opcode::BrEqIntI4
+            | Opcode::BrNeIntI4
+            | Opcode::BrModEqZeroIntI4
+            | Opcode::BrModNeZeroIntI4 => {
+                if let Some((taken, fallthrough)) = direct_branch_targets(pc, instr, code_len) {
+                    targets.push(taken);
+                    targets.push(fallthrough);
+                }
+            }
             opcode if opcode.is_compare_test() => {
                 if let Some((taken, fallthrough)) = compare_test_targets(code, pc, code_len) {
                     targets.push(taken);
@@ -642,6 +705,20 @@ fn branch_truthy_falsy_targets(pc: usize, instr: Instr, code_len: usize) -> Opti
         fallthrough
     };
     Some((truthy, falsy))
+}
+
+fn direct_branch_targets(pc: usize, instr: Instr, code_len: usize) -> Option<(usize, usize)> {
+    let fallthrough = pc + 1;
+    let taken = match instr.opcode() {
+        Opcode::BrNil | Opcode::BrNotNil | Opcode::BrEqZeroInt | Opcode::BrNeZeroInt => {
+            native_relative_target(pc, instr.sbx() as i32, code_len)?
+        }
+        Opcode::BrEqIntI4 | Opcode::BrNeIntI4 | Opcode::BrModEqZeroIntI4 | Opcode::BrModNeZeroIntI4 => {
+            native_relative_target(pc, instr.branch_i4_offset() as i32, code_len)?
+        }
+        _ => return None,
+    };
+    Some((taken, fallthrough))
 }
 
 fn compare_test_targets(code: &[Instr], pc: usize, code_len: usize) -> Option<(usize, usize)> {

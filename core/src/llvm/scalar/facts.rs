@@ -236,7 +236,33 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                     return None;
                 }
             }
-            Opcode::AddInt | Opcode::SubInt | Opcode::MulInt | Opcode::DivInt | Opcode::ModInt => {
+            Opcode::AddMulInt => {
+                let acc = native_kind(&kinds, instr.a())
+                    .or_else(|| static_kind(&static_values, instr.a()).and_then(|value| static_value_kind(&value)))
+                    .unwrap_or(NativeScalarKind::I64);
+                let lhs = native_kind(&kinds, instr.b())
+                    .or_else(|| static_kind(&static_values, instr.b()).and_then(|value| static_value_kind(&value)))
+                    .unwrap_or(NativeScalarKind::I64);
+                let rhs = native_kind(&kinds, instr.c())
+                    .or_else(|| static_kind(&static_values, instr.c()).and_then(|value| static_value_kind(&value)))
+                    .unwrap_or(NativeScalarKind::I64);
+                if !matches!(acc, NativeScalarKind::I64 | NativeScalarKind::MaybeI64)
+                    || !matches!(lhs, NativeScalarKind::I64 | NativeScalarKind::MaybeI64)
+                    || !matches!(rhs, NativeScalarKind::I64 | NativeScalarKind::MaybeI64)
+                {
+                    return None;
+                }
+                if !set_native_kind(&mut kinds, &mut static_values, instr.a(), NativeScalarKind::I64) {
+                    return None;
+                }
+            }
+            Opcode::AddInt
+            | Opcode::SubInt
+            | Opcode::MulInt
+            | Opcode::DivInt
+            | Opcode::ModInt
+            | Opcode::MinInt
+            | Opcode::MaxInt => {
                 if let (Some(NativeStraightlineValue::I64(lhs)), Some(NativeStraightlineValue::I64(rhs))) = (
                     static_kind(&static_values, instr.b())
                         .or_else(|| local_static_i64_before(code, int_consts, pc, instr.b())),
@@ -413,6 +439,19 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                     let relative = native_relative_target(pc, instr.sbx() as i32, code.len())?;
                     let untaken = if branch_taken { fallthrough } else { relative };
                     mark_static_untaken_return_path(&mut skip_static_pcs, &static_boundaries, code, untaken);
+                }
+            }
+            Opcode::BrEqZeroInt
+            | Opcode::BrNeZeroInt
+            | Opcode::BrEqIntI4
+            | Opcode::BrNeIntI4
+            | Opcode::BrModEqZeroIntI4
+            | Opcode::BrModNeZeroIntI4 => {
+                if !matches!(
+                    native_kind(&kinds, instr.a()),
+                    Some(NativeScalarKind::I64 | NativeScalarKind::MaybeI64)
+                ) {
+                    return None;
                 }
             }
             opcode if opcode.is_compare_test() => {

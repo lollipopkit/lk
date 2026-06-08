@@ -46,7 +46,7 @@ use pkg::{init_package, run_pkg_command};
     version,
     about = "CLI for LK",
     long_about = None,
-    after_help = "Compiler and runtime migration target the Instr VM path."
+    after_help = "Direct source execution uses the bytecode VM by default; native/AOT paths are explicit opt-ins."
 )]
 struct CliArgs {
     /// Subcommands like `compile FILE`
@@ -618,10 +618,17 @@ fn try_execute_cached_native(path: &Path, source: &[u8]) -> anyhow::Result<bool>
 
 #[cfg(feature = "llvm")]
 fn native_run_enabled() -> bool {
-    if env_flag("LK_FORCE_VM") || env_flag("LK_VM_ONLY") || env_flag("LK_VM_PROFILE") {
-        return false;
-    }
-    env_flag("LK_NATIVE_RUN")
+    native_run_enabled_from_flags(
+        env_flag("LK_FORCE_VM"),
+        env_flag("LK_VM_ONLY"),
+        env_flag("LK_VM_PROFILE"),
+        env_flag("LK_NATIVE_RUN"),
+    )
+}
+
+#[cfg(feature = "llvm")]
+fn native_run_enabled_from_flags(force_vm: bool, vm_only: bool, vm_profile: bool, native_run: bool) -> bool {
+    native_run && !(force_vm || vm_only || vm_profile)
 }
 
 #[cfg(feature = "llvm")]

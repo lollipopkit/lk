@@ -525,6 +525,8 @@ pub(super) fn native_static_i64_binary(lhs: &str, rhs: &str, opcode: Opcode) -> 
         Opcode::MulInt => lhs.wrapping_mul(rhs),
         Opcode::DivInt if rhs != 0 => lhs.wrapping_div(rhs),
         Opcode::ModInt if rhs != 0 => lhs.wrapping_rem(rhs),
+        Opcode::MinInt => lhs.min(rhs),
+        Opcode::MaxInt => lhs.max(rhs),
         _ => return None,
     };
     Some(value.to_string())

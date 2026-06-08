@@ -27,7 +27,8 @@ By default the runner measures the same bytecode VM path used by direct
 `lk file.lk` execution. Use `RUN_AOT=1` to compile and measure native AOT as an
 additional explicit engine. If LLVM is disabled or the current workload artifact
 is not native lowerable yet, AOT is reported as skipped and the VM/Lua benchmark
-still runs.
+still runs. The latest smoke currently skips full-suite AOT because native
+lowering does not yet support a loop-after dynamic-map `GetIndex` shape.
 
 The runner executes one workload at a time and prints progress to stderr, so a
 slow or stuck workload can be identified directly. Each workload has a timeout
@@ -111,22 +112,49 @@ chains, including direct-call inline blocks; it reduced `gcd_batch` dynamic
 `TestEqIntI2` is enabled for facts-confirmed `a == K && b == L` small-int
 condition pairs; it reduces state-machine compare dispatch but is still a small
 interpreter-side improvement rather than a path to the target by itself.
+`MinInt` and `MaxInt` are enabled for facts-confirmed integer min/max update
+branches such as `if candidate < current { current = candidate }`; they are
+general register-write opcodes, not workload-specific fused operations.
+`BrEqZeroInt` and `BrNeZeroInt` are enabled for facts-confirmed zero compare
+false edges such as `while (x != 0)` and `if (x == 0)`. They replace the
+immediate compare-test plus following `Jmp` with one direct `AsBx` branch while
+keeping normal comparison expressions as bool-producing expressions.
+`BrEqIntI4` and `BrNeIntI4` extend the same idea to facts-confirmed `0..15`
+small-int equality branches. They pack the immediate and relative offset into
+one `ABx` payload, reducing branch-chain dispatch without adding
+workload-specific transition opcodes.
+`BrEqInt8` / `BrNeInt8` / `BrLtInt8` / `BrLeInt8` / `BrGtInt8` / `BrGeInt8`
+were tested as a register-vs-register short-branch candidate and reverted.
+They covered general `Int/Int` compare branches in `binary_search`,
+`sliding_window_sum`, and `prime_trial_division`, but the default VM geomean
+only moved to `0.887x` and the AOT smoke exposed a separate native dynamic-map
+`GetIndex` lowering gap, so the candidate is not part of the default benchmark
+path.
 The compiler also lowers selected calls directly into their destination local:
 `math.floor(Int-like)` writes the proven-integer argument expression into the
 target register, and external `map.get(map, key)` writes `GetFieldK`/`GetIndex`
 into the target register. This reduces temporary-register `Move` instructions
 without adding workload-specific opcodes.
+Plain indexed access now uses the same direct-to-destination path, and
+facts-confirmed `List<Int> + Int key` access lowers to `GetList` instead of the
+fully generic `GetIndex`.
 Direct `lk file.lk` execution defaults to the bytecode VM. Set
 `LK_NATIVE_RUN=1` to opt into the cached native executable fast path when LLVM
 lowering succeeds; keep `LK_FORCE_VM=1` for interpreter-only benchmark/profile
-runs. The latest opt-in native sample used
+runs. A historical opt-in native sample used
 `RUN_AOT=0 RUNS=3 EXTRA_RUNS=5 BENCH_PROGRESS=0 BENCH_TIMEOUT=30` and was
 checksum-clean: cached-native LK/Lua geomean `0.353x` with a cold native cache
-dir and prewarm. The latest full run with `RUN_AOT=1` reported cached-native LK/Lua
-`0.349x`, AOT/Lua `0.350x`, and AOT/LK `1.001x`. A
+dir and prewarm. A historical full run with `RUN_AOT=1` reported cached-native
+LK/Lua `0.349x`, AOT/Lua `0.350x`, and AOT/LK `1.001x`. The current full-suite
+AOT smoke skips native compilation until loop-after dynamic-map `GetIndex`
+lowering is implemented. A
 precomputed absolute-target table for every `Jmp` was tested and rejected after
 it made `gcd_batch` hit the 30s timeout. `DivIntI` was also tested and rejected
 because it covered static division literals but regressed interpreter geomean.
+An interpreter peephole that executed a following `ForLoopI` inside hot
+`AddInt` / `AddIntI` / `AddMulInt` / `ListPush` handlers was also tested and
+reverted: checksum stayed clean, but the default VM geomean regressed to
+`0.856x` and `state_machine_transitions` regressed to `1.329x`.
 The next higher-leverage interpreter opcode work should target generic
 control-flow reduction, loop-carried register writes, or existing index
 helper/layout costs rather than workload-specific fused opcodes.
@@ -134,15 +162,66 @@ helper/layout costs rather than workload-specific fused opcodes.
 Latest default VM validation:
 
 ```bash
-LK_FORCE_VM=1 RUN_AOT=0 RUNS=3 EXTRA_RUNS=5 BENCH_PROGRESS=0 BENCH_TIMEOUT=60 bash bench/run_workload_bench.sh
+RUN_AOT=0 RUNS=3 EXTRA_RUNS=5 BENCH_PROGRESS=0 BENCH_TIMEOUT=60 bash bench/run_workload_bench.sh
 ```
 
 This is the direct-execution baseline: `lk file.lk` defaults to the bytecode VM,
-so this command intentionally does not use cached native execution. The latest
-checksum-clean run reported LK/Lua geomean `1.029x`. The largest remaining VM
-regressions were `prime_trial_division` `2.132x`, `state_machine_transitions`
-`2.132x`, `stock_max_profit` `1.895x`, `gcd_batch` `1.751x`,
-`config_defaults_merge` `1.675x`, and `route_permission_check` `1.417x`.
+and the runner defaults to `RUN_AOT=0`, so this command intentionally does not
+use cached native execution or AOT. The latest checksum-clean rerun reported
+LK/Lua geomean `0.793x` / `0.808x` across two retained-candidate reruns. The
+largest remaining VM regressions still include `sliding_window_sum`,
+`state_machine_transitions`, `prime_trial_division`, `gcd_batch`, and
+`config_defaults_merge`. Small-int branch lowering reduced
+`state_machine_transitions` from the previous `2.073x` result while keeping the
+optimization generic; `AddMulInt` folds facts-confirmed compound-add multiply
+terms into one accumulator write; `AddIntI` / `MulIntI` also cover commuted
+small-int immediate arithmetic (`literal + x` / `literal * x`) when facts
+confirm the register operand is `Int`; facts-confirmed typed int-list `GetIndex`
+reads now try the `TypedList::Int` backing before the generic typed-list element
+matcher, `GetList` covers the narrower facts-confirmed `List<Int> + Int key`
+shape, known string key lookup on empty `TypedMap::Mixed` now returns `nil`
+directly for sparse/default maps, and `ListPush` propagates pushed element kind into list facts without
+preserving unsafe static length assumptions.
+Continuous `Move` dispatch now uses a tight next-op bounds check instead of
+`code.get(...).map(...)` on each adjacent move. Loop scalar const caching now
+also covers short template literal parts, so `"prefix${i}"` style keys do not
+reload the literal prefix on every iteration.
+`ModInt` / `ModIntI` followed by a same-register `BrEqZeroInt` / `BrNeZeroInt`
+now applies that branch inside the modulo arm and skips the next dispatch; this
+is a VM peephole over existing bytecode, not a new opcode.
+`BrModEqZeroIntI4` / `BrModNeZeroIntI4` additionally cover facts-confirmed
+small-divisor divisibility guards like `(x % K) == 0` and `(x % K) != 0` for
+`K` in `1..15`, folding `ModIntI + zero branch` into one packed branch without
+creating workload-specific fused opcodes.
+Nil branches, zero branches, small-int branch/test, and ordinary compare-test
+fallthrough bodies shaped as `Move + Jmp` or a single `Move` also execute inside
+the current branch handler, reducing branch-chain/default dispatch without
+changing bytecode or LLVM lowering.
+`GetFieldK` also applies a following same-register `BrNil` / `BrNotNil` inside
+the field-read arm, and directly executes a fallthrough default `Move` when
+present. Profile validation reduced `config_defaults_merge` `opcode_steps` from
+`2386193` to `1772050`, with `BrNotNil` and `Move` dropping out of the top
+dynamic opcodes.
+The compiler also sinks safe `let/assign x = default; if-chain { x = value }`
+patterns into a synthetic final `else` default. This is a branch-chain/register
+write optimization rather than a new opcode: it avoids writing the default value
+before a branch that immediately overwrites it.
+
+The same VM line also includes a correctness fix for immediate arithmetic:
+`AddIntI`, `MulIntI`, and `ModIntI` now index through the current call
+`frame_base`, so direct-call callees no longer read or write the entry frame
+when executing immediate arithmetic. `AddIntI` / `MulIntI` additionally lower
+commuted small-int literal forms without adding new opcodes.
+Profile-enabled validation showed `gcd_batch` executing `BrEqZeroInt:737372`,
+`config_defaults_merge` executing `BrNeZeroInt:360000`, and
+`stock_max_profit` executing `MaxInt:540000` and `MinInt:540000`. Static
+static coverage now reports `instructions=1952`, `Jmp=166`, `LoadInt=313`,
+`AddInt=106`, `AddIntI=58`, `AddMulInt:10`, `BrModNeZeroIntI4:21`,
+`BrNeZeroInt:9`, `BrNeIntI4:10`, `GetIndex=62`, `GetList=6`, and `Move=341`.
+Typed int sidecar/register cache was tested and rejected after a low-sample
+VM-only run regressed to `1.210x`. `ConcatKInt` was also tested as a general
+`"prefix${int}"` template-key opcode, but was reverted after the default VM
+geomean regressed to `1.073x`.
 
 ## Adaptive Rerun Policy
 
@@ -293,7 +372,7 @@ The remaining gap (target ≤1.10x) is primarily due to:
 - String interning not yet implemented
 - Dispatch loop overhead (measurement-enabled checks)
 
-## Latest AOT Validation (2026-06-07)
+## Historical AOT Validation (2026-06-07)
 
 Command:
 
@@ -423,7 +502,8 @@ the old `Extra = 62` slot to compress static positive/negative-step range loops.
 It is not the long-term opcode encoding migration described in `OPCODE.md`.
 Continuous `Move` dispatch batching is also enabled; it preserves per-instruction
 profile accounting, so `Move` remains visible in dynamic opcode counters even
-when adjacent moves are consumed inside one dispatch arm.
+when adjacent moves are consumed inside one dispatch arm. On the current opcode
+baseline, the next-op check is a direct bounds check plus opcode read.
 
 An attempted follow-up that stored static range `step_value` in
 `PerfForLoopFact` regressed low-sample geomean and was reverted; `ForLoopI`
@@ -431,10 +511,18 @@ continues to read the step register.
 Another attempted follow-up split `ForLoopI` into four positive/negative and
 inclusive/exclusive opcode shapes. With `LK_FORCE_VM=1 RUN_AOT=0 RUNS=3
 EXTRA_RUNS=5 BENCH_PROGRESS=0 BENCH_TIMEOUT=30`, interpreter geomean regressed
-to `1.075x`, so the split was reverted. Simplifying the continuous
-`Move` next-op check regressed to `1.072x`, and moving `DivInt` / `ModInt`
-zero-divisor construction into a cold helper regressed to `1.079x`; neither is
-kept as a default optimization.
+to `1.075x`, so the split was reverted. An earlier continuous `Move` next-op
+check experiment regressed on the then-current baseline, but the current
+small-int branch baseline validates the direct bounds-check form at `0.905x`.
+Moving `DivInt` / `ModInt` zero-divisor construction into a cold helper
+regressed to `1.079x` and is not kept as a default optimization.
+
+Template literal parts inside loops are now collected into the same scalar
+literal cache as ordinary string literals. Profile-enabled single-sample runs
+showed opcode steps dropping from about `2.63M` to `2.24M` in `two_sum_map`,
+`4.41M` to `3.99M` in `histogram_group_count`, and `1.08M` to `0.92M` in
+`template_render_mix`; this removes dynamic `LoadString` prefix materialization
+without adding a workload-specific opcode.
 
 The normal release VM now uses a zero-sized no-op runtime profile frame when
 `vm-profile` is not enabled; opcode histogram, register write source, and
@@ -477,10 +565,13 @@ rolled back; future loop work should use phi/native hot-loop lowering instead
 of rearranging interpreter branch shape alone.
 
 The latest index-key counters show that string-map direct lookup now covers most
-hot map accesses: aggregate `generic_map_lookup` remains about `19.5K`, while
-`typed_map_direct` is about `1.99M` after const map folding removes some
-lookups before runtime. Per workload,
-`two_sum_map` is down to about `2.5K` generic lookups, `histogram_group_count`
-about `7K`, `log_parse_filter` about `4.4K`, and `inventory_reorder` about
-`5.6K`. The next optimization target should move to general loop
-materialization, arithmetic temporaries, `Move` elimination, and branch lowering.
+hot map accesses: aggregate `generic_map_lookup` is about `84K`, while
+`typed_map_direct` is about `2.97M` after const map folding removes some
+lookups before runtime. The increase in aggregate generic lookups comes from
+`config_defaults_merge`, where sparse/default maps still leave about `69K`
+generic lookups after the empty `TypedMap::Mixed` fast path converts many misses
+to direct `nil`. Per workload, `two_sum_map` is down to about `2.5K` generic
+lookups, `histogram_group_count` about `3.5K`, `log_parse_filter` about `2.2K`,
+and `inventory_reorder` about `2.8K`. The next optimization target should move
+to general loop materialization, arithmetic temporaries, `Move` elimination, and
+branch lowering.

@@ -33,7 +33,7 @@ use std::{
 use anyhow::{Result, anyhow, bail};
 
 use crate::{
-    expr::{Expr, TemplateStringPart},
+    expr::{Expr, Pattern, TemplateStringPart},
     operator::{BinOp, UnaryOp},
     stmt::{ForPattern, Program, Stmt},
     util::fast_map::FastHashMap,
@@ -202,6 +202,10 @@ impl Compiler {
         let mut index = 0;
         while index < statements.len() {
             if index + 1 < statements.len()
+                && self.try_lower_default_assign_if_chain(statements[index].as_ref(), statements[index + 1].as_ref())?
+            {
+                index += 2;
+            } else if index + 1 < statements.len()
                 && self.try_lower_move2_assign_pair(statements[index].as_ref(), statements[index + 1].as_ref())?
             {
                 index += 2;
@@ -213,6 +217,89 @@ impl Compiler {
                 break;
             }
         }
+        Ok(())
+    }
+
+    fn try_lower_default_assign_if_chain(&mut self, first: &Stmt, second: &Stmt) -> Result<bool> {
+        let Some((name, default_value, is_let)) = default_assign_candidate(first) else {
+            return Ok(false);
+        };
+        if self.cell_locals.contains(name)
+            || !pure_default_expr(default_value)
+            || expr_mentions_name(default_value, name)
+            || !if_chain_assigns_only_target(second, name)
+            || if_chain_condition_mentions_name(second, name)
+        {
+            return Ok(false);
+        }
+        let Stmt::If {
+            condition,
+            then_stmt,
+            else_stmt,
+        } = second
+        else {
+            return Ok(false);
+        };
+
+        let watermark = self.next_reg;
+        let target = if let Some(reg) = self.locals.get(name).copied() {
+            reg
+        } else if is_let {
+            let reg = self.alloc_reg();
+            self.insert_local(name.to_string(), reg);
+            reg
+        } else {
+            return Ok(false);
+        };
+        self.function
+            .performance
+            .set_register_kind(target, facts::expr_static_value_kind(default_value));
+        self.lower_defaulted_if_chain(name, default_value, condition, then_stmt, else_stmt.as_deref())?;
+        self.next_reg = self.live_register_floor().max(watermark).max(target + 1);
+        Ok(true)
+    }
+
+    fn lower_defaulted_if_chain(
+        &mut self,
+        name: &str,
+        default_value: &Expr,
+        condition: &Expr,
+        then_stmt: &Stmt,
+        else_stmt: Option<&Stmt>,
+    ) -> Result<()> {
+        let false_jumps = self.emit_condition_false_jumps(condition)?;
+
+        self.emitted_return = false;
+        self.local_rebind_suppression += 1;
+        self.lower_stmt(then_stmt)?;
+        self.local_rebind_suppression -= 1;
+        let then_returns = self.emitted_return;
+
+        let jmp_end = (!then_returns).then(|| self.emit_jmp_placeholder());
+        let else_start = self.function.code.len();
+        self.patch_condition_false_jumps(false_jumps, else_start)?;
+
+        self.emitted_return = false;
+        if let Some(Stmt::If {
+            condition,
+            then_stmt,
+            else_stmt,
+        }) = else_stmt
+        {
+            self.lower_defaulted_if_chain(name, default_value, condition, then_stmt, else_stmt.as_deref())?;
+        } else {
+            debug_assert!(else_stmt.is_none());
+            self.local_rebind_suppression += 1;
+            self.lower_assign(name, default_value)?;
+            self.local_rebind_suppression -= 1;
+        }
+        let else_returns = self.emitted_return;
+
+        if let Some(jmp_end) = jmp_end {
+            let end = self.function.code.len();
+            self.patch_jmp(jmp_end, end)?;
+        }
+        self.emitted_return = then_returns && else_returns;
         Ok(())
     }
 
@@ -373,10 +460,15 @@ impl Compiler {
     }
 
     fn lower_access(&mut self, target: &Expr, key: &Expr) -> Result<u16> {
+        let dst = self.alloc_reg();
+        self.lower_access_to_register(dst, target, key)?;
+        Ok(dst)
+    }
+
+    pub(super) fn lower_access_to_register(&mut self, dst: u16, target: &Expr, key: &Expr) -> Result<()> {
         let target = self.lower_readonly_access_target(target)?;
         let index_fact = index_fact_from_target(&self.function.performance, target);
         let (key, key_fact) = self.lower_index_key_for_target(target, index_fact, key)?;
-        let dst = self.alloc_reg();
         let pc = self.function.code.len();
         if list_int_key(index_fact, &self.function.performance, key) {
             self.emit(Instr::abc(
@@ -407,7 +499,7 @@ impl Compiler {
         if let Some(fact) = index_fact {
             self.function.performance.set_index_fact(pc, fact);
         }
-        Ok(dst)
+        Ok(())
     }
 
     fn lower_readonly_access_target(&mut self, target: &Expr) -> Result<u16> {
@@ -587,6 +679,15 @@ impl Compiler {
                 Ok(vec![self.emit_branch_placeholder(Opcode::BrNil, value)?])
             }
             Expr::Bin(lhs, op, rhs) if compare_test_opcode(op).is_some() => {
+                if let Some((opcode, value, immediate)) = self.lower_mod_zero_i4_branch_operands(lhs, op, rhs)? {
+                    return Ok(vec![self.emit_i4_branch_placeholder(opcode, value, immediate)?]);
+                }
+                if let Some((opcode, value)) = self.lower_zero_branch_operands(lhs, op, rhs)? {
+                    return Ok(vec![self.emit_branch_placeholder(opcode, value)?]);
+                }
+                if let Some((opcode, value, immediate)) = self.lower_i4_branch_operands(lhs, op, rhs)? {
+                    return Ok(vec![self.emit_i4_branch_placeholder(opcode, value, immediate)?]);
+                }
                 if ENABLE_COMPARE_TEST_IMMEDIATE_LOWERING
                     && let Some((opcode, lhs, rhs)) = self.lower_compare_test_immediate_operands(lhs, op, rhs)?
                 {
@@ -657,11 +758,82 @@ impl Compiler {
         Ok(None)
     }
 
+    fn lower_zero_branch_operands(&mut self, lhs: &Expr, op: &BinOp, rhs: &Expr) -> Result<Option<(Opcode, u16)>> {
+        let value_expr = if zero_int_literal(rhs) {
+            lhs
+        } else if zero_int_literal(lhs) {
+            rhs
+        } else {
+            return Ok(None);
+        };
+        let value = self.lower_readonly_operand(value_expr)?;
+        if self.function.performance.value_kind(value) != PerfValueKind::Int {
+            return Ok(None);
+        }
+        let opcode = match op {
+            BinOp::Eq => Opcode::BrNeZeroInt,
+            BinOp::Ne => Opcode::BrEqZeroInt,
+            _ => return Ok(None),
+        };
+        Ok(Some((opcode, value)))
+    }
+
+    fn lower_mod_zero_i4_branch_operands(
+        &mut self,
+        lhs: &Expr,
+        op: &BinOp,
+        rhs: &Expr,
+    ) -> Result<Option<(Opcode, u16, u8)>> {
+        let Some((value_expr, divisor)) = mod_i4_zero_operands(lhs, rhs) else {
+            return Ok(None);
+        };
+        let value = self.lower_readonly_operand(value_expr)?;
+        if self.function.performance.value_kind(value) != PerfValueKind::Int {
+            return Ok(None);
+        }
+        let opcode = match op {
+            BinOp::Eq => Opcode::BrModNeZeroIntI4,
+            BinOp::Ne => Opcode::BrModEqZeroIntI4,
+            _ => return Ok(None),
+        };
+        Ok(Some((opcode, value, divisor)))
+    }
+
+    fn lower_i4_branch_operands(&mut self, lhs: &Expr, op: &BinOp, rhs: &Expr) -> Result<Option<(Opcode, u16, u8)>> {
+        let (value_expr, immediate) = if let Some(immediate) = u4_literal(rhs) {
+            (lhs, immediate)
+        } else if let Some(immediate) = u4_literal(lhs) {
+            (rhs, immediate)
+        } else {
+            return Ok(None);
+        };
+        let value = self.lower_readonly_operand(value_expr)?;
+        if self.function.performance.value_kind(value) != PerfValueKind::Int {
+            return Ok(None);
+        }
+        let opcode = match op {
+            BinOp::Eq => Opcode::BrNeIntI4,
+            BinOp::Ne => Opcode::BrEqIntI4,
+            _ => return Ok(None),
+        };
+        Ok(Some((opcode, value, immediate)))
+    }
+
     pub(super) fn patch_condition_false_jumps(&mut self, jumps: Vec<usize>, target: usize) -> Result<()> {
         for jump in jumps {
             match self.function.code.get(jump).copied().map(Instr::opcode) {
-                Some(Opcode::BrNil | Opcode::BrNotNil | Opcode::BrFalse | Opcode::BrTrue) => {
+                Some(
+                    Opcode::BrNil
+                    | Opcode::BrNotNil
+                    | Opcode::BrFalse
+                    | Opcode::BrTrue
+                    | Opcode::BrEqZeroInt
+                    | Opcode::BrNeZeroInt,
+                ) => {
                     self.patch_branch(jump, target)?;
+                }
+                Some(Opcode::BrEqIntI4 | Opcode::BrNeIntI4 | Opcode::BrModEqZeroIntI4 | Opcode::BrModNeZeroIntI4) => {
+                    self.patch_i4_branch(jump, target)?
                 }
                 Some(opcode) if opcode.is_compare_test() => self.patch_compare_test_jump(jump, target)?,
                 _ => self.patch_test_false_jump(jump, target)?,
@@ -692,12 +864,8 @@ impl Compiler {
 
             // Lower each part into its register
             for (i, part) in parts.iter().enumerate() {
-                let part_reg = self.lower_template_string_part(part, force_single_expr_string)?;
                 let target_reg = start_reg + i as u16;
-                if part_reg != target_reg {
-                    self.emit(Instr::abc(Opcode::Move, target_reg as u8, part_reg as u8, 0));
-                    self.set_register_kind(target_reg, PerfValueKind::String);
-                }
+                self.lower_template_string_part_to_register(target_reg, part, force_single_expr_string)?;
             }
 
             let dst = self.alloc_reg();
@@ -749,6 +917,35 @@ impl Compiler {
                 ));
                 self.set_register_kind(dst, PerfValueKind::String);
                 Ok(dst)
+            }
+        }
+    }
+
+    fn lower_template_string_part_to_register(
+        &mut self,
+        dst: u16,
+        part: &TemplateStringPart,
+        force_expr_string: bool,
+    ) -> Result<()> {
+        match part {
+            TemplateStringPart::Literal(value) => self.emit_literal_to_register(dst, &LiteralVal::from_str(value)),
+            TemplateStringPart::Expr(expr) => {
+                if !force_expr_string {
+                    return self.lower_expr_to_register(dst, expr, "template part");
+                }
+                let value = self.lower_readonly_operand(expr)?;
+                if self.function.performance.value_kind(value) == PerfValueKind::String {
+                    let move_source = !self.is_current_local_slot(value);
+                    return self.emit_move_with_policy(dst, value, "template string part", move_source);
+                }
+                self.emit(Instr::abc(
+                    Opcode::ToString,
+                    checked_u8("template string dst", dst)?,
+                    checked_u8("template string src", value)?,
+                    0,
+                ));
+                self.set_register_kind(dst, PerfValueKind::String);
+                Ok(())
             }
         }
     }
@@ -950,6 +1147,9 @@ impl Compiler {
     }
 
     fn lower_if(&mut self, condition: &Expr, then_stmt: &Stmt, else_stmt: Option<&Stmt>) -> Result<()> {
+        if self.try_lower_min_max_if(condition, then_stmt, else_stmt)? {
+            return Ok(());
+        }
         let watermark = self.next_reg;
         let false_jumps = self.emit_condition_false_jumps(condition)?;
 
@@ -984,6 +1184,40 @@ impl Compiler {
         }
 
         Ok(())
+    }
+
+    fn try_lower_min_max_if(&mut self, condition: &Expr, then_stmt: &Stmt, else_stmt: Option<&Stmt>) -> Result<bool> {
+        if else_stmt.is_some() {
+            return Ok(false);
+        }
+        let Some((name, value)) = single_assign_stmt(then_stmt) else {
+            return Ok(false);
+        };
+        if self.cell_locals.contains(name) {
+            return Ok(false);
+        }
+        let Some(dst) = self.locals.get(name).copied() else {
+            return Ok(false);
+        };
+        if self.function.performance.value_kind(dst) != PerfValueKind::Int {
+            return Ok(false);
+        }
+        let Some(opcode) = min_max_update_opcode(condition, name, value) else {
+            return Ok(false);
+        };
+        let candidate = self.lower_readonly_operand(value)?;
+        if self.function.performance.value_kind(candidate) != PerfValueKind::Int {
+            return Ok(false);
+        }
+        self.emit(Instr::abc(
+            opcode,
+            checked_u8("min/max dst", dst)?,
+            checked_u8("min/max current", dst)?,
+            checked_u8("min/max candidate", candidate)?,
+        ));
+        self.set_register_kind(dst, PerfValueKind::Int);
+        self.emitted_return = false;
+        Ok(true)
     }
 
     fn lower_while(&mut self, condition: &Expr, body: &Stmt) -> Result<()> {
@@ -1562,6 +1796,15 @@ impl Compiler {
 
     fn lower_bin(&mut self, lhs: &Expr, op: &BinOp, rhs: &Expr) -> Result<u16> {
         let static_flavor = numeric_flavor(lhs, op, rhs);
+        if static_flavor == NumericFlavor::Int
+            && let Some(immediate) = support::commuted_int_immediate_operand(op, lhs)
+        {
+            let rhs = self.lower_readonly_operand(rhs)?;
+            if self.function.performance.value_kind(rhs) == PerfValueKind::Int {
+                let dst = self.alloc_reg();
+                return self.emit_int_immediate_to_register(dst, op, rhs, immediate);
+            }
+        }
         let lhs = self.lower_readonly_operand(lhs)?;
         if let Some(immediate) = int_immediate_operand(op, rhs) {
             let dst = self.alloc_reg();
@@ -1717,7 +1960,110 @@ fn list_int_key(
         && facts.value_kind(key) == crate::vm::analysis::PerfValueKind::Int
 }
 
-const ENABLE_GET_LIST_LOWERING: bool = false;
+fn default_assign_candidate(stmt: &Stmt) -> Option<(&str, &Expr, bool)> {
+    match stmt {
+        Stmt::Let {
+            pattern: Pattern::Variable(name),
+            value,
+            is_const,
+            ..
+        } if !*is_const => Some((name.as_str(), value, true)),
+        Stmt::Assign { name, value, .. } => Some((name.as_str(), value, false)),
+        _ => None,
+    }
+}
+
+fn pure_default_expr(expr: &Expr) -> bool {
+    match strip_parens(expr) {
+        Expr::Literal(_) | Expr::Var(_) => true,
+        _ => false,
+    }
+}
+
+fn expr_mentions_name(expr: &Expr, name: &str) -> bool {
+    let mut free = Vec::new();
+    collect_expr_free_vars(expr, &mut HashSet::new(), &mut free);
+    free.iter().any(|candidate| candidate == name)
+}
+
+fn if_chain_assigns_only_target(stmt: &Stmt, name: &str) -> bool {
+    let Stmt::If {
+        then_stmt, else_stmt, ..
+    } = stmt
+    else {
+        return false;
+    };
+    let Some((assigned, value)) = single_assign_stmt(then_stmt) else {
+        return false;
+    };
+    if assigned != name || expr_mentions_name(value, name) {
+        return false;
+    }
+    match else_stmt.as_deref() {
+        None => true,
+        Some(nested @ Stmt::If { .. }) => if_chain_assigns_only_target(nested, name),
+        Some(_) => false,
+    }
+}
+
+fn if_chain_condition_mentions_name(stmt: &Stmt, name: &str) -> bool {
+    let Stmt::If {
+        condition, else_stmt, ..
+    } = stmt
+    else {
+        return false;
+    };
+    expr_mentions_name(condition, name)
+        || else_stmt
+            .as_deref()
+            .is_some_and(|nested| if_chain_condition_mentions_name(nested, name))
+}
+
+fn single_assign_stmt(stmt: &Stmt) -> Option<(&str, &Expr)> {
+    match stmt {
+        Stmt::Assign { name, value, .. } => Some((name.as_str(), value)),
+        Stmt::Block { statements } if statements.len() == 1 => single_assign_stmt(&statements[0]),
+        _ => None,
+    }
+}
+
+fn min_max_update_opcode(condition: &Expr, assigned_name: &str, value: &Expr) -> Option<Opcode> {
+    let Expr::Bin(lhs, op, rhs) = strip_parens(condition) else {
+        return None;
+    };
+    let value_name = local_expr_name(value)?;
+    match op {
+        BinOp::Lt if local_expr_name(lhs)? == value_name && local_expr_name(rhs)? == assigned_name => {
+            Some(Opcode::MinInt)
+        }
+        BinOp::Gt if local_expr_name(lhs)? == value_name && local_expr_name(rhs)? == assigned_name => {
+            Some(Opcode::MaxInt)
+        }
+        BinOp::Gt if local_expr_name(rhs)? == value_name && local_expr_name(lhs)? == assigned_name => {
+            Some(Opcode::MinInt)
+        }
+        BinOp::Lt if local_expr_name(rhs)? == value_name && local_expr_name(lhs)? == assigned_name => {
+            Some(Opcode::MaxInt)
+        }
+        _ => None,
+    }
+}
+
+fn local_expr_name(expr: &Expr) -> Option<&str> {
+    match strip_parens(expr) {
+        Expr::Var(name) => Some(name.as_str()),
+        _ => None,
+    }
+}
+
+fn strip_parens(expr: &Expr) -> &Expr {
+    match expr {
+        Expr::Paren(inner) => strip_parens(inner),
+        _ => expr,
+    }
+}
+
+const ENABLE_GET_LIST_LOWERING: bool = true;
 const ENABLE_COMPARE_TEST_LOWERING: bool = true;
 const ENABLE_COMPARE_TEST_IMMEDIATE_LOWERING: bool = true;
 const ENABLE_COMPARE_TEST_PAIR_IMMEDIATE_LOWERING: bool = true;
@@ -1766,6 +2112,14 @@ fn compare_test_immediate_operand(expr: &Expr) -> Option<i8> {
     }
 }
 
+fn zero_int_literal(expr: &Expr) -> bool {
+    match expr {
+        Expr::Paren(inner) => zero_int_literal(inner),
+        Expr::Literal(LiteralVal::Int(0)) => true,
+        _ => false,
+    }
+}
+
 fn equality_u4_local_immediate(expr: &Expr) -> Option<(&str, u8)> {
     let Expr::Bin(lhs, BinOp::Eq, rhs) = expr else {
         return None;
@@ -1781,6 +2135,28 @@ fn equality_u4_local_immediate(expr: &Expr) -> Option<(&str, u8)> {
         return Some((name, value));
     }
     None
+}
+
+fn mod_i4_zero_operands<'a>(lhs: &'a Expr, rhs: &'a Expr) -> Option<(&'a Expr, u8)> {
+    if zero_int_literal(rhs)
+        && let Some(candidate) = mod_i4_operand(lhs)
+    {
+        return Some(candidate);
+    }
+    if zero_int_literal(lhs)
+        && let Some(candidate) = mod_i4_operand(rhs)
+    {
+        return Some(candidate);
+    }
+    None
+}
+
+fn mod_i4_operand(expr: &Expr) -> Option<(&Expr, u8)> {
+    let Expr::Bin(lhs, BinOp::Mod, rhs) = strip_parens(expr) else {
+        return None;
+    };
+    let divisor = u4_literal(rhs).filter(|value| *value != 0)?;
+    Some((lhs.as_ref(), divisor))
 }
 
 fn u4_literal(expr: &Expr) -> Option<u8> {

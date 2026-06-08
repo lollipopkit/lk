@@ -38,6 +38,15 @@ pub(super) fn emit_test_block(
             tmp_index,
         );
     }
+    if matches!(instr.opcode(), Opcode::BrEqZeroInt | Opcode::BrNeZeroInt) {
+        return emit_zero_int_branch_block(ir, code, pc, instr, register_count, facts, tmp_index);
+    }
+    if matches!(instr.opcode(), Opcode::BrEqIntI4 | Opcode::BrNeIntI4) {
+        return emit_i4_int_branch_block(ir, code, pc, instr, register_count, facts, tmp_index);
+    }
+    if matches!(instr.opcode(), Opcode::BrModEqZeroIntI4 | Opcode::BrModNeZeroIntI4) {
+        return emit_mod_zero_i4_int_branch_block(ir, code, pc, instr, register_count, facts, tmp_index);
+    }
     if let Some(value) = static_regs
         .get(instr.a() as usize)
         .and_then(|value| value.as_ref())
@@ -368,6 +377,141 @@ pub(super) fn emit_for_loop_i_block(
         native_label(pc + 1, code.len())
     ));
     static_regs[instr.a() as usize] = None;
+    true
+}
+
+fn emit_zero_int_branch_block(
+    ir: &mut String,
+    code: &[Instr],
+    pc: usize,
+    instr: Instr,
+    register_count: usize,
+    facts: &NativeScalarFacts,
+    tmp_index: &mut usize,
+) -> bool {
+    if !reg_in_bounds(register_count, instr.a()) {
+        return false;
+    }
+    let fallthrough = pc + 1;
+    let Some(taken) = native_relative_target(pc, instr.sbx() as i32, code.len()) else {
+        return false;
+    };
+    let Some(kind) = facts
+        .register_kind_before(pc, instr.a())
+        .or_else(|| local_register_kind_before(code, pc, instr.a()))
+    else {
+        return false;
+    };
+    if !matches!(kind, NativeScalarKind::I64 | NativeScalarKind::MaybeI64) {
+        return false;
+    }
+    let value = next_tmp(tmp_index);
+    let cond = next_tmp(tmp_index);
+    ir.push_str(&format!("  {value} = load i64, ptr %r{}.slot\n", instr.a()));
+    let pred = if instr.opcode() == Opcode::BrEqZeroInt {
+        "eq"
+    } else {
+        "ne"
+    };
+    ir.push_str(&format!("  {cond} = icmp {pred} i64 {value}, 0\n"));
+    ir.push_str(&format!(
+        "  br i1 {cond}, label {}, label {}\n",
+        native_label(taken, code.len()),
+        native_label(fallthrough, code.len())
+    ));
+    true
+}
+
+fn emit_i4_int_branch_block(
+    ir: &mut String,
+    code: &[Instr],
+    pc: usize,
+    instr: Instr,
+    register_count: usize,
+    facts: &NativeScalarFacts,
+    tmp_index: &mut usize,
+) -> bool {
+    if !reg_in_bounds(register_count, instr.a()) {
+        return false;
+    }
+    let fallthrough = pc + 1;
+    let Some(taken) = native_relative_target(pc, instr.branch_i4_offset() as i32, code.len()) else {
+        return false;
+    };
+    let Some(kind) = facts
+        .register_kind_before(pc, instr.a())
+        .or_else(|| local_register_kind_before(code, pc, instr.a()))
+    else {
+        return false;
+    };
+    if !matches!(kind, NativeScalarKind::I64 | NativeScalarKind::MaybeI64) {
+        return false;
+    }
+    let value = next_tmp(tmp_index);
+    let cond = next_tmp(tmp_index);
+    let pred = if instr.opcode() == Opcode::BrEqIntI4 {
+        "eq"
+    } else {
+        "ne"
+    };
+    ir.push_str(&format!("  {value} = load i64, ptr %r{}.slot\n", instr.a()));
+    ir.push_str(&format!(
+        "  {cond} = icmp {pred} i64 {value}, {}\n",
+        instr.branch_i4_immediate()
+    ));
+    ir.push_str(&format!(
+        "  br i1 {cond}, label {}, label {}\n",
+        native_label(taken, code.len()),
+        native_label(fallthrough, code.len())
+    ));
+    true
+}
+
+fn emit_mod_zero_i4_int_branch_block(
+    ir: &mut String,
+    code: &[Instr],
+    pc: usize,
+    instr: Instr,
+    register_count: usize,
+    facts: &NativeScalarFacts,
+    tmp_index: &mut usize,
+) -> bool {
+    if !reg_in_bounds(register_count, instr.a()) {
+        return false;
+    }
+    let divisor = instr.branch_i4_immediate();
+    if divisor == 0 {
+        return false;
+    }
+    let fallthrough = pc + 1;
+    let Some(taken) = native_relative_target(pc, instr.branch_i4_offset() as i32, code.len()) else {
+        return false;
+    };
+    let Some(kind) = facts
+        .register_kind_before(pc, instr.a())
+        .or_else(|| local_register_kind_before(code, pc, instr.a()))
+    else {
+        return false;
+    };
+    if !matches!(kind, NativeScalarKind::I64 | NativeScalarKind::MaybeI64) {
+        return false;
+    }
+    let value = next_tmp(tmp_index);
+    let rem = next_tmp(tmp_index);
+    let cond = next_tmp(tmp_index);
+    let pred = if instr.opcode() == Opcode::BrModEqZeroIntI4 {
+        "eq"
+    } else {
+        "ne"
+    };
+    ir.push_str(&format!("  {value} = load i64, ptr %r{}.slot\n", instr.a()));
+    ir.push_str(&format!("  {rem} = srem i64 {value}, {divisor}\n"));
+    ir.push_str(&format!("  {cond} = icmp {pred} i64 {rem}, 0\n"));
+    ir.push_str(&format!(
+        "  br i1 {cond}, label {}, label {}\n",
+        native_label(taken, code.len()),
+        native_label(fallthrough, code.len())
+    ));
     true
 }
 

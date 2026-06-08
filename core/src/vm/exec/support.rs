@@ -450,17 +450,22 @@ impl Executor {
             instr.c() != 0
         };
         if let Some(fact) = function.performance.compare_test_branch(self.pc) {
-            self.pc = if value == jump_when {
-                fact.target_pc
+            if value == jump_when {
+                self.pc = fact.target_pc;
             } else {
-                self.pc + 2
-            };
+                let next_pc = self.pc + 2;
+                if !self.try_apply_fallthrough_move_at(code, next_pc) {
+                    self.pc = next_pc;
+                }
+            }
         } else {
             let jmp = code[self.pc + 1];
             if value == jump_when {
                 self.pc = self.relative_pc_unchecked(jmp.sj_arg());
             } else {
-                self.pc += 2;
+                if !self.try_apply_fallthrough_move_at(code, self.pc + 2) {
+                    self.pc += 2;
+                }
             }
         }
     }
@@ -473,15 +478,105 @@ impl Executor {
         value: bool,
     ) {
         if let Some(fact) = function.performance.compare_test_branch(self.pc) {
-            self.pc = if value { self.pc + 2 } else { fact.target_pc };
+            if value {
+                if !self.try_apply_fallthrough_move_at(code, self.pc + 2) {
+                    self.pc += 2;
+                }
+            } else {
+                self.pc = fact.target_pc;
+            }
         } else {
             let jmp = code[self.pc + 1];
             if value {
-                self.pc += 2;
+                if !self.try_apply_fallthrough_move_at(code, self.pc + 2) {
+                    self.pc += 2;
+                }
             } else {
                 self.pc = self.relative_pc_unchecked(jmp.sj_arg());
             }
         }
+    }
+
+    #[inline(always)]
+    pub(super) fn try_apply_next_zero_branch_for_written_int(&mut self, code: &[Instr], dst: u8, value: i64) -> bool {
+        let next_pc = self.pc + 1;
+        let Some(next) = code.get(next_pc).copied() else {
+            return false;
+        };
+        if next.a() != dst {
+            return false;
+        }
+        let should_jump = match next.opcode() {
+            Opcode::BrEqZeroInt => value == 0,
+            Opcode::BrNeZeroInt => value != 0,
+            _ => return false,
+        };
+        if should_jump {
+            self.pc = (next_pc as i64 + 1 + next.sbx() as i64) as usize;
+        } else {
+            self.pc = next_pc + 1;
+        }
+        true
+    }
+
+    #[inline(always)]
+    pub(super) fn try_apply_next_nil_branch_for_written_value(
+        &mut self,
+        code: &[Instr],
+        dst: u8,
+        value: &RuntimeVal,
+    ) -> bool {
+        let next_pc = self.pc + 1;
+        let Some(next) = code.get(next_pc).copied() else {
+            return false;
+        };
+        if next.a() != dst {
+            return false;
+        }
+        let is_nil = matches!(value, RuntimeVal::Nil);
+        let should_jump = match next.opcode() {
+            Opcode::BrNil => is_nil,
+            Opcode::BrNotNil => !is_nil,
+            _ => return false,
+        };
+        if should_jump {
+            self.pc = (next_pc as i64 + 1 + next.sbx() as i64) as usize;
+        } else if !self.try_apply_fallthrough_move_at(code, next_pc + 1) {
+            self.pc = next_pc + 1;
+        }
+        true
+    }
+
+    #[inline(always)]
+    pub(super) fn try_apply_fallthrough_move_jump(&mut self, code: &[Instr]) -> bool {
+        self.try_apply_fallthrough_move_at(code, self.pc + 1)
+    }
+
+    #[inline(always)]
+    pub(super) fn try_apply_fallthrough_move_at(&mut self, code: &[Instr], move_pc: usize) -> bool {
+        let Some(next) = code.get(move_pc).copied() else {
+            return false;
+        };
+        if next.opcode() != Opcode::Move {
+            return false;
+        }
+        let jump_pc = move_pc + 1;
+        let Some(jmp) = code.get(jump_pc).copied() else {
+            let value = *self.read_unchecked(next.b());
+            self.write_unchecked(next.a(), value);
+            self.pc = move_pc + 1;
+            return true;
+        };
+        if jmp.opcode() == Opcode::Jmp {
+            let value = *self.read_unchecked(next.b());
+            self.write_unchecked(next.a(), value);
+            self.pc = (jump_pc as i64 + 1 + jmp.sj_arg() as i64) as usize;
+        } else {
+            let value = *self.read_unchecked(next.b());
+            self.write_unchecked(next.a(), value);
+            self.pc = move_pc + 1;
+        }
+        true
     }
 
     #[inline]

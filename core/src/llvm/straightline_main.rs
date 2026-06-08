@@ -301,7 +301,46 @@ pub(super) fn compile_native_scalar_main_artifact(
                 }
                 regs[instr.a() as usize] = Some(value);
             }
-            Opcode::AddInt | Opcode::SubInt | Opcode::MulInt | Opcode::DivInt | Opcode::ModInt => {
+            Opcode::AddInt
+            | Opcode::SubInt
+            | Opcode::MulInt
+            | Opcode::DivInt
+            | Opcode::ModInt
+            | Opcode::MinInt
+            | Opcode::MaxInt
+            | Opcode::AddMulInt => {
+                if instr.opcode() == Opcode::AddMulInt {
+                    let Some(NativeStraightlineValue::I64(acc)) = regs.get(instr.a() as usize).and_then(Clone::clone)
+                    else {
+                        return Ok(None);
+                    };
+                    let Some(NativeStraightlineValue::I64(lhs)) = regs.get(instr.b() as usize).and_then(Clone::clone)
+                    else {
+                        return Ok(None);
+                    };
+                    let Some(NativeStraightlineValue::I64(rhs)) = regs.get(instr.c() as usize).and_then(Clone::clone)
+                    else {
+                        return Ok(None);
+                    };
+                    let name = if let (Ok(acc), Ok(lhs), Ok(rhs)) =
+                        (acc.parse::<i64>(), lhs.parse::<i64>(), rhs.parse::<i64>())
+                    {
+                        acc.wrapping_add(lhs.wrapping_mul(rhs)).to_string()
+                    } else {
+                        let product = format!("%r{}_{}", instr.a(), ssa_index);
+                        ssa_index += 1;
+                        let name = format!("%r{}_{}", instr.a(), ssa_index);
+                        ssa_index += 1;
+                        body.push_str(&format!("  {product} = mul i64 {lhs}, {rhs}\n"));
+                        body.push_str(&format!("  {name} = add i64 {acc}, {product}\n"));
+                        name
+                    };
+                    if instr.a() as usize >= regs.len() {
+                        return Ok(None);
+                    }
+                    regs[instr.a() as usize] = Some(NativeStraightlineValue::I64(name));
+                    continue;
+                }
                 let Some(NativeStraightlineValue::I64(lhs)) = regs.get(instr.b() as usize).and_then(Clone::clone)
                 else {
                     return Ok(None);
@@ -324,11 +363,20 @@ pub(super) fn compile_native_scalar_main_artifact(
                         Opcode::MulInt => "mul",
                         Opcode::DivInt => "sdiv",
                         Opcode::ModInt => "srem",
+                        Opcode::MinInt | Opcode::MaxInt => "select",
                         _ => unreachable!("opcode matched above"),
                     };
                     let name = format!("%r{}_{}", instr.a(), ssa_index);
                     ssa_index += 1;
-                    body.push_str(&format!("  {name} = {op} i64 {lhs}, {rhs}\n"));
+                    if matches!(instr.opcode(), Opcode::MinInt | Opcode::MaxInt) {
+                        let pred = if instr.opcode() == Opcode::MinInt { "slt" } else { "sgt" };
+                        let cond = format!("%r{}_{}", instr.a(), ssa_index);
+                        ssa_index += 1;
+                        body.push_str(&format!("  {cond} = icmp {pred} i64 {lhs}, {rhs}\n"));
+                        body.push_str(&format!("  {name} = {op} i1 {cond}, i64 {lhs}, i64 {rhs}\n"));
+                    } else {
+                        body.push_str(&format!("  {name} = {op} i64 {lhs}, {rhs}\n"));
+                    }
                     name
                 };
                 if instr.a() as usize >= regs.len() {
@@ -1224,6 +1272,14 @@ pub(super) fn native_scalar_function_needs_blocks(code: &[Instr]) -> bool {
                 | Opcode::Test
                 | Opcode::BrFalse
                 | Opcode::BrTrue
+                | Opcode::BrNil
+                | Opcode::BrNotNil
+                | Opcode::BrEqZeroInt
+                | Opcode::BrNeZeroInt
+                | Opcode::BrEqIntI4
+                | Opcode::BrNeIntI4
+                | Opcode::BrModEqZeroIntI4
+                | Opcode::BrModNeZeroIntI4
                 | Opcode::Jmp
         )
     })
