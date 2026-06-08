@@ -157,7 +157,6 @@ pub(in crate::llvm) fn local_register_kind_before(code: &[Instr], pc: usize, reg
             Opcode::LoadBool
             | Opcode::Not
             | Opcode::IsNil
-            | Opcode::StringStartsWith
             | Opcode::CmpInt
             | Opcode::CmpNeInt
             | Opcode::CmpLtInt
@@ -1183,34 +1182,6 @@ pub(in crate::llvm) fn emit_mixed_numeric_int_opcode_block(
         slot_prefix,
         instr.a()
     ));
-}
-
-pub(in crate::llvm) fn emit_dynamic_string_starts_with(
-    ir: &mut String,
-    extra_globals: &mut String,
-    slot_prefix: &str,
-    dst: u8,
-    target: u8,
-    prefix: &str,
-    tmp_index: &mut usize,
-) {
-    let symbol = format!("@lk_starts_with_prefix_{}", *tmp_index);
-    *tmp_index += 1;
-    let target_ptr = next_tmp(tmp_index);
-    let cmp_value = next_tmp(tmp_index);
-    let is_match = next_tmp(tmp_index);
-    let out = next_tmp(tmp_index);
-    extra_globals.push_str(&llvm_string_constant(&symbol, prefix));
-    ir.push_str(&format!(
-        "  {target_ptr} = load ptr, ptr %{slot_prefix}r{target}.slot\n"
-    ));
-    ir.push_str(&format!(
-        "  {cmp_value} = call i32 @strncmp(ptr {target_ptr}, ptr {symbol}, i64 {})\n",
-        prefix.len()
-    ));
-    ir.push_str(&format!("  {is_match} = icmp eq i32 {cmp_value}, 0\n"));
-    ir.push_str(&format!("  {out} = zext i1 {is_match} to i64\n"));
-    ir.push_str(&format!("  store i64 {out}, ptr %{slot_prefix}r{dst}.slot\n"));
 }
 
 pub(in crate::llvm) fn emit_static_string_i64_map_get(

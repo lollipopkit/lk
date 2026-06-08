@@ -865,9 +865,6 @@ impl Executor {
                     self.dispatch_concat_n(instr, module, ctx)?;
                     profile.record_write_source(VmRegisterWriteSource::String, collect_metrics);
                 }
-                Opcode::StringStartsWith => {
-                    self.dispatch_cold(Opcode::StringStartsWith, function, module, instr, ctx, collect_metrics)?;
-                }
                 Opcode::StringSplit => {
                     self.dispatch_cold(Opcode::StringSplit, function, module, instr, ctx, collect_metrics)?;
                 }

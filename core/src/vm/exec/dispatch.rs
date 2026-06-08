@@ -191,12 +191,6 @@ impl Executor {
         Ok(())
     }
 
-    pub(super) fn dispatch_string_starts_with(&mut self, instr: Instr) -> Result<()> {
-        self.string_starts_with(instr.a(), instr.b(), instr.c())?;
-        self.pc += 1;
-        Ok(())
-    }
-
     pub(super) fn dispatch_string_split(&mut self, instr: Instr) -> Result<()> {
         self.collect_pending_garbage();
         self.string_split(instr.a(), instr.b(), instr.c())?;
@@ -532,9 +526,6 @@ impl Executor {
             }
             Opcode::ToString => {
                 self.dispatch_to_string(instr, module, ctx)?;
-            }
-            Opcode::StringStartsWith => {
-                self.dispatch_string_starts_with(instr)?;
             }
             Opcode::StringSplit => {
                 self.dispatch_string_split(instr)?;

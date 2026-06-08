@@ -645,34 +645,6 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                     return None;
                 }
             }
-            Opcode::StringStartsWith => {
-                let Some(prefix) = static_kind(&static_values, instr.c()) else {
-                    return None;
-                };
-                let NativeStraightlineValue::String { value: prefix, .. } = prefix else {
-                    return None;
-                };
-                if let Some(NativeStraightlineValue::String { value: target, .. }) =
-                    static_kind(&static_values, instr.b())
-                {
-                    let value = i64::from(target.starts_with(&prefix)).to_string();
-                    if !set_static_value(
-                        &mut kinds,
-                        &mut static_values,
-                        instr.a(),
-                        Some(NativeScalarKind::Bool),
-                        NativeStraightlineValue::Bool(value),
-                    ) {
-                        return None;
-                    }
-                } else if native_kind(&kinds, instr.b()) == Some(NativeScalarKind::StrPtr) {
-                    if !set_native_kind(&mut kinds, &mut static_values, instr.a(), NativeScalarKind::Bool) {
-                        return None;
-                    }
-                } else {
-                    return None;
-                }
-            }
             Opcode::GetGlobal => {
                 if let Some(value) = global_names
                     .get(instr.bx() as usize)
