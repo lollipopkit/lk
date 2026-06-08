@@ -792,7 +792,7 @@ fn fold_literal_arith(lhs: &LiteralVal, op: &BinOp, rhs: &LiteralVal) -> Option<
         BinOp::Sub => fold_literal_numeric(lhs, rhs, |a, b| a - b, |a, b| a - b),
         BinOp::Mul => fold_literal_mul(lhs, rhs),
         BinOp::Div => fold_literal_div(lhs, rhs),
-        BinOp::Mod => fold_literal_numeric(lhs, rhs, |a, b| a % b, |a, b| a % b),
+        BinOp::Mod => fold_literal_mod(lhs, rhs),
         _ => None,
     }
 }
@@ -860,6 +860,10 @@ fn repeat_literal_string(value: &str, count: i64) -> LiteralVal {
 }
 
 fn fold_literal_div(lhs: &LiteralVal, rhs: &LiteralVal) -> Option<LiteralVal> {
+    if literal_is_zero(rhs) {
+        return None;
+    }
+
     match (lhs, rhs) {
         (LiteralVal::Int(a), LiteralVal::Int(b)) => {
             let result = (*a as f64) / (*b as f64);
@@ -870,6 +874,21 @@ fn fold_literal_div(lhs: &LiteralVal, rhs: &LiteralVal) -> Option<LiteralVal> {
             }
         }
         _ => fold_literal_numeric(lhs, rhs, |a, b| a / b, |a, b| a / b),
+    }
+}
+
+fn fold_literal_mod(lhs: &LiteralVal, rhs: &LiteralVal) -> Option<LiteralVal> {
+    if literal_is_zero(rhs) {
+        return None;
+    }
+    fold_literal_numeric(lhs, rhs, |a, b| a % b, |a, b| a % b)
+}
+
+fn literal_is_zero(value: &LiteralVal) -> bool {
+    match value {
+        LiteralVal::Int(value) => *value == 0,
+        LiteralVal::Float(value) => *value == 0.0,
+        _ => false,
     }
 }
 

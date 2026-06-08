@@ -263,6 +263,15 @@ mod test {
         // Invalid map key types
         panic(r#"{[1, 2]: "invalid"}"#);
         panic(r#"{{}: "invalid"}"#);
+        assert!(Expr::try_from("|x| { foo(] }").is_err());
+    }
+
+    #[test]
+    fn constant_folding_preserves_division_by_zero() {
+        panic("1 / 0");
+        panic("1.0 / 0.0");
+        panic("1 % 0");
+        panic("1.0 % 0.0");
     }
 
     #[test]

@@ -146,22 +146,45 @@ impl<'a> Parser<'a> {
     fn parse_closure_block_expr(&mut self) -> Result<Expr> {
         self.pos += 1;
         let start = self.pos;
-        let mut depth = 0i32;
+        let mut paren = 0usize;
+        let mut bracket = 0usize;
+        let mut brace = 0usize;
         while !self.eof() {
             match self.tokens[self.pos] {
-                Token::LBrace | Token::LParen | Token::LBracket => {
-                    depth += 1;
+                Token::LParen => {
+                    paren += 1;
                     self.pos += 1;
                 }
-                Token::RParen | Token::RBracket => {
-                    if depth > 0 {
-                        depth -= 1;
+                Token::RParen => {
+                    if paren == 0 {
+                        return Err(anyhow!(self.err("Mismatched ')' in closure block")));
                     }
+                    paren -= 1;
                     self.pos += 1;
                 }
-                Token::RBrace if depth == 0 => break,
+                Token::LBracket => {
+                    bracket += 1;
+                    self.pos += 1;
+                }
+                Token::RBracket => {
+                    if bracket == 0 {
+                        return Err(anyhow!(self.err("Mismatched ']' in closure block")));
+                    }
+                    bracket -= 1;
+                    self.pos += 1;
+                }
+                Token::LBrace => {
+                    brace += 1;
+                    self.pos += 1;
+                }
+                Token::RBrace if brace == 0 => {
+                    if paren != 0 || bracket != 0 {
+                        return Err(anyhow!(self.err("Expected matching bracket before closure block end")));
+                    }
+                    break;
+                }
                 Token::RBrace => {
-                    depth -= 1;
+                    brace -= 1;
                     self.pos += 1;
                 }
                 _ => self.pos += 1,

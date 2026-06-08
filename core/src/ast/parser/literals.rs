@@ -40,15 +40,7 @@ impl<'a> Parser<'a> {
                         }
 
                         if self.eof() || !self.is_valid_expr_start() {
-                            let msg = format!(
-                                "Invalid map key after comma: {:?}",
-                                if self.eof() {
-                                    &Token::Nil
-                                } else {
-                                    &self.tokens[self.pos]
-                                }
-                            );
-                            return Err(anyhow!(self.err(&msg)));
+                            return Err(anyhow!(self.err("Invalid map key after comma")));
                         }
 
                         let key = Box::new(self.parse_map_key()?);
@@ -68,15 +60,7 @@ impl<'a> Parser<'a> {
         }
 
         if self.eof() || self.tokens[self.pos] != Token::RBrace {
-            let msg = format!(
-                "Expecting '}}', found {:?}",
-                if self.eof() {
-                    &Token::Nil
-                } else {
-                    &self.tokens[self.pos]
-                }
-            );
-            return Err(anyhow!(self.err(&msg)));
+            return Err(anyhow!(self.err("Expecting '}'")));
         }
         self.pos += 1;
 
@@ -97,15 +81,7 @@ impl<'a> Parser<'a> {
 
     fn expect_map_colon(&mut self) -> Result<()> {
         if self.eof() || self.tokens[self.pos] != Token::Colon {
-            let msg = format!(
-                "Expecting ':', found {:?}",
-                if self.eof() {
-                    &Token::Nil
-                } else {
-                    &self.tokens[self.pos]
-                }
-            );
-            return Err(anyhow!(self.err(&msg)));
+            return Err(anyhow!(self.err("Expecting ':'")));
         }
         self.pos += 1;
         Ok(())
@@ -113,15 +89,7 @@ impl<'a> Parser<'a> {
 
     fn ensure_map_value_start(&self) -> Result<()> {
         if self.eof() || !self.is_valid_expr_start() {
-            let msg = format!(
-                "Invalid map value after ':', {:?}",
-                if self.eof() {
-                    &Token::Nil
-                } else {
-                    &self.tokens[self.pos]
-                }
-            );
-            return Err(anyhow!(self.err(&msg)));
+            return Err(anyhow!(self.err("Invalid map value after ':'")));
         }
         Ok(())
     }

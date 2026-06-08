@@ -696,8 +696,6 @@ impl Fnv64 {
             self.0 ^= u64::from(*byte);
             self.0 = self.0.wrapping_mul(0x100000001b3);
         }
-        self.0 ^= 0xff;
-        self.0 = self.0.wrapping_mul(0x100000001b3);
     }
 
     fn u64(&mut self, value: u64) {

@@ -43,6 +43,7 @@ examples/
 Run any example: `lk examples/syntax/closure.lk`
 
 ### Highlights
+
 - Rust-inspired syntax with first-class named parameters
 - Deterministic bytecode VM with optional concurrency runtime
 - Batteries-included standard library and LSP-backed tooling

@@ -3,11 +3,11 @@
 set -uo pipefail
 
 BENCH_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_DIR="$(cd "$BENCH_DIR/.." && pwd)"
 BASE_RUNS="${RUNS:-3}"
 EXTRA_RUNS="${EXTRA_RUNS:-5}"
 REGRESSION_MARGIN="${REGRESSION_MARGIN:-0.03}"
 NOISE_MARGIN="${NOISE_MARGIN:-0.08}"
-LK_BIN="/Users/lk/proj/lk/target/release/lk"
 LUA_BIN="lua"
 RUN_AOT="${RUN_AOT:-0}"
 AOT_ENABLED=0
@@ -17,8 +17,37 @@ BENCH_PROGRESS="${BENCH_PROGRESS:-1}"
 LK_PREWARM_TIMEOUT="${LK_PREWARM_TIMEOUT:-120}"
 
 TMPDIR=$(mktemp -d)
-trap "rm -rf $TMPDIR" EXIT
+trap 'rm -rf "$TMPDIR"' EXIT
 AOT_BIN="${AOT_BIN:-$TMPDIR/lk-workloads-aot}"
+
+resolve_lk_bin() {
+  local candidate
+  if [ -n "${LK_BIN:-}" ]; then
+    if [ -x "$LK_BIN" ]; then
+      printf '%s\n' "$LK_BIN"
+      return 0
+    fi
+    echo "LK_BIN is set but not executable: $LK_BIN" >&2
+    return 1
+  fi
+
+  candidate="$REPO_DIR/target/release/lk"
+  if [ -x "$candidate" ]; then
+    printf '%s\n' "$candidate"
+    return 0
+  fi
+
+  candidate="$(command -v lk 2>/dev/null || true)"
+  if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+    printf '%s\n' "$candidate"
+    return 0
+  fi
+
+  echo "Unable to find an executable lk binary. Set LK_BIN or build $REPO_DIR/target/release/lk." >&2
+  return 1
+}
+
+LK_BIN="$(resolve_lk_bin)" || exit 1
 
 WORKLOADS=(
   gcd_batch
@@ -387,9 +416,9 @@ fi
 echo ""
 
 for name in "${WORKLOADS[@]}"; do
-  > "$TMPDIR/lk_${name}.dat"
-  > "$TMPDIR/lua_${name}.dat"
-  > "$TMPDIR/aot_${name}.dat"
+  : > "$TMPDIR/lk_${name}.dat"
+  : > "$TMPDIR/lua_${name}.dat"
+  : > "$TMPDIR/aot_${name}.dat"
 done
 
 run_engine_workload() {
@@ -469,7 +498,7 @@ for run_index in $(seq 1 "$BASE_RUNS"); do
 done
 
 REASONS="$TMPDIR/adaptive_reasons.txt"
-> "$REASONS"
+: > "$REASONS"
 if should_extend_runs "$REASONS"; then
   echo "Adaptive rerun triggered:"
   sed 's/^/  - /' "$REASONS"
@@ -497,9 +526,9 @@ mismatch_count=0
 ratio_file="$TMPDIR/ratios.dat"
 aot_ratio_file="$TMPDIR/aot_ratios.dat"
 speedup_file="$TMPDIR/aot_vm_ratios.dat"
-> "$ratio_file"
-> "$aot_ratio_file"
-> "$speedup_file"
+: > "$ratio_file"
+: > "$aot_ratio_file"
+: > "$speedup_file"
 for name in "${WORKLOADS[@]}"; do
   lk_ms=$(median_of "$TMPDIR/lk_${name}.dat")
   lua_ms=$(median_of "$TMPDIR/lua_${name}.dat")

@@ -100,6 +100,13 @@ mod tests {
         ));
         assert!(line.contains("val_clones=9"));
         assert!(line.contains("heap_clones=9"));
+        assert!(line.contains("copy_policy_heap_clones=9"));
+        assert!(line.contains("register_copy_heap_clones=10"));
+        assert!(line.contains("local_copy_heap_clones=12"));
+        assert!(line.contains("local_load_heap_clones=13"));
+        assert!(line.contains("local_store_heap_clones=14"));
+        assert!(line.contains("const_load_heap_clones=15"));
+        assert!(line.contains("call_arg_heap_clones=16"));
         assert!(line.contains("container_copy_heap_clones=17"));
     }
 
