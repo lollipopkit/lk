@@ -630,7 +630,6 @@ let total = iter.reduce(iter.range(0, 10, 2), 0, |acc, n| acc + n);`,
             <summary>
               <span>{group.section.title}</span>
             </summary>
-            <a href={`#${group.section.id}`}>{group.section.title}</a>
             {#each group.children as child}
               <a class="toc-nested" href={`#${child.id}`}>{child.title}</a>
             {/each}
