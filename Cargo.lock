@@ -811,12 +811,192 @@ dependencies = [
  "chrono",
  "dashmap 6.1.0",
  "lk-core",
+ "lk-stdlib-bytes",
+ "lk-stdlib-chan",
+ "lk-stdlib-common",
+ "lk-stdlib-datetime",
+ "lk-stdlib-io",
+ "lk-stdlib-iter",
+ "lk-stdlib-json",
+ "lk-stdlib-math",
+ "lk-stdlib-net",
+ "lk-stdlib-os",
+ "lk-stdlib-slice",
+ "lk-stdlib-stream",
+ "lk-stdlib-string",
+ "lk-stdlib-task",
+ "lk-stdlib-time",
+ "lk-stdlib-toml",
+ "lk-stdlib-yaml",
  "once_cell",
  "serde_json",
  "serde_yaml",
  "tokio",
  "toml",
  "tracing",
+]
+
+[[package]]
+name = "lk-stdlib-bytes"
+version = "0.1.3"
+dependencies = [
+ "anyhow",
+ "lk-core",
+ "lk-stdlib-common",
+]
+
+[[package]]
+name = "lk-stdlib-chan"
+version = "0.1.3"
+dependencies = [
+ "anyhow",
+ "lk-core",
+ "lk-stdlib-common",
+]
+
+[[package]]
+name = "lk-stdlib-common"
+version = "0.1.3"
+dependencies = [
+ "anyhow",
+ "lk-core",
+]
+
+[[package]]
+name = "lk-stdlib-datetime"
+version = "0.1.3"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "lk-core",
+ "lk-stdlib-common",
+]
+
+[[package]]
+name = "lk-stdlib-io"
+version = "0.1.3"
+dependencies = [
+ "anyhow",
+ "lk-core",
+ "lk-stdlib-bytes",
+ "lk-stdlib-common",
+]
+
+[[package]]
+name = "lk-stdlib-iter"
+version = "0.1.3"
+dependencies = [
+ "anyhow",
+ "lk-core",
+ "lk-stdlib-common",
+]
+
+[[package]]
+name = "lk-stdlib-json"
+version = "0.1.3"
+dependencies = [
+ "anyhow",
+ "lk-core",
+ "lk-stdlib-common",
+ "serde_json",
+]
+
+[[package]]
+name = "lk-stdlib-math"
+version = "0.1.3"
+dependencies = [
+ "anyhow",
+ "lk-core",
+ "lk-stdlib-common",
+]
+
+[[package]]
+name = "lk-stdlib-net"
+version = "0.1.3"
+dependencies = [
+ "anyhow",
+ "lk-core",
+ "lk-stdlib-bytes",
+ "lk-stdlib-common",
+]
+
+[[package]]
+name = "lk-stdlib-os"
+version = "0.1.3"
+dependencies = [
+ "anyhow",
+ "lk-core",
+ "lk-stdlib-common",
+]
+
+[[package]]
+name = "lk-stdlib-slice"
+version = "0.1.3"
+dependencies = [
+ "anyhow",
+ "lk-core",
+ "lk-stdlib-common",
+]
+
+[[package]]
+name = "lk-stdlib-stream"
+version = "0.1.3"
+dependencies = [
+ "anyhow",
+ "dashmap 6.1.0",
+ "lk-core",
+ "lk-stdlib-common",
+ "once_cell",
+ "tokio",
+]
+
+[[package]]
+name = "lk-stdlib-string"
+version = "0.1.3"
+dependencies = [
+ "anyhow",
+ "lk-core",
+ "lk-stdlib-common",
+]
+
+[[package]]
+name = "lk-stdlib-task"
+version = "0.1.3"
+dependencies = [
+ "anyhow",
+ "lk-core",
+ "lk-stdlib-common",
+ "tokio",
+]
+
+[[package]]
+name = "lk-stdlib-time"
+version = "0.1.3"
+dependencies = [
+ "anyhow",
+ "lk-core",
+ "lk-stdlib-common",
+ "tokio",
+]
+
+[[package]]
+name = "lk-stdlib-toml"
+version = "0.1.3"
+dependencies = [
+ "anyhow",
+ "lk-core",
+ "lk-stdlib-common",
+ "toml",
+]
+
+[[package]]
+name = "lk-stdlib-yaml"
+version = "0.1.3"
+dependencies = [
+ "anyhow",
+ "lk-core",
+ "lk-stdlib-common",
+ "serde_yaml",
 ]
 
 [[package]]

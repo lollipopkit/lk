@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use super::{CallableValue, HeapValue, RuntimeMapKey, RuntimeVal, TypedList, TypedMap};
+use super::{CallableValue, HeapValue, RuntimeMapKey, RuntimeSet, RuntimeVal, TypedList, TypedMap};
 use crate::vm::RuntimeCallable;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -158,7 +158,11 @@ fn collect_heap_value_edges(
     runtime_callables: &mut Vec<Arc<RuntimeCallable>>,
 ) {
     match value {
-        HeapValue::String(_) | HeapValue::Task(_) | HeapValue::Channel(_) => {}
+        HeapValue::String(_)
+        | HeapValue::Bytes(_)
+        | HeapValue::Task(_)
+        | HeapValue::Channel(_)
+        | HeapValue::Resource(_) => {}
         HeapValue::Stream(stream) => {
             for value in &stream.roots {
                 collect_runtime_value_edge(value, refs);
@@ -169,8 +173,10 @@ fn collect_heap_value_edges(
                 collect_runtime_value_edge(value, refs);
             }
         }
+        HeapValue::Slice(slice) => collect_runtime_value_edge(&slice.source, refs),
         HeapValue::List(values) => collect_typed_list_edges(values, refs),
         HeapValue::Map(values) => collect_typed_map_edges(values, refs),
+        HeapValue::Set(values) => collect_runtime_set_edges(values, refs),
         HeapValue::Object(object) => {
             for value in object.fields.values() {
                 collect_runtime_value_edge(value, refs);
@@ -191,6 +197,12 @@ fn collect_heap_value_edges(
                 collect_runtime_value_edge(value, refs);
             }
         }
+    }
+}
+
+fn collect_runtime_set_edges(values: &RuntimeSet, refs: &mut Vec<HeapRef>) {
+    for key in values.entries() {
+        collect_runtime_map_key_edge(key, refs);
     }
 }
 

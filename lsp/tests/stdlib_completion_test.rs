@@ -5,7 +5,7 @@ fn test_stdlib_modules_listed() {
     let analyzer = &mut LkAnalyzer::new();
     let modules = analyzer.list_stdlib_modules();
     // Ensure key stdlib modules are registered
-    for m in ["math", "string", "datetime", "os", "tcp", "io"] {
+    for m in ["math", "string", "datetime", "os", "io", "net", "bytes", "slice"] {
         assert!(modules.contains(&m.to_string()), "missing module: {}", m);
     }
 }

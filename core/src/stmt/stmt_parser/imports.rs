@@ -41,10 +41,8 @@ impl<'a> StmtParser<'a> {
                 ImportStmt::Namespace { alias, source }
             }
             // use module; or use module as alias;
-            Token::Id(module) => {
-                let module = module.clone();
-                self.pos += 1;
-
+            Token::Id(_) => {
+                let module = self.parse_module_path()?;
                 if !self.eof() && self.tokens[self.pos] == Token::As {
                     self.pos += 1; // consume 'as'
                     let alias = self.expect_id()?;
@@ -99,11 +97,22 @@ impl<'a> StmtParser<'a> {
                 Ok(ImportSource::File(path))
             }
             Token::Id(name) => {
-                let name = name.clone();
-                self.pos += 1;
+                let name = self.parse_module_path_from_first(name.clone())?;
                 Ok(ImportSource::Module(name))
             }
             _ => Err(anyhow!(self.err("Expected module name or file path"))),
         }
+    }
+
+    fn parse_module_path(&mut self) -> Result<String> {
+        let Token::Id(first) = &self.tokens[self.pos] else {
+            return Err(anyhow!(self.err("Expected module name")));
+        };
+        self.parse_module_path_from_first(first.clone())
+    }
+
+    fn parse_module_path_from_first(&mut self, first: String) -> Result<String> {
+        self.pos += 1;
+        Ok(first)
     }
 }

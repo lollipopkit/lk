@@ -306,7 +306,7 @@ pub fn execute_imports(imports: &[ImportStmt], resolver: &ModuleResolver, env: &
         match import {
             ImportStmt::Module { module } => {
                 let module_export = resolver.resolve_runtime_module(module)?;
-                env.define_runtime_global(module.clone(), module_export);
+                env.define_runtime_global(default_module_binding(module), module_export);
             }
             ImportStmt::File { path } => {
                 let module_name = Path::new(path)
@@ -329,6 +329,10 @@ pub fn execute_imports(imports: &[ImportStmt], resolver: &ModuleResolver, env: &
         }
     }
     Ok(())
+}
+
+pub fn default_module_binding(module: &str) -> String {
+    module.rsplit('/').next().unwrap_or(module).to_string()
 }
 
 fn resolve_runtime_import_source(source: &ImportSource, resolver: &ModuleResolver) -> Result<RuntimeExport> {
@@ -417,6 +421,85 @@ mod tests {
             source: ImportSource::Module("math".to_string()),
         };
         assert!(matches!(import, ImportStmt::Items { .. }));
+    }
+
+    #[test]
+    fn test_parent_module_item_import_parses() -> Result<()> {
+        let program = parse_program("use { file, std } from io;")?;
+        assert_eq!(
+            collect_program_imports(&program),
+            vec![ImportStmt::Items {
+                items: vec![
+                    ImportItem {
+                        name: "file".to_string(),
+                        alias: None,
+                    },
+                    ImportItem {
+                        name: "std".to_string(),
+                        alias: None,
+                    },
+                ],
+                source: ImportSource::Module("io".to_string()),
+            }]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_slash_module_path_is_rejected() {
+        let err = parse_program("use io/file;").expect_err("slash module paths are no longer supported");
+        assert!(err.to_string().contains("Expected"));
+    }
+
+    #[test]
+    fn test_parent_module_item_import_binds_child_namespace() -> Result<()> {
+        use crate::{
+            module::{ModuleProvider, RuntimeNativeExport, runtime_export_from_plain_native_entries},
+            util::fast_map::fast_hash_map_from_iter,
+            val::{HeapStore, HeapValue, TypedMap},
+            vm::{NativeArgs, NativeRuntime},
+        };
+
+        #[derive(Debug)]
+        struct TestModule;
+
+        impl ModuleProvider for TestModule {
+            fn name(&self) -> &str {
+                "io"
+            }
+
+            fn register(&self, _registry: &mut ModuleRegistry) -> Result<()> {
+                Ok(())
+            }
+
+            fn runtime_exports(&self) -> Result<RuntimeExport> {
+                let file =
+                    runtime_export_from_plain_native_entries(&[RuntimeNativeExport::plain("marker", marker, 0)], &[]);
+                let mut heap = HeapStore::new();
+                let file = crate::vm::import_runtime_export(&file, &mut heap)?;
+                let value = RuntimeVal::Obj(heap.alloc(HeapValue::Map(TypedMap::StringMixed(
+                    fast_hash_map_from_iter([(Arc::<str>::from("file"), file)]),
+                ))));
+                Ok(RuntimeExport::from_value(value, heap))
+            }
+        }
+
+        fn marker(_args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+            Ok(RuntimeVal::Int(7))
+        }
+
+        let mut registry = ModuleRegistry::new();
+        registry.register_module("io", Box::new(TestModule))?;
+        let resolver = Arc::new(ModuleResolver::with_registry(registry));
+        let result = execute_import_source(
+            r#"
+            use { file } from io;
+            return file.marker();
+            "#,
+            resolver,
+        )?;
+        assert_eq!(result, RuntimeVal::Int(7));
+        Ok(())
     }
 
     #[test]

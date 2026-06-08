@@ -872,6 +872,52 @@ fn execute_source_runs_public_source_entry_on_new_vm() {
 }
 
 #[test]
+fn execute_source_uses_builtin_set_constructor_methods_and_iteration() {
+    let result = execute_source(
+        r#"
+        let s = Set([1, 2, 2]);
+        let added = s.add(3);
+        let duplicate = s.add(2);
+        let removed = s.delete(1);
+        let total = 0;
+        for value in s {
+            total += value;
+        }
+        return [s.len(), s.has(2), added, duplicate, removed, 3 in s, total, typeof(s)];
+        "#,
+    )
+    .expect("execute source");
+
+    let [RuntimeVal::Obj(handle)] = result.returns.as_slice() else {
+        panic!("expected one list return");
+    };
+    let HeapValue::List(TypedList::Mixed(values)) = result.state.heap.get(*handle).expect("set result list") else {
+        panic!("expected mixed list return");
+    };
+    assert_eq!(values[0], RuntimeVal::Int(2));
+    assert_eq!(values[1], RuntimeVal::Bool(true));
+    assert_eq!(values[2], RuntimeVal::Bool(true));
+    assert_eq!(values[3], RuntimeVal::Bool(false));
+    assert_eq!(values[4], RuntimeVal::Bool(true));
+    assert_eq!(values[5], RuntimeVal::Bool(true));
+    assert_eq!(values[6], RuntimeVal::Int(5));
+    assert_eq!(values[7], RuntimeVal::ShortStr(ShortStr::new("Set").expect("short")));
+}
+
+#[test]
+fn execute_source_rejects_float_set_values() {
+    let err = execute_source(
+        r#"
+        let s = Set();
+        s.add(1.5);
+        return s;
+        "#,
+    )
+    .expect_err("float set value should fail");
+    assert!(err.to_string().contains("Float cannot be used as a key"));
+}
+
+#[test]
 fn execute_module_context_native_can_use_vm_context() {
     fn add_seed(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let [RuntimeVal::Int(delta)] = args.as_slice() else {

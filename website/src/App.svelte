@@ -90,10 +90,10 @@
   let locale: Locales | undefined = initialLocale
   let currentPath = normalizePath(typeof window === 'undefined' ? '/' : window.location.pathname)
 
-  const heroCode = `use io;
+  const heroCode = `use { std } from io;
 use json;
 
-let data = json.parse(io.read());
+let data = json.parse(std.read_to_string(std.stdin()));
 
 match data.req {
   { "user": { "id": id }, ..rest } if id in [1, 2, 3] => {
@@ -159,12 +159,13 @@ match data.req {
   return width * (height ?? 0);
 }`,
     },
-    {
-      label: 'Use forms',
-      code: `use math as m;
+      {
+        label: 'Use forms',
+        code: `use math as m;
+use { file, std } from io;
 use { abs, sqrt } from math;
 use * as config from "config/app";`,
-    },
+      },
     {
       label: 'Collection pipelines',
       code: `use iter;

@@ -44,7 +44,7 @@ Native stdlib lowering includes static OS string helpers for
 for the currently covered scalar/string shapes.
 Static direct-call folding may also recover immutable heap-const list arguments
 inside the same basic block, which covers statically bounded recursive list
-methods such as `list.skip(1)` without lowering through the VM runtime.
+methods such as `xs.skip(1)` without lowering through the VM runtime.
 Self-recursive function hinting tries scalar and list-like parameter profiles, so
 recursive helpers with mixed signatures such as `contains(List<Int>, Int) ->
 Bool` can be classified without falling back to the VM runtime.
@@ -61,8 +61,8 @@ falling back to the VM runtime.
 String-valued dynamic map writes copy runtime text through `strdup` before
 storing into ptr slots, so loop-local template buffers do not alias later
 iterations.
-For `Map<i64,i64/f64/bool/str>` and `Map<str,i64/f64/bool/str>`, `map.has` and
-`map.delete` also lower natively: delete materializes a fresh dynamic map
+For `Map<i64,i64/f64/bool/str>` and `Map<str,i64/f64/bool/str>`, `m.has(k)` and
+`m.delete(k)` also lower natively: delete materializes a fresh dynamic map
 storage for the returned `without` map and preserves the removed value. Missing
 dynamic map `get` results carry a present bit for integer, float, bool, and
 string pointer values, including receiver-method calls such as
@@ -72,17 +72,17 @@ display, and missing `get` lowering, with runtime text copied through `strdup`
 before it is stored. Optional scalar map-get results can be recovered into
 `ArgList` returns without falling back to the VM runtime.
 `DynamicList<i64>` and `DynamicList<bool>` also support monomorphized
-`list.contains`, `list.index_of`, `list.reverse`, `list.pop`, `list.push`,
-`list.slice`, `list.insert`, `list.remove_at`, and `list.set` lowering through
+`xs.contains`, `xs.index_of`, `xs.reverse`, `xs.pop`, `xs.push`,
+`xs.slice`, `xs.insert`, `xs.remove_at`, and `xs.set` lowering through
 i64-slot helpers while preserving element-specific return/display shape,
 including nested `[new_list, old_value]` returns. `List<bool>` also lowers
-receiver `concat([false])` and module `list.sort(xs)` through the same i64-slot
+receiver `concat([false])` and `xs.sort()` through the same i64-slot
 ABI, with bool-specific display shape preserved at returns.
 `DynamicList<f64>` and dynamic pointer/string lists support the same module
-mutator family from register-recovered builtin calls, including `list.slice`,
-`list.insert`, `list.remove_at`, `list.set`, and `list.push`; f64 paths use
+mutator family from register-recovered builtin calls, including `xs.slice`,
+`xs.insert`, `xs.remove_at`, `xs.set`, and `xs.push`; f64 paths use
 double-list helpers and string paths use ptr-list helpers. This path is intentionally
-kept distinct from static `List<i64>` module folding: only storage rooted at
+kept distinct from static `List<i64>` folding: only storage rooted at
 `NewList`, `ListPush`, or an empty `LoadHeapConst []` is treated as mutable
 dynamic storage, so non-empty static heap lists continue to use static module
 helper folding.

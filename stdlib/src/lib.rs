@@ -1,37 +1,39 @@
-pub mod concurrency_chan;
-pub mod concurrency_task;
-pub mod datetime;
-pub mod io;
-pub mod iter;
-pub mod json;
-pub mod list;
-pub mod map;
-pub mod math;
-pub mod os;
-mod runtime_native;
-pub mod stream;
-pub mod string;
-pub mod tcp;
-pub mod time;
-pub mod toml;
-pub mod yaml;
+pub use lk_stdlib_bytes as bytes;
+pub use lk_stdlib_chan as concurrency_chan;
+pub use lk_stdlib_datetime as datetime;
+pub use lk_stdlib_io as io;
+pub use lk_stdlib_iter as iter;
+pub use lk_stdlib_json as json;
+pub use lk_stdlib_math as math;
+pub use lk_stdlib_net as net;
+pub use lk_stdlib_os as os;
+pub use lk_stdlib_slice as slice;
+pub use lk_stdlib_stream as stream;
+pub use lk_stdlib_string as string;
+pub use lk_stdlib_task as concurrency_task;
+pub use lk_stdlib_time as time;
+pub use lk_stdlib_toml as toml;
+pub use lk_stdlib_yaml as yaml;
+mod runtime_native {
+    pub use lk_stdlib_common::runtime_native::*;
+}
 
+#[cfg(test)]
+mod bytes_test;
 #[cfg(test)]
 mod datetime_test;
 #[cfg(test)]
 mod globals_test;
 #[cfg(test)]
-mod list_test;
-#[cfg(test)]
 mod math_test;
 #[cfg(test)]
 mod os_test;
 #[cfg(test)]
+mod stdlib_runtime_test;
+#[cfg(test)]
 mod stream_test;
 #[cfg(test)]
 mod string_test;
-#[cfg(test)]
-mod tcp_test;
 
 use anyhow::{Result, anyhow};
 use lk_core::{
@@ -39,8 +41,8 @@ use lk_core::{
     rt::{self, RuntimePayload},
     val,
     val::{
-        CallableValue, ChannelValue, HeapRef, HeapStore, HeapValue, RuntimeMapKey, RuntimeVal, TaskValue, Type,
-        TypedList, TypedMap,
+        CallableValue, ChannelValue, HeapRef, HeapStore, HeapValue, RuntimeMapKey, RuntimeSet, RuntimeVal, TaskValue,
+        Type, TypedList, TypedMap,
     },
     vm::{
         NativeArgs, NativeEntry, NativeFunction, NativeRuntime, call_runtime_callable_runtime,
@@ -54,7 +56,7 @@ use runtime_native::runtime_display_value;
 /// Register all stdlib modules with the given registry
 pub fn register_stdlib_modules(registry: &mut ModuleRegistry) -> Result<()> {
     for name in [
-        "io", "json", "yaml", "toml", "iter", "math", "string", "list", "map", "datetime", "os", "tcp", "stream",
+        "io", "json", "yaml", "toml", "bytes", "iter", "math", "string", "datetime", "os", "net", "slice", "stream",
         "task", "chan", "time",
     ] {
         register_stdlib_module_by_name(registry, name)?;
@@ -73,89 +75,85 @@ pub fn register_stdlib_modules_named(registry: &mut ModuleRegistry, names: &[Str
 
 fn register_stdlib_module_by_name(registry: &mut ModuleRegistry, name: &str) -> Result<()> {
     match name {
-        "io" => registry.register_module("io", Box::new(io::IoModule::new()))?,
-        "json" => registry.register_module("json", Box::new(json::JsonModule::new()))?,
-        "yaml" => registry.register_module("yaml", Box::new(yaml::YamlModule::new()))?,
-        "toml" => registry.register_module("toml", Box::new(toml::TomlModule::new()))?,
-        "iter" => registry.register_module("iter", Box::new(iter::IterModule::new()))?,
-        "math" => registry.register_module("math", Box::new(math::MathModule::new()))?,
-        "string" => registry.register_module("string", Box::new(string::StringModule::new()))?,
-        "list" => registry.register_module("list", Box::new(list::ListModule::new()))?,
-        "map" => registry.register_module("map", Box::new(map::MapModule::new()))?,
-        "datetime" => registry.register_module("datetime", Box::new(datetime::DateTimeModule::new()))?,
-        "os" => registry.register_module("os", Box::new(os::OsModule::new()))?,
-        "tcp" => registry.register_module("tcp", Box::new(tcp::TcpModule::new()))?,
-        "stream" => registry.register_module("stream", Box::new(stream::StreamModule::new()))?,
-        "task" => registry.register_module("task", Box::new(concurrency_task::TaskModule::new()))?,
-        "chan" => registry.register_module("chan", Box::new(concurrency_chan::ChannelModule::new()))?,
-        "time" => registry.register_module("time", Box::new(time::TimeModule::new()))?,
+        "io" => io::register(registry)?,
+        "json" => json::register(registry)?,
+        "yaml" => yaml::register(registry)?,
+        "toml" => toml::register(registry)?,
+        "bytes" => bytes::register(registry)?,
+        "iter" => iter::register(registry)?,
+        "math" => math::register(registry)?,
+        "string" => string::register(registry)?,
+        "datetime" => datetime::register(registry)?,
+        "os" => os::register(registry)?,
+        "net" => net::register(registry)?,
+        "slice" => slice::register(registry)?,
+        "stream" => stream::register(registry)?,
+        "task" => concurrency_task::register(registry)?,
+        "chan" => concurrency_chan::register(registry)?,
+        "time" => time::register(registry)?,
         _ => {}
     }
     Ok(())
 }
 
 pub fn register_stdlib_module_io(registry: &mut ModuleRegistry) -> Result<()> {
-    registry.register_module("io", Box::new(io::IoModule::new()))
+    io::register(registry)
 }
 
 pub fn register_stdlib_module_json(registry: &mut ModuleRegistry) -> Result<()> {
-    registry.register_module("json", Box::new(json::JsonModule::new()))
+    json::register(registry)
 }
 
 pub fn register_stdlib_module_yaml(registry: &mut ModuleRegistry) -> Result<()> {
-    registry.register_module("yaml", Box::new(yaml::YamlModule::new()))
+    yaml::register(registry)
 }
 
 pub fn register_stdlib_module_toml(registry: &mut ModuleRegistry) -> Result<()> {
-    registry.register_module("toml", Box::new(toml::TomlModule::new()))
+    toml::register(registry)
+}
+
+pub fn register_stdlib_module_bytes(registry: &mut ModuleRegistry) -> Result<()> {
+    bytes::register(registry)
 }
 
 pub fn register_stdlib_module_iter(registry: &mut ModuleRegistry) -> Result<()> {
-    registry.register_module("iter", Box::new(iter::IterModule::new()))
+    iter::register(registry)
 }
 
 pub fn register_stdlib_module_math(registry: &mut ModuleRegistry) -> Result<()> {
-    registry.register_module("math", Box::new(math::MathModule::new()))
+    math::register(registry)
 }
 
 pub fn register_stdlib_module_string(registry: &mut ModuleRegistry) -> Result<()> {
-    registry.register_module("string", Box::new(string::StringModule::new()))
-}
-
-pub fn register_stdlib_module_list(registry: &mut ModuleRegistry) -> Result<()> {
-    registry.register_module("list", Box::new(list::ListModule::new()))
-}
-
-pub fn register_stdlib_module_map(registry: &mut ModuleRegistry) -> Result<()> {
-    registry.register_module("map", Box::new(map::MapModule::new()))
+    string::register(registry)
 }
 
 pub fn register_stdlib_module_datetime(registry: &mut ModuleRegistry) -> Result<()> {
-    registry.register_module("datetime", Box::new(datetime::DateTimeModule::new()))
+    datetime::register(registry)
 }
 
 pub fn register_stdlib_module_os(registry: &mut ModuleRegistry) -> Result<()> {
-    registry.register_module("os", Box::new(os::OsModule::new()))
+    os::register(registry)
 }
 
-pub fn register_stdlib_module_tcp(registry: &mut ModuleRegistry) -> Result<()> {
-    registry.register_module("tcp", Box::new(tcp::TcpModule::new()))
+pub fn register_stdlib_module_net(registry: &mut ModuleRegistry) -> Result<()> {
+    net::register(registry)
 }
 
 pub fn register_stdlib_module_stream(registry: &mut ModuleRegistry) -> Result<()> {
-    registry.register_module("stream", Box::new(stream::StreamModule::new()))
+    stream::register(registry)
 }
 
 pub fn register_stdlib_module_task(registry: &mut ModuleRegistry) -> Result<()> {
-    registry.register_module("task", Box::new(concurrency_task::TaskModule::new()))
+    concurrency_task::register(registry)
 }
 
 pub fn register_stdlib_module_chan(registry: &mut ModuleRegistry) -> Result<()> {
-    registry.register_module("chan", Box::new(concurrency_chan::ChannelModule::new()))
+    concurrency_chan::register(registry)
 }
 
 pub fn register_stdlib_module_time(registry: &mut ModuleRegistry) -> Result<()> {
-    registry.register_module("time", Box::new(time::TimeModule::new()))
+    time::register(registry)
 }
 
 /// Register global builtin functions available without use
@@ -553,8 +551,13 @@ fn heap_values_equal(left: &HeapValue, right: &HeapValue, heap: &HeapStore) -> R
         (HeapValue::String(left), HeapValue::String(right)) => left == right,
         (HeapValue::List(left), HeapValue::List(right)) => typed_lists_equal(left, right, heap)?,
         (HeapValue::Map(left), HeapValue::Map(right)) => typed_maps_equal(left, right, heap)?,
+        (HeapValue::Set(left), HeapValue::Set(right)) => runtime_sets_equal(left, right),
         _ => false,
     })
+}
+
+fn runtime_sets_equal(left: &RuntimeSet, right: &RuntimeSet) -> bool {
+    left.len() == right.len() && left.entries().all(|key| right.contains(key))
 }
 
 fn runtime_value_to_string(value: &RuntimeVal, heap: &HeapStore) -> Result<Option<Arc<str>>> {
@@ -961,41 +964,6 @@ fn runtime_type_name(value: &RuntimeVal, heap: &HeapStore) -> &'static str {
 pub fn register_stdlib_globals(registry: &mut ModuleRegistry) {
     register_stdlib_core_globals(registry);
     register_stdlib_concurrency_globals(registry);
-}
-
-/// Returns a mapping of stdlib module names to their .lk source file paths.
-/// These are LK-language stdlib modules that complement the Rust-native ones.
-pub fn stdlib_lk_modules() -> Vec<(&'static str, &'static str)> {
-    vec![
-        ("alg", "alg"),
-        ("collections", "collections"),
-        ("func", "func"),
-        ("math_ext", "math_ext"),
-    ]
-}
-
-/// Register LK-source stdlib modules on a resolver.
-/// Must be called after Rust-native stdlib modules are registered
-/// (native modules take priority).
-pub fn register_stdlib_lk_modules(resolver: &mut lk_core::stmt::ModuleResolver) -> Result<()> {
-    let lk_dir = lk_dir_path();
-    for (name, sub) in stdlib_lk_modules() {
-        // Only register if no Rust-native module with this name exists
-        if resolver.resolve_runtime_module(name).is_err() {
-            let mod_path = lk_dir.join(sub).join("mod.lk");
-            if mod_path.exists() {
-                resolver.register_package_module(name, mod_path);
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Return the directory containing the .lk stdlib source files.
-fn lk_dir_path() -> std::path::PathBuf {
-    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("src")
-        .join("lk")
 }
 
 #[cfg(test)]

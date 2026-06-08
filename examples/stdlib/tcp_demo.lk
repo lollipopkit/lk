@@ -1,11 +1,13 @@
 // TCP networking demo
 // Shows basic connect/write/read/close pattern
 
-use tcp;
+use bytes;
+use { socket, tcp } from net;
 
 // 1. Connect to a remote server
-let conn = tcp.connect("example.com", 80);
-assert(conn > 0);
+let addr = socket.addr("example.com", 80);
+let conn = tcp.connect(addr);
+assert(conn != nil);
 
 // 2. Send an HTTP request
 let request = "GET / HTTP/1.0\r\nHost: example.com\r\n\r\n";
@@ -13,7 +15,7 @@ let sent = tcp.write(conn, request);
 assert(sent > 0);
 
 // 3. Read the response
-let response = tcp.read(conn, 4096);
+let response = bytes.to_string_utf8(tcp.read(conn, 4096));
 assert(response.len() > 0);
 assert(response.contains("HTTP"));
 

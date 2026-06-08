@@ -234,6 +234,7 @@ pub enum Type {
     /// Generic container types
     List(Box<Type>), // List<T>
     Map(Box<Type>, Box<Type>), // Map<K, V>
+    Set(Box<Type>),            // Set<T>
     /// Fixed-length heterogeneous tuple: (T0, T1, ...)
     Tuple(Vec<Type>),
 
@@ -348,6 +349,11 @@ impl Type {
                         return Some(Type::Map(Box::new(params[0].clone()), Box::new(params[1].clone())));
                     }
                 }
+                "Set" => {
+                    if params.len() == 1 {
+                        return Some(Type::Set(Box::new(params[0].clone())));
+                    }
+                }
                 "Task" => {
                     if params.len() == 1 {
                         return Some(Type::Task(Box::new(params[0].clone())));
@@ -412,6 +418,7 @@ impl Type {
         match s {
             "List" => Some(Type::List(Box::new(Type::Any))),
             "Map" => Some(Type::Map(Box::new(Type::Any), Box::new(Type::Any))),
+            "Set" => Some(Type::Set(Box::new(Type::Any))),
             _ => {
                 // Assume it's a named custom type
                 if is_type_name(s) {
@@ -434,6 +441,7 @@ impl Type {
             Type::Any => "Any".to_string(),
             Type::List(elem) => format!("List<{}>", elem.display()),
             Type::Map(k, v) => format!("Map<{}, {}>", k.display(), v.display()),
+            Type::Set(elem) => format!("Set<{}>", elem.display()),
             Type::Tuple(elems) => {
                 if elems.is_empty() {
                     "Tuple<>".to_string()
@@ -526,6 +534,7 @@ impl Type {
             // Generic containers with covariant element types
             (Type::List(a), Type::List(b)) => a.is_assignable_to(b),
             (Type::Map(ak, av), Type::Map(bk, bv)) => ak.is_assignable_to(bk) && av.is_assignable_to(bv),
+            (Type::Set(a), Type::Set(b)) => a.is_assignable_to(b),
             (Type::Tuple(as_), Type::Tuple(bs)) => {
                 as_.len() == bs.len() && as_.iter().zip(bs.iter()).all(|(a, b)| a.is_assignable_to(b))
             }
@@ -594,7 +603,7 @@ impl Type {
     pub fn contains_variables(&self) -> bool {
         match self {
             Type::Variable(_) => true,
-            Type::List(inner) | Type::Optional(inner) | Type::Task(inner) | Type::Channel(inner) => {
+            Type::List(inner) | Type::Set(inner) | Type::Optional(inner) | Type::Task(inner) | Type::Channel(inner) => {
                 inner.contains_variables()
             }
             Type::Map(k, v) => k.contains_variables() || v.contains_variables(),
@@ -620,6 +629,7 @@ impl Type {
         match self {
             Type::Variable(name) => substitutions.get(name).cloned().unwrap_or_else(|| self.clone()),
             Type::List(inner) => Type::List(Box::new(inner.substitute(substitutions))),
+            Type::Set(inner) => Type::Set(Box::new(inner.substitute(substitutions))),
             Type::Map(k, v) => Type::Map(
                 Box::new(k.substitute(substitutions)),
                 Box::new(v.substitute(substitutions)),

@@ -7,13 +7,13 @@ use crate::module::runtime_export_from_runtime_native;
 use crate::stmt::ModuleResolver;
 use crate::typ::TypeChecker;
 use crate::val::{HeapStore, HeapValue, RuntimeMapKey, RuntimeObject, RuntimeVal, ShortStr, Type, TypedList, TypedMap};
-use crate::vm::{NativeArgs, NativeFunction, NativeRuntime, RuntimeExport, collect_runtime_export};
+use crate::vm::{NativeArgs, NativeEntry, NativeFunction, NativeRuntime, RuntimeExport, collect_runtime_export};
 
 use crate::typ::{TraitDef, TraitImpl};
 use std::collections::HashMap;
 
 mod core_methods;
-use core_methods::{core_call_method_builtin, core_call_method_named_builtin};
+use core_methods::{core_call_method_builtin, core_call_method_named_builtin, core_set_builtin};
 
 /// VM runtime context.
 ///
@@ -269,6 +269,7 @@ impl VmContext {
         );
         self.install_runtime_builtin("__lk_make_struct", NativeFunction::Plain(core_make_struct_builtin), 2);
         self.install_runtime_builtin("typeof", NativeFunction::Plain(core_typeof_builtin), 1);
+        self.install_runtime_builtin("Set", NativeFunction::Plain(core_set_builtin), NativeEntry::VARIADIC);
         self.install_runtime_builtin("__lk_set_field", NativeFunction::Plain(core_set_field_builtin), 3);
         self.install_runtime_builtin("__lk_merge_fields", NativeFunction::Plain(core_merge_fields_builtin), 2);
         self.install_runtime_builtin("__lk_bit_and", NativeFunction::Plain(core_bit_and_builtin), 2);

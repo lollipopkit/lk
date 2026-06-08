@@ -1,11 +1,12 @@
-use crate::util::fast_map::{FastHashMap, fast_hash_map_new};
+use crate::util::fast_map::{FastHashMap, fast_hash_map_new, fast_hash_set_new};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Result, anyhow, bail};
 
 use crate::{
     val::{
-        CallableValue, HeapRef, HeapStore, HeapValue, RuntimeMapKey, RuntimeObject, RuntimeVal, TypedList, TypedMap,
+        CallableValue, HeapRef, HeapStore, HeapValue, RuntimeMapKey, RuntimeObject, RuntimeSet, RuntimeVal, TypedList,
+        TypedMap,
     },
     vm::{Module, NativeArgs, NativeEntry, RuntimeCallable, RuntimeModuleState, VmContext},
 };
@@ -1284,8 +1285,10 @@ pub fn copy_runtime_value(
 fn copy_heap_value(value: &HeapValue, source_heap: &HeapStore, dest_heap: &mut HeapStore) -> Result<HeapValue> {
     Ok(match value {
         HeapValue::String(value) => HeapValue::String(Arc::clone(value)),
+        HeapValue::Bytes(value) => HeapValue::Bytes(Arc::clone(value)),
         HeapValue::List(values) => HeapValue::List(copy_typed_list(values, source_heap, dest_heap)?),
         HeapValue::Map(values) => HeapValue::Map(copy_typed_map(values, source_heap, dest_heap)?),
+        HeapValue::Set(values) => HeapValue::Set(copy_runtime_set(values, source_heap, dest_heap)?),
         HeapValue::Object(object) => {
             let mut fields = fast_hash_map_new();
             for (key, value) in &object.fields {
@@ -1310,6 +1313,13 @@ fn copy_heap_value(value: &HeapValue, source_heap: &HeapStore, dest_heap: &mut H
         HeapValue::Channel(value) => HeapValue::Channel(value.clone()),
         HeapValue::Stream(value) => HeapValue::Stream(value.clone()),
         HeapValue::StreamCursor(value) => HeapValue::StreamCursor(value.clone()),
+        HeapValue::Slice(value) => HeapValue::Slice(Arc::new(crate::val::SliceValue {
+            source: copy_runtime_value(&value.source, source_heap, dest_heap)?,
+            kind: value.kind,
+            start: value.start,
+            len: value.len,
+        })),
+        HeapValue::Resource(value) => HeapValue::Resource(value.clone()),
         HeapValue::UpvalCell(value) => HeapValue::UpvalCell(copy_runtime_value(&value, source_heap, dest_heap)?),
         HeapValue::ErrorVal(error) => HeapValue::ErrorVal(crate::val::ErrorVal {
             message: Arc::clone(&error.message),
@@ -1322,6 +1332,14 @@ fn copy_heap_value(value: &HeapValue, source_heap: &HeapStore, dest_heap: &mut H
             },
         }),
     })
+}
+
+fn copy_runtime_set(values: &RuntimeSet, source_heap: &HeapStore, dest_heap: &mut HeapStore) -> Result<RuntimeSet> {
+    let mut out = fast_hash_set_new();
+    for key in values.entries() {
+        out.insert(copy_runtime_map_key(key, source_heap, dest_heap)?);
+    }
+    Ok(RuntimeSet::from_entries(out))
 }
 
 fn copy_typed_list(values: &TypedList, source_heap: &HeapStore, dest_heap: &mut HeapStore) -> Result<TypedList> {

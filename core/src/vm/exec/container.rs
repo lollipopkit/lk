@@ -3,7 +3,9 @@ use std::sync::Arc;
 
 use anyhow::{Result, anyhow, bail};
 
-use crate::val::{HeapRef, HeapValue, RuntimeMapKey, RuntimeObject, RuntimeVal, ShortStr, TypedList, TypedMap};
+use crate::val::{
+    HeapRef, HeapValue, RuntimeMapKey, RuntimeObject, RuntimeSet, RuntimeVal, ShortStr, TypedList, TypedMap,
+};
 
 use super::profile::{record_dynamic_index_key_metric, record_index_key_metric};
 use super::{Executor, heap_kind, push_list_value, set_list_value};
@@ -34,6 +36,7 @@ enum ToIterPlan {
     ExistingList(HeapRef),
     StringChars(Vec<Arc<str>>),
     Map(TypedMapIterSnapshot),
+    Set(Vec<RuntimeMapKey>),
 }
 
 enum TypedMapIterSnapshot {
@@ -247,9 +250,10 @@ impl Executor {
                 HeapValue::String(value) => Ok(string_char_len(value)),
                 HeapValue::List(value) => Ok(value.len()),
                 HeapValue::Map(value) => Ok(value.len()),
+                HeapValue::Set(value) => Ok(value.len()),
                 other => bail!("Len target object is not sized: {:?}", heap_kind(other)),
             },
-            other => bail!("Len target expected string/list/map, got {:?}", other.kind()),
+            other => bail!("Len target expected string/list/map/set, got {:?}", other.kind()),
         }
     }
 
@@ -277,9 +281,10 @@ impl Executor {
                 }
                 HeapValue::List(values) => self.list_contains(values, &needle),
                 HeapValue::Map(values) => self.map_contains(values, &needle),
+                HeapValue::Set(values) => self.set_contains(values, &needle),
                 other => bail!("Contains haystack object is not searchable: {:?}", heap_kind(other)),
             },
-            other => bail!("Contains haystack expected string/list/map, got {:?}", other.kind()),
+            other => bail!("Contains haystack expected string/list/map/set, got {:?}", other.kind()),
         }
     }
 
@@ -370,6 +375,11 @@ impl Executor {
         })
     }
 
+    fn set_contains(&self, values: &RuntimeSet, needle: &RuntimeVal) -> Result<bool> {
+        let key = self.runtime_map_key_from_value(needle)?;
+        Ok(values.contains(&key))
+    }
+
     pub(super) fn to_iter(&mut self, register: u8) -> Result<RuntimeVal> {
         match self.read(register)?.clone() {
             RuntimeVal::ShortStr(value) => {
@@ -386,11 +396,12 @@ impl Executor {
                     HeapValue::List(_) => ToIterPlan::ExistingList(handle),
                     HeapValue::String(value) => ToIterPlan::StringChars(string_chars_to_list(value)),
                     HeapValue::Map(map) => ToIterPlan::Map(typed_map_iter_snapshot(map)),
+                    HeapValue::Set(values) => ToIterPlan::Set(values.entries().cloned().collect()),
                     other => bail!("ToIter target object is not iterable: {:?}", heap_kind(other)),
                 };
                 self.finish_to_iter_plan(plan)
             }
-            other => bail!("ToIter target expected string/list/map, got {:?}", other.kind()),
+            other => bail!("ToIter target expected string/list/map/set, got {:?}", other.kind()),
         }
     }
 
@@ -401,7 +412,18 @@ impl Executor {
                 self.alloc_heap_value(HeapValue::List(TypedList::String(list))),
             )),
             ToIterPlan::Map(snapshot) => self.map_entries_to_iter_list(snapshot),
+            ToIterPlan::Set(values) => self.set_values_to_iter_list(values),
         }
+    }
+
+    fn set_values_to_iter_list(&mut self, values: Vec<RuntimeMapKey>) -> Result<RuntimeVal> {
+        let values = values
+            .into_iter()
+            .map(|value| self.runtime_map_key_to_value(value))
+            .collect();
+        Ok(RuntimeVal::Obj(
+            self.alloc_heap_value(HeapValue::List(TypedList::Mixed(values))),
+        ))
     }
 
     fn map_entries_to_iter_list(&mut self, entries: TypedMapIterSnapshot) -> Result<RuntimeVal> {

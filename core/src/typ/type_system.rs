@@ -148,6 +148,7 @@ impl TypeRegistry {
             Type::Nil => "Nil".to_string(),
             Type::List(inner) => format!("List<{}>", Self::type_to_string(inner)),
             Type::Map(k, v) => format!("Map<{}, {}>", Self::type_to_string(k), Self::type_to_string(v)),
+            Type::Set(inner) => format!("Set<{}>", Self::type_to_string(inner)),
             Type::Tuple(elems) => {
                 if elems.is_empty() {
                     "Tuple<>".to_string()
@@ -401,6 +402,7 @@ impl TypeInferenceEngine {
 
             // Structural unification
             (Type::List(a), Type::List(b)) => self.unify(*a, *b),
+            (Type::Set(a), Type::Set(b)) => self.unify(*a, *b),
             (Type::Map(ak, av), Type::Map(bk, bv)) => {
                 self.unify(*ak, *bk)?;
                 self.unify(*av, *bv)
@@ -558,7 +560,7 @@ impl TypeInferenceEngine {
     fn occurs_check(var: &str, typ: &Type) -> bool {
         match typ {
             Type::Variable(v) => v == var,
-            Type::List(inner) | Type::Optional(inner) | Type::Task(inner) | Type::Channel(inner) => {
+            Type::List(inner) | Type::Set(inner) | Type::Optional(inner) | Type::Task(inner) | Type::Channel(inner) => {
                 Self::occurs_check(var, inner)
             }
             Type::Map(k, v) => Self::occurs_check(var, k) || Self::occurs_check(var, v),

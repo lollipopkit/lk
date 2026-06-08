@@ -1,10 +1,7 @@
 use math;
-use alg;
-use collections;
-use func;
 use string;
-use list;
 use os;
+use { file } from io;
 
 // Math new features
 assert(math.hypot(3.0, 4.0) > 4.99);
@@ -32,40 +29,22 @@ assert(string.capitalize("hello world") == "Hello world");
 assert(string.title("hello world") == "Hello World");
 
 // OS new features
-assert(os.file_exists("/tmp"));
+assert(file.exists("/tmp"));
 assert(os.path_sep() != "");
 
-// alg module
-assert_eq(alg.gcd(12, 8), 4);
-assert_eq(alg.lcm(4, 6), 12);
-assert(alg.is_prime(7));
-assert(!alg.is_prime(4));
-assert_eq(alg.fib(10), 55);
-assert_eq(alg.factorial(5), 120);
-assert_eq(alg.comb(10, 3), 120);
+// Builtin Set
+let my_set = Set(["a", "b", "a"]);
+assert(my_set.has("a"));
+assert(my_set.contains("b"));
+assert_eq(my_set.len(), 2);
+my_set.add("c");
+assert_eq(my_set.len(), 3);
+my_set.delete("a");
+assert(!my_set.has("a"));
 
-// collections - stack
-let s = collections.stack();
-s = collections.stack_push(s, 1);
-s = collections.stack_push(s, 2);
-s = collections.stack_push(s, 3);
-assert_eq(collections.stack_peek(s), 3);
-assert_eq(collections.stack_len(s), 3);
-
-// collections - set
-let my_set = collections.set();
-my_set = collections.set_add(my_set, "a");
-my_set = collections.set_add(my_set, "b");
-my_set = collections.set_add(my_set, "a"); // duplicate
-assert(collections.set_has(my_set, "a"));
-assert_eq(collections.set_len(my_set), 2);
-
-// func module
-let add = |a, b| a + b;
-let add3 = func.curry2(add)(3);
-assert_eq(add3(4), 7);
-let double = func.compose(|x| x * 2, |x| x + 1);
-assert_eq(double(3), 8);  // (3+1)*2 = 8
-assert_eq(func.id(42), 42);
+// List methods remain available without importing a list module.
+assert_eq(xs.first(), 3);
+assert_eq(xs.last(), 6);
+assert_eq(xs.slice(1, 4), [1, 4, 1]);
 
 println("stdlib comprehensive test: all assertions passed");

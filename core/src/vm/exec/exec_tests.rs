@@ -2,7 +2,7 @@ use super::*;
 use std::sync::{Arc, Mutex};
 
 use crate::{
-    val::{CallableValue, HeapRef, HeapStore, HeapValue, RuntimeMapKey, RuntimeVal, TypedMap},
+    val::{CallableValue, HeapRef, HeapStore, HeapValue, RuntimeMapKey, RuntimeVal, ShortStr, TypedList, TypedMap},
     vm::{
         ConstHeapValue, ConstPool, Instr, NativeArgs, NativeEntry, NativeFunction, NativeRuntime, Opcode,
         RuntimeCallable, VmContext,

@@ -20,7 +20,8 @@
 
 ### 集合
 - 列表：`[a, b, c]`（允许异构）。下标访问：`list[0]`。负索引：`list[-1]`。区间切片：`list[1..3]`。安全访问帮助函数在标准库/元方法中。
-- 映射：`{ key: value, ... }`。裸 key 为字符串键：`{name: "Alice", age: 30}` 等价于 `{ "name": "Alice", "age": 30 }`。键为运行时表达式，会被转为字符串（string/int/float/bool）。可用 `map.key` 或 `map["key"]` 访问。
+- 映射：`{ key: value, ... }`。裸 key 为字符串键：`{name: "Alice", age: 30}` 等价于 `{ "name": "Alice", "age": 30 }`。键使用运行时 key 值（nil/bool/int/string/object；float 会被拒绝）。可用 `map.key` 或 `map["key"]` 访问。
+- 集合：`Set()` 创建空集合；`Set([items])` 从列表构造集合。Set 元素使用与 Map 相同的 key 规则。
 
 ### 模板字符串
 - 仅支持在普通引号字符串中使用 `${expr}` 插值（`"..."` 与 `'...'` 都可）。
@@ -31,8 +32,8 @@
 
 ### 输入与变量
 - 没有隐式运行时上下文。标识符必须在词法环境中定义（例如通过语句中的 `let`、函数参数或模块 `use`）。
-- 通过标准库显式读取外部输入：`io.read()`（字符串）。手动解析：`json.parse(...)`、`yaml.parse(...)`、`toml.parse(...)`。
-- 示例：`use io; use json; let data = json.parse(io.read()); return data.req.user.id == 1;`
+- 通过标准库显式读取外部输入：`use { std } from io;` 后使用 `std.read_to_string(std.stdin())`。手动解析：`json.parse(...)`、`yaml.parse(...)`、`toml.parse(...)`。
+- 示例：`use { std } from io; use json; let data = json.parse(std.read_to_string(std.stdin())); return data.req.user.id == 1;`
 
 ### 常量
 - `const name = expr;` —— 类似 `let`，但不可变。尝试重新赋值 `const` 变量会在运行时错误。
@@ -69,7 +70,7 @@
 - 列表之间的 `-` 产生一个新列表，移除右侧列表中的元素。
 - 列表之间 `+` 表示拼接。列表与值相加表示追加。
 - 映射之间 `+` 表示合并，遇到重复键以右侧为准。
-- `in` 支持字符串子串判断 `str in str`、列表成员检查、映射键存在性。对于 `list in list`，会检查左侧所有元素都包含在右侧。
+- `in` 支持字符串子串判断 `str in str`、列表/集合成员检查、映射键存在性。对于 `list in list`，会检查左侧所有元素都包含在右侧。
 
 ## 运算符（按优先级）
 - 后缀：调用 `()`、点 `.` 字段、下标 `[expr]`、可选链 `?.field`、可选下标 `?[expr]`
@@ -128,7 +129,7 @@
 - `if let pattern = expr stmt [else stmt]`
 - `while (cond) stmt` 或 `while cond stmt`
 - `while let pattern = expr stmt`
-- `for pattern in expr stmt`，其中 `expr` 可迭代：列表、字符串（字符）、映射（迭代 `[key, value]`）。
+- `for pattern in expr stmt`，其中 `expr` 可迭代：列表、字符串（字符）、映射（迭代 `[key, value]`）、集合（迭代 value）。
 - `break;`、`continue;`
 - `return;` 或 `return expr;`
 
@@ -167,11 +168,14 @@
 ### Use 导入
 - 形式：
   - `use math;` —— 标准库模块作为命名空间。
+  - `use { file, std } from io;` —— 从父标准库模块选择性导入子命名空间。
+  - `use io;` —— 父标准库模块命名空间，可通过 `io.file`、`io.std` 访问子命名空间。
   - `use "path/to/file.lk";` —— 文件模块作为命名空间（名称来自文件名）。
   - `use { abs, sqrt } from math;` —— 选择性导入。
   - `use { f as g } from "m.lk";` —— 带别名。
   - `use * as m from math;` —— 命名空间别名。
   - `use math as m;` —— 模块别名。
+- 裸模块导入直接绑定模块名：`use net;` 会定义 `net`。
 
 - 文件导入与安全：
   - 文件不会自动对外可见。跨文件依赖必须显式 `use`。
@@ -214,38 +218,36 @@ use "d/d1";    // c/d/d1.lk，导出名为 d1
 
 ## 内置与标准库
 - 全局内置：`print(fmt, ...args)`、`println(fmt, ...args)`、`panic([msg])`、`assert(cond[, msg])`、`assert_eq(actual, expected[, msg])`、`assert_ne(actual, expected[, msg])`、`typeof(value)`。
-- `typeof(value)` 返回运行时类型名字符串：`"Int"`、`"Float"`、`"String"`、`"Bool"`、`"Nil"`、`"List"`、`"Map"` 或结构体类型名。
+- `typeof(value)` 返回运行时类型名字符串：`"Int"`、`"Float"`、`"String"`、`"Bytes"`、`"Bool"`、`"Nil"`、`"List"`、`"Map"`、`"Set"`、`"Slice"`、`"File"`/`"TcpStream"` 等 resource 类型名，或结构体类型名。
 
 ### 标准库模块
-按需导入：`math`、`string`、`list`、`map`、`iter`、`stream`、`datetime`、`os`、`io`、`json`、`yaml`、`toml`、`tcp`。LK 源码模块：`alg`、`collections`、`func`、`math_ext`。启用 `concurrency` 后支持：`task`、`chan`、`time`。
+按需导入：`math`、`string`、`bytes`、`iter`、`stream`、`datetime`、`os`、`io`、`net`、`slice`、`json`、`yaml`、`toml`。启用 `concurrency` 后支持：`task`、`chan`、`time`。
 
 - `math`：常量 `pi`、`e`、`inf`、`nan`、`max_int`、`min_int`、`max_float`、`epsilon`；函数 `abs`、`sqrt`、`floor`、`ceil`、`round`、`min`、`max`、`pow`、`exp`、`sin`、`cos`、`tan`、`asin`、`acos`、`atan`、`atan2`、`log`、`log10`、`log2`、`clamp`、`random`、`hypot`、`cbrt`、`sinh`、`cosh`、`tanh`、`trunc`、`fract`、`sign`、`to_int`、`to_float`、`is_nan`、`is_inf`。
 - `string`：方法（见下方元方法）。
-- `list`：方法（见下方元方法）。
-- `map`：`map.len(m)`、`map.keys(m)`、`map.values(m)`、`map.has(m, key)`、`map.get(m, key)`、`map.set(m, key, val)`（返回更新后的映射）、`map.delete(m, key)`（返回 `[updated_map, removed_value]`）。
+- `bytes`：二进制数据类型，底层按字节保存。`from_list(list)`、`from_string(str)`、`len(bytes)`、`is_empty(bytes)`、`get(bytes, index)`、`slice(bytes, start[, end])`、`to_list(bytes)`、`to_string_utf8(bytes)`、`to_string_lossy(bytes)`、`concat(a, b)`、`eq(a, b)`。
 - `iter`：仅提供模块级列表工具：`range([start,] end [, step])`、`enumerate(list)`、`zip(list1, list2)`、`take(list, n)`、`skip(list, n)`、`chain(list1, list2)`、`flatten(list)`、`unique(list)`、`chunk(list, size)`，以及高阶操作 `map(list, fn)`、`filter(list, fn)`、`reduce(list, init, fn)`。
 - `stream`：模块级懒执行管道。`stream.from_list(list)`、`stream.range(start, end)`、`stream.iterate(seed, fn)`、`stream.repeat(val)`、`stream.from_channel(ch)`、`stream.map(s, fn)`、`stream.filter(s, fn)`、`stream.take(s, n)`、`stream.skip(s, n)`、`stream.chain(a, b)`、`stream.subscribe(s)`、`stream.next(cursor)`、`stream.collect(stream_or_cursor)`、`stream.next_block(cursor[, timeout_ms])`、`stream.collect_block(stream_or_cursor[, n][, timeout_ms])`。
 - `datetime`：`now()`（微秒）、`format(secs, fmt)`、`parse(str, fmt)`、`add(secs, delta)`、`sub(secs, delta)`、`day_of_week(secs)`、`day_of_year(secs)`、`is_weekend(secs)`。
-- `os`：`hostname()`、`arch()`、`os()`、`clock()`、`time()`、`epoch()`、`exit(code)`、`exec(cmd, args?, stream?)`、`env_get(key, default?)`、`env`、`dir_current()`、`dir_temp()`、`dir_list(path)`、`file_read(path)`、`file_write(path, content)`、`file_append(path, content)`、`file_exists(path)`、`file_size(path)`、`file_delete(path)`、`mkdir(path)`、`path_join(parts...)`、`path_sep()`。
-- `io`：`io.read()`（stdin）、`io.stdin_read([bytpes])`、`io.stdin_read_line()`、`io.stdin_read_all()`、`io.stdout_write(s)`、`io.stdout_writeln(s)`、`io.stdout_flush()`、`io.stderr_write(s)`、`io.stderr_writeln(s)`、`io.stderr_flush()`。
+- `os`：`hostname()`、`arch()`、`os()`、`clock()`、`time()`、`epoch()`、`exit(code)`、`exec(cmd, args?, stream?)`、`env_get(key, default?)`、`env`、`dir_current()`、`dir_temp()`、`dir_list(path)`、`mkdir(path)`、`path_join(parts...)`、`path_sep()`。
+- `io`：父命名空间。可用 `use { std, file } from io;` 导入子命名空间，或通过 `io.std`、`io.file` 访问。
+- `io.std`：`stdin()`、`stdout()`、`stderr()`、`read(reader[, max_bytes]) -> Bytes`、`read_to_string(reader)`、`read_line(reader)`、`write(writer, data)`、`writeln(writer, data)`、`flush(writer)`。`write`/`writeln` 接受 `Bytes` 或 `String`。
+- `io.file`：`open(path, mode)`、`create(path)`、`read(path) -> Bytes`、`write(path, data)`、`append(path, data)`、`exists(path)`、`size(path)`、`remove(path)`、`read_to_string(path_or_file)`、`write_all(file, data)`、`flush(file)`、`close(file)`。二进制 API 使用 `Bytes`，文本读取显式使用 `read_to_string`。
+- `slice`：`from_list(list)`、`from_string(str)`、`len(slice)`、`is_empty(slice)`、`get(slice, index)`、`sub(slice, start[, end])`、`to_list(slice)`、`to_string(slice)`。
 - `json`：`json.parse(string)`。
 - `yaml`：`yaml.parse(string)`。
 - `toml`：`toml.parse(string)`。
-- `tcp`：`tcp.connect(host, port)`、`tcp.bind(host, port)`、`tcp.accept(listener)`、`tcp.write(conn, data)`、`tcp.read(conn, len?)`、`tcp.close(conn)`。
+- `net`：父命名空间。可用 `use { socket, tcp, udp } from net;` 导入子命名空间，或通过 `net.socket`、`net.tcp`、`net.udp` 访问。
+- `net.socket`：`addr(host, port)`、`close(resource)`。
+- `net.tcp`：`connect(addr)`、`bind(addr)`、`accept(listener)`、`write(stream, data)`、`read(stream, len?) -> Bytes`、`close(resource)`，以及 `connect_task`、`accept_task`、`read_task`、`write_task`。`write` 接受 `Bytes` 或 `String`。
+- `net.udp`：`bind(addr)`、`recv_from(socket, len?) -> {data: Bytes, addr: String}`、`send_to(socket, data, addr)`，以及 `recv_from_task`、`send_to_task`。`send_to` 接受 `Bytes` 或 `String`。
 - `time`（并发）：`time.now()`、`time.sleep(ms)`、`time.timeout(ms)`、`time.after(ms)`、`time.since(start, end)`。
-
-#### LK 源码标准库模块
-这些模块用 LK 语言本身编写，补充 Rust 原生模块的算法、数据结构和工具：
-
-- `alg`：排序（`insertion_sort`、`merge_sort`、`quick_sort`）、搜索（`binary_search`、`linear_search`、`bisect`）、经典算法（`gcd`、`lcm`、`is_prime`、`sieve`、`fib`、`factorial`、`comb`、`pow_int`）、字符串算法（`kmp_search`、`kmp_table`）、`shuffle`、`bisect`。
-- `collections`：`stack`/`stack_push`/`stack_pop`/`stack_peek`/`stack_is_empty`/`stack_len`、`queue`/`queue_push`/`queue_pop`/`queue_peek`/`queue_is_empty`/`queue_len`、`set`/`set_add`/`set_remove`/`set_has`/`set_values`/`set_len`/`set_union`/`set_intersection`/`set_difference`/`set_symmetric_difference`、`heap`/`heap_push`/`heap_pop`/`heap_peek`/`heap_len`/`heap_is_empty`、`deque`/`deque_push_front`/`deque_push_back`/`deque_pop_front`/`deque_pop_back`/`deque_peek_front`/`deque_peek_back`/`deque_len`/`deque_is_empty`。
-- `func`：`compose`、`pipe`、`compose_all`、`pipe_all`、`curry2`、`curry3`、`partial1`、`partial2`、`id`、`constant`、`complement`、`both`、`either`、`iterate`、`unfold`、`scan`、`group_by`、`count_by`、`partition`、`flat_map`、`zip_with`、`memoize`、`tap`。
-- `math_ext`：`ext_gcd`、`pow_mod`、`mod_inverse`、`totient`、`divisor_count`、`divisor_sum`、`perm`、`collatz_len`、`triangular`、`pentagonal`、`hexagonal`、`is_perfect`、`catalan`、`sign`、`clamp`、`lerp`、`inverse_lerp`、`map_range`。从 `alg` 重新导出 `gcd`、`lcm`、`is_prime`、`factorial`、`comb`。
 
 ### 元方法（可直接通过 `value.method()` 使用，无需导入）
 - String：`len`、`lower`、`upper`、`trim`、`starts_with`、`ends_with`、`contains`、`replace`、`substring`、`split`、`join`、`reverse`、`repeat`、`chars`、`char_at`、`byte_at`、`find`、`is_empty`、`format`
 - List：`len`、`push`、`set`、`concat`、`join`、`get`、`first`、`last`、`map`、`filter`、`reduce`、`take`、`skip`、`chain`、`flatten`、`unique`、`chunk`、`enumerate`、`zip`、`to_stream`、`sort`、`reverse`、`pop`、`insert`、`remove_at`、`contains`、`index_of`、`slice`、`is_empty`
-- Map：`len`、`keys`、`values`、`has`、`get`、`set`、`delete`
+- Map：`len`、`is_empty`、`keys`、`values`、`has`、`get`、`set`、`delete`、`clear`
+- Set：`len`、`is_empty`、`has`、`contains`、`add`、`delete`、`remove`、`values`、`clear`
 - Stream：`map`、`filter`、`reduce`、`take`、`skip`、`chain`、`subscribe`、`collect`、`collect_block`
 - StreamCursor：`next`、`collect`、`next_block`、`collect_block`
 - Channel：`to_stream`
@@ -265,11 +267,11 @@ use "d/d1";    // c/d/d1.lk，导出名为 d1
 ## 类型与注解
 ### 原始与复合类型
 - `Int`、`Float`、`String`、`Bool`、`Nil`、`Any`
-- `List<T>`、`Map<K, V>`
+- `List<T>`、`Map<K, V>`、`Set<T>`
 - `Task<T>`、`Channel<T>`（并发）
 - 函数类型：`(T1, T2) -> R`
 - 联合类型：`A | B | Nil`；可选类型：`T?`（`T | Nil` 的语法糖）
-- 支持命名与泛型类型（如 `List<Int>`、`Map<String, Int>`）
+- 支持命名与泛型类型（如 `List<Int>`、`Map<String, Int>`、`Set<String>`）
 
 ### 注解
 - `let x: Int = 1;`
@@ -334,7 +336,7 @@ statement    ::= import_stmt | if_stmt | if_let_stmt | while_stmt | while_let_st
                | fn_stmt | struct_stmt | trait_stmt | impl_stmt | expr_stmt | block_stmt
 
 import_stmt  ::= 'use' ( module | string | items_from_source | namespace_import | module_alias ) ';'
-module       ::= identifier
+module       ::= identifier { '/' identifier }
 string       ::= string_literal
 items_from_source ::= '{' import_item { ',' import_item } '}' 'from' ( module | string )
 import_item  ::= id [ 'as' id ]
@@ -401,6 +403,7 @@ for_pattern  ::= '_' | id | '(' for_pattern { ',' for_pattern } ')' | '[' for_pa
 - `Nil` —— 空值/未定义值
 - `List` —— 有序集合
 - `Map` —— 键值映射
+- `Set` —— 唯一值集合
 - `Function` —— 一等函数
 - `Object` —— 结构体实例（含类型名与字段）
 - `Task` —— 并发任务句柄（功能开关）

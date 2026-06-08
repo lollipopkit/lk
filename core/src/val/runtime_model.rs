@@ -3,10 +3,10 @@
 //! The `LiteralVal` enum remains active while the compiler and executor are migrated.
 //! New VM code should target these types first.
 
-use crate::util::fast_map::{FastHashMap, fast_hash_map_from_iter, fast_hash_map_new};
+use crate::util::fast_map::{FastHashMap, FastHashSet, fast_hash_map_from_iter, fast_hash_map_new, fast_hash_set_new};
 use std::sync::Arc;
 
-use super::values::{ChannelValue, ShortStr, StreamCursorValue, StreamValue, TaskValue};
+use super::values::{ChannelValue, ResourceValue, ShortStr, SliceValue, StreamCursorValue, StreamValue, TaskValue};
 
 mod heap;
 
@@ -72,13 +72,17 @@ pub enum RuntimeValKind {
 #[derive(Clone, Debug)]
 pub enum HeapValue {
     String(Arc<str>),
+    Bytes(Arc<[u8]>),
     List(TypedList),
     Map(TypedMap),
+    Set(RuntimeSet),
     Callable(CallableValue),
     Task(Arc<TaskValue>),
     Channel(Arc<ChannelValue>),
     Stream(Arc<StreamValue>),
     StreamCursor(Arc<StreamCursorValue>),
+    Slice(Arc<SliceValue>),
+    Resource(Arc<ResourceValue>),
     Object(RuntimeObject),
     UpvalCell(RuntimeVal),
     ErrorVal(ErrorVal),
@@ -89,17 +93,78 @@ impl HeapValue {
     pub fn type_name(&self) -> &'static str {
         match self {
             Self::String(_) => "String",
+            Self::Bytes(_) => "Bytes",
             Self::List(_) => "List",
             Self::Map(_) => "Map",
+            Self::Set(_) => "Set",
             Self::Callable(_) => "Function",
             Self::Task(_) => "Task",
             Self::Channel(_) => "Channel",
             Self::Stream(_) => "Stream",
             Self::StreamCursor(_) => "StreamCursor",
+            Self::Slice(_) => "Slice",
+            Self::Resource(resource) => resource.kind,
             Self::Object(_) => "Object",
             Self::UpvalCell(_) => "UpvalCell",
             Self::ErrorVal(_) => "Error",
         }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RuntimeSet {
+    entries: FastHashSet<RuntimeMapKey>,
+}
+
+impl RuntimeSet {
+    pub fn new() -> Self {
+        Self {
+            entries: fast_hash_set_new(),
+        }
+    }
+
+    pub fn from_entries(entries: FastHashSet<RuntimeMapKey>) -> Self {
+        Self { entries }
+    }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    #[inline]
+    pub fn contains(&self, key: &RuntimeMapKey) -> bool {
+        self.entries.contains(key)
+    }
+
+    #[inline]
+    pub fn insert(&mut self, key: RuntimeMapKey) -> bool {
+        self.entries.insert(key)
+    }
+
+    #[inline]
+    pub fn remove(&mut self, key: &RuntimeMapKey) -> bool {
+        self.entries.remove(key)
+    }
+
+    #[inline]
+    pub fn clear(&mut self) {
+        self.entries.clear();
+    }
+
+    pub fn entries(&self) -> impl Iterator<Item = &RuntimeMapKey> {
+        self.entries.iter()
+    }
+}
+
+impl Default for RuntimeSet {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -427,6 +492,17 @@ impl TypedMap {
             }
         }
         out
+    }
+
+    #[inline]
+    pub fn clear(&mut self) {
+        match self {
+            Self::Mixed(values) => values.clear(),
+            Self::StringMixed(values) => values.clear(),
+            Self::StringInt(values) => values.clear(),
+            Self::StringFloat(values) => values.clear(),
+            Self::StringBool(values) => values.clear(),
+        }
     }
 
     #[inline]

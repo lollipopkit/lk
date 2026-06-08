@@ -69,6 +69,26 @@ impl TypeChecker {
 
         if let Expr::Var(name) = func {
             match name.as_str() {
+                "Set" => {
+                    if args.len() > 1 {
+                        return Err(Self::type_err("Set() expects 0 or 1 argument", None, None, None));
+                    }
+                    let Some(arg) = args.first() else {
+                        return Ok(Type::Set(Box::new(Type::Any)));
+                    };
+                    let arg_ty = self.check_expr(arg)?;
+                    return match self.resolve_aliases(&arg_ty) {
+                        Type::List(elem) => Ok(Type::Set(elem)),
+                        Type::Set(elem) => Ok(Type::Set(elem)),
+                        Type::Any | Type::Variable(_) => Ok(Type::Set(Box::new(Type::Any))),
+                        other => Err(Self::type_err(
+                            "Set(value) expects List or Set",
+                            Some(Type::List(Box::new(Type::Any))),
+                            Some(other),
+                            Some(arg.as_ref().clone()),
+                        )),
+                    };
+                }
                 "chan" => {
                     if args.is_empty() || args.len() > 2 {
                         return Err(Self::type_err("chan() expects 1 or 2 arguments", None, None, None));

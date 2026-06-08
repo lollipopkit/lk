@@ -350,6 +350,6 @@ fn test_for_statement_type_checking() {
         result
             .unwrap_err()
             .to_string()
-            .contains("For loop iterable must be List, String, or Map")
+            .contains("For loop iterable must be List, String, Map, or Set")
     );
 }

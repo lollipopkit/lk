@@ -181,6 +181,7 @@ impl TypeChecker {
                 Box::new(self.resolve_aliases_internal(key, visiting)),
                 Box::new(self.resolve_aliases_internal(value, visiting)),
             ),
+            Type::Set(inner) => Type::Set(Box::new(self.resolve_aliases_internal(inner, visiting))),
             Type::Tuple(items) => {
                 let mapped = items
                     .iter()

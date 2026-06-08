@@ -40,7 +40,9 @@ use std::sync::Arc;
 
 use anyhow::{Result, anyhow, bail};
 
-use crate::val::{HeapStore, HeapValue, RuntimeMapKey, RuntimeVal, TypedList, TypedMap, typed_map_from_entries};
+use crate::val::{
+    HeapStore, HeapValue, RuntimeMapKey, RuntimeSet, RuntimeVal, TypedList, TypedMap, typed_map_from_entries,
+};
 
 use super::{
     CallWindow, Function, Module, NativeEntry, Opcode, RegisterIndex, RuntimeExport, RuntimeModuleState, VmContext,
@@ -147,6 +149,8 @@ fn format_runtime_val(value: &RuntimeVal, heap: &HeapStore, depth: usize) -> Str
                 HeapValue::List(_) => "[...]".to_string(),
                 HeapValue::Map(map) if depth < MAX_DEPTH => format_typed_map(map, heap, depth + 1),
                 HeapValue::Map(_) => "{...}".to_string(),
+                HeapValue::Set(set) if depth < MAX_DEPTH => format_runtime_set(set),
+                HeapValue::Set(_) => "Set([...])".to_string(),
                 HeapValue::Callable(callable) => format_callable(callable),
                 HeapValue::Object(obj) => {
                     if depth < MAX_DEPTH {
@@ -232,6 +236,17 @@ fn format_typed_map(map: &TypedMap, heap: &HeapStore, depth: usize) -> String {
         TypedMap::StringBool(entries) => append_string_display_map_entries(&mut out, entries),
     }
     out.push('}');
+    out
+}
+
+fn format_runtime_set(set: &RuntimeSet) -> String {
+    let mut out = String::from("Set([");
+    let mut first = true;
+    for value in set.entries() {
+        append_separator(&mut out, &mut first);
+        out.push_str(&format_map_key(value));
+    }
+    out.push_str("])");
     out
 }
 

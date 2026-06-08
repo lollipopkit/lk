@@ -1,23 +1,24 @@
-// I/O module demo — stdin, stdout, stderr
+// I/O module demo: stdin, stdout, stderr
 
-use io;
+use { std } from io;
 
 // 1. Write to stdout
-io.stdout_write("Hello via io.stdout.write\n");
-io.stdout_writeln("Writeln adds a trailing newline");
+let out = std.stdout();
+std.write(out, "Hello via std.write\n");
+std.writeln(out, "Writeln adds a trailing newline");
 
 // 2. Format printing with builtin print/println
 print("Value: {}\n", 42);
 println("Formatted: {} + {} = {}", 1, 2, 3);
 
 // 3. Write to stderr (useful for logging/warnings)
-io.stderr_write("[warn] this is a warning\n");
+std.write(std.stderr(), "[warn] this is a warning\n");
 
 // 4. Flush stdout
-io.stdout_flush();
+std.flush(out);
 
-// 5. io.read() — reads all of stdin (returns "" if no input)
-let all_input = io.read();
+// 5. Read all stdin through an explicit resource
+let all_input = std.read_to_string(std.stdin());
 assert(all_input != nil);
 
 println("io_demo: completed");
