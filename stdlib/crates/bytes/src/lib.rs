@@ -140,7 +140,10 @@ fn slice(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Runtim
     } else {
         bytes.len()
     };
-    let slice = bytes[start..end.max(start)].to_vec();
+    if end < start {
+        bail!("bytes.slice() end must be greater than or equal to start");
+    }
+    let slice = bytes[start..end].to_vec();
     Ok(runtime_bytes_value(slice, runtime.heap_mut()))
 }
 
@@ -219,7 +222,7 @@ fn byte_list_arg(value: &RuntimeVal, heap: &HeapStore, context: &str) -> Result<
 }
 
 fn checked_byte(value: i64, context: &str) -> Result<u8> {
-    u8::try_from(value).map_err(|_| anyhow!("{context} expects byte values in 0..255, got {value}"))
+    u8::try_from(value).map_err(|_| anyhow!("{context} expects byte values in 0..=255, got {value}"))
 }
 
 fn usize_arg(value: &RuntimeVal, context: &str) -> Result<usize> {

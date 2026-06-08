@@ -239,7 +239,7 @@ Use as needed: `math`, `string`, `bytes`, `iter`, `stream`, `datetime`, `os`, `i
 - `net`: parent namespace. Import children with `use { socket, tcp, udp } from net;` or access them through `net.socket`, `net.tcp`, and `net.udp`.
 - `net.socket`: `addr(host, port)`, `close(resource)`.
 - `net.tcp`: `connect(addr)`, `bind(addr)`, `accept(listener)`, `write(stream, data)`, `read(stream, len?) -> Bytes`, `close(resource)`, plus `connect_task`, `accept_task`, `read_task`, `write_task`. `write` accepts `Bytes` or `String`.
-- `net.udp`: `bind(addr)`, `recv_from(socket, len?) -> Bytes`, `send_to(socket, data, addr)`, plus `recv_from_task`, `send_to_task`. `send_to` accepts `Bytes` or `String`.
+- `net.udp`: `bind(addr)`, `recv_from(socket, len?) -> {data: Bytes, addr: String}`, `send_to(socket, data, addr)`, plus `recv_from_task`, `send_to_task`. `send_to` accepts `Bytes` or `String`.
 - `time` (concurrency): `time.now()`, `time.sleep(ms)`, `time.timeout(ms)`, `time.after(ms)`, `time.since(start, end)`.
 
 ### Meta-methods (usable as `value.method()` without importing)

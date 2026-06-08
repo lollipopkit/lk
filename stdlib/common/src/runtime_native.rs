@@ -113,9 +113,11 @@ fn runtime_display_set(values: &RuntimeSet) -> Result<String> {
     let mut out = String::from("Set(");
     out.push('[');
     let mut first = true;
-    for key in values.entries() {
+    let mut entries = values.entries().map(runtime_display_map_key).collect::<Vec<_>>();
+    entries.sort();
+    for key in entries {
         push_display_sep(&mut out, &mut first);
-        out.push_str(&runtime_display_map_key(key));
+        out.push_str(&key);
     }
     out.push(']');
     out.push(')');

@@ -14,6 +14,11 @@ pub use lk_stdlib_common::typed_list_from_values;
 
 use crate::runtime_native::{runtime_string_arg, runtime_string_value};
 
+/// Byte-oriented slices over lists and strings.
+///
+/// `slice.from_string()` and `slice.sub()` operate on byte offsets. String slices
+/// may split a multibyte UTF-8 character; `slice.to_string()` validates the byte
+/// range and returns an error when the selected range is not valid UTF-8.
 #[derive(Debug)]
 pub struct SliceModule;
 

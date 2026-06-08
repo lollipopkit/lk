@@ -835,11 +835,17 @@ fn stdlib_source_path(module_name: &str) -> Option<PathBuf> {
     if !module_name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
         return None;
     }
-    let path = repo_root_from_manifest()
-        .join("stdlib")
-        .join("src")
-        .join(format!("{module_name}.rs"));
-    path.is_file().then_some(path)
+    let root = repo_root_from_manifest();
+    [
+        root.join("stdlib")
+            .join("crates")
+            .join(module_name)
+            .join("src")
+            .join("lib.rs"),
+        root.join("stdlib").join("src").join(format!("{module_name}.rs")),
+    ]
+    .into_iter()
+    .find(|path| path.is_file())
 }
 
 fn find_stdlib_module_location(module_name: &str) -> Option<Location> {
@@ -973,7 +979,7 @@ mod tests {
     #[test]
     fn stdlib_export_location_points_to_export_function() {
         let location = find_stdlib_export_location("math", "sqrt").expect("math.sqrt location");
-        assert!(location.uri.as_str().ends_with("/stdlib/src/math.rs"));
+        assert!(location.uri.as_str().ends_with("/stdlib/crates/math/src/lib.rs"));
         assert!(location.range.start.line > 0);
     }
 

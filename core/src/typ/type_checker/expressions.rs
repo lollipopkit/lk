@@ -1166,6 +1166,8 @@ impl TypeChecker {
                         self.inference_engine.add_constraint((*key_type).clone(), arg_ty);
                         Ok(Some(Type::Bool))
                     }
+                    // List membership is a value-equality linear scan at runtime; Set membership
+                    // uses the same key equality semantics but is the preferred O(1) path.
                     Type::Set(elem_type) | Type::List(elem_type) => {
                         if args.len() != 1 {
                             return Err(Self::type_err(

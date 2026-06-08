@@ -50,13 +50,20 @@ mod tests {
     #[test]
     fn bytes_from_list_rejects_non_byte_values() {
         let err = run("use bytes; return bytes.from_list([256]);").expect_err("256 is outside u8 range");
-        assert!(err.to_string().contains("0..255"));
+        assert!(err.to_string().contains("0..=255"));
 
         let err = run("use bytes; return bytes.from_list([-1]);").expect_err("-1 is outside u8 range");
-        assert!(err.to_string().contains("0..255"));
+        assert!(err.to_string().contains("0..=255"));
 
         let err = run("use bytes; return bytes.from_list([\"x\"]);").expect_err("non-int item should fail");
         assert!(err.to_string().contains("expects Int items"));
+    }
+
+    #[test]
+    fn bytes_slice_rejects_end_before_start() {
+        let err = run("use bytes; return bytes.slice(bytes.from_string(\"abc\"), 2, 1);")
+            .expect_err("end before start should fail");
+        assert!(err.to_string().contains("end must be greater than or equal to start"));
     }
 
     #[test]

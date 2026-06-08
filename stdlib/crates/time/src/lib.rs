@@ -1,6 +1,6 @@
-// Time module for LK concurrency.
-//
-// Module-level functions use RuntimeNative.
+//! Time module for LK concurrency.
+//!
+//! Module-level functions use RuntimeNative.
 
 use anyhow::{Result, anyhow, bail};
 use lk_core::{

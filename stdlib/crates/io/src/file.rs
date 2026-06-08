@@ -84,26 +84,21 @@ fn read(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Runtime
 
 fn read_to_string(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 1, "file.read_to_string()")?;
-    if runtime_string_arg(
+    match runtime_string_arg(
         args.get(0).expect("checked arity"),
         runtime.heap(),
         "file.read_to_string path",
-    )
-    .is_ok()
-    {
-        let path = runtime_string_arg(
-            args.get(0).expect("checked arity"),
-            runtime.heap(),
-            "file.read_to_string path",
-        )?;
-        let content =
-            std::fs::read_to_string(path.as_ref()).map_err(|err| anyhow!("failed to read file '{}': {err}", path))?;
-        return Ok(crate::runtime_native::runtime_string_value(
-            &content,
-            runtime.heap_mut(),
-        ));
+    ) {
+        Ok(path) => {
+            let content = std::fs::read_to_string(path.as_ref())
+                .map_err(|err| anyhow!("failed to read file '{}': {err}", path))?;
+            Ok(crate::runtime_native::runtime_string_value(
+                &content,
+                runtime.heap_mut(),
+            ))
+        }
+        Err(_) => io_std::read_to_string(args, runtime),
     }
-    io_std::read_to_string(args, runtime)
 }
 
 fn write_path(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {

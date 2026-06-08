@@ -495,6 +495,17 @@ impl TypedMap {
     }
 
     #[inline]
+    pub fn clear(&mut self) {
+        match self {
+            Self::Mixed(values) => values.clear(),
+            Self::StringMixed(values) => values.clear(),
+            Self::StringInt(values) => values.clear(),
+            Self::StringFloat(values) => values.clear(),
+            Self::StringBool(values) => values.clear(),
+        }
+    }
+
+    #[inline]
     pub fn set(&mut self, key: RuntimeMapKey, value: RuntimeVal) {
         match self {
             Self::Mixed(values) => {

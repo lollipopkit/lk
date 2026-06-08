@@ -240,7 +240,7 @@ use "d/d1";    // c/d/d1.lk，导出名为 d1
 - `net`：父命名空间。可用 `use { socket, tcp, udp } from net;` 导入子命名空间，或通过 `net.socket`、`net.tcp`、`net.udp` 访问。
 - `net.socket`：`addr(host, port)`、`close(resource)`。
 - `net.tcp`：`connect(addr)`、`bind(addr)`、`accept(listener)`、`write(stream, data)`、`read(stream, len?) -> Bytes`、`close(resource)`，以及 `connect_task`、`accept_task`、`read_task`、`write_task`。`write` 接受 `Bytes` 或 `String`。
-- `net.udp`：`bind(addr)`、`recv_from(socket, len?) -> Bytes`、`send_to(socket, data, addr)`，以及 `recv_from_task`、`send_to_task`。`send_to` 接受 `Bytes` 或 `String`。
+- `net.udp`：`bind(addr)`、`recv_from(socket, len?) -> {data: Bytes, addr: String}`、`send_to(socket, data, addr)`，以及 `recv_from_task`、`send_to_task`。`send_to` 接受 `Bytes` 或 `String`。
 - `time`（并发）：`time.now()`、`time.sleep(ms)`、`time.timeout(ms)`、`time.after(ms)`、`time.since(start, end)`。
 
 ### 元方法（可直接通过 `value.method()` 使用，无需导入）

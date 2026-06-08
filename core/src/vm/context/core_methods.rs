@@ -264,9 +264,7 @@ fn dispatch_map_builtin_method(
                 bail!("map.clear() expects no arguments, got {}", positional.len());
             }
             if let Some(HeapValue::Map(map)) = heap.get_mut(handle) {
-                for (key, _) in map.entries_iter() {
-                    map.remove(&key);
-                }
+                map.clear();
             }
             Ok(Some(RuntimeVal::Nil))
         }

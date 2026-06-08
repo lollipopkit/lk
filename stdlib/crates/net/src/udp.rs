@@ -2,16 +2,19 @@ use anyhow::{Result, anyhow, bail};
 use lk_core::{
     module::{ModuleProvider, ModuleRegistry, RuntimeNativeExport, runtime_export_from_plain_native_entries},
     rt::{self, RuntimePayload},
-    val::{HeapStore, ResourceHandle, RuntimeVal},
+    util::fast_map::fast_hash_map_new,
+    val::{HeapStore, HeapValue, ResourceHandle, RuntimeMapKey, RuntimeVal, TypedMap},
     vm::{NativeArgs, NativeEntry, NativeRuntime, RuntimeExport},
 };
-use std::net::UdpSocket;
+use std::{net::UdpSocket, sync::Arc};
 
 use crate::{
     bytes::{runtime_bytes_or_string_arg, runtime_bytes_value},
     resource::{payload_int, resource_arg, resource_value, task_value},
-    runtime_native::runtime_string_arg,
+    runtime_native::{runtime_string_arg, runtime_string_value},
 };
+
+const MAX_DATAGRAM_READ_LIMIT: usize = 65_535;
 
 #[derive(Debug)]
 pub struct NetUdpModule;
@@ -64,8 +67,8 @@ fn bind(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Runtime
 
 fn recv_from(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     let (socket, max) = recv_args(args, runtime)?;
-    let (data, _addr) = recv_socket(socket, max)?;
-    Ok(runtime_bytes_value(data, runtime.heap_mut()))
+    let (data, addr) = recv_socket(socket, max)?;
+    Ok(recv_result_value(data, addr, runtime.heap_mut()))
 }
 
 fn send_to(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
@@ -80,8 +83,8 @@ fn send_to(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Runt
 fn recv_from_task(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     let (socket, max) = recv_args(args, runtime)?;
     spawn_task(runtime, async move {
-        let (data, _addr) = recv_socket(socket, max)?;
-        Ok(payload_bytes(data))
+        let (data, addr) = recv_socket(socket, max)?;
+        Ok(payload_recv_result(data, addr))
     })
 }
 
@@ -89,7 +92,7 @@ fn send_to_task(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result
     expect_arity(args, 3, "udp.send_to_task()")?;
     let values = args.as_slice();
     let socket = socket_clone(&values[0], runtime.heap(), "udp.send_to_task()")?;
-    let data = runtime_bytes_or_string_arg(&values[1], runtime.heap(), "udp.send_to_task data")?.to_vec();
+    let data = runtime_bytes_or_string_arg(&values[1], runtime.heap(), "udp.send_to_task data")?;
     let addr = runtime_string_arg(&values[2], runtime.heap(), "udp.send_to_task addr")?.to_string();
     spawn_task(runtime, async move {
         let RuntimeVal::Int(sent) = send_socket(socket, &data, &addr)? else {
@@ -110,6 +113,9 @@ fn recv_args(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<(U
     } else {
         4096
     };
+    if max > MAX_DATAGRAM_READ_LIMIT {
+        bail!("udp.recv_from max_bytes must be <= {MAX_DATAGRAM_READ_LIMIT}, got {max}");
+    }
     Ok((socket, max))
 }
 
@@ -149,9 +155,18 @@ fn spawn_task(
     Ok(task_value(task_id, runtime.heap_mut()))
 }
 
-fn payload_bytes(bytes: Vec<u8>) -> RuntimePayload {
+fn recv_result_value(data: Vec<u8>, addr: String, heap: &mut HeapStore) -> RuntimeVal {
+    let data = runtime_bytes_value(data, heap);
+    let addr = runtime_string_value(&addr, heap);
+    let mut fields = fast_hash_map_new();
+    fields.insert(RuntimeMapKey::String(Arc::<str>::from("data")), data);
+    fields.insert(RuntimeMapKey::String(Arc::<str>::from("addr")), addr);
+    RuntimeVal::Obj(heap.alloc(HeapValue::Map(TypedMap::Mixed(fields))))
+}
+
+fn payload_recv_result(data: Vec<u8>, addr: String) -> RuntimePayload {
     let mut heap = HeapStore::new();
-    let value = runtime_bytes_value(bytes, &mut heap);
+    let value = recv_result_value(data, addr, &mut heap);
     RuntimePayload::new(value, heap)
 }
 
@@ -180,5 +195,29 @@ fn resource_kind(handle: &ResourceHandle) -> &'static str {
         ResourceHandle::TcpListener(_) => "TcpListener",
         ResourceHandle::UdpSocket(_) => "UdpSocket",
         ResourceHandle::Closed => "Closed",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lk_core::val::{HeapValue, RuntimeVal};
+
+    #[test]
+    fn recv_result_value_contains_data_and_addr_fields() {
+        let mut heap = HeapStore::new();
+        let value = recv_result_value(vec![1, 2, 3], "127.0.0.1:9999".to_string(), &mut heap);
+        let RuntimeVal::Obj(handle) = value else {
+            panic!("expected result map");
+        };
+        let Some(HeapValue::Map(map)) = heap.get(handle) else {
+            panic!("expected result map");
+        };
+
+        assert!(matches!(map.get_str("data"), Some(RuntimeVal::Obj(_))));
+        let Some(addr) = map.get_str("addr") else {
+            panic!("expected addr field");
+        };
+        assert!(matches!(addr, RuntimeVal::ShortStr(_) | RuntimeVal::Obj(_)));
     }
 }

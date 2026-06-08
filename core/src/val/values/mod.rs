@@ -62,6 +62,22 @@ impl Debug for ResourceValue {
     }
 }
 
+impl Debug for ResourceHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let name = match self {
+            Self::File(_) => "File",
+            Self::Stdin => "Stdin",
+            Self::Stdout => "Stdout",
+            Self::Stderr => "Stderr",
+            Self::TcpStream(_) => "TcpStream",
+            Self::TcpListener(_) => "TcpListener",
+            Self::UdpSocket(_) => "UdpSocket",
+            Self::Closed => "Closed",
+        };
+        f.write_str(name)
+    }
+}
+
 pub enum ResourceHandle {
     File(std::fs::File),
     Stdin,

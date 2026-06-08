@@ -16,6 +16,8 @@ use crate::{
     runtime_native::runtime_string_arg,
 };
 
+const MAX_READ_LIMIT: usize = 1024 * 1024;
+
 #[derive(Debug)]
 pub struct NetTcpModule;
 
@@ -149,11 +151,10 @@ fn write_task(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<R
     let stream = stream_clone(&values[0], runtime.heap(), "tcp.write_task()")?;
     let data = runtime_bytes_or_string_arg(&values[1], runtime.heap(), "tcp.write_task data")?.to_vec();
     spawn_task(runtime, async move {
-        let written = write_stream(stream, &data)?;
-        let RuntimeVal::Int(written) = written else {
-            unreachable!("write_stream returns int")
-        };
-        Ok(payload_int(written))
+        match write_stream(stream, &data)? {
+            RuntimeVal::Int(written) => Ok(payload_int(written)),
+            other => Err(anyhow!("tcp.write_task expected write count, got {:?}", other.kind())),
+        }
     })
 }
 
@@ -168,6 +169,9 @@ fn read_args(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<(T
     } else {
         4096
     };
+    if max > MAX_READ_LIMIT {
+        bail!("tcp.read max_bytes must be <= {MAX_READ_LIMIT}, got {max}");
+    }
     Ok((stream, max))
 }
 
