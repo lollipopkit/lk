@@ -30,13 +30,17 @@ mod tests {
         let path = path.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"");
         let source = format!(
             r#"
-            use bytes;
+            use fs;
             use {{ file }} from io;
-            file.write("{path}", "hello");
-            let content = bytes.to_string_utf8(file.read("{path}"));
-            let exists = file.exists("{path}");
-            let size = file.size("{path}");
-            file.remove("{path}");
+            let writer = file.open("{path}", "write");
+            file.write(writer, "hello");
+            file.close(writer);
+            let reader = file.open("{path}", "read");
+            let content = file.read_to_string(reader);
+            file.close(reader);
+            let exists = fs.exists("{path}");
+            let size = fs.metadata("{path}").len;
+            fs.remove_file("{path}");
             return exists && content == "hello" && size == 5;
             "#
         );
@@ -52,13 +56,17 @@ mod tests {
         let path = path.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"");
         let source = format!(
             r#"
-            use bytes;
+            use fs;
             use io;
             use {{ socket }} from net;
-            io.file.write("{path}", "hello");
-            let content = bytes.to_string_utf8(io.file.read("{path}"));
+            let writer = io.file.open("{path}", "write");
+            io.file.write(writer, "hello");
+            io.file.close(writer);
+            let reader = io.file.open("{path}", "read");
+            let content = io.file.read_to_string(reader);
+            io.file.close(reader);
             let addr = socket.addr("127.0.0.1", 80);
-            io.file.remove("{path}");
+            fs.remove_file("{path}");
             return content == "hello" && addr == "127.0.0.1:80" && typeof(io.std.stdout()) == "Stdout";
             "#
         );

@@ -11,7 +11,9 @@ use crate::{
 };
 
 use super::{
-    Compiler, checked_u8,
+    Compiler,
+    call::map_get_method_call_args,
+    checked_u8,
     inline::{inline_body_is_supported, stmt_contains_call_to},
     support::{FunctionInlineBody, const_runtime_map_key_from_literal},
 };
@@ -934,28 +936,38 @@ fn const_map_get_scalar_loop_key(
     expr: &Expr,
     const_maps: &HashMap<String, FastHashMap<RuntimeMapKey, ConstRuntimeValue>>,
 ) -> Result<Option<ScalarLoopConstKey>> {
-    let Expr::CallExpr(callee, args) = expr else {
+    let Some((target, key)) = const_map_get_target_and_key(expr) else {
         return Ok(None);
     };
-    if args.len() != 2 {
-        return Ok(None);
-    }
-    let Expr::Access(target, method) = callee.as_ref() else {
-        return Ok(None);
-    };
-    if !matches!(target.as_ref(), Expr::Var(name) if name == "map") || method_name(method) != Some("get") {
-        return Ok(None);
-    }
-    let Some(target_name) = super::support::simple_local_expr_name(&args[0]) else {
+    let Some(target_name) = super::support::simple_local_expr_name(target) else {
         return Ok(None);
     };
     let Some(map) = const_maps.get(target_name) else {
         return Ok(None);
     };
-    let Some(key) = const_map_key_from_expr(&args[1])? else {
+    let Some(key) = const_map_key_from_expr(key)? else {
         return Ok(None);
     };
     Ok(map.get(&key).and_then(const_runtime_scalar_loop_key))
+}
+
+fn const_map_get_target_and_key(expr: &Expr) -> Option<(&Expr, &Expr)> {
+    let Expr::CallExpr(callee, args) = expr else {
+        return None;
+    };
+    if let Some((target, key)) = map_get_method_call_args(callee, args) {
+        return Some((target, key));
+    }
+    if args.len() != 2 {
+        return None;
+    }
+    let Expr::Access(target, method) = callee.as_ref() else {
+        return None;
+    };
+    if !matches!(target.as_ref(), Expr::Var(name) if name == "map") || method_name(method) != Some("get") {
+        return None;
+    }
+    Some((args[0].as_ref(), args[1].as_ref()))
 }
 
 fn const_map_key_from_expr(expr: &Expr) -> Result<Option<RuntimeMapKey>> {

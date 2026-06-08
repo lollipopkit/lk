@@ -1,6 +1,8 @@
 use math;
 use string;
 use os;
+use fs;
+use path;
 use { file } from io;
 
 // Math new features
@@ -29,8 +31,8 @@ assert(string.capitalize("hello world") == "Hello world");
 assert(string.title("hello world") == "Hello World");
 
 // OS new features
-assert(file.exists("/tmp"));
-assert(os.path_sep() != "");
+assert(fs.exists(fs.temp_dir()));
+assert(path.sep() != "");
 
 // Builtin Set
 let my_set = Set(["a", "b", "a"]);

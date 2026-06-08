@@ -31,8 +31,8 @@ This document describes the LK language as implemented in this repository (parse
 
 ### Input and Variables
 - There is no implicit runtime context. Identifiers must be defined in the lexical environment (e.g., via `let` in statements, function params, or module uses).
-- Read external input explicitly with stdlib: `std.read_to_string(std.stdin())` after `use { std } from io;`. Parse manually: `json.parse(...)`, `yaml.parse(...)`, `toml.parse(...)`.
-- Example: `use { std } from io; use json; let data = json.parse(std.read_to_string(std.stdin())); return data.req.user.id == 1;`
+- Read external input explicitly with stdlib: `std.read_to_string(std.stdin())` after `use { std } from io;`. Parse manually through `encoding`: `encoding.json.parse(...)`, `encoding.yaml.parse(...)`, `encoding.toml.parse(...)`.
+- Example: `use { std } from io; use { json } from encoding; let data = json.parse(std.read_to_string(std.stdin())); return data.req.user.id == 1;`
 
 ### Constants
 - `const name = expr;` - like `let` but immutable. Attempting to reassign a `const` variable is a runtime error.
@@ -220,7 +220,7 @@ use "d/d1";    // c/d/d1.lk, available as d1
 - `typeof(value)` returns the runtime type name as a string: `"Int"`, `"Float"`, `"String"`, `"Bytes"`, `"Bool"`, `"Nil"`, `"List"`, `"Map"`, `"Set"`, `"Slice"`, resource names such as `"File"`/`"TcpStream"`, or the struct type name.
 
 ### Stdlib Modules
-Use as needed: `math`, `string`, `bytes`, `iter`, `stream`, `datetime`, `os`, `io`, `net`, `slice`, `json`, `yaml`, `toml`. With `concurrency` feature: `task`, `chan`, `time`.
+Use as needed: `math`, `string`, `bytes`, `iter`, `stream`, `datetime`, `os`, `fs`, `path`, `env`, `process`, `io`, `net`, `slice`, `encoding`, `hash`, `regex`, `random`, `uuid`, `http`. With `concurrency` feature: `task`, `chan`, `time`.
 
 - `math`: constants `pi`, `e`, `inf`, `nan`, `max_int`, `min_int`, `max_float`, `epsilon`; functions `abs`, `sqrt`, `floor`, `ceil`, `round`, `min`, `max`, `pow`, `exp`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `log`, `log10`, `log2`, `clamp`, `random`, `hypot`, `cbrt`, `sinh`, `cosh`, `tanh`, `trunc`, `fract`, `sign`, `to_int`, `to_float`, `is_nan`, `is_inf`.
 - `string`: methods (see meta-methods below).
@@ -228,14 +228,21 @@ Use as needed: `math`, `string`, `bytes`, `iter`, `stream`, `datetime`, `os`, `i
 - `iter`: module-level list utilities only: `range([start,] end [, step])`, `enumerate(list)`, `zip(list1, list2)`, `take(list, n)`, `skip(list, n)`, `chain(list1, list2)`, `flatten(list)`, `unique(list)`, `chunk(list, size)`, and higher-order ops `map(list, fn)`, `filter(list, fn)`, `reduce(list, init, fn)`.
 - `stream`: module-level lazy pipelines. `stream.from_list(list)`, `stream.range(start, end)`, `stream.iterate(seed, fn)`, `stream.repeat(val)`, `stream.from_channel(ch)`, `stream.map(s, fn)`, `stream.filter(s, fn)`, `stream.take(s, n)`, `stream.skip(s, n)`, `stream.chain(a, b)`, `stream.subscribe(s)`, `stream.next(cursor)`, `stream.collect(stream_or_cursor)`, `stream.next_block(cursor[, timeout_ms])`, `stream.collect_block(stream_or_cursor[, n][, timeout_ms])`.
 - `datetime`: `now()` (microseconds), `format(secs, fmt)`, `parse(str, fmt)`, `add(secs, delta)`, `sub(secs, delta)`, `day_of_week(secs)`, `day_of_year(secs)`, `is_weekend(secs)`.
-- `os`: `hostname()`, `arch()`, `os()`, `clock()`, `time()`, `epoch()`, `exit(code)`, `exec(cmd, args?, stream?)`, `env_get(key, default?)`, `env`, `dir_current()`, `dir_temp()`, `dir_list(path)`, `mkdir(path)`, `path_join(parts...)`, `path_sep()`.
+- `os`: platform/time helpers `hostname()`, `arch()`, `os()`, `clock()`, `time()`, `epoch()`.
+- `fs`: path-level filesystem APIs. `read(path) -> Bytes`, `read_to_string(path)`, `write(path, data)`, `append(path, data)`, `exists(path)`, `is_file(path)`, `is_dir(path)`, `metadata(path)`, `read_dir(path)`, `create_dir(path)`, `create_dir_all(path)`, `remove_file(path)`, `remove_dir(path)`, `remove_dir_all(path)`, `rename(from, to)`, `copy(from, to)`, `canonicalize(path)`, `temp_dir()`.
+- `path`: `join(parts...)`, `parent(path)`, `file_name(path)`, `file_stem(path)`, `extension(path)`, `with_extension(path, ext)`, `is_absolute(path)`, `normalize(path)`, `components(path)`, `sep()`, `delimiter()`.
+- `env`: `get(key)`, `get_or(key, default)`, `has(key)`, `vars()`. Mutating process environment is intentionally not exposed.
+- `process`: `id()`, `cwd()`, `set_cwd(path)`, `exit(code)`, `status(cmd[, args])`, `output(cmd[, args]) -> {status, success, stdout: Bytes, stderr: Bytes}`, `output_string(cmd[, args])`.
 - `io`: parent namespace. Import children with `use { std, file } from io;` or access them through `io.std` and `io.file`.
 - `io.std`: `stdin()`, `stdout()`, `stderr()`, `read(reader[, max_bytes]) -> Bytes`, `read_to_string(reader)`, `read_line(reader)`, `write(writer, data)`, `writeln(writer, data)`, `flush(writer)`. `write`/`writeln` accept `Bytes` or `String`.
-- `io.file`: `open(path, mode)`, `create(path)`, `read(path) -> Bytes`, `write(path, data)`, `append(path, data)`, `exists(path)`, `size(path)`, `remove(path)`, `read_to_string(path_or_file)`, `write_all(file, data)`, `flush(file)`, `close(file)`. Binary APIs use `Bytes`; text APIs are explicit.
+- `io.file`: resource-level file APIs. `open(path, mode)`, `create(path)`, `read(file[, max_bytes]) -> Bytes`, `read_to_string(file)`, `read_line(file)`, `write(file, data)`, `writeln(file, data)`, `write_all(file, data)`, `flush(file)`, `close(file)`. Path-level operations live in `fs`.
 - `slice`: `from_list(list)`, `from_string(str)`, `len(slice)`, `is_empty(slice)`, `get(slice, index)`, `sub(slice, start[, end])`, `to_list(slice)`, `to_string(slice)`.
-- `json`: `json.parse(string)`.
-- `yaml`: `yaml.parse(string)`.
-- `toml`: `toml.parse(string)`.
+- `encoding`: parent namespace. Import children with `use { json, yaml, toml, base64, hex, url } from encoding;` or access them through `encoding.json`, `encoding.base64`, etc. `json.parse(string)`, `yaml.parse(string)`, `toml.parse(string)`, `base64.encode(data)`, `base64.decode(string) -> Bytes`, `hex.encode(data)`, `hex.decode(string) -> Bytes`, `url.encode_component(string)`, `url.decode_component(string)`, `url.query_parse(string)`, `url.query_stringify(map)`.
+- `hash`: `sha256(data)`, `sha1(data)`, `crc32(data)`, `fnv64(data)`. `data` accepts `Bytes` or `String`.
+- `regex`: `is_match(pattern, text)`, `find(pattern, text)`, `find_all(pattern, text)`, `captures(pattern, text)`, `replace(pattern, text, replacement)`, `split(pattern, text)`.
+- `random`: `int(min, max)`, `float()`, `bool([probability])`, `bytes(len)`, `choice(list)`, `shuffle(list)`.
+- `uuid`: `v4()`, `parse(string)`, `is_valid(string)`.
+- `http`: sync client APIs `request(method, url[, opts])`, `get(url[, opts])`, `post(url, body[, opts])`; responses are maps with `status`, `headers`, and `body: Bytes`.
 - `net`: parent namespace. Import children with `use { socket, tcp, udp } from net;` or access them through `net.socket`, `net.tcp`, and `net.udp`.
 - `net.socket`: `addr(host, port)`, `close(resource)`.
 - `net.tcp`: `connect(addr)`, `bind(addr)`, `accept(listener)`, `write(stream, data)`, `read(stream, len?) -> Bytes`, `close(resource)`, plus `connect_task`, `accept_task`, `read_task`, `write_task`. `write` accepts `Bytes` or `String`.

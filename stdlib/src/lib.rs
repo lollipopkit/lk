@@ -1,19 +1,26 @@
 pub use lk_stdlib_bytes as bytes;
 pub use lk_stdlib_chan as concurrency_chan;
 pub use lk_stdlib_datetime as datetime;
+pub use lk_stdlib_encoding as encoding;
+pub use lk_stdlib_env as env;
+pub use lk_stdlib_fs as fs;
+pub use lk_stdlib_hash as hash;
+pub use lk_stdlib_http as http;
 pub use lk_stdlib_io as io;
 pub use lk_stdlib_iter as iter;
-pub use lk_stdlib_json as json;
 pub use lk_stdlib_math as math;
 pub use lk_stdlib_net as net;
 pub use lk_stdlib_os as os;
+pub use lk_stdlib_path as path;
+pub use lk_stdlib_process as process;
+pub use lk_stdlib_random as random;
+pub use lk_stdlib_regex as regex;
 pub use lk_stdlib_slice as slice;
 pub use lk_stdlib_stream as stream;
 pub use lk_stdlib_string as string;
 pub use lk_stdlib_task as concurrency_task;
 pub use lk_stdlib_time as time;
-pub use lk_stdlib_toml as toml;
-pub use lk_stdlib_yaml as yaml;
+pub use lk_stdlib_uuid as uuid;
 mod runtime_native {
     pub use lk_stdlib_common::runtime_native::*;
 }
@@ -28,6 +35,8 @@ mod globals_test;
 mod math_test;
 #[cfg(test)]
 mod os_test;
+#[cfg(test)]
+mod stdlib_modules_test;
 #[cfg(test)]
 mod stdlib_runtime_test;
 #[cfg(test)]
@@ -56,8 +65,8 @@ use runtime_native::runtime_display_value;
 /// Register all stdlib modules with the given registry
 pub fn register_stdlib_modules(registry: &mut ModuleRegistry) -> Result<()> {
     for name in [
-        "io", "json", "yaml", "toml", "bytes", "iter", "math", "string", "datetime", "os", "net", "slice", "stream",
-        "task", "chan", "time",
+        "io", "encoding", "bytes", "iter", "math", "string", "datetime", "os", "fs", "path", "env", "process", "hash",
+        "regex", "random", "uuid", "http", "net", "slice", "stream", "task", "chan", "time",
     ] {
         register_stdlib_module_by_name(registry, name)?;
     }
@@ -76,15 +85,22 @@ pub fn register_stdlib_modules_named(registry: &mut ModuleRegistry, names: &[Str
 fn register_stdlib_module_by_name(registry: &mut ModuleRegistry, name: &str) -> Result<()> {
     match name {
         "io" => io::register(registry)?,
-        "json" => json::register(registry)?,
-        "yaml" => yaml::register(registry)?,
-        "toml" => toml::register(registry)?,
+        "encoding" => encoding::register(registry)?,
         "bytes" => bytes::register(registry)?,
         "iter" => iter::register(registry)?,
         "math" => math::register(registry)?,
         "string" => string::register(registry)?,
         "datetime" => datetime::register(registry)?,
         "os" => os::register(registry)?,
+        "fs" => fs::register(registry)?,
+        "path" => path::register(registry)?,
+        "env" => env::register(registry)?,
+        "process" => process::register(registry)?,
+        "hash" => hash::register(registry)?,
+        "regex" => regex::register(registry)?,
+        "random" => random::register(registry)?,
+        "uuid" => uuid::register(registry)?,
+        "http" => http::register(registry)?,
         "net" => net::register(registry)?,
         "slice" => slice::register(registry)?,
         "stream" => stream::register(registry)?,
@@ -100,16 +116,8 @@ pub fn register_stdlib_module_io(registry: &mut ModuleRegistry) -> Result<()> {
     io::register(registry)
 }
 
-pub fn register_stdlib_module_json(registry: &mut ModuleRegistry) -> Result<()> {
-    json::register(registry)
-}
-
-pub fn register_stdlib_module_yaml(registry: &mut ModuleRegistry) -> Result<()> {
-    yaml::register(registry)
-}
-
-pub fn register_stdlib_module_toml(registry: &mut ModuleRegistry) -> Result<()> {
-    toml::register(registry)
+pub fn register_stdlib_module_encoding(registry: &mut ModuleRegistry) -> Result<()> {
+    encoding::register(registry)
 }
 
 pub fn register_stdlib_module_bytes(registry: &mut ModuleRegistry) -> Result<()> {
@@ -134,6 +142,42 @@ pub fn register_stdlib_module_datetime(registry: &mut ModuleRegistry) -> Result<
 
 pub fn register_stdlib_module_os(registry: &mut ModuleRegistry) -> Result<()> {
     os::register(registry)
+}
+
+pub fn register_stdlib_module_fs(registry: &mut ModuleRegistry) -> Result<()> {
+    fs::register(registry)
+}
+
+pub fn register_stdlib_module_path(registry: &mut ModuleRegistry) -> Result<()> {
+    path::register(registry)
+}
+
+pub fn register_stdlib_module_env(registry: &mut ModuleRegistry) -> Result<()> {
+    env::register(registry)
+}
+
+pub fn register_stdlib_module_process(registry: &mut ModuleRegistry) -> Result<()> {
+    process::register(registry)
+}
+
+pub fn register_stdlib_module_hash(registry: &mut ModuleRegistry) -> Result<()> {
+    hash::register(registry)
+}
+
+pub fn register_stdlib_module_regex(registry: &mut ModuleRegistry) -> Result<()> {
+    regex::register(registry)
+}
+
+pub fn register_stdlib_module_random(registry: &mut ModuleRegistry) -> Result<()> {
+    random::register(registry)
+}
+
+pub fn register_stdlib_module_uuid(registry: &mut ModuleRegistry) -> Result<()> {
+    uuid::register(registry)
+}
+
+pub fn register_stdlib_module_http(registry: &mut ModuleRegistry) -> Result<()> {
+    http::register(registry)
 }
 
 pub fn register_stdlib_module_net(registry: &mut ModuleRegistry) -> Result<()> {

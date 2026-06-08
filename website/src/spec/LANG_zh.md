@@ -32,8 +32,8 @@
 
 ### 输入与变量
 - 没有隐式运行时上下文。标识符必须在词法环境中定义（例如通过语句中的 `let`、函数参数或模块 `use`）。
-- 通过标准库显式读取外部输入：`use { std } from io;` 后使用 `std.read_to_string(std.stdin())`。手动解析：`json.parse(...)`、`yaml.parse(...)`、`toml.parse(...)`。
-- 示例：`use { std } from io; use json; let data = json.parse(std.read_to_string(std.stdin())); return data.req.user.id == 1;`
+- 通过标准库显式读取外部输入：`use { std } from io;` 后使用 `std.read_to_string(std.stdin())`。通过 `encoding` 手动解析：`encoding.json.parse(...)`、`encoding.yaml.parse(...)`、`encoding.toml.parse(...)`。
+- 示例：`use { std } from io; use { json } from encoding; let data = json.parse(std.read_to_string(std.stdin())); return data.req.user.id == 1;`
 
 ### 常量
 - `const name = expr;` —— 类似 `let`，但不可变。尝试重新赋值 `const` 变量会在运行时错误。
@@ -221,7 +221,7 @@ use "d/d1";    // c/d/d1.lk，导出名为 d1
 - `typeof(value)` 返回运行时类型名字符串：`"Int"`、`"Float"`、`"String"`、`"Bytes"`、`"Bool"`、`"Nil"`、`"List"`、`"Map"`、`"Set"`、`"Slice"`、`"File"`/`"TcpStream"` 等 resource 类型名，或结构体类型名。
 
 ### 标准库模块
-按需导入：`math`、`string`、`bytes`、`iter`、`stream`、`datetime`、`os`、`io`、`net`、`slice`、`json`、`yaml`、`toml`。启用 `concurrency` 后支持：`task`、`chan`、`time`。
+按需导入：`math`、`string`、`bytes`、`iter`、`stream`、`datetime`、`os`、`fs`、`path`、`env`、`process`、`io`、`net`、`slice`、`encoding`、`hash`、`regex`、`random`、`uuid`、`http`。启用 `concurrency` 后支持：`task`、`chan`、`time`。
 
 - `math`：常量 `pi`、`e`、`inf`、`nan`、`max_int`、`min_int`、`max_float`、`epsilon`；函数 `abs`、`sqrt`、`floor`、`ceil`、`round`、`min`、`max`、`pow`、`exp`、`sin`、`cos`、`tan`、`asin`、`acos`、`atan`、`atan2`、`log`、`log10`、`log2`、`clamp`、`random`、`hypot`、`cbrt`、`sinh`、`cosh`、`tanh`、`trunc`、`fract`、`sign`、`to_int`、`to_float`、`is_nan`、`is_inf`。
 - `string`：方法（见下方元方法）。
@@ -229,14 +229,21 @@ use "d/d1";    // c/d/d1.lk，导出名为 d1
 - `iter`：仅提供模块级列表工具：`range([start,] end [, step])`、`enumerate(list)`、`zip(list1, list2)`、`take(list, n)`、`skip(list, n)`、`chain(list1, list2)`、`flatten(list)`、`unique(list)`、`chunk(list, size)`，以及高阶操作 `map(list, fn)`、`filter(list, fn)`、`reduce(list, init, fn)`。
 - `stream`：模块级懒执行管道。`stream.from_list(list)`、`stream.range(start, end)`、`stream.iterate(seed, fn)`、`stream.repeat(val)`、`stream.from_channel(ch)`、`stream.map(s, fn)`、`stream.filter(s, fn)`、`stream.take(s, n)`、`stream.skip(s, n)`、`stream.chain(a, b)`、`stream.subscribe(s)`、`stream.next(cursor)`、`stream.collect(stream_or_cursor)`、`stream.next_block(cursor[, timeout_ms])`、`stream.collect_block(stream_or_cursor[, n][, timeout_ms])`。
 - `datetime`：`now()`（微秒）、`format(secs, fmt)`、`parse(str, fmt)`、`add(secs, delta)`、`sub(secs, delta)`、`day_of_week(secs)`、`day_of_year(secs)`、`is_weekend(secs)`。
-- `os`：`hostname()`、`arch()`、`os()`、`clock()`、`time()`、`epoch()`、`exit(code)`、`exec(cmd, args?, stream?)`、`env_get(key, default?)`、`env`、`dir_current()`、`dir_temp()`、`dir_list(path)`、`mkdir(path)`、`path_join(parts...)`、`path_sep()`。
+- `os`：平台/时间辅助函数：`hostname()`、`arch()`、`os()`、`clock()`、`time()`、`epoch()`。
+- `fs`：基于路径的文件系统 API。`read(path) -> Bytes`、`read_to_string(path)`、`write(path, data)`、`append(path, data)`、`exists(path)`、`is_file(path)`、`is_dir(path)`、`metadata(path)`、`read_dir(path)`、`create_dir(path)`、`create_dir_all(path)`、`remove_file(path)`、`remove_dir(path)`、`remove_dir_all(path)`、`rename(from, to)`、`copy(from, to)`、`canonicalize(path)`、`temp_dir()`。
+- `path`：`join(parts...)`、`parent(path)`、`file_name(path)`、`file_stem(path)`、`extension(path)`、`with_extension(path, ext)`、`is_absolute(path)`、`normalize(path)`、`components(path)`、`sep()`、`delimiter()`。
+- `env`：`get(key)`、`get_or(key, default)`、`has(key)`、`vars()`。不暴露进程环境变量 mutation。
+- `process`：`id()`、`cwd()`、`set_cwd(path)`、`exit(code)`、`status(cmd[, args])`、`output(cmd[, args]) -> {status, success, stdout: Bytes, stderr: Bytes}`、`output_string(cmd[, args])`。
 - `io`：父命名空间。可用 `use { std, file } from io;` 导入子命名空间，或通过 `io.std`、`io.file` 访问。
 - `io.std`：`stdin()`、`stdout()`、`stderr()`、`read(reader[, max_bytes]) -> Bytes`、`read_to_string(reader)`、`read_line(reader)`、`write(writer, data)`、`writeln(writer, data)`、`flush(writer)`。`write`/`writeln` 接受 `Bytes` 或 `String`。
-- `io.file`：`open(path, mode)`、`create(path)`、`read(path) -> Bytes`、`write(path, data)`、`append(path, data)`、`exists(path)`、`size(path)`、`remove(path)`、`read_to_string(path_or_file)`、`write_all(file, data)`、`flush(file)`、`close(file)`。二进制 API 使用 `Bytes`，文本读取显式使用 `read_to_string`。
+- `io.file`：基于 `File` resource 的 API。`open(path, mode)`、`create(path)`、`read(file[, max_bytes]) -> Bytes`、`read_to_string(file)`、`read_line(file)`、`write(file, data)`、`writeln(file, data)`、`write_all(file, data)`、`flush(file)`、`close(file)`。基于路径的操作在 `fs` 中。
 - `slice`：`from_list(list)`、`from_string(str)`、`len(slice)`、`is_empty(slice)`、`get(slice, index)`、`sub(slice, start[, end])`、`to_list(slice)`、`to_string(slice)`。
-- `json`：`json.parse(string)`。
-- `yaml`：`yaml.parse(string)`。
-- `toml`：`toml.parse(string)`。
+- `encoding`：父命名空间。可用 `use { json, yaml, toml, base64, hex, url } from encoding;` 导入子命名空间，或通过 `encoding.json`、`encoding.base64` 等访问。`json.parse(string)`、`yaml.parse(string)`、`toml.parse(string)`、`base64.encode(data)`、`base64.decode(string) -> Bytes`、`hex.encode(data)`、`hex.decode(string) -> Bytes`、`url.encode_component(string)`、`url.decode_component(string)`、`url.query_parse(string)`、`url.query_stringify(map)`。
+- `hash`：`sha256(data)`、`sha1(data)`、`crc32(data)`、`fnv64(data)`。`data` 接受 `Bytes` 或 `String`。
+- `regex`：`is_match(pattern, text)`、`find(pattern, text)`、`find_all(pattern, text)`、`captures(pattern, text)`、`replace(pattern, text, replacement)`、`split(pattern, text)`。
+- `random`：`int(min, max)`、`float()`、`bool([probability])`、`bytes(len)`、`choice(list)`、`shuffle(list)`。
+- `uuid`：`v4()`、`parse(string)`、`is_valid(string)`。
+- `http`：同步 client API：`request(method, url[, opts])`、`get(url[, opts])`、`post(url, body[, opts])`；响应为包含 `status`、`headers`、`body: Bytes` 的 map。
 - `net`：父命名空间。可用 `use { socket, tcp, udp } from net;` 导入子命名空间，或通过 `net.socket`、`net.tcp`、`net.udp` 访问。
 - `net.socket`：`addr(host, port)`、`close(resource)`。
 - `net.tcp`：`connect(addr)`、`bind(addr)`、`accept(listener)`、`write(stream, data)`、`read(stream, len?) -> Bytes`、`close(resource)`，以及 `connect_task`、`accept_task`、`read_task`、`write_task`。`write` 接受 `Bytes` 或 `String`。

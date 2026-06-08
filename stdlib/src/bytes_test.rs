@@ -74,15 +74,18 @@ mod tests {
         let source = format!(
             r#"
             use bytes;
+            use fs;
             use {{ file }} from io;
             let data = bytes.from_list([0, 65, 255]);
-            file.write("{path}", data);
-            let raw = file.read("{path}");
+            fs.write("{path}", data);
+            let raw = fs.read("{path}");
             let text_path = "{path}.txt";
-            file.write(text_path, bytes.from_string("hello"));
-            let text = file.read_to_string(text_path);
-            file.remove("{path}");
-            file.remove(text_path);
+            fs.write(text_path, bytes.from_string("hello"));
+            let reader = file.open(text_path, "read");
+            let text = file.read_to_string(reader);
+            file.close(reader);
+            fs.remove_file("{path}");
+            fs.remove_file(text_path);
             return bytes.eq(raw, data) && text == "hello";
             "#
         );

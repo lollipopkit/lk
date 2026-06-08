@@ -91,7 +91,7 @@
   let currentPath = normalizePath(typeof window === 'undefined' ? '/' : window.location.pathname)
 
   const heroCode = `use { std } from io;
-use json;
+use { json } from encoding;
 
 let data = json.parse(std.read_to_string(std.stdin()));
 
@@ -142,11 +142,18 @@ match data.req {
     'stream',
     'datetime',
     'os',
+    'fs',
+    'path',
+    'env',
+    'process',
     'io',
-    'json',
-    'yaml',
-    'toml',
-    'tcp',
+    'encoding',
+    'hash',
+    'regex',
+    'random',
+    'uuid',
+    'http',
+    'net',
     'task',
     'chan',
     'time',

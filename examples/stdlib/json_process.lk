@@ -1,6 +1,6 @@
 // Practical JSON data processing demo
 
-use json;
+use { json } from encoding;
 
 // Simulate receiving a JSON payload (single-line string)
 let payload = "{ \"users\": [{ \"id\": 1, \"name\": \"Alice\", \"scores\": [95, 87, 92] }, { \"id\": 2, \"name\": \"Bob\", \"scores\": [78, 85, 90] }, { \"id\": 3, \"name\": \"Carol\", \"scores\": [100, 95, 98] }]}";

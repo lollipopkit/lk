@@ -642,6 +642,91 @@ fn compiler_lowers_map_get_module_call_to_get_index() {
 }
 
 #[test]
+fn compiler_errors_on_map_get_missing_receiver_in_call() {
+    let program = parse_program(
+        r#"
+        fn id(value) {
+            return value;
+        }
+        return id(map.get("x"));
+        "#,
+    );
+    let err = Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["map"])
+        .expect_err("map.get missing receiver must not lower as method get");
+
+    assert!(
+        err.to_string().contains("map.get"),
+        "expected map.get arity error, got {err}"
+    );
+}
+
+#[test]
+fn compiler_lowers_map_get_method_call_to_get_index() {
+    let program = parse_program(
+        r#"
+        let hist = {};
+        let key = "answer";
+        hist.set(key, 42);
+        return hist.get(key);
+        "#,
+    );
+    let module = Compiler::compile_module(&program).expect("compile module");
+    let entry = module.entry_function().expect("entry");
+
+    assert!(
+        entry.code.iter().any(|instr| instr.opcode() == Opcode::GetIndex),
+        "map get method should lower to GetIndex"
+    );
+    assert!(
+        !entry.code.iter().any(|instr| instr.opcode() == Opcode::Call),
+        "map get method should not call through the runtime callable bridge"
+    );
+
+    let result = execute_module(&module).expect("execute module");
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
+}
+
+#[test]
+fn compiler_lowers_map_get_method_directly_into_destination() {
+    let program = parse_program(
+        r#"
+        let values = {"x": 42};
+        let key = "x";
+        let value = values.get(key);
+        return value;
+        "#,
+    );
+    let module = Compiler::compile_module(&program).expect("compile module");
+    let function = module.entry_function().expect("entry function");
+
+    let get = function
+        .code
+        .iter()
+        .find(|instr| matches!(instr.opcode(), Opcode::GetIndex | Opcode::GetFieldK))
+        .expect("expected map get method lowering");
+    let value_return = function
+        .code
+        .iter()
+        .find(|instr| instr.opcode() == Opcode::Return1)
+        .expect("expected single return");
+
+    assert_eq!(
+        get.a(),
+        value_return.a(),
+        "map get method should write directly into the destination local: {:?}",
+        function.code
+    );
+    assert!(
+        !function.code.windows(2).any(
+            |window| matches!(window[0].opcode(), Opcode::GetIndex | Opcode::GetFieldK)
+                && window[1].opcode() == Opcode::Move
+        ),
+        "map get method should not emit GetIndex/GetFieldK followed by a destination Move: {:?}",
+        function.code
+    );
+}
+
+#[test]
 fn compiler_folds_const_map_get_literal_key() {
     let program = parse_program(
         r#"
@@ -661,6 +746,37 @@ fn compiler_folds_const_map_get_literal_key() {
     assert!(
         entry.code.iter().any(|instr| instr.opcode() == Opcode::LoadInt),
         "folded const map value should load the scalar result: {:?}",
+        entry.code
+    );
+
+    let result = execute_module(&module).expect("execute module");
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
+}
+
+#[test]
+fn compiler_folds_const_map_get_method_literal_key() {
+    let program = parse_program(
+        r#"
+        let hist = {"answer": 42};
+        return hist.get("answer");
+        "#,
+    );
+    let module = Compiler::compile_module(&program).expect("compile module");
+    let entry = module.entry_function().expect("entry");
+
+    assert!(
+        !entry.code.iter().any(|instr| instr.opcode() == Opcode::GetIndex),
+        "const map + literal key method should fold to a scalar load: {:?}",
+        entry.code
+    );
+    assert!(
+        !entry.code.iter().any(|instr| instr.opcode() == Opcode::Call),
+        "const map get method should not call through runtime helper: {:?}",
+        entry.code
+    );
+    assert!(
+        entry.code.iter().any(|instr| instr.opcode() == Opcode::LoadInt),
+        "folded const map method value should load the scalar result: {:?}",
         entry.code
     );
 
@@ -705,6 +821,46 @@ fn compiler_hoists_loop_const_map_get_folded_scalar_values() {
 }
 
 #[test]
+fn compiler_hoists_loop_const_map_get_method_folded_scalar_values() {
+    let program = parse_program(
+        r#"
+        let levels = {"admin": 100};
+        let total = 0;
+        for i in 1..=5 {
+            total += levels.get("admin");
+        }
+        return total;
+        "#,
+    );
+    let module = Compiler::compile_module(&program).expect("compile module");
+    let entry = module.entry_function().expect("entry");
+    let admin_loads = entry
+        .code
+        .iter()
+        .filter(|instr| instr.opcode() == Opcode::LoadInt && entry.consts.int(instr.bx()) == Some(100))
+        .count();
+
+    assert_eq!(
+        admin_loads, 1,
+        "folded const map method value should be cached once for the loop: {:?}",
+        entry.code
+    );
+    assert!(
+        !entry.code.iter().any(|instr| instr.opcode() == Opcode::GetIndex),
+        "const map + literal key method should still fold away GetIndex: {:?}",
+        entry.code
+    );
+    assert!(
+        !entry.code.iter().any(|instr| instr.opcode() == Opcode::Call),
+        "loop const map get method should not call through runtime helper: {:?}",
+        entry.code
+    );
+
+    let result = execute_module(&module).expect("execute module");
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(500)]);
+}
+
+#[test]
 fn compiler_does_not_fold_const_map_get_after_mutation() {
     let program = parse_program(
         r#"
@@ -723,6 +879,31 @@ fn compiler_does_not_fold_const_map_get_after_mutation() {
             .iter()
             .any(|instr| matches!(instr.opcode(), Opcode::GetIndex | Opcode::GetFieldK)),
         "mutated const map local must keep runtime lookup semantics: {:?}",
+        entry.code
+    );
+
+    let result = execute_module(&module).expect("execute module");
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(100)]);
+}
+
+#[test]
+fn compiler_does_not_fold_const_map_get_method_after_mutation() {
+    let program = parse_program(
+        r#"
+        let hist = {"answer": 42};
+        hist.set("answer", 100);
+        return hist.get("answer");
+        "#,
+    );
+    let module = Compiler::compile_module(&program).expect("compile module");
+    let entry = module.entry_function().expect("entry");
+
+    assert!(
+        entry
+            .code
+            .iter()
+            .any(|instr| matches!(instr.opcode(), Opcode::GetIndex | Opcode::GetFieldK)),
+        "mutated const map local method must keep runtime lookup semantics: {:?}",
         entry.code
     );
 

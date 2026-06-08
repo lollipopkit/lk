@@ -69,7 +69,7 @@ fn stderr(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Runti
     Ok(resource_value("Stderr", ResourceHandle::Stderr, runtime.heap_mut()))
 }
 
-fn read(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+pub fn read(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     if args.is_empty() || args.len() > 2 {
         bail!("read() expects 1 or 2 arguments: reader[, max_bytes]");
     }
@@ -125,7 +125,7 @@ pub fn read_to_string(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> 
     Ok(runtime_string_value(&out, runtime.heap_mut()))
 }
 
-fn read_line(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+pub fn read_line(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 1, "read_line()")?;
     let resource = resource_arg(args.get(0).expect("checked arity"), runtime.heap(), "read_line()")?;
     let mut handle = resource.handle.lock().map_err(|_| anyhow!("resource lock poisoned"))?;
@@ -159,7 +159,7 @@ pub fn write(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Ru
     write_bytes(&resource, &data)
 }
 
-fn writeln_fn(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+pub fn writeln_fn(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 2, "writeln()")?;
     let values = args.as_slice();
     let resource = resource_arg(&values[0], runtime.heap(), "writeln()")?;

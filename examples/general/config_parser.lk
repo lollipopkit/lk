@@ -1,8 +1,6 @@
 // Config file parsing demo — combine JSON, YAML, TOML
 
-use json;
-use yaml;
-use toml;
+use { json, yaml, toml } from encoding;
 
 // Simulate reading different config file formats
 

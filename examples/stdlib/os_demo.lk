@@ -1,6 +1,9 @@
 // OS and system interaction demo
 
 use os;
+use env;
+use fs;
+use process;
 
 // 1. System info
 let hostname = os.hostname();
@@ -13,8 +16,8 @@ let os_name = os.os();
 assert(os_name != nil);
 
 // 2. Environment variables
-let path_val = os.env.get("PATH");
-assert(path_val != nil);
+let path_val = env.get_or("PATH", "");
+assert(path_val != "");
 
 // env.set/unset disabled in VM runtime - skip
 
@@ -29,13 +32,13 @@ let epoch = os.epoch();
 assert(epoch > 0);
 
 // 4. Directory operations
-let cwd = os.dir_current();
+let cwd = process.cwd();
 assert(cwd != nil);
 
-let tmp = os.dir_temp();
+let tmp = fs.temp_dir();
 assert(tmp != nil);
 
-let listing = os.dir_list(tmp);
+let listing = fs.read_dir(tmp);
 assert(listing != nil);
 
 println("os_demo: all assertions passed");

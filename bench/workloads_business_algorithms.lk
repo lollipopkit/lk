@@ -2,8 +2,6 @@
 // Each block measures runtime only and prints: workload|name|checksum=...|elapsed=...ms
 use os;
 use math;
-use map;
-use string;
 
 let seed = os.epoch();
 let workload_filter = os.env.get("LK_WORKLOAD_FILTER", "");
@@ -112,7 +110,7 @@ if should_run("two_sum_map") {
         for i in 1..=two_sum_width {
             let need = target - i;
             let need_key = "n${need}";
-            if map.get(seen, need_key) != nil {
+            if seen.get(need_key) != nil {
                 found += 1;
             }
         }
@@ -201,7 +199,7 @@ if should_run("histogram_group_count") {
         for i in 1..=hist_n {
             let bucket = ((i * 17) + r) % 32;
             let key = "b${bucket}";
-            let prev = map.get(hist, key);
+            let prev = hist.get(key);
             if prev == nil {
                 hist.set(key, 1);
             } else {
@@ -210,7 +208,7 @@ if should_run("histogram_group_count") {
         }
         for b in 0..32 {
             let key = "b${b}";
-            let v = map.get(hist, key);
+            let v = hist.get(key);
             if v != nil {
                 checksum += v * v;
             }
@@ -266,7 +264,7 @@ if should_run("log_parse_filter") {
                 let line = "ts=${r}|tenant=t${i % 13}|status=error|path=/api/v1/orders/${i % 19}";
                 let parsed_len = line.split("|").join("|").len();
                 checksum += parsed_len % 7;
-                let prev = map.get(status_counts, "error");
+                let prev = status_counts.get("error");
                 if prev == nil {
                     status_counts.set("error", 1);
                 } else {
@@ -276,7 +274,7 @@ if should_run("log_parse_filter") {
                 let line = "ts=${r}|tenant=t${i % 13}|status=warn|path=/api/v1/orders/${i % 19}";
                 let parsed_len = line.split("|").join("|").len();
                 checksum += parsed_len % 7;
-                let prev = map.get(status_counts, "warn");
+                let prev = status_counts.get("warn");
                 if prev == nil {
                     status_counts.set("warn", 1);
                 } else {
@@ -286,7 +284,7 @@ if should_run("log_parse_filter") {
                 let line = "ts=${r}|tenant=t${i % 13}|status=${status}|path=/api/v1/orders/${i % 19}";
                 let parsed_len = line.split("|").join("|").len();
                 checksum += parsed_len % 7;
-                let prev = map.get(status_counts, status);
+                let prev = status_counts.get(status);
                 if prev == nil {
                     status_counts.set(status, 1);
                 } else {
@@ -294,9 +292,9 @@ if should_run("log_parse_filter") {
                 }
             }
         }
-        let ok_count = map.get(status_counts, "ok");
-        let warn_count = map.get(status_counts, "warn");
-        let error_count = map.get(status_counts, "error");
+        let ok_count = status_counts.get("ok");
+        let warn_count = status_counts.get("warn");
+        let error_count = status_counts.get("error");
         if ok_count != nil { checksum += ok_count; }
         if warn_count != nil { checksum += warn_count * 7; }
         if error_count != nil { checksum += error_count * 31; }
@@ -306,8 +304,8 @@ if should_run("log_parse_filter") {
 }
 
 fn cart_line_total(sku, qty, region, prices, tax_rates) {
-    let price = map.get(prices, sku);
-    let tax = map.get(tax_rates, region);
+    let price = prices.get(sku);
+    let tax = tax_rates.get(region);
     let subtotal = price * qty;
     let discount = 0;
     if qty >= 5 {
@@ -349,15 +347,15 @@ if should_run("route_permission_check") {
     let role_levels = {"guest": 0, "user": 10, "analyst": 40, "ops": 70, "admin": 100};
     for i in 1..=route_rounds {
         if ((i % 11) == 0) {
-            checksum += (i % 97) + map.get(role_levels, "admin") + "/admin/users".len();
+            checksum += (i % 97) + role_levels.get("admin") + "/admin/users".len();
         } else if ((i % 7) == 0) {
-            checksum += (i % 97) + map.get(role_levels, "ops") + "DELETE".len();
+            checksum += (i % 97) + role_levels.get("ops") + "DELETE".len();
         } else if ((i % 5) == 0) {
-            checksum += (i % 97) + map.get(role_levels, "analyst") + "/reports/daily".len();
+            checksum += (i % 97) + role_levels.get("analyst") + "/reports/daily".len();
         } else if ((i % 2) == 0) {
-            checksum += (i % 97) + map.get(role_levels, "user") + "/api/orders".len();
+            checksum += (i % 97) + role_levels.get("user") + "/api/orders".len();
         } else {
-            checksum += 3 + map.get(role_levels, "guest");
+            checksum += 3 + role_levels.get("guest");
         }
     }
     t1 = os.clock();
@@ -373,7 +371,7 @@ if should_run("inventory_reorder") {
         let reorder = [];
         for i in 1..=64 {
             let sku = "sku-${i % 23}";
-            let current = map.get(stock, sku);
+            let current = stock.get(sku);
             let delta = ((i * 11) + r) % 37;
             if current == nil {
                 stock.set(sku, delta);
@@ -383,7 +381,7 @@ if should_run("inventory_reorder") {
         }
         for i in 0..23 {
             let sku = "sku-${i}";
-            let available = map.get(stock, sku);
+            let available = stock.get(sku);
             if available == nil {
                 available = 0;
             }
@@ -408,7 +406,7 @@ fn fraud_score(amount, country, device, prior_declines, risky_countries) {
     } else if amount > 400 {
         score += 15;
     }
-    if map.get(risky_countries, country) != nil {
+    if risky_countries.get(country) != nil {
         score += 35;
     }
     if device.starts_with("emu") {
@@ -511,9 +509,9 @@ if should_run("event_join_by_id") {
         }
         for e in 0..event_n {
             let uid = "u${(e * 7 + r) % user_n}";
-            let quota = map.get(user_quotas, uid);
+            let quota = user_quotas.get(uid);
             if quota != nil {
-                let plan = map.get(user_plans, uid);
+                let plan = user_plans.get(uid);
                 checksum += quota % 31;
                 if plan == 3 {
                     checksum += 41;
@@ -539,13 +537,13 @@ if should_run("config_defaults_merge") {
         if ((i % 3) == 0) { config.set("timeout", 30 + (i % 17)); }
         if ((i % 5) == 0) { config.set("region", 2); }
         if ((i % 7) == 0) { config.set("mode", 2); }
-        let retries = map.get(config, "retries");
+        let retries = config.get("retries");
         if retries == nil { retries = 3; }
-        let timeout = map.get(config, "timeout");
+        let timeout = config.get("timeout");
         if timeout == nil { timeout = 25; }
-        let region = map.get(config, "region");
+        let region = config.get("region");
         if region == nil { region = 1; }
-        let mode = map.get(config, "mode");
+        let mode = config.get("mode");
         if mode == nil { mode = 1; }
         checksum += retries * 13 + timeout;
         if region == 2 { checksum += 17; } else { checksum += 5; }

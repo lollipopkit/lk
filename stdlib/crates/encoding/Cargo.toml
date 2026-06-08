@@ -1,0 +1,19 @@
+[package]
+name = "lk-stdlib-encoding"
+description = "Encoding and data format module for LK"
+version = "0.1.3"
+edition = "2024"
+authors = ["lollipopkit <a@lpkt.cn>"]
+license = "Apache-2.0"
+
+[dependencies]
+anyhow = { workspace = true }
+base64 = { workspace = true }
+hex = { workspace = true }
+lk-core = { path = "../../../core", default-features = false }
+lk-stdlib-bytes = { path = "../bytes" }
+lk-stdlib-common = { path = "../../common" }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+toml = { workspace = true }
+url = { workspace = true }
