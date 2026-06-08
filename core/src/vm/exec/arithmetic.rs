@@ -867,6 +867,7 @@ impl Executor {
     fn heap_values_equal(&self, lhs: &HeapValue, rhs: &HeapValue) -> Result<bool> {
         Ok(match (lhs, rhs) {
             (HeapValue::String(lhs), HeapValue::String(rhs)) => lhs == rhs,
+            (HeapValue::Bytes(lhs), HeapValue::Bytes(rhs)) => lhs == rhs,
             (HeapValue::List(lhs), HeapValue::List(rhs)) => self.typed_lists_equal(lhs, rhs)?,
             (HeapValue::Map(lhs), HeapValue::Map(rhs)) => self.typed_maps_equal(lhs, rhs)?,
             _ => false,

@@ -1,5 +1,31 @@
 [workspace]
-members = ["core", "cli", "stdlib", "lkrt", "lsp", "tree-sitter-lk"]
+members = [
+    "core",
+    "cli",
+    "stdlib",
+    "stdlib/common",
+    "stdlib/crates/bytes",
+    "stdlib/crates/chan",
+    "stdlib/crates/datetime",
+    "stdlib/crates/io",
+    "stdlib/crates/iter",
+    "stdlib/crates/json",
+    "stdlib/crates/list",
+    "stdlib/crates/map",
+    "stdlib/crates/math",
+    "stdlib/crates/net",
+    "stdlib/crates/os",
+    "stdlib/crates/slice",
+    "stdlib/crates/stream",
+    "stdlib/crates/string",
+    "stdlib/crates/task",
+    "stdlib/crates/time",
+    "stdlib/crates/toml",
+    "stdlib/crates/yaml",
+    "lkrt",
+    "lsp",
+    "tree-sitter-lk",
+]
 resolver = "2"
 
 [workspace.package]

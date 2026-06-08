@@ -66,6 +66,7 @@ fn import_heap_value(
 ) -> Result<HeapValue> {
     Ok(match value {
         HeapValue::String(value) => HeapValue::String(value.clone()),
+        HeapValue::Bytes(value) => HeapValue::Bytes(value.clone()),
         HeapValue::List(values) => HeapValue::List(import_typed_list(
             values,
             source_heap,

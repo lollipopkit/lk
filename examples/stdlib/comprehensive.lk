@@ -5,7 +5,7 @@ use func;
 use string;
 use list;
 use os;
-use io/file;
+use { file } from io;
 
 // Math new features
 assert(math.hypot(3.0, 4.0) > 4.99);

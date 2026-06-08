@@ -325,6 +325,7 @@ fn map_native_error(native: &NativeEntry, result: Result<RuntimeVal>) -> Result<
 pub(super) fn heap_kind(value: &HeapValue) -> &'static str {
     match value {
         HeapValue::String(_) => "String",
+        HeapValue::Bytes(_) => "Bytes",
         HeapValue::List(_) => "List",
         HeapValue::Map(_) => "Map",
         HeapValue::Callable(_) => "Callable",

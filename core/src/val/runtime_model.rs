@@ -72,6 +72,7 @@ pub enum RuntimeValKind {
 #[derive(Clone, Debug)]
 pub enum HeapValue {
     String(Arc<str>),
+    Bytes(Arc<[u8]>),
     List(TypedList),
     Map(TypedMap),
     Callable(CallableValue),
@@ -91,6 +92,7 @@ impl HeapValue {
     pub fn type_name(&self) -> &'static str {
         match self {
             Self::String(_) => "String",
+            Self::Bytes(_) => "Bytes",
             Self::List(_) => "List",
             Self::Map(_) => "Map",
             Self::Callable(_) => "Function",

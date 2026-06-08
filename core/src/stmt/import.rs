@@ -20,7 +20,6 @@ use std::sync::Arc;
 /// 4. `use { func as alias } from "file.lk";` - imports with alias
 /// 5. `use * as math from math;` - imports all as namespace
 /// 6. `use math as m;` - imports entire module with alias
-/// 7. `use io/file;` - imports module `io/file` as `file`
 ///
 /// Use statement variants
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -425,21 +424,39 @@ mod tests {
     }
 
     #[test]
-    fn test_slash_module_path_parses() -> Result<()> {
-        let program = parse_program("use io/file;")?;
+    fn test_parent_module_item_import_parses() -> Result<()> {
+        let program = parse_program("use { file, std } from io;")?;
         assert_eq!(
             collect_program_imports(&program),
-            vec![ImportStmt::Module {
-                module: "io/file".to_string()
+            vec![ImportStmt::Items {
+                items: vec![
+                    ImportItem {
+                        name: "file".to_string(),
+                        alias: None,
+                    },
+                    ImportItem {
+                        name: "std".to_string(),
+                        alias: None,
+                    },
+                ],
+                source: ImportSource::Module("io".to_string()),
             }]
         );
         Ok(())
     }
 
     #[test]
-    fn test_slash_module_import_binds_last_segment() -> Result<()> {
+    fn test_slash_module_path_is_rejected() {
+        let err = parse_program("use io/file;").expect_err("slash module paths are no longer supported");
+        assert!(err.to_string().contains("Expected"));
+    }
+
+    #[test]
+    fn test_parent_module_item_import_binds_child_namespace() -> Result<()> {
         use crate::{
             module::{ModuleProvider, RuntimeNativeExport, runtime_export_from_plain_native_entries},
+            util::fast_map::fast_hash_map_from_iter,
+            val::{HeapStore, HeapValue, TypedMap},
             vm::{NativeArgs, NativeRuntime},
         };
 
@@ -448,7 +465,7 @@ mod tests {
 
         impl ModuleProvider for TestModule {
             fn name(&self) -> &str {
-                "io/file"
+                "io"
             }
 
             fn register(&self, _registry: &mut ModuleRegistry) -> Result<()> {
@@ -456,10 +473,14 @@ mod tests {
             }
 
             fn runtime_exports(&self) -> Result<RuntimeExport> {
-                Ok(runtime_export_from_plain_native_entries(
-                    &[RuntimeNativeExport::plain("marker", marker, 0)],
-                    &[],
-                ))
+                let file =
+                    runtime_export_from_plain_native_entries(&[RuntimeNativeExport::plain("marker", marker, 0)], &[]);
+                let mut heap = HeapStore::new();
+                let file = crate::vm::import_runtime_export(&file, &mut heap)?;
+                let value = RuntimeVal::Obj(heap.alloc(HeapValue::Map(TypedMap::StringMixed(
+                    fast_hash_map_from_iter([(Arc::<str>::from("file"), file)]),
+                ))));
+                Ok(RuntimeExport::from_value(value, heap))
             }
         }
 
@@ -468,11 +489,11 @@ mod tests {
         }
 
         let mut registry = ModuleRegistry::new();
-        registry.register_module("io/file", Box::new(TestModule))?;
+        registry.register_module("io", Box::new(TestModule))?;
         let resolver = Arc::new(ModuleResolver::with_registry(registry));
         let result = execute_import_source(
             r#"
-            use io/file;
+            use { file } from io;
             return file.marker();
             "#,
             resolver,

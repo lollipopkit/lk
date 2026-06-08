@@ -1284,6 +1284,7 @@ pub fn copy_runtime_value(
 fn copy_heap_value(value: &HeapValue, source_heap: &HeapStore, dest_heap: &mut HeapStore) -> Result<HeapValue> {
     Ok(match value {
         HeapValue::String(value) => HeapValue::String(Arc::clone(value)),
+        HeapValue::Bytes(value) => HeapValue::Bytes(Arc::clone(value)),
         HeapValue::List(values) => HeapValue::List(copy_typed_list(values, source_heap, dest_heap)?),
         HeapValue::Map(values) => HeapValue::Map(copy_typed_map(values, source_heap, dest_heap)?),
         HeapValue::Object(object) => {

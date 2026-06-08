@@ -30,8 +30,8 @@ This document describes the LK language as implemented in this repository (parse
 
 ### Input and Variables
 - There is no implicit runtime context. Identifiers must be defined in the lexical environment (e.g., via `let` in statements, function params, or module uses).
-- Read external input explicitly with stdlib: `std.read_to_string(std.stdin())` after `use io/std;`. Parse manually: `json.parse(...)`, `yaml.parse(...)`, `toml.parse(...)`.
-- Example: `use io/std; use json; let data = json.parse(std.read_to_string(std.stdin())); return data.req.user.id == 1;`
+- Read external input explicitly with stdlib: `std.read_to_string(std.stdin())` after `use { std } from io;`. Parse manually: `json.parse(...)`, `yaml.parse(...)`, `toml.parse(...)`.
+- Example: `use { std } from io; use json; let data = json.parse(std.read_to_string(std.stdin())); return data.req.user.id == 1;`
 
 ### Constants
 - `const name = expr;` - like `let` but immutable. Attempting to reassign a `const` variable is a runtime error.
@@ -166,13 +166,14 @@ Used in `match`, `if let`, `while let`, and `let` destructuring.
 ### Uses
 - Forms:
   - `use math;` - stdlib module as a namespace
-  - `use io/file;` - nested stdlib module as a namespace named `file`
+  - `use { file, std } from io;` - selected child namespaces from a parent stdlib module
+  - `use io;` - parent stdlib module namespace, with child namespaces such as `io.file` and `io.std`
   - `use "path/to/file.lk";` - file module as a namespace (name is the file stem)
   - `use { abs, sqrt } from math;` - selected items
   - `use { f as g } from "m.lk";` - with alias
   - `use * as m from math;` - namespace alias
   - `use math as m;` - module alias
-- Bare module uses bind the last path segment: `use net/tcp;` defines `tcp`.
+- Bare module uses bind the module name directly: `use net;` defines `net`.
 
 - File use resolution and safety:
   - Files are not automatically visible to each other. Use every cross-file dependency explicitly.
@@ -215,28 +216,31 @@ use "d/d1";    // c/d/d1.lk, available as d1
 
 ## Builtins and Stdlib
 - Builtin globals: `print(fmt, ...args)`, `println(fmt, ...args)`, `panic([msg])`, `assert(cond[, msg])`, `assert_eq(actual, expected[, msg])`, `assert_ne(actual, expected[, msg])`, `typeof(value)`.
-- `typeof(value)` returns the runtime type name as a string: `"Int"`, `"Float"`, `"String"`, `"Bool"`, `"Nil"`, `"List"`, `"Map"`, `"Slice"`, resource names such as `"File"`/`"TcpStream"`, or the struct type name.
+- `typeof(value)` returns the runtime type name as a string: `"Int"`, `"Float"`, `"String"`, `"Bytes"`, `"Bool"`, `"Nil"`, `"List"`, `"Map"`, `"Slice"`, resource names such as `"File"`/`"TcpStream"`, or the struct type name.
 
 ### Stdlib Modules
-Use as needed: `math`, `string`, `list`, `map`, `iter`, `stream`, `datetime`, `os`, `io/std`, `io/file`, `net/socket`, `net/tcp`, `net/udp`, `slice`, `json`, `yaml`, `toml`. LK-source modules: `alg`, `collections`, `func`, `math_ext`. With `concurrency` feature: `task`, `chan`, `time`.
+Use as needed: `math`, `string`, `bytes`, `list`, `map`, `iter`, `stream`, `datetime`, `os`, `io`, `net`, `slice`, `json`, `yaml`, `toml`. LK-source modules: `alg`, `collections`, `func`, `math_ext`. With `concurrency` feature: `task`, `chan`, `time`.
 
 - `math`: constants `pi`, `e`, `inf`, `nan`, `max_int`, `min_int`, `max_float`, `epsilon`; functions `abs`, `sqrt`, `floor`, `ceil`, `round`, `min`, `max`, `pow`, `exp`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `log`, `log10`, `log2`, `clamp`, `random`, `hypot`, `cbrt`, `sinh`, `cosh`, `tanh`, `trunc`, `fract`, `sign`, `to_int`, `to_float`, `is_nan`, `is_inf`.
 - `string`: methods (see meta-methods below).
+- `bytes`: binary data backed by bytes. `from_list(list)`, `from_string(str)`, `len(bytes)`, `is_empty(bytes)`, `get(bytes, index)`, `slice(bytes, start[, end])`, `to_list(bytes)`, `to_string_utf8(bytes)`, `to_string_lossy(bytes)`, `concat(a, b)`, `eq(a, b)`.
 - `list`: methods (see meta-methods below).
 - `map`: `map.len(m)`, `map.keys(m)`, `map.values(m)`, `map.has(m, key)`, `map.get(m, key)`, `map.set(m, key, val)` (returns updated map), `map.delete(m, key)` (returns `[updated_map, removed_value]`).
 - `iter`: module-level list utilities only: `range([start,] end [, step])`, `enumerate(list)`, `zip(list1, list2)`, `take(list, n)`, `skip(list, n)`, `chain(list1, list2)`, `flatten(list)`, `unique(list)`, `chunk(list, size)`, and higher-order ops `map(list, fn)`, `filter(list, fn)`, `reduce(list, init, fn)`.
 - `stream`: module-level lazy pipelines. `stream.from_list(list)`, `stream.range(start, end)`, `stream.iterate(seed, fn)`, `stream.repeat(val)`, `stream.from_channel(ch)`, `stream.map(s, fn)`, `stream.filter(s, fn)`, `stream.take(s, n)`, `stream.skip(s, n)`, `stream.chain(a, b)`, `stream.subscribe(s)`, `stream.next(cursor)`, `stream.collect(stream_or_cursor)`, `stream.next_block(cursor[, timeout_ms])`, `stream.collect_block(stream_or_cursor[, n][, timeout_ms])`.
 - `datetime`: `now()` (microseconds), `format(secs, fmt)`, `parse(str, fmt)`, `add(secs, delta)`, `sub(secs, delta)`, `day_of_week(secs)`, `day_of_year(secs)`, `is_weekend(secs)`.
 - `os`: `hostname()`, `arch()`, `os()`, `clock()`, `time()`, `epoch()`, `exit(code)`, `exec(cmd, args?, stream?)`, `env_get(key, default?)`, `env`, `dir_current()`, `dir_temp()`, `dir_list(path)`, `mkdir(path)`, `path_join(parts...)`, `path_sep()`.
-- `io/std`: `stdin()`, `stdout()`, `stderr()`, `read_to_string(reader)`, `read_line(reader)`, `write(writer, data)`, `writeln(writer, data)`, `flush(writer)`.
-- `io/file`: `open(path, mode)`, `create(path)`, `read(path)`, `write(path, data)`, `append(path, data)`, `exists(path)`, `size(path)`, `remove(path)`, `read_to_string(file)`, `write_all(file, data)`, `flush(file)`, `close(file)`.
+- `io`: parent namespace. Import children with `use { std, file } from io;` or access them through `io.std` and `io.file`.
+- `io.std`: `stdin()`, `stdout()`, `stderr()`, `read(reader[, max_bytes]) -> Bytes`, `read_to_string(reader)`, `read_line(reader)`, `write(writer, data)`, `writeln(writer, data)`, `flush(writer)`. `write`/`writeln` accept `Bytes` or `String`.
+- `io.file`: `open(path, mode)`, `create(path)`, `read(path) -> Bytes`, `write(path, data)`, `append(path, data)`, `exists(path)`, `size(path)`, `remove(path)`, `read_to_string(path_or_file)`, `write_all(file, data)`, `flush(file)`, `close(file)`. Binary APIs use `Bytes`; text APIs are explicit.
 - `slice`: `from_list(list)`, `from_string(str)`, `len(slice)`, `is_empty(slice)`, `get(slice, index)`, `sub(slice, start[, end])`, `to_list(slice)`, `to_string(slice)`.
 - `json`: `json.parse(string)`.
 - `yaml`: `yaml.parse(string)`.
 - `toml`: `toml.parse(string)`.
-- `net/socket`: `addr(host, port)`, `close(resource)`.
-- `net/tcp`: `connect(addr)`, `bind(addr)`, `accept(listener)`, `write(stream, data)`, `read(stream, len?)`, `close(resource)`, plus `connect_task`, `accept_task`, `read_task`, `write_task`.
-- `net/udp`: `bind(addr)`, `recv_from(socket, len?)`, `send_to(socket, data, addr)`, plus `recv_from_task`, `send_to_task`.
+- `net`: parent namespace. Import children with `use { socket, tcp, udp } from net;` or access them through `net.socket`, `net.tcp`, and `net.udp`.
+- `net.socket`: `addr(host, port)`, `close(resource)`.
+- `net.tcp`: `connect(addr)`, `bind(addr)`, `accept(listener)`, `write(stream, data)`, `read(stream, len?) -> Bytes`, `close(resource)`, plus `connect_task`, `accept_task`, `read_task`, `write_task`. `write` accepts `Bytes` or `String`.
+- `net.udp`: `bind(addr)`, `recv_from(socket, len?) -> Bytes`, `send_to(socket, data, addr)`, plus `recv_from_task`, `send_to_task`. `send_to` accepts `Bytes` or `String`.
 - `time` (concurrency): `time.now()`, `time.sleep(ms)`, `time.timeout(ms)`, `time.after(ms)`, `time.since(start, end)`.
 
 #### LK-Source Stdlib Modules

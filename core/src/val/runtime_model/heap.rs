@@ -158,7 +158,11 @@ fn collect_heap_value_edges(
     runtime_callables: &mut Vec<Arc<RuntimeCallable>>,
 ) {
     match value {
-        HeapValue::String(_) | HeapValue::Task(_) | HeapValue::Channel(_) | HeapValue::Resource(_) => {}
+        HeapValue::String(_)
+        | HeapValue::Bytes(_)
+        | HeapValue::Task(_)
+        | HeapValue::Channel(_)
+        | HeapValue::Resource(_) => {}
         HeapValue::Stream(stream) => {
             for value in &stream.roots {
                 collect_runtime_value_edge(value, refs);

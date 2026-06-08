@@ -1077,6 +1077,10 @@ fn runtime_access(receiver: &RuntimeVal, field: &str, heap: &mut HeapStore) -> a
                 .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
             {
                 HeapValue::String(value) => RuntimeAccess::Ready(runtime_string_access(value.as_ref(), field)),
+                HeapValue::Bytes(value) => match field {
+                    "len" => RuntimeAccess::Ready(Some(RuntimeVal::Int(value.len() as i64))),
+                    _ => RuntimeAccess::Ready(None),
+                },
                 HeapValue::List(values) => RuntimeAccess::Ready(runtime_list_access(values, field)),
                 HeapValue::Map(values) => RuntimeAccess::Ready(values.get_str(field)),
                 HeapValue::Slice(slice) => match field {
@@ -1295,6 +1299,7 @@ fn runtime_dispatch_type(value: &RuntimeVal, heap: &HeapStore) -> Type {
 fn heap_dispatch_type(value: &HeapValue) -> Type {
     match value {
         HeapValue::String(_) => Type::String,
+        HeapValue::Bytes(_) => Type::Named("Bytes".to_string()),
         HeapValue::List(_) => Type::List(Box::new(Type::Any)),
         HeapValue::Map(_) => Type::Map(Box::new(Type::Any), Box::new(Type::Any)),
         HeapValue::Callable(_) => Type::Function {

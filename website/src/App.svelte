@@ -90,7 +90,7 @@
   let locale: Locales | undefined = initialLocale
   let currentPath = normalizePath(typeof window === 'undefined' ? '/' : window.location.pathname)
 
-  const heroCode = `use io/std;
+  const heroCode = `use { std } from io;
 use json;
 
 let data = json.parse(std.read_to_string(std.stdin()));
@@ -162,7 +162,7 @@ match data.req {
       {
         label: 'Use forms',
         code: `use math as m;
-use io/file;
+use { file, std } from io;
 use { abs, sqrt } from math;
 use * as config from "config/app";`,
       },

@@ -113,16 +113,6 @@ impl<'a> StmtParser<'a> {
 
     fn parse_module_path_from_first(&mut self, first: String) -> Result<String> {
         self.pos += 1;
-        let mut path = first;
-        while !self.eof() && self.tokens[self.pos] == Token::Div {
-            self.pos += 1;
-            if self.eof() {
-                return Err(anyhow!(self.err("Expected module path segment after '/'")));
-            }
-            let segment = self.expect_id()?;
-            path.push('/');
-            path.push_str(&segment);
-        }
-        Ok(path)
+        Ok(first)
     }
 }

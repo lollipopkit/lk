@@ -1,5 +1,7 @@
 // Collections module — data structures implemented in pure LK.
 
+use map;
+
 // ── Stack ─────────────────────────────────────────────────
 
 /// Create an empty stack.
@@ -81,18 +83,18 @@ fn set() {
 
 /// Add a value to the set.
 fn set_add(s, value) {
-  s._items[value] = true;
+  s._items = map.set(s._items, value, true);
   return s;
 }
 
 /// Check if a value is in the set.
 fn set_has(s, value) {
-  return s._items.has(value);
+  return map.has(s._items, value);
 }
 
 /// Remove a value from the set.
 fn set_remove(s, value) {
-  let result = s._items.delete(value);
+  let result = map.delete(s._items, value);
   s._items = result[0];
   return s;
 }
@@ -110,8 +112,8 @@ fn set_len(s) {
 /// Set union.
 fn set_union(a, b) {
   let result = set();
-  for v in a._items.keys() { result._items[v] = true; }
-  for v in b._items.keys() { result._items[v] = true; }
+  for v in a._items.keys() { result._items = map.set(result._items, v, true); }
+  for v in b._items.keys() { result._items = map.set(result._items, v, true); }
   return result;
 }
 
@@ -119,7 +121,7 @@ fn set_union(a, b) {
 fn set_intersection(a, b) {
   let result = set();
   for v in a._items.keys() {
-    if b._items.has(v) { result._items[v] = true; }
+    if map.has(b._items, v) { result._items = map.set(result._items, v, true); }
   }
   return result;
 }
@@ -128,7 +130,7 @@ fn set_intersection(a, b) {
 fn set_difference(a, b) {
   let result = set();
   for v in a._items.keys() {
-    if !b._items.has(v) { result._items[v] = true; }
+    if !map.has(b._items, v) { result._items = map.set(result._items, v, true); }
   }
   return result;
 }

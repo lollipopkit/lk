@@ -1,6 +1,6 @@
 // I/O module demo: stdin, stdout, stderr
 
-use io/std;
+use { std } from io;
 
 // 1. Write to stdout
 let out = std.stdout();

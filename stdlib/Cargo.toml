@@ -15,6 +15,25 @@ default = []
 
 [dependencies]
 lk-core = { path = "../core", default-features = false }
+lk-stdlib-bytes = { path = "crates/bytes" }
+lk-stdlib-chan = { path = "crates/chan" }
+lk-stdlib-common = { path = "common" }
+lk-stdlib-datetime = { path = "crates/datetime" }
+lk-stdlib-io = { path = "crates/io" }
+lk-stdlib-iter = { path = "crates/iter" }
+lk-stdlib-json = { path = "crates/json" }
+lk-stdlib-list = { path = "crates/list" }
+lk-stdlib-map = { path = "crates/map" }
+lk-stdlib-math = { path = "crates/math" }
+lk-stdlib-net = { path = "crates/net" }
+lk-stdlib-os = { path = "crates/os" }
+lk-stdlib-slice = { path = "crates/slice" }
+lk-stdlib-stream = { path = "crates/stream" }
+lk-stdlib-string = { path = "crates/string" }
+lk-stdlib-task = { path = "crates/task" }
+lk-stdlib-time = { path = "crates/time" }
+lk-stdlib-toml = { path = "crates/toml" }
+lk-stdlib-yaml = { path = "crates/yaml" }
 anyhow = { workspace = true }
 arcstr = { workspace = true }
 chrono = { workspace = true }

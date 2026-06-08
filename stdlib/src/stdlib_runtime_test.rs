@@ -24,19 +24,42 @@ mod tests {
     }
 
     #[test]
-    fn io_file_module_uses_last_path_segment_binding() -> Result<()> {
+    fn io_file_module_imports_from_parent_namespace() -> Result<()> {
         let mut path = std::env::temp_dir();
         path.push(format!("lk-io-file-test-{}.txt", std::process::id()));
         let path = path.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"");
         let source = format!(
             r#"
-            use io/file;
+            use bytes;
+            use {{ file }} from io;
             file.write("{path}", "hello");
-            let content = file.read("{path}");
+            let content = bytes.to_string_utf8(file.read("{path}"));
             let exists = file.exists("{path}");
             let size = file.size("{path}");
             file.remove("{path}");
             return exists && content == "hello" && size == 5;
+            "#
+        );
+        let result = run(&source)?;
+        assert_eq!(result.first_return(), &RuntimeVal::Bool(true));
+        Ok(())
+    }
+
+    #[test]
+    fn parent_namespaces_are_importable_as_modules() -> Result<()> {
+        let mut path = std::env::temp_dir();
+        path.push(format!("lk-io-parent-test-{}.txt", std::process::id()));
+        let path = path.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"");
+        let source = format!(
+            r#"
+            use bytes;
+            use io;
+            use {{ socket }} from net;
+            io.file.write("{path}", "hello");
+            let content = bytes.to_string_utf8(io.file.read("{path}"));
+            let addr = socket.addr("127.0.0.1", 80);
+            io.file.remove("{path}");
+            return content == "hello" && addr == "127.0.0.1:80" && typeof(io.std.stdout()) == "Stdout";
             "#
         );
         let result = run(&source)?;
