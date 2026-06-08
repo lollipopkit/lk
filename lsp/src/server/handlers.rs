@@ -11,7 +11,7 @@ use tower_lsp::LanguageServer;
 use tracing::{debug, info};
 
 use crate::analyzer::LkAnalyzer;
-use lk_core::{token::Tokenizer, val};
+use lk_core::token::Tokenizer;
 
 use super::{
     formatting::format_lk,
@@ -19,10 +19,7 @@ use super::{
     semantic::semantic_tokens_delta_edit,
     signature::{sig, sig_owned},
     state::{Document, LkLanguageServer},
-    text::{
-        apply_incremental_change_rope, collect_named_keys_in_args, find_call_before_cursor, infer_call_at_position,
-        position_to_char_idx,
-    },
+    text::{apply_incremental_change_rope, infer_call_at_position, position_to_char_idx},
     utils::compute_content_hash,
     workspace_cache::{build_file_cache, filter_cached_inlay_hints},
     MAX_SEMANTIC_TOKENS,
@@ -66,7 +63,13 @@ impl LanguageServer for LkLanguageServer {
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 completion_provider: Some(CompletionOptions {
                     resolve_provider: Some(false),
-                    trigger_characters: Some(vec![".".to_string()]),
+                    trigger_characters: Some(vec![
+                        ".".to_string(),
+                        "\"".to_string(),
+                        "{".to_string(),
+                        ",".to_string(),
+                        ":".to_string(),
+                    ]),
                     work_done_progress_options: Default::default(),
                     all_commit_characters: None,
                     completion_item: None,
@@ -256,306 +259,9 @@ impl LanguageServer for LkLanguageServer {
     }
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
-        let mut items = self.get_completions();
-
-        // Add identifier-aware and stdlib-aware completions based on current line
         let uri = &params.text_document_position.text_document.uri;
         let position = params.text_document_position.position;
-
-        if let Some(doc) = self.documents.get(uri) {
-            let line_idx = position.line as usize;
-            if line_idx < doc.content.len_lines() {
-                let line = doc.content.line(line_idx).to_string();
-                let line_start_char = doc.content.line_to_char(line_idx);
-                let abs_char = position_to_char_idx(&doc.content, position);
-                let within_line = abs_char.saturating_sub(line_start_char).min(line.chars().count());
-                let line_prefix: String = line.chars().take(within_line).collect();
-                let line_suffix: String = line.chars().skip(within_line).collect();
-
-                // '@' context completions removed
-
-                // Regexes for use/from and module dot access
-                let import_re = Regex::new(r"(?:^|\s)use\s+([A-Za-z_]\w*)?$").ok();
-                let from_re = Regex::new(r"(?:^|\s)from\s+([A-Za-z_]\w*)?$").ok();
-                let moddot_re = Regex::new(r"([A-Za-z_]\w*)\.$").ok();
-                let alias_method_re = Regex::new(r"([A-Za-z_]\w*)\.([A-Za-z_]*)$").ok();
-                // use { ... } cursor inside braces; capture content before cursor
-                let import_brace_re = Regex::new(r"(?:^|\s)use\s*\{([^}]*)$").ok();
-                // In the suffix, look for '} from <module>' after the cursor
-                let suffix_from_re = Regex::new(r"^\s*\}?\s*from\s+([A-Za-z_]\w*)").ok();
-                // use "<path> cursor inside quotes
-                let import_path_re = Regex::new(r#"(?:^|\s)use\s+\"([^\"]*)$"#).ok();
-
-                if let Ok(mut analyzer) = self.analyzer.lock() {
-                    // Suggest module names after `use` or `from`
-                    if let Some(re) = &import_re {
-                        if let Some(caps) = re.captures(&line_prefix) {
-                            let typed = caps.get(1).map(|m| m.as_str()).unwrap_or("");
-                            let modules = analyzer.list_stdlib_modules();
-                            for m in modules.into_iter().filter(|m| m.starts_with(typed)) {
-                                items.push(CompletionItem {
-                                    label: m,
-                                    kind: Some(CompletionItemKind::MODULE),
-                                    detail: Some("LK stdlib module".to_string()),
-                                    ..Default::default()
-                                });
-                            }
-                        }
-                    }
-                    if let Some(re) = &from_re {
-                        if let Some(caps) = re.captures(&line_prefix) {
-                            let typed = caps.get(1).map(|m| m.as_str()).unwrap_or("");
-                            let modules = analyzer.list_stdlib_modules();
-                            for m in modules.into_iter().filter(|m| m.starts_with(typed)) {
-                                items.push(CompletionItem {
-                                    label: m,
-                                    kind: Some(CompletionItemKind::MODULE),
-                                    detail: Some("LK stdlib module".to_string()),
-                                    ..Default::default()
-                                });
-                            }
-                        }
-                    }
-
-                    // Suggest exports after `alias.` or `alias.pref...` if alias is an imported module;
-                    // otherwise suggest common type meta-methods (with optional prefix filtering).
-                    if let (Some(am_re), Some(md_re)) = (&alias_method_re, &moddot_re) {
-                        // Extract alias and typed prefix after the dot
-                        let (alias_opt, typed_prefix) = if let Some(caps) = am_re.captures(&line_prefix) {
-                            let alias = caps.get(1).map(|m| m.as_str()).unwrap_or("");
-                            let typed = caps.get(2).map(|m| m.as_str()).unwrap_or("");
-                            (Some(alias), typed)
-                        } else if let Some(caps) = md_re.captures(&line_prefix) {
-                            let alias = caps.get(1).map(|m| m.as_str()).unwrap_or("");
-                            (Some(alias), "")
-                        } else {
-                            (None, "")
-                        };
-
-                        if let Some(alias) = alias_opt {
-                            let full_content = doc.content.to_string();
-                            let alias_map = analyzer.collect_import_aliases(&full_content);
-                            if let Some(module_name) = alias_map.get(alias) {
-                                if let Some(mut exports) = analyzer.list_module_exports(module_name) {
-                                    if !typed_prefix.is_empty() {
-                                        exports.retain(|e| e.starts_with(typed_prefix));
-                                    }
-                                    for e in exports {
-                                        items.push(CompletionItem {
-                                            label: e,
-                                            kind: Some(CompletionItemKind::FUNCTION),
-                                            detail: Some(format!("{}.{}", module_name, alias)),
-                                            ..Default::default()
-                                        });
-                                    }
-                                }
-                            } else {
-                                // Fallback: suggest common type meta-methods; filter by typed_prefix when present
-                                const LIST_METHODS: &[&str] = &[
-                                    "len",
-                                    "push",
-                                    "concat",
-                                    "join",
-                                    "get",
-                                    "first",
-                                    "last",
-                                    "map",
-                                    "filter",
-                                    "reduce",
-                                    "take",
-                                    "skip",
-                                    "chain",
-                                    "flatten",
-                                    "unique",
-                                    "chunk",
-                                    "enumerate",
-                                    "zip",
-                                ];
-                                const MAP_METHODS: &[&str] = &["len", "keys", "values", "has", "get"];
-                                const STRING_METHODS: &[&str] = &[
-                                    "len",
-                                    "lower",
-                                    "upper",
-                                    "trim",
-                                    "starts_with",
-                                    "ends_with",
-                                    "contains",
-                                    "replace",
-                                    "substring",
-                                    "split",
-                                    "join",
-                                ];
-                                let mut push_method = |name: &str, ty: &str| {
-                                    if typed_prefix.is_empty() || name.starts_with(typed_prefix) {
-                                        items.push(CompletionItem {
-                                            label: name.to_string(),
-                                            kind: Some(CompletionItemKind::METHOD),
-                                            detail: Some(format!("{} method (meta)", ty)),
-                                            ..Default::default()
-                                        });
-                                    }
-                                };
-                                for m in LIST_METHODS {
-                                    push_method(m, "List");
-                                }
-                                for m in MAP_METHODS {
-                                    push_method(m, "Map");
-                                }
-                                for m in STRING_METHODS {
-                                    push_method(m, "String");
-                                }
-                            }
-                        }
-                    }
-
-                    // Suggest exports inside `use { ... } from <module>`
-                    if let (Some(br_re), Some(sf_re)) = (&import_brace_re, &suffix_from_re) {
-                        if let Some(br_caps) = br_re.captures(&line_prefix) {
-                            if let Some(sf_caps) = sf_re.captures(&line_suffix) {
-                                let module_name = sf_caps.get(1).map(|m| m.as_str()).unwrap_or("");
-                                if let Some(mut exports) = analyzer.list_module_exports(module_name) {
-                                    // Determine typed prefix within braces
-                                    let raw = br_caps.get(1).map(|m| m.as_str()).unwrap_or("");
-                                    let last = raw.split(',').next_back().unwrap_or("").trim();
-                                    let typed = last.split_whitespace().last().unwrap_or("");
-                                    if !typed.is_empty() {
-                                        exports.retain(|e| e.starts_with(typed));
-                                    }
-                                    for e in exports {
-                                        items.push(CompletionItem {
-                                            label: e,
-                                            kind: Some(CompletionItemKind::FUNCTION),
-                                            detail: Some(format!("from {}", module_name)),
-                                            ..Default::default()
-                                        });
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Suggest file paths inside use "..."
-                    if let Some(re) = &import_path_re {
-                        if let Some(caps) = re.captures(&line_prefix) {
-                            let typed = caps.get(1).map(|m| m.as_str()).unwrap_or("");
-                            // Determine base directories
-                            let mut base_dirs = Vec::new();
-                            if let Ok(mut p) = uri.to_file_path() {
-                                if p.pop() {
-                                    base_dirs.push(p.clone());
-                                    base_dirs.push(p.join("lib"));
-                                    base_dirs.push(p.join("modules"));
-                                }
-                            }
-                            // Split typed into dir and file prefix
-                            let (dir_part, file_prefix) = if let Some(pos) = typed.rfind('/') {
-                                (&typed[..pos], &typed[pos + 1..])
-                            } else {
-                                ("", typed)
-                            };
-                            for base in base_dirs {
-                                let root = if dir_part.is_empty() {
-                                    base.clone()
-                                } else {
-                                    base.join(dir_part)
-                                };
-                                if let Ok(entries) = std::fs::read_dir(&root) {
-                                    for e in entries.flatten() {
-                                        if let Ok(ft) = e.file_type() {
-                                            let name = e.file_name().to_string_lossy().to_string();
-                                            if name.starts_with(file_prefix) {
-                                                let rel = if dir_part.is_empty() {
-                                                    name.clone()
-                                                } else {
-                                                    format!("{}/{}", dir_part, name)
-                                                };
-                                                let (label, kind) = if ft.is_dir() {
-                                                    (format!("{}/", rel), CompletionItemKind::FOLDER)
-                                                } else {
-                                                    (rel, CompletionItemKind::FILE)
-                                                };
-                                                items.push(CompletionItem {
-                                                    label,
-                                                    kind: Some(kind),
-                                                    detail: Some("File path".to_string()),
-                                                    ..Default::default()
-                                                });
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Generic identifier/path completions based on current prefix
-                    // Extract a simple alnum/underscore/dot suffix from the current line prefix
-                    let prefix: String = {
-                        let mut collected: Vec<char> = Vec::new();
-                        for ch in line_prefix.chars().rev() {
-                            if ch.is_ascii_alphanumeric() || ch == '_' || ch == '.' {
-                                collected.push(ch);
-                            } else {
-                                break;
-                            }
-                        }
-                        collected.reverse();
-                        collected.into_iter().collect()
-                    };
-                    if !prefix.is_empty() {
-                        let var_items = analyzer.get_var_completions(&prefix);
-                        if !var_items.is_empty() {
-                            let existing: std::collections::HashSet<String> =
-                                items.iter().map(|ci| ci.label.clone()).collect();
-                            for it in var_items {
-                                if !existing.contains(&it.label) {
-                                    items.push(it);
-                                }
-                            }
-                        }
-                    }
-
-                    // Named-argument completions inside function calls
-                    // Heuristic: find nearest '(' before cursor on this line, extract callee identifier,
-                    // and propose remaining named parameters not yet provided.
-                    if let Some((fname, start_idx)) = find_call_before_cursor(&line_prefix) {
-                        // Collect provided named keys up to cursor in this argument list
-                        let provided = collect_named_keys_in_args(&line_prefix[start_idx..]);
-                        // Parse document to find function named parameters
-                        let sigs = analyzer.collect_fn_named_param_decls(&doc.content.to_string());
-                        if let Some(named_decls) = sigs.get(&fname) {
-                            use std::collections::HashSet;
-                            let provided_set: HashSet<&str> = provided.iter().map(|s| s.as_str()).collect();
-                            for decl in named_decls {
-                                if provided_set.contains(decl.name.as_str()) {
-                                    continue;
-                                }
-                                let label = format!("{}:", decl.name);
-                                let mut detail = String::new();
-                                if let Some(ty) = &decl.type_annotation {
-                                    detail.push_str(&ty.display());
-                                }
-                                let is_optional = matches!(decl.type_annotation, Some(val::Type::Optional(_)))
-                                    || decl.default.is_some();
-                                if !detail.is_empty() {
-                                    detail.push(' ');
-                                }
-                                detail.push_str(if is_optional { "[optional]" } else { "[required]" });
-                                items.push(CompletionItem {
-                                    label,
-                                    kind: Some(CompletionItemKind::FIELD),
-                                    detail: if detail.is_empty() { None } else { Some(detail) },
-                                    insert_text: None,
-                                    ..Default::default()
-                                });
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(Some(CompletionResponse::Array(items)))
+        Ok(self.completion_response(uri, position))
     }
 
     async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {

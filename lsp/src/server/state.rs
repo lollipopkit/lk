@@ -3,9 +3,10 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use dashmap::DashMap;
+use lk_completion::CompletionEngine;
 use ropey::Rope;
 use tokio::sync::Semaphore;
-use tower_lsp::lsp_types::{CompletionItem, CompletionItemKind, InlayHint, SemanticToken, Url};
+use tower_lsp::lsp_types::{InlayHint, SemanticToken, Url};
 use tower_lsp::Client;
 
 use super::workspace_cache::WorkspaceCache;
@@ -32,6 +33,7 @@ pub(crate) struct LkLanguageServer {
     pub(crate) client: Client,
     pub(crate) documents: Arc<DashMap<Url, Document>>,
     pub(crate) analyzer: Mutex<LkAnalyzer>,
+    pub(crate) completion_engine: CompletionEngine,
     pub(crate) config: Mutex<super::config::ServerConfig>,
     // Shared limiter for all heavy analysis work (diagnostics, hover-derived lookups, etc.).
     pub(crate) compute_limiter: Mutex<Arc<Semaphore>>,
@@ -45,58 +47,11 @@ impl LkLanguageServer {
             client,
             documents: Arc::new(DashMap::new()),
             analyzer: Mutex::new(LkAnalyzer::new()),
+            completion_engine: CompletionEngine::default(),
             config: Mutex::new(super::config::ServerConfig::default()),
             compute_limiter: Mutex::new(Arc::new(Semaphore::new(2))),
             workspace_root: Mutex::new(None),
             workspace_cache: Arc::new(WorkspaceCache::default()),
         }
-    }
-
-    pub(crate) fn get_completions(&self) -> Vec<CompletionItem> {
-        let mut items = Vec::new();
-
-        // LK keywords
-        let keywords = [
-            "if", "else", "while", "let", "fn", "return", "break", "continue", "use", "from", "as", "go", "select",
-            "case", "default", "true", "false", "nil", "spawn", "chan", "send", "recv",
-        ];
-
-        for keyword in keywords {
-            items.push(CompletionItem {
-                label: keyword.to_string(),
-                kind: Some(CompletionItemKind::KEYWORD),
-                detail: Some("LK keyword".to_string()),
-                ..Default::default()
-            });
-        }
-
-        // Operators
-        let operators = ["==", "!=", "<=", ">=", "&&", "||", "in", "<-"];
-        for op in operators {
-            items.push(CompletionItem {
-                label: op.to_string(),
-                kind: Some(CompletionItemKind::OPERATOR),
-                detail: Some("LK operator".to_string()),
-                ..Default::default()
-            });
-        }
-
-        // Standard library helper functions
-        let stdlib_functions = [
-            ("print", "Global function - print without newline"),
-            ("println", "Global function - print with newline"),
-            ("panic", "Global function - raise runtime error"),
-        ];
-
-        for (func, desc) in stdlib_functions {
-            items.push(CompletionItem {
-                label: func.to_string(),
-                kind: Some(CompletionItemKind::FUNCTION),
-                detail: Some(desc.to_string()),
-                ..Default::default()
-            });
-        }
-
-        items
     }
 }

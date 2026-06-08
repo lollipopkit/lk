@@ -1,5 +1,6 @@
 mod analysis;
 mod cli;
+mod completion;
 mod config;
 mod entry;
 mod formatting;

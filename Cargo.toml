@@ -2,6 +2,7 @@
 members = [
     "core",
     "cli",
+    "completion",
     "stdlib",
     "stdlib/common",
     "stdlib/crates/bytes",

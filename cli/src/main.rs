@@ -32,6 +32,7 @@ mod main_test;
 mod paths;
 mod pkg;
 mod repl;
+mod repl_completion;
 
 use coverage::run_coverage_report;
 #[cfg(test)]

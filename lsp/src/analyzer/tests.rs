@@ -161,25 +161,6 @@ fn test_collect_named_param_decls_supports_completions() {
 }
 
 #[test]
-fn test_get_var_completions() {
-    let mut analyzer = create_analyzer();
-    let completions = analyzer.get_var_completions("req");
-
-    // Should return completions that start with "req"
-    assert!(!completions.is_empty());
-
-    let labels: Vec<&String> = completions.iter().map(|c| &c.label).collect();
-    assert!(labels.contains(&&"req".to_string()));
-    assert!(labels.contains(&&"req.user".to_string()));
-    assert!(labels.contains(&&"req.user.id".to_string()));
-    assert!(labels.contains(&&"req.user.role".to_string()));
-    assert!(labels.contains(&&"req.user.name".to_string()));
-
-    // Should not include completions that don't match the prefix
-    assert!(!labels.contains(&&"record".to_string()));
-}
-
-#[test]
 fn test_validate_identifier_access_with_valid_vars() {
     let analyzer = create_analyzer();
 

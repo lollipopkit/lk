@@ -65,14 +65,21 @@ mod bench_tests {
 
     #[test]
     fn bench_completion_caching() {
-        let mut analyzer = LkAnalyzer::new();
+        let engine = lk_completion::CompletionEngine::new().expect("completion engine");
+        let request = lk_completion::CompletionRequest {
+            source: "use io;\nio.file.r",
+            cursor: "use io;\nio.file.r".len(),
+            mode: lk_completion::CompletionMode::Lsp,
+            session_source: None,
+            base_dir: None,
+        };
 
         let start = Instant::now();
-        let _completions1 = analyzer.get_var_completions("req");
+        let _completions1 = engine.complete(request);
         let first_completion = start.elapsed();
 
         let start = Instant::now();
-        let _completions2 = analyzer.get_var_completions("req");
+        let _completions2 = engine.complete(request);
         let second_completion = start.elapsed();
 
         println!(

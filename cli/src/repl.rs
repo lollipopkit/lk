@@ -1,4 +1,4 @@
-use rustyline::{DefaultEditor, error::ReadlineError};
+use rustyline::{Editor, error::ReadlineError, history::DefaultHistory};
 use std::sync::Arc;
 
 use lk_core::{
@@ -11,6 +11,7 @@ use lk_core::{
 };
 
 use crate::diagnostic;
+use crate::repl_completion::{ReplCompletionState, ReplHelper};
 
 fn print_repl_help() {
     eprintln!("Commands: :quit | :exit | :q, :help");
@@ -122,8 +123,11 @@ pub fn run(_is_statement_mode: bool) -> anyhow::Result<()> {
         .with_resolver(resolver)
         .with_type_checker(Some(TypeChecker::new_strict()));
 
-    // In-memory line editor with history and arrow key support
-    let mut rl = DefaultEditor::new()?;
+    // In-memory line editor with history, arrow key support, and context-aware completion.
+    let completion_state = ReplCompletionState::new();
+    let helper = ReplHelper::new(completion_state.clone())?;
+    let mut rl = Editor::<ReplHelper, DefaultHistory>::new()?;
+    rl.set_helper(Some(helper));
     let mut buffer = String::new();
 
     print_repl_help();
@@ -244,6 +248,7 @@ pub fn run(_is_statement_mode: bool) -> anyhow::Result<()> {
 
         match result {
             Ok(res) => {
+                completion_state.append_successful_input(&final_src);
                 if !res.first_return_is_nil() {
                     println!("{}", res.display_first_return());
                 }

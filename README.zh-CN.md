@@ -64,6 +64,7 @@ assert_eq!(result.display_first_return(), "true");
 #### CLI
 
 - 进入 REPL：`lk`
+- REPL 补全：按 Tab 可补全命令、关键字、stdlib 模块/导出、receiver 方法，以及当前 REPL 会话里已成功定义的符号。
 - 执行源码或模块产物：`lk FILE`（支持 `.lk` 和 `.lkm`）
 - 仅做静态类型检查：`lk check FILE`（输出编译期诊断信息）
 - 编译为可执行模块产物：`lk compile [FILE]` → `FILE.lkm`（省略 `FILE` 时使用当前目录的 `main.lk`、package 的 `src/main.lk`，或单一 workspace app 入口）
@@ -75,7 +76,7 @@ assert_eq!(result.display_first_return(), "true");
 
 #### VS Code
 
-VS Code 支持已合并为 `vsc-ext/lsp` 下的单个扩展，包含 `.lk` 语言注册、TextMate 高亮、代码片段和 LK LSP 客户端。使用 `make debug-lsp-ext` 启动本地 Extension Development Host，或使用 `make vsix` 构建 VSIX。
+VS Code 支持已合并为 `vsc-ext/lsp` 下的单个扩展，包含 `.lk` 语言注册、TextMate 高亮、代码片段，以及带智能补全的 LK LSP 客户端；补全覆盖 stdlib 模块、导入别名、本地符号、named arguments 和常见 receiver 方法。使用 `make debug-lsp-ext` 启动本地 Extension Development Host，或使用 `make vsix` 构建 VSIX。
 
 ## 许可证
 
