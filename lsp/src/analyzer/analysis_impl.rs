@@ -596,12 +596,14 @@ impl LkAnalyzer {
         })
     }
 
-    /// List available stdlib module names
+    /// List available stdlib module names.
+    #[allow(dead_code)]
     pub fn list_stdlib_modules(&self) -> Vec<String> {
         self.registry.get_module_names()
     }
 
-    /// List exports for a given stdlib module name
+    /// List exports for a given stdlib module name.
+    #[allow(dead_code)]
     pub fn list_module_exports(&self, module: &str) -> Option<Vec<String>> {
         self.module_export_names(module)
     }

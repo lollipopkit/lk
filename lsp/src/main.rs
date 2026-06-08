@@ -9,6 +9,6 @@ mod inlay_hint_test;
 pub use server::compute_inlay_hints;
 
 #[tokio::main]
-async fn main() {
-    server::run().await;
+async fn main() -> anyhow::Result<()> {
+    server::run().await
 }

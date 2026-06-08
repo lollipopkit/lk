@@ -77,6 +77,7 @@ assert_eq!(result.display_first_return(), "true");
 #### CLI
 
 - Run REPL: `lk`
+- REPL completion: press Tab for commands, keywords, stdlib modules/exports, receiver methods, and symbols defined earlier in the same REPL session.
 - Execute a source file: `lk FILE`
 - Type-check without executing: `lk check FILE` (reports compile-time diagnostics)
 - Compile to an executable module artifact: `lk compile [FILE]` → `FILE.lkm` (omitting `FILE` uses `./main.lk`, package `./src/main.lk`, or a single workspace app entry)
@@ -88,7 +89,7 @@ Note: command-line paths must be relative and sanitized.
 
 #### VS Code
 
-The VS Code support is a single merged extension under `vsc-ext/lsp`. It includes `.lk` language registration, TextMate highlighting, snippets, and the LK LSP client. Use `make debug-lsp-ext` for a local Extension Development Host, or `make vsix` to build the VSIX.
+The VS Code support is a single merged extension under `vsc-ext/lsp`. It includes `.lk` language registration, TextMate highlighting, snippets, and the LK LSP client with smart completion for stdlib modules, imported aliases, local symbols, named arguments, and common receiver methods. Use `make debug-lsp-ext` for a local Extension Development Host, or `make vsix` to build the VSIX.
 
 ## License
 
