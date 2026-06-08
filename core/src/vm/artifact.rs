@@ -378,4 +378,19 @@ mod tests {
         assert_eq!(decoded_module.functions.len(), module.functions.len());
         assert_eq!(decoded_module.functions[0].code, module.functions[0].code);
     }
+
+    #[test]
+    fn module_artifact_rejects_previous_version() {
+        assert_eq!(MODULE_ARTIFACT_VERSION, 3);
+        let source = "return 1;\n";
+        let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
+        let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
+        let module = Compiler::compile_module(&program).expect("compile");
+        let mut artifact = ModuleArtifact::new(Vec::new(), &module).expect("artifact");
+        artifact.version = MODULE_ARTIFACT_VERSION - 1;
+
+        let json = artifact.to_json_string().expect("json");
+        let err = ModuleArtifact::from_json_str(&json).expect_err("version 2 artifact should be rejected");
+        assert!(err.to_string().contains("unsupported LK module artifact version 2"));
+    }
 }

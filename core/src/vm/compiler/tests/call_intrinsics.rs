@@ -322,6 +322,17 @@ fn compiler_runs_direct_function_with_string_method() {
         return price("pro", 49, 8);
         "#,
     );
+    let module =
+        Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["__lk_call_method"]).expect("compile");
+    let entry = module.entry_function().expect("entry");
+    assert!(
+        entry.code.iter().any(|instr| instr.opcode() == Opcode::CallDirect),
+        "removing StringStartsWith must not degrade the outer price call away from CallDirect"
+    );
+    assert!(
+        !entry.code.iter().any(|instr| instr.opcode() == Opcode::Call),
+        "removing StringStartsWith must not force the outer price call through generic Call"
+    );
 
     let mut ctx = crate::vm::VmContext::new().with_type_checker(Some(crate::typ::TypeChecker::new_strict()));
     let result = program.execute_with_ctx(&mut ctx).expect("execute program");
