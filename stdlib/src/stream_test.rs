@@ -48,7 +48,7 @@ mod tests {
     #[test]
     fn test_stream_range_map_take_collect() -> Result<()> {
         let v = run(
-            "import stream; let s = stream.take(stream.map(stream.range(0, 10), fn(x) => x * 2), 3); let c = stream.subscribe(s); return stream.collect(c);",
+            "use stream; let s = stream.take(stream.map(stream.range(0, 10), fn(x) => x * 2), 3); let c = stream.subscribe(s); return stream.collect(c);",
         )?;
         assert_eq!(
             expect_list(v.first_return(), v.state.heap()),
@@ -60,7 +60,7 @@ mod tests {
     #[test]
     fn test_stream_iterate_infinite_take() -> Result<()> {
         let v =
-            run("import stream; let s = stream.take(stream.iterate(1, fn(x) => x + 1), 5); return stream.collect(s);")?;
+            run("use stream; let s = stream.take(stream.iterate(1, fn(x) => x + 1), 5); return stream.collect(s);")?;
         assert_eq!(
             expect_list(v.first_return(), v.state.heap()),
             vec![
@@ -76,7 +76,7 @@ mod tests {
 
     #[test]
     fn test_list_to_stream_collect() -> Result<()> {
-        let v = run("import stream; return stream.collect(stream.from_list([1,2,3]));")?;
+        let v = run("use stream; return stream.collect(stream.from_list([1,2,3]));")?;
         assert_eq!(
             expect_list(v.first_return(), v.state.heap()),
             vec![RuntimeVal::Int(1), RuntimeVal::Int(2), RuntimeVal::Int(3)]
@@ -87,7 +87,7 @@ mod tests {
     #[test]
     fn test_stream_from_channel_next() -> Result<()> {
         let v = run(
-            "import stream; let ch = chan(8); send(ch, 42); let s = stream.from_channel(ch); let c = stream.subscribe(s); return stream.next(c);",
+            "use stream; let ch = chan(8); send(ch, 42); let s = stream.from_channel(ch); let c = stream.subscribe(s); return stream.next(c);",
         )?;
         let values = expect_list(v.first_return(), v.state.heap());
         assert_eq!(values.len(), 2);

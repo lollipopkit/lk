@@ -64,20 +64,20 @@
     "body": ["struct ${1:Name} {", "\t${2:field}: ${3:Type},", "}"],
     "description": "Struct definition"
   },
-  "import": {
-    "prefix": "imp",
-    "body": ["import ${1:module};"],
-    "description": "Import module"
+  "use": {
+    "prefix": "use",
+    "body": ["use ${1:module};"],
+    "description": "Use module"
   },
-  "import_from": {
-    "prefix": "impf",
-    "body": ["import { ${1:items} } from ${2:module};"],
-    "description": "Import items from module"
+  "use_from": {
+    "prefix": "usef",
+    "body": ["use { ${1:items} } from ${2:module};"],
+    "description": "Use items from module"
   },
-  "import_as": {
-    "prefix": "impa",
-    "body": ["import ${1:module} as ${2:alias};"],
-    "description": "Import module with alias"
+  "use_as": {
+    "prefix": "usea",
+    "body": ["use ${1:module} as ${2:alias};"],
+    "description": "Use module with alias"
   },
   "closure": {
     "prefix": "cl",

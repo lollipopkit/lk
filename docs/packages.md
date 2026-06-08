@@ -45,22 +45,22 @@ Package imports resolve to:
 Example:
 
 ```lk
-import util;
+use util;
 return util.answer();
 ```
 
-File imports such as `import "foo";` remain relative to the current file.
+File uses such as `use "foo";` remain relative to the current file.
 They do not require `Lk.toml`; use them for files under the importing file's
-directory. File imports are still explicit: files are not automatically visible
+directory. File uses are still explicit: files are not automatically visible
 to each other.
 
 Parent-directory imports are intentionally rejected. For example, from
-`src/nested/test.lk`, `import "../root";` is invalid. If nested code needs to
+`src/nested/test.lk`, `use "../root";` is invalid. If nested code needs to
 depend on code outside its subtree, make that code a package/workspace member and
-use a bare package import instead:
+use a bare package use instead:
 
 ```lk
-import util;
+use util;
 return util.answer();
 ```
 

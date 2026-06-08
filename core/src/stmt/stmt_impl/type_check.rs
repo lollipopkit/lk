@@ -613,7 +613,7 @@ impl Stmt {
                 Ok(())
             }
             Stmt::Import(_) => {
-                // Import 语句暂时不需要类型检查
+                // Use 语句暂时不需要类型检查
                 Ok(())
             }
             Stmt::Break | Stmt::Continue | Stmt::Return { .. } => {

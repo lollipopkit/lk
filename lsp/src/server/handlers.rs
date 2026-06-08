@@ -274,20 +274,20 @@ impl LanguageServer for LkLanguageServer {
 
                 // '@' context completions removed
 
-                // Regexes for import/from and module dot access
-                let import_re = Regex::new(r"(?:^|\s)import\s+([A-Za-z_]\w*)?$").ok();
+                // Regexes for use/from and module dot access
+                let import_re = Regex::new(r"(?:^|\s)use\s+([A-Za-z_]\w*)?$").ok();
                 let from_re = Regex::new(r"(?:^|\s)from\s+([A-Za-z_]\w*)?$").ok();
                 let moddot_re = Regex::new(r"([A-Za-z_]\w*)\.$").ok();
                 let alias_method_re = Regex::new(r"([A-Za-z_]\w*)\.([A-Za-z_]*)$").ok();
-                // import { ... } cursor inside braces; capture content before cursor
-                let import_brace_re = Regex::new(r"(?:^|\s)import\s*\{([^}]*)$").ok();
+                // use { ... } cursor inside braces; capture content before cursor
+                let import_brace_re = Regex::new(r"(?:^|\s)use\s*\{([^}]*)$").ok();
                 // In the suffix, look for '} from <module>' after the cursor
                 let suffix_from_re = Regex::new(r"^\s*\}?\s*from\s+([A-Za-z_]\w*)").ok();
-                // import "<path> cursor inside quotes
-                let import_path_re = Regex::new(r#"(?:^|\s)import\s+\"([^\"]*)$"#).ok();
+                // use "<path> cursor inside quotes
+                let import_path_re = Regex::new(r#"(?:^|\s)use\s+\"([^\"]*)$"#).ok();
 
                 if let Ok(mut analyzer) = self.analyzer.lock() {
-                    // Suggest module names after `import` or `from`
+                    // Suggest module names after `use` or `from`
                     if let Some(re) = &import_re {
                         if let Some(caps) = re.captures(&line_prefix) {
                             let typed = caps.get(1).map(|m| m.as_str()).unwrap_or("");
@@ -408,7 +408,7 @@ impl LanguageServer for LkLanguageServer {
                         }
                     }
 
-                    // Suggest exports inside `import { … } from <module>`
+                    // Suggest exports inside `use { ... } from <module>`
                     if let (Some(br_re), Some(sf_re)) = (&import_brace_re, &suffix_from_re) {
                         if let Some(br_caps) = br_re.captures(&line_prefix) {
                             if let Some(sf_caps) = sf_re.captures(&line_suffix) {
@@ -434,7 +434,7 @@ impl LanguageServer for LkLanguageServer {
                         }
                     }
 
-                    // Suggest file paths inside import "..."
+                    // Suggest file paths inside use "..."
                     if let Some(re) = &import_path_re {
                         if let Some(caps) = re.captures(&line_prefix) {
                             let typed = caps.get(1).map(|m| m.as_str()).unwrap_or("");

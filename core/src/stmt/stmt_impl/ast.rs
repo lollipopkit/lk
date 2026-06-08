@@ -43,7 +43,7 @@ pub struct NamedParamDecl {
 /// 语法设计：
 /// program  ::= statement*
 /// statement ::= import_stmt | if_stmt | while_stmt | let_stmt | assign_stmt | break_stmt | continue_stmt | return_stmt | fn_stmt | expr_stmt | block_stmt
-/// import_stmt ::= 'import' import_spec ';'
+/// import_stmt ::= 'use' import_spec ';'
 /// if_stmt  ::= 'if' '(' expr ')' statement ['else' statement]
 /// while_stmt ::= 'while' '(' expr ')' statement
 /// let_stmt ::= 'let' id [':' type] '=' expr ';'
@@ -56,7 +56,7 @@ pub struct NamedParamDecl {
 /// block_stmt ::= '{' statement* '}'
 #[derive(Debug, Clone, PartialEq)]
 pub enum Stmt {
-    /// import statement
+    /// use statement
     Import(ImportStmt),
     /// if (condition) then_stmt [else else_stmt]
     If {

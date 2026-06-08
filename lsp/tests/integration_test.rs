@@ -8,7 +8,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tower_lsp::lsp_types::*;
 
-// Re-implement the analyzer for testing since we can't import from lk_lsp
+// Re-implement the analyzer for testing since we can't use from lk_lsp
 #[derive(Debug, Clone)]
 pub struct AnalysisResult {
     pub diagnostics: Vec<Diagnostic>,
@@ -179,8 +179,8 @@ impl LkAnalyzer {
                         ImportStmt::ModuleAlias { module, .. } => module.clone(),
                     };
                     imports.push(DocumentSymbol {
-                        name: format!("import {}", import_name),
-                        detail: Some("Import statement".to_string()),
+                        name: format!("use {}", import_name),
+                        detail: Some("Use statement".to_string()),
                         kind: SymbolKind::MODULE,
                         tags: None,
                         #[allow(deprecated)]
@@ -353,7 +353,7 @@ impl TestLanguageServer {
             T::Return => "Keyword: return".to_string(),
             T::Struct => "Keyword: struct".to_string(),
             T::Fn => "Keyword: fn".to_string(),
-            T::Import => "Keyword: import".to_string(),
+            T::Use => "Keyword: use".to_string(),
             T::From => "Keyword: from".to_string(),
             T::Const => "Keyword: const".to_string(),
             T::As => "Keyword: as".to_string(),
@@ -418,7 +418,7 @@ impl TestLanguageServer {
 
         // LK keywords
         let keywords = [
-            "if", "else", "while", "let", "fn", "return", "break", "continue", "import", "from", "as", "go", "select",
+            "if", "else", "while", "let", "fn", "return", "break", "continue", "use", "from", "as", "go", "select",
             "case", "default", "true", "false", "nil", "struct", "const", "for", "in", "spawn", "chan", "send", "recv",
             "type",
         ];
@@ -510,7 +510,7 @@ async fn test_lsp_statement_validation() {
     let uri = Url::parse("file:///program.lk").unwrap();
 
     let program = r#"
-        import math;
+        use math;
         let user_level = req.user.level;
         fn calculate_score(base) {
             return math.sqrt(base * user_level);
@@ -568,7 +568,7 @@ async fn test_lsp_hover_functionality() {
 
     // Test hover with statements (symbols)
     let program = r#"
-        import math;
+        use math;
         let result = math.sqrt(42);
         fn test() { return result; }
     "#;
@@ -578,7 +578,7 @@ async fn test_lsp_hover_functionality() {
 
     let hover = hover.unwrap();
     if let HoverContents::Scalar(MarkedString::String(content)) = hover.contents {
-        // The first non-whitespace token in this program should be the 'import' keyword
+        // The first non-whitespace token in this program should be the 'use' keyword
         assert!(content.contains("Keyword:"));
     } else {
         panic!("Expected string hover content");
@@ -597,7 +597,7 @@ async fn test_lsp_completion_functionality() {
     assert!(labels.contains(&&"if".to_string()));
     assert!(labels.contains(&&"let".to_string()));
     assert!(labels.contains(&&"fn".to_string()));
-    assert!(labels.contains(&&"import".to_string()));
+    assert!(labels.contains(&&"use".to_string()));
 
     // Check for operators
     assert!(labels.contains(&&"==".to_string()));
@@ -633,8 +633,8 @@ async fn test_lsp_document_symbols() {
     let uri = Url::parse("file:///program.lk").unwrap();
 
     let program = r#"
-        import math;
-        import string;
+        use math;
+        use string;
         
         let global_var = 42;
         
@@ -669,12 +669,12 @@ async fn test_lsp_document_symbols() {
     let import_names: Vec<&String> = imports
         .children
         .as_ref()
-        .expect("import children")
+        .expect("use children")
         .iter()
         .map(|s| &s.name)
         .collect();
-    assert!(import_names.contains(&&"import math".to_string()));
-    assert!(import_names.contains(&&"import string".to_string()));
+    assert!(import_names.contains(&&"use math".to_string()));
+    assert!(import_names.contains(&&"use string".to_string()));
 
     let function_symbols: Vec<_> = symbols.iter().filter(|s| s.kind == SymbolKind::FUNCTION).collect();
     assert_eq!(function_symbols.len(), 2);
@@ -725,9 +725,9 @@ async fn test_lsp_complex_program_analysis() {
     let uri = Url::parse("file:///complex.lk").unwrap();
 
     let complex_program = r#"
-        import math;
-        import string;
-        import datetime;
+        use math;
+        use string;
+        use datetime;
         
         let user_level = req.user.level;
         let user_name = req.user.name;
@@ -782,13 +782,13 @@ async fn test_lsp_complex_program_analysis() {
     let import_names: Vec<&String> = imports
         .children
         .as_ref()
-        .expect("import children")
+        .expect("use children")
         .iter()
         .map(|s| &s.name)
         .collect();
-    assert!(import_names.contains(&&"import math".to_string()));
-    assert!(import_names.contains(&&"import string".to_string()));
-    assert!(import_names.contains(&&"import datetime".to_string()));
+    assert!(import_names.contains(&&"use math".to_string()));
+    assert!(import_names.contains(&&"use string".to_string()));
+    assert!(import_names.contains(&&"use datetime".to_string()));
 
     let variables = symbols.iter().find(|s| s.name == "Variables").expect("Variables group");
     let variable_names: Vec<&String> = variables

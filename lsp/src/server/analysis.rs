@@ -140,7 +140,7 @@ fn is_ident_continue(ch: char) -> bool {
 fn is_import_module_token(tokens: &[token::Token], idx: usize) -> bool {
     matches!(
         idx.checked_sub(1).and_then(|prev| tokens.get(prev)),
-        Some(token::Token::Import | token::Token::From)
+        Some(token::Token::Use | token::Token::From)
     )
 }
 
@@ -501,7 +501,7 @@ impl LkLanguageServer {
             let token::Token::Str(import_path) = &tokens[i] else {
                 continue;
             };
-            if !matches!(tokens.get(i.checked_sub(1)?), Some(token::Token::Import)) {
+            if !matches!(tokens.get(i.checked_sub(1)?), Some(token::Token::Use)) {
                 continue;
             }
             let path = self.resolve_lk_import_path(import_path, current_uri)?;
@@ -601,7 +601,7 @@ impl LkLanguageServer {
             };
             if !matches!(
                 idx.checked_sub(1).and_then(|prev| tokens.get(prev)),
-                Some(token::Token::Import)
+                Some(token::Token::Use)
             ) {
                 continue;
             }
@@ -941,7 +941,7 @@ fn find_definition_in_content(content: &str, symbol_name: &str, uri: &Url) -> Op
             }
         }
 
-        if (trimmed.starts_with("import ") && trimmed.contains(&format!("import {}", symbol_name)))
+        if (trimmed.starts_with("use ") && trimmed.contains(&format!("use {}", symbol_name)))
             || (trimmed.starts_with("from ") && trimmed.contains(&format!("from {}", symbol_name)))
         {
             if let Some(pos) = line.find(symbol_name) {
@@ -979,7 +979,7 @@ mod tests {
 
     #[test]
     fn import_module_name_at_position_detects_module_import_target() {
-        let content = "import mathlib;\nimport mathlib as ml;\nimport { add } from mathlib;\n";
+        let content = "use mathlib;\nuse mathlib as ml;\nuse { add } from mathlib;\n";
 
         assert_eq!(
             import_module_name_at_position(content, Position::new(0, 8)).as_deref(),
@@ -997,7 +997,7 @@ mod tests {
 
     #[test]
     fn import_module_name_at_position_ignores_alias_and_imported_items() {
-        let content = "import mathlib as ml;\nimport { add } from mathlib;\n";
+        let content = "use mathlib as ml;\nuse { add } from mathlib;\n";
 
         assert_eq!(import_module_name_at_position(content, Position::new(0, 18)), None);
         assert_eq!(import_module_name_at_position(content, Position::new(1, 9)), None);

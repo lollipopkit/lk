@@ -1,6 +1,6 @@
 // Examples for list/iter interop through module-level APIs
 
-import iter;
+use iter;
 
 // Basic higher-order ops
 let xs = [1,2,3,4,5];

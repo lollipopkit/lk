@@ -213,14 +213,14 @@ impl Display for Stmt {
     }
 }
 
-/// Helper function to format import statements for display
+/// Helper function to format use statements for display
 fn format_import_stmt(import: &ImportStmt) -> String {
     match import {
         ImportStmt::Module { module } => {
-            format!("import {}", module)
+            format!("use {}", module)
         }
         ImportStmt::File { path } => {
-            format!("import \"{}\"", path)
+            format!("use \"{}\"", path)
         }
         ImportStmt::Items { items, source } => {
             let mut items_str = String::new();
@@ -240,17 +240,17 @@ fn format_import_stmt(import: &ImportStmt) -> String {
                 ImportSource::File(path) => format!("\"{}\"", path),
             };
 
-            format!("import {{ {} }} from {}", items_str, source_str)
+            format!("use {{ {} }} from {}", items_str, source_str)
         }
         ImportStmt::Namespace { alias, source } => {
             let source_str = match source {
                 ImportSource::Module(name) => name.clone(),
                 ImportSource::File(path) => format!("\"{}\"", path),
             };
-            format!("import * as {} from {}", alias, source_str)
+            format!("use * as {} from {}", alias, source_str)
         }
         ImportStmt::ModuleAlias { module, alias } => {
-            format!("import {} as {}", module, alias)
+            format!("use {} as {}", module, alias)
         }
     }
 }

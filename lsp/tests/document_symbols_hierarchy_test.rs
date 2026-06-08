@@ -24,7 +24,7 @@ fn list_child_names(parent: &DocumentSymbol) -> Vec<String> {
 fn test_function_symbol_hierarchy_with_groups_and_labels() {
     let mut analyzer = LkAnalyzer::new();
     let code = r#"
-        import math;
+        use math;
 
         let a: Int = 1;
 
@@ -37,12 +37,12 @@ fn test_function_symbol_hierarchy_with_groups_and_labels() {
     let res = analyzer.analyze(code);
     assert!(!res.symbols.is_empty());
 
-    // Top-level Imports container with child import symbol(s)
+    // Top-level Imports container with child use symbol(s)
     let imports = get_symbol(&res.symbols, "Imports").expect("Imports container present");
     assert_eq!(imports.kind, SymbolKind::NAMESPACE);
     let import_kids = list_child_names(imports);
     assert!(
-        import_kids.iter().any(|n| n == "import math"),
+        import_kids.iter().any(|n| n == "use math"),
         "imports children: {:?}",
         import_kids
     );
@@ -141,8 +141,8 @@ fn test_nested_function_appears_under_parent() {
 fn test_toplevel_grouped_containers() {
     let mut analyzer = LkAnalyzer::new();
     let code = r#"
-        import math;
-        import { sqrt, sin } from math;
+        use math;
+        use { sqrt, sin } from math;
 
         let x = 1;
         let y = 2;
@@ -155,16 +155,16 @@ fn test_toplevel_grouped_containers() {
         res.diagnostics
     );
 
-    // Imports container contains each import as a child; exact label per analyzer
+    // Imports container contains each use as a child; exact label per analyzer
     let imports = get_symbol(&res.symbols, "Imports").expect("Imports container present");
     let import_names = list_child_names(imports);
     assert!(
-        import_names.iter().any(|n| n == "import math"),
+        import_names.iter().any(|n| n == "use math"),
         "imports: {:?}",
         import_names
     );
     assert!(
-        import_names.iter().any(|n| n == "import {…} from math"),
+        import_names.iter().any(|n| n == "use {…} from math"),
         "imports: {:?}",
         import_names
     );

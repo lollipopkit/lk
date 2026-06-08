@@ -96,7 +96,7 @@ npx tree-sitter build --wasm
 - **Structs:** definition and literals
 - **Types:** Int, Float, String, Bool, Nil, Any, List<T>, Map<K,V>, function types, optional types, union types
 - **Patterns:** literals, wildcards, identifiers, list/map destructuring, or-patterns, guarded patterns, ranges
-- **Imports:** module imports, selective imports, namespace aliases
+- **Uses:** module uses, selective uses, namespace aliases
 - **Concurrency:** spawn, chan, send, recv, select
 - **Comments:** line (`//`) and block (`/* */`)
 

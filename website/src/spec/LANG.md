@@ -29,9 +29,9 @@ This document describes the LK language as implemented in this repository (parse
 - Examples: `"Hello, ${user.name}!"`, `"Sum: ${1 + 2}"`.
 
 ### Input and Variables
-- There is no implicit runtime context. Identifiers must be defined in the lexical environment (e.g., via `let` in statements, function params, or imports).
+- There is no implicit runtime context. Identifiers must be defined in the lexical environment (e.g., via `let` in statements, function params, or module uses).
 - Read external input explicitly with stdlib: `io.read()` (string). Parse manually: `json.parse(...)`, `yaml.parse(...)`, `toml.parse(...)`.
-- Example: `import io; import json; let data = json.parse(io.read()); return data.req.user.id == 1;`
+- Example: `use io; use json; let data = json.parse(io.read()); return data.req.user.id == 1;`
 
 ### Constants
 - `const name = expr;` - like `let` but immutable. Attempting to reassign a `const` variable is a runtime error.
@@ -163,25 +163,25 @@ Used in `match`, `if let`, `while let`, and `let` destructuring.
 - Defaults are lazily evaluated inside the callee when the argument is omitted; expressions can reference other parameters.
 - Call sites supply named arguments with `name: expr`: `f(1, 2, label: "demo", flag: false)` or `f(label: "demo")`. Named arguments may appear in any order; once a named argument appears, positional arguments cannot follow it.
 
-### Imports
+### Uses
 - Forms:
-  - `import math;` - stdlib module as a namespace
-  - `import "path/to/file.lk";` - file module as a namespace (name is the file stem)
-  - `import { abs, sqrt } from math;` - selected items
-  - `import { f as g } from "m.lk";` - with alias
-  - `import * as m from math;` - namespace alias
-  - `import math as m;` - module alias
+  - `use math;` - stdlib module as a namespace
+  - `use "path/to/file.lk";` - file module as a namespace (name is the file stem)
+  - `use { abs, sqrt } from math;` - selected items
+  - `use { f as g } from "m.lk";` - with alias
+  - `use * as m from math;` - namespace alias
+  - `use math as m;` - module alias
 
-- File import resolution and safety:
-  - Files are not automatically visible to each other. Import every cross-file dependency explicitly.
-  - Quoted file imports do not require `Lk.toml`; they are resolved from the importing file's directory.
+- File use resolution and safety:
+  - Files are not automatically visible to each other. Use every cross-file dependency explicitly.
+  - Quoted file uses do not require `Lk.toml`; they are resolved from the current file's directory.
   - Paths are relative-only and sanitized: absolute paths and any `..` components are rejected.
   - Resolution attempts, in order: `${MOD_NAME}.lk`, then `${MOD_NAME}/mod.lk` (relative to the current file directory).
   - If you pass a quoted path with `.lk` already (e.g., `"lib/foo.lk"`), it must be relative and will be used directly if it exists.
-  - In a package, bare module imports first check stdlib modules, then `Lk.toml` workspace/dependency packages. Package imports resolve to `src/mod.lk` or `src/<package-name>.lk`.
-  - Because `..` is rejected, code in a nested directory cannot import a parent-directory file with `../...`; use a package/workspace module when nested code must depend on code outside its subtree.
+  - In a package, bare module uses first check stdlib modules, then `Lk.toml` workspace/dependency packages. Package uses resolve to `src/mod.lk` or `src/<package-name>.lk`.
+  - Because `..` is rejected, code in a nested directory cannot use a parent-directory file with `../...`; use a package/workspace module when nested code must depend on code outside its subtree.
 
-#### File Import Example
+#### File Use Example
 
 ```text
 a.lk
@@ -193,16 +193,16 @@ c/d/d1.lk
 From `a.lk`:
 
 ```lk
-import "b";       // b.lk, available as b
-import "c/c1";    // c/c1.lk, available as c1
-import "c/d/d1";  // c/d/d1.lk, available as d1
+use "b";       // b.lk, available as b
+use "c/c1";    // c/c1.lk, available as c1
+use "c/d/d1";  // c/d/d1.lk, available as d1
 ```
 
 From `c/c1.lk`:
 
 ```lk
-import "d/d1";    // c/d/d1.lk, available as d1
-// import "../a"; // rejected: parent-directory imports are not allowed
+use "d/d1";    // c/d/d1.lk, available as d1
+// use "../a"; // rejected: parent-directory uses are not allowed
 ```
 
 ## Packages
@@ -216,7 +216,7 @@ import "d/d1";    // c/d/d1.lk, available as d1
 - `typeof(value)` returns the runtime type name as a string: `"Int"`, `"Float"`, `"String"`, `"Bool"`, `"Nil"`, `"List"`, `"Map"`, or the struct type name.
 
 ### Stdlib Modules
-Import as needed: `math`, `string`, `list`, `map`, `iter`, `stream`, `datetime`, `os`, `io`, `json`, `yaml`, `toml`, `tcp`. LK-source modules: `alg`, `collections`, `func`, `assert`, `math_ext`. With `concurrency` feature: `task`, `chan`, `time`.
+Use as needed: `math`, `string`, `list`, `map`, `iter`, `stream`, `datetime`, `os`, `io`, `json`, `yaml`, `toml`, `tcp`. LK-source modules: `alg`, `collections`, `func`, `assert`, `math_ext`. With `concurrency` feature: `task`, `chan`, `time`.
 
 - `math`: constants `pi`, `e`, `inf`, `nan`, `max_int`, `min_int`, `max_float`, `epsilon`; functions `abs`, `sqrt`, `floor`, `ceil`, `round`, `min`, `max`, `pow`, `exp`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `log`, `log10`, `log2`, `clamp`, `random`, `hypot`, `cbrt`, `sinh`, `cosh`, `tanh`, `trunc`, `fract`, `sign`, `to_int`, `to_float`, `is_nan`, `is_inf`.
 - `string`: methods (see meta-methods below).
@@ -333,7 +333,7 @@ statement    ::= import_stmt | if_stmt | if_let_stmt | while_stmt | while_let_st
                | index_assign_stmt | dot_assign_stmt | return_stmt | break_stmt | continue_stmt
                | fn_stmt | struct_stmt | trait_stmt | impl_stmt | expr_stmt | block_stmt
 
-import_stmt  ::= 'import' ( module | string | items_from_source | namespace_import | module_alias ) ';'
+import_stmt  ::= 'use' ( module | string | items_from_source | namespace_import | module_alias ) ';'
 module       ::= identifier
 string       ::= string_literal
 items_from_source ::= '{' import_item { ',' import_item } '}' 'from' ( module | string )

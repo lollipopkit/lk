@@ -53,7 +53,7 @@ The previous standalone `lk-highlight` extension has been merged into this packa
 
 ### Stdlib awareness
 - The client queries the Rust LK language server for stdlib modules and exports. Module-aware completions support:
-  - `import <module>` / `from <module>` name completion
+  - `use <module>` / `from <module>` name completion
   - `<alias>.` namespace member completion for stdlib exports (e.g. `iter.zip`, `iter.take`, `iter.map`, ...)
 - Recent updates synced with the server include:
   - `iter` exports generic higher-order ops: `map(list, fn)`, `filter(list, fn)`, `reduce(list, init, fn)`
@@ -94,7 +94,7 @@ The previous standalone `lk-highlight` extension has been merged into this packa
 The extension supports the LK language with the following features:
 
 ### Syntax Highlighting
-- Keywords: `if`, `else`, `while`, `let`, `return`, `fn`, `go`, `select`, `case`, `default`, `break`, `continue`, `import`, `from`, `as`, `in`
+- Keywords: `if`, `else`, `while`, `let`, `return`, `fn`, `go`, `select`, `case`, `default`, `break`, `continue`, `use`, `from`, `as`, `in`
 - Operators: `||`, `&&`, `==`, `!=`, `<=`, `>=`, `<`, `>`, `+`, `-`, `*`, `/`, `%`, `=`, `!`, `<-`
 - Member access: `variable.path`
 - Strings and numbers

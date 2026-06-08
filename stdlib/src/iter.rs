@@ -1020,10 +1020,10 @@ mod tests {
     #[test]
     fn iter_sequence_ops_run_on_exec() -> Result<()> {
         assert_eq!(
-            expect_return_list(&run("import iter; return iter.range(0, 6, 2);")?),
+            expect_return_list(&run("use iter; return iter.range(0, 6, 2);")?),
             vec![RuntimeVal::Int(0), RuntimeVal::Int(2), RuntimeVal::Int(4)]
         );
-        let result = run("import iter; return iter.zip([1,2], [\"a\",\"b\",\"c\"]);")?;
+        let result = run("use iter; return iter.zip([1,2], [\"a\",\"b\",\"c\"]);")?;
         let zipped = expect_return_list(&result);
         assert_eq!(zipped.len(), 2);
         assert_eq!(
@@ -1042,7 +1042,7 @@ mod tests {
         );
         assert_eq!(
             expect_return_list(&run(
-                "import iter; return iter.chain(iter.take([1,2,3], 2), iter.skip([4,5,6], 1));"
+                "use iter; return iter.chain(iter.take([1,2,3], 2), iter.skip([4,5,6], 1));"
             )?),
             vec![
                 RuntimeVal::Int(1),
@@ -1058,7 +1058,7 @@ mod tests {
     fn iter_list_shape_ops_run_on_exec() -> Result<()> {
         assert_eq!(
             expect_return_list(&run(
-                "import iter; let a = [1,2]; let b = [3]; let c = [4]; return iter.flatten([a,b,c]);"
+                "use iter; let a = [1,2]; let b = [3]; let c = [4]; return iter.flatten([a,b,c]);"
             )?),
             vec![
                 RuntimeVal::Int(1),
@@ -1068,10 +1068,10 @@ mod tests {
             ]
         );
         assert_eq!(
-            expect_return_list(&run("import iter; return iter.unique([1,1,2,2,3]);")?),
+            expect_return_list(&run("use iter; return iter.unique([1,1,2,2,3]);")?),
             vec![RuntimeVal::Int(1), RuntimeVal::Int(2), RuntimeVal::Int(3)]
         );
-        let result = run("import iter; return iter.chunk([1,2,3,4,5], 2);")?;
+        let result = run("use iter; return iter.chunk([1,2,3,4,5], 2);")?;
         let chunks = expect_return_list(&result);
         assert_eq!(chunks.len(), 3);
         assert_eq!(
@@ -1089,17 +1089,17 @@ mod tests {
     #[test]
     fn iter_higher_order_ops_call_runtime_closures() -> Result<()> {
         assert_eq!(
-            expect_return_list(&run("import iter; return iter.map([1,2,3], fn(x) => x * 2);")?),
+            expect_return_list(&run("use iter; return iter.map([1,2,3], fn(x) => x * 2);")?),
             vec![RuntimeVal::Int(2), RuntimeVal::Int(4), RuntimeVal::Int(6)]
         );
         assert_eq!(
             expect_return_list(&run(
-                "import iter; return iter.filter([1,2,3,4], fn(x) => x % 2 == 0);"
+                "use iter; return iter.filter([1,2,3,4], fn(x) => x % 2 == 0);"
             )?),
             vec![RuntimeVal::Int(2), RuntimeVal::Int(4)]
         );
         assert_eq!(
-            run_value("import iter; return iter.reduce([1,2,3], 0, fn(acc, x) => acc + x);")?,
+            run_value("use iter; return iter.reduce([1,2,3], 0, fn(acc, x) => acc + x);")?,
             RuntimeVal::Int(6)
         );
         Ok(())
@@ -1391,10 +1391,10 @@ mod tests {
 
     #[test]
     fn iter_collect_and_next_accept_lists_only() -> Result<()> {
-        assert_eq!(run_value("import iter; return iter.next([7,8]);")?, RuntimeVal::Int(7));
-        assert_eq!(run_value("import iter; return iter.next([]);")?, RuntimeVal::Nil);
+        assert_eq!(run_value("use iter; return iter.next([7,8]);")?, RuntimeVal::Int(7));
+        assert_eq!(run_value("use iter; return iter.next([]);")?, RuntimeVal::Nil);
         assert_eq!(
-            expect_return_list(&run("import iter; return iter.collect([1,2]);")?),
+            expect_return_list(&run("use iter; return iter.collect([1,2]);")?),
             vec![RuntimeVal::Int(1), RuntimeVal::Int(2)]
         );
         Ok(())

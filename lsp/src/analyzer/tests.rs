@@ -57,7 +57,7 @@ fn test_analyze_invalid_expression() {
 fn test_analyze_statement_program() {
     let mut analyzer = create_analyzer();
     let code = r#"
-        import math;
+        use math;
         let user_level = req.user.level;
         fn calculate_score(base) {
             return math.sqrt(base * user_level);
@@ -73,7 +73,7 @@ fn test_analyze_statement_program() {
     assert!(diag.message.contains("Function 'calculate_score' infers implicit Any"));
     assert_eq!(diag.code, Some(NumberOrString::String("lk_type_error".to_string())));
 
-    // Should have grouped import/variable symbols and function symbols.
+    // Should have grouped use/variable symbols and function symbols.
     assert!(result.symbols.len() >= 3);
 
     let symbol_names: Vec<&String> = result.symbols.iter().map(|s| &s.name).collect();
@@ -86,11 +86,11 @@ fn test_analyze_statement_program() {
     let import_names: Vec<&String> = imports
         .children
         .as_ref()
-        .expect("import children")
+        .expect("use children")
         .iter()
         .map(|s| &s.name)
         .collect();
-    assert!(import_names.contains(&&"import math".to_string()));
+    assert!(import_names.contains(&&"use math".to_string()));
     let variables = result
         .symbols
         .iter()

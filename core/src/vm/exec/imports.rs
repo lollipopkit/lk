@@ -43,7 +43,7 @@ fn import_runtime_value(
                     Arc::clone(&source_module),
                     source_state.clone(),
                 )
-                .ok_or_else(|| anyhow!("closure import could not be materialized"))?;
+                .ok_or_else(|| anyhow!("closure use could not be materialized"))?;
                 return Ok(RuntimeVal::Obj(
                     dest_heap.alloc(HeapValue::Callable(CallableValue::Runtime(Arc::new(callable)))),
                 ));
@@ -250,7 +250,7 @@ fn import_runtime_map_key(
                 source_state,
             )? {
                 RuntimeVal::Obj(handle) => crate::val::RuntimeMapKey::Obj(handle),
-                _ => unreachable!("object map key import must stay an object"),
+                _ => unreachable!("object map key use must stay an object"),
             }
         }
     })

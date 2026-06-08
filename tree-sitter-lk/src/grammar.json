@@ -2440,7 +2440,7 @@
           "members": [
             {
               "type": "STRING",
-              "value": "import"
+              "value": "use"
             },
             {
               "type": "SYMBOL",
@@ -2478,7 +2478,7 @@
           "members": [
             {
               "type": "STRING",
-              "value": "import"
+              "value": "use"
             },
             {
               "type": "SYMBOL",
@@ -2516,7 +2516,7 @@
           "members": [
             {
               "type": "STRING",
-              "value": "import"
+              "value": "use"
             },
             {
               "type": "STRING",
@@ -2586,7 +2586,7 @@
           "members": [
             {
               "type": "STRING",
-              "value": "import"
+              "value": "use"
             },
             {
               "type": "STRING",
@@ -3674,5 +3674,6 @@
   ],
   "externals": [],
   "inline": [],
-  "supertypes": []
+  "supertypes": [],
+  "reserved": {}
 }

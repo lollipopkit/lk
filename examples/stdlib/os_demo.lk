@@ -1,6 +1,6 @@
 // OS and system interaction demo
 
-import os;
+use os;
 
 fn assert(cond) {
   if (!cond) { panic("assertion failed"); }

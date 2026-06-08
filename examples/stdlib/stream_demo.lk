@@ -1,7 +1,7 @@
 // Stream (lazy pipeline) demo
 // Streams are lazy — they only compute values when consumed
 
-import stream;
+use stream;
 
 fn assert(cond) {
   if (!cond) { panic("assertion failed"); }

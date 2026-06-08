@@ -390,7 +390,7 @@ fn llvm_backend_lowers_static_object_arg_list_take_skip_without_artifact_shell()
 #[test]
 fn llvm_backend_lowers_static_object_list_module_mutators_without_artifact_shell() {
     let source = r#"
-        import list;
+        use list;
         struct User { name: String }
         let a = User { name: "a" };
         let b = User { name: "b" };
@@ -425,7 +425,7 @@ fn llvm_backend_lowers_static_object_list_module_mutators_without_artifact_shell
 #[test]
 fn llvm_backend_lowers_static_object_map_module_values_without_artifact_shell() {
     let source = r#"
-        import map;
+        use map;
         struct User { name: String }
         let a = User { name: "a" };
         let b = User { name: "b" };
@@ -451,7 +451,7 @@ fn llvm_backend_lowers_static_object_map_module_values_without_artifact_shell() 
 #[test]
 fn llvm_backend_lowers_static_callable_map_module_values_without_artifact_shell() {
     let source = r#"
-        import map;
+        use map;
         let f = |x| x + 1;
         let m = map.set({}, "f", f);
         return [map.has(m, "f"), map.get(m, "f"), map.values(m), map.delete(m, "f")];
@@ -477,7 +477,7 @@ fn llvm_backend_lowers_static_callable_map_module_values_without_artifact_shell(
 #[test]
 fn llvm_backend_lowers_static_display_map_more_operations_without_artifact_shell() {
     let source = r#"
-        import map;
+        use map;
         struct User { name: String }
         let a = User { name: "a" };
         let b = User { name: "b" };
@@ -513,7 +513,7 @@ fn llvm_backend_lowers_static_display_map_more_operations_without_artifact_shell
 #[test]
 fn llvm_backend_lowers_static_display_map_rest_without_artifact_shell() {
     let source = r#"
-        import map;
+        use map;
         struct User { name: String }
         let a = User { name: "a" };
         let b = User { name: "b" };
@@ -539,7 +539,7 @@ fn llvm_backend_lowers_static_display_map_rest_without_artifact_shell() {
 #[test]
 fn llvm_backend_lowers_static_display_map_values_methods_without_artifact_shell() {
     let source = r#"
-        import map;
+        use map;
         struct User { name: String }
         let a = User { name: "a" };
         let b = User { name: "b" };
@@ -568,7 +568,7 @@ fn llvm_backend_lowers_static_display_map_values_methods_without_artifact_shell(
 #[test]
 fn llvm_backend_lowers_static_display_map_equality_without_artifact_shell() {
     let source = r#"
-        import map;
+        use map;
         struct User { name: String }
         let a = User { name: "a" };
         let lhs = map.set({}, "a", a);
@@ -591,7 +591,7 @@ fn llvm_backend_lowers_static_display_map_equality_without_artifact_shell() {
 #[test]
 fn llvm_backend_lowers_static_display_map_iter_without_artifact_shell() {
     let source = r#"
-        import map;
+        use map;
         struct User { name: String }
         let a = User { name: "a" };
         let b = User { name: "b" };

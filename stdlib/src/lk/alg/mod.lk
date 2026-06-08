@@ -1,7 +1,7 @@
 // Algorithm module — implemented in pure LK.
 // Provides sorting, searching, and classic algorithms.
 
-import math;
+use math;
 
 /// Greatest common divisor (Euclidean algorithm).
 fn gcd(a, b) {

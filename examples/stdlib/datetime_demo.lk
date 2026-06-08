@@ -1,7 +1,7 @@
 // Datetime module demo
 
-import datetime;
-import math;
+use datetime;
+use math;
 
 fn assert(cond) {
   if (!cond) { panic("assertion failed"); }

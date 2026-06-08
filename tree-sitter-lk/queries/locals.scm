@@ -29,6 +29,6 @@
 (for_statement
   (for_pattern) @local.definition)
 
-; Import creates references
+; Use creates references
 (import_statement
   (identifier) @local.reference)

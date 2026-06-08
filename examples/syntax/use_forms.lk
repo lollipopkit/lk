@@ -1,0 +1,41 @@
+// Use forms demo
+// Shows all use syntaxes: module, selective, alias, namespace, module alias
+// Run from project root: lk examples/syntax/use_forms.lk
+
+fn assert(cond) {
+  if (!cond) { panic("assertion failed"); }
+}
+
+// 1. Use stdlib module as namespace
+use math;
+assert(math.floor(3.7) == 3);
+
+// 2. Selective use — bring specific items into scope
+use { abs, max, min } from math;
+assert(abs(-5) == 5);
+assert(max(3, 7) == 7);
+assert(min(3, 7) == 3);
+
+// 3. Use with alias
+use { sqrt as square_root } from math;
+assert(square_root(25.0) > 4.99);
+
+// 4. Module alias
+use math as m;
+assert(m.pi > 3.0);
+assert(m.floor(3.7) == 3);
+
+// 5. Namespace use (use all as namespace)
+use * as string_mod from string;
+assert(string_mod.len("hello") == 5);
+
+// 6. Use another example file (relative to this file)
+use "../general/fib";
+let f30 = fib.iterative(30);
+assert(f30 == 832040);
+
+// 7. Use from file with selective syntax
+use { iterative } from "../general/fib";
+assert(iterative(10) == 55);
+
+println("use_forms: all assertions passed");

@@ -82,7 +82,7 @@ fn test_compile_with_import_writes_module_artifact_output() {
         "fib.lk",
         "fn iterative(n) {\n    if (n <= 1) { return n; }\n    let a = 0;\n    let b = 1;\n    for _ in 2..=n {\n        let t = a + b;\n        a = b;\n        b = t;\n    }\n    return b;\n}\n",
     );
-    write_file(&dir, "main.lk", "import \"fib\";\nreturn fib.iterative(10);\n");
+    write_file(&dir, "main.lk", "use \"fib\";\nreturn fib.iterative(10);\n");
 
     let output = run_cli(&dir, ["compile", "main.lk"]).output().expect("spawn compile");
     assert!(
@@ -221,7 +221,7 @@ fn test_source_run_defaults_to_vm_and_cached_native_is_opt_in() {
 fn test_llvm_compile_lowers_unused_stdlib_import_metadata() {
     let dir = unique_tmp_dir("llvm_unused_stdlib_import");
     ensure_clean_dir(&dir);
-    write_file(&dir, "a.lk", "import math;\nreturn 123;\n");
+    write_file(&dir, "a.lk", "use math;\nreturn 123;\n");
 
     let llvm = run_cli(&dir, ["compile", "llvm", "a.lk"])
         .output()
@@ -234,7 +234,7 @@ fn test_llvm_compile_lowers_unused_stdlib_import_metadata() {
     let ir = fs::read_to_string(dir.join("a.ll")).expect("read LLVM IR");
     assert!(
         !ir.contains("@lk_module_json"),
-        "unused import metadata should not force artifact shell: {ir}"
+        "unused use metadata should not force artifact shell: {ir}"
     );
     assert!(ir.contains("@lk_i64_fmt"), "expected native i64 print lowering: {ir}");
 
@@ -930,7 +930,7 @@ name = "util"
 "#,
     );
     write_file(&dir.join("deps/util"), "src/mod.lk", "fn answer() { return 42; }\n");
-    write_file(&dir, "src/main.lk", "import util;\nreturn util.answer();\n");
+    write_file(&dir, "src/main.lk", "use util;\nreturn util.answer();\n");
 
     let run_out = run_cli(&dir, ["src/main.lk"]).output().expect("spawn run");
     assert!(

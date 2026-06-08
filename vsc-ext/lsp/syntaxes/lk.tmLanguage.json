@@ -477,7 +477,7 @@
         },
         {
           "name": "keyword.declaration.lk",
-          "match": "\\b(fn|struct|type|trait|impl|import|from|as)\\b"
+          "match": "\\b(fn|struct|type|trait|impl|use|from|as)\\b"
         },
         {
           "name": "keyword.other.lk",

@@ -299,25 +299,25 @@ impl LkAnalyzer {
         groups
     }
 
-    /// Collect import symbols via token scanning and produce per-import DocumentSymbols.
+    /// Collect use symbols via token scanning and produce per-use DocumentSymbols.
     pub(crate) fn collect_import_symbols_via_tokens(tokens: &[token::Token], spans: &[Span]) -> Vec<DocumentSymbol> {
         use token::Token as T;
         use tower_lsp::lsp_types::{DocumentSymbol, Position, Range, SymbolKind};
         let mut out: Vec<DocumentSymbol> = Vec::new();
         let mut i = 0usize;
         while i < tokens.len() {
-            if !matches!(tokens[i], T::Import) {
+            if !matches!(tokens[i], T::Use) {
                 i += 1;
                 continue;
             }
             let start_idx = i;
             let mut j = i + 1;
-            let mut label = String::from("import");
+            let mut label = String::from("use");
             // Derive a short label based on common forms
             if let Some(tok) = tokens.get(j) {
                 match tok {
                     T::Str(s) => {
-                        label = format!("import \"{}\"", s);
+                        label = format!("use \"{}\"", s);
                         j += 1;
                     }
                     T::LBrace => {
@@ -328,21 +328,21 @@ impl LkAnalyzer {
                         }
                         if j + 1 < tokens.len() {
                             if let T::Id(m) = &tokens[j + 1] {
-                                label = format!("import {{…}} from {}", m);
+                                label = format!("use {{…}} from {}", m);
                             } else {
-                                label = "import {…}".to_string();
+                                label = "use {…}".to_string();
                             }
                         }
                     }
                     T::Id(m) => {
                         // maybe alias form later
-                        label = format!("import {}", m);
+                        label = format!("use {}", m);
                         // peek for 'as <alias>'
                         let mut k = j + 1;
                         if matches!(tokens.get(k), Some(T::As)) {
                             k += 1;
                             if let Some(T::Id(a)) = tokens.get(k) {
-                                label = format!("import {} as {}", m, a);
+                                label = format!("use {} as {}", m, a);
                             }
                         }
                     }
@@ -361,7 +361,7 @@ impl LkAnalyzer {
                 );
                 out.push(DocumentSymbol {
                     name: label,
-                    detail: Some("Import statement".to_string()),
+                    detail: Some("Use statement".to_string()),
                     kind: SymbolKind::MODULE,
                     tags: None,
                     #[allow(deprecated)]
@@ -636,28 +636,28 @@ impl LkAnalyzer {
             if let Stmt::Import(import_stmt) = stmt.as_ref() {
                 match import_stmt {
                     ImportStmt::Module { module } => {
-                        // import math; -> alias is module name
+                        // use math; -> alias is module name
                         map.insert(module.clone(), module.clone());
                     }
                     ImportStmt::ModuleAlias { module, alias } => {
-                        // import math as m; -> alias maps to module
+                        // use math as m; -> alias maps to module
                         map.insert(alias.clone(), module.clone());
                     }
                     ImportStmt::Namespace { alias, source } => {
                         if let stmt::ImportSource::Module(name) = source {
-                            // import * as m from math; -> alias maps to module
+                            // use * as m from math; -> alias maps to module
                             map.insert(alias.clone(), name.clone());
                         }
                     }
                     ImportStmt::Items { source, .. } => {
-                        // import { sqrt } from math; -> does not create a module alias
+                        // use { sqrt } from math; -> does not create a module alias
                         // We could track individual items in the future
                         if let stmt::ImportSource::Module(_name) = source {
                             // no alias to insert
                         }
                     }
                     ImportStmt::File { .. } => {
-                        // File imports are not stdlib modules; ignore here
+                        // File uses are not stdlib modules; ignore here
                     }
                 }
             }

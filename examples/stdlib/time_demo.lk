@@ -1,6 +1,6 @@
 // Time module demo (concurrency feature)
 
-import time;
+use time;
 
 fn assert(cond) {
   if (!cond) { panic("assertion failed"); }

@@ -4433,7 +4433,8 @@
   },
   {
     "type": "block_comment",
-    "named": true
+    "named": true,
+    "extra": true
   },
   {
     "type": "break",
@@ -4488,10 +4489,6 @@
     "named": false
   },
   {
-    "type": "import",
-    "named": false
-  },
-  {
     "type": "in",
     "named": false
   },
@@ -4505,7 +4502,8 @@
   },
   {
     "type": "line_comment",
-    "named": true
+    "named": true,
+    "extra": true
   },
   {
     "type": "match",
@@ -4545,6 +4543,10 @@
   },
   {
     "type": "true",
+    "named": false
+  },
+  {
+    "type": "use",
     "named": false
   },
   {

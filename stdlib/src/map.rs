@@ -474,43 +474,43 @@ mod tests {
     #[test]
     fn test_map_len_keys_values_has_get() -> Result<()> {
         assert_eq!(
-            run_return("import map; return map.len({\"a\":1, \"b\":2});")?,
+            run_return("use map; return map.len({\"a\":1, \"b\":2});")?,
             RuntimeVal::Int(2)
         );
 
         let keys =
-            run_return("import map; import string; let m={\"a\":1, \"b\":2}; return string.join(map.keys(m), \",\");")?;
+            run_return("use map; use string; let m={\"a\":1, \"b\":2}; return string.join(map.keys(m), \",\");")?;
         match keys {
             RuntimeVal::ShortStr(v) if v.as_str() == "a,b" || v.as_str() == "b,a" => {}
             _ => panic!("unexpected keys output: {:?}", keys),
         }
 
         assert_eq!(
-            run_return("import map; return map.has({\"a\":1}, \"a\");")?,
+            run_return("use map; return map.has({\"a\":1}, \"a\");")?,
             RuntimeVal::Bool(true)
         );
         assert_eq!(
-            run_return("import map; return map.has({\"a\":1}, \"b\");")?,
+            run_return("use map; return map.has({\"a\":1}, \"b\");")?,
             RuntimeVal::Bool(false)
         );
         assert_eq!(
-            run_return("import map; return map.get({\"a\":1}, \"a\");")?,
+            run_return("use map; return map.get({\"a\":1}, \"a\");")?,
             RuntimeVal::Int(1)
         );
         assert_eq!(
-            run_return("import map; return map.get({\"a\":1}, \"b\");")?,
+            run_return("use map; return map.get({\"a\":1}, \"b\");")?,
             RuntimeVal::Nil
         );
         assert_eq!(
-            run_return("import map; let m=map.set({}, \"a\", \"x\"); return map.has(m, \"a\");")?,
+            run_return("use map; let m=map.set({}, \"a\", \"x\"); return map.has(m, \"a\");")?,
             RuntimeVal::Bool(true)
         );
         assert_eq!(
-            run_return("import map; let m=map.set({}, \"a\", \"x\"); return map.get(m, \"a\");")?,
+            run_return("use map; let m=map.set({}, \"a\", \"x\"); return map.get(m, \"a\");")?,
             runtime_short_string("x")
         );
 
-        let values = run("import map; return map.values({\"a\":1, \"b\":2});")?;
+        let values = run("use map; return map.values({\"a\":1, \"b\":2});")?;
         let values = expect_list(&values);
         assert_eq!(values.len(), 2);
         assert!(values.contains(&RuntimeVal::Int(1)));
@@ -521,7 +521,7 @@ mod tests {
     #[test]
     fn test_map_int_keys_use_mixed_map_backing() -> Result<()> {
         let result = run(r#"
-            import map;
+            use map;
             let counts = {};
             counts = map.set(counts, 1, 10);
             counts = map.set(counts, 2, 20);
@@ -551,7 +551,7 @@ mod tests {
     fn test_map_set_counts_dynamic_string_keys() -> Result<()> {
         let result = run_return(
             r#"
-            import map;
+            use map;
             let words = "the fox the".split(" ");
             let counts = {};
             for word in words {
@@ -573,7 +573,7 @@ mod tests {
     #[test]
     fn test_map_set_and_delete() -> Result<()> {
         let result = run(r#"
-            import map;
+            use map;
             let updated = map.set({"a": 1}, "a", 7);
             let removed_pair = map.delete(updated, "a");
             let without = removed_pair[0];

@@ -1,6 +1,6 @@
 // JSON parse demo
 
-import json;
+use json;
 
 fn assert(cond) {
   if (!cond) { panic("assertion failed"); }

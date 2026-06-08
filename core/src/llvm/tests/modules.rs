@@ -26,7 +26,7 @@ fn llvm_backend_lowers_static_module_return_display_without_artifact_shell() {
 #[test]
 fn llvm_backend_lowers_static_parse_result_method_call_with_recovered_key_without_shell() {
     let source = r#"
-        import toml;
+        use toml;
         fn assert(cond) { if (!cond) { panic("assertion failed"); } }
         let toml_cfg = "[ssl]\nenabled = true\ncert = \"/etc/ssl/cert.pem\"\n";
         let t = toml.parse(toml_cfg);
@@ -52,7 +52,7 @@ fn llvm_backend_lowers_static_parse_result_method_call_with_recovered_key_withou
 #[test]
 fn llvm_backend_lowers_dynamic_bool_list_module_methods_without_artifact_shell() {
     let source = r#"
-        import list;
+        use list;
         let xs = [];
         for n in [1, 2, 3] {
             xs = xs.push(n > 1);
@@ -81,7 +81,7 @@ fn llvm_backend_lowers_dynamic_bool_list_module_methods_without_artifact_shell()
 #[test]
 fn llvm_backend_lowers_dynamic_bool_list_module_mutators_without_artifact_shell() {
     let source = r#"
-        import list;
+        use list;
         let xs = [];
         for n in [1, 2, 3] {
             xs = xs.push(n > 1);
@@ -114,7 +114,7 @@ fn llvm_backend_lowers_dynamic_bool_list_module_mutators_without_artifact_shell(
 #[test]
 fn llvm_backend_lowers_dynamic_i64_string_map_has_delete_without_artifact_shell() {
     let source = r#"
-        import map;
+        use map;
         let names = {};
         for n in [1, 2] {
             names = map.set(names, n, "v${n}");
@@ -143,7 +143,7 @@ fn llvm_backend_lowers_dynamic_i64_string_map_has_delete_without_artifact_shell(
 fn llvm_backend_lowers_dynamic_i64_map_has_delete_without_artifact_shell() {
     for source in [
         r#"
-            import map;
+            use map;
             let counts = {};
             for n in [1, 2] {
                 counts = map.set(counts, n, n * 10);
@@ -154,7 +154,7 @@ fn llvm_backend_lowers_dynamic_i64_map_has_delete_without_artifact_shell() {
             return [map.has(counts, 1), map.has(without, 1), old, map.get(without, 1), map.values(without), without];
         "#,
         r#"
-            import map;
+            use map;
             let weights = {};
             for n in [1, 2] {
                 weights = map.set(weights, n, n + 0.5);
@@ -165,7 +165,7 @@ fn llvm_backend_lowers_dynamic_i64_map_has_delete_without_artifact_shell() {
             return [map.has(weights, 1), map.has(without, 1), old, map.get(without, 1), map.values(without), without];
         "#,
         r#"
-            import map;
+            use map;
             let flags = {};
             for n in [1, 2] {
                 flags = map.set(flags, n, n == 2);
@@ -198,7 +198,7 @@ fn llvm_backend_lowers_dynamic_i64_map_has_delete_without_artifact_shell() {
 fn llvm_backend_lowers_dynamic_string_map_has_delete_without_artifact_shell() {
     for source in [
         r#"
-            import map;
+            use map;
             let weights = {};
             for n in [1, 2] {
                 weights = map.set(weights, "k${n}", n + 0.5);
@@ -208,7 +208,7 @@ fn llvm_backend_lowers_dynamic_string_map_has_delete_without_artifact_shell() {
             return [map.has(weights, "k1"), map.has(weights, "k3"), removed[1], map.has(without, "k1"), map.values(without), without];
         "#,
         r#"
-            import map;
+            use map;
             let flags = {};
             for n in [1, 2] {
                 flags = map.set(flags, "k${n}", n > 1);
@@ -218,7 +218,7 @@ fn llvm_backend_lowers_dynamic_string_map_has_delete_without_artifact_shell() {
             return [map.has(flags, "k1"), map.has(flags, "k3"), removed[1], map.has(without, "k1"), map.values(without), without];
         "#,
         r#"
-            import map;
+            use map;
             let names = {};
             for n in [1, 2] {
                 names = map.set(names, "k${n}", "v${n}");
@@ -250,7 +250,7 @@ fn llvm_backend_lowers_dynamic_string_map_receiver_get_missing_without_artifact_
     for (source, maybe_nil_label) in [
         (
             r#"
-                import map;
+                use map;
                 let weights = {};
                 for n in [1, 2] {
                     weights = map.set(weights, "k${n}", n + 0.5);
@@ -263,7 +263,7 @@ fn llvm_backend_lowers_dynamic_string_map_receiver_get_missing_without_artifact_
         ),
         (
             r#"
-                import map;
+                use map;
                 let flags = {};
                 for n in [1, 2] {
                     flags = map.set(flags, "k${n}", n > 1);
@@ -313,7 +313,7 @@ fn llvm_backend_lowers_dynamic_string_string_map_missing_get_without_artifact_sh
 fn dynamic_string_string_map_missing_get_source(expr: &str) -> String {
     format!(
         r#"
-            import map;
+            use map;
             let names = {{}};
             for n in [1, 2] {{
                 names = map.set(names, "k${{n}}", "v${{n}}");
@@ -328,7 +328,7 @@ fn dynamic_string_string_map_missing_get_source(expr: &str) -> String {
 #[test]
 fn llvm_backend_lowers_dynamic_i64_list_module_methods_without_artifact_shell() {
     let source = r#"
-        import list;
+        use list;
         let xs = [];
         for n in [1, 2, 3] {
             xs = xs.push(n * 2);
@@ -354,7 +354,7 @@ fn llvm_backend_lowers_dynamic_i64_list_module_methods_without_artifact_shell() 
 #[test]
 fn llvm_backend_lowers_dynamic_i64_list_module_mutators_without_artifact_shell() {
     let source = r#"
-        import list;
+        use list;
         let xs = [];
         for n in [1, 2, 3] {
             xs = xs.push(n * 2);
@@ -424,7 +424,7 @@ fn llvm_backend_lowers_math_module_return_display_without_artifact_shell() {
 
 #[test]
 fn llvm_backend_lowers_math_epsilon_member_display_without_artifact_shell() {
-    let tokens = Tokenizer::tokenize("import math; return math.epsilon;").expect("tokens");
+    let tokens = Tokenizer::tokenize("use math; return math.epsilon;").expect("tokens");
     let program = StmtParser::new(&tokens).parse_program().expect("program");
     let module = Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["math"]).expect("module");
     let module = ModuleArtifact::new(Vec::new(), &module).expect("module artifact");
@@ -440,7 +440,7 @@ fn llvm_backend_lowers_math_epsilon_member_display_without_artifact_shell() {
 #[test]
 fn llvm_backend_lowers_static_math_module_more_helpers_without_artifact_shell() {
     let tokens = Tokenizer::tokenize(
-        r#"import math;
+        r#"use math;
 return [
   math.tan(0),
   math.log(1),
@@ -498,7 +498,7 @@ fn llvm_backend_lowers_os_module_return_display_without_artifact_shell() {
 
 #[test]
 fn llvm_backend_lowers_os_env_get_member_display_without_artifact_shell() {
-    let tokens = Tokenizer::tokenize("import os; return os.env.get;").expect("tokens");
+    let tokens = Tokenizer::tokenize("use os; return os.env.get;").expect("tokens");
     let program = StmtParser::new(&tokens).parse_program().expect("program");
     let module = Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["os"]).expect("module");
     let module = ModuleArtifact::new(Vec::new(), &module).expect("module artifact");
@@ -526,7 +526,7 @@ fn llvm_backend_lowers_os_module_builtin_return_display_without_artifact_shell()
 
 #[test]
 fn llvm_backend_lowers_list_module_get_without_artifact_shell() {
-    let tokens = Tokenizer::tokenize(r#"import list; return list.get(["a", "b"], 1);"#).expect("tokens");
+    let tokens = Tokenizer::tokenize(r#"use list; return list.get(["a", "b"], 1);"#).expect("tokens");
     let program = StmtParser::new(&tokens).parse_program().expect("program");
     let module = Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["list", "__lk_call_method"])
         .expect("module");
@@ -542,7 +542,7 @@ fn llvm_backend_lowers_list_module_get_without_artifact_shell() {
 #[test]
 fn llvm_backend_lowers_static_list_module_helpers_without_artifact_shell() {
     let tokens = Tokenizer::tokenize(
-        r#"import list;
+        r#"use list;
 let first = list.first(["a", "b"]);
 let last = list.last(["a", "b"]);
 let contains = list.contains(["a", "b"], "b");
@@ -569,7 +569,7 @@ return [first, last, contains, empty, joined, concat];"#,
 #[test]
 fn llvm_backend_lowers_static_list_module_more_helpers_without_artifact_shell() {
     let tokens = Tokenizer::tokenize(
-        r#"import list;
+        r#"use list;
 return [
   list.push([1, 2], 3),
   list.reverse([1, 2, 3]),
@@ -601,7 +601,7 @@ return [
 #[test]
 fn llvm_backend_lowers_static_list_module_mutators_without_artifact_shell() {
     let tokens = Tokenizer::tokenize(
-        r#"import list;
+        r#"use list;
 return [
   list.set([1, 2, 3], 1, 9),
   list.insert([1, 3], 1, 2),
@@ -624,7 +624,7 @@ return [
 #[test]
 fn llvm_backend_lowers_static_string_module_basic_helpers_without_artifact_shell() {
     let tokens = Tokenizer::tokenize(
-        r#"import string;
+        r#"use string;
 return [
   string.upper("ab"),
   string.lower("AB"),
@@ -665,7 +665,7 @@ return [
 #[test]
 fn llvm_backend_lowers_static_string_module_more_helpers_without_artifact_shell() {
     let tokens = Tokenizer::tokenize(
-        r#"import string;
+        r#"use string;
 return [
   string.split("a,b", ","),
   string.join(["a", "b"], ":"),
@@ -704,7 +704,7 @@ return [
 #[test]
 fn llvm_backend_lowers_static_map_module_basic_helpers_without_artifact_shell() {
     let tokens = Tokenizer::tokenize(
-        r#"import map;
+        r#"use map;
 return [
   map.len({"a": 1, "b": 2}),
   map.keys({"a": 1, "b": 2}),
@@ -730,7 +730,7 @@ return [
 #[test]
 fn llvm_backend_lowers_static_iter_next_collect_without_artifact_shell() {
     let tokens = Tokenizer::tokenize(
-        r#"import iter;
+        r#"use iter;
 return [
   iter.next([1, 2]),
   iter.next([]),
@@ -753,7 +753,7 @@ return [
 #[test]
 fn llvm_backend_lowers_static_iter_list_helpers_without_artifact_shell() {
     let tokens = Tokenizer::tokenize(
-        r#"import iter;
+        r#"use iter;
 return [
   iter.enumerate(["a", "b"]),
   iter.take([1, 2, 3], 2),
@@ -785,7 +785,7 @@ return [
 #[test]
 fn llvm_backend_lowers_static_iter_map_filter_reduce_without_artifact_shell() {
     let tokens = Tokenizer::tokenize(
-        r#"import iter;
+        r#"use iter;
 return [
   iter.map([1, 2, 3], |x| x + 1),
   iter.filter([1, 2, 3], |x| x > 1),

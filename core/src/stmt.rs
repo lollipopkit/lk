@@ -9,6 +9,8 @@ mod function_test;
 #[cfg(test)]
 mod if_let_test;
 #[cfg(test)]
+mod import_parse_test;
+#[cfg(test)]
 mod stmt_recover_test;
 #[cfg(test)]
 mod stmt_test;

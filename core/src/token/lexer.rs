@@ -61,8 +61,8 @@ pub enum Token {
     Default,  // default
     // Concurrency keywords
     Select, // select
-    // Import keywords
-    Import, // import
+    // Module-use keywords
+    Use,    // use
     From,   // from
     As,     // as
     // Type system keywords
@@ -655,8 +655,8 @@ impl<'a> Tokenizer<'a> {
             self.push_span_only(Token::Fn, sp);
             return Ok(());
         }
-        if let Some(sp) = match_kw(self, "import") {
-            self.push_span_only(Token::Import, sp);
+        if let Some(sp) = match_kw(self, "use") {
+            self.push_span_only(Token::Use, sp);
             return Ok(());
         }
         if let Some(sp) = match_kw(self, "from") {
@@ -1105,10 +1105,10 @@ impl<'a> Tokenizer<'a> {
                 '0'..='9' => {
                     self.parse_num()?;
                 }
-                // Keywords: true false nil if else while let break continue return goto fn for as ...
+                // Keywords: true false nil if else while let break continue return goto fn for use as ...
                 // Also: go, select/case/default
                 // NOTE: include starting letters for all keywords so they route to parse_keywords.
-                't' | 'f' | 'n' | 'i' | 'e' | 'w' | 'l' | 'b' | 'c' | 'g' | 's' | 'd' | 'a' | 'm' => {
+                't' | 'f' | 'n' | 'i' | 'e' | 'w' | 'l' | 'b' | 'c' | 'g' | 's' | 'd' | 'a' | 'm' | 'u' => {
                     self.parse_keywords()?;
                 }
                 _ => {

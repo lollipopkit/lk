@@ -1,6 +1,6 @@
 // Math module demo
 
-import math;
+use math;
 
 fn assert(cond) {
   if (!cond) { panic("assertion failed"); }

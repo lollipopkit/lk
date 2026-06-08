@@ -71,7 +71,7 @@ println("10. 16/4 == 4 = {} (true)", d2 == 4);
 // pow(2,10) == 1024 is false; pow(2,10) == 1024.0 is true.
 // math.sqrt() auto-promotes: sqrt(144) == 12 is true.
 // (See also: numeric_auto_promotion.lk for Int/Float interop)
-import math;
+use math;
 let p = math.pow(2, 10);
 println("10b. pow(2,10) == 1024 = {} (Float ≠ Int)", p == 1024);
 println("10b. pow(2,10) == 1024.0 = {} (Float == Float)", p == 1024.0);

@@ -46,9 +46,9 @@ fn test_analyze_small_expression_latency() {
 fn test_analyze_complex_program_latency() {
     let mut analyzer = LkAnalyzer::new();
     let program = r#"
-        import math;
-        import string;
-        import datetime;
+        use math;
+        use string;
+        use datetime;
 
         let user_level = req.user.level;
         let user_name = req.user.name;

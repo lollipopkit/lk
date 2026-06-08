@@ -1,6 +1,6 @@
 // I/O module demo — stdin, stdout, stderr
 
-import io;
+use io;
 
 fn assert(cond) {
   if (!cond) { panic("assertion failed"); }

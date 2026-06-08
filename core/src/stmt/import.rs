@@ -11,31 +11,31 @@ use serde::{Deserialize, Serialize};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
-/// Import system for LK - supports various import syntaxes and plugin-style module resolution
+/// Import system for LK - supports various `use` syntaxes and plugin-style module resolution
 ///
-/// Supported import syntaxes:
-/// 1. `import math;` - imports stdlib module 'math' with all exports
-/// 2. `import "path/to/file.lk";` - imports file with all exports  
-/// 3. `import { abs, sqrt } from math;` - imports specific items from stdlib module
-/// 4. `import { func as alias } from "file.lk";` - imports with alias
-/// 5. `import * as math from math;` - imports all as namespace
-/// 6. `import math as m;` - imports entire module with alias
+/// Supported use syntaxes:
+/// 1. `use math;` - imports stdlib module 'math' with all exports
+/// 2. `use "path/to/file.lk";` - imports file with all exports
+/// 3. `use { abs, sqrt } from math;` - imports specific items from stdlib module
+/// 4. `use { func as alias } from "file.lk";` - imports with alias
+/// 5. `use * as math from math;` - imports all as namespace
+/// 6. `use math as m;` - imports entire module with alias
 ///
-/// Import statement variants
+/// Use statement variants
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ImportStmt {
-    /// `import module;` - import entire module
+    /// `use module;` - use entire module
     Module { module: String },
-    /// `import "path";` - import from file path
+    /// `use "path";` - use from file path
     File { path: String },
-    /// `import { items } from source;` - import specific items
+    /// `use { items } from source;` - use specific items
     Items {
         items: Vec<ImportItem>,
         source: ImportSource,
     },
-    /// `import * as alias from source;` - import all as namespace
+    /// `use * as alias from source;` - use all as namespace
     Namespace { alias: String, source: ImportSource },
-    /// `import module as alias;` - import module with alias
+    /// `use module as alias;` - use module with alias
     ModuleAlias { module: String, alias: String },
 }
 
@@ -46,14 +46,14 @@ pub enum ImportSource {
     File(String),
 }
 
-/// Individual import item with optional alias
+/// Individual use item with optional alias
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ImportItem {
     pub name: String,
     pub alias: Option<String>,
 }
 
-// Note: The Module trait and registry live in module.rs; this file owns source import resolution.
+// Note: The Module trait and registry live in module.rs; this file owns source use resolution.
 
 /// Module resolver - handles finding and loading modules
 #[derive(Debug, Clone)]
@@ -120,7 +120,7 @@ impl ModuleResolver {
         self.search_paths.push(base.join("modules"));
     }
 
-    /// Register a package root module. `import name;` resolves to this file when
+    /// Register a package root module. `use name;` resolves to this file when
     /// no stdlib module with the same name exists.
     pub fn register_package_module(&self, name: impl Into<String>, root: impl Into<PathBuf>) {
         self.package_modules.insert(name.into(), root.into());
@@ -317,7 +317,7 @@ pub fn execute_imports(imports: &[ImportStmt], resolver: &ModuleResolver, env: &
                 let module = resolver.resolve_runtime_file(path)?;
                 env.define_runtime_global(module_name, module);
             }
-            ImportStmt::Items { .. } => unreachable!("items imports are handled before runtime import binding"),
+            ImportStmt::Items { .. } => unreachable!("items imports are handled before runtime use binding"),
             ImportStmt::Namespace { alias, source } => {
                 let module = resolve_runtime_import_source(source, resolver)?;
                 env.define_runtime_global(alias.clone(), module);
@@ -523,7 +523,7 @@ mod tests {
         let resolver = Arc::new(resolver);
 
         let src = r#"
-            import "examples/fib";
+            use "examples/fib";
             return fib.iterative(10);
         "#;
 
@@ -540,7 +540,7 @@ mod tests {
         let resolver = Arc::new(resolver);
 
         let src = r#"
-            import { iterative as fib_iter } from "examples/fib";
+            use { iterative as fib_iter } from "examples/fib";
             return fib_iter(10);
         "#;
 
@@ -557,7 +557,7 @@ mod tests {
         let resolver = Arc::new(resolver);
 
         let src = r#"
-            import * as fibs from "examples/fib";
+            use * as fibs from "examples/fib";
             return fibs.iterative(10);
         "#;
 
@@ -586,7 +586,7 @@ mod tests {
         let resolver = Arc::new(resolver);
 
         let src = r#"
-            import * as calc from "calc";
+            use * as calc from "calc";
             return calc.add(y: 2, x: 40);
         "#;
 
@@ -618,7 +618,7 @@ mod tests {
         let resolver = Arc::new(resolver);
 
         let src = r#"
-            import * as counter from "counter";
+            use * as counter from "counter";
             let first = counter.next();
             let second = counter.next();
             return second * 10 + first;

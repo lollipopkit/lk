@@ -1,5 +1,5 @@
-import mathlib;
-import greetings;
+use mathlib;
+use greetings;
 
 let n = 7;
 let doubled = mathlib.double(n);

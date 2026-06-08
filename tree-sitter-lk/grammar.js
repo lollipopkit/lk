@@ -477,10 +477,10 @@ module.exports = grammar({
     statement: $ => $._statement,
 
     import_statement: $ => choice(
-      seq('import', $.identifier, optional(seq('as', $.identifier)), ';'),
-      seq('import', $.string_literal, optional(seq('as', $.identifier)), ';'),
-      seq('import', '{', $.import_item, repeat(seq(',', $.import_item)), optional(','), '}', 'from', choice($.identifier, $.string_literal), ';'),
-      seq('import', '*', 'as', $.identifier, 'from', choice($.identifier, $.string_literal), ';'),
+      seq('use', $.identifier, optional(seq('as', $.identifier)), ';'),
+      seq('use', $.string_literal, optional(seq('as', $.identifier)), ';'),
+      seq('use', '{', $.import_item, repeat(seq(',', $.import_item)), optional(','), '}', 'from', choice($.identifier, $.string_literal), ';'),
+      seq('use', '*', 'as', $.identifier, 'from', choice($.identifier, $.string_literal), ';'),
     ),
 
     import_item: $ => seq($.identifier, optional(seq('as', $.identifier))),

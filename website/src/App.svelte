@@ -90,8 +90,8 @@
   let locale: Locales | undefined = initialLocale
   let currentPath = normalizePath(typeof window === 'undefined' ? '/' : window.location.pathname)
 
-  const heroCode = `import io;
-import json;
+  const heroCode = `use io;
+use json;
 
 let data = json.parse(io.read());
 
@@ -160,14 +160,14 @@ match data.req {
 }`,
     },
     {
-      label: 'Import forms',
-      code: `import math as m;
-import { abs, sqrt } from math;
-import * as config from "config/app";`,
+      label: 'Use forms',
+      code: `use math as m;
+use { abs, sqrt } from math;
+use * as config from "config/app";`,
     },
     {
       label: 'Collection pipelines',
-      code: `import iter;
+      code: `use iter;
 
 let total = iter.reduce(iter.range(0, 10, 2), 0, |acc, n| acc + n);`,
     },
@@ -227,7 +227,7 @@ let total = iter.reduce(iter.range(0, 10, 2), 0, |acc, n| acc + n);`,
     'struct',
     'trait',
     'impl',
-    'import',
+    'use',
     'from',
     'as',
     'spawn',
@@ -779,7 +779,7 @@ let total = iter.reduce(iter.range(0, 10, 2), 0, |acc, n| acc + n);`,
           <article>
             <header>
               <FileCode2 size={18} />
-            <h3>{example.label === 'Named parameters' ? $LL.examples.namedParameters() : example.label === 'Import forms' ? $LL.examples.importForms() : $LL.examples.collectionPipelines()}</h3>
+            <h3>{example.label === 'Named parameters' ? $LL.examples.namedParameters() : example.label === 'Use forms' ? $LL.examples.importForms() : $LL.examples.collectionPipelines()}</h3>
             </header>
             <pre><code>{@html highlightLkCode(example.code)}</code></pre>
           </article>

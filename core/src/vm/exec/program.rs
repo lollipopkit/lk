@@ -127,7 +127,7 @@ mod tests {
 
         assert_eq!(globals[0], RuntimeVal::Nil);
         let RuntimeVal::Obj(imported) = globals[1] else {
-            panic!("external global should import as heap object");
+            panic!("external global should use as heap object");
         };
         assert!(matches!(dest_heap.get(imported), Some(HeapValue::String(value)) if value.as_ref() == "external"));
     }

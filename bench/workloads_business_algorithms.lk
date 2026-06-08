@@ -1,9 +1,9 @@
 // Business-style algorithm workloads for LK vs Lua comparison.
 // Each block measures runtime only and prints: workload|name|checksum=...|elapsed=...ms
-import os;
-import math;
-import map;
-import string;
+use os;
+use math;
+use map;
+use string;
 
 let seed = os.epoch();
 let workload_filter = os.env.get("LK_WORKLOAD_FILTER", "");

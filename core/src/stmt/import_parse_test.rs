@@ -4,21 +4,29 @@ mod tests {
     use crate::token::Tokenizer;
 
     #[test]
-    fn test_import_without_specifier_returns_error() {
-        let src = "import";
+    fn test_use_without_specifier_returns_error() {
+        let src = "use";
         let tokens = Tokenizer::tokenize(src).expect("tokenize");
         let mut sp = StmtParser::new(&tokens);
         let result = sp.parse_program();
-        assert!(result.is_err(), "expected parse error for bare 'import'");
+        assert!(result.is_err(), "expected parse error for bare 'use'");
     }
 
     #[test]
-    fn test_import_from_without_source_returns_error() {
-        let src = "import { a } from";
+    fn test_use_from_without_source_returns_error() {
+        let src = "use { a } from";
         let tokens = Tokenizer::tokenize(src).expect("tokenize");
         let mut sp = StmtParser::new(&tokens);
         let result = sp.parse_program();
-        assert!(result.is_err(), "expected parse error for missing import source");
+        assert!(result.is_err(), "expected parse error for missing use source");
+    }
+
+    #[test]
+    fn test_old_import_keyword_is_not_supported() {
+        let src = "import math;";
+        let tokens = Tokenizer::tokenize(src).expect("tokenize");
+        let mut sp = StmtParser::new(&tokens);
+        let result = sp.parse_program();
+        assert!(result.is_err(), "old import keyword should not parse");
     }
 }
-

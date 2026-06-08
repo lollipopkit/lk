@@ -850,11 +850,11 @@ line2""#,
     }
 
     #[test]
-    fn test_import_math_as_alias_tokenization() {
-        let src = "import math as m;";
+    fn test_use_math_as_alias_tokenization() {
+        let src = "use math as m;";
         let tokens = Tokenizer::tokenize(src).expect("tokenize failed");
         let expected = vec![
-            Token::Import,
+            Token::Use,
             Token::Id("math".to_string()),
             Token::As,
             Token::Id("m".to_string()),

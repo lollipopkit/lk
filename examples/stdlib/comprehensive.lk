@@ -1,11 +1,11 @@
-import math;
-import alg;
-import collections;
-import func;
-import assert_;
-import string;
-import list;
-import os;
+use math;
+use alg;
+use collections;
+use func;
+use assert_;
+use string;
+use list;
+use os;
 
 // Math new features
 assert_.assert(math.hypot(3.0, 4.0) > 4.99);

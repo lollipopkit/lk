@@ -51,7 +51,7 @@ mod tests {
 
     #[test]
     fn test_string_len() -> Result<()> {
-        let result = execute_string("import string; return string.len(\"hello\");")?;
+        let result = execute_string("use string; return string.len(\"hello\");")?;
         assert_eq!(result.first_return(), &RuntimeVal::Int(5));
 
         Ok(())
@@ -59,7 +59,7 @@ mod tests {
 
     #[test]
     fn test_string_lower() -> Result<()> {
-        let result = execute_string("import string; return string.lower(\"HELLO\");")?;
+        let result = execute_string("use string; return string.lower(\"HELLO\");")?;
         assert_eq!(runtime_str(result.first_return(), result.state.heap()), Some("hello"));
 
         Ok(())
@@ -114,7 +114,7 @@ mod tests {
     #[test]
     fn test_string_replace_named_arguments() -> Result<()> {
         let source = r#"
-            import string;
+            use string;
             let named = string.replace("lollipop", pattern: "l", with: "x");
             let named_all = string.replace("lollipop", pattern: "l", with: "x", all: true);
             let positional = string.replace("lollipop", "l", "x");
@@ -163,14 +163,14 @@ mod tests {
 
     #[test]
     fn test_string_substring_out_of_bounds_error() {
-        let source = "import string; return string.substring(\"abc\", 10, 1);";
+        let source = "use string; return string.substring(\"abc\", 10, 1);";
         let err = execute_string(source).expect_err("out-of-bounds substring should error");
         assert!(err.to_string().contains("start index out of bounds"));
     }
 
     #[test]
     fn test_string_join_rejects_non_string_items() {
-        let source = "import string; return string.join([\"ok\", 123], \",\");";
+        let source = "use string; return string.join([\"ok\", 123], \",\");";
         let err = execute_string(source).expect_err("non-string list elements should error");
         assert!(err.to_string().contains("list must contain only strings"));
     }

@@ -13,7 +13,7 @@
   "continue"
   "fn"
   "match"
-  "import"
+  "use"
   "from"
   "as"
   "struct"
@@ -129,7 +129,7 @@
 (named_argument
   name: (identifier) @parameter)
 
-; Import items
+; Use items
 (import_item
   (identifier) @namespace)
 

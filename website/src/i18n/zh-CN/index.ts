@@ -4,7 +4,7 @@ const zhCN: Translation = {
   meta: {
     lang: 'zh-CN',
     title: 'LK Lang',
-    description: 'LK 是 Rust 编写的 Rust 风格轻量脚本语言，包含丰富语法糖、结构化模式匹配、package import 和实用标准库',
+    description: 'LK 是 Rust 编写的 Rust 风格轻量脚本语言，包含丰富语法糖、结构化模式匹配、package use 和实用标准库',
   },
   nav: {
     spec: '规范',
@@ -56,7 +56,7 @@ const zhCN: Translation = {
     rows: {
       valueModel: '值模型',
       execution: '执行',
-      imports: '导入',
+      imports: 'Use 导入',
       concurrency: '并发',
     },
   },
@@ -66,9 +66,9 @@ const zhCN: Translation = {
   },
   examples: {
     title: '示例与当前语言参考保持一致。',
-    subtitle: '这些片段聚焦 `LANG.md` 中记录的行为：命名参数、安全相对导入和集合式高阶工具。',
+    subtitle: '这些片段聚焦 `LANG.md` 中记录的行为：命名参数、安全相对 use 和集合式高阶工具。',
     namedParameters: '命名参数',
-    importForms: '导入形式',
+    importForms: 'Use 形式',
     collectionPipelines: '集合管线',
   },
   start: {
@@ -79,7 +79,7 @@ const zhCN: Translation = {
     eyebrow: '语言参考',
     title: '由 LANG.md 渲染的 LK 语言规范。',
     subtitle:
-      '该页面直接以仓库中的 `LANG.md` 为来源，用网页布局展示 parser、evaluator、statement、type、import、package、CLI 和 runtime notes。',
+      '该页面直接以仓库中的 `LANG.md` 为来源，用网页布局展示 parser、evaluator、statement、type、module use、package、CLI 和 runtime notes。',
     toc: '本页目录',
   },
   footer: {

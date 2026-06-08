@@ -30,9 +30,9 @@
 - 示例：`"Hello, ${user.name}!"`、`"Sum: ${1 + 2}"`。
 
 ### 输入与变量
-- 没有隐式运行时上下文。标识符必须在词法环境中定义（例如通过语句中的 `let`、函数参数或导入）。
+- 没有隐式运行时上下文。标识符必须在词法环境中定义（例如通过语句中的 `let`、函数参数或模块 `use`）。
 - 通过标准库显式读取外部输入：`io.read()`（字符串）。手动解析：`json.parse(...)`、`yaml.parse(...)`、`toml.parse(...)`。
-- 示例：`import io; import json; let data = json.parse(io.read()); return data.req.user.id == 1;`
+- 示例：`use io; use json; let data = json.parse(io.read()); return data.req.user.id == 1;`
 
 ### 常量
 - `const name = expr;` —— 类似 `let`，但不可变。尝试重新赋值 `const` 变量会在运行时错误。
@@ -164,23 +164,23 @@
 - 默认值延迟在被调端计算；表达式可以引用其他参数。
 - 调用时使用 `name: expr` 传入命名参数：`f(1, 2, label: "demo", flag: false)` 或 `f(label: "demo")`。命名参数可任意顺序；一旦出现命名参数，其后不能再出现位置参数。
 
-### 导入
+### Use 导入
 - 形式：
-  - `import math;` —— 标准库模块作为命名空间。
-  - `import "path/to/file.lk";` —— 文件模块作为命名空间（名称来自文件名）。
-  - `import { abs, sqrt } from math;` —— 选择性导入。
-  - `import { f as g } from "m.lk";` —— 带别名。
-  - `import * as m from math;` —— 命名空间别名。
-  - `import math as m;` —— 模块别名。
+  - `use math;` —— 标准库模块作为命名空间。
+  - `use "path/to/file.lk";` —— 文件模块作为命名空间（名称来自文件名）。
+  - `use { abs, sqrt } from math;` —— 选择性导入。
+  - `use { f as g } from "m.lk";` —— 带别名。
+  - `use * as m from math;` —— 命名空间别名。
+  - `use math as m;` —— 模块别名。
 
 - 文件导入与安全：
-  - 文件不会自动对外可见。跨文件依赖必须显式 `import`。
-  - 引号路径导入不依赖 `Lk.toml`；按导入文件所在目录解析。
+  - 文件不会自动对外可见。跨文件依赖必须显式 `use`。
+  - 引号路径导入不依赖 `Lk.toml`；按当前文件所在目录解析。
   - 路径仅允许相对路径，并经过清洗：绝对路径和任意 `..` 组件会被拒绝。
   - 解析顺序：`${MOD_NAME}.lk`，再 `${MOD_NAME}/mod.lk`（相对于当前文件目录）。
   - 如果引号路径已经包含 `.lk`（如 `"lib/foo.lk"`），需为相对路径且若存在则直接使用。
-  - 在 package 中，裸模块导入先查标准库，再查 `Lk.toml` 的工作区/依赖包。包导入解析到 `src/mod.lk` 或 `src/<package-name>.lk`。
-  - 由于拒绝 `..`，嵌套目录中的代码不能通过 `../...` 导入父目录文件；当子目录依赖树外文件时，请使用 package/workspace 模块。
+  - 在 package 中，裸模块 `use` 先查标准库，再查 `Lk.toml` 的工作区/依赖包。package 模块解析到 `src/mod.lk` 或 `src/<package-name>.lk`。
+  - 由于拒绝 `..`，嵌套目录中的代码不能通过 `../...` 使用父目录文件；当子目录依赖树外文件时，请使用 package/workspace 模块。
 
 #### 文件导入示例
 
@@ -194,16 +194,16 @@ c/d/d1.lk
 来自 `a.lk`：
 
 ```lk
-import "b";       // b.lk，导出名为 b
-import "c/c1";    // c/c1.lk，导出名为 c1
-import "c/d/d1";  // c/d/d1.lk，导出名为 d1
+use "b";       // b.lk，导出名为 b
+use "c/c1";    // c/c1.lk，导出名为 c1
+use "c/d/d1";  // c/d/d1.lk，导出名为 d1
 ```
 
 来自 `c/c1.lk`：
 
 ```lk
-import "d/d1";    // c/d/d1.lk，导出名为 d1
-// import "../a"; // 被拒绝：父目录导入不允许
+use "d/d1";    // c/d/d1.lk，导出名为 d1
+// use "../a"; // 被拒绝：父目录 use 不允许
 ```
 
 ## 包
@@ -334,7 +334,7 @@ statement    ::= import_stmt | if_stmt | if_let_stmt | while_stmt | while_let_st
                | index_assign_stmt | dot_assign_stmt | return_stmt | break_stmt | continue_stmt
                | fn_stmt | struct_stmt | trait_stmt | impl_stmt | expr_stmt | block_stmt
 
-import_stmt  ::= 'import' ( module | string | items_from_source | namespace_import | module_alias ) ';'
+import_stmt  ::= 'use' ( module | string | items_from_source | namespace_import | module_alias ) ';'
 module       ::= identifier
 string       ::= string_literal
 items_from_source ::= '{' import_item { ',' import_item } '}' 'from' ( module | string )

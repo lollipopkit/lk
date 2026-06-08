@@ -884,7 +884,7 @@ fn llvm_backend_lowers_dynamic_bool_list_return_without_artifact_shell() {
 #[test]
 fn llvm_backend_lowers_dynamic_string_f64_map_get_without_artifact_shell() {
     let source = r#"
-        import map;
+        use map;
         let m = {};
         for n in [1, 2] {
             m = map.set(m, "k${n}", n + 0.5);
@@ -908,7 +908,7 @@ fn llvm_backend_lowers_dynamic_string_f64_map_get_without_artifact_shell() {
 #[test]
 fn llvm_backend_lowers_dynamic_string_f64_map_values_without_artifact_shell() {
     let source = r#"
-        import map;
+        use map;
         let m = {};
         for n in [1, 2] {
             m = map.set(m, "k${n}", n + 0.5);
@@ -932,7 +932,7 @@ fn llvm_backend_lowers_dynamic_string_f64_map_values_without_artifact_shell() {
 #[test]
 fn llvm_backend_lowers_dynamic_string_f64_map_keys_values_without_artifact_shell() {
     let source = r#"
-        import map;
+        use map;
         let weights = {};
         for n in [1, 2] {
             weights = map.set(weights, "k${n}", n + 0.5);
@@ -957,7 +957,7 @@ fn llvm_backend_lowers_dynamic_string_f64_map_keys_values_without_artifact_shell
 #[test]
 fn llvm_backend_lowers_dynamic_string_f64_map_iteration_without_artifact_shell() {
     let source = r#"
-        import map;
+        use map;
         let m = {};
         for n in [1, 2] {
             m = map.set(m, "k${n}", n + 0.5);
@@ -986,7 +986,7 @@ fn llvm_backend_lowers_dynamic_string_f64_map_iteration_without_artifact_shell()
 #[test]
 fn llvm_backend_lowers_dynamic_string_f64_map_pair_list_return_without_artifact_shell() {
     let source = r#"
-        import map;
+        use map;
         let m = {};
         for n in [1, 2] {
             m = map.set(m, "k${n}", n + 0.5);
@@ -1015,7 +1015,7 @@ fn llvm_backend_lowers_dynamic_string_f64_map_pair_list_return_without_artifact_
 #[test]
 fn llvm_backend_lowers_dynamic_string_i64_map_return_without_artifact_shell() {
     let source = r#"
-        import map;
+        use map;
         let m = {};
         for n in [1, 2] {
             m = map.set(m, "k${n}", n * 10);
@@ -1040,7 +1040,7 @@ fn llvm_backend_lowers_dynamic_string_i64_map_return_without_artifact_shell() {
 #[test]
 fn llvm_backend_lowers_dynamic_string_f64_map_return_without_artifact_shell() {
     let source = r#"
-        import map;
+        use map;
         let m = {};
         for n in [1, 2] {
             m = map.set(m, "k${n}", n + 0.5);
@@ -1065,7 +1065,7 @@ fn llvm_backend_lowers_dynamic_string_f64_map_return_without_artifact_shell() {
 #[test]
 fn llvm_backend_lowers_dynamic_f64_list_module_methods_without_artifact_shell() {
     let source = r#"
-        import list;
+        use list;
         let xs = [];
         for n in [1, 2, 1] {
             xs = xs.push(n + 0.5);
@@ -1093,7 +1093,7 @@ fn llvm_backend_lowers_dynamic_f64_list_module_methods_without_artifact_shell() 
 #[test]
 fn llvm_backend_lowers_dynamic_string_list_module_methods_without_artifact_shell() {
     let source = r#"
-        import list;
+        use list;
         let xs = [];
         for n in [1, 2, 3] {
             xs = xs.push("v${n}");
@@ -1127,7 +1127,7 @@ fn llvm_backend_lowers_dynamic_string_list_module_methods_without_artifact_shell
 #[test]
 fn llvm_backend_lowers_dynamic_i64_i64_map_return_without_artifact_shell() {
     let source = r#"
-        import map;
+        use map;
         let counts = {};
         for n in [1, 2] {
             counts = map.set(counts, n, n * 10);
@@ -1152,7 +1152,7 @@ fn llvm_backend_lowers_dynamic_i64_i64_map_return_without_artifact_shell() {
 #[test]
 fn llvm_backend_lowers_dynamic_i64_i64_map_get_values_without_artifact_shell() {
     let source = r#"
-        import map;
+        use map;
         let counts = {};
         for n in [1, 2] {
             counts = map.set(counts, n, n * 10);
@@ -1177,7 +1177,7 @@ fn llvm_backend_lowers_dynamic_i64_i64_map_get_values_without_artifact_shell() {
 #[test]
 fn llvm_backend_lowers_dynamic_i64_i64_map_iteration_without_artifact_shell() {
     let source = r#"
-        import map;
+        use map;
         let counts = {};
         for n in [1, 2] {
             counts = map.set(counts, n, n * 10);
@@ -1205,7 +1205,7 @@ fn llvm_backend_lowers_dynamic_i64_i64_map_iteration_without_artifact_shell() {
 #[test]
 fn llvm_backend_lowers_dynamic_i64_f64_map_return_without_artifact_shell() {
     let source = r#"
-        import map;
+        use map;
         let weights = {};
         for n in [1, 2] {
             weights = map.set(weights, n, n + 0.5);
@@ -1230,7 +1230,7 @@ fn llvm_backend_lowers_dynamic_i64_f64_map_return_without_artifact_shell() {
 #[test]
 fn llvm_backend_lowers_dynamic_i64_f64_map_get_keys_values_without_artifact_shell() {
     let source = r#"
-        import map;
+        use map;
         let weights = {};
         for n in [1, 2] {
             weights = map.set(weights, n, n + 0.5);
@@ -1256,7 +1256,7 @@ fn llvm_backend_lowers_dynamic_i64_f64_map_get_keys_values_without_artifact_shel
 #[test]
 fn llvm_backend_lowers_dynamic_i64_f64_map_iteration_without_artifact_shell() {
     let source = r#"
-        import map;
+        use map;
         let weights = {};
         for n in [1, 2] {
             weights = map.set(weights, n, n + 0.5);
@@ -1285,7 +1285,7 @@ fn llvm_backend_lowers_dynamic_i64_f64_map_iteration_without_artifact_shell() {
 #[test]
 fn llvm_backend_lowers_dynamic_string_bool_map_without_artifact_shell() {
     let source = r#"
-        import map;
+        use map;
         let flags = {};
         for n in [1, 2] {
             flags = map.set(flags, "k${n}", n > 1);
@@ -1311,7 +1311,7 @@ fn llvm_backend_lowers_dynamic_string_bool_map_without_artifact_shell() {
 #[test]
 fn llvm_backend_lowers_dynamic_i64_bool_map_without_artifact_shell() {
     let source = r#"
-        import map;
+        use map;
         let flags = {};
         for n in [1, 2] {
             flags = map.set(flags, n, n > 1);
@@ -1345,7 +1345,7 @@ fn llvm_backend_lowers_dynamic_i64_bool_map_without_artifact_shell() {
 #[test]
 fn llvm_backend_lowers_dynamic_i64_string_map_without_artifact_shell() {
     let source = r#"
-        import map;
+        use map;
         let names = {};
         for n in [1, 2] {
             names = map.set(names, n, "v${n}");
@@ -1372,7 +1372,7 @@ fn llvm_backend_lowers_dynamic_i64_string_map_without_artifact_shell() {
 #[test]
 fn llvm_backend_lowers_nested_dynamic_map_return_without_artifact_shell() {
     let source = r#"
-        import map;
+        use map;
         let flags = {};
         for n in [1, 2] {
             flags = map.set(flags, n, n > 1);
@@ -1397,7 +1397,7 @@ fn llvm_backend_lowers_nested_dynamic_map_return_without_artifact_shell() {
 #[test]
 fn llvm_backend_lowers_nested_dynamic_pair_list_return_without_artifact_shell() {
     let source = r#"
-        import map;
+        use map;
         let weights = {};
         for n in [1, 2] {
             weights = map.set(weights, "k${n}", n + 0.5);
@@ -1426,7 +1426,7 @@ fn llvm_backend_lowers_nested_dynamic_pair_list_return_without_artifact_shell() 
 #[test]
 fn llvm_backend_lowers_nested_dynamic_i64_f64_pair_list_return_without_artifact_shell() {
     let source = r#"
-        import map;
+        use map;
         let weights = {};
         for n in [1, 2] {
             weights = map.set(weights, n, n + 0.5);
@@ -1455,7 +1455,7 @@ fn llvm_backend_lowers_nested_dynamic_i64_f64_pair_list_return_without_artifact_
 #[test]
 fn llvm_backend_lowers_dynamic_f64_list_module_mutators_without_artifact_shell() {
     let source = r#"
-        import list;
+        use list;
         let xs = [];
         for n in [1, 2, 3] {
             xs = xs.push(n + 0.5);
@@ -1488,7 +1488,7 @@ fn llvm_backend_lowers_dynamic_f64_list_module_mutators_without_artifact_shell()
 #[test]
 fn llvm_backend_lowers_dynamic_string_list_module_mutators_without_artifact_shell() {
     let source = r#"
-        import list;
+        use list;
         let xs = [];
         for n in [1, 2, 3] {
             xs.push("v${n}");

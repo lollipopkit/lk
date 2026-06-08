@@ -642,7 +642,7 @@ fn llvm_backend_lowers_dynamic_string_int_map_set_call_without_shell() {
         let text = "the quick brown fox jumps over the lazy dog the fox was quick";
         let words = text.split(" ");
         let lower_words = words.map(|w| w.lower());
-        import map;
+        use map;
         let freq = {};
         for word in lower_words {
             let current = freq.get(word);
@@ -672,7 +672,7 @@ fn llvm_backend_lowers_dynamic_string_int_map_set_call_without_shell() {
 fn llvm_backend_lowers_static_map_set_call_without_shell() {
     let source = r#"
         fn assert(cond) { if (!cond) { panic("assertion failed"); } }
-        import map;
+        use map;
         let m = { "a": 1, "b": 2 };
         let m2 = map.set(m, "c", 3);
         assert(m2.has("c"));
@@ -695,7 +695,7 @@ fn llvm_backend_lowers_static_map_set_call_without_shell() {
 #[test]
 fn llvm_backend_lowers_string_value_map_set_get_without_shell() {
     let source = r#"
-        import map;
+        use map;
         let m = {};
         let m2 = map.set(m, "a", "x");
         return [map.has(m2, "a"), map.get(m2, "a"), map.values(m2), map.delete(m2, "a")];
@@ -898,7 +898,7 @@ fn llvm_backend_lowers_static_list_display_return_methods_without_shell() {
 #[test]
 fn llvm_backend_lowers_iter_flatten_mixed_arglist_without_shell() {
     let source = r#"
-        import iter;
+        use iter;
         fn assert(cond) { if (!cond) { panic("assertion failed"); } }
         let nested_left = [1, 2];
         let nested_right = [3];
@@ -921,7 +921,7 @@ fn llvm_backend_lowers_iter_flatten_mixed_arglist_without_shell() {
 #[test]
 fn llvm_backend_lowers_io_stderr_to_fd_two_without_shell() {
     let source = r#"
-        import io;
+        use io;
         io.stderr_write("warn");
         io.stderr_writeln("line");
         io.stderr_flush();

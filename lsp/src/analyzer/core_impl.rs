@@ -610,11 +610,11 @@ impl LkAnalyzer {
         let mut i = 0usize;
         while i < tokens.len() {
             match &tokens[i] {
-                T::Import => {
+                T::Use => {
                     let mut j = i + 1;
                     match tokens.get(j) {
                         Some(T::Str(path)) => {
-                            // import "file"; -> check existence
+                            // use "file"; -> check existence
                             let exists = file_exists_cache
                                 .entry(path.clone())
                                 .or_insert_with(|| self.file_exists(path));
@@ -647,7 +647,7 @@ impl LkAnalyzer {
                             continue;
                         }
                         Some(T::LBrace) => {
-                            // import { a, b as c } from module;
+                            // use { a, b as c } from module;
                             j += 1; // after '{'
                             let mut item_indices: Vec<usize> = Vec::new();
                             while j < tokens.len() {
@@ -741,7 +741,7 @@ impl LkAnalyzer {
                             continue;
                         }
                         Some(T::Mul) => {
-                            // import * as alias from module;
+                            // use * as alias from module;
                             // seek 'from' then module id
                             while j < tokens.len() && !matches!(tokens[j], T::From) {
                                 j += 1;
@@ -778,7 +778,7 @@ impl LkAnalyzer {
                             continue;
                         }
                         Some(T::Id(mod_name)) => {
-                            // import module [as alias]?;
+                            // use module [as alias]?;
                             let mod_idx = j;
                             if self.registry.get_module(mod_name).is_err()
                                 && !self.package_modules.contains_key(mod_name)
@@ -951,7 +951,7 @@ impl LkAnalyzer {
                 let id_diagnostics = self.validate_identifier_access(expr, None);
                 result.diagnostics.extend(id_diagnostics);
 
-                // Even for expressions, scan for import diagnostics (typically none)
+                // Even for expressions, scan for use diagnostics (typically none)
                 self.add_import_diagnostics(tokens, spans, &mut result);
                 // Named-args diagnostics on expressions that contain calls
                 let nad = self.collect_named_call_diagnostics(content, tokens, spans);
@@ -1037,7 +1037,7 @@ impl LkAnalyzer {
                         }
 
                         // Labels syntax is not supported; no label symbols at top-level
-                        // Add precise import diagnostics using tokens/spans
+                        // Add precise use diagnostics using tokens/spans
                         self.add_import_diagnostics(tokens, spans, &mut result);
 
                         // Run type checking to surface semantic diagnostics (e.g., numeric operand errors)
@@ -1099,7 +1099,7 @@ impl LkAnalyzer {
                                     None,
                                 ));
                             }
-                            // And add precise import diagnostics using tokens/spans
+                            // And add precise use diagnostics using tokens/spans
                             self.add_import_diagnostics(tokens, spans, &mut result);
                             // Named-args diagnostics (best-effort on partially parsed code)
                             let nad = self.collect_named_call_diagnostics(content, tokens, spans);
@@ -1148,7 +1148,7 @@ impl LkAnalyzer {
                         }
 
                         result.diagnostics.extend(collected);
-                        // Also attempt import diagnostics if tokens parsed
+                        // Also attempt use diagnostics if tokens parsed
                         self.add_import_diagnostics(tokens, spans, &mut result);
                     }
                 }

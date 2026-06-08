@@ -60,7 +60,7 @@ pub fn register_stdlib_modules(registry: &mut ModuleRegistry) -> Result<()> {
 }
 
 /// Register a selected subset of stdlib modules. Unknown names are ignored so
-/// package modules can share the same import collection path and resolve later.
+/// package modules can share the same use collection path and resolve later.
 pub fn register_stdlib_modules_named(registry: &mut ModuleRegistry, names: &[String]) -> Result<()> {
     for name in names {
         register_stdlib_module_by_name(registry, name)?;
@@ -155,7 +155,7 @@ pub fn register_stdlib_module_time(registry: &mut ModuleRegistry) -> Result<()> 
     registry.register_module("time", Box::new(time::TimeModule::new()))
 }
 
-/// Register global builtin functions available without import
+/// Register global builtin functions available without use
 /// - print(fmt, ...args): print formatted text without newline; returns nil
 /// - println(fmt, ...args): print formatted text with newline; returns nil
 /// - panic([msg]): raise a runtime error with optional message and backtrace

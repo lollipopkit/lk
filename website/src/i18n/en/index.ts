@@ -5,7 +5,7 @@ const en: BaseTranslation = {
     lang: 'en',
     title: 'LK Lang',
     description:
-      'LK is a Rust-like scripting language with rich pattern matching, package imports, practical CLI workflows, and a batteries-included standard library.',
+      'LK is a Rust-like scripting language with rich pattern matching, package uses, practical CLI workflows, and a batteries-included standard library.',
   },
   nav: {
     spec: 'Spec',
@@ -57,7 +57,7 @@ const en: BaseTranslation = {
     rows: {
       valueModel: 'Value model',
       execution: 'Execution',
-      imports: 'Imports',
+      imports: 'Uses',
       concurrency: 'Concurrency',
     },
   },
@@ -68,9 +68,9 @@ const en: BaseTranslation = {
   examples: {
     title: 'Examples that mirror the current language reference.',
     subtitle:
-      'These snippets focus on the behavior documented in `LANG.md`: named parameters, relative-safe imports, and collection-oriented higher-order helpers.',
+      'These snippets focus on the behavior documented in `LANG.md`: named parameters, relative-safe module uses, and collection-oriented higher-order helpers.',
     namedParameters: 'Named parameters',
-    importForms: 'Import forms',
+    importForms: 'Use forms',
     collectionPipelines: 'Collection pipelines',
   },
   start: {
@@ -81,7 +81,7 @@ const en: BaseTranslation = {
     eyebrow: 'Language Reference',
     title: 'LK language specification, rendered from LANG.md.',
     subtitle:
-      'This page uses the repository `LANG.md` as its source and presents the parser, evaluator, statement, type, import, package, CLI, and runtime notes in a web-native layout.',
+      'This page uses the repository `LANG.md` as its source and presents the parser, evaluator, statement, type, module use, package, CLI, and runtime notes in a web-native layout.',
     toc: 'On this page',
   },
   footer: {

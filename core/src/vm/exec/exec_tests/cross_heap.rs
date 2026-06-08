@@ -16,10 +16,10 @@ fn import_runtime_export_copies_mixed_map_object_keys_into_destination_heap() {
     let export = RuntimeExport::new(RuntimeVal::Obj(map), Arc::clone(&state), Arc::new(Module::default()));
     let mut dest_heap = HeapStore::new();
 
-    let imported = import_runtime_export(&export, &mut dest_heap).expect("import export");
+    let imported = import_runtime_export(&export, &mut dest_heap).expect("use export");
 
     let RuntimeVal::Obj(imported_map) = imported else {
-        panic!("import should return map object");
+        panic!("use should return map object");
     };
     let Some(HeapValue::Map(TypedMap::Mixed(entries))) = dest_heap.get(imported_map) else {
         panic!("imported value should be a mixed map");

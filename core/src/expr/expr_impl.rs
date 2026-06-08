@@ -113,7 +113,7 @@ pub struct MatchArm {
 ///
 /// Examples:
 /// - `{ "age": 20 }.age >= 18`
-/// - `import json; let data = json.parse(io.read()); data.user.name == "Alice"` (in statements)
+/// - `use json; let data = json.parse(io.read()); data.user.name == "Alice"` (in statements)
 /// - `[1, 2, 3]`
 /// - `{"name": "John", "age": 30}`
 /// - `[1, 2, 3].1`

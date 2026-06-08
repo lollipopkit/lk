@@ -65,7 +65,7 @@ mod tests {
     #[test]
     fn test_math_abs_positive() -> Result<()> {
         assert_eq!(
-            execute_math("import math; return math.abs(42);")?.first_return(),
+            execute_math("use math; return math.abs(42);")?.first_return(),
             &RuntimeVal::Int(42)
         );
         Ok(())
@@ -74,7 +74,7 @@ mod tests {
     #[test]
     fn test_math_abs_negative() -> Result<()> {
         assert_eq!(
-            execute_math("import math; return math.abs(-42);")?.first_return(),
+            execute_math("use math; return math.abs(-42);")?.first_return(),
             &RuntimeVal::Int(42)
         );
         Ok(())
@@ -83,7 +83,7 @@ mod tests {
     #[test]
     fn test_math_sqrt() -> Result<()> {
         assert_eq!(
-            execute_math("import math; return math.sqrt(16);")?.first_return(),
+            execute_math("use math; return math.sqrt(16);")?.first_return(),
             &RuntimeVal::Float(4.0)
         );
         Ok(())
@@ -91,7 +91,7 @@ mod tests {
 
     #[test]
     fn test_math_constants() -> Result<()> {
-        let result = execute_math("import math; return math.pi;")?;
+        let result = execute_math("use math; return math.pi;")?;
         let RuntimeVal::Float(value) = result.first_return() else {
             panic!("Expected float result");
         };
@@ -102,7 +102,7 @@ mod tests {
     #[test]
     fn test_math_clamp_named_arguments() -> Result<()> {
         let source = r#"
-            import math;
+            use math;
             let a = math.clamp(150);
             let b = math.clamp(-5);
             let c = math.clamp(5, min: 2, max: 4);

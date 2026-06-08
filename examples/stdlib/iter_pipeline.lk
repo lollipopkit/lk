@@ -1,6 +1,6 @@
 // Iterator and stream pipeline demo
 
-import iter;
+use iter;
 
 fn assert(cond) {
   if (!cond) { panic("assertion failed"); }

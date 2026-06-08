@@ -23,7 +23,7 @@ pub struct SemanticTokenValidationSummary {
 
 fn semantic_keyword_token(identifier: &str) -> Option<u32> {
     match identifier {
-        "if" | "else" | "while" | "for" | "in" | "fn" | "return" | "break" | "continue" | "import" | "from" | "as"
+        "if" | "else" | "while" | "for" | "in" | "fn" | "return" | "break" | "continue" | "use" | "from" | "as"
         | "match" | "case" | "default" | "select" | "type" | "trait" | "impl" | "true" | "false" | "nil" | "spawn"
         | "chan" | "send" | "recv" => Some(KEYWORD_IDX),
         _ => None,

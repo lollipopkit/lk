@@ -198,7 +198,7 @@ impl<'a> StmtParser<'a> {
         }
 
         match &self.tokens[self.pos] {
-            Token::Import => self.parse_import_stmt(),
+            Token::Use => self.parse_import_stmt(),
             Token::If => self.parse_if_stmt(),
             Token::While => self.parse_while_stmt(),
             Token::For => self.parse_for_stmt(),

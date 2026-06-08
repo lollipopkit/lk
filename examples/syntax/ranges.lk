@@ -1,6 +1,6 @@
 // Ranges and iteration demo
 
-import iter;
+use iter;
 
 fn assert(cond) {
   if (!cond) { panic("assertion failed"); }

@@ -13,9 +13,9 @@ fn repo_root() -> PathBuf {
 fn test_unknown_module_import_diagnostic() {
     let mut analyzer = LkAnalyzer::new();
     let code = r#"
-        import not_a_module;
-        import * as ns from missing;
-        import { foo, bar } from bogus;
+        use not_a_module;
+        use * as ns from missing;
+        use { foo, bar } from bogus;
     "#;
     let res = analyzer.analyze(code);
     // Should have at least one error diagnostic about unknown modules
@@ -41,12 +41,12 @@ fn test_file_import_diagnostic_resolves_relative_to_current_file_dir() {
 
     let mut analyzer = LkAnalyzer::new();
     analyzer.set_base_dir(current_file_dir);
-    let res = analyzer.analyze(r#"import "examples/fib";"#);
+    let res = analyzer.analyze(r#"use "examples/fib";"#);
 
     let msgs: Vec<&str> = res.diagnostics.iter().map(|d| d.message.as_str()).collect();
     assert!(
         !msgs.iter().any(|m| m.contains("File not found: examples/fib")),
-        "expected import to resolve via current file directory; diagnostics: {msgs:?}"
+        "expected use to resolve via current file directory; diagnostics: {msgs:?}"
     );
 
     let _ = fs::remove_dir_all(base);
@@ -83,11 +83,11 @@ name = "util"
 
     let mut analyzer = LkAnalyzer::new();
     analyzer.set_base_dir(app_src);
-    let res = analyzer.analyze("import util;\nreturn util.answer();\n");
+    let res = analyzer.analyze("use util;\nreturn util.answer();\n");
     let msgs: Vec<&str> = res.diagnostics.iter().map(|d| d.message.as_str()).collect();
     assert!(
         !msgs.iter().any(|m| m.contains("Unknown module: util")),
-        "expected package import to resolve; diagnostics: {msgs:?}"
+        "expected package use to resolve; diagnostics: {msgs:?}"
     );
 
     let _ = fs::remove_dir_all(base);
@@ -107,11 +107,11 @@ fn test_example_workspace_imports_are_resolved() {
     let msgs: Vec<&str> = res.diagnostics.iter().map(|d| d.message.as_str()).collect();
     assert!(
         !msgs.iter().any(|m| m.contains("Unknown module: mathlib")),
-        "expected mathlib workspace import to resolve; diagnostics: {msgs:?}"
+        "expected mathlib workspace use to resolve; diagnostics: {msgs:?}"
     );
     assert!(
         !msgs.iter().any(|m| m.contains("Unknown module: greetings")),
-        "expected greetings workspace import to resolve; diagnostics: {msgs:?}"
+        "expected greetings workspace use to resolve; diagnostics: {msgs:?}"
     );
 }
 

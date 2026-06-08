@@ -1,7 +1,7 @@
 // Extended math functions — implemented in pure LK, complementing the Rust `math` module.
 // These are pure-LK computations that don't need native Rust std access.
 
-import alg;
+use alg;
 
 /// Extended GCD: returns [gcd, x, y] such that a*x + b*y = gcd(a, b).
 fn ext_gcd(a, b) {

@@ -57,7 +57,7 @@ impl LkLanguageServer {
 
         // LK keywords
         let keywords = [
-            "if", "else", "while", "let", "fn", "return", "break", "continue", "import", "from", "as", "go", "select",
+            "if", "else", "while", "let", "fn", "return", "break", "continue", "use", "from", "as", "go", "select",
             "case", "default", "true", "false", "nil", "spawn", "chan", "send", "recv",
         ];
 

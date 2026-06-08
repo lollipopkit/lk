@@ -24,7 +24,7 @@ type RootTranslation = {
 		 */
 		title: string
 		/**
-		 * L​K​ ​i​s​ ​a​ ​R​u​s​t​-​l​i​k​e​ ​s​c​r​i​p​t​i​n​g​ ​l​a​n​g​u​a​g​e​ ​w​i​t​h​ ​r​i​c​h​ ​p​a​t​t​e​r​n​ ​m​a​t​c​h​i​n​g​,​ ​p​a​c​k​a​g​e​ ​i​m​p​o​r​t​s​,​ ​p​r​a​c​t​i​c​a​l​ ​C​L​I​ ​w​o​r​k​f​l​o​w​s​,​ ​a​n​d​ ​a​ ​b​a​t​t​e​r​i​e​s​-​i​n​c​l​u​d​e​d​ ​s​t​a​n​d​a​r​d​ ​l​i​b​r​a​r​y​.
+		 * L​K​ ​i​s​ ​a​ ​R​u​s​t​-​l​i​k​e​ ​s​c​r​i​p​t​i​n​g​ ​l​a​n​g​u​a​g​e​ ​w​i​t​h​ ​r​i​c​h​ ​p​a​t​t​e​r​n​ ​m​a​t​c​h​i​n​g​,​ ​p​a​c​k​a​g​e​ ​u​s​e​s​,​ ​p​r​a​c​t​i​c​a​l​ ​C​L​I​ ​w​o​r​k​f​l​o​w​s​,​ ​a​n​d​ ​a​ ​b​a​t​t​e​r​i​e​s​-​i​n​c​l​u​d​e​d​ ​s​t​a​n​d​a​r​d​ ​l​i​b​r​a​r​y​.
 		 */
 		description: string
 	}
@@ -147,7 +147,7 @@ type RootTranslation = {
 			 */
 			execution: string
 			/**
-			 * I​m​p​o​r​t​s
+			 * U​s​e​s
 			 */
 			imports: string
 			/**
@@ -172,7 +172,7 @@ type RootTranslation = {
 		 */
 		title: string
 		/**
-		 * T​h​e​s​e​ ​s​n​i​p​p​e​t​s​ ​f​o​c​u​s​ ​o​n​ ​t​h​e​ ​b​e​h​a​v​i​o​r​ ​d​o​c​u​m​e​n​t​e​d​ ​i​n​ ​`​L​A​N​G​.​m​d​`​:​ ​n​a​m​e​d​ ​p​a​r​a​m​e​t​e​r​s​,​ ​r​e​l​a​t​i​v​e​-​s​a​f​e​ ​i​m​p​o​r​t​s​,​ ​a​n​d​ ​c​o​l​l​e​c​t​i​o​n​-​o​r​i​e​n​t​e​d​ ​h​i​g​h​e​r​-​o​r​d​e​r​ ​h​e​l​p​e​r​s​.
+		 * T​h​e​s​e​ ​s​n​i​p​p​e​t​s​ ​f​o​c​u​s​ ​o​n​ ​t​h​e​ ​b​e​h​a​v​i​o​r​ ​d​o​c​u​m​e​n​t​e​d​ ​i​n​ ​`​L​A​N​G​.​m​d​`​:​ ​n​a​m​e​d​ ​p​a​r​a​m​e​t​e​r​s​,​ ​r​e​l​a​t​i​v​e​-​s​a​f​e​ ​m​o​d​u​l​e​ ​u​s​e​s​,​ ​a​n​d​ ​c​o​l​l​e​c​t​i​o​n​-​o​r​i​e​n​t​e​d​ ​h​i​g​h​e​r​-​o​r​d​e​r​ ​h​e​l​p​e​r​s​.
 		 */
 		subtitle: string
 		/**
@@ -180,7 +180,7 @@ type RootTranslation = {
 		 */
 		namedParameters: string
 		/**
-		 * I​m​p​o​r​t​ ​f​o​r​m​s
+		 * U​s​e​ ​f​o​r​m​s
 		 */
 		importForms: string
 		/**
@@ -208,7 +208,7 @@ type RootTranslation = {
 		 */
 		title: string
 		/**
-		 * T​h​i​s​ ​p​a​g​e​ ​u​s​e​s​ ​t​h​e​ ​r​e​p​o​s​i​t​o​r​y​ ​`​L​A​N​G​.​m​d​`​ ​a​s​ ​i​t​s​ ​s​o​u​r​c​e​ ​a​n​d​ ​p​r​e​s​e​n​t​s​ ​t​h​e​ ​p​a​r​s​e​r​,​ ​e​v​a​l​u​a​t​o​r​,​ ​s​t​a​t​e​m​e​n​t​,​ ​t​y​p​e​,​ ​i​m​p​o​r​t​,​ ​p​a​c​k​a​g​e​,​ ​C​L​I​,​ ​a​n​d​ ​r​u​n​t​i​m​e​ ​n​o​t​e​s​ ​i​n​ ​a​ ​w​e​b​-​n​a​t​i​v​e​ ​l​a​y​o​u​t​.
+		 * T​h​i​s​ ​p​a​g​e​ ​u​s​e​s​ ​t​h​e​ ​r​e​p​o​s​i​t​o​r​y​ ​`​L​A​N​G​.​m​d​`​ ​a​s​ ​i​t​s​ ​s​o​u​r​c​e​ ​a​n​d​ ​p​r​e​s​e​n​t​s​ ​t​h​e​ ​p​a​r​s​e​r​,​ ​e​v​a​l​u​a​t​o​r​,​ ​s​t​a​t​e​m​e​n​t​,​ ​t​y​p​e​,​ ​m​o​d​u​l​e​ ​u​s​e​,​ ​p​a​c​k​a​g​e​,​ ​C​L​I​,​ ​a​n​d​ ​r​u​n​t​i​m​e​ ​n​o​t​e​s​ ​i​n​ ​a​ ​w​e​b​-​n​a​t​i​v​e​ ​l​a​y​o​u​t​.
 		 */
 		subtitle: string
 		/**
@@ -243,7 +243,7 @@ export type TranslationFunctions = {
 		 */
 		title: () => LocalizedString
 		/**
-		 * LK is a Rust-like scripting language with rich pattern matching, package imports, practical CLI workflows, and a batteries-included standard library.
+		 * LK is a Rust-like scripting language with rich pattern matching, package uses, practical CLI workflows, and a batteries-included standard library.
 		 */
 		description: () => LocalizedString
 	}
@@ -366,7 +366,7 @@ export type TranslationFunctions = {
 			 */
 			execution: () => LocalizedString
 			/**
-			 * Imports
+			 * Uses
 			 */
 			imports: () => LocalizedString
 			/**
@@ -391,7 +391,7 @@ export type TranslationFunctions = {
 		 */
 		title: () => LocalizedString
 		/**
-		 * These snippets focus on the behavior documented in `LANG.md`: named parameters, relative-safe imports, and collection-oriented higher-order helpers.
+		 * These snippets focus on the behavior documented in `LANG.md`: named parameters, relative-safe module uses, and collection-oriented higher-order helpers.
 		 */
 		subtitle: () => LocalizedString
 		/**
@@ -399,7 +399,7 @@ export type TranslationFunctions = {
 		 */
 		namedParameters: () => LocalizedString
 		/**
-		 * Import forms
+		 * Use forms
 		 */
 		importForms: () => LocalizedString
 		/**
@@ -427,7 +427,7 @@ export type TranslationFunctions = {
 		 */
 		title: () => LocalizedString
 		/**
-		 * This page uses the repository `LANG.md` as its source and presents the parser, evaluator, statement, type, import, package, CLI, and runtime notes in a web-native layout.
+		 * This page uses the repository `LANG.md` as its source and presents the parser, evaluator, statement, type, module use, package, CLI, and runtime notes in a web-native layout.
 		 */
 		subtitle: () => LocalizedString
 		/**

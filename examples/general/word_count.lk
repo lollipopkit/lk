@@ -15,7 +15,7 @@ assert(words.len() == 13);
 let lower_words = words.map(|w| w.lower());
 
 // 3. Count word frequencies using a map
-import map;
+use map;
 let freq = {};
 for word in lower_words {
   let current = freq.get(word);

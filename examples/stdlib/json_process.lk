@@ -1,6 +1,6 @@
 // Practical JSON data processing demo
 
-import json;
+use json;
 
 fn assert(cond) {
   if (!cond) { panic("assertion failed"); }

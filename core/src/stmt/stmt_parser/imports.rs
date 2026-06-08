@@ -7,22 +7,22 @@ use anyhow::{Result, anyhow};
 
 impl<'a> StmtParser<'a> {
     pub fn parse_import_stmt(&mut self) -> Result<Stmt> {
-        self.expect_token(Token::Import)?;
+        self.expect_token(Token::Use)?;
 
-        // After 'import', ensure there is a specifier
+        // After 'use', ensure there is a specifier
         if self.eof() {
-            return Err(anyhow!(self.err("Expected import specifier after 'import'")));
+            return Err(anyhow!(self.err("Expected use specifier after 'use'")));
         }
 
-        // Check for different import patterns
+        // Check for different use patterns
         let import_stmt = match &self.tokens[self.pos] {
-            // import "path";
+            // use "path";
             Token::Str(path) => {
                 let path = path.clone();
                 self.pos += 1;
                 ImportStmt::File { path }
             }
-            // import { ... } from source
+            // use { ... } from source
             Token::LBrace => {
                 self.pos += 1; // consume {
                 let items = self.parse_import_items()?;
@@ -31,7 +31,7 @@ impl<'a> StmtParser<'a> {
                 let source = self.parse_import_source()?;
                 ImportStmt::Items { items, source }
             }
-            // import * as alias from source
+            // use * as alias from source
             Token::Mul => {
                 self.pos += 1; // consume *
                 self.expect_token(Token::As)?;
@@ -40,7 +40,7 @@ impl<'a> StmtParser<'a> {
                 let source = self.parse_import_source()?;
                 ImportStmt::Namespace { alias, source }
             }
-            // import module; or import module as alias;
+            // use module; or use module as alias;
             Token::Id(module) => {
                 let module = module.clone();
                 self.pos += 1;
@@ -54,7 +54,7 @@ impl<'a> StmtParser<'a> {
                 }
             }
             _ => {
-                return Err(anyhow!(self.err("Expected import specifier")));
+                return Err(anyhow!(self.err("Expected use specifier")));
             }
         };
 

@@ -1,7 +1,7 @@
 // TCP networking demo
 // Shows basic connect/write/read/close pattern
 
-import tcp;
+use tcp;
 
 fn assert(cond) {
   if (!cond) { panic("assertion failed"); }

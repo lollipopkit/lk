@@ -67,7 +67,7 @@ mod tests {
     fn test_format_and_parse_roundtrip() -> Result<()> {
         let ts = Utc.with_ymd_and_hms(2024, 1, 6, 12, 30, 0).unwrap().timestamp();
 
-        let formatted = run("import datetime; return datetime.format(1704544200, \"%Y-%m-%d %H:%M\");")?;
+        let formatted = run("use datetime; return datetime.format(1704544200, \"%Y-%m-%d %H:%M\");")?;
         assert_eq!(
             runtime_str(formatted.first_return(), formatted.state.heap()),
             Some("2024-01-06 12:30")
@@ -107,11 +107,11 @@ mod tests {
     fn test_add_sub_and_day_of_year() -> Result<()> {
         let base = 1_700_000_000i64;
         assert_eq!(
-            run("import datetime; return datetime.add(1700000000, 30);")?.first_return(),
+            run("use datetime; return datetime.add(1700000000, 30);")?.first_return(),
             &RuntimeVal::Int(base + 30)
         );
         assert_eq!(
-            run("import datetime; return datetime.sub(1700000000, 45);")?.first_return(),
+            run("use datetime; return datetime.sub(1700000000, 45);")?.first_return(),
             &RuntimeVal::Int(base - 45)
         );
         assert_eq!(
@@ -159,7 +159,7 @@ mod tests {
 
     #[test]
     fn test_datetime_now() -> Result<()> {
-        let result = run("import datetime; return datetime.now();")?;
+        let result = run("use datetime; return datetime.now();")?;
         let RuntimeVal::Int(timestamp) = result.first_return() else {
             panic!("Expected integer timestamp");
         };
@@ -169,7 +169,7 @@ mod tests {
 
     #[test]
     fn test_datetime_format() -> Result<()> {
-        let formatted = run("import datetime; return datetime.format(1672531200, \"%Y-%m-%d\");")?;
+        let formatted = run("use datetime; return datetime.format(1672531200, \"%Y-%m-%d\");")?;
         assert_eq!(
             runtime_str(formatted.first_return(), formatted.state.heap()),
             Some("2023-01-01")

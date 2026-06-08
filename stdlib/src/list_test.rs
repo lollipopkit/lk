@@ -60,11 +60,11 @@ mod tests {
     #[test]
     fn test_list_len_push_join() -> Result<()> {
         assert_eq!(
-            run("import list; return list.len([1,2,3]);")?.first_return(),
+            run("use list; return list.len([1,2,3]);")?.first_return(),
             &RuntimeVal::Int(3)
         );
         assert_eq!(
-            run("import list; return list.join(list.push([\"a\", \"b\"], \"c\"), \",\");")?.first_return(),
+            run("use list; return list.join(list.push([\"a\", \"b\"], \"c\"), \",\");")?.first_return(),
             &RuntimeVal::ShortStr(lk_core::val::ShortStr::new("a,b,c").expect("short string"))
         );
         Ok(())
@@ -73,26 +73,26 @@ mod tests {
     #[test]
     fn test_list_get_first_last() -> Result<()> {
         assert_eq!(
-            run("import list; return list.get([10,20,30], 1);")?.first_return(),
+            run("use list; return list.get([10,20,30], 1);")?.first_return(),
             &RuntimeVal::Int(20)
         );
         assert_eq!(
-            run("import list; return list.get([10,20,30], 5);")?.first_return(),
+            run("use list; return list.get([10,20,30], 5);")?.first_return(),
             &RuntimeVal::Nil
         );
         assert_eq!(
-            run("import list; return list.get([10,20,30], -1);")?.first_return(),
+            run("use list; return list.get([10,20,30], -1);")?.first_return(),
             &RuntimeVal::Nil
         );
         assert_eq!(
-            run("import list; return list.first([10,20,30]);")?.first_return(),
+            run("use list; return list.first([10,20,30]);")?.first_return(),
             &RuntimeVal::Int(10)
         );
         assert_eq!(
-            run("import list; return list.last([10,20,30]);")?.first_return(),
+            run("use list; return list.last([10,20,30]);")?.first_return(),
             &RuntimeVal::Int(30)
         );
-        let result = run("import list; return [list.first([]), list.last([])];")?;
+        let result = run("use list; return [list.first([]), list.last([])];")?;
         assert_eq!(
             expect_runtime_list(result.first_return().clone(), result.state.heap()),
             vec![RuntimeVal::Nil, RuntimeVal::Nil]
@@ -102,7 +102,7 @@ mod tests {
 
     #[test]
     fn test_list_concat_and_set_returns_pair() -> Result<()> {
-        let concat = run("import list; return list.concat([1,2], [3,4]);")?;
+        let concat = run("use list; return list.concat([1,2], [3,4]);")?;
         assert_eq!(
             expect_runtime_list(concat.first_return().clone(), concat.state.heap()),
             vec![
@@ -112,7 +112,7 @@ mod tests {
                 RuntimeVal::Int(4)
             ]
         );
-        let result = run("import list; let pair = list.set([1, 2, 3], 1, 42); \
+        let result = run("use list; let pair = list.set([1, 2, 3], 1, 42); \
              let updated = pair[0]; \
              let old = pair[1]; \
              return [updated[1], old];")?;
@@ -125,13 +125,13 @@ mod tests {
 
     #[test]
     fn test_list_get_rejects_non_integer_index() {
-        let err = run("import list; return list.get([1], \"x\");").expect_err("non-integer index should error");
+        let err = run("use list; return list.get([1], \"x\");").expect_err("non-integer index should error");
         assert!(err.to_string().contains("index must be an integer"));
     }
 
     #[test]
     fn test_list_join_rejects_non_string_items() {
-        let err = run("import list; return list.join([\"ok\", 1], \",\");").expect_err("non-string items should error");
+        let err = run("use list; return list.join([\"ok\", 1], \",\");").expect_err("non-string items should error");
         assert!(err.to_string().contains("list must contain only strings"));
     }
 

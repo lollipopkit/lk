@@ -32,7 +32,7 @@ The LSP server consists of:
 ### LK Statements
 - Variable declarations (`let x = value;`)
 - Function definitions (`fn name(params) { body }`)
-- Import statements (`import math;`, `import { abs } from math;`)
+- Use statements (`use math;`, `use { abs } from math;`)
 - Control flow (`if`, `while`, `break`, `continue`, `return`)
 - Concurrency primitives (`go`, `select`, channel operations)
 
@@ -40,7 +40,7 @@ The LSP server consists of:
 
 #### Keywords
 - Control flow: `if`, `else`, `while`, `let`, `fn`, `return`, `break`, `continue`
-- Imports: `import`, `from`, `as`
+- Imports: `use`, `from`, `as`
 - Concurrency: `go`, `select`, `case`, `default`
 - Literals: `true`, `false`, `nil`
 
@@ -130,7 +130,7 @@ Test the LSP server with a LK file containing:
 req.user.role == 'admin' && req.user.level >= 5
 
 // Statement program example
-import math;
+use math;
 let result = math.sqrt(req.user.score);
 fn validate_user(user) {
     return user.role == 'admin' || user.level >= 10;

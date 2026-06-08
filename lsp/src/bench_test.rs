@@ -28,7 +28,7 @@ mod bench_tests {
 
         // Test statement analysis
         let program = r#"
-            import math;
+            use math;
             let user_level = req.user.level;
             let user_role = req.user.role;
             

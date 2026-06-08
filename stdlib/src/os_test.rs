@@ -85,12 +85,12 @@ mod tests {
 
     #[test]
     fn test_os_arch_and_os_execute() -> Result<()> {
-        let arch = run("import os; return os.arch();")?;
+        let arch = run("use os; return os.arch();")?;
         assert_eq!(
             runtime_str(arch.first_return(), arch.state.heap()),
             Some(std::env::consts::ARCH)
         );
-        let os = run("import os; return os.os();")?;
+        let os = run("use os; return os.os();")?;
         assert_eq!(
             runtime_str(os.first_return(), os.state.heap()),
             Some(std::env::consts::OS)
@@ -116,14 +116,14 @@ mod tests {
     #[test]
     fn test_os_env_get_default_and_mutation_errors() -> Result<()> {
         let var = "LK_TEST_ENV_SHOULD_NOT_EXIST_42";
-        let src_default = format!("import os; return os.env_get(\"{}\", \"dflt\");", var);
+        let src_default = format!("use os; return os.env_get(\"{}\", \"dflt\");", var);
         let default = run(&src_default)?;
         assert_eq!(runtime_str(default.first_return(), default.state.heap()), Some("dflt"));
 
-        let src_set = format!("import os; return os.env_set(\"{}\", \"X\");", var);
+        let src_set = format!("use os; return os.env_set(\"{}\", \"X\");", var);
         let err = run(&src_set).expect_err("env.set should be disabled");
         assert!(err.to_string().contains("disabled"));
-        let src_unset = format!("import os; return os.env_unset(\"{}\");", var);
+        let src_unset = format!("use os; return os.env_unset(\"{}\");", var);
         let err = run(&src_unset).expect_err("env.unset should be disabled");
         assert!(err.to_string().contains("disabled"));
         Ok(())
@@ -147,7 +147,7 @@ mod tests {
         writeln!(File::create(&f1)?, "hello")?;
         writeln!(File::create(&f2)?, "world")?;
 
-        let out = run("import os; return os.dir_temp();")?;
+        let out = run("use os; return os.dir_temp();")?;
         if !matches!(out.first_return(), RuntimeVal::Nil) {
             assert!(
                 runtime_str(out.first_return(), out.state.heap()).is_some(),
@@ -155,7 +155,7 @@ mod tests {
                 out.first_return()
             );
         }
-        let out = run("import os; return os.dir_current();")?;
+        let out = run("use os; return os.dir_current();")?;
         if !matches!(out.first_return(), RuntimeVal::Nil) {
             assert!(
                 runtime_str(out.first_return(), out.state.heap()).is_some(),
@@ -164,7 +164,7 @@ mod tests {
             );
         }
 
-        let src = format!("import os; return os.dir_list(\"{}\");", td.to_string_lossy());
+        let src = format!("use os; return os.dir_list(\"{}\");", td.to_string_lossy());
         let out = run(&src)?;
         let TypedList::String(names) = runtime_list(out.first_return(), out.state.heap()) else {
             panic!("expected typed string list");
@@ -181,7 +181,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn test_os_exec_capture_unix() -> Result<()> {
-        let out = run("import os; return os.exec(\"/bin/echo\", [\"hello\"]);")?;
+        let out = run("use os; return os.exec(\"/bin/echo\", [\"hello\"]);")?;
         assert_eq!(
             runtime_str(out.first_return(), out.state.heap()).map(str::trim_end),
             Some("hello")
@@ -192,7 +192,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn test_os_exec_stream_mode_returns_line_list_unix() -> Result<()> {
-        let out = run("import os; return os.exec(\"/bin/echo\", [\"a\", \"b\"], true);")?;
+        let out = run("use os; return os.exec(\"/bin/echo\", [\"a\", \"b\"], true);")?;
         let TypedList::String(list) = runtime_list(out.first_return(), out.state.heap()) else {
             panic!("stream mode should return typed string list");
         };

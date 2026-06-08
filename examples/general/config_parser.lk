@@ -1,8 +1,8 @@
 // Config file parsing demo — combine JSON, YAML, TOML
 
-import json;
-import yaml;
-import toml;
+use json;
+use yaml;
+use toml;
 
 fn assert(cond) {
   if (!cond) { panic("assertion failed"); }
