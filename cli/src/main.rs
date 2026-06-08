@@ -235,6 +235,8 @@ fn maybe_print_vm_profile(enabled: bool) {
 }
 
 fn vm_profile_line(metrics: VmRuntimeMetrics) -> String {
+    let heap_clones = metrics.copy_policy_heap_clones;
+    let val_clones = heap_clones;
     format!(
         "VM profile: opcode_steps={} top_opcodes={} write_sources={} index_keys={} calls={} branches={} typed_branches={} containers={} list_ops={} map_ops={} string_ops={} val_clones={} heap_clones={} copy_policy_heap_clones={} register_copy_heap_clones={} local_copy_heap_clones={} local_load_heap_clones={} local_store_heap_clones={} const_load_heap_clones={} call_arg_heap_clones={} container_copy_heap_clones={}",
         metrics.opcode_steps,
@@ -248,8 +250,8 @@ fn vm_profile_line(metrics: VmRuntimeMetrics) -> String {
         metrics.list_ops,
         metrics.map_ops,
         metrics.string_ops,
-        metrics.copy_policy_heap_clones,
-        metrics.copy_policy_heap_clones,
+        val_clones,
+        heap_clones,
         metrics.copy_policy_heap_clones,
         metrics.register_copy_heap_clones,
         metrics.local_copy_heap_clones,
