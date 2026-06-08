@@ -1,9 +1,11 @@
-use crate::util::fast_map::{FastHashMap, fast_hash_map_new};
+use crate::util::fast_map::{FastHashMap, fast_hash_map_new, fast_hash_set_new};
 use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
 
-use crate::val::{CallableValue, HeapStore, HeapValue, RuntimeObject, RuntimeVal, TypedList, TypedMap};
+use crate::val::{
+    CallableValue, HeapStore, HeapValue, RuntimeMapKey, RuntimeObject, RuntimeSet, RuntimeVal, TypedList, TypedMap,
+};
 
 use super::{RuntimeCallable, runtime_value_to_callable_shared};
 use crate::vm::{Module, RuntimeExport};
@@ -75,6 +77,13 @@ fn import_heap_value(
             source_state,
         )?),
         HeapValue::Map(values) => HeapValue::Map(import_typed_map(
+            values,
+            source_heap,
+            dest_heap,
+            source_module,
+            source_state,
+        )?),
+        HeapValue::Set(values) => HeapValue::Set(import_runtime_set(
             values,
             source_heap,
             dest_heap,
@@ -162,6 +171,26 @@ fn import_heap_value(
     })
 }
 
+fn import_runtime_set(
+    values: &RuntimeSet,
+    source_heap: &HeapStore,
+    dest_heap: &mut HeapStore,
+    source_module: Arc<Module>,
+    source_state: std::sync::Arc<std::sync::Mutex<crate::vm::RuntimeModuleState>>,
+) -> Result<RuntimeSet> {
+    let mut out = fast_hash_set_new();
+    for key in values.entries() {
+        out.insert(import_runtime_map_key(
+            key,
+            source_heap,
+            dest_heap,
+            Arc::clone(&source_module),
+            source_state.clone(),
+        )?);
+    }
+    Ok(RuntimeSet::from_entries(out))
+}
+
 fn import_typed_list(
     values: &TypedList,
     source_heap: &HeapStore,
@@ -243,19 +272,19 @@ fn import_typed_map(
 }
 
 fn import_runtime_map_key(
-    key: &crate::val::RuntimeMapKey,
+    key: &RuntimeMapKey,
     source_heap: &HeapStore,
     dest_heap: &mut HeapStore,
     source_module: Arc<Module>,
     source_state: std::sync::Arc<std::sync::Mutex<crate::vm::RuntimeModuleState>>,
-) -> Result<crate::val::RuntimeMapKey> {
+) -> Result<RuntimeMapKey> {
     Ok(match key {
-        crate::val::RuntimeMapKey::Nil => crate::val::RuntimeMapKey::Nil,
-        crate::val::RuntimeMapKey::Bool(value) => crate::val::RuntimeMapKey::Bool(*value),
-        crate::val::RuntimeMapKey::Int(value) => crate::val::RuntimeMapKey::Int(*value),
-        crate::val::RuntimeMapKey::ShortStr(value) => crate::val::RuntimeMapKey::ShortStr(*value),
-        crate::val::RuntimeMapKey::String(value) => crate::val::RuntimeMapKey::String(Arc::clone(value)),
-        crate::val::RuntimeMapKey::Obj(handle) => {
+        RuntimeMapKey::Nil => RuntimeMapKey::Nil,
+        RuntimeMapKey::Bool(value) => RuntimeMapKey::Bool(*value),
+        RuntimeMapKey::Int(value) => RuntimeMapKey::Int(*value),
+        RuntimeMapKey::ShortStr(value) => RuntimeMapKey::ShortStr(*value),
+        RuntimeMapKey::String(value) => RuntimeMapKey::String(Arc::clone(value)),
+        RuntimeMapKey::Obj(handle) => {
             match import_runtime_value(
                 &RuntimeVal::Obj(*handle),
                 source_heap,
@@ -263,7 +292,7 @@ fn import_runtime_map_key(
                 source_module,
                 source_state,
             )? {
-                RuntimeVal::Obj(handle) => crate::val::RuntimeMapKey::Obj(handle),
+                RuntimeVal::Obj(handle) => RuntimeMapKey::Obj(handle),
                 _ => unreachable!("object map key use must stay an object"),
             }
         }

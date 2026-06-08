@@ -172,12 +172,16 @@ mod tests {
     }
 
     #[test]
-    fn test_assert_lk_modules_are_not_registered() {
-        let mut resolver = ModuleResolver::new();
-        crate::register_stdlib_lk_modules(&mut resolver).expect("register lk stdlib modules");
+    fn test_removed_lk_source_modules_are_not_registered() {
+        let registry = module::ModuleRegistry::new();
+        let resolver = ModuleResolver::with_registry(registry);
 
-        assert!(resolver.resolve_runtime_module("assert").is_err());
-        assert!(resolver.resolve_runtime_module("assert_").is_err());
+        for module in ["alg", "collections", "func", "math_ext", "test_minimal"] {
+            assert!(
+                resolver.resolve_runtime_module(module).is_err(),
+                "removed LK source module `{module}` should not be registered as a runtime module"
+            );
+        }
     }
 
     #[test]

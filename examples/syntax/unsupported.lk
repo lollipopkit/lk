@@ -95,9 +95,9 @@ println("13. \"ha\" * 3 = {} (expected: hahaha)", "ha" * 3);
 let bare_user = {name: "Alice", age: 30};
 println("14. bare_user.name = {} (expected: Alice)", bare_user.name);
 
-// ── 15. map.set() returns updated map, not void ──
-// map.set(m, "key", val) returns the updated map
-// map.delete(m, "key") returns [updated_map, removed_value]
+// ── 15. Map instance mutation ──
+// m.set("key", val) mutates the map in place
+// m.delete("key") mutates the map in place and returns the removed value
 
 // ── 16. Map/struct dot assignment and compound assignment ──
 let assign_m = {count: 1};

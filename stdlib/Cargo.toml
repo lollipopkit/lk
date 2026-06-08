@@ -22,8 +22,6 @@ lk-stdlib-datetime = { path = "crates/datetime" }
 lk-stdlib-io = { path = "crates/io" }
 lk-stdlib-iter = { path = "crates/iter" }
 lk-stdlib-json = { path = "crates/json" }
-lk-stdlib-list = { path = "crates/list" }
-lk-stdlib-map = { path = "crates/map" }
 lk-stdlib-math = { path = "crates/math" }
 lk-stdlib-net = { path = "crates/net" }
 lk-stdlib-os = { path = "crates/os" }

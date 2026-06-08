@@ -4,7 +4,7 @@ use anyhow::{anyhow, bail};
 use arcstr::ArcStr;
 
 use crate::{
-    val::{HeapRef, HeapStore, HeapValue, RuntimeMapKey, RuntimeVal, ShortStr, Type, TypedList},
+    val::{HeapRef, HeapStore, HeapValue, RuntimeMapKey, RuntimeSet, RuntimeVal, ShortStr, Type, TypedList},
     vm::{
         NativeArgs, NativeRuntime, call_runtime_value_runtime_list_args,
         call_runtime_value_runtime_named_map_list_args, call_runtime_value_runtime_with_receiver_list_args,
@@ -127,6 +127,11 @@ fn call_method_positional_runtime(
         return Ok(result);
     }
     if let Some(result) = positional.with_slice(runtime.heap_mut(), |positional, heap| {
+        dispatch_set_builtin_method(&receiver, method_str, positional, heap)
+    })? {
+        return Ok(result);
+    }
+    if let Some(result) = positional.with_slice(runtime.heap_mut(), |positional, heap| {
         dispatch_string_builtin_method(&receiver, method_str, positional, heap)
     })? {
         return Ok(result);
@@ -171,6 +176,11 @@ fn call_method_named_runtime(
             return Ok(result);
         }
         if let Some(result) = positional.with_slice(runtime.heap_mut(), |positional, heap| {
+            dispatch_set_builtin_method(&receiver, method.as_str(), positional, heap)
+        })? {
+            return Ok(result);
+        }
+        if let Some(result) = positional.with_slice(runtime.heap_mut(), |positional, heap| {
             dispatch_string_builtin_method(&receiver, method.as_str(), positional, heap)
         })? {
             return Ok(result);
@@ -184,7 +194,7 @@ fn call_method_named_runtime(
     bail!("Named arguments are not supported for trait methods")
 }
 
-/// Dispatch built-in map instance methods: set, get, has, len.
+/// Dispatch built-in map instance methods.
 /// Returns Some(value) if the method was handled, None if it should fall through.
 fn dispatch_map_builtin_method(
     receiver: &RuntimeVal,
@@ -204,7 +214,7 @@ fn dispatch_map_builtin_method(
             if positional.len() != 2 {
                 bail!("map.set() expects 2 arguments (key, value), got {}", positional.len());
             }
-            let key = map_string_key(&positional[0], heap, "map.set() key")?;
+            let key = runtime_map_key_from_value(&positional[0], heap, "map.set() key")?;
             let value = positional[1].clone();
             if let Some(HeapValue::Map(map)) = heap.get_mut(handle) {
                 map.set(key, value);
@@ -218,7 +228,7 @@ fn dispatch_map_builtin_method(
                     positional.len()
                 );
             }
-            let key = map_string_key(&positional[0], heap, "map.get() key")?;
+            let key = runtime_map_key_from_value(&positional[0], heap, "map.get() key")?;
             let default = positional.get(1).cloned().unwrap_or(RuntimeVal::Nil);
             let result = match heap.get(handle) {
                 Some(HeapValue::Map(map)) => map.get(&key).unwrap_or(RuntimeVal::Nil),
@@ -234,9 +244,31 @@ fn dispatch_map_builtin_method(
             if positional.len() != 1 {
                 bail!("map.has() expects 1 argument (key), got {}", positional.len());
             }
-            let key = map_string_key(&positional[0], heap, "map.has() key")?;
+            let key = runtime_map_key_from_value(&positional[0], heap, "map.has() key")?;
             let found = matches!(heap.get(handle), Some(HeapValue::Map(m)) if m.get(&key).is_some());
             Ok(Some(RuntimeVal::Bool(found)))
+        }
+        "delete" => {
+            if positional.len() != 1 {
+                bail!("map.delete() expects 1 argument (key), got {}", positional.len());
+            }
+            let key = runtime_map_key_from_value(&positional[0], heap, "map.delete() key")?;
+            let removed = match heap.get_mut(handle) {
+                Some(HeapValue::Map(map)) => map.remove(&key).unwrap_or(RuntimeVal::Nil),
+                _ => RuntimeVal::Nil,
+            };
+            Ok(Some(removed))
+        }
+        "clear" => {
+            if !positional.is_empty() {
+                bail!("map.clear() expects no arguments, got {}", positional.len());
+            }
+            if let Some(HeapValue::Map(map)) = heap.get_mut(handle) {
+                for (key, _) in map.entries_iter() {
+                    map.remove(&key);
+                }
+            }
+            Ok(Some(RuntimeVal::Nil))
         }
         "len" => {
             if !positional.is_empty() {
@@ -247,6 +279,16 @@ fn dispatch_map_builtin_method(
                 _ => 0,
             };
             Ok(Some(RuntimeVal::Int(len as i64)))
+        }
+        "is_empty" => {
+            if !positional.is_empty() {
+                bail!("map.is_empty() expects no arguments, got {}", positional.len());
+            }
+            let is_empty = match heap.get(handle) {
+                Some(HeapValue::Map(m)) => m.is_empty(),
+                _ => true,
+            };
+            Ok(Some(RuntimeVal::Bool(is_empty)))
         }
         "keys" => {
             if !positional.is_empty() {
@@ -260,11 +302,7 @@ fn dispatch_map_builtin_method(
                 Some(HeapValue::Map(m)) => {
                     let mut ks: Vec<RuntimeVal> = Vec::with_capacity(m.len());
                     for (k, _) in m.entries_iter() {
-                        match k {
-                            RuntimeMapKey::String(ref s) => ks.push(make_string_val(s, heap)),
-                            RuntimeMapKey::ShortStr(ref s) => ks.push(make_string_val(s.as_str(), heap)),
-                            _ => {}
-                        }
+                        ks.push(runtime_map_key_to_value(k, heap));
                     }
                     ks
                 }
@@ -300,15 +338,157 @@ fn dispatch_map_builtin_method(
     }
 }
 
-fn map_string_key(value: &RuntimeVal, heap: &HeapStore, context: &str) -> anyhow::Result<RuntimeMapKey> {
+fn dispatch_set_builtin_method(
+    receiver: &RuntimeVal,
+    method: &str,
+    positional: &[RuntimeVal],
+    heap: &mut HeapStore,
+) -> anyhow::Result<Option<RuntimeVal>> {
+    let RuntimeVal::Obj(handle) = receiver else {
+        return Ok(None);
+    };
+    let handle = *handle;
+    if !matches!(heap.get(handle), Some(HeapValue::Set(_))) {
+        return Ok(None);
+    }
+    match method {
+        "len" => {
+            if !positional.is_empty() {
+                bail!("set.len() expects no arguments, got {}", positional.len());
+            }
+            let len = match heap.get(handle) {
+                Some(HeapValue::Set(values)) => values.len(),
+                _ => 0,
+            };
+            Ok(Some(RuntimeVal::Int(len as i64)))
+        }
+        "is_empty" => {
+            if !positional.is_empty() {
+                bail!("set.is_empty() expects no arguments, got {}", positional.len());
+            }
+            let is_empty = match heap.get(handle) {
+                Some(HeapValue::Set(values)) => values.is_empty(),
+                _ => true,
+            };
+            Ok(Some(RuntimeVal::Bool(is_empty)))
+        }
+        "has" | "contains" => {
+            if positional.len() != 1 {
+                bail!("set.{method}() expects 1 argument (value), got {}", positional.len());
+            }
+            let key = runtime_map_key_from_value(&positional[0], heap, "set.has() value")?;
+            let found = matches!(heap.get(handle), Some(HeapValue::Set(values)) if values.contains(&key));
+            Ok(Some(RuntimeVal::Bool(found)))
+        }
+        "add" => {
+            if positional.len() != 1 {
+                bail!("set.add() expects 1 argument (value), got {}", positional.len());
+            }
+            let key = runtime_map_key_from_value(&positional[0], heap, "set.add() value")?;
+            let inserted = match heap.get_mut(handle) {
+                Some(HeapValue::Set(values)) => values.insert(key),
+                _ => false,
+            };
+            Ok(Some(RuntimeVal::Bool(inserted)))
+        }
+        "delete" | "remove" => {
+            if positional.len() != 1 {
+                bail!("set.{method}() expects 1 argument (value), got {}", positional.len());
+            }
+            let key = runtime_map_key_from_value(&positional[0], heap, "set.delete() value")?;
+            let removed = match heap.get_mut(handle) {
+                Some(HeapValue::Set(values)) => values.remove(&key),
+                _ => false,
+            };
+            Ok(Some(RuntimeVal::Bool(removed)))
+        }
+        "clear" => {
+            if !positional.is_empty() {
+                bail!("set.clear() expects no arguments, got {}", positional.len());
+            }
+            if let Some(HeapValue::Set(values)) = heap.get_mut(handle) {
+                values.clear();
+            }
+            Ok(Some(RuntimeVal::Nil))
+        }
+        "values" => {
+            if !positional.is_empty() {
+                bail!("set.values() expects no arguments, got {}", positional.len());
+            }
+            let vals = match heap.get(handle) {
+                Some(HeapValue::Set(values)) => values.entries().cloned().collect::<Vec<_>>(),
+                _ => Vec::new(),
+            };
+            let vals = vals
+                .into_iter()
+                .map(|value| runtime_map_key_to_value(value, heap))
+                .collect();
+            Ok(Some(RuntimeVal::Obj(
+                heap.alloc(HeapValue::List(TypedList::Mixed(vals))),
+            )))
+        }
+        _ => Ok(None),
+    }
+}
+
+pub(super) fn core_set_builtin(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> anyhow::Result<RuntimeVal> {
+    if args.len() > 1 {
+        bail!("Set() expects 0 or 1 argument, got {}", args.len());
+    }
+    let set = match args.get(0) {
+        None => RuntimeSet::new(),
+        Some(value) => runtime_set_from_value(value, runtime.heap())?,
+    };
+    Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::Set(set))))
+}
+
+fn runtime_set_from_value(value: &RuntimeVal, heap: &HeapStore) -> anyhow::Result<RuntimeSet> {
+    let RuntimeVal::Obj(handle) = value else {
+        bail!("Set(value) expects List or Set, got {:?}", value.kind());
+    };
+    match heap.get(*handle) {
+        Some(HeapValue::List(list)) => {
+            let mut set = RuntimeSet::new();
+            for item in list.collect_owned() {
+                set.insert(runtime_map_key_from_value(&item, heap, "Set() item")?);
+            }
+            Ok(set)
+        }
+        Some(HeapValue::Set(values)) => {
+            let mut set = RuntimeSet::new();
+            for item in values.entries() {
+                set.insert(item.clone());
+            }
+            Ok(set)
+        }
+        Some(value) => bail!("Set(value) expects List or Set, got {}", value.type_name()),
+        None => bail!("Set(value) heap object out of bounds"),
+    }
+}
+
+fn runtime_map_key_from_value(value: &RuntimeVal, heap: &HeapStore, context: &str) -> anyhow::Result<RuntimeMapKey> {
     match value {
-        RuntimeVal::ShortStr(s) => Ok(RuntimeMapKey::String(Arc::<str>::from(s.as_str()))),
+        RuntimeVal::Nil => Ok(RuntimeMapKey::Nil),
+        RuntimeVal::Bool(value) => Ok(RuntimeMapKey::Bool(*value)),
+        RuntimeVal::Int(value) => Ok(RuntimeMapKey::Int(*value)),
+        RuntimeVal::Float(_) => bail!("{context}: Float cannot be used as a key"),
+        RuntimeVal::ShortStr(s) => Ok(RuntimeMapKey::ShortStr(*s)),
         RuntimeVal::Obj(handle) => match heap.get(*handle) {
             Some(HeapValue::String(s)) => Ok(RuntimeMapKey::String(Arc::clone(s))),
-            Some(v) => bail!("{context}: expected string key, got {}", v.type_name()),
+            Some(_) => Ok(RuntimeMapKey::Obj(*handle)),
             None => bail!("{context}: heap object out of bounds"),
         },
-        other => bail!("{context}: expected string key, got {:?}", other.kind()),
+    }
+}
+
+fn runtime_map_key_to_value(value: RuntimeMapKey, heap: &mut HeapStore) -> RuntimeVal {
+    match value {
+        RuntimeMapKey::Nil => RuntimeVal::Nil,
+        RuntimeMapKey::Bool(value) => RuntimeVal::Bool(value),
+        RuntimeMapKey::Int(value) => RuntimeVal::Int(value),
+        RuntimeMapKey::ShortStr(value) => RuntimeVal::ShortStr(value),
+        RuntimeMapKey::String(value) => make_string_val(&value, heap),
+        RuntimeMapKey::Obj(value) => RuntimeVal::Obj(value),
     }
 }
 
@@ -1302,6 +1482,7 @@ fn heap_dispatch_type(value: &HeapValue) -> Type {
         HeapValue::Bytes(_) => Type::Named("Bytes".to_string()),
         HeapValue::List(_) => Type::List(Box::new(Type::Any)),
         HeapValue::Map(_) => Type::Map(Box::new(Type::Any), Box::new(Type::Any)),
+        HeapValue::Set(_) => Type::Set(Box::new(Type::Any)),
         HeapValue::Callable(_) => Type::Function {
             params: Vec::new(),
             named_params: Vec::new(),

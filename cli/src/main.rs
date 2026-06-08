@@ -836,7 +836,6 @@ pub(crate) fn build_vm_context(path: &Path) -> anyhow::Result<VmContext> {
         resolver.set_base_dir(parent.to_path_buf());
     }
     configure_package_resolver(&mut resolver, path)?;
-    lk_stdlib::register_stdlib_lk_modules(&mut resolver)?;
     let resolver = Arc::new(resolver);
     Ok(VmContext::new()
         .with_resolver(Arc::clone(&resolver))

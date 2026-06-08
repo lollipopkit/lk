@@ -328,6 +328,7 @@ pub(super) fn heap_kind(value: &HeapValue) -> &'static str {
         HeapValue::Bytes(_) => "Bytes",
         HeapValue::List(_) => "List",
         HeapValue::Map(_) => "Map",
+        HeapValue::Set(_) => "Set",
         HeapValue::Callable(_) => "Callable",
         HeapValue::Task(_) => "Task",
         HeapValue::Channel(_) => "Channel",

@@ -10,8 +10,6 @@ members = [
     "stdlib/crates/io",
     "stdlib/crates/iter",
     "stdlib/crates/json",
-    "stdlib/crates/list",
-    "stdlib/crates/map",
     "stdlib/crates/math",
     "stdlib/crates/net",
     "stdlib/crates/os",

@@ -568,12 +568,12 @@ impl Stmt {
 
                 // 验证可迭代类型
                 match iter_type {
-                    Type::List(_) | Type::String | Type::Map(_, _) | Type::Any | Type::Variable(_) => {
+                    Type::List(_) | Type::String | Type::Map(_, _) | Type::Set(_) | Type::Any | Type::Variable(_) => {
                         // 这些类型都是可迭代的（Any和类型变量在运行时确定）
                     }
                     _ => {
                         return Err(anyhow!(format!(
-                            "For loop iterable must be List, String, or Map, but got {}",
+                            "For loop iterable must be List, String, Map, or Set, but got {}",
                             iter_type.display()
                         )));
                     }
@@ -639,6 +639,7 @@ impl Stmt {
                         // Map 迭代返回 [key, value] 对，使用 Tuple 表示
                         Type::Tuple(vec![(**k).clone(), (**v).clone()])
                     }
+                    Type::Set(inner) => (**inner).clone(),
                     _ => Type::Any,
                 };
                 type_checker.add_local_type(name.clone(), var_type);

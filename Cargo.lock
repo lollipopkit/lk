@@ -818,8 +818,6 @@ dependencies = [
  "lk-stdlib-io",
  "lk-stdlib-iter",
  "lk-stdlib-json",
- "lk-stdlib-list",
- "lk-stdlib-map",
  "lk-stdlib-math",
  "lk-stdlib-net",
  "lk-stdlib-os",
@@ -901,26 +899,6 @@ dependencies = [
  "lk-core",
  "lk-stdlib-common",
  "serde_json",
-]
-
-[[package]]
-name = "lk-stdlib-list"
-version = "0.1.3"
-dependencies = [
- "anyhow",
- "arcstr",
- "lk-core",
- "lk-stdlib-common",
-]
-
-[[package]]
-name = "lk-stdlib-map"
-version = "0.1.3"
-dependencies = [
- "anyhow",
- "lk-core",
- "lk-stdlib-common",
- "lk-stdlib-string",
 ]
 
 [[package]]

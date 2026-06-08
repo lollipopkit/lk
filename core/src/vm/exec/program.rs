@@ -4,14 +4,15 @@ use anyhow::Result;
 
 use crate::{
     stmt::{
-        Program,
+        Program, StmtParser,
         import::{collect_program_imports, execute_imports},
     },
+    token::Tokenizer,
     val::{HeapStore, RuntimeVal},
     vm::{Compiler, GlobalSlot, ModuleArtifact, VmContext},
 };
 
-use super::{Executor, ProgramResult, execute_module, imports::import_runtime_export};
+use super::{Executor, ProgramResult, imports::import_runtime_export};
 
 pub fn execute_program(program: &Program) -> Result<ProgramResult> {
     let mut ctx = VmContext::new();
@@ -69,13 +70,9 @@ pub fn execute_compiled_module_with_ctx(module: Arc<crate::vm::Module>, ctx: &mu
 }
 
 pub fn execute_source(source: &str) -> Result<ProgramResult> {
-    let module = Compiler::compile_source_module(source)?;
-    let result = execute_module(&module)?;
-    Ok(ProgramResult {
-        returns: result.returns,
-        state: result.state,
-        module: Arc::new(module),
-    })
+    let tokens = Tokenizer::tokenize(source)?;
+    let program = StmtParser::new(&tokens).parse_program()?;
+    execute_program(&program)
 }
 
 fn seed_module_globals(slots: &[GlobalSlot], ctx: &VmContext, heap: &mut HeapStore) -> Result<Vec<RuntimeVal>> {

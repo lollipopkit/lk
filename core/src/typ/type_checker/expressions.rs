@@ -578,7 +578,7 @@ impl TypeChecker {
                 Ok(Type::Bool)
             }
             BinOp::In => match self.resolve_aliases(&right_type) {
-                Type::List(_) | Type::Map(_, _) => Ok(Type::Bool),
+                Type::List(_) | Type::Map(_, _) | Type::Set(_) => Ok(Type::Bool),
                 other => Err(Self::type_err(
                     "'in' operator requires container type",
                     Some(Type::List(Box::new(Type::Any))),
@@ -1006,7 +1006,7 @@ impl TypeChecker {
                 let resolved_receiver = self.resolve_aliases(receiver_ty);
                 let known_container = matches!(
                     &resolved_receiver,
-                    Type::List(_) | Type::Map(_, _) | Type::String | Type::Tuple(_) | Type::Variable(_)
+                    Type::List(_) | Type::Map(_, _) | Type::Set(_) | Type::String | Type::Tuple(_) | Type::Variable(_)
                 );
                 if !known_container {
                     return Ok(None);
@@ -1053,6 +1053,266 @@ impl TypeChecker {
                     }
                     _ => Ok(None),
                 }
+            }
+            "is_empty" => {
+                let resolved_receiver = self.resolve_aliases(receiver_ty);
+                let known_container = matches!(
+                    &resolved_receiver,
+                    Type::List(_) | Type::Map(_, _) | Type::Set(_) | Type::String | Type::Tuple(_) | Type::Variable(_)
+                );
+                if !known_container {
+                    return Ok(None);
+                }
+                if !args.is_empty() {
+                    if matches!(&resolved_receiver, Type::Variable(_)) {
+                        return Ok(None);
+                    }
+                    return Err(Self::type_err(
+                        "Method is_empty expects 0 arguments",
+                        None,
+                        None,
+                        Some(func.clone()),
+                    ));
+                }
+                Ok(Some(Type::Bool))
+            }
+            "get" => {
+                let resolved_receiver = self.resolve_aliases(receiver_ty);
+                match resolved_receiver {
+                    Type::Map(key_type, value_type) => {
+                        if args.is_empty() || args.len() > 2 {
+                            return Err(Self::type_err(
+                                "Method get expects 1 or 2 arguments",
+                                None,
+                                None,
+                                Some(func.clone()),
+                            ));
+                        }
+                        let arg_ty = self.check_expr(&args[0])?;
+                        self.inference_engine.add_constraint((*key_type).clone(), arg_ty);
+                        if let Some(default) = args.get(1) {
+                            let default_ty = self.check_expr(default)?;
+                            self.inference_engine.add_constraint((*value_type).clone(), default_ty);
+                        }
+                        Ok(Some(*value_type))
+                    }
+                    Type::List(elem_type) => {
+                        if args.len() != 1 {
+                            return Err(Self::type_err(
+                                "Method get expects 1 argument",
+                                None,
+                                None,
+                                Some(func.clone()),
+                            ));
+                        }
+                        let index_ty = self.check_expr(&args[0])?;
+                        self.enforce_int_type(args[0].as_ref(), index_ty, "List index")?;
+                        Ok(Some(*elem_type))
+                    }
+                    Type::Variable(_) => Ok(None),
+                    _ => Ok(None),
+                }
+            }
+            "set" => {
+                let resolved_receiver = self.resolve_aliases(receiver_ty);
+                match resolved_receiver {
+                    Type::Map(key_type, value_type) => {
+                        if args.len() != 2 {
+                            return Err(Self::type_err(
+                                "Method set expects 2 arguments",
+                                None,
+                                None,
+                                Some(func.clone()),
+                            ));
+                        }
+                        let key_ty = self.check_expr(&args[0])?;
+                        let value_ty = self.check_expr(&args[1])?;
+                        self.inference_engine.add_constraint((*key_type).clone(), key_ty);
+                        self.inference_engine.add_constraint((*value_type).clone(), value_ty);
+                        Ok(Some(Type::Nil))
+                    }
+                    Type::List(elem_type) => {
+                        if args.len() != 2 {
+                            return Err(Self::type_err(
+                                "Method set expects 2 arguments",
+                                None,
+                                None,
+                                Some(func.clone()),
+                            ));
+                        }
+                        let index_ty = self.check_expr(&args[0])?;
+                        let value_ty = self.check_expr(&args[1])?;
+                        self.enforce_int_type(args[0].as_ref(), index_ty, "List index")?;
+                        self.inference_engine.add_constraint((*elem_type).clone(), value_ty);
+                        Ok(Some(Type::Nil))
+                    }
+                    Type::Variable(_) => Ok(None),
+                    _ => Ok(None),
+                }
+            }
+            "has" | "contains" => {
+                let resolved_receiver = self.resolve_aliases(receiver_ty);
+                match resolved_receiver {
+                    Type::Map(key_type, _) => {
+                        if args.len() != 1 {
+                            return Err(Self::type_err(
+                                &format!("Method {method} expects 1 argument"),
+                                None,
+                                None,
+                                Some(func.clone()),
+                            ));
+                        }
+                        let arg_ty = self.check_expr(&args[0])?;
+                        self.inference_engine.add_constraint((*key_type).clone(), arg_ty);
+                        Ok(Some(Type::Bool))
+                    }
+                    Type::Set(elem_type) | Type::List(elem_type) => {
+                        if args.len() != 1 {
+                            return Err(Self::type_err(
+                                &format!("Method {method} expects 1 argument"),
+                                None,
+                                None,
+                                Some(func.clone()),
+                            ));
+                        }
+                        let arg_ty = self.check_expr(&args[0])?;
+                        self.inference_engine.add_constraint((*elem_type).clone(), arg_ty);
+                        Ok(Some(Type::Bool))
+                    }
+                    Type::Variable(_) => Ok(None),
+                    _ => Ok(None),
+                }
+            }
+            "delete" | "remove" => {
+                let resolved_receiver = self.resolve_aliases(receiver_ty);
+                match resolved_receiver {
+                    Type::Map(key_type, value_type) => {
+                        if args.len() != 1 {
+                            return Err(Self::type_err(
+                                &format!("Method {method} expects 1 argument"),
+                                None,
+                                None,
+                                Some(func.clone()),
+                            ));
+                        }
+                        let arg_ty = self.check_expr(&args[0])?;
+                        self.inference_engine.add_constraint((*key_type).clone(), arg_ty);
+                        Ok(Some(*value_type))
+                    }
+                    Type::Set(elem_type) => {
+                        if args.len() != 1 {
+                            return Err(Self::type_err(
+                                &format!("Method {method} expects 1 argument"),
+                                None,
+                                None,
+                                Some(func.clone()),
+                            ));
+                        }
+                        let arg_ty = self.check_expr(&args[0])?;
+                        self.inference_engine.add_constraint((*elem_type).clone(), arg_ty);
+                        Ok(Some(Type::Bool))
+                    }
+                    Type::List(elem_type) if method == "remove" => {
+                        if args.len() != 1 {
+                            return Err(Self::type_err(
+                                "Method remove expects 1 argument",
+                                None,
+                                None,
+                                Some(func.clone()),
+                            ));
+                        }
+                        let arg_ty = self.check_expr(&args[0])?;
+                        self.inference_engine.add_constraint((*elem_type).clone(), arg_ty);
+                        Ok(Some(Type::List(elem_type)))
+                    }
+                    Type::Variable(_) => Ok(None),
+                    _ => Ok(None),
+                }
+            }
+            "add" => {
+                let resolved_receiver = self.resolve_aliases(receiver_ty);
+                match resolved_receiver {
+                    Type::Set(elem_type) => {
+                        if args.len() != 1 {
+                            return Err(Self::type_err(
+                                "Method add expects 1 argument",
+                                None,
+                                None,
+                                Some(func.clone()),
+                            ));
+                        }
+                        let arg_ty = self.check_expr(&args[0])?;
+                        self.inference_engine.add_constraint((*elem_type).clone(), arg_ty);
+                        Ok(Some(Type::Bool))
+                    }
+                    Type::Variable(_) => Ok(None),
+                    _ => Ok(None),
+                }
+            }
+            "push" => {
+                let resolved_receiver = self.resolve_aliases(receiver_ty);
+                match resolved_receiver {
+                    Type::List(elem_type) => {
+                        if args.len() != 1 {
+                            return Err(Self::type_err(
+                                "Method push expects 1 argument",
+                                None,
+                                None,
+                                Some(func.clone()),
+                            ));
+                        }
+                        let arg_ty = self.check_expr(&args[0])?;
+                        self.inference_engine.add_constraint((*elem_type).clone(), arg_ty);
+                        Ok(Some(Type::Nil))
+                    }
+                    Type::Variable(_) => Ok(None),
+                    _ => Ok(None),
+                }
+            }
+            "keys" | "values" => {
+                let resolved_receiver = self.resolve_aliases(receiver_ty);
+                match resolved_receiver {
+                    Type::Map(key_type, value_type) => {
+                        if !args.is_empty() {
+                            return Err(Self::type_err(
+                                &format!("Method {method} expects 0 arguments"),
+                                None,
+                                None,
+                                Some(func.clone()),
+                            ));
+                        }
+                        let elem = if method == "keys" { *key_type } else { *value_type };
+                        Ok(Some(Type::List(Box::new(elem))))
+                    }
+                    Type::Set(elem_type) if method == "values" => {
+                        if !args.is_empty() {
+                            return Err(Self::type_err(
+                                "Method values expects 0 arguments",
+                                None,
+                                None,
+                                Some(func.clone()),
+                            ));
+                        }
+                        Ok(Some(Type::List(elem_type)))
+                    }
+                    Type::Variable(_) => Ok(None),
+                    _ => Ok(None),
+                }
+            }
+            "clear" => {
+                let resolved_receiver = self.resolve_aliases(receiver_ty);
+                if matches!(&resolved_receiver, Type::Map(_, _) | Type::Set(_) | Type::List(_)) {
+                    if !args.is_empty() {
+                        return Err(Self::type_err(
+                            "Method clear expects 0 arguments",
+                            None,
+                            None,
+                            Some(func.clone()),
+                        ));
+                    }
+                    return Ok(Some(Type::Nil));
+                }
+                Ok(None)
             }
             _ => Ok(None),
         }

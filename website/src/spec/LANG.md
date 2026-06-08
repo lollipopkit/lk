@@ -19,7 +19,8 @@ This document describes the LK language as implemented in this repository (parse
 
 ### Collections
 - List: `[a, b, c]` (heterogeneous allowed). Indexing: `list[0]`. Negative indexing: `list[-1]`. Slice with range: `list[1..3]`. Safe access helpers via stdlib/meta-methods.
-- Map: `{ key: value, ... }`. Bare keys are string keys: `{name: "Alice", age: 30}` is equivalent to `{ "name": "Alice", "age": 30 }`. Keys are evaluated expressions and coerced to strings at runtime (string/int/float/bool); access with `map.key` or `map["key"]`.
+- Map: `{ key: value, ... }`. Bare keys are string keys: `{name: "Alice", age: 30}` is equivalent to `{ "name": "Alice", "age": 30 }`. Keys are runtime key values (nil/bool/int/string/object; float is rejected); access with `map.key` or `map["key"]`.
+- Set: `Set()` creates an empty set; `Set([items])` builds a set from a list. Set elements use the same key rules as Map.
 
 ### Template Strings
 - Interpolation only with `${expr}` inside normal quotes (both `"..."` and `'...'`).
@@ -127,7 +128,7 @@ Used in `match`, `if let`, `while let`, and `let` destructuring.
 - `if let pattern = expr stmt [else stmt]`
 - `while (cond) stmt` or `while cond stmt`
 - `while let pattern = expr stmt`
-- `for pattern in expr stmt` where `expr` is iterable: List, String (chars), or Map (iterates `[key, value]`).
+- `for pattern in expr stmt` where `expr` is iterable: List, String (chars), Map (iterates `[key, value]`), or Set (iterates values).
 - `break;`, `continue;`
 - `return;` or `return expr;`
 
@@ -216,16 +217,14 @@ use "d/d1";    // c/d/d1.lk, available as d1
 
 ## Builtins and Stdlib
 - Builtin globals: `print(fmt, ...args)`, `println(fmt, ...args)`, `panic([msg])`, `assert(cond[, msg])`, `assert_eq(actual, expected[, msg])`, `assert_ne(actual, expected[, msg])`, `typeof(value)`.
-- `typeof(value)` returns the runtime type name as a string: `"Int"`, `"Float"`, `"String"`, `"Bytes"`, `"Bool"`, `"Nil"`, `"List"`, `"Map"`, `"Slice"`, resource names such as `"File"`/`"TcpStream"`, or the struct type name.
+- `typeof(value)` returns the runtime type name as a string: `"Int"`, `"Float"`, `"String"`, `"Bytes"`, `"Bool"`, `"Nil"`, `"List"`, `"Map"`, `"Set"`, `"Slice"`, resource names such as `"File"`/`"TcpStream"`, or the struct type name.
 
 ### Stdlib Modules
-Use as needed: `math`, `string`, `bytes`, `list`, `map`, `iter`, `stream`, `datetime`, `os`, `io`, `net`, `slice`, `json`, `yaml`, `toml`. LK-source modules: `alg`, `collections`, `func`, `math_ext`. With `concurrency` feature: `task`, `chan`, `time`.
+Use as needed: `math`, `string`, `bytes`, `iter`, `stream`, `datetime`, `os`, `io`, `net`, `slice`, `json`, `yaml`, `toml`. With `concurrency` feature: `task`, `chan`, `time`.
 
 - `math`: constants `pi`, `e`, `inf`, `nan`, `max_int`, `min_int`, `max_float`, `epsilon`; functions `abs`, `sqrt`, `floor`, `ceil`, `round`, `min`, `max`, `pow`, `exp`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `log`, `log10`, `log2`, `clamp`, `random`, `hypot`, `cbrt`, `sinh`, `cosh`, `tanh`, `trunc`, `fract`, `sign`, `to_int`, `to_float`, `is_nan`, `is_inf`.
 - `string`: methods (see meta-methods below).
 - `bytes`: binary data backed by bytes. `from_list(list)`, `from_string(str)`, `len(bytes)`, `is_empty(bytes)`, `get(bytes, index)`, `slice(bytes, start[, end])`, `to_list(bytes)`, `to_string_utf8(bytes)`, `to_string_lossy(bytes)`, `concat(a, b)`, `eq(a, b)`.
-- `list`: methods (see meta-methods below).
-- `map`: `map.len(m)`, `map.keys(m)`, `map.values(m)`, `map.has(m, key)`, `map.get(m, key)`, `map.set(m, key, val)` (returns updated map), `map.delete(m, key)` (returns `[updated_map, removed_value]`).
 - `iter`: module-level list utilities only: `range([start,] end [, step])`, `enumerate(list)`, `zip(list1, list2)`, `take(list, n)`, `skip(list, n)`, `chain(list1, list2)`, `flatten(list)`, `unique(list)`, `chunk(list, size)`, and higher-order ops `map(list, fn)`, `filter(list, fn)`, `reduce(list, init, fn)`.
 - `stream`: module-level lazy pipelines. `stream.from_list(list)`, `stream.range(start, end)`, `stream.iterate(seed, fn)`, `stream.repeat(val)`, `stream.from_channel(ch)`, `stream.map(s, fn)`, `stream.filter(s, fn)`, `stream.take(s, n)`, `stream.skip(s, n)`, `stream.chain(a, b)`, `stream.subscribe(s)`, `stream.next(cursor)`, `stream.collect(stream_or_cursor)`, `stream.next_block(cursor[, timeout_ms])`, `stream.collect_block(stream_or_cursor[, n][, timeout_ms])`.
 - `datetime`: `now()` (microseconds), `format(secs, fmt)`, `parse(str, fmt)`, `add(secs, delta)`, `sub(secs, delta)`, `day_of_week(secs)`, `day_of_year(secs)`, `is_weekend(secs)`.
@@ -243,18 +242,11 @@ Use as needed: `math`, `string`, `bytes`, `list`, `map`, `iter`, `stream`, `date
 - `net.udp`: `bind(addr)`, `recv_from(socket, len?) -> Bytes`, `send_to(socket, data, addr)`, plus `recv_from_task`, `send_to_task`. `send_to` accepts `Bytes` or `String`.
 - `time` (concurrency): `time.now()`, `time.sleep(ms)`, `time.timeout(ms)`, `time.after(ms)`, `time.since(start, end)`.
 
-#### LK-Source Stdlib Modules
-These modules are written in LK itself and complement the Rust-native modules with algorithms, data structures, and utilities:
-
-- `alg`: Sorting (`insertion_sort`, `merge_sort`, `quick_sort`), searching (`binary_search`, `linear_search`, `bisect`), classic algorithms (`gcd`, `lcm`, `is_prime`, `sieve`, `fib`, `factorial`, `comb`, `pow_int`), string algorithms (`kmp_search`, `kmp_table`), `shuffle`, `bisect`.
-- `collections`: `stack`/`stack_push`/`stack_pop`/`stack_peek`/`stack_is_empty`/`stack_len`, `queue`/`queue_push`/`queue_pop`/`queue_peek`/`queue_is_empty`/`queue_len`, `set`/`set_add`/`set_remove`/`set_has`/`set_values`/`set_len`/`set_union`/`set_intersection`/`set_difference`/`set_symmetric_difference`, `heap`/`heap_push`/`heap_pop`/`heap_peek`/`heap_len`/`heap_is_empty`, `deque`/`deque_push_front`/`deque_push_back`/`deque_pop_front`/`deque_pop_back`/`deque_peek_front`/`deque_peek_back`/`deque_len`/`deque_is_empty`.
-- `func`: `compose`, `pipe`, `compose_all`, `pipe_all`, `curry2`, `curry3`, `partial1`, `partial2`, `id`, `constant`, `complement`, `both`, `either`, `iterate`, `unfold`, `scan`, `group_by`, `count_by`, `partition`, `flat_map`, `zip_with`, `memoize`, `tap`.
-- `math_ext`: `ext_gcd`, `pow_mod`, `mod_inverse`, `totient`, `divisor_count`, `divisor_sum`, `perm`, `collatz_len`, `triangular`, `pentagonal`, `hexagonal`, `is_perfect`, `catalan`, `sign`, `clamp`, `lerp`, `inverse_lerp`, `map_range`. Re-exports `gcd`, `lcm`, `is_prime`, `factorial`, `comb` from `alg`.
-
 ### Meta-methods (usable as `value.method()` without importing)
 - String: `len`, `lower`, `upper`, `trim`, `starts_with`, `ends_with`, `contains`, `replace`, `substring`, `split`, `join`, `reverse`, `repeat`, `chars`, `char_at`, `byte_at`, `find`, `is_empty`, `format`
 - List: `len`, `push`, `set`, `concat`, `join`, `get`, `first`, `last`, `map`, `filter`, `reduce`, `take`, `skip`, `chain`, `flatten`, `unique`, `chunk`, `enumerate`, `zip`, `to_stream`, `sort`, `reverse`, `pop`, `insert`, `remove_at`, `contains`, `index_of`, `slice`, `is_empty`
-- Map: `len`, `keys`, `values`, `has`, `get`, `set`, `delete`
+- Map: `len`, `is_empty`, `keys`, `values`, `has`, `get`, `set`, `delete`, `clear`
+- Set: `len`, `is_empty`, `has`, `contains`, `add`, `delete`, `remove`, `values`, `clear`
 - Stream: `map`, `filter`, `take`, `skip`, `chain`, `subscribe`, `collect`, `collect_block`
 - StreamCursor: `next`, `collect`, `next_block`, `collect_block`
 - Channel: `to_stream`
@@ -274,11 +266,11 @@ These modules are written in LK itself and complement the Rust-native modules wi
 ## Types and Annotations
 ### Primitive and Composite Types
 - `Int`, `Float`, `String`, `Bool`, `Nil`, `Any`
-- `List<T>`, `Map<K, V>`
+- `List<T>`, `Map<K, V>`, `Set<T>`
 - `Task<T>`, `Channel<T>` (concurrency)
 - Function types: `(T1, T2) -> R`
 - Union: `A | B | Nil`; Optional: `T?` (sugar for `T | Nil`)
-- Named and generic types are parsed (e.g., `List<Int>`, `Map<String, Int>`)
+- Named and generic types are parsed (e.g., `List<Int>`, `Map<String, Int>`, `Set<String>`)
 
 ### Annotations
 - `let x: Int = 1;`
@@ -410,6 +402,7 @@ for_pattern  ::= '_' | id | '(' for_pattern { ',' for_pattern } ')' | '[' for_pa
 - `Nil` - Null/undefined value
 - `List` - Ordered collections
 - `Map` - Key-value maps
+- `Set` - Unique value collections
 - `Function` - First-class functions
 - `Object` - Struct instances (with type name and fields)
 - `Task` - Concurrency task handle (feature-gated)

@@ -1,6 +1,8 @@
 use anyhow::{Result, anyhow};
 use lk_core::{
-    val::{CallableValue, HeapStore, HeapValue, RuntimeMapKey, RuntimeVal, ShortStr, TypedList, TypedMap, de},
+    val::{
+        CallableValue, HeapStore, HeapValue, RuntimeMapKey, RuntimeSet, RuntimeVal, ShortStr, TypedList, TypedMap, de,
+    },
     vm::{NativeArgs, NativeRuntime},
 };
 use std::{fmt::Write as _, sync::Arc};
@@ -90,6 +92,7 @@ fn runtime_display_heap_value(value: &HeapValue, heap: &HeapStore) -> Result<Str
         HeapValue::Bytes(value) => Ok(format!("<Bytes {} bytes>", value.len())),
         HeapValue::List(values) => runtime_display_list(values, heap),
         HeapValue::Map(values) => runtime_display_map(values, heap),
+        HeapValue::Set(values) => runtime_display_set(values),
         HeapValue::Callable(value) => Ok(runtime_display_callable(value)),
         HeapValue::Object(value) => {
             let mut out = value.type_name.to_string();
@@ -104,6 +107,19 @@ fn runtime_display_heap_value(value: &HeapValue, heap: &HeapStore) -> Result<Str
         }
         other => Ok(format!("<{}>", other.type_name())),
     }
+}
+
+fn runtime_display_set(values: &RuntimeSet) -> Result<String> {
+    let mut out = String::from("Set(");
+    out.push('[');
+    let mut first = true;
+    for key in values.entries() {
+        push_display_sep(&mut out, &mut first);
+        out.push_str(&runtime_display_map_key(key));
+    }
+    out.push(']');
+    out.push(')');
+    Ok(out)
 }
 
 fn runtime_display_callable(value: &CallableValue) -> String {

@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use anyhow::{Result, bail};
 
-use crate::val::{HeapStore, HeapValue, RuntimeMapKey, RuntimeVal, ShortStr, TypedList, TypedMap};
+use crate::val::{HeapStore, HeapValue, RuntimeMapKey, RuntimeSet, RuntimeVal, ShortStr, TypedList, TypedMap};
 use crate::vm::{Instr, Opcode};
 
 use super::Executor;
@@ -870,6 +870,7 @@ impl Executor {
             (HeapValue::Bytes(lhs), HeapValue::Bytes(rhs)) => lhs == rhs,
             (HeapValue::List(lhs), HeapValue::List(rhs)) => self.typed_lists_equal(lhs, rhs)?,
             (HeapValue::Map(lhs), HeapValue::Map(rhs)) => self.typed_maps_equal(lhs, rhs)?,
+            (HeapValue::Set(lhs), HeapValue::Set(rhs)) => runtime_sets_equal(lhs, rhs),
             _ => false,
         })
     }
@@ -1020,6 +1021,10 @@ impl Executor {
         };
         Ok(Some(map))
     }
+}
+
+fn runtime_sets_equal(lhs: &RuntimeSet, rhs: &RuntimeSet) -> bool {
+    lhs.len() == rhs.len() && lhs.entries().all(|key| rhs.contains(key))
 }
 
 fn merge_typed_maps(lhs: &TypedMap, rhs: &TypedMap) -> TypedMap {
