@@ -342,7 +342,9 @@ fn inline_expr_is_supported(expr: &Expr) -> bool {
             !args.is_empty() && !name.is_empty() && args.iter().all(|arg| inline_expr_is_supported(arg))
         }
         Expr::CallExpr(callee, args) => {
-            inline_expr_is_supported(callee) && args.iter().all(|arg| inline_expr_is_supported(arg))
+            !inline_call_expr_uses_runtime_method_helper(callee)
+                && inline_expr_is_supported(callee)
+                && args.iter().all(|arg| inline_expr_is_supported(arg))
         }
         Expr::List(values) => values.iter().all(|value| inline_expr_is_supported(value)),
         Expr::Map(entries) => entries
@@ -354,6 +356,16 @@ fn inline_expr_is_supported(expr: &Expr) -> bool {
         }),
         _ => false,
     }
+}
+
+fn inline_call_expr_uses_runtime_method_helper(callee: &Expr) -> bool {
+    let Expr::Access(_, field) = callee else {
+        return false;
+    };
+    matches!(
+        field.as_ref(),
+        Expr::Literal(crate::val::LiteralVal::String(method)) if method.as_ref() == "starts_with"
+    )
 }
 
 pub(super) fn stmt_contains_call_to(stmt: &Stmt, target: &str) -> bool {

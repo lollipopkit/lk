@@ -383,21 +383,6 @@ pub(super) fn native_static_to_string_value(
     })
 }
 
-pub(super) fn native_static_string_starts_with(
-    target: NativeStraightlineValue,
-    prefix: NativeStraightlineValue,
-) -> Option<NativeStraightlineValue> {
-    let NativeStraightlineValue::String { value: target, .. } = target else {
-        return None;
-    };
-    let NativeStraightlineValue::String { value: prefix, .. } = prefix else {
-        return None;
-    };
-    Some(NativeStraightlineValue::Bool(
-        i64::from(target.starts_with(&prefix)).to_string(),
-    ))
-}
-
 pub(super) fn native_static_string_split(
     target: NativeStraightlineValue,
     delimiter: NativeStraightlineValue,

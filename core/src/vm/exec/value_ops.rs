@@ -107,45 +107,6 @@ impl Executor {
         }
     }
 
-    pub(super) fn string_starts_with(&mut self, dst: u8, target: u8, prefix: u8) -> Result<()> {
-        let value = self.string_starts_with_value(target, prefix)?;
-        self.write(dst, RuntimeVal::Bool(value))
-    }
-
-    fn string_starts_with_value(&self, target: u8, prefix: u8) -> Result<bool> {
-        let target = self.read(target)?;
-        let prefix = self.read(prefix)?;
-        match (target, prefix) {
-            (RuntimeVal::ShortStr(target), RuntimeVal::ShortStr(prefix)) => {
-                Ok(target.as_str().starts_with(prefix.as_str()))
-            }
-            (RuntimeVal::ShortStr(target), RuntimeVal::Obj(prefix)) => match self.state.heap.get(*prefix) {
-                Some(HeapValue::String(prefix)) => Ok(target.as_str().starts_with(prefix.as_ref())),
-                Some(other) => bail!("StringStartsWith prefix must be string, got {:?}", heap_kind(other)),
-                None => bail!("heap object {} out of bounds", prefix.index()),
-            },
-            (RuntimeVal::Obj(target), RuntimeVal::ShortStr(prefix)) => match self.state.heap.get(*target) {
-                Some(HeapValue::String(target)) => Ok(target.starts_with(prefix.as_str())),
-                Some(other) => bail!("StringStartsWith target must be string, got {:?}", heap_kind(other)),
-                None => bail!("heap object {} out of bounds", target.index()),
-            },
-            (RuntimeVal::Obj(target), RuntimeVal::Obj(prefix)) => {
-                let target = match self.state.heap.get(*target) {
-                    Some(HeapValue::String(target)) => target,
-                    Some(other) => bail!("StringStartsWith target must be string, got {:?}", heap_kind(other)),
-                    None => bail!("heap object {} out of bounds", target.index()),
-                };
-                let prefix = match self.state.heap.get(*prefix) {
-                    Some(HeapValue::String(prefix)) => prefix,
-                    Some(other) => bail!("StringStartsWith prefix must be string, got {:?}", heap_kind(other)),
-                    None => bail!("heap object {} out of bounds", prefix.index()),
-                };
-                Ok(target.starts_with(prefix.as_ref()))
-            }
-            (target, _) => bail!("StringStartsWith target must be string, got {:?}", target.kind()),
-        }
-    }
-
     pub(super) fn string_split(&mut self, dst: u8, target: u8, delimiter: u8) -> Result<()> {
         let target = self.read(target)?.clone();
         let Some(target) = self.runtime_value_to_string(&target)? else {

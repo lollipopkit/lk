@@ -25,7 +25,6 @@ mod object_methods;
 mod returns;
 mod runtime_builtins;
 mod set_index;
-mod string_methods;
 mod string_split;
 mod values;
 use self::{
@@ -62,7 +61,6 @@ use self::{
     returns::emit_return_block,
     runtime_builtins::emit_runtime_builtin_call,
     set_index::{emit_set_field_k_block, emit_set_index_block},
-    string_methods::emit_string_starts_with_block,
     string_split::emit_string_split_block,
     values::emit_value_block,
 };
@@ -572,24 +570,6 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                     NativeStraightlineValue::Text(text)
                 });
                 emit_branch_to_next(&mut ir, pc, code.len());
-            }
-            Opcode::StringStartsWith => {
-                if emit_string_starts_with_block(
-                    &mut ir,
-                    &mut extra_globals,
-                    &mut static_regs,
-                    code,
-                    strings,
-                    pc,
-                    instr,
-                    register_count,
-                    facts,
-                    &mut tmp_index,
-                )
-                .is_none()
-                {
-                    return Ok(None);
-                }
             }
             Opcode::GetIndex | Opcode::GetList => {
                 if !emit_get_index_block(

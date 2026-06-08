@@ -66,49 +66,6 @@ fn execute_compares_nil_and_short_strings_on_fast_path() {
 }
 
 #[test]
-fn execute_string_starts_with_short_and_heap_strings() {
-    let function = Function {
-        consts: ConstPool {
-            strings: vec!["emu".to_string(), "ios".to_string()],
-            heap_values: vec![
-                ConstHeapValue::LongString(std::sync::Arc::<str>::from("emu-android-device")),
-                ConstHeapValue::LongString(std::sync::Arc::<str>::from("android-device")),
-            ],
-            ..ConstPool::default()
-        },
-        code: vec![
-            Instr::abx(Opcode::LoadString, 0, 0),
-            Instr::abx(Opcode::LoadString, 1, 1),
-            Instr::abx(Opcode::LoadHeapConst, 2, 0),
-            Instr::abx(Opcode::LoadHeapConst, 3, 1),
-            Instr::abc(Opcode::StringStartsWith, 4, 2, 0),
-            Instr::abc(Opcode::StringStartsWith, 5, 3, 0),
-            Instr::abc(Opcode::StringStartsWith, 6, 0, 0),
-            Instr::abc(Opcode::StringStartsWith, 7, 0, 1),
-            Instr::abc(Opcode::Return, 4, 4, 0),
-        ],
-        register_count: 8,
-        param_count: 0,
-        positional_param_count: 0,
-        param_names: Vec::new(),
-        capture_count: 0,
-        ..Function::default()
-    };
-
-    let result = execute(&function).expect("execute");
-
-    assert_eq!(
-        result.returns,
-        vec![
-            RuntimeVal::Bool(true),
-            RuntimeVal::Bool(false),
-            RuntimeVal::Bool(true),
-            RuntimeVal::Bool(false)
-        ]
-    );
-}
-
-#[test]
 fn execute_checks_contains_for_typed_list_map_and_string() {
     let function = Function {
         consts: ConstPool {

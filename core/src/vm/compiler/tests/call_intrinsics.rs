@@ -308,12 +308,10 @@ fn compiler_keeps_recursive_direct_function_call_as_call_direct() {
 }
 
 #[test]
-fn compiler_inlines_direct_function_with_map_get_and_string_intrinsic() {
+fn compiler_runs_direct_function_with_string_method() {
     let program = parse_program(
         r#"
-        fn price(sku, region, prices, rates) {
-            let base = map.get(prices, sku);
-            let tax = map.get(rates, region);
+        fn price(sku, base, tax) {
             let discount = 0;
             if sku.starts_with("pro") {
                 discount = 1;
@@ -321,49 +319,23 @@ fn compiler_inlines_direct_function_with_map_get_and_string_intrinsic() {
             return base + tax - discount;
         }
 
-        let prices = {"basic": 19, "pro": 49};
-        let rates = {"us": 8};
-        return price("pro", "us", prices, rates);
+        return price("pro", 49, 8);
         "#,
     );
     let module =
-        Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["map"]).expect("compile module");
+        Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["__lk_call_method"]).expect("compile");
     let entry = module.entry_function().expect("entry");
-
     assert!(
-        !entry
-            .code
-            .iter()
-            .any(|instr| matches!(instr.opcode(), Opcode::Call | Opcode::CallDirect)),
-        "direct function with map.get and string intrinsic should inline in the caller"
+        entry.code.iter().any(|instr| instr.opcode() == Opcode::CallDirect),
+        "removing StringStartsWith must not degrade the outer price call away from CallDirect"
     );
     assert!(
-        entry.code.iter().any(|instr| instr.opcode() == Opcode::GetIndex),
-        "inlined map.get should lower to GetIndex"
-    );
-    assert!(
-        entry
-            .code
-            .iter()
-            .any(|instr| instr.opcode() == Opcode::StringStartsWith),
-        "inlined starts_with should lower to StringStartsWith"
-    );
-    assert!(
-        !entry.code.iter().enumerate().any(|(pc, instr)| {
-            instr.opcode() == Opcode::Move
-                && entry
-                    .performance
-                    .register_copy(pc)
-                    .is_some_and(|fact| !fact.move_source)
-                && entry
-                    .performance
-                    .register(instr.b() as u16)
-                    .is_some_and(|fact| matches!(fact.value.kind, crate::vm::analysis::PerfValueKind::Map))
-        }),
-        "readonly inline map params should stay aliased instead of cloned into inline locals"
+        !entry.code.iter().any(|instr| instr.opcode() == Opcode::Call),
+        "removing StringStartsWith must not force the outer price call through generic Call"
     );
 
-    let result = execute_module(&module).expect("execute module");
+    let mut ctx = crate::vm::VmContext::new().with_type_checker(Some(crate::typ::TypeChecker::new_strict()));
+    let result = program.execute_with_ctx(&mut ctx).expect("execute program");
     assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(56)]);
 }
 
@@ -573,8 +545,8 @@ fn compiler_set_method_does_not_consume_local_value_argument() {
 }
 
 #[test]
-fn compiler_lowers_starts_with_method_to_string_opcode() {
-    let function = compile_source(
+fn compiler_runs_starts_with_method_through_runtime_helper() {
+    let program = parse_program(
         r#"
         let device = "emu-android";
         if device.starts_with("emu") {
@@ -582,21 +554,10 @@ fn compiler_lowers_starts_with_method_to_string_opcode() {
         }
         return 0;
         "#,
-    )
-    .expect("compile source");
+    );
 
-    assert!(
-        function
-            .code
-            .iter()
-            .any(|instr| instr.opcode() == Opcode::StringStartsWith),
-        "string starts_with should lower to StringStartsWith"
-    );
-    assert!(
-        !function.code.iter().any(|instr| instr.opcode() == Opcode::Call),
-        "string starts_with should not call through the runtime method helper"
-    );
-    let result = execute(&function).expect("execute");
+    let mut ctx = crate::vm::VmContext::new().with_type_checker(Some(crate::typ::TypeChecker::new_strict()));
+    let result = program.execute_with_ctx(&mut ctx).expect("execute program");
     assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
 }
 

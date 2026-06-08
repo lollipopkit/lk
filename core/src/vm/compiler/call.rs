@@ -237,12 +237,6 @@ impl Compiler {
                 }
                 self.lower_set_method_call(target, &args[0], &args[1])
             }
-            "starts_with" => {
-                if args.len() != 1 {
-                    bail!("Compiler method starts_with expects 1 arg, got {}", args.len());
-                }
-                self.lower_starts_with_method_call(target, &args[0])
-            }
             "split" => {
                 if args.len() != 1 {
                     bail!("Compiler method split expects 1 arg, got {}", args.len());
@@ -420,20 +414,6 @@ impl Compiler {
             );
         }
         Ok(target_reg)
-    }
-
-    fn lower_starts_with_method_call(&mut self, target: &Expr, prefix: &Expr) -> Result<u16> {
-        let target_reg = self.lower_readonly_access_target(target)?;
-        let prefix_reg = self.lower_readonly_operand(prefix)?;
-        let dst = self.alloc_reg();
-        self.emit(Instr::abc(
-            Opcode::StringStartsWith,
-            checked_u8("method starts_with dst", dst)?,
-            checked_u8("method starts_with target", target_reg)?,
-            checked_u8("method starts_with prefix", prefix_reg)?,
-        ));
-        self.set_register_kind(dst, PerfValueKind::Bool);
-        Ok(dst)
     }
 
     fn lower_string_split_method_call(&mut self, target: &Expr, delimiter: &Expr) -> Result<u16> {

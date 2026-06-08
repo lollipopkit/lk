@@ -16,7 +16,7 @@ use super::{
         native_static_list_from_values, native_static_list_join, native_static_list_push, native_static_load_cell,
         native_static_map_from_pairs, native_static_map_rest, native_static_not, native_static_object_from_fields,
         native_static_set_index, native_static_slice_from, native_static_store_cell, native_static_string_split,
-        native_static_string_starts_with, native_static_to_iter, native_static_to_string_value, native_static_truthy,
+        native_static_to_iter, native_static_to_string_value, native_static_truthy,
         native_straightline_heap_const_value,
     },
 };
@@ -950,21 +950,6 @@ pub(super) fn native_straightline_function_return(
                     key_kind: native_runtime_string_key_kind(&value),
                     value,
                 });
-            }
-            Opcode::StringStartsWith => {
-                let Some(target) = regs.get(instr.b() as usize).and_then(Clone::clone) else {
-                    return Ok(None);
-                };
-                let Some(prefix) = regs.get(instr.c() as usize).and_then(Clone::clone) else {
-                    return Ok(None);
-                };
-                if instr.a() as usize >= regs.len() {
-                    return Ok(None);
-                }
-                let Some(value) = native_static_string_starts_with(target, prefix) else {
-                    return Ok(None);
-                };
-                regs[instr.a() as usize] = Some(value);
             }
             Opcode::StringSplit => {
                 let Some(target) = regs.get(instr.b() as usize).and_then(Clone::clone) else {

@@ -76,18 +76,6 @@ fn llvm_backend_lowers_non_string_contains_string_to_false_without_artifact_shel
 }
 
 #[test]
-fn llvm_backend_lowers_static_string_starts_with_without_artifact_shell() {
-    let tokens = Tokenizer::tokenize(r#"return "emu-android".starts_with("emu");"#).expect("tokens");
-    let program = StmtParser::new(&tokens).parse_program().expect("program");
-
-    let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
-
-    assert!(!artifact.module.ir.contains("@lk_module_json"));
-    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
-    assert!(artifact.module.ir.contains("@lk_bool_true"));
-}
-
-#[test]
 fn llvm_backend_lowers_static_split_join_without_artifact_shell() {
     let tokens = Tokenizer::tokenize(r#"return "a|b|c".split("|").join("|");"#).expect("tokens");
     let program = StmtParser::new(&tokens).parse_program().expect("program");

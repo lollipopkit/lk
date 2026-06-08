@@ -14,13 +14,13 @@ use crate::vm::{ConstHeapValueData, FunctionData, Instr, ModuleArtifact, Opcode}
 use super::{
     block_helpers::{
         clear_control_flow_static_values, concat_text_values, control_flow_static_boundaries,
-        emit_dynamic_string_starts_with, emit_inline_branch_to_next, emit_inline_i64_add_mul_block,
-        emit_inline_i64_add2_block, emit_inline_i64_binary_block, emit_inline_scalar_arg_stores,
-        emit_inline_scalar_equality_block, emit_inline_scalar_ordered_comparison_block,
-        emit_inline_string_ptr_equality_block, emit_mixed_numeric_int_opcode_block, emit_static_formatted_print,
-        emit_static_string_i64_map_get, i64_slot_kind, inline_native_label, inline_text_value_from_reg,
-        native_static_string, scalar_named_call_args, static_call_args, static_string_i64_map_supported,
-        static_string_value_trusted_at_call, store_native_inline_scalar_value, three_regs_in_bounds,
+        emit_inline_branch_to_next, emit_inline_i64_add_mul_block, emit_inline_i64_add2_block,
+        emit_inline_i64_binary_block, emit_inline_scalar_arg_stores, emit_inline_scalar_equality_block,
+        emit_inline_scalar_ordered_comparison_block, emit_inline_string_ptr_equality_block,
+        emit_mixed_numeric_int_opcode_block, emit_static_formatted_print, emit_static_string_i64_map_get,
+        i64_slot_kind, inline_native_label, inline_text_value_from_reg, native_static_string, scalar_named_call_args,
+        static_call_args, static_string_i64_map_supported, static_string_value_trusted_at_call,
+        store_native_inline_scalar_value, three_regs_in_bounds,
     },
     emit::emit_f64_binary_block,
     facts::{NativeScalarFacts, NativeScalarKind, native_scalar_block_facts_with_initial},
@@ -454,41 +454,6 @@ fn emit_inline_direct_scalar_blocks(
                     tmp_index,
                 )?;
                 static_regs[instr.a() as usize] = Some(concat_text_values(lhs, rhs)?);
-                emit_inline_branch_to_next(ir, call_pc, pc, code.len());
-            }
-            Opcode::StringStartsWith => {
-                if !three_regs_in_bounds(register_count, instr) {
-                    return None;
-                }
-                let NativeStraightlineValue::String { value: prefix, .. } =
-                    static_regs.get(instr.c() as usize).and_then(Clone::clone)?
-                else {
-                    return None;
-                };
-                if let Some(NativeStraightlineValue::String { value: target, .. }) =
-                    static_regs.get(instr.b() as usize).and_then(Clone::clone)
-                    && static_string_value_trusted_at_call(code, pc, instr.b())
-                {
-                    let value = i64::from(target.starts_with(&prefix));
-                    ir.push_str(&format!(
-                        "  store i64 {value}, ptr %call{call_pc}.r{}.slot\n",
-                        instr.a()
-                    ));
-                    static_regs[instr.a() as usize] = Some(NativeStraightlineValue::Bool(value.to_string()));
-                } else if facts.register_kind_before(pc, instr.b()) == Some(NativeScalarKind::StrPtr) {
-                    emit_dynamic_string_starts_with(
-                        ir,
-                        extra_globals,
-                        &format!("call{call_pc}."),
-                        instr.a(),
-                        instr.b(),
-                        &prefix,
-                        tmp_index,
-                    );
-                    static_regs[instr.a() as usize] = None;
-                } else {
-                    return None;
-                }
                 emit_inline_branch_to_next(ir, call_pc, pc, code.len());
             }
             Opcode::GetIndex | Opcode::GetList => {
