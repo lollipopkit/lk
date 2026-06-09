@@ -27,8 +27,11 @@ Stdlib support has two sources:
 
 - Pure stdlib logic lives as LK source and is compiled through the normal
   compiler, VM IR, and LLVM lowering pipeline.
-- Host-only primitives live in `lkrt` and are exposed through a typed intrinsic
-  registry.
+- Runtime stdlib modules live in `lk-stdlib`; `lk-llvm` may read the stdlib
+  registry at compile time to discover module/global availability and display
+  metadata without making `lk-core` depend on stdlib.
+- Host-only primitives live in `lkrt` and are exposed through typed LLVM
+  capability mappings.
 
 LLVM lowering must not reimplement full stdlib method bodies with ad hoc string
 matches. It may call monomorphized LK stdlib functions or typed `lkrt`
@@ -52,10 +55,12 @@ The native stdlib path is:
 ```text
 LK user code
   -> Compiler / ModuleArtifact compile-time boundary
-  -> LLVM shape analysis and monomorphization
+  -> lk-llvm shape analysis, stdlib discovery, and monomorphization
   -> direct LLVM IR + typed calls to lkrt
   -> clang links IR with liblkrt.a
 ```
 
 `lkrt` is linked at final executable build time. It must not depend on `lk-core`
 or `lk-stdlib`; that keeps parser/compiler/VM code out of the final binary.
+`lk-llvm` is a compile-time crate and may depend on both `lk-core` and
+`lk-stdlib`; the CLI only connects it when the `llvm` feature is enabled.

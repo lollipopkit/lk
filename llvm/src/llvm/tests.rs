@@ -96,16 +96,12 @@ fn llvm_backend_reports_imported_runtime_globals_as_unsupported_native_shape() {
         },
     };
 
-    let err = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default())
-        .expect_err("runtime globals must be rejected without native runtime seeding");
+    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default())
+        .expect("stdlib module catalog should make imported modules displayable");
 
-    let message = err.to_string();
-    assert!(
-        message.contains("runtime globals are not native-lowerable yet"),
-        "{message}"
-    );
-    assert!(message.contains("process"), "{message}");
-    assert!(!message.contains("lk_rt_run_module_json"), "{message}");
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
+    assert!(artifact.module.ir.contains("cwd: <native fn cwd(0 args)>"));
+    assert!(artifact.module.ir.contains("status: <native fn status(...)>"));
 }
 
 #[test]

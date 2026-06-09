@@ -7,7 +7,7 @@ authors = ["lollipopkit <a@lpkt.cn>"]
 license = "Apache-2.0"
 
 [dependencies]
-lk-core = { path = "../../../core", default-features = false }
+lk-core = { path = "../../../core", default-features = false, features = ["async-runtime"] }
 lk-stdlib-common = { path = "../../common" }
 anyhow = { workspace = true }
 dashmap = { workspace = true }

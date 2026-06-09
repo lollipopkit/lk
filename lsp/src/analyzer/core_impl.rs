@@ -170,8 +170,6 @@ impl LkAnalyzer {
         Self {
             token_cache: FastHashMap::default(),
             completion_cache: None,
-            // Empty registry; populated only in `new()` when needed for stdlib-aware features
-            registry: ModuleRegistry::new(),
             base_dir: None,
             package_modules: HashMap::new(),
             missing_packages: HashSet::new(),
@@ -179,18 +177,11 @@ impl LkAnalyzer {
     }
     /// Create a new LK analyzer
     pub fn new() -> Self {
-        // Initialize a registry preloaded with stdlib modules and globals
-        let mut registry = ModuleRegistry::new();
-        // Register stdlib globals and modules so LSP can recognize them
-        lk_stdlib::register_stdlib_globals(&mut registry);
-        if let Err(err) = lk_stdlib::register_stdlib_modules(&mut registry) {
-            tracing::error!("failed to register stdlib modules: {:#}", err);
-        }
+        let _ = lk_stdlib::stdlib_catalog();
 
         Self {
             token_cache: FastHashMap::default(),
             completion_cache: None,
-            registry,
             base_dir: None,
             package_modules: HashMap::new(),
             missing_packages: HashSet::new(),
@@ -680,7 +671,7 @@ impl LkAnalyzer {
                             if j + 1 < tokens.len() {
                                 j += 1; // move to module id
                                 if let T::Id(mod_name) = &tokens[j] {
-                                    if self.registry.get_module(mod_name).is_ok() {
+                                    if lk_stdlib::stdlib_catalog().module(mod_name).is_some() {
                                         // Validate each item against module exports
                                         if let Some(exports) = self.module_export_names(mod_name) {
                                             for idx in item_indices {
@@ -749,7 +740,7 @@ impl LkAnalyzer {
                             if j + 1 < tokens.len() {
                                 j += 1;
                                 if let T::Id(mod_name) = &tokens[j] {
-                                    if self.registry.get_module(mod_name).is_err()
+                                    if lk_stdlib::stdlib_catalog().module(mod_name).is_none()
                                         && !self.package_modules.contains_key(mod_name)
                                         && j < spans.len()
                                     {
@@ -780,7 +771,7 @@ impl LkAnalyzer {
                         Some(T::Id(mod_name)) => {
                             // use module [as alias]?;
                             let mod_idx = j;
-                            if self.registry.get_module(mod_name).is_err()
+                            if lk_stdlib::stdlib_catalog().module(mod_name).is_none()
                                 && !self.package_modules.contains_key(mod_name)
                                 && mod_idx < spans.len()
                             {

@@ -82,7 +82,7 @@ pub(crate) fn describe_token_hover(tokens: &[CoreToken], _spans: &[CoreSpan], id
         T::Id(name) => {
             let is_call = tokens.get(idx + 1).map(|t| matches!(t, T::LParen)).unwrap_or(false);
             if is_call {
-                if let Some((sig, doc)) = stdlib_func_hover(name) {
+                if let Some((sig, doc)) = stdlib_func_hover(tokens, idx) {
                     format!("{}\n{}", sig, doc)
                 } else {
                     format!("Function call: {}(…)", name)
@@ -112,15 +112,35 @@ pub(crate) fn describe_token_hover(tokens: &[CoreToken], _spans: &[CoreSpan], id
     }
 }
 
-pub(crate) fn stdlib_func_hover(name: &str) -> Option<(&'static str, &'static str)> {
-    match name {
-        "print" => Some(("print(fmt, ...args)", "Print to stdout without newline")),
-        "println" => Some(("println(fmt, ...args)", "Print to stdout with newline")),
-        "panic" => Some(("panic(message)", "Raise a runtime error")),
-        "len" => Some(("len(collection)", "Return the length of a collection")),
-        "type" => Some(("type(value)", "Return the runtime type of a value")),
-        _ => None,
+pub(crate) fn stdlib_func_hover(tokens: &[CoreToken], idx: usize) -> Option<(String, String)> {
+    let path = dotted_token_path(tokens, idx)?;
+    let catalog = lk_stdlib::stdlib_catalog();
+    if path.len() == 1 {
+        let global = catalog.global(path[0])?;
+        return Some((global.detail.clone(), "LK stdlib global".to_string()));
     }
+    let export = catalog.export_path(&path)?;
+    Some((export.detail.clone(), "LK stdlib export".to_string()))
+}
+
+fn dotted_token_path(tokens: &[CoreToken], idx: usize) -> Option<Vec<&str>> {
+    let CoreToken::Id(name) = tokens.get(idx)? else {
+        return None;
+    };
+    let mut path = vec![name.as_str()];
+    let mut cursor = idx;
+    while cursor >= 2 {
+        if !matches!(tokens.get(cursor - 1), Some(CoreToken::Dot)) {
+            break;
+        }
+        let Some(CoreToken::Id(parent)) = tokens.get(cursor - 2) else {
+            break;
+        };
+        path.push(parent.as_str());
+        cursor -= 2;
+    }
+    path.reverse();
+    Some(path)
 }
 
 pub(crate) fn infer_call_at_position(content: &str, position: Position) -> (String, Option<usize>) {

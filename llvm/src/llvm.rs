@@ -16,6 +16,7 @@ mod map_mutate;
 mod options;
 mod output;
 mod scalar;
+mod stdlib_catalog;
 mod straightline_main;
 mod straightline_value;
 mod subfunction;

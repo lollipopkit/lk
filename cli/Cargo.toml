@@ -16,14 +16,14 @@ default-run = "lk"
 
 [features]
 default = ["llvm"]
-llvm = ["lk-core/llvm", "dep:lkrt", "dep:llvm-tools"]
+llvm = ["dep:lk-llvm"]
 vm-profile = ["lk-core/vm-profile"]
 
 [dependencies]
 lk-core = { path = "../core", default-features = false }
 lk-completion = { path = "../completion" }
+lk-llvm = { path = "../llvm", optional = true }
 lk-stdlib = { path = "../stdlib" }
-lkrt = { path = "../lkrt", optional = true }
 anyhow = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
@@ -32,7 +32,6 @@ toml = { workspace = true }
 clap = { version = "4", features = ["derive"] }
 rustyline = "18"
 tracing-subscriber = { workspace = true }
-llvm-tools = { workspace = true, optional = true }
 
 [dev-dependencies]
 assert_cmd = "2"

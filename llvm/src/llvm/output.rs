@@ -12,9 +12,8 @@ use super::{
     ir_text::{llvm_float_literal, native_float_display, native_scalar_main_header},
     options::LlvmBackendOptions,
     straightline_value::{
-        NativeBuiltin, NativeListElementKind, NativeModule, NativeStraightlineValue, NativeTextPart,
-        native_runtime_string_key_kind, native_static_contains, native_static_index, native_static_make_struct,
-        native_static_merge_fields,
+        NativeBuiltin, NativeListElementKind, NativeStraightlineValue, NativeTextPart, native_runtime_string_key_kind,
+        native_static_contains, native_static_index, native_static_make_struct, native_static_merge_fields,
     },
 };
 use crate::vm::{ConstHeapValueData, ConstRuntimeValueData, RuntimeMapKeyData};
@@ -87,7 +86,6 @@ pub(super) fn emit_native_builtin_call(
         | NativeBuiltin::ListSort => return emit_native_list_builtin(builtin, args, ssa_index),
         NativeBuiltin::OsClock => return emit_native_os_clock(body, args, ssa_index),
         NativeBuiltin::OsEpoch => return emit_native_os_epoch(body, args, ssa_index),
-        NativeBuiltin::OsEnvGet | NativeBuiltin::OsEnvSet | NativeBuiltin::OsEnvUnset => return None,
         NativeBuiltin::IterRange => return emit_native_iter_range(args, ssa_index),
         NativeBuiltin::IterTake
         | NativeBuiltin::IterSkip
@@ -144,21 +142,10 @@ pub(super) fn emit_native_builtin_call(
         | NativeBuiltin::MathExp
         | NativeBuiltin::MathSin
         | NativeBuiltin::MathCos => return emit_native_math_builtin(body, builtin, args, ssa_index),
-        NativeBuiltin::FibIterative => return emit_native_fib_iterative(body, args, ssa_index),
-        NativeBuiltin::MathlibDouble => return emit_native_mathlib_double(body, args, ssa_index),
-        NativeBuiltin::GreetingsMessage => return emit_native_greetings_message(args),
         NativeBuiltin::StringLen => return emit_native_string_len(body, args, ssa_index),
         NativeBuiltin::OsHostname => return emit_native_static_string_builtin(args, "lk-host"),
         NativeBuiltin::OsArch => return emit_native_static_string_builtin(args, std::env::consts::ARCH),
         NativeBuiltin::OsName => return emit_native_static_string_builtin(args, std::env::consts::OS),
-        NativeBuiltin::OsDirCurrent => return emit_native_static_string_builtin(args, "."),
-        NativeBuiltin::OsDirTemp => return emit_native_static_string_builtin(args, "/tmp"),
-        NativeBuiltin::OsDirList => {
-            if args.len() == 1 {
-                return Some(native_static_string_value("lk-dir-entry"));
-            }
-            return None;
-        }
         NativeBuiltin::Panic => {
             // Panic: emit abort() which terminates the program
             body.push_str("  call void @abort()\n");
@@ -177,59 +164,6 @@ pub(super) fn emit_native_builtin_call(
         body.push_str("  call i32 (ptr, ...) @printf(ptr @lk_str_fmt, ptr @lk_empty_text)\n");
     }
     Some(NativeStraightlineValue::Nil)
-}
-
-fn emit_native_fib_iterative(
-    body: &mut String,
-    args: &[NativeStraightlineValue],
-    ssa_index: &mut usize,
-) -> Option<NativeStraightlineValue> {
-    if args.len() != 1 {
-        return None;
-    }
-    let n = native_i64_value(args.first()?)?;
-    if let Ok(n) = n.parse::<i64>() {
-        let mut a = 0i64;
-        let mut b = 1i64;
-        if n <= 1 {
-            return Some(NativeStraightlineValue::I64(n.to_string()));
-        }
-        for _ in 2..=n {
-            let next = a + b;
-            a = b;
-            b = next;
-        }
-        return Some(NativeStraightlineValue::I64(b.to_string()));
-    }
-    let out = format!("%lk_fib_iterative_{}", *ssa_index);
-    *ssa_index += 1;
-    body.push_str(&format!("  {out} = call i64 @lk_fib_iterative(i64 {n})\n"));
-    Some(NativeStraightlineValue::I64(out))
-}
-
-fn emit_native_mathlib_double(
-    body: &mut String,
-    args: &[NativeStraightlineValue],
-    ssa_index: &mut usize,
-) -> Option<NativeStraightlineValue> {
-    if args.len() != 1 {
-        return None;
-    }
-    let value = native_i64_value(args.first()?)?;
-    if let Ok(value) = value.parse::<i64>() {
-        return Some(NativeStraightlineValue::I64((value * 2).to_string()));
-    }
-    let out = format!("%lk_mathlib_double_{}", *ssa_index);
-    *ssa_index += 1;
-    body.push_str(&format!("  {out} = mul i64 {value}, 2\n"));
-    Some(NativeStraightlineValue::I64(out))
-}
-
-fn emit_native_greetings_message(args: &[NativeStraightlineValue]) -> Option<NativeStraightlineValue> {
-    let [NativeStraightlineValue::String { value, .. }] = args else {
-        return None;
-    };
-    Some(native_static_string_value(&format!("hello, {value}")))
 }
 
 fn emit_native_string_len(
@@ -676,9 +610,9 @@ fn emit_native_core_call_method(
             NativeStraightlineValue::Module(module),
             NativeStraightlineValue::String { value: method, .. },
             NativeStraightlineValue::List { elements, .. },
-        ] if elements.is_empty() => match (module, method.as_str()) {
-            (NativeModule::Os, "clock") => emit_native_os_clock(body, &[], ssa_index),
-            (NativeModule::Os, "epoch") => emit_native_os_epoch(body, &[], ssa_index),
+        ] if elements.is_empty() => match (module.name(), method.as_str()) {
+            ("os", "clock") => emit_native_os_clock(body, &[], ssa_index),
+            ("os", "epoch") => emit_native_os_epoch(body, &[], ssa_index),
             _ => None,
         },
         [
@@ -725,6 +659,9 @@ pub(super) fn emit_native_static_core_call_method(
     args: &[NativeStraightlineValue],
     ssa_index: &mut usize,
 ) -> Option<NativeStraightlineValue> {
+    if let Some(value) = emit_native_static_module_method(args, ssa_index) {
+        return Some(value);
+    }
     if let [
         NativeStraightlineValue::ArgList { elements },
         NativeStraightlineValue::String { value: method, .. },
@@ -819,6 +756,34 @@ pub(super) fn emit_native_static_core_call_method(
         _ => return None,
     };
     emit_native_static_string_method(first, second, elements, ssa_index)
+}
+
+fn emit_native_static_module_method(
+    args: &[NativeStraightlineValue],
+    _ssa_index: &mut usize,
+) -> Option<NativeStraightlineValue> {
+    let [
+        receiver @ NativeStraightlineValue::Module(_),
+        method @ NativeStraightlineValue::String { .. },
+        method_args,
+    ] = args
+    else {
+        return None;
+    };
+    let NativeStraightlineValue::Builtin(builtin) =
+        native_static_index(receiver.clone(), method.clone(), String::new())?
+    else {
+        return None;
+    };
+    let args = match method_args {
+        NativeStraightlineValue::ArgList { elements } => elements.clone(),
+        NativeStraightlineValue::List { elements, .. } => elements
+            .iter()
+            .map(native_const_method_arg)
+            .collect::<Option<Vec<_>>>()?,
+        _ => return None,
+    };
+    emit_native_static_parse_builtin(builtin, &args)
 }
 
 fn emit_native_static_string_method(

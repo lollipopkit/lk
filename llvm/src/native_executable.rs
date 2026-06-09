@@ -1,0 +1,112 @@
+use std::{
+    path::{Path, PathBuf},
+    process::Command,
+};
+
+use anyhow::Context;
+
+pub fn compile_native_executable_from_llvm(path: &Path, output: &Path, ir: &str) -> anyhow::Result<()> {
+    let _ = lkrt::link_anchor();
+    let source_path = temp_llvm_source_path(path);
+    std::fs::write(&source_path, ir).with_context(|| format!("write native LLVM IR {}", source_path.display()))?;
+    let clang = clang_command();
+    let mut command = Command::new(&clang);
+    command.arg(&source_path).arg("-o").arg(output);
+    if let Some(staticlib) = lkrt_staticlib_path() {
+        add_force_load_staticlib(&mut command, &staticlib);
+    }
+    let output_status = match command
+        .output()
+        .with_context(|| format!("spawn clang to build native executable {}", output.display()))
+    {
+        Ok(output_status) => output_status,
+        Err(error) => {
+            let _ = std::fs::remove_file(&source_path);
+            return Err(error);
+        }
+    };
+    let _ = std::fs::remove_file(&source_path);
+    if !output_status.status.success() {
+        anyhow::bail!(
+            "native executable build failed for {}:\n{}",
+            path.display(),
+            String::from_utf8_lossy(&output_status.stderr)
+        );
+    }
+    Ok(())
+}
+
+fn add_force_load_staticlib(command: &mut Command, staticlib: &Path) {
+    if cfg!(target_os = "macos") {
+        command.arg(format!("-Wl,-force_load,{}", staticlib.display()));
+    } else {
+        command
+            .arg("-Wl,--whole-archive")
+            .arg(staticlib)
+            .arg("-Wl,--no-whole-archive");
+    }
+}
+
+fn lkrt_staticlib_path() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("LKRT_STATICLIB") {
+        return Some(PathBuf::from(path));
+    }
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?;
+    let file = if cfg!(target_os = "windows") {
+        "lkrt.lib"
+    } else {
+        "liblkrt.a"
+    };
+    let candidate = dir.join(file);
+    if candidate.exists() {
+        return Some(candidate);
+    }
+    latest_lkrt_staticlib_in_deps(&dir.join("deps"))
+}
+
+fn latest_lkrt_staticlib_in_deps(deps_dir: &Path) -> Option<PathBuf> {
+    let entries = std::fs::read_dir(deps_dir).ok()?;
+    let prefix = if cfg!(target_os = "windows") {
+        "lkrt-"
+    } else {
+        "liblkrt-"
+    };
+    let suffix = if cfg!(target_os = "windows") { ".lib" } else { ".a" };
+    entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let path = entry.path();
+            let name = path.file_name()?.to_str()?;
+            if !name.starts_with(prefix) || !name.ends_with(suffix) {
+                return None;
+            }
+            let modified = entry.metadata().ok()?.modified().ok()?;
+            Some((modified, path))
+        })
+        .max_by_key(|(modified, _)| *modified)
+        .map(|(_, path)| path)
+}
+
+fn clang_command() -> std::ffi::OsString {
+    std::env::var_os("LK_CLANG")
+        .or_else(|| std::env::var_os("CLANG"))
+        .or_else(|| std::env::var_os("CC"))
+        .unwrap_or_else(|| {
+            let homebrew_llvm = Path::new("/opt/homebrew/opt/llvm/bin/clang");
+            if homebrew_llvm.exists() {
+                homebrew_llvm.as_os_str().to_os_string()
+            } else {
+                "clang".into()
+            }
+        })
+}
+
+fn temp_llvm_source_path(path: &Path) -> PathBuf {
+    let stem = path.file_stem().and_then(|stem| stem.to_str()).unwrap_or("lk");
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    std::env::temp_dir().join(format!("lk-{stem}-{}-{nanos}.ll", std::process::id()))
+}

@@ -1,3 +1,4 @@
+pub mod metadata;
 pub mod resource;
 pub mod runtime_native;
 

@@ -58,16 +58,23 @@ use lk_core::{
         call_runtime_value_runtime_with_receiver,
     },
 };
-use std::sync::Arc;
+pub use lk_stdlib_common::metadata::{
+    StdlibArity, StdlibCatalog, StdlibConstValue, StdlibExportKind, StdlibExportSpec, StdlibGlobalSpec,
+    StdlibModuleSpec,
+};
+use std::sync::{Arc, OnceLock};
 
 use runtime_native::runtime_display_value;
 
+static STDLIB_CATALOG: OnceLock<StdlibCatalog> = OnceLock::new();
+
+pub fn stdlib_catalog() -> &'static StdlibCatalog {
+    STDLIB_CATALOG.get_or_init(build_stdlib_catalog)
+}
+
 /// Register all stdlib modules with the given registry
 pub fn register_stdlib_modules(registry: &mut ModuleRegistry) -> Result<()> {
-    for name in [
-        "io", "encoding", "bytes", "iter", "math", "string", "datetime", "os", "fs", "path", "env", "process", "hash",
-        "regex", "random", "uuid", "http", "net", "slice", "stream", "task", "chan", "time",
-    ] {
+    for name in stdlib_module_names() {
         register_stdlib_module_by_name(registry, name)?;
     }
     Ok(())
@@ -110,6 +117,314 @@ fn register_stdlib_module_by_name(registry: &mut ModuleRegistry, name: &str) -> 
         _ => {}
     }
     Ok(())
+}
+
+fn stdlib_module_names() -> &'static [&'static str] {
+    &[
+        "io", "encoding", "bytes", "iter", "math", "string", "datetime", "os", "fs", "path", "env", "process", "hash",
+        "regex", "random", "uuid", "http", "net", "slice", "stream", "task", "chan", "time",
+    ]
+}
+
+fn build_stdlib_catalog() -> StdlibCatalog {
+    let mut registry = ModuleRegistry::new();
+    register_stdlib_globals(&mut registry);
+    register_stdlib_modules(&mut registry).expect("stdlib module registration should not fail");
+
+    let mut modules = Vec::new();
+    for name in stdlib_module_names() {
+        let Ok(export) = registry.get_runtime_module(name) else {
+            continue;
+        };
+        let exports = export
+            .state_lock()
+            .ok()
+            .and_then(|state| catalog_exports_from_runtime(name, export.value(), state.heap()))
+            .unwrap_or_default();
+        let display = catalog_module_display(&exports);
+        modules.push(StdlibModuleSpec {
+            name: (*name).to_string(),
+            detail: "stdlib module".to_string(),
+            display,
+            exports,
+        });
+    }
+    modules.sort_by(|left, right| left.name.cmp(&right.name));
+
+    let mut globals: Vec<_> = registry
+        .get_all_runtime_builtins()
+        .iter()
+        .filter(|(name, _)| !name.contains("::") && !name.contains('$'))
+        .filter_map(|(name, export)| {
+            let arity = catalog_global_arity(export)?;
+            Some(StdlibGlobalSpec {
+                name: name.to_string(),
+                arity,
+                detail: catalog_function_detail(name, arity),
+                lowering_key: stdlib_global_lowering_key(name),
+            })
+        })
+        .collect();
+    globals.sort_by(|left, right| left.name.cmp(&right.name));
+
+    StdlibCatalog { modules, globals }
+}
+
+fn catalog_exports_from_runtime(path: &str, value: &RuntimeVal, heap: &HeapStore) -> Option<Vec<StdlibExportSpec>> {
+    let RuntimeVal::Obj(handle) = value else {
+        return None;
+    };
+    let HeapValue::Map(map) = heap.get(*handle)? else {
+        return None;
+    };
+    let mut exports = Vec::new();
+    for (key, value) in map.entries_iter() {
+        let Some(name) = key.as_str().map(ToString::to_string) else {
+            continue;
+        };
+        let child_path = format!("{path}.{name}");
+        exports.push(catalog_export_from_runtime(&child_path, name, &value, heap));
+    }
+    exports.sort_by(|left, right| left.name.cmp(&right.name));
+    Some(exports)
+}
+
+fn catalog_export_from_runtime(path: &str, name: String, value: &RuntimeVal, heap: &HeapStore) -> StdlibExportSpec {
+    match value {
+        RuntimeVal::Obj(handle) => match heap.get(*handle) {
+            Some(HeapValue::Callable(CallableValue::RuntimeNative {
+                name: native_name,
+                arity,
+                ..
+            })) => {
+                let arity = catalog_arity(*arity);
+                StdlibExportSpec {
+                    name,
+                    kind: StdlibExportKind::Function,
+                    arity: Some(arity),
+                    detail: catalog_function_detail(path, arity),
+                    display: catalog_function_display(native_name, arity),
+                    lowering_key: stdlib_export_lowering_key(path),
+                    const_value: None,
+                    children: Vec::new(),
+                }
+            }
+            Some(HeapValue::Map(_)) => {
+                let children = catalog_exports_from_runtime(path, value, heap).unwrap_or_default();
+                let display = catalog_module_display(&children);
+                StdlibExportSpec {
+                    name,
+                    kind: StdlibExportKind::Module,
+                    arity: None,
+                    detail: "stdlib namespace".to_string(),
+                    display,
+                    lowering_key: None,
+                    const_value: None,
+                    children,
+                }
+            }
+            _ => catalog_value_export(path, name, value, heap),
+        },
+        _ => catalog_value_export(path, name, value, heap),
+    }
+}
+
+fn catalog_value_export(path: &str, name: String, value: &RuntimeVal, heap: &HeapStore) -> StdlibExportSpec {
+    StdlibExportSpec {
+        name,
+        kind: StdlibExportKind::Value,
+        arity: None,
+        detail: "stdlib value".to_string(),
+        display: runtime_display_value(value, heap).unwrap_or_else(|_| format!("<value {path}>")),
+        lowering_key: stdlib_export_lowering_key(path),
+        const_value: catalog_const_value(value, heap),
+        children: Vec::new(),
+    }
+}
+
+fn catalog_module_display(exports: &[StdlibExportSpec]) -> String {
+    format!(
+        "{{{}}}",
+        exports
+            .iter()
+            .map(|export| format!("{}: {}", export.name, export.display))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
+fn catalog_arity(arity: u16) -> StdlibArity {
+    if arity == NativeEntry::VARIADIC {
+        StdlibArity::Variadic
+    } else {
+        StdlibArity::Fixed(arity)
+    }
+}
+
+fn catalog_global_arity(export: &lk_core::vm::RuntimeExport) -> Option<StdlibArity> {
+    let state = export.state_lock().ok()?;
+    let RuntimeVal::Obj(handle) = export.value() else {
+        return None;
+    };
+    let HeapValue::Callable(CallableValue::RuntimeNative { arity, .. }) = state.heap().get(*handle)? else {
+        return None;
+    };
+    Some(catalog_arity(*arity))
+}
+
+fn catalog_function_detail(name: &str, arity: StdlibArity) -> String {
+    match arity {
+        StdlibArity::Fixed(value) => format!("{name}({value} args)"),
+        StdlibArity::Variadic => format!("{name}(...)"),
+    }
+}
+
+fn catalog_function_display(name: &str, arity: StdlibArity) -> String {
+    match arity {
+        StdlibArity::Fixed(value) => format!("<native fn {name}({value} args)>"),
+        StdlibArity::Variadic => format!("<native fn {name}(...)>"),
+    }
+}
+
+fn catalog_const_value(value: &RuntimeVal, heap: &HeapStore) -> Option<StdlibConstValue> {
+    match value {
+        RuntimeVal::Nil => Some(StdlibConstValue::Nil),
+        RuntimeVal::Bool(value) => Some(StdlibConstValue::Bool(*value)),
+        RuntimeVal::Int(value) => Some(StdlibConstValue::Int(*value)),
+        RuntimeVal::Float(value) => Some(StdlibConstValue::Float(*value)),
+        RuntimeVal::ShortStr(value) => Some(StdlibConstValue::String(value.as_str().to_string())),
+        RuntimeVal::Obj(handle) => match heap.get(*handle)? {
+            HeapValue::String(value) => Some(StdlibConstValue::String(value.to_string())),
+            _ => None,
+        },
+    }
+}
+
+fn stdlib_global_lowering_key(name: &str) -> Option<&'static str> {
+    match name {
+        "print" => Some("core.print"),
+        "println" => Some("core.println"),
+        "panic" => Some("core.panic"),
+        "chan" => Some("core.chan"),
+        "send" => Some("core.send"),
+        "recv" => Some("core.recv"),
+        _ => None,
+    }
+}
+
+fn stdlib_export_lowering_key(path: &str) -> Option<&'static str> {
+    match path {
+        "datetime.add" => Some("datetime.add"),
+        "datetime.day_of_week" => Some("datetime.day_of_week"),
+        "datetime.day_of_year" => Some("datetime.day_of_year"),
+        "datetime.format" => Some("datetime.format"),
+        "datetime.is_weekend" => Some("datetime.is_weekend"),
+        "datetime.now" => Some("datetime.now"),
+        "datetime.sub" => Some("datetime.sub"),
+        "encoding.json.parse" => Some("encoding.json.parse"),
+        "encoding.toml.parse" => Some("encoding.toml.parse"),
+        "encoding.yaml.parse" => Some("encoding.yaml.parse"),
+        "iter.chain" => Some("iter.chain"),
+        "iter.chunk" => Some("iter.chunk"),
+        "iter.collect" => Some("iter.collect"),
+        "iter.enumerate" => Some("iter.enumerate"),
+        "iter.filter" => Some("iter.filter"),
+        "iter.flatten" => Some("iter.flatten"),
+        "iter.map" => Some("iter.map"),
+        "iter.next" => Some("iter.next"),
+        "iter.range" => Some("iter.range"),
+        "iter.reduce" => Some("iter.reduce"),
+        "iter.skip" => Some("iter.skip"),
+        "iter.take" => Some("iter.take"),
+        "iter.unique" => Some("iter.unique"),
+        "iter.zip" => Some("iter.zip"),
+        "math.abs" => Some("math.abs"),
+        "math.acos" => Some("math.acos"),
+        "math.asin" => Some("math.asin"),
+        "math.atan" => Some("math.atan"),
+        "math.atan2" => Some("math.atan2"),
+        "math.cbrt" => Some("math.cbrt"),
+        "math.ceil" => Some("math.ceil"),
+        "math.clamp" => Some("math.clamp"),
+        "math.cos" => Some("math.cos"),
+        "math.cosh" => Some("math.cosh"),
+        "math.e" => Some("math.e"),
+        "math.epsilon" => Some("math.epsilon"),
+        "math.exp" => Some("math.exp"),
+        "math.floor" => Some("math.floor"),
+        "math.fract" => Some("math.fract"),
+        "math.hypot" => Some("math.hypot"),
+        "math.inf" => Some("math.inf"),
+        "math.is_inf" => Some("math.is_inf"),
+        "math.is_nan" => Some("math.is_nan"),
+        "math.log" => Some("math.log"),
+        "math.log10" => Some("math.log10"),
+        "math.log2" => Some("math.log2"),
+        "math.max" => Some("math.max"),
+        "math.max_float" => Some("math.max_float"),
+        "math.max_int" => Some("math.max_int"),
+        "math.min" => Some("math.min"),
+        "math.min_int" => Some("math.min_int"),
+        "math.nan" => Some("math.nan"),
+        "math.pi" => Some("math.pi"),
+        "math.pow" => Some("math.pow"),
+        "math.round" => Some("math.round"),
+        "math.sign" => Some("math.sign"),
+        "math.sin" => Some("math.sin"),
+        "math.sinh" => Some("math.sinh"),
+        "math.sqrt" => Some("math.sqrt"),
+        "math.tan" => Some("math.tan"),
+        "math.tanh" => Some("math.tanh"),
+        "math.to_float" => Some("math.to_float"),
+        "math.to_int" => Some("math.to_int"),
+        "math.trunc" => Some("math.trunc"),
+        "os.arch" => Some("os.arch"),
+        "os.clock" => Some("os.clock"),
+        "os.epoch" => Some("os.epoch"),
+        "os.hostname" => Some("os.hostname"),
+        "os.os" => Some("os.os"),
+        "stream.chain" => Some("stream.chain"),
+        "stream.collect" => Some("stream.collect"),
+        "stream.filter" => Some("stream.filter"),
+        "stream.from_list" => Some("stream.from_list"),
+        "stream.map" => Some("stream.map"),
+        "stream.range" => Some("stream.range"),
+        "stream.skip" => Some("stream.skip"),
+        "stream.take" => Some("stream.take"),
+        "string.byte" => Some("string.byte"),
+        "string.capitalize" => Some("string.capitalize"),
+        "string.char" => Some("string.char"),
+        "string.chars" => Some("string.chars"),
+        "string.contains" => Some("string.contains"),
+        "string.count" => Some("string.count"),
+        "string.ends_with" => Some("string.ends_with"),
+        "string.find" => Some("string.find"),
+        "string.format" => Some("string.format"),
+        "string.is_empty" => Some("string.is_empty"),
+        "string.join" => Some("string.join"),
+        "string.len" => Some("string.len"),
+        "string.lower" => Some("string.lower"),
+        "string.pad_left" => Some("string.pad_left"),
+        "string.pad_right" => Some("string.pad_right"),
+        "string.repeat" => Some("string.repeat"),
+        "string.replace" => Some("string.replace"),
+        "string.reverse" => Some("string.reverse"),
+        "string.split" => Some("string.split"),
+        "string.starts_with" => Some("string.starts_with"),
+        "string.strip" => Some("string.strip"),
+        "string.strip_prefix" => Some("string.strip_prefix"),
+        "string.strip_suffix" => Some("string.strip_suffix"),
+        "string.substring" => Some("string.substring"),
+        "string.title" => Some("string.title"),
+        "string.to_float" => Some("string.to_float"),
+        "string.to_int" => Some("string.to_int"),
+        "string.trim" => Some("string.trim"),
+        "string.upper" => Some("string.upper"),
+        "time.now" => Some("time.now"),
+        "time.since" => Some("time.since"),
+        "time.sleep" => Some("time.sleep"),
+        _ => None,
+    }
 }
 
 pub fn register_stdlib_module_io(registry: &mut ModuleRegistry) -> Result<()> {

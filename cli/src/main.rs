@@ -7,8 +7,6 @@ static PERF_TRACE_INIT: Once = Once::new();
 const DEFAULT_TRACE_FILTER: &str = "lk::vm::alloc=trace,lk::vm::slowpath=debug,lk_core=info,lk_cli=info";
 
 use clap::{Parser, Subcommand, ValueEnum};
-#[cfg(feature = "llvm")]
-use lk_core::llvm::{LlvmBackendOptions, OptLevel};
 use lk_core::{
     module::ModuleRegistry,
     package::{PackageGraph, PackageModule},
@@ -22,6 +20,8 @@ use lk_core::{
         vm_runtime_metrics_snapshot,
     },
 };
+#[cfg(feature = "llvm")]
+use lk_llvm::{LlvmBackendOptions, OptLevel};
 
 use anyhow::Context;
 
@@ -544,7 +544,7 @@ fn compile_instr_artifact(path: &Path) -> anyhow::Result<ModuleArtifact> {
 #[cfg(feature = "llvm")]
 fn compile_llvm_ir(path: &Path, options: LlvmBackendOptions) -> anyhow::Result<()> {
     let artifact = compile_instr_artifact(path)?;
-    let llvm = lk_core::llvm::compile_module_artifact_to_llvm(&artifact, options)
+    let llvm = lk_llvm::compile_module_artifact_to_llvm(&artifact, options)
         .with_context(|| format!("compile LLVM IR for {}", path.display()))?;
     let output = path.with_extension("ll");
     std::fs::write(&output, llvm.module.ir).with_context(|| format!("write LLVM IR {}", output.display()))?;
@@ -563,9 +563,9 @@ fn compile_executable(path: &Path, output: Option<&Path>, options: LlvmBackendOp
 #[cfg(feature = "llvm")]
 fn compile_executable_to_path(path: &Path, output: &Path, options: LlvmBackendOptions) -> anyhow::Result<()> {
     let artifact = compile_instr_artifact(path)?;
-    let llvm = lk_core::llvm::compile_module_artifact_to_llvm(&artifact, options)
+    let llvm = lk_llvm::compile_module_artifact_to_llvm(&artifact, options)
         .with_context(|| format!("compile native executable LLVM IR for {}", path.display()))?;
-    compile_native_executable_from_llvm(path, &output, &llvm.module.ir)?;
+    lk_llvm::compile_native_executable_from_llvm(path, &output, &llvm.module.ir)?;
     Ok(())
 }
 
@@ -708,111 +708,6 @@ impl Fnv64 {
     fn finish(self) -> u64 {
         self.0
     }
-}
-
-#[cfg(feature = "llvm")]
-fn compile_native_executable_from_llvm(path: &Path, output: &Path, ir: &str) -> anyhow::Result<()> {
-    let _ = lkrt::link_anchor();
-    let source_path = temp_llvm_source_path(path)?;
-    std::fs::write(&source_path, ir).with_context(|| format!("write native LLVM IR {}", source_path.display()))?;
-    let clang = clang_command();
-    let mut command = Command::new(&clang);
-    command.arg(&source_path).arg("-o").arg(output);
-    if let Some(staticlib) = lkrt_staticlib_path() {
-        add_force_load_staticlib(&mut command, &staticlib);
-    }
-    let output_status = command
-        .output()
-        .with_context(|| format!("spawn clang to build native executable {}", output.display()))?;
-    let _ = std::fs::remove_file(&source_path);
-    if !output_status.status.success() {
-        anyhow::bail!(
-            "native executable build failed for {}:\n{}",
-            path.display(),
-            String::from_utf8_lossy(&output_status.stderr)
-        );
-    }
-    Ok(())
-}
-
-#[cfg(feature = "llvm")]
-fn add_force_load_staticlib(command: &mut Command, staticlib: &Path) {
-    if cfg!(target_os = "macos") {
-        command.arg("-Wl,-force_load").arg(staticlib);
-    } else {
-        command
-            .arg("-Wl,--whole-archive")
-            .arg(staticlib)
-            .arg("-Wl,--no-whole-archive");
-    }
-}
-
-#[cfg(feature = "llvm")]
-fn lkrt_staticlib_path() -> Option<PathBuf> {
-    if let Some(path) = std::env::var_os("LKRT_STATICLIB") {
-        return Some(PathBuf::from(path));
-    }
-    let exe = std::env::current_exe().ok()?;
-    let dir = exe.parent()?;
-    let file = if cfg!(target_os = "windows") {
-        "lkrt.lib"
-    } else {
-        "liblkrt.a"
-    };
-    let candidate = dir.join(file);
-    if candidate.exists() {
-        return Some(candidate);
-    }
-    latest_lkrt_staticlib_in_deps(&dir.join("deps"))
-}
-
-#[cfg(feature = "llvm")]
-fn latest_lkrt_staticlib_in_deps(deps_dir: &Path) -> Option<PathBuf> {
-    let entries = std::fs::read_dir(deps_dir).ok()?;
-    let prefix = if cfg!(target_os = "windows") {
-        "lkrt-"
-    } else {
-        "liblkrt-"
-    };
-    let suffix = if cfg!(target_os = "windows") { ".lib" } else { ".a" };
-    entries
-        .filter_map(Result::ok)
-        .filter_map(|entry| {
-            let path = entry.path();
-            let name = path.file_name()?.to_str()?;
-            if !name.starts_with(prefix) || !name.ends_with(suffix) {
-                return None;
-            }
-            let modified = entry.metadata().ok()?.modified().ok()?;
-            Some((modified, path))
-        })
-        .max_by_key(|(modified, _)| *modified)
-        .map(|(_, path)| path)
-}
-
-#[cfg(feature = "llvm")]
-fn clang_command() -> std::ffi::OsString {
-    std::env::var_os("LK_CLANG")
-        .or_else(|| std::env::var_os("CLANG"))
-        .or_else(|| std::env::var_os("CC"))
-        .unwrap_or_else(|| {
-            let homebrew_llvm = Path::new("/opt/homebrew/opt/llvm/bin/clang");
-            if homebrew_llvm.exists() {
-                homebrew_llvm.as_os_str().to_os_string()
-            } else {
-                "clang".into()
-            }
-        })
-}
-
-#[cfg(feature = "llvm")]
-fn temp_llvm_source_path(path: &Path) -> anyhow::Result<PathBuf> {
-    let stem = path.file_stem().and_then(|stem| stem.to_str()).unwrap_or("lk");
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or(0);
-    Ok(std::env::temp_dir().join(format!("lk-{stem}-{}-{nanos}.ll", std::process::id())))
 }
 
 #[cfg(feature = "llvm")]

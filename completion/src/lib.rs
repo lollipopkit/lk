@@ -1,9 +1,5 @@
-use lk_core::{
-    module::ModuleRegistry,
-    token::{Token, Tokenizer},
-    val::{CallableValue, HeapStore, HeapValue, RuntimeVal, TypedMap},
-    vm::NativeEntry,
-};
+use lk_core::token::{Token, Tokenizer};
+use lk_stdlib::{StdlibExportKind, StdlibExportSpec, stdlib_catalog};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     path::Path,
@@ -71,22 +67,16 @@ pub struct CompletionRequest<'a> {
 }
 
 #[derive(Debug)]
-pub struct CompletionEngine {
-    registry: ModuleRegistry,
-}
+pub struct CompletionEngine;
 
 impl CompletionEngine {
     pub fn new() -> anyhow::Result<Self> {
-        let mut registry = ModuleRegistry::new();
-        lk_stdlib::register_stdlib_globals(&mut registry);
-        lk_stdlib::register_stdlib_modules(&mut registry)?;
-        Ok(Self { registry })
+        let _ = stdlib_catalog();
+        Ok(Self)
     }
 
     pub fn fallback() -> Self {
-        Self {
-            registry: ModuleRegistry::new(),
-        }
+        Self
     }
 
     pub fn complete(&self, request: CompletionRequest<'_>) -> Vec<CompletionCandidate> {
@@ -231,9 +221,11 @@ impl CompletionEngine {
             return false;
         };
         let typed_start = ctx.cursor - typed.len();
-        let mut modules = self.registry.get_module_names();
-        modules.sort();
-        for module in modules.into_iter().filter(|module| module.starts_with(typed)) {
+        for module in stdlib_catalog()
+            .module_names()
+            .into_iter()
+            .filter(|module| module.starts_with(typed))
+        {
             out.push(CompletionCandidate::new(
                 module.clone(),
                 CompletionKind::Module,
@@ -267,7 +259,7 @@ impl CompletionEngine {
             .import_aliases
             .get(path[0])
             .map(String::as_str)
-            .or_else(|| self.registry.get_module(path[0]).ok().map(|_| path[0]))
+            .or_else(|| stdlib_catalog().module(path[0]).map(|_| path[0]))
         {
             let mut module_path = Vec::with_capacity(path.len());
             module_path.push(module_name);
@@ -367,21 +359,20 @@ impl CompletionEngine {
                 ));
             }
         }
-        for (name, export) in self.registry.get_all_runtime_builtins() {
+        for global in &stdlib_catalog().globals {
+            let name = &global.name;
             if name.starts_with(typed) && !name.contains("::") && !name.contains('$') {
                 out.push(CompletionCandidate::new(
                     name.to_string(),
                     CompletionKind::Function,
-                    Some(runtime_export_detail(export)),
+                    Some(global.detail.clone()),
                     name.to_string(),
                     replace_start,
                     ctx.cursor,
                 ));
             }
         }
-        let mut modules = self.registry.get_module_names();
-        modules.sort();
-        for module in modules {
+        for module in stdlib_catalog().module_names() {
             if module.starts_with(typed) {
                 out.push(CompletionCandidate::new(
                     module.clone(),
@@ -408,23 +399,35 @@ impl CompletionEngine {
     }
 
     fn export_names_at_path(&self, path: &[&str]) -> Option<Vec<(String, CompletionKind, String)>> {
-        let module = self.registry.get_module(path.first().copied()?).ok()?;
-        let export = module.runtime_exports().ok()?;
-        let state = export.state_lock().ok()?;
-        let mut value = export.value().clone();
-        for part in &path[1..] {
-            value = runtime_map_get_str(&value, state.heap(), part)?;
-        }
-        let entries = runtime_string_map_entries(&value, state.heap())?;
-        let mut out: Vec<_> = entries
+        let exports: Vec<&StdlibExportSpec> = if path.len() == 1 {
+            stdlib_catalog()
+                .module(path.first().copied()?)?
+                .exports
+                .iter()
+                .collect()
+        } else {
+            stdlib_catalog().export_path(path)?.children.iter().collect()
+        };
+        let mut out: Vec<_> = exports
             .into_iter()
-            .map(|(name, value)| {
-                let (kind, detail) = runtime_value_completion_kind(&value, state.heap());
-                (name, kind, detail)
+            .map(|export| {
+                (
+                    export.name.clone(),
+                    completion_kind_from_stdlib(export),
+                    export.detail.clone(),
+                )
             })
             .collect();
         out.sort_by(|left, right| left.0.cmp(&right.0));
         Some(out)
+    }
+}
+
+fn completion_kind_from_stdlib(export: &StdlibExportSpec) -> CompletionKind {
+    match export.kind {
+        StdlibExportKind::Function => CompletionKind::Function,
+        StdlibExportKind::Module => CompletionKind::Module,
+        StdlibExportKind::Value => CompletionKind::Value,
     }
 }
 
@@ -922,95 +925,6 @@ fn method_candidates(receiver_type: Option<ReceiverType>) -> Vec<(&'static str, 
         }
     }
     out
-}
-
-fn runtime_export_detail(export: &lk_core::vm::RuntimeExport) -> String {
-    let Ok(state) = export.state_lock() else {
-        return "runtime builtin".to_string();
-    };
-    runtime_value_completion_kind(export.value(), state.heap()).1
-}
-
-fn runtime_map_get_str(value: &RuntimeVal, heap: &HeapStore, key: &str) -> Option<RuntimeVal> {
-    let RuntimeVal::Obj(handle) = value else {
-        return None;
-    };
-    let HeapValue::Map(map) = heap.get(*handle)? else {
-        return None;
-    };
-    typed_map_get_str(map, key)
-}
-
-fn runtime_string_map_entries(value: &RuntimeVal, heap: &HeapStore) -> Option<BTreeMap<String, RuntimeVal>> {
-    let RuntimeVal::Obj(handle) = value else {
-        return None;
-    };
-    let HeapValue::Map(map) = heap.get(*handle)? else {
-        return None;
-    };
-    Some(typed_map_string_entries(map))
-}
-
-fn typed_map_get_str(map: &TypedMap, key: &str) -> Option<RuntimeVal> {
-    match map {
-        TypedMap::Mixed(entries) => entries
-            .iter()
-            .find_map(|(entry_key, value)| (entry_key.as_str() == Some(key)).then(|| value.clone())),
-        TypedMap::StringMixed(entries) => entries.get(key).cloned(),
-        TypedMap::StringInt(entries) => entries.get(key).copied().map(RuntimeVal::Int),
-        TypedMap::StringFloat(entries) => entries.get(key).copied().map(RuntimeVal::Float),
-        TypedMap::StringBool(entries) => entries.get(key).copied().map(RuntimeVal::Bool),
-    }
-}
-
-fn typed_map_string_entries(map: &TypedMap) -> BTreeMap<String, RuntimeVal> {
-    match map {
-        TypedMap::Mixed(entries) => entries
-            .iter()
-            .filter_map(|(key, value)| key.as_str().map(|key| (key.to_string(), value.clone())))
-            .collect(),
-        TypedMap::StringMixed(entries) => entries
-            .iter()
-            .map(|(key, value)| (key.to_string(), value.clone()))
-            .collect(),
-        TypedMap::StringInt(entries) => entries
-            .iter()
-            .map(|(key, value)| (key.to_string(), RuntimeVal::Int(*value)))
-            .collect(),
-        TypedMap::StringFloat(entries) => entries
-            .iter()
-            .map(|(key, value)| (key.to_string(), RuntimeVal::Float(*value)))
-            .collect(),
-        TypedMap::StringBool(entries) => entries
-            .iter()
-            .map(|(key, value)| (key.to_string(), RuntimeVal::Bool(*value)))
-            .collect(),
-    }
-}
-
-fn runtime_value_completion_kind(value: &RuntimeVal, heap: &HeapStore) -> (CompletionKind, String) {
-    match value {
-        RuntimeVal::Nil => (CompletionKind::Value, "Nil".to_string()),
-        RuntimeVal::Bool(_) | RuntimeVal::Int(_) | RuntimeVal::Float(_) | RuntimeVal::ShortStr(_) => {
-            (CompletionKind::Value, "const".to_string())
-        }
-        RuntimeVal::Obj(handle) => match heap.get(*handle) {
-            Some(HeapValue::Callable(CallableValue::RuntimeNative { arity, .. })) => {
-                if *arity == NativeEntry::VARIADIC {
-                    (CompletionKind::Function, "native function (variadic)".to_string())
-                } else {
-                    (CompletionKind::Function, format!("native function ({arity} args)"))
-                }
-            }
-            Some(HeapValue::Callable(_)) => (CompletionKind::Function, "function".to_string()),
-            Some(HeapValue::List(_)) => (CompletionKind::Variable, "list".to_string()),
-            Some(HeapValue::Map(_)) => (CompletionKind::Module, "namespace".to_string()),
-            Some(HeapValue::Set(_)) => (CompletionKind::Variable, "set".to_string()),
-            Some(HeapValue::String(_)) => (CompletionKind::Value, "string".to_string()),
-            Some(other) => (CompletionKind::Value, other.type_name().to_string()),
-            None => (CompletionKind::Value, "dangling heap ref".to_string()),
-        },
-    }
 }
 
 const KEYWORDS: &[&str] = &[

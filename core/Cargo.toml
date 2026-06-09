@@ -11,9 +11,8 @@ name = "lk_core"
 crate-type = ["rlib", "staticlib"]
 
 [features]
-default = ["llvm", "async-runtime"]
+default = ["async-runtime"]
 async-runtime = ["dep:futures", "dep:tokio"]
-llvm = ["dep:llvm-tools"]
 vm-profile = []
 
 [dependencies]
@@ -29,7 +28,6 @@ dashmap = { workspace = true }
 tracing = { workspace = true }
 chrono = { workspace = true }
 tempfile = { workspace = true }
-llvm-tools = { workspace = true, optional = true }
 rustc-hash = { version = "2" }
 hashbrown = { version = "0.15", features = ["serde"] }
 itoa = { version = "1" }

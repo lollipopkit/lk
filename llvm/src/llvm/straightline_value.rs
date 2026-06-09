@@ -1,11 +1,11 @@
 mod display;
 mod equality;
 mod maps;
-mod modules;
 mod strings;
 use super::const_display::{
     native_const_list_display, native_const_map_display, native_const_object_display, native_string_const_value,
 };
+use crate::llvm::stdlib_catalog::{stdlib_global_builtin, stdlib_global_name, stdlib_module_index, stdlib_module_name};
 use crate::vm::{ConstHeapValueData, ConstRuntimeValueData, Opcode, RuntimeMapKeyData};
 use display::{native_arg_list_display, native_builtin_display, native_display_map_display, native_module_display};
 use equality::{
@@ -174,6 +174,7 @@ pub(super) enum NativeTextPart {
     String { symbol: String, value: String },
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum NativeBuiltin {
     Print,
@@ -201,12 +202,6 @@ pub(super) enum NativeBuiltin {
     OsHostname,
     OsArch,
     OsName,
-    OsDirCurrent,
-    OsDirTemp,
-    OsDirList,
-    OsEnvGet,
-    OsEnvSet,
-    OsEnvUnset,
     IterRange,
     IterMap,
     IterFilter,
@@ -257,9 +252,6 @@ pub(super) enum NativeBuiltin {
     MathMax,
     MathPow,
     MathExp,
-    FibIterative,
-    GreetingsMessage,
-    MathlibDouble,
     MathSin,
     MathCos,
     MathModuleMethod(&'static str),
@@ -271,27 +263,23 @@ pub(super) enum NativeBuiltin {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum NativeModule {
-    Datetime,
-    Fib,
-    Greetings,
-    Os,
-    OsEnv,
-    Iter,
-    Json,
-    Math,
-    Mathlib,
-    Map,
-    List,
-    Toml,
-    Time,
-    Stream,
-    String,
-    Yaml,
+pub(super) struct NativeModule {
+    name: &'static str,
+}
+
+#[allow(non_upper_case_globals)]
+impl NativeModule {
+    pub(super) const fn new(name: &'static str) -> Self {
+        Self { name }
+    }
+
+    pub(super) const fn name(self) -> &'static str {
+        self.name
+    }
 }
 
 pub(super) fn native_static_global(name: &str) -> Option<NativeStraightlineValue> {
-    match name {
+    let value = match name {
         "print" => Some(NativeStraightlineValue::Builtin(NativeBuiltin::Print)),
         "println" => Some(NativeStraightlineValue::Builtin(NativeBuiltin::Println)),
         "__lk_bit_and" => Some(NativeStraightlineValue::Builtin(NativeBuiltin::BitAnd)),
@@ -307,29 +295,17 @@ pub(super) fn native_static_global(name: &str) -> Option<NativeStraightlineValue
         "panic" => Some(NativeStraightlineValue::Builtin(NativeBuiltin::Panic)),
         "recv" => Some(NativeStraightlineValue::Builtin(NativeBuiltin::Recv)),
         "send" => Some(NativeStraightlineValue::Builtin(NativeBuiltin::Send)),
-        "datetime" => Some(NativeStraightlineValue::Module(NativeModule::Datetime)),
-        "os" => Some(NativeStraightlineValue::Module(NativeModule::Os)),
-        "iter" => Some(NativeStraightlineValue::Module(NativeModule::Iter)),
-        "json" => Some(NativeStraightlineValue::Module(NativeModule::Json)),
-        "math" => Some(NativeStraightlineValue::Module(NativeModule::Math)),
-        "m" => Some(NativeStraightlineValue::Module(NativeModule::Math)),
-        "abs" => Some(NativeStraightlineValue::Builtin(NativeBuiltin::MathAbs)),
-        "max" => Some(NativeStraightlineValue::Builtin(NativeBuiltin::MathMax)),
-        "min" => Some(NativeStraightlineValue::Builtin(NativeBuiltin::MathMin)),
-        "square_root" => Some(NativeStraightlineValue::Builtin(NativeBuiltin::MathSqrt)),
-        "fib" => Some(NativeStraightlineValue::Module(NativeModule::Fib)),
-        "iterative" => Some(NativeStraightlineValue::Builtin(NativeBuiltin::FibIterative)),
-        "greetings" => Some(NativeStraightlineValue::Module(NativeModule::Greetings)),
-        "mathlib" => Some(NativeStraightlineValue::Module(NativeModule::Mathlib)),
-        "map" => Some(NativeStraightlineValue::Module(NativeModule::Map)),
-        "list" => Some(NativeStraightlineValue::Module(NativeModule::List)),
-        "toml" => Some(NativeStraightlineValue::Module(NativeModule::Toml)),
-        "time" => Some(NativeStraightlineValue::Module(NativeModule::Time)),
-        "stream" => Some(NativeStraightlineValue::Module(NativeModule::Stream)),
-        "string_mod" | "string" => Some(NativeStraightlineValue::Module(NativeModule::String)),
-        "yaml" => Some(NativeStraightlineValue::Module(NativeModule::Yaml)),
+        "map" => Some(NativeStraightlineValue::Module(NativeModule::new("map"))),
+        "list" => Some(NativeStraightlineValue::Module(NativeModule::new("list"))),
         _ => None,
-    }
+    };
+    value
+        .or_else(|| stdlib_global_builtin(name))
+        .or_else(|| stdlib_module_name(name).map(|name| NativeStraightlineValue::Module(NativeModule::new(name))))
+        .or_else(|| {
+            let _ = stdlib_global_name(name)?;
+            None
+        })
 }
 
 pub(super) fn native_static_to_string_value(
@@ -988,7 +964,48 @@ pub(super) fn native_static_index(
 }
 
 fn native_static_module_index(module: NativeModule, key: NativeStraightlineValue) -> Option<NativeStraightlineValue> {
-    modules::native_static_module_index(module, key)
+    if let Some(value) = native_core_container_module_index(module, key.clone()) {
+        return Some(value);
+    }
+    stdlib_module_index(module, key)
+}
+
+fn native_core_container_module_index(
+    module: NativeModule,
+    key: NativeStraightlineValue,
+) -> Option<NativeStraightlineValue> {
+    let NativeStraightlineValue::String { value: key, .. } = key else {
+        return None;
+    };
+    let builtin = match (module.name(), key.as_str()) {
+        ("map", "len") => NativeBuiltin::MapModuleMethod("len"),
+        ("map", "keys") => NativeBuiltin::MapModuleMethod("keys"),
+        ("map", "values") => NativeBuiltin::MapModuleMethod("values"),
+        ("map", "has") => NativeBuiltin::MapModuleMethod("has"),
+        ("map", "get") => NativeBuiltin::MapModuleMethod("get"),
+        ("map", "delete") => NativeBuiltin::MapDelete,
+        ("map", "set") => NativeBuiltin::MapSet,
+        ("map", "mutate") => NativeBuiltin::MapMutate,
+        ("list", "concat") => NativeBuiltin::ListConcat,
+        ("list", "contains") => NativeBuiltin::ListContains,
+        ("list", "first") => NativeBuiltin::ListFirst,
+        ("list", "get") => NativeBuiltin::ListGet,
+        ("list", "index_of") => NativeBuiltin::ListIndexOf,
+        ("list", "insert") => NativeBuiltin::ListInsert,
+        ("list", "is_empty") => NativeBuiltin::ListIsEmpty,
+        ("list", "join") => NativeBuiltin::ListJoin,
+        ("list", "last") => NativeBuiltin::ListLast,
+        ("list", "len") => NativeBuiltin::ListLen,
+        ("list", "pop") => NativeBuiltin::ListPop,
+        ("list", "push") => NativeBuiltin::ListPush,
+        ("list", "remove_at") => NativeBuiltin::ListRemoveAt,
+        ("list", "reverse") => NativeBuiltin::ListReverse,
+        ("list", "set") => NativeBuiltin::ListSet,
+        ("list", "slice") => NativeBuiltin::ListSlice,
+        ("list", "sort") => NativeBuiltin::ListSort,
+        _ => return None,
+    };
+    Some(NativeStraightlineValue::Builtin(builtin))
 }
 
 pub(super) fn native_static_set_index(

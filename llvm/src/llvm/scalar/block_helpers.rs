@@ -11,8 +11,8 @@ use crate::llvm::{
     ir_text::{native_relative_target, next_tmp, reg_in_bounds},
     output::emit_native_static_core_call_method,
     straightline_value::{
-        NativeBuiltin, NativeListElementKind, NativeMapKeyKind, NativeMapValueKind, NativeModule,
-        NativeStraightlineValue, NativeTextPart, native_runtime_string_key_kind, native_straightline_heap_const_value,
+        NativeBuiltin, NativeListElementKind, NativeMapKeyKind, NativeMapValueKind, NativeStraightlineValue,
+        NativeTextPart, native_runtime_string_key_kind, native_straightline_heap_const_value,
     },
 };
 use crate::vm::{ConstHeapValueData, ConstRuntimeValueData, Instr, ModuleArtifact, Opcode, RuntimeMapKeyData};
@@ -1375,8 +1375,8 @@ pub(in crate::llvm) fn concat_text_values(
 }
 
 pub(in crate::llvm) fn emit_native_block_core_call_method(
-    ir: &mut String,
-    extra_globals: &mut String,
+    _ir: &mut String,
+    _extra_globals: &mut String,
     builtin: NativeBuiltin,
     args: &[NativeStraightlineValue],
     tmp_index: &mut usize,
@@ -1387,48 +1387,7 @@ pub(in crate::llvm) fn emit_native_block_core_call_method(
     if let Some(value) = emit_native_static_core_call_method(args, tmp_index) {
         return Some(value);
     }
-    let [
-        NativeStraightlineValue::Module(NativeModule::OsEnv),
-        NativeStraightlineValue::String { value: method, .. },
-        NativeStraightlineValue::List { elements, .. },
-    ] = args
-    else {
-        return None;
-    };
-    if method != "get" || (elements.len() != 1 && elements.len() != 2) {
-        return None;
-    }
-    let name = native_const_string_arg(&elements[0])?;
-    let default = match elements.get(1) {
-        Some(value) => native_const_string_arg(value)?,
-        None => String::new(),
-    };
-    let name_symbol = format!("@lk_env_name_{}", *tmp_index);
-    *tmp_index += 1;
-    let default_symbol = format!("@lk_env_default_{}", *tmp_index);
-    *tmp_index += 1;
-    let env_ptr = next_tmp(tmp_index);
-    let missing = next_tmp(tmp_index);
-    let out = next_tmp(tmp_index);
-    extra_globals.push_str(&llvm_string_constant(&name_symbol, &name));
-    extra_globals.push_str(&llvm_string_constant(&default_symbol, &default));
-    ir.push_str(&format!("  {env_ptr} = call ptr @getenv(ptr {name_symbol})\n"));
-    ir.push_str(&format!("  {missing} = icmp eq ptr {env_ptr}, null\n"));
-    ir.push_str(&format!(
-        "  {out} = select i1 {missing}, ptr {default_symbol}, ptr {env_ptr}\n"
-    ));
-    Some(NativeStraightlineValue::StringPtr(out))
-}
-
-fn native_const_string_arg(value: &ConstRuntimeValueData) -> Option<String> {
-    match value {
-        ConstRuntimeValueData::ShortStr(value) => Some(value.clone()),
-        ConstRuntimeValueData::Heap(value) => match value.as_ref() {
-            ConstHeapValueData::LongString(value) => Some(value.clone()),
-            _ => None,
-        },
-        _ => None,
-    }
+    None
 }
 
 pub(in crate::llvm) fn native_static_string(value: &str, symbol: String) -> NativeStraightlineValue {

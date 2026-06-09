@@ -3,6 +3,7 @@ members = [
     "core",
     "cli",
     "completion",
+    "llvm",
     "stdlib",
     "stdlib/common",
     "stdlib/web",
