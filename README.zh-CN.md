@@ -38,6 +38,11 @@ examples/
 
 ## 特性
 
+- 类 Rust 语法，支持一等 named parameters
+- 确定性的 bytecode VM，并可选启用并发运行时
+- 可编译到浏览器 wasm 的 playground facade，内置安全标准库子集
+- 标准库、CLI、LSP 与官网源码都在同一仓库内维护
+
 ### 用法
 
 #### 集成（库）
@@ -73,6 +78,19 @@ assert_eq!(result.display_first_return(), "true");
 - 创建包并管理依赖：`lk init`、`lk pkg add`、`lk pkg fetch`、`lk pkg tree`（详见 [docs/packages.md](docs/packages.md)）
 
 注意：命令行参数路径必须为经净化的相对路径。
+
+#### Website 与 wasm playground
+
+官网位于 `website/`，新增 `/try` 路由会按需加载 LK wasm runtime。
+
+```bash
+cd website
+bun run build
+```
+
+本地开发时，`bun run build` 会执行 `website/scripts/build-wasm.mjs`，由它调用 `wasm-pack build ../wasm --target web --out-dir ../website/src/wasm/pkg --release`，再生成 i18n 类型并构建 Vite 应用；此时 `website/src/wasm/pkg/` 属于生成产物，通常被 git 忽略，开发者不应提交。Cloudflare 预构建/部署分支会从仓库读取已构建 wasm package（见 `website/scripts/build-wasm.mjs`），因此这些分支上的 `website/src/wasm/pkg/` 需要存在并提交，或由 CI/CD 构建流程产出。示例：本地开发：忽略并不提交；部署/Cloudflare 预构建分支：需包含或由构建流程产出。
+
+浏览器 playground 支持单文件运行、stdout 捕获、返回值展示、parse/runtime 诊断和指令步数上限。它只暴露浏览器安全标准库子集；`fs`、`io`、`net`、`process`、`env`、`os`、`task`、`chan` 等 native 模块会明确报告为浏览器不可用。
 
 #### VS Code
 

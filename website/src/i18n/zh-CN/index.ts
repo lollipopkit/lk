@@ -7,6 +7,7 @@ const zhCN: Translation = {
     description: 'LK 是 Rust 编写的 Rust 风格轻量脚本语言，包含丰富语法糖、结构化模式匹配、package use 和实用标准库',
   },
   nav: {
+    try: '试用',
     spec: '规范',
     github: 'Github',
     languageLabel: '语言',

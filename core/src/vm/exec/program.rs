@@ -41,6 +41,15 @@ pub fn execute_program_with_ctx(program: &Program, ctx: &mut VmContext) -> Resul
     execute_compiled_module_with_ctx(module, ctx)
 }
 
+pub fn execute_program_with_ctx_and_budget(
+    program: &Program,
+    ctx: &mut VmContext,
+    instruction_budget: u64,
+) -> Result<ProgramResult> {
+    let module = compile_program_module_with_ctx(program, ctx)?;
+    execute_compiled_module_with_ctx_and_budget(module, ctx, instruction_budget)
+}
+
 pub fn execute_module_artifact_with_ctx(artifact: ModuleArtifact, ctx: &mut VmContext) -> Result<ProgramResult> {
     let imports = artifact.imports.clone();
     let resolver = ctx.resolver().clone();
@@ -50,18 +59,34 @@ pub fn execute_module_artifact_with_ctx(artifact: ModuleArtifact, ctx: &mut VmCo
 }
 
 pub fn execute_compiled_module_with_ctx(module: Arc<crate::vm::Module>, ctx: &mut VmContext) -> Result<ProgramResult> {
+    execute_compiled_module_with_ctx_inner(module, ctx, None)
+}
+
+fn execute_compiled_module_with_ctx_and_budget(
+    module: Arc<crate::vm::Module>,
+    ctx: &mut VmContext,
+    instruction_budget: u64,
+) -> Result<ProgramResult> {
+    execute_compiled_module_with_ctx_inner(module, ctx, Some(instruction_budget))
+}
+
+fn execute_compiled_module_with_ctx_inner(
+    module: Arc<crate::vm::Module>,
+    ctx: &mut VmContext,
+    instruction_budget: Option<u64>,
+) -> Result<ProgramResult> {
     let mut seed_heap = HeapStore::new();
     let globals = seed_module_globals(&module.globals, ctx, &mut seed_heap)?;
     let register_count = module
         .entry_function()
         .map(|function| function.register_count)
         .unwrap_or_default();
-    let result = Executor::new(register_count).run_shared_module_with_globals_and_heap_and_ctx(
-        Arc::clone(&module),
-        globals,
-        seed_heap,
-        ctx,
-    )?;
+    let mut executor = Executor::new(register_count);
+    if let Some(instruction_budget) = instruction_budget {
+        executor = executor.with_instruction_budget(instruction_budget);
+    }
+    let result =
+        executor.run_shared_module_with_globals_and_heap_and_ctx(Arc::clone(&module), globals, seed_heap, ctx)?;
     Ok(ProgramResult {
         returns: result.returns,
         state: result.state,
@@ -92,10 +117,10 @@ mod tests {
 
     use crate::{
         val::{HeapStore, HeapValue, RuntimeVal},
-        vm::{GlobalSlot, RuntimeExport, RuntimeModuleState, VmContext},
+        vm::{Function, GlobalSlot, Instr, Module, Opcode, RuntimeExport, RuntimeModuleState, VmContext},
     };
 
-    use super::seed_module_globals;
+    use super::{execute_compiled_module_with_ctx_and_budget, seed_module_globals};
 
     #[test]
     fn seed_module_globals_imports_by_module_slot_order_without_name_map() {
@@ -127,5 +152,35 @@ mod tests {
             panic!("external global should use as heap object");
         };
         assert!(matches!(dest_heap.get(imported), Some(HeapValue::String(value)) if value.as_ref() == "external"));
+    }
+
+    #[test]
+    fn move_batch_consumes_budget_per_move() {
+        let mut function = Function {
+            register_count: 4,
+            ..Function::default()
+        };
+        let int_index = function.consts.push_int(7).expect("push int");
+        function.code = vec![
+            Instr::abx(Opcode::LoadInt, 0, int_index),
+            Instr::abc(Opcode::Move, 1, 0, 0),
+            Instr::abc(Opcode::Move, 2, 1, 0),
+            Instr::abc(Opcode::Move, 3, 2, 0),
+            Instr::abc(Opcode::Return, 3, 1, 0),
+        ];
+        let module = Arc::new(Module::single(function));
+
+        let mut limited_ctx = VmContext::new_without_core_vm_builtins();
+        let error = execute_compiled_module_with_ctx_and_budget(Arc::clone(&module), &mut limited_ctx, 3)
+            .expect_err("three-instruction budget should not cover three moves after load");
+        assert!(
+            error.to_string().contains("execution step limit exceeded"),
+            "unexpected error: {error}"
+        );
+
+        let mut enough_ctx = VmContext::new_without_core_vm_builtins();
+        let result = execute_compiled_module_with_ctx_and_budget(module, &mut enough_ctx, 5)
+            .expect("budget should count each batched Move and complete");
+        assert_eq!(result.returns.first(), Some(&RuntimeVal::Int(7)));
     }
 }

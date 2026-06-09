@@ -1,0 +1,21 @@
+[package]
+name = "lk-wasm"
+description = "Wasm facade for LK browser playground"
+version = "0.1.3"
+edition = "2024"
+authors = ["lollipopkit <a@lpkt.cn>"]
+license = "Apache-2.0"
+
+[lib]
+name = "lk_wasm"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+anyhow = { workspace = true }
+js-sys = { workspace = true }
+lk-core = { path = "../core", default-features = false }
+lk-stdlib-common = { path = "../stdlib/common" }
+lk-stdlib-web = { path = "../stdlib/web" }
+serde = { workspace = true, features = ["derive"] }
+serde-wasm-bindgen = { workspace = true }
+wasm-bindgen = { workspace = true }

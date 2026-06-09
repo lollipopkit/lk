@@ -5,6 +5,7 @@ members = [
     "completion",
     "stdlib",
     "stdlib/common",
+    "stdlib/web",
     "stdlib/crates/bytes",
     "stdlib/crates/chan",
     "stdlib/crates/datetime",
@@ -31,6 +32,7 @@ members = [
     "lkrt",
     "lsp",
     "tree-sitter-lk",
+    "wasm",
 ]
 resolver = "2"
 
@@ -75,6 +77,9 @@ arcstr = { version = "1", features = ["serde"] }
 ureq = "2"
 url = "2"
 uuid = { version = "1", features = ["v4"] }
+wasm-bindgen = "0.2"
+serde-wasm-bindgen = "0.6"
+js-sys = "0.3"
 
 [profile.release]
 panic = "abort"

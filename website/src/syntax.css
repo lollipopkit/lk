@@ -1,0 +1,39 @@
+.lk-keyword {
+  color: var(--syntax-keyword);
+  font-weight: 600;
+}
+
+.lk-function {
+  color: var(--syntax-function);
+}
+
+.lk-string {
+  color: var(--syntax-string);
+}
+
+.lk-number {
+  color: var(--syntax-number);
+}
+
+.lk-constant {
+  color: var(--syntax-constant);
+  font-weight: 600;
+}
+
+.lk-type {
+  color: var(--syntax-type);
+  font-weight: 600;
+}
+
+.lk-operator {
+  color: var(--syntax-operator);
+}
+
+.lk-punctuation {
+  color: var(--syntax-punctuation);
+}
+
+.lk-comment {
+  color: var(--syntax-comment);
+  font-style: italic;
+}

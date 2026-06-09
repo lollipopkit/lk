@@ -24,7 +24,7 @@ pub use super::RuntimeCallable;
 pub use imports::import_runtime_export;
 pub use program::{
     compile_program_module_with_ctx, execute_compiled_module_with_ctx, execute_module_artifact_with_ctx,
-    execute_program, execute_program_with_ctx, execute_source,
+    execute_program, execute_program_with_ctx, execute_program_with_ctx_and_budget, execute_source,
 };
 #[cfg(test)]
 pub(crate) use runtime_callable::call_runtime_callable_test;
@@ -321,6 +321,8 @@ pub struct Executor {
     collect_metrics: bool,
     gc_pending: bool,
     shared_module: Option<Arc<Module>>,
+    instruction_budget: Option<u64>,
+    instruction_count: u64,
 }
 
 impl Executor {
@@ -337,9 +339,30 @@ impl Executor {
             collect_metrics: false,
             gc_pending: false,
             shared_module: None,
+            instruction_budget: None,
+            instruction_count: 0,
         };
         this.reset_entry_frame(register_count);
         this
+    }
+
+    pub fn with_instruction_budget(mut self, budget: u64) -> Self {
+        self.instruction_budget = Some(budget);
+        self
+    }
+
+    #[inline]
+    fn consume_instruction(&mut self) -> Result<()> {
+        self.instruction_count = self
+            .instruction_count
+            .checked_add(1)
+            .ok_or_else(|| anyhow!("instruction counter overflow"))?;
+        if let Some(budget) = self.instruction_budget
+            && self.instruction_count > budget
+        {
+            bail!("execution step limit exceeded ({budget} instructions)");
+        }
+        Ok(())
     }
 
     pub fn run_function(self, function: &Function) -> Result<ExecResult> {
@@ -523,6 +546,7 @@ impl Executor {
         let code = &function.code;
         let mut profile = RuntimeProfileFrame::new();
         while self.pc < code.len() {
+            self.consume_instruction()?;
             let instr = code[self.pc];
             let opcode = instr.opcode();
             profile.record_opcode(opcode, collect_metrics);
@@ -547,6 +571,7 @@ impl Executor {
                     if self.pc >= code.len() || code[self.pc].opcode() != Opcode::Move {
                         break;
                     }
+                    self.consume_instruction()?;
                 },
                 Opcode::Move2 => {
                     let first = *self.read_unchecked(instr.b());

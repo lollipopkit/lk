@@ -8,6 +8,7 @@ const en: BaseTranslation = {
       'LK is a Rust-like scripting language with rich pattern matching, package uses, practical CLI workflows, and a batteries-included standard library.',
   },
   nav: {
+    try: 'Try',
     spec: 'Spec',
     github: 'Github',
     languageLabel: 'Language',

@@ -30,6 +30,10 @@ type RootTranslation = {
 	}
 	nav: {
 		/**
+		 * T​r​y
+		 */
+		'try': string
+		/**
 		 * S​p​e​c
 		 */
 		spec: string
@@ -248,6 +252,10 @@ export type TranslationFunctions = {
 		description: () => LocalizedString
 	}
 	nav: {
+		/**
+		 * Try
+		 */
+		'try': () => LocalizedString
 		/**
 		 * Spec
 		 */
