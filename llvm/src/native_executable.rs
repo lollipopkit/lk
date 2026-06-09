@@ -15,9 +15,16 @@ pub fn compile_native_executable_from_llvm(path: &Path, output: &Path, ir: &str)
     if let Some(staticlib) = lkrt_staticlib_path() {
         add_force_load_staticlib(&mut command, &staticlib);
     }
-    let output_status = command
+    let output_status = match command
         .output()
-        .with_context(|| format!("spawn clang to build native executable {}", output.display()))?;
+        .with_context(|| format!("spawn clang to build native executable {}", output.display()))
+    {
+        Ok(output_status) => output_status,
+        Err(error) => {
+            let _ = std::fs::remove_file(&source_path);
+            return Err(error);
+        }
+    };
     let _ = std::fs::remove_file(&source_path);
     if !output_status.status.success() {
         anyhow::bail!(
@@ -31,7 +38,7 @@ pub fn compile_native_executable_from_llvm(path: &Path, output: &Path, ir: &str)
 
 fn add_force_load_staticlib(command: &mut Command, staticlib: &Path) {
     if cfg!(target_os = "macos") {
-        command.arg("-Wl,-force_load").arg(staticlib);
+        command.arg(format!("-Wl,-force_load,{}", staticlib.display()));
     } else {
         command
             .arg("-Wl,--whole-archive")

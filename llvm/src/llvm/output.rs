@@ -762,8 +762,11 @@ fn emit_native_static_module_method(
     args: &[NativeStraightlineValue],
     _ssa_index: &mut usize,
 ) -> Option<NativeStraightlineValue> {
-    let [receiver @ NativeStraightlineValue::Module(_), method @ NativeStraightlineValue::String { .. }, method_args] =
-        args
+    let [
+        receiver @ NativeStraightlineValue::Module(_),
+        method @ NativeStraightlineValue::String { .. },
+        method_args,
+    ] = args
     else {
         return None;
     };

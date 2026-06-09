@@ -1,3 +1,8 @@
+use std::{
+    collections::HashMap,
+    sync::{Mutex, OnceLock},
+};
+
 use lk_stdlib::{StdlibConstValue, StdlibExportKind, stdlib_catalog};
 
 use crate::llvm::{
@@ -158,5 +163,14 @@ fn const_value_to_native(value: &StdlibConstValue) -> Option<NativeStraightlineV
 }
 
 fn leak_catalog_string(value: String) -> &'static str {
-    Box::leak(value.into_boxed_str())
+    static INTERNED: OnceLock<Mutex<HashMap<String, &'static str>>> = OnceLock::new();
+
+    let table = INTERNED.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut table = table.lock().expect("LLVM stdlib catalog intern table poisoned");
+    if let Some(interned) = table.get(value.as_str()).copied() {
+        return interned;
+    }
+    let interned = Box::leak(value.clone().into_boxed_str());
+    table.insert(value, interned);
+    interned
 }

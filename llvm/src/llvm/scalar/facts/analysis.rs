@@ -284,6 +284,21 @@ fn native_map_module_return_kind(method: &str) -> Option<NativeScalarKind> {
 /// Determine the return kind for a CoreCallMethod builtin.
 fn native_core_method_return_kind(args: &[NativeStraightlineValue]) -> Option<NativeScalarKind> {
     if let [
+        receiver @ NativeStraightlineValue::Module(_),
+        method @ NativeStraightlineValue::String { .. },
+        method_args,
+    ] = args
+    {
+        let builtin = native_static_index(receiver.clone(), method.clone(), String::new())?;
+        let arg_count = core_method_arg_count(method_args)?;
+        if arg_count == 0
+            && let Some(kind) = native_builtin_return_kind(builtin.clone(), &[])
+        {
+            return Some(kind);
+        }
+        return native_builtin_return_kind_dynamic(&builtin, arg_count);
+    }
+    if let [
         NativeStraightlineValue::ArgList { .. },
         NativeStraightlineValue::String { value: method, .. },
         method_args,
@@ -461,6 +476,15 @@ fn native_core_method_return_kind(args: &[NativeStraightlineValue]) -> Option<Na
         };
     }
     Some(NativeScalarKind::I64)
+}
+
+fn core_method_arg_count(args: &NativeStraightlineValue) -> Option<u8> {
+    let len = match args {
+        NativeStraightlineValue::ArgList { elements } => elements.len(),
+        NativeStraightlineValue::List { elements, .. } => elements.len(),
+        _ => return None,
+    };
+    u8::try_from(len).ok()
 }
 
 fn native_static_string_method_known(method: &str) -> bool {

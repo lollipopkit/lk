@@ -215,10 +215,21 @@ fn native_text_display(parts: &[NativeTextPart]) -> Option<String> {
     let mut out = String::new();
     for part in parts {
         match part {
-            NativeTextPart::I64(value) | NativeTextPart::F64(value) | NativeTextPart::Bool(value) => {
+            NativeTextPart::I64(value) | NativeTextPart::F64(value) => {
                 if value.starts_with('%') {
                     return None;
                 }
+                out.push_str(value);
+            }
+            NativeTextPart::Bool(value) => {
+                if value.starts_with('%') {
+                    return None;
+                }
+                let value = match value.as_str() {
+                    "1" => "true",
+                    "0" => "false",
+                    value => value,
+                };
                 out.push_str(value);
             }
             NativeTextPart::Nil => out.push_str("nil"),

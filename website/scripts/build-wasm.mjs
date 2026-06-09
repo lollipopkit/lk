@@ -31,6 +31,10 @@ if (result.error) {
 
 if (result.status === 0) {
   const jsPath = join(process.cwd(), 'src/wasm/pkg/lk_wasm.js')
+  if (!existsSync(jsPath)) {
+    console.error(`Expected wasm JS artifact not found: ${jsPath}`)
+    process.exit(1)
+  }
   const js = readFileSync(jsPath, 'utf8')
 
   if (!js.startsWith('// @ts-nocheck')) {
