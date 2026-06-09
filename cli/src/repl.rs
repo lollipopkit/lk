@@ -168,13 +168,13 @@ fn normalize_binary_signs(src: &str) -> String {
     let mut in_double = false;
     while i < len {
         let c = chars[i];
-        if !in_single && c == '"' {
+        if !in_single && c == '"' && !is_escaped_quote(&chars, i) {
             in_double = !in_double;
             out.push(c);
             i += 1;
             continue;
         }
-        if !in_double && c == '\'' {
+        if !in_double && c == '\'' && !is_escaped_quote(&chars, i) {
             in_single = !in_single;
             out.push(c);
             i += 1;
@@ -222,6 +222,19 @@ fn normalize_binary_signs(src: &str) -> String {
         i += 1;
     }
     out
+}
+
+fn is_escaped_quote(chars: &[char], quote_index: usize) -> bool {
+    let mut backslashes = 0usize;
+    let mut index = quote_index;
+    while index > 0 {
+        index -= 1;
+        if chars[index] != '\\' {
+            break;
+        }
+        backslashes += 1;
+    }
+    backslashes % 2 == 1
 }
 
 pub fn run(_is_statement_mode: bool) -> anyhow::Result<()> {
@@ -359,6 +372,12 @@ mod tests {
         assert_eq!(normalize_binary_signs("1+2"), "1+ 2");
         assert_eq!(normalize_binary_signs("-2"), "-2");
         assert_eq!(normalize_binary_signs("\"1+2\""), "\"1+2\"");
+    }
+
+    #[test]
+    fn normalize_binary_signs_ignores_escaped_quotes() {
+        assert_eq!(normalize_binary_signs(r#""a\"+1""#), r#""a\"+1""#);
+        assert_eq!(normalize_binary_signs(r#"'a\'+1'"#), r#"'a\'+1'"#);
     }
 
     #[test]

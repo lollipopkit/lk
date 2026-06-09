@@ -19,7 +19,7 @@ pub(in crate::llvm) fn native_static_set_from_arg(
             .collect::<Option<Vec<_>>>()?,
         _ => return None,
     };
-    dedup_set_elements(&mut elements)?;
+    dedup_set_elements(&mut elements);
     Some(NativeStraightlineValue::Set {
         value: native_const_list_display(&elements)?,
         symbol,
@@ -79,7 +79,7 @@ pub(in crate::llvm) fn native_static_set_contains(
     ))
 }
 
-fn dedup_set_elements(elements: &mut Vec<ConstRuntimeValueData>) -> Option<()> {
+fn dedup_set_elements(elements: &mut Vec<ConstRuntimeValueData>) {
     let mut out = Vec::with_capacity(elements.len());
     for element in elements.drain(..) {
         if !out
@@ -90,7 +90,6 @@ fn dedup_set_elements(elements: &mut Vec<ConstRuntimeValueData>) -> Option<()> {
         }
     }
     *elements = out;
-    Some(())
 }
 
 fn set_contains(elements: &[ConstRuntimeValueData], needle: &ConstRuntimeValueData) -> bool {
