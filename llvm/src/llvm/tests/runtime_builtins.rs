@@ -108,3 +108,24 @@ fn llvm_backend_lowers_host_fs_and_env_runtime_builtins_to_lkrt() {
     assert!(artifact.module.ir.contains("call ptr @lkrt_fs_temp_dir"));
     assert!(artifact.module.ir.contains("call ptr @lkrt_fs_canonicalize"));
 }
+
+#[test]
+fn llvm_backend_static_socket_addr_matches_lkrt_ipv6_format() {
+    let source = r#"
+        use { socket } from net;
+        return socket.addr("::1", 8080);
+    "#;
+    let tokens = Tokenizer::tokenize(source).expect("tokens");
+    let program = StmtParser::new(&tokens).parse_program().expect("program");
+    let mut registry = ModuleRegistry::new();
+    lk_stdlib::register_stdlib_modules(&mut registry).expect("stdlib registration");
+    let resolver = Arc::new(ModuleResolver::with_registry(registry));
+    let mut ctx = VmContext::new().with_resolver(resolver);
+    let module = compile_program_module_with_ctx(&program, &mut ctx).expect("compile module");
+    let artifact = ModuleArtifact::new(collect_program_imports(&program), &module).expect("artifact");
+
+    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm artifact");
+
+    assert!(artifact.module.ir.contains("[::1]:8080"));
+    assert!(!artifact.module.ir.contains("::1:8080"));
+}

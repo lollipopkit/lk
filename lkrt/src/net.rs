@@ -14,7 +14,8 @@ pub extern "C" fn lkrt_socket_addr(host: *const c_char, port: i64) -> *mut c_cha
         if !(0..=65535).contains(&port) {
             return Err(format!("socket.addr port expects integer 0..65535, got {port}"));
         }
-        owned_c_string(format!("{}:{port}", c_str(host, "socket.addr host")?))
+        let host = c_str(host, "socket.addr host")?;
+        owned_c_string(socket_addr_text(&host, port))
     })
 }
 
@@ -103,8 +104,16 @@ fn write_stream(handle: i64, data: &[u8]) -> Result<i64, String> {
         .stream(handle)?
         .try_clone()
         .map_err(|err| format!("tcp.write clone stream: {err}"))?;
-    let written = stream.write(data).map_err(|err| format!("tcp write: {err}"))?;
-    Ok(written as i64)
+    stream.write_all(data).map_err(|err| format!("tcp write: {err}"))?;
+    Ok(data.len() as i64)
+}
+
+fn socket_addr_text(host: &str, port: i64) -> String {
+    if host.contains(':') && !(host.starts_with('[') && host.ends_with(']')) {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    }
 }
 
 fn checked_read_len(value: i64) -> Result<usize, String> {
@@ -157,5 +166,19 @@ mod tests {
         let error = lkrt_last_error();
         assert!(!error.is_null());
         lkrt_string_free(error);
+    }
+
+    #[test]
+    fn socket_addr_brackets_ipv6_literals() {
+        let host = CString::new("::1").expect("host");
+        let addr = lkrt_socket_addr(host.as_ptr(), 8080);
+        assert!(!addr.is_null());
+        // SAFETY: addr is an lkrt-owned NUL-terminated CString pointer.
+        let addr_text = unsafe { std::ffi::CStr::from_ptr(addr) }
+            .to_str()
+            .expect("utf8")
+            .to_owned();
+        lkrt_string_free(addr);
+        assert_eq!(addr_text, "[::1]:8080");
     }
 }

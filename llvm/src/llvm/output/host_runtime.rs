@@ -120,6 +120,26 @@ pub(super) fn emit_native_zero_arg_string_ptr_call(
     Some(NativeStraightlineValue::StringPtr(out))
 }
 
+pub(super) fn emit_native_socket_addr(args: &[NativeStraightlineValue]) -> Option<NativeStraightlineValue> {
+    let [
+        NativeStraightlineValue::String { value: host, .. },
+        NativeStraightlineValue::I64(port),
+    ] = args
+    else {
+        return None;
+    };
+    let port = port.parse::<i64>().ok()?;
+    if !(0..=65535).contains(&port) {
+        return None;
+    }
+    let needs_brackets = host.contains(':') && !(host.starts_with('[') && host.ends_with(']'));
+    Some(static_string(if needs_brackets {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    }))
+}
+
 pub(super) fn emit_native_fs_write(
     body: &mut String,
     args: &[NativeStraightlineValue],
@@ -146,6 +166,17 @@ pub(super) fn emit_native_fs_write(
         _ => return None,
     }
     Some(NativeStraightlineValue::Bool(out))
+}
+
+fn static_string(value: String) -> NativeStraightlineValue {
+    let len = value.chars().count();
+    let key_kind = crate::llvm::straightline_value::native_runtime_string_key_kind(&value);
+    NativeStraightlineValue::String {
+        symbol: String::new(),
+        value,
+        len,
+        key_kind,
+    }
 }
 
 fn static_string_ptr_arg(body: &mut String, value: &NativeStraightlineValue) -> Option<String> {

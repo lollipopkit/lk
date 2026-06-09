@@ -6,7 +6,7 @@ use std::ffi::c_char;
 use std::{
     fs,
     path::Path,
-    sync::OnceLock,
+    sync::{Mutex, MutexGuard, OnceLock},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -22,11 +22,13 @@ enum MetadataField {
 pub extern "C" fn lkrt_env_get(key: *const c_char, out: *mut *mut c_char) -> i64 {
     status(|| {
         let key = c_str(key, "env.get key")?;
-        let value = std::env::var_os(key.as_str())
-            .and_then(|value| value.into_string().ok())
-            .map(owned_c_string)
-            .transpose()?
-            .unwrap_or(std::ptr::null_mut());
+        let value = {
+            let _env = env_lock();
+            std::env::var_os(key.as_str()).and_then(|value| value.into_string().ok())
+        }
+        .map(owned_c_string)
+        .transpose()?
+        .unwrap_or(std::ptr::null_mut());
         write_out(out, value, "env.get")
     })
 }
@@ -36,7 +38,11 @@ pub extern "C" fn lkrt_env_get_or(key: *const c_char, default: *const c_char) ->
     aborting(|| {
         let key = c_str(key, "env.get_or key")?;
         let default = c_str(default, "env.get_or default")?;
-        owned_c_string(std::env::var(key.as_str()).unwrap_or(default))
+        let value = {
+            let _env = env_lock();
+            std::env::var(key.as_str()).unwrap_or(default)
+        };
+        owned_c_string(value)
     })
 }
 
@@ -44,6 +50,7 @@ pub extern "C" fn lkrt_env_get_or(key: *const c_char, default: *const c_char) ->
 pub extern "C" fn lkrt_env_has(key: *const c_char) -> i64 {
     aborting(|| {
         let key = c_str(key, "env.has key")?;
+        let _env = env_lock();
         Ok(i64::from(std::env::var_os(key.as_str()).is_some()))
     })
 }
@@ -53,10 +60,10 @@ pub extern "C" fn lkrt_env_set(key: *const c_char, value: *const c_char) -> i64 
     status(|| {
         let key = c_str(key, "env.set key")?;
         let value = c_str(value, "env.set value")?;
-        let _guard = runtime().lock().expect("lkrt runtime poisoned");
-        // SAFETY: lkrt serializes environment mutation through the runtime
-        // mutex. Native LK code is single-process and does not expose
-        // concurrent foreign environment access through this ABI.
+        let _env = env_lock();
+        // SAFETY: Rust 2024 requires process environment reads and writes to
+        // be serialized. Every lkrt env accessor takes this process-wide mutex
+        // before touching std::env, including reads and mutations.
         unsafe {
             std::env::set_var(key, value);
         }
@@ -68,8 +75,8 @@ pub extern "C" fn lkrt_env_set(key: *const c_char, value: *const c_char) -> i64 
 pub extern "C" fn lkrt_env_remove(key: *const c_char) -> i64 {
     status(|| {
         let key = c_str(key, "env.remove key")?;
-        let _guard = runtime().lock().expect("lkrt runtime poisoned");
-        // SAFETY: See lkrt_env_set; environment mutation is serialized by lkrt.
+        let _env = env_lock();
+        // SAFETY: See lkrt_env_set; all lkrt std::env access is serialized.
         unsafe {
             std::env::remove_var(key);
         }
@@ -225,6 +232,14 @@ fn fs_metadata_field(path: *const c_char, field: MetadataField) -> Result<i64, S
         MetadataField::Readonly => i64::from(metadata.permissions().readonly()),
     };
     Ok(value)
+}
+
+fn env_lock() -> MutexGuard<'static, ()> {
+    static ENV_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
+    ENV_MUTEX
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .expect("lkrt env mutex poisoned")
 }
 
 #[cfg(test)]

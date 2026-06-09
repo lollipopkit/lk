@@ -25,7 +25,8 @@ pub(super) fn subfunction_param_kind_candidates(param_count: usize) -> Vec<Vec<N
     }
     for mut encoded in 0..total {
         if candidates.len() >= MAX_CANDIDATES {
-            return Vec::new();
+            eprintln!("lk-llvm: truncated subfunction param candidates at {MAX_CANDIDATES} for {param_count} params");
+            break;
         }
         let mut kinds = Vec::with_capacity(param_count);
         for _ in 0..param_count {

@@ -206,8 +206,8 @@ fn read_stream(mut stream: TcpStream, max: usize) -> Result<Vec<u8>> {
 }
 
 fn write_stream(mut stream: TcpStream, data: &[u8]) -> Result<RuntimeVal> {
-    let written = stream.write(data).map_err(|err| anyhow!("tcp write: {err}"))?;
-    Ok(RuntimeVal::Int(written as i64))
+    stream.write_all(data).map_err(|err| anyhow!("tcp write: {err}"))?;
+    Ok(RuntimeVal::Int(data.len() as i64))
 }
 
 fn spawn_task(

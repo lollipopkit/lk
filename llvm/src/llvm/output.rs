@@ -23,7 +23,8 @@ use crate::vm::{ConstHeapValueData, ConstRuntimeValueData, RuntimeMapKeyData};
 use arg_list_methods::emit_native_arg_list_method;
 use host_runtime::{
     emit_native_bytes_to_string_utf8, emit_native_env_get, emit_native_env_get_or, emit_native_fs_write,
-    emit_native_unary_string_i64_call, emit_native_unary_string_ptr_call, emit_native_zero_arg_string_ptr_call,
+    emit_native_socket_addr, emit_native_unary_string_i64_call, emit_native_unary_string_ptr_call,
+    emit_native_zero_arg_string_ptr_call,
 };
 use iter_methods::{emit_native_iter_builtin, emit_native_iter_module_method};
 use list_methods::{emit_native_list_builtin, emit_native_static_list_method};
@@ -368,17 +369,6 @@ fn emit_native_io_std_resource(args: &[NativeStraightlineValue], handle: i64) ->
         return None;
     }
     Some(NativeStraightlineValue::I64(handle.to_string()))
-}
-
-fn emit_native_socket_addr(args: &[NativeStraightlineValue]) -> Option<NativeStraightlineValue> {
-    let [
-        NativeStraightlineValue::String { value: host, .. },
-        NativeStraightlineValue::I64(port),
-    ] = args
-    else {
-        return None;
-    };
-    Some(native_static_string_value(&format!("{host}:{port}")))
 }
 
 fn emit_native_fib_iterative(args: &[NativeStraightlineValue]) -> Option<NativeStraightlineValue> {
