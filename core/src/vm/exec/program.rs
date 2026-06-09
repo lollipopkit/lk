@@ -117,10 +117,10 @@ mod tests {
 
     use crate::{
         val::{HeapStore, HeapValue, RuntimeVal},
-        vm::{GlobalSlot, RuntimeExport, RuntimeModuleState, VmContext},
+        vm::{Function, GlobalSlot, Instr, Module, Opcode, RuntimeExport, RuntimeModuleState, VmContext},
     };
 
-    use super::seed_module_globals;
+    use super::{execute_compiled_module_with_ctx_and_budget, seed_module_globals};
 
     #[test]
     fn seed_module_globals_imports_by_module_slot_order_without_name_map() {
@@ -152,5 +152,35 @@ mod tests {
             panic!("external global should use as heap object");
         };
         assert!(matches!(dest_heap.get(imported), Some(HeapValue::String(value)) if value.as_ref() == "external"));
+    }
+
+    #[test]
+    fn move_batch_consumes_budget_per_move() {
+        let mut function = Function {
+            register_count: 4,
+            ..Function::default()
+        };
+        let int_index = function.consts.push_int(7).expect("push int");
+        function.code = vec![
+            Instr::abx(Opcode::LoadInt, 0, int_index),
+            Instr::abc(Opcode::Move, 1, 0, 0),
+            Instr::abc(Opcode::Move, 2, 1, 0),
+            Instr::abc(Opcode::Move, 3, 2, 0),
+            Instr::abc(Opcode::Return, 3, 1, 0),
+        ];
+        let module = Arc::new(Module::single(function));
+
+        let mut limited_ctx = VmContext::new_without_core_vm_builtins();
+        let error = execute_compiled_module_with_ctx_and_budget(Arc::clone(&module), &mut limited_ctx, 3)
+            .expect_err("three-instruction budget should not cover three moves after load");
+        assert!(
+            error.to_string().contains("execution step limit exceeded"),
+            "unexpected error: {error}"
+        );
+
+        let mut enough_ctx = VmContext::new_without_core_vm_builtins();
+        let result = execute_compiled_module_with_ctx_and_budget(module, &mut enough_ctx, 5)
+            .expect("budget should count each batched Move and complete");
+        assert_eq!(result.returns.first(), Some(&RuntimeVal::Int(7)));
     }
 }

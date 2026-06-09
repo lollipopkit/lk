@@ -283,6 +283,7 @@ code {
 
 .language-switcher select:focus-visible,
 .site-nav a:focus-visible,
+.icon-btn:focus-visible,
 .btn:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;

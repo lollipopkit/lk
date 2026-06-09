@@ -88,7 +88,7 @@ cd website
 bun run build
 ```
 
-`bun run build` 会先执行 `wasm-pack build ../wasm --target web --out-dir ../website/src/wasm/pkg --release`，再生成 i18n 类型并构建 Vite 应用。生成的 `website/src/wasm/pkg/` 已加入忽略列表，不应提交。
+本地开发时，`bun run build` 会执行 `website/scripts/build-wasm.mjs`，由它调用 `wasm-pack build ../wasm --target web --out-dir ../website/src/wasm/pkg --release`，再生成 i18n 类型并构建 Vite 应用；此时 `website/src/wasm/pkg/` 属于生成产物，通常被 git 忽略，开发者不应提交。Cloudflare 预构建/部署分支会从仓库读取已构建 wasm package（见 `website/scripts/build-wasm.mjs`），因此这些分支上的 `website/src/wasm/pkg/` 需要存在并提交，或由 CI/CD 构建流程产出。示例：本地开发：忽略并不提交；部署/Cloudflare 预构建分支：需包含或由构建流程产出。
 
 浏览器 playground 支持单文件运行、stdout 捕获、返回值展示、parse/runtime 诊断和指令步数上限。它只暴露浏览器安全标准库子集；`fs`、`io`、`net`、`process`、`env`、`os`、`task`、`chan` 等 native 模块会明确报告为浏览器不可用。
 

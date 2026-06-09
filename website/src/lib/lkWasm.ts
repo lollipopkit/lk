@@ -16,17 +16,22 @@ export type RunResult = {
 }
 
 type LkWasmModule = {
-  default: () => Promise<void>
+  default: () => Promise<unknown>
   runLk: (source: string) => RunResult
 }
 
 let modulePromise: Promise<LkWasmModule> | undefined
 
 export async function loadLkWasm(): Promise<LkWasmModule> {
-  modulePromise ??= import('../wasm/pkg/lk_wasm.js').then(async (mod) => {
-    const wasm = mod as LkWasmModule
-    await wasm.default()
-    return wasm
-  })
+  modulePromise ??= import('../wasm/pkg/lk_wasm.js')
+    .then(async (mod) => {
+      const wasm = mod as LkWasmModule
+      await wasm.default()
+      return wasm
+    })
+    .catch((error) => {
+      modulePromise = undefined
+      throw error
+    })
   return modulePromise
 }

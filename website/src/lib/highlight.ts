@@ -154,7 +154,9 @@ export function highlightLkCode(source: string): string {
       let end = index + 1
       while (isIdentifierPart(source[end])) end += 1
       const word = source.slice(index, end)
-      const rest = source.slice(end).replace(/^\s+/, '')
+      let nextIndex = end
+      while (/\s/.test(source[nextIndex] || '')) nextIndex += 1
+      const nextChar = source[nextIndex]
 
       if (lkConstants.has(word)) {
         html += wrapToken('constant', word)
@@ -162,7 +164,7 @@ export function highlightLkCode(source: string): string {
         html += wrapToken('type', word)
       } else if (lkKeywords.has(word)) {
         html += wrapToken('keyword', word)
-      } else if (rest.startsWith('(')) {
+      } else if (nextChar === '(') {
         html += wrapToken('function', word)
       } else {
         html += escapeHtml(word)

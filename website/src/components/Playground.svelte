@@ -62,7 +62,32 @@
 
   async function copyOutput(): Promise<void> {
     const text = [result?.stdout, result?.result, result?.error].filter(Boolean).join('\n')
-    if (text) await navigator.clipboard.writeText(text)
+    if (!text) return
+
+    try {
+      if (navigator.clipboard) {
+        await navigator.clipboard.writeText(text)
+        return
+      }
+    } catch (error) {
+      console.warn('Clipboard API copy failed; falling back to document copy.', error)
+    }
+
+    const textarea = document.createElement('textarea')
+    textarea.value = text
+    textarea.setAttribute('readonly', '')
+    textarea.style.position = 'fixed'
+    textarea.style.left = '-9999px'
+    textarea.style.top = '0'
+    document.body.appendChild(textarea)
+    textarea.select()
+    try {
+      document.execCommand('copy')
+    } catch (error) {
+      console.warn('Fallback clipboard copy failed.', error)
+    } finally {
+      document.body.removeChild(textarea)
+    }
   }
 </script>
 

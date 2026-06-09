@@ -97,7 +97,7 @@ cd website
 bun run build
 ```
 
-`bun run build` first runs `wasm-pack build ../wasm --target web --out-dir ../website/src/wasm/pkg --release`, then regenerates i18n types and builds the Vite app. The generated `website/src/wasm/pkg/` directory is ignored and should not be committed.
+For local development, `bun run build` runs `website/scripts/build-wasm.mjs`, which invokes `wasm-pack build ../wasm --target web --out-dir ../website/src/wasm/pkg --release`, then regenerates i18n types and builds the Vite app. In that workflow, `website/src/wasm/pkg/` is generated output, is typically ignored, and should not be committed. Cloudflare prebuilt/deployment branches use the checked-in wasm package instead (see `website/scripts/build-wasm.mjs`), so the checked-in `website/src/wasm/pkg/` artifacts must be retained on those branches. Workflow summary: local development regenerates and ignores `pkg/`; deployment/Cloudflare prebuild uses retained or CI-produced wasm artifacts.
 
 The browser playground supports single-file execution with stdout capture, return-value display, parse/runtime diagnostics, and an instruction step limit. It intentionally exposes only the browser-safe stdlib subset; native modules such as `fs`, `io`, `net`, `process`, `env`, `os`, `task`, and `chan` are reported as unavailable in the browser.
 

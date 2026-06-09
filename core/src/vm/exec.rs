@@ -571,6 +571,7 @@ impl Executor {
                     if self.pc >= code.len() || code[self.pc].opcode() != Opcode::Move {
                         break;
                     }
+                    self.consume_instruction()?;
                 },
                 Opcode::Move2 => {
                     let first = *self.read_unchecked(instr.b());
