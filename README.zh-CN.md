@@ -69,7 +69,7 @@ assert_eq!(result.display_first_return(), "true");
 #### CLI
 
 - 进入 REPL：`lk`
-- REPL 补全使用 Reedline：非空前缀会在提示符下方显示候选菜单，最佳候选会以灰色 inline hint 显示在输入框中，`Tab` 循环并插入候选，`Right Arrow` 接受当前 inline hint。
+- REPL 在支持 cursor-position query 的终端上使用 Reedline 补全：非空前缀会在提示符下方显示候选菜单，最佳候选会以灰色 inline hint 显示在输入框中，`Tab` 循环并插入候选，`Right Arrow` 接受当前 inline hint。可以设置 `LK_REPL_TUI=always` 强制启用 Reedline UI，或设置 `LK_REPL_TUI=never` 使用简单行输入 fallback。
 - REPL 顶层绑定会在当前会话内持久化，后续输入可以继续使用之前声明的变量、常量和函数。
 - 执行源码或模块产物：`lk FILE`（支持 `.lk` 和 `.lkm`）
 - 仅做静态类型检查：`lk check FILE`（输出编译期诊断信息）

@@ -63,12 +63,20 @@ pub(crate) fn new_editor(state: ReplCompletionState) -> anyhow::Result<Reedline>
 }
 
 pub(crate) fn read_input(editor: &mut Reedline) -> anyhow::Result<ReplInput> {
-    match editor.read_line(&prompt())? {
-        Signal::Success(source) => Ok(ReplInput::Submit(source.trim_end().to_string())),
-        Signal::CtrlC => Ok(ReplInput::Continue),
-        Signal::CtrlD => Ok(ReplInput::Exit),
-        _ => Ok(ReplInput::Continue),
+    match editor.read_line(&prompt()).map_err(anyhow::Error::from) {
+        Err(err) if is_cursor_position_timeout(&err) => Ok(ReplInput::FallbackToSimple),
+        Err(err) => Err(err),
+        Ok(signal) => match signal {
+            Signal::Success(source) => Ok(ReplInput::Submit(source.trim_end().to_string())),
+            Signal::CtrlC => Ok(ReplInput::Continue),
+            Signal::CtrlD => Ok(ReplInput::Exit),
+            _ => Ok(ReplInput::Continue),
+        },
     }
+}
+
+fn is_cursor_position_timeout(error: &anyhow::Error) -> bool {
+    error.to_string().contains("cursor position could not be read")
 }
 
 fn prompt() -> LkPrompt {
@@ -267,5 +275,14 @@ mod tests {
         assert!(supports_xterm256_color(None, Some("truecolor")));
         assert!(supports_xterm256_color(None, Some("24bit")));
         assert!(!supports_xterm256_color(Some("xterm"), None));
+    }
+
+    #[test]
+    fn detects_reedline_cursor_position_timeout() {
+        let error = anyhow::anyhow!("The cursor position could not be read within a normal duration");
+        assert!(is_cursor_position_timeout(&error));
+
+        let other = anyhow::anyhow!("terminal input failed");
+        assert!(!is_cursor_position_timeout(&other));
     }
 }

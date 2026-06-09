@@ -69,7 +69,7 @@ assert_eq!(result.display_first_return(), "true");
 #### CLI
 
 - Run REPL: `lk`
-- REPL completion uses Reedline: non-empty prefixes show a completion menu below the prompt, the best candidate is shown inline as a gray hint, `Tab` cycles and inserts candidates, and `Right Arrow` accepts the current inline hint.
+- REPL completion uses Reedline on terminals that support cursor-position queries: non-empty prefixes show a completion menu below the prompt, the best candidate is shown inline as a gray hint, `Tab` cycles and inserts candidates, and `Right Arrow` accepts the current inline hint. Set `LK_REPL_TUI=always` to force the Reedline UI or `LK_REPL_TUI=never` to use the simple line fallback.
 - REPL top-level bindings persist for the current session, so later inputs can reuse variables, constants, and functions declared earlier.
 - Execute a source file or module artifact: `lk FILE` (supports `.lk` and `.lkm`)
 - Type-check without executing: `lk check FILE` (reports compile-time diagnostics)

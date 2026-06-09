@@ -1,5 +1,5 @@
 use std::{
-    io::{self, BufRead, IsTerminal},
+    io::{self, BufRead, IsTerminal, Write},
     sync::Arc,
 };
 
@@ -18,6 +18,7 @@ pub(crate) enum ReplInput {
     Submit(String),
     Continue,
     Exit,
+    FallbackToSimple,
 }
 
 enum ReplStep {
@@ -32,10 +33,6 @@ struct ReplSession {
 
 impl ReplSession {
     fn new() -> anyhow::Result<Self> {
-        if let Err(e) = rt::init_runtime() {
-            diagnostic::warning(format_args!("Failed to initialize runtime: {}", e));
-        }
-
         let mut registry = ModuleRegistry::new();
         lk_stdlib::register_stdlib_globals(&mut registry);
         lk_stdlib::register_stdlib_modules(&mut registry)?;
@@ -226,11 +223,44 @@ pub fn run(_is_statement_mode: bool) -> anyhow::Result<()> {
     let mut session = ReplSession::new()?;
     print_repl_help();
 
-    if io::stdin().is_terminal() && io::stdout().is_terminal() {
+    let interactive = io::stdin().is_terminal() && io::stdout().is_terminal();
+    if interactive && should_use_reedline_repl() {
         run_tui(&mut session)
+    } else if interactive {
+        run_simple_interactive(&mut session)
     } else {
         run_fallback(&mut session)
     }
+}
+
+fn should_use_reedline_repl() -> bool {
+    should_use_reedline_repl_from_env(
+        std::env::var("LK_REPL_TUI").ok().as_deref(),
+        std::env::var("TERM").ok().as_deref(),
+        std::env::var_os("CODEX_CI").is_some(),
+        std::env::var_os("CODEX_SANDBOX").is_some(),
+        std::env::var_os("CI").is_some(),
+    )
+}
+
+fn should_use_reedline_repl_from_env(
+    lk_repl_tui: Option<&str>,
+    term: Option<&str>,
+    codex_ci: bool,
+    codex_sandbox: bool,
+    ci: bool,
+) -> bool {
+    match lk_repl_tui {
+        Some("always" | "1" | "true" | "yes") => return true,
+        Some("never" | "0" | "false" | "no") => return false,
+        _ => {}
+    }
+
+    if codex_ci || codex_sandbox || ci {
+        return false;
+    }
+
+    !matches!(term, None | Some("") | Some("dumb"))
 }
 
 fn run_tui(session: &mut ReplSession) -> anyhow::Result<()> {
@@ -246,7 +276,38 @@ fn run_tui(session: &mut ReplSession) -> anyhow::Result<()> {
                 eprintln!("^C");
             }
             ReplInput::Exit => return Ok(()),
+            ReplInput::FallbackToSimple => return run_simple_interactive(session),
         }
+    }
+}
+
+fn run_simple_interactive(session: &mut ReplSession) -> anyhow::Result<()> {
+    let stdin = io::stdin();
+    let mut lines = stdin.lock().lines();
+    let mut acc = String::new();
+    loop {
+        let prompt = if acc.is_empty() { "> " } else { "... " };
+        eprint!("{prompt}");
+        io::stderr().flush()?;
+
+        let Some(line) = lines.next().transpose()? else {
+            return Ok(());
+        };
+        let trimmed = line.trim_end();
+        if trimmed.ends_with('\\') {
+            acc.push_str(trimmed.strip_suffix('\\').unwrap_or(trimmed));
+            acc.push('\n');
+            continue;
+        }
+        acc.push_str(trimmed);
+        acc.push('\n');
+        if should_continue_multiline(&acc) {
+            continue;
+        }
+        if matches!(session.execute(&acc), ReplStep::Exit) {
+            return Ok(());
+        }
+        acc.clear();
     }
 }
 
@@ -293,5 +354,38 @@ mod tests {
         assert_eq!(normalize_binary_signs("1+2"), "1+ 2");
         assert_eq!(normalize_binary_signs("-2"), "-2");
         assert_eq!(normalize_binary_signs("\"1+2\""), "\"1+2\"");
+    }
+
+    #[test]
+    fn reedline_repl_is_disabled_in_codex_proxy_terminals() {
+        assert!(!should_use_reedline_repl_from_env(
+            None,
+            Some("xterm-256color"),
+            true,
+            false,
+            false
+        ));
+    }
+
+    #[test]
+    fn reedline_repl_can_be_forced_for_supported_terminals() {
+        assert!(should_use_reedline_repl_from_env(
+            Some("always"),
+            Some("dumb"),
+            true,
+            false,
+            false
+        ));
+    }
+
+    #[test]
+    fn reedline_repl_is_disabled_for_dumb_terminals() {
+        assert!(!should_use_reedline_repl_from_env(
+            None,
+            Some("dumb"),
+            false,
+            false,
+            false
+        ));
     }
 }
