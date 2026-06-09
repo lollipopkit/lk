@@ -5,6 +5,5 @@
     "checkJs": true,
     "moduleResolution": "bundler"
   },
-  "include": ["src/**/*.d.ts", "src/**/*.ts", "src/**/*.js", "src/**/*.svelte"],
-  "exclude": ["src/wasm/pkg/**/*.js"]
+  "include": ["src/**/*.d.ts", "src/**/*.ts", "src/**/*.js", "src/**/*.svelte"]
 }
