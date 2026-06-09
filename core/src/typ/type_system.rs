@@ -375,6 +375,11 @@ impl TypeInferenceEngine {
             // Same types unify
             (a, b) if a == b => Ok(()),
 
+            // `Any` is a weak gradual-typing constraint. It must not bind an
+            // otherwise fresh type variable, because later concrete call-site
+            // constraints should still be able to refine that variable.
+            (Type::Any, _) | (_, Type::Any) => Ok(()),
+
             // Variable unification
             (Type::Variable(var), typ) | (typ, Type::Variable(var)) => {
                 if Self::occurs_check(&var, &typ) {

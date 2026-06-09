@@ -86,6 +86,10 @@ Notes:
 - The file path must be relative (no absolute paths or `..`).
 - Output is prettified JSON suitable for piping to `jq`.
 
+### Type Diagnostics
+
+The analyzer runs strict type checking after parsing a full statement program. Unannotated function parameters are checked after the whole program has contributed call-site constraints, so a parameter such as `fn should_run(name)` is accepted when later calls consistently pass `String` values. If no concrete call-site or body constraint resolves the parameter, the diagnostic is reported on the parameter name instead of at the top of the file.
+
 ### Integration with Editors
 
 #### VS Code
@@ -100,7 +104,7 @@ Create a VS Code extension that launches the LSP server:
       "extensions": [".lk"]
     }]
   },
-  "activationEvents": ["onLanguage:lk"]
+  "activationEvents": ["onLanguage:lk", "workspaceContains:Lk.toml"]
 }
 ```
 

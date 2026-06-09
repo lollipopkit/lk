@@ -6,6 +6,27 @@ use anyhow::Result;
 impl TypeChecker {
     /// Check function call type
     pub(super) fn check_function_call(&mut self, func: &Expr, args: &[Box<Expr>]) -> Result<Type> {
+        if let Some(Type::Function {
+            params,
+            named_params,
+            return_type,
+        }) = self.stdlib_call_function_type(func)
+        {
+            if !named_params.is_empty() || params.len() != args.len() {
+                return Err(Self::type_err(
+                    &format!("Function expects {} arguments", params.len()),
+                    None,
+                    None,
+                    Some(func.clone()),
+                ));
+            }
+            for (param_type, arg) in params.iter().zip(args.iter()) {
+                let arg_type = self.check_expr(arg)?;
+                self.inference_engine.add_constraint(param_type.clone(), arg_type);
+            }
+            return Ok(*return_type);
+        }
+
         if let Expr::Access(obj_expr, field_expr) = func {
             let receiver_ty = self.check_expr(obj_expr)?;
             if let Expr::Literal(field_val) = field_expr.as_ref()

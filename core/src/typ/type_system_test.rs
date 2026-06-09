@@ -291,6 +291,23 @@ mod tests {
     }
 
     #[test]
+    fn test_type_inference_any_does_not_block_later_concrete_constraint() {
+        let registry = TypeRegistry::new();
+        let mut engine = TypeInferenceEngine::new(registry);
+        let var = engine.fresh_type_var();
+
+        engine.add_constraint(var.clone(), Type::Any);
+        engine.add_constraint(var.clone(), Type::String);
+
+        let substitutions = engine.solve_constraints().unwrap();
+        if let Type::Variable(name) = var {
+            assert_eq!(substitutions.get(&name), Some(&Type::String));
+        } else {
+            panic!("expected type variable");
+        }
+    }
+
+    #[test]
     fn test_type_substitution() {
         let mut substitutions = HashMap::new();
         substitutions.insert("T".to_string(), Type::Int);

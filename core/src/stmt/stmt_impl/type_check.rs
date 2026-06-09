@@ -2,7 +2,10 @@ use super::{ForPattern, Program, Stmt};
 use crate::{
     expr::Pattern,
     token::ParseError,
-    typ::{FunctionSig, NamedParamSig, StructDef, TraitDef, TypeAlias as AliasDef, TypeChecker},
+    typ::{
+        FunctionSig, NamedParamSig, PendingStrictFunction, PendingStrictParam, StructDef, TraitDef,
+        TypeAlias as AliasDef, TypeChecker,
+    },
     val::{FunctionNamedParamType, Type},
 };
 use anyhow::{Result, anyhow};
@@ -409,6 +412,52 @@ impl Stmt {
                     normalize_union(collected_returns)
                 };
 
+                if type_checker.defer_strict_function_checks() {
+                    let pending_positional = params
+                        .iter()
+                        .cloned()
+                        .zip(positional_tys.iter().cloned())
+                        .zip(positional_origin.iter().copied())
+                        .map(|((name, ty), annotated)| PendingStrictParam { name, ty, annotated })
+                        .collect();
+                    let pending_named = named_params
+                        .iter()
+                        .map(|param| param.name.clone())
+                        .zip(named_annos.iter().map(|param| param.ty.clone()))
+                        .zip(named_origin.iter().copied())
+                        .map(|((name, ty), annotated)| PendingStrictParam { name, ty, annotated })
+                        .collect();
+
+                    let final_func_type = Type::Function {
+                        params: positional_tys.clone(),
+                        named_params: named_annos.clone(),
+                        return_type: Box::new(inferred_return.clone()),
+                    };
+
+                    if let Some(self_ty) = type_checker.current_impl_self_type().cloned() {
+                        type_checker.add_method_sig(&self_ty, name, final_func_type.clone());
+                    }
+
+                    type_checker.add_local_type(name.clone(), final_func_type);
+                    type_checker.add_function_sig(
+                        name.clone(),
+                        FunctionSig {
+                            positional: positional_tys,
+                            named: named_sigs,
+                            return_type: Some(inferred_return.clone()),
+                        },
+                    );
+                    type_checker.add_pending_strict_function(PendingStrictFunction {
+                        name: name.clone(),
+                        positional: pending_positional,
+                        named: pending_named,
+                        return_type: inferred_return,
+                        return_annotated: return_was_annotated,
+                    });
+
+                    return Ok(());
+                }
+
                 let subs = type_checker.solve_constraints()?;
                 let resolved_positional: Vec<Type> = positional_tys
                     .into_iter()
@@ -433,23 +482,23 @@ impl Stmt {
 
                 let resolved_return = normalize_union(vec![type_checker.apply_substitutions(inferred_return, &subs)]);
 
-                fn type_is_unresolved(ty: &Type) -> bool {
-                    matches!(ty, Type::Any)
-                }
-
                 if type_checker.strict_any() {
                     let mut issues: Vec<String> = Vec::new();
                     for (idx, param_name) in params.iter().enumerate() {
-                        if !positional_origin[idx] && type_is_unresolved(&resolved_positional[idx]) {
+                        if !positional_origin[idx]
+                            && TypeChecker::type_is_strict_any_unresolved(&resolved_positional[idx])
+                        {
                             issues.push(format!("parameter '{}'", param_name));
                         }
                     }
                     for (idx, np) in named_params.iter().enumerate() {
-                        if !named_origin[idx] && type_is_unresolved(&resolved_named_annos[idx].ty) {
+                        if !named_origin[idx]
+                            && TypeChecker::type_is_strict_any_unresolved(&resolved_named_annos[idx].ty)
+                        {
                             issues.push(format!("named parameter '{}'", np.name));
                         }
                     }
-                    if !return_was_annotated && type_is_unresolved(&resolved_return) {
+                    if !return_was_annotated && TypeChecker::type_is_strict_any_unresolved(&resolved_return) {
                         issues.push("return type".to_string());
                     }
                     if !issues.is_empty() {
@@ -716,6 +765,18 @@ impl Stmt {
 impl Program {
     /// 类型检查程序
     pub fn type_check(&self, type_checker: &mut TypeChecker) -> Result<()> {
+        if type_checker.strict_any() {
+            let previous_defer = type_checker.begin_deferred_strict_function_checks();
+            let result = (|| {
+                for stmt in &self.statements {
+                    stmt.type_check(type_checker)?;
+                }
+                type_checker.finalize_deferred_strict_function_checks()
+            })();
+            type_checker.restore_deferred_strict_function_checks(previous_defer);
+            return result;
+        }
+
         for stmt in &self.statements {
             stmt.type_check(type_checker)?;
         }

@@ -1,4 +1,4 @@
 {
-    "lkr.lsp.semanticTokens.enabled": true,
-    "lkr.lsp.semanticTokens.throttleMs": 150,
+    "lk.lsp.semanticTokens.enabled": true,
+    "lk.lsp.semanticTokens.throttleMs": 150,
 }

@@ -51,6 +51,11 @@ The previous standalone `lk-highlight` extension has been merged into this packa
   - Document symbols
 - Inlay hints (parameter + type hints)
 
+### Type diagnostics
+
+- Strict type diagnostics use whole-program call-site constraints before reporting implicit `Any` parameters.
+- If a function parameter remains unresolved, the error is attached to the parameter name rather than the file header.
+
 ### Stdlib awareness
 - The client queries the Rust LK language server for stdlib modules and exports. Module-aware completions support:
   - `use <module>` / `from <module>` name completion
@@ -68,7 +73,6 @@ The previous standalone `lk-highlight` extension has been merged into this packa
   - `lk.lsp.inlayHints.enabled`
   - `lk.lsp.inlayHints.parameters.enabled`
   - `lk.lsp.inlayHints.types.enabled`
-  - `lk.lsp.inlayHints.throttleMs`
 
 ## Requirements
 

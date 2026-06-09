@@ -22,7 +22,8 @@
   ],
   "main": "./out/extension.js",
   "activationEvents": [
-    "onLanguage:lk"
+    "onLanguage:lk",
+    "workspaceContains:Lk.toml"
   ],
   "contributes": {
     "languages": [
@@ -194,12 +195,6 @@
           "default": true,
           "description": "Enable inlay hints (inline editor hints) from LK LSP"
         },
-        "lk.lsp.inlayHints.throttleMs": {
-          "type": "number",
-          "default": 50,
-          "minimum": 0,
-          "description": "Throttle consecutive inlay hint requests per document (ms). Set 0 to disable."
-        },
         "lk.lsp.inlayHints.parameters.enabled": {
           "type": "boolean",
           "default": true,
@@ -274,6 +269,7 @@
     "typescript": "^6.0.3"
   },
   "dependencies": {
+    "minimatch": "^5.1.9",
     "vscode-languageclient": "^9.0.1"
   }
 }

@@ -1,7 +1,9 @@
 mod calls;
+mod literals;
+mod stdlib;
 
 use super::{NamedParamSig, TypeChecker};
-use crate::expr::{Expr, SelectCase, SelectPattern, TemplateStringPart};
+use crate::expr::{Expr, SelectCase, SelectPattern};
 use crate::operator::{BinOp, UnaryOp};
 use crate::typ::{NumericClass, NumericHierarchy};
 use crate::val::{FunctionNamedParamType, LiteralVal, Type};
@@ -890,6 +892,10 @@ impl TypeChecker {
 
     /// Check access type (expr.field or expr[index])
     fn check_access(&mut self, expr: &Expr, field: &Expr) -> Result<Type> {
+        if let Some(function_type) = self.stdlib_access_function_type(expr, field) {
+            return Ok(function_type);
+        }
+
         let expr_type = self.check_expr(expr)?;
         let field_type = self.check_expr(field)?;
         let resolved_expr_type = self.resolve_aliases(&expr_type);
@@ -1487,50 +1493,5 @@ impl TypeChecker {
                 None,
             )
         })
-    }
-
-    /// Check template string type
-    fn check_template_string(&mut self, parts: &[TemplateStringPart]) -> Result<Type> {
-        // All parts must be string-coercible
-        for part in parts {
-            match part {
-                TemplateStringPart::Literal(_) => {
-                    // String literals are fine
-                }
-                TemplateStringPart::Expr(expr) => {
-                    let expr_type = self.check_expr(expr)?;
-                    // Allow implicit string coercion for template parts (adds constraint for vars)
-                    self.coerce_to_string(&expr_type);
-                }
-            }
-        }
-
-        Ok(Type::String)
-    }
-
-    /// Check literal value type
-    fn check_literal(&mut self, val: &LiteralVal) -> Result<Type> {
-        match val {
-            LiteralVal::Nil => Ok(Type::Nil),
-            LiteralVal::Bool(_) => Ok(Type::Bool),
-            LiteralVal::Int(_) => Ok(Type::Int),
-            LiteralVal::Float(_) => Ok(Type::Float),
-            LiteralVal::ShortStr(_) => Ok(Type::String),
-            value if value.as_str().is_some() => Ok(Type::String),
-            LiteralVal::String(_) => Ok(Type::String),
-        }
-    }
-
-    /// Infer type from a LiteralVal (for use in literal checking)
-    pub(super) fn infer_val_type(&mut self, val: &LiteralVal) -> Result<Type> {
-        match val {
-            LiteralVal::Nil => Ok(Type::Nil),
-            LiteralVal::Bool(_) => Ok(Type::Bool),
-            LiteralVal::Int(_) => Ok(Type::Int),
-            LiteralVal::Float(_) => Ok(Type::Float),
-            LiteralVal::ShortStr(_) => Ok(Type::String),
-            value if value.as_str().is_some() => Ok(Type::String),
-            LiteralVal::String(_) => Ok(Type::String),
-        }
     }
 }

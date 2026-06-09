@@ -1027,4 +1027,50 @@ mod tests {
         let mut checker = TypeChecker::new_strict();
         assert!(program.type_check(&mut checker).is_ok());
     }
+
+    #[test]
+    fn test_strict_function_param_infers_from_later_string_call() {
+        let program = parse_program(
+            r#"
+            let workload_filter = os.env.get("LK_WORKLOAD_FILTER", "");
+            fn should_run(name) {
+                return workload_filter == "" || workload_filter == name;
+            }
+            if should_run("gcd_batch") {
+                println("run");
+            }
+        "#,
+        );
+        let mut checker = TypeChecker::new_strict();
+        assert!(program.type_check(&mut checker).is_ok());
+        let ty = checker
+            .get_local_type("should_run")
+            .expect("function type should remain in checker");
+        match ty {
+            crate::val::Type::Function {
+                params, return_type, ..
+            } => {
+                assert_eq!(params, &vec![crate::val::Type::String]);
+                assert_eq!(return_type.as_ref(), &crate::val::Type::Bool);
+            }
+            other => panic!("expected function type, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_strict_function_param_without_concrete_call_still_errors() {
+        let program = parse_program(
+            r#"
+            let workload_filter = os.env.get("LK_WORKLOAD_FILTER", "");
+            fn should_run(name) {
+                return workload_filter == "" || workload_filter == name;
+            }
+        "#,
+        );
+        let mut checker = TypeChecker::new_strict();
+        let err = program
+            .type_check(&mut checker)
+            .expect_err("unconstrained function parameter should still require annotation");
+        assert!(err.to_string().contains("parameter 'name'"));
+    }
 }

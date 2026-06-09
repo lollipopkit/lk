@@ -66,12 +66,12 @@ fn test_analyze_statement_program() {
     "#;
     let result = analyzer.analyze(code);
 
-    // Type checking should surface strict Any diagnostics for missing annotations
-    assert_eq!(result.diagnostics.len(), 1);
-    let diag = &result.diagnostics[0];
-    assert_eq!(diag.severity, Some(DiagnosticSeverity::ERROR));
-    assert!(diag.message.contains("Function 'calculate_score' infers implicit Any"));
-    assert_eq!(diag.code, Some(NumberOrString::String("lk_type_error".to_string())));
+    // The later call constrains `base` to Int, so strict Any should not report a false positive.
+    assert!(
+        result.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        result.diagnostics
+    );
 
     // Should have grouped use/variable symbols and function symbols.
     assert!(result.symbols.len() >= 3);
@@ -392,6 +392,47 @@ fn test_type_inlay_hints_let_and_define() {
     hints.extend(analyzer.compute_define_type_hints(src, full_range(src)));
     assert!(!hints.is_empty(), "expected type hints for let/define, got none");
     assert!(hints.iter().all(|h| h.kind == Some(InlayHintKind::TYPE)));
+}
+
+#[test]
+fn test_business_workload_should_run_infers_from_string_calls() {
+    let mut analyzer = create_analyzer();
+    let code = include_str!("../../../bench/workloads_business_algorithms.lk");
+    let result = analyzer.analyze(code);
+
+    assert!(
+        !result
+            .diagnostics
+            .iter()
+            .any(|diag| diag.message.contains("Function 'should_run' infers implicit Any")),
+        "should_run(name) should infer name from later string call sites"
+    );
+}
+
+#[test]
+fn test_unconstrained_implicit_any_diagnostic_points_to_parameter() {
+    let mut analyzer = create_analyzer();
+    let code = r#"
+        let workload_filter = os.env.get("LK_WORKLOAD_FILTER", "");
+        fn should_run(name) {
+            return workload_filter == "" || workload_filter == name;
+        }
+    "#;
+    let result = analyzer.analyze(code);
+
+    assert_eq!(result.diagnostics.len(), 1);
+    let diag = &result.diagnostics[0];
+    assert_eq!(diag.severity, Some(DiagnosticSeverity::ERROR));
+    assert_eq!(diag.code, Some(NumberOrString::String("lk_type_error".to_string())));
+    assert_eq!(
+        diag.message,
+        "Function 'should_run' infers implicit Any for parameter 'name'; add explicit annotations"
+    );
+    assert_eq!(
+        diag.range,
+        Range::new(Position::new(2, 22), Position::new(2, 26)),
+        "implicit Any diagnostic should point at the unannotated parameter"
+    );
 }
 
 fn full_range(s: &str) -> Range {
