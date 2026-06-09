@@ -1443,18 +1443,40 @@ fn nested_const_list_element_kind(elements: &[ConstRuntimeValueData]) -> Option<
             return None;
         };
         for item in items {
-            let item_kind = match item {
-                ConstRuntimeValueData::Int(_) => NativeScalarKind::I64,
-                ConstRuntimeValueData::Float(_) => NativeScalarKind::F64,
-                ConstRuntimeValueData::Bool(_) => NativeScalarKind::Bool,
-                ConstRuntimeValueData::ShortStr(_) | ConstRuntimeValueData::Heap(_) => NativeScalarKind::StrPtr,
-                _ => return None,
-            };
+            let item_kind = nested_const_runtime_value_kind(item)?;
             match kind {
                 None => kind = Some(item_kind),
                 Some(previous) if previous == item_kind => {}
                 Some(_) => return None,
             }
+        }
+    }
+    kind
+}
+
+fn nested_const_runtime_value_kind(value: &ConstRuntimeValueData) -> Option<NativeScalarKind> {
+    match value {
+        ConstRuntimeValueData::Int(_) => Some(NativeScalarKind::I64),
+        ConstRuntimeValueData::Float(_) => Some(NativeScalarKind::F64),
+        ConstRuntimeValueData::Bool(_) => Some(NativeScalarKind::Bool),
+        ConstRuntimeValueData::ShortStr(_) => Some(NativeScalarKind::StrPtr),
+        ConstRuntimeValueData::Heap(heap) => match heap.as_ref() {
+            ConstHeapValueData::LongString(_) => Some(NativeScalarKind::StrPtr),
+            ConstHeapValueData::List(items) => homogeneous_const_runtime_value_kind(items),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn homogeneous_const_runtime_value_kind(items: &[ConstRuntimeValueData]) -> Option<NativeScalarKind> {
+    let mut kind = None;
+    for item in items {
+        let item_kind = nested_const_runtime_value_kind(item)?;
+        match kind {
+            None => kind = Some(item_kind),
+            Some(previous) if previous == item_kind => {}
+            Some(_) => return None,
         }
     }
     kind

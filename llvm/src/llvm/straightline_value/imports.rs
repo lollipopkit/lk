@@ -75,6 +75,10 @@ fn native_static_import_global(imports: &[ImportStmt], name: &str) -> Option<Nat
 }
 
 fn native_example_module_name(module: &str) -> Option<&'static str> {
+    // Deliberate example-only native mappings. The import binding is normalized
+    // through crate::stmt::import::default_module_binding, then mapped to
+    // NativeStraightlineValue::Module entries whose exports are fixed in the
+    // LLVM native table, including NativeBuiltin::FibIterative.
     match crate::stmt::import::default_module_binding(module).as_str() {
         "fib" => Some("example.fib"),
         "mathlib" => Some("example.mathlib"),
@@ -84,6 +88,7 @@ fn native_example_module_name(module: &str) -> Option<&'static str> {
 }
 
 fn native_example_file_export(path: &str, name: &str) -> Option<NativeStraightlineValue> {
+    // Keep this in sync with native_example_module_name and the example sources.
     match (crate::stmt::import::default_module_binding(path).as_str(), name) {
         ("fib", "iterative") => Some(NativeStraightlineValue::Builtin(NativeBuiltin::FibIterative)),
         _ => None,

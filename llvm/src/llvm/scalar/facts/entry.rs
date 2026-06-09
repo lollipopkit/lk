@@ -22,7 +22,16 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_static_globals_and_functio
     static_globals: Vec<Option<crate::llvm::straightline_value::NativeStraightlineValue>>,
     functions: Option<&[FunctionData]>,
 ) -> Option<NativeScalarFacts> {
+    debug_assert_eq!(
+        static_globals.len(),
+        global_count,
+        "static global facts length must match global count"
+    );
     if static_globals.len() != global_count {
+        eprintln!(
+            "native scalar facts static global length mismatch: static_globals={}, global_count={global_count}",
+            static_globals.len()
+        );
         return None;
     }
     if let Some(facts) = native_scalar_block_facts_with_initial(

@@ -1,4 +1,5 @@
 use std::{
+    env,
     io::{self, BufRead, IsTerminal, Write},
     sync::Arc,
 };
@@ -12,7 +13,7 @@ use lk_core::{
     vm::{ReplExecutionResult, ReplVmSession, VmContext},
 };
 
-use crate::{diagnostic, repl_completion::ReplCompletionState, repl_tui};
+use crate::{configure_package_resolver, diagnostic, repl_completion::ReplCompletionState, repl_tui};
 
 pub(crate) enum ReplInput {
     Submit(String),
@@ -36,7 +37,11 @@ impl ReplSession {
         let mut registry = ModuleRegistry::new();
         lk_stdlib::register_stdlib_globals(&mut registry);
         lk_stdlib::register_stdlib_modules(&mut registry)?;
-        let resolver = Arc::new(ModuleResolver::with_registry(registry));
+        let mut resolver = ModuleResolver::with_registry(registry);
+        let cwd = env::current_dir()?;
+        resolver.set_base_dir(cwd.clone());
+        configure_package_resolver(&mut resolver, &cwd)?;
+        let resolver = Arc::new(resolver);
         let ctx = VmContext::new()
             .with_resolver(resolver)
             .with_type_checker(Some(TypeChecker::new_strict()));

@@ -57,12 +57,7 @@ pub(super) fn emit_native_builtin_call(
             return native_static_set_from_arg(arg, symbol);
         }
         NativeBuiltin::CoreTypeof => return emit_native_typeof(args),
-        NativeBuiltin::BytesToStringUtf8 => {
-            if args.len() == 1 {
-                return Some(native_static_string_value("HTTP/1.0 200 OK"));
-            }
-            return None;
-        }
+        NativeBuiltin::BytesToStringUtf8 => return None,
         NativeBuiltin::CoreCallMethod => return emit_native_core_call_method(body, args, ssa_index),
         NativeBuiltin::Assert | NativeBuiltin::AssertEq | NativeBuiltin::AssertNe => return None,
         NativeBuiltin::CoreRegisterTrait | NativeBuiltin::CoreRegisterTraitImpl => {
@@ -102,58 +97,17 @@ pub(super) fn emit_native_builtin_call(
         | NativeBuiltin::ListSort => return emit_native_list_builtin(builtin, args, ssa_index),
         NativeBuiltin::OsClock => return emit_native_os_clock(body, args, ssa_index),
         NativeBuiltin::OsEpoch => return emit_native_os_epoch(body, args, ssa_index),
-        NativeBuiltin::FsExists => {
-            if args.len() == 1 {
-                return Some(NativeStraightlineValue::Bool("1".to_string()));
-            }
-            return None;
-        }
-        NativeBuiltin::EnvGetOr => {
-            let [NativeStraightlineValue::String { value: key, .. }, default] = args else {
-                return None;
-            };
-            if key == "PATH" {
-                return Some(native_static_string_value("/usr/bin:/bin"));
-            }
-            return Some(default.clone());
-        }
-        NativeBuiltin::FsReadDir => {
-            if args.len() == 1 {
-                let elements = Vec::new();
-                let symbol = format!("@lk_fs_read_dir_{}", *ssa_index);
-                *ssa_index += 1;
-                return Some(NativeStraightlineValue::List {
-                    value: native_const_list_display(&elements)?,
-                    symbol,
-                    elements,
-                });
-            }
-            return None;
-        }
+        NativeBuiltin::FsExists | NativeBuiltin::EnvGetOr | NativeBuiltin::FsReadDir => return None,
         NativeBuiltin::FsTempDir => return emit_native_static_string_builtin(args, "/tmp"),
         NativeBuiltin::FibIterative => return emit_native_fib_iterative(args),
         NativeBuiltin::GreetingsMessage => return emit_native_greetings_message(args),
         NativeBuiltin::IoStdStdin => return emit_native_io_std_resource(args, "Stdin", ssa_index),
         NativeBuiltin::IoStdStdout => return emit_native_io_std_resource(args, "Stdout", ssa_index),
         NativeBuiltin::IoStdStderr => return emit_native_io_std_resource(args, "Stderr", ssa_index),
-        NativeBuiltin::IoStdReadToString => {
-            if args.len() == 1 {
-                return Some(native_static_string_value(""));
-            }
-            return None;
-        }
-        NativeBuiltin::IoStdWrite | NativeBuiltin::IoStdWriteln => {
-            if args.len() == 2 {
-                return Some(NativeStraightlineValue::Nil);
-            }
-            return None;
-        }
-        NativeBuiltin::IoStdFlush => {
-            if args.len() == 1 {
-                return Some(NativeStraightlineValue::Nil);
-            }
-            return None;
-        }
+        NativeBuiltin::IoStdReadToString
+        | NativeBuiltin::IoStdWrite
+        | NativeBuiltin::IoStdWriteln
+        | NativeBuiltin::IoStdFlush => return None,
         NativeBuiltin::IterRange => return emit_native_iter_range(args, ssa_index),
         NativeBuiltin::IterTake
         | NativeBuiltin::IterSkip
@@ -216,15 +170,9 @@ pub(super) fn emit_native_builtin_call(
         NativeBuiltin::OsArch => return emit_native_static_string_builtin(args, std::env::consts::ARCH),
         NativeBuiltin::OsName => return emit_native_static_string_builtin(args, std::env::consts::OS),
         NativeBuiltin::PathSep => return emit_native_static_string_builtin(args, std::path::MAIN_SEPARATOR_STR),
-        NativeBuiltin::ProcessCwd => return emit_native_static_string_builtin(args, "."),
+        NativeBuiltin::ProcessCwd => return None,
         NativeBuiltin::SocketAddr => return emit_native_socket_addr(args),
-        NativeBuiltin::TcpConnect => return emit_native_tcp_connect(args, ssa_index),
-        NativeBuiltin::TcpRead => return emit_native_tcp_read(args, ssa_index),
-        NativeBuiltin::TcpWrite => return emit_native_tcp_write(args),
-        NativeBuiltin::TcpClose => {
-            if args.len() == 1 {
-                return Some(NativeStraightlineValue::Nil);
-            }
+        NativeBuiltin::TcpConnect | NativeBuiltin::TcpRead | NativeBuiltin::TcpWrite | NativeBuiltin::TcpClose => {
             return None;
         }
         NativeBuiltin::Panic => {
@@ -351,57 +299,6 @@ fn emit_native_socket_addr(args: &[NativeStraightlineValue]) -> Option<NativeStr
         return None;
     };
     Some(native_static_string_value(&format!("{host}:{port}")))
-}
-
-fn emit_native_tcp_connect(
-    args: &[NativeStraightlineValue],
-    ssa_index: &mut usize,
-) -> Option<NativeStraightlineValue> {
-    if args.len() != 1 {
-        return None;
-    }
-    let fields = Vec::new();
-    let symbol = format!("@lk_tcp_stream_{}", *ssa_index);
-    *ssa_index += 1;
-    Some(NativeStraightlineValue::Object {
-        value: native_const_object_display("TcpStream", &fields)?,
-        symbol,
-        type_name: "TcpStream".to_string(),
-        fields,
-    })
-}
-
-fn emit_native_tcp_read(
-    args: &[NativeStraightlineValue],
-    ssa_index: &mut usize,
-) -> Option<NativeStraightlineValue> {
-    if args.len() != 2 {
-        return None;
-    }
-    let elements = b"HTTP/1.0 200 OK"
-        .iter()
-        .map(|byte| ConstRuntimeValueData::Int(i64::from(*byte)))
-        .collect::<Vec<_>>();
-    let symbol = format!("@lk_tcp_read_{}", *ssa_index);
-    *ssa_index += 1;
-    Some(NativeStraightlineValue::List {
-        value: native_const_list_display(&elements)?,
-        symbol,
-        elements,
-    })
-}
-
-fn emit_native_tcp_write(args: &[NativeStraightlineValue]) -> Option<NativeStraightlineValue> {
-    let [_, data] = args else {
-        return None;
-    };
-    let len = match data {
-        NativeStraightlineValue::String { len, .. } => *len,
-        NativeStraightlineValue::StringPtr(_) => 1,
-        NativeStraightlineValue::List { elements, .. } => elements.len(),
-        _ => return None,
-    };
-    Some(NativeStraightlineValue::I64(len.max(1).to_string()))
 }
 
 fn emit_native_fib_iterative(args: &[NativeStraightlineValue]) -> Option<NativeStraightlineValue> {

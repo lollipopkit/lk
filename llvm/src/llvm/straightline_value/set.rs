@@ -38,7 +38,8 @@ pub(in crate::llvm) fn native_static_set_method(
     };
     match (method, args) {
         ("has" | "contains", [needle]) => {
-            let contains = set_contains(elements, needle)?;
+            let needle = native_runtime_const_value(needle)?;
+            let contains = set_contains(elements, &needle);
             Some(NativeStraightlineValue::Bool(i64::from(contains).to_string()))
         }
         ("len", []) => Some(NativeStraightlineValue::I64(elements.len().to_string())),
@@ -55,8 +56,9 @@ pub(in crate::llvm) fn native_static_set_method(
             })
         }
         ("delete", [value]) => {
+            let value = native_runtime_const_value(value)?;
             let mut elements = elements.clone();
-            elements.retain(|element| !const_runtime_value_matches(element, value).unwrap_or(false));
+            elements.retain(|element| !const_runtime_value_eq(element, &value));
             Some(NativeStraightlineValue::Set {
                 value: native_const_list_display(&elements)?,
                 symbol,
@@ -71,8 +73,9 @@ pub(in crate::llvm) fn native_static_set_contains(
     elements: &[ConstRuntimeValueData],
     needle: &NativeStraightlineValue,
 ) -> Option<NativeStraightlineValue> {
+    let needle = native_runtime_const_value(needle)?;
     Some(NativeStraightlineValue::Bool(
-        i64::from(set_contains(elements, needle)?).to_string(),
+        i64::from(set_contains(elements, &needle)).to_string(),
     ))
 }
 
@@ -90,19 +93,8 @@ fn dedup_set_elements(elements: &mut Vec<ConstRuntimeValueData>) -> Option<()> {
     Some(())
 }
 
-fn set_contains(elements: &[ConstRuntimeValueData], needle: &NativeStraightlineValue) -> Option<bool> {
-    elements
-        .iter()
-        .map(|element| const_runtime_value_matches(element, needle))
-        .try_fold(false, |found, matched| Some(found || matched?))
-}
-
-fn const_runtime_value_matches(
-    element: &ConstRuntimeValueData,
-    needle: &NativeStraightlineValue,
-) -> Option<bool> {
-    let element = native_const_runtime_value(element, String::new())?;
-    Some(native_static_value_eq(&element, needle))
+fn set_contains(elements: &[ConstRuntimeValueData], needle: &ConstRuntimeValueData) -> bool {
+    elements.iter().any(|element| const_runtime_value_eq(element, needle))
 }
 
 fn const_runtime_value_eq(lhs: &ConstRuntimeValueData, rhs: &ConstRuntimeValueData) -> bool {

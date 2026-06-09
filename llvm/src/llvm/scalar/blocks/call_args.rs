@@ -40,6 +40,7 @@ pub(super) fn static_or_recovered_call_args(
     strings: &[String],
     heap_values: &[ConstHeapValueData],
     global_names: &[String],
+    static_globals: &[Option<NativeStraightlineValue>],
     pc: usize,
     callee: u8,
     count: u8,
@@ -61,7 +62,7 @@ pub(super) fn static_or_recovered_call_args(
                             strings,
                             heap_values,
                             global_names,
-                            &[],
+                            static_globals,
                             pc,
                             u8::try_from(reg).ok()?,
                         )

@@ -880,6 +880,7 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                     strings,
                     heap_values,
                     global_names,
+                    &static_globals,
                     pc,
                     instr.b(),
                     instr.c(),

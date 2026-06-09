@@ -169,6 +169,27 @@ fn emit_truthy_condition(
             ir.push_str(&format!("  {cond} = icmp ne i64 {value}, 0\n"));
             Some(cond)
         }
+        NativeScalarKind::I64 => {
+            let value = next_tmp(tmp_index);
+            let cond = next_tmp(tmp_index);
+            ir.push_str(&format!("  {value} = load i64, ptr %r{reg}.slot\n"));
+            ir.push_str(&format!("  {cond} = icmp ne i64 {value}, 0\n"));
+            Some(cond)
+        }
+        NativeScalarKind::F64 => {
+            let value = next_tmp(tmp_index);
+            let cond = next_tmp(tmp_index);
+            ir.push_str(&format!("  {value} = load double, ptr %r{reg}.slot\n"));
+            ir.push_str(&format!("  {cond} = fcmp une double {value}, 0.0\n"));
+            Some(cond)
+        }
+        NativeScalarKind::StrPtr => {
+            let value = next_tmp(tmp_index);
+            let cond = next_tmp(tmp_index);
+            ir.push_str(&format!("  {value} = load ptr, ptr %r{reg}.slot\n"));
+            ir.push_str(&format!("  {cond} = icmp ne ptr {value}, null\n"));
+            Some(cond)
+        }
         NativeScalarKind::Nil => Some("false".to_string()),
         NativeScalarKind::MaybeI64 | NativeScalarKind::MaybeStrPtr => {
             let present = next_tmp(tmp_index);
@@ -177,7 +198,6 @@ fn emit_truthy_condition(
             ir.push_str(&format!("  {cond} = icmp ne i64 {present}, 0\n"));
             Some(cond)
         }
-        NativeScalarKind::I64 | NativeScalarKind::F64 | NativeScalarKind::StrPtr => Some("true".to_string()),
     }
 }
 

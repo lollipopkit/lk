@@ -720,9 +720,7 @@ pub(super) fn native_static_container_test(
         ),
         Opcode::IsMap => matches!(
             value,
-            NativeStraightlineValue::Map { .. }
-                | NativeStraightlineValue::Set { .. }
-                | NativeStraightlineValue::DisplayMap { .. }
+            NativeStraightlineValue::Map { .. } | NativeStraightlineValue::DisplayMap { .. }
         ),
         _ => return None,
     };

@@ -6,7 +6,7 @@ pub(super) fn native_static_module_index(
     module: NativeModule,
     key: NativeStraightlineValue,
 ) -> Option<NativeStraightlineValue> {
-    if let Some(value) = native_core_container_module_index(module, key.clone()) {
+    if let Some(value) = native_core_container_module_index(module, &key) {
         return Some(value);
     }
     stdlib_module_index(module, key)
@@ -14,7 +14,7 @@ pub(super) fn native_static_module_index(
 
 fn native_core_container_module_index(
     module: NativeModule,
-    key: NativeStraightlineValue,
+    key: &NativeStraightlineValue,
 ) -> Option<NativeStraightlineValue> {
     let NativeStraightlineValue::String { value: key, .. } = key else {
         return None;
