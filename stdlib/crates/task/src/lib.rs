@@ -173,7 +173,10 @@ fn task_spawn_blocking(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lk_core::{rt::RuntimePayload, vm::RuntimeModuleState};
+    use lk_core::{
+        rt::RuntimePayload,
+        vm::{NativeFunction, RuntimeModuleState},
+    };
 
     fn task_native(name: &str) -> Result<(u16, NativeFunction)> {
         crate::runtime_native::runtime_native_export(&TaskModule::new(), name)

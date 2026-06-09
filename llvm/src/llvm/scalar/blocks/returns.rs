@@ -1,7 +1,7 @@
 use crate::{
     llvm::{
         const_display::llvm_string_constant,
-        ir_text::{native_float_display, reg_in_bounds},
+        ir_text::{emit_native_main_return_zero, native_float_display, reg_in_bounds},
         scalar::{block_helpers::local_register_kind_before, emit::emit_native_return_print, facts::NativeScalarFacts},
         straightline_value::{
             NativeListElementKind, NativeMapKeyKind, NativeMapValueKind, NativeStraightlineValue,
@@ -23,7 +23,7 @@ pub(super) fn emit_return_block(
     tmp_index: &mut usize,
 ) -> Option<()> {
     if instr.return_count() == 0 {
-        ir.push_str("  ret i32 0\n");
+        emit_native_main_return_zero(ir);
         return Some(());
     }
     if instr.return_count() != 1 || !reg_in_bounds(register_count, instr.a()) {
@@ -36,7 +36,7 @@ pub(super) fn emit_return_block(
             "  %print{pc} = call i32 (ptr, ...) @printf(ptr @lk_str_fmt, ptr {symbol})\n"
         ));
         extra_globals.push_str(&llvm_string_constant(&symbol, &display));
-        ir.push_str("  ret i32 0\n");
+        emit_native_main_return_zero(ir);
         return Some(());
     }
     if let Some(display) = static_value.as_ref().and_then(native_static_module_display) {
@@ -45,7 +45,7 @@ pub(super) fn emit_return_block(
             "  %print{pc} = call i32 (ptr, ...) @printf(ptr @lk_str_fmt, ptr {symbol})\n"
         ));
         extra_globals.push_str(&llvm_string_constant(&symbol, &display));
-        ir.push_str("  ret i32 0\n");
+        emit_native_main_return_zero(ir);
         return Some(());
     }
     if let Some(display) = static_value.as_ref().and_then(native_static_arg_list_display) {
@@ -54,7 +54,7 @@ pub(super) fn emit_return_block(
             "  %print{pc} = call i32 (ptr, ...) @printf(ptr @lk_str_fmt, ptr {symbol})\n"
         ));
         extra_globals.push_str(&llvm_string_constant(&symbol, &display));
-        ir.push_str("  ret i32 0\n");
+        emit_native_main_return_zero(ir);
         return Some(());
     }
     if let Some(NativeStraightlineValue::ArgList { elements }) = static_value.as_ref() {
@@ -77,7 +77,7 @@ pub(super) fn emit_return_block(
         ir.push_str(&format!(
             "  %print{pc} = call i32 (ptr, ...) @printf(ptr @lk_str_fmt, ptr {symbol})\n"
         ));
-        ir.push_str("  ret i32 0\n");
+        emit_native_main_return_zero(ir);
         return Some(());
     }
     if let Some(NativeStraightlineValue::DynamicList { id, element }) = static_value.as_ref()
@@ -110,7 +110,7 @@ pub(super) fn emit_return_block(
         .register_kind_before(pc, instr.a())
         .or_else(|| local_register_kind_before(code, pc, instr.a()))?;
     emit_native_return_print(ir, pc, instr.a(), kind, tmp_index);
-    ir.push_str("  ret i32 0\n");
+    emit_native_main_return_zero(ir);
     Some(())
 }
 
@@ -146,7 +146,7 @@ fn emit_dynamic_arg_list_return(
     ir.push_str(&format!(
         "  call i32 (ptr, ...) @printf(ptr @lk_str_fmt, ptr {close})\n"
     ));
-    ir.push_str("  ret i32 0\n");
+    emit_native_main_return_zero(ir);
     true
 }
 
@@ -641,7 +641,7 @@ fn emit_dynamic_numeric_list_return(
     ir.push_str(&format!(
         "  call i32 (ptr, ...) @printf(ptr @lk_str_fmt, ptr {close})\n"
     ));
-    ir.push_str("  ret i32 0\n");
+    emit_native_main_return_zero(ir);
 }
 
 fn emit_dynamic_map_return_value(
@@ -780,7 +780,7 @@ fn emit_dynamic_pair_list_return(
     ir.push_str(&format!(
         "  call i32 (ptr, ...) @printf(ptr @lk_str_fmt, ptr {close})\n"
     ));
-    ir.push_str("  ret i32 0\n");
+    emit_native_main_return_zero(ir);
 }
 
 fn emit_dynamic_pair_list_return_value(
@@ -1016,7 +1016,7 @@ fn emit_dynamic_map_return(
     ir.push_str(&format!(
         "  call i32 (ptr, ...) @printf(ptr @lk_str_fmt, ptr {close})\n"
     ));
-    ir.push_str("  ret i32 0\n");
+    emit_native_main_return_zero(ir);
 }
 
 fn emit_dynamic_map_key_return(ir: &mut String, pc: usize, id: usize, key: NativeMapKeyKind, key_fmt: &str) {

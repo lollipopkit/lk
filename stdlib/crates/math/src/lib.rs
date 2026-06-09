@@ -358,7 +358,7 @@ pub fn metadata() -> StdlibModuleMetadata {
     lk_stdlib_common::stdlib_module_metadata!(
         math,
         [
-            abs => Int,
+            abs => IntOrFloat,
             acos => Float,
             asin => Float,
             atan => Float,
@@ -377,11 +377,11 @@ pub fn metadata() -> StdlibModuleMetadata {
             log => Float,
             log10 => Float,
             log2 => Float,
-            max => Int,
-            min => Int,
+            max => IntOrFloat,
+            min => IntOrFloat,
             pow => Float,
             round => Int,
-            sign => Float,
+            sign => IntOrFloat,
             sin => Float,
             sinh => Float,
             sqrt => Float,
@@ -389,7 +389,7 @@ pub fn metadata() -> StdlibModuleMetadata {
             tanh => Float,
             to_float => Float,
             to_int => Int,
-            trunc => Float,
+            trunc => IntOrFloat,
         ]
     )
 }

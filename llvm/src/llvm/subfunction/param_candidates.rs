@@ -7,12 +7,26 @@ use crate::{
 };
 
 pub(super) fn subfunction_param_kind_candidates(param_count: usize) -> Vec<Vec<NativeScalarKind>> {
+    const MAX_CANDIDATES: usize = 256;
+    const MAX_ENUMERATED_PARAMS: usize = 5;
+
     if param_count == 0 {
         return vec![Vec::new()];
     }
+    if param_count > MAX_ENUMERATED_PARAMS {
+        return Vec::new();
+    }
     let mut candidates = Vec::new();
-    let total = 3usize.saturating_pow(param_count as u32);
+    let Some(total) = 3usize.checked_pow(param_count as u32) else {
+        return Vec::new();
+    };
+    if total > MAX_CANDIDATES {
+        return Vec::new();
+    }
     for mut encoded in 0..total {
+        if candidates.len() >= MAX_CANDIDATES {
+            return Vec::new();
+        }
         let mut kinds = Vec::with_capacity(param_count);
         for _ in 0..param_count {
             kinds.push(match encoded % 3 {

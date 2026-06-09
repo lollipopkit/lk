@@ -64,8 +64,12 @@ pub fn metadata() -> StdlibModuleMetadata {
         fs,
         [
             exists => Bool,
+            read => RuntimeValue,
+            read_to_string => String,
+            write => Bool,
             read_dir => RuntimeValue,
-            temp_dir => String,
+            canonicalize => RuntimeValue,
+            temp_dir => RuntimeValue,
         ]
     )
 }

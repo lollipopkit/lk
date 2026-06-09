@@ -1,4 +1,5 @@
 mod arg_list_methods;
+mod host_runtime;
 mod iter_methods;
 mod list_methods;
 mod map_methods;
@@ -7,11 +8,10 @@ mod object_methods;
 mod print;
 mod return_value;
 mod string_methods;
-
 use super::{
     const_display::{native_const_list_display, native_const_map_display},
     dynamic_containers::emit_dynamic_i64_list_slice_range,
-    ir_text::{llvm_float_literal, native_float_display, native_scalar_main_header},
+    ir_text::{emit_native_main_return_zero, llvm_float_literal, native_float_display, native_scalar_main_header},
     options::LlvmBackendOptions,
     straightline_value::{
         NativeBuiltin, NativeListElementKind, NativeStraightlineValue, native_runtime_string_key_kind,
@@ -21,6 +21,10 @@ use super::{
 };
 use crate::vm::{ConstHeapValueData, ConstRuntimeValueData, RuntimeMapKeyData};
 use arg_list_methods::emit_native_arg_list_method;
+use host_runtime::{
+    emit_native_bytes_to_string_utf8, emit_native_env_get, emit_native_env_get_or, emit_native_fs_write,
+    emit_native_unary_string_i64_call, emit_native_unary_string_ptr_call, emit_native_zero_arg_string_ptr_call,
+};
 use iter_methods::{emit_native_iter_builtin, emit_native_iter_module_method};
 use list_methods::{emit_native_list_builtin, emit_native_static_list_method};
 pub(super) use map_methods::emit_native_map_set;
@@ -61,7 +65,7 @@ pub(super) fn emit_native_builtin_call(
             return native_static_set_from_arg(arg, symbol);
         }
         NativeBuiltin::CoreTypeof => return emit_native_typeof(args),
-        NativeBuiltin::BytesToStringUtf8 => return None,
+        NativeBuiltin::BytesToStringUtf8 => return emit_native_bytes_to_string_utf8(body, args, ssa_index),
         NativeBuiltin::CoreCallMethod => {
             trace_core_call_method_args(args);
             return emit_native_core_call_method(body, args, ssa_index);
@@ -104,8 +108,42 @@ pub(super) fn emit_native_builtin_call(
         | NativeBuiltin::ListSort => return emit_native_list_builtin(builtin, args, ssa_index),
         NativeBuiltin::OsClock => return emit_native_os_clock(body, args, ssa_index),
         NativeBuiltin::OsEpoch => return emit_native_os_epoch(body, args, ssa_index),
-        NativeBuiltin::FsExists | NativeBuiltin::EnvGetOr | NativeBuiltin::FsReadDir => return None,
-        NativeBuiltin::FsTempDir => return emit_native_static_string_builtin(args, "/tmp"),
+        NativeBuiltin::EnvGet => return emit_native_env_get(body, args, ssa_index),
+        NativeBuiltin::EnvGetOr => return emit_native_env_get_or(body, args, ssa_index),
+        NativeBuiltin::EnvHas => {
+            return emit_native_unary_string_i64_call(body, args, ssa_index, "env_has", "@lkrt_env_has", true);
+        }
+        NativeBuiltin::FsExists => {
+            return emit_native_unary_string_i64_call(body, args, ssa_index, "fs_exists", "@lkrt_fs_exists", true);
+        }
+        NativeBuiltin::FsRead => {
+            return emit_native_unary_string_i64_call(body, args, ssa_index, "fs_read", "@lkrt_fs_read", false);
+        }
+        NativeBuiltin::FsReadDir => {
+            return emit_native_unary_string_i64_call(body, args, ssa_index, "fs_read_dir", "@lkrt_fs_read_dir", false);
+        }
+        NativeBuiltin::FsReadToString => {
+            return emit_native_unary_string_ptr_call(
+                body,
+                args,
+                ssa_index,
+                "fs_read_to_string",
+                "@lkrt_fs_read_to_string",
+            );
+        }
+        NativeBuiltin::FsWrite => return emit_native_fs_write(body, args, ssa_index),
+        NativeBuiltin::FsCanonicalize => {
+            return emit_native_unary_string_ptr_call(
+                body,
+                args,
+                ssa_index,
+                "fs_canonicalize",
+                "@lkrt_fs_canonicalize",
+            );
+        }
+        NativeBuiltin::FsTempDir => {
+            return emit_native_zero_arg_string_ptr_call(body, args, ssa_index, "fs_temp_dir", "@lkrt_fs_temp_dir");
+        }
         NativeBuiltin::FibIterative => return emit_native_fib_iterative(args),
         NativeBuiltin::GreetingsMessage => return emit_native_greetings_message(args),
         NativeBuiltin::IoStdStdin => return emit_native_io_std_resource(args, 0),
@@ -675,38 +713,28 @@ fn emit_native_static_list_arg_list_method(
 }
 
 fn emit_native_time_now(
-    _body: &mut String,
+    body: &mut String,
     args: &[NativeStraightlineValue],
     ssa_index: &mut usize,
 ) -> Option<NativeStraightlineValue> {
     if !args.is_empty() {
         return None;
     }
-    let value = 1_000_000i64 + (*ssa_index as i64 * 50);
+    let value = format!("%time_now_ms_{}", *ssa_index);
     *ssa_index += 1;
-    Some(NativeStraightlineValue::I64(value.to_string()))
+    body.push_str(&format!("  {value} = call i64 @lkrt_time_now_ms()\n"));
+    Some(NativeStraightlineValue::I64(value))
 }
 
 fn emit_native_time_sleep(
     body: &mut String,
     args: &[NativeStraightlineValue],
-    ssa_index: &mut usize,
+    _ssa_index: &mut usize,
 ) -> Option<NativeStraightlineValue> {
     let [NativeStraightlineValue::I64(ms)] = args else {
         return None;
     };
-    let micros_i64 = if ms.starts_with('%') {
-        let value = format!("%time_sleep_us_{}", *ssa_index);
-        *ssa_index += 1;
-        body.push_str(&format!("  {value} = mul i64 {ms}, 1000\n"));
-        value
-    } else {
-        ms.parse::<i64>().ok()?.saturating_mul(1000).to_string()
-    };
-    let micros_i32 = format!("%time_sleep_us_{}", *ssa_index);
-    *ssa_index += 1;
-    body.push_str(&format!("  {micros_i32} = trunc i64 {micros_i64} to i32\n"));
-    body.push_str(&format!("  call i32 @usleep(i32 {micros_i32})\n"));
+    body.push_str(&format!("  call void @lkrt_time_sleep_ms(i64 {ms})\n"));
     Some(NativeStraightlineValue::Nil)
 }
 
@@ -1186,15 +1214,9 @@ fn emit_native_os_clock(
     if !args.is_empty() {
         return None;
     }
-    let ticks = format!("%os_clock_ticks_{}", *ssa_index);
-    *ssa_index += 1;
-    let ticks_f64 = format!("%os_clock_ticks_f64_{}", *ssa_index);
-    *ssa_index += 1;
     let seconds = format!("%os_clock_seconds_{}", *ssa_index);
     *ssa_index += 1;
-    body.push_str(&format!("  {ticks} = call i64 @clock()\n"));
-    body.push_str(&format!("  {ticks_f64} = sitofp i64 {ticks} to double\n"));
-    body.push_str(&format!("  {seconds} = fdiv double {ticks_f64}, 1000000.0\n"));
+    body.push_str(&format!("  {seconds} = call double @lkrt_os_clock()\n"));
     Some(NativeStraightlineValue::F64(seconds))
 }
 
@@ -1206,12 +1228,9 @@ fn emit_native_os_epoch(
     if !args.is_empty() {
         return None;
     }
-    let seconds = format!("%os_epoch_seconds_{}", *ssa_index);
-    *ssa_index += 1;
     let millis = format!("%os_epoch_millis_{}", *ssa_index);
     *ssa_index += 1;
-    body.push_str(&format!("  {seconds} = call i64 @time(ptr null)\n"));
-    body.push_str(&format!("  {millis} = mul i64 {seconds}, 1000\n"));
+    body.push_str(&format!("  {millis} = call i64 @lkrt_os_epoch()\n"));
     Some(NativeStraightlineValue::I64(millis))
 }
 
@@ -1450,7 +1469,6 @@ pub(super) fn emit_local_or_global_string_ptr(body: &mut String, symbol: &str, v
     ));
     Some(ptr)
 }
-
 pub(super) fn native_scalar_main_ir(options: &LlvmBackendOptions, body: &str, return_value: Option<&str>) -> String {
     let mut ir = native_scalar_main_header(options);
     ir.push_str(body);
@@ -1459,7 +1477,7 @@ pub(super) fn native_scalar_main_ir(options: &LlvmBackendOptions, body: &str, re
             "  %print = call i32 (ptr, ...) @printf(ptr @lk_i64_fmt, i64 {value})\n"
         ));
     }
-    ir.push_str("  ret i32 0\n");
+    emit_native_main_return_zero(&mut ir);
     ir.push_str("}\n");
     ir
 }
@@ -1475,7 +1493,7 @@ pub(super) fn native_straightline_main_ir(
     if let Some(value) = return_value {
         emit_native_main_return(&mut ir, &mut globals, value);
     }
-    ir.push_str("  ret i32 0\n");
+    emit_native_main_return_zero(&mut ir);
     ir.push_str("}\n");
     ir.push_str(&globals);
     ir

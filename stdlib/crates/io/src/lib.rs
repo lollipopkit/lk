@@ -60,13 +60,13 @@ pub fn metadata() -> StdlibModuleMetadata {
     lk_stdlib_common::stdlib_module_metadata!(
         io,
         [
-            std.flush => Nil,
+            std.flush => Bool,
             std.read_to_string => String,
             std.stderr => RuntimeValue,
             std.stdin => RuntimeValue,
             std.stdout => RuntimeValue,
-            std.write => Nil,
-            std.writeln => Nil,
+            std.write => Int,
+            std.writeln => Int,
         ]
     )
 }

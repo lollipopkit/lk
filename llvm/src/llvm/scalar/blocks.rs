@@ -702,7 +702,9 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                 }
             }
             Opcode::Call => {
-                if instr.a() != instr.b() || !reg_in_bounds(register_count, instr.a()) {}
+                if instr.a() != instr.b() || !reg_in_bounds(register_count, instr.a()) {
+                    return Ok(None);
+                }
                 if let Some(target @ (NativeStraightlineValue::Function(_) | NativeStraightlineValue::Closure { .. })) =
                     static_regs.get(instr.b() as usize).and_then(Clone::clone)
                 {

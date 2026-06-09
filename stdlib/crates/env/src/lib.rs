@@ -45,7 +45,14 @@ pub fn register(registry: &mut ModuleRegistry) -> Result<()> {
 }
 
 pub fn metadata() -> StdlibModuleMetadata {
-    lk_stdlib_common::stdlib_module_metadata!(env, [get_or => String])
+    lk_stdlib_common::stdlib_module_metadata!(
+        env,
+        [
+            get => RuntimeValue,
+            get_or => String,
+            has => Bool,
+        ]
+    )
 }
 
 fn get(args: NativeArgs<'_>, runtime: &mut lk_core::vm::NativeRuntime<'_>) -> Result<RuntimeVal> {

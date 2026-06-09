@@ -41,24 +41,42 @@ intrinsics.
 
 - Prefer typed ABI: `i64`, `double`, `(ptr, len)` text, typed list/map handles,
   and monomorphized container layouts.
+- `lkrt_abi_version()` exposes the native runtime ABI version. LLVM lowering
+  should treat a missing or incompatible ABI as a link/configuration error, not
+  as a reason to fall back to the VM.
+- Strings returned by `lkrt` are owned by `lkrt` and must be released with
+  `lkrt_string_free(ptr)` when generated code starts tracking native ownership.
+- `lkrt_last_error()` returns an owned string for diagnostics. Existing aborting
+  helpers still abort on failure, but new status/out-param helpers should record
+  actionable errors through the same error channel.
 - TCP native stdlib helpers use typed `lkrt` intrinsics: strings are passed as
   `ptr`, and TCP streams/byte buffers are opaque `i64` handles owned by `lkrt`.
   `tcp.read` returns a bytes handle, and `bytes.to_string_utf8` validates that
   handle before returning a string pointer.
+- Opaque handles are typed resources managed by `lkrt`. A handle must not be
+  accepted as the wrong resource kind, and every resource kind needs an explicit
+  close/free path such as `lkrt_tcp_close`, `lkrt_bytes_free`, or
+  `lkrt_handle_close`.
 - Standard IO native helpers use small opaque `i64` resource handles
   (`0 = stdin`, `1 = stdout`, `2 = stderr`) and typed `lkrt` calls for
   `io.std.write`, `io.std.writeln`, `io.std.flush`, and
   `io.std.read_to_string`.
 - Environment, filesystem, and process helpers that require host state lower to
-  `lkrt` calls instead of compile-time constants. `env.get_or`,
-  `fs.exists`, `fs.read_dir`, and `process.cwd` read the host state at native
-  executable runtime.
+  `lkrt` calls instead of compile-time constants. Current scalar/native
+  lowering covers `env.get`, `env.get_or`, `env.has`, `fs.exists`, `fs.read`,
+  `fs.read_to_string`, `fs.write`, `fs.read_dir`, `fs.canonicalize`,
+  `fs.temp_dir`, and `process.cwd` where the value can be represented as
+  scalar/string/bytes handles. `fs.metadata()` remains outside scalar lowering
+  until native map/object ABI support exists.
 - Do not use `RuntimeVal`, `HeapStore`, `RuntimeExport`, or `NativeRuntime`
   as the default native ABI.
 - Generic runtime-value ABI is not allowed as a silent fallback. If a shape is
   not native-lowerable, the compiler must report a concrete unsupported reason.
 - Any future exported C ABI in `lkrt` must be isolated there and audited; LLVM
   outside `lkrt` must not introduce unsafe code.
+- Host-effect intrinsic metadata lives in `lk-llvm`'s native intrinsic registry.
+  The registry is the source for `lkrt_*` LLVM declarations and records each
+  intrinsic's typed signature and effect (`Pure`, `ReadsHost`, or `WritesHost`).
 
 ## Implementation Shape
 

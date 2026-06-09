@@ -72,6 +72,7 @@ pub fn metadata() -> StdlibModuleMetadata {
             format => String,
             is_weekend => Bool,
             now => Int,
+            parse => Int,
             sub => Int,
         ]
     )

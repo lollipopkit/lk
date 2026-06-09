@@ -5,6 +5,7 @@ use crate::llvm::{
         native_dynamic_container_helpers, native_dynamic_f64_list_helpers, native_dynamic_i64_list_helpers,
         native_dynamic_i64_map_helpers, native_dynamic_ptr_list_helpers,
     },
+    ir_text::emit_native_main_return_zero,
     scalar::subfunctions::prepend_subfunctions,
 };
 
@@ -15,7 +16,8 @@ pub(super) fn finish_scalar_ir(
     recursive_indices: &[u16],
     additional_subfn_indices: &[u16],
 ) -> String {
-    ir.push_str("exit:\n  ret i32 0\n");
+    ir.push_str("exit:\n");
+    emit_native_main_return_zero(&mut ir);
     ir.push_str("lk_assert_fail:\n");
     ir.push_str("  call void @abort()\n");
     ir.push_str("  unreachable\n");

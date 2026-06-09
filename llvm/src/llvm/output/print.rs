@@ -18,17 +18,10 @@ pub(super) fn emit_native_print_value(body: &mut String, value: &NativeStraightl
         NativeStraightlineValue::F64(value) => {
             if let Ok(parsed) = value.parse::<f64>() {
                 let display = native_float_display(parsed);
-                let len = display.chars().count();
-                let text = NativeStraightlineValue::String {
-                    symbol: String::new(),
-                    key_kind: native_runtime_string_key_kind(&display),
-                    value: display,
-                    len,
-                };
-                let NativeStraightlineValue::String { symbol, value, .. } = text else {
-                    unreachable!();
-                };
-                let ptr = emit_local_or_global_string_ptr(body, &symbol, &value)?;
+                let _len = display.chars().count();
+                let _key_kind = native_runtime_string_key_kind(&display);
+                let symbol = String::new();
+                let ptr = emit_local_or_global_string_ptr(body, &symbol, &display)?;
                 body.push_str(&format!("  call i32 (ptr, ...) @printf(ptr {str_fmt}, ptr {ptr})\n"));
             } else {
                 body.push_str(&format!(
@@ -99,6 +92,7 @@ pub(in crate::llvm) fn emit_native_print_text_parts(
     parts: &[NativeTextPart],
     line: bool,
 ) -> Option<()> {
+    let mut text_index = 0usize;
     for part in parts {
         match part {
             NativeTextPart::I64(value) => {
@@ -112,13 +106,15 @@ pub(in crate::llvm) fn emit_native_print_text_parts(
                 ));
             }
             NativeTextPart::Bool(value) => {
-                let bool_ptr = format!("%text_bool_{}", body.len());
+                let bool_ptr = format!("%text_bool_{text_index}");
+                text_index += 1;
                 let condition = if value == "0" {
                     "false".to_string()
                 } else if value == "1" {
                     "true".to_string()
                 } else if value.starts_with('%') {
-                    let cond = format!("%text_bool_cond_{}", body.len());
+                    let cond = format!("%text_bool_cond_{text_index}");
+                    text_index += 1;
                     body.push_str(&format!("  {cond} = icmp ne i64 {value}, 0\n"));
                     cond
                 } else {

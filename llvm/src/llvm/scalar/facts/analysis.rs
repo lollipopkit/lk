@@ -62,9 +62,10 @@ pub(in crate::llvm) fn native_builtin_return_kind(
     target: NativeStraightlineValue,
     args: &[NativeStraightlineValue],
 ) -> Option<NativeScalarKind> {
-    if let NativeStraightlineValue::Builtin(NativeBuiltin::MathExp | NativeBuiltin::MathSin | NativeBuiltin::MathCos) =
-        target
-        && native_static_math_unary_i64(args).is_some()
+    if let NativeStraightlineValue::Builtin(
+        builtin @ (NativeBuiltin::MathExp | NativeBuiltin::MathSin | NativeBuiltin::MathCos),
+    ) = target
+        && native_static_math_unary_i64(builtin, args).is_some()
     {
         return Some(NativeScalarKind::I64);
     }
@@ -147,7 +148,7 @@ pub(in crate::llvm) fn native_builtin_return_kind(
     }
 }
 
-fn native_static_math_unary_i64(args: &[NativeStraightlineValue]) -> Option<i64> {
+fn native_static_math_unary_i64(builtin: NativeBuiltin, args: &[NativeStraightlineValue]) -> Option<i64> {
     let [arg] = args else {
         return None;
     };
@@ -158,10 +159,14 @@ fn native_static_math_unary_i64(args: &[NativeStraightlineValue]) -> Option<i64>
         }
         _ => return None,
     };
-    for result in [value.exp(), value.sin(), value.cos()] {
-        if result.fract() == 0.0 {
-            return Some(result as i64);
-        }
+    let result = match builtin {
+        NativeBuiltin::MathExp => value.exp(),
+        NativeBuiltin::MathSin => value.sin(),
+        NativeBuiltin::MathCos => value.cos(),
+        _ => return None,
+    };
+    if result.fract() == 0.0 {
+        return Some(result as i64);
     }
     None
 }

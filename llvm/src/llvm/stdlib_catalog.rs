@@ -45,6 +45,15 @@ pub(in crate::llvm) fn stdlib_builtin_return_kind(
     builtin: NativeBuiltin,
     arg_count: usize,
 ) -> Option<NativeScalarKind> {
+    match builtin {
+        NativeBuiltin::EnvGet => return (arg_count == 1).then_some(NativeScalarKind::MaybeStrPtr),
+        NativeBuiltin::FsCanonicalize | NativeBuiltin::FsTempDir => {
+            return (arg_count == usize::from(matches!(builtin, NativeBuiltin::FsCanonicalize)))
+                .then_some(NativeScalarKind::StrPtr);
+        }
+        NativeBuiltin::FsRead => return (arg_count == 1).then_some(NativeScalarKind::I64),
+        _ => {}
+    }
     let key = native_builtin_lowering_key(builtin)?;
     let catalog = stdlib_catalog();
     if let Some(global) = catalog.global_by_lowering_key(&key) {
@@ -120,13 +129,19 @@ fn lowering_key_to_value(key: &str) -> Option<NativeStraightlineValue> {
         "datetime.is_weekend" => NativeBuiltin::DatetimeIsWeekend,
         "datetime.now" => NativeBuiltin::DatetimeNow,
         "datetime.sub" => NativeBuiltin::DatetimeSub,
+        "env.get" => NativeBuiltin::EnvGet,
         "env.get_or" => NativeBuiltin::EnvGetOr,
+        "env.has" => NativeBuiltin::EnvHas,
         "encoding.json.parse" => NativeBuiltin::JsonParse,
         "encoding.toml.parse" => NativeBuiltin::TomlParse,
         "encoding.yaml.parse" => NativeBuiltin::YamlParse,
         "fs.exists" => NativeBuiltin::FsExists,
+        "fs.read" => NativeBuiltin::FsRead,
         "fs.read_dir" => NativeBuiltin::FsReadDir,
+        "fs.read_to_string" => NativeBuiltin::FsReadToString,
         "fs.temp_dir" => NativeBuiltin::FsTempDir,
+        "fs.write" => NativeBuiltin::FsWrite,
+        "fs.canonicalize" => NativeBuiltin::FsCanonicalize,
         "io.std.flush" => NativeBuiltin::IoStdFlush,
         "io.std.read_to_string" => NativeBuiltin::IoStdReadToString,
         "io.std.stderr" => NativeBuiltin::IoStdStderr,
@@ -233,13 +248,19 @@ fn native_builtin_lowering_key(builtin: NativeBuiltin) -> Option<String> {
         NativeBuiltin::DatetimeIsWeekend => "datetime.is_weekend",
         NativeBuiltin::DatetimeNow => "datetime.now",
         NativeBuiltin::DatetimeSub => "datetime.sub",
+        NativeBuiltin::EnvGet => "env.get",
         NativeBuiltin::EnvGetOr => "env.get_or",
+        NativeBuiltin::EnvHas => "env.has",
         NativeBuiltin::JsonParse => "encoding.json.parse",
         NativeBuiltin::TomlParse => "encoding.toml.parse",
         NativeBuiltin::YamlParse => "encoding.yaml.parse",
         NativeBuiltin::FsExists => "fs.exists",
+        NativeBuiltin::FsRead => "fs.read",
         NativeBuiltin::FsReadDir => "fs.read_dir",
+        NativeBuiltin::FsReadToString => "fs.read_to_string",
         NativeBuiltin::FsTempDir => "fs.temp_dir",
+        NativeBuiltin::FsWrite => "fs.write",
+        NativeBuiltin::FsCanonicalize => "fs.canonicalize",
         NativeBuiltin::IoStdFlush => "io.std.flush",
         NativeBuiltin::IoStdReadToString => "io.std.read_to_string",
         NativeBuiltin::IoStdStderr => "io.std.stderr",
@@ -314,7 +335,7 @@ fn stdlib_return_kind_to_native(kind: StdlibReturnKind) -> NativeScalarKind {
     match kind {
         StdlibReturnKind::Nil => NativeScalarKind::Nil,
         StdlibReturnKind::Bool => NativeScalarKind::Bool,
-        StdlibReturnKind::Int | StdlibReturnKind::RuntimeValue => NativeScalarKind::I64,
+        StdlibReturnKind::Int | StdlibReturnKind::IntOrFloat | StdlibReturnKind::RuntimeValue => NativeScalarKind::I64,
         StdlibReturnKind::Float => NativeScalarKind::F64,
         StdlibReturnKind::String => NativeScalarKind::StrPtr,
     }

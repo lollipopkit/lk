@@ -836,11 +836,9 @@ fn static_value_before_call(
             Opcode::Move if prev.b() != reg => static_regs.get(prev.b() as usize).cloned().flatten().or_else(|| {
                 static_value_before_call(static_regs, code, int_consts, strings, heap_values, prev_pc, prev.b())
             }),
-            _ => static_regs
-                .get(reg as usize)
-                .cloned()
-                .flatten()
-                .or_else(|| static_regs_target_before_call(code, int_consts, strings, heap_values, pc, reg)),
+            _ => static_regs_target_before_call(code, int_consts, strings, heap_values, prev_pc, reg).or_else(|| {
+                static_value_before_call(static_regs, code, int_consts, strings, heap_values, prev_pc, reg)
+            }),
         };
     }
     static_regs.get(reg as usize).cloned().flatten()
