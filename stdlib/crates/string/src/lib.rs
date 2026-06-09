@@ -3,10 +3,11 @@ use std::sync::Arc;
 
 use anyhow::{Result, anyhow, bail};
 use lk_core::{
-    module::{ModuleProvider, ModuleRegistry, RuntimeNativeExport, runtime_export_from_plain_native_entries},
+    module::{ModuleProvider, ModuleRegistry},
     val::{HeapStore, HeapValue, RuntimeVal, TypedList},
     vm::{NativeArgs, NativeEntry, NativeRuntime, RuntimeExport},
 };
+use lk_stdlib_common::metadata::StdlibModuleMetadata;
 
 pub mod runtime_native {
     pub use lk_stdlib_common::runtime_native::*;
@@ -132,7 +133,7 @@ impl StringModule {
     }
 
     fn substring(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        expect_arity(args, 3, "substring()")?;
+        lk_stdlib_common::runtime_native::expect_arity(args, 3, "substring()")?;
         let values = args.as_slice();
         let value = runtime_string_arg(&values[0], runtime.heap(), "substring() first argument")?;
         let start = usize_arg(&values[1], "substring() second argument")?;
@@ -162,7 +163,7 @@ impl StringModule {
     }
 
     fn join(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        expect_arity(args, 2, "join()")?;
+        lk_stdlib_common::runtime_native::expect_arity(args, 2, "join()")?;
         let values = args.as_slice();
         let strings = string_list_arg(&values[0], runtime.heap(), "join() first argument")?;
         let delimiter = runtime_string_arg(&values[1], runtime.heap(), "join() second argument")?;
@@ -182,7 +183,7 @@ impl StringModule {
     }
 
     fn repeat(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        expect_arity(args, 2, "repeat()")?;
+        lk_stdlib_common::runtime_native::expect_arity(args, 2, "repeat()")?;
         let values = args.as_slice();
         let value = runtime_string_arg(&values[0], runtime.heap(), "repeat() first argument")?;
         let count = int_arg(&values[1], "repeat() second argument")?;
@@ -193,7 +194,7 @@ impl StringModule {
     }
 
     fn char_at(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        expect_arity(args, 2, "char()")?;
+        lk_stdlib_common::runtime_native::expect_arity(args, 2, "char()")?;
         let values = args.as_slice();
         let value = runtime_string_arg(&values[0], runtime.heap(), "char() first argument")?;
         let index = usize_arg(&values[1], "char() second argument")?;
@@ -203,7 +204,7 @@ impl StringModule {
     }
 
     fn byte_at(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        expect_arity(args, 2, "byte()")?;
+        lk_stdlib_common::runtime_native::expect_arity(args, 2, "byte()")?;
         let values = args.as_slice();
         let value = runtime_string_arg(&values[0], runtime.heap(), "byte() first argument")?;
         let index = usize_arg(&values[1], "byte() second argument")?;
@@ -368,7 +369,7 @@ impl StringModule {
     }
 
     fn to_int(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        expect_arity(args, 1, "to_int()")?;
+        lk_stdlib_common::runtime_native::expect_arity(args, 1, "to_int()")?;
         match &args.as_slice()[0] {
             RuntimeVal::Int(v) => Ok(RuntimeVal::Int(*v)),
             RuntimeVal::Float(v) => Ok(RuntimeVal::Int(*v as i64)),
@@ -378,7 +379,7 @@ impl StringModule {
     }
 
     fn to_float(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        expect_arity(args, 1, "to_float()")?;
+        lk_stdlib_common::runtime_native::expect_arity(args, 1, "to_float()")?;
         match &args.as_slice()[0] {
             RuntimeVal::Float(v) => Ok(RuntimeVal::Float(*v)),
             RuntimeVal::Int(v) => Ok(RuntimeVal::Float(*v as f64)),
@@ -441,65 +442,91 @@ impl ModuleProvider for StringModule {
     }
 
     fn runtime_exports(&self) -> Result<RuntimeExport> {
-        Ok(runtime_export_from_plain_native_entries(
-            &[
-                RuntimeNativeExport::plain("len", Self::len, 1),
-                RuntimeNativeExport::plain("lower", Self::lower, 1),
-                RuntimeNativeExport::plain("upper", Self::upper, 1),
-                RuntimeNativeExport::plain("trim", Self::trim, 1),
-                RuntimeNativeExport::plain("starts_with", Self::starts_with, 2),
-                RuntimeNativeExport::plain("ends_with", Self::ends_with, 2),
-                RuntimeNativeExport::plain("contains", Self::contains, 2),
-                RuntimeNativeExport::plain("replace", Self::replace, NativeEntry::VARIADIC),
-                RuntimeNativeExport::plain("substring", Self::substring, 3),
-                RuntimeNativeExport::plain("split", Self::split, 2),
-                RuntimeNativeExport::plain("join", Self::join, 2),
-                RuntimeNativeExport::plain("reverse", Self::reverse, 1),
-                RuntimeNativeExport::plain("repeat", Self::repeat, 2),
-                RuntimeNativeExport::plain("char", Self::char_at, 2),
-                RuntimeNativeExport::plain("byte", Self::byte_at, 2),
-                RuntimeNativeExport::plain("chars", Self::chars, 1),
-                RuntimeNativeExport::plain("find", Self::find, NativeEntry::VARIADIC),
-                RuntimeNativeExport::plain("is_empty", Self::is_empty, 1),
-                RuntimeNativeExport::plain("format", Self::format, NativeEntry::VARIADIC),
-                RuntimeNativeExport::plain("strip", Self::strip, 2),
-                RuntimeNativeExport::plain("strip_prefix", Self::strip_prefix, 2),
-                RuntimeNativeExport::plain("strip_suffix", Self::strip_suffix, 2),
-                RuntimeNativeExport::plain("count", Self::count, 2),
-                RuntimeNativeExport::plain("pad_left", Self::pad_left, 3),
-                RuntimeNativeExport::plain("pad_right", Self::pad_right, 3),
-                RuntimeNativeExport::plain("to_int", Self::to_int, 1),
-                RuntimeNativeExport::plain("to_float", Self::to_float, 1),
-                RuntimeNativeExport::plain("title", Self::title, 1),
-                RuntimeNativeExport::plain("capitalize", Self::capitalize, 1),
+        Ok(lk_stdlib_common::stdlib_runtime_exports!(
+            [
+                plain "len" => Self::len, 1,
+                plain "lower" => Self::lower, 1,
+                plain "upper" => Self::upper, 1,
+                plain "trim" => Self::trim, 1,
+                plain "starts_with" => Self::starts_with, 2,
+                plain "ends_with" => Self::ends_with, 2,
+                plain "contains" => Self::contains, 2,
+                plain "replace" => Self::replace, NativeEntry::VARIADIC,
+                plain "substring" => Self::substring, 3,
+                plain "split" => Self::split, 2,
+                plain "join" => Self::join, 2,
+                plain "reverse" => Self::reverse, 1,
+                plain "repeat" => Self::repeat, 2,
+                plain "char" => Self::char_at, 2,
+                plain "byte" => Self::byte_at, 2,
+                plain "chars" => Self::chars, 1,
+                plain "find" => Self::find, NativeEntry::VARIADIC,
+                plain "is_empty" => Self::is_empty, 1,
+                plain "format" => Self::format, NativeEntry::VARIADIC,
+                plain "strip" => Self::strip, 2,
+                plain "strip_prefix" => Self::strip_prefix, 2,
+                plain "strip_suffix" => Self::strip_suffix, 2,
+                plain "count" => Self::count, 2,
+                plain "pad_left" => Self::pad_left, 3,
+                plain "pad_right" => Self::pad_right, 3,
+                plain "to_int" => Self::to_int, 1,
+                plain "to_float" => Self::to_float, 1,
+                plain "title" => Self::title, 1,
+                plain "capitalize" => Self::capitalize, 1,
             ],
-            &[],
         ))
     }
 }
 
 pub fn register(registry: &mut ModuleRegistry) -> Result<()> {
+    lk_stdlib_common::metadata::register_stdlib_module_metadata(metadata())?;
     registry.register_module("string", Box::new(StringModule::new()))
 }
 
-fn expect_arity(args: NativeArgs<'_>, expected: usize, name: &str) -> Result<()> {
-    if args.len() == expected {
-        Ok(())
-    } else {
-        bail!(
-            "{name} takes exactly {expected} argument{}",
-            if expected == 1 { "" } else { "s" }
-        )
-    }
+pub fn metadata() -> StdlibModuleMetadata {
+    lk_stdlib_common::stdlib_module_metadata!(
+        string,
+        [
+            byte => Int,
+            capitalize => String,
+            char => String,
+            chars => RuntimeValue,
+            contains => Bool,
+            count => Int,
+            ends_with => Bool,
+            find => Int,
+            format => String,
+            is_empty => Bool,
+            join => String,
+            len => Int,
+            lower => String,
+            pad_left => String,
+            pad_right => String,
+            repeat => String,
+            replace => String,
+            reverse => String,
+            split => RuntimeValue,
+            starts_with => Bool,
+            strip => String,
+            strip_prefix => String,
+            strip_suffix => String,
+            substring => String,
+            title => String,
+            to_float => Float,
+            to_int => Int,
+            trim => String,
+            upper => String,
+        ]
+    )
 }
 
 fn one_string(args: NativeArgs<'_>, runtime: &NativeRuntime<'_>, name: &str) -> Result<Arc<str>> {
-    expect_arity(args, 1, name)?;
+    lk_stdlib_common::runtime_native::expect_arity(args, 1, name)?;
     runtime_string_arg(&args.as_slice()[0], runtime.heap(), name)
 }
 
 fn two_strings(args: NativeArgs<'_>, runtime: &NativeRuntime<'_>, name: &str) -> Result<(Arc<str>, Arc<str>)> {
-    expect_arity(args, 2, name)?;
+    lk_stdlib_common::runtime_native::expect_arity(args, 2, name)?;
     let values = args.as_slice();
     Ok((
         runtime_string_arg(&values[0], runtime.heap(), name)?,

@@ -36,6 +36,7 @@ mod slots;
 mod string_ops;
 
 pub(in crate::llvm) use super::kind::{NativeScalarFacts, NativeScalarKind};
+pub(in crate::llvm) use analysis::native_builtin_return_kind_dynamic;
 use analysis::*;
 use arg_lists::*;
 use calls::{CallFactsContext, propagate_call_opcode};

@@ -1,6 +1,6 @@
-use anyhow::{Result, bail};
+use anyhow::Result;
 use lk_core::{
-    module::{ModuleProvider, ModuleRegistry, RuntimeNativeExport, runtime_export_from_plain_native_entries},
+    module::{ModuleProvider, ModuleRegistry},
     val::RuntimeVal,
     vm::{NativeArgs, NativeRuntime, RuntimeExport},
 };
@@ -27,14 +27,13 @@ impl ModuleProvider for HashModule {
     }
 
     fn runtime_exports(&self) -> Result<RuntimeExport> {
-        Ok(runtime_export_from_plain_native_entries(
-            &[
-                RuntimeNativeExport::plain("sha256", sha256, 1),
-                RuntimeNativeExport::plain("sha1", sha1, 1),
-                RuntimeNativeExport::plain("crc32", crc32, 1),
-                RuntimeNativeExport::plain("fnv64", fnv64, 1),
+        Ok(lk_stdlib_common::stdlib_runtime_exports!(
+            [
+                plain "sha256" => sha256, 1,
+                plain "sha1" => sha1, 1,
+                plain "crc32" => crc32, 1,
+                plain "fnv64" => fnv64, 1,
             ],
-            &[],
         ))
     }
 }
@@ -77,14 +76,6 @@ fn fnv64(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Runtim
 }
 
 fn data_arg(args: NativeArgs<'_>, runtime: &NativeRuntime<'_>, name: &str) -> Result<std::sync::Arc<[u8]>> {
-    expect_arity(args, 1, name)?;
+    lk_stdlib_common::runtime_native::expect_arity(args, 1, name)?;
     runtime_bytes_or_string_arg(args.get(0).expect("checked arity"), runtime.heap(), name)
-}
-
-fn expect_arity(args: NativeArgs<'_>, expected: usize, name: &str) -> Result<()> {
-    if args.len() == expected {
-        Ok(())
-    } else {
-        bail!("{name} expects exactly {expected} argument(s)")
-    }
 }

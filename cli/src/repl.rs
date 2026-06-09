@@ -13,7 +13,7 @@ use lk_core::{
     vm::{ReplExecutionResult, ReplVmSession, VmContext},
 };
 
-use crate::{configure_package_resolver, diagnostic, repl_completion::ReplCompletionState, repl_tui};
+use crate::{configure_package_resolver, diagnostic, repl_completion::ReplCompletionState, repl_tui, startup_trace};
 
 pub(crate) enum ReplInput {
     Submit(String),
@@ -34,18 +34,27 @@ struct ReplSession {
 
 impl ReplSession {
     fn new() -> anyhow::Result<Self> {
+        let mut startup = startup_trace::StartupTrace::new("repl session");
         let mut registry = ModuleRegistry::new();
+        startup.step("module registry created");
         lk_stdlib::register_stdlib_globals(&mut registry);
+        startup.step("stdlib globals registered");
         lk_stdlib::register_stdlib_modules(&mut registry)?;
+        startup.step("stdlib modules registered");
         let mut resolver = ModuleResolver::with_registry(registry);
+        startup.step("module resolver created");
         let cwd = env::current_dir()?;
+        startup.step("cwd resolved");
         resolver.set_base_dir(cwd.clone());
         configure_package_resolver(&mut resolver, &cwd)?;
+        startup.step("package resolver configured");
         let resolver = Arc::new(resolver);
         let ctx = VmContext::new()
             .with_resolver(resolver)
             .with_type_checker(Some(TypeChecker::new_strict()));
+        startup.step("vm context created");
         let vm = ReplVmSession::new(ctx, TypeChecker::new());
+        startup.step("repl vm session created");
 
         Ok(Self {
             vm,
@@ -238,15 +247,22 @@ fn is_escaped_quote(chars: &[char], quote_index: usize) -> bool {
 }
 
 pub fn run(_is_statement_mode: bool) -> anyhow::Result<()> {
+    let mut startup = startup_trace::StartupTrace::new("repl");
     let mut session = ReplSession::new()?;
+    startup.step("session initialized");
     print_repl_help();
+    startup.step("help printed");
 
     let interactive = io::stdin().is_terminal() && io::stdout().is_terminal();
+    startup.step("terminal mode detected");
     if interactive && should_use_reedline_repl() {
+        startup.step("enter reedline repl");
         run_tui(&mut session)
     } else if interactive {
+        startup.step("enter simple repl");
         run_simple_interactive(&mut session)
     } else {
+        startup.step("enter fallback repl");
         run_fallback(&mut session)
     }
 }

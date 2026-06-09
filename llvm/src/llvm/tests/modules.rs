@@ -494,14 +494,9 @@ fn llvm_backend_lowers_os_module_return_display_without_artifact_shell() {
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
-    assert!(artifact.module.ir.contains("arch: <native fn os::<native>(0 args)>"));
-    assert!(artifact.module.ir.contains("clock: <native fn os::<native>(0 args)>"));
-    assert!(
-        artifact
-            .module
-            .ir
-            .contains("hostname: <native fn os::<native>(0 args)>")
-    );
+    assert!(artifact.module.ir.contains("arch: <native fn arch(0 args)>"));
+    assert!(artifact.module.ir.contains("clock: <native fn clock(0 args)>"));
+    assert!(artifact.module.ir.contains("hostname: <native fn hostname(0 args)>"));
 }
 
 #[test]
@@ -529,7 +524,7 @@ fn llvm_backend_lowers_os_module_builtin_return_display_without_artifact_shell()
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
-    assert!(artifact.module.ir.contains("c\"<native fn os::<native>(0 args)>\\00\""));
+    assert!(artifact.module.ir.contains("c\"<native fn hostname(0 args)>\\00\""));
 }
 
 #[test]

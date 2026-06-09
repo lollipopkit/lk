@@ -28,13 +28,12 @@ fn native_static_import_global(imports: &[ImportStmt], name: &str) -> Option<Nat
                     .or_else(|| native_example_module_name(module))
                     .map(|module| NativeStraightlineValue::Module(NativeModule::new(module)))
             }
-            ImportStmt::ModuleAlias { module, alias } if alias == name => {
-                stdlib_module_name(module)
-                    .or_else(|| native_example_module_name(module))
-                    .map(|module| NativeStraightlineValue::Module(NativeModule::new(module)))
-            }
+            ImportStmt::ModuleAlias { module, alias } if alias == name => stdlib_module_name(module)
+                .or_else(|| native_example_module_name(module))
+                .map(|module| NativeStraightlineValue::Module(NativeModule::new(module))),
             ImportStmt::File { path } if crate::stmt::import::default_module_binding(path) == name => {
-                native_example_module_name(path).map(|module| NativeStraightlineValue::Module(NativeModule::new(module)))
+                native_example_module_name(path)
+                    .map(|module| NativeStraightlineValue::Module(NativeModule::new(module)))
             }
             ImportStmt::Namespace {
                 alias,

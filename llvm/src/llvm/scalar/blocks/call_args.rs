@@ -51,22 +51,18 @@ pub(super) fn static_or_recovered_call_args(
         let end = start.checked_add(count as usize)?;
         (start..end)
             .map(|reg| {
-                static_regs
-                    .get(reg)
-                    .cloned()
-                    .flatten()
-                    .or_else(|| {
-                        local_static_value_before(
-                            code,
-                            int_consts,
-                            strings,
-                            heap_values,
-                            global_names,
-                            static_globals,
-                            pc,
-                            u8::try_from(reg).ok()?,
-                        )
-                    })
+                static_regs.get(reg).cloned().flatten().or_else(|| {
+                    local_static_value_before(
+                        code,
+                        int_consts,
+                        strings,
+                        heap_values,
+                        global_names,
+                        static_globals,
+                        pc,
+                        u8::try_from(reg).ok()?,
+                    )
+                })
             })
             .collect::<Option<Vec<_>>>()
     })
@@ -83,10 +79,18 @@ pub(super) fn static_or_recovered_call_target(
     pc: usize,
     callee: u8,
 ) -> Option<NativeStraightlineValue> {
-    static_regs
-        .get(callee as usize)
-        .and_then(Clone::clone)
-        .or_else(|| local_static_value_before(code, int_consts, strings, heap_values, global_names, static_globals, pc, callee))
+    static_regs.get(callee as usize).and_then(Clone::clone).or_else(|| {
+        local_static_value_before(
+            code,
+            int_consts,
+            strings,
+            heap_values,
+            global_names,
+            static_globals,
+            pc,
+            callee,
+        )
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -280,7 +284,18 @@ pub(super) fn emit_recovered_builtin_call_block(
         .map(|(arg_index, reg)| {
             let force_slot_string =
                 matches!(builtin, NativeBuiltin::Print | NativeBuiltin::Println) && (instr.c() == 1 || arg_index > 0);
-            trusted_scalar_arg_value(ir, facts, pc, static_regs, reg, code, force_slot_string, tmp_index)
+            let allow_static_string = matches!(builtin, NativeBuiltin::CoreCallMethod) && arg_index == 1;
+            trusted_scalar_arg_value(
+                ir,
+                facts,
+                pc,
+                static_regs,
+                reg,
+                code,
+                force_slot_string,
+                allow_static_string,
+                tmp_index,
+            )
         })
         .collect::<Option<Vec<_>>>();
     if let Some(args) = scalar_args.as_ref() {
@@ -533,9 +548,15 @@ fn trusted_scalar_arg_value(
     reg: usize,
     code: &[Instr],
     force_slot_string: bool,
+    allow_static_string: bool,
     tmp_index: &mut usize,
 ) -> Option<NativeStraightlineValue> {
     let reg_u8 = u8::try_from(reg).ok()?;
+    if allow_static_string
+        && let Some(value @ NativeStraightlineValue::String { .. }) = static_regs.get(reg).cloned().flatten()
+    {
+        return Some(value);
+    }
     if let Some(value) = static_regs.get(reg).cloned().flatten()
         && force_slot_string
         && matches!(
@@ -601,8 +622,18 @@ fn local_static_call_result_before(
             continue;
         }
         return match prev.opcode() {
-            Opcode::Move if prev.b() != reg => {
-                local_static_call_result_before(
+            Opcode::Move if prev.b() != reg => local_static_call_result_before(
+                code,
+                int_consts,
+                strings,
+                heap_values,
+                global_names,
+                static_globals,
+                prev_pc,
+                prev.b(),
+            ),
+            Opcode::Call if prev.a() == prev.b() => {
+                let target = local_static_value_before(
                     code,
                     int_consts,
                     strings,
@@ -611,20 +642,7 @@ fn local_static_call_result_before(
                     static_globals,
                     prev_pc,
                     prev.b(),
-                )
-            }
-            Opcode::Call if prev.a() == prev.b() => {
-                let target =
-                    local_static_value_before(
-                        code,
-                        int_consts,
-                        strings,
-                        heap_values,
-                        global_names,
-                        static_globals,
-                        prev_pc,
-                        prev.b(),
-                    )?;
+                )?;
                 let args = local_static_call_args(
                     code,
                     int_consts,
@@ -694,13 +712,53 @@ fn local_static_value_before(
         .or_else(|| local_static_i64_before(code, int_consts, pc, reg))
         .or_else(|| local_static_heap_const_before(code, heap_values, pc, reg))
         .or_else(|| local_static_global_before(code, global_names, static_globals, pc, reg))
-        .or_else(|| local_static_index_before(code, int_consts, strings, heap_values, global_names, static_globals, pc, reg))
         .or_else(|| {
-            local_static_new_list_before(code, int_consts, strings, heap_values, global_names, static_globals, pc, reg)
+            local_static_index_before(
+                code,
+                int_consts,
+                strings,
+                heap_values,
+                global_names,
+                static_globals,
+                pc,
+                reg,
+            )
         })
-        .or_else(|| local_static_object_before(code, int_consts, strings, heap_values, global_names, static_globals, pc, reg))
         .or_else(|| {
-            local_static_call_result_before(code, int_consts, strings, heap_values, global_names, static_globals, pc, reg)
+            local_static_new_list_before(
+                code,
+                int_consts,
+                strings,
+                heap_values,
+                global_names,
+                static_globals,
+                pc,
+                reg,
+            )
+        })
+        .or_else(|| {
+            local_static_object_before(
+                code,
+                int_consts,
+                strings,
+                heap_values,
+                global_names,
+                static_globals,
+                pc,
+                reg,
+            )
+        })
+        .or_else(|| {
+            local_static_call_result_before(
+                code,
+                int_consts,
+                strings,
+                heap_values,
+                global_names,
+                static_globals,
+                pc,
+                reg,
+            )
         })
 }
 
@@ -739,18 +797,16 @@ fn local_static_object_before(
                     .collect::<Option<Vec<_>>>()?;
                 native_static_object_from_fields(&fields, String::new())
             }
-            Opcode::Move if prev.b() != reg => {
-                local_static_object_before(
-                    code,
-                    int_consts,
-                    strings,
-                    heap_values,
-                    global_names,
-                    static_globals,
-                    prev_pc,
-                    prev.b(),
-                )
-            }
+            Opcode::Move if prev.b() != reg => local_static_object_before(
+                code,
+                int_consts,
+                strings,
+                heap_values,
+                global_names,
+                static_globals,
+                prev_pc,
+                prev.b(),
+            ),
             _ => None,
         };
     }
@@ -797,18 +853,16 @@ fn local_static_new_list_before(
                     elements,
                 })
             }
-            Opcode::Move if prev.b() != reg => {
-                local_static_new_list_before(
-                    code,
-                    int_consts,
-                    strings,
-                    heap_values,
-                    global_names,
-                    static_globals,
-                    prev_pc,
-                    prev.b(),
-                )
-            }
+            Opcode::Move if prev.b() != reg => local_static_new_list_before(
+                code,
+                int_consts,
+                strings,
+                heap_values,
+                global_names,
+                static_globals,
+                prev_pc,
+                prev.b(),
+            ),
             _ => None,
         };
     }
@@ -854,18 +908,16 @@ fn local_static_index_before(
                 )?;
                 native_static_index(target, key, String::new())
             }
-            Opcode::Move if prev.b() != reg => {
-                local_static_index_before(
-                    code,
-                    int_consts,
-                    strings,
-                    heap_values,
-                    global_names,
-                    static_globals,
-                    prev_pc,
-                    prev.b(),
-                )
-            }
+            Opcode::Move if prev.b() != reg => local_static_index_before(
+                code,
+                int_consts,
+                strings,
+                heap_values,
+                global_names,
+                static_globals,
+                prev_pc,
+                prev.b(),
+            ),
             _ => None,
         };
     }
@@ -888,7 +940,11 @@ fn local_static_global_before(
             Opcode::GetGlobal => static_globals
                 .get(prev.bx() as usize)
                 .and_then(Clone::clone)
-                .or_else(|| global_names.get(prev.bx() as usize).and_then(|name| native_static_global(name))),
+                .or_else(|| {
+                    global_names
+                        .get(prev.bx() as usize)
+                        .and_then(|name| native_static_global(name))
+                }),
             Opcode::Move if prev.b() != reg => {
                 local_static_global_before(code, global_names, static_globals, prev_pc, prev.b())
             }

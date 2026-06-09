@@ -34,6 +34,7 @@ mod pkg;
 mod repl;
 mod repl_completion;
 mod repl_tui;
+mod startup_trace;
 
 use coverage::run_coverage_report;
 #[cfg(test)]
@@ -341,12 +342,16 @@ fn top_opcode_profile(metrics: &VmRuntimeMetrics) -> String {
 }
 
 fn main() -> anyhow::Result<()> {
+    let mut startup = startup_trace::StartupTrace::new("main");
     maybe_init_perf_tracing();
+    startup.step("perf tracing checked");
 
     let CliArgs { command, file } = CliArgs::parse();
+    startup.step("cli args parsed");
 
     // No args: enter REPL
     if command.is_none() && file.is_none() {
+        startup.step("enter repl");
         return repl::run(true);
     }
 

@@ -26,6 +26,28 @@ pub(in crate::llvm) fn emit_runtime_builtin_call(
             ir.push_str("  unreachable\n");
             true
         }
+        NativeBuiltin::BytesToStringUtf8 => emit_bytes_to_string_utf8_call(ir, instr, register_count, tmp_index),
+        NativeBuiltin::SocketAddr => emit_socket_addr_call(ir, instr, register_count, tmp_index),
+        NativeBuiltin::TcpConnect => emit_tcp_connect_call(ir, instr, register_count, tmp_index),
+        NativeBuiltin::TcpRead => emit_tcp_read_call(ir, instr, register_count, tmp_index),
+        NativeBuiltin::TcpWrite => emit_tcp_write_call(ir, instr, register_count, facts, pc, tmp_index),
+        NativeBuiltin::TcpClose => emit_tcp_close_call(ir, instr, register_count, tmp_index),
+        NativeBuiltin::IoStdWrite | NativeBuiltin::IoStdWriteln => {
+            emit_io_std_write_call(ir, builtin, instr, register_count, tmp_index)
+        }
+        NativeBuiltin::IoStdFlush => emit_io_std_flush_call(ir, instr, register_count, tmp_index),
+        NativeBuiltin::IoStdReadToString => emit_io_std_read_to_string_call(ir, instr, register_count, tmp_index),
+        NativeBuiltin::EnvGet => emit_env_get_call(ir, instr, register_count, tmp_index),
+        NativeBuiltin::EnvGetOr => emit_env_get_or_call(ir, instr, register_count, tmp_index),
+        NativeBuiltin::EnvHas => emit_env_has_call(ir, instr, register_count, tmp_index),
+        NativeBuiltin::FsExists => emit_fs_exists_call(ir, instr, register_count, tmp_index),
+        NativeBuiltin::FsRead => emit_fs_read_call(ir, instr, register_count, tmp_index),
+        NativeBuiltin::FsReadDir => emit_fs_read_dir_call(ir, instr, register_count, tmp_index),
+        NativeBuiltin::FsReadToString => emit_fs_read_to_string_call(ir, instr, register_count, tmp_index),
+        NativeBuiltin::FsWrite => emit_fs_write_call(ir, instr, register_count, facts, pc, tmp_index),
+        NativeBuiltin::FsCanonicalize => emit_fs_canonicalize_call(ir, instr, register_count, tmp_index),
+        NativeBuiltin::FsTempDir => emit_fs_temp_dir_call(ir, instr, tmp_index),
+        NativeBuiltin::ProcessCwd => emit_process_cwd_call(ir, instr, tmp_index),
         NativeBuiltin::Print | NativeBuiltin::Println => {
             let is_newline = builtin == NativeBuiltin::Println;
             let arg_reg = instr.b() as usize + 1;
@@ -95,6 +117,538 @@ pub(in crate::llvm) fn emit_runtime_builtin_call(
         }
         _ => false,
     }
+}
+
+fn emit_bytes_to_string_utf8_call(ir: &mut String, instr: Instr, register_count: usize, tmp_index: &mut usize) -> bool {
+    if instr.c() != 1 {
+        return false;
+    }
+    let Some(bytes_reg) = call_arg_reg(instr, register_count, 0) else {
+        return false;
+    };
+    let bytes = load_i64_reg(ir, bytes_reg, tmp_index);
+    let out = next_tmp(tmp_index);
+    ir.push_str(&format!("  {out} = call ptr @lkrt_bytes_to_string_utf8(i64 {bytes})\n"));
+    store_ptr_result(ir, instr.a(), &out);
+    true
+}
+
+fn emit_socket_addr_call(ir: &mut String, instr: Instr, register_count: usize, tmp_index: &mut usize) -> bool {
+    if instr.c() != 2 {
+        return false;
+    }
+    let Some(host_reg) = call_arg_reg(instr, register_count, 0) else {
+        return false;
+    };
+    let Some(port_reg) = call_arg_reg(instr, register_count, 1) else {
+        return false;
+    };
+    let host = load_ptr_reg(ir, host_reg, tmp_index);
+    let port = load_i64_reg(ir, port_reg, tmp_index);
+    let out = next_tmp(tmp_index);
+    ir.push_str(&format!(
+        "  {out} = call ptr @lkrt_socket_addr(ptr {host}, i64 {port})\n"
+    ));
+    store_ptr_result(ir, instr.a(), &out);
+    true
+}
+
+fn emit_tcp_connect_call(ir: &mut String, instr: Instr, register_count: usize, tmp_index: &mut usize) -> bool {
+    if instr.c() != 1 {
+        return false;
+    }
+    let Some(addr_reg) = call_arg_reg(instr, register_count, 0) else {
+        return false;
+    };
+    let addr = load_ptr_reg(ir, addr_reg, tmp_index);
+    let out = next_tmp(tmp_index);
+    ir.push_str(&format!("  {out} = call i64 @lkrt_tcp_connect(ptr {addr})\n"));
+    store_i64_result(ir, instr.a(), &out);
+    true
+}
+
+fn emit_tcp_read_call(ir: &mut String, instr: Instr, register_count: usize, tmp_index: &mut usize) -> bool {
+    if instr.c() != 1 && instr.c() != 2 {
+        return false;
+    }
+    let Some(stream_reg) = call_arg_reg(instr, register_count, 0) else {
+        return false;
+    };
+    let stream = load_i64_reg(ir, stream_reg, tmp_index);
+    let max = if instr.c() == 2 {
+        let Some(max_reg) = call_arg_reg(instr, register_count, 1) else {
+            return false;
+        };
+        load_i64_reg(ir, max_reg, tmp_index)
+    } else {
+        "4096".to_string()
+    };
+    let out = next_tmp(tmp_index);
+    ir.push_str(&format!("  {out} = call i64 @lkrt_tcp_read(i64 {stream}, i64 {max})\n"));
+    store_i64_result(ir, instr.a(), &out);
+    true
+}
+
+fn emit_tcp_write_call(
+    ir: &mut String,
+    instr: Instr,
+    register_count: usize,
+    facts: &NativeScalarFacts,
+    pc: usize,
+    tmp_index: &mut usize,
+) -> bool {
+    if instr.c() != 2 {
+        return false;
+    }
+    let Some(stream_reg) = call_arg_reg(instr, register_count, 0) else {
+        return false;
+    };
+    let Some(data_reg) = call_arg_reg(instr, register_count, 1) else {
+        return false;
+    };
+    let stream = load_i64_reg(ir, stream_reg, tmp_index);
+    let data_kind = facts
+        .register_kind_before(pc, data_reg as u8)
+        .unwrap_or(NativeScalarKind::StrPtr);
+    let out = next_tmp(tmp_index);
+    match data_kind {
+        NativeScalarKind::StrPtr => {
+            let data = load_ptr_reg(ir, data_reg, tmp_index);
+            ir.push_str(&format!(
+                "  {out} = call i64 @lkrt_tcp_write_str(i64 {stream}, ptr {data})\n"
+            ));
+        }
+        NativeScalarKind::MaybeStrPtr => {
+            emit_maybe_tcp_write_call(
+                ir,
+                data_reg,
+                tmp_index,
+                &stream,
+                &out,
+                "ptr",
+                "@lkrt_tcp_write_str",
+                load_ptr_reg,
+            );
+        }
+        NativeScalarKind::I64 => {
+            let data = load_i64_reg(ir, data_reg, tmp_index);
+            ir.push_str(&format!(
+                "  {out} = call i64 @lkrt_tcp_write_bytes(i64 {stream}, i64 {data})\n"
+            ));
+        }
+        NativeScalarKind::MaybeI64 => {
+            emit_maybe_tcp_write_call(
+                ir,
+                data_reg,
+                tmp_index,
+                &stream,
+                &out,
+                "i64",
+                "@lkrt_tcp_write_bytes",
+                load_i64_reg,
+            );
+        }
+        _ => return false,
+    }
+    store_i64_result(ir, instr.a(), &out);
+    true
+}
+
+fn emit_maybe_tcp_write_call(
+    ir: &mut String,
+    data_reg: usize,
+    tmp_index: &mut usize,
+    stream: &str,
+    out: &str,
+    data_type: &str,
+    symbol: &str,
+    load_data: fn(&mut String, usize, &mut usize) -> String,
+) {
+    let label_id = *tmp_index;
+    *tmp_index += 1;
+    let present = load_present_slot(ir, data_reg, tmp_index);
+    let cond = next_tmp(tmp_index);
+    ir.push_str(&format!("  {cond} = icmp ne i64 {present}, 0\n"));
+    ir.push_str(&format!(
+        "  br i1 {cond}, label %tcp.write.present.{label_id}, label %tcp.write.nil.{label_id}\n"
+    ));
+    ir.push_str(&format!("tcp.write.present.{label_id}:\n"));
+    let data = load_data(ir, data_reg, tmp_index);
+    let written = next_tmp(tmp_index);
+    ir.push_str(&format!(
+        "  {written} = call i64 {symbol}(i64 {stream}, {data_type} {data})\n"
+    ));
+    ir.push_str(&format!("  br label %tcp.write.done.{label_id}\n"));
+    ir.push_str(&format!("tcp.write.nil.{label_id}:\n"));
+    ir.push_str(&format!("  br label %tcp.write.done.{label_id}\n"));
+    ir.push_str(&format!("tcp.write.done.{label_id}:\n"));
+    ir.push_str(&format!(
+        "  {out} = phi i64 [ {written}, %tcp.write.present.{label_id} ], [ 0, %tcp.write.nil.{label_id} ]\n"
+    ));
+}
+
+fn emit_tcp_close_call(ir: &mut String, instr: Instr, register_count: usize, tmp_index: &mut usize) -> bool {
+    if instr.c() != 1 {
+        return false;
+    }
+    let Some(stream_reg) = call_arg_reg(instr, register_count, 0) else {
+        return false;
+    };
+    let stream = load_i64_reg(ir, stream_reg, tmp_index);
+    let out = next_tmp(tmp_index);
+    ir.push_str(&format!("  {out} = call i64 @lkrt_tcp_close(i64 {stream})\n"));
+    store_i64_result(ir, instr.a(), &out);
+    true
+}
+
+fn emit_io_std_write_call(
+    ir: &mut String,
+    builtin: NativeBuiltin,
+    instr: Instr,
+    register_count: usize,
+    tmp_index: &mut usize,
+) -> bool {
+    if instr.c() != 2 {
+        return false;
+    }
+    let Some(resource_reg) = call_arg_reg(instr, register_count, 0) else {
+        return false;
+    };
+    let Some(data_reg) = call_arg_reg(instr, register_count, 1) else {
+        return false;
+    };
+    let resource = load_i64_reg(ir, resource_reg, tmp_index);
+    let data = load_ptr_reg(ir, data_reg, tmp_index);
+    let newline = i64::from(builtin == NativeBuiltin::IoStdWriteln);
+    let out = next_tmp(tmp_index);
+    ir.push_str(&format!(
+        "  {out} = call i64 @lkrt_io_std_write(i64 {resource}, ptr {data}, i64 {newline})\n"
+    ));
+    store_i64_result(ir, instr.a(), &out);
+    true
+}
+
+fn emit_io_std_flush_call(ir: &mut String, instr: Instr, register_count: usize, tmp_index: &mut usize) -> bool {
+    if instr.c() != 1 {
+        return false;
+    }
+    let Some(resource_reg) = call_arg_reg(instr, register_count, 0) else {
+        return false;
+    };
+    let resource = load_i64_reg(ir, resource_reg, tmp_index);
+    let out = next_tmp(tmp_index);
+    ir.push_str(&format!("  {out} = call i64 @lkrt_io_std_flush(i64 {resource})\n"));
+    store_i64_result(ir, instr.a(), &out);
+    true
+}
+
+fn emit_io_std_read_to_string_call(
+    ir: &mut String,
+    instr: Instr,
+    register_count: usize,
+    tmp_index: &mut usize,
+) -> bool {
+    if instr.c() != 1 {
+        return false;
+    }
+    let Some(resource_reg) = call_arg_reg(instr, register_count, 0) else {
+        return false;
+    };
+    let resource = load_i64_reg(ir, resource_reg, tmp_index);
+    let out = next_tmp(tmp_index);
+    ir.push_str(&format!(
+        "  {out} = call ptr @lkrt_io_std_read_to_string(i64 {resource})\n"
+    ));
+    store_ptr_result(ir, instr.a(), &out);
+    true
+}
+
+fn emit_env_get_or_call(ir: &mut String, instr: Instr, register_count: usize, tmp_index: &mut usize) -> bool {
+    if instr.c() != 2 {
+        return false;
+    }
+    let Some(key_reg) = call_arg_reg(instr, register_count, 0) else {
+        return false;
+    };
+    let Some(default_reg) = call_arg_reg(instr, register_count, 1) else {
+        return false;
+    };
+    let key = load_ptr_reg(ir, key_reg, tmp_index);
+    let default = load_ptr_reg(ir, default_reg, tmp_index);
+    let out = next_tmp(tmp_index);
+    ir.push_str(&format!(
+        "  {out} = call ptr @lkrt_env_get_or(ptr {key}, ptr {default})\n"
+    ));
+    store_ptr_result(ir, instr.a(), &out);
+    true
+}
+
+fn emit_env_get_call(ir: &mut String, instr: Instr, register_count: usize, tmp_index: &mut usize) -> bool {
+    if instr.c() != 1 {
+        return false;
+    }
+    let Some(key_reg) = call_arg_reg(instr, register_count, 0) else {
+        return false;
+    };
+    let key = load_ptr_reg(ir, key_reg, tmp_index);
+    let out_slot = next_tmp(tmp_index);
+    let status = next_tmp(tmp_index);
+    let value = next_tmp(tmp_index);
+    let status_ok = next_tmp(tmp_index);
+    let value_present = next_tmp(tmp_index);
+    let present = next_tmp(tmp_index);
+    let present_i64 = next_tmp(tmp_index);
+    ir.push_str(&format!("  {out_slot} = alloca ptr\n"));
+    ir.push_str(&format!(
+        "  {status} = call i64 @lkrt_env_get(ptr {key}, ptr {out_slot})\n"
+    ));
+    ir.push_str(&format!("  {value} = load ptr, ptr {out_slot}\n"));
+    ir.push_str(&format!("  {status_ok} = icmp eq i64 {status}, 0\n"));
+    ir.push_str(&format!("  {value_present} = icmp ne ptr {value}, null\n"));
+    ir.push_str(&format!("  {present} = and i1 {status_ok}, {value_present}\n"));
+    ir.push_str(&format!("  {present_i64} = zext i1 {present} to i64\n"));
+    store_ptr_result_with_present(ir, instr.a(), &value, &present_i64);
+    true
+}
+
+fn emit_env_has_call(ir: &mut String, instr: Instr, register_count: usize, tmp_index: &mut usize) -> bool {
+    if instr.c() != 1 {
+        return false;
+    }
+    let Some(key_reg) = call_arg_reg(instr, register_count, 0) else {
+        return false;
+    };
+    let key = load_ptr_reg(ir, key_reg, tmp_index);
+    let out = next_tmp(tmp_index);
+    ir.push_str(&format!("  {out} = call i64 @lkrt_env_has(ptr {key})\n"));
+    store_i64_result(ir, instr.a(), &out);
+    true
+}
+
+fn emit_fs_exists_call(ir: &mut String, instr: Instr, register_count: usize, tmp_index: &mut usize) -> bool {
+    if instr.c() != 1 {
+        return false;
+    }
+    let Some(path_reg) = call_arg_reg(instr, register_count, 0) else {
+        return false;
+    };
+    let path = load_ptr_reg(ir, path_reg, tmp_index);
+    let out = next_tmp(tmp_index);
+    ir.push_str(&format!("  {out} = call i64 @lkrt_fs_exists(ptr {path})\n"));
+    store_i64_result(ir, instr.a(), &out);
+    true
+}
+
+fn emit_fs_read_call(ir: &mut String, instr: Instr, register_count: usize, tmp_index: &mut usize) -> bool {
+    emit_unary_path_i64_call(ir, instr, register_count, tmp_index, "@lkrt_fs_read")
+}
+
+fn emit_fs_read_dir_call(ir: &mut String, instr: Instr, register_count: usize, tmp_index: &mut usize) -> bool {
+    emit_unary_path_i64_call(ir, instr, register_count, tmp_index, "@lkrt_fs_read_dir")
+}
+
+fn emit_fs_read_to_string_call(ir: &mut String, instr: Instr, register_count: usize, tmp_index: &mut usize) -> bool {
+    emit_unary_path_ptr_call(ir, instr, register_count, tmp_index, "@lkrt_fs_read_to_string")
+}
+
+fn emit_fs_canonicalize_call(ir: &mut String, instr: Instr, register_count: usize, tmp_index: &mut usize) -> bool {
+    emit_unary_path_ptr_call(ir, instr, register_count, tmp_index, "@lkrt_fs_canonicalize")
+}
+
+fn emit_fs_temp_dir_call(ir: &mut String, instr: Instr, tmp_index: &mut usize) -> bool {
+    if instr.c() != 0 {
+        return false;
+    }
+    let out = next_tmp(tmp_index);
+    ir.push_str(&format!("  {out} = call ptr @lkrt_fs_temp_dir()\n"));
+    store_ptr_result(ir, instr.a(), &out);
+    true
+}
+
+fn emit_fs_write_call(
+    ir: &mut String,
+    instr: Instr,
+    register_count: usize,
+    facts: &NativeScalarFacts,
+    pc: usize,
+    tmp_index: &mut usize,
+) -> bool {
+    if instr.c() != 2 {
+        return false;
+    }
+    let Some(path_reg) = call_arg_reg(instr, register_count, 0) else {
+        return false;
+    };
+    let Some(data_reg) = call_arg_reg(instr, register_count, 1) else {
+        return false;
+    };
+    let path = load_ptr_reg(ir, path_reg, tmp_index);
+    let data_kind = facts
+        .register_kind_before(pc, data_reg as u8)
+        .unwrap_or(NativeScalarKind::StrPtr);
+    let out = next_tmp(tmp_index);
+    match data_kind {
+        NativeScalarKind::StrPtr => {
+            let data = load_ptr_reg(ir, data_reg, tmp_index);
+            ir.push_str(&format!(
+                "  {out} = call i64 @lkrt_fs_write_str(ptr {path}, ptr {data})\n"
+            ));
+        }
+        NativeScalarKind::MaybeStrPtr => {
+            emit_maybe_fs_write_call(
+                ir,
+                data_reg,
+                tmp_index,
+                &path,
+                &out,
+                "ptr",
+                "@lkrt_fs_write_str",
+                load_ptr_reg,
+            );
+        }
+        NativeScalarKind::I64 => {
+            let data = load_i64_reg(ir, data_reg, tmp_index);
+            ir.push_str(&format!(
+                "  {out} = call i64 @lkrt_fs_write_bytes(ptr {path}, i64 {data})\n"
+            ));
+        }
+        NativeScalarKind::MaybeI64 => {
+            emit_maybe_fs_write_call(
+                ir,
+                data_reg,
+                tmp_index,
+                &path,
+                &out,
+                "i64",
+                "@lkrt_fs_write_bytes",
+                load_i64_reg,
+            );
+        }
+        _ => return false,
+    }
+    store_i64_result(ir, instr.a(), &out);
+    true
+}
+
+fn emit_process_cwd_call(ir: &mut String, instr: Instr, tmp_index: &mut usize) -> bool {
+    if instr.c() != 0 {
+        return false;
+    }
+    let out = next_tmp(tmp_index);
+    ir.push_str(&format!("  {out} = call ptr @lkrt_process_cwd()\n"));
+    store_ptr_result(ir, instr.a(), &out);
+    true
+}
+
+fn emit_unary_path_i64_call(
+    ir: &mut String,
+    instr: Instr,
+    register_count: usize,
+    tmp_index: &mut usize,
+    symbol: &str,
+) -> bool {
+    if instr.c() != 1 {
+        return false;
+    }
+    let Some(path_reg) = call_arg_reg(instr, register_count, 0) else {
+        return false;
+    };
+    let path = load_ptr_reg(ir, path_reg, tmp_index);
+    let out = next_tmp(tmp_index);
+    ir.push_str(&format!("  {out} = call i64 {symbol}(ptr {path})\n"));
+    store_i64_result(ir, instr.a(), &out);
+    true
+}
+
+fn emit_unary_path_ptr_call(
+    ir: &mut String,
+    instr: Instr,
+    register_count: usize,
+    tmp_index: &mut usize,
+    symbol: &str,
+) -> bool {
+    if instr.c() != 1 {
+        return false;
+    }
+    let Some(path_reg) = call_arg_reg(instr, register_count, 0) else {
+        return false;
+    };
+    let path = load_ptr_reg(ir, path_reg, tmp_index);
+    let out = next_tmp(tmp_index);
+    ir.push_str(&format!("  {out} = call ptr {symbol}(ptr {path})\n"));
+    store_ptr_result(ir, instr.a(), &out);
+    true
+}
+
+fn emit_maybe_fs_write_call(
+    ir: &mut String,
+    data_reg: usize,
+    tmp_index: &mut usize,
+    path: &str,
+    out: &str,
+    data_type: &str,
+    symbol: &str,
+    load_data: fn(&mut String, usize, &mut usize) -> String,
+) {
+    let label_id = *tmp_index;
+    *tmp_index += 1;
+    let present = load_present_slot(ir, data_reg, tmp_index);
+    let cond = next_tmp(tmp_index);
+    ir.push_str(&format!("  {cond} = icmp ne i64 {present}, 0\n"));
+    ir.push_str(&format!(
+        "  br i1 {cond}, label %fs.write.present.{label_id}, label %fs.write.nil.{label_id}\n"
+    ));
+    ir.push_str(&format!("fs.write.present.{label_id}:\n"));
+    let data = load_data(ir, data_reg, tmp_index);
+    let written = next_tmp(tmp_index);
+    ir.push_str(&format!(
+        "  {written} = call i64 {symbol}(ptr {path}, {data_type} {data})\n"
+    ));
+    ir.push_str(&format!("  br label %fs.write.done.{label_id}\n"));
+    ir.push_str(&format!("fs.write.nil.{label_id}:\n"));
+    ir.push_str(&format!("  br label %fs.write.done.{label_id}\n"));
+    ir.push_str(&format!("fs.write.done.{label_id}:\n"));
+    ir.push_str(&format!(
+        "  {out} = phi i64 [ {written}, %fs.write.present.{label_id} ], [ 0, %fs.write.nil.{label_id} ]\n"
+    ));
+}
+
+fn call_arg_reg(instr: Instr, register_count: usize, index: usize) -> Option<usize> {
+    let reg = instr.b() as usize + 1 + index;
+    (reg < register_count).then_some(reg)
+}
+
+fn load_i64_reg(ir: &mut String, reg: usize, tmp_index: &mut usize) -> String {
+    let value = next_tmp(tmp_index);
+    ir.push_str(&format!("  {value} = load i64, ptr %r{reg}.slot\n"));
+    value
+}
+
+fn load_ptr_reg(ir: &mut String, reg: usize, tmp_index: &mut usize) -> String {
+    let value = next_tmp(tmp_index);
+    ir.push_str(&format!("  {value} = load ptr, ptr %r{reg}.slot\n"));
+    value
+}
+
+fn load_present_slot(ir: &mut String, reg: usize, tmp_index: &mut usize) -> String {
+    let value = next_tmp(tmp_index);
+    ir.push_str(&format!("  {value} = load i64, ptr %r{reg}.present.slot\n"));
+    value
+}
+
+fn store_i64_result(ir: &mut String, dst: u8, value: &str) {
+    ir.push_str(&format!("  store i64 {value}, ptr %r{dst}.slot\n"));
+    ir.push_str(&format!("  store i64 1, ptr %r{dst}.present.slot\n"));
+}
+
+fn store_ptr_result(ir: &mut String, dst: u8, value: &str) {
+    ir.push_str(&format!("  store ptr {value}, ptr %r{dst}.slot\n"));
+    ir.push_str(&format!("  store i64 1, ptr %r{dst}.present.slot\n"));
+}
+
+fn store_ptr_result_with_present(ir: &mut String, dst: u8, value: &str, present: &str) {
+    ir.push_str(&format!("  store ptr {value}, ptr %r{dst}.slot\n"));
+    ir.push_str(&format!("  store i64 {present}, ptr %r{dst}.present.slot\n"));
 }
 
 fn emit_assert_call(

@@ -1,6 +1,6 @@
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Result, anyhow};
 use lk_core::{
-    module::{ModuleProvider, ModuleRegistry, RuntimeNativeExport, runtime_export_from_plain_native_entries},
+    module::{ModuleProvider, ModuleRegistry},
     util::fast_map::fast_hash_map_new,
     val::{HeapValue, RuntimeVal, TypedList, TypedMap},
     vm::{NativeArgs, NativeRuntime, RuntimeExport},
@@ -31,16 +31,15 @@ impl ModuleProvider for RegexModule {
     }
 
     fn runtime_exports(&self) -> Result<RuntimeExport> {
-        Ok(runtime_export_from_plain_native_entries(
-            &[
-                RuntimeNativeExport::plain("is_match", is_match, 2),
-                RuntimeNativeExport::plain("find", find, 2),
-                RuntimeNativeExport::plain("find_all", find_all, 2),
-                RuntimeNativeExport::plain("captures", captures, 2),
-                RuntimeNativeExport::plain("replace", replace, 3),
-                RuntimeNativeExport::plain("split", split, 2),
+        Ok(lk_stdlib_common::stdlib_runtime_exports!(
+            [
+                plain "is_match" => is_match, 2,
+                plain "find" => find, 2,
+                plain "find_all" => find_all, 2,
+                plain "captures" => captures, 2,
+                plain "replace" => replace, 3,
+                plain "split" => split, 2,
             ],
-            &[],
         ))
     }
 }
@@ -89,7 +88,7 @@ fn captures(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Run
 }
 
 fn replace(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    expect_arity(args, 3, "regex.replace()")?;
+    lk_stdlib_common::runtime_native::expect_arity(args, 3, "regex.replace()")?;
     let regex = cached_regex(args.get(0).expect("checked arity"), runtime, "regex.replace pattern")?;
     let text = runtime_string_arg(
         args.get(1).expect("checked arity"),
@@ -116,7 +115,7 @@ fn split(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Runtim
 }
 
 fn regex_text(args: NativeArgs<'_>, runtime: &NativeRuntime<'_>, name: &str) -> Result<(regex::Regex, Arc<str>)> {
-    expect_arity(args, 2, name)?;
+    lk_stdlib_common::runtime_native::expect_arity(args, 2, name)?;
     let regex = cached_regex(args.get(0).expect("checked arity"), runtime, name)?;
     let text = runtime_string_arg(args.get(1).expect("checked arity"), runtime.heap(), name)?;
     Ok((regex, text))
@@ -148,12 +147,4 @@ fn match_map(text: &str, start: usize, end: usize, runtime: &mut NativeRuntime<'
     map.insert(Arc::<str>::from("start"), RuntimeVal::Int(start as i64));
     map.insert(Arc::<str>::from("end"), RuntimeVal::Int(end as i64));
     RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::Map(TypedMap::StringMixed(map))))
-}
-
-fn expect_arity(args: NativeArgs<'_>, expected: usize, name: &str) -> Result<()> {
-    if args.len() == expected {
-        Ok(())
-    } else {
-        bail!("{name} expects exactly {expected} argument(s)")
-    }
 }

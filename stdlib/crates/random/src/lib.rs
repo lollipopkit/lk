@@ -1,6 +1,6 @@
 use anyhow::{Result, bail};
 use lk_core::{
-    module::{ModuleProvider, ModuleRegistry, RuntimeNativeExport, runtime_export_from_plain_native_entries},
+    module::{ModuleProvider, ModuleRegistry},
     val::{HeapValue, RuntimeVal},
     vm::{NativeArgs, NativeRuntime, RuntimeExport},
 };
@@ -29,16 +29,15 @@ impl ModuleProvider for RandomModule {
     }
 
     fn runtime_exports(&self) -> Result<RuntimeExport> {
-        Ok(runtime_export_from_plain_native_entries(
-            &[
-                RuntimeNativeExport::plain("int", int, 2),
-                RuntimeNativeExport::plain("float", float, 0),
-                RuntimeNativeExport::plain("bool", bool_value, lk_core::vm::NativeEntry::VARIADIC),
-                RuntimeNativeExport::plain("bytes", bytes, 1),
-                RuntimeNativeExport::plain("choice", choice, 1),
-                RuntimeNativeExport::plain("shuffle", shuffle, 1),
+        Ok(lk_stdlib_common::stdlib_runtime_exports!(
+            [
+                plain "int" => int, 2,
+                plain "float" => float, 0,
+                plain "bool" => bool_value, lk_core::vm::NativeEntry::VARIADIC,
+                plain "bytes" => bytes, 1,
+                plain "choice" => choice, 1,
+                plain "shuffle" => shuffle, 1,
             ],
-            &[],
         ))
     }
 }
@@ -48,7 +47,7 @@ pub fn register(registry: &mut ModuleRegistry) -> Result<()> {
 }
 
 fn int(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    expect_arity(args, 2, "random.int()")?;
+    lk_stdlib_common::runtime_native::expect_arity(args, 2, "random.int()")?;
     let min = int_arg(args.get(0).expect("checked arity"), "random.int min")?;
     let max = int_arg(args.get(1).expect("checked arity"), "random.int max")?;
     if max < min {
@@ -58,7 +57,7 @@ fn int(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<Runtime
 }
 
 fn float(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    expect_arity(args, 0, "random.float()")?;
+    lk_stdlib_common::runtime_native::expect_arity(args, 0, "random.float()")?;
     Ok(RuntimeVal::Float(rand::rng().random()))
 }
 
@@ -78,7 +77,7 @@ fn bool_value(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<
 }
 
 fn bytes(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    expect_arity(args, 1, "random.bytes()")?;
+    lk_stdlib_common::runtime_native::expect_arity(args, 1, "random.bytes()")?;
     let len = usize_arg(args.get(0).expect("checked arity"), "random.bytes len")?;
     if len > MAX_RANDOM_BYTES {
         bail!("random.bytes() len exceeds {MAX_RANDOM_BYTES}");
@@ -89,7 +88,7 @@ fn bytes(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Runtim
 }
 
 fn choice(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    expect_arity(args, 1, "random.choice()")?;
+    lk_stdlib_common::runtime_native::expect_arity(args, 1, "random.choice()")?;
     let values = list_values(args.get(0).expect("checked arity"), runtime, "random.choice list")?;
     if values.is_empty() {
         return Ok(RuntimeVal::Nil);
@@ -99,7 +98,7 @@ fn choice(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Runti
 }
 
 fn shuffle(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    expect_arity(args, 1, "random.shuffle()")?;
+    lk_stdlib_common::runtime_native::expect_arity(args, 1, "random.shuffle()")?;
     let mut values = list_values(args.get(0).expect("checked arity"), runtime, "random.shuffle list")?;
     for i in (1..values.len()).rev() {
         let j = rand::rng().random_range(0..=i);
@@ -156,13 +155,5 @@ fn float_arg(value: &RuntimeVal, context: &str) -> Result<f64> {
         RuntimeVal::Float(value) => Ok(*value),
         RuntimeVal::Int(value) => Ok(*value as f64),
         other => bail!("{context} expects number, got {:?}", other.kind()),
-    }
-}
-
-fn expect_arity(args: NativeArgs<'_>, expected: usize, name: &str) -> Result<()> {
-    if args.len() == expected {
-        Ok(())
-    } else {
-        bail!("{name} expects exactly {expected} argument(s)")
     }
 }

@@ -2,6 +2,43 @@ pub mod metadata;
 pub mod resource;
 pub mod runtime_native;
 
+#[macro_export]
+macro_rules! stdlib_runtime_exports {
+    ([$($kind:ident $name:literal => $function:path, $arity:expr),* $(,)?] $(, [$($value_name:literal => $value:expr),* $(,)?])? $(,)?) => {
+        ::lk_core::module::runtime_export_from_plain_native_entries(
+            &[
+                $(
+                    ::lk_core::module::RuntimeNativeExport::$kind($name, $function, $arity),
+                )*
+            ],
+            &[
+                $($(
+                    ::lk_core::module::RuntimeValueExport::new($value_name, $value),
+                )*)?
+            ],
+        )
+    };
+}
+
+#[macro_export]
+macro_rules! stdlib_register_runtime_builtins {
+    ($registry:expr, [$($kind:ident $name:literal => $function:path, $arity:expr),* $(,)?] $(,)?) => {{
+        $(
+            $registry.register_runtime_builtin(
+                $name,
+                $crate::stdlib_register_runtime_builtins!(@function $kind, $function),
+                $arity,
+            );
+        )*
+    }};
+    (@function plain, $function:path) => {
+        ::lk_core::vm::NativeFunction::Plain($function)
+    };
+    (@function full_state, $function:path) => {
+        ::lk_core::vm::NativeFunction::FullState($function)
+    };
+}
+
 use lk_core::{
     val,
     val::{HeapStore, HeapValue, RuntimeVal, TypedList},

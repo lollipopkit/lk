@@ -1,13 +1,154 @@
 use crate::{
     llvm::{
         ir_text::{emit_branch_to_next, next_tmp, reg_in_bounds},
-        scalar::block_helpers::emit_static_named_call,
         scalar::facts::{NativeScalarFacts, NativeScalarKind},
+        scalar::{
+            block_helpers::{emit_static_direct_call_result, emit_static_named_call},
+            inline::emit_inline_direct_scalar_call,
+        },
         straightline_value::NativeStraightlineValue,
         subfunction::compile_native_scalar_subfunction,
     },
-    vm::{Instr, ModuleArtifact},
+    vm::{ConstHeapValueData, Instr, ModuleArtifact},
 };
+
+use super::{
+    asserts::emit_native_assert_direct_call,
+    callees::{callee_contains_call, callee_is_native_assert},
+    direct_print::emit_direct_emit_helper_call,
+    list_direct_calls::emit_list_direct_call,
+    list_methods::function_has_list_return_shape,
+};
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn emit_direct_call_block(
+    ir: &mut String,
+    extra_globals: &mut String,
+    artifact: &ModuleArtifact,
+    recursive_indices: &[u16],
+    additional_subfn_indices: &mut Vec<u16>,
+    code: &[Instr],
+    int_consts: &[i64],
+    strings: &[String],
+    heap_values: &[ConstHeapValueData],
+    global_names: &[String],
+    facts: &NativeScalarFacts,
+    static_regs: &mut [Option<NativeStraightlineValue>],
+    static_globals: &mut [Option<NativeStraightlineValue>],
+    instr: Instr,
+    pc: usize,
+    register_count: usize,
+    global_count: usize,
+    tmp_index: &mut usize,
+) -> Option<()> {
+    if !reg_in_bounds(register_count, instr.a()) {
+        return None;
+    }
+    let callee_index = instr.b();
+    if let Some(callee) = artifact.module.functions.get(callee_index as usize)
+        && emit_direct_emit_helper_call(ir, extra_globals, callee, facts, static_regs, instr, pc, tmp_index).is_some()
+    {
+        static_regs[instr.a() as usize] = Some(NativeStraightlineValue::Nil);
+        emit_branch_to_next(ir, pc, code.len());
+        return Some(());
+    }
+    if emit_static_direct_call_result(
+        ir,
+        extra_globals,
+        artifact,
+        code,
+        int_consts,
+        strings,
+        heap_values,
+        pc,
+        static_regs,
+        static_globals,
+        instr,
+        tmp_index,
+    )
+    .is_some()
+    {
+        emit_branch_to_next(ir, pc, code.len());
+        return Some(());
+    }
+    let is_recursive = recursive_indices.contains(&u16::from(callee_index));
+    if !is_recursive {
+        let callee = artifact.module.functions.get(callee_index as usize)?;
+        if function_has_list_return_shape(callee) {
+            emit_list_direct_call(
+                ir,
+                extra_globals,
+                static_regs,
+                instr,
+                pc,
+                callee_index as usize,
+                facts,
+                tmp_index,
+            )?;
+            additional_subfn_indices.push(u16::from(callee_index));
+            emit_branch_to_next(ir, pc, code.len());
+            return Some(());
+        }
+        if callee_is_native_assert(callee) {
+            emit_native_assert_direct_call(ir, instr, pc, code.len(), register_count, facts, tmp_index)?;
+            static_regs[instr.a() as usize] = Some(NativeStraightlineValue::Nil);
+            return Some(());
+        }
+        let inline_result = if callee_contains_call(callee) {
+            None
+        } else {
+            emit_inline_direct_scalar_call(
+                ir,
+                extra_globals,
+                artifact,
+                callee,
+                pc,
+                instr,
+                register_count,
+                global_count,
+                global_names,
+                code,
+                static_regs,
+                static_globals,
+                facts,
+                tmp_index,
+                code.len(),
+            )
+        };
+        if inline_result.is_none() {
+            emit_fallback_direct_subfunction_call(
+                ir,
+                artifact,
+                recursive_indices,
+                additional_subfn_indices,
+                instr,
+                pc,
+                code.len(),
+                register_count,
+                facts,
+                tmp_index,
+                true,
+            )?;
+        }
+        static_regs[instr.a() as usize] = None;
+    } else {
+        emit_fallback_direct_subfunction_call(
+            ir,
+            artifact,
+            recursive_indices,
+            additional_subfn_indices,
+            instr,
+            pc,
+            code.len(),
+            register_count,
+            facts,
+            tmp_index,
+            false,
+        )?;
+        static_regs[instr.a() as usize] = None;
+    }
+    Some(())
+}
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn emit_named_call_block(

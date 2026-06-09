@@ -5,6 +5,7 @@ use lk_core::{
     val::{CallableValue, HeapStore, HeapValue, RuntimeVal, TypedMap},
     vm::{Module, NativeArgs, NativeFunction, NativeRuntime, PlainNativeFunction, RuntimeExport, RuntimeModuleState},
 };
+use lk_stdlib_common::metadata::StdlibModuleMetadata;
 use std::sync::{Arc, Mutex};
 
 pub mod runtime_native {
@@ -74,7 +75,21 @@ impl ModuleProvider for OsModule {
 }
 
 pub fn register(registry: &mut ModuleRegistry) -> Result<()> {
+    lk_stdlib_common::metadata::register_stdlib_module_metadata(metadata())?;
     registry.register_module("os", Box::new(OsModule::new()))
+}
+
+pub fn metadata() -> StdlibModuleMetadata {
+    lk_stdlib_common::stdlib_module_metadata!(
+        os,
+        [
+            arch => String,
+            clock => Float,
+            epoch => Int,
+            hostname => String,
+            os => String,
+        ]
+    )
 }
 
 fn no_args(args: NativeArgs<'_>, name: &str) -> Result<()> {

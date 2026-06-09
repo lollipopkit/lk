@@ -5,10 +5,10 @@
 
 use anyhow::{Result, anyhow, bail};
 use lk_core::{
-    module::{self, ModuleProvider, ModuleRegistry, RuntimeNativeExport, runtime_export_from_plain_native_entries},
+    module::{self, ModuleProvider, ModuleRegistry},
     rt,
     val::{HeapStore, HeapValue, RuntimeVal, TaskValue},
-    vm::{NativeArgs, NativeEntry, NativeFunction, NativeRuntime, RuntimeExport},
+    vm::{NativeArgs, NativeEntry, NativeRuntime, RuntimeExport},
 };
 use std::sync::Arc;
 
@@ -40,28 +40,28 @@ impl ModuleProvider for TaskModule {
     }
 
     fn register(&self, registry: &mut module::ModuleRegistry) -> Result<()> {
-        registry.register_runtime_builtin("task::await", NativeFunction::Plain(task_await), 1);
-        registry.register_runtime_builtin("task::try_await", NativeFunction::Plain(task_try_await), 1);
-        registry.register_runtime_builtin(
-            "task::join_all",
-            NativeFunction::Plain(task_join_all),
-            NativeEntry::VARIADIC,
+        lk_stdlib_common::stdlib_register_runtime_builtins!(
+            registry,
+            [
+                plain "task::await" => task_await, 1,
+                plain "task::try_await" => task_try_await, 1,
+                plain "task::join_all" => task_join_all, NativeEntry::VARIADIC,
+                plain "task::sleep" => task_sleep, 1,
+                plain "task::spawn_blocking" => task_spawn_blocking, 1,
+            ],
         );
-        registry.register_runtime_builtin("task::sleep", NativeFunction::Plain(task_sleep), 1);
-        registry.register_runtime_builtin("task::spawn_blocking", NativeFunction::Plain(task_spawn_blocking), 1);
         Ok(())
     }
 
     fn runtime_exports(&self) -> Result<RuntimeExport> {
-        Ok(runtime_export_from_plain_native_entries(
-            &[
-                RuntimeNativeExport::plain("await", task_await, 1),
-                RuntimeNativeExport::plain("try_await", task_try_await, 1),
-                RuntimeNativeExport::plain("join_all", task_join_all, NativeEntry::VARIADIC),
-                RuntimeNativeExport::plain("sleep", task_sleep, 1),
-                RuntimeNativeExport::plain("spawn_blocking", task_spawn_blocking, 1),
+        Ok(lk_stdlib_common::stdlib_runtime_exports!(
+            [
+                plain "await" => task_await, 1,
+                plain "try_await" => task_try_await, 1,
+                plain "join_all" => task_join_all, NativeEntry::VARIADIC,
+                plain "sleep" => task_sleep, 1,
+                plain "spawn_blocking" => task_spawn_blocking, 1,
             ],
-            &[],
         ))
     }
 }
@@ -74,16 +74,6 @@ impl TaskModule {
     pub fn new() -> Self {
         Self
     }
-}
-
-fn expect_arity(args: NativeArgs<'_>, expected: usize, name: &str) -> Result<()> {
-    if args.len() == expected {
-        return Ok(());
-    }
-    bail!(
-        "{name} expects exactly {expected} argument{}",
-        if expected == 1 { "" } else { "s" }
-    )
 }
 
 fn task_arg(value: &RuntimeVal, heap: &HeapStore, name: &str) -> Result<Arc<TaskValue>> {
@@ -118,7 +108,7 @@ fn is_callable(value: &RuntimeVal, heap: &HeapStore) -> Result<bool> {
 }
 
 fn task_await(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    expect_arity(args, 1, "task.await()")?;
+    lk_stdlib_common::runtime_native::expect_arity(args, 1, "task.await()")?;
     let task = task_arg(args.get(0).expect("checked arity"), runtime.heap(), "task.await()")?;
     let value = rt::with_runtime(|rt| rt.block_on(rt.join_task(task.id)))
         .map_err(|err| anyhow!("Failed to await task: {err}"))?;
@@ -126,7 +116,7 @@ fn task_await(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<R
 }
 
 fn task_try_await(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    expect_arity(args, 1, "task.try_await()")?;
+    lk_stdlib_common::runtime_native::expect_arity(args, 1, "task.try_await()")?;
     let task = task_arg(args.get(0).expect("checked arity"), runtime.heap(), "task.try_await()")?;
     let value = match &task.value {
         Some(value) => value.clone_value_into(runtime.heap_mut())?,
@@ -150,7 +140,7 @@ fn task_join_all(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Resul
 }
 
 fn task_sleep(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    expect_arity(args, 1, "task.sleep()")?;
+    lk_stdlib_common::runtime_native::expect_arity(args, 1, "task.sleep()")?;
     let duration_ms = numeric_millis(args.get(0).expect("checked arity"), "task.sleep()")?;
     rt::with_runtime(|rt| {
         let duration = std::time::Duration::from_millis(duration_ms as u64);
@@ -163,7 +153,7 @@ fn task_sleep(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<
 }
 
 fn task_spawn_blocking(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    expect_arity(args, 1, "task.spawn_blocking()")?;
+    lk_stdlib_common::runtime_native::expect_arity(args, 1, "task.spawn_blocking()")?;
     if !is_callable(args.get(0).expect("checked arity"), runtime.heap())? {
         bail!("task.spawn_blocking() expects a function argument");
     }
@@ -183,7 +173,10 @@ fn task_spawn_blocking(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lk_core::{rt::RuntimePayload, vm::RuntimeModuleState};
+    use lk_core::{
+        rt::RuntimePayload,
+        vm::{NativeFunction, RuntimeModuleState},
+    };
 
     fn task_native(name: &str) -> Result<(u16, NativeFunction)> {
         crate::runtime_native::runtime_native_export(&TaskModule::new(), name)

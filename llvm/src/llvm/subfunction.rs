@@ -5,6 +5,7 @@
 //! control flow (Test branching, Jmp jumps).
 
 mod list;
+mod param_candidates;
 
 use anyhow::Result;
 
@@ -19,8 +20,8 @@ use super::{
     ir_text::{native_label, native_relative_target, next_tmp},
     output::emit_native_print_text_parts,
     scalar::block_helpers::{
-        concat_text_values, emit_static_formatted_print, local_heap_kind_before, local_register_kind_before,
-        scalar_arg_value, text_value_from_reg,
+        concat_text_values, emit_static_formatted_print, local_register_kind_before, scalar_arg_value,
+        text_value_from_reg,
     },
     scalar::emit::{
         emit_f64_binary_block, emit_i64_add_mul_block, emit_i64_add2_block, emit_i64_binary_block,
@@ -32,6 +33,7 @@ use super::{
         native_straightline_heap_const_value,
     },
 };
+use param_candidates::{callsite_param_kind_candidates, subfunction_param_kind_candidates};
 
 const PTR_LIST_PARAM_BASE: usize = 900_000;
 const PTR_LIST_REG_BASE: usize = 800_000;
@@ -1038,6 +1040,10 @@ pub(super) fn compile_native_ptr_list_subfunction(
                 }
                 static_regs[instr.a() as usize] = None;
             }
+            Opcode::AddIntI | Opcode::MulIntI => {
+                emit_ptr_list_i64_immediate_block(&mut ir, instr, &mut tmp_index);
+                static_regs[instr.a() as usize] = None;
+            }
             Opcode::CmpLtInt | Opcode::CmpGtInt | Opcode::CmpInt => {
                 if emit_ptr_list_compare(&mut ir, instr, &static_regs, &mut tmp_index).is_none() {
                     return Ok(None);
@@ -1124,6 +1130,19 @@ fn native_return_zero(kind: NativeScalarKind) -> &'static str {
 
 fn ptr_list_param_id(function_index: usize, param: usize) -> usize {
     PTR_LIST_PARAM_BASE + function_index.saturating_mul(16) + param
+}
+
+fn emit_ptr_list_i64_immediate_block(ir: &mut String, instr: Instr, tmp_index: &mut usize) {
+    let lhs = next_tmp(tmp_index);
+    let out = next_tmp(tmp_index);
+    let op = match instr.opcode() {
+        Opcode::AddIntI => "add",
+        Opcode::MulIntI => "mul",
+        _ => unreachable!("opcode matched by caller"),
+    };
+    ir.push_str(&format!("  {lhs} = load i64, ptr %r{}.slot\n", instr.b()));
+    ir.push_str(&format!("  {out} = {op} i64 {lhs}, {}\n", instr.sc()));
+    ir.push_str(&format!("  store i64 {out}, ptr %r{}.slot\n", instr.a()));
 }
 
 fn ptr_list_reg_id(function_index: usize, reg: usize) -> usize {
@@ -1412,69 +1431,6 @@ fn compute_callee_facts(
         }
     }
     Ok(None)
-}
-
-fn subfunction_param_kind_candidates(param_count: usize) -> Vec<Vec<NativeScalarKind>> {
-    if param_count == 0 {
-        return vec![Vec::new()];
-    }
-    let mut candidates = Vec::new();
-    let total = 3usize.saturating_pow(param_count as u32);
-    for mut encoded in 0..total {
-        let mut kinds = Vec::with_capacity(param_count);
-        for _ in 0..param_count {
-            kinds.push(match encoded % 3 {
-                0 => NativeScalarKind::I64,
-                1 => NativeScalarKind::Bool,
-                _ => NativeScalarKind::StrPtr,
-            });
-            encoded /= 3;
-        }
-        candidates.push(kinds);
-    }
-    candidates
-}
-
-fn callsite_param_kind_candidates(
-    artifact: &ModuleArtifact,
-    function_index: u16,
-    param_count: usize,
-) -> Vec<Vec<NativeScalarKind>> {
-    let mut out = Vec::new();
-    for function in &artifact.module.functions {
-        let Ok(code) = function
-            .code
-            .iter()
-            .copied()
-            .map(Instr::try_from_raw)
-            .collect::<Result<Vec<_>, _>>()
-        else {
-            continue;
-        };
-        for (pc, instr) in code.iter().copied().enumerate() {
-            if instr.opcode() != Opcode::CallDirect
-                || instr.b() as u16 != function_index
-                || instr.c() as usize != param_count
-            {
-                continue;
-            }
-            let start = instr.a() as usize + 1;
-            let Some(kinds) = (start..start + param_count)
-                .map(|reg| {
-                    let reg = u8::try_from(reg).ok()?;
-                    local_heap_kind_before(&code, &function.consts.heap_values, pc, reg)
-                        .or_else(|| local_register_kind_before(&code, pc, reg))
-                })
-                .collect::<Option<Vec<_>>>()
-            else {
-                continue;
-            };
-            if !out.contains(&kinds) {
-                out.push(kinds);
-            }
-        }
-    }
-    out
 }
 
 fn determine_return_kind(code: &[Instr], facts: &NativeScalarFacts) -> Option<NativeScalarKind> {

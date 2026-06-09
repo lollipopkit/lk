@@ -6,7 +6,7 @@ use crate::{
             block_helpers::local_static_container_before,
             blocks::const_lists::emit_const_list_element_len,
             contains::{local_static_index_value_before, local_static_map_rest_before},
-            facts::NativeScalarFacts,
+            facts::{NativeScalarFacts, NativeScalarKind},
         },
         straightline_value::{NativeListElementKind, NativeStraightlineValue},
     },
@@ -24,7 +24,7 @@ pub(super) fn emit_len_block(
     pc: usize,
     instr: Instr,
     register_count: usize,
-    _facts: &NativeScalarFacts,
+    facts: &NativeScalarFacts,
     tmp_index: &mut usize,
 ) -> Option<()> {
     if !reg_in_bounds(register_count, instr.a()) || !reg_in_bounds(register_count, instr.b()) {
@@ -35,7 +35,20 @@ pub(super) fn emit_len_block(
         .and_then(Clone::clone)
         .or_else(|| local_static_container_before(code, heap_values, pc, instr.b()))
         .or_else(|| local_static_map_rest_before(code, strings, heap_values, pc, instr.b()))
-        .or_else(|| local_static_index_value_before(code, int_consts, strings, heap_values, pc, instr.b()))?;
+        .or_else(|| local_static_index_value_before(code, int_consts, strings, heap_values, pc, instr.b()));
+    let Some(target) = target else {
+        if facts.register_kind_before(pc, instr.b()) != Some(NativeScalarKind::StrPtr) {
+            return None;
+        }
+        let value = next_tmp(tmp_index);
+        let len = next_tmp(tmp_index);
+        ir.push_str(&format!("  {value} = load ptr, ptr %r{}.slot\n", instr.b()));
+        ir.push_str(&format!("  {len} = call i64 @strlen(ptr {value})\n"));
+        ir.push_str(&format!("  store i64 {len}, ptr %r{}.slot\n", instr.a()));
+        static_regs[instr.a() as usize] = None;
+        emit_branch_to_next(ir, pc, code.len());
+        return Some(());
+    };
     match target {
         NativeStraightlineValue::String { value, .. } if value.is_ascii() => {
             let len = value.len();

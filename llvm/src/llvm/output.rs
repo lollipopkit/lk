@@ -1,30 +1,39 @@
 mod arg_list_methods;
+mod host_runtime;
 mod iter_methods;
 mod list_methods;
 mod map_methods;
 mod math_methods;
 mod object_methods;
+mod print;
 mod return_value;
 mod string_methods;
-
 use super::{
-    const_display::{native_const_list_display, native_const_map_display, native_const_object_display},
-    ir_text::{llvm_float_literal, native_float_display, native_scalar_main_header},
+    const_display::{native_const_list_display, native_const_map_display},
+    dynamic_containers::emit_dynamic_i64_list_slice_range,
+    ir_text::{emit_native_main_return_zero, llvm_float_literal, native_float_display, native_scalar_main_header},
     options::LlvmBackendOptions,
     straightline_value::{
-        NativeBuiltin, NativeListElementKind, NativeStraightlineValue, NativeTextPart, native_runtime_string_key_kind,
+        NativeBuiltin, NativeListElementKind, NativeStraightlineValue, native_runtime_string_key_kind,
         native_static_contains, native_static_index, native_static_make_struct, native_static_merge_fields,
         native_static_set_from_arg, native_static_set_method,
     },
 };
 use crate::vm::{ConstHeapValueData, ConstRuntimeValueData, RuntimeMapKeyData};
 use arg_list_methods::emit_native_arg_list_method;
+use host_runtime::{
+    emit_native_bytes_to_string_utf8, emit_native_env_get, emit_native_env_get_or, emit_native_fs_write,
+    emit_native_socket_addr, emit_native_unary_string_i64_call, emit_native_unary_string_ptr_call,
+    emit_native_zero_arg_string_ptr_call,
+};
 use iter_methods::{emit_native_iter_builtin, emit_native_iter_module_method};
 use list_methods::{emit_native_list_builtin, emit_native_static_list_method};
-use map_methods::emit_native_map_builtin;
 pub(super) use map_methods::emit_native_map_set;
+use map_methods::{emit_native_map_builtin, emit_native_map_delete};
 use math_methods::emit_native_math_module_method;
 use object_methods::emit_native_object_method;
+pub(in crate::llvm) use print::emit_native_print_text_parts;
+use print::emit_native_print_value;
 use return_value::emit_native_main_return;
 use string_methods::emit_native_string_module_method;
 
@@ -57,8 +66,11 @@ pub(super) fn emit_native_builtin_call(
             return native_static_set_from_arg(arg, symbol);
         }
         NativeBuiltin::CoreTypeof => return emit_native_typeof(args),
-        NativeBuiltin::BytesToStringUtf8 => return None,
-        NativeBuiltin::CoreCallMethod => return emit_native_core_call_method(body, args, ssa_index),
+        NativeBuiltin::BytesToStringUtf8 => return emit_native_bytes_to_string_utf8(body, args, ssa_index),
+        NativeBuiltin::CoreCallMethod => {
+            trace_core_call_method_args(args);
+            return emit_native_core_call_method(body, args, ssa_index);
+        }
         NativeBuiltin::Assert | NativeBuiltin::AssertEq | NativeBuiltin::AssertNe => return None,
         NativeBuiltin::CoreRegisterTrait | NativeBuiltin::CoreRegisterTraitImpl => {
             return Some(NativeStraightlineValue::Nil);
@@ -97,13 +109,47 @@ pub(super) fn emit_native_builtin_call(
         | NativeBuiltin::ListSort => return emit_native_list_builtin(builtin, args, ssa_index),
         NativeBuiltin::OsClock => return emit_native_os_clock(body, args, ssa_index),
         NativeBuiltin::OsEpoch => return emit_native_os_epoch(body, args, ssa_index),
-        NativeBuiltin::FsExists | NativeBuiltin::EnvGetOr | NativeBuiltin::FsReadDir => return None,
-        NativeBuiltin::FsTempDir => return emit_native_static_string_builtin(args, "/tmp"),
+        NativeBuiltin::EnvGet => return emit_native_env_get(body, args, ssa_index),
+        NativeBuiltin::EnvGetOr => return emit_native_env_get_or(body, args, ssa_index),
+        NativeBuiltin::EnvHas => {
+            return emit_native_unary_string_i64_call(body, args, ssa_index, "env_has", "@lkrt_env_has", true);
+        }
+        NativeBuiltin::FsExists => {
+            return emit_native_unary_string_i64_call(body, args, ssa_index, "fs_exists", "@lkrt_fs_exists", true);
+        }
+        NativeBuiltin::FsRead => {
+            return emit_native_unary_string_i64_call(body, args, ssa_index, "fs_read", "@lkrt_fs_read", false);
+        }
+        NativeBuiltin::FsReadDir => {
+            return emit_native_unary_string_i64_call(body, args, ssa_index, "fs_read_dir", "@lkrt_fs_read_dir", false);
+        }
+        NativeBuiltin::FsReadToString => {
+            return emit_native_unary_string_ptr_call(
+                body,
+                args,
+                ssa_index,
+                "fs_read_to_string",
+                "@lkrt_fs_read_to_string",
+            );
+        }
+        NativeBuiltin::FsWrite => return emit_native_fs_write(body, args, ssa_index),
+        NativeBuiltin::FsCanonicalize => {
+            return emit_native_unary_string_ptr_call(
+                body,
+                args,
+                ssa_index,
+                "fs_canonicalize",
+                "@lkrt_fs_canonicalize",
+            );
+        }
+        NativeBuiltin::FsTempDir => {
+            return emit_native_zero_arg_string_ptr_call(body, args, ssa_index, "fs_temp_dir", "@lkrt_fs_temp_dir");
+        }
         NativeBuiltin::FibIterative => return emit_native_fib_iterative(args),
         NativeBuiltin::GreetingsMessage => return emit_native_greetings_message(args),
-        NativeBuiltin::IoStdStdin => return emit_native_io_std_resource(args, "Stdin", ssa_index),
-        NativeBuiltin::IoStdStdout => return emit_native_io_std_resource(args, "Stdout", ssa_index),
-        NativeBuiltin::IoStdStderr => return emit_native_io_std_resource(args, "Stderr", ssa_index),
+        NativeBuiltin::IoStdStdin => return emit_native_io_std_resource(args, 0),
+        NativeBuiltin::IoStdStdout => return emit_native_io_std_resource(args, 1),
+        NativeBuiltin::IoStdStderr => return emit_native_io_std_resource(args, 2),
         NativeBuiltin::IoStdReadToString
         | NativeBuiltin::IoStdWrite
         | NativeBuiltin::IoStdWriteln
@@ -195,6 +241,53 @@ pub(super) fn emit_native_builtin_call(
     Some(NativeStraightlineValue::Nil)
 }
 
+fn trace_core_call_method_args(args: &[NativeStraightlineValue]) {
+    if std::env::var_os("LK_NATIVE_BLOCK_TRACE").is_none() {
+        return;
+    }
+    let shapes = args.iter().map(native_value_shape).collect::<Vec<_>>().join(", ");
+    eprintln!("native core call method args: [{shapes}]");
+}
+
+fn native_value_shape(value: &NativeStraightlineValue) -> &'static str {
+    match value {
+        NativeStraightlineValue::I64(_) => "I64",
+        NativeStraightlineValue::F64(_) => "F64",
+        NativeStraightlineValue::Bool(_) => "Bool",
+        NativeStraightlineValue::Nil => "Nil",
+        NativeStraightlineValue::String { .. } => "String",
+        NativeStraightlineValue::StringPtr(_) => "StringPtr",
+        NativeStraightlineValue::Text(_) => "Text",
+        NativeStraightlineValue::DynamicTextChar => "DynamicTextChar",
+        NativeStraightlineValue::DynamicJoinedText { .. } => "DynamicJoinedText",
+        NativeStraightlineValue::DynamicSplitText { .. } => "DynamicSplitText",
+        NativeStraightlineValue::List { .. } => "List",
+        NativeStraightlineValue::Map { .. } => "Map",
+        NativeStraightlineValue::Set { .. } => "Set",
+        NativeStraightlineValue::DisplayMap { .. } => "DisplayMap",
+        NativeStraightlineValue::DynamicMap { .. } => "DynamicMap",
+        NativeStraightlineValue::DynamicMapIter { .. } => "DynamicMapIter",
+        NativeStraightlineValue::DynamicMapEntry { .. } => "DynamicMapEntry",
+        NativeStraightlineValue::DynamicList { .. } => "DynamicList",
+        NativeStraightlineValue::DynamicPairList { .. } => "DynamicPairList",
+        NativeStraightlineValue::DynamicConstListElement { .. } => "DynamicConstListElement",
+        NativeStraightlineValue::DynamicArgListElement { .. } => "DynamicArgListElement",
+        NativeStraightlineValue::Channel { .. } => "Channel",
+        NativeStraightlineValue::ArgList { .. } => "ArgList",
+        NativeStraightlineValue::Object { .. } => "Object",
+        NativeStraightlineValue::Error { .. } => "Error",
+        NativeStraightlineValue::Builtin(_) => "Builtin",
+        NativeStraightlineValue::Module(_) => "Module",
+        NativeStraightlineValue::Function(_) => "Function",
+        NativeStraightlineValue::Closure { .. } => "Closure",
+        NativeStraightlineValue::Cell { .. } => "Cell",
+        NativeStraightlineValue::MaybeI64 { .. } => "MaybeI64",
+        NativeStraightlineValue::MaybeF64 { .. } => "MaybeF64",
+        NativeStraightlineValue::MaybeBool { .. } => "MaybeBool",
+        NativeStraightlineValue::MaybeStrPtr { .. } => "MaybeStrPtr",
+    }
+}
+
 fn emit_native_string_len(
     body: &mut String,
     args: &[NativeStraightlineValue],
@@ -271,34 +364,11 @@ fn emit_native_typeof(args: &[NativeStraightlineValue]) -> Option<NativeStraight
     Some(native_static_string_value(name))
 }
 
-fn emit_native_io_std_resource(
-    args: &[NativeStraightlineValue],
-    type_name: &str,
-    ssa_index: &mut usize,
-) -> Option<NativeStraightlineValue> {
+fn emit_native_io_std_resource(args: &[NativeStraightlineValue], handle: i64) -> Option<NativeStraightlineValue> {
     if !args.is_empty() {
         return None;
     }
-    let fields = Vec::new();
-    let symbol = format!("@lk_io_std_resource_{}", *ssa_index);
-    *ssa_index += 1;
-    Some(NativeStraightlineValue::Object {
-        value: native_const_object_display(type_name, &fields)?,
-        symbol,
-        type_name: type_name.to_string(),
-        fields,
-    })
-}
-
-fn emit_native_socket_addr(args: &[NativeStraightlineValue]) -> Option<NativeStraightlineValue> {
-    let [
-        NativeStraightlineValue::String { value: host, .. },
-        NativeStraightlineValue::I64(port),
-    ] = args
-    else {
-        return None;
-    };
-    Some(native_static_string_value(&format!("{host}:{port}")))
+    Some(NativeStraightlineValue::I64(handle.to_string()))
 }
 
 fn emit_native_fib_iterative(args: &[NativeStraightlineValue]) -> Option<NativeStraightlineValue> {
@@ -633,38 +703,28 @@ fn emit_native_static_list_arg_list_method(
 }
 
 fn emit_native_time_now(
-    _body: &mut String,
+    body: &mut String,
     args: &[NativeStraightlineValue],
     ssa_index: &mut usize,
 ) -> Option<NativeStraightlineValue> {
     if !args.is_empty() {
         return None;
     }
-    let value = 1_000_000i64 + (*ssa_index as i64 * 50);
+    let value = format!("%time_now_ms_{}", *ssa_index);
     *ssa_index += 1;
-    Some(NativeStraightlineValue::I64(value.to_string()))
+    body.push_str(&format!("  {value} = call i64 @lkrt_time_now_ms()\n"));
+    Some(NativeStraightlineValue::I64(value))
 }
 
 fn emit_native_time_sleep(
     body: &mut String,
     args: &[NativeStraightlineValue],
-    ssa_index: &mut usize,
+    _ssa_index: &mut usize,
 ) -> Option<NativeStraightlineValue> {
     let [NativeStraightlineValue::I64(ms)] = args else {
         return None;
     };
-    let micros_i64 = if ms.starts_with('%') {
-        let value = format!("%time_sleep_us_{}", *ssa_index);
-        *ssa_index += 1;
-        body.push_str(&format!("  {value} = mul i64 {ms}, 1000\n"));
-        value
-    } else {
-        ms.parse::<i64>().ok()?.saturating_mul(1000).to_string()
-    };
-    let micros_i32 = format!("%time_sleep_us_{}", *ssa_index);
-    *ssa_index += 1;
-    body.push_str(&format!("  {micros_i32} = trunc i64 {micros_i64} to i32\n"));
-    body.push_str(&format!("  call i32 @usleep(i32 {micros_i32})\n"));
+    body.push_str(&format!("  call void @lkrt_time_sleep_ms(i64 {ms})\n"));
     Some(NativeStraightlineValue::Nil)
 }
 
@@ -732,6 +792,29 @@ fn emit_native_core_call_method(
             NativeStraightlineValue::List { elements, .. },
         ] => emit_native_dynamic_int_list_method(body, *id, method, elements, ssa_index),
         [
+            NativeStraightlineValue::StringPtr(receiver),
+            NativeStraightlineValue::String { value: method, .. },
+            NativeStraightlineValue::ArgList { elements },
+        ] if method == "contains" && elements.len() == 1 => {
+            emit_native_string_ptr_contains_arg(body, receiver, elements.first()?, ssa_index)
+        }
+        [
+            NativeStraightlineValue::StringPtr(receiver),
+            NativeStraightlineValue::String { value: method, .. },
+            NativeStraightlineValue::List { elements, .. },
+        ] if method == "contains" && elements.len() == 1 => {
+            let needle = native_const_method_arg(elements.first()?)?;
+            emit_native_string_ptr_contains_arg(body, receiver, &needle, ssa_index)
+        }
+        [
+            NativeStraightlineValue::StringPtr(receiver),
+            NativeStraightlineValue::String { value: method, .. },
+            NativeStraightlineValue::DynamicList {
+                id,
+                element: NativeListElementKind::StrPtr,
+            },
+        ] if method == "contains" => emit_native_string_ptr_contains(body, receiver, *id, ssa_index),
+        [
             receiver @ NativeStraightlineValue::Object { .. },
             NativeStraightlineValue::String { value: method, .. },
             NativeStraightlineValue::List { elements, .. },
@@ -741,6 +824,70 @@ fn emit_native_core_call_method(
             NativeStraightlineValue::String { value: method, .. },
             NativeStraightlineValue::DynamicList { .. },
         ] => emit_native_object_method(receiver, method),
+        [
+            receiver @ NativeStraightlineValue::Map { .. },
+            NativeStraightlineValue::String { value: method, .. },
+            NativeStraightlineValue::List { elements, .. },
+        ] if method == "delete" && elements.len() == 1 => {
+            let key = native_const_method_arg(elements.first()?)?;
+            emit_native_map_delete(&[receiver.clone(), key], ssa_index)
+        }
+        [
+            receiver @ NativeStraightlineValue::Map { .. },
+            NativeStraightlineValue::String { value: method, .. },
+            NativeStraightlineValue::List { elements, .. },
+        ] if method == "set" && elements.len() == 2 => {
+            let key = native_const_method_arg(elements.first()?)?;
+            let value = native_const_method_arg(elements.get(1)?)?;
+            emit_native_map_set(&[receiver.clone(), key, value])
+        }
+        _ => None,
+    }
+}
+
+fn emit_native_string_ptr_contains(
+    body: &mut String,
+    receiver: &str,
+    list_id: usize,
+    ssa_index: &mut usize,
+) -> Option<NativeStraightlineValue> {
+    let slot = format!("%string_contains_slot_{}", *ssa_index);
+    let needle = format!("%string_contains_needle_{}", *ssa_index);
+    let found = format!("%string_contains_found_{}", *ssa_index);
+    let matched = format!("%string_contains_matched_{}", *ssa_index);
+    let out = format!("%string_contains_{}", *ssa_index);
+    *ssa_index += 1;
+    body.push_str(&format!(
+        "  {slot} = getelementptr [4096 x ptr], ptr %list{list_id}.ptr.slots, i64 0, i64 0\n"
+    ));
+    body.push_str(&format!("  {needle} = load ptr, ptr {slot}\n"));
+    body.push_str(&format!("  {found} = call ptr @strstr(ptr {receiver}, ptr {needle})\n"));
+    body.push_str(&format!("  {matched} = icmp ne ptr {found}, null\n"));
+    body.push_str(&format!("  {out} = zext i1 {matched} to i64\n"));
+    Some(NativeStraightlineValue::Bool(out))
+}
+
+fn emit_native_string_ptr_contains_arg(
+    body: &mut String,
+    receiver: &str,
+    needle: &NativeStraightlineValue,
+    ssa_index: &mut usize,
+) -> Option<NativeStraightlineValue> {
+    let needle = static_string_ptr_arg(body, needle)?;
+    let found = format!("%string_contains_found_{}", *ssa_index);
+    let matched = format!("%string_contains_matched_{}", *ssa_index);
+    let out = format!("%string_contains_{}", *ssa_index);
+    *ssa_index += 1;
+    body.push_str(&format!("  {found} = call ptr @strstr(ptr {receiver}, ptr {needle})\n"));
+    body.push_str(&format!("  {matched} = icmp ne ptr {found}, null\n"));
+    body.push_str(&format!("  {out} = zext i1 {matched} to i64\n"));
+    Some(NativeStraightlineValue::Bool(out))
+}
+
+fn static_string_ptr_arg(body: &mut String, value: &NativeStraightlineValue) -> Option<String> {
+    match value {
+        NativeStraightlineValue::StringPtr(ptr) => Some(ptr.clone()),
+        NativeStraightlineValue::String { symbol, value, .. } => emit_local_or_global_string_ptr(body, symbol, value),
         _ => None,
     }
 }
@@ -932,6 +1079,9 @@ fn emit_native_static_string_method(
         ("contains", [_]) => Some(NativeStraightlineValue::Bool(
             i64::from(receiver.contains(&string_arg(0)?)).to_string(),
         )),
+        ("starts_with", [_]) => Some(NativeStraightlineValue::Bool(
+            i64::from(receiver.starts_with(&string_arg(0)?)).to_string(),
+        )),
         ("ends_with", [_]) => Some(NativeStraightlineValue::Bool(
             i64::from(receiver.ends_with(&string_arg(0)?)).to_string(),
         )),
@@ -942,10 +1092,18 @@ fn emit_native_static_string_method(
                 .unwrap_or(-1)
                 .to_string(),
         )),
-        ("substring", [ConstRuntimeValueData::Int(start), ConstRuntimeValueData::Int(end)]) => {
-            let len = receiver.len() as i64;
-            let start = (*start).clamp(0, len) as usize;
-            let end = (*end).clamp(0, len) as usize;
+        (
+            "substring",
+            [
+                ConstRuntimeValueData::Int(start),
+                ConstRuntimeValueData::Int(substring_len),
+            ],
+        ) => {
+            let receiver_len = receiver.len() as i64;
+            let start = (*start).clamp(0, receiver_len) as usize;
+            let end = start
+                .saturating_add((*substring_len).max(0) as usize)
+                .min(receiver.len());
             let value = if end <= start { "" } else { receiver.get(start..end)? };
             Some(native_static_string_value(value))
         }
@@ -981,6 +1139,7 @@ fn native_static_string_method_known(method: &str) -> bool {
             | "trim"
             | "reverse"
             | "contains"
+            | "starts_with"
             | "ends_with"
             | "find"
             | "substring"
@@ -997,10 +1156,18 @@ fn emit_native_dynamic_int_list_method(
     args: &[ConstRuntimeValueData],
     ssa_index: &mut usize,
 ) -> Option<NativeStraightlineValue> {
-    if !args.is_empty() {
-        return None;
-    }
     match method {
+        "slice" if args.len() == 2 => {
+            let [ConstRuntimeValueData::Int(start), ConstRuntimeValueData::Int(end)] = args else {
+                return None;
+            };
+            emit_dynamic_i64_list_slice_range(body, id, id, &start.to_string(), Some(&end.to_string()), ssa_index)?;
+            Some(NativeStraightlineValue::DynamicList {
+                id,
+                element: NativeListElementKind::I64,
+            })
+        }
+        _ if !args.is_empty() => None,
         "first" => {
             let slot = format!("%lk_list_first_slot_{}", *ssa_index);
             let out = format!("%lk_list_first_{}", *ssa_index);
@@ -1037,15 +1204,9 @@ fn emit_native_os_clock(
     if !args.is_empty() {
         return None;
     }
-    let ticks = format!("%os_clock_ticks_{}", *ssa_index);
-    *ssa_index += 1;
-    let ticks_f64 = format!("%os_clock_ticks_f64_{}", *ssa_index);
-    *ssa_index += 1;
     let seconds = format!("%os_clock_seconds_{}", *ssa_index);
     *ssa_index += 1;
-    body.push_str(&format!("  {ticks} = call i64 @clock()\n"));
-    body.push_str(&format!("  {ticks_f64} = sitofp i64 {ticks} to double\n"));
-    body.push_str(&format!("  {seconds} = fdiv double {ticks_f64}, 1000000.0\n"));
+    body.push_str(&format!("  {seconds} = call double @lkrt_os_clock()\n"));
     Some(NativeStraightlineValue::F64(seconds))
 }
 
@@ -1057,12 +1218,9 @@ fn emit_native_os_epoch(
     if !args.is_empty() {
         return None;
     }
-    let seconds = format!("%os_epoch_seconds_{}", *ssa_index);
-    *ssa_index += 1;
     let millis = format!("%os_epoch_millis_{}", *ssa_index);
     *ssa_index += 1;
-    body.push_str(&format!("  {seconds} = call i64 @time(ptr null)\n"));
-    body.push_str(&format!("  {millis} = mul i64 {seconds}, 1000\n"));
+    body.push_str(&format!("  {millis} = call i64 @lkrt_os_epoch()\n"));
     Some(NativeStraightlineValue::I64(millis))
 }
 
@@ -1279,154 +1437,7 @@ fn native_map_key_arg(key: &RuntimeMapKeyData) -> Option<ConstRuntimeValueData> 
     }
 }
 
-fn emit_native_print_value(body: &mut String, value: &NativeStraightlineValue, line: bool) -> Option<()> {
-    let i64_fmt = if line { "@lk_i64_fmt" } else { "@lk_i64_raw_fmt" };
-    let f64_fmt = if line { "@lk_f64_fmt" } else { "@lk_f64_raw_fmt" };
-    let str_fmt = if line { "@lk_str_fmt" } else { "@lk_str_raw_fmt" };
-    match value {
-        NativeStraightlineValue::I64(value) => {
-            body.push_str(&format!("  call i32 (ptr, ...) @printf(ptr {i64_fmt}, i64 {value})\n"))
-        }
-        NativeStraightlineValue::MaybeI64 { .. }
-        | NativeStraightlineValue::MaybeF64 { .. }
-        | NativeStraightlineValue::MaybeBool { .. }
-        | NativeStraightlineValue::MaybeStrPtr { .. } => return None,
-        NativeStraightlineValue::F64(value) => {
-            if let Ok(parsed) = value.parse::<f64>() {
-                let display = native_float_display(parsed);
-                let len = display.chars().count();
-                let text = NativeStraightlineValue::String {
-                    symbol: String::new(),
-                    key_kind: native_runtime_string_key_kind(&display),
-                    value: display,
-                    len,
-                };
-                let NativeStraightlineValue::String { symbol, value, .. } = text else {
-                    unreachable!();
-                };
-                let ptr = emit_local_or_global_string_ptr(body, &symbol, &value)?;
-                body.push_str(&format!("  call i32 (ptr, ...) @printf(ptr {str_fmt}, ptr {ptr})\n"));
-            } else {
-                body.push_str(&format!(
-                    "  call i32 (ptr, ...) @printf(ptr {f64_fmt}, double {value})\n"
-                ));
-            }
-        }
-        NativeStraightlineValue::Bool(value) => {
-            if value == "0" {
-                body.push_str(&format!(
-                    "  call i32 (ptr, ...) @printf(ptr {str_fmt}, ptr @lk_bool_false)\n"
-                ));
-            } else {
-                body.push_str(&format!(
-                    "  call i32 (ptr, ...) @printf(ptr {str_fmt}, ptr @lk_bool_true)\n"
-                ));
-            }
-        }
-        NativeStraightlineValue::StringPtr(value) => {
-            body.push_str(&format!("  call i32 (ptr, ...) @printf(ptr {str_fmt}, ptr {value})\n"))
-        }
-        NativeStraightlineValue::Text(parts) => emit_native_print_text_parts(body, parts, line)?,
-        NativeStraightlineValue::DynamicSplitText { .. } => return None,
-        NativeStraightlineValue::DynamicTextChar => return None,
-        NativeStraightlineValue::Nil => {
-            body.push_str(&format!(
-                "  call i32 (ptr, ...) @printf(ptr {str_fmt}, ptr @lk_nil_text)\n"
-            ));
-        }
-        NativeStraightlineValue::String { symbol, value, .. } => {
-            let ptr = emit_local_or_global_string_ptr(body, symbol, value)?;
-            body.push_str(&format!("  call i32 (ptr, ...) @printf(ptr {str_fmt}, ptr {ptr})\n"));
-        }
-        NativeStraightlineValue::Object { .. } => {
-            let NativeStraightlineValue::String { symbol, value, .. } = emit_native_object_method(value, "show")?
-            else {
-                return None;
-            };
-            let ptr = emit_local_or_global_string_ptr(body, &symbol, &value)?;
-            body.push_str(&format!("  call i32 (ptr, ...) @printf(ptr {str_fmt}, ptr {ptr})\n"));
-        }
-        NativeStraightlineValue::List { .. }
-        | NativeStraightlineValue::Map { .. }
-        | NativeStraightlineValue::Set { .. }
-        | NativeStraightlineValue::DisplayMap { .. }
-        | NativeStraightlineValue::DynamicMap { .. }
-        | NativeStraightlineValue::DynamicMapIter { .. }
-        | NativeStraightlineValue::DynamicMapEntry { .. }
-        | NativeStraightlineValue::DynamicList { .. }
-        | NativeStraightlineValue::DynamicPairList { .. }
-        | NativeStraightlineValue::DynamicConstListElement { .. }
-        | NativeStraightlineValue::DynamicArgListElement { .. }
-        | NativeStraightlineValue::DynamicJoinedText { .. }
-        | NativeStraightlineValue::Channel { .. }
-        | NativeStraightlineValue::ArgList { .. }
-        | NativeStraightlineValue::Error { .. } => return None,
-        NativeStraightlineValue::Builtin(_)
-        | NativeStraightlineValue::Module(_)
-        | NativeStraightlineValue::Function(_)
-        | NativeStraightlineValue::Closure { .. }
-        | NativeStraightlineValue::Cell { .. } => return None,
-    }
-    Some(())
-}
-
-pub(super) fn emit_native_print_text_parts(body: &mut String, parts: &[NativeTextPart], line: bool) -> Option<()> {
-    for part in parts {
-        match part {
-            NativeTextPart::I64(value) => {
-                body.push_str(&format!(
-                    "  call i32 (ptr, ...) @printf(ptr @lk_i64_raw_fmt, i64 {value})\n"
-                ));
-            }
-            NativeTextPart::F64(value) => {
-                body.push_str(&format!(
-                    "  call i32 (ptr, ...) @printf(ptr @lk_f64_raw_fmt, double {value})\n"
-                ));
-            }
-            NativeTextPart::Bool(value) => {
-                let bool_ptr = format!("%text_bool_{}", body.len());
-                let condition = if value == "0" {
-                    "false".to_string()
-                } else if value == "1" {
-                    "true".to_string()
-                } else if value.starts_with('%') {
-                    let cond = format!("%text_bool_cond_{}", body.len());
-                    body.push_str(&format!("  {cond} = icmp ne i64 {value}, 0\n"));
-                    cond
-                } else {
-                    return None;
-                };
-                body.push_str(&format!(
-                    "  {bool_ptr} = select i1 {}, ptr @lk_bool_true, ptr @lk_bool_false\n",
-                    condition
-                ));
-                body.push_str(&format!(
-                    "  call i32 (ptr, ...) @printf(ptr @lk_str_raw_fmt, ptr {bool_ptr})\n"
-                ));
-            }
-            NativeTextPart::Nil => {
-                body.push_str("  call i32 (ptr, ...) @printf(ptr @lk_str_raw_fmt, ptr @lk_nil_text)\n");
-            }
-            NativeTextPart::StrPtr(value) => {
-                body.push_str(&format!(
-                    "  call i32 (ptr, ...) @printf(ptr @lk_str_raw_fmt, ptr {value})\n"
-                ));
-            }
-            NativeTextPart::String { symbol, value } => {
-                let ptr = emit_local_or_global_string_ptr(body, symbol, value)?;
-                body.push_str(&format!(
-                    "  call i32 (ptr, ...) @printf(ptr @lk_str_raw_fmt, ptr {ptr})\n"
-                ));
-            }
-        }
-    }
-    if line {
-        body.push_str("  call i32 (ptr, ...) @printf(ptr @lk_str_fmt, ptr @lk_empty_text)\n");
-    }
-    Some(())
-}
-
-fn emit_local_or_global_string_ptr(body: &mut String, symbol: &str, value: &str) -> Option<String> {
+pub(super) fn emit_local_or_global_string_ptr(body: &mut String, symbol: &str, value: &str) -> Option<String> {
     if !symbol.is_empty() && !symbol.starts_with("@lk_const_heap_str_") && !symbol.starts_with("@lk_func") {
         return Some(symbol.to_string());
     }
@@ -1448,7 +1459,6 @@ fn emit_local_or_global_string_ptr(body: &mut String, symbol: &str, value: &str)
     ));
     Some(ptr)
 }
-
 pub(super) fn native_scalar_main_ir(options: &LlvmBackendOptions, body: &str, return_value: Option<&str>) -> String {
     let mut ir = native_scalar_main_header(options);
     ir.push_str(body);
@@ -1457,7 +1467,7 @@ pub(super) fn native_scalar_main_ir(options: &LlvmBackendOptions, body: &str, re
             "  %print = call i32 (ptr, ...) @printf(ptr @lk_i64_fmt, i64 {value})\n"
         ));
     }
-    ir.push_str("  ret i32 0\n");
+    emit_native_main_return_zero(&mut ir);
     ir.push_str("}\n");
     ir
 }
@@ -1473,7 +1483,7 @@ pub(super) fn native_straightline_main_ir(
     if let Some(value) = return_value {
         emit_native_main_return(&mut ir, &mut globals, value);
     }
-    ir.push_str("  ret i32 0\n");
+    emit_native_main_return_zero(&mut ir);
     ir.push_str("}\n");
     ir.push_str(&globals);
     ir

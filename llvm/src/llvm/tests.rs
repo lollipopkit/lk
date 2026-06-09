@@ -156,6 +156,35 @@ fn llvm_backend_lowers_os_clock_and_epoch_without_shell() {
 }
 
 #[test]
+fn llvm_stdlib_catalog_drives_builtin_facts_and_display() {
+    use super::{
+        scalar::kind::NativeScalarKind,
+        stdlib_catalog::stdlib_builtin_return_kind,
+        straightline_value::{NativeBuiltin, NativeStraightlineValue, native_static_callable_display},
+    };
+
+    let os_clock = NativeStraightlineValue::Builtin(NativeBuiltin::OsClock);
+    assert_eq!(
+        stdlib_builtin_return_kind(NativeBuiltin::OsClock, 0),
+        Some(NativeScalarKind::F64)
+    );
+    assert_eq!(
+        native_static_callable_display(&os_clock).as_deref(),
+        Some("<native fn clock(0 args)>")
+    );
+
+    let string_to_float = NativeStraightlineValue::Builtin(NativeBuiltin::StringModuleMethod("to_float"));
+    assert_eq!(
+        stdlib_builtin_return_kind(NativeBuiltin::StringModuleMethod("to_float"), 1),
+        Some(NativeScalarKind::F64)
+    );
+    assert_eq!(
+        native_static_callable_display(&string_to_float).as_deref(),
+        Some("<native fn to_float(1 args)>")
+    );
+}
+
+#[test]
 fn llvm_backend_lowers_os_string_builtin_without_shell() {
     let artifact = ModuleArtifact {
         format: "lk.module".to_string(),

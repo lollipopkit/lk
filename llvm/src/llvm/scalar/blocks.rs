@@ -31,28 +31,22 @@ mod values;
 use self::{
     allocas::emit_scalar_entry_allocas,
     arithmetic::{emit_int_arithmetic_block, emit_int_immediate_block},
-    asserts::emit_native_assert_direct_call,
     call_args::{
         emit_recovered_builtin_call_block, emit_runtime_formatted_print_call, static_or_recovered_call_args,
         static_or_recovered_call_target,
     },
-    callees::{callee_contains_call, callee_is_native_assert},
     cells::emit_cell_block,
     channel::emit_static_channel_call,
     compare::emit_compare_block,
     control::{emit_compare_test_block, emit_for_loop_i_block, emit_test_block},
-    direct_call::{emit_fallback_direct_subfunction_call, emit_named_call_block},
-    direct_print::emit_direct_emit_helper_call,
+    direct_call::{emit_direct_call_block, emit_named_call_block},
     finalize::finish_scalar_ir,
     get_index::{emit_get_field_k_block, emit_get_index_block},
     globals::{emit_get_global_block, emit_set_global_block},
     iter::emit_to_iter_block,
     len::emit_len_block,
     list_builtin_dispatch::{emit_dynamic_list_builtin_call_block, emit_dynamic_list_builtin_call_from_regs_block},
-    list_direct_calls::emit_list_direct_call,
-    list_methods::{
-        emit_dynamic_list_method_call_block, emit_static_i64_list_zip_arglist_call, function_has_list_return_shape,
-    },
+    list_methods::{emit_dynamic_list_method_call_block, emit_static_i64_list_zip_arglist_call},
     list_push::emit_list_push_block,
     map_methods::{
         emit_dynamic_map_delete_call, emit_dynamic_map_get_call, emit_dynamic_map_get_method_call,
@@ -69,9 +63,9 @@ use self::{
 use super::{
     block_helpers::{
         clear_control_flow_static_values, control_flow_static_boundaries, emit_native_block_core_call_method,
-        emit_static_direct_call_result, emit_static_formatted_print, emit_static_scalar_value_store_if_needed,
-        local_register_kind_before, local_static_container_before, local_static_i64_before, native_static_string,
-        static_call_target, static_callable_value, store_native_scalar_call_result, three_regs_in_bounds,
+        emit_static_formatted_print, emit_static_scalar_value_store_if_needed, local_register_kind_before,
+        local_static_container_before, local_static_i64_before, native_static_string, static_call_target,
+        static_callable_value, store_native_scalar_call_result, three_regs_in_bounds,
     },
     contains::{
         emit_static_contains_or_slice_block, emit_static_type_test_block, local_static_callable_before,
@@ -80,7 +74,7 @@ use super::{
         static_iter_builtin_call, static_list_empty_arg_method, static_object_from_registers,
     },
     facts::{NativeScalarFacts, NativeScalarKind},
-    inline::{emit_inline_direct_scalar_call, emit_inline_static_scalar_call},
+    inline::emit_inline_static_scalar_call,
 };
 use crate::llvm::{
     callee_eval::native_straightline_function_return,
@@ -708,7 +702,9 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                 }
             }
             Opcode::Call => {
-                if instr.a() != instr.b() || !reg_in_bounds(register_count, instr.a()) {}
+                if instr.a() != instr.b() || !reg_in_bounds(register_count, instr.a()) {
+                    return Ok(None);
+                }
                 if let Some(target @ (NativeStraightlineValue::Function(_) | NativeStraightlineValue::Closure { .. })) =
                     static_regs.get(instr.b() as usize).and_then(Clone::clone)
                 {
@@ -801,8 +797,7 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                     &static_globals,
                     pc,
                     instr.b(),
-                )
-                else {
+                ) else {
                     return Ok(None);
                 };
                 if matches!(builtin, NativeBuiltin::Send | NativeBuiltin::Recv)
@@ -1252,7 +1247,18 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                     } else if let Some(value) = emit_native_builtin_call(&mut ir, builtin, &args, &mut tmp_index) {
                         value
                     } else {
-                        emit_runtime_builtin_call(&mut ir, builtin, instr, register_count, facts, pc, &mut tmp_index);
+                        let emitted = emit_runtime_builtin_call(
+                            &mut ir,
+                            builtin,
+                            instr,
+                            register_count,
+                            facts,
+                            pc,
+                            &mut tmp_index,
+                        );
+                        if !emitted {
+                            return Ok(None);
+                        }
                         static_regs[instr.a() as usize] = None;
                         emit_branch_to_next(&mut ir, pc, code.len());
                         continue;
@@ -1313,147 +1319,29 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                 }
             }
             Opcode::CallDirect => {
-                if !reg_in_bounds(register_count, instr.a()) {
-                    return Ok(None);
-                }
-                let callee_index = instr.b();
-                if let Some(callee) = artifact.module.functions.get(callee_index as usize)
-                    && emit_direct_emit_helper_call(
-                        &mut ir,
-                        &mut extra_globals,
-                        callee,
-                        facts,
-                        &static_regs,
-                        instr,
-                        pc,
-                        &mut tmp_index,
-                    )
-                    .is_some()
-                {
-                    static_regs[instr.a() as usize] = Some(NativeStraightlineValue::Nil);
-                    emit_branch_to_next(&mut ir, pc, code.len());
-                    continue;
-                }
-                if emit_static_direct_call_result(
+                if emit_direct_call_block(
                     &mut ir,
                     &mut extra_globals,
                     artifact,
+                    recursive_indices,
+                    &mut additional_subfn_indices,
                     code,
                     int_consts,
                     strings,
                     heap_values,
-                    pc,
+                    global_names,
+                    facts,
                     &mut static_regs,
                     &mut static_globals,
                     instr,
+                    pc,
+                    register_count,
+                    global_count,
                     &mut tmp_index,
                 )
-                .is_some()
+                .is_none()
                 {
-                    emit_branch_to_next(&mut ir, pc, code.len());
-                    continue;
-                }
-                let is_recursive = recursive_indices.contains(&u16::from(callee_index));
-                if !is_recursive {
-                    let Some(callee) = artifact.module.functions.get(callee_index as usize) else {
-                        return Ok(None);
-                    };
-                    if function_has_list_return_shape(callee) {
-                        if emit_list_direct_call(
-                            &mut ir,
-                            &mut extra_globals,
-                            &mut static_regs,
-                            instr,
-                            pc,
-                            callee_index as usize,
-                            facts,
-                            &mut tmp_index,
-                        )
-                        .is_none()
-                        {
-                            return Ok(None);
-                        }
-                        additional_subfn_indices.push(u16::from(callee_index));
-                        emit_branch_to_next(&mut ir, pc, code.len());
-                        continue;
-                    }
-                    if callee_is_native_assert(callee) {
-                        if emit_native_assert_direct_call(
-                            &mut ir,
-                            instr,
-                            pc,
-                            code.len(),
-                            register_count,
-                            facts,
-                            &mut tmp_index,
-                        )
-                        .is_none()
-                        {
-                            return Ok(None);
-                        }
-                        static_regs[instr.a() as usize] = Some(NativeStraightlineValue::Nil);
-                        continue;
-                    }
-                    let inline_result = if callee_contains_call(callee) {
-                        None
-                    } else {
-                        emit_inline_direct_scalar_call(
-                            &mut ir,
-                            &mut extra_globals,
-                            artifact,
-                            callee,
-                            pc,
-                            instr,
-                            register_count,
-                            global_count,
-                            global_names,
-                            code,
-                            &static_regs,
-                            &static_globals,
-                            facts,
-                            &mut tmp_index,
-                            code.len(),
-                        )
-                    };
-                    if inline_result.is_none() {
-                        if emit_fallback_direct_subfunction_call(
-                            &mut ir,
-                            artifact,
-                            recursive_indices,
-                            &mut additional_subfn_indices,
-                            instr,
-                            pc,
-                            code.len(),
-                            register_count,
-                            facts,
-                            &mut tmp_index,
-                            true,
-                        )
-                        .is_none()
-                        {
-                            return Ok(None);
-                        }
-                    }
-                    static_regs[instr.a() as usize] = None;
-                } else {
-                    if emit_fallback_direct_subfunction_call(
-                        &mut ir,
-                        artifact,
-                        recursive_indices,
-                        &mut additional_subfn_indices,
-                        instr,
-                        pc,
-                        code.len(),
-                        register_count,
-                        facts,
-                        &mut tmp_index,
-                        false,
-                    )
-                    .is_none()
-                    {
-                        return Ok(None);
-                    }
-                    static_regs[instr.a() as usize] = None;
+                    return Ok(None);
                 }
             }
             opcode if opcode.is_return() => {
@@ -1495,5 +1383,11 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
         }
         ir.push('\n');
     }
-    Ok(Some(finish_scalar_ir(artifact, ir, &extra_globals, recursive_indices, &additional_subfn_indices)))
+    Ok(Some(finish_scalar_ir(
+        artifact,
+        ir,
+        &extra_globals,
+        recursive_indices,
+        &additional_subfn_indices,
+    )))
 }
