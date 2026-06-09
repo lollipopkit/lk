@@ -1,6 +1,6 @@
 use anyhow::{Result, anyhow, bail};
 use lk_core::{
-    module::{ModuleProvider, ModuleRegistry, RuntimeNativeExport, runtime_export_from_plain_native_entries},
+    module::{ModuleProvider, ModuleRegistry},
     rt::{self, RuntimePayload},
     util::fast_map::fast_hash_map_new,
     val::{HeapStore, HeapValue, ResourceHandle, RuntimeMapKey, RuntimeVal, TypedMap},
@@ -41,21 +41,20 @@ impl ModuleProvider for NetUdpModule {
     }
 
     fn runtime_exports(&self) -> Result<RuntimeExport> {
-        Ok(runtime_export_from_plain_native_entries(
-            &[
-                RuntimeNativeExport::plain("bind", bind, 1),
-                RuntimeNativeExport::plain("recv_from", recv_from, NativeEntry::VARIADIC),
-                RuntimeNativeExport::plain("send_to", send_to, 3),
-                RuntimeNativeExport::plain("recv_from_task", recv_from_task, NativeEntry::VARIADIC),
-                RuntimeNativeExport::plain("send_to_task", send_to_task, 3),
+        Ok(lk_stdlib_common::stdlib_runtime_exports!(
+            [
+                plain "bind" => bind, 1,
+                plain "recv_from" => recv_from, NativeEntry::VARIADIC,
+                plain "send_to" => send_to, 3,
+                plain "recv_from_task" => recv_from_task, NativeEntry::VARIADIC,
+                plain "send_to_task" => send_to_task, 3,
             ],
-            &[],
         ))
     }
 }
 
 fn bind(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    expect_arity(args, 1, "udp.bind()")?;
+    lk_stdlib_common::runtime_native::expect_arity(args, 1, "udp.bind()")?;
     let addr = runtime_string_arg(args.get(0).expect("checked arity"), runtime.heap(), "udp.bind addr")?;
     let socket = UdpSocket::bind(addr.as_ref()).map_err(|err| anyhow!("udp bind {addr}: {err}"))?;
     Ok(resource_value(
@@ -72,7 +71,7 @@ fn recv_from(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Ru
 }
 
 fn send_to(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    expect_arity(args, 3, "udp.send_to()")?;
+    lk_stdlib_common::runtime_native::expect_arity(args, 3, "udp.send_to()")?;
     let values = args.as_slice();
     let socket = socket_clone(&values[0], runtime.heap(), "udp.send_to()")?;
     let data = runtime_bytes_or_string_arg(&values[1], runtime.heap(), "udp.send_to data")?;
@@ -89,7 +88,7 @@ fn recv_from_task(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Resu
 }
 
 fn send_to_task(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    expect_arity(args, 3, "udp.send_to_task()")?;
+    lk_stdlib_common::runtime_native::expect_arity(args, 3, "udp.send_to_task()")?;
     let values = args.as_slice();
     let socket = socket_clone(&values[0], runtime.heap(), "udp.send_to_task()")?;
     let data = runtime_bytes_or_string_arg(&values[1], runtime.heap(), "udp.send_to_task data")?;
@@ -174,14 +173,6 @@ fn usize_arg(value: &RuntimeVal, context: &str) -> Result<usize> {
     match value {
         RuntimeVal::Int(value) if *value >= 0 => Ok(*value as usize),
         other => bail!("{context} expects a non-negative integer, got {:?}", other.kind()),
-    }
-}
-
-fn expect_arity(args: NativeArgs<'_>, expected: usize, name: &str) -> Result<()> {
-    if args.len() == expected {
-        Ok(())
-    } else {
-        bail!("{name} expects exactly {expected} argument(s)")
     }
 }
 

@@ -3,10 +3,11 @@ use std::{
     sync::{Mutex, OnceLock},
 };
 
-use lk_stdlib::{StdlibConstValue, StdlibExportKind, stdlib_catalog};
+use lk_stdlib::{StdlibArity, StdlibConstValue, StdlibExportKind, StdlibReturnKind, stdlib_catalog};
 
 use crate::llvm::{
     ir_text::llvm_float_literal,
+    scalar::kind::NativeScalarKind,
     straightline_value::{NativeBuiltin, NativeModule, NativeStraightlineValue, native_runtime_string_key_kind},
 };
 
@@ -28,6 +29,35 @@ pub(super) fn stdlib_global_builtin(name: &str) -> Option<NativeStraightlineValu
 
 pub(super) fn stdlib_module_display(name: &str) -> Option<String> {
     stdlib_catalog().module(name).map(|module| module.display.clone())
+}
+
+pub(super) fn stdlib_builtin_display(builtin: NativeBuiltin) -> Option<String> {
+    let key = native_builtin_lowering_key(builtin)?;
+    let catalog = stdlib_catalog();
+    if let Some(global) = catalog.global_by_lowering_key(&key) {
+        return Some(catalog_function_display(&global.name, global.arity));
+    }
+    let export = catalog.export_by_lowering_key(&key)?;
+    Some(export.display.clone())
+}
+
+pub(in crate::llvm) fn stdlib_builtin_return_kind(
+    builtin: NativeBuiltin,
+    arg_count: usize,
+) -> Option<NativeScalarKind> {
+    let key = native_builtin_lowering_key(builtin)?;
+    let catalog = stdlib_catalog();
+    if let Some(global) = catalog.global_by_lowering_key(&key) {
+        return arity_matches(global.arity, arg_count)
+            .then_some(global.return_kind)
+            .flatten()
+            .map(stdlib_return_kind_to_native);
+    }
+    let export = catalog.export_by_lowering_key(&key)?;
+    arity_matches(export.arity?, arg_count)
+        .then_some(export.return_kind)
+        .flatten()
+        .map(stdlib_return_kind_to_native)
 }
 
 pub(super) fn stdlib_module_index(
@@ -75,6 +105,9 @@ fn lowering_key_to_value(key: &str) -> Option<NativeStraightlineValue> {
     let builtin = match key {
         "core.print" => NativeBuiltin::Print,
         "core.println" => NativeBuiltin::Println,
+        "core.assert" => NativeBuiltin::Assert,
+        "core.assert_eq" => NativeBuiltin::AssertEq,
+        "core.assert_ne" => NativeBuiltin::AssertNe,
         "core.panic" => NativeBuiltin::Panic,
         "core.chan" => NativeBuiltin::Chan,
         "core.send" => NativeBuiltin::Send,
@@ -179,6 +212,112 @@ fn lowering_key_to_value(key: &str) -> Option<NativeStraightlineValue> {
         _ => return None,
     };
     Some(NativeStraightlineValue::Builtin(builtin))
+}
+
+fn native_builtin_lowering_key(builtin: NativeBuiltin) -> Option<String> {
+    let key = match builtin {
+        NativeBuiltin::Print => "core.print",
+        NativeBuiltin::Println => "core.println",
+        NativeBuiltin::Assert => "core.assert",
+        NativeBuiltin::AssertEq => "core.assert_eq",
+        NativeBuiltin::AssertNe => "core.assert_ne",
+        NativeBuiltin::Panic => "core.panic",
+        NativeBuiltin::Chan => "core.chan",
+        NativeBuiltin::Send => "core.send",
+        NativeBuiltin::Recv => "core.recv",
+        NativeBuiltin::BytesToStringUtf8 => "bytes.to_string_utf8",
+        NativeBuiltin::DatetimeAdd => "datetime.add",
+        NativeBuiltin::DatetimeDayOfWeek => "datetime.day_of_week",
+        NativeBuiltin::DatetimeDayOfYear => "datetime.day_of_year",
+        NativeBuiltin::DatetimeFormat => "datetime.format",
+        NativeBuiltin::DatetimeIsWeekend => "datetime.is_weekend",
+        NativeBuiltin::DatetimeNow => "datetime.now",
+        NativeBuiltin::DatetimeSub => "datetime.sub",
+        NativeBuiltin::EnvGetOr => "env.get_or",
+        NativeBuiltin::JsonParse => "encoding.json.parse",
+        NativeBuiltin::TomlParse => "encoding.toml.parse",
+        NativeBuiltin::YamlParse => "encoding.yaml.parse",
+        NativeBuiltin::FsExists => "fs.exists",
+        NativeBuiltin::FsReadDir => "fs.read_dir",
+        NativeBuiltin::FsTempDir => "fs.temp_dir",
+        NativeBuiltin::IoStdFlush => "io.std.flush",
+        NativeBuiltin::IoStdReadToString => "io.std.read_to_string",
+        NativeBuiltin::IoStdStderr => "io.std.stderr",
+        NativeBuiltin::IoStdStdin => "io.std.stdin",
+        NativeBuiltin::IoStdStdout => "io.std.stdout",
+        NativeBuiltin::IoStdWrite => "io.std.write",
+        NativeBuiltin::IoStdWriteln => "io.std.writeln",
+        NativeBuiltin::IterChain => "iter.chain",
+        NativeBuiltin::IterChunk => "iter.chunk",
+        NativeBuiltin::IterEnumerate => "iter.enumerate",
+        NativeBuiltin::IterFilter => "iter.filter",
+        NativeBuiltin::IterFlatten => "iter.flatten",
+        NativeBuiltin::IterMap => "iter.map",
+        NativeBuiltin::IterRange => "iter.range",
+        NativeBuiltin::IterReduce => "iter.reduce",
+        NativeBuiltin::IterSkip => "iter.skip",
+        NativeBuiltin::IterTake => "iter.take",
+        NativeBuiltin::IterUnique => "iter.unique",
+        NativeBuiltin::IterZip => "iter.zip",
+        NativeBuiltin::IterModuleMethod(method) => return Some(format!("iter.{method}")),
+        NativeBuiltin::MathAbs => "math.abs",
+        NativeBuiltin::MathCeil => "math.ceil",
+        NativeBuiltin::MathCos => "math.cos",
+        NativeBuiltin::MathExp => "math.exp",
+        NativeBuiltin::MathFloor => "math.floor",
+        NativeBuiltin::MathMax => "math.max",
+        NativeBuiltin::MathMin => "math.min",
+        NativeBuiltin::MathPow => "math.pow",
+        NativeBuiltin::MathRound => "math.round",
+        NativeBuiltin::MathSin => "math.sin",
+        NativeBuiltin::MathSqrt => "math.sqrt",
+        NativeBuiltin::MathModuleMethod(method) => return Some(format!("math.{method}")),
+        NativeBuiltin::SocketAddr => "net.socket.addr",
+        NativeBuiltin::TcpClose => "net.tcp.close",
+        NativeBuiltin::TcpConnect => "net.tcp.connect",
+        NativeBuiltin::TcpRead => "net.tcp.read",
+        NativeBuiltin::TcpWrite => "net.tcp.write",
+        NativeBuiltin::OsArch => "os.arch",
+        NativeBuiltin::OsClock => "os.clock",
+        NativeBuiltin::OsEpoch => "os.epoch",
+        NativeBuiltin::OsHostname => "os.hostname",
+        NativeBuiltin::OsName => "os.os",
+        NativeBuiltin::PathSep => "path.sep",
+        NativeBuiltin::ProcessCwd => "process.cwd",
+        NativeBuiltin::StreamCollect => "stream.collect",
+        NativeBuiltin::StreamFromList => "stream.from_list",
+        NativeBuiltin::StringLen => "string.len",
+        NativeBuiltin::StringModuleMethod(method) => return Some(format!("string.{method}")),
+        NativeBuiltin::TimeNow => "time.now",
+        NativeBuiltin::TimeSince => "time.since",
+        NativeBuiltin::TimeSleep => "time.sleep",
+        _ => return None,
+    };
+    Some(key.to_string())
+}
+
+fn catalog_function_display(name: &str, arity: StdlibArity) -> String {
+    match arity {
+        StdlibArity::Fixed(value) => format!("<native fn {name}({value} args)>"),
+        StdlibArity::Variadic => format!("<native fn {name}(...)>"),
+    }
+}
+
+fn arity_matches(arity: StdlibArity, arg_count: usize) -> bool {
+    match arity {
+        StdlibArity::Fixed(expected) => usize::from(expected) == arg_count,
+        StdlibArity::Variadic => true,
+    }
+}
+
+fn stdlib_return_kind_to_native(kind: StdlibReturnKind) -> NativeScalarKind {
+    match kind {
+        StdlibReturnKind::Nil => NativeScalarKind::Nil,
+        StdlibReturnKind::Bool => NativeScalarKind::Bool,
+        StdlibReturnKind::Int | StdlibReturnKind::RuntimeValue => NativeScalarKind::I64,
+        StdlibReturnKind::Float => NativeScalarKind::F64,
+        StdlibReturnKind::String => NativeScalarKind::StrPtr,
+    }
 }
 
 fn const_value_to_native(value: &StdlibConstValue) -> Option<NativeStraightlineValue> {

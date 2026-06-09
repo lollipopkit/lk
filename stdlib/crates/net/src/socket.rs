@@ -1,6 +1,6 @@
 use anyhow::{Result, bail};
 use lk_core::{
-    module::{ModuleProvider, ModuleRegistry, RuntimeNativeExport, runtime_export_from_plain_native_entries},
+    module::{ModuleProvider, ModuleRegistry},
     val::RuntimeVal,
     vm::{NativeArgs, NativeRuntime, RuntimeExport},
 };
@@ -35,18 +35,17 @@ impl ModuleProvider for NetSocketModule {
     }
 
     fn runtime_exports(&self) -> Result<RuntimeExport> {
-        Ok(runtime_export_from_plain_native_entries(
-            &[
-                RuntimeNativeExport::plain("addr", addr, 2),
-                RuntimeNativeExport::plain("close", close, 1),
+        Ok(lk_stdlib_common::stdlib_runtime_exports!(
+            [
+                plain "addr" => addr, 2,
+                plain "close" => close, 1,
             ],
-            &[],
         ))
     }
 }
 
 fn addr(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    expect_arity(args, 2, "socket.addr()")?;
+    lk_stdlib_common::runtime_native::expect_arity(args, 2, "socket.addr()")?;
     let values = args.as_slice();
     let host = runtime_string_arg(&values[0], runtime.heap(), "socket.addr host")?;
     let port = match &values[1] {
@@ -57,15 +56,7 @@ fn addr(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Runtime
 }
 
 fn close(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    expect_arity(args, 1, "socket.close()")?;
+    lk_stdlib_common::runtime_native::expect_arity(args, 1, "socket.close()")?;
     let resource = resource_arg(args.get(0).expect("checked arity"), runtime.heap(), "socket.close()")?;
     Ok(RuntimeVal::Bool(close_resource(&resource)?))
-}
-
-fn expect_arity(args: NativeArgs<'_>, expected: usize, name: &str) -> Result<()> {
-    if args.len() == expected {
-        Ok(())
-    } else {
-        bail!("{name} expects exactly {expected} argument(s)")
-    }
 }

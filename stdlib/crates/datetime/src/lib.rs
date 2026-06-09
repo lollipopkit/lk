@@ -1,10 +1,11 @@
 use anyhow::{Result, anyhow};
 use chrono::Datelike;
 use lk_core::{
-    module::{ModuleProvider, ModuleRegistry, RuntimeNativeExport, runtime_export_from_plain_native_entries},
+    module::{ModuleProvider, ModuleRegistry},
     val::RuntimeVal,
     vm::{NativeArgs, NativeRuntime, RuntimeExport},
 };
+use lk_stdlib_common::metadata::StdlibModuleMetadata;
 
 pub mod runtime_native {
     pub use lk_stdlib_common::runtime_native::*;
@@ -41,24 +42,39 @@ impl ModuleProvider for DateTimeModule {
     }
 
     fn runtime_exports(&self) -> Result<RuntimeExport> {
-        Ok(runtime_export_from_plain_native_entries(
-            &[
-                RuntimeNativeExport::plain("now", now, 0),
-                RuntimeNativeExport::plain("format", format, 2),
-                RuntimeNativeExport::plain("parse", parse, 2),
-                RuntimeNativeExport::plain("add", add_seconds, 2),
-                RuntimeNativeExport::plain("sub", sub_seconds, 2),
-                RuntimeNativeExport::plain("day_of_week", day_of_week, 1),
-                RuntimeNativeExport::plain("day_of_year", day_of_year, 1),
-                RuntimeNativeExport::plain("is_weekend", is_weekend, 1),
+        Ok(lk_stdlib_common::stdlib_runtime_exports!(
+            [
+                plain "now" => now, 0,
+                plain "format" => format, 2,
+                plain "parse" => parse, 2,
+                plain "add" => add_seconds, 2,
+                plain "sub" => sub_seconds, 2,
+                plain "day_of_week" => day_of_week, 1,
+                plain "day_of_year" => day_of_year, 1,
+                plain "is_weekend" => is_weekend, 1,
             ],
-            &[],
         ))
     }
 }
 
 pub fn register(registry: &mut ModuleRegistry) -> Result<()> {
+    lk_stdlib_common::metadata::register_stdlib_module_metadata(metadata())?;
     registry.register_module("datetime", Box::new(DateTimeModule::new()))
+}
+
+pub fn metadata() -> StdlibModuleMetadata {
+    lk_stdlib_common::stdlib_module_metadata!(
+        datetime,
+        [
+            add => Int,
+            day_of_week => Int,
+            day_of_year => Int,
+            format => String,
+            is_weekend => Bool,
+            now => Int,
+            sub => Int,
+        ]
+    )
 }
 
 fn expect_arity(args: NativeArgs<'_>, name: &str, arity: usize) -> Result<()> {

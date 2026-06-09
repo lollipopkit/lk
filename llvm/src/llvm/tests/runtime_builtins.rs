@@ -1,9 +1,11 @@
 use crate::{
     llvm::{LlvmBackendOptions, compile_module_artifact_to_llvm},
-    stmt::stmt_parser::StmtParser,
+    stmt::{ModuleResolver, import::collect_program_imports, stmt_parser::StmtParser},
     token::Tokenizer,
-    vm::{Compiler, ModuleArtifact},
+    vm::{Compiler, ModuleArtifact, VmContext, compile_program_module_with_ctx},
 };
+use lk_core::module::ModuleRegistry;
+use std::sync::Arc;
 
 #[test]
 fn llvm_backend_lowers_assert_runtime_globals_without_artifact_shell() {
@@ -26,4 +28,40 @@ fn llvm_backend_lowers_assert_runtime_globals_without_artifact_shell() {
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
     assert!(artifact.module.ir.contains("lk_assert_fail"));
     assert!(artifact.module.ir.contains("i64 7"));
+}
+
+#[test]
+fn llvm_backend_lowers_tcp_and_bytes_runtime_builtins_to_lkrt() {
+    let source = r#"
+        use bytes;
+        use { socket, tcp } from net;
+
+        let addr = socket.addr("127.0.0.1", 9);
+        let conn = tcp.connect(addr);
+        let sent = tcp.write(conn, "ping");
+        let raw = tcp.read(conn, 4);
+        let text = bytes.to_string_utf8(raw);
+        tcp.close(conn);
+        return sent;
+    "#;
+    let tokens = Tokenizer::tokenize(source).expect("tokens");
+    let program = StmtParser::new(&tokens).parse_program().expect("program");
+    let mut registry = ModuleRegistry::new();
+    lk_stdlib::register_stdlib_modules(&mut registry).expect("stdlib registration");
+    let resolver = Arc::new(ModuleResolver::with_registry(registry));
+    let mut ctx = VmContext::new().with_resolver(resolver);
+    let module = compile_program_module_with_ctx(&program, &mut ctx).expect("compile module");
+    let artifact = ModuleArtifact::new(collect_program_imports(&program), &module).expect("artifact");
+
+    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm artifact");
+
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
+    assert!(artifact.module.ir.contains("@lkrt_tcp_connect"));
+    assert!(artifact.module.ir.contains("@lkrt_tcp_write_str"));
+    assert!(artifact.module.ir.contains("@lkrt_tcp_read"));
+    assert!(artifact.module.ir.contains("@lkrt_tcp_close"));
+    assert!(artifact.module.ir.contains("@lkrt_bytes_to_string_utf8"));
+    assert!(artifact.module.ir.contains("call i64 @lkrt_tcp_write_str"));
+    assert!(artifact.module.ir.contains("call ptr @lkrt_bytes_to_string_utf8"));
 }

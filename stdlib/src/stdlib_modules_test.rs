@@ -11,7 +11,7 @@ mod tests {
         vm::{ProgramResult, VmContext},
     };
 
-    use crate::register_stdlib_modules;
+    use crate::{StdlibExportKind, StdlibReturnKind, register_stdlib_modules, stdlib_catalog};
 
     fn run(source: &str) -> Result<ProgramResult> {
         let tokens = Tokenizer::tokenize(source)?;
@@ -33,6 +33,56 @@ mod tests {
             panic!("expected list heap value");
         };
         values
+    }
+
+    #[test]
+    fn test_catalog_lowered_callables_have_return_kind() {
+        let catalog = stdlib_catalog();
+        assert_eq!(
+            catalog
+                .export_path(&["os", "clock"])
+                .and_then(|export| export.return_kind),
+            Some(StdlibReturnKind::Float)
+        );
+        assert_eq!(
+            catalog
+                .export_path(&["string", "to_float"])
+                .and_then(|export| export.return_kind),
+            Some(StdlibReturnKind::Float)
+        );
+        assert_eq!(
+            catalog
+                .export_path(&["io", "std", "read_to_string"])
+                .and_then(|export| export.return_kind),
+            Some(StdlibReturnKind::String)
+        );
+        for global in &catalog.globals {
+            if global.lowering_key.is_some() {
+                assert!(
+                    global.return_kind.is_some(),
+                    "global {} has lowering key without return kind",
+                    global.name
+                );
+            }
+        }
+        for module in &catalog.modules {
+            for export in &module.exports {
+                assert_lowered_export_has_return_kind(&module.name, export);
+            }
+        }
+    }
+
+    fn assert_lowered_export_has_return_kind(path: &str, export: &crate::StdlibExportSpec) {
+        let path = format!("{path}.{}", export.name);
+        if export.kind == StdlibExportKind::Function && export.lowering_key.is_some() {
+            assert!(
+                export.return_kind.is_some(),
+                "export {path} has lowering key without return kind"
+            );
+        }
+        for child in &export.children {
+            assert_lowered_export_has_return_kind(&path, child);
+        }
     }
 
     #[test]

@@ -6,7 +6,7 @@ use std::sync::{
 use anyhow::{Result, anyhow, bail};
 use dashmap::DashMap;
 use lk_core::{
-    module::{ModuleProvider, ModuleRegistry, RuntimeNativeExport, runtime_export_from_plain_native_entries},
+    module::{ModuleProvider, ModuleRegistry},
     rt::{self, RuntimePayload},
     val::{CallableValue, HeapStore, HeapValue, RuntimeVal, ShortStr, StreamCursorValue, StreamValue, Type, TypedList},
     vm::{
@@ -14,6 +14,7 @@ use lk_core::{
         call_runtime_value_runtime,
     },
 };
+use lk_stdlib_common::metadata::StdlibModuleMetadata;
 use once_cell::sync::Lazy;
 
 pub mod runtime_native {
@@ -424,35 +425,51 @@ impl ModuleProvider for StreamModule {
     }
 
     fn runtime_exports(&self) -> Result<RuntimeExport> {
-        Ok(runtime_export_from_plain_native_entries(
-            &[
-                RuntimeNativeExport::plain("from_list", from_list, 1),
-                RuntimeNativeExport::plain("range", range, NativeEntry::VARIADIC),
-                RuntimeNativeExport::plain("iterate", iterate, 2),
-                RuntimeNativeExport::plain("repeat", repeat, 1),
-                RuntimeNativeExport::plain("from_channel", from_channel, 1),
-                RuntimeNativeExport::plain("map", map, 2),
-                RuntimeNativeExport::plain("filter", filter, 2),
-                RuntimeNativeExport::plain("take", take, 2),
-                RuntimeNativeExport::plain("skip", skip, 2),
-                RuntimeNativeExport::plain("chain", chain, 2),
-                RuntimeNativeExport::plain("subscribe", subscribe, 1),
-                RuntimeNativeExport::full_state("next", next, 1),
-                RuntimeNativeExport::full_state("collect", collect, NativeEntry::VARIADIC),
-                RuntimeNativeExport::full_state("next_block", next_block, NativeEntry::VARIADIC),
-                RuntimeNativeExport::full_state("collect_block", collect_block, NativeEntry::VARIADIC),
+        Ok(lk_stdlib_common::stdlib_runtime_exports!(
+            [
+                plain "from_list" => from_list, 1,
+                plain "range" => range, NativeEntry::VARIADIC,
+                plain "iterate" => iterate, 2,
+                plain "repeat" => repeat, 1,
+                plain "from_channel" => from_channel, 1,
+                plain "map" => map, 2,
+                plain "filter" => filter, 2,
+                plain "take" => take, 2,
+                plain "skip" => skip, 2,
+                plain "chain" => chain, 2,
+                plain "subscribe" => subscribe, 1,
+                full_state "next" => next, 1,
+                full_state "collect" => collect, NativeEntry::VARIADIC,
+                full_state "next_block" => next_block, NativeEntry::VARIADIC,
+                full_state "collect_block" => collect_block, NativeEntry::VARIADIC,
             ],
-            &[],
         ))
     }
 }
 
 pub fn register(registry: &mut ModuleRegistry) -> Result<()> {
+    lk_stdlib_common::metadata::register_stdlib_module_metadata(metadata())?;
     registry.register_module("stream", Box::new(StreamModule::new()))
 }
 
+pub fn metadata() -> StdlibModuleMetadata {
+    lk_stdlib_common::stdlib_module_metadata!(
+        stream,
+        [
+            chain => RuntimeValue,
+            collect => RuntimeValue,
+            filter => RuntimeValue,
+            from_list => RuntimeValue,
+            map => RuntimeValue,
+            range => RuntimeValue,
+            skip => RuntimeValue,
+            take => RuntimeValue,
+        ]
+    )
+}
+
 fn from_list(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    expect_arity(args, 1, "stream.from_list")?;
+    lk_stdlib_common::runtime_native::expect_arity(args, 1, "stream.from_list")?;
     let values = list_arg_ref(&args.as_slice()[0], runtime.heap(), "stream.from_list argument")?;
     let values = copy_typed_list(values);
     create_stream(StreamSpec::FromList(Arc::new(values)), Type::Any, runtime.heap_mut())
@@ -478,7 +495,7 @@ fn range(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Runtim
 }
 
 fn iterate(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    expect_arity(args, 2, "stream.iterate")?;
+    lk_stdlib_common::runtime_native::expect_arity(args, 2, "stream.iterate")?;
     let values = args.as_slice();
     ensure_runtime_callable(&values[1], runtime, "stream.iterate function")?;
     create_stream(
@@ -492,7 +509,7 @@ fn iterate(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Runt
 }
 
 fn repeat(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    expect_arity(args, 1, "stream.repeat")?;
+    lk_stdlib_common::runtime_native::expect_arity(args, 1, "stream.repeat")?;
     create_stream(
         StreamSpec::Repeat(args.as_slice()[0].clone()),
         Type::Any,
@@ -501,7 +518,7 @@ fn repeat(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Runti
 }
 
 fn from_channel(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    expect_arity(args, 1, "stream.from_channel")?;
+    lk_stdlib_common::runtime_native::expect_arity(args, 1, "stream.from_channel")?;
     let channel = channel_arg(&args.as_slice()[0], runtime.heap(), "stream.from_channel argument")?;
     create_stream(
         StreamSpec::FromChannel { channel_id: channel.id },
@@ -511,7 +528,7 @@ fn from_channel(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result
 }
 
 fn map(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    expect_arity(args, 2, "stream.map")?;
+    lk_stdlib_common::runtime_native::expect_arity(args, 2, "stream.map")?;
     let values = args.as_slice();
     ensure_runtime_callable(&values[1], runtime, "stream.map function")?;
     let upstream = get_stream_spec(stream_id_arg(&values[0], runtime.heap(), "stream.map stream")?)?;
@@ -526,7 +543,7 @@ fn map(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeV
 }
 
 fn filter(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    expect_arity(args, 2, "stream.filter")?;
+    lk_stdlib_common::runtime_native::expect_arity(args, 2, "stream.filter")?;
     let values = args.as_slice();
     ensure_runtime_callable(&values[1], runtime, "stream.filter function")?;
     let upstream = get_stream_spec(stream_id_arg(&values[0], runtime.heap(), "stream.filter stream")?)?;
@@ -541,7 +558,7 @@ fn filter(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Runti
 }
 
 fn take(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    expect_arity(args, 2, "stream.take")?;
+    lk_stdlib_common::runtime_native::expect_arity(args, 2, "stream.take")?;
     let values = args.as_slice();
     let upstream = get_stream_spec(stream_id_arg(&values[0], runtime.heap(), "stream.take stream")?)?;
     let n = int_arg(&values[1], "stream.take count")?;
@@ -549,7 +566,7 @@ fn take(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Runtime
 }
 
 fn skip(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    expect_arity(args, 2, "stream.skip")?;
+    lk_stdlib_common::runtime_native::expect_arity(args, 2, "stream.skip")?;
     let values = args.as_slice();
     let upstream = get_stream_spec(stream_id_arg(&values[0], runtime.heap(), "stream.skip stream")?)?;
     let n = int_arg(&values[1], "stream.skip count")?;
@@ -557,7 +574,7 @@ fn skip(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Runtime
 }
 
 fn chain(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    expect_arity(args, 2, "stream.chain")?;
+    lk_stdlib_common::runtime_native::expect_arity(args, 2, "stream.chain")?;
     let values = args.as_slice();
     let left = get_stream_spec(stream_id_arg(&values[0], runtime.heap(), "stream.chain left")?)?;
     let right = get_stream_spec(stream_id_arg(&values[1], runtime.heap(), "stream.chain right")?)?;
@@ -565,7 +582,7 @@ fn chain(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Runtim
 }
 
 fn subscribe(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    expect_arity(args, 1, "stream.subscribe")?;
+    lk_stdlib_common::runtime_native::expect_arity(args, 1, "stream.subscribe")?;
     create_cursor(
         stream_id_arg(&args.as_slice()[0], runtime.heap(), "stream.subscribe argument")?,
         runtime.heap_mut(),
@@ -573,7 +590,7 @@ fn subscribe(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Ru
 }
 
 fn next(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    expect_arity(args, 1, "stream.next")?;
+    lk_stdlib_common::runtime_native::expect_arity(args, 1, "stream.next")?;
     let cursor_id = cursor_id_arg(&args.as_slice()[0], runtime.heap(), "stream.next argument")?;
     next_cursor(cursor_id, runtime)
 }
@@ -894,17 +911,6 @@ fn int_arg(value: &RuntimeVal, context: &str) -> Result<i64> {
     match value {
         RuntimeVal::Int(value) => Ok(*value),
         _ => Err(anyhow!("{context} must be an integer")),
-    }
-}
-
-fn expect_arity(args: NativeArgs<'_>, expected: usize, name: &str) -> Result<()> {
-    if args.len() == expected {
-        Ok(())
-    } else {
-        Err(anyhow!(
-            "{name} expects exactly {expected} argument{}",
-            if expected == 1 { "" } else { "s" }
-        ))
     }
 }
 

@@ -1,11 +1,6 @@
-use crate::{
-    llvm::const_display::native_const_list_display,
-    vm::ConstRuntimeValueData,
-};
+use crate::{llvm::const_display::native_const_list_display, vm::ConstRuntimeValueData};
 
-use super::{
-    NativeStraightlineValue, native_const_runtime_value, native_runtime_const_value, native_static_value_eq,
-};
+use super::{NativeStraightlineValue, native_const_runtime_value, native_runtime_const_value, native_static_value_eq};
 
 pub(in crate::llvm) fn native_static_set_from_arg(
     arg: &NativeStraightlineValue,
@@ -82,10 +77,7 @@ pub(in crate::llvm) fn native_static_set_contains(
 fn dedup_set_elements(elements: &mut Vec<ConstRuntimeValueData>) {
     let mut out = Vec::with_capacity(elements.len());
     for element in elements.drain(..) {
-        if !out
-            .iter()
-            .any(|existing| const_runtime_value_eq(existing, &element))
-        {
+        if !out.iter().any(|existing| const_runtime_value_eq(existing, &element)) {
             out.push(element);
         }
     }

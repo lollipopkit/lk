@@ -96,7 +96,10 @@ fn emit_native_map_get(args: &[NativeStraightlineValue], ssa_index: &mut usize) 
     native_static_index(target.clone(), key.clone(), symbol)
 }
 
-fn emit_native_map_delete(args: &[NativeStraightlineValue], ssa_index: &mut usize) -> Option<NativeStraightlineValue> {
+pub(in crate::llvm::output) fn emit_native_map_delete(
+    args: &[NativeStraightlineValue],
+    ssa_index: &mut usize,
+) -> Option<NativeStraightlineValue> {
     let [target, key] = args else {
         return None;
     };

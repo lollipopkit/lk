@@ -4,7 +4,7 @@ use anyhow::{Result, anyhow};
 use lk_core::{
     module::{ModuleProvider, ModuleRegistry},
     val::RuntimeVal,
-    vm::{NativeArgs, NativeEntry, NativeFunction, NativeRuntime, RuntimeExport},
+    vm::{NativeArgs, NativeEntry, NativeRuntime, RuntimeExport},
 };
 use lk_stdlib_common::runtime_native::runtime_display_value;
 
@@ -16,6 +16,34 @@ const UNSUPPORTED_MODULES: &[&str] = &[
     "chan", "datetime", "env", "fs", "http", "io", "net", "os", "process", "random", "stream", "task", "time", "uuid",
 ];
 
+struct WebModuleEntry {
+    register: fn(&mut ModuleRegistry) -> Result<()>,
+}
+
+macro_rules! define_web_modules {
+    ($($register:path),+ $(,)?) => {
+        const WEB_MODULES: &[WebModuleEntry] = &[
+            $(
+                WebModuleEntry {
+                    register: $register,
+                },
+            )+
+        ];
+    };
+}
+
+define_web_modules!(
+    lk_stdlib_bytes::register,
+    lk_stdlib_encoding::register,
+    lk_stdlib_hash::register,
+    lk_stdlib_iter::register,
+    lk_stdlib_math::register,
+    lk_stdlib_path::register,
+    lk_stdlib_regex::register,
+    lk_stdlib_slice::register,
+    lk_stdlib_string::register,
+);
+
 pub fn clear_stdout() {
     STDOUT.with(|stdout| stdout.borrow_mut().clear());
 }
@@ -25,25 +53,23 @@ pub fn take_stdout() -> String {
 }
 
 pub fn register_web_stdlib_globals(registry: &mut ModuleRegistry) {
-    register_runtime_builtin(registry, "print", print, NativeEntry::VARIADIC);
-    register_runtime_builtin(registry, "println", println, NativeEntry::VARIADIC);
-    register_runtime_builtin(registry, "panic", panic, NativeEntry::VARIADIC);
-    register_runtime_builtin(registry, "assert", assert, NativeEntry::VARIADIC);
-    register_runtime_builtin(registry, "assert_eq", assert_eq, NativeEntry::VARIADIC);
-    register_runtime_builtin(registry, "assert_ne", assert_ne, NativeEntry::VARIADIC);
+    lk_stdlib_common::stdlib_register_runtime_builtins!(
+        registry,
+        [
+            full_state "print" => print, NativeEntry::VARIADIC,
+            full_state "println" => println, NativeEntry::VARIADIC,
+            full_state "panic" => panic, NativeEntry::VARIADIC,
+            full_state "assert" => assert, NativeEntry::VARIADIC,
+            full_state "assert_eq" => assert_eq, NativeEntry::VARIADIC,
+            full_state "assert_ne" => assert_ne, NativeEntry::VARIADIC,
+        ],
+    );
 }
 
 pub fn register_web_stdlib_modules(registry: &mut ModuleRegistry) -> Result<()> {
-    lk_stdlib_bytes::register(registry)?;
-    lk_stdlib_encoding::register(registry)?;
-    lk_stdlib_hash::register(registry)?;
-    lk_stdlib_iter::register(registry)?;
-    lk_stdlib_math::register(registry)?;
-    lk_stdlib_path::register(registry)?;
-    lk_stdlib_regex::register(registry)?;
-    lk_stdlib_slice::register(registry)?;
-    lk_stdlib_string::register(registry)?;
-
+    for module in WEB_MODULES {
+        (module.register)(registry)?;
+    }
     for name in UNSUPPORTED_MODULES {
         registry.register_module(name, Box::new(UnsupportedWebModule { name }))?;
     }
@@ -53,15 +79,6 @@ pub fn register_web_stdlib_modules(registry: &mut ModuleRegistry) -> Result<()> 
 pub fn register_web_stdlib(registry: &mut ModuleRegistry) -> Result<()> {
     register_web_stdlib_globals(registry);
     register_web_stdlib_modules(registry)
-}
-
-fn register_runtime_builtin(
-    registry: &mut ModuleRegistry,
-    name: &str,
-    function: fn(NativeArgs<'_>, &mut NativeRuntime<'_>) -> Result<RuntimeVal>,
-    arity: u16,
-) {
-    registry.register_runtime_builtin(name, NativeFunction::FullState(function), arity);
 }
 
 fn print(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {

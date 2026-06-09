@@ -43,6 +43,48 @@ pub(in crate::llvm::output) fn emit_native_static_list_method(
     args: &[ConstRuntimeValueData],
     ssa_index: &mut usize,
 ) -> Option<NativeStraightlineValue> {
+    if method == "len" && args.is_empty() {
+        let NativeStraightlineValue::List { elements, .. } = receiver else {
+            return None;
+        };
+        return Some(NativeStraightlineValue::I64(elements.len().to_string()));
+    }
+    if method == "is_empty" && args.is_empty() {
+        let NativeStraightlineValue::List { elements, .. } = receiver else {
+            return None;
+        };
+        return Some(NativeStraightlineValue::Bool(
+            i64::from(elements.is_empty()).to_string(),
+        ));
+    }
+    if method == "contains" && args.len() == 1 {
+        let NativeStraightlineValue::List { elements, .. } = receiver else {
+            return None;
+        };
+        let needle = args.first()?;
+        return Some(NativeStraightlineValue::Bool(
+            i64::from(
+                elements
+                    .iter()
+                    .any(|element| const_runtime_values_equal(element, needle)),
+            )
+            .to_string(),
+        ));
+    }
+    if method == "reverse" && args.is_empty() {
+        let NativeStraightlineValue::List { mut elements, .. } = receiver else {
+            return None;
+        };
+        elements.reverse();
+        return static_list_method_value(elements, ssa_index);
+    }
+    if method == "sort" && args.is_empty() {
+        let NativeStraightlineValue::List { mut elements, .. } = receiver else {
+            return None;
+        };
+        elements.sort_by(compare_const_runtime_values);
+        return static_list_method_value(elements, ssa_index);
+    }
     if (method == "first" || method == "last") && args.is_empty() {
         let NativeStraightlineValue::List { elements, .. } = receiver else {
             return None;

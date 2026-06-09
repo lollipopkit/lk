@@ -59,10 +59,11 @@ fn lkrt_staticlib_path() -> Option<PathBuf> {
         "liblkrt.a"
     };
     let candidate = dir.join(file);
-    if candidate.exists() {
-        return Some(candidate);
+    let mut candidates = vec![candidate];
+    if let Some(path) = latest_lkrt_staticlib_in_deps(&dir.join("deps")) {
+        candidates.push(path);
     }
-    latest_lkrt_staticlib_in_deps(&dir.join("deps"))
+    newest_existing_path(candidates)
 }
 
 fn latest_lkrt_staticlib_in_deps(deps_dir: &Path) -> Option<PathBuf> {
@@ -82,6 +83,17 @@ fn latest_lkrt_staticlib_in_deps(deps_dir: &Path) -> Option<PathBuf> {
                 return None;
             }
             let modified = entry.metadata().ok()?.modified().ok()?;
+            Some((modified, path))
+        })
+        .max_by_key(|(modified, _)| *modified)
+        .map(|(_, path)| path)
+}
+
+fn newest_existing_path(paths: impl IntoIterator<Item = PathBuf>) -> Option<PathBuf> {
+    paths
+        .into_iter()
+        .filter_map(|path| {
+            let modified = path.metadata().ok()?.modified().ok()?;
             Some((modified, path))
         })
         .max_by_key(|(modified, _)| *modified)

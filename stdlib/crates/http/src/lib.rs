@@ -1,6 +1,6 @@
 use anyhow::{Result, anyhow, bail};
 use lk_core::{
-    module::{ModuleProvider, ModuleRegistry, RuntimeNativeExport, runtime_export_from_plain_native_entries},
+    module::{ModuleProvider, ModuleRegistry},
     util::fast_map::fast_hash_map_new,
     val::{HeapValue, RuntimeVal, TypedMap},
     vm::{NativeArgs, NativeRuntime, RuntimeExport},
@@ -30,13 +30,12 @@ impl ModuleProvider for HttpModule {
     }
 
     fn runtime_exports(&self) -> Result<RuntimeExport> {
-        Ok(runtime_export_from_plain_native_entries(
-            &[
-                RuntimeNativeExport::plain("request", request, lk_core::vm::NativeEntry::VARIADIC),
-                RuntimeNativeExport::plain("get", get, lk_core::vm::NativeEntry::VARIADIC),
-                RuntimeNativeExport::plain("post", post, lk_core::vm::NativeEntry::VARIADIC),
+        Ok(lk_stdlib_common::stdlib_runtime_exports!(
+            [
+                plain "request" => request, lk_core::vm::NativeEntry::VARIADIC,
+                plain "get" => get, lk_core::vm::NativeEntry::VARIADIC,
+                plain "post" => post, lk_core::vm::NativeEntry::VARIADIC,
             ],
-            &[],
         ))
     }
 }

@@ -1,9 +1,10 @@
 use anyhow::{Result, bail};
 use lk_core::{
-    module::{ModuleProvider, ModuleRegistry, RuntimeNativeExport, runtime_export_from_plain_native_entries},
+    module::{ModuleProvider, ModuleRegistry},
     val::{HeapValue, RuntimeVal, TypedList},
     vm::{NativeArgs, NativeEntry, NativeRuntime, RuntimeExport},
 };
+use lk_stdlib_common::metadata::StdlibModuleMetadata;
 use lk_stdlib_common::runtime_native::{runtime_string_arg, runtime_string_value};
 use std::{path::Path, sync::Arc};
 
@@ -26,27 +27,31 @@ impl ModuleProvider for PathModule {
     }
 
     fn runtime_exports(&self) -> Result<RuntimeExport> {
-        Ok(runtime_export_from_plain_native_entries(
-            &[
-                RuntimeNativeExport::plain("join", join, NativeEntry::VARIADIC),
-                RuntimeNativeExport::plain("parent", parent, 1),
-                RuntimeNativeExport::plain("file_name", file_name, 1),
-                RuntimeNativeExport::plain("file_stem", file_stem, 1),
-                RuntimeNativeExport::plain("extension", extension, 1),
-                RuntimeNativeExport::plain("with_extension", with_extension, 2),
-                RuntimeNativeExport::plain("is_absolute", is_absolute, 1),
-                RuntimeNativeExport::plain("normalize", normalize, 1),
-                RuntimeNativeExport::plain("components", components, 1),
-                RuntimeNativeExport::plain("sep", sep, 0),
-                RuntimeNativeExport::plain("delimiter", delimiter, 0),
+        Ok(lk_stdlib_common::stdlib_runtime_exports!(
+            [
+                plain "join" => join, NativeEntry::VARIADIC,
+                plain "parent" => parent, 1,
+                plain "file_name" => file_name, 1,
+                plain "file_stem" => file_stem, 1,
+                plain "extension" => extension, 1,
+                plain "with_extension" => with_extension, 2,
+                plain "is_absolute" => is_absolute, 1,
+                plain "normalize" => normalize, 1,
+                plain "components" => components, 1,
+                plain "sep" => sep, 0,
+                plain "delimiter" => delimiter, 0,
             ],
-            &[],
         ))
     }
 }
 
 pub fn register(registry: &mut ModuleRegistry) -> Result<()> {
+    lk_stdlib_common::metadata::register_stdlib_module_metadata(metadata())?;
     registry.register_module("path", Box::new(PathModule::new()))
+}
+
+pub fn metadata() -> StdlibModuleMetadata {
+    lk_stdlib_common::stdlib_module_metadata!(path, [sep => String])
 }
 
 fn join(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
@@ -86,7 +91,7 @@ fn extension(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Ru
 }
 
 fn with_extension(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    expect_arity(args, 2, "path.with_extension()")?;
+    lk_stdlib_common::runtime_native::expect_arity(args, 2, "path.with_extension()")?;
     let path = string_arg(args.get(0).expect("checked arity"), runtime, "path.with_extension path")?;
     let ext = string_arg(args.get(1).expect("checked arity"), runtime, "path.with_extension ext")?;
     let path = Path::new(path.as_ref()).with_extension(ext.as_ref());
@@ -94,13 +99,13 @@ fn with_extension(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Resu
 }
 
 fn is_absolute(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    expect_arity(args, 1, "path.is_absolute()")?;
+    lk_stdlib_common::runtime_native::expect_arity(args, 1, "path.is_absolute()")?;
     let path = string_arg(args.get(0).expect("checked arity"), runtime, "path.is_absolute path")?;
     Ok(RuntimeVal::Bool(Path::new(path.as_ref()).is_absolute()))
 }
 
 fn normalize(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    expect_arity(args, 1, "path.normalize()")?;
+    lk_stdlib_common::runtime_native::expect_arity(args, 1, "path.normalize()")?;
     let path = string_arg(args.get(0).expect("checked arity"), runtime, "path.normalize path")?;
     let mut out = std::path::PathBuf::new();
     for component in Path::new(path.as_ref()).components() {
@@ -119,7 +124,7 @@ fn normalize(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Ru
 }
 
 fn components(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    expect_arity(args, 1, "path.components()")?;
+    lk_stdlib_common::runtime_native::expect_arity(args, 1, "path.components()")?;
     let path = string_arg(args.get(0).expect("checked arity"), runtime, "path.components path")?;
     let values = Path::new(path.as_ref())
         .components()
@@ -131,12 +136,12 @@ fn components(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<R
 }
 
 fn sep(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    expect_arity(args, 0, "path.sep()")?;
+    lk_stdlib_common::runtime_native::expect_arity(args, 0, "path.sep()")?;
     Ok(runtime_string_value(std::path::MAIN_SEPARATOR_STR, runtime.heap_mut()))
 }
 
 fn delimiter(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    expect_arity(args, 0, "path.delimiter()")?;
+    lk_stdlib_common::runtime_native::expect_arity(args, 0, "path.delimiter()")?;
     Ok(runtime_string_value(
         if cfg!(windows) { ";" } else { ":" },
         runtime.heap_mut(),
@@ -149,7 +154,7 @@ fn path_part(
     name: &str,
     f: impl FnOnce(&Path) -> Option<String>,
 ) -> Result<RuntimeVal> {
-    expect_arity(args, 1, name)?;
+    lk_stdlib_common::runtime_native::expect_arity(args, 1, name)?;
     let path = string_arg(args.get(0).expect("checked arity"), runtime, name)?;
     let path = Path::new(path.as_ref());
     Ok(match f(path) {
@@ -160,12 +165,4 @@ fn path_part(
 
 fn string_arg(value: &RuntimeVal, runtime: &NativeRuntime<'_>, context: &str) -> Result<Arc<str>> {
     runtime_string_arg(value, runtime.heap(), context)
-}
-
-fn expect_arity(args: NativeArgs<'_>, expected: usize, name: &str) -> Result<()> {
-    if args.len() == expected {
-        Ok(())
-    } else {
-        bail!("{name} expects exactly {expected} argument(s)")
-    }
 }

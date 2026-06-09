@@ -41,6 +41,18 @@ intrinsics.
 
 - Prefer typed ABI: `i64`, `double`, `(ptr, len)` text, typed list/map handles,
   and monomorphized container layouts.
+- TCP native stdlib helpers use typed `lkrt` intrinsics: strings are passed as
+  `ptr`, and TCP streams/byte buffers are opaque `i64` handles owned by `lkrt`.
+  `tcp.read` returns a bytes handle, and `bytes.to_string_utf8` validates that
+  handle before returning a string pointer.
+- Standard IO native helpers use small opaque `i64` resource handles
+  (`0 = stdin`, `1 = stdout`, `2 = stderr`) and typed `lkrt` calls for
+  `io.std.write`, `io.std.writeln`, `io.std.flush`, and
+  `io.std.read_to_string`.
+- Environment, filesystem, and process helpers that require host state lower to
+  `lkrt` calls instead of compile-time constants. `env.get_or`,
+  `fs.exists`, `fs.read_dir`, and `process.cwd` read the host state at native
+  executable runtime.
 - Do not use `RuntimeVal`, `HeapStore`, `RuntimeExport`, or `NativeRuntime`
   as the default native ABI.
 - Generic runtime-value ABI is not allowed as a silent fallback. If a shape is

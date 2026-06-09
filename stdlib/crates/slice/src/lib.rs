@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use anyhow::{Result, anyhow, bail};
 use lk_core::{
-    module::{ModuleProvider, ModuleRegistry, RuntimeNativeExport, runtime_export_from_plain_native_entries},
+    module::{ModuleProvider, ModuleRegistry},
     val::{HeapStore, HeapValue, RuntimeVal, SliceKind, SliceValue, TypedList},
     vm::{NativeArgs, NativeEntry, NativeRuntime, RuntimeExport},
 };
@@ -44,18 +44,17 @@ impl ModuleProvider for SliceModule {
     }
 
     fn runtime_exports(&self) -> Result<RuntimeExport> {
-        Ok(runtime_export_from_plain_native_entries(
-            &[
-                RuntimeNativeExport::plain("from_list", from_list, 1),
-                RuntimeNativeExport::plain("from_string", from_string, 1),
-                RuntimeNativeExport::plain("len", len, 1),
-                RuntimeNativeExport::plain("is_empty", is_empty, 1),
-                RuntimeNativeExport::plain("get", get, 2),
-                RuntimeNativeExport::plain("sub", sub, NativeEntry::VARIADIC),
-                RuntimeNativeExport::plain("to_list", to_list, 1),
-                RuntimeNativeExport::plain("to_string", to_string, 1),
+        Ok(lk_stdlib_common::stdlib_runtime_exports!(
+            [
+                plain "from_list" => from_list, 1,
+                plain "from_string" => from_string, 1,
+                plain "len" => len, 1,
+                plain "is_empty" => is_empty, 1,
+                plain "get" => get, 2,
+                plain "sub" => sub, NativeEntry::VARIADIC,
+                plain "to_list" => to_list, 1,
+                plain "to_string" => to_string, 1,
             ],
-            &[],
         ))
     }
 }
@@ -65,14 +64,14 @@ pub fn register(registry: &mut ModuleRegistry) -> Result<()> {
 }
 
 fn from_list(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    expect_arity(args, 1, "slice.from_list()")?;
+    lk_stdlib_common::runtime_native::expect_arity(args, 1, "slice.from_list()")?;
     let source = args.get(0).expect("checked arity").clone();
     let len = list_arg(&source, runtime.heap(), "slice.from_list()")?.len();
     Ok(slice_value(source, SliceKind::List, 0, len, runtime.heap_mut()))
 }
 
 fn from_string(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    expect_arity(args, 1, "slice.from_string()")?;
+    lk_stdlib_common::runtime_native::expect_arity(args, 1, "slice.from_string()")?;
     let source = args.get(0).expect("checked arity").clone();
     let text = runtime_string_arg(&source, runtime.heap(), "slice.from_string()")?;
     Ok(slice_value(
@@ -85,21 +84,21 @@ fn from_string(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<
 }
 
 fn len(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    expect_arity(args, 1, "slice.len()")?;
+    lk_stdlib_common::runtime_native::expect_arity(args, 1, "slice.len()")?;
     Ok(RuntimeVal::Int(
         slice_arg(args.get(0).expect("checked arity"), runtime.heap(), "slice.len()")?.len as i64,
     ))
 }
 
 fn is_empty(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    expect_arity(args, 1, "slice.is_empty()")?;
+    lk_stdlib_common::runtime_native::expect_arity(args, 1, "slice.is_empty()")?;
     Ok(RuntimeVal::Bool(
         slice_arg(args.get(0).expect("checked arity"), runtime.heap(), "slice.is_empty()")?.len == 0,
     ))
 }
 
 fn get(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    expect_arity(args, 2, "slice.get()")?;
+    lk_stdlib_common::runtime_native::expect_arity(args, 2, "slice.get()")?;
     let values = args.as_slice();
     let slice = slice_arg(&values[0], runtime.heap(), "slice.get()")?;
     let index = usize_arg(&values[1], "slice.get() index")?;
@@ -149,7 +148,7 @@ fn sub(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeV
 }
 
 fn to_list(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    expect_arity(args, 1, "slice.to_list()")?;
+    lk_stdlib_common::runtime_native::expect_arity(args, 1, "slice.to_list()")?;
     let slice = slice_arg(args.get(0).expect("checked arity"), runtime.heap(), "slice.to_list()")?;
     let values = match slice.kind {
         SliceKind::List => {
@@ -178,7 +177,7 @@ fn to_list(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Runt
 }
 
 fn to_string(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    expect_arity(args, 1, "slice.to_string()")?;
+    lk_stdlib_common::runtime_native::expect_arity(args, 1, "slice.to_string()")?;
     let slice = slice_arg(args.get(0).expect("checked arity"), runtime.heap(), "slice.to_string()")?;
     match slice.kind {
         SliceKind::String => {
@@ -255,13 +254,5 @@ fn usize_arg(value: &RuntimeVal, context: &str) -> Result<usize> {
     match value {
         RuntimeVal::Int(value) if *value >= 0 => Ok(*value as usize),
         other => bail!("{context} expects a non-negative integer, got {:?}", other.kind()),
-    }
-}
-
-fn expect_arity(args: NativeArgs<'_>, expected: usize, name: &str) -> Result<()> {
-    if args.len() == expected {
-        Ok(())
-    } else {
-        bail!("{name} expects exactly {expected} argument(s)")
     }
 }

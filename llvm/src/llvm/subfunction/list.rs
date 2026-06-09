@@ -331,6 +331,10 @@ fn compile_native_i64_list_subfunction_profile(
                 }
                 static_regs[instr.a() as usize] = None;
             }
+            Opcode::AddIntI | Opcode::MulIntI => {
+                emit_i64_list_immediate_block(&mut ir, instr, &mut tmp_index);
+                static_regs[instr.a() as usize] = None;
+            }
             Opcode::CmpInt
             | Opcode::CmpNeInt
             | Opcode::CmpLtInt
@@ -427,6 +431,19 @@ fn emit_move(
         static_regs[instr.a() as usize] = static_regs.get(instr.b() as usize).and_then(Clone::clone);
     }
     Ok(Some(()))
+}
+
+fn emit_i64_list_immediate_block(ir: &mut String, instr: Instr, tmp_index: &mut usize) {
+    let lhs = next_tmp(tmp_index);
+    let out = next_tmp(tmp_index);
+    let op = match instr.opcode() {
+        Opcode::AddIntI => "add",
+        Opcode::MulIntI => "mul",
+        _ => unreachable!("opcode matched by caller"),
+    };
+    ir.push_str(&format!("  {lhs} = load i64, ptr %r{}.slot\n", instr.b()));
+    ir.push_str(&format!("  {out} = {op} i64 {lhs}, {}\n", instr.sc()));
+    ir.push_str(&format!("  store i64 {out}, ptr %r{}.slot\n", instr.a()));
 }
 
 fn emit_new_list(
@@ -612,9 +629,6 @@ fn callsite_i64_list_param_kind(
     pc: usize,
     reg: u8,
 ) -> Option<I64ListParamKind> {
-    if local_register_kind_before(code, pc, reg) == Some(NativeScalarKind::I64) {
-        return Some(I64ListParamKind::I64);
-    }
     let start = pc.saturating_sub(64);
     for prev_pc in (start..pc).rev() {
         let prev = *code.get(prev_pc)?;
@@ -634,6 +648,9 @@ fn callsite_i64_list_param_kind(
             }
             _ => None,
         };
+    }
+    if local_register_kind_before(code, pc, reg) == Some(NativeScalarKind::I64) {
+        return Some(I64ListParamKind::I64);
     }
     None
 }

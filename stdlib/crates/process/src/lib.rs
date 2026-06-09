@@ -1,11 +1,12 @@
 use anyhow::{Result, anyhow, bail};
 use lk_core::{
-    module::{ModuleProvider, ModuleRegistry, RuntimeNativeExport, runtime_export_from_plain_native_entries},
+    module::{ModuleProvider, ModuleRegistry},
     util::fast_map::fast_hash_map_new,
     val::{HeapValue, RuntimeVal, TypedList, TypedMap},
     vm::{NativeArgs, NativeRuntime, RuntimeExport},
 };
 use lk_stdlib_bytes::runtime_bytes_value;
+use lk_stdlib_common::metadata::StdlibModuleMetadata;
 use lk_stdlib_common::runtime_native::{runtime_string_arg, runtime_string_value};
 use std::{process::Command, sync::Arc};
 
@@ -28,32 +29,36 @@ impl ModuleProvider for ProcessModule {
     }
 
     fn runtime_exports(&self) -> Result<RuntimeExport> {
-        Ok(runtime_export_from_plain_native_entries(
-            &[
-                RuntimeNativeExport::plain("id", id, 0),
-                RuntimeNativeExport::plain("cwd", cwd, 0),
-                RuntimeNativeExport::plain("set_cwd", set_cwd, 1),
-                RuntimeNativeExport::plain("exit", exit, 1),
-                RuntimeNativeExport::plain("status", status, lk_core::vm::NativeEntry::VARIADIC),
-                RuntimeNativeExport::plain("output", output, lk_core::vm::NativeEntry::VARIADIC),
-                RuntimeNativeExport::plain("output_string", output_string, lk_core::vm::NativeEntry::VARIADIC),
+        Ok(lk_stdlib_common::stdlib_runtime_exports!(
+            [
+                plain "id" => id, 0,
+                plain "cwd" => cwd, 0,
+                plain "set_cwd" => set_cwd, 1,
+                plain "exit" => exit, 1,
+                plain "status" => status, lk_core::vm::NativeEntry::VARIADIC,
+                plain "output" => output, lk_core::vm::NativeEntry::VARIADIC,
+                plain "output_string" => output_string, lk_core::vm::NativeEntry::VARIADIC,
             ],
-            &[],
         ))
     }
 }
 
 pub fn register(registry: &mut ModuleRegistry) -> Result<()> {
+    lk_stdlib_common::metadata::register_stdlib_module_metadata(metadata())?;
     registry.register_module("process", Box::new(ProcessModule::new()))
 }
 
+pub fn metadata() -> StdlibModuleMetadata {
+    lk_stdlib_common::stdlib_module_metadata!(process, [cwd => String])
+}
+
 fn id(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    expect_arity(args, 0, "process.id()")?;
+    lk_stdlib_common::runtime_native::expect_arity(args, 0, "process.id()")?;
     Ok(RuntimeVal::Int(std::process::id() as i64))
 }
 
 fn cwd(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    expect_arity(args, 0, "process.cwd()")?;
+    lk_stdlib_common::runtime_native::expect_arity(args, 0, "process.cwd()")?;
     match std::env::current_dir() {
         Ok(path) => Ok(runtime_string_value(&path.to_string_lossy(), runtime.heap_mut())),
         Err(_) => Ok(RuntimeVal::Nil),
@@ -61,7 +66,7 @@ fn cwd(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeV
 }
 
 fn set_cwd(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    expect_arity(args, 1, "process.set_cwd()")?;
+    lk_stdlib_common::runtime_native::expect_arity(args, 1, "process.set_cwd()")?;
     let path = runtime_string_arg(
         args.get(0).expect("checked arity"),
         runtime.heap(),
@@ -72,7 +77,7 @@ fn set_cwd(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Runt
 }
 
 fn exit(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    expect_arity(args, 1, "process.exit()")?;
+    lk_stdlib_common::runtime_native::expect_arity(args, 1, "process.exit()")?;
     let code = int_arg(args.get(0).expect("checked arity"), "process.exit code")?;
     if code < i64::from(i32::MIN) || code > i64::from(i32::MAX) {
         bail!("process.exit code must fit in i32, got {code}");
@@ -167,13 +172,5 @@ fn int_arg(value: &RuntimeVal, context: &str) -> Result<i64> {
     match value {
         RuntimeVal::Int(value) => Ok(*value),
         other => bail!("{context} expects Int, got {:?}", other.kind()),
-    }
-}
-
-fn expect_arity(args: NativeArgs<'_>, expected: usize, name: &str) -> Result<()> {
-    if args.len() == expected {
-        Ok(())
-    } else {
-        bail!("{name} expects exactly {expected} argument(s)")
     }
 }

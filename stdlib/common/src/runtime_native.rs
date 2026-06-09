@@ -1,9 +1,10 @@
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 use lk_core::{
+    util::fast_map::fast_hash_map_new,
     val::{
         CallableValue, HeapStore, HeapValue, RuntimeMapKey, RuntimeSet, RuntimeVal, ShortStr, TypedList, TypedMap, de,
     },
-    vm::{NativeArgs, NativeRuntime},
+    vm::{NativeArgs, NativeRuntime, RuntimeExport, import_runtime_export},
 };
 use std::{fmt::Write as _, sync::Arc};
 
@@ -29,6 +30,27 @@ pub fn runtime_native_export(
         return Err(anyhow!("{name} must be RuntimeNative"));
     };
     Ok((*arity, function.clone()))
+}
+
+pub fn namespace_export(entries: &[(&'static str, RuntimeExport)]) -> Result<RuntimeExport> {
+    let mut heap = HeapStore::new();
+    let mut map = fast_hash_map_new();
+    for (name, export) in entries {
+        map.insert(Arc::<str>::from(*name), import_runtime_export(export, &mut heap)?);
+    }
+    let value = RuntimeVal::Obj(heap.alloc(HeapValue::Map(TypedMap::StringMixed(map))));
+    Ok(RuntimeExport::from_value(value, heap))
+}
+
+pub fn expect_arity(args: NativeArgs<'_>, expected: usize, name: &str) -> Result<()> {
+    if args.len() == expected {
+        Ok(())
+    } else {
+        bail!(
+            "{name} expects exactly {expected} argument{}",
+            if expected == 1 { "" } else { "s" }
+        )
+    }
 }
 
 pub fn parse_format(

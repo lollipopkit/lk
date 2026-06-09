@@ -14,7 +14,7 @@ use crate::{
                 local_static_object_before, local_static_string_before,
             },
             emit::emit_f64_binary_block,
-            facts::{NativeScalarFacts, NativeScalarKind},
+            facts::{NativeScalarFacts, NativeScalarKind, native_builtin_return_kind_dynamic},
         },
         straightline_value::{
             NativeListElementKind, NativeMapKeyKind, NativeMapValueKind, NativeStraightlineValue, NativeTextPart,
@@ -625,11 +625,13 @@ fn emit_move(
         emit_branch_to_next(ir, pc, code.len());
         return true;
     }
+    let source_last_written_by_call = register_last_written_by_call_before(code, pc, instr.b());
     if let Some(
         value @ (NativeStraightlineValue::String { .. }
         | NativeStraightlineValue::StringPtr(_)
         | NativeStraightlineValue::Text(_)),
     ) = static_regs.get(instr.b() as usize).and_then(Clone::clone)
+        && !source_last_written_by_call
     {
         let ptr = next_tmp(tmp_index);
         ir.push_str(&format!("  {ptr} = load ptr, ptr %r{}.slot\n", instr.b()));
@@ -639,28 +641,32 @@ fn emit_move(
         emit_branch_to_next(ir, pc, code.len());
         return true;
     }
-    if let Some(NativeStraightlineValue::F64(value)) = static_regs.get(instr.b() as usize).and_then(Clone::clone) {
+    if let Some(NativeStraightlineValue::F64(value)) = static_regs.get(instr.b() as usize).and_then(Clone::clone)
+        && !source_last_written_by_call
+    {
         static_regs[instr.a() as usize] = Some(NativeStraightlineValue::F64(value.clone()));
         ir.push_str(&format!("  store double {value}, ptr %r{}.slot\n", instr.a()));
         emit_branch_to_next(ir, pc, code.len());
         return true;
     }
-    if matches!(
-        static_regs.get(instr.b() as usize).and_then(|value| value.as_ref()),
-        Some(
-            NativeStraightlineValue::Builtin(_)
-                | NativeStraightlineValue::Module(_)
-                | NativeStraightlineValue::Function(_)
-                | NativeStraightlineValue::Closure { .. }
-                | NativeStraightlineValue::Channel { .. }
-                | NativeStraightlineValue::List { .. }
-                | NativeStraightlineValue::Map { .. }
-                | NativeStraightlineValue::DynamicMap { .. }
-                | NativeStraightlineValue::DynamicList { .. }
-                | NativeStraightlineValue::Object { .. }
-                | NativeStraightlineValue::ArgList { .. }
+    if !source_last_written_by_call
+        && matches!(
+            static_regs.get(instr.b() as usize).and_then(|value| value.as_ref()),
+            Some(
+                NativeStraightlineValue::Builtin(_)
+                    | NativeStraightlineValue::Module(_)
+                    | NativeStraightlineValue::Function(_)
+                    | NativeStraightlineValue::Closure { .. }
+                    | NativeStraightlineValue::Channel { .. }
+                    | NativeStraightlineValue::List { .. }
+                    | NativeStraightlineValue::Map { .. }
+                    | NativeStraightlineValue::DynamicMap { .. }
+                    | NativeStraightlineValue::DynamicList { .. }
+                    | NativeStraightlineValue::Object { .. }
+                    | NativeStraightlineValue::ArgList { .. }
+            )
         )
-    ) {
+    {
         static_regs[instr.a() as usize] = static_regs.get(instr.b() as usize).and_then(Clone::clone);
         emit_branch_to_next(ir, pc, code.len());
         return true;
@@ -668,6 +674,7 @@ fn emit_move(
     if let Some(
         value @ (NativeStraightlineValue::I64(_) | NativeStraightlineValue::Bool(_) | NativeStraightlineValue::F64(_)),
     ) = static_regs.get(instr.b() as usize).and_then(Clone::clone)
+        && !source_last_written_by_call
     {
         emit_static_scalar_value_store_if_needed(ir, instr.a(), &value);
         static_regs[instr.a() as usize] = Some(value);
@@ -675,7 +682,7 @@ fn emit_move(
         return true;
     }
     let heap_kind = local_heap_kind_before(code, heap_values, pc, instr.b());
-    let local_kind = if register_last_written_by_call_before(code, pc, instr.b()) {
+    let local_kind = if source_last_written_by_call {
         None
     } else {
         local_register_kind_before(code, pc, instr.b())
@@ -688,7 +695,9 @@ fn emit_move(
     ) {
         local_kind
     } else {
-        facts.register_kind_before(pc, instr.b()).or(local_kind)
+        facts.register_kind_before(pc, instr.b()).or(local_kind).or_else(|| {
+            recent_call_return_kind_before(static_regs, code, int_consts, strings, heap_values, pc, instr.b())
+        })
     };
     if let Some(kind) = kind {
         static_regs[instr.a() as usize] = static_regs
@@ -788,6 +797,67 @@ fn register_last_written_by_call_before(code: &[Instr], pc: usize, reg: u8) -> b
         .rev()
         .find(|instr| instr.a() == reg)
         .is_some_and(|instr| matches!(instr.opcode(), Opcode::Call | Opcode::CallDirect | Opcode::CallNamed))
+}
+
+fn recent_call_return_kind_before(
+    static_regs: &[Option<NativeStraightlineValue>],
+    code: &[Instr],
+    int_consts: &[i64],
+    strings: &[String],
+    heap_values: &[ConstHeapValueData],
+    pc: usize,
+    reg: u8,
+) -> Option<NativeScalarKind> {
+    let prev_pc = (0..pc).rev().find(|prev_pc| code[*prev_pc].a() == reg)?;
+    let call = code.get(prev_pc).copied()?;
+    if call.opcode() != Opcode::Call || call.a() != call.b() {
+        return None;
+    }
+    let target = static_value_before_call(static_regs, code, int_consts, strings, heap_values, prev_pc, call.b())
+        .or_else(|| static_regs_target_before_call(code, int_consts, strings, heap_values, prev_pc, call.b()))?;
+    native_builtin_return_kind_dynamic(&target, call.c())
+}
+
+fn static_value_before_call(
+    static_regs: &[Option<NativeStraightlineValue>],
+    code: &[Instr],
+    int_consts: &[i64],
+    strings: &[String],
+    heap_values: &[ConstHeapValueData],
+    pc: usize,
+    reg: u8,
+) -> Option<NativeStraightlineValue> {
+    for prev_pc in (pc.saturating_sub(64)..pc).rev() {
+        let prev = code.get(prev_pc).copied()?;
+        if prev.a() != reg {
+            continue;
+        }
+        return match prev.opcode() {
+            Opcode::Move if prev.b() != reg => static_regs.get(prev.b() as usize).cloned().flatten().or_else(|| {
+                static_value_before_call(static_regs, code, int_consts, strings, heap_values, prev_pc, prev.b())
+            }),
+            _ => static_regs
+                .get(reg as usize)
+                .cloned()
+                .flatten()
+                .or_else(|| static_regs_target_before_call(code, int_consts, strings, heap_values, pc, reg)),
+        };
+    }
+    static_regs.get(reg as usize).cloned().flatten()
+}
+
+fn static_regs_target_before_call(
+    code: &[Instr],
+    int_consts: &[i64],
+    strings: &[String],
+    heap_values: &[ConstHeapValueData],
+    pc: usize,
+    reg: u8,
+) -> Option<NativeStraightlineValue> {
+    local_static_container_before(code, heap_values, pc, reg)
+        .or_else(|| local_static_index_value_before(code, int_consts, strings, heap_values, pc, reg))
+        .or_else(|| local_static_string_before(code, strings, pc, reg))
+        .or_else(|| local_static_i64_before(code, int_consts, pc, reg))
 }
 
 fn emit_to_string(

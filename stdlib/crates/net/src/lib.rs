@@ -15,11 +15,10 @@ pub mod runtime_native {
 use anyhow::Result;
 use lk_core::{
     module::{ModuleProvider, ModuleRegistry},
-    util::fast_map::fast_hash_map_new,
-    val::{HeapStore, HeapValue, RuntimeVal, TypedMap},
-    vm::{RuntimeExport, import_runtime_export},
+    vm::RuntimeExport,
 };
-use std::sync::Arc;
+use lk_stdlib_common::metadata::StdlibModuleMetadata;
+use lk_stdlib_common::runtime_native::namespace_export;
 
 #[derive(Debug)]
 pub struct NetModule;
@@ -55,15 +54,19 @@ impl ModuleProvider for NetModule {
 }
 
 pub fn register(registry: &mut ModuleRegistry) -> Result<()> {
+    lk_stdlib_common::metadata::register_stdlib_module_metadata(metadata())?;
     registry.register_module("net", Box::new(NetModule::new()))
 }
 
-fn namespace_export(entries: &[(&'static str, RuntimeExport)]) -> Result<RuntimeExport> {
-    let mut heap = HeapStore::new();
-    let mut map = fast_hash_map_new();
-    for (name, export) in entries {
-        map.insert(Arc::<str>::from(*name), import_runtime_export(export, &mut heap)?);
-    }
-    let value = RuntimeVal::Obj(heap.alloc(HeapValue::Map(TypedMap::StringMixed(map))));
-    Ok(RuntimeExport::from_value(value, heap))
+pub fn metadata() -> StdlibModuleMetadata {
+    lk_stdlib_common::stdlib_module_metadata!(
+        net,
+        [
+            socket.addr => String,
+            tcp.close => Bool,
+            tcp.connect => RuntimeValue,
+            tcp.read => RuntimeValue,
+            tcp.write => Int,
+        ]
+    )
 }

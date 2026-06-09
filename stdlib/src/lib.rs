@@ -59,8 +59,10 @@ use lk_core::{
     },
 };
 pub use lk_stdlib_common::metadata::{
-    StdlibArity, StdlibCatalog, StdlibConstValue, StdlibExportKind, StdlibExportSpec, StdlibGlobalSpec,
-    StdlibModuleSpec,
+    StdlibArity, StdlibCallableMetadata, StdlibCatalog, StdlibConstValue, StdlibExportKind, StdlibExportSpec,
+    StdlibGlobalMetadata, StdlibGlobalSpec, StdlibModuleMetadata, StdlibModuleSpec, StdlibReturnKind,
+    register_stdlib_global_metadata, register_stdlib_module_metadata, registered_stdlib_export_metadata,
+    registered_stdlib_global_metadata,
 };
 use std::sync::{Arc, OnceLock};
 
@@ -68,14 +70,98 @@ use runtime_native::runtime_display_value;
 
 static STDLIB_CATALOG: OnceLock<StdlibCatalog> = OnceLock::new();
 
+struct StdlibModuleEntry {
+    name: &'static str,
+    register: fn(&mut ModuleRegistry) -> Result<()>,
+}
+
+macro_rules! define_stdlib_modules {
+    ($($name:literal => $register:path as $wrapper:ident),+ $(,)?) => {
+        const STDLIB_MODULES: &[StdlibModuleEntry] = &[
+            $(
+                StdlibModuleEntry {
+                    name: $name,
+                    register: $register,
+                },
+            )+
+        ];
+
+        $(
+            pub fn $wrapper(registry: &mut ModuleRegistry) -> Result<()> {
+                $register(registry)
+            }
+        )+
+    };
+}
+
+macro_rules! register_full_state_builtin {
+    ($registry:expr, $name:ident => $function:ident / $arity:expr => $first:ident $(. $rest:ident)* : $return_kind:ident) => {
+        register_runtime_builtin_full_state(
+            $registry,
+            stringify!($name),
+            $function,
+            $arity,
+            Some(lk_stdlib_common::stdlib_global_metadata!(
+                $name => $first $(. $rest)* : $return_kind
+            )),
+        );
+    };
+}
+
+macro_rules! register_plain_builtin {
+    ($registry:expr, $name:ident => $function:ident / $arity:expr) => {
+        register_runtime_builtin($registry, stringify!($name), $function, $arity, None);
+    };
+    ($registry:expr, $name:ident => $function:ident / $arity:expr => $first:ident $(. $rest:ident)* : $return_kind:ident) => {
+        register_runtime_builtin(
+            $registry,
+            stringify!($name),
+            $function,
+            $arity,
+            Some(lk_stdlib_common::stdlib_global_metadata!(
+                $name => $first $(. $rest)* : $return_kind
+            )),
+        );
+    };
+    ($registry:expr, $name:literal => $function:ident / $arity:expr) => {
+        register_runtime_builtin($registry, $name, $function, $arity, None);
+    };
+}
+
+define_stdlib_modules!(
+    "io" => io::register as register_stdlib_module_io,
+    "encoding" => encoding::register as register_stdlib_module_encoding,
+    "bytes" => bytes::register as register_stdlib_module_bytes,
+    "iter" => iter::register as register_stdlib_module_iter,
+    "math" => math::register as register_stdlib_module_math,
+    "string" => string::register as register_stdlib_module_string,
+    "datetime" => datetime::register as register_stdlib_module_datetime,
+    "os" => os::register as register_stdlib_module_os,
+    "fs" => fs::register as register_stdlib_module_fs,
+    "path" => path::register as register_stdlib_module_path,
+    "env" => env::register as register_stdlib_module_env,
+    "process" => process::register as register_stdlib_module_process,
+    "hash" => hash::register as register_stdlib_module_hash,
+    "regex" => regex::register as register_stdlib_module_regex,
+    "random" => random::register as register_stdlib_module_random,
+    "uuid" => uuid::register as register_stdlib_module_uuid,
+    "http" => http::register as register_stdlib_module_http,
+    "net" => net::register as register_stdlib_module_net,
+    "slice" => slice::register as register_stdlib_module_slice,
+    "stream" => stream::register as register_stdlib_module_stream,
+    "task" => concurrency_task::register as register_stdlib_module_task,
+    "chan" => concurrency_chan::register as register_stdlib_module_chan,
+    "time" => time::register as register_stdlib_module_time,
+);
+
 pub fn stdlib_catalog() -> &'static StdlibCatalog {
     STDLIB_CATALOG.get_or_init(build_stdlib_catalog)
 }
 
 /// Register all stdlib modules with the given registry
 pub fn register_stdlib_modules(registry: &mut ModuleRegistry) -> Result<()> {
-    for name in stdlib_module_names() {
-        register_stdlib_module_by_name(registry, name)?;
+    for entry in STDLIB_MODULES {
+        (entry.register)(registry)?;
     }
     Ok(())
 }
@@ -90,40 +176,14 @@ pub fn register_stdlib_modules_named(registry: &mut ModuleRegistry, names: &[Str
 }
 
 fn register_stdlib_module_by_name(registry: &mut ModuleRegistry, name: &str) -> Result<()> {
-    match name {
-        "io" => io::register(registry)?,
-        "encoding" => encoding::register(registry)?,
-        "bytes" => bytes::register(registry)?,
-        "iter" => iter::register(registry)?,
-        "math" => math::register(registry)?,
-        "string" => string::register(registry)?,
-        "datetime" => datetime::register(registry)?,
-        "os" => os::register(registry)?,
-        "fs" => fs::register(registry)?,
-        "path" => path::register(registry)?,
-        "env" => env::register(registry)?,
-        "process" => process::register(registry)?,
-        "hash" => hash::register(registry)?,
-        "regex" => regex::register(registry)?,
-        "random" => random::register(registry)?,
-        "uuid" => uuid::register(registry)?,
-        "http" => http::register(registry)?,
-        "net" => net::register(registry)?,
-        "slice" => slice::register(registry)?,
-        "stream" => stream::register(registry)?,
-        "task" => concurrency_task::register(registry)?,
-        "chan" => concurrency_chan::register(registry)?,
-        "time" => time::register(registry)?,
-        _ => {}
+    if let Some(entry) = STDLIB_MODULES.iter().find(|entry| entry.name == name) {
+        (entry.register)(registry)?;
     }
     Ok(())
 }
 
-fn stdlib_module_names() -> &'static [&'static str] {
-    &[
-        "io", "encoding", "bytes", "iter", "math", "string", "datetime", "os", "fs", "path", "env", "process", "hash",
-        "regex", "random", "uuid", "http", "net", "slice", "stream", "task", "chan", "time",
-    ]
+fn stdlib_module_names() -> impl Iterator<Item = &'static str> {
+    STDLIB_MODULES.iter().map(|entry| entry.name)
 }
 
 fn build_stdlib_catalog() -> StdlibCatalog {
@@ -143,7 +203,7 @@ fn build_stdlib_catalog() -> StdlibCatalog {
             .unwrap_or_default();
         let display = catalog_module_display(&exports);
         modules.push(StdlibModuleSpec {
-            name: (*name).to_string(),
+            name: name.to_string(),
             detail: "stdlib module".to_string(),
             display,
             exports,
@@ -157,11 +217,13 @@ fn build_stdlib_catalog() -> StdlibCatalog {
         .filter(|(name, _)| !name.contains("::") && !name.contains('$'))
         .filter_map(|(name, export)| {
             let arity = catalog_global_arity(export)?;
+            let metadata = registered_stdlib_global_metadata(name);
             Some(StdlibGlobalSpec {
                 name: name.to_string(),
                 arity,
                 detail: catalog_function_detail(name, arity),
-                lowering_key: stdlib_global_lowering_key(name),
+                lowering_key: metadata.map(|metadata| metadata.lowering_key),
+                return_kind: metadata.map(|metadata| metadata.return_kind),
             })
         })
         .collect();
@@ -192,19 +254,17 @@ fn catalog_exports_from_runtime(path: &str, value: &RuntimeVal, heap: &HeapStore
 fn catalog_export_from_runtime(path: &str, name: String, value: &RuntimeVal, heap: &HeapStore) -> StdlibExportSpec {
     match value {
         RuntimeVal::Obj(handle) => match heap.get(*handle) {
-            Some(HeapValue::Callable(CallableValue::RuntimeNative {
-                name: native_name,
-                arity,
-                ..
-            })) => {
+            Some(HeapValue::Callable(CallableValue::RuntimeNative { name: _, arity, .. })) => {
                 let arity = catalog_arity(*arity);
+                let metadata = registered_stdlib_export_metadata(path);
                 StdlibExportSpec {
                     name,
                     kind: StdlibExportKind::Function,
                     arity: Some(arity),
                     detail: catalog_function_detail(path, arity),
-                    display: catalog_function_display(native_name, arity),
-                    lowering_key: stdlib_export_lowering_key(path),
+                    display: catalog_function_display(path.rsplit('.').next().unwrap_or(path), arity),
+                    lowering_key: metadata.map(|metadata| metadata.lowering_key),
+                    return_kind: metadata.map(|metadata| metadata.return_kind),
                     const_value: None,
                     children: Vec::new(),
                 }
@@ -219,6 +279,7 @@ fn catalog_export_from_runtime(path: &str, name: String, value: &RuntimeVal, hea
                     detail: "stdlib namespace".to_string(),
                     display,
                     lowering_key: None,
+                    return_kind: None,
                     const_value: None,
                     children,
                 }
@@ -230,13 +291,15 @@ fn catalog_export_from_runtime(path: &str, name: String, value: &RuntimeVal, hea
 }
 
 fn catalog_value_export(path: &str, name: String, value: &RuntimeVal, heap: &HeapStore) -> StdlibExportSpec {
+    let metadata = registered_stdlib_export_metadata(path);
     StdlibExportSpec {
         name,
         kind: StdlibExportKind::Value,
         arity: None,
         detail: "stdlib value".to_string(),
         display: runtime_display_value(value, heap).unwrap_or_else(|_| format!("<value {path}>")),
-        lowering_key: stdlib_export_lowering_key(path),
+        lowering_key: metadata.map(|metadata| metadata.lowering_key),
+        return_kind: metadata.map(|metadata| metadata.return_kind),
         const_value: catalog_const_value(value, heap),
         children: Vec::new(),
     }
@@ -300,240 +363,6 @@ fn catalog_const_value(value: &RuntimeVal, heap: &HeapStore) -> Option<StdlibCon
     }
 }
 
-fn stdlib_global_lowering_key(name: &str) -> Option<&'static str> {
-    match name {
-        "print" => Some("core.print"),
-        "println" => Some("core.println"),
-        "panic" => Some("core.panic"),
-        "chan" => Some("core.chan"),
-        "send" => Some("core.send"),
-        "recv" => Some("core.recv"),
-        _ => None,
-    }
-}
-
-fn stdlib_export_lowering_key(path: &str) -> Option<&'static str> {
-    match path {
-        "datetime.add" => Some("datetime.add"),
-        "bytes.to_string_utf8" => Some("bytes.to_string_utf8"),
-        "datetime.day_of_week" => Some("datetime.day_of_week"),
-        "datetime.day_of_year" => Some("datetime.day_of_year"),
-        "datetime.format" => Some("datetime.format"),
-        "datetime.is_weekend" => Some("datetime.is_weekend"),
-        "datetime.now" => Some("datetime.now"),
-        "datetime.sub" => Some("datetime.sub"),
-        "env.get_or" => Some("env.get_or"),
-        "encoding.json.parse" => Some("encoding.json.parse"),
-        "encoding.toml.parse" => Some("encoding.toml.parse"),
-        "encoding.yaml.parse" => Some("encoding.yaml.parse"),
-        "fs.exists" => Some("fs.exists"),
-        "fs.read_dir" => Some("fs.read_dir"),
-        "fs.temp_dir" => Some("fs.temp_dir"),
-        "io.std.flush" => Some("io.std.flush"),
-        "io.std.read_to_string" => Some("io.std.read_to_string"),
-        "io.std.stderr" => Some("io.std.stderr"),
-        "io.std.stdin" => Some("io.std.stdin"),
-        "io.std.stdout" => Some("io.std.stdout"),
-        "io.std.write" => Some("io.std.write"),
-        "io.std.writeln" => Some("io.std.writeln"),
-        "iter.chain" => Some("iter.chain"),
-        "iter.chunk" => Some("iter.chunk"),
-        "iter.collect" => Some("iter.collect"),
-        "iter.enumerate" => Some("iter.enumerate"),
-        "iter.filter" => Some("iter.filter"),
-        "iter.flatten" => Some("iter.flatten"),
-        "iter.map" => Some("iter.map"),
-        "iter.next" => Some("iter.next"),
-        "iter.range" => Some("iter.range"),
-        "iter.reduce" => Some("iter.reduce"),
-        "iter.skip" => Some("iter.skip"),
-        "iter.take" => Some("iter.take"),
-        "iter.unique" => Some("iter.unique"),
-        "iter.zip" => Some("iter.zip"),
-        "math.abs" => Some("math.abs"),
-        "math.acos" => Some("math.acos"),
-        "math.asin" => Some("math.asin"),
-        "math.atan" => Some("math.atan"),
-        "math.atan2" => Some("math.atan2"),
-        "math.cbrt" => Some("math.cbrt"),
-        "math.ceil" => Some("math.ceil"),
-        "math.clamp" => Some("math.clamp"),
-        "math.cos" => Some("math.cos"),
-        "math.cosh" => Some("math.cosh"),
-        "math.e" => Some("math.e"),
-        "math.epsilon" => Some("math.epsilon"),
-        "math.exp" => Some("math.exp"),
-        "math.floor" => Some("math.floor"),
-        "math.fract" => Some("math.fract"),
-        "math.hypot" => Some("math.hypot"),
-        "math.inf" => Some("math.inf"),
-        "math.is_inf" => Some("math.is_inf"),
-        "math.is_nan" => Some("math.is_nan"),
-        "math.log" => Some("math.log"),
-        "math.log10" => Some("math.log10"),
-        "math.log2" => Some("math.log2"),
-        "math.max" => Some("math.max"),
-        "math.max_float" => Some("math.max_float"),
-        "math.max_int" => Some("math.max_int"),
-        "math.min" => Some("math.min"),
-        "math.min_int" => Some("math.min_int"),
-        "math.nan" => Some("math.nan"),
-        "math.pi" => Some("math.pi"),
-        "math.pow" => Some("math.pow"),
-        "math.round" => Some("math.round"),
-        "math.sign" => Some("math.sign"),
-        "math.sin" => Some("math.sin"),
-        "math.sinh" => Some("math.sinh"),
-        "math.sqrt" => Some("math.sqrt"),
-        "math.tan" => Some("math.tan"),
-        "math.tanh" => Some("math.tanh"),
-        "math.to_float" => Some("math.to_float"),
-        "math.to_int" => Some("math.to_int"),
-        "math.trunc" => Some("math.trunc"),
-        "net.socket.addr" => Some("net.socket.addr"),
-        "net.tcp.close" => Some("net.tcp.close"),
-        "net.tcp.connect" => Some("net.tcp.connect"),
-        "net.tcp.read" => Some("net.tcp.read"),
-        "net.tcp.write" => Some("net.tcp.write"),
-        "os.arch" => Some("os.arch"),
-        "os.clock" => Some("os.clock"),
-        "os.epoch" => Some("os.epoch"),
-        "os.hostname" => Some("os.hostname"),
-        "os.os" => Some("os.os"),
-        "path.sep" => Some("path.sep"),
-        "process.cwd" => Some("process.cwd"),
-        "stream.chain" => Some("stream.chain"),
-        "stream.collect" => Some("stream.collect"),
-        "stream.filter" => Some("stream.filter"),
-        "stream.from_list" => Some("stream.from_list"),
-        "stream.map" => Some("stream.map"),
-        "stream.range" => Some("stream.range"),
-        "stream.skip" => Some("stream.skip"),
-        "stream.take" => Some("stream.take"),
-        "string.byte" => Some("string.byte"),
-        "string.capitalize" => Some("string.capitalize"),
-        "string.char" => Some("string.char"),
-        "string.chars" => Some("string.chars"),
-        "string.contains" => Some("string.contains"),
-        "string.count" => Some("string.count"),
-        "string.ends_with" => Some("string.ends_with"),
-        "string.find" => Some("string.find"),
-        "string.format" => Some("string.format"),
-        "string.is_empty" => Some("string.is_empty"),
-        "string.join" => Some("string.join"),
-        "string.len" => Some("string.len"),
-        "string.lower" => Some("string.lower"),
-        "string.pad_left" => Some("string.pad_left"),
-        "string.pad_right" => Some("string.pad_right"),
-        "string.repeat" => Some("string.repeat"),
-        "string.replace" => Some("string.replace"),
-        "string.reverse" => Some("string.reverse"),
-        "string.split" => Some("string.split"),
-        "string.starts_with" => Some("string.starts_with"),
-        "string.strip" => Some("string.strip"),
-        "string.strip_prefix" => Some("string.strip_prefix"),
-        "string.strip_suffix" => Some("string.strip_suffix"),
-        "string.substring" => Some("string.substring"),
-        "string.title" => Some("string.title"),
-        "string.to_float" => Some("string.to_float"),
-        "string.to_int" => Some("string.to_int"),
-        "string.trim" => Some("string.trim"),
-        "string.upper" => Some("string.upper"),
-        "time.now" => Some("time.now"),
-        "time.since" => Some("time.since"),
-        "time.sleep" => Some("time.sleep"),
-        _ => None,
-    }
-}
-
-pub fn register_stdlib_module_io(registry: &mut ModuleRegistry) -> Result<()> {
-    io::register(registry)
-}
-
-pub fn register_stdlib_module_encoding(registry: &mut ModuleRegistry) -> Result<()> {
-    encoding::register(registry)
-}
-
-pub fn register_stdlib_module_bytes(registry: &mut ModuleRegistry) -> Result<()> {
-    bytes::register(registry)
-}
-
-pub fn register_stdlib_module_iter(registry: &mut ModuleRegistry) -> Result<()> {
-    iter::register(registry)
-}
-
-pub fn register_stdlib_module_math(registry: &mut ModuleRegistry) -> Result<()> {
-    math::register(registry)
-}
-
-pub fn register_stdlib_module_string(registry: &mut ModuleRegistry) -> Result<()> {
-    string::register(registry)
-}
-
-pub fn register_stdlib_module_datetime(registry: &mut ModuleRegistry) -> Result<()> {
-    datetime::register(registry)
-}
-
-pub fn register_stdlib_module_os(registry: &mut ModuleRegistry) -> Result<()> {
-    os::register(registry)
-}
-
-pub fn register_stdlib_module_fs(registry: &mut ModuleRegistry) -> Result<()> {
-    fs::register(registry)
-}
-
-pub fn register_stdlib_module_path(registry: &mut ModuleRegistry) -> Result<()> {
-    path::register(registry)
-}
-
-pub fn register_stdlib_module_env(registry: &mut ModuleRegistry) -> Result<()> {
-    env::register(registry)
-}
-
-pub fn register_stdlib_module_process(registry: &mut ModuleRegistry) -> Result<()> {
-    process::register(registry)
-}
-
-pub fn register_stdlib_module_hash(registry: &mut ModuleRegistry) -> Result<()> {
-    hash::register(registry)
-}
-
-pub fn register_stdlib_module_regex(registry: &mut ModuleRegistry) -> Result<()> {
-    regex::register(registry)
-}
-
-pub fn register_stdlib_module_random(registry: &mut ModuleRegistry) -> Result<()> {
-    random::register(registry)
-}
-
-pub fn register_stdlib_module_uuid(registry: &mut ModuleRegistry) -> Result<()> {
-    uuid::register(registry)
-}
-
-pub fn register_stdlib_module_http(registry: &mut ModuleRegistry) -> Result<()> {
-    http::register(registry)
-}
-
-pub fn register_stdlib_module_net(registry: &mut ModuleRegistry) -> Result<()> {
-    net::register(registry)
-}
-
-pub fn register_stdlib_module_stream(registry: &mut ModuleRegistry) -> Result<()> {
-    stream::register(registry)
-}
-
-pub fn register_stdlib_module_task(registry: &mut ModuleRegistry) -> Result<()> {
-    concurrency_task::register(registry)
-}
-
-pub fn register_stdlib_module_chan(registry: &mut ModuleRegistry) -> Result<()> {
-    concurrency_chan::register(registry)
-}
-
-pub fn register_stdlib_module_time(registry: &mut ModuleRegistry) -> Result<()> {
-    time::register(registry)
-}
-
 /// Register global builtin functions available without use
 /// - print(fmt, ...args): print formatted text without newline; returns nil
 /// - println(fmt, ...args): print formatted text with newline; returns nil
@@ -542,40 +371,52 @@ pub fn register_stdlib_module_time(registry: &mut ModuleRegistry) -> Result<()> 
 /// - assert_eq(actual, expected[, msg]): panic unless values are equal
 /// - assert_ne(actual, expected[, msg]): panic unless values are not equal
 pub fn register_stdlib_core_globals(registry: &mut ModuleRegistry) {
-    register_runtime_builtin_full_state(registry, "print", print, NativeEntry::VARIADIC);
-    register_runtime_builtin_full_state(registry, "println", println, NativeEntry::VARIADIC);
-    register_runtime_builtin_full_state(registry, "panic", panic, NativeEntry::VARIADIC);
-    register_runtime_builtin_full_state(registry, "assert", assert, NativeEntry::VARIADIC);
-    register_runtime_builtin_full_state(registry, "assert_eq", assert_eq, NativeEntry::VARIADIC);
-    register_runtime_builtin_full_state(registry, "assert_ne", assert_ne, NativeEntry::VARIADIC);
+    register_full_state_builtin!(registry, print => print / NativeEntry::VARIADIC => core.print: Nil);
+    register_full_state_builtin!(registry, println => println / NativeEntry::VARIADIC => core.println: Nil);
+    register_full_state_builtin!(registry, panic => panic / NativeEntry::VARIADIC => core.panic: Nil);
+    register_full_state_builtin!(registry, assert => assert / NativeEntry::VARIADIC => core.assert: Nil);
+    register_full_state_builtin!(registry, assert_eq => assert_eq / NativeEntry::VARIADIC => core.assert_eq: Nil);
+    register_full_state_builtin!(registry, assert_ne => assert_ne / NativeEntry::VARIADIC => core.assert_ne: Nil);
 }
 
 pub fn register_stdlib_concurrency_globals(registry: &mut ModuleRegistry) {
-    register_runtime_builtin(registry, "spawn", spawn, 1);
-    register_runtime_builtin(registry, "chan", chan, NativeEntry::VARIADIC);
-    register_runtime_builtin(registry, "send", send, 2);
-    register_runtime_builtin(registry, "recv", recv, 1);
-    register_runtime_builtin(registry, "chan::try_send", chan_try_send, 2);
-    register_runtime_builtin(registry, "chan::try_recv", chan_try_recv, 1);
-    register_runtime_builtin(registry, "select$block", select_block, 5);
+    register_plain_builtin!(registry, spawn => spawn / 1);
+    register_plain_builtin!(registry, chan => chan / NativeEntry::VARIADIC => core.chan: RuntimeValue);
+    register_plain_builtin!(registry, send => send / 2 => core.send: Nil);
+    register_plain_builtin!(registry, recv => recv / 1 => core.recv: RuntimeValue);
+    register_plain_builtin!(registry, "chan::try_send" => chan_try_send / 2);
+    register_plain_builtin!(registry, "chan::try_recv" => chan_try_recv / 1);
+    register_plain_builtin!(registry, "select$block" => select_block / 5);
 }
 
 fn register_runtime_builtin(
     registry: &mut ModuleRegistry,
-    name: &str,
+    name: &'static str,
     function: fn(NativeArgs<'_>, &mut NativeRuntime<'_>) -> Result<RuntimeVal>,
     arity: u16,
+    metadata: Option<StdlibGlobalMetadata>,
 ) {
+    register_global_metadata(name, metadata);
     registry.register_runtime_builtin(name, NativeFunction::Plain(function), arity);
 }
 
 fn register_runtime_builtin_full_state(
     registry: &mut ModuleRegistry,
-    name: &str,
+    name: &'static str,
     function: fn(NativeArgs<'_>, &mut NativeRuntime<'_>) -> Result<RuntimeVal>,
     arity: u16,
+    metadata: Option<StdlibGlobalMetadata>,
 ) {
+    register_global_metadata(name, metadata);
     registry.register_runtime_builtin(name, NativeFunction::FullState(function), arity);
+}
+
+fn register_global_metadata(name: &'static str, metadata: Option<StdlibGlobalMetadata>) {
+    let Some(metadata) = metadata else {
+        return;
+    };
+    debug_assert_eq!(metadata.name, name);
+    register_stdlib_global_metadata(metadata).expect("stdlib global metadata should be consistent");
 }
 
 fn print(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
@@ -1353,6 +1194,7 @@ mod runtime_registration_tests {
     fn named_registration_includes_only_requested_modules() {
         let mut registry = ModuleRegistry::new();
         register_stdlib_modules_named(&mut registry, &["math".to_string()]).expect("register math");
+        register_stdlib_modules_named(&mut registry, &["math".to_string()]).expect("register math again");
 
         assert!(registry.get_module("math").is_ok());
         assert!(registry.get_module("json").is_err());

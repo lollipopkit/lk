@@ -4,6 +4,7 @@
 //! Split out from `facts.rs` to keep each file under the 1500-line limit.
 
 use crate::llvm::scalar::kind::{NativeScalarFacts, NativeScalarKind};
+use crate::llvm::stdlib_catalog::stdlib_builtin_return_kind;
 use crate::llvm::straightline_value::{
     NativeBuiltin, NativeListElementKind, NativeMapKeyKind, NativeMapValueKind, NativeStraightlineValue,
     NativeTextPart, native_static_index, native_straightline_heap_const_value,
@@ -15,15 +16,12 @@ pub(in crate::llvm) fn native_builtin_return_kind_dynamic(
     target: &NativeStraightlineValue,
     arg_count: u8,
 ) -> Option<NativeScalarKind> {
+    if let NativeStraightlineValue::Builtin(builtin) = target
+        && let Some(kind) = stdlib_builtin_return_kind(*builtin, usize::from(arg_count))
+    {
+        return Some(kind);
+    }
     match target {
-        NativeStraightlineValue::Builtin(
-            NativeBuiltin::Print
-            | NativeBuiltin::Println
-            | NativeBuiltin::Assert
-            | NativeBuiltin::AssertEq
-            | NativeBuiltin::AssertNe
-            | NativeBuiltin::Panic,
-        ) => Some(NativeScalarKind::Nil),
         NativeStraightlineValue::Builtin(NativeBuiltin::BitAnd | NativeBuiltin::BitNot | NativeBuiltin::BitOr) => {
             Some(NativeScalarKind::I64)
         }
@@ -32,28 +30,7 @@ pub(in crate::llvm) fn native_builtin_return_kind_dynamic(
         }
         NativeStraightlineValue::Builtin(NativeBuiltin::CoreSet) if arg_count == 1 => Some(NativeScalarKind::I64),
         NativeStraightlineValue::Builtin(NativeBuiltin::CoreTypeof) => Some(NativeScalarKind::StrPtr),
-        NativeStraightlineValue::Builtin(NativeBuiltin::BytesToStringUtf8) if arg_count == 1 => {
-            Some(NativeScalarKind::StrPtr)
-        }
         NativeStraightlineValue::Builtin(NativeBuiltin::CoreCallMethod) => Some(NativeScalarKind::MaybeI64),
-        NativeStraightlineValue::Builtin(NativeBuiltin::Chan) => Some(NativeScalarKind::I64),
-        NativeStraightlineValue::Builtin(NativeBuiltin::Send) => Some(NativeScalarKind::Nil),
-        NativeStraightlineValue::Builtin(NativeBuiltin::Recv) => Some(NativeScalarKind::I64),
-        NativeStraightlineValue::Builtin(
-            NativeBuiltin::DatetimeAdd
-            | NativeBuiltin::DatetimeDayOfWeek
-            | NativeBuiltin::DatetimeDayOfYear
-            | NativeBuiltin::DatetimeIsWeekend
-            | NativeBuiltin::DatetimeNow
-            | NativeBuiltin::DatetimeSub,
-        ) => Some(NativeScalarKind::I64),
-        NativeStraightlineValue::Builtin(NativeBuiltin::DatetimeFormat) => Some(NativeScalarKind::StrPtr),
-        NativeStraightlineValue::Builtin(NativeBuiltin::EnvGetOr) if arg_count == 2 => Some(NativeScalarKind::StrPtr),
-        NativeStraightlineValue::Builtin(NativeBuiltin::FsExists) if arg_count == 1 => Some(NativeScalarKind::Bool),
-        NativeStraightlineValue::Builtin(NativeBuiltin::FsReadDir) if arg_count == 1 => Some(NativeScalarKind::I64),
-        NativeStraightlineValue::Builtin(NativeBuiltin::FsTempDir | NativeBuiltin::PathSep) if arg_count == 0 => {
-            Some(NativeScalarKind::StrPtr)
-        }
         NativeStraightlineValue::Builtin(NativeBuiltin::FibIterative | NativeBuiltin::MathlibDouble)
             if arg_count == 1 =>
         {
@@ -62,53 +39,8 @@ pub(in crate::llvm) fn native_builtin_return_kind_dynamic(
         NativeStraightlineValue::Builtin(NativeBuiltin::GreetingsMessage) if arg_count == 1 => {
             Some(NativeScalarKind::StrPtr)
         }
-        NativeStraightlineValue::Builtin(
-            NativeBuiltin::IoStdStdin | NativeBuiltin::IoStdStdout | NativeBuiltin::IoStdStderr,
-        ) if arg_count == 0 => Some(NativeScalarKind::I64),
-        NativeStraightlineValue::Builtin(NativeBuiltin::IoStdReadToString) if arg_count == 1 => {
-            Some(NativeScalarKind::StrPtr)
-        }
-        NativeStraightlineValue::Builtin(
-            NativeBuiltin::IoStdWrite | NativeBuiltin::IoStdWriteln | NativeBuiltin::IoStdFlush,
-        ) => Some(NativeScalarKind::Nil),
-        NativeStraightlineValue::Builtin(NativeBuiltin::IterRange)
-            if arg_count == 1 || arg_count == 2 || arg_count == 3 =>
-        {
-            Some(NativeScalarKind::I64)
-        }
-        NativeStraightlineValue::Builtin(
-            NativeBuiltin::MathSqrt
-            | NativeBuiltin::MathPow
-            | NativeBuiltin::MathExp
-            | NativeBuiltin::MathSin
-            | NativeBuiltin::MathCos,
-        ) => Some(NativeScalarKind::F64),
-        NativeStraightlineValue::Builtin(
-            NativeBuiltin::MathAbs
-            | NativeBuiltin::MathFloor
-            | NativeBuiltin::MathCeil
-            | NativeBuiltin::MathRound
-            | NativeBuiltin::MathMin
-            | NativeBuiltin::MathMax,
-        ) => Some(NativeScalarKind::I64),
-        NativeStraightlineValue::Builtin(NativeBuiltin::MathModuleMethod(method)) => math_module_return_kind(method),
-        NativeStraightlineValue::Builtin(NativeBuiltin::TimeNow) if arg_count == 0 => Some(NativeScalarKind::I64),
-        NativeStraightlineValue::Builtin(NativeBuiltin::TimeSleep) if arg_count == 1 => Some(NativeScalarKind::Nil),
-        NativeStraightlineValue::Builtin(NativeBuiltin::TimeSince) if arg_count == 2 => Some(NativeScalarKind::I64),
-        NativeStraightlineValue::Builtin(NativeBuiltin::StreamFromList | NativeBuiltin::StreamCollect) => {
-            Some(NativeScalarKind::I64)
-        }
-        NativeStraightlineValue::Builtin(
-            NativeBuiltin::IterMap | NativeBuiltin::IterFilter | NativeBuiltin::IterReduce,
-        ) => Some(NativeScalarKind::I64),
-        NativeStraightlineValue::Builtin(NativeBuiltin::IterModuleMethod(method)) => {
-            native_iter_module_return_kind(method)
-        }
         NativeStraightlineValue::Builtin(NativeBuiltin::StringLen | NativeBuiltin::ListLen) => {
             Some(NativeScalarKind::I64)
-        }
-        NativeStraightlineValue::Builtin(NativeBuiltin::StringModuleMethod(method)) => {
-            native_string_module_return_kind(method)
         }
         NativeStraightlineValue::Builtin(NativeBuiltin::MapModuleMethod(method)) => {
             native_map_module_return_kind(method)
@@ -120,19 +52,6 @@ pub(in crate::llvm) fn native_builtin_return_kind_dynamic(
         NativeStraightlineValue::Builtin(NativeBuiltin::MapSet | NativeBuiltin::MapMutate) => {
             Some(NativeScalarKind::I64)
         }
-        NativeStraightlineValue::Builtin(NativeBuiltin::OsHostname | NativeBuiltin::OsArch | NativeBuiltin::OsName)
-            if arg_count == 0 =>
-        {
-            Some(NativeScalarKind::StrPtr)
-        }
-        NativeStraightlineValue::Builtin(NativeBuiltin::ProcessCwd) if arg_count == 0 => {
-            Some(NativeScalarKind::StrPtr)
-        }
-        NativeStraightlineValue::Builtin(NativeBuiltin::SocketAddr) if arg_count == 2 => Some(NativeScalarKind::StrPtr),
-        NativeStraightlineValue::Builtin(NativeBuiltin::TcpConnect) if arg_count == 1 => Some(NativeScalarKind::I64),
-        NativeStraightlineValue::Builtin(NativeBuiltin::TcpRead) if arg_count == 2 => Some(NativeScalarKind::I64),
-        NativeStraightlineValue::Builtin(NativeBuiltin::TcpWrite) if arg_count == 2 => Some(NativeScalarKind::I64),
-        NativeStraightlineValue::Builtin(NativeBuiltin::TcpClose) if arg_count == 1 => Some(NativeScalarKind::Nil),
         NativeStraightlineValue::Builtin(_) => Some(NativeScalarKind::I64),
         _ => None,
     }
@@ -143,54 +62,21 @@ pub(in crate::llvm) fn native_builtin_return_kind(
     target: NativeStraightlineValue,
     args: &[NativeStraightlineValue],
 ) -> Option<NativeScalarKind> {
+    if let NativeStraightlineValue::Builtin(NativeBuiltin::MathExp | NativeBuiltin::MathSin | NativeBuiltin::MathCos) =
+        target
+        && native_static_math_unary_i64(args).is_some()
+    {
+        return Some(NativeScalarKind::I64);
+    }
+    if let NativeStraightlineValue::Builtin(NativeBuiltin::CoreCallMethod) = target {
+        return native_core_method_return_kind(args);
+    }
+    if let NativeStraightlineValue::Builtin(builtin) = target
+        && let Some(kind) = stdlib_builtin_return_kind(builtin, args.len())
+    {
+        return Some(kind);
+    }
     match target {
-        NativeStraightlineValue::Builtin(NativeBuiltin::OsClock) if args.is_empty() => Some(NativeScalarKind::F64),
-        NativeStraightlineValue::Builtin(NativeBuiltin::OsEpoch) if args.is_empty() => Some(NativeScalarKind::I64),
-        NativeStraightlineValue::Builtin(NativeBuiltin::FsExists) if args.len() == 1 => Some(NativeScalarKind::Bool),
-        NativeStraightlineValue::Builtin(NativeBuiltin::FsTempDir | NativeBuiltin::PathSep) if args.is_empty() => {
-            Some(NativeScalarKind::StrPtr)
-        }
-        NativeStraightlineValue::Builtin(
-            NativeBuiltin::IoStdStdin | NativeBuiltin::IoStdStdout | NativeBuiltin::IoStdStderr,
-        ) if args.is_empty() => Some(NativeScalarKind::I64),
-        NativeStraightlineValue::Builtin(NativeBuiltin::IoStdReadToString) if args.len() == 1 => {
-            Some(NativeScalarKind::StrPtr)
-        }
-        NativeStraightlineValue::Builtin(
-            NativeBuiltin::IoStdWrite | NativeBuiltin::IoStdWriteln | NativeBuiltin::IoStdFlush,
-        ) => Some(NativeScalarKind::Nil),
-        NativeStraightlineValue::Builtin(NativeBuiltin::OsHostname | NativeBuiltin::OsArch | NativeBuiltin::OsName)
-            if args.is_empty() =>
-        {
-            Some(NativeScalarKind::StrPtr)
-        }
-        NativeStraightlineValue::Builtin(NativeBuiltin::IterRange)
-            if args.len() == 1 || args.len() == 2 || args.len() == 3 =>
-        {
-            Some(NativeScalarKind::I64)
-        }
-        NativeStraightlineValue::Builtin(NativeBuiltin::MathExp | NativeBuiltin::MathSin | NativeBuiltin::MathCos)
-            if native_static_math_unary_i64(args).is_some() =>
-        {
-            Some(NativeScalarKind::I64)
-        }
-        NativeStraightlineValue::Builtin(
-            NativeBuiltin::MathSqrt
-            | NativeBuiltin::MathPow
-            | NativeBuiltin::MathExp
-            | NativeBuiltin::MathSin
-            | NativeBuiltin::MathCos,
-        ) => Some(NativeScalarKind::F64),
-        NativeStraightlineValue::Builtin(
-            NativeBuiltin::MathAbs
-            | NativeBuiltin::MathFloor
-            | NativeBuiltin::MathCeil
-            | NativeBuiltin::MathRound
-            | NativeBuiltin::MathMin
-            | NativeBuiltin::MathMax,
-        ) => Some(NativeScalarKind::I64),
-        NativeStraightlineValue::Builtin(NativeBuiltin::MathModuleMethod(method)) => math_module_return_kind(method),
-        NativeStraightlineValue::Builtin(NativeBuiltin::CoreCallMethod) => native_core_method_return_kind(args),
         NativeStraightlineValue::Builtin(NativeBuiltin::BitAnd) if args.len() == 2 => Some(NativeScalarKind::I64),
         NativeStraightlineValue::Builtin(NativeBuiltin::BitOr) if args.len() == 2 => Some(NativeScalarKind::I64),
         NativeStraightlineValue::Builtin(NativeBuiltin::BitNot) if args.len() == 1 => Some(NativeScalarKind::I64),
@@ -201,26 +87,9 @@ pub(in crate::llvm) fn native_builtin_return_kind(
         NativeStraightlineValue::Builtin(NativeBuiltin::CoreMergeFields) if args.len() == 2 => {
             Some(NativeScalarKind::I64)
         }
-        NativeStraightlineValue::Builtin(NativeBuiltin::BytesToStringUtf8) if args.len() == 1 => {
-            Some(NativeScalarKind::StrPtr)
-        }
         NativeStraightlineValue::Builtin(NativeBuiltin::CoreTypeof) if args.len() == 1 => {
             Some(NativeScalarKind::StrPtr)
         }
-        NativeStraightlineValue::Builtin(NativeBuiltin::Chan) => Some(NativeScalarKind::I64),
-        NativeStraightlineValue::Builtin(NativeBuiltin::Send) => Some(NativeScalarKind::Nil),
-        NativeStraightlineValue::Builtin(NativeBuiltin::Recv) => Some(NativeScalarKind::I64),
-        NativeStraightlineValue::Builtin(
-            NativeBuiltin::DatetimeAdd
-            | NativeBuiltin::DatetimeDayOfWeek
-            | NativeBuiltin::DatetimeDayOfYear
-            | NativeBuiltin::DatetimeIsWeekend
-            | NativeBuiltin::DatetimeNow
-            | NativeBuiltin::DatetimeSub,
-        ) => Some(NativeScalarKind::I64),
-        NativeStraightlineValue::Builtin(NativeBuiltin::DatetimeFormat) => Some(NativeScalarKind::StrPtr),
-        NativeStraightlineValue::Builtin(NativeBuiltin::EnvGetOr) if args.len() == 2 => Some(NativeScalarKind::StrPtr),
-        NativeStraightlineValue::Builtin(NativeBuiltin::FsReadDir) if args.len() == 1 => Some(NativeScalarKind::I64),
         NativeStraightlineValue::Builtin(NativeBuiltin::FibIterative | NativeBuiltin::MathlibDouble)
             if args.len() == 1 =>
         {
@@ -229,33 +98,7 @@ pub(in crate::llvm) fn native_builtin_return_kind(
         NativeStraightlineValue::Builtin(NativeBuiltin::GreetingsMessage) if args.len() == 1 => {
             Some(NativeScalarKind::StrPtr)
         }
-        NativeStraightlineValue::Builtin(
-            NativeBuiltin::JsonParse | NativeBuiltin::TomlParse | NativeBuiltin::YamlParse,
-        ) if args.len() == 1 => Some(NativeScalarKind::I64),
-        NativeStraightlineValue::Builtin(NativeBuiltin::TimeNow) if args.is_empty() => Some(NativeScalarKind::I64),
-        NativeStraightlineValue::Builtin(NativeBuiltin::TimeSleep) if args.len() == 1 => Some(NativeScalarKind::Nil),
-        NativeStraightlineValue::Builtin(NativeBuiltin::TimeSince) if args.len() == 2 => Some(NativeScalarKind::I64),
-        NativeStraightlineValue::Builtin(NativeBuiltin::ProcessCwd) if args.is_empty() => {
-            Some(NativeScalarKind::StrPtr)
-        }
-        NativeStraightlineValue::Builtin(NativeBuiltin::SocketAddr) if args.len() == 2 => Some(NativeScalarKind::StrPtr),
-        NativeStraightlineValue::Builtin(NativeBuiltin::TcpConnect) if args.len() == 1 => Some(NativeScalarKind::I64),
-        NativeStraightlineValue::Builtin(NativeBuiltin::TcpRead) if args.len() == 2 => Some(NativeScalarKind::I64),
-        NativeStraightlineValue::Builtin(NativeBuiltin::TcpWrite) if args.len() == 2 => Some(NativeScalarKind::I64),
-        NativeStraightlineValue::Builtin(NativeBuiltin::TcpClose) if args.len() == 1 => Some(NativeScalarKind::Nil),
-        NativeStraightlineValue::Builtin(NativeBuiltin::StreamFromList | NativeBuiltin::StreamCollect) => {
-            Some(NativeScalarKind::I64)
-        }
-        NativeStraightlineValue::Builtin(
-            NativeBuiltin::IterMap | NativeBuiltin::IterFilter | NativeBuiltin::IterReduce,
-        ) => Some(NativeScalarKind::I64),
-        NativeStraightlineValue::Builtin(NativeBuiltin::IterModuleMethod(method)) => {
-            native_iter_module_return_kind(method)
-        }
         NativeStraightlineValue::Builtin(NativeBuiltin::StringLen) if args.len() == 1 => Some(NativeScalarKind::I64),
-        NativeStraightlineValue::Builtin(NativeBuiltin::StringModuleMethod(method)) => {
-            native_string_module_return_kind(method)
-        }
         NativeStraightlineValue::Builtin(NativeBuiltin::MapModuleMethod(method)) => {
             native_map_module_return_kind(method)
         }
@@ -299,16 +142,6 @@ pub(in crate::llvm) fn native_builtin_return_kind(
         NativeStraightlineValue::Builtin(NativeBuiltin::MapSet | NativeBuiltin::MapMutate) => {
             Some(NativeScalarKind::I64)
         }
-        NativeStraightlineValue::Builtin(NativeBuiltin::Print | NativeBuiltin::Println) => Some(NativeScalarKind::Nil),
-        NativeStraightlineValue::Builtin(NativeBuiltin::Assert) if args.len() == 1 || args.len() == 2 => {
-            Some(NativeScalarKind::Nil)
-        }
-        NativeStraightlineValue::Builtin(NativeBuiltin::AssertEq | NativeBuiltin::AssertNe)
-            if args.len() == 2 || args.len() == 3 =>
-        {
-            Some(NativeScalarKind::Nil)
-        }
-        NativeStraightlineValue::Builtin(NativeBuiltin::Panic) if args.len() <= 1 => Some(NativeScalarKind::Nil),
         NativeStraightlineValue::Builtin(_) => Some(NativeScalarKind::I64),
         _ => None,
     }
@@ -331,28 +164,6 @@ fn native_static_math_unary_i64(args: &[NativeStraightlineValue]) -> Option<i64>
         }
     }
     None
-}
-
-fn native_string_module_return_kind(method: &str) -> Option<NativeScalarKind> {
-    match method {
-        "contains" | "ends_with" | "is_empty" | "starts_with" => Some(NativeScalarKind::Bool),
-        "byte" | "count" | "find" | "to_int" => Some(NativeScalarKind::I64),
-        "chars" | "split" => Some(NativeScalarKind::I64),
-        "to_float" => Some(NativeScalarKind::F64),
-        "capitalize" | "char" | "format" | "join" | "lower" | "pad_left" | "pad_right" | "replace" | "repeat"
-        | "reverse" | "strip" | "strip_prefix" | "strip_suffix" | "substring" | "title" | "trim" | "upper" => {
-            Some(NativeScalarKind::StrPtr)
-        }
-        _ => None,
-    }
-}
-
-fn native_iter_module_return_kind(method: &str) -> Option<NativeScalarKind> {
-    match method {
-        "collect" => Some(NativeScalarKind::I64),
-        "next" => Some(NativeScalarKind::I64),
-        _ => None,
-    }
 }
 
 fn native_map_module_return_kind(method: &str) -> Option<NativeScalarKind> {
@@ -765,16 +576,6 @@ fn native_dynamic_list_element_kind(value: &NativeStraightlineValue) -> Option<N
         NativeListElementKind::F64 => Some(NativeScalarKind::F64),
         NativeListElementKind::Bool => Some(NativeScalarKind::Bool),
         NativeListElementKind::StrPtr | NativeListElementKind::Text => Some(NativeScalarKind::StrPtr),
-    }
-}
-
-fn math_module_return_kind(method: &str) -> Option<NativeScalarKind> {
-    match method {
-        "clamp" | "to_int" => Some(NativeScalarKind::I64),
-        "is_nan" | "is_inf" => Some(NativeScalarKind::Bool),
-        "tan" | "asin" | "acos" | "atan" | "atan2" | "log" | "log10" | "log2" | "hypot" | "cbrt" | "sinh" | "cosh"
-        | "tanh" | "trunc" | "fract" | "sign" | "to_float" => Some(NativeScalarKind::F64),
-        _ => None,
     }
 }
 
