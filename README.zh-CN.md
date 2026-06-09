@@ -70,6 +70,7 @@ assert_eq!(result.display_first_return(), "true");
 
 - 进入 REPL：`lk`
 - REPL 补全使用 Reedline：非空前缀会在提示符下方显示候选菜单，最佳候选会以灰色 inline hint 显示在输入框中，`Tab` 循环并插入候选，`Right Arrow` 接受当前 inline hint。
+- REPL 顶层绑定会在当前会话内持久化，后续输入可以继续使用之前声明的变量、常量和函数。
 - 执行源码或模块产物：`lk FILE`（支持 `.lk` 和 `.lkm`）
 - 仅做静态类型检查：`lk check FILE`（输出编译期诊断信息）
 - 编译为可执行模块产物：`lk compile [FILE]` → `FILE.lkm`（省略 `FILE` 时使用当前目录的 `main.lk`、package 的 `src/main.lk`，或单一 workspace app 入口）

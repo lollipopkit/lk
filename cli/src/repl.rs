@@ -9,7 +9,7 @@ use lk_core::{
     stmt::{ModuleResolver, StmtParser},
     token::Tokenizer,
     typ::TypeChecker,
-    vm::VmContext,
+    vm::{ReplExecutionResult, ReplVmSession, VmContext},
 };
 
 use crate::{diagnostic, repl_completion::ReplCompletionState, repl_tui};
@@ -26,7 +26,7 @@ enum ReplStep {
 }
 
 struct ReplSession {
-    env: VmContext,
+    vm: ReplVmSession,
     completion_state: ReplCompletionState,
 }
 
@@ -40,12 +40,13 @@ impl ReplSession {
         lk_stdlib::register_stdlib_globals(&mut registry);
         lk_stdlib::register_stdlib_modules(&mut registry)?;
         let resolver = Arc::new(ModuleResolver::with_registry(registry));
-        let env = VmContext::new()
+        let ctx = VmContext::new()
             .with_resolver(resolver)
             .with_type_checker(Some(TypeChecker::new_strict()));
+        let vm = ReplVmSession::new(ctx, TypeChecker::new());
 
         Ok(Self {
-            env,
+            vm,
             completion_state: ReplCompletionState::new(),
         })
     }
@@ -73,7 +74,7 @@ impl ReplSession {
 
         let mut parser = StmtParser::new_with_spans(&tokens, &spans);
         let Some(result) = (match parser.parse_program_with_enhanced_errors(final_src) {
-            Ok(program) => Some(program.execute_with_ctx(&mut self.env)),
+            Ok(program) => Some(self.vm.execute_program(&program)),
             Err(parse_err) => self.execute_as_expression(final_src, parse_err),
         }) else {
             return ReplStep::Continue;
@@ -109,7 +110,7 @@ impl ReplSession {
         &mut self,
         source: &str,
         statement_error: lk_core::token::ParseError,
-    ) -> Option<anyhow::Result<lk_core::vm::ProgramResult>> {
+    ) -> Option<anyhow::Result<ReplExecutionResult>> {
         let normalized = normalize_binary_signs(source);
         let wrapped = format!("println(({}));", normalized);
         let Ok((tokens, spans)) = Tokenizer::tokenize_enhanced_with_spans(&wrapped) else {
@@ -118,7 +119,7 @@ impl ReplSession {
         };
         let mut parser = StmtParser::new_with_spans(&tokens, &spans);
         match parser.parse_program_with_enhanced_errors(&wrapped) {
-            Ok(program) => Some(program.execute_with_ctx(&mut self.env)),
+            Ok(program) => Some(self.vm.execute_program(&program)),
             Err(_expr_err) => {
                 diagnostic::parse_error(&statement_error, source);
                 None

@@ -70,6 +70,7 @@ assert_eq!(result.display_first_return(), "true");
 
 - Run REPL: `lk`
 - REPL completion uses Reedline: non-empty prefixes show a completion menu below the prompt, the best candidate is shown inline as a gray hint, `Tab` cycles and inserts candidates, and `Right Arrow` accepts the current inline hint.
+- REPL top-level bindings persist for the current session, so later inputs can reuse variables, constants, and functions declared earlier.
 - Execute a source file or module artifact: `lk FILE` (supports `.lk` and `.lkm`)
 - Type-check without executing: `lk check FILE` (reports compile-time diagnostics)
 - Compile to an executable module artifact: `lk compile [FILE]` → `FILE.lkm` (omitting `FILE` uses `./main.lk`, package `./src/main.lk`, or a single workspace app entry)
