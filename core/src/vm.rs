@@ -18,6 +18,7 @@ mod gc;
 mod ir;
 #[cfg(test)]
 mod migration_guard;
+mod repl;
 mod runtime;
 #[allow(dead_code)]
 pub(crate) mod ssa;
@@ -30,6 +31,7 @@ pub use context::VmContext;
 pub use exec::*;
 pub use gc::*;
 pub use ir::*;
+pub use repl::*;
 pub use runtime::*;
 
 pub use analysis::{

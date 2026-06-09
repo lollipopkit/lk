@@ -8,11 +8,11 @@
 use crate::stmt::import::ImportStmt;
 use crate::vm::{Instr, ModuleArtifact, Opcode};
 
-use super::scalar::facts::native_scalar_block_facts_with_statics_and_functions;
+use super::scalar::facts::native_scalar_block_facts_with_static_globals_and_functions;
 use super::straightline_main::{
     native_direct_call_targets_need_blocks, native_scalar_function_needs_blocks, native_straightline_function_has_call,
 };
-use super::straightline_value::native_static_global;
+use super::straightline_value::{native_static_global_with_imports, native_static_import_globals};
 
 pub(crate) fn unsupported_module_artifact_reason(artifact: &ModuleArtifact) -> String {
     let Some(function) = artifact.module.functions.get(artifact.module.entry as usize) else {
@@ -44,7 +44,7 @@ pub(crate) fn unsupported_module_artifact_reason(artifact: &ModuleArtifact) -> S
     let needs_block_lowering =
         native_scalar_function_needs_blocks(&code) || native_direct_call_targets_need_blocks(artifact, &code);
     if needs_block_lowering
-        && native_scalar_block_facts_with_statics_and_functions(
+        && native_scalar_block_facts_with_static_globals_and_functions(
             function.register_count as usize,
             artifact.module.globals.len(),
             &artifact.module.globals,
@@ -52,6 +52,7 @@ pub(crate) fn unsupported_module_artifact_reason(artifact: &ModuleArtifact) -> S
             &function.consts.strings,
             &function.consts.heap_values,
             &code,
+            native_static_import_globals(&artifact.imports, &artifact.module.globals),
             Some(&artifact.module.functions),
         )
         .is_none()
@@ -76,6 +77,7 @@ pub(crate) fn unsupported_module_artifact_reason(artifact: &ModuleArtifact) -> S
 /// Check if a Call instruction's target register holds a statically known
 /// Function/Closure or Builtin target that the block compiler can handle.
 fn call_has_static_target(
+    imports: &[ImportStmt],
     global_names: &[String],
     function: &crate::vm::FunctionData,
     pc: usize,
@@ -103,12 +105,13 @@ fn call_has_static_target(
         match check.opcode() {
             Opcode::GetGlobal => {
                 let name = global_names.get(check.bx() as usize).map(|s| s.as_str()).unwrap_or("");
-                return crate::llvm::straightline_value::native_static_global(name).is_some();
+                return native_static_global_with_imports(imports, name).is_some();
             }
             Opcode::Move => {
                 // Recursively trace through Move chains (r5 -> r1 -> r2 -> LoadFunction/MakeClosure).
                 // Create a synthetic instr with the source register as target_reg.
                 return call_has_static_target(
+                    imports,
                     global_names,
                     function,
                     check_pc,
@@ -136,7 +139,13 @@ fn unsupported_control_flow_call_reason(
             Opcode::Call => {
                 // Check if the target register holds a statically known Builtin (println, panic)
                 // or Function/Closure target. In that case the block compiler handles it.
-                if !call_has_static_target(artifact.module.globals.as_slice(), function, pc, instr) {
+                if !call_has_static_target(
+                    &artifact.imports,
+                    artifact.module.globals.as_slice(),
+                    function,
+                    pc,
+                    instr,
+                ) {
                     return Some(format!(
                         "control-flow dynamic Call at pc {pc} uses callee r{} with {} args; native lowering needs a statically known Function/Closure target and scalar arguments for this call shape",
                         instr.b(),
@@ -147,7 +156,13 @@ fn unsupported_control_flow_call_reason(
             Opcode::CallNamed => {
                 // Check if the target register holds a statically known Function/Closure.
                 // The block compiler can handle this via emit_static_named_call.
-                if !call_has_static_target(artifact.module.globals.as_slice(), function, pc, instr) {
+                if !call_has_static_target(
+                    &artifact.imports,
+                    artifact.module.globals.as_slice(),
+                    function,
+                    pc,
+                    instr,
+                ) {
                     return Some(format!(
                         "control-flow CallNamed at pc {pc} uses callee r{} with packed args {}; native lowering needs a statically known Function/Closure target and scalar positional/named arguments",
                         instr.a(),
@@ -325,7 +340,7 @@ fn unsupported_runtime_global_names(artifact: &ModuleArtifact, code: &[Instr]) -
                 let Some(name) = artifact.module.globals.get(index) else {
                     continue;
                 };
-                if native_static_global(name).is_some() {
+                if native_static_global_with_imports(&artifact.imports, name).is_some() {
                     continue;
                 }
                 if imported_names.is_empty() || imported_names.iter().any(|imported| imported == name) {

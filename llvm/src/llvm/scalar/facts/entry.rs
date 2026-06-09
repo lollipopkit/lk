@@ -11,7 +11,7 @@ use crate::{
 };
 
 #[allow(clippy::too_many_arguments)]
-pub(in crate::llvm) fn native_scalar_block_facts_with_statics_and_functions(
+pub(in crate::llvm) fn native_scalar_block_facts_with_static_globals_and_functions(
     register_count: usize,
     global_count: usize,
     global_names: &[String],
@@ -19,8 +19,21 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_statics_and_functions(
     strings: &[String],
     heap_values: &[ConstHeapValueData],
     code: &[Instr],
+    static_globals: Vec<Option<crate::llvm::straightline_value::NativeStraightlineValue>>,
     functions: Option<&[FunctionData]>,
 ) -> Option<NativeScalarFacts> {
+    debug_assert_eq!(
+        static_globals.len(),
+        global_count,
+        "static global facts length must match global count"
+    );
+    if static_globals.len() != global_count {
+        eprintln!(
+            "native scalar facts static global length mismatch: static_globals={}, global_count={global_count}",
+            static_globals.len()
+        );
+        return None;
+    }
     if let Some(facts) = native_scalar_block_facts_with_initial(
         register_count,
         global_count,
@@ -32,7 +45,7 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_statics_and_functions(
         vec![None; register_count],
         vec![None; register_count],
         vec![None; global_count],
-        vec![None; global_count],
+        static_globals.clone(),
         functions,
         &[],
         0,
@@ -73,7 +86,7 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_statics_and_functions(
             vec![None; register_count],
             vec![None; register_count],
             vec![None; global_count],
-            vec![None; global_count],
+            static_globals.clone(),
             functions,
             &[],
             0,
@@ -97,7 +110,7 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_statics_and_functions(
         vec![None; register_count],
         vec![None; register_count],
         vec![None; global_count],
-        vec![None; global_count],
+        static_globals,
         functions,
         &[],
         0,

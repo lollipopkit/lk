@@ -56,6 +56,21 @@ pub(super) fn stdlib_module_index(
     export.const_value.as_ref().and_then(const_value_to_native)
 }
 
+pub(super) fn stdlib_export_path_value(path: &[&str]) -> Option<NativeStraightlineValue> {
+    let export = stdlib_catalog().export_path(path)?;
+    if export.kind == StdlibExportKind::Module {
+        return Some(NativeStraightlineValue::Module(NativeModule::new(leak_catalog_string(
+            path.join("."),
+        ))));
+    }
+    if let Some(lowering_key) = export.lowering_key
+        && let Some(value) = lowering_key_to_value(lowering_key)
+    {
+        return Some(value);
+    }
+    export.const_value.as_ref().and_then(const_value_to_native)
+}
+
 fn lowering_key_to_value(key: &str) -> Option<NativeStraightlineValue> {
     let builtin = match key {
         "core.print" => NativeBuiltin::Print,
@@ -64,6 +79,7 @@ fn lowering_key_to_value(key: &str) -> Option<NativeStraightlineValue> {
         "core.chan" => NativeBuiltin::Chan,
         "core.send" => NativeBuiltin::Send,
         "core.recv" => NativeBuiltin::Recv,
+        "bytes.to_string_utf8" => NativeBuiltin::BytesToStringUtf8,
         "datetime.add" => NativeBuiltin::DatetimeAdd,
         "datetime.day_of_week" => NativeBuiltin::DatetimeDayOfWeek,
         "datetime.day_of_year" => NativeBuiltin::DatetimeDayOfYear,
@@ -71,9 +87,20 @@ fn lowering_key_to_value(key: &str) -> Option<NativeStraightlineValue> {
         "datetime.is_weekend" => NativeBuiltin::DatetimeIsWeekend,
         "datetime.now" => NativeBuiltin::DatetimeNow,
         "datetime.sub" => NativeBuiltin::DatetimeSub,
+        "env.get_or" => NativeBuiltin::EnvGetOr,
         "encoding.json.parse" => NativeBuiltin::JsonParse,
         "encoding.toml.parse" => NativeBuiltin::TomlParse,
         "encoding.yaml.parse" => NativeBuiltin::YamlParse,
+        "fs.exists" => NativeBuiltin::FsExists,
+        "fs.read_dir" => NativeBuiltin::FsReadDir,
+        "fs.temp_dir" => NativeBuiltin::FsTempDir,
+        "io.std.flush" => NativeBuiltin::IoStdFlush,
+        "io.std.read_to_string" => NativeBuiltin::IoStdReadToString,
+        "io.std.stderr" => NativeBuiltin::IoStdStderr,
+        "io.std.stdin" => NativeBuiltin::IoStdStdin,
+        "io.std.stdout" => NativeBuiltin::IoStdStdout,
+        "io.std.write" => NativeBuiltin::IoStdWrite,
+        "io.std.writeln" => NativeBuiltin::IoStdWriteln,
         "iter.chain" => NativeBuiltin::IterChain,
         "iter.chunk" => NativeBuiltin::IterChunk,
         "iter.collect" => NativeBuiltin::IterModuleMethod("collect"),
@@ -120,11 +147,18 @@ fn lowering_key_to_value(key: &str) -> Option<NativeStraightlineValue> {
         "math.to_float" => NativeBuiltin::MathModuleMethod("to_float"),
         "math.to_int" => NativeBuiltin::MathModuleMethod("to_int"),
         "math.trunc" => NativeBuiltin::MathModuleMethod("trunc"),
+        "net.socket.addr" => NativeBuiltin::SocketAddr,
+        "net.tcp.close" => NativeBuiltin::TcpClose,
+        "net.tcp.connect" => NativeBuiltin::TcpConnect,
+        "net.tcp.read" => NativeBuiltin::TcpRead,
+        "net.tcp.write" => NativeBuiltin::TcpWrite,
         "os.arch" => NativeBuiltin::OsArch,
         "os.clock" => NativeBuiltin::OsClock,
         "os.epoch" => NativeBuiltin::OsEpoch,
         "os.hostname" => NativeBuiltin::OsHostname,
         "os.os" => NativeBuiltin::OsName,
+        "path.sep" => NativeBuiltin::PathSep,
+        "process.cwd" => NativeBuiltin::ProcessCwd,
         "stream.chain" => NativeBuiltin::IterChain,
         "stream.collect" => NativeBuiltin::StreamCollect,
         "stream.filter" => NativeBuiltin::IterFilter,

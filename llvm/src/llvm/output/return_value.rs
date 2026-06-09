@@ -37,6 +37,7 @@ pub(super) fn emit_native_main_return(ir: &mut String, globals: &mut String, val
         NativeStraightlineValue::String { symbol, value, .. }
         | NativeStraightlineValue::List { symbol, value, .. }
         | NativeStraightlineValue::Map { symbol, value, .. }
+        | NativeStraightlineValue::Set { symbol, value, .. }
         | NativeStraightlineValue::Object { symbol, value, .. } => {
             ir.push_str(&format!(
                 "  %print = call i32 (ptr, ...) @printf(ptr @lk_str_fmt, ptr {symbol})\n"

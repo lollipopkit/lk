@@ -20,12 +20,13 @@ use crate::llvm::{
         NativeStringKeyKind, NativeTextPart, native_runtime_string_key_kind, native_static_compare_bool,
         native_static_global, native_static_i64_binary, native_static_index, native_static_list_from_values,
         native_static_list_join, native_static_load_cell, native_static_map_from_pairs, native_static_map_rest,
-        native_static_set_index, native_static_store_cell, native_static_to_iter,
+        native_static_set_from_arg, native_static_set_index, native_static_store_cell, native_static_to_iter,
     },
 };
 use crate::vm::{ConstHeapValueData, ConstRuntimeValueData, FunctionData, Instr, Opcode};
 mod analysis;
 mod arg_lists;
+mod calls;
 mod entry;
 mod list_push;
 mod list_returns;
@@ -37,7 +38,8 @@ mod string_ops;
 pub(in crate::llvm) use super::kind::{NativeScalarFacts, NativeScalarKind};
 use analysis::*;
 use arg_lists::*;
-pub(in crate::llvm) use entry::native_scalar_block_facts_with_statics_and_functions;
+use calls::{CallFactsContext, propagate_call_opcode};
+pub(in crate::llvm) use entry::native_scalar_block_facts_with_static_globals_and_functions;
 use list_push::propagate_list_push;
 use list_returns::dynamic_list_return_value;
 use map_methods::*;
@@ -71,7 +73,11 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
     let mut globals_before = Vec::with_capacity(code.len());
     let static_boundaries = control_flow_static_boundaries(code);
     let mut skip_static_pcs = vec![false; code.len()];
+    let trace = std::env::var_os("LK_NATIVE_FACTS_TRACE").is_some();
     for (pc, instr) in code.iter().copied().enumerate() {
+        if trace {
+            eprintln!("native scalar facts pc={pc:04} {}", instr.disassemble());
+        }
         registers_before.push(kinds.clone());
         globals_before.push(global_kinds.clone());
         if skip_static_pcs.get(pc).copied().unwrap_or(false) {
@@ -838,6 +844,23 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                             return None;
                         }
                     } else {
+                        if elements.iter().all(|value| {
+                            matches!(value, ConstRuntimeValueData::Heap(heap) if matches!(heap.as_ref(), ConstHeapValueData::List(_)))
+                        }) {
+                            if !set_static_value(
+                                &mut kinds,
+                                &mut static_values,
+                                instr.a(),
+                                None,
+                                NativeStraightlineValue::DynamicConstListElement {
+                                    elements: elements.clone(),
+                                    index: format!("%r{}.slot", instr.c()),
+                                },
+                            ) {
+                                return None;
+                            }
+                            continue;
+                        }
                         let kind = if elements.iter().all(|value| {
                             matches!(
                                 value,
@@ -861,6 +884,16 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                         } else if !set_native_kind(&mut kinds, &mut static_values, instr.a(), kind) {
                             return None;
                         }
+                    }
+                } else if let NativeStraightlineValue::DynamicConstListElement { elements, .. } = &target {
+                    if native_kind(&kinds, instr.c()) != Some(NativeScalarKind::I64) {
+                        return None;
+                    }
+                    let Some(kind) = nested_const_list_element_kind(elements) else {
+                        return None;
+                    };
+                    if !set_native_kind(&mut kinds, &mut static_values, instr.a(), kind) {
+                        return None;
                     }
                 } else if let Some(value) =
                     arg_list_get_index_value(&static_values, &kinds, code, int_consts, pc, instr, target.clone())
@@ -976,7 +1009,9 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                     let Some(key) = static_kind(&static_values, instr.b()) else {
                         return None;
                     };
-                    let Some(value) = static_kind(&static_values, instr.c()) else {
+                    let Some(value) = static_kind(&static_values, instr.c())
+                        .or_else(|| local_static_i64_before(code, int_consts, pc, instr.c()))
+                    else {
                         return None;
                     };
                     let Some(value) = native_static_set_index(target, key, value) else {
@@ -1009,7 +1044,9 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                         return None;
                     }
                 } else {
-                    let Some(value) = static_kind(&static_values, instr.b()) else {
+                    let Some(value) = static_kind(&static_values, instr.b())
+                        .or_else(|| local_static_i64_before(code, int_consts, pc, instr.b()))
+                    else {
                         return None;
                     };
                     let Some(value) = native_static_set_index(target, key, value) else {
@@ -1030,6 +1067,18 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                 let end = start.checked_add(instr.c() as usize)?;
                 if end > kinds.len() {
                     return None;
+                }
+                if instr.c() == 0 {
+                    if !set_static_value(
+                        &mut kinds,
+                        &mut static_values,
+                        instr.a(),
+                        None,
+                        NativeStraightlineValue::ArgList { elements: Vec::new() },
+                    ) {
+                        return None;
+                    }
+                    continue;
                 }
                 if instr.c() == 1
                     && let Some(value) = single_callable_arg_list(static_values.get(start).cloned().flatten())
@@ -1134,312 +1183,24 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                     }
                 }
             }
-            Opcode::Call => {
-                if instr.a() != instr.b() {
-                    return None;
-                }
-                let Some(target) = static_kind(&static_values, instr.b()) else {
-                    kinds[instr.a() as usize] = None;
-                    static_values[instr.a() as usize] = None;
-                    continue;
-                };
-                if let Some((function_index, captures)) = static_call_target(&target) {
-                    let function_index = u8::try_from(function_index).ok()?;
-                    let direct_instr = Instr::abc(Opcode::CallDirect, instr.a(), function_index, instr.c());
-                    let kind = native_direct_call_return_kind(
-                        functions?,
-                        direct_instr,
-                        &kinds,
-                        &static_values,
-                        &global_kinds,
-                        &static_globals,
-                        global_count,
-                        global_names,
-                        &captures,
-                        depth,
-                        recursive_hints,
-                    )?;
-                    if !set_native_kind(&mut kinds, &mut static_values, instr.a(), kind) {
-                        return None;
-                    }
-                    continue;
-                }
-                let start = instr.b() as usize + 1;
-                let end = start.checked_add(instr.c() as usize)?;
-                if let Some(ok) = propagate_dynamic_map_call(&mut kinds, &mut static_values, instr, pc, &target, start)
-                {
-                    if !ok {
-                        return None;
-                    }
-                    continue;
-                }
-                if let Some(ok) =
-                    propagate_dynamic_ptr_list_builtin_call(&mut kinds, &mut static_values, instr, pc, &target, start)
-                {
-                    if !ok {
-                        return None;
-                    }
-                    continue;
-                }
-                if let Some(ok) = propagate_dynamic_i64_list_builtin_call(
-                    &mut kinds,
-                    &mut static_values,
+            Opcode::Call | Opcode::CallDirect | Opcode::CallNamed => {
+                let mut ctx = CallFactsContext {
+                    kinds: &mut kinds,
+                    static_values: &mut static_values,
+                    global_kinds: &global_kinds,
+                    static_globals: &static_globals,
+                    global_count,
+                    global_names,
+                    functions,
                     code,
+                    int_consts,
+                    strings,
                     heap_values,
-                    instr,
                     pc,
-                    &target,
-                    start,
-                ) {
-                    if !ok {
-                        return None;
-                    }
-                    continue;
-                }
-                if let Some(ok) =
-                    propagate_dynamic_f64_list_builtin_call(&mut kinds, &mut static_values, instr, pc, &target, start)
-                {
-                    if !ok {
-                        return None;
-                    }
-                    continue;
-                }
-                let Some(args) = static_values.get(start..end) else {
-                    if let Some(kind) = native_builtin_return_kind_dynamic(&target, instr.c()) {
-                        if !set_native_kind(&mut kinds, &mut static_values, instr.a(), kind) {
-                            return None;
-                        }
-                    } else {
-                        return None;
-                    }
-                    continue;
+                    depth,
+                    recursive_hints,
                 };
-                let args_vec: Vec<_> = args.iter().cloned().collect();
-                if args_vec.iter().any(|a| a.is_none()) {
-                    let recovered = (start..end)
-                        .map(|reg| {
-                            let reg = u8::try_from(reg).ok()?;
-                            static_values
-                                .get(reg as usize)
-                                .cloned()
-                                .flatten()
-                                .or_else(|| local_static_heap_const_before(code, heap_values, pc, reg))
-                                .or_else(|| local_static_object_before(&static_values, code, int_consts, pc, reg))
-                                .or_else(|| {
-                                    local_static_i64_value_before(code, int_consts, strings, heap_values, pc, reg)
-                                })
-                                .or_else(|| local_static_i64_before(code, int_consts, pc, reg))
-                        })
-                        .collect::<Option<Vec<_>>>();
-                    if let Some(args_vec) = recovered
-                        && let Some(kind) = native_builtin_return_kind(target.clone(), &args_vec)
-                    {
-                        if !set_native_kind(&mut kinds, &mut static_values, instr.a(), kind) {
-                            return None;
-                        }
-                        continue;
-                    }
-                    if let Some(kind) = native_builtin_return_kind_dynamic(&target, instr.c()) {
-                        if !set_native_kind(&mut kinds, &mut static_values, instr.a(), kind) {
-                            return None;
-                        }
-                    } else {
-                        return None;
-                    }
-                    continue;
-                }
-                let args_vec: Vec<NativeStraightlineValue> = args_vec.into_iter().map(|a| a.unwrap()).collect();
-                if matches!(target, NativeStraightlineValue::Builtin(NativeBuiltin::CoreCallMethod)) {
-                    let mut tmp_index = 0usize;
-                    if let Some(value) = emit_native_static_core_call_method(&args_vec, &mut tmp_index) {
-                        let kind = static_value_kind(&value);
-                        if !set_static_value(&mut kinds, &mut static_values, instr.a(), kind, value) {
-                            return None;
-                        }
-                        continue;
-                    }
-                    if let Some(ok) =
-                        propagate_dynamic_string_list_method_call(&mut kinds, &mut static_values, instr, &args_vec)
-                            .or_else(|| {
-                                propagate_dynamic_i64_list_method_call(&mut kinds, &mut static_values, instr, &args_vec)
-                                    .or_else(|| {
-                                        propagate_dynamic_f64_list_method_call(
-                                            &mut kinds,
-                                            &mut static_values,
-                                            instr,
-                                            &args_vec,
-                                        )
-                                    })
-                            })
-                    {
-                        if !ok {
-                            return None;
-                        }
-                        continue;
-                    }
-                    if let Some(kind) = dynamic_map_get_method_kind(&args_vec) {
-                        if !set_native_kind(&mut kinds, &mut static_values, instr.a(), kind) {
-                            return None;
-                        }
-                        continue;
-                    }
-                }
-                if let Some(value) = match target.clone() {
-                    NativeStraightlineValue::Builtin(NativeBuiltin::MapSet) => emit_native_map_set(&args_vec),
-                    NativeStraightlineValue::Builtin(NativeBuiltin::MapMutate) => {
-                        let [target, callable] = args_vec.as_slice() else {
-                            return None;
-                        };
-                        native_static_map_mutate(
-                            functions?,
-                            target.clone(),
-                            callable.clone(),
-                            format!("@lk_map_mutate_{pc}"),
-                        )
-                    }
-                    NativeStraightlineValue::Builtin(builtin) => emit_native_static_parse_builtin(builtin, &args_vec),
-                    _ => None,
-                } {
-                    let kind = static_value_kind(&value);
-                    if !set_static_value(&mut kinds, &mut static_values, instr.a(), kind, value) {
-                        return None;
-                    }
-                    continue;
-                }
-                if matches!(target, NativeStraightlineValue::Builtin(NativeBuiltin::CoreCallMethod))
-                    && let [
-                        list,
-                        NativeStraightlineValue::String { value: method, .. },
-                        NativeStraightlineValue::ArgList { elements },
-                    ] = args_vec.as_slice()
-                    && method == "map"
-                    && matches!(
-                        elements.as_slice(),
-                        [NativeStraightlineValue::Function(_) | NativeStraightlineValue::Closure { .. }]
-                    )
-                {
-                    let kind = static_value_kind(list);
-                    if !set_static_value(&mut kinds, &mut static_values, instr.a(), kind, list.clone()) {
-                        return None;
-                    }
-                    continue;
-                }
-                let Some(kind) = native_builtin_return_kind(target, &args_vec) else {
-                    return None;
-                };
-                if !set_native_kind(&mut kinds, &mut static_values, instr.a(), kind) {
-                    return None;
-                }
-            }
-            Opcode::CallDirect => {
-                let callee_index = instr.b();
-                if let Some((_, hint)) = recursive_hints.iter().find(|(idx, _)| *idx as u8 == callee_index) {
-                    if let Some(kind) = hint {
-                        let value = kind_symbolic_value(*kind, instr.a());
-                        if !set_static_value(&mut kinds, &mut static_values, instr.a(), Some(*kind), value) {
-                            return None;
-                        }
-                    } else {
-                        kinds[instr.a() as usize] = None;
-                        static_values[instr.a() as usize] = None;
-                    }
-                } else {
-                    if let Some(value) = native_direct_call_static_return_value(
-                        functions?,
-                        instr,
-                        &static_values,
-                        code,
-                        int_consts,
-                        pc,
-                        &[],
-                        depth,
-                    ) {
-                        let kind = static_value_kind(&value);
-                        if !set_static_value(&mut kinds, &mut static_values, instr.a(), kind, value) {
-                            return None;
-                        }
-                        continue;
-                    }
-                    if let Some(callee) = functions?.get(callee_index as usize) {
-                        let start = instr.a().checked_add(1)? as usize;
-                        let end = start.checked_add(instr.c() as usize)?;
-                        let args = static_values.get(start..end)?;
-                        if let Some(value) = dynamic_list_return_value(callee, args, pc) {
-                            if !set_static_value(&mut kinds, &mut static_values, instr.a(), None, value) {
-                                return None;
-                            }
-                            continue;
-                        }
-                    }
-                    let Some(kind) = native_direct_call_return_kind(
-                        functions?,
-                        instr,
-                        &kinds,
-                        &static_values,
-                        &global_kinds,
-                        &static_globals,
-                        global_count,
-                        global_names,
-                        &[],
-                        depth,
-                        recursive_hints,
-                    ) else {
-                        return None;
-                    };
-                    if !set_native_kind(&mut kinds, &mut static_values, instr.a(), kind) {
-                        return None;
-                    }
-                }
-            }
-            Opcode::CallNamed => {
-                let Some(target) = static_kind(&static_values, instr.a()) else {
-                    kinds[instr.a() as usize] = None;
-                    static_values[instr.a() as usize] = None;
-                    continue;
-                };
-                let Some((function_index, captures)) = static_call_target(&target) else {
-                    kinds[instr.a() as usize] = None;
-                    static_values[instr.a() as usize] = None;
-                    continue;
-                };
-                let function = functions?.get(function_index as usize)?;
-                let args = native_named_call_args(
-                    function,
-                    &kinds,
-                    &static_values,
-                    instr.a(),
-                    instr.bx() & 0x7f,
-                    instr.bx() >> 7,
-                )?;
-                if let Some((_, hint)) = recursive_hints.iter().find(|(idx, _)| *idx == function_index) {
-                    if let Some(kind) = hint {
-                        let value = kind_symbolic_value(*kind, instr.a());
-                        if !set_static_value(&mut kinds, &mut static_values, instr.a(), Some(*kind), value) {
-                            return None;
-                        }
-                    } else {
-                        kinds[instr.a() as usize] = None;
-                        static_values[instr.a() as usize] = None;
-                    }
-                } else {
-                    let Some(kind) = native_static_function_return_kind(
-                        functions?,
-                        function_index as usize,
-                        &args,
-                        &captures,
-                        &global_kinds,
-                        &static_globals,
-                        global_count,
-                        global_names,
-                        depth,
-                        recursive_hints,
-                    ) else {
-                        return None;
-                    };
-                    if !set_native_kind(&mut kinds, &mut static_values, instr.a(), kind) {
-                        return None;
-                    }
-                }
+                propagate_call_opcode(&mut ctx, instr)?;
             }
             opcode if opcode.is_return() => {
                 if instr.return_count() > 1 {
@@ -1670,4 +1431,53 @@ fn field_key_value(strings: &[String], instr: Instr) -> Option<NativeStraightlin
         len: value.len(),
         key_kind: NativeStringKeyKind::Short,
     })
+}
+
+fn nested_const_list_element_kind(elements: &[ConstRuntimeValueData]) -> Option<NativeScalarKind> {
+    let mut kind = None;
+    for value in elements {
+        let ConstRuntimeValueData::Heap(heap) = value else {
+            return None;
+        };
+        let ConstHeapValueData::List(items) = heap.as_ref() else {
+            return None;
+        };
+        for item in items {
+            let item_kind = nested_const_runtime_value_kind(item)?;
+            match kind {
+                None => kind = Some(item_kind),
+                Some(previous) if previous == item_kind => {}
+                Some(_) => return None,
+            }
+        }
+    }
+    kind
+}
+
+fn nested_const_runtime_value_kind(value: &ConstRuntimeValueData) -> Option<NativeScalarKind> {
+    match value {
+        ConstRuntimeValueData::Int(_) => Some(NativeScalarKind::I64),
+        ConstRuntimeValueData::Float(_) => Some(NativeScalarKind::F64),
+        ConstRuntimeValueData::Bool(_) => Some(NativeScalarKind::Bool),
+        ConstRuntimeValueData::ShortStr(_) => Some(NativeScalarKind::StrPtr),
+        ConstRuntimeValueData::Heap(heap) => match heap.as_ref() {
+            ConstHeapValueData::LongString(_) => Some(NativeScalarKind::StrPtr),
+            ConstHeapValueData::List(items) => homogeneous_const_runtime_value_kind(items),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn homogeneous_const_runtime_value_kind(items: &[ConstRuntimeValueData]) -> Option<NativeScalarKind> {
+    let mut kind = None;
+    for item in items {
+        let item_kind = nested_const_runtime_value_kind(item)?;
+        match kind {
+            None => kind = Some(item_kind),
+            Some(previous) if previous == item_kind => {}
+            Some(_) => return None,
+        }
+    }
+    kind
 }

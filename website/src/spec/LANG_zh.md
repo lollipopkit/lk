@@ -395,7 +395,7 @@ for_pattern  ::= '_' | id | '(' for_pattern { ',' for_pattern } ')' | '[' for_pa
 ```
 
 ## CLI 使用说明
-- 运行 REPL：`lk`
+- 运行 REPL：`lk`（`LK_REPL_TUI=always|never|auto` 控制是否强制启用 Reedline 补全 UI、禁用它，或按终端能力自动选择）
 - 通过 bytecode VM 执行文件（语句）：`lk FILE`
 - 编译为可执行模块产物：`lk compile [FILE]` -> `FILE.lkm`
 - 执行模块产物：`lk FILE.lkm`

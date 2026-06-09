@@ -8,6 +8,7 @@ mod channel;
 mod compare;
 mod const_lists;
 mod control;
+mod direct_call;
 mod direct_print;
 mod finalize;
 mod get_index;
@@ -36,10 +37,11 @@ use self::{
         static_or_recovered_call_target,
     },
     callees::{callee_contains_call, callee_is_native_assert},
-    cells::{emit_load_cell_block, emit_store_cell_block},
+    cells::emit_cell_block,
     channel::emit_static_channel_call,
     compare::emit_compare_block,
     control::{emit_compare_test_block, emit_for_loop_i_block, emit_test_block},
+    direct_call::{emit_fallback_direct_subfunction_call, emit_named_call_block},
     direct_print::emit_direct_emit_helper_call,
     finalize::finish_scalar_ir,
     get_index::{emit_get_field_k_block, emit_get_index_block},
@@ -67,10 +69,9 @@ use self::{
 use super::{
     block_helpers::{
         clear_control_flow_static_values, control_flow_static_boundaries, emit_native_block_core_call_method,
-        emit_static_direct_call_result, emit_static_formatted_print, emit_static_named_call,
-        emit_static_scalar_value_store_if_needed, local_register_kind_before, local_static_container_before,
-        local_static_i64_before, native_static_string, static_call_target, static_callable_value,
-        store_native_scalar_call_result, three_regs_in_bounds,
+        emit_static_direct_call_result, emit_static_formatted_print, emit_static_scalar_value_store_if_needed,
+        local_register_kind_before, local_static_container_before, local_static_i64_before, native_static_string,
+        static_call_target, static_callable_value, store_native_scalar_call_result, three_regs_in_bounds,
     },
     contains::{
         emit_static_contains_or_slice_block, emit_static_type_test_block, local_static_callable_before,
@@ -92,7 +93,6 @@ use crate::llvm::{
         NativeBuiltin, NativeListElementKind, NativeMapKeyKind, NativeMapValueKind, NativeStraightlineValue,
         NativeTextPart, native_static_list_join, native_straightline_heap_const_value,
     },
-    subfunction::compile_native_scalar_subfunction,
 };
 use crate::vm::{ConstHeapValueData, ConstRuntimeValueData, Instr, ModuleArtifact, Opcode};
 pub(in crate::llvm) fn compile_native_scalar_main_blocks(
@@ -107,6 +107,7 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
     heap_values: &[ConstHeapValueData],
     code: &[Instr],
     facts: &NativeScalarFacts,
+    imported_static_globals: &[Option<NativeStraightlineValue>],
     recursive_indices: &[u16],
 ) -> anyhow::Result<Option<String>> {
     let Some(mut ir) = emit_scalar_entry_allocas(artifact, options, register_count, global_count, heap_values, code)
@@ -121,7 +122,10 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
     let mut tmp_index = 0usize;
     let mut extra_globals = String::new();
     let mut static_regs: Vec<Option<NativeStraightlineValue>> = vec![None; register_count];
-    let mut static_globals: Vec<Option<NativeStraightlineValue>> = vec![None; global_count];
+    if imported_static_globals.len() != global_count {
+        return Ok(None);
+    }
+    let mut static_globals: Vec<Option<NativeStraightlineValue>> = imported_static_globals.to_vec();
     let static_boundaries = control_flow_static_boundaries(code);
     let mut skip_static_pcs = vec![false; code.len()];
     let trace = std::env::var_os("LK_NATIVE_BLOCK_TRACE").is_some();
@@ -787,8 +791,17 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                     static_regs[instr.a() as usize] = None;
                     continue;
                 }
-                let Some(NativeStraightlineValue::Builtin(builtin)) =
-                    static_or_recovered_call_target(&static_regs, code, global_names, pc, instr.b())
+                let Some(NativeStraightlineValue::Builtin(builtin)) = static_or_recovered_call_target(
+                    &static_regs,
+                    code,
+                    int_consts,
+                    strings,
+                    heap_values,
+                    global_names,
+                    &static_globals,
+                    pc,
+                    instr.b(),
+                )
                 else {
                     return Ok(None);
                 };
@@ -867,6 +880,7 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                     strings,
                     heap_values,
                     global_names,
+                    &static_globals,
                     pc,
                     instr.b(),
                     instr.c(),
@@ -1280,25 +1294,23 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                 }
             }
             Opcode::CallNamed => {
-                if !reg_in_bounds(register_count, instr.a()) {
-                    return Ok(None);
-                }
-                if emit_static_named_call(
+                if emit_named_call_block(
                     &mut ir,
                     &mut extra_globals,
                     artifact,
                     facts,
-                    pc,
                     &mut static_regs,
                     &mut static_globals,
                     instr,
+                    pc,
+                    register_count,
                     &mut tmp_index,
+                    code.len(),
                 )
                 .is_none()
                 {
                     return Ok(None);
                 }
-                emit_branch_to_next(&mut ir, pc, code.len());
             }
             Opcode::CallDirect => {
                 if !reg_in_bounds(register_count, instr.a()) {
@@ -1404,84 +1416,44 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                         )
                     };
                     if inline_result.is_none() {
-                        let all_recursive: Vec<u16> = recursive_indices.to_vec();
-                        if compile_native_scalar_subfunction(artifact, callee_index as usize, &all_recursive).is_err()
-                            || compile_native_scalar_subfunction(artifact, callee_index as usize, &all_recursive)
-                                .ok()
-                                .flatten()
-                                .is_none()
+                        if emit_fallback_direct_subfunction_call(
+                            &mut ir,
+                            artifact,
+                            recursive_indices,
+                            &mut additional_subfn_indices,
+                            instr,
+                            pc,
+                            code.len(),
+                            register_count,
+                            facts,
+                            &mut tmp_index,
+                            true,
+                        )
+                        .is_none()
                         {
                             return Ok(None);
                         }
-                        let return_kind = facts
-                            .register_kind_before(pc + 1, instr.a())
-                            .unwrap_or(NativeScalarKind::I64);
-                        let return_ty = return_kind.llvm_type();
-                        let mut call_args = String::new();
-                        for i in 0..instr.c() as usize {
-                            let arg_reg = instr.a() as usize + 1 + i;
-                            if arg_reg >= register_count {
-                                return Ok(None);
-                            }
-                            let arg_kind = facts
-                                .register_kind_before(pc, arg_reg as u8)
-                                .unwrap_or(NativeScalarKind::I64);
-                            let arg_ty = arg_kind.llvm_type();
-                            let arg_tmp = next_tmp(&mut tmp_index);
-                            ir.push_str(&format!("  {arg_tmp} = load {arg_ty}, ptr %r{arg_reg}.slot\n"));
-                            if i > 0 {
-                                call_args.push_str(", ");
-                            }
-                            call_args.push_str(&format!("{arg_ty} {arg_tmp}"));
-                        }
-                        let result = next_tmp(&mut tmp_index);
-                        ir.push_str(&format!(
-                            "  {result} = call {return_ty} @lk_fn_{callee_index}({call_args})\n"
-                        ));
-                        ir.push_str(&format!("  store {return_ty} {result}, ptr %r{}.slot\n", instr.a()));
-                        static_regs[instr.a() as usize] = None;
-                        additional_subfn_indices.push(u16::from(callee_index));
-                        emit_branch_to_next(&mut ir, pc, code.len());
                     }
                     static_regs[instr.a() as usize] = None;
                 } else {
-                    let all_recursive: Vec<u16> = recursive_indices.to_vec();
-                    if compile_native_scalar_subfunction(artifact, callee_index as usize, &all_recursive).is_err()
-                        || compile_native_scalar_subfunction(artifact, callee_index as usize, &all_recursive)
-                            .ok()
-                            .flatten()
-                            .is_none()
+                    if emit_fallback_direct_subfunction_call(
+                        &mut ir,
+                        artifact,
+                        recursive_indices,
+                        &mut additional_subfn_indices,
+                        instr,
+                        pc,
+                        code.len(),
+                        register_count,
+                        facts,
+                        &mut tmp_index,
+                        false,
+                    )
+                    .is_none()
                     {
                         return Ok(None);
                     }
-                    let return_kind = facts
-                        .register_kind_before(pc + 1, instr.a())
-                        .unwrap_or(NativeScalarKind::I64);
-                    let return_ty = return_kind.llvm_type();
-                    let mut call_args = String::new();
-                    for i in 0..instr.c() as usize {
-                        let arg_reg = instr.a() as usize + 1 + i;
-                        if arg_reg >= register_count {
-                            return Ok(None);
-                        }
-                        let arg_kind = facts
-                            .register_kind_before(pc, arg_reg as u8)
-                            .unwrap_or(NativeScalarKind::I64);
-                        let arg_ty = arg_kind.llvm_type();
-                        let arg_tmp = next_tmp(&mut tmp_index);
-                        ir.push_str(&format!("  {arg_tmp} = load {arg_ty}, ptr %r{arg_reg}.slot\n"));
-                        if i > 0 {
-                            call_args.push_str(", ");
-                        }
-                        call_args.push_str(&format!("{arg_ty} {arg_tmp}"));
-                    }
-                    let result = next_tmp(&mut tmp_index);
-                    ir.push_str(&format!(
-                        "  {result} = call {return_ty} @lk_fn_{callee_index}({call_args})\n"
-                    ));
-                    ir.push_str(&format!("  store {return_ty} {result}, ptr %r{}.slot\n", instr.a()));
                     static_regs[instr.a() as usize] = None;
-                    emit_branch_to_next(&mut ir, pc, code.len());
                 }
             }
             opcode if opcode.is_return() => {
@@ -1501,28 +1473,12 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                     return Ok(None);
                 }
             }
-            Opcode::StoreCellVal => {
-                if emit_store_cell_block(
+            Opcode::StoreCellVal | Opcode::LoadCellVal => {
+                if emit_cell_block(
                     &mut ir,
                     &mut static_regs,
                     code,
                     int_consts,
-                    pc,
-                    instr,
-                    register_count,
-                    facts,
-                    &mut tmp_index,
-                )
-                .is_none()
-                {
-                    return Ok(None);
-                }
-            }
-            Opcode::LoadCellVal => {
-                if emit_load_cell_block(
-                    &mut ir,
-                    &mut static_regs,
-                    code,
                     pc,
                     instr,
                     register_count,
@@ -1539,11 +1495,5 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
         }
         ir.push('\n');
     }
-    Ok(Some(finish_scalar_ir(
-        artifact,
-        ir,
-        &extra_globals,
-        recursive_indices,
-        &additional_subfn_indices,
-    )))
+    Ok(Some(finish_scalar_ir(artifact, ir, &extra_globals, recursive_indices, &additional_subfn_indices)))
 }

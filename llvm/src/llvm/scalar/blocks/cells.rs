@@ -4,8 +4,37 @@ use crate::{
         scalar::{block_helpers::local_static_i64_before, facts::NativeScalarFacts},
         straightline_value::{NativeStraightlineValue, native_static_load_cell, native_static_store_cell},
     },
-    vm::Instr,
+    vm::{Instr, Opcode},
 };
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn emit_cell_block(
+    ir: &mut String,
+    static_regs: &mut [Option<NativeStraightlineValue>],
+    code: &[Instr],
+    int_consts: &[i64],
+    pc: usize,
+    instr: Instr,
+    register_count: usize,
+    facts: &NativeScalarFacts,
+    tmp_index: &mut usize,
+) -> Option<()> {
+    match instr.opcode() {
+        Opcode::StoreCellVal => emit_store_cell_block(
+            ir,
+            static_regs,
+            code,
+            int_consts,
+            pc,
+            instr,
+            register_count,
+            facts,
+            tmp_index,
+        ),
+        Opcode::LoadCellVal => emit_load_cell_block(ir, static_regs, code, pc, instr, register_count, facts, tmp_index),
+        _ => None,
+    }
+}
 
 pub(super) fn emit_store_cell_block(
     ir: &mut String,

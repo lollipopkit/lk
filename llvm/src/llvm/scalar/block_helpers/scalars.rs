@@ -85,6 +85,7 @@ pub(in crate::llvm) fn emit_static_scalar_value_store_if_needed(
         | NativeStraightlineValue::DynamicSplitText { .. }
         | NativeStraightlineValue::List { .. }
         | NativeStraightlineValue::Map { .. }
+        | NativeStraightlineValue::Set { .. }
         | NativeStraightlineValue::DisplayMap { .. }
         | NativeStraightlineValue::DynamicMap { .. }
         | NativeStraightlineValue::DynamicMapIter { .. }

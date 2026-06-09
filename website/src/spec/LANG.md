@@ -394,7 +394,7 @@ for_pattern  ::= '_' | id | '(' for_pattern { ',' for_pattern } ')' | '[' for_pa
 ```
 
 ## Notes for CLI Usage
-- Run REPL: `lk`
+- Run REPL: `lk` (`LK_REPL_TUI=always|never|auto` controls whether the Reedline completion UI is forced, disabled, or terminal-detected)
 - Execute a file (statements) through the bytecode VM: `lk FILE`
 - Compile to an executable module artifact: `lk compile [FILE]` -> `FILE.lkm`
 - Execute an module artifact: `lk FILE.lkm`

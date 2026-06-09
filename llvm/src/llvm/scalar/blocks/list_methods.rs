@@ -830,12 +830,7 @@ fn f64_list_arg_from_reg(
 }
 
 pub(super) fn function_has_list_return_shape(function: &crate::vm::FunctionData) -> bool {
-    function
-        .code
-        .iter()
-        .copied()
-        .filter_map(|raw| Instr::try_from_raw(raw).ok())
-        .any(|instr| instr.opcode() == Opcode::ListPush)
+    super::super::list_shape::function_returns_pushed_list(function)
 }
 
 fn dynamic_list_method_i64_arg_reg(code: &[Instr], pc: usize, instr: Instr) -> Option<u8> {

@@ -1463,4 +1463,5 @@ mod basic;
 mod direct_calls;
 mod modules;
 mod objects;
+mod runtime_builtins;
 mod strings;

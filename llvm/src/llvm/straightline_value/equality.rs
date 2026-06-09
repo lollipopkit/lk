@@ -67,6 +67,12 @@ pub(in crate::llvm) fn native_static_value_eq(lhs: &NativeStraightlineValue, rhs
                         .is_some_and(|(_, rhs_value)| native_const_runtime_eq(lhs_value, rhs_value))
                 })
         }
+        (NativeStraightlineValue::Set { elements: lhs, .. }, NativeStraightlineValue::Set { elements: rhs, .. }) => {
+            lhs.len() == rhs.len()
+                && lhs
+                    .iter()
+                    .all(|lhs| rhs.iter().any(|rhs| native_const_runtime_eq(lhs, rhs)))
+        }
         (
             NativeStraightlineValue::DisplayMap { entries: lhs, .. },
             NativeStraightlineValue::DisplayMap { entries: rhs, .. },
@@ -146,6 +152,12 @@ pub(in crate::llvm) fn native_static_collection_equality_bool(
                         .is_some_and(|(_, rhs_value)| native_const_runtime_eq(lhs_value, rhs_value))
                 })
         }
+        (NativeStraightlineValue::Set { elements: lhs, .. }, NativeStraightlineValue::Set { elements: rhs, .. }) => {
+            lhs.len() == rhs.len()
+                && lhs
+                    .iter()
+                    .all(|lhs| rhs.iter().any(|rhs| native_const_runtime_eq(lhs, rhs)))
+        }
         (
             NativeStraightlineValue::DisplayMap { entries: lhs, .. },
             NativeStraightlineValue::DisplayMap { entries: rhs, .. },
@@ -199,6 +211,9 @@ pub(in crate::llvm) fn native_static_contains(
                 let needle = native_map_key(needle)?;
                 entries.iter().any(|(key, _)| *key == needle)
             }
+        }
+        NativeStraightlineValue::Set { elements, .. } => {
+            return super::native_static_set_contains(&elements, &needle);
         }
         NativeStraightlineValue::DisplayMap { entries, .. } => {
             if native_display_map_entries_are_string_keyed(&entries) {
