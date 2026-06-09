@@ -2,7 +2,6 @@ use lk_core::{
     ast,
     ast::Parser as ExprParser,
     expr::Expr,
-    module::ModuleRegistry,
     package::PackageGraph,
     resolve,
     resolve::slots::{FunctionLayout, SlotResolver},
@@ -101,8 +100,6 @@ pub struct LkAnalyzer {
     token_cache: FastHashMap<String, Arc<TokenCacheEntry>>,
     // Cache for completion items that don't change
     completion_cache: Option<Vec<CompletionItem>>,
-    // Registered stdlib modules for resolution/completions
-    registry: ModuleRegistry,
     // Base directory for resolving relative file imports
     base_dir: Option<PathBuf>,
     // Package modules available from Lk.toml workspace/dependencies

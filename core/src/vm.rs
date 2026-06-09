@@ -5,7 +5,7 @@
 #[allow(dead_code, unused_imports)]
 pub(crate) mod alloc;
 #[allow(dead_code, unused_imports)]
-pub(crate) mod analysis;
+pub mod analysis;
 #[allow(dead_code, unused_imports)]
 mod analysis_queries;
 mod artifact;

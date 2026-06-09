@@ -113,14 +113,15 @@ pub(crate) fn describe_token_hover(tokens: &[CoreToken], _spans: &[CoreSpan], id
 }
 
 pub(crate) fn stdlib_func_hover(name: &str) -> Option<(&'static str, &'static str)> {
-    match name {
-        "print" => Some(("print(fmt, ...args)", "Print to stdout without newline")),
-        "println" => Some(("println(fmt, ...args)", "Print to stdout with newline")),
-        "panic" => Some(("panic(message)", "Raise a runtime error")),
-        "len" => Some(("len(collection)", "Return the length of a collection")),
-        "type" => Some(("type(value)", "Return the runtime type of a value")),
-        _ => None,
-    }
+    let global = lk_stdlib::stdlib_catalog().global(name)?;
+    Some((
+        leak_hover_text(global.detail.clone()),
+        leak_hover_text("LK stdlib global".to_string()),
+    ))
+}
+
+fn leak_hover_text(value: String) -> &'static str {
+    Box::leak(value.into_boxed_str())
 }
 
 pub(crate) fn infer_call_at_position(content: &str, position: Position) -> (String, Option<usize>) {

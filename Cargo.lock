@@ -841,9 +841,8 @@ dependencies = [
  "clap",
  "lk-completion",
  "lk-core",
+ "lk-llvm",
  "lk-stdlib",
- "lkrt",
- "llvm-tools",
  "predicates",
  "rustyline",
  "serde",
@@ -875,7 +874,6 @@ dependencies = [
  "futures",
  "hashbrown 0.15.5",
  "itoa",
- "llvm-tools",
  "once_cell",
  "rustc-hash",
  "ryu",
@@ -886,6 +884,21 @@ dependencies = [
  "tokio",
  "toml",
  "tracing",
+]
+
+[[package]]
+name = "lk-llvm"
+version = "0.1.3"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "lk-core",
+ "lk-stdlib",
+ "lkrt",
+ "llvm-tools",
+ "serde_json",
+ "serde_yaml",
+ "toml",
 ]
 
 [[package]]

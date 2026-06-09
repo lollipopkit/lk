@@ -1,3 +1,4 @@
+// @ts-nocheck
 /* @ts-self-types="./lk_wasm.d.ts" */
 
 /**

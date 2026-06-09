@@ -1,7 +1,6 @@
 use super::LkAnalyzer;
 use lk_core::expr::Expr;
 use lk_core::val::{HeapStore, HeapValue, RuntimeVal, TypedMap};
-use std::collections::BTreeMap;
 use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range};
 
 impl LkAnalyzer {
@@ -55,12 +54,7 @@ impl LkAnalyzer {
     }
 
     pub(crate) fn module_export_names(&self, module_name: &str) -> Option<Vec<String>> {
-        let export = self.registry.get_module(module_name).ok()?.runtime_exports().ok()?;
-        let state = export.state_lock().ok()?;
-        let entries = runtime_string_map_entries(export.value(), state.heap())?;
-        let mut keys: Vec<String> = entries.keys().cloned().collect();
-        keys.sort();
-        Some(keys)
+        Some(lk_stdlib::stdlib_catalog().module(module_name)?.export_names())
     }
 }
 
@@ -71,20 +65,6 @@ fn runtime_map_get_str(value: &RuntimeVal, heap: &HeapStore, key: &str) -> Optio
     let HeapValue::Map(map) = heap.get(*handle)? else {
         return None;
     };
-    typed_map_get_str(map, key)
-}
-
-fn runtime_string_map_entries(value: &RuntimeVal, heap: &HeapStore) -> Option<BTreeMap<String, RuntimeVal>> {
-    let RuntimeVal::Obj(handle) = value else {
-        return None;
-    };
-    let HeapValue::Map(map) = heap.get(*handle)? else {
-        return None;
-    };
-    Some(typed_map_string_entries(map))
-}
-
-fn typed_map_get_str(map: &TypedMap, key: &str) -> Option<RuntimeVal> {
     match map {
         TypedMap::Mixed(entries) => entries
             .iter()
@@ -93,30 +73,5 @@ fn typed_map_get_str(map: &TypedMap, key: &str) -> Option<RuntimeVal> {
         TypedMap::StringInt(entries) => entries.get(key).copied().map(RuntimeVal::Int),
         TypedMap::StringFloat(entries) => entries.get(key).copied().map(RuntimeVal::Float),
         TypedMap::StringBool(entries) => entries.get(key).copied().map(RuntimeVal::Bool),
-    }
-}
-
-fn typed_map_string_entries(map: &TypedMap) -> BTreeMap<String, RuntimeVal> {
-    match map {
-        TypedMap::Mixed(entries) => entries
-            .iter()
-            .filter_map(|(key, value)| key.as_str().map(|key| (key.to_string(), value.clone())))
-            .collect(),
-        TypedMap::StringMixed(entries) => entries
-            .iter()
-            .map(|(key, value)| (key.to_string(), value.clone()))
-            .collect(),
-        TypedMap::StringInt(entries) => entries
-            .iter()
-            .map(|(key, value)| (key.to_string(), RuntimeVal::Int(*value)))
-            .collect(),
-        TypedMap::StringFloat(entries) => entries
-            .iter()
-            .map(|(key, value)| (key.to_string(), RuntimeVal::Float(*value)))
-            .collect(),
-        TypedMap::StringBool(entries) => entries
-            .iter()
-            .map(|(key, value)| (key.to_string(), RuntimeVal::Bool(*value)))
-            .collect(),
     }
 }

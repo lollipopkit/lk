@@ -56,12 +56,9 @@ pub(in crate::llvm) fn native_builtin_return_kind_dynamic(
             | NativeBuiltin::MathCeil
             | NativeBuiltin::MathRound
             | NativeBuiltin::MathMin
-            | NativeBuiltin::MathMax
-            | NativeBuiltin::FibIterative
-            | NativeBuiltin::MathlibDouble,
+            | NativeBuiltin::MathMax,
         ) => Some(NativeScalarKind::I64),
         NativeStraightlineValue::Builtin(NativeBuiltin::MathModuleMethod(method)) => math_module_return_kind(method),
-        NativeStraightlineValue::Builtin(NativeBuiltin::GreetingsMessage) => Some(NativeScalarKind::StrPtr),
         NativeStraightlineValue::Builtin(NativeBuiltin::TimeNow) if arg_count == 0 => Some(NativeScalarKind::I64),
         NativeStraightlineValue::Builtin(NativeBuiltin::TimeSleep) if arg_count == 1 => Some(NativeScalarKind::Nil),
         NativeStraightlineValue::Builtin(NativeBuiltin::TimeSince) if arg_count == 2 => Some(NativeScalarKind::I64),
@@ -90,14 +87,11 @@ pub(in crate::llvm) fn native_builtin_return_kind_dynamic(
         NativeStraightlineValue::Builtin(NativeBuiltin::MapSet | NativeBuiltin::MapMutate) => {
             Some(NativeScalarKind::I64)
         }
-        NativeStraightlineValue::Builtin(
-            NativeBuiltin::OsHostname
-            | NativeBuiltin::OsArch
-            | NativeBuiltin::OsName
-            | NativeBuiltin::OsDirCurrent
-            | NativeBuiltin::OsDirTemp,
-        ) if arg_count == 0 => Some(NativeScalarKind::StrPtr),
-        NativeStraightlineValue::Builtin(NativeBuiltin::OsDirList) if arg_count == 1 => Some(NativeScalarKind::StrPtr),
+        NativeStraightlineValue::Builtin(NativeBuiltin::OsHostname | NativeBuiltin::OsArch | NativeBuiltin::OsName)
+            if arg_count == 0 =>
+        {
+            Some(NativeScalarKind::StrPtr)
+        }
         NativeStraightlineValue::Builtin(_) => Some(NativeScalarKind::I64),
         _ => None,
     }
@@ -111,14 +105,11 @@ pub(in crate::llvm) fn native_builtin_return_kind(
     match target {
         NativeStraightlineValue::Builtin(NativeBuiltin::OsClock) if args.is_empty() => Some(NativeScalarKind::F64),
         NativeStraightlineValue::Builtin(NativeBuiltin::OsEpoch) if args.is_empty() => Some(NativeScalarKind::I64),
-        NativeStraightlineValue::Builtin(
-            NativeBuiltin::OsHostname
-            | NativeBuiltin::OsArch
-            | NativeBuiltin::OsName
-            | NativeBuiltin::OsDirCurrent
-            | NativeBuiltin::OsDirTemp,
-        ) if args.is_empty() => Some(NativeScalarKind::StrPtr),
-        NativeStraightlineValue::Builtin(NativeBuiltin::OsDirList) if args.len() == 1 => Some(NativeScalarKind::StrPtr),
+        NativeStraightlineValue::Builtin(NativeBuiltin::OsHostname | NativeBuiltin::OsArch | NativeBuiltin::OsName)
+            if args.is_empty() =>
+        {
+            Some(NativeScalarKind::StrPtr)
+        }
         NativeStraightlineValue::Builtin(NativeBuiltin::IterRange)
             if args.len() == 1 || args.len() == 2 || args.len() == 3 =>
         {
@@ -142,14 +133,9 @@ pub(in crate::llvm) fn native_builtin_return_kind(
             | NativeBuiltin::MathCeil
             | NativeBuiltin::MathRound
             | NativeBuiltin::MathMin
-            | NativeBuiltin::MathMax
-            | NativeBuiltin::FibIterative
-            | NativeBuiltin::MathlibDouble,
+            | NativeBuiltin::MathMax,
         ) => Some(NativeScalarKind::I64),
         NativeStraightlineValue::Builtin(NativeBuiltin::MathModuleMethod(method)) => math_module_return_kind(method),
-        NativeStraightlineValue::Builtin(NativeBuiltin::GreetingsMessage) if args.len() == 1 => {
-            Some(NativeScalarKind::StrPtr)
-        }
         NativeStraightlineValue::Builtin(NativeBuiltin::CoreCallMethod) => native_core_method_return_kind(args),
         NativeStraightlineValue::Builtin(NativeBuiltin::BitAnd) if args.len() == 2 => Some(NativeScalarKind::I64),
         NativeStraightlineValue::Builtin(NativeBuiltin::BitOr) if args.len() == 2 => Some(NativeScalarKind::I64),
@@ -474,19 +460,7 @@ fn native_core_method_return_kind(args: &[NativeStraightlineValue]) -> Option<Na
             _ => Some(NativeScalarKind::I64),
         };
     }
-    let [
-        NativeStraightlineValue::Module(crate::llvm::straightline_value::NativeModule::OsEnv),
-        NativeStraightlineValue::String { value: method, .. },
-        NativeStraightlineValue::List { elements, .. },
-    ] = args
-    else {
-        return Some(NativeScalarKind::I64);
-    };
-    if method == "get" && (elements.len() == 1 || elements.len() == 2) {
-        Some(NativeScalarKind::StrPtr)
-    } else {
-        Some(NativeScalarKind::I64)
-    }
+    Some(NativeScalarKind::I64)
 }
 
 fn native_static_string_method_known(method: &str) -> bool {

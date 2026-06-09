@@ -26,10 +26,10 @@ fn llvm_backend_lowers_static_module_return_display_without_artifact_shell() {
 #[test]
 fn llvm_backend_lowers_static_parse_result_method_call_with_recovered_key_without_shell() {
     let source = r#"
-        use toml;
+        use encoding;
         fn assert(cond) { if (!cond) { panic("assertion failed"); } }
         let toml_cfg = "[ssl]\nenabled = true\ncert = \"/etc/ssl/cert.pem\"\n";
-        let t = toml.parse(toml_cfg);
+        let t = encoding.toml.parse(toml_cfg);
         fn is_feature_enabled(cfg, feature) {
             if (!cfg.ssl.has(feature)) { return false; }
             return cfg.ssl[feature] == true;
@@ -38,9 +38,12 @@ fn llvm_backend_lowers_static_parse_result_method_call_with_recovered_key_withou
     "#;
     let tokens = Tokenizer::tokenize(source).expect("tokens");
     let program = StmtParser::new(&tokens).parse_program().expect("program");
-    let module =
-        Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["panic", "__lk_call_method", "toml"])
-            .expect("module");
+    let module = Compiler::compile_module_with_natives_and_globals(
+        &program,
+        Vec::new(),
+        ["panic", "__lk_call_method", "encoding"],
+    )
+    .expect("module");
     let module = ModuleArtifact::new(collect_program_imports(&program), &module).expect("module artifact");
 
     let artifact = compile_module_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
@@ -492,22 +495,27 @@ fn llvm_backend_lowers_os_module_return_display_without_artifact_shell() {
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
     assert!(artifact.module.ir.contains("arch: <native fn os::<native>(0 args)>"));
-    assert!(artifact.module.ir.contains("env_get: <native fn os::<native>(...)>"));
-    assert!(artifact.module.ir.contains("path_join: <native fn os::<native>(...)>"));
+    assert!(artifact.module.ir.contains("clock: <native fn os::<native>(0 args)>"));
+    assert!(
+        artifact
+            .module
+            .ir
+            .contains("hostname: <native fn os::<native>(0 args)>")
+    );
 }
 
 #[test]
 fn llvm_backend_lowers_os_env_get_member_display_without_artifact_shell() {
-    let tokens = Tokenizer::tokenize("use os; return os.env.get;").expect("tokens");
+    let tokens = Tokenizer::tokenize("return env;").expect("tokens");
     let program = StmtParser::new(&tokens).parse_program().expect("program");
-    let module = Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["os"]).expect("module");
+    let module = Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["env"]).expect("module");
     let module = ModuleArtifact::new(Vec::new(), &module).expect("module artifact");
 
     let artifact = compile_module_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
-    assert!(artifact.module.ir.contains("c\"<native fn os::<native>(...)>\\00\""));
+    assert!(artifact.module.ir.contains("get: <native fn get(1 args)>"));
 }
 
 #[test]
