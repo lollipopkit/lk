@@ -69,7 +69,7 @@ assert_eq!(result.display_first_return(), "true");
 #### CLI
 
 - 进入 REPL：`lk`
-- REPL 补全：按 Tab 可补全命令、关键字、stdlib 模块/导出、receiver 方法，以及当前 REPL 会话里已成功定义的符号。
+- REPL 补全使用 Reedline：非空前缀会在提示符下方显示候选菜单，最佳候选会以灰色 inline hint 显示在输入框中，`Tab` 循环并插入候选，`Right Arrow` 接受当前 inline hint。
 - 执行源码或模块产物：`lk FILE`（支持 `.lk` 和 `.lkm`）
 - 仅做静态类型检查：`lk check FILE`（输出编译期诊断信息）
 - 编译为可执行模块产物：`lk compile [FILE]` → `FILE.lkm`（省略 `FILE` 时使用当前目录的 `main.lk`、package 的 `src/main.lk`，或单一 workspace app 入口）

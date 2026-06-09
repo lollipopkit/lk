@@ -61,12 +61,7 @@ pub(super) fn emit_scalar_entry_allocas(
 }
 
 fn function_has_list_return_shape(function: &crate::vm::FunctionData) -> bool {
-    function
-        .code
-        .iter()
-        .copied()
-        .filter_map(|raw| Instr::try_from_raw(raw).ok())
-        .any(|instr| instr.opcode() == Opcode::ListPush)
+    super::super::list_shape::function_returns_pushed_list(function)
 }
 
 fn dynamic_map_alloca_needed(heap_values: &[ConstHeapValueData], instr: Instr) -> bool {

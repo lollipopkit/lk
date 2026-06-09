@@ -5,4 +5,5 @@ pub(in crate::llvm) mod emit;
 pub(in crate::llvm) mod facts;
 pub(in crate::llvm) mod inline;
 pub(in crate::llvm) mod kind;
+pub(in crate::llvm) mod list_shape;
 pub(in crate::llvm) mod subfunctions;

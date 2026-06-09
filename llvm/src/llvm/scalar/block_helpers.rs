@@ -713,12 +713,7 @@ pub(in crate::llvm) fn emit_static_direct_call_result(
 }
 
 fn callee_has_list_return_shape(function: &crate::vm::FunctionData) -> bool {
-    function
-        .code
-        .iter()
-        .copied()
-        .filter_map(|raw| Instr::try_from_raw(raw).ok())
-        .any(|instr| instr.opcode() == Opcode::ListPush)
+    super::list_shape::function_returns_pushed_list(function)
 }
 #[allow(clippy::too_many_arguments)]
 pub(in crate::llvm) fn scalar_named_call_args(
@@ -968,6 +963,7 @@ pub(in crate::llvm) fn store_native_scalar_call_result(
         }
         | NativeStraightlineValue::List { .. }
         | NativeStraightlineValue::Map { .. }
+        | NativeStraightlineValue::Set { .. }
         | NativeStraightlineValue::DisplayMap { .. }
         | NativeStraightlineValue::Object { .. }
         | NativeStraightlineValue::Channel { .. }

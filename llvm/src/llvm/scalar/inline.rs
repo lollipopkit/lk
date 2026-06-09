@@ -456,6 +456,35 @@ fn emit_inline_direct_scalar_blocks(
                 static_regs[instr.a() as usize] = Some(concat_text_values(lhs, rhs)?);
                 emit_inline_branch_to_next(ir, call_pc, pc, code.len());
             }
+            Opcode::ConcatN => {
+                if !reg_in_bounds(register_count, instr.a()) {
+                    return None;
+                }
+                let start = instr.b() as usize;
+                let end = start.checked_add(instr.c() as usize)?;
+                if end > register_count {
+                    return None;
+                }
+                let mut parts = Vec::new();
+                for reg in start..end {
+                    let reg = u8::try_from(reg).ok()?;
+                    parts.push(inline_text_value_from_reg(
+                        ir,
+                        call_pc,
+                        reg,
+                        facts.register_kind_before(pc, reg),
+                        &static_regs,
+                        tmp_index,
+                    )?);
+                }
+                let mut iter = parts.into_iter();
+                let mut value = iter.next()?;
+                for part in iter {
+                    value = concat_text_values(value, part)?;
+                }
+                static_regs[instr.a() as usize] = Some(value);
+                emit_inline_branch_to_next(ir, call_pc, pc, code.len());
+            }
             Opcode::GetIndex | Opcode::GetList => {
                 if !three_regs_in_bounds(register_count, instr) {
                     return None;

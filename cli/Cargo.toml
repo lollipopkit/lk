@@ -30,7 +30,8 @@ serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 toml = { workspace = true }
 clap = { version = "4", features = ["derive"] }
-rustyline = "18"
+reedline = "0.48"
+nu-ansi-term = "0.50"
 tracing-subscriber = { workspace = true }
 
 [dev-dependencies]

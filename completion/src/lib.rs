@@ -610,6 +610,20 @@ impl SymbolIndex {
                         });
                     }
                 }
+            } else if let Some(rest) = trimmed
+                .strip_prefix("trait ")
+                .or_else(|| trimmed.strip_prefix("struct "))
+                .or_else(|| trimmed.strip_prefix("type "))
+            {
+                if let Some(name) = leading_identifier(rest) {
+                    if seen.insert((name.to_string(), CompletionKind::Type)) {
+                        index.symbols.push(SymbolInfo {
+                            name: name.to_string(),
+                            kind: CompletionKind::Type,
+                            detail: Some("type".to_string()),
+                        });
+                    }
+                }
             }
         }
         index
@@ -1001,6 +1015,39 @@ mod tests {
         }));
         assert!(got.contains(&"user_name".to_string()));
         assert!(got.contains(&"user_score".to_string()));
+    }
+
+    #[test]
+    fn completes_session_type_declarations() {
+        let engine = CompletionEngine::new().unwrap();
+        let session_source = "trait Drawable {}\nstruct Point {}\ntype UserId = Int;";
+
+        let drawable = labels(engine.complete(CompletionRequest {
+            source: "Dra",
+            cursor: 3,
+            mode: CompletionMode::Repl,
+            session_source: Some(session_source),
+            base_dir: None,
+        }));
+        assert!(drawable.contains(&"Drawable".to_string()));
+
+        let point = labels(engine.complete(CompletionRequest {
+            source: "Poi",
+            cursor: 3,
+            mode: CompletionMode::Repl,
+            session_source: Some(session_source),
+            base_dir: None,
+        }));
+        assert!(point.contains(&"Point".to_string()));
+
+        let user_id = labels(engine.complete(CompletionRequest {
+            source: "User",
+            cursor: 4,
+            mode: CompletionMode::Repl,
+            session_source: Some(session_source),
+            base_dir: None,
+        }));
+        assert!(user_id.contains(&"UserId".to_string()));
     }
 
     #[test]

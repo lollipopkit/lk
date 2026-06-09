@@ -66,6 +66,11 @@ pub(super) fn emit_len_block(
             ir.push_str(&format!("  store i64 {len}, ptr %r{}.slot\n", instr.a()));
             static_regs[instr.a() as usize] = Some(NativeStraightlineValue::I64(len.to_string()));
         }
+        NativeStraightlineValue::Set { elements, .. } => {
+            let len = elements.len();
+            ir.push_str(&format!("  store i64 {len}, ptr %r{}.slot\n", instr.a()));
+            static_regs[instr.a() as usize] = Some(NativeStraightlineValue::I64(len.to_string()));
+        }
         NativeStraightlineValue::DynamicMapIter { id, .. } => {
             let len = next_tmp(tmp_index);
             ir.push_str(&format!("  {len} = load i64, ptr %map{id}.len.slot\n"));

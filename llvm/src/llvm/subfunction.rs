@@ -711,8 +711,46 @@ pub(super) fn compile_native_scalar_subfunction(
                 emitted_terminator = false;
             }
             Opcode::ConcatN => {
-                // N-ary concat: fallback for now; static folding is complex.
-                return Ok(None);
+                if (instr.a() as usize) >= register_count {
+                    return Ok(None);
+                }
+                let start = instr.b() as usize;
+                let end = start
+                    .checked_add(instr.c() as usize)
+                    .ok_or_else(|| anyhow::anyhow!("concat arg overflow"))?;
+                if end > register_count {
+                    return Ok(None);
+                }
+                let mut parts = Vec::new();
+                for reg in start..end {
+                    let reg = u8::try_from(reg)
+                        .ok()
+                        .ok_or_else(|| anyhow::anyhow!("concat register overflow"))?;
+                    let Some(value) = text_value_from_reg(
+                        &mut ir,
+                        reg,
+                        callee_facts
+                            .register_kind_before(pc, reg)
+                            .or_else(|| local_register_kind_before(&code, pc, reg)),
+                        &static_regs,
+                        &mut tmp_index,
+                    ) else {
+                        return Ok(None);
+                    };
+                    parts.push(value);
+                }
+                let mut parts = parts.into_iter();
+                let Some(mut value) = parts.next() else {
+                    return Ok(None);
+                };
+                for part in parts {
+                    let Some(next) = concat_text_values(value, part) else {
+                        return Ok(None);
+                    };
+                    value = next;
+                }
+                static_regs[instr.a() as usize] = Some(value);
+                emitted_terminator = false;
             }
             _ => {
                 return Ok(None);
@@ -1442,10 +1480,16 @@ fn callsite_param_kind_candidates(
 fn determine_return_kind(code: &[Instr], facts: &NativeScalarFacts) -> Option<NativeScalarKind> {
     let mut return_kind: Option<NativeScalarKind> = None;
     for (pc, instr) in code.iter().copied().enumerate() {
-        if !instr.opcode().is_return() || instr.return_count() != 1 {
+        if !instr.opcode().is_return() {
             continue;
         }
-        let kind = facts.register_kind_before(pc, instr.a())?;
+        let kind = if instr.return_count() == 0 {
+            NativeScalarKind::Nil
+        } else if instr.return_count() == 1 {
+            facts.register_kind_before(pc, instr.a())?
+        } else {
+            return None;
+        };
         match return_kind {
             None => return_kind = Some(kind),
             Some(prev) if prev != kind => return None,

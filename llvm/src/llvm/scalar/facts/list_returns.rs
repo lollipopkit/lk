@@ -1,6 +1,7 @@
 use crate::{
+    llvm::scalar::list_shape::function_returns_pushed_list,
     llvm::straightline_value::{NativeListElementKind, NativeStraightlineValue},
-    vm::{ConstHeapValueData, ConstRuntimeValueData, FunctionData, Instr, Opcode},
+    vm::{ConstHeapValueData, ConstRuntimeValueData, FunctionData},
 };
 
 pub(in crate::llvm) fn dynamic_list_return_value(
@@ -20,12 +21,7 @@ pub(in crate::llvm) fn dynamic_list_return_value(
 }
 
 fn callee_has_list_return_shape(function: &FunctionData) -> bool {
-    function
-        .code
-        .iter()
-        .copied()
-        .filter_map(|raw| Instr::try_from_raw(raw).ok())
-        .any(|instr| instr.opcode() == Opcode::ListPush)
+    function_returns_pushed_list(function)
 }
 
 fn value_element_kind(value: &NativeStraightlineValue) -> Option<NativeListElementKind> {

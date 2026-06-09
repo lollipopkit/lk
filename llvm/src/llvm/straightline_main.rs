@@ -17,17 +17,17 @@ use super::options::LlvmBackendOptions;
 use super::output::{emit_native_builtin_call, native_scalar_main_ir, native_straightline_main_ir};
 use super::scalar::blocks::compile_native_scalar_main_blocks;
 use super::scalar::contains::static_iter_builtin_call;
-use super::scalar::facts::native_scalar_block_facts_with_statics_and_functions;
+use super::scalar::facts::native_scalar_block_facts_with_static_globals_and_functions;
 use super::straightline_value::{
     NativeStraightlineValue, NativeStringKeyKind, native_runtime_string_key_kind, native_static_alias_symbol,
     native_static_collection_equality_bool, native_static_compare_bool, native_static_container_test,
     native_static_contains, native_static_equality_bool, native_static_f64_binary, native_static_f64_divisor_nonzero,
-    native_static_global, native_static_i64_binary, native_static_i64_divisor_nonzero, native_static_index,
-    native_static_int_range, native_static_len, native_static_list_from_values, native_static_list_join,
-    native_static_list_push, native_static_load_cell, native_static_map_from_pairs, native_static_map_rest,
-    native_static_not, native_static_object_from_fields, native_static_set_index, native_static_slice_from,
-    native_static_store_cell, native_static_string_split, native_static_to_iter, native_static_to_string_value,
-    native_static_truthy,
+    native_static_global_with_imports, native_static_i64_binary, native_static_i64_divisor_nonzero,
+    native_static_import_globals, native_static_index, native_static_int_range, native_static_len,
+    native_static_list_from_values, native_static_list_join, native_static_list_push, native_static_load_cell,
+    native_static_map_from_pairs, native_static_map_rest, native_static_not, native_static_object_from_fields,
+    native_static_set_index, native_static_slice_from, native_static_store_cell, native_static_string_split,
+    native_static_to_iter, native_static_to_string_value, native_static_truthy,
 };
 
 pub(super) fn compile_native_scalar_main_artifact(
@@ -51,11 +51,12 @@ pub(super) fn compile_native_scalar_main_artifact(
     if code.is_empty() {
         return Ok(Some(native_scalar_main_ir(options, &body, None)));
     }
+    let imported_static_globals = native_static_import_globals(&artifact.imports, &artifact.module.globals);
     let needs_block_lowering = native_scalar_function_needs_blocks(&code)
         || native_direct_call_targets_need_blocks(artifact, &code)
         || native_straightline_function_has_call(&code);
     if needs_block_lowering
-        && let Some(scalar_facts) = native_scalar_block_facts_with_statics_and_functions(
+        && let Some(scalar_facts) = native_scalar_block_facts_with_static_globals_and_functions(
             function.register_count as usize,
             artifact.module.globals.len(),
             &artifact.module.globals,
@@ -63,6 +64,7 @@ pub(super) fn compile_native_scalar_main_artifact(
             &function.consts.strings,
             &function.consts.heap_values,
             &code,
+            imported_static_globals.clone(),
             Some(&artifact.module.functions),
         )
     {
@@ -78,6 +80,7 @@ pub(super) fn compile_native_scalar_main_artifact(
             &function.consts.heap_values,
             &code,
             &scalar_facts,
+            &imported_static_globals,
             &collect_self_recursive_indices(&artifact.module.functions),
         );
     }
@@ -291,7 +294,7 @@ pub(super) fn compile_native_scalar_main_artifact(
                         .module
                         .globals
                         .get(instr.bx() as usize)
-                        .and_then(|name| native_static_global(name))
+                        .and_then(|name| native_static_global_with_imports(&artifact.imports, name))
                 });
                 let Some(value) = value else {
                     return Ok(None);

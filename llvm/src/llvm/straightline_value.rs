@@ -1,11 +1,14 @@
 mod display;
 mod equality;
+mod imports;
 mod maps;
+mod module_index;
+mod set;
 mod strings;
 use super::const_display::{
     native_const_list_display, native_const_map_display, native_const_object_display, native_string_const_value,
 };
-use crate::llvm::stdlib_catalog::{stdlib_global_builtin, stdlib_global_name, stdlib_module_index, stdlib_module_name};
+use crate::llvm::stdlib_catalog::{stdlib_global_builtin, stdlib_global_name, stdlib_module_name};
 use crate::vm::{ConstHeapValueData, ConstRuntimeValueData, Opcode, RuntimeMapKeyData};
 use display::{native_arg_list_display, native_builtin_display, native_display_map_display, native_module_display};
 use equality::{
@@ -15,7 +18,10 @@ use equality::{
 pub(in crate::llvm) use equality::{
     native_static_collection_equality_bool, native_static_contains, native_static_value_eq,
 };
+pub(super) use imports::{native_static_global_with_imports, native_static_import_globals};
 pub(super) use maps::{native_static_map_delete, native_static_map_from_pairs, native_static_map_rest};
+use module_index::native_static_module_index;
+pub(super) use set::{native_static_set_contains, native_static_set_from_arg, native_static_set_method};
 use strings::native_const_string_value;
 pub(super) use strings::{native_const_runtime_string, native_runtime_string_key_kind};
 
@@ -93,6 +99,11 @@ pub(super) enum NativeStraightlineValue {
         symbol: String,
         value: String,
         entries: Vec<(RuntimeMapKeyData, ConstRuntimeValueData)>,
+    },
+    Set {
+        symbol: String,
+        value: String,
+        elements: Vec<ConstRuntimeValueData>,
     },
     DisplayMap {
         symbol: String,
@@ -179,6 +190,9 @@ pub(super) enum NativeTextPart {
 pub(super) enum NativeBuiltin {
     Print,
     Println,
+    Assert,
+    AssertEq,
+    AssertNe,
     BitAnd,
     BitNot,
     BitOr,
@@ -188,7 +202,9 @@ pub(super) enum NativeBuiltin {
     CoreMergeFields,
     CoreRegisterTrait,
     CoreRegisterTraitImpl,
+    CoreSet,
     CoreTypeof,
+    BytesToStringUtf8,
     Recv,
     DatetimeAdd,
     DatetimeDayOfWeek,
@@ -197,11 +213,31 @@ pub(super) enum NativeBuiltin {
     DatetimeIsWeekend,
     DatetimeNow,
     DatetimeSub,
+    EnvGetOr,
+    FsExists,
+    FsReadDir,
+    FsTempDir,
+    FibIterative,
+    GreetingsMessage,
+    IoStdFlush,
+    IoStdReadToString,
+    IoStdStderr,
+    IoStdStdin,
+    IoStdStdout,
+    IoStdWrite,
+    IoStdWriteln,
     OsClock,
     OsEpoch,
     OsHostname,
     OsArch,
     OsName,
+    PathSep,
+    ProcessCwd,
+    SocketAddr,
+    TcpClose,
+    TcpConnect,
+    TcpRead,
+    TcpWrite,
     IterRange,
     IterMap,
     IterFilter,
@@ -244,6 +280,7 @@ pub(super) enum NativeBuiltin {
     ListSort,
     YamlParse,
     MathAbs,
+    MathlibDouble,
     MathSqrt,
     MathFloor,
     MathCeil,
@@ -282,6 +319,9 @@ pub(super) fn native_static_global(name: &str) -> Option<NativeStraightlineValue
     let value = match name {
         "print" => Some(NativeStraightlineValue::Builtin(NativeBuiltin::Print)),
         "println" => Some(NativeStraightlineValue::Builtin(NativeBuiltin::Println)),
+        "assert" => Some(NativeStraightlineValue::Builtin(NativeBuiltin::Assert)),
+        "assert_eq" => Some(NativeStraightlineValue::Builtin(NativeBuiltin::AssertEq)),
+        "assert_ne" => Some(NativeStraightlineValue::Builtin(NativeBuiltin::AssertNe)),
         "__lk_bit_and" => Some(NativeStraightlineValue::Builtin(NativeBuiltin::BitAnd)),
         "__lk_bit_not" => Some(NativeStraightlineValue::Builtin(NativeBuiltin::BitNot)),
         "__lk_bit_or" => Some(NativeStraightlineValue::Builtin(NativeBuiltin::BitOr)),
@@ -291,6 +331,7 @@ pub(super) fn native_static_global(name: &str) -> Option<NativeStraightlineValue
         "__lk_merge_fields" => Some(NativeStraightlineValue::Builtin(NativeBuiltin::CoreMergeFields)),
         "__lk_register_trait" => Some(NativeStraightlineValue::Builtin(NativeBuiltin::CoreRegisterTrait)),
         "__lk_register_trait_impl" => Some(NativeStraightlineValue::Builtin(NativeBuiltin::CoreRegisterTraitImpl)),
+        "Set" => Some(NativeStraightlineValue::Builtin(NativeBuiltin::CoreSet)),
         "typeof" => Some(NativeStraightlineValue::Builtin(NativeBuiltin::CoreTypeof)),
         "panic" => Some(NativeStraightlineValue::Builtin(NativeBuiltin::Panic)),
         "recv" => Some(NativeStraightlineValue::Builtin(NativeBuiltin::Recv)),
@@ -341,6 +382,7 @@ pub(super) fn native_static_to_string_value(
         | NativeStraightlineValue::Error { .. }
         | NativeStraightlineValue::List { .. }
         | NativeStraightlineValue::Map { .. }
+        | NativeStraightlineValue::Set { .. }
         | NativeStraightlineValue::DisplayMap { .. }
         | NativeStraightlineValue::Object { .. }
         | NativeStraightlineValue::Builtin(_)
@@ -428,6 +470,7 @@ pub(super) fn native_static_truthy(value: &NativeStraightlineValue) -> Option<bo
         | NativeStraightlineValue::DynamicTextChar
         | NativeStraightlineValue::List { .. }
         | NativeStraightlineValue::Map { .. }
+        | NativeStraightlineValue::Set { .. }
         | NativeStraightlineValue::DisplayMap { .. }
         | NativeStraightlineValue::DynamicMap { .. }
         | NativeStraightlineValue::DynamicMapIter { .. }
@@ -585,6 +628,7 @@ pub(super) fn native_static_compare_bool(
         }
         (NativeStraightlineValue::List { .. }, NativeStraightlineValue::List { .. })
         | (NativeStraightlineValue::Map { .. }, NativeStraightlineValue::Map { .. })
+        | (NativeStraightlineValue::Set { .. }, NativeStraightlineValue::Set { .. })
         | (NativeStraightlineValue::DisplayMap { .. }, NativeStraightlineValue::DisplayMap { .. })
             if matches!(opcode, Opcode::CmpInt | Opcode::CmpNeInt) =>
         {
@@ -619,6 +663,7 @@ pub(super) fn native_static_alias_symbol(value: &NativeStraightlineValue) -> Opt
     match value {
         NativeStraightlineValue::List { symbol, .. }
         | NativeStraightlineValue::Map { symbol, .. }
+        | NativeStraightlineValue::Set { symbol, .. }
         | NativeStraightlineValue::DisplayMap { symbol, .. }
         | NativeStraightlineValue::Object { symbol, .. }
         | NativeStraightlineValue::Cell { symbol, .. } => Some(symbol),
@@ -675,7 +720,9 @@ pub(super) fn native_static_container_test(
         ),
         Opcode::IsMap => matches!(
             value,
-            NativeStraightlineValue::Map { .. } | NativeStraightlineValue::DisplayMap { .. }
+            NativeStraightlineValue::Map { .. }
+                | NativeStraightlineValue::Set { .. }
+                | NativeStraightlineValue::DisplayMap { .. }
         ),
         _ => return None,
     };
@@ -688,6 +735,7 @@ pub(super) fn native_static_len(value: NativeStraightlineValue) -> Option<Native
         NativeStraightlineValue::List { elements, .. } => elements.len(),
         NativeStraightlineValue::ArgList { elements } => elements.len(),
         NativeStraightlineValue::Map { entries, .. } => entries.len(),
+        NativeStraightlineValue::Set { elements, .. } => elements.len(),
         NativeStraightlineValue::DisplayMap { entries, .. } => entries.len(),
         NativeStraightlineValue::DynamicArgListElement { elements, .. } => elements.len(),
         _ => return None,
@@ -961,51 +1009,6 @@ pub(super) fn native_static_index(
         NativeStraightlineValue::Module(module) => native_static_module_index(module, key),
         _ => None,
     }
-}
-
-fn native_static_module_index(module: NativeModule, key: NativeStraightlineValue) -> Option<NativeStraightlineValue> {
-    if let Some(value) = native_core_container_module_index(module, key.clone()) {
-        return Some(value);
-    }
-    stdlib_module_index(module, key)
-}
-
-fn native_core_container_module_index(
-    module: NativeModule,
-    key: NativeStraightlineValue,
-) -> Option<NativeStraightlineValue> {
-    let NativeStraightlineValue::String { value: key, .. } = key else {
-        return None;
-    };
-    let builtin = match (module.name(), key.as_str()) {
-        ("map", "len") => NativeBuiltin::MapModuleMethod("len"),
-        ("map", "keys") => NativeBuiltin::MapModuleMethod("keys"),
-        ("map", "values") => NativeBuiltin::MapModuleMethod("values"),
-        ("map", "has") => NativeBuiltin::MapModuleMethod("has"),
-        ("map", "get") => NativeBuiltin::MapModuleMethod("get"),
-        ("map", "delete") => NativeBuiltin::MapDelete,
-        ("map", "set") => NativeBuiltin::MapSet,
-        ("map", "mutate") => NativeBuiltin::MapMutate,
-        ("list", "concat") => NativeBuiltin::ListConcat,
-        ("list", "contains") => NativeBuiltin::ListContains,
-        ("list", "first") => NativeBuiltin::ListFirst,
-        ("list", "get") => NativeBuiltin::ListGet,
-        ("list", "index_of") => NativeBuiltin::ListIndexOf,
-        ("list", "insert") => NativeBuiltin::ListInsert,
-        ("list", "is_empty") => NativeBuiltin::ListIsEmpty,
-        ("list", "join") => NativeBuiltin::ListJoin,
-        ("list", "last") => NativeBuiltin::ListLast,
-        ("list", "len") => NativeBuiltin::ListLen,
-        ("list", "pop") => NativeBuiltin::ListPop,
-        ("list", "push") => NativeBuiltin::ListPush,
-        ("list", "remove_at") => NativeBuiltin::ListRemoveAt,
-        ("list", "reverse") => NativeBuiltin::ListReverse,
-        ("list", "set") => NativeBuiltin::ListSet,
-        ("list", "slice") => NativeBuiltin::ListSlice,
-        ("list", "sort") => NativeBuiltin::ListSort,
-        _ => return None,
-    };
-    Some(NativeStraightlineValue::Builtin(builtin))
 }
 
 pub(super) fn native_static_set_index(
@@ -1322,6 +1325,11 @@ pub(super) fn native_runtime_const_value(value: &NativeStraightlineValue) -> Opt
             let mut out = Vec::with_capacity(entries.len());
             out.extend(entries.iter().cloned());
             Some(ConstRuntimeValueData::Heap(Box::new(ConstHeapValueData::Map(out))))
+        }
+        NativeStraightlineValue::Set { elements, .. } => {
+            let mut out = Vec::with_capacity(elements.len());
+            out.extend(elements.iter().cloned());
+            Some(ConstRuntimeValueData::Heap(Box::new(ConstHeapValueData::List(out))))
         }
         NativeStraightlineValue::DisplayMap { entries, .. } => {
             let entries = entries

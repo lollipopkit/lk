@@ -1,5 +1,7 @@
-use rustyline::{Editor, error::ReadlineError, history::DefaultHistory};
-use std::sync::Arc;
+use std::{
+    io::{self, BufRead, IsTerminal},
+    sync::Arc,
+};
 
 use lk_core::{
     module::ModuleRegistry,
@@ -10,15 +12,132 @@ use lk_core::{
     vm::VmContext,
 };
 
-use crate::diagnostic;
-use crate::repl_completion::{ReplCompletionState, ReplHelper};
+use crate::{diagnostic, repl_completion::ReplCompletionState, repl_tui};
+
+pub(crate) enum ReplInput {
+    Submit(String),
+    Continue,
+    Exit,
+}
+
+enum ReplStep {
+    Continue,
+    Exit,
+}
+
+struct ReplSession {
+    env: VmContext,
+    completion_state: ReplCompletionState,
+}
+
+impl ReplSession {
+    fn new() -> anyhow::Result<Self> {
+        if let Err(e) = rt::init_runtime() {
+            diagnostic::warning(format_args!("Failed to initialize runtime: {}", e));
+        }
+
+        let mut registry = ModuleRegistry::new();
+        lk_stdlib::register_stdlib_globals(&mut registry);
+        lk_stdlib::register_stdlib_modules(&mut registry)?;
+        let resolver = Arc::new(ModuleResolver::with_registry(registry));
+        let env = VmContext::new()
+            .with_resolver(resolver)
+            .with_type_checker(Some(TypeChecker::new_strict()));
+
+        Ok(Self {
+            env,
+            completion_state: ReplCompletionState::new(),
+        })
+    }
+
+    fn completion_state(&self) -> ReplCompletionState {
+        self.completion_state.clone()
+    }
+
+    fn execute(&mut self, source: &str) -> ReplStep {
+        let final_src = source.trim_end();
+        if final_src.trim().is_empty() {
+            return ReplStep::Continue;
+        }
+        if final_src.starts_with(':') {
+            return self.execute_command(final_src);
+        }
+
+        let (tokens, spans) = match Tokenizer::tokenize_enhanced_with_spans(final_src) {
+            Ok((tokens, spans)) => (tokens, spans),
+            Err(parse_err) => {
+                diagnostic::parse_error(&parse_err, final_src);
+                return ReplStep::Continue;
+            }
+        };
+
+        let mut parser = StmtParser::new_with_spans(&tokens, &spans);
+        let Some(result) = (match parser.parse_program_with_enhanced_errors(final_src) {
+            Ok(program) => Some(program.execute_with_ctx(&mut self.env)),
+            Err(parse_err) => self.execute_as_expression(final_src, parse_err),
+        }) else {
+            return ReplStep::Continue;
+        };
+
+        match result {
+            Ok(result) => {
+                self.completion_state.append_successful_input(final_src);
+                if !result.first_return_is_nil() {
+                    println!("{}", result.display_first_return());
+                }
+            }
+            Err(e) => diagnostic::error(&e),
+        }
+        ReplStep::Continue
+    }
+
+    fn execute_command(&mut self, command: &str) -> ReplStep {
+        match command {
+            ":quit" | ":exit" | ":q" => ReplStep::Exit,
+            ":help" => {
+                print_repl_help();
+                ReplStep::Continue
+            }
+            _ => {
+                eprintln!("Unknown command. Type :help for help.");
+                ReplStep::Continue
+            }
+        }
+    }
+
+    fn execute_as_expression(
+        &mut self,
+        source: &str,
+        statement_error: lk_core::token::ParseError,
+    ) -> Option<anyhow::Result<lk_core::vm::ProgramResult>> {
+        let normalized = normalize_binary_signs(source);
+        let wrapped = format!("println(({}));", normalized);
+        let Ok((tokens, spans)) = Tokenizer::tokenize_enhanced_with_spans(&wrapped) else {
+            diagnostic::parse_error(&statement_error, source);
+            return None;
+        };
+        let mut parser = StmtParser::new_with_spans(&tokens, &spans);
+        match parser.parse_program_with_enhanced_errors(&wrapped) {
+            Ok(program) => Some(program.execute_with_ctx(&mut self.env)),
+            Err(_expr_err) => {
+                diagnostic::parse_error(&statement_error, source);
+                None
+            }
+        }
+    }
+}
+
+impl Drop for ReplSession {
+    fn drop(&mut self) {
+        rt::shutdown_runtime();
+    }
+}
 
 fn print_repl_help() {
     eprintln!("Commands: :quit | :exit | :q, :help");
 }
 
-fn should_continue_multiline(buf: &str) -> bool {
-    // Simple bracket/brace/paren balance check; continue if unbalanced or trailing '\\'
+pub(crate) fn should_continue_multiline(buf: &str) -> bool {
     let mut paren = 0i32;
     let mut brace = 0i32;
     let mut bracket = 0i32;
@@ -37,9 +156,6 @@ fn should_continue_multiline(buf: &str) -> bool {
     paren > 0 || brace > 0 || bracket > 0 || trailing_backslash
 }
 
-// Normalize bare expressions to avoid tokenizer merging '+/-' with following digits
-// when used as binary operators without spaces, e.g., "a+1" -> "a+ 1", "a-1" -> "a- 1".
-// This only tweaks outside of quoted strings.
 fn normalize_binary_signs(src: &str) -> String {
     let mut out = String::with_capacity(src.len() + 8);
     let chars: Vec<char> = src.chars().collect();
@@ -68,7 +184,6 @@ fn normalize_binary_signs(src: &str) -> String {
         }
 
         if (c == '+' || c == '-') && i + 1 < len && chars[i + 1].is_ascii_digit() {
-            // Look at previous visible char to decide if this is binary op context
             let mut j = i as isize - 1;
             let mut prev: Option<char> = None;
             while j >= 0 {
@@ -93,7 +208,6 @@ fn normalize_binary_signs(src: &str) -> String {
             );
 
             if prev_is_value_like {
-                // Insert a space after '+' or '-' to force binary tokenization
                 out.push(c);
                 out.push(' ');
                 i += 1;
@@ -108,152 +222,75 @@ fn normalize_binary_signs(src: &str) -> String {
 }
 
 pub fn run(_is_statement_mode: bool) -> anyhow::Result<()> {
-    // Initialize runtime
-
-    if let Err(e) = rt::init_runtime() {
-        diagnostic::warning(format_args!("Failed to initialize runtime: {}", e));
-    }
-
-    // Prepare stdlib and environment (persist across statements)
-    let mut registry = ModuleRegistry::new();
-    lk_stdlib::register_stdlib_globals(&mut registry);
-    lk_stdlib::register_stdlib_modules(&mut registry)?;
-    let resolver = Arc::new(ModuleResolver::with_registry(registry));
-    let mut env = VmContext::new()
-        .with_resolver(resolver)
-        .with_type_checker(Some(TypeChecker::new_strict()));
-
-    // In-memory line editor with history, arrow key support, and context-aware completion.
-    let completion_state = ReplCompletionState::new();
-    let helper = ReplHelper::new(completion_state.clone())?;
-    let mut rl = Editor::<ReplHelper, DefaultHistory>::new()?;
-    rl.set_helper(Some(helper));
-    let mut buffer = String::new();
-
+    let mut session = ReplSession::new()?;
     print_repl_help();
 
+    if io::stdin().is_terminal() && io::stdout().is_terminal() {
+        run_tui(&mut session)
+    } else {
+        run_fallback(&mut session)
+    }
+}
+
+fn run_tui(session: &mut ReplSession) -> anyhow::Result<()> {
+    let mut editor = repl_tui::new_editor(session.completion_state())?;
     loop {
-        // Prompt
-        buffer.clear();
-        let mut acc = String::new();
-        // Read one or more lines using rustyline until complete
-        loop {
-            let prompt = if acc.is_empty() { "> " } else { "... " };
-            match rl.readline(prompt) {
-                Ok(line) => {
-                    let trimmed = line.trim_end();
-
-                    // Commands only when starting fresh
-                    if acc.is_empty() && trimmed.starts_with(':') {
-                        match trimmed {
-                            ":quit" | ":exit" | ":q" => {
-                                rt::shutdown_runtime();
-                                return Ok(());
-                            }
-                            ":help" => {
-                                print_repl_help();
-                                acc.clear();
-                                break; // show new prompt
-                            }
-                            _ => {
-                                eprintln!("Unknown command. Type :help for help.");
-                                acc.clear();
-                                break; // new prompt
-                            }
-                        }
-                    }
-
-                    // Support line continuation via trailing '\\' (strip it)
-                    if trimmed.ends_with('\\') {
-                        acc.push_str(trimmed.strip_suffix('\\').unwrap_or(trimmed));
-                        acc.push('\n');
-                        continue;
-                    }
-
-                    acc.push_str(trimmed);
-                    acc.push('\n');
-                    if !should_continue_multiline(&acc) {
-                        break;
-                    }
-                }
-                Err(ReadlineError::Interrupted) => {
-                    // Ctrl-C: clear current buffer and prompt again
-                    acc.clear();
-                    eprintln!("^C");
-                    break;
-                }
-                Err(ReadlineError::Eof) => {
-                    // Ctrl-D: exit if nothing pending; otherwise treat as submit
-                    if acc.trim().is_empty() {
-                        println!();
-                        rt::shutdown_runtime();
-                        return Ok(());
-                    } else {
-                        break;
-                    }
-                }
-                Err(e) => {
-                    eprintln!("Readline error: {}", e);
-                    continue;
+        match repl_tui::read_input(&mut editor)? {
+            ReplInput::Submit(source) => {
+                if matches!(session.execute(&source), ReplStep::Exit) {
+                    return Ok(());
                 }
             }
+            ReplInput::Continue => {
+                eprintln!("^C");
+            }
+            ReplInput::Exit => return Ok(()),
         }
+    }
+}
 
-        let final_src = acc.trim_end().to_string();
-        if final_src.trim().is_empty() {
+fn run_fallback(session: &mut ReplSession) -> anyhow::Result<()> {
+    let stdin = io::stdin();
+    let mut lines = stdin.lock().lines();
+    let mut acc = String::new();
+    while let Some(line) = lines.next().transpose()? {
+        let trimmed = line.trim_end();
+        if trimmed.ends_with('\\') {
+            acc.push_str(trimmed.strip_suffix('\\').unwrap_or(trimmed));
+            acc.push('\n');
             continue;
         }
-        // Add to in-memory history
-        let _ = rl.add_history_entry(final_src.as_str());
-
-        // Always run in statement mode. If parsing as statements fails,
-        // try wrapping input as println(<expr>); to allow quick expression prints.
-        let result = {
-            let src = final_src.clone();
-            let (tokens, spans) = match Tokenizer::tokenize_enhanced_with_spans(&src) {
-                Ok((tokens, spans)) => (tokens, spans),
-                Err(parse_err) => {
-                    diagnostic::parse_error(&parse_err, &src);
-                    continue;
-                }
-            };
-
-            let mut parser = StmtParser::new_with_spans(&tokens, &spans);
-            match parser.parse_program_with_enhanced_errors(&src) {
-                Ok(program) => program.execute_with_ctx(&mut env),
-                Err(parse_err) => {
-                    // Attempt to treat input as expression: println((<src>));
-                    // Normalize to avoid tokenizer merging '+'/'-' with following digits in binary contexts.
-                    let normalized = normalize_binary_signs(&src);
-                    let wrapped = format!("println(({}));", normalized);
-                    match Tokenizer::tokenize_enhanced_with_spans(&wrapped) {
-                        Ok((wtoks, wspans)) => {
-                            let mut wparser = StmtParser::new_with_spans(&wtoks, &wspans);
-                            match wparser.parse_program_with_enhanced_errors(&wrapped) {
-                                Ok(wprog) => wprog.execute_with_ctx(&mut env),
-                                Err(_expr_err) => {
-                                    diagnostic::parse_error(&parse_err, &src);
-                                    continue;
-                                }
-                            }
-                        }
-                        Err(_expr_err) => {
-                            diagnostic::parse_error(&parse_err, &src);
-                            continue;
-                        }
-                    }
-                }
-            }
-        };
-
-        match result {
-            Ok(res) => {
-                completion_state.append_successful_input(&final_src);
-                if !res.first_return_is_nil() {
-                    println!("{}", res.display_first_return());
-                }
-            }
-            Err(e) => diagnostic::error(&e),
+        acc.push_str(trimmed);
+        acc.push('\n');
+        if should_continue_multiline(&acc) {
+            continue;
         }
+        if matches!(session.execute(&acc), ReplStep::Exit) {
+            return Ok(());
+        }
+        acc.clear();
+    }
+    if !acc.trim().is_empty() {
+        session.execute(&acc);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn multiline_detects_unclosed_delimiters() {
+        assert!(should_continue_multiline("println((1)\n"));
+        assert!(should_continue_multiline("let xs = [1,\n"));
+        assert!(!should_continue_multiline("println(1)\n"));
+    }
+
+    #[test]
+    fn normalize_binary_signs_preserves_unary_signs() {
+        assert_eq!(normalize_binary_signs("1+2"), "1+ 2");
+        assert_eq!(normalize_binary_signs("-2"), "-2");
+        assert_eq!(normalize_binary_signs("\"1+2\""), "\"1+2\"");
     }
 }
