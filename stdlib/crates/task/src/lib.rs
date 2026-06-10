@@ -5,10 +5,9 @@
 
 use anyhow::{Result, anyhow, bail};
 use lk_core::{
-    module::{self, ModuleProvider, ModuleRegistry},
     rt,
     val::{HeapStore, HeapValue, RuntimeVal, TaskValue},
-    vm::{NativeArgs, NativeEntry, NativeRuntime, RuntimeExport},
+    vm::{NativeArgs, NativeRuntime},
 };
 use std::sync::Arc;
 
@@ -17,62 +16,74 @@ pub mod runtime_native {
 }
 pub use lk_stdlib_common::typed_list_from_values;
 
-#[derive(Debug)]
+#[derive(Debug, Default, lk_stdlib_common::StdlibModule)]
+#[stdlib_module(name = "task", docs = "Task management functions for concurrent operations")]
 pub struct TaskModule;
 
-impl Default for TaskModule {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl ModuleProvider for TaskModule {
-    fn name(&self) -> &str {
-        "task"
-    }
-
-    fn description(&self) -> &str {
-        "Task management functions for concurrent operations"
-    }
-
-    fn enabled(&self) -> bool {
-        true
-    }
-
-    fn register(&self, registry: &mut module::ModuleRegistry) -> Result<()> {
-        lk_stdlib_common::stdlib_register_runtime_builtins!(
-            registry,
-            [
-                plain "task::await" => task_await, 1,
-                plain "task::try_await" => task_try_await, 1,
-                plain "task::join_all" => task_join_all, NativeEntry::VARIADIC,
-                plain "task::sleep" => task_sleep, 1,
-                plain "task::spawn_blocking" => task_spawn_blocking, 1,
-            ],
-        );
-        Ok(())
-    }
-
-    fn runtime_exports(&self) -> Result<RuntimeExport> {
-        Ok(lk_stdlib_common::stdlib_runtime_exports!(
-            [
-                plain "await" => task_await, 1,
-                plain "try_await" => task_try_await, 1,
-                plain "join_all" => task_join_all, NativeEntry::VARIADIC,
-                plain "sleep" => task_sleep, 1,
-                plain "spawn_blocking" => task_spawn_blocking, 1,
-            ],
-        ))
-    }
-}
-
-pub fn register(registry: &mut ModuleRegistry) -> Result<()> {
-    registry.register_module("task", Box::new(TaskModule::new()))
-}
-
+#[lk_stdlib_common::stdlib_exports(module = "task", runtime_builtins = true)]
 impl TaskModule {
-    pub fn new() -> Self {
-        Self
+    #[stdlib_export(name = "await", params(task: Task), returns = Any)]
+    fn task_await(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let task = task_arg(args.get(0).expect("checked arity"), runtime.heap(), "task.await()")?;
+        let value = rt::with_runtime(|rt| rt.block_on(rt.join_task(task.id)))
+            .map_err(|err| anyhow!("Failed to await task: {err}"))?;
+        value.into_value(runtime.heap_mut())
+    }
+
+    #[stdlib_export(name = "try_await", params(task: Task), returns = List)]
+    fn try_await(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let task = task_arg(args.get(0).expect("checked arity"), runtime.heap(), "task.try_await()")?;
+        let value = match &task.value {
+            Some(value) => value.clone_value_into(runtime.heap_mut())?,
+            None => RuntimeVal::Nil,
+        };
+        Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(
+            lk_core::val::TypedList::Mixed(vec![RuntimeVal::Bool(task.value.is_some()), value]),
+        ))))
+    }
+
+    #[stdlib_export(name = "join_all", params(...tasks: Task), returns = List)]
+    fn join_all(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let mut values = Vec::with_capacity(args.len());
+        for arg in args.as_slice() {
+            let task = task_arg(arg, runtime.heap(), "task.join_all()")?;
+            let value = rt::with_runtime(|rt| rt.block_on(rt.join_task(task.id)))
+                .map_err(|err| anyhow!("Failed to await task: {err}"))?;
+            values.push(value.into_value(runtime.heap_mut())?);
+        }
+        let list = crate::typed_list_from_values(values, runtime.heap());
+        Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(list))))
+    }
+
+    #[stdlib_export(name = "sleep", params(ms: Int | Float), returns = Nil)]
+    fn sleep(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let duration_ms = numeric_millis(args.get(0).expect("checked arity"), "task.sleep()")?;
+        rt::with_runtime(|rt| {
+            let duration = std::time::Duration::from_millis(duration_ms as u64);
+            rt.block_on(async {
+                tokio::time::sleep(duration).await;
+                Ok(RuntimeVal::Nil)
+            })
+        })
+        .map_err(|err| anyhow!("Failed to sleep: {err}"))
+    }
+
+    #[stdlib_export(name = "spawn_blocking", params(f: Fn), returns = Task)]
+    fn spawn_blocking(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        if !is_callable(args.get(0).expect("checked arity"), runtime.heap())? {
+            bail!("task.spawn_blocking() expects a function argument");
+        }
+        let task_id = rt::with_runtime(|rt| {
+            let future = async move { Err(anyhow!("task.spawn_blocking() needs VmContext lifetime management")) };
+            rt.spawn(future)
+        })
+        .map_err(|err| anyhow!("Failed to spawn blocking task: {err}"))?;
+        Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::Task(Arc::new(
+            TaskValue {
+                id: task_id,
+                value: None,
+            },
+        )))))
     }
 }
 
@@ -105,69 +116,6 @@ fn is_callable(value: &RuntimeVal, heap: &HeapStore) -> Result<bool> {
         .get(*handle)
         .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?;
     Ok(matches!(value, HeapValue::Callable(_)))
-}
-
-fn task_await(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 1, "task.await()")?;
-    let task = task_arg(args.get(0).expect("checked arity"), runtime.heap(), "task.await()")?;
-    let value = rt::with_runtime(|rt| rt.block_on(rt.join_task(task.id)))
-        .map_err(|err| anyhow!("Failed to await task: {err}"))?;
-    value.into_value(runtime.heap_mut())
-}
-
-fn task_try_await(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 1, "task.try_await()")?;
-    let task = task_arg(args.get(0).expect("checked arity"), runtime.heap(), "task.try_await()")?;
-    let value = match &task.value {
-        Some(value) => value.clone_value_into(runtime.heap_mut())?,
-        None => RuntimeVal::Nil,
-    };
-    Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(
-        lk_core::val::TypedList::Mixed(vec![RuntimeVal::Bool(task.value.is_some()), value]),
-    ))))
-}
-
-fn task_join_all(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    let mut values = Vec::with_capacity(args.len());
-    for arg in args.as_slice() {
-        let task = task_arg(arg, runtime.heap(), "task.join_all()")?;
-        let value = rt::with_runtime(|rt| rt.block_on(rt.join_task(task.id)))
-            .map_err(|err| anyhow!("Failed to await task: {err}"))?;
-        values.push(value.into_value(runtime.heap_mut())?);
-    }
-    let list = crate::typed_list_from_values(values, runtime.heap());
-    Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(list))))
-}
-
-fn task_sleep(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 1, "task.sleep()")?;
-    let duration_ms = numeric_millis(args.get(0).expect("checked arity"), "task.sleep()")?;
-    rt::with_runtime(|rt| {
-        let duration = std::time::Duration::from_millis(duration_ms as u64);
-        rt.block_on(async {
-            tokio::time::sleep(duration).await;
-            Ok(RuntimeVal::Nil)
-        })
-    })
-    .map_err(|err| anyhow!("Failed to sleep: {err}"))
-}
-
-fn task_spawn_blocking(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 1, "task.spawn_blocking()")?;
-    if !is_callable(args.get(0).expect("checked arity"), runtime.heap())? {
-        bail!("task.spawn_blocking() expects a function argument");
-    }
-    let task_id = rt::with_runtime(|rt| {
-        let future = async move { Err(anyhow!("task.spawn_blocking() needs VmContext lifetime management")) };
-        rt.spawn(future)
-    })
-    .map_err(|err| anyhow!("Failed to spawn blocking task: {err}"))?;
-    Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::Task(Arc::new(
-        TaskValue {
-            id: task_id,
-            value: None,
-        },
-    )))))
 }
 
 #[cfg(test)]

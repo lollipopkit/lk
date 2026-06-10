@@ -1,81 +1,56 @@
 use anyhow::Result;
 use lk_core::{
-    module::{ModuleProvider, ModuleRegistry},
     val::RuntimeVal,
-    vm::{NativeArgs, NativeRuntime, RuntimeExport},
+    vm::{NativeArgs, NativeRuntime},
 };
 use lk_stdlib_bytes::runtime_bytes_or_string_arg;
 use lk_stdlib_common::runtime_native::runtime_string_value;
 use sha1::Digest as _;
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, lk_stdlib_common::StdlibModule)]
+#[stdlib_module(name = "hash", docs = "Hash and checksum helpers")]
 pub struct HashModule;
 
+#[lk_stdlib_common::stdlib_exports(module = "hash")]
 impl HashModule {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-impl ModuleProvider for HashModule {
-    fn name(&self) -> &str {
-        "hash"
-    }
-
-    fn register(&self, _registry: &mut ModuleRegistry) -> Result<()> {
-        Ok(())
-    }
-
-    fn runtime_exports(&self) -> Result<RuntimeExport> {
-        Ok(lk_stdlib_common::stdlib_runtime_exports!(
-            [
-                plain "sha256" => sha256, 1,
-                plain "sha1" => sha1, 1,
-                plain "crc32" => crc32, 1,
-                plain "fnv64" => fnv64, 1,
-            ],
+    #[stdlib_export(name = "sha256", params(data: Bytes | String), returns = String)]
+    fn sha256(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let data = data_arg(args, runtime, "hash.sha256()")?;
+        Ok(runtime_string_value(
+            &format!("{:x}", sha2::Sha256::digest(data.as_ref())),
+            runtime.heap_mut(),
         ))
     }
-}
 
-pub fn register(registry: &mut ModuleRegistry) -> Result<()> {
-    registry.register_module("hash", Box::new(HashModule::new()))
-}
-
-fn sha256(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    let data = data_arg(args, runtime, "hash.sha256()")?;
-    Ok(runtime_string_value(
-        &format!("{:x}", sha2::Sha256::digest(data.as_ref())),
-        runtime.heap_mut(),
-    ))
-}
-
-fn sha1(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    let data = data_arg(args, runtime, "hash.sha1()")?;
-    Ok(runtime_string_value(
-        &format!("{:x}", sha1::Sha1::digest(data.as_ref())),
-        runtime.heap_mut(),
-    ))
-}
-
-fn crc32(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    let data = data_arg(args, runtime, "hash.crc32()")?;
-    Ok(RuntimeVal::Int(crc32fast::hash(data.as_ref()) as i64))
-}
-
-fn fnv64(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    const OFFSET: u64 = 0xcbf29ce484222325;
-    const PRIME: u64 = 0x100000001b3;
-    let data = data_arg(args, runtime, "hash.fnv64()")?;
-    let mut hash = OFFSET;
-    for byte in data.iter() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(PRIME);
+    #[stdlib_export(name = "sha1", params(data: Bytes | String), returns = String)]
+    fn sha1(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let data = data_arg(args, runtime, "hash.sha1()")?;
+        Ok(runtime_string_value(
+            &format!("{:x}", sha1::Sha1::digest(data.as_ref())),
+            runtime.heap_mut(),
+        ))
     }
-    Ok(RuntimeVal::Int(hash as i64))
+
+    #[stdlib_export(name = "crc32", params(data: Bytes | String), returns = Int)]
+    fn crc32(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let data = data_arg(args, runtime, "hash.crc32()")?;
+        Ok(RuntimeVal::Int(crc32fast::hash(data.as_ref()) as i64))
+    }
+
+    #[stdlib_export(name = "fnv64", params(data: Bytes | String), returns = Int)]
+    fn fnv64(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        const OFFSET: u64 = 0xcbf29ce484222325;
+        const PRIME: u64 = 0x100000001b3;
+        let data = data_arg(args, runtime, "hash.fnv64()")?;
+        let mut hash = OFFSET;
+        for byte in data.iter() {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(PRIME);
+        }
+        Ok(RuntimeVal::Int(hash as i64))
+    }
 }
 
 fn data_arg(args: NativeArgs<'_>, runtime: &NativeRuntime<'_>, name: &str) -> Result<std::sync::Arc<[u8]>> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 1, name)?;
     runtime_bytes_or_string_arg(args.get(0).expect("checked arity"), runtime.heap(), name)
 }

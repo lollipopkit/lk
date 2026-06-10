@@ -1,8 +1,7 @@
 use anyhow::{Result, anyhow, bail};
 use lk_core::{
-    module::{ModuleProvider, ModuleRegistry},
     val::{ResourceHandle, RuntimeVal},
-    vm::{NativeArgs, NativeEntry, NativeRuntime, RuntimeExport},
+    vm::{NativeArgs, NativeRuntime},
 };
 use std::io::{Read, Write};
 
@@ -12,60 +11,56 @@ use crate::{
     runtime_native::runtime_string_value,
 };
 
-#[derive(Debug)]
+#[derive(Debug, Default, lk_stdlib_common::StdlibModule)]
+#[stdlib_module(name = "std", docs = "Standard input and output resources")]
 pub struct IoStdModule;
 
+#[lk_stdlib_common::stdlib_exports(module = "io.std")]
 impl IoStdModule {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-impl Default for IoStdModule {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl ModuleProvider for IoStdModule {
-    fn name(&self) -> &str {
-        "std"
+    #[stdlib_export(params(), returns = Resource)]
+    fn stdin(_args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        Ok(resource_value("Stdin", ResourceHandle::Stdin, runtime.heap_mut()))
     }
 
-    fn register(&self, _registry: &mut ModuleRegistry) -> Result<()> {
-        Ok(())
+    #[stdlib_export(params(), returns = Resource)]
+    fn stdout(_args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        Ok(resource_value("Stdout", ResourceHandle::Stdout, runtime.heap_mut()))
     }
 
-    fn runtime_exports(&self) -> Result<RuntimeExport> {
-        Ok(lk_stdlib_common::stdlib_runtime_exports!(
-            [
-                plain "stdin" => stdin, 0,
-                plain "stdout" => stdout, 0,
-                plain "stderr" => stderr, 0,
-                plain "read" => read, NativeEntry::VARIADIC,
-                plain "read_to_string" => read_to_string, 1,
-                plain "read_line" => read_line, 1,
-                plain "write" => write, 2,
-                plain "writeln" => writeln_fn, 2,
-                plain "flush" => flush, 1,
-            ],
-        ))
+    #[stdlib_export(params(), returns = Resource)]
+    fn stderr(_args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        Ok(resource_value("Stderr", ResourceHandle::Stderr, runtime.heap_mut()))
     }
-}
 
-fn stdin(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 0, "io.std.stdin()")?;
-    Ok(resource_value("Stdin", ResourceHandle::Stdin, runtime.heap_mut()))
-}
+    #[stdlib_export(params(reader: Resource, max_bytes?: Int), returns = Bytes)]
+    fn read_export(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        read(args, runtime)
+    }
 
-fn stdout(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 0, "io.std.stdout()")?;
-    Ok(resource_value("Stdout", ResourceHandle::Stdout, runtime.heap_mut()))
-}
+    #[stdlib_export(params(reader: Resource), returns = String)]
+    fn read_to_string_export(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        read_to_string(args, runtime)
+    }
 
-fn stderr(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 0, "io.std.stderr()")?;
-    Ok(resource_value("Stderr", ResourceHandle::Stderr, runtime.heap_mut()))
+    #[stdlib_export(params(reader: Resource), returns = String?)]
+    fn read_line_export(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        read_line(args, runtime)
+    }
+
+    #[stdlib_export(params(writer: Resource, data: Bytes | String), returns = Int)]
+    fn write_export(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        write(args, runtime)
+    }
+
+    #[stdlib_export(params(writer: Resource, data: Bytes | String), returns = Int)]
+    fn writeln_export(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        writeln_fn(args, runtime)
+    }
+
+    #[stdlib_export(params(writer: Resource), returns = Bool)]
+    fn flush_export(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        flush(args, runtime)
+    }
 }
 
 pub fn read(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
@@ -99,7 +94,6 @@ pub fn read(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Run
 }
 
 pub fn read_to_string(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 1, "read_to_string()")?;
     let resource = resource_arg(args.get(0).expect("checked arity"), runtime.heap(), "read_to_string()")?;
     let mut handle = resource.handle.lock().map_err(|_| anyhow!("resource lock poisoned"))?;
     let mut out = String::new();
@@ -125,7 +119,6 @@ pub fn read_to_string(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> 
 }
 
 pub fn read_line(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 1, "read_line()")?;
     let resource = resource_arg(args.get(0).expect("checked arity"), runtime.heap(), "read_line()")?;
     let mut handle = resource.handle.lock().map_err(|_| anyhow!("resource lock poisoned"))?;
     let mut out = String::new();
@@ -151,7 +144,6 @@ pub fn read_line(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Resul
 }
 
 pub fn write(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 2, "write()")?;
     let values = args.as_slice();
     let resource = resource_arg(&values[0], runtime.heap(), "write()")?;
     let data = runtime_bytes_or_string_arg(&values[1], runtime.heap(), "write() data")?;
@@ -159,7 +151,6 @@ pub fn write(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Ru
 }
 
 pub fn writeln_fn(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 2, "writeln()")?;
     let values = args.as_slice();
     let resource = resource_arg(&values[0], runtime.heap(), "writeln()")?;
     let data = runtime_bytes_or_string_arg(&values[1], runtime.heap(), "writeln() data")?;
@@ -170,7 +161,6 @@ pub fn writeln_fn(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Resu
 }
 
 pub fn flush(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 1, "flush()")?;
     let resource = resource_arg(args.get(0).expect("checked arity"), runtime.heap(), "flush()")?;
     let mut handle = resource.handle.lock().map_err(|_| anyhow!("resource lock poisoned"))?;
     match &mut *handle {

@@ -7,7 +7,7 @@ mod tests {
         module::ModuleRegistry,
         stmt::{ModuleResolver, stmt_parser::StmtParser},
         token::Tokenizer,
-        val::{HeapValue, RuntimeVal, TypedList},
+        val::{CallableValue, HeapValue, RuntimeVal, TypedList},
         vm::{ProgramResult, VmContext},
     };
 
@@ -83,6 +83,87 @@ mod tests {
         for child in &export.children {
             assert_lowered_export_has_return_kind(&path, child);
         }
+    }
+
+    #[test]
+    fn test_macro_generated_metadata_includes_hover_docs_and_nested_children() {
+        let catalog = stdlib_catalog();
+        let env = catalog.module("env").expect("env module");
+        assert_eq!(env.docs.as_deref(), Some("Environment variable helpers"));
+
+        let get = catalog.export_path(&["env", "get"]).expect("env.get export");
+        assert_eq!(get.signature.as_deref(), Some("env.get(key: String) -> String?"));
+        assert_eq!(
+            get.docs.as_deref(),
+            Some("Returns an environment variable, or nil if it is not set.")
+        );
+
+        let path_join = catalog.export_path(&["path", "join"]).expect("path.join export");
+        assert_eq!(
+            path_join.signature.as_deref(),
+            Some("path.join(first: String, ...rest: String) -> String")
+        );
+
+        let bytes_utf8 = catalog
+            .export_path(&["bytes", "to_string_utf8"])
+            .expect("bytes.to_string_utf8 export");
+        assert_eq!(
+            bytes_utf8.docs.as_deref(),
+            Some("Decodes bytes as UTF-8 and raises an error for invalid input.")
+        );
+
+        let slice_from_string = catalog
+            .export_path(&["slice", "from_string"])
+            .expect("slice.from_string export");
+        assert_eq!(
+            slice_from_string.signature.as_deref(),
+            Some("slice.from_string(text: String) -> Slice")
+        );
+
+        let encoding = catalog.module("encoding").expect("encoding module");
+        assert_eq!(encoding.docs.as_deref(), Some("Encoding and data format helpers"));
+        let json = encoding.export("json").expect("encoding.json namespace");
+        assert_eq!(json.kind, StdlibExportKind::Module);
+        assert!(json.children.iter().any(|child| child.name == "parse"));
+        let json_parse = catalog
+            .export_path(&["encoding", "json", "parse"])
+            .expect("encoding.json.parse export");
+        assert_eq!(
+            json_parse.signature.as_deref(),
+            Some("encoding.json.parse(source: String) -> Value")
+        );
+    }
+
+    #[test]
+    fn test_stdlib_export_macro_registers_selected_runtime_builtins() -> Result<()> {
+        let mut registry = ModuleRegistry::new();
+        register_stdlib_modules(&mut registry)?;
+
+        for (name, arity) in [
+            ("time::sleep", 1),
+            ("time::since", 2),
+            ("chan::try_send", 2),
+            ("task::join_all", lk_core::vm::NativeEntry::VARIADIC),
+        ] {
+            let export = registry.get_runtime_builtin(name).expect("runtime builtin");
+            let state = export.state_lock().expect("runtime export state lock");
+            let RuntimeVal::Obj(handle) = export.value() else {
+                panic!("{name} should be heap callable");
+            };
+            let Some(HeapValue::Callable(CallableValue::RuntimeNative {
+                arity: actual_arity, ..
+            })) = state.heap().get(*handle)
+            else {
+                panic!("{name} should use RuntimeNative");
+            };
+            assert_eq!(*actual_arity, arity, "{name} arity");
+        }
+
+        assert!(
+            registry.get_runtime_builtin("slice::from_string").is_none(),
+            "runtime_builtins=false modules should not register module::function builtins"
+        );
+        Ok(())
     }
 
     #[test]

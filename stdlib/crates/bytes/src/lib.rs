@@ -2,11 +2,9 @@ use std::sync::Arc;
 
 use anyhow::{Result, anyhow, bail};
 use lk_core::{
-    module::{ModuleProvider, ModuleRegistry},
     val::{HeapStore, HeapValue, RuntimeVal, TypedList},
-    vm::{NativeArgs, NativeEntry, NativeRuntime, RuntimeExport},
+    vm::{NativeArgs, NativeRuntime},
 };
-use lk_stdlib_common::metadata::StdlibModuleMetadata;
 
 pub mod runtime_native {
     pub use lk_stdlib_common::runtime_native::*;
@@ -14,57 +12,9 @@ pub mod runtime_native {
 
 use crate::runtime_native::{runtime_string_arg, runtime_string_value};
 
-#[derive(Debug)]
+#[derive(Debug, Default, lk_stdlib_common::StdlibModule)]
+#[stdlib_module(name = "bytes", docs = "Byte buffer helpers")]
 pub struct BytesModule;
-
-impl BytesModule {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-impl Default for BytesModule {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl ModuleProvider for BytesModule {
-    fn name(&self) -> &str {
-        "bytes"
-    }
-
-    fn register(&self, _registry: &mut ModuleRegistry) -> Result<()> {
-        Ok(())
-    }
-
-    fn runtime_exports(&self) -> Result<RuntimeExport> {
-        Ok(lk_stdlib_common::stdlib_runtime_exports!(
-            [
-                plain "from_list" => from_list, 1,
-                plain "from_string" => from_string, 1,
-                plain "len" => len, 1,
-                plain "is_empty" => is_empty, 1,
-                plain "get" => get, 2,
-                plain "slice" => slice, NativeEntry::VARIADIC,
-                plain "to_list" => to_list, 1,
-                plain "to_string_utf8" => to_string_utf8, 1,
-                plain "to_string_lossy" => to_string_lossy, 1,
-                plain "concat" => concat, 2,
-                plain "eq" => eq, 2,
-            ],
-        ))
-    }
-}
-
-pub fn register(registry: &mut ModuleRegistry) -> Result<()> {
-    lk_stdlib_common::metadata::register_stdlib_module_metadata(metadata())?;
-    registry.register_module("bytes", Box::new(BytesModule::new()))
-}
-
-pub fn metadata() -> StdlibModuleMetadata {
-    lk_stdlib_common::stdlib_module_metadata!(bytes, [to_string_utf8 => String])
-}
 
 pub fn runtime_bytes_value(bytes: impl Into<Arc<[u8]>>, heap: &mut HeapStore) -> RuntimeVal {
     RuntimeVal::Obj(heap.alloc(HeapValue::Bytes(bytes.into())))
@@ -90,116 +40,120 @@ pub fn runtime_bytes_or_string_arg(value: &RuntimeVal, heap: &HeapStore, context
     }
 }
 
-fn from_list(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 1, "bytes.from_list()")?;
-    let values = byte_list_arg(args.get(0).expect("checked arity"), runtime.heap(), "bytes.from_list()")?;
-    Ok(runtime_bytes_value(values, runtime.heap_mut()))
-}
-
-fn from_string(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 1, "bytes.from_string()")?;
-    let value = runtime_string_arg(
-        args.get(0).expect("checked arity"),
-        runtime.heap(),
-        "bytes.from_string()",
-    )?;
-    Ok(runtime_bytes_value(
-        Arc::<[u8]>::from(value.as_bytes()),
-        runtime.heap_mut(),
-    ))
-}
-
-fn len(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 1, "bytes.len()")?;
-    let value = runtime_bytes_arg(args.get(0).expect("checked arity"), runtime.heap(), "bytes.len()")?;
-    Ok(RuntimeVal::Int(value.len() as i64))
-}
-
-fn is_empty(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 1, "bytes.is_empty()")?;
-    let value = runtime_bytes_arg(args.get(0).expect("checked arity"), runtime.heap(), "bytes.is_empty()")?;
-    Ok(RuntimeVal::Bool(value.is_empty()))
-}
-
-fn get(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 2, "bytes.get()")?;
-    let values = args.as_slice();
-    let bytes = runtime_bytes_arg(&values[0], runtime.heap(), "bytes.get()")?;
-    let index = usize_arg(&values[1], "bytes.get() index")?;
-    Ok(bytes
-        .get(index)
-        .copied()
-        .map(|value| RuntimeVal::Int(value as i64))
-        .unwrap_or(RuntimeVal::Nil))
-}
-
-fn slice(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    if args.len() != 2 && args.len() != 3 {
-        bail!("bytes.slice() expects 2 or 3 arguments: bytes, start[, end]");
+#[lk_stdlib_common::stdlib_exports]
+impl BytesModule {
+    #[stdlib_export(name = "from_list", params(values: List), returns = Bytes)]
+    fn from_list(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let values = byte_list_arg(args.get(0).expect("checked arity"), runtime.heap(), "bytes.from_list()")?;
+        Ok(runtime_bytes_value(values, runtime.heap_mut()))
     }
-    let values = args.as_slice();
-    let bytes = runtime_bytes_arg(&values[0], runtime.heap(), "bytes.slice()")?;
-    let start = usize_arg(&values[1], "bytes.slice() start")?.min(bytes.len());
-    let end = if let Some(value) = values.get(2) {
-        usize_arg(value, "bytes.slice() end")?.min(bytes.len())
-    } else {
-        bytes.len()
-    };
-    if end < start {
-        bail!("bytes.slice() end must be greater than or equal to start");
+
+    #[stdlib_export(name = "from_string", params(value: String), returns = Bytes)]
+    fn from_string(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let value = runtime_string_arg(
+            args.get(0).expect("checked arity"),
+            runtime.heap(),
+            "bytes.from_string()",
+        )?;
+        Ok(runtime_bytes_value(
+            Arc::<[u8]>::from(value.as_bytes()),
+            runtime.heap_mut(),
+        ))
     }
-    let slice = bytes[start..end].to_vec();
-    Ok(runtime_bytes_value(slice, runtime.heap_mut()))
-}
 
-fn to_list(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 1, "bytes.to_list()")?;
-    let bytes = runtime_bytes_arg(args.get(0).expect("checked arity"), runtime.heap(), "bytes.to_list()")?;
-    let list = TypedList::Int(bytes.iter().copied().map(i64::from).collect());
-    Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(list))))
-}
+    #[stdlib_export(name = "len", params(value: Bytes), returns = Int)]
+    fn len(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let value = runtime_bytes_arg(args.get(0).expect("checked arity"), runtime.heap(), "bytes.len()")?;
+        Ok(RuntimeVal::Int(value.len() as i64))
+    }
 
-fn to_string_utf8(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 1, "bytes.to_string_utf8()")?;
-    let bytes = runtime_bytes_arg(
-        args.get(0).expect("checked arity"),
-        runtime.heap(),
-        "bytes.to_string_utf8()",
-    )?;
-    let value = std::str::from_utf8(&bytes).map_err(|err| anyhow!("bytes are not valid UTF-8: {err}"))?;
-    Ok(runtime_string_value(value, runtime.heap_mut()))
-}
+    #[stdlib_export(name = "is_empty", params(value: Bytes), returns = Bool)]
+    fn is_empty(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let value = runtime_bytes_arg(args.get(0).expect("checked arity"), runtime.heap(), "bytes.is_empty()")?;
+        Ok(RuntimeVal::Bool(value.is_empty()))
+    }
 
-fn to_string_lossy(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 1, "bytes.to_string_lossy()")?;
-    let bytes = runtime_bytes_arg(
-        args.get(0).expect("checked arity"),
-        runtime.heap(),
-        "bytes.to_string_lossy()",
-    )?;
-    Ok(runtime_string_value(
-        &String::from_utf8_lossy(&bytes),
-        runtime.heap_mut(),
-    ))
-}
+    #[stdlib_export(name = "get", params(value: Bytes, index: Int), returns = Int?)]
+    fn get(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let values = args.as_slice();
+        let bytes = runtime_bytes_arg(&values[0], runtime.heap(), "bytes.get()")?;
+        let index = usize_arg(&values[1], "bytes.get() index")?;
+        Ok(bytes
+            .get(index)
+            .copied()
+            .map(|value| RuntimeVal::Int(value as i64))
+            .unwrap_or(RuntimeVal::Nil))
+    }
 
-fn concat(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 2, "bytes.concat()")?;
-    let values = args.as_slice();
-    let left = runtime_bytes_arg(&values[0], runtime.heap(), "bytes.concat() first argument")?;
-    let right = runtime_bytes_arg(&values[1], runtime.heap(), "bytes.concat() second argument")?;
-    let mut out = Vec::with_capacity(left.len() + right.len());
-    out.extend_from_slice(&left);
-    out.extend_from_slice(&right);
-    Ok(runtime_bytes_value(out, runtime.heap_mut()))
-}
+    #[stdlib_export(name = "slice", params(value: Bytes, start: Int, end?: Int), returns = Bytes)]
+    fn slice(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        if args.len() != 2 && args.len() != 3 {
+            bail!("bytes.slice() expects 2 or 3 arguments: bytes, start[, end]");
+        }
+        let values = args.as_slice();
+        let bytes = runtime_bytes_arg(&values[0], runtime.heap(), "bytes.slice()")?;
+        let start = usize_arg(&values[1], "bytes.slice() start")?.min(bytes.len());
+        let end = if let Some(value) = values.get(2) {
+            usize_arg(value, "bytes.slice() end")?.min(bytes.len())
+        } else {
+            bytes.len()
+        };
+        if end < start {
+            bail!("bytes.slice() end must be greater than or equal to start");
+        }
+        let slice = bytes[start..end].to_vec();
+        Ok(runtime_bytes_value(slice, runtime.heap_mut()))
+    }
 
-fn eq(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 2, "bytes.eq()")?;
-    let values = args.as_slice();
-    let left = runtime_bytes_arg(&values[0], runtime.heap(), "bytes.eq() first argument")?;
-    let right = runtime_bytes_arg(&values[1], runtime.heap(), "bytes.eq() second argument")?;
-    Ok(RuntimeVal::Bool(left == right))
+    #[stdlib_export(name = "to_list", params(value: Bytes), returns = List)]
+    fn to_list(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let bytes = runtime_bytes_arg(args.get(0).expect("checked arity"), runtime.heap(), "bytes.to_list()")?;
+        let list = TypedList::Int(bytes.iter().copied().map(i64::from).collect());
+        Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(list))))
+    }
+
+    #[stdlib_export(name = "to_string_utf8", params(value: Bytes), returns = String, docs = "Decodes bytes as UTF-8 and raises an error for invalid input.")]
+    fn to_string_utf8(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let bytes = runtime_bytes_arg(
+            args.get(0).expect("checked arity"),
+            runtime.heap(),
+            "bytes.to_string_utf8()",
+        )?;
+        let value = std::str::from_utf8(&bytes).map_err(|err| anyhow!("bytes are not valid UTF-8: {err}"))?;
+        Ok(runtime_string_value(value, runtime.heap_mut()))
+    }
+
+    #[stdlib_export(name = "to_string_lossy", params(value: Bytes), returns = String)]
+    fn to_string_lossy(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let bytes = runtime_bytes_arg(
+            args.get(0).expect("checked arity"),
+            runtime.heap(),
+            "bytes.to_string_lossy()",
+        )?;
+        Ok(runtime_string_value(
+            &String::from_utf8_lossy(&bytes),
+            runtime.heap_mut(),
+        ))
+    }
+
+    #[stdlib_export(name = "concat", params(left: Bytes, right: Bytes), returns = Bytes)]
+    fn concat(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let values = args.as_slice();
+        let left = runtime_bytes_arg(&values[0], runtime.heap(), "bytes.concat() first argument")?;
+        let right = runtime_bytes_arg(&values[1], runtime.heap(), "bytes.concat() second argument")?;
+        let mut out = Vec::with_capacity(left.len() + right.len());
+        out.extend_from_slice(&left);
+        out.extend_from_slice(&right);
+        Ok(runtime_bytes_value(out, runtime.heap_mut()))
+    }
+
+    #[stdlib_export(name = "eq", params(left: Bytes, right: Bytes), returns = Bool)]
+    fn eq(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let values = args.as_slice();
+        let left = runtime_bytes_arg(&values[0], runtime.heap(), "bytes.eq() first argument")?;
+        let right = runtime_bytes_arg(&values[1], runtime.heap(), "bytes.eq() second argument")?;
+        Ok(RuntimeVal::Bool(left == right))
+    }
 }
 
 fn byte_list_arg(value: &RuntimeVal, heap: &HeapStore, context: &str) -> Result<Vec<u8>> {

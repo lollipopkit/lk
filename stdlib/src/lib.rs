@@ -62,7 +62,7 @@ pub use lk_stdlib_common::metadata::{
     StdlibArity, StdlibCallableMetadata, StdlibCatalog, StdlibConstValue, StdlibExportKind, StdlibExportSpec,
     StdlibGlobalMetadata, StdlibGlobalSpec, StdlibModuleMetadata, StdlibModuleSpec, StdlibReturnKind,
     register_stdlib_global_metadata, register_stdlib_module_metadata, registered_stdlib_export_metadata,
-    registered_stdlib_global_metadata,
+    registered_stdlib_global_metadata, registered_stdlib_module_metadata,
 };
 use std::sync::{Arc, OnceLock};
 
@@ -206,6 +206,7 @@ fn build_stdlib_catalog() -> StdlibCatalog {
             name: name.to_string(),
             detail: "stdlib module".to_string(),
             display,
+            docs: registered_stdlib_module_metadata(name).and_then(|metadata| metadata.docs.map(str::to_string)),
             exports,
         });
     }
@@ -224,6 +225,8 @@ fn build_stdlib_catalog() -> StdlibCatalog {
                 detail: catalog_function_detail(name, arity),
                 lowering_key: metadata.map(|metadata| metadata.lowering_key),
                 return_kind: metadata.map(|metadata| metadata.return_kind),
+                signature: metadata.and_then(|metadata| metadata.signature.map(str::to_string)),
+                docs: metadata.and_then(|metadata| metadata.docs.map(str::to_string)),
             })
         })
         .collect();
@@ -265,6 +268,8 @@ fn catalog_export_from_runtime(path: &str, name: String, value: &RuntimeVal, hea
                     display: catalog_function_display(path.rsplit('.').next().unwrap_or(path), arity),
                     lowering_key: metadata.map(|metadata| metadata.lowering_key),
                     return_kind: metadata.map(|metadata| metadata.return_kind),
+                    signature: metadata.and_then(|metadata| metadata.signature.map(str::to_string)),
+                    docs: metadata.and_then(|metadata| metadata.docs.map(str::to_string)),
                     const_value: None,
                     children: Vec::new(),
                 }
@@ -280,6 +285,8 @@ fn catalog_export_from_runtime(path: &str, name: String, value: &RuntimeVal, hea
                     display,
                     lowering_key: None,
                     return_kind: None,
+                    signature: None,
+                    docs: None,
                     const_value: None,
                     children,
                 }
@@ -300,6 +307,8 @@ fn catalog_value_export(path: &str, name: String, value: &RuntimeVal, heap: &Hea
         display: runtime_display_value(value, heap).unwrap_or_else(|_| format!("<value {path}>")),
         lowering_key: metadata.map(|metadata| metadata.lowering_key),
         return_kind: metadata.map(|metadata| metadata.return_kind),
+        signature: metadata.and_then(|metadata| metadata.signature.map(str::to_string)),
+        docs: metadata.and_then(|metadata| metadata.docs.map(str::to_string)),
         const_value: catalog_const_value(value, heap),
         children: Vec::new(),
     }

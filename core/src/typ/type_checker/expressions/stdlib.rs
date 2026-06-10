@@ -9,7 +9,7 @@ impl TypeChecker {
         let Some(path) = access_segments(func) else {
             return Ok(None);
         };
-        let Some((module, field)) = canonical_stdlib_call_path(&path, args.len()) else {
+        let Some((module, field)) = canonical_stdlib_path(&path) else {
             return Ok(None);
         };
 
@@ -45,7 +45,7 @@ impl TypeChecker {
         let Some(path) = access_segments(callee) else {
             return Ok(None);
         };
-        let Some((module, field)) = canonical_stdlib_call_path(&path, pos_args.len()) else {
+        let Some((module, field)) = canonical_stdlib_path(&path) else {
             return Ok(None);
         };
 
@@ -159,17 +159,9 @@ fn stdlib_function_signature(module: &str, field: &str) -> Option<(Vec<Type>, Ve
     }
 }
 
-fn canonical_stdlib_call_path<'a>(path: &'a [&'a str], positional_count: usize) -> Option<(&'a str, &'a str)> {
-    match path {
-        ["os", "env", "get"] if positional_count == 2 => Some(("env", "get_or")),
-        _ => canonical_stdlib_path(path),
-    }
-}
-
 fn canonical_stdlib_path<'a>(path: &'a [&'a str]) -> Option<(&'a str, &'a str)> {
     match path {
         [module, field] => Some((module, field)),
-        ["os", "env", field] => Some(("env", field)),
         _ => None,
     }
 }

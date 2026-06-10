@@ -1,5 +1,6 @@
 use anyhow::{Result, anyhow, bail};
 use lk_core::{
+    module::{RuntimeNativeExport, RuntimeValueExport},
     util::fast_map::fast_hash_map_new,
     val::{
         CallableValue, HeapStore, HeapValue, RuntimeMapKey, RuntimeSet, RuntimeVal, ShortStr, TypedList, TypedMap, de,
@@ -32,10 +33,25 @@ pub fn runtime_native_export(
     Ok((*arity, function.clone()))
 }
 
-pub fn namespace_export(entries: &[(&'static str, RuntimeExport)]) -> Result<RuntimeExport> {
+pub fn module_export(
+    natives: &[RuntimeNativeExport],
+    values: &[RuntimeValueExport],
+    namespaces: &[(&'static str, RuntimeExport)],
+) -> Result<RuntimeExport> {
     let mut heap = HeapStore::new();
     let mut map = fast_hash_map_new();
-    for (name, export) in entries {
+    for native in natives {
+        let value = RuntimeVal::Obj(heap.alloc(HeapValue::Callable(CallableValue::RuntimeNative {
+            name: Arc::<str>::from(native.name),
+            arity: native.arity,
+            function: native.function.clone(),
+        })));
+        map.insert(Arc::<str>::from(native.name), value);
+    }
+    for value in values {
+        map.insert(Arc::<str>::from(value.name), value.value.clone());
+    }
+    for (name, export) in namespaces {
         map.insert(Arc::<str>::from(*name), import_runtime_export(export, &mut heap)?);
     }
     let value = RuntimeVal::Obj(heap.alloc(HeapValue::Map(TypedMap::StringMixed(map))));

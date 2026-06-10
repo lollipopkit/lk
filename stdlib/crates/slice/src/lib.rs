@@ -2,9 +2,8 @@ use std::sync::Arc;
 
 use anyhow::{Result, anyhow, bail};
 use lk_core::{
-    module::{ModuleProvider, ModuleRegistry},
     val::{HeapStore, HeapValue, RuntimeVal, SliceKind, SliceValue, TypedList},
-    vm::{NativeArgs, NativeEntry, NativeRuntime, RuntimeExport},
+    vm::{NativeArgs, NativeRuntime},
 };
 
 pub mod runtime_native {
@@ -19,175 +18,137 @@ use crate::runtime_native::{runtime_string_arg, runtime_string_value};
 /// `slice.from_string()` and `slice.sub()` operate on byte offsets. String slices
 /// may split a multibyte UTF-8 character; `slice.to_string()` validates the byte
 /// range and returns an error when the selected range is not valid UTF-8.
-#[derive(Debug)]
+#[derive(Debug, Default, lk_stdlib_common::StdlibModule)]
+#[stdlib_module(name = "slice", docs = "Byte-oriented slices over lists and strings")]
 pub struct SliceModule;
 
+#[lk_stdlib_common::stdlib_exports(module = "slice")]
 impl SliceModule {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-impl Default for SliceModule {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl ModuleProvider for SliceModule {
-    fn name(&self) -> &str {
-        "slice"
+    #[stdlib_export(params(list: List), returns = Slice)]
+    fn from_list(source: RuntimeVal, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let len = list_arg(&source, runtime.heap(), "slice.from_list()")?.len();
+        Ok(slice_value(source, SliceKind::List, 0, len, runtime.heap_mut()))
     }
 
-    fn register(&self, _registry: &mut ModuleRegistry) -> Result<()> {
-        Ok(())
-    }
-
-    fn runtime_exports(&self) -> Result<RuntimeExport> {
-        Ok(lk_stdlib_common::stdlib_runtime_exports!(
-            [
-                plain "from_list" => from_list, 1,
-                plain "from_string" => from_string, 1,
-                plain "len" => len, 1,
-                plain "is_empty" => is_empty, 1,
-                plain "get" => get, 2,
-                plain "sub" => sub, NativeEntry::VARIADIC,
-                plain "to_list" => to_list, 1,
-                plain "to_string" => to_string, 1,
-            ],
+    #[stdlib_export(params(text: String), returns = Slice)]
+    fn from_string(source: RuntimeVal, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let text = runtime_string_arg(&source, runtime.heap(), "slice.from_string()")?;
+        Ok(slice_value(
+            source,
+            SliceKind::String,
+            0,
+            text.len(),
+            runtime.heap_mut(),
         ))
     }
-}
 
-pub fn register(registry: &mut ModuleRegistry) -> Result<()> {
-    registry.register_module("slice", Box::new(SliceModule::new()))
-}
-
-fn from_list(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 1, "slice.from_list()")?;
-    let source = args.get(0).expect("checked arity").clone();
-    let len = list_arg(&source, runtime.heap(), "slice.from_list()")?.len();
-    Ok(slice_value(source, SliceKind::List, 0, len, runtime.heap_mut()))
-}
-
-fn from_string(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 1, "slice.from_string()")?;
-    let source = args.get(0).expect("checked arity").clone();
-    let text = runtime_string_arg(&source, runtime.heap(), "slice.from_string()")?;
-    Ok(slice_value(
-        source,
-        SliceKind::String,
-        0,
-        text.len(),
-        runtime.heap_mut(),
-    ))
-}
-
-fn len(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 1, "slice.len()")?;
-    Ok(RuntimeVal::Int(
-        slice_arg(args.get(0).expect("checked arity"), runtime.heap(), "slice.len()")?.len as i64,
-    ))
-}
-
-fn is_empty(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 1, "slice.is_empty()")?;
-    Ok(RuntimeVal::Bool(
-        slice_arg(args.get(0).expect("checked arity"), runtime.heap(), "slice.is_empty()")?.len == 0,
-    ))
-}
-
-fn get(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 2, "slice.get()")?;
-    let values = args.as_slice();
-    let slice = slice_arg(&values[0], runtime.heap(), "slice.get()")?;
-    let index = usize_arg(&values[1], "slice.get() index")?;
-    if index >= slice.len {
-        return Ok(RuntimeVal::Nil);
+    #[stdlib_export(params(slice: Slice), returns = Int)]
+    fn len(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        Ok(RuntimeVal::Int(
+            slice_arg(args.get(0).expect("checked arity"), runtime.heap(), "slice.len()")?.len as i64,
+        ))
     }
-    match slice.kind {
-        SliceKind::List => {
-            let item = {
-                let list = list_arg(&slice.source, runtime.heap(), "slice.get() source")?;
-                list_item(list, slice.start + index)
-            };
-            Ok(item
-                .map(|item| item.into_runtime(runtime.heap_mut()))
-                .unwrap_or(RuntimeVal::Nil))
+
+    #[stdlib_export(params(slice: Slice), returns = Bool)]
+    fn is_empty(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        Ok(RuntimeVal::Bool(
+            slice_arg(args.get(0).expect("checked arity"), runtime.heap(), "slice.is_empty()")?.len == 0,
+        ))
+    }
+
+    #[stdlib_export(params(slice: Slice, index: Int), returns = Any)]
+    fn get(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let values = args.as_slice();
+        let slice = slice_arg(&values[0], runtime.heap(), "slice.get()")?;
+        let index = usize_arg(&values[1], "slice.get() index")?;
+        if index >= slice.len {
+            return Ok(RuntimeVal::Nil);
         }
-        SliceKind::String => {
-            let text = runtime_string_arg(&slice.source, runtime.heap(), "slice.get() source")?;
-            let Some(byte) = text.as_bytes().get(slice.start + index) else {
-                return Ok(RuntimeVal::Nil);
-            };
-            Ok(RuntimeVal::Int(*byte as i64))
+        match slice.kind {
+            SliceKind::List => {
+                let item = {
+                    let list = list_arg(&slice.source, runtime.heap(), "slice.get() source")?;
+                    list_item(list, slice.start + index)
+                };
+                Ok(item
+                    .map(|item| item.into_runtime(runtime.heap_mut()))
+                    .unwrap_or(RuntimeVal::Nil))
+            }
+            SliceKind::String => {
+                let text = runtime_string_arg(&slice.source, runtime.heap(), "slice.get() source")?;
+                let Some(byte) = text.as_bytes().get(slice.start + index) else {
+                    return Ok(RuntimeVal::Nil);
+                };
+                Ok(RuntimeVal::Int(*byte as i64))
+            }
         }
     }
-}
 
-fn sub(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    if args.len() != 2 && args.len() != 3 {
-        bail!("slice.sub() expects 2 or 3 arguments: slice, start[, end]");
+    #[stdlib_export(params(slice: Slice, start: Int, end?: Int), returns = Slice)]
+    fn sub(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        if args.len() != 2 && args.len() != 3 {
+            bail!("slice.sub() expects 2 or 3 arguments: slice, start[, end]");
+        }
+        let values = args.as_slice();
+        let slice = slice_arg(&values[0], runtime.heap(), "slice.sub()")?;
+        let start = usize_arg(&values[1], "slice.sub() start")?.min(slice.len);
+        let end = if let Some(end) = values.get(2) {
+            usize_arg(end, "slice.sub() end")?.min(slice.len)
+        } else {
+            slice.len
+        };
+        let len = end.saturating_sub(start);
+        Ok(slice_value(
+            slice.source.clone(),
+            slice.kind,
+            slice.start + start,
+            len,
+            runtime.heap_mut(),
+        ))
     }
-    let values = args.as_slice();
-    let slice = slice_arg(&values[0], runtime.heap(), "slice.sub()")?;
-    let start = usize_arg(&values[1], "slice.sub() start")?.min(slice.len);
-    let end = if let Some(end) = values.get(2) {
-        usize_arg(end, "slice.sub() end")?.min(slice.len)
-    } else {
-        slice.len
-    };
-    let len = end.saturating_sub(start);
-    Ok(slice_value(
-        slice.source.clone(),
-        slice.kind,
-        slice.start + start,
-        len,
-        runtime.heap_mut(),
-    ))
-}
 
-fn to_list(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 1, "slice.to_list()")?;
-    let slice = slice_arg(args.get(0).expect("checked arity"), runtime.heap(), "slice.to_list()")?;
-    let values = match slice.kind {
-        SliceKind::List => {
-            let items = {
-                let list = list_arg(&slice.source, runtime.heap(), "slice.to_list() source")?;
-                (0..slice.len)
-                    .filter_map(|index| list_item(list, slice.start + index))
-                    .collect::<Vec<_>>()
-            };
-            items
-                .into_iter()
-                .map(|item| item.into_runtime(runtime.heap_mut()))
-                .collect()
-        }
-        SliceKind::String => {
-            let text = runtime_string_arg(&slice.source, runtime.heap(), "slice.to_list() source")?;
-            text.as_bytes()[slice.start..slice.start + slice.len]
-                .iter()
-                .copied()
-                .map(|byte| RuntimeVal::Int(byte as i64))
-                .collect()
-        }
-    };
-    let list = crate::typed_list_from_values(values, runtime.heap());
-    Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(list))))
-}
+    #[stdlib_export(params(slice: Slice), returns = List)]
+    fn to_list(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let slice = slice_arg(args.get(0).expect("checked arity"), runtime.heap(), "slice.to_list()")?;
+        let values = match slice.kind {
+            SliceKind::List => {
+                let items = {
+                    let list = list_arg(&slice.source, runtime.heap(), "slice.to_list() source")?;
+                    (0..slice.len)
+                        .filter_map(|index| list_item(list, slice.start + index))
+                        .collect::<Vec<_>>()
+                };
+                items
+                    .into_iter()
+                    .map(|item| item.into_runtime(runtime.heap_mut()))
+                    .collect()
+            }
+            SliceKind::String => {
+                let text = runtime_string_arg(&slice.source, runtime.heap(), "slice.to_list() source")?;
+                text.as_bytes()[slice.start..slice.start + slice.len]
+                    .iter()
+                    .copied()
+                    .map(|byte| RuntimeVal::Int(byte as i64))
+                    .collect()
+            }
+        };
+        let list = crate::typed_list_from_values(values, runtime.heap());
+        Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(list))))
+    }
 
-fn to_string(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 1, "slice.to_string()")?;
-    let slice = slice_arg(args.get(0).expect("checked arity"), runtime.heap(), "slice.to_string()")?;
-    match slice.kind {
-        SliceKind::String => {
-            let text = runtime_string_arg(&slice.source, runtime.heap(), "slice.to_string() source")?;
-            let bytes = &text.as_bytes()[slice.start..slice.start + slice.len];
-            let value =
-                std::str::from_utf8(bytes).map_err(|_| anyhow!("slice.to_string() range is not valid UTF-8"))?;
-            Ok(runtime_string_value(value, runtime.heap_mut()))
+    #[stdlib_export(params(slice: Slice), returns = String)]
+    fn to_string(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let slice = slice_arg(args.get(0).expect("checked arity"), runtime.heap(), "slice.to_string()")?;
+        match slice.kind {
+            SliceKind::String => {
+                let text = runtime_string_arg(&slice.source, runtime.heap(), "slice.to_string() source")?;
+                let bytes = &text.as_bytes()[slice.start..slice.start + slice.len];
+                let value =
+                    std::str::from_utf8(bytes).map_err(|_| anyhow!("slice.to_string() range is not valid UTF-8"))?;
+                Ok(runtime_string_value(value, runtime.heap_mut()))
+            }
+            SliceKind::List => bail!("slice.to_string() expects a string slice"),
         }
-        SliceKind::List => bail!("slice.to_string() expects a string slice"),
     }
 }
 

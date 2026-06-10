@@ -3,11 +3,9 @@ use std::sync::Arc;
 
 use anyhow::{Result, anyhow, bail};
 use lk_core::{
-    module::{ModuleProvider, ModuleRegistry},
     val::{HeapStore, HeapValue, RuntimeVal, TypedList},
-    vm::{NativeArgs, NativeEntry, NativeRuntime, RuntimeExport},
+    vm::{NativeArgs, NativeRuntime},
 };
-use lk_stdlib_common::metadata::StdlibModuleMetadata;
 
 pub mod runtime_native {
     pub use lk_stdlib_common::runtime_native::*;
@@ -15,55 +13,55 @@ pub mod runtime_native {
 
 use crate::runtime_native::{runtime_display_value, runtime_string_arg, runtime_string_value};
 
-#[derive(Debug)]
+#[derive(Debug, Default, lk_stdlib_common::StdlibModule)]
+#[stdlib_module(name = "string", docs = "String manipulation functions")]
 pub struct StringModule;
 
-impl Default for StringModule {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
+#[lk_stdlib_common::stdlib_exports(module = "string")]
 impl StringModule {
-    pub fn new() -> Self {
-        Self
-    }
-
+    #[stdlib_export(params(text: String), returns = Int)]
     fn len(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let value = one_string(args, runtime, "len()")?;
         Ok(RuntimeVal::Int(value.len() as i64))
     }
 
+    #[stdlib_export(params(text: String), returns = String)]
     fn lower(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let value = one_string(args, runtime, "lower()")?;
         Ok(runtime_string_value(&value.to_lowercase(), runtime.heap_mut()))
     }
 
+    #[stdlib_export(params(text: String), returns = String)]
     fn upper(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let value = one_string(args, runtime, "upper()")?;
         Ok(runtime_string_value(&value.to_uppercase(), runtime.heap_mut()))
     }
 
+    #[stdlib_export(params(text: String), returns = String)]
     fn trim(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let value = one_string(args, runtime, "trim()")?;
         Ok(runtime_string_value(value.trim(), runtime.heap_mut()))
     }
 
+    #[stdlib_export(params(text: String, prefix: String), returns = Bool)]
     fn starts_with(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let (value, prefix) = two_strings(args, runtime, "starts_with()")?;
         Ok(RuntimeVal::Bool(value.starts_with(prefix.as_ref())))
     }
 
+    #[stdlib_export(params(text: String, suffix: String), returns = Bool)]
     fn ends_with(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let (value, suffix) = two_strings(args, runtime, "ends_with()")?;
         Ok(RuntimeVal::Bool(value.ends_with(suffix.as_ref())))
     }
 
+    #[stdlib_export(params(text: String, needle: String), returns = Bool)]
     fn contains(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let (value, needle) = two_strings(args, runtime, "contains()")?;
         Ok(RuntimeVal::Bool(value.contains(needle.as_ref())))
     }
 
+    #[stdlib_export(params(text: String, from: String, to: String, count?: Int), named(pattern, with, all), returns = String)]
     fn replace(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let pos = args.as_slice();
         if pos.is_empty() {
@@ -132,8 +130,8 @@ impl StringModule {
         Ok(runtime_string_value(&result, runtime.heap_mut()))
     }
 
+    #[stdlib_export(params(text: String, start: Int, end: Int), returns = String)]
     fn substring(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        lk_stdlib_common::runtime_native::expect_arity(args, 3, "substring()")?;
         let values = args.as_slice();
         let value = runtime_string_arg(&values[0], runtime.heap(), "substring() first argument")?;
         let start = usize_arg(&values[1], "substring() second argument")?;
@@ -145,6 +143,7 @@ impl StringModule {
         Ok(runtime_string_value(&value[start..end], runtime.heap_mut()))
     }
 
+    #[stdlib_export(params(text: String, separator: String), returns = List[String])]
     fn split(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let (value, delimiter) = two_strings(args, runtime, "split()")?;
         let mut parts = Vec::new();
@@ -162,8 +161,8 @@ impl StringModule {
         ))
     }
 
+    #[stdlib_export(params(values: List, separator: String), returns = String)]
     fn join(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        lk_stdlib_common::runtime_native::expect_arity(args, 2, "join()")?;
         let values = args.as_slice();
         let strings = string_list_arg(&values[0], runtime.heap(), "join() first argument")?;
         let delimiter = runtime_string_arg(&values[1], runtime.heap(), "join() second argument")?;
@@ -173,6 +172,7 @@ impl StringModule {
         ))
     }
 
+    #[stdlib_export(params(text: String), returns = String)]
     fn reverse(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let value = one_string(args, runtime, "reverse()")?;
         let mut reversed = String::new();
@@ -182,8 +182,8 @@ impl StringModule {
         Ok(runtime_string_value(&reversed, runtime.heap_mut()))
     }
 
+    #[stdlib_export(params(text: String, count: Int), returns = String)]
     fn repeat(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        lk_stdlib_common::runtime_native::expect_arity(args, 2, "repeat()")?;
         let values = args.as_slice();
         let value = runtime_string_arg(&values[0], runtime.heap(), "repeat() first argument")?;
         let count = int_arg(&values[1], "repeat() second argument")?;
@@ -193,8 +193,8 @@ impl StringModule {
         Ok(runtime_string_value(&value.repeat(count as usize), runtime.heap_mut()))
     }
 
+    #[stdlib_export(name = "char", params(text: String, index: Int), returns = String)]
     fn char_at(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        lk_stdlib_common::runtime_native::expect_arity(args, 2, "char()")?;
         let values = args.as_slice();
         let value = runtime_string_arg(&values[0], runtime.heap(), "char() first argument")?;
         let index = usize_arg(&values[1], "char() second argument")?;
@@ -203,8 +203,8 @@ impl StringModule {
         }))
     }
 
+    #[stdlib_export(name = "byte", params(text: String, index: Int), returns = Int)]
     fn byte_at(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        lk_stdlib_common::runtime_native::expect_arity(args, 2, "byte()")?;
         let values = args.as_slice();
         let value = runtime_string_arg(&values[0], runtime.heap(), "byte() first argument")?;
         let index = usize_arg(&values[1], "byte() second argument")?;
@@ -214,6 +214,7 @@ impl StringModule {
             .map_or(RuntimeVal::Nil, |value| RuntimeVal::Int(*value as i64)))
     }
 
+    #[stdlib_export(params(text: String), returns = List[String])]
     fn chars(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let value = one_string(args, runtime, "chars()")?;
         let mut chars = Vec::new();
@@ -225,6 +226,7 @@ impl StringModule {
         ))
     }
 
+    #[stdlib_export(params(text: String, needle: String, start?: Int), returns = Int)]
     fn find(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         if args.len() != 2 && args.len() != 3 {
             bail!("find() takes 2 or 3 arguments: string, pattern[, start]");
@@ -245,11 +247,13 @@ impl StringModule {
             .map_or(RuntimeVal::Nil, |index| RuntimeVal::Int((start + index) as i64)))
     }
 
+    #[stdlib_export(params(text: String), returns = Bool)]
     fn is_empty(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let value = one_string(args, runtime, "is_empty()")?;
         Ok(RuntimeVal::Bool(value.is_empty()))
     }
 
+    #[stdlib_export(params(template: String, ...values: Any), returns = String)]
     fn format(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         if args.is_empty() {
             bail!("format() requires at least 1 argument (format string)");
@@ -287,6 +291,7 @@ impl StringModule {
         Ok(runtime_string_value(&out, runtime.heap_mut()))
     }
 
+    #[stdlib_export(params(text: String, chars: String), returns = String)]
     fn strip(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let (value, pattern) = two_strings(args, runtime, "strip()")?;
         Ok(value
@@ -295,6 +300,7 @@ impl StringModule {
             .map_or(RuntimeVal::Nil, |s| runtime_string_value(s, runtime.heap_mut())))
     }
 
+    #[stdlib_export(params(text: String, prefix: String), returns = String)]
     fn strip_prefix(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let (value, prefix) = two_strings(args, runtime, "strip_prefix()")?;
         Ok(value
@@ -302,6 +308,7 @@ impl StringModule {
             .map_or(RuntimeVal::Nil, |s| runtime_string_value(s, runtime.heap_mut())))
     }
 
+    #[stdlib_export(params(text: String, suffix: String), returns = String)]
     fn strip_suffix(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let (value, suffix) = two_strings(args, runtime, "strip_suffix()")?;
         Ok(value
@@ -309,6 +316,7 @@ impl StringModule {
             .map_or(RuntimeVal::Nil, |s| runtime_string_value(s, runtime.heap_mut())))
     }
 
+    #[stdlib_export(params(text: String, needle: String), returns = Int)]
     fn count(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let (value, pattern) = two_strings(args, runtime, "count()")?;
         if pattern.is_empty() {
@@ -318,6 +326,7 @@ impl StringModule {
         Ok(RuntimeVal::Int(value.matches(pattern.as_ref()).count() as i64))
     }
 
+    #[stdlib_export(params(text: String, width: Int, pad: String), returns = String)]
     fn pad_left(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         if args.len() < 2 || args.len() > 3 {
             bail!("pad_left() takes 2 or 3 arguments: string, width[, fill]");
@@ -343,6 +352,7 @@ impl StringModule {
         Ok(runtime_string_value(&padded, runtime.heap_mut()))
     }
 
+    #[stdlib_export(params(text: String, width: Int, pad: String), returns = String)]
     fn pad_right(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         if args.len() < 2 || args.len() > 3 {
             bail!("pad_right() takes 2 or 3 arguments: string, width[, fill]");
@@ -368,8 +378,8 @@ impl StringModule {
         Ok(runtime_string_value(&padded, runtime.heap_mut()))
     }
 
+    #[stdlib_export(params(text: String), returns = Int)]
     fn to_int(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        lk_stdlib_common::runtime_native::expect_arity(args, 1, "to_int()")?;
         match &args.as_slice()[0] {
             RuntimeVal::Int(v) => Ok(RuntimeVal::Int(*v)),
             RuntimeVal::Float(v) => Ok(RuntimeVal::Int(*v as i64)),
@@ -378,8 +388,8 @@ impl StringModule {
         }
     }
 
+    #[stdlib_export(params(text: String), returns = Float)]
     fn to_float(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        lk_stdlib_common::runtime_native::expect_arity(args, 1, "to_float()")?;
         match &args.as_slice()[0] {
             RuntimeVal::Float(v) => Ok(RuntimeVal::Float(*v)),
             RuntimeVal::Int(v) => Ok(RuntimeVal::Float(*v as f64)),
@@ -388,6 +398,7 @@ impl StringModule {
         }
     }
 
+    #[stdlib_export(params(text: String), returns = String)]
     fn title(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let value = one_string(args, runtime, "title()")?;
         let mut result = String::with_capacity(value.len());
@@ -410,6 +421,7 @@ impl StringModule {
         Ok(runtime_string_value(&result, runtime.heap_mut()))
     }
 
+    #[stdlib_export(params(text: String), returns = String)]
     fn capitalize(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let value = one_string(args, runtime, "capitalize()")?;
         let mut chars = value.chars();
@@ -428,105 +440,11 @@ impl StringModule {
     }
 }
 
-impl ModuleProvider for StringModule {
-    fn name(&self) -> &str {
-        "string"
-    }
-
-    fn description(&self) -> &str {
-        "String manipulation functions"
-    }
-
-    fn register(&self, _registry: &mut ModuleRegistry) -> Result<()> {
-        Ok(())
-    }
-
-    fn runtime_exports(&self) -> Result<RuntimeExport> {
-        Ok(lk_stdlib_common::stdlib_runtime_exports!(
-            [
-                plain "len" => Self::len, 1,
-                plain "lower" => Self::lower, 1,
-                plain "upper" => Self::upper, 1,
-                plain "trim" => Self::trim, 1,
-                plain "starts_with" => Self::starts_with, 2,
-                plain "ends_with" => Self::ends_with, 2,
-                plain "contains" => Self::contains, 2,
-                plain "replace" => Self::replace, NativeEntry::VARIADIC,
-                plain "substring" => Self::substring, 3,
-                plain "split" => Self::split, 2,
-                plain "join" => Self::join, 2,
-                plain "reverse" => Self::reverse, 1,
-                plain "repeat" => Self::repeat, 2,
-                plain "char" => Self::char_at, 2,
-                plain "byte" => Self::byte_at, 2,
-                plain "chars" => Self::chars, 1,
-                plain "find" => Self::find, NativeEntry::VARIADIC,
-                plain "is_empty" => Self::is_empty, 1,
-                plain "format" => Self::format, NativeEntry::VARIADIC,
-                plain "strip" => Self::strip, 2,
-                plain "strip_prefix" => Self::strip_prefix, 2,
-                plain "strip_suffix" => Self::strip_suffix, 2,
-                plain "count" => Self::count, 2,
-                plain "pad_left" => Self::pad_left, 3,
-                plain "pad_right" => Self::pad_right, 3,
-                plain "to_int" => Self::to_int, 1,
-                plain "to_float" => Self::to_float, 1,
-                plain "title" => Self::title, 1,
-                plain "capitalize" => Self::capitalize, 1,
-            ],
-        ))
-    }
-}
-
-pub fn register(registry: &mut ModuleRegistry) -> Result<()> {
-    lk_stdlib_common::metadata::register_stdlib_module_metadata(metadata())?;
-    registry.register_module("string", Box::new(StringModule::new()))
-}
-
-pub fn metadata() -> StdlibModuleMetadata {
-    lk_stdlib_common::stdlib_module_metadata!(
-        string,
-        [
-            byte => Int,
-            capitalize => String,
-            char => String,
-            chars => RuntimeValue,
-            contains => Bool,
-            count => Int,
-            ends_with => Bool,
-            find => Int,
-            format => String,
-            is_empty => Bool,
-            join => String,
-            len => Int,
-            lower => String,
-            pad_left => String,
-            pad_right => String,
-            repeat => String,
-            replace => String,
-            reverse => String,
-            split => RuntimeValue,
-            starts_with => Bool,
-            strip => String,
-            strip_prefix => String,
-            strip_suffix => String,
-            substring => String,
-            title => String,
-            to_float => Float,
-            to_int => Int,
-            trim => String,
-            upper => String,
-        ]
-    )
-}
-
 fn one_string(args: NativeArgs<'_>, runtime: &NativeRuntime<'_>, name: &str) -> Result<Arc<str>> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 1, name)?;
     runtime_string_arg(&args.as_slice()[0], runtime.heap(), name)
 }
 
 fn two_strings(args: NativeArgs<'_>, runtime: &NativeRuntime<'_>, name: &str) -> Result<(Arc<str>, Arc<str>)> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 2, name)?;
     let values = args.as_slice();
     Ok((
         runtime_string_arg(&values[0], runtime.heap(), name)?,

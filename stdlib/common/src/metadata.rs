@@ -48,14 +48,24 @@ pub struct StdlibCallableMetadata {
     pub path: &'static str,
     pub lowering_key: &'static str,
     pub return_kind: StdlibReturnKind,
+    pub signature: Option<&'static str>,
+    pub docs: Option<&'static str>,
 }
 
 impl StdlibCallableMetadata {
-    pub const fn new(path: &'static str, lowering_key: &'static str, return_kind: StdlibReturnKind) -> Self {
+    pub const fn new(
+        path: &'static str,
+        lowering_key: &'static str,
+        return_kind: StdlibReturnKind,
+        signature: Option<&'static str>,
+        docs: Option<&'static str>,
+    ) -> Self {
         Self {
             path,
             lowering_key,
             return_kind,
+            signature,
+            docs,
         }
     }
 }
@@ -63,12 +73,17 @@ impl StdlibCallableMetadata {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StdlibModuleMetadata {
     pub name: &'static str,
+    pub docs: Option<&'static str>,
     pub callables: &'static [StdlibCallableMetadata],
 }
 
 impl StdlibModuleMetadata {
-    pub const fn new(name: &'static str, callables: &'static [StdlibCallableMetadata]) -> Self {
-        Self { name, callables }
+    pub const fn new(
+        name: &'static str,
+        docs: Option<&'static str>,
+        callables: &'static [StdlibCallableMetadata],
+    ) -> Self {
+        Self { name, docs, callables }
     }
 }
 
@@ -77,6 +92,8 @@ pub struct StdlibGlobalMetadata {
     pub name: &'static str,
     pub lowering_key: &'static str,
     pub return_kind: StdlibReturnKind,
+    pub signature: Option<&'static str>,
+    pub docs: Option<&'static str>,
 }
 
 impl StdlibGlobalMetadata {
@@ -85,6 +102,8 @@ impl StdlibGlobalMetadata {
             name,
             lowering_key,
             return_kind,
+            signature: None,
+            docs: None,
         }
     }
 }
@@ -98,10 +117,12 @@ macro_rules! stdlib_module_metadata {
                     concat!(stringify!($module), $(".", stringify!($path)),+),
                     concat!(stringify!($module), $(".", stringify!($path)),+),
                     $crate::metadata::StdlibReturnKind::$return_kind,
+                    None,
+                    None,
                 ),
             )*
         ];
-        $crate::metadata::StdlibModuleMetadata::new(stringify!($module), CALLABLES)
+        $crate::metadata::StdlibModuleMetadata::new(stringify!($module), None, CALLABLES)
     }};
 }
 
@@ -208,6 +229,11 @@ pub fn registered_stdlib_export_metadata(path: &str) -> Option<StdlibCallableMet
         .copied()
 }
 
+pub fn registered_stdlib_module_metadata(name: &str) -> Option<StdlibModuleMetadata> {
+    let registry = metadata_registry().lock().expect("stdlib metadata registry poisoned");
+    registry.modules.iter().find(|metadata| metadata.name == name).copied()
+}
+
 pub fn registered_stdlib_global_metadata(name: &str) -> Option<StdlibGlobalMetadata> {
     let registry = metadata_registry().lock().expect("stdlib metadata registry poisoned");
     registry.globals.iter().find(|metadata| metadata.name == name).copied()
@@ -226,6 +252,8 @@ pub struct StdlibExportSpec {
     pub display: String,
     pub lowering_key: Option<&'static str>,
     pub return_kind: Option<StdlibReturnKind>,
+    pub signature: Option<String>,
+    pub docs: Option<String>,
     pub const_value: Option<StdlibConstValue>,
     pub children: Vec<StdlibExportSpec>,
 }
@@ -247,6 +275,7 @@ pub struct StdlibModuleSpec {
     pub name: String,
     pub detail: String,
     pub display: String,
+    pub docs: Option<String>,
     pub exports: Vec<StdlibExportSpec>,
 }
 
@@ -269,6 +298,8 @@ pub struct StdlibGlobalSpec {
     pub detail: String,
     pub lowering_key: Option<&'static str>,
     pub return_kind: Option<StdlibReturnKind>,
+    pub signature: Option<String>,
+    pub docs: Option<String>,
 }
 
 #[derive(Debug, Clone)]

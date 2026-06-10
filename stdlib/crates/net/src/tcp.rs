@@ -1,9 +1,8 @@
 use anyhow::{Result, anyhow, bail};
 use lk_core::{
-    module::{ModuleProvider, ModuleRegistry},
     rt::{self, RuntimePayload},
     val::{HeapStore, ResourceHandle, RuntimeVal},
-    vm::{NativeArgs, NativeEntry, NativeRuntime, RuntimeExport},
+    vm::{NativeArgs, NativeRuntime},
 };
 use std::{
     io::{Read, Write},
@@ -18,143 +17,110 @@ use crate::{
 
 const MAX_READ_LIMIT: usize = 1024 * 1024;
 
-#[derive(Debug)]
+#[derive(Debug, Default, lk_stdlib_common::StdlibModule)]
+#[stdlib_module(name = "tcp", docs = "TCP networking helpers")]
 pub struct NetTcpModule;
 
+#[lk_stdlib_common::stdlib_exports(module = "net.tcp")]
 impl NetTcpModule {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-impl Default for NetTcpModule {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl ModuleProvider for NetTcpModule {
-    fn name(&self) -> &str {
-        "tcp"
-    }
-
-    fn register(&self, _registry: &mut ModuleRegistry) -> Result<()> {
-        Ok(())
-    }
-
-    fn runtime_exports(&self) -> Result<RuntimeExport> {
-        Ok(lk_stdlib_common::stdlib_runtime_exports!(
-            [
-                plain "connect" => connect, 1,
-                plain "bind" => bind, 1,
-                plain "accept" => accept, 1,
-                plain "read" => read, NativeEntry::VARIADIC,
-                plain "write" => write, 2,
-                plain "close" => close, 1,
-                plain "connect_task" => connect_task, 1,
-                plain "accept_task" => accept_task, 1,
-                plain "read_task" => read_task, NativeEntry::VARIADIC,
-                plain "write_task" => write_task, 2,
-            ],
+    #[stdlib_export(params(addr: String), returns = Resource)]
+    fn connect(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let addr = runtime_string_arg(args.get(0).expect("checked arity"), runtime.heap(), "tcp.connect addr")?;
+        let stream = TcpStream::connect(addr.as_ref()).map_err(|err| anyhow!("tcp connect {addr}: {err}"))?;
+        Ok(resource_value(
+            "TcpStream",
+            ResourceHandle::TcpStream(stream),
+            runtime.heap_mut(),
         ))
     }
-}
 
-fn connect(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 1, "tcp.connect()")?;
-    let addr = runtime_string_arg(args.get(0).expect("checked arity"), runtime.heap(), "tcp.connect addr")?;
-    let stream = TcpStream::connect(addr.as_ref()).map_err(|err| anyhow!("tcp connect {addr}: {err}"))?;
-    Ok(resource_value(
-        "TcpStream",
-        ResourceHandle::TcpStream(stream),
-        runtime.heap_mut(),
-    ))
-}
+    #[stdlib_export(params(addr: String), returns = Resource)]
+    fn bind(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let addr = runtime_string_arg(args.get(0).expect("checked arity"), runtime.heap(), "tcp.bind addr")?;
+        let listener = TcpListener::bind(addr.as_ref()).map_err(|err| anyhow!("tcp bind {addr}: {err}"))?;
+        Ok(resource_value(
+            "TcpListener",
+            ResourceHandle::TcpListener(listener),
+            runtime.heap_mut(),
+        ))
+    }
 
-fn bind(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 1, "tcp.bind()")?;
-    let addr = runtime_string_arg(args.get(0).expect("checked arity"), runtime.heap(), "tcp.bind addr")?;
-    let listener = TcpListener::bind(addr.as_ref()).map_err(|err| anyhow!("tcp bind {addr}: {err}"))?;
-    Ok(resource_value(
-        "TcpListener",
-        ResourceHandle::TcpListener(listener),
-        runtime.heap_mut(),
-    ))
-}
-
-fn accept(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 1, "tcp.accept()")?;
-    let listener = listener_clone(args.get(0).expect("checked arity"), runtime.heap(), "tcp.accept()")?;
-    let (stream, _) = listener.accept().map_err(|err| anyhow!("tcp accept: {err}"))?;
-    Ok(resource_value(
-        "TcpStream",
-        ResourceHandle::TcpStream(stream),
-        runtime.heap_mut(),
-    ))
-}
-
-fn read(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    let (stream, max) = read_args(args, runtime)?;
-    let data = read_stream(stream, max)?;
-    Ok(runtime_bytes_value(data, runtime.heap_mut()))
-}
-
-fn write(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 2, "tcp.write()")?;
-    let values = args.as_slice();
-    let stream = stream_clone(&values[0], runtime.heap(), "tcp.write()")?;
-    let data = runtime_bytes_or_string_arg(&values[1], runtime.heap(), "tcp.write data")?;
-    write_stream(stream, &data)
-}
-
-fn close(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 1, "tcp.close()")?;
-    let resource = resource_arg(args.get(0).expect("checked arity"), runtime.heap(), "tcp.close()")?;
-    Ok(RuntimeVal::Bool(crate::resource::close_resource(&resource)?))
-}
-
-fn connect_task(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 1, "tcp.connect_task()")?;
-    let addr = runtime_string_arg(
-        args.get(0).expect("checked arity"),
-        runtime.heap(),
-        "tcp.connect_task addr",
-    )?
-    .to_string();
-    spawn_task(runtime, async move {
-        let stream = TcpStream::connect(&addr).map_err(|err| anyhow!("tcp connect {addr}: {err}"))?;
-        Ok(payload_resource("TcpStream", ResourceHandle::TcpStream(stream)))
-    })
-}
-
-fn accept_task(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 1, "tcp.accept_task()")?;
-    let listener = listener_clone(args.get(0).expect("checked arity"), runtime.heap(), "tcp.accept_task()")?;
-    spawn_task(runtime, async move {
+    #[stdlib_export(params(listener: Resource), returns = Resource)]
+    fn accept(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let listener = listener_clone(args.get(0).expect("checked arity"), runtime.heap(), "tcp.accept()")?;
         let (stream, _) = listener.accept().map_err(|err| anyhow!("tcp accept: {err}"))?;
-        Ok(payload_resource("TcpStream", ResourceHandle::TcpStream(stream)))
-    })
-}
+        Ok(resource_value(
+            "TcpStream",
+            ResourceHandle::TcpStream(stream),
+            runtime.heap_mut(),
+        ))
+    }
 
-fn read_task(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    let (stream, max) = read_args(args, runtime)?;
-    spawn_task(
-        runtime,
-        async move { Ok(payload_resource_bytes(read_stream(stream, max)?)) },
-    )
-}
+    #[stdlib_export(params(stream: Resource, max_bytes?: Int), returns = Bytes)]
+    fn read(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let (stream, max) = read_args(args, runtime)?;
+        let data = read_stream(stream, max)?;
+        Ok(runtime_bytes_value(data, runtime.heap_mut()))
+    }
 
-fn write_task(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 2, "tcp.write_task()")?;
-    let values = args.as_slice();
-    let stream = stream_clone(&values[0], runtime.heap(), "tcp.write_task()")?;
-    let data = runtime_bytes_or_string_arg(&values[1], runtime.heap(), "tcp.write_task data")?.to_vec();
-    spawn_task(runtime, async move {
-        match write_stream(stream, &data)? {
-            RuntimeVal::Int(written) => Ok(payload_int(written)),
-            other => Err(anyhow!("tcp.write_task expected write count, got {:?}", other.kind())),
-        }
-    })
+    #[stdlib_export(params(stream: Resource, data: Bytes | String), returns = Int)]
+    fn write(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let values = args.as_slice();
+        let stream = stream_clone(&values[0], runtime.heap(), "tcp.write()")?;
+        let data = runtime_bytes_or_string_arg(&values[1], runtime.heap(), "tcp.write data")?;
+        write_stream(stream, &data)
+    }
+
+    #[stdlib_export(params(resource: Resource), returns = Bool)]
+    fn close(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let resource = resource_arg(args.get(0).expect("checked arity"), runtime.heap(), "tcp.close()")?;
+        Ok(RuntimeVal::Bool(crate::resource::close_resource(&resource)?))
+    }
+
+    #[stdlib_export(params(addr: String), returns = Task)]
+    fn connect_task(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let addr = runtime_string_arg(
+            args.get(0).expect("checked arity"),
+            runtime.heap(),
+            "tcp.connect_task addr",
+        )?
+        .to_string();
+        spawn_task(runtime, async move {
+            let stream = TcpStream::connect(&addr).map_err(|err| anyhow!("tcp connect {addr}: {err}"))?;
+            Ok(payload_resource("TcpStream", ResourceHandle::TcpStream(stream)))
+        })
+    }
+
+    #[stdlib_export(params(listener: Resource), returns = Task)]
+    fn accept_task(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let listener = listener_clone(args.get(0).expect("checked arity"), runtime.heap(), "tcp.accept_task()")?;
+        spawn_task(runtime, async move {
+            let (stream, _) = listener.accept().map_err(|err| anyhow!("tcp accept: {err}"))?;
+            Ok(payload_resource("TcpStream", ResourceHandle::TcpStream(stream)))
+        })
+    }
+
+    #[stdlib_export(params(stream: Resource, max_bytes?: Int), returns = Task)]
+    fn read_task(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let (stream, max) = read_args(args, runtime)?;
+        spawn_task(
+            runtime,
+            async move { Ok(payload_resource_bytes(read_stream(stream, max)?)) },
+        )
+    }
+
+    #[stdlib_export(params(stream: Resource, data: Bytes | String), returns = Task)]
+    fn write_task(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let values = args.as_slice();
+        let stream = stream_clone(&values[0], runtime.heap(), "tcp.write_task()")?;
+        let data = runtime_bytes_or_string_arg(&values[1], runtime.heap(), "tcp.write_task data")?.to_vec();
+        spawn_task(runtime, async move {
+            match write_stream(stream, &data)? {
+                RuntimeVal::Int(written) => Ok(payload_int(written)),
+                other => Err(anyhow!("tcp.write_task expected write count, got {:?}", other.kind())),
+            }
+        })
+    }
 }
 
 fn read_args(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<(TcpStream, usize)> {

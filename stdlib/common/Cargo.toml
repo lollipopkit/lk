@@ -8,5 +8,5 @@ license = "Apache-2.0"
 
 [dependencies]
 lk-core = { path = "../../core", default-features = false }
+lk-stdlib-macros = { path = "../macros" }
 anyhow = { workspace = true }
-

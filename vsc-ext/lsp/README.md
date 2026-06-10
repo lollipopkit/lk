@@ -67,6 +67,7 @@ The previous standalone `lk-highlight` extension has been merged into this packa
 - The client queries the Rust LK language server for stdlib modules and exports. Module-aware completions support:
   - `use <module>` / `from <module>` name completion
   - `<alias>.` namespace member completion for stdlib exports (e.g. `iter.zip`, `iter.take`, `iter.map`, ...)
+- Stdlib function hover uses Rust-side metadata generated from function-level `#[stdlib_export]` annotations, including signatures and Markdown docs when present.
 - Recent updates synced with the server include:
   - `iter` exports generic higher-order ops: `map(list, fn)`, `filter(list, fn)`, `reduce(list, init, fn)`
   - `list` exposes method sugar delegating to `iter`: `take`, `skip`, `chain`, `flatten`, `unique`, `chunk`, `enumerate`, `zip` in addition to `map/filter/reduce`
@@ -113,7 +114,7 @@ The extension supports the LK language with the following features:
 
 ### Language Server Features
 - Real-time error checking
-- Code completion for keywords and functions
+- Code completion for keywords, functions, named arguments, receiver methods, and repeated string argument values
 - Hover information for symbols
 - Document symbols for navigation
 - Identifier root analysis

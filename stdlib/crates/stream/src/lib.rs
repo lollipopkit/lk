@@ -6,15 +6,10 @@ use std::sync::{
 use anyhow::{Result, anyhow, bail};
 use dashmap::DashMap;
 use lk_core::{
-    module::{ModuleProvider, ModuleRegistry},
     rt::{self, RuntimePayload},
     val::{CallableValue, HeapStore, HeapValue, RuntimeVal, ShortStr, StreamCursorValue, StreamValue, Type, TypedList},
-    vm::{
-        NativeArgs, NativeEntry, NativeRuntime, RuntimeExport, call_runtime_callable_runtime,
-        call_runtime_value_runtime,
-    },
+    vm::{NativeArgs, NativeEntry, NativeRuntime, call_runtime_callable_runtime, call_runtime_value_runtime},
 };
-use lk_stdlib_common::metadata::StdlibModuleMetadata;
 use once_cell::sync::Lazy;
 
 pub mod runtime_native {
@@ -22,14 +17,9 @@ pub mod runtime_native {
 }
 pub use lk_stdlib_common::typed_list_from_values;
 
-#[derive(Debug)]
+#[derive(Debug, Default, lk_stdlib_common::StdlibModule)]
+#[stdlib_module(name = "stream", docs = "Lazy, cold stream utilities")]
 pub struct StreamModule;
-
-impl Default for StreamModule {
-    fn default() -> Self {
-        Self::new()
-    }
-}
 
 static NEXT_STREAM_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_CURSOR_ID: AtomicU64 = AtomicU64::new(1);
@@ -405,217 +395,161 @@ impl StreamCursor for ChannelCursor {
     }
 }
 
+#[lk_stdlib_common::stdlib_exports(module = "stream")]
 impl StreamModule {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-impl ModuleProvider for StreamModule {
-    fn name(&self) -> &str {
-        "stream"
+    #[stdlib_export(params(values: List), returns = Stream)]
+    fn from_list(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let values = list_arg_ref(&args.as_slice()[0], runtime.heap(), "stream.from_list argument")?;
+        let values = copy_typed_list(values);
+        create_stream(StreamSpec::FromList(Arc::new(values)), Type::Any, runtime.heap_mut())
     }
 
-    fn description(&self) -> &str {
-        "Lazy, cold stream utilities"
+    #[stdlib_export(params(start: Int, end?: Int, step?: Int), returns = Stream)]
+    fn range(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let values = args.as_slice();
+        let (start, end, step) = match values {
+            [end] => (0, Some(int_arg(end, "stream.range end")?), 1),
+            [start, end] => (
+                int_arg(start, "stream.range start")?,
+                Some(int_arg(end, "stream.range end")?),
+                1,
+            ),
+            [start, end, step] => (
+                int_arg(start, "stream.range start")?,
+                Some(int_arg(end, "stream.range end")?),
+                int_arg(step, "stream.range step")?,
+            ),
+            _ => bail!("stream.range expects 1-3 arguments"),
+        };
+        create_stream(StreamSpec::Range { start, end, step }, Type::Int, runtime.heap_mut())
     }
 
-    fn register(&self, _registry: &mut ModuleRegistry) -> Result<()> {
-        Ok(())
+    #[stdlib_export(params(seed: Any, f: Fn), returns = Stream)]
+    fn iterate(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let values = args.as_slice();
+        ensure_runtime_callable(&values[1], runtime, "stream.iterate function")?;
+        create_stream(
+            StreamSpec::Iterate {
+                seed: values[0].clone(),
+                func: values[1].clone(),
+            },
+            Type::Any,
+            runtime.heap_mut(),
+        )
     }
 
-    fn runtime_exports(&self) -> Result<RuntimeExport> {
-        Ok(lk_stdlib_common::stdlib_runtime_exports!(
-            [
-                plain "from_list" => from_list, 1,
-                plain "range" => range, NativeEntry::VARIADIC,
-                plain "iterate" => iterate, 2,
-                plain "repeat" => repeat, 1,
-                plain "from_channel" => from_channel, 1,
-                plain "map" => map, 2,
-                plain "filter" => filter, 2,
-                plain "take" => take, 2,
-                plain "skip" => skip, 2,
-                plain "chain" => chain, 2,
-                plain "subscribe" => subscribe, 1,
-                full_state "next" => next, 1,
-                full_state "collect" => collect, NativeEntry::VARIADIC,
-                full_state "next_block" => next_block, NativeEntry::VARIADIC,
-                full_state "collect_block" => collect_block, NativeEntry::VARIADIC,
-            ],
-        ))
+    #[stdlib_export(params(value: Any), returns = Stream)]
+    fn repeat(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        create_stream(
+            StreamSpec::Repeat(args.as_slice()[0].clone()),
+            Type::Any,
+            runtime.heap_mut(),
+        )
     }
-}
 
-pub fn register(registry: &mut ModuleRegistry) -> Result<()> {
-    lk_stdlib_common::metadata::register_stdlib_module_metadata(metadata())?;
-    registry.register_module("stream", Box::new(StreamModule::new()))
-}
-
-pub fn metadata() -> StdlibModuleMetadata {
-    lk_stdlib_common::stdlib_module_metadata!(
-        stream,
-        [
-            chain => RuntimeValue,
-            collect => RuntimeValue,
-            filter => RuntimeValue,
-            from_list => RuntimeValue,
-            map => RuntimeValue,
-            range => RuntimeValue,
-            skip => RuntimeValue,
-            take => RuntimeValue,
-        ]
-    )
-}
-
-fn from_list(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 1, "stream.from_list")?;
-    let values = list_arg_ref(&args.as_slice()[0], runtime.heap(), "stream.from_list argument")?;
-    let values = copy_typed_list(values);
-    create_stream(StreamSpec::FromList(Arc::new(values)), Type::Any, runtime.heap_mut())
-}
-
-fn range(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    let values = args.as_slice();
-    let (start, end, step) = match values {
-        [end] => (0, Some(int_arg(end, "stream.range end")?), 1),
-        [start, end] => (
-            int_arg(start, "stream.range start")?,
-            Some(int_arg(end, "stream.range end")?),
-            1,
-        ),
-        [start, end, step] => (
-            int_arg(start, "stream.range start")?,
-            Some(int_arg(end, "stream.range end")?),
-            int_arg(step, "stream.range step")?,
-        ),
-        _ => bail!("stream.range expects 1-3 arguments"),
-    };
-    create_stream(StreamSpec::Range { start, end, step }, Type::Int, runtime.heap_mut())
-}
-
-fn iterate(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 2, "stream.iterate")?;
-    let values = args.as_slice();
-    ensure_runtime_callable(&values[1], runtime, "stream.iterate function")?;
-    create_stream(
-        StreamSpec::Iterate {
-            seed: values[0].clone(),
-            func: values[1].clone(),
-        },
-        Type::Any,
-        runtime.heap_mut(),
-    )
-}
-
-fn repeat(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 1, "stream.repeat")?;
-    create_stream(
-        StreamSpec::Repeat(args.as_slice()[0].clone()),
-        Type::Any,
-        runtime.heap_mut(),
-    )
-}
-
-fn from_channel(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 1, "stream.from_channel")?;
-    let channel = channel_arg(&args.as_slice()[0], runtime.heap(), "stream.from_channel argument")?;
-    create_stream(
-        StreamSpec::FromChannel { channel_id: channel.id },
-        channel.inner_type.clone(),
-        runtime.heap_mut(),
-    )
-}
-
-fn map(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 2, "stream.map")?;
-    let values = args.as_slice();
-    ensure_runtime_callable(&values[1], runtime, "stream.map function")?;
-    let upstream = get_stream_spec(stream_id_arg(&values[0], runtime.heap(), "stream.map stream")?)?;
-    create_stream(
-        StreamSpec::Map {
-            upstream,
-            func: values[1].clone(),
-        },
-        Type::Any,
-        runtime.heap_mut(),
-    )
-}
-
-fn filter(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 2, "stream.filter")?;
-    let values = args.as_slice();
-    ensure_runtime_callable(&values[1], runtime, "stream.filter function")?;
-    let upstream = get_stream_spec(stream_id_arg(&values[0], runtime.heap(), "stream.filter stream")?)?;
-    create_stream(
-        StreamSpec::Filter {
-            upstream,
-            func: values[1].clone(),
-        },
-        Type::Any,
-        runtime.heap_mut(),
-    )
-}
-
-fn take(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 2, "stream.take")?;
-    let values = args.as_slice();
-    let upstream = get_stream_spec(stream_id_arg(&values[0], runtime.heap(), "stream.take stream")?)?;
-    let n = int_arg(&values[1], "stream.take count")?;
-    create_stream(StreamSpec::Take { upstream, n }, Type::Any, runtime.heap_mut())
-}
-
-fn skip(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 2, "stream.skip")?;
-    let values = args.as_slice();
-    let upstream = get_stream_spec(stream_id_arg(&values[0], runtime.heap(), "stream.skip stream")?)?;
-    let n = int_arg(&values[1], "stream.skip count")?;
-    create_stream(StreamSpec::Skip { upstream, n }, Type::Any, runtime.heap_mut())
-}
-
-fn chain(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 2, "stream.chain")?;
-    let values = args.as_slice();
-    let left = get_stream_spec(stream_id_arg(&values[0], runtime.heap(), "stream.chain left")?)?;
-    let right = get_stream_spec(stream_id_arg(&values[1], runtime.heap(), "stream.chain right")?)?;
-    create_stream(StreamSpec::Chain { left, right }, Type::Any, runtime.heap_mut())
-}
-
-fn subscribe(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 1, "stream.subscribe")?;
-    create_cursor(
-        stream_id_arg(&args.as_slice()[0], runtime.heap(), "stream.subscribe argument")?,
-        runtime.heap_mut(),
-    )
-}
-
-fn next(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 1, "stream.next")?;
-    let cursor_id = cursor_id_arg(&args.as_slice()[0], runtime.heap(), "stream.next argument")?;
-    next_cursor(cursor_id, runtime)
-}
-
-fn collect(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    let (cursor_id, limit) = cursor_and_limit(args.as_slice(), runtime, "stream.collect")?;
-    collect_cursor(cursor_id, limit, runtime)
-}
-
-fn next_block(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    let values = args.as_slice();
-    if values.is_empty() || values.len() > 2 {
-        bail!("stream.next_block expects (cursor[, timeout_ms])");
+    #[stdlib_export(params(channel: Channel), returns = Stream)]
+    fn from_channel(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let channel = channel_arg(&args.as_slice()[0], runtime.heap(), "stream.from_channel argument")?;
+        create_stream(
+            StreamSpec::FromChannel { channel_id: channel.id },
+            channel.inner_type.clone(),
+            runtime.heap_mut(),
+        )
     }
-    let cursor_id = cursor_id_arg(&values[0], runtime.heap(), "stream.next_block cursor")?;
-    let timeout_ms = match values.get(1) {
-        Some(value) => Some(int_arg(value, "stream.next_block timeout_ms")?),
-        None => None,
-    };
-    next_block_cursor(cursor_id, timeout_ms, runtime)
-}
 
-fn collect_block(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    let (cursor_id, limit, timeout_ms) = cursor_limit_timeout(args.as_slice(), runtime, "stream.collect_block")?;
-    collect_block_cursor(cursor_id, limit, timeout_ms, runtime)
+    #[stdlib_export(params(stream: Stream, f: Fn), returns = Stream)]
+    fn map(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let values = args.as_slice();
+        ensure_runtime_callable(&values[1], runtime, "stream.map function")?;
+        let upstream = get_stream_spec(stream_id_arg(&values[0], runtime.heap(), "stream.map stream")?)?;
+        create_stream(
+            StreamSpec::Map {
+                upstream,
+                func: values[1].clone(),
+            },
+            Type::Any,
+            runtime.heap_mut(),
+        )
+    }
+
+    #[stdlib_export(params(stream: Stream, predicate: Fn), returns = Stream)]
+    fn filter(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let values = args.as_slice();
+        ensure_runtime_callable(&values[1], runtime, "stream.filter function")?;
+        let upstream = get_stream_spec(stream_id_arg(&values[0], runtime.heap(), "stream.filter stream")?)?;
+        create_stream(
+            StreamSpec::Filter {
+                upstream,
+                func: values[1].clone(),
+            },
+            Type::Any,
+            runtime.heap_mut(),
+        )
+    }
+
+    #[stdlib_export(params(stream: Stream, count: Int), returns = Stream)]
+    fn take(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let values = args.as_slice();
+        let upstream = get_stream_spec(stream_id_arg(&values[0], runtime.heap(), "stream.take stream")?)?;
+        let n = int_arg(&values[1], "stream.take count")?;
+        create_stream(StreamSpec::Take { upstream, n }, Type::Any, runtime.heap_mut())
+    }
+
+    #[stdlib_export(params(stream: Stream, count: Int), returns = Stream)]
+    fn skip(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let values = args.as_slice();
+        let upstream = get_stream_spec(stream_id_arg(&values[0], runtime.heap(), "stream.skip stream")?)?;
+        let n = int_arg(&values[1], "stream.skip count")?;
+        create_stream(StreamSpec::Skip { upstream, n }, Type::Any, runtime.heap_mut())
+    }
+
+    #[stdlib_export(params(left: Stream, right: Stream), returns = Stream)]
+    fn chain(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let values = args.as_slice();
+        let left = get_stream_spec(stream_id_arg(&values[0], runtime.heap(), "stream.chain left")?)?;
+        let right = get_stream_spec(stream_id_arg(&values[1], runtime.heap(), "stream.chain right")?)?;
+        create_stream(StreamSpec::Chain { left, right }, Type::Any, runtime.heap_mut())
+    }
+
+    #[stdlib_export(params(stream: Stream), returns = Cursor)]
+    fn subscribe(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        create_cursor(
+            stream_id_arg(&args.as_slice()[0], runtime.heap(), "stream.subscribe argument")?,
+            runtime.heap_mut(),
+        )
+    }
+
+    #[stdlib_export(params(cursor: Cursor), returns = Any, kind = "full_state")]
+    fn next(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let cursor_id = cursor_id_arg(&args.as_slice()[0], runtime.heap(), "stream.next argument")?;
+        next_cursor(cursor_id, runtime)
+    }
+
+    #[stdlib_export(params(cursor: Cursor, limit?: Int), returns = List, kind = "full_state")]
+    fn collect(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let (cursor_id, limit) = cursor_and_limit(args.as_slice(), runtime, "stream.collect")?;
+        collect_cursor(cursor_id, limit, runtime)
+    }
+
+    #[stdlib_export(params(cursor: Cursor, timeout_ms?: Int), returns = Any, kind = "full_state")]
+    fn next_block(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let values = args.as_slice();
+        if values.is_empty() || values.len() > 2 {
+            bail!("stream.next_block expects (cursor[, timeout_ms])");
+        }
+        let cursor_id = cursor_id_arg(&values[0], runtime.heap(), "stream.next_block cursor")?;
+        let timeout_ms = match values.get(1) {
+            Some(value) => Some(int_arg(value, "stream.next_block timeout_ms")?),
+            None => None,
+        };
+        next_block_cursor(cursor_id, timeout_ms, runtime)
+    }
+
+    #[stdlib_export(params(cursor: Cursor, limit?: Int, timeout_ms?: Int), returns = List, kind = "full_state")]
+    fn collect_block(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let (cursor_id, limit, timeout_ms) = cursor_limit_timeout(args.as_slice(), runtime, "stream.collect_block")?;
+        collect_block_cursor(cursor_id, limit, timeout_ms, runtime)
+    }
 }
 
 fn create_stream(spec: StreamSpec, inner_type: Type, heap: &mut HeapStore) -> Result<RuntimeVal> {

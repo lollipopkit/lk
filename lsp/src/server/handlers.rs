@@ -282,7 +282,7 @@ impl LanguageServer for LkLanguageServer {
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
         let uri = &params.text_document_position.text_document.uri;
         let position = params.text_document_position.position;
-        Ok(self.completion_response(uri, position))
+        Ok(self.completion_response(uri, position, params.context.as_ref()))
     }
 
     async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {

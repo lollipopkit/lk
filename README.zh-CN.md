@@ -82,7 +82,7 @@ assert_eq!(result.display_first_return(), "true");
 
 #### VS Code
 
-VS Code 支持已合并为 `vsc-ext/lsp` 下的单个扩展，包含 `.lk` 语言注册、TextMate 高亮、代码片段，以及带智能补全的 LK LSP 客户端；补全覆盖 stdlib 模块、导入别名、本地符号、named arguments 和常见 receiver 方法。使用 `make debug-lsp-ext` 启动本地 Extension Development Host，或使用 `make vsix` 构建 VSIX。
+VS Code 支持已合并为 `vsc-ext/lsp` 下的单个扩展，包含 `.lk` 语言注册、TextMate 高亮、代码片段，以及带智能补全的 LK LSP 客户端；补全覆盖 stdlib 模块、导入别名、本地符号、named arguments、重复出现的字符串参数值和常见 receiver 方法。使用 `make debug-lsp-ext` 启动本地 Extension Development Host，或使用 `make vsix` 构建 VSIX。
 
 ## 许可证
 

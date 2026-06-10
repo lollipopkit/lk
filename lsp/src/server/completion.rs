@@ -1,13 +1,19 @@
-use lk_completion::{CompletionCandidate, CompletionKind, CompletionMode, CompletionRequest};
+use lk_completion::{CompletionCandidate, CompletionKind, CompletionMode, CompletionRequest, CompletionTrigger};
 use ropey::Rope;
 use tower_lsp::lsp_types::{
-    CompletionItem, CompletionItemKind, CompletionResponse, CompletionTextEdit, Position, Range, TextEdit, Url,
+    CompletionContext as LspCompletionContext, CompletionItem, CompletionItemKind, CompletionResponse,
+    CompletionTextEdit, CompletionTriggerKind, Position, Range, TextEdit, Url,
 };
 
 use super::{state::LkLanguageServer, text::position_to_char_idx};
 
 impl LkLanguageServer {
-    pub(crate) fn completion_response(&self, uri: &Url, position: Position) -> Option<CompletionResponse> {
+    pub(crate) fn completion_response(
+        &self,
+        uri: &Url,
+        position: Position,
+        context: Option<&LspCompletionContext>,
+    ) -> Option<CompletionResponse> {
         let doc = self.documents.get(uri)?;
         let content = doc.content.to_string();
         let cursor_char = position_to_char_idx(&doc.content, position);
@@ -16,6 +22,7 @@ impl LkLanguageServer {
             &self.completion_engine,
             &content,
             cursor_char,
+            completion_trigger_from_lsp(context),
             base_dir.as_deref(),
         )))
     }
@@ -25,6 +32,7 @@ pub(crate) fn completion_items_for_source(
     engine: &lk_completion::CompletionEngine,
     content: &str,
     cursor_char: usize,
+    trigger: CompletionTrigger,
     base_dir: Option<&std::path::Path>,
 ) -> Vec<CompletionItem> {
     let cursor = char_to_byte_idx(content, cursor_char);
@@ -32,6 +40,7 @@ pub(crate) fn completion_items_for_source(
         source: content,
         cursor,
         mode: CompletionMode::Lsp,
+        trigger,
         session_source: None,
         base_dir,
     });
@@ -39,6 +48,35 @@ pub(crate) fn completion_items_for_source(
         .into_iter()
         .map(|candidate| completion_item(content, candidate))
         .collect()
+}
+
+fn completion_trigger_from_lsp(context: Option<&LspCompletionContext>) -> CompletionTrigger {
+    let Some(context) = context else {
+        return CompletionTrigger::Invoked;
+    };
+    if context.trigger_kind == CompletionTriggerKind::TRIGGER_CHARACTER {
+        return context
+            .trigger_character
+            .as_deref()
+            .and_then(|value| value.chars().next())
+            .map(CompletionTrigger::TriggerCharacter)
+            .unwrap_or(CompletionTrigger::Invoked);
+    }
+    if context.trigger_kind == CompletionTriggerKind::TRIGGER_FOR_INCOMPLETE_COMPLETIONS {
+        CompletionTrigger::Incomplete
+    } else {
+        CompletionTrigger::Invoked
+    }
+}
+
+#[cfg(test)]
+fn completion_items_for_source_invoked(
+    engine: &lk_completion::CompletionEngine,
+    content: &str,
+    cursor_char: usize,
+    base_dir: Option<&std::path::Path>,
+) -> Vec<CompletionItem> {
+    completion_items_for_source(engine, content, cursor_char, CompletionTrigger::Invoked, base_dir)
 }
 
 fn completion_item(content: &str, candidate: CompletionCandidate) -> CompletionItem {
@@ -104,7 +142,7 @@ mod tests {
     fn lsp_completion_maps_nested_stdlib_exports() {
         let engine = lk_completion::CompletionEngine::new().unwrap();
         let content = "io.file.read";
-        let got = labels(completion_items_for_source(
+        let got = labels(completion_items_for_source_invoked(
             &engine,
             content,
             content.chars().count(),
@@ -117,7 +155,7 @@ mod tests {
     fn lsp_completion_maps_named_arg_text_edit() {
         let engine = lk_completion::CompletionEngine::new().unwrap();
         let content = "fn draw({width: Int}) { }\ndraw(w";
-        let items = completion_items_for_source(&engine, content, content.chars().count(), None);
+        let items = completion_items_for_source_invoked(&engine, content, content.chars().count(), None);
         let width = items
             .iter()
             .find(|item| item.label == "width:")
@@ -126,5 +164,37 @@ mod tests {
             panic!("expected text edit");
         };
         assert_eq!(edit.new_text, "width: ");
+    }
+
+    #[test]
+    fn lsp_completion_maps_string_argument_values() {
+        let engine = lk_completion::CompletionEngine::new().unwrap();
+        let content = "if should_run(\"gcd_batch\") {}\nif should_run(\"\") {}";
+        let cursor = content.rfind("\"\"").unwrap() + 1;
+        let items =
+            completion_items_for_source(&engine, content, cursor, CompletionTrigger::TriggerCharacter('"'), None);
+        let item = items
+            .iter()
+            .find(|item| item.label == "gcd_batch")
+            .expect("workload completion");
+        assert_eq!(item.kind, Some(CompletionItemKind::VALUE));
+        let Some(CompletionTextEdit::Edit(edit)) = &item.text_edit else {
+            panic!("expected text edit");
+        };
+        assert_eq!(edit.new_text, "gcd_batch");
+    }
+
+    #[test]
+    fn lsp_completion_suppresses_empty_prefix_on_brace_trigger() {
+        let engine = lk_completion::CompletionEngine::new().unwrap();
+        let content = "let a0 = 1;\nif should_run(\"\") {";
+        let items = completion_items_for_source(
+            &engine,
+            content,
+            content.chars().count(),
+            CompletionTrigger::TriggerCharacter('{'),
+            None,
+        );
+        assert!(items.is_empty());
     }
 }

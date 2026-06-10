@@ -2,6 +2,8 @@ pub mod metadata;
 pub mod resource;
 pub mod runtime_native;
 
+pub use lk_stdlib_macros::{StdlibModule, stdlib_exports};
+
 #[macro_export]
 macro_rules! stdlib_runtime_exports {
     ([$($kind:ident $name:literal => $function:path, $arity:expr),* $(,)?] $(, [$($value_name:literal => $value:expr),* $(,)?])? $(,)?) => {

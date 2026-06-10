@@ -1,11 +1,9 @@
 use anyhow::{Result, anyhow};
 use chrono::Datelike;
 use lk_core::{
-    module::{ModuleProvider, ModuleRegistry},
     val::RuntimeVal,
-    vm::{NativeArgs, NativeRuntime, RuntimeExport},
+    vm::{NativeArgs, NativeRuntime},
 };
-use lk_stdlib_common::metadata::StdlibModuleMetadata;
 
 pub mod runtime_native {
     pub use lk_stdlib_common::runtime_native::*;
@@ -13,76 +11,79 @@ pub mod runtime_native {
 
 use crate::runtime_native::{runtime_string_arg, runtime_string_value};
 
-#[derive(Debug)]
+#[derive(Debug, Default, lk_stdlib_common::StdlibModule)]
+#[stdlib_module(name = "datetime", docs = "Date and time functions")]
 pub struct DateTimeModule;
 
-impl Default for DateTimeModule {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
+#[lk_stdlib_common::stdlib_exports(module = "datetime")]
 impl DateTimeModule {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-impl ModuleProvider for DateTimeModule {
-    fn name(&self) -> &str {
-        "datetime"
+    #[stdlib_export(name = "now", params(), returns = Int)]
+    fn now(_args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        Ok(RuntimeVal::Int(chrono::Utc::now().timestamp_micros()))
     }
 
-    fn description(&self) -> &str {
-        "Date and time functions"
+    #[stdlib_export(name = "format", params(timestamp: Int, format: String), returns = String)]
+    fn format(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let timestamp = timestamp_arg(args.get(0).expect("checked arity"), "format")?;
+        let format = runtime_string_arg(args.get(1).expect("checked arity"), runtime.heap(), "format")?;
+        let formatted = utc_datetime(timestamp)?.format(format.as_ref()).to_string();
+        Ok(runtime_string_value(&formatted, runtime.heap_mut()))
     }
 
-    fn register(&self, _registry: &mut lk_core::module::ModuleRegistry) -> Result<()> {
-        Ok(())
+    #[stdlib_export(name = "parse", params(value: String, format: String), returns = Int)]
+    fn parse(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let datetime = runtime_string_arg(args.get(0).expect("checked arity"), runtime.heap(), "parse")?;
+        let format = runtime_string_arg(args.get(1).expect("checked arity"), runtime.heap(), "parse")?;
+        let naive = chrono::NaiveDateTime::parse_from_str(datetime.as_ref(), format.as_ref())
+            .map_err(|err| anyhow!("failed to parse datetime: {err}"))?;
+        let dt = chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(naive, chrono::Utc);
+        Ok(RuntimeVal::Int(dt.timestamp()))
     }
 
-    fn runtime_exports(&self) -> Result<RuntimeExport> {
-        Ok(lk_stdlib_common::stdlib_runtime_exports!(
-            [
-                plain "now" => now, 0,
-                plain "format" => format, 2,
-                plain "parse" => parse, 2,
-                plain "add" => add_seconds, 2,
-                plain "sub" => sub_seconds, 2,
-                plain "day_of_week" => day_of_week, 1,
-                plain "day_of_year" => day_of_year, 1,
-                plain "is_weekend" => is_weekend, 1,
-            ],
-        ))
+    #[stdlib_export(name = "add", params(timestamp: Int, seconds: Int), returns = Int)]
+    fn add(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let timestamp = timestamp_arg(args.get(0).expect("checked arity"), "add")?;
+        let seconds = int_arg(args.get(1).expect("checked arity"), "add")?;
+        Ok(RuntimeVal::Int(timestamp + seconds))
     }
-}
 
-pub fn register(registry: &mut ModuleRegistry) -> Result<()> {
-    lk_stdlib_common::metadata::register_stdlib_module_metadata(metadata())?;
-    registry.register_module("datetime", Box::new(DateTimeModule::new()))
-}
-
-pub fn metadata() -> StdlibModuleMetadata {
-    lk_stdlib_common::stdlib_module_metadata!(
-        datetime,
-        [
-            add => Int,
-            day_of_week => Int,
-            day_of_year => Int,
-            format => String,
-            is_weekend => Bool,
-            now => Int,
-            parse => Int,
-            sub => Int,
-        ]
-    )
-}
-
-fn expect_arity(args: NativeArgs<'_>, name: &str, arity: usize) -> Result<()> {
-    if args.len() == arity {
-        return Ok(());
+    #[stdlib_export(name = "sub", params(timestamp: Int, seconds: Int), returns = Int)]
+    fn sub(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let timestamp = timestamp_arg(args.get(0).expect("checked arity"), "sub")?;
+        let seconds = int_arg(args.get(1).expect("checked arity"), "sub")?;
+        Ok(RuntimeVal::Int(timestamp - seconds))
     }
-    Err(anyhow!("{name}() takes exactly {arity} arguments"))
+
+    #[stdlib_export(name = "day_of_week", params(timestamp: Int), returns = Int)]
+    fn day_of_week(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let timestamp = timestamp_arg(args.get(0).expect("checked arity"), "day_of_week")?;
+        let day = match utc_datetime(timestamp)?.weekday() {
+            chrono::Weekday::Sun => 0,
+            chrono::Weekday::Mon => 1,
+            chrono::Weekday::Tue => 2,
+            chrono::Weekday::Wed => 3,
+            chrono::Weekday::Thu => 4,
+            chrono::Weekday::Fri => 5,
+            chrono::Weekday::Sat => 6,
+        };
+        Ok(RuntimeVal::Int(day))
+    }
+
+    #[stdlib_export(name = "day_of_year", params(timestamp: Int), returns = Int)]
+    fn day_of_year(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let timestamp = timestamp_arg(args.get(0).expect("checked arity"), "day_of_year")?;
+        Ok(RuntimeVal::Int(i64::from(utc_datetime(timestamp)?.ordinal())))
+    }
+
+    #[stdlib_export(name = "is_weekend", params(timestamp: Int), returns = Bool)]
+    fn is_weekend(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let timestamp = timestamp_arg(args.get(0).expect("checked arity"), "is_weekend")?;
+        let is_weekend = matches!(
+            utc_datetime(timestamp)?.weekday(),
+            chrono::Weekday::Sat | chrono::Weekday::Sun
+        );
+        Ok(RuntimeVal::Bool(is_weekend))
+    }
 }
 
 fn int_arg(value: &RuntimeVal, name: &str) -> Result<i64> {
@@ -104,74 +105,4 @@ fn timestamp_arg(value: &RuntimeVal, name: &str) -> Result<i64> {
 
 fn utc_datetime(timestamp: i64) -> Result<chrono::DateTime<chrono::Utc>> {
     chrono::DateTime::<chrono::Utc>::from_timestamp(timestamp, 0).ok_or_else(|| anyhow!("invalid timestamp"))
-}
-
-fn now(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    if args.len() != 0 {
-        return Err(anyhow!("now() takes no arguments"));
-    }
-    Ok(RuntimeVal::Int(chrono::Utc::now().timestamp_micros()))
-}
-
-fn format(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    expect_arity(args, "format", 2)?;
-    let timestamp = timestamp_arg(args.get(0).expect("checked arity"), "format")?;
-    let format = runtime_string_arg(args.get(1).expect("checked arity"), runtime.heap(), "format")?;
-    let formatted = utc_datetime(timestamp)?.format(format.as_ref()).to_string();
-    Ok(runtime_string_value(&formatted, runtime.heap_mut()))
-}
-
-fn parse(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    expect_arity(args, "parse", 2)?;
-    let datetime = runtime_string_arg(args.get(0).expect("checked arity"), runtime.heap(), "parse")?;
-    let format = runtime_string_arg(args.get(1).expect("checked arity"), runtime.heap(), "parse")?;
-    let naive = chrono::NaiveDateTime::parse_from_str(datetime.as_ref(), format.as_ref())
-        .map_err(|err| anyhow!("failed to parse datetime: {err}"))?;
-    let dt = chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(naive, chrono::Utc);
-    Ok(RuntimeVal::Int(dt.timestamp()))
-}
-
-fn add_seconds(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    expect_arity(args, "add", 2)?;
-    let timestamp = timestamp_arg(args.get(0).expect("checked arity"), "add")?;
-    let seconds = int_arg(args.get(1).expect("checked arity"), "add")?;
-    Ok(RuntimeVal::Int(timestamp + seconds))
-}
-
-fn sub_seconds(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    expect_arity(args, "sub", 2)?;
-    let timestamp = timestamp_arg(args.get(0).expect("checked arity"), "sub")?;
-    let seconds = int_arg(args.get(1).expect("checked arity"), "sub")?;
-    Ok(RuntimeVal::Int(timestamp - seconds))
-}
-
-fn day_of_week(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    expect_arity(args, "day_of_week", 1)?;
-    let timestamp = timestamp_arg(args.get(0).expect("checked arity"), "day_of_week")?;
-    let day = match utc_datetime(timestamp)?.weekday() {
-        chrono::Weekday::Sun => 0,
-        chrono::Weekday::Mon => 1,
-        chrono::Weekday::Tue => 2,
-        chrono::Weekday::Wed => 3,
-        chrono::Weekday::Thu => 4,
-        chrono::Weekday::Fri => 5,
-        chrono::Weekday::Sat => 6,
-    };
-    Ok(RuntimeVal::Int(day))
-}
-
-fn day_of_year(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    expect_arity(args, "day_of_year", 1)?;
-    let timestamp = timestamp_arg(args.get(0).expect("checked arity"), "day_of_year")?;
-    Ok(RuntimeVal::Int(i64::from(utc_datetime(timestamp)?.ordinal())))
-}
-
-fn is_weekend(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    expect_arity(args, "is_weekend", 1)?;
-    let timestamp = timestamp_arg(args.get(0).expect("checked arity"), "is_weekend")?;
-    let is_weekend = matches!(
-        utc_datetime(timestamp)?.weekday(),
-        chrono::Weekday::Sat | chrono::Weekday::Sun
-    );
-    Ok(RuntimeVal::Bool(is_weekend))
 }

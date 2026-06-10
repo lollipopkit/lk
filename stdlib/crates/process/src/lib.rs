@@ -1,117 +1,83 @@
 use anyhow::{Result, anyhow, bail};
 use lk_core::{
-    module::{ModuleProvider, ModuleRegistry},
     util::fast_map::fast_hash_map_new,
     val::{HeapValue, RuntimeVal, TypedList, TypedMap},
-    vm::{NativeArgs, NativeRuntime, RuntimeExport},
+    vm::{NativeArgs, NativeRuntime},
 };
 use lk_stdlib_bytes::runtime_bytes_value;
-use lk_stdlib_common::metadata::StdlibModuleMetadata;
 use lk_stdlib_common::runtime_native::{runtime_string_arg, runtime_string_value};
 use std::{process::Command, sync::Arc};
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, lk_stdlib_common::StdlibModule)]
+#[stdlib_module(name = "process", docs = "Process execution and state helpers")]
 pub struct ProcessModule;
 
+#[lk_stdlib_common::stdlib_exports(module = "process")]
 impl ProcessModule {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-impl ModuleProvider for ProcessModule {
-    fn name(&self) -> &str {
-        "process"
+    #[stdlib_export(name = "id", params(), returns = Int)]
+    fn id(_args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        Ok(RuntimeVal::Int(std::process::id() as i64))
     }
 
-    fn register(&self, _registry: &mut ModuleRegistry) -> Result<()> {
-        Ok(())
+    #[stdlib_export(name = "cwd", params(), returns = String?)]
+    fn cwd(_args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        match std::env::current_dir() {
+            Ok(path) => Ok(runtime_string_value(&path.to_string_lossy(), runtime.heap_mut())),
+            Err(_) => Ok(RuntimeVal::Nil),
+        }
     }
 
-    fn runtime_exports(&self) -> Result<RuntimeExport> {
-        Ok(lk_stdlib_common::stdlib_runtime_exports!(
-            [
-                plain "id" => id, 0,
-                plain "cwd" => cwd, 0,
-                plain "set_cwd" => set_cwd, 1,
-                plain "exit" => exit, 1,
-                plain "status" => status, lk_core::vm::NativeEntry::VARIADIC,
-                plain "output" => output, lk_core::vm::NativeEntry::VARIADIC,
-                plain "output_string" => output_string, lk_core::vm::NativeEntry::VARIADIC,
-            ],
-        ))
+    #[stdlib_export(name = "set_cwd", params(path: String), returns = Bool)]
+    fn set_cwd(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let path = runtime_string_arg(
+            args.get(0).expect("checked arity"),
+            runtime.heap(),
+            "process.set_cwd path",
+        )?;
+        std::env::set_current_dir(path.as_ref()).map_err(|err| anyhow!("failed to set cwd '{}': {err}", path))?;
+        Ok(RuntimeVal::Bool(true))
     }
-}
 
-pub fn register(registry: &mut ModuleRegistry) -> Result<()> {
-    lk_stdlib_common::metadata::register_stdlib_module_metadata(metadata())?;
-    registry.register_module("process", Box::new(ProcessModule::new()))
-}
-
-pub fn metadata() -> StdlibModuleMetadata {
-    lk_stdlib_common::stdlib_module_metadata!(process, [cwd => String])
-}
-
-fn id(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 0, "process.id()")?;
-    Ok(RuntimeVal::Int(std::process::id() as i64))
-}
-
-fn cwd(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 0, "process.cwd()")?;
-    match std::env::current_dir() {
-        Ok(path) => Ok(runtime_string_value(&path.to_string_lossy(), runtime.heap_mut())),
-        Err(_) => Ok(RuntimeVal::Nil),
+    #[stdlib_export(name = "exit", params(code: Int), returns = Nil)]
+    fn exit(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let code = int_arg(args.get(0).expect("checked arity"), "process.exit code")?;
+        if code < i64::from(i32::MIN) || code > i64::from(i32::MAX) {
+            bail!("process.exit code must fit in i32, got {code}");
+        }
+        let code = code as i32;
+        std::process::exit(code);
     }
-}
 
-fn set_cwd(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 1, "process.set_cwd()")?;
-    let path = runtime_string_arg(
-        args.get(0).expect("checked arity"),
-        runtime.heap(),
-        "process.set_cwd path",
-    )?;
-    std::env::set_current_dir(path.as_ref()).map_err(|err| anyhow!("failed to set cwd '{}': {err}", path))?;
-    Ok(RuntimeVal::Bool(true))
-}
-
-fn exit(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 1, "process.exit()")?;
-    let code = int_arg(args.get(0).expect("checked arity"), "process.exit code")?;
-    if code < i64::from(i32::MIN) || code > i64::from(i32::MAX) {
-        bail!("process.exit code must fit in i32, got {code}");
+    #[stdlib_export(name = "status", params(cmd: String, ...args: String), returns = Int)]
+    fn status(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let (cmd, argv) = command_args(args, runtime, "process.status()")?;
+        let status = Command::new(cmd.as_ref())
+            .args(&argv)
+            .status()
+            .map_err(|err| anyhow!("failed to execute '{}': {err}", cmd))?;
+        Ok(RuntimeVal::Int(status.code().unwrap_or(-1) as i64))
     }
-    let code = code as i32;
-    std::process::exit(code);
-}
 
-fn status(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    let (cmd, argv) = command_args(args, runtime, "process.status()")?;
-    let status = Command::new(cmd.as_ref())
-        .args(&argv)
-        .status()
-        .map_err(|err| anyhow!("failed to execute '{}': {err}", cmd))?;
-    Ok(RuntimeVal::Int(status.code().unwrap_or(-1) as i64))
-}
+    #[stdlib_export(name = "output", params(cmd: String, ...args: String), returns = Map)]
+    fn output(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let (cmd, argv) = command_args(args, runtime, "process.output()")?;
+        let output = Command::new(cmd.as_ref())
+            .args(&argv)
+            .output()
+            .map_err(|err| anyhow!("failed to execute '{}': {err}", cmd))?;
+        output_map(output, runtime)
+    }
 
-fn output(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    let (cmd, argv) = command_args(args, runtime, "process.output()")?;
-    let output = Command::new(cmd.as_ref())
-        .args(&argv)
-        .output()
-        .map_err(|err| anyhow!("failed to execute '{}': {err}", cmd))?;
-    output_map(output, runtime)
-}
-
-fn output_string(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    let (cmd, argv) = command_args(args, runtime, "process.output_string()")?;
-    let output = Command::new(cmd.as_ref())
-        .args(&argv)
-        .output()
-        .map_err(|err| anyhow!("failed to execute '{}': {err}", cmd))?;
-    let stdout = String::from_utf8(output.stdout).map_err(|_| anyhow!("command stdout is not valid UTF-8"))?;
-    Ok(runtime_string_value(&stdout, runtime.heap_mut()))
+    #[stdlib_export(name = "output_string", params(cmd: String, ...args: String), returns = String)]
+    fn output_string(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let (cmd, argv) = command_args(args, runtime, "process.output_string()")?;
+        let output = Command::new(cmd.as_ref())
+            .args(&argv)
+            .output()
+            .map_err(|err| anyhow!("failed to execute '{}': {err}", cmd))?;
+        let stdout = String::from_utf8(output.stdout).map_err(|_| anyhow!("command stdout is not valid UTF-8"))?;
+        Ok(runtime_string_value(&stdout, runtime.heap_mut()))
+    }
 }
 
 fn output_map(output: std::process::Output, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
