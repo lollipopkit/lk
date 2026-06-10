@@ -64,6 +64,7 @@ The previous standalone `lk-highlight` extension has been merged into this packa
 - Hover type links open LK-defined types or built-in runtime type documentation through the internal `lk.openLocation` command. Rust-backed stdlib hovers also expose `Go to implementation`.
 
 ### Stdlib awareness
+
 - The client queries the Rust LK language server for stdlib modules and exports. Module-aware completions support:
   - `use <module>` / `from <module>` name completion
   - `<alias>.` namespace member completion for stdlib exports (e.g. `iter.zip`, `iter.take`, `iter.map`, ...)

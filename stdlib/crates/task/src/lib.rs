@@ -58,6 +58,9 @@ impl TaskModule {
     #[stdlib_export(name = "sleep", params(ms: Int | Float), returns = Nil)]
     fn sleep(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let duration_ms = numeric_millis(args.get(0).expect("checked arity"), "task.sleep()")?;
+        if duration_ms < 0 {
+            bail!("task.sleep() duration must be non-negative");
+        }
         rt::with_runtime(|rt| {
             let duration = std::time::Duration::from_millis(duration_ms as u64);
             rt.block_on(async {
@@ -73,17 +76,7 @@ impl TaskModule {
         if !is_callable(args.get(0).expect("checked arity"), runtime.heap())? {
             bail!("task.spawn_blocking() expects a function argument");
         }
-        let task_id = rt::with_runtime(|rt| {
-            let future = async move { Err(anyhow!("task.spawn_blocking() needs VmContext lifetime management")) };
-            rt.spawn(future)
-        })
-        .map_err(|err| anyhow!("Failed to spawn blocking task: {err}"))?;
-        Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::Task(Arc::new(
-            TaskValue {
-                id: task_id,
-                value: None,
-            },
-        )))))
+        bail!("task.spawn_blocking() needs VmContext lifetime management")
     }
 }
 

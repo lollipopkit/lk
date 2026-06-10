@@ -61,7 +61,7 @@ impl StringModule {
         Ok(RuntimeVal::Bool(value.contains(needle.as_ref())))
     }
 
-    #[stdlib_export(params(text: String, from: String, to: String, count?: Int), named(pattern, with, all), returns = String)]
+    #[stdlib_export(params(text: String, pattern?: String, with?: String, all?: Bool), named(pattern, with, all), returns = String)]
     fn replace(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let pos = args.as_slice();
         if pos.is_empty() {
@@ -193,7 +193,7 @@ impl StringModule {
         Ok(runtime_string_value(&value.repeat(count as usize), runtime.heap_mut()))
     }
 
-    #[stdlib_export(name = "char", params(text: String, index: Int), returns = String)]
+    #[stdlib_export(name = "char", params(text: String, index: Int), returns = String?)]
     fn char_at(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let values = args.as_slice();
         let value = runtime_string_arg(&values[0], runtime.heap(), "char() first argument")?;
@@ -203,7 +203,7 @@ impl StringModule {
         }))
     }
 
-    #[stdlib_export(name = "byte", params(text: String, index: Int), returns = Int)]
+    #[stdlib_export(name = "byte", params(text: String, index: Int), returns = Int?)]
     fn byte_at(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let values = args.as_slice();
         let value = runtime_string_arg(&values[0], runtime.heap(), "byte() first argument")?;
@@ -226,7 +226,7 @@ impl StringModule {
         ))
     }
 
-    #[stdlib_export(params(text: String, needle: String, start?: Int), returns = Int)]
+    #[stdlib_export(params(text: String, needle: String, start?: Int), returns = Int?)]
     fn find(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         if args.len() != 2 && args.len() != 3 {
             bail!("find() takes 2 or 3 arguments: string, pattern[, start]");
@@ -291,7 +291,7 @@ impl StringModule {
         Ok(runtime_string_value(&out, runtime.heap_mut()))
     }
 
-    #[stdlib_export(params(text: String, chars: String), returns = String)]
+    #[stdlib_export(params(text: String, chars: String), returns = String?)]
     fn strip(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let (value, pattern) = two_strings(args, runtime, "strip()")?;
         Ok(value
@@ -300,7 +300,7 @@ impl StringModule {
             .map_or(RuntimeVal::Nil, |s| runtime_string_value(s, runtime.heap_mut())))
     }
 
-    #[stdlib_export(params(text: String, prefix: String), returns = String)]
+    #[stdlib_export(params(text: String, prefix: String), returns = String?)]
     fn strip_prefix(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let (value, prefix) = two_strings(args, runtime, "strip_prefix()")?;
         Ok(value
@@ -308,7 +308,7 @@ impl StringModule {
             .map_or(RuntimeVal::Nil, |s| runtime_string_value(s, runtime.heap_mut())))
     }
 
-    #[stdlib_export(params(text: String, suffix: String), returns = String)]
+    #[stdlib_export(params(text: String, suffix: String), returns = String?)]
     fn strip_suffix(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let (value, suffix) = two_strings(args, runtime, "strip_suffix()")?;
         Ok(value
@@ -326,7 +326,7 @@ impl StringModule {
         Ok(RuntimeVal::Int(value.matches(pattern.as_ref()).count() as i64))
     }
 
-    #[stdlib_export(params(text: String, width: Int, pad: String), returns = String)]
+    #[stdlib_export(params(text: String, width: Int, pad?: String), returns = String)]
     fn pad_left(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         if args.len() < 2 || args.len() > 3 {
             bail!("pad_left() takes 2 or 3 arguments: string, width[, fill]");
@@ -352,7 +352,7 @@ impl StringModule {
         Ok(runtime_string_value(&padded, runtime.heap_mut()))
     }
 
-    #[stdlib_export(params(text: String, width: Int, pad: String), returns = String)]
+    #[stdlib_export(params(text: String, width: Int, pad?: String), returns = String)]
     fn pad_right(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         if args.len() < 2 || args.len() > 3 {
             bail!("pad_right() takes 2 or 3 arguments: string, width[, fill]");
@@ -378,7 +378,7 @@ impl StringModule {
         Ok(runtime_string_value(&padded, runtime.heap_mut()))
     }
 
-    #[stdlib_export(params(text: String), returns = Int)]
+    #[stdlib_export(params(value: Number | Bool), returns = Int)]
     fn to_int(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         match &args.as_slice()[0] {
             RuntimeVal::Int(v) => Ok(RuntimeVal::Int(*v)),
@@ -388,7 +388,7 @@ impl StringModule {
         }
     }
 
-    #[stdlib_export(params(text: String), returns = Float)]
+    #[stdlib_export(params(value: Number | Bool), returns = Float)]
     fn to_float(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         match &args.as_slice()[0] {
             RuntimeVal::Float(v) => Ok(RuntimeVal::Float(*v)),

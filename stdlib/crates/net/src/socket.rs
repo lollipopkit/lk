@@ -23,7 +23,12 @@ impl NetSocketModule {
             RuntimeVal::Int(value) if *value >= 0 && *value <= 65535 => *value as u16,
             other => bail!("socket.addr port expects integer 0..65535, got {:?}", other.kind()),
         };
-        Ok(runtime_string_value(&format!("{host}:{port}"), runtime.heap_mut()))
+        let addr = if host.contains(':') {
+            format!("[{host}]:{port}")
+        } else {
+            format!("{host}:{port}")
+        };
+        Ok(runtime_string_value(&addr, runtime.heap_mut()))
     }
 
     #[stdlib_export(params(resource: Resource), returns = Bool)]

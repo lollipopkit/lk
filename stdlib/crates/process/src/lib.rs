@@ -48,7 +48,7 @@ impl ProcessModule {
         std::process::exit(code);
     }
 
-    #[stdlib_export(name = "status", params(cmd: String, ...args: String), returns = Int)]
+    #[stdlib_export(name = "status", params(cmd: String, args?: List[String]), returns = Int)]
     fn status(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let (cmd, argv) = command_args(args, runtime, "process.status()")?;
         let status = Command::new(cmd.as_ref())
@@ -58,7 +58,7 @@ impl ProcessModule {
         Ok(RuntimeVal::Int(status.code().unwrap_or(-1) as i64))
     }
 
-    #[stdlib_export(name = "output", params(cmd: String, ...args: String), returns = Map)]
+    #[stdlib_export(name = "output", params(cmd: String, args?: List[String]), returns = Map)]
     fn output(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let (cmd, argv) = command_args(args, runtime, "process.output()")?;
         let output = Command::new(cmd.as_ref())
@@ -68,7 +68,7 @@ impl ProcessModule {
         output_map(output, runtime)
     }
 
-    #[stdlib_export(name = "output_string", params(cmd: String, ...args: String), returns = String)]
+    #[stdlib_export(name = "output_string", params(cmd: String, args?: List[String]), returns = String)]
     fn output_string(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let (cmd, argv) = command_args(args, runtime, "process.output_string()")?;
         let output = Command::new(cmd.as_ref())

@@ -46,10 +46,12 @@ $(VSC_EXTENSIONS:%=vsix-%): vsix-%:
 				"$$vscode_cli" --install-extension "$$vsix_file" || { \
 					echo "VSIX install failed. The package was still built at: $$vsix_file"; \
 					echo "If VS Code asks for a restart before reinstalling, restart VS Code and run: \"$$vscode_cli\" --install-extension $$vsix_file"; \
+					exit 1; \
 				}; \
 			else \
 				echo "VS Code CLI was not found. Install manually from VS Code: Extensions > ... > Install from VSIX... > $$vsix_file"; \
 				echo "Or run: make vsix INSTALL_VSIX=1 VSCODE_CLI=/path/to/code"; \
+				exit 1; \
 			fi; \
 			;; \
 		*) \

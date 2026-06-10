@@ -43,14 +43,21 @@ impl OsModule {
         use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
         static START: AtomicU64 = AtomicU64::new(0);
         static INIT: AtomicBool = AtomicBool::new(false);
-        if !INIT.swap(true, Ordering::SeqCst) {
+        if INIT
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
             START.store(epoch_nanos(), Ordering::SeqCst);
+        } else {
+            while START.load(Ordering::SeqCst) == 0 {
+                std::thread::yield_now();
+            }
         }
         let elapsed_secs = epoch_nanos().wrapping_sub(START.load(Ordering::SeqCst)) as f64 / 1_000_000_000.0;
         Ok(RuntimeVal::Float(elapsed_secs))
     }
 
-    #[stdlib_export(params(), returns = Float)]
+    #[stdlib_export(params(), returns = Int)]
     fn time(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         no_args(args, "time")?;
         Ok(RuntimeVal::Int(

@@ -132,6 +132,43 @@ mod tests {
             json_parse.signature.as_deref(),
             Some("encoding.json.parse(source: String) -> Value")
         );
+
+        let string_char = catalog.export_path(&["string", "char"]).expect("string.char export");
+        assert_eq!(
+            string_char.signature.as_deref(),
+            Some("string.char(text: String, index: Int) -> String?")
+        );
+        let string_byte = catalog.export_path(&["string", "byte"]).expect("string.byte export");
+        assert_eq!(
+            string_byte.signature.as_deref(),
+            Some("string.byte(text: String, index: Int) -> Int?")
+        );
+        let string_pad_left = catalog
+            .export_path(&["string", "pad_left"])
+            .expect("string.pad_left export");
+        assert_eq!(
+            string_pad_left.signature.as_deref(),
+            Some("string.pad_left(text: String, width: Int, pad?: String) -> String")
+        );
+        let string_replace = catalog
+            .export_path(&["string", "replace"])
+            .expect("string.replace export");
+        assert_eq!(
+            string_replace.signature.as_deref(),
+            Some("string.replace(text: String, pattern?: String, with?: String, all?: Bool) -> String")
+        );
+        let time_since = catalog.export_path(&["time", "since"]).expect("time.since export");
+        assert_eq!(
+            time_since.signature.as_deref(),
+            Some("time.since(start_ms: Int | Float, end_ms: Int | Float) -> Int")
+        );
+        let stream_collect = catalog
+            .export_path(&["stream", "collect"])
+            .expect("stream.collect export");
+        assert_eq!(
+            stream_collect.signature.as_deref(),
+            Some("stream.collect(cursor: Stream | Cursor, limit?: Int) -> List")
+        );
     }
 
     #[test]

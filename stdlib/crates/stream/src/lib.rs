@@ -525,7 +525,7 @@ impl StreamModule {
         next_cursor(cursor_id, runtime)
     }
 
-    #[stdlib_export(params(cursor: Cursor, limit?: Int), returns = List, kind = "full_state")]
+    #[stdlib_export(params(cursor: Stream | Cursor, limit?: Int), returns = List, kind = "full_state")]
     fn collect(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let (cursor_id, limit) = cursor_and_limit(args.as_slice(), runtime, "stream.collect")?;
         collect_cursor(cursor_id, limit, runtime)
@@ -545,7 +545,7 @@ impl StreamModule {
         next_block_cursor(cursor_id, timeout_ms, runtime)
     }
 
-    #[stdlib_export(params(cursor: Cursor, limit?: Int, timeout_ms?: Int), returns = List, kind = "full_state")]
+    #[stdlib_export(params(cursor: Stream | Cursor, limit?: Int, timeout_ms?: Int), returns = List, kind = "full_state")]
     fn collect_block(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let (cursor_id, limit, timeout_ms) = cursor_limit_timeout(args.as_slice(), runtime, "stream.collect_block")?;
         collect_block_cursor(cursor_id, limit, timeout_ms, runtime)

@@ -53,7 +53,7 @@ impl TimeModule {
         Ok(RuntimeVal::Int(epoch_millis()))
     }
 
-    #[stdlib_export(name = "since", params(start_ms: Int, end_ms: Int), returns = Int)]
+    #[stdlib_export(name = "since", params(start_ms: Int | Float, end_ms: Int | Float), returns = Int)]
     fn since(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let values = args.as_slice();
         let start = numeric_millis(&values[0], "time.since()")?;

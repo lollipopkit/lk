@@ -33,8 +33,10 @@ impl ChannelModule {
 
     #[stdlib_export(name = "len", params(channel: Channel), returns = Int)]
     fn len(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        let _ = channel_arg(args.get(0).expect("checked arity"), runtime.heap(), "chan.len()")?;
-        Ok(RuntimeVal::Int(0))
+        let channel = channel_arg(args.get(0).expect("checked arity"), runtime.heap(), "chan.len()")?;
+        let len = rt::with_runtime(|runtime| runtime.channel_len(channel.id))
+            .map_err(|err| anyhow!("Failed to read channel length: {err}"))?;
+        Ok(RuntimeVal::Int(len as i64))
     }
 
     #[stdlib_export(name = "capacity", params(channel: Channel), returns = Int)]
@@ -45,8 +47,10 @@ impl ChannelModule {
 
     #[stdlib_export(name = "is_closed", params(channel: Channel), returns = Bool)]
     fn is_closed(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        let _ = channel_arg(args.get(0).expect("checked arity"), runtime.heap(), "chan.is_closed()")?;
-        Ok(RuntimeVal::Bool(false))
+        let channel = channel_arg(args.get(0).expect("checked arity"), runtime.heap(), "chan.is_closed()")?;
+        let closed = rt::with_runtime(|runtime| runtime.channel_is_closed(channel.id))
+            .map_err(|err| anyhow!("Failed to read channel closed state: {err}"))?;
+        Ok(RuntimeVal::Bool(closed))
     }
 
     #[stdlib_export(name = "try_send", params(channel: Channel, value: Any), returns = Bool)]

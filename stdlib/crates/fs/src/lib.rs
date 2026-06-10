@@ -146,7 +146,7 @@ impl FsModule {
         Ok(RuntimeVal::Bool(true))
     }
 
-    #[stdlib_export(params(from: String, to: String), returns = Bool)]
+    #[stdlib_export(params(from: String, to: String), returns = Int)]
     fn copy(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let from = path_arg(args.get(0).expect("checked arity"), runtime, "fs.copy from")?;
         let to = path_arg(args.get(1).expect("checked arity"), runtime, "fs.copy to")?;
@@ -155,7 +155,7 @@ impl FsModule {
         Ok(RuntimeVal::Int(copied as i64))
     }
 
-    #[stdlib_export(params(path: String), returns = String)]
+    #[stdlib_export(params(path: String), returns = String?)]
     fn canonicalize(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let path = path_arg(args.get(0).expect("checked arity"), runtime, "fs.canonicalize path")?;
         let path =
@@ -163,7 +163,7 @@ impl FsModule {
         path_value(path, runtime.heap_mut())
     }
 
-    #[stdlib_export(params(), returns = String)]
+    #[stdlib_export(params(), returns = String?)]
     fn temp_dir(_args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         path_value(std::env::temp_dir(), runtime.heap_mut())
     }

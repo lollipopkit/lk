@@ -148,11 +148,7 @@ impl UrlEncodingModule {
             runtime.heap(),
             "encoding.url.decode_component value",
         )?;
-        let wrapped = format!("x={value}");
-        let decoded = url::form_urlencoded::parse(wrapped.as_bytes())
-            .map(|(_, value)| value.to_string())
-            .next()
-            .unwrap_or_default();
+        let decoded = percent_decode_component(value.as_ref())?;
         Ok(runtime_string_value(&decoded, runtime.heap_mut()))
     }
 
@@ -188,6 +184,28 @@ impl UrlEncodingModule {
         }
         Ok(runtime_string_value(&serializer.finish(), runtime.heap_mut()))
     }
+}
+
+fn percent_decode_component(value: &str) -> Result<String> {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let Some(hex) = bytes.get(index + 1..index + 3) else {
+                bail!("invalid percent encoding: incomplete escape");
+            };
+            let hex = std::str::from_utf8(hex).map_err(|_| anyhow!("invalid percent encoding: non-UTF-8 escape"))?;
+            let byte = u8::from_str_radix(hex, 16)
+                .map_err(|_| anyhow!("invalid percent encoding: expected two hex digits"))?;
+            decoded.push(byte);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(decoded).map_err(|err| anyhow!("invalid percent-encoded UTF-8: {err}"))
 }
 
 fn string_map_arg(value: &RuntimeVal, runtime: &NativeRuntime<'_>, context: &str) -> Result<Vec<(String, String)>> {

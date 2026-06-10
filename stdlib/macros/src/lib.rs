@@ -753,6 +753,7 @@ impl ParamSpec {
         let optional = name.ends_with('?');
         if optional {
             name.pop();
+            name = name.trim_end().to_string();
         }
         let rest = source[colon_idx + 1..].trim();
         let (ty, default) = split_default(rest);

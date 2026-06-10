@@ -19,7 +19,7 @@ pub struct DateTimeModule;
 impl DateTimeModule {
     #[stdlib_export(name = "now", params(), returns = Int)]
     fn now(_args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        Ok(RuntimeVal::Int(chrono::Utc::now().timestamp_micros()))
+        Ok(RuntimeVal::Int(chrono::Utc::now().timestamp()))
     }
 
     #[stdlib_export(name = "format", params(timestamp: Int, format: String), returns = String)]

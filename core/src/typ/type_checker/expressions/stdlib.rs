@@ -18,7 +18,7 @@ impl TypeChecker {
             return Ok(Some(Type::Int));
         }
 
-        let Some((params, named_params, return_type)) = stdlib_function_signature(module, field) else {
+        let Some((params, named_params, return_type)) = stdlib_function_signature(&module, &field) else {
             return Ok(None);
         };
         if !named_params.is_empty() || params.len() != args.len() {
@@ -61,7 +61,7 @@ impl TypeChecker {
         let mut path = access_segments(expr)?;
         path.push(segment_name(field)?);
         let (module, field) = canonical_stdlib_path(&path)?;
-        self.stdlib_function_type(module, field)
+        self.stdlib_function_type(&module, &field)
     }
 
     fn stdlib_function_type(&self, module: &str, field: &str) -> Option<Type> {
@@ -159,9 +159,9 @@ fn stdlib_function_signature(module: &str, field: &str) -> Option<(Vec<Type>, Ve
     }
 }
 
-fn canonical_stdlib_path<'a>(path: &'a [&'a str]) -> Option<(&'a str, &'a str)> {
+fn canonical_stdlib_path(path: &[&str]) -> Option<(String, String)> {
     match path {
-        [module, field] => Some((module, field)),
+        [.., field] if path.len() >= 2 => Some((path[..path.len() - 1].join("."), (*field).to_string())),
         _ => None,
     }
 }

@@ -174,7 +174,7 @@ impl IterModule {
         Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(list))))
     }
 
-    #[stdlib_export(params(values: List[List]), returns = List)]
+    #[stdlib_export(params(values: List), returns = List)]
     fn flatten(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let plan = flatten_typed_list(
             typed_list_arg_ref(&args.as_slice()[0], runtime.heap(), "iter.flatten")?,
