@@ -161,6 +161,7 @@ fn stdlib_function_signature(module: &str, field: &str) -> Option<(Vec<Type>, Ve
 
 fn canonical_stdlib_path(path: &[&str]) -> Option<(String, String)> {
     match path {
+        ["os", "env", field] => Some(("env".to_string(), (*field).to_string())),
         [.., field] if path.len() >= 2 => Some((path[..path.len() - 1].join("."), (*field).to_string())),
         _ => None,
     }

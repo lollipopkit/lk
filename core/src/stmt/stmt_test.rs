@@ -1109,6 +1109,7 @@ mod tests {
         let program = parse_program(
             r#"
             let filter = env.get_or("LK_WORKLOAD_FILTER", "");
+            let os_filter = os.env.get_or("LK_WORKLOAD_FILTER", "");
             let hi = math.max(1, 2);
             let lo = math.min(1, 2);
             let clamped_default = math.clamp(5);
