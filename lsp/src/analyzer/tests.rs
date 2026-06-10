@@ -133,6 +133,21 @@ fn test_collect_named_param_decls_for_signature_help() {
 }
 
 #[test]
+fn test_collect_named_param_decls_through_attributes() {
+    let mut analyzer = create_analyzer();
+    let content = r#"
+        #[derive(Debug)]
+        fn draw_rect({width: Int}) {
+            return width;
+        }
+    "#;
+    let decls = analyzer.collect_fn_named_param_decls(content);
+    let params = decls.get("draw_rect").expect("expected named params");
+    assert_eq!(params.len(), 1);
+    assert_eq!(params[0].name, "width");
+}
+
+#[test]
 fn test_collect_named_call_diagnostics_for_missing_required() {
     let mut analyzer = create_analyzer();
     let content = r#"

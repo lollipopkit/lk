@@ -3,6 +3,8 @@ mod stmt_impl;
 pub mod stmt_parser;
 
 #[cfg(test)]
+mod attribute_test;
+#[cfg(test)]
 mod destructuring_test;
 #[cfg(test)]
 mod function_test;

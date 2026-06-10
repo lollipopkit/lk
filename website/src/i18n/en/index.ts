@@ -52,9 +52,9 @@ const en: BaseTranslation = {
   },
   runtime: {
     kicker: 'Runtime and Tooling',
-    title: 'From scripts to type checks, module artifacts, and package tools.',
+    title: 'From scripts to type checks, native builds, and package tools.',
     subtitle:
-      'LK can run a REPL, execute `.lk` files, type-check without executing, emit module artifacts, and manage package workspaces.',
+      'LK can run a REPL, execute `.lk` files, type-check without executing, emit native executables or bytecode artifacts, and manage package workspaces.',
     rows: {
       valueModel: 'Value model',
       execution: 'Execution',

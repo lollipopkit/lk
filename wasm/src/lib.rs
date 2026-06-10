@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use lk_core::{
     module::ModuleRegistry,
-    stmt::{ModuleResolver, StmtParser},
-    token::Tokenizer,
+    stmt::ModuleResolver,
+    syntax::{ParseOptions, parse_program_source},
     typ::TypeChecker,
     vm::{VmContext, execute_program_with_ctx_and_budget},
 };
@@ -64,24 +64,13 @@ pub fn run_lk(source: &str) -> JsValue {
 }
 
 fn run_lk_inner(source: &str) -> Result<String, Diagnostic> {
-    let (tokens, spans) = Tokenizer::tokenize_enhanced_with_spans(source).map_err(|error| Diagnostic {
+    let program = parse_program_source(source, ParseOptions::default()).map_err(|error| Diagnostic {
         level: "error",
         message: error.to_string(),
         rendered: Some(error.display_with_source(source)),
         line: error.span.as_ref().map(|span| span.start.line),
         column: error.span.as_ref().map(|span| span.start.column),
     })?;
-
-    let mut parser = StmtParser::new_with_spans(&tokens, &spans);
-    let program = parser
-        .parse_program_with_enhanced_errors(source)
-        .map_err(|error| Diagnostic {
-            level: "error",
-            message: error.to_string(),
-            rendered: Some(error.display_with_source(source)),
-            line: error.span.as_ref().map(|span| span.start.line),
-            column: error.span.as_ref().map(|span| span.start.column),
-        })?;
 
     let mut registry = ModuleRegistry::new();
     lk_stdlib_web::register_web_stdlib(&mut registry).map_err(runtime_diagnostic)?;

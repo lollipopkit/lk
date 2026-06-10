@@ -136,6 +136,7 @@ pub(super) fn collect_expr_free_vars(expr: &Expr, bound: &mut HashSet<String>, f
 fn collect_stmt_free_vars(statements: &[Box<Stmt>], bound: &mut HashSet<String>, free: &mut Vec<String>) {
     for stmt in statements {
         match stmt.as_ref() {
+            Stmt::Attributed { item, .. } => collect_single_stmt_free_vars(item, bound, free),
             Stmt::Expr(expr) => collect_expr_free_vars(expr, bound, free),
             Stmt::Return { value: Some(value) } => collect_expr_free_vars(value, bound, free),
             Stmt::Return { value: None } | Stmt::Empty | Stmt::Break | Stmt::Continue => {}

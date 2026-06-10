@@ -165,6 +165,39 @@ Used in `match`, `if let`, `while let`, and `let` destructuring.
 - Defaults are lazily evaluated inside the callee when the argument is omitted; expressions can reference other parameters.
 - Call sites supply named arguments with `name: expr`: `f(1, 2, label: "demo", flag: false)` or `f(label: "demo")`. Named arguments may appear in any order; once a named argument appears, positional arguments cannot follow it.
 
+### Attributes
+- Item declarations can carry preserved Rust-style attributes: `#[derive(Debug)] struct User { id: Int }` or `#[inline] fn answer() { return 42; }`.
+- Attributes currently attach only to item declarations (`fn`, `struct`, `type`, `trait`, `impl`). Applying an attribute to `let`, `return`, or an expression statement is a parse error.
+- Ordinary attribute wrappers are transparent to parsing, type checking, slot resolution, VM execution, REPL binding collection, LSP named-parameter analysis, and tree-sitter syntax. `#[derive(Debug)]` and `#[derive(Show)]` on structs are expanded after parsing into an internal display trait implementation, so template strings and formatted output can use `${value}`.
+
+### Macros
+- LK supports Rust-shaped declarative macros with LK semantics: `macro_rules! name { (matcher) => { template }; ... }`.
+- Invoke function-like macros as `name!(...)`, `name![...]`, or `name!{...}`. Macro definitions are compile-time items and do not become runtime statements.
+- Supported fragment kinds: `expr`, `stmt`, `block`, `item`, `ident`, `literal`, `tt`, `pat`, `ty`, and `path`.
+- `expr`, `stmt`, `item`, `pat`, `ty`, and `path` fragments use parser-discovered or grammar-guided capture boundaries, so a fragment can stop before a following block metavariable without requiring a comma delimiter.
+- `expr`, `stmt`, `pat`, `ty`, and `path` matcher positions enforce follow-set diagnostics to reject ambiguous future-incompatible matcher shapes. LK also permits an immediately following `block` fragment where its grammar-guided capture needs that form.
+- Repetition supports Rust-style `$( ... )*`, `$( ... )+`, and `$( ... )?`, with an optional separator such as `$( $x:expr ),*`.
+- Macro expansion happens before normal parsing/type checking. Captured identifiers resolve at the call site; local bindings introduced by the macro template are freshened to avoid common name collisions.
+- Export macros from a file/package with `export macro_rules! name { ... }` or `export { internal as public };`. Ordinary `macro_rules!` definitions remain private to the defining file/module for external macro imports.
+- Exported macros can call private helper macros from their defining file/package with `$crate::helper!()`.
+- File, package, and std macro imports use LK `use` syntax: `use { answer as ans } from "macros"; ans!();`, `use { answer } from util; answer!();`, `use { vec, matches } from macros; vec![1];`, `use "macros"; macros::answer!();`, and `use * as m from macros; m::matches!(x, 1);`. External macro imports only see exported macro names. Named macro imports and the std `macros` namespace are compile-time-only and are removed before runtime import execution. Split runtime item imports and named macro imports into separate `use` statements.
+- The built-in compile-time `macros` module currently exports `vec!`, `assert!`, `assert_eq!`, `assert_ne!`, `matches!`, `panic!`, `todo!`, and `unreachable!`.
+- Macro expansion errors include rule-level mismatch notes and an expansion stack showing nested macro calls; LSP diagnostics preserve these macro expansion messages.
+- Current implementation covers `macro_rules!`, function-like invocations, item attribute preservation, built-in struct derives for `Debug`/`Show`, and the versioned procedural macro protocol data model. External derive plugins, attribute macros, and function-like procedural macro execution are still planned through the isolated process protocol.
+- Use `lk macro expand <file> --trace` to inspect the expanded token stream and expansion trace.
+- Example:
+
+```lk
+macro_rules! vec {
+  ($($value:expr),*) => { [$($value),*] };
+}
+
+export { vec };
+
+let values = vec![1, 2 + 3, 4];
+return values.1;
+```
+
 ### Uses
 - Forms:
   - `use math;` - stdlib module as a namespace
@@ -176,6 +209,7 @@ Used in `match`, `if let`, `while let`, and `let` destructuring.
   - `use * as m from math;` - namespace alias
   - `use math as m;` - module alias
 - Bare module uses bind the module name directly: `use net;` defines `net`.
+- For macros, quoted file uses, package module uses, and the built-in compile-time `macros` module also participate in macro resolution before runtime execution. Use `::` for macro namespaces, such as `m::assert_ok!()`.
 
 - File use resolution and safety:
   - Files are not automatically visible to each other. Use every cross-file dependency explicitly.
@@ -397,7 +431,8 @@ for_pattern  ::= '_' | id | '(' for_pattern { ',' for_pattern } ')' | '[' for_pa
 ## Notes for CLI Usage
 - Run REPL: `lk` (`LK_REPL_TUI=always|never|auto` controls whether the Reedline completion UI is forced, disabled, or terminal-detected)
 - Execute a file (statements) through the bytecode VM: `lk FILE`
-- Compile to an executable module artifact: `lk compile [FILE]` -> `FILE.lkm`
+- Compile to a native executable: `lk compile [FILE]`
+- Compile to a bytecode module artifact: `lk compile bytecode [FILE]` -> `FILE.lkm`
 - Execute an module artifact: `lk FILE.lkm`
 - Only relative, sanitized paths are allowed
 - CLI prints a result only when it is not `nil`

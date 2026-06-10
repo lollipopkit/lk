@@ -2,11 +2,13 @@ use lk_core::{
     ast,
     ast::Parser as ExprParser,
     expr::Expr,
+    macro_system,
     package::PackageGraph,
     resolve,
     resolve::slots::{FunctionLayout, SlotResolver},
     stmt,
     stmt::{stmt_parser::StmtParser, ImportStmt, Program, Stmt},
+    syntax::{parse_expr_source, parse_program_source, ParseOptions},
     token,
     token::{Span, Tokenizer},
     typ,
@@ -50,16 +52,18 @@ pub struct AnalysisResult {
 pub(crate) struct TokenCacheEntry {
     pub(crate) tokens: Arc<[token::Token]>,
     pub(crate) spans: Arc<[Span]>,
+    parse_options: ParseOptions,
     named_param_decls: OnceCell<Arc<HashMap<String, Vec<NamedParamDecl>>>>,
     program_ast: OnceCell<Arc<Program>>,
     expr_ast: OnceCell<Arc<Expr>>,
 }
 
 impl TokenCacheEntry {
-    fn new(tokens: Vec<token::Token>, spans: Vec<Span>) -> Self {
+    fn new(tokens: Vec<token::Token>, spans: Vec<Span>, parse_options: ParseOptions) -> Self {
         Self {
             tokens: tokens.into(),
             spans: spans.into(),
+            parse_options,
             named_param_decls: OnceCell::new(),
             program_ast: OnceCell::new(),
             expr_ast: OnceCell::new(),
@@ -68,19 +72,13 @@ impl TokenCacheEntry {
 
     fn parse_program_arc(&self, content: &str) -> std::result::Result<Arc<Program>, lk_core::token::ParseError> {
         self.program_ast
-            .get_or_try_init(|| {
-                let mut parser = StmtParser::new_with_spans(self.tokens.as_ref(), self.spans.as_ref());
-                parser.parse_program_with_enhanced_errors(content).map(Arc::new)
-            })
+            .get_or_try_init(|| parse_program_source(content, self.parse_options.clone()).map(Arc::new))
             .cloned()
     }
 
     fn parse_expression_arc(&self, content: &str) -> std::result::Result<Arc<Expr>, token::ParseError> {
         self.expr_ast
-            .get_or_try_init(|| {
-                let mut parser = ExprParser::new_with_spans(self.tokens.as_ref(), self.spans.as_ref());
-                parser.parse_with_enhanced_errors(content).map(Arc::new)
-            })
+            .get_or_try_init(|| parse_expr_source(content, self.parse_options.clone()).map(Arc::new))
             .cloned()
     }
 }

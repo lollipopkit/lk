@@ -13,6 +13,7 @@ use crate::PkgCommand;
 
 pub(crate) fn run_pkg_command(command: PkgCommand) -> anyhow::Result<()> {
     match command {
+        PkgCommand::Init { name } => init_package(name),
         PkgCommand::Add {
             name,
             source,

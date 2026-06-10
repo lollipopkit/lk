@@ -11,8 +11,8 @@ use lk_core::{
     module::ModuleRegistry,
     package::{PackageGraph, PackageModule},
     rt,
-    stmt::{ModuleResolver, import::collect_program_imports, stmt_parser::StmtParser},
-    token::Tokenizer,
+    stmt::{ModuleResolver, import::collect_program_imports},
+    syntax::{ParseOptions, expand_source, parse_program_source, render_tokens},
     typ::TypeChecker,
     vm::{
         ModuleArtifact, Opcode, VM_INDEX_KEY_METRIC_NAMES, VM_REGISTER_WRITE_SOURCE_NAMES, VmContext, VmRuntimeMetrics,
@@ -40,7 +40,7 @@ use coverage::run_coverage_report;
 #[cfg(test)]
 use paths::split_compile_args_with_cwd;
 use paths::{parse_program_file, parse_sanitized_path, sanitize_path, split_compile_args};
-use pkg::{init_package, run_pkg_command};
+use pkg::run_pkg_command;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -49,7 +49,7 @@ use pkg::{init_package, run_pkg_command};
     version,
     about = "CLI for LK",
     long_about = None,
-    after_help = "Direct source execution uses the bytecode VM by default; native/AOT paths are explicit opt-ins."
+    after_help = "Direct source execution uses the bytecode VM; `lk compile` emits a native executable by default."
 )]
 struct CliArgs {
     /// Subcommands like `compile FILE`
@@ -84,9 +84,8 @@ impl From<OptLevelCli> for OptLevel {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub(crate) enum CompileMode {
-    #[cfg(feature = "llvm")]
+    Bytecode,
     Llvm,
-    #[cfg(feature = "llvm")]
     Exe,
 }
 
@@ -94,7 +93,7 @@ pub(crate) enum CompileMode {
 enum Commands {
     /// Compile sources into supported migration targets.
     Compile {
-        /// 支持 `lk compile [TARGET] [FILE]`（省略 FILE 时自动查找当前目录入口）
+        /// 支持 `lk compile [TARGET] [FILE]`（默认编译 exe；省略 FILE 时自动查找当前目录入口）
         #[arg(value_name = "ARGS", num_args = 0..=2)]
         positional: Vec<String>,
         #[cfg(feature = "llvm")]
@@ -113,7 +112,7 @@ enum Commands {
         #[arg(long)]
         target_triple: Option<String>,
         #[cfg(feature = "llvm")]
-        /// 输出文件路径（针对 `exe` 目标指定最终 ELF 路径）
+        /// 输出文件路径（针对默认 exe 目标指定最终可执行文件路径）
         #[cfg(feature = "llvm")]
         #[arg(long)]
         output: Option<PathBuf>,
@@ -136,10 +135,10 @@ enum Commands {
         #[arg(long)]
         runtime: bool,
     },
-    /// Create and manage LK packages.
-    Init {
-        /// Package name. Defaults to the current directory name.
-        name: Option<String>,
+    /// Inspect macro expansion.
+    Macro {
+        #[command(subcommand)]
+        command: MacroCommand,
     },
     /// Package manager commands.
     Pkg {
@@ -149,7 +148,25 @@ enum Commands {
 }
 
 #[derive(Debug, Subcommand)]
+enum MacroCommand {
+    /// Expand macros in a source file and print the resulting LK token stream.
+    Expand {
+        /// Source file to expand
+        #[arg(value_name = "FILE", value_parser = parse_sanitized_path)]
+        file: PathBuf,
+        /// Print expansion trace entries before expanded source
+        #[arg(long)]
+        trace: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 enum PkgCommand {
+    /// Create a package.
+    Init {
+        /// Package name. Defaults to the current directory name.
+        name: Option<String>,
+    },
     /// Add a GitHub dependency to Lk.toml.
     Add {
         name: String,
@@ -383,36 +400,48 @@ fn main() -> anyhow::Result<()> {
                 let compile_mode = pos_target;
 
                 #[cfg(feature = "llvm")]
-                if compile_mode != Some(CompileMode::Exe) && output.is_some() {
-                    anyhow::bail!("--output is only supported for `lk compile exe <FILE>`");
+                if compile_mode != CompileMode::Exe && output.is_some() {
+                    anyhow::bail!("--output is only supported for `lk compile <FILE>`");
                 }
 
                 match compile_mode {
-                    None => {
+                    CompileMode::Bytecode => {
                         compile_instr_module(&safe)?;
                         return Ok(());
                     }
-                    #[cfg(feature = "llvm")]
-                    Some(CompileMode::Llvm) => {
-                        let options = LlvmBackendOptions {
-                            module_name: module_name_from_path(&safe),
-                            target_triple,
-                            run_optimizations: !skip_opt,
-                            opt_level: opt_level_cli.into(),
-                        };
-                        compile_llvm_ir(&safe, options)?;
-                        return Ok(());
+                    CompileMode::Llvm => {
+                        #[cfg(not(feature = "llvm"))]
+                        anyhow::bail!(
+                            "LLVM backend disabled at build time; rebuild with `--features llvm` to use `llvm` target"
+                        );
+                        #[cfg(feature = "llvm")]
+                        {
+                            let options = LlvmBackendOptions {
+                                module_name: module_name_from_path(&safe),
+                                target_triple,
+                                run_optimizations: !skip_opt,
+                                opt_level: opt_level_cli.into(),
+                            };
+                            compile_llvm_ir(&safe, options)?;
+                            return Ok(());
+                        }
                     }
-                    #[cfg(feature = "llvm")]
-                    Some(CompileMode::Exe) => {
-                        let options = LlvmBackendOptions {
-                            module_name: module_name_from_path(&safe),
-                            target_triple,
-                            run_optimizations: !skip_opt,
-                            opt_level: opt_level_cli.into(),
-                        };
-                        compile_executable(&safe, output.as_deref(), options)?;
-                        return Ok(());
+                    CompileMode::Exe => {
+                        #[cfg(not(feature = "llvm"))]
+                        anyhow::bail!(
+                            "LLVM backend disabled at build time; rebuild with `--features llvm` to compile native executables"
+                        );
+                        #[cfg(feature = "llvm")]
+                        {
+                            let options = LlvmBackendOptions {
+                                module_name: module_name_from_path(&safe),
+                                target_triple,
+                                run_optimizations: !skip_opt,
+                                opt_level: opt_level_cli.into(),
+                            };
+                            compile_executable(&safe, output.as_deref(), options)?;
+                            return Ok(());
+                        }
                     }
                 }
             }
@@ -428,8 +457,8 @@ fn main() -> anyhow::Result<()> {
                 run_coverage_report(&file, disassemble, runtime)?;
                 return Ok(());
             }
-            Commands::Init { name } => {
-                init_package(name)?;
+            Commands::Macro { command } => {
+                run_macro_command(command)?;
                 return Ok(());
             }
             Commands::Pkg { command } => {
@@ -482,16 +511,14 @@ fn main() -> anyhow::Result<()> {
         diagnostic::warning(format_args!("Failed to initialize runtime: {}", e));
     }
 
-    // Parse and execute as statements
-    let (tokens, spans) = match Tokenizer::tokenize_enhanced_with_spans(&input) {
-        Ok((tokens, spans)) => (tokens, spans),
-        Err(parse_err) => {
-            diagnostic::parse_error(&parse_err, &input);
-            std::process::exit(1);
-        }
-    };
-    let mut parser = StmtParser::new_with_spans(&tokens, &spans);
-    let program = match parser.parse_program_with_enhanced_errors(&input) {
+    // Parse, expand macros, and execute as statements.
+    let program = match parse_program_source(
+        &input,
+        ParseOptions {
+            base_dir: safe.parent().map(Path::to_path_buf),
+            ..ParseOptions::default()
+        },
+    ) {
         Ok(program) => program,
         Err(parse_err) => {
             diagnostic::parse_error(&parse_err, &input);
@@ -517,6 +544,38 @@ fn main() -> anyhow::Result<()> {
         println!("{}", result.display_first_return());
     }
 
+    Ok(())
+}
+
+fn run_macro_command(command: MacroCommand) -> anyhow::Result<()> {
+    match command {
+        MacroCommand::Expand { file, trace } => expand_macro_file(&file, trace),
+    }
+}
+
+fn expand_macro_file(path: &Path, trace: bool) -> anyhow::Result<()> {
+    let input = std::fs::read_to_string(path).with_context(|| format!("read LK source {}", path.display()))?;
+    let expanded = expand_source(
+        &input,
+        ParseOptions {
+            macro_trace: trace,
+            base_dir: path.parent().map(Path::to_path_buf),
+            ..ParseOptions::default()
+        },
+    )
+    .map_err(|parse_err| {
+        diagnostic::parse_error(&parse_err, &input);
+        anyhow::anyhow!(parse_err.to_string())
+    })?;
+    if trace {
+        for step in &expanded.trace {
+            println!(
+                "# macro {} at {}:{} -> {} tokens",
+                step.macro_name, step.call_span.start.line, step.call_span.start.column, step.output_len
+            );
+        }
+    }
+    println!("{}", render_tokens(&expanded.tokens));
     Ok(())
 }
 

@@ -39,16 +39,194 @@ fn ensure_clean_dir(dir: &Path) {
 }
 
 #[test]
+fn test_macro_expand_prints_expanded_source_and_trace() {
+    let dir = unique_tmp_dir("macro_expand");
+    ensure_clean_dir(&dir);
+
+    write_file(
+        &dir,
+        "macros.lk",
+        r#"
+macro_rules! id {
+    ($value:expr) => { $value };
+}
+return id!(7);
+"#,
+    );
+
+    let output = run_cli(&dir, ["macro", "expand", "macros.lk", "--trace"])
+        .output()
+        .expect("spawn macro expand");
+    assert!(
+        output.status.success(),
+        "macro expand failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).expect("utf8 stdout");
+    assert!(stdout.contains("# macro id at"), "expected trace line, got: {stdout}");
+    assert!(stdout.contains("return 7;"), "expected expanded return, got: {stdout}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_macro_expand_uses_macros_from_file_import() {
+    let dir = unique_tmp_dir("macro_expand_import");
+    ensure_clean_dir(&dir);
+
+    write_file(
+        &dir,
+        "macros.lk",
+        r#"
+export macro_rules! answer {
+    () => { 42 };
+}
+"#,
+    );
+    write_file(
+        &dir,
+        "main.lk",
+        r#"
+use { answer } from "macros";
+return answer!();
+"#,
+    );
+
+    let output = run_cli(&dir, ["macro", "expand", "main.lk"])
+        .output()
+        .expect("spawn macro expand");
+    assert!(
+        output.status.success(),
+        "macro expand failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).expect("utf8 stdout");
+    assert!(
+        stdout.contains("return 42;"),
+        "expected imported macro expansion, got: {stdout}"
+    );
+
+    let run = run_cli(&dir, ["main.lk"]).output().expect("spawn source run");
+    assert!(
+        run.status.success(),
+        "source run failed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(String::from_utf8(run.stdout).expect("utf8 stdout").trim(), "42");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_builtin_assertion_macros_execute_with_stdlib_globals() {
+    let dir = unique_tmp_dir("builtin_assertion_macros");
+    ensure_clean_dir(&dir);
+
+    write_file(
+        &dir,
+        "main.lk",
+        r#"
+use { assert_eq, assert_ne } from macros;
+assert_eq!(1, 1.0);
+assert_eq!(["a", 2], ["a", 2.0], "numeric equality should coerce");
+assert_ne!(1, 2);
+return 42;
+"#,
+    );
+
+    let run = run_cli(&dir, ["main.lk"]).output().expect("spawn source run");
+    assert!(
+        run.status.success(),
+        "source run failed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(String::from_utf8(run.stdout).expect("utf8 stdout").trim(), "42");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_macro_expand_uses_macros_from_package_import() {
+    let dir = unique_tmp_dir("macro_expand_package_import");
+    ensure_clean_dir(&dir);
+    create_dir_all(dir.join("src")).expect("create app src");
+    create_dir_all(dir.join("deps/util/src")).expect("create dep src");
+
+    write_file(
+        &dir,
+        "Lk.toml",
+        r#"
+[package]
+name = "app"
+
+[dependencies]
+util = { path = "deps/util" }
+"#,
+    );
+    write_file(
+        &dir.join("deps/util"),
+        "Lk.toml",
+        r#"
+[package]
+name = "util"
+"#,
+    );
+    write_file(
+        &dir.join("deps/util/src"),
+        "mod.lk",
+        r#"
+export macro_rules! answer {
+    () => { 42 };
+}
+"#,
+    );
+    write_file(
+        &dir.join("src"),
+        "main.lk",
+        r#"
+use { answer } from util;
+return answer!();
+"#,
+    );
+
+    let output = run_cli(&dir, ["macro", "expand", "src/main.lk"])
+        .output()
+        .expect("spawn macro expand");
+    assert!(
+        output.status.success(),
+        "macro expand failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).expect("utf8 stdout");
+    assert!(
+        stdout.contains("return 42;"),
+        "expected package macro expansion, got: {stdout}"
+    );
+
+    let run = run_cli(&dir, ["src/main.lk"]).output().expect("spawn source run");
+    assert!(
+        run.status.success(),
+        "source run failed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(String::from_utf8(run.stdout).expect("utf8 stdout").trim(), "42");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn test_compile_writes_module_artifact_output() {
     let dir = unique_tmp_dir("module_output");
     ensure_clean_dir(&dir);
 
     write_file(&dir, "a.lk", "return 123;\n");
 
-    let output = run_cli(&dir, ["compile", "a.lk"]).output().expect("spawn compile");
+    let output = run_cli(&dir, ["compile", "bytecode", "a.lk"])
+        .output()
+        .expect("spawn bytecode compile");
     assert!(
         output.status.success(),
-        "compile failed: {}",
+        "bytecode compile failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -84,10 +262,12 @@ fn test_compile_with_import_writes_module_artifact_output() {
     );
     write_file(&dir, "main.lk", "use \"fib\";\nreturn fib.iterative(10);\n");
 
-    let output = run_cli(&dir, ["compile", "main.lk"]).output().expect("spawn compile");
+    let output = run_cli(&dir, ["compile", "bytecode", "main.lk"])
+        .output()
+        .expect("spawn bytecode compile");
     assert!(
         output.status.success(),
-        "compile failed: {}",
+        "bytecode compile failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
     let module = fs::read_to_string(dir.join("main.lkm")).expect("read module output");
@@ -137,7 +317,7 @@ fn test_llvm_compile_lowers_simple_i64_return_without_vm_shell() {
         "expected native print lowering: {ir}"
     );
 
-    let exe = run_cli(&dir, ["compile", "exe", "a.lk"])
+    let exe = run_cli(&dir, ["compile", "a.lk"])
         .env("RUSTC", dir.join("missing-rustc"))
         .output()
         .expect("spawn exe compile");
@@ -248,7 +428,7 @@ fn test_llvm_compile_exe_rejects_unsupported_shape_without_host_launcher() {
     ensure_clean_dir(&dir);
     write_file(&dir, "unsupported.lk", "return !([1, 2, 3]);\n");
 
-    let exe = run_cli(&dir, ["compile", "exe", "unsupported.lk"])
+    let exe = run_cli(&dir, ["compile", "unsupported.lk"])
         .env("LK_CLANG", dir.join("missing-clang"))
         .output()
         .expect("spawn exe compile");
@@ -432,7 +612,7 @@ fn test_llvm_compile_lowers_long_string_return_without_vm_shell() {
         "expected string bytes lowering: {ir}"
     );
 
-    let exe = run_cli(&dir, ["compile", "exe", "long_string.lk"])
+    let exe = run_cli(&dir, ["compile", "long_string.lk"])
         .env("RUSTC", dir.join("missing-rustc"))
         .output()
         .expect("spawn exe compile");
@@ -491,7 +671,7 @@ fn test_llvm_compile_lowers_const_list_return_without_vm_shell() {
         "expected list display bytes lowering: {ir}"
     );
 
-    let exe = run_cli(&dir, ["compile", "exe", "list.lk"])
+    let exe = run_cli(&dir, ["compile", "list.lk"])
         .env("RUSTC", dir.join("missing-rustc"))
         .output()
         .expect("spawn exe compile");
@@ -547,7 +727,7 @@ fn test_llvm_compile_lowers_const_map_return_without_vm_shell() {
         "expected map display bytes lowering: {ir}"
     );
 
-    let exe = run_cli(&dir, ["compile", "exe", "map.lk"])
+    let exe = run_cli(&dir, ["compile", "map.lk"])
         .env("RUSTC", dir.join("missing-rustc"))
         .output()
         .expect("spawn exe compile");
@@ -602,7 +782,7 @@ fn test_llvm_compile_lowers_zero_arg_direct_function_call_without_vm_shell() {
         "expected direct call native i64 arithmetic lowering: {ir}"
     );
 
-    let exe = run_cli(&dir, ["compile", "exe", "call.lk"])
+    let exe = run_cli(&dir, ["compile", "call.lk"])
         .env("RUSTC", dir.join("missing-rustc"))
         .output()
         .expect("spawn exe compile");
@@ -658,7 +838,7 @@ fn test_llvm_compile_lowers_zero_arg_direct_f64_call_without_vm_shell() {
         "expected direct f64 call constant result lowering: {ir}"
     );
 
-    let exe = run_cli(&dir, ["compile", "exe", "call_float.lk"])
+    let exe = run_cli(&dir, ["compile", "call_float.lk"])
         .env("RUSTC", dir.join("missing-rustc"))
         .output()
         .expect("spawn exe compile");
@@ -710,7 +890,7 @@ fn test_llvm_compile_lowers_zero_arg_direct_compare_call_without_vm_shell() {
     );
     assert!(ir.contains("@lk_bool_true"), "expected bool print lowering: {ir}");
 
-    let exe = run_cli(&dir, ["compile", "exe", "call_compare.lk"])
+    let exe = run_cli(&dir, ["compile", "call_compare.lk"])
         .env("RUSTC", dir.join("missing-rustc"))
         .output()
         .expect("spawn exe compile");
@@ -759,7 +939,7 @@ fn test_llvm_compile_lowers_positional_direct_call_without_vm_shell() {
     assert!(ir.contains("@lk_i64_fmt"), "expected i64 print lowering: {ir}");
     assert!(ir.contains("i64 42"), "expected direct arg call constant result: {ir}");
 
-    let exe = run_cli(&dir, ["compile", "exe", "call_arg.lk"])
+    let exe = run_cli(&dir, ["compile", "call_arg.lk"])
         .env("RUSTC", dir.join("missing-rustc"))
         .output()
         .expect("spawn exe compile");
@@ -815,7 +995,7 @@ fn test_llvm_compile_lowers_f64_positional_direct_call_without_vm_shell() {
         "expected f64 direct arg call constant result: {ir}"
     );
 
-    let exe = run_cli(&dir, ["compile", "exe", "call_f64_arg.lk"])
+    let exe = run_cli(&dir, ["compile", "call_f64_arg.lk"])
         .env("RUSTC", dir.join("missing-rustc"))
         .output()
         .expect("spawn exe compile");
@@ -940,12 +1120,12 @@ name = "util"
     );
     assert_eq!(String::from_utf8(run_out.stdout).expect("utf8 stdout").trim(), "42");
 
-    let compile = run_cli(&dir, ["compile", "src/main.lk"])
+    let compile = run_cli(&dir, ["compile", "bytecode", "src/main.lk"])
         .output()
         .expect("spawn compile");
     assert!(
         compile.status.success(),
-        "compile failed: {}",
+        "bytecode compile failed: {}",
         String::from_utf8_lossy(&compile.stderr)
     );
     assert!(dir.join("src/main.lkm").exists(), "compile should emit module artifact");
@@ -971,10 +1151,12 @@ fn test_compile_struct_constructs_to_module_artifact() {
         "struct Point { x: Int, y: Int }\nreturn Point { x: 1, y: 2 };\n",
     );
 
-    let output = run_cli(&dir, ["compile", "mod.lk"]).output().expect("spawn compile");
+    let output = run_cli(&dir, ["compile", "bytecode", "mod.lk"])
+        .output()
+        .expect("spawn bytecode compile");
     assert!(
         output.status.success(),
-        "compile failed: {}",
+        "bytecode compile failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
     let module = fs::read_to_string(dir.join("mod.lkm")).expect("read module output");

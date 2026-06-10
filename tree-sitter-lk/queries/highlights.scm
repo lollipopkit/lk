@@ -17,6 +17,11 @@
   "from"
   "as"
   "struct"
+  "type"
+  "trait"
+  "impl"
+  "export"
+  "macro_rules"
   "select"
   "case"
   "default"
@@ -110,6 +115,31 @@
 ; Function definition
 (function_definition
   name: (identifier) @function)
+
+(macro_definition
+  name: (identifier) @function.macro)
+
+(macro_export_item
+  (identifier) @function.macro)
+
+(macro_invocation
+  name: (identifier) @function.macro)
+
+(attribute
+  (identifier) @attribute)
+
+(type_alias_definition
+  (type_identifier) @type)
+
+(trait_definition
+  (type_identifier) @type)
+
+(trait_method
+  name: (identifier) @function.method)
+
+(impl_definition
+  trait: (type_identifier) @type
+  target: (named_type) @type)
 
 ; Named parameters
 (named_param

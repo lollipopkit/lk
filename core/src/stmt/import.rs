@@ -1,7 +1,7 @@
 use crate::{
     module::ModuleRegistry,
-    stmt::{Program, Stmt, stmt_parser::StmtParser},
-    token::Tokenizer,
+    stmt::{Program, Stmt},
+    syntax::{ParseOptions, parse_program_source},
     val::{HeapValue, RuntimeVal},
     vm::{RuntimeExport, VmContext},
 };
@@ -173,15 +173,18 @@ impl ModuleResolver {
     }
 
     pub fn resolve_source_runtime(&self, src: &str) -> Result<RuntimeExport> {
-        // Tokenize with spans for better diagnostics
-        let (tokens, spans) = Tokenizer::tokenize_enhanced_with_spans(src).map_err(|e| anyhow!(e.to_string()))?;
+        self.resolve_source_runtime_with_base(src, None)
+    }
 
-        // Parse program with enhanced errors
-        let mut parser = StmtParser::new_with_spans(&tokens, &spans);
-        let program: Program = parser
-            .parse_program_with_enhanced_errors(src)
-            .map_err(|e| anyhow!(e.to_string()))?;
-
+    fn resolve_source_runtime_with_base(&self, src: &str, base_dir: Option<PathBuf>) -> Result<RuntimeExport> {
+        let program = parse_program_source(
+            src,
+            ParseOptions {
+                base_dir,
+                ..ParseOptions::default()
+            },
+        )
+        .map_err(|e| anyhow!(e.to_string()))?;
         let resolver = Arc::new(self.clone());
         let mut ctx = VmContext::new().with_resolver(resolver);
         let result = program.execute_with_ctx(&mut ctx)?;
@@ -257,7 +260,7 @@ impl ModuleResolver {
         if let Some(parent) = path.parent() {
             resolver.set_base_dir(parent.to_path_buf());
         }
-        resolver.resolve_source_runtime(&src)
+        resolver.resolve_source_runtime_with_base(&src, path.parent().map(Path::to_path_buf))
     }
 }
 
@@ -394,11 +397,7 @@ mod tests {
     use std::path::PathBuf;
 
     fn parse_program(source: &str) -> Result<Program> {
-        let (tokens, spans) = Tokenizer::tokenize_enhanced_with_spans(source).map_err(|e| anyhow!(e.to_string()))?;
-        let mut parser = StmtParser::new_with_spans(&tokens, &spans);
-        parser
-            .parse_program_with_enhanced_errors(source)
-            .map_err(|e| anyhow!(e.to_string()))
+        parse_program_source(source, ParseOptions::default()).map_err(|e| anyhow!(e.to_string()))
     }
 
     fn execute_import_source(source: &str, resolver: Arc<ModuleResolver>) -> Result<RuntimeVal> {

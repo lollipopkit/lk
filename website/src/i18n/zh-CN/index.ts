@@ -51,9 +51,9 @@ const zhCN: Translation = {
   },
   runtime: {
     kicker: '运行时与工具链',
-    title: '从脚本到类型检查、模块产物和包工具。',
+    title: '从脚本到类型检查、native 构建和包工具。',
     subtitle:
-      'LK 可以运行 REPL、执行 `.lk` 文件、不执行只做类型检查，也可以生成模块产物并管理 package workspace。',
+      'LK 可以运行 REPL、执行 `.lk` 文件、不执行只做类型检查，也可以生成 native 可执行文件或 bytecode 产物，并管理 package workspace。',
     rows: {
       valueModel: '值模型',
       execution: '执行',

@@ -166,6 +166,39 @@
 - 默认值延迟在被调端计算；表达式可以引用其他参数。
 - 调用时使用 `name: expr` 传入命名参数：`f(1, 2, label: "demo", flag: false)` 或 `f(label: "demo")`。命名参数可任意顺序；一旦出现命名参数，其后不能再出现位置参数。
 
+### 属性（Attributes）
+- item 声明可以带 Rust 风格的保留属性：`#[derive(Debug)] struct User { id: Int }` 或 `#[inline] fn answer() { return 42; }`。
+- 当前属性只能附着在 item 声明上（`fn`、`struct`、`type`、`trait`、`impl`）。把属性加到 `let`、`return` 或表达式语句上会产生解析错误。
+- 普通 attribute wrapper 对解析、类型检查、slot resolution、VM 执行、REPL 绑定收集、LSP 命名参数分析与 tree-sitter 语法都是透明的。结构体上的 `#[derive(Debug)]` 与 `#[derive(Show)]` 会在解析后展开为内部 display trait 实现，因此 template string 与格式化输出可以使用 `${value}`。
+
+### 宏
+- LK 支持 Rust 形态、LK 语义的声明式宏：`macro_rules! name { (matcher) => { template }; ... }`。
+- 函数式宏调用写作 `name!(...)`、`name![...]` 或 `name!{...}`。宏定义是编译期 item，不会成为运行时语句。
+- 支持的 fragment kind：`expr`、`stmt`、`block`、`item`、`ident`、`literal`、`tt`、`pat`、`ty`、`path`。
+- `expr`、`stmt`、`item`、`pat`、`ty` 与 `path` fragment 使用 parser-discovered 或 grammar-guided capture boundary，因此 fragment 可以在后续 block metavariable 前停止，不强制依赖逗号分隔。
+- `expr`、`stmt`、`pat`、`ty` 与 `path` matcher 位置会执行 follow-set 诊断，以拒绝未来语法不兼容的歧义 matcher。LK 也允许在 grammar-guided capture 需要时紧跟 `block` fragment。
+- 重复语法支持 Rust 风格的 `$( ... )*`、`$( ... )+` 与 `$( ... )?`，并支持可选分隔符，例如 `$( $x:expr ),*`。
+- 宏展开发生在普通解析与类型检查之前。捕获的标识符按调用点解析；宏模板中新引入的局部绑定会 freshen，避免常见命名冲突。
+- 使用 `export macro_rules! name { ... }` 或 `export { internal as public };` 从文件/package 导出宏。普通 `macro_rules!` 定义只在定义所在文件/模块内可用，对外部宏导入保持私有。
+- 已导出的宏可以通过 `$crate::helper!()` 调用定义所在文件/package 内的私有 helper 宏。
+- 文件、package 与标准宏导入使用 LK `use` 语法：`use { answer as ans } from "macros"; ans!();`、`use { answer } from util; answer!();`、`use { vec, matches } from macros; vec![1];`、`use "macros"; macros::answer!();`、`use * as m from macros; m::matches!(x, 1);`。外部宏导入只能看到已导出的宏名。命中宏的命名导入与标准 `macros` 命名空间都是编译期导入，会在运行时 import 执行前移除。运行时 item 导入与命名宏导入应拆成不同 `use` 语句。
+- 内置编译期 `macros` 模块当前导出 `vec!`、`assert!`、`assert_eq!`、`assert_ne!`、`matches!`、`panic!`、`todo!` 与 `unreachable!`。
+- 宏展开错误会包含逐条 rule 的 mismatch notes，并附带 expansion stack 展示嵌套宏调用链；LSP diagnostics 会保留这些宏展开消息。
+- 当前实现覆盖 `macro_rules!`、函数式宏调用、item attribute preservation、结构体内置 `Debug`/`Show` derive，以及版本化 procedural macro protocol 数据模型。外部 derive 插件、attribute macros 与函数式 procedural macro 执行仍计划通过隔离进程协议实现。
+- 使用 `lk macro expand <file> --trace` 可以查看展开后的 token stream 与展开 trace。
+- 示例：
+
+```lk
+macro_rules! vec {
+  ($($value:expr),*) => { [$($value),*] };
+}
+
+export { vec };
+
+let values = vec![1, 2 + 3, 4];
+return values.1;
+```
+
 ### Use 导入
 - 形式：
   - `use math;` —— 标准库模块作为命名空间。
@@ -177,6 +210,7 @@
   - `use * as m from math;` —— 命名空间别名。
   - `use math as m;` —— 模块别名。
 - 裸模块导入直接绑定模块名：`use net;` 会定义 `net`。
+- 对宏而言，引号文件导入、package 模块导入与内置编译期 `macros` 模块也会先参与宏解析。宏命名空间调用使用 `::`，例如 `m::assert_ok!()`。
 
 - 文件导入与安全：
   - 文件不会自动对外可见。跨文件依赖必须显式 `use`。
@@ -398,7 +432,8 @@ for_pattern  ::= '_' | id | '(' for_pattern { ',' for_pattern } ')' | '[' for_pa
 ## CLI 使用说明
 - 运行 REPL：`lk`（`LK_REPL_TUI=always|never|auto` 控制是否强制启用 Reedline 补全 UI、禁用它，或按终端能力自动选择）
 - 通过 bytecode VM 执行文件（语句）：`lk FILE`
-- 编译为可执行模块产物：`lk compile [FILE]` -> `FILE.lkm`
+- 编译为 native 可执行文件：`lk compile [FILE]`
+- 编译为 bytecode 模块产物：`lk compile bytecode [FILE]` -> `FILE.lkm`
 - 执行模块产物：`lk FILE.lkm`
 - 只允许相对且经过清洗的路径。
 - CLI 只在结果非 `nil` 时打印。

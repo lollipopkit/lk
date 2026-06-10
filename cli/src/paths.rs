@@ -3,8 +3,8 @@ use std::path::{Component, Path, PathBuf};
 
 use anyhow::Context;
 use lk_core::package::{MANIFEST_FILE, Manifest};
-use lk_core::stmt::{Program, stmt_parser::StmtParser};
-use lk_core::token::Tokenizer;
+use lk_core::stmt::Program;
+use lk_core::syntax::{ParseOptions, parse_program_source};
 
 use crate::{CompileMode, diagnostic};
 
@@ -32,15 +32,11 @@ pub(crate) fn parse_sanitized_path(raw: &str) -> Result<PathBuf, String> {
 
 pub(crate) fn parse_program_file(path: &Path) -> anyhow::Result<Program> {
     let src = read_file_content(&path.to_string_lossy())?;
-    let (tokens, spans) = match Tokenizer::tokenize_enhanced_with_spans(&src) {
-        Ok(result) => result,
-        Err(parse_err) => {
-            diagnostic::parse_error(&parse_err, &src);
-            std::process::exit(1);
-        }
+    let options = ParseOptions {
+        base_dir: path.parent().map(Path::to_path_buf),
+        ..ParseOptions::default()
     };
-    let mut parser = StmtParser::new_with_spans(&tokens, &spans);
-    match parser.parse_program_with_enhanced_errors(&src) {
+    match parse_program_source(&src, options) {
         Ok(program) => Ok(program),
         Err(parse_err) => {
             diagnostic::parse_error(&parse_err, &src);
@@ -49,59 +45,42 @@ pub(crate) fn parse_program_file(path: &Path) -> anyhow::Result<Program> {
     }
 }
 
-pub(crate) fn split_compile_args(args: &[String]) -> anyhow::Result<(Option<CompileMode>, PathBuf)> {
+pub(crate) fn split_compile_args(args: &[String]) -> anyhow::Result<(CompileMode, PathBuf)> {
     let cwd = std::env::current_dir().context("read current directory")?;
     split_compile_args_with_cwd(args, &cwd)
 }
 
-pub(crate) fn split_compile_args_with_cwd(
-    args: &[String],
-    cwd: &Path,
-) -> anyhow::Result<(Option<CompileMode>, PathBuf)> {
+pub(crate) fn split_compile_args_with_cwd(args: &[String], cwd: &Path) -> anyhow::Result<(CompileMode, PathBuf)> {
     match args.len() {
-        0 => Ok((None, default_compile_entry(cwd)?)),
+        0 => Ok((CompileMode::Exe, default_compile_entry(cwd)?)),
         1 => {
-            #[cfg(not(feature = "llvm"))]
-            if matches!(args[0].to_ascii_lowercase().as_str(), "llvm" | "exe") {
-                anyhow::bail!(
-                    "LLVM backend disabled at build time; rebuild with `--features llvm` to use '{}' target",
-                    args[0]
-                );
-            }
             if let Some(mode) = parse_compile_mode(&args[0])? {
-                return Ok((Some(mode), default_compile_entry(cwd)?));
+                return Ok((mode, default_compile_entry(cwd)?));
             }
-            Ok((None, sanitize_path(&args[0])?))
+            Ok((CompileMode::Exe, sanitize_path(&args[0])?))
         }
         2 => {
-            #[cfg(not(feature = "llvm"))]
-            if matches!(args[0].to_ascii_lowercase().as_str(), "llvm" | "exe") {
-                anyhow::bail!(
-                    "LLVM backend disabled at build time; rebuild with `--features llvm` to use '{}' target",
-                    args[0]
-                );
-            }
             let mode =
                 parse_compile_mode(&args[0])?.ok_or_else(|| anyhow::anyhow!("Unknown compile target '{}'", args[0]))?;
             let file = sanitize_path(&args[1])?;
-            Ok((Some(mode), file))
+            Ok((mode, file))
         }
-        _ => anyhow::bail!("compile requires [FILE] or [TARGET FILE]"),
+        _ => anyhow::bail!("compile requires [FILE], [TARGET], or [TARGET FILE]"),
     }
 }
 
 fn parse_compile_mode(raw: &str) -> anyhow::Result<Option<CompileMode>> {
     let target = raw.to_ascii_lowercase();
     match target.as_str() {
+        "bytecode" => Ok(Some(CompileMode::Bytecode)),
         #[cfg(feature = "llvm")]
         "llvm" => Ok(Some(CompileMode::Llvm)),
-        #[cfg(feature = "llvm")]
-        "exe" => Ok(Some(CompileMode::Exe)),
         #[cfg(not(feature = "llvm"))]
-        "llvm" | "exe" => anyhow::bail!(
+        "llvm" => anyhow::bail!(
             "LLVM backend disabled at build time; rebuild with `--features llvm` to use '{}' target",
             raw
         ),
+        "exe" => anyhow::bail!("`lk compile exe` was removed; use `lk compile [FILE]` for native executables"),
         _ => Ok(None),
     }
 }

@@ -4,8 +4,8 @@ use std::path::Path;
 use anyhow::Context;
 use lk_core::{
     rt,
-    stmt::{Program, stmt_parser::StmtParser},
-    token::Tokenizer,
+    stmt::Program,
+    syntax::{ParseOptions, parse_program_source},
     vm::{
         Opcode, VM_INDEX_KEY_METRIC_NAMES, VM_REGISTER_WRITE_SOURCE_NAMES, VmRuntimeMetrics,
         compile_program_module_with_ctx, vm_runtime_metrics_enabled, vm_runtime_metrics_reset,
@@ -48,9 +48,7 @@ pub(crate) fn run_coverage_report(path: &Path, disassemble: bool, runtime: bool)
 }
 
 fn parse_program(source: &str) -> anyhow::Result<Program> {
-    let (tokens, spans) = Tokenizer::tokenize_enhanced_with_spans(source)?;
-    let mut parser = StmtParser::new_with_spans(&tokens, &spans);
-    Ok(parser.parse_program_with_enhanced_errors(source)?)
+    Ok(parse_program_source(source, ParseOptions::default())?)
 }
 
 fn print_static_coverage(path: &Path, module: &lk_core::vm::Module) {

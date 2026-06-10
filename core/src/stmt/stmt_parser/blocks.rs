@@ -87,7 +87,12 @@ impl<'a> StmtParser<'a> {
 
         // 使用表达式解析器解析这部分 tokens
         let expr_tokens = &self.tokens[start_pos..end_pos];
-        let mut expr_parser = ExprParser::new(expr_tokens);
+        let expr_spans = self.token_spans.map(|spans| &spans[start_pos..end_pos]);
+        let mut expr_parser = if let Some(spans) = expr_spans {
+            ExprParser::new_with_spans(expr_tokens, spans)
+        } else {
+            ExprParser::new(expr_tokens)
+        };
         let expr = expr_parser.parse()?;
 
         // 更新位置

@@ -377,6 +377,9 @@ impl TestLanguageServer {
             T::BitNot => "Operator: ~".to_string(),
             T::Dot => "Accessor: .".to_string(),
             T::Colon => "Symbol: :".to_string(),
+            T::ColonColon => "Symbol: ::".to_string(),
+            T::Dollar => "Symbol: $".to_string(),
+            T::Hash => "Symbol: #".to_string(),
             T::Comma => "Symbol: ,".to_string(),
             T::Semicolon => "Symbol: ;".to_string(),
             // '@' token removed from lexer

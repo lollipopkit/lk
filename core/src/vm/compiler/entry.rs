@@ -4,14 +4,14 @@ use anyhow::{Result, anyhow, bail};
 
 use crate::{
     expr::Expr,
-    stmt::{Program, Stmt, StmtParser},
-    token::Tokenizer,
+    stmt::{Program, Stmt},
+    syntax::{ParseOptions, parse_program_source},
 };
 
 use super::{
     CompiledFunction, Compiler, Function, FunctionSignature, Module, NativeEntry, collect_function_inline_bodies,
     collect_function_names, collect_function_signatures, collect_global_names_with_external, collect_native_names,
-    function_frame_params, global_slots_from_names,
+    function_frame_params, global_slots_from_names, item_without_attributes,
 };
 
 impl Compiler {
@@ -77,7 +77,7 @@ impl Compiler {
                 named_params,
                 body,
                 ..
-            } = stmt.as_ref()
+            } = item_without_attributes(stmt)
             {
                 let function_index = *function_names
                     .get(name)
@@ -103,8 +103,7 @@ impl Compiler {
     }
 
     pub fn compile_source(source: &str) -> Result<Function> {
-        let tokens = Tokenizer::tokenize(source)?;
-        let program = StmtParser::new(&tokens).parse_program()?;
+        let program = parse_program_source(source, ParseOptions::default())?;
         Self::compile_program(&program)
     }
 
@@ -113,8 +112,7 @@ impl Compiler {
     }
 
     pub fn compile_source_module_with_natives(source: &str, natives: Vec<NativeEntry>) -> Result<Module> {
-        let tokens = Tokenizer::tokenize(source)?;
-        let program = StmtParser::new(&tokens).parse_program()?;
+        let program = parse_program_source(source, ParseOptions::default())?;
         Self::compile_module_with_natives(&program, natives)
     }
 

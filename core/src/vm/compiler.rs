@@ -122,6 +122,7 @@ impl Compiler {
 
     fn lower_stmt(&mut self, stmt: &Stmt) -> Result<()> {
         match stmt {
+            Stmt::Attributed { item, .. } => self.lower_stmt(item)?,
             Stmt::Empty => {}
             Stmt::Expr(expr) => {
                 let watermark = self.next_reg;

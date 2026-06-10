@@ -354,7 +354,12 @@ impl<'a> StmtParser<'a> {
         }
 
         let expr_tokens = &self.tokens[start_pos..end_pos];
-        let mut expr_parser = ExprParser::new(expr_tokens);
+        let expr_spans = self.token_spans.map(|spans| &spans[start_pos..end_pos]);
+        let mut expr_parser = if let Some(spans) = expr_spans {
+            ExprParser::new_with_spans(expr_tokens, spans)
+        } else {
+            ExprParser::new(expr_tokens)
+        };
         let expr = expr_parser.parse()?;
         self.pos = end_pos;
         Ok(expr)
@@ -462,6 +467,7 @@ impl<'a> StmtParser<'a> {
             Token::RBracket => "]".to_string(),
             Token::Comma => ",".to_string(),
             Token::Colon => ":".to_string(),
+            Token::ColonColon => "::".to_string(),
             Token::Pipe => "|".to_string(),
             Token::Question => "?".to_string(),
             Token::FnArrow => "->".to_string(),

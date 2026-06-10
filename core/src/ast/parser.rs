@@ -14,6 +14,7 @@ pub struct Parser<'a> {
     pos: usize,
     len: usize,
     token_spans: Option<&'a [Span]>,
+    prefix_mode: bool,
 }
 
 struct StructLiteralParts {
@@ -35,6 +36,18 @@ impl<'a> Parser<'a> {
 
         // All sub-expressions parsed, apply constant folding optimization
         Ok(exp.fold_constants())
+    }
+
+    pub fn parse_prefix(&mut self) -> Result<(Expr, usize)> {
+        if self.eof() {
+            return Err(anyhow!(self.err("Expected expression")));
+        }
+        let previous_prefix_mode = self.prefix_mode;
+        self.prefix_mode = true;
+        let result = self.parse_expr();
+        self.prefix_mode = previous_prefix_mode;
+        let exp = result?;
+        Ok((exp.fold_constants(), self.pos))
     }
 
     /// Parse with enhanced error information that includes position
@@ -380,6 +393,8 @@ impl<'a> Parser<'a> {
                 // Possible struct literal: only allowed immediately after a variable name
                 if let Expr::Var(name) = &expr {
                     expr = self.parse_struct_literal_after_name(name.clone())?;
+                } else if self.prefix_mode {
+                    break;
                 } else {
                     // If not a simple Var before '{', treat as error to avoid ambiguity with blocks
                     return Err(anyhow!(self.err(
@@ -823,6 +838,14 @@ impl<'a> Parser<'a> {
     /// Parse a pattern for match expressions
     pub fn parse_pattern(&mut self) -> Result<Pattern> {
         self.parse_or_pattern()
+    }
+
+    pub fn parse_pattern_prefix(&mut self) -> Result<(Pattern, usize)> {
+        if self.eof() {
+            return Err(anyhow!(self.err("Expected pattern")));
+        }
+        let pattern = self.parse_pattern()?;
+        Ok((pattern, self.pos))
     }
 
     /// Parse OR pattern: pattern1 | pattern2

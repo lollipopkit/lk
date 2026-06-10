@@ -134,11 +134,11 @@ type RootTranslation = {
 		 */
 		kicker: string
 		/**
-		 * F​r​o​m​ ​s​c​r​i​p​t​s​ ​t​o​ ​t​y​p​e​ ​c​h​e​c​k​s​,​ ​m​o​d​u​l​e​ ​a​r​t​i​f​a​c​t​s​,​ ​a​n​d​ ​p​a​c​k​a​g​e​ ​t​o​o​l​s​.
+		 * F​r​o​m​ ​s​c​r​i​p​t​s​ ​t​o​ ​t​y​p​e​ ​c​h​e​c​k​s​,​ ​n​a​t​i​v​e​ ​b​u​i​l​d​s​,​ ​a​n​d​ ​p​a​c​k​a​g​e​ ​t​o​o​l​s​.
 		 */
 		title: string
 		/**
-		 * L​K​ ​c​a​n​ ​r​u​n​ ​a​ ​R​E​P​L​,​ ​e​x​e​c​u​t​e​ ​`​.​l​k​`​ ​f​i​l​e​s​,​ ​t​y​p​e​-​c​h​e​c​k​ ​w​i​t​h​o​u​t​ ​e​x​e​c​u​t​i​n​g​,​ ​e​m​i​t​ ​m​o​d​u​l​e​ ​a​r​t​i​f​a​c​t​s​,​ ​a​n​d​ ​m​a​n​a​g​e​ ​p​a​c​k​a​g​e​ ​w​o​r​k​s​p​a​c​e​s​.
+		 * L​K​ ​c​a​n​ ​r​u​n​ ​a​ ​R​E​P​L​,​ ​e​x​e​c​u​t​e​ ​`​.​l​k​`​ ​f​i​l​e​s​,​ ​t​y​p​e​-​c​h​e​c​k​ ​w​i​t​h​o​u​t​ ​e​x​e​c​u​t​i​n​g​,​ ​e​m​i​t​ ​n​a​t​i​v​e​ ​e​x​e​c​u​t​a​b​l​e​s​ ​o​r​ ​b​y​t​e​c​o​d​e​ ​a​r​t​i​f​a​c​t​s​,​ ​a​n​d​ ​m​a​n​a​g​e​ ​p​a​c​k​a​g​e​ ​w​o​r​k​s​p​a​c​e​s​.
 		 */
 		subtitle: string
 		rows: {
@@ -357,11 +357,11 @@ export type TranslationFunctions = {
 		 */
 		kicker: () => LocalizedString
 		/**
-		 * From scripts to type checks, module artifacts, and package tools.
+		 * From scripts to type checks, native builds, and package tools.
 		 */
 		title: () => LocalizedString
 		/**
-		 * LK can run a REPL, execute `.lk` files, type-check without executing, emit module artifacts, and manage package workspaces.
+		 * LK can run a REPL, execute `.lk` files, type-check without executing, emit native executables or bytecode artifacts, and manage package workspaces.
 		 */
 		subtitle: () => LocalizedString
 		rows: {

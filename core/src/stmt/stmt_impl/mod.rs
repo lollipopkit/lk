@@ -9,4 +9,4 @@ mod ast;
 mod display;
 mod type_check;
 
-pub use ast::{ForPattern, NamedParamDecl, Program, Stmt};
+pub use ast::{Attribute, ForPattern, NamedParamDecl, Program, Stmt};

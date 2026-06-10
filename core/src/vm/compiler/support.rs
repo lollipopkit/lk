@@ -55,11 +55,18 @@ pub(super) struct FunctionInlineBody {
     pub(super) body: Stmt,
 }
 
+pub(super) fn item_without_attributes(stmt: &Stmt) -> &Stmt {
+    match stmt {
+        Stmt::Attributed { item, .. } => item_without_attributes(item),
+        stmt => stmt,
+    }
+}
+
 pub(super) fn collect_function_names(program: &Program) -> Result<HashMap<String, u32>> {
     let mut names = HashMap::new();
     let mut next = 1_u32;
     for stmt in &program.statements {
-        if let Stmt::Function { name, .. } = stmt.as_ref() {
+        if let Stmt::Function { name, .. } = item_without_attributes(stmt) {
             if names.insert(name.clone(), next).is_some() {
                 bail!("Compiler duplicate function `{name}`");
             }
@@ -80,7 +87,7 @@ pub(super) fn collect_function_inline_bodies(program: &Program) -> Result<HashMa
             named_params,
             body,
             ..
-        } = stmt.as_ref()
+        } = item_without_attributes(stmt)
         {
             let body = FunctionInlineBody {
                 params: params.clone(),
@@ -103,7 +110,7 @@ pub(super) fn collect_function_signatures(program: &Program) -> Result<HashMap<S
             params,
             named_params,
             ..
-        } = stmt.as_ref()
+        } = item_without_attributes(stmt)
         {
             let signature = FunctionSignature {
                 positional_params: params.clone(),
@@ -165,6 +172,7 @@ pub(super) fn pattern_binds_scrutinee_directly(pattern: &Pattern) -> bool {
 
 fn collect_mutated_names(stmt: &Stmt, names: &mut HashSet<String>) {
     match stmt {
+        Stmt::Attributed { item, .. } => collect_mutated_names(item, names),
         Stmt::If {
             condition,
             then_stmt,
@@ -395,64 +403,82 @@ where
     let function_visible_lets = collect_callable_visible_top_level_lets(program, &top_level_lets);
 
     for stmt in &program.statements {
-        match stmt.as_ref() {
-            Stmt::Define { name, .. } | Stmt::Function { name, .. } => {
-                insert_global_name(&mut names, name.clone())?;
-            }
-            Stmt::Let { pattern, .. } => {
-                if let Pattern::Variable(name) = pattern
-                    && function_visible_lets.contains(name)
-                {
-                    insert_global_name(&mut names, name.clone())?;
-                }
-            }
-            _ => {}
-        }
+        collect_global_name_from_top_level_stmt(stmt, &function_visible_lets, &mut names)?;
     }
     Ok(names)
+}
+
+fn collect_global_name_from_top_level_stmt(
+    stmt: &Stmt,
+    function_visible_lets: &HashSet<String>,
+    names: &mut HashMap<String, u32>,
+) -> Result<()> {
+    match stmt {
+        Stmt::Attributed { item, .. } => collect_global_name_from_top_level_stmt(item, function_visible_lets, names),
+        Stmt::Define { name, .. } | Stmt::Function { name, .. } => insert_global_name(names, name.clone()),
+        Stmt::Let { pattern, .. } => {
+            if let Pattern::Variable(name) = pattern
+                && function_visible_lets.contains(name)
+            {
+                insert_global_name(names, name.clone())?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
 }
 
 fn collect_top_level_let_names(program: &Program) -> HashSet<String> {
     let mut names = HashSet::new();
     for stmt in &program.statements {
-        if let Stmt::Let {
-            pattern: Pattern::Variable(name),
-            ..
-        } = stmt.as_ref()
-        {
-            names.insert(name.clone());
-        }
+        collect_top_level_let_name(stmt, &mut names);
     }
     names
+}
+
+fn collect_top_level_let_name(stmt: &Stmt, names: &mut HashSet<String>) {
+    match stmt {
+        Stmt::Attributed { item, .. } => collect_top_level_let_name(item, names),
+        Stmt::Let {
+            pattern: Pattern::Variable(name),
+            ..
+        } => {
+            names.insert(name.clone());
+        }
+        _ => {}
+    }
 }
 
 fn collect_callable_visible_top_level_lets(program: &Program, top_level_lets: &HashSet<String>) -> HashSet<String> {
     let mut visible = HashSet::new();
     for stmt in &program.statements {
-        match stmt.as_ref() {
-            Stmt::Function {
-                params,
-                named_params,
-                body,
-                ..
-            } => collect_visible_function_lets(&mut visible, top_level_lets, params, named_params, body),
-            Stmt::Impl { methods, .. } => {
-                for method in methods {
-                    if let Stmt::Function {
-                        params,
-                        named_params,
-                        body,
-                        ..
-                    } = method
-                    {
-                        collect_visible_function_lets(&mut visible, top_level_lets, params, named_params, body);
-                    }
-                }
-            }
-            _ => {}
-        }
+        collect_callable_visible_top_level_lets_from_stmt(stmt, &mut visible, top_level_lets);
     }
     visible
+}
+
+fn collect_callable_visible_top_level_lets_from_stmt(
+    stmt: &Stmt,
+    visible: &mut HashSet<String>,
+    top_level_lets: &HashSet<String>,
+) {
+    match stmt {
+        Stmt::Attributed { item, .. } => {
+            collect_callable_visible_top_level_lets_from_stmt(item, visible, top_level_lets)
+        }
+        Stmt::Function {
+            params,
+            named_params,
+            body,
+            ..
+        } => collect_visible_function_lets(visible, top_level_lets, params, named_params, body),
+        Stmt::Impl { methods, .. } => {
+            for method in methods {
+                collect_callable_visible_top_level_lets_from_stmt(method, visible, top_level_lets);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn collect_visible_function_lets(

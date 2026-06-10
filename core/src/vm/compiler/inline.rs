@@ -81,6 +81,7 @@ impl Compiler {
         let result = self.alloc_reg();
         let mut returns = InlineReturnPatches::default();
         match body {
+            Stmt::Attributed { item, .. } => return self.lower_inline_body(item),
             Stmt::Block { statements } => self.lower_inline_block(statements, result, &mut returns)?,
             Stmt::Return { value: Some(value) } => self.lower_inline_return(value, result, &mut returns, true)?,
             _ => bail!("Compiler unsupported inline function body"),
@@ -105,6 +106,7 @@ impl Compiler {
             self.lower_inline_stmt(stmt, result, returns, false)?;
         }
         match last.as_ref() {
+            Stmt::Attributed { item, .. } => self.lower_inline_stmt(item, result, returns, true),
             Stmt::Return { value: Some(value) } => self.lower_inline_return(value, result, returns, true),
             _ => bail!("Compiler inline function body must end with return value"),
         }
@@ -118,6 +120,7 @@ impl Compiler {
         tail_position: bool,
     ) -> Result<()> {
         match stmt {
+            Stmt::Attributed { item, .. } => self.lower_inline_stmt(item, result, returns, tail_position),
             Stmt::Block { statements } => {
                 self.local_rebind_suppression += 1;
                 self.lower_inline_stmt_sequence(statements, result, returns)?;
@@ -269,6 +272,7 @@ impl Compiler {
 
 fn inline_stmt_is_supported(stmt: &Stmt) -> bool {
     match stmt {
+        Stmt::Attributed { item, .. } => inline_stmt_is_supported(item),
         Stmt::Block { statements } => statements.iter().all(|stmt| inline_stmt_is_supported(stmt)),
         Stmt::Let {
             pattern: Pattern::Variable(_),
@@ -295,13 +299,18 @@ fn inline_stmt_is_supported(stmt: &Stmt) -> bool {
 
 fn inline_prefix_stmt_is_supported(stmt: &Stmt) -> bool {
     match stmt {
+        Stmt::Attributed { item, .. } => inline_prefix_stmt_is_supported(item),
         Stmt::Return { .. } => false,
         _ => inline_stmt_is_supported(stmt),
     }
 }
 
 fn inline_tail_return_is_supported(stmt: &Stmt) -> bool {
-    matches!(stmt, Stmt::Return { value: Some(value) } if inline_expr_is_supported(value))
+    match stmt {
+        Stmt::Attributed { item, .. } => inline_tail_return_is_supported(item),
+        Stmt::Return { value: Some(value) } => inline_expr_is_supported(value),
+        _ => false,
+    }
 }
 
 fn inline_block_is_supported(statements: &[Box<Stmt>]) -> bool {
@@ -315,6 +324,7 @@ fn inline_block_is_supported(statements: &[Box<Stmt>]) -> bool {
 
 pub(super) fn inline_body_is_supported(body: &Stmt) -> bool {
     match body {
+        Stmt::Attributed { item, .. } => inline_body_is_supported(item),
         Stmt::Block { statements } => inline_block_is_supported(statements),
         _ => false,
     }
@@ -370,6 +380,7 @@ fn inline_call_expr_uses_runtime_method_helper(callee: &Expr) -> bool {
 
 pub(super) fn stmt_contains_call_to(stmt: &Stmt, target: &str) -> bool {
     match stmt {
+        Stmt::Attributed { item, .. } => stmt_contains_call_to(item, target),
         Stmt::If {
             condition,
             then_stmt,
@@ -503,6 +514,7 @@ fn local_names_in_inline_body(stmt: &Stmt, params: &[String]) -> HashSet<String>
 
 fn collect_local_names(stmt: &Stmt, names: &mut HashSet<String>) {
     match stmt {
+        Stmt::Attributed { item, .. } => collect_local_names(item, names),
         Stmt::Let {
             pattern: Pattern::Variable(name),
             ..
@@ -530,6 +542,7 @@ fn collect_local_names(stmt: &Stmt, names: &mut HashSet<String>) {
 
 fn collect_assigned_names(stmt: &Stmt, names: &mut HashSet<String>) {
     match stmt {
+        Stmt::Attributed { item, .. } => collect_assigned_names(item, names),
         Stmt::Assign { name, value, .. } | Stmt::CompoundAssign { name, value, .. } => {
             names.insert(name.clone());
             collect_assigned_names_in_expr(value, names);

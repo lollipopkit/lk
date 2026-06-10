@@ -63,6 +63,8 @@ module.exports = grammar({
     program: $ => repeat(
       choice(
         $.import_statement,
+        $.macro_export,
+        $.macro_definition,
         $._statement,
       ),
     ),
@@ -108,17 +110,7 @@ module.exports = grammar({
       "'",
     ),
 
-    raw_string: $ => seq(
-      'r',
-      repeat('#'),
-      '"',
-      repeat(choice(
-        /[^"\\]+/,
-        /\\./,
-      )),
-      '"',
-      repeat('#'),
-    ),
+    raw_string: $ => token(/r#*"([^"\\]|\\.)*"#*/),
 
     string_interpolation: $ => seq(
       '${',
@@ -144,6 +136,7 @@ module.exports = grammar({
       $.range_expression,
       $.closure,
       $.match_expression,
+      $.macro_invocation,
       $.spawn_expression,
       $.chan_expression,
       $.send_expression,
@@ -457,24 +450,48 @@ module.exports = grammar({
 
     // ── Statements ─────────────────────────────────────────────────────
     _statement: $ => choice(
-      $.import_statement,
-      $.let_statement,
-      $.define_statement,
-      $.assignment_statement,
+        $.import_statement,
+        $.attributed_item,
+        $.let_statement,
+        $.define_statement,
+        $.assignment_statement,
       $.compound_assignment_statement,
       $.if_statement,
       $.while_statement,
       $.for_statement,
-      $.function_definition,
-      $.struct_definition,
-      $.return_statement,
-      $.break_statement,
+        $.function_definition,
+        $.macro_export,
+        $.macro_definition,
+        $.struct_definition,
+        $.type_alias_definition,
+        $.trait_definition,
+        $.impl_definition,
+        $.return_statement,
+        $.break_statement,
       $.continue_statement,
       $.expression_statement,
       $.block,
     ),
 
     statement: $ => $._statement,
+
+    attribute: $ => seq(
+      '#',
+      '[',
+      repeat($._macro_token),
+      ']',
+    ),
+
+    attributed_item: $ => seq(
+      repeat1($.attribute),
+      choice(
+        $.function_definition,
+        $.struct_definition,
+        $.type_alias_definition,
+        $.trait_definition,
+        $.impl_definition,
+      ),
+    ),
 
     import_statement: $ => choice(
       seq('use', $.identifier, optional(seq('as', $.identifier)), ';'),
@@ -484,6 +501,80 @@ module.exports = grammar({
     ),
 
     import_item: $ => seq($.identifier, optional(seq('as', $.identifier))),
+
+    macro_export: $ => seq(
+      'export',
+      '{',
+      $.macro_export_item,
+      repeat(seq(',', $.macro_export_item)),
+      optional(','),
+      '}',
+      optional(';'),
+    ),
+
+    macro_export_item: $ => seq($.identifier, optional(seq('as', $.identifier))),
+
+    macro_definition: $ => seq(
+      optional('export'),
+      'macro_rules',
+      '!',
+      field('name', $.identifier),
+      $.macro_group,
+    ),
+
+    macro_invocation: $ => prec(21, seq(
+      field('name', $.identifier),
+      '!',
+      $.macro_group,
+    )),
+
+    macro_group: $ => choice(
+      seq('(', repeat($._macro_token), ')'),
+      seq('{', repeat($._macro_token), '}'),
+      seq('[', repeat($._macro_token), ']'),
+    ),
+
+    _macro_token: $ => choice(
+      $.macro_group,
+      $.identifier,
+      $.integer_literal,
+      $.float_literal,
+      $.string_literal,
+      'export',
+      'macro_rules',
+      'true',
+      'false',
+      'nil',
+      '$',
+      '#',
+      '!',
+      ':',
+      '::',
+      ',',
+      ';',
+      '.',
+      '..',
+      '..=',
+      '?',
+      '=>',
+      '->',
+      '=',
+      '==',
+      '!=',
+      '<',
+      '>',
+      '<=',
+      '>=',
+      '+',
+      '-',
+      '*',
+      '/',
+      '%',
+      '&',
+      '|',
+      '&&',
+      '||',
+    ),
 
     let_statement: $ => seq(
       'let',
@@ -602,6 +693,53 @@ module.exports = grammar({
     struct_field: $ => seq(
       $.identifier,
       optional(seq(':', $._type)),
+    ),
+
+    type_alias_definition: $ => seq(
+      'type',
+      $.type_identifier,
+      '=',
+      $._type,
+      ';',
+    ),
+
+    trait_definition: $ => seq(
+      'trait',
+      $.type_identifier,
+      '{',
+      repeat($.trait_method),
+      '}',
+    ),
+
+    trait_method: $ => seq(
+      'fn',
+      field('name', $.identifier),
+      '(',
+      optional($.trait_method_params),
+      ')',
+      optional(seq('->', $._type)),
+      ';',
+    ),
+
+    trait_method_params: $ => seq(
+      $.trait_method_param,
+      repeat(seq(',', $.trait_method_param)),
+      optional(','),
+    ),
+
+    trait_method_param: $ => seq(
+      $.identifier,
+      optional(seq(':', $._type)),
+    ),
+
+    impl_definition: $ => seq(
+      'impl',
+      field('trait', $.type_identifier),
+      'for',
+      field('target', $._type),
+      '{',
+      repeat($.function_definition),
+      '}',
     ),
 
     return_statement: $ => seq('return', optional($._full_expression), ';'),

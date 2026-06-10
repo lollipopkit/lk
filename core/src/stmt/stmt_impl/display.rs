@@ -1,13 +1,21 @@
 use super::{ForPattern, Stmt};
 use crate::{
+    macro_system::token_lexeme,
     operator::BinOp,
     stmt::{ImportSource, ImportStmt},
+    token::Token,
 };
 use std::fmt::{self, Display};
 
 impl Display for Stmt {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Stmt::Attributed { attributes, item } => {
+                for attr in attributes {
+                    writeln!(f, "#[{}]", format_attribute_tokens(&attr.tokens))?;
+                }
+                write!(f, "{}", item)
+            }
             Stmt::Import(import_stmt) => {
                 write!(f, "{};", format_import_stmt(import_stmt))
             }
@@ -211,6 +219,44 @@ impl Display for Stmt {
             }
         }
     }
+}
+
+fn format_attribute_tokens(tokens: &[Token]) -> String {
+    let mut output = String::new();
+    let mut prev: Option<&Token> = None;
+    for token in tokens {
+        if should_insert_attr_space(prev, token) {
+            output.push(' ');
+        }
+        output.push_str(&token_lexeme(token));
+        prev = Some(token);
+    }
+    output
+}
+
+fn should_insert_attr_space(prev: Option<&Token>, current: &Token) -> bool {
+    let Some(prev) = prev else {
+        return false;
+    };
+    if matches!(
+        current,
+        Token::RParen
+            | Token::RBrace
+            | Token::RBracket
+            | Token::Comma
+            | Token::Semicolon
+            | Token::Dot
+            | Token::ColonColon
+    ) {
+        return false;
+    }
+    if matches!(
+        prev,
+        Token::LParen | Token::LBrace | Token::LBracket | Token::Dot | Token::ColonColon
+    ) {
+        return false;
+    }
+    true
 }
 
 /// Helper function to format use statements for display

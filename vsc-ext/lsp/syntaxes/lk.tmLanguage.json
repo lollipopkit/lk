@@ -6,6 +6,9 @@
       "include": "#comments"
     },
     {
+      "include": "#attributes"
+    },
+    {
       "include": "#strings"
     },
     {
@@ -72,6 +75,43 @@
             }
           },
           "end": "$"
+        }
+      ]
+    },
+    "attributes": {
+      "patterns": [
+        {
+          "name": "meta.attribute.lk",
+          "begin": "#\\[",
+          "beginCaptures": {
+            "0": {
+              "name": "punctuation.definition.attribute.begin.lk"
+            }
+          },
+          "end": "\\]",
+          "endCaptures": {
+            "0": {
+              "name": "punctuation.definition.attribute.end.lk"
+            }
+          },
+          "patterns": [
+            {
+              "include": "#strings"
+            },
+            {
+              "include": "#types"
+            },
+            {
+              "include": "#constants"
+            },
+            {
+              "name": "entity.other.attribute-name.lk",
+              "match": "\\b[a-zA-Z_][a-zA-Z0-9_-]*\\b"
+            },
+            {
+              "include": "#punctuation"
+            }
+          ]
         }
       ]
     },
@@ -477,7 +517,7 @@
         },
         {
           "name": "keyword.declaration.lk",
-          "match": "\\b(fn|struct|type|trait|impl|use|from|as)\\b"
+          "match": "\\b(fn|struct|type|trait|impl|use|from|as|export|macro_rules)\\b"
         },
         {
           "name": "keyword.other.lk",
@@ -517,7 +557,7 @@
         },
         {
           "name": "keyword.operator.arrow.lk",
-          "match": "->|=>"
+          "match": "::|->|=>"
         },
         {
           "name": "keyword.operator.range.lk",
@@ -536,6 +576,10 @@
           "match": "!(?!=)"
         },
         {
+          "name": "keyword.operator.macro.lk",
+          "match": "[$#]"
+        },
+        {
           "name": "keyword.operator.ternary.lk",
           "match": "\\?(?![.?])"
         }
@@ -543,6 +587,14 @@
     },
     "ident-access": {
       "patterns": [
+        {
+          "match": "\\b([a-zA-Z_][a-zA-Z0-9_]*)\\s*(?=!)",
+          "captures": {
+            "1": {
+              "name": "entity.name.function.macro.lk"
+            }
+          }
+        },
         {
           "match": "\\b([a-zA-Z_][a-zA-Z0-9_]*)\\s*(?=\\()",
           "captures": {

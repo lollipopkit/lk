@@ -25,7 +25,7 @@ fn semantic_keyword_token(identifier: &str) -> Option<u32> {
     match identifier {
         "if" | "else" | "while" | "for" | "in" | "fn" | "return" | "break" | "continue" | "use" | "from" | "as"
         | "match" | "case" | "default" | "select" | "type" | "trait" | "impl" | "true" | "false" | "nil" | "spawn"
-        | "chan" | "send" | "recv" => Some(KEYWORD_IDX),
+        | "chan" | "send" | "recv" | "export" | "macro_rules" => Some(KEYWORD_IDX),
         _ => None,
     }
 }
@@ -38,6 +38,7 @@ fn semantic_operator_len(chars: &[char], index: usize) -> Option<usize> {
     match (current, next, third) {
         ('.', Some('.'), Some('=')) => Some(3),
         ('=', Some('='), _)
+        | (':', Some(':'), _)
         | ('!', Some('='), _)
         | ('<', Some('='), _)
         | ('>', Some('='), _)
@@ -218,13 +219,13 @@ impl LkAnalyzer {
                     // Check for keywords
                     let mut token_idx = semantic_keyword_token(&identifier).unwrap_or(VARIABLE_IDX);
 
-                    // If next non-whitespace char is '(', treat as function identifier
+                    // If next non-whitespace char is '(' or '!', treat as function/macro identifier.
                     if token_idx == VARIABLE_IDX {
                         let mut j = char_index;
                         while j < len && chars[j].is_whitespace() {
                             j += 1;
                         }
-                        if j < len && chars[j] == '(' {
+                        if j < len && matches!(chars[j], '(' | '!') {
                             token_idx = FUNCTION_IDX;
                         }
                     }
@@ -240,7 +241,7 @@ impl LkAnalyzer {
                 }
 
                 // Skip other operators and punctuation to reduce token density
-                if "+-*/%,;(){}[]@.".contains(c) {
+                if "+-*/%,;(){}[]@.$#".contains(c) {
                     char_index += 1;
                     continue;
                 }
@@ -471,13 +472,13 @@ impl LkAnalyzer {
                     }
 
                     let mut token_idx = semantic_keyword_token(slice).unwrap_or(VARIABLE_IDX);
-                    // Detect function call by peeking next non-whitespace char
+                    // Detect function or macro call by peeking next non-whitespace char.
                     if token_idx == VARIABLE_IDX {
                         let mut k = j;
                         while k < len && chars[k].is_whitespace() {
                             k += 1;
                         }
-                        if k < len && chars[k] == '(' {
+                        if k < len && matches!(chars[k], '(' | '!') {
                             token_idx = FUNCTION_IDX;
                         }
                     }

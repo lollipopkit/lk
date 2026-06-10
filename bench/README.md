@@ -44,6 +44,16 @@ For a higher-confidence baseline refresh:
 RUNS=10 EXTRA_RUNS=20 bench/run_workload_bench.sh
 ```
 
+To emit machine-readable results for CI or local comparison, set
+`BENCH_RESULT_TSV`:
+
+```bash
+LUA_BIN=$PWD/lua-5.5.0/src/lua \
+  RUN_AOT=0 RUNS=3 EXTRA_RUNS=5 BENCH_PROGRESS=0 BENCH_TIMEOUT=60 \
+  BENCH_RESULT_TSV=/tmp/lk-bench.tsv \
+  bash bench/run_workload_bench.sh
+```
+
 For VM-side diagnostics, enable one extra filtered LK run per workload. This
 prints VM opcode, call, branch, container, copy-policy, heap-value movement,
 dynamic top-opcode, register-write source, and index-key counters after the
@@ -290,6 +300,34 @@ Confidence uses `max((p80 - p20) / median)` across LK and Lua samples:
 
 Low-confidence rows should be rerun on a quieter machine before making
 fine-grained claims.
+
+## PR Performance Gate
+
+Pull requests run the `Performance Gate / workload-bench` GitHub Actions job.
+The job builds the base and head `lk` binaries on the same runner, then uses the
+head checkout's benchmark runner to execute the same workload suite against both
+binaries. This keeps the comparison independent of older base-branch runner
+features while still measuring the base executable.
+
+The hard gate is the geometric mean of per-workload `head_ratio / base_ratio`,
+where each ratio is LK time divided by Lua time for that same run. The job fails
+when the geomean is more than 10% slower than base. Individual workloads more
+than 10% slower are listed in the GitHub step summary, but they do not fail the
+job by themselves unless the whole-suite geomean also crosses the threshold.
+
+The workflow builds and uses the vendored Lua 5.5.0 binary from
+`lua-5.5.0/src/lua`, matching the benchmark methodology and avoiding differences
+from runner-provided Lua packages.
+
+To reproduce the comparator locally after collecting two TSV files:
+
+```bash
+python3 bench/compare_workload_bench.py \
+  --base /tmp/lk-perf-base.tsv \
+  --head /tmp/lk-perf-head.tsv \
+  --max-geomean-regression 0.10 \
+  --warn-workload-regression 0.10
+```
 
 ## Current Baseline
 

@@ -66,7 +66,7 @@ return util.answer();
 
 ## CLI
 
-- `lk init [name]` creates a package.
+- `lk pkg init [name]` creates a package.
 - `lk pkg add <name> <owner/repo> [--tag v1] [--branch main] [--rev SHA]` adds a dependency.
 - `lk pkg fetch` downloads dependencies into `$LK_HOME/git` or `~/.lk/git` and writes `Lk.lock`.
 - `lk pkg update [name]` refreshes dependencies.
