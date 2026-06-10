@@ -1,10 +1,9 @@
 use anyhow::{Result, anyhow, bail};
 use lk_core::{
-    module::{ModuleProvider, ModuleRegistry},
     rt::{self, RuntimePayload},
     util::fast_map::fast_hash_map_new,
     val::{HeapStore, HeapValue, ResourceHandle, RuntimeMapKey, RuntimeVal, TypedMap},
-    vm::{NativeArgs, NativeEntry, NativeRuntime, RuntimeExport},
+    vm::{NativeArgs, NativeRuntime},
 };
 use std::{net::UdpSocket, sync::Arc};
 
@@ -16,89 +15,61 @@ use crate::{
 
 const MAX_DATAGRAM_READ_LIMIT: usize = 65_535;
 
-#[derive(Debug)]
+#[derive(Debug, Default, lk_stdlib_common::StdlibModule)]
+#[stdlib_module(name = "udp", docs = "UDP networking helpers")]
 pub struct NetUdpModule;
 
+#[lk_stdlib_common::stdlib_exports(module = "net.udp")]
 impl NetUdpModule {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-impl Default for NetUdpModule {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl ModuleProvider for NetUdpModule {
-    fn name(&self) -> &str {
-        "udp"
-    }
-
-    fn register(&self, _registry: &mut ModuleRegistry) -> Result<()> {
-        Ok(())
-    }
-
-    fn runtime_exports(&self) -> Result<RuntimeExport> {
-        Ok(lk_stdlib_common::stdlib_runtime_exports!(
-            [
-                plain "bind" => bind, 1,
-                plain "recv_from" => recv_from, NativeEntry::VARIADIC,
-                plain "send_to" => send_to, 3,
-                plain "recv_from_task" => recv_from_task, NativeEntry::VARIADIC,
-                plain "send_to_task" => send_to_task, 3,
-            ],
+    #[stdlib_export(params(addr: String), returns = Resource)]
+    fn bind(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let addr = runtime_string_arg(args.get(0).expect("checked arity"), runtime.heap(), "udp.bind addr")?;
+        let socket = UdpSocket::bind(addr.as_ref()).map_err(|err| anyhow!("udp bind {addr}: {err}"))?;
+        Ok(resource_value(
+            "UdpSocket",
+            ResourceHandle::UdpSocket(socket),
+            runtime.heap_mut(),
         ))
     }
-}
 
-fn bind(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 1, "udp.bind()")?;
-    let addr = runtime_string_arg(args.get(0).expect("checked arity"), runtime.heap(), "udp.bind addr")?;
-    let socket = UdpSocket::bind(addr.as_ref()).map_err(|err| anyhow!("udp bind {addr}: {err}"))?;
-    Ok(resource_value(
-        "UdpSocket",
-        ResourceHandle::UdpSocket(socket),
-        runtime.heap_mut(),
-    ))
-}
-
-fn recv_from(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    let (socket, max) = recv_args(args, runtime)?;
-    let (data, addr) = recv_socket(socket, max)?;
-    Ok(recv_result_value(data, addr, runtime.heap_mut()))
-}
-
-fn send_to(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 3, "udp.send_to()")?;
-    let values = args.as_slice();
-    let socket = socket_clone(&values[0], runtime.heap(), "udp.send_to()")?;
-    let data = runtime_bytes_or_string_arg(&values[1], runtime.heap(), "udp.send_to data")?;
-    let addr = runtime_string_arg(&values[2], runtime.heap(), "udp.send_to addr")?;
-    send_socket(socket, &data, &addr)
-}
-
-fn recv_from_task(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    let (socket, max) = recv_args(args, runtime)?;
-    spawn_task(runtime, async move {
+    #[stdlib_export(params(socket: Resource, max_bytes?: Int), returns = Map)]
+    fn recv_from(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let (socket, max) = recv_args(args, runtime)?;
         let (data, addr) = recv_socket(socket, max)?;
-        Ok(payload_recv_result(data, addr))
-    })
-}
+        Ok(recv_result_value(data, addr, runtime.heap_mut()))
+    }
 
-fn send_to_task(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 3, "udp.send_to_task()")?;
-    let values = args.as_slice();
-    let socket = socket_clone(&values[0], runtime.heap(), "udp.send_to_task()")?;
-    let data = runtime_bytes_or_string_arg(&values[1], runtime.heap(), "udp.send_to_task data")?;
-    let addr = runtime_string_arg(&values[2], runtime.heap(), "udp.send_to_task addr")?.to_string();
-    spawn_task(runtime, async move {
-        let RuntimeVal::Int(sent) = send_socket(socket, &data, &addr)? else {
-            unreachable!("send_socket returns int")
-        };
-        Ok(payload_int(sent))
-    })
+    #[stdlib_export(params(socket: Resource, data: Bytes | String, addr: String), returns = Int)]
+    fn send_to(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let values = args.as_slice();
+        let socket = socket_clone(&values[0], runtime.heap(), "udp.send_to()")?;
+        let data = runtime_bytes_or_string_arg(&values[1], runtime.heap(), "udp.send_to data")?;
+        let addr = runtime_string_arg(&values[2], runtime.heap(), "udp.send_to addr")?;
+        send_socket(socket, &data, &addr)
+    }
+
+    #[stdlib_export(params(socket: Resource, max_bytes?: Int), returns = Task)]
+    fn recv_from_task(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let (socket, max) = recv_args(args, runtime)?;
+        spawn_task(runtime, async move {
+            let (data, addr) = recv_socket(socket, max)?;
+            Ok(payload_recv_result(data, addr))
+        })
+    }
+
+    #[stdlib_export(params(socket: Resource, data: Bytes | String, addr: String), returns = Task)]
+    fn send_to_task(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let values = args.as_slice();
+        let socket = socket_clone(&values[0], runtime.heap(), "udp.send_to_task()")?;
+        let data = runtime_bytes_or_string_arg(&values[1], runtime.heap(), "udp.send_to_task data")?;
+        let addr = runtime_string_arg(&values[2], runtime.heap(), "udp.send_to_task addr")?.to_string();
+        spawn_task(runtime, async move {
+            let RuntimeVal::Int(sent) = send_socket(socket, &data, &addr)? else {
+                unreachable!("send_socket returns int")
+            };
+            Ok(payload_int(sent))
+        })
+    }
 }
 
 fn recv_args(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<(UdpSocket, usize)> {

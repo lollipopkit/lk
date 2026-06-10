@@ -1,8 +1,7 @@
 use anyhow::{Result, bail};
 use lk_core::{
-    module::{ModuleProvider, ModuleRegistry},
     val::RuntimeVal,
-    vm::{NativeArgs, NativeRuntime, RuntimeExport},
+    vm::{NativeArgs, NativeRuntime},
 };
 
 use crate::{
@@ -10,53 +9,31 @@ use crate::{
     runtime_native::{runtime_string_arg, runtime_string_value},
 };
 
-#[derive(Debug)]
+#[derive(Debug, Default, lk_stdlib_common::StdlibModule)]
+#[stdlib_module(name = "socket", docs = "Socket address helpers")]
 pub struct NetSocketModule;
 
+#[lk_stdlib_common::stdlib_exports(module = "net.socket")]
 impl NetSocketModule {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-impl Default for NetSocketModule {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl ModuleProvider for NetSocketModule {
-    fn name(&self) -> &str {
-        "socket"
-    }
-
-    fn register(&self, _registry: &mut ModuleRegistry) -> Result<()> {
-        Ok(())
+    #[stdlib_export(params(host: String, port: Int), returns = String)]
+    fn addr(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let values = args.as_slice();
+        let host = runtime_string_arg(&values[0], runtime.heap(), "socket.addr host")?;
+        let port = match &values[1] {
+            RuntimeVal::Int(value) if *value >= 0 && *value <= 65535 => *value as u16,
+            other => bail!("socket.addr port expects integer 0..65535, got {:?}", other.kind()),
+        };
+        let addr = if host.contains(':') {
+            format!("[{host}]:{port}")
+        } else {
+            format!("{host}:{port}")
+        };
+        Ok(runtime_string_value(&addr, runtime.heap_mut()))
     }
 
-    fn runtime_exports(&self) -> Result<RuntimeExport> {
-        Ok(lk_stdlib_common::stdlib_runtime_exports!(
-            [
-                plain "addr" => addr, 2,
-                plain "close" => close, 1,
-            ],
-        ))
+    #[stdlib_export(params(resource: Resource), returns = Bool)]
+    fn close(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let resource = resource_arg(args.get(0).expect("checked arity"), runtime.heap(), "socket.close()")?;
+        Ok(RuntimeVal::Bool(close_resource(&resource)?))
     }
-}
-
-fn addr(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 2, "socket.addr()")?;
-    let values = args.as_slice();
-    let host = runtime_string_arg(&values[0], runtime.heap(), "socket.addr host")?;
-    let port = match &values[1] {
-        RuntimeVal::Int(value) if *value >= 0 && *value <= 65535 => *value as u16,
-        other => bail!("socket.addr port expects integer 0..65535, got {:?}", other.kind()),
-    };
-    Ok(runtime_string_value(&format!("{host}:{port}"), runtime.heap_mut()))
-}
-
-fn close(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 1, "socket.close()")?;
-    let resource = resource_arg(args.get(0).expect("checked arity"), runtime.heap(), "socket.close()")?;
-    Ok(RuntimeVal::Bool(close_resource(&resource)?))
 }

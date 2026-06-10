@@ -1032,7 +1032,7 @@ mod tests {
     fn test_strict_function_param_infers_from_later_string_call() {
         let program = parse_program(
             r#"
-            let workload_filter = os.env.get("LK_WORKLOAD_FILTER", "");
+            let workload_filter = env.get_or("LK_WORKLOAD_FILTER", "");
             fn should_run(name) {
                 return workload_filter == "" || workload_filter == name;
             }
@@ -1108,7 +1108,8 @@ mod tests {
     fn test_type_check_stdlib_env_and_math_signatures() {
         let program = parse_program(
             r#"
-            let filter = os.env.get("LK_WORKLOAD_FILTER", "");
+            let filter = env.get_or("LK_WORKLOAD_FILTER", "");
+            let os_filter = os.env.get_or("LK_WORKLOAD_FILTER", "");
             let hi = math.max(1, 2);
             let lo = math.min(1, 2);
             let clamped_default = math.clamp(5);

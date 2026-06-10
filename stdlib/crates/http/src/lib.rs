@@ -1,9 +1,8 @@
 use anyhow::{Result, anyhow, bail};
 use lk_core::{
-    module::{ModuleProvider, ModuleRegistry},
     util::fast_map::fast_hash_map_new,
     val::{HeapValue, RuntimeVal, TypedMap},
-    vm::{NativeArgs, NativeRuntime, RuntimeExport},
+    vm::{NativeArgs, NativeRuntime},
 };
 use lk_stdlib_bytes::{runtime_bytes_or_string_arg, runtime_bytes_value};
 use lk_stdlib_common::runtime_native::{runtime_string_arg, runtime_string_value};
@@ -11,68 +10,45 @@ use std::{io::Read, sync::Arc, time::Duration};
 
 const MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, lk_stdlib_common::StdlibModule)]
+#[stdlib_module(name = "http", docs = "HTTP client helpers")]
 pub struct HttpModule;
 
+#[lk_stdlib_common::stdlib_exports(module = "http")]
 impl HttpModule {
-    pub fn new() -> Self {
-        Self
+    #[stdlib_export(params(method: String, url: String, opts?: Map), returns = Map, docs = "Sends an HTTP request and returns a response map.")]
+    fn request(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        if args.len() < 2 || args.len() > 3 {
+            bail!("http.request() expects 2 or 3 arguments: method, url[, opts]");
+        }
+        let method = runtime_string_arg(
+            args.get(0).expect("checked arity"),
+            runtime.heap(),
+            "http.request method",
+        )?;
+        let url = runtime_string_arg(args.get(1).expect("checked arity"), runtime.heap(), "http.request url")?;
+        let opts = args.get(2);
+        send_request(method.as_ref(), url.as_ref(), opts, None, runtime)
     }
-}
 
-impl ModuleProvider for HttpModule {
-    fn name(&self) -> &str {
-        "http"
+    #[stdlib_export(params(url: String, opts?: Map), returns = Map)]
+    fn get(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        if args.is_empty() || args.len() > 2 {
+            bail!("http.get() expects 1 or 2 arguments: url[, opts]");
+        }
+        let url = runtime_string_arg(args.get(0).expect("checked arity"), runtime.heap(), "http.get url")?;
+        send_request("GET", url.as_ref(), args.get(1), None, runtime)
     }
 
-    fn register(&self, _registry: &mut ModuleRegistry) -> Result<()> {
-        Ok(())
+    #[stdlib_export(params(url: String, body: Bytes | String, opts?: Map), returns = Map)]
+    fn post(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        if args.len() < 2 || args.len() > 3 {
+            bail!("http.post() expects 2 or 3 arguments: url, body[, opts]");
+        }
+        let url = runtime_string_arg(args.get(0).expect("checked arity"), runtime.heap(), "http.post url")?;
+        let body = runtime_bytes_or_string_arg(args.get(1).expect("checked arity"), runtime.heap(), "http.post body")?;
+        send_request("POST", url.as_ref(), args.get(2), Some(body), runtime)
     }
-
-    fn runtime_exports(&self) -> Result<RuntimeExport> {
-        Ok(lk_stdlib_common::stdlib_runtime_exports!(
-            [
-                plain "request" => request, lk_core::vm::NativeEntry::VARIADIC,
-                plain "get" => get, lk_core::vm::NativeEntry::VARIADIC,
-                plain "post" => post, lk_core::vm::NativeEntry::VARIADIC,
-            ],
-        ))
-    }
-}
-
-pub fn register(registry: &mut ModuleRegistry) -> Result<()> {
-    registry.register_module("http", Box::new(HttpModule::new()))
-}
-
-fn request(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    if args.len() < 2 || args.len() > 3 {
-        bail!("http.request() expects 2 or 3 arguments: method, url[, opts]");
-    }
-    let method = runtime_string_arg(
-        args.get(0).expect("checked arity"),
-        runtime.heap(),
-        "http.request method",
-    )?;
-    let url = runtime_string_arg(args.get(1).expect("checked arity"), runtime.heap(), "http.request url")?;
-    let opts = args.get(2);
-    send_request(method.as_ref(), url.as_ref(), opts, None, runtime)
-}
-
-fn get(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    if args.is_empty() || args.len() > 2 {
-        bail!("http.get() expects 1 or 2 arguments: url[, opts]");
-    }
-    let url = runtime_string_arg(args.get(0).expect("checked arity"), runtime.heap(), "http.get url")?;
-    send_request("GET", url.as_ref(), args.get(1), None, runtime)
-}
-
-fn post(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    if args.len() < 2 || args.len() > 3 {
-        bail!("http.post() expects 2 or 3 arguments: url, body[, opts]");
-    }
-    let url = runtime_string_arg(args.get(0).expect("checked arity"), runtime.heap(), "http.post url")?;
-    let body = runtime_bytes_or_string_arg(args.get(1).expect("checked arity"), runtime.heap(), "http.post body")?;
-    send_request("POST", url.as_ref(), args.get(2), Some(body), runtime)
 }
 
 fn send_request(

@@ -4,12 +4,10 @@
 
 use anyhow::{Result, anyhow};
 use lk_core::{
-    module::{self, ModuleProvider, ModuleRegistry},
     rt::{RuntimePayload, with_runtime},
     val::{ChannelValue, HeapValue, RuntimeVal, Type},
-    vm::{NativeArgs, NativeRuntime, RuntimeExport},
+    vm::{NativeArgs, NativeRuntime},
 };
-use lk_stdlib_common::metadata::StdlibModuleMetadata;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -17,74 +15,50 @@ pub mod runtime_native {
     pub use lk_stdlib_common::runtime_native::*;
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default, lk_stdlib_common::StdlibModule)]
+#[stdlib_module(name = "time", docs = "Timing and scheduling functions for concurrent operations")]
 pub struct TimeModule;
 
-impl Default for TimeModule {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl ModuleProvider for TimeModule {
-    fn name(&self) -> &str {
-        "time"
-    }
-
-    fn description(&self) -> &str {
-        "Timing and scheduling functions for concurrent operations"
-    }
-
-    fn enabled(&self) -> bool {
-        true
-    }
-
-    fn register(&self, registry: &mut module::ModuleRegistry) -> Result<()> {
-        lk_stdlib_common::stdlib_register_runtime_builtins!(
-            registry,
-            [
-                plain "time::sleep" => time_sleep, 1,
-                plain "time::timeout" => time_timeout, 1,
-                plain "time::after" => time_after, 1,
-                plain "time::now" => time_now, 0,
-                plain "time::since" => time_since, 2,
-            ],
-        );
-        Ok(())
-    }
-
-    fn runtime_exports(&self) -> Result<RuntimeExport> {
-        Ok(lk_stdlib_common::stdlib_runtime_exports!(
-            [
-                plain "sleep" => time_sleep, 1,
-                plain "timeout" => time_timeout, 1,
-                plain "after" => time_after, 1,
-                plain "now" => time_now, 0,
-                plain "since" => time_since, 2,
-            ],
-        ))
-    }
-}
-
-pub fn register(registry: &mut ModuleRegistry) -> Result<()> {
-    lk_stdlib_common::metadata::register_stdlib_module_metadata(metadata())?;
-    registry.register_module("time", Box::new(TimeModule::new()))
-}
-
-pub fn metadata() -> StdlibModuleMetadata {
-    lk_stdlib_common::stdlib_module_metadata!(
-        time,
-        [
-            now => Int,
-            since => Int,
-            sleep => Nil,
-        ]
-    )
-}
-
+#[lk_stdlib_common::stdlib_exports(module = "time", runtime_builtins = true)]
 impl TimeModule {
-    pub fn new() -> Self {
-        Self
+    #[stdlib_export(name = "sleep", params(ms: Int | Float), returns = Nil)]
+    fn sleep(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let duration_ms = numeric_millis(args.get(0).expect("checked arity"), "time.sleep()")?;
+        with_runtime(|runtime| {
+            let duration = Duration::from_millis(duration_ms as u64);
+            runtime.block_on(async {
+                tokio::time::sleep(duration).await;
+                Ok(RuntimeVal::Nil)
+            })
+        })
+        .map_err(|err| anyhow!("Failed to sleep: {err}"))
+    }
+
+    #[stdlib_export(name = "timeout", params(ms: Int | Float), returns = Channel)]
+    fn timeout(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let duration_ms = numeric_millis(args.get(0).expect("checked arity"), "time.timeout()")?;
+        let channel_id = spawn_timer(duration_ms, RuntimeVal::Nil)?;
+        Ok(runtime_channel(channel_id, 1, Type::Nil, runtime))
+    }
+
+    #[stdlib_export(name = "after", params(ms: Int | Float), returns = Channel)]
+    fn after(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let duration_ms = numeric_millis(args.get(0).expect("checked arity"), "time.after()")?;
+        let channel_id = spawn_timer(duration_ms, RuntimeVal::Int(epoch_millis()))?;
+        Ok(runtime_channel(channel_id, 1, Type::Int, runtime))
+    }
+
+    #[stdlib_export(name = "now", params(), returns = Int)]
+    fn now(_args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        Ok(RuntimeVal::Int(epoch_millis()))
+    }
+
+    #[stdlib_export(name = "since", params(start_ms: Int | Float, end_ms: Int | Float), returns = Int)]
+    fn since(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let values = args.as_slice();
+        let start = numeric_millis(&values[0], "time.since()")?;
+        let end = numeric_millis(&values[1], "time.since()")?;
+        Ok(RuntimeVal::Int(end - start))
     }
 }
 
@@ -106,46 +80,6 @@ fn runtime_channel(id: u64, capacity: i64, inner_type: Type, runtime: &mut Nativ
         capacity: Some(capacity),
         inner_type,
     }))))
-}
-
-fn time_sleep(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 1, "time.sleep()")?;
-    let duration_ms = numeric_millis(args.get(0).expect("checked arity"), "time.sleep()")?;
-    with_runtime(|runtime| {
-        let duration = Duration::from_millis(duration_ms as u64);
-        runtime.block_on(async {
-            tokio::time::sleep(duration).await;
-            Ok(RuntimeVal::Nil)
-        })
-    })
-    .map_err(|err| anyhow!("Failed to sleep: {err}"))
-}
-
-fn time_timeout(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 1, "time.timeout()")?;
-    let duration_ms = numeric_millis(args.get(0).expect("checked arity"), "time.timeout()")?;
-    let channel_id = spawn_timer(duration_ms, RuntimeVal::Nil)?;
-    Ok(runtime_channel(channel_id, 1, Type::Nil, runtime))
-}
-
-fn time_after(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 1, "time.after()")?;
-    let duration_ms = numeric_millis(args.get(0).expect("checked arity"), "time.after()")?;
-    let channel_id = spawn_timer(duration_ms, RuntimeVal::Int(epoch_millis()))?;
-    Ok(runtime_channel(channel_id, 1, Type::Int, runtime))
-}
-
-fn time_now(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 0, "time.now()")?;
-    Ok(RuntimeVal::Int(epoch_millis()))
-}
-
-fn time_since(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 2, "time.since()")?;
-    let values = args.as_slice();
-    let start = numeric_millis(&values[0], "time.since()")?;
-    let end = numeric_millis(&values[1], "time.since()")?;
-    Ok(RuntimeVal::Int(end - start))
 }
 
 fn spawn_timer(duration_ms: i64, payload: RuntimeVal) -> Result<u64> {

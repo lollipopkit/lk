@@ -1,26 +1,25 @@
 use anyhow::{Result, anyhow, bail};
 use lk_core::{
-    module::{ModuleProvider, ModuleRegistry},
     val::RuntimeVal,
-    vm::{NativeArgs, NativeEntry, NativeRuntime, RuntimeExport},
+    vm::{NativeArgs, NativeRuntime},
 };
-use lk_stdlib_common::metadata::StdlibModuleMetadata;
 use std::collections::HashSet;
 
-#[derive(Debug)]
+#[derive(Debug, Default, lk_stdlib_common::StdlibModule)]
+#[stdlib_module(name = "math", docs = "Mathematical functions and constants")]
 pub struct MathModule;
 
-impl Default for MathModule {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
+#[lk_stdlib_common::stdlib_exports(module = "math")]
+#[stdlib_value("pi" => RuntimeVal::Float(std::f64::consts::PI))]
+#[stdlib_value("e" => RuntimeVal::Float(std::f64::consts::E))]
+#[stdlib_value("inf" => RuntimeVal::Float(f64::INFINITY))]
+#[stdlib_value("nan" => RuntimeVal::Float(f64::NAN))]
+#[stdlib_value("max_int" => RuntimeVal::Int(i64::MAX))]
+#[stdlib_value("min_int" => RuntimeVal::Int(i64::MIN))]
+#[stdlib_value("max_float" => RuntimeVal::Float(f64::MAX))]
+#[stdlib_value("epsilon" => RuntimeVal::Float(f64::EPSILON))]
 impl MathModule {
-    pub fn new() -> Self {
-        Self
-    }
-
+    #[stdlib_export(params(value: Int, min?: Int = 0, max?: Int = 100), named(min, max), returns = Int)]
     fn clamp(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let pos = args.as_slice();
         if pos.is_empty() {
@@ -61,8 +60,8 @@ impl MathModule {
         Ok(RuntimeVal::Int(value.clamp(min, max)))
     }
 
-    fn random(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        lk_stdlib_common::runtime_native::expect_arity(args, 0, "random()")?;
+    #[stdlib_export(params(), returns = Float)]
+    fn random(_args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
         static SEED: AtomicU64 = AtomicU64::new(0x12345678_9ABCDEF0);
@@ -86,8 +85,8 @@ impl MathModule {
         Ok(RuntimeVal::Float((seed >> 11) as f64 / (1u64 << 53) as f64))
     }
 
+    #[stdlib_export(params(value: Int | Float), returns = Int | Float)]
     fn abs(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        lk_stdlib_common::runtime_native::expect_arity(args, 1, "abs()")?;
         match args.as_slice()[0] {
             RuntimeVal::Int(value) => Ok(RuntimeVal::Int(value.abs())),
             RuntimeVal::Float(value) => Ok(RuntimeVal::Float(value.abs())),
@@ -95,8 +94,8 @@ impl MathModule {
         }
     }
 
+    #[stdlib_export(params(value: Number), returns = Float)]
     fn sqrt(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        lk_stdlib_common::runtime_native::expect_arity(args, 1, "sqrt()")?;
         match args.as_slice()[0] {
             RuntimeVal::Int(value) if value >= 0 => Ok(RuntimeVal::Float((value as f64).sqrt())),
             RuntimeVal::Float(value) if value >= 0.0 => Ok(RuntimeVal::Float(value.sqrt())),
@@ -105,18 +104,22 @@ impl MathModule {
         }
     }
 
+    #[stdlib_export(params(value: Number), returns = Float)]
     fn sin(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         unary_float(args, "sin()", f64::sin)
     }
 
+    #[stdlib_export(params(value: Number), returns = Float)]
     fn cos(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         unary_float(args, "cos()", f64::cos)
     }
 
+    #[stdlib_export(params(value: Number), returns = Float)]
     fn tan(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         unary_float(args, "tan()", f64::tan)
     }
 
+    #[stdlib_export(params(value: Number), returns = Float)]
     fn asin(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let value = unary_number(args, "asin()")?;
         if !(-1.0..=1.0).contains(&value) {
@@ -125,6 +128,7 @@ impl MathModule {
         Ok(RuntimeVal::Float(value.asin()))
     }
 
+    #[stdlib_export(params(value: Number), returns = Float)]
     fn acos(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let value = unary_number(args, "acos()")?;
         if !(-1.0..=1.0).contains(&value) {
@@ -133,90 +137,103 @@ impl MathModule {
         Ok(RuntimeVal::Float(value.acos()))
     }
 
+    #[stdlib_export(params(value: Number), returns = Float)]
     fn atan(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         unary_float(args, "atan()", f64::atan)
     }
 
+    #[stdlib_export(name = "atan2", params(y: Number, x: Number), returns = Float)]
     fn atan2_(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        lk_stdlib_common::runtime_native::expect_arity(args, 2, "atan2()")?;
         let values = args.as_slice();
         let y = number_arg(&values[0], "atan2() first argument")?;
         let x = number_arg(&values[1], "atan2() second argument")?;
         Ok(RuntimeVal::Float(y.atan2(x)))
     }
 
+    #[stdlib_export(params(value: Number), returns = Float)]
     fn log(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         positive_unary_float(args, "log()", f64::ln)
     }
 
+    #[stdlib_export(name = "log10", params(value: Number), returns = Float)]
     fn log10_(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         positive_unary_float(args, "log10()", f64::log10)
     }
 
+    #[stdlib_export(name = "log2", params(value: Number), returns = Float)]
     fn log2_(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         positive_unary_float(args, "log2()", f64::log2)
     }
 
+    #[stdlib_export(params(value: Number), returns = Float)]
     fn exp(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         unary_float(args, "exp()", f64::exp)
     }
 
+    #[stdlib_export(params(base: Number, exponent: Number), returns = Float)]
     fn pow(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        lk_stdlib_common::runtime_native::expect_arity(args, 2, "pow()")?;
         let values = args.as_slice();
         let base = number_arg(&values[0], "pow() first argument")?;
         let exponent = number_arg(&values[1], "pow() second argument")?;
         Ok(RuntimeVal::Float(base.powf(exponent)))
     }
 
+    #[stdlib_export(params(value: Number), returns = Int)]
     fn floor(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         integer_round(args, "floor()", f64::floor)
     }
 
+    #[stdlib_export(params(value: Number), returns = Int)]
     fn ceil(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         integer_round(args, "ceil()", f64::ceil)
     }
 
+    #[stdlib_export(params(value: Number), returns = Int)]
     fn round(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         integer_round(args, "round()", f64::round)
     }
 
+    #[stdlib_export(params(left: Number, right: Number), returns = Number)]
     fn min(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         min_max(args, "min()", |left, right| left < right)
     }
 
+    #[stdlib_export(params(left: Number, right: Number), returns = Number)]
     fn max(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         min_max(args, "max()", |left, right| left > right)
     }
 
+    #[stdlib_export(params(x: Number, y: Number), returns = Float)]
     fn hypot(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        lk_stdlib_common::runtime_native::expect_arity(args, 2, "hypot()")?;
         let values = args.as_slice();
         let x = number_arg(&values[0], "hypot() first argument")?;
         let y = number_arg(&values[1], "hypot() second argument")?;
         Ok(RuntimeVal::Float(x.hypot(y)))
     }
 
+    #[stdlib_export(params(value: Number), returns = Float)]
     fn cbrt(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        lk_stdlib_common::runtime_native::expect_arity(args, 1, "cbrt()")?;
         let value = unary_number(args, "cbrt()")?;
         Ok(RuntimeVal::Float(value.cbrt()))
     }
 
+    #[stdlib_export(params(value: Number), returns = Float)]
     fn sinh(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         unary_float(args, "sinh()", f64::sinh)
     }
 
+    #[stdlib_export(params(value: Number), returns = Float)]
     fn cosh(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         unary_float(args, "cosh()", f64::cosh)
     }
 
+    #[stdlib_export(params(value: Number), returns = Float)]
     fn tanh(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         unary_float(args, "tanh()", f64::tanh)
     }
 
+    #[stdlib_export(params(value: Number), returns = Int | Float)]
     fn trunc(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        lk_stdlib_common::runtime_native::expect_arity(args, 1, "trunc()")?;
         match args.as_slice()[0] {
             RuntimeVal::Int(value) => Ok(RuntimeVal::Int(value)),
             RuntimeVal::Float(value) => Ok(RuntimeVal::Float(value.trunc())),
@@ -224,8 +241,8 @@ impl MathModule {
         }
     }
 
+    #[stdlib_export(params(value: Number), returns = Float)]
     fn fract(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        lk_stdlib_common::runtime_native::expect_arity(args, 1, "fract()")?;
         match args.as_slice()[0] {
             RuntimeVal::Int(_) => Ok(RuntimeVal::Float(0.0)),
             RuntimeVal::Float(value) => Ok(RuntimeVal::Float(value.fract())),
@@ -233,8 +250,8 @@ impl MathModule {
         }
     }
 
+    #[stdlib_export(params(value: Number), returns = Int | Float)]
     fn sign(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        lk_stdlib_common::runtime_native::expect_arity(args, 1, "sign()")?;
         match args.as_slice()[0] {
             RuntimeVal::Int(value) => Ok(RuntimeVal::Int(value.signum())),
             RuntimeVal::Float(value) => {
@@ -250,8 +267,8 @@ impl MathModule {
         }
     }
 
+    #[stdlib_export(params(value: Number | Bool), returns = Int)]
     fn to_int(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        lk_stdlib_common::runtime_native::expect_arity(args, 1, "to_int()")?;
         match args.as_slice()[0] {
             RuntimeVal::Int(value) => Ok(RuntimeVal::Int(value)),
             RuntimeVal::Float(value) => Ok(RuntimeVal::Int(value as i64)),
@@ -260,8 +277,8 @@ impl MathModule {
         }
     }
 
+    #[stdlib_export(params(value: Number | Bool), returns = Float)]
     fn to_float(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        lk_stdlib_common::runtime_native::expect_arity(args, 1, "to_float()")?;
         match args.as_slice()[0] {
             RuntimeVal::Float(value) => Ok(RuntimeVal::Float(value)),
             RuntimeVal::Int(value) => Ok(RuntimeVal::Float(value as f64)),
@@ -270,128 +287,19 @@ impl MathModule {
         }
     }
 
+    #[stdlib_export(params(value: Float), returns = Bool)]
     fn is_nan(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        lk_stdlib_common::runtime_native::expect_arity(args, 1, "is_nan()")?;
         Ok(RuntimeVal::Bool(
             matches!(args.as_slice()[0], RuntimeVal::Float(v) if v.is_nan()),
         ))
     }
 
+    #[stdlib_export(params(value: Float), returns = Bool)]
     fn is_inf(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        lk_stdlib_common::runtime_native::expect_arity(args, 1, "is_inf()")?;
         Ok(RuntimeVal::Bool(
             matches!(args.as_slice()[0], RuntimeVal::Float(v) if v.is_infinite()),
         ))
     }
-}
-
-impl ModuleProvider for MathModule {
-    fn name(&self) -> &str {
-        "math"
-    }
-
-    fn description(&self) -> &str {
-        "Mathematical functions and constants"
-    }
-
-    fn register(&self, _registry: &mut lk_core::module::ModuleRegistry) -> Result<()> {
-        Ok(())
-    }
-
-    fn runtime_exports(&self) -> Result<RuntimeExport> {
-        Ok(lk_stdlib_common::stdlib_runtime_exports!(
-            [
-                plain "abs" => Self::abs, 1,
-                plain "sqrt" => Self::sqrt, 1,
-                plain "sin" => Self::sin, 1,
-                plain "cos" => Self::cos, 1,
-                plain "tan" => Self::tan, 1,
-                plain "asin" => Self::asin, 1,
-                plain "acos" => Self::acos, 1,
-                plain "atan" => Self::atan, 1,
-                plain "atan2" => Self::atan2_, 2,
-                plain "log" => Self::log, 1,
-                plain "log10" => Self::log10_, 1,
-                plain "log2" => Self::log2_, 1,
-                plain "exp" => Self::exp, 1,
-                plain "pow" => Self::pow, 2,
-                plain "floor" => Self::floor, 1,
-                plain "ceil" => Self::ceil, 1,
-                plain "round" => Self::round, 1,
-                plain "min" => Self::min, 2,
-                plain "max" => Self::max, 2,
-                plain "clamp" => Self::clamp, NativeEntry::VARIADIC,
-                plain "random" => Self::random, 0,
-                plain "hypot" => Self::hypot, 2,
-                plain "cbrt" => Self::cbrt, 1,
-                plain "sinh" => Self::sinh, 1,
-                plain "cosh" => Self::cosh, 1,
-                plain "tanh" => Self::tanh, 1,
-                plain "trunc" => Self::trunc, 1,
-                plain "fract" => Self::fract, 1,
-                plain "sign" => Self::sign, 1,
-                plain "to_int" => Self::to_int, 1,
-                plain "to_float" => Self::to_float, 1,
-                plain "is_nan" => Self::is_nan, 1,
-                plain "is_inf" => Self::is_inf, 1,
-            ],
-            [
-                "pi" => RuntimeVal::Float(std::f64::consts::PI),
-                "e" => RuntimeVal::Float(std::f64::consts::E),
-                "inf" => RuntimeVal::Float(f64::INFINITY),
-                "nan" => RuntimeVal::Float(f64::NAN),
-                "max_int" => RuntimeVal::Int(i64::MAX),
-                "min_int" => RuntimeVal::Int(i64::MIN),
-                "max_float" => RuntimeVal::Float(f64::MAX),
-                "epsilon" => RuntimeVal::Float(f64::EPSILON),
-            ],
-        ))
-    }
-}
-
-pub fn register(registry: &mut ModuleRegistry) -> Result<()> {
-    lk_stdlib_common::metadata::register_stdlib_module_metadata(metadata())?;
-    registry.register_module("math", Box::new(MathModule::new()))
-}
-
-pub fn metadata() -> StdlibModuleMetadata {
-    lk_stdlib_common::stdlib_module_metadata!(
-        math,
-        [
-            abs => IntOrFloat,
-            acos => Float,
-            asin => Float,
-            atan => Float,
-            atan2 => Float,
-            cbrt => Float,
-            ceil => Int,
-            clamp => Int,
-            cos => Float,
-            cosh => Float,
-            exp => Float,
-            floor => Int,
-            fract => Float,
-            hypot => Float,
-            is_inf => Bool,
-            is_nan => Bool,
-            log => Float,
-            log10 => Float,
-            log2 => Float,
-            max => IntOrFloat,
-            min => IntOrFloat,
-            pow => Float,
-            round => Int,
-            sign => IntOrFloat,
-            sin => Float,
-            sinh => Float,
-            sqrt => Float,
-            tan => Float,
-            tanh => Float,
-            to_float => Float,
-            to_int => Int,
-            trunc => IntOrFloat,
-        ]
-    )
 }
 
 fn number_arg(value: &RuntimeVal, context: &str) -> Result<f64> {
@@ -410,7 +318,6 @@ fn int_arg(value: &RuntimeVal, context: &str) -> Result<i64> {
 }
 
 fn unary_number(args: NativeArgs<'_>, name: &str) -> Result<f64> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 1, name)?;
     number_arg(&args.as_slice()[0], &format!("{name} argument"))
 }
 
@@ -427,7 +334,6 @@ fn positive_unary_float(args: NativeArgs<'_>, name: &str, op: fn(f64) -> f64) ->
 }
 
 fn integer_round(args: NativeArgs<'_>, name: &str, op: fn(f64) -> f64) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 1, name)?;
     match args.as_slice()[0] {
         RuntimeVal::Int(value) => Ok(RuntimeVal::Int(value)),
         RuntimeVal::Float(value) => Ok(RuntimeVal::Int(op(value) as i64)),
@@ -436,7 +342,6 @@ fn integer_round(args: NativeArgs<'_>, name: &str, op: fn(f64) -> f64) -> Result
 }
 
 fn min_max(args: NativeArgs<'_>, name: &str, take_left: fn(f64, f64) -> bool) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 2, name)?;
     let values = args.as_slice();
     let left = number_arg(&values[0], &format!("{name} first argument"))?;
     let right = number_arg(&values[1], &format!("{name} second argument"))?;

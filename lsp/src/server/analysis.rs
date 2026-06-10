@@ -12,8 +12,9 @@ use tower_lsp::lsp_types::*;
 use crate::analyzer::{AnalysisResult, LkAnalyzer};
 use lk_core::{package::PackageGraph, resolve, stmt, token};
 
+use super::hover::document_hover;
 use super::state::LkLanguageServer;
-use super::text::{describe_token_hover, find_token_at_offset, position_to_char_idx};
+use super::text::{find_token_at_offset, position_to_char_idx};
 use super::utils::compute_content_hash;
 use tracing::debug;
 
@@ -188,11 +189,23 @@ impl LkLanguageServer {
         };
 
         if let Some((idx, _token)) = find_token_at_offset(spans.as_ref(), tokens.as_ref(), offset) {
-            let hover_text = describe_token_hover(tokens.as_ref(), spans.as_ref(), idx);
-            return Some(Hover {
-                contents: HoverContents::Scalar(MarkedString::String(hover_text)),
-                range: None,
-            });
+            let package_modules = uri
+                .to_file_path()
+                .ok()
+                .and_then(|path| path.parent().map(Path::to_path_buf))
+                .map(|base_dir| {
+                    let (_, modules, _) = self.workspace_cache.package_context_for(base_dir);
+                    modules
+                })
+                .unwrap_or_default();
+            return Some(document_hover(
+                &content,
+                uri,
+                tokens.as_ref(),
+                spans.as_ref(),
+                idx,
+                &package_modules,
+            ));
         }
 
         if let Some(analysis) = self.get_or_compute_analysis(uri).await {
@@ -848,13 +861,13 @@ fn stdlib_source_path(module_name: &str) -> Option<PathBuf> {
     .find(|path| path.is_file())
 }
 
-fn find_stdlib_module_location(module_name: &str) -> Option<Location> {
+pub(crate) fn find_stdlib_module_location(module_name: &str) -> Option<Location> {
     let path = stdlib_source_path(module_name)?;
     let uri = Url::from_file_path(path).ok()?;
     Some(Location::new(uri, Range::new(Position::new(0, 0), Position::new(0, 0))))
 }
 
-fn find_stdlib_export_location(module_name: &str, export_name: &str) -> Option<Location> {
+pub(crate) fn find_stdlib_export_location(module_name: &str, export_name: &str) -> Option<Location> {
     let path = stdlib_source_path(module_name)?;
     let content = fs::read_to_string(&path).ok()?;
     let uri = Url::from_file_path(path).ok()?;

@@ -6,11 +6,10 @@
 
 use anyhow::{Result, anyhow, bail};
 use lk_core::{
-    module::{self, ModuleProvider, ModuleRegistry},
     rt,
     rt::RuntimePayload,
     val::{ChannelValue, HeapStore, HeapValue, RuntimeVal, TypedList},
-    vm::{NativeArgs, NativeRuntime, RuntimeExport},
+    vm::{NativeArgs, NativeRuntime},
 };
 use std::sync::Arc;
 
@@ -18,64 +17,61 @@ pub mod runtime_native {
     pub use lk_stdlib_common::runtime_native::*;
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default, lk_stdlib_common::StdlibModule)]
+#[stdlib_module(name = "chan", docs = "Channel operations for inter-task communication")]
 pub struct ChannelModule;
 
-impl Default for ChannelModule {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl ModuleProvider for ChannelModule {
-    fn name(&self) -> &str {
-        "chan"
-    }
-
-    fn description(&self) -> &str {
-        "Channel operations for inter-task communication"
-    }
-
-    fn enabled(&self) -> bool {
-        true
-    }
-
-    fn register(&self, registry: &mut module::ModuleRegistry) -> Result<()> {
-        lk_stdlib_common::stdlib_register_runtime_builtins!(
-            registry,
-            [
-                plain "chan::close" => chan_close, 1,
-                plain "chan::len" => chan_len, 1,
-                plain "chan::capacity" => chan_capacity, 1,
-                plain "chan::is_closed" => chan_is_closed, 1,
-                plain "chan::try_send" => chan_try_send, 2,
-                plain "chan::try_recv" => chan_try_recv, 1,
-            ],
-        );
-        Ok(())
-    }
-
-    fn runtime_exports(&self) -> Result<RuntimeExport> {
-        Ok(lk_stdlib_common::stdlib_runtime_exports!(
-            [
-                plain "close" => chan_close, 1,
-                plain "len" => chan_len, 1,
-                plain "capacity" => chan_capacity, 1,
-                plain "is_closed" => chan_is_closed, 1,
-                plain "try_send" => chan_try_send, 2,
-                plain "try_recv" => chan_try_recv, 1,
-            ],
-        ))
-    }
-}
-
-pub fn register(registry: &mut ModuleRegistry) -> Result<()> {
-    registry.register_module("chan", Box::new(ChannelModule::new()))
-}
-
+#[lk_stdlib_common::stdlib_exports(module = "chan", runtime_builtins = true)]
 impl ChannelModule {
-    pub fn new() -> Self {
-        Self
+    #[stdlib_export(name = "close", params(channel: Channel), returns = Nil)]
+    fn close(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let channel = channel_arg(args.get(0).expect("checked arity"), runtime.heap(), "chan.close()")?;
+        rt::with_runtime(|runtime| runtime.close_channel(channel.id))
+            .map_err(|err| anyhow!("Failed to close channel: {err}"))?;
+        Ok(RuntimeVal::Nil)
+    }
+
+    #[stdlib_export(name = "len", params(channel: Channel), returns = Int)]
+    fn len(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let channel = channel_arg(args.get(0).expect("checked arity"), runtime.heap(), "chan.len()")?;
+        let len = rt::with_runtime(|runtime| runtime.channel_len(channel.id))
+            .map_err(|err| anyhow!("Failed to read channel length: {err}"))?;
+        Ok(RuntimeVal::Int(len as i64))
+    }
+
+    #[stdlib_export(name = "capacity", params(channel: Channel), returns = Int)]
+    fn capacity(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let channel = channel_arg(args.get(0).expect("checked arity"), runtime.heap(), "chan.capacity()")?;
+        Ok(RuntimeVal::Int(channel.capacity.unwrap_or(0)))
+    }
+
+    #[stdlib_export(name = "is_closed", params(channel: Channel), returns = Bool)]
+    fn is_closed(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let channel = channel_arg(args.get(0).expect("checked arity"), runtime.heap(), "chan.is_closed()")?;
+        let closed = rt::with_runtime(|runtime| runtime.channel_is_closed(channel.id))
+            .map_err(|err| anyhow!("Failed to read channel closed state: {err}"))?;
+        Ok(RuntimeVal::Bool(closed))
+    }
+
+    #[stdlib_export(name = "try_send", params(channel: Channel, value: Any), returns = Bool)]
+    fn try_send(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let values = args.as_slice();
+        let channel = channel_arg(&values[0], runtime.heap(), "chan.try_send()")?;
+        let value = RuntimePayload::copy_from_value(&values[1], runtime.heap())?;
+        let sent = rt::with_runtime(|runtime| runtime.try_send(channel.id, value))
+            .map_err(|err| anyhow!("Failed to send to channel: {err}"))?;
+        Ok(RuntimeVal::Bool(sent))
+    }
+
+    #[stdlib_export(name = "try_recv", params(channel: Channel), returns = List)]
+    fn try_recv(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let channel = channel_arg(args.get(0).expect("checked arity"), runtime.heap(), "chan.try_recv()")?;
+        match rt::with_runtime(|rt| rt.try_recv(channel.id))
+            .map_err(|err| anyhow!("Failed to receive from channel: {err}"))?
+        {
+            Some((ok, value)) => Ok(pair(ok, value.into_value(runtime.heap_mut())?, runtime)),
+            None => Ok(pair(false, RuntimeVal::Nil, runtime)),
+        }
     }
 }
 
@@ -98,53 +94,6 @@ fn pair(ok: bool, value: RuntimeVal, runtime: &mut NativeRuntime<'_>) -> Runtime
             .heap_mut()
             .alloc(HeapValue::List(TypedList::Mixed(vec![RuntimeVal::Bool(ok), value]))),
     )
-}
-
-fn chan_close(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 1, "chan.close()")?;
-    let channel = channel_arg(args.get(0).expect("checked arity"), runtime.heap(), "chan.close()")?;
-    rt::with_runtime(|runtime| runtime.close_channel(channel.id))
-        .map_err(|err| anyhow!("Failed to close channel: {err}"))?;
-    Ok(RuntimeVal::Nil)
-}
-
-fn chan_len(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 1, "chan.len()")?;
-    let _ = channel_arg(args.get(0).expect("checked arity"), runtime.heap(), "chan.len()")?;
-    Ok(RuntimeVal::Int(0))
-}
-
-fn chan_capacity(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 1, "chan.capacity()")?;
-    let channel = channel_arg(args.get(0).expect("checked arity"), runtime.heap(), "chan.capacity()")?;
-    Ok(RuntimeVal::Int(channel.capacity.unwrap_or(0)))
-}
-
-fn chan_is_closed(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 1, "chan.is_closed()")?;
-    let _ = channel_arg(args.get(0).expect("checked arity"), runtime.heap(), "chan.is_closed()")?;
-    Ok(RuntimeVal::Bool(false))
-}
-
-fn chan_try_send(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 2, "chan.try_send()")?;
-    let values = args.as_slice();
-    let channel = channel_arg(&values[0], runtime.heap(), "chan.try_send()")?;
-    let value = RuntimePayload::copy_from_value(&values[1], runtime.heap())?;
-    let sent = rt::with_runtime(|runtime| runtime.try_send(channel.id, value))
-        .map_err(|err| anyhow!("Failed to send to channel: {err}"))?;
-    Ok(RuntimeVal::Bool(sent))
-}
-
-fn chan_try_recv(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 1, "chan.try_recv()")?;
-    let channel = channel_arg(args.get(0).expect("checked arity"), runtime.heap(), "chan.try_recv()")?;
-    match rt::with_runtime(|rt| rt.try_recv(channel.id))
-        .map_err(|err| anyhow!("Failed to receive from channel: {err}"))?
-    {
-        Some((ok, value)) => Ok(pair(ok, value.into_value(runtime.heap_mut())?, runtime)),
-        None => Ok(pair(false, RuntimeVal::Nil, runtime)),
-    }
 }
 
 #[cfg(test)]

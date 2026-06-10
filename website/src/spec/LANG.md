@@ -5,6 +5,7 @@ This document describes the LK language as implemented in this repository (parse
 ### Comments
 - Line comments: `// ...`
 - Block comments: `/* ... */`
+- Documentation comments for tooling: `/// ...` and `/** ... */` attach to the next `fn`, `struct`, `trait`, or `type` declaration when immediately adjacent. Top-of-file `//! ...` and `/*! ... */` document the package root for LSP hover. These comments do not change runtime semantics.
 
 ### Identifiers
 - Consist of letters, digits, `_`, and `-`. Keywords are reserved. (Be mindful that `-` within identifiers is allowed by the lexer.)

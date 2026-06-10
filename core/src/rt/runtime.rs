@@ -290,6 +290,33 @@ impl Runtime {
         Ok(result)
     }
 
+    /// Return the number of queued values currently buffered for a channel.
+    pub fn channel_len(&self, channel_id: u64) -> Result<usize> {
+        let receiver_arc = {
+            let channels = self.channels.lock().unwrap();
+            let Some(channel) = channels.get(&channel_id) else {
+                return Ok(0);
+            };
+            channel.receiver.clone()
+        };
+        let Ok(receiver) = receiver_arc.try_lock() else {
+            return Ok(0);
+        };
+        Ok(match &*receiver {
+            ChannelReceiver::Bounded(receiver) => receiver.len(),
+            ChannelReceiver::Unbounded(receiver) => receiver.len(),
+        })
+    }
+
+    /// Return whether a channel has been closed or removed from the runtime.
+    pub fn channel_is_closed(&self, channel_id: u64) -> Result<bool> {
+        let channels = self.channels.lock().unwrap();
+        let Some(channel) = channels.get(&channel_id) else {
+            return Ok(true);
+        };
+        Ok(channel.closed.load(Ordering::SeqCst))
+    }
+
     /// Receive a value from a channel, waiting until a value is available or the channel closes.
     pub async fn recv_async(&self, channel_id: u64) -> Result<(bool, RuntimePayload)> {
         let (receiver_arc, closed_flag) = {

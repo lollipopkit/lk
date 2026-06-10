@@ -46,7 +46,6 @@ fn server_capabilities_from(params: &InitializeParams) -> ServerCapabilities {
             trigger_characters: Some(vec![
                 ".".to_string(),
                 "\"".to_string(),
-                "{".to_string(),
                 ",".to_string(),
                 ":".to_string(),
             ]),
@@ -85,6 +84,22 @@ fn server_capabilities_from(params: &InitializeParams) -> ServerCapabilities {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn completion_triggers_do_not_include_block_open_brace() {
+        let capabilities = server_capabilities_from(&InitializeParams::default());
+        let Some(CompletionOptions {
+            trigger_characters: Some(triggers),
+            ..
+        }) = capabilities.completion_provider
+        else {
+            panic!("expected completion provider trigger characters");
+        };
+
+        assert!(!triggers.iter().any(|trigger| trigger == "{"));
+        assert!(triggers.iter().any(|trigger| trigger == "."));
+        assert!(triggers.iter().any(|trigger| trigger == "\""));
+    }
 
     #[test]
     fn server_capabilities_use_push_diagnostics_only() {
@@ -282,7 +297,7 @@ impl LanguageServer for LkLanguageServer {
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
         let uri = &params.text_document_position.text_document.uri;
         let position = params.text_document_position.position;
-        Ok(self.completion_response(uri, position))
+        Ok(self.completion_response(uri, position, params.context.as_ref()))
     }
 
     async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {

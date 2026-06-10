@@ -1,8 +1,7 @@
 use anyhow::{Result, bail};
 use lk_core::{
-    module::{ModuleProvider, ModuleRegistry},
     val::{HeapValue, RuntimeVal},
-    vm::{NativeArgs, NativeRuntime, RuntimeExport},
+    vm::{NativeArgs, NativeRuntime},
 };
 use lk_stdlib_bytes::runtime_bytes_value;
 use lk_stdlib_common::runtime_native::runtime_string_value;
@@ -10,102 +9,74 @@ use rand::Rng as _;
 
 const MAX_RANDOM_BYTES: usize = 16 * 1024 * 1024;
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, lk_stdlib_common::StdlibModule)]
+#[stdlib_module(name = "random", docs = "Random value helpers")]
 pub struct RandomModule;
 
+#[lk_stdlib_common::stdlib_exports(module = "random")]
 impl RandomModule {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-impl ModuleProvider for RandomModule {
-    fn name(&self) -> &str {
-        "random"
-    }
-
-    fn register(&self, _registry: &mut ModuleRegistry) -> Result<()> {
-        Ok(())
+    #[stdlib_export(name = "int", params(min: Int, max: Int), returns = Int)]
+    fn int(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let min = int_arg(args.get(0).expect("checked arity"), "random.int min")?;
+        let max = int_arg(args.get(1).expect("checked arity"), "random.int max")?;
+        if max < min {
+            bail!("random.int() max must be >= min");
+        }
+        Ok(RuntimeVal::Int(rand::rng().random_range(min..=max)))
     }
 
-    fn runtime_exports(&self) -> Result<RuntimeExport> {
-        Ok(lk_stdlib_common::stdlib_runtime_exports!(
-            [
-                plain "int" => int, 2,
-                plain "float" => float, 0,
-                plain "bool" => bool_value, lk_core::vm::NativeEntry::VARIADIC,
-                plain "bytes" => bytes, 1,
-                plain "choice" => choice, 1,
-                plain "shuffle" => shuffle, 1,
-            ],
-        ))
+    #[stdlib_export(name = "float", params(), returns = Float)]
+    fn float(_args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        Ok(RuntimeVal::Float(rand::rng().random()))
     }
-}
 
-pub fn register(registry: &mut ModuleRegistry) -> Result<()> {
-    registry.register_module("random", Box::new(RandomModule::new()))
-}
-
-fn int(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 2, "random.int()")?;
-    let min = int_arg(args.get(0).expect("checked arity"), "random.int min")?;
-    let max = int_arg(args.get(1).expect("checked arity"), "random.int max")?;
-    if max < min {
-        bail!("random.int() max must be >= min");
+    #[stdlib_export(name = "bool", params(probability?: Float), returns = Bool)]
+    fn bool_value(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        if args.len() > 1 {
+            bail!("random.bool() expects at most 1 argument");
+        }
+        let probability = if let Some(value) = args.get(0) {
+            float_arg(value, "random.bool probability")?
+        } else {
+            0.5
+        };
+        if !(0.0..=1.0).contains(&probability) {
+            bail!("random.bool() probability must be in 0..=1");
+        }
+        Ok(RuntimeVal::Bool(rand::rng().random_bool(probability)))
     }
-    Ok(RuntimeVal::Int(rand::rng().random_range(min..=max)))
-}
 
-fn float(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 0, "random.float()")?;
-    Ok(RuntimeVal::Float(rand::rng().random()))
-}
+    #[stdlib_export(name = "bytes", params(len: Int), returns = Bytes)]
+    fn bytes(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let len = usize_arg(args.get(0).expect("checked arity"), "random.bytes len")?;
+        if len > MAX_RANDOM_BYTES {
+            bail!("random.bytes() len exceeds {MAX_RANDOM_BYTES}");
+        }
+        let mut data = vec![0u8; len];
+        rand::rng().fill(data.as_mut_slice());
+        Ok(runtime_bytes_value(data, runtime.heap_mut()))
+    }
 
-fn bool_value(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    if args.len() > 1 {
-        bail!("random.bool() expects at most 1 argument");
+    #[stdlib_export(name = "choice", params(values: List), returns = Any)]
+    fn choice(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let values = list_values(args.get(0).expect("checked arity"), runtime, "random.choice list")?;
+        if values.is_empty() {
+            return Ok(RuntimeVal::Nil);
+        }
+        let index = rand::rng().random_range(0..values.len());
+        Ok(values[index])
     }
-    let probability = if let Some(value) = args.get(0) {
-        float_arg(value, "random.bool probability")?
-    } else {
-        0.5
-    };
-    if !(0.0..=1.0).contains(&probability) {
-        bail!("random.bool() probability must be in 0..=1");
-    }
-    Ok(RuntimeVal::Bool(rand::rng().random_bool(probability)))
-}
 
-fn bytes(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 1, "random.bytes()")?;
-    let len = usize_arg(args.get(0).expect("checked arity"), "random.bytes len")?;
-    if len > MAX_RANDOM_BYTES {
-        bail!("random.bytes() len exceeds {MAX_RANDOM_BYTES}");
+    #[stdlib_export(name = "shuffle", params(values: List), returns = List)]
+    fn shuffle(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let mut values = list_values(args.get(0).expect("checked arity"), runtime, "random.shuffle list")?;
+        for i in (1..values.len()).rev() {
+            let j = rand::rng().random_range(0..=i);
+            values.swap(i, j);
+        }
+        let list = lk_stdlib_common::typed_list_from_values(values, runtime.heap());
+        Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(list))))
     }
-    let mut data = vec![0u8; len];
-    rand::rng().fill(data.as_mut_slice());
-    Ok(runtime_bytes_value(data, runtime.heap_mut()))
-}
-
-fn choice(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 1, "random.choice()")?;
-    let values = list_values(args.get(0).expect("checked arity"), runtime, "random.choice list")?;
-    if values.is_empty() {
-        return Ok(RuntimeVal::Nil);
-    }
-    let index = rand::rng().random_range(0..values.len());
-    Ok(values[index])
-}
-
-fn shuffle(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 1, "random.shuffle()")?;
-    let mut values = list_values(args.get(0).expect("checked arity"), runtime, "random.shuffle list")?;
-    for i in (1..values.len()).rev() {
-        let j = rand::rng().random_range(0..=i);
-        values.swap(i, j);
-    }
-    let list = lk_stdlib_common::typed_list_from_values(values, runtime.heap());
-    Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(list))))
 }
 
 fn list_values(value: &RuntimeVal, runtime: &mut NativeRuntime<'_>, context: &str) -> Result<Vec<RuntimeVal>> {

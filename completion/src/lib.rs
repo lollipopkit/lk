@@ -27,6 +27,13 @@ pub enum CompletionMode {
     Repl,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompletionTrigger {
+    Invoked,
+    TriggerCharacter(char),
+    Incomplete,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompletionCandidate {
     pub label: String,
@@ -57,11 +64,34 @@ impl CompletionCandidate {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompletionResult {
+    pub candidates: Vec<CompletionCandidate>,
+    pub is_incomplete: bool,
+}
+
+impl CompletionResult {
+    fn complete(candidates: Vec<CompletionCandidate>) -> Self {
+        Self {
+            candidates,
+            is_incomplete: false,
+        }
+    }
+
+    fn incomplete(candidates: Vec<CompletionCandidate>) -> Self {
+        Self {
+            candidates,
+            is_incomplete: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct CompletionRequest<'a> {
     pub source: &'a str,
     pub cursor: usize,
     pub mode: CompletionMode,
+    pub trigger: CompletionTrigger,
     pub session_source: Option<&'a str>,
     pub base_dir: Option<&'a Path>,
 }
@@ -80,6 +110,10 @@ impl CompletionEngine {
     }
 
     pub fn complete(&self, request: CompletionRequest<'_>) -> Vec<CompletionCandidate> {
+        self.complete_with_metadata(request).candidates
+    }
+
+    pub fn complete_with_metadata(&self, request: CompletionRequest<'_>) -> CompletionResult {
         let cursor = request.cursor.min(request.source.len());
         let ctx = CompletionContext::new(request.source, cursor);
         let symbol_source = merged_symbol_source(request.source, request.session_source);
@@ -88,23 +122,32 @@ impl CompletionEngine {
         let mut out = Vec::new();
         if request.mode == CompletionMode::Repl && ctx.line_prefix.trim_start().starts_with(':') {
             self.push_repl_commands(&mut out, &ctx);
-            return dedup_sort(out);
+            return CompletionResult::complete(dedup_sort(out));
         }
         if self.push_import_path(&mut out, &ctx, request.base_dir) {
-            return dedup_sort(out);
+            return CompletionResult::complete(dedup_sort(out));
         }
         if self.push_brace_import_exports(&mut out, &ctx) {
-            return dedup_sort(out);
+            return CompletionResult::complete(dedup_sort(out));
         }
         if self.push_module_name_context(&mut out, &ctx) {
-            return dedup_sort(out);
+            return CompletionResult::complete(dedup_sort(out));
+        }
+        if self.push_string_argument_values(&mut out, &ctx, &symbol_source) {
+            return CompletionResult::incomplete(dedup_sort(out));
         }
         if self.push_member_context(&mut out, &ctx, &symbols) {
-            return dedup_sort(out);
+            return CompletionResult::complete(dedup_sort(out));
         }
         self.push_named_args(&mut out, &ctx, &symbols);
+        if !out.is_empty() {
+            return CompletionResult::complete(dedup_sort(out));
+        }
+        if should_suppress_general(&ctx, request.trigger) {
+            return CompletionResult::incomplete(Vec::new());
+        }
         self.push_general(&mut out, &ctx, &symbols);
-        dedup_sort(out)
+        CompletionResult::complete(dedup_sort(out))
     }
 
     fn push_repl_commands(&self, out: &mut Vec<CompletionCandidate>, ctx: &CompletionContext<'_>) {
@@ -320,6 +363,31 @@ impl CompletionEngine {
         }
     }
 
+    fn push_string_argument_values(
+        &self,
+        out: &mut Vec<CompletionCandidate>,
+        ctx: &CompletionContext<'_>,
+        symbol_source: &str,
+    ) -> bool {
+        let Some(arg) = ctx.first_string_argument_context() else {
+            return false;
+        };
+        for value in collect_first_string_argument_values(symbol_source, arg.function_name) {
+            if !value.starts_with(arg.typed) {
+                continue;
+            }
+            out.push(CompletionCandidate::new(
+                value.clone(),
+                CompletionKind::Value,
+                Some(format!("string argument for {}", arg.function_name)),
+                value,
+                arg.typed_start,
+                ctx.cursor,
+            ));
+        }
+        true
+    }
+
     fn push_general(&self, out: &mut Vec<CompletionCandidate>, ctx: &CompletionContext<'_>, symbols: &SymbolIndex) {
         let typed = ctx.current_identifier_prefix();
         let replace_start = ctx.cursor - typed.len();
@@ -484,6 +552,29 @@ impl<'a> CompletionContext<'a> {
             .unwrap_or(0);
         &self.line_prefix[start..]
     }
+
+    fn first_string_argument_context(&self) -> Option<StringArgumentContext<'a>> {
+        let (quote_start, _quote) = active_string_start(self.line_prefix)?;
+        let before_quote = &self.line_prefix[..quote_start];
+        let (function_name, args_start) = find_call_before_cursor(before_quote)?;
+        if !before_quote[args_start..].trim().is_empty() {
+            return None;
+        }
+
+        let typed_start = self.line_start + quote_start + 1;
+        Some(StringArgumentContext {
+            function_name,
+            typed: &self.source[typed_start..self.cursor],
+            typed_start,
+        })
+    }
+}
+
+#[derive(Debug)]
+struct StringArgumentContext<'a> {
+    function_name: &'a str,
+    typed: &'a str,
+    typed_start: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -881,6 +972,133 @@ fn collect_named_keys(args: &str) -> BTreeSet<&str> {
     out
 }
 
+fn should_suppress_general(ctx: &CompletionContext<'_>, trigger: CompletionTrigger) -> bool {
+    matches!(
+        trigger,
+        CompletionTrigger::TriggerCharacter('{' | '"' | '\'' | ',' | ':')
+    ) && ctx.current_identifier_prefix().is_empty()
+}
+
+fn active_string_start(line_prefix: &str) -> Option<(usize, char)> {
+    let mut active = None;
+    let mut escaped = false;
+    for (idx, ch) in line_prefix.char_indices() {
+        if let Some((_, quote)) = active {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == quote {
+                active = None;
+            }
+        } else if ch == '"' || ch == '\'' {
+            active = Some((idx, ch));
+        }
+    }
+    active
+}
+
+fn collect_first_string_argument_values(source: &str, function_name: &str) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    if let Ok((tokens, _spans)) = Tokenizer::tokenize_enhanced_with_spans(source) {
+        let mut i = 0usize;
+        while i + 2 < tokens.len() {
+            if matches!(&tokens[i], Token::Id(name) if name == function_name)
+                && matches!(tokens[i + 1], Token::LParen)
+                && let Token::Str(value) = &tokens[i + 2]
+            {
+                if !value.is_empty() {
+                    out.insert(value.clone());
+                }
+                i += 3;
+                continue;
+            }
+            i += 1;
+        }
+        return out;
+    }
+
+    collect_first_string_argument_values_text(source, function_name, &mut out);
+    out
+}
+
+fn collect_first_string_argument_values_text(source: &str, function_name: &str, out: &mut BTreeSet<String>) {
+    let mut offset = 0usize;
+    while let Some(rel) = source[offset..].find(function_name) {
+        let name_start = offset + rel;
+        let name_end = name_start + function_name.len();
+        if !identifier_boundary(source, name_start, name_end) {
+            offset = name_end;
+            continue;
+        }
+        let mut cursor = skip_ascii_ws(source, name_end);
+        if source.as_bytes().get(cursor) != Some(&b'(') {
+            offset = name_end;
+            continue;
+        }
+        cursor = skip_ascii_ws(source, cursor + 1);
+        let Some(quote) = source
+            .as_bytes()
+            .get(cursor)
+            .copied()
+            .filter(|byte| *byte == b'"' || *byte == b'\'')
+        else {
+            offset = cursor;
+            continue;
+        };
+        if let Some((value, next)) = parse_quoted_value(source, cursor + 1, quote) {
+            if !value.is_empty() {
+                out.insert(value);
+            }
+            offset = next;
+        } else {
+            offset = cursor + 1;
+        }
+    }
+}
+
+fn identifier_boundary(source: &str, start: usize, end: usize) -> bool {
+    let before = source[..start].chars().next_back();
+    let after = source[end..].chars().next();
+    before.is_none_or(|ch| !is_ident_continue(ch)) && after.is_none_or(|ch| !is_ident_continue(ch))
+}
+
+fn skip_ascii_ws(source: &str, mut cursor: usize) -> usize {
+    while source.as_bytes().get(cursor).is_some_and(u8::is_ascii_whitespace) {
+        cursor += 1;
+    }
+    cursor
+}
+
+fn parse_quoted_value(source: &str, mut cursor: usize, quote: u8) -> Option<(String, usize)> {
+    let mut value = String::new();
+    let bytes = source.as_bytes();
+    while cursor < bytes.len() {
+        let byte = bytes[cursor];
+        if byte == quote {
+            return Some((value, cursor + 1));
+        }
+        if byte == b'\\' {
+            let next = *bytes.get(cursor + 1)?;
+            value.push(match next {
+                b'n' => '\n',
+                b'r' => '\r',
+                b't' => '\t',
+                b'\\' => '\\',
+                b'\'' => '\'',
+                b'"' => '"',
+                b'0' => '\0',
+                other => other as char,
+            });
+            cursor += 2;
+        } else {
+            value.push(byte as char);
+            cursor += 1;
+        }
+    }
+    None
+}
+
 fn method_candidates(receiver_type: Option<ReceiverType>) -> Vec<(&'static str, &'static str)> {
     const LIST: &[&str] = &[
         "len",
@@ -982,6 +1200,7 @@ mod tests {
             source: "ass",
             cursor: 3,
             mode: CompletionMode::Lsp,
+            trigger: CompletionTrigger::Invoked,
             session_source: None,
             base_dir: None,
         }));
@@ -997,10 +1216,11 @@ mod tests {
             source: "io.file.read",
             cursor: "io.file.read".len(),
             mode: CompletionMode::Lsp,
+            trigger: CompletionTrigger::Invoked,
             session_source: None,
             base_dir: None,
         }));
-        assert!(got.contains(&"read_to_string".to_string()));
+        assert!(got.contains(&"read_to_string".to_string()), "{got:?}");
     }
 
     #[test]
@@ -1010,6 +1230,7 @@ mod tests {
             source: "use",
             cursor: 3,
             mode: CompletionMode::Repl,
+            trigger: CompletionTrigger::Invoked,
             session_source: Some("let user_name = 1;\nfn user_score() { return 1; }"),
             base_dir: None,
         }));
@@ -1026,6 +1247,7 @@ mod tests {
             source: "Dra",
             cursor: 3,
             mode: CompletionMode::Repl,
+            trigger: CompletionTrigger::Invoked,
             session_source: Some(session_source),
             base_dir: None,
         }));
@@ -1035,6 +1257,7 @@ mod tests {
             source: "Poi",
             cursor: 3,
             mode: CompletionMode::Repl,
+            trigger: CompletionTrigger::Invoked,
             session_source: Some(session_source),
             base_dir: None,
         }));
@@ -1044,6 +1267,7 @@ mod tests {
             source: "User",
             cursor: 4,
             mode: CompletionMode::Repl,
+            trigger: CompletionTrigger::Invoked,
             session_source: Some(session_source),
             base_dir: None,
         }));
@@ -1058,6 +1282,7 @@ mod tests {
             source,
             cursor: source.len(),
             mode: CompletionMode::Lsp,
+            trigger: CompletionTrigger::Invoked,
             session_source: None,
             base_dir: None,
         });
@@ -1075,6 +1300,7 @@ mod tests {
             source,
             cursor: source.len(),
             mode: CompletionMode::Lsp,
+            trigger: CompletionTrigger::Invoked,
             session_source: None,
             base_dir: None,
         });
@@ -1093,6 +1319,7 @@ mod tests {
             source,
             cursor: source.len(),
             mode: CompletionMode::Lsp,
+            trigger: CompletionTrigger::Invoked,
             session_source: None,
             base_dir: None,
         }));
@@ -1109,9 +1336,125 @@ mod tests {
             source: "use \"ma",
             cursor: "use \"ma".len(),
             mode: CompletionMode::Lsp,
+            trigger: CompletionTrigger::Invoked,
             session_source: None,
             base_dir: Some(dir.path()),
         }));
         assert!(got.contains(&"main.lk".to_string()));
+    }
+
+    #[test]
+    fn completes_first_string_argument_from_existing_calls() {
+        let engine = CompletionEngine::new().unwrap();
+        let source =
+            "if should_run(\"gcd_batch\") {}\nif should_run(\"prime_trial_division\") {}\nif should_run(\"pri\") {}";
+        let cursor = source.rfind("pri").unwrap() + "pri".len();
+        let got = engine.complete(CompletionRequest {
+            source,
+            cursor,
+            mode: CompletionMode::Lsp,
+            trigger: CompletionTrigger::Invoked,
+            session_source: None,
+            base_dir: None,
+        });
+        assert!(got.iter().any(|item| item.label == "prime_trial_division"));
+        assert!(!got.iter().any(|item| item.label == "gcd_batch"));
+        assert!(!got.iter().any(|item| item.label == "if"));
+        assert!(!got.iter().any(|item| item.label == "Int"));
+        assert_eq!(got[0].replace_start, cursor - "pri".len());
+        assert_eq!(got[0].replace_end, cursor);
+    }
+
+    #[test]
+    fn completes_local_function_after_normal_identifier_typing() {
+        let engine = CompletionEngine::new().unwrap();
+        let source = "fn should_run(name) { return true; }\nsho";
+        let got = labels(engine.complete(CompletionRequest {
+            source,
+            cursor: source.len(),
+            mode: CompletionMode::Lsp,
+            trigger: CompletionTrigger::Invoked,
+            session_source: None,
+            base_dir: None,
+        }));
+        assert!(got.contains(&"should_run".to_string()));
+    }
+
+    #[test]
+    fn completes_local_function_after_empty_block_completion_session() {
+        let engine = CompletionEngine::new().unwrap();
+        let source = "fn should_run(name) { return true; }\nif should_run(\"\") {\nsho";
+        let got = labels(engine.complete(CompletionRequest {
+            source,
+            cursor: source.len(),
+            mode: CompletionMode::Lsp,
+            trigger: CompletionTrigger::Incomplete,
+            session_source: None,
+            base_dir: None,
+        }));
+        assert!(got.contains(&"should_run".to_string()));
+    }
+
+    #[test]
+    fn structural_trigger_empty_result_is_incomplete() {
+        let engine = CompletionEngine::new().unwrap();
+        let source = "let a0 = 1;\nif should_run(\"\") {";
+        let got = engine.complete_with_metadata(CompletionRequest {
+            source,
+            cursor: source.len(),
+            mode: CompletionMode::Lsp,
+            trigger: CompletionTrigger::TriggerCharacter('{'),
+            session_source: None,
+            base_dir: None,
+        });
+        assert!(got.candidates.is_empty());
+        assert!(got.is_incomplete);
+    }
+
+    #[test]
+    fn completes_first_single_quoted_string_argument() {
+        let engine = CompletionEngine::new().unwrap();
+        let source = "if should_run('gcd_batch') {}\nif should_run('') {}";
+        let cursor = source.rfind("''").unwrap() + 1;
+        let got = labels(engine.complete(CompletionRequest {
+            source,
+            cursor,
+            mode: CompletionMode::Lsp,
+            trigger: CompletionTrigger::TriggerCharacter('\''),
+            session_source: None,
+            base_dir: None,
+        }));
+        assert_eq!(got, vec!["gcd_batch".to_string()]);
+    }
+
+    #[test]
+    fn suppresses_general_empty_prefix_after_structural_trigger() {
+        let engine = CompletionEngine::new().unwrap();
+        let source = "let a0 = 1;\nif should_run(\"\") {";
+        let got = engine.complete(CompletionRequest {
+            source,
+            cursor: source.len(),
+            mode: CompletionMode::Lsp,
+            trigger: CompletionTrigger::TriggerCharacter('{'),
+            session_source: None,
+            base_dir: None,
+        });
+        assert!(got.is_empty());
+    }
+
+    #[test]
+    fn keeps_brace_import_exports_on_brace_trigger() {
+        let engine = CompletionEngine::new().unwrap();
+        let source = "use {} from io";
+        let cursor = "use {".len();
+        let got = labels(engine.complete(CompletionRequest {
+            source,
+            cursor,
+            mode: CompletionMode::Lsp,
+            trigger: CompletionTrigger::TriggerCharacter('{'),
+            session_source: None,
+            base_dir: None,
+        }));
+        assert!(!got.is_empty());
     }
 }

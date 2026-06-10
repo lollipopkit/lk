@@ -1,292 +1,211 @@
 use anyhow::{Result, anyhow, bail};
 use base64::Engine as _;
 use lk_core::{
-    module::{ModuleProvider, ModuleRegistry},
     util::fast_map::fast_hash_map_new,
     val::{HeapValue, RuntimeVal, TypedMap, de},
-    vm::{NativeArgs, NativeRuntime, RuntimeExport},
+    vm::{NativeArgs, NativeRuntime},
 };
 use lk_stdlib_bytes::{runtime_bytes_or_string_arg, runtime_bytes_value};
-use lk_stdlib_common::metadata::StdlibModuleMetadata;
-use lk_stdlib_common::runtime_native::{namespace_export, parse_format, runtime_string_arg, runtime_string_value};
+use lk_stdlib_common::runtime_native::{parse_format, runtime_string_arg, runtime_string_value};
 use std::sync::Arc;
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, lk_stdlib_common::StdlibModule)]
+#[stdlib_module(name = "encoding", docs = "Encoding and data format helpers")]
 pub struct EncodingModule;
 
-impl EncodingModule {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-impl ModuleProvider for EncodingModule {
-    fn name(&self) -> &str {
-        "encoding"
-    }
-
-    fn register(&self, _registry: &mut ModuleRegistry) -> Result<()> {
-        Ok(())
-    }
-
-    fn runtime_exports(&self) -> Result<RuntimeExport> {
-        namespace_export(&[
-            (
-                "json",
-                DataFormatModule::new("json", de::Format::Json).runtime_exports()?,
-            ),
-            (
-                "yaml",
-                DataFormatModule::new("yaml", de::Format::Yaml).runtime_exports()?,
-            ),
-            (
-                "toml",
-                DataFormatModule::new("toml", de::Format::Toml).runtime_exports()?,
-            ),
-            ("base64", Base64Module.runtime_exports()?),
-            ("hex", HexModule.runtime_exports()?),
-            ("url", UrlEncodingModule.runtime_exports()?),
-        ])
-    }
-}
-
-pub fn register(registry: &mut ModuleRegistry) -> Result<()> {
-    lk_stdlib_common::metadata::register_stdlib_module_metadata(metadata())?;
-    registry.register_module("encoding", Box::new(EncodingModule::new()))
-}
-
-pub fn metadata() -> StdlibModuleMetadata {
-    lk_stdlib_common::stdlib_module_metadata!(
-        encoding,
-        [
-            json.parse => RuntimeValue,
-            toml.parse => RuntimeValue,
-            yaml.parse => RuntimeValue,
-        ]
+#[lk_stdlib_common::stdlib_exports(
+    children(
+        json = JsonModule,
+        yaml = YamlModule,
+        toml = TomlModule,
+        base64 = Base64Module,
+        hex = HexModule,
+        url = UrlEncodingModule,
     )
-}
+)]
+impl EncodingModule {}
 
-#[derive(Debug)]
-struct DataFormatModule {
-    name: &'static str,
-    format: de::Format,
-}
+#[derive(Debug, Default, lk_stdlib_common::StdlibModule)]
+#[stdlib_module(name = "json", docs = "JSON parser")]
+struct JsonModule;
 
-impl DataFormatModule {
-    fn new(name: &'static str, format: de::Format) -> Self {
-        Self { name, format }
+#[lk_stdlib_common::stdlib_exports(module = "encoding.json")]
+impl JsonModule {
+    #[stdlib_export(params(source: String), returns = Value)]
+    fn parse(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        parse_format(args, runtime, "encoding.json.parse", de::Format::Json)
     }
 }
 
-impl ModuleProvider for DataFormatModule {
-    fn name(&self) -> &str {
-        self.name
-    }
+#[derive(Debug, Default, lk_stdlib_common::StdlibModule)]
+#[stdlib_module(name = "yaml", docs = "YAML parser")]
+struct YamlModule;
 
-    fn register(&self, _registry: &mut ModuleRegistry) -> Result<()> {
-        Ok(())
-    }
-
-    fn runtime_exports(&self) -> Result<RuntimeExport> {
-        let parse_fn = match self.format {
-            de::Format::Json => parse_json,
-            de::Format::Yaml => parse_yaml,
-            de::Format::Toml => parse_toml,
-        };
-        Ok(lk_stdlib_common::stdlib_runtime_exports!(
-            [
-                plain "parse" => parse_fn, 1,
-            ],
-        ))
+#[lk_stdlib_common::stdlib_exports(module = "encoding.yaml")]
+impl YamlModule {
+    #[stdlib_export(params(source: String), returns = Value)]
+    fn parse(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        parse_format(args, runtime, "encoding.yaml.parse", de::Format::Yaml)
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default, lk_stdlib_common::StdlibModule)]
+#[stdlib_module(name = "toml", docs = "TOML parser")]
+struct TomlModule;
+
+#[lk_stdlib_common::stdlib_exports(module = "encoding.toml")]
+impl TomlModule {
+    #[stdlib_export(params(source: String), returns = Value)]
+    fn parse(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        parse_format(args, runtime, "encoding.toml.parse", de::Format::Toml)
+    }
+}
+
+#[derive(Debug, Default, lk_stdlib_common::StdlibModule)]
+#[stdlib_module(name = "base64", docs = "Base64 encoding helpers")]
 struct Base64Module;
 
-impl ModuleProvider for Base64Module {
-    fn name(&self) -> &str {
-        "base64"
-    }
-
-    fn register(&self, _registry: &mut ModuleRegistry) -> Result<()> {
-        Ok(())
-    }
-
-    fn runtime_exports(&self) -> Result<RuntimeExport> {
-        Ok(lk_stdlib_common::stdlib_runtime_exports!(
-            [
-                plain "encode" => base64_encode, 1,
-                plain "decode" => base64_decode, 1,
-            ],
+#[lk_stdlib_common::stdlib_exports(module = "encoding.base64")]
+impl Base64Module {
+    #[stdlib_export(params(data: Bytes | String), returns = String)]
+    fn encode(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let data = runtime_bytes_or_string_arg(
+            args.get(0).expect("checked arity"),
+            runtime.heap(),
+            "encoding.base64.encode data",
+        )?;
+        Ok(runtime_string_value(
+            &base64::engine::general_purpose::STANDARD.encode(data.as_ref()),
+            runtime.heap_mut(),
         ))
+    }
+
+    #[stdlib_export(params(data: String), returns = Bytes)]
+    fn decode(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let data = runtime_string_arg(
+            args.get(0).expect("checked arity"),
+            runtime.heap(),
+            "encoding.base64.decode data",
+        )?;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(data.as_bytes())
+            .map_err(|err| anyhow!("invalid base64 data: {err}"))?;
+        Ok(runtime_bytes_value(bytes, runtime.heap_mut()))
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default, lk_stdlib_common::StdlibModule)]
+#[stdlib_module(name = "hex", docs = "Hex encoding helpers")]
 struct HexModule;
 
-impl ModuleProvider for HexModule {
-    fn name(&self) -> &str {
-        "hex"
+#[lk_stdlib_common::stdlib_exports(module = "encoding.hex")]
+impl HexModule {
+    #[stdlib_export(params(data: Bytes | String), returns = String)]
+    fn encode(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let data = runtime_bytes_or_string_arg(
+            args.get(0).expect("checked arity"),
+            runtime.heap(),
+            "encoding.hex.encode data",
+        )?;
+        Ok(runtime_string_value(&hex::encode(data.as_ref()), runtime.heap_mut()))
     }
 
-    fn register(&self, _registry: &mut ModuleRegistry) -> Result<()> {
-        Ok(())
-    }
-
-    fn runtime_exports(&self) -> Result<RuntimeExport> {
-        Ok(lk_stdlib_common::stdlib_runtime_exports!(
-            [
-                plain "encode" => hex_encode, 1,
-                plain "decode" => hex_decode, 1,
-            ],
-        ))
+    #[stdlib_export(params(data: String), returns = Bytes)]
+    fn decode(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let data = runtime_string_arg(
+            args.get(0).expect("checked arity"),
+            runtime.heap(),
+            "encoding.hex.decode data",
+        )?;
+        let bytes = hex::decode(data.as_ref()).map_err(|err| anyhow!("invalid hex data: {err}"))?;
+        Ok(runtime_bytes_value(bytes, runtime.heap_mut()))
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default, lk_stdlib_common::StdlibModule)]
+#[stdlib_module(name = "url", docs = "URL encoding helpers")]
 struct UrlEncodingModule;
 
-impl ModuleProvider for UrlEncodingModule {
-    fn name(&self) -> &str {
-        "url"
-    }
-
-    fn register(&self, _registry: &mut ModuleRegistry) -> Result<()> {
-        Ok(())
-    }
-
-    fn runtime_exports(&self) -> Result<RuntimeExport> {
-        Ok(lk_stdlib_common::stdlib_runtime_exports!(
-            [
-                plain "encode_component" => url_encode_component, 1,
-                plain "decode_component" => url_decode_component, 1,
-                plain "query_parse" => query_parse, 1,
-                plain "query_stringify" => query_stringify, 1,
-            ],
+#[lk_stdlib_common::stdlib_exports(module = "encoding.url")]
+impl UrlEncodingModule {
+    #[stdlib_export(params(value: String), returns = String)]
+    fn encode_component(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let value = runtime_string_arg(
+            args.get(0).expect("checked arity"),
+            runtime.heap(),
+            "encoding.url.encode_component value",
+        )?;
+        Ok(runtime_string_value(
+            &url::form_urlencoded::byte_serialize(value.as_bytes()).collect::<String>(),
+            runtime.heap_mut(),
         ))
     }
-}
 
-fn parse_json(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    parse_format(args, runtime, "encoding.json.parse", de::Format::Json)
-}
-
-fn parse_yaml(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    parse_format(args, runtime, "encoding.yaml.parse", de::Format::Yaml)
-}
-
-fn parse_toml(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    parse_format(args, runtime, "encoding.toml.parse", de::Format::Toml)
-}
-
-fn base64_encode(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 1, "encoding.base64.encode()")?;
-    let data = runtime_bytes_or_string_arg(
-        args.get(0).expect("checked arity"),
-        runtime.heap(),
-        "encoding.base64.encode data",
-    )?;
-    Ok(runtime_string_value(
-        &base64::engine::general_purpose::STANDARD.encode(data.as_ref()),
-        runtime.heap_mut(),
-    ))
-}
-
-fn base64_decode(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 1, "encoding.base64.decode()")?;
-    let data = runtime_string_arg(
-        args.get(0).expect("checked arity"),
-        runtime.heap(),
-        "encoding.base64.decode data",
-    )?;
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(data.as_bytes())
-        .map_err(|err| anyhow!("invalid base64 data: {err}"))?;
-    Ok(runtime_bytes_value(bytes, runtime.heap_mut()))
-}
-
-fn hex_encode(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 1, "encoding.hex.encode()")?;
-    let data = runtime_bytes_or_string_arg(
-        args.get(0).expect("checked arity"),
-        runtime.heap(),
-        "encoding.hex.encode data",
-    )?;
-    Ok(runtime_string_value(&hex::encode(data.as_ref()), runtime.heap_mut()))
-}
-
-fn hex_decode(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 1, "encoding.hex.decode()")?;
-    let data = runtime_string_arg(
-        args.get(0).expect("checked arity"),
-        runtime.heap(),
-        "encoding.hex.decode data",
-    )?;
-    let bytes = hex::decode(data.as_ref()).map_err(|err| anyhow!("invalid hex data: {err}"))?;
-    Ok(runtime_bytes_value(bytes, runtime.heap_mut()))
-}
-
-fn url_encode_component(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 1, "encoding.url.encode_component()")?;
-    let value = runtime_string_arg(
-        args.get(0).expect("checked arity"),
-        runtime.heap(),
-        "encoding.url.encode_component value",
-    )?;
-    Ok(runtime_string_value(
-        &url::form_urlencoded::byte_serialize(value.as_bytes()).collect::<String>(),
-        runtime.heap_mut(),
-    ))
-}
-
-fn url_decode_component(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 1, "encoding.url.decode_component()")?;
-    let value = runtime_string_arg(
-        args.get(0).expect("checked arity"),
-        runtime.heap(),
-        "encoding.url.decode_component value",
-    )?;
-    let wrapped = format!("x={value}");
-    let decoded = url::form_urlencoded::parse(wrapped.as_bytes())
-        .map(|(_, value)| value.to_string())
-        .next()
-        .unwrap_or_default();
-    Ok(runtime_string_value(&decoded, runtime.heap_mut()))
-}
-
-fn query_parse(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 1, "encoding.url.query_parse()")?;
-    let value = runtime_string_arg(
-        args.get(0).expect("checked arity"),
-        runtime.heap(),
-        "encoding.url.query_parse value",
-    )?;
-    let mut map = fast_hash_map_new();
-    for (key, value) in url::form_urlencoded::parse(value.as_bytes()) {
-        map.insert(
-            Arc::<str>::from(key.as_ref()),
-            runtime_string_value(value.as_ref(), runtime.heap_mut()),
-        );
+    #[stdlib_export(params(value: String), returns = String)]
+    fn decode_component(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let value = runtime_string_arg(
+            args.get(0).expect("checked arity"),
+            runtime.heap(),
+            "encoding.url.decode_component value",
+        )?;
+        let decoded = percent_decode_component(value.as_ref())?;
+        Ok(runtime_string_value(&decoded, runtime.heap_mut()))
     }
-    Ok(RuntimeVal::Obj(
-        runtime.heap_mut().alloc(HeapValue::Map(TypedMap::StringMixed(map))),
-    ))
+
+    #[stdlib_export(params(query: String), returns = Map)]
+    fn query_parse(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let value = runtime_string_arg(
+            args.get(0).expect("checked arity"),
+            runtime.heap(),
+            "encoding.url.query_parse value",
+        )?;
+        let mut map = fast_hash_map_new();
+        for (key, value) in url::form_urlencoded::parse(value.as_bytes()) {
+            map.insert(
+                Arc::<str>::from(key.as_ref()),
+                runtime_string_value(value.as_ref(), runtime.heap_mut()),
+            );
+        }
+        Ok(RuntimeVal::Obj(
+            runtime.heap_mut().alloc(HeapValue::Map(TypedMap::StringMixed(map))),
+        ))
+    }
+
+    #[stdlib_export(params(map: Map<String, String>), returns = String)]
+    fn query_stringify(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let map = string_map_arg(
+            args.get(0).expect("checked arity"),
+            runtime,
+            "encoding.url.query_stringify map",
+        )?;
+        let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+        for (key, value) in map {
+            serializer.append_pair(&key, &value);
+        }
+        Ok(runtime_string_value(&serializer.finish(), runtime.heap_mut()))
+    }
 }
 
-fn query_stringify(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 1, "encoding.url.query_stringify()")?;
-    let map = string_map_arg(
-        args.get(0).expect("checked arity"),
-        runtime,
-        "encoding.url.query_stringify map",
-    )?;
-    let mut serializer = url::form_urlencoded::Serializer::new(String::new());
-    for (key, value) in map {
-        serializer.append_pair(&key, &value);
+fn percent_decode_component(value: &str) -> Result<String> {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let Some(hex) = bytes.get(index + 1..index + 3) else {
+                bail!("invalid percent encoding: incomplete escape");
+            };
+            let hex = std::str::from_utf8(hex).map_err(|_| anyhow!("invalid percent encoding: non-UTF-8 escape"))?;
+            let byte = u8::from_str_radix(hex, 16)
+                .map_err(|_| anyhow!("invalid percent encoding: expected two hex digits"))?;
+            decoded.push(byte);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
     }
-    Ok(runtime_string_value(&serializer.finish(), runtime.heap_mut()))
+    String::from_utf8(decoded).map_err(|err| anyhow!("invalid percent-encoded UTF-8: {err}"))
 }
 
 fn string_map_arg(value: &RuntimeVal, runtime: &NativeRuntime<'_>, context: &str) -> Result<Vec<(String, String)>> {

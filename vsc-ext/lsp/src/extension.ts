@@ -67,6 +67,38 @@ function withTiming<T>(label: string, fn: () => T): T {
   }
 }
 
+function trustHoverCommands(hover: vscode.Hover | null | undefined): vscode.Hover | null | undefined {
+  if (!hover) return hover;
+  const trustedContents = hover.contents.map(content => {
+    if (content instanceof vscode.MarkdownString) {
+      content.isTrusted = { enabledCommands: ['lk.openLocation'] };
+      return content;
+    }
+    if (typeof content === 'string') {
+      const markdown = new vscode.MarkdownString(content, true);
+      markdown.isTrusted = { enabledCommands: ['lk.openLocation'] };
+      return markdown;
+    }
+    return content;
+  });
+  return new vscode.Hover(trustedContents, hover.range);
+}
+
+async function openLkLocation(target: any) {
+  if (!target?.uri || !target?.range?.start) {
+    vscode.window.showErrorMessage('Invalid LK location target.');
+    return;
+  }
+  const uri = vscode.Uri.parse(String(target.uri));
+  const start = target.range.start;
+  const end = target.range.end ?? start;
+  const selection = new vscode.Range(
+    new vscode.Position(Number(start.line) || 0, Number(start.character) || 0),
+    new vscode.Position(Number(end.line) || Number(start.line) || 0, Number(end.character) || Number(start.character) || 0)
+  );
+  await vscode.window.showTextDocument(uri, { selection });
+}
+
 // Simple LRU cache for perf-sensitive middleware
 class LRU<K, V> {
   private map = new Map<K, V>();
@@ -297,6 +329,9 @@ export function activate(context: vscode.ExtensionContext) {
   });
   context.subscriptions.push(analyzeCommand);
 
+  const openLocationCommand = vscode.commands.registerCommand('lk.openLocation', openLkLocation);
+  context.subscriptions.push(openLocationCommand);
+
   // Check if LSP is enabled
   const config = vscode.workspace.getConfiguration('lk.lsp');
   // Initialize perf tracing settings early
@@ -371,6 +406,13 @@ export function activate(context: vscode.ExtensionContext) {
       } finally {
         next(uri, diagnostics);
       }
+    },
+    provideHover(document, position, token, next) {
+      const result = next(document, position, token);
+      if (result && typeof (result as any).then === 'function') {
+        return (result as Promise<vscode.Hover | null | undefined>).then(trustHoverCommands);
+      }
+      return trustHoverCommands(result as vscode.Hover | null | undefined) as any;
     },
     provideDocumentSemanticTokens(document, token, next) {
       if (!settings.semanticTokensEnabled) {

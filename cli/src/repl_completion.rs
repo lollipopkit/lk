@@ -54,6 +54,7 @@ impl ReplCompletion {
             source,
             cursor,
             mode: CompletionMode::Repl,
+            trigger: lk_completion::CompletionTrigger::Invoked,
             session_source: session_source.as_deref(),
             base_dir: self.base_dir.as_deref(),
         })

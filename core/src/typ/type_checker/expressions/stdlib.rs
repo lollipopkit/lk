@@ -9,7 +9,7 @@ impl TypeChecker {
         let Some(path) = access_segments(func) else {
             return Ok(None);
         };
-        let Some((module, field)) = canonical_stdlib_call_path(&path, args.len()) else {
+        let Some((module, field)) = canonical_stdlib_path(&path) else {
             return Ok(None);
         };
 
@@ -18,7 +18,7 @@ impl TypeChecker {
             return Ok(Some(Type::Int));
         }
 
-        let Some((params, named_params, return_type)) = stdlib_function_signature(module, field) else {
+        let Some((params, named_params, return_type)) = stdlib_function_signature(&module, &field) else {
             return Ok(None);
         };
         if !named_params.is_empty() || params.len() != args.len() {
@@ -45,7 +45,7 @@ impl TypeChecker {
         let Some(path) = access_segments(callee) else {
             return Ok(None);
         };
-        let Some((module, field)) = canonical_stdlib_call_path(&path, pos_args.len()) else {
+        let Some((module, field)) = canonical_stdlib_path(&path) else {
             return Ok(None);
         };
 
@@ -61,7 +61,7 @@ impl TypeChecker {
         let mut path = access_segments(expr)?;
         path.push(segment_name(field)?);
         let (module, field) = canonical_stdlib_path(&path)?;
-        self.stdlib_function_type(module, field)
+        self.stdlib_function_type(&module, &field)
     }
 
     fn stdlib_function_type(&self, module: &str, field: &str) -> Option<Type> {
@@ -159,17 +159,10 @@ fn stdlib_function_signature(module: &str, field: &str) -> Option<(Vec<Type>, Ve
     }
 }
 
-fn canonical_stdlib_call_path<'a>(path: &'a [&'a str], positional_count: usize) -> Option<(&'a str, &'a str)> {
+fn canonical_stdlib_path(path: &[&str]) -> Option<(String, String)> {
     match path {
-        ["os", "env", "get"] if positional_count == 2 => Some(("env", "get_or")),
-        _ => canonical_stdlib_path(path),
-    }
-}
-
-fn canonical_stdlib_path<'a>(path: &'a [&'a str]) -> Option<(&'a str, &'a str)> {
-    match path {
-        [module, field] => Some((module, field)),
-        ["os", "env", field] => Some(("env", field)),
+        ["os", "env", field] => Some(("env".to_string(), (*field).to_string())),
+        [.., field] if path.len() >= 2 => Some((path[..path.len() - 1].join("."), (*field).to_string())),
         _ => None,
     }
 }

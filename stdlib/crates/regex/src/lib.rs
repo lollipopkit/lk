@@ -1,9 +1,8 @@
 use anyhow::{Result, anyhow};
 use lk_core::{
-    module::{ModuleProvider, ModuleRegistry},
     util::fast_map::fast_hash_map_new,
     val::{HeapValue, RuntimeVal, TypedList, TypedMap},
-    vm::{NativeArgs, NativeRuntime, RuntimeExport},
+    vm::{NativeArgs, NativeRuntime},
 };
 use lk_stdlib_common::runtime_native::{runtime_string_arg, runtime_string_value};
 use once_cell::sync::Lazy;
@@ -12,110 +11,85 @@ use std::sync::{Arc, Mutex};
 static CACHE: Lazy<Mutex<std::collections::HashMap<String, regex::Regex>>> =
     Lazy::new(|| Mutex::new(std::collections::HashMap::new()));
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, lk_stdlib_common::StdlibModule)]
+#[stdlib_module(name = "regex", docs = "Regular expression helpers")]
 pub struct RegexModule;
 
+#[lk_stdlib_common::stdlib_exports(module = "regex")]
 impl RegexModule {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-impl ModuleProvider for RegexModule {
-    fn name(&self) -> &str {
-        "regex"
+    #[stdlib_export(name = "is_match", params(pattern: String, text: String), returns = Bool)]
+    fn is_match(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let (regex, text) = regex_text(args, runtime, "regex.is_match()")?;
+        Ok(RuntimeVal::Bool(regex.is_match(text.as_ref())))
     }
 
-    fn register(&self, _registry: &mut ModuleRegistry) -> Result<()> {
-        Ok(())
+    #[stdlib_export(name = "find", params(pattern: String, text: String), returns = Map?)]
+    fn find(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let (regex, text) = regex_text(args, runtime, "regex.find()")?;
+        Ok(match regex.find(text.as_ref()) {
+            Some(m) => match_map(m.as_str(), m.start(), m.end(), runtime),
+            None => RuntimeVal::Nil,
+        })
     }
 
-    fn runtime_exports(&self) -> Result<RuntimeExport> {
-        Ok(lk_stdlib_common::stdlib_runtime_exports!(
-            [
-                plain "is_match" => is_match, 2,
-                plain "find" => find, 2,
-                plain "find_all" => find_all, 2,
-                plain "captures" => captures, 2,
-                plain "replace" => replace, 3,
-                plain "split" => split, 2,
-            ],
+    #[stdlib_export(name = "find_all", params(pattern: String, text: String), returns = List)]
+    fn find_all(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let (regex, text) = regex_text(args, runtime, "regex.find_all()")?;
+        let values = regex
+            .find_iter(text.as_ref())
+            .map(|m| match_map(m.as_str(), m.start(), m.end(), runtime))
+            .collect::<Vec<_>>();
+        let list = lk_stdlib_common::typed_list_from_values(values, runtime.heap());
+        Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(list))))
+    }
+
+    #[stdlib_export(name = "captures", params(pattern: String, text: String), returns = List?)]
+    fn captures(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let (regex, text) = regex_text(args, runtime, "regex.captures()")?;
+        let Some(captures) = regex.captures(text.as_ref()) else {
+            return Ok(RuntimeVal::Nil);
+        };
+        let mut values = Vec::new();
+        for capture in captures.iter() {
+            values.push(match capture {
+                Some(value) => runtime_string_value(value.as_str(), runtime.heap_mut()),
+                None => RuntimeVal::Nil,
+            });
+        }
+        let list = lk_stdlib_common::typed_list_from_values(values, runtime.heap());
+        Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(list))))
+    }
+
+    #[stdlib_export(name = "replace", params(pattern: String, text: String, replacement: String), returns = String)]
+    fn replace(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let regex = cached_regex(args.get(0).expect("checked arity"), runtime, "regex.replace pattern")?;
+        let text = runtime_string_arg(
+            args.get(1).expect("checked arity"),
+            runtime.heap(),
+            "regex.replace text",
+        )?;
+        let replacement = runtime_string_arg(
+            args.get(2).expect("checked arity"),
+            runtime.heap(),
+            "regex.replace replacement",
+        )?;
+        Ok(runtime_string_value(
+            &regex.replace_all(text.as_ref(), replacement.as_ref()),
+            runtime.heap_mut(),
+        ))
+    }
+
+    #[stdlib_export(name = "split", params(pattern: String, text: String), returns = List)]
+    fn split(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let (regex, text) = regex_text(args, runtime, "regex.split()")?;
+        let values = regex.split(text.as_ref()).map(Arc::<str>::from).collect::<Vec<_>>();
+        Ok(RuntimeVal::Obj(
+            runtime.heap_mut().alloc(HeapValue::List(TypedList::String(values))),
         ))
     }
 }
 
-pub fn register(registry: &mut ModuleRegistry) -> Result<()> {
-    registry.register_module("regex", Box::new(RegexModule::new()))
-}
-
-fn is_match(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    let (regex, text) = regex_text(args, runtime, "regex.is_match()")?;
-    Ok(RuntimeVal::Bool(regex.is_match(text.as_ref())))
-}
-
-fn find(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    let (regex, text) = regex_text(args, runtime, "regex.find()")?;
-    Ok(match regex.find(text.as_ref()) {
-        Some(m) => match_map(m.as_str(), m.start(), m.end(), runtime),
-        None => RuntimeVal::Nil,
-    })
-}
-
-fn find_all(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    let (regex, text) = regex_text(args, runtime, "regex.find_all()")?;
-    let values = regex
-        .find_iter(text.as_ref())
-        .map(|m| match_map(m.as_str(), m.start(), m.end(), runtime))
-        .collect::<Vec<_>>();
-    let list = lk_stdlib_common::typed_list_from_values(values, runtime.heap());
-    Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(list))))
-}
-
-fn captures(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    let (regex, text) = regex_text(args, runtime, "regex.captures()")?;
-    let Some(captures) = regex.captures(text.as_ref()) else {
-        return Ok(RuntimeVal::Nil);
-    };
-    let mut values = Vec::new();
-    for capture in captures.iter() {
-        values.push(match capture {
-            Some(value) => runtime_string_value(value.as_str(), runtime.heap_mut()),
-            None => RuntimeVal::Nil,
-        });
-    }
-    let list = lk_stdlib_common::typed_list_from_values(values, runtime.heap());
-    Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(list))))
-}
-
-fn replace(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 3, "regex.replace()")?;
-    let regex = cached_regex(args.get(0).expect("checked arity"), runtime, "regex.replace pattern")?;
-    let text = runtime_string_arg(
-        args.get(1).expect("checked arity"),
-        runtime.heap(),
-        "regex.replace text",
-    )?;
-    let replacement = runtime_string_arg(
-        args.get(2).expect("checked arity"),
-        runtime.heap(),
-        "regex.replace replacement",
-    )?;
-    Ok(runtime_string_value(
-        &regex.replace_all(text.as_ref(), replacement.as_ref()),
-        runtime.heap_mut(),
-    ))
-}
-
-fn split(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    let (regex, text) = regex_text(args, runtime, "regex.split()")?;
-    let values = regex.split(text.as_ref()).map(Arc::<str>::from).collect::<Vec<_>>();
-    Ok(RuntimeVal::Obj(
-        runtime.heap_mut().alloc(HeapValue::List(TypedList::String(values))),
-    ))
-}
-
 fn regex_text(args: NativeArgs<'_>, runtime: &NativeRuntime<'_>, name: &str) -> Result<(regex::Regex, Arc<str>)> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 2, name)?;
     let regex = cached_regex(args.get(0).expect("checked arity"), runtime, name)?;
     let text = runtime_string_arg(args.get(1).expect("checked arity"), runtime.heap(), name)?;
     Ok((regex, text))

@@ -46,7 +46,7 @@ The previous standalone `lk-highlight` extension has been merged into this packa
 - Language Server Protocol (LSP) integration for:
   - Real-time error detection and diagnostics
   - Code completion
-  - Hover information
+  - Markdown hover information with LK/std library signatures, doc comments, package docs, type links, and implementation links
   - Go to definition
   - Document symbols
 - Inlay hints (parameter + type hints)
@@ -56,10 +56,19 @@ The previous standalone `lk-highlight` extension has been merged into this packa
 - Strict type diagnostics use whole-program call-site constraints before reporting implicit `Any` parameters.
 - If a function parameter remains unresolved, the error is attached to the parameter name rather than the file header.
 
+### Hover docs and type links
+
+- Hovering LK declarations and stdlib calls shows the signature in a fenced `lk` code block.
+- `///` and `/** ... */` comments immediately above `fn`, `struct`, `trait`, or `type` declarations render as Markdown in hover.
+- Top-of-file package docs from `//!` and `/*! ... */` in a package root render when hovering `use package` or `use package as alias`.
+- Hover type links open LK-defined types or built-in runtime type documentation through the internal `lk.openLocation` command. Rust-backed stdlib hovers also expose `Go to implementation`.
+
 ### Stdlib awareness
+
 - The client queries the Rust LK language server for stdlib modules and exports. Module-aware completions support:
   - `use <module>` / `from <module>` name completion
   - `<alias>.` namespace member completion for stdlib exports (e.g. `iter.zip`, `iter.take`, `iter.map`, ...)
+- Stdlib function hover uses Rust-side metadata generated from function-level `#[stdlib_export]` annotations, including highlighted signatures, Markdown docs, spec links for built-in types, and Rust implementation links when present.
 - Recent updates synced with the server include:
   - `iter` exports generic higher-order ops: `map(list, fn)`, `filter(list, fn)`, `reduce(list, init, fn)`
   - `list` exposes method sugar delegating to `iter`: `take`, `skip`, `chain`, `flatten`, `unique`, `chunk`, `enumerate`, `zip` in addition to `map/filter/reduce`
@@ -84,13 +93,13 @@ The previous standalone `lk-highlight` extension has been merged into this packa
 2. Install dependencies: `npm --prefix vsc-ext/lsp install`
 3. Compile the extension: `npm --prefix vsc-ext/lsp run compile`
 4. Build the LK LSP server: `cargo build -p lk-lsp`
-5. Run `make debug-lsp-ext` to open an Extension Development Host, or run `make vsix` to build the single VSIX package.
+5. Run `make debug-lsp-ext` to open an Extension Development Host, or run `make vsix` to build the single VSIX package. In an interactive shell, `make vsix` asks whether to install the generated VSIX with VS Code's CLI; use `make vsix INSTALL_VSIX=1` to install without prompting, or `make vsix INSTALL_VSIX=1 VSCODE_CLI=/path/to/code` when the CLI is not on `PATH`. If VS Code refuses to reinstall an active extension, restart VS Code and rerun the printed install command.
 
 ## Development
 
 - `npm run compile`: Compile the TypeScript source
 - `npm run watch`: Compile in watch mode
-- `make vsix`: Build the merged VS Code extension package from `vsc-ext/lsp`
+- `make vsix`: Build the merged VS Code extension package from `vsc-ext/lsp` and prompt to install the generated VSIX
 - `make debug-lsp-ext`: Launch VS Code with the merged extension and a repo-local `lk-lsp`
 
 ## LK Language Features
@@ -106,7 +115,7 @@ The extension supports the LK language with the following features:
 
 ### Language Server Features
 - Real-time error checking
-- Code completion for keywords and functions
+- Code completion for keywords, functions, named arguments, receiver methods, and repeated string argument values
 - Hover information for symbols
 - Document symbols for navigation
 - Identifier root analysis

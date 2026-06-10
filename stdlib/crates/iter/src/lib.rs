@@ -2,299 +2,228 @@ use std::sync::Arc;
 
 use anyhow::{Result, anyhow, bail};
 use lk_core::{
-    module::{ModuleProvider, ModuleRegistry},
     val::{CallableValue, HeapStore, HeapValue, RuntimeMapKey, RuntimeVal, ShortStr, TypedList, TypedMap},
     vm::{
-        NativeArgs, NativeEntry, NativeFunction, NativeRuntime, RuntimeExport, call_runtime_callable_runtime,
+        NativeArgs, NativeEntry, NativeFunction, NativeRuntime, call_runtime_callable_runtime,
         call_runtime_value_runtime,
     },
 };
-use lk_stdlib_common::metadata::StdlibModuleMetadata;
 
 pub mod runtime_native {
     pub use lk_stdlib_common::runtime_native::*;
 }
 pub use lk_stdlib_common::typed_list_from_values;
 
-#[derive(Debug)]
+#[derive(Debug, Default, lk_stdlib_common::StdlibModule)]
+#[stdlib_module(name = "iter", docs = "List-oriented iterator utilities")]
 pub struct IterModule;
 
-impl Default for IterModule {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
+#[lk_stdlib_common::stdlib_exports(module = "iter")]
 impl IterModule {
-    pub fn new() -> Self {
-        Self
+    #[stdlib_export(params(values: List, f: Fn), returns = List, kind = "full_state")]
+    fn map(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let values = args.as_slice();
+        let input = list_snapshot_arg(&values[0], runtime.heap(), "iter.map first argument")?;
+        let mut out = Vec::with_capacity(input.len());
+        input.for_each_item(|item| {
+            let value = item.into_runtime_value(runtime.heap_mut());
+            out.push(call_callable(
+                &values[1],
+                &[value],
+                runtime,
+                "iter.map second argument",
+            )?);
+            Ok(())
+        })?;
+        runtime_list(out, runtime.heap_mut())
     }
-}
 
-impl ModuleProvider for IterModule {
-    fn name(&self) -> &str {
-        "iter"
+    #[stdlib_export(params(values: List, predicate: Fn), returns = List, kind = "full_state")]
+    fn filter(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let values = args.as_slice();
+        let input = list_snapshot_arg(&values[0], runtime.heap(), "iter.filter first argument")?;
+        let mut out = Vec::with_capacity(input.len());
+        input.for_each_item(|item| {
+            let value = item.into_runtime_value(runtime.heap_mut());
+            let keep = call_callable(
+                &values[1],
+                std::slice::from_ref(&value),
+                runtime,
+                "iter.filter second argument",
+            )?;
+            if truthy(&keep) {
+                out.push(value);
+            }
+            Ok(())
+        })?;
+        runtime_list(out, runtime.heap_mut())
     }
 
-    fn description(&self) -> &str {
-        "List-oriented iterator utilities"
+    #[stdlib_export(params(values: List, initial: Any, f: Fn), returns = Any, kind = "full_state")]
+    fn reduce(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let values = args.as_slice();
+        let input = list_snapshot_arg(&values[0], runtime.heap(), "iter.reduce first argument")?;
+        let mut acc = values[1].clone();
+        input.for_each_item(|item| {
+            let value = item.into_runtime_value(runtime.heap_mut());
+            let previous = std::mem::replace(&mut acc, RuntimeVal::Nil);
+            acc = call_callable(&values[2], &[previous, value], runtime, "iter.reduce third argument")?;
+            Ok(())
+        })?;
+        Ok(acc)
     }
 
-    fn register(&self, _registry: &mut ModuleRegistry) -> Result<()> {
-        Ok(())
+    #[stdlib_export(params(values: List), returns = List)]
+    fn enumerate(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let input = list_snapshot_arg(&args.as_slice()[0], runtime.heap(), "iter.enumerate")?;
+        let mut out = Vec::with_capacity(input.len());
+        let mut index = 0usize;
+        input.for_each_item(|item| {
+            let value = item.into_runtime_value(runtime.heap_mut());
+            out.push(runtime_list(
+                vec![RuntimeVal::Int(index as i64), value],
+                runtime.heap_mut(),
+            )?);
+            index += 1;
+            Ok(())
+        })?;
+        runtime_list(out, runtime.heap_mut())
     }
 
-    fn runtime_exports(&self) -> Result<RuntimeExport> {
-        Ok(lk_stdlib_common::stdlib_runtime_exports!(
-            [
-                full_state "map" => map, 2,
-                full_state "filter" => filter, 2,
-                full_state "reduce" => reduce, 3,
-                plain "enumerate" => enumerate, 1,
-                plain "range" => range, NativeEntry::VARIADIC,
-                plain "zip" => zip, 2,
-                plain "take" => take, 2,
-                plain "skip" => skip, 2,
-                plain "chain" => chain, 2,
-                plain "flatten" => flatten, 1,
-                plain "unique" => unique, 1,
-                plain "chunk" => chunk, 2,
-                plain "next" => next, 1,
-                plain "collect" => collect, 1,
-            ],
+    #[stdlib_export(params(stop: Int; start: Int, stop: Int, step?: Int), returns = List)]
+    fn range(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let values = args.as_slice();
+        let (start, end, step) = match values {
+            [end] => (0, int_arg(end, "iter.range end")?, 1),
+            [start, end] => (int_arg(start, "iter.range start")?, int_arg(end, "iter.range end")?, 1),
+            [start, end, step] => (
+                int_arg(start, "iter.range start")?,
+                int_arg(end, "iter.range end")?,
+                int_arg(step, "iter.range step")?,
+            ),
+            _ => bail!("iter.range expects (end), (start, end), or (start, end, step)"),
+        };
+        if step == 0 {
+            bail!("iter.range step cannot be zero");
+        }
+
+        let mut out = Vec::new();
+        let mut current = start;
+        if step > 0 {
+            while current < end {
+                out.push(current);
+                current += step;
+            }
+        } else {
+            while current > end {
+                out.push(current);
+                current += step;
+            }
+        }
+        Ok(RuntimeVal::Obj(
+            runtime.heap_mut().alloc(HeapValue::List(TypedList::Int(out))),
         ))
     }
-}
 
-pub fn register(registry: &mut ModuleRegistry) -> Result<()> {
-    lk_stdlib_common::metadata::register_stdlib_module_metadata(metadata())?;
-    registry.register_module("iter", Box::new(IterModule::new()))
-}
+    #[stdlib_export(params(left: List, right: List), returns = List)]
+    fn zip(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let values = args.as_slice();
+        let pairs = {
+            let left = typed_list_arg_ref(&values[0], runtime.heap(), "iter.zip first argument")?;
+            let right = typed_list_arg_ref(&values[1], runtime.heap(), "iter.zip second argument")?;
+            let count = left.len().min(right.len());
+            let mut pairs = Vec::with_capacity(count);
+            for index in 0..count {
+                let left = typed_list_item_snapshot(left, index).expect("index bounded by count");
+                let right = typed_list_item_snapshot(right, index).expect("index bounded by count");
+                pairs.push((left, right));
+            }
+            pairs
+        };
+        let mut out = Vec::with_capacity(pairs.len());
+        for (left, right) in pairs {
+            let left = left.into_runtime_value(runtime.heap_mut());
+            let right = right.into_runtime_value(runtime.heap_mut());
+            out.push(runtime_list(vec![left, right], runtime.heap_mut())?);
+        }
+        runtime_list(out, runtime.heap_mut())
+    }
 
-pub fn metadata() -> StdlibModuleMetadata {
-    lk_stdlib_common::stdlib_module_metadata!(
-        iter,
-        [
-            chain => RuntimeValue,
-            chunk => RuntimeValue,
-            collect => RuntimeValue,
-            enumerate => RuntimeValue,
-            filter => RuntimeValue,
-            flatten => RuntimeValue,
-            map => RuntimeValue,
-            next => RuntimeValue,
-            range => RuntimeValue,
-            reduce => RuntimeValue,
-            skip => RuntimeValue,
-            take => RuntimeValue,
-            unique => RuntimeValue,
-            zip => RuntimeValue,
-        ]
-    )
-}
+    #[stdlib_export(params(values: List, count: Int), returns = List)]
+    fn take(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let values = args.as_slice();
+        let n = count_arg(&values[1], "iter.take count")?;
+        list_slice(&values[0], runtime.heap_mut(), 0, Some(n), "iter.take first argument")
+    }
 
-fn map(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 2, "iter.map")?;
-    let values = args.as_slice();
-    let input = list_snapshot_arg(&values[0], runtime.heap(), "iter.map first argument")?;
-    let mut out = Vec::with_capacity(input.len());
-    input.for_each_item(|item| {
-        let value = item.into_runtime_value(runtime.heap_mut());
-        out.push(call_callable(
-            &values[1],
-            &[value],
-            runtime,
-            "iter.map second argument",
-        )?);
-        Ok(())
-    })?;
-    runtime_list(out, runtime.heap_mut())
-}
+    #[stdlib_export(params(values: List, count: Int), returns = List)]
+    fn skip(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let values = args.as_slice();
+        let n = count_arg(&values[1], "iter.skip count")?;
+        list_slice(&values[0], runtime.heap_mut(), n, None, "iter.skip first argument")
+    }
 
-fn filter(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 2, "iter.filter")?;
-    let values = args.as_slice();
-    let input = list_snapshot_arg(&values[0], runtime.heap(), "iter.filter first argument")?;
-    let mut out = Vec::with_capacity(input.len());
-    input.for_each_item(|item| {
-        let value = item.into_runtime_value(runtime.heap_mut());
-        let keep = call_callable(
-            &values[1],
-            std::slice::from_ref(&value),
-            runtime,
-            "iter.filter second argument",
+    #[stdlib_export(params(left: List, right: List), returns = List)]
+    fn chain(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let values = args.as_slice();
+        let plan = typed_list_concat_preserving_backing(
+            typed_list_arg_ref(&values[0], runtime.heap(), "iter.chain first argument")?,
+            typed_list_arg_ref(&values[1], runtime.heap(), "iter.chain second argument")?,
+        );
+        let list = plan.into_typed(runtime.heap_mut());
+        Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(list))))
+    }
+
+    #[stdlib_export(params(values: List), returns = List)]
+    fn flatten(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let plan = flatten_typed_list(
+            typed_list_arg_ref(&args.as_slice()[0], runtime.heap(), "iter.flatten")?,
+            runtime.heap(),
         )?;
-        if truthy(&keep) {
-            out.push(value);
-        }
-        Ok(())
-    })?;
-    runtime_list(out, runtime.heap_mut())
-}
-
-fn reduce(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 3, "iter.reduce")?;
-    let values = args.as_slice();
-    let input = list_snapshot_arg(&values[0], runtime.heap(), "iter.reduce first argument")?;
-    let mut acc = values[1].clone();
-    input.for_each_item(|item| {
-        let value = item.into_runtime_value(runtime.heap_mut());
-        let previous = std::mem::replace(&mut acc, RuntimeVal::Nil);
-        acc = call_callable(&values[2], &[previous, value], runtime, "iter.reduce third argument")?;
-        Ok(())
-    })?;
-    Ok(acc)
-}
-
-fn enumerate(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 1, "iter.enumerate")?;
-    let input = list_snapshot_arg(&args.as_slice()[0], runtime.heap(), "iter.enumerate")?;
-    let mut out = Vec::with_capacity(input.len());
-    let mut index = 0usize;
-    input.for_each_item(|item| {
-        let value = item.into_runtime_value(runtime.heap_mut());
-        out.push(runtime_list(
-            vec![RuntimeVal::Int(index as i64), value],
-            runtime.heap_mut(),
-        )?);
-        index += 1;
-        Ok(())
-    })?;
-    runtime_list(out, runtime.heap_mut())
-}
-
-fn range(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    let values = args.as_slice();
-    let (start, end, step) = match values {
-        [end] => (0, int_arg(end, "iter.range end")?, 1),
-        [start, end] => (int_arg(start, "iter.range start")?, int_arg(end, "iter.range end")?, 1),
-        [start, end, step] => (
-            int_arg(start, "iter.range start")?,
-            int_arg(end, "iter.range end")?,
-            int_arg(step, "iter.range step")?,
-        ),
-        _ => bail!("iter.range expects (end), (start, end), or (start, end, step)"),
-    };
-    if step == 0 {
-        bail!("iter.range step cannot be zero");
+        let list = plan.into_typed(runtime.heap_mut());
+        Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(list))))
     }
 
-    let mut out = Vec::new();
-    let mut current = start;
-    if step > 0 {
-        while current < end {
-            out.push(current);
-            current += step;
-        }
-    } else {
-        while current > end {
-            out.push(current);
-            current += step;
-        }
+    #[stdlib_export(params(values: List), returns = List)]
+    fn unique(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let input = typed_list_arg_ref(&args.as_slice()[0], runtime.heap(), "iter.unique")?;
+        let list = unique_typed_list(input, runtime.heap());
+        Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(list))))
     }
-    Ok(RuntimeVal::Obj(
-        runtime.heap_mut().alloc(HeapValue::List(TypedList::Int(out))),
-    ))
-}
 
-fn zip(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 2, "iter.zip")?;
-    let values = args.as_slice();
-    let pairs = {
-        let left = typed_list_arg_ref(&values[0], runtime.heap(), "iter.zip first argument")?;
-        let right = typed_list_arg_ref(&values[1], runtime.heap(), "iter.zip second argument")?;
-        let count = left.len().min(right.len());
-        let mut pairs = Vec::with_capacity(count);
-        for index in 0..count {
-            let left = typed_list_item_snapshot(left, index).expect("index bounded by count");
-            let right = typed_list_item_snapshot(right, index).expect("index bounded by count");
-            pairs.push((left, right));
+    #[stdlib_export(params(values: List, size: Int), returns = List)]
+    fn chunk(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let values = args.as_slice();
+        let size = count_arg(&values[1], "iter.chunk size")?;
+        if size == 0 {
+            bail!("iter.chunk size must be positive");
         }
-        pairs
-    };
-    let mut out = Vec::with_capacity(pairs.len());
-    for (left, right) in pairs {
-        let left = left.into_runtime_value(runtime.heap_mut());
-        let right = right.into_runtime_value(runtime.heap_mut());
-        out.push(runtime_list(vec![left, right], runtime.heap_mut())?);
-    }
-    runtime_list(out, runtime.heap_mut())
-}
-
-fn take(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 2, "iter.take")?;
-    let values = args.as_slice();
-    let n = count_arg(&values[1], "iter.take count")?;
-    list_slice(&values[0], runtime.heap_mut(), 0, Some(n), "iter.take first argument")
-}
-
-fn skip(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 2, "iter.skip")?;
-    let values = args.as_slice();
-    let n = count_arg(&values[1], "iter.skip count")?;
-    list_slice(&values[0], runtime.heap_mut(), n, None, "iter.skip first argument")
-}
-
-fn chain(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 2, "iter.chain")?;
-    let values = args.as_slice();
-    let plan = typed_list_concat_preserving_backing(
-        typed_list_arg_ref(&values[0], runtime.heap(), "iter.chain first argument")?,
-        typed_list_arg_ref(&values[1], runtime.heap(), "iter.chain second argument")?,
-    );
-    let list = plan.into_typed(runtime.heap_mut());
-    Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(list))))
-}
-
-fn flatten(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 1, "iter.flatten")?;
-    let plan = flatten_typed_list(
-        typed_list_arg_ref(&args.as_slice()[0], runtime.heap(), "iter.flatten")?,
-        runtime.heap(),
-    )?;
-    let list = plan.into_typed(runtime.heap_mut());
-    Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(list))))
-}
-
-fn unique(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 1, "iter.unique")?;
-    let input = typed_list_arg_ref(&args.as_slice()[0], runtime.heap(), "iter.unique")?;
-    let list = unique_typed_list(input, runtime.heap());
-    Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(list))))
-}
-
-fn chunk(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 2, "iter.chunk")?;
-    let values = args.as_slice();
-    let size = count_arg(&values[1], "iter.chunk size")?;
-    if size == 0 {
-        bail!("iter.chunk size must be positive");
-    }
-    let chunks = {
-        let input = typed_list_arg_ref(&values[0], runtime.heap(), "iter.chunk first argument")?;
-        let mut chunks = Vec::new();
-        for start in (0..input.len()).step_by(size) {
-            chunks.push(typed_list_slice(input, start, Some(size)));
+        let chunks = {
+            let input = typed_list_arg_ref(&values[0], runtime.heap(), "iter.chunk first argument")?;
+            let mut chunks = Vec::new();
+            for start in (0..input.len()).step_by(size) {
+                chunks.push(typed_list_slice(input, start, Some(size)));
+            }
+            chunks
+        };
+        let mut out = Vec::with_capacity(chunks.len());
+        for chunk in chunks {
+            out.push(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(chunk))));
         }
-        chunks
-    };
-    let mut out = Vec::with_capacity(chunks.len());
-    for chunk in chunks {
-        out.push(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(chunk))));
+        runtime_list(out, runtime.heap_mut())
     }
-    runtime_list(out, runtime.heap_mut())
-}
 
-fn next(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 1, "iter.next")?;
-    first_list_item(&args.as_slice()[0], runtime.heap_mut(), "iter.next")
-}
+    #[stdlib_export(params(values: List), returns = Any)]
+    fn next(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        first_list_item(&args.as_slice()[0], runtime.heap_mut(), "iter.next")
+    }
 
-fn collect(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    lk_stdlib_common::runtime_native::expect_arity(args, 1, "iter.collect")?;
-    let input = typed_list_arg_ref(&args.as_slice()[0], runtime.heap(), "iter.collect")?;
-    let input = copy_typed_list(input);
-    Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(input))))
+    #[stdlib_export(params(values: List), returns = List)]
+    fn collect(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let input = typed_list_arg_ref(&args.as_slice()[0], runtime.heap(), "iter.collect")?;
+        let input = copy_typed_list(input);
+        Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(input))))
+    }
 }
 
 fn maybe_typed_list_arg_ref<'a>(value: &RuntimeVal, heap: &'a HeapStore) -> Result<Option<&'a TypedList>> {

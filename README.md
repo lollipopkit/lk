@@ -82,7 +82,7 @@ Note: command-line paths must be relative and sanitized.
 
 #### VS Code
 
-VS Code support is a single merged extension under `vsc-ext/lsp`. It includes `.lk` language registration, TextMate highlighting, snippets, and the LK LSP client with smart completion for stdlib modules, imported aliases, local symbols, named arguments, and common receiver methods. Use `make debug-lsp-ext` for a local Extension Development Host, or `make vsix` to build the VSIX.
+VS Code support is a single merged extension under `vsc-ext/lsp`. It includes `.lk` language registration, TextMate highlighting, snippets, and the LK LSP client with smart completion for stdlib modules, imported aliases, local symbols, named arguments, repeated string argument values, and common receiver methods. Use `make debug-lsp-ext` for a local Extension Development Host, or `make vsix` to build the VSIX.
 
 ## License
 

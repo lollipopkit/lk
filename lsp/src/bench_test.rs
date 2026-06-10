@@ -70,6 +70,7 @@ mod bench_tests {
             source: "use io;\nio.file.r",
             cursor: "use io;\nio.file.r".len(),
             mode: lk_completion::CompletionMode::Lsp,
+            trigger: lk_completion::CompletionTrigger::Invoked,
             session_source: None,
             base_dir: None,
         };

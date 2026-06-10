@@ -117,10 +117,14 @@ pub(crate) fn stdlib_func_hover(tokens: &[CoreToken], idx: usize) -> Option<(Str
     let catalog = lk_stdlib::stdlib_catalog();
     if path.len() == 1 {
         let global = catalog.global(path[0])?;
-        return Some((global.detail.clone(), "LK stdlib global".to_string()));
+        let signature = global.signature.clone().unwrap_or_else(|| global.detail.clone());
+        let docs = global.docs.clone().unwrap_or_else(|| "LK stdlib global".to_string());
+        return Some((signature, docs));
     }
     let export = catalog.export_path(&path)?;
-    Some((export.detail.clone(), "LK stdlib export".to_string()))
+    let signature = export.signature.clone().unwrap_or_else(|| export.detail.clone());
+    let docs = export.docs.clone().unwrap_or_else(|| "LK stdlib export".to_string());
+    Some((signature, docs))
 }
 
 fn dotted_token_path(tokens: &[CoreToken], idx: usize) -> Option<Vec<&str>> {
@@ -161,4 +165,24 @@ pub(crate) fn infer_call_at_position(content: &str, position: Position) -> (Stri
         }
     }
     (String::new(), None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stdlib_hover_uses_generated_signature_and_docs() {
+        let tokens = vec![
+            CoreToken::Id("env".to_string()),
+            CoreToken::Dot,
+            CoreToken::Id("get".to_string()),
+            CoreToken::LParen,
+        ];
+
+        let (signature, docs) = stdlib_func_hover(&tokens, 2).expect("env.get hover");
+
+        assert_eq!(signature, "env.get(key: String) -> String?");
+        assert_eq!(docs, "Returns an environment variable, or nil if it is not set.");
+    }
 }
