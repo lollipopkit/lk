@@ -5,7 +5,7 @@ A Language Server Protocol (LSP) implementation for the LK (Query Check Language
 ## Features
 
 - **Syntax Diagnostics**: Real-time error detection for LK expressions and statement programs
-- **Hover Information**: Shows type information, identifier roots, and symbol counts
+- **Hover Information**: Shows LK function/type signatures, Markdown doc comments, package docs, and lightweight type navigation links
 - **Code Completion**: Auto-complete for LK keywords, operators, common variables, and standard library functions
 - **Document Symbols**: Navigate through variables, functions, and imports in LK programs
 - **Identifier Analysis**: Detects and analyzes top-level identifier roots used (req, record, etc.)
@@ -89,6 +89,13 @@ Notes:
 ### Type Diagnostics
 
 The analyzer runs strict type checking after parsing a full statement program. Unannotated function parameters are checked after the whole program has contributed call-site constraints, so a parameter such as `fn should_run(name)` is accepted when later calls consistently pass `String` values. If no concrete call-site or body constraint resolves the parameter, the diagnostic is reported on the parameter name instead of at the top of the file.
+
+### Hover Docs
+
+LK hover uses Markdown for LK-authored declarations:
+- `///` and `/** ... */` immediately above `fn`, `struct`, `trait`, or `type` declarations are shown with the declaration signature.
+- `//!` and `/*! ... */` at the top of a package root file (`src/mod.lk` or `src/<package>.lk`) are shown when hovering a package name or alias in `use package` / `use package as alias`.
+- Type names in signatures link to LK-defined `struct`, `trait`, or `type` declarations in the same document. Built-in and stdlib/Rust-backed types are left as text.
 
 ### Integration with Editors
 

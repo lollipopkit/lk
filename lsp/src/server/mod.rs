@@ -5,6 +5,7 @@ mod config;
 mod entry;
 mod formatting;
 mod handlers;
+mod hover;
 mod inlay_hints;
 mod semantic;
 mod signature;

@@ -46,7 +46,7 @@ The previous standalone `lk-highlight` extension has been merged into this packa
 - Language Server Protocol (LSP) integration for:
   - Real-time error detection and diagnostics
   - Code completion
-  - Hover information
+  - Markdown hover information with LK signatures, doc comments, package docs, and type links
   - Go to definition
   - Document symbols
 - Inlay hints (parameter + type hints)
@@ -55,6 +55,13 @@ The previous standalone `lk-highlight` extension has been merged into this packa
 
 - Strict type diagnostics use whole-program call-site constraints before reporting implicit `Any` parameters.
 - If a function parameter remains unresolved, the error is attached to the parameter name rather than the file header.
+
+### Hover docs and type links
+
+- Hovering LK declarations and calls shows the declaration in a fenced `lk` code block.
+- `///` and `/** ... */` comments immediately above `fn`, `struct`, `trait`, or `type` declarations render as Markdown in hover.
+- Top-of-file package docs from `//!` and `/*! ... */` in a package root render when hovering `use package` or `use package as alias`.
+- Hover type links open LK-defined types through the internal `lk.openLocation` command. Built-in and stdlib/Rust-backed types are intentionally not linked.
 
 ### Stdlib awareness
 - The client queries the Rust LK language server for stdlib modules and exports. Module-aware completions support:
