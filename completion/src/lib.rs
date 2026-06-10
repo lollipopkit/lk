@@ -64,6 +64,28 @@ impl CompletionCandidate {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompletionResult {
+    pub candidates: Vec<CompletionCandidate>,
+    pub is_incomplete: bool,
+}
+
+impl CompletionResult {
+    fn complete(candidates: Vec<CompletionCandidate>) -> Self {
+        Self {
+            candidates,
+            is_incomplete: false,
+        }
+    }
+
+    fn incomplete(candidates: Vec<CompletionCandidate>) -> Self {
+        Self {
+            candidates,
+            is_incomplete: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct CompletionRequest<'a> {
     pub source: &'a str,
@@ -88,6 +110,10 @@ impl CompletionEngine {
     }
 
     pub fn complete(&self, request: CompletionRequest<'_>) -> Vec<CompletionCandidate> {
+        self.complete_with_metadata(request).candidates
+    }
+
+    pub fn complete_with_metadata(&self, request: CompletionRequest<'_>) -> CompletionResult {
         let cursor = request.cursor.min(request.source.len());
         let ctx = CompletionContext::new(request.source, cursor);
         let symbol_source = merged_symbol_source(request.source, request.session_source);
@@ -96,32 +122,32 @@ impl CompletionEngine {
         let mut out = Vec::new();
         if request.mode == CompletionMode::Repl && ctx.line_prefix.trim_start().starts_with(':') {
             self.push_repl_commands(&mut out, &ctx);
-            return dedup_sort(out);
+            return CompletionResult::complete(dedup_sort(out));
         }
         if self.push_import_path(&mut out, &ctx, request.base_dir) {
-            return dedup_sort(out);
+            return CompletionResult::complete(dedup_sort(out));
         }
         if self.push_brace_import_exports(&mut out, &ctx) {
-            return dedup_sort(out);
+            return CompletionResult::complete(dedup_sort(out));
         }
         if self.push_module_name_context(&mut out, &ctx) {
-            return dedup_sort(out);
+            return CompletionResult::complete(dedup_sort(out));
         }
         if self.push_string_argument_values(&mut out, &ctx, &symbol_source) {
-            return dedup_sort(out);
+            return CompletionResult::incomplete(dedup_sort(out));
         }
         if self.push_member_context(&mut out, &ctx, &symbols) {
-            return dedup_sort(out);
+            return CompletionResult::complete(dedup_sort(out));
         }
         self.push_named_args(&mut out, &ctx, &symbols);
         if !out.is_empty() {
-            return dedup_sort(out);
+            return CompletionResult::complete(dedup_sort(out));
         }
         if should_suppress_general(&ctx, request.trigger) {
-            return Vec::new();
+            return CompletionResult::incomplete(Vec::new());
         }
         self.push_general(&mut out, &ctx, &symbols);
-        dedup_sort(out)
+        CompletionResult::complete(dedup_sort(out))
     }
 
     fn push_repl_commands(&self, out: &mut Vec<CompletionCandidate>, ctx: &CompletionContext<'_>) {
@@ -1337,6 +1363,52 @@ mod tests {
         assert!(!got.iter().any(|item| item.label == "Int"));
         assert_eq!(got[0].replace_start, cursor - "pri".len());
         assert_eq!(got[0].replace_end, cursor);
+    }
+
+    #[test]
+    fn completes_local_function_after_normal_identifier_typing() {
+        let engine = CompletionEngine::new().unwrap();
+        let source = "fn should_run(name) { return true; }\nsho";
+        let got = labels(engine.complete(CompletionRequest {
+            source,
+            cursor: source.len(),
+            mode: CompletionMode::Lsp,
+            trigger: CompletionTrigger::Invoked,
+            session_source: None,
+            base_dir: None,
+        }));
+        assert!(got.contains(&"should_run".to_string()));
+    }
+
+    #[test]
+    fn completes_local_function_after_empty_block_completion_session() {
+        let engine = CompletionEngine::new().unwrap();
+        let source = "fn should_run(name) { return true; }\nif should_run(\"\") {\nsho";
+        let got = labels(engine.complete(CompletionRequest {
+            source,
+            cursor: source.len(),
+            mode: CompletionMode::Lsp,
+            trigger: CompletionTrigger::Incomplete,
+            session_source: None,
+            base_dir: None,
+        }));
+        assert!(got.contains(&"should_run".to_string()));
+    }
+
+    #[test]
+    fn structural_trigger_empty_result_is_incomplete() {
+        let engine = CompletionEngine::new().unwrap();
+        let source = "let a0 = 1;\nif should_run(\"\") {";
+        let got = engine.complete_with_metadata(CompletionRequest {
+            source,
+            cursor: source.len(),
+            mode: CompletionMode::Lsp,
+            trigger: CompletionTrigger::TriggerCharacter('{'),
+            session_source: None,
+            base_dir: None,
+        });
+        assert!(got.candidates.is_empty());
+        assert!(got.is_incomplete);
     }
 
     #[test]

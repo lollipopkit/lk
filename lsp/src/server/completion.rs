@@ -1,7 +1,7 @@
 use lk_completion::{CompletionCandidate, CompletionKind, CompletionMode, CompletionRequest, CompletionTrigger};
 use ropey::Rope;
 use tower_lsp::lsp_types::{
-    CompletionContext as LspCompletionContext, CompletionItem, CompletionItemKind, CompletionResponse,
+    CompletionContext as LspCompletionContext, CompletionItem, CompletionItemKind, CompletionList, CompletionResponse,
     CompletionTextEdit, CompletionTriggerKind, Position, Range, TextEdit, Url,
 };
 
@@ -18,25 +18,25 @@ impl LkLanguageServer {
         let content = doc.content.to_string();
         let cursor_char = position_to_char_idx(&doc.content, position);
         let base_dir = uri.to_file_path().ok().and_then(|mut path| path.pop().then_some(path));
-        Some(CompletionResponse::Array(completion_items_for_source(
+        Some(completion_response_for_source(
             &self.completion_engine,
             &content,
             cursor_char,
             completion_trigger_from_lsp(context),
             base_dir.as_deref(),
-        )))
+        ))
     }
 }
 
-pub(crate) fn completion_items_for_source(
+pub(crate) fn completion_response_for_source(
     engine: &lk_completion::CompletionEngine,
     content: &str,
     cursor_char: usize,
     trigger: CompletionTrigger,
     base_dir: Option<&std::path::Path>,
-) -> Vec<CompletionItem> {
+) -> CompletionResponse {
     let cursor = char_to_byte_idx(content, cursor_char);
-    let candidates = engine.complete(CompletionRequest {
+    let result = engine.complete_with_metadata(CompletionRequest {
         source: content,
         cursor,
         mode: CompletionMode::Lsp,
@@ -44,10 +44,44 @@ pub(crate) fn completion_items_for_source(
         session_source: None,
         base_dir,
     });
-    candidates
+    let items = result
+        .candidates
         .into_iter()
         .map(|candidate| completion_item(content, candidate))
-        .collect()
+        .collect();
+    if result.is_incomplete {
+        CompletionResponse::List(CompletionList {
+            is_incomplete: true,
+            items,
+        })
+    } else {
+        CompletionResponse::Array(items)
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn completion_items_for_source(
+    engine: &lk_completion::CompletionEngine,
+    content: &str,
+    cursor_char: usize,
+    trigger: CompletionTrigger,
+    base_dir: Option<&std::path::Path>,
+) -> Vec<CompletionItem> {
+    completion_items_from_response(completion_response_for_source(
+        engine,
+        content,
+        cursor_char,
+        trigger,
+        base_dir,
+    ))
+}
+
+#[cfg(test)]
+fn completion_items_from_response(response: CompletionResponse) -> Vec<CompletionItem> {
+    match response {
+        CompletionResponse::Array(items) => items,
+        CompletionResponse::List(list) => list.items,
+    }
 }
 
 fn completion_trigger_from_lsp(context: Option<&LspCompletionContext>) -> CompletionTrigger {
@@ -185,16 +219,34 @@ mod tests {
     }
 
     #[test]
+    fn lsp_completion_maps_normal_identifier_function_after_block() {
+        let engine = lk_completion::CompletionEngine::new().unwrap();
+        let content = "fn should_run(name) { return true; }\nif should_run(\"\") {\nsho";
+        let items = completion_items_for_source(
+            &engine,
+            content,
+            content.chars().count(),
+            CompletionTrigger::Incomplete,
+            None,
+        );
+        assert!(items.iter().any(|item| item.label == "should_run"));
+    }
+
+    #[test]
     fn lsp_completion_suppresses_empty_prefix_on_brace_trigger() {
         let engine = lk_completion::CompletionEngine::new().unwrap();
         let content = "let a0 = 1;\nif should_run(\"\") {";
-        let items = completion_items_for_source(
+        let response = completion_response_for_source(
             &engine,
             content,
             content.chars().count(),
             CompletionTrigger::TriggerCharacter('{'),
             None,
         );
-        assert!(items.is_empty());
+        let CompletionResponse::List(list) = response else {
+            panic!("expected incomplete completion list");
+        };
+        assert!(list.items.is_empty());
+        assert!(list.is_incomplete);
     }
 }

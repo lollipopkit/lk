@@ -1,13 +1,14 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use lk_core::token::{Span, Token};
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde_json::json;
-use tower_lsp::lsp_types::{Hover, HoverContents, MarkupContent, MarkupKind, Position, Range, Url};
+use tower_lsp::lsp_types::{Hover, HoverContents, Location, MarkupContent, MarkupKind, Position, Range, Url};
 
+use super::analysis::{find_stdlib_export_location, find_stdlib_module_location};
 use super::text::describe_token_hover;
 
 static DECL_RE: Lazy<Regex> = Lazy::new(|| {
@@ -17,7 +18,7 @@ static TYPE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\b[A-Z][A-Za-z0-9_]*\??\
 
 const BUILTIN_TYPES: &[&str] = &[
     "Any", "Int", "Float", "String", "Bool", "Nil", "List", "Map", "Set", "Tuple", "Optional", "Task", "Channel",
-    "Bytes", "Slice", "Object",
+    "Bytes", "Slice", "Object", "Number",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,6 +60,9 @@ pub(crate) fn document_hover(
         return hover;
     }
     if let Some(hover) = package_doc_hover(tokens, idx, package_modules) {
+        return hover;
+    }
+    if let Some(hover) = stdlib_hover(content, uri, tokens, idx, &index) {
         return hover;
     }
 
@@ -122,28 +126,138 @@ fn render_decl_markdown(decl: &LkDecl, content: &str, uri: &Url, index: &LkDocIn
 }
 
 fn type_links_for_signature(signature: &str, content: &str, uri: &Url, index: &LkDocIndex) -> Vec<String> {
-    let builtin: HashSet<&str> = BUILTIN_TYPES.iter().copied().collect();
     let mut seen = HashSet::new();
     let mut links = Vec::new();
     for mat in TYPE_RE.find_iter(signature) {
         let type_name = mat.as_str().trim_end_matches('?');
-        if builtin.contains(type_name) || !seen.insert(type_name.to_string()) {
+        if !seen.insert(type_name.to_string()) {
             continue;
         }
-        let Some(decl) = index
+        if let Some(decl) = index
             .decls
             .iter()
             .find(|decl| decl.name == type_name && decl.kind != LkDeclKind::Function)
-        else {
-            continue;
-        };
-        links.push(format!(
-            "[Go to {}]({})",
-            type_name,
-            command_uri(uri, decl.name_range, content)
-        ));
+        {
+            links.push(format!(
+                "[Go to {}]({})",
+                type_name,
+                command_uri(uri, decl.name_range, content)
+            ));
+        } else if BUILTIN_TYPES.contains(&type_name) {
+            if let Some(location) = spec_type_location(type_name) {
+                links.push(format!(
+                    "[Go to {}]({})",
+                    type_name,
+                    command_uri_for_location(&location)
+                ));
+            }
+        }
     }
     links
+}
+
+fn stdlib_hover(content: &str, uri: &Url, tokens: &[Token], idx: usize, index: &LkDocIndex) -> Option<Hover> {
+    let path = dotted_token_path(tokens, idx)?;
+    let catalog = lk_stdlib::stdlib_catalog();
+
+    if path.len() == 1 {
+        if let Some(global) = catalog.global(path[0]) {
+            let signature = global.signature.clone().unwrap_or_else(|| global.detail.clone());
+            let docs = global.docs.clone().unwrap_or_else(|| "LK stdlib global".to_string());
+            return Some(markdown_hover(
+                render_stdlib_markdown(path[0], &signature, &docs, None, content, uri, index),
+                None,
+            ));
+        }
+        if let Some(module) = catalog.module(path[0]) {
+            let docs = module.docs.clone().unwrap_or_else(|| module.detail.clone());
+            let implementation = find_stdlib_module_location(path[0]);
+            return Some(markdown_hover(
+                render_stdlib_module_markdown(path[0], &docs, implementation.as_ref()),
+                None,
+            ));
+        }
+        return None;
+    }
+
+    let export = catalog.export_path(&path)?;
+    let signature = export.signature.clone().unwrap_or_else(|| export.detail.clone());
+    let docs = export.docs.clone().unwrap_or_else(|| "LK stdlib export".to_string());
+    let implementation = find_stdlib_export_location(path[0], path[path.len() - 1]);
+    Some(markdown_hover(
+        render_stdlib_markdown(
+            &path.join("."),
+            &signature,
+            &docs,
+            implementation.as_ref(),
+            content,
+            uri,
+            index,
+        ),
+        None,
+    ))
+}
+
+fn render_stdlib_module_markdown(path: &str, docs: &str, implementation: Option<&Location>) -> String {
+    let mut out = format!("`{path}`\n\n{}", docs.trim());
+    if let Some(location) = implementation {
+        out.push_str("\n\n");
+        out.push_str(&format!(
+            "[Go to implementation]({})",
+            command_uri_for_location(location)
+        ));
+    }
+    out
+}
+
+fn render_stdlib_markdown(
+    path: &str,
+    signature: &str,
+    docs: &str,
+    implementation: Option<&Location>,
+    content: &str,
+    uri: &Url,
+    index: &LkDocIndex,
+) -> String {
+    let mut out = format!("`{path}`\n\n```lk\n{signature}\n```");
+    let docs = docs.trim();
+    if !docs.is_empty() {
+        out.push_str("\n\n");
+        out.push_str(docs);
+    }
+
+    let mut links = type_links_for_signature(signature, content, uri, index);
+    if let Some(location) = implementation {
+        links.push(format!(
+            "[Go to implementation]({})",
+            command_uri_for_location(location)
+        ));
+    }
+    if !links.is_empty() {
+        out.push_str("\n\n");
+        out.push_str(&links.join(" | "));
+    }
+    out
+}
+
+fn dotted_token_path(tokens: &[Token], idx: usize) -> Option<Vec<&str>> {
+    let Token::Id(name) = tokens.get(idx)? else {
+        return None;
+    };
+    let mut path = vec![name.as_str()];
+    let mut cursor = idx;
+    while cursor >= 2 {
+        if !matches!(tokens.get(cursor - 1), Some(Token::Dot)) {
+            break;
+        }
+        let Some(Token::Id(parent)) = tokens.get(cursor - 2) else {
+            break;
+        };
+        path.push(parent.as_str());
+        cursor -= 2;
+    }
+    path.reverse();
+    Some(path)
 }
 
 fn package_doc_hover(tokens: &[Token], idx: usize, package_modules: &HashMap<String, PathBuf>) -> Option<Hover> {
@@ -211,6 +325,64 @@ fn command_uri(uri: &Url, range: Range, content: &str) -> String {
         }
     }]);
     format!("command:lk.openLocation?{}", percent_encode(&args.to_string()))
+}
+
+fn command_uri_for_location(location: &Location) -> String {
+    let content = location
+        .uri
+        .to_file_path()
+        .ok()
+        .and_then(|path| fs::read_to_string(path).ok())
+        .unwrap_or_default();
+    command_uri(&location.uri, location.range, &content)
+}
+
+fn spec_type_location(type_name: &str) -> Option<Location> {
+    let path = repo_root_from_manifest()
+        .join("website")
+        .join("src")
+        .join("spec")
+        .join("LANG.md");
+    let content = fs::read_to_string(&path).ok()?;
+    let line = spec_type_line(&content, type_name)?;
+    let uri = Url::from_file_path(path).ok()?;
+    let line_text = content.lines().nth(line)?;
+    let character = line_text.find(type_name).unwrap_or(0) as u32;
+    Some(Location::new(
+        uri,
+        Range::new(
+            Position::new(line as u32, character),
+            Position::new(line as u32, character + type_name.chars().count() as u32),
+        ),
+    ))
+}
+
+fn spec_type_line(content: &str, type_name: &str) -> Option<usize> {
+    let backticked = format!("`{type_name}`");
+    let list_prefix = format!("- {type_name}:");
+    content
+        .lines()
+        .position(|line| line.contains(&backticked) || line.trim_start().starts_with(&list_prefix))
+        .or_else(|| spec_type_fallback_line(content, type_name))
+        .or_else(|| content.lines().position(|line| line.contains(type_name)))
+}
+
+fn spec_type_fallback_line(content: &str, type_name: &str) -> Option<usize> {
+    let needle = match type_name {
+        "Number" => "Numeric auto-promotion",
+        "Tuple" => "Tuple (comma-separated)",
+        "Optional" => "Optional:",
+        "Bytes" | "Slice" => "typeof(value)",
+        _ => return None,
+    };
+    content.lines().position(|line| line.contains(needle))
+}
+
+fn repo_root_from_manifest() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")))
 }
 
 fn percent_encode(input: &str) -> String {
@@ -514,7 +686,7 @@ struct User { id: Int, name: String }
     }
 
     #[test]
-    fn links_only_local_declared_non_builtin_types() {
+    fn links_local_and_builtin_types() {
         let uri = Url::parse("file:///tmp/test.lk").expect("uri");
         let content = "struct User { id: Int }\n/// Loads user\nfn load(id: Int) -> User {\n}\n";
         let index = scan_lk_docs(content);
@@ -522,7 +694,67 @@ struct User { id: Int, name: String }
         let rendered = render_decl_markdown(fn_decl, content, &uri, &index);
 
         assert!(rendered.contains("[Go to User](command:lk.openLocation?"));
-        assert!(!rendered.contains("Go to Int"));
+        assert!(rendered.contains("[Go to Int](command:lk.openLocation?"));
+    }
+
+    #[test]
+    fn stdlib_function_hover_renders_markdown_signature_docs_and_links() {
+        let uri = Url::parse("file:///tmp/test.lk").expect("uri");
+        let content = "math.floor(1.2)";
+        let index = scan_lk_docs(content);
+        let tokens = vec![
+            Token::Id("math".to_string()),
+            Token::Dot,
+            Token::Id("floor".to_string()),
+            Token::LParen,
+        ];
+
+        let hover = stdlib_hover(content, &uri, &tokens, 2, &index).expect("math.floor hover");
+        let HoverContents::Markup(markup) = hover.contents else {
+            panic!("expected markdown hover");
+        };
+
+        assert_eq!(markup.kind, MarkupKind::Markdown);
+        assert!(markup.value.contains("`math.floor`"));
+        assert!(markup.value.contains("```lk\nmath.floor(value: Number) -> Int\n```"));
+        assert!(markup.value.contains("Go to Number"));
+        assert!(markup.value.contains("Go to Int"));
+        assert!(markup.value.contains("Go to implementation"));
+    }
+
+    #[test]
+    fn stdlib_hover_preserves_markdown_docs() {
+        let uri = Url::parse("file:///tmp/test.lk").expect("uri");
+        let content = "env.get(\"HOME\")";
+        let index = scan_lk_docs(content);
+        let tokens = vec![
+            Token::Id("env".to_string()),
+            Token::Dot,
+            Token::Id("get".to_string()),
+            Token::LParen,
+        ];
+
+        let hover = stdlib_hover(content, &uri, &tokens, 2, &index).expect("env.get hover");
+        let HoverContents::Markup(markup) = hover.contents else {
+            panic!("expected markdown hover");
+        };
+
+        assert!(markup.value.contains("Returns an environment variable"));
+    }
+
+    #[test]
+    fn command_uri_for_external_location_includes_target_file() {
+        let path = repo_root_from_manifest()
+            .join("website")
+            .join("src")
+            .join("spec")
+            .join("LANG.md");
+        let uri = Url::from_file_path(&path).expect("spec uri");
+        let location = Location::new(uri, Range::new(Position::new(13, 3), Position::new(13, 9)));
+        let command = command_uri_for_location(&location);
+
+        assert!(command.contains("command:lk.openLocation?"));
+        assert!(command.contains("website%2Fsrc%2Fspec%2FLANG.md"));
     }
 
     #[test]

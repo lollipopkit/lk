@@ -861,13 +861,13 @@ fn stdlib_source_path(module_name: &str) -> Option<PathBuf> {
     .find(|path| path.is_file())
 }
 
-fn find_stdlib_module_location(module_name: &str) -> Option<Location> {
+pub(crate) fn find_stdlib_module_location(module_name: &str) -> Option<Location> {
     let path = stdlib_source_path(module_name)?;
     let uri = Url::from_file_path(path).ok()?;
     Some(Location::new(uri, Range::new(Position::new(0, 0), Position::new(0, 0))))
 }
 
-fn find_stdlib_export_location(module_name: &str, export_name: &str) -> Option<Location> {
+pub(crate) fn find_stdlib_export_location(module_name: &str, export_name: &str) -> Option<Location> {
     let path = stdlib_source_path(module_name)?;
     let content = fs::read_to_string(&path).ok()?;
     let uri = Url::from_file_path(path).ok()?;
