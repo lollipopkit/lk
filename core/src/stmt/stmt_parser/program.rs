@@ -257,7 +257,7 @@ impl<'a> StmtParser<'a> {
         })
     }
 
-    fn parse_attributes(&mut self) -> Result<Vec<Attribute>> {
+    pub(super) fn parse_attributes(&mut self) -> Result<Vec<Attribute>> {
         let mut attributes = Vec::new();
         while !self.eof() && self.tokens[self.pos] == Token::Hash {
             let hash_index = self.pos;

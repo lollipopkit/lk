@@ -167,7 +167,7 @@ pub enum Stmt {
 }
 
 /// 程序结构 - 包含语句列表
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Program {
     pub statements: Vec<Box<Stmt>>,
 }

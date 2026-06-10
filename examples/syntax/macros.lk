@@ -22,4 +22,16 @@ struct MacroPoint {
 
 let point = MacroPoint { value: values.1 };
 assert_eq!("${point}", "MacroPoint { value: 5 }");
+
+#[cfg(false)]
+fn selected_value() {
+    return 0;
+}
+
+#[cfg(true)]
+fn selected_value() {
+    return values.1;
+}
+
+assert_eq!(selected_value(), 5);
 return values.1;

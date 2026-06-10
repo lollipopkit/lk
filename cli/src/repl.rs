@@ -13,7 +13,10 @@ use lk_core::{
     vm::{ReplExecutionResult, ReplVmSession, VmContext},
 };
 
-use crate::{configure_package_resolver, diagnostic, repl_completion::ReplCompletionState, repl_tui, startup_trace};
+use crate::{
+    configure_package_resolver, diagnostic, register_enabled_stdlib, repl_completion::ReplCompletionState, repl_tui,
+    startup_trace,
+};
 
 pub(crate) enum ReplInput {
     Submit(String),
@@ -37,10 +40,8 @@ impl ReplSession {
         let mut startup = startup_trace::StartupTrace::new("repl session");
         let mut registry = ModuleRegistry::new();
         startup.step("module registry created");
-        lk_stdlib::register_stdlib_globals(&mut registry);
-        startup.step("stdlib globals registered");
-        lk_stdlib::register_stdlib_modules(&mut registry)?;
-        startup.step("stdlib modules registered");
+        register_enabled_stdlib(&mut registry)?;
+        startup.step("stdlib registry configured");
         let mut resolver = ModuleResolver::with_registry(registry);
         startup.step("module resolver created");
         let cwd = env::current_dir()?;

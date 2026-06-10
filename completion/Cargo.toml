@@ -6,9 +6,13 @@ edition = "2024"
 authors = ["lollipopkit <a@lpkt.cn>"]
 license = "Apache-2.0"
 
+[features]
+default = ["stdlib"]
+stdlib = ["dep:lk-stdlib"]
+
 [dependencies]
-lk-core = { path = "../core" }
-lk-stdlib = { path = "../stdlib" }
+lk-core = { path = "../core", default-features = false }
+lk-stdlib = { path = "../stdlib", optional = true }
 anyhow = { workspace = true }
 
 [dev-dependencies]

@@ -15,7 +15,7 @@ const en: BaseTranslation = {
   },
   hero: {
     eyebrow: 'Rust-like scripting language written in Rust',
-    title: 'Lightweight, modern scripting language.',
+    title: 'Lightweight, modern and efficient',
     subtitle:
       'LK gives you clear syntax, structured pattern matching, practical CLI workflows, and a useful standard library for embedding logic in applications and writing automation scripts.',
     primaryAction: 'Start',

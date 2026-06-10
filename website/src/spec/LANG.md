@@ -167,8 +167,9 @@ Used in `match`, `if let`, `while let`, and `let` destructuring.
 
 ### Attributes
 - Item declarations can carry preserved Rust-style attributes: `#[derive(Debug)] struct User { id: Int }` or `#[inline] fn answer() { return 42; }`.
-- Attributes currently attach only to item declarations (`fn`, `struct`, `type`, `trait`, `impl`). Applying an attribute to `let`, `return`, or an expression statement is a parse error.
+- Attributes currently attach to item declarations (`fn`, `struct`, `type`, `trait`, `impl`) and to methods inside `impl` blocks. Applying an attribute to `let`, `return`, or an expression statement is a parse error.
 - Ordinary attribute wrappers are transparent to parsing, type checking, slot resolution, VM execution, REPL binding collection, LSP named-parameter analysis, and tree-sitter syntax. `#[derive(Debug)]` and `#[derive(Show)]` on structs are expanded after parsing into an internal display trait implementation, so template strings and formatted output can use `${value}`.
+- `#[cfg(...)]` filters items during AST macro expansion. Supported predicates are `true`, `false`, `feature = "name"`, `feature("name")`, `not(...)`, `any(...)`, and `all(...)`. `lk macro expand --feature name FILE` enables feature predicates for expansion inspection.
 
 ### Macros
 - LK supports Rust-shaped declarative macros with LK semantics: `macro_rules! name { (matcher) => { template }; ... }`.
@@ -182,9 +183,11 @@ Used in `match`, `if let`, `while let`, and `let` destructuring.
 - Exported macros can call private helper macros from their defining file/package with `$crate::helper!()`.
 - File, package, and std macro imports use LK `use` syntax: `use { answer as ans } from "macros"; ans!();`, `use { answer } from util; answer!();`, `use { vec, matches } from macros; vec![1];`, `use "macros"; macros::answer!();`, and `use * as m from macros; m::matches!(x, 1);`. External macro imports only see exported macro names. Named macro imports and the std `macros` namespace are compile-time-only and are removed before runtime import execution. Split runtime item imports and named macro imports into separate `use` statements.
 - The built-in compile-time `macros` module currently exports `vec!`, `assert!`, `assert_eq!`, `assert_ne!`, `matches!`, `panic!`, `todo!`, and `unreachable!`.
-- Macro expansion errors include rule-level mismatch notes and an expansion stack showing nested macro calls; LSP diagnostics preserve these macro expansion messages.
-- Current implementation covers `macro_rules!`, function-like invocations, item attribute preservation, built-in struct derives for `Debug`/`Show`, and the versioned procedural macro protocol data model. External derive plugins, attribute macros, and function-like procedural macro execution are still planned through the isolated process protocol.
-- Use `lk macro expand <file> --trace` to inspect the expanded token stream and expansion trace.
+- Macro expansion errors include rule-level mismatch notes and an expansion stack showing nested macro calls; parse errors caused by macro-generated tokens include a macro origin stack. LSP diagnostics preserve macro expansion messages, with richer semantic use of token origins still planned.
+- Current implementation covers `macro_rules!`, function-like invocations, item attribute preservation, built-in struct derives for `Debug`/`Show`, built-in `cfg` item filtering, the versioned procedural macro protocol data model, isolated process hosting, external derive providers, external `#[attr] item` and impl-method transform providers, and external function-like providers registered through `ProcMacroProviders` or `Lk.toml`.
+- `Lk.toml` can declare process-backed providers with `[macros.derive.NAME]`, `[macros.attribute.NAME]`, and `[macros.function_like.NAME]` tables. Each provider uses `command`, optional `args`, optional `timeout_ms`, and optional `max_output_bytes`; derive, attribute, and function-like providers are wired to the parser today.
+- Procedural macro output tokens preserve provider-supplied spans for later parse diagnostics; missing output spans fall back to the macro call or attribute span. Expanded token streams also expose per-token origins for call-site captures, macro-definition tokens, `$crate` anchors, and function-like proc macro output.
+- Use `lk macro expand <file> --trace --deps --origins` to inspect the expanded token stream, token expansion trace, collected procedural macro dependencies, token origin JSON, and any post-parse AST derive/attribute expansion.
 - Example:
 
 ```lk
@@ -245,7 +248,7 @@ use "d/d1";    // c/d/d1.lk, available as d1
 ```
 
 ## Packages
-- `Lk.toml` defines `[package]`, `[dependencies]`, `[workspace]`, and `[workspace.dependencies]`.
+- `Lk.toml` defines `[package]`, `[dependencies]`, `[workspace]`, `[workspace.dependencies]`, and optional `[macros.*]` procedural macro provider tables.
 - String dependencies default to GitHub, e.g. `util = "owner/repo"`.
 - `Lk.lock` stores fetched git sources at concrete revisions.
 - See `docs/packages.md` for package manager commands and manifest examples. The runnable workspace example lives in `examples/lk-example-workspace`.

@@ -7,8 +7,8 @@ use crate::{
 };
 
 use super::{
-    Capture, ExpandedToken, FragmentKind, MacroDef, PatternElem, RepeatOp, SourceToken, TemplateElem, find_group,
-    is_open_delim, token_lexeme, token_matches,
+    Capture, ExpandedToken, FragmentKind, MacroDef, MacroOriginFrame, MacroOriginKind, PatternElem, RepeatOp,
+    SourceToken, TemplateElem, find_group, is_open_delim, origin, token_lexeme, token_matches,
 };
 
 #[derive(Debug, Clone)]
@@ -21,6 +21,7 @@ pub(super) fn expand_macro_invocation(
     definition: &MacroDef,
     input: &[SourceToken],
     call_span: &Span,
+    call_origins: &[MacroOriginFrame],
 ) -> Result<Vec<SourceToken>, ParseError> {
     let mut mismatches = Vec::new();
     for (rule_index, rule) in definition.rules.iter().enumerate() {
@@ -30,7 +31,12 @@ pub(super) fn expand_macro_invocation(
                 let expanded =
                     substitute_template(&rule.template, &captures, definition.crate_anchor.as_deref(), call_span)?;
                 let expanded = apply_simple_hygiene(expanded, call_span.start.offset);
-                return Ok(expanded.into_iter().map(|token| token.token).collect());
+                return Ok(annotate_declarative_output(
+                    expanded,
+                    &definition.name,
+                    call_span,
+                    call_origins,
+                ));
             }
             PatternMatch::Matched(pos) => mismatches.push(format!(
                 "rule {}: matched a prefix but left unexpected {}",
@@ -539,6 +545,7 @@ fn substitute_template_at(
             TemplateElem::Token(token) => output.push(ExpandedToken {
                 token: token.clone(),
                 from_capture: false,
+                origin_kind: MacroOriginKind::Definition,
             }),
             TemplateElem::MetaVar(name) => {
                 let capture = captures.get(name).ok_or_else(|| {
@@ -562,6 +569,7 @@ fn substitute_template_at(
                 output.extend(replacement.iter().cloned().map(|token| ExpandedToken {
                     token,
                     from_capture: true,
+                    origin_kind: MacroOriginKind::CallSite,
                 }));
             }
             TemplateElem::CrateAnchor(token) => {
@@ -577,6 +585,7 @@ fn substitute_template_at(
                 output.push(ExpandedToken {
                     token,
                     from_capture: false,
+                    origin_kind: MacroOriginKind::CrateAnchor,
                 });
             }
             TemplateElem::Repeat { elems, separator, op } => {
@@ -606,6 +615,7 @@ fn substitute_template_at(
                         output.push(ExpandedToken {
                             token: separator.clone(),
                             from_capture: false,
+                            origin_kind: MacroOriginKind::Definition,
                         });
                     }
                     output.extend(substitute_template_at(
@@ -620,6 +630,24 @@ fn substitute_template_at(
         }
     }
     Ok(output)
+}
+
+fn annotate_declarative_output(
+    tokens: Vec<ExpandedToken>,
+    macro_name: &str,
+    call_span: &Span,
+    call_origins: &[MacroOriginFrame],
+) -> Vec<SourceToken> {
+    tokens
+        .into_iter()
+        .map(|mut expanded| {
+            if !expanded.from_capture {
+                origin::inherit_call_origin(&mut expanded.token, call_origins);
+            }
+            origin::push_origin(&mut expanded.token, macro_name, call_span, expanded.origin_kind);
+            expanded.token
+        })
+        .collect()
 }
 
 fn repetition_count(

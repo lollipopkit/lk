@@ -3,6 +3,7 @@
 
   export let value = ''
   export let ariaLabel = 'LK source code'
+  export let compact = false
 
   let highlightLayer: HTMLPreElement
 
@@ -14,7 +15,7 @@
   }
 </script>
 
-<div class="lk-code-editor">
+<div class="lk-code-editor" class:compact>
   <pre class="lk-code-editor-highlight" aria-hidden="true" bind:this={highlightLayer}><code>{@html highlightLkCode(value)}</code>{#if value.endsWith('\n')}<br />{/if}</pre>
   <textarea bind:value spellcheck="false" aria-label={ariaLabel} on:scroll={syncScroll}></textarea>
 </div>
@@ -68,12 +69,31 @@
     color: transparent;
   }
 
+  .lk-code-editor.compact,
+  .lk-code-editor.compact .lk-code-editor-highlight,
+  .lk-code-editor.compact textarea {
+    min-height: 20rem;
+  }
+
+  .lk-code-editor.compact .lk-code-editor-highlight,
+  .lk-code-editor.compact textarea {
+    font-size: 0.84rem;
+    line-height: 1.58;
+    padding: 0.95rem;
+  }
+
   @media (max-width: 560px) {
     .lk-code-editor,
     .lk-code-editor-highlight,
     .lk-code-editor textarea {
       min-height: 24rem;
       font-size: 0.8rem;
+    }
+
+    .lk-code-editor.compact,
+    .lk-code-editor.compact .lk-code-editor-highlight,
+    .lk-code-editor.compact textarea {
+      min-height: 18rem;
     }
   }
 </style>

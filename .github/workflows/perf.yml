@@ -111,12 +111,12 @@ jobs:
 
       - name: Build base LK
         working-directory: base
-        run: cargo build --release -p lk-cli
+        run: cargo build --profile dist -p lk-cli
 
       - name: Benchmark base
         working-directory: head
         env:
-          LK_BIN: ${{ github.workspace }}/base/target/release/lk
+          LK_BIN: ${{ github.workspace }}/base/target/dist/lk
           LUA_BIN: ${{ github.workspace }}/head/lua-5.5.0/src/lua
           BENCH_RESULT_TSV: ${{ runner.temp }}/lk-perf-base.tsv
           RUN_AOT: "0"
@@ -128,12 +128,12 @@ jobs:
 
       - name: Build head LK
         working-directory: head
-        run: cargo build --release -p lk-cli
+        run: cargo build --profile dist -p lk-cli
 
       - name: Benchmark head
         working-directory: head
         env:
-          LK_BIN: ${{ github.workspace }}/head/target/release/lk
+          LK_BIN: ${{ github.workspace }}/head/target/dist/lk
           LUA_BIN: ${{ github.workspace }}/head/lua-5.5.0/src/lua
           BENCH_RESULT_TSV: ${{ runner.temp }}/lk-perf-head.tsv
           RUN_AOT: "0"

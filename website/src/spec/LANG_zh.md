@@ -168,8 +168,9 @@
 
 ### 属性（Attributes）
 - item 声明可以带 Rust 风格的保留属性：`#[derive(Debug)] struct User { id: Int }` 或 `#[inline] fn answer() { return 42; }`。
-- 当前属性只能附着在 item 声明上（`fn`、`struct`、`type`、`trait`、`impl`）。把属性加到 `let`、`return` 或表达式语句上会产生解析错误。
+- 当前属性可以附着在 item 声明上（`fn`、`struct`、`type`、`trait`、`impl`），也可以附着在 `impl` block 内的方法上。把属性加到 `let`、`return` 或表达式语句上会产生解析错误。
 - 普通 attribute wrapper 对解析、类型检查、slot resolution、VM 执行、REPL 绑定收集、LSP 命名参数分析与 tree-sitter 语法都是透明的。结构体上的 `#[derive(Debug)]` 与 `#[derive(Show)]` 会在解析后展开为内部 display trait 实现，因此 template string 与格式化输出可以使用 `${value}`。
+- `#[cfg(...)]` 会在 AST macro expansion 阶段过滤 item。当前支持的 predicate 包括 `true`、`false`、`feature = "name"`、`feature("name")`、`not(...)`、`any(...)` 与 `all(...)`。`lk macro expand --feature name FILE` 可为展开检查启用 feature predicate。
 
 ### 宏
 - LK 支持 Rust 形态、LK 语义的声明式宏：`macro_rules! name { (matcher) => { template }; ... }`。
@@ -183,9 +184,11 @@
 - 已导出的宏可以通过 `$crate::helper!()` 调用定义所在文件/package 内的私有 helper 宏。
 - 文件、package 与标准宏导入使用 LK `use` 语法：`use { answer as ans } from "macros"; ans!();`、`use { answer } from util; answer!();`、`use { vec, matches } from macros; vec![1];`、`use "macros"; macros::answer!();`、`use * as m from macros; m::matches!(x, 1);`。外部宏导入只能看到已导出的宏名。命中宏的命名导入与标准 `macros` 命名空间都是编译期导入，会在运行时 import 执行前移除。运行时 item 导入与命名宏导入应拆成不同 `use` 语句。
 - 内置编译期 `macros` 模块当前导出 `vec!`、`assert!`、`assert_eq!`、`assert_ne!`、`matches!`、`panic!`、`todo!` 与 `unreachable!`。
-- 宏展开错误会包含逐条 rule 的 mismatch notes，并附带 expansion stack 展示嵌套宏调用链；LSP diagnostics 会保留这些宏展开消息。
-- 当前实现覆盖 `macro_rules!`、函数式宏调用、item attribute preservation、结构体内置 `Debug`/`Show` derive，以及版本化 procedural macro protocol 数据模型。外部 derive 插件、attribute macros 与函数式 procedural macro 执行仍计划通过隔离进程协议实现。
-- 使用 `lk macro expand <file> --trace` 可以查看展开后的 token stream 与展开 trace。
+- 宏展开错误会包含逐条 rule 的 mismatch notes，并附带 expansion stack 展示嵌套宏调用链；由宏生成 token 触发的 parse error 会包含 macro origin stack。LSP diagnostics 会保留这些宏展开消息，token origin 在语义诊断中的进一步使用仍在计划中。
+- 当前实现覆盖 `macro_rules!`、函数式宏调用、item attribute preservation、结构体内置 `Debug`/`Show` derive、内置 `cfg` item filtering、版本化 procedural macro protocol 数据模型、隔离进程 host、外部 derive provider、外部 `#[attr] item` 与 impl-method transform provider，以及通过 `ProcMacroProviders` 或 `Lk.toml` 注册的外部 function-like provider。
+- `Lk.toml` 可以用 `[macros.derive.NAME]`、`[macros.attribute.NAME]` 与 `[macros.function_like.NAME]` 表声明进程型 provider。每个 provider 使用 `command`、可选 `args`、可选 `timeout_ms` 与可选 `max_output_bytes`；目前 derive、attribute 与 function-like provider 都已接入解析器。
+- Procedural macro 输出 token 会保留 provider 提供的 span，用于后续 parse diagnostics；缺失输出 span 时会回退到宏调用或 attribute span。展开后的 token stream 还会暴露逐 token origin，用于区分 call-site capture、macro definition token、`$crate` anchor 与 function-like proc macro output。
+- 使用 `lk macro expand <file> --trace --deps --origins` 可以查看展开后的 token stream、token 展开 trace、收集到的 procedural macro dependencies、token origin JSON，以及 parse 后的 AST derive/attribute 展开结果。
 - 示例：
 
 ```lk
@@ -246,7 +249,7 @@ use "d/d1";    // c/d/d1.lk，导出名为 d1
 ```
 
 ## 包
-- `Lk.toml` 定义 `[package]`、`[dependencies]`、`[workspace]` 与 `[workspace.dependencies]`。
+- `Lk.toml` 定义 `[package]`、`[dependencies]`、`[workspace]`、`[workspace.dependencies]`，以及可选的 `[macros.*]` procedural macro provider 表。
 - 字符串依赖默认来自 GitHub，例如：`util = "owner/repo"`。
 - `Lk.lock` 保存具体 revision 的已抓取 git 源码。
 - 包管理命令和清单示例见 `docs/packages.md`。可运行的 workspace 示例见 `examples/lk-example-workspace`。

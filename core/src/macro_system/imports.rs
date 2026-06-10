@@ -274,7 +274,12 @@ fn load_macro_source(
         .zip(spans)
         .map(|(token, span)| {
             let lexeme = token_lexeme(&token);
-            SourceToken { token, span, lexeme }
+            SourceToken {
+                token,
+                span,
+                lexeme,
+                origins: Vec::new(),
+            }
         })
         .collect::<Vec<_>>();
     let mut module = MacroModule::default();

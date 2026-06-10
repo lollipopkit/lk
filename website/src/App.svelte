@@ -73,8 +73,8 @@
   }
 
   const navItems: NavItem[] = [
-    { href: '/try', label: 'try' },
-    { href: '/spec', label: 'spec' },
+    { href: '/spec#examples', label: 'try' },
+    { href: '/spec#spec-start', label: 'spec' },
     { href: 'https://github.com/lollipopkit/lk', label: 'github', external: true },
   ]
 
@@ -92,6 +92,7 @@
 
   let locale: Locales | undefined = initialLocale
   let currentPath = normalizePath(typeof window === 'undefined' ? '/' : window.location.pathname)
+  let currentHash = typeof window === 'undefined' ? '' : window.location.hash
 
   const heroCode = `use { std } from io;
 use { json } from encoding;
@@ -223,12 +224,29 @@ let total = iter.reduce(iter.range(0, 10, 2), 0, |acc, n| acc + n);`,
     return value
       .toLowerCase()
       .replace(/`/g, '')
-      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/[^\p{Letter}\p{Number}]+/gu, '-')
       .replace(/^-|-$/g, '')
   }
 
+  function uniqueSlug(title: string, seen: Map<string, number>): string {
+    const base = slugify(title) || 'section'
+    const count = seen.get(base) || 0
+    seen.set(base, count + 1)
+    return count === 0 ? base : `${base}-${count + 1}`
+  }
+
   function normalizePath(path: string): string {
-    return path === '/LANG.md' ? '/spec' : path
+    return path === '/LANG.md' || path === '/try' ? '/spec' : path
+  }
+
+  function isCurrentNavItem(item: NavItem): boolean {
+    if (item.external) return false
+    const url = new URL(item.href, typeof window === 'undefined' ? 'http://localhost' : window.location.origin)
+    const path = normalizePath(url.pathname)
+    if (path !== currentPath) return false
+    if (item.label === 'try') return currentHash === '#examples'
+    if (item.label === 'spec') return currentPath === '/spec' && currentHash !== '#examples'
+    return false
   }
 
   function pathWithLocale(path: string): string {
@@ -271,6 +289,7 @@ let total = iter.reduce(iter.range(0, 10, 2), 0, |acc, n| acc + n);`,
   function parseMarkdown(markdown: string): SpecSection[] {
     const lines = markdown.split('\n')
     const sections: SpecSection[] = []
+    const seenIds = new Map<string, number>()
     let current: SpecSection | undefined = undefined
     let paragraph: string[] = []
     let list: string[] = []
@@ -328,7 +347,7 @@ let total = iter.reduce(iter.range(0, 10, 2), 0, |acc, n| acc + n);`,
           continue
         }
         current = {
-          id: slugify(title),
+          id: uniqueSlug(title, seenIds),
           level: heading[1].length,
           title,
           blocks: [],
@@ -362,6 +381,13 @@ let total = iter.reduce(iter.range(0, 10, 2), 0, |acc, n| acc + n);`,
     if (typeof window === 'undefined') return
     window.history.pushState({}, '', pathWithLocale(path))
     currentPath = normalizePath(window.location.pathname)
+    currentHash = window.location.hash
+    if (currentHash) {
+      window.setTimeout(() => {
+        document.getElementById(currentHash.slice(1))?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      }, 0)
+      return
+    }
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }
 
@@ -382,10 +408,22 @@ let total = iter.reduce(iter.range(0, 10, 2), 0, |acc, n| acc + n);`,
   onMount(() => {
     const nextLocale = locale || getInitialLocale()
     applyLocale(nextLocale)
-    syncLocaleToUrl(nextLocale)
+    if (window.location.pathname === '/try') {
+      window.history.replaceState({}, '', pathWithLocale('/spec#examples'))
+    } else {
+      syncLocaleToUrl(nextLocale)
+    }
+    currentPath = normalizePath(window.location.pathname)
+    currentHash = window.location.hash
+    if (currentHash) {
+      window.setTimeout(() => {
+        document.getElementById(currentHash.slice(1))?.scrollIntoView({ block: 'start' })
+      }, 0)
+    }
 
     const handlePopstate = () => {
       currentPath = normalizePath(window.location.pathname)
+      currentHash = window.location.hash
     }
 
     window.addEventListener('popstate', handlePopstate)
@@ -417,7 +455,7 @@ let total = iter.reduce(iter.range(0, 10, 2), 0, |acc, n| acc + n);`,
         {#if item.external}
           <a href={item.href} target="_blank" rel="noreferrer">{getNavLabel(item)}</a>
         {:else}
-          <a href={item.href} aria-current={currentPath === item.href ? 'page' : undefined} on:click={(event) => navigate(event, item.href)}>{getNavLabel(item)}</a>
+          <a href={item.href} aria-current={isCurrentNavItem(item) ? 'page' : undefined} on:click={(event) => navigate(event, item.href)}>{getNavLabel(item)}</a>
         {/if}
       {/each}
     </nav>
@@ -454,6 +492,8 @@ let total = iter.reduce(iter.range(0, 10, 2), 0, |acc, n| acc + n);`,
       </aside>
 
       <div class="spec-content">
+        <Playground embedded />
+        <div id="spec-start" class="spec-start-anchor" aria-hidden="true"></div>
         {#each specSections as section}
           <article class={`spec-card spec-level-${section.level}`} id={section.id}>
             {#if section.level <= 2}
@@ -482,8 +522,6 @@ let total = iter.reduce(iter.range(0, 10, 2), 0, |acc, n| acc + n);`,
         {/each}
       </div>
     </section>
-  {:else if currentPath === '/try'}
-    <Playground />
   {:else}
     <section class="hero" aria-labelledby="hero-title">
       <div class="hero-copy">

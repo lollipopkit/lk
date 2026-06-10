@@ -854,6 +854,11 @@ h2 {
   min-width: 0;
 }
 
+.spec-start-anchor {
+  height: 0;
+  scroll-margin-top: 6.5rem;
+}
+
 .spec-card {
   position: relative;
   min-width: 0;

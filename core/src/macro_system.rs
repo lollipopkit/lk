@@ -8,11 +8,18 @@ use crate::token::{ParseError, Span, Token};
 mod expansion;
 mod follow;
 mod imports;
+mod origin;
+mod proc_deps;
+mod proc_function;
+mod proc_output;
 mod procedural;
 
+pub use origin::{MacroOriginFrame, MacroOriginKind, MacroTokenOrigin};
+pub use proc_deps::ProcMacroDependencyRecorder;
 pub use procedural::{
     PROC_MACRO_PROTOCOL_VERSION, ProcMacroDependency, ProcMacroDiagnostic, ProcMacroDiagnosticLevel, ProcMacroKind,
-    ProcMacroOptions, ProcMacroRequest, ProcMacroResponse, ProcMacroSpan, ProcMacroToken, expand_ast_macros,
+    ProcMacroOptions, ProcMacroProcessConfig, ProcMacroProcessError, ProcMacroProviders, ProcMacroRequest,
+    ProcMacroResponse, ProcMacroSpan, ProcMacroToken, expand_ast_macros, run_proc_macro_process,
 };
 
 const DEFAULT_RECURSION_LIMIT: usize = 128;
@@ -22,6 +29,9 @@ pub struct MacroExpandOptions {
     pub recursion_limit: usize,
     pub trace: bool,
     pub base_dir: Option<PathBuf>,
+    pub proc_macro_providers: ProcMacroProviders,
+    pub proc_macro_features: Vec<String>,
+    pub proc_macro_dependency_recorder: ProcMacroDependencyRecorder,
 }
 
 impl Default for MacroExpandOptions {
@@ -30,6 +40,9 @@ impl Default for MacroExpandOptions {
             recursion_limit: DEFAULT_RECURSION_LIMIT,
             trace: false,
             base_dir: None,
+            proc_macro_providers: ProcMacroProviders::default(),
+            proc_macro_features: Vec::new(),
+            proc_macro_dependency_recorder: ProcMacroDependencyRecorder::default(),
         }
     }
 }
@@ -46,6 +59,7 @@ pub struct SourceToken {
     pub token: Token,
     pub span: Span,
     pub lexeme: String,
+    pub origins: Vec<MacroOriginFrame>,
 }
 
 #[derive(Debug, Clone)]
@@ -69,7 +83,9 @@ pub struct MacroTrace {
 pub struct MacroExpandResult {
     pub tokens: Vec<Token>,
     pub spans: Vec<Span>,
+    pub origins: Vec<MacroTokenOrigin>,
     pub trace: Vec<MacroTrace>,
+    pub proc_macro_dependencies: Vec<ProcMacroDependency>,
 }
 
 #[derive(Debug, Clone)]
@@ -168,6 +184,7 @@ impl Capture {
 struct ExpandedToken {
     token: SourceToken,
     from_capture: bool,
+    origin_kind: MacroOriginKind,
 }
 
 #[derive(Default)]
@@ -223,15 +240,26 @@ pub fn expand_macros(
         .zip(spans)
         .map(|(token, span)| {
             let lexeme = token_lexeme(&token);
-            SourceToken { token, span, lexeme }
+            SourceToken {
+                token,
+                span,
+                lexeme,
+                origins: Vec::new(),
+            }
         })
         .collect::<Vec<_>>();
     let (without_defs, registry) = collect_macro_defs(&source_tokens, options.base_dir.as_deref())?;
     let mut trace = Vec::new();
     let mut stack = Vec::new();
     let expanded = expand_stream(&without_defs, &registry, &options, 0, &mut trace, &mut stack)?;
-    let (tokens, spans) = split_source_tokens(expanded);
-    Ok(MacroExpandResult { tokens, spans, trace })
+    let (tokens, spans, origins) = split_source_tokens(expanded);
+    Ok(MacroExpandResult {
+        tokens,
+        spans,
+        origins,
+        trace,
+        proc_macro_dependencies: options.proc_macro_dependency_recorder.dependencies(),
+    })
 }
 
 pub fn token_lexeme(token: &Token) -> String {
@@ -726,25 +754,36 @@ fn expand_stream(
     let mut output = Vec::with_capacity(tokens.len());
     let mut index = 0usize;
     while index < tokens.len() {
-        let Some((name, group_start)) = macro_invocation_at(tokens, index, registry) else {
+        let Some((name, group_start)) = macro_invocation_at(tokens, index, registry, options) else {
             output.push(tokens[index].clone());
             index += 1;
             continue;
         };
-        let definition = registry.macros.get(&name).expect("checked in macro_invocation_at");
         let (inner_start, inner_end) = find_group(tokens, group_start)?;
         let input = &tokens[inner_start + 1..inner_end];
         let call_span = tokens[index].span.clone();
+        let call_origins = tokens[index].origins.clone();
         stack.push(MacroCallFrame {
             macro_name: name.clone(),
             call_span: call_span.clone(),
         });
-        let expanded = match expansion::expand_macro_invocation(definition, input, &call_span) {
-            Ok(expanded) => expanded,
-            Err(error) => {
-                let error = macro_error_with_stack(error, stack);
-                stack.pop();
-                return Err(error);
+        let expanded = if let Some(definition) = registry.macros.get(&name) {
+            match expansion::expand_macro_invocation(definition, input, &call_span, &call_origins) {
+                Ok(expanded) => expanded,
+                Err(error) => {
+                    let error = macro_error_with_stack(error, stack);
+                    stack.pop();
+                    return Err(error);
+                }
+            }
+        } else {
+            match proc_function::expand_function_like_proc_macro(&name, input, options, &call_span, &call_origins) {
+                Ok(expanded) => expanded,
+                Err(error) => {
+                    let error = macro_error_with_stack(error, stack);
+                    stack.pop();
+                    return Err(error);
+                }
             }
         };
         if options.trace {
@@ -789,7 +828,12 @@ fn macro_error_with_stack(error: ParseError, stack: &[MacroCallFrame]) -> ParseE
     }
 }
 
-fn macro_invocation_at(tokens: &[SourceToken], index: usize, registry: &MacroRegistry) -> Option<(String, usize)> {
+fn macro_invocation_at(
+    tokens: &[SourceToken],
+    index: usize,
+    registry: &MacroRegistry,
+    options: &MacroExpandOptions,
+) -> Option<(String, usize)> {
     let Token::Id(name) = &tokens.get(index)?.token else {
         return None;
     };
@@ -803,7 +847,12 @@ fn macro_invocation_at(tokens: &[SourceToken], index: usize, registry: &MacroReg
         macro_name.push_str(segment);
         cursor += 2;
     }
-    if !registry.macros.contains_key(&macro_name) || tokens.get(cursor).map(|t| &t.token) != Some(&Token::Not) {
+    let is_macro = registry.macros.contains_key(&macro_name)
+        || options
+            .proc_macro_providers
+            .function_like_provider(&macro_name)
+            .is_some();
+    if !is_macro || tokens.get(cursor).map(|t| &t.token) != Some(&Token::Not) {
         return None;
     }
     if !is_open_delim(&tokens.get(cursor + 1)?.token) {
@@ -856,14 +905,21 @@ fn token_matches(expected: &Token, actual: &Token) -> bool {
     }
 }
 
-fn split_source_tokens(tokens: Vec<SourceToken>) -> (Vec<Token>, Vec<Span>) {
+fn split_source_tokens(tokens: Vec<SourceToken>) -> (Vec<Token>, Vec<Span>, Vec<MacroTokenOrigin>) {
     let mut out_tokens = Vec::with_capacity(tokens.len());
     let mut spans = Vec::with_capacity(tokens.len());
-    for token in tokens {
+    let mut origins = Vec::with_capacity(tokens.len());
+    for (token_index, token) in tokens.into_iter().enumerate() {
+        origins.push(MacroTokenOrigin {
+            token_index,
+            lexeme: token.lexeme.clone(),
+            span: token.span.clone(),
+            frames: token.origins.clone(),
+        });
         out_tokens.push(token.token);
         spans.push(token.span);
     }
-    (out_tokens, spans)
+    (out_tokens, spans, origins)
 }
 
 fn expect_id(tokens: &[SourceToken], index: usize, message: &str) -> Result<String, ParseError> {
@@ -883,6 +939,9 @@ fn error_at(tokens: &[SourceToken], index: usize, message: &str) -> ParseError {
         None => ParseError::new(message.to_string()),
     }
 }
+
+#[cfg(test)]
+mod origin_tests;
 
 #[cfg(test)]
 mod tests {

@@ -6,6 +6,8 @@
   import { loadLkWasm, type RunResult } from '../lib/lkWasm'
   import { playgroundExamples } from '../lib/playgroundExamples'
 
+  export let embedded = false
+
   let source = playgroundExamples[0].code
   let activeExample = playgroundExamples[0].name
   let wasmReady = false
@@ -91,14 +93,7 @@
   }
 </script>
 
-<section class="playground-page" aria-labelledby="try-title">
-  <div class="playground-heading">
-    <p id="try-title" class="eyebrow">LK Wasm Playground</p>
-    <p>
-      The playground loads the LK wasm runtime only on this page and runs a browser-safe stdlib subset.
-    </p>
-  </div>
-
+<section id="examples" class="playground-page" class:playground-embedded={embedded} aria-label="LK examples">
   <div class="playground-shell">
     <section class="playground-editor" aria-label="LK source editor">
       <div class="playground-toolbar">
@@ -120,7 +115,7 @@
           </button>
         </div>
       </div>
-      <LkCodeEditor bind:value={source} ariaLabel="LK source code" />
+      <LkCodeEditor bind:value={source} ariaLabel="LK source code" compact={embedded} />
     </section>
 
     <section class="playground-output" aria-label="Run output">

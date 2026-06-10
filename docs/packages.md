@@ -19,6 +19,40 @@ local = { path = "deps/local" }
 By default, string dependencies are GitHub repositories. `owner/repo` resolves to
 `https://github.com/owner/repo.git`.
 
+## Procedural Macro Providers
+
+`Lk.toml` can register isolated process providers for procedural macros. The
+compiler sends a versioned JSON request on stdin and expects a versioned JSON
+response on stdout. Commands that look like paths are resolved relative to the
+manifest directory; plain command names resolve through `PATH`.
+
+```toml
+[macros.derive.MakeAnswer]
+command = "./tools/derive-make-answer"
+args = ["--json"]
+timeout_ms = 5000
+max_output_bytes = 1048576
+
+[macros.attribute.route]
+command = "lk-route-macro"
+
+[macros.function_like.sql]
+command = "lk-sql-macro"
+```
+
+External derive providers append generated items after the annotated struct.
+External attribute providers can transform, replace, or remove a single
+annotated item. Function-like providers expand `name!(...)`, `name![...]`, and
+`name!{...}` invocations to token streams before normal parsing. Provider
+responses can report deterministic dependency metadata; `lk macro expand --deps`
+prints the collected dependencies as JSON.
+
+Expanded token streams keep token-level macro origins for declarative macro
+captures, macro-definition output, `$crate` anchors, and function-like
+procedural macro output. `lk macro expand --origins` prints this source-map
+metadata as JSON; parse errors caused by macro-generated tokens use the same
+origin stack to explain which macro call produced the token.
+
 ## Workspaces
 
 ```toml

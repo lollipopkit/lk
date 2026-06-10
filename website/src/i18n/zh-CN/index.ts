@@ -14,7 +14,7 @@ const zhCN: Translation = {
   },
   hero: {
     eyebrow: '用 Rust 编写的 Rust 风格脚本语言',
-    title: '轻量 现代 脚本语言。',
+    title: '轻量 现代 高效',
     subtitle:
       'LK 提供清晰的语法、结构化模式匹配、实用标准库和直接的 CLI 工作流，适合嵌入业务逻辑与编写自动化脚本。',
     primaryAction: '开始',

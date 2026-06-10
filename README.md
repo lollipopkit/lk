@@ -8,7 +8,7 @@ English | [简体中文](README.zh-CN.md)
 ## Features
 
 - Rust-inspired syntax with first-class named parameters
-- Rust-shaped `macro_rules!` declarative macros with function-like calls, explicit macro exports/re-exports, file/package imports, standard `macros` imports, item attributes, and built-in `#[derive(Debug|Show)]`; see [docs/macros.md](docs/macros.md) for the macro ecosystem roadmap
+- Rust-shaped `macro_rules!` declarative macros with function-like calls, explicit macro exports/re-exports, file/package imports, standard `macros` imports, item attributes, built-in `#[derive(Debug|Show)]`, isolated external derive/attribute/function-like providers, and token-level macro origin/source-map inspection; see [docs/macros.md](docs/macros.md) for the macro ecosystem roadmap
 - VM interpreter and LLVM compiler backend, supporting cross-platform native compilation and browser WASM
 - Built-in standard library and syntax sugar
 - Package manager and REPL, with VS Code LSP extension support
@@ -82,3 +82,8 @@ VS Code support is a single merged extension under `vsc-ext/lsp`. It includes `.
 ```plaintext
 Apache-2.0 lollipopkit
 ```
+
+## Acknowledgements
+
+- Part of the design inspiration came from a handwritten Lua VM/compiler tutorial I read during college.
+- Six months of ChatGPT Pro provided through OpenAI OSS.

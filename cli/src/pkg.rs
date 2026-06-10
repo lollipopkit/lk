@@ -194,6 +194,7 @@ pub(crate) fn init_package(name: Option<String>) -> anyhow::Result<()> {
         }),
         workspace: None,
         dependencies: BTreeMap::new(),
+        macros: Default::default(),
     };
     manifest.write(&manifest_path)?;
     let src_dir = cwd.join("src");

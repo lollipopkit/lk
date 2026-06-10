@@ -2,8 +2,10 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     env, fs,
     path::{Path, PathBuf},
+    time::Duration,
 };
 
+use crate::macro_system::{ProcMacroProcessConfig, ProcMacroProviders};
 use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 
@@ -16,6 +18,8 @@ pub struct Manifest {
     pub workspace: Option<WorkspaceSection>,
     #[serde(default)]
     pub dependencies: BTreeMap<String, DependencySpec>,
+    #[serde(default, skip_serializing_if = "MacroSection::is_empty")]
+    pub macros: MacroSection,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -35,6 +39,27 @@ pub struct WorkspaceSection {
     pub members: Vec<String>,
     #[serde(default)]
     pub dependencies: BTreeMap<String, DependencySpec>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct MacroSection {
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub derive: BTreeMap<String, ProcMacroSpec>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub attribute: BTreeMap<String, ProcMacroSpec>,
+    #[serde(default, rename = "function_like", skip_serializing_if = "BTreeMap::is_empty")]
+    pub function_like: BTreeMap<String, ProcMacroSpec>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProcMacroSpec {
+    pub command: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_bytes: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -93,6 +118,40 @@ impl Manifest {
     pub fn write(&self, path: &Path) -> Result<()> {
         let raw = toml::to_string_pretty(self).context("serialize Lk.toml")?;
         fs::write(path, raw).with_context(|| format!("write manifest {}", path.display()))
+    }
+
+    pub fn proc_macro_providers(&self, manifest_dir: &Path) -> ProcMacroProviders {
+        let mut providers = ProcMacroProviders::default();
+        for (name, spec) in &self.macros.derive {
+            providers.register_derive(name.clone(), spec.to_process_config(manifest_dir));
+        }
+        for (name, spec) in &self.macros.attribute {
+            providers.register_attribute(name.clone(), spec.to_process_config(manifest_dir));
+        }
+        for (name, spec) in &self.macros.function_like {
+            providers.register_function_like(name.clone(), spec.to_process_config(manifest_dir));
+        }
+        providers
+    }
+}
+
+impl MacroSection {
+    pub fn is_empty(&self) -> bool {
+        self.derive.is_empty() && self.attribute.is_empty() && self.function_like.is_empty()
+    }
+}
+
+impl ProcMacroSpec {
+    pub fn to_process_config(&self, manifest_dir: &Path) -> ProcMacroProcessConfig {
+        let mut config = ProcMacroProcessConfig::new(resolve_proc_macro_command(manifest_dir, &self.command));
+        config.args = self.args.clone();
+        if let Some(timeout_ms) = self.timeout_ms {
+            config.timeout = Duration::from_millis(timeout_ms);
+        }
+        if let Some(max_output_bytes) = self.max_output_bytes {
+            config.max_output_bytes = max_output_bytes;
+        }
+        config
     }
 }
 
@@ -323,6 +382,18 @@ pub fn cache_dir_for_source(source: &str) -> PathBuf {
     root
 }
 
+fn resolve_proc_macro_command(manifest_dir: &Path, command: &str) -> PathBuf {
+    let path = PathBuf::from(command);
+    if path.is_absolute() || !is_path_like_command(command) {
+        return path;
+    }
+    manifest_dir.join(path)
+}
+
+fn is_path_like_command(command: &str) -> bool {
+    command.starts_with('.') || command.contains('/') || command.contains('\\')
+}
+
 pub fn lk_home() -> PathBuf {
     if let Ok(home) = env::var("LK_HOME")
         && !home.is_empty()
@@ -388,6 +459,47 @@ mod tests {
             manifest.dependencies["remote"].git_url().unwrap(),
             github_url("owner/repo")
         );
+        Ok(())
+    }
+
+    #[test]
+    fn manifest_builds_proc_macro_providers() -> Result<()> {
+        let raw = r#"
+            [package]
+            name = "app"
+
+            [macros.derive.MakeAnswer]
+            command = "./tools/derive-make-answer"
+            args = ["--json"]
+            timeout_ms = 250
+            max_output_bytes = 1024
+
+            [macros.attribute.route]
+            command = "lk-route-macro"
+
+            [macros.function_like.sql]
+            command = "tools/sql-macro"
+        "#;
+        let manifest: Manifest = toml::from_str(raw)?;
+        let providers = manifest.proc_macro_providers(Path::new("/tmp/app"));
+
+        let derive = providers
+            .derive_provider("MakeAnswer")
+            .expect("derive provider should be registered");
+        assert_eq!(derive.program, PathBuf::from("/tmp/app/./tools/derive-make-answer"));
+        assert_eq!(derive.args, vec!["--json"]);
+        assert_eq!(derive.timeout, Duration::from_millis(250));
+        assert_eq!(derive.max_output_bytes, 1024);
+
+        let attr = providers
+            .attribute_provider("route")
+            .expect("attribute provider should be registered");
+        assert_eq!(attr.program, PathBuf::from("lk-route-macro"));
+
+        let function_like = providers
+            .function_like_provider("sql")
+            .expect("function-like provider should be registered");
+        assert_eq!(function_like.program, PathBuf::from("/tmp/app/tools/sql-macro"));
         Ok(())
     }
 

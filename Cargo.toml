@@ -88,6 +88,12 @@ syn = { version = "2", features = ["full", "extra-traits"] }
 
 [profile.release]
 panic = "abort"
+opt-level = 2
+lto = "thin"
+codegen-units = 16
+
+[profile.dist]
+inherits = "release"
 opt-level = 3
 lto = true
 codegen-units = 1

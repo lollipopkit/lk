@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::Context;
-use lk_core::package::{MANIFEST_FILE, Manifest};
+use lk_core::package::{MANIFEST_FILE, Manifest, find_manifest};
 use lk_core::stmt::Program;
 use lk_core::syntax::{ParseOptions, parse_program_source};
 
@@ -32,10 +32,7 @@ pub(crate) fn parse_sanitized_path(raw: &str) -> Result<PathBuf, String> {
 
 pub(crate) fn parse_program_file(path: &Path) -> anyhow::Result<Program> {
     let src = read_file_content(&path.to_string_lossy())?;
-    let options = ParseOptions {
-        base_dir: path.parent().map(Path::to_path_buf),
-        ..ParseOptions::default()
-    };
+    let options = parse_options_for_file(path)?;
     match parse_program_source(&src, options) {
         Ok(program) => Ok(program),
         Err(parse_err) => {
@@ -43,6 +40,22 @@ pub(crate) fn parse_program_file(path: &Path) -> anyhow::Result<Program> {
             std::process::exit(1);
         }
     }
+}
+
+pub(crate) fn parse_options_for_file(path: &Path) -> anyhow::Result<ParseOptions> {
+    let mut options = ParseOptions {
+        base_dir: path.parent().map(Path::to_path_buf),
+        ..ParseOptions::default()
+    };
+    let Some(manifest_path) = find_manifest(path) else {
+        return Ok(options);
+    };
+    let manifest = Manifest::read(&manifest_path)?;
+    let manifest_dir = manifest_path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("manifest has no parent: {}", manifest_path.display()))?;
+    options.proc_macro_providers = manifest.proc_macro_providers(manifest_dir);
+    Ok(options)
 }
 
 pub(crate) fn split_compile_args(args: &[String]) -> anyhow::Result<(CompileMode, PathBuf)> {

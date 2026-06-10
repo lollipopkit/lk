@@ -8,11 +8,12 @@ const DEFAULT_TRACE_FILTER: &str = "lk::vm::alloc=trace,lk::vm::slowpath=debug,l
 
 use clap::{Parser, Subcommand, ValueEnum};
 use lk_core::{
+    macro_system::MacroTokenOrigin,
     module::ModuleRegistry,
     package::{PackageGraph, PackageModule},
     rt,
     stmt::{ModuleResolver, import::collect_program_imports},
-    syntax::{ParseOptions, expand_source, parse_program_source, render_tokens},
+    syntax::{expand_program_source, parse_program_source, render_program, render_tokens},
     typ::TypeChecker,
     vm::{
         ModuleArtifact, Opcode, VM_INDEX_KEY_METRIC_NAMES, VM_REGISTER_WRITE_SOURCE_NAMES, VmContext, VmRuntimeMetrics,
@@ -39,7 +40,7 @@ mod startup_trace;
 use coverage::run_coverage_report;
 #[cfg(test)]
 use paths::split_compile_args_with_cwd;
-use paths::{parse_program_file, parse_sanitized_path, sanitize_path, split_compile_args};
+use paths::{parse_options_for_file, parse_program_file, parse_sanitized_path, sanitize_path, split_compile_args};
 use pkg::run_pkg_command;
 
 #[derive(Debug, Parser)]
@@ -157,6 +158,15 @@ enum MacroCommand {
         /// Print expansion trace entries before expanded source
         #[arg(long)]
         trace: bool,
+        /// Print procedural macro dependency metadata after expansion
+        #[arg(long)]
+        deps: bool,
+        /// Print token-level macro origin metadata after expansion
+        #[arg(long)]
+        origins: bool,
+        /// Enable a compile-time macro feature for cfg predicates; repeat for multiple features
+        #[arg(long = "feature", value_name = "NAME")]
+        features: Vec<String>,
     },
 }
 
@@ -512,13 +522,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     // Parse, expand macros, and execute as statements.
-    let program = match parse_program_source(
-        &input,
-        ParseOptions {
-            base_dir: safe.parent().map(Path::to_path_buf),
-            ..ParseOptions::default()
-        },
-    ) {
+    let program = match parse_program_source(&input, parse_options_for_file(&safe)?) {
         Ok(program) => program,
         Err(parse_err) => {
             diagnostic::parse_error(&parse_err, &input);
@@ -549,34 +553,110 @@ fn main() -> anyhow::Result<()> {
 
 fn run_macro_command(command: MacroCommand) -> anyhow::Result<()> {
     match command {
-        MacroCommand::Expand { file, trace } => expand_macro_file(&file, trace),
+        MacroCommand::Expand {
+            file,
+            trace,
+            deps,
+            origins,
+            features,
+        } => expand_macro_file(&file, trace, deps, origins, features),
     }
 }
 
-fn expand_macro_file(path: &Path, trace: bool) -> anyhow::Result<()> {
+fn expand_macro_file(path: &Path, trace: bool, deps: bool, origins: bool, features: Vec<String>) -> anyhow::Result<()> {
     let input = std::fs::read_to_string(path).with_context(|| format!("read LK source {}", path.display()))?;
-    let expanded = expand_source(
-        &input,
-        ParseOptions {
-            macro_trace: trace,
-            base_dir: path.parent().map(Path::to_path_buf),
-            ..ParseOptions::default()
-        },
-    )
-    .map_err(|parse_err| {
+    let mut options = parse_options_for_file(path)?;
+    options.macro_trace = trace;
+    options.macro_features = features;
+    let expanded = expand_program_source(&input, options).map_err(|parse_err| {
         diagnostic::parse_error(&parse_err, &input);
         anyhow::anyhow!(parse_err.to_string())
     })?;
     if trace {
-        for step in &expanded.trace {
+        for step in &expanded.source.trace {
             println!(
                 "# macro {} at {}:{} -> {} tokens",
                 step.macro_name, step.call_span.start.line, step.call_span.start.column, step.output_len
             );
         }
     }
-    println!("{}", render_tokens(&expanded.tokens));
+    let token_output = render_tokens(&expanded.source.tokens);
+    if expanded.ast_expanded {
+        println!("# token macro expansion");
+        println!("{token_output}");
+        println!("# ast macro expansion");
+        println!("{}", render_program(&expanded.program));
+    } else {
+        println!("{token_output}");
+    }
+    if deps {
+        println!("# proc macro dependencies");
+        println!("{}", serde_json::to_string_pretty(&expanded.proc_macro_dependencies)?);
+    }
+    if origins {
+        println!("# macro token origins");
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json_macro_origins(&expanded.source.origins))?
+        );
+    }
     Ok(())
+}
+
+#[derive(serde::Serialize)]
+struct JsonMacroTokenOrigin<'a> {
+    token_index: usize,
+    lexeme: &'a str,
+    span: JsonSpan,
+    frames: Vec<JsonMacroOriginFrame<'a>>,
+}
+
+#[derive(serde::Serialize)]
+struct JsonMacroOriginFrame<'a> {
+    macro_name: &'a str,
+    kind: &'a str,
+    call_span: JsonSpan,
+}
+
+#[derive(serde::Serialize)]
+struct JsonSpan {
+    start_line: u32,
+    start_column: u32,
+    start_offset: usize,
+    end_line: u32,
+    end_column: u32,
+    end_offset: usize,
+}
+
+fn json_macro_origins(origins: &[MacroTokenOrigin]) -> Vec<JsonMacroTokenOrigin<'_>> {
+    origins
+        .iter()
+        .map(|origin| JsonMacroTokenOrigin {
+            token_index: origin.token_index,
+            lexeme: &origin.lexeme,
+            span: json_span(&origin.span),
+            frames: origin
+                .frames
+                .iter()
+                .map(|frame| JsonMacroOriginFrame {
+                    macro_name: &frame.macro_name,
+                    kind: frame.kind.as_str(),
+                    call_span: json_span(&frame.call_span),
+                })
+                .collect(),
+        })
+        .collect()
+}
+
+fn json_span(span: &lk_core::token::Span) -> JsonSpan {
+    JsonSpan {
+        start_line: span.start.line,
+        start_column: span.start.column,
+        start_offset: span.start.offset,
+        end_line: span.end.line,
+        end_column: span.end.column,
+        end_offset: span.end.offset,
+    }
 }
 
 fn run_type_check(path: &Path) -> anyhow::Result<()> {
@@ -790,8 +870,7 @@ fn module_name_from_path(path: &Path) -> String {
 
 pub(crate) fn build_vm_context(path: &Path) -> anyhow::Result<VmContext> {
     let mut registry = ModuleRegistry::new();
-    lk_stdlib::register_stdlib_globals(&mut registry);
-    lk_stdlib::register_stdlib_modules(&mut registry)?;
+    register_enabled_stdlib(&mut registry)?;
     let mut resolver = ModuleResolver::with_registry(registry);
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
         resolver.set_base_dir(parent.to_path_buf());
@@ -801,6 +880,19 @@ pub(crate) fn build_vm_context(path: &Path) -> anyhow::Result<VmContext> {
     Ok(VmContext::new()
         .with_resolver(Arc::clone(&resolver))
         .with_type_checker(Some(TypeChecker::new_strict())))
+}
+
+pub(crate) fn register_enabled_stdlib(registry: &mut ModuleRegistry) -> anyhow::Result<()> {
+    #[cfg(feature = "stdlib")]
+    {
+        lk_stdlib::register_stdlib_globals(registry);
+        lk_stdlib::register_stdlib_modules(registry)?;
+    }
+    #[cfg(not(feature = "stdlib"))]
+    {
+        let _ = registry;
+    }
+    Ok(())
 }
 
 pub(crate) fn configure_package_resolver(

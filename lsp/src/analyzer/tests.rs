@@ -136,7 +136,7 @@ fn test_collect_named_param_decls_for_signature_help() {
 fn test_collect_named_param_decls_through_attributes() {
     let mut analyzer = create_analyzer();
     let content = r#"
-        #[derive(Debug)]
+        #[inline]
         fn draw_rect({width: Int}) {
             return width;
         }

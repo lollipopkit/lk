@@ -5,7 +5,7 @@ VSCODE_CLI ?=
 VSC_EXT_DIR := vsc-ext
 VSC_EXTENSIONS := lsp
 
-.PHONY: vsix $(VSC_EXTENSIONS:%=vsix-%) clean-vsix debug-lsp-ext install-lk
+.PHONY: vsix $(VSC_EXTENSIONS:%=vsix-%) clean-vsix debug-lsp-ext install
 
 vsix: $(VSC_EXTENSIONS:%=vsix-%)
 
@@ -65,6 +65,7 @@ clean-vsix:
 debug-lsp-ext:
 	./scripts/debug-vscode-lsp.sh
 
-install-lk:
-	cargo install --path cli
-	cargo install --path lsp
+install:
+	cargo install --path cli --force
+	cargo install --path lsp --force
+	$(MAKE) vsix INSTALL_VSIX=1
