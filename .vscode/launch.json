@@ -7,16 +7,16 @@
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Debug unit tests in library 'lkr-core'",
+            "name": "Debug unit tests in library 'lk-core'",
             "cargo": {
                 "args": [
                     "test",
                     "--no-run",
                     "--lib",
-                    "--package=lkr-core"
+                    "--package=lk-core"
                 ],
                 "filter": {
-                    "name": "lkr-core",
+                    "name": "lk-core",
                     "kind": "lib"
                 }
             },
@@ -28,28 +28,28 @@
             "type": "extensionHost",
             "request": "launch",
             "args": [
-                "--extensionDevelopmentPath=${workspaceFolder}/vsc-ext"
+                "--extensionDevelopmentPath=${workspaceFolder}/vsc-ext/lsp"
             ],
             "outFiles": [
-                "${workspaceFolder}/vsc-ext/out/**/*.js"
+                "${workspaceFolder}/vsc-ext/lsp/out/**/*.js"
             ],
             "preLaunchTask": "Build All"
         },
         {
-            "name": "Debug LKR LSP Server",
+            "name": "Debug LK LSP Server",
             "type": "lldb",
             "request": "launch",
             "cargo": {
                 "args": [
                     "build",
-                    "--package=lkr-lsp"
+                    "--package=lk-lsp"
                 ],
                 "filter": {
-                    "name": "lkr-lsp",
+                    "name": "lk-lsp",
                     "kind": "bin"
                 }
             },
-            "program": "${workspaceFolder}/target/debug/lkr-lsp",
+            "program": "${workspaceFolder}/target/debug/lk-lsp",
             "args": [],
             "cwd": "${workspaceFolder}"
         }

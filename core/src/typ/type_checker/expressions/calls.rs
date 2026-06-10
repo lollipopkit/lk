@@ -6,6 +6,10 @@ use anyhow::Result;
 impl TypeChecker {
     /// Check function call type
     pub(super) fn check_function_call(&mut self, func: &Expr, args: &[Box<Expr>]) -> Result<Type> {
+        if let Some(return_type) = self.check_stdlib_function_call(func, args)? {
+            return Ok(return_type);
+        }
+
         if let Expr::Access(obj_expr, field_expr) = func {
             let receiver_ty = self.check_expr(obj_expr)?;
             if let Expr::Literal(field_val) = field_expr.as_ref()

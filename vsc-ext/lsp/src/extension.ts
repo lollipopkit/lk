@@ -108,7 +108,6 @@ const runtime = {
   semanticTokensMode: 'auto' as 'auto' | 'rangeOnly' | 'fullOnly',
   autoRangeAtLines: 800,
   inlayHintsEnabled: true,
-  inlayHintsThrottleMs: 50,
   inlayHintsShowParameters: true,
   inlayHintsShowTypes: true,
   checkingDelayMs: 120,
@@ -311,7 +310,6 @@ export function activate(context: vscode.ExtensionContext) {
   runtime.semanticTokensMode = (config.get<string>('semanticTokens.mode', 'auto') as any) || 'auto';
   runtime.autoRangeAtLines = Math.max(1, Number(config.get<number>('semanticTokens.autoRangeAtLines', 800)) || 800);
   runtime.inlayHintsEnabled = config.get<boolean>('inlayHints.enabled', true);
-  runtime.inlayHintsThrottleMs = Math.max(0, Number(config.get<number>('inlayHints.throttleMs', 50)) || 0);
   runtime.inlayHintsShowParameters = config.get<boolean>('inlayHints.parameters.enabled', true);
   runtime.inlayHintsShowTypes = config.get<boolean>('inlayHints.types.enabled', true);
   runtime.checkingDelayMs = Math.max(0, Number(config.get<number>('ui.checkingDelayMs', 120)) || 120);
@@ -350,10 +348,8 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Lightweight, per-document throttle map (separate for tokens and hints)
   const lastTokenReqAt = new Map<string, number>();
-  const lastInlayReqAt = new Map<string, number>();
   // Simple per-document concurrency gates to avoid piling up work while scrolling
   const tokenInFlight = new Set<string>();
-  const inlayInFlight = new Set<string>();
   // Keyed in-flight promises to dedupe identical requests
   const dedupeTokenRange = new Map<string, Promise<any>>();
   const dedupeInlay = new Map<string, Promise<any>>();
@@ -487,7 +483,7 @@ export function activate(context: vscode.ExtensionContext) {
       dedupeTokenRange.set(cacheKey, wrapped);
       return wrapped as any;
     },
-    // Inlay hints: show checking spinner and support throttling + filtering
+    // Inlay hints: show checking spinner, dedupe identical requests, and filter by settings.
     provideInlayHints(document, range, token, next) {
       if (!runtime.inlayHintsEnabled) {
         return null;
@@ -495,34 +491,19 @@ export function activate(context: vscode.ExtensionContext) {
       if (token?.isCancellationRequested) return null;
       const reqVersion = document.version;
       const key = document.uri.toString();
-      if (inlayInFlight.has(key)) {
-        perfLog('skip.inlayHints.inflight', 0);
-        return null;
-      }
-      beginChecking('inlayHints');
-      if (runtime.inlayHintsThrottleMs > 0) {
-        const now = Date.now();
-        const last = lastInlayReqAt.get(key) || 0;
-        if (now - last < runtime.inlayHintsThrottleMs) {
-          endChecking();
-          return null;
-        }
-        lastInlayReqAt.set(key, now);
-      }
       const rKey = `${range.start.line}:${range.start.character}-${range.end.line}:${range.end.character}`;
       const settingsKey = `${Number(runtime.inlayHintsShowParameters)}:${Number(runtime.inlayHintsShowTypes)}`;
       const cacheKey = `${key}#v${reqVersion}#I#${rKey}#${settingsKey}`;
       if (enableCaching) {
         const cached = inlayCache.get(cacheKey);
         if (cached !== undefined) {
-          endChecking();
           return cached as any;
         }
       }
       if (dedupeInlay.has(cacheKey)) {
         return dedupeInlay.get(cacheKey)! as any;
       }
-      inlayInFlight.add(key);
+      beginChecking('inlayHints');
       const res = withTiming('middleware.inlayHints', () => next(document, range, token));
       const filter = (hints: vscode.InlayHint[] | null | undefined) => {
         if (!hints) return hints;
@@ -544,7 +525,7 @@ export function activate(context: vscode.ExtensionContext) {
             if (enableCaching) inlayCache.set(cacheKey, filtered as any);
             return filtered;
           })
-          .finally(() => { inlayInFlight.delete(key); dedupeInlay.delete(cacheKey); endChecking(); });
+          .finally(() => { dedupeInlay.delete(cacheKey); endChecking(); });
         dedupeInlay.set(cacheKey, p as any);
         return p as any;
       } else {
@@ -553,7 +534,6 @@ export function activate(context: vscode.ExtensionContext) {
           if (enableCaching) inlayCache.set(cacheKey, filtered as any);
           return filtered;
         } finally {
-          inlayInFlight.delete(key);
           endChecking();
         }
       }
@@ -584,7 +564,6 @@ export function activate(context: vscode.ExtensionContext) {
     runtime.semanticTokensMode = (cfg.get<string>('semanticTokens.mode', 'auto') as any) || 'auto';
     runtime.autoRangeAtLines = Math.max(1, Number(cfg.get<number>('semanticTokens.autoRangeAtLines', 800)) || 800);
     runtime.inlayHintsEnabled = cfg.get<boolean>('inlayHints.enabled', true);
-    runtime.inlayHintsThrottleMs = Math.max(0, Number(cfg.get<number>('inlayHints.throttleMs', 50)) || 0);
     runtime.inlayHintsShowParameters = cfg.get<boolean>('inlayHints.parameters.enabled', true);
     runtime.inlayHintsShowTypes = cfg.get<boolean>('inlayHints.types.enabled', true);
     // Perf tracing settings

@@ -1077,12 +1077,15 @@ impl LkAnalyzer {
             Ok(_) => Vec::new(),
             Err(err) => {
                 let range = Self::type_error_range(&err, tokens, spans, content);
+                let message = Self::type_error_from_anyhow(&err)
+                    .map(|type_error| type_error.message.clone())
+                    .unwrap_or_else(|| err.to_string());
                 let mut diagnostic = Diagnostic::new(
                     range,
                     Some(DiagnosticSeverity::ERROR),
                     None,
                     Some("lk".to_string()),
-                    err.to_string(),
+                    message,
                     None,
                     None,
                 );
@@ -1104,8 +1107,47 @@ impl LkAnalyzer {
                     return range;
                 }
             }
+            if let Some(range) = Self::implicit_any_error_range(Some(type_error), &type_error.message, tokens, spans) {
+                return range;
+            }
+        }
+        let message = err.to_string();
+        if let Some(range) = Self::implicit_any_error_range(None, &message, tokens, spans) {
+            return range;
         }
         Self::default_error_range(content)
+    }
+
+    pub(crate) fn implicit_any_error_range(
+        type_error: Option<&typ::TypeError>,
+        message: &str,
+        tokens: &[token::Token],
+        spans: &[Span],
+    ) -> Option<Range> {
+        let fn_name = type_error
+            .and_then(|err| err.function_name.as_deref())
+            .or_else(|| Self::quoted_after(message, "Function '"))?;
+        let function = Self::scan_function_blocks(tokens, spans)
+            .into_iter()
+            .find(|block| block.name == fn_name)?;
+
+        if let Some(param_name) = type_error
+            .and_then(|err| err.parameter_name.as_deref())
+            .or_else(|| Self::quoted_after(message, "parameter '"))
+        {
+            if let Some((_, span)) = function.param_spans.iter().find(|(name, _)| name == param_name) {
+                return Some(Self::span_to_range(span));
+            }
+        }
+
+        Some(Self::span_to_range(&function.name_span))
+    }
+
+    fn quoted_after<'a>(message: &'a str, marker: &str) -> Option<&'a str> {
+        let start = message.find(marker)? + marker.len();
+        let rest = &message[start..];
+        let end = rest.find('\'')?;
+        Some(&rest[..end])
     }
 
     pub(crate) fn type_error_from_anyhow(err: &anyhow::Error) -> Option<&typ::TypeError> {

@@ -1027,4 +1027,96 @@ mod tests {
         let mut checker = TypeChecker::new_strict();
         assert!(program.type_check(&mut checker).is_ok());
     }
+
+    #[test]
+    fn test_strict_function_param_infers_from_later_string_call() {
+        let program = parse_program(
+            r#"
+            let workload_filter = os.env.get("LK_WORKLOAD_FILTER", "");
+            fn should_run(name) {
+                return workload_filter == "" || workload_filter == name;
+            }
+            if should_run("gcd_batch") {
+                println("run");
+            }
+        "#,
+        );
+        let mut checker = TypeChecker::new_strict();
+        assert!(program.type_check(&mut checker).is_ok());
+        let ty = checker
+            .get_local_type("should_run")
+            .expect("function type should remain in checker");
+        match ty {
+            crate::val::Type::Function {
+                params, return_type, ..
+            } => {
+                assert_eq!(params, &vec![crate::val::Type::String]);
+                assert_eq!(return_type.as_ref(), &crate::val::Type::Bool);
+            }
+            other => panic!("expected function type, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_strict_function_param_without_concrete_call_still_errors() {
+        let program = parse_program(
+            r#"
+            fn should_run(name) {
+                return true;
+            }
+        "#,
+        );
+        let mut checker = TypeChecker::new_strict();
+        let err = program
+            .type_check(&mut checker)
+            .expect_err("unconstrained function parameter should still require annotation");
+        assert!(err.to_string().contains("parameter 'name'"));
+        let type_error = err
+            .downcast_ref::<crate::typ::TypeError>()
+            .expect("strict implicit Any should use structured TypeError");
+        assert_eq!(type_error.function_name.as_deref(), Some("should_run"));
+        assert_eq!(type_error.parameter_name.as_deref(), Some("name"));
+    }
+
+    #[test]
+    fn test_strict_function_pending_checks_clear_after_error() {
+        let mut checker = TypeChecker::new_strict();
+        let bad = parse_program(
+            r#"
+            fn unresolved(name) {
+                return name;
+            }
+        "#,
+        );
+        assert!(bad.type_check(&mut checker).is_err());
+
+        let good = parse_program(
+            r#"
+            fn resolved(name) {
+                return name;
+            }
+            let value = resolved("ok");
+        "#,
+        );
+        assert!(
+            good.type_check(&mut checker).is_ok(),
+            "stale pending strict checks from the failed program must not leak into the next check"
+        );
+    }
+
+    #[test]
+    fn test_type_check_stdlib_env_and_math_signatures() {
+        let program = parse_program(
+            r#"
+            let filter = os.env.get("LK_WORKLOAD_FILTER", "");
+            let hi = math.max(1, 2);
+            let lo = math.min(1, 2);
+            let clamped_default = math.clamp(5);
+            let clamped_range = math.clamp(5, 0, 10);
+            let clamped_named = math.clamp(5, min: 0, max: 10);
+        "#,
+        );
+        let mut checker = TypeChecker::new_strict();
+        assert!(program.type_check(&mut checker).is_ok());
+    }
 }

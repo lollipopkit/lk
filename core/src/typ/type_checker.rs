@@ -32,6 +32,8 @@ pub struct TypeError {
     pub expected: Option<Type>,
     pub actual: Option<Type>,
     pub expr: Option<Expr>,
+    pub function_name: Option<String>,
+    pub parameter_name: Option<String>,
 }
 
 impl std::fmt::Display for TypeError {
@@ -70,6 +72,10 @@ pub struct TypeChecker {
     impl_self_type: Option<Type>,
     /// Recorded method signatures keyed by (receiver_type, method_name)
     method_sigs: HashMap<(String, String), Type>,
+    /// Function strict-Any checks delayed until the whole program contributes call-site constraints.
+    pending_strict_functions: Vec<PendingStrictFunction>,
+    /// Program-level type checking enables this so later call sites can refine earlier function declarations.
+    defer_strict_function_checks: bool,
 }
 
 impl Default for TypeChecker {
@@ -85,8 +91,30 @@ impl TypeChecker {
             expected,
             actual,
             expr,
+            function_name: None,
+            parameter_name: None,
         };
         anyhow::Error::new(te)
+    }
+
+    pub fn implicit_any_type_err(
+        function_name: &str,
+        issues: &[String],
+        parameter_name: Option<&str>,
+    ) -> anyhow::Error {
+        let message = format!(
+            "Function '{}' infers implicit Any for {}; add explicit annotations",
+            function_name,
+            issues.join(", ")
+        );
+        anyhow::Error::new(TypeError {
+            message,
+            expected: None,
+            actual: None,
+            expr: None,
+            function_name: Some(function_name.to_string()),
+            parameter_name: parameter_name.map(str::to_string),
+        })
     }
     /// Create a new type checker with default (non-strict) behaviour
     pub fn new() -> Self {
@@ -124,6 +152,8 @@ impl TypeChecker {
             options,
             impl_self_type: None,
             method_sigs: HashMap::new(),
+            pending_strict_functions: Vec::new(),
+            defer_strict_function_checks: false,
         }
     }
 
@@ -267,6 +297,31 @@ impl TypeChecker {
         self.inference_engine.add_constraint(a, b);
     }
 
+    pub fn defer_strict_function_checks(&self) -> bool {
+        self.defer_strict_function_checks
+    }
+
+    pub fn begin_deferred_strict_function_checks(&mut self) -> bool {
+        let previous = self.defer_strict_function_checks;
+        self.defer_strict_function_checks = true;
+        previous
+    }
+
+    pub fn restore_deferred_strict_function_checks(&mut self, previous: bool) {
+        self.defer_strict_function_checks = previous;
+    }
+
+    pub fn add_pending_strict_function(&mut self, pending: PendingStrictFunction) {
+        self.pending_strict_functions.push(pending);
+    }
+
+    pub fn finalize_deferred_strict_function_checks(&mut self) -> Result<()> {
+        let pending = std::mem::take(&mut self.pending_strict_functions);
+        let subs = self.solve_constraints()?;
+        self.apply_substitutions_to_environment(&subs);
+        self.check_pending_strict_functions(&pending, &subs)
+    }
+
     /// Get the inferred type for a local variable
     pub fn get_local_type(&self, name: &str) -> Option<&Type> {
         self.local_types.get(name)
@@ -319,6 +374,59 @@ impl TypeChecker {
             self.const_locals = prev;
         }
     }
+
+    fn apply_substitutions_to_environment(&mut self, subs: &HashMap<String, Type>) {
+        for ty in self.local_types.values_mut() {
+            *ty = ty.substitute(subs);
+        }
+        for sig in self.function_sigs.values_mut() {
+            sig.apply_substitutions(subs);
+        }
+        for ty in self.method_sigs.values_mut() {
+            *ty = ty.substitute(subs);
+        }
+    }
+
+    fn check_pending_strict_functions(
+        &self,
+        pending_functions: &[PendingStrictFunction],
+        subs: &HashMap<String, Type>,
+    ) -> Result<()> {
+        for pending in pending_functions {
+            let mut issues = Vec::new();
+            let mut first_param_name = None;
+            for param in &pending.positional {
+                let resolved = param.ty.substitute(subs);
+                if !param.annotated && Self::type_is_strict_any_unresolved(&resolved) {
+                    first_param_name.get_or_insert_with(|| param.name.clone());
+                    issues.push(format!("parameter '{}'", param.name));
+                }
+            }
+            for param in &pending.named {
+                let resolved = param.ty.substitute(subs);
+                if !param.annotated && Self::type_is_strict_any_unresolved(&resolved) {
+                    first_param_name.get_or_insert_with(|| param.name.clone());
+                    issues.push(format!("named parameter '{}'", param.name));
+                }
+            }
+            let resolved_return = pending.return_type.substitute(subs);
+            if !pending.return_annotated && Self::type_is_strict_any_unresolved(&resolved_return) {
+                issues.push("return type".to_string());
+            }
+            if !issues.is_empty() {
+                return Err(Self::implicit_any_type_err(
+                    &pending.name,
+                    &issues,
+                    first_param_name.as_deref(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn type_is_strict_any_unresolved(ty: &Type) -> bool {
+        matches!(ty, Type::Any) || ty.contains_variables()
+    }
 }
 
 /// Function signature for static checking (positional + named)
@@ -329,9 +437,39 @@ pub struct FunctionSig {
     pub return_type: Option<Type>,
 }
 
+impl FunctionSig {
+    fn apply_substitutions(&mut self, subs: &HashMap<String, Type>) {
+        for ty in &mut self.positional {
+            *ty = ty.substitute(subs);
+        }
+        for param in &mut self.named {
+            param.ty = param.ty.substitute(subs);
+        }
+        if let Some(return_type) = &mut self.return_type {
+            *return_type = return_type.substitute(subs);
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct NamedParamSig {
     pub name: String,
     pub ty: Type,
     pub has_default: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PendingStrictFunction {
+    pub name: String,
+    pub positional: Vec<PendingStrictParam>,
+    pub named: Vec<PendingStrictParam>,
+    pub return_type: Type,
+    pub return_annotated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PendingStrictParam {
+    pub name: String,
+    pub ty: Type,
+    pub annotated: bool,
 }

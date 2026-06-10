@@ -10,7 +10,7 @@
                 "compile"
             ],
             "options": {
-                "cwd": "${workspaceFolder}/vsc-ext"
+                "cwd": "${workspaceFolder}/vsc-ext/lsp"
             },
             "group": {
                 "kind": "build"
@@ -18,13 +18,13 @@
             "problemMatcher": ["$tsc"]
         },
         {
-            "label": "Build LKR LSP Server",
+            "label": "Build LK LSP Server",
             "type": "shell",
             "command": "cargo",
             "args": [
                 "build",
                 "-p",
-                "lkr-lsp"
+                "lk-lsp"
             ],
             "options": {
                 "cwd": "${workspaceFolder}"
@@ -35,7 +35,7 @@
         {
             "label": "Build All",
             "dependsOn": [
-                "Build LKR LSP Server",
+                "Build LK LSP Server",
                 "Build VS Code Extension"
             ],
             "group": {
@@ -51,7 +51,7 @@
                 "install"
             ],
             "options": {
-                "cwd": "${workspaceFolder}/vsc-ext"
+                "cwd": "${workspaceFolder}/vsc-ext/lsp"
             },
             "problemMatcher": []
         }

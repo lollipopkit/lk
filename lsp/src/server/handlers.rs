@@ -29,6 +29,79 @@ mod initialization;
 
 use initialization::semantic_tokens_provider_from;
 
+fn server_capabilities_from(params: &InitializeParams) -> ServerCapabilities {
+    ServerCapabilities {
+        // Switch to INCREMENTAL now that we apply ranges with UTF-16 mapping.
+        // Save notifications let us refresh the workspace cache after edits.
+        text_document_sync: Some(TextDocumentSyncCapability::Options(TextDocumentSyncOptions {
+            open_close: Some(true),
+            change: Some(TextDocumentSyncKind::INCREMENTAL),
+            will_save: Some(false),
+            will_save_wait_until: Some(false),
+            save: Some(TextDocumentSyncSaveOptions::Supported(true)),
+        })),
+        hover_provider: Some(HoverProviderCapability::Simple(true)),
+        completion_provider: Some(CompletionOptions {
+            resolve_provider: Some(false),
+            trigger_characters: Some(vec![
+                ".".to_string(),
+                "\"".to_string(),
+                "{".to_string(),
+                ",".to_string(),
+                ":".to_string(),
+            ]),
+            work_done_progress_options: Default::default(),
+            all_commit_characters: None,
+            completion_item: None,
+        }),
+        signature_help_provider: Some(SignatureHelpOptions {
+            trigger_characters: Some(vec!["(".to_string(), ",".to_string()]),
+            retrigger_characters: None,
+            work_done_progress_options: Default::default(),
+        }),
+        document_symbol_provider: Some(OneOf::Left(true)),
+        references_provider: Some(OneOf::Left(true)),
+        definition_provider: Some(OneOf::Left(true)),
+        document_highlight_provider: Some(OneOf::Left(true)),
+        rename_provider: Some(OneOf::Left(true)),
+        // Diagnostics are pushed via textDocument/publishDiagnostics. Advertising
+        // pull diagnostics as well makes VS Code show the same diagnostic twice.
+        diagnostic_provider: None,
+        semantic_tokens_provider: semantic_tokens_provider_from(params),
+        code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
+        code_lens_provider: Some(CodeLensOptions {
+            resolve_provider: Some(false),
+        }),
+        document_formatting_provider: Some(OneOf::Left(true)),
+        inlay_hint_provider: Some(OneOf::Right(InlayHintServerCapabilities::Options(InlayHintOptions {
+            work_done_progress_options: Default::default(),
+            resolve_provider: Some(false),
+        }))),
+        // Workspace capabilities left default; client will still send configuration changes
+        ..Default::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn server_capabilities_use_push_diagnostics_only() {
+        let params = InitializeParams::default();
+        let capabilities = server_capabilities_from(&params);
+
+        assert!(
+            capabilities.diagnostic_provider.is_none(),
+            "LK pushes diagnostics with textDocument/publishDiagnostics; pull diagnostics duplicate VS Code output"
+        );
+        assert!(
+            capabilities.inlay_hint_provider.is_some(),
+            "removing pull diagnostics must not disable inlay hints"
+        );
+    }
+}
+
 #[tower_lsp::async_trait]
 impl LanguageServer for LkLanguageServer {
     async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
@@ -50,59 +123,7 @@ impl LanguageServer for LkLanguageServer {
         self.workspace_cache.set_root(workspace_root);
 
         Ok(InitializeResult {
-            capabilities: ServerCapabilities {
-                // Switch to INCREMENTAL now that we apply ranges with UTF-16 mapping.
-                // Save notifications let us refresh the workspace cache after edits.
-                text_document_sync: Some(TextDocumentSyncCapability::Options(TextDocumentSyncOptions {
-                    open_close: Some(true),
-                    change: Some(TextDocumentSyncKind::INCREMENTAL),
-                    will_save: Some(false),
-                    will_save_wait_until: Some(false),
-                    save: Some(TextDocumentSyncSaveOptions::Supported(true)),
-                })),
-                hover_provider: Some(HoverProviderCapability::Simple(true)),
-                completion_provider: Some(CompletionOptions {
-                    resolve_provider: Some(false),
-                    trigger_characters: Some(vec![
-                        ".".to_string(),
-                        "\"".to_string(),
-                        "{".to_string(),
-                        ",".to_string(),
-                        ":".to_string(),
-                    ]),
-                    work_done_progress_options: Default::default(),
-                    all_commit_characters: None,
-                    completion_item: None,
-                }),
-                signature_help_provider: Some(SignatureHelpOptions {
-                    trigger_characters: Some(vec!["(".to_string(), ",".to_string()]),
-                    retrigger_characters: None,
-                    work_done_progress_options: Default::default(),
-                }),
-                document_symbol_provider: Some(OneOf::Left(true)),
-                references_provider: Some(OneOf::Left(true)),
-                definition_provider: Some(OneOf::Left(true)),
-                document_highlight_provider: Some(OneOf::Left(true)),
-                rename_provider: Some(OneOf::Left(true)),
-                diagnostic_provider: Some(DiagnosticServerCapabilities::Options(DiagnosticOptions {
-                    identifier: Some("lk".to_string()),
-                    inter_file_dependencies: false,
-                    workspace_diagnostics: false,
-                    work_done_progress_options: Default::default(),
-                })),
-                semantic_tokens_provider: semantic_tokens_provider_from(&params),
-                code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
-                code_lens_provider: Some(CodeLensOptions {
-                    resolve_provider: Some(false),
-                }),
-                document_formatting_provider: Some(OneOf::Left(true)),
-                inlay_hint_provider: Some(OneOf::Right(InlayHintServerCapabilities::Options(InlayHintOptions {
-                    work_done_progress_options: Default::default(),
-                    resolve_provider: Some(false),
-                }))),
-                // Workspace capabilities left default; client will still send configuration changes
-                ..Default::default()
-            },
+            capabilities: server_capabilities_from(&params),
             server_info: Some(ServerInfo {
                 name: "LK Language Server".to_string(),
                 version: Some("0.1.0".to_string()),
