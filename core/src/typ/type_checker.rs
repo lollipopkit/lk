@@ -32,6 +32,8 @@ pub struct TypeError {
     pub expected: Option<Type>,
     pub actual: Option<Type>,
     pub expr: Option<Expr>,
+    pub function_name: Option<String>,
+    pub parameter_name: Option<String>,
 }
 
 impl std::fmt::Display for TypeError {
@@ -89,8 +91,30 @@ impl TypeChecker {
             expected,
             actual,
             expr,
+            function_name: None,
+            parameter_name: None,
         };
         anyhow::Error::new(te)
+    }
+
+    pub fn implicit_any_type_err(
+        function_name: &str,
+        issues: &[String],
+        parameter_name: Option<&str>,
+    ) -> anyhow::Error {
+        let message = format!(
+            "Function '{}' infers implicit Any for {}; add explicit annotations",
+            function_name,
+            issues.join(", ")
+        );
+        anyhow::Error::new(TypeError {
+            message,
+            expected: None,
+            actual: None,
+            expr: None,
+            function_name: Some(function_name.to_string()),
+            parameter_name: parameter_name.map(str::to_string),
+        })
     }
     /// Create a new type checker with default (non-strict) behaviour
     pub fn new() -> Self {
@@ -292,11 +316,10 @@ impl TypeChecker {
     }
 
     pub fn finalize_deferred_strict_function_checks(&mut self) -> Result<()> {
+        let pending = std::mem::take(&mut self.pending_strict_functions);
         let subs = self.solve_constraints()?;
         self.apply_substitutions_to_environment(&subs);
-        self.check_pending_strict_functions(&subs)?;
-        self.pending_strict_functions.clear();
-        Ok(())
+        self.check_pending_strict_functions(&pending, &subs)
     }
 
     /// Get the inferred type for a local variable
@@ -364,18 +387,25 @@ impl TypeChecker {
         }
     }
 
-    fn check_pending_strict_functions(&self, subs: &HashMap<String, Type>) -> Result<()> {
-        for pending in &self.pending_strict_functions {
+    fn check_pending_strict_functions(
+        &self,
+        pending_functions: &[PendingStrictFunction],
+        subs: &HashMap<String, Type>,
+    ) -> Result<()> {
+        for pending in pending_functions {
             let mut issues = Vec::new();
+            let mut first_param_name = None;
             for param in &pending.positional {
                 let resolved = param.ty.substitute(subs);
                 if !param.annotated && Self::type_is_strict_any_unresolved(&resolved) {
+                    first_param_name.get_or_insert_with(|| param.name.clone());
                     issues.push(format!("parameter '{}'", param.name));
                 }
             }
             for param in &pending.named {
                 let resolved = param.ty.substitute(subs);
                 if !param.annotated && Self::type_is_strict_any_unresolved(&resolved) {
+                    first_param_name.get_or_insert_with(|| param.name.clone());
                     issues.push(format!("named parameter '{}'", param.name));
                 }
             }
@@ -384,11 +414,11 @@ impl TypeChecker {
                 issues.push("return type".to_string());
             }
             if !issues.is_empty() {
-                return Err(anyhow::anyhow!(format!(
-                    "Function '{}' infers implicit Any for {}; add explicit annotations",
-                    pending.name,
-                    issues.join(", ")
-                )));
+                return Err(Self::implicit_any_type_err(
+                    &pending.name,
+                    &issues,
+                    first_param_name.as_deref(),
+                ));
             }
         }
         Ok(())

@@ -484,10 +484,12 @@ impl Stmt {
 
                 if type_checker.strict_any() {
                     let mut issues: Vec<String> = Vec::new();
+                    let mut first_param_name = None;
                     for (idx, param_name) in params.iter().enumerate() {
                         if !positional_origin[idx]
                             && TypeChecker::type_is_strict_any_unresolved(&resolved_positional[idx])
                         {
+                            first_param_name.get_or_insert_with(|| param_name.clone());
                             issues.push(format!("parameter '{}'", param_name));
                         }
                     }
@@ -495,6 +497,7 @@ impl Stmt {
                         if !named_origin[idx]
                             && TypeChecker::type_is_strict_any_unresolved(&resolved_named_annos[idx].ty)
                         {
+                            first_param_name.get_or_insert_with(|| np.name.clone());
                             issues.push(format!("named parameter '{}'", np.name));
                         }
                     }
@@ -502,11 +505,11 @@ impl Stmt {
                         issues.push("return type".to_string());
                     }
                     if !issues.is_empty() {
-                        return Err(anyhow!(format!(
-                            "Function '{}' infers implicit Any for {}; add explicit annotations",
+                        return Err(TypeChecker::implicit_any_type_err(
                             name,
-                            issues.join(", ")
-                        )));
+                            &issues,
+                            first_param_name.as_deref(),
+                        ));
                     }
                 }
 

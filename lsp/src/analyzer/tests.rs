@@ -413,9 +413,8 @@ fn test_business_workload_should_run_infers_from_string_calls() {
 fn test_unconstrained_implicit_any_diagnostic_points_to_parameter() {
     let mut analyzer = create_analyzer();
     let code = r#"
-        let workload_filter = os.env.get("LK_WORKLOAD_FILTER", "");
         fn should_run(name) {
-            return workload_filter == "" || workload_filter == name;
+            return true;
         }
     "#;
     let result = analyzer.analyze(code);
@@ -430,7 +429,7 @@ fn test_unconstrained_implicit_any_diagnostic_points_to_parameter() {
     );
     assert_eq!(
         diag.range,
-        Range::new(Position::new(2, 22), Position::new(2, 26)),
+        Range::new(Position::new(1, 22), Position::new(1, 26)),
         "implicit Any diagnostic should point at the unannotated parameter"
     );
 }

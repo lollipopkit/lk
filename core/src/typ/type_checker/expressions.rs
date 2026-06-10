@@ -264,6 +264,9 @@ impl TypeChecker {
 
                     return Ok(Type::Named(name.clone()));
                 }
+                if let Some(return_type) = self.check_stdlib_named_function_call(callee, pos_args, named_args)? {
+                    return Ok(return_type);
+                }
                 // Type-check callee first
                 let callee_type = self.check_expr(callee)?;
 

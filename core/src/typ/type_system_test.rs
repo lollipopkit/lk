@@ -297,8 +297,14 @@ mod tests {
         let var = engine.fresh_type_var();
 
         engine.add_constraint(var.clone(), Type::Any);
-        engine.add_constraint(var.clone(), Type::String);
+        let substitutions = engine.solve_constraints().unwrap();
+        if let Type::Variable(name) = &var {
+            assert_eq!(substitutions.get(name), None);
+        } else {
+            panic!("expected type variable");
+        }
 
+        engine.add_constraint(var.clone(), Type::String);
         let substitutions = engine.solve_constraints().unwrap();
         if let Type::Variable(name) = var {
             assert_eq!(substitutions.get(&name), Some(&Type::String));

@@ -1,59 +1,195 @@
 use crate::expr::Expr;
 use crate::typ::type_checker::TypeChecker;
-use crate::val::Type;
+use crate::val::{FunctionNamedParamType, Type};
+use anyhow::Result;
+use std::collections::HashSet;
 
 impl TypeChecker {
-    pub(super) fn stdlib_call_function_type(&self, func: &Expr) -> Option<Type> {
-        let Expr::Access(expr, field) = func else {
-            return None;
+    pub(super) fn check_stdlib_function_call(&mut self, func: &Expr, args: &[Box<Expr>]) -> Result<Option<Type>> {
+        let Some(path) = access_segments(func) else {
+            return Ok(None);
         };
-        self.stdlib_access_function_type(expr, field)
+        let Some((module, field)) = canonical_stdlib_call_path(&path, args.len()) else {
+            return Ok(None);
+        };
+
+        if module == "math" && field == "clamp" {
+            self.check_math_clamp_args(args, &[])?;
+            return Ok(Some(Type::Int));
+        }
+
+        let Some((params, named_params, return_type)) = stdlib_function_signature(module, field) else {
+            return Ok(None);
+        };
+        if !named_params.is_empty() || params.len() != args.len() {
+            return Err(Self::type_err(
+                &format!("Function expects {} arguments", params.len()),
+                None,
+                None,
+                Some(func.clone()),
+            ));
+        }
+        for (param_type, arg) in params.iter().zip(args.iter()) {
+            let arg_type = self.check_expr(arg)?;
+            self.inference_engine.add_constraint(param_type.clone(), arg_type);
+        }
+        Ok(Some(return_type))
+    }
+
+    pub(super) fn check_stdlib_named_function_call(
+        &mut self,
+        callee: &Expr,
+        pos_args: &[Box<Expr>],
+        named_args: &[(String, Box<Expr>)],
+    ) -> Result<Option<Type>> {
+        let Some(path) = access_segments(callee) else {
+            return Ok(None);
+        };
+        let Some((module, field)) = canonical_stdlib_call_path(&path, pos_args.len()) else {
+            return Ok(None);
+        };
+
+        if module == "math" && field == "clamp" {
+            self.check_math_clamp_args(pos_args, named_args)?;
+            return Ok(Some(Type::Int));
+        }
+
+        Ok(None)
     }
 
     pub(super) fn stdlib_access_function_type(&self, expr: &Expr, field: &Expr) -> Option<Type> {
-        let Expr::Var(module) = expr else {
-            return None;
-        };
-        let field_name = match field {
-            Expr::Literal(value) => value.as_str()?,
-            Expr::Var(name) => name.as_str(),
-            _ => return None,
-        };
-        let (params, return_type) = stdlib_function_signature(module, field_name)?;
+        let mut path = access_segments(expr)?;
+        path.push(segment_name(field)?);
+        let (module, field) = canonical_stdlib_path(&path)?;
+        self.stdlib_function_type(module, field)
+    }
+
+    fn stdlib_function_type(&self, module: &str, field: &str) -> Option<Type> {
+        let (params, named_params, return_type) = stdlib_function_signature(module, field)?;
         Some(Type::Function {
             params,
-            named_params: Vec::new(),
+            named_params,
             return_type: Box::new(return_type),
         })
     }
+
+    fn check_math_clamp_args(&mut self, pos_args: &[Box<Expr>], named_args: &[(String, Box<Expr>)]) -> Result<()> {
+        if pos_args.is_empty() || pos_args.len() > 3 {
+            return Err(Self::type_err(
+                "clamp() expects 1..3 positional arguments",
+                None,
+                None,
+                None,
+            ));
+        }
+        for arg in pos_args {
+            let arg_type = self.check_expr(arg)?;
+            self.inference_engine.add_constraint(Type::Int, arg_type);
+        }
+
+        let mut seen = HashSet::with_capacity(named_args.len());
+        for (name, expr) in named_args {
+            if name != "min" && name != "max" {
+                return Err(Self::type_err(
+                    &format!("Unknown named argument: {}", name),
+                    None,
+                    None,
+                    Some(expr.as_ref().clone()),
+                ));
+            }
+            if !seen.insert(name.as_str()) {
+                return Err(Self::type_err(
+                    &format!("Duplicate named argument: {}", name),
+                    None,
+                    None,
+                    Some(expr.as_ref().clone()),
+                ));
+            }
+            let arg_type = self.check_expr(expr)?;
+            self.inference_engine.add_constraint(Type::Int, arg_type);
+        }
+        Ok(())
+    }
 }
 
-fn stdlib_function_signature(module: &str, field: &str) -> Option<(Vec<Type>, Type)> {
+fn stdlib_function_signature(module: &str, field: &str) -> Option<(Vec<Type>, Vec<FunctionNamedParamType>, Type)> {
     let any = || Type::Any;
     let unary_any = || vec![Type::Any];
     let binary_any = || vec![Type::Any, Type::Any];
+    let no_named = || Vec::new();
 
     match (module, field) {
-        ("os", "arch" | "hostname" | "os") => Some((Vec::new(), Type::String)),
-        ("os", "clock") => Some((Vec::new(), Type::Float)),
-        ("os", "epoch" | "time") => Some((Vec::new(), Type::Int)),
+        ("os", "arch" | "hostname" | "os") => Some((Vec::new(), no_named(), Type::String)),
+        ("os", "clock") => Some((Vec::new(), no_named(), Type::Float)),
+        ("os", "epoch" | "time") => Some((Vec::new(), no_named(), Type::Int)),
 
-        ("env", "get") => Some((unary_any(), Type::Any)),
-        ("env", "get_or") => Some((binary_any(), Type::String)),
-        ("env", "has") => Some((unary_any(), Type::Bool)),
+        ("env", "get") => Some((unary_any(), no_named(), Type::Any)),
+        ("env", "get_or") => Some((binary_any(), no_named(), Type::String)),
+        ("env", "has") => Some((unary_any(), no_named(), Type::Bool)),
 
-        ("math", "abs" | "max" | "min") => Some((unary_any(), Type::Any)),
-        ("math", "clamp") => Some((vec![any(), any(), any()], Type::Int)),
-        ("math", "ceil" | "floor" | "round" | "to_int" | "trunc") => Some((unary_any(), Type::Int)),
+        ("math", "abs") => Some((unary_any(), no_named(), Type::Any)),
+        ("math", "max" | "min") => Some((binary_any(), no_named(), Type::Any)),
+        ("math", "clamp") => Some((
+            vec![any()],
+            vec![
+                FunctionNamedParamType {
+                    name: "min".to_string(),
+                    ty: Type::Optional(Box::new(Type::Int)),
+                    has_default: true,
+                },
+                FunctionNamedParamType {
+                    name: "max".to_string(),
+                    ty: Type::Optional(Box::new(Type::Int)),
+                    has_default: true,
+                },
+            ],
+            Type::Int,
+        )),
+        ("math", "ceil" | "floor" | "round" | "to_int" | "trunc") => Some((unary_any(), no_named(), Type::Int)),
         (
             "math",
             "acos" | "asin" | "atan" | "cbrt" | "cos" | "cosh" | "exp" | "fract" | "log" | "log10" | "log2" | "sin"
             | "sinh" | "sqrt" | "tan" | "tanh" | "to_float",
-        ) => Some((unary_any(), Type::Float)),
-        ("math", "atan2" | "hypot" | "pow") => Some((binary_any(), Type::Float)),
-        ("math", "is_inf" | "is_nan") => Some((unary_any(), Type::Bool)),
-        ("math", "random") => Some((Vec::new(), Type::Float)),
+        ) => Some((unary_any(), no_named(), Type::Float)),
+        ("math", "atan2" | "hypot" | "pow") => Some((binary_any(), no_named(), Type::Float)),
+        ("math", "is_inf" | "is_nan") => Some((unary_any(), no_named(), Type::Bool)),
+        ("math", "random") => Some((Vec::new(), no_named(), Type::Float)),
 
+        _ => None,
+    }
+}
+
+fn canonical_stdlib_call_path<'a>(path: &'a [&'a str], positional_count: usize) -> Option<(&'a str, &'a str)> {
+    match path {
+        ["os", "env", "get"] if positional_count == 2 => Some(("env", "get_or")),
+        _ => canonical_stdlib_path(path),
+    }
+}
+
+fn canonical_stdlib_path<'a>(path: &'a [&'a str]) -> Option<(&'a str, &'a str)> {
+    match path {
+        [module, field] => Some((module, field)),
+        ["os", "env", field] => Some(("env", field)),
+        _ => None,
+    }
+}
+
+fn access_segments(expr: &Expr) -> Option<Vec<&str>> {
+    match expr {
+        Expr::Var(name) => Some(vec![name.as_str()]),
+        Expr::Access(base, field) => {
+            let mut path = access_segments(base)?;
+            path.push(segment_name(field)?);
+            Some(path)
+        }
+        _ => None,
+    }
+}
+
+fn segment_name(expr: &Expr) -> Option<&str> {
+    match expr {
+        Expr::Var(name) => Some(name.as_str()),
+        Expr::Literal(value) => value.as_str(),
         _ => None,
     }
 }
