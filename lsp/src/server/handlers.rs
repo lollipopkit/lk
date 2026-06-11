@@ -244,6 +244,9 @@ impl LanguageServer for LkLanguageServer {
 
     async fn did_save(&self, params: DidSaveTextDocumentParams) {
         let uri = params.text_document.uri;
+        if let Ok(path) = uri.to_file_path() {
+            self.workspace_cache.invalidate_proc_macro_dependents(&path);
+        }
         let Some((content, base_dir)) = self.documents.get(&uri).and_then(|doc| {
             let base_dir = uri
                 .to_file_path()
@@ -840,6 +843,9 @@ impl LanguageServer for LkLanguageServer {
         }
         if let Some(import_location) = self.find_package_import_at_position(&content, position, uri).await {
             return Ok(Some(GotoDefinitionResponse::Scalar(import_location)));
+        }
+        if let Some(macro_location) = self.find_macro_definition_at_position(&content, position, uri).await {
+            return Ok(Some(GotoDefinitionResponse::Scalar(macro_location)));
         }
 
         // Find the symbol at the cursor position

@@ -8,7 +8,8 @@ use crate::{
 
 use super::{
     Capture, ExpandedToken, FragmentKind, MacroDef, MacroOriginFrame, MacroOriginKind, PatternElem, RepeatOp,
-    SourceToken, TemplateElem, find_group, is_open_delim, origin, token_lexeme, token_matches,
+    SourceToken, TemplateElem, find_group, hygiene::apply_simple_hygiene, is_open_delim, origin, token_lexeme,
+    token_matches,
 };
 
 #[derive(Debug, Clone)]
@@ -94,27 +95,46 @@ fn match_pattern(
             } => {
                 let mut repeats: Vec<HashMap<String, Capture>> = Vec::new();
                 let mut current = pos;
-                loop {
+                if let Some(separator) = separator {
                     let mut local = HashMap::new();
-                    match match_pattern(elems, input, current, &mut local)? {
-                        PatternMatch::Matched(next) if next > current => {
-                            repeats.push(local);
-                            current = next;
-                            if let Some(separator) = separator {
-                                if input
-                                    .get(current)
+                    if let PatternMatch::Matched(next) = match_pattern(elems, input, current, &mut local)?
+                        && next > current
+                    {
+                        repeats.push(local);
+                        current = next;
+                        if *op != RepeatOp::Optional {
+                            loop {
+                                let separator_pos = current;
+                                if !input
+                                    .get(separator_pos)
                                     .is_some_and(|token| token_matches(separator, &token.token))
                                 {
-                                    current += 1;
-                                } else {
                                     break;
+                                }
+                                let mut next_local = HashMap::new();
+                                match match_pattern(elems, input, separator_pos + 1, &mut next_local)? {
+                                    PatternMatch::Matched(next) if next > separator_pos + 1 => {
+                                        repeats.push(next_local);
+                                        current = next;
+                                    }
+                                    _ => break,
                                 }
                             }
                         }
-                        _ => break,
                     }
-                    if *op == RepeatOp::Optional {
-                        break;
+                } else {
+                    loop {
+                        let mut local = HashMap::new();
+                        match match_pattern(elems, input, current, &mut local)? {
+                            PatternMatch::Matched(next) if next > current => {
+                                repeats.push(local);
+                                current = next;
+                            }
+                            _ => break,
+                        }
+                        if *op == RepeatOp::Optional {
+                            break;
+                        }
                     }
                 }
                 if repeats.is_empty() && *op == RepeatOp::OneOrMore {
@@ -123,7 +143,7 @@ fn match_pattern(
                         input_token_label(input, current)
                     )));
                 }
-                merge_repeated_captures(captures, repeats);
+                merge_repeated_captures(captures, elems, repeats);
                 pos = current;
             }
         }
@@ -509,17 +529,38 @@ fn next_literal_token(pattern: &[PatternElem]) -> Option<Token> {
     })
 }
 
-fn merge_repeated_captures(captures: &mut HashMap<String, Capture>, repeats: Vec<HashMap<String, Capture>>) {
-    let mut grouped: HashMap<String, Vec<Vec<SourceToken>>> = HashMap::new();
+fn merge_repeated_captures(
+    captures: &mut HashMap<String, Capture>,
+    elems: &[PatternElem],
+    repeats: Vec<HashMap<String, Capture>>,
+) {
+    let mut grouped: HashMap<String, Vec<Capture>> = HashMap::new();
     for repeat in repeats {
         for (name, capture) in repeat {
-            if let Some(tokens) = capture.alternatives.into_iter().next() {
-                grouped.entry(name).or_default().push(tokens);
-            }
+            grouped.entry(name).or_default().push(capture);
         }
     }
-    for (name, alternatives) in grouped {
-        captures.insert(name, Capture::repeated(alternatives));
+    for name in repeated_capture_names(elems) {
+        grouped.entry(name).or_default();
+    }
+    for (name, capture_group) in grouped {
+        captures.insert(name, Capture::repeated(capture_group));
+    }
+}
+
+fn repeated_capture_names(elems: &[PatternElem]) -> Vec<String> {
+    let mut names = Vec::new();
+    collect_repeated_capture_names(elems, &mut names);
+    names
+}
+
+fn collect_repeated_capture_names(elems: &[PatternElem], names: &mut Vec<String>) {
+    for elem in elems {
+        match elem {
+            PatternElem::MetaVar { name, .. } => names.push(name.clone()),
+            PatternElem::Repeat { elems, .. } => collect_repeated_capture_names(elems, names),
+            PatternElem::Token(_) => {}
+        }
     }
 }
 
@@ -529,14 +570,14 @@ fn substitute_template(
     crate_anchor: Option<&str>,
     call_span: &Span,
 ) -> Result<Vec<ExpandedToken>, ParseError> {
-    substitute_template_at(template, captures, crate_anchor, None, call_span)
+    substitute_template_at(template, captures, crate_anchor, &[], call_span)
 }
 
 fn substitute_template_at(
     template: &[TemplateElem],
     captures: &HashMap<String, Capture>,
     crate_anchor: Option<&str>,
-    repeat_index: Option<usize>,
+    repeat_path: &[usize],
     call_span: &Span,
 ) -> Result<Vec<ExpandedToken>, ParseError> {
     let mut output = Vec::new();
@@ -551,21 +592,7 @@ fn substitute_template_at(
                 let capture = captures.get(name).ok_or_else(|| {
                     ParseError::with_span(format!("Unknown macro metavariable `${name}`"), call_span.clone())
                 })?;
-                let replacement = if let Some(index) = repeat_index {
-                    capture.alternatives.get(index).ok_or_else(|| {
-                        ParseError::with_span(
-                            format!("Macro repetition index out of range for `${name}`"),
-                            call_span.clone(),
-                        )
-                    })?
-                } else if capture.alternatives.len() == 1 {
-                    &capture.alternatives[0]
-                } else {
-                    return Err(ParseError::with_span(
-                        format!("Repeated metavariable `${name}` used outside repetition"),
-                        call_span.clone(),
-                    ));
-                };
+                let replacement = capture_tokens_at_path(capture, repeat_path, name, call_span)?;
                 output.extend(replacement.iter().cloned().map(|token| ExpandedToken {
                     token,
                     from_capture: true,
@@ -589,7 +616,7 @@ fn substitute_template_at(
                 });
             }
             TemplateElem::Repeat { elems, separator, op } => {
-                let Some(count) = repetition_count(elems, captures, call_span)? else {
+                let Some(count) = repetition_count(elems, captures, repeat_path, call_span)? else {
                     return Err(ParseError::with_span(
                         "Macro repetition requires at least one metavariable".to_string(),
                         call_span.clone(),
@@ -618,11 +645,13 @@ fn substitute_template_at(
                             origin_kind: MacroOriginKind::Definition,
                         });
                     }
+                    let mut nested_path = repeat_path.to_vec();
+                    nested_path.push(index);
                     output.extend(substitute_template_at(
                         elems,
                         captures,
                         crate_anchor,
-                        Some(index),
+                        &nested_path,
                         call_span,
                     )?);
                 }
@@ -653,16 +682,18 @@ fn annotate_declarative_output(
 fn repetition_count(
     elems: &[TemplateElem],
     captures: &HashMap<String, Capture>,
+    repeat_path: &[usize],
     call_span: &Span,
 ) -> Result<Option<usize>, ParseError> {
     let mut count = None;
-    collect_repetition_count(elems, captures, call_span, &mut count)?;
+    collect_repetition_count(elems, captures, repeat_path, call_span, &mut count)?;
     Ok(count)
 }
 
 fn collect_repetition_count(
     elems: &[TemplateElem],
     captures: &HashMap<String, Capture>,
+    repeat_path: &[usize],
     call_span: &Span,
     count: &mut Option<usize>,
 ) -> Result<(), ParseError> {
@@ -672,7 +703,9 @@ fn collect_repetition_count(
                 let Some(capture) = captures.get(name) else {
                     continue;
                 };
-                let candidate = capture.alternatives.len();
+                let Some(candidate) = capture_repetition_len_at_path(capture, repeat_path, name, call_span)? else {
+                    continue;
+                };
                 if let Some(existing) = count {
                     if *existing != candidate {
                         return Err(ParseError::with_span(
@@ -687,7 +720,7 @@ fn collect_repetition_count(
                 }
             }
             TemplateElem::Repeat { elems, .. } => {
-                collect_repetition_count(elems, captures, call_span, count)?;
+                collect_repetition_count(elems, captures, repeat_path, call_span, count)?;
             }
             TemplateElem::Token(_) | TemplateElem::CrateAnchor(_) => {}
         }
@@ -695,33 +728,59 @@ fn collect_repetition_count(
     Ok(())
 }
 
-fn apply_simple_hygiene(tokens: Vec<ExpandedToken>, site: usize) -> Vec<ExpandedToken> {
-    let mut renames = HashMap::new();
-    let mut index = 0usize;
-    while index + 1 < tokens.len() {
-        if !tokens[index].from_capture
-            && matches!(tokens[index].token.token, Token::Let | Token::Const)
-            && !tokens[index + 1].from_capture
-            && let Token::Id(name) = &tokens[index + 1].token.token
-        {
-            renames
-                .entry(name.clone())
-                .or_insert_with(|| format!("__lk_macro_{site}_{name}"));
-        }
-        index += 1;
+fn capture_tokens_at_path<'a>(
+    capture: &'a Capture,
+    repeat_path: &[usize],
+    name: &str,
+    call_span: &Span,
+) -> Result<&'a [SourceToken], ParseError> {
+    let mut current = capture;
+    for index in repeat_path {
+        let Capture::Repeated(items) = current else {
+            return Err(ParseError::with_span(
+                format!("Macro repetition index is too deep for `${name}`"),
+                call_span.clone(),
+            ));
+        };
+        current = items.get(*index).ok_or_else(|| {
+            ParseError::with_span(
+                format!("Macro repetition index out of range for `${name}`"),
+                call_span.clone(),
+            )
+        })?;
     }
+    match current {
+        Capture::Tokens(tokens) => Ok(tokens),
+        Capture::Repeated(_) => Err(ParseError::with_span(
+            format!("Repeated metavariable `${name}` used outside nested repetition"),
+            call_span.clone(),
+        )),
+    }
+}
 
-    tokens
-        .into_iter()
-        .map(|mut token| {
-            if !token.from_capture
-                && let Token::Id(name) = &token.token.token
-                && let Some(replacement) = renames.get(name)
-            {
-                token.token.token = Token::Id(replacement.clone());
-                token.token.lexeme = replacement.clone();
-            }
-            token
-        })
-        .collect()
+fn capture_repetition_len_at_path(
+    capture: &Capture,
+    repeat_path: &[usize],
+    name: &str,
+    call_span: &Span,
+) -> Result<Option<usize>, ParseError> {
+    let mut current = capture;
+    for index in repeat_path {
+        let Capture::Repeated(items) = current else {
+            return Err(ParseError::with_span(
+                format!("Macro repetition index is too deep for `${name}`"),
+                call_span.clone(),
+            ));
+        };
+        current = items.get(*index).ok_or_else(|| {
+            ParseError::with_span(
+                format!("Macro repetition index out of range for `${name}`"),
+                call_span.clone(),
+            )
+        })?;
+    }
+    Ok(match current {
+        Capture::Repeated(items) => Some(items.len()),
+        Capture::Tokens(_) => None,
+    })
 }

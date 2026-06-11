@@ -1,4 +1,7 @@
 <script lang="ts">
+  import { onMount } from 'svelte'
+  import { slide, fade } from 'svelte/transition'
+  import { ArrowUp } from '@lucide/svelte'
   import type { Locales } from '../i18n/i18n-types'
   import LL from '../i18n/i18n-svelte'
   import { highlightLkCode } from '../lib/highlight'
@@ -12,6 +15,34 @@
   $: activeDoc = locale === 'zh-CN' ? learnZhDocument : learnDocument
   $: sections = parseDocMarkdown(activeDoc)
   $: nav = buildDocNav(sections)
+  let collapsedGroups = new Set<string>()
+  let activeSectionId = ''
+  let showBackToTop = false
+
+  onMount(() => {
+    const observer = new IntersectionObserver((entries) => {
+      const visible = entries.filter(e => e.isIntersecting)
+      if (visible.length > 0) {
+        visible.sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top)
+        activeSectionId = visible[0].target.id
+      }
+    }, {
+      rootMargin: '-10% 0px -65% 0px'
+    })
+
+    const elements = document.querySelectorAll('.doc-card')
+    elements.forEach((el) => observer.observe(el))
+
+    const handleScroll = () => {
+      showBackToTop = window.scrollY > 400
+    }
+    window.addEventListener('scroll', handleScroll)
+
+    return () => {
+      observer.disconnect()
+      window.removeEventListener('scroll', handleScroll)
+    }
+  })
 
   const playgroundSections = new Set([
     'hello-lk', 'values--types', 'variables--scope', 'operators--expressions',
@@ -21,6 +52,19 @@
 
   function shouldShowPlayground(sectionId: string): boolean {
     return playgroundSections.has(sectionId)
+  }
+
+  function isGroupOpen(groupId: string): boolean {
+    return !collapsedGroups.has(groupId)
+  }
+
+  function toggleGroup(groupId: string): void {
+    collapsedGroups = new Set(collapsedGroups)
+    if (collapsedGroups.has(groupId)) {
+      collapsedGroups.delete(groupId)
+    } else {
+      collapsedGroups.add(groupId)
+    }
   }
 
   function highlightInlineCode(text: string): string {
@@ -36,14 +80,28 @@
   <aside class="doc-toc" aria-label="Tutorial table of contents">
     <strong>{$LL.learn.toc()}</strong>
     {#each nav as group}
-      <details open>
-        <summary>
-          <span>{group.section.title}</span>
-        </summary>
-        {#each group.children as child}
-          <a class="toc-nested" href={`#${child.id}`}>{child.title}</a>
-        {/each}
-      </details>
+      <div class="toc-group">
+        <div class="toc-heading">
+          <a class="toc-title" class:toc-active={activeSectionId === group.section.id} href={`#${group.section.id}`}>{group.section.title}</a>
+          {#if group.children.length > 0}
+            <button
+              class="toc-toggle"
+              class:toc-toggle-open={isGroupOpen(group.section.id)}
+              type="button"
+              aria-label={`Toggle ${group.section.title}`}
+              aria-expanded={isGroupOpen(group.section.id)}
+              on:click={() => toggleGroup(group.section.id)}
+            ></button>
+          {/if}
+        </div>
+        {#if group.children.length > 0 && isGroupOpen(group.section.id)}
+          <div transition:slide={{ duration: 200 }}>
+            {#each group.children as child}
+              <a class="toc-nested" class:toc-active={activeSectionId === child.id} href={`#${child.id}`}>{child.title}</a>
+            {/each}
+          </div>
+        {/if}
+      </div>
     {/each}
   </aside>
 
@@ -109,80 +167,26 @@
   </div>
 </section>
 
+{#if showBackToTop}
+  <button
+    class="floating-back-to-top"
+    on:click={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
+    aria-label="Back to top"
+    transition:fade={{ duration: 150 }}
+  >
+    <ArrowUp size={18} />
+  </button>
+{/if}
+
 <style>
   .doc-layout {
     display: grid;
-    grid-template-columns: 16rem minmax(0, 1fr);
-    gap: 2rem;
-    max-width: 72rem;
+    grid-template-columns: 260px minmax(0, 1fr);
+    gap: clamp(1.5rem, 4vw, 3rem);
+    width: min(1180px, calc(100vw - 32px));
     margin: 0 auto;
-    padding: 6.5rem 1rem 4rem;
+    padding: clamp(3rem, 7vw, 5rem) 0 clamp(5rem, 10vw, 8rem);
     scroll-margin-top: 6.5rem;
-  }
-
-  .doc-toc {
-    position: sticky;
-    top: 7rem;
-    max-height: calc(100vh - 8rem);
-    overflow-y: auto;
-    font-size: 0.85rem;
-    line-height: 1.6;
-  }
-
-  .doc-toc strong {
-    display: block;
-    margin-bottom: 0.75rem;
-    font-size: 0.78rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--muted);
-  }
-
-  .doc-toc details {
-    margin-bottom: 0.5rem;
-  }
-
-  .doc-toc summary {
-    cursor: pointer;
-    font-weight: 600;
-    color: var(--ink);
-    padding: 0.25rem 0;
-    list-style: none;
-    display: flex;
-    align-items: center;
-    gap: 0.35rem;
-  }
-
-  .doc-toc summary::before {
-    content: '▸';
-    font-size: 0.7rem;
-    color: var(--muted);
-    transition: transform 0.15s;
-  }
-
-  .doc-toc details[open] summary::before {
-    transform: rotate(90deg);
-  }
-
-  .doc-toc a {
-    display: block;
-    padding: 0.15rem 0 0.15rem 1rem;
-    color: var(--ink-soft);
-    text-decoration: none;
-    font-size: 0.82rem;
-    border-radius: 3px;
-    transition: color 0.15s, background 0.15s;
-  }
-
-  .doc-toc a:hover {
-    color: var(--accent);
-    background: var(--accent-soft);
-  }
-
-  .doc-toc .toc-nested {
-    padding-left: 1.5rem;
-    font-size: 0.8rem;
   }
 
   .doc-content {
@@ -300,15 +304,13 @@
   @media (max-width: 860px) {
     .doc-layout {
       grid-template-columns: 1fr;
-      padding-top: 5rem;
     }
 
-    .doc-toc {
-      position: static;
-      max-height: none;
-      border-bottom: 1px solid var(--line-soft);
-      padding-bottom: 1rem;
-      margin-bottom: 1rem;
+  }
+
+  @media (max-width: 560px) {
+    .doc-layout {
+      width: min(100% - 24px, 1180px);
     }
   }
 </style>

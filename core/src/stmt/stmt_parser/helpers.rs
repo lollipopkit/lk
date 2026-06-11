@@ -50,21 +50,76 @@ impl<'a> StmtParser<'a> {
 
     pub(super) fn parse_type_annotation(&mut self) -> Result<Type> {
         let mut type_tokens = Vec::new();
+        let mut paren: i32 = 0;
+        let mut bracket: i32 = 0;
+        let mut brace: i32 = 0;
+        let mut angle: i32 = 0;
 
         // Collect tokens that make up the type annotation until we hit a token that can't be part of a type
         while !self.eof() {
             match &self.tokens[self.pos] {
+                Token::LParen => {
+                    paren += 1;
+                    type_tokens.push(&self.tokens[self.pos]);
+                    self.pos += 1;
+                }
+                Token::RParen => {
+                    if paren > 0 {
+                        paren -= 1;
+                        type_tokens.push(&self.tokens[self.pos]);
+                        self.pos += 1;
+                    } else {
+                        break;
+                    }
+                }
+                Token::LBracket => {
+                    bracket += 1;
+                    type_tokens.push(&self.tokens[self.pos]);
+                    self.pos += 1;
+                }
+                Token::RBracket => {
+                    if bracket > 0 {
+                        bracket -= 1;
+                        type_tokens.push(&self.tokens[self.pos]);
+                        self.pos += 1;
+                    } else {
+                        break;
+                    }
+                }
+                Token::LBrace => {
+                    brace += 1;
+                    type_tokens.push(&self.tokens[self.pos]);
+                    self.pos += 1;
+                }
+                Token::RBrace => {
+                    if brace > 0 {
+                        brace -= 1;
+                        type_tokens.push(&self.tokens[self.pos]);
+                        self.pos += 1;
+                    } else {
+                        break;
+                    }
+                }
+                Token::Lt => {
+                    angle += 1;
+                    type_tokens.push(&self.tokens[self.pos]);
+                    self.pos += 1;
+                }
+                Token::Gt => {
+                    if angle > 0 {
+                        angle -= 1;
+                    }
+                    type_tokens.push(&self.tokens[self.pos]);
+                    self.pos += 1;
+                }
+                Token::Assign if paren == 0 && bracket == 0 && brace == 0 && angle == 0 => break,
                 Token::Id(_)
-                | Token::Lt
-                | Token::Gt
                 | Token::Comma
-                | Token::LParen
-                | Token::RParen
-                | Token::Arrow
+                | Token::Colon
+                | Token::Assign
+                | Token::FnArrow
                 | Token::Question
-                | Token::Pipe
-                | Token::LBracket
-                | Token::RBracket => {
+                | Token::Pipe => {
                     type_tokens.push(&self.tokens[self.pos]);
                     self.pos += 1;
                 }
@@ -468,6 +523,7 @@ impl<'a> StmtParser<'a> {
             Token::Comma => ",".to_string(),
             Token::Colon => ":".to_string(),
             Token::ColonColon => "::".to_string(),
+            Token::Assign => "=".to_string(),
             Token::Pipe => "|".to_string(),
             Token::Question => "?".to_string(),
             Token::FnArrow => "->".to_string(),

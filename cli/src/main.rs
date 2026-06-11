@@ -7,13 +7,18 @@ static PERF_TRACE_INIT: Once = Once::new();
 const DEFAULT_TRACE_FILTER: &str = "lk::vm::alloc=trace,lk::vm::slowpath=debug,lk_core=info,lk_cli=info";
 
 use clap::{Parser, Subcommand, ValueEnum};
+#[cfg(feature = "llvm")]
+use lk_core::macro_system::{ProcMacroDependencyFingerprint, fingerprint_proc_macro_dependencies};
 use lk_core::{
-    macro_system::MacroTokenOrigin,
+    macro_system::{AstMacroOrigin, MacroTokenOrigin, ProcMacroDependency},
     module::ModuleRegistry,
     package::{PackageGraph, PackageModule},
     rt,
     stmt::{ModuleResolver, import::collect_program_imports},
-    syntax::{expand_program_source, parse_program_source, render_program, render_tokens},
+    syntax::{
+        expand_program_source, macro_origin_note_for_span, parse_program_source, render_program, render_tokens,
+        type_error_span,
+    },
     typ::TypeChecker,
     vm::{
         ModuleArtifact, Opcode, VM_INDEX_KEY_METRIC_NAMES, VM_REGISTER_WRITE_SOURCE_NAMES, VmContext, VmRuntimeMetrics,
@@ -40,7 +45,7 @@ mod startup_trace;
 use coverage::run_coverage_report;
 #[cfg(test)]
 use paths::split_compile_args_with_cwd;
-use paths::{parse_options_for_file, parse_program_file, parse_sanitized_path, sanitize_path, split_compile_args};
+use paths::{expand_program_file, parse_options_for_file, parse_sanitized_path, sanitize_path, split_compile_args};
 use pkg::run_pkg_command;
 
 #[derive(Debug, Parser)]
@@ -189,11 +194,49 @@ enum PkgCommand {
         rev: Option<String>,
     },
     /// Fetch dependencies and update Lk.lock.
-    Fetch,
+    Fetch {
+        /// Resolve registry dependencies from the local index cache without network requests.
+        #[arg(long)]
+        offline: bool,
+    },
     /// Update one dependency or all dependencies.
-    Update { name: Option<String> },
+    Update {
+        name: Option<String>,
+        /// Resolve registry dependencies from the local index cache without network requests.
+        #[arg(long)]
+        offline: bool,
+    },
+    /// Validate package graph and macro provider distribution metadata.
+    Check,
+    /// Publish a registry manifest, or print it with --dry-run.
+    Publish {
+        /// Print the registry publish manifest without uploading.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Yank or un-yank a registry package version.
+    Yank {
+        /// Package name to yank.
+        name: String,
+        /// Package version to yank.
+        version: String,
+        /// Reverse a previous yank.
+        #[arg(long)]
+        undo: bool,
+    },
+    /// Manage the local registry index cache.
+    Index {
+        #[command(subcommand)]
+        command: PkgIndexCommand,
+    },
     /// Print the resolved dependency tree.
     Tree,
+}
+
+#[derive(Debug, Subcommand)]
+enum PkgIndexCommand {
+    /// Download [registry].url/api/v1/index into $LK_HOME/registry/<name>/index.json.
+    Sync,
 }
 
 fn env_toggle_enabled(raw: &str) -> bool {
@@ -599,6 +642,11 @@ fn expand_macro_file(path: &Path, trace: bool, deps: bool, origins: bool, featur
             "{}",
             serde_json::to_string_pretty(&json_macro_origins(&expanded.source.origins))?
         );
+        println!("# ast macro origins");
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json_ast_macro_origins(&expanded.ast_macro_origins))?
+        );
     }
     Ok(())
 }
@@ -616,6 +664,29 @@ struct JsonMacroOriginFrame<'a> {
     macro_name: &'a str,
     kind: &'a str,
     call_span: JsonSpan,
+}
+
+#[derive(serde::Serialize)]
+struct JsonAstMacroOrigin<'a> {
+    macro_name: &'a str,
+    kind: &'a str,
+    input_span: Option<JsonSpan>,
+    generated_items: usize,
+    generated_item_labels: &'a [String],
+    generated_item_origins: Vec<JsonAstGeneratedItemOrigin<'a>>,
+}
+
+#[derive(serde::Serialize)]
+struct JsonAstGeneratedItemOrigin<'a> {
+    label: &'a str,
+    span: Option<JsonSpan>,
+    generated_member_origins: Vec<JsonAstGeneratedMemberOrigin<'a>>,
+}
+
+#[derive(serde::Serialize)]
+struct JsonAstGeneratedMemberOrigin<'a> {
+    label: &'a str,
+    span: Option<JsonSpan>,
 }
 
 #[derive(serde::Serialize)]
@@ -648,6 +719,35 @@ fn json_macro_origins(origins: &[MacroTokenOrigin]) -> Vec<JsonMacroTokenOrigin<
         .collect()
 }
 
+fn json_ast_macro_origins(origins: &[AstMacroOrigin]) -> Vec<JsonAstMacroOrigin<'_>> {
+    origins
+        .iter()
+        .map(|origin| JsonAstMacroOrigin {
+            macro_name: &origin.macro_name,
+            kind: origin.kind.as_str(),
+            input_span: origin.input_span.as_ref().map(json_span),
+            generated_items: origin.generated_items,
+            generated_item_labels: &origin.generated_item_labels,
+            generated_item_origins: origin
+                .generated_item_origins
+                .iter()
+                .map(|item| JsonAstGeneratedItemOrigin {
+                    label: &item.label,
+                    span: item.span.as_ref().map(json_span),
+                    generated_member_origins: item
+                        .generated_member_origins
+                        .iter()
+                        .map(|member| JsonAstGeneratedMemberOrigin {
+                            label: &member.label,
+                            span: member.span.as_ref().map(json_span),
+                        })
+                        .collect(),
+                })
+                .collect(),
+        })
+        .collect()
+}
+
 fn json_span(span: &lk_core::token::Span) -> JsonSpan {
     JsonSpan {
         start_line: span.start.line,
@@ -660,10 +760,22 @@ fn json_span(span: &lk_core::token::Span) -> JsonSpan {
 }
 
 fn run_type_check(path: &Path) -> anyhow::Result<()> {
-    let program = parse_program_file(path)?;
+    let input = std::fs::read_to_string(path).with_context(|| format!("read LK source {}", path.display()))?;
+    let options = parse_options_for_file(path)?;
+    let expanded = expand_program_source(&input, options).map_err(|parse_err| {
+        diagnostic::parse_error(&parse_err, &input);
+        anyhow::anyhow!(parse_err.to_string())
+    })?;
     let mut checker = TypeChecker::new_strict();
-    if let Err(err) = program.type_check(&mut checker) {
-        diagnostic::error(&err);
+    if let Err(err) = expanded.program.type_check(&mut checker) {
+        let mut message = err.to_string();
+        if let Some(span) = type_error_span(&err, &expanded.source.tokens, &expanded.source.spans)
+            && let Some(note) = macro_origin_note_for_span(&expanded.source.origins, &span)
+        {
+            message.push('\n');
+            message.push_str(&note);
+        }
+        diagnostic::error(&anyhow::anyhow!(message));
         std::process::exit(1);
     }
     Ok(())
@@ -678,12 +790,24 @@ fn compile_instr_module(path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+struct CompiledInstrArtifact {
+    artifact: ModuleArtifact,
+    proc_macro_dependencies: Vec<ProcMacroDependency>,
+}
+
 fn compile_instr_artifact(path: &Path) -> anyhow::Result<ModuleArtifact> {
-    let program = parse_program_file(path)?;
+    Ok(compile_instr_artifact_with_dependencies(path)?.artifact)
+}
+
+fn compile_instr_artifact_with_dependencies(path: &Path) -> anyhow::Result<CompiledInstrArtifact> {
+    let expansion = expand_program_file(path)?;
     let mut ctx = build_vm_context(path)?;
-    let module = compile_program_module_with_ctx(&program, &mut ctx)
+    let module = compile_program_module_with_ctx(&expansion.program, &mut ctx)
         .with_context(|| format!("compile Instr module for {}", path.display()))?;
-    ModuleArtifact::new(collect_program_imports(&program), &module)
+    Ok(CompiledInstrArtifact {
+        artifact: ModuleArtifact::new(collect_program_imports(&expansion.program), &module)?,
+        proc_macro_dependencies: expansion.proc_macro_dependencies,
+    })
 }
 
 #[cfg(feature = "llvm")]
@@ -707,11 +831,20 @@ fn compile_executable(path: &Path, output: Option<&Path>, options: LlvmBackendOp
 
 #[cfg(feature = "llvm")]
 fn compile_executable_to_path(path: &Path, output: &Path, options: LlvmBackendOptions) -> anyhow::Result<()> {
-    let artifact = compile_instr_artifact(path)?;
-    let llvm = lk_llvm::compile_module_artifact_to_llvm(&artifact, options)
+    compile_executable_to_path_with_dependencies(path, output, options).map(|_| ())
+}
+
+#[cfg(feature = "llvm")]
+fn compile_executable_to_path_with_dependencies(
+    path: &Path,
+    output: &Path,
+    options: LlvmBackendOptions,
+) -> anyhow::Result<Vec<ProcMacroDependency>> {
+    let compiled = compile_instr_artifact_with_dependencies(path)?;
+    let llvm = lk_llvm::compile_module_artifact_to_llvm(&compiled.artifact, options)
         .with_context(|| format!("compile native executable LLVM IR for {}", path.display()))?;
     lk_llvm::compile_native_executable_from_llvm(path, &output, &llvm.module.ir)?;
-    Ok(())
+    Ok(compiled.proc_macro_dependencies)
 }
 
 #[cfg(feature = "llvm")]
@@ -722,29 +855,41 @@ fn try_execute_cached_native(path: &Path, source: &[u8]) -> anyhow::Result<bool>
     let Some(output) = cached_native_executable_path(path, source)? else {
         return Ok(false);
     };
-    if !output.exists() {
+    if !output.exists() || !native_cache_proc_macro_dependencies_fresh(path, &output) {
         let tmp = native_cache_tmp_path(&output);
         let options = LlvmBackendOptions {
             module_name: module_name_from_path(path),
             ..LlvmBackendOptions::default()
         };
-        if let Err(err) = compile_executable_to_path(path, &tmp, options) {
-            let _ = std::fs::remove_file(&tmp);
-            if native_trace_enabled() {
-                diagnostic::warning(format_args!("Native cache build skipped: {err:#}"));
-            }
-            return Ok(false);
-        }
-        if let Err(err) = std::fs::rename(&tmp, &output) {
-            let _ = std::fs::remove_file(&tmp);
-            if output.exists() {
-                // Another process won the same cache race.
-            } else {
+        let dependencies = match compile_executable_to_path_with_dependencies(path, &tmp, options) {
+            Ok(dependencies) => dependencies,
+            Err(err) => {
+                let _ = std::fs::remove_file(&tmp);
                 if native_trace_enabled() {
-                    diagnostic::warning(format_args!("Native cache install failed: {err}"));
+                    diagnostic::warning(format_args!("Native cache build skipped: {err:#}"));
                 }
                 return Ok(false);
             }
+        };
+        let installed_by_this_process = match std::fs::rename(&tmp, &output) {
+            Ok(()) => true,
+            Err(err) => {
+                let _ = std::fs::remove_file(&tmp);
+                if output.exists() && native_cache_proc_macro_dependencies_fresh(path, &output) {
+                    false
+                } else {
+                    if native_trace_enabled() {
+                        diagnostic::warning(format_args!("Native cache install failed: {err}"));
+                    }
+                    return Ok(false);
+                }
+            }
+        };
+        if installed_by_this_process
+            && let Err(err) = write_native_cache_proc_macro_dependencies(path, &output, &dependencies)
+            && native_trace_enabled()
+        {
+            diagnostic::warning(format_args!("Native cache dependency metadata skipped: {err:#}"));
         }
     }
 
@@ -812,6 +957,48 @@ fn cached_native_executable_path(path: &Path, source: &[u8]) -> anyhow::Result<O
         }
     }
     Ok(Some(cache_dir.join(format!("lk-native-{:016x}", hash.finish()))))
+}
+
+#[cfg(feature = "llvm")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct NativeCacheProcMacroDependencies {
+    dependencies: Vec<ProcMacroDependency>,
+    fingerprint: ProcMacroDependencyFingerprint,
+}
+
+#[cfg(feature = "llvm")]
+fn native_cache_proc_macro_dependencies_fresh(source_path: &Path, output: &Path) -> bool {
+    let metadata_path = native_cache_proc_macro_dependencies_path(output);
+    let Ok(raw) = std::fs::read_to_string(metadata_path) else {
+        return false;
+    };
+    let Ok(metadata) = serde_json::from_str::<NativeCacheProcMacroDependencies>(&raw) else {
+        return false;
+    };
+    metadata
+        .fingerprint
+        .is_current(&metadata.dependencies, source_path.parent())
+}
+
+#[cfg(feature = "llvm")]
+fn write_native_cache_proc_macro_dependencies(
+    source_path: &Path,
+    output: &Path,
+    dependencies: &[ProcMacroDependency],
+) -> anyhow::Result<()> {
+    let metadata_path = native_cache_proc_macro_dependencies_path(output);
+    let metadata = NativeCacheProcMacroDependencies {
+        dependencies: dependencies.to_vec(),
+        fingerprint: fingerprint_proc_macro_dependencies(dependencies, source_path.parent()),
+    };
+    std::fs::write(&metadata_path, serde_json::to_vec_pretty(&metadata)?)
+        .with_context(|| format!("write native cache dependency metadata {}", metadata_path.display()))
+}
+
+#[cfg(feature = "llvm")]
+fn native_cache_proc_macro_dependencies_path(output: &Path) -> PathBuf {
+    let file = output.file_name().and_then(|file| file.to_str()).unwrap_or("lk-native");
+    output.with_file_name(format!("{file}.proc-macro-deps.json"))
 }
 
 #[cfg(feature = "llvm")]

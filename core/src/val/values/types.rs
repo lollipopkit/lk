@@ -289,6 +289,18 @@ impl Type {
             _ => {}
         }
 
+        // Handle type variables: 'T, 'K, 'V
+        if s.starts_with('\'') && s.len() > 1 {
+            return Some(Type::Variable(s[1..].to_string()));
+        }
+
+        // Handle function types before optional/union parsing so `(A) -> B?`
+        // remains a function returning an optional rather than an optional
+        // function type.
+        if let Some(function_type) = parse_function_type(s) {
+            return Some(function_type);
+        }
+
         // Handle optional types: Int? (allow trailing whitespace before '?').
         let s_no_ws = s.trim_end();
         if let Some(inner) = s_no_ws.strip_suffix('?') {
@@ -298,21 +310,22 @@ impl Type {
             }
         }
 
-        // Handle type variables: 'T, 'K, 'V
-        if s.starts_with('\'') && s.len() > 1 {
-            return Some(Type::Variable(s[1..].to_string()));
-        }
-
         // Handle union types: Int | String | Nil
         if s.contains(" | ") {
-            let mut types = Vec::new();
-            for part in s.split(" | ") {
-                if let Some(ty) = Type::parse(part) {
-                    types.push(ty);
+            let parts = split_top_level(s, '|');
+            if parts.len() == 1 {
+                // The union separator is nested inside another type form such
+                // as `List<Int | String>`; let that outer parser handle it.
+            } else {
+                let mut types = Vec::new();
+                for part in parts {
+                    if let Some(ty) = Type::parse(part) {
+                        types.push(ty);
+                    }
                 }
-            }
-            if !types.is_empty() {
-                return Some(Type::Union(types));
+                if !types.is_empty() {
+                    return Some(Type::Union(types));
+                }
             }
         }
 
@@ -331,7 +344,7 @@ impl Type {
                 vec![]
             } else {
                 let mut params = Vec::new();
-                for param in params_str.split(',').map(str::trim) {
+                for param in split_top_level(params_str, ',') {
                     params.push(Type::parse(param)?);
                 }
                 params
@@ -374,41 +387,6 @@ impl Type {
                     return Some(Type::Generic {
                         name: base.to_string(),
                         params,
-                    });
-                }
-            }
-        }
-
-        // Handle function types: (Int, String) -> Bool
-        if s.contains("->") {
-            if let Some((params_str, return_str)) = s.split_once("->") {
-                let params_str = params_str.trim();
-                let return_str = return_str.trim();
-
-                // Parse parameters
-                let params = if params_str.starts_with('(') && params_str.ends_with(')') {
-                    let inner = &params_str[1..params_str.len() - 1];
-                    if inner.is_empty() {
-                        vec![]
-                    } else {
-                        let mut params = Vec::new();
-                        for param in inner.split(',').map(str::trim) {
-                            if let Some(ty) = Type::parse(param) {
-                                params.push(ty);
-                            }
-                        }
-                        params
-                    }
-                } else {
-                    vec![]
-                };
-
-                // Parse return type
-                if let Some(return_type) = Type::parse(return_str) {
-                    return Some(Type::Function {
-                        params,
-                        named_params: Vec::new(),
-                        return_type: Box::new(return_type),
                     });
                 }
             }
@@ -696,6 +674,157 @@ fn is_type_name(value: &str) -> bool {
     let mut chars = value.chars();
     matches!(chars.next(), Some(c) if c.is_ascii_alphabetic() || c == '_')
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+fn parse_function_type(s: &str) -> Option<Type> {
+    let arrow = find_top_level_arrow(s)?;
+    let params_str = s[..arrow].trim();
+    let return_str = s[arrow + 2..].trim();
+    if !params_str.starts_with('(') || !params_str.ends_with(')') || return_str.is_empty() {
+        return None;
+    }
+
+    let inner = &params_str[1..params_str.len() - 1];
+    let (params, named_params) = parse_function_param_types(inner)?;
+    let return_type = Type::parse(return_str)?;
+    Some(Type::Function {
+        params,
+        named_params,
+        return_type: Box::new(return_type),
+    })
+}
+
+fn parse_function_param_types(s: &str) -> Option<(Vec<Type>, Vec<FunctionNamedParamType>)> {
+    let mut params = Vec::new();
+    let mut named_params = Vec::new();
+    let s = s.trim();
+    if s.is_empty() {
+        return Some((params, named_params));
+    }
+
+    for part in split_top_level(s, ',') {
+        let part = part.trim();
+        if part.is_empty() {
+            return None;
+        }
+        if part.starts_with('{') || part.ends_with('}') {
+            if !part.starts_with('{') || !part.ends_with('}') {
+                return None;
+            }
+            let block = &part[1..part.len() - 1];
+            for named in split_top_level(block, ',') {
+                named_params.push(parse_function_named_param_type(named)?);
+            }
+        } else {
+            params.push(Type::parse(part)?);
+        }
+    }
+
+    Some((params, named_params))
+}
+
+fn parse_function_named_param_type(s: &str) -> Option<FunctionNamedParamType> {
+    let colon = find_top_level_char(s, ':')?;
+    let name = s[..colon].trim();
+    if !is_type_name(name) {
+        return None;
+    }
+    let rest = s[colon + 1..].trim();
+    let (ty, has_default) = if let Some(assign) = find_top_level_char(rest, '=') {
+        (rest[..assign].trim(), true)
+    } else {
+        (rest, false)
+    };
+    if ty.is_empty() {
+        return None;
+    }
+    Some(FunctionNamedParamType {
+        name: name.to_string(),
+        ty: Type::parse(ty)?,
+        has_default,
+    })
+}
+
+fn find_top_level_arrow(s: &str) -> Option<usize> {
+    let mut paren = 0i32;
+    let mut bracket = 0i32;
+    let mut brace = 0i32;
+    let mut angle = 0i32;
+    let mut chars = s.char_indices().peekable();
+    while let Some((index, ch)) = chars.next() {
+        match ch {
+            '(' => paren += 1,
+            ')' => paren -= 1,
+            '[' => bracket += 1,
+            ']' => bracket -= 1,
+            '{' => brace += 1,
+            '}' => brace -= 1,
+            '<' => angle += 1,
+            '>' => angle -= 1,
+            '-' if paren == 0
+                && bracket == 0
+                && brace == 0
+                && angle == 0
+                && chars.peek().is_some_and(|(_, next)| *next == '>') =>
+            {
+                return Some(index);
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn find_top_level_char(s: &str, needle: char) -> Option<usize> {
+    let mut paren = 0i32;
+    let mut bracket = 0i32;
+    let mut brace = 0i32;
+    let mut angle = 0i32;
+    for (index, ch) in s.char_indices() {
+        match ch {
+            '(' => paren += 1,
+            ')' => paren -= 1,
+            '[' => bracket += 1,
+            ']' => bracket -= 1,
+            '{' => brace += 1,
+            '}' => brace -= 1,
+            '<' => angle += 1,
+            '>' => angle -= 1,
+            _ if ch == needle && paren == 0 && bracket == 0 && brace == 0 && angle == 0 => {
+                return Some(index);
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn split_top_level(s: &str, delimiter: char) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut start = 0usize;
+    let mut paren = 0i32;
+    let mut bracket = 0i32;
+    let mut brace = 0i32;
+    let mut angle = 0i32;
+    for (index, ch) in s.char_indices() {
+        match ch {
+            '(' => paren += 1,
+            ')' => paren -= 1,
+            '[' => bracket += 1,
+            ']' => bracket -= 1,
+            '{' => brace += 1,
+            '}' => brace -= 1,
+            '<' => angle += 1,
+            '>' => angle -= 1,
+            _ if ch == delimiter && paren == 0 && bracket == 0 && brace == 0 && angle == 0 => {
+                parts.push(s[start..index].trim());
+                start = index + ch.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    parts.push(s[start..].trim());
+    parts
 }
 
 #[cfg(test)]

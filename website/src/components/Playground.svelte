@@ -8,8 +8,8 @@
 
   export let embedded = false
 
-  let source = playgroundExamples[0].code
-  let activeExample = playgroundExamples[0].name
+  export let source = playgroundExamples[0].code
+  export let activeExample = playgroundExamples[0].name
   let wasmReady = false
   let loading = true
   let running = false
@@ -93,18 +93,22 @@
   }
 </script>
 
-<section id="examples" class="playground-page" class:playground-embedded={embedded} aria-label="LK examples">
+<section id="examples" class="playground-page" class:playground-embedded={embedded} aria-label="LK playground">
   <div class="playground-shell">
     <section class="playground-editor" aria-label="LK source editor">
       <div class="playground-toolbar">
-        <label>
-          <span>Example</span>
-          <select value={activeExample} on:change={selectExample}>
+        <div class="window-controls" aria-hidden="true">
+          <span class="dot red"></span>
+          <span class="dot yellow"></span>
+          <span class="dot green"></span>
+        </div>
+        <div class="editor-select-wrapper">
+          <select value={activeExample} on:change={selectExample} aria-label="Select LK sample">
             {#each playgroundExamples as example}
               <option value={example.name}>{example.name}</option>
             {/each}
           </select>
-        </label>
+        </div>
         <div class="playground-actions">
           <button class="icon-btn" type="button" on:click={reset} aria-label="Reset source">
             <RotateCcw size={17} />
@@ -156,7 +160,7 @@
       {:else}
         <div class="output-empty">
           <span>Ready</span>
-          <p>Select an example or edit the source, then run it in the wasm sandbox.</p>
+          <p>Select a sample or edit the source, then run it in the wasm sandbox.</p>
         </div>
       {/if}
     </section>

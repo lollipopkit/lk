@@ -592,6 +592,11 @@ impl LkAnalyzer {
         self.missing_packages = missing_packages;
     }
 
+    #[allow(dead_code)]
+    pub(crate) fn base_dir(&self) -> Option<&Path> {
+        self.base_dir.as_deref()
+    }
+
     /// Scan tokens to add diagnostics for unknown stdlib modules and unknown exports with precise spans
     fn add_import_diagnostics(&self, tokens: &[token::Token], spans: &[Span], result: &mut AnalysisResult) {
         use std::collections::HashMap;
@@ -905,7 +910,10 @@ impl LkAnalyzer {
     ) -> std::result::Result<Arc<TokenCacheEntry>, token::ParseError> {
         let cache_key = self.token_cache_key(content);
         if let Some(cached) = self.token_cache.get(&cache_key) {
-            return Ok(cached.clone());
+            if cached.proc_macro_dependencies_current() {
+                return Ok(cached.clone());
+            }
+            self.token_cache.remove(&cache_key);
         }
         let (tokens, spans) = Tokenizer::tokenize_enhanced_with_spans(content)?;
         let entry = Arc::new(TokenCacheEntry::new(tokens, spans, self.parse_options()));
@@ -1070,12 +1078,26 @@ impl LkAnalyzer {
                             result.symbols.push(sym);
                         }
 
+                        let expansion = token_entry.parse_program_expansion_arc(content).ok();
+                        if let Some(expansion) = expansion.as_ref() {
+                            Self::append_ast_macro_origin_symbols(&mut result.symbols, &expansion.ast_macro_origins);
+                        }
+
                         // Labels syntax is not supported; no label symbols at top-level
                         // Add precise use diagnostics using tokens/spans
                         self.add_import_diagnostics(tokens, spans, &mut result);
 
                         // Run type checking to surface semantic diagnostics (e.g., numeric operand errors)
-                        let type_diags = Self::collect_type_diagnostics(program, tokens, spans, content);
+                        let type_diags = match expansion {
+                            Some(expansion) => Self::collect_type_diagnostics(
+                                &expansion.program,
+                                &expansion.source.tokens,
+                                &expansion.source.spans,
+                                content,
+                                Some(&expansion.source.origins),
+                            ),
+                            None => Self::collect_type_diagnostics(program, tokens, spans, content, None),
+                        };
                         if !type_diags.is_empty() {
                             result.diagnostics.extend(type_diags);
                         }

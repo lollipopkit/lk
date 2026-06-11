@@ -33,9 +33,10 @@ members = [
     "stdlib/crates/uuid",
     "lkrt",
     "lsp",
-    "tree-sitter-lk",
+    "ecosystem/tree-sitter-lk",
     "wasm",
 ]
+exclude = ["ecosystem/zed-ext"]
 resolver = "2"
 
 [workspace.package]

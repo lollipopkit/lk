@@ -7,6 +7,7 @@ mod formatting;
 mod handlers;
 mod hover;
 mod inlay_hints;
+mod macro_definition;
 mod semantic;
 mod signature;
 mod state;

@@ -1,6 +1,31 @@
+use super::generated_symbols;
 use super::*;
 
 impl LkAnalyzer {
+    #[allow(dead_code)]
+    pub(crate) fn proc_macro_dependencies(&mut self, content: &str) -> Vec<macro_system::ProcMacroDependency> {
+        let entry = match self.tokenize_with_spans_cached(content) {
+            Ok(entry) => entry,
+            Err(_) => return Vec::new(),
+        };
+        entry
+            .parse_program_expansion_arc(content)
+            .map(|expansion| expansion.proc_macro_dependencies.clone())
+            .unwrap_or_default()
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn ast_macro_origins(&mut self, content: &str) -> Vec<macro_system::AstMacroOrigin> {
+        let entry = match self.tokenize_with_spans_cached(content) {
+            Ok(entry) => entry,
+            Err(_) => return Vec::new(),
+        };
+        entry
+            .parse_program_expansion_arc(content)
+            .map(|expansion| expansion.ast_macro_origins.clone())
+            .unwrap_or_default()
+    }
+
     /// Scan function blocks in source order: name, name span, body token range, and param spans.
     pub(crate) fn scan_function_blocks(tokens: &[token::Token], spans: &[Span]) -> Vec<FnBlockInfo> {
         use token::Token as T;
@@ -374,6 +399,31 @@ impl LkAnalyzer {
             i = j + 1;
         }
         out
+    }
+
+    pub(crate) fn append_ast_macro_origin_symbols(
+        symbols: &mut Vec<DocumentSymbol>,
+        origins: &[macro_system::AstMacroOrigin],
+    ) {
+        let origin_symbols = origins
+            .iter()
+            .filter_map(generated_symbols::ast_macro_origin_symbol)
+            .collect::<Vec<_>>();
+        if origin_symbols.is_empty() {
+            return;
+        }
+        let range = generated_symbols::symbols_range(&origin_symbols);
+        symbols.push(DocumentSymbol {
+            name: "Macro Expansions".to_string(),
+            detail: Some("AST macro generated items".to_string()),
+            kind: SymbolKind::NAMESPACE,
+            tags: None,
+            #[allow(deprecated)]
+            deprecated: None,
+            range,
+            selection_range: range,
+            children: Some(origin_symbols),
+        });
     }
 
     // Labels are not supported; no label collection helpers
@@ -1071,15 +1121,24 @@ impl LkAnalyzer {
         tokens: &[token::Token],
         spans: &[Span],
         content: &str,
+        origins: Option<&[macro_system::MacroTokenOrigin]>,
     ) -> Vec<Diagnostic> {
         let mut checker = TypeChecker::new_strict();
         match program.type_check(&mut checker) {
             Ok(_) => Vec::new(),
             Err(err) => {
                 let range = Self::type_error_range(&err, tokens, spans, content);
-                let message = Self::type_error_from_anyhow(&err)
+                let mut message = Self::type_error_from_anyhow(&err)
                     .map(|type_error| type_error.message.clone())
                     .unwrap_or_else(|| err.to_string());
+                if let Some(origins) = origins {
+                    if let Some(span) = lk_core::syntax::type_error_span(&err, tokens, spans) {
+                        if let Some(note) = macro_origin_note_for_span(origins, &span) {
+                            message.push('\n');
+                            message.push_str(&note);
+                        }
+                    }
+                }
                 let mut diagnostic = Diagnostic::new(
                     range,
                     Some(DiagnosticSeverity::ERROR),

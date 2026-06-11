@@ -14,7 +14,14 @@ use tower_lsp::lsp_types::{InlayHint, InlayHintKind, Position, Range, SemanticTo
 use tracing::{debug, warn};
 
 use crate::analyzer::{AnalysisResult, LkAnalyzer};
-use lk_core::{package::PackageGraph, token::Tokenizer};
+use lk_core::{
+    macro_system::{
+        fingerprint_proc_macro_dependencies, ProcMacroDependency, ProcMacroDependencyFingerprint,
+        ProcMacroDependencyGraph,
+    },
+    package::PackageGraph,
+    token::Tokenizer,
+};
 
 use super::{inlay_hints::compute_inlay_hints_with_margin, utils::compute_content_hash};
 
@@ -27,6 +34,8 @@ pub(crate) struct WorkspaceFileCache {
     pub(crate) analysis: Arc<AnalysisResult>,
     pub(crate) semantic_tokens: Arc<Vec<SemanticToken>>,
     pub(crate) inlay_hints: Arc<Vec<InlayHint>>,
+    proc_macro_dependencies: Arc<Vec<ProcMacroDependency>>,
+    proc_macro_dependency_fingerprint: ProcMacroDependencyFingerprint,
 }
 
 #[derive(Debug, Default)]
@@ -40,6 +49,7 @@ pub(crate) struct WorkspaceCache {
     files: DashMap<Url, WorkspaceFileCache>,
     root: Mutex<Option<PathBuf>>,
     package_context: Mutex<PackageContext>,
+    proc_macro_dependents: Mutex<ProcMacroDependencyGraph<Url>>,
     preloading: AtomicBool,
 }
 
@@ -56,15 +66,47 @@ impl WorkspaceCache {
         if let Ok(mut ctx) = self.package_context.lock() {
             *ctx = PackageContext::default();
         }
+        self.clear_proc_macro_dependents();
     }
 
     pub(crate) fn get(&self, uri: &Url, content_hash: u64) -> Option<WorkspaceFileCache> {
         let cached = self.files.get(uri)?;
-        (cached.content_hash == content_hash).then(|| cached.clone())
+        if cached.content_hash != content_hash {
+            return None;
+        }
+        let entry = cached.clone();
+        drop(cached);
+        if entry.proc_macro_dependency_fingerprint.is_current(
+            entry.proc_macro_dependencies.as_ref(),
+            dependency_base_dir(uri).as_deref(),
+        ) {
+            Some(entry)
+        } else {
+            self.files.remove(uri);
+            self.remove_proc_macro_dependents_for_uri(uri);
+            None
+        }
     }
 
     pub(crate) fn insert(&self, uri: Url, entry: WorkspaceFileCache) {
+        self.remove_proc_macro_dependents_for_uri(&uri);
+        self.insert_proc_macro_dependents(&uri, &entry);
         self.files.insert(uri, entry);
+    }
+
+    pub(crate) fn invalidate_proc_macro_dependents(&self, changed_path: &Path) {
+        let dependents = self
+            .proc_macro_dependents
+            .lock()
+            .ok()
+            .map(|mut graph| graph.take_dependents_for_changed_path(changed_path));
+        let Some(dependents) = dependents.filter(|dependents| !dependents.is_empty()) else {
+            return;
+        };
+        for uri in dependents {
+            self.files.remove(&uri);
+            self.remove_proc_macro_dependents_for_uri(&uri);
+        }
     }
 
     pub(crate) fn package_context_for(
@@ -117,7 +159,7 @@ impl WorkspaceCache {
             let base_dir = path.parent().map(Path::to_path_buf).unwrap_or_else(|| root.clone());
             analyzer.set_package_context(base_dir, modules.clone(), missing.clone());
             let entry = build_file_cache(&mut analyzer, &content);
-            self.files.insert(uri, entry);
+            self.insert(uri, entry);
             indexed += 1;
         }
 
@@ -164,18 +206,52 @@ impl WorkspaceCache {
             }
         }
     }
+
+    fn insert_proc_macro_dependents(&self, uri: &Url, entry: &WorkspaceFileCache) {
+        let Some(base_dir) = dependency_base_dir(uri) else {
+            return;
+        };
+        let Ok(mut graph) = self.proc_macro_dependents.lock() else {
+            return;
+        };
+        graph.insert(uri.clone(), entry.proc_macro_dependencies.as_ref(), &base_dir);
+    }
+
+    fn remove_proc_macro_dependents_for_uri(&self, uri: &Url) {
+        let Ok(mut graph) = self.proc_macro_dependents.lock() else {
+            return;
+        };
+        graph.remove_dependent(uri);
+    }
+
+    fn clear_proc_macro_dependents(&self) {
+        if let Ok(mut graph) = self.proc_macro_dependents.lock() {
+            graph.clear();
+        }
+    }
 }
 
 pub(crate) fn build_file_cache(analyzer: &mut LkAnalyzer, content: &str) -> WorkspaceFileCache {
     let analysis = Arc::new(analyzer.analyze(content));
     let semantic_tokens = Arc::new(analyzer.generate_semantic_tokens(content));
     let inlay_hints = Arc::new(compute_full_inlay_hints(content));
+    let proc_macro_dependencies = Arc::new(analyzer.proc_macro_dependencies(content));
+    let proc_macro_dependency_fingerprint =
+        fingerprint_proc_macro_dependencies(proc_macro_dependencies.as_ref(), analyzer.base_dir());
     WorkspaceFileCache {
         content_hash: compute_content_hash(content),
         analysis,
         semantic_tokens,
         inlay_hints,
+        proc_macro_dependencies,
+        proc_macro_dependency_fingerprint,
     }
+}
+
+fn dependency_base_dir(uri: &Url) -> Option<PathBuf> {
+    uri.to_file_path()
+        .ok()
+        .and_then(|path| path.parent().map(Path::to_path_buf))
 }
 
 pub(crate) fn filter_cached_inlay_hints(
@@ -342,5 +418,179 @@ mod tests {
             elapsed <= Duration::from_millis(1000),
             "workspace cache preload took too long: {elapsed:?}"
         );
+    }
+
+    #[test]
+    fn cache_entry_stales_when_proc_macro_dependency_changes() {
+        let dir = std::env::temp_dir().join(format!(
+            "lk_lsp_macro_dep_cache_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time")
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("create temp dir");
+        let source_path = dir.join("main.lk");
+        let dependency_path = dir.join("schema.txt");
+        let content = "return 1;\n";
+        fs::write(&source_path, content).expect("write source");
+        fs::write(&dependency_path, "one").expect("write dependency");
+        let uri = Url::from_file_path(&source_path).expect("source uri");
+        let dependencies = Arc::new(vec![ProcMacroDependency {
+            path: "schema.txt".to_string(),
+            digest: None,
+        }]);
+        let cache = WorkspaceCache::default();
+        cache.insert(
+            uri.clone(),
+            WorkspaceFileCache {
+                content_hash: compute_content_hash(content),
+                analysis: Arc::new(AnalysisResult {
+                    diagnostics: Vec::new(),
+                    symbols: Vec::new(),
+                    identifier_roots: HashSet::new(),
+                }),
+                semantic_tokens: Arc::new(Vec::new()),
+                inlay_hints: Arc::new(Vec::new()),
+                proc_macro_dependencies: dependencies.clone(),
+                proc_macro_dependency_fingerprint: fingerprint_proc_macro_dependencies(
+                    dependencies.as_ref(),
+                    Some(&dir),
+                ),
+            },
+        );
+
+        assert!(cache.get(&uri, compute_content_hash(content)).is_some());
+        fs::write(dependency_path, "two").expect("rewrite dependency");
+
+        assert!(cache.get(&uri, compute_content_hash(content)).is_none());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn proc_macro_dependency_graph_invalidates_dependent_cached_files() {
+        let dir = std::env::temp_dir().join(format!(
+            "lk_lsp_macro_dep_graph_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time")
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("create temp dir");
+        let dependent_path = dir.join("dependent.lk");
+        let independent_path = dir.join("independent.lk");
+        let dependency_path = dir.join("schema.txt");
+        let content = "return 1;\n";
+        fs::write(&dependent_path, content).expect("write dependent");
+        fs::write(&independent_path, content).expect("write independent");
+        fs::write(&dependency_path, "schema").expect("write dependency");
+
+        let dependent_uri = Url::from_file_path(&dependent_path).expect("dependent uri");
+        let independent_uri = Url::from_file_path(&independent_path).expect("independent uri");
+        let cache = WorkspaceCache::default();
+        cache.insert(
+            dependent_uri.clone(),
+            test_workspace_file_cache(
+                content,
+                vec![ProcMacroDependency {
+                    path: "schema.txt".to_string(),
+                    digest: None,
+                }],
+                &dir,
+            ),
+        );
+        cache.insert(
+            independent_uri.clone(),
+            test_workspace_file_cache(content, Vec::new(), &dir),
+        );
+
+        assert!(cache.get(&dependent_uri, compute_content_hash(content)).is_some());
+        assert!(cache.get(&independent_uri, compute_content_hash(content)).is_some());
+
+        cache.invalidate_proc_macro_dependents(&dependency_path);
+
+        assert!(cache.get(&dependent_uri, compute_content_hash(content)).is_none());
+        assert!(cache.get(&independent_uri, compute_content_hash(content)).is_some());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn proc_macro_dependency_graph_invalidates_directory_dependents() {
+        let dir = std::env::temp_dir().join(format!(
+            "lk_lsp_macro_dep_dir_graph_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time")
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("schema")).expect("create schema dir");
+        let dependent_path = dir.join("dependent.lk");
+        let unrelated_path = dir.join("unrelated.lk");
+        let changed_path = dir.join("schema").join("user.lk");
+        let content = "return 1;\n";
+        fs::write(&dependent_path, content).expect("write dependent");
+        fs::write(&unrelated_path, content).expect("write unrelated");
+        fs::write(&changed_path, "schema").expect("write schema file");
+
+        let dependent_uri = Url::from_file_path(&dependent_path).expect("dependent uri");
+        let unrelated_uri = Url::from_file_path(&unrelated_path).expect("unrelated uri");
+        let cache = WorkspaceCache::default();
+        cache.insert(
+            dependent_uri.clone(),
+            test_workspace_file_cache(
+                content,
+                vec![ProcMacroDependency {
+                    path: "schema".to_string(),
+                    digest: None,
+                }],
+                &dir,
+            ),
+        );
+        cache.insert(
+            unrelated_uri.clone(),
+            test_workspace_file_cache(
+                content,
+                vec![ProcMacroDependency {
+                    path: "other-schema".to_string(),
+                    digest: None,
+                }],
+                &dir,
+            ),
+        );
+
+        cache.invalidate_proc_macro_dependents(&changed_path);
+
+        assert!(cache.get(&dependent_uri, compute_content_hash(content)).is_none());
+        assert!(cache.get(&unrelated_uri, compute_content_hash(content)).is_some());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn test_workspace_file_cache(
+        content: &str,
+        dependencies: Vec<ProcMacroDependency>,
+        base_dir: &Path,
+    ) -> WorkspaceFileCache {
+        let dependencies = Arc::new(dependencies);
+        WorkspaceFileCache {
+            content_hash: compute_content_hash(content),
+            analysis: Arc::new(AnalysisResult {
+                diagnostics: Vec::new(),
+                symbols: Vec::new(),
+                identifier_roots: HashSet::new(),
+            }),
+            semantic_tokens: Arc::new(Vec::new()),
+            inlay_hints: Arc::new(Vec::new()),
+            proc_macro_dependencies: dependencies.clone(),
+            proc_macro_dependency_fingerprint: fingerprint_proc_macro_dependencies(
+                dependencies.as_ref(),
+                Some(base_dir),
+            ),
+        }
     }
 }

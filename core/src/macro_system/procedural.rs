@@ -1,10 +1,12 @@
 use super::{proc_deps::ProcMacroDependencyRecorder, proc_output::parse_tokens_from_proc_output};
+mod derive;
+mod origins;
+
+use self::origins::{generated_item_origins, stmt_label};
 use crate::{
-    expr::{Expr, TemplateStringPart},
     macro_system::token_lexeme,
     stmt::{Attribute, Program, Stmt, StmtParser},
     token::{ParseError, Position, Span, Token, Tokenizer},
-    val::{LiteralVal, Type},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -178,6 +180,20 @@ impl ProcMacroProviders {
     pub fn function_like_provider(&self, name: &str) -> Option<&ProcMacroProcessConfig> {
         self.function_like.get(name)
     }
+
+    pub fn register_trusted_dependency(&mut self, dependency: &str, providers: ProcMacroProviders) {
+        for (name, config) in providers.derive {
+            self.derive.entry(name).or_insert(config);
+        }
+        for (name, config) in providers.attribute {
+            self.attribute.entry(name).or_insert(config);
+        }
+        for (name, config) in providers.function_like {
+            self.function_like
+                .entry(format!("{dependency}::{name}"))
+                .or_insert(config);
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -236,24 +252,53 @@ pub struct ProcMacroOptions {
 #[derive(Debug, Default)]
 struct AstMacroState {
     show_trait_available: bool,
+    origins: Vec<AstMacroOrigin>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum DeriveMacro {
-    Debug,
-    Show,
-    External(String),
+#[derive(Debug, Clone, PartialEq)]
+pub struct AstMacroExpansionResult {
+    pub program: Program,
+    pub origins: Vec<AstMacroOrigin>,
 }
 
-impl DeriveMacro {
-    fn is_builtin_show(&self) -> bool {
-        matches!(self, Self::Debug | Self::Show)
-    }
+#[derive(Debug, Clone, PartialEq)]
+pub struct AstMacroOrigin {
+    pub macro_name: String,
+    pub kind: AstMacroOriginKind,
+    pub input_span: Option<Span>,
+    pub generated_items: usize,
+    pub generated_item_labels: Vec<String>,
+    pub generated_item_origins: Vec<AstGeneratedItemOrigin>,
+}
 
-    fn external_name(&self) -> Option<&str> {
+#[derive(Debug, Clone, PartialEq)]
+pub struct AstGeneratedItemOrigin {
+    pub label: String,
+    pub span: Option<Span>,
+    pub generated_member_origins: Vec<AstGeneratedMemberOrigin>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AstGeneratedMemberOrigin {
+    pub label: String,
+    pub span: Option<Span>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AstMacroOriginKind {
+    Cfg,
+    BuiltinDerive,
+    ExternalDerive,
+    Attribute,
+}
+
+impl AstMacroOriginKind {
+    pub fn as_str(&self) -> &'static str {
         match self {
-            Self::External(name) => Some(name),
-            _ => None,
+            Self::Cfg => "cfg",
+            Self::BuiltinDerive => "builtin_derive",
+            Self::ExternalDerive => "external_derive",
+            Self::Attribute => "attribute",
         }
     }
 }
@@ -357,9 +402,20 @@ fn read_limited_file(path: &PathBuf, max_bytes: usize) -> Result<Vec<u8>, ProcMa
 }
 
 pub fn expand_ast_macros(program: Program, options: ProcMacroOptions) -> Result<Program, ParseError> {
+    Ok(expand_ast_macros_with_metadata(program, options)?.program)
+}
+
+pub fn expand_ast_macros_with_metadata(
+    program: Program,
+    options: ProcMacroOptions,
+) -> Result<AstMacroExpansionResult, ParseError> {
     let mut state = AstMacroState::default();
     let statements = expand_stmt_vec(program.statements, &options, &mut state)?;
-    Program::new(statements).map_err(|err| ParseError::new(err.to_string()))
+    let program = Program::new(statements).map_err(|err| ParseError::new(err.to_string()))?;
+    Ok(AstMacroExpansionResult {
+        program,
+        origins: state.origins,
+    })
 }
 
 fn expand_stmt_vec(
@@ -522,9 +578,10 @@ fn expand_attributed_stmt(
     for attr in attributes {
         if let Some(enabled) = parse_cfg_attribute(&attr, &features)? {
             if !enabled {
+                record_ast_origin(state, "cfg", AstMacroOriginKind::Cfg, attr.span.clone(), &[]);
                 return Ok(Vec::new());
             }
-        } else if let Some(parsed) = parse_derive_attribute(&attr)? {
+        } else if let Some(parsed) = derive::parse_derive_attribute(&attr)? {
             if derive_span.is_none() {
                 derive_span = attr.span.clone();
             }
@@ -551,6 +608,13 @@ fn expand_attributed_stmt(
         }
         let item = *transformed_items.pop().expect("attribute macro transform has one item");
         transformed_items = expand_external_attribute(&name, &attr, item, options)?;
+        record_ast_origin(
+            state,
+            &name,
+            AstMacroOriginKind::Attribute,
+            attr.span.clone(),
+            &transformed_items,
+        );
     }
 
     if derives.is_empty() {
@@ -579,40 +643,26 @@ fn expand_attributed_stmt(
         ));
     }
     let expanded_item = *transformed_items.pop().expect("single transformed item with derives");
-    let Stmt::Struct { name, fields } = expanded_item else {
-        return Err(error_from_span(
-            derive_span.as_ref(),
-            "derive macros currently support structs only",
-        ));
-    };
 
-    let needs_builtin_show = derives.iter().any(DeriveMacro::is_builtin_show);
+    derive::expand_derives(derives, derive_span, preserved_attrs, expanded_item, options, state)
+}
 
-    let mut output = Vec::new();
-    if needs_builtin_show && !state.show_trait_available {
-        output.push(Box::new(builtin_show_trait()));
-        state.show_trait_available = true;
-    }
-
-    let item = Stmt::Struct {
-        name: name.clone(),
-        fields: fields.clone(),
-    };
-    output.push(Box::new(apply_preserved_attributes(preserved_attrs, item)));
-
-    if needs_builtin_show {
-        output.push(Box::new(derive_show_impl(&name, &fields)));
-    }
-    for derive in derives.iter().filter_map(DeriveMacro::external_name) {
-        output.extend(expand_external_derive(
-            derive,
-            &name,
-            &fields,
-            options,
-            derive_span.as_ref(),
-        )?);
-    }
-    Ok(output)
+fn record_ast_origin(
+    state: &mut AstMacroState,
+    macro_name: &str,
+    kind: AstMacroOriginKind,
+    input_span: Option<Span>,
+    generated_items: &[Box<Stmt>],
+) {
+    let generated_item_origins = generated_item_origins(generated_items, input_span.clone());
+    state.origins.push(AstMacroOrigin {
+        macro_name: macro_name.to_string(),
+        kind,
+        input_span,
+        generated_items: generated_items.len(),
+        generated_item_labels: generated_items.iter().map(|stmt| stmt_label(stmt)).collect(),
+        generated_item_origins,
+    });
 }
 
 fn registered_attribute_macro_name(attr: &Attribute, options: &ProcMacroOptions) -> Option<String> {
@@ -778,59 +828,6 @@ impl<'a> CfgParser<'a> {
     }
 }
 
-fn parse_derive_attribute(attr: &Attribute) -> Result<Option<Vec<DeriveMacro>>, ParseError> {
-    let Some(Token::Id(name)) = attr.tokens.first() else {
-        return Ok(None);
-    };
-    if name != "derive" {
-        return Ok(None);
-    }
-    if attr.tokens.len() < 3 || attr.tokens.get(1) != Some(&Token::LParen) || attr.tokens.last() != Some(&Token::RParen)
-    {
-        return Err(error_at_attr(
-            attr,
-            "Malformed derive attribute; expected #[derive(Name, ...)]",
-        ));
-    }
-
-    let mut derives = Vec::new();
-    let mut pos = 2;
-    while pos + 1 < attr.tokens.len() {
-        match &attr.tokens[pos] {
-            Token::Id(name) => {
-                derives.push(parse_derive_name(name));
-                pos += 1;
-            }
-            Token::RParen => break,
-            _ => return Err(error_at_attr(attr, "Expected derive macro name")),
-        }
-
-        match attr.tokens.get(pos) {
-            Some(Token::Comma) => {
-                pos += 1;
-                if attr.tokens.get(pos) == Some(&Token::RParen) {
-                    break;
-                }
-            }
-            Some(Token::RParen) => break,
-            _ => return Err(error_at_attr(attr, "Expected ',' or ')' in derive attribute")),
-        }
-    }
-
-    if derives.is_empty() {
-        return Err(error_at_attr(attr, "derive attribute requires at least one macro name"));
-    }
-    Ok(Some(derives))
-}
-
-fn parse_derive_name(name: &str) -> DeriveMacro {
-    match name {
-        "Debug" => DeriveMacro::Debug,
-        "Show" => DeriveMacro::Show,
-        _ => DeriveMacro::External(name.to_string()),
-    }
-}
-
 fn apply_preserved_attributes(attributes: Vec<Attribute>, item: Stmt) -> Stmt {
     if attributes.is_empty() {
         item
@@ -840,86 +837,6 @@ fn apply_preserved_attributes(attributes: Vec<Attribute>, item: Stmt) -> Stmt {
             item: Box::new(item),
         }
     }
-}
-
-fn builtin_show_trait() -> Stmt {
-    Stmt::Trait {
-        name: BUILTIN_SHOW_TRAIT.to_string(),
-        methods: vec![(
-            "show".to_string(),
-            Type::Function {
-                params: vec![Type::Any],
-                named_params: Vec::new(),
-                return_type: Box::new(Type::String),
-            },
-        )],
-    }
-}
-
-fn derive_show_impl(name: &str, fields: &[(String, Option<Type>)]) -> Stmt {
-    Stmt::Impl {
-        trait_name: BUILTIN_SHOW_TRAIT.to_string(),
-        target_type: Type::Named(name.to_string()),
-        methods: vec![Stmt::Function {
-            name: "show".to_string(),
-            params: vec!["self".to_string()],
-            param_types: vec![Some(Type::Named(name.to_string()))],
-            named_params: Vec::new(),
-            return_type: Some(Type::String),
-            body: Box::new(Stmt::Block {
-                statements: vec![Box::new(Stmt::Return {
-                    value: Some(Box::new(derived_show_expr(name, fields))),
-                })],
-            }),
-        }],
-    }
-}
-
-fn derived_show_expr(name: &str, fields: &[(String, Option<Type>)]) -> Expr {
-    let mut parts = Vec::new();
-    if fields.is_empty() {
-        parts.push(TemplateStringPart::Literal(format!("{name} {{}}")));
-        return Expr::TemplateString(parts);
-    }
-
-    parts.push(TemplateStringPart::Literal(format!("{name} {{ ")));
-    for (index, (field, _)) in fields.iter().enumerate() {
-        if index > 0 {
-            parts.push(TemplateStringPart::Literal(", ".to_string()));
-        }
-        parts.push(TemplateStringPart::Literal(format!("{field}: ")));
-        parts.push(TemplateStringPart::Expr(Box::new(field_access_expr("self", field))));
-    }
-    parts.push(TemplateStringPart::Literal(" }".to_string()));
-    Expr::TemplateString(parts)
-}
-
-fn field_access_expr(base: &str, field: &str) -> Expr {
-    Expr::Access(
-        Box::new(Expr::Var(base.to_string())),
-        Box::new(Expr::Literal(LiteralVal::from_str(field))),
-    )
-}
-
-fn expand_external_derive(
-    derive: &str,
-    name: &str,
-    fields: &[(String, Option<Type>)],
-    options: &ProcMacroOptions,
-    fallback_span: Option<&Span>,
-) -> Result<Vec<Box<Stmt>>, ParseError> {
-    let Some(config) = options.providers.derive_provider(derive) else {
-        return Err(error_from_span(
-            fallback_span,
-            &format!("No procedural derive provider registered for `{derive}`"),
-        ));
-    };
-    let request = derive_request(derive, name, fields, options);
-    let response = run_proc_macro_process(&request, config)
-        .map_err(|err| error_from_span(fallback_span, &format!("Procedural derive `{derive}` failed: {err}")))?;
-    reject_error_diagnostics(derive, &response.diagnostics, fallback_span)?;
-    options.dependency_recorder.record(&response.dependencies);
-    parse_proc_macro_output_items(derive, &response.output_tokens, fallback_span)
 }
 
 fn expand_external_attribute(
@@ -940,24 +857,6 @@ fn expand_external_attribute(
     reject_error_diagnostics(name, &response.diagnostics, attr.span.as_ref())?;
     options.dependency_recorder.record(&response.dependencies);
     parse_proc_macro_output_items(name, &response.output_tokens, attr.span.as_ref())
-}
-
-fn derive_request(
-    macro_name: &str,
-    name: &str,
-    fields: &[(String, Option<Type>)],
-    options: &ProcMacroOptions,
-) -> ProcMacroRequest {
-    ProcMacroRequest {
-        protocol_version: PROC_MACRO_PROTOCOL_VERSION,
-        kind: ProcMacroKind::Derive,
-        macro_name: macro_name.to_string(),
-        input_tokens: derive_attribute_tokens(macro_name),
-        item_tokens: struct_item_tokens(name, fields),
-        package: options.package.clone(),
-        module: options.module.clone(),
-        features: options.features.clone(),
-    }
 }
 
 fn attribute_request(
@@ -1034,18 +933,6 @@ fn proc_output_parse_error(macro_name: &str, err: ParseError, fallback_span: Opt
     }
 }
 
-fn derive_attribute_tokens(name: &str) -> Vec<ProcMacroToken> {
-    [
-        Token::Id("derive".to_string()),
-        Token::LParen,
-        Token::Id(name.to_string()),
-        Token::RParen,
-    ]
-    .iter()
-    .map(|token| ProcMacroToken::from_token(token, None))
-    .collect()
-}
-
 fn attribute_input_tokens(attr: &Attribute) -> Vec<ProcMacroToken> {
     attr.tokens
         .iter()
@@ -1071,32 +958,6 @@ fn stmt_item_tokens(
         .collect())
 }
 
-fn struct_item_tokens(name: &str, fields: &[(String, Option<Type>)]) -> Vec<ProcMacroToken> {
-    let mut tokens = vec![Token::Struct, Token::Id(name.to_string()), Token::LBrace];
-    for (index, (field, ty)) in fields.iter().enumerate() {
-        if index > 0 {
-            tokens.push(Token::Comma);
-        }
-        tokens.push(Token::Id(field.clone()));
-        if let Some(ty) = ty {
-            tokens.push(Token::Colon);
-            push_type_tokens(&mut tokens, ty);
-        }
-    }
-    tokens.push(Token::RBrace);
-    tokens
-        .iter()
-        .map(|token| ProcMacroToken::from_token(token, None))
-        .collect()
-}
-
-fn push_type_tokens(tokens: &mut Vec<Token>, ty: &Type) {
-    match Tokenizer::tokenize(&ty.display()) {
-        Ok(mut parsed) => tokens.append(&mut parsed),
-        Err(_) => tokens.push(Token::Id(ty.display())),
-    }
-}
-
 fn token_kind(token: &Token) -> String {
     let debug = format!("{token:?}");
     debug.split(['(', ' ']).next().unwrap_or(debug.as_str()).to_string()
@@ -1119,330 +980,4 @@ fn error_from_span(span: Option<&Span>, message: &str) -> ParseError {
 }
 
 #[cfg(test)]
-mod tests {
-    use crate::{
-        macro_system::{
-            PROC_MACRO_PROTOCOL_VERSION, ProcMacroKind, ProcMacroProcessConfig, ProcMacroProcessError,
-            ProcMacroProviders, ProcMacroRequest, run_proc_macro_process,
-        },
-        syntax::{ParseOptions, parse_program_source},
-        val::RuntimeVal,
-        vm::execute_source,
-    };
-    use std::{path::PathBuf, time::Duration};
-
-    #[test]
-    fn derive_debug_generates_runtime_show_for_template_display() {
-        let result = execute_source(
-            r#"
-            #[derive(Debug)]
-            struct User {
-                id: Int,
-                name: String,
-            }
-
-            let user = User { id: 7, name: "Ada" };
-            return "${user}" == "User { id: 7, name: Ada }";
-            "#,
-        )
-        .expect("execute derived debug");
-
-        assert_eq!(result.returns, vec![RuntimeVal::Bool(true)]);
-    }
-
-    #[test]
-    fn derive_show_preserves_non_macro_attributes() {
-        let result = execute_source(
-            r#"
-            #[repr("lk")]
-            #[derive(Show)]
-            struct Empty {}
-
-            let value = Empty {};
-            return "${value}" == "Empty {}";
-            "#,
-        )
-        .expect("execute derived show with preserved attr");
-
-        assert_eq!(result.returns, vec![RuntimeVal::Bool(true)]);
-    }
-
-    #[test]
-    fn unregistered_external_derive_reports_parse_error() {
-        let err = parse_program_source(
-            r#"
-            #[derive(Clone)]
-            struct User { id: Int }
-            "#,
-            ParseOptions::default(),
-        )
-        .expect_err("unregistered derive should fail");
-
-        assert!(
-            err.to_string()
-                .contains("No procedural derive provider registered for `Clone`")
-        );
-    }
-
-    #[test]
-    fn derive_on_non_struct_reports_attribute_span() {
-        let err = parse_program_source(
-            r#"
-            #[derive(Debug)]
-            fn answer() {
-                return 42;
-            }
-            "#,
-            ParseOptions::default(),
-        )
-        .expect_err("derive on function should fail");
-
-        assert!(err.to_string().contains("derive macros currently support structs only"));
-        assert!(err.span.is_some(), "derive error should keep the attribute span");
-    }
-
-    #[test]
-    fn cfg_false_removes_item_before_type_check_and_execution() {
-        let result = execute_source(
-            r#"
-            #[cfg(false)]
-            fn value() {
-                return unknown_symbol;
-            }
-
-            #[cfg(true)]
-            fn value() {
-                return 42;
-            }
-
-            return value();
-            "#,
-        )
-        .expect("execute cfg-filtered program");
-
-        assert_eq!(result.returns, vec![RuntimeVal::Int(42)]);
-    }
-
-    #[test]
-    fn cfg_feature_not_any_all_selects_items_from_parse_options() {
-        let program = parse_program_source(
-            r#"
-            #[cfg(all(feature = "debug", any(feature = "cli", feature("lsp"))))]
-            fn value() {
-                return 7;
-            }
-
-            #[cfg(not(feature = "debug"))]
-            fn value() {
-                return 1;
-            }
-
-            return value();
-            "#,
-            ParseOptions {
-                macro_features: vec!["debug".to_string(), "cli".to_string()],
-                ..ParseOptions::default()
-            },
-        )
-        .expect("parse cfg feature program");
-
-        let result = program.execute().expect("execute cfg feature program");
-        assert_eq!(result.returns, vec![RuntimeVal::Int(7)]);
-    }
-
-    #[test]
-    fn external_derive_provider_appends_generated_items() {
-        let Some(shell) = test_shell() else {
-            return;
-        };
-        let mut providers = ProcMacroProviders::default();
-        providers.register_derive(
-            "MakeAnswer",
-            shell_response_config(
-                shell,
-                r#"{"protocol_version":1,"output_tokens":[{"kind":"Fn","lexeme":"fn","span":null},{"kind":"Id","lexeme":"generated","span":null},{"kind":"LParen","lexeme":"(","span":null},{"kind":"RParen","lexeme":")","span":null},{"kind":"LBrace","lexeme":"{","span":null},{"kind":"Return","lexeme":"return","span":null},{"kind":"Int","lexeme":"99","span":null},{"kind":"Semicolon","lexeme":";","span":null},{"kind":"RBrace","lexeme":"}","span":null}],"diagnostics":[],"dependencies":[]}"#,
-            ),
-        );
-        let program = parse_program_source(
-            r#"
-            #[derive(MakeAnswer)]
-            struct User { id: Int }
-
-            return generated();
-            "#,
-            ParseOptions {
-                proc_macro_providers: providers,
-                ..ParseOptions::default()
-            },
-        )
-        .expect("external derive should expand");
-
-        let result = program.execute().expect("execute external derive output");
-        assert_eq!(result.returns, vec![RuntimeVal::Int(99)]);
-    }
-
-    #[test]
-    fn external_derive_provider_error_diagnostic_fails_parse() {
-        let Some(shell) = test_shell() else {
-            return;
-        };
-        let mut providers = ProcMacroProviders::default();
-        providers.register_derive(
-            "Fail",
-            shell_response_config(
-                shell,
-                r#"{"protocol_version":1,"output_tokens":[],"diagnostics":[{"level":"Error","message":"derive refused input","span":null,"notes":["check provider logs"]}],"dependencies":[]}"#,
-            ),
-        );
-
-        let err = parse_program_source(
-            r#"
-            #[derive(Fail)]
-            struct User { id: Int }
-            "#,
-            ParseOptions {
-                proc_macro_providers: providers,
-                ..ParseOptions::default()
-            },
-        )
-        .expect_err("provider diagnostic should fail parsing");
-
-        let message = err.to_string();
-        assert!(message.contains("derive refused input"));
-        assert!(message.contains("check provider logs"));
-    }
-
-    #[test]
-    fn external_attribute_provider_replaces_item() {
-        let Some(shell) = test_shell() else {
-            return;
-        };
-        let mut providers = ProcMacroProviders::default();
-        providers.register_attribute(
-            "replace",
-            shell_response_config(
-                shell,
-                r#"{"protocol_version":1,"output_tokens":[{"kind":"Fn","lexeme":"fn","span":null},{"kind":"Id","lexeme":"generated","span":null},{"kind":"LParen","lexeme":"(","span":null},{"kind":"RParen","lexeme":")","span":null},{"kind":"LBrace","lexeme":"{","span":null},{"kind":"Return","lexeme":"return","span":null},{"kind":"Int","lexeme":"123","span":null},{"kind":"Semicolon","lexeme":";","span":null},{"kind":"RBrace","lexeme":"}","span":null}],"diagnostics":[],"dependencies":[]}"#,
-            ),
-        );
-        let program = parse_program_source(
-            r#"
-            #[replace]
-            fn old() {
-                return 1;
-            }
-
-            return generated();
-            "#,
-            ParseOptions {
-                proc_macro_providers: providers,
-                ..ParseOptions::default()
-            },
-        )
-        .expect("external attribute should expand");
-
-        let result = program.execute().expect("execute attribute macro output");
-        assert_eq!(result.returns, vec![RuntimeVal::Int(123)]);
-    }
-
-    #[test]
-    fn external_attribute_provider_error_diagnostic_fails_parse() {
-        let Some(shell) = test_shell() else {
-            return;
-        };
-        let mut providers = ProcMacroProviders::default();
-        providers.register_attribute(
-            "fail_attr",
-            shell_response_config(
-                shell,
-                r#"{"protocol_version":1,"output_tokens":[],"diagnostics":[{"level":"Error","message":"attribute refused input","span":null,"notes":["check attribute provider logs"]}],"dependencies":[]}"#,
-            ),
-        );
-
-        let err = parse_program_source(
-            r#"
-            #[fail_attr]
-            fn old() {
-                return 1;
-            }
-            "#,
-            ParseOptions {
-                proc_macro_providers: providers,
-                ..ParseOptions::default()
-            },
-        )
-        .expect_err("provider diagnostic should fail parsing");
-
-        let message = err.to_string();
-        assert!(message.contains("attribute refused input"));
-        assert!(message.contains("check attribute provider logs"));
-    }
-
-    #[test]
-    fn proc_macro_process_decodes_versioned_response() {
-        let Some(shell) = test_shell() else {
-            return;
-        };
-        let request = empty_request("demo");
-        let config = ProcMacroProcessConfig {
-            program: shell,
-            args: vec![
-                "-c".to_string(),
-                concat!(
-                    "cat >/dev/null; printf '%s' ",
-                    "'{\"protocol_version\":1,\"output_tokens\":[],\"diagnostics\":[],\"dependencies\":[]}'"
-                )
-                .to_string(),
-            ],
-            timeout: Duration::from_secs(1),
-            max_output_bytes: 4096,
-        };
-
-        let response = run_proc_macro_process(&request, &config).expect("run proc macro process");
-        assert_eq!(response.protocol_version, PROC_MACRO_PROTOCOL_VERSION);
-    }
-
-    #[test]
-    fn proc_macro_process_enforces_timeout() {
-        let Some(shell) = test_shell() else {
-            return;
-        };
-        let request = empty_request("slow");
-        let config = ProcMacroProcessConfig {
-            program: shell,
-            args: vec!["-c".to_string(), "sleep 1".to_string()],
-            timeout: Duration::from_millis(10),
-            max_output_bytes: 4096,
-        };
-
-        let err = run_proc_macro_process(&request, &config).expect_err("process should time out");
-        assert!(matches!(err, ProcMacroProcessError::Timeout { .. }));
-    }
-
-    fn empty_request(name: &str) -> ProcMacroRequest {
-        ProcMacroRequest {
-            protocol_version: PROC_MACRO_PROTOCOL_VERSION,
-            kind: ProcMacroKind::Attribute,
-            macro_name: name.to_string(),
-            input_tokens: Vec::new(),
-            item_tokens: Vec::new(),
-            package: None,
-            module: None,
-            features: Vec::new(),
-        }
-    }
-
-    fn test_shell() -> Option<PathBuf> {
-        let shell = PathBuf::from("/bin/sh");
-        shell.exists().then_some(shell)
-    }
-
-    fn shell_response_config(shell: PathBuf, response: &str) -> ProcMacroProcessConfig {
-        ProcMacroProcessConfig {
-            program: shell,
-            args: vec!["-c".to_string(), format!("cat >/dev/null; printf '%s' '{response}'")],
-            timeout: Duration::from_secs(1),
-            max_output_bytes: 4096,
-        }
-    }
-}
+mod tests;

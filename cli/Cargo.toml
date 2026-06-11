@@ -34,6 +34,9 @@ clap = { version = "4", features = ["derive"] }
 reedline = "0.48"
 nu-ansi-term = "0.50"
 tracing-subscriber = { workspace = true }
+ureq = { workspace = true }
+semver = "1"
+sha2 = { workspace = true }
 
 [dev-dependencies]
 assert_cmd = "2"

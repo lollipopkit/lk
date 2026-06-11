@@ -59,15 +59,19 @@ fn parse_proc_output_tokens(
             .as_ref()
             .map(|span| span.to_span())
             .unwrap_or_else(|| fallback_span.clone());
-        let parsed = Tokenizer::tokenize(&proc_token.lexeme).map_err(|err| {
-            ParseError::with_span(
-                format!(
-                    "Procedural macro `{macro_name}` produced invalid token `{}`: {err}",
-                    proc_token.lexeme
-                ),
-                span.clone(),
-            )
-        })?;
+        let parsed = if let Some(token) = proc_token_kind_override(proc_token) {
+            vec![token]
+        } else {
+            Tokenizer::tokenize(&proc_token.lexeme).map_err(|err| {
+                ParseError::with_span(
+                    format!(
+                        "Procedural macro `{macro_name}` produced invalid token `{}`: {err}",
+                        proc_token.lexeme
+                    ),
+                    span.clone(),
+                )
+            })?
+        };
         if parsed.is_empty() {
             return Err(ParseError::with_span(
                 format!("Procedural macro `{macro_name}` produced an empty token lexeme"),
@@ -80,6 +84,13 @@ fn parse_proc_output_tokens(
         }
     }
     Ok((out_tokens, out_spans))
+}
+
+fn proc_token_kind_override(token: &ProcMacroToken) -> Option<Token> {
+    match (token.kind.as_str(), token.lexeme.as_str()) {
+        ("Or", "||") => Some(Token::Or),
+        _ => None,
+    }
 }
 
 fn should_space_proc_tokens(prev: Option<&str>, current: &str) -> bool {
@@ -98,4 +109,26 @@ fn should_space_proc_tokens(prev: Option<&str>, current: &str) -> bool {
 fn zero_span() -> Span {
     use crate::token::Position;
     Span::new(Position::start(), Position::start())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn proc_token(kind: &str, lexeme: &str) -> ProcMacroToken {
+        ProcMacroToken {
+            kind: kind.to_string(),
+            lexeme: lexeme.to_string(),
+            span: None,
+        }
+    }
+
+    #[test]
+    fn parse_proc_output_preserves_or_kind_for_context_sensitive_lexeme() {
+        let (tokens, spans) =
+            parse_proc_output_tokens("logic", &[proc_token("Or", "||")], &zero_span()).expect("parse proc output");
+
+        assert_eq!(tokens, vec![Token::Or]);
+        assert_eq!(spans, vec![zero_span()]);
+    }
 }

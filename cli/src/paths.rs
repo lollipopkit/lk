@@ -2,9 +2,8 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::Context;
-use lk_core::package::{MANIFEST_FILE, Manifest, find_manifest};
-use lk_core::stmt::Program;
-use lk_core::syntax::{ParseOptions, parse_program_source};
+use lk_core::package::{MANIFEST_FILE, Manifest, PackageGraph, find_manifest};
+use lk_core::syntax::{ParseOptions, ProgramExpansion, expand_program_source};
 
 use crate::{CompileMode, diagnostic};
 
@@ -30,11 +29,11 @@ pub(crate) fn parse_sanitized_path(raw: &str) -> Result<PathBuf, String> {
     sanitize_path(raw).map_err(|e| e.to_string())
 }
 
-pub(crate) fn parse_program_file(path: &Path) -> anyhow::Result<Program> {
+pub(crate) fn expand_program_file(path: &Path) -> anyhow::Result<ProgramExpansion> {
     let src = read_file_content(&path.to_string_lossy())?;
     let options = parse_options_for_file(path)?;
-    match parse_program_source(&src, options) {
-        Ok(program) => Ok(program),
+    match expand_program_source(&src, options) {
+        Ok(expansion) => Ok(expansion),
         Err(parse_err) => {
             diagnostic::parse_error(&parse_err, &src);
             std::process::exit(1);
@@ -54,7 +53,10 @@ pub(crate) fn parse_options_for_file(path: &Path) -> anyhow::Result<ParseOptions
     let manifest_dir = manifest_path
         .parent()
         .ok_or_else(|| anyhow::anyhow!("manifest has no parent: {}", manifest_path.display()))?;
-    options.proc_macro_providers = manifest.proc_macro_providers(manifest_dir);
+    options.proc_macro_providers = match PackageGraph::discover(path)? {
+        Some(graph) => graph.proc_macro_providers_for_manifest(&manifest_path)?,
+        None => manifest.proc_macro_providers(manifest_dir),
+    };
     Ok(options)
 }
 

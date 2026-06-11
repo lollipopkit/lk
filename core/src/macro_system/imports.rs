@@ -69,6 +69,22 @@ enum MacroImportSource {
     Module(String),
 }
 
+#[derive(Debug, Clone)]
+pub(in crate::macro_system) enum MacroRuntimeAnchorSource {
+    File(String),
+    Module(String),
+}
+
+impl MacroImportSource {
+    fn runtime_anchor_source(&self) -> Option<MacroRuntimeAnchorSource> {
+        match self {
+            Self::File(path) => Some(MacroRuntimeAnchorSource::File(path.clone())),
+            Self::Module(name) if is_builtin_macro_module(name) => None,
+            Self::Module(name) => Some(MacroRuntimeAnchorSource::Module(name.clone())),
+        }
+    }
+}
+
 #[derive(Debug)]
 enum MacroImportKind {
     Named(Vec<MacroImportItem>),
@@ -87,6 +103,8 @@ struct MacroModule {
     exports: FastHashMap<String, MacroDef>,
     anchors: FastHashMap<String, MacroDef>,
     local_names: Vec<String>,
+    imported_runtime_anchors: Vec<(String, MacroRuntimeAnchorSource)>,
+    crate_anchor: Option<String>,
 }
 
 impl MacroModule {
@@ -94,6 +112,8 @@ impl MacroModule {
         LoadedMacroModule {
             public: self.exports,
             anchors: self.anchors,
+            runtime_anchors: self.imported_runtime_anchors,
+            crate_anchor: self.crate_anchor,
         }
     }
 }
@@ -102,6 +122,8 @@ impl MacroModule {
 struct LoadedMacroModule {
     public: FastHashMap<String, MacroDef>,
     anchors: FastHashMap<String, MacroDef>,
+    runtime_anchors: Vec<(String, MacroRuntimeAnchorSource)>,
+    crate_anchor: Option<String>,
 }
 
 pub(super) fn collect_imported_macro_defs(
@@ -113,6 +135,12 @@ pub(super) fn collect_imported_macro_defs(
     for spec in macro_import_specs(tokens)? {
         let loaded = load_imported_macros(base_dir, &spec, tokens, loading)?;
         register_anchor_macros(registry, &loaded.anchors);
+        for (anchor, source) in loaded.runtime_anchors.iter().cloned() {
+            registry.insert_runtime_anchor(anchor, source);
+        }
+        if let (Some(anchor), Some(source)) = (loaded.crate_anchor.clone(), spec.source.runtime_anchor_source()) {
+            registry.insert_runtime_anchor(anchor, source);
+        }
         register_file_macros(registry, &loaded.public, &spec, tokens)?;
     }
     Ok(())
@@ -283,10 +311,15 @@ fn load_macro_source(
         })
         .collect::<Vec<_>>();
     let mut module = MacroModule::default();
+    module.crate_anchor = Some(crate_anchor.clone());
     for spec in macro_import_specs(&source_tokens)? {
         let imported = load_imported_macros(Some(base_dir), &spec, &source_tokens, loading)?;
         register_file_macro_map(&mut module.macros, &imported.public, &spec, &source_tokens)?;
         merge_anchor_macros(&mut module.anchors, &imported.anchors);
+        module.imported_runtime_anchors.extend(imported.runtime_anchors);
+        if let (Some(anchor), Some(source)) = (imported.crate_anchor, spec.source.runtime_anchor_source()) {
+            module.imported_runtime_anchors.push((anchor, source));
+        }
     }
     let mut exports = Vec::new();
     let mut index = 0usize;
@@ -653,8 +686,9 @@ mod tests {
     use std::{fs, path::Path};
 
     use crate::{
+        stmt::ModuleResolver,
         syntax::{ParseOptions, expand_source, parse_program_source, render_tokens},
-        vm::execute_source,
+        vm::{VmContext, execute_source},
     };
 
     fn write_package(root: &Path, name: &str, body: &str) {
@@ -1118,5 +1152,100 @@ return value();
         )
         .expect("runtime package item import should remain valid");
         assert_eq!(program.statements.len(), 2);
+    }
+
+    #[test]
+    fn local_crate_anchor_runtime_item_reference_uses_same_file_item() {
+        let result = execute_source(
+            r#"
+fn helper() {
+    return 40;
+}
+
+macro_rules! answer {
+    () => { $crate::helper() + 2 };
+}
+
+return answer!();
+"#,
+        )
+        .expect("local crate anchor runtime item should execute");
+
+        assert_eq!(result.display_first_return(), "42");
+    }
+
+    #[test]
+    fn imported_crate_anchor_runtime_item_reference_imports_definition_module() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        fs::write(
+            temp.path().join("macros.lk"),
+            r#"
+fn helper() {
+    return 40;
+}
+
+export macro_rules! answer {
+    () => { $crate::helper() + 2 };
+}
+"#,
+        )
+        .expect("write macro module");
+        let program = parse_program_source(
+            r#"
+use { answer } from "macros";
+return answer!();
+"#,
+            ParseOptions {
+                base_dir: Some(temp.path().to_path_buf()),
+                ..ParseOptions::default()
+            },
+        )
+        .expect("program should parse with injected runtime anchor import");
+        let mut resolver = ModuleResolver::new();
+        resolver.set_base_dir(temp.path().to_path_buf());
+        let mut ctx = VmContext::new().with_resolver(std::sync::Arc::new(resolver));
+        let result = program
+            .execute_with_ctx(&mut ctx)
+            .expect("injected runtime anchor import should execute");
+
+        assert_eq!(result.display_first_return(), "42");
+    }
+
+    #[test]
+    fn package_crate_anchor_runtime_item_reference_imports_definition_module() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        write_package(
+            temp.path(),
+            "util",
+            r#"
+fn helper() {
+    return 40;
+}
+
+export macro_rules! answer {
+    () => { $crate::helper() + 2 };
+}
+"#,
+        );
+        let app_src = write_app_manifest(temp.path(), "util");
+        let program = parse_program_source(
+            r#"
+use { answer } from util;
+return answer!();
+"#,
+            ParseOptions {
+                base_dir: Some(app_src),
+                ..ParseOptions::default()
+            },
+        )
+        .expect("program should parse with injected package runtime anchor import");
+        let resolver = ModuleResolver::new();
+        resolver.register_package_module("util", temp.path().join("deps/util/src/mod.lk"));
+        let mut ctx = VmContext::new().with_resolver(std::sync::Arc::new(resolver));
+        let result = program
+            .execute_with_ctx(&mut ctx)
+            .expect("injected package runtime anchor import should execute");
+
+        assert_eq!(result.display_first_return(), "42");
     }
 }

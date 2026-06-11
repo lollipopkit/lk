@@ -591,8 +591,21 @@ fn test_source_run_defaults_to_vm_and_cached_native_is_opt_in() {
         assert_eq!(String::from_utf8(output.stdout).expect("utf8 stdout").trim(), "42");
     }
 
-    let cache_entries = fs::read_dir(&cache_dir).expect("read native cache").count();
-    assert_eq!(cache_entries, 1, "expected one cached native executable");
+    let cache_entries = fs::read_dir(&cache_dir)
+        .expect("read native cache")
+        .map(|entry| entry.expect("cache entry").path())
+        .collect::<Vec<_>>();
+    let metadata_entries = cache_entries
+        .iter()
+        .filter(|path| {
+            path.file_name()
+                .and_then(|file| file.to_str())
+                .is_some_and(|file| file.ends_with(".proc-macro-deps.json"))
+        })
+        .count();
+    let executable_entries = cache_entries.len() - metadata_entries;
+    assert_eq!(executable_entries, 1, "expected one cached native executable");
+    assert_eq!(metadata_entries, 1, "expected one native cache dependency sidecar");
 
     let vm = run_cli(&dir, ["a.lk"])
         .env("LK_NATIVE_CACHE_DIR", &cache_dir)

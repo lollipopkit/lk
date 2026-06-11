@@ -137,6 +137,26 @@ mod tests {
         assert!(!native_run_enabled_from_flags(false, false, true, true));
     }
 
+    #[cfg(feature = "llvm")]
+    #[test]
+    fn native_cache_proc_macro_dependency_metadata_stales_on_file_change() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let source = dir.path().join("main.lk");
+        let output = dir.path().join("lk-native-test");
+        std::fs::write(&source, "return generated!();\n").expect("write source");
+        std::fs::write(dir.path().join("schema.txt"), "one").expect("write dependency");
+        let dependencies = vec![ProcMacroDependency {
+            path: "schema.txt".to_string(),
+            digest: None,
+        }];
+
+        write_native_cache_proc_macro_dependencies(&source, &output, &dependencies).expect("write dependency metadata");
+        assert!(native_cache_proc_macro_dependencies_fresh(&source, &output));
+
+        std::fs::write(dir.path().join("schema.txt"), "two").expect("rewrite dependency");
+        assert!(!native_cache_proc_macro_dependencies_fresh(&source, &output));
+    }
+
     #[test]
     fn test_cli_args_compile_default_target_is_exe() {
         let args = CliArgs::try_parse_from(["lk", "compile", "foo.lk"]).expect("should parse default compile");
@@ -220,6 +240,32 @@ mod tests {
             assert_eq!(name.as_deref(), Some("demo"));
         } else {
             panic!("expected pkg init command");
+        }
+    }
+
+    #[test]
+    fn test_pkg_check_parses() {
+        let args = CliArgs::try_parse_from(["lk", "pkg", "check"]).expect("should parse pkg check");
+        if let Some(Commands::Pkg {
+            command: PkgCommand::Check,
+        }) = args.command
+        {
+        } else {
+            panic!("expected pkg check command");
+        }
+    }
+
+    #[test]
+    fn test_pkg_publish_dry_run_parses() {
+        let args =
+            CliArgs::try_parse_from(["lk", "pkg", "publish", "--dry-run"]).expect("should parse pkg publish dry-run");
+        if let Some(Commands::Pkg {
+            command: PkgCommand::Publish { dry_run },
+        }) = args.command
+        {
+            assert!(dry_run);
+        } else {
+            panic!("expected pkg publish command");
         }
     }
 

@@ -8,6 +8,7 @@ use std::{
 use crate::macro_system::{ProcMacroProcessConfig, ProcMacroProviders};
 use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 pub const MANIFEST_FILE: &str = "Lk.toml";
 pub const LOCK_FILE: &str = "Lk.lock";
@@ -16,6 +17,8 @@ pub const LOCK_FILE: &str = "Lk.lock";
 pub struct Manifest {
     pub package: Option<PackageSection>,
     pub workspace: Option<WorkspaceSection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registry: Option<RegistrySection>,
     #[serde(default)]
     pub dependencies: BTreeMap<String, DependencySpec>,
     #[serde(default, skip_serializing_if = "MacroSection::is_empty")]
@@ -42,7 +45,17 @@ pub struct WorkspaceSection {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RegistrySection {
+    pub name: Option<String>,
+    pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub include: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MacroSection {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trusted_dependencies: Vec<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub derive: BTreeMap<String, ProcMacroSpec>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -74,6 +87,8 @@ pub struct DetailedDependency {
     pub github: Option<String>,
     pub git: Option<String>,
     pub path: Option<String>,
+    pub registry: Option<String>,
+    pub version: Option<String>,
     pub branch: Option<String>,
     pub tag: Option<String>,
     pub rev: Option<String>,
@@ -92,11 +107,15 @@ pub struct LockedPackage {
     pub name: String,
     pub source: String,
     pub rev: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checksum: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 pub struct PackageModule {
     pub name: String,
+    pub package_root: PathBuf,
+    pub manifest_path: PathBuf,
     pub root: PathBuf,
 }
 
@@ -107,6 +126,50 @@ pub struct PackageGraph {
     pub manifest: Manifest,
     pub modules: Vec<PackageModule>,
     pub missing: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RegistryPublishManifest {
+    pub package: String,
+    pub version: String,
+    pub registry: String,
+    pub registry_url: String,
+    pub include: Vec<String>,
+    pub dependencies: Vec<RegistryPublishDependency>,
+    pub macro_providers: RegistryPublishMacroProviders,
+    pub integrity: RegistryPublishIntegrity,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RegistryPublishDependency {
+    pub name: String,
+    pub source: String,
+    pub version_or_rev: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RegistryPublishMacroProviders {
+    pub derive: Vec<String>,
+    pub attribute: Vec<String>,
+    pub function_like: Vec<String>,
+    pub trusted_dependencies: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RegistryPublishIntegrity {
+    pub algorithm: String,
+    pub digest: String,
+}
+
+#[derive(Serialize)]
+struct RegistryPublishManifestDigestPayload<'a> {
+    package: &'a str,
+    version: &'a str,
+    registry: &'a str,
+    registry_url: &'a str,
+    include: &'a [String],
+    dependencies: &'a [RegistryPublishDependency],
+    macro_providers: &'a RegistryPublishMacroProviders,
 }
 
 impl Manifest {
@@ -133,11 +196,131 @@ impl Manifest {
         }
         providers
     }
+
+    pub fn trusted_proc_macro_dependencies(&self) -> BTreeSet<String> {
+        self.macros.trusted_dependencies.iter().cloned().collect()
+    }
+
+    pub fn validate_macro_distribution(
+        &self,
+        manifest_dir: &Path,
+        dependency_macro_providers: &BTreeMap<String, bool>,
+    ) -> Result<()> {
+        let mut issues = Vec::new();
+        validate_proc_macro_specs(manifest_dir, "derive", &self.macros.derive, &mut issues);
+        validate_proc_macro_specs(manifest_dir, "attribute", &self.macros.attribute, &mut issues);
+        validate_proc_macro_specs(manifest_dir, "function_like", &self.macros.function_like, &mut issues);
+        for dependency in &self.macros.trusted_dependencies {
+            match dependency_macro_providers.get(dependency) {
+                Some(true) => {}
+                Some(false) => issues.push(format!(
+                    "trusted macro dependency `{dependency}` does not declare derive, attribute, or function-like providers"
+                )),
+                None => issues.push(format!(
+                    "trusted macro dependency `{dependency}` is not a resolved dependency or workspace member"
+                )),
+            }
+        }
+        if issues.is_empty() {
+            Ok(())
+        } else {
+            Err(anyhow!("macro package check failed:\n{}", issues.join("\n")))
+        }
+    }
+
+    pub fn registry_publish_manifest(
+        &self,
+        dependency_versions: &BTreeMap<String, Option<String>>,
+    ) -> Result<RegistryPublishManifest> {
+        let package = self
+            .package
+            .as_ref()
+            .ok_or_else(|| anyhow!("registry publish requires a [package] section"))?;
+        let version = package
+            .version
+            .as_ref()
+            .filter(|version| is_publish_version(version))
+            .ok_or_else(|| anyhow!("registry publish requires [package].version to be a semantic version"))?
+            .clone();
+        let registry = self
+            .registry
+            .as_ref()
+            .ok_or_else(|| anyhow!("registry publish requires a [registry] section"))?;
+        let registry_url = registry
+            .url
+            .as_ref()
+            .filter(|url| is_registry_url(url))
+            .ok_or_else(|| anyhow!("registry publish requires [registry].url to start with http:// or https://"))?
+            .clone();
+
+        let dependencies = self
+            .dependencies
+            .iter()
+            .map(|(name, spec)| RegistryPublishDependency {
+                name: name.clone(),
+                source: dependency_publish_source(spec),
+                version_or_rev: dependency_versions
+                    .get(name)
+                    .cloned()
+                    .flatten()
+                    .or_else(|| dependency_version(spec)),
+            })
+            .collect();
+        let macro_providers = RegistryPublishMacroProviders {
+            derive: self.macros.derive.keys().cloned().collect(),
+            attribute: self.macros.attribute.keys().cloned().collect(),
+            function_like: self.macros.function_like.keys().cloned().collect(),
+            trusted_dependencies: self.macros.trusted_dependencies.clone(),
+        };
+        let mut publish = RegistryPublishManifest {
+            package: package.name.clone(),
+            version,
+            registry: registry.name.clone().unwrap_or_else(|| "default".to_string()),
+            registry_url,
+            include: registry_include(registry),
+            dependencies,
+            macro_providers,
+            integrity: RegistryPublishIntegrity::default(),
+        };
+        publish.integrity = publish.integrity();
+        Ok(publish)
+    }
+}
+
+impl RegistryPublishManifest {
+    pub fn integrity(&self) -> RegistryPublishIntegrity {
+        let payload = RegistryPublishManifestDigestPayload {
+            package: &self.package,
+            version: &self.version,
+            registry: &self.registry,
+            registry_url: &self.registry_url,
+            include: &self.include,
+            dependencies: &self.dependencies,
+            macro_providers: &self.macro_providers,
+        };
+        let body = serde_json::to_vec(&payload).expect("serialize registry publish manifest digest payload");
+        let digest = Sha256::digest(&body);
+        RegistryPublishIntegrity {
+            algorithm: "sha256".to_string(),
+            digest: format!("{digest:x}"),
+        }
+    }
+
+    pub fn verify_integrity(&self) -> bool {
+        self.integrity == self.integrity()
+    }
 }
 
 impl MacroSection {
     pub fn is_empty(&self) -> bool {
-        self.derive.is_empty() && self.attribute.is_empty() && self.function_like.is_empty()
+        self.trusted_dependencies.is_empty()
+            && self.derive.is_empty()
+            && self.attribute.is_empty()
+            && self.function_like.is_empty()
+    }
+
+    fn has_providers(&self) -> bool {
+        !self.derive.is_empty() || !self.attribute.is_empty() || !self.function_like.is_empty()
     }
 }
 
@@ -195,6 +378,20 @@ impl DependencySpec {
     pub fn is_workspace(&self) -> bool {
         matches!(self, DependencySpec::Detailed(dep) if dep.workspace)
     }
+
+    pub fn registry_version(&self) -> Option<&str> {
+        match self {
+            DependencySpec::GitHub(_) => None,
+            DependencySpec::Detailed(dep) => dep.version.as_deref(),
+        }
+    }
+
+    pub fn registry_override(&self) -> Option<&str> {
+        match self {
+            DependencySpec::GitHub(_) => None,
+            DependencySpec::Detailed(dep) => dep.registry.as_deref(),
+        }
+    }
 }
 
 impl PackageGraph {
@@ -238,16 +435,88 @@ impl PackageGraph {
         self.root.join(LOCK_FILE)
     }
 
+    pub fn proc_macro_providers_for_manifest(&self, manifest_path: &Path) -> Result<ProcMacroProviders> {
+        let manifest = Manifest::read(manifest_path)?;
+        let manifest_dir = manifest_path
+            .parent()
+            .ok_or_else(|| anyhow!("manifest has no parent: {}", manifest_path.display()))?;
+        let trusted = manifest.trusted_proc_macro_dependencies();
+        let mut providers = manifest.proc_macro_providers(manifest_dir);
+        if trusted.is_empty() {
+            return Ok(providers);
+        }
+
+        for module in &self.modules {
+            if module.manifest_path == manifest_path || !trusted.contains(&module.name) {
+                continue;
+            }
+            let dependency_manifest = Manifest::read(&module.manifest_path)?;
+            let dependency_providers = dependency_manifest.proc_macro_providers(&module.package_root);
+            providers.register_trusted_dependency(&module.name, dependency_providers);
+        }
+        Ok(providers)
+    }
+
+    pub fn validate_macro_distribution(&self) -> Result<()> {
+        let mut manifests = BTreeSet::new();
+        manifests.insert(self.manifest_path.clone());
+        for module in &self.modules {
+            manifests.insert(module.manifest_path.clone());
+        }
+        for manifest_path in manifests {
+            self.validate_macro_distribution_for_manifest(&manifest_path)
+                .with_context(|| format!("check macro package manifest {}", manifest_path.display()))?;
+        }
+        Ok(())
+    }
+
+    pub fn registry_publish_manifest(&self) -> Result<RegistryPublishManifest> {
+        if !self.missing.is_empty() {
+            return Err(anyhow!(
+                "registry publish requires all dependencies to resolve; missing: {}",
+                self.missing.join(", ")
+            ));
+        }
+        self.validate_macro_distribution_for_manifest(&self.manifest_path)?;
+        let dependency_versions = self
+            .modules
+            .iter()
+            .filter(|module| module.manifest_path != self.manifest_path)
+            .filter_map(|module| {
+                Manifest::read(&module.manifest_path).ok().map(|manifest| {
+                    (
+                        module.name.clone(),
+                        manifest.package.and_then(|package| package.version),
+                    )
+                })
+            })
+            .collect();
+        self.manifest.registry_publish_manifest(&dependency_versions)
+    }
+
+    pub fn validate_macro_distribution_for_manifest(&self, manifest_path: &Path) -> Result<()> {
+        let manifest = Manifest::read(manifest_path)?;
+        let manifest_dir = manifest_path
+            .parent()
+            .ok_or_else(|| anyhow!("manifest has no parent: {}", manifest_path.display()))?;
+        let mut dependency_macro_providers = BTreeMap::new();
+        for module in &self.modules {
+            if module.manifest_path == manifest_path {
+                continue;
+            }
+            let dependency_manifest = Manifest::read(&module.manifest_path)?;
+            dependency_macro_providers.insert(module.name.clone(), dependency_manifest.macros.has_providers());
+        }
+        manifest.validate_macro_distribution(manifest_dir, &dependency_macro_providers)
+    }
+
     fn collect_workspace_modules(&mut self) -> Result<()> {
         let mut seen = BTreeSet::new();
         if let Some(package) = self.manifest.package.as_ref()
             && let Some(root) = package_entry(&self.root, &package.name)
         {
             seen.insert(package.name.clone());
-            self.modules.push(PackageModule {
-                name: package.name.clone(),
-                root,
-            });
+            self.modules.push(package_module(&self.root, &package.name, root));
         }
 
         let Some(workspace) = self.manifest.workspace.as_ref() else {
@@ -265,10 +534,7 @@ impl PackageGraph {
             if seen.insert(package.name.clone())
                 && let Some(root) = package_entry(&member, &package.name)
             {
-                self.modules.push(PackageModule {
-                    name: package.name,
-                    root,
-                });
+                self.modules.push(package_module(&member, &package.name, root));
             }
         }
         Ok(())
@@ -295,7 +561,7 @@ impl PackageGraph {
                 continue;
             };
             if let Some(root) = package_entry(&dep_dir, &name) {
-                self.modules.push(PackageModule { name, root });
+                self.modules.push(package_module(&dep_dir, &name, root));
             } else {
                 self.missing.push(name);
             }
@@ -360,6 +626,15 @@ pub fn package_entry(root: &Path, name: &str) -> Option<PathBuf> {
     None
 }
 
+fn package_module(package_root: &Path, name: &str, root: PathBuf) -> PackageModule {
+    PackageModule {
+        name: name.to_string(),
+        package_root: package_root.to_path_buf(),
+        manifest_path: package_root.join(MANIFEST_FILE),
+        root,
+    }
+}
+
 pub fn github_url(repo: &str) -> String {
     if repo.starts_with("http://") || repo.starts_with("https://") || repo.starts_with("git@") {
         repo.to_string()
@@ -392,6 +667,106 @@ fn resolve_proc_macro_command(manifest_dir: &Path, command: &str) -> PathBuf {
 
 fn is_path_like_command(command: &str) -> bool {
     command.starts_with('.') || command.contains('/') || command.contains('\\')
+}
+
+fn validate_proc_macro_specs(
+    manifest_dir: &Path,
+    kind: &str,
+    specs: &BTreeMap<String, ProcMacroSpec>,
+    issues: &mut Vec<String>,
+) {
+    for (name, spec) in specs {
+        if !is_valid_macro_provider_name(name) {
+            issues.push(format!(
+                "[macros.{kind}.{name}] must use an identifier macro name without path separators"
+            ));
+        }
+        if spec.command.trim().is_empty() {
+            issues.push(format!("[macros.{kind}.{name}] command must not be empty"));
+        } else if is_path_like_command(&spec.command) {
+            let command_path = resolve_proc_macro_command(manifest_dir, &spec.command);
+            if !command_path.exists() {
+                issues.push(format!(
+                    "[macros.{kind}.{name}] command path does not exist: {}",
+                    command_path.display()
+                ));
+            }
+        }
+        if spec.timeout_ms == Some(0) {
+            issues.push(format!("[macros.{kind}.{name}] timeout_ms must be greater than 0"));
+        }
+        if spec.max_output_bytes == Some(0) {
+            issues.push(format!(
+                "[macros.{kind}.{name}] max_output_bytes must be greater than 0"
+            ));
+        }
+    }
+}
+
+fn is_valid_macro_provider_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first == '_' || first.is_ascii_alphabetic())
+        && chars.all(|ch| ch == '_' || ch == '-' || ch.is_ascii_alphanumeric())
+}
+
+fn is_publish_version(version: &str) -> bool {
+    let parts = version.split('.').collect::<Vec<_>>();
+    parts.len() == 3
+        && parts.iter().all(|part| {
+            !part.is_empty()
+                && part
+                    .split_once('-')
+                    .map_or(*part, |(base, _)| base)
+                    .chars()
+                    .all(|ch| ch.is_ascii_digit())
+        })
+}
+
+fn is_registry_url(url: &str) -> bool {
+    url.starts_with("https://") || url.starts_with("http://")
+}
+
+fn registry_include(registry: &RegistrySection) -> Vec<String> {
+    if registry.include.is_empty() {
+        vec!["Lk.toml".to_string(), "src/**".to_string()]
+    } else {
+        registry.include.clone()
+    }
+}
+
+fn dependency_publish_source(spec: &DependencySpec) -> String {
+    match spec {
+        DependencySpec::GitHub(repo) => format!("github:{repo}"),
+        DependencySpec::Detailed(dep) if dep.workspace => "workspace".to_string(),
+        DependencySpec::Detailed(dep) if dep.path.is_some() => {
+            format!("path:{}", dep.path.as_deref().unwrap_or_default())
+        }
+        DependencySpec::Detailed(dep) if dep.github.is_some() => {
+            format!("github:{}", dep.github.as_deref().unwrap_or_default())
+        }
+        DependencySpec::Detailed(dep) if dep.git.is_some() => format!("git:{}", dep.git.as_deref().unwrap_or_default()),
+        DependencySpec::Detailed(dep) if dep.version.is_some() => dep
+            .registry
+            .as_deref()
+            .map(|registry| format!("registry:{registry}"))
+            .unwrap_or_else(|| "registry:default".to_string()),
+        DependencySpec::Detailed(_) => "unknown".to_string(),
+    }
+}
+
+fn dependency_version(spec: &DependencySpec) -> Option<String> {
+    match spec {
+        DependencySpec::GitHub(_) => None,
+        DependencySpec::Detailed(dep) => dep
+            .version
+            .clone()
+            .or_else(|| dep.rev.clone())
+            .or_else(|| dep.tag.clone())
+            .or_else(|| dep.branch.clone()),
+    }
 }
 
 pub fn lk_home() -> PathBuf {
@@ -481,6 +856,7 @@ mod tests {
             command = "tools/sql-macro"
         "#;
         let manifest: Manifest = toml::from_str(raw)?;
+        assert!(manifest.trusted_proc_macro_dependencies().is_empty());
         let providers = manifest.proc_macro_providers(Path::new("/tmp/app"));
 
         let derive = providers
@@ -500,6 +876,223 @@ mod tests {
             .function_like_provider("sql")
             .expect("function-like provider should be registered");
         assert_eq!(function_like.program, PathBuf::from("/tmp/app/tools/sql-macro"));
+        Ok(())
+    }
+
+    #[test]
+    fn graph_loads_only_trusted_dependency_proc_macro_providers() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path();
+        fs::create_dir_all(root.join("src"))?;
+        fs::create_dir_all(root.join("deps/helper/src"))?;
+        fs::write(root.join("src/mod.lk"), "return helper::value();\n")?;
+        fs::write(root.join("deps/helper/src/mod.lk"), "fn value() { return 1; }\n")?;
+        fs::write(
+            root.join("deps/helper").join(MANIFEST_FILE),
+            r#"
+                [package]
+                name = "helper"
+
+                [macros.function_like.sql]
+                command = "./tools/sql"
+            "#,
+        )?;
+        fs::write(
+            root.join(MANIFEST_FILE),
+            r#"
+                [package]
+                name = "app"
+
+                [dependencies]
+                helper = { path = "deps/helper" }
+            "#,
+        )?;
+
+        let graph = PackageGraph::discover(root)?.unwrap();
+        let providers = graph.proc_macro_providers_for_manifest(&root.join(MANIFEST_FILE))?;
+        assert!(providers.function_like_provider("helper::sql").is_none());
+
+        fs::write(
+            root.join(MANIFEST_FILE),
+            r#"
+                [package]
+                name = "app"
+
+                [dependencies]
+                helper = { path = "deps/helper" }
+
+                [macros]
+                trusted_dependencies = ["helper"]
+            "#,
+        )?;
+
+        let graph = PackageGraph::discover(root)?.unwrap();
+        let providers = graph.proc_macro_providers_for_manifest(&root.join(MANIFEST_FILE))?;
+        let provider = providers
+            .function_like_provider("helper::sql")
+            .expect("trusted dependency function-like provider should be namespaced");
+        assert_eq!(provider.program, root.join("deps/helper/tools/sql"));
+        assert!(providers.function_like_provider("sql").is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn macro_distribution_check_accepts_trusted_provider_package() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path();
+        fs::create_dir_all(root.join("deps/helper/src"))?;
+        fs::create_dir_all(root.join("deps/helper/tools"))?;
+        fs::write(root.join("deps/helper/src/mod.lk"), "fn value() { return 1; }\n")?;
+        fs::write(root.join("deps/helper/tools/sql"), "#!/bin/sh\n")?;
+        fs::write(
+            root.join("deps/helper").join(MANIFEST_FILE),
+            r#"
+                [package]
+                name = "helper"
+
+                [macros.function_like.sql]
+                command = "./tools/sql"
+                timeout_ms = 100
+                max_output_bytes = 1024
+            "#,
+        )?;
+        fs::write(
+            root.join(MANIFEST_FILE),
+            r#"
+                [package]
+                name = "app"
+
+                [dependencies]
+                helper = { path = "deps/helper" }
+
+                [macros]
+                trusted_dependencies = ["helper"]
+            "#,
+        )?;
+
+        let graph = PackageGraph::discover(root)?.unwrap();
+        graph.validate_macro_distribution()?;
+        Ok(())
+    }
+
+    #[test]
+    fn macro_distribution_check_reports_bad_provider_metadata() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path();
+        fs::create_dir_all(root.join("deps/helper/src"))?;
+        fs::write(root.join("deps/helper/src/mod.lk"), "fn value() { return 1; }\n")?;
+        fs::write(
+            root.join("deps/helper").join(MANIFEST_FILE),
+            r#"
+                [package]
+                name = "helper"
+            "#,
+        )?;
+        fs::write(
+            root.join(MANIFEST_FILE),
+            r#"
+                [package]
+                name = "app"
+
+                [dependencies]
+                helper = { path = "deps/helper" }
+
+                [macros]
+                trusted_dependencies = ["helper", "missing"]
+
+                [macros.function_like."bad::name"]
+                command = "./tools/missing"
+                timeout_ms = 0
+                max_output_bytes = 0
+            "#,
+        )?;
+
+        let graph = PackageGraph::discover(root)?.unwrap();
+        let err = graph
+            .validate_macro_distribution()
+            .expect_err("bad macro distribution metadata should fail");
+        let message = format!("{err:#}");
+        assert!(message.contains("bad::name"), "{message}");
+        assert!(message.contains("command path does not exist"), "{message}");
+        assert!(message.contains("timeout_ms must be greater than 0"), "{message}");
+        assert!(message.contains("max_output_bytes must be greater than 0"), "{message}");
+        assert!(
+            message.contains("trusted macro dependency `helper` does not declare"),
+            "{message}"
+        );
+        assert!(message.contains("trusted macro dependency `missing`"), "{message}");
+        Ok(())
+    }
+
+    #[test]
+    fn registry_publish_manifest_records_versioned_macro_metadata() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path();
+        fs::create_dir_all(root.join("src"))?;
+        fs::create_dir_all(root.join("tools"))?;
+        fs::write(root.join("src/mod.lk"), "return 1;\n")?;
+        fs::write(root.join("tools/sql"), "#!/bin/sh\n")?;
+        fs::write(
+            root.join(MANIFEST_FILE),
+            r#"
+                [package]
+                name = "macro_app"
+                version = "0.2.3"
+
+                [registry]
+                name = "local"
+                url = "https://registry.lk.example"
+                include = ["Lk.toml", "src/**", "tools/sql"]
+
+                [macros.function_like.sql]
+                command = "./tools/sql"
+            "#,
+        )?;
+
+        let graph = PackageGraph::discover(root)?.unwrap();
+        let publish = graph.registry_publish_manifest()?;
+
+        assert_eq!(publish.package, "macro_app");
+        assert_eq!(publish.version, "0.2.3");
+        assert_eq!(publish.registry, "local");
+        assert_eq!(publish.registry_url, "https://registry.lk.example");
+        assert_eq!(publish.include, vec!["Lk.toml", "src/**", "tools/sql"]);
+        assert_eq!(publish.macro_providers.function_like, vec!["sql"]);
+        assert_eq!(publish.integrity.algorithm, "sha256");
+        assert_eq!(publish.integrity.digest.len(), 64);
+        assert!(publish.verify_integrity());
+
+        let mut tampered = publish.clone();
+        tampered.include.push("extra/**".to_string());
+        assert!(!tampered.verify_integrity());
+        Ok(())
+    }
+
+    #[test]
+    fn registry_publish_manifest_requires_registry_and_semver() -> Result<()> {
+        let manifest: Manifest = toml::from_str(
+            r#"
+                [package]
+                name = "macro_app"
+                version = "dev"
+            "#,
+        )?;
+        let err = manifest
+            .registry_publish_manifest(&BTreeMap::new())
+            .expect_err("non-semver packages are not publishable");
+        assert!(err.to_string().contains("semantic version"), "{err}");
+
+        let manifest: Manifest = toml::from_str(
+            r#"
+                [package]
+                name = "macro_app"
+                version = "0.1.0"
+            "#,
+        )?;
+        let err = manifest
+            .registry_publish_manifest(&BTreeMap::new())
+            .expect_err("registry metadata is required");
+        assert!(err.to_string().contains("[registry]"), "{err}");
         Ok(())
     }
 

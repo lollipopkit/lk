@@ -117,6 +117,25 @@ mod tests {
         } else {
             panic!("Expected (Int, String) -> Bool");
         }
+
+        if let Some(Type::Function {
+            params,
+            named_params,
+            return_type,
+        }) = Type::parse("(Int, {current: User = _, limit: Int}) -> User?")
+        {
+            assert_eq!(params, vec![Type::Int]);
+            assert_eq!(named_params.len(), 2);
+            assert_eq!(named_params[0].name, "current");
+            assert_eq!(named_params[0].ty, Type::Named("User".to_string()));
+            assert!(named_params[0].has_default);
+            assert_eq!(named_params[1].name, "limit");
+            assert_eq!(named_params[1].ty, Type::Int);
+            assert!(!named_params[1].has_default);
+            assert_eq!(*return_type, Type::Optional(Box::new(Type::Named("User".to_string()))));
+        } else {
+            panic!("Expected function type with named params");
+        }
     }
 
     #[test]

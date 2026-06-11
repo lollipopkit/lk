@@ -7,19 +7,34 @@ use crate::token::{ParseError, Span, Token};
 
 mod expansion;
 mod follow;
+mod hygiene;
 mod imports;
 mod origin;
 mod proc_deps;
 mod proc_function;
 mod proc_output;
 mod procedural;
+mod runtime_anchor;
+mod validation;
+
+#[cfg(test)]
+mod hygiene_tests;
+
+#[cfg(test)]
+mod validation_tests;
 
 pub use origin::{MacroOriginFrame, MacroOriginKind, MacroTokenOrigin};
-pub use proc_deps::ProcMacroDependencyRecorder;
+pub use proc_deps::{
+    ProcMacroDependencyFileState, ProcMacroDependencyFingerprint, ProcMacroDependencyFingerprintEntry,
+    ProcMacroDependencyGraph, ProcMacroDependencyRecorder, fingerprint_proc_macro_dependencies,
+    normalize_proc_macro_dependency_path, resolve_proc_macro_dependency_path,
+};
 pub use procedural::{
+    AstGeneratedItemOrigin, AstGeneratedMemberOrigin, AstMacroExpansionResult, AstMacroOrigin, AstMacroOriginKind,
     PROC_MACRO_PROTOCOL_VERSION, ProcMacroDependency, ProcMacroDiagnostic, ProcMacroDiagnosticLevel, ProcMacroKind,
     ProcMacroOptions, ProcMacroProcessConfig, ProcMacroProcessError, ProcMacroProviders, ProcMacroRequest,
-    ProcMacroResponse, ProcMacroSpan, ProcMacroToken, expand_ast_macros, run_proc_macro_process,
+    ProcMacroResponse, ProcMacroSpan, ProcMacroToken, expand_ast_macros, expand_ast_macros_with_metadata,
+    run_proc_macro_process,
 };
 
 const DEFAULT_RECURSION_LIMIT: usize = 128;
@@ -164,19 +179,18 @@ enum FragmentKind {
 }
 
 #[derive(Debug, Clone)]
-struct Capture {
-    alternatives: Vec<Vec<SourceToken>>,
+enum Capture {
+    Tokens(Vec<SourceToken>),
+    Repeated(Vec<Capture>),
 }
 
 impl Capture {
     fn single(tokens: Vec<SourceToken>) -> Self {
-        Self {
-            alternatives: vec![tokens],
-        }
+        Self::Tokens(tokens)
     }
 
-    fn repeated(alternatives: Vec<Vec<SourceToken>>) -> Self {
-        Self { alternatives }
+    fn repeated(captures: Vec<Capture>) -> Self {
+        Self::Repeated(captures)
     }
 }
 
@@ -190,6 +204,7 @@ struct ExpandedToken {
 #[derive(Default)]
 struct MacroRegistry {
     macros: HashMap<String, MacroDef>,
+    pub(in crate::macro_system) runtime_anchors: HashMap<String, imports::MacroRuntimeAnchorSource>,
 }
 
 impl MacroRegistry {
@@ -228,6 +243,10 @@ impl MacroRegistry {
         definition.name = name.clone();
         self.macros.insert(name, definition);
     }
+
+    fn insert_runtime_anchor(&mut self, anchor: String, source: imports::MacroRuntimeAnchorSource) {
+        self.runtime_anchors.entry(anchor).or_insert(source);
+    }
 }
 
 pub fn expand_macros(
@@ -252,6 +271,7 @@ pub fn expand_macros(
     let mut trace = Vec::new();
     let mut stack = Vec::new();
     let expanded = expand_stream(&without_defs, &registry, &options, 0, &mut trace, &mut stack)?;
+    let expanded = runtime_anchor::rewrite_anchor_runtime_refs(expanded, &registry);
     let (tokens, spans, origins) = split_source_tokens(expanded);
     Ok(MacroExpandResult {
         tokens,
@@ -542,6 +562,7 @@ pub(in crate::macro_system) fn parse_macro_def(
         let (template_start, template_end) = find_group(tokens, template_group)?;
         let matcher = parse_pattern_elems(&tokens[matcher_start + 1..matcher_end])?;
         let template = parse_template_elems(&tokens[template_start + 1..template_end])?;
+        validation::validate_rule_repetition_shapes(&matcher, &template, tokens)?;
         rules.push(MacroRule { matcher, template });
         index = template_end + 1;
         if index < body_end && matches!(tokens[index].token, Token::Semicolon | Token::Comma) {

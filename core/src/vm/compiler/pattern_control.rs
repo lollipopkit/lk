@@ -165,7 +165,11 @@ impl Compiler {
                 previous.extend(nested_previous);
                 self.lower_guard_condition(pattern_condition, guard)?
             }
-            Pattern::Or(patterns) => self.lower_or_pattern_condition(patterns, value)?,
+            Pattern::Or(patterns) => {
+                let (or_condition, or_previous) = self.lower_or_pattern_condition(patterns, value)?;
+                previous.extend(or_previous);
+                or_condition
+            }
         };
         Ok((condition, previous))
     }
@@ -276,12 +280,35 @@ impl Compiler {
         Ok(result)
     }
 
-    fn lower_or_pattern_condition(&mut self, patterns: &[Pattern], value: u16) -> Result<u16> {
+    fn lower_or_pattern_condition(
+        &mut self,
+        patterns: &[Pattern],
+        value: u16,
+    ) -> Result<(u16, Vec<(String, Option<u16>)>)> {
+        if let Some(name) = or_pattern_common_direct_binding_name(patterns) {
+            let previous = vec![(name.to_string(), self.insert_local(name.to_string(), value))];
+            let condition = self.lower_or_pattern_condition_without_bindings(patterns, value)?;
+            return Ok((condition, previous));
+        }
+        Ok((
+            self.lower_or_pattern_condition_without_bindings(patterns, value)?,
+            Vec::new(),
+        ))
+    }
+
+    fn lower_or_pattern_condition_without_bindings(&mut self, patterns: &[Pattern], value: u16) -> Result<u16> {
         let result = self.lower_val(&LiteralVal::Bool(false))?;
         let true_value = self.lower_val(&LiteralVal::Bool(true))?;
         let mut end_jumps = Vec::with_capacity(patterns.len());
         for pattern in patterns {
-            let (condition, previous) = self.lower_pattern_match(pattern, value)?;
+            let (condition, previous) = if or_pattern_common_direct_binding_name(patterns).is_some() {
+                (
+                    self.lower_direct_binding_or_alternative_condition(pattern, value)?,
+                    Vec::new(),
+                )
+            } else {
+                self.lower_pattern_match(pattern, value)?
+            };
             if !previous.is_empty() {
                 self.restore_pattern_bindings(previous);
                 bail!("Compiler does not support binding variables inside or-pattern yet");
@@ -297,6 +324,39 @@ impl Compiler {
             self.patch_jmp(pc, end)?;
         }
         Ok(result)
+    }
+
+    fn lower_direct_binding_or_alternative_condition(&mut self, pattern: &Pattern, value: u16) -> Result<u16> {
+        match pattern {
+            Pattern::Variable(_) => self.lower_non_nil_pattern_condition(value),
+            Pattern::Guard { pattern, guard } if matches!(pattern.as_ref(), Pattern::Variable(_)) => {
+                let condition = self.lower_non_nil_pattern_condition(value)?;
+                self.lower_guard_condition(condition, guard)
+            }
+            _ => {
+                let (condition, previous) = self.lower_pattern_match(pattern, value)?;
+                self.restore_pattern_bindings(previous);
+                Ok(condition)
+            }
+        }
+    }
+
+    fn lower_non_nil_pattern_condition(&mut self, value: u16) -> Result<u16> {
+        let is_nil = self.alloc_reg();
+        self.emit(Instr::abc(
+            Opcode::IsNil,
+            checked_u8("or-pattern variable nil check", is_nil)?,
+            checked_u8("or-pattern variable value", value)?,
+            0,
+        ));
+        let condition = self.alloc_reg();
+        self.emit(Instr::abc(
+            Opcode::Not,
+            checked_u8("or-pattern variable condition", condition)?,
+            checked_u8("or-pattern variable nil", is_nil)?,
+            0,
+        ));
+        Ok(condition)
     }
 
     fn lower_and_condition(&mut self, lhs: u16, rhs: u16) -> Result<u16> {
@@ -394,5 +454,25 @@ impl Compiler {
                 self.locals.remove(&name);
             }
         }
+    }
+}
+
+fn or_pattern_common_direct_binding_name(patterns: &[Pattern]) -> Option<&str> {
+    let mut common = None;
+    for pattern in patterns {
+        let name = direct_binding_pattern_name(pattern)?;
+        if common.is_some_and(|common| common != name) {
+            return None;
+        }
+        common = Some(name);
+    }
+    common
+}
+
+fn direct_binding_pattern_name(pattern: &Pattern) -> Option<&str> {
+    match pattern {
+        Pattern::Variable(name) if name != "_" => Some(name),
+        Pattern::Guard { pattern, .. } => direct_binding_pattern_name(pattern),
+        _ => None,
     }
 }

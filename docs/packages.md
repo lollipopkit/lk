@@ -13,11 +13,52 @@ edition = "2026"
 [dependencies]
 util = "owner/repo"
 math_ext = { github = "owner/math-ext", tag = "v0.1.0" }
+helper_macros = { version = "0.1.0" }
+route_macros = { version = ">=0.2.0, <0.4.0" }
 local = { path = "deps/local" }
+
+[registry]
+name = "default"
+url = "https://registry.lk.example"
+include = ["Lk.toml", "src/**"]
 ```
 
 By default, string dependencies are GitHub repositories. `owner/repo` resolves to
 `https://github.com/owner/repo.git`.
+
+Registry dependencies use `version = "x.y.z"` for exact versions or a semver
+range such as `version = ">=0.2.0, <0.4.0"`, resolving through `[registry].url`
+by default. A dependency can override the registry endpoint with
+`registry = "https://registry.example"`.
+
+For exact versions, `lk pkg fetch` requests
+`GET [registry].url/api/v1/packages/<name>/<version>` and expects JSON with a
+Git `source` URL/path, concrete `rev`, and optional `checksum`. For ranges, it requests
+`GET [registry].url/api/v1/packages/<name>` and accepts either a JSON array of
+versions or `{ "versions": [...] }`, where each version entry contains
+`version`, `source`, `rev`, optional `checksum`, optional `yanked`, and optional
+`publish_manifest`. LK validates any supplied publish manifest against the
+package name, version, registry URL, and `integrity.sha256` digest before using
+that registry version. It selects the highest non-yanked semver version
+matching the range, fetches that Git source into the normal `$LK_HOME/git`
+cache, checks out the resolved revision, verifies `sha256:<hex>` checksums when
+provided, and records the locked revision plus checksum in `Lk.lock`.
+
+`lk pkg index sync` downloads `[registry].url/api/v1/index` with
+`X-LK-Registry-Scope: index` and stores a normalized cache at
+`$LK_HOME/registry/<registry-name-or-url-key>/index.json` or
+`~/.lk/registry/<registry-name-or-url-key>/index.json`. The index snapshot
+contains package names, version entries with Git `source`, `rev`, optional
+`checksum`, optional `yanked`, optional `publish_manifest`, and macro provider
+metadata. Cached publish manifests are validated when the cache is read. This
+cache is the local foundation for offline registry resolution and future
+project-wide macro package indexing.
+
+`lk pkg fetch --offline` and `lk pkg update [name] --offline` resolve registry
+dependencies from that local index cache instead of sending registry HTTP
+requests. Offline resolution supports exact versions and semver ranges, skips
+yanked entries, then fetches/checks out the indexed Git `source` and `rev` with
+the same checksum verification used by online fetch.
 
 ## Procedural Macro Providers
 
@@ -27,6 +68,9 @@ response on stdout. Commands that look like paths are resolved relative to the
 manifest directory; plain command names resolve through `PATH`.
 
 ```toml
+[macros]
+trusted_dependencies = ["helper_macros"]
+
 [macros.derive.MakeAnswer]
 command = "./tools/derive-make-answer"
 args = ["--json"]
@@ -47,11 +91,60 @@ annotated item. Function-like providers expand `name!(...)`, `name![...]`, and
 responses can report deterministic dependency metadata; `lk macro expand --deps`
 prints the collected dependencies as JSON.
 
+Dependency metadata participates in cache invalidation. LK fingerprints each
+reported `path`/`digest` pair plus the resolved file state when the dependency
+path is readable. Direct native execution writes a `.proc-macro-deps.json`
+sidecar beside cached native executables and rebuilds stale entries. The LSP
+workspace cache stores the same fingerprint and drops preloaded analysis when a
+macro dependency file changes or appears after being missing.
+
+Providers declared by dependencies are not executed automatically. A package must
+opt in with `[macros].trusted_dependencies`, naming each dependency whose
+provider commands may run. Trusted dependency function-like providers are
+available through the dependency namespace, for example
+`helper_macros::sql!("select 1")`. Trusted dependency derive and attribute
+providers use their declared names because current derive/attribute syntax is not
+path-shaped; providers declared by the current package win name collisions.
+
+Run `lk pkg check` before publishing or sharing a macro package. It validates the
+package graph, provider macro names, path-like provider command paths,
+`timeout_ms` / `max_output_bytes` bounds, and `[macros].trusted_dependencies`.
+Trusted dependencies must resolve to package/workspace members and declare at
+least one derive, attribute, or function-like provider.
+
+`lk pkg publish --dry-run` builds the registry publish manifest without a
+network upload. It requires `[package].version` to be a semantic version and a
+`[registry]` table with an `http://` or `https://` URL. The generated manifest
+captures the package name/version, registry target, include globs, resolved
+dependency version or revision metadata, macro provider names, and an
+`integrity` object whose `sha256` digest is computed over the canonical
+manifest payload without the `integrity` field. Registries can use that digest
+as the immutable publish identity and signing preimage. `lk pkg publish`
+recomputes the digest before upload and refuses a tampered manifest. It sends
+the verified manifest as authenticated JSON to
+`[registry].url/api/v1/packages` with `Authorization: Bearer <token>`, reading
+the token from `LK_REGISTRY_PUBLISH_TOKEN`, `LK_REGISTRY_TOKEN`, or
+`LK_PUBLISH_TOKEN`, in that order. Publish requests also send
+`X-LK-Registry-Scope: publish`.
+
+`lk pkg yank <name> <version>` marks a registry version as yanked through
+`POST [registry].url/api/v1/packages/<name>/<version>/yank`. `lk pkg yank
+<name> <version> --undo` reverses the yank through `DELETE` on the same
+endpoint. Both commands use the same registry token environment variables as
+publish, but prefer `LK_REGISTRY_YANK_TOKEN` before the shared fallback tokens,
+and send `X-LK-Registry-Scope: yank`. Range resolution skips versions whose
+registry entries have `yanked = true`.
+
+`lk pkg index sync` uses the current package's `[registry]` table and does not
+require an auth token by default; registries can still inspect the
+`X-LK-Registry-Scope: index` header for scoped access policy.
+
 Expanded token streams keep token-level macro origins for declarative macro
 captures, macro-definition output, `$crate` anchors, and function-like
-procedural macro output. `lk macro expand --origins` prints this source-map
-metadata as JSON; parse errors caused by macro-generated tokens use the same
-origin stack to explain which macro call produced the token.
+procedural macro output. Post-parse derive/attribute/cfg expansion also records
+item-level AST macro origins. `lk macro expand --origins` prints both source-map
+sets as JSON; parse errors caused by macro-generated tokens use the same origin
+stack to explain which macro call produced the token.
 
 ## Workspaces
 
@@ -102,6 +195,13 @@ return util.answer();
 
 - `lk pkg init [name]` creates a package.
 - `lk pkg add <name> <owner/repo> [--tag v1] [--branch main] [--rev SHA]` adds a dependency.
-- `lk pkg fetch` downloads dependencies into `$LK_HOME/git` or `~/.lk/git` and writes `Lk.lock`.
+- `lk pkg fetch` downloads Git dependencies and resolves exact or range-based registry `version` dependencies into `$LK_HOME/git` or `~/.lk/git`, then writes `Lk.lock`.
+- `lk pkg fetch --offline` resolves registry `version` dependencies from `$LK_HOME/registry/<registry-name-or-url-key>/index.json`.
 - `lk pkg update [name]` refreshes dependencies.
+- `lk pkg update [name] --offline` refreshes dependencies using the local registry index cache.
+- `lk pkg check` validates package graph and macro provider distribution metadata.
+- `lk pkg publish --dry-run` validates registry publishing metadata and prints the publish manifest JSON with a `sha256` integrity digest.
+- `lk pkg publish` verifies and uploads the publish manifest JSON, including its integrity digest, with `LK_REGISTRY_PUBLISH_TOKEN`, `LK_REGISTRY_TOKEN`, or `LK_PUBLISH_TOKEN`.
+- `lk pkg yank <name> <version> [--undo]` yanks or un-yanks a registry package version.
+- `lk pkg index sync` downloads and caches the registry package index.
 - `lk pkg tree` prints resolved package modules.

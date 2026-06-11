@@ -914,12 +914,15 @@ dependencies = [
  "nu-ansi-term",
  "predicates",
  "reedline",
+ "semver",
  "serde",
  "serde_json",
  "serde_yaml",
+ "sha2",
  "tempfile",
  "toml",
  "tracing-subscriber",
+ "ureq",
 ]
 
 [[package]]
@@ -949,6 +952,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "sha2",
  "tempfile",
  "tokio",
  "toml",

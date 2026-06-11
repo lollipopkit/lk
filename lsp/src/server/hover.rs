@@ -2,7 +2,10 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use lk_core::token::{Span, Token};
+use lk_core::{
+    macro_system::AstMacroOrigin,
+    token::{Span, Token},
+};
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde_json::json;
@@ -53,6 +56,7 @@ pub(crate) fn document_hover(
     tokens: &[Token],
     spans: &[Span],
     idx: usize,
+    ast_macro_origins: &[AstMacroOrigin],
     package_modules: &HashMap<String, PathBuf>,
 ) -> Hover {
     let index = scan_lk_docs(content);
@@ -63,6 +67,9 @@ pub(crate) fn document_hover(
         return hover;
     }
     if let Some(hover) = stdlib_hover(content, uri, tokens, idx, &index) {
+        return hover;
+    }
+    if let Some(hover) = ast_macro_origin_hover(spans.get(idx), ast_macro_origins) {
         return hover;
     }
 
@@ -123,6 +130,39 @@ fn render_decl_markdown(decl: &LkDecl, content: &str, uri: &Url, index: &LkDocIn
         out.push_str(&links.join(" | "));
     }
     out
+}
+
+fn ast_macro_origin_hover(span: Option<&Span>, origins: &[AstMacroOrigin]) -> Option<Hover> {
+    let span = span?;
+    let origin = origins
+        .iter()
+        .find(|origin| origin.input_span.as_ref().is_some_and(|input| span_inside(span, input)))?;
+    let mut out = format!(
+        "`{} {}`\n\nGenerated {} item(s).",
+        origin.kind.as_str(),
+        origin.macro_name,
+        origin.generated_items
+    );
+    if !origin.generated_item_labels.is_empty() {
+        out.push_str("\n\nGenerated items:");
+        for label in &origin.generated_item_labels {
+            out.push_str("\n- `");
+            out.push_str(label);
+            out.push('`');
+        }
+    }
+    Some(markdown_hover(out, origin.input_span.as_ref().map(lsp_range_from_span)))
+}
+
+fn span_inside(inner: &Span, outer: &Span) -> bool {
+    outer.start.offset <= inner.start.offset && inner.end.offset <= outer.end.offset
+}
+
+fn lsp_range_from_span(span: &Span) -> Range {
+    Range::new(
+        Position::new(span.start.line - 1, span.start.column.saturating_sub(1)),
+        Position::new(span.end.line - 1, span.end.column.saturating_sub(1)),
+    )
 }
 
 fn type_links_for_signature(signature: &str, content: &str, uri: &Url, index: &LkDocIndex) -> Vec<String> {
@@ -767,5 +807,41 @@ struct User { id: Int, name: String }
         ];
         assert_eq!(import_package_name_for_token(&tokens, 1).as_deref(), Some("mathlib"));
         assert_eq!(import_package_name_for_token(&tokens, 3).as_deref(), Some("mathlib"));
+    }
+
+    #[test]
+    fn ast_macro_origin_hover_lists_generated_items() {
+        use lk_core::syntax::{expand_program_source, ParseOptions};
+
+        let uri = Url::parse("file:///tmp/test.lk").expect("uri");
+        let content = r#"
+#[derive(Debug)]
+struct User { id: Int }
+"#;
+        let (tokens, spans) = lk_core::token::Tokenizer::tokenize_enhanced_with_spans(content).expect("tokenize");
+        let debug_idx = tokens
+            .iter()
+            .position(|token| matches!(token, Token::Id(name) if name == "Debug"))
+            .expect("Debug token");
+        let expanded =
+            expand_program_source(content, ParseOptions::default()).expect("derive macro expansion should succeed");
+
+        let hover = document_hover(
+            content,
+            &uri,
+            &tokens,
+            &spans,
+            debug_idx,
+            &expanded.ast_macro_origins,
+            &HashMap::new(),
+        );
+        let HoverContents::Markup(markup) = hover.contents else {
+            panic!("expected markdown hover");
+        };
+
+        assert!(markup.value.contains("`builtin_derive Debug`"));
+        assert!(markup.value.contains("Generated 2 item(s)."));
+        assert!(markup.value.contains("`trait __LKShow`"));
+        assert!(markup.value.contains("`impl __LKShow for User`"));
     }
 }

@@ -8,7 +8,10 @@ use lk_core::{
     resolve::slots::{FunctionLayout, SlotResolver},
     stmt,
     stmt::{stmt_parser::StmtParser, ImportStmt, Program, Stmt},
-    syntax::{parse_expr_source, parse_program_source, ParseOptions},
+    syntax::{
+        expand_program_source, macro_origin_note_for_span, parse_expr_source, parse_program_source, ParseOptions,
+        ProgramExpansion,
+    },
     token,
     token::{Span, Tokenizer},
     typ,
@@ -25,6 +28,7 @@ use tower_lsp::lsp_types::*;
 mod analysis_impl;
 mod completions;
 mod core_impl;
+mod generated_symbols;
 mod semantic_tokens;
 #[cfg(test)]
 mod tests;
@@ -54,8 +58,15 @@ pub(crate) struct TokenCacheEntry {
     pub(crate) spans: Arc<[Span]>,
     parse_options: ParseOptions,
     named_param_decls: OnceCell<Arc<HashMap<String, Vec<NamedParamDecl>>>>,
+    program_expansion: OnceCell<CachedProgramExpansion>,
     program_ast: OnceCell<Arc<Program>>,
     expr_ast: OnceCell<Arc<Expr>>,
+}
+
+#[derive(Debug, Clone)]
+struct CachedProgramExpansion {
+    expansion: Arc<ProgramExpansion>,
+    proc_macro_dependency_fingerprint: macro_system::ProcMacroDependencyFingerprint,
 }
 
 impl TokenCacheEntry {
@@ -65,21 +76,56 @@ impl TokenCacheEntry {
             spans: spans.into(),
             parse_options,
             named_param_decls: OnceCell::new(),
+            program_expansion: OnceCell::new(),
             program_ast: OnceCell::new(),
             expr_ast: OnceCell::new(),
         }
     }
 
     fn parse_program_arc(&self, content: &str) -> std::result::Result<Arc<Program>, lk_core::token::ParseError> {
+        if self.parse_options.expand_macros {
+            return self
+                .parse_program_expansion_arc(content)
+                .map(|expansion| Arc::new(expansion.program.clone()));
+        }
         self.program_ast
             .get_or_try_init(|| parse_program_source(content, self.parse_options.clone()).map(Arc::new))
             .cloned()
+    }
+
+    fn parse_program_expansion_arc(
+        &self,
+        content: &str,
+    ) -> std::result::Result<Arc<ProgramExpansion>, lk_core::token::ParseError> {
+        self.program_expansion
+            .get_or_try_init(|| {
+                let expansion = expand_program_source(content, self.parse_options.clone())?;
+                let proc_macro_dependency_fingerprint = macro_system::fingerprint_proc_macro_dependencies(
+                    &expansion.proc_macro_dependencies,
+                    self.parse_options.base_dir.as_deref(),
+                );
+                Ok(CachedProgramExpansion {
+                    expansion: Arc::new(expansion),
+                    proc_macro_dependency_fingerprint,
+                })
+            })
+            .map(|cached| cached.expansion.clone())
     }
 
     fn parse_expression_arc(&self, content: &str) -> std::result::Result<Arc<Expr>, token::ParseError> {
         self.expr_ast
             .get_or_try_init(|| parse_expr_source(content, self.parse_options.clone()).map(Arc::new))
             .cloned()
+    }
+
+    fn proc_macro_dependencies_current(&self) -> bool {
+        let Some(cached) = self.program_expansion.get() else {
+            return true;
+        };
+        cached.proc_macro_dependency_fingerprint.is_current(
+            &cached.expansion.proc_macro_dependencies,
+            self.parse_options.base_dir.as_deref(),
+        )
     }
 }
 
