@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-EXT="$ROOT/vsc-ext/lsp"
+EXT="$ROOT/ecosystem/vsc-ext/lsp"
 EXAMPLES="$ROOT/examples/lk-example-workspace"
 SERVER="$ROOT/target/debug/lk-lsp"
 USER_DATA_DIR="${LK_VSCODE_USER_DATA_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/lk-vscode-lsp.XXXXXX")}"

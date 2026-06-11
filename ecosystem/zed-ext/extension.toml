@@ -1,0 +1,18 @@
+id = "lk"
+name = "LK"
+description = "LK language support for Zed."
+version = "0.1.0"
+schema_version = 1
+authors = ["lollipopkit <a@lpkt.cn>"]
+repository = "https://github.com/lollipopkit/lk"
+snippets = "./snippets/lk.json"
+
+[language_servers.lk-lsp]
+name = "LK Language Server"
+languages = ["LK"]
+
+[grammars.lk]
+repository = "https://github.com/lollipopkit/lk"
+# Replace this with the commit that contains ecosystem/tree-sitter-lk before publishing.
+commit = "REPLACE_WITH_RELEASE_COMMIT"
+path = "ecosystem/tree-sitter-lk"

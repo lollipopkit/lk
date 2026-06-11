@@ -26,6 +26,8 @@ tree-sitter-lk = { path = "path/to/tree-sitter-lk" }
 tree-sitter = "0.24"
 ```
 
+In this repository, the grammar lives at `ecosystem/tree-sitter-lk`.
+
 ### Python
 
 ```bash
@@ -77,7 +79,7 @@ npx tree-sitter test
 ### Parse a file
 
 ```bash
-npx tree-sitter parse examples/fib.lk
+npx tree-sitter parse ../../examples/syntax/control_flow.lk
 ```
 
 ### Build WASM

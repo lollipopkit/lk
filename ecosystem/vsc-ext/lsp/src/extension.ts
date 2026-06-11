@@ -747,11 +747,13 @@ function getServerPath(): string | undefined {
   // Try to find the lk-lsp executable in different locations
   const exe = process.platform === 'win32' ? '.exe' : '';
   const possiblePaths = [
-    // When developing inside repo: extension is at vsc-ext/lsp/out
+    // When developing inside repo: extension is at ecosystem/vsc-ext/lsp/out
     // Look for cargo build outputs at repo root target/{debug,release}
+    path.join(__dirname, '..', '..', '..', '..', 'target', 'debug', `lk-lsp${exe}`),
+    path.join(__dirname, '..', '..', '..', '..', 'target', 'release', `lk-lsp${exe}`),
+    // Fallbacks that may exist depending on packaging layout
     path.join(__dirname, '..', '..', '..', 'target', 'debug', `lk-lsp${exe}`),
     path.join(__dirname, '..', '..', '..', 'target', 'release', `lk-lsp${exe}`),
-    // Fallbacks that may exist depending on packaging layout
     path.join(__dirname, '..', '..', 'target', 'debug', `lk-lsp${exe}`),
     path.join(__dirname, '..', '..', 'target', 'release', `lk-lsp${exe}`),
     // Common user install locations

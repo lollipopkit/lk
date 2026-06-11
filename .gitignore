@@ -7,8 +7,9 @@ flamegraph.svg
 *.o
 *.elf
 
-vsc-ext/*/node_modules/
-vsc-ext/*/*.vsix
+ecosystem/vsc-ext/*/node_modules/
+ecosystem/vsc-ext/*/*.vsix
+ecosystem/zed-ext/target/
 website/node_modules/
 website/dist/
 website/src/wasm/pkg/.gitignore

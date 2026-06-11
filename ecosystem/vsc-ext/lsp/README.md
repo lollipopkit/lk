@@ -90,8 +90,8 @@ The previous standalone `lk-highlight` extension has been merged into this packa
 ## Installation
 
 1. Clone this repository
-2. Install dependencies: `npm --prefix vsc-ext/lsp install`
-3. Compile the extension: `npm --prefix vsc-ext/lsp run compile`
+2. Install dependencies: `npm --prefix ecosystem/vsc-ext/lsp install`
+3. Compile the extension: `npm --prefix ecosystem/vsc-ext/lsp run compile`
 4. Build the LK LSP server: `cargo build -p lk-lsp`
 5. Run `make install` to install the LK CLI, `lk-lsp`, and the packaged VSIX into VS Code. Run `make debug-lsp-ext` to open an Extension Development Host, or run `make vsix` to only build the single VSIX package. In an interactive shell, `make vsix` asks whether to install the generated VSIX with VS Code's CLI; use `make vsix INSTALL_VSIX=1` to install without prompting, or `make vsix INSTALL_VSIX=1 VSCODE_CLI=/path/to/code` when the CLI is not on `PATH`. If VS Code refuses to reinstall an active extension, restart VS Code and rerun the printed install command.
 
@@ -100,7 +100,7 @@ The previous standalone `lk-highlight` extension has been merged into this packa
 - `npm run compile`: Compile the TypeScript source
 - `npm run watch`: Compile in watch mode
 - `make install`: Install the LK CLI, `lk-lsp`, and the VS Code extension package
-- `make vsix`: Build the merged VS Code extension package from `vsc-ext/lsp` and prompt to install the generated VSIX
+- `make vsix`: Build the merged VS Code extension package from `ecosystem/vsc-ext/lsp` and prompt to install the generated VSIX
 - `make debug-lsp-ext`: Launch VS Code with the merged extension and a repo-local `lk-lsp`
 
 ## LK Language Features

@@ -22,7 +22,7 @@
       }
     ],
     "links": {
-      "repository": "https://github.com/lollipopkit/lk/tree-sitter-lk"
+      "repository": "https://github.com/lollipopkit/lk/tree/main/ecosystem/tree-sitter-lk"
     }
   },
   "bindings": {
