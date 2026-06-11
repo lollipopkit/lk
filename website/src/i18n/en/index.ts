@@ -11,6 +11,8 @@ const en: BaseTranslation = {
     try: 'Try',
     spec: 'Spec',
     github: 'Github',
+    learn: 'Learn',
+    stdlib: 'Stdlib',
     languageLabel: 'Language',
   },
   hero: {
@@ -78,6 +80,20 @@ const en: BaseTranslation = {
     kicker: 'CLI',
     title: 'Use it from the terminal or embed the core runtime.',
   },
+  learn: {
+    eyebrow: 'Tutorial',
+    title: 'Learn LK step by step.',
+    subtitle:
+      'A progressive tutorial that takes you from your first LK program through pattern matching, structs, traits, modules, and macros.',
+    toc: 'On this page',
+  },
+  stdlib: {
+    eyebrow: 'Standard Library',
+    title: 'LK Standard Library Reference.',
+    subtitle:
+      'Module-by-module reference with function tables and runnable examples for every stdlib module.',
+    toc: 'On this page',
+  },
   spec: {
     eyebrow: 'Language Reference',
     title: 'LK language specification, rendered from LANG.md.',
@@ -88,6 +104,8 @@ const en: BaseTranslation = {
   footer: {
     brand: 'LK Lang',
     home: 'Home',
+    learn: 'Learn',
+    stdlib: 'Stdlib',
     spec: 'Spec',
   },
 }

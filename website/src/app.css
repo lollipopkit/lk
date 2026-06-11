@@ -307,6 +307,51 @@ code {
 .stdlib-section,
 .examples-section,
 .start-section,
+
+.spec-table-wrapper {
+  overflow-x: auto;
+  margin: 1rem 0 0;
+}
+
+.spec-table-wrapper table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.spec-table-wrapper th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--ink);
+  padding: 0.5rem 0.75rem;
+  border-bottom: 2px solid var(--line);
+  background: var(--surface-2);
+  white-space: nowrap;
+}
+
+.spec-table-wrapper td {
+  padding: 0.4rem 0.75rem;
+  border-bottom: 1px solid var(--line-soft);
+  color: var(--ink-soft);
+  vertical-align: top;
+}
+
+.spec-table-wrapper td:first-child {
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  color: var(--accent-ink);
+  white-space: nowrap;
+}
+
+.inline-code {
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  background: var(--surface-3);
+  padding: 0.1em 0.35em;
+  border-radius: 3px;
+  color: var(--accent-ink);
+}
+
 .site-footer {
   width: min(1180px, calc(100vw - 32px));
   margin: 0 auto;
@@ -965,6 +1010,51 @@ h2 {
   font-size: 0.84rem;
   line-height: 1.58;
   white-space: pre;
+}
+
+
+.spec-table-wrapper {
+  overflow-x: auto;
+  margin: 1rem 0 0;
+}
+
+.spec-table-wrapper table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.spec-table-wrapper th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--ink);
+  padding: 0.5rem 0.75rem;
+  border-bottom: 2px solid var(--line);
+  background: var(--surface-2);
+  white-space: nowrap;
+}
+
+.spec-table-wrapper td {
+  padding: 0.4rem 0.75rem;
+  border-bottom: 1px solid var(--line-soft);
+  color: var(--ink-soft);
+  vertical-align: top;
+}
+
+.spec-table-wrapper td:first-child {
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  color: var(--accent-ink);
+  white-space: nowrap;
+}
+
+.inline-code {
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  background: var(--surface-3);
+  padding: 0.1em 0.35em;
+  border-radius: 3px;
+  color: var(--accent-ink);
 }
 
 .site-footer {

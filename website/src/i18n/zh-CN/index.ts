@@ -10,6 +10,8 @@ const zhCN: Translation = {
     try: '试用',
     spec: '规范',
     github: 'Github',
+    learn: '教程',
+    stdlib: '标准库',
     languageLabel: '语言',
   },
   hero: {
@@ -76,6 +78,20 @@ const zhCN: Translation = {
     kicker: 'CLI',
     title: '从终端使用，或嵌入核心运行时。',
   },
+  learn: {
+    eyebrow: '教程',
+    title: '一步步学会 LK。',
+    subtitle:
+      '渐进式教程，从第一个程序到模式匹配、结构体、Trait、模块和宏系统。',
+    toc: '本页目录',
+  },
+  stdlib: {
+    eyebrow: '标准库',
+    title: 'LK 标准库参考。',
+    subtitle:
+      '按模块分节的参考文档，每个模块都有函数表格和可运行的代码示例。',
+    toc: '本页目录',
+  },
   spec: {
     eyebrow: '语言参考',
     title: '由 LANG.md 渲染的 LK 语言规范。',
@@ -86,6 +102,8 @@ const zhCN: Translation = {
   footer: {
     brand: 'LK Lang',
     home: '首页',
+    learn: '教程',
+    stdlib: '标准库',
     spec: '规范',
   },
 }

@@ -42,6 +42,14 @@ type RootTranslation = {
 		 */
 		github: string
 		/**
+		 * L​e​a​r​n
+		 */
+		learn: string
+		/**
+		 * S​t​d​l​i​b
+		 */
+		stdlib: string
+		/**
 		 * L​a​n​g​u​a​g​e
 		 */
 		languageLabel: string
@@ -52,7 +60,7 @@ type RootTranslation = {
 		 */
 		eyebrow: string
 		/**
-		 * L​i​g​h​t​w​e​i​g​h​t​,​ ​m​o​d​e​r​n​ ​s​c​r​i​p​t​i​n​g​ ​l​a​n​g​u​a​g​e​.
+		 * L​i​g​h​t​w​e​i​g​h​t​,​ ​m​o​d​e​r​n​ ​a​n​d​ ​e​f​f​i​c​i​e​n​t
 		 */
 		title: string
 		/**
@@ -162,13 +170,21 @@ type RootTranslation = {
 	}
 	stdlib: {
 		/**
-		 * S​t​d​l​i​b
+		 * S​t​a​n​d​a​r​d​ ​L​i​b​r​a​r​y
 		 */
-		kicker: string
+		eyebrow: string
 		/**
-		 * U​s​e​f​u​l​ ​m​o​d​u​l​e​s​ ​a​r​e​ ​p​a​r​t​ ​o​f​ ​t​h​e​ ​l​a​n​g​u​a​g​e​ ​s​t​o​r​y​.
+		 * L​K​ ​S​t​a​n​d​a​r​d​ ​L​i​b​r​a​r​y​ ​R​e​f​e​r​e​n​c​e​.
 		 */
 		title: string
+		/**
+		 * M​o​d​u​l​e​-​b​y​-​m​o​d​u​l​e​ ​r​e​f​e​r​e​n​c​e​ ​w​i​t​h​ ​f​u​n​c​t​i​o​n​ ​t​a​b​l​e​s​ ​a​n​d​ ​r​u​n​n​a​b​l​e​ ​e​x​a​m​p​l​e​s​ ​f​o​r​ ​e​v​e​r​y​ ​s​t​d​l​i​b​ ​m​o​d​u​l​e​.
+		 */
+		subtitle: string
+		/**
+		 * O​n​ ​t​h​i​s​ ​p​a​g​e
+		 */
+		toc: string
 	}
 	examples: {
 		/**
@@ -202,6 +218,24 @@ type RootTranslation = {
 		 */
 		title: string
 	}
+	learn: {
+		/**
+		 * T​u​t​o​r​i​a​l
+		 */
+		eyebrow: string
+		/**
+		 * L​e​a​r​n​ ​L​K​ ​s​t​e​p​ ​b​y​ ​s​t​e​p​.
+		 */
+		title: string
+		/**
+		 * A​ ​p​r​o​g​r​e​s​s​i​v​e​ ​t​u​t​o​r​i​a​l​ ​t​h​a​t​ ​t​a​k​e​s​ ​y​o​u​ ​f​r​o​m​ ​y​o​u​r​ ​f​i​r​s​t​ ​L​K​ ​p​r​o​g​r​a​m​ ​t​h​r​o​u​g​h​ ​p​a​t​t​e​r​n​ ​m​a​t​c​h​i​n​g​,​ ​s​t​r​u​c​t​s​,​ ​t​r​a​i​t​s​,​ ​m​o​d​u​l​e​s​,​ ​a​n​d​ ​m​a​c​r​o​s​.
+		 */
+		subtitle: string
+		/**
+		 * O​n​ ​t​h​i​s​ ​p​a​g​e
+		 */
+		toc: string
+	}
 	spec: {
 		/**
 		 * L​a​n​g​u​a​g​e​ ​R​e​f​e​r​e​n​c​e
@@ -229,6 +263,14 @@ type RootTranslation = {
 		 * H​o​m​e
 		 */
 		home: string
+		/**
+		 * L​e​a​r​n
+		 */
+		learn: string
+		/**
+		 * S​t​d​l​i​b
+		 */
+		stdlib: string
 		/**
 		 * S​p​e​c
 		 */
@@ -265,6 +307,14 @@ export type TranslationFunctions = {
 		 */
 		github: () => LocalizedString
 		/**
+		 * Learn
+		 */
+		learn: () => LocalizedString
+		/**
+		 * Stdlib
+		 */
+		stdlib: () => LocalizedString
+		/**
 		 * Language
 		 */
 		languageLabel: () => LocalizedString
@@ -275,7 +325,7 @@ export type TranslationFunctions = {
 		 */
 		eyebrow: () => LocalizedString
 		/**
-		 * Lightweight, modern scripting language.
+		 * Lightweight, modern and efficient
 		 */
 		title: () => LocalizedString
 		/**
@@ -385,13 +435,21 @@ export type TranslationFunctions = {
 	}
 	stdlib: {
 		/**
-		 * Stdlib
+		 * Standard Library
 		 */
-		kicker: () => LocalizedString
+		eyebrow: () => LocalizedString
 		/**
-		 * Useful modules are part of the language story.
+		 * LK Standard Library Reference.
 		 */
 		title: () => LocalizedString
+		/**
+		 * Module-by-module reference with function tables and runnable examples for every stdlib module.
+		 */
+		subtitle: () => LocalizedString
+		/**
+		 * On this page
+		 */
+		toc: () => LocalizedString
 	}
 	examples: {
 		/**
@@ -425,6 +483,24 @@ export type TranslationFunctions = {
 		 */
 		title: () => LocalizedString
 	}
+	learn: {
+		/**
+		 * Tutorial
+		 */
+		eyebrow: () => LocalizedString
+		/**
+		 * Learn LK step by step.
+		 */
+		title: () => LocalizedString
+		/**
+		 * A progressive tutorial that takes you from your first LK program through pattern matching, structs, traits, modules, and macros.
+		 */
+		subtitle: () => LocalizedString
+		/**
+		 * On this page
+		 */
+		toc: () => LocalizedString
+	}
 	spec: {
 		/**
 		 * Language Reference
@@ -452,6 +528,14 @@ export type TranslationFunctions = {
 		 * Home
 		 */
 		home: () => LocalizedString
+		/**
+		 * Learn
+		 */
+		learn: () => LocalizedString
+		/**
+		 * Stdlib
+		 */
+		stdlib: () => LocalizedString
 		/**
 		 * Spec
 		 */

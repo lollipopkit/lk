@@ -11,7 +11,10 @@
     syncLocaleToUrl,
   } from './lib/i18n'
   import { highlightLkCode } from './lib/highlight'
+  import { parseDocMarkdown, buildDocNav, type DocSection, type DocNavGroup, type DocBlock } from './lib/docPage'
   import Playground from './components/Playground.svelte'
+  import LearnPage from './components/LearnPage.svelte'
+  import StdlibPage from './components/StdlibPage.svelte'
   import {
     ArrowRight,
     Boxes,
@@ -33,7 +36,7 @@
 
   type NavItem = {
     href: string
-    label: 'try' | 'spec' | 'github'
+    label: 'try' | 'learn' | 'stdlib' | 'spec' | 'github'
     external?: boolean
   }
 
@@ -55,26 +58,10 @@
     text: string
   }
 
-  type SpecBlock =
-    | { type: 'paragraph'; text: string }
-    | { type: 'list'; items: string[] }
-    | { type: 'code'; text: string }
-
-  type SpecSection = {
-    id: string
-    level: number
-    title: string
-    blocks: SpecBlock[]
-  }
-
-  type SpecNavGroup = {
-    section: SpecSection
-    children: SpecSection[]
-  }
-
   const navItems: NavItem[] = [
-    { href: '/spec#examples', label: 'try' },
-    { href: '/spec#spec-start', label: 'spec' },
+    { href: '/learn', label: 'learn' },
+    { href: '/stdlib', label: 'stdlib' },
+    { href: '/spec', label: 'spec' },
     { href: 'https://github.com/lollipopkit/lk', label: 'github', external: true },
   ]
 
@@ -217,26 +204,12 @@ let total = iter.reduce(iter.range(0, 10, 2), 0, |acc, n| acc + n);`,
   }
 
   $: activeLangDocument = locale === 'zh-CN' ? langZhDocument : langDocument
-  $: specSections = parseMarkdown(activeLangDocument)
-  $: specNav = buildSpecNav(specSections)
-
-  function slugify(value: string): string {
-    return value
-      .toLowerCase()
-      .replace(/`/g, '')
-      .replace(/[^\p{Letter}\p{Number}]+/gu, '-')
-      .replace(/^-|-$/g, '')
-  }
-
-  function uniqueSlug(title: string, seen: Map<string, number>): string {
-    const base = slugify(title) || 'section'
-    const count = seen.get(base) || 0
-    seen.set(base, count + 1)
-    return count === 0 ? base : `${base}-${count + 1}`
-  }
+  $: specSections = parseDocMarkdown(activeLangDocument)
+  $: specNav = buildDocNav(specSections)
 
   function normalizePath(path: string): string {
-    return path === '/LANG.md' || path === '/try' ? '/spec' : path
+    if (path === '/LANG.md' || path === '/try') return '/spec'
+    return path
   }
 
   function isCurrentNavItem(item: NavItem): boolean {
@@ -244,9 +217,9 @@ let total = iter.reduce(iter.range(0, 10, 2), 0, |acc, n| acc + n);`,
     const url = new URL(item.href, typeof window === 'undefined' ? 'http://localhost' : window.location.origin)
     const path = normalizePath(url.pathname)
     if (path !== currentPath) return false
-    if (item.label === 'try') return currentHash === '#examples'
-    if (item.label === 'spec') return currentPath === '/spec' && currentHash !== '#examples'
-    return false
+    if (item.label === 'spec' && currentHash === '#examples') return false
+    if (item.label === 'try') return currentPath === '/spec' && currentHash === '#examples'
+    return true
   }
 
   function pathWithLocale(path: string): string {
@@ -267,113 +240,6 @@ let total = iter.reduce(iter.range(0, 10, 2), 0, |acc, n| acc + n);`,
     const nextLocale = (event.currentTarget as HTMLSelectElement).value as Locales
     applyLocale(nextLocale)
     syncLocaleToUrl(nextLocale)
-  }
-
-  function buildSpecNav(sections: SpecSection[]): SpecNavGroup[] {
-    const nav: SpecNavGroup[] = []
-    let current: SpecNavGroup | undefined = undefined
-
-    for (const section of sections.filter((item) => item.level <= 3)) {
-      if (section.level <= 2 || !current) {
-        current = { section, children: [] }
-        nav.push(current)
-        continue
-      }
-
-      current.children.push(section)
-    }
-
-    return nav
-  }
-
-  function parseMarkdown(markdown: string): SpecSection[] {
-    const lines = markdown.split('\n')
-    const sections: SpecSection[] = []
-    const seenIds = new Map<string, number>()
-    let current: SpecSection | undefined = undefined
-    let paragraph: string[] = []
-    let list: string[] = []
-    let code: string[] = []
-    let inCode = false
-
-    function ensureSection(): SpecSection {
-      if (!current) {
-        current = { id: 'overview', level: 2, title: 'Overview', blocks: [] }
-        sections.push(current)
-      }
-      return current
-    }
-
-    function flushParagraph(): void {
-      if (!paragraph.length) return
-      ensureSection().blocks.push({ type: 'paragraph', text: paragraph.join(' ') })
-      paragraph = []
-    }
-
-    function flushList(): void {
-      if (!list.length) return
-      ensureSection().blocks.push({ type: 'list', items: list })
-      list = []
-    }
-
-    function flushTextBlocks(): void {
-      flushParagraph()
-      flushList()
-    }
-
-    for (const line of lines) {
-      if (line.startsWith('```')) {
-        if (inCode) {
-          ensureSection().blocks.push({ type: 'code', text: code.join('\n') })
-          code = []
-          inCode = false
-        } else {
-          flushTextBlocks()
-          inCode = true
-        }
-        continue
-      }
-
-      if (inCode) {
-        code.push(line)
-        continue
-      }
-
-      const heading = line.match(/^(#{1,6})\s+(.*)$/)
-      if (heading) {
-        flushTextBlocks()
-        const title = heading[2].trim()
-        if (heading[1].length === 1 && title === 'Language Overview') {
-          continue
-        }
-        current = {
-          id: uniqueSlug(title, seenIds),
-          level: heading[1].length,
-          title,
-          blocks: [],
-        }
-        sections.push(current)
-        continue
-      }
-
-      if (!line.trim()) {
-        flushTextBlocks()
-        continue
-      }
-
-      const bullet = line.match(/^\s*-\s+(.*)$/)
-      if (bullet) {
-        flushParagraph()
-        list.push(bullet[1])
-        continue
-      }
-
-      flushList()
-      paragraph.push(line.trim())
-    }
-
-    flushTextBlocks()
-    return sections
   }
 
   function navigate(event: MouseEvent, path: string): void {
@@ -403,6 +269,14 @@ let total = iter.reduce(iter.range(0, 10, 2), 0, |acc, n| acc + n);`,
       return
     }
     document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
+
+  function highlightInlineCode(text: string): string {
+    return text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/`([^`]+)`/g, '<code class="inline-code">$1</code>')
   }
 
   onMount(() => {
@@ -475,7 +349,11 @@ let total = iter.reduce(iter.range(0, 10, 2), 0, |acc, n| acc + n);`,
     </div>
   </header>
 
-  {#if currentPath === '/spec'}
+  {#if currentPath === '/learn'}
+    <LearnPage {locale} />
+  {:else if currentPath === '/stdlib'}
+    <StdlibPage {locale} />
+  {:else if currentPath === '/spec'}
     <section class="spec-layout" aria-label="LK language specification">
       <aside class="spec-toc" aria-label="Specification table of contents">
         <strong>{$LL.spec.toc()}</strong>
@@ -511,11 +389,32 @@ let total = iter.reduce(iter.range(0, 10, 2), 0, |acc, n| acc + n);`,
               {:else if block.type === 'list'}
                 <ul>
                   {#each block.items as item}
-                    <li>{item}</li>
+                    <li>{@html highlightInlineCode(item)}</li>
                   {/each}
                 </ul>
               {:else if block.type === 'code'}
                 <pre><code>{@html highlightLkCode(block.text)}</code></pre>
+              {:else if block.type === 'table'}
+                <div class="spec-table-wrapper">
+                  <table>
+                    <thead>
+                      <tr>
+                        {#each block.headers as header}
+                          <th>{header}</th>
+                        {/each}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {#each block.rows as row}
+                        <tr>
+                          {#each row as cell, ci}
+                            <td>{@html ci === 0 ? highlightInlineCode(cell) : cell}</td>
+                          {/each}
+                        </tr>
+                      {/each}
+                    </tbody>
+                  </table>
+                </div>
               {/if}
             {/each}
           </article>
@@ -531,9 +430,9 @@ let total = iter.reduce(iter.range(0, 10, 2), 0, |acc, n| acc + n);`,
           {$LL.hero.subtitle()}
         </p>
         <div class="hero-actions" aria-label="Hero actions">
-          <a class="btn btn-primary" href="#start" on:click={(event) => scrollToSection(event, 'start')}>
+          <a class="btn btn-primary" href="/learn" on:click={(event) => navigate(event, '/learn')}>
             <Play size={18} />
-            {$LL.hero.primaryAction()}
+            {$LL.nav.learn()}
           </a>
           <a class="btn btn-secondary" href="#language" on:click={(event) => scrollToSection(event, 'language')}>
             {$LL.hero.secondaryAction()}
@@ -662,6 +561,8 @@ let total = iter.reduce(iter.range(0, 10, 2), 0, |acc, n| acc + n);`,
   <footer class="site-footer">
     <span>{$LL.footer.brand()}</span>
     <a href="/" on:click={(event) => navigate(event, '/')}>{$LL.footer.home()}</a>
+    <a href="/learn" on:click={(event) => navigate(event, '/learn')}>{$LL.footer.learn()}</a>
+    <a href="/stdlib" on:click={(event) => navigate(event, '/stdlib')}>{$LL.footer.stdlib()}</a>
     <a href="/spec" on:click={(event) => navigate(event, '/spec')}>{$LL.footer.spec()}</a>
   </footer>
 </main>
