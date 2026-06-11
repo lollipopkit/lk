@@ -245,9 +245,13 @@ mod tests {
     fn shell_response_config(shell: PathBuf, response: &str) -> ProcMacroProcessConfig {
         ProcMacroProcessConfig {
             program: shell,
-            args: vec!["-c".to_string(), format!("cat >/dev/null; printf '%s' '{response}'")],
+            args: vec![
+                "-c".to_string(),
+                r##"cat >/dev/null; printf '%s' "$LK_PROC_MACRO_RESPONSE""##.to_string(),
+            ],
             timeout: Duration::from_secs(1),
             max_output_bytes: 4096,
+            env: Some(vec![("LK_PROC_MACRO_RESPONSE".to_string(), response.to_string())]),
         }
     }
 }

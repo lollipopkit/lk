@@ -51,6 +51,12 @@ pub(super) fn rewrite_anchor_runtime_refs(tokens: Vec<SourceToken>, registry: &M
     output
 }
 
+/// Detects crate-anchor identifiers of the form `__lk_macro_crate_*::` in a token stream.
+///
+/// Returns `Some(&str)` when the token at `index` is an `Id` starting with
+/// `__lk_macro_crate_` and the next token is `::`, indicating a path anchor.
+/// Returns `None` otherwise, so plain identifiers with a similar prefix but
+/// no `::` follower are not mistaken for anchors.
 fn crate_anchor_path_at(tokens: &[SourceToken], index: usize) -> Option<&str> {
     let Token::Id(anchor) = &tokens.get(index)?.token else {
         return None;

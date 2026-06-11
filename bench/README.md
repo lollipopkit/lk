@@ -19,7 +19,7 @@ execute real runtime work.
 ## How to Run
 
 ```bash
-cargo build --release -p lk-cli
+cargo build --profile dist -p lk-cli
 bench/run_workload_bench.sh
 ```
 
@@ -518,7 +518,7 @@ it is not a replacement for the 2026-06-04 baseline.
 Profile-enabled direction check:
 
 ```bash
-cargo build --release -p lk-cli --features vm-profile
+cargo build --profile dist -p lk-cli --features vm-profile
 RUN_AOT=0 RUNS=1 EXTRA_RUNS=0 PROFILE_WORKLOADS=1 BENCH_PROGRESS=0 BENCH_TIMEOUT=30 bash bench/run_workload_bench.sh
 ```
 
@@ -552,7 +552,7 @@ build, not a `vm-profile` feature build.
 Profile-enabled direction check:
 
 ```bash
-cargo build --release -p lk-cli --features vm-profile
+cargo build --profile dist -p lk-cli --features vm-profile
 RUN_AOT=0 RUNS=1 EXTRA_RUNS=0 PROFILE_WORKLOADS=1 BENCH_PROGRESS=0 BENCH_TIMEOUT=10 bash bench/run_workload_bench.sh
 ```
 

@@ -49,11 +49,25 @@ pub(super) fn collect_fallback_for_pattern_ids(
     }
 }
 
+/// Parses a `for` pattern prefix from generated macro tokens.
+///
+/// Preconditions: `start <= end` and `end <= tokens.len()`.
+/// Returns the parsed pattern and number of tokens consumed, or `None` if the
+/// tokens at `start..end` don't form a valid for-pattern prefix.
 pub(super) fn parse_generated_for_pattern_prefix(
     tokens: &[ExpandedToken],
     start: usize,
     end: usize,
 ) -> Option<(ForPattern, usize)> {
+    debug_assert!(
+        start <= end,
+        "parse_generated_for_pattern_prefix: start ({start}) > end ({end})"
+    );
+    debug_assert!(
+        end <= tokens.len(),
+        "parse_generated_for_pattern_prefix: end ({end}) > tokens.len() ({})",
+        tokens.len()
+    );
     if start >= end || tokens[start].from_capture {
         return None;
     }

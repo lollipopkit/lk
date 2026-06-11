@@ -7,6 +7,13 @@ use std::{
 };
 
 use anyhow::Context;
+
+// Maximum header line size to prevent DoS via unbounded header lines.
+const MAX_HEADER_LINE_SIZE: usize = 8192;
+// Maximum total header bytes to prevent DoS via many small header lines.
+const MAX_HEADER_TOTAL_SIZE: usize = 65536;
+// Maximum request body size to prevent OOM from untrusted content-length.
+const MAX_CONTENT_LENGTH: usize = 10 * 1024 * 1024; // 10 MiB
 use lk_core::package::{RegistryAsymmetricSigningKey, RegistryService, RegistrySigningKey, RegistrySigningKeyring};
 use serde::Deserialize;
 
@@ -36,10 +43,14 @@ pub(super) fn serve_registry(
     eprintln!("Serving LK registry at http://{addr}");
     for stream in listener.incoming() {
         let mut stream = stream.context("accept registry connection")?;
-        if let Err(error) = handle_stream(&mut stream, &service, &auth) {
-            let body = format!("registry request failed: {error:#}");
-            let _ = write_response(&mut stream, 500, "Internal Server Error", "text/plain", body.as_bytes());
-        }
+        let service = service.clone();
+        let auth = auth.clone();
+        std::thread::spawn(move || {
+            if let Err(error) = handle_stream(&mut stream, &service, &auth) {
+                let body = format!("registry request failed: {error:#}");
+                let _ = write_response(&mut stream, 500, "Internal Server Error", "text/plain", body.as_bytes());
+            }
+        });
     }
     Ok(())
 }
@@ -129,11 +140,19 @@ fn read_http_request(stream: &mut TcpStream) -> anyhow::Result<Vec<u8>> {
     let mut reader = BufReader::new(stream.try_clone().context("clone registry stream")?);
     let mut request = Vec::new();
     let mut content_length = 0usize;
+    let mut total_header_bytes = 0usize;
     loop {
         let mut line = Vec::new();
         let read = reader.read_until(b'\n', &mut line).context("read registry request")?;
         if read == 0 {
             break;
+        }
+        if line.len() > MAX_HEADER_LINE_SIZE {
+            anyhow::bail!("header line exceeds {MAX_HEADER_LINE_SIZE} bytes");
+        }
+        total_header_bytes += line.len();
+        if total_header_bytes > MAX_HEADER_TOTAL_SIZE {
+            anyhow::bail!("total header bytes exceed {MAX_HEADER_TOTAL_SIZE}");
         }
         if let Some(header) = std::str::from_utf8(&line)
             .ok()
@@ -148,6 +167,11 @@ fn read_http_request(stream: &mut TcpStream) -> anyhow::Result<Vec<u8>> {
         }
     }
     if content_length > 0 {
+        if content_length > MAX_CONTENT_LENGTH {
+            anyhow::bail!(
+                "content-length {content_length} exceeds maximum {MAX_CONTENT_LENGTH}"
+            );
+        }
         let start = request.len();
         request.resize(start + content_length, 0);
         reader
@@ -353,7 +377,16 @@ fn require_shared_bearer_token(request: &ParsedRequest, expected: &str) -> Resul
     let Some(expected) = Some(expected.trim()).filter(|token| !token.is_empty()) else {
         return Ok(());
     };
-    if bearer_token(request) == expected {
+    let actual = bearer_token(request).as_bytes();
+    let expected_bytes = expected.as_bytes();
+    // Constant-time comparison to prevent timing attacks.
+    let eq = actual.len() == expected_bytes.len()
+        && actual
+            .iter()
+            .zip(expected_bytes.iter())
+            .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+            == 0;
+    if eq {
         Ok(())
     } else {
         Err(RegistryRouteError::new(

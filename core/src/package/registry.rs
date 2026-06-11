@@ -166,14 +166,14 @@ pub struct RegistryIndexResponse {
     pub packages: Vec<RegistryPackageIndexResponse>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct RegistryService {
     storage_root: PathBuf,
     registry_url: String,
     signing_material: Option<RegistrySigningMaterial>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 enum RegistrySigningMaterial {
     Hmac(RegistrySigningKey),
     Ed25519(RegistryAsymmetricSigningKey),

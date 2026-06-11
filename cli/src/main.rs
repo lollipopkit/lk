@@ -655,6 +655,9 @@ fn main() -> anyhow::Result<()> {
     }
 
     // Parse, expand macros, and execute as statements.
+    // NOTE: Direct `.lk` execution does not check proc-macro dependency
+    // freshness against cached native binaries. Proc macros are always
+    // re-expanded through the macro system when running in VM mode.
     let program = match parse_program_source(&input, parse_options_for_file(&safe)?) {
         Ok(program) => program,
         Err(parse_err) => {
@@ -700,7 +703,9 @@ fn expand_macro_file(path: &Path, trace: bool, deps: bool, origins: bool, featur
     let input = std::fs::read_to_string(path).with_context(|| format!("read LK source {}", path.display()))?;
     let mut options = parse_options_for_file(path)?;
     options.macro_trace = trace;
-    options.macro_features = features;
+    // Deduplicate features preserving first-occurrence order.
+    let mut seen = std::collections::HashSet::new();
+    options.macro_features = features.into_iter().filter(|f| seen.insert(f.clone())).collect();
     let expanded = expand_program_source(&input, options).map_err(|parse_err| {
         diagnostic::parse_error(&parse_err, &input);
         anyhow::anyhow!(parse_err.to_string())
@@ -965,11 +970,31 @@ fn try_execute_cached_native(path: &Path, source: &[u8]) -> anyhow::Result<bool>
             Ok(()) => true,
             Err(err) => {
                 let _ = std::fs::remove_file(&tmp);
-                if output.exists() && native_cache_proc_macro_dependencies_fresh(path, &output) {
+                // Retry a few times in case another process is still writing the same output.
+                let max_retries = 3;
+                for attempt in 0..max_retries {
+                    if output.exists()
+                        && native_cache_proc_macro_dependencies_fresh(path, &output)
+                    {
+                        break; // Another process finished first.
+                    }
+                    if attempt + 1 < max_retries {
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                    } else if native_trace_enabled() {
+                        diagnostic::warning(format_args!(
+                            "Native cache install failed after {max_retries} retries: {err}"
+                        ));
+                    }
+                }
+                if output.exists()
+                    && native_cache_proc_macro_dependencies_fresh(path, &output)
+                {
                     false
                 } else {
                     if native_trace_enabled() {
-                        diagnostic::warning(format_args!("Native cache install failed: {err}"));
+                        diagnostic::warning(format_args!(
+                            "Native cache install failed: {err}"
+                        ));
                     }
                     return Ok(false);
                 }
@@ -1059,10 +1084,22 @@ struct NativeCacheProcMacroDependencies {
 #[cfg(feature = "llvm")]
 fn native_cache_proc_macro_dependencies_fresh(source_path: &Path, output: &Path) -> bool {
     let metadata_path = native_cache_proc_macro_dependencies_path(output);
-    let Ok(raw) = std::fs::read_to_string(metadata_path) else {
+    let Ok(raw) = std::fs::read_to_string(&metadata_path) else {
+        if native_trace_enabled() {
+            diagnostic::warning(format_args!(
+                "proc-macro-deps metadata missing: {}",
+                metadata_path.display()
+            ));
+        }
         return false;
     };
     let Ok(metadata) = serde_json::from_str::<NativeCacheProcMacroDependencies>(&raw) else {
+        if native_trace_enabled() {
+            diagnostic::warning(format_args!(
+                "proc-macro-deps metadata corrupt at: {}",
+                metadata_path.display()
+            ));
+        }
         return false;
     };
     metadata

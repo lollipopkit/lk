@@ -2,6 +2,10 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+// Timeout in seconds for all registry HTTP requests.
+const REGISTRY_HTTP_TIMEOUT_SECS: u64 = 30;
 use std::process::Command;
 
 use anyhow::Context;
@@ -273,7 +277,10 @@ fn resolve_registry_dependency(
         return resolve_registry_version_range(name, version, registry_url);
     }
     let endpoint = registry_dependency_endpoint(registry_url, name, version);
-    match ureq::get(&endpoint).call() {
+    match ureq::get(&endpoint)
+        .timeout(Duration::from_secs(REGISTRY_HTTP_TIMEOUT_SECS))
+        .call()
+    {
         Ok(response) if (200..300).contains(&response.status()) => {
             let body = response.into_string().context("read registry dependency response")?;
             let resolution: RegistryDependencyResolution =
@@ -356,7 +363,10 @@ fn resolve_registry_version_range(
     let requirement = VersionReq::parse(requirement)
         .with_context(|| format!("parse registry version requirement `{requirement}` for dependency `{name}`"))?;
     let endpoint = registry_package_versions_endpoint(registry_url, name);
-    let versions = match ureq::get(&endpoint).call() {
+    let versions = match ureq::get(&endpoint)
+        .timeout(Duration::from_secs(REGISTRY_HTTP_TIMEOUT_SECS))
+        .call()
+    {
         Ok(response) if (200..300).contains(&response.status()) => {
             let body = response
                 .into_string()
@@ -696,7 +706,10 @@ fn collect_checksum_files(root: &Path, dir: &Path, files: &mut Vec<PathBuf>) -> 
         let file_type = entry.file_type()?;
         if file_type.is_dir() {
             collect_checksum_files(root, &path, files)?;
-        } else if file_type.is_file() {
+        } else if file_type.is_file() || file_type.is_symlink() {
+            // Symlinks are included as regular files; the target is hashed
+            // by the caller. This ensures symlinked assets are not silently
+            // dropped from the package checksum.
             files.push(path.strip_prefix(root)?.to_path_buf());
         }
     }
@@ -862,6 +875,7 @@ fn sync_registry_index() -> anyhow::Result<()> {
 fn download_registry_index(registry_url: &str) -> anyhow::Result<RegistryIndexSnapshot> {
     let endpoint = registry_index_endpoint(registry_url);
     match ureq::get(&endpoint)
+        .timeout(std::time::Duration::from_secs(REGISTRY_HTTP_TIMEOUT_SECS))
         .set("X-LK-Registry-Scope", RegistryAuthScope::Index.header_value())
         .call()
     {
@@ -984,6 +998,7 @@ fn upload_registry_publish_manifest_with_token(manifest: &RegistryPublishManifes
     let body = serde_json::to_string(manifest).context("serialize registry publish manifest")?;
     let auth = format!("Bearer {token}");
     match ureq::post(&endpoint)
+        .timeout(Duration::from_secs(REGISTRY_HTTP_TIMEOUT_SECS))
         .set("Authorization", &auth)
         .set("X-LK-Registry-Scope", RegistryAuthScope::Publish.header_value())
         .set("Content-Type", "application/json")
@@ -1028,9 +1043,9 @@ fn upload_registry_yank(registry_url: &str, name: &str, version: &str, undo: boo
     let endpoint = registry_yank_endpoint(registry_url, name, version);
     let auth = format!("Bearer {token}");
     let request = if undo {
-        ureq::delete(&endpoint)
+        ureq::delete(&endpoint).timeout(Duration::from_secs(REGISTRY_HTTP_TIMEOUT_SECS))
     } else {
-        ureq::post(&endpoint)
+        ureq::post(&endpoint).timeout(Duration::from_secs(REGISTRY_HTTP_TIMEOUT_SECS))
     }
     .set("Authorization", &auth)
     .set("X-LK-Registry-Scope", RegistryAuthScope::Yank.header_value());

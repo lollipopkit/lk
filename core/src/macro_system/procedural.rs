@@ -127,6 +127,7 @@ pub struct ProcMacroProcessConfig {
     pub args: Vec<String>,
     pub timeout: Duration,
     pub max_output_bytes: usize,
+    pub env: Option<Vec<(String, String)>>,
 }
 
 impl ProcMacroProcessConfig {
@@ -145,6 +146,7 @@ impl Default for ProcMacroProcessConfig {
             args: Vec::new(),
             timeout: Duration::from_secs(5),
             max_output_bytes: 1_048_576,
+            env: None,
         }
     }
 }
@@ -316,6 +318,12 @@ pub fn run_proc_macro_process(
     let stderr = File::create(&output_paths.stderr).map_err(ProcMacroProcessError::Spawn)?;
     let mut child = Command::new(&config.program)
         .args(&config.args)
+        .envs(
+            config
+                .env
+                .iter()
+                .flat_map(|pairs| pairs.iter().map(|(k, v)| (k.as_str(), v.as_str()))),
+        )
         .stdin(Stdio::piped())
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr))
@@ -330,6 +338,8 @@ pub fn run_proc_macro_process(
     }
 
     let started = Instant::now();
+    let mut backoff = Duration::from_millis(5);
+    let max_backoff = Duration::from_millis(100);
     let status = loop {
         if let Some(status) = child.try_wait().map_err(ProcMacroProcessError::Wait)? {
             break status;
@@ -341,7 +351,8 @@ pub fn run_proc_macro_process(
                 timeout: config.timeout,
             });
         }
-        std::thread::sleep(Duration::from_millis(5));
+        std::thread::sleep(backoff);
+        backoff = (backoff * 2).min(max_backoff);
     };
 
     let stderr = read_limited_file(&output_paths.stderr, config.max_output_bytes)?;

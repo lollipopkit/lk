@@ -253,14 +253,28 @@ fn stable_hash_hex(bytes: &[u8]) -> String {
     format!("{:016x}", hash.finish())
 }
 
+// Maximum directory nesting depth to prevent stack overflow.
+const MAX_DIRECTORY_DEPTH: u32 = 64;
+// Maximum individual file size to hash; skip hashing (but record length) beyond this.
+const MAX_FILE_READ_BYTES: u64 = 10 * 1024 * 1024; // 10 MiB
+
 fn stable_directory_hash_hex(path: &Path) -> io::Result<String> {
     let mut hash = StableHash64::new();
     hash.str("dir");
-    hash_directory(&mut hash, path, Path::new(""))?;
+    hash_directory(&mut hash, path, Path::new(""), 0)?;
     Ok(format!("{:016x}", hash.finish()))
 }
 
-fn hash_directory(hash: &mut StableHash64, dir: &Path, relative_dir: &Path) -> io::Result<()> {
+fn hash_directory(hash: &mut StableHash64, dir: &Path, relative_dir: &Path, depth: u32) -> io::Result<()> {
+    if depth > MAX_DIRECTORY_DEPTH {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!(
+                "directory depth exceeds {MAX_DIRECTORY_DEPTH}: {}",
+                relative_dir.display()
+            ),
+        ));
+    }
     let mut entries = fs::read_dir(dir)?.collect::<io::Result<Vec<_>>>()?;
     entries.sort_by_key(|entry| entry.file_name());
     for entry in entries {
@@ -274,12 +288,14 @@ fn hash_directory(hash: &mut StableHash64, dir: &Path, relative_dir: &Path) -> i
         if file_type.is_dir() {
             hash.str("dir");
             hash.u64(metadata.len());
-            hash_directory(hash, &path, &relative_path)?;
+            hash_directory(hash, &path, &relative_path, depth + 1)?;
         } else if file_type.is_file() {
             hash.str("file");
             hash.u64(metadata.len());
-            if let Ok(bytes) = fs::read(&path) {
-                hash.bytes(&bytes);
+            if metadata.len() <= MAX_FILE_READ_BYTES {
+                if let Ok(bytes) = fs::read(&path) {
+                    hash.bytes(&bytes);
+                }
             }
         } else if file_type.is_symlink() {
             hash.str("symlink");

@@ -603,7 +603,19 @@ fn test_source_run_defaults_to_vm_and_cached_native_is_opt_in() {
                 .is_some_and(|file| file.ends_with(".proc-macro-deps.json"))
         })
         .count();
-    let executable_entries = cache_entries.len() - metadata_entries;
+    // Explicitly filter for executable (non-metadata) files instead of
+    // subtracting metadata_entries, to avoid miscounting if extra files
+    // appear in the cache directory.
+    let executable_entries = cache_entries
+        .iter()
+        .filter(|path| {
+            path.is_file()
+                && !path
+                    .file_name()
+                    .and_then(|f| f.to_str())
+                    .is_some_and(|f| f.ends_with(".proc-macro-deps.json"))
+        })
+        .count();
     assert_eq!(executable_entries, 1, "expected one cached native executable");
     assert_eq!(metadata_entries, 1, "expected one native cache dependency sidecar");
 

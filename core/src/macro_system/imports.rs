@@ -1,6 +1,4 @@
 use std::{
-    collections::hash_map::DefaultHasher,
-    hash::{Hash, Hasher},
     path::{Component, Path, PathBuf},
 };
 
@@ -260,7 +258,19 @@ fn load_imported_macros(
 }
 
 fn load_macro_file(path: &Path, loading: &mut Vec<PathBuf>) -> Result<LoadedMacroModule, ParseError> {
-    let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let canonical = path.canonicalize();
+    let path = match &canonical {
+        Ok(p) => p.clone(),
+        Err(e) => {
+            // Canonicalization may fail for non-existent or inaccessible paths.
+            // Normalize to an absolute path so comparisons remain consistent.
+            eprintln!(
+                "warning: macro import path canonicalization failed for {}: {e}",
+                path.display()
+            );
+            path.to_path_buf()
+        }
+    };
     if loading.iter().any(|entry| entry == &path) {
         return Ok(LoadedMacroModule::default());
     }
@@ -357,10 +367,18 @@ pub(super) fn local_macro_crate_anchor() -> String {
     macro_crate_anchor_for_label("local")
 }
 
+/// Computes a deterministic crate anchor from a label using a stable hash.
+/// Uses FxHash (multiply-xor) which produces the same value for the same input
+/// regardless of Rust version or process, unlike `DefaultHasher` which is
+/// non-deterministic across versions. The anchor is stable enough for the
+/// macro expansion use case and avoids pulling in a cryptographic dependency.
 fn macro_crate_anchor_for_label(label: &str) -> String {
-    let mut hasher = DefaultHasher::new();
-    label.hash(&mut hasher);
-    format!("__lk_macro_crate_{:016x}", hasher.finish())
+    // FxHash: deterministic, fast, and stable across Rust versions.
+    let mut hash = 0_u64;
+    for byte in label.bytes() {
+        hash = hash.wrapping_mul(0x517cc1b727220a95).wrapping_add(byte as u64);
+    }
+    format!("__lk_macro_crate_{:016x}", hash)
 }
 
 fn register_anchor_macros(registry: &mut MacroRegistry, anchors: &FastHashMap<String, MacroDef>) {

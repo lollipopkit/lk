@@ -765,7 +765,7 @@ fn expand_stream(
     trace: &mut Vec<MacroTrace>,
     stack: &mut Vec<MacroCallFrame>,
 ) -> Result<Vec<SourceToken>, ParseError> {
-    if depth > options.recursion_limit {
+    if depth >= options.recursion_limit {
         return Err(macro_error_with_stack(
             error_at(tokens, 0, "Macro expansion recursion limit exceeded"),
             stack,

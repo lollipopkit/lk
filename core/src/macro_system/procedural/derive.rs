@@ -223,19 +223,44 @@ fn derive_show_impl(name: &str, fields: &[(String, Option<Type>)]) -> Stmt {
     }
 }
 
+/// Escape characters that are special in LK template strings.
+/// Template strings use `{...}` for interpolation, so `{` and `}` must be
+/// escaped. Backslashes are also escaped to avoid `\{` ambiguity.
+fn escape_template_literal(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '{' => out.push_str("\\{"),
+            '}' => out.push_str("\\}"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
 fn derived_show_expr(name: &str, fields: &[(String, Option<Type>)]) -> Expr {
     let mut parts = Vec::new();
     if fields.is_empty() {
-        parts.push(TemplateStringPart::Literal(format!("{name} {{}}")));
+        parts.push(TemplateStringPart::Literal(format!(
+            "{} {{}}",
+            escape_template_literal(name)
+        )));
         return Expr::TemplateString(parts);
     }
 
-    parts.push(TemplateStringPart::Literal(format!("{name} {{ ")));
+    parts.push(TemplateStringPart::Literal(format!(
+        "{} {{ ",
+        escape_template_literal(name)
+    )));
     for (index, (field, _)) in fields.iter().enumerate() {
         if index > 0 {
             parts.push(TemplateStringPart::Literal(", ".to_string()));
         }
-        parts.push(TemplateStringPart::Literal(format!("{field}: ")));
+        parts.push(TemplateStringPart::Literal(format!(
+            "{}: ",
+            escape_template_literal(field)
+        )));
         parts.push(TemplateStringPart::Expr(Box::new(field_access_expr("self", field))));
     }
     parts.push(TemplateStringPart::Literal(" }".to_string()));

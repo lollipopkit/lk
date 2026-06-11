@@ -4,6 +4,7 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     process::Command,
+    time::Duration,
 };
 
 fn bin_path() -> PathBuf {
@@ -26,24 +27,80 @@ where
     cmd
 }
 
+/// Run a CLI subprocess with a timeout so tests fail fast instead of hanging.
+fn run_cli_with_timeout<I, S>(dir: &Path, args: I) -> std::process::Output
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let mut child = run_cli(dir, args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn CLI process");
+    let timeout = Duration::from_secs(60);
+    let start = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => {
+                return child.wait_with_output().expect("wait for CLI output");
+            }
+            Ok(None) => {
+                if start.elapsed() > timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!("CLI process timed out after {timeout:?}");
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(e) => panic!("failed to wait for CLI process: {e}"),
+        }
+    }
+}
+
 fn write_file(dir: &Path, name: &str, contents: &str) {
     let path = dir.join(name);
     let mut file = File::create(&path).expect("create file");
     file.write_all(contents.as_bytes()).expect("write file");
 }
 
+/// RAII guard that cleans up a temporary directory on drop, even on panic.
+struct TempDirGuard {
+    path: PathBuf,
+}
+
+impl TempDirGuard {
+    fn new(path: PathBuf) -> Self {
+        ensure_clean_dir(&path);
+        Self { path }
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for TempDirGuard {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
 fn ensure_clean_dir(dir: &Path) {
-    let _ = fs::remove_dir_all(dir);
+    if let Err(err) = fs::remove_dir_all(dir) {
+        if err.kind() != std::io::ErrorKind::NotFound {
+            eprintln!("warning: failed to remove temp dir {}: {err}", dir.display());
+        }
+    }
     create_dir_all(dir).expect("create tmp dir");
 }
 
 #[test]
 fn macro_expand_origins_prints_nested_origin_json() {
-    let dir = unique_tmp_dir("macro_origins");
-    ensure_clean_dir(&dir);
+    let dir = TempDirGuard::new(unique_tmp_dir("macro_origins"));
 
     write_file(
-        &dir,
+        dir.path(),
         "main.lk",
         r#"
 macro_rules! inner {
@@ -56,9 +113,7 @@ outer!();
 "#,
     );
 
-    let output = run_cli(&dir, ["macro", "expand", "main.lk", "--origins"])
-        .output()
-        .expect("spawn macro expand");
+    let output = run_cli_with_timeout(dir.path(), ["macro", "expand", "main.lk", "--origins"]);
     assert!(
         output.status.success(),
         "macro expand failed: {}",
@@ -85,17 +140,14 @@ outer!();
     assert_eq!(frames[0]["kind"], "definition");
     assert_eq!(frames[1]["macro_name"], "inner");
     assert_eq!(frames[1]["kind"], "definition");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn macro_expand_origins_prints_ast_macro_origin_json() {
-    let dir = unique_tmp_dir("ast_macro_origins");
-    ensure_clean_dir(&dir);
+    let dir = TempDirGuard::new(unique_tmp_dir("ast_macro_origins"));
 
     write_file(
-        &dir,
+        dir.path(),
         "main.lk",
         r#"
 #[derive(Debug)]
@@ -103,9 +155,7 @@ struct User { id: Int }
 "#,
     );
 
-    let output = run_cli(&dir, ["macro", "expand", "main.lk", "--origins"])
-        .output()
-        .expect("spawn macro expand");
+    let output = run_cli_with_timeout(dir.path(), ["macro", "expand", "main.lk", "--origins"]);
     assert!(
         output.status.success(),
         "macro expand failed: {}",
@@ -160,6 +210,4 @@ struct User { id: Int }
             .any(|member| member["label"] == "expr self.id" && member["span"].is_object()),
         "generated field expression origin should carry a source-map span"
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }

@@ -18,6 +18,7 @@ fn proc_macro_process_decodes_versioned_response() {
         ],
         timeout: Duration::from_secs(1),
         max_output_bytes: 4096,
+        env: None,
     };
 
     let response = run_proc_macro_process(&request, &config).expect("run proc macro process");
@@ -35,6 +36,7 @@ fn proc_macro_process_enforces_timeout() {
         args: vec!["-c".to_string(), "sleep 1".to_string()],
         timeout: Duration::from_millis(10),
         max_output_bytes: 4096,
+        env: None,
     };
 
     let err = run_proc_macro_process(&request, &config).expect_err("process should time out");
