@@ -26,8 +26,8 @@ mod validation_tests;
 pub use origin::{MacroOriginFrame, MacroOriginKind, MacroTokenOrigin};
 pub use proc_deps::{
     ProcMacroDependencyFileState, ProcMacroDependencyFingerprint, ProcMacroDependencyFingerprintEntry,
-    ProcMacroDependencyGraph, ProcMacroDependencyRecorder, fingerprint_proc_macro_dependencies,
-    normalize_proc_macro_dependency_path, resolve_proc_macro_dependency_path,
+    ProcMacroDependencyGraph, ProcMacroDependencyRecorder, fingerprint_dependency_paths,
+    fingerprint_proc_macro_dependencies, normalize_proc_macro_dependency_path, resolve_proc_macro_dependency_path,
 };
 pub use procedural::{
     AstGeneratedItemOrigin, AstGeneratedMemberOrigin, AstMacroExpansionResult, AstMacroOrigin, AstMacroOriginKind,

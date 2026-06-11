@@ -1,5 +1,6 @@
 use crate::{
     syntax::{expand_source, render_tokens},
+    token::Token,
     vm::execute_source,
 };
 
@@ -110,6 +111,50 @@ fn generated_default_positional_param_can_reference_previous_generated_param() {
     assert_eq!(result.display_first_return(), "42");
 }
 
+fn generated_param_names_for_source(source: &str) -> (Vec<String>, String) {
+    let expanded = expand_source(source, Default::default()).expect("duplicate parameter macro should expand");
+    let rendered = render_tokens(&expanded.tokens);
+    let generated_item_names = expanded
+        .tokens
+        .iter()
+        .filter_map(|token| match token {
+            Token::Id(name) if name.starts_with("__lk_macro_") && name.ends_with("_item") => Some(name.to_string()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    (generated_item_names, rendered)
+}
+
+fn assert_duplicate_param_names_share_one_fresh_name(source: &str) {
+    let (generated_item_names, rendered) = generated_param_names_for_source(source);
+
+    assert!(
+        generated_item_names.len() >= 3,
+        "duplicate parameters and body reference should all be freshened: {generated_item_names:?}; {rendered}"
+    );
+    assert!(
+        generated_item_names.iter().all(|name| name == &generated_item_names[0]),
+        "duplicate parameters should share one fresh name: {generated_item_names:?}; {rendered}"
+    );
+}
+
+#[test]
+fn generated_duplicate_function_params_share_one_fresh_name() {
+    assert_duplicate_param_names_share_one_fresh_name(
+        r#"
+        macro_rules! duplicate_params {
+            () => {
+                fn read(item, item) {
+                    return item;
+                }
+            };
+        }
+        let item = 99;
+        duplicate_params!();
+        "#,
+    );
+}
+
 #[test]
 fn generated_named_param_does_not_capture_its_own_default() {
     let expanded = expand_source(
@@ -157,6 +202,23 @@ fn generated_named_param_default_can_reference_previous_generated_param() {
 }
 
 #[test]
+fn generated_duplicate_named_params_share_one_fresh_name() {
+    assert_duplicate_param_names_share_one_fresh_name(
+        r#"
+        macro_rules! duplicate_named_params {
+            () => {
+                fn read({ item: Int = 1, item: Int = 2 }) {
+                    return item;
+                }
+            };
+        }
+        let item = 99;
+        duplicate_named_params!();
+        "#,
+    );
+}
+
+#[test]
 fn generated_closure_param_does_not_capture_call_site_body_identifier() {
     let result = execute_source(
         r#"
@@ -200,6 +262,22 @@ fn generated_closure_param_references_are_freshened_together() {
         "{rendered}"
     );
     assert!(rendered.contains("(item);"), "{rendered}");
+}
+
+#[test]
+fn generated_duplicate_closure_params_share_one_fresh_name() {
+    assert_duplicate_param_names_share_one_fresh_name(
+        r#"
+        macro_rules! duplicate_closure_params {
+            () => {
+                let read = |item, item| item;
+                return read(item);
+            };
+        }
+        let item = 99;
+        duplicate_closure_params!();
+        "#,
+    );
 }
 
 #[test]
@@ -254,6 +332,22 @@ fn generated_fn_closure_param_references_are_freshened_together() {
         "{rendered}"
     );
     assert!(rendered.contains("(item);"), "{rendered}");
+}
+
+#[test]
+fn generated_duplicate_fn_closure_params_share_one_fresh_name() {
+    assert_duplicate_param_names_share_one_fresh_name(
+        r#"
+        macro_rules! duplicate_fn_closure_params {
+            () => {
+                let read = fn(item, item) => item;
+                return read(item);
+            };
+        }
+        let item = 99;
+        duplicate_fn_closure_params!();
+        "#,
+    );
 }
 
 #[test]

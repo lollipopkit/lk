@@ -16,6 +16,7 @@
   import StdlibPage from './components/StdlibPage.svelte'
   import Playground from './components/Playground.svelte'
   import { playgroundExamples } from './lib/playgroundExamples'
+  import type { PlaygroundSelectionId } from './lib/playgroundExamples'
   import {
     ArrowRight,
     Braces,
@@ -88,7 +89,7 @@
   let compileStep = $state(0)
   let mobileMenuOpen = $state(false)
   let playgroundSource = $state('')
-  let playgroundActiveExample = $state('')
+  let playgroundActiveExample = $state<PlaygroundSelectionId>(playgroundExamples[0].id)
 
   function applyTheme(nextTheme: 'light' | 'dark'): void {
     theme = nextTheme
@@ -261,7 +262,7 @@ return msg;`
     const code = featureCodes[key]
     if (code) {
       playgroundSource = code
-      playgroundActiveExample = 'Custom'
+      playgroundActiveExample = 'custom'
       scrollToSection('showcase')
     }
   }
@@ -361,7 +362,7 @@ return msg;`
     applyLocale(nextLocale)
 
     playgroundSource = playgroundExamples[0].code
-    playgroundActiveExample = playgroundExamples[0].name
+    playgroundActiveExample = playgroundExamples[0].id
 
     const savedTheme = localStorage.getItem('theme') as 'light' | 'dark' | null
     if (savedTheme) {

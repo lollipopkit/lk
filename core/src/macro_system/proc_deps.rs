@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
-    fs, hash,
+    fs, hash, io,
     path::{Path, PathBuf},
     rc::Rc,
     time::UNIX_EPOCH,
@@ -91,9 +91,17 @@ where
     pub fn insert(&mut self, dependent: T, dependencies: &[ProcMacroDependency], base_dir: &Path) {
         self.remove_dependent(&dependent);
         for dependency in dependencies {
-            if let Some(path) = resolve_proc_macro_dependency_path(&dependency.path, Some(base_dir)) {
-                self.dependents.entry(path).or_default().insert(dependent.clone());
-            }
+            self.insert_dependency_path(dependent.clone(), Path::new(&dependency.path), base_dir);
+        }
+    }
+
+    pub fn insert_paths<P>(&mut self, dependent: T, paths: &[P], base_dir: &Path)
+    where
+        P: AsRef<Path>,
+    {
+        self.remove_dependent(&dependent);
+        for path in paths {
+            self.insert_dependency_path(dependent.clone(), path.as_ref(), base_dir);
         }
     }
 
@@ -122,16 +130,40 @@ where
     pub fn is_empty(&self) -> bool {
         self.dependents.is_empty()
     }
+
+    fn insert_dependency_path(&mut self, dependent: T, path: &Path, base_dir: &Path) {
+        if let Some(path) = resolve_dependency_path(path, Some(base_dir)) {
+            self.dependents.entry(path).or_default().insert(dependent);
+        }
+    }
 }
 
 pub fn fingerprint_proc_macro_dependencies(
     dependencies: &[ProcMacroDependency],
     base_dir: Option<&Path>,
 ) -> ProcMacroDependencyFingerprint {
-    let mut entries = dependencies
+    let entries = dependencies
         .iter()
-        .map(|dependency| fingerprint_entry(dependency, base_dir))
+        .map(|dependency| fingerprint_entry(&dependency.path, dependency.digest.clone(), base_dir))
         .collect::<Vec<_>>();
+    fingerprint_entries(entries)
+}
+
+pub fn fingerprint_dependency_paths<P>(paths: &[P], base_dir: Option<&Path>) -> ProcMacroDependencyFingerprint
+where
+    P: AsRef<Path>,
+{
+    let entries = paths
+        .iter()
+        .map(|path| {
+            let display = path.as_ref().to_string_lossy().into_owned();
+            fingerprint_entry(&display, None, base_dir)
+        })
+        .collect::<Vec<_>>();
+    fingerprint_entries(entries)
+}
+
+fn fingerprint_entries(mut entries: Vec<ProcMacroDependencyFingerprintEntry>) -> ProcMacroDependencyFingerprint {
     entries.sort_by(|left, right| {
         left.path
             .cmp(&right.path)
@@ -149,30 +181,39 @@ pub fn fingerprint_proc_macro_dependencies(
     }
 }
 
-fn fingerprint_entry(dependency: &ProcMacroDependency, base_dir: Option<&Path>) -> ProcMacroDependencyFingerprintEntry {
-    let resolved = resolve_proc_macro_dependency_path(&dependency.path, base_dir);
+fn fingerprint_entry(
+    path: &str,
+    digest: Option<String>,
+    base_dir: Option<&Path>,
+) -> ProcMacroDependencyFingerprintEntry {
+    let resolved = resolve_proc_macro_dependency_path(path, base_dir);
     let resolved_path = resolved.as_ref().map(|path| display_path(path));
     let state = resolved
         .as_ref()
         .map(|path| fingerprint_file_state(path))
         .unwrap_or(ProcMacroDependencyFileState::Missing);
     ProcMacroDependencyFingerprintEntry {
-        path: dependency.path.clone(),
+        path: path.to_string(),
         resolved_path,
-        digest: dependency.digest.clone(),
+        digest,
         state,
     }
 }
 
 pub fn resolve_proc_macro_dependency_path(path: &str, base_dir: Option<&Path>) -> Option<PathBuf> {
-    if path.is_empty() {
+    resolve_dependency_path(Path::new(path), base_dir)
+}
+
+fn resolve_dependency_path(path: &Path, base_dir: Option<&Path>) -> Option<PathBuf> {
+    if path.as_os_str().is_empty() {
         return None;
     }
-    let raw = Path::new(path);
-    let resolved = if raw.is_absolute() {
-        raw.to_path_buf()
+    let resolved = if path.is_absolute() {
+        path.to_path_buf()
     } else {
-        base_dir.map(|base| base.join(raw)).unwrap_or_else(|| raw.to_path_buf())
+        base_dir
+            .map(|base| base.join(path))
+            .unwrap_or_else(|| path.to_path_buf())
     };
     Some(normalize_proc_macro_dependency_path(&resolved))
 }
@@ -195,14 +236,62 @@ fn fingerprint_file_state(path: &Path) -> ProcMacroDependencyFileState {
         len: metadata.len(),
         modified_secs,
         modified_nanos,
-        content_hash: fs::read(path).ok().map(|bytes| stable_hash_hex(&bytes)),
+        content_hash: dependency_content_hash(path, &metadata),
     }
+}
+
+fn dependency_content_hash(path: &Path, metadata: &fs::Metadata) -> Option<String> {
+    if metadata.is_dir() {
+        return stable_directory_hash_hex(path).ok();
+    }
+    fs::read(path).ok().map(|bytes| stable_hash_hex(&bytes))
 }
 
 fn stable_hash_hex(bytes: &[u8]) -> String {
     let mut hash = StableHash64::new();
     hash.bytes(bytes);
     format!("{:016x}", hash.finish())
+}
+
+fn stable_directory_hash_hex(path: &Path) -> io::Result<String> {
+    let mut hash = StableHash64::new();
+    hash.str("dir");
+    hash_directory(&mut hash, path, Path::new(""))?;
+    Ok(format!("{:016x}", hash.finish()))
+}
+
+fn hash_directory(hash: &mut StableHash64, dir: &Path, relative_dir: &Path) -> io::Result<()> {
+    let mut entries = fs::read_dir(dir)?.collect::<io::Result<Vec<_>>>()?;
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        let path = entry.path();
+        let name = entry.file_name();
+        let relative_path = relative_dir.join(&name);
+        let relative_display = relative_path.to_string_lossy();
+        let metadata = fs::symlink_metadata(&path)?;
+        let file_type = metadata.file_type();
+        hash.str(&relative_display);
+        if file_type.is_dir() {
+            hash.str("dir");
+            hash.u64(metadata.len());
+            hash_directory(hash, &path, &relative_path)?;
+        } else if file_type.is_file() {
+            hash.str("file");
+            hash.u64(metadata.len());
+            if let Ok(bytes) = fs::read(&path) {
+                hash.bytes(&bytes);
+            }
+        } else if file_type.is_symlink() {
+            hash.str("symlink");
+            if let Ok(target) = fs::read_link(&path) {
+                hash.str(&target.to_string_lossy());
+            }
+        } else {
+            hash.str("other");
+            hash.u64(metadata.len());
+        }
+    }
+    Ok(())
 }
 
 fn display_path(path: &Path) -> String {
@@ -326,6 +415,32 @@ mod tests {
     }
 
     #[test]
+    fn fingerprint_changes_when_directory_child_content_changes() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        fs::create_dir_all(dir.path().join("schema")).expect("create schema dir");
+        fs::write(dir.path().join("schema/user.lk"), "one").expect("write dependency");
+        let deps = vec![dependency("schema")];
+
+        let first = fingerprint_proc_macro_dependencies(&deps, Some(dir.path()));
+        fs::write(dir.path().join("schema/user.lk"), "two").expect("rewrite dependency");
+
+        assert!(!first.is_current(&deps, Some(dir.path())));
+    }
+
+    #[test]
+    fn fingerprint_changes_when_nested_directory_dependency_appears() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        fs::create_dir_all(dir.path().join("schema/models")).expect("create schema dir");
+        fs::write(dir.path().join("schema/models/user.lk"), "user").expect("write dependency");
+        let deps = vec![dependency("schema")];
+
+        let first = fingerprint_proc_macro_dependencies(&deps, Some(dir.path()));
+        fs::write(dir.path().join("schema/models/order.lk"), "order").expect("write nested dependency");
+
+        assert!(!first.is_current(&deps, Some(dir.path())));
+    }
+
+    #[test]
     fn fingerprint_ignores_dependency_order() {
         let dir = tempfile::tempdir().expect("temp dir");
         fs::write(dir.path().join("a.txt"), "a").expect("write a");
@@ -335,6 +450,30 @@ mod tests {
         let second = fingerprint_proc_macro_dependencies(&[dependency("b.txt"), dependency("a.txt")], Some(dir.path()));
 
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn generic_dependency_path_fingerprint_changes_when_content_changes() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("module.lk");
+        fs::write(&path, "export fn value() { return 1; }").expect("write module");
+        let deps = vec![PathBuf::from("module.lk")];
+
+        let first = fingerprint_dependency_paths(&deps, Some(dir.path()));
+        fs::write(&path, "export fn value() { return 2; }").expect("rewrite module");
+
+        assert_ne!(first, fingerprint_dependency_paths(&deps, Some(dir.path())));
+    }
+
+    #[test]
+    fn generic_dependency_path_fingerprint_changes_when_missing_file_appears() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let deps = vec![PathBuf::from("module.lk")];
+        let missing = fingerprint_dependency_paths(&deps, Some(dir.path()));
+
+        fs::write(dir.path().join("module.lk"), "export fn value() {}").expect("create module");
+
+        assert_ne!(missing, fingerprint_dependency_paths(&deps, Some(dir.path())));
     }
 
     #[test]
@@ -369,11 +508,65 @@ mod tests {
     }
 
     #[test]
+    fn dependency_graph_invalidates_missing_directory_dependents_when_child_appears() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut graph = ProcMacroDependencyGraph::default();
+
+        graph.insert("main.lk", &[dependency("schema")], dir.path());
+        graph.insert("other.lk", &[dependency("other-schema")], dir.path());
+
+        let dependents = graph.take_dependents_for_changed_path(&dir.path().join("schema/user.lk"));
+
+        assert!(dependents.contains("main.lk"));
+        assert!(!dependents.contains("other.lk"));
+    }
+
+    #[test]
     fn dependency_graph_skips_empty_dependency_paths() {
         let dir = tempfile::tempdir().expect("temp dir");
         let mut graph = ProcMacroDependencyGraph::default();
 
         graph.insert("main.lk", &[dependency("")], dir.path());
+
+        assert!(graph.is_empty());
+    }
+
+    #[test]
+    fn dependency_graph_accepts_generic_project_dependency_paths() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        fs::create_dir_all(dir.path().join("modules")).expect("create modules dir");
+        fs::write(dir.path().join("modules/math.lk"), "export fn add() {}").expect("write module");
+        let mut graph = ProcMacroDependencyGraph::default();
+
+        graph.insert_paths("main.lk", &["modules"], dir.path());
+        graph.insert_paths("other.lk", &["other-modules"], dir.path());
+
+        let dependents = graph.take_dependents_for_changed_path(&dir.path().join("modules/math.lk"));
+
+        assert!(dependents.contains("main.lk"));
+        assert!(!dependents.contains("other.lk"));
+    }
+
+    #[test]
+    fn dependency_graph_accepts_absolute_project_dependency_paths() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let dependency_path = dir.path().join("generated.lk");
+        fs::write(&dependency_path, "export fn generated() {}").expect("write dependency");
+        let mut graph = ProcMacroDependencyGraph::default();
+
+        graph.insert_paths("main.lk", &[dependency_path.as_path()], dir.path());
+
+        let dependents = graph.take_dependents_for_changed_path(&dependency_path);
+
+        assert!(dependents.contains("main.lk"));
+    }
+
+    #[test]
+    fn dependency_graph_skips_empty_project_dependency_paths() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut graph = ProcMacroDependencyGraph::default();
+
+        graph.insert_paths("main.lk", &[""], dir.path());
 
         assert!(graph.is_empty());
     }

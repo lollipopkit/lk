@@ -65,7 +65,7 @@
   }
 
   .lk-code-editor textarea::selection {
-    background: rgba(145, 124, 86, 0.34);
+    background: var(--code-selection);
     color: transparent;
   }
 

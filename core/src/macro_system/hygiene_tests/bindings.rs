@@ -45,6 +45,27 @@ fn generated_block_local_let_does_not_freshen_outer_generated_reference() {
 }
 
 #[test]
+fn generated_block_local_const_does_not_freshen_outer_generated_reference() {
+    let result = execute_source(
+        r#"
+        macro_rules! scoped_const {
+            () => {
+                {
+                    const item = 1;
+                }
+                return item;
+            };
+        }
+        let item = 10;
+        scoped_const!();
+        "#,
+    )
+    .expect("macro program should execute");
+
+    assert_eq!(result.display_first_return(), "10");
+}
+
+#[test]
 fn generated_map_rest_destructuring_references_are_freshened_together() {
     let result = execute_source(
         r#"
@@ -81,6 +102,30 @@ fn generated_let_initializer_reference_uses_outer_binding() {
     .expect("macro program should execute");
 
     assert_eq!(result.display_first_return(), "42");
+}
+
+#[test]
+fn generated_let_pattern_guard_uses_generated_binding_and_value_uses_outer_binding() {
+    let expanded = expand_source(
+        r#"
+        macro_rules! guarded_let {
+            () => {
+                let item if item > 40 = item;
+                return item;
+            };
+        }
+        let item = 42;
+        guarded_let!();
+        "#,
+        Default::default(),
+    )
+    .expect("guarded let binding macro should expand");
+    let rendered = render_tokens(&expanded.tokens);
+
+    assert!(rendered.contains("let __lk_macro_"), "{rendered}");
+    assert!(rendered.contains("if __lk_macro_"), "{rendered}");
+    assert!(rendered.contains("= item;"), "{rendered}");
+    assert!(rendered.contains("return __lk_macro_"), "{rendered}");
 }
 
 #[test]

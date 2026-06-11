@@ -229,6 +229,44 @@ enum PkgCommand {
         #[command(subcommand)]
         command: PkgIndexCommand,
     },
+    /// Manage registry signing keys.
+    Key {
+        #[command(subcommand)]
+        command: PkgKeyCommand,
+    },
+    /// Serve a local LK package registry.
+    Serve {
+        /// Address to bind, for example 127.0.0.1:3899.
+        #[arg(long, default_value = "127.0.0.1:3899")]
+        addr: String,
+        /// Durable registry storage directory.
+        #[arg(long, value_parser = parse_sanitized_path)]
+        storage: PathBuf,
+        /// Public registry URL clients will validate in publish manifests.
+        #[arg(long)]
+        registry_url: String,
+        /// Bearer token required for publish/index/yank requests.
+        #[arg(long)]
+        token: Option<String>,
+        /// JSON auth policy with scoped bearer tokens for index/publish/yank routes.
+        #[arg(long, value_parser = parse_sanitized_path)]
+        auth_policy: Option<PathBuf>,
+        /// Load the HMAC signing key from a JSON file.
+        #[arg(long, value_parser = parse_sanitized_path)]
+        signing_key_file: Option<PathBuf>,
+        /// Load an HMAC signing keyring and sign with its active key.
+        #[arg(long, value_parser = parse_sanitized_path)]
+        signing_keyring_file: Option<PathBuf>,
+        /// Load an Ed25519 private signing key from a JSON file.
+        #[arg(long, value_parser = parse_sanitized_path)]
+        signing_private_key_file: Option<PathBuf>,
+        /// Optional HMAC signing key id for generated registry signatures.
+        #[arg(long)]
+        signing_key_id: Option<String>,
+        /// Optional HMAC signing secret for generated registry signatures.
+        #[arg(long)]
+        signing_secret: Option<String>,
+    },
     /// Print the resolved dependency tree.
     Tree,
 }
@@ -237,6 +275,58 @@ enum PkgCommand {
 enum PkgIndexCommand {
     /// Download [registry].url/api/v1/index into $LK_HOME/registry/<name>/index.json.
     Sync,
+}
+
+#[derive(Debug, Subcommand)]
+enum PkgKeyCommand {
+    /// Generate an HMAC registry signing key JSON file.
+    Generate {
+        /// Output path for the key JSON file.
+        #[arg(long, value_parser = parse_sanitized_path)]
+        out: PathBuf,
+        /// Key id embedded in registry signatures.
+        #[arg(long)]
+        key_id: String,
+    },
+    /// Generate an Ed25519 private/public registry signing key pair.
+    GenerateAsymmetric {
+        /// Output path for the private key JSON file.
+        #[arg(long, value_parser = parse_sanitized_path)]
+        private_out: PathBuf,
+        /// Output path for the public key JSON file.
+        #[arg(long, value_parser = parse_sanitized_path)]
+        public_out: PathBuf,
+        /// Key id embedded in registry signatures.
+        #[arg(long)]
+        key_id: String,
+    },
+    /// Initialize an HMAC registry signing keyring JSON file.
+    InitKeyring {
+        /// Output path for the keyring JSON file.
+        #[arg(long, value_parser = parse_sanitized_path)]
+        out: PathBuf,
+        /// Initial active key id embedded in registry signatures.
+        #[arg(long)]
+        key_id: String,
+    },
+    /// Add a new active key to an existing keyring.
+    Rotate {
+        /// Keyring JSON file to update.
+        #[arg(long, value_parser = parse_sanitized_path)]
+        keyring: PathBuf,
+        /// New active key id.
+        #[arg(long)]
+        key_id: String,
+    },
+    /// Mark a non-active key id as revoked in a keyring.
+    Revoke {
+        /// Keyring JSON file to update.
+        #[arg(long, value_parser = parse_sanitized_path)]
+        keyring: PathBuf,
+        /// Existing non-active key id to revoke.
+        #[arg(long)]
+        key_id: String,
+    },
 }
 
 fn env_toggle_enabled(raw: &str) -> bool {

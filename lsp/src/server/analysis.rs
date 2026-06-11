@@ -202,7 +202,7 @@ impl LkLanguageServer {
                 .ok()
                 .and_then(|path| path.parent().map(Path::to_path_buf))
                 .map(|base_dir| {
-                    let (_, modules, _) = self.workspace_cache.package_context_for(base_dir);
+                    let (_, modules, _, _) = self.workspace_cache.package_context_for(base_dir);
                     modules
                 })
                 .unwrap_or_default();
@@ -265,11 +265,11 @@ impl LkLanguageServer {
         let computed_result = task::spawn_blocking(move || {
             let mut analyzer = LkAnalyzer::new();
             if let Some(b) = base_dir {
-                let (base, modules, missing) = workspace_cache.package_context_for(b);
+                let (base, modules, missing, proc_macro_providers) = workspace_cache.package_context_for(b);
                 if modules.is_empty() && missing.is_empty() {
                     analyzer.set_base_dir(base);
                 } else {
-                    analyzer.set_package_context(base, modules, missing);
+                    analyzer.set_package_context(base, modules, missing, proc_macro_providers);
                 }
             }
             analyzer.analyze(&content_for_compute)
@@ -330,11 +330,11 @@ impl LkLanguageServer {
         let generated_result = task::spawn_blocking(move || {
             let mut analyzer = LkAnalyzer::new_light();
             if let Some(b) = base_dir {
-                let (base, modules, missing) = workspace_cache.package_context_for(b);
+                let (base, modules, missing, proc_macro_providers) = workspace_cache.package_context_for(b);
                 if modules.is_empty() && missing.is_empty() {
                     analyzer.set_base_dir(base);
                 } else {
-                    analyzer.set_package_context(base, modules, missing);
+                    analyzer.set_package_context(base, modules, missing, proc_macro_providers);
                 }
             }
             analyzer.generate_semantic_tokens(&content_for_tokens)
@@ -407,11 +407,11 @@ impl LkLanguageServer {
                     task::spawn_blocking(move || {
                         let mut analyzer = LkAnalyzer::new();
                         if let Some(b) = base_dir {
-                            let (base, modules, missing) = workspace_cache.package_context_for(b);
+                            let (base, modules, missing, proc_macro_providers) = workspace_cache.package_context_for(b);
                             if modules.is_empty() && missing.is_empty() {
                                 analyzer.set_base_dir(base);
                             } else {
-                                analyzer.set_package_context(base, modules, missing);
+                                analyzer.set_package_context(base, modules, missing, proc_macro_providers);
                             }
                         }
                         analyzer.analyze(&content_for_compute)
@@ -717,7 +717,7 @@ impl LkLanguageServer {
             .ok()
             .and_then(|path| path.parent().map(Path::to_path_buf))?;
 
-        let (_, cached_modules, _) = self.workspace_cache.package_context_for(current_dir.clone());
+        let (_, cached_modules, _, _) = self.workspace_cache.package_context_for(current_dir.clone());
         if let Some(path) = cached_modules.get(module_name) {
             return path.canonicalize().ok().or_else(|| Some(path.clone()));
         }

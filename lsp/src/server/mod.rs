@@ -13,6 +13,7 @@ mod signature;
 mod state;
 mod text;
 mod utils;
+mod watch;
 mod workspace_cache;
 
 pub use entry::run;

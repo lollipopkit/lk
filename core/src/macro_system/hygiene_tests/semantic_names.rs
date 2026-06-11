@@ -482,6 +482,57 @@ fn generated_struct_literal_field_name_is_not_freshened_as_local_binding_referen
 }
 
 #[test]
+fn generated_struct_literal_type_name_is_not_freshened_as_local_binding_reference() {
+    let expanded = expand_source(
+        r#"
+        struct Boxed {
+            item: Int,
+        }
+
+        macro_rules! generated_struct_literal_type {
+            () => {
+                let Boxed = 7;
+                let boxed = Boxed { item: 35 };
+                return Boxed + boxed.item;
+            };
+        }
+        let Boxed = 99;
+        generated_struct_literal_type!();
+        "#,
+        Default::default(),
+    )
+    .expect("struct literal type macro should expand");
+    let rendered = render_tokens(&expanded.tokens);
+
+    assert!(rendered.contains("let __lk_macro_"), "{rendered}");
+    assert!(rendered.contains("= Boxed {item : 35};"), "{rendered}");
+    assert!(rendered.contains("return __lk_macro_"), "{rendered}");
+    assert!(!rendered.contains("= __lk_macro_"), "{rendered}");
+}
+
+#[test]
+fn generated_if_condition_before_block_is_still_freshened_as_local_reference() {
+    let result = execute_source(
+        r#"
+        macro_rules! generated_if_condition {
+            () => {
+                let condition = true;
+                if condition {
+                    return 42;
+                }
+                return 0;
+            };
+        }
+        let condition = false;
+        generated_if_condition!();
+        "#,
+    )
+    .expect("if condition macro should execute");
+
+    assert_eq!(result.display_first_return(), "42");
+}
+
+#[test]
 fn generated_named_argument_key_is_not_freshened_as_local_binding_reference() {
     let result = execute_source(
         r#"

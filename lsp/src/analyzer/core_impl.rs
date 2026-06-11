@@ -173,6 +173,7 @@ impl LkAnalyzer {
             base_dir: None,
             package_modules: HashMap::new(),
             missing_packages: HashSet::new(),
+            proc_macro_providers: macro_system::ProcMacroProviders::default(),
         }
     }
     /// Create a new LK analyzer
@@ -185,6 +186,7 @@ impl LkAnalyzer {
             base_dir: None,
             package_modules: HashMap::new(),
             missing_packages: HashSet::new(),
+            proc_macro_providers: macro_system::ProcMacroProviders::default(),
         }
     }
 
@@ -570,12 +572,19 @@ impl LkAnalyzer {
     /// Set the base directory used for resolving file imports
     pub fn set_base_dir(&mut self, base: PathBuf) {
         if let Ok(Some(graph)) = PackageGraph::discover(&base) {
+            self.proc_macro_providers = graph
+                .proc_macro_providers_for_manifest(&graph.manifest_path)
+                .unwrap_or_else(|_| macro_system::ProcMacroProviders::default());
             self.package_modules = graph
                 .modules
                 .into_iter()
                 .map(|module| (module.name, module.root))
                 .collect();
             self.missing_packages = graph.missing.into_iter().collect();
+        } else {
+            self.package_modules.clear();
+            self.missing_packages.clear();
+            self.proc_macro_providers = macro_system::ProcMacroProviders::default();
         }
         self.base_dir = Some(base);
     }
@@ -586,10 +595,18 @@ impl LkAnalyzer {
         base: PathBuf,
         package_modules: HashMap<String, PathBuf>,
         missing_packages: HashSet<String>,
+        proc_macro_providers: macro_system::ProcMacroProviders,
     ) {
         self.base_dir = Some(base);
         self.package_modules = package_modules;
         self.missing_packages = missing_packages;
+        self.proc_macro_providers = proc_macro_providers;
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn set_proc_macro_providers(&mut self, providers: macro_system::ProcMacroProviders) {
+        self.proc_macro_providers = providers;
+        self.token_cache.clear();
     }
 
     #[allow(dead_code)]
@@ -892,6 +909,7 @@ impl LkAnalyzer {
     fn parse_options(&self) -> ParseOptions {
         ParseOptions {
             base_dir: self.base_dir.clone(),
+            proc_macro_providers: self.proc_macro_providers.clone(),
             ..ParseOptions::default()
         }
     }
@@ -910,13 +928,19 @@ impl LkAnalyzer {
     ) -> std::result::Result<Arc<TokenCacheEntry>, token::ParseError> {
         let cache_key = self.token_cache_key(content);
         if let Some(cached) = self.token_cache.get(&cache_key) {
-            if cached.proc_macro_dependencies_current() {
+            if cached.dependencies_current() {
                 return Ok(cached.clone());
             }
             self.token_cache.remove(&cache_key);
         }
         let (tokens, spans) = Tokenizer::tokenize_enhanced_with_spans(content)?;
-        let entry = Arc::new(TokenCacheEntry::new(tokens, spans, self.parse_options()));
+        let project_dependencies = collect_project_file_dependencies_from_tokens(&tokens);
+        let entry = Arc::new(TokenCacheEntry::new(
+            tokens,
+            spans,
+            self.parse_options(),
+            project_dependencies,
+        ));
         if content.len() < 10_000 {
             if self.token_cache.len() >= 100 {
                 self.token_cache.clear();

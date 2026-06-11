@@ -384,10 +384,7 @@ pub(crate) fn generated_ast_item_definition_location(
     for origin in origins {
         for item in &origin.generated_item_origins {
             for member in &item.generated_member_origins {
-                let Some(name) = generated_member_label_name(&member.label) else {
-                    continue;
-                };
-                if name != symbol_name {
+                if !generated_member_label_matches(&member.label, symbol_name) {
                     continue;
                 }
                 let span = member
@@ -401,6 +398,13 @@ pub(crate) fn generated_ast_item_definition_location(
                 continue;
             }
             let span = item.span.as_ref().or(origin.input_span.as_ref())?;
+            return Some(Location::new(uri.clone(), range_from_span(span)));
+        }
+        for label in &origin.generated_item_labels {
+            if !generated_item_label_matches(label, symbol_name) {
+                continue;
+            }
+            let span = origin.input_span.as_ref()?;
             return Some(Location::new(uri.clone(), range_from_span(span)));
         }
     }
@@ -431,8 +435,25 @@ fn generated_impl_label_names(label: &str) -> impl Iterator<Item = &str> {
     names.into_iter().flatten()
 }
 
+fn generated_member_label_matches(label: &str, symbol_name: &str) -> bool {
+    if let Some(index) = label.strip_prefix("index ") {
+        return index == symbol_name
+            || generated_index_label_name(label).is_some_and(|base| base == symbol_name)
+            || index.rsplit('.').next().is_some_and(|tail| tail == symbol_name);
+    }
+    let Some(name) = generated_member_label_name(label) else {
+        return false;
+    };
+    name == symbol_name || name.rsplit('.').next().is_some_and(|tail| tail == symbol_name)
+}
+
 fn generated_member_label_name(label: &str) -> Option<&str> {
     for prefix in ["fn ", "struct ", "trait ", "type "] {
+        if let Some(name) = label.strip_prefix(prefix) {
+            return Some(name);
+        }
+    }
+    for prefix in ["attr_arg ", "attr_key ", "attr_value ", "import_file "] {
         if let Some(name) = label.strip_prefix(prefix) {
             return Some(name);
         }
@@ -440,9 +461,10 @@ fn generated_member_label_name(label: &str) -> Option<&str> {
     label
         .strip_prefix("expr ")
         .and_then(generated_expr_label_name)
-        .or_else(|| label.strip_prefix("select "))
+        .or_else(|| generated_select_label_name(label))
+        .or_else(|| label.strip_prefix("match "))
         .or_else(|| generated_index_label_name(label))
-        .or_else(|| label.strip_prefix("stmt "))
+        .or_else(|| generated_stmt_label_name(label))
         .or_else(|| label.strip_prefix("call "))
         .or_else(|| label.strip_prefix("ref "))
         .or_else(|| label.strip_prefix("assign_ref "))
@@ -453,23 +475,36 @@ fn generated_member_label_name(label: &str) -> Option<&str> {
         .or_else(|| label.strip_prefix("named_arg "))
         .or_else(|| label.strip_prefix("named_param_type "))
         .or_else(|| label.strip_prefix("import_module "))
-        .or_else(|| label.strip_prefix("import_file "))
         .or_else(|| label.strip_prefix("import_item "))
         .or_else(|| label.strip_prefix("import_alias "))
         .or_else(|| label.strip_prefix("import_namespace "))
         .or_else(|| label.strip_prefix("attr "))
         .or_else(|| label.strip_prefix("derive "))
         .or_else(|| label.strip_prefix("type_ref "))
-        .or_else(|| label.strip_prefix("type_var "))?
-        .rsplit('.')
-        .next()
+        .or_else(|| label.strip_prefix("type_var "))
+}
+
+fn generated_select_label_name(label: &str) -> Option<&str> {
+    match label.strip_prefix("select ")? {
+        "recv" | "send" | "guard" | "body" | "default" => label.strip_prefix("select "),
+        _ => None,
+    }
+}
+
+fn generated_stmt_label_name(label: &str) -> Option<&str> {
+    match label.strip_prefix("stmt ")? {
+        "if" | "if let" => Some("if"),
+        "while" | "while let" => Some("while"),
+        "for" | "break" | "continue" | "return" => label.strip_prefix("stmt "),
+        _ => None,
+    }
 }
 
 fn generated_expr_label_name(label: &str) -> Option<&str> {
     if matches!(label, "match" | "select") {
         return Some(label);
     }
-    label.contains('.').then(|| label.rsplit('.').next()).flatten()
+    label.contains('.').then_some(label)
 }
 
 fn generated_index_label_name(label: &str) -> Option<&str> {

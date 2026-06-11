@@ -21,7 +21,7 @@ stdlib = ["dep:lk-stdlib", "lk-completion/stdlib"]
 vm-profile = ["lk-core/vm-profile"]
 
 [dependencies]
-lk-core = { path = "../core", default-features = false }
+lk-core = { path = "../core" }
 lk-completion = { path = "../completion", default-features = false }
 lk-llvm = { path = "../llvm", optional = true }
 lk-stdlib = { path = "../stdlib", optional = true }

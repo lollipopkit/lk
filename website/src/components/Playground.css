@@ -18,8 +18,8 @@
   border-radius: var(--radius);
   overflow: hidden;
   background: var(--code-bg-strong);
-  box-shadow: 0 24px 60px -15px rgba(0, 0, 0, 0.35),
-              0 0 0 1px rgba(255, 255, 255, 0.05);
+  box-shadow: 0 24px 60px -15px var(--shadow-soft),
+              0 0 0 1px var(--code-border);
   transition: border-color 0.3s ease, box-shadow 0.3s ease;
 }
 
@@ -61,10 +61,7 @@
 }
 
 .playground-embedded .playground-toolbar {
-  background:
-    linear-gradient(90deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px),
-    var(--code-bg);
-  background-size: 64px 64px;
+  background: var(--code-bg);
 }
 
 .playground-embedded .window-controls {
@@ -198,13 +195,13 @@
   align-content: start;
   gap: 1rem;
   padding-bottom: 1.25rem;
-  background: #0d0e11;
+  background: var(--console-bg);
   border-left: 1px solid var(--line-strong);
-  box-shadow: inset 6px 0 20px rgba(0, 0, 0, 0.3);
+  box-shadow: inset 6px 0 20px var(--console-shadow);
 }
 
 .output-header {
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  border-bottom: 1px solid var(--console-border);
   background: transparent;
   color: var(--muted);
   font-size: 0.8rem;
@@ -227,12 +224,12 @@
   margin: 0 1rem;
   padding: 1.15rem;
   overflow: auto;
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--console-border);
   border-radius: var(--radius);
-  background: #16171d;
-  color: #e3e6ed;
+  background: var(--console-panel-bg);
+  color: var(--console-text);
   font: 500 0.86rem/1.6 var(--font-mono);
-  box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.25);
+  box-shadow: inset 0 2px 8px var(--console-shadow);
 }
 
 .playground-embedded .playground-output pre {
@@ -274,9 +271,9 @@
   gap: 0.5rem;
   margin: 3.5rem 1.5rem;
   padding: 2rem 1.5rem;
-  border: 1px dashed rgba(255, 255, 255, 0.1);
+  border: 1px dashed var(--console-border);
   border-radius: var(--radius);
-  background: rgba(255, 255, 255, 0.01);
+  background: var(--console-panel-bg);
   text-align: center;
   align-items: center;
   justify-content: center;
@@ -302,7 +299,7 @@
   height: 5rem;
   margin: 1rem 1rem 0;
   border-radius: var(--radius);
-  background: linear-gradient(90deg, #16171d, #252833, #16171d);
+  background: linear-gradient(90deg, var(--console-panel-bg), var(--surface-3), var(--console-panel-bg));
   background-size: 220% 100%;
   animation: skeleton-slide 1.4s ease-in-out infinite;
 }

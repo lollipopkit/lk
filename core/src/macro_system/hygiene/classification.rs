@@ -14,7 +14,8 @@ pub(super) fn is_hygiene_preserved_identifier_reference(tokens: &[ExpandedToken]
     matches!(tokens.get(index).map(|token| &token.token.token), Some(Token::Id(_)))
         && (is_attribute_identifier_reference(tokens, index)
             || is_import_path_identifier_reference(tokens, index)
-            || is_path_segment_identifier_reference(tokens, index))
+            || is_path_segment_identifier_reference(tokens, index)
+            || is_struct_literal_type_identifier_reference(tokens, index))
 }
 
 pub(super) fn is_semantic_identifier_definition(tokens: &[ExpandedToken], index: usize) -> bool {
@@ -57,7 +58,7 @@ fn is_delimited_type_annotation_reference(tokens: &[ExpandedToken], index: usize
             Token::LParen => super::is_function_parameter_list(tokens, parent),
             Token::LBrace => {
                 super::is_function_named_parameter_block(tokens, parent)
-                    || super::is_declaration_block(tokens, parent)
+                    || (super::is_declaration_block(tokens, parent) && !is_for_object_pattern_block(tokens, parent))
                     || is_struct_body(tokens, parent)
             }
             _ => false,
@@ -83,6 +84,10 @@ fn is_delimited_type_annotation_reference(tokens: &[ExpandedToken], index: usize
                 .unwrap_or(segment_end);
         type_annotation_segment_contains(tokens, colon + 1, segment_end)
     })
+}
+
+fn is_for_object_pattern_block(tokens: &[ExpandedToken], open_index: usize) -> bool {
+    matches!(super::previous_significant_token(tokens, open_index), Some(Token::For))
 }
 
 fn is_function_return_type_reference(tokens: &[ExpandedToken], index: usize) -> bool {
@@ -191,6 +196,37 @@ fn is_path_segment_identifier_reference(tokens: &[ExpandedToken], index: usize) 
             tokens.get(index + 1).map(|token| &token.token.token),
             Some(Token::ColonColon)
         ))
+}
+
+fn is_struct_literal_type_identifier_reference(tokens: &[ExpandedToken], index: usize) -> bool {
+    if !matches!(tokens.get(index).map(|token| &token.token.token), Some(Token::Id(_)))
+        || !matches!(
+            tokens.get(index + 1).map(|token| &token.token.token),
+            Some(Token::LBrace)
+        )
+    {
+        return false;
+    }
+    !matches!(
+        super::previous_significant_token(tokens, index),
+        Some(
+            Token::If
+                | Token::While
+                | Token::For
+                | Token::In
+                | Token::Match
+                | Token::Fn
+                | Token::Struct
+                | Token::Trait
+                | Token::Impl
+                | Token::Type
+                | Token::Let
+                | Token::Const
+                | Token::Dot
+                | Token::OptionalDot
+                | Token::ColonColon
+        )
+    )
 }
 
 fn is_attribute_identifier_reference(tokens: &[ExpandedToken], index: usize) -> bool {

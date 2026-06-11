@@ -1,7 +1,7 @@
 use crate::macro_system::ExpandedToken;
 use crate::stmt::{ForPattern, StmtParser};
 
-use super::{BindingRename, collect_simple_generated_id, find_generated_id_in_range};
+use super::{BindingRename, collect_simple_generated_id, find_generated_ids_in_range};
 
 pub(super) fn collect_for_pattern_binding_renames(
     tokens: &[ExpandedToken],
@@ -16,8 +16,21 @@ pub(super) fn collect_for_pattern_binding_renames(
     let mut names = Vec::new();
     collect_for_pattern_names(pattern, &mut names);
     for name in names {
-        if let Some(index) = find_generated_id_in_range(tokens, start, start + consumed, &name) {
-            collect_simple_generated_id(tokens, index, site, reference_start, None, None, scope_end, renames);
+        let binding_indices = find_generated_ids_in_range(tokens, start, start + consumed, &name);
+        let Some(first_index) = binding_indices.first().copied() else {
+            continue;
+        };
+        let replacement = format!("__lk_macro_{site}_{first_index}_{name}");
+        for index in binding_indices {
+            renames.push(BindingRename {
+                name: name.clone(),
+                replacement: replacement.clone(),
+                binding_index: index,
+                reference_start,
+                excluded_start: None,
+                excluded_end: None,
+                end: scope_end,
+            });
         }
     }
 }
@@ -55,7 +68,7 @@ pub(super) fn parse_generated_for_pattern_prefix(
 
 fn collect_for_pattern_names(pattern: &ForPattern, names: &mut Vec<String>) {
     match pattern {
-        ForPattern::Variable(name) if name != "_" => names.push(name.clone()),
+        ForPattern::Variable(name) if name != "_" => push_for_pattern_name(names, name),
         ForPattern::Tuple(patterns) => {
             for pattern in patterns {
                 collect_for_pattern_names(pattern, names);
@@ -68,7 +81,7 @@ fn collect_for_pattern_names(pattern: &ForPattern, names: &mut Vec<String>) {
             if let Some(rest) = rest
                 && rest != "_"
             {
-                names.push(rest.clone());
+                push_for_pattern_name(names, rest);
             }
         }
         ForPattern::Object(entries) => {
@@ -77,5 +90,11 @@ fn collect_for_pattern_names(pattern: &ForPattern, names: &mut Vec<String>) {
             }
         }
         ForPattern::Ignore | ForPattern::Variable(_) => {}
+    }
+}
+
+fn push_for_pattern_name(names: &mut Vec<String>, name: &str) {
+    if !names.iter().any(|existing| existing == name) {
+        names.push(name.to_string());
     }
 }

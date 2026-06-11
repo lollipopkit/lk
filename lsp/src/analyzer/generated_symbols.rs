@@ -129,6 +129,8 @@ fn generated_member_symbol_kind(label: &str) -> SymbolKind {
         SymbolKind::FIELD
     } else if label.starts_with("call ") {
         SymbolKind::FUNCTION
+    } else if label.starts_with("literal ") {
+        SymbolKind::CONSTANT
     } else if label.starts_with("binding ")
         || label.starts_with("ref ")
         || label.starts_with("assign_ref ")
@@ -140,7 +142,7 @@ fn generated_member_symbol_kind(label: &str) -> SymbolKind {
     } else if label.starts_with("map_key ") || label.starts_with("named_arg ") || label.starts_with("named_param_type ")
     {
         SymbolKind::PROPERTY
-    } else if label.starts_with("type_ref ") || label.starts_with("type_var ") {
+    } else if label.starts_with("type_ref ") || label.starts_with("type_var ") || label.starts_with("type_expr ") {
         SymbolKind::TYPE_PARAMETER
     } else if label.starts_with("import_file ") {
         SymbolKind::FILE
@@ -148,20 +150,31 @@ fn generated_member_symbol_kind(label: &str) -> SymbolKind {
         SymbolKind::MODULE
     } else if label.starts_with("import_item ") || label.starts_with("import_alias ") {
         SymbolKind::VARIABLE
-    } else if label.starts_with("attr ") {
+    } else if label.starts_with("attr ")
+        || label.starts_with("attr_arg ")
+        || label.starts_with("attr_key ")
+        || label.starts_with("attr_value ")
+    {
         SymbolKind::PROPERTY
     } else if label.starts_with("derive ") {
         SymbolKind::ENUM_MEMBER
     } else if label.starts_with("stmt ")
         || label.starts_with("select ")
+        || label.starts_with("match ")
         || label.starts_with("pattern ")
         || label.starts_with("for_pattern ")
+        || label.starts_with("template_part ")
+        || label.starts_with("range ")
         || label == "match_arm"
     {
         SymbolKind::EVENT
     } else if label.starts_with("index ") {
         SymbolKind::ARRAY
-    } else if label.starts_with("expr ") {
+    } else if label.starts_with("expr ")
+        || label.starts_with("binary ")
+        || label.starts_with("unary ")
+        || label.starts_with("compound_assign ")
+    {
         SymbolKind::OPERATOR
     } else {
         SymbolKind::OBJECT

@@ -139,6 +139,44 @@ registry entries have `yanked = true`.
 require an auth token by default; registries can still inspect the
 `X-LK-Registry-Scope: index` header for scoped access policy.
 
+`lk pkg key generate --out registry-key.json --key-id local-key` creates an
+HMAC registry signing key file. `lk pkg key init-keyring --out
+registry-keyring.json --key-id key-1` creates a keyring with an active signing
+key; `lk pkg key rotate --keyring registry-keyring.json --key-id key-2` adds a
+new active key while keeping previous keys trusted for existing signatures; and
+`lk pkg key revoke --keyring registry-keyring.json --key-id key-1` marks an old
+non-active key as revoked. `lk pkg key generate-asymmetric --private-out
+registry-private.json --public-out registry-public.json --key-id ed-key`
+creates an Ed25519 private/public signing key pair. `lk pkg serve --addr
+127.0.0.1:3899 --storage
+./registry --registry-url https://registry.lk.example --signing-keyring-file
+registry-keyring.json` starts the built-in registry service and signs generated
+publish/index/version responses with the active key. Clients can enforce
+registry signatures with `LK_REGISTRY_SIGNING_KEYRING_FILE`, or use
+`LK_REGISTRY_PUBLIC_KEY_FILE` with `--signing-private-key-file` for public-only
+trust. `LK_REGISTRY_SIGNING_KEY_FILE` / `LK_REGISTRY_SIGNING_KEY_ID` plus
+`LK_REGISTRY_SIGNING_SECRET` remain available for single-key local HMAC
+testing. Server signing sources cannot be combined with each other.
+
+`lk pkg serve --auth-policy registry-auth.json` enables scoped bearer-token
+authorization for registry routes. The policy file is JSON:
+
+```json
+{
+  "tokens": [
+    { "token": "index-token", "scopes": ["index"] },
+    { "token": "publish-token", "scopes": ["publish"] },
+    { "token": "admin-token", "scopes": ["*"] }
+  ]
+}
+```
+
+When an auth policy is configured, `GET /api/v1/index`, `POST
+/api/v1/packages`, and yank/unyank routes all require an `Authorization: Bearer
+...` token with the matching `index`, `publish`, or `yank` scope. The older
+`--token` flag remains available for local single-token publish/yank testing,
+but it cannot be combined with `--auth-policy`.
+
 Expanded token streams keep token-level macro origins for declarative macro
 captures, macro-definition output, `$crate` anchors, and function-like
 procedural macro output. Post-parse derive/attribute/cfg expansion also records
@@ -204,4 +242,10 @@ return util.answer();
 - `lk pkg publish` verifies and uploads the publish manifest JSON, including its integrity digest, with `LK_REGISTRY_PUBLISH_TOKEN`, `LK_REGISTRY_TOKEN`, or `LK_PUBLISH_TOKEN`.
 - `lk pkg yank <name> <version> [--undo]` yanks or un-yanks a registry package version.
 - `lk pkg index sync` downloads and caches the registry package index.
+- `lk pkg key generate --out <path> --key-id <id>` creates a JSON HMAC signing key for registry responses.
+- `lk pkg key generate-asymmetric --private-out <path> --public-out <path> --key-id <id>` creates an Ed25519 private/public signing key pair.
+- `lk pkg key init-keyring --out <path> --key-id <id>` creates a JSON HMAC signing keyring.
+- `lk pkg key rotate --keyring <path> --key-id <id>` adds a new active signing key to a keyring.
+- `lk pkg key revoke --keyring <path> --key-id <id>` revokes an old non-active key in a keyring.
+- `lk pkg serve --storage <dir> --registry-url <url> [--auth-policy <path>] [--signing-keyring-file <path>|--signing-private-key-file <path>]` runs a local registry server.
 - `lk pkg tree` prints resolved package modules.

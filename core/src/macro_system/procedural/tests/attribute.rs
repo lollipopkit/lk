@@ -180,6 +180,7 @@ fn external_attribute_records_generated_expression_category_origins() {
             fn generated() {
                 let items = [41, 42];
                 let meta = {kind: items.0};
+                let dynamic = items[value];
                 let value = (items.0 + 1);
                 let flag = !value;
                 value;
@@ -215,12 +216,24 @@ fn external_attribute_records_generated_expression_category_origins() {
         .expect("generated function origin");
     for label in [
         "expr list",
+        "expr list_item",
         "expr map",
+        "expr map_key_expr",
+        "expr map_value",
         "expr access",
+        "expr access_base",
+        "expr access_member",
         "expr paren",
         "expr binary",
+        "expr binary_left",
+        "expr binary_right",
+        "binary add",
         "expr unary",
+        "expr unary_operand",
+        "unary not",
         "expr template_string",
+        "template_part literal",
+        "template_part expr",
         "stmt expr",
         "index items.0",
         "map_key kind",
@@ -248,6 +261,7 @@ fn external_attribute_records_remaining_generated_expression_shape_origins() {
                 let channel = nil;
                 let value = 1;
                 let user = User { id: value };
+                let updated = User { ..user, id: value };
                 let direct = user.id;
                 let maybe = user?.id;
                 let chosen = value > 0 ? value..10 : nil;
@@ -262,7 +276,11 @@ fn external_attribute_records_remaining_generated_expression_shape_origins() {
                     case send(channel, value) => value;
                     default => nil;
                 };
-                return called;
+                let matched = match value {
+                    1 => called,
+                    _ => value
+                };
+                return matched;
             }
             "#,
     );
@@ -298,26 +316,60 @@ fn external_attribute_records_remaining_generated_expression_shape_origins() {
         .expect("generated function origin");
     for label in [
         "expr literal",
+        "literal int",
+        "literal bool",
+        "literal nil",
         "expr access",
         "expr and",
         "expr or",
         "expr nullish",
+        "expr logical_left",
+        "expr logical_right",
+        "expr nullish_left",
+        "expr nullish_right",
+        "binary gt",
         "expr struct_literal",
+        "expr struct_field",
+        "expr struct_field_value",
+        "expr struct_update_base",
+        "expr struct_update_fields",
         "expr optional_access",
         "expr conditional",
+        "expr conditional_condition",
+        "expr conditional_then",
+        "expr conditional_else",
         "expr range",
+        "range exclusive",
+        "range start",
+        "range end",
         "expr closure",
+        "expr closure_body",
         "expr block",
+        "expr block_stmt",
         "expr call",
+        "expr call_expr",
+        "expr call_callee",
+        "expr call_arg",
         "expr call_named",
+        "expr named_arg_value",
         "expr select",
+        "expr var",
+        "expr match_value",
+        "expr match_arm_body",
         "select recv",
+        "select recv_channel",
         "select send",
+        "select send_channel",
+        "select send_value",
+        "select guard",
+        "select body",
         "select default",
         "named_arg current",
         "struct_field id",
         "type_ref User",
+        "ref user",
         "binding item",
+        "ref item",
         "call helper",
         "call handler",
     ] {
@@ -341,7 +393,7 @@ fn external_attribute_records_top_level_statement_origins() {
         "stmt_attr",
         shell_response_config(
             shell,
-            r#"{"protocol_version":1,"output_tokens":[{"kind":"Let","lexeme":"let","span":null},{"kind":"Id","lexeme":"current","span":null},{"kind":"Colon","lexeme":":","span":null},{"kind":"Id","lexeme":"User","span":null},{"kind":"Assign","lexeme":"=","span":null},{"kind":"Id","lexeme":"seed","span":null},{"kind":"Semicolon","lexeme":";","span":null},{"kind":"Id","lexeme":"current","span":null},{"kind":"PlusAssign","lexeme":"+=", "span":null},{"kind":"Int","lexeme":"1","span":null},{"kind":"Semicolon","lexeme":";","span":null}],"diagnostics":[],"dependencies":[]}"#,
+            r#"{"protocol_version":1,"output_tokens":[{"kind":"Let","lexeme":"let","span":null},{"kind":"Id","lexeme":"current","span":null},{"kind":"Colon","lexeme":":","span":null},{"kind":"Id","lexeme":"User","span":null},{"kind":"Assign","lexeme":"=","span":null},{"kind":"Id","lexeme":"seed","span":null},{"kind":"Semicolon","lexeme":";","span":null},{"kind":"Const","lexeme":"const","span":null},{"kind":"Id","lexeme":"fixed","span":null},{"kind":"Assign","lexeme":"=","span":null},{"kind":"Int","lexeme":"7","span":null},{"kind":"Semicolon","lexeme":";","span":null},{"kind":"Id","lexeme":"current","span":null},{"kind":"PlusAssign","lexeme":"+=", "span":null},{"kind":"Int","lexeme":"1","span":null},{"kind":"Semicolon","lexeme":";","span":null}],"diagnostics":[],"dependencies":[]}"#,
         ),
     );
 
@@ -399,6 +451,23 @@ fn external_attribute_records_top_level_statement_origins() {
             .any(|member| member.label == "stmt let" && member.span.is_some()),
         "top-level generated let statement should carry a source-map span: {generated_statement:?}"
     );
+    for label in ["stmt binding_pattern", "stmt type_annotation", "stmt initializer"] {
+        assert!(
+            generated_statement
+                .generated_member_origins
+                .iter()
+                .any(|member| member.label == label && member.span.is_some()),
+            "top-level generated statement role `{label}` should carry a source-map span: {generated_statement:?}"
+        );
+    }
+    assert!(
+        origin
+            .generated_item_origins
+            .iter()
+            .flat_map(|item| &item.generated_member_origins)
+            .any(|member| member.label == "stmt const" && member.span.is_some()),
+        "top-level generated const statement should carry a source-map span: {origin:?}"
+    );
     assert!(
         origin
             .generated_item_origins
@@ -415,6 +484,16 @@ fn external_attribute_records_top_level_statement_origins() {
             .any(|member| member.label == "stmt compound_assign" && member.span.is_some()),
         "top-level generated compound assignment statement should carry a source-map span: {origin:?}"
     );
+    for label in ["stmt compound_assign_value"] {
+        assert!(
+            origin
+                .generated_item_origins
+                .iter()
+                .flat_map(|item| &item.generated_member_origins)
+                .any(|member| member.label == label && member.span.is_some()),
+            "top-level generated assignment role `{label}` should carry a source-map span: {origin:?}"
+        );
+    }
 }
 
 #[test]
@@ -470,6 +549,14 @@ fn external_attribute_records_generated_function_type_annotation_origins() {
     );
     for label in [
         "binding mapper",
+        "type_expr function",
+        "type_expr function_param",
+        "type_expr function_named_param",
+        "type_expr function_return",
+        "type_expr named",
+        "stmt binding_pattern",
+        "stmt type_annotation",
+        "stmt initializer",
         "named_param_type current",
         "ref seed",
         "call mapper",
@@ -525,13 +612,25 @@ fn external_attribute_records_generated_control_flow_statement_origins() {
         .expect("generated function origin");
     for label in [
         "stmt let",
+        "stmt binding_pattern",
+        "stmt initializer",
         "stmt if",
+        "stmt if_condition",
+        "stmt if_then",
+        "stmt if_else",
         "stmt assign",
+        "stmt assign_value",
         "stmt while",
+        "stmt while_condition",
+        "stmt while_body",
         "stmt compound_assign",
+        "stmt compound_assign_value",
         "stmt break",
         "stmt continue",
         "stmt return",
+        "stmt return_value",
+        "stmt block_item",
+        "stmt function_body",
     ] {
         assert!(
             generated_fn
@@ -539,6 +638,84 @@ fn external_attribute_records_generated_control_flow_statement_origins() {
                 .iter()
                 .any(|member| member.label == label && member.span.is_some()),
             "generated control-flow statement origin `{label}` should carry a source-map span: {generated_fn:?}"
+        );
+    }
+}
+
+#[test]
+fn external_attribute_records_generated_let_and_for_statement_role_origins() {
+    let Some(shell) = test_shell() else {
+        return;
+    };
+    let mut providers = ProcMacroProviders::default();
+    let response = proc_macro_response_from_source(
+        r#"
+            fn generated() {
+                let seed = 1;
+                if let item if item > 0 = seed {
+                    item;
+                } else {
+                    seed;
+                }
+                while let current if current < 2 = seed {
+                    current;
+                }
+                for row in rows {
+                    row;
+                }
+                return seed;
+            }
+            "#,
+    );
+    let mut config = shell_response_config(shell, &response);
+    config.max_output_bytes = 16 * 1024;
+    providers.register_attribute("let_control_flow", config);
+
+    let expanded = expand_program_source(
+        r#"
+            #[let_control_flow]
+            fn old() {
+                return 1;
+            }
+            "#,
+        ParseOptions {
+            proc_macro_providers: providers,
+            ..ParseOptions::default()
+        },
+    )
+    .expect("external attribute should expand");
+
+    let origin = expanded
+        .ast_macro_origins
+        .iter()
+        .find(|origin| origin.macro_name == "let_control_flow")
+        .expect("attribute origin should be recorded");
+    let generated_fn = origin
+        .generated_item_origins
+        .iter()
+        .find(|item| item.label == "fn generated")
+        .expect("generated function origin");
+    for label in [
+        "stmt if let",
+        "stmt if_let_pattern",
+        "stmt if_let_value",
+        "stmt if_let_then",
+        "stmt if_let_else",
+        "stmt while let",
+        "stmt while_let_pattern",
+        "stmt while_let_value",
+        "stmt while_let_body",
+        "stmt for",
+        "stmt for_pattern",
+        "stmt for_iterable",
+        "stmt for_body",
+    ] {
+        assert!(
+            generated_fn
+                .generated_member_origins
+                .iter()
+                .any(|member| member.label == label && member.span.is_some()),
+            "generated let/for statement role origin `{label}` should carry a source-map span: {generated_fn:?}"
         );
     }
 }
@@ -594,10 +771,14 @@ fn external_attribute_records_nested_declaration_type_origins() {
     );
     for label in [
         "type Alias",
+        "stmt type_alias_target",
         "struct Boxed",
         "struct_field item",
+        "stmt struct_field_type",
         "trait Reader",
         "fn read",
+        "stmt trait_method_type",
+        "stmt return_value",
     ] {
         assert!(
             generated_fn
@@ -748,6 +929,15 @@ fn external_attribute_records_pattern_map_key_origins() {
             .any(|member| member.label == "pattern map" && member.span.is_some()),
         "generated let map pattern category should carry a source-map span: {generated_fn:?}"
     );
+    for label in ["pattern key", "pattern value", "pattern rest"] {
+        assert!(
+            generated_fn
+                .generated_member_origins
+                .iter()
+                .any(|member| member.label == label && member.span.is_some()),
+            "generated map pattern structure origin `{label}` should carry a source-map span: {generated_fn:?}"
+        );
+    }
     assert!(
         generated_fn
             .generated_member_origins
@@ -755,6 +945,15 @@ fn external_attribute_records_pattern_map_key_origins() {
             .any(|member| member.label == "for_pattern object" && member.span.is_some()),
         "generated for object pattern category should carry a source-map span: {generated_fn:?}"
     );
+    for label in ["for_pattern key", "for_pattern value"] {
+        assert!(
+            generated_fn
+                .generated_member_origins
+                .iter()
+                .any(|member| member.label == label && member.span.is_some()),
+            "generated for object pattern structure origin `{label}` should carry a source-map span: {generated_fn:?}"
+        );
+    }
 }
 
 #[test]
@@ -779,6 +978,7 @@ fn external_attribute_records_generated_pattern_category_origins() {
                 let limit = 0;
                 return match value {
                     item | item if item > limit => item,
+                    1..limit => 2,
                     0 => 0,
                     _ => 1
                 };
@@ -815,13 +1015,27 @@ fn external_attribute_records_generated_pattern_category_origins() {
         .expect("generated function origin");
     for label in [
         "pattern list",
+        "pattern element",
+        "pattern rest",
+        "pattern variable",
         "pattern or",
+        "pattern alternative",
         "pattern guard",
+        "pattern guard_expr",
+        "pattern range",
+        "pattern range_exclusive",
+        "pattern range_start",
+        "pattern range_end",
+        "match guard",
         "pattern literal",
+        "pattern literal_int",
         "pattern wildcard",
         "match_arm",
         "for_pattern tuple",
+        "for_pattern element",
+        "for_pattern variable",
         "for_pattern array",
+        "for_pattern rest",
         "for_pattern ignore",
         "binding head",
         "binding tail",
@@ -997,6 +1211,71 @@ fn external_attribute_records_generated_derive_attribute_origins() {
                 .iter()
                 .any(|member| member.label == label && member.span.is_some()),
             "generated derive attribute origin `{label}` should carry a source-map span: {generated_struct:?}"
+        );
+    }
+}
+
+#[test]
+fn external_attribute_records_generated_attribute_argument_origins() {
+    let Some(shell) = test_shell() else {
+        return;
+    };
+    let mut providers = ProcMacroProviders::default();
+    providers.register_attribute(
+        "meta_attrs_attr",
+        shell_response_config(
+            shell,
+            r##"{"protocol_version":1,"output_tokens":[{"kind":"Hash","lexeme":"#","span":null},{"kind":"LBracket","lexeme":"[","span":null},{"kind":"Id","lexeme":"meta","span":null},{"kind":"LParen","lexeme":"(","span":null},{"kind":"Id","lexeme":"feature","span":null},{"kind":"Assign","lexeme":"=","span":null},{"kind":"Str","lexeme":"\"debug\"","span":null},{"kind":"Comma","lexeme":",","span":null},{"kind":"Id","lexeme":"all","span":null},{"kind":"LParen","lexeme":"(","span":null},{"kind":"Str","lexeme":"\"lsp\"","span":null},{"kind":"Comma","lexeme":",","span":null},{"kind":"Str","lexeme":"\"cli\"","span":null},{"kind":"RParen","lexeme":")","span":null},{"kind":"Comma","lexeme":",","span":null},{"kind":"Id","lexeme":"enabled","span":null},{"kind":"Assign","lexeme":"=","span":null},{"kind":"Bool","lexeme":"true","span":null},{"kind":"Comma","lexeme":",","span":null},{"kind":"Id","lexeme":"retries","span":null},{"kind":"Assign","lexeme":"=","span":null},{"kind":"Int","lexeme":"3","span":null},{"kind":"Comma","lexeme":",","span":null},{"kind":"Id","lexeme":"ratio","span":null},{"kind":"Assign","lexeme":"=","span":null},{"kind":"Float","lexeme":"1.5","span":null},{"kind":"Comma","lexeme":",","span":null},{"kind":"Id","lexeme":"fallback","span":null},{"kind":"Assign","lexeme":"=","span":null},{"kind":"Nil","lexeme":"nil","span":null},{"kind":"RParen","lexeme":")","span":null},{"kind":"RBracket","lexeme":"]","span":null},{"kind":"Struct","lexeme":"struct","span":null},{"kind":"Id","lexeme":"Generated","span":null},{"kind":"LBrace","lexeme":"{","span":null},{"kind":"Id","lexeme":"id","span":null},{"kind":"Colon","lexeme":":","span":null},{"kind":"Id","lexeme":"Int","span":null},{"kind":"Comma","lexeme":",","span":null},{"kind":"RBrace","lexeme":"}","span":null}],"diagnostics":[],"dependencies":[]}"##,
+        ),
+    );
+
+    let expanded = expand_program_source(
+        r#"
+            #[meta_attrs_attr]
+            fn old() {
+                return 0;
+            }
+            "#,
+        ParseOptions {
+            proc_macro_providers: providers,
+            ..ParseOptions::default()
+        },
+    )
+    .expect("external attribute should expand");
+
+    let origin = expanded
+        .ast_macro_origins
+        .iter()
+        .find(|origin| origin.macro_name == "meta_attrs_attr")
+        .expect("attribute origin should be recorded");
+    let generated_struct = origin
+        .generated_item_origins
+        .iter()
+        .find(|item| item.label == "struct Generated")
+        .expect("generated struct origin");
+    for label in [
+        "attr meta",
+        "attr_key feature",
+        "attr_value debug",
+        "attr_arg all",
+        "attr_value lsp",
+        "attr_value cli",
+        "attr_key enabled",
+        "attr_value true",
+        "attr_key retries",
+        "attr_value 3",
+        "attr_key ratio",
+        "attr_value 1.5",
+        "attr_key fallback",
+        "attr_value nil",
+        "struct Generated",
+    ] {
+        assert!(
+            generated_struct
+                .generated_member_origins
+                .iter()
+                .any(|member| member.label == label && member.span.is_some()),
+            "generated attribute argument origin `{label}` should carry a source-map span: {generated_struct:?}"
         );
     }
 }

@@ -2,14 +2,18 @@
   import { onMount } from 'svelte'
   import { Copy, Play, RotateCcw } from '@lucide/svelte'
   import './Playground.css'
+  import LL from '../i18n/i18n-svelte'
   import LkCodeEditor from './LkCodeEditor.svelte'
   import { loadLkWasm, type RunResult } from '../lib/lkWasm'
   import { playgroundExamples } from '../lib/playgroundExamples'
+  import type { PlaygroundSelectionId } from '../lib/playgroundExamples'
+
+  const customExampleId: PlaygroundSelectionId = 'custom'
 
   export let embedded = false
 
   export let source = playgroundExamples[0].code
-  export let activeExample = playgroundExamples[0].name
+  export let activeExample: PlaygroundSelectionId = playgroundExamples[0].id
   let wasmReady = false
   let loading = true
   let running = false
@@ -48,16 +52,16 @@
   }
 
   function reset(): void {
-    const current = playgroundExamples.find((example) => example.name === activeExample) || playgroundExamples[0]
+    const current = playgroundExamples.find((example) => example.id === activeExample) || playgroundExamples[0]
     source = current.code
     result = undefined
   }
 
   function selectExample(event: Event): void {
-    const name = (event.currentTarget as HTMLSelectElement).value
-    const example = playgroundExamples.find((item) => item.name === name)
+    const id = (event.currentTarget as HTMLSelectElement).value
+    const example = playgroundExamples.find((item) => item.id === id)
     if (!example) return
-    activeExample = example.name
+    activeExample = example.id
     source = example.code
     result = undefined
   }
@@ -93,9 +97,9 @@
   }
 </script>
 
-<section id="examples" class="playground-page" class:playground-embedded={embedded} aria-label="LK playground">
+<section id="examples" class="playground-page" class:playground-embedded={embedded} aria-label={$LL.playground.ariaLabel()}>
   <div class="playground-shell">
-    <section class="playground-editor" aria-label="LK source editor">
+    <section class="playground-editor" aria-label={$LL.playground.editorAriaLabel()}>
       <div class="playground-toolbar">
         <div class="window-controls" aria-hidden="true">
           <span class="dot red"></span>
@@ -103,29 +107,32 @@
           <span class="dot green"></span>
         </div>
         <div class="editor-select-wrapper">
-          <select value={activeExample} on:change={selectExample} aria-label="Select LK sample">
+          <select value={activeExample} on:change={selectExample} aria-label={$LL.playground.selectSample()}>
             {#each playgroundExamples as example}
-              <option value={example.name}>{example.name}</option>
+              <option value={example.id}>{$LL.playground.examples[example.id]()}</option>
             {/each}
+            {#if activeExample === customExampleId}
+              <option value={customExampleId}>{$LL.playground.examples.custom()}</option>
+            {/if}
           </select>
         </div>
         <div class="playground-actions">
-          <button class="icon-btn" type="button" on:click={reset} aria-label="Reset source">
+          <button class="icon-btn" type="button" on:click={reset} aria-label={$LL.playground.resetSource()}>
             <RotateCcw size={17} />
           </button>
           <button class="btn btn-primary" type="button" on:click={run} disabled={!wasmReady || running}>
             <Play size={18} />
-            {running ? 'Running' : 'Run'}
+            {running ? $LL.playground.running() : $LL.playground.run()}
           </button>
         </div>
       </div>
-      <LkCodeEditor bind:value={source} ariaLabel="LK source code" compact={embedded} />
+      <LkCodeEditor bind:value={source} ariaLabel={$LL.playground.sourceAriaLabel()} compact={embedded} />
     </section>
 
-    <section class="playground-output" aria-label="Run output">
+    <section class="playground-output" aria-label={$LL.playground.outputAriaLabel()}>
       <div class="output-header">
-        <span>{loading ? 'Loading wasm' : wasmReady ? 'Ready' : 'Unavailable'}</span>
-        <button class="icon-btn" type="button" on:click={copyOutput} disabled={!result} aria-label="Copy output">
+        <span>{loading ? $LL.playground.loadingWasm() : wasmReady ? $LL.playground.ready() : $LL.playground.unavailable()}</span>
+        <button class="icon-btn" type="button" on:click={copyOutput} disabled={!result} aria-label={$LL.playground.copyOutput()}>
           <Copy size={17} />
         </button>
       </div>
@@ -137,7 +144,7 @@
         <div class="output-skeleton short"></div>
       {:else if result}
         <div class:output-ok={result.ok} class:output-fail={!result.ok} class="output-status">
-          {result.ok ? 'Completed' : 'Failed'} · {result.elapsedMs.toFixed(1)} ms
+          {result.ok ? $LL.playground.completed() : $LL.playground.failed()} · {result.elapsedMs.toFixed(1)} ms
         </div>
         {#if result.stdout}
           <h2>stdout</h2>
@@ -159,8 +166,8 @@
         {/each}
       {:else}
         <div class="output-empty">
-          <span>Ready</span>
-          <p>Select a sample or edit the source, then run it in the wasm sandbox.</p>
+          <span>{$LL.playground.ready()}</span>
+          <p>{$LL.playground.emptyMessage()}</p>
         </div>
       {/if}
     </section>

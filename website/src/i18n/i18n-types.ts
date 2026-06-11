@@ -156,6 +156,126 @@ type RootTranslation = {
 		 */
 		title: string
 	}
+	playground: {
+		/**
+		 * L​K​ ​p​l​a​y​g​r​o​u​n​d
+		 */
+		ariaLabel: string
+		/**
+		 * L​K​ ​s​o​u​r​c​e​ ​e​d​i​t​o​r
+		 */
+		editorAriaLabel: string
+		/**
+		 * L​K​ ​s​o​u​r​c​e​ ​c​o​d​e
+		 */
+		sourceAriaLabel: string
+		/**
+		 * R​u​n​ ​o​u​t​p​u​t
+		 */
+		outputAriaLabel: string
+		/**
+		 * S​e​l​e​c​t​ ​L​K​ ​s​a​m​p​l​e
+		 */
+		selectSample: string
+		/**
+		 * R​e​s​e​t​ ​s​o​u​r​c​e
+		 */
+		resetSource: string
+		/**
+		 * C​o​p​y​ ​o​u​t​p​u​t
+		 */
+		copyOutput: string
+		/**
+		 * R​u​n
+		 */
+		run: string
+		/**
+		 * R​u​n​n​i​n​g
+		 */
+		running: string
+		/**
+		 * L​o​a​d​i​n​g​ ​w​a​s​m
+		 */
+		loadingWasm: string
+		/**
+		 * R​e​a​d​y
+		 */
+		ready: string
+		/**
+		 * U​n​a​v​a​i​l​a​b​l​e
+		 */
+		unavailable: string
+		/**
+		 * C​o​m​p​l​e​t​e​d
+		 */
+		completed: string
+		/**
+		 * F​a​i​l​e​d
+		 */
+		failed: string
+		/**
+		 * S​e​l​e​c​t​ ​a​ ​s​a​m​p​l​e​ ​o​r​ ​e​d​i​t​ ​t​h​e​ ​s​o​u​r​c​e​,​ ​t​h​e​n​ ​r​u​n​ ​i​t​ ​i​n​ ​t​h​e​ ​w​a​s​m​ ​s​a​n​d​b​o​x​.
+		 */
+		emptyMessage: string
+		examples: {
+			/**
+			 * P​a​t​t​e​r​n​ ​m​a​t​c​h​i​n​g
+			 */
+			patternMatching: string
+			/**
+			 * S​t​r​u​c​t​s​ ​&​ ​t​r​a​i​t​s
+			 */
+			structTrait: string
+			/**
+			 * N​a​m​e​d​ ​p​a​r​a​m​s
+			 */
+			namedParams: string
+			/**
+			 * R​a​n​g​e​s
+			 */
+			ranges: string
+			/**
+			 * T​e​m​p​l​a​t​e​ ​s​t​r​i​n​g​s
+			 */
+			templateStrings: string
+			/**
+			 * E​r​r​o​r​ ​h​a​n​d​l​i​n​g
+			 */
+			errorHandling: string
+			/**
+			 * C​l​o​s​u​r​e​s
+			 */
+			closures: string
+			/**
+			 * C​o​n​f​i​g​ ​p​a​r​s​e​r
+			 */
+			configParser: string
+			/**
+			 * S​o​r​t​ ​&​ ​s​e​a​r​c​h
+			 */
+			sortSearch: string
+			/**
+			 * L​i​s​t​ ​/​ ​i​t​e​r​ ​i​n​t​e​r​o​p
+			 */
+			listIterSugar: string
+			/**
+			 * L​i​s​t​ ​o​p​e​r​a​t​i​o​n​s
+			 */
+			listOps: string
+			/**
+			 * J​S​O​N​ ​p​r​o​c​e​s​s​i​n​g
+			 */
+			jsonProcess: string
+			/**
+			 * M​a​c​r​o​s
+			 */
+			macros: string
+			/**
+			 * C​u​s​t​o​m
+			 */
+			custom: string
+		}
+	}
 	runtime: {
 		/**
 		 * R​u​n​t​i​m​e​ ​&​ ​T​o​o​l​i​n​g
@@ -215,10 +335,6 @@ type RootTranslation = {
 		 * U​p​ ​a​n​d​ ​r​u​n​n​i​n​g​ ​i​n​ ​s​e​c​o​n​d​s​.
 		 */
 		title: string
-		/**
-		 * O​r​ ​b​u​i​l​d​ ​f​r​o​m​ ​s​o​u​r​c​e​:
-		 */
-		installHint: string
 	}
 	learn: {
 		/**
@@ -401,6 +517,126 @@ export type TranslationFunctions = {
 		 */
 		title: () => LocalizedString
 	}
+	playground: {
+		/**
+		 * LK playground
+		 */
+		ariaLabel: () => LocalizedString
+		/**
+		 * LK source editor
+		 */
+		editorAriaLabel: () => LocalizedString
+		/**
+		 * LK source code
+		 */
+		sourceAriaLabel: () => LocalizedString
+		/**
+		 * Run output
+		 */
+		outputAriaLabel: () => LocalizedString
+		/**
+		 * Select LK sample
+		 */
+		selectSample: () => LocalizedString
+		/**
+		 * Reset source
+		 */
+		resetSource: () => LocalizedString
+		/**
+		 * Copy output
+		 */
+		copyOutput: () => LocalizedString
+		/**
+		 * Run
+		 */
+		run: () => LocalizedString
+		/**
+		 * Running
+		 */
+		running: () => LocalizedString
+		/**
+		 * Loading wasm
+		 */
+		loadingWasm: () => LocalizedString
+		/**
+		 * Ready
+		 */
+		ready: () => LocalizedString
+		/**
+		 * Unavailable
+		 */
+		unavailable: () => LocalizedString
+		/**
+		 * Completed
+		 */
+		completed: () => LocalizedString
+		/**
+		 * Failed
+		 */
+		failed: () => LocalizedString
+		/**
+		 * Select a sample or edit the source, then run it in the wasm sandbox.
+		 */
+		emptyMessage: () => LocalizedString
+		examples: {
+			/**
+			 * Pattern matching
+			 */
+			patternMatching: () => LocalizedString
+			/**
+			 * Structs & traits
+			 */
+			structTrait: () => LocalizedString
+			/**
+			 * Named params
+			 */
+			namedParams: () => LocalizedString
+			/**
+			 * Ranges
+			 */
+			ranges: () => LocalizedString
+			/**
+			 * Template strings
+			 */
+			templateStrings: () => LocalizedString
+			/**
+			 * Error handling
+			 */
+			errorHandling: () => LocalizedString
+			/**
+			 * Closures
+			 */
+			closures: () => LocalizedString
+			/**
+			 * Config parser
+			 */
+			configParser: () => LocalizedString
+			/**
+			 * Sort & search
+			 */
+			sortSearch: () => LocalizedString
+			/**
+			 * List / iter interop
+			 */
+			listIterSugar: () => LocalizedString
+			/**
+			 * List operations
+			 */
+			listOps: () => LocalizedString
+			/**
+			 * JSON processing
+			 */
+			jsonProcess: () => LocalizedString
+			/**
+			 * Macros
+			 */
+			macros: () => LocalizedString
+			/**
+			 * Custom
+			 */
+			custom: () => LocalizedString
+		}
+	}
 	runtime: {
 		/**
 		 * Runtime & Tooling
@@ -460,10 +696,6 @@ export type TranslationFunctions = {
 		 * Up and running in seconds.
 		 */
 		title: () => LocalizedString
-		/**
-		 * Or build from source:
-		 */
-		installHint: () => LocalizedString
 	}
 	learn: {
 		/**

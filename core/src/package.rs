@@ -8,7 +8,15 @@ use std::{
 use crate::macro_system::{ProcMacroProcessConfig, ProcMacroProviders};
 use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+
+mod registry;
+pub use registry::{
+    RegistryAsymmetricSigningKey, RegistryIndex, RegistryManifestSignature, RegistryPackageIndex,
+    RegistryPackageIndexResponse, RegistryPackageVersionResponse, RegistryPublicSigningKey, RegistryPublishDependency,
+    RegistryPublishIntegrity, RegistryPublishMacroProviders, RegistryPublishManifest, RegistryPublishRequest,
+    RegistryPublishServerValidation, RegistryPublishStoredManifest, RegistryService, RegistrySigningKey,
+    RegistrySigningKeyring, RegistryStoredPackage, RegistryStoredVersion,
+};
 
 pub const MANIFEST_FILE: &str = "Lk.toml";
 pub const LOCK_FILE: &str = "Lk.lock";
@@ -128,50 +136,6 @@ pub struct PackageGraph {
     pub missing: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RegistryPublishManifest {
-    pub package: String,
-    pub version: String,
-    pub registry: String,
-    pub registry_url: String,
-    pub include: Vec<String>,
-    pub dependencies: Vec<RegistryPublishDependency>,
-    pub macro_providers: RegistryPublishMacroProviders,
-    pub integrity: RegistryPublishIntegrity,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RegistryPublishDependency {
-    pub name: String,
-    pub source: String,
-    pub version_or_rev: Option<String>,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RegistryPublishMacroProviders {
-    pub derive: Vec<String>,
-    pub attribute: Vec<String>,
-    pub function_like: Vec<String>,
-    pub trusted_dependencies: Vec<String>,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RegistryPublishIntegrity {
-    pub algorithm: String,
-    pub digest: String,
-}
-
-#[derive(Serialize)]
-struct RegistryPublishManifestDigestPayload<'a> {
-    package: &'a str,
-    version: &'a str,
-    registry: &'a str,
-    registry_url: &'a str,
-    include: &'a [String],
-    dependencies: &'a [RegistryPublishDependency],
-    macro_providers: &'a RegistryPublishMacroProviders,
-}
-
 impl Manifest {
     pub fn read(path: &Path) -> Result<Self> {
         let raw = fs::read_to_string(path).with_context(|| format!("read manifest {}", path.display()))?;
@@ -226,88 +190,6 @@ impl Manifest {
         } else {
             Err(anyhow!("macro package check failed:\n{}", issues.join("\n")))
         }
-    }
-
-    pub fn registry_publish_manifest(
-        &self,
-        dependency_versions: &BTreeMap<String, Option<String>>,
-    ) -> Result<RegistryPublishManifest> {
-        let package = self
-            .package
-            .as_ref()
-            .ok_or_else(|| anyhow!("registry publish requires a [package] section"))?;
-        let version = package
-            .version
-            .as_ref()
-            .filter(|version| is_publish_version(version))
-            .ok_or_else(|| anyhow!("registry publish requires [package].version to be a semantic version"))?
-            .clone();
-        let registry = self
-            .registry
-            .as_ref()
-            .ok_or_else(|| anyhow!("registry publish requires a [registry] section"))?;
-        let registry_url = registry
-            .url
-            .as_ref()
-            .filter(|url| is_registry_url(url))
-            .ok_or_else(|| anyhow!("registry publish requires [registry].url to start with http:// or https://"))?
-            .clone();
-
-        let dependencies = self
-            .dependencies
-            .iter()
-            .map(|(name, spec)| RegistryPublishDependency {
-                name: name.clone(),
-                source: dependency_publish_source(spec),
-                version_or_rev: dependency_versions
-                    .get(name)
-                    .cloned()
-                    .flatten()
-                    .or_else(|| dependency_version(spec)),
-            })
-            .collect();
-        let macro_providers = RegistryPublishMacroProviders {
-            derive: self.macros.derive.keys().cloned().collect(),
-            attribute: self.macros.attribute.keys().cloned().collect(),
-            function_like: self.macros.function_like.keys().cloned().collect(),
-            trusted_dependencies: self.macros.trusted_dependencies.clone(),
-        };
-        let mut publish = RegistryPublishManifest {
-            package: package.name.clone(),
-            version,
-            registry: registry.name.clone().unwrap_or_else(|| "default".to_string()),
-            registry_url,
-            include: registry_include(registry),
-            dependencies,
-            macro_providers,
-            integrity: RegistryPublishIntegrity::default(),
-        };
-        publish.integrity = publish.integrity();
-        Ok(publish)
-    }
-}
-
-impl RegistryPublishManifest {
-    pub fn integrity(&self) -> RegistryPublishIntegrity {
-        let payload = RegistryPublishManifestDigestPayload {
-            package: &self.package,
-            version: &self.version,
-            registry: &self.registry,
-            registry_url: &self.registry_url,
-            include: &self.include,
-            dependencies: &self.dependencies,
-            macro_providers: &self.macro_providers,
-        };
-        let body = serde_json::to_vec(&payload).expect("serialize registry publish manifest digest payload");
-        let digest = Sha256::digest(&body);
-        RegistryPublishIntegrity {
-            algorithm: "sha256".to_string(),
-            digest: format!("{digest:x}"),
-        }
-    }
-
-    pub fn verify_integrity(&self) -> bool {
-        self.integrity == self.integrity()
     }
 }
 
@@ -468,30 +350,6 @@ impl PackageGraph {
                 .with_context(|| format!("check macro package manifest {}", manifest_path.display()))?;
         }
         Ok(())
-    }
-
-    pub fn registry_publish_manifest(&self) -> Result<RegistryPublishManifest> {
-        if !self.missing.is_empty() {
-            return Err(anyhow!(
-                "registry publish requires all dependencies to resolve; missing: {}",
-                self.missing.join(", ")
-            ));
-        }
-        self.validate_macro_distribution_for_manifest(&self.manifest_path)?;
-        let dependency_versions = self
-            .modules
-            .iter()
-            .filter(|module| module.manifest_path != self.manifest_path)
-            .filter_map(|module| {
-                Manifest::read(&module.manifest_path).ok().map(|manifest| {
-                    (
-                        module.name.clone(),
-                        manifest.package.and_then(|package| package.version),
-                    )
-                })
-            })
-            .collect();
-        self.manifest.registry_publish_manifest(&dependency_versions)
     }
 
     pub fn validate_macro_distribution_for_manifest(&self, manifest_path: &Path) -> Result<()> {
@@ -712,7 +570,7 @@ fn is_valid_macro_provider_name(name: &str) -> bool {
         && chars.all(|ch| ch == '_' || ch == '-' || ch.is_ascii_alphanumeric())
 }
 
-fn is_publish_version(version: &str) -> bool {
+pub(super) fn is_publish_version(version: &str) -> bool {
     let parts = version.split('.').collect::<Vec<_>>();
     parts.len() == 3
         && parts.iter().all(|part| {
@@ -723,10 +581,6 @@ fn is_publish_version(version: &str) -> bool {
                     .chars()
                     .all(|ch| ch.is_ascii_digit())
         })
-}
-
-fn is_registry_url(url: &str) -> bool {
-    url.starts_with("https://") || url.starts_with("http://")
 }
 
 fn registry_include(registry: &RegistrySection) -> Vec<String> {
@@ -1021,78 +875,6 @@ mod tests {
             "{message}"
         );
         assert!(message.contains("trusted macro dependency `missing`"), "{message}");
-        Ok(())
-    }
-
-    #[test]
-    fn registry_publish_manifest_records_versioned_macro_metadata() -> Result<()> {
-        let temp = tempfile::tempdir()?;
-        let root = temp.path();
-        fs::create_dir_all(root.join("src"))?;
-        fs::create_dir_all(root.join("tools"))?;
-        fs::write(root.join("src/mod.lk"), "return 1;\n")?;
-        fs::write(root.join("tools/sql"), "#!/bin/sh\n")?;
-        fs::write(
-            root.join(MANIFEST_FILE),
-            r#"
-                [package]
-                name = "macro_app"
-                version = "0.2.3"
-
-                [registry]
-                name = "local"
-                url = "https://registry.lk.example"
-                include = ["Lk.toml", "src/**", "tools/sql"]
-
-                [macros.function_like.sql]
-                command = "./tools/sql"
-            "#,
-        )?;
-
-        let graph = PackageGraph::discover(root)?.unwrap();
-        let publish = graph.registry_publish_manifest()?;
-
-        assert_eq!(publish.package, "macro_app");
-        assert_eq!(publish.version, "0.2.3");
-        assert_eq!(publish.registry, "local");
-        assert_eq!(publish.registry_url, "https://registry.lk.example");
-        assert_eq!(publish.include, vec!["Lk.toml", "src/**", "tools/sql"]);
-        assert_eq!(publish.macro_providers.function_like, vec!["sql"]);
-        assert_eq!(publish.integrity.algorithm, "sha256");
-        assert_eq!(publish.integrity.digest.len(), 64);
-        assert!(publish.verify_integrity());
-
-        let mut tampered = publish.clone();
-        tampered.include.push("extra/**".to_string());
-        assert!(!tampered.verify_integrity());
-        Ok(())
-    }
-
-    #[test]
-    fn registry_publish_manifest_requires_registry_and_semver() -> Result<()> {
-        let manifest: Manifest = toml::from_str(
-            r#"
-                [package]
-                name = "macro_app"
-                version = "dev"
-            "#,
-        )?;
-        let err = manifest
-            .registry_publish_manifest(&BTreeMap::new())
-            .expect_err("non-semver packages are not publishable");
-        assert!(err.to_string().contains("semantic version"), "{err}");
-
-        let manifest: Manifest = toml::from_str(
-            r#"
-                [package]
-                name = "macro_app"
-                version = "0.1.0"
-            "#,
-        )?;
-        let err = manifest
-            .registry_publish_manifest(&BTreeMap::new())
-            .expect_err("registry metadata is required");
-        assert!(err.to_string().contains("[registry]"), "{err}");
         Ok(())
     }
 

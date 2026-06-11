@@ -175,6 +175,32 @@ fn generated_ast_definition_finds_generated_impl_item_trait_and_target_names() {
 }
 
 #[test]
+fn generated_ast_definition_falls_back_to_generated_item_labels() {
+    let uri = Url::parse("file:///tmp/external-fallback-label-origin.lk").expect("uri");
+    let span = token::Span::new(token::Position::new(3, 2, 20), token::Position::new(3, 22, 40));
+    let origins = vec![macro_system::AstMacroOrigin {
+        macro_name: "MakeFallbackItems".to_string(),
+        kind: macro_system::AstMacroOriginKind::Attribute,
+        input_span: Some(span),
+        generated_items: 3,
+        generated_item_labels: vec![
+            "fn generated".to_string(),
+            "struct Boxed".to_string(),
+            "impl Value for User".to_string(),
+        ],
+        generated_item_origins: vec![],
+    }];
+
+    for name in ["generated", "Boxed", "Value", "User"] {
+        let location =
+            generated_ast_item_definition_location(&origins, name, &uri).expect("fallback generated item location");
+        assert_eq!(location.uri, uri);
+        assert_eq!(location.range.start, Position::new(2, 1));
+        assert_eq!(location.range.end, Position::new(2, 21));
+    }
+}
+
+#[test]
 fn generated_ast_definition_finds_generated_inherent_impl_item_target_name() {
     let uri = Url::parse("file:///tmp/external-inherent-impl-origin.lk").expect("uri");
     let span = token::Span::new(token::Position::new(4, 3, 40), token::Position::new(4, 18, 55));
@@ -246,11 +272,39 @@ fn generated_ast_definition_ignores_expression_category_labels() {
                     span: Some(span.clone()),
                 },
                 macro_system::AstGeneratedMemberOrigin {
+                    label: "expr access_member".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
                     label: "expr literal".to_string(),
                     span: Some(span.clone()),
                 },
                 macro_system::AstGeneratedMemberOrigin {
                     label: "expr or".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "expr var".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "expr call_expr".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "expr match_arm_guard".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "pattern variable".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "for_pattern variable".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "type_expr function".to_string(),
                     span: Some(span),
                 },
             ],
@@ -258,8 +312,14 @@ fn generated_ast_definition_ignores_expression_category_labels() {
     }];
 
     assert!(generated_ast_item_definition_location(&origins, "access", &uri).is_none());
+    assert!(generated_ast_item_definition_location(&origins, "access_member", &uri).is_none());
     assert!(generated_ast_item_definition_location(&origins, "literal", &uri).is_none());
     assert!(generated_ast_item_definition_location(&origins, "or", &uri).is_none());
+    assert!(generated_ast_item_definition_location(&origins, "var", &uri).is_none());
+    assert!(generated_ast_item_definition_location(&origins, "call_expr", &uri).is_none());
+    assert!(generated_ast_item_definition_location(&origins, "match_arm_guard", &uri).is_none());
+    assert!(generated_ast_item_definition_location(&origins, "variable", &uri).is_none());
+    assert!(generated_ast_item_definition_location(&origins, "function", &uri).is_none());
 }
 
 #[test]
@@ -507,6 +567,10 @@ fn generated_ast_definition_finds_generated_control_flow_origin() {
                 },
                 macro_system::AstGeneratedMemberOrigin {
                     label: "expr match".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "match guard".to_string(),
                     span: Some(span),
                 },
             ],
@@ -517,12 +581,160 @@ fn generated_ast_definition_finds_generated_control_flow_origin() {
         generated_ast_item_definition_location(&origins, "if", &uri).expect("generated if origin location");
     let match_location =
         generated_ast_item_definition_location(&origins, "match", &uri).expect("generated match origin location");
+    let guard_location =
+        generated_ast_item_definition_location(&origins, "guard", &uri).expect("generated guard origin location");
 
     assert_eq!(if_location.uri, uri);
     assert_eq!(if_location.range.start, Position::new(4, 2));
     assert_eq!(if_location.range.end, Position::new(4, 18));
     assert_eq!(match_location.range.start, Position::new(4, 2));
     assert_eq!(match_location.range.end, Position::new(4, 18));
+    assert_eq!(guard_location.range.start, Position::new(4, 2));
+    assert_eq!(guard_location.range.end, Position::new(4, 18));
+}
+
+#[test]
+fn generated_ast_definition_finds_let_control_flow_origin_by_keyword() {
+    let uri = Url::parse("file:///tmp/external-let-control-flow-origin.lk").expect("uri");
+    let span = token::Span::new(token::Position::new(5, 3, 60), token::Position::new(5, 24, 81));
+    let origins = vec![macro_system::AstMacroOrigin {
+        macro_name: "GenerateLetControlFlow".to_string(),
+        kind: macro_system::AstMacroOriginKind::Attribute,
+        input_span: Some(span.clone()),
+        generated_items: 1,
+        generated_item_labels: vec!["fn generated".to_string()],
+        generated_item_origins: vec![macro_system::AstGeneratedItemOrigin {
+            label: "fn generated".to_string(),
+            span: Some(span.clone()),
+            generated_member_origins: vec![
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "stmt if let".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "stmt while let".to_string(),
+                    span: Some(span),
+                },
+            ],
+        }],
+    }];
+
+    let if_location =
+        generated_ast_item_definition_location(&origins, "if", &uri).expect("generated if-let origin location");
+    let while_location =
+        generated_ast_item_definition_location(&origins, "while", &uri).expect("generated while-let origin location");
+
+    assert_eq!(if_location.uri, uri);
+    assert_eq!(if_location.range.start, Position::new(4, 2));
+    assert_eq!(if_location.range.end, Position::new(4, 23));
+    assert_eq!(while_location.range.start, Position::new(4, 2));
+    assert_eq!(while_location.range.end, Position::new(4, 23));
+    assert!(generated_ast_item_definition_location(&origins, "if let", &uri).is_none());
+    assert!(generated_ast_item_definition_location(&origins, "while let", &uri).is_none());
+}
+
+#[test]
+fn generated_ast_definition_ignores_structural_statement_category_labels() {
+    let uri = Url::parse("file:///tmp/external-statement-category-origin.lk").expect("uri");
+    let span = token::Span::new(token::Position::new(6, 4, 70), token::Position::new(6, 25, 91));
+    let origins = vec![macro_system::AstMacroOrigin {
+        macro_name: "GenerateStatementCategories".to_string(),
+        kind: macro_system::AstMacroOriginKind::Attribute,
+        input_span: Some(span.clone()),
+        generated_items: 1,
+        generated_item_labels: vec!["fn generated".to_string()],
+        generated_item_origins: vec![macro_system::AstGeneratedItemOrigin {
+            label: "fn generated".to_string(),
+            span: Some(span.clone()),
+            generated_member_origins: vec![
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "stmt let".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "stmt const".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "stmt assign".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "stmt compound_assign".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "compound_assign add".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "stmt define".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "stmt struct_field_type".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "stmt type_alias_target".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "stmt param".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "stmt named_param".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "stmt trait_method".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "stmt impl_trait".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "stmt impl_target".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "stmt expr".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "stmt block".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "stmt empty".to_string(),
+                    span: Some(span),
+                },
+            ],
+        }],
+    }];
+
+    for name in [
+        "let",
+        "const",
+        "assign",
+        "compound_assign",
+        "add",
+        "define",
+        "struct_field_type",
+        "type_alias_target",
+        "param",
+        "named_param",
+        "trait_method",
+        "impl_trait",
+        "impl_target",
+        "expr",
+        "block",
+        "empty",
+    ] {
+        assert!(generated_ast_item_definition_location(&origins, name, &uri).is_none());
+    }
 }
 
 #[test]
@@ -548,7 +760,23 @@ fn generated_ast_definition_finds_generated_select_case_origins() {
                     span: Some(span.clone()),
                 },
                 macro_system::AstGeneratedMemberOrigin {
+                    label: "select guard".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "select body".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
                     label: "select default".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "select recv_channel".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "select send_value".to_string(),
                     span: Some(span),
                 },
             ],
@@ -559,6 +787,10 @@ fn generated_ast_definition_finds_generated_select_case_origins() {
         generated_ast_item_definition_location(&origins, "recv", &uri).expect("generated recv case location");
     let send_location =
         generated_ast_item_definition_location(&origins, "send", &uri).expect("generated send case location");
+    let guard_location =
+        generated_ast_item_definition_location(&origins, "guard", &uri).expect("generated guard case location");
+    let body_location =
+        generated_ast_item_definition_location(&origins, "body", &uri).expect("generated body case location");
     let default_location =
         generated_ast_item_definition_location(&origins, "default", &uri).expect("generated default case location");
 
@@ -567,8 +799,44 @@ fn generated_ast_definition_finds_generated_select_case_origins() {
     assert_eq!(recv_location.range.end, Position::new(5, 27));
     assert_eq!(send_location.range.start, Position::new(5, 3));
     assert_eq!(send_location.range.end, Position::new(5, 27));
+    assert_eq!(guard_location.range.start, Position::new(5, 3));
+    assert_eq!(guard_location.range.end, Position::new(5, 27));
+    assert_eq!(body_location.range.start, Position::new(5, 3));
+    assert_eq!(body_location.range.end, Position::new(5, 27));
     assert_eq!(default_location.range.start, Position::new(5, 3));
     assert_eq!(default_location.range.end, Position::new(5, 27));
+    assert!(generated_ast_item_definition_location(&origins, "recv_channel", &uri).is_none());
+    assert!(generated_ast_item_definition_location(&origins, "send_value", &uri).is_none());
+}
+
+#[test]
+fn generated_ast_definition_ignores_pattern_literal_kind_origins() {
+    let uri = Url::parse("file:///tmp/external-pattern-literal-origin.lk").expect("uri");
+    let span = token::Span::new(token::Position::new(7, 5, 80), token::Position::new(7, 20, 95));
+    let origins = vec![macro_system::AstMacroOrigin {
+        macro_name: "GeneratePattern".to_string(),
+        kind: macro_system::AstMacroOriginKind::Attribute,
+        input_span: Some(span.clone()),
+        generated_items: 1,
+        generated_item_labels: vec!["fn generated".to_string()],
+        generated_item_origins: vec![macro_system::AstGeneratedItemOrigin {
+            label: "fn generated".to_string(),
+            span: Some(span.clone()),
+            generated_member_origins: vec![
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "pattern literal".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "pattern literal_int".to_string(),
+                    span: Some(span),
+                },
+            ],
+        }],
+    }];
+
+    assert!(generated_ast_item_definition_location(&origins, "literal", &uri).is_none());
+    assert!(generated_ast_item_definition_location(&origins, "literal_int", &uri).is_none());
 }
 
 #[test]
@@ -697,6 +965,10 @@ fn generated_ast_definition_finds_generated_import_origins() {
             span: Some(span.clone()),
             generated_member_origins: vec![
                 macro_system::AstGeneratedMemberOrigin {
+                    label: "import_file lib.lk".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
                     label: "import_module math".to_string(),
                     span: Some(span.clone()),
                 },
@@ -716,7 +988,7 @@ fn generated_ast_definition_finds_generated_import_origins() {
         }],
     }];
 
-    for name in ["math", "sqrt", "root", "m"] {
+    for name in ["lib.lk", "math", "sqrt", "root", "m"] {
         let location =
             generated_ast_item_definition_location(&origins, name, &uri).expect("generated import origin location");
         assert_eq!(location.uri, uri);
@@ -764,6 +1036,75 @@ fn generated_ast_definition_finds_generated_attribute_origins() {
 }
 
 #[test]
+fn generated_ast_definition_finds_generated_attribute_argument_origins() {
+    let uri = Url::parse("file:///tmp/external-attribute-argument-origin.lk").expect("uri");
+    let span = token::Span::new(token::Position::new(9, 5, 90), token::Position::new(9, 42, 127));
+    let origins = vec![macro_system::AstMacroOrigin {
+        macro_name: "GenerateCfgAttrs".to_string(),
+        kind: macro_system::AstMacroOriginKind::Attribute,
+        input_span: Some(span.clone()),
+        generated_items: 1,
+        generated_item_labels: vec!["struct Generated".to_string()],
+        generated_item_origins: vec![macro_system::AstGeneratedItemOrigin {
+            label: "struct Generated".to_string(),
+            span: Some(span.clone()),
+            generated_member_origins: vec![
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "attr cfg".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "attr_arg all".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "attr_key feature".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "attr_value debug".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "attr_value lsp".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "attr_value cli".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "attr_value true".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "attr_value 3".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "attr_value 1.5".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "attr_value nil".to_string(),
+                    span: Some(span),
+                },
+            ],
+        }],
+    }];
+
+    for name in [
+        "cfg", "all", "feature", "debug", "lsp", "cli", "true", "3", "1.5", "nil",
+    ] {
+        let location =
+            generated_ast_item_definition_location(&origins, name, &uri).expect("generated attribute arg location");
+        assert_eq!(location.uri, uri);
+        assert_eq!(location.range.start, Position::new(8, 4));
+        assert_eq!(location.range.end, Position::new(8, 41));
+    }
+}
+
+#[test]
 fn generated_ast_definition_finds_generated_type_reference() {
     let uri = Url::parse("file:///tmp/external-type-ref-origin.lk").expect("uri");
     let span = token::Span::new(token::Position::new(7, 6, 70), token::Position::new(7, 18, 82));
@@ -788,6 +1129,64 @@ fn generated_ast_definition_finds_generated_type_reference() {
     assert_eq!(location.uri, uri);
     assert_eq!(location.range.start, Position::new(6, 5));
     assert_eq!(location.range.end, Position::new(6, 17));
+}
+
+#[test]
+fn generated_ast_definition_matches_full_and_terminal_generated_reference_names() {
+    let uri = Url::parse("file:///tmp/external-full-reference-origin.lk").expect("uri");
+    let span = token::Span::new(token::Position::new(12, 9, 140), token::Position::new(12, 36, 167));
+    let origins = vec![macro_system::AstMacroOrigin {
+        macro_name: "GenerateFullRefs".to_string(),
+        kind: macro_system::AstMacroOriginKind::Attribute,
+        input_span: Some(span.clone()),
+        generated_items: 1,
+        generated_item_labels: vec!["fn generated".to_string()],
+        generated_item_origins: vec![macro_system::AstGeneratedItemOrigin {
+            label: "fn generated".to_string(),
+            span: Some(span.clone()),
+            generated_member_origins: vec![
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "type_ref pkg.User".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "import_module std.io".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "expr user.profile.id".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "call user.profile.render".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "index user.items.0".to_string(),
+                    span: Some(span),
+                },
+            ],
+        }],
+    }];
+
+    for name in [
+        "pkg.User",
+        "User",
+        "std.io",
+        "io",
+        "user.profile.id",
+        "id",
+        "user.profile.render",
+        "render",
+        "user.items.0",
+        "items",
+    ] {
+        let location =
+            generated_ast_item_definition_location(&origins, name, &uri).expect("generated full ref location");
+        assert_eq!(location.uri, uri);
+        assert_eq!(location.range.start, Position::new(11, 8));
+        assert_eq!(location.range.end, Position::new(11, 35));
+    }
 }
 
 #[test]

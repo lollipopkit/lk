@@ -20,6 +20,14 @@ struct BindingRename {
     end: usize,
 }
 
+#[derive(Debug, Clone)]
+struct ParameterBinding {
+    name: String,
+    index: usize,
+    excluded_start: Option<usize>,
+    excluded_end: Option<usize>,
+}
+
 pub(super) fn apply_simple_hygiene(tokens: Vec<ExpandedToken>, site: usize) -> Vec<ExpandedToken> {
     let renames = collect_generated_binding_renames(&tokens, site);
     tokens
@@ -359,21 +367,12 @@ fn collect_parameter_list_binding_renames(
     scope_end: usize,
     renames: &mut Vec<BindingRename>,
 ) {
+    let mut bindings = Vec::new();
     let mut index = start;
     while index < end {
         match &tokens[index].token.token {
             Token::Id(_) => {
-                let (excluded_start, excluded_end) = parameter_default_exclusion(tokens, index, end);
-                collect_simple_generated_id(
-                    tokens,
-                    index,
-                    site,
-                    index,
-                    excluded_start,
-                    excluded_end,
-                    scope_end,
-                    renames,
-                );
+                collect_parameter_binding(tokens, index, end, &mut bindings);
                 index = skip_parameter_tail(tokens, index + 1, end);
             }
             Token::LBrace => {
@@ -384,17 +383,7 @@ fn collect_parameter_list_binding_renames(
                 let mut named_index = index + 1;
                 while named_index < close {
                     if matches!(tokens[named_index].token.token, Token::Id(_)) {
-                        let (excluded_start, excluded_end) = parameter_default_exclusion(tokens, named_index, close);
-                        collect_simple_generated_id(
-                            tokens,
-                            named_index,
-                            site,
-                            named_index,
-                            excluded_start,
-                            excluded_end,
-                            scope_end,
-                            renames,
-                        );
+                        collect_parameter_binding(tokens, named_index, close, &mut bindings);
                         named_index = skip_parameter_tail(tokens, named_index + 1, close);
                     } else {
                         named_index += 1;
@@ -403,6 +392,49 @@ fn collect_parameter_list_binding_renames(
                 index = close + 1;
             }
             _ => index += 1,
+        }
+    }
+    push_parameter_binding_renames(bindings, site, scope_end, renames);
+}
+
+fn collect_parameter_binding(tokens: &[ExpandedToken], index: usize, end: usize, bindings: &mut Vec<ParameterBinding>) {
+    if tokens.get(index).is_some_and(|token| !token.from_capture)
+        && let Token::Id(name) = &tokens[index].token.token
+        && name != "_"
+    {
+        let (excluded_start, excluded_end) = parameter_default_exclusion(tokens, index, end);
+        bindings.push(ParameterBinding {
+            name: name.clone(),
+            index,
+            excluded_start,
+            excluded_end,
+        });
+    }
+}
+
+fn push_parameter_binding_renames(
+    bindings: Vec<ParameterBinding>,
+    site: usize,
+    scope_end: usize,
+    renames: &mut Vec<BindingRename>,
+) {
+    let mut seen = Vec::<String>::new();
+    for binding in &bindings {
+        if seen.iter().any(|name| name == &binding.name) {
+            continue;
+        }
+        seen.push(binding.name.clone());
+        let replacement = format!("__lk_macro_{site}_{}_{}", binding.index, binding.name);
+        for same_name in bindings.iter().filter(|candidate| candidate.name == binding.name) {
+            renames.push(BindingRename {
+                name: same_name.name.clone(),
+                replacement: replacement.clone(),
+                binding_index: same_name.index,
+                reference_start: same_name.index,
+                excluded_start: same_name.excluded_start,
+                excluded_end: same_name.excluded_end,
+                end: scope_end,
+            });
         }
     }
 }
@@ -773,12 +805,6 @@ fn skip_group(tokens: &[ExpandedToken], open_index: usize) -> Option<usize> {
         _ => return None,
     };
     find_matching_delimiter(tokens, open_index, open, close).map(|index| index + 1)
-}
-
-fn find_generated_id_in_range(tokens: &[ExpandedToken], start: usize, end: usize, name: &str) -> Option<usize> {
-    (start..end.min(tokens.len())).find(|index| {
-        !tokens[*index].from_capture && matches!(&tokens[*index].token.token, Token::Id(candidate) if candidate == name)
-    })
 }
 
 fn statement_start_before(tokens: &[ExpandedToken], index: usize) -> usize {

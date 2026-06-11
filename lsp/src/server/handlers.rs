@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -21,6 +22,7 @@ use super::{
     state::{Document, LkLanguageServer},
     text::{apply_incremental_change_rope, infer_call_at_position, position_to_char_idx},
     utils::compute_content_hash,
+    watch::{clear_cached_document_artifacts, supports_watched_files_dynamic_registration},
     workspace_cache::{build_file_cache, filter_cached_inlay_hints},
     MAX_SEMANTIC_TOKENS,
 };
@@ -136,6 +138,8 @@ impl LanguageServer for LkLanguageServer {
             *root = workspace_root.clone();
         }
         self.workspace_cache.set_root(workspace_root);
+        self.watched_files_dynamic_registration
+            .store(supports_watched_files_dynamic_registration(&params), Ordering::Release);
 
         Ok(InitializeResult {
             capabilities: server_capabilities_from(&params),
@@ -154,6 +158,7 @@ impl LanguageServer for LkLanguageServer {
             .await;
         // Load initial configuration from client
         self.load_config().await;
+        self.register_watched_files_if_supported().await;
         self.schedule_workspace_cache_preload();
     }
 
@@ -245,7 +250,10 @@ impl LanguageServer for LkLanguageServer {
     async fn did_save(&self, params: DidSaveTextDocumentParams) {
         let uri = params.text_document.uri;
         if let Ok(path) = uri.to_file_path() {
-            self.workspace_cache.invalidate_proc_macro_dependents(&path);
+            let affected = self.workspace_cache.invalidate_changed_path_dependents(&path);
+            for (affected_uri, version) in clear_cached_document_artifacts(&self.documents, &affected) {
+                self.schedule_diagnostics_and_warmup(affected_uri, version, 0).await;
+            }
         }
         let Some((content, base_dir)) = self.documents.get(&uri).and_then(|doc| {
             let base_dir = uri
@@ -262,11 +270,11 @@ impl LanguageServer for LkLanguageServer {
             let cache_for_build = cache.clone();
             let entry = task::spawn_blocking(move || {
                 let mut analyzer = LkAnalyzer::new();
-                let (base, modules, missing) = cache_for_build.package_context_for(base_dir);
+                let (base, modules, missing, proc_macro_providers) = cache_for_build.package_context_for(base_dir);
                 if modules.is_empty() && missing.is_empty() {
                     analyzer.set_base_dir(base);
                 } else {
-                    analyzer.set_package_context(base, modules, missing);
+                    analyzer.set_package_context(base, modules, missing, proc_macro_providers);
                 }
                 build_file_cache(&mut analyzer, &content)
             })
@@ -275,6 +283,17 @@ impl LanguageServer for LkLanguageServer {
                 cache.insert(uri, entry);
             }
         });
+    }
+
+    async fn did_change_watched_files(&self, params: DidChangeWatchedFilesParams) {
+        for change in params.changes {
+            if let Ok(path) = change.uri.to_file_path() {
+                let affected = self.workspace_cache.invalidate_changed_path_dependents(&path);
+                for (affected_uri, version) in clear_cached_document_artifacts(&self.documents, &affected) {
+                    self.schedule_diagnostics_and_warmup(affected_uri, version, 0).await;
+                }
+            }
+        }
     }
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
