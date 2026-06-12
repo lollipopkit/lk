@@ -381,8 +381,8 @@ fn spec_type_location(type_name: &str) -> Option<Location> {
     let path = repo_root_from_manifest()
         .join("website")
         .join("src")
-        .join("spec")
-        .join("LANG.md");
+        .join("learn")
+        .join("LEARN.md");
     let content = fs::read_to_string(&path).ok()?;
     let line = spec_type_line(&content, type_name)?;
     let uri = Url::from_file_path(path).ok()?;
@@ -787,14 +787,14 @@ struct User { id: Int, name: String }
         let path = repo_root_from_manifest()
             .join("website")
             .join("src")
-            .join("spec")
-            .join("LANG.md");
-        let uri = Url::from_file_path(&path).expect("spec uri");
+            .join("learn")
+            .join("LEARN.md");
+        let uri = Url::from_file_path(&path).expect("learn uri");
         let location = Location::new(uri, Range::new(Position::new(13, 3), Position::new(13, 9)));
         let command = command_uri_for_location(&location);
 
         assert!(command.contains("command:lk.openLocation?"));
-        assert!(command.contains("website%2Fsrc%2Fspec%2FLANG.md"));
+        assert!(command.contains("website%2Fsrc%2Flearn%2FLEARN.md"));
     }
 
     #[test]

@@ -36,9 +36,10 @@ pub(super) fn apply_simple_hygiene(tokens: Vec<ExpandedToken>, site: usize) -> V
         .enumerate()
         .map(|(index, mut token)| {
             if !token.from_capture
-                && is_hygienic_identifier_reference(&tokens, index)
                 && let Token::Id(name) = &token.token.token
                 && let Some(replacement) = rename_for_identifier(&renames, name, index)
+                && (is_hygienic_identifier_reference(&tokens, index)
+                    || is_generated_binding_identifier(&renames, name, index))
             {
                 token.token.token = Token::Id(replacement.to_string());
                 token.token.lexeme = replacement.to_string();
@@ -564,6 +565,12 @@ fn rename_excludes_index(rename: &BindingRename, index: usize) -> bool {
         (Some(start), Some(end)) => index >= start && index < end,
         _ => false,
     }
+}
+
+fn is_generated_binding_identifier(renames: &[BindingRename], name: &str, index: usize) -> bool {
+    renames
+        .iter()
+        .any(|rename| rename.name == name && rename.binding_index == index)
 }
 
 fn is_hygienic_identifier_reference(tokens: &[ExpandedToken], index: usize) -> bool {

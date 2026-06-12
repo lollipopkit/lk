@@ -315,8 +315,9 @@ when the geomean is more than 10% slower than base. Individual workloads more
 than 10% slower are listed in the GitHub step summary, but they do not fail the
 job by themselves unless the whole-suite geomean also crosses the threshold.
 
-The workflow builds and uses the vendored Lua 5.5.0 binary from
-`lua-5.5.0/src/lua`, matching the benchmark methodology and avoiding differences
+The workflow downloads Lua 5.5.0 from the official Lua release tarball, builds
+it under `head/lua-5.5.0/src/lua`, and uses that binary for both base and head
+measurements. This matches the benchmark methodology while avoiding differences
 from runner-provided Lua packages.
 
 To reproduce the comparator locally after collecting two TSV files:

@@ -168,9 +168,7 @@ fn read_http_request(stream: &mut TcpStream) -> anyhow::Result<Vec<u8>> {
     }
     if content_length > 0 {
         if content_length > MAX_CONTENT_LENGTH {
-            anyhow::bail!(
-                "content-length {content_length} exceeds maximum {MAX_CONTENT_LENGTH}"
-            );
+            anyhow::bail!("content-length {content_length} exceeds maximum {MAX_CONTENT_LENGTH}");
         }
         let start = request.len();
         request.resize(start + content_length, 0);

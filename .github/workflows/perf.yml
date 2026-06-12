@@ -108,7 +108,19 @@ jobs:
             base
             head
 
-      - name: Build vendored Lua
+      - name: Fetch Lua reference source
+        shell: bash
+        run: |
+          set -euo pipefail
+          lua_version="5.5.0"
+          lua_dir="head/lua-${lua_version}"
+          if [ ! -d "$lua_dir/src" ]; then
+            curl -fsSL "https://www.lua.org/ftp/lua-${lua_version}.tar.gz" -o "${RUNNER_TEMP}/lua-${lua_version}.tar.gz"
+            tar -xzf "${RUNNER_TEMP}/lua-${lua_version}.tar.gz" -C head
+          fi
+          test -f "$lua_dir/src/Makefile"
+
+      - name: Build Lua reference
         run: make -C head/lua-5.5.0/src linux
 
       - name: Build base LK

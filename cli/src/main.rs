@@ -973,9 +973,7 @@ fn try_execute_cached_native(path: &Path, source: &[u8]) -> anyhow::Result<bool>
                 // Retry a few times in case another process is still writing the same output.
                 let max_retries = 3;
                 for attempt in 0..max_retries {
-                    if output.exists()
-                        && native_cache_proc_macro_dependencies_fresh(path, &output)
-                    {
+                    if output.exists() && native_cache_proc_macro_dependencies_fresh(path, &output) {
                         break; // Another process finished first.
                     }
                     if attempt + 1 < max_retries {
@@ -986,15 +984,11 @@ fn try_execute_cached_native(path: &Path, source: &[u8]) -> anyhow::Result<bool>
                         ));
                     }
                 }
-                if output.exists()
-                    && native_cache_proc_macro_dependencies_fresh(path, &output)
-                {
+                if output.exists() && native_cache_proc_macro_dependencies_fresh(path, &output) {
                     false
                 } else {
                     if native_trace_enabled() {
-                        diagnostic::warning(format_args!(
-                            "Native cache install failed: {err}"
-                        ));
+                        diagnostic::warning(format_args!("Native cache install failed: {err}"));
                     }
                     return Ok(false);
                 }

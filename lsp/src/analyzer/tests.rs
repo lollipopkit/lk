@@ -193,6 +193,7 @@ printf '{"protocol_version":1,"output_tokens":[{"kind":"Int","lexeme":"%s","span
             args: vec![script.display().to_string(), schema.display().to_string()],
             timeout: Duration::from_secs(1),
             max_output_bytes: 4096,
+            env: None,
         },
     );
 
