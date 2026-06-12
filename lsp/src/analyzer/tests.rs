@@ -1,12 +1,30 @@
 use super::*;
 use lk_core::expr;
+use lk_core::macro_system::{ProcMacroProcessConfig, ProcMacroProviders};
 use lk_core::util::fast_map::FastHashMap;
 use lk_core::val::{HeapStore, HeapValue, LiteralVal, RuntimeVal, ShortStr, TypedMap};
+use std::{fs, path::PathBuf, time::Duration};
 use tower_lsp::lsp_types::{
     DiagnosticSeverity, InlayHintKind, NumberOrString, Position, Range, SemanticToken, SymbolKind,
 };
 fn create_analyzer() -> LkAnalyzer {
     LkAnalyzer::new()
+}
+
+fn test_shell() -> Option<PathBuf> {
+    let shell = PathBuf::from("/bin/sh");
+    shell.exists().then_some(shell)
+}
+
+fn unique_tmp_dir(name: &str) -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "lk_lsp_{name}_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos()
+    ))
 }
 
 fn short(value: &str) -> RuntimeVal {
@@ -130,6 +148,149 @@ fn test_collect_named_param_decls_for_signature_help() {
         params[1].default.as_ref(),
         Some(expr::Expr::Literal(LiteralVal::Int(100)))
     ));
+}
+
+#[test]
+fn test_collect_named_param_decls_through_attributes() {
+    let mut analyzer = create_analyzer();
+    let content = r#"
+        #[inline]
+        fn draw_rect({width: Int}) {
+            return width;
+        }
+    "#;
+    let decls = analyzer.collect_fn_named_param_decls(content);
+    let params = decls.get("draw_rect").expect("expected named params");
+    assert_eq!(params.len(), 1);
+    assert_eq!(params[0].name, "width");
+}
+
+#[test]
+fn analyzer_token_cache_invalidates_program_expansion_when_proc_macro_dependency_changes() {
+    let Some(shell) = test_shell() else {
+        return;
+    };
+    let dir = unique_tmp_dir("analyzer_proc_macro_dep_cache");
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).expect("create temp dir");
+    let schema = dir.join("schema.txt");
+    let script = dir.join("provider.sh");
+    fs::write(&schema, "1").expect("write schema");
+    fs::write(
+        &script,
+        r#"cat >/dev/null
+value=$(cat "$1")
+printf '{"protocol_version":1,"output_tokens":[{"kind":"Int","lexeme":"%s","span":null}],"diagnostics":[],"dependencies":[{"path":"schema.txt","digest":null}]}' "$value"
+"#,
+    )
+    .expect("write provider script");
+
+    let mut providers = ProcMacroProviders::default();
+    providers.register_function_like(
+        "from_schema",
+        ProcMacroProcessConfig {
+            program: shell,
+            args: vec![script.display().to_string(), schema.display().to_string()],
+            timeout: Duration::from_secs(1),
+            max_output_bytes: 4096,
+            env: None,
+        },
+    );
+
+    let mut analyzer = create_analyzer();
+    analyzer.set_base_dir(dir.clone());
+    analyzer.set_proc_macro_providers(providers);
+    let content = "return from_schema!();";
+
+    let first_entry = analyzer.tokenize_with_spans_cached(content).expect("first tokenize");
+    let first = first_entry
+        .parse_program_expansion_arc(content)
+        .expect("first expansion");
+    assert!(first
+        .source
+        .tokens
+        .iter()
+        .any(|token| matches!(token, token::Token::Int(1))));
+
+    fs::write(&schema, "2").expect("rewrite schema");
+
+    let second_entry = analyzer.tokenize_with_spans_cached(content).expect("second tokenize");
+    let second = second_entry
+        .parse_program_expansion_arc(content)
+        .expect("second expansion");
+
+    assert!(second
+        .source
+        .tokens
+        .iter()
+        .any(|token| matches!(token, token::Token::Int(2))));
+    assert!(!second
+        .source
+        .tokens
+        .iter()
+        .any(|token| matches!(token, token::Token::Int(1))));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn analyzer_token_cache_invalidates_program_expansion_when_file_import_changes() {
+    let dir = unique_tmp_dir("analyzer_file_import_dep_cache");
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).expect("create temp dir");
+    let macros = dir.join("macros.lk");
+    fs::write(
+        &macros,
+        r#"
+        export macro_rules! answer {
+            () => { return 1; };
+        }
+        "#,
+    )
+    .expect("write macro file");
+
+    let mut analyzer = create_analyzer();
+    analyzer.set_base_dir(dir.clone());
+    let content = r#"
+        use { answer } from "macros.lk";
+        answer!();
+    "#;
+
+    let first_entry = analyzer.tokenize_with_spans_cached(content).expect("first tokenize");
+    let first = first_entry
+        .parse_program_expansion_arc(content)
+        .expect("first expansion");
+    assert!(first
+        .source
+        .tokens
+        .iter()
+        .any(|token| matches!(token, token::Token::Int(1))));
+
+    fs::write(
+        &macros,
+        r#"
+        export macro_rules! answer {
+            () => { return 2; };
+        }
+        "#,
+    )
+    .expect("rewrite macro file");
+
+    let second_entry = analyzer.tokenize_with_spans_cached(content).expect("second tokenize");
+    let second = second_entry
+        .parse_program_expansion_arc(content)
+        .expect("second expansion");
+
+    assert!(second
+        .source
+        .tokens
+        .iter()
+        .any(|token| matches!(token, token::Token::Int(2))));
+    assert!(!second
+        .source
+        .tokens
+        .iter()
+        .any(|token| matches!(token, token::Token::Int(1))));
+    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -432,6 +593,460 @@ fn test_unconstrained_implicit_any_diagnostic_points_to_parameter() {
         Range::new(Position::new(1, 22), Position::new(1, 26)),
         "implicit Any diagnostic should point at the unannotated parameter"
     );
+}
+
+#[test]
+fn test_macro_generated_type_diagnostic_includes_origin_stack() {
+    let mut analyzer = create_analyzer();
+    let code = r#"
+        macro_rules! bad_numeric {
+            () => { "foo" - 1; };
+        }
+        bad_numeric!();
+    "#;
+    let result = analyzer.analyze(code);
+
+    let diagnostic = result
+        .diagnostics
+        .iter()
+        .find(|diag| diag.message.contains("must by numeric types"))
+        .expect("expected numeric type diagnostic");
+    assert!(diagnostic.message.contains("Macro origin stack:"));
+    assert!(diagnostic.message.contains("bad_numeric"));
+    assert_eq!(
+        diagnostic.code,
+        Some(NumberOrString::String("lk_type_error".to_string()))
+    );
+}
+
+#[test]
+fn test_ast_macro_origins_appear_in_document_symbols() {
+    let mut analyzer = create_analyzer();
+    let code = r#"
+        #[derive(Debug)]
+        struct User { id: Int }
+    "#;
+    let result = analyzer.analyze(code);
+
+    let macros = result
+        .symbols
+        .iter()
+        .find(|symbol| symbol.name == "Macro Expansions")
+        .expect("macro expansions symbol container");
+    assert_eq!(macros.kind, SymbolKind::NAMESPACE);
+    let origins = macros.children.as_ref().expect("macro expansion origin children");
+    let derive = origins
+        .iter()
+        .find(|symbol| symbol.name == "builtin_derive Debug")
+        .expect("Debug derive origin symbol");
+    assert_eq!(derive.detail.as_deref(), Some("generated 2 item(s)"));
+    let generated = derive.children.as_ref().expect("generated item children");
+    assert!(
+        generated.iter().any(|symbol| symbol.name == "trait __LKShow"),
+        "generated symbols: {generated:?}"
+    );
+    assert!(
+        generated.iter().any(|symbol| symbol.name == "impl __LKShow for User"),
+        "generated symbols: {generated:?}"
+    );
+    let generated_impl = generated
+        .iter()
+        .find(|symbol| symbol.name == "impl __LKShow for User")
+        .expect("generated impl symbol");
+    assert_eq!(
+        generated_impl.detail.as_deref(),
+        Some("generated by builtin_derive Debug")
+    );
+    assert!(
+        generated_impl.range.end.character > generated_impl.range.start.character,
+        "generated item symbol should expose a source-map range"
+    );
+    let generated_members = generated_impl
+        .children
+        .as_ref()
+        .expect("generated impl should expose member origins");
+    assert!(
+        generated_members.iter().any(|symbol| symbol.name == "fn show"),
+        "generated member symbols: {generated_members:?}"
+    );
+    assert!(
+        generated_members.iter().any(|symbol| symbol.name == "expr self.id"),
+        "generated member symbols: {generated_members:?}"
+    );
+}
+
+#[test]
+fn test_ast_macro_control_flow_origins_appear_as_typed_document_symbols() {
+    let span = Span::new(token::Position::new(2, 9, 10), token::Position::new(2, 23, 24));
+    let origins = vec![macro_system::AstMacroOrigin {
+        macro_name: "control_flow".to_string(),
+        kind: macro_system::AstMacroOriginKind::Attribute,
+        input_span: Some(span.clone()),
+        generated_items: 1,
+        generated_item_labels: vec!["fn generated".to_string()],
+        generated_item_origins: vec![macro_system::AstGeneratedItemOrigin {
+            label: "fn generated".to_string(),
+            span: Some(span.clone()),
+            generated_member_origins: vec![
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "stmt if".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "stmt const".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "stmt expr".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "expr match".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "expr var".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "expr call_expr".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "pattern variable".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "for_pattern variable".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "match_arm".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "match guard".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "template_part literal".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "template_part expr".to_string(),
+                    span: Some(span.clone()),
+                },
+            ],
+        }],
+    }];
+    let mut symbols = Vec::new();
+    LkAnalyzer::append_ast_macro_origin_symbols(&mut symbols, &origins);
+
+    let macros = symbols
+        .iter()
+        .find(|symbol| symbol.name == "Macro Expansions")
+        .expect("macro expansions symbol container");
+    let origin = macros
+        .children
+        .as_ref()
+        .and_then(|children| children.iter().find(|symbol| symbol.name == "attribute control_flow"))
+        .expect("attribute origin symbol");
+    let generated_fn = origin
+        .children
+        .as_ref()
+        .and_then(|children| children.iter().find(|symbol| symbol.name == "fn generated"))
+        .expect("generated function symbol");
+    let members = generated_fn.children.as_ref().expect("generated member symbols");
+    let stmt_if = members
+        .iter()
+        .find(|symbol| symbol.name == "stmt if")
+        .expect("generated if statement origin symbol");
+    let stmt_expr = members
+        .iter()
+        .find(|symbol| symbol.name == "stmt expr")
+        .expect("generated expression statement origin symbol");
+    let stmt_const = members
+        .iter()
+        .find(|symbol| symbol.name == "stmt const")
+        .expect("generated const statement origin symbol");
+    let expr_match = members
+        .iter()
+        .find(|symbol| symbol.name == "expr match")
+        .expect("generated match expression origin symbol");
+    let expr_var = members
+        .iter()
+        .find(|symbol| symbol.name == "expr var")
+        .expect("generated variable expression origin symbol");
+    let expr_call_expr = members
+        .iter()
+        .find(|symbol| symbol.name == "expr call_expr")
+        .expect("generated expression-callee call origin symbol");
+    let pattern_variable = members
+        .iter()
+        .find(|symbol| symbol.name == "pattern variable")
+        .expect("generated pattern variable origin symbol");
+    let for_pattern_variable = members
+        .iter()
+        .find(|symbol| symbol.name == "for_pattern variable")
+        .expect("generated for-pattern variable origin symbol");
+    let match_arm = members
+        .iter()
+        .find(|symbol| symbol.name == "match_arm")
+        .expect("generated match arm origin symbol");
+    let match_guard = members
+        .iter()
+        .find(|symbol| symbol.name == "match guard")
+        .expect("generated match guard origin symbol");
+    let template_part_literal = members
+        .iter()
+        .find(|symbol| symbol.name == "template_part literal")
+        .expect("generated template literal part origin symbol");
+    let template_part_expr = members
+        .iter()
+        .find(|symbol| symbol.name == "template_part expr")
+        .expect("generated template expression part origin symbol");
+
+    assert_eq!(stmt_if.kind, SymbolKind::EVENT);
+    assert_eq!(stmt_const.kind, SymbolKind::EVENT);
+    assert_eq!(stmt_expr.kind, SymbolKind::EVENT);
+    assert_eq!(expr_match.kind, SymbolKind::OPERATOR);
+    assert_eq!(expr_var.kind, SymbolKind::OPERATOR);
+    assert_eq!(expr_call_expr.kind, SymbolKind::OPERATOR);
+    assert_eq!(pattern_variable.kind, SymbolKind::EVENT);
+    assert_eq!(for_pattern_variable.kind, SymbolKind::EVENT);
+    assert_eq!(match_arm.kind, SymbolKind::EVENT);
+    assert_eq!(match_guard.kind, SymbolKind::EVENT);
+    assert_eq!(template_part_literal.kind, SymbolKind::EVENT);
+    assert_eq!(template_part_expr.kind, SymbolKind::EVENT);
+    assert!(
+        stmt_if.range.end.character > stmt_if.range.start.character,
+        "generated control-flow symbol should expose a source-map range"
+    );
+}
+
+#[test]
+fn test_ast_macro_import_and_attribute_origins_appear_as_typed_document_symbols() {
+    let span = Span::new(token::Position::new(3, 5, 30), token::Position::new(3, 29, 54));
+    let origins = vec![macro_system::AstMacroOrigin {
+        macro_name: "generated_metadata".to_string(),
+        kind: macro_system::AstMacroOriginKind::Attribute,
+        input_span: Some(span.clone()),
+        generated_items: 1,
+        generated_item_labels: vec!["statement".to_string()],
+        generated_item_origins: vec![macro_system::AstGeneratedItemOrigin {
+            label: "statement".to_string(),
+            span: Some(span.clone()),
+            generated_member_origins: vec![
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "import_file lib.lk".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "import_module math".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "import_item sqrt".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "import_alias root".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "import_namespace m".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "attr derive".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "attr_arg all".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "attr_key feature".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "attr_value debug".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "derive Debug".to_string(),
+                    span: Some(span),
+                },
+            ],
+        }],
+    }];
+    let mut symbols = Vec::new();
+    LkAnalyzer::append_ast_macro_origin_symbols(&mut symbols, &origins);
+
+    let members = symbols
+        .iter()
+        .find(|symbol| symbol.name == "Macro Expansions")
+        .and_then(|macros| macros.children.as_ref())
+        .and_then(|origins| {
+            origins
+                .iter()
+                .find(|symbol| symbol.name == "attribute generated_metadata")
+        })
+        .and_then(|origin| origin.children.as_ref())
+        .and_then(|items| items.iter().find(|symbol| symbol.name == "statement"))
+        .and_then(|item| item.children.as_ref())
+        .expect("generated member symbols");
+    let kind_for = |name: &str| {
+        members
+            .iter()
+            .find(|symbol| symbol.name == name)
+            .map(|symbol| symbol.kind)
+            .unwrap_or_else(|| panic!("missing generated member symbol `{name}`: {members:?}"))
+    };
+
+    assert_eq!(kind_for("import_file lib.lk"), SymbolKind::FILE);
+    assert_eq!(kind_for("import_module math"), SymbolKind::MODULE);
+    assert_eq!(kind_for("import_item sqrt"), SymbolKind::VARIABLE);
+    assert_eq!(kind_for("import_alias root"), SymbolKind::VARIABLE);
+    assert_eq!(kind_for("import_namespace m"), SymbolKind::MODULE);
+    assert_eq!(kind_for("attr derive"), SymbolKind::PROPERTY);
+    assert_eq!(kind_for("attr_arg all"), SymbolKind::PROPERTY);
+    assert_eq!(kind_for("attr_key feature"), SymbolKind::PROPERTY);
+    assert_eq!(kind_for("attr_value debug"), SymbolKind::PROPERTY);
+    assert_eq!(kind_for("derive Debug"), SymbolKind::ENUM_MEMBER);
+}
+
+#[test]
+fn test_ast_macro_reference_origins_appear_as_typed_document_symbols() {
+    let span = Span::new(token::Position::new(4, 7, 60), token::Position::new(4, 31, 84));
+    let origins = vec![macro_system::AstMacroOrigin {
+        macro_name: "generated_refs".to_string(),
+        kind: macro_system::AstMacroOriginKind::Attribute,
+        input_span: Some(span.clone()),
+        generated_items: 1,
+        generated_item_labels: vec!["fn generated".to_string()],
+        generated_item_origins: vec![macro_system::AstGeneratedItemOrigin {
+            label: "fn generated".to_string(),
+            span: Some(span.clone()),
+            generated_member_origins: vec![
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "binding current".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "ref seed".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "assign_ref current".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "compound_assign_ref current".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "call helper".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "literal int".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "binary add".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "unary not".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "range step".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "pattern element".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "for_pattern rest".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "expr call_arg".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "struct_field id".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "map_key kind".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "named_arg value".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "named_param_type current".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "type_ref User".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "type_var T".to_string(),
+                    span: Some(span.clone()),
+                },
+                macro_system::AstGeneratedMemberOrigin {
+                    label: "type_expr function".to_string(),
+                    span: Some(span),
+                },
+            ],
+        }],
+    }];
+    let mut symbols = Vec::new();
+    LkAnalyzer::append_ast_macro_origin_symbols(&mut symbols, &origins);
+
+    let members = symbols
+        .iter()
+        .find(|symbol| symbol.name == "Macro Expansions")
+        .and_then(|macros| macros.children.as_ref())
+        .and_then(|origins| origins.iter().find(|symbol| symbol.name == "attribute generated_refs"))
+        .and_then(|origin| origin.children.as_ref())
+        .and_then(|items| items.iter().find(|symbol| symbol.name == "fn generated"))
+        .and_then(|item| item.children.as_ref())
+        .expect("generated member symbols");
+    let kind_for = |name: &str| {
+        members
+            .iter()
+            .find(|symbol| symbol.name == name)
+            .map(|symbol| symbol.kind)
+            .unwrap_or_else(|| panic!("missing generated member symbol `{name}`: {members:?}"))
+    };
+
+    assert_eq!(kind_for("binding current"), SymbolKind::VARIABLE);
+    assert_eq!(kind_for("ref seed"), SymbolKind::VARIABLE);
+    assert_eq!(kind_for("assign_ref current"), SymbolKind::VARIABLE);
+    assert_eq!(kind_for("compound_assign_ref current"), SymbolKind::VARIABLE);
+    assert_eq!(kind_for("call helper"), SymbolKind::FUNCTION);
+    assert_eq!(kind_for("literal int"), SymbolKind::CONSTANT);
+    assert_eq!(kind_for("binary add"), SymbolKind::OPERATOR);
+    assert_eq!(kind_for("unary not"), SymbolKind::OPERATOR);
+    assert_eq!(kind_for("range step"), SymbolKind::EVENT);
+    assert_eq!(kind_for("pattern element"), SymbolKind::EVENT);
+    assert_eq!(kind_for("for_pattern rest"), SymbolKind::EVENT);
+    assert_eq!(kind_for("expr call_arg"), SymbolKind::OPERATOR);
+    assert_eq!(kind_for("struct_field id"), SymbolKind::FIELD);
+    assert_eq!(kind_for("map_key kind"), SymbolKind::PROPERTY);
+    assert_eq!(kind_for("named_arg value"), SymbolKind::PROPERTY);
+    assert_eq!(kind_for("named_param_type current"), SymbolKind::PROPERTY);
+    assert_eq!(kind_for("type_ref User"), SymbolKind::TYPE_PARAMETER);
+    assert_eq!(kind_for("type_var T"), SymbolKind::TYPE_PARAMETER);
+    assert_eq!(kind_for("type_expr function"), SymbolKind::TYPE_PARAMETER);
 }
 
 fn full_range(s: &str) -> Range {

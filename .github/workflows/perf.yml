@@ -1,0 +1,201 @@
+name: Performance Gate
+
+on:
+  pull_request:
+    branches:
+      - main
+  merge_group:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      base_ref:
+        description: Base ref, branch, tag, or SHA
+        required: false
+        default: main
+      head_ref:
+        description: Head ref, branch, tag, or SHA
+        required: false
+        default: ""
+
+jobs:
+  workload-bench:
+    runs-on: ubuntu-latest
+    name: workload-bench
+    timeout-minutes: 90
+    env:
+      MAX_GEOMEAN_REGRESSION: "0.10"
+      WARN_WORKLOAD_REGRESSION: "0.10"
+      BENCH_RUNS: "3"
+      BENCH_EXTRA_RUNS: "5"
+      BENCH_TIMEOUT: "60"
+    steps:
+      - name: Resolve benchmark refs
+        id: refs
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GITHUB_SHA_VALUE: ${{ github.sha }}
+          GITHUB_REPOSITORY_VALUE: ${{ github.repository }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          MERGE_GROUP_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+          INPUT_BASE_REF: ${{ inputs.base_ref }}
+          INPUT_HEAD_REF: ${{ inputs.head_ref }}
+        run: |
+          set -euo pipefail
+          case "$EVENT_NAME" in
+            pull_request)
+              base_ref="$PR_BASE_SHA"
+              head_ref="$PR_HEAD_SHA"
+              head_repository="$PR_HEAD_REPOSITORY"
+              ;;
+            merge_group)
+              base_ref="$MERGE_GROUP_BASE_SHA"
+              head_ref="$MERGE_GROUP_HEAD_SHA"
+              head_repository="$GITHUB_REPOSITORY_VALUE"
+              ;;
+            workflow_dispatch)
+              base_ref="${INPUT_BASE_REF:-$DEFAULT_BRANCH}"
+              head_ref="${INPUT_HEAD_REF:-$GITHUB_SHA_VALUE}"
+              head_repository="$GITHUB_REPOSITORY_VALUE"
+              ;;
+            *)
+              echo "Unsupported event: $EVENT_NAME" >&2
+              exit 1
+              ;;
+          esac
+
+          if [ -z "$base_ref" ] || [ -z "$head_ref" ] || [ -z "$head_repository" ]; then
+            echo "Unable to resolve benchmark refs" >&2
+            echo "base_ref=$base_ref" >&2
+            echo "head_ref=$head_ref" >&2
+            echo "head_repository=$head_repository" >&2
+            exit 1
+          fi
+
+          {
+            echo "base_ref=$base_ref"
+            echo "head_ref=$head_ref"
+            echo "head_repository=$head_repository"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Checkout base
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.refs.outputs.base_ref }}
+          persist-credentials: false
+          path: base
+
+      - name: Checkout head
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.refs.outputs.head_repository }}
+          persist-credentials: false
+          ref: ${{ steps.refs.outputs.head_ref }}
+          path: head
+
+      - name: Resolve Rust toolchain
+        id: rust-toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          toolchain="$(awk -F '"' '/^[[:space:]]*channel[[:space:]]*=/{ print $2; exit }' head/rust-toolchain.toml)"
+          if [ -z "$toolchain" ]; then
+            echo "Unable to resolve Rust toolchain channel" >&2
+            exit 1
+          fi
+          echo "toolchain=$toolchain" >> "$GITHUB_OUTPUT"
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: ${{ steps.rust-toolchain.outputs.toolchain }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            base
+            head
+
+      - name: Resolve LK build profiles
+        id: build-profiles
+        shell: bash
+        run: |
+          set -euo pipefail
+          resolve_profile() {
+            local checkout="$1"
+            local output_prefix="$2"
+            local profile="release"
+            local bin_dir="release"
+            if grep -q '^\[profile\.dist\]' "$checkout/Cargo.toml"; then
+              profile="dist"
+              bin_dir="dist"
+            fi
+            {
+              echo "${output_prefix}_profile=$profile"
+              echo "${output_prefix}_bin=$GITHUB_WORKSPACE/$checkout/target/$bin_dir/lk"
+            } >> "$GITHUB_OUTPUT"
+          }
+          resolve_profile base base
+          resolve_profile head head
+
+      - name: Fetch Lua reference source
+        shell: bash
+        run: |
+          set -euo pipefail
+          lua_version="5.5.0"
+          lua_dir="head/lua-${lua_version}"
+          if [ ! -d "$lua_dir/src" ]; then
+            curl -fsSL "https://www.lua.org/ftp/lua-${lua_version}.tar.gz" -o "${RUNNER_TEMP}/lua-${lua_version}.tar.gz"
+            tar -xzf "${RUNNER_TEMP}/lua-${lua_version}.tar.gz" -C head
+          fi
+          test -f "$lua_dir/src/Makefile"
+
+      - name: Build Lua reference
+        run: make -C head/lua-5.5.0/src linux
+
+      - name: Build base LK
+        working-directory: base
+        run: cargo build --profile "${{ steps.build-profiles.outputs.base_profile }}" -p lk-cli
+
+      - name: Benchmark base
+        working-directory: head
+        env:
+          LK_BIN: ${{ steps.build-profiles.outputs.base_bin }}
+          LUA_BIN: ${{ github.workspace }}/head/lua-5.5.0/src/lua
+          BENCH_RESULT_TSV: ${{ runner.temp }}/lk-perf-base.tsv
+          RUN_AOT: "0"
+          RUNS: ${{ env.BENCH_RUNS }}
+          EXTRA_RUNS: ${{ env.BENCH_EXTRA_RUNS }}
+          BENCH_PROGRESS: "0"
+          BENCH_TIMEOUT: ${{ env.BENCH_TIMEOUT }}
+        run: bash bench/run_workload_bench.sh
+
+      - name: Build head LK
+        working-directory: head
+        run: cargo build --profile "${{ steps.build-profiles.outputs.head_profile }}" -p lk-cli
+
+      - name: Benchmark head
+        working-directory: head
+        env:
+          LK_BIN: ${{ steps.build-profiles.outputs.head_bin }}
+          LUA_BIN: ${{ github.workspace }}/head/lua-5.5.0/src/lua
+          BENCH_RESULT_TSV: ${{ runner.temp }}/lk-perf-head.tsv
+          RUN_AOT: "0"
+          RUNS: ${{ env.BENCH_RUNS }}
+          EXTRA_RUNS: ${{ env.BENCH_EXTRA_RUNS }}
+          BENCH_PROGRESS: "0"
+          BENCH_TIMEOUT: ${{ env.BENCH_TIMEOUT }}
+        run: bash bench/run_workload_bench.sh
+
+      - name: Compare performance
+        working-directory: head
+        run: |
+          python3 bench/compare_workload_bench.py \
+            --base "${{ runner.temp }}/lk-perf-base.tsv" \
+            --head "${{ runner.temp }}/lk-perf-head.tsv" \
+            --max-geomean-regression "$MAX_GEOMEAN_REGRESSION" \
+            --warn-workload-regression "$WARN_WORKLOAD_REGRESSION"

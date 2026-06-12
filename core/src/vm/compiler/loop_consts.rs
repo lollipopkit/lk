@@ -174,6 +174,7 @@ impl Compiler {
 
 fn collect_stmt_scalar_consts(stmt: &Stmt, keys: &mut Vec<ScalarLoopConstKey>) {
     match stmt {
+        Stmt::Attributed { item, .. } => collect_stmt_scalar_consts(item, keys),
         Stmt::Empty | Stmt::Break | Stmt::Continue | Stmt::Import(_) | Stmt::Struct { .. } | Stmt::TypeAlias { .. } => {
         }
         Stmt::Expr(expr) | Stmt::Return { value: Some(expr) } => collect_expr_scalar_consts(expr, keys),
@@ -333,6 +334,7 @@ fn collect_expr_scalar_consts(expr: &Expr, keys: &mut Vec<ScalarLoopConstKey>) {
 
 fn collect_stmt_folded_int_consts(stmt: &Stmt, locals: &mut HashMap<String, i64>, keys: &mut Vec<ScalarLoopConstKey>) {
     match stmt {
+        Stmt::Attributed { item, .. } => collect_stmt_folded_int_consts(item, locals, keys),
         Stmt::Let { pattern, value, .. } => {
             collect_expr_folded_int_consts(value, locals, keys);
             if let crate::expr::Pattern::Variable(name) = pattern {
@@ -552,6 +554,7 @@ fn collect_stmt_inline_call_scalar_consts(
     keys: &mut Vec<ScalarLoopConstKey>,
 ) {
     match stmt {
+        Stmt::Attributed { item, .. } => collect_stmt_inline_call_scalar_consts(item, bodies, visiting, keys),
         Stmt::Empty | Stmt::Break | Stmt::Continue | Stmt::Import(_) | Stmt::Struct { .. } | Stmt::TypeAlias { .. } => {
         }
         Stmt::Expr(expr) | Stmt::Return { value: Some(expr) } => {
@@ -761,6 +764,7 @@ fn collect_stmt_const_map_get_scalar_consts(
     keys: &mut Vec<ScalarLoopConstKey>,
 ) -> Result<()> {
     match stmt {
+        Stmt::Attributed { item, .. } => collect_stmt_const_map_get_scalar_consts(item, const_maps, keys)?,
         Stmt::Empty | Stmt::Break | Stmt::Continue | Stmt::Import(_) | Stmt::Struct { .. } | Stmt::TypeAlias { .. } => {
         }
         Stmt::Expr(expr) | Stmt::Return { value: Some(expr) } => {

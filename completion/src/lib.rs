@@ -1,4 +1,5 @@
 use lk_core::token::{Token, Tokenizer};
+#[cfg(feature = "stdlib")]
 use lk_stdlib::{StdlibExportKind, StdlibExportSpec, stdlib_catalog};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -101,6 +102,7 @@ pub struct CompletionEngine;
 
 impl CompletionEngine {
     pub fn new() -> anyhow::Result<Self> {
+        #[cfg(feature = "stdlib")]
         let _ = stdlib_catalog();
         Ok(Self)
     }
@@ -263,20 +265,28 @@ impl CompletionEngine {
         let Some(typed) = module_prefix else {
             return false;
         };
-        let typed_start = ctx.cursor - typed.len();
-        for module in stdlib_catalog()
-            .module_names()
-            .into_iter()
-            .filter(|module| module.starts_with(typed))
+        #[cfg(feature = "stdlib")]
         {
-            out.push(CompletionCandidate::new(
-                module.clone(),
-                CompletionKind::Module,
-                Some("LK stdlib module".to_string()),
-                module,
-                typed_start,
-                ctx.cursor,
-            ));
+            let typed_start = ctx.cursor - typed.len();
+            for module in stdlib_catalog()
+                .module_names()
+                .into_iter()
+                .filter(|module| module.starts_with(typed))
+            {
+                out.push(CompletionCandidate::new(
+                    module.clone(),
+                    CompletionKind::Module,
+                    Some("LK stdlib module".to_string()),
+                    module,
+                    typed_start,
+                    ctx.cursor,
+                ));
+            }
+        }
+        #[cfg(not(feature = "stdlib"))]
+        {
+            let _ = out;
+            let _ = typed;
         }
         true
     }
@@ -298,12 +308,16 @@ impl CompletionEngine {
         if path.is_empty() {
             return false;
         }
-        if let Some(module_name) = symbols
-            .import_aliases
-            .get(path[0])
-            .map(String::as_str)
-            .or_else(|| stdlib_catalog().module(path[0]).map(|_| path[0]))
-        {
+        if let Some(module_name) = symbols.import_aliases.get(path[0]).map(String::as_str).or_else(|| {
+            #[cfg(feature = "stdlib")]
+            {
+                stdlib_catalog().module(path[0]).map(|_| path[0])
+            }
+            #[cfg(not(feature = "stdlib"))]
+            {
+                None
+            }
+        }) {
             let mut module_path = Vec::with_capacity(path.len());
             module_path.push(module_name);
             module_path.extend_from_slice(&path[1..]);
@@ -427,29 +441,32 @@ impl CompletionEngine {
                 ));
             }
         }
-        for global in &stdlib_catalog().globals {
-            let name = &global.name;
-            if name.starts_with(typed) && !name.contains("::") && !name.contains('$') {
-                out.push(CompletionCandidate::new(
-                    name.to_string(),
-                    CompletionKind::Function,
-                    Some(global.detail.clone()),
-                    name.to_string(),
-                    replace_start,
-                    ctx.cursor,
-                ));
+        #[cfg(feature = "stdlib")]
+        {
+            for global in &stdlib_catalog().globals {
+                let name = &global.name;
+                if name.starts_with(typed) && !name.contains("::") && !name.contains('$') {
+                    out.push(CompletionCandidate::new(
+                        name.to_string(),
+                        CompletionKind::Function,
+                        Some(global.detail.clone()),
+                        name.to_string(),
+                        replace_start,
+                        ctx.cursor,
+                    ));
+                }
             }
-        }
-        for module in stdlib_catalog().module_names() {
-            if module.starts_with(typed) {
-                out.push(CompletionCandidate::new(
-                    module.clone(),
-                    CompletionKind::Module,
-                    Some("stdlib module".to_string()),
-                    module,
-                    replace_start,
-                    ctx.cursor,
-                ));
+            for module in stdlib_catalog().module_names() {
+                if module.starts_with(typed) {
+                    out.push(CompletionCandidate::new(
+                        module.clone(),
+                        CompletionKind::Module,
+                        Some("stdlib module".to_string()),
+                        module,
+                        replace_start,
+                        ctx.cursor,
+                    ));
+                }
             }
         }
         for symbol in &symbols.symbols {
@@ -466,6 +483,7 @@ impl CompletionEngine {
         }
     }
 
+    #[cfg(feature = "stdlib")]
     fn export_names_at_path(&self, path: &[&str]) -> Option<Vec<(String, CompletionKind, String)>> {
         let exports: Vec<&StdlibExportSpec> = if path.len() == 1 {
             stdlib_catalog()
@@ -489,8 +507,14 @@ impl CompletionEngine {
         out.sort_by(|left, right| left.0.cmp(&right.0));
         Some(out)
     }
+
+    #[cfg(not(feature = "stdlib"))]
+    fn export_names_at_path(&self, _path: &[&str]) -> Option<Vec<(String, CompletionKind, String)>> {
+        None
+    }
 }
 
+#[cfg(feature = "stdlib")]
 fn completion_kind_from_stdlib(export: &StdlibExportSpec) -> CompletionKind {
     match export.kind {
         StdlibExportKind::Function => CompletionKind::Function,
@@ -1193,6 +1217,7 @@ mod tests {
         items.into_iter().map(|item| item.label).collect()
     }
 
+    #[cfg(feature = "stdlib")]
     #[test]
     fn completes_stdlib_globals_from_registry() {
         let engine = CompletionEngine::new().unwrap();
@@ -1209,6 +1234,7 @@ mod tests {
         assert!(got.contains(&"assert_ne".to_string()));
     }
 
+    #[cfg(feature = "stdlib")]
     #[test]
     fn completes_nested_stdlib_exports() {
         let engine = CompletionEngine::new().unwrap();

@@ -12,10 +12,13 @@ pub enum Token {
     LBracket,          // [
     RBracket,          // ]
     Dot,               // .
+    ColonColon,        // ::
     OptionalDot,       // ?.
     Colon,             // :
     Comma,             // ,
     Semicolon,         // ;
+    Dollar,            // $
+    Hash,              // #
     Assign,            // =
     AddAssign,         // +=
     SubAssign,         // -=
@@ -779,9 +782,28 @@ impl<'a> Tokenizer<'a> {
             }
             ':' => {
                 let start = self.current_position();
+                if self.expect("::") {
+                    let end = self.current_position();
+                    self.push_with_span(Token::ColonColon, start, end);
+                } else {
+                    self.advance_char();
+                    let end = self.current_position();
+                    self.push_with_span(Token::Colon, start, end);
+                }
+                Ok(())
+            }
+            '$' => {
+                let start = self.current_position();
                 self.advance_char();
                 let end = self.current_position();
-                self.push_with_span(Token::Colon, start, end);
+                self.push_with_span(Token::Dollar, start, end);
+                Ok(())
+            }
+            '#' => {
+                let start = self.current_position();
+                self.advance_char();
+                let end = self.current_position();
+                self.push_with_span(Token::Hash, start, end);
                 Ok(())
             }
             ',' => {
@@ -1136,6 +1158,8 @@ impl<'a> Tokenizer<'a> {
                 | ':'
                 | ','
                 | ';'
+                | '$'
+                | '#'
                 | '&'
                 | '|'
                 | '~'
@@ -1162,7 +1186,10 @@ impl<'a> Tokenizer<'a> {
                 | Token::LBracket
                 | Token::Comma
                 | Token::Colon
+                | Token::ColonColon
                 | Token::Semicolon
+                | Token::Dollar
+                | Token::Hash
                 | Token::Assign
                 | Token::AddAssign
                 | Token::SubAssign

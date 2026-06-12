@@ -9,6 +9,13 @@ use crate::{
 };
 use anyhow::Result;
 
+/// Source attribute preserved for later derive/attribute/procedural macro expansion.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Attribute {
+    pub tokens: Vec<crate::token::Token>,
+    pub span: Option<Span>,
+}
+
 /// For 循环的模式匹配 (类似 Rust 的 Pattern)
 #[derive(Debug, Clone, PartialEq)]
 pub enum ForPattern {
@@ -56,6 +63,11 @@ pub struct NamedParamDecl {
 /// block_stmt ::= '{' statement* '}'
 #[derive(Debug, Clone, PartialEq)]
 pub enum Stmt {
+    /// #[attr] item
+    Attributed {
+        attributes: Vec<Attribute>,
+        item: Box<Stmt>,
+    },
     /// use statement
     Import(ImportStmt),
     /// if (condition) then_stmt [else else_stmt]
@@ -155,7 +167,7 @@ pub enum Stmt {
 }
 
 /// 程序结构 - 包含语句列表
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Program {
     pub statements: Vec<Box<Stmt>>,
 }

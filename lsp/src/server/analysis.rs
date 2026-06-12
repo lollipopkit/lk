@@ -10,9 +10,16 @@ use tokio::time::{sleep, Duration};
 use tower_lsp::lsp_types::*;
 
 use crate::analyzer::{AnalysisResult, LkAnalyzer};
-use lk_core::{package::PackageGraph, resolve, stmt, token};
+use lk_core::{
+    package::{self, PackageGraph},
+    resolve, stmt, syntax, token,
+};
 
 use super::hover::document_hover;
+use super::macro_definition::{
+    find_exported_macro_definition_in_content, find_local_macro_definition, generated_ast_item_definition_location,
+    imported_macro_definition, ImportedMacroSource,
+};
 use super::state::LkLanguageServer;
 use super::text::{find_token_at_offset, position_to_char_idx};
 use super::utils::compute_content_hash;
@@ -173,13 +180,14 @@ impl LkLanguageServer {
             (doc.content.to_string(), off)
         };
 
-        let (tokens, spans) = {
+        let (tokens, spans, ast_macro_origins) = {
             if let Ok(mut analyzer) = self.analyzer.lock() {
                 match analyzer.tokenize_with_spans_cached(&content) {
                     Ok(entry) => {
                         let tokens = entry.tokens.clone();
                         let spans = entry.spans.clone();
-                        (tokens, spans)
+                        let ast_macro_origins = analyzer.ast_macro_origins(&content);
+                        (tokens, spans, ast_macro_origins)
                     }
                     Err(_) => return None,
                 }
@@ -194,7 +202,7 @@ impl LkLanguageServer {
                 .ok()
                 .and_then(|path| path.parent().map(Path::to_path_buf))
                 .map(|base_dir| {
-                    let (_, modules, _) = self.workspace_cache.package_context_for(base_dir);
+                    let (_, modules, _, _) = self.workspace_cache.package_context_for(base_dir);
                     modules
                 })
                 .unwrap_or_default();
@@ -204,6 +212,7 @@ impl LkLanguageServer {
                 tokens.as_ref(),
                 spans.as_ref(),
                 idx,
+                &ast_macro_origins,
                 &package_modules,
             ));
         }
@@ -256,11 +265,11 @@ impl LkLanguageServer {
         let computed_result = task::spawn_blocking(move || {
             let mut analyzer = LkAnalyzer::new();
             if let Some(b) = base_dir {
-                let (base, modules, missing) = workspace_cache.package_context_for(b);
+                let (base, modules, missing, proc_macro_providers) = workspace_cache.package_context_for(b);
                 if modules.is_empty() && missing.is_empty() {
                     analyzer.set_base_dir(base);
                 } else {
-                    analyzer.set_package_context(base, modules, missing);
+                    analyzer.set_package_context(base, modules, missing, proc_macro_providers);
                 }
             }
             analyzer.analyze(&content_for_compute)
@@ -321,11 +330,11 @@ impl LkLanguageServer {
         let generated_result = task::spawn_blocking(move || {
             let mut analyzer = LkAnalyzer::new_light();
             if let Some(b) = base_dir {
-                let (base, modules, missing) = workspace_cache.package_context_for(b);
+                let (base, modules, missing, proc_macro_providers) = workspace_cache.package_context_for(b);
                 if modules.is_empty() && missing.is_empty() {
                     analyzer.set_base_dir(base);
                 } else {
-                    analyzer.set_package_context(base, modules, missing);
+                    analyzer.set_package_context(base, modules, missing, proc_macro_providers);
                 }
             }
             analyzer.generate_semantic_tokens(&content_for_tokens)
@@ -398,11 +407,11 @@ impl LkLanguageServer {
                     task::spawn_blocking(move || {
                         let mut analyzer = LkAnalyzer::new();
                         if let Some(b) = base_dir {
-                            let (base, modules, missing) = workspace_cache.package_context_for(b);
+                            let (base, modules, missing, proc_macro_providers) = workspace_cache.package_context_for(b);
                             if modules.is_empty() && missing.is_empty() {
                                 analyzer.set_base_dir(base);
                             } else {
-                                analyzer.set_package_context(base, modules, missing);
+                                analyzer.set_package_context(base, modules, missing, proc_macro_providers);
                             }
                         }
                         analyzer.analyze(&content_for_compute)
@@ -602,6 +611,35 @@ impl LkLanguageServer {
         None
     }
 
+    pub(crate) async fn find_macro_definition_at_position(
+        &self,
+        content: &str,
+        position: Position,
+        uri: &Url,
+    ) -> Option<Location> {
+        let (tokens, spans) = token::Tokenizer::tokenize_enhanced_with_spans(content).ok()?;
+        let offset = position_to_char_idx(&Rope::from_str(content), position);
+        find_macro_definition_at_offset(&tokens, &spans, offset, uri)
+            .or_else(|| self.find_imported_macro_definition_at_offset(&tokens, &spans, offset, uri))
+    }
+
+    fn find_imported_macro_definition_at_offset(
+        &self,
+        tokens: &[token::Token],
+        spans: &[token::Span],
+        offset: usize,
+        uri: &Url,
+    ) -> Option<Location> {
+        let imported = imported_macro_definition(tokens, spans, offset)?;
+        let path = match imported.source {
+            ImportedMacroSource::File(path) => self.resolve_lk_import_path(&path, uri)?,
+            ImportedMacroSource::Package(module) => self.resolve_package_module_path(&module, uri)?,
+        };
+        let imported_uri = Url::from_file_path(&path).ok()?;
+        let imported_content = fs::read_to_string(path).ok()?;
+        find_exported_macro_definition_in_content(&imported_content, &imported.name, &imported_uri)
+    }
+
     async fn collect_file_import_aliases(&self, content: &str, current_uri: &Url) -> HashMap<String, PathBuf> {
         let mut aliases = HashMap::new();
         let Ok((tokens, _spans)) = token::Tokenizer::tokenize_enhanced_with_spans(content) else {
@@ -679,7 +717,7 @@ impl LkLanguageServer {
             .ok()
             .and_then(|path| path.parent().map(Path::to_path_buf))?;
 
-        let (_, cached_modules, _) = self.workspace_cache.package_context_for(current_dir.clone());
+        let (_, cached_modules, _, _) = self.workspace_cache.package_context_for(current_dir.clone());
         if let Some(path) = cached_modules.get(module_name) {
             return path.canonicalize().ok().or_else(|| Some(path.clone()));
         }
@@ -725,56 +763,90 @@ impl LkLanguageServer {
         pos: Position,
         uri: &Url,
     ) -> Option<Location> {
-        let (tokens, spans) = match token::Tokenizer::tokenize_enhanced_with_spans(content) {
-            Ok(p) => p,
-            Err(_) => return None,
-        };
-        let mut parser = stmt::stmt_parser::StmtParser::new_with_spans(&tokens, &spans);
-        let program = parser.parse_program_with_enhanced_errors(content).ok()?;
-        let mut resolver = resolve::slots::SlotResolver::new();
-        let resolution = resolver.resolve_program_slots(&program);
-        let analyzer = LkAnalyzer::default();
-        let enriched = analyzer.enrich_layout_spans(&resolution.root, &tokens, &spans);
-        let fblocks = LkAnalyzer::scan_function_blocks(&tokens, &spans);
-        let cursor_line = pos.line + 1;
-        let cursor_col = pos.character + 1;
-        let mut cursor_offset = 0usize;
-        for sp in &spans {
-            if sp.start.line == cursor_line {
-                cursor_offset = sp.start.offset + (cursor_col.saturating_sub(sp.start.column)) as usize;
-                break;
+        let cursor_offset = position_to_char_idx(&Rope::from_str(content), pos);
+        if let Ok((tokens, spans)) = token::Tokenizer::tokenize_enhanced_with_spans(content) {
+            let mut parser = stmt::stmt_parser::StmtParser::new_with_spans(&tokens, &spans);
+            if let Ok(program) = parser.parse_program_with_enhanced_errors(content) {
+                if let Some(location) =
+                    definition_location_in_program(&program, &tokens, &spans, symbol_name, cursor_offset, uri)
+                {
+                    return Some(location);
+                }
             }
         }
-        let mut candidate_spans: Vec<token::Span> = Vec::new();
-        let mut pick_child: Option<usize> = None;
-        for (i, fb) in fblocks.iter().enumerate() {
-            let s = spans.get(fb.body_start_idx)?.start.offset;
-            let e = spans.get(fb.body_end_idx)?.end.offset;
-            if cursor_offset >= s && cursor_offset <= e {
-                pick_child = Some(i);
-                break;
-            }
+
+        let expansion = syntax::expand_program_source(content, parse_options_for_uri(uri)).ok()?;
+
+        definition_location_in_program(
+            &expansion.program,
+            &expansion.source.tokens,
+            &expansion.source.spans,
+            symbol_name,
+            cursor_offset,
+            uri,
+        )
+        .or_else(|| generated_ast_item_definition_location(&expansion.ast_macro_origins, symbol_name, uri))
+    }
+}
+
+fn parse_options_for_uri(uri: &Url) -> syntax::ParseOptions {
+    let base_dir = uri
+        .to_file_path()
+        .ok()
+        .and_then(|path| path.parent().map(Path::to_path_buf));
+    let mut options = syntax::ParseOptions {
+        base_dir: base_dir.clone(),
+        ..syntax::ParseOptions::default()
+    };
+    let Some(base_dir) = base_dir else {
+        return options;
+    };
+    let Some(manifest_path) = package::find_manifest(&base_dir) else {
+        return options;
+    };
+    let Ok(Some(graph)) = PackageGraph::discover(&base_dir) else {
+        return options;
+    };
+    if let Ok(providers) = graph.proc_macro_providers_for_manifest(&manifest_path) {
+        options.proc_macro_providers = providers;
+    }
+    options
+}
+
+fn definition_location_in_program(
+    program: &stmt::Program,
+    tokens: &[token::Token],
+    spans: &[token::Span],
+    symbol_name: &str,
+    cursor_offset: usize,
+    uri: &Url,
+) -> Option<Location> {
+    let mut resolver = resolve::slots::SlotResolver::new();
+    let resolution = resolver.resolve_program_slots(program);
+    let analyzer = LkAnalyzer::default();
+    let enriched = analyzer.enrich_layout_spans(&resolution.root, tokens, spans);
+    let fblocks = LkAnalyzer::scan_function_blocks(tokens, spans);
+    let mut candidate_spans: Vec<token::Span> = Vec::new();
+    let mut pick_child: Option<usize> = None;
+    for (i, fb) in fblocks.iter().enumerate() {
+        let s = spans.get(fb.body_start_idx)?.start.offset;
+        let e = spans.get(fb.body_end_idx)?.end.offset;
+        if cursor_offset >= s && cursor_offset <= e {
+            pick_child = Some(i);
+            break;
         }
-        if let Some(ci) = pick_child {
-            if let Some(child) = enriched.children.get(ci) {
-                for d in &child.decls {
-                    if d.name == symbol_name {
-                        if let Some(sp) = &d.span {
-                            candidate_spans.push(sp.clone());
-                        }
+    }
+    if let Some(ci) = pick_child {
+        if let Some(child) = enriched.children.get(ci) {
+            for d in &child.decls {
+                if d.name == symbol_name {
+                    if let Some(sp) = &d.span {
+                        candidate_spans.push(sp.clone());
                     }
                 }
             }
-            if candidate_spans.is_empty() {
-                for d in &enriched.decls {
-                    if d.name == symbol_name {
-                        if let Some(sp) = &d.span {
-                            candidate_spans.push(sp.clone());
-                        }
-                    }
-                }
-            }
-        } else {
+        }
+        if candidate_spans.is_empty() {
             for d in &enriched.decls {
                 if d.name == symbol_name {
                     if let Some(sp) = &d.span {
@@ -783,15 +855,53 @@ impl LkLanguageServer {
                 }
             }
         }
-        if let Some(sp) = candidate_spans.first() {
-            let range = Range::new(
-                Position::new(sp.start.line - 1, sp.start.column - 1),
-                Position::new(sp.end.line - 1, sp.end.column - 1),
-            );
-            return Some(Location::new(uri.clone(), range));
+    } else {
+        for d in &enriched.decls {
+            if d.name == symbol_name {
+                if let Some(sp) = &d.span {
+                    candidate_spans.push(sp.clone());
+                }
+            }
         }
-        None
     }
+    if let Some(sp) = candidate_spans.first() {
+        let range = Range::new(
+            Position::new(sp.start.line - 1, sp.start.column - 1),
+            Position::new(sp.end.line - 1, sp.end.column - 1),
+        );
+        return Some(Location::new(uri.clone(), range));
+    }
+    find_definition_in_tokens(tokens, spans, symbol_name, uri)
+}
+
+fn find_definition_in_tokens(
+    tokens: &[token::Token],
+    spans: &[token::Span],
+    symbol_name: &str,
+    uri: &Url,
+) -> Option<Location> {
+    for (idx, token) in tokens.iter().enumerate() {
+        match token {
+            token::Token::Fn | token::Token::Struct | token::Token::Trait | token::Token::Type => {
+                let Some(token::Token::Id(name)) = tokens.get(idx + 1) else {
+                    continue;
+                };
+                if name != symbol_name {
+                    continue;
+                }
+                let sp = spans.get(idx + 1)?;
+                return Some(Location::new(
+                    uri.clone(),
+                    Range::new(
+                        Position::new(sp.start.line - 1, sp.start.column - 1),
+                        Position::new(sp.end.line - 1, sp.end.column - 1),
+                    ),
+                ));
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 fn qualified_symbol_context_at_offset(
@@ -976,6 +1086,15 @@ fn find_definition_in_content(content: &str, symbol_name: &str, uri: &Url) -> Op
     None
 }
 
+fn find_macro_definition_at_offset(
+    tokens: &[token::Token],
+    spans: &[token::Span],
+    offset: usize,
+    uri: &Url,
+) -> Option<Location> {
+    find_local_macro_definition(tokens, spans, offset, uri)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1072,6 +1191,209 @@ mod tests {
             plain_symbol_name_at_position(content, double_pos).as_deref(),
             Some("double")
         );
+    }
+
+    #[test]
+    fn macro_definition_lookup_resolves_same_file_macro_call_name() {
+        let content = "macro_rules! answer { () => { 42 }; }\nlet x = answer!();\n";
+        let (tokens, spans) = token::Tokenizer::tokenize_enhanced_with_spans(content).expect("tokens");
+        let uri = Url::parse("file:///tmp/macros.lk").expect("uri");
+        let call_offset = content.rfind("answer").expect("call answer") + 2;
+
+        let location =
+            find_macro_definition_at_offset(&tokens, &spans, call_offset, &uri).expect("macro definition location");
+
+        assert_eq!(location.uri, uri);
+        assert_eq!(location.range.start, Position::new(0, 13));
+        assert_eq!(location.range.end, Position::new(0, 19));
+    }
+
+    #[test]
+    fn macro_definition_lookup_resolves_same_file_macro_call_bang() {
+        let content = "macro_rules! answer { () => { 42 }; }\nlet x = answer!();\n";
+        let (tokens, spans) = token::Tokenizer::tokenize_enhanced_with_spans(content).expect("tokens");
+        let uri = Url::parse("file:///tmp/macros.lk").expect("uri");
+        let bang_offset = content.rfind('!').expect("call bang");
+
+        let location =
+            find_macro_definition_at_offset(&tokens, &spans, bang_offset, &uri).expect("macro definition location");
+
+        assert_eq!(location.range.start, Position::new(0, 13));
+        assert_eq!(location.range.end, Position::new(0, 19));
+    }
+
+    #[test]
+    fn generated_macro_definition_lookup_uses_expanded_token_spans() {
+        let content = r#"macro_rules! make_answer {
+    () => { fn answer() { return 42; } };
+}
+make_answer!();
+return answer();
+"#;
+        let expansion =
+            syntax::expand_program_source(content, syntax::ParseOptions::default()).expect("macro-expanded program");
+        let uri = Url::parse("file:///tmp/generated-symbol.lk").expect("uri");
+        let usage_offset = content.rfind("answer").expect("answer call") + 2;
+
+        let location = definition_location_in_program(
+            &expansion.program,
+            &expansion.source.tokens,
+            &expansion.source.spans,
+            "answer",
+            usage_offset,
+            &uri,
+        )
+        .expect("generated function definition location");
+
+        let generated_name_offset = content.find("fn answer").expect("generated template function") + 3;
+        let expected_start = position_for_ascii_offset(content, generated_name_offset);
+        let expected_end = Position::new(expected_start.line, expected_start.character + "answer".len() as u32);
+        assert_eq!(location.uri, uri);
+        assert_eq!(location.range.start, expected_start);
+        assert_eq!(location.range.end, expected_end);
+    }
+
+    #[test]
+    fn package_proc_macro_provider_generated_definition_uses_manifest_options() {
+        let dir = unique_test_dir("lsp_proc_macro_definition");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("create temp package");
+        let provider_path = dir.join("provider.sh");
+        fs::write(
+            dir.join("Lk.toml"),
+            format!(
+                r#"
+[package]
+name = "demo"
+version = "0.1.0"
+
+[macros.derive.MakeAnswer]
+command = "/bin/sh"
+args = [{}]
+timeout_ms = 1000
+max_output_bytes = 4096
+"#,
+                toml_string(provider_path.to_string_lossy().as_ref())
+            ),
+        )
+        .expect("write manifest");
+        fs::write(
+            &provider_path,
+            r#"cat >/dev/null
+printf '%s' '{"protocol_version":1,"output_tokens":[{"kind":"Fn","lexeme":"fn","span":null},{"kind":"Id","lexeme":"generated","span":null},{"kind":"LParen","lexeme":"(","span":null},{"kind":"RParen","lexeme":")","span":null},{"kind":"LBrace","lexeme":"{","span":null},{"kind":"Return","lexeme":"return","span":null},{"kind":"Int","lexeme":"77","span":null},{"kind":"Semicolon","lexeme":";","span":null},{"kind":"RBrace","lexeme":"}","span":null}],"diagnostics":[],"dependencies":[]}'
+"#,
+        )
+        .expect("write provider");
+        let source = r#"
+#[derive(MakeAnswer)]
+struct User { id: Int }
+return generated();
+"#;
+        let source_path = dir.join("main.lk");
+        fs::write(&source_path, source).expect("write source");
+        let uri = Url::from_file_path(&source_path).expect("file uri");
+        let options = parse_options_for_uri(&uri);
+        let expansion = syntax::expand_program_source(source, options).expect("manifest provider should expand");
+        let usage_offset = source.rfind("generated").expect("generated call") + 2;
+
+        let location = definition_location_in_program(
+            &expansion.program,
+            &expansion.source.tokens,
+            &expansion.source.spans,
+            "generated",
+            usage_offset,
+            &uri,
+        )
+        .or_else(|| generated_ast_item_definition_location(&expansion.ast_macro_origins, "generated", &uri))
+        .expect("generated provider item definition");
+
+        assert_eq!(location.uri, uri);
+        assert!(
+            location.range.start.line <= 1,
+            "null provider spans should fall back to the derive input span: {:?}",
+            location.range
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ast_generated_member_definition_lookup_uses_member_origins() {
+        let source = r#"
+#[derive(Debug)]
+struct User { id: Int }
+let value = User { id: 1 };
+return value.show();
+"#;
+        let uri = Url::parse("file:///tmp/derive-member-origin.lk").expect("uri");
+        let expansion =
+            syntax::expand_program_source(source, syntax::ParseOptions::default()).expect("derive should expand");
+
+        let location = generated_ast_item_definition_location(&expansion.ast_macro_origins, "show", &uri)
+            .expect("generated show member definition");
+
+        assert_eq!(location.uri, uri);
+        assert_eq!(
+            location.range.start.line, 1,
+            "generated member origin should fall back to derive input span: {:?}",
+            location.range
+        );
+        assert!(
+            location.range.end.character > location.range.start.character,
+            "generated member definition should expose a non-empty range"
+        );
+    }
+
+    #[test]
+    fn ast_generated_field_expression_definition_lookup_uses_member_origins() {
+        let source = r#"
+#[derive(Debug)]
+struct User { id: Int }
+let value = User { id: 1 };
+return "${value}";
+"#;
+        let uri = Url::parse("file:///tmp/derive-field-origin.lk").expect("uri");
+        let expansion =
+            syntax::expand_program_source(source, syntax::ParseOptions::default()).expect("derive should expand");
+
+        let location = generated_ast_item_definition_location(&expansion.ast_macro_origins, "id", &uri)
+            .expect("generated field expression definition");
+
+        assert_eq!(location.uri, uri);
+        assert_eq!(
+            location.range.start.line, 1,
+            "generated field expression origin should fall back to derive input span: {:?}",
+            location.range
+        );
+        assert!(
+            location.range.end.character > location.range.start.character,
+            "generated field expression definition should expose a non-empty range"
+        );
+    }
+
+    fn unique_test_dir(name: &str) -> PathBuf {
+        let mut dir = std::env::temp_dir();
+        dir.push(format!("{name}_{}", std::process::id()));
+        dir
+    }
+
+    fn toml_string(value: &str) -> String {
+        serde_json::to_string(value).expect("TOML basic string compatible JSON string")
+    }
+
+    fn position_for_ascii_offset(content: &str, offset: usize) -> Position {
+        let mut line = 0u32;
+        let mut line_start = 0usize;
+        for (idx, byte) in content.bytes().enumerate() {
+            if idx == offset {
+                break;
+            }
+            if byte == b'\n' {
+                line += 1;
+                line_start = idx + 1;
+            }
+        }
+        Position::new(line, (offset - line_start) as u32)
     }
 
     #[test]

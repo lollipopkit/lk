@@ -236,6 +236,9 @@ impl ResolverCore {
 
     fn resolve_stmt(&mut self, stmt: &Stmt, children_out: &mut Vec<FunctionLayout>) {
         match stmt {
+            Stmt::Attributed { item, .. } => {
+                self.resolve_stmt(item, children_out);
+            }
             Stmt::Import(_) => {
                 // No local bindings
             }

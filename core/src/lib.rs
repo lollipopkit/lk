@@ -1,10 +1,12 @@
 pub mod ast;
 pub mod expr;
+pub mod macro_system;
 pub mod module;
 mod operator;
 pub mod package;
 pub mod rt;
 pub mod stmt;
+pub mod syntax;
 pub mod token;
 pub mod typ;
 pub mod util;

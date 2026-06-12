@@ -16,7 +16,7 @@ impl LkAnalyzer {
                     let mut out: HashMap<String, Vec<NamedParamDecl>> =
                         HashMap::with_capacity(program.statements.len());
                     for st in &program.statements {
-                        if let Stmt::Function { name, named_params, .. } = st.as_ref() {
+                        if let Stmt::Function { name, named_params, .. } = stmt_without_attributes(st) {
                             out.insert(name.clone(), named_params.clone());
                         }
                     }
@@ -173,6 +173,7 @@ impl LkAnalyzer {
             base_dir: None,
             package_modules: HashMap::new(),
             missing_packages: HashSet::new(),
+            proc_macro_providers: macro_system::ProcMacroProviders::default(),
         }
     }
     /// Create a new LK analyzer
@@ -185,6 +186,7 @@ impl LkAnalyzer {
             base_dir: None,
             package_modules: HashMap::new(),
             missing_packages: HashSet::new(),
+            proc_macro_providers: macro_system::ProcMacroProviders::default(),
         }
     }
 
@@ -570,12 +572,19 @@ impl LkAnalyzer {
     /// Set the base directory used for resolving file imports
     pub fn set_base_dir(&mut self, base: PathBuf) {
         if let Ok(Some(graph)) = PackageGraph::discover(&base) {
+            self.proc_macro_providers = graph
+                .proc_macro_providers_for_manifest(&graph.manifest_path)
+                .unwrap_or_else(|_| macro_system::ProcMacroProviders::default());
             self.package_modules = graph
                 .modules
                 .into_iter()
                 .map(|module| (module.name, module.root))
                 .collect();
             self.missing_packages = graph.missing.into_iter().collect();
+        } else {
+            self.package_modules.clear();
+            self.missing_packages.clear();
+            self.proc_macro_providers = macro_system::ProcMacroProviders::default();
         }
         self.base_dir = Some(base);
     }
@@ -586,10 +595,23 @@ impl LkAnalyzer {
         base: PathBuf,
         package_modules: HashMap<String, PathBuf>,
         missing_packages: HashSet<String>,
+        proc_macro_providers: macro_system::ProcMacroProviders,
     ) {
         self.base_dir = Some(base);
         self.package_modules = package_modules;
         self.missing_packages = missing_packages;
+        self.proc_macro_providers = proc_macro_providers;
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn set_proc_macro_providers(&mut self, providers: macro_system::ProcMacroProviders) {
+        self.proc_macro_providers = providers;
+        self.token_cache.clear();
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn base_dir(&self) -> Option<&Path> {
+        self.base_dir.as_deref()
     }
 
     /// Scan tokens to add diagnostics for unknown stdlib modules and unknown exports with precise spans
@@ -706,7 +728,10 @@ impl LkAnalyzer {
                                                 }
                                             }
                                         }
-                                    } else if !self.package_modules.contains_key(mod_name) && j < spans.len() {
+                                    } else if !macro_system::is_builtin_macro_module(mod_name)
+                                        && !self.package_modules.contains_key(mod_name)
+                                        && j < spans.len()
+                                    {
                                         let sp = &spans[j];
                                         let range = Range::new(
                                             Position::new(sp.start.line - 1, sp.start.column.saturating_sub(1)),
@@ -741,6 +766,7 @@ impl LkAnalyzer {
                                 j += 1;
                                 if let T::Id(mod_name) = &tokens[j] {
                                     if lk_stdlib::stdlib_catalog().module(mod_name).is_none()
+                                        && !macro_system::is_builtin_macro_module(mod_name)
                                         && !self.package_modules.contains_key(mod_name)
                                         && j < spans.len()
                                     {
@@ -772,6 +798,7 @@ impl LkAnalyzer {
                             // use module [as alias]?;
                             let mod_idx = j;
                             if lk_stdlib::stdlib_catalog().module(mod_name).is_none()
+                                && !macro_system::is_builtin_macro_module(mod_name)
                                 && !self.package_modules.contains_key(mod_name)
                                 && mod_idx < spans.len()
                             {
@@ -856,21 +883,69 @@ impl LkAnalyzer {
         }
     }
 
-    /// Tokenize with spans, using an internal cache keyed by full content string.
+    fn parse_error_diagnostic(parse_err: &token::ParseError, content: &str) -> Diagnostic {
+        let range = if let Some(span) = &parse_err.span {
+            let start_pos = Position::new(span.start.line.saturating_sub(1), span.start.column.saturating_sub(1));
+            let end_pos = Position::new(span.end.line.saturating_sub(1), span.end.column.saturating_sub(1));
+            Range::new(start_pos, end_pos)
+        } else {
+            Range::new(Position::new(0, 0), Position::new(0, content.len() as u32))
+        };
+        Diagnostic::new(
+            range,
+            Some(DiagnosticSeverity::ERROR),
+            None,
+            Some("lk".to_string()),
+            parse_err.message.clone(),
+            None,
+            None,
+        )
+    }
+
+    fn is_macro_expansion_error(message: &str) -> bool {
+        message.contains("macro") || message.contains("Macro") || message.contains("$crate")
+    }
+
+    fn parse_options(&self) -> ParseOptions {
+        ParseOptions {
+            base_dir: self.base_dir.clone(),
+            proc_macro_providers: self.proc_macro_providers.clone(),
+            ..ParseOptions::default()
+        }
+    }
+
+    fn token_cache_key(&self, content: &str) -> String {
+        match &self.base_dir {
+            Some(base_dir) => format!("{}\0{content}", base_dir.display()),
+            None => content.to_string(),
+        }
+    }
+
+    /// Tokenize with spans, using an internal cache keyed by base directory and full content string.
     pub(crate) fn tokenize_with_spans_cached(
         &mut self,
         content: &str,
     ) -> std::result::Result<Arc<TokenCacheEntry>, token::ParseError> {
-        if let Some(cached) = self.token_cache.get(content) {
-            return Ok(cached.clone());
+        let cache_key = self.token_cache_key(content);
+        if let Some(cached) = self.token_cache.get(&cache_key) {
+            if cached.dependencies_current() {
+                return Ok(cached.clone());
+            }
+            self.token_cache.remove(&cache_key);
         }
         let (tokens, spans) = Tokenizer::tokenize_enhanced_with_spans(content)?;
-        let entry = Arc::new(TokenCacheEntry::new(tokens, spans));
+        let project_dependencies = collect_project_file_dependencies_from_tokens(&tokens);
+        let entry = Arc::new(TokenCacheEntry::new(
+            tokens,
+            spans,
+            self.parse_options(),
+            project_dependencies,
+        ));
         if content.len() < 10_000 {
             if self.token_cache.len() >= 100 {
                 self.token_cache.clear();
             }
-            self.token_cache.insert(content.to_string(), entry.clone());
+            self.token_cache.insert(cache_key, entry.clone());
         }
         Ok(entry)
     }
@@ -1027,115 +1102,124 @@ impl LkAnalyzer {
                             result.symbols.push(sym);
                         }
 
+                        let expansion = token_entry.parse_program_expansion_arc(content).ok();
+                        if let Some(expansion) = expansion.as_ref() {
+                            Self::append_ast_macro_origin_symbols(&mut result.symbols, &expansion.ast_macro_origins);
+                        }
+
                         // Labels syntax is not supported; no label symbols at top-level
                         // Add precise use diagnostics using tokens/spans
                         self.add_import_diagnostics(tokens, spans, &mut result);
 
                         // Run type checking to surface semantic diagnostics (e.g., numeric operand errors)
-                        let type_diags = Self::collect_type_diagnostics(program, tokens, spans, content);
+                        let type_diags = match expansion {
+                            Some(expansion) => Self::collect_type_diagnostics(
+                                &expansion.program,
+                                &expansion.source.tokens,
+                                &expansion.source.spans,
+                                content,
+                                Some(&expansion.source.origins),
+                            ),
+                            None => Self::collect_type_diagnostics(program, tokens, spans, content, None),
+                        };
                         if !type_diags.is_empty() {
                             result.diagnostics.extend(type_diags);
                         }
                     }
                     Err(stmt_err) => {
-                        // If we found expression-level errors and the content doesn't look like statements,
-                        // prefer reporting these expression diagnostics.
                         let mut collected: Vec<Diagnostic> = Vec::new();
-                        let has_statement_keywords = content.contains("let ")
-                            || content.contains("if ")
-                            || content.contains("while ")
-                            || content.contains("return ")
-                            || content.contains("break")
-                            || content.contains("continue");
-                        if !expr_recover_errors.is_empty() && !has_statement_keywords {
-                            for e in expr_recover_errors {
-                                let range = if let Some(span) = &e.span {
-                                    let start_pos = Position::new(span.start.line - 1, span.start.column - 1);
-                                    let end_pos = Position::new(span.end.line - 1, span.end.column - 1);
-                                    Range::new(start_pos, end_pos)
-                                } else {
-                                    Range::new(Position::new(0, 0), Position::new(0, content.len() as u32))
-                                };
-                                collected.push(Diagnostic::new(
-                                    range,
-                                    Some(DiagnosticSeverity::ERROR),
-                                    None,
-                                    Some("lk".to_string()),
-                                    e.message,
-                                    None,
-                                    None,
-                                ));
-                            }
-                        }
+                        let macro_parse_err = if Self::is_macro_expansion_error(&stmt_err.message) {
+                            Some(&stmt_err)
+                        } else if Self::is_macro_expansion_error(&expr_err.message) {
+                            Some(&expr_err)
+                        } else {
+                            None
+                        };
 
-                        // First, attempt recovering parse to collect multiple errors with precise spans
-                        let mut recover_parser = StmtParser::new_with_spans(tokens, spans);
-                        let (_stmts, errs) = recover_parser.parse_program_recovering_with_enhanced_errors(content);
-                        if !errs.is_empty() {
-                            for e in errs {
-                                let range = if let Some(span) = &e.span {
-                                    let start_pos = Position::new(span.start.line - 1, span.start.column - 1);
-                                    let end_pos = Position::new(span.end.line - 1, span.end.column - 1);
-                                    Range::new(start_pos, end_pos)
-                                } else {
-                                    Range::new(Position::new(0, 0), Position::new(0, content.len() as u32))
-                                };
-                                collected.push(Diagnostic::new(
-                                    range,
-                                    Some(DiagnosticSeverity::ERROR),
-                                    None,
-                                    Some("lk".to_string()),
-                                    e.message,
-                                    None,
-                                    None,
-                                ));
-                            }
-                            // And add precise use diagnostics using tokens/spans
-                            self.add_import_diagnostics(tokens, spans, &mut result);
-                            // Named-args diagnostics (best-effort on partially parsed code)
-                            let nad = self.collect_named_call_diagnostics(content, tokens, spans);
-                            if !nad.is_empty() {
-                                result.diagnostics.extend(nad);
-                            }
-                        }
-
-                        // If recovery yielded nothing (e.g., single token), try chunk-based scan then line-wise
-                        if collected.is_empty() {
-                            collected = self.scan_chunks_for_diagnostics(content);
-                            if collected.is_empty() {
-                                collected = self.scan_lines_for_diagnostics(content);
-                            }
-                        }
-
-                        // If line scanning found nothing (e.g., single-line expression-like input),
-                        // fall back to reporting the most relevant single error.
-                        if collected.is_empty() {
-                            // Both parsing attempts failed - prefer statement error for code containing statement keywords
+                        if let Some(parse_err) = macro_parse_err {
+                            collected.push(Self::parse_error_diagnostic(parse_err, content));
+                        } else {
+                            // If we found expression-level errors and the content doesn't look like statements,
+                            // prefer reporting these expression diagnostics.
                             let has_statement_keywords = content.contains("let ")
                                 || content.contains("if ")
                                 || content.contains("while ")
                                 || content.contains("return ")
                                 || content.contains("break")
                                 || content.contains("continue");
-                            let parse_err = if has_statement_keywords { &stmt_err } else { &expr_err };
+                            if !expr_recover_errors.is_empty() && !has_statement_keywords {
+                                for e in expr_recover_errors {
+                                    let range = if let Some(span) = &e.span {
+                                        let start_pos = Position::new(span.start.line - 1, span.start.column - 1);
+                                        let end_pos = Position::new(span.end.line - 1, span.end.column - 1);
+                                        Range::new(start_pos, end_pos)
+                                    } else {
+                                        Range::new(Position::new(0, 0), Position::new(0, content.len() as u32))
+                                    };
+                                    collected.push(Diagnostic::new(
+                                        range,
+                                        Some(DiagnosticSeverity::ERROR),
+                                        None,
+                                        Some("lk".to_string()),
+                                        e.message,
+                                        None,
+                                        None,
+                                    ));
+                                }
+                            }
 
-                            let range = if let Some(span) = &parse_err.span {
-                                let start_pos = Position::new(span.start.line - 1, span.start.column - 1);
-                                let end_pos = Position::new(span.end.line - 1, span.end.column - 1);
-                                Range::new(start_pos, end_pos)
-                            } else {
-                                Range::new(Position::new(0, 0), Position::new(0, content.len() as u32))
-                            };
+                            // First, attempt recovering parse to collect multiple errors with precise spans.
+                            let mut recover_parser = StmtParser::new_with_spans(tokens, spans);
+                            let (_stmts, errs) = recover_parser.parse_program_recovering_with_enhanced_errors(content);
+                            if !errs.is_empty() {
+                                for e in errs {
+                                    let range = if let Some(span) = &e.span {
+                                        let start_pos = Position::new(span.start.line - 1, span.start.column - 1);
+                                        let end_pos = Position::new(span.end.line - 1, span.end.column - 1);
+                                        Range::new(start_pos, end_pos)
+                                    } else {
+                                        Range::new(Position::new(0, 0), Position::new(0, content.len() as u32))
+                                    };
+                                    collected.push(Diagnostic::new(
+                                        range,
+                                        Some(DiagnosticSeverity::ERROR),
+                                        None,
+                                        Some("lk".to_string()),
+                                        e.message,
+                                        None,
+                                        None,
+                                    ));
+                                }
+                                // And add precise use diagnostics using tokens/spans
+                                self.add_import_diagnostics(tokens, spans, &mut result);
+                                // Named-args diagnostics (best-effort on partially parsed code)
+                                let nad = self.collect_named_call_diagnostics(content, tokens, spans);
+                                if !nad.is_empty() {
+                                    result.diagnostics.extend(nad);
+                                }
+                            }
 
-                            collected.push(Diagnostic::new(
-                                range,
-                                Some(DiagnosticSeverity::ERROR),
-                                None,
-                                Some("lk".to_string()),
-                                parse_err.message.clone(),
-                                None,
-                                None,
-                            ));
+                            // If recovery yielded nothing (e.g., single token), try chunk-based scan then line-wise
+                            if collected.is_empty() {
+                                collected = self.scan_chunks_for_diagnostics(content);
+                                if collected.is_empty() {
+                                    collected = self.scan_lines_for_diagnostics(content);
+                                }
+                            }
+
+                            // If line scanning found nothing (e.g., single-line expression-like input),
+                            // fall back to reporting the most relevant single error.
+                            if collected.is_empty() {
+                                // Both parsing attempts failed - prefer statement error for code containing statement keywords
+                                let has_statement_keywords = content.contains("let ")
+                                    || content.contains("if ")
+                                    || content.contains("while ")
+                                    || content.contains("return ")
+                                    || content.contains("break")
+                                    || content.contains("continue");
+                                let parse_err = if has_statement_keywords { &stmt_err } else { &expr_err };
+                                collected.push(Self::parse_error_diagnostic(parse_err, content));
+                            }
                         }
 
                         result.diagnostics.extend(collected);
@@ -1154,7 +1238,7 @@ impl LkAnalyzer {
                     let has_complex_items = program
                         .statements
                         .iter()
-                        .any(|stmt| matches!(stmt.as_ref(), Stmt::Import(_) | Stmt::Function { .. }));
+                        .any(|stmt| matches!(stmt_without_attributes(stmt), Stmt::Import(_) | Stmt::Function { .. }));
                     if has_complex_items {
                         // Skip type checking when imports/functions are present since additional context is required.
                         // TODO: enrich analyzer with module resolution to support complex programs.
@@ -1349,5 +1433,12 @@ impl LkAnalyzer {
         }
         new_root.children = built_children;
         new_root
+    }
+}
+
+fn stmt_without_attributes(stmt: &Stmt) -> &Stmt {
+    match stmt {
+        Stmt::Attributed { item, .. } => stmt_without_attributes(item),
+        stmt => stmt,
     }
 }

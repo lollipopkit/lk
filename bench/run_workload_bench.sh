@@ -8,13 +8,14 @@ BASE_RUNS="${RUNS:-3}"
 EXTRA_RUNS="${EXTRA_RUNS:-5}"
 REGRESSION_MARGIN="${REGRESSION_MARGIN:-0.03}"
 NOISE_MARGIN="${NOISE_MARGIN:-0.08}"
-LUA_BIN="lua"
+LUA_BIN="${LUA_BIN:-lua}"
 RUN_AOT="${RUN_AOT:-0}"
 AOT_ENABLED=0
 PROFILE_WORKLOADS="${PROFILE_WORKLOADS:-0}"
 BENCH_TIMEOUT="${BENCH_TIMEOUT:-30}"
 BENCH_PROGRESS="${BENCH_PROGRESS:-1}"
 LK_PREWARM_TIMEOUT="${LK_PREWARM_TIMEOUT:-120}"
+BENCH_RESULT_TSV="${BENCH_RESULT_TSV:-}"
 
 TMPDIR=$(mktemp -d)
 trap 'rm -rf "$TMPDIR"' EXIT
@@ -375,7 +376,7 @@ echo "LK:  target/release/lk"
 echo "Lua: $($LUA_BIN -v 2>&1 | head -1)"
 if [ "$RUN_AOT" != "0" ]; then
   AOT_COMPILE_LOG="$TMPDIR/aot_compile.log"
-  if "$LK_BIN" compile exe "$BENCH_DIR/workloads_business_algorithms.lk" --output "$AOT_BIN" > "$AOT_COMPILE_LOG" 2>&1; then
+  if "$LK_BIN" compile "$BENCH_DIR/workloads_business_algorithms.lk" --output "$AOT_BIN" > "$AOT_COMPILE_LOG" 2>&1; then
     AOT_ENABLED=1
     AOT_BACKEND=$(sed -nE 's/.*backend ([^,]+),.*/\1/p' "$AOT_COMPILE_LOG" | tail -1)
     if [ -z "$AOT_BACKEND" ]; then
@@ -529,6 +530,10 @@ speedup_file="$TMPDIR/aot_vm_ratios.dat"
 : > "$ratio_file"
 : > "$aot_ratio_file"
 : > "$speedup_file"
+if [ -n "$BENCH_RESULT_TSV" ]; then
+  mkdir -p "$(dirname "$BENCH_RESULT_TSV")"
+  printf "workload\tlk_ms\tlua_ms\tratio\tnoise\tconfidence\tstatus\tchecksum\n" > "$BENCH_RESULT_TSV"
+fi
 for name in "${WORKLOADS[@]}"; do
   lk_ms=$(median_of "$TMPDIR/lk_${name}.dat")
   lua_ms=$(median_of "$TMPDIR/lua_${name}.dat")
@@ -571,8 +576,14 @@ for name in "${WORKLOADS[@]}"; do
       checksum="MISMATCH lk=$lk_sum aot=$aot_sum lua=$lua_sum"
       mismatch_count=$((mismatch_count + 1))
     fi
+    if [ -n "$BENCH_RESULT_TSV" ]; then
+      printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" "$name" "$lk_ms" "$lua_ms" "$ratio" "$noise" "$confidence" "$status" "$checksum" >> "$BENCH_RESULT_TSV"
+    fi
     printf "%-28s %10s %10s %10s %10s %10s %10s %8s %10s %11s %s\n" "$name" "$lk_fmt" "$aot_fmt" "$lua_fmt" "$ratio_cell" "$aot_lua_cell" "$aot_vm_cell" "$noise" "$confidence" "$status" "$checksum"
   else
+    if [ -n "$BENCH_RESULT_TSV" ]; then
+      printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" "$name" "$lk_ms" "$lua_ms" "$ratio" "$noise" "$confidence" "$status" "$checksum" >> "$BENCH_RESULT_TSV"
+    fi
     printf "%-28s %10s %10s %10s %8s %10s %11s %s\n" "$name" "$lk_fmt" "$lua_fmt" "$ratio_cell" "$noise" "$confidence" "$status" "$checksum"
   fi
 done

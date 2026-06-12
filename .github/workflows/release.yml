@@ -67,18 +67,18 @@ jobs:
         with:
           shared-key: ${{ matrix.target }}
       - name: Build binaries
-        run: cargo build --release --target ${{ matrix.target }} -p lkr-cli -p lkr-lsp --all-features
+        run: cargo build --profile dist --target ${{ matrix.target }} -p lk-cli -p lk-lsp --all-features
         shell: bash
       - name: Package archive (unix)
         if: ${{ runner.os != 'Windows' }}
         shell: bash
         run: |
           set -euo pipefail
-          archive_name="lkr-${RELEASE_TAG}-${{ matrix.os }}-${{ matrix.arch }}"
+          archive_name="lk-${RELEASE_TAG}-${{ matrix.os }}-${{ matrix.arch }}"
           staging="artifacts/$archive_name"
           mkdir -p "$staging"
-          cp "target/${{ matrix.target }}/release/lkr${{ matrix.bin_ext }}" "$staging/"
-          cp "target/${{ matrix.target }}/release/lkr-lsp${{ matrix.bin_ext }}" "$staging/"
+          cp "target/${{ matrix.target }}/dist/lk${{ matrix.bin_ext }}" "$staging/"
+          cp "target/${{ matrix.target }}/dist/lk-lsp${{ matrix.bin_ext }}" "$staging/"
           cp LICENSE "$staging/"
           tar -C artifacts -czf "${archive_name}.tar.gz" "$archive_name"
           rm -rf "$staging"
@@ -87,19 +87,19 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $archiveName = "lkr-$env:RELEASE_TAG-${{ matrix.os }}-${{ matrix.arch }}"
+          $archiveName = "lk-$env:RELEASE_TAG-${{ matrix.os }}-${{ matrix.arch }}"
           $staging = Join-Path "artifacts" $archiveName
           New-Item -ItemType Directory -Path $staging | Out-Null
-          Copy-Item "target\${{ matrix.target }}\release\lkr${{ matrix.bin_ext }}" -Destination $staging
-          Copy-Item "target\${{ matrix.target }}\release\lkr-lsp${{ matrix.bin_ext }}" -Destination $staging
+          Copy-Item "target\${{ matrix.target }}\dist\lk${{ matrix.bin_ext }}" -Destination $staging
+          Copy-Item "target\${{ matrix.target }}\dist\lk-lsp${{ matrix.bin_ext }}" -Destination $staging
           Copy-Item "LICENSE" -Destination $staging
           Compress-Archive -Path "$staging\*" -DestinationPath "artifacts\$archiveName.zip"
           Remove-Item $staging -Recurse -Force
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: lkr-${{ env.RELEASE_TAG }}-${{ matrix.os }}-${{ matrix.arch }}
-          path: artifacts/lkr-${{ env.RELEASE_TAG }}-${{ matrix.os }}-${{ matrix.arch }}.${{ matrix.archive_ext }}
+          name: lk-${{ env.RELEASE_TAG }}-${{ matrix.os }}-${{ matrix.arch }}
+          path: artifacts/lk-${{ env.RELEASE_TAG }}-${{ matrix.os }}-${{ matrix.arch }}.${{ matrix.archive_ext }}
 
   publish:
     name: publish release

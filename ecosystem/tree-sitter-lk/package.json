@@ -1,0 +1,27 @@
+{
+  "name": "tree-sitter-lk",
+  "version": "0.1.0",
+  "description": "LK grammar for tree-sitter",
+  "license": "Apache-2.0",
+  "author": "lollipopkit <a@lpkt.cn>",
+  "repository": "https://github.com/lollipopkit/lk/tree/main/ecosystem/tree-sitter-lk",
+  "main": "bindings/node.js",
+  "types": "bindings/node.d.ts",
+  "keywords": [
+    "incremental",
+    "parsing",
+    "lk"
+  ],
+  "scripts": {
+    "generate": "tree-sitter generate",
+    "test": "tree-sitter test",
+    "build-wasm": "tree-sitter build --wasm",
+    "parse": "tree-sitter parse"
+  },
+  "dependencies": {
+    "node-addon-api": "^8"
+  },
+  "devDependencies": {
+    "tree-sitter-cli": "^0.26.8"
+  }
+}

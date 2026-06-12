@@ -7,13 +7,16 @@ use std::{
 use lk_core::{
     module::ModuleRegistry,
     rt,
-    stmt::{ModuleResolver, StmtParser},
-    token::Tokenizer,
+    stmt::ModuleResolver,
+    syntax::{ParseOptions, parse_program_source},
     typ::TypeChecker,
     vm::{ReplExecutionResult, ReplVmSession, VmContext},
 };
 
-use crate::{configure_package_resolver, diagnostic, repl_completion::ReplCompletionState, repl_tui, startup_trace};
+use crate::{
+    configure_package_resolver, diagnostic, register_enabled_stdlib, repl_completion::ReplCompletionState, repl_tui,
+    startup_trace,
+};
 
 pub(crate) enum ReplInput {
     Submit(String),
@@ -37,10 +40,8 @@ impl ReplSession {
         let mut startup = startup_trace::StartupTrace::new("repl session");
         let mut registry = ModuleRegistry::new();
         startup.step("module registry created");
-        lk_stdlib::register_stdlib_globals(&mut registry);
-        startup.step("stdlib globals registered");
-        lk_stdlib::register_stdlib_modules(&mut registry)?;
-        startup.step("stdlib modules registered");
+        register_enabled_stdlib(&mut registry)?;
+        startup.step("stdlib registry configured");
         let mut resolver = ModuleResolver::with_registry(registry);
         startup.step("module resolver created");
         let cwd = env::current_dir()?;
@@ -75,16 +76,7 @@ impl ReplSession {
             return self.execute_command(final_src);
         }
 
-        let (tokens, spans) = match Tokenizer::tokenize_enhanced_with_spans(final_src) {
-            Ok((tokens, spans)) => (tokens, spans),
-            Err(parse_err) => {
-                diagnostic::parse_error(&parse_err, final_src);
-                return ReplStep::Continue;
-            }
-        };
-
-        let mut parser = StmtParser::new_with_spans(&tokens, &spans);
-        let Some(result) = (match parser.parse_program_with_enhanced_errors(final_src) {
+        let Some(result) = (match parse_program_source(final_src, ParseOptions::default()) {
             Ok(program) => Some(self.vm.execute_program(&program)),
             Err(parse_err) => self.execute_as_expression(final_src, parse_err),
         }) else {
@@ -124,12 +116,7 @@ impl ReplSession {
     ) -> Option<anyhow::Result<ReplExecutionResult>> {
         let normalized = normalize_binary_signs(source);
         let wrapped = format!("println(({}));", normalized);
-        let Ok((tokens, spans)) = Tokenizer::tokenize_enhanced_with_spans(&wrapped) else {
-            diagnostic::parse_error(&statement_error, source);
-            return None;
-        };
-        let mut parser = StmtParser::new_with_spans(&tokens, &spans);
-        match parser.parse_program_with_enhanced_errors(&wrapped) {
+        match parse_program_source(&wrapped, ParseOptions::default()) {
             Ok(program) => Some(self.vm.execute_program(&program)),
             Err(_expr_err) => {
                 diagnostic::parse_error(&statement_error, source);

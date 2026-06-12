@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use dashmap::DashMap;
@@ -39,6 +40,7 @@ pub(crate) struct LkLanguageServer {
     pub(crate) compute_limiter: Mutex<Arc<Semaphore>>,
     pub(crate) workspace_root: Mutex<Option<PathBuf>>,
     pub(crate) workspace_cache: Arc<WorkspaceCache>,
+    pub(crate) watched_files_dynamic_registration: AtomicBool,
 }
 
 impl LkLanguageServer {
@@ -52,6 +54,7 @@ impl LkLanguageServer {
             compute_limiter: Mutex::new(Arc::new(Semaphore::new(2))),
             workspace_root: Mutex::new(None),
             workspace_cache: Arc::new(WorkspaceCache::default()),
+            watched_files_dynamic_registration: AtomicBool::new(false),
         }
     }
 }

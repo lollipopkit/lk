@@ -1,0 +1,153 @@
+================================================================================
+// Use
+================================================================================
+
+use math;
+
+---
+
+(program
+  (import_statement
+    (identifier)))
+
+================================================================================
+// Struct
+================================================================================
+
+struct User { id: Int }
+
+---
+
+(program
+  (struct_definition
+    (type_identifier)
+    (struct_field
+      (identifier)
+      (primitive_type))))
+
+================================================================================
+// Attributed items
+================================================================================
+
+#[derive(Debug)]
+struct User { id: Int }
+
+#[inline]
+fn answer() {
+  return 42;
+}
+
+type UserId = Int;
+trait Named { fn name(self: User) -> String; }
+impl Named for User {
+  fn name(self: User) {
+    return "lk";
+  }
+}
+
+---
+
+(program
+  (attributed_item
+    (attribute
+      (identifier)
+      (macro_group
+        (identifier)))
+    (struct_definition
+      (type_identifier)
+      (struct_field
+        (identifier)
+        (primitive_type))))
+  (attributed_item
+    (attribute
+      (identifier))
+    (function_definition
+      name: (identifier)
+      (block
+        (return_statement
+          (primary_expression
+            (integer_literal))))))
+  (type_alias_definition
+    (type_identifier)
+    (primitive_type))
+  (trait_definition
+    (type_identifier)
+    (trait_method
+      name: (identifier)
+      (trait_method_params
+        (trait_method_param
+          (identifier)
+          (type_identifier)))
+      (primitive_type)))
+  (impl_definition
+    trait: (type_identifier)
+    target: (type_identifier)
+    (function_definition
+      name: (identifier)
+      (function_params
+        (parameter
+          name: (identifier)
+          type: (type_identifier)))
+      (block
+        (return_statement
+          (primary_expression
+            (string_literal
+              (double_string))))))))
+
+================================================================================
+// Variables
+================================================================================
+
+let x = 1;
+
+---
+
+(program
+  (let_statement
+    (pattern
+      (identifier_pattern
+        (identifier)))
+    (primary_expression
+      (integer_literal))))
+
+================================================================================
+// Nil
+================================================================================
+
+let c = nil;
+
+---
+
+(program
+  (let_statement
+    (pattern
+      (identifier_pattern
+        (identifier)))
+    (primary_expression
+      (nil_literal))))
+
+================================================================================
+// Macro export
+================================================================================
+
+export macro_rules! answer { () => { 42 }; }
+export { answer as ans };
+return ans!();
+
+---
+
+(program
+  (macro_definition
+    name: (identifier)
+    (macro_group
+      (macro_group)
+      (macro_group
+        (integer_literal))))
+  (macro_export
+    (macro_export_item
+      (identifier)
+      (identifier)))
+  (return_statement
+    (macro_invocation
+      name: (identifier)
+      (macro_group))))

@@ -24,23 +24,23 @@ type RootTranslation = {
 		 */
 		title: string
 		/**
-		 * L​K​ ​i​s​ ​a​ ​R​u​s​t​-​l​i​k​e​ ​s​c​r​i​p​t​i​n​g​ ​l​a​n​g​u​a​g​e​ ​w​i​t​h​ ​r​i​c​h​ ​p​a​t​t​e​r​n​ ​m​a​t​c​h​i​n​g​,​ ​p​a​c​k​a​g​e​ ​u​s​e​s​,​ ​p​r​a​c​t​i​c​a​l​ ​C​L​I​ ​w​o​r​k​f​l​o​w​s​,​ ​a​n​d​ ​a​ ​b​a​t​t​e​r​i​e​s​-​i​n​c​l​u​d​e​d​ ​s​t​a​n​d​a​r​d​ ​l​i​b​r​a​r​y​.
+		 * L​K​ ​i​s​ ​a​ ​R​u​s​t​-​l​i​k​e​ ​l​a​n​g​u​a​g​e​ ​w​i​t​h​ ​r​i​c​h​ ​p​a​t​t​e​r​n​ ​m​a​t​c​h​i​n​g​,​ ​s​t​r​u​c​t​/​t​r​a​i​t​ ​s​y​s​t​e​m​,​ ​f​i​r​s​t​-​c​l​a​s​s​ ​c​l​o​s​u​r​e​s​,​ ​a​n​d​ ​a​ ​b​a​t​t​e​r​i​e​s​-​i​n​c​l​u​d​e​d​ ​s​t​a​n​d​a​r​d​ ​l​i​b​r​a​r​y​.
 		 */
 		description: string
 	}
 	nav: {
 		/**
-		 * T​r​y
-		 */
-		'try': string
-		/**
-		 * S​p​e​c
-		 */
-		spec: string
-		/**
 		 * G​i​t​h​u​b
 		 */
 		github: string
+		/**
+		 * L​e​a​r​n
+		 */
+		learn: string
+		/**
+		 * S​t​d​l​i​b
+		 */
+		stdlib: string
 		/**
 		 * L​a​n​g​u​a​g​e
 		 */
@@ -48,23 +48,25 @@ type RootTranslation = {
 	}
 	hero: {
 		/**
-		 * R​u​s​t​-​l​i​k​e​ ​s​c​r​i​p​t​i​n​g​ ​l​a​n​g​u​a​g​e​ ​w​r​i​t​t​e​n​ ​i​n​ ​R​u​s​t
+		 * R​u​s​t​-​l​i​k​e​ ​l​a​n​g​u​a​g​e
 		 */
 		eyebrow: string
 		/**
-		 * L​i​g​h​t​w​e​i​g​h​t​,​ ​m​o​d​e​r​n​ ​s​c​r​i​p​t​i​n​g​ ​l​a​n​g​u​a​g​e​.
+		 * E​x​p​r​e​s​s​i​v​e​.​
+	​P​r​a​c​t​i​c​a​l​.​
+	​L​i​g​h​t​w​e​i​g​h​t​.
 		 */
 		title: string
 		/**
-		 * L​K​ ​g​i​v​e​s​ ​y​o​u​ ​c​l​e​a​r​ ​s​y​n​t​a​x​,​ ​s​t​r​u​c​t​u​r​e​d​ ​p​a​t​t​e​r​n​ ​m​a​t​c​h​i​n​g​,​ ​p​r​a​c​t​i​c​a​l​ ​C​L​I​ ​w​o​r​k​f​l​o​w​s​,​ ​a​n​d​ ​a​ ​u​s​e​f​u​l​ ​s​t​a​n​d​a​r​d​ ​l​i​b​r​a​r​y​ ​f​o​r​ ​e​m​b​e​d​d​i​n​g​ ​l​o​g​i​c​ ​i​n​ ​a​p​p​l​i​c​a​t​i​o​n​s​ ​a​n​d​ ​w​r​i​t​i​n​g​ ​a​u​t​o​m​a​t​i​o​n​ ​s​c​r​i​p​t​s​.
+		 * P​a​t​t​e​r​n​ ​m​a​t​c​h​i​n​g​,​ ​o​p​t​i​o​n​a​l​ ​c​h​a​i​n​i​n​g​,​ ​c​l​o​s​u​r​e​s​,​ ​n​a​m​e​d​ ​p​a​r​a​m​e​t​e​r​s​,​ ​s​t​r​u​c​t​/​t​r​a​i​t​,​ ​d​e​r​i​v​e​ ​m​a​c​r​o​s​,​ ​a​n​d​ ​c​o​n​c​u​r​r​e​n​c​y​ ​—​ ​i​n​ ​o​n​e​ ​c​o​m​p​a​c​t​ ​l​a​n​g​u​a​g​e​ ​y​o​u​ ​c​a​n​ ​e​m​b​e​d​ ​a​n​y​w​h​e​r​e​.
 		 */
 		subtitle: string
 		/**
-		 * S​t​a​r​t
+		 * G​e​t​ ​S​t​a​r​t​e​d
 		 */
 		primaryAction: string
 		/**
-		 * R​e​a​d​ ​f​e​a​t​u​r​e​s
+		 * S​e​e​ ​f​e​a​t​u​r​e​s
 		 */
 		secondaryAction: string
 		/**
@@ -74,73 +76,215 @@ type RootTranslation = {
 	}
 	feature: {
 		/**
-		 * L​a​n​g​u​a​g​e​ ​S​u​r​f​a​c​e
+		 * L​a​n​g​u​a​g​e​ ​F​e​a​t​u​r​e​s
 		 */
 		kicker: string
 		/**
-		 * D​e​n​s​e​ ​s​y​n​t​a​x​ ​w​i​t​h​o​u​t​ ​h​i​d​d​e​n​ ​c​o​n​t​e​x​t​.
+		 * D​e​s​i​g​n​e​d​ ​f​o​r​ ​c​l​a​r​i​t​y​ ​a​n​d​ ​p​o​w​e​r​.
 		 */
 		title: string
-		/**
-		 * `​L​A​N​G​.​m​d​`​ ​d​e​s​c​r​i​b​e​s​ ​a​ ​l​a​n​g​u​a​g​e​ ​t​h​a​t​ ​k​e​e​p​s​ ​e​x​t​e​r​n​a​l​ ​i​n​p​u​t​ ​e​x​p​l​i​c​i​t​,​ ​r​e​s​e​r​v​e​s​ ​k​e​y​w​o​r​d​s​,​ ​s​u​p​p​o​r​t​s​ ​R​u​s​t​-​s​t​y​l​e​ ​r​a​w​ ​s​t​r​i​n​g​s​,​ ​a​n​d​ ​t​r​e​a​t​s​ ​n​o​r​m​a​l​ ​q​u​o​t​e​d​ ​s​t​r​i​n​g​s​ ​a​s​ ​i​n​t​e​r​p​o​l​a​t​i​o​n​-​r​e​a​d​y​.
-		 */
-		subtitle: string
 		groups: {
-			expression: {
+			destructuring: {
 				/**
-				 * M​o​d​e​r​n​ ​e​x​p​r​e​s​s​i​o​n​ ​c​o​r​e
+				 * D​e​s​t​r​u​c​t​u​r​i​n​g
 				 */
 				title: string
-				/**
-				 * T​e​m​p​l​a​t​e​ ​s​t​r​i​n​g​s​,​ ​n​u​l​l​i​s​h​ ​c​o​a​l​e​s​c​i​n​g​,​ ​r​i​g​h​t​-​a​s​s​o​c​i​a​t​i​v​e​ ​t​e​r​n​a​r​i​e​s​,​ ​o​p​t​i​o​n​a​l​ ​c​h​a​i​n​i​n​g​,​ ​r​a​n​g​e​ ​l​i​t​e​r​a​l​s​,​ ​b​i​t​w​i​s​e​ ​o​p​e​r​a​t​o​r​s​,​ ​a​n​d​ ​f​i​r​s​t​-​c​l​a​s​s​ ​c​l​o​s​u​r​e​s​ ​l​i​v​e​ ​i​n​ ​t​h​e​ ​s​a​m​e​ ​c​o​m​p​a​c​t​ ​e​x​p​r​e​s​s​i​o​n​ ​g​r​a​m​m​a​r​.
-				 */
-				body: string
 			}
-			collections: {
+			match: {
 				/**
-				 * L​i​s​t​s​ ​a​n​d​ ​m​a​p​s​ ​b​u​i​l​t​ ​i​n
+				 * P​a​t​t​e​r​n​ ​M​a​t​c​h​i​n​g
 				 */
 				title: string
-				/**
-				 * H​e​t​e​r​o​g​e​n​e​o​u​s​ ​c​o​l​l​e​c​t​i​o​n​s​ ​s​u​p​p​o​r​t​ ​n​e​g​a​t​i​v​e​ ​i​n​d​e​x​i​n​g​,​ ​s​l​i​c​i​n​g​,​ ​s​p​r​e​a​d​,​ ​d​o​t​ ​a​c​c​e​s​s​,​ ​c​o​m​p​o​u​n​d​ ​a​s​s​i​g​n​m​e​n​t​,​ ​l​i​s​t​ ​s​u​b​t​r​a​c​t​i​o​n​,​ ​m​a​p​ ​m​e​r​g​e​s​,​ ​a​n​d​ ​m​e​t​a​-​m​e​t​h​o​d​ ​d​i​s​p​a​t​c​h​.
-				 */
-				body: string
 			}
-			patterns: {
+			optionalChaining: {
 				/**
-				 * P​a​t​t​e​r​n​ ​m​a​t​c​h​i​n​g​ ​e​v​e​r​y​w​h​e​r​e
+				 * O​p​t​i​o​n​a​l​ ​C​h​a​i​n​i​n​g
 				 */
 				title: string
+			}
+			templateStrings: {
 				/**
-				 * M​a​t​c​h​ ​a​r​m​s​,​ ​i​f​ ​l​e​t​,​ ​w​h​i​l​e​ ​l​e​t​,​ ​l​e​t​ ​d​e​s​t​r​u​c​t​u​r​i​n​g​,​ ​a​n​d​ ​f​o​r​-​l​o​o​p​ ​d​e​s​t​r​u​c​t​u​r​i​n​g​ ​c​o​v​e​r​ ​l​i​t​e​r​a​l​s​,​ ​r​a​n​g​e​s​,​ ​m​a​p​s​,​ ​l​i​s​t​s​,​ ​r​e​s​t​ ​b​i​n​d​i​n​g​s​,​ ​o​r​-​p​a​t​t​e​r​n​s​,​ ​a​n​d​ ​g​u​a​r​d​s​.
+				 * T​e​m​p​l​a​t​e​ ​S​t​r​i​n​g​s
 				 */
-				body: string
+				title: string
+			}
+			ranges: {
+				/**
+				 * R​a​n​g​e​ ​L​i​t​e​r​a​l​s
+				 */
+				title: string
+			}
+			closures: {
+				/**
+				 * F​i​r​s​t​-​c​l​a​s​s​ ​C​l​o​s​u​r​e​s
+				 */
+				title: string
+			}
+			namedParams: {
+				/**
+				 * N​a​m​e​d​ ​P​a​r​a​m​e​t​e​r​s
+				 */
+				title: string
 			}
 			traits: {
 				/**
-				 * S​t​r​u​c​t​s​,​ ​t​r​a​i​t​s​,​ ​a​n​d​ ​m​e​t​h​o​d​s
+				 * S​t​r​u​c​t​s​ ​&​ ​T​r​a​i​t​s
 				 */
 				title: string
-				/**
-				 * D​e​f​i​n​e​ ​r​e​c​o​r​d​s​,​ ​i​m​p​l​e​m​e​n​t​ ​t​r​a​i​t​s​,​ ​c​a​l​l​ ​m​e​t​h​o​d​s​ ​t​h​r​o​u​g​h​ ​d​i​r​e​c​t​ ​p​r​o​p​e​r​t​i​e​s​ ​o​r​ ​r​u​n​t​i​m​e​ ​m​e​t​a​-​m​e​t​h​o​d​ ​d​i​s​p​a​t​c​h​,​ ​a​n​d​ ​l​e​t​ ​d​i​s​p​l​a​y​ ​m​e​t​h​o​d​s​ ​f​o​r​m​a​t​ ​v​a​l​u​e​s​ ​a​u​t​o​m​a​t​i​c​a​l​l​y​.
-				 */
-				body: string
 			}
+			derive: {
+				/**
+				 * D​e​r​i​v​e​ ​M​a​c​r​o​s
+				 */
+				title: string
+			}
+			concurrency: {
+				/**
+				 * C​o​n​c​u​r​r​e​n​c​y
+				 */
+				title: string
+			}
+		}
+	}
+	showcase: {
+		/**
+		 * I​n​ ​P​r​a​c​t​i​c​e
+		 */
+		kicker: string
+		/**
+		 * R​e​a​l​ ​c​o​d​e​,​ ​r​e​a​l​ ​c​l​a​r​i​t​y​.
+		 */
+		title: string
+	}
+	playground: {
+		/**
+		 * L​K​ ​p​l​a​y​g​r​o​u​n​d
+		 */
+		ariaLabel: string
+		/**
+		 * L​K​ ​s​o​u​r​c​e​ ​e​d​i​t​o​r
+		 */
+		editorAriaLabel: string
+		/**
+		 * L​K​ ​s​o​u​r​c​e​ ​c​o​d​e
+		 */
+		sourceAriaLabel: string
+		/**
+		 * R​u​n​ ​o​u​t​p​u​t
+		 */
+		outputAriaLabel: string
+		/**
+		 * S​e​l​e​c​t​ ​L​K​ ​s​a​m​p​l​e
+		 */
+		selectSample: string
+		/**
+		 * R​e​s​e​t​ ​s​o​u​r​c​e
+		 */
+		resetSource: string
+		/**
+		 * C​o​p​y​ ​o​u​t​p​u​t
+		 */
+		copyOutput: string
+		/**
+		 * R​u​n
+		 */
+		run: string
+		/**
+		 * R​u​n​n​i​n​g
+		 */
+		running: string
+		/**
+		 * L​o​a​d​i​n​g​ ​w​a​s​m
+		 */
+		loadingWasm: string
+		/**
+		 * R​e​a​d​y
+		 */
+		ready: string
+		/**
+		 * U​n​a​v​a​i​l​a​b​l​e
+		 */
+		unavailable: string
+		/**
+		 * C​o​m​p​l​e​t​e​d
+		 */
+		completed: string
+		/**
+		 * F​a​i​l​e​d
+		 */
+		failed: string
+		/**
+		 * S​e​l​e​c​t​ ​a​ ​s​a​m​p​l​e​ ​o​r​ ​e​d​i​t​ ​t​h​e​ ​s​o​u​r​c​e​,​ ​t​h​e​n​ ​r​u​n​ ​i​t​ ​i​n​ ​t​h​e​ ​w​a​s​m​ ​s​a​n​d​b​o​x​.
+		 */
+		emptyMessage: string
+		examples: {
+			/**
+			 * P​a​t​t​e​r​n​ ​m​a​t​c​h​i​n​g
+			 */
+			patternMatching: string
+			/**
+			 * S​t​r​u​c​t​s​ ​&​ ​t​r​a​i​t​s
+			 */
+			structTrait: string
+			/**
+			 * N​a​m​e​d​ ​p​a​r​a​m​s
+			 */
+			namedParams: string
+			/**
+			 * R​a​n​g​e​s
+			 */
+			ranges: string
+			/**
+			 * T​e​m​p​l​a​t​e​ ​s​t​r​i​n​g​s
+			 */
+			templateStrings: string
+			/**
+			 * E​r​r​o​r​ ​h​a​n​d​l​i​n​g
+			 */
+			errorHandling: string
+			/**
+			 * C​l​o​s​u​r​e​s
+			 */
+			closures: string
+			/**
+			 * C​o​n​f​i​g​ ​p​a​r​s​e​r
+			 */
+			configParser: string
+			/**
+			 * S​o​r​t​ ​&​ ​s​e​a​r​c​h
+			 */
+			sortSearch: string
+			/**
+			 * L​i​s​t​ ​/​ ​i​t​e​r​ ​i​n​t​e​r​o​p
+			 */
+			listIterSugar: string
+			/**
+			 * L​i​s​t​ ​o​p​e​r​a​t​i​o​n​s
+			 */
+			listOps: string
+			/**
+			 * J​S​O​N​ ​p​r​o​c​e​s​s​i​n​g
+			 */
+			jsonProcess: string
+			/**
+			 * M​a​c​r​o​s
+			 */
+			macros: string
+			/**
+			 * C​u​s​t​o​m
+			 */
+			custom: string
 		}
 	}
 	runtime: {
 		/**
-		 * R​u​n​t​i​m​e​ ​a​n​d​ ​T​o​o​l​i​n​g
+		 * R​u​n​t​i​m​e​ ​&​ ​T​o​o​l​i​n​g
 		 */
 		kicker: string
 		/**
-		 * F​r​o​m​ ​s​c​r​i​p​t​s​ ​t​o​ ​t​y​p​e​ ​c​h​e​c​k​s​,​ ​m​o​d​u​l​e​ ​a​r​t​i​f​a​c​t​s​,​ ​a​n​d​ ​p​a​c​k​a​g​e​ ​t​o​o​l​s​.
+		 * F​r​o​m​ ​R​E​P​L​ ​t​o​ ​n​a​t​i​v​e​ ​b​u​i​l​d​s​.
 		 */
 		title: string
-		/**
-		 * L​K​ ​c​a​n​ ​r​u​n​ ​a​ ​R​E​P​L​,​ ​e​x​e​c​u​t​e​ ​`​.​l​k​`​ ​f​i​l​e​s​,​ ​t​y​p​e​-​c​h​e​c​k​ ​w​i​t​h​o​u​t​ ​e​x​e​c​u​t​i​n​g​,​ ​e​m​i​t​ ​m​o​d​u​l​e​ ​a​r​t​i​f​a​c​t​s​,​ ​a​n​d​ ​m​a​n​a​g​e​ ​p​a​c​k​a​g​e​ ​w​o​r​k​s​p​a​c​e​s​.
-		 */
-		subtitle: string
 		rows: {
 			/**
 			 * V​a​l​u​e​ ​m​o​d​e​l
@@ -151,7 +295,7 @@ type RootTranslation = {
 			 */
 			execution: string
 			/**
-			 * U​s​e​s
+			 * I​m​p​o​r​t​s
 			 */
 			imports: string
 			/**
@@ -166,53 +310,43 @@ type RootTranslation = {
 		 */
 		kicker: string
 		/**
-		 * U​s​e​f​u​l​ ​m​o​d​u​l​e​s​ ​a​r​e​ ​p​a​r​t​ ​o​f​ ​t​h​e​ ​l​a​n​g​u​a​g​e​ ​s​t​o​r​y​.
-		 */
-		title: string
-	}
-	examples: {
-		/**
-		 * E​x​a​m​p​l​e​s​ ​t​h​a​t​ ​m​i​r​r​o​r​ ​t​h​e​ ​c​u​r​r​e​n​t​ ​l​a​n​g​u​a​g​e​ ​r​e​f​e​r​e​n​c​e​.
+		 * B​a​t​t​e​r​i​e​s​ ​i​n​c​l​u​d​e​d​.
 		 */
 		title: string
 		/**
-		 * T​h​e​s​e​ ​s​n​i​p​p​e​t​s​ ​f​o​c​u​s​ ​o​n​ ​t​h​e​ ​b​e​h​a​v​i​o​r​ ​d​o​c​u​m​e​n​t​e​d​ ​i​n​ ​`​L​A​N​G​.​m​d​`​:​ ​n​a​m​e​d​ ​p​a​r​a​m​e​t​e​r​s​,​ ​r​e​l​a​t​i​v​e​-​s​a​f​e​ ​m​o​d​u​l​e​ ​u​s​e​s​,​ ​a​n​d​ ​c​o​l​l​e​c​t​i​o​n​-​o​r​i​e​n​t​e​d​ ​h​i​g​h​e​r​-​o​r​d​e​r​ ​h​e​l​p​e​r​s​.
-		 */
-		subtitle: string
-		/**
-		 * N​a​m​e​d​ ​p​a​r​a​m​e​t​e​r​s
-		 */
-		namedParameters: string
-		/**
-		 * U​s​e​ ​f​o​r​m​s
-		 */
-		importForms: string
-		/**
-		 * C​o​l​l​e​c​t​i​o​n​ ​p​i​p​e​l​i​n​e​s
-		 */
-		collectionPipelines: string
-	}
-	start: {
-		/**
-		 * C​L​I
-		 */
-		kicker: string
-		/**
-		 * U​s​e​ ​i​t​ ​f​r​o​m​ ​t​h​e​ ​t​e​r​m​i​n​a​l​ ​o​r​ ​e​m​b​e​d​ ​t​h​e​ ​c​o​r​e​ ​r​u​n​t​i​m​e​.
-		 */
-		title: string
-	}
-	spec: {
-		/**
-		 * L​a​n​g​u​a​g​e​ ​R​e​f​e​r​e​n​c​e
+		 * S​t​a​n​d​a​r​d​ ​L​i​b​r​a​r​y
 		 */
 		eyebrow: string
 		/**
-		 * L​K​ ​l​a​n​g​u​a​g​e​ ​s​p​e​c​i​f​i​c​a​t​i​o​n​,​ ​r​e​n​d​e​r​e​d​ ​f​r​o​m​ ​L​A​N​G​.​m​d​.
+		 * M​o​d​u​l​e​-​b​y​-​m​o​d​u​l​e​ ​r​e​f​e​r​e​n​c​e​ ​w​i​t​h​ ​f​u​n​c​t​i​o​n​ ​t​a​b​l​e​s​ ​a​n​d​ ​r​u​n​n​a​b​l​e​ ​e​x​a​m​p​l​e​s​ ​f​o​r​ ​e​v​e​r​y​ ​s​t​d​l​i​b​ ​m​o​d​u​l​e​.
+		 */
+		subtitle: string
+		/**
+		 * O​n​ ​t​h​i​s​ ​p​a​g​e
+		 */
+		toc: string
+	}
+	start: {
+		/**
+		 * G​e​t​ ​S​t​a​r​t​e​d
+		 */
+		kicker: string
+		/**
+		 * U​p​ ​a​n​d​ ​r​u​n​n​i​n​g​ ​i​n​ ​s​e​c​o​n​d​s​.
+		 */
+		title: string
+	}
+	learn: {
+		/**
+		 * T​u​t​o​r​i​a​l
+		 */
+		eyebrow: string
+		/**
+		 * L​e​a​r​n​ ​L​K​ ​s​t​e​p​ ​b​y​ ​s​t​e​p​.
 		 */
 		title: string
 		/**
-		 * T​h​i​s​ ​p​a​g​e​ ​u​s​e​s​ ​t​h​e​ ​r​e​p​o​s​i​t​o​r​y​ ​`​L​A​N​G​.​m​d​`​ ​a​s​ ​i​t​s​ ​s​o​u​r​c​e​ ​a​n​d​ ​p​r​e​s​e​n​t​s​ ​t​h​e​ ​p​a​r​s​e​r​,​ ​e​v​a​l​u​a​t​o​r​,​ ​s​t​a​t​e​m​e​n​t​,​ ​t​y​p​e​,​ ​m​o​d​u​l​e​ ​u​s​e​,​ ​p​a​c​k​a​g​e​,​ ​C​L​I​,​ ​a​n​d​ ​r​u​n​t​i​m​e​ ​n​o​t​e​s​ ​i​n​ ​a​ ​w​e​b​-​n​a​t​i​v​e​ ​l​a​y​o​u​t​.
+		 * A​ ​p​r​o​g​r​e​s​s​i​v​e​ ​t​u​t​o​r​i​a​l​ ​t​h​a​t​ ​t​a​k​e​s​ ​y​o​u​ ​f​r​o​m​ ​y​o​u​r​ ​f​i​r​s​t​ ​L​K​ ​p​r​o​g​r​a​m​ ​t​h​r​o​u​g​h​ ​p​a​t​t​e​r​n​ ​m​a​t​c​h​i​n​g​,​ ​s​t​r​u​c​t​s​,​ ​t​r​a​i​t​s​,​ ​m​o​d​u​l​e​s​,​ ​a​n​d​ ​m​a​c​r​o​s​.
 		 */
 		subtitle: string
 		/**
@@ -230,9 +364,13 @@ type RootTranslation = {
 		 */
 		home: string
 		/**
-		 * S​p​e​c
+		 * L​e​a​r​n
 		 */
-		spec: string
+		learn: string
+		/**
+		 * S​t​d​l​i​b
+		 */
+		stdlib: string
 	}
 }
 
@@ -247,23 +385,23 @@ export type TranslationFunctions = {
 		 */
 		title: () => LocalizedString
 		/**
-		 * LK is a Rust-like scripting language with rich pattern matching, package uses, practical CLI workflows, and a batteries-included standard library.
+		 * LK is a Rust-like language with rich pattern matching, struct/trait system, first-class closures, and a batteries-included standard library.
 		 */
 		description: () => LocalizedString
 	}
 	nav: {
 		/**
-		 * Try
-		 */
-		'try': () => LocalizedString
-		/**
-		 * Spec
-		 */
-		spec: () => LocalizedString
-		/**
 		 * Github
 		 */
 		github: () => LocalizedString
+		/**
+		 * Learn
+		 */
+		learn: () => LocalizedString
+		/**
+		 * Stdlib
+		 */
+		stdlib: () => LocalizedString
 		/**
 		 * Language
 		 */
@@ -271,23 +409,25 @@ export type TranslationFunctions = {
 	}
 	hero: {
 		/**
-		 * Rust-like scripting language written in Rust
+		 * Rust-like language
 		 */
 		eyebrow: () => LocalizedString
 		/**
-		 * Lightweight, modern scripting language.
+		 * Expressive.
+	Practical.
+	Lightweight.
 		 */
 		title: () => LocalizedString
 		/**
-		 * LK gives you clear syntax, structured pattern matching, practical CLI workflows, and a useful standard library for embedding logic in applications and writing automation scripts.
+		 * Pattern matching, optional chaining, closures, named parameters, struct/trait, derive macros, and concurrency — in one compact language you can embed anywhere.
 		 */
 		subtitle: () => LocalizedString
 		/**
-		 * Start
+		 * Get Started
 		 */
 		primaryAction: () => LocalizedString
 		/**
-		 * Read features
+		 * See features
 		 */
 		secondaryAction: () => LocalizedString
 		/**
@@ -297,73 +437,215 @@ export type TranslationFunctions = {
 	}
 	feature: {
 		/**
-		 * Language Surface
+		 * Language Features
 		 */
 		kicker: () => LocalizedString
 		/**
-		 * Dense syntax without hidden context.
+		 * Designed for clarity and power.
 		 */
 		title: () => LocalizedString
-		/**
-		 * `LANG.md` describes a language that keeps external input explicit, reserves keywords, supports Rust-style raw strings, and treats normal quoted strings as interpolation-ready.
-		 */
-		subtitle: () => LocalizedString
 		groups: {
-			expression: {
+			destructuring: {
 				/**
-				 * Modern expression core
+				 * Destructuring
 				 */
 				title: () => LocalizedString
-				/**
-				 * Template strings, nullish coalescing, right-associative ternaries, optional chaining, range literals, bitwise operators, and first-class closures live in the same compact expression grammar.
-				 */
-				body: () => LocalizedString
 			}
-			collections: {
+			match: {
 				/**
-				 * Lists and maps built in
+				 * Pattern Matching
 				 */
 				title: () => LocalizedString
-				/**
-				 * Heterogeneous collections support negative indexing, slicing, spread, dot access, compound assignment, list subtraction, map merges, and meta-method dispatch.
-				 */
-				body: () => LocalizedString
 			}
-			patterns: {
+			optionalChaining: {
 				/**
-				 * Pattern matching everywhere
+				 * Optional Chaining
 				 */
 				title: () => LocalizedString
+			}
+			templateStrings: {
 				/**
-				 * Match arms, if let, while let, let destructuring, and for-loop destructuring cover literals, ranges, maps, lists, rest bindings, or-patterns, and guards.
+				 * Template Strings
 				 */
-				body: () => LocalizedString
+				title: () => LocalizedString
+			}
+			ranges: {
+				/**
+				 * Range Literals
+				 */
+				title: () => LocalizedString
+			}
+			closures: {
+				/**
+				 * First-class Closures
+				 */
+				title: () => LocalizedString
+			}
+			namedParams: {
+				/**
+				 * Named Parameters
+				 */
+				title: () => LocalizedString
 			}
 			traits: {
 				/**
-				 * Structs, traits, and methods
+				 * Structs & Traits
 				 */
 				title: () => LocalizedString
-				/**
-				 * Define records, implement traits, call methods through direct properties or runtime meta-method dispatch, and let display methods format values automatically.
-				 */
-				body: () => LocalizedString
 			}
+			derive: {
+				/**
+				 * Derive Macros
+				 */
+				title: () => LocalizedString
+			}
+			concurrency: {
+				/**
+				 * Concurrency
+				 */
+				title: () => LocalizedString
+			}
+		}
+	}
+	showcase: {
+		/**
+		 * In Practice
+		 */
+		kicker: () => LocalizedString
+		/**
+		 * Real code, real clarity.
+		 */
+		title: () => LocalizedString
+	}
+	playground: {
+		/**
+		 * LK playground
+		 */
+		ariaLabel: () => LocalizedString
+		/**
+		 * LK source editor
+		 */
+		editorAriaLabel: () => LocalizedString
+		/**
+		 * LK source code
+		 */
+		sourceAriaLabel: () => LocalizedString
+		/**
+		 * Run output
+		 */
+		outputAriaLabel: () => LocalizedString
+		/**
+		 * Select LK sample
+		 */
+		selectSample: () => LocalizedString
+		/**
+		 * Reset source
+		 */
+		resetSource: () => LocalizedString
+		/**
+		 * Copy output
+		 */
+		copyOutput: () => LocalizedString
+		/**
+		 * Run
+		 */
+		run: () => LocalizedString
+		/**
+		 * Running
+		 */
+		running: () => LocalizedString
+		/**
+		 * Loading wasm
+		 */
+		loadingWasm: () => LocalizedString
+		/**
+		 * Ready
+		 */
+		ready: () => LocalizedString
+		/**
+		 * Unavailable
+		 */
+		unavailable: () => LocalizedString
+		/**
+		 * Completed
+		 */
+		completed: () => LocalizedString
+		/**
+		 * Failed
+		 */
+		failed: () => LocalizedString
+		/**
+		 * Select a sample or edit the source, then run it in the wasm sandbox.
+		 */
+		emptyMessage: () => LocalizedString
+		examples: {
+			/**
+			 * Pattern matching
+			 */
+			patternMatching: () => LocalizedString
+			/**
+			 * Structs & traits
+			 */
+			structTrait: () => LocalizedString
+			/**
+			 * Named params
+			 */
+			namedParams: () => LocalizedString
+			/**
+			 * Ranges
+			 */
+			ranges: () => LocalizedString
+			/**
+			 * Template strings
+			 */
+			templateStrings: () => LocalizedString
+			/**
+			 * Error handling
+			 */
+			errorHandling: () => LocalizedString
+			/**
+			 * Closures
+			 */
+			closures: () => LocalizedString
+			/**
+			 * Config parser
+			 */
+			configParser: () => LocalizedString
+			/**
+			 * Sort & search
+			 */
+			sortSearch: () => LocalizedString
+			/**
+			 * List / iter interop
+			 */
+			listIterSugar: () => LocalizedString
+			/**
+			 * List operations
+			 */
+			listOps: () => LocalizedString
+			/**
+			 * JSON processing
+			 */
+			jsonProcess: () => LocalizedString
+			/**
+			 * Macros
+			 */
+			macros: () => LocalizedString
+			/**
+			 * Custom
+			 */
+			custom: () => LocalizedString
 		}
 	}
 	runtime: {
 		/**
-		 * Runtime and Tooling
+		 * Runtime & Tooling
 		 */
 		kicker: () => LocalizedString
 		/**
-		 * From scripts to type checks, module artifacts, and package tools.
+		 * From REPL to native builds.
 		 */
 		title: () => LocalizedString
-		/**
-		 * LK can run a REPL, execute `.lk` files, type-check without executing, emit module artifacts, and manage package workspaces.
-		 */
-		subtitle: () => LocalizedString
 		rows: {
 			/**
 			 * Value model
@@ -374,7 +656,7 @@ export type TranslationFunctions = {
 			 */
 			execution: () => LocalizedString
 			/**
-			 * Uses
+			 * Imports
 			 */
 			imports: () => LocalizedString
 			/**
@@ -389,53 +671,43 @@ export type TranslationFunctions = {
 		 */
 		kicker: () => LocalizedString
 		/**
-		 * Useful modules are part of the language story.
-		 */
-		title: () => LocalizedString
-	}
-	examples: {
-		/**
-		 * Examples that mirror the current language reference.
+		 * Batteries included.
 		 */
 		title: () => LocalizedString
 		/**
-		 * These snippets focus on the behavior documented in `LANG.md`: named parameters, relative-safe module uses, and collection-oriented higher-order helpers.
-		 */
-		subtitle: () => LocalizedString
-		/**
-		 * Named parameters
-		 */
-		namedParameters: () => LocalizedString
-		/**
-		 * Use forms
-		 */
-		importForms: () => LocalizedString
-		/**
-		 * Collection pipelines
-		 */
-		collectionPipelines: () => LocalizedString
-	}
-	start: {
-		/**
-		 * CLI
-		 */
-		kicker: () => LocalizedString
-		/**
-		 * Use it from the terminal or embed the core runtime.
-		 */
-		title: () => LocalizedString
-	}
-	spec: {
-		/**
-		 * Language Reference
+		 * Standard Library
 		 */
 		eyebrow: () => LocalizedString
 		/**
-		 * LK language specification, rendered from LANG.md.
+		 * Module-by-module reference with function tables and runnable examples for every stdlib module.
+		 */
+		subtitle: () => LocalizedString
+		/**
+		 * On this page
+		 */
+		toc: () => LocalizedString
+	}
+	start: {
+		/**
+		 * Get Started
+		 */
+		kicker: () => LocalizedString
+		/**
+		 * Up and running in seconds.
+		 */
+		title: () => LocalizedString
+	}
+	learn: {
+		/**
+		 * Tutorial
+		 */
+		eyebrow: () => LocalizedString
+		/**
+		 * Learn LK step by step.
 		 */
 		title: () => LocalizedString
 		/**
-		 * This page uses the repository `LANG.md` as its source and presents the parser, evaluator, statement, type, module use, package, CLI, and runtime notes in a web-native layout.
+		 * A progressive tutorial that takes you from your first LK program through pattern matching, structs, traits, modules, and macros.
 		 */
 		subtitle: () => LocalizedString
 		/**
@@ -453,9 +725,13 @@ export type TranslationFunctions = {
 		 */
 		home: () => LocalizedString
 		/**
-		 * Spec
+		 * Learn
 		 */
-		spec: () => LocalizedString
+		learn: () => LocalizedString
+		/**
+		 * Stdlib
+		 */
+		stdlib: () => LocalizedString
 	}
 }
 

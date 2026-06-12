@@ -2,10 +2,11 @@ NPM ?= npm
 INSTALL_VSIX ?=
 VSCODE_CLI ?=
 
-VSC_EXT_DIR := vsc-ext
+VSC_EXT_DIR := ecosystem/vsc-ext
 VSC_EXTENSIONS := lsp
+ZED_EXT_DIR := ecosystem/zed-ext
 
-.PHONY: vsix $(VSC_EXTENSIONS:%=vsix-%) clean-vsix debug-lsp-ext install-lk
+.PHONY: vsix $(VSC_EXTENSIONS:%=vsix-%) clean-vsix debug-lsp-ext zed-ext-check install
 
 vsix: $(VSC_EXTENSIONS:%=vsix-%)
 
@@ -65,6 +66,10 @@ clean-vsix:
 debug-lsp-ext:
 	./scripts/debug-vscode-lsp.sh
 
-install-lk:
-	cargo install --path cli
-	cargo install --path lsp
+zed-ext-check:
+	cargo check --manifest-path $(ZED_EXT_DIR)/Cargo.toml --target wasm32-wasip1
+
+install:
+	cargo install --path cli --force
+	cargo install --path lsp --force
+	$(MAKE) vsix INSTALL_VSIX=1

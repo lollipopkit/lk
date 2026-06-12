@@ -15,6 +15,7 @@ impl<'a> Parser<'a> {
             pos: 0,
             len,
             token_spans: None,
+            prefix_mode: false,
         }
     }
 
@@ -26,6 +27,7 @@ impl<'a> Parser<'a> {
             pos: 0,
             len,
             token_spans: Some(spans),
+            prefix_mode: false,
         }
     }
 

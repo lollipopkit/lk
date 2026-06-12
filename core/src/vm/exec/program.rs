@@ -4,10 +4,10 @@ use anyhow::Result;
 
 use crate::{
     stmt::{
-        Program, StmtParser,
+        Program,
         import::{collect_program_imports, execute_imports},
     },
-    token::Tokenizer,
+    syntax::{ParseOptions, parse_program_source},
     val::{HeapStore, RuntimeVal},
     vm::{Compiler, GlobalSlot, ModuleArtifact, VmContext},
 };
@@ -95,8 +95,7 @@ fn execute_compiled_module_with_ctx_inner(
 }
 
 pub fn execute_source(source: &str) -> Result<ProgramResult> {
-    let tokens = Tokenizer::tokenize(source)?;
-    let program = StmtParser::new(&tokens).parse_program()?;
+    let program = parse_program_source(source, ParseOptions::default())?;
     execute_program(&program)
 }
 

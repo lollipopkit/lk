@@ -53,6 +53,100 @@ fn test_file_import_diagnostic_resolves_relative_to_current_file_dir() {
 }
 
 #[test]
+fn test_macro_import_resolves_relative_to_current_file_dir() {
+    let mut base = std::env::temp_dir();
+    base.push(format!("lk-lsp-macro-import-test-{}", std::process::id()));
+    let current_file_dir = base.join("src");
+    fs::create_dir_all(&current_file_dir).unwrap();
+
+    fs::write(
+        current_file_dir.join("macros.lk"),
+        r#"
+export macro_rules! answer {
+    () => { 42 };
+}
+"#,
+    )
+    .unwrap();
+
+    let mut analyzer = LkAnalyzer::new();
+    analyzer.set_base_dir(current_file_dir);
+    let res = analyzer.analyze(
+        r#"
+use { answer } from "macros";
+return answer!();
+"#,
+    );
+
+    let msgs: Vec<&str> = res.diagnostics.iter().map(|d| d.message.as_str()).collect();
+    assert!(
+        !res.diagnostics
+            .iter()
+            .any(|d| d.severity == Some(DiagnosticSeverity::ERROR)),
+        "expected macro import to resolve through LSP base_dir; diagnostics: {msgs:?}"
+    );
+
+    let _ = fs::remove_dir_all(base);
+}
+
+#[test]
+fn test_package_macro_import_resolves_through_lk_toml() {
+    let mut base = std::env::temp_dir();
+    base.push(format!("lk-lsp-package-macro-test-{}", std::process::id()));
+    let app_src = base.join("src");
+    let dep_src = base.join("deps").join("util").join("src");
+    fs::create_dir_all(&app_src).unwrap();
+    fs::create_dir_all(&dep_src).unwrap();
+    fs::write(
+        base.join("Lk.toml"),
+        r#"
+[package]
+name = "app"
+
+[dependencies]
+util = { path = "deps/util" }
+"#,
+    )
+    .unwrap();
+    fs::write(
+        base.join("deps").join("util").join("Lk.toml"),
+        r#"
+[package]
+name = "util"
+"#,
+    )
+    .unwrap();
+    fs::write(
+        dep_src.join("mod.lk"),
+        r#"
+export macro_rules! answer {
+    () => { 42 };
+}
+"#,
+    )
+    .unwrap();
+
+    let mut analyzer = LkAnalyzer::new();
+    analyzer.set_base_dir(app_src);
+    let res = analyzer.analyze(
+        r#"
+use { answer } from util;
+return answer!();
+"#,
+    );
+
+    let msgs: Vec<&str> = res.diagnostics.iter().map(|d| d.message.as_str()).collect();
+    assert!(
+        !res.diagnostics
+            .iter()
+            .any(|d| d.severity == Some(DiagnosticSeverity::ERROR)),
+        "expected package macro import to resolve through Lk.toml; diagnostics: {msgs:?}"
+    );
+
+    let _ = fs::remove_dir_all(base);
+}
+
+#[test]
 fn test_package_import_is_not_reported_as_unknown_module() {
     let mut base = std::env::temp_dir();
     base.push(format!("lk-lsp-package-test-{}", std::process::id()));
@@ -91,6 +185,23 @@ name = "util"
     );
 
     let _ = fs::remove_dir_all(base);
+}
+
+#[test]
+fn test_builtin_macro_module_is_not_reported_as_unknown_module() {
+    let mut analyzer = LkAnalyzer::new();
+    let res = analyzer.analyze(
+        r#"
+use macros;
+let values = macros::vec![1, 2, 3];
+return macros::matches!(values.1, 2);
+"#,
+    );
+    let msgs: Vec<&str> = res.diagnostics.iter().map(|d| d.message.as_str()).collect();
+    assert!(
+        !msgs.iter().any(|m| m.contains("Unknown module: macros")),
+        "expected builtin macro module use to resolve; diagnostics: {msgs:?}"
+    );
 }
 
 #[test]

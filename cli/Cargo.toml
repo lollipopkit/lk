@@ -15,15 +15,16 @@ path = "src/main.rs"
 default-run = "lk"
 
 [features]
-default = ["llvm"]
+default = ["llvm", "stdlib"]
 llvm = ["dep:lk-llvm"]
+stdlib = ["dep:lk-stdlib", "lk-completion/stdlib"]
 vm-profile = ["lk-core/vm-profile"]
 
 [dependencies]
-lk-core = { path = "../core", default-features = false }
-lk-completion = { path = "../completion" }
+lk-core = { path = "../core" }
+lk-completion = { path = "../completion", default-features = false }
 lk-llvm = { path = "../llvm", optional = true }
-lk-stdlib = { path = "../stdlib" }
+lk-stdlib = { path = "../stdlib", optional = true }
 anyhow = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
@@ -33,6 +34,9 @@ clap = { version = "4", features = ["derive"] }
 reedline = "0.48"
 nu-ansi-term = "0.50"
 tracing-subscriber = { workspace = true }
+ureq = { workspace = true }
+semver = "1"
+sha2 = { workspace = true }
 
 [dev-dependencies]
 assert_cmd = "2"

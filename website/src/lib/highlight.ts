@@ -17,6 +17,8 @@ const lkKeywords = new Set([
   'struct',
   'trait',
   'impl',
+  'export',
+  'macro_rules',
   'use',
   'from',
   'as',
@@ -166,6 +168,8 @@ export function highlightLkCode(source: string): string {
         html += wrapToken('keyword', word)
       } else if (nextChar === '(') {
         html += wrapToken('function', word)
+      } else if (source[nextIndex] === '!') {
+        html += wrapToken('function', word)
       } else {
         html += escapeHtml(word)
       }
@@ -175,7 +179,7 @@ export function highlightLkCode(source: string): string {
 
     const operator = source
       .slice(index)
-      .match(/^(?:\?\?|\?\.|\?\[|=>|->|\.\.=|\.\.|==|!=|<=|>=|\+=|-=|\*=|\/=|%=|&&|\|\||:=|[+\-*/%&|~!?:=<>])/)
+      .match(/^(?:\?\?|\?\.|\?\[|::|=>|->|\.\.=|\.\.|==|!=|<=|>=|\+=|-=|\*=|\/=|%=|&&|\|\||:=|[+\-*/%&|~!?:=<>$#])/)
     if (operator) {
       html += wrapToken('operator', operator[0])
       index += operator[0].length

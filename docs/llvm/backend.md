@@ -108,13 +108,15 @@ but it must not preserve arbitrary mutable register facts across branches.
 Executable output uses the same `ModuleArtifact` compile-time boundary:
 
 ```sh
-lk compile exe FILE.lk
+lk compile FILE.lk
 ```
 
 For native-lowerable shapes, the CLI compiles the direct LLVM IR to a native
 executable with `clang` and links the typed `lkrt` native runtime static
 library. Unsupported shapes fail before executable emission; the CLI no longer
-generates a host executable launcher.
+generates a host executable launcher. Use `lk compile bytecode FILE.lk` when
+the desired output is the `.lkm` bytecode module artifact instead of a native
+executable.
 
 Future native AOT work must continue expanding this `ModuleArtifact` lowering
 surface without adding a VM runtime bridge. The final executable may link Rust

@@ -117,7 +117,7 @@ mod tests {
             CliArgs::try_parse_from(["lk", "compile", "llvm", "foo.lk"]).expect("should parse positional target");
         if let Some(Commands::Compile { positional, .. }) = args.command {
             let (target, file) = split_compile_args(&positional).expect("should split compile args");
-            assert_eq!(target, Some(CompileMode::Llvm));
+            assert_eq!(target, CompileMode::Llvm);
             assert_eq!(file, PathBuf::from("foo.lk"));
         } else {
             panic!("expected compile command");
@@ -137,12 +137,32 @@ mod tests {
         assert!(!native_run_enabled_from_flags(false, false, true, true));
     }
 
+    #[cfg(feature = "llvm")]
     #[test]
-    fn test_cli_args_compile_default_target_is_none() {
+    fn native_cache_proc_macro_dependency_metadata_stales_on_file_change() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let source = dir.path().join("main.lk");
+        let output = dir.path().join("lk-native-test");
+        std::fs::write(&source, "return generated!();\n").expect("write source");
+        std::fs::write(dir.path().join("schema.txt"), "one").expect("write dependency");
+        let dependencies = vec![ProcMacroDependency {
+            path: "schema.txt".to_string(),
+            digest: None,
+        }];
+
+        write_native_cache_proc_macro_dependencies(&source, &output, &dependencies).expect("write dependency metadata");
+        assert!(native_cache_proc_macro_dependencies_fresh(&source, &output));
+
+        std::fs::write(dir.path().join("schema.txt"), "two").expect("rewrite dependency");
+        assert!(!native_cache_proc_macro_dependencies_fresh(&source, &output));
+    }
+
+    #[test]
+    fn test_cli_args_compile_default_target_is_exe() {
         let args = CliArgs::try_parse_from(["lk", "compile", "foo.lk"]).expect("should parse default compile");
         if let Some(Commands::Compile { positional, .. }) = args.command {
             let (target, file) = split_compile_args(&positional).expect("should split compile args");
-            assert_eq!(target, None);
+            assert_eq!(target, CompileMode::Exe);
             assert_eq!(file, PathBuf::from("foo.lk"));
         } else {
             panic!("expected compile command");
@@ -167,7 +187,7 @@ mod tests {
 
         let (target, file) = split_compile_args_with_cwd(&[], temp.path()).expect("should find main.lk");
 
-        assert_eq!(target, None);
+        assert_eq!(target, CompileMode::Exe);
         assert_eq!(file, main.canonicalize().expect("canonical main"));
     }
 
@@ -186,22 +206,67 @@ mod tests {
 
         let (target, file) = split_compile_args_with_cwd(&[], temp.path()).expect("should find src/main.lk");
 
-        assert_eq!(target, None);
+        assert_eq!(target, CompileMode::Exe);
         assert_eq!(file, main.canonicalize().expect("canonical main"));
     }
 
-    #[cfg(feature = "llvm")]
     #[test]
     fn test_split_compile_args_accepts_target_with_omitted_file() {
         let temp = tempfile::tempdir().expect("temp dir");
         let main = temp.path().join("main.lk");
         std::fs::write(&main, "return 1;\n").expect("write main.lk");
 
-        let args = vec!["exe".to_string()];
+        let args = vec!["bytecode".to_string()];
         let (target, file) = split_compile_args_with_cwd(&args, temp.path()).expect("should find main.lk");
 
-        assert_eq!(target, Some(CompileMode::Exe));
+        assert_eq!(target, CompileMode::Bytecode);
         assert_eq!(file, main.canonicalize().expect("canonical main"));
+    }
+
+    #[test]
+    fn test_split_compile_args_rejects_removed_exe_target() {
+        let args = vec!["exe".to_string(), "main.lk".to_string()];
+        let err = split_compile_args(&args).expect_err("exe target was removed");
+        assert!(err.to_string().contains("`lk compile exe` was removed"));
+    }
+
+    #[test]
+    fn test_pkg_init_parses_package_name() {
+        let args = CliArgs::try_parse_from(["lk", "pkg", "init", "demo"]).expect("should parse pkg init");
+        if let Some(Commands::Pkg {
+            command: PkgCommand::Init { name },
+        }) = args.command
+        {
+            assert_eq!(name.as_deref(), Some("demo"));
+        } else {
+            panic!("expected pkg init command");
+        }
+    }
+
+    #[test]
+    fn test_pkg_check_parses() {
+        let args = CliArgs::try_parse_from(["lk", "pkg", "check"]).expect("should parse pkg check");
+        if let Some(Commands::Pkg {
+            command: PkgCommand::Check,
+        }) = args.command
+        {
+        } else {
+            panic!("expected pkg check command");
+        }
+    }
+
+    #[test]
+    fn test_pkg_publish_dry_run_parses() {
+        let args =
+            CliArgs::try_parse_from(["lk", "pkg", "publish", "--dry-run"]).expect("should parse pkg publish dry-run");
+        if let Some(Commands::Pkg {
+            command: PkgCommand::Publish { dry_run },
+        }) = args.command
+        {
+            assert!(dry_run);
+        } else {
+            panic!("expected pkg publish command");
+        }
     }
 
     #[test]
@@ -218,7 +283,7 @@ mod tests {
 
         let (target, file) = split_compile_args_with_cwd(&[], temp.path()).expect("should find single workspace app");
 
-        assert_eq!(target, None);
+        assert_eq!(target, CompileMode::Exe);
         assert_eq!(file, main.canonicalize().expect("canonical main"));
     }
 

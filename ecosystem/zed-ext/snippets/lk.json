@@ -1,0 +1,92 @@
+{
+  "Function": {
+    "prefix": "fn",
+    "body": ["fn ${1:name}(${2:params}) {", "\t$0", "}"],
+    "description": "Function definition"
+  },
+  "Typed Function": {
+    "prefix": "fnt",
+    "body": ["fn ${1:name}(${2:params}) -> ${3:Type} {", "\t$0", "}"],
+    "description": "Function definition with return type"
+  },
+  "Named Function": {
+    "prefix": "fnn",
+    "body": ["fn ${1:name}(${2:positional}, {${3:named}: ${4:Type}${5: = ${6:default}}}) {", "\t$0", "}"],
+    "description": "Function with named parameters"
+  },
+  "If": {
+    "prefix": "if",
+    "body": ["if (${1:condition}) {", "\t$0", "}"],
+    "description": "If statement"
+  },
+  "If Else": {
+    "prefix": "ife",
+    "body": ["if (${1:condition}) {", "\t$2", "} else {", "\t$0", "}"],
+    "description": "If-else statement"
+  },
+  "For In": {
+    "prefix": "for",
+    "body": ["for ${1:item} in ${2:iterable} {", "\t$0", "}"],
+    "description": "For-in loop"
+  },
+  "Let": {
+    "prefix": "let",
+    "body": ["let ${1:name} = ${2:value};"],
+    "description": "Variable declaration"
+  },
+  "Typed Let": {
+    "prefix": "lett",
+    "body": ["let ${1:name}: ${2:Type} = ${3:value};"],
+    "description": "Variable declaration with type annotation"
+  },
+  "Match": {
+    "prefix": "match",
+    "body": ["match ${1:value} {", "\t${2:pattern} => ${3:expr},", "\t_ => ${4:default},", "}"],
+    "description": "Match expression"
+  },
+  "Struct": {
+    "prefix": "struct",
+    "body": ["struct ${1:Name} {", "\t${2:field}: ${3:Type},", "}"],
+    "description": "Struct definition"
+  },
+  "Use": {
+    "prefix": "use",
+    "body": ["use ${1:module};"],
+    "description": "Use module"
+  },
+  "Use From": {
+    "prefix": "usef",
+    "body": ["use { ${1:items} } from ${2:module};"],
+    "description": "Use items from module"
+  },
+  "Use As": {
+    "prefix": "usea",
+    "body": ["use ${1:module} as ${2:alias};"],
+    "description": "Use module with alias"
+  },
+  "Closure": {
+    "prefix": "cl",
+    "body": ["|${1:params}| ${2:expr}"],
+    "description": "Closure expression"
+  },
+  "Println": {
+    "prefix": "pl",
+    "body": ["println(\"${1:%s}\", ${2:args});"],
+    "description": "Print formatted line"
+  },
+  "Channel": {
+    "prefix": "chan",
+    "body": ["let ${1:ch} = chan(${2:capacity});"],
+    "description": "Create channel"
+  },
+  "Spawn": {
+    "prefix": "spawn",
+    "body": ["let ${1:task} = spawn(|| ${2:expr});"],
+    "description": "Spawn task"
+  },
+  "Select": {
+    "prefix": "sel",
+    "body": ["select {", "\tcase ${1:expr} => ${2:handler},", "\tdefault => ${3:fallback},", "}"],
+    "description": "Select expression"
+  }
+}

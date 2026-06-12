@@ -213,12 +213,24 @@ impl<'a> StmtParser<'a> {
         }
 
         while !self.eof() && self.tokens[self.pos] != Token::RBrace {
-            // 只允许方法定义（fn）
+            let attributes = if self.tokens[self.pos] == Token::Hash {
+                self.parse_attributes()?
+            } else {
+                Vec::new()
+            };
+            // 只允许方法定义（fn），可带属性
             if self.tokens[self.pos] != Token::Fn {
                 return Err(anyhow!(self.err("Expected 'fn' in impl block")));
             }
             let m = self.parse_function_stmt()?;
-            methods.push(m);
+            if attributes.is_empty() {
+                methods.push(m);
+            } else {
+                methods.push(Stmt::Attributed {
+                    attributes,
+                    item: Box::new(m),
+                });
+            }
         }
 
         self.expect_token(Token::RBrace)?;

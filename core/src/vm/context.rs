@@ -48,6 +48,7 @@ impl VmContext {
     /// 创建一个空上下文。
     pub fn new() -> Self {
         let mut ctx = Self::new_without_core_vm_builtins();
+        ctx.type_checker = Some(TypeChecker::new());
         ctx.install_core_vm_builtins();
         ctx
     }

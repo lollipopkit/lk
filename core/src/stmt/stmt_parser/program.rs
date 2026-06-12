@@ -1,9 +1,9 @@
 use super::StmtParser;
 use crate::{
-    stmt::{Program, Stmt},
+    stmt::{Attribute, Program, Stmt},
     token::{ParseError, Position, Span, Token, offset_to_position},
 };
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 
 impl<'a> StmtParser<'a> {
     /// 解析整个程序
@@ -198,6 +198,7 @@ impl<'a> StmtParser<'a> {
         }
 
         match &self.tokens[self.pos] {
+            Token::Hash => self.parse_attributed_stmt(),
             Token::Use => self.parse_import_stmt(),
             Token::If => self.parse_if_stmt(),
             Token::While => self.parse_while_stmt(),
@@ -243,4 +244,80 @@ impl<'a> StmtParser<'a> {
             _ => self.parse_expr_stmt(),
         }
     }
+
+    fn parse_attributed_stmt(&mut self) -> Result<Stmt> {
+        let attributes = self.parse_attributes()?;
+        let item = self.parse_statement()?;
+        if !is_attribute_item(&item) {
+            return Err(anyhow!(self.err("Attributes can only be applied to item declarations")));
+        }
+        Ok(Stmt::Attributed {
+            attributes,
+            item: Box::new(item),
+        })
+    }
+
+    pub(super) fn parse_attributes(&mut self) -> Result<Vec<Attribute>> {
+        let mut attributes = Vec::new();
+        while !self.eof() && self.tokens[self.pos] == Token::Hash {
+            let hash_index = self.pos;
+            self.pos += 1;
+            self.expect_token(Token::LBracket)?;
+            let mut tokens = Vec::new();
+            let mut bracket_depth = 1i32;
+            let mut close_index = self.pos;
+            while !self.eof() {
+                close_index = self.pos;
+                match &self.tokens[self.pos] {
+                    Token::LBracket => {
+                        bracket_depth += 1;
+                        tokens.push(self.tokens[self.pos].clone());
+                        self.pos += 1;
+                    }
+                    Token::RBracket => {
+                        bracket_depth -= 1;
+                        self.pos += 1;
+                        if bracket_depth == 0 {
+                            break;
+                        }
+                        tokens.push(Token::RBracket);
+                    }
+                    token => {
+                        tokens.push(token.clone());
+                        self.pos += 1;
+                    }
+                }
+            }
+            if bracket_depth != 0 {
+                return Err(anyhow!(self.err("Unclosed attribute; expected ']'")));
+            }
+            if tokens.is_empty() {
+                return Err(anyhow!(self.err("Attribute cannot be empty")));
+            }
+            attributes.push(Attribute {
+                tokens,
+                span: self.attribute_span(hash_index, close_index),
+            });
+        }
+        Ok(attributes)
+    }
+
+    fn attribute_span(&self, start: usize, end: usize) -> Option<Span> {
+        let spans = self.token_spans?;
+        let start_span = spans.get(start)?;
+        let end_span = spans.get(end).unwrap_or(start_span);
+        Some(Span::new(start_span.start.clone(), end_span.end.clone()))
+    }
+}
+
+fn is_attribute_item(stmt: &Stmt) -> bool {
+    matches!(
+        stmt,
+        Stmt::Attributed { .. }
+            | Stmt::Function { .. }
+            | Stmt::Struct { .. }
+            | Stmt::TypeAlias { .. }
+            | Stmt::Trait { .. }
+            | Stmt::Impl { .. }
+    )
 }

@@ -120,6 +120,9 @@ fn collect_repl_statement_bindings(
     flush_names: &mut BTreeSet<String>,
 ) {
     match stmt {
+        Stmt::Attributed { item, .. } => {
+            collect_repl_statement_bindings(item, active_names, declared_names, flush_names);
+        }
         Stmt::Let { pattern, .. } => {
             for name in pattern_binding_names(pattern) {
                 active_names.insert(name.clone());

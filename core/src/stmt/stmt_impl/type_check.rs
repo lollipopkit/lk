@@ -15,6 +15,7 @@ impl Stmt {
     /// 静态类型检查语句
     pub fn type_check(&self, type_checker: &mut TypeChecker) -> Result<()> {
         match self {
+            Stmt::Attributed { item, .. } => item.type_check(type_checker),
             Stmt::TypeAlias { name, target } => {
                 type_checker.registry_mut().register_type_alias(AliasDef {
                     name: name.clone(),

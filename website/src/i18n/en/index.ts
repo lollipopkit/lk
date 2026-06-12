@@ -5,90 +5,110 @@ const en: BaseTranslation = {
     lang: 'en',
     title: 'LK Lang',
     description:
-      'LK is a Rust-like scripting language with rich pattern matching, package uses, practical CLI workflows, and a batteries-included standard library.',
+      'LK is a Rust-like language with rich pattern matching, struct/trait system, first-class closures, and a batteries-included standard library.',
   },
   nav: {
-    try: 'Try',
-    spec: 'Spec',
     github: 'Github',
+    learn: 'Learn',
+    stdlib: 'Stdlib',
     languageLabel: 'Language',
   },
   hero: {
-    eyebrow: 'Rust-like scripting language written in Rust',
-    title: 'Lightweight, modern scripting language.',
+    eyebrow: 'Rust-like language',
+    title: 'Expressive.\nPractical.\nLightweight.',
     subtitle:
-      'LK gives you clear syntax, structured pattern matching, practical CLI workflows, and a useful standard library for embedding logic in applications and writing automation scripts.',
-    primaryAction: 'Start',
-    secondaryAction: 'Read features',
+      'Pattern matching, optional chaining, closures, named parameters, struct/trait, derive macros, and concurrency — in one compact language you can embed anywhere.',
+    primaryAction: 'Get Started',
+    secondaryAction: 'See features',
     previewLabel: 'LK syntax preview',
   },
   feature: {
-    kicker: 'Language Surface',
-    title: 'Dense syntax without hidden context.',
-    subtitle:
-      '`LANG.md` describes a language that keeps external input explicit, reserves keywords, supports Rust-style raw strings, and treats normal quoted strings as interpolation-ready.',
+    kicker: 'Language Features',
+    title: 'Designed for clarity and power.',
     groups: {
-      expression: {
-        title: 'Modern expression core',
-        body:
-          'Template strings, nullish coalescing, right-associative ternaries, optional chaining, range literals, bitwise operators, and first-class closures live in the same compact expression grammar.',
-      },
-      collections: {
-        title: 'Lists and maps built in',
-        body:
-          'Heterogeneous collections support negative indexing, slicing, spread, dot access, compound assignment, list subtraction, map merges, and meta-method dispatch.',
-      },
-      patterns: {
-        title: 'Pattern matching everywhere',
-        body:
-          'Match arms, if let, while let, let destructuring, and for-loop destructuring cover literals, ranges, maps, lists, rest bindings, or-patterns, and guards.',
-      },
-      traits: {
-        title: 'Structs, traits, and methods',
-        body:
-          'Define records, implement traits, call methods through direct properties or runtime meta-method dispatch, and let display methods format values automatically.',
-      },
+      destructuring: { title: 'Destructuring' },
+      match: { title: 'Pattern Matching' },
+      optionalChaining: { title: 'Optional Chaining' },
+      templateStrings: { title: 'Template Strings' },
+      ranges: { title: 'Range Literals' },
+      closures: { title: 'First-class Closures' },
+      namedParams: { title: 'Named Parameters' },
+      traits: { title: 'Structs & Traits' },
+      derive: { title: 'Derive Macros' },
+      concurrency: { title: 'Concurrency' },
+    },
+  },
+  showcase: {
+    kicker: 'In Practice',
+    title: 'Real code, real clarity.',
+  },
+  playground: {
+    ariaLabel: 'LK playground',
+    editorAriaLabel: 'LK source editor',
+    sourceAriaLabel: 'LK source code',
+    outputAriaLabel: 'Run output',
+    selectSample: 'Select LK sample',
+    resetSource: 'Reset source',
+    copyOutput: 'Copy output',
+    run: 'Run',
+    running: 'Running',
+    loadingWasm: 'Loading wasm',
+    ready: 'Ready',
+    unavailable: 'Unavailable',
+    completed: 'Completed',
+    failed: 'Failed',
+    emptyMessage: 'Select a sample or edit the source, then run it in the wasm sandbox.',
+    examples: {
+      patternMatching: 'Pattern matching',
+      structTrait: 'Structs & traits',
+      namedParams: 'Named params',
+      ranges: 'Ranges',
+      templateStrings: 'Template strings',
+      errorHandling: 'Error handling',
+      closures: 'Closures',
+      configParser: 'Config parser',
+      sortSearch: 'Sort & search',
+      listIterSugar: 'List / iter interop',
+      listOps: 'List operations',
+      jsonProcess: 'JSON processing',
+      macros: 'Macros',
+      custom: 'Custom',
     },
   },
   runtime: {
-    kicker: 'Runtime and Tooling',
-    title: 'From scripts to type checks, module artifacts, and package tools.',
-    subtitle:
-      'LK can run a REPL, execute `.lk` files, type-check without executing, emit module artifacts, and manage package workspaces.',
+    kicker: 'Runtime & Tooling',
+    title: 'From REPL to native builds.',
     rows: {
       valueModel: 'Value model',
       execution: 'Execution',
-      imports: 'Uses',
+      imports: 'Imports',
       concurrency: 'Concurrency',
     },
   },
   stdlib: {
     kicker: 'Stdlib',
-    title: 'Useful modules are part of the language story.',
-  },
-  examples: {
-    title: 'Examples that mirror the current language reference.',
+    title: 'Batteries included.',
+    eyebrow: 'Standard Library',
     subtitle:
-      'These snippets focus on the behavior documented in `LANG.md`: named parameters, relative-safe module uses, and collection-oriented higher-order helpers.',
-    namedParameters: 'Named parameters',
-    importForms: 'Use forms',
-    collectionPipelines: 'Collection pipelines',
+      'Module-by-module reference with function tables and runnable examples for every stdlib module.',
+    toc: 'On this page',
   },
   start: {
-    kicker: 'CLI',
-    title: 'Use it from the terminal or embed the core runtime.',
+    kicker: 'Get Started',
+    title: 'Up and running in seconds.',
   },
-  spec: {
-    eyebrow: 'Language Reference',
-    title: 'LK language specification, rendered from LANG.md.',
+  learn: {
+    eyebrow: 'Tutorial',
+    title: 'Learn LK step by step.',
     subtitle:
-      'This page uses the repository `LANG.md` as its source and presents the parser, evaluator, statement, type, module use, package, CLI, and runtime notes in a web-native layout.',
+      'A progressive tutorial that takes you from your first LK program through pattern matching, structs, traits, modules, and macros.',
     toc: 'On this page',
   },
   footer: {
     brand: 'LK Lang',
     home: 'Home',
-    spec: 'Spec',
+    learn: 'Learn',
+    stdlib: 'Stdlib',
   },
 }
 
