@@ -317,8 +317,10 @@ job by themselves unless the whole-suite geomean also crosses the threshold.
 
 The workflow downloads Lua 5.5.0 from the official Lua release tarball, builds
 it under `head/lua-5.5.0/src/lua`, and uses that binary for both base and head
-measurements. This matches the benchmark methodology while avoiding differences
-from runner-provided Lua packages.
+measurements. It builds each LK checkout with `dist` when that checkout defines
+`[profile.dist]`, otherwise it falls back to `release` so older base commits can
+still be benchmarked. This matches the benchmark methodology while avoiding
+differences from runner-provided Lua packages.
 
 To reproduce the comparator locally after collecting two TSV files:
 

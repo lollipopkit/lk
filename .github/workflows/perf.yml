@@ -98,15 +98,49 @@ jobs:
           ref: ${{ steps.refs.outputs.head_ref }}
           path: head
 
+      - name: Resolve Rust toolchain
+        id: rust-toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          toolchain="$(awk -F '"' '/^[[:space:]]*channel[[:space:]]*=/{ print $2; exit }' head/rust-toolchain.toml)"
+          if [ -z "$toolchain" ]; then
+            echo "Unable to resolve Rust toolchain channel" >&2
+            exit 1
+          fi
+          echo "toolchain=$toolchain" >> "$GITHUB_OUTPUT"
+
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          toolchain-file: head/rust-toolchain.toml
+          toolchain: ${{ steps.rust-toolchain.outputs.toolchain }}
 
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
             base
             head
+
+      - name: Resolve LK build profiles
+        id: build-profiles
+        shell: bash
+        run: |
+          set -euo pipefail
+          resolve_profile() {
+            local checkout="$1"
+            local output_prefix="$2"
+            local profile="release"
+            local bin_dir="release"
+            if grep -q '^\[profile\.dist\]' "$checkout/Cargo.toml"; then
+              profile="dist"
+              bin_dir="dist"
+            fi
+            {
+              echo "${output_prefix}_profile=$profile"
+              echo "${output_prefix}_bin=$GITHUB_WORKSPACE/$checkout/target/$bin_dir/lk"
+            } >> "$GITHUB_OUTPUT"
+          }
+          resolve_profile base base
+          resolve_profile head head
 
       - name: Fetch Lua reference source
         shell: bash
@@ -125,12 +159,12 @@ jobs:
 
       - name: Build base LK
         working-directory: base
-        run: cargo build --profile dist -p lk-cli
+        run: cargo build --profile "${{ steps.build-profiles.outputs.base_profile }}" -p lk-cli
 
       - name: Benchmark base
         working-directory: head
         env:
-          LK_BIN: ${{ github.workspace }}/base/target/dist/lk
+          LK_BIN: ${{ steps.build-profiles.outputs.base_bin }}
           LUA_BIN: ${{ github.workspace }}/head/lua-5.5.0/src/lua
           BENCH_RESULT_TSV: ${{ runner.temp }}/lk-perf-base.tsv
           RUN_AOT: "0"
@@ -142,12 +176,12 @@ jobs:
 
       - name: Build head LK
         working-directory: head
-        run: cargo build --profile dist -p lk-cli
+        run: cargo build --profile "${{ steps.build-profiles.outputs.head_profile }}" -p lk-cli
 
       - name: Benchmark head
         working-directory: head
         env:
-          LK_BIN: ${{ github.workspace }}/head/target/dist/lk
+          LK_BIN: ${{ steps.build-profiles.outputs.head_bin }}
           LUA_BIN: ${{ github.workspace }}/head/lua-5.5.0/src/lua
           BENCH_RESULT_TSV: ${{ runner.temp }}/lk-perf-head.tsv
           RUN_AOT: "0"
