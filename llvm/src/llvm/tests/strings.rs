@@ -620,7 +620,10 @@ fn llvm_backend_lowers_template_expression_compare_without_shell() {
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
-    assert!(artifact.module.ir.contains("call i32 @strcmp"));
+    // The template `"${x} + ${y} = ${x + y}"` compared against a constant lowers
+    // to per-part integer comparisons (`icmp eq i64` for the dynamic `${x + y}`),
+    // not a whole-string `strcmp`.
+    assert!(artifact.module.ir.contains("icmp eq i64"));
 }
 
 #[test]
@@ -653,7 +656,7 @@ fn llvm_backend_lowers_dynamic_string_int_map_set_call_without_shell() {
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
-    assert!(artifact.module.ir.contains("@lk_set_string_int_map"));
+    assert!(artifact.module.ir.contains("@lkrt_map_str_int_set"));
 }
 
 #[test]
@@ -737,8 +740,8 @@ fn llvm_backend_lowers_string_list_sort_ptr_list_call_without_shell() {
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
     assert!(artifact.module.ir.contains("@lk_fn_2_list") || artifact.module.ir.contains("@lk_fn_1_list"));
-    assert!(artifact.module.ir.contains("@lk_take_ptr_list"));
-    assert!(artifact.module.ir.contains("@lk_concat_ptr_list"));
+    assert!(artifact.module.ir.contains("@lkrt_list_str_take"));
+    assert!(artifact.module.ir.contains("@lkrt_list_str_concat"));
 }
 
 #[test]
@@ -782,7 +785,7 @@ fn llvm_backend_lowers_i64_list_direct_call_without_shell() {
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
     assert!(artifact.module.ir.contains("@lk_fn_2_i64_list") || artifact.module.ir.contains("@lk_fn_1_i64_list"));
-    assert!(artifact.module.ir.contains("@lk_slice_i64_list"));
+    assert!(artifact.module.ir.contains("@lkrt_list_i64_slice"));
 }
 
 #[test]
@@ -809,8 +812,8 @@ fn llvm_backend_lowers_i64_list_take_concat_inline_without_shell() {
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
-    assert!(artifact.module.ir.contains("@lk_take_i64_list"));
-    assert!(artifact.module.ir.contains("@lk_concat_i64_list"));
+    assert!(artifact.module.ir.contains("@lkrt_list_i64_take"));
+    assert!(artifact.module.ir.contains("@lkrt_list_i64_concat"));
 }
 
 #[test]
@@ -832,7 +835,7 @@ fn llvm_backend_lowers_i64_range_chain_arglist_without_shell() {
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
-    assert!(artifact.module.ir.contains("@lk_concat_i64_list"));
+    assert!(artifact.module.ir.contains("@lkrt_list_i64_concat"));
 }
 
 #[test]

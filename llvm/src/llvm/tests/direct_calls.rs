@@ -554,7 +554,11 @@ fn llvm_backend_lowers_inline_static_capture_closure_arg_call_without_shell() {
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
     assert!(
-        artifact.module.ir.contains("@lk_bool_true") && artifact.module.ir.contains("select i1"),
+        artifact.module.ir.contains("@lk_bool_true")
+            && artifact
+                .module
+                .ir
+                .contains("@printf(ptr @lk_str_fmt, ptr @lk_block_return_static"),
         "expected inline captured closure argument native lowering: {}",
         artifact.module.ir
     );
@@ -876,7 +880,15 @@ fn llvm_backend_lowers_zero_arg_direct_function_call_bool_without_shell() {
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
     assert!(artifact.module.ir.contains("@lk_bool_true"));
-    assert!(artifact.module.ir.contains("select i1"));
+    // The constant `true` return folds to a static string printed via @lk_str_fmt
+    // (no runtime `select i1`, which previously only appeared in the now-sunk
+    // hand-written helper pool).
+    assert!(
+        artifact
+            .module
+            .ir
+            .contains("@printf(ptr @lk_str_fmt, ptr @lk_block_return_static")
+    );
 }
 
 #[test]

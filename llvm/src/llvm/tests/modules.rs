@@ -72,12 +72,12 @@ fn llvm_backend_lowers_dynamic_bool_list_module_methods_without_artifact_shell()
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
-    assert!(artifact.module.ir.contains("@lk_contains_i64_list"));
-    assert!(artifact.module.ir.contains("@lk_index_of_i64_list"));
-    assert!(artifact.module.ir.contains("call void @lk_reverse_i64_list"));
-    assert!(artifact.module.ir.contains("call void @lk_sort_i64_list"));
-    assert!(artifact.module.ir.contains("call void @lk_concat_i64_list"));
-    assert!(artifact.module.ir.contains("@lk_pop_i64_list"));
+    assert!(artifact.module.ir.contains("@lkrt_list_i64_contains"));
+    assert!(artifact.module.ir.contains("@lkrt_list_i64_index_of"));
+    assert!(artifact.module.ir.contains("call void @lkrt_list_i64_reverse"));
+    assert!(artifact.module.ir.contains("call void @lkrt_list_i64_sort"));
+    assert!(artifact.module.ir.contains("call void @lkrt_list_i64_concat"));
+    assert!(artifact.module.ir.contains("@lkrt_list_i64_pop"));
     assert!(artifact.module.ir.contains("ret.arg.list."));
 }
 
@@ -107,11 +107,11 @@ fn llvm_backend_lowers_dynamic_bool_list_module_mutators_without_artifact_shell(
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
-    assert!(artifact.module.ir.contains("@lk_push_i64_list"));
-    assert!(artifact.module.ir.contains("@lk_slice_range_i64_list"));
-    assert!(artifact.module.ir.contains("@lk_insert_i64_list"));
-    assert!(artifact.module.ir.contains("@lk_remove_at_i64_list"));
-    assert!(artifact.module.ir.contains("@lk_set_i64_list"));
+    assert!(artifact.module.ir.contains("@lkrt_list_i64_push"));
+    assert!(artifact.module.ir.contains("@lkrt_list_i64_slice_range"));
+    assert!(artifact.module.ir.contains("@lkrt_list_i64_insert"));
+    assert!(artifact.module.ir.contains("@lkrt_list_i64_remove_at"));
+    assert!(artifact.module.ir.contains("@lkrt_list_i64_set"));
 }
 
 #[test]
@@ -136,7 +136,7 @@ fn llvm_backend_lowers_dynamic_i64_string_map_has_delete_without_artifact_shell(
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
-    assert!(artifact.module.ir.contains("@lk_set_i64_ptr_map"));
+    assert!(artifact.module.ir.contains("@lkrt_map_i64_ptr_set"));
     assert!(artifact.module.ir.contains("lk.delete.i64.map."));
     assert!(artifact.module.ir.contains("lk.has.i64.map."));
     assert!(artifact.module.ir.contains("ret.arg.map."));
@@ -242,8 +242,10 @@ fn llvm_backend_lowers_dynamic_string_map_has_delete_without_artifact_shell() {
 
         assert!(!artifact.module.ir.contains("@lk_module_json"));
         assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
-        assert!(artifact.module.ir.contains("lk.delete.string.map."));
-        assert!(artifact.module.ir.contains("lk.has.string.map."));
+        // has/delete are lowered to lkrt typed helpers (contains + monomorphized
+        // `_delete`) rather than the old hand-written inline loops.
+        assert!(artifact.module.ir.contains("call i64 @lkrt_map_str_contains("));
+        assert!(artifact.module.ir.contains("_delete(ptr "));
         assert!(artifact.module.ir.contains("ret.arg.map."));
     }
 }
@@ -348,10 +350,10 @@ fn llvm_backend_lowers_dynamic_i64_list_module_methods_without_artifact_shell() 
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
-    assert!(artifact.module.ir.contains("@lk_contains_i64_list"));
-    assert!(artifact.module.ir.contains("@lk_index_of_i64_list"));
-    assert!(artifact.module.ir.contains("@lk_reverse_i64_list"));
-    assert!(artifact.module.ir.contains("@lk_pop_i64_list"));
+    assert!(artifact.module.ir.contains("@lkrt_list_i64_contains"));
+    assert!(artifact.module.ir.contains("@lkrt_list_i64_index_of"));
+    assert!(artifact.module.ir.contains("@lkrt_list_i64_reverse"));
+    assert!(artifact.module.ir.contains("@lkrt_list_i64_pop"));
 }
 
 #[test]
@@ -380,11 +382,11 @@ fn llvm_backend_lowers_dynamic_i64_list_module_mutators_without_artifact_shell()
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
-    assert!(artifact.module.ir.contains("@lk_push_i64_list"));
-    assert!(artifact.module.ir.contains("@lk_slice_range_i64_list"));
-    assert!(artifact.module.ir.contains("@lk_insert_i64_list"));
-    assert!(artifact.module.ir.contains("@lk_remove_at_i64_list"));
-    assert!(artifact.module.ir.contains("@lk_set_i64_list"));
+    assert!(artifact.module.ir.contains("@lkrt_list_i64_push"));
+    assert!(artifact.module.ir.contains("@lkrt_list_i64_slice_range"));
+    assert!(artifact.module.ir.contains("@lkrt_list_i64_insert"));
+    assert!(artifact.module.ir.contains("@lkrt_list_i64_remove_at"));
+    assert!(artifact.module.ir.contains("@lkrt_list_i64_set"));
 }
 
 #[test]

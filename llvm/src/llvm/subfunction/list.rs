@@ -118,7 +118,7 @@ fn compile_native_i64_list_subfunction_profile(
                 let param_id = i64_list_param_id(function_index, param);
                 ir.push_str(&format!("  {arg_len} = load i64, ptr %arg{param}.len.slot\n"));
                 ir.push_str(&format!(
-                    "  call void @lk_slice_i64_list(ptr %arg{param}.values, i64 {arg_len}, i64 0, ptr %list{param_id}.value.slots, ptr %list{param_id}.len.slot)\n"
+                    "  call void @lkrt_list_i64_slice(ptr %arg{param}.values, i64 {arg_len}, i64 0, ptr %list{param_id}.value.slots, ptr %list{param_id}.len.slot)\n"
                 ));
                 static_regs[param] = Some(NativeStraightlineValue::DynamicList {
                     id: param_id,
@@ -395,7 +395,7 @@ fn compile_native_i64_list_subfunction_profile(
                     "  {base} = getelementptr [4096 x i64], ptr %list{id}.value.slots, i64 0, i64 0\n"
                 ));
                 ir.push_str(&format!(
-                    "  call void @lk_slice_i64_list(ptr {base}, i64 {len}, i64 0, ptr %out.values, ptr %out.len.slot)\n"
+                    "  call void @lkrt_list_i64_slice(ptr {base}, i64 {len}, i64 0, ptr %out.values, ptr %out.len.slot)\n"
                 ));
                 ir.push_str("  ret void\n");
                 after_return = true;

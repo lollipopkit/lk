@@ -1140,7 +1140,7 @@ fn emit_dynamic_i64_list_concat_static_rhs(
         "  {dst_base} = getelementptr [4096 x i64], ptr %list{dst_id}.value.slots, i64 0, i64 0\n"
     ));
     ir.push_str(&format!(
-        "  call void @lk_concat_i64_list(ptr {lhs_base}, i64 {lhs_len}, ptr {rhs_base}, i64 {}, ptr {dst_base}, ptr %list{dst_id}.len.slot)\n",
+        "  call void @lkrt_list_i64_concat(ptr {lhs_base}, i64 {lhs_len}, ptr {rhs_base}, i64 {}, ptr {dst_base}, ptr %list{dst_id}.len.slot)\n",
         elements.len()
     ));
     ir.push_str(&format!("  store i64 0, ptr %list{dst_id}.text.len.slot\n"));
@@ -1186,7 +1186,7 @@ fn emit_dynamic_f64_list_concat_static_rhs(
         "  {dst_base} = getelementptr [4096 x double], ptr %list{dst_id}.f64.slots, i64 0, i64 0\n"
     ));
     ir.push_str(&format!(
-        "  call void @lk_concat_f64_list(ptr {lhs_base}, i64 {lhs_len}, ptr {rhs_base}, i64 {}, ptr {dst_base}, ptr %list{dst_id}.len.slot)\n",
+        "  call void @lkrt_list_f64_concat(ptr {lhs_base}, i64 {lhs_len}, ptr {rhs_base}, i64 {}, ptr {dst_base}, ptr %list{dst_id}.len.slot)\n",
         elements.len()
     ));
     ir.push_str(&format!("  store i64 0, ptr %list{dst_id}.text.len.slot\n"));
@@ -1274,7 +1274,7 @@ fn emit_static_i64_list_concat_dynamic_rhs(
         "  {dst_base} = getelementptr [4096 x i64], ptr %list{dst_id}.value.slots, i64 0, i64 0\n"
     ));
     ir.push_str(&format!(
-        "  call void @lk_concat_i64_list(ptr {lhs_values}, i64 {}, ptr {rhs_base}, i64 {rhs_len}, ptr {dst_base}, ptr %list{dst_id}.len.slot)\n",
+        "  call void @lkrt_list_i64_concat(ptr {lhs_values}, i64 {}, ptr {rhs_base}, i64 {rhs_len}, ptr {dst_base}, ptr %list{dst_id}.len.slot)\n",
         lhs.len()
     ));
     ir.push_str(&format!("  store i64 0, ptr %list{dst_id}.text.len.slot\n"));
@@ -1295,7 +1295,7 @@ fn emit_static_i64_list_concat_static_rhs(
         "  {dst_base} = getelementptr [4096 x i64], ptr %list{dst_id}.value.slots, i64 0, i64 0\n"
     ));
     ir.push_str(&format!(
-        "  call void @lk_concat_i64_list(ptr {lhs_values}, i64 {}, ptr {rhs_values}, i64 {}, ptr {dst_base}, ptr %list{dst_id}.len.slot)\n",
+        "  call void @lkrt_list_i64_concat(ptr {lhs_values}, i64 {}, ptr {rhs_values}, i64 {}, ptr {dst_base}, ptr %list{dst_id}.len.slot)\n",
         lhs.len(),
         rhs.len()
     ));

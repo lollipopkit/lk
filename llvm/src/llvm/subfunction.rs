@@ -828,7 +828,7 @@ pub(super) fn compile_native_ptr_list_subfunction(
     let arg_len = next_tmp(&mut 0usize);
     ir.push_str(&format!("  {arg_len} = load i64, ptr %arg0.len.slot\n"));
     ir.push_str(&format!(
-        "  call void @lk_slice_ptr_list(ptr %arg0.values, i64 {arg_len}, i64 0, ptr %list{param_list_id}.ptr.slots, ptr %list{param_list_id}.len.slot)\n"
+        "  call void @lkrt_list_str_slice(ptr %arg0.values, i64 {arg_len}, i64 0, ptr %list{param_list_id}.ptr.slots, ptr %list{param_list_id}.len.slot)\n"
     ));
     ir.push_str("  br label %bb0\n\n");
     static_regs[0] = Some(NativeStraightlineValue::DynamicList {
@@ -1104,7 +1104,7 @@ pub(super) fn compile_native_ptr_list_subfunction(
                     "  {base} = getelementptr [4096 x ptr], ptr %list{id}.ptr.slots, i64 0, i64 0\n"
                 ));
                 ir.push_str(&format!(
-                    "  call void @lk_slice_ptr_list(ptr {base}, i64 {len}, i64 0, ptr %out.values, ptr %out.len.slot)\n"
+                    "  call void @lkrt_list_str_slice(ptr {base}, i64 {len}, i64 0, ptr %out.values, ptr %out.len.slot)\n"
                 ));
                 ir.push_str("  ret void\n");
                 after_return = true;

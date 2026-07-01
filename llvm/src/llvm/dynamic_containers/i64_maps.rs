@@ -22,7 +22,7 @@ pub(in crate::llvm) fn emit_dynamic_i64_int_map_set(
     ir.push_str(&format!(
         "  {value_base} = getelementptr [4096 x i64], ptr %map{id}.value.slots, i64 0, i64 0\n"
     ));
-    ir.push_str(&format!("  {next_len} = call i64 @lk_set_i64_int_map(ptr {key_base}, ptr {value_base}, i64 {len}, i64 {key}, i64 {value})\n"));
+    ir.push_str(&format!("  {next_len} = call i64 @lkrt_map_i64_int_set(ptr {key_base}, ptr {value_base}, i64 {len}, i64 {key}, i64 {value})\n"));
     ir.push_str(&format!("  store i64 {next_len}, ptr %map{id}.len.slot\n"));
     Some(())
 }
@@ -59,7 +59,7 @@ pub(in crate::llvm) fn emit_dynamic_i64_int_map_get_key(
     ir.push_str(&format!(
         "  {value_base} = getelementptr [4096 x i64], ptr %map{id}.value.slots, i64 0, i64 0\n"
     ));
-    ir.push_str(&format!("  {found} = call i64 @lk_lookup_i64_int_map(ptr {key_base}, ptr {value_base}, i64 {len}, i64 {key}, ptr %r{dst}.slot)\n"));
+    ir.push_str(&format!("  {found} = call i64 @lkrt_map_i64_int_lookup(ptr {key_base}, ptr {value_base}, i64 {len}, i64 {key}, ptr %r{dst}.slot)\n"));
     ir.push_str(&format!("  store i64 {found}, ptr %r{dst}.present.slot\n"));
     Some(())
 }
@@ -86,7 +86,7 @@ pub(in crate::llvm) fn emit_dynamic_i64_f64_map_set(
     ir.push_str(&format!(
         "  {value_base} = getelementptr [4096 x double], ptr %map{id}.f64.slots, i64 0, i64 0\n"
     ));
-    ir.push_str(&format!("  {next_len} = call i64 @lk_set_i64_f64_map(ptr {key_base}, ptr {value_base}, i64 {len}, i64 {key}, double {value})\n"));
+    ir.push_str(&format!("  {next_len} = call i64 @lkrt_map_i64_f64_set(ptr {key_base}, ptr {value_base}, i64 {len}, i64 {key}, double {value})\n"));
     ir.push_str(&format!("  store i64 {next_len}, ptr %map{id}.len.slot\n"));
     Some(())
 }
@@ -123,7 +123,7 @@ pub(in crate::llvm) fn emit_dynamic_i64_f64_map_get_key(
     ir.push_str(&format!(
         "  {value_base} = getelementptr [4096 x double], ptr %map{id}.f64.slots, i64 0, i64 0\n"
     ));
-    ir.push_str(&format!("  {found} = call i64 @lk_lookup_i64_f64_map(ptr {key_base}, ptr {value_base}, i64 {len}, i64 {key}, ptr %r{dst}.slot)\n"));
+    ir.push_str(&format!("  {found} = call i64 @lkrt_map_i64_f64_lookup(ptr {key_base}, ptr {value_base}, i64 {len}, i64 {key}, ptr %r{dst}.slot)\n"));
     ir.push_str(&format!("  store i64 {found}, ptr %r{dst}.present.slot\n"));
     Some(())
 }
@@ -152,7 +152,7 @@ pub(in crate::llvm) fn emit_dynamic_i64_ptr_map_set(
     ir.push_str(&format!(
         "  {value_base} = getelementptr [4096 x ptr], ptr %map{id}.ptr.slots, i64 0, i64 0\n"
     ));
-    ir.push_str(&format!("  {next_len} = call i64 @lk_set_i64_ptr_map(ptr {key_base}, ptr {value_base}, i64 {len}, i64 {key}, ptr {value_copy})\n"));
+    ir.push_str(&format!("  {next_len} = call i64 @lkrt_map_i64_ptr_set(ptr {key_base}, ptr {value_base}, i64 {len}, i64 {key}, ptr {value_copy})\n"));
     ir.push_str(&format!("  store i64 {next_len}, ptr %map{id}.len.slot\n"));
     Some(())
 }
@@ -189,7 +189,7 @@ pub(in crate::llvm) fn emit_dynamic_i64_ptr_map_get_key(
     ir.push_str(&format!(
         "  {value_base} = getelementptr [4096 x ptr], ptr %map{id}.ptr.slots, i64 0, i64 0\n"
     ));
-    ir.push_str(&format!("  {found} = call i64 @lk_lookup_i64_ptr_map(ptr {key_base}, ptr {value_base}, i64 {len}, i64 {key}, ptr %r{dst}.slot)\n"));
+    ir.push_str(&format!("  {found} = call i64 @lkrt_map_i64_ptr_lookup(ptr {key_base}, ptr {value_base}, i64 {len}, i64 {key}, ptr %r{dst}.slot)\n"));
     ir.push_str(&format!("  store i64 {found}, ptr %r{dst}.present.slot\n"));
     Some(())
 }
@@ -586,162 +586,12 @@ fn emit_dynamic_value_copy_loop(
     ir.push_str(&format!("{label}.done_block:\n"));
 }
 
+/// The `DynamicMap<i64, V>` lookup/set method bodies used to be hand-written
+/// LLVM IR here. They now live in `lkrt` as monomorphized typed helpers
+/// (`lkrt_map_i64_{int,f64,ptr}_{lookup,set}`), declared through the native
+/// intrinsic registry and linked from `liblkrt.a`. The emitters above call those
+/// symbols directly, so no in-module IR is needed. (The map's has/delete/iter/
+/// values/keys shapes remain inline IR in the emitters and are not helpers.)
 pub(in crate::llvm) fn native_dynamic_i64_map_helpers() -> &'static str {
-    r#"
-define private i64 @lk_lookup_i64_int_map(ptr %keys, ptr %values, i64 %len, i64 %key, ptr %out) {
-entry:
-  br label %loop
-loop:
-  %i = phi i64 [ 0, %entry ], [ %next, %cont ]
-  %done = icmp uge i64 %i, %len
-  br i1 %done, label %missing, label %check
-check:
-  %key_slot = getelementptr i64, ptr %keys, i64 %i
-  %stored_key = load i64, ptr %key_slot
-  %matched = icmp eq i64 %stored_key, %key
-  br i1 %matched, label %found, label %cont
-found:
-  %value_slot = getelementptr i64, ptr %values, i64 %i
-  %value = load i64, ptr %value_slot
-  store i64 %value, ptr %out
-  ret i64 1
-cont:
-  %next = add i64 %i, 1
-  br label %loop
-missing:
-  ret i64 0
-}
-
-define private i64 @lk_lookup_i64_f64_map(ptr %keys, ptr %values, i64 %len, i64 %key, ptr %out) {
-entry:
-  br label %loop
-loop:
-  %i = phi i64 [ 0, %entry ], [ %next, %cont ]
-  %done = icmp uge i64 %i, %len
-  br i1 %done, label %missing, label %check
-check:
-  %key_slot = getelementptr i64, ptr %keys, i64 %i
-  %stored_key = load i64, ptr %key_slot
-  %matched = icmp eq i64 %stored_key, %key
-  br i1 %matched, label %found, label %cont
-found:
-  %value_slot = getelementptr double, ptr %values, i64 %i
-  %value = load double, ptr %value_slot
-  store double %value, ptr %out
-  ret i64 1
-cont:
-  %next = add i64 %i, 1
-  br label %loop
-missing:
-  ret i64 0
-}
-
-define private i64 @lk_lookup_i64_ptr_map(ptr %keys, ptr %values, i64 %len, i64 %key, ptr %out) {
-entry:
-  br label %loop
-loop:
-  %i = phi i64 [ 0, %entry ], [ %next, %cont ]
-  %done = icmp uge i64 %i, %len
-  br i1 %done, label %missing, label %check
-check:
-  %key_slot = getelementptr i64, ptr %keys, i64 %i
-  %stored_key = load i64, ptr %key_slot
-  %matched = icmp eq i64 %stored_key, %key
-  br i1 %matched, label %found, label %cont
-found:
-  %value_slot = getelementptr ptr, ptr %values, i64 %i
-  %value = load ptr, ptr %value_slot
-  store ptr %value, ptr %out
-  ret i64 1
-cont:
-  %next = add i64 %i, 1
-  br label %loop
-missing:
-  ret i64 0
-}
-
-define private i64 @lk_set_i64_int_map(ptr %keys, ptr %values, i64 %len, i64 %key, i64 %value) {
-entry:
-  br label %loop
-loop:
-  %i = phi i64 [ 0, %entry ], [ %next, %cont ]
-  %done = icmp uge i64 %i, %len
-  br i1 %done, label %append, label %check
-check:
-  %key_slot = getelementptr i64, ptr %keys, i64 %i
-  %stored_key = load i64, ptr %key_slot
-  %matched = icmp eq i64 %stored_key, %key
-  br i1 %matched, label %update, label %cont
-update:
-  %update_value_slot = getelementptr i64, ptr %values, i64 %i
-  store i64 %value, ptr %update_value_slot
-  ret i64 %len
-cont:
-  %next = add i64 %i, 1
-  br label %loop
-append:
-  %append_key_slot = getelementptr i64, ptr %keys, i64 %len
-  %append_value_slot = getelementptr i64, ptr %values, i64 %len
-  store i64 %key, ptr %append_key_slot
-  store i64 %value, ptr %append_value_slot
-  %next_len = add i64 %len, 1
-  ret i64 %next_len
-}
-
-define private i64 @lk_set_i64_f64_map(ptr %keys, ptr %values, i64 %len, i64 %key, double %value) {
-entry:
-  br label %loop
-loop:
-  %i = phi i64 [ 0, %entry ], [ %next, %cont ]
-  %done = icmp uge i64 %i, %len
-  br i1 %done, label %append, label %check
-check:
-  %key_slot = getelementptr i64, ptr %keys, i64 %i
-  %stored_key = load i64, ptr %key_slot
-  %matched = icmp eq i64 %stored_key, %key
-  br i1 %matched, label %update, label %cont
-update:
-  %update_value_slot = getelementptr double, ptr %values, i64 %i
-  store double %value, ptr %update_value_slot
-  ret i64 %len
-cont:
-  %next = add i64 %i, 1
-  br label %loop
-append:
-  %append_key_slot = getelementptr i64, ptr %keys, i64 %len
-  %append_value_slot = getelementptr double, ptr %values, i64 %len
-  store i64 %key, ptr %append_key_slot
-  store double %value, ptr %append_value_slot
-  %next_len = add i64 %len, 1
-  ret i64 %next_len
-}
-
-define private i64 @lk_set_i64_ptr_map(ptr %keys, ptr %values, i64 %len, i64 %key, ptr %value) {
-entry:
-  br label %loop
-loop:
-  %i = phi i64 [ 0, %entry ], [ %next, %cont ]
-  %done = icmp uge i64 %i, %len
-  br i1 %done, label %append, label %check
-check:
-  %key_slot = getelementptr i64, ptr %keys, i64 %i
-  %stored_key = load i64, ptr %key_slot
-  %matched = icmp eq i64 %stored_key, %key
-  br i1 %matched, label %update, label %cont
-update:
-  %update_value_slot = getelementptr ptr, ptr %values, i64 %i
-  store ptr %value, ptr %update_value_slot
-  ret i64 %len
-cont:
-  %next = add i64 %i, 1
-  br label %loop
-append:
-  %append_key_slot = getelementptr i64, ptr %keys, i64 %len
-  %append_value_slot = getelementptr ptr, ptr %values, i64 %len
-  store i64 %key, ptr %append_key_slot
-  store ptr %value, ptr %append_value_slot
-  %next_len = add i64 %len, 1
-  ret i64 %next_len
-}
-"#
+    ""
 }

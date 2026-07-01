@@ -68,400 +68,10 @@ fn emit_heap_slot(ir: &mut String, name: &str, bytes: usize) {
 
 pub(super) fn native_dynamic_container_helpers() -> &'static str {
     r#"
-define private i64 @lk_split_string_int_key(ptr %key, ptr %prefix_out) {
-entry:
-  %len = call i64 @strlen(ptr %key)
-  %last = sub i64 %len, 1
-  %empty = icmp eq i64 %len, 0
-  br i1 %empty, label %raw, label %scan
-scan:
-  %i = phi i64 [ %last, %entry ], [ %prev, %digit ]
-  %slot = getelementptr i8, ptr %key, i64 %i
-  %ch = load i8, ptr %slot
-  %ge_zero = icmp uge i8 %ch, 48
-  %le_nine = icmp ule i8 %ch, 57
-  %is_digit = and i1 %ge_zero, %le_nine
-  br i1 %is_digit, label %digit, label %split
-digit:
-  %at_start = icmp eq i64 %i, 0
-  %prev = sub i64 %i, 1
-  br i1 %at_start, label %raw, label %scan
-split:
-  %start = add i64 %i, 1
-  %no_suffix = icmp eq i64 %start, %len
-  br i1 %no_suffix, label %raw, label %parse_entry
-parse_entry:
-  %copy = call ptr @strdup(ptr %key)
-  %term = getelementptr i8, ptr %copy, i64 %start
-  store i8 0, ptr %term
-  store ptr %copy, ptr %prefix_out
-  br label %parse
-parse:
-  %j = phi i64 [ %start, %parse_entry ], [ %next_j, %parse_body ]
-  %acc = phi i64 [ 0, %parse_entry ], [ %next_acc, %parse_body ]
-  %done = icmp uge i64 %j, %len
-  br i1 %done, label %done_parse, label %parse_body
-parse_body:
-  %digit_slot = getelementptr i8, ptr %key, i64 %j
-  %digit_ch = load i8, ptr %digit_slot
-  %digit_z = zext i8 %digit_ch to i64
-  %digit_value = sub i64 %digit_z, 48
-  %acc10 = mul i64 %acc, 10
-  %next_acc = add i64 %acc10, %digit_value
-  %next_j = add i64 %j, 1
-  br label %parse
-done_parse:
-  ret i64 %acc
-raw:
-  store ptr %key, ptr %prefix_out
-  ret i64 0
-}
-
-define private i64 @lk_lookup_string_int_map(ptr %prefixes, ptr %numbers, ptr %values, i64 %len, ptr %prefix, i64 %number, ptr %out) {
-entry:
-  br label %loop
-loop:
-  %i = phi i64 [ 0, %entry ], [ %next, %cont ]
-  %done = icmp uge i64 %i, %len
-  br i1 %done, label %missing, label %check
-check:
-  %prefix_slot = getelementptr ptr, ptr %prefixes, i64 %i
-  %stored_prefix = load ptr, ptr %prefix_slot
-  %prefix_cmp = call i32 @strcmp(ptr %stored_prefix, ptr %prefix)
-  %prefix_eq = icmp eq i32 %prefix_cmp, 0
-  %number_slot = getelementptr i64, ptr %numbers, i64 %i
-  %stored_number = load i64, ptr %number_slot
-  %number_eq = icmp eq i64 %stored_number, %number
-  %matched = and i1 %prefix_eq, %number_eq
-  br i1 %matched, label %found, label %cont
-found:
-  %value_slot = getelementptr i64, ptr %values, i64 %i
-  %value = load i64, ptr %value_slot
-  store i64 %value, ptr %out
-  ret i64 1
-cont:
-  %next = add i64 %i, 1
-  br label %loop
-missing:
-  ret i64 0
-}
-
-define private i64 @lk_set_string_int_map(ptr %prefixes, ptr %numbers, ptr %values, i64 %len, ptr %prefix, i64 %number, i64 %value) {
-entry:
-  br label %loop
-loop:
-  %i = phi i64 [ 0, %entry ], [ %next, %cont ]
-  %done = icmp uge i64 %i, %len
-  br i1 %done, label %append, label %check
-check:
-  %prefix_slot = getelementptr ptr, ptr %prefixes, i64 %i
-  %stored_prefix = load ptr, ptr %prefix_slot
-  %prefix_cmp = call i32 @strcmp(ptr %stored_prefix, ptr %prefix)
-  %prefix_eq = icmp eq i32 %prefix_cmp, 0
-  %number_slot = getelementptr i64, ptr %numbers, i64 %i
-  %stored_number = load i64, ptr %number_slot
-  %number_eq = icmp eq i64 %stored_number, %number
-  %matched = and i1 %prefix_eq, %number_eq
-  br i1 %matched, label %update, label %cont
-update:
-  %update_value_slot = getelementptr i64, ptr %values, i64 %i
-  store i64 %value, ptr %update_value_slot
-  ret i64 %len
-cont:
-  %next = add i64 %i, 1
-  br label %loop
-append:
-  %append_prefix_slot = getelementptr ptr, ptr %prefixes, i64 %len
-  %append_number_slot = getelementptr i64, ptr %numbers, i64 %len
-  %append_value_slot = getelementptr i64, ptr %values, i64 %len
-  store ptr %prefix, ptr %append_prefix_slot
-  store i64 %number, ptr %append_number_slot
-  store i64 %value, ptr %append_value_slot
-  %next_len = add i64 %len, 1
-  ret i64 %next_len
-}
-
-define private i64 @lk_lookup_string_f64_map(ptr %prefixes, ptr %numbers, ptr %values, i64 %len, ptr %prefix, i64 %number, ptr %out) {
-entry:
-  br label %loop
-loop:
-  %i = phi i64 [ 0, %entry ], [ %next, %cont ]
-  %done = icmp uge i64 %i, %len
-  br i1 %done, label %missing, label %check
-check:
-  %prefix_slot = getelementptr ptr, ptr %prefixes, i64 %i
-  %stored_prefix = load ptr, ptr %prefix_slot
-  %prefix_cmp = call i32 @strcmp(ptr %stored_prefix, ptr %prefix)
-  %prefix_eq = icmp eq i32 %prefix_cmp, 0
-  %number_slot = getelementptr i64, ptr %numbers, i64 %i
-  %stored_number = load i64, ptr %number_slot
-  %number_eq = icmp eq i64 %stored_number, %number
-  %matched = and i1 %prefix_eq, %number_eq
-  br i1 %matched, label %found, label %cont
-found:
-  %value_slot = getelementptr double, ptr %values, i64 %i
-  %value = load double, ptr %value_slot
-  store double %value, ptr %out
-  ret i64 1
-cont:
-  %next = add i64 %i, 1
-  br label %loop
-missing:
-  ret i64 0
-}
-
-define private i64 @lk_set_string_f64_map(ptr %prefixes, ptr %numbers, ptr %values, i64 %len, ptr %prefix, i64 %number, double %value) {
-entry:
-  br label %loop
-loop:
-  %i = phi i64 [ 0, %entry ], [ %next, %cont ]
-  %done = icmp uge i64 %i, %len
-  br i1 %done, label %append, label %check
-check:
-  %prefix_slot = getelementptr ptr, ptr %prefixes, i64 %i
-  %stored_prefix = load ptr, ptr %prefix_slot
-  %prefix_cmp = call i32 @strcmp(ptr %stored_prefix, ptr %prefix)
-  %prefix_eq = icmp eq i32 %prefix_cmp, 0
-  %number_slot = getelementptr i64, ptr %numbers, i64 %i
-  %stored_number = load i64, ptr %number_slot
-  %number_eq = icmp eq i64 %stored_number, %number
-  %matched = and i1 %prefix_eq, %number_eq
-  br i1 %matched, label %update, label %cont
-update:
-  %update_value_slot = getelementptr double, ptr %values, i64 %i
-  store double %value, ptr %update_value_slot
-  ret i64 %len
-cont:
-  %next = add i64 %i, 1
-  br label %loop
-append:
-  %append_prefix_slot = getelementptr ptr, ptr %prefixes, i64 %len
-  %append_number_slot = getelementptr i64, ptr %numbers, i64 %len
-  %append_value_slot = getelementptr double, ptr %values, i64 %len
-  store ptr %prefix, ptr %append_prefix_slot
-  store i64 %number, ptr %append_number_slot
-  store double %value, ptr %append_value_slot
-  %next_len = add i64 %len, 1
-  ret i64 %next_len
-}
-
-define private i64 @lk_i64_decimal_len(i64 %value) {
-entry:
-  %is_zero = icmp eq i64 %value, 0
-  br i1 %is_zero, label %zero, label %nonzero
-zero:
-  ret i64 1
-nonzero:
-  %is_negative = icmp slt i64 %value, 0
-  %initial_len = select i1 %is_negative, i64 1, i64 0
-  br i1 %is_negative, label %neg_loop, label %pos_loop
-pos_loop:
-  %pos_value = phi i64 [ %value, %nonzero ], [ %pos_next, %pos_continue ]
-  %pos_len = phi i64 [ %initial_len, %nonzero ], [ %pos_len_next, %pos_continue ]
-  %pos_len_next = add i64 %pos_len, 1
-  %pos_done = icmp slt i64 %pos_value, 10
-  br i1 %pos_done, label %pos_ret, label %pos_continue
-pos_continue:
-  %pos_next = sdiv i64 %pos_value, 10
-  br label %pos_loop
-pos_ret:
-  ret i64 %pos_len_next
-neg_loop:
-  %neg_value = phi i64 [ %value, %nonzero ], [ %neg_next, %neg_continue ]
-  %neg_len = phi i64 [ %initial_len, %nonzero ], [ %neg_len_next, %neg_continue ]
-  %neg_len_next = add i64 %neg_len, 1
-  %neg_done = icmp sgt i64 %neg_value, -10
-  br i1 %neg_done, label %neg_ret, label %neg_continue
-neg_continue:
-  %neg_next = sdiv i64 %neg_value, 10
-  br label %neg_loop
-neg_ret:
-  ret i64 %neg_len_next
-}
-
-define private void @lk_slice_i64_list(ptr %src_values, i64 %src_len, i64 %start, ptr %dst_values, ptr %dst_len) {
-entry:
-  %start_neg = icmp slt i64 %start, 0
-  %start_nonneg = select i1 %start_neg, i64 0, i64 %start
-  %start_over = icmp sgt i64 %start_nonneg, %src_len
-  %start_clamped = select i1 %start_over, i64 %src_len, i64 %start_nonneg
-  br label %loop
-loop:
-  %src_i = phi i64 [ %start_clamped, %entry ], [ %src_next, %copy ]
-  %dst_i = phi i64 [ 0, %entry ], [ %dst_next, %copy ]
-  %done = icmp uge i64 %src_i, %src_len
-  br i1 %done, label %finish, label %copy
-copy:
-  %src_slot = getelementptr i64, ptr %src_values, i64 %src_i
-  %value = load i64, ptr %src_slot
-  %dst_slot = getelementptr i64, ptr %dst_values, i64 %dst_i
-  store i64 %value, ptr %dst_slot
-  %src_next = add i64 %src_i, 1
-  %dst_next = add i64 %dst_i, 1
-  br label %loop
-finish:
-  store i64 %dst_i, ptr %dst_len
-  ret void
-}
-
-define private void @lk_take_i64_list(ptr %src_values, i64 %src_len, i64 %count, ptr %dst_values, ptr %dst_len) {
-entry:
-  %count_neg = icmp slt i64 %count, 0
-  %count_nonneg = select i1 %count_neg, i64 0, i64 %count
-  %count_over = icmp sgt i64 %count_nonneg, %src_len
-  %count_clamped = select i1 %count_over, i64 %src_len, i64 %count_nonneg
-  br label %loop
-loop:
-  %i = phi i64 [ 0, %entry ], [ %next, %copy ]
-  %done = icmp uge i64 %i, %count_clamped
-  br i1 %done, label %finish, label %copy
-copy:
-  %src_slot = getelementptr i64, ptr %src_values, i64 %i
-  %value = load i64, ptr %src_slot
-  %dst_slot = getelementptr i64, ptr %dst_values, i64 %i
-  store i64 %value, ptr %dst_slot
-  %next = add i64 %i, 1
-  br label %loop
-finish:
-  store i64 %i, ptr %dst_len
-  ret void
-}
-
-define private void @lk_concat_i64_list(ptr %lhs_values, i64 %lhs_len, ptr %rhs_values, i64 %rhs_len, ptr %dst_values, ptr %dst_len) {
-entry:
-  br label %lhs_loop
-lhs_loop:
-  %lhs_i = phi i64 [ 0, %entry ], [ %lhs_next, %lhs_copy ]
-  %lhs_done = icmp uge i64 %lhs_i, %lhs_len
-  br i1 %lhs_done, label %rhs_loop, label %lhs_copy
-lhs_copy:
-  %lhs_src_slot = getelementptr i64, ptr %lhs_values, i64 %lhs_i
-  %lhs_value = load i64, ptr %lhs_src_slot
-  %lhs_dst_slot = getelementptr i64, ptr %dst_values, i64 %lhs_i
-  store i64 %lhs_value, ptr %lhs_dst_slot
-  %lhs_next = add i64 %lhs_i, 1
-  br label %lhs_loop
-rhs_loop:
-  %rhs_i = phi i64 [ 0, %lhs_loop ], [ %rhs_next, %rhs_copy ]
-  %rhs_done = icmp uge i64 %rhs_i, %rhs_len
-  br i1 %rhs_done, label %finish, label %rhs_copy
-rhs_copy:
-  %rhs_src_slot = getelementptr i64, ptr %rhs_values, i64 %rhs_i
-  %rhs_value = load i64, ptr %rhs_src_slot
-  %dst_i = add i64 %lhs_len, %rhs_i
-  %rhs_dst_slot = getelementptr i64, ptr %dst_values, i64 %dst_i
-  store i64 %rhs_value, ptr %rhs_dst_slot
-  %rhs_next = add i64 %rhs_i, 1
-  br label %rhs_loop
-finish:
-  %total = add i64 %lhs_len, %rhs_len
-  store i64 %total, ptr %dst_len
-  ret void
-}
-
-define private void @lk_slice_ptr_list(ptr %src_values, i64 %src_len, i64 %start, ptr %dst_values, ptr %dst_len) {
-entry:
-  %start_neg = icmp slt i64 %start, 0
-  %start_nonneg = select i1 %start_neg, i64 0, i64 %start
-  %start_over = icmp sgt i64 %start_nonneg, %src_len
-  %start_clamped = select i1 %start_over, i64 %src_len, i64 %start_nonneg
-  br label %loop
-loop:
-  %src_i = phi i64 [ %start_clamped, %entry ], [ %src_next, %copy ]
-  %dst_i = phi i64 [ 0, %entry ], [ %dst_next, %copy ]
-  %done = icmp uge i64 %src_i, %src_len
-  br i1 %done, label %finish, label %copy
-copy:
-  %src_slot = getelementptr ptr, ptr %src_values, i64 %src_i
-  %value = load ptr, ptr %src_slot
-  %dst_slot = getelementptr ptr, ptr %dst_values, i64 %dst_i
-  store ptr %value, ptr %dst_slot
-  %src_next = add i64 %src_i, 1
-  %dst_next = add i64 %dst_i, 1
-  br label %loop
-finish:
-  store i64 %dst_i, ptr %dst_len
-  ret void
-}
-
-define private void @lk_take_ptr_list(ptr %src_values, i64 %src_len, i64 %count, ptr %dst_values, ptr %dst_len) {
-entry:
-  %count_neg = icmp slt i64 %count, 0
-  %count_nonneg = select i1 %count_neg, i64 0, i64 %count
-  %count_over = icmp sgt i64 %count_nonneg, %src_len
-  %count_clamped = select i1 %count_over, i64 %src_len, i64 %count_nonneg
-  br label %loop
-loop:
-  %i = phi i64 [ 0, %entry ], [ %next, %copy ]
-  %done = icmp uge i64 %i, %count_clamped
-  br i1 %done, label %finish, label %copy
-copy:
-  %src_slot = getelementptr ptr, ptr %src_values, i64 %i
-  %value = load ptr, ptr %src_slot
-  %dst_slot = getelementptr ptr, ptr %dst_values, i64 %i
-  store ptr %value, ptr %dst_slot
-  %next = add i64 %i, 1
-  br label %loop
-finish:
-  store i64 %i, ptr %dst_len
-  ret void
-}
-
-define private void @lk_concat_ptr_list(ptr %lhs_values, i64 %lhs_len, ptr %rhs_values, i64 %rhs_len, ptr %dst_values, ptr %dst_len) {
-entry:
-  br label %lhs_loop
-lhs_loop:
-  %lhs_i = phi i64 [ 0, %entry ], [ %lhs_next, %lhs_copy ]
-  %lhs_done = icmp uge i64 %lhs_i, %lhs_len
-  br i1 %lhs_done, label %rhs_loop, label %lhs_copy
-lhs_copy:
-  %lhs_src_slot = getelementptr ptr, ptr %lhs_values, i64 %lhs_i
-  %lhs_value = load ptr, ptr %lhs_src_slot
-  %lhs_dst_slot = getelementptr ptr, ptr %dst_values, i64 %lhs_i
-  store ptr %lhs_value, ptr %lhs_dst_slot
-  %lhs_next = add i64 %lhs_i, 1
-  br label %lhs_loop
-rhs_loop:
-  %rhs_i = phi i64 [ 0, %lhs_loop ], [ %rhs_next, %rhs_copy ]
-  %rhs_done = icmp uge i64 %rhs_i, %rhs_len
-  br i1 %rhs_done, label %finish, label %rhs_copy
-rhs_copy:
-  %rhs_src_slot = getelementptr ptr, ptr %rhs_values, i64 %rhs_i
-  %rhs_value = load ptr, ptr %rhs_src_slot
-  %dst_i = add i64 %lhs_len, %rhs_i
-  %rhs_dst_slot = getelementptr ptr, ptr %dst_values, i64 %dst_i
-  store ptr %rhs_value, ptr %rhs_dst_slot
-  %rhs_next = add i64 %rhs_i, 1
-  br label %rhs_loop
-finish:
-  %total = add i64 %lhs_len, %rhs_len
-  store i64 %total, ptr %dst_len
-  ret void
-}
-
-define private i64 @lk_eq_i64_list(ptr %lhs_values, i64 %lhs_len, ptr %rhs_values, i64 %rhs_len) {
-entry:
-  %len_eq = icmp eq i64 %lhs_len, %rhs_len
-  br i1 %len_eq, label %loop, label %not_equal
-loop:
-  %i = phi i64 [ 0, %entry ], [ %next, %cont ]
-  %done = icmp uge i64 %i, %lhs_len
-  br i1 %done, label %equal, label %check
-check:
-  %lhs_slot = getelementptr i64, ptr %lhs_values, i64 %i
-  %rhs_slot = getelementptr i64, ptr %rhs_values, i64 %i
-  %lhs = load i64, ptr %lhs_slot
-  %rhs = load i64, ptr %rhs_slot
-  %same = icmp eq i64 %lhs, %rhs
-  br i1 %same, label %cont, label %not_equal
-cont:
-  %next = add i64 %i, 1
-  br label %loop
-equal:
-  ret i64 1
-not_equal:
-  ret i64 0
-}
+; DynamicMap<str, V> (split_key / lookup / set) and the i64 decimal-length helper
+; are lowered to lkrt (lkrt_map_str_* / lkrt_i64_decimal_len).
+; DynamicList<i64> slice/take/concat/eq and DynamicList<str> slice/take/concat
+; are lowered to lkrt (lkrt_list_i64_* / lkrt_list_str_*).
 "#
 }
 
@@ -491,7 +101,7 @@ pub(super) fn emit_dynamic_string_int_map_set(
     ir.push_str(&format!(
         "  {value_base} = getelementptr [4096 x i64], ptr %map{id}.value.slots, i64 0, i64 0\n"
     ));
-    ir.push_str(&format!("  {next_len} = call i64 @lk_set_string_int_map(ptr {prefix_base}, ptr {number_base}, ptr {value_base}, i64 {len}, ptr {prefix}, i64 {number}, i64 {value})\n"));
+    ir.push_str(&format!("  {next_len} = call i64 @lkrt_map_str_int_set(ptr {prefix_base}, ptr {number_base}, ptr {value_base}, i64 {len}, ptr {prefix}, i64 {number}, i64 {value})\n"));
     ir.push_str(&format!("  store i64 {next_len}, ptr %map{id}.len.slot\n"));
     Some(())
 }
@@ -522,7 +132,7 @@ pub(super) fn emit_dynamic_string_int_map_get(
     ir.push_str(&format!(
         "  {value_base} = getelementptr [4096 x i64], ptr %map{id}.value.slots, i64 0, i64 0\n"
     ));
-    ir.push_str(&format!("  {found} = call i64 @lk_lookup_string_int_map(ptr {prefix_base}, ptr {number_base}, ptr {value_base}, i64 {len}, ptr {prefix}, i64 {number}, ptr %r{dst}.slot)\n"));
+    ir.push_str(&format!("  {found} = call i64 @lkrt_map_str_int_lookup(ptr {prefix_base}, ptr {number_base}, ptr {value_base}, i64 {len}, ptr {prefix}, i64 {number}, ptr %r{dst}.slot)\n"));
     ir.push_str(&format!("  store i64 {found}, ptr %r{dst}.present.slot\n"));
     Some(())
 }
@@ -553,7 +163,7 @@ pub(super) fn emit_dynamic_string_f64_map_set(
     ir.push_str(&format!(
         "  {value_base} = getelementptr [4096 x double], ptr %map{id}.f64.slots, i64 0, i64 0\n"
     ));
-    ir.push_str(&format!("  {next_len} = call i64 @lk_set_string_f64_map(ptr {prefix_base}, ptr {number_base}, ptr {value_base}, i64 {len}, ptr {prefix}, i64 {number}, double {value})\n"));
+    ir.push_str(&format!("  {next_len} = call i64 @lkrt_map_str_f64_set(ptr {prefix_base}, ptr {number_base}, ptr {value_base}, i64 {len}, ptr {prefix}, i64 {number}, double {value})\n"));
     ir.push_str(&format!("  store i64 {next_len}, ptr %map{id}.len.slot\n"));
     Some(())
 }
@@ -584,7 +194,7 @@ pub(super) fn emit_dynamic_string_f64_map_get(
     ir.push_str(&format!(
         "  {value_base} = getelementptr [4096 x double], ptr %map{id}.f64.slots, i64 0, i64 0\n"
     ));
-    ir.push_str(&format!("  {found} = call i64 @lk_lookup_string_f64_map(ptr {prefix_base}, ptr {number_base}, ptr {value_base}, i64 {len}, ptr {prefix}, i64 {number}, ptr %r{dst}.slot)\n"));
+    ir.push_str(&format!("  {found} = call i64 @lkrt_map_str_f64_lookup(ptr {prefix_base}, ptr {number_base}, ptr {value_base}, i64 {len}, ptr {prefix}, i64 {number}, ptr %r{dst}.slot)\n"));
     ir.push_str(&format!("  store i64 {found}, ptr %r{dst}.present.slot\n"));
     Some(())
 }
@@ -1078,7 +688,7 @@ pub(super) fn emit_dynamic_ptr_list_slice(
         "  {dst_base} = getelementptr [4096 x ptr], ptr %list{dst_id}.ptr.slots, i64 0, i64 0\n"
     ));
     ir.push_str(&format!(
-        "  call void @lk_slice_ptr_list(ptr {src_base}, i64 {src_len}, i64 {start}, ptr {dst_base}, ptr %list{dst_id}.len.slot)\n"
+        "  call void @lkrt_list_str_slice(ptr {src_base}, i64 {src_len}, i64 {start}, ptr {dst_base}, ptr %list{dst_id}.len.slot)\n"
     ));
     Some(())
 }
@@ -1103,7 +713,7 @@ pub(super) fn emit_dynamic_ptr_list_take(
         "  {dst_base} = getelementptr [4096 x ptr], ptr %list{dst_id}.ptr.slots, i64 0, i64 0\n"
     ));
     ir.push_str(&format!(
-        "  call void @lk_take_ptr_list(ptr {src_base}, i64 {src_len}, i64 {count}, ptr {dst_base}, ptr %list{dst_id}.len.slot)\n"
+        "  call void @lkrt_list_str_take(ptr {src_base}, i64 {src_len}, i64 {count}, ptr {dst_base}, ptr %list{dst_id}.len.slot)\n"
     ));
     Some(())
 }
@@ -1132,7 +742,7 @@ pub(super) fn emit_dynamic_ptr_list_concat(
         "  {dst_base} = getelementptr [4096 x ptr], ptr %list{dst_id}.ptr.slots, i64 0, i64 0\n"
     ));
     ir.push_str(&format!(
-        "  call void @lk_concat_ptr_list(ptr {lhs_base}, i64 {lhs_len}, ptr {rhs_base}, i64 {rhs_len}, ptr {dst_base}, ptr %list{dst_id}.len.slot)\n"
+        "  call void @lkrt_list_str_concat(ptr {lhs_base}, i64 {lhs_len}, ptr {rhs_base}, i64 {rhs_len}, ptr {dst_base}, ptr %list{dst_id}.len.slot)\n"
     ));
     Some(())
 }
@@ -1154,7 +764,7 @@ pub(super) fn emit_dynamic_ptr_list_copy(
         "  {dst_base} = getelementptr [4096 x ptr], ptr %list{dst_id}.ptr.slots, i64 0, i64 0\n"
     ));
     ir.push_str(&format!(
-        "  call void @lk_slice_ptr_list(ptr {src_base}, i64 {src_len}, i64 0, ptr {dst_base}, ptr %list{dst_id}.len.slot)\n"
+        "  call void @lkrt_list_str_slice(ptr {src_base}, i64 {src_len}, i64 0, ptr {dst_base}, ptr %list{dst_id}.len.slot)\n"
     ));
     Some(())
 }
@@ -1198,7 +808,7 @@ pub(super) fn emit_dynamic_int_list_slice(
         "  {dst_base} = getelementptr [4096 x i64], ptr %list{dst_id}.value.slots, i64 0, i64 0\n"
     ));
     ir.push_str(&format!(
-        "  call void @lk_slice_i64_list(ptr {src_base}, i64 {src_len}, i64 {start}, ptr {dst_base}, ptr %list{dst_id}.len.slot)\n"
+        "  call void @lkrt_list_i64_slice(ptr {src_base}, i64 {src_len}, i64 {start}, ptr {dst_base}, ptr %list{dst_id}.len.slot)\n"
     ));
     ir.push_str(&format!("  store i64 0, ptr %list{dst_id}.text.len.slot\n"));
     Some(())
@@ -1224,7 +834,7 @@ pub(super) fn emit_dynamic_int_list_take(
         "  {dst_base} = getelementptr [4096 x i64], ptr %list{dst_id}.value.slots, i64 0, i64 0\n"
     ));
     ir.push_str(&format!(
-        "  call void @lk_take_i64_list(ptr {src_base}, i64 {src_len}, i64 {count}, ptr {dst_base}, ptr %list{dst_id}.len.slot)\n"
+        "  call void @lkrt_list_i64_take(ptr {src_base}, i64 {src_len}, i64 {count}, ptr {dst_base}, ptr %list{dst_id}.len.slot)\n"
     ));
     ir.push_str(&format!("  store i64 0, ptr %list{dst_id}.text.len.slot\n"));
     Some(())
@@ -1254,7 +864,7 @@ pub(super) fn emit_dynamic_int_list_concat(
         "  {dst_base} = getelementptr [4096 x i64], ptr %list{dst_id}.value.slots, i64 0, i64 0\n"
     ));
     ir.push_str(&format!(
-        "  call void @lk_concat_i64_list(ptr {lhs_base}, i64 {lhs_len}, ptr {rhs_base}, i64 {rhs_len}, ptr {dst_base}, ptr %list{dst_id}.len.slot)\n"
+        "  call void @lkrt_list_i64_concat(ptr {lhs_base}, i64 {lhs_len}, ptr {rhs_base}, i64 {rhs_len}, ptr {dst_base}, ptr %list{dst_id}.len.slot)\n"
     ));
     ir.push_str(&format!("  store i64 0, ptr %list{dst_id}.text.len.slot\n"));
     Some(())
@@ -1277,7 +887,7 @@ pub(super) fn emit_dynamic_int_list_copy(
         "  {dst_base} = getelementptr [4096 x i64], ptr %list{dst_id}.value.slots, i64 0, i64 0\n"
     ));
     ir.push_str(&format!(
-        "  call void @lk_slice_i64_list(ptr {src_base}, i64 {src_len}, i64 0, ptr {dst_base}, ptr %list{dst_id}.len.slot)\n"
+        "  call void @lkrt_list_i64_slice(ptr {src_base}, i64 {src_len}, i64 0, ptr {dst_base}, ptr %list{dst_id}.len.slot)\n"
     ));
     ir.push_str(&format!("  store i64 0, ptr %list{dst_id}.text.len.slot\n"));
     Some(())
@@ -1306,7 +916,7 @@ pub(super) fn emit_dynamic_int_list_equality(
         "  {rhs_base} = getelementptr [4096 x i64], ptr %list{rhs_id}.value.slots, i64 0, i64 0\n"
     ));
     ir.push_str(&format!(
-        "  {equal} = call i64 @lk_eq_i64_list(ptr {lhs_base}, i64 {lhs_len}, ptr {rhs_base}, i64 {rhs_len})\n"
+        "  {equal} = call i64 @lkrt_list_i64_eq(ptr {lhs_base}, i64 {lhs_len}, ptr {rhs_base}, i64 {rhs_len})\n"
     ));
     if not_equal {
         ir.push_str(&format!("  {value} = xor i64 {equal}, 1\n"));
@@ -1364,7 +974,7 @@ fn emit_dynamic_text_len_value(ir: &mut String, parts: &[NativeTextPart], tmp_in
             NativeTextPart::I64(value) => {
                 let len = next_tmp(tmp_index);
                 let next_total = next_tmp(tmp_index);
-                ir.push_str(&format!("  {len} = call i64 @lk_i64_decimal_len(i64 {value})\n"));
+                ir.push_str(&format!("  {len} = call i64 @lkrt_i64_decimal_len(i64 {value})\n"));
                 ir.push_str(&format!("  {next_total} = add i64 {total}, {len}\n"));
                 total = next_total;
             }
@@ -1412,7 +1022,7 @@ fn dynamic_string_int_key_parts(
         let number = next_tmp(tmp_index);
         ir.push_str(&format!("  {prefix_slot} = call ptr @malloc(i64 8)\n"));
         ir.push_str(&format!(
-            "  {number} = call i64 @lk_split_string_int_key(ptr {value}, ptr {prefix_slot})\n"
+            "  {number} = call i64 @lkrt_map_str_split_key(ptr {value}, ptr {prefix_slot})\n"
         ));
         ir.push_str(&format!("  {prefix} = load ptr, ptr {prefix_slot}\n"));
         return Some((prefix, number));

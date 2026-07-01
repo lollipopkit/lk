@@ -44,6 +44,44 @@ intrinsics.
 - `lkrt_abi_version()` exposes the native runtime ABI version. LLVM lowering
   should treat a missing or incompatible ABI as a link/configuration error, not
   as a reason to fall back to the VM.
+- Monomorphized container method bodies live in `lkrt` as typed helpers rather
+  than as per-shape hand-written LLVM IR. The `DynamicList<i64>`, `DynamicList<f64>`,
+  and `DynamicList<str>` layouts are fully sunk to `lkrt_list_{i64,f64,str}_*`
+  helpers, declared through the native intrinsic registry (modules `list.i64`,
+  `list.f64`, `list.str`). They take a raw element `ptr` + `i64` length (plus
+  `dst`/`dst_len` out-pointers for producing helpers). They are `Pure`: they only
+  read the source buffer and write the caller-owned destination buffer, never
+  touching host state.
+- Because LLVM lowers in-place shapes (`xs.slice(..)`, `xs.sort()`) onto the same
+  storage, every helper must tolerate `src == dst` aliasing — use raw pointers and
+  `ptr::copy` (memmove) for range moves, never overlapping `&`/`&mut` slices or
+  `copy_nonoverlapping`.
+- Element semantics must match the old IR exactly: `f64` compares via `fcmp`
+  (Rust `PartialEq`/`PartialOrd`, NaN-aware); `str` elements are `*const c_char`
+  compared with `strcmp` (byte-wise `CStr`). Structural `str` ops only move
+  pointers; only `push`/`insert`/`set` take ownership of the injected value by
+  duplicating it (leaked, matching `strdup`'s never-freed contract). Missing/empty
+  `str` results return a stable empty C string.
+- `DynamicMap<i64, V>` lookup/set helpers are also sunk to
+  `lkrt_map_i64_{int,f64,ptr}_{lookup,set}` (module `map.i64`): `lookup` writes the
+  found value through an `out` pointer and returns 1/0 (the caller stores that into
+  its `present` slot, preserving `nil`), and `set` updates in place or appends.
+  The `i64`-keyed map's `has`/`delete`/`iter`/`values`/`keys` shapes remain inline
+  IR in the emitters (they are not helper-pool functions).
+- `DynamicMap<str, V>` uses a composite short-string key (`prefix` string + integer
+  suffix, so `"k12"` stores `prefix="k"`, `number=12`). Its `split_key`, `lookup`,
+  `set`, `contains` (for `has`), and compaction `delete` are sunk to
+  `lkrt_map_str_{split_key,contains}` + `lkrt_map_str_{int,f64,ptr}_{lookup,set,delete}`
+  (module `map.str`). Keys compare with `strcmp(prefix) && number ==`; `split_key`
+  scans trailing ASCII digits and leaks a truncated prefix copy (a "raw" key — empty,
+  all-digits, or no trailing digit — keeps the original pointer with `number=0`).
+  `lookup` follows the same `out`/return present-bit convention as `map.i64`; `delete`
+  copies the surviving entries into the destination arrays (tolerating `src == dst`),
+  writes the removed value through `out_value`, sets `out_present`, and returns the
+  destination length. Only the `str`-keyed map's `iter`/`values`/`keys` remain inline.
+- `lkrt_i64_decimal_len(i64)` (module `fmt`, `Pure`) returns the decimal-spelling
+  width of an `i64` (counting a leading `-`); it sizes dynamic template/text buffers,
+  replacing the old hand-written `@lk_i64_decimal_len` IR.
 - Strings returned by `lkrt` are owned by `lkrt` and must be released with
   `lkrt_string_free(ptr)` when generated code starts tracking native ownership.
 - `lkrt_last_error()` returns an owned string for diagnostics. Existing aborting
