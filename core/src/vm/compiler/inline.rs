@@ -6,7 +6,7 @@ use crate::{
     stmt::Stmt,
 };
 
-use super::{Compiler, support::mutated_names_in_stmt};
+use super::{Compiler, free_vars::collect_expr_closure_captures, support::mutated_names_in_stmt};
 
 #[derive(Default)]
 struct InlineReturnPatches {
@@ -51,6 +51,25 @@ impl Compiler {
         let mutated_names = mutated_names_in_stmt(body);
 
         let result = (|| {
+            // Locals a closure *argument* captures promote before any
+            // argument lowers: a read-only `Var` argument binds its parameter
+            // to the local's register directly, and a later closure argument
+            // boxing that register in place would leave the parameter
+            // aliasing a cell (`use2(y, |q| q + y)` read the cell as `a`).
+            // Loop variables are exempt — their captures snapshot into a
+            // fresh cell without re-binding the register.
+            let mut captured = Vec::new();
+            for arg in args {
+                collect_expr_closure_captures(arg, &mut captured);
+            }
+            for name in captured {
+                if self.active_loop_binding_slot(&name) == self.locals.get(&name).copied()
+                    && self.locals.contains_key(&name)
+                {
+                    continue;
+                }
+                self.promote_captured_local(&name)?;
+            }
             // Two phases: every argument expression lowers in the *caller's*
             // namespace before any parameter binds. Interleaving would let a
             // later argument resolve a name against an already-bound earlier

@@ -68,8 +68,10 @@ pub struct Compiler {
     /// Loop-pattern variables of the enclosing `for` loops: the fused loop
     /// opcodes own the raw register, so a capture takes a fresh snapshot cell
     /// per capture site instead of re-binding the register (per-iteration
-    /// binding semantics).
-    loop_snapshot_vars: Vec<String>,
+    /// binding semantics). `slot` is filled when the pattern binds; a
+    /// same-named local whose binding differs (a fresh `let` in the body) is
+    /// an ordinary local, not the loop variable.
+    loop_snapshot_vars: Vec<LoopSnapshotVar>,
     dynamic_function_base: u32,
     pending_functions: Vec<Function>,
     inline_stack: Vec<String>,
@@ -249,6 +251,12 @@ impl Compiler {
 
         let watermark = self.next_reg;
         let target = if let Some(reg) = self.locals.get(name).copied() {
+            // A re-`let` over a promoted cell or over a live loop counter
+            // must not write the old register in place — the generic path
+            // allocates the fresh binding.
+            if is_let && (self.cell_locals.contains(name) || self.active_loop_binding_slot(name) == Some(reg)) {
+                return Ok(false);
+            }
             reg
         } else if is_let {
             let reg = self.alloc_reg();
@@ -383,7 +391,13 @@ impl Compiler {
         }
         let watermark = self.next_reg;
         let slot = if let Some(slot) = self.locals.get(name).copied() {
-            self.local_write_slot(slot).0
+            if self.active_loop_binding_slot(name) == Some(slot) {
+                // A fresh binding must not clobber the counter register the
+                // fused loop opcodes drive (`for i { let i = …; }`).
+                self.alloc_reg()
+            } else {
+                self.local_write_slot(slot).0
+            }
         } else {
             self.alloc_reg()
         };
@@ -1340,16 +1354,25 @@ impl Compiler {
         }
         collect_stmt_closure_captures(body, &mut captured);
         for name in captured {
-            if self.loop_snapshot_vars.iter().any(|v| v == &name) {
+            // Inside the loop body the pattern names lexically bind the loop
+            // variables, so a name-level skip is exact here.
+            if self.loop_snapshot_vars.iter().any(|v| v.name == name) {
                 continue;
             }
-            let Some(local) = self.locals.get(&name).copied() else {
-                continue;
-            };
-            if self.cell_locals.insert(name) {
-                let cell = self.emit_upval_cell(local)?;
-                self.emit_move(local, cell, "box captured local")?;
-            }
+            self.promote_captured_local(&name)?;
+        }
+        Ok(())
+    }
+
+    /// Promotes `name` (if it is a plain local) to a capture cell right now:
+    /// box the current value and re-bind the register to the cell.
+    pub(super) fn promote_captured_local(&mut self, name: &str) -> Result<()> {
+        let Some(local) = self.locals.get(name).copied() else {
+            return Ok(());
+        };
+        if self.cell_locals.insert(name.to_string()) {
+            let cell = self.emit_upval_cell(local)?;
+            self.emit_move(local, cell, "box captured local")?;
         }
         Ok(())
     }
@@ -1579,6 +1602,26 @@ impl Compiler {
             slot: self.insert_fresh_local(name.to_string(), value),
             was_cell,
         });
+        // Fill the innermost pending snapshot entry: captures and re-`let`s
+        // recognize the loop variable by this slot, not by name alone.
+        if let Some(entry) = self
+            .loop_snapshot_vars
+            .iter_mut()
+            .rev()
+            .find(|entry| entry.name == name && entry.slot.is_none())
+        {
+            entry.slot = Some(value);
+        }
+    }
+
+    /// The binding slot of the innermost enclosing `for` variable named
+    /// `name`, if that loop has already bound its pattern.
+    pub(super) fn active_loop_binding_slot(&self, name: &str) -> Option<u16> {
+        self.loop_snapshot_vars
+            .iter()
+            .rev()
+            .find(|entry| entry.name == name)
+            .and_then(|entry| entry.slot)
     }
 
     fn bind_for_pattern_inner(
@@ -1901,7 +1944,9 @@ impl Compiler {
             // A `for` loop variable cannot be re-bound to a cell (the fused
             // loop opcodes drive the raw register): each capture snapshots
             // the current value into a fresh cell — per-iteration binding.
-            if self.loop_snapshot_vars.iter().any(|v| v == name) {
+            // Only the loop's own binding slot qualifies: a same-named fresh
+            // `let` in the body is an ordinary local and promotes normally.
+            if self.active_loop_binding_slot(name) == Some(local) {
                 let cell = self.emit_upval_cell_with_policy(local, false)?;
                 return Ok((cell, true));
             }
@@ -2413,6 +2458,15 @@ pub fn compile_source(source: &str) -> Result<Function> {
     Compiler::compile_source(source)
 }
 
+/// One active `for`-pattern variable: the binding slot is recorded when the
+/// pattern binds (`None` while the loop head — range/iterable expressions —
+/// still lowers against the enclosing scope).
+#[derive(Debug)]
+struct LoopSnapshotVar {
+    name: String,
+    slot: Option<u16>,
+}
+
 /// One name bound by a `for` pattern: the shadowed previous slot (if any) and
 /// whether that previous binding carried a capture-cell mark to re-instate.
 struct ForPatternBinding {
@@ -2421,9 +2475,12 @@ struct ForPatternBinding {
     was_cell: bool,
 }
 
-fn collect_for_pattern_names(pattern: &ForPattern, out: &mut Vec<String>) {
+fn collect_for_pattern_names(pattern: &ForPattern, out: &mut Vec<LoopSnapshotVar>) {
     match pattern {
-        ForPattern::Variable(name) => out.push(name.clone()),
+        ForPattern::Variable(name) => out.push(LoopSnapshotVar {
+            name: name.clone(),
+            slot: None,
+        }),
         ForPattern::Ignore => {}
         ForPattern::Tuple(patterns) => {
             for pattern in patterns {
@@ -2435,7 +2492,10 @@ fn collect_for_pattern_names(pattern: &ForPattern, out: &mut Vec<String>) {
                 collect_for_pattern_names(pattern, out);
             }
             if let Some(rest) = rest {
-                out.push(rest.clone());
+                out.push(LoopSnapshotVar {
+                    name: rest.clone(),
+                    slot: None,
+                });
             }
         }
         ForPattern::Object(entries) => {

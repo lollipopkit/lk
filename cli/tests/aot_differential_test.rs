@@ -570,6 +570,20 @@ fn differential_builtins() {
                 "closure_loop_var_snapshot",
                 "for i in 0..3 {\n  let f = |x| x + i;\n  println(f(10));\n}\nlet j = 0;\nwhile (j < 3) {\n  let g = |x| x * 10 + j;\n  println(g(j));\n  j = j + 1;\n}\nreturn 0;\n",
             ),
+            // A body re-`let` of the loop variable's name is a fresh binding:
+            // the counter register stays intact (two iterations), the capture
+            // promotes a shared cell (assignment visible), per-iteration.
+            new(
+                "closure_loop_name_re_let",
+                "for i in 0..2 {\n  let i = i * 10;\n  let f = |x| x + i;\n  i = i + 5;\n  println(f(0));\n}\nreturn 0;\n",
+            ),
+            // A read-only Var argument to an inlined helper must not alias a
+            // register a later closure argument boxes (captured locals
+            // pre-promote before any argument lowers).
+            new(
+                "closure_inline_arg_alias",
+                "fn use2(a, g) { let t = a + 1; return g(t); }\nlet y = 10;\nprintln(use2(y, |q| q + y));\ny = 20;\nprintln(use2(y, |q| q + y));\nreturn 0;\n",
+            ),
             // Returned closures via the static summary path: a function whose
             // single return is a closure with parameter-mapped captures is
             // consumed at the call site (no call emitted, pure body skipped).

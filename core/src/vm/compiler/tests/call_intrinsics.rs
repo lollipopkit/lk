@@ -1029,3 +1029,27 @@ fn compiler_inline_arguments_resolve_names_in_caller_scope() {
     let result = execute_module(&module).expect("execute module");
     assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(101)]);
 }
+
+#[test]
+fn compiler_inline_readonly_param_survives_later_closure_promotion() {
+    // A read-only `Var` argument binds its parameter to the local's register
+    // directly; a later closure argument capturing the same local promotes
+    // it in place. The promotion must happen *before* the binding (locals a
+    // closure argument captures pre-promote), or the parameter aliases the
+    // cell. Regression: "Add expected numbers or strings, got Obj and Int".
+    let module = compile_source_module(
+        r#"
+        fn use2(a, g) {
+            let t = a + 1;
+            return g(t);
+        }
+        let y = 10;
+        return use2(y, |q| q + y);
+        "#,
+    )
+    .expect("compile module");
+
+    let result = execute_module(&module).expect("execute module");
+    // t = 10 + 1; g(11) = 11 + 10.
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(21)]);
+}

@@ -1002,3 +1002,29 @@ fn compiler_loop_variable_shadowing_promoted_outer_name() {
     // total = 0 + 1; the escaped closure sees the post-loop mutation (200).
     assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(1200)]);
 }
+
+#[test]
+fn compiler_loop_body_re_let_of_loop_name_is_a_fresh_binding() {
+    // `let i = …` inside `for i` is a fresh ordinary local: it must not
+    // clobber the counter register the fused loop opcode drives (the loop
+    // ran once instead of twice), and a closure capturing it promotes a
+    // shared cell — the later assignment stays visible (regression: the
+    // capture was misclassified as a loop-variable snapshot by name).
+    let module = compile_source_module(
+        r#"
+        let total = 0;
+        for i in 0..2 {
+            let i = i * 10;
+            let f = |x| x + i;
+            i = i + 5;
+            total = total * 100 + f(0);
+        }
+        return total;
+        "#,
+    )
+    .expect("compile module");
+
+    let result = execute_module(&module).expect("execute module");
+    // Iterations: 5 then 15 → 5 * 100 + 15.
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(515)]);
+}

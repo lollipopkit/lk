@@ -24,7 +24,13 @@ impl Compiler {
             }
             let watermark = self.next_reg;
             let slot = if let Some(slot) = self.locals.get(name).copied() {
-                self.local_write_slot(slot).0
+                if self.active_loop_binding_slot(name) == Some(slot) {
+                    // A fresh binding must not clobber the counter register
+                    // the fused loop opcodes drive (`for i { let i = …; }`).
+                    self.alloc_reg()
+                } else {
+                    self.local_write_slot(slot).0
+                }
             } else {
                 self.alloc_reg()
             };
