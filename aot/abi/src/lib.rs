@@ -1,0 +1,285 @@
+//! Single-source-of-truth ABI schema shared by the AOT codegen and `lkrt`.
+//!
+//! This crate is deliberately dependency-free (no `lk-core`, no `lk-stdlib`, no
+//! LLVM). It only describes *what* native runtime functions exist, their typed
+//! signatures, and their host-effect classification. The LLVM-specific rendering
+//! of these signatures (the `declare` text) lives in the codegen crate, which
+//! consumes [`ABI_FUNCTIONS`]; `lkrt` links the implementations and shares
+//! [`ABI_VERSION`]. Keeping the schema here removes the previous hand-synced
+//! duplication between the codegen intrinsic table, `lkrt`'s exports, and its ABI
+//! version constant.
+
+/// Native runtime ABI version. Bumped when the calling convention or the
+/// representation contract (present-bit, ownership, handle layout) changes.
+/// A native binary whose linked `lkrt` reports a different value is a
+/// link/configuration error, never a reason to fall back to the VM.
+pub const ABI_VERSION: i64 = 1;
+
+/// How a native intrinsic interacts with host state, used by codegen to decide
+/// which optimizations (CSE/hoist/DCE) are sound.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AbiEffect {
+    Pure,
+    ReadsHost,
+    WritesHost,
+}
+
+/// The typed vocabulary of native ABI parameters/results. Deliberately small:
+/// scalars plus opaque pointers. `StrPtr` is a `*const c_char`; `Ptr` is any
+/// other raw pointer (buffers, out-params, handles).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AbiType {
+    I64,
+    F64,
+    Ptr,
+    StrPtr,
+    Nil,
+}
+
+/// One native runtime function: its module/name identity (as referenced by the
+/// lowering), its exported C symbol, and its typed signature + effect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AbiFn {
+    pub module: &'static str,
+    pub name: &'static str,
+    pub symbol: &'static str,
+    pub params: &'static [AbiType],
+    pub result: AbiType,
+    pub effect: AbiEffect,
+}
+
+/// Invokes the given callback macro with every ABI table entry, in order. This is
+/// the single source of truth (RFC aot-redesign §3.3): the [`ABI_FUNCTIONS`] const
+/// table below and `lkrt`'s compile-time signature-conformance checks both expand
+/// from it, so a signature can no longer drift between the schema, the codegen
+/// `declare`s, and the runtime implementation without failing the build/tests.
+///
+/// Entry shape: `("module", "name", symbol_ident, Effect, [ParamTypes...], RetType);`
+#[macro_export]
+macro_rules! for_each_abi_fn {
+    ($callback:ident) => {
+        $callback! {
+            ("lkrt", "abi_version", lkrt_abi_version, Pure, [], I64);
+            ("lkrt", "abi_check", lkrt_abi_check, WritesHost, [I64], Nil);
+            ("lkrt", "cleanup", lkrt_cleanup, WritesHost, [], Nil);
+            ("lkrt", "error_clear", lkrt_error_clear, WritesHost, [], Nil);
+            ("lkrt", "last_error", lkrt_last_error, ReadsHost, [], StrPtr);
+            ("lkrt", "string_free", lkrt_string_free, WritesHost, [StrPtr], Nil);
+            ("socket", "addr", lkrt_socket_addr, Pure, [StrPtr, I64], StrPtr);
+            ("tcp", "connect", lkrt_tcp_connect, WritesHost, [StrPtr], I64);
+            ("tcp", "read", lkrt_tcp_read, WritesHost, [I64, I64], I64);
+            ("tcp", "write_str", lkrt_tcp_write_str, WritesHost, [I64, StrPtr], I64);
+            ("tcp", "write_bytes", lkrt_tcp_write_bytes, WritesHost, [I64, I64], I64);
+            ("tcp", "close", lkrt_tcp_close, WritesHost, [I64], I64);
+            ("bytes", "to_string_utf8", lkrt_bytes_to_string_utf8, Pure, [I64], StrPtr);
+            ("bytes", "free", lkrt_bytes_free, WritesHost, [I64], I64);
+            ("lkrt", "handle_close", lkrt_handle_close, WritesHost, [I64], I64);
+            ("io.std", "write", lkrt_io_std_write, WritesHost, [I64, StrPtr, I64], I64);
+            ("io.std", "flush", lkrt_io_std_flush, WritesHost, [I64], I64);
+            ("io.std", "read_to_string", lkrt_io_std_read_to_string, WritesHost, [I64], StrPtr);
+            ("env", "get", lkrt_env_get, ReadsHost, [StrPtr, Ptr], I64);
+            ("env", "get_or", lkrt_env_get_or, ReadsHost, [StrPtr, StrPtr], StrPtr);
+            ("env", "has", lkrt_env_has, ReadsHost, [StrPtr], I64);
+            ("env", "set", lkrt_env_set, WritesHost, [StrPtr, StrPtr], I64);
+            ("env", "remove", lkrt_env_remove, WritesHost, [StrPtr], I64);
+            ("fs", "read", lkrt_fs_read, ReadsHost, [StrPtr], I64);
+            ("fs", "read_to_string", lkrt_fs_read_to_string, ReadsHost, [StrPtr], StrPtr);
+            ("fs", "write_str", lkrt_fs_write_str, WritesHost, [StrPtr, StrPtr], I64);
+            ("fs", "write_bytes", lkrt_fs_write_bytes, WritesHost, [StrPtr, I64], I64);
+            ("fs", "exists", lkrt_fs_exists, ReadsHost, [StrPtr], I64);
+            ("fs", "read_dir", lkrt_fs_read_dir, ReadsHost, [StrPtr], I64);
+            ("fs", "metadata_len", lkrt_fs_metadata_len, ReadsHost, [StrPtr], I64);
+            ("fs", "metadata_is_file", lkrt_fs_metadata_is_file, ReadsHost, [StrPtr], I64);
+            ("fs", "metadata_is_dir", lkrt_fs_metadata_is_dir, ReadsHost, [StrPtr], I64);
+            ("fs", "metadata_readonly", lkrt_fs_metadata_readonly, ReadsHost, [StrPtr], I64);
+            ("fs", "canonicalize", lkrt_fs_canonicalize, ReadsHost, [StrPtr], StrPtr);
+            ("fs", "temp_dir", lkrt_fs_temp_dir, ReadsHost, [], StrPtr);
+            ("path", "temp_dir", lkrt_path_temp_dir, ReadsHost, [], StrPtr);
+            ("process", "cwd", lkrt_process_cwd, ReadsHost, [], StrPtr);
+            ("os", "clock", lkrt_os_clock, ReadsHost, [], F64);
+            ("os", "epoch", lkrt_os_epoch, ReadsHost, [], I64);
+            ("time", "now", lkrt_time_now_ms, ReadsHost, [], I64);
+            ("time", "sleep", lkrt_time_sleep_ms, WritesHost, [I64], Nil);
+            // Monomorphized `DynamicList<i64>` container helpers. These are pure: they
+            // only read the source buffer and write the caller-owned destination buffer.
+            ("list.i64", "contains", lkrt_list_i64_contains, Pure, [Ptr, I64, I64], I64);
+            ("list.i64", "index_of", lkrt_list_i64_index_of, Pure, [Ptr, I64, I64], I64);
+            ("list.i64", "reverse", lkrt_list_i64_reverse, Pure, [Ptr, I64, Ptr, Ptr], Nil);
+            ("list.i64", "sort", lkrt_list_i64_sort, Pure, [Ptr, I64, Ptr, Ptr], Nil);
+            ("list.i64", "pop", lkrt_list_i64_pop, Pure, [Ptr, I64], I64);
+            ("list.i64", "slice_range", lkrt_list_i64_slice_range, Pure, [Ptr, I64, I64, I64, Ptr, Ptr], Nil);
+            ("list.i64", "push", lkrt_list_i64_push, Pure, [Ptr, I64, I64, Ptr, Ptr], Nil);
+            ("list.i64", "insert", lkrt_list_i64_insert, Pure, [Ptr, I64, I64, I64, Ptr, Ptr], Nil);
+            ("list.i64", "remove_at", lkrt_list_i64_remove_at, Pure, [Ptr, I64, I64, Ptr, Ptr], I64);
+            ("list.i64", "set", lkrt_list_i64_set, Pure, [Ptr, I64, I64, I64, Ptr, Ptr], I64);
+            ("list.i64", "slice", lkrt_list_i64_slice, Pure, [Ptr, I64, I64, Ptr, Ptr], Nil);
+            ("list.i64", "take", lkrt_list_i64_take, Pure, [Ptr, I64, I64, Ptr, Ptr], Nil);
+            ("list.i64", "concat", lkrt_list_i64_concat, Pure, [Ptr, I64, Ptr, I64, Ptr, Ptr], Nil);
+            ("list.i64", "eq", lkrt_list_i64_eq, Pure, [Ptr, I64, Ptr, I64], I64);
+            // Monomorphized `DynamicList<f64>` container helpers. Same pure contract as
+            // the i64 helpers; comparisons follow `fcmp` (NaN-aware) semantics.
+            ("list.f64", "contains", lkrt_list_f64_contains, Pure, [Ptr, I64, F64], I64);
+            ("list.f64", "index_of", lkrt_list_f64_index_of, Pure, [Ptr, I64, F64], I64);
+            ("list.f64", "reverse", lkrt_list_f64_reverse, Pure, [Ptr, I64, Ptr, Ptr], Nil);
+            ("list.f64", "sort", lkrt_list_f64_sort, Pure, [Ptr, I64, Ptr, Ptr], Nil);
+            ("list.f64", "pop", lkrt_list_f64_pop, Pure, [Ptr, I64], F64);
+            ("list.f64", "slice", lkrt_list_f64_slice, Pure, [Ptr, I64, I64, Ptr, Ptr], Nil);
+            ("list.f64", "slice_range", lkrt_list_f64_slice_range, Pure, [Ptr, I64, I64, I64, Ptr, Ptr], Nil);
+            ("list.f64", "take", lkrt_list_f64_take, Pure, [Ptr, I64, I64, Ptr, Ptr], Nil);
+            ("list.f64", "concat", lkrt_list_f64_concat, Pure, [Ptr, I64, Ptr, I64, Ptr, Ptr], Nil);
+            ("list.f64", "unique", lkrt_list_f64_unique, Pure, [Ptr, I64, Ptr, Ptr], Nil);
+            ("list.f64", "push", lkrt_list_f64_push, Pure, [Ptr, I64, F64, Ptr, Ptr], Nil);
+            ("list.f64", "insert", lkrt_list_f64_insert, Pure, [Ptr, I64, I64, F64, Ptr, Ptr], Nil);
+            ("list.f64", "remove_at", lkrt_list_f64_remove_at, Pure, [Ptr, I64, I64, Ptr, Ptr], F64);
+            ("list.f64", "set", lkrt_list_f64_set, Pure, [Ptr, I64, I64, F64, Ptr, Ptr], F64);
+            // Monomorphized `DynamicList<str>` (C string pointer) container helpers.
+            // Structural ops move pointers; push/insert/set duplicate the injected value.
+            ("list.str", "contains", lkrt_list_str_contains, Pure, [Ptr, I64, StrPtr], I64);
+            ("list.str", "index_of", lkrt_list_str_index_of, Pure, [Ptr, I64, StrPtr], I64);
+            ("list.str", "text_len", lkrt_list_str_text_len, Pure, [Ptr, I64], I64);
+            ("list.str", "reverse", lkrt_list_str_reverse, Pure, [Ptr, I64, Ptr, Ptr], Nil);
+            ("list.str", "sort", lkrt_list_str_sort, Pure, [Ptr, I64, Ptr, Ptr], Nil);
+            ("list.str", "pop", lkrt_list_str_pop, Pure, [Ptr, I64], StrPtr);
+            ("list.str", "slice_range", lkrt_list_str_slice_range, Pure, [Ptr, I64, I64, I64, Ptr, Ptr], Nil);
+            ("list.str", "push", lkrt_list_str_push, Pure, [Ptr, I64, StrPtr, Ptr, Ptr], Nil);
+            ("list.str", "insert", lkrt_list_str_insert, Pure, [Ptr, I64, I64, StrPtr, Ptr, Ptr], Nil);
+            ("list.str", "remove_at", lkrt_list_str_remove_at, Pure, [Ptr, I64, I64, Ptr, Ptr], StrPtr);
+            ("list.str", "set", lkrt_list_str_set, Pure, [Ptr, I64, I64, StrPtr, Ptr, Ptr], StrPtr);
+            ("list.str", "slice", lkrt_list_str_slice, Pure, [Ptr, I64, I64, Ptr, Ptr], Nil);
+            ("list.str", "take", lkrt_list_str_take, Pure, [Ptr, I64, I64, Ptr, Ptr], Nil);
+            ("list.str", "concat", lkrt_list_str_concat, Pure, [Ptr, I64, Ptr, I64, Ptr, Ptr], Nil);
+            // Monomorphized `DynamicMap<i64, V>` lookup/set helpers (parallel key/value
+            // arrays). `lookup` writes the found value through `out` and returns 1/0;
+            // `set` updates in place or appends, returning the new length.
+            ("map.i64", "int_lookup", lkrt_map_i64_int_lookup, Pure, [Ptr, Ptr, I64, I64, Ptr], I64);
+            ("map.i64", "f64_lookup", lkrt_map_i64_f64_lookup, Pure, [Ptr, Ptr, I64, I64, Ptr], I64);
+            ("map.i64", "ptr_lookup", lkrt_map_i64_ptr_lookup, Pure, [Ptr, Ptr, I64, I64, Ptr], I64);
+            ("map.i64", "int_set", lkrt_map_i64_int_set, Pure, [Ptr, Ptr, I64, I64, I64], I64);
+            ("map.i64", "f64_set", lkrt_map_i64_f64_set, Pure, [Ptr, Ptr, I64, I64, F64], I64);
+            ("map.i64", "ptr_set", lkrt_map_i64_ptr_set, Pure, [Ptr, Ptr, I64, I64, StrPtr], I64);
+            // Monomorphized `DynamicMap<str, V>` helpers with a composite short-string key
+            // (string prefix + integer suffix). `split_key` parses a key into that pair;
+            // lookup/set compare with `strcmp(prefix) && number ==`.
+            ("map.str", "split_key", lkrt_map_str_split_key, Pure, [StrPtr, Ptr], I64);
+            ("map.str", "int_lookup", lkrt_map_str_int_lookup, Pure, [Ptr, Ptr, Ptr, I64, StrPtr, I64, Ptr], I64);
+            ("map.str", "int_set", lkrt_map_str_int_set, Pure, [Ptr, Ptr, Ptr, I64, StrPtr, I64, I64], I64);
+            ("map.str", "f64_lookup", lkrt_map_str_f64_lookup, Pure, [Ptr, Ptr, Ptr, I64, StrPtr, I64, Ptr], I64);
+            ("map.str", "f64_set", lkrt_map_str_f64_set, Pure, [Ptr, Ptr, Ptr, I64, StrPtr, I64, F64], I64);
+            ("map.str", "ptr_lookup", lkrt_map_str_ptr_lookup, Pure, [Ptr, Ptr, Ptr, I64, StrPtr, I64, Ptr], I64);
+            ("map.str", "ptr_set", lkrt_map_str_ptr_set, Pure, [Ptr, Ptr, Ptr, I64, StrPtr, I64, StrPtr], I64);
+            ("map.str", "contains", lkrt_map_str_contains, Pure, [Ptr, Ptr, I64, StrPtr, I64], I64);
+            // `DynamicMap<str, V>` compaction delete: copies non-matching entries into a
+            // destination map, writing the removed value through `out_value` / presence
+            // through `out_present`, and returns the destination length.
+            ("map.str", "int_delete", lkrt_map_str_int_delete, Pure, [Ptr, Ptr, Ptr, I64, Ptr, Ptr, Ptr, StrPtr, I64, Ptr, Ptr], I64);
+            ("map.str", "f64_delete", lkrt_map_str_f64_delete, Pure, [Ptr, Ptr, Ptr, I64, Ptr, Ptr, Ptr, StrPtr, I64, Ptr, Ptr], I64);
+            ("map.str", "ptr_delete", lkrt_map_str_ptr_delete, Pure, [Ptr, Ptr, Ptr, I64, Ptr, Ptr, Ptr, StrPtr, I64, Ptr, Ptr], I64);
+            ("fmt", "i64_decimal_len", lkrt_i64_decimal_len, Pure, [I64], I64);
+            // Growable `List<i64>` handles (Phase 2 container handle-ification). `new`
+            // allocates a handle, `push` appends, `len` counts, `get` indexes with VM
+            // semantics (negative-from-end; out-of-range writes `present = 0`).
+            ("list_h", "i64_new", lkrt_lklist_i64_new, WritesHost, [], Ptr);
+            ("list_h", "i64_push", lkrt_lklist_i64_push, WritesHost, [Ptr, I64], Nil);
+            ("list_h", "i64_len", lkrt_lklist_i64_len, ReadsHost, [Ptr], I64);
+            ("list_h", "i64_get", lkrt_lklist_i64_get, ReadsHost, [Ptr, I64, Ptr], I64);
+            ("list_h", "i64_at", lkrt_lklist_i64_at, ReadsHost, [Ptr, I64], I64);
+            // Store `list[index] = value`; aborts on an out-of-range/negative index
+            // (matching the VM's fatal store-index error — a halt, not a nil).
+            ("list_h", "i64_set", lkrt_lklist_i64_set, WritesHost, [Ptr, I64, I64], Nil);
+            // Linear membership test; returns 0/1 (the caller narrows to `i1`).
+            ("list_h", "i64_contains", lkrt_lklist_i64_contains, ReadsHost, [Ptr, I64], I64);
+            ("list_h", "f64_new", lkrt_lklist_f64_new, WritesHost, [], Ptr);
+            ("list_h", "f64_push", lkrt_lklist_f64_push, WritesHost, [Ptr, F64], Nil);
+            ("list_h", "f64_len", lkrt_lklist_f64_len, ReadsHost, [Ptr], I64);
+            ("list_h", "f64_at", lkrt_lklist_f64_at, ReadsHost, [Ptr, I64], F64);
+            ("list_h", "f64_set", lkrt_lklist_f64_set, WritesHost, [Ptr, I64, F64], Nil);
+            ("list_h", "f64_contains", lkrt_lklist_f64_contains, ReadsHost, [Ptr, F64], I64);
+            // String-element list handle (elements are interned string-constant pointers).
+            ("list_h", "str_new", lkrt_lklist_str_new, WritesHost, [], Ptr);
+            ("list_h", "str_push", lkrt_lklist_str_push, WritesHost, [Ptr, StrPtr], Nil);
+            ("list_h", "str_len", lkrt_lklist_str_len, ReadsHost, [Ptr], I64);
+            ("list_h", "str_at", lkrt_lklist_str_at, ReadsHost, [Ptr, I64], StrPtr);
+            ("list_h", "str_join", lkrt_lklist_str_join, WritesHost, [Ptr, StrPtr], StrPtr);
+            // String-keyed map handle. `get_pair` (returning a by-value `Maybe<i64>`) is
+            // declared directly in codegen, like the list variant.
+            ("map_h", "str_i64_new", lkrt_lkmap_str_i64_new, WritesHost, [], Ptr);
+            ("map_h", "str_i64_set", lkrt_lkmap_str_i64_set, WritesHost, [Ptr, StrPtr, I64], Nil);
+            ("map_h", "str_i64_len", lkrt_lkmap_str_i64_len, ReadsHost, [Ptr], I64);
+            // Int-keyed map handle. `get_pair` (by-value `Maybe<i64>`) is declared in codegen.
+            ("map_h", "i64_i64_new", lkrt_lkmap_i64_i64_new, WritesHost, [], Ptr);
+            ("map_h", "i64_i64_set", lkrt_lkmap_i64_i64_set, WritesHost, [Ptr, I64, I64], Nil);
+            ("map_h", "i64_i64_len", lkrt_lkmap_i64_i64_len, ReadsHost, [Ptr], I64);
+            // String-keyed, f64-valued map. `get_pair` (by-value `Maybe<f64>`) → codegen.
+            ("map_h", "str_f64_new", lkrt_lkmap_str_f64_new, WritesHost, [], Ptr);
+            ("map_h", "str_f64_set", lkrt_lkmap_str_f64_set, WritesHost, [Ptr, StrPtr, F64], Nil);
+            ("map_h", "str_f64_len", lkrt_lkmap_str_f64_len, ReadsHost, [Ptr], I64);
+            // Int-keyed, f64-valued map. `get_pair` (by-value `Maybe<f64>`) → codegen.
+            ("map_h", "i64_f64_new", lkrt_lkmap_i64_f64_new, WritesHost, [], Ptr);
+            ("map_h", "i64_f64_set", lkrt_lkmap_i64_f64_set, WritesHost, [Ptr, I64, F64], Nil);
+            ("map_h", "i64_f64_len", lkrt_lkmap_i64_f64_len, ReadsHost, [Ptr], I64);
+            // Byte-wise string comparison, returning -1/0/1 (the caller compares to 0).
+            ("str", "cmp", lkrt_str_cmp, Pure, [StrPtr, StrPtr], I64);
+            // `a ++ b` → a freshly allocated C string (`WritesHost`: allocates/leaks).
+            ("str", "concat", lkrt_str_concat, WritesHost, [StrPtr, StrPtr], StrPtr);
+            // Scalar → display string (the VM's `ToString`), allocating/leaking a C string.
+            ("str", "from_i64", lkrt_i64_to_str, WritesHost, [I64], StrPtr);
+            ("str", "from_f64", lkrt_f64_to_str, WritesHost, [F64], StrPtr);
+            ("str", "from_bool", lkrt_bool_to_str, WritesHost, [I64], StrPtr);
+            // Divisor-guarded arithmetic: abort on a zero divisor (matching the VM's fatal
+            // error) instead of raw `sdiv`/`fdiv`/`frem` UB. `ReadsHost` keeps codegen from
+            // ever treating them as removable pure math (the abort is an observable effect).
+            ("arith", "i64_div", lkrt_i64_div_checked, ReadsHost, [I64, I64], I64);
+            ("arith", "i64_mod", lkrt_i64_mod_checked, ReadsHost, [I64, I64], I64);
+            ("arith", "f64_div", lkrt_f64_div_checked, ReadsHost, [F64, F64], F64);
+            ("arith", "f64_mod", lkrt_f64_mod_checked, ReadsHost, [F64, F64], F64);
+        }
+    };
+}
+
+/// Expands the ABI table into the [`ABI_FUNCTIONS`] const slice.
+macro_rules! define_abi_functions {
+    ($( ($module:literal, $name:literal, $symbol:ident, $effect:ident, [$($param:ident),* $(,)?], $ret:ident) );* $(;)?) => {
+        /// The complete native ABI surface. Codegen renders `declare`s from this; `lkrt`
+        /// provides one `#[no_mangle]` implementation per `symbol` (checked against this
+        /// table by `lkrt`'s conformance test via [`for_each_abi_fn`]).
+        pub const ABI_FUNCTIONS: &[AbiFn] = &[
+            $( AbiFn {
+                module: $module,
+                name: $name,
+                symbol: stringify!($symbol),
+                params: &[$(AbiType::$param),*],
+                result: AbiType::$ret,
+                effect: AbiEffect::$effect,
+            } ),*
+        ];
+    };
+}
+
+for_each_abi_fn!(define_abi_functions);
+
+/// Looks up an ABI function by its `(module, name)` identity.
+pub fn find(module: &str, name: &str) -> Option<&'static AbiFn> {
+    ABI_FUNCTIONS
+        .iter()
+        .find(|intrinsic| intrinsic.module == module && intrinsic.name == name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn symbols_are_unique() {
+        let mut seen = std::collections::HashSet::new();
+        for f in ABI_FUNCTIONS {
+            assert!(seen.insert(f.symbol), "duplicate ABI symbol: {}", f.symbol);
+        }
+    }
+
+    #[test]
+    fn find_resolves_known_entry() {
+        let f = find("map.str", "int_lookup").expect("known entry");
+        assert_eq!(f.symbol, "lkrt_map_str_int_lookup");
+        assert_eq!(f.result, AbiType::I64);
+    }
+}

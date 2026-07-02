@@ -1,0 +1,11 @@
+[package]
+name = "lk-aot-codegen"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "lk_aot_codegen"
+
+[dependencies]
+lk-aot-abi = { path = "../abi" }
+lk-aot-mir = { path = "../mir" }

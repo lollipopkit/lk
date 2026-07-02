@@ -1,8 +1,10 @@
 # AOT 后端重设计 RFC
 
-> 状态:提案 / 设计记录。目标是把当前 LLVM AOT 后端从"文本 IR 拼接 + 分析发射交织 +
-> 逐 shape 手写"重构为"类型化中间表示(MIR)+ 结构化 SSA 发射 + 单一真相 ABI +
-> 句柄化运行时"。要求:**高性能、现代设计规范、清晰项目结构、优雅**。
+> 状态:**已实现**(核心设计 §2-§6 全部落地,MIR 管线为默认后端;实现记录见 §9.5,
+> 剩余项均为 §1 划定的非目标或 §7 约定的"legacy 完全替换后退役")。目标是把当前 LLVM
+> AOT 后端从"文本 IR 拼接 + 分析发射交织 + 逐 shape 手写"重构为"类型化中间表示(MIR)+
+> 结构化 SSA 发射 + 单一真相 ABI + 句柄化运行时"。要求:**高性能、现代设计规范、
+> 清晰项目结构、优雅**。
 >
 > 关联:能力边界与拒绝原因见 [`aot-gaps-and-lkrt.md`](./aot-gaps-and-lkrt.md);
 > 现行 ABI 约束见 [`native-stdlib.md`](./native-stdlib.md);已支持形状见 [`backend.md`](./backend.md)。
@@ -319,6 +321,127 @@ differential harness 直接解决"emit 签名 == helper 签名 == 运行结果 =
 | `llvm/src/llvm/tests/*`(IR 子串断言) | MIR 快照 + golden `.ll` + differential harness |
 
 ---
+
+## 9.5 实现进度
+
+- **阶段 0 — 地基:✅ 已落地(1613 workspace 测试全绿)。**
+  - 新建 `lk-aot-abi`(`aot/abi/`,零依赖):`AbiType`/`AbiEffect`/`AbiFn` + `ABI_VERSION`
+    + `ABI_FUNCTIONS` 表(迁自 `intrinsics.rs`)+ `find()`。`llvm/intrinsics.rs` 缩为薄适配
+    (re-export + 保留 LLVM 特定的 `declarations()`/`llvm_type()`);`lkrt` 复用
+    `lk_aot_abi::ABI_VERSION`(消除自带 `= 1`)。**单一真相已就位**。
+  - 除零守卫:`lkrt/src/arith.rs` 的 `lkrt_{i64,f64}_{div,mod}_checked`(rhs==0 → abort,
+    `i64::MIN/-1` 用 wrapping 避免 UB);emit 侧主标量 int/float 路径 + 混合浮点 + call-slot
+    int 改调 helper。端到端验证:`x/0` 在 VM 报错 exit 1、native 确定性 abort exit 134
+    (此前为 `sdiv i64 x,0` UB;float `/0` 此前静默给 inf)。callee_eval/straightline_main
+    仍走"proven-nonzero 才发 sdiv"(安全,MIN/-1 残留留待 MIR 统一)。
+  - ABI 版本 assert:`lkrt_abi_check(expected)`,`main` 入口无条件 `call`(不改 entry CFG,
+    保住 `[x, %entry]` phi);链接的 stale `lkrt` → abort 报错。
+- **阶段 1 — MIR + codegen 地基:✅ 已落地并端到端验证。**
+  - `lk-aot-mir`(`aot/mir/`,仅依赖 abi):类型化 SSA 数据模型(`Ty`/`Const`/`Inst`/
+    `Term`/`Block`/`MirFunction`/`MirModule`,SSA **block 参数**替代裸 phi;容器/host 操作
+    统一为 `Inst::Call{AbiRef}`)+ `validate()`(单赋值 / 先定义后用 / 分支目标 / ABI 可解析)。
+    `Ty` 是**封闭枚举 = 可 lower 子集的定义**。
+  - `lk-aot-codegen`(`aot/codegen/`,依赖 abi+mir):**total** `render_module(&MirModule)
+    -> String`;唯一知道 LLVM 语法的地方;ABI `declare` 渲染迁到此(按 RFC 归属);
+    block 参数→phi(扫描前驱分支实参);Div/Mod→guarded helper;entry→`@main` 打印返回值 +
+    `lkrt_abi_check`。
+  - **端到端验证**:`aot/codegen/examples/demo.rs` 渲染 `20/4` MIR → `clang` 链接
+    `liblkrt.a` → 运行输出 `5`,`@lkrt_i64_div_checked`/`lkrt_abi_check` 真实执行。
+    mir 4 + codegen 2 单测(含 golden IR:guarded div、block-param phi)。
+- **阶段 1b — `lk-aot-lower`(bytecode→MIR 桥):✅ 首个 strangler 切片已落地。**
+  - `aot/lower`(`lk-aot-lower`,依赖 lk-core+mir):`lower(&ModuleArtifact) ->
+    Result<MirModule, Unsupported>`。**总函数**:能力判定就是它——构造成功即保证 codegen 不崩,
+    否则返回带 pc/opcode 的精确 `Unsupported`(枚举,可穷尽/可测)。
+  - 切片范围(持续扩):无参无捕获单入口、**标量直线全覆盖** —— int/float/bool/nil 常量、
+    int/float 算术(含立即数 AddIntI/MulIntI/ModIntI)、int 比较(→Bool)、Move、Return。
+    寄存器带**类型追踪**((ValueId, Ty)),类型不匹配 → `Unsupported::TypeMismatch`;
+    其余 opcode(控制流/调用/容器)→ `Unsupported`(调用方回退旧 text 后端)。
+    CLI 端到端(`LK_AOT_MIR=1`)验证:`1.5+2.5`→4、`3<5`→true、`x*3+1`→31 均走新路径且 =VM。
+  - **端到端(全链路在测)**:手写 `ModuleArtifact`(`20/4`)→ `lower` → `validate` →
+    `render_module` → guarded-div LLVM(`lowers_straightline_integer_division`)。
+  - **完整新 pipeline 骨架已打通**:`abi → mir → lower → codegen` 四 crate 就位,
+    真实字节码可走全新路径产出正确 native 二进制。
+- **阶段 1b(续)— 绞刑架 opt-in 切换:✅ 已接入。** `compile_module_artifact_to_llvm`
+  入口:`LK_AOT_MIR=1` 且 `lower` 接受该 artifact 时走 `lower→codegen`,否则回退旧 text
+  后端。默认关闭 → 251 llvm + 1622 workspace 测试零改动。验证:`LK_AOT_MIR=1 lk compile
+  '20/4'` 产出 `ModuleID='lk_aot'` + `@lkrt_abi_check` 的新 IR,native 输出 `5`=VM;
+  无 env 仍走旧后端(`lk_fib_iterative`)。
+- **阶段 1b(续)— 控制流切片(acyclic + SSA 合并):✅ 已落地并端到端验证。** `lower` 支持
+  `Test`/`BrTrue`/`BrFalse`/`Jmp` → MIR 块 + `CondBr`/`Br`(分支语义照抄旧后端 `test_targets`,
+  零臆测)。**两遍 SSA 合并构造**:leader 升序=拓扑序(前向 CFG),Pass A 算每块 phi 参数
+  (前驱分歧的 reg→block 参数,一致的继承支配定义),Pass B 回填分支实参。回边(loop)/
+  非 Bool 条件/返回类型冲突 → 精确 `Unsupported`。端到端:`branch_demo` 的 `min`(if/else
+  合并,含 `phi i64`)lower→clang→运行,`min(3,5)=3`/`min(5,3)=3`/`min(7,7)=7` 三方向全对。
+- **阶段 1b(续)— 融合 compare-and-branch + 循环(Braun SSA):✅ 已落地并端到端验证。**
+  融合 `TestXxxInt(I)`+`Jmp` → `FusedCmp` 终结符(消费 Jmp,`jump_when` 极性用交换目标实现)。
+  SSA 构造改为 **Braun 按需构造**(`read/write_variable` + 未密封块 incomplete-phi + latch
+  填充后密封回填),**统一处理 acyclic 合并与循环回边**(subsumes 之前的两遍法)。跳过 trivial-phi
+  消除(正确非最简)。**端到端差分对拍 VM(`LK_AOT_MIR=1`,走新路径)**:`sum 1..100=5050`、
+  `countdown=10`、`factorial=720`、**嵌套循环 `nested=25`** 全部 =VM。
+- **阶段 1b(续)— 多函数直接调用(native function ABI):✅ I64 函数 + 递归已落地并差分验证。**
+  lower 现下降**所有**函数为 `MirModule.functions`;`CallDirect`(寄存器窗口:`a`=dst、`b`=callee
+  index、`c`=argc,实参在 `[a+1, a+1+argc)`)→ `Inst::CallFn`→codegen `call i64 @lk_fn_N`。
+  ABI 切片:用户函数强制 `(i64,…)->i64`,参数/返回全程 `read_typed(I64)`/返回类型校验——不符
+  即整模块**回退**(绝不误编译)。`LoadFunction`/`SetGlobal` 对直接调用为 no-op。**差分对拍 VM
+  (`LK_AOT_MIR=1` 走新路径)**:`add=7`、`fact(6)=720`、`fib(10)=55`、`gcd(48,36)=12`、
+  嵌套 `dbl(inc(5))=12` 全 =VM。**差分测试当场抓出并修复了一个 CallDirect 参数误读导致的段错误
+  误编译**(印证"逐形状差分对拍"的必要性)。
+- **阶段 2(最大一块)— 容器句柄化:🚧 地基已落地并差分验证。** 新增 `lkrt/src/lklist.rs` 的
+  **growable `LkList<i64>` opaque handle**(`*mut Vec<i64>`,new/push/len/get;区别于旧的 caller
+  预分配定长 `[4096 x T]`,无上限)+ ABI schema `list_h` 条目 + MIR `Ty::ListI64` + codegen。
+  lower:常量 `List<i64>` 字面量(`LoadHeapConst`)→ 物化为 handle(new + 逐元素 push);`Len`
+  → `lkrt_lklist_i64_len`。**差分对拍 VM(新路径)**:`[1,2,3,4].len()=4`、`[..5..].len()*2=10`。
+  **⚠️ 关键正确性发现**:`GetList` 索引是 `Maybe<Int>`(负索引从末尾;越界→`Nil`,见
+  `lklist` get 的 `present` 出参)——索引/set/迭代 + `LkMap`(hashbrown)+ f64/str 元素是后续片,
+  须按 present-bit 建模并逐形状差分(含越界/负索引)。
+  **GetList(常量在界内):✅** 可静态证明在界内的访问(const-物化列表已知长度 + 常量下标 ∈
+  `[0,len)`)→ `lkrt_lklist_i64_at(handle, idx)`(干净 i64);lower 用 `const_int`/`list_len` 分析。
+  差分:`xs[0]+xs[2]=40`、`xs[1]*xs[3]=525`、`len+xs[0]=4` =VM(NEW)。
+  **GetList(动态下标)+ `Maybe<Int>` 模型:✅ 已落地并差分验证(正确性地雷已拆)。** 非"常量在界内"
+  的下标 → `Inst::ListGetMaybe` → `lkrt_lklist_i64_get_pair(handle,index) -> {i64,i64}`(`#[repr(C)]`
+  双 i64 **按值返回**,SysV rax:rdx = LLVM `{i64,i64}`,无 alloca/出参),VM 语义(负从末尾、越界→
+  present=0)。`Ty::MaybeI64`(codegen `{i64,i64}`)。**唯一消费者=return**:extractvalue present 分支,
+  present 打印元素,absent **只 `ret` 不打印**(VM 顶层 nil 返回打印空,已核实);Maybe 入算术/比较 →
+  `TypeMismatch` **回退**(不做 eager-abort,不与 `return xs[越界]`→nil 分歧)。差分(全 =VM):
+  `xs[2]=30`/`xs[1]=20`/越界 `xs[9]`→空/负 `xs[-1]`→30/常量越界 `xs[7]`→空 走 **NEW**;`xs[i]+5=25`、
+  `if(xs[i]>15)` 正确回退 **OLD**。
+  **循环建表:✅** 空 `[]`=空 ListI64 常量;死 `LoadString` no-op → `let xs=[]; while{xs.push(i)} len`
+  全走 NEW(`build_loop=5`)。**list.push:✅**(`lkrt_lklist_{i64,f64}_push`,引用语义 + `list_len` 追踪)。
+- **RFC 收官轮(全部落地,workspace 1684 测试全绿)**:
+  - **§6 differential harness ✅ 一等公民**:`cli/tests/aot_differential_test.rs` —— 69 个语料用例
+    (标量/控制流/函数/list/map/字符串)每例:VM 运行 vs MIR 管线 native 编译运行,stdout 与
+    成功/失败逐项比对;`Path::New` 用例额外断言确实走了 MIR 管线(`ModuleID = 'lk_aot'`)。
+  - **§6 MIR 快照 ✅**:`lk_aot_mir::render()`(稳定、无 LLVM 语法的行式文本)+
+    `aot/lower/tests/mir_snapshots.rs`(真实源码 → 字节码 → MIR 文本 golden,6 个形状:
+    直线除法 / if-else 合并 / 循环块参数 / 直接调用 / 列表物化+动态索引 / map 查找)。
+  - **§3.3 单一真相闭环 ✅**:ABI 表重构为 `for_each_abi_fn!` **数据宏**(140 条),
+    `ABI_FUNCTIONS` const 表与 lkrt 的 `abi_conformance_test` **从同一宏展开**——每个符号的
+    存在性/`extern "C"`/arity 由 fn-pointer coercion 在**编译期**强制,参数/返回的寄存器类
+    (i64/f64/ptr/void)由测试比对 schema;签名漂移不可能再活过 CI(StrPtr/Ptr 同 class:
+    LLVM 不透明指针下调用约定相同,区分仅是文档)。
+  - **§3.4 所有权模型 ✅**:默认 **arena** —— 所有运行时分配(字符串 + 容器句柄)在创建时注册
+    (`arena_c_string`/`arena_handle` + 类型化 drop fn),codegen 在 entry 干净退出路径发
+    `lkrt_cleanup()` 统一回收(打印之后);**`lkrt_string_free` 真正接入**——lower 对 concat 链
+    中已知死亡的 display 临时串与中间累加串发 eager free(`to_display_str` 返回 fresh 标记)。
+    长驻循环里逐次分配的中间串不再累积。
+  - **§3.5 `Unsupported::reason()` ✅**:每变体一句面向用户的解释 + `Display`;双后端都拒时
+    编译错误同时携带 legacy 诊断与 MIR 精确原因。
+  - **Maybe<Str> ✅(元素类型矩阵补齐)**:`lkrt_lklist_str_get_pair -> {ptr,i64}` +
+    `Ty::MaybeStr`/`ListGetMaybeStr`/`UnwrapMaybeStr`;`MaybePresent` 改携带 `maybe_ty`(三载体)。
+    差分:动态索引 concat 循环 `"abc"`、越界→nil、负索引、`==nil` 分支全 =VM。
+  - **翻默认 ✅(绞刑架主备易位)**:MIR 管线**默认开**,`LK_AOT_MIR=0` 或
+    `LlvmBackendOptions::use_mir_pipeline=Some(false)` 退回 legacy(选项而非 env,避免进程内
+    测试竞态)。34 个 llvm crate legacy-IR 结构断言测试 pin 到 legacy 选项(随删 legacy 一并退役);
+    7 个 CLI 集成测试改写为 MIR 路径断言。**差分测试当场抓出并修复 legacy 后端一个真实分歧**:
+    `return nil;` legacy native 打印 `nil`,VM 与 MIR 管线都打印空——改写后的 CLI 测试现在锁定
+    正确(VM)行为。
+- **RFC 状态:核心设计(§2-§6)全部落地;按 §1 非目标划界的剩余项**:
+  1. 闭包/间接调用/可变全局(§7 阶段 4)= **本 RFC 明确的非目标**,扩展点已就位
+     (`Ty` 封闭枚举加变体 + lower 加 arm 即可);`__lk_call_method` 动态方法分派
+     (list `.sort()`/`.pop()` 等)同属此类,现回退 legacy。
+  2. 删除 legacy text 后端(§7 "旧路径在被完全替换前保留为 fallback 对拍基准"):
+     待 MIR 覆盖吸收 legacy 独有形状(方法分派/对象/try 等)后整体退役,连同其 34 个
+     pinned 结构断言测试与 `dynamic_containers/`(预计 -2~4 万行)。
 
 ## 9. 一句话总结
 

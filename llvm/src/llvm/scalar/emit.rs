@@ -18,20 +18,23 @@ pub(in crate::llvm) fn emit_i64_binary_block(ir: &mut String, instr: Instr, tmp_
     };
     ir.push_str(&format!("  {lhs} = load i64, ptr %r{}.slot\n", instr.b()));
     ir.push_str(&format!("  {rhs} = load i64, ptr %r{}.slot\n", instr.c()));
-    if matches!(instr.opcode(), Opcode::DivInt | Opcode::ModInt) {
-        let zero = next_tmp(tmp_index);
-        let ok_label = format!("divisor_ok_{}", *tmp_index);
-        ir.push_str(&format!("  {zero} = icmp eq i64 {rhs}, 0\n"));
-        ir.push_str(&format!("  br i1 {zero}, label %lk_divisor_zero, label %{ok_label}\n"));
-        ir.push_str(&format!("{ok_label}:\n"));
-    }
-    if matches!(instr.opcode(), Opcode::MinInt | Opcode::MaxInt) {
-        let pred = if instr.opcode() == Opcode::MinInt { "slt" } else { "sgt" };
-        let cond = next_tmp(tmp_index);
-        ir.push_str(&format!("  {cond} = icmp {pred} i64 {lhs}, {rhs}\n"));
-        ir.push_str(&format!("  {out} = select i1 {cond}, i64 {lhs}, i64 {rhs}\n"));
-    } else {
-        ir.push_str(&format!("  {out} = {op} i64 {lhs}, {rhs}\n"));
+    match instr.opcode() {
+        // Divisor-zero (and the `i64::MIN / -1` overflow) is handled by the lkrt
+        // helper — a deterministic abort matching the VM — instead of raw `sdiv`
+        // UB plus an ad-hoc guard block.
+        Opcode::DivInt => ir.push_str(&format!(
+            "  {out} = call i64 @lkrt_i64_div_checked(i64 {lhs}, i64 {rhs})\n"
+        )),
+        Opcode::ModInt => ir.push_str(&format!(
+            "  {out} = call i64 @lkrt_i64_mod_checked(i64 {lhs}, i64 {rhs})\n"
+        )),
+        Opcode::MinInt | Opcode::MaxInt => {
+            let pred = if instr.opcode() == Opcode::MinInt { "slt" } else { "sgt" };
+            let cond = next_tmp(tmp_index);
+            ir.push_str(&format!("  {cond} = icmp {pred} i64 {lhs}, {rhs}\n"));
+            ir.push_str(&format!("  {out} = select i1 {cond}, i64 {lhs}, i64 {rhs}\n"));
+        }
+        _ => ir.push_str(&format!("  {out} = {op} i64 {lhs}, {rhs}\n")),
     }
     ir.push_str(&format!("  store i64 {out}, ptr %r{}.slot\n", instr.a()));
     ir.push_str(&format!("  store i64 1, ptr %r{}.present.slot\n", instr.a()));
@@ -110,22 +113,21 @@ pub(in crate::llvm) fn emit_f64_binary_block(
     let lhs = emit_numeric_load_as_f64(ir, slot_prefix, instr.b(), lhs_kind, tmp_index);
     let rhs = emit_numeric_load_as_f64(ir, slot_prefix, instr.c(), rhs_kind, tmp_index);
     let out = next_tmp(tmp_index);
-    let zero = next_tmp(tmp_index);
-    let ok_label = format!("divisor_ok_{}", *tmp_index);
-    let op = match instr.opcode() {
-        Opcode::AddFloat => "fadd",
-        Opcode::SubFloat => "fsub",
-        Opcode::MulFloat => "fmul",
-        Opcode::DivFloat => "fdiv",
-        Opcode::ModFloat => "frem",
+    match instr.opcode() {
+        Opcode::AddFloat => ir.push_str(&format!("  {out} = fadd double {lhs}, {rhs}\n")),
+        Opcode::SubFloat => ir.push_str(&format!("  {out} = fsub double {lhs}, {rhs}\n")),
+        Opcode::MulFloat => ir.push_str(&format!("  {out} = fmul double {lhs}, {rhs}\n")),
+        // The VM errors on float division/remainder by zero (rather than producing
+        // infinity/NaN), so route through the lkrt helper that aborts on a zero
+        // divisor instead of raw `fdiv`/`frem`.
+        Opcode::DivFloat => ir.push_str(&format!(
+            "  {out} = call double @lkrt_f64_div_checked(double {lhs}, double {rhs})\n"
+        )),
+        Opcode::ModFloat => ir.push_str(&format!(
+            "  {out} = call double @lkrt_f64_mod_checked(double {lhs}, double {rhs})\n"
+        )),
         _ => unreachable!("opcode matched by caller"),
-    };
-    if matches!(instr.opcode(), Opcode::DivFloat | Opcode::ModFloat) {
-        ir.push_str(&format!("  {zero} = fcmp oeq double {rhs}, 0.0\n"));
-        ir.push_str(&format!("  br i1 {zero}, label %lk_divisor_zero, label %{ok_label}\n"));
-        ir.push_str(&format!("{ok_label}:\n"));
     }
-    ir.push_str(&format!("  {out} = {op} double {lhs}, {rhs}\n"));
     ir.push_str(&format!(
         "  store double {out}, ptr %{slot_prefix}r{}.slot\n",
         instr.a()

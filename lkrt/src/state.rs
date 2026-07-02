@@ -1,6 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
-    ffi::{CString, c_char},
+    ffi::{CString, c_char, c_void},
     net::TcpStream,
     sync::{Mutex, OnceLock},
 };
@@ -21,6 +21,9 @@ pub(crate) struct RuntimeState {
     next_handle: i64,
     resources: HashMap<i64, Resource>,
     owned_strings: HashSet<usize>,
+    /// Container handles (lists/maps) with their typed drop functions — the
+    /// default arena of RFC aot-redesign §3.4, reclaimed by [`Self::cleanup`].
+    owned_containers: Vec<(usize, unsafe fn(*mut c_void))>,
 }
 
 enum Resource {
@@ -103,6 +106,12 @@ impl RuntimeState {
         self.owned_strings.remove(&(ptr as usize))
     }
 
+    pub(crate) fn register_container(&mut self, ptr: *mut c_void, drop_fn: unsafe fn(*mut c_void)) {
+        if !ptr.is_null() {
+            self.owned_containers.push((ptr as usize, drop_fn));
+        }
+    }
+
     pub(crate) fn cleanup(&mut self) {
         self.resources.clear();
         for ptr in self.owned_strings.drain() {
@@ -112,7 +121,31 @@ impl RuntimeState {
                 drop(CString::from_raw(ptr as *mut c_char));
             }
         }
+        for (ptr, drop_fn) in self.owned_containers.drain(..) {
+            // SAFETY: Each entry was registered by `arena_handle` with the drop
+            // function matching the handle's concrete type; generated code never
+            // uses a handle after `lkrt_cleanup` (it is the last call before exit).
+            unsafe {
+                drop_fn(ptr as *mut c_void);
+            }
+        }
     }
+}
+
+/// Boxes `value`, registers the handle in the runtime arena with a typed drop
+/// function, and returns it as an opaque pointer. All container `new` entry
+/// points allocate through here so `lkrt_cleanup` can reclaim them.
+pub(crate) fn arena_handle<T>(value: T) -> *mut c_void {
+    unsafe fn drop_impl<T>(ptr: *mut c_void) {
+        // SAFETY: `ptr` came from `Box::into_raw` with this exact `T`.
+        drop(unsafe { Box::from_raw(ptr as *mut T) });
+    }
+    let ptr = Box::into_raw(Box::new(value)) as *mut c_void;
+    runtime()
+        .lock()
+        .expect("lkrt runtime poisoned")
+        .register_container(ptr, drop_impl::<T>);
+    ptr
 }
 
 fn wrong_kind_error(handle: i64, expected: HandleKind, actual: HandleKind) -> String {

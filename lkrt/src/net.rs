@@ -153,7 +153,8 @@ mod tests {
             .to_str()
             .expect("utf8")
             .to_owned();
-        lkrt_string_free(response);
+        // SAFETY: the pointer came from an lkrt owned-string return.
+        unsafe { lkrt_string_free(response) };
         assert_eq!(response_text, "pong");
         assert_eq!(lkrt_bytes_free(bytes), 0);
         assert_eq!(lkrt_tcp_close(stream), 1);
@@ -165,7 +166,8 @@ mod tests {
     fn last_error_is_owned_string() {
         let error = lkrt_last_error();
         assert!(!error.is_null());
-        lkrt_string_free(error);
+        // SAFETY: the pointer came from an lkrt owned-string return.
+        unsafe { lkrt_string_free(error) };
     }
 
     #[test]
@@ -178,7 +180,8 @@ mod tests {
             .to_str()
             .expect("utf8")
             .to_owned();
-        lkrt_string_free(addr);
+        // SAFETY: the pointer came from an lkrt owned-string return.
+        unsafe { lkrt_string_free(addr) };
         assert_eq!(addr_text, "[::1]:8080");
     }
 }

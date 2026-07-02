@@ -5,7 +5,7 @@ use std::{
 
 use crate::state::runtime;
 
-pub(crate) const ABI_VERSION: i64 = 1;
+pub(crate) use lk_aot_abi::ABI_VERSION;
 pub(crate) const LKRT_STATUS_OK: i64 = 0;
 pub(crate) const LKRT_STATUS_ERR: i64 = -1;
 
@@ -16,6 +16,19 @@ thread_local! {
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_abi_version() -> i64 {
     ABI_VERSION
+}
+
+/// Called at the start of a native binary's `main` with the ABI version the code
+/// was generated against. If the linked `lkrt` reports a different version the
+/// binary and runtime disagree on the calling/representation contract, so we
+/// abort with a clear message rather than execute with a mismatched ABI (this is
+/// a link/configuration error, never a reason to fall back to the VM).
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_abi_check(expected: i64) {
+    if expected != ABI_VERSION {
+        eprintln!("lkrt ABI mismatch: binary built for ABI v{expected}, linked lkrt is v{ABI_VERSION}");
+        std::process::abort();
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -36,8 +49,15 @@ pub extern "C" fn lkrt_cleanup() {
     runtime().lock().expect("lkrt runtime poisoned").cleanup();
 }
 
+/// Frees an arena-registered string returned by an lkrt function. Unregistered
+/// or null pointers are ignored, so double-frees through this entry point are
+/// harmless.
+///
+/// # Safety
+/// `ptr` must be null or a pointer previously returned by an lkrt function
+/// (`CString::into_raw`-based) that has not been freed by other means.
 #[unsafe(no_mangle)]
-pub extern "C" fn lkrt_string_free(ptr: *mut c_char) {
+pub unsafe extern "C" fn lkrt_string_free(ptr: *mut c_char) {
     if ptr.is_null() {
         return;
     }

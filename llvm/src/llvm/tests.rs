@@ -9,6 +9,18 @@ use crate::{
     },
 };
 
+/// Options pinning a compile to the legacy text backend. Used only by tests that
+/// assert legacy-backend-specific IR structure (alloca'd globals, `bb`-named
+/// blocks, per-shape helper calls); they retire together with that backend. This
+/// is an explicit option rather than the `LK_AOT_MIR` env var so parallel
+/// in-process tests never race on the global environment.
+pub(crate) fn legacy_text_backend_options() -> LlvmBackendOptions {
+    LlvmBackendOptions {
+        use_mir_pipeline: Some(false),
+        ..LlvmBackendOptions::default()
+    }
+}
+
 #[test]
 fn llvm_backend_allows_unused_import_metadata_for_native_shape() {
     let artifact = ModuleArtifact {
@@ -265,7 +277,7 @@ fn llvm_backend_lowers_i64_instr_arithmetic_ops_without_shell() {
         },
     };
 
-    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm artifact");
+    let artifact = compile_module_artifact_to_llvm(&artifact, legacy_text_backend_options()).expect("llvm artifact");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -309,7 +321,7 @@ fn llvm_backend_lowers_i64_compare_and_branch_without_shell() {
         },
     };
 
-    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm artifact");
+    let artifact = compile_module_artifact_to_llvm(&artifact, legacy_text_backend_options()).expect("llvm artifact");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(artifact.module.ir.contains("icmp slt i64"));
@@ -331,7 +343,7 @@ fn llvm_backend_lowers_source_if_i64_branch_without_shell() {
     let tokens = Tokenizer::tokenize(source).expect("tokens");
     let program = StmtParser::new(&tokens).parse_program().expect("program");
 
-    let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
+    let artifact = compile_program_to_llvm(&program, legacy_text_backend_options()).expect("llvm artifact");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(artifact.module.ir.contains("icmp "));
@@ -449,7 +461,7 @@ fn llvm_backend_lowers_source_static_logical_short_circuit_without_shell() {
     let tokens = Tokenizer::tokenize(source).expect("tokens");
     let program = StmtParser::new(&tokens).parse_program().expect("program");
 
-    let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
+    let artifact = compile_program_to_llvm(&program, legacy_text_backend_options()).expect("llvm artifact");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -472,7 +484,7 @@ fn llvm_backend_lowers_source_while_i64_loop_without_shell() {
     let tokens = Tokenizer::tokenize(source).expect("tokens");
     let program = StmtParser::new(&tokens).parse_program().expect("program");
 
-    let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
+    let artifact = compile_program_to_llvm(&program, legacy_text_backend_options()).expect("llvm artifact");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -495,7 +507,7 @@ fn llvm_backend_lowers_source_not_and_is_nil_without_shell() {
     let tokens = Tokenizer::tokenize(source).expect("tokens");
     let program = StmtParser::new(&tokens).parse_program().expect("program");
 
-    let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
+    let artifact = compile_program_to_llvm(&program, legacy_text_backend_options()).expect("llvm artifact");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -508,7 +520,7 @@ fn llvm_backend_lowers_nil_return_without_artifact_shell() {
     let tokens = Tokenizer::tokenize("return nil;").expect("tokens");
     let program = StmtParser::new(&tokens).parse_program().expect("program");
 
-    let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
+    let artifact = compile_program_to_llvm(&program, legacy_text_backend_options()).expect("llvm artifact");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -733,7 +745,7 @@ fn llvm_backend_lowers_static_const_list_len_without_artifact_shell() {
         },
     };
 
-    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm");
+    let artifact = compile_module_artifact_to_llvm(&artifact, legacy_text_backend_options()).expect("llvm");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -776,7 +788,7 @@ fn llvm_backend_lowers_static_const_list_get_index_without_artifact_shell() {
         },
     };
 
-    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm");
+    let artifact = compile_module_artifact_to_llvm(&artifact, legacy_text_backend_options()).expect("llvm");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -789,7 +801,7 @@ fn llvm_backend_lowers_source_const_list_get_index_without_artifact_shell() {
     let tokens = Tokenizer::tokenize("return [10, 20].1;").expect("tokens");
     let program = StmtParser::new(&tokens).parse_program().expect("program");
 
-    let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
+    let artifact = compile_program_to_llvm(&program, legacy_text_backend_options()).expect("llvm artifact");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -802,7 +814,7 @@ fn llvm_backend_lowers_source_const_list_len_without_artifact_shell() {
     let tokens = Tokenizer::tokenize("return [1, 2].len();").expect("tokens");
     let program = StmtParser::new(&tokens).parse_program().expect("program");
 
-    let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
+    let artifact = compile_program_to_llvm(&program, legacy_text_backend_options()).expect("llvm artifact");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -892,7 +904,7 @@ fn llvm_backend_lowers_static_const_map_len_without_artifact_shell() {
         },
     };
 
-    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm");
+    let artifact = compile_module_artifact_to_llvm(&artifact, legacy_text_backend_options()).expect("llvm");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -1071,7 +1083,7 @@ fn llvm_backend_lowers_source_const_map_get_index_without_artifact_shell() {
     let tokens = Tokenizer::tokenize(r#"return {"a": 1, "b": 2}.b;"#).expect("tokens");
     let program = StmtParser::new(&tokens).parse_program().expect("program");
 
-    let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
+    let artifact = compile_program_to_llvm(&program, legacy_text_backend_options()).expect("llvm artifact");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));

@@ -1,0 +1,10 @@
+[package]
+name = "lk-aot-mir"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "lk_aot_mir"
+
+[dependencies]
+lk-aot-abi = { path = "../abi" }

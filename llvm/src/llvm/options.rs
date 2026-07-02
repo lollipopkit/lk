@@ -43,6 +43,14 @@ pub struct LlvmBackendOptions {
     pub run_optimizations: bool,
     /// Optimisation level when [`LlvmBackendOptions::run_optimizations`] is true.
     pub opt_level: OptLevel,
+    /// Whether shapes accepted by the typed MIR pipeline
+    /// (`lk-aot-lower` → `lk-aot-codegen`, `docs/llvm/aot-redesign.md`) compile
+    /// through it, falling back to the legacy text backend otherwise. `None`
+    /// resolves from the `LK_AOT_MIR` environment variable (default **on**;
+    /// `LK_AOT_MIR=0` opts out). Tests that assert legacy-backend IR structure
+    /// pin `Some(false)` to stay off the MIR path without racing on the
+    /// process-global environment.
+    pub use_mir_pipeline: Option<bool>,
 }
 
 impl Default for LlvmBackendOptions {
@@ -52,6 +60,7 @@ impl Default for LlvmBackendOptions {
             target_triple: None,
             run_optimizations: true,
             opt_level: OptLevel::default(),
+            use_mir_pipeline: None,
         }
     }
 }

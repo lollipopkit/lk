@@ -96,7 +96,8 @@ fn llvm_backend_lowers_static_string_list_get_without_artifact_shell() {
     let module = Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["__lk_call_method"])
         .expect("compile module");
     let module = ModuleArtifact::new(Vec::new(), &module).expect("artifact");
-    let artifact = compile_module_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
+    let artifact =
+        compile_module_artifact_to_llvm(&module, super::legacy_text_backend_options()).expect("llvm artifact");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -379,7 +380,7 @@ fn llvm_backend_lowers_const_string_concat_without_artifact_shell() {
         },
     };
 
-    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm");
+    let artifact = compile_module_artifact_to_llvm(&artifact, super::legacy_text_backend_options()).expect("llvm");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -420,7 +421,7 @@ fn llvm_backend_lowers_static_tostring_concat_without_artifact_shell() {
         },
     };
 
-    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm");
+    let artifact = compile_module_artifact_to_llvm(&artifact, super::legacy_text_backend_options()).expect("llvm");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -465,8 +466,9 @@ fn llvm_backend_lowers_static_float_divisor_zero_tostring_guard_without_artifact
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
-    assert!(artifact.module.ir.contains("fcmp oeq double"));
-    assert!(artifact.module.ir.contains("lk_divisor_zero:"));
+    // Float division is divisor-guarded by the lkrt helper (which aborts on a zero
+    // divisor) rather than an inline `fcmp`/`lk_divisor_zero` branch.
+    assert!(artifact.module.ir.contains("call double @lkrt_f64_div_checked"));
 }
 
 #[test]

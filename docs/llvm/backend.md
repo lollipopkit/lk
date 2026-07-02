@@ -1,6 +1,33 @@
 # LLVM Backend
 
-The current LLVM target uses `ModuleArtifact` as its input boundary. A small
+## Two-tier architecture (MIR pipeline is the default)
+
+Since the AOT redesign ([`aot-redesign.md`](./aot-redesign.md)) the backend is
+two-tiered. Every compile first runs the **typed MIR pipeline**:
+`ModuleArtifact` → `lk-aot-lower` (a total `lower() -> Result<MirModule,
+Unsupported>` — the testable capability predicate) → `lk-aot-codegen` (a total
+`MirModule` → LLVM-text rendering). Shapes the lowering rejects fall through to
+the **legacy text backend** described in the rest of this document; if that also
+rejects, the compile fails with both reasons. `LK_AOT_MIR=0` (or
+`LlvmBackendOptions::use_mir_pipeline = Some(false)`) pins a compile to the
+legacy backend.
+
+The MIR pipeline covers: straight-line and branching/looping scalar code
+(i64/f64/bool/str, guarded div/mod, VM-exact float display), direct function
+calls with per-callsite-monomorphized i64/f64/bool params/returns (recursion
+included), growable handle containers (`List<i64/f64/str>`,
+`Map<{str,i64} × {i64,f64}>`) with VM-exact indexing (`Maybe` present-bit model
+for out-of-range/missing: return prints `nil`, arithmetic aborts like the VM
+halt, `== nil` tests the present bit), `push`/`set`/`len`/iteration/`in`/`join`,
+string equality/concat/interpolation, and default-arena ownership
+(`lkrt_cleanup` on exit + eager frees of dead concat intermediates). Its
+behaviour is pinned by the differential harness
+(`cli/tests/aot_differential_test.rs`, VM vs native over the whole corpus) and
+MIR snapshots (`aot/lower/tests/mir_snapshots.rs`).
+
+## Legacy text backend (fallback surface)
+
+The legacy backend uses `ModuleArtifact` as its input boundary. A small
 native-lowerable subset of entry functions can return an `i64`, `f64`, `bool`,
 `nil`, short string, long string literal, simple const list, or simple const map
 from scalar loads, integer/float arithmetic, integer and float comparisons,

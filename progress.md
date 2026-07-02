@@ -1,4 +1,92 @@
-# 实现进度:LLVM 容器操作下沉到 lkrt
+# 实现进度
+
+**当前**:`docs/llvm/aot-redesign.md`(AOT 后端重设计)**已完成**——核心设计 §2-§6 全部
+落地,MIR 管线为默认后端(workspace 1684 测试全绿)。下方"容器下沉"是更早沿旧结构完成
+的工作(`aot-gaps-and-lkrt.md`)。
+
+## AOT 重设计收官轮(本轮)
+
+- **差分 harness 一等公民(§6)**:`cli/tests/aot_differential_test.rs`,69 例
+  (标量/控制流/函数/list/map/字符串)。每例:VM 运行 vs MIR 管线 native 运行,stdout +
+  成功/失败逐项比对;`Path::New` 断言确实走 MIR 管线(IR 含 `ModuleID = 'lk_aot'`)。
+  含失败语义用例(div/0、缺失键算术 → 双方都响亮失败、stdout 均空)。
+- **MIR 快照(§6)**:`lk_aot_mir::render()` 稳定行式文本;`aot/lower/tests/mir_snapshots.rs`
+  6 形状 golden(直线除法 / if-else / 循环 / 直接调用 / 列表+动态索引 / map 查找)。
+- **ABI 单一真相闭环(§3.3)**:表 → `for_each_abi_fn!` 数据宏(140 条,`aot/abi`)。
+  `ABI_FUNCTIONS` const 与 lkrt `abi_conformance_test` 从同一宏展开:符号存在/`extern "C"`/
+  arity 由 fn-pointer coercion **编译期**强制;参数/返回寄存器类(i64/f64/ptr/void)测试期
+  与 schema 比对(StrPtr/Ptr 同 class——LLVM 不透明指针下调用约定相同)。
+- **所有权(§3.4)**:默认 arena——`arena_c_string`/`arena_handle` 注册所有字符串+容器句柄
+  (state.rs `owned_containers: Vec<(usize, drop_fn)>`);codegen 在 entry 各退出点打印后发
+  `lkrt_cleanup()`。lower 对 ConcatString/ConcatN 已知死亡的 display 临时串与中间累加串发
+  eager `lkrt_string_free`(`to_display_str` 返回 `(ValueId, fresh)`);循环内插值不再累积。
+- **`Unsupported::reason()` + Display(§3.5)**:每变体一句解释;双后端都拒时错误带双原因。
+- **Maybe<Str>(元素矩阵补齐)**:`lkrt_lklist_str_get_pair -> LkMaybeStr {ptr,i64}` +
+  `lkrt_maybe_str_unwrap`;MIR `Ty::MaybeStr` + `ListGetMaybeStr`/`UnwrapMaybeStr`;
+  `MaybePresent.float: bool` 重构为 `maybe_ty: Ty`(三载体)。差分:动态索引 concat 循环
+  `"abc"`、越界→nil、负索引→"c"、`==nil` 全 =VM。
+- **翻默认**:gate 默认开;退出通道 `LK_AOT_MIR=0` **或** `LlvmBackendOptions::
+  use_mir_pipeline: Option<bool>`(测试用选项 pin,避免进程内 env 竞态)。
+  - llvm crate:34 个 legacy-IR 结构断言测试(`*_without_shell` 等)pin
+    `legacy_text_backend_options()`(tests.rs 的 helper;它们是 legacy 后端的覆盖,随删除退役)。
+  - CLI:7 个集成测试改写为 MIR 断言(`ModuleID='lk_aot'`、`phi i64`、`call i64 @lk_fn_1`、
+    `@lkrt_f64_to_str`、`@lk_str_0`),并加真实运行断言(loop=6、call=42、f64=3.75)。
+  - **差分抓出 legacy 真实分歧**:`return nil;` legacy native 打印 `nil` / VM 与 MIR 打印空。
+    nil 测试改为锁定 VM 行为(空输出)并注明。
+- **文档**:RFC 状态改"已实现" + §9.5 收官记录;`backend.md` 顶部加两层架构章节
+  (MIR 默认 + legacy fallback 的能力面)。
+
+### 本轮踩坑/决策
+
+- fish 下 `sed` BRE 捕获组把 `\1` 写成字面量 → 语料文件损坏,重写文件解决;LK `while`
+  条件必须带括号(`if` 不用)。
+- CLI 差分/集成测试里 exit code 只比 `success()`(VM 错误 exit 1 vs native abort 134,
+  语义等价"响亮失败")。
+- 零参小函数会被前端内联 → CLI 测试不能断言 `call @lk_fn_1()`,改断言 display helper。
+- lkrt 测试回收 arena 字符串用 `lkrt_string_free`(不再 `CString::from_raw`,避免注册表
+  悬挂条目)。
+- `render_ret` 的 cleanup 必须在 printf **之后**(打印值可能是 arena 串)。
+
+## 剩余(RFC §1 非目标 / §7 约定后续)
+
+1. 阶段 4:闭包/间接调用/可变全局 + `__lk_call_method` 方法分派(`.sort()`/`.pop()` 等)。
+2. legacy text 后端整体退役(待 MIR 吸收其独有形状;连同 34 pinned 测试 +
+   `dynamic_containers/`)。
+
+## AOT 重设计(aot-redesign.md,更早轮次)
+
+新 crate 家族(`aot/`):`lk-aot-abi`(schema 单一真相,零依赖)、`lk-aot-mir`(类型化
+SSA + `validate`)、`lk-aot-lower`(bytecode→`Result<MirModule,Unsupported>`,总函数)、
+`lk-aot-codegen`(total `render_module`→LLVM)。
+
+- **阶段 0**:abi crate(表迁自 intrinsics.rs;llvm/intrinsics.rs 缩为薄适配;lkrt 复用
+  `ABI_VERSION`)。除零守卫 `lkrt/src/arith.rs`(`lkrt_{i64,f64}_{div,mod}_checked`),
+  emit 主标量/混合浮点/call-slot 改调 helper —— `x/0` native 由 UB 变确定性 abort(exit
+  134),float `/0` 由静默 inf 变 abort。`lkrt_abi_check` 在 main 入口(不改 entry CFG)。
+  修了 3 个断言旧 `sdiv/fdiv/lk_divisor_zero` 的测试(gcd/mixed-float/float-guard)。
+- **阶段 1**:mir(block 参数替代 phi;容器=`Inst::Call{AbiRef}`;`Ty` 封闭枚举=可 lower
+  子集定义)+ codegen(block 参数→phi 扫前驱;Div/Mod→helper;entry→`@main` 打印)。
+  `examples/demo.rs` `20/4`→clang→liblkrt→运行 `5` 端到端验证。
+- **阶段 1b**:lower 首切片(无参无捕获单入口 + 标量直线整数);`lowers_straightline_
+  integer_division` 全链路(手写 artifact→lower→validate→render→guarded-div LLVM)。
+- **验证**:`cargo test --workspace` **1622 passed / 0 failed**;四 crate 各自单测
+  (abi 2 / mir 4 / lower 3 / codegen 2)。
+- **下一步**:绞刑架切换 `lk-llvm` 入口到 `lower→codegen`(Unsupported 回退旧后端)+
+  扩片(float/比较/分支/调用),见 aot-redesign §9.5;阶段 2-4(容器句柄化 / 控制流块 /
+  闭包+间接调用+可变全局)见 §7。
+
+### 关键决策/踩坑
+
+- **ABI 版本 assert 不能拆 entry 块**:条件分支会破坏下游 `[x,%entry]` phi;改用 lkrt
+  `lkrt_abi_check(expected)` 内部 abort,main 入口只加一条 call。
+- **除零 helper 不标 Pure**:标 `ReadsHost` 防 codegen 未来把"可 abort"当纯函数 DCE 掉
+  (当前 text 路径无属性,是元数据前瞻)。
+- **迁 intrinsics 表用 `cp` 复制再改**,避免手抄 1200 行;类型名 replace_all
+  (`NativeIntrinsic*`→`Abi*`),llvm 侧 re-export 旧名减少 crate 内改动。
+
+---
+
+# (更早)LLVM 容器操作下沉到 lkrt
 
 目标:落地 `docs/llvm/aot-gaps-and-lkrt.md` —— 把单态动态容器操作从 llvm crate
 的手写 LLVM IR 下沉为 `lkrt` 的 typed ABI helper,llvm 侧只声明 intrinsic + 生成调用。

@@ -95,6 +95,14 @@ fib.ret:\n\
     );
     ir.push_str("define i32 @main() {\n");
     ir.push_str("entry:\n");
+    // Guard against a stale/mismatched linked `lkrt`: pass the ABI version this
+    // module was generated against; `lkrt_abi_check` aborts on a mismatch. This is
+    // a single straight-line call, so it does not change `entry`'s successors or
+    // the `[x, %entry]` phi predecessors the rest of the body relies on.
+    ir.push_str(&format!(
+        "  call void @lkrt_abi_check(i64 {})\n",
+        crate::llvm::intrinsics::ABI_VERSION
+    ));
     ir
 }
 

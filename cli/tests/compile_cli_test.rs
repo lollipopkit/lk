@@ -718,10 +718,24 @@ fn test_llvm_compile_lowers_i64_loop_without_vm_shell() {
         "i64 loop should not call artifact runtime: {ir}"
     );
     assert!(
-        ir.contains("%g0.slot = alloca i64"),
-        "expected i64 global slot lowering: {ir}"
+        ir.contains("; ModuleID = 'lk_aot'"),
+        "expected the MIR pipeline to handle an i64 loop: {ir}"
     );
-    assert!(ir.contains("br label %bb"), "expected native CFG lowering: {ir}");
+    assert!(ir.contains("phi i64"), "expected SSA loop-carried phis: {ir}");
+
+    let exe = run_cli(&dir, ["compile", "loop.lk"])
+        .output()
+        .expect("spawn exe compile");
+    assert!(
+        exe.status.success(),
+        "native executable compile failed: {}",
+        String::from_utf8_lossy(&exe.stderr)
+    );
+    let run_exe = Command::new(dir.join("loop"))
+        .output()
+        .expect("spawn compiled executable");
+    assert!(run_exe.status.success());
+    assert_eq!(String::from_utf8(run_exe.stdout).expect("utf8 stdout").trim(), "6");
 
     let _ = fs::remove_dir_all(&dir);
 }
@@ -780,8 +794,26 @@ fn test_llvm_compile_lowers_nil_return_without_vm_shell() {
         !ir.contains("lk_rt_run_module_json"),
         "nil return should not call artifact runtime: {ir}"
     );
-    assert!(ir.contains("@lk_nil_text"), "expected nil text lowering: {ir}");
-    assert!(ir.contains("@lk_str_fmt"), "expected string print lowering: {ir}");
+    assert!(
+        ir.contains("; ModuleID = 'lk_aot'"),
+        "expected the MIR pipeline to handle a nil return: {ir}"
+    );
+    // A top-level `return nil;` prints *nothing* in the VM; the legacy backend
+    // printed "nil" here (a real divergence the MIR path fixed). Prove the
+    // compiled binary matches the VM.
+    let exe = run_cli(&dir, ["compile", "nil.lk"])
+        .output()
+        .expect("spawn exe compile");
+    assert!(
+        exe.status.success(),
+        "native executable compile failed: {}",
+        String::from_utf8_lossy(&exe.stderr)
+    );
+    let run_exe = Command::new(dir.join("nil"))
+        .output()
+        .expect("spawn compiled executable");
+    assert!(run_exe.status.success());
+    assert_eq!(String::from_utf8(run_exe.stdout).expect("utf8 stdout"), "");
 
     let _ = fs::remove_dir_all(&dir);
 }
@@ -810,9 +842,12 @@ fn test_llvm_compile_lowers_short_string_return_without_vm_shell() {
         !ir.contains("lk_rt_run_module_json"),
         "short string return should not call artifact runtime: {ir}"
     );
+    assert!(
+        ir.contains("; ModuleID = 'lk_aot'"),
+        "expected the MIR pipeline to handle a string return: {ir}"
+    );
+    assert!(ir.contains("@lk_str_0"), "expected an interned string global: {ir}");
     assert!(ir.contains("@lk_str_fmt"), "expected string print lowering: {ir}");
-    assert!(ir.contains("@lk_const_str_0"), "expected string const lowering: {ir}");
-    assert!(ir.contains("c\"ok\\00\""), "expected string bytes lowering: {ir}");
 
     let _ = fs::remove_dir_all(&dir);
 }
@@ -1071,10 +1106,15 @@ fn test_llvm_compile_lowers_zero_arg_direct_f64_call_without_vm_shell() {
         !ir.contains("lk_rt_run_module_json"),
         "direct f64 call return should not call artifact runtime: {ir}"
     );
-    assert!(ir.contains("@lk_f64_fmt"), "expected f64 print lowering: {ir}");
     assert!(
-        ir.contains("store double 3.75"),
-        "expected direct f64 call constant result lowering: {ir}"
+        ir.contains("; ModuleID = 'lk_aot'"),
+        "expected the MIR pipeline to handle a zero-arg f64 call: {ir}"
+    );
+    // The front end inlines the zero-arg callee, so there is no residual native
+    // call; the observable f64 result still prints via the VM-exact helper.
+    assert!(
+        ir.contains("@lkrt_f64_to_str"),
+        "expected the VM-exact float display helper: {ir}"
     );
 
     let exe = run_cli(&dir, ["compile", "call_float.lk"])
@@ -1175,8 +1215,14 @@ fn test_llvm_compile_lowers_positional_direct_call_without_vm_shell() {
         !ir.contains("lk_rt_run_module_json"),
         "positional direct call should not call artifact runtime: {ir}"
     );
-    assert!(ir.contains("@lk_i64_fmt"), "expected i64 print lowering: {ir}");
-    assert!(ir.contains("i64 42"), "expected direct arg call constant result: {ir}");
+    assert!(
+        ir.contains("; ModuleID = 'lk_aot'"),
+        "expected the MIR pipeline to handle a direct call: {ir}"
+    );
+    assert!(
+        ir.contains("call i64 @lk_fn_1(i64"),
+        "expected a native direct call: {ir}"
+    );
 
     let exe = run_cli(&dir, ["compile", "call_arg.lk"])
         .env("RUSTC", dir.join("missing-rustc"))
@@ -1228,10 +1274,13 @@ fn test_llvm_compile_lowers_f64_positional_direct_call_without_vm_shell() {
         !ir.contains("lk_rt_run_module_json"),
         "f64 positional direct call should not call artifact runtime: {ir}"
     );
-    assert!(ir.contains("@lk_f64_fmt"), "expected f64 print lowering: {ir}");
     assert!(
-        ir.contains("store double 3.75"),
-        "expected f64 direct arg call constant result: {ir}"
+        ir.contains("; ModuleID = 'lk_aot'"),
+        "expected the MIR pipeline to handle an f64 direct call: {ir}"
+    );
+    assert!(
+        ir.contains("call double @lk_fn_1(double"),
+        "expected a monomorphized f64 native call: {ir}"
     );
 
     let exe = run_cli(&dir, ["compile", "call_f64_arg.lk"])
@@ -1280,10 +1329,13 @@ fn test_llvm_compile_lowers_f64_return_without_vm_shell() {
         !ir.contains("lk_rt_run_module_json"),
         "f64 return should not call artifact runtime: {ir}"
     );
-    assert!(ir.contains("@lk_f64_fmt"), "expected f64 print lowering: {ir}");
     assert!(
-        ir.contains("store double 3.75"),
-        "expected native f64 arithmetic constant lowering: {ir}"
+        ir.contains("; ModuleID = 'lk_aot'"),
+        "expected the MIR pipeline to handle an f64 return: {ir}"
+    );
+    assert!(
+        ir.contains("@lkrt_f64_to_str"),
+        "expected the VM-exact float display helper: {ir}"
     );
 
     let _ = fs::remove_dir_all(&dir);

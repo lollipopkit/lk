@@ -11,3 +11,4 @@ name = "lkrt"
 crate-type = ["rlib", "staticlib"]
 
 [dependencies]
+lk-aot-abi = { path = "../aot/abi" }

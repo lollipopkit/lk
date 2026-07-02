@@ -280,11 +280,13 @@ mod tests {
         // SAFETY: text is an lkrt-owned NUL-terminated CString pointer.
         let text = unsafe { CStr::from_ptr(text) };
         assert_eq!(text.to_str().expect("utf8"), "hello");
-        lkrt_string_free(text.as_ptr().cast_mut());
+        // SAFETY: the pointer came from an lkrt owned-string return.
+        unsafe { lkrt_string_free(text.as_ptr().cast_mut()) };
         assert_eq!(lkrt_bytes_free(bytes), 0);
 
         let canonical = lkrt_fs_canonicalize(file.as_ptr());
         assert!(!canonical.is_null());
-        lkrt_string_free(canonical);
+        // SAFETY: the pointer came from an lkrt owned-string return.
+        unsafe { lkrt_string_free(canonical) };
     }
 }

@@ -1012,22 +1012,12 @@ pub(in crate::llvm) fn emit_inline_i64_binary_block(
             ir.push_str(&format!("  {cond} = icmp {pred} i64 {lhs}, {rhs}\n"));
             ir.push_str(&format!("  {out} = select i1 {cond}, i64 {lhs}, i64 {rhs}\n"));
         }
-        Opcode::DivInt => {
-            let zero = next_tmp(tmp_index);
-            let label = format!("call{call_pc}.div_ok_{}", out.trim_start_matches('%'));
-            ir.push_str(&format!("  {zero} = icmp eq i64 {rhs}, 0\n"));
-            ir.push_str(&format!("  br i1 {zero}, label %lk_divisor_zero, label %{label}\n"));
-            ir.push_str(&format!("{label}:\n"));
-            ir.push_str(&format!("  {out} = sdiv i64 {lhs}, {rhs}\n"));
-        }
-        Opcode::ModInt => {
-            let zero = next_tmp(tmp_index);
-            let label = format!("call{call_pc}.mod_ok_{}", out.trim_start_matches('%'));
-            ir.push_str(&format!("  {zero} = icmp eq i64 {rhs}, 0\n"));
-            ir.push_str(&format!("  br i1 {zero}, label %lk_divisor_zero, label %{label}\n"));
-            ir.push_str(&format!("{label}:\n"));
-            ir.push_str(&format!("  {out} = srem i64 {lhs}, {rhs}\n"));
-        }
+        Opcode::DivInt => ir.push_str(&format!(
+            "  {out} = call i64 @lkrt_i64_div_checked(i64 {lhs}, i64 {rhs})\n"
+        )),
+        Opcode::ModInt => ir.push_str(&format!(
+            "  {out} = call i64 @lkrt_i64_mod_checked(i64 {lhs}, i64 {rhs})\n"
+        )),
         _ => unreachable!("checked by caller"),
     }
     ir.push_str(&format!("  store i64 {out}, ptr %call{call_pc}.r{}.slot\n", instr.a()));
@@ -1092,8 +1082,12 @@ pub(in crate::llvm) fn emit_mixed_numeric_int_opcode_block(
         Opcode::AddInt => ir.push_str(&format!("  {out} = fadd double {lhs}, {rhs}\n")),
         Opcode::SubInt => ir.push_str(&format!("  {out} = fsub double {lhs}, {rhs}\n")),
         Opcode::MulInt => ir.push_str(&format!("  {out} = fmul double {lhs}, {rhs}\n")),
-        Opcode::DivInt => ir.push_str(&format!("  {out} = fdiv double {lhs}, {rhs}\n")),
-        Opcode::ModInt => ir.push_str(&format!("  {out} = frem double {lhs}, {rhs}\n")),
+        Opcode::DivInt => ir.push_str(&format!(
+            "  {out} = call double @lkrt_f64_div_checked(double {lhs}, double {rhs})\n"
+        )),
+        Opcode::ModInt => ir.push_str(&format!(
+            "  {out} = call double @lkrt_f64_mod_checked(double {lhs}, double {rhs})\n"
+        )),
         _ => unreachable!("checked by caller"),
     }
     ir.push_str(&format!(

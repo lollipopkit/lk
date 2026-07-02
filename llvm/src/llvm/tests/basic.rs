@@ -27,7 +27,7 @@ fn llvm_backend_lowers_simple_i64_return_without_artifact_shell() {
     let tokens = Tokenizer::tokenize("return 1 + 2 * 3;").expect("tokens");
     let program = StmtParser::new(&tokens).parse_program().expect("program");
 
-    let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
+    let artifact = compile_program_to_llvm(&program, super::legacy_text_backend_options()).expect("llvm artifact");
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
     assert!(artifact.module.ir.contains("declare i32 @printf(ptr, ...)"));
@@ -145,7 +145,7 @@ fn llvm_backend_lowers_static_range_indexing_without_shell() {
     ] {
         let tokens = Tokenizer::tokenize(source).expect("tokens");
         let program = StmtParser::new(&tokens).parse_program().expect("program");
-        let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
+        let artifact = compile_program_to_llvm(&program, super::legacy_text_backend_options()).expect("llvm artifact");
         assert!(!artifact.module.ir.contains("@lk_module_json"));
         assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
         assert!(
@@ -263,7 +263,8 @@ fn llvm_backend_folds_static_f64_instr_arithmetic_without_shell() {
         },
     };
 
-    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm artifact");
+    let artifact =
+        compile_module_artifact_to_llvm(&artifact, super::legacy_text_backend_options()).expect("llvm artifact");
     let expected = 20.0_f64 / 6.0 + (20.0_f64 % 6.0) * 3.0 - 3.0;
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
@@ -286,7 +287,7 @@ fn llvm_backend_lowers_source_f64_global_without_shell() {
     let tokens = Tokenizer::tokenize(source).expect("tokens");
     let program = StmtParser::new(&tokens).parse_program().expect("program");
 
-    let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
+    let artifact = compile_program_to_llvm(&program, super::legacy_text_backend_options()).expect("llvm artifact");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -311,7 +312,9 @@ fn llvm_backend_lowers_source_mixed_int_float_arithmetic_without_shell() {
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
     assert!(artifact.module.ir.contains("sitofp i64"));
     assert!(artifact.module.ir.contains("fadd double"));
-    assert!(artifact.module.ir.contains("fdiv double"));
+    // Float division routes through the divisor-guarded lkrt helper (abort on /0)
+    // rather than a raw `fdiv` that would silently produce infinity.
+    assert!(artifact.module.ir.contains("call double @lkrt_f64_div_checked"));
     assert!(artifact.module.ir.contains("@lk_f64_fmt"));
 }
 
@@ -342,7 +345,7 @@ fn llvm_backend_lowers_simple_short_string_return_without_artifact_shell() {
     let tokens = Tokenizer::tokenize("return \"ok\";").expect("tokens");
     let program = StmtParser::new(&tokens).parse_program().expect("program");
 
-    let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
+    let artifact = compile_program_to_llvm(&program, super::legacy_text_backend_options()).expect("llvm artifact");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -356,7 +359,7 @@ fn llvm_backend_lowers_source_string_global_without_artifact_shell() {
     let tokens = Tokenizer::tokenize(r#"let text = "ok"; return text;"#).expect("tokens");
     let program = StmtParser::new(&tokens).parse_program().expect("program");
 
-    let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
+    let artifact = compile_program_to_llvm(&program, super::legacy_text_backend_options()).expect("llvm artifact");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -402,7 +405,7 @@ fn llvm_backend_lowers_source_static_conditional_expression_without_artifact_she
     let tokens = Tokenizer::tokenize(r#"return 1 < 2 ? 42 : 7;"#).expect("tokens");
     let program = StmtParser::new(&tokens).parse_program().expect("program");
 
-    let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
+    let artifact = compile_program_to_llvm(&program, super::legacy_text_backend_options()).expect("llvm artifact");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -582,7 +585,7 @@ fn llvm_backend_lowers_source_for_static_list_i64_loop_without_artifact_shell() 
     .expect("tokens");
     let program = StmtParser::new(&tokens).parse_program().expect("program");
 
-    let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
+    let artifact = compile_program_to_llvm(&program, super::legacy_text_backend_options()).expect("llvm artifact");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -691,7 +694,10 @@ fn llvm_backend_lowers_recursive_gcd_without_artifact_shell() {
         artifact.module.ir.contains("@lk_fn_1"),
         "should generate subfunction for recursive call"
     );
-    assert!(artifact.module.ir.contains("srem"), "should use modulo operation");
+    assert!(
+        artifact.module.ir.contains("@lkrt_i64_mod_checked"),
+        "modulo should route through the divisor-guarded lkrt helper"
+    );
 }
 
 #[test]
