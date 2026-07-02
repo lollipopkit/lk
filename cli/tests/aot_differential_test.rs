@@ -1,9 +1,8 @@
 //! Differential harness (docs/llvm/aot-redesign.md §6): every case is compiled
-//! natively through the MIR pipeline (`LK_AOT_MIR=1`) and executed, then run
+//! natively through the MIR pipeline (the only backend) and executed, then run
 //! under the bytecode VM, and the observable behaviour (stdout + success/failure)
-//! must match exactly. Cases marked `Path::New` additionally assert the compile
-//! actually took the `lk-aot-lower` → `lk-aot-codegen` path rather than falling
-//! back to the legacy text backend.
+//! must match exactly. Cases marked `Path::New` additionally assert the emitted
+//! IR came from the `lk-aot-lower` → `lk-aot-codegen` path.
 #![cfg(feature = "llvm")]
 
 use std::ffi::OsStr;
@@ -88,9 +87,8 @@ fn run_differential(area: &str, cases: &[Case]) {
         let vm = run_cli(&dir, [file.as_str()]).output().expect("spawn vm run");
         let vm_stdout = String::from_utf8_lossy(&vm.stdout).into_owned();
 
-        // MIR-path IR (also proves which backend handled the shape).
+        // MIR-path IR.
         let llvm = run_cli(&dir, ["compile", "llvm", &file])
-            .env("LK_AOT_MIR", "1")
             .output()
             .expect("spawn llvm compile");
         assert!(
@@ -102,16 +100,11 @@ fn run_differential(area: &str, cases: &[Case]) {
         let ir = fs::read_to_string(dir.join(format!("{}.ll", case.name))).expect("read IR");
         let took_new = ir.contains("; ModuleID = 'lk_aot'");
         if case.path == Path::New {
-            assert!(
-                took_new,
-                "[{area}/{}] expected the MIR pipeline but the legacy backend handled it",
-                case.name
-            );
+            assert!(took_new, "[{area}/{}] expected MIR-pipeline IR", case.name);
         }
 
         // Native build + run.
         let exe = run_cli(&dir, ["compile", &file])
-            .env("LK_AOT_MIR", "1")
             .output()
             .expect("spawn native compile");
         assert!(
@@ -345,6 +338,54 @@ fn differential_strings() {
             new("interp_bool", "let x = 5;\nreturn \"big=${x > 3}\";\n"),
             new("interp_float", "return \"v=${2.0}\";\n"),
             new("interp_neg", "return \"val:${-7}\";\n"),
+            new("long_string", "return \"longer-than-short\";\n"),
+            new(
+                "long_string_var",
+                "let s = \"a-fairly-long-string-literal\";\nreturn s + \"!\";\n",
+            ),
+        ],
+    );
+}
+
+#[test]
+fn differential_builtins() {
+    run_differential(
+        "builtins",
+        &[
+            // println/print formatting must match `format_variadic_runtime`
+            // exactly: `{}` substitution, leftover `{}` kept literal, extra args
+            // appended space-separated, non-string first arg joined with spaces.
+            new("println_fmt", "let x = 42;\nprintln(\"{}\", x);\nreturn 0;\n"),
+            new(
+                "println_multi",
+                "let x = 6;\nprintln(\"a={} b={}\", x, x * 7);\nreturn 0;\n",
+            ),
+            new("println_value", "let x = 42;\nprintln(x);\nreturn 0;\n"),
+            new("println_plain", "println(\"plain text\");\nreturn 0;\n"),
+            new("println_empty", "println();\nreturn 0;\n"),
+            new("println_missing_args", "println(\"x={} y={}\", 1);\nreturn 0;\n"),
+            new("println_extra_args", "println(\"v:\", 2, 3);\nreturn 0;\n"),
+            new("println_join", "println(1.5, true, \"s\");\nreturn 0;\n"),
+            new(
+                "println_dynamic_str",
+                "let s = \"dyn\" + \"amic\";\nprintln(s);\nreturn 0;\n",
+            ),
+            new(
+                "println_in_loop",
+                "let i = 0;\nwhile (i < 3) { println(\"i={}\", i); i = i + 1; }\nreturn i;\n",
+            ),
+            new("print_no_newline", "print(\"a\");\nprint(\"b\");\nreturn 0;\n"),
+            new("assert_true", "let x = 1;\nassert(x == 1);\nreturn 7;\n"),
+            // Both sides must fail loudly with identical (already-flushed) stdout.
+            new(
+                "assert_false_after_output",
+                "println(\"before\");\nlet x = 1;\nassert(x == 2);\nreturn 7;\n",
+            ),
+            new("assert_msg_false", "assert(1 == 2, \"boom\");\nreturn 7;\n"),
+            new(
+                "div_zero_after_output",
+                "println(\"before\");\nlet a = 1;\nlet b = 0;\nreturn a % b;\n",
+            ),
         ],
     );
 }

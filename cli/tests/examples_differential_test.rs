@@ -117,13 +117,9 @@ fn examples_corpus_differential() {
             .to_string();
         let label = format!("{}/{}", dir.file_name().and_then(OsStr::to_str).unwrap_or("?"), file);
 
-        // MIR-gated IR compile: legacy fallback stays default-off, so success
-        // here means the MIR pipeline itself accepted the program.
+        // IR compile: success means the MIR pipeline accepted the program.
         let mut compile_ir = Command::new(bin_path());
-        compile_ir
-            .current_dir(&dir)
-            .args(["compile", "llvm", &file])
-            .env("LK_AOT_MIR", "1");
+        compile_ir.current_dir(&dir).args(["compile", "llvm", &file]);
         let ir_result = run_with_timeout(compile_ir, &scratch, &format!("{stem}_ir"));
         if !ir_result.success {
             let reason = fs::read_to_string(scratch.join(format!("{stem}_ir.stderr")))
@@ -152,10 +148,7 @@ fn examples_corpus_differential() {
 
         // Native build + run.
         let mut compile_exe = Command::new(bin_path());
-        compile_exe
-            .current_dir(&dir)
-            .args(["compile", &file])
-            .env("LK_AOT_MIR", "1");
+        compile_exe.current_dir(&dir).args(["compile", &file]);
         let exe = run_with_timeout(compile_exe, &scratch, &format!("{stem}_exe"));
         if !exe.success {
             let reason = fs::read_to_string(scratch.join(format!("{stem}_exe.stderr"))).unwrap_or_default();
@@ -208,13 +201,13 @@ fn examples_corpus_differential() {
         "examples corpus diverged between VM and native:\n{}",
         divergences.join("\n\n")
     );
-    // Coverage floor: at the time of writing the MIR pipeline lowers 2 of the
-    // 44 examples (general/fib, syntax/numeric_auto_promotion). Falling below
-    // this means the differential corpus silently stopped comparing anything —
-    // raise the floor as lowering coverage grows.
+    // Coverage floor: the MIR pipeline currently lowers 3 of the 44 examples
+    // (general/fib, syntax/internal, syntax/numeric_auto_promotion). Falling
+    // below this means the differential corpus silently stopped comparing
+    // anything — raise the floor as lowering coverage grows.
     assert!(
-        compared.len() >= 2,
-        "expected at least 2 natively compared examples, got {}",
+        compared.len() >= 3,
+        "expected at least 3 natively compared examples, got {}",
         compared.len()
     );
 }

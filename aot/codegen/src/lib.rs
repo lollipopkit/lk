@@ -35,6 +35,7 @@ fn render_prelude(out: &mut String) {
     out.push_str("@lk_i64_fmt = private unnamed_addr constant [5 x i8] c\"%ld\\0A\\00\", align 1\n");
     out.push_str("@lk_f64_fmt = private unnamed_addr constant [7 x i8] c\"%.16g\\0A\\00\", align 1\n");
     out.push_str("@lk_str_fmt = private unnamed_addr constant [4 x i8] c\"%s\\0A\\00\", align 1\n");
+    out.push_str("@lk_str_raw_fmt = private unnamed_addr constant [3 x i8] c\"%s\\00\", align 1\n");
     out.push_str("@lk_bool_true = private unnamed_addr constant [5 x i8] c\"true\\00\", align 1\n");
     out.push_str("@lk_bool_false = private unnamed_addr constant [6 x i8] c\"false\\00\", align 1\n\n");
     out.push_str("declare i32 @printf(ptr, ...)\n");
@@ -198,6 +199,9 @@ fn render_inst(out: &mut String, module: &MirModule, inst: &Inst) {
         Inst::Not { dst, src } => {
             let _ = writeln!(out, "  {} = xor i1 {}, true", val(*dst), val(*src));
         }
+        Inst::BoolAnd { dst, lhs, rhs } => {
+            let _ = writeln!(out, "  {} = and i1 {}, {}", val(*dst), val(*lhs), val(*rhs));
+        }
         Inst::MaybePresent { dst, src, maybe_ty } => {
             let n = dst.0;
             let carrier = ty_str(*maybe_ty);
@@ -206,6 +210,10 @@ fn render_inst(out: &mut String, module: &MirModule, inst: &Inst) {
         }
         Inst::Call { dst, callee, args } => render_call(out, *dst, *callee, args),
         Inst::CallFn { dst, func, args } => render_call_fn(out, module, *dst, *func, args),
+        Inst::PrintStr { value, newline } => {
+            let fmt = if *newline { "@lk_str_fmt" } else { "@lk_str_raw_fmt" };
+            let _ = writeln!(out, "  call i32 (ptr, ...) @printf(ptr {fmt}, ptr {})", val(*value));
+        }
         Inst::ListGetMaybe { dst, handle, index } => {
             let _ = writeln!(
                 out,
@@ -494,7 +502,9 @@ fn render_term(out: &mut String, func: &MirFunction, term: &Term, is_entry: bool
             );
         }
         Term::Abort => {
-            out.push_str("  call void @abort()\n  unreachable\n");
+            // `lkrt_abort` flushes C stdio before aborting so already-printed
+            // output is not discarded (the VM keeps it on a fatal error).
+            out.push_str("  call void @lkrt_abort()\n  unreachable\n");
         }
     }
 }

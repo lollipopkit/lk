@@ -116,6 +116,23 @@ impl std::fmt::Display for Unsupported {
 
 type Reg = (ValueId, Ty);
 
+/// Runtime builtins recognized from `GetGlobal` by name and lowered natively at
+/// their `Call` sites. A register holding one of these carries no SSA value:
+/// any use other than a call rejects (reads find the register undefined).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Builtin {
+    Println,
+    Print,
+    Assert,
+}
+
+/// One piece of a `print`/`println` output line, assembled at lower time from
+/// the (constant) format string and the call arguments.
+enum PrintPart {
+    Lit(String),
+    Val(ValueId, Ty),
+}
+
 /// The right-hand side of a fused compare-and-branch: a register or an immediate.
 #[derive(Debug, Clone, Copy)]
 enum FusedRhs {
@@ -140,6 +157,16 @@ enum Exit {
         rhs: FusedRhs,
         op: CmpOp,
         jump_when: bool,
+        taken: usize,
+        fallthrough: usize,
+    },
+    /// Fused `TestEqIntI2` + trailing `Jmp`: `r_a == imm_a && r_b == imm_b`
+    /// falls through, anything else branches to `taken`. Consumes the `Jmp`.
+    FusedCmp2 {
+        reg_a: u8,
+        imm_a: i64,
+        reg_b: u8,
+        imm_b: i64,
         taken: usize,
         fallthrough: usize,
     },
@@ -229,6 +256,7 @@ pub fn lower(artifact: &ModuleArtifact) -> Result<MirModule, Unsupported> {
                 module.entry,
                 is_entry,
                 &mut scratch,
+                &module.globals,
                 &mut sig,
             ) && !is_entry
             {
@@ -260,6 +288,7 @@ pub fn lower(artifact: &ModuleArtifact) -> Result<MirModule, Unsupported> {
             module.entry,
             is_entry,
             &mut globals,
+            &module.globals,
             &mut sig,
         )?);
     }
@@ -351,6 +380,7 @@ fn lower_function(
     entry: u32,
     is_entry: bool,
     globals: &mut Vec<String>,
+    module_globals: &[String],
     sig: &mut SigInfer,
 ) -> Result<MirFunction, Unsupported> {
     if func.capture_count != 0 {
@@ -401,6 +431,7 @@ fn lower_function(
                 }
             }
             Some(Exit::FusedCmp { taken, fallthrough, .. })
+            | Some(Exit::FusedCmp2 { taken, fallthrough, .. })
             | Some(Exit::FusedModZero { taken, fallthrough, .. })
             | Some(Exit::NilBranch { taken, fallthrough, .. }) => {
                 mark_target(*taken, code_len, &mut leaders, &mut implicit_ret);
@@ -476,6 +507,7 @@ fn lower_function(
                 funcs,
                 entry,
                 globals,
+                module_globals,
                 sig,
                 &instrs[pc],
                 pc,
@@ -542,6 +574,49 @@ fn lower_function(
                     float,
                     lhs,
                     rhs: rhs_val,
+                });
+                cond_val[bi] = Some(cond);
+            }
+            Some(Exit::FusedCmp2 {
+                reg_a,
+                imm_a,
+                reg_b,
+                imm_b,
+                ..
+            }) => {
+                let a = ssa.read_typed(reg_a, bi, Ty::I64, start)?;
+                let b = ssa.read_typed(reg_b, bi, Ty::I64, start)?;
+                let ka = ssa.new_val();
+                insts.push(Inst::Const {
+                    dst: ka,
+                    value: Const::I64(imm_a),
+                });
+                let kb = ssa.new_val();
+                insts.push(Inst::Const {
+                    dst: kb,
+                    value: Const::I64(imm_b),
+                });
+                let ca = ssa.new_val();
+                insts.push(Inst::Cmp {
+                    dst: ca,
+                    op: CmpOp::Eq,
+                    float: false,
+                    lhs: a,
+                    rhs: ka,
+                });
+                let cb = ssa.new_val();
+                insts.push(Inst::Cmp {
+                    dst: cb,
+                    op: CmpOp::Eq,
+                    float: false,
+                    lhs: b,
+                    rhs: kb,
+                });
+                let cond = ssa.new_val();
+                insts.push(Inst::BoolAnd {
+                    dst: cond,
+                    lhs: ca,
+                    rhs: cb,
                 });
                 cond_val[bi] = Some(cond);
             }
@@ -768,6 +843,20 @@ fn build_term(
                 else_args: args_to(ssa, bi, else_b as usize),
             }
         }
+        // The conjunction holding means "fall through"; anything else takes the
+        // branch (the VM's false-branch application for `TestEqIntI2`).
+        Some(Exit::FusedCmp2 { taken, fallthrough, .. }) => {
+            let cond = cond_val.expect("fused-cmp2 cond resolved");
+            let then_b = block_id(fallthrough);
+            let else_b = block_id(taken);
+            Term::CondBr {
+                cond,
+                then_blk: BlockId(then_b),
+                then_args: args_to(ssa, bi, then_b as usize),
+                else_blk: BlockId(else_b),
+                else_args: args_to(ssa, bi, else_b as usize),
+            }
+        }
         // The compare already encodes the polarity (`op`), so `taken` is always the
         // `then` branch.
         Some(Exit::FusedModZero { taken, fallthrough, .. }) => {
@@ -826,6 +915,14 @@ struct Ssa {
     const_int: std::collections::HashMap<ValueId, i64>,
     /// SSA value of a const-materialized list handle → its known element count.
     list_len: std::collections::HashMap<ValueId, i64>,
+    /// SSA value → its compile-time string content (`LoadString` /
+    /// `LoadHeapConst` long strings), used to expand `println` format strings
+    /// at lower time.
+    const_strs: std::collections::HashMap<ValueId, String>,
+    /// `(block, register)` → runtime builtin loaded there by `GetGlobal` (and
+    /// propagated by `Move`). Block-local by construction; any write to the
+    /// register clears it.
+    builtin_regs: std::collections::HashMap<(usize, u8), Builtin>,
 }
 
 impl Ssa {
@@ -842,6 +939,8 @@ impl Ssa {
             next_val: 0,
             const_int: std::collections::HashMap::new(),
             list_len: std::collections::HashMap::new(),
+            const_strs: std::collections::HashMap::new(),
+            builtin_regs: std::collections::HashMap::new(),
         }
     }
 
@@ -854,6 +953,7 @@ impl Ssa {
     fn write(&mut self, reg: u8, block: usize, value: Reg) {
         if (reg as usize) < self.reg_count {
             self.current_def[block][reg as usize] = Some(value);
+            self.builtin_regs.remove(&(block, reg));
         }
     }
 
@@ -871,6 +971,72 @@ impl Ssa {
         } else {
             Err(Unsupported::TypeMismatch { pc })
         }
+    }
+
+    /// Resolves the compile-time string content of `reg` at `block`, if every
+    /// acyclic reaching definition is the same constant string. Read-only:
+    /// unlike `read`, this never creates phis, so it can look through unsealed
+    /// loop headers (a cycle path contributes no new definition). Recovers
+    /// `println` format strings the compiler's loop-literal cache hoisted out
+    /// of the loop body (where the plain `const_strs` value lookup only sees
+    /// the loop-header phi).
+    fn reg_const_str(&self, reg: u8, block: usize) -> Option<String> {
+        let mut visited = std::collections::HashSet::new();
+        let mut found: Option<String> = None;
+        if self.collect_reg_const_str(reg, block, &mut visited, &mut found) {
+            found
+        } else {
+            None
+        }
+    }
+
+    fn collect_reg_const_str(
+        &self,
+        reg: u8,
+        block: usize,
+        visited: &mut std::collections::HashSet<(usize, u8)>,
+        found: &mut Option<String>,
+    ) -> bool {
+        if !visited.insert((block, reg)) {
+            return true;
+        }
+        if let Some((v, ty)) = self.current_def[block][reg as usize] {
+            if ty != Ty::Str {
+                return false;
+            }
+            if let Some(s) = self.const_strs.get(&v) {
+                return match found {
+                    Some(prev) => prev == s,
+                    None => {
+                        *found = Some(s.clone());
+                        true
+                    }
+                };
+            }
+            // A phi param's operands are exactly its register's reaching
+            // definitions at the phi's own block — redirect the walk there
+            // (the phi may be for a *different* register than the one that
+            // carried the value here, e.g. through a `Move`). Any other
+            // non-constant definition makes the value dynamic.
+            for (phi_block, phis) in self.phis.iter().enumerate() {
+                if let Some(phi) = phis.iter().find(|phi| phi.param == v) {
+                    let phi_reg = phi.reg as u8;
+                    for p in self.preds[phi_block].clone() {
+                        if !self.collect_reg_const_str(phi_reg, p, visited, found) {
+                            return false;
+                        }
+                    }
+                    return true;
+                }
+            }
+            return false;
+        }
+        for &p in &self.preds[block] {
+            if !self.collect_reg_const_str(reg, p, visited, found) {
+                return false;
+            }
+        }
+        true
     }
 
     /// The type of `reg` as seen from an already-filled predecessor (loop-invariant
@@ -1001,6 +1167,7 @@ fn exit_successors(exit: Option<Exit>, fallthrough: usize) -> Vec<usize> {
         Some(Exit::Jump(t)) => vec![t],
         Some(Exit::Cond { then_pc, else_pc, .. }) => vec![then_pc, else_pc],
         Some(Exit::FusedCmp { taken, fallthrough, .. })
+        | Some(Exit::FusedCmp2 { taken, fallthrough, .. })
         | Some(Exit::FusedModZero { taken, fallthrough, .. })
         | Some(Exit::NilBranch { taken, fallthrough, .. }) => {
             vec![taken, fallthrough]
@@ -1014,12 +1181,24 @@ fn exit_of(pc: usize, instrs: &[Instr], code_len: usize, consumed: &mut [bool]) 
     }
     let instr = instrs[pc];
     if instr.opcode().is_compare_test() {
-        if instr.opcode() == Opcode::TestEqIntI2 {
-            return Err(Unsupported::Opcode { pc, op: instr.opcode() });
-        }
         let jmp = instrs.get(pc + 1).copied().ok_or(Unsupported::BadTarget { pc })?;
         if jmp.opcode() != Opcode::Jmp {
             return Err(Unsupported::Opcode { pc, op: instr.opcode() });
+        }
+        if instr.opcode() == Opcode::TestEqIntI2 {
+            // `r_a == (c >> 4) && r_b == (c & 0xf)`: true falls through, false
+            // takes the trailing `Jmp` (the VM's false-branch application).
+            let packed = instr.c();
+            let taken = rel(pc + 1, jmp.sj_arg(), code_len).ok_or(Unsupported::BadTarget { pc })?;
+            consumed[pc + 1] = true;
+            return Ok(Some(Exit::FusedCmp2 {
+                reg_a: instr.a(),
+                imm_a: i64::from(packed >> 4),
+                reg_b: instr.b(),
+                imm_b: i64::from(packed & 0x0f),
+                taken,
+                fallthrough: pc + 2,
+            }));
         }
         let op = test_cmp_op(instr.opcode()).ok_or(Unsupported::Opcode { pc, op: instr.opcode() })?;
         let immediate = instr.opcode().is_int_immediate_compare_test();
@@ -1158,6 +1337,7 @@ fn lower_inst(
     funcs: &[FunctionData],
     entry: u32,
     globals: &mut Vec<String>,
+    module_globals: &[String],
     sig: &mut SigInfer,
     instr: &Instr,
     pc: usize,
@@ -1204,6 +1384,13 @@ fn lower_inst(
             ssa.write(instr.a(), block, (dst, Ty::Nil));
         }
         Opcode::Move => {
+            // A register holding a runtime builtin (no SSA value) propagates the
+            // builtin ref instead of a value: the compiler moves the callee into
+            // the call-window base before the `Call`.
+            if let Some(builtin) = ssa.builtin_regs.get(&(block, instr.b())).copied() {
+                ssa.builtin_regs.insert((block, instr.a()), builtin);
+                return Ok(());
+            }
             let src = ssa.read(instr.b(), block, pc)?;
             ssa.write(instr.a(), block, src);
         }
@@ -1401,6 +1588,31 @@ fn lower_inst(
         // function value is never read as a scalar in the supported subset (if it
         // were, the read would find it undefined and reject).
         Opcode::LoadFunction | Opcode::SetGlobal => {}
+        Opcode::GetGlobal => {
+            // Only reads of known runtime builtins lower; the register then holds
+            // a builtin ref (no SSA value — any non-call use finds it undefined
+            // and rejects). Other globals (imported modules, user function
+            // values) are outside the subset.
+            let name = module_globals.get(instr.bx() as usize).map(String::as_str);
+            let builtin = match name {
+                Some("println") => Builtin::Println,
+                Some("print") => Builtin::Print,
+                Some("assert") => Builtin::Assert,
+                _ => return Err(Unsupported::Opcode { pc, op: instr.opcode() }),
+            };
+            ssa.builtin_regs.insert((block, instr.a()), builtin);
+        }
+        Opcode::Call => {
+            // Register-window call: `a` = window base (the callee slot), `c` =
+            // positional count, args at `[a+1, a+1+c)`. Only calls whose callee
+            // register holds a recognized runtime builtin lower; everything else
+            // (closures, runtime values) rejects.
+            let base = instr.a();
+            let Some(builtin) = ssa.builtin_regs.get(&(block, base)).copied() else {
+                return Err(Unsupported::Opcode { pc, op: instr.opcode() });
+            };
+            lower_builtin_call(ssa, insts, globals, builtin, base, instr.c() as usize, block, pc)?;
+        }
         // A string constant materializes an interned module global (a C-string) with
         // type `Str`. String *operations* (concat/compare/…) aren't modelled, so a
         // `Str` flowing into one rejects (falls back); but a returned literal prints,
@@ -1417,6 +1629,7 @@ fn lower_inst(
                 dst,
                 value: Const::Str(GlobalId(gid)),
             });
+            ssa.const_strs.insert(dst, s.clone());
             ssa.write(instr.a(), block, (dst, Ty::Str));
         }
         Opcode::ToString => {
@@ -1625,6 +1838,18 @@ fn lower_inst(
                         });
                     }
                     ssa.write(instr.a(), block, (handle, map_ty));
+                }
+                ConstHeapValueData::LongString(s) => {
+                    // A string literal too long for the inline `ShortStr` encoding:
+                    // same lowering as `LoadString` (an interned C-string global).
+                    let gid = intern_global(globals, s);
+                    let dst = ssa.new_val();
+                    insts.push(Inst::Const {
+                        dst,
+                        value: Const::Str(GlobalId(gid)),
+                    });
+                    ssa.const_strs.insert(dst, s.clone());
+                    ssa.write(instr.a(), block, (dst, Ty::Str));
                 }
                 _ => return Err(Unsupported::Opcode { pc, op: instr.opcode() }),
             }
@@ -2100,6 +2325,229 @@ fn free_owned_str(insts: &mut Vec<Inst>, v: ValueId) {
         callee: AbiRef::new("lkrt", "string_free"),
         args: vec![v],
     });
+}
+
+/// Lowers a call to a recognized runtime builtin (`println` / `print` /
+/// `assert`). The builtin's nil return is written to the call-window base
+/// register, matching the VM's return-value placement.
+#[allow(clippy::too_many_arguments)]
+fn lower_builtin_call(
+    ssa: &mut Ssa,
+    insts: &mut Vec<Inst>,
+    globals: &mut Vec<String>,
+    builtin: Builtin,
+    base: u8,
+    argc: usize,
+    block: usize,
+    pc: usize,
+) -> Result<(), Unsupported> {
+    match builtin {
+        Builtin::Println | Builtin::Print => {
+            let parts = print_parts(ssa, base, argc, block, pc)?;
+            emit_print(ssa, insts, globals, parts, builtin == Builtin::Println, pc)?;
+        }
+        Builtin::Assert => {
+            // `assert(cond)` / `assert(cond, message)`: a false condition is a
+            // fatal error, matching the VM's loud halt. The condition must be a
+            // `Bool` (the VM's truthiness for other values is not modelled).
+            if argc == 0 || argc > 2 {
+                return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+            }
+            let cond = ssa.read_typed(base.wrapping_add(1), block, Ty::Bool, pc)?;
+            let wide = ssa.new_val();
+            insts.push(Inst::ZextBool { dst: wide, src: cond });
+            if argc == 1 {
+                insts.push(Inst::Call {
+                    dst: None,
+                    callee: AbiRef::new("rt", "assert"),
+                    args: vec![wide],
+                });
+            } else {
+                let (mv, mty) = ssa.read(base.wrapping_add(2), block, pc)?;
+                let (msg, fresh) = to_display_str(ssa, insts, mv, mty, pc)?;
+                insts.push(Inst::Call {
+                    dst: None,
+                    callee: AbiRef::new("rt", "assert_msg"),
+                    args: vec![wide, msg],
+                });
+                // On failure the call aborts and never returns; on success the
+                // display temporary is dead.
+                if fresh {
+                    free_owned_str(insts, msg);
+                }
+            }
+        }
+    }
+    let nil = ssa.new_val();
+    insts.push(Inst::Const {
+        dst: nil,
+        value: Const::Nil,
+    });
+    ssa.write(base, block, (nil, Ty::Nil));
+    Ok(())
+}
+
+/// Assembles the output pieces of a `print`/`println` call, mirroring the VM's
+/// `format_variadic_runtime` exactly:
+///  - no args → empty output;
+///  - a *constant* string first arg is the format: each `{}` consumes the next
+///    arg's display, leftover `{}` stay literal, and leftover args append
+///    space-separated with a leading space iff the rendered format part is
+///    non-empty (decided statically; the one runtime-dependent case — only
+///    `Str` placeholders and no literal text — rejects);
+///  - a dynamic (non-constant) `Str` first arg lowers only as the sole
+///    argument (the output is then the string itself, `{}` included);
+///  - a non-string first arg joins all args' displays with single spaces.
+fn print_parts(ssa: &mut Ssa, base: u8, argc: usize, block: usize, pc: usize) -> Result<Vec<PrintPart>, Unsupported> {
+    let mut args = Vec::with_capacity(argc);
+    for i in 0..argc {
+        args.push(ssa.read(base.wrapping_add(1).wrapping_add(i as u8), block, pc)?);
+    }
+    let Some((&(first_v, first_ty), _)) = args.split_first() else {
+        return Ok(Vec::new());
+    };
+    if first_ty != Ty::Str {
+        let mut parts = Vec::new();
+        for (i, &(v, ty)) in args.iter().enumerate() {
+            if i > 0 {
+                parts.push(PrintPart::Lit(" ".to_string()));
+            }
+            parts.push(PrintPart::Val(v, ty));
+        }
+        return Ok(parts);
+    }
+    let const_fmt = ssa
+        .const_strs
+        .get(&first_v)
+        .cloned()
+        // Loop bodies read the format through a loop-header phi (the compiler
+        // hoists loop literals); recover the constant via reaching definitions.
+        .or_else(|| ssa.reg_const_str(base.wrapping_add(1), block));
+    let Some(fmt) = const_fmt else {
+        if argc == 1 {
+            return Ok(vec![PrintPart::Val(first_v, Ty::Str)]);
+        }
+        return Err(Unsupported::TypeMismatch { pc });
+    };
+    let rest = &args[1..];
+    let mut parts: Vec<PrintPart> = Vec::new();
+    let mut lit = String::new();
+    let mut chars = fmt.chars().peekable();
+    let mut next_arg = 0usize;
+    while let Some(ch) = chars.next() {
+        if ch == '{' && chars.peek() == Some(&'}') {
+            chars.next();
+            if let Some(&(v, ty)) = rest.get(next_arg) {
+                if !lit.is_empty() {
+                    parts.push(PrintPart::Lit(std::mem::take(&mut lit)));
+                }
+                parts.push(PrintPart::Val(v, ty));
+                next_arg += 1;
+            } else {
+                lit.push_str("{}");
+            }
+        } else {
+            lit.push(ch);
+        }
+    }
+    if !lit.is_empty() {
+        parts.push(PrintPart::Lit(std::mem::take(&mut lit)));
+    }
+    let extras = &rest[next_arg..];
+    if !extras.is_empty() {
+        // The VM inserts one space iff the rendered format part is non-empty.
+        // Statically: literal pieces are non-empty by construction and
+        // i64/f64/bool displays are never empty; only a `Str` placeholder can
+        // render empty, which makes the space runtime-dependent → reject.
+        if !parts.is_empty() {
+            let has_lit = parts.iter().any(|p| matches!(p, PrintPart::Lit(_)));
+            let str_placeholder = parts.iter().any(|p| matches!(p, PrintPart::Val(_, Ty::Str)));
+            if !has_lit && str_placeholder {
+                return Err(Unsupported::TypeMismatch { pc });
+            }
+            parts.push(PrintPart::Lit(" ".to_string()));
+        }
+        for (i, &(v, ty)) in extras.iter().enumerate() {
+            if i > 0 {
+                parts.push(PrintPart::Lit(" ".to_string()));
+            }
+            parts.push(PrintPart::Val(v, ty));
+        }
+    }
+    Ok(parts)
+}
+
+/// Renders assembled [`PrintPart`]s: adjacent literals merge into one interned
+/// global, value parts display-convert, everything folds into a single string
+/// via `str.concat` (freeing consumed temporaries), and one [`Inst::PrintStr`]
+/// emits it.
+fn emit_print(
+    ssa: &mut Ssa,
+    insts: &mut Vec<Inst>,
+    globals: &mut Vec<String>,
+    parts: Vec<PrintPart>,
+    newline: bool,
+    pc: usize,
+) -> Result<(), Unsupported> {
+    fn lit_value(ssa: &mut Ssa, insts: &mut Vec<Inst>, globals: &mut Vec<String>, text: &str) -> ValueId {
+        let gid = intern_global(globals, text);
+        let dst = ssa.new_val();
+        insts.push(Inst::Const {
+            dst,
+            value: Const::Str(GlobalId(gid)),
+        });
+        dst
+    }
+
+    let mut pieces: Vec<(ValueId, bool)> = Vec::new();
+    let mut pending = String::new();
+    for part in parts {
+        match part {
+            PrintPart::Lit(s) => pending.push_str(&s),
+            PrintPart::Val(v, ty) => {
+                if !pending.is_empty() {
+                    let lit = lit_value(ssa, insts, globals, &pending);
+                    pieces.push((lit, false));
+                    pending.clear();
+                }
+                pieces.push(to_display_str(ssa, insts, v, ty, pc)?);
+            }
+        }
+    }
+    if !pending.is_empty() {
+        let lit = lit_value(ssa, insts, globals, &pending);
+        pieces.push((lit, false));
+    }
+
+    let (value, fresh) = match pieces.split_first() {
+        None => (lit_value(ssa, insts, globals, ""), false),
+        Some((&(first, first_fresh), rest)) => {
+            let mut acc = first;
+            let mut acc_fresh = first_fresh;
+            for &(v, v_fresh) in rest {
+                let dst = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(dst),
+                    callee: AbiRef::new("str", "concat"),
+                    args: vec![acc, v],
+                });
+                if acc_fresh {
+                    free_owned_str(insts, acc);
+                }
+                if v_fresh {
+                    free_owned_str(insts, v);
+                }
+                acc = dst;
+                acc_fresh = true;
+            }
+            (acc, acc_fresh)
+        }
+    };
+    insts.push(Inst::PrintStr { value, newline });
+    if fresh {
+        free_owned_str(insts, value);
+    }
+    Ok(())
 }
 
 /// Materializes a constant map key as a `Str` value (an interned global) for the

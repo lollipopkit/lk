@@ -859,10 +859,7 @@ fn test_llvm_compile_lowers_long_string_return_without_vm_shell() {
     ensure_clean_dir(&dir);
     write_file(&dir, "long_string.lk", "return \"longer-than-short\";\n");
 
-    // Long-string returns are still a legacy-backend-only shape; the fallback
-    // is opt-in on the production path, so this coverage opts in explicitly.
     let llvm = run_cli(&dir, ["compile", "llvm", "long_string.lk"])
-        .env("LK_AOT_LEGACY", "1")
         .output()
         .expect("spawn llvm compile");
     assert!(
@@ -880,17 +877,11 @@ fn test_llvm_compile_lowers_long_string_return_without_vm_shell() {
         "long string return should not call artifact runtime: {ir}"
     );
     assert!(ir.contains("@lk_str_fmt"), "expected string print lowering: {ir}");
-    assert!(
-        ir.contains("@lk_const_heap_str_0"),
-        "expected heap string const lowering: {ir}"
-    );
-    assert!(
-        ir.contains("c\"longer-than-short\\00\""),
-        "expected string bytes lowering: {ir}"
-    );
+    // Long strings lower through the MIR pipeline as interned globals now.
+    assert!(ir.contains("; ModuleID = 'lk_aot'"), "expected MIR pipeline: {ir}");
+    assert!(ir.contains("@lk_str_0"), "expected interned string global: {ir}");
 
     let exe = run_cli(&dir, ["compile", "long_string.lk"])
-        .env("LK_AOT_LEGACY", "1")
         .env("RUSTC", dir.join("missing-rustc"))
         .output()
         .expect("spawn exe compile");
@@ -917,123 +908,40 @@ fn test_llvm_compile_lowers_long_string_return_without_vm_shell() {
 
 #[cfg(feature = "llvm")]
 #[test]
-fn test_llvm_compile_lowers_const_list_return_without_vm_shell() {
-    let dir = unique_tmp_dir("llvm_native_const_list");
+fn test_llvm_compile_rejects_mixed_const_list_shape() {
+    // Mixed-element constant containers are outside the MIR subset (the only
+    // backend since the legacy text backend retired); the compile must fail
+    // loudly with the lowering's Unsupported reason instead of half-working.
+    let dir = unique_tmp_dir("llvm_mixed_const_list");
     ensure_clean_dir(&dir);
     write_file(&dir, "list.lk", "return [1, true, \"longer-than-short\"];\n");
 
-    // Const-list returns are still a legacy-backend-only shape; the fallback
-    // is opt-in on the production path, so this coverage opts in explicitly.
     let llvm = run_cli(&dir, ["compile", "llvm", "list.lk"])
-        .env("LK_AOT_LEGACY", "1")
         .output()
         .expect("spawn llvm compile");
-    assert!(
-        llvm.status.success(),
-        "LLVM IR compile failed: {}",
-        String::from_utf8_lossy(&llvm.stderr)
-    );
-    let ir = fs::read_to_string(dir.join("list.ll")).expect("read LLVM IR");
-    assert!(
-        !ir.contains("@lk_module_json"),
-        "const list return should not embed artifact shell: {ir}"
-    );
-    assert!(
-        !ir.contains("lk_rt_run_module_json"),
-        "const list return should not call artifact runtime: {ir}"
-    );
-    assert!(ir.contains("@lk_str_fmt"), "expected string print lowering: {ir}");
-    assert!(
-        ir.contains("@lk_const_heap_list_0"),
-        "expected const list lowering: {ir}"
-    );
-    assert!(
-        ir.contains("c\"[1, true, longer-than-short]\\00\""),
-        "expected list display bytes lowering: {ir}"
-    );
-
-    let exe = run_cli(&dir, ["compile", "list.lk"])
-        .env("LK_AOT_LEGACY", "1")
-        .env("RUSTC", dir.join("missing-rustc"))
-        .output()
-        .expect("spawn exe compile");
-    assert!(
-        exe.status.success(),
-        "native executable compile failed: {}",
-        String::from_utf8_lossy(&exe.stderr)
-    );
-    let run_exe = Command::new(dir.join("list"))
-        .output()
-        .expect("spawn compiled executable");
-    assert!(
-        run_exe.status.success(),
-        "compiled executable failed: {}",
-        String::from_utf8_lossy(&run_exe.stderr)
-    );
-    assert_eq!(
-        String::from_utf8(run_exe.stdout).expect("utf8 stdout").trim(),
-        "[1, true, longer-than-short]"
-    );
+    assert!(!llvm.status.success(), "mixed const list should not lower natively yet");
+    let stderr = String::from_utf8_lossy(&llvm.stderr);
+    assert!(stderr.contains("MIR lowering:"), "unexpected stderr: {stderr}");
 
     let _ = fs::remove_dir_all(&dir);
 }
 
 #[cfg(feature = "llvm")]
 #[test]
-fn test_llvm_compile_lowers_const_map_return_without_vm_shell() {
-    let dir = unique_tmp_dir("llvm_native_const_map");
+fn test_llvm_compile_rejects_mixed_const_map_shape() {
+    // Mixed-element constant containers are outside the MIR subset (the only
+    // backend since the legacy text backend retired); the compile must fail
+    // loudly with the lowering's Unsupported reason instead of half-working.
+    let dir = unique_tmp_dir("llvm_mixed_const_map");
     ensure_clean_dir(&dir);
     write_file(&dir, "map.lk", "return {\"a\": 1, \"b\": true};\n");
 
-    // Const-map returns are still a legacy-backend-only shape; the fallback
-    // is opt-in on the production path, so this coverage opts in explicitly.
     let llvm = run_cli(&dir, ["compile", "llvm", "map.lk"])
-        .env("LK_AOT_LEGACY", "1")
         .output()
         .expect("spawn llvm compile");
-    assert!(
-        llvm.status.success(),
-        "LLVM IR compile failed: {}",
-        String::from_utf8_lossy(&llvm.stderr)
-    );
-    let ir = fs::read_to_string(dir.join("map.ll")).expect("read LLVM IR");
-    assert!(
-        !ir.contains("@lk_module_json"),
-        "const map return should not embed artifact shell: {ir}"
-    );
-    assert!(
-        !ir.contains("lk_rt_run_module_json"),
-        "const map return should not call artifact runtime: {ir}"
-    );
-    assert!(ir.contains("@lk_str_fmt"), "expected string print lowering: {ir}");
-    assert!(ir.contains("@lk_const_heap_map_0"), "expected const map lowering: {ir}");
-    assert!(
-        ir.contains("c\"{a: 1, b: true}\\00\""),
-        "expected map display bytes lowering: {ir}"
-    );
-
-    let exe = run_cli(&dir, ["compile", "map.lk"])
-        .env("LK_AOT_LEGACY", "1")
-        .env("RUSTC", dir.join("missing-rustc"))
-        .output()
-        .expect("spawn exe compile");
-    assert!(
-        exe.status.success(),
-        "native executable compile failed: {}",
-        String::from_utf8_lossy(&exe.stderr)
-    );
-    let run_exe = Command::new(dir.join("map"))
-        .output()
-        .expect("spawn compiled executable");
-    assert!(
-        run_exe.status.success(),
-        "compiled executable failed: {}",
-        String::from_utf8_lossy(&run_exe.stderr)
-    );
-    assert_eq!(
-        String::from_utf8(run_exe.stdout).expect("utf8 stdout").trim(),
-        "{a: 1, b: true}"
-    );
+    assert!(!llvm.status.success(), "mixed const map should not lower natively yet");
+    let stderr = String::from_utf8_lossy(&llvm.stderr);
+    assert!(stderr.contains("MIR lowering:"), "unexpected stderr: {stderr}");
 
     let _ = fs::remove_dir_all(&dir);
 }

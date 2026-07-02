@@ -147,6 +147,9 @@ pub enum Inst {
     ZextBool { dst: ValueId, src: ValueId },
     /// `dst = !src` — boolean negation (`xor i1 src, true`).
     Not { dst: ValueId, src: ValueId },
+    /// `dst = lhs & rhs` on `Bool` (`and i1`). Used by fused conjunction
+    /// branches (`TestEqIntI2`).
+    BoolAnd { dst: ValueId, lhs: ValueId, rhs: ValueId },
     /// `dst = (src.present != 0)` — extracts a `Maybe`'s present bit as a `Bool`
     /// (true ⇒ the value is present, i.e. not nil). `maybe_ty` is the operand's
     /// `Maybe` type, selecting the carrier struct for the `extractvalue`.
@@ -232,6 +235,11 @@ pub enum Inst {
         handle: ValueId,
         key: ValueId,
     },
+    /// `printf("%s[\n]", value)` — prints a `Str` value to stdout, optionally with
+    /// a trailing newline. Lowered from the `print`/`println` runtime builtins;
+    /// the lowering display-converts and formats the arguments, so codegen only
+    /// ever prints one finished string.
+    PrintStr { value: ValueId, newline: bool },
 }
 
 /// A resolved reference to an ABI function (its `(module, name)` identity).
@@ -531,6 +539,7 @@ fn render_inst(inst: &Inst) -> String {
         Inst::IntToFloat { dst, src } => format!("{} = sitofp {}", v(*dst), v(*src)),
         Inst::ZextBool { dst, src } => format!("{} = zext.bool {}", v(*dst), v(*src)),
         Inst::Not { dst, src } => format!("{} = not {}", v(*dst), v(*src)),
+        Inst::BoolAnd { dst, lhs, rhs } => format!("{} = bool.and {}, {}", v(*dst), v(*lhs), v(*rhs)),
         Inst::MaybePresent { dst, src, maybe_ty } => {
             format!("{} = maybe.present<{}> {}", v(*dst), ty_name(*maybe_ty), v(*src))
         }
@@ -572,6 +581,9 @@ fn render_inst(inst: &Inst) -> String {
         Inst::MapGetMaybeI64F64 { dst, handle, key } => {
             format!("{} = map.i64_f64.get_maybe {}, {}", v(*dst), v(*handle), v(*key))
         }
+        Inst::PrintStr { value, newline } => {
+            format!("print.str{} {}", if *newline { "ln" } else { "" }, v(*value))
+        }
     }
 }
 
@@ -610,6 +622,7 @@ fn inst_def(inst: &Inst) -> Option<ValueId> {
         | Inst::IntToFloat { dst, .. }
         | Inst::ZextBool { dst, .. }
         | Inst::Not { dst, .. }
+        | Inst::BoolAnd { dst, .. }
         | Inst::MaybePresent { dst, .. }
         | Inst::ListGetMaybe { dst, .. }
         | Inst::UnwrapMaybeI64 { dst, .. }
@@ -622,13 +635,17 @@ fn inst_def(inst: &Inst) -> Option<ValueId> {
         | Inst::MapGetMaybeStrF64 { dst, .. }
         | Inst::MapGetMaybeI64F64 { dst, .. } => Some(*dst),
         Inst::Call { dst, .. } | Inst::CallFn { dst, .. } => *dst,
+        Inst::PrintStr { .. } => None,
     }
 }
 
 fn inst_uses(inst: &Inst) -> Vec<ValueId> {
     match inst {
         Inst::Const { .. } => vec![],
-        Inst::IntBin { lhs, rhs, .. } | Inst::FloatBin { lhs, rhs, .. } | Inst::Cmp { lhs, rhs, .. } => {
+        Inst::IntBin { lhs, rhs, .. }
+        | Inst::FloatBin { lhs, rhs, .. }
+        | Inst::Cmp { lhs, rhs, .. }
+        | Inst::BoolAnd { lhs, rhs, .. } => {
             vec![*lhs, *rhs]
         }
         Inst::IntToFloat { src, .. }
@@ -652,6 +669,7 @@ fn inst_uses(inst: &Inst) -> Vec<ValueId> {
             vec![*handle, *key]
         }
         Inst::Call { args, .. } | Inst::CallFn { args, .. } => args.clone(),
+        Inst::PrintStr { value, .. } => vec![*value],
     }
 }
 

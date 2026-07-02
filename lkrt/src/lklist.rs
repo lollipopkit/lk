@@ -97,12 +97,12 @@ pub unsafe extern "C" fn lkrt_lklist_i64_get(handle: *mut c_void, index: i64, pr
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_lklist_i64_set(handle: *mut c_void, index: i64, value: i64) {
     if handle.is_null() {
-        std::process::abort();
+        crate::abi::flush_and_abort();
     }
     // SAFETY: `handle` addresses a `Vec<i64>` from `lkrt_lklist_i64_new`.
     let values = unsafe { &mut *(handle as *mut Vec<i64>) };
     if index < 0 || index as usize >= values.len() {
-        std::process::abort();
+        crate::abi::flush_and_abort();
     }
     values[index as usize] = value;
 }
@@ -115,12 +115,12 @@ pub unsafe extern "C" fn lkrt_lklist_i64_set(handle: *mut c_void, index: i64, va
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_lklist_f64_set(handle: *mut c_void, index: i64, value: f64) {
     if handle.is_null() {
-        std::process::abort();
+        crate::abi::flush_and_abort();
     }
     // SAFETY: `handle` addresses a `Vec<f64>` from `lkrt_lklist_f64_new`.
     let values = unsafe { &mut *(handle as *mut Vec<f64>) };
     if index < 0 || index as usize >= values.len() {
-        std::process::abort();
+        crate::abi::flush_and_abort();
     }
     values[index as usize] = value;
 }
@@ -188,7 +188,7 @@ pub unsafe extern "C" fn lkrt_lklist_str_get_pair(handle: *mut c_void, index: i6
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_maybe_str_unwrap(value: *const c_char, present: i64) -> *const c_char {
     if present == 0 {
-        std::process::abort();
+        crate::abi::flush_and_abort();
     }
     value
 }
@@ -222,7 +222,7 @@ pub unsafe extern "C" fn lkrt_lklist_f64_get_pair(handle: *mut c_void, index: i6
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_maybe_f64_unwrap(value: f64, present: i64) -> f64 {
     if present == 0 {
-        std::process::abort();
+        crate::abi::flush_and_abort();
     }
     value
 }
@@ -236,7 +236,7 @@ pub extern "C" fn lkrt_maybe_f64_unwrap(value: f64, present: i64) -> f64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_maybe_i64_unwrap(value: i64, present: i64) -> i64 {
     if present == 0 {
-        std::process::abort();
+        crate::abi::flush_and_abort();
     }
     value
 }

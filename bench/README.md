@@ -29,9 +29,11 @@ By default the runner measures the same bytecode VM path used by direct
 does not accidentally change the default VM baseline. Use `RUN_AOT=1` to compile
 and measure native AOT as an additional explicit engine. If LLVM is disabled or
 the current workload artifact is not native lowerable yet, AOT is reported as
-skipped and the VM/Lua benchmark still runs. The latest smoke currently skips
-full-suite AOT because native lowering does not yet support a loop-after
-dynamic-map `GetIndex` shape.
+skipped and the VM/Lua benchmark still runs. Since the legacy text backend
+retired, AOT coverage equals the MIR pipeline's subset; the full workload suite
+currently skips AOT (the first blocking shape is the `os.clock` module-call
+timing preamble), so historical AOT numbers below were measured on the retired
+backend and are not reproducible until the MIR pipeline absorbs those shapes.
 
 The runner executes one workload at a time and prints progress to stderr, so a
 slow or stuck workload can be identified directly. Each workload has a timeout

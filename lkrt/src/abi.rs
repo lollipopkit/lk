@@ -5,6 +5,29 @@ use std::{
 
 use crate::state::runtime;
 
+unsafe extern "C" {
+    fn fflush(stream: *mut core::ffi::c_void) -> i32;
+}
+
+/// Fatal-guard abort. Native output goes through C stdio (`printf`), which is
+/// block-buffered when stdout is not a TTY and does **not** flush on `abort()`;
+/// a guard firing after user output must not silently discard what the program
+/// already printed (the VM keeps it), so every abort path flushes all C streams
+/// first (`fflush(NULL)` flushes every open stream).
+pub(crate) fn flush_and_abort() -> ! {
+    // SAFETY: fflush(NULL) is defined by C99 to flush all open output streams.
+    unsafe {
+        fflush(std::ptr::null_mut());
+    }
+    std::process::abort()
+}
+
+/// FFI surface of [`flush_and_abort`] for generated code (`Term::Abort`).
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_abort() {
+    flush_and_abort();
+}
+
 pub(crate) use lk_aot_abi::ABI_VERSION;
 pub(crate) const LKRT_STATUS_OK: i64 = 0;
 pub(crate) const LKRT_STATUS_ERR: i64 = -1;
@@ -27,7 +50,7 @@ pub extern "C" fn lkrt_abi_version() -> i64 {
 pub extern "C" fn lkrt_abi_check(expected: i64) {
     if expected != ABI_VERSION {
         eprintln!("lkrt ABI mismatch: binary built for ABI v{expected}, linked lkrt is v{ABI_VERSION}");
-        std::process::abort();
+        flush_and_abort();
     }
 }
 
@@ -71,6 +94,36 @@ pub unsafe extern "C" fn lkrt_string_free(ptr: *mut c_char) {
     }
 }
 
+/// Runtime `assert(cond)` lowered from AOT builtin calls: a false (zero)
+/// condition is a fatal error, matching the VM's loud `assertion failed` halt.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_assert(cond: i64) {
+    if cond == 0 {
+        eprintln!("assertion failed");
+        flush_and_abort();
+    }
+}
+
+/// `assert(cond, message)` variant: the message is display-converted by the
+/// lowering, so it arrives as a C string.
+///
+/// # Safety
+/// `message` must be null or a NUL-terminated string pointer (an LK string
+/// constant or an lkrt-owned string).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_assert_msg(cond: i64, message: *const c_char) {
+    if cond == 0 {
+        let text = if message.is_null() {
+            String::new()
+        } else {
+            // SAFETY: non-null message pointers are NUL-terminated per the ABI.
+            unsafe { CStr::from_ptr(message) }.to_string_lossy().into_owned()
+        };
+        eprintln!("assertion failed: {text}");
+        flush_and_abort();
+    }
+}
+
 pub(crate) fn c_str(ptr: *const c_char, context: &str) -> Result<String, String> {
     if ptr.is_null() {
         return Err(format!("{context} is null"));
@@ -98,7 +151,7 @@ pub(crate) fn aborting<T>(f: impl FnOnce() -> Result<T, String>) -> T {
         Err(error) => {
             set_last_error(error.clone());
             eprintln!("lkrt error: {error}");
-            std::process::abort();
+            flush_and_abort();
         }
     }
 }

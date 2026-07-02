@@ -564,8 +564,6 @@ fn main() -> anyhow::Result<()> {
                                 target_triple,
                                 run_optimizations: !skip_opt,
                                 opt_level: opt_level_cli.into(),
-                                use_mir_pipeline: None,
-                                allow_legacy_fallback: None,
                             };
                             compile_llvm_ir(&safe, options)?;
                             return Ok(());
@@ -583,8 +581,6 @@ fn main() -> anyhow::Result<()> {
                                 target_triple,
                                 run_optimizations: !skip_opt,
                                 opt_level: opt_level_cli.into(),
-                                use_mir_pipeline: None,
-                                allow_legacy_fallback: None,
                             };
                             compile_executable(&safe, output.as_deref(), options)?;
                             return Ok(());

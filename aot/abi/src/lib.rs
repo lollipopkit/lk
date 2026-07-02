@@ -65,6 +65,13 @@ macro_rules! for_each_abi_fn {
             ("lkrt", "error_clear", lkrt_error_clear, WritesHost, [], Nil);
             ("lkrt", "last_error", lkrt_last_error, ReadsHost, [], StrPtr);
             ("lkrt", "string_free", lkrt_string_free, WritesHost, [StrPtr], Nil);
+            // Fatal-guard abort: flushes C stdio before aborting so a guard firing
+            // after user output does not discard what the program already printed.
+            ("lkrt", "abort", lkrt_abort, WritesHost, [], Nil);
+            // Runtime builtins lowered from `GetGlobal` + `Call` shapes. `assert`
+            // aborts loudly on a false condition, matching the VM's fatal error.
+            ("rt", "assert", lkrt_assert, WritesHost, [I64], Nil);
+            ("rt", "assert_msg", lkrt_assert_msg, WritesHost, [I64, StrPtr], Nil);
             ("socket", "addr", lkrt_socket_addr, Pure, [StrPtr, I64], StrPtr);
             ("tcp", "connect", lkrt_tcp_connect, WritesHost, [StrPtr], I64);
             ("tcp", "read", lkrt_tcp_read, WritesHost, [I64, I64], I64);
@@ -100,81 +107,6 @@ macro_rules! for_each_abi_fn {
             ("os", "epoch", lkrt_os_epoch, ReadsHost, [], I64);
             ("time", "now", lkrt_time_now_ms, ReadsHost, [], I64);
             ("time", "sleep", lkrt_time_sleep_ms, WritesHost, [I64], Nil);
-            // Monomorphized `DynamicList<i64>` container helpers. These are pure: they
-            // only read the source buffer and write the caller-owned destination buffer.
-            ("list.i64", "contains", lkrt_list_i64_contains, Pure, [Ptr, I64, I64], I64);
-            ("list.i64", "index_of", lkrt_list_i64_index_of, Pure, [Ptr, I64, I64], I64);
-            ("list.i64", "reverse", lkrt_list_i64_reverse, Pure, [Ptr, I64, Ptr, Ptr], Nil);
-            ("list.i64", "sort", lkrt_list_i64_sort, Pure, [Ptr, I64, Ptr, Ptr], Nil);
-            ("list.i64", "pop", lkrt_list_i64_pop, Pure, [Ptr, I64], I64);
-            ("list.i64", "slice_range", lkrt_list_i64_slice_range, Pure, [Ptr, I64, I64, I64, Ptr, Ptr], Nil);
-            ("list.i64", "push", lkrt_list_i64_push, Pure, [Ptr, I64, I64, Ptr, Ptr], Nil);
-            ("list.i64", "insert", lkrt_list_i64_insert, Pure, [Ptr, I64, I64, I64, Ptr, Ptr], Nil);
-            ("list.i64", "remove_at", lkrt_list_i64_remove_at, Pure, [Ptr, I64, I64, Ptr, Ptr], I64);
-            ("list.i64", "set", lkrt_list_i64_set, Pure, [Ptr, I64, I64, I64, Ptr, Ptr], I64);
-            ("list.i64", "slice", lkrt_list_i64_slice, Pure, [Ptr, I64, I64, Ptr, Ptr], Nil);
-            ("list.i64", "take", lkrt_list_i64_take, Pure, [Ptr, I64, I64, Ptr, Ptr], Nil);
-            ("list.i64", "concat", lkrt_list_i64_concat, Pure, [Ptr, I64, Ptr, I64, Ptr, Ptr], Nil);
-            ("list.i64", "eq", lkrt_list_i64_eq, Pure, [Ptr, I64, Ptr, I64], I64);
-            // Monomorphized `DynamicList<f64>` container helpers. Same pure contract as
-            // the i64 helpers; comparisons follow `fcmp` (NaN-aware) semantics.
-            ("list.f64", "contains", lkrt_list_f64_contains, Pure, [Ptr, I64, F64], I64);
-            ("list.f64", "index_of", lkrt_list_f64_index_of, Pure, [Ptr, I64, F64], I64);
-            ("list.f64", "reverse", lkrt_list_f64_reverse, Pure, [Ptr, I64, Ptr, Ptr], Nil);
-            ("list.f64", "sort", lkrt_list_f64_sort, Pure, [Ptr, I64, Ptr, Ptr], Nil);
-            ("list.f64", "pop", lkrt_list_f64_pop, Pure, [Ptr, I64], F64);
-            ("list.f64", "slice", lkrt_list_f64_slice, Pure, [Ptr, I64, I64, Ptr, Ptr], Nil);
-            ("list.f64", "slice_range", lkrt_list_f64_slice_range, Pure, [Ptr, I64, I64, I64, Ptr, Ptr], Nil);
-            ("list.f64", "take", lkrt_list_f64_take, Pure, [Ptr, I64, I64, Ptr, Ptr], Nil);
-            ("list.f64", "concat", lkrt_list_f64_concat, Pure, [Ptr, I64, Ptr, I64, Ptr, Ptr], Nil);
-            ("list.f64", "unique", lkrt_list_f64_unique, Pure, [Ptr, I64, Ptr, Ptr], Nil);
-            ("list.f64", "push", lkrt_list_f64_push, Pure, [Ptr, I64, F64, Ptr, Ptr], Nil);
-            ("list.f64", "insert", lkrt_list_f64_insert, Pure, [Ptr, I64, I64, F64, Ptr, Ptr], Nil);
-            ("list.f64", "remove_at", lkrt_list_f64_remove_at, Pure, [Ptr, I64, I64, Ptr, Ptr], F64);
-            ("list.f64", "set", lkrt_list_f64_set, Pure, [Ptr, I64, I64, F64, Ptr, Ptr], F64);
-            // Monomorphized `DynamicList<str>` (C string pointer) container helpers.
-            // Structural ops move pointers; push/insert/set duplicate the injected value.
-            ("list.str", "contains", lkrt_list_str_contains, Pure, [Ptr, I64, StrPtr], I64);
-            ("list.str", "index_of", lkrt_list_str_index_of, Pure, [Ptr, I64, StrPtr], I64);
-            ("list.str", "text_len", lkrt_list_str_text_len, Pure, [Ptr, I64], I64);
-            ("list.str", "reverse", lkrt_list_str_reverse, Pure, [Ptr, I64, Ptr, Ptr], Nil);
-            ("list.str", "sort", lkrt_list_str_sort, Pure, [Ptr, I64, Ptr, Ptr], Nil);
-            ("list.str", "pop", lkrt_list_str_pop, Pure, [Ptr, I64], StrPtr);
-            ("list.str", "slice_range", lkrt_list_str_slice_range, Pure, [Ptr, I64, I64, I64, Ptr, Ptr], Nil);
-            ("list.str", "push", lkrt_list_str_push, Pure, [Ptr, I64, StrPtr, Ptr, Ptr], Nil);
-            ("list.str", "insert", lkrt_list_str_insert, Pure, [Ptr, I64, I64, StrPtr, Ptr, Ptr], Nil);
-            ("list.str", "remove_at", lkrt_list_str_remove_at, Pure, [Ptr, I64, I64, Ptr, Ptr], StrPtr);
-            ("list.str", "set", lkrt_list_str_set, Pure, [Ptr, I64, I64, StrPtr, Ptr, Ptr], StrPtr);
-            ("list.str", "slice", lkrt_list_str_slice, Pure, [Ptr, I64, I64, Ptr, Ptr], Nil);
-            ("list.str", "take", lkrt_list_str_take, Pure, [Ptr, I64, I64, Ptr, Ptr], Nil);
-            ("list.str", "concat", lkrt_list_str_concat, Pure, [Ptr, I64, Ptr, I64, Ptr, Ptr], Nil);
-            // Monomorphized `DynamicMap<i64, V>` lookup/set helpers (parallel key/value
-            // arrays). `lookup` writes the found value through `out` and returns 1/0;
-            // `set` updates in place or appends, returning the new length.
-            ("map.i64", "int_lookup", lkrt_map_i64_int_lookup, Pure, [Ptr, Ptr, I64, I64, Ptr], I64);
-            ("map.i64", "f64_lookup", lkrt_map_i64_f64_lookup, Pure, [Ptr, Ptr, I64, I64, Ptr], I64);
-            ("map.i64", "ptr_lookup", lkrt_map_i64_ptr_lookup, Pure, [Ptr, Ptr, I64, I64, Ptr], I64);
-            ("map.i64", "int_set", lkrt_map_i64_int_set, Pure, [Ptr, Ptr, I64, I64, I64], I64);
-            ("map.i64", "f64_set", lkrt_map_i64_f64_set, Pure, [Ptr, Ptr, I64, I64, F64], I64);
-            ("map.i64", "ptr_set", lkrt_map_i64_ptr_set, Pure, [Ptr, Ptr, I64, I64, StrPtr], I64);
-            // Monomorphized `DynamicMap<str, V>` helpers with a composite short-string key
-            // (string prefix + integer suffix). `split_key` parses a key into that pair;
-            // lookup/set compare with `strcmp(prefix) && number ==`.
-            ("map.str", "split_key", lkrt_map_str_split_key, Pure, [StrPtr, Ptr], I64);
-            ("map.str", "int_lookup", lkrt_map_str_int_lookup, Pure, [Ptr, Ptr, Ptr, I64, StrPtr, I64, Ptr], I64);
-            ("map.str", "int_set", lkrt_map_str_int_set, Pure, [Ptr, Ptr, Ptr, I64, StrPtr, I64, I64], I64);
-            ("map.str", "f64_lookup", lkrt_map_str_f64_lookup, Pure, [Ptr, Ptr, Ptr, I64, StrPtr, I64, Ptr], I64);
-            ("map.str", "f64_set", lkrt_map_str_f64_set, Pure, [Ptr, Ptr, Ptr, I64, StrPtr, I64, F64], I64);
-            ("map.str", "ptr_lookup", lkrt_map_str_ptr_lookup, Pure, [Ptr, Ptr, Ptr, I64, StrPtr, I64, Ptr], I64);
-            ("map.str", "ptr_set", lkrt_map_str_ptr_set, Pure, [Ptr, Ptr, Ptr, I64, StrPtr, I64, StrPtr], I64);
-            ("map.str", "contains", lkrt_map_str_contains, Pure, [Ptr, Ptr, I64, StrPtr, I64], I64);
-            // `DynamicMap<str, V>` compaction delete: copies non-matching entries into a
-            // destination map, writing the removed value through `out_value` / presence
-            // through `out_present`, and returns the destination length.
-            ("map.str", "int_delete", lkrt_map_str_int_delete, Pure, [Ptr, Ptr, Ptr, I64, Ptr, Ptr, Ptr, StrPtr, I64, Ptr, Ptr], I64);
-            ("map.str", "f64_delete", lkrt_map_str_f64_delete, Pure, [Ptr, Ptr, Ptr, I64, Ptr, Ptr, Ptr, StrPtr, I64, Ptr, Ptr], I64);
-            ("map.str", "ptr_delete", lkrt_map_str_ptr_delete, Pure, [Ptr, Ptr, Ptr, I64, Ptr, Ptr, Ptr, StrPtr, I64, Ptr, Ptr], I64);
-            ("fmt", "i64_decimal_len", lkrt_i64_decimal_len, Pure, [I64], I64);
             // Growable `List<i64>` handles (Phase 2 container handle-ification). `new`
             // allocates a handle, `push` appends, `len` counts, `get` indexes with VM
             // semantics (negative-from-end; out-of-range writes `present = 0`).
@@ -278,8 +210,8 @@ mod tests {
 
     #[test]
     fn find_resolves_known_entry() {
-        let f = find("map.str", "int_lookup").expect("known entry");
-        assert_eq!(f.symbol, "lkrt_map_str_int_lookup");
-        assert_eq!(f.result, AbiType::I64);
+        let f = find("map_h", "str_i64_set").expect("known entry");
+        assert_eq!(f.symbol, "lkrt_lkmap_str_i64_set");
+        assert_eq!(f.result, AbiType::Nil);
     }
 }

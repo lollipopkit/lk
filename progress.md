@@ -1,7 +1,55 @@
 # 实现进度
 
-**当前**:正确性优先加固轮(plan.md)**已完成**,workspace **1701 测试全绿**。
-此前:`docs/llvm/aot-redesign.md` 全部落地,MIR 管线为默认后端。
+**当前**:"先补再删"轮**已完成**——MIR 补形状后 legacy text 后端整体退役,
+workspace **1460 测试全绿**(-4.8 万行,~240 legacy 测试退役)。
+
+## "先补再删"轮(本轮)
+
+**补(MIR 新形状)**:
+- `LoadHeapConst::LongString` → 与 `LoadString` 同构(interned global + hex 转义),
+  记入 `const_strs`。
+- `GetGlobal` runtime builtin:`builtin_regs: (block, reg) → Builtin` 侧表
+  (`Ssa::write` 失效,`Move` 传播,不写 SSA 值——其他用途读到 undefined 即拒);
+  `Call`(A=窗口基址,C=参数数)命中 builtin 时下降:
+  - println/print:`print_parts` 在 lower 期精确复刻 `format_variadic_runtime`
+    (`{}` 逐个消耗、缺参保留字面 `{}`、多余参数空格追加且"格式部分非空才加前导
+    空格"——唯一运行时相关的 case(纯 Str 占位符且无字面量)拒绝);动态格式串仅
+    单参形状(输出=原串);非 Str 首参=空格 join。`emit_print` 合并相邻字面量、
+    display 转换、concat 折叠(eager free),新 `Inst::PrintStr{value,newline}`
+    (codegen printf `@lk_str_fmt`/新增 `@lk_str_raw_fmt`)。返回 nil 写窗口基址。
+  - **循环坑**:编译器把循环体格式串外提(loop-literal cache),循环体读到的是
+    未 seal 的 header phi param,`const_strs` 查不到 → `Ssa::reg_const_str`
+    只读回溯到达定义(命中 phi 时**重定向到 phi 自己的 reg/block**——Move 换寄存器;
+    visited 按 (block,reg) 防环;多路径必须同一常量)。
+  - assert(1-2 参):cond 限 `Ty::Bool` → `ZextBool` + `lkrt_assert(_msg)`。
+- `TestEqIntI2`(bench 全套第一道墙):`Exit::FusedCmp2` + MIR `Inst::BoolAnd`,
+  false 边走尾随 Jmp,true 边 fallthrough(与 VM false-branch 应用一致)。
+
+**本轮抓到的真实分歧(差分立刻命中)**:native abort 不 flush C stdio →
+assert 失败/除零前已 printf 的 stdout 整体丢失(VM 保留)。修复:lkrt 所有
+abort 路径统一 `flush_and_abort()`(`fflush(NULL)`),FFI 面 `lkrt_abort`,
+codegen `Term::Abort` 调它。差分用例 `assert_false_after_output` /
+`div_zero_after_output` 锁定。
+
+**删(legacy 退役)**:
+- llvm crate:scalar/(23.8k)、dynamic_containers、straightline_*、subfunction、
+  callee_eval、const_display、diagnostics、intrinsics、ir_text、known_key、
+  map_mutate、output、stdlib_catalog 全删;backend.rs 重写为纯 MIR 管线;
+  options 删 `use_mir_pipeline`/`allow_legacy_fallback`(连同两个 env 开关)。
+- 测试:先把 helper 改为过渡 shim 跑测试分类——26 过(MIR 覆盖,保留)/
+  224 失败(legacy 覆盖,脚本按失败名批量删,注意别吞文件尾的 `mod` 声明);
+  空文件 modules/objects/runtime_builtins 删除。CLI 的 const list/map(混合元素)
+  测试改写为"响亮失败 + MIR reason"断言;long_string 测试改断 MIR 特征。
+- lkrt:containers.rs(~2000 行 legacy 线性容器 helper)+ abi schema 60 条
+  (list.i64/f64/str、map.i64/str、fmt)删除;conformance 自动跟随。
+- 文档:backend.md 重写(单管线架构);aot-redesign.md 状态=已退役;
+  bench README AOT 段更新(历史 AOT 数字标注为退役后端所测,不可复现直到
+  MIR 吸收 os.clock 等模块形状)。
+
+**验证**:workspace 1460 全绿;手写差分 7 组(新增 builtins 16 例)、examples
+3/44(地板断言 ≥3)、fuzz 92/100 两种子、sanitizer 差分零报告、GC stress 全绿。
+
+## 正确性优先加固轮(上轮,plan.md)
 
 ## 正确性优先加固轮(本轮,plan.md)
 

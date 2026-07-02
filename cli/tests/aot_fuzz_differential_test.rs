@@ -369,12 +369,29 @@ impl Generator {
             self.statement(&mut out, "");
         }
 
-        // `println` lowers through GetGlobal, which the MIR pipeline rejects
-        // today; a small share of programs keeps that graceful-Unsupported
-        // path (and lower() totality over it) permanently exercised.
-        if self.rng.chance(8) {
-            let expr = self.int_expr(1);
-            let _ = writeln!(out, "println(\"{{}}\", {expr});");
+        // `println` lowers natively now (GetGlobal builtin + format expansion);
+        // exercise several shapes: `{}` formats, plain values, and extra args.
+        for _ in 0..self.rng.below(3) {
+            match self.rng.below(4) {
+                0 => {
+                    let expr = self.int_expr(1);
+                    let _ = writeln!(out, "println(\"{{}}\", {expr});");
+                }
+                1 => {
+                    let a = self.int_expr(1);
+                    let b = self.int_expr(1);
+                    let _ = writeln!(out, "println(\"a={{}} b={{}}\", {a}, {b});");
+                }
+                2 => {
+                    let ty = self.random_ty();
+                    let expr = self.expr_of(ty, 1);
+                    let _ = writeln!(out, "println({expr});");
+                }
+                _ => {
+                    let expr = self.int_expr(1);
+                    let _ = writeln!(out, "println(\"v:\", {expr}, {});", self.rng.below(61));
+                }
+            }
         }
 
         // Externalize the whole live scalar state through one interpolated
@@ -435,7 +452,6 @@ fn run_case(dir: &std::path::Path, name: &str, source: &str, seed: u64) -> CaseO
     let exe = Command::new(bin_path())
         .current_dir(dir)
         .args(["compile", &file])
-        .env("LK_AOT_MIR", "1")
         .output()
         .expect("spawn native compile");
     let exe_stderr = String::from_utf8_lossy(&exe.stderr).into_owned();

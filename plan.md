@@ -1,9 +1,12 @@
 # 正确性优先计划(llvm lower / VM)
 
-> **状态:全部完成(2026-07-02)**。workspace 1701 测试全绿(基线 1684)。
-> 成果与发现的 bug 见 `handoff.md`;实现细节见 `progress.md` 顶部章节。
+> **状态:全部完成(2026-07-02)**,含后续"先补再删"轮:MIR 补齐
+> println/print/assert/长字符串/TestEqIntI2 后,legacy text 后端整体退役
+> (-4.8 万行,workspace 1460 全绿)。成果见 `handoff.md`,细节见 `progress.md`。
 > 计划外发现:`.lkm` facts 不序列化导致 for 循环运行时错误与 while 死循环
-> (已修,artifact v4);Miri 抓出 lkrt 测试代码一处 Stacked Borrows UB(已修)。
+> (已修,artifact v4);Miri 抓出 lkrt 测试代码一处 Stacked Borrows UB(已修);
+> native abort 丢弃 C stdio 缓冲 stdout(已修,`lkrt_abort` flush)。
+> 「非本轮」中的 clang `-O2` 阻碍已清(现在只有 MIR 一个后端)。
 
 目标:不改变架构骨架(bytecode 单一语义锚 + VM/AOT 双独立实现 + 差分验证),
 把该架构的正确性保障从"手写用例"升级为"系统性防线"。性能工作(-O2、tiering、
