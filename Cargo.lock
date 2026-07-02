@@ -1442,6 +1442,7 @@ name = "lkrt"
 version = "0.1.3"
 dependencies = [
  "lk-aot-abi",
+ "rustc-hash",
 ]
 
 [[package]]

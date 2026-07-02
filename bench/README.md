@@ -33,14 +33,16 @@ skipped and the VM/Lua benchmark still runs. Since the legacy text backend
 retired, AOT coverage equals the MIR pipeline's subset. As of 2026-07-02 the
 MIR pipeline compiles the **full 20-workload suite** (module builtins, mutable
 globals, range-for, fused arithmetic, string-keyed maps, method dispatch), all
-20 checksums match the VM, and a single-sample dist-build comparison measured
-**AOT/VM geomean 0.329x** — on par with the retired backend's historical
-0.331x, now via clang `-O2`. Per-workload: scalar/control-flow workloads run
-at 0.02x–0.19x of VM time; the five dynamic string-key map workloads
-(two_sum_map, histogram_group_count, log_parse_filter, inventory_reorder,
-event_join_by_id) are 2.0–3.5x *slower* than the VM — the known lkrt
-string-map bottleneck (per-operation global-lock arena registration plus
-`CStr`→`String` conversions), the next native performance target.
+20 checksums match the VM, and a min-of-3 dist-build comparison measured
+**AOT/VM geomean ≈0.26x** (previously 0.329x). The former lkrt string-map
+bottleneck is fixed: the runtime arena is thread-local (no per-operation
+global lock), arena registry and map handles use FxHash, `str.concat_i64`
+builds composite/template int-suffix strings in one allocation, and the
+`set_ik` map ABI stores composite keys with no key allocation at all. The five
+dynamic string-key map workloads (two_sum_map, histogram_group_count,
+log_parse_filter, inventory_reorder, event_join_by_id) went from 2.0–3.5x
+*slower* than the VM to **0.79–1.04x** (geomean ≈0.89x); scalar/control-flow
+workloads stay at 0.02x–0.24x.
 
 The runner executes one workload at a time and prints progress to stderr, so a
 slow or stuck workload can be identified directly. Each workload has a timeout
@@ -415,7 +417,6 @@ Primary bottlenecks:
   copies
 - String conversion and string-key construction
 - Map/list memory layout and cache locality
-- AOT dynamic string-key map helpers and template string construction
 
 ## Files
 

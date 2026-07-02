@@ -3,7 +3,7 @@ use std::{
     ffi::{CStr, CString, c_char},
 };
 
-use crate::state::runtime;
+use crate::state::with_runtime;
 
 unsafe extern "C" {
     fn fflush(stream: *mut core::ffi::c_void) -> i32;
@@ -69,7 +69,7 @@ pub extern "C" fn lkrt_error_clear() {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_cleanup() {
-    runtime().lock().expect("lkrt runtime poisoned").cleanup();
+    with_runtime(|rt| rt.cleanup());
 }
 
 /// Frees an arena-registered string returned by an lkrt function. Unregistered
@@ -84,7 +84,7 @@ pub unsafe extern "C" fn lkrt_string_free(ptr: *mut c_char) {
     if ptr.is_null() {
         return;
     }
-    if !runtime().lock().expect("lkrt runtime poisoned").unregister_string(ptr) {
+    if !with_runtime(|rt| rt.unregister_string(ptr)) {
         return;
     }
     // SAFETY: The pointer must come from an lkrt function that returned a
@@ -92,6 +92,24 @@ pub unsafe extern "C" fn lkrt_string_free(ptr: *mut c_char) {
     unsafe {
         drop(CString::from_raw(ptr));
     }
+}
+
+/// Runtime `panic(message)` lowered from AOT builtin calls: always fatal,
+/// matching the VM's loud panic halt (the message text goes to stderr; the
+/// VM additionally prints a backtrace, which stderr comparisons don't cover).
+///
+/// # Safety
+/// `message` must be null or a NUL-terminated string pointer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_panic(message: *const c_char) {
+    let text = if message.is_null() {
+        String::new()
+    } else {
+        // SAFETY: non-null message pointers are NUL-terminated per the ABI.
+        unsafe { CStr::from_ptr(message) }.to_string_lossy().into_owned()
+    };
+    eprintln!("{text}");
+    flush_and_abort();
 }
 
 /// Runtime `assert(cond)` lowered from AOT builtin calls: a false (zero)
@@ -141,7 +159,7 @@ pub(crate) fn owned_c_string(value: impl AsRef<str>) -> Result<*mut c_char, Stri
     let ptr = CString::new(value.as_ref())
         .map(CString::into_raw)
         .map_err(|_| "string contains interior NUL byte".to_string())?;
-    runtime().lock().expect("lkrt runtime poisoned").register_string(ptr);
+    with_runtime(|rt| rt.register_string(ptr));
     Ok(ptr)
 }
 
@@ -191,6 +209,6 @@ fn owned_c_string_lossy(value: impl AsRef<str>) -> *mut c_char {
     let ptr = CString::new(sanitized)
         .expect("sanitized lkrt error string has no interior NUL")
         .into_raw();
-    runtime().lock().expect("lkrt runtime poisoned").register_string(ptr);
+    with_runtime(|rt| rt.register_string(ptr));
     ptr
 }

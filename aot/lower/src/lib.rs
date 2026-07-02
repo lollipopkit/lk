@@ -124,6 +124,10 @@ enum Builtin {
     Println,
     Print,
     Assert,
+    AssertEq,
+    AssertNe,
+    Panic,
+    Typeof,
     /// `__lk_call_method(receiver, name, args_list)` — the compiler's generic
     /// method-dispatch entry; lowered per (receiver type, method name).
     CallMethod,
@@ -146,6 +150,12 @@ enum GlobalRef {
     /// the compiler's `SetGlobal` storage of top-level `fn` declarations
     /// (direct calls address the callee by index instead).
     UserFn,
+    /// A capture-free closure (`MakeClosure` with `capture_count == 0`) — a
+    /// statically known function reference. Supported consumers: an indirect
+    /// `Call` through the register (lowered as a direct call) and the entry
+    /// prefix's `SetGlobal` storage of a top-level `let f = |x| …` (readable
+    /// back via `GetGlobal` when the slot is written exactly once).
+    Lambda(u32),
     /// A `NewList` argument pack: the compiler boxes method-call arguments
     /// into a list; the lowering keeps the raw elements so method dispatch can
     /// consume them without materializing a runtime list.
@@ -280,6 +290,10 @@ struct SigInfer {
     /// globals to nil while native storage zero-initializes, so a read that
     /// could observe the pre-first-write value must reject.
     initialized_globals: Vec<bool>,
+    /// Slots holding a top-level capture-free closure (`let f = |x| …`):
+    /// assigned exactly once, in the entry prefix, from a zero-capture
+    /// `MakeClosure`. Reading such a slot yields [`GlobalRef::Lambda`].
+    lambda_globals: Vec<Option<u32>>,
     /// Diagnostic names for the mutable-global table (slot-indexed).
     global_names: Vec<String>,
     /// Final compact `slot → gvar` numbering, built once signatures converge
@@ -321,6 +335,7 @@ pub fn lower(artifact: &ModuleArtifact) -> Result<MirModule, Unsupported> {
         conflict: false,
         global_tys: vec![None; global_count],
         initialized_globals: prescan_initialized_globals(module, global_count),
+        lambda_globals: prescan_lambda_globals(module, global_count),
         global_names: module.globals.clone(),
         gvar_of: std::collections::HashMap::new(),
     };
@@ -409,6 +424,108 @@ pub fn lower(artifact: &ModuleArtifact) -> Result<MirModule, Unsupported> {
 /// initialization (native storage zero-initializes instead), so only these
 /// slots are readable via `GetGlobal`. Runtime-builtin `Call`s (println,
 /// os.clock, …) cannot read user globals and do not stop the scan.
+/// Finds module-global slots that hold a top-level capture-free closure:
+/// written exactly once in the whole module, in the entry prefix (same
+/// straight-line region as [`prescan_initialized_globals`]), from the result
+/// of a zero-capture `MakeClosure`. Only such slots may resolve to
+/// [`GlobalRef::Lambda`] on `GetGlobal` — a slot with any other write could be
+/// observed with a different value at runtime.
+fn prescan_lambda_globals(module: &lk_core::vm::ModuleData, global_count: usize) -> Vec<Option<u32>> {
+    let mut candidates: Vec<Option<u32>> = vec![None; global_count];
+    let mut write_counts = vec![0usize; global_count];
+    for func in &module.functions {
+        for raw in &func.code {
+            let Ok(instr) = Instr::try_from_raw(*raw) else {
+                break;
+            };
+            if instr.opcode() == Opcode::SetGlobal
+                && let Some(count) = write_counts.get_mut(instr.bx() as usize)
+            {
+                *count += 1;
+            }
+        }
+    }
+    let Some(entry) = module.functions.get(module.entry as usize) else {
+        return vec![None; global_count];
+    };
+    // Register → zero-capture closure function index, tracked through the
+    // entry prefix (`Move` propagates, any other write clears).
+    let mut lambda_regs: std::collections::HashMap<u8, u32> = std::collections::HashMap::new();
+    for raw in &entry.code {
+        let Ok(instr) = Instr::try_from_raw(*raw) else {
+            break;
+        };
+        match instr.opcode() {
+            Opcode::MakeClosure => {
+                let fidx = instr.b() as usize;
+                let zero_capture = module.functions.get(fidx).is_some_and(|f| f.capture_count == 0);
+                if zero_capture {
+                    lambda_regs.insert(instr.a(), fidx as u32);
+                } else {
+                    lambda_regs.remove(&instr.a());
+                }
+            }
+            Opcode::Move => {
+                match lambda_regs.get(&instr.b()).copied() {
+                    Some(fidx) => lambda_regs.insert(instr.a(), fidx),
+                    None => lambda_regs.remove(&instr.a()),
+                };
+            }
+            Opcode::Move2 => {
+                // `a ← b`, then `b ← c` — both destinations must be retracked.
+                match lambda_regs.get(&instr.b()).copied() {
+                    Some(fidx) => lambda_regs.insert(instr.a(), fidx),
+                    None => lambda_regs.remove(&instr.a()),
+                };
+                match lambda_regs.get(&instr.c()).copied() {
+                    Some(fidx) => lambda_regs.insert(instr.b(), fidx),
+                    None => lambda_regs.remove(&instr.b()),
+                };
+            }
+            Opcode::SetGlobal => {
+                let slot = instr.bx() as usize;
+                if let (Some(&fidx), Some(candidate)) = (lambda_regs.get(&instr.a()), candidates.get_mut(slot)) {
+                    *candidate = Some(fidx);
+                }
+            }
+            // Same prefix boundary as `prescan_initialized_globals`.
+            Opcode::Jmp
+            | Opcode::Test
+            | Opcode::BrFalse
+            | Opcode::BrTrue
+            | Opcode::BrNil
+            | Opcode::BrNotNil
+            | Opcode::BrEqZeroInt
+            | Opcode::BrNeZeroInt
+            | Opcode::BrEqIntI4
+            | Opcode::BrNeIntI4
+            | Opcode::BrModEqZeroIntI4
+            | Opcode::BrModNeZeroIntI4
+            | Opcode::ForLoopI
+            | Opcode::Return
+            | Opcode::Return0
+            | Opcode::Return1
+            | Opcode::CallDirect
+            | Opcode::CallNamed
+            | Opcode::TryBegin
+            | Opcode::Raise => break,
+            op if op.is_compare_test() => break,
+            _ => {
+                // Any other write to a tracked register invalidates it. The
+                // instruction encodings vary; conservatively clear `a` for
+                // every remaining opcode (no tracked pattern writes elsewhere).
+                lambda_regs.remove(&instr.a());
+            }
+        }
+    }
+    for (candidate, count) in candidates.iter_mut().zip(&write_counts) {
+        if *count != 1 {
+            *candidate = None;
+        }
+    }
+    candidates
+}
+
 fn prescan_initialized_globals(module: &lk_core::vm::ModuleData, global_count: usize) -> Vec<bool> {
     let mut initialized = vec![false; global_count];
     let Some(entry) = module.functions.get(module.entry as usize) else {
@@ -466,14 +583,27 @@ fn reachable_functions(module: &lk_core::vm::ModuleData) -> Vec<bool> {
     reachable[entry] = true;
     while let Some(fi) = stack.pop() {
         for raw in &module.functions[fi].code {
-            if let Ok(instr) = Instr::try_from_raw(*raw)
-                && instr.opcode() == Opcode::CallDirect
-            {
-                let callee = instr.b() as usize;
-                if callee < n && !reachable[callee] {
-                    reachable[callee] = true;
-                    stack.push(callee);
+            let Ok(instr) = Instr::try_from_raw(*raw) else {
+                continue;
+            };
+            // A zero-capture `MakeClosure` target is indirectly callable
+            // (`GlobalRef::Lambda`), so it must be lowered/emitted too;
+            // capturing closures reject their defining function anyway.
+            let callee = match instr.opcode() {
+                Opcode::CallDirect => instr.b() as usize,
+                Opcode::MakeClosure
+                    if module
+                        .functions
+                        .get(instr.b() as usize)
+                        .is_some_and(|f| f.capture_count == 0) =>
+                {
+                    instr.b() as usize
                 }
+                _ => continue,
+            };
+            if callee < n && !reachable[callee] {
+                reachable[callee] = true;
+                stack.push(callee);
             }
         }
     }
@@ -1668,6 +1798,81 @@ fn rel(pc: usize, offset: i32, code_len: usize) -> Option<usize> {
     }
 }
 
+/// Lowers a call to user function `callee_idx` with the register-window layout
+/// shared by `CallDirect` and indirect `Call` (callee/result at `dst_reg`,
+/// args at `[dst_reg+1, dst_reg+1+argc)`): reads the typed arguments, refines
+/// the callee's per-callsite-monomorphized signature, and writes the typed
+/// result.
+#[allow(clippy::too_many_arguments)]
+fn lower_user_call(
+    ssa: &mut Ssa,
+    insts: &mut Vec<Inst>,
+    funcs: &[FunctionData],
+    entry: u32,
+    sig: &mut SigInfer,
+    callee_idx: usize,
+    dst_reg: u8,
+    argc: usize,
+    block: usize,
+    pc: usize,
+) -> Result<(), Unsupported> {
+    if callee_idx >= funcs.len() || callee_idx == entry as usize {
+        return Err(Unsupported::Opcode {
+            pc,
+            op: Opcode::CallDirect,
+        });
+    }
+    if argc != funcs[callee_idx].param_count as usize {
+        return Err(Unsupported::Opcode {
+            pc,
+            op: Opcode::CallDirect,
+        });
+    }
+    let mut args = Vec::with_capacity(argc);
+    for i in 0..argc {
+        let arg_reg = dst_reg.wrapping_add(1).wrapping_add(i as u8);
+        let (aval, aty) = read_scalar(ssa, insts, arg_reg, block, pc)?;
+        // `Str` and container handles pass as `ptr` (arena-owned until
+        // exit, so no ownership transfer is involved). `Maybe` carriers
+        // and nil stay out of the function ABI.
+        if matches!(aty, Ty::Nil | Ty::MaybeI64 | Ty::MaybeF64 | Ty::MaybeStr) {
+            return Err(Unsupported::TypeMismatch { pc });
+        }
+        // Refine the callee's parameter type from this observed argument.
+        if let Some(slot) = sig.param_obs.get_mut(callee_idx).and_then(|p| p.get_mut(i)) {
+            match slot {
+                None => *slot = Some(aty),
+                Some(prev) if *prev != aty => sig.conflict = true,
+                Some(_) => {}
+            }
+        }
+        args.push(aval);
+    }
+    let ret = sig.ret_types.get(callee_idx).copied().unwrap_or(Ty::I64);
+    if ret == Ty::Nil {
+        insts.push(Inst::CallFn {
+            dst: None,
+            func: FuncId(callee_idx as u32),
+            args,
+        });
+        let nil = ssa.new_val();
+        insts.push(Inst::Const {
+            dst: nil,
+            value: Const::Nil,
+        });
+        ssa.write(dst_reg, block, (nil, Ty::Nil));
+    } else {
+        let dst = ssa.new_val();
+        insts.push(Inst::CallFn {
+            dst: Some(dst),
+            func: FuncId(callee_idx as u32),
+            args,
+        });
+        ssa.write(dst_reg, block, (dst, ret));
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn lower_inst(
     ssa: &mut Ssa,
@@ -1749,6 +1954,34 @@ fn lower_inst(
                 let second = ssa.read(instr.c(), block, pc)?;
                 ssa.write(instr.b(), block, second);
             }
+        }
+        Opcode::IsNil => {
+            // `a` = dst, `b` = src. The statically-typed subset resolves most nil
+            // tests at lower time: concrete scalars are never nil, `Nil` always
+            // is; a Maybe carrier (dynamic map/list read) tests its present bit.
+            let (v, ty) = ssa.read(instr.b(), block, pc)?;
+            let dst = ssa.new_val();
+            match ty {
+                Ty::Nil => insts.push(Inst::Const {
+                    dst,
+                    value: Const::Bool(true),
+                }),
+                Ty::I64 | Ty::F64 | Ty::Bool | Ty::Str => insts.push(Inst::Const {
+                    dst,
+                    value: Const::Bool(false),
+                }),
+                Ty::MaybeI64 | Ty::MaybeF64 | Ty::MaybeStr | Ty::MaybeBool => {
+                    let present = ssa.new_val();
+                    insts.push(Inst::MaybePresent {
+                        dst: present,
+                        src: v,
+                        maybe_ty: ty,
+                    });
+                    insts.push(Inst::Not { dst, src: present });
+                }
+                _ => return Err(Unsupported::TypeMismatch { pc }),
+            }
+            ssa.write(instr.a(), block, (dst, Ty::Bool));
         }
         Opcode::Not => {
             // `!x`: `a` = dst, `b` = src. The VM negates a `Bool` and treats `Nil` as
@@ -1854,8 +2087,10 @@ fn lower_inst(
         Opcode::GetIndexStrI | Opcode::SetIndexStrI => {
             // Composite string-int key access (`m["n${i}"]`): the key is the
             // compiler-proven constant prefix plus the decimal suffix register.
-            // Built as `concat(prefix, i64_to_str(suffix))`; the map ABI copies
-            // the key, so the fresh temporary frees right after the call.
+            // A store passes (prefix, suffix) straight to the `set_ik` ABI (key
+            // built on the stack inside lkrt, nothing to free); a load builds
+            // the key via `concat_i64` in one allocation, and the fresh
+            // temporary frees right after the map call.
             let Some(key_fact) = func.performance.known_key(pc).and_then(|fact| fact.string_int) else {
                 return Err(Unsupported::Opcode { pc, op: instr.opcode() });
             };
@@ -1873,33 +2108,25 @@ fn lower_inst(
             };
             let (handle, map_ty) = ssa.read(map_reg, block, pc)?;
             let suffix = ssa.read_typed(suffix_reg, block, Ty::I64, pc)?;
-            let suffix_str = ssa.new_val();
-            insts.push(Inst::Call {
-                dst: Some(suffix_str),
-                callee: AbiRef::new("str", "from_i64"),
-                args: vec![suffix],
-            });
-            let key = ssa.new_val();
-            insts.push(Inst::Call {
-                dst: Some(key),
-                callee: AbiRef::new("str", "concat"),
-                args: vec![prefix_v, suffix_str],
-            });
-            free_owned_str(insts, suffix_str);
             if is_set {
                 let (value, value_ty) = ssa.read(instr.c(), block, pc)?;
                 let set_fn = match (map_ty, value_ty) {
-                    (Ty::MapStrI64, Ty::I64) => "str_i64_set",
-                    (Ty::MapStrF64, Ty::F64) => "str_f64_set",
+                    (Ty::MapStrI64, Ty::I64) => "str_i64_set_ik",
+                    (Ty::MapStrF64, Ty::F64) => "str_f64_set_ik",
                     _ => return Err(Unsupported::TypeMismatch { pc }),
                 };
                 insts.push(Inst::Call {
                     dst: None,
                     callee: AbiRef::new("map_h", set_fn),
-                    args: vec![handle, key, value],
+                    args: vec![handle, prefix_v, suffix, value],
                 });
-                free_owned_str(insts, key);
             } else {
+                let key = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(key),
+                    callee: AbiRef::new("str", "concat_i64"),
+                    args: vec![prefix_v, suffix],
+                });
                 let dst = ssa.new_val();
                 let maybe_ty = match map_ty {
                     Ty::MapStrI64 => {
@@ -2096,56 +2323,18 @@ fn lower_inst(
             // (`sig.conflict` → whole-module fallback). The result takes the callee's
             // inferred return type, so `f64`/`bool`-returning calls type correctly.
             let callee_idx = instr.b() as usize;
-            if callee_idx >= funcs.len() || callee_idx == entry as usize {
-                return Err(Unsupported::Opcode { pc, op: instr.opcode() });
-            }
-            let argc = instr.c() as usize;
-            if argc != funcs[callee_idx].param_count as usize {
-                return Err(Unsupported::Opcode { pc, op: instr.opcode() });
-            }
-            let dst_reg = instr.a();
-            let mut args = Vec::with_capacity(argc);
-            for i in 0..argc {
-                let arg_reg = dst_reg.wrapping_add(1).wrapping_add(i as u8);
-                let (aval, aty) = read_scalar(ssa, insts, arg_reg, block, pc)?;
-                // `Str` and container handles pass as `ptr` (arena-owned until
-                // exit, so no ownership transfer is involved). `Maybe` carriers
-                // and nil stay out of the function ABI.
-                if matches!(aty, Ty::Nil | Ty::MaybeI64 | Ty::MaybeF64 | Ty::MaybeStr) {
-                    return Err(Unsupported::TypeMismatch { pc });
-                }
-                // Refine the callee's parameter type from this observed argument.
-                if let Some(slot) = sig.param_obs.get_mut(callee_idx).and_then(|p| p.get_mut(i)) {
-                    match slot {
-                        None => *slot = Some(aty),
-                        Some(prev) if *prev != aty => sig.conflict = true,
-                        Some(_) => {}
-                    }
-                }
-                args.push(aval);
-            }
-            let ret = sig.ret_types.get(callee_idx).copied().unwrap_or(Ty::I64);
-            if ret == Ty::Nil {
-                insts.push(Inst::CallFn {
-                    dst: None,
-                    func: FuncId(callee_idx as u32),
-                    args,
-                });
-                let nil = ssa.new_val();
-                insts.push(Inst::Const {
-                    dst: nil,
-                    value: Const::Nil,
-                });
-                ssa.write(dst_reg, block, (nil, Ty::Nil));
-            } else {
-                let dst = ssa.new_val();
-                insts.push(Inst::CallFn {
-                    dst: Some(dst),
-                    func: FuncId(callee_idx as u32),
-                    args,
-                });
-                ssa.write(dst_reg, block, (dst, ret));
-            }
+            lower_user_call(
+                ssa,
+                insts,
+                funcs,
+                entry,
+                sig,
+                callee_idx,
+                instr.a(),
+                instr.c() as usize,
+                block,
+                pc,
+            )?;
         }
         // Direct calls address the callee by index, so the loaded function
         // value itself only flows into the compiler's global-table storage
@@ -2153,11 +2342,34 @@ fn lower_inst(
         Opcode::LoadFunction => {
             ssa.builtin_regs.insert((block, instr.a()), GlobalRef::UserFn);
         }
+        Opcode::MakeClosure => {
+            // `a` = dst, `b` = function index, `c` = capture window base. A
+            // zero-capture closure is a statically known function reference
+            // (no environment); capturing closures need cell storage and stay
+            // unsupported.
+            let fidx = instr.b() as usize;
+            let callee = funcs.get(fidx).ok_or(Unsupported::BadConst { pc })?;
+            if callee.capture_count != 0 {
+                return Err(Unsupported::Opcode { pc, op: instr.opcode() });
+            }
+            ssa.builtin_regs
+                .insert((block, instr.a()), GlobalRef::Lambda(fidx as u32));
+        }
         Opcode::SetGlobal => {
             // Storing a function value into the global table is the compiler's
             // top-level `fn` bookkeeping — a no-op natively.
             if let Some(GlobalRef::UserFn) = ssa.builtin_regs.get(&(block, instr.a())) {
                 return Ok(());
+            }
+            // A top-level `let f = |x| …` stores a lambda ref: a no-op when the
+            // prescan proved the slot single-assigned with this exact closure
+            // (readers resolve it statically); anything else would let readers
+            // observe a stale ref, so it rejects.
+            if let Some(GlobalRef::Lambda(fidx)) = ssa.builtin_regs.get(&(block, instr.a())) {
+                if sig.lambda_globals.get(instr.bx() as usize).copied().flatten() == Some(*fidx) {
+                    return Ok(());
+                }
+                return Err(Unsupported::Opcode { pc, op: instr.opcode() });
             }
             // Writing a global whose *name* this lowering recognizes would let
             // later `GetGlobal` reads resolve to the stale builtin/module
@@ -2166,7 +2378,10 @@ fn lower_inst(
             let slot = instr.bx();
             let name = module_globals.get(slot as usize).map(String::as_str);
             if let Some(name) = name
-                && (matches!(name, "println" | "print" | "assert") || MODULE_GLOBALS.contains(&name))
+                && (matches!(
+                    name,
+                    "println" | "print" | "assert" | "assert_eq" | "assert_ne" | "panic" | "typeof"
+                ) || MODULE_GLOBALS.contains(&name))
             {
                 return Err(Unsupported::Opcode { pc, op: instr.opcode() });
             }
@@ -2200,12 +2415,23 @@ fn lower_inst(
                 Some("println") => Some(GlobalRef::Builtin(Builtin::Println)),
                 Some("print") => Some(GlobalRef::Builtin(Builtin::Print)),
                 Some("assert") => Some(GlobalRef::Builtin(Builtin::Assert)),
+                Some("assert_eq") => Some(GlobalRef::Builtin(Builtin::AssertEq)),
+                Some("assert_ne") => Some(GlobalRef::Builtin(Builtin::AssertNe)),
+                Some("panic") => Some(GlobalRef::Builtin(Builtin::Panic)),
+                Some("typeof") => Some(GlobalRef::Builtin(Builtin::Typeof)),
                 Some("__lk_call_method") => Some(GlobalRef::Builtin(Builtin::CallMethod)),
                 Some(name) if MODULE_GLOBALS.contains(&name) => Some(GlobalRef::Module(name.to_string())),
                 _ => None,
             };
             if let Some(global_ref) = global_ref {
                 ssa.builtin_regs.insert((block, instr.a()), global_ref);
+                return Ok(());
+            }
+            // A single-assignment top-level lambda slot resolves statically to
+            // its function reference (initialization-order safe: the prescan
+            // only accepts entry-prefix writes, which precede any user call).
+            if let Some(fidx) = sig.lambda_globals.get(slot as usize).copied().flatten() {
+                ssa.builtin_regs.insert((block, instr.a()), GlobalRef::Lambda(fidx));
                 return Ok(());
             }
             let initialized = sig.initialized_globals.get(slot as usize).copied().unwrap_or(false);
@@ -2238,6 +2464,23 @@ fn lower_inst(
                 }
                 Some(GlobalRef::ModuleFn(module, name)) => {
                     lower_module_call(ssa, insts, &module, &name, base, instr.c() as usize, block, pc)?;
+                }
+                // An indirect call through a statically known capture-free
+                // closure devirtualizes to a direct call (same register-window
+                // layout: result at `base`, args at `[base+1, base+1+c)`).
+                Some(GlobalRef::Lambda(fidx)) => {
+                    lower_user_call(
+                        ssa,
+                        insts,
+                        funcs,
+                        entry,
+                        sig,
+                        fidx as usize,
+                        base,
+                        instr.c() as usize,
+                        block,
+                        pc,
+                    )?;
                 }
                 Some(GlobalRef::Module(_)) | Some(GlobalRef::UserFn) | Some(GlobalRef::ArgList(_)) | None => {
                     return Err(Unsupported::Opcode { pc, op: instr.opcode() });
@@ -2274,23 +2517,14 @@ fn lower_inst(
         }
         Opcode::ConcatString => {
             // `a` = dst, `b` = lhs, `c` = rhs. Concatenate `display(lhs) ++
-            // display(rhs)` (each operand display-converted, as the VM does).
+            // display(rhs)` (each operand display-converted, as the VM does);
+            // an int rhs fuses into a single `concat_i64` call.
             let (lv, lty) = ssa.read(instr.b(), block, pc)?;
             let (rv, rty) = ssa.read(instr.c(), block, pc)?;
             let (l, l_fresh) = to_display_str(ssa, insts, globals, lv, lty, pc)?;
-            let (r, r_fresh) = to_display_str(ssa, insts, globals, rv, rty, pc)?;
-            let dst = ssa.new_val();
-            insts.push(Inst::Call {
-                dst: Some(dst),
-                callee: AbiRef::new("str", "concat"),
-                args: vec![l, r],
-            });
-            // Display temporaries are dead once concatenated — free them.
+            let dst = concat_display(ssa, insts, globals, l, rv, rty, pc)?;
             if l_fresh {
                 free_owned_str(insts, l);
-            }
-            if r_fresh {
-                free_owned_str(insts, r);
             }
             ssa.write(instr.a(), block, (dst, Ty::Str));
         }
@@ -2298,37 +2532,11 @@ fn lower_inst(
             // `a` = dst, `b` = first element register, `c` = element count. The VM
             // display-converts each element then concatenates; each element is
             // display-converted (`Str`/`Int`/`Bool`) and folded via repeated
-            // `str_concat`. A float/other element rejects (falls back).
+            // `str_concat` — int elements fuse into `concat_i64` (no suffix
+            // temporary). A float/other element rejects (falls back).
             let start = instr.b();
             let count = instr.c() as usize;
-            let mut vals = Vec::with_capacity(count);
-            for i in 0..count {
-                let (v, ty) = ssa.read(start.wrapping_add(i as u8), block, pc)?;
-                vals.push(to_display_str(ssa, insts, globals, v, ty, pc)?);
-            }
-            let result = if let Some((&(first, first_fresh), rest)) = vals.split_first() {
-                let mut acc = first;
-                let mut acc_fresh = first_fresh;
-                for &(v, fresh) in rest {
-                    let dst = ssa.new_val();
-                    insts.push(Inst::Call {
-                        dst: Some(dst),
-                        callee: AbiRef::new("str", "concat"),
-                        args: vec![acc, v],
-                    });
-                    // The consumed accumulator and element temporary are dead;
-                    // free the ones this lowering allocated.
-                    if acc_fresh {
-                        free_owned_str(insts, acc);
-                    }
-                    if fresh {
-                        free_owned_str(insts, v);
-                    }
-                    acc = dst;
-                    acc_fresh = true;
-                }
-                acc
-            } else {
+            let result = if count == 0 {
                 // Empty concat → the empty string.
                 let gid = intern_global(globals, "");
                 let dst = ssa.new_val();
@@ -2337,6 +2545,21 @@ fn lower_inst(
                     value: Const::Str(GlobalId(gid)),
                 });
                 dst
+            } else {
+                let (v0, ty0) = ssa.read(start, block, pc)?;
+                let (mut acc, mut acc_fresh) = to_display_str(ssa, insts, globals, v0, ty0, pc)?;
+                for i in 1..count {
+                    let (v, ty) = ssa.read(start.wrapping_add(i as u8), block, pc)?;
+                    let dst = concat_display(ssa, insts, globals, acc, v, ty, pc)?;
+                    // The consumed accumulator is dead; free it if this
+                    // lowering allocated it.
+                    if acc_fresh {
+                        free_owned_str(insts, acc);
+                    }
+                    acc = dst;
+                    acc_fresh = true;
+                }
+                acc
             };
             ssa.write(instr.a(), block, (result, Ty::Str));
         }
@@ -3154,6 +3377,41 @@ fn to_display_str(
     }
 }
 
+/// Emits `acc ++ display(v)`. An `I64` operand fuses into a single
+/// `str.concat_i64` call (no intermediate suffix string); every other display
+/// type goes through [`to_display_str`] + `str.concat`, eagerly freeing the
+/// fresh display temporary.
+fn concat_display(
+    ssa: &mut Ssa,
+    insts: &mut Vec<Inst>,
+    globals: &mut Vec<String>,
+    acc: ValueId,
+    v: ValueId,
+    ty: Ty,
+    pc: usize,
+) -> Result<ValueId, Unsupported> {
+    if ty == Ty::I64 {
+        let dst = ssa.new_val();
+        insts.push(Inst::Call {
+            dst: Some(dst),
+            callee: AbiRef::new("str", "concat_i64"),
+            args: vec![acc, v],
+        });
+        return Ok(dst);
+    }
+    let (s, fresh) = to_display_str(ssa, insts, globals, v, ty, pc)?;
+    let dst = ssa.new_val();
+    insts.push(Inst::Call {
+        dst: Some(dst),
+        callee: AbiRef::new("str", "concat"),
+        args: vec![acc, s],
+    });
+    if fresh {
+        free_owned_str(insts, s);
+    }
+    Ok(dst)
+}
+
 /// Frees a fresh, lower-created string temporary that has been fully consumed.
 /// Sound only for values invisible to user code (display temporaries and
 /// intermediate concat accumulators).
@@ -3187,6 +3445,217 @@ fn lower_builtin_call(
         Builtin::CallMethod => {
             // Dispatched by the caller before reaching here.
             return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+        }
+        Builtin::Panic => {
+            // `panic(args…)`: the message is the space-joined display of the
+            // arguments (`join_runtime_display`), or the literal `panic` with
+            // no arguments; always fatal (the VM's loud panic halt).
+            let msg = if argc == 0 {
+                materialize_key(ssa, insts, globals, "panic")
+            } else {
+                let (v0, ty0) = ssa.read(base.wrapping_add(1), block, pc)?;
+                let (mut acc, mut acc_fresh) = to_display_str(ssa, insts, globals, v0, ty0, pc)?;
+                for i in 1..argc {
+                    let sep = materialize_key(ssa, insts, globals, " ");
+                    let with_sep = ssa.new_val();
+                    insts.push(Inst::Call {
+                        dst: Some(with_sep),
+                        callee: AbiRef::new("str", "concat"),
+                        args: vec![acc, sep],
+                    });
+                    if acc_fresh {
+                        free_owned_str(insts, acc);
+                    }
+                    let (v, ty) = ssa.read(base.wrapping_add(1 + i as u8), block, pc)?;
+                    acc = concat_display(ssa, insts, globals, with_sep, v, ty, pc)?;
+                    free_owned_str(insts, with_sep);
+                    acc_fresh = true;
+                }
+                acc
+            };
+            // The call aborts and never returns; the message is intentionally
+            // not freed.
+            insts.push(Inst::Call {
+                dst: None,
+                callee: AbiRef::new("rt", "panic"),
+                args: vec![msg],
+            });
+        }
+        Builtin::AssertEq | Builtin::AssertNe => {
+            // `assert_eq(a, b [, extra])` / `assert_ne`: scalar equality with
+            // the VM's `runtime_values_equal` semantics (same-type scalars,
+            // Int/Float coercion, byte-equal strings). The failure message is
+            // built eagerly (dead on the success path) so no extra control
+            // flow is needed.
+            if argc < 2 || argc > 3 {
+                return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+            }
+            let negated = builtin == Builtin::AssertNe;
+            let (lv, lty) = ssa.read(base.wrapping_add(1), block, pc)?;
+            let (rv, rty) = ssa.read(base.wrapping_add(2), block, pc)?;
+            let op = if negated { CmpOp::Ne } else { CmpOp::Eq };
+            let ok = match (lty, rty) {
+                (Ty::I64, Ty::I64) | (Ty::Bool, Ty::Bool) => {
+                    let dst = ssa.new_val();
+                    insts.push(Inst::Cmp {
+                        dst,
+                        op,
+                        float: false,
+                        lhs: lv,
+                        rhs: rv,
+                    });
+                    dst
+                }
+                (Ty::F64, Ty::F64) | (Ty::I64, Ty::F64) | (Ty::F64, Ty::I64) => {
+                    let widen = |ssa: &mut Ssa, insts: &mut Vec<Inst>, v: ValueId, ty: Ty| {
+                        if ty == Ty::I64 {
+                            let f = ssa.new_val();
+                            insts.push(Inst::IntToFloat { dst: f, src: v });
+                            f
+                        } else {
+                            v
+                        }
+                    };
+                    let lf = widen(ssa, insts, lv, lty);
+                    let rf = widen(ssa, insts, rv, rty);
+                    let dst = ssa.new_val();
+                    insts.push(Inst::Cmp {
+                        dst,
+                        op,
+                        float: true,
+                        lhs: lf,
+                        rhs: rf,
+                    });
+                    dst
+                }
+                (Ty::Str, Ty::Str) => {
+                    let cmp = ssa.new_val();
+                    insts.push(Inst::Call {
+                        dst: Some(cmp),
+                        callee: AbiRef::new("str", "cmp"),
+                        args: vec![lv, rv],
+                    });
+                    let zero = ssa.new_val();
+                    insts.push(Inst::Const {
+                        dst: zero,
+                        value: Const::I64(0),
+                    });
+                    let dst = ssa.new_val();
+                    insts.push(Inst::Cmp {
+                        dst,
+                        op,
+                        float: false,
+                        lhs: cmp,
+                        rhs: zero,
+                    });
+                    dst
+                }
+                _ => return Err(Unsupported::TypeMismatch { pc }),
+            };
+            // `(msg, fresh)`: a bare const message must not be freed.
+            let (msg, msg_fresh) = if negated {
+                // "values should not be equal" — no operand displays.
+                if argc == 3 {
+                    let (ev, ety) = ssa.read(base.wrapping_add(3), block, pc)?;
+                    let sep = materialize_key(ssa, insts, globals, "values should not be equal - ");
+                    (concat_display(ssa, insts, globals, sep, ev, ety, pc)?, true)
+                } else {
+                    (
+                        materialize_key(ssa, insts, globals, "values should not be equal"),
+                        false,
+                    )
+                }
+            } else {
+                // "expected {b}, got {a}" (+ " - {extra}").
+                let head = materialize_key(ssa, insts, globals, "expected ");
+                let with_expected = concat_display(ssa, insts, globals, head, rv, rty, pc)?;
+                let comma = materialize_key(ssa, insts, globals, ", got ");
+                let joined = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(joined),
+                    callee: AbiRef::new("str", "concat"),
+                    args: vec![with_expected, comma],
+                });
+                free_owned_str(insts, with_expected);
+                let full = concat_display(ssa, insts, globals, joined, lv, lty, pc)?;
+                free_owned_str(insts, joined);
+                if argc == 3 {
+                    let (ev, ety) = ssa.read(base.wrapping_add(3), block, pc)?;
+                    let dash = materialize_key(ssa, insts, globals, " - ");
+                    let with_dash = ssa.new_val();
+                    insts.push(Inst::Call {
+                        dst: Some(with_dash),
+                        callee: AbiRef::new("str", "concat"),
+                        args: vec![full, dash],
+                    });
+                    free_owned_str(insts, full);
+                    let all = concat_display(ssa, insts, globals, with_dash, ev, ety, pc)?;
+                    free_owned_str(insts, with_dash);
+                    (all, true)
+                } else {
+                    (full, true)
+                }
+            };
+            let wide = ssa.new_val();
+            insts.push(Inst::ZextBool { dst: wide, src: ok });
+            insts.push(Inst::Call {
+                dst: None,
+                callee: AbiRef::new("rt", "assert_msg"),
+                args: vec![wide, msg],
+            });
+            if msg_fresh {
+                free_owned_str(insts, msg);
+            }
+        }
+        Builtin::Typeof => {
+            // `typeof(x)` — the VM's type name from the statically proven MIR
+            // type. Maybe carriers select between the scalar name and `Nil` at
+            // runtime (a missing map key is `Nil` in the VM).
+            if argc != 1 {
+                return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+            }
+            let (v, ty) = ssa.read(base.wrapping_add(1), block, pc)?;
+            let scalar_name = |ty: Ty| match ty {
+                Ty::I64 => Some("Int"),
+                Ty::F64 => Some("Float"),
+                Ty::Bool => Some("Bool"),
+                Ty::Str => Some("String"),
+                Ty::Nil => Some("Nil"),
+                _ => None,
+            };
+            let result = match ty {
+                Ty::MaybeI64 | Ty::MaybeF64 | Ty::MaybeStr | Ty::MaybeBool => {
+                    let value_name = match ty {
+                        Ty::MaybeI64 => "Int",
+                        Ty::MaybeF64 => "Float",
+                        Ty::MaybeBool => "Bool",
+                        _ => "String",
+                    };
+                    let present = ssa.new_val();
+                    insts.push(Inst::MaybePresent {
+                        dst: present,
+                        src: v,
+                        maybe_ty: ty,
+                    });
+                    let then_v = materialize_key(ssa, insts, globals, value_name);
+                    let else_v = materialize_key(ssa, insts, globals, "Nil");
+                    let dst = ssa.new_val();
+                    insts.push(Inst::Select {
+                        dst,
+                        cond: present,
+                        then_v,
+                        else_v,
+                        ty: Ty::Str,
+                    });
+                    dst
+                }
+                ty => match scalar_name(ty) {
+                    Some(name) => materialize_key(ssa, insts, globals, name),
+                    None => return Err(Unsupported::TypeMismatch { pc }),
+                },
+            };
+            ssa.write(base, block, (result, Ty::Str));
+            return Ok(());
         }
         Builtin::Assert => {
             // `assert(cond)` / `assert(cond, message)`: a false condition is a
@@ -3769,6 +4238,169 @@ mod tests {
             param_names: Vec::new(),
             capture_count: 0,
         }
+    }
+
+    /// `let inc = |x| x + 1; return inc(41);` — a zero-capture closure stored in
+    /// a module global (entry-prefix single assignment), read back and called
+    /// indirectly: devirtualizes to a direct `CallFn`.
+    #[test]
+    fn lowers_zero_capture_lambda_global_call() {
+        let art = ModuleArtifact {
+            format: "lk.module".to_string(),
+            version: MODULE_ARTIFACT_VERSION,
+            imports: Vec::new(),
+            module: ModuleData {
+                entry: 0,
+                globals: vec!["inc".to_string()],
+                functions: vec![
+                    func(
+                        ints(vec![41]),
+                        vec![
+                            Instr::abc(Opcode::MakeClosure, 0, 1, 0).raw(),
+                            Instr::abx(Opcode::SetGlobal, 0, 0).raw(),
+                            Instr::abx(Opcode::GetGlobal, 1, 0).raw(),
+                            Instr::abx(Opcode::LoadInt, 2, 0).raw(),
+                            Instr::abc(Opcode::Call, 1, 0, 1).raw(),
+                            Instr::abc(Opcode::Return1, 1, 0, 0).raw(),
+                        ],
+                        4,
+                        0,
+                    ),
+                    func(
+                        ints(vec![1]),
+                        vec![
+                            Instr::abx(Opcode::LoadInt, 1, 0).raw(),
+                            Instr::abc(Opcode::AddInt, 2, 0, 1).raw(),
+                            Instr::abc(Opcode::Return1, 2, 0, 0).raw(),
+                        ],
+                        3,
+                        1,
+                    ),
+                ],
+            },
+        };
+        let mir = lower(&art).expect("zero-capture lambda lowers");
+        assert_eq!(lk_aot_mir::validate(&mir), Ok(()));
+        assert_eq!(mir.functions.len(), 2, "lambda body must be reachable/emitted");
+        let ir = lk_aot_codegen::render_module(&mir);
+        assert!(ir.contains("call i64 @lk_fn_1"), "devirtualized direct call: {ir}");
+    }
+
+    /// A register-local zero-capture lambda (no global storage) calls directly
+    /// through the tracked `MakeClosure` ref.
+    #[test]
+    fn lowers_local_lambda_call() {
+        let art = ModuleArtifact {
+            format: "lk.module".to_string(),
+            version: MODULE_ARTIFACT_VERSION,
+            imports: Vec::new(),
+            module: ModuleData {
+                entry: 0,
+                globals: Vec::new(),
+                functions: vec![
+                    func(
+                        ints(vec![20]),
+                        vec![
+                            Instr::abc(Opcode::MakeClosure, 1, 1, 0).raw(),
+                            Instr::abx(Opcode::LoadInt, 2, 0).raw(),
+                            Instr::abc(Opcode::Call, 1, 0, 1).raw(),
+                            Instr::abc(Opcode::Return1, 1, 0, 0).raw(),
+                        ],
+                        4,
+                        0,
+                    ),
+                    func(
+                        ints(vec![2]),
+                        vec![
+                            Instr::abx(Opcode::LoadInt, 1, 0).raw(),
+                            Instr::abc(Opcode::MulInt, 2, 0, 1).raw(),
+                            Instr::abc(Opcode::Return1, 2, 0, 0).raw(),
+                        ],
+                        3,
+                        1,
+                    ),
+                ],
+            },
+        };
+        let mir = lower(&art).expect("local lambda lowers");
+        assert_eq!(lk_aot_mir::validate(&mir), Ok(()));
+        assert_eq!(mir.functions.len(), 2);
+    }
+
+    /// A capturing closure (`capture_count == 1`) rejects the module.
+    #[test]
+    fn rejects_capturing_closure() {
+        let mut lambda = func(ints(vec![]), vec![Instr::abc(Opcode::Return1, 0, 0, 0).raw()], 2, 1);
+        lambda.capture_count = 1;
+        let art = ModuleArtifact {
+            format: "lk.module".to_string(),
+            version: MODULE_ARTIFACT_VERSION,
+            imports: Vec::new(),
+            module: ModuleData {
+                entry: 0,
+                globals: Vec::new(),
+                functions: vec![
+                    func(
+                        ints(vec![]),
+                        vec![
+                            Instr::abc(Opcode::MakeClosure, 0, 1, 0).raw(),
+                            Instr::abc(Opcode::Return1, 0, 0, 0).raw(),
+                        ],
+                        2,
+                        0,
+                    ),
+                    lambda,
+                ],
+            },
+        };
+        assert!(lower(&art).is_err(), "capturing closure must reject");
+    }
+
+    /// A lambda global written twice is not single-assignment: readers could
+    /// observe either closure, so the module rejects loudly.
+    #[test]
+    fn rejects_reassigned_lambda_global() {
+        let lambda_body = |k: i64| {
+            func(
+                ints(vec![k]),
+                vec![
+                    Instr::abx(Opcode::LoadInt, 1, 0).raw(),
+                    Instr::abc(Opcode::MulInt, 2, 0, 1).raw(),
+                    Instr::abc(Opcode::Return1, 2, 0, 0).raw(),
+                ],
+                3,
+                1,
+            )
+        };
+        let art = ModuleArtifact {
+            format: "lk.module".to_string(),
+            version: MODULE_ARTIFACT_VERSION,
+            imports: Vec::new(),
+            module: ModuleData {
+                entry: 0,
+                globals: vec!["f".to_string()],
+                functions: vec![
+                    func(
+                        ints(vec![5]),
+                        vec![
+                            Instr::abc(Opcode::MakeClosure, 0, 1, 0).raw(),
+                            Instr::abx(Opcode::SetGlobal, 0, 0).raw(),
+                            Instr::abc(Opcode::MakeClosure, 0, 2, 0).raw(),
+                            Instr::abx(Opcode::SetGlobal, 0, 0).raw(),
+                            Instr::abx(Opcode::GetGlobal, 1, 0).raw(),
+                            Instr::abx(Opcode::LoadInt, 2, 0).raw(),
+                            Instr::abc(Opcode::Call, 1, 0, 1).raw(),
+                            Instr::abc(Opcode::Return1, 1, 0, 0).raw(),
+                        ],
+                        4,
+                        0,
+                    ),
+                    lambda_body(1),
+                    lambda_body(2),
+                ],
+            },
+        };
+        assert!(lower(&art).is_err(), "reassigned lambda global must reject");
     }
 
     /// `fn add(x,y){ return x+y } return add(3,4)` — a two-function module with a
@@ -4396,8 +5028,10 @@ mod tests {
         let mir = lower(&art).expect("ConcatString with int display lowers");
         assert_eq!(lk_aot_mir::validate(&mir), Ok(()));
         let ir = lk_aot_codegen::render_module(&mir);
-        assert!(ir.contains("call ptr @lkrt_i64_to_str(i64"), "int display: {ir}");
-        assert!(ir.contains("call ptr @lkrt_str_concat(ptr"), "then concat: {ir}");
+        // The int suffix fuses into a single concat_i64 call — no intermediate
+        // display string is materialized (or freed).
+        assert!(ir.contains("call ptr @lkrt_str_concat_i64(ptr"), "fused concat: {ir}");
+        assert!(!ir.contains("call ptr @lkrt_i64_to_str(i64"), "no suffix temp: {ir}");
     }
 
     /// `"${a}-${b}"` — string interpolation of string vars lowers `ConcatN` to a

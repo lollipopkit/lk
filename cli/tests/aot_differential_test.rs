@@ -420,6 +420,62 @@ fn differential_builtins() {
                 "div_zero_after_output",
                 "println(\"before\");\nlet a = 1;\nlet b = 0;\nreturn a % b;\n",
             ),
+            // assert_eq/assert_ne: pass and loud-fail (with pre-flushed stdout),
+            // Int/Float coercion, string comparison, extra message argument.
+            new(
+                "assert_eq_pass",
+                "let x = 6;\nassert_eq(x * 7, 42);\nassert_eq(\"a\" + \"b\", \"ab\");\nassert_eq(2, 2.0);\nreturn 5;\n",
+            ),
+            new(
+                "assert_eq_fail_after_output",
+                "println(\"before\");\nlet x = 1;\nassert_eq(x, 2);\nreturn 7;\n",
+            ),
+            new("assert_eq_fail_msg", "assert_eq(1, 2, \"context\");\nreturn 7;\n"),
+            new("assert_ne_pass", "assert_ne(1, 2);\nreturn 3;\n"),
+            new(
+                "assert_ne_fail_after_output",
+                "println(\"before\");\nassert_ne(5, 5);\nreturn 7;\n",
+            ),
+            // panic: always fatal, stdout before it must be preserved.
+            new(
+                "panic_after_output",
+                "println(\"before\");\nlet x = 1;\nif (x == 1) { panic(\"stop\", x); }\nreturn 7;\n",
+            ),
+            // Zero-capture lambdas: top-level (module-global, single
+            // assignment) and function-local, called indirectly — both
+            // devirtualize to direct calls.
+            new(
+                "lambda_toplevel_call",
+                "let double = |x| x * 2;\nlet add = |a, b| a + b;\nprintln(double(5));\nprintln(add(3, 7));\nprintln(double(add(1, 2)));\nreturn 0;\n",
+            ),
+            new(
+                "lambda_cross_function",
+                "let inc = |x| x + 1;\nfn twice(n) { return inc(inc(n)); }\nprintln(twice(5));\nreturn 0;\n",
+            ),
+            new(
+                "lambda_local_in_fn",
+                "fn area(w, h) { let mul = |a, b| a * b; return mul(w, h); }\nprintln(area(6, 7));\nreturn 0;\n",
+            ),
+            new(
+                "lambda_float_mono",
+                "let scale = |x| x * 1.5;\nprintln(scale(2));\nprintln(scale(3));\nreturn 0;\n",
+            ),
+            new(
+                "lambda_local_reassign",
+                "let f = |x| x + 1;\nprintln(f(1));\nf = |x| x * 10;\nprintln(f(2));\nreturn 0;\n",
+            ),
+            // typeof: static scalar names plus the runtime Maybe (missing map
+            // key → Nil) selection. One println per call — a *dynamic* Str as
+            // the first println argument with extra args is the (rejected)
+            // dynamic-format-string shape.
+            new(
+                "typeof_scalars",
+                "let i = 1;\nlet f = 1.5;\nlet b = true;\nlet s = \"x\";\nprintln(typeof(i));\nprintln(typeof(f));\nprintln(typeof(b));\nprintln(typeof(s));\nprintln(typeof(nil));\nreturn 0;\n",
+            ),
+            new(
+                "typeof_map_maybe",
+                "let m = {};\nm.set(\"k\", 1);\nprintln(typeof(m.get(\"k\")));\nprintln(typeof(m.get(\"missing\")));\nreturn 0;\n",
+            ),
         ],
     );
 }

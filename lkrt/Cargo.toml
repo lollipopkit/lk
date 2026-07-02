@@ -12,3 +12,4 @@ crate-type = ["rlib", "staticlib"]
 
 [dependencies]
 lk-aot-abi = { path = "../aot/abi" }
+rustc-hash = { version = "2" }

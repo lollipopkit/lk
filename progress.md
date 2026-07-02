@@ -1,9 +1,102 @@
 # 实现进度
 
-**当前**:全量优化轮已完成(CI 化/-O2/模块 builtin/可变全局/方法分派/.lkm v5/
-budget 特化),**bench 全套 20 workload MIR 原生化,AOT/VM 几何平均 0.329x,
-20/20 checksum 一致**,workspace 1461 全绿。细节见 handoff.md。
-此前:"先补再删"轮——legacy text 后端整体退役(-4.8 万行)。
+**当前**:lkrt string-map 性能轮完成——**5 个 map workload 2.0–3.5x →
+0.79–1.04x,全套几何平均 0.329x → ≈0.26x**;MIR 吸收 panic/assert_eq/
+assert_ne/typeof/IsNil,examples 差分 3/44 → 5/44。细节见 handoff.md。
+
+## lkrt string-map 性能轮(本轮)
+
+**运行时(lkrt)**:
+- `state.rs`:全局 `Mutex<RuntimeState>` → `thread_local RefCell`(const 初始化,
+  `with_runtime(f)` 统一入口)。前提:AOT 二进制单线程(lowered 子集无线程);
+  句柄/arena 串不得跨线程。单测因此天然隔离,Miri 23/23 依旧全绿。
+- arena `owned_strings`/`resources` 与 lkmap 四种句柄 map 全部 FxHash
+  (rustc-hash 2,workspace 已有);**map 无 iter/keys ABI,无迭代序依赖**。
+- `set` 走 `get_mut` 命中就地更新,miss 才 `to_string()`(更新型 workload
+  免每 op key 分配)。
+- `lkrt_str_concat_i64(prefix, i64)`:手写 `i64_decimal`(栈上 [u8;20])+
+  `CString::from_vec_unchecked`(输入是 C 串,无内部 NUL,免扫描免 realloc),
+  单次分配;`str_concat`/`i64_to_str` 同样改 unchecked 路径。
+- `lkrt_lkmap_str_{i64,f64}_set_ik(handle, prefix, suffix, value)`:key 在
+  lkrt 栈上拼(88B inline + 超长 spill 到 Vec),存储零 key 分配;
+  非法 UTF-8 与 `key_str` 一致降级为空 key。
+- `lkrt_panic(msg)`:eprintln + `flush_and_abort`。
+
+**lower(aot/lower)**:
+- `GetIndexStrI`:key 改 `concat_i64` 单调用(原 from_i64+concat+free 三连);
+  `SetIndexStrI`:直接 `set_ik`,完全不物化 key。
+- 新 helper `concat_display(acc, v, ty)`:`ty==I64` 融合成 `concat_i64`,
+  否则 to_display_str+concat+eager free。`ConcatString`/`ConcatN` 重写为
+  逐元素折叠(原先全量预转换再折叠;display 转换无用户可见副作用,重排安全)。
+- 新 builtin:`Builtin::{Panic,AssertEq,AssertNe,Typeof}` + `IsNil` opcode。
+  - panic:参数空格 join(`join_runtime_display` 语义),0 参 = "panic"。
+  - assert_eq/ne:相等按 `runtime_values_equal` 子集(同型标量、Int/Float
+    互转 `IntToFloat`、Str 走 str.cmp==0);失败消息 **eager 构造**
+    ("expected {b}, got {a}"[+" - {extra}"])免控制流,过 `rt.assert_msg`。
+  - typeof:静态标量名(Int/Float/Bool/String/Nil);Maybe 载体
+    MaybePresent + Select(值名, "Nil")。**注意**:lower_builtin_call 尾部
+    统一写 nil 返回值,Typeof 提前 return 写 Str 结果。
+  - IsNil:标量→Const false、Nil→true、Maybe→Not(MaybePresent);
+    fused_bool fact 只是 VM 执行捷径,后续分支指令仍在码流中被正常
+    lower,直线化安全。
+  - SetGlobal 黑名单同步(写这些名字的程序整体拒绝)。
+
+**abi**:`("str","concat_i64")`、`("map_h","str_{i64,f64}_set_ik")`、
+`("rt","panic")` 共 4 条新表项(conformance 编译期自动跟随)。
+
+**测量**(dist,min-of-3,AOT/VM):two_sum 0.894 / histogram 1.044 /
+log_parse 0.787 / inventory 0.947 / event_join 0.807;对照组标量 workload
+0.02–0.24 不变;20/20 checksum 一致。逐步归因:免锁+fxhash+set 免分配 →
+2.0–2.4x 降到 1.24–1.51x;concat_i64+模板融合 → 0.76–1.10x;set_ik →
+最终值。剩余:histogram 的 let-bound key(`let key = "b${b}"` 复用于
+get+set)每迭代仍一次 key 分配。
+
+**测试/防线**:workspace 全绿;手写差分 +9 例(assert_eq pass/fail/msg、
+assert_ne、panic_after_output、typeof 标量+map Maybe);examples 地板 3→5
+(named_args/named_params 解锁);fuzz 200 例;ASan/UBSan 差分零报告;
+Miri lkrt 全绿。
+
+**踩坑**:println 首参为**动态** Str 且带额外参数是既有的拒绝形状
+(动态格式串仅单参),差分用例里 `println(typeof(a), typeof(b))` 要拆行;
+`materialize_key` 实为通用常量串物化 helper(名字историч)。
+
+## 零捕获闭包切片(本轮,RFC 阶段 4 第一步)
+
+- `GlobalRef::Lambda(u32)`:`MakeClosure`(a=dst, b=fn 索引, c=捕获窗口)
+  在 `capture_count == 0` 时按静态函数引用进 builtin_regs(Move/Move2
+  传播);捕获闭包拒绝(原样)。
+- **间接 Call 去虚化**:`Call` 的 callee 寄存器命中 Lambda → 走抽出的
+  `lower_user_call`(与 `CallDirect` 完全同窗布局:结果=base,参数
+  [base+1, base+1+c)),进同一 per-callsite 单态化(param_obs/ret_types
+  fixpoint)。
+- **顶层 lambda 全局**(`let f = |x|…` 顶层是模块全局):
+  `prescan_lambda_globals` 认"entry 前缀内、全模块唯一一次 SetGlobal、
+  写入值是零捕获 MakeClosure(经寄存器追踪,Move/Move2 传播)"的槽位;
+  GetGlobal 命中 → Lambda ref(初始化序安全:前缀写先于一切用户调用);
+  SetGlobal(Lambda) 与 prescan 不符 → 响亮拒绝。**entry 局部** lambda
+  重赋值天然正确((block,reg) 按 pc 序覆盖);跨块用局部 lambda 拒绝。
+- 可达性:`reachable_functions` 沿零捕获 MakeClosure 边扩展(lambda 体
+  必须被 lower/emit)。
+- fuzz 生成器:helper 30% 概率发成 `let f = |…| expr;`(调用点语法同名
+  函数,天然覆盖去虚化);200 例×2 种子干净。
+- 差分 +5(顶层/跨函数/函数局部/float 单态/局部重赋值);lower 单测 +4
+  (全局 lambda 调用、局部调用、捕获拒绝、重赋值全局拒绝)。
+- **验证过的语义边界**:`let f=|x|x; fn g(n){return f(n);} f=|x|x*2;` —
+  VM 自身把函数内 `f` 静态绑定到首个赋值(输出一致);双写全局在手写
+  artifact 层面必须拒绝(单测锁定)。
+
+## bench runner / 环境(本轮)
+
+- `resolve_lk_bin`:优先 dist/release 中 mtime 更新者(CI perf.yml 本就
+  pin dist bin;本地默认原是 release,数字系统性偏慢);`LK:` 行回显真实
+  路径。
+- 本机源码构建 Lua 5.4.7 → `~/.local/bin/lua`(runner 用 `LUA_BIN` 指定),
+  解锁任务 24/25 本地预筛;本地 dist VM/Lua geomean ≈1.18x(仅本地参照,
+  CI 用 Lua 5.5 且机器不同)。
+
+此前:全量优化轮(CI 化/-O2/模块 builtin/可变全局/方法分派/.lkm v5/
+budget 特化),bench 全套 MIR 原生化 0.329x;"先补再删"轮——legacy text
+后端整体退役(-4.8 万行)。
 
 ## "先补再删"轮(本轮)
 

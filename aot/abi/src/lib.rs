@@ -72,6 +72,7 @@ macro_rules! for_each_abi_fn {
             // aborts loudly on a false condition, matching the VM's fatal error.
             ("rt", "assert", lkrt_assert, WritesHost, [I64], Nil);
             ("rt", "assert_msg", lkrt_assert_msg, WritesHost, [I64, StrPtr], Nil);
+            ("rt", "panic", lkrt_panic, WritesHost, [StrPtr], Nil);
             ("socket", "addr", lkrt_socket_addr, Pure, [StrPtr, I64], StrPtr);
             ("tcp", "connect", lkrt_tcp_connect, WritesHost, [StrPtr], I64);
             ("tcp", "read", lkrt_tcp_read, WritesHost, [I64, I64], I64);
@@ -149,6 +150,10 @@ macro_rules! for_each_abi_fn {
             ("map_h", "str_f64_set", lkrt_lkmap_str_f64_set, WritesHost, [Ptr, StrPtr, F64], Nil);
             ("map_h", "str_f64_len", lkrt_lkmap_str_f64_len, ReadsHost, [Ptr], I64);
             // Int-keyed, f64-valued map. `get_pair` (by-value `Maybe<f64>`) → codegen.
+            // Composite string-int key store (`m["n${i}"] = v`): the key is built
+            // on the stack inside lkrt, so the store allocates nothing on updates.
+            ("map_h", "str_i64_set_ik", lkrt_lkmap_str_i64_set_ik, WritesHost, [Ptr, StrPtr, I64, I64], Nil);
+            ("map_h", "str_f64_set_ik", lkrt_lkmap_str_f64_set_ik, WritesHost, [Ptr, StrPtr, I64, F64], Nil);
             ("map_h", "i64_f64_new", lkrt_lkmap_i64_f64_new, WritesHost, [], Ptr);
             ("map_h", "i64_f64_set", lkrt_lkmap_i64_f64_set, WritesHost, [Ptr, I64, F64], Nil);
             ("map_h", "i64_f64_len", lkrt_lkmap_i64_f64_len, ReadsHost, [Ptr], I64);
@@ -156,6 +161,9 @@ macro_rules! for_each_abi_fn {
             ("str", "cmp", lkrt_str_cmp, Pure, [StrPtr, StrPtr], I64);
             // `a ++ b` → a freshly allocated C string (`WritesHost`: allocates/leaks).
             ("str", "concat", lkrt_str_concat, WritesHost, [StrPtr, StrPtr], StrPtr);
+            // `prefix ++ decimal(suffix)` in one allocation — the composite string-int
+            // key shape proven by `GetIndexStrI`/`SetIndexStrI` facts.
+            ("str", "concat_i64", lkrt_str_concat_i64, WritesHost, [StrPtr, I64], StrPtr);
             ("str", "char_len", lkrt_str_char_len, Pure, [StrPtr], I64);
             ("str", "starts_with", lkrt_str_starts_with, Pure, [StrPtr, StrPtr], I64);
             // Scalar → display string (the VM's `ToString`), allocating/leaking a C string.

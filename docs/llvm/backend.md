@@ -27,6 +27,12 @@ ModuleArtifact → lk-aot-lower → lk_aot_mir::validate → lk-aot-codegen → 
   params as phis).
 - Direct function calls with per-callsite-monomorphized i64/f64/bool
   params/returns, recursion included; dead (uncalled) functions are skipped.
+- Zero-capture closures (`let f = |x| …`) as statically known function
+  references: indirect calls devirtualize to direct calls, both for
+  register-local lambdas and for top-level lambdas stored in a module global
+  (single assignment in the entry prefix, readable from any function).
+  Capturing closures and closures used as first-class values (passed as
+  arguments, stored in containers) reject.
 - Growable handle containers (`List<i64/f64/str>`, `Map<{str,i64} ×
   {i64,f64}>`) with VM-exact indexing: the `Maybe` present-bit model makes
   out-of-range/missing reads return-print `nil`, abort on arithmetic (like the
@@ -36,7 +42,16 @@ ModuleArtifact → lk-aot-lower → lk_aot_mir::validate → lk-aot-codegen → 
 - Runtime builtins recognized from `GetGlobal`: `println`/`print` (constant
   format strings expand at lower time with exact `format_variadic_runtime`
   semantics — `{}` substitution, leftover `{}` kept literal, extra args
-  space-appended) and `assert`/`assert(cond, message)` (false aborts loudly).
+  space-appended), `assert`/`assert(cond, message)` (false aborts loudly),
+  `assert_eq`/`assert_ne` (scalar equality with Int/Float coercion and string
+  bytes, VM-format failure message), `panic(args…)` (space-joined display,
+  always fatal), and `typeof` (static scalar names; Maybe carriers select
+  `Nil` vs the value name at runtime). `IsNil` lowers likewise (scalars are
+  never nil, Maybe tests its present bit).
+- Composite string-int keys (`m["n${i}"]`): stores call the zero-allocation
+  `set_ik` map ABI (key built on the lkrt stack); loads build the key with the
+  single-allocation `str.concat_i64` fusion, which also fuses every int
+  operand of template-string concatenation.
 - Fused compare-branch opcodes (`TestXxxInt(I)`+`Jmp`, `TestEqIntI2`,
   `BrEqIntI4` family, `BrMod*ZeroIntI4`, nil branches).
 

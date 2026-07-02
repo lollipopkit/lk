@@ -8,14 +8,14 @@
 use std::cmp::Ordering;
 use std::ffi::{CStr, CString, c_char};
 
-use crate::state::runtime;
+use crate::state::with_runtime;
 
 /// Returns an owned C string across the FFI boundary, registering it with the
 /// runtime arena so it is reclaimed by `lkrt_string_free` (when the generated
 /// code knows the value is dead) or by `lkrt_cleanup` at program exit.
 pub(crate) fn arena_c_string(s: CString) -> *mut c_char {
     let ptr = s.into_raw();
-    runtime().lock().expect("lkrt runtime poisoned").register_string(ptr);
+    with_runtime(|rt| rt.register_string(ptr));
     ptr
 }
 
@@ -101,18 +101,68 @@ pub unsafe extern "C" fn lkrt_str_concat(a: *const c_char, b: *const c_char) -> 
     } else {
         unsafe { CStr::from_ptr(b) }.to_bytes()
     };
-    let mut bytes = Vec::with_capacity(a.len() + b.len());
+    let mut bytes = Vec::with_capacity(a.len() + b.len() + 1);
     bytes.extend_from_slice(a);
     bytes.extend_from_slice(b);
-    // Strings shouldn't contain interior NULs; fall back to empty defensively.
-    arena_c_string(CString::new(bytes).unwrap_or_default())
+    // SAFETY: both inputs come from NUL-terminated C strings, so the collected
+    // bytes cannot contain an interior NUL.
+    arena_c_string(unsafe { CString::from_vec_unchecked(bytes) })
+}
+
+/// `prefix ++ decimal(suffix)` in a single allocation: the composite string-int
+/// map-key shape (`m["n${i}"]`) the lowering proves via `GetIndexStrI` /
+/// `SetIndexStrI` facts. Equivalent to `concat(prefix, from_i64(suffix))`
+/// without materializing the intermediate suffix string.
+///
+/// # Safety
+/// `prefix` must be a valid NUL-terminated C string, or null (treated as empty).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_str_concat_i64(prefix: *const c_char, suffix: i64) -> *mut c_char {
+    let prefix = if prefix.is_null() {
+        b""
+    } else {
+        // SAFETY: caller guarantees a valid NUL-terminated string.
+        unsafe { CStr::from_ptr(prefix) }.to_bytes()
+    };
+    let mut digits = [0u8; 20];
+    let digits = i64_decimal(suffix, &mut digits);
+    let mut bytes = Vec::with_capacity(prefix.len() + digits.len() + 1);
+    bytes.extend_from_slice(prefix);
+    bytes.extend_from_slice(digits);
+    // SAFETY: the prefix has no interior NUL (C string) and digits are ASCII.
+    arena_c_string(unsafe { CString::from_vec_unchecked(bytes) })
+}
+
+/// Formats `n` as decimal ASCII into `buf` (right-aligned), returning the
+/// written slice. `buf` fits every `i64` (19 digits + sign).
+pub(crate) fn i64_decimal(n: i64, buf: &mut [u8; 20]) -> &[u8] {
+    let mut magnitude = n.unsigned_abs();
+    let mut at = buf.len();
+    loop {
+        at -= 1;
+        buf[at] = b'0' + (magnitude % 10) as u8;
+        magnitude /= 10;
+        if magnitude == 0 {
+            break;
+        }
+    }
+    if n < 0 {
+        at -= 1;
+        buf[at] = b'-';
+    }
+    &buf[at..]
 }
 
 /// Renders an `i64` as its decimal string (the VM's integer display), returned as a
 /// freshly allocated, arena-registered C string.
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_i64_to_str(n: i64) -> *mut c_char {
-    arena_c_string(CString::new(n.to_string()).unwrap_or_default())
+    let mut digits = [0u8; 20];
+    let digits = i64_decimal(n, &mut digits);
+    let mut bytes = Vec::with_capacity(digits.len() + 1);
+    bytes.extend_from_slice(digits);
+    // SAFETY: decimal digits and sign are ASCII, never NUL.
+    arena_c_string(unsafe { CString::from_vec_unchecked(bytes) })
 }
 
 /// Renders an `f64` as its display string. The VM formats floats with Rust's
@@ -159,6 +209,23 @@ mod tests {
             assert_eq!(lkrt_str_cmp(hi.as_ptr(), hi2.as_ptr()), 0);
             assert_eq!(lkrt_str_cmp(hi.as_ptr(), ho.as_ptr()), -1);
             assert_eq!(lkrt_str_cmp(ho.as_ptr(), hi.as_ptr()), 1);
+        }
+    }
+
+    #[test]
+    fn concat_i64_matches_two_step_build() {
+        let prefix = CString::new("n").unwrap();
+        for n in [0, 7, -1, 1234567890123456789, i64::MIN, i64::MAX] {
+            unsafe {
+                let fused = lkrt_str_concat_i64(prefix.as_ptr(), n);
+                assert_eq!(CStr::from_ptr(fused).to_str().unwrap(), format!("n{n}"), "suffix {n}");
+                crate::lkrt_string_free(fused);
+            }
+        }
+        unsafe {
+            let empty = lkrt_str_concat_i64(std::ptr::null(), 42);
+            assert_eq!(CStr::from_ptr(empty).to_bytes(), b"42");
+            crate::lkrt_string_free(empty);
         }
     }
 

@@ -18,7 +18,7 @@ mod state;
 
 pub use abi::{
     lkrt_abi_check, lkrt_abi_version, lkrt_abort, lkrt_assert, lkrt_assert_msg, lkrt_cleanup, lkrt_error_clear,
-    lkrt_last_error, lkrt_string_free,
+    lkrt_last_error, lkrt_panic, lkrt_string_free,
 };
 pub use arith::{lkrt_f64_div_checked, lkrt_f64_mod_checked, lkrt_i64_div_checked, lkrt_i64_mod_checked};
 pub use host::{
@@ -41,11 +41,12 @@ pub use lkmap::{
     lkrt_lkmap_i64_f64_get_pair, lkrt_lkmap_i64_f64_len, lkrt_lkmap_i64_f64_new, lkrt_lkmap_i64_f64_set,
     lkrt_lkmap_i64_i64_get_pair, lkrt_lkmap_i64_i64_len, lkrt_lkmap_i64_i64_new, lkrt_lkmap_i64_i64_set,
     lkrt_lkmap_str_f64_get_pair, lkrt_lkmap_str_f64_len, lkrt_lkmap_str_f64_new, lkrt_lkmap_str_f64_set,
-    lkrt_lkmap_str_i64_get_pair, lkrt_lkmap_str_i64_len, lkrt_lkmap_str_i64_new, lkrt_lkmap_str_i64_set,
+    lkrt_lkmap_str_f64_set_ik, lkrt_lkmap_str_i64_get_pair, lkrt_lkmap_str_i64_len, lkrt_lkmap_str_i64_new,
+    lkrt_lkmap_str_i64_set, lkrt_lkmap_str_i64_set_ik,
 };
 pub use lkstr::{
     lkrt_bool_to_str, lkrt_f64_to_str, lkrt_i64_to_str, lkrt_str_char_len, lkrt_str_cmp, lkrt_str_concat,
-    lkrt_str_starts_with,
+    lkrt_str_concat_i64, lkrt_str_starts_with,
 };
 pub use net::{
     lkrt_bytes_free, lkrt_bytes_to_string_utf8, lkrt_handle_close, lkrt_socket_addr, lkrt_tcp_close, lkrt_tcp_connect,

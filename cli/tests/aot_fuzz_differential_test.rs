@@ -407,7 +407,14 @@ impl Generator {
             self.lists = saved_lists;
             self.maps = saved_maps;
             self.fns = saved_fns;
-            let _ = writeln!(out, "fn {name}({}) {{ return {body}; }}", params.join(", "));
+            // A top-level `let f = |…| …` lambda is call-site identical to a
+            // named `fn`, but exercises the zero-capture closure lowering
+            // (MakeClosure → GlobalRef::Lambda devirtualization).
+            if self.rng.chance(30) {
+                let _ = writeln!(out, "let {name} = |{}| {body};", params.join(", "));
+            } else {
+                let _ = writeln!(out, "fn {name}({}) {{ return {body}; }}", params.join(", "));
+            }
             self.fns.push(FnSig { name, arity });
         }
 

@@ -32,9 +32,17 @@ resolve_lk_bin() {
     return 1
   fi
 
-  candidate="$REPO_DIR/target/release/lk"
-  if [ -x "$candidate" ]; then
-    printf '%s\n' "$candidate"
+  # Prefer the newest of dist/release: CI's perf gate measures the dist
+  # profile (perf.yml pins LK_BIN to target/dist/lk), so local runs should
+  # match it — but never silently pick a stale binary over a fresh one.
+  local newest=""
+  for candidate in "$REPO_DIR/target/dist/lk" "$REPO_DIR/target/release/lk"; do
+    if [ -x "$candidate" ] && { [ -z "$newest" ] || [ "$candidate" -nt "$newest" ]; }; then
+      newest="$candidate"
+    fi
+  done
+  if [ -n "$newest" ]; then
+    printf '%s\n' "$newest"
     return 0
   fi
 
@@ -44,7 +52,7 @@ resolve_lk_bin() {
     return 0
   fi
 
-  echo "Unable to find an executable lk binary. Set LK_BIN or build $REPO_DIR/target/release/lk." >&2
+  echo "Unable to find an executable lk binary. Set LK_BIN or build $REPO_DIR/target/dist/lk (cargo build --profile dist -p lk-cli)." >&2
   return 1
 }
 
@@ -372,7 +380,7 @@ record_output() {
 
 echo ""
 echo "LK vs Lua — Business Algorithm Workloads"
-echo "LK:  target/release/lk"
+echo "LK:  $LK_BIN"
 echo "Lua: $($LUA_BIN -v 2>&1 | head -1)"
 if [ "$RUN_AOT" != "0" ]; then
   AOT_COMPILE_LOG="$TMPDIR/aot_compile.log"

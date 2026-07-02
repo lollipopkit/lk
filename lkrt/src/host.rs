@@ -1,6 +1,6 @@
 use crate::{
     abi::{aborting, c_str, owned_c_string, status, write_out},
-    state::runtime,
+    state::with_runtime,
 };
 use std::ffi::c_char;
 use std::{
@@ -97,7 +97,7 @@ pub extern "C" fn lkrt_fs_read(path: *const c_char) -> i64 {
     aborting(|| {
         let path = c_str(path, "fs.read path")?;
         let data = fs::read(path.as_str()).map_err(|err| format!("fs.read {path}: {err}"))?;
-        Ok(runtime().lock().expect("lkrt runtime poisoned").insert_bytes(data))
+        Ok(with_runtime(|rt| rt.insert_bytes(data)))
     })
 }
 
@@ -124,7 +124,7 @@ pub extern "C" fn lkrt_fs_write_str(path: *const c_char, data: *const c_char) ->
 pub extern "C" fn lkrt_fs_write_bytes(path: *const c_char, data: i64) -> i64 {
     aborting(|| {
         let path = c_str(path, "fs.write path")?;
-        let data = runtime().lock().expect("lkrt runtime poisoned").take_bytes(data)?;
+        let data = with_runtime(|rt| rt.take_bytes(data))?;
         fs::write(path.as_str(), &data).map_err(|err| format!("fs.write {path}: {err}"))?;
         Ok(1)
     })
