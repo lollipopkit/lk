@@ -44,44 +44,27 @@ intrinsics.
 - `lkrt_abi_version()` exposes the native runtime ABI version. LLVM lowering
   should treat a missing or incompatible ABI as a link/configuration error, not
   as a reason to fall back to the VM.
-- Monomorphized container method bodies live in `lkrt` as typed helpers rather
-  than as per-shape hand-written LLVM IR. The `DynamicList<i64>`, `DynamicList<f64>`,
-  and `DynamicList<str>` layouts are fully sunk to `lkrt_list_{i64,f64,str}_*`
-  helpers, declared through the native intrinsic registry (modules `list.i64`,
-  `list.f64`, `list.str`). They take a raw element `ptr` + `i64` length (plus
-  `dst`/`dst_len` out-pointers for producing helpers). They are `Pure`: they only
-  read the source buffer and write the caller-owned destination buffer, never
-  touching host state.
-- Because LLVM lowers in-place shapes (`xs.slice(..)`, `xs.sort()`) onto the same
-  storage, every helper must tolerate `src == dst` aliasing — use raw pointers and
-  `ptr::copy` (memmove) for range moves, never overlapping `&`/`&mut` slices or
-  `copy_nonoverlapping`.
-- Element semantics must match the old IR exactly: `f64` compares via `fcmp`
-  (Rust `PartialEq`/`PartialOrd`, NaN-aware); `str` elements are `*const c_char`
-  compared with `strcmp` (byte-wise `CStr`). Structural `str` ops only move
-  pointers; only `push`/`insert`/`set` take ownership of the injected value by
-  duplicating it (leaked, matching `strdup`'s never-freed contract). Missing/empty
-  `str` results return a stable empty C string.
-- `DynamicMap<i64, V>` lookup/set helpers are also sunk to
-  `lkrt_map_i64_{int,f64,ptr}_{lookup,set}` (module `map.i64`): `lookup` writes the
-  found value through an `out` pointer and returns 1/0 (the caller stores that into
-  its `present` slot, preserving `nil`), and `set` updates in place or appends.
-  The `i64`-keyed map's `has`/`delete`/`iter`/`values`/`keys` shapes remain inline
-  IR in the emitters (they are not helper-pool functions).
-- `DynamicMap<str, V>` uses a composite short-string key (`prefix` string + integer
-  suffix, so `"k12"` stores `prefix="k"`, `number=12`). Its `split_key`, `lookup`,
-  `set`, `contains` (for `has`), and compaction `delete` are sunk to
-  `lkrt_map_str_{split_key,contains}` + `lkrt_map_str_{int,f64,ptr}_{lookup,set,delete}`
-  (module `map.str`). Keys compare with `strcmp(prefix) && number ==`; `split_key`
-  scans trailing ASCII digits and leaks a truncated prefix copy (a "raw" key — empty,
-  all-digits, or no trailing digit — keeps the original pointer with `number=0`).
-  `lookup` follows the same `out`/return present-bit convention as `map.i64`; `delete`
-  copies the surviving entries into the destination arrays (tolerating `src == dst`),
-  writes the removed value through `out_value`, sets `out_present`, and returns the
-  destination length. Only the `str`-keyed map's `iter`/`values`/`keys` remain inline.
-- `lkrt_i64_decimal_len(i64)` (module `fmt`, `Pure`) returns the decimal-spelling
-  width of an `i64` (counting a leading `-`); it sizes dynamic template/text buffers,
-  replacing the old hand-written `@lk_i64_decimal_len` IR.
+- Container method bodies live in `lkrt` as typed helpers rather than as
+  per-shape hand-written LLVM IR. Lists and maps are **opaque growable
+  handles** (`*mut Vec<T>` / `*mut FxHashMap<K, V>` behind `ptr`), created by
+  the `lkrt_lklist_*_new` / `lkrt_lkmap_*_new` entry points in
+  `lkrt/src/lklist.rs` / `lkrt/src/lkmap.rs` and registered in the runtime
+  arena (reclaimed by `lkrt_cleanup()` at exit). There is no fixed capacity
+  and no caller-owned buffer; the raw-buffer `lkrt_list_*`/`lkrt_map_*`
+  helper family described by earlier drafts was retired with the legacy text
+  backend.
+- The schema single source of truth is `aot/abi` (`for_each_abi_fn!`):
+  `list_h.*` covers `i64`/`f64`/`str` element lists (`push`/`set`/`len`/
+  `at`/`contains`/`join` plus the fn-pointer HOF entries
+  `i64_{map,filter,reduce}_fn`), `map_h.*` covers `{str,i64} × {i64,f64}`
+  maps (`new`/`set`/`set_ik`/`len`). Handle-typed parameters are `Ptr`.
+- Reads with missing/out-of-range semantics return a by-value `Maybe`
+  (`lkrt_lklist_*_get_pair` / `lkrt_lkmap_*_get_pair` → `{value, present}`
+  structs); stores with fatal VM semantics (`xs[i] = v` out of range) abort
+  loudly via `lkrt` instead of returning. String elements/keys are
+  `*const c_char`; the map copies its key on insert, so composite-key stores
+  use the zero-allocation `map_h.*_set_ik` (key assembled on the lkrt stack)
+  and key temporaries are freed eagerly by the lowering.
 - Strings returned by `lkrt` are owned by `lkrt` and must be released with
   `lkrt_string_free(ptr)` when generated code starts tracking native ownership.
 - `lkrt_last_error()` returns an owned string for diagnostics. Existing aborting

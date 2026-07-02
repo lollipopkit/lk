@@ -441,6 +441,12 @@ fn differential_builtins() {
                 "panic_after_output",
                 "println(\"before\");\nlet x = 1;\nif (x == 1) { panic(\"stop\", x); }\nreturn 7;\n",
             ),
+            // NaN semantics: `!=` must be true when either side is NaN
+            // (fcmp une, not one); ordered comparisons stay false.
+            new(
+                "math_nan_compare",
+                "use math;\nlet n = math.nan;\nprintln(n != n);\nprintln(n == n);\nprintln(n < 1.0);\nprintln(n >= 1.0);\nprintln(1.5 != math.nan);\nreturn 0;\n",
+            ),
             // math module: constants, type-directed rounding/abs/min/max,
             // Number→Float promotion, and the sqrt negative-argument guard.
             new(

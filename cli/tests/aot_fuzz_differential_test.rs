@@ -542,6 +542,34 @@ struct CaseOutcome {
     compared: bool,
 }
 
+/// Runs a command to completion with a hard timeout, killing the child on
+/// expiry — a miscompiled native binary (or a future generator extension)
+/// must fail the test instead of hanging CI.
+fn output_with_timeout(mut command: Command, what: &str, context: &str) -> std::process::Output {
+    use std::time::{Duration, Instant};
+    const RUN_TIMEOUT: Duration = Duration::from_secs(60);
+    let mut child = command
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap_or_else(|err| panic!("spawn {what}: {err}"));
+    let started = Instant::now();
+    loop {
+        match child.try_wait().expect("poll child") {
+            Some(_) => break,
+            None if started.elapsed() > RUN_TIMEOUT => {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("{context}\n{what} timed out after {RUN_TIMEOUT:?}");
+            }
+            None => std::thread::sleep(Duration::from_millis(20)),
+        }
+    }
+    child
+        .wait_with_output()
+        .unwrap_or_else(|err| panic!("collect {what}: {err}"))
+}
+
 fn run_case(dir: &std::path::Path, name: &str, source: &str, seed: u64) -> CaseOutcome {
     let file = format!("{name}.lk");
     let mut f = File::create(dir.join(&file)).expect("create case file");
@@ -551,12 +579,9 @@ fn run_case(dir: &std::path::Path, name: &str, source: &str, seed: u64) -> CaseO
 
     // VM reference run. Generated programs are well-typed, in-bounds, and
     // terminate by construction, so the VM must accept and run them.
-    let vm = Command::new(bin_path())
-        .current_dir(dir)
-        .arg(&file)
-        .env("LK_FORCE_VM", "1")
-        .output()
-        .expect("spawn vm run");
+    let mut vm_cmd = Command::new(bin_path());
+    vm_cmd.current_dir(dir).arg(&file).env("LK_FORCE_VM", "1");
+    let vm = output_with_timeout(vm_cmd, "VM run", &context("VM run"));
     let vm_stderr = String::from_utf8_lossy(&vm.stderr).into_owned();
     assert!(
         !vm_stderr.contains("panicked at"),
@@ -571,11 +596,9 @@ fn run_case(dir: &std::path::Path, name: &str, source: &str, seed: u64) -> CaseO
 
     // MIR-gated native compile: either it lowers, or it must fail with a
     // graceful Unsupported reason (lower() totality) — never a panic.
-    let exe = Command::new(bin_path())
-        .current_dir(dir)
-        .args(["compile", &file])
-        .output()
-        .expect("spawn native compile");
+    let mut exe_cmd = Command::new(bin_path());
+    exe_cmd.current_dir(dir).args(["compile", &file]);
+    let exe = output_with_timeout(exe_cmd, "native compile", &context("native compile"));
     let exe_stderr = String::from_utf8_lossy(&exe.stderr).into_owned();
     assert!(
         !exe_stderr.contains("panicked at"),
@@ -599,9 +622,7 @@ fn run_case(dir: &std::path::Path, name: &str, source: &str, seed: u64) -> CaseO
         return CaseOutcome { compared: false };
     }
 
-    let native = Command::new(dir.join(name))
-        .output()
-        .expect("spawn compiled executable");
+    let native = output_with_timeout(Command::new(dir.join(name)), "native run", &context("native run"));
 
     let vm_stdout = String::from_utf8_lossy(&vm.stdout);
     let native_stdout = String::from_utf8_lossy(&native.stdout);

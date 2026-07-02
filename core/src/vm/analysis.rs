@@ -159,6 +159,15 @@ mod sparse_facts {
         T: Deserialize<'de>,
     {
         let (len, entries): (u32, Vec<(u32, T)>) = Deserialize::deserialize(deserializer)?;
+        // `.lkm` artifacts are untrusted input: the table length is one slot
+        // per instruction, so anything beyond a generous instruction-count
+        // ceiling is malformed — reject before allocating.
+        const MAX_FACT_TABLE_LEN: u32 = 1 << 22;
+        if len > MAX_FACT_TABLE_LEN {
+            return Err(D::Error::custom(format_args!(
+                "sparse fact table length {len} exceeds the {MAX_FACT_TABLE_LEN} ceiling"
+            )));
+        }
         let mut table: Vec<Option<T>> = std::iter::repeat_with(|| None).take(len as usize).collect();
         for (index, value) in entries {
             let slot = table

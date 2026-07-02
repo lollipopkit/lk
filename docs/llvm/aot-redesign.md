@@ -431,9 +431,9 @@ differential harness 直接解决"emit 签名 == helper 签名 == 运行结果 =
   - **Maybe<Str> ✅(元素类型矩阵补齐)**:`lkrt_lklist_str_get_pair -> {ptr,i64}` +
     `Ty::MaybeStr`/`ListGetMaybeStr`/`UnwrapMaybeStr`;`MaybePresent` 改携带 `maybe_ty`(三载体)。
     差分:动态索引 concat 循环 `"abc"`、越界→nil、负索引、`==nil` 分支全 =VM。
-  - **翻默认 ✅(绞刑架主备易位)**:MIR 管线**默认开**,`LK_AOT_MIR=0` 或
-    `LlvmBackendOptions::use_mir_pipeline=Some(false)` 退回 legacy(选项而非 env,避免进程内
-    测试竞态)。34 个 llvm crate legacy-IR 结构断言测试 pin 到 legacy 选项(随删 legacy 一并退役);
+  - **翻默认 ✅(绞刑架主备易位,历史记录)**:MIR 管线**默认开**。当时曾提供
+    `LK_AOT_MIR=0` / `LlvmBackendOptions::use_mir_pipeline=Some(false)` 退回 legacy 的
+    过渡通道;**legacy 后端退役时这两个开关已一并删除,现在没有任何运行时回退**。34 个 llvm crate legacy-IR 结构断言测试 pin 到 legacy 选项(随删 legacy 一并退役);
     7 个 CLI 集成测试改写为 MIR 路径断言。**差分测试当场抓出并修复 legacy 后端一个真实分歧**:
     `return nil;` legacy native 打印 `nil`,VM 与 MIR 管线都打印空——改写后的 CLI 测试现在锁定
     正确(VM)行为。

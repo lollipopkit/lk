@@ -79,7 +79,12 @@ impl FunctionVerifier<'_> {
     /// executor's base arithmetic cannot leave the frame.
     fn check_window(&self, pc: usize, role: &str, base: usize, span: usize) -> Result<()> {
         let regs = self.function.register_count as usize;
-        if base >= regs || base + span > regs {
+        // Operand register arithmetic in the executor is 8-bit (`u8`
+        // `wrapping_add`), so a window reaching past register 255 would wrap
+        // to the bottom of the frame even when a (malicious) `register_count`
+        // claims room for it — cap the window to the encodable space too.
+        const REGISTER_SPACE: usize = u8::MAX as usize + 1;
+        if base >= regs || base + span > regs || base + span > REGISTER_SPACE {
             return Err(self.fail(
                 pc,
                 format_args!(
@@ -522,6 +527,35 @@ impl FunctionVerifier<'_> {
             }
             let span = 1 + fact.positional_count as usize + fact.named_count as usize * 2;
             self.check_window(pc, "call-site fact", fact.call_base as usize, span)?;
+            // The executor lets an in-range fact *override* the instruction's
+            // own operands (`call_fact_from_static_cache_or_instr`), so a
+            // tampered fact must also agree with the instruction it annotates.
+            let instr = self.function.code[pc];
+            match instr.opcode() {
+                Opcode::Call | Opcode::CallDirect => {
+                    if fact.call_base != u16::from(instr.a())
+                        || fact.positional_count != u16::from(instr.c())
+                        || fact.named_count != 0
+                    {
+                        return Err(self.fail(pc, "call-site fact disagrees with the call instruction"));
+                    }
+                }
+                Opcode::CallNamed => {
+                    let payload = instr.bx();
+                    if fact.call_base != u16::from(instr.a())
+                        || fact.positional_count != (payload & 0x7f)
+                        || fact.named_count != (payload >> 7)
+                    {
+                        return Err(self.fail(pc, "call-site fact disagrees with the named-call instruction"));
+                    }
+                }
+                other => {
+                    return Err(self.fail(
+                        pc,
+                        format_args!("call-site fact attached to non-call instruction {other:?}"),
+                    ));
+                }
+            }
         }
 
         for (pc, fact) in facts.global_ops.iter().enumerate() {
@@ -538,6 +572,22 @@ impl FunctionVerifier<'_> {
                         self.module.globals.len()
                     ),
                 ));
+            }
+            // Same override rule as call facts: the slot must match the
+            // instruction's own operand.
+            let instr = self.function.code[pc];
+            match instr.opcode() {
+                Opcode::GetGlobal | Opcode::SetGlobal => {
+                    if fact.slot != instr.bx() {
+                        return Err(self.fail(pc, "global fact disagrees with the instruction's slot"));
+                    }
+                }
+                other => {
+                    return Err(self.fail(
+                        pc,
+                        format_args!("global fact attached to non-global instruction {other:?}"),
+                    ));
+                }
             }
         }
 

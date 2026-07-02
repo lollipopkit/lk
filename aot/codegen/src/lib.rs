@@ -411,7 +411,12 @@ fn render_const(out: &mut String, dst: ValueId, value: &Const) {
 }
 
 fn render_f64(x: f64) -> String {
-    if x == x.trunc() && x.is_finite() {
+    if !x.is_finite() {
+        // LLVM's textual parser has no `NaN`/`inf` literal — non-finite
+        // constants (reachable via `math.nan`/`math.inf`) spell the exact
+        // IEEE-754 bit pattern in hex-float form.
+        format!("0x{:016X}", x.to_bits())
+    } else if x == x.trunc() {
         format!("{x:.1}")
     } else {
         format!("{x}")
@@ -485,7 +490,10 @@ fn render_cmp(out: &mut String, dst: ValueId, op: CmpOp, float: bool, lhs: Value
     if float {
         let pred = match op {
             CmpOp::Eq => "oeq",
-            CmpOp::Ne => "one",
+            // `une`, not `one`: Rust/VM `!=` is true when either operand is
+            // NaN (`math.nan` is reachable), and the ordered predicate would
+            // return false for that case.
+            CmpOp::Ne => "une",
             CmpOp::Lt => "olt",
             CmpOp::Le => "ole",
             CmpOp::Gt => "ogt",

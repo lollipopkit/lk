@@ -142,6 +142,12 @@ fn dispatch_builtin_method(
     }
 }
 
+/// List higher-order methods that need the full runtime (they call back into
+/// user code); kept in one place so every dispatch site agrees.
+fn is_list_hof(method: &str) -> bool {
+    matches!(method, "filter" | "map" | "reduce")
+}
+
 /// `CallMethodK` entry: dispatches a positional method call whose arguments
 /// live in a register window (no boxed argument list). The hot builtin paths
 /// consume the slice directly; only the rare tails (callable property, list
@@ -153,7 +159,7 @@ pub(crate) fn core_call_method_windowed(
     args: &[RuntimeVal],
     runtime: &mut NativeRuntime<'_>,
 ) -> anyhow::Result<RuntimeVal> {
-    if !matches!(method_name, "filter" | "map" | "reduce")
+    if !is_list_hof(method_name)
         && let Some(prop) = runtime_access(&receiver, method_name, runtime.heap_mut())?
     {
         if runtime_is_callable(&prop, runtime.heap())? {
@@ -175,7 +181,7 @@ pub(crate) fn core_call_method_windowed(
         Some(handle) => MethodPositionalArgs::List(handle),
         None => MethodPositionalArgs::Empty,
     };
-    if matches!(method_name, "filter" | "map" | "reduce") {
+    if is_list_hof(method_name) {
         let name = DetachedStr::Short(ShortStr::new(method_name).expect("method names are short"));
         return call_method_positional_runtime(receiver, name, positional, runtime);
     }
@@ -216,7 +222,7 @@ fn call_method_positional_runtime(
 ) -> anyhow::Result<RuntimeVal> {
     // Try dispatch for methods that need runtime state BEFORE heap closure
     let method_str = method.as_str();
-    if matches!(method_str, "filter" | "map" | "reduce") {
+    if is_list_hof(method_str) {
         // Check if receiver is a list
         let is_list = match &receiver {
             RuntimeVal::Obj(h) => matches!(runtime.heap().get(*h), Some(HeapValue::List(_))),

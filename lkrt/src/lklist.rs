@@ -595,4 +595,34 @@ mod tests {
             assert_eq!(present, 0);
         }
     }
+
+    #[test]
+    fn i64_hof_map_filter_reduce() {
+        extern "C" fn double(v: i64) -> i64 {
+            v * 2
+        }
+        extern "C" fn is_even(v: i64) -> bool {
+            v % 2 == 0
+        }
+        extern "C" fn add(acc: i64, v: i64) -> i64 {
+            acc + v
+        }
+        unsafe {
+            let xs = lkrt_lklist_i64_new();
+            for v in [1, 2, 3, 4, 5] {
+                lkrt_lklist_i64_push(xs, v);
+            }
+            let mapped = lkrt_lklist_i64_map_fn(xs, double);
+            assert_eq!(lkrt_lklist_i64_len(mapped), 5);
+            let mut present = 0;
+            assert_eq!(lkrt_lklist_i64_get(mapped, 4, &mut present), 10);
+            assert_eq!(present, 1);
+            let kept = lkrt_lklist_i64_filter_fn(xs, is_even);
+            assert_eq!(lkrt_lklist_i64_len(kept), 2);
+            assert_eq!(lkrt_lklist_i64_get(kept, 0, &mut present), 2);
+            assert_eq!(present, 1);
+            assert_eq!(lkrt_lklist_i64_reduce_fn(xs, 0, add), 15);
+            assert_eq!(lkrt_lklist_i64_reduce_fn(std::ptr::null_mut(), 7, add), 7);
+        }
+    }
 }

@@ -12,7 +12,6 @@ name = "lk_llvm"
 [dependencies]
 lk-core = { path = "../core", default-features = false, features = ["async-runtime"] }
 lk-stdlib = { path = "../stdlib" }
-lk-aot-abi = { path = "../aot/abi" }
 lk-aot-mir = { path = "../aot/mir" }
 lk-aot-lower = { path = "../aot/lower" }
 lk-aot-codegen = { path = "../aot/codegen" }

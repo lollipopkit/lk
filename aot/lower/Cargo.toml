@@ -7,7 +7,7 @@ edition = "2024"
 name = "lk_aot_lower"
 
 [dependencies]
-lk-core = { path = "../../core", default-features = false, features = ["async-runtime"] }
+lk-core = { path = "../../core", default-features = false }
 lk-aot-abi = { path = "../abi" }
 lk-aot-mir = { path = "../mir" }
 

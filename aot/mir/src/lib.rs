@@ -376,6 +376,9 @@ pub enum MirError {
     UnknownGlobal { func: FuncId, gvar: u32 },
     /// The module/function references a missing entry block/function.
     MissingEntry,
+    /// A call or branch passes a different number of arguments than the
+    /// callee's parameters / the target block's params expect.
+    ArityMismatch { func: FuncId },
 }
 
 /// Validates structural well-formedness: single-assignment, define-before-use
@@ -421,13 +424,16 @@ pub fn validate(module: &MirModule) -> Result<(), MirError> {
                         });
                     }
                 }
-                if let Inst::Call { callee, .. } = inst
-                    && callee.resolve().is_none()
-                {
-                    return Err(MirError::UnknownAbi {
-                        module: callee.module,
-                        name: callee.name,
-                    });
+                if let Inst::Call { callee, args, .. } = inst {
+                    let Some(abi) = callee.resolve() else {
+                        return Err(MirError::UnknownAbi {
+                            module: callee.module,
+                            name: callee.name,
+                        });
+                    };
+                    if args.len() != abi.params.len() {
+                        return Err(MirError::ArityMismatch { func: func.id });
+                    }
                 }
                 if let Inst::GlobalGet { gvar, .. } | Inst::GlobalSet { gvar, .. } = inst
                     && *gvar as usize >= module.mutable_globals.len()
@@ -437,10 +443,13 @@ pub fn validate(module: &MirModule) -> Result<(), MirError> {
                         gvar: *gvar,
                     });
                 }
-                if let Inst::CallFn { func: callee, .. } = inst
-                    && module.function(*callee).is_none()
-                {
-                    return Err(MirError::MissingEntry);
+                if let Inst::CallFn { func: callee, args, .. } = inst {
+                    let Some(target) = module.function(*callee) else {
+                        return Err(MirError::MissingEntry);
+                    };
+                    if args.len() != target.params.len() {
+                        return Err(MirError::ArityMismatch { func: func.id });
+                    }
                 }
                 if let Some(def) = inst_def(inst)
                     && !defined.insert(def)
@@ -466,6 +475,30 @@ pub fn validate(module: &MirModule) -> Result<(), MirError> {
                         block: target,
                     });
                 }
+            }
+            // Branch arguments must match the target block's params (the phi
+            // inputs codegen will collect per predecessor).
+            let target_arity = |target: BlockId| func.block(target).map(|b| b.params.len());
+            match &block.term {
+                Term::Br { target, args } => {
+                    if target_arity(*target) != Some(args.len()) {
+                        return Err(MirError::ArityMismatch { func: func.id });
+                    }
+                }
+                Term::CondBr {
+                    then_blk,
+                    then_args,
+                    else_blk,
+                    else_args,
+                    ..
+                } => {
+                    if target_arity(*then_blk) != Some(then_args.len())
+                        || target_arity(*else_blk) != Some(else_args.len())
+                    {
+                        return Err(MirError::ArityMismatch { func: func.id });
+                    }
+                }
+                Term::Ret(_) | Term::Abort => {}
             }
         }
     }

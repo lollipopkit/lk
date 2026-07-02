@@ -1062,10 +1062,6 @@ fn cached_native_executable_path(path: &Path, source: &[u8]) -> anyhow::Result<O
         hash.bytes(b"LK_NATIVE_SANITIZE=");
         hash.bytes(sanitize.to_string_lossy().as_bytes());
     }
-    if let Some(legacy) = std::env::var_os("LK_AOT_LEGACY") {
-        hash.bytes(b"LK_AOT_LEGACY=");
-        hash.bytes(legacy.to_string_lossy().as_bytes());
-    }
     // NOTE: the key covers only this file's bytes. AOT lowering rejects
     // imports today, so imported-module content cannot affect a cached
     // native binary yet — when import lowering lands, imported file contents

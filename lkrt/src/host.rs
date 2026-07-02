@@ -208,7 +208,8 @@ pub extern "C" fn lkrt_os_name() -> *mut c_char {
 /// (the VM's error is equally fatal).
 ///
 /// # Safety
-/// `path` must be a valid NUL-terminated C string, or null.
+/// `path` must be a valid, non-null NUL-terminated C string (a null pointer
+/// is a caller bug and aborts with a loud `lkrt error`).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_fs_read_dir_list(path: *const c_char) -> *mut core::ffi::c_void {
     aborting(|| {

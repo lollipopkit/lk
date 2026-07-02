@@ -7,6 +7,13 @@
 > **架构级重设计**(类型化 MIR + 结构化发射 + 单一真相 ABI + 句柄化运行时)见
 > [`aot-redesign.md`](./aot-redesign.md):本文记录"当前实现的下沉进展",重设计文档记录
 > "目标架构与迁移路径"。
+>
+> **⚠️ 历史文档(legacy 后端已整体退役)**:下文描述的 legacy text 后端、
+> `lkrt/src/containers.rs`、`native_dynamic_*_helpers()` 与裸缓冲
+> `@lkrt_list_{i64,f64,str}_*` helper 家族均已随 legacy 退役删除。当前唯一实现是
+> 句柄化运行时:`lkrt/src/lklist.rs` 的 `lkrt_lklist_i64_*` 等导出(不透明
+> `*mut Vec<T>` 句柄,无固定容量),ABI 单一真相在 `aot/abi`。现行能力面见
+> [`backend.md`](./backend.md)。本文仅作决策历史参考。
 
 ## 1. 现状:覆盖广,但"全有或全无"
 

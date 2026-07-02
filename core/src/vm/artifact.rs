@@ -20,6 +20,8 @@ use super::{
 // Version 5: the per-pc fact tables use a sparse `(len, [(index, value)])`
 // encoding and the JSON is compact (a size fix — dense null tables made even
 // tiny artifacts kilobytes large).
+// Version 6: the `CallMethodK` opcode (boxing-free positional method calls)
+// joins the instruction encoding; older runtimes would mis-decode it.
 pub const MODULE_ARTIFACT_VERSION: u32 = 6;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

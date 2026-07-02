@@ -1076,7 +1076,6 @@ version = "0.1.3"
 dependencies = [
  "anyhow",
  "chrono",
- "lk-aot-abi",
  "lk-aot-codegen",
  "lk-aot-lower",
  "lk-aot-mir",
