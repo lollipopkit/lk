@@ -197,8 +197,11 @@ impl Compiler {
                 self.local_rebind_suppression += 1;
                 self.lower_stmt_sequence(statements)?;
                 self.local_rebind_suppression -= 1;
+                // In-block promotions of *outer* locals must survive the
+                // scope restore (the register now holds the cell); dropping
+                // them left later reads loading the raw cell object.
+                self.cell_locals = self.scope_restored_cell_locals(&locals, cell_locals);
                 self.locals = locals;
-                self.cell_locals = cell_locals;
                 self.const_map_locals = const_map_locals;
                 if !self.emitted_return {
                     self.next_reg = self.live_register_floor().max(watermark);
@@ -391,9 +394,13 @@ impl Compiler {
         }
         let watermark = self.next_reg;
         let slot = if let Some(slot) = self.locals.get(name).copied() {
-            if self.active_loop_binding_slot(name) == Some(slot) {
-                // A fresh binding must not clobber the counter register the
-                // fused loop opcodes drive (`for i { let i = …; }`).
+            if self.active_loop_binding_slot(name) == Some(slot) || self.cell_locals.contains(name) {
+                // A fresh binding must not write the old register in place:
+                // it would clobber the counter the fused loop opcodes drive
+                // (`for i { let i = …; }`), or overwrite a promoted cell that
+                // earlier-emitted reads (a loop condition or a statement
+                // before this `let`, re-executed on the back edge) still
+                // load through.
                 self.alloc_reg()
             } else {
                 self.local_write_slot(slot).0

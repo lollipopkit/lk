@@ -584,6 +584,17 @@ fn differential_builtins() {
                 "closure_inline_arg_alias",
                 "fn use2(a, g) { let t = a + 1; return g(t); }\nlet y = 10;\nprintln(use2(y, |q| q + y));\ny = 20;\nprintln(use2(y, |q| q + y));\nreturn 0;\n",
             ),
+            // Re-`let` of a promoted name in a loop body: earlier-emitted
+            // reads (re-executed on the back edge) keep loading the outer
+            // cell; block-scope promotions of outer locals survive restore.
+            new(
+                "closure_re_let_promoted_in_loop",
+                "let x = 100;\nlet g = |q| q + x;\nlet i = 0;\nwhile (i < 2) {\n  println(x);\n  let x = 5;\n  println(x);\n  i = i + 1;\n}\nprintln(g(0));\nreturn 0;\n",
+            ),
+            new(
+                "closure_block_capture_survives",
+                "let y = 1;\n{\n  let f = |q| q + y;\n  println(f(0));\n}\nprintln(y);\ny = 9;\nprintln(y);\nreturn 0;\n",
+            ),
             // Returned closures via the static summary path: a function whose
             // single return is a closure with parameter-mapped captures is
             // consumed at the call site (no call emitted, pure body skipped).

@@ -1028,3 +1028,56 @@ fn compiler_loop_body_re_let_of_loop_name_is_a_fresh_binding() {
     // Iterations: 5 then 15 → 5 * 100 + 15.
     assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(515)]);
 }
+
+#[test]
+fn compiler_re_let_of_promoted_name_in_loop_keeps_earlier_cell_reads() {
+    // A re-`let` of a promoted name must not write the old register in
+    // place: a read emitted *before* the `let` (re-executed on the back
+    // edge) still loads through the cell. Regression: "LoadCellVal expected
+    // UpvalCell object" on iteration 2.
+    let module = compile_source_module(
+        r#"
+        let x = 100;
+        let g = |q| q + x;
+        let total = 0;
+        let i = 0;
+        while (i < 2) {
+            total = total + x;
+            let x = 5;
+            i = i + 1;
+        }
+        return total * 10 + g(0);
+        "#,
+    )
+    .expect("compile module");
+
+    let result = execute_module(&module).expect("execute module");
+    // Both iterations read the outer cell (total = 200); g sees 100.
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(2100)]);
+}
+
+#[test]
+fn compiler_block_scope_keeps_outer_capture_promotion() {
+    // A promotion of an *outer* local inside a block scope is a code-level
+    // side effect on the enclosing frame (the register now holds the cell)
+    // and must survive the block's cell-mark restore. Regression: the
+    // post-block read printed the raw `<UpvalCell>` object.
+    let module = compile_source_module(
+        r#"
+        let y = 1;
+        let captured = 0;
+        {
+            let f = |q| q + y;
+            captured = f(0);
+        }
+        let after = y;
+        y = 9;
+        return captured * 100 + after * 10 + y;
+        "#,
+    )
+    .expect("compile module");
+
+    let result = execute_module(&module).expect("execute module");
+    // captured = 1, after = 1 (a value, not the cell object), y = 9.
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(119)]);
+}
