@@ -423,8 +423,8 @@ impl Generator {
                 // Branchy helper with fresh capturing closures at two call
                 // sites: the VM inlines the helper body, and the captured
                 // local's cell promotion must survive the inline scope
-                // restore (regression shape; native side may reject —
-                // cross-block cell flows stay outside the subset).
+                // restore (regression shape); the native side lowers it via
+                // cross-block cell phis.
                 let helper = self.fresh("pick");
                 let r1 = self.fresh("v");
                 let r2 = self.fresh("v");
@@ -458,9 +458,9 @@ impl Generator {
             }
             12 => {
                 // Capturing closure: the environment is a shared mutable cell,
-                // so a mutation between calls must be visible (declaration,
-                // calls, and mutation stay adjacent — cross-block cell flows
-                // are outside the native subset and would only skew coverage).
+                // so a mutation between calls must be visible — including a
+                // mutation inside a branch (cross-block cell state lowers via
+                // virtual-slot phis).
                 let lam = self.fresh("lam");
                 let result = self.fresh("v");
                 let named = self.vars_of(Ty::I64);
@@ -471,7 +471,12 @@ impl Generator {
                     if self.rng.chance(50) {
                         let bump = self.rng.below(9);
                         let second = self.fresh("v");
-                        let _ = writeln!(out, "{indent}{captured} = {captured} + {bump};");
+                        if self.rng.chance(40) {
+                            let cond = self.bool_expr(1);
+                            let _ = writeln!(out, "{indent}if ({cond}) {{ {captured} = {captured} + {bump}; }}");
+                        } else {
+                            let _ = writeln!(out, "{indent}{captured} = {captured} + {bump};");
+                        }
                         let _ = writeln!(out, "{indent}let {second} = {lam}({arg});");
                         self.vars.push((second, Ty::I64));
                     }

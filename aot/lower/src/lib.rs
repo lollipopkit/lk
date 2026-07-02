@@ -56,10 +56,11 @@ pub enum Unsupported {
     BadConst {
         pc: usize,
     },
-    /// A register was read with no reaching definition on any predecessor path.
+    /// A register (or virtual cell slot) was read with no reaching definition
+    /// on any predecessor path.
     UndefinedOperand {
         pc: usize,
-        reg: u8,
+        reg: usize,
     },
     /// An operand had the wrong type for the operation.
     TypeMismatch {
@@ -166,7 +167,7 @@ enum GlobalRef {
     Closure(u32, Vec<ClosureCapture>),
     /// An upvalue cell (`LoadHeapConst` of `UpvalCell`): the compiler's shared
     /// mutable box for captured locals. Its content is tracked per block in
-    /// [`Ssa::cell_vals`]; the handle itself never materializes.
+    /// a virtual SSA slot; the handle itself never materializes.
     Cell(u32),
     /// Inside a lambda body: `LoadCapture k` yields the k-th captured cell;
     /// `LoadCellVal` through it reads the hidden capture parameter.
@@ -994,7 +995,19 @@ fn lower_function(
     }
 
     // 5. Lower each block in leader order via Braun on-demand SSA construction.
-    let mut ssa = Ssa::new(reg_count, preds, total_blocks);
+    // One virtual cell slot per `LoadHeapConst UpvalCell` site (cell ids are
+    // assigned in lowering order, so the site count bounds them).
+    let cell_capacity = instrs
+        .iter()
+        .filter(|i| {
+            i.opcode() == Opcode::LoadHeapConst
+                && matches!(
+                    func.consts.heap_values.get(i.bx() as usize),
+                    Some(ConstHeapValueData::UpvalCell(_))
+                )
+        })
+        .count();
+    let mut ssa = Ssa::new(reg_count, cell_capacity, preds, total_blocks);
     // Function parameters occupy r0..r(param_count-1) at entry; each takes its
     // inferred type (the argument type observed at call sites, `I64` by default).
     // They seed the entry block's register file as its first SSA values.
@@ -1089,7 +1102,8 @@ fn lower_function(
                 // capture resolves to a parameter, record a summary — call
                 // sites construct the closure from their argument values and
                 // this body is never emitted. Everything else rejects below.
-                if !is_entry && let Some(candidate) = ret_closure_candidate(&ssa, reg, bi, &fn_params, param_count) {
+                if !is_entry && let Some(candidate) = ret_closure_candidate(&mut ssa, reg, bi, &fn_params, param_count)
+                {
                     let single_ret =
                         !implicit_ret && exits.iter().flatten().filter(|e| matches!(e, Exit::Ret(_))).count() == 1;
                     if single_ret
@@ -1549,6 +1563,9 @@ struct Phi {
 
 struct Ssa {
     reg_count: usize,
+    /// Register slots plus the virtual cell slots appended after them
+    /// (`reg_count + cid` addresses cell `cid`'s content).
+    slot_count: usize,
     preds: Vec<Vec<usize>>,
     current_def: Vec<Vec<Option<Reg>>>,
     sealed: Vec<bool>,
@@ -1578,12 +1595,14 @@ struct Ssa {
     /// propagated by `Move`. Block-local by construction; any write to the
     /// register clears it.
     builtin_regs: std::collections::HashMap<(usize, u8), GlobalRef>,
-    /// Fresh ids for upvalue cells created by `LoadHeapConst`.
+    /// Fresh ids for upvalue cells created by `LoadHeapConst`; each cell's
+    /// content lives in virtual slot `reg_count + cid`, participating in the
+    /// same Braun construction as registers (cross-block cell state gets
+    /// phis). Iteration isolation needs no extra guard: the only path to a
+    /// cell read is a `Cell`/`Closure` ref in `builtin_regs`, and ref
+    /// propagation dies at loop headers whose entry edge lacks the ref, while
+    /// the creation site re-initializes the slot each iteration.
     next_cell: u32,
-    /// `(block, cell id)` → the cell's current content. Block-local like
-    /// [`Self::builtin_regs`]: cross-block cell flows reject rather than
-    /// modelling phi'd cell state.
-    cell_vals: std::collections::HashMap<(usize, u32), (ValueId, Ty)>,
     /// Per-block trailing instructions added for phi-edge type conversions
     /// (`Maybe` ↔ scalar merges); appended after the block's own instructions
     /// when the MIR blocks are assembled.
@@ -1591,11 +1610,13 @@ struct Ssa {
 }
 
 impl Ssa {
-    fn new(reg_count: usize, preds: Vec<Vec<usize>>, total_blocks: usize) -> Self {
+    fn new(reg_count: usize, cell_capacity: usize, preds: Vec<Vec<usize>>, total_blocks: usize) -> Self {
+        let slot_count = reg_count + cell_capacity;
         Self {
             reg_count,
+            slot_count,
             preds,
-            current_def: vec![vec![None; reg_count]; total_blocks],
+            current_def: vec![vec![None; slot_count]; total_blocks],
             sealed: vec![false; total_blocks],
             filled: vec![false; total_blocks],
             phis: (0..total_blocks).map(|_| Vec::new()).collect(),
@@ -1608,7 +1629,6 @@ impl Ssa {
             const_strs: std::collections::HashMap::new(),
             builtin_regs: std::collections::HashMap::new(),
             next_cell: 0,
-            cell_vals: std::collections::HashMap::new(),
             edge_insts: vec![Vec::new(); total_blocks],
         }
     }
@@ -1621,16 +1641,33 @@ impl Ssa {
 
     fn write(&mut self, reg: u8, block: usize, value: Reg) {
         if (reg as usize) < self.reg_count {
-            self.current_def[block][reg as usize] = Some(value);
-            self.builtin_regs.remove(&(block, reg));
+            self.write_slot(reg as usize, block, value);
+        }
+    }
+
+    fn write_slot(&mut self, slot: usize, block: usize, value: Reg) {
+        if slot < self.slot_count {
+            self.current_def[block][slot] = Some(value);
+            if slot < self.reg_count {
+                self.builtin_regs.remove(&(block, slot as u8));
+            }
         }
     }
 
     fn read(&mut self, reg: u8, block: usize, pc: usize) -> Result<Reg, Unsupported> {
-        if let Some(v) = self.current_def[block][reg as usize] {
+        self.read_slot(reg as usize, block, pc)
+    }
+
+    fn read_slot(&mut self, slot: usize, block: usize, pc: usize) -> Result<Reg, Unsupported> {
+        if let Some(v) = self.current_def[block][slot] {
             return Ok(v);
         }
-        self.read_recursive(reg, block, pc)
+        self.read_recursive(slot, block, pc)
+    }
+
+    /// The virtual slot holding cell `cid`'s content.
+    fn cell_slot(&self, cid: u32) -> usize {
+        self.reg_count + cid as usize
     }
 
     fn read_typed(&mut self, reg: u8, block: usize, want: Ty, pc: usize) -> Result<ValueId, Unsupported> {
@@ -1698,7 +1735,7 @@ impl Ssa {
     fn reg_const_str(&self, reg: u8, block: usize) -> Option<String> {
         let mut visited = std::collections::HashSet::new();
         let mut found: Option<String> = None;
-        if self.collect_reg_const_str(reg, block, &mut visited, &mut found) {
+        if self.collect_reg_const_str(reg as usize, block, &mut visited, &mut found) {
             found
         } else {
             None
@@ -1707,15 +1744,15 @@ impl Ssa {
 
     fn collect_reg_const_str(
         &self,
-        reg: u8,
+        reg: usize,
         block: usize,
-        visited: &mut std::collections::HashSet<(usize, u8)>,
+        visited: &mut std::collections::HashSet<(usize, usize)>,
         found: &mut Option<String>,
     ) -> bool {
         if !visited.insert((block, reg)) {
             return true;
         }
-        if let Some((v, ty)) = self.current_def[block][reg as usize] {
+        if let Some((v, ty)) = self.current_def[block][reg] {
             if ty != Ty::Str {
                 return false;
             }
@@ -1735,7 +1772,7 @@ impl Ssa {
             // non-constant definition makes the value dynamic.
             for (phi_block, phis) in self.phis.iter().enumerate() {
                 if let Some(phi) = phis.iter().find(|phi| phi.param == v) {
-                    let phi_reg = phi.reg as u8;
+                    let phi_reg = phi.reg;
                     for p in self.preds[phi_block].clone() {
                         if !self.collect_reg_const_str(phi_reg, p, visited, found) {
                             return false;
@@ -1756,24 +1793,24 @@ impl Ssa {
 
     /// The type of `reg` as seen from an already-filled predecessor (loop-invariant
     /// for the register classes we lower), used to type a freshly created phi.
-    fn phi_ty(&mut self, reg: u8, block: usize, pc: usize) -> Result<Ty, Unsupported> {
+    fn phi_ty(&mut self, slot: usize, block: usize, pc: usize) -> Result<Ty, Unsupported> {
         let preds = self.preds[block].clone();
         for p in preds {
             if self.filled[p] {
-                return Ok(self.read(reg, p, pc)?.1);
+                return Ok(self.read_slot(slot, p, pc)?.1);
             }
         }
-        Err(Unsupported::UndefinedOperand { pc, reg })
+        Err(Unsupported::UndefinedOperand { pc, reg: slot })
     }
 
-    fn read_recursive(&mut self, reg: u8, block: usize, pc: usize) -> Result<Reg, Unsupported> {
+    fn read_recursive(&mut self, slot: usize, block: usize, pc: usize) -> Result<Reg, Unsupported> {
         let value: Reg = if !self.sealed[block] {
-            let ty = self.phi_ty(reg, block, pc)?;
+            let ty = self.phi_ty(slot, block, pc)?;
             let param = self.new_val();
             let idx = self.phis[block].len();
             self.phis[block].push(Phi {
                 param,
-                reg: reg as usize,
+                reg: slot,
                 ty,
                 operands: Vec::new(),
             });
@@ -1781,34 +1818,34 @@ impl Ssa {
             (param, ty)
         } else if self.preds[block].len() == 1 {
             let p = self.preds[block][0];
-            self.read(reg, p, pc)?
+            self.read_slot(slot, p, pc)?
         } else if self.preds[block].is_empty() {
-            return Err(Unsupported::UndefinedOperand { pc, reg });
+            return Err(Unsupported::UndefinedOperand { pc, reg: slot });
         } else {
-            let ty = self.phi_ty(reg, block, pc)?;
+            let ty = self.phi_ty(slot, block, pc)?;
             let param = self.new_val();
             let idx = self.phis[block].len();
             self.phis[block].push(Phi {
                 param,
-                reg: reg as usize,
+                reg: slot,
                 ty,
                 operands: Vec::new(),
             });
             // Break cycles before reading operands.
-            self.current_def[block][reg as usize] = Some((param, ty));
+            self.current_def[block][slot] = Some((param, ty));
             self.add_phi_operands(block, idx, pc)?;
             (param, ty)
         };
-        self.current_def[block][reg as usize] = Some(value);
+        self.current_def[block][slot] = Some(value);
         Ok(value)
     }
 
     fn add_phi_operands(&mut self, block: usize, phi_idx: usize, pc: usize) -> Result<(), Unsupported> {
-        let reg = self.phis[block][phi_idx].reg as u8;
+        let slot = self.phis[block][phi_idx].reg;
         let phi_ty = self.phis[block][phi_idx].ty;
         let preds = self.preds[block].clone();
         for p in preds {
-            let (v, ty) = self.read(reg, p, pc)?;
+            let (v, ty) = self.read_slot(slot, p, pc)?;
             // Every incoming edge must agree on the type (the phi was typed from
             // one filled predecessor). A `Maybe` merging with its scalar (the
             // `let v = m[k]; if v == nil { v = default; }` shape) converts on
@@ -2099,7 +2136,7 @@ fn rel(pc: usize, offset: i32, code_len: usize) -> Option<usize> {
 /// A `Ret` of a register holding a closure ref whose captures all resolve
 /// (in the returning block) to the function's own parameter values.
 fn ret_closure_candidate(
-    ssa: &Ssa,
+    ssa: &mut Ssa,
     reg: u8,
     block: usize,
     fn_params: &[(ValueId, Ty)],
@@ -2110,14 +2147,19 @@ fn ret_closure_candidate(
         GlobalRef::Closure(fidx, caps) => (fidx, caps),
         _ => return None,
     };
-    let params = fn_params.get(..param_count.min(fn_params.len()))?;
     let mut srcs = Vec::with_capacity(caps.len());
     for cap in &caps {
         let (v, _) = match cap {
-            ClosureCapture::Cell(cid) => *ssa.cell_vals.get(&(block, *cid))?,
+            ClosureCapture::Cell(cid) => {
+                let slot = ssa.cell_slot(*cid);
+                ssa.read_slot(slot, block, 0).ok()?
+            }
             ClosureCapture::Value(v, ty) => (*v, *ty),
         };
-        let k = params.iter().position(|&(pv, _)| pv == v)?;
+        let k = fn_params
+            .get(..param_count.min(fn_params.len()))?
+            .iter()
+            .position(|&(pv, _)| pv == v)?;
         srcs.push(RetCaptureSrc::Param(k));
     }
     Some((fidx, srcs))
@@ -2311,15 +2353,15 @@ fn lower_user_call(
             // cell contents at this call site) travels as hidden trailing
             // arguments, in parameter order.
             Some(_) => {
-                let Some(GlobalRef::Closure(_, caps)) = ssa.builtin_regs.get(&(block, arg_reg)).cloned() else {
+                let Some(GlobalRef::Closure(_, caps)) = ssa.builtin_ref_at(arg_reg, block) else {
                     return Err(Unsupported::Opcode { pc, op: Opcode::Call });
                 };
                 for capture in &caps {
                     let (v, ty) = match capture {
-                        ClosureCapture::Cell(cid) => *ssa
-                            .cell_vals
-                            .get(&(block, *cid))
-                            .ok_or(Unsupported::Opcode { pc, op: Opcode::Call })?,
+                        ClosureCapture::Cell(cid) => {
+                            let slot = ssa.cell_slot(*cid);
+                            ssa.read_slot(slot, block, pc)?
+                        }
                         ClosureCapture::Value(v, ty) => (*v, *ty),
                     };
                     if matches!(ty, Ty::Nil | Ty::MaybeI64 | Ty::MaybeF64 | Ty::MaybeStr | Ty::MaybeBool) {
@@ -3049,16 +3091,16 @@ fn lower_inst(
         }
         Opcode::LoadCellVal => {
             // `a` = dst, `b` = cell register: reads the cell's current content.
-            match ssa.builtin_regs.get(&(block, instr.b())) {
+            // The cell ref backtracks across blocks like any global ref; the
+            // content read goes through the virtual slot (phis on demand).
+            match ssa.builtin_ref_at(instr.b(), block) {
                 Some(GlobalRef::CellParam(k)) => {
-                    let &(v, ty) = capture_params.get(*k).ok_or(Unsupported::BadConst { pc })?;
+                    let &(v, ty) = capture_params.get(k).ok_or(Unsupported::BadConst { pc })?;
                     ssa.write(instr.a(), block, (v, ty));
                 }
                 Some(GlobalRef::Cell(cid)) => {
-                    let &(v, ty) = ssa
-                        .cell_vals
-                        .get(&(block, *cid))
-                        .ok_or(Unsupported::Opcode { pc, op: instr.opcode() })?;
+                    let slot = ssa.cell_slot(cid);
+                    let (v, ty) = ssa.read_slot(slot, block, pc)?;
                     ssa.write(instr.a(), block, (v, ty));
                 }
                 _ => return Err(Unsupported::Opcode { pc, op: instr.opcode() }),
@@ -3068,11 +3110,12 @@ fn lower_inst(
             // `a` = cell register, `b` = value register: updates the tracked
             // cell content (mutations inside a lambda would need write-back
             // through the hidden parameter, so `CellParam` stores reject).
-            let Some(GlobalRef::Cell(cid)) = ssa.builtin_regs.get(&(block, instr.a())).cloned() else {
+            let Some(GlobalRef::Cell(cid)) = ssa.builtin_ref_at(instr.a(), block) else {
                 return Err(Unsupported::Opcode { pc, op: instr.opcode() });
             };
             let (v, ty) = ssa.read(instr.b(), block, pc)?;
-            ssa.cell_vals.insert((block, cid), (v, ty));
+            let slot = ssa.cell_slot(cid);
+            ssa.write_slot(slot, block, (v, ty));
         }
         Opcode::SetGlobal => {
             // Storing a function value into the global table is the compiler's
@@ -3210,10 +3253,10 @@ fn lower_inst(
                     let mut resolved = Vec::with_capacity(captures.len());
                     for capture in &captures {
                         let (v, ty) = match capture {
-                            ClosureCapture::Cell(cid) => *ssa
-                                .cell_vals
-                                .get(&(block, *cid))
-                                .ok_or(Unsupported::Opcode { pc, op: instr.opcode() })?,
+                            ClosureCapture::Cell(cid) => {
+                                let slot = ssa.cell_slot(*cid);
+                                ssa.read_slot(slot, block, pc)?
+                            }
                             ClosureCapture::Value(v, ty) => (*v, *ty),
                         };
                         if matches!(ty, Ty::Nil | Ty::MaybeI64 | Ty::MaybeF64 | Ty::MaybeStr | Ty::MaybeBool) {
@@ -3515,11 +3558,14 @@ fn lower_inst(
                 }
                 ConstHeapValueData::UpvalCell(initial) => {
                     // The compiler's shared mutable box for a captured local.
-                    // The cell never materializes: its content is tracked as a
-                    // virtual SSA slot (`Ssa::cell_vals`), read/written by
-                    // `LoadCellVal`/`StoreCellVal` and resolved at closure call
-                    // sites. Cells start nil (any pre-store read is a `Nil`
-                    // value, exactly the VM's fresh-cell content).
+                    // The cell never materializes: its content lives in a
+                    // virtual SSA slot (`reg_count + cid`) under the same
+                    // Braun construction as registers, so cross-block state
+                    // (mutation in a branch, reads after a merge, loop-carried
+                    // updates) gets phis. Cells start nil (any pre-store read
+                    // is a `Nil` value, exactly the VM's fresh-cell content);
+                    // re-executing this site (a loop-created cell) re-
+                    // initializes the slot, matching the VM's fresh cell.
                     if !matches!(initial.as_ref(), ConstRuntimeValueData::Nil) {
                         return Err(Unsupported::Opcode { pc, op: instr.opcode() });
                     }
@@ -3530,7 +3576,8 @@ fn lower_inst(
                         dst: nil,
                         value: Const::Nil,
                     });
-                    ssa.cell_vals.insert((block, cid), (nil, Ty::Nil));
+                    let slot = ssa.cell_slot(cid);
+                    ssa.write_slot(slot, block, (nil, Ty::Nil));
                     ssa.builtin_regs.insert((block, instr.a()), GlobalRef::Cell(cid));
                 }
             }

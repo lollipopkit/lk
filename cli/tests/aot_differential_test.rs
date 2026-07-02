@@ -550,6 +550,26 @@ fn differential_builtins() {
                 "closure_as_argument_forwarding",
                 "fn inner(f, x) { return f(x); }\nfn outer(g, y) { return inner(g, y) + inner(g, y * 2); }\nlet base = 100;\nlet addb = |v| v + base;\nprintln(outer(addb, 5));\nbase = 200;\nprintln(outer(addb, 5));\nreturn 0;\n",
             ),
+            // Cross-block cell state (virtual-slot phis): mutation in branch
+            // arms visible after the merge, loop-carried cell updates, a
+            // capturing closure through a branchy (VM-inlined) helper, and
+            // loop-variable snapshot capture (per-iteration cell copy).
+            new(
+                "closure_cell_across_blocks",
+                "let c = 1;\nlet f = |x| x * c;\nlet n = 4;\nif n > 2 { c = 5; } else { c = 7; }\nprintln(f(2));\nc = 9;\nprintln(f(2));\nreturn 0;\n",
+            ),
+            new(
+                "closure_cell_loop_carried",
+                "let c = 0;\nlet f = |x| x + c;\nfor i in 0..3 {\n  println(f(0));\n  c = c + 1;\n}\nprintln(f(100));\nreturn 0;\n",
+            ),
+            new(
+                "closure_arg_branchy_helper",
+                "fn pick(h, n) { if n > 3 { return h(n); } return h(0); }\nlet off = 7;\nprintln(pick(|q| q + off, 10));\nprintln(pick(|q| q + off, 1));\noff = 20;\nprintln(pick(|q| q + off, 1));\nreturn 0;\n",
+            ),
+            new(
+                "closure_loop_var_snapshot",
+                "for i in 0..3 {\n  let f = |x| x + i;\n  println(f(10));\n}\nlet j = 0;\nwhile (j < 3) {\n  let g = |x| x * 10 + j;\n  println(g(j));\n  j = j + 1;\n}\nreturn 0;\n",
+            ),
             // Returned closures via the static summary path: a function whose
             // single return is a closure with parameter-mapped captures is
             // consumed at the call site (no call emitted, pure body skipped).
