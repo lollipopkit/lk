@@ -697,6 +697,43 @@ mod tests {
     }
 
     #[test]
+    fn list_display_exact_bytes() {
+        use std::ffi::CString;
+        let text = |ptr: *mut c_char| {
+            // SAFETY: display returns a NUL-terminated arena C string.
+            unsafe { CStr::from_ptr(ptr) }.to_str().expect("utf8").to_string()
+        };
+        unsafe {
+            let ints = lkrt_lklist_i64_new();
+            assert_eq!(text(lkrt_lklist_i64_display(ints)), "[]");
+            for v in [1, -2, 30] {
+                lkrt_lklist_i64_push(ints, v);
+            }
+            assert_eq!(text(lkrt_lklist_i64_display(ints)), "[1,-2,30]");
+
+            let floats = lkrt_lklist_f64_new();
+            lkrt_lklist_f64_push(floats, 1.5);
+            lkrt_lklist_f64_push(floats, 2.0);
+            lkrt_lklist_f64_push(floats, 0.25);
+            // Rust `f64::to_string` (the VM's float display): `2.0` renders `2`.
+            assert_eq!(text(lkrt_lklist_f64_display(floats)), "[1.5,2,0.25]");
+
+            let strs = lkrt_lklist_str_new();
+            let a = CString::new("a").unwrap();
+            let spaced = CString::new("b c").unwrap();
+            let quoted = CString::new("he said \"hi\"\tok").unwrap();
+            lkrt_lklist_str_push(strs, a.as_ptr());
+            lkrt_lklist_str_push(strs, spaced.as_ptr());
+            lkrt_lklist_str_push(strs, quoted.as_ptr());
+            // Elements quote/escape with Rust `{:?}` (the VM's `quote_string`).
+            assert_eq!(
+                text(lkrt_lklist_str_display(strs)),
+                "[\"a\",\"b c\",\"he said \\\"hi\\\"\\tok\"]"
+            );
+        }
+    }
+
+    #[test]
     fn str_list_join() {
         use std::ffi::CString;
         unsafe {

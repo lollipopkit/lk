@@ -2252,16 +2252,16 @@ fn lower_user_call(
     // retargets the call to a per-identity *clone* of the callee (created on
     // demand, byte-identical body, `lambda_params` pre-filled so its
     // parameters seed static refs instead of binding values).
+    // Identity resolution backtracks across blocks like the hidden-env
+    // lookup below (an argument register may inherit its lambda/closure ref
+    // from a predecessor), so both paths agree on what the register holds.
     let identity: Vec<Option<LambdaIdentity>> = (0..argc)
         .map(|i| {
             let arg_reg = dst_reg.wrapping_add(1).wrapping_add(i as u8);
-            match ssa.builtin_regs.get(&(block, arg_reg)) {
-                Some(GlobalRef::Lambda(fidx)) => Some(LambdaIdentity {
-                    fidx: *fidx,
-                    captures: 0,
-                }),
+            match ssa.builtin_ref_at(arg_reg, block) {
+                Some(GlobalRef::Lambda(fidx)) => Some(LambdaIdentity { fidx, captures: 0 }),
                 Some(GlobalRef::Closure(fidx, caps)) => Some(LambdaIdentity {
-                    fidx: *fidx,
+                    fidx,
                     captures: caps.len() as u16,
                 }),
                 _ => None,

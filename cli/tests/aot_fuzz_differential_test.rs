@@ -55,6 +55,10 @@ enum Ty {
 struct ListVar {
     name: String,
     len: usize,
+    /// The literal elements at creation, so the equality shape (case 14) can
+    /// generate genuine exact matches instead of comparing against unrelated
+    /// random literals.
+    items: Vec<String>,
 }
 
 struct MapVar {
@@ -252,7 +256,7 @@ impl Generator {
                 let len = 3 + self.rng.below(3) as usize;
                 let items = (0..len).map(|_| format!("{}", self.rng.below(61))).collect::<Vec<_>>();
                 let _ = writeln!(out, "{indent}let {name} = [{}];", items.join(", "));
-                self.lists.push(ListVar { name, len });
+                self.lists.push(ListVar { name, len, items });
             }
             4 => {
                 let name = self.fresh("m");
@@ -507,22 +511,35 @@ impl Generator {
                 }
             }
             14 => {
-                // List structural equality against a literal: exact match,
-                // length mismatch, or a perturbed element — printed directly
-                // (native lowers via the lkrt eq helpers; `!=` half the time).
+                // List structural equality against a literal built from the
+                // list's *creation* elements: an exact match, a truncation,
+                // or a single perturbed element — printed directly (native
+                // lowers via the lkrt eq helpers; `!=` half the time).
                 if let Some(list) = self.lists.first().cloned() {
-                    let items: Vec<String> = (0..list.len).map(|_| format!("{}", self.rng.below(61))).collect();
-                    let mut literal = items.join(", ");
-                    if self.rng.chance(30) && !items.is_empty() {
-                        literal = items[..items.len() - 1].join(", ");
+                    let mut items = list.items.clone();
+                    match self.rng.below(3) {
+                        0 => {}
+                        1 => {
+                            items.pop();
+                        }
+                        _ => {
+                            if !items.is_empty() {
+                                let idx = self.rng.below(items.len() as u64) as usize;
+                                items[idx] = format!("{}", self.rng.below(61));
+                            }
+                        }
                     }
                     let op = if self.rng.chance(50) { "==" } else { "!=" };
-                    let _ = writeln!(out, "{indent}println({} {op} [{literal}]);", list.name);
+                    let _ = writeln!(out, "{indent}println({} {op} [{}]);", list.name, items.join(", "));
                 } else {
                     let name = self.fresh("xs");
                     let _ = writeln!(out, "{indent}let {name} = [4, 5, 6];");
                     let _ = writeln!(out, "{indent}println({name} == [4, 5, 6]);");
-                    self.lists.push(ListVar { name, len: 3 });
+                    self.lists.push(ListVar {
+                        name,
+                        len: 3,
+                        items: vec!["4".into(), "5".into(), "6".into()],
+                    });
                 }
             }
             11 => {
