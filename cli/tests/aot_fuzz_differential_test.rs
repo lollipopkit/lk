@@ -362,6 +362,20 @@ impl Generator {
                 let _ = writeln!(out, "{indent}let {total} = {map}.len();");
                 self.vars.push((total, Ty::I64));
             }
+            12 if self.rng.chance(40) => {
+                // Two different lambda identities through the same helper —
+                // exercises per-identity clone specialization.
+                let helper = self.fresh("hof");
+                let r1 = self.fresh("v");
+                let r2 = self.fresh("v");
+                let k = 1 + self.rng.below(5);
+                let m = self.rng.below(9);
+                let _ = writeln!(out, "{indent}fn {helper}(f, x) {{ return f(x) + f(x + 1); }}");
+                let _ = writeln!(out, "{indent}let {r1} = {helper}(|p| p * {k}, {});", self.rng.below(12));
+                let _ = writeln!(out, "{indent}let {r2} = {helper}(|p| p + {m}, {});", self.rng.below(12));
+                self.vars.push((r1, Ty::I64));
+                self.vars.push((r2, Ty::I64));
+            }
             12 => {
                 // Capturing closure: the environment is a shared mutable cell,
                 // so a mutation between calls must be visible (declaration,

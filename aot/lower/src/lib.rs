@@ -356,12 +356,27 @@ struct SigInfer {
     /// assigned exactly once, in the entry prefix, from a zero-capture
     /// `MakeClosure`. Reading such a slot yields [`GlobalRef::Lambda`].
     lambda_globals: Vec<Option<u32>>,
-    /// `lambda_params[f][i]` — call sites always pass this exact zero-capture
-    /// lambda as `f`'s i-th argument. The parameter is *erased* from the MIR
-    /// signature: the callee seeds the register with the [`GlobalRef::Lambda`]
-    /// instead, so indirect calls through it devirtualize. Two call sites
-    /// passing different lambdas mark `conflict` (whole-module fallback).
+    /// `lambda_params[f][i]` — this function's i-th parameter is an *erased*
+    /// zero-capture lambda with a statically known identity: the callee seeds
+    /// the register with the [`GlobalRef::Lambda`] instead of binding a value,
+    /// so indirect calls through it devirtualize. Set on clone
+    /// materialization (see [`Self::specializations`]).
     lambda_params: Vec<Vec<Option<u32>>>,
+    /// Clone specialization table: `(original fn, lambda identity per param)`
+    /// → the specialized clone's id. Call sites passing lambdas retarget to
+    /// the clone whose identity vector matches, so *different* lambdas at the
+    /// same parameter get independent clones instead of a conflict.
+    specializations: std::collections::HashMap<(u32, Vec<Option<u32>>), u32>,
+    /// Clones queued during a pass (original fn ids, in id-assignment order),
+    /// materialized into the working function list between passes.
+    pending_clones: Vec<u32>,
+    /// Original functions that have at least one specialized (lambda-passing)
+    /// call site. If such a function also has a plain call site
+    /// (`plain_called`), the program is polymorphic over functions vs values —
+    /// reject. Otherwise the original body is skipped (all callers use clones).
+    specialized: Vec<bool>,
+    /// Original functions with at least one all-plain call site.
+    plain_called: Vec<bool>,
     /// Diagnostic names for the mutable-global table (slot-indexed).
     global_names: Vec<String>,
     /// Final compact `slot → gvar` numbering, built once signatures converge
@@ -390,7 +405,7 @@ pub fn lower(artifact: &ModuleArtifact) -> Result<MirModule, Unsupported> {
     // never directly called (e.g. a small helper the front end inlined at every use)
     // are dead for AOT; lowering them would pointlessly fail the whole module if they
     // use a shape we don't support, so we skip them entirely.
-    let reachable = reachable_functions(module);
+    let mut reachable = reachable_functions(module);
 
     let global_count = module.globals.len();
     let mut sig = SigInfer {
@@ -411,25 +426,40 @@ pub fn lower(artifact: &ModuleArtifact) -> Result<MirModule, Unsupported> {
             .iter()
             .map(|f| vec![None; f.param_count as usize])
             .collect(),
+        specializations: std::collections::HashMap::new(),
+        pending_clones: Vec::new(),
+        specialized: vec![false; n],
+        plain_called: vec![false; n],
         global_names: module.globals.clone(),
         gvar_of: std::collections::HashMap::new(),
     };
+
+    // Working function list: module functions plus lambda-argument clone
+    // specializations materialized between fixpoint passes (byte-identical
+    // bodies whose `lambda_params` erase the lambda parameters).
+    let mut funcs: Vec<FunctionData> = module.functions.to_vec();
 
     // Fixpoint: re-lower every function, refining inferred parameter/return types
     // (bounded — the scalar lattice converges quickly). Transient failures are
     // tolerated here (a function may not lower until the types it depends on have
     // converged); the final pass below is authoritative and propagates errors.
-    for _ in 0..2 * n + 2 {
-        let snapshot = (sig.param_obs.clone(), sig.ret_types.clone());
-        for (fi, func) in module.functions.iter().enumerate() {
+    let mut passes = 0usize;
+    loop {
+        let snapshot = (sig.param_obs.clone(), sig.ret_types.clone(), sig.specializations.len());
+        for fi in 0..funcs.len() {
             if !reachable[fi] {
+                continue;
+            }
+            // Originals whose call sites all pass lambdas are fully replaced
+            // by their clones (their bodies would reject without erasure).
+            if sig.specialized.get(fi).copied().unwrap_or(false) {
                 continue;
             }
             let is_entry = fi as u32 == module.entry;
             let mut scratch = Vec::new();
             if let Ok(mf) = lower_function(
-                func,
-                &module.functions,
+                &funcs[fi],
+                &funcs,
                 fi as u32,
                 module.entry,
                 is_entry,
@@ -444,7 +474,16 @@ pub fn lower(artifact: &ModuleArtifact) -> Result<MirModule, Unsupported> {
         if sig.conflict {
             return Err(Unsupported::ReturnTypeConflict);
         }
-        if snapshot == (sig.param_obs.clone(), sig.ret_types.clone()) {
+        // Materialize clones queued during this pass so the next pass lowers
+        // them (their `lambda_params` are already in place).
+        for orig in std::mem::take(&mut sig.pending_clones) {
+            funcs.push(funcs[orig as usize].clone());
+            reachable.push(true);
+        }
+        passes += 1;
+        if snapshot == (sig.param_obs.clone(), sig.ret_types.clone(), sig.specializations.len())
+            || passes > 2 * funcs.len() + 2
+        {
             break;
         }
     }
@@ -464,15 +503,18 @@ pub fn lower(artifact: &ModuleArtifact) -> Result<MirModule, Unsupported> {
     // the reachable functions. Any reachable function outside the subset fails the
     // whole module (caller falls back); `FuncId`s keep their original module indices.
     let mut globals: Vec<String> = Vec::new();
-    let mut functions = Vec::with_capacity(n);
-    for (fi, func) in module.functions.iter().enumerate() {
+    let mut functions = Vec::with_capacity(funcs.len());
+    for fi in 0..funcs.len() {
         if !reachable[fi] {
+            continue;
+        }
+        if sig.specialized.get(fi).copied().unwrap_or(false) {
             continue;
         }
         let is_entry = fi as u32 == module.entry;
         functions.push(lower_function(
-            func,
-            &module.functions,
+            &funcs[fi],
+            &funcs,
             fi as u32,
             module.entry,
             is_entry,
@@ -1984,34 +2026,72 @@ fn lower_user_call(
             op: Opcode::CallDirect,
         });
     }
+    // Zero-capture lambda arguments are erased from the native signature:
+    // collect the call site's lambda identity vector; a non-empty vector
+    // retargets the call to a per-identity *clone* of the callee (created on
+    // demand, byte-identical body, `lambda_params` pre-filled so its
+    // parameters seed static refs instead of binding values).
+    let identity: Vec<Option<u32>> = (0..argc)
+        .map(|i| {
+            let arg_reg = dst_reg.wrapping_add(1).wrapping_add(i as u8);
+            match ssa.builtin_regs.get(&(block, arg_reg)) {
+                Some(GlobalRef::Lambda(fidx)) => Some(*fidx),
+                _ => None,
+            }
+        })
+        .collect();
+    let callee_idx = if identity.iter().any(Option::is_some) {
+        // The clone carries `lambda_params`; the original body would treat the
+        // parameter as a plain value and reject. A function called both ways
+        // is polymorphic over functions vs values — outside the subset.
+        if let Some(flag) = sig.specialized.get_mut(callee_idx) {
+            *flag = true;
+        }
+        if sig.plain_called.get(callee_idx).copied().unwrap_or(false) {
+            sig.conflict = true;
+            return Err(Unsupported::TypeMismatch { pc });
+        }
+        let key = (callee_idx as u32, identity.clone());
+        match sig.specializations.get(&key) {
+            Some(&clone) => clone as usize,
+            None => {
+                // Cap the clone count per original so a pathological program
+                // cannot explode the module (falls back loudly instead).
+                const MAX_SPECIALIZATIONS: usize = 8;
+                let existing = sig
+                    .specializations
+                    .keys()
+                    .filter(|(orig, _)| *orig == callee_idx as u32)
+                    .count();
+                if existing >= MAX_SPECIALIZATIONS {
+                    sig.conflict = true;
+                    return Err(Unsupported::TypeMismatch { pc });
+                }
+                let clone = sig.param_obs.len() as u32;
+                sig.param_obs.push(vec![None; funcs[callee_idx].param_count as usize]);
+                sig.ret_types.push(sig.ret_types[callee_idx]);
+                sig.lambda_params.push(identity.clone());
+                sig.specializations.insert(key, clone);
+                sig.pending_clones.push(callee_idx as u32);
+                clone as usize
+            }
+        }
+    } else {
+        if sig.specialized.get(callee_idx).copied().unwrap_or(false) {
+            sig.conflict = true;
+            return Err(Unsupported::TypeMismatch { pc });
+        }
+        if let Some(flag) = sig.plain_called.get_mut(callee_idx) {
+            *flag = true;
+        }
+        callee_idx
+    };
     let mut args = Vec::with_capacity(argc + captures.len());
     for i in 0..argc {
         let arg_reg = dst_reg.wrapping_add(1).wrapping_add(i as u8);
-        // A zero-capture lambda argument is erased from the native signature:
-        // record its identity (all call sites must agree) and pass nothing —
-        // the callee seeds the parameter register with the static ref instead.
-        if let Some(GlobalRef::Lambda(fidx)) = ssa.builtin_regs.get(&(block, arg_reg)) {
-            if let Some(slot) = sig.lambda_params.get_mut(callee_idx).and_then(|p| p.get_mut(i)) {
-                match slot {
-                    None => *slot = Some(*fidx),
-                    Some(prev) if *prev != *fidx => sig.conflict = true,
-                    Some(_) => {}
-                }
-            }
+        if identity[i].is_some() {
+            // Erased lambda argument: nothing is passed at runtime.
             continue;
-        }
-        // A previously observed lambda parameter fed with a non-lambda value
-        // is polymorphic — fall back rather than miscompile either site.
-        if sig
-            .lambda_params
-            .get(callee_idx)
-            .and_then(|p| p.get(i))
-            .copied()
-            .flatten()
-            .is_some()
-        {
-            sig.conflict = true;
-            return Err(Unsupported::TypeMismatch { pc });
         }
         let (aval, aty) = read_scalar(ssa, insts, arg_reg, block, pc)?;
         // `Str` and container handles pass as `ptr` (arena-owned until

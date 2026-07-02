@@ -441,6 +441,12 @@ fn differential_builtins() {
                 "panic_after_output",
                 "println(\"before\");\nlet x = 1;\nif (x == 1) { panic(\"stop\", x); }\nreturn 7;\n",
             ),
+            // Multi-identity lambda arguments: each identity gets its own
+            // specialized clone of the callee (apply itself may be a lambda).
+            new(
+                "lambda_multi_identity",
+                "fn apply(f, x) { return f(x) + f(x + 1); }\nlet double = |v| v * 2;\nlet square = |v| v * v;\nprintln(apply(double, 5));\nprintln(apply(square, 5));\nprintln(apply(|v| v + 100, 1));\nlet lapply = |g, n| g(n);\nprintln(lapply(double, 7));\nprintln(lapply(square, 5));\nreturn 0;\n",
+            ),
             // List display: VM-exact separators/quoting through println
             // (the runtime_display path; template interpolation of containers
             // rejects — that path is scalar-only in the VM).
