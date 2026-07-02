@@ -117,6 +117,9 @@ pub enum Const {
     Bool(bool),
     /// References an interned module global (see [`MirModule::globals`]).
     Str(GlobalId),
+    /// The address of a lowered user function (`ptr @lk_fn_N`) — passed to
+    /// runtime helpers that invoke compiled callbacks (list HOF).
+    FnAddr(FuncId),
     Nil,
 }
 
@@ -542,6 +545,7 @@ fn render_inst(inst: &Inst) -> String {
                 Const::F64(x) => format!("const.f64 {x:?}"),
                 Const::Bool(b) => format!("const.bool {b}"),
                 Const::Str(g) => format!("const.str g{}", g.0),
+                Const::FnAddr(f) => format!("const.fnaddr fn{}", f.0),
                 Const::Nil => "const.nil".to_string(),
             };
             format!("{} = {c}", v(*dst))

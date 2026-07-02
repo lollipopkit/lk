@@ -68,7 +68,23 @@ ModuleArtifact → lk-aot-lower → lk_aot_mir::validate → lk-aot-codegen → 
 - `os.hostname`/`arch`/`os`, `process.cwd`, `fs.temp_dir` (owned strings),
   `fs.read_dir` (sorted UTF-8 entry names as `List<str>`), and `time.since`
   (inline `end - start`). `== nil`/`!= nil` folds for concrete-typed operands
-  and tests the present bit for Maybe carriers.
+  and tests the present bit for Maybe carriers; `Bool == Bool` widens to i64.
+- `datetime` module via chrono in lkrt (the stdlib module's exact crate, so
+  formatting/weekday output is byte-identical): `now`/`format`/`parse`/
+  `day_of_week`/`day_of_year`/`is_weekend`; `add`/`sub` inline as Int
+  arithmetic. `io.std` (the `std` global from `use { std } from io`):
+  stdin/stdout/stderr are fixed handles, `write`/`writeln` return the VM's
+  byte counts, `flush` → `true`; the lkrt writers flush C stdio before and
+  their own stream after, so `printf` output and Rust-side writes keep
+  program order. `json` stays out of the subset (dynamic nested values).
+- List HOF over compiled zero-capture lambdas (fn-pointer ABI,
+  `Const::FnAddr` → `ptr @lk_fn_N`): `map`/`filter`/`reduce` over `List<i64>`
+  call the lambda per element inside lkrt; the callback signature goes through
+  the same monomorphization lattice as direct calls.
+- `CallMethodK` (the boxing-free method-call opcode) lowers through the same
+  per-(receiver type, method) dispatch as the legacy `__lk_call_method` shape;
+  builtin/global refs resolve across blocks when all predecessor paths agree
+  (`assert(a || b)`).
 - Fused compare-branch opcodes (`TestXxxInt(I)`+`Jmp`, `TestEqIntI2`,
   `BrEqIntI4` family, `BrMod*ZeroIntI4`, nil branches).
 

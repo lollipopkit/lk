@@ -292,6 +292,89 @@ pub extern "C" fn lkrt_math_pow(base: f64, exponent: f64) -> f64 {
     base.powf(exponent)
 }
 
+/// The stdlib datetime module's `utc_datetime`: aborts on an out-of-range
+/// timestamp (the VM's loud `invalid timestamp` error).
+fn datetime_utc(timestamp: i64, context: &str) -> chrono::DateTime<chrono::Utc> {
+    match chrono::DateTime::<chrono::Utc>::from_timestamp(timestamp, 0) {
+        Some(dt) => dt,
+        None => {
+            eprintln!("lkrt error: {context}: invalid timestamp");
+            crate::abi::flush_and_abort();
+        }
+    }
+}
+
+/// `datetime.now()` — Unix epoch seconds (`chrono::Utc::now().timestamp()`).
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_datetime_now() -> i64 {
+    chrono::Utc::now().timestamp()
+}
+
+/// `datetime.format(timestamp, format)` — chrono strftime formatting in UTC,
+/// byte-identical to the stdlib module (same crate, same call).
+///
+/// # Safety
+/// `format` must be a valid NUL-terminated C string, or null (empty).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_datetime_format(timestamp: i64, format: *const c_char) -> *mut c_char {
+    aborting(|| {
+        let format = c_str(format, "datetime.format format")?;
+        let formatted = datetime_utc(timestamp, "datetime.format")
+            .format(format.as_str())
+            .to_string();
+        owned_c_string(formatted)
+    })
+}
+
+/// `datetime.parse(value, format)` — chrono naive parse anchored to UTC;
+/// a parse failure aborts (the VM's loud error).
+///
+/// # Safety
+/// Both pointers must be valid NUL-terminated C strings, or null (empty).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_datetime_parse(value: *const c_char, format: *const c_char) -> i64 {
+    aborting(|| {
+        let value = c_str(value, "datetime.parse value")?;
+        let format = c_str(format, "datetime.parse format")?;
+        let naive = chrono::NaiveDateTime::parse_from_str(value.as_str(), format.as_str())
+            .map_err(|err| format!("failed to parse datetime: {err}"))?;
+        Ok(chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(naive, chrono::Utc).timestamp())
+    })
+}
+
+/// `datetime.day_of_week(timestamp)` — the stdlib module's mapping (Sun = 0).
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_datetime_day_of_week(timestamp: i64) -> i64 {
+    use chrono::Datelike;
+    match datetime_utc(timestamp, "datetime.day_of_week").weekday() {
+        chrono::Weekday::Sun => 0,
+        chrono::Weekday::Mon => 1,
+        chrono::Weekday::Tue => 2,
+        chrono::Weekday::Wed => 3,
+        chrono::Weekday::Thu => 4,
+        chrono::Weekday::Fri => 5,
+        chrono::Weekday::Sat => 6,
+    }
+}
+
+/// `datetime.day_of_year(timestamp)` — 1-based ordinal.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_datetime_day_of_year(timestamp: i64) -> i64 {
+    use chrono::Datelike;
+    i64::from(datetime_utc(timestamp, "datetime.day_of_year").ordinal())
+}
+
+/// `datetime.is_weekend(timestamp)` — 1 for Sat/Sun, else 0 (the lowering
+/// converts to the LK `Bool`).
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_datetime_is_weekend(timestamp: i64) -> i64 {
+    use chrono::Datelike;
+    i64::from(matches!(
+        datetime_utc(timestamp, "datetime.is_weekend").weekday(),
+        chrono::Weekday::Sat | chrono::Weekday::Sun
+    ))
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_os_clock() -> f64 {
     static START: OnceLock<Instant> = OnceLock::new();

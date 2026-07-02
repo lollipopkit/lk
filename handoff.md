@@ -1,7 +1,43 @@
 # Handoff
 
-**本轮(三):捕获闭包 MIR 支持 + os/fs/process/time 模块吸收,examples 8/44**。
-workspace 全绿,ASan/UBSan 差分零报告,Miri lkrt 23/23。
+**本轮(四):CallMethodK opcode + list HOF + datetime/io.std 模块,
+examples 10/44,VM/Lua geomean 1.033x**。
+workspace 全绿,ASan/UBSan 差分零报告,Miri lkrt 23/23,fuzz 200 例干净,
+AOT 20/20 checksum 一致。
+
+## 本轮新增(2026-07-02 第四场)
+
+- **CallMethodK opcode(ISA 级,artifact v6)**:`a`=窗口基址(receiver 在
+  a、args 在 a+1..、结果写 a)、`b`=方法名字符串常量索引、`c`=argc。编译器
+  `lower_dynamic_method_call` 直接发射(名字索引 >u8 回退旧 helper 形状);
+  exec 主循环热路径直接窗口分派(`core_call_method_windowed`:builtin
+  分派吃 slice 零装箱,罕见尾路径〔可调用属性/list HOF/trait〕才物化
+  args list);verifier 校验窗口+名字常量;AOT lower 经共享
+  `lower_method_dispatch` 消费。**每次方法调用消灭 NewList 堆分配 +
+  GetGlobal + 泛型 Call 机制。fraud 33→16ms、cart 6.1→3.2ms(自轮初
+  49/9.2ms 累计 -67%);全套 VM/Lua geomean 1.120x→1.033x**,
+  template_render 转 ahead(0.98x),零回归。
+- **list HOF(阶段 4 第三切片)**:`map`/`filter`/`reduce` over `List<i64>`
+  接零捕获 lambda——MIR 新 `Const::FnAddr(FuncId)`(codegen 渲染
+  `ptr @lk_fn_N`),lkrt `i64_{map,filter,reduce}_fn` 以 `extern "C"` fn
+  指针逐元素回调;lambda 签名过同一单态化格(map: i64→i64、filter:
+  i64→Bool、reduce: (i64,i64)→i64,不符响亮拒绝)。链式 pipeline 与
+  回调内除零 abort 差分锁定。
+- **datetime 模块**:lkrt 引 chrono(与 stdlib 同 crate,格式化/星期
+  字节一致);now/format/parse/day_of_week/day_of_year/is_weekend 经
+  ABI,add/sub 内联 Int 算术。**发现并修复 example bug**:datetime_demo
+  假设 now() 返回微秒(实际秒)→ VM 自己也断言失败(从未被执行过的
+  example);已修正 demo。
+- **io.std 模块**(`use { std } from io` 的解构 import 绑 "std" 全局):
+  stdin/stdout/stderr = 固定句柄 0/1/2,write/writeln 返回 VM 字节数
+  (lkrt 返回值已对齐),flush→true。**修复真实分歧**:native 里
+  Rust-stdout 缓冲与 printf 的 C 缓冲交错错序——lkrt 写者先
+  fflush(NULL) 后 flush 自身流,保持程序序。
+- **杂项通用形状**:Bool==Bool 比较(ZextBool→icmp)、跨块 builtin ref
+  回溯(`assert(a || b)` 的 merge 块调用,全前驱一致才命中)、
+  Str.contains/.len 方法。json 明确记录为子集外(动态嵌套值)。
+- **examples 8/44 → 10/44**(datetime_demo、io_demo),地板 ≥10;
+  手写差分 +5 组。
 
 ## 本轮新增(2026-07-02 第三场)
 
@@ -82,20 +118,23 @@ workspace 全绿,ASan/UBSan 差分零报告,Miri lkrt 23/23。
 
 ## 待办(需专门轮次)
 
-1. **CallMethod 专用 opcode**(见上,本轮 profiling 的头号发现):方法
-   调用免 NewList 装箱 + 免 GetGlobal,预计再砍每调用 ~100-200ns;
-   fraud/cart 仍 4.1x/4.4x behind Lua(本地),这是主要剩余差距。
-2. **MIR 一等函数值**(阶段 4 最后一块):闭包作参数/容器元素/返回值
-   (需 FnRef/闭包环境进单态化格或 fn-pointer ABI + `Const::FnAddr`)、
-   list HOF(map/filter/reduce 接静态 lambda)。closure.lk/higher_order.lk
-   解锁依赖这些;捕获闭包的 cell 建模(本轮)已就位。
-3. **VM 字符串 interning/hash 缓存**(任务24)+ **循环 Move 消除**(任务25):
-   本地 Lua 已可预筛;README 历史反例多,小步验证。
-4. examples 覆盖长尾:模块函数(json/datetime/io/stream/tcp,含解构
-   import 形状、句柄返回值)、LoadHeapConst 常量容器、match/struct/
-   NewRange。
-5. histogram_group_count AOT 仍 ≈1.04x(let-bound 模板 key 每迭代一次
+1. **VM 剩余性能差距**:fraud/cart 仍 2.0x/2.3x behind Lua(本地)。
+   CallMethodK 后每方法调用剩余成本:窗口参数 Move、receiver/args clone、
+   NativeRuntime 构造、builtin 名字 match。候选:方法分派 pc 级 fact 缓存
+   (receiver kind + method id)、任务 24/25(interning/Move 消除,本地
+   Lua 已可预筛,README 历史反例多)。
+2. **MIR 一等函数值(真·一等)**:闭包作参数传给用户函数(需按 lambda
+   身份克隆特化或 FnRef 进类型格)、返回闭包(运行时闭包表示:env 结构 +
+   fn 指针)。closure.lk 4/5 节、higher_order.lk 其余方法依赖;list HOF
+   零捕获切片已落地(`Const::FnAddr` 地基可复用)。
+3. examples 覆盖长尾:json(动态嵌套值,子集外——需运行时动态值表示,
+   单独立项)、stream/tcp_demo(句柄+bytes 流)、LoadHeapConst 常量
+   混合容器、match/struct/NewRange、iter/list_iter_sugar(HOF over
+   str/mixed list)。
+4. histogram_group_count AOT 仍 ≈1.04x(let-bound 模板 key 每迭代一次
    分配),收益小,最低优先级。
+5. `.lkm` v6:CallMethodK 后旧 v5 artifact 被拒(设计如此);发布渠道如
+   有缓存 artifact 需重编译。
 
 ## 上轮成果(仍有效)
 

@@ -15,11 +15,18 @@ unsafe extern "C" {
 /// already printed (the VM keeps it), so every abort path flushes all C streams
 /// first (`fflush(NULL)` flushes every open stream).
 pub(crate) fn flush_and_abort() -> ! {
+    flush_c_stdio();
+    std::process::abort()
+}
+
+/// Flushes every C stdio stream (`fflush(NULL)`). Rust-side writers that share
+/// a stream with generated `printf` output call this first so the two buffers
+/// cannot interleave out of order.
+pub(crate) fn flush_c_stdio() {
     // SAFETY: fflush(NULL) is defined by C99 to flush all open output streams.
     unsafe {
         fflush(std::ptr::null_mut());
     }
-    std::process::abort()
 }
 
 /// FFI surface of [`flush_and_abort`] for generated code (`Term::Abort`).

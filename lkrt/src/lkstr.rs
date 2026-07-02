@@ -62,6 +62,25 @@ pub unsafe extern "C" fn lkrt_str_char_len(s: *const std::ffi::c_char) -> i64 {
     }
 }
 
+/// `s.contains(needle)` — byte-substring test (Rust `str::contains`, the VM's
+/// exact semantics). Null pointers count as empty strings.
+///
+/// # Safety
+/// Both pointers must be null or NUL-terminated strings.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_str_contains(s: *const c_char, needle: *const c_char) -> i64 {
+    let bytes = |p: *const c_char| {
+        if p.is_null() {
+            &[][..]
+        } else {
+            // SAFETY: non-null pointers are NUL-terminated per the ABI.
+            unsafe { CStr::from_ptr(p) }.to_bytes()
+        }
+    };
+    let (s, needle) = (bytes(s), bytes(needle));
+    i64::from(s.windows(needle.len().max(1)).any(|w| w == needle) || needle.is_empty())
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_str_cmp(a: *const c_char, b: *const c_char) -> i64 {
     // SAFETY: caller guarantees valid NUL-terminated strings (or null → empty).

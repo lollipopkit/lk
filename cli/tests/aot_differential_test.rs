@@ -499,6 +499,32 @@ fn differential_builtins() {
                 "closure_capture_float",
                 "let rate = 1.5;\nlet scale = |x| x * rate;\nprintln(scale(2));\nprintln(scale(3));\nreturn 0;\n",
             ),
+            // datetime (chrono-backed, byte-identical formatting) and str
+            // contains/len; Bool == Bool comparison.
+            new(
+                "datetime_fns",
+                "use datetime;\nlet ts = 1700000000;\nprintln(datetime.format(ts, \"%Y-%m-%d %H:%M:%S\"));\nprintln(datetime.add(ts, 3600));\nprintln(datetime.sub(ts, 3600));\nprintln(datetime.day_of_week(ts));\nprintln(datetime.day_of_year(ts));\nlet w = datetime.is_weekend(ts);\nprintln(w == true || w == false);\nlet f = datetime.format(ts, \"%Y-%m-%d\");\nprintln(f.contains(\"20\"));\nprintln(f.len());\nreturn 0;\n",
+            ),
+            // io.std: fixed stdio handles, write/writeln byte counts, flush.
+            new(
+                "io_std_write",
+                "use { std } from io;\nlet out = std.stdout();\nprintln(std.write(out, \"a\"));\nprintln(std.writeln(out, \"b\"));\nprintln(std.flush(out));\nreturn 0;\n",
+            ),
+            // List HOF over compiled zero-capture lambdas (fn-pointer ABI):
+            // map/filter/reduce over List<i64>, including chained pipelines
+            // and an aborting callback (div/0 inside the lambda).
+            new(
+                "list_hof_map_filter_reduce",
+                "let nums = [1, 2, 3, 4, 5, 6];\nlet squares = nums.map(|x| x * x);\nprintln(squares[5]);\nlet evens = nums.filter(|x| x % 2 == 0);\nprintln(evens.len());\nlet total = nums.reduce(0, |acc, x| acc + x);\nprintln(total);\nreturn 0;\n",
+            ),
+            new(
+                "list_hof_chain",
+                "let nums = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];\nlet result = nums.filter(|x| x % 2 != 0).map(|x| x * x).reduce(0, |a, b| a + b);\nprintln(result);\nreturn 0;\n",
+            ),
+            new(
+                "list_hof_callback_aborts_after_output",
+                "println(\"before\");\nlet nums = [1, 0, 2];\nlet r = nums.map(|x| 10 / x);\nprintln(r[0]);\nreturn 0;\n",
+            ),
             // typeof: static scalar names plus the runtime Maybe (missing map
             // key → Nil) selection. One println per call — a *dynamic* Str as
             // the first println argument with extra args is the (rejected)

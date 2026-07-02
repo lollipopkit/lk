@@ -41,6 +41,16 @@ impl<T> ClassOf for *const T {
 impl<T> ClassOf for *mut T {
     const CLASS: Class = Class::Ptr;
 }
+// Compiled-callback pointers (list HOF): pointer-class like any other ptr.
+impl ClassOf for extern "C" fn(i64) -> i64 {
+    const CLASS: Class = Class::Ptr;
+}
+impl ClassOf for extern "C" fn(i64) -> bool {
+    const CLASS: Class = Class::Ptr;
+}
+impl ClassOf for extern "C" fn(i64, i64) -> i64 {
+    const CLASS: Class = Class::Ptr;
+}
 
 trait FnClasses {
     fn classes(&self) -> (Vec<Class>, Class);

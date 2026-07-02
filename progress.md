@@ -1,6 +1,37 @@
 # 实现进度
 
-**当前**:捕获闭包 + 模块吸收轮完成(examples 8/44)。细节见 handoff.md。
+**当前**:CallMethodK opcode + list HOF + datetime/io.std 轮完成
+(examples 10/44,VM/Lua 1.033x)。细节见 handoff.md。
+
+## CallMethodK / list HOF / 重模块轮(本轮第四场)
+
+- **CallMethodK 实现要点**:opcode=105(追加,artifact v5→v6,版本测试
+  同步改 6/拒绝 5);编译器在 `lower_dynamic_method_call` 先试
+  `push_string`(去重)拿名字常量,≤u8 才发新形状(receiver+args 搬进
+  连续窗口,`clear_register(base)`);exec 端 `dispatch_call_method_k`
+  借 `function.consts`(与 `self.state` 无借用冲突,方法名不需 detach),
+  args 拷进 8 槽 inline buffer(超出 spill Vec),`NativeRuntime::new`
+  后进 `core_call_method_windowed`。**语义顺序保持**:filter/map/reduce
+  整体委托旧路径;runtime_access(属性优先)在 builtin 前;trait 尾物化
+  list。老 `__lk_call_method` 路径保留(名字索引溢出回退 + 兼容)。
+- **AOT 侧**:`lower_method_call` 拆出共享 `lower_method_dispatch`;
+  `lower_method_call_k` 直接读窗口。**跨块 builtin ref 回溯**
+  (`builtin_ref_at`,mirror `reg_const_str`:visited 防环、全前驱一致、
+  本块 SSA def 遮蔽)解决 `assert(a || b)` merge 块调用。
+- **list HOF**:`Const::FnAddr(FuncId)` → `getelementptr i8, ptr @lk_fn_N`;
+  lkrt 回调签名过 conformance(fn 指针加 ClassOf=Ptr impl);filter 回调
+  Rust `bool` ↔ LLVM i1(icmp 产出 0/1,实测 UBSan 干净)。HOF arm 在
+  泛型参数读取**之前**(lambda 寄存器是 builtin_regs ref 无 SSA 值)。
+- **datetime**:lkrt 引 chrono(workspace 版本);`datetime_utc` 越界
+  abort;demo 的微秒假设是 example 自身 bug(VM 也断言失败)已修。
+- **io.std**:`std` 进 MODULE_GLOBALS(解构 import 绑定名);句柄
+  0/1/2 编译期常量;lkrt `write_std_stream` 返回字节数(对齐 VM 的
+  written count)且 **fflush(NULL) 前置 + 自身 flush 后置**(两套
+  stdout 缓冲的交错错序,差分 io_std_write 用例当场抓出)。
+- Bool==Bool:ZextBool→i64 icmp(codegen 整型 icmp 硬编码 i64,i1
+  直接喂会 IR 类型错)。
+- 验证:workspace 全绿、三套 sanitized 差分 + 200 fuzz、Miri 23/23、
+  AOT 20/20 checksum、GC stress(CallMethodK 轮跑过)。
 
 ## 捕获闭包轮(本轮第三场)
 

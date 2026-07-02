@@ -125,6 +125,15 @@ macro_rules! for_each_abi_fn {
             ("math", "cos", lkrt_math_cos, Pure, [F64], F64);
             ("math", "exp", lkrt_math_exp, Pure, [F64], F64);
             ("math", "pow", lkrt_math_pow, Pure, [F64, F64], F64);
+            // chrono-backed datetime (same crate as the stdlib module, so
+            // formatting/weekday output is byte-identical). `format`/`parse`/
+            // ordinal helpers abort on invalid input like the VM's loud error.
+            ("datetime", "now", lkrt_datetime_now, ReadsHost, [], I64);
+            ("datetime", "format", lkrt_datetime_format, ReadsHost, [I64, StrPtr], StrPtr);
+            ("datetime", "parse", lkrt_datetime_parse, ReadsHost, [StrPtr, StrPtr], I64);
+            ("datetime", "day_of_week", lkrt_datetime_day_of_week, ReadsHost, [I64], I64);
+            ("datetime", "day_of_year", lkrt_datetime_day_of_year, ReadsHost, [I64], I64);
+            ("datetime", "is_weekend", lkrt_datetime_is_weekend, ReadsHost, [I64], I64);
             ("time", "now", lkrt_time_now_ms, ReadsHost, [], I64);
             ("time", "sleep", lkrt_time_sleep_ms, WritesHost, [I64], Nil);
             // Growable `List<i64>` handles (Phase 2 container handle-ification). `new`
@@ -132,6 +141,12 @@ macro_rules! for_each_abi_fn {
             // semantics (negative-from-end; out-of-range writes `present = 0`).
             ("list_h", "i64_new", lkrt_lklist_i64_new, WritesHost, [], Ptr);
             ("list_h", "i64_push", lkrt_lklist_i64_push, WritesHost, [Ptr, I64], Nil);
+            // List HOF over compiled zero-capture lambdas (`ptr @lk_fn_N`
+            // callbacks). The callback may abort (div/0 inside the lambda), so
+            // none of these are Pure.
+            ("list_h", "i64_map_fn", lkrt_lklist_i64_map_fn, WritesHost, [Ptr, Ptr], Ptr);
+            ("list_h", "i64_filter_fn", lkrt_lklist_i64_filter_fn, WritesHost, [Ptr, Ptr], Ptr);
+            ("list_h", "i64_reduce_fn", lkrt_lklist_i64_reduce_fn, WritesHost, [Ptr, I64, Ptr], I64);
             ("list_h", "i64_len", lkrt_lklist_i64_len, ReadsHost, [Ptr], I64);
             ("list_h", "i64_get", lkrt_lklist_i64_get, ReadsHost, [Ptr, I64, Ptr], I64);
             ("list_h", "i64_at", lkrt_lklist_i64_at, ReadsHost, [Ptr, I64], I64);
@@ -182,6 +197,7 @@ macro_rules! for_each_abi_fn {
             ("str", "concat_i64", lkrt_str_concat_i64, WritesHost, [StrPtr, I64], StrPtr);
             ("str", "char_len", lkrt_str_char_len, Pure, [StrPtr], I64);
             ("str", "starts_with", lkrt_str_starts_with, Pure, [StrPtr, StrPtr], I64);
+            ("str", "contains", lkrt_str_contains, Pure, [StrPtr, StrPtr], I64);
             // Scalar → display string (the VM's `ToString`), allocating/leaking a C string.
             ("str", "from_i64", lkrt_i64_to_str, WritesHost, [I64], StrPtr);
             ("str", "from_f64", lkrt_f64_to_str, WritesHost, [F64], StrPtr);

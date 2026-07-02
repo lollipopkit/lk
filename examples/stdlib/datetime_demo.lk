@@ -1,14 +1,12 @@
 // Datetime module demo
 
 use datetime;
-use math;
 
-// datetime.now() returns microseconds; most functions need integer seconds
-let now_us = datetime.now();
-let now_secs = math.floor(now_us / 1000000);
+// datetime.now() returns Unix epoch seconds
+let now_secs = datetime.now();
 
 // 1. Current time
-assert(now_us > 0);
+assert(now_secs > 0);
 
 // 2. Formatting
 let formatted = datetime.format(now_secs, "%Y-%m-%d");

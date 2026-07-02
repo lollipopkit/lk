@@ -19,6 +19,59 @@ pub extern "C" fn lkrt_lklist_i64_new() -> *mut c_void {
     crate::state::arena_handle(Vec::<i64>::new())
 }
 
+/// `xs.map(f)` over an `i64` list with a compiled zero-capture lambda: calls
+/// `f` per element in order and returns the fresh result list.
+///
+/// # Safety
+/// `handle` must be a live `i64` list handle (or null → empty result); `f` a
+/// valid `extern "C" fn(i64) -> i64` (a lowered `@lk_fn_N`).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_i64_map_fn(handle: *mut c_void, f: extern "C" fn(i64) -> i64) -> *mut c_void {
+    let values: &[i64] = if handle.is_null() {
+        &[]
+    } else {
+        // SAFETY: `handle` addresses a `Vec<i64>` created by `lkrt_lklist_i64_new`.
+        unsafe { &*(handle as *mut Vec<i64>) }
+    };
+    let mapped: Vec<i64> = values.iter().map(|&v| f(v)).collect();
+    crate::state::arena_handle(mapped)
+}
+
+/// `xs.filter(p)` over an `i64` list: keeps the elements whose predicate holds.
+///
+/// # Safety
+/// See [`lkrt_lklist_i64_map_fn`]; `p` returns the lambda's `Bool`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_i64_filter_fn(handle: *mut c_void, p: extern "C" fn(i64) -> bool) -> *mut c_void {
+    let values: &[i64] = if handle.is_null() {
+        &[]
+    } else {
+        // SAFETY: as above.
+        unsafe { &*(handle as *mut Vec<i64>) }
+    };
+    let kept: Vec<i64> = values.iter().copied().filter(|&v| p(v)).collect();
+    crate::state::arena_handle(kept)
+}
+
+/// `xs.reduce(init, f)` over an `i64` list: left fold with `f(acc, element)`.
+///
+/// # Safety
+/// See [`lkrt_lklist_i64_map_fn`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_i64_reduce_fn(
+    handle: *mut c_void,
+    init: i64,
+    f: extern "C" fn(i64, i64) -> i64,
+) -> i64 {
+    let values: &[i64] = if handle.is_null() {
+        &[]
+    } else {
+        // SAFETY: as above.
+        unsafe { &*(handle as *mut Vec<i64>) }
+    };
+    values.iter().fold(init, |acc, &v| f(acc, v))
+}
+
 /// Appends `value` to the list.
 ///
 /// # Safety

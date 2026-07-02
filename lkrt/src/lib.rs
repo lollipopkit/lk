@@ -22,21 +22,23 @@ pub use abi::{
 };
 pub use arith::{lkrt_f64_div_checked, lkrt_f64_mod_checked, lkrt_i64_div_checked, lkrt_i64_mod_checked};
 pub use host::{
-    lkrt_env_get, lkrt_env_get_or, lkrt_env_has, lkrt_env_remove, lkrt_env_set, lkrt_fs_canonicalize, lkrt_fs_exists,
-    lkrt_fs_metadata_is_dir, lkrt_fs_metadata_is_file, lkrt_fs_metadata_len, lkrt_fs_metadata_readonly, lkrt_fs_read,
-    lkrt_fs_read_dir, lkrt_fs_read_dir_list, lkrt_fs_read_to_string, lkrt_fs_temp_dir, lkrt_fs_write_bytes,
-    lkrt_fs_write_str, lkrt_math_ceil, lkrt_math_cos, lkrt_math_exp, lkrt_math_floor, lkrt_math_pow, lkrt_math_round,
-    lkrt_math_sin, lkrt_math_sqrt, lkrt_os_arch, lkrt_os_clock, lkrt_os_epoch, lkrt_os_hostname, lkrt_os_name,
-    lkrt_path_temp_dir, lkrt_process_cwd, lkrt_time_now_ms, lkrt_time_sleep_ms,
+    lkrt_datetime_day_of_week, lkrt_datetime_day_of_year, lkrt_datetime_format, lkrt_datetime_is_weekend,
+    lkrt_datetime_now, lkrt_datetime_parse, lkrt_env_get, lkrt_env_get_or, lkrt_env_has, lkrt_env_remove, lkrt_env_set,
+    lkrt_fs_canonicalize, lkrt_fs_exists, lkrt_fs_metadata_is_dir, lkrt_fs_metadata_is_file, lkrt_fs_metadata_len,
+    lkrt_fs_metadata_readonly, lkrt_fs_read, lkrt_fs_read_dir, lkrt_fs_read_dir_list, lkrt_fs_read_to_string,
+    lkrt_fs_temp_dir, lkrt_fs_write_bytes, lkrt_fs_write_str, lkrt_math_ceil, lkrt_math_cos, lkrt_math_exp,
+    lkrt_math_floor, lkrt_math_pow, lkrt_math_round, lkrt_math_sin, lkrt_math_sqrt, lkrt_os_arch, lkrt_os_clock,
+    lkrt_os_epoch, lkrt_os_hostname, lkrt_os_name, lkrt_path_temp_dir, lkrt_process_cwd, lkrt_time_now_ms,
+    lkrt_time_sleep_ms,
 };
 pub use io::{lkrt_io_std_flush, lkrt_io_std_read_to_string, lkrt_io_std_write};
 pub use lklist::{
     LkMaybeF64, LkMaybeI64, LkMaybeStr, lkrt_lklist_f64_at, lkrt_lklist_f64_contains, lkrt_lklist_f64_get_pair,
     lkrt_lklist_f64_len, lkrt_lklist_f64_new, lkrt_lklist_f64_push, lkrt_lklist_f64_set, lkrt_lklist_i64_at,
-    lkrt_lklist_i64_contains, lkrt_lklist_i64_get, lkrt_lklist_i64_get_pair, lkrt_lklist_i64_len, lkrt_lklist_i64_new,
-    lkrt_lklist_i64_push, lkrt_lklist_i64_set, lkrt_lklist_str_at, lkrt_lklist_str_get_pair, lkrt_lklist_str_join,
-    lkrt_lklist_str_len, lkrt_lklist_str_new, lkrt_lklist_str_push, lkrt_maybe_f64_unwrap, lkrt_maybe_i64_unwrap,
-    lkrt_maybe_str_unwrap,
+    lkrt_lklist_i64_contains, lkrt_lklist_i64_filter_fn, lkrt_lklist_i64_get, lkrt_lklist_i64_get_pair,
+    lkrt_lklist_i64_len, lkrt_lklist_i64_map_fn, lkrt_lklist_i64_new, lkrt_lklist_i64_push, lkrt_lklist_i64_reduce_fn,
+    lkrt_lklist_i64_set, lkrt_lklist_str_at, lkrt_lklist_str_get_pair, lkrt_lklist_str_join, lkrt_lklist_str_len,
+    lkrt_lklist_str_new, lkrt_lklist_str_push, lkrt_maybe_f64_unwrap, lkrt_maybe_i64_unwrap, lkrt_maybe_str_unwrap,
 };
 pub use lkmap::{
     lkrt_lkmap_i64_f64_get_pair, lkrt_lkmap_i64_f64_len, lkrt_lkmap_i64_f64_new, lkrt_lkmap_i64_f64_set,
@@ -47,7 +49,7 @@ pub use lkmap::{
 };
 pub use lkstr::{
     lkrt_bool_to_str, lkrt_f64_to_str, lkrt_i64_to_str, lkrt_str_char_len, lkrt_str_cmp, lkrt_str_concat,
-    lkrt_str_concat_i64, lkrt_str_starts_with,
+    lkrt_str_concat_i64, lkrt_str_contains, lkrt_str_starts_with,
 };
 pub use net::{
     lkrt_bytes_free, lkrt_bytes_to_string_utf8, lkrt_handle_close, lkrt_socket_addr, lkrt_tcp_close, lkrt_tcp_connect,

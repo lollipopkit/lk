@@ -401,6 +401,9 @@ fn render_const(out: &mut String, dst: ValueId, value: &Const) {
         Const::Str(g) => {
             let _ = writeln!(out, "  {} = getelementptr i8, ptr @lk_str_{}, i64 0", val(dst), g.0);
         }
+        Const::FnAddr(f) => {
+            let _ = writeln!(out, "  {} = getelementptr i8, ptr @lk_fn_{}, i64 0", val(dst), f.0);
+        }
         Const::Nil => {
             let _ = writeln!(out, "  {} = add i64 0, 0", val(dst));
         }

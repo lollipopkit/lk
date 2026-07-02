@@ -188,7 +188,7 @@ enum ClosureCapture {
 
 /// Global names treated as stdlib module objects when read via `GetGlobal`.
 /// Only modules with at least one [`module_call_abi`] mapping belong here.
-const MODULE_GLOBALS: &[&str] = &["os", "time", "env", "math", "fs", "process"];
+const MODULE_GLOBALS: &[&str] = &["os", "time", "env", "math", "fs", "process", "datetime", "std"];
 
 /// Maps a `module.method` call to its typed lkrt ABI entry: the `AbiRef`, the
 /// exact positional argument types, and the return type. `None` means the
@@ -216,6 +216,12 @@ fn module_call_abi(module: &str, name: &str) -> Option<(AbiRef, &'static [Ty], T
         ("fs", "temp_dir") => Some((AbiRef::new("fs", "temp_dir"), &[], Ty::Str)),
         // Sorted entry names as List<str> (the VM's exact shape).
         ("fs", "read_dir") => Some((AbiRef::new("fs", "read_dir_list"), &[Ty::Str], Ty::ListStr)),
+        // chrono-backed datetime (byte-identical to the stdlib module).
+        ("datetime", "now") => Some((AbiRef::new("datetime", "now"), &[], Ty::I64)),
+        ("datetime", "format") => Some((AbiRef::new("datetime", "format"), &[Ty::I64, Ty::Str], Ty::Str)),
+        ("datetime", "parse") => Some((AbiRef::new("datetime", "parse"), &[Ty::Str, Ty::Str], Ty::I64)),
+        ("datetime", "day_of_week") => Some((AbiRef::new("datetime", "day_of_week"), &[Ty::I64], Ty::I64)),
+        ("datetime", "day_of_year") => Some((AbiRef::new("datetime", "day_of_year"), &[Ty::I64], Ty::I64)),
         // Float-typed math (Number args f64-promote at the call site). `sqrt`
         // aborts on a negative argument (the stdlib module's loud error).
         ("math", "sqrt") => Some((AbiRef::new("math", "sqrt"), &[Ty::F64], Ty::F64)),
@@ -1466,6 +1472,52 @@ impl Ssa {
     /// `println` format strings the compiler's loop-literal cache hoisted out
     /// of the loop body (where the plain `const_strs` value lookup only sees
     /// the loop-header phi).
+    /// Resolves the global ref a register holds at `block`, backtracking
+    /// through predecessors when the loading block differs from the using
+    /// block (e.g. `assert(a || b)` — the short-circuit's merge block calls a
+    /// builtin loaded before the branch). All paths must agree on the same
+    /// ref, and a block with an SSA definition for the register shadows it.
+    fn builtin_ref_at(&self, reg: u8, block: usize) -> Option<GlobalRef> {
+        let mut visited = std::collections::HashSet::new();
+        let mut found: Option<GlobalRef> = None;
+        if self.collect_builtin_ref(reg, block, &mut visited, &mut found) {
+            found
+        } else {
+            None
+        }
+    }
+
+    fn collect_builtin_ref(
+        &self,
+        reg: u8,
+        block: usize,
+        visited: &mut std::collections::HashSet<(usize, u8)>,
+        found: &mut Option<GlobalRef>,
+    ) -> bool {
+        if !visited.insert((block, reg)) {
+            return true;
+        }
+        if let Some(global_ref) = self.builtin_regs.get(&(block, reg)) {
+            return match found {
+                Some(prev) => prev == global_ref,
+                None => {
+                    *found = Some(global_ref.clone());
+                    true
+                }
+            };
+        }
+        // An SSA definition in this block shadows any inherited ref.
+        if self.current_def[block][reg as usize].is_some() {
+            return false;
+        }
+        if self.preds[block].is_empty() {
+            return false;
+        }
+        self.preds[block]
+            .iter()
+            .all(|&pred| self.collect_builtin_ref(reg, pred, visited, found))
+    }
+
     fn reg_const_str(&self, reg: u8, block: usize) -> Option<String> {
         let mut visited = std::collections::HashSet::new();
         let mut found: Option<String> = None;
@@ -2421,6 +2473,19 @@ fn lower_inst(
             let (rv, rty) = read_scalar(ssa, insts, instr.c(), block, pc)?;
             let (float, lhs, rhs) = match (lty, rty) {
                 (Ty::I64, Ty::I64) => (false, lv, rv),
+                // Bool equality (`b == true`): widen to i64 (the integer
+                // compare renders `icmp … i64`); ordered comparisons on Bools
+                // are VM errors, so they reject.
+                (Ty::Bool, Ty::Bool) => {
+                    if !matches!(cmp_op(op), CmpOp::Eq | CmpOp::Ne) {
+                        return Err(Unsupported::TypeMismatch { pc });
+                    }
+                    let lw = ssa.new_val();
+                    insts.push(Inst::ZextBool { dst: lw, src: lv });
+                    let rw = ssa.new_val();
+                    insts.push(Inst::ZextBool { dst: rw, src: rv });
+                    (false, lw, rw)
+                }
                 (Ty::F64, Ty::F64) | (Ty::I64, Ty::F64) | (Ty::F64, Ty::I64) => (
                     true,
                     coerce_to_f64(ssa, insts, lv, lty),
@@ -2460,7 +2525,7 @@ fn lower_inst(
             ssa.write(instr.a(), block, (dst, Ty::Bool));
         }
         Opcode::CallMethodK => {
-            lower_method_call_k(ssa, insts, globals, func, instr, block, pc)?;
+            lower_method_call_k(ssa, insts, globals, func, funcs, entry, sig, instr, block, pc)?;
         }
         Opcode::CallDirect => {
             // Register-window call: `a`=dst register, `b`=callee function index,
@@ -2659,7 +2724,7 @@ fn lower_inst(
             // register holds a recognized global ref lower; everything else
             // (closures, runtime values) rejects.
             let base = instr.a();
-            match ssa.builtin_regs.get(&(block, base)).cloned() {
+            match ssa.builtin_ref_at(base, block) {
                 Some(GlobalRef::Builtin(Builtin::CallMethod)) => {
                     if instr.c() != 3 {
                         return Err(Unsupported::Opcode { pc, op: instr.opcode() });
@@ -4008,11 +4073,15 @@ fn lower_method_call(
 /// base, args in the window, method name a string constant. Shares the
 /// per-(receiver type, method) dispatch with the legacy
 /// `__lk_call_method` shape.
+#[allow(clippy::too_many_arguments)]
 fn lower_method_call_k(
     ssa: &mut Ssa,
     insts: &mut Vec<Inst>,
     globals: &mut Vec<String>,
     func: &FunctionData,
+    funcs: &[FunctionData],
+    entry: u32,
+    sig: &mut SigInfer,
     instr: &Instr,
     block: usize,
     pc: usize,
@@ -4026,6 +4095,15 @@ fn lower_method_call_k(
         .clone();
     let (receiver, receiver_ty) = ssa.read(base, block, pc)?;
     let argc = instr.c() as usize;
+    // List HOF with a compiled zero-capture lambda callback (fn-pointer ABI):
+    // handled before the generic argument reads, because the lambda register
+    // carries a `GlobalRef::Lambda`, not an SSA value.
+    if receiver_ty == Ty::ListI64
+        && let Some(result) = lower_list_hof_k(ssa, insts, funcs, entry, sig, receiver, &name, base, argc, block, pc)?
+    {
+        ssa.write(base, block, result);
+        return Ok(());
+    }
     let mut args = Vec::with_capacity(argc);
     for i in 0..argc {
         args.push(ssa.read(base.wrapping_add(1).wrapping_add(i as u8), block, pc)?);
@@ -4033,6 +4111,106 @@ fn lower_method_call_k(
     let result = lower_method_dispatch(ssa, insts, globals, receiver, receiver_ty, &name, &args, block, pc)?;
     ssa.write(base, block, result);
     Ok(())
+}
+
+/// `xs.map(|x| …)` / `filter` / `reduce(init, |acc, x| …)` over `List<i64>`
+/// with a zero-capture lambda: the compiled `@lk_fn_N` address is passed to an
+/// lkrt fold helper. The lambda's signature is seeded/enforced through the
+/// same monomorphization lattice as direct calls (`i64 → i64` for map,
+/// `i64 → Bool` for filter, `(i64, i64) → i64` for reduce). Returns
+/// `Ok(None)` when the shape doesn't apply (the generic path then rejects
+/// loudly — never a silent semantic change).
+#[allow(clippy::too_many_arguments)]
+fn lower_list_hof_k(
+    ssa: &mut Ssa,
+    insts: &mut Vec<Inst>,
+    funcs: &[FunctionData],
+    entry: u32,
+    sig: &mut SigInfer,
+    receiver: ValueId,
+    name: &str,
+    base: u8,
+    argc: usize,
+    block: usize,
+    pc: usize,
+) -> Result<Option<Reg>, Unsupported> {
+    let lambda_at = |ssa: &Ssa, reg: u8| match ssa.builtin_regs.get(&(block, reg)) {
+        Some(GlobalRef::Lambda(fidx)) => Some(*fidx as usize),
+        _ => None,
+    };
+    let seed_params = |sig: &mut SigInfer, fidx: usize, arity: usize| {
+        for i in 0..arity {
+            if let Some(slot) = sig.param_obs.get_mut(fidx).and_then(|p| p.get_mut(i)) {
+                match slot {
+                    None => *slot = Some(Ty::I64),
+                    Some(prev) if *prev != Ty::I64 => sig.conflict = true,
+                    Some(_) => {}
+                }
+            }
+        }
+    };
+    match (name, argc) {
+        ("map" | "filter", 1) => {
+            let Some(fidx) = lambda_at(ssa, base.wrapping_add(1)) else {
+                return Ok(None);
+            };
+            if fidx >= funcs.len() || fidx == entry as usize || funcs[fidx].param_count != 1 {
+                return Err(Unsupported::Opcode {
+                    pc,
+                    op: Opcode::CallMethodK,
+                });
+            }
+            seed_params(sig, fidx, 1);
+            let want_ret = if name == "map" { Ty::I64 } else { Ty::Bool };
+            if sig.ret_types.get(fidx).copied() != Some(want_ret) {
+                // Transiently wrong before the fixpoint converges; final pass
+                // rejects real mismatches loudly.
+                return Err(Unsupported::TypeMismatch { pc });
+            }
+            let fnaddr = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: fnaddr,
+                value: Const::FnAddr(FuncId(fidx as u32)),
+            });
+            let dst = ssa.new_val();
+            let hof = if name == "map" { "i64_map_fn" } else { "i64_filter_fn" };
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", hof),
+                args: vec![receiver, fnaddr],
+            });
+            Ok(Some((dst, Ty::ListI64)))
+        }
+        ("reduce", 2) => {
+            let Some(fidx) = lambda_at(ssa, base.wrapping_add(2)) else {
+                return Ok(None);
+            };
+            if fidx >= funcs.len() || fidx == entry as usize || funcs[fidx].param_count != 2 {
+                return Err(Unsupported::Opcode {
+                    pc,
+                    op: Opcode::CallMethodK,
+                });
+            }
+            let init = read_typed_scalar(ssa, insts, base.wrapping_add(1), block, Ty::I64, pc)?;
+            seed_params(sig, fidx, 2);
+            if sig.ret_types.get(fidx).copied() != Some(Ty::I64) {
+                return Err(Unsupported::TypeMismatch { pc });
+            }
+            let fnaddr = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: fnaddr,
+                value: Const::FnAddr(FuncId(fidx as u32)),
+            });
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", "i64_reduce_fn"),
+                args: vec![receiver, init, fnaddr],
+            });
+            Ok(Some((dst, Ty::I64)))
+        }
+        _ => Ok(None),
+    }
 }
 
 /// The shared per-(receiver type, method name, argument types) dispatch table.
@@ -4071,6 +4249,39 @@ fn lower_method_dispatch(
                 rhs: zero,
             });
             (b, Ty::Bool)
+        }
+        // `s.contains(needle)` — byte-substring test, exactly Rust/VM semantics.
+        (Ty::Str, "contains", [(needle, Ty::Str)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("str", "contains"),
+                args: vec![receiver, *needle],
+            });
+            let zero = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: zero,
+                value: Const::I64(0),
+            });
+            let b = ssa.new_val();
+            insts.push(Inst::Cmp {
+                dst: b,
+                op: CmpOp::Ne,
+                float: false,
+                lhs: dst,
+                rhs: zero,
+            });
+            (b, Ty::Bool)
+        }
+        // `s.len()` — Unicode scalar count (the VM's `chars().count()`).
+        (Ty::Str, "len", []) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("str", "char_len"),
+                args: vec![receiver],
+            });
+            (dst, Ty::I64)
         }
         // `m.get(key)` on string-keyed maps: the missing-key `Maybe` model.
         (Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool, "get", [(key, Ty::Str)]) => {
@@ -4252,6 +4463,129 @@ fn lower_module_call(
             ty,
         });
         ssa.write(base, block, (dst, ty));
+        return Ok(());
+    }
+    // `io.std` (bound as the `std` global by `use { std } from io`): the
+    // stdio resources are fixed handles (stdin 0 / stdout 1 / stderr 2 — the
+    // lkrt convention); `write`/`writeln` return the VM's written byte count,
+    // `flush` is always `true` on success (errors abort loudly on both sides).
+    if module == "std" {
+        match name {
+            "stdin" | "stdout" | "stderr" => {
+                if argc != 0 {
+                    return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+                }
+                let handle = match name {
+                    "stdin" => 0,
+                    "stdout" => 1,
+                    _ => 2,
+                };
+                let dst = ssa.new_val();
+                insts.push(Inst::Const {
+                    dst,
+                    value: Const::I64(handle),
+                });
+                ssa.write(base, block, (dst, Ty::I64));
+                return Ok(());
+            }
+            "write" | "writeln" => {
+                if argc != 2 {
+                    return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+                }
+                let handle = read_typed_scalar(ssa, insts, base.wrapping_add(1), block, Ty::I64, pc)?;
+                let data = ssa.read_typed(base.wrapping_add(2), block, Ty::Str, pc)?;
+                let newline = ssa.new_val();
+                insts.push(Inst::Const {
+                    dst: newline,
+                    value: Const::I64(i64::from(name == "writeln")),
+                });
+                let dst = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(dst),
+                    callee: AbiRef::new("io.std", "write"),
+                    args: vec![handle, data, newline],
+                });
+                ssa.write(base, block, (dst, Ty::I64));
+                return Ok(());
+            }
+            "flush" => {
+                if argc != 1 {
+                    return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+                }
+                let handle = read_typed_scalar(ssa, insts, base.wrapping_add(1), block, Ty::I64, pc)?;
+                insts.push(Inst::Call {
+                    dst: None,
+                    callee: AbiRef::new("io.std", "flush"),
+                    args: vec![handle],
+                });
+                let dst = ssa.new_val();
+                insts.push(Inst::Const {
+                    dst,
+                    value: Const::Bool(true),
+                });
+                ssa.write(base, block, (dst, Ty::Bool));
+                return Ok(());
+            }
+            "read_to_string" => {
+                if argc != 1 {
+                    return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+                }
+                let handle = read_typed_scalar(ssa, insts, base.wrapping_add(1), block, Ty::I64, pc)?;
+                let dst = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(dst),
+                    callee: AbiRef::new("io.std", "read_to_string"),
+                    args: vec![handle],
+                });
+                ssa.write(base, block, (dst, Ty::Str));
+                return Ok(());
+            }
+            _ => return Err(Unsupported::Opcode { pc, op: Opcode::Call }),
+        }
+    }
+    // `datetime.add`/`sub` are plain Int arithmetic (`timestamp ± seconds`);
+    // `is_weekend` returns the helper's 0/1 as a `Bool`.
+    if module == "datetime" && matches!(name, "add" | "sub") {
+        if argc != 2 {
+            return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+        }
+        let ts = read_typed_scalar(ssa, insts, base.wrapping_add(1), block, Ty::I64, pc)?;
+        let secs = read_typed_scalar(ssa, insts, base.wrapping_add(2), block, Ty::I64, pc)?;
+        let dst = ssa.new_val();
+        insts.push(Inst::IntBin {
+            dst,
+            op: if name == "add" { IntBinOp::Add } else { IntBinOp::Sub },
+            lhs: ts,
+            rhs: secs,
+        });
+        ssa.write(base, block, (dst, Ty::I64));
+        return Ok(());
+    }
+    if module == "datetime" && name == "is_weekend" {
+        if argc != 1 {
+            return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+        }
+        let ts = read_typed_scalar(ssa, insts, base.wrapping_add(1), block, Ty::I64, pc)?;
+        let wide = ssa.new_val();
+        insts.push(Inst::Call {
+            dst: Some(wide),
+            callee: AbiRef::new("datetime", "is_weekend"),
+            args: vec![ts],
+        });
+        let zero = ssa.new_val();
+        insts.push(Inst::Const {
+            dst: zero,
+            value: Const::I64(0),
+        });
+        let dst = ssa.new_val();
+        insts.push(Inst::Cmp {
+            dst,
+            op: CmpOp::Ne,
+            float: false,
+            lhs: wide,
+            rhs: zero,
+        });
+        ssa.write(base, block, (dst, Ty::Bool));
         return Ok(());
     }
     // `time.since(start, end)` is `end - start` (the VM's `numeric_millis`

@@ -201,14 +201,14 @@ fn examples_corpus_differential() {
         "examples corpus diverged between VM and native:\n{}",
         divergences.join("\n\n")
     );
-    // Coverage floor: the MIR pipeline currently lowers 8 of the 44 examples
-    // (general/fib, stdlib/{math,os,time}_demo, syntax/internal,
+    // Coverage floor: the MIR pipeline currently lowers 10 of the 44 examples
+    // (general/fib, stdlib/{datetime,io,math,os,time}_demo, syntax/internal,
     // syntax/named_args, syntax/named_params, syntax/numeric_auto_promotion).
     // Falling below this means the differential corpus silently stopped
     // comparing anything — raise the floor as lowering coverage grows.
     assert!(
-        compared.len() >= 8,
-        "expected at least 8 natively compared examples, got {}",
+        compared.len() >= 10,
+        "expected at least 10 natively compared examples, got {}",
         compared.len()
     );
 }
