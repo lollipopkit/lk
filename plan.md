@@ -1,86 +1,56 @@
-# 正确性优先计划(llvm lower / VM)
+# 下一轮计划:list display + 一等函数值收官
 
-> **状态:全部完成(2026-07-02)**,含后续"先补再删"轮:MIR 补齐
-> println/print/assert/长字符串/TestEqIntI2 后,legacy text 后端整体退役
-> (-4.8 万行,workspace 1460 全绿)。成果见 `handoff.md`,细节见 `progress.md`。
-> 计划外发现:`.lkm` facts 不序列化导致 for 循环运行时错误与 while 死循环
-> (已修,artifact v4);Miri 抓出 lkrt 测试代码一处 Stacked Borrows UB(已修);
-> native abort 丢弃 C stdio 缓冲 stdout(已修,`lkrt_abort` flush)。
-> 「非本轮」中的 clang `-O2` 阻碍已清(现在只有 MIR 一个后端)。
+> **状态:待开工**。上一轮(正确性优先计划,九步)与其后的五轮优化/特性
+> session 已全部完成并合并(PR #15,`cbc2932`):CallMethodK opcode
+> (artifact v6)、闭包四切片、模块吸收、lkrt string-map、clippy 清零 +
+> CI lint 门禁。现状见 `handoff.md`,历史细节见 `progress.md`。
 
-目标:不改变架构骨架(bytecode 单一语义锚 + VM/AOT 双独立实现 + 差分验证),
-把该架构的正确性保障从"手写用例"升级为"系统性防线"。性能工作(-O2、tiering、
-facts 上移)全部排除在本轮之外。
+目标:补齐 examples 长尾的公共依赖(list display),然后完成 RFC 阶段 4
+的最后一块(一等函数值)。VM 性能项(dispatch 密度专项)不在本轮。
 
-原则:
-- 两条执行路径保持**独立推导**(冗余即校验),不引入共享可信输入。
-- 失败方向永远是"响亮失败",不允许静默降级到弱测试面。
-- 每步完成即跑相关测试;全部完成后跑 `cargo test --workspace --all-features`。
+原则(沿用):
+- VM 语义是唯一锚;native 侧任何形状先钉 VM 行为(必要时 dump 字节码),
+  再实现,差分用例锁定。
+- 拒绝面永远响亮;单态化冲突整模块回退,不允许静默错编。
+- 每步过:相关 crate 测试 → 差分三套 → 收尾全量 + sanitizer。
 
 ## 步骤
 
-### 1. 生产路径运行 MIR validate()(小)
-`llvm/src/llvm/backend.rs`:`lower()` 成功后、`render_module()` 之前无条件调
-`lk_aot_mir::validate()`,失败即 bail(内部错误,带 reason)。
-验证:`cargo test -p lk-llvm` + CLI AOT 测试。
+### 1. list display 格式化(中)
+`println("{}", list)` / `println(list)`:VM 的 list/map display 格式先钉死
+(嵌套、字符串元素引号与否、分隔符——写进 `docs/semantics.md`),lkrt 加
+递归格式化 helper(handle → 拼接 Str),lower 的 display 分派
+(`to_display_str`/print_parts)接容器句柄类型。
+验证:差分用例(i64/f64/str/嵌套 list、map)+ examples 差分覆盖变化。
 
-### 2. bytecode verifier:.lkm 加载期验证(中大)
-`.lkm` 是外部输入,但 `artifact.rs::validate` 只查 format/version/entry;
-执行器 `stack_index_unchecked` 的 debug_assert 在 release 下消失,损坏 artifact
-可静默跨帧读写(内存安全但结果错)。
-- 在 `core/src/vm/ir.rs` 为每个 Opcode 增加操作数分类元数据(register / immediate /
-  jump offset / 索引),与 opcode 定义同处,作为单一真相。
-- 在 artifact 加载(`FunctionData::into_function` / `ModuleData::into_module`)
-  逐指令验证:寄存器 < register_count、跳转目标在函数内、函数/全局索引在界内。
-- 编译器产物在测试中同样过一遍 verifier(保证 verifier 不误杀合法字节码)。
-验证:`cargo test -p lk-core`,加恶意 artifact 拒绝用例。
+### 2. 多身份 lambda 参数:按身份克隆特化(大)
+现状:`sig.lambda_params` 单身份擦除已落地,两个调用点传不同 lambda →
+conflict 整模块回退(closure.lk 4 节的形状)。
+- 特化键:`(callee, 各 lambda 参数的身份向量)` → 克隆 MIR 函数体
+  (FuncId 映射需扩展:克隆函数的 id 分配与 `lk_fn_N` 命名)。
+- 上限防爆炸:每函数特化数硬上限(如 8),超限响亮回退。
+- 与既有 param_obs fixpoint 的交互:克隆体各自参与类型推导。
+验证:closure.lk 4 节形状差分;fuzz 生成器加"同 helper 两个 lambda"形状。
 
-### 3. legacy fallback 改 opt-in(中)
-MIR 拒绝时静默落到 legacy(弱测试面、已知语义分歧)。改为:
-- `LlvmBackendOptions::allow_legacy_fallback`(默认 false)+ 环境变量
-  `LK_AOT_LEGACY=1` 可开。
-- 默认路径:MIR 拒绝 → 直接报错(同时带 MIR Unsupported reason 与 legacy 提示)。
-- 现有依赖 fallback 的测试改为显式 opt-in;34 个 pinned legacy 测试不受影响
-  (它们已用 `legacy_text_backend_options()`)。
-验证:`cargo test -p lk-llvm -p lk-cli`。
+### 3. 捕获闭包作参数(中,依赖 2)
+零捕获擦除 + cell 建模已就位:捕获闭包的 env 是调用点已解析的值向量,
+作参数 = 擦除 lambda 身份 + 把 env 值追加为隐藏实参(克隆体按
+capture 数扩参)。跨块限制沿用。
 
-### 4. GC stress 模式(小)
-`LK_GC_STRESS=1` 时每次 `alloc_heap_value` 立即 collect(而非 pending 标志)。
-用于暴露 root 枚举遗漏。
-验证:stress 开启下跑 `cargo test -p lk-core`(允许慢)。
+### 4. 返回闭包(大,可切到下轮)
+需要运行时闭包表示:`{ fn_ptr, env… }` 结构(lkrt 侧 boxed env +
+codegen 间接调用)。若 2/3 消化后预算不足,立项留档不硬做。
 
-### 5. 差分语料扩展:examples/ 纳入差分(中)
-新测试:遍历 `examples/{syntax,stdlib,general}` 全部 .lk,能被 MIR lower 的
-就 VM vs native 比对 stdout/退出语义;不能 lower 的记录 Unsupported reason
-(作为覆盖面快照,不算失败)。
-验证:新测试通过;统计当前可 lower 比例写入测试输出。
-
-### 6. 生成式差分 fuzz(大)
-新增随机良类型程序生成器(限定 MIR 可下降子集:i64/f64/bool/str 标量、
-if/while/for、直接调用、List/Map、模板串):
-- 种子化(CI 确定性),默认 N 个用例;`LK_FUZZ_CASES` 环境变量放大。
-- 每例:VM 运行 vs MIR native 运行,stdout + 成功/失败逐项比对。
-- 生成器另定向 fuzz `lower()` totality:任意程序只允许 Ok/Unsupported,panic 即 bug。
-验证:默认规模在 CI 时间预算内全绿;本地放大规模跑一轮。
-
-### 7. native 侧 sanitizer 接入(小中)
-`llvm/src/native_executable.rs` 支持 `LK_NATIVE_SANITIZE=address,undefined`
-透传 `-fsanitize=`;差分测试(含 fuzz)在 sanitizer 下本地跑一轮。
-lkrt 单测跑 Miri 可行性评估(FFI 边界内的纯逻辑部分)。
-
-### 8. 语义 golden vectors(中)
-`docs/semantics.md`:逐特性写下已覆盖子集的裁决语义(div/0、缺失键算术、
-nil 打印、float 显示、退出语义 VM exit-1 vs native abort-134),配 .lk 片段 +
-期望输出,作为 VM/native 分歧时的第三仲裁。
-
-### 9. 收尾验证
-- `cargo fmt` + `cargo clippy --workspace --all-features`
-- `cargo test --workspace --all-features` 全绿
-- `LK_GC_STRESS=1` 下跑 core 测试
-- 更新 handoff.md / progress.md
+### 5. 收尾验证
+- 三套差分 + fuzz(双种子放大)+ sanitized-differential + Miri lkrt
+- `RUSTFLAGS="-D warnings" cargo test --workspace --all-features --no-run`
+  (CI parity,test targets 也要干净)
+- AOT bench 20/20 checksum;fmt + clippy 门禁
+- 更新 handoff.md / progress.md / backend.md
 
 ## 非本轮(记录不做)
-- clang `-O2`(仅 MIR 管线、需先过差分+sanitizer)—— 性能项
-- 函数级 tiering / Cranelift —— 需差分覆盖混合模式后再议
-- `LK_DISABLE_FACTS` 旁路 —— 依赖 verifier 落地后评估收益
-- native cache key 不含 import 内容 —— AOT 尚不支持 import,在 cache 代码处留注释
+- VM dispatch 密度专项(超级指令/computed goto)—— fraud 剩 2.0x 的
+  本质差距,重大专项单独立项。
+- json/动态值表示 —— 需要 native 侧 tagged 动态值,独立立项。
+- Move 消除(上限 6-8%,README 历史反例多)、histogram AOT 1.04x。
+- clippy `--all-targets` gate(先清 test 代码剩余 ~33 条 lint)。
