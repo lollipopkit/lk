@@ -52,6 +52,12 @@ ModuleArtifact → lk-aot-lower → lk_aot_mir::validate → lk-aot-codegen → 
   `set_ik` map ABI (key built on the lkrt stack); loads build the key with the
   single-allocation `str.concat_i64` fusion, which also fuses every int
   operand of template-string concatenation.
+- `math` module: constants resolve at lower time (`pi`/`e`/`inf`/`nan`/
+  `max_int`/`min_int`/`max_float`/`epsilon`); `floor`/`ceil`/`round` dispatch
+  on the static type (Int passthrough, Float → lkrt `as i64` cast); `abs` and
+  `min`/`max` lower to selects preserving the argument type; `sqrt` (aborts on
+  a negative argument like the VM) / `sin`/`cos`/`exp`/`pow` call lkrt with
+  Number→Float promotion. Native links `-lm` on Linux.
 - Fused compare-branch opcodes (`TestXxxInt(I)`+`Jmp`, `TestEqIntI2`,
   `BrEqIntI4` family, `BrMod*ZeroIntI4`, nil branches).
 

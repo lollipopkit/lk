@@ -109,6 +109,15 @@ macro_rules! for_each_abi_fn {
             // `math.floor(Float) -> Int` with the VM's exact rounding (`floor()
             // as i64`, saturating); an `Int` argument short-circuits in the lowering.
             ("math", "floor", lkrt_math_floor, Pure, [F64], I64);
+            ("math", "ceil", lkrt_math_ceil, Pure, [F64], I64);
+            ("math", "round", lkrt_math_round, Pure, [F64], I64);
+            // Aborts on a negative argument (the stdlib module's loud error),
+            // so it must never be treated as removable pure math.
+            ("math", "sqrt", lkrt_math_sqrt, ReadsHost, [F64], F64);
+            ("math", "sin", lkrt_math_sin, Pure, [F64], F64);
+            ("math", "cos", lkrt_math_cos, Pure, [F64], F64);
+            ("math", "exp", lkrt_math_exp, Pure, [F64], F64);
+            ("math", "pow", lkrt_math_pow, Pure, [F64, F64], F64);
             ("time", "now", lkrt_time_now_ms, ReadsHost, [], I64);
             ("time", "sleep", lkrt_time_sleep_ms, WritesHost, [I64], Nil);
             // Growable `List<i64>` handles (Phase 2 container handle-ification). `new`

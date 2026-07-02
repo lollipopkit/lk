@@ -441,6 +441,16 @@ fn differential_builtins() {
                 "panic_after_output",
                 "println(\"before\");\nlet x = 1;\nif (x == 1) { panic(\"stop\", x); }\nreturn 7;\n",
             ),
+            // math module: constants, type-directed rounding/abs/min/max,
+            // Number→Float promotion, and the sqrt negative-argument guard.
+            new(
+                "math_consts_and_fns",
+                "use math;\nprintln(math.pi > 3.14);\nprintln(math.abs(-42));\nprintln(math.abs(-1.5));\nprintln(math.floor(3.7));\nprintln(math.ceil(3.2));\nprintln(math.round(2.5));\nprintln(math.min(3, 7));\nprintln(math.max(2.5, 1.5));\nprintln(math.pow(2, 10));\nprintln(math.sqrt(144.0));\nprintln(math.exp(0));\nprintln(math.sin(0));\nprintln(math.cos(0));\nreturn 0;\n",
+            ),
+            new(
+                "math_sqrt_negative_after_output",
+                "use math;\nprintln(\"before\");\nlet x = 0.0 - 4.0;\nprintln(math.sqrt(x));\nreturn 0;\n",
+            ),
             // Zero-capture lambdas: top-level (module-global, single
             // assignment) and function-local, called indirectly — both
             // devirtualize to direct calls.

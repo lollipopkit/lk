@@ -1,8 +1,42 @@
 # 实现进度
 
-**当前**:lkrt string-map 性能轮完成——**5 个 map workload 2.0–3.5x →
-0.79–1.04x,全套几何平均 0.329x → ≈0.26x**;MIR 吸收 panic/assert_eq/
-assert_ne/typeof/IsNil,examples 差分 3/44 → 5/44。细节见 handoff.md。
+**当前**:lkrt string-map 性能轮 + VM 方法分派优化轮完成。细节见 handoff.md。
+
+## VM 方法分派免分配轮(本轮下半场)
+
+- **Profiling 方法**:`cargo build --profile dist -p lk-cli --features
+  vm-profile` + `LK_VM_PROFILE=1 LK_WORKLOAD_FILTER=x`(直接跑,不必走
+  runner);归因用手写 .lk 微基准逐成分剥离(全量/换索引/去 map/去字符串),
+  比 opcode 计数更快定位——fraud 的 40ms/44ms 在 `starts_with` 方法调用,
+  不在 map。
+- **core_methods.rs 改动**:`DetachedStr { Short(ShortStr), Heap(Arc<str>) }`
+  取代三处 per-call 分配(`method_name_arc`→`method_name_detached`、
+  string receiver 的 `Arc::<str>::from` 全拷、`extract_string_arc`→
+  `extract_string_detached`);`dispatch_builtin_method` 按 receiver kind
+  (`builtin_receiver_kind`)定向调用四个互斥 dispatcher 之一(原顺序试探
+  map→set→string→list,每次 with_slice 都拷参数)。**语义保持**:
+  runtime_access(属性优先)仍在 builtin 之前、trait 尾路径不变,
+  ArcStr 仅在 trait 尾惰性构造。
+- 验证:workspace 全绿、GC stress core 全绿、三套 sanitized 差分零报告、
+  Miri lkrt 23/23;全套 bench checksum 一致,geomean 1.175→1.120(dist,
+  本地),无 workload 回归。
+
+## math 模块 MIR 吸收(本轮下半场)
+
+- lkrt(host.rs):`lkrt_math_{ceil,round}`(`integer_round` 语义,
+  `as i64` saturating cast)、`lkrt_math_sqrt`(负参 eprintln+
+  flush_and_abort,对应 stdlib bail)、`lkrt_math_{sin,cos,exp,pow}`。
+  abi 8 条新表项(sqrt 标 ReadsHost 防 DCE,其余 Pure)。
+- lower:`module_const(module, name)`(GetIndex 的 Module 成员读 arm 先查
+  常量表再落 ModuleFn);floor arm 泛化为 floor/ceil/round;abs = 保型
+  Select(Int 用 `0 - x` sub 自然 wrap,对齐 VM release 的 wrapping_abs);
+  min/max = 同型 Select(返回原值,fcmp olt/ogt 与 Rust `<`/`>` NaN 语义
+  一致);module_call_abi 的 F64 形参统一接受 I64 提升(IntToFloat,
+  对应 stdlib `number_arg`)。
+- **native 链接 `-lm`**(Linux;powf 未内联导致 undefined reference,
+  macOS/Windows 由 libSystem/CRT 覆盖)。
+- math_demo 解锁(native==VM),examples 6/44,地板 ≥6;差分 +2
+  (math_consts_and_fns、sqrt 负参响亮失败保留已刷 stdout)。
 
 ## lkrt string-map 性能轮(本轮)
 

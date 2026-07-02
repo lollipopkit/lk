@@ -184,6 +184,30 @@ fn module_call_abi(module: &str, name: &str) -> Option<(AbiRef, &'static [Ty], T
         ("time", "sleep") => Some((AbiRef::new("time", "sleep"), &[Ty::I64], Ty::Nil)),
         // Environment lookup with a default; both sides return an owned string.
         ("env", "get_or") => Some((AbiRef::new("env", "get_or"), &[Ty::Str, Ty::Str], Ty::Str)),
+        // Float-typed math (Number args f64-promote at the call site). `sqrt`
+        // aborts on a negative argument (the stdlib module's loud error).
+        ("math", "sqrt") => Some((AbiRef::new("math", "sqrt"), &[Ty::F64], Ty::F64)),
+        ("math", "sin") => Some((AbiRef::new("math", "sin"), &[Ty::F64], Ty::F64)),
+        ("math", "cos") => Some((AbiRef::new("math", "cos"), &[Ty::F64], Ty::F64)),
+        ("math", "exp") => Some((AbiRef::new("math", "exp"), &[Ty::F64], Ty::F64)),
+        ("math", "pow") => Some((AbiRef::new("math", "pow"), &[Ty::F64, Ty::F64], Ty::F64)),
+        _ => None,
+    }
+}
+
+/// Constant module members (`math.pi`): a member read resolves to the literal
+/// value instead of a function ref. Values mirror the stdlib module's
+/// `#[stdlib_value]` exports exactly.
+fn module_const(module: &str, name: &str) -> Option<(Const, Ty)> {
+    match (module, name) {
+        ("math", "pi") => Some((Const::F64(std::f64::consts::PI), Ty::F64)),
+        ("math", "e") => Some((Const::F64(std::f64::consts::E), Ty::F64)),
+        ("math", "inf") => Some((Const::F64(f64::INFINITY), Ty::F64)),
+        ("math", "nan") => Some((Const::F64(f64::NAN), Ty::F64)),
+        ("math", "max_int") => Some((Const::I64(i64::MAX), Ty::I64)),
+        ("math", "min_int") => Some((Const::I64(i64::MIN), Ty::I64)),
+        ("math", "max_float") => Some((Const::F64(f64::MAX), Ty::F64)),
+        ("math", "epsilon") => Some((Const::F64(f64::EPSILON), Ty::F64)),
         _ => None,
     }
 }
@@ -2832,7 +2856,8 @@ fn lower_inst(
         Opcode::GetList | Opcode::GetIndex => {
             // A constant-name member read on a module object resolves to a
             // module function ref (`os.clock` → `GetIndex` on the module with a
-            // constant string key); the register carries the ref, not a value.
+            // constant string key) — or, for constant members (`math.pi`), to
+            // the literal value itself.
             if let Some(GlobalRef::Module(module)) = ssa.builtin_regs.get(&(block, instr.b())).cloned() {
                 let name = {
                     let key = ssa.read(instr.c(), block, pc).ok().map(|(v, _)| v);
@@ -2842,6 +2867,12 @@ fn lower_inst(
                 let Some(name) = name else {
                     return Err(Unsupported::Opcode { pc, op: instr.opcode() });
                 };
+                if let Some((value, ty)) = module_const(&module, &name) {
+                    let dst = ssa.new_val();
+                    insts.push(Inst::Const { dst, value });
+                    ssa.write(instr.a(), block, (dst, ty));
+                    return Ok(());
+                }
                 ssa.builtin_regs
                     .insert((block, instr.a()), GlobalRef::ModuleFn(module, name));
                 return Ok(());
@@ -3853,10 +3884,10 @@ fn lower_module_call(
     block: usize,
     pc: usize,
 ) -> Result<(), Unsupported> {
-    // `math.floor` dispatches on the argument's static type, matching the VM's
-    // `integer_round`: an `Int` passes through unchanged, a `Float` rounds via
-    // the lkrt helper (`floor() as i64`).
-    if module == "math" && name == "floor" {
+    // `math.floor`/`ceil`/`round` dispatch on the argument's static type,
+    // matching the VM's `integer_round`: an `Int` passes through unchanged, a
+    // `Float` rounds via the lkrt helper (`f64::xxx() as i64`).
+    if module == "math" && matches!(name, "floor" | "ceil" | "round") {
         if argc != 1 {
             return Err(Unsupported::Opcode { pc, op: Opcode::Call });
         }
@@ -3864,16 +3895,102 @@ fn lower_module_call(
         match ty {
             Ty::I64 => ssa.write(base, block, (v, Ty::I64)),
             Ty::F64 => {
+                let round_fn = match name {
+                    "floor" => "floor",
+                    "ceil" => "ceil",
+                    _ => "round",
+                };
                 let dst = ssa.new_val();
                 insts.push(Inst::Call {
                     dst: Some(dst),
-                    callee: AbiRef::new("math", "floor"),
+                    callee: AbiRef::new("math", round_fn),
                     args: vec![v],
                 });
                 ssa.write(base, block, (dst, Ty::I64));
             }
             _ => return Err(Unsupported::TypeMismatch { pc }),
         }
+        return Ok(());
+    }
+    // `math.abs` returns its argument's type: Int → wrapping integer abs
+    // (select(x < 0, 0 - x, x), sub wraps like the VM's release build),
+    // Float → fabs via select on the float compare.
+    if module == "math" && name == "abs" {
+        if argc != 1 {
+            return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+        }
+        let (v, ty) = read_scalar(ssa, insts, base.wrapping_add(1), block, pc)?;
+        if !matches!(ty, Ty::I64 | Ty::F64) {
+            return Err(Unsupported::TypeMismatch { pc });
+        }
+        let zero = ssa.new_val();
+        insts.push(Inst::Const {
+            dst: zero,
+            value: if ty == Ty::F64 { Const::F64(0.0) } else { Const::I64(0) },
+        });
+        let negative = ssa.new_val();
+        insts.push(Inst::Cmp {
+            dst: negative,
+            op: CmpOp::Lt,
+            float: ty == Ty::F64,
+            lhs: v,
+            rhs: zero,
+        });
+        let negated = ssa.new_val();
+        if ty == Ty::F64 {
+            insts.push(Inst::FloatBin {
+                dst: negated,
+                op: FloatBinOp::Sub,
+                lhs: zero,
+                rhs: v,
+            });
+        } else {
+            insts.push(Inst::IntBin {
+                dst: negated,
+                op: IntBinOp::Sub,
+                lhs: zero,
+                rhs: v,
+            });
+        }
+        let dst = ssa.new_val();
+        insts.push(Inst::Select {
+            dst,
+            cond: negative,
+            then_v: negated,
+            else_v: v,
+            ty,
+        });
+        ssa.write(base, block, (dst, ty));
+        return Ok(());
+    }
+    // `math.min`/`max` return one of the *original* arguments (comparison per
+    // the VM's `min_max`); same-type scalar pairs lower to a select.
+    if module == "math" && matches!(name, "min" | "max") {
+        if argc != 2 {
+            return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+        }
+        let (l, lty) = read_scalar(ssa, insts, base.wrapping_add(1), block, pc)?;
+        let (r, rty) = read_scalar(ssa, insts, base.wrapping_add(2), block, pc)?;
+        if lty != rty || !matches!(lty, Ty::I64 | Ty::F64) {
+            return Err(Unsupported::TypeMismatch { pc });
+        }
+        let pick_left = ssa.new_val();
+        insts.push(Inst::Cmp {
+            dst: pick_left,
+            op: if name == "min" { CmpOp::Lt } else { CmpOp::Gt },
+            float: lty == Ty::F64,
+            lhs: l,
+            rhs: r,
+        });
+        let dst = ssa.new_val();
+        insts.push(Inst::Select {
+            dst,
+            cond: pick_left,
+            then_v: l,
+            else_v: r,
+            ty: lty,
+        });
+        ssa.write(base, block, (dst, lty));
         return Ok(());
     }
     let Some((callee, param_tys, ret_ty)) = module_call_abi(module, name) else {
@@ -3885,6 +4002,21 @@ fn lower_module_call(
     let mut args = Vec::with_capacity(argc);
     for (i, want) in param_tys.iter().enumerate() {
         let arg_reg = base.wrapping_add(1).wrapping_add(i as u8);
+        // `Number` parameters (schema type F64) accept an Int by promotion,
+        // matching the stdlib module's `number_arg` coercion.
+        if *want == Ty::F64 {
+            let (v, ty) = read_scalar(ssa, insts, arg_reg, block, pc)?;
+            match ty {
+                Ty::F64 => args.push(v),
+                Ty::I64 => {
+                    let f = ssa.new_val();
+                    insts.push(Inst::IntToFloat { dst: f, src: v });
+                    args.push(f);
+                }
+                _ => return Err(Unsupported::TypeMismatch { pc }),
+            }
+            continue;
+        }
         args.push(ssa.read_typed(arg_reg, block, *want, pc)?);
     }
     let dst = match ret_ty {

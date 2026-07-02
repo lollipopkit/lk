@@ -24,9 +24,9 @@ pub use arith::{lkrt_f64_div_checked, lkrt_f64_mod_checked, lkrt_i64_div_checked
 pub use host::{
     lkrt_env_get, lkrt_env_get_or, lkrt_env_has, lkrt_env_remove, lkrt_env_set, lkrt_fs_canonicalize, lkrt_fs_exists,
     lkrt_fs_metadata_is_dir, lkrt_fs_metadata_is_file, lkrt_fs_metadata_len, lkrt_fs_metadata_readonly, lkrt_fs_read,
-    lkrt_fs_read_dir, lkrt_fs_read_to_string, lkrt_fs_temp_dir, lkrt_fs_write_bytes, lkrt_fs_write_str,
-    lkrt_math_floor, lkrt_os_clock, lkrt_os_epoch, lkrt_path_temp_dir, lkrt_process_cwd, lkrt_time_now_ms,
-    lkrt_time_sleep_ms,
+    lkrt_fs_read_dir, lkrt_fs_read_to_string, lkrt_fs_temp_dir, lkrt_fs_write_bytes, lkrt_fs_write_str, lkrt_math_ceil,
+    lkrt_math_cos, lkrt_math_exp, lkrt_math_floor, lkrt_math_pow, lkrt_math_round, lkrt_math_sin, lkrt_math_sqrt,
+    lkrt_os_clock, lkrt_os_epoch, lkrt_path_temp_dir, lkrt_process_cwd, lkrt_time_now_ms, lkrt_time_sleep_ms,
 };
 pub use io::{lkrt_io_std_flush, lkrt_io_std_read_to_string, lkrt_io_std_write};
 pub use lklist::{

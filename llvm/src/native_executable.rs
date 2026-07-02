@@ -27,6 +27,11 @@ pub fn compile_native_executable_from_llvm(path: &Path, output: &Path, ir: &str,
     if let Some(staticlib) = lkrt_staticlib_path() {
         add_force_load_staticlib(&mut command, &staticlib);
     }
+    // lkrt's float math (`powf` etc.) lowers to libm calls; macOS bundles libm
+    // in libSystem, Windows in the CRT, so the explicit link is Linux-only.
+    if cfg!(target_os = "linux") {
+        command.arg("-lm");
+    }
     let output_status = match command
         .output()
         .with_context(|| format!("spawn clang to build native executable {}", output.display()))

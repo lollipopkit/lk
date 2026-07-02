@@ -13,11 +13,31 @@ use crate::{
 
 const MAX_INLINE_METHOD_POSITIONAL_ARGS: usize = u8::MAX as usize + 1;
 
-fn method_name_arc(helper: &str, method: &RuntimeVal, heap: &HeapStore) -> anyhow::Result<ArcStr> {
+/// A string value detached from the heap borrow without copying its bytes: a
+/// `ShortStr` is `Copy` (inline), a heap string keeps its `Arc` (refcount
+/// clone). Method dispatch runs for every `x.method(…)` call, so the method
+/// name, string receiver, and string arguments all use this instead of
+/// materializing a fresh `Arc`/`ArcStr` per call.
+#[derive(Clone)]
+enum DetachedStr {
+    Short(ShortStr),
+    Heap(Arc<str>),
+}
+
+impl DetachedStr {
+    fn as_str(&self) -> &str {
+        match self {
+            DetachedStr::Short(value) => value.as_str(),
+            DetachedStr::Heap(value) => value,
+        }
+    }
+}
+
+fn method_name_detached(helper: &str, method: &RuntimeVal, heap: &HeapStore) -> anyhow::Result<DetachedStr> {
     match method {
-        RuntimeVal::ShortStr(value) => Ok(ArcStr::from(value.as_str())),
+        RuntimeVal::ShortStr(value) => Ok(DetachedStr::Short(*value)),
         RuntimeVal::Obj(handle) => match heap.get(*handle) {
-            Some(HeapValue::String(value)) => Ok(ArcStr::from(value.as_ref())),
+            Some(HeapValue::String(value)) => Ok(DetachedStr::Heap(Arc::clone(value))),
             Some(value) => Err(anyhow!(
                 "{helper} expects method name as string, got {}",
                 value.type_name()
@@ -39,7 +59,7 @@ pub(super) fn core_call_method_builtin(
         bail!("__lk_call_method expects 3 arguments: receiver, method name, positional args list");
     }
     let receiver = args.get(0).expect("arity checked").clone();
-    let method = method_name_arc("__lk_call_method", args.get(1).expect("arity checked"), runtime.heap())?;
+    let method = method_name_detached("__lk_call_method", args.get(1).expect("arity checked"), runtime.heap())?;
     let positional =
         runtime_positional_arg_list("__lk_call_method", args.get(2).expect("arity checked"), runtime.heap())?;
     call_method_positional_runtime(receiver, method, positional, runtime)
@@ -55,7 +75,7 @@ pub(super) fn core_call_method_named_builtin(
         );
     }
     let receiver = args.get(0).expect("arity checked").clone();
-    let method = method_name_arc(
+    let method = method_name_detached(
         "__lk_call_method_named",
         args.get(1).expect("arity checked"),
         runtime.heap(),
@@ -73,9 +93,58 @@ pub(super) fn core_call_method_named_builtin(
     call_method_named_runtime(receiver, method, positional, named, runtime)
 }
 
+/// Which builtin-method dispatcher can possibly handle a receiver. The four
+/// dispatchers are mutually exclusive on receiver type, so dispatch probes
+/// exactly one instead of trying each in turn (every probe copies the
+/// positional args out of the heap list).
+enum BuiltinReceiver {
+    Map,
+    Set,
+    Str,
+    List,
+    Other,
+}
+
+fn builtin_receiver_kind(receiver: &RuntimeVal, heap: &HeapStore) -> BuiltinReceiver {
+    match receiver {
+        RuntimeVal::ShortStr(_) => BuiltinReceiver::Str,
+        RuntimeVal::Obj(handle) => match heap.get(*handle) {
+            Some(HeapValue::Map(_)) => BuiltinReceiver::Map,
+            Some(HeapValue::Set(_)) => BuiltinReceiver::Set,
+            Some(HeapValue::String(_)) => BuiltinReceiver::Str,
+            Some(HeapValue::List(_)) => BuiltinReceiver::List,
+            _ => BuiltinReceiver::Other,
+        },
+        _ => BuiltinReceiver::Other,
+    }
+}
+
+fn dispatch_builtin_method(
+    receiver: &RuntimeVal,
+    method: &str,
+    positional: MethodPositionalArgs,
+    runtime: &mut NativeRuntime<'_>,
+) -> anyhow::Result<Option<RuntimeVal>> {
+    match builtin_receiver_kind(receiver, runtime.heap()) {
+        BuiltinReceiver::Map => positional.with_slice(runtime.heap_mut(), |positional, heap| {
+            dispatch_map_builtin_method(receiver, method, positional, heap)
+        }),
+        BuiltinReceiver::Set => positional.with_slice(runtime.heap_mut(), |positional, heap| {
+            dispatch_set_builtin_method(receiver, method, positional, heap)
+        }),
+        BuiltinReceiver::Str => positional.with_slice(runtime.heap_mut(), |positional, heap| {
+            dispatch_string_builtin_method(receiver, method, positional, heap)
+        }),
+        BuiltinReceiver::List => positional.with_slice(runtime.heap_mut(), |positional, heap| {
+            dispatch_list_builtin_method(receiver, method, positional, heap)
+        }),
+        BuiltinReceiver::Other => Ok(None),
+    }
+}
+
 fn call_method_positional_runtime(
     receiver: RuntimeVal,
-    method: ArcStr,
+    method: DetachedStr,
     positional: MethodPositionalArgs,
     runtime: &mut NativeRuntime<'_>,
 ) -> anyhow::Result<RuntimeVal> {
@@ -107,7 +176,7 @@ fn call_method_positional_runtime(
                     return Ok(r);
                 }
             }
-            return call_trait_method_runtime(receiver, method, positional, runtime);
+            return call_trait_method_runtime(receiver, ArcStr::from(method.as_str()), positional, runtime);
         }
     }
     if let Some(prop) = runtime_access(&receiver, method_str, runtime.heap_mut())? {
@@ -121,32 +190,15 @@ fn call_method_positional_runtime(
             return Ok(prop);
         }
     }
-    if let Some(result) = positional.with_slice(runtime.heap_mut(), |positional, heap| {
-        dispatch_map_builtin_method(&receiver, method_str, positional, heap)
-    })? {
+    if let Some(result) = dispatch_builtin_method(&receiver, method_str, positional, runtime)? {
         return Ok(result);
     }
-    if let Some(result) = positional.with_slice(runtime.heap_mut(), |positional, heap| {
-        dispatch_set_builtin_method(&receiver, method_str, positional, heap)
-    })? {
-        return Ok(result);
-    }
-    if let Some(result) = positional.with_slice(runtime.heap_mut(), |positional, heap| {
-        dispatch_string_builtin_method(&receiver, method_str, positional, heap)
-    })? {
-        return Ok(result);
-    }
-    if let Some(result) = positional.with_slice(runtime.heap_mut(), |positional, heap| {
-        dispatch_list_builtin_method(&receiver, method_str, positional, heap)
-    })? {
-        return Ok(result);
-    }
-    call_trait_method_runtime(receiver, method, positional, runtime)
+    call_trait_method_runtime(receiver, ArcStr::from(method.as_str()), positional, runtime)
 }
 
 fn call_method_named_runtime(
     receiver: RuntimeVal,
-    method: ArcStr,
+    method: DetachedStr,
     positional: MethodPositionalArgs,
     named: Option<HeapRef>,
     runtime: &mut NativeRuntime<'_>,
@@ -169,27 +221,10 @@ fn call_method_named_runtime(
             return Ok(prop);
         }
     }
-    if named.is_none() {
-        if let Some(result) = positional.with_slice(runtime.heap_mut(), |positional, heap| {
-            dispatch_map_builtin_method(&receiver, method.as_str(), positional, heap)
-        })? {
-            return Ok(result);
-        }
-        if let Some(result) = positional.with_slice(runtime.heap_mut(), |positional, heap| {
-            dispatch_set_builtin_method(&receiver, method.as_str(), positional, heap)
-        })? {
-            return Ok(result);
-        }
-        if let Some(result) = positional.with_slice(runtime.heap_mut(), |positional, heap| {
-            dispatch_string_builtin_method(&receiver, method.as_str(), positional, heap)
-        })? {
-            return Ok(result);
-        }
-        if let Some(result) = positional.with_slice(runtime.heap_mut(), |positional, heap| {
-            dispatch_list_builtin_method(&receiver, method.as_str(), positional, heap)
-        })? {
-            return Ok(result);
-        }
+    if named.is_none()
+        && let Some(result) = dispatch_builtin_method(&receiver, method.as_str(), positional, runtime)?
+    {
+        return Ok(result);
     }
     bail!("Named arguments are not supported for trait methods")
 }
@@ -491,11 +526,11 @@ fn runtime_map_key_to_value(value: RuntimeMapKey, heap: &mut HeapStore) -> Runti
 }
 
 /// Extract a string value from a RuntimeVal as an Arc<str> (cloned, no borrow retained).
-fn extract_string_arc(value: &RuntimeVal, heap: &HeapStore, context: &str) -> anyhow::Result<Arc<str>> {
+fn extract_string_detached(value: &RuntimeVal, heap: &HeapStore, context: &str) -> anyhow::Result<DetachedStr> {
     match value {
-        RuntimeVal::ShortStr(s) => Ok(Arc::<str>::from(s.as_str())),
+        RuntimeVal::ShortStr(s) => Ok(DetachedStr::Short(*s)),
         RuntimeVal::Obj(handle) => match heap.get(*handle) {
-            Some(HeapValue::String(s)) => Ok(Arc::clone(s)),
+            Some(HeapValue::String(s)) => Ok(DetachedStr::Heap(Arc::clone(s))),
             Some(v) => bail!("{context}: expected string, got {}", v.type_name()),
             None => bail!("{context}: heap object out of bounds"),
         },
@@ -520,15 +555,17 @@ fn dispatch_string_builtin_method(
     positional: &[RuntimeVal],
     heap: &mut HeapStore,
 ) -> anyhow::Result<Option<RuntimeVal>> {
-    // Extract the string value as an owned Arc<str> so we can use heap mutably after.
-    let s: Arc<str> = match receiver {
-        RuntimeVal::ShortStr(s) => Arc::<str>::from(s.as_str()),
+    // Detach the string value from the heap borrow (no byte copy) so the
+    // method bodies can use heap mutably.
+    let detached = match receiver {
+        RuntimeVal::ShortStr(s) => DetachedStr::Short(*s),
         RuntimeVal::Obj(handle) => match heap.get(*handle) {
-            Some(HeapValue::String(arc)) => Arc::clone(arc),
+            Some(HeapValue::String(arc)) => DetachedStr::Heap(Arc::clone(arc)),
             _ => return Ok(None),
         },
         _ => return Ok(None),
     };
+    let s = detached.as_str();
     match method {
         "split" => {
             if positional.len() != 1 {
@@ -537,9 +574,9 @@ fn dispatch_string_builtin_method(
                     positional.len()
                 );
             }
-            let delim = extract_string_arc(&positional[0], heap, "string.split() delimiter")?;
+            let delim = extract_string_detached(&positional[0], heap, "string.split() delimiter")?;
             let mut parts = Vec::new();
-            for part in s.split(delim.as_ref()) {
+            for part in s.split(delim.as_str()) {
                 parts.push(Arc::<str>::from(part));
             }
             let handle = heap.alloc(HeapValue::List(TypedList::String(parts)));
@@ -552,8 +589,8 @@ fn dispatch_string_builtin_method(
                     positional.len()
                 );
             }
-            let prefix = extract_string_arc(&positional[0], heap, "string.starts_with() prefix")?;
-            Ok(Some(RuntimeVal::Bool(s.starts_with(prefix.as_ref()))))
+            let prefix = extract_string_detached(&positional[0], heap, "string.starts_with() prefix")?;
+            Ok(Some(RuntimeVal::Bool(s.starts_with(prefix.as_str()))))
         }
         "ends_with" => {
             if positional.len() != 1 {
@@ -562,8 +599,8 @@ fn dispatch_string_builtin_method(
                     positional.len()
                 );
             }
-            let suffix = extract_string_arc(&positional[0], heap, "string.ends_with() suffix")?;
-            Ok(Some(RuntimeVal::Bool(s.ends_with(suffix.as_ref()))))
+            let suffix = extract_string_detached(&positional[0], heap, "string.ends_with() suffix")?;
+            Ok(Some(RuntimeVal::Bool(s.ends_with(suffix.as_str()))))
         }
         "contains" => {
             if positional.len() != 1 {
@@ -572,8 +609,8 @@ fn dispatch_string_builtin_method(
                     positional.len()
                 );
             }
-            let needle = extract_string_arc(&positional[0], heap, "string.contains() needle")?;
-            Ok(Some(RuntimeVal::Bool(s.contains(needle.as_ref()))))
+            let needle = extract_string_detached(&positional[0], heap, "string.contains() needle")?;
+            Ok(Some(RuntimeVal::Bool(s.contains(needle.as_str()))))
         }
         "trim" => {
             if !positional.is_empty() {
@@ -603,8 +640,8 @@ fn dispatch_string_builtin_method(
             if positional.len() != 1 {
                 bail!("string.find() expects 1 argument (needle), got {}", positional.len());
             }
-            let needle = extract_string_arc(&positional[0], heap, "string.find() needle")?;
-            match s.find(needle.as_ref()) {
+            let needle = extract_string_detached(&positional[0], heap, "string.find() needle")?;
+            match s.find(needle.as_str()) {
                 Some(pos) => Ok(Some(RuntimeVal::Int(pos as i64))),
                 None => Ok(Some(RuntimeVal::Int(-1))),
             }
@@ -677,9 +714,9 @@ fn dispatch_string_builtin_method(
                     positional.len()
                 );
             }
-            let from = extract_string_arc(&positional[0], heap, "string.replace() from")?;
-            let to = extract_string_arc(&positional[1], heap, "string.replace() to")?;
-            Ok(Some(make_string_val(&s.replace(from.as_ref(), to.as_ref()), heap)))
+            let from = extract_string_detached(&positional[0], heap, "string.replace() from")?;
+            let to = extract_string_detached(&positional[1], heap, "string.replace() to")?;
+            Ok(Some(make_string_val(&s.replace(from.as_str(), to.as_str()), heap)))
         }
         _ => Ok(None),
     }
@@ -1010,12 +1047,12 @@ fn dispatch_list_builtin_method(
             if positional.len() != 1 {
                 bail!("list.join() expects 1 argument (separator), got {}", positional.len());
             }
-            let sep = extract_string_arc(&positional[0], heap, "list.join() separator")?;
+            let sep = extract_string_detached(&positional[0], heap, "list.join() separator")?;
             let parts = match heap.get(handle) {
                 Some(HeapValue::List(list)) => list_join_parts(list, heap)?,
                 _ => return Ok(None),
             };
-            let joined = parts.join(sep.as_ref());
+            let joined = parts.join(sep.as_str());
             Ok(Some(make_string_val(&joined, heap)))
         }
         _ => Ok(None),

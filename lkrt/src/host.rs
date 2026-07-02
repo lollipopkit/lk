@@ -196,6 +196,53 @@ pub extern "C" fn lkrt_math_floor(value: f64) -> i64 {
     value.floor() as i64
 }
 
+/// `math.ceil(Float)` — `integer_round` with `f64::ceil` (see [`lkrt_math_floor`]).
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_math_ceil(value: f64) -> i64 {
+    value.ceil() as i64
+}
+
+/// `math.round(Float)` — `integer_round` with `f64::round` (see [`lkrt_math_floor`]).
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_math_round(value: f64) -> i64 {
+    value.round() as i64
+}
+
+/// `math.sqrt(Number)` — the stdlib module rejects negative arguments loudly,
+/// so the guard aborts (matching the VM's fatal error), never returns NaN.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_math_sqrt(value: f64) -> f64 {
+    if value < 0.0 {
+        eprintln!("lkrt error: sqrt() argument must be non-negative");
+        crate::abi::flush_and_abort();
+    }
+    value.sqrt()
+}
+
+/// `math.sin(Number)` → Float.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_math_sin(value: f64) -> f64 {
+    value.sin()
+}
+
+/// `math.cos(Number)` → Float.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_math_cos(value: f64) -> f64 {
+    value.cos()
+}
+
+/// `math.exp(Number)` → Float.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_math_exp(value: f64) -> f64 {
+    value.exp()
+}
+
+/// `math.pow(base, exponent)` → Float (`f64::powf`, both args f64-promoted).
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_math_pow(base: f64, exponent: f64) -> f64 {
+    base.powf(exponent)
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_os_clock() -> f64 {
     static START: OnceLock<Instant> = OnceLock::new();
