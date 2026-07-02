@@ -227,7 +227,7 @@ impl Generator {
     // ---- statements --------------------------------------------------------
 
     fn statement(&mut self, out: &mut String, indent: &str) {
-        match self.rng.below(10) {
+        match self.rng.below(12) {
             0 | 1 => {
                 let ty = self.random_ty();
                 let name = self.fresh("v");
@@ -330,6 +330,53 @@ impl Generator {
                     self.vars.push((name, ty));
                 }
             }
+            9 => {
+                // Range for: inclusive or exclusive, small deterministic bounds.
+                let acc = self.fresh("acc");
+                let lo = self.rng.below(4);
+                let hi = lo + self.rng.below(8);
+                let op = if self.rng.chance(50) { "..=" } else { ".." };
+                let _ = writeln!(out, "{indent}let {acc} = 0;");
+                let _ = writeln!(out, "{indent}for i in {lo}{op}{hi} {{ {acc} = {acc} + i; }}");
+                self.vars.push((acc, Ty::I64));
+            }
+            10 => {
+                // Dynamic-template string keys hammer the composite-key and
+                // string-keyed map paths.
+                let map = self.fresh("dm");
+                let counter = self.fresh("i");
+                let bound = 2 + self.rng.below(6);
+                let modulus = 2 + self.rng.below(3);
+                let _ = writeln!(out, "{indent}let {map} = {{}};");
+                let _ = writeln!(out, "{indent}let {counter} = 0;");
+                let _ = writeln!(out, "{indent}while ({counter} < {bound}) {{");
+                let _ = writeln!(out, "{indent}    let key = \"k${{{counter} % {modulus}}}\";");
+                let _ = writeln!(out, "{indent}    let prev = {map}[key];");
+                let _ = writeln!(
+                    out,
+                    "{indent}    if (prev == nil) {{ {map}[key] = 1; }} else {{ {map}[key] = prev + 1; }}"
+                );
+                let _ = writeln!(out, "{indent}    {counter} = {counter} + 1;");
+                let _ = writeln!(out, "{indent}}}");
+                let total = self.fresh("v");
+                let _ = writeln!(out, "{indent}let {total} = {map}.len();");
+                self.vars.push((total, Ty::I64));
+            }
+            _ => {
+                // String list: push templated parts, observe via join.
+                let list = self.fresh("sl");
+                let counter = self.fresh("i");
+                let bound = 1 + self.rng.below(4);
+                let _ = writeln!(out, "{indent}let {list} = [];");
+                let _ = writeln!(out, "{indent}let {counter} = 0;");
+                let _ = writeln!(
+                    out,
+                    "{indent}while ({counter} < {bound}) {{ {list}.push(\"p${{{counter}}}\"); {counter} = {counter} + 1; }}"
+                );
+                let joined = self.fresh("v");
+                let _ = writeln!(out, "{indent}let {joined} = {list}.join(\"-\");");
+                self.vars.push((joined, Ty::Str));
+            }
             _ => {
                 let ty = self.random_ty();
                 let name = self.fresh("v");
@@ -370,8 +417,31 @@ impl Generator {
         }
 
         // `println` lowers natively now (GetGlobal builtin + format expansion);
-        // exercise several shapes: `{}` formats, plain values, and extra args.
+        // exercise several shapes: `{}` formats, plain values, extra args, and
+        // randomized placeholder/argument-count mismatches (the lower-time
+        // expansion must replicate `format_variadic_runtime` exactly).
         for _ in 0..self.rng.below(3) {
+            if self.rng.chance(30) {
+                let placeholders = self.rng.below(4) as usize;
+                let args = self.rng.below(4) as usize;
+                let mut fmt = String::new();
+                for i in 0..placeholders {
+                    if i > 0 || self.rng.chance(60) {
+                        fmt.push_str(["x", "-", " ", "="][self.rng.below(4) as usize]);
+                    }
+                    fmt.push_str("{}");
+                }
+                if self.rng.chance(50) {
+                    fmt.push('!');
+                }
+                let arg_list: Vec<String> = (0..args).map(|_| self.int_expr(1)).collect();
+                if arg_list.is_empty() {
+                    let _ = writeln!(out, "println(\"{fmt}\");");
+                } else {
+                    let _ = writeln!(out, "println(\"{fmt}\", {});", arg_list.join(", "));
+                }
+                continue;
+            }
             match self.rng.below(4) {
                 0 => {
                     let expr = self.int_expr(1);

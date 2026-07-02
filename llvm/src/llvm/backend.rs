@@ -17,11 +17,11 @@ pub struct LlvmModule {
     pub target_triple: Option<String>,
 }
 
-/// Aggregates the raw IR plus optional optimized IR produced by `opt`.
+/// The rendered LLVM module plus the optimization level the native executable
+/// build should hand to clang.
 #[derive(Debug, Clone)]
 pub struct LlvmModuleArtifact {
     pub module: LlvmModule,
-    pub optimised_ir: Option<String>,
     pub opt_level: OptLevel,
 }
 
@@ -90,7 +90,10 @@ pub fn compile_module_artifact_to_llvm(
             ir,
             target_triple: options.target_triple,
         },
-        optimised_ir: None,
-        opt_level: options.opt_level,
+        opt_level: if options.run_optimizations {
+            options.opt_level
+        } else {
+            OptLevel::None
+        },
     })
 }

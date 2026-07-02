@@ -188,6 +188,14 @@ pub extern "C" fn lkrt_process_cwd() -> *mut c_char {
     })
 }
 
+/// `math.floor(Float)` with the VM's exact semantics: `value.floor() as i64`
+/// (a saturating cast, matching `integer_round` in the stdlib math module).
+/// `Int` arguments never reach here — the lowering passes them through.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_math_floor(value: f64) -> i64 {
+    value.floor() as i64
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_os_clock() -> f64 {
     static START: OnceLock<Instant> = OnceLock::new();

@@ -138,23 +138,68 @@ pub struct PerfRegisterFact {
     pub live_after: bool,
 }
 
+/// Serde codec for per-pc `Vec<Option<T>>` fact tables: most entries are
+/// `None`, so the wire format is `(len, [(index, value), ...])` instead of a
+/// dense array of nulls (a size fix for serialized `ModuleArtifact`s).
+mod sparse_facts {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error};
+
+    pub fn serialize<S: Serializer, T: Serialize>(table: &[Option<T>], serializer: S) -> Result<S::Ok, S::Error> {
+        let entries: Vec<(u32, &T)> = table
+            .iter()
+            .enumerate()
+            .filter_map(|(i, slot)| slot.as_ref().map(|value| (i as u32, value)))
+            .collect();
+        (table.len() as u32, entries).serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D, T>(deserializer: D) -> Result<Vec<Option<T>>, D::Error>
+    where
+        D: Deserializer<'de>,
+        T: Deserialize<'de>,
+    {
+        let (len, entries): (u32, Vec<(u32, T)>) = Deserialize::deserialize(deserializer)?;
+        let mut table: Vec<Option<T>> = std::iter::repeat_with(|| None).take(len as usize).collect();
+        for (index, value) in entries {
+            let slot = table
+                .get_mut(index as usize)
+                .ok_or_else(|| D::Error::custom("sparse fact index out of bounds"))?;
+            *slot = Some(value);
+        }
+        Ok(table)
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PerformanceFacts {
     pub values: Vec<PerfValueFact>,
+    #[serde(with = "sparse_facts")]
     pub value_lists: Vec<Option<PerfContainerFact>>,
+    #[serde(with = "sparse_facts")]
     pub value_maps: Vec<Option<PerfContainerFact>>,
+    #[serde(with = "sparse_facts")]
     pub registers: Vec<Option<PerfRegisterFact>>,
     pub local_slots: Vec<bool>,
+    #[serde(with = "sparse_facts")]
     pub key_ops: Vec<Option<PerfKeyFact>>,
+    #[serde(with = "sparse_facts")]
     pub index_ops: Vec<Option<PerfIndexFact>>,
+    #[serde(with = "sparse_facts")]
     pub call_sites: Vec<Option<PerfCallFact>>,
+    #[serde(with = "sparse_facts")]
     pub global_ops: Vec<Option<PerfGlobalFact>>,
     pub dead_writes: Vec<bool>,
+    #[serde(with = "sparse_facts")]
     pub register_copies: Vec<Option<PerfRegisterCopyFact>>,
+    #[serde(with = "sparse_facts")]
     pub local_copies: Vec<Option<PerfLocalCopyFact>>,
+    #[serde(with = "sparse_facts")]
     pub container_moves: Vec<Option<PerfContainerMoveFact>>,
+    #[serde(with = "sparse_facts")]
     pub container_builds: Vec<Option<PerfContainerBuildFact>>,
+    #[serde(with = "sparse_facts")]
     pub cell_moves: Vec<Option<PerfCellMoveFact>>,
+    #[serde(with = "sparse_facts")]
     pub for_loops: Vec<Option<PerfForLoopFact>>,
     pub control_flow: PerfControlFlowFacts,
 }
@@ -262,7 +307,9 @@ pub struct PerfCompareTestBranchFact {
 pub struct PerfControlFlowFacts {
     pub block_ids: Vec<u32>,
     pub branch_targets: Vec<bool>,
+    #[serde(with = "sparse_facts")]
     pub fused_bool_branches: Vec<Option<PerfFusedBoolBranchFact>>,
+    #[serde(with = "sparse_facts")]
     pub compare_test_branches: Vec<Option<PerfCompareTestBranchFact>>,
 }
 

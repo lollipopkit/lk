@@ -126,6 +126,51 @@ enum Builtin {
     Assert,
 }
 
+/// What a register loaded from the global table refers to. Like [`Builtin`],
+/// none of these carry an SSA value; only the recognized consumption patterns
+/// lower, everything else finds the register undefined and rejects.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum GlobalRef {
+    Builtin(Builtin),
+    /// A stdlib module object (`use os;` → `GetGlobal "os"`). Its only
+    /// supported consumer is a constant-name member read (`GetIndex` with a
+    /// constant string key), which produces [`GlobalRef::ModuleFn`].
+    Module(String),
+    /// A member function resolved from `module.name`, callable when
+    /// [`module_call_abi`] maps it to a typed lkrt ABI entry.
+    ModuleFn(String, String),
+    /// A user function value (`LoadFunction`); its only supported consumer is
+    /// the compiler's `SetGlobal` storage of top-level `fn` declarations
+    /// (direct calls address the callee by index instead).
+    UserFn,
+}
+
+/// Global names treated as stdlib module objects when read via `GetGlobal`.
+/// Only modules with at least one [`module_call_abi`] mapping belong here.
+const MODULE_GLOBALS: &[&str] = &["os", "time", "env", "math"];
+
+/// Maps a `module.method` call to its typed lkrt ABI entry: the `AbiRef`, the
+/// exact positional argument types, and the return type. `None` means the
+/// member is not natively lowerable (yet) and the program falls back.
+/// (`math.floor` dispatches on its argument type in [`lower_module_call`].)
+///
+/// Every entry must be VM-exact: same value semantics *and* the same display
+/// (the differential corpora compare stdout byte-for-byte).
+fn module_call_abi(module: &str, name: &str) -> Option<(AbiRef, &'static [Ty], Ty)> {
+    match (module, name) {
+        // Monotonic in-process seconds (f64) — both sides anchor to first use.
+        ("os", "clock") => Some((AbiRef::new("os", "clock"), &[], Ty::F64)),
+        // Unix epoch milliseconds.
+        ("os", "epoch") => Some((AbiRef::new("os", "epoch"), &[], Ty::I64)),
+        // Monotonic milliseconds / sleep-for-milliseconds.
+        ("time", "now") => Some((AbiRef::new("time", "now"), &[], Ty::I64)),
+        ("time", "sleep") => Some((AbiRef::new("time", "sleep"), &[Ty::I64], Ty::Nil)),
+        // Environment lookup with a default; both sides return an owned string.
+        ("env", "get_or") => Some((AbiRef::new("env", "get_or"), &[Ty::Str, Ty::Str], Ty::Str)),
+        _ => None,
+    }
+}
+
 /// One piece of a `print`/`println` output line, assembled at lower time from
 /// the (constant) format string and the call arguments.
 enum PrintPart {
@@ -157,6 +202,19 @@ enum Exit {
         rhs: FusedRhs,
         op: CmpOp,
         jump_when: bool,
+        taken: usize,
+        fallthrough: usize,
+    },
+    /// `ForLoopI`: increment the index register by the step register, then
+    /// branch back to `taken` (the loop head) while the range condition holds,
+    /// else fall through. Direction/inclusivity come from the compiler's
+    /// for-loop fact (required — there is no fact-less execution path).
+    ForLoop {
+        index_reg: u8,
+        end_reg: u8,
+        step_reg: u8,
+        inclusive: bool,
+        positive_step: bool,
         taken: usize,
         fallthrough: usize,
     },
@@ -206,11 +264,29 @@ struct SigInfer {
     param_obs: Vec<Vec<Option<Ty>>>,
     ret_types: Vec<Ty>,
     conflict: bool,
+    /// Per module-global slot: the scalar type every `SetGlobal` writes (a
+    /// mixed-type global marks `conflict`, rejecting the module rather than
+    /// miscompiling one of the writes).
+    global_tys: Vec<Option<Ty>>,
+    /// Slots written by the entry function *before* any control flow or user
+    /// call. Only these may be read via `GetGlobal`: the VM initializes
+    /// globals to nil while native storage zero-initializes, so a read that
+    /// could observe the pre-first-write value must reject.
+    initialized_globals: Vec<bool>,
+    /// Diagnostic names for the mutable-global table (slot-indexed).
+    global_names: Vec<String>,
+    /// Final compact `slot → gvar` numbering, built once signatures converge
+    /// (empty during the fixpoint passes, whose emitted MIR is discarded).
+    gvar_of: std::collections::HashMap<u16, u32>,
 }
 
 impl SigInfer {
     fn param_ty(&self, func: usize, i: usize) -> Ty {
         self.param_obs[func].get(i).copied().flatten().unwrap_or(Ty::I64)
+    }
+
+    fn gvar(&self, slot: u16) -> u32 {
+        self.gvar_of.get(&slot).copied().unwrap_or(u32::from(slot))
     }
 }
 
@@ -227,6 +303,7 @@ pub fn lower(artifact: &ModuleArtifact) -> Result<MirModule, Unsupported> {
     // use a shape we don't support, so we skip them entirely.
     let reachable = reachable_functions(module);
 
+    let global_count = module.globals.len();
     let mut sig = SigInfer {
         param_obs: module
             .functions
@@ -235,6 +312,10 @@ pub fn lower(artifact: &ModuleArtifact) -> Result<MirModule, Unsupported> {
             .collect(),
         ret_types: vec![Ty::I64; n],
         conflict: false,
+        global_tys: vec![None; global_count],
+        initialized_globals: prescan_initialized_globals(module, global_count),
+        global_names: module.globals.clone(),
+        gvar_of: std::collections::HashMap::new(),
     };
 
     // Fixpoint: re-lower every function, refining inferred parameter/return types
@@ -271,6 +352,17 @@ pub fn lower(artifact: &ModuleArtifact) -> Result<MirModule, Unsupported> {
         }
     }
 
+    // Compact numbering for the mutable globals the fixpoint discovered; the
+    // final pass emits `GlobalGet`/`GlobalSet` against these ids.
+    let mut mutable_globals: Vec<(String, Ty)> = Vec::new();
+    for (slot, ty) in sig.global_tys.clone().into_iter().enumerate() {
+        if let Some(ty) = ty {
+            sig.gvar_of.insert(slot as u16, mutable_globals.len() as u32);
+            let name = sig.global_names.get(slot).cloned().unwrap_or_default();
+            mutable_globals.push((name, ty));
+        }
+    }
+
     // Final pass with stable signatures: produce the real MIR + interned globals for
     // the reachable functions. Any reachable function outside the subset fails the
     // whole module (caller falls back); `FuncId`s keep their original module indices.
@@ -298,9 +390,58 @@ pub fn lower(artifact: &ModuleArtifact) -> Result<MirModule, Unsupported> {
     Ok(MirModule {
         abi_version: lk_aot_abi::ABI_VERSION,
         globals,
+        mutable_globals,
         entry: FuncId(module.entry),
         functions,
     })
+}
+
+/// Slots the entry function writes before any control flow or user-function
+/// call: the linear instruction prefix up to the first branch/jump/return/
+/// `CallDirect`/`CallNamed`. Reads of other globals could observe the VM's nil
+/// initialization (native storage zero-initializes instead), so only these
+/// slots are readable via `GetGlobal`. Runtime-builtin `Call`s (println,
+/// os.clock, …) cannot read user globals and do not stop the scan.
+fn prescan_initialized_globals(module: &lk_core::vm::ModuleData, global_count: usize) -> Vec<bool> {
+    let mut initialized = vec![false; global_count];
+    let Some(entry) = module.functions.get(module.entry as usize) else {
+        return initialized;
+    };
+    for raw in &entry.code {
+        let Ok(instr) = Instr::try_from_raw(*raw) else {
+            break;
+        };
+        match instr.opcode() {
+            Opcode::SetGlobal => {
+                if let Some(flag) = initialized.get_mut(instr.bx() as usize) {
+                    *flag = true;
+                }
+            }
+            Opcode::Jmp
+            | Opcode::Test
+            | Opcode::BrFalse
+            | Opcode::BrTrue
+            | Opcode::BrNil
+            | Opcode::BrNotNil
+            | Opcode::BrEqZeroInt
+            | Opcode::BrNeZeroInt
+            | Opcode::BrEqIntI4
+            | Opcode::BrNeIntI4
+            | Opcode::BrModEqZeroIntI4
+            | Opcode::BrModNeZeroIntI4
+            | Opcode::ForLoopI
+            | Opcode::Return
+            | Opcode::Return0
+            | Opcode::Return1
+            | Opcode::CallDirect
+            | Opcode::CallNamed
+            | Opcode::TryBegin
+            | Opcode::Raise => break,
+            op if op.is_compare_test() => break,
+            _ => {}
+        }
+    }
+    initialized
 }
 
 /// Marks which functions are reachable from the entry by following `CallDirect`
@@ -342,16 +483,88 @@ fn reachable_functions(module: &lk_core::vm::ModuleData) -> Vec<bool> {
 fn empty_map_is_int_keyed(code: &[u32], start_pc: usize, dst_reg: u8) -> bool {
     let mut regs = std::collections::HashSet::new();
     regs.insert(dst_reg);
+    // Registers most recently written by a string producer: an index through
+    // one of these means the map is string-keyed. A wrong guess only costs a
+    // fallback (the typed lowering rejects the mismatch), never a miscompile.
+    let mut str_regs = std::collections::HashSet::new();
     for raw in &code[start_pc + 1..] {
         let Ok(instr) = Instr::try_from_raw(*raw) else { break };
         match instr.opcode() {
             Opcode::Move if regs.contains(&instr.b()) => {
                 regs.insert(instr.a());
             }
+            Opcode::LoadString | Opcode::ConcatString | Opcode::ConcatN | Opcode::ToString => {
+                str_regs.insert(instr.a());
+            }
+            // String `+` compiles to AddInt (runtime dispatch): the result is a
+            // string iff an operand is.
+            Opcode::AddInt => {
+                if str_regs.contains(&instr.b()) || str_regs.contains(&instr.c()) {
+                    str_regs.insert(instr.a());
+                } else {
+                    str_regs.remove(&instr.a());
+                }
+            }
+            Opcode::LoadInt
+            | Opcode::SubInt
+            | Opcode::MulInt
+            | Opcode::AddIntI
+            | Opcode::MulIntI
+            | Opcode::ModIntI
+            | Opcode::ModInt => {
+                str_regs.remove(&instr.a());
+            }
             Opcode::SetFieldK if regs.contains(&instr.a()) => return false,
             Opcode::GetFieldK if regs.contains(&instr.b()) => return false,
-            Opcode::SetIndex if regs.contains(&instr.a()) => return true,
-            Opcode::GetIndex | Opcode::GetList if regs.contains(&instr.b()) => return true,
+            // Composite string-int keys are string-keyed by construction.
+            Opcode::SetIndexStrI if regs.contains(&instr.a()) => return false,
+            Opcode::GetIndexStrI if regs.contains(&instr.b()) => return false,
+            Opcode::SetIndex if regs.contains(&instr.a()) => return !str_regs.contains(&instr.b()),
+            Opcode::GetIndex | Opcode::GetList if regs.contains(&instr.b()) => {
+                return !str_regs.contains(&instr.c());
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Whether an empty `[]` literal's first pushed element is a string (tracked
+/// through `Move`s, like the map-key lookahead). A wrong guess only costs a
+/// fallback: the typed push rejects the mismatch, never miscompiles.
+fn empty_list_is_str_elem(code: &[u32], start_pc: usize, dst_reg: u8) -> bool {
+    let mut regs = std::collections::HashSet::new();
+    regs.insert(dst_reg);
+    let mut str_regs = std::collections::HashSet::new();
+    for raw in &code[start_pc + 1..] {
+        let Ok(instr) = Instr::try_from_raw(*raw) else { break };
+        match instr.opcode() {
+            Opcode::Move if regs.contains(&instr.b()) => {
+                regs.insert(instr.a());
+            }
+            Opcode::LoadString | Opcode::ConcatString | Opcode::ConcatN | Opcode::ToString => {
+                str_regs.insert(instr.a());
+            }
+            Opcode::AddInt => {
+                if str_regs.contains(&instr.b()) || str_regs.contains(&instr.c()) {
+                    str_regs.insert(instr.a());
+                } else {
+                    str_regs.remove(&instr.a());
+                }
+            }
+            Opcode::LoadInt
+            | Opcode::LoadFloat
+            | Opcode::SubInt
+            | Opcode::MulInt
+            | Opcode::AddIntI
+            | Opcode::MulIntI
+            | Opcode::ModIntI
+            | Opcode::ModInt => {
+                str_regs.remove(&instr.a());
+            }
+            Opcode::ListPush if regs.contains(&instr.a()) => {
+                return str_regs.contains(&instr.b());
+            }
             _ => {}
         }
     }
@@ -402,7 +615,7 @@ fn lower_function(
     // 1. Classify control-flow exits; a fused `TestXxx`+`Jmp` consumes the `Jmp`.
     let mut consumed = vec![false; code_len];
     let exits: Vec<Option<Exit>> = (0..code_len)
-        .map(|pc| exit_of(pc, &instrs, code_len, &mut consumed))
+        .map(|pc| exit_of(pc, &instrs, code_len, &mut consumed, &func.performance))
         .collect::<Result<Vec<_>, _>>()?;
 
     // 2. Block leaders.
@@ -432,6 +645,7 @@ fn lower_function(
             }
             Some(Exit::FusedCmp { taken, fallthrough, .. })
             | Some(Exit::FusedCmp2 { taken, fallthrough, .. })
+            | Some(Exit::ForLoop { taken, fallthrough, .. })
             | Some(Exit::FusedModZero { taken, fallthrough, .. })
             | Some(Exit::NilBranch { taken, fallthrough, .. }) => {
                 mark_target(*taken, code_len, &mut leaders, &mut implicit_ret);
@@ -532,7 +746,9 @@ fn lower_function(
             }
             Some(Exit::FusedCmp { reg_a, rhs, op, .. }) => {
                 // Dispatch on the tested register's type (int vs float compare).
-                let (lv, lty) = ssa.read(reg_a, bi, start)?;
+                // A `Maybe` operand unwraps first (aborting when absent — the
+                // VM's halt on comparing nil).
+                let (lv, lty) = read_scalar(&mut ssa, &mut insts, reg_a, bi, start)?;
                 let (float, lhs, rhs_val) = match lty {
                     Ty::I64 => {
                         let rhs_val = match rhs {
@@ -544,7 +760,7 @@ fn lower_function(
                                 });
                                 c
                             }
-                            FusedRhs::Reg(r) => ssa.read_typed(r, bi, Ty::I64, start)?,
+                            FusedRhs::Reg(r) => read_typed_scalar(&mut ssa, &mut insts, r, bi, Ty::I64, start)?,
                         };
                         (false, lv, rhs_val)
                     }
@@ -574,6 +790,43 @@ fn lower_function(
                     float,
                     lhs,
                     rhs: rhs_val,
+                });
+                cond_val[bi] = Some(cond);
+            }
+            Some(Exit::ForLoop {
+                index_reg,
+                end_reg,
+                step_reg,
+                inclusive,
+                positive_step,
+                ..
+            }) => {
+                // next = index + step (wrapping, like the VM); the register is
+                // updated *before* the branch so the back-edge phi carries it.
+                let index = ssa.read_typed(index_reg, bi, Ty::I64, start)?;
+                let end = ssa.read_typed(end_reg, bi, Ty::I64, start)?;
+                let step = ssa.read_typed(step_reg, bi, Ty::I64, start)?;
+                let next = ssa.new_val();
+                insts.push(Inst::IntBin {
+                    dst: next,
+                    op: IntBinOp::Add,
+                    lhs: index,
+                    rhs: step,
+                });
+                ssa.write(index_reg, bi, (next, Ty::I64));
+                let op = match (positive_step, inclusive) {
+                    (true, true) => CmpOp::Le,
+                    (true, false) => CmpOp::Lt,
+                    (false, true) => CmpOp::Ge,
+                    (false, false) => CmpOp::Gt,
+                };
+                let cond = ssa.new_val();
+                insts.push(Inst::Cmp {
+                    dst: cond,
+                    op,
+                    float: false,
+                    lhs: next,
+                    rhs: end,
                 });
                 cond_val[bi] = Some(cond);
             }
@@ -721,11 +974,16 @@ fn lower_function(
     for bi in 0..leader_vec.len() {
         let params: Vec<(ValueId, Ty)> = ssa.phis[bi].iter().map(|p| (p.param, p.ty)).collect();
         let exit = block_exit[bi];
+        // Phi-edge conversions land after the block's own instructions,
+        // before the terminator.
+        let edge_tail = std::mem::take(&mut ssa.edge_insts[bi]);
         let term = build_term(bi, exit, &ssa, &block_id, ret_val[bi], cond_val[bi]);
+        let mut insts = std::mem::take(&mut block_insts[bi]);
+        insts.extend(edge_tail);
         mir_blocks.push(Block {
             id: BlockId(bi as u32),
             params,
-            insts: std::mem::take(&mut block_insts[bi]),
+            insts,
             term,
         });
     }
@@ -740,10 +998,10 @@ fn lower_function(
     }
 
     let ret = ret_ty.unwrap_or(Ty::Nil);
-    // User (non-entry) functions use the `(i64, ...) -> scalar` ABI: the return may
-    // be `I64`/`F64`/`Bool` (params are still `I64`). Returning a container/`Maybe`/
-    // `Str`/`Nil` across the direct-call boundary isn't modelled — reject (fall back).
-    if !is_entry && !matches!(ret, Ty::I64 | Ty::F64 | Ty::Bool) {
+    // User (non-entry) functions return scalars or `Str`/handle pointers
+    // (arena-owned until exit). Returning a `Maybe` carrier or `Nil` across the
+    // direct-call boundary isn't modelled — reject (fall back).
+    if !is_entry && matches!(ret, Ty::Nil | Ty::MaybeI64 | Ty::MaybeF64 | Ty::MaybeStr) {
         return Err(Unsupported::ReturnTypeConflict);
     }
     // The entry can return scalars (printed), but not a container handle (printing
@@ -843,6 +1101,19 @@ fn build_term(
                 else_args: args_to(ssa, bi, else_b as usize),
             }
         }
+        // The range condition holding means "loop back" (`taken`).
+        Some(Exit::ForLoop { taken, fallthrough, .. }) => {
+            let cond = cond_val.expect("for-loop cond resolved");
+            let then_b = block_id(taken);
+            let else_b = block_id(fallthrough);
+            Term::CondBr {
+                cond,
+                then_blk: BlockId(then_b),
+                then_args: args_to(ssa, bi, then_b as usize),
+                else_blk: BlockId(else_b),
+                else_args: args_to(ssa, bi, else_b as usize),
+            }
+        }
         // The conjunction holding means "fall through"; anything else takes the
         // branch (the VM's false-branch application for `TestEqIntI2`).
         Some(Exit::FusedCmp2 { taken, fallthrough, .. }) => {
@@ -919,10 +1190,15 @@ struct Ssa {
     /// `LoadHeapConst` long strings), used to expand `println` format strings
     /// at lower time.
     const_strs: std::collections::HashMap<ValueId, String>,
-    /// `(block, register)` → runtime builtin loaded there by `GetGlobal` (and
-    /// propagated by `Move`). Block-local by construction; any write to the
+    /// `(block, register)` → global reference (runtime builtin, module object,
+    /// or resolved module function) loaded there by `GetGlobal`/`GetIndex` and
+    /// propagated by `Move`. Block-local by construction; any write to the
     /// register clears it.
-    builtin_regs: std::collections::HashMap<(usize, u8), Builtin>,
+    builtin_regs: std::collections::HashMap<(usize, u8), GlobalRef>,
+    /// Per-block trailing instructions added for phi-edge type conversions
+    /// (`Maybe` ↔ scalar merges); appended after the block's own instructions
+    /// when the MIR blocks are assembled.
+    edge_insts: Vec<Vec<Inst>>,
 }
 
 impl Ssa {
@@ -941,6 +1217,7 @@ impl Ssa {
             list_len: std::collections::HashMap::new(),
             const_strs: std::collections::HashMap::new(),
             builtin_regs: std::collections::HashMap::new(),
+            edge_insts: vec![Vec::new(); total_blocks],
         }
     }
 
@@ -1094,17 +1371,48 @@ impl Ssa {
         let preds = self.preds[block].clone();
         for p in preds {
             let (v, ty) = self.read(reg, p, pc)?;
-            // Every incoming edge must agree on the type (the phi was typed from one
-            // filled predecessor). A register that is `i64` on one path and, say,
-            // `MaybeI64` on another (`m = xs[i]` in one branch, an int in another) is
-            // a heterogeneous value our typed MIR cannot represent — reject so the
-            // program falls back rather than emitting an ill-typed phi.
-            if ty != phi_ty {
+            // Every incoming edge must agree on the type (the phi was typed from
+            // one filled predecessor). A `Maybe` merging with its scalar (the
+            // `let v = m[k]; if v == nil { v = default; }` shape) converts on
+            // the incoming edge: extracting the raw value never observes the
+            // absent case (the phi takes the other edge there), and wrapping a
+            // scalar marks it present. Anything else is a heterogeneous value
+            // our typed MIR cannot represent — reject (fall back).
+            let v = if ty == phi_ty {
+                v
+            } else if let Some(converted) = self.convert_phi_edge(v, ty, phi_ty, p) {
+                converted
+            } else {
                 return Err(Unsupported::TypeMismatch { pc });
-            }
+            };
             self.phis[block][phi_idx].operands.push((p, v));
         }
         Ok(())
+    }
+
+    fn convert_phi_edge(&mut self, v: ValueId, from: Ty, to: Ty, pred: usize) -> Option<ValueId> {
+        let dst = match (from, to) {
+            (Ty::MaybeI64, Ty::I64) | (Ty::MaybeF64, Ty::F64) | (Ty::MaybeStr, Ty::Str) => {
+                let dst = self.new_val();
+                self.edge_insts[pred].push(Inst::MaybeValue {
+                    dst,
+                    src: v,
+                    maybe_ty: from,
+                });
+                dst
+            }
+            (Ty::I64, Ty::MaybeI64) | (Ty::F64, Ty::MaybeF64) | (Ty::Str, Ty::MaybeStr) => {
+                let dst = self.new_val();
+                self.edge_insts[pred].push(Inst::MaybeWrap {
+                    dst,
+                    src: v,
+                    maybe_ty: to,
+                });
+                dst
+            }
+            _ => return None,
+        };
+        Some(dst)
     }
 
     fn mark_filled(&mut self, block: usize) {
@@ -1168,6 +1476,7 @@ fn exit_successors(exit: Option<Exit>, fallthrough: usize) -> Vec<usize> {
         Some(Exit::Cond { then_pc, else_pc, .. }) => vec![then_pc, else_pc],
         Some(Exit::FusedCmp { taken, fallthrough, .. })
         | Some(Exit::FusedCmp2 { taken, fallthrough, .. })
+        | Some(Exit::ForLoop { taken, fallthrough, .. })
         | Some(Exit::FusedModZero { taken, fallthrough, .. })
         | Some(Exit::NilBranch { taken, fallthrough, .. }) => {
             vec![taken, fallthrough]
@@ -1175,7 +1484,13 @@ fn exit_successors(exit: Option<Exit>, fallthrough: usize) -> Vec<usize> {
     }
 }
 
-fn exit_of(pc: usize, instrs: &[Instr], code_len: usize, consumed: &mut [bool]) -> Result<Option<Exit>, Unsupported> {
+fn exit_of(
+    pc: usize,
+    instrs: &[Instr],
+    code_len: usize,
+    consumed: &mut [bool],
+    facts: &lk_core::vm::analysis::PerformanceFacts,
+) -> Result<Option<Exit>, Unsupported> {
     if consumed[pc] {
         return Ok(None);
     }
@@ -1231,6 +1546,21 @@ fn exit_of(pc: usize, instrs: &[Instr], code_len: usize, consumed: &mut [bool]) 
         // requires an `Int` operand; the immediate is an unsigned byte. These are
         // what `if (i == k)` / `!=` inside loops lower to (enabling break/continue/
         // early-return/else-if shapes).
+        Opcode::ForLoopI => {
+            let Some(fact) = facts.for_loop(pc) else {
+                return Err(Unsupported::Opcode { pc, op: instr.opcode() });
+            };
+            let taken = rel(pc, fact.jump_offset, code_len).ok_or(Unsupported::BadTarget { pc })?;
+            Ok(Some(Exit::ForLoop {
+                index_reg: instr.a(),
+                end_reg: instr.b(),
+                step_reg: instr.c(),
+                inclusive: fact.inclusive,
+                positive_step: fact.positive_step,
+                taken,
+                fallthrough: pc + 1,
+            }))
+        }
         Opcode::BrEqIntI4 | Opcode::BrNeIntI4 => {
             let taken = rel(pc, instr.branch_i4_offset() as i32, code_len).ok_or(Unsupported::BadTarget { pc })?;
             let op = if instr.opcode() == Opcode::BrEqIntI4 {
@@ -1384,15 +1714,31 @@ fn lower_inst(
             ssa.write(instr.a(), block, (dst, Ty::Nil));
         }
         Opcode::Move => {
-            // A register holding a runtime builtin (no SSA value) propagates the
-            // builtin ref instead of a value: the compiler moves the callee into
-            // the call-window base before the `Call`.
-            if let Some(builtin) = ssa.builtin_regs.get(&(block, instr.b())).copied() {
-                ssa.builtin_regs.insert((block, instr.a()), builtin);
+            // A register holding a global ref (no SSA value) propagates the ref
+            // instead of a value: the compiler moves the callee into the
+            // call-window base before the `Call`.
+            if let Some(global_ref) = ssa.builtin_regs.get(&(block, instr.b())).cloned() {
+                ssa.builtin_regs.insert((block, instr.a()), global_ref);
                 return Ok(());
             }
             let src = ssa.read(instr.b(), block, pc)?;
             ssa.write(instr.a(), block, src);
+        }
+        Opcode::Move2 => {
+            // Fused adjacent moves: `a ← b`, then `b ← c`. The VM reads `b`
+            // before overwriting it; SSA reads naturally see the old value.
+            if let Some(global_ref) = ssa.builtin_regs.get(&(block, instr.b())).cloned() {
+                ssa.builtin_regs.insert((block, instr.a()), global_ref);
+            } else {
+                let first = ssa.read(instr.b(), block, pc)?;
+                ssa.write(instr.a(), block, first);
+            }
+            if let Some(global_ref) = ssa.builtin_regs.get(&(block, instr.c())).cloned() {
+                ssa.builtin_regs.insert((block, instr.b()), global_ref);
+            } else {
+                let second = ssa.read(instr.c(), block, pc)?;
+                ssa.write(instr.b(), block, second);
+            }
         }
         Opcode::Not => {
             // `!x`: `a` = dst, `b` = src. The VM negates a `Bool` and treats `Nil` as
@@ -1452,6 +1798,155 @@ fn lower_inst(
                 }
                 _ => return Err(Unsupported::TypeMismatch { pc }),
             }
+        }
+        Opcode::GetIndexStrI | Opcode::SetIndexStrI => {
+            // Composite string-int key access (`m["n${i}"]`): the key is the
+            // compiler-proven constant prefix plus the decimal suffix register.
+            // Built as `concat(prefix, i64_to_str(suffix))`; the map ABI copies
+            // the key, so the fresh temporary frees right after the call.
+            let Some(key_fact) = func.performance.known_key(pc).and_then(|fact| fact.string_int) else {
+                return Err(Unsupported::Opcode { pc, op: instr.opcode() });
+            };
+            let prefix = func
+                .consts
+                .strings
+                .get(key_fact.prefix_key as usize)
+                .ok_or(Unsupported::BadConst { pc })?;
+            let prefix_v = materialize_key(ssa, insts, globals, prefix);
+            let is_set = instr.opcode() == Opcode::SetIndexStrI;
+            let (map_reg, suffix_reg) = if is_set {
+                (instr.a(), instr.b())
+            } else {
+                (instr.b(), instr.c())
+            };
+            let (handle, map_ty) = ssa.read(map_reg, block, pc)?;
+            let suffix = ssa.read_typed(suffix_reg, block, Ty::I64, pc)?;
+            let suffix_str = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(suffix_str),
+                callee: AbiRef::new("str", "from_i64"),
+                args: vec![suffix],
+            });
+            let key = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(key),
+                callee: AbiRef::new("str", "concat"),
+                args: vec![prefix_v, suffix_str],
+            });
+            free_owned_str(insts, suffix_str);
+            if is_set {
+                let (value, value_ty) = ssa.read(instr.c(), block, pc)?;
+                let set_fn = match (map_ty, value_ty) {
+                    (Ty::MapStrI64, Ty::I64) => "str_i64_set",
+                    (Ty::MapStrF64, Ty::F64) => "str_f64_set",
+                    _ => return Err(Unsupported::TypeMismatch { pc }),
+                };
+                insts.push(Inst::Call {
+                    dst: None,
+                    callee: AbiRef::new("map_h", set_fn),
+                    args: vec![handle, key, value],
+                });
+                free_owned_str(insts, key);
+            } else {
+                let dst = ssa.new_val();
+                let maybe_ty = match map_ty {
+                    Ty::MapStrI64 => {
+                        insts.push(Inst::MapGetMaybe { dst, handle, key });
+                        Ty::MaybeI64
+                    }
+                    Ty::MapStrF64 => {
+                        insts.push(Inst::MapGetMaybeStrF64 { dst, handle, key });
+                        Ty::MaybeF64
+                    }
+                    _ => return Err(Unsupported::TypeMismatch { pc }),
+                };
+                free_owned_str(insts, key);
+                ssa.write(instr.a(), block, (dst, maybe_ty));
+            }
+        }
+        Opcode::MidInt => {
+            // `a = (b + c) / 2` — wrapping add then truncated division
+            // (`wrapping_add / 2` in the VM; the guarded div helper's
+            // `wrapping_div` by the constant 2 is identical).
+            let lhs = ssa.read_typed(instr.b(), block, Ty::I64, pc)?;
+            let rhs = ssa.read_typed(instr.c(), block, Ty::I64, pc)?;
+            let sum = ssa.new_val();
+            insts.push(Inst::IntBin {
+                dst: sum,
+                op: IntBinOp::Add,
+                lhs,
+                rhs,
+            });
+            let two = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: two,
+                value: Const::I64(2),
+            });
+            let dst = ssa.new_val();
+            insts.push(Inst::IntBin {
+                dst,
+                op: IntBinOp::Div,
+                lhs: sum,
+                rhs: two,
+            });
+            ssa.write(instr.a(), block, (dst, Ty::I64));
+        }
+        Opcode::MinInt | Opcode::MaxInt => {
+            let lhs = ssa.read_typed(instr.b(), block, Ty::I64, pc)?;
+            let rhs = ssa.read_typed(instr.c(), block, Ty::I64, pc)?;
+            let op = if instr.opcode() == Opcode::MinInt {
+                IntBinOp::Min
+            } else {
+                IntBinOp::Max
+            };
+            let dst = ssa.new_val();
+            insts.push(Inst::IntBin { dst, op, lhs, rhs });
+            ssa.write(instr.a(), block, (dst, Ty::I64));
+        }
+        op @ (Opcode::AddMulInt | Opcode::Add2Int) => {
+            // Fused accumulator updates: `a += b * c` / `a += b + c` (all Int,
+            // wrapping — matching the VM's typed fast path, which bails on
+            // non-Int operands, so the static Int requirement is exact).
+            let acc = ssa.read_typed(instr.a(), block, Ty::I64, pc)?;
+            let lhs = ssa.read_typed(instr.b(), block, Ty::I64, pc)?;
+            let rhs = ssa.read_typed(instr.c(), block, Ty::I64, pc)?;
+            let term = ssa.new_val();
+            insts.push(Inst::IntBin {
+                dst: term,
+                op: if op == Opcode::AddMulInt {
+                    IntBinOp::Mul
+                } else {
+                    IntBinOp::Add
+                },
+                lhs,
+                rhs,
+            });
+            let dst = ssa.new_val();
+            insts.push(Inst::IntBin {
+                dst,
+                op: IntBinOp::Add,
+                lhs: acc,
+                rhs: term,
+            });
+            ssa.write(instr.a(), block, (dst, Ty::I64));
+        }
+        op @ (Opcode::AddListInt | Opcode::SubListInt) => {
+            // `a ±= list[key]` — the element read has the VM's exact
+            // negative-index/halt semantics via the scalar list read.
+            let acc = ssa.read_typed(instr.a(), block, Ty::I64, pc)?;
+            let item = list_i64_element_scalar(ssa, insts, instr.b(), instr.c(), block, pc)?;
+            let dst = ssa.new_val();
+            insts.push(Inst::IntBin {
+                dst,
+                op: if op == Opcode::AddListInt {
+                    IntBinOp::Add
+                } else {
+                    IntBinOp::Sub
+                },
+                lhs: acc,
+                rhs: item,
+            });
+            ssa.write(instr.a(), block, (dst, Ty::I64));
         }
         op @ (Opcode::AddIntI | Opcode::MulIntI | Opcode::ModIntI) => {
             let lhs = read_typed_scalar(ssa, insts, instr.b(), block, Ty::I64, pc)?;
@@ -1561,7 +2056,10 @@ fn lower_inst(
             for i in 0..argc {
                 let arg_reg = dst_reg.wrapping_add(1).wrapping_add(i as u8);
                 let (aval, aty) = read_scalar(ssa, insts, arg_reg, block, pc)?;
-                if !matches!(aty, Ty::I64 | Ty::F64 | Ty::Bool) {
+                // `Str` and container handles pass as `ptr` (arena-owned until
+                // exit, so no ownership transfer is involved). `Maybe` carriers
+                // and nil stay out of the function ABI.
+                if matches!(aty, Ty::Nil | Ty::MaybeI64 | Ty::MaybeF64 | Ty::MaybeStr) {
                     return Err(Unsupported::TypeMismatch { pc });
                 }
                 // Refine the callee's parameter type from this observed argument.
@@ -1583,35 +2081,95 @@ fn lower_inst(
             let ret = sig.ret_types.get(callee_idx).copied().unwrap_or(Ty::I64);
             ssa.write(dst_reg, block, (dst, ret));
         }
-        // Function-value storage into the global table. Direct calls address the
-        // callee by index, so these are no-ops here; a register left holding a
-        // function value is never read as a scalar in the supported subset (if it
-        // were, the read would find it undefined and reject).
-        Opcode::LoadFunction | Opcode::SetGlobal => {}
+        // Direct calls address the callee by index, so the loaded function
+        // value itself only flows into the compiler's global-table storage
+        // (`SetGlobal`), which stays a no-op.
+        Opcode::LoadFunction => {
+            ssa.builtin_regs.insert((block, instr.a()), GlobalRef::UserFn);
+        }
+        Opcode::SetGlobal => {
+            // Storing a function value into the global table is the compiler's
+            // top-level `fn` bookkeeping — a no-op natively.
+            if let Some(GlobalRef::UserFn) = ssa.builtin_regs.get(&(block, instr.a())) {
+                return Ok(());
+            }
+            // Writing a global whose *name* this lowering recognizes would let
+            // later `GetGlobal` reads resolve to the stale builtin/module
+            // meaning and miscompile (`println = f; println(x)`), so those
+            // writes reject the program.
+            let slot = instr.bx();
+            let name = module_globals.get(slot as usize).map(String::as_str);
+            if let Some(name) = name
+                && (matches!(name, "println" | "print" | "assert") || MODULE_GLOBALS.contains(&name))
+            {
+                return Err(Unsupported::Opcode { pc, op: instr.opcode() });
+            }
+            // Mutable scalar module global (a top-level `let` shared with
+            // functions): the write's type must agree across the whole module.
+            let (v, ty) = ssa.read(instr.a(), block, pc)?;
+            if !matches!(ty, Ty::I64 | Ty::F64 | Ty::Bool | Ty::Str) {
+                return Err(Unsupported::TypeMismatch { pc });
+            }
+            match sig.global_tys.get_mut(slot as usize) {
+                Some(state @ None) => *state = Some(ty),
+                Some(Some(prev)) if *prev != ty => return Err(Unsupported::TypeMismatch { pc }),
+                Some(Some(_)) => {}
+                None => return Err(Unsupported::Opcode { pc, op: instr.opcode() }),
+            }
+            insts.push(Inst::GlobalSet {
+                gvar: sig.gvar(slot),
+                src: v,
+            });
+        }
         Opcode::GetGlobal => {
-            // Only reads of known runtime builtins lower; the register then holds
-            // a builtin ref (no SSA value — any non-call use finds it undefined
-            // and rejects). Other globals (imported modules, user function
-            // values) are outside the subset.
-            let name = module_globals.get(instr.bx() as usize).map(String::as_str);
-            let builtin = match name {
-                Some("println") => Builtin::Println,
-                Some("print") => Builtin::Print,
-                Some("assert") => Builtin::Assert,
-                _ => return Err(Unsupported::Opcode { pc, op: instr.opcode() }),
+            // Reads of known runtime builtins / stdlib module objects load a
+            // global ref (no SSA value — any unrecognized use finds it
+            // undefined and rejects). Reads of mutable scalar globals load the
+            // typed value, but only for slots provably initialized in the
+            // entry prefix (the VM's pre-write value is nil, native storage is
+            // zero — a read that could observe it must reject).
+            let slot = instr.bx();
+            let name = module_globals.get(slot as usize).map(String::as_str);
+            let global_ref = match name {
+                Some("println") => Some(GlobalRef::Builtin(Builtin::Println)),
+                Some("print") => Some(GlobalRef::Builtin(Builtin::Print)),
+                Some("assert") => Some(GlobalRef::Builtin(Builtin::Assert)),
+                Some(name) if MODULE_GLOBALS.contains(&name) => Some(GlobalRef::Module(name.to_string())),
+                _ => None,
             };
-            ssa.builtin_regs.insert((block, instr.a()), builtin);
+            if let Some(global_ref) = global_ref {
+                ssa.builtin_regs.insert((block, instr.a()), global_ref);
+                return Ok(());
+            }
+            let initialized = sig.initialized_globals.get(slot as usize).copied().unwrap_or(false);
+            let ty = sig.global_tys.get(slot as usize).copied().flatten();
+            let (Some(ty), true) = (ty, initialized) else {
+                return Err(Unsupported::Opcode { pc, op: instr.opcode() });
+            };
+            let dst = ssa.new_val();
+            insts.push(Inst::GlobalGet {
+                dst,
+                gvar: sig.gvar(slot),
+            });
+            ssa.write(instr.a(), block, (dst, ty));
         }
         Opcode::Call => {
             // Register-window call: `a` = window base (the callee slot), `c` =
             // positional count, args at `[a+1, a+1+c)`. Only calls whose callee
-            // register holds a recognized runtime builtin lower; everything else
+            // register holds a recognized global ref lower; everything else
             // (closures, runtime values) rejects.
             let base = instr.a();
-            let Some(builtin) = ssa.builtin_regs.get(&(block, base)).copied() else {
-                return Err(Unsupported::Opcode { pc, op: instr.opcode() });
-            };
-            lower_builtin_call(ssa, insts, globals, builtin, base, instr.c() as usize, block, pc)?;
+            match ssa.builtin_regs.get(&(block, base)).cloned() {
+                Some(GlobalRef::Builtin(builtin)) => {
+                    lower_builtin_call(ssa, insts, globals, builtin, base, instr.c() as usize, block, pc)?;
+                }
+                Some(GlobalRef::ModuleFn(module, name)) => {
+                    lower_module_call(ssa, insts, &module, &name, base, instr.c() as usize, block, pc)?;
+                }
+                Some(GlobalRef::Module(_)) | Some(GlobalRef::UserFn) | None => {
+                    return Err(Unsupported::Opcode { pc, op: instr.opcode() });
+                }
+            }
         }
         // A string constant materializes an interned module global (a C-string) with
         // type `Str`. String *operations* (concat/compare/…) aren't modelled, so a
@@ -1638,7 +2196,7 @@ fn lower_inst(
             let (v, ty) = ssa.read(instr.b(), block, pc)?;
             // The result is register-visible, so it stays arena-owned (never
             // freed eagerly, reclaimed by `lkrt_cleanup` at exit).
-            let (s, _fresh) = to_display_str(ssa, insts, v, ty, pc)?;
+            let (s, _fresh) = to_display_str(ssa, insts, globals, v, ty, pc)?;
             ssa.write(instr.a(), block, (s, Ty::Str));
         }
         Opcode::ConcatString => {
@@ -1646,8 +2204,8 @@ fn lower_inst(
             // display(rhs)` (each operand display-converted, as the VM does).
             let (lv, lty) = ssa.read(instr.b(), block, pc)?;
             let (rv, rty) = ssa.read(instr.c(), block, pc)?;
-            let (l, l_fresh) = to_display_str(ssa, insts, lv, lty, pc)?;
-            let (r, r_fresh) = to_display_str(ssa, insts, rv, rty, pc)?;
+            let (l, l_fresh) = to_display_str(ssa, insts, globals, lv, lty, pc)?;
+            let (r, r_fresh) = to_display_str(ssa, insts, globals, rv, rty, pc)?;
             let dst = ssa.new_val();
             insts.push(Inst::Call {
                 dst: Some(dst),
@@ -1673,7 +2231,7 @@ fn lower_inst(
             let mut vals = Vec::with_capacity(count);
             for i in 0..count {
                 let (v, ty) = ssa.read(start.wrapping_add(i as u8), block, pc)?;
-                vals.push(to_display_str(ssa, insts, v, ty, pc)?);
+                vals.push(to_display_str(ssa, insts, globals, v, ty, pc)?);
             }
             let result = if let Some((&(first, first_fresh), rest)) = vals.split_first() {
                 let mut acc = first;
@@ -1738,6 +2296,19 @@ fn lower_inst(
                 .ok_or(Unsupported::BadConst { pc })?;
             match hv {
                 ConstHeapValueData::List(elems) => {
+                    // An empty `[]` is ambiguous — a lookahead types it from the
+                    // first value pushed (a wrong guess only costs a fallback).
+                    if elems.is_empty() && empty_list_is_str_elem(&func.code, pc, instr.a()) {
+                        let handle = ssa.new_val();
+                        insts.push(Inst::Call {
+                            dst: Some(handle),
+                            callee: AbiRef::new("list_h", "str_new"),
+                            args: Vec::new(),
+                        });
+                        ssa.list_len.insert(handle, 0);
+                        ssa.write(instr.a(), block, (handle, Ty::ListStr));
+                        return Ok(());
+                    }
                     let all_int = elems.iter().all(|e| matches!(e, ConstRuntimeValueData::Int(_)));
                     let all_float = elems.iter().all(|e| matches!(e, ConstRuntimeValueData::Float(_)));
                     let all_str = elems.iter().all(|e| matches!(e, ConstRuntimeValueData::ShortStr(_)));
@@ -1859,6 +2430,8 @@ fn lower_inst(
             // regardless of element type (lists) or key/value type (maps).
             let (handle, ty) = ssa.read(instr.b(), block, pc)?;
             let (module, len_fn) = match ty {
+                // Strings count Unicode scalar values (the VM's char length).
+                Ty::Str => ("str", "char_len"),
                 Ty::ListI64 => ("list_h", "i64_len"),
                 Ty::ListF64 => ("list_h", "f64_len"),
                 Ty::ListStr => ("list_h", "str_len"),
@@ -1902,6 +2475,17 @@ fn lower_inst(
                         args: vec![handle, value],
                     });
                 }
+                Ty::ListStr => {
+                    // Stored strings are arena-owned (interned constants or
+                    // register-visible arena strings), alive until exit, so the
+                    // pointer push involves no ownership transfer.
+                    let value = ssa.read_typed(instr.b(), block, Ty::Str, pc)?;
+                    insts.push(Inst::Call {
+                        dst: None,
+                        callee: AbiRef::new("list_h", "str_push"),
+                        args: vec![handle, value],
+                    });
+                }
                 _ => return Err(Unsupported::TypeMismatch { pc }),
             }
             // Keep the known length in sync so subsequent constant-index bounds
@@ -1915,9 +2499,41 @@ fn lower_inst(
         // `for x in xs` loop body). For a list operand both have identical semantics,
         // so they share this arm; a non-list operand rejects (falls back).
         Opcode::GetList | Opcode::GetIndex => {
-            // `a` = dst, `b` = list register, `c` = index register (an `I64`; a
-            // `Maybe` index — `xs[ys[j]]` — unwraps first).
+            // A constant-name member read on a module object resolves to a
+            // module function ref (`os.clock` → `GetIndex` on the module with a
+            // constant string key); the register carries the ref, not a value.
+            if let Some(GlobalRef::Module(module)) = ssa.builtin_regs.get(&(block, instr.b())).cloned() {
+                let name = {
+                    let key = ssa.read(instr.c(), block, pc).ok().map(|(v, _)| v);
+                    key.and_then(|v| ssa.const_strs.get(&v).cloned())
+                        .or_else(|| ssa.reg_const_str(instr.c(), block))
+                };
+                let Some(name) = name else {
+                    return Err(Unsupported::Opcode { pc, op: instr.opcode() });
+                };
+                ssa.builtin_regs
+                    .insert((block, instr.a()), GlobalRef::ModuleFn(module, name));
+                return Ok(());
+            }
+            // `a` = dst, `b` = container register, `c` = key register.
             let (handle, list_ty) = ssa.read(instr.b(), block, pc)?;
+            // String-keyed map reads take a `Str` key (dynamic template keys
+            // included); a missing key is the `Maybe` nil model.
+            if matches!(list_ty, Ty::MapStrI64 | Ty::MapStrF64) {
+                let key = ssa.read_typed(instr.c(), block, Ty::Str, pc)?;
+                let dst = ssa.new_val();
+                let maybe_ty = if list_ty == Ty::MapStrI64 {
+                    insts.push(Inst::MapGetMaybe { dst, handle, key });
+                    Ty::MaybeI64
+                } else {
+                    insts.push(Inst::MapGetMaybeStrF64 { dst, handle, key });
+                    Ty::MaybeF64
+                };
+                ssa.write(instr.a(), block, (dst, maybe_ty));
+                return Ok(());
+            }
+            // Lists / int-keyed maps index with an `I64` (a `Maybe` index —
+            // `xs[ys[j]]` — unwraps first).
             let index_val = read_typed_scalar(ssa, insts, instr.c(), block, Ty::I64, pc)?;
             // Fast path: a **provably in-range** access (constant list of known
             // length indexed by a constant in `[0, len)`) is a clean scalar `at`.
@@ -2009,9 +2625,27 @@ fn lower_inst(
             // `a` = container register, `b` = index/key register, `c` = value register.
             // For a **list**, the store is bounds-checked in the runtime helper (aborts
             // on an out-of-range/negative index — the VM's fatal store error, a halt).
-            // For an **int-keyed map**, the store always inserts-or-updates. A non-I64
-            // index/key or an unsupported container rejects (falls back).
+            // For a **map**, the store always inserts-or-updates. An unsupported
+            // container/key/value combination rejects (falls back).
             let (handle, list_ty) = ssa.read(instr.a(), block, pc)?;
+            // String-keyed map stores take a `Str` key (dynamic template keys
+            // included); the map ABI copies the key.
+            if matches!(list_ty, Ty::MapStrI64 | Ty::MapStrF64) {
+                let key = ssa.read_typed(instr.b(), block, Ty::Str, pc)?;
+                let (cv, cty) = read_scalar(ssa, insts, instr.c(), block, pc)?;
+                let (set_fn, value) = match (list_ty, cty) {
+                    (Ty::MapStrI64, Ty::I64) => ("str_i64_set", cv),
+                    (Ty::MapStrF64, Ty::F64) => ("str_f64_set", cv),
+                    (Ty::MapStrF64, Ty::I64) => ("str_f64_set", coerce_to_f64(ssa, insts, cv, cty)),
+                    _ => return Err(Unsupported::TypeMismatch { pc }),
+                };
+                insts.push(Inst::Call {
+                    dst: None,
+                    callee: AbiRef::new("map_h", set_fn),
+                    args: vec![handle, key, value],
+                });
+                return Ok(());
+            }
             let index = read_typed_scalar(ssa, insts, instr.b(), block, Ty::I64, pc)?;
             match list_ty {
                 Ty::ListI64 => {
@@ -2277,12 +2911,54 @@ fn read_typed_scalar(
 fn to_display_str(
     ssa: &mut Ssa,
     insts: &mut Vec<Inst>,
+    globals: &mut Vec<String>,
     v: ValueId,
     ty: Ty,
     pc: usize,
 ) -> Result<(ValueId, bool), Unsupported> {
     match ty {
         Ty::Str => Ok((v, false)),
+        // A `Maybe` displays its value when present and `nil` when absent
+        // (matching the VM's display of a missing-key read). The value-side
+        // conversion runs unconditionally (its result is arena-owned and
+        // simply unused on the absent path), then a select picks the text.
+        Ty::MaybeI64 | Ty::MaybeF64 | Ty::MaybeStr => {
+            let raw = ssa.new_val();
+            insts.push(Inst::MaybeValue {
+                dst: raw,
+                src: v,
+                maybe_ty: ty,
+            });
+            let scalar_ty = match ty {
+                Ty::MaybeI64 => Ty::I64,
+                Ty::MaybeF64 => Ty::F64,
+                _ => Ty::Str,
+            };
+            let (value_str, _) = to_display_str(ssa, insts, globals, raw, scalar_ty, pc)?;
+            let present = ssa.new_val();
+            insts.push(Inst::MaybePresent {
+                dst: present,
+                src: v,
+                maybe_ty: ty,
+            });
+            let nil_gid = intern_global(globals, "nil");
+            let nil_str = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: nil_str,
+                value: Const::Str(GlobalId(nil_gid)),
+            });
+            let dst = ssa.new_val();
+            insts.push(Inst::Select {
+                dst,
+                cond: present,
+                then_v: value_str,
+                else_v: nil_str,
+                ty: Ty::Str,
+            });
+            // Not marked fresh: the value-side temporary stays arena-owned
+            // (freeing it eagerly would dangle when the select picked it).
+            Ok((dst, false))
+        }
         Ty::I64 => {
             let dst = ssa.new_val();
             insts.push(Inst::Call {
@@ -2364,7 +3040,7 @@ fn lower_builtin_call(
                 });
             } else {
                 let (mv, mty) = ssa.read(base.wrapping_add(2), block, pc)?;
-                let (msg, fresh) = to_display_str(ssa, insts, mv, mty, pc)?;
+                let (msg, fresh) = to_display_str(ssa, insts, globals, mv, mty, pc)?;
                 insts.push(Inst::Call {
                     dst: None,
                     callee: AbiRef::new("rt", "assert_msg"),
@@ -2384,6 +3060,82 @@ fn lower_builtin_call(
         value: Const::Nil,
     });
     ssa.write(base, block, (nil, Ty::Nil));
+    Ok(())
+}
+
+/// Lowers a `module.method(args)` call whose member [`module_call_abi`] maps to
+/// a typed lkrt ABI entry. Arity and argument types must match the schema
+/// exactly; the result (or nil) is written to the call-window base register.
+#[allow(clippy::too_many_arguments)]
+fn lower_module_call(
+    ssa: &mut Ssa,
+    insts: &mut Vec<Inst>,
+    module: &str,
+    name: &str,
+    base: u8,
+    argc: usize,
+    block: usize,
+    pc: usize,
+) -> Result<(), Unsupported> {
+    // `math.floor` dispatches on the argument's static type, matching the VM's
+    // `integer_round`: an `Int` passes through unchanged, a `Float` rounds via
+    // the lkrt helper (`floor() as i64`).
+    if module == "math" && name == "floor" {
+        if argc != 1 {
+            return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+        }
+        let (v, ty) = read_scalar(ssa, insts, base.wrapping_add(1), block, pc)?;
+        match ty {
+            Ty::I64 => ssa.write(base, block, (v, Ty::I64)),
+            Ty::F64 => {
+                let dst = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(dst),
+                    callee: AbiRef::new("math", "floor"),
+                    args: vec![v],
+                });
+                ssa.write(base, block, (dst, Ty::I64));
+            }
+            _ => return Err(Unsupported::TypeMismatch { pc }),
+        }
+        return Ok(());
+    }
+    let Some((callee, param_tys, ret_ty)) = module_call_abi(module, name) else {
+        return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+    };
+    if argc != param_tys.len() {
+        return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+    }
+    let mut args = Vec::with_capacity(argc);
+    for (i, want) in param_tys.iter().enumerate() {
+        let arg_reg = base.wrapping_add(1).wrapping_add(i as u8);
+        args.push(ssa.read_typed(arg_reg, block, *want, pc)?);
+    }
+    let dst = match ret_ty {
+        Ty::Nil => {
+            insts.push(Inst::Call {
+                dst: None,
+                callee,
+                args,
+            });
+            let nil = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: nil,
+                value: Const::Nil,
+            });
+            (nil, Ty::Nil)
+        }
+        _ => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee,
+                args,
+            });
+            (dst, ret_ty)
+        }
+    };
+    ssa.write(base, block, dst);
     Ok(())
 }
 
@@ -2510,7 +3262,7 @@ fn emit_print(
                     pieces.push((lit, false));
                     pending.clear();
                 }
-                pieces.push(to_display_str(ssa, insts, v, ty, pc)?);
+                pieces.push(to_display_str(ssa, insts, globals, v, ty, pc)?);
             }
         }
     }

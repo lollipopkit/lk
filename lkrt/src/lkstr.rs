@@ -26,6 +26,24 @@ pub(crate) fn arena_c_string(s: CString) -> *mut c_char {
 ///
 /// # Safety
 /// `a` and `b` must be valid NUL-terminated C strings, or null (treated as empty).
+/// `s.len()` with the VM's exact semantics: the number of Unicode scalar
+/// values (`chars().count()`), not bytes.
+///
+/// # Safety
+/// `s` must be null or a NUL-terminated string pointer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_str_char_len(s: *const std::ffi::c_char) -> i64 {
+    if s.is_null() {
+        return 0;
+    }
+    // SAFETY: non-null pointers are NUL-terminated per the ABI.
+    let text = unsafe { std::ffi::CStr::from_ptr(s) };
+    match text.to_str() {
+        Ok(text) => text.chars().count() as i64,
+        Err(_) => text.to_bytes().len() as i64,
+    }
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_str_cmp(a: *const c_char, b: *const c_char) -> i64 {
     // SAFETY: caller guarantees valid NUL-terminated strings (or null → empty).

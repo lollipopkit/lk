@@ -214,6 +214,50 @@ fn render_inst(out: &mut String, module: &MirModule, inst: &Inst) {
             let fmt = if *newline { "@lk_str_fmt" } else { "@lk_str_raw_fmt" };
             let _ = writeln!(out, "  call i32 (ptr, ...) @printf(ptr {fmt}, ptr {})", val(*value));
         }
+        Inst::Select {
+            dst,
+            cond,
+            then_v,
+            else_v,
+            ty,
+        } => {
+            let t = ty_str(*ty);
+            let _ = writeln!(
+                out,
+                "  {} = select i1 {}, {t} {}, {t} {}",
+                val(*dst),
+                val(*cond),
+                val(*then_v),
+                val(*else_v)
+            );
+        }
+        Inst::MaybeValue { dst, src, maybe_ty } => {
+            let carrier = ty_str(*maybe_ty);
+            let _ = writeln!(out, "  {} = extractvalue {carrier} {}, 0", val(*dst), val(*src));
+        }
+        Inst::MaybeWrap { dst, src, maybe_ty } => {
+            let n = dst.0;
+            let carrier = ty_str(*maybe_ty);
+            let value_ty = match maybe_ty {
+                Ty::MaybeF64 => "double",
+                Ty::MaybeStr => "ptr",
+                _ => "i64",
+            };
+            let _ = writeln!(
+                out,
+                "  %mw{n} = insertvalue {carrier} poison, {value_ty} {}, 0",
+                val(*src)
+            );
+            let _ = writeln!(out, "  {} = insertvalue {carrier} %mw{n}, i64 1, 1", val(*dst));
+        }
+        Inst::GlobalGet { dst, gvar } => {
+            let ty = gvar_ty(module, *gvar);
+            let _ = writeln!(out, "  {} = load {ty}, ptr @lk_gvar_{gvar}", val(*dst));
+        }
+        Inst::GlobalSet { gvar, src } => {
+            let ty = gvar_ty(module, *gvar);
+            let _ = writeln!(out, "  store {ty} {}, ptr @lk_gvar_{gvar}", val(*src));
+        }
         Inst::ListGetMaybe { dst, handle, index } => {
             let _ = writeln!(
                 out,
@@ -614,6 +658,14 @@ fn render_ret(out: &mut String, ret_ty: Ty, value: Option<ValueId>, is_entry: bo
     }
 }
 
+fn gvar_ty(module: &MirModule, gvar: u32) -> &'static str {
+    module
+        .mutable_globals
+        .get(gvar as usize)
+        .map(|(_, ty)| ty_str(*ty))
+        .unwrap_or("i64")
+}
+
 fn render_globals(out: &mut String, module: &MirModule) {
     for (i, g) in module.globals.iter().enumerate() {
         let bytes = g.len() + 1;
@@ -622,6 +674,15 @@ fn render_globals(out: &mut String, module: &MirModule) {
             out,
             "@lk_str_{i} = private unnamed_addr constant [{bytes} x i8] c\"{escaped}\\00\", align 1"
         );
+    }
+    for (i, (name, ty)) in module.mutable_globals.iter().enumerate() {
+        let zero = match ty {
+            Ty::F64 => "0.0",
+            Ty::Bool => "false",
+            Ty::Str => "null",
+            _ => "0",
+        };
+        let _ = writeln!(out, "@lk_gvar_{i} = internal global {} {zero} ; {name}", ty_str(*ty));
     }
 }
 
@@ -635,6 +696,7 @@ mod tests {
         MirModule {
             abi_version: lk_aot_abi::ABI_VERSION,
             globals: vec![],
+            mutable_globals: Vec::new(),
             entry: FuncId(0),
             functions: vec![MirFunction {
                 id: FuncId(0),
@@ -689,6 +751,7 @@ mod tests {
         let m = MirModule {
             abi_version: lk_aot_abi::ABI_VERSION,
             globals: vec![],
+            mutable_globals: Vec::new(),
             entry: FuncId(0),
             functions: vec![MirFunction {
                 id: FuncId(0),

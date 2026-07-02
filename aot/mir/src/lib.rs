@@ -240,6 +240,28 @@ pub enum Inst {
     /// the lowering display-converts and formats the arguments, so codegen only
     /// ever prints one finished string.
     PrintStr { value: ValueId, newline: bool },
+    /// `dst = extractvalue src, 0` — reads a `Maybe` carrier's raw value
+    /// **without** asserting presence (unlike [`Inst::UnwrapMaybeI64`]). Used
+    /// on phi edges that merge a `Maybe` with a plain scalar: on the absent
+    /// path the extracted value is never observed (the phi takes the other
+    /// edge), so no abort semantics are required.
+    MaybeValue { dst: ValueId, src: ValueId, maybe_ty: Ty },
+    /// `dst = {src, 1}` — wraps a plain scalar into a present `Maybe` carrier
+    /// (the dual of [`Inst::MaybeValue`] for mixed phi edges).
+    MaybeWrap { dst: ValueId, src: ValueId, maybe_ty: Ty },
+    /// `dst = select cond, then_v, else_v` over values of type `ty`.
+    Select {
+        dst: ValueId,
+        cond: ValueId,
+        then_v: ValueId,
+        else_v: ValueId,
+        ty: Ty,
+    },
+    /// `dst = load @lk_gvar_{gvar}` — reads a mutable module global (see
+    /// [`MirModule::mutable_globals`]).
+    GlobalGet { dst: ValueId, gvar: u32 },
+    /// `store src, @lk_gvar_{gvar}` — writes a mutable module global.
+    GlobalSet { gvar: u32, src: ValueId },
 }
 
 /// A resolved reference to an ABI function (its `(module, name)` identity).
@@ -312,6 +334,10 @@ pub struct MirModule {
     pub abi_version: i64,
     /// Interned string constants, addressed by [`GlobalId`].
     pub globals: Vec<String>,
+    /// Mutable module-level variables (top-level `let`s shared with functions),
+    /// addressed by index from [`Inst::GlobalGet`] / [`Inst::GlobalSet`]. The
+    /// name is diagnostic only; codegen emits one typed LLVM global per entry.
+    pub mutable_globals: Vec<(String, Ty)>,
     pub functions: Vec<MirFunction>,
     pub entry: FuncId,
 }
@@ -337,6 +363,8 @@ pub enum MirError {
     UnknownBlock { func: FuncId, block: BlockId },
     /// A `Call` names an ABI function absent from the schema.
     UnknownAbi { module: &'static str, name: &'static str },
+    /// A `GlobalGet`/`GlobalSet` names a mutable global outside the module table.
+    UnknownGlobal { func: FuncId, gvar: u32 },
     /// The module/function references a missing entry block/function.
     MissingEntry,
 }
@@ -390,6 +418,14 @@ pub fn validate(module: &MirModule) -> Result<(), MirError> {
                     return Err(MirError::UnknownAbi {
                         module: callee.module,
                         name: callee.name,
+                    });
+                }
+                if let Inst::GlobalGet { gvar, .. } | Inst::GlobalSet { gvar, .. } = inst
+                    && *gvar as usize >= module.mutable_globals.len()
+                {
+                    return Err(MirError::UnknownGlobal {
+                        func: func.id,
+                        gvar: *gvar,
                     });
                 }
                 if let Inst::CallFn { func: callee, .. } = inst
@@ -584,6 +620,21 @@ fn render_inst(inst: &Inst) -> String {
         Inst::PrintStr { value, newline } => {
             format!("print.str{} {}", if *newline { "ln" } else { "" }, v(*value))
         }
+        Inst::Select {
+            dst,
+            cond,
+            then_v,
+            else_v,
+            ..
+        } => format!("{} = select {}, {}, {}", v(*dst), v(*cond), v(*then_v), v(*else_v)),
+        Inst::MaybeValue { dst, src, maybe_ty } => {
+            format!("{} = maybe.value<{}> {}", v(*dst), ty_name(*maybe_ty), v(*src))
+        }
+        Inst::MaybeWrap { dst, src, maybe_ty } => {
+            format!("{} = maybe.wrap<{}> {}", v(*dst), ty_name(*maybe_ty), v(*src))
+        }
+        Inst::GlobalGet { dst, gvar } => format!("{} = gvar.get gvar{gvar}", v(*dst)),
+        Inst::GlobalSet { gvar, src } => format!("gvar.set gvar{gvar}, {}", v(*src)),
     }
 }
 
@@ -633,9 +684,13 @@ fn inst_def(inst: &Inst) -> Option<ValueId> {
         | Inst::MapGetMaybe { dst, .. }
         | Inst::MapGetMaybeI64Key { dst, .. }
         | Inst::MapGetMaybeStrF64 { dst, .. }
-        | Inst::MapGetMaybeI64F64 { dst, .. } => Some(*dst),
+        | Inst::MapGetMaybeI64F64 { dst, .. }
+        | Inst::MaybeValue { dst, .. }
+        | Inst::MaybeWrap { dst, .. }
+        | Inst::Select { dst, .. }
+        | Inst::GlobalGet { dst, .. } => Some(*dst),
         Inst::Call { dst, .. } | Inst::CallFn { dst, .. } => *dst,
-        Inst::PrintStr { .. } => None,
+        Inst::PrintStr { .. } | Inst::GlobalSet { .. } => None,
     }
 }
 
@@ -654,7 +709,9 @@ fn inst_uses(inst: &Inst) -> Vec<ValueId> {
         | Inst::MaybePresent { src, .. }
         | Inst::UnwrapMaybeI64 { src, .. }
         | Inst::UnwrapMaybeF64 { src, .. }
-        | Inst::UnwrapMaybeStr { src, .. } => {
+        | Inst::UnwrapMaybeStr { src, .. }
+        | Inst::MaybeValue { src, .. }
+        | Inst::MaybeWrap { src, .. } => {
             vec![*src]
         }
         Inst::ListGetMaybe { handle, index, .. }
@@ -670,6 +727,11 @@ fn inst_uses(inst: &Inst) -> Vec<ValueId> {
         }
         Inst::Call { args, .. } | Inst::CallFn { args, .. } => args.clone(),
         Inst::PrintStr { value, .. } => vec![*value],
+        Inst::Select {
+            cond, then_v, else_v, ..
+        } => vec![*cond, *then_v, *else_v],
+        Inst::GlobalGet { .. } => vec![],
+        Inst::GlobalSet { src, .. } => vec![*src],
     }
 }
 
@@ -710,6 +772,7 @@ mod tests {
         MirModule {
             abi_version: lk_aot_abi::ABI_VERSION,
             globals: vec![],
+            mutable_globals: Vec::new(),
             entry: FuncId(0),
             functions: vec![MirFunction {
                 id: FuncId(0),

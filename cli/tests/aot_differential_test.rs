@@ -1,8 +1,8 @@
 //! Differential harness (docs/llvm/aot-redesign.md §6): every case is compiled
 //! natively through the MIR pipeline (the only backend) and executed, then run
 //! under the bytecode VM, and the observable behaviour (stdout + success/failure)
-//! must match exactly. Cases marked `Path::New` additionally assert the emitted
-//! IR came from the `lk-aot-lower` → `lk-aot-codegen` path.
+//! must match exactly, and the emitted IR must come from the
+//! `lk-aot-lower` → `lk-aot-codegen` path.
 #![cfg(feature = "llvm")]
 
 use std::ffi::OsStr;
@@ -37,36 +37,13 @@ where
     cmd
 }
 
-/// Which backend the MIR-gated compile is expected to use for this case.
-#[derive(Clone, Copy, PartialEq)]
-enum Path {
-    /// Must lower through the new MIR pipeline (asserted on the emitted IR).
-    New,
-    /// Either backend is acceptable; only behavioural equality is checked.
-    Any,
-}
-
 struct Case {
     name: &'static str,
     source: &'static str,
-    path: Path,
 }
 
 const fn new(name: &'static str, source: &'static str) -> Case {
-    Case {
-        name,
-        source,
-        path: Path::New,
-    }
-}
-
-#[allow(dead_code)]
-const fn any(name: &'static str, source: &'static str) -> Case {
-    Case {
-        name,
-        source,
-        path: Path::Any,
-    }
+    Case { name, source }
 }
 
 /// Compile `case` natively with the MIR gate enabled, run it, run the same
@@ -98,10 +75,11 @@ fn run_differential(area: &str, cases: &[Case]) {
             String::from_utf8_lossy(&llvm.stderr)
         );
         let ir = fs::read_to_string(dir.join(format!("{}.ll", case.name))).expect("read IR");
-        let took_new = ir.contains("; ModuleID = 'lk_aot'");
-        if case.path == Path::New {
-            assert!(took_new, "[{area}/{}] expected MIR-pipeline IR", case.name);
-        }
+        assert!(
+            ir.contains("; ModuleID = 'lk_aot'"),
+            "[{area}/{}] expected MIR-pipeline IR",
+            case.name
+        );
 
         // Native build + run.
         let exe = run_cli(&dir, ["compile", &file])
@@ -342,6 +320,62 @@ fn differential_strings() {
             new(
                 "long_string_var",
                 "let s = \"a-fairly-long-string-literal\";\nreturn s + \"!\";\n",
+            ),
+        ],
+    );
+}
+
+#[test]
+fn differential_modules_and_globals() {
+    run_differential(
+        "modules",
+        &[
+            // Module builtins: only determinism-safe assertions go through
+            // stdout (clock/epoch values themselves are time-dependent).
+            new(
+                "os_clock_monotonic",
+                "use os;\nlet t0 = os.clock();\nlet t1 = os.clock();\nprintln(\"ok={}\", t1 >= t0);\nreturn 0;\n",
+            ),
+            new("os_epoch_positive", "use os;\nreturn os.epoch() > 0;\n"),
+            new(
+                "env_get_or_default",
+                "use env;\nlet v = env.get_or(\"LK_DIFF_NOT_SET_XYZ\", \"fallback\");\nprintln(\"{}\", v);\nreturn v == \"fallback\";\n",
+            ),
+            new(
+                "math_floor_float",
+                "use math;\nprintln(\"{} {} {}\", math.floor(7.9), math.floor(-7.1), math.floor(4));\nreturn 0;\n",
+            ),
+            new(
+                "mutable_global_scalar",
+                "let total = 0;\nlet scale = 2.5;\nfn read_total(x) { return total + x; }\ntotal = 40;\nprintln(\"{} {}\", read_total(2), scale * 2.0);\nreturn read_total(0);\n",
+            ),
+            new(
+                "mutable_global_str",
+                "use env;\nlet label = env.get_or(\"LK_DIFF_NOT_SET_XYZ\", \"tag\");\nfn show(n) { return \"${label}-${n}\"; }\nprintln(\"{}\", show(3));\nreturn 0;\n",
+            ),
+            new(
+                "for_range_incl_excl",
+                "let s = 0;\nfor i in 1..=10 { s = s + i; }\nlet t = 0;\nfor j in 0..4 { t = t + j; }\nprintln(\"{} {}\", s, t);\nreturn s + t;\n",
+            ),
+            new(
+                "for_range_empty",
+                "let s = 0;\nfor i in 5..5 { s = s + 1; }\nreturn s;\n",
+            ),
+            new(
+                "maybe_default_merge",
+                "let m = {\"a\": 1};\nlet k = \"a\";\nlet v = m[k + \"\"];\nif v == nil { v = 7; }\nlet w = m[k + \"x\"];\nif w == nil { w = 9; }\nprintln(\"{} {}\", v + 1, w + 1);\nreturn 0;\n",
+            ),
+            new(
+                "dyn_str_key_map",
+                "let counts = {};\nlet i = 0;\nwhile (i < 6) { let key = \"k\" + \"${i % 2}\";\n let prev = counts[key];\n if prev == nil { counts[key] = 1; } else { counts[key] = prev + 1; }\n i = i + 1; }\nprintln(\"{} {}\", counts[\"k0\"], counts[\"k1\"]);\nreturn counts.len();\n",
+            ),
+            new(
+                "str_list_push_join",
+                "let parts = [];\nlet i = 0;\nwhile (i < 3) { parts.push(\"p${i}\"); i = i + 1; }\nreturn parts.join(\",\");\n",
+            ),
+            new(
+                "str_char_len",
+                "let s = \"hello\" + \" world\";\nprintln(\"{}\", s.len());\nreturn 0;\n",
             ),
         ],
     );

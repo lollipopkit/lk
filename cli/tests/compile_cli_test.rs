@@ -450,7 +450,7 @@ fn test_compile_writes_module_artifact_output() {
     );
     let module = fs::read_to_string(dir.join("a.lkm")).expect("read module output");
     assert!(
-        module.contains("\"format\": \"lk.module\"") && module.contains("\"code\""),
+        module.contains("\"format\":\"lk.module\"") && module.contains("\"code\""),
         "expected module artifact, got: {module}"
     );
     let run = run_cli(&dir, ["a.lkm"]).output().expect("spawn module run");
@@ -1372,7 +1372,7 @@ fn test_compile_struct_constructs_to_module_artifact() {
     );
     let module = fs::read_to_string(dir.join("mod.lkm")).expect("read module output");
     assert!(
-        module.contains("\"format\": \"lk.module\""),
+        module.contains("\"format\":\"lk.module\""),
         "expected module artifact, got: {module}"
     );
 }

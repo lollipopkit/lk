@@ -17,7 +17,10 @@ use super::{
 // Facts are semantically required by the executor (`ForLoopI`, `GetIndexStrI` /
 // `SetIndexStrI`, compare-test branch targets), so version-3 artifacts containing
 // those opcodes hung or failed at runtime and are rejected instead of half-working.
-pub const MODULE_ARTIFACT_VERSION: u32 = 4;
+// Version 5: the per-pc fact tables use a sparse `(len, [(index, value)])`
+// encoding and the JSON is compact (a size fix — dense null tables made even
+// tiny artifacts kilobytes large).
+pub const MODULE_ARTIFACT_VERSION: u32 = 5;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ModuleArtifact {
@@ -41,7 +44,7 @@ impl ModuleArtifact {
     }
 
     pub fn to_json_string(&self) -> Result<String> {
-        serde_json::to_string_pretty(self).map_err(Into::into)
+        serde_json::to_string(self).map_err(Into::into)
     }
 
     pub fn from_json_str(input: &str) -> Result<Self> {
@@ -392,7 +395,7 @@ mod tests {
 
     #[test]
     fn module_artifact_rejects_previous_version() {
-        assert_eq!(MODULE_ARTIFACT_VERSION, 4);
+        assert_eq!(MODULE_ARTIFACT_VERSION, 5);
         let source = "return 1;\n";
         let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
         let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
@@ -401,8 +404,8 @@ mod tests {
         artifact.version = MODULE_ARTIFACT_VERSION - 1;
 
         let json = artifact.to_json_string().expect("json");
-        let err = ModuleArtifact::from_json_str(&json).expect_err("version 3 artifact should be rejected");
-        assert!(err.to_string().contains("unsupported LK module artifact version 3"));
+        let err = ModuleArtifact::from_json_str(&json).expect_err("version 4 artifact should be rejected");
+        assert!(err.to_string().contains("unsupported LK module artifact version 4"));
     }
 
     #[test]

@@ -105,6 +105,9 @@ macro_rules! for_each_abi_fn {
             ("process", "cwd", lkrt_process_cwd, ReadsHost, [], StrPtr);
             ("os", "clock", lkrt_os_clock, ReadsHost, [], F64);
             ("os", "epoch", lkrt_os_epoch, ReadsHost, [], I64);
+            // `math.floor(Float) -> Int` with the VM's exact rounding (`floor()
+            // as i64`, saturating); an `Int` argument short-circuits in the lowering.
+            ("math", "floor", lkrt_math_floor, Pure, [F64], I64);
             ("time", "now", lkrt_time_now_ms, ReadsHost, [], I64);
             ("time", "sleep", lkrt_time_sleep_ms, WritesHost, [I64], Nil);
             // Growable `List<i64>` handles (Phase 2 container handle-ification). `new`
@@ -153,6 +156,7 @@ macro_rules! for_each_abi_fn {
             ("str", "cmp", lkrt_str_cmp, Pure, [StrPtr, StrPtr], I64);
             // `a ++ b` → a freshly allocated C string (`WritesHost`: allocates/leaks).
             ("str", "concat", lkrt_str_concat, WritesHost, [StrPtr, StrPtr], StrPtr);
+            ("str", "char_len", lkrt_str_char_len, Pure, [StrPtr], I64);
             // Scalar → display string (the VM's `ToString`), allocating/leaking a C string.
             ("str", "from_i64", lkrt_i64_to_str, WritesHost, [I64], StrPtr);
             ("str", "from_f64", lkrt_f64_to_str, WritesHost, [F64], StrPtr);

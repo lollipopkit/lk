@@ -938,7 +938,7 @@ fn compile_executable_to_path_with_dependencies(
     let compiled = compile_instr_artifact_with_dependencies(path)?;
     let llvm = lk_llvm::compile_module_artifact_to_llvm(&compiled.artifact, options)
         .with_context(|| format!("compile native executable LLVM IR for {}", path.display()))?;
-    lk_llvm::compile_native_executable_from_llvm(path, &output, &llvm.module.ir)?;
+    lk_llvm::compile_native_executable_from_llvm(path, &output, &llvm.module.ir, llvm.opt_level.as_flag())?;
     Ok(compiled.proc_macro_dependencies)
 }
 
