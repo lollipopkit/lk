@@ -320,6 +320,11 @@ pub struct Executor {
     pc: usize,
     collect_metrics: bool,
     gc_pending: bool,
+    /// `LK_GC_STRESS=1` forces a full collection at every GC safepoint instead
+    /// of waiting for the heap threshold. Root-enumeration gaps then surface
+    /// deterministically as use-after-collect failures in any test run instead
+    /// of as rare allocation-timing-dependent corruption.
+    gc_stress: bool,
     shared_module: Option<Arc<Module>>,
     instruction_budget: Option<u64>,
     instruction_count: u64,
@@ -338,6 +343,7 @@ impl Executor {
             pc: 0,
             collect_metrics: false,
             gc_pending: false,
+            gc_stress: gc_stress_enabled(),
             shared_module: None,
             instruction_budget: None,
             instruction_count: 0,
@@ -1639,6 +1645,10 @@ impl Executor {
         let register = u8::try_from(index).map_err(|_| anyhow!("function arg index {} exceeds u8", index))?;
         self.write(register, value)
     }
+}
+
+fn gc_stress_enabled() -> bool {
+    std::env::var_os("LK_GC_STRESS").is_some_and(|value| value != "0")
 }
 
 pub fn execute(function: &Function) -> Result<ExecResult> {

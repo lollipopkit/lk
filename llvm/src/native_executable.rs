@@ -12,6 +12,15 @@ pub fn compile_native_executable_from_llvm(path: &Path, output: &Path, ir: &str)
     let clang = clang_command();
     let mut command = Command::new(&clang);
     command.arg(&source_path).arg("-o").arg(output);
+    // `LK_NATIVE_SANITIZE=address,undefined` forwards `-fsanitize=` so the
+    // differential corpora can run native binaries under ASan/UBSan; the
+    // handwritten runtime helpers and generated IR are otherwise only
+    // exercised without sanitizers.
+    if let Some(sanitizers) = std::env::var_os("LK_NATIVE_SANITIZE")
+        && !sanitizers.is_empty()
+    {
+        command.arg(format!("-fsanitize={}", sanitizers.to_string_lossy()));
+    }
     if let Some(staticlib) = lkrt_staticlib_path() {
         add_force_load_staticlib(&mut command, &staticlib);
     }

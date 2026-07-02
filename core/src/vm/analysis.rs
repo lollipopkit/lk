@@ -2,12 +2,20 @@ use std::sync::Arc;
 #[cfg(all(not(test), feature = "vm-profile"))]
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+use serde::{Deserialize, Serialize};
+
 use crate::val::{LiteralVal, Type};
 use crate::vm::alloc::RegionPlan;
 use crate::vm::ssa::SsaFunction;
 
 /// Classification of how a value escapes during execution.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+///
+/// Serde note: `PerformanceFacts` and every fact type reachable from it are
+/// serialized into `ModuleArtifact` because some facts are semantically
+/// required by the executor (`ForLoopI`, `GetIndexStrI`/`SetIndexStrI`,
+/// compare-test branch targets). Deserialized facts are untrusted input and
+/// are validated by `vm::verify` before execution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum EscapeClass {
     /// Value is compile-time constant or otherwise trivially confined.
     #[default]
@@ -49,7 +57,7 @@ impl EscapeSummary {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum PerfValueKind {
     #[default]
     Unknown,
@@ -95,14 +103,14 @@ impl PerfValueKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct PerfContainerFact {
     pub value_kind: PerfValueKind,
     pub known_len: Option<usize>,
     pub adoptable: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PerfValueFact {
     pub kind: PerfValueKind,
     pub escape: EscapeClass,
@@ -121,7 +129,7 @@ impl Default for PerfValueFact {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct PerfRegisterFact {
     pub value: PerfValueFact,
     pub list: Option<PerfContainerFact>,
@@ -130,7 +138,7 @@ pub struct PerfRegisterFact {
     pub live_after: bool,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PerformanceFacts {
     pub values: Vec<PerfValueFact>,
     pub value_lists: Vec<Option<PerfContainerFact>>,
@@ -151,30 +159,30 @@ pub struct PerformanceFacts {
     pub control_flow: PerfControlFlowFacts,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct PerfLocalCopyFact {
     pub move_source: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct PerfKeyFact {
     pub const_key: Option<u16>,
     pub string_int: Option<PerfStringIntKeyFact>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct PerfStringIntKeyFact {
     pub prefix_key: u16,
     pub suffix_reg: u16,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct PerfIndexFact {
     pub target_kind: PerfIndexTargetKind,
     pub value_kind: PerfValueKind,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum PerfIndexTargetKind {
     #[default]
     Unknown,
@@ -184,7 +192,7 @@ pub enum PerfIndexTargetKind {
     String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct PerfCallFact {
     pub call_base: u16,
     pub positional_count: u16,
@@ -192,7 +200,7 @@ pub struct PerfCallFact {
     pub target_kind: PerfCallTargetKind,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum PerfCallTargetKind {
     #[default]
     Unknown,
@@ -201,42 +209,42 @@ pub enum PerfCallTargetKind {
     Runtime,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct PerfGlobalFact {
     pub slot: u16,
     pub move_source: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct PerfRegisterCopyFact {
     pub move_source: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct PerfContainerMoveFact {
     pub move_key: bool,
     pub move_value: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct PerfContainerBuildFact {
     pub move_keys: bool,
     pub move_values: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct PerfCellMoveFact {
     pub move_value: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct PerfForLoopFact {
     pub jump_offset: i32,
     pub inclusive: bool,
     pub positive_step: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct PerfFusedBoolBranchFact {
     pub result_reg: u8,
     pub jump_when: bool,
@@ -245,12 +253,12 @@ pub struct PerfFusedBoolBranchFact {
     pub fallthrough_pc_delta: usize,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct PerfCompareTestBranchFact {
     pub target_pc: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct PerfControlFlowFacts {
     pub block_ids: Vec<u32>,
     pub branch_targets: Vec<bool>,

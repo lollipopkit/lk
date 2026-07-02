@@ -1,8 +1,75 @@
 # 实现进度
 
-**当前**:`docs/llvm/aot-redesign.md`(AOT 后端重设计)**已完成**——核心设计 §2-§6 全部
-落地,MIR 管线为默认后端(workspace 1684 测试全绿)。下方"容器下沉"是更早沿旧结构完成
-的工作(`aot-gaps-and-lkrt.md`)。
+**当前**:正确性优先加固轮(plan.md)**已完成**,workspace **1701 测试全绿**。
+此前:`docs/llvm/aot-redesign.md` 全部落地,MIR 管线为默认后端。
+
+## 正确性优先加固轮(本轮,plan.md)
+
+按 plan.md 九步全部落地。两个真实 bug + 一处测试 UB:
+
+- **`.lkm` facts 丢失(严重,差分思路当场抓出)**:`FunctionData.performance`
+  是 `#[serde(skip)]` → `.lkm` 加载后 facts 为空。实测:`for i in 0..10` 的
+  `.lkm` 运行报 `ForLoopI missing performance fact`;`while (a < b)` 的 `.lkm`
+  **死循环**(compare-test 无 fact 时 fallback 把下一条指令按 Jmp 解码)。
+  `GetIndexStrI`/`SetIndexStrI` 同样硬依赖 fact。修复:`analysis.rs` 全部
+  Perf* 类型加 serde derive,`performance` 改 `#[serde(default)]` 序列化,
+  `MODULE_ARTIFACT_VERSION` 3→4(旧 artifact 本就半坏,拒绝优于半工作)。
+  回归:`module_artifact_round_trips_performance_facts`(编译→JSON→加载→执行=45)。
+- **lkrt 测试 UB(Miri 抓出)**:`host.rs` fs 测试用 `&CStr::as_ptr().cast_mut()`
+  喂 `CString::from_raw`——SharedReadOnly provenance 不能 Unique 回收。改存
+  原始 owned 指针。lkrt 37 测试 Miri 全绿(`-Zmiri-disable-isolation
+  -Zmiri-ignore-leaks`;ignore-leaks 因 arena 设计:句柄由 exit 前
+  `lkrt_cleanup` 统一释放,单测共享全局 arena 不能各自 cleanup)。
+- **bytecode verifier**(`core/src/vm/verify.rs`,新):`.lkm` 是不可信输入,
+  而执行器热路径 `stack_index_unchecked`/`relative_pc_unchecked` 在 release
+  下无检查 → 损坏 artifact 可静默跨帧读写/跳出函数。加载期逐指令验证:
+  寄存器 < register_count、寄存器窗口(call/容器构造/Return/ConcatN)、跳转
+  目标 ∈ [0, len]、常量池/函数/native/global/capture 索引;facts 验证:
+  for_loop/compare_test/fused_bool 目标、call_base 窗口、global slot、key
+  fact 常量索引;`ForLoopI` 必须有 fact,compare-test 无 fact 时 pc+1 必须是
+  Jmp。`into_module()` 无条件跑;`compile_module` 在 `debug_assertions` 下
+  自验(整个测试套变成 verifier 的防误杀语料)。13 个单测。
+  - 操作数语义逐 opcode 对照执行器核实(exec.rs 主循环 + dispatch/const_load/
+    callable_ops/cell/handler/container/support)。关键点:Call/CallDirect/
+    CallNamed 的 A=窗口基址(B 只有 7 位会截断)、CallNamed bx=pos(7b)|named、
+    MakeClosure 的捕获窗口大小取 callee.capture_count、GetFieldK/SetFieldK 的
+    C 是字符串常量索引、branch_i4 的 12 位偏移。
+- **MIR validate() 进生产路径**:`backend.rs` 在 lower 成功后、render 前无条件
+  `lk_aot_mir::validate()`(此前只在 codegen 测试里跑,"renders a validated
+  module" 前置条件生产路径无人保证)。llvm crate 新增 `lk-aot-mir` 依赖。
+- **legacy fallback 改 opt-in**:`allow_legacy_fallback: Option<bool>`(env
+  `LK_AOT_LEGACY`),默认关——MIR 拒绝直接报错(带 Unsupported reason +
+  opt-in 提示);`use_mir_pipeline=Some(false)` 仍是显式直选 legacy。
+  **~200 个 llvm 测试原来靠静默 fallback 存活**(251 中 199 失败),批量改为
+  `legacy_fallback_options()` 显式 opt-in(tests.rs helper,与 legacy 同退役);
+  CLI 3 个 legacy-only 形状测试(const list/map、long string)加
+  `LK_AOT_LEGACY=1`。错误信息保持 "LLVM native lowering does not support" 前缀。
+- **GC stress**:`LK_GC_STRESS=1` 时 `collect_pending_garbage` 每安全点强制
+  collect(不在分配点——新句柄未入根)。core/stdlib/cli 全测 + 复杂 examples
+  stress 下全绿。
+- **examples/ 差分**(`cli/tests/examples_differential_test.rs`):整树拷贝到
+  temp(相对 import 可用),逐 .lk:MIR 编译→VM vs native 比对;不可 lower
+  记录 reason 快照。当前 2/44 可 lower(fib、numeric_auto_promotion),42 个
+  卡 GetGlobal(println/assert 也是 global!)/LoadHeapConst/MakeClosure/
+  NewObject/IsNil/NewRange。地板断言 ≥2 防退化。
+- **生成式差分 fuzz**(`cli/tests/aot_fuzz_differential_test.rs`):splitmix64
+  种子化生成器,限定 MIR 子集(标量、计数 while、直接调用、List<i64>、const
+  key map、模板串插值)。观察面=把全部活变量插进 `return "${v0}|${acc2}"`
+  模板(println 会引入 GetGlobal 不可 lower,仅留 8% 概率作 Unsupported 探针)。
+  VM 必须接受生成程序;AOT 拒绝必须是 graceful Unsupported(lower totality,
+  stderr 含 panic 即 fail)。默认 40 例(30 可比较),`LK_FUZZ_CASES`/`LK_FUZZ_SEED`
+  放大:400+200 例两种子全部干净。
+  - 生成器踩坑:LK `/` 是 Int/Int→Float(整数表达式只用 %);`if (expr) != x`
+    会把首个括号组当条件(if 条件必须整体加括号)。已记入 docs/semantics.md。
+- **sanitizer**:`native_executable.rs` 支持 `LK_NATIVE_SANITIZE` 透传
+  `-fsanitize=`;native cache key 加入该变量与 `LK_AOT_LEGACY`(缓存正确性),
+  并注释 import-content-not-in-key 地雷。全部差分语料 ASan/UBSan 零报告
+  (arena cleanup 无泄漏顺带被 LSan 验证)。Makefile:`miri-lkrt`、
+  `sanitized-differential`、`gc-stress`。
+- **docs/semantics.md**(新):golden vectors 第三仲裁(div/0、缺失键算术、
+  nil 静默返回、float 显示、`/`→Float、负索引、退出语义 VM exit-1 vs native
+  abort-134 等),含维护约定:分歧先查表,裁决后加条目+差分用例。
+- **backend.md** 顶部两层架构章节更新(validate 强制 + fallback opt-in)。
 
 ## AOT 重设计收官轮(本轮)
 

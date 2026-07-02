@@ -19,7 +19,10 @@ impl Executor {
     #[cold]
     #[inline]
     pub(super) fn collect_pending_garbage(&mut self) {
-        if self.gc_pending {
+        // Stress mode collects at every safepoint (not at allocation sites —
+        // fresh handles are only rooted once the handler writes them to a
+        // register), so a missed root fails deterministically in any test run.
+        if self.gc_pending || self.gc_stress {
             let roots = self.root_refs();
             self.state.heap.collect(roots);
             self.gc_pending = false;

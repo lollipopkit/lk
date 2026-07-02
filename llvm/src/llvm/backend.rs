@@ -64,12 +64,16 @@ pub fn compile_module_artifact_to_llvm(
     options: LlvmBackendOptions,
 ) -> Result<LlvmModuleArtifact> {
     // Strangler path (`docs/llvm/aot-redesign.md`): shapes the typed MIR lowering
-    // accepts compile through `lk-aot-lower` → `lk-aot-codegen`; anything it
-    // rejects falls through to the legacy text backend. **Default on** — the MIR
-    // pipeline is the primary backend; `LK_AOT_MIR=0` (or
-    // `options.use_mir_pipeline = Some(false)`) opts a compile back onto the
-    // legacy path (used by tests that assert legacy-backend IR structure, which
-    // retire together with the legacy backend).
+    // accepts compile through `lk-aot-lower` → `lk-aot-codegen`. **Default on** —
+    // the MIR pipeline is the primary backend; `LK_AOT_MIR=0` (or
+    // `options.use_mir_pipeline = Some(false)`) pins a compile onto the legacy
+    // path explicitly (used by tests that assert legacy-backend IR structure,
+    // which retire together with the legacy backend).
+    //
+    // Shapes the MIR pipeline *rejects* fail the compile by default instead of
+    // silently falling back to the legacy text backend: legacy is the
+    // less-tested semantic surface, so the fallback requires explicit opt-in
+    // (`LK_AOT_LEGACY=1` or `options.allow_legacy_fallback = Some(true)`).
     let use_mir = options
         .use_mir_pipeline
         .unwrap_or_else(|| std::env::var_os("LK_AOT_MIR").is_none_or(|v| v != "0"));
@@ -79,6 +83,12 @@ pub fn compile_module_artifact_to_llvm(
         None
     };
     if let Some(Ok(mir)) = lowered {
+        // Correctness gate: codegen documents "renders a *validated* module", so
+        // enforce that precondition on the production path instead of only in
+        // tests. A failure here is a lowering bug, never a user error.
+        if let Err(error) = lk_aot_mir::validate(&mir) {
+            bail!("internal AOT error: MIR validation failed after lowering: {error:?}");
+        }
         let mut ir = lk_aot_codegen::render_module(&mir);
         if let Some(triple) = &options.target_triple {
             ir = ir.replacen(
@@ -96,6 +106,23 @@ pub fn compile_module_artifact_to_llvm(
             optimised_ir: None,
             opt_level: options.opt_level,
         });
+    }
+
+    let legacy_allowed = !use_mir
+        || options
+            .allow_legacy_fallback
+            .unwrap_or_else(|| std::env::var_os("LK_AOT_LEGACY").is_some_and(|v| v != "0"));
+    if !legacy_allowed {
+        bail!(
+            "LLVM native lowering does not support this ModuleArtifact shape yet (MIR lowering: {}). \
+             The legacy text backend fallback is disabled by default because its semantics \
+             are less thoroughly pinned; set LK_AOT_LEGACY=1 (or \
+             LlvmBackendOptions::allow_legacy_fallback = Some(true)) to opt in.",
+            match &lowered {
+                Some(Err(unsupported)) => unsupported.to_string(),
+                _ => "not attempted".to_string(),
+            }
+        );
     }
 
     if let Some(ir) = compile_native_scalar_main_artifact(artifact, &options)? {

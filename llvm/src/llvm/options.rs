@@ -45,12 +45,20 @@ pub struct LlvmBackendOptions {
     pub opt_level: OptLevel,
     /// Whether shapes accepted by the typed MIR pipeline
     /// (`lk-aot-lower` → `lk-aot-codegen`, `docs/llvm/aot-redesign.md`) compile
-    /// through it, falling back to the legacy text backend otherwise. `None`
-    /// resolves from the `LK_AOT_MIR` environment variable (default **on**;
-    /// `LK_AOT_MIR=0` opts out). Tests that assert legacy-backend IR structure
-    /// pin `Some(false)` to stay off the MIR path without racing on the
-    /// process-global environment.
+    /// through it. `None` resolves from the `LK_AOT_MIR` environment variable
+    /// (default **on**; `LK_AOT_MIR=0` opts out). Tests that assert
+    /// legacy-backend IR structure pin `Some(false)` to compile on the legacy
+    /// path explicitly, without racing on the process-global environment.
     pub use_mir_pipeline: Option<bool>,
+    /// Whether shapes the MIR pipeline rejects may fall back to the legacy
+    /// text backend. `None` resolves from the `LK_AOT_LEGACY` environment
+    /// variable and defaults to **off**: the legacy backend is the less-tested
+    /// semantic surface (it has produced real divergences from the VM, e.g.
+    /// `return nil;` display), so silently serving MIR rejects from it trades
+    /// correctness for coverage. Explicitly pinning
+    /// `use_mir_pipeline = Some(false)` bypasses this gate — that is a direct
+    /// request for the legacy backend, not a fallback.
+    pub allow_legacy_fallback: Option<bool>,
 }
 
 impl Default for LlvmBackendOptions {
@@ -61,6 +69,7 @@ impl Default for LlvmBackendOptions {
             run_optimizations: true,
             opt_level: OptLevel::default(),
             use_mir_pipeline: None,
+            allow_legacy_fallback: None,
         }
     }
 }

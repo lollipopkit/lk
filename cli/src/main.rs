@@ -565,6 +565,7 @@ fn main() -> anyhow::Result<()> {
                                 run_optimizations: !skip_opt,
                                 opt_level: opt_level_cli.into(),
                                 use_mir_pipeline: None,
+                                allow_legacy_fallback: None,
                             };
                             compile_llvm_ir(&safe, options)?;
                             return Ok(());
@@ -583,6 +584,7 @@ fn main() -> anyhow::Result<()> {
                                 run_optimizations: !skip_opt,
                                 opt_level: opt_level_cli.into(),
                                 use_mir_pipeline: None,
+                                allow_legacy_fallback: None,
                             };
                             compile_executable(&safe, output.as_deref(), options)?;
                             return Ok(());
@@ -1060,6 +1062,20 @@ fn cached_native_executable_path(path: &Path, source: &[u8]) -> anyhow::Result<O
     hash.bytes(source_path.to_string_lossy().as_bytes());
     hash.bytes(source);
     hash.bytes(env!("CARGO_PKG_VERSION").as_bytes());
+    // Build-affecting environment must be part of the key, or a cached binary
+    // built under different flags gets silently reused.
+    if let Some(sanitize) = std::env::var_os("LK_NATIVE_SANITIZE") {
+        hash.bytes(b"LK_NATIVE_SANITIZE=");
+        hash.bytes(sanitize.to_string_lossy().as_bytes());
+    }
+    if let Some(legacy) = std::env::var_os("LK_AOT_LEGACY") {
+        hash.bytes(b"LK_AOT_LEGACY=");
+        hash.bytes(legacy.to_string_lossy().as_bytes());
+    }
+    // NOTE: the key covers only this file's bytes. AOT lowering rejects
+    // imports today, so imported-module content cannot affect a cached
+    // native binary yet — when import lowering lands, imported file contents
+    // must join this hash or stale caches will run old dependency code.
     if let Some(exe) = exe.as_ref() {
         hash.bytes(exe.to_string_lossy().as_bytes());
         if let Ok(meta) = exe.metadata() {

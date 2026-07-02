@@ -73,3 +73,20 @@ install:
 	cargo install --path cli --force
 	cargo install --path lsp --force
 	$(MAKE) vsix INSTALL_VSIX=1
+
+# Correctness harnesses (see plan.md). Miri needs `rustup component add miri
+# --toolchain nightly`. Leaks are ignored because lkrt's arena ownership frees
+# strings/containers via lkrt_cleanup() at process exit, which unit tests
+# sharing the global arena must not call; Stacked Borrows UB checking stays on.
+miri-lkrt:
+	MIRIFLAGS="-Zmiri-disable-isolation -Zmiri-ignore-leaks" cargo +nightly miri test -p lkrt
+
+# Differential corpora with the native side compiled under ASan/UBSan.
+sanitized-differential:
+	LK_NATIVE_SANITIZE=address,undefined cargo test -p lk-cli --test aot_differential_test
+	LK_NATIVE_SANITIZE=address,undefined cargo test -p lk-cli --test examples_differential_test
+	LK_NATIVE_SANITIZE=address,undefined LK_FUZZ_CASES=120 cargo test -p lk-cli --test aot_fuzz_differential_test
+
+# Whole-suite GC stress: force a collection at every VM safepoint.
+gc-stress:
+	LK_GC_STRESS=1 cargo test -p lk-core -p lk-stdlib -p lk-cli

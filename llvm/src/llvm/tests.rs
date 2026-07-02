@@ -21,6 +21,41 @@ pub(crate) fn legacy_text_backend_options() -> LlvmBackendOptions {
     }
 }
 
+/// Options for tests that exercise shapes the MIR pipeline rejects and that are
+/// still served by the legacy text backend. The fallback is opt-in
+/// (default-off) on the production path because legacy is the less-tested
+/// semantic surface; these tests opt in explicitly to document the remaining
+/// legacy coverage, and they retire together with that backend. Shapes the MIR
+/// pipeline accepts still compile through MIR under these options.
+pub(crate) fn legacy_fallback_options() -> LlvmBackendOptions {
+    LlvmBackendOptions {
+        allow_legacy_fallback: Some(true),
+        ..LlvmBackendOptions::default()
+    }
+}
+
+#[test]
+fn llvm_backend_rejects_mir_unsupported_shape_unless_legacy_fallback_opted_in() {
+    // Long-string returns are a legacy-only shape today: the MIR pipeline
+    // rejects them, so without the fallback opt-in the compile must fail
+    // loudly instead of silently landing on the legacy backend.
+    let tokens = Tokenizer::tokenize("return \"longer-than-short\";\n").expect("tokens");
+    let program = StmtParser::new(&tokens).parse_program().expect("program");
+
+    let pinned_off = LlvmBackendOptions {
+        allow_legacy_fallback: Some(false),
+        ..LlvmBackendOptions::default()
+    };
+    let err = compile_program_to_llvm(&program, pinned_off).expect_err("fallback disabled must fail");
+    let message = err.to_string();
+    assert!(message.contains("MIR lowering:"), "{message}");
+    assert!(message.contains("LK_AOT_LEGACY"), "{message}");
+
+    let artifact =
+        compile_program_to_llvm(&program, legacy_fallback_options()).expect("fallback opt-in compiles via legacy");
+    assert!(artifact.module.ir.contains("longer-than-short"));
+}
+
 #[test]
 fn llvm_backend_allows_unused_import_metadata_for_native_shape() {
     let artifact = ModuleArtifact {
@@ -50,7 +85,7 @@ fn llvm_backend_allows_unused_import_metadata_for_native_shape() {
         },
     };
 
-    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm artifact");
+    let artifact = compile_module_artifact_to_llvm(&artifact, legacy_fallback_options()).expect("llvm artifact");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -68,7 +103,7 @@ fn llvm_backend_lowers_static_println_runtime_global_without_shell() {
         Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["println"]).expect("compile module");
     let artifact = ModuleArtifact::new(Vec::new(), &module).expect("artifact");
 
-    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm artifact");
+    let artifact = compile_module_artifact_to_llvm(&artifact, legacy_fallback_options()).expect("llvm artifact");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -108,7 +143,7 @@ fn llvm_backend_reports_imported_runtime_globals_as_unsupported_native_shape() {
         },
     };
 
-    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default())
+    let artifact = compile_module_artifact_to_llvm(&artifact, legacy_fallback_options())
         .expect("stdlib module catalog should make imported modules displayable");
 
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -159,7 +194,7 @@ fn llvm_backend_lowers_os_clock_and_epoch_without_shell() {
         },
     };
 
-    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm artifact");
+    let artifact = compile_module_artifact_to_llvm(&artifact, legacy_fallback_options()).expect("llvm artifact");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -232,7 +267,7 @@ fn llvm_backend_lowers_os_string_builtin_without_shell() {
         },
     };
 
-    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm artifact");
+    let artifact = compile_module_artifact_to_llvm(&artifact, legacy_fallback_options()).expect("llvm artifact");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -362,7 +397,7 @@ fn llvm_backend_lowers_source_if_i64_truthy_branch_without_shell() {
     let tokens = Tokenizer::tokenize(source).expect("tokens");
     let program = StmtParser::new(&tokens).parse_program().expect("program");
 
-    let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
+    let artifact = compile_program_to_llvm(&program, legacy_fallback_options()).expect("llvm artifact");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -382,7 +417,7 @@ fn llvm_backend_lowers_source_if_nil_falsy_branch_without_shell() {
     let tokens = Tokenizer::tokenize(source).expect("tokens");
     let program = StmtParser::new(&tokens).parse_program().expect("program");
 
-    let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
+    let artifact = compile_program_to_llvm(&program, legacy_fallback_options()).expect("llvm artifact");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -402,7 +437,7 @@ fn llvm_backend_lowers_source_if_static_string_truthy_branch_without_shell() {
     let tokens = Tokenizer::tokenize(source).expect("tokens");
     let program = StmtParser::new(&tokens).parse_program().expect("program");
 
-    let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
+    let artifact = compile_program_to_llvm(&program, legacy_fallback_options()).expect("llvm artifact");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -422,7 +457,7 @@ fn llvm_backend_lowers_source_if_static_list_truthy_branch_without_shell() {
     let tokens = Tokenizer::tokenize(source).expect("tokens");
     let program = StmtParser::new(&tokens).parse_program().expect("program");
 
-    let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
+    let artifact = compile_program_to_llvm(&program, legacy_fallback_options()).expect("llvm artifact");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -440,7 +475,7 @@ fn llvm_backend_lowers_source_static_nullish_coalescing_without_shell() {
     let tokens = Tokenizer::tokenize(source).expect("tokens");
     let program = StmtParser::new(&tokens).parse_program().expect("program");
 
-    let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
+    let artifact = compile_program_to_llvm(&program, legacy_fallback_options()).expect("llvm artifact");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -533,7 +568,7 @@ fn llvm_backend_lowers_static_function_return_display_without_artifact_shell() {
     let tokens = Tokenizer::tokenize("fn f() { return 1; }\nreturn f;").expect("tokens");
     let program = StmtParser::new(&tokens).parse_program().expect("program");
 
-    let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
+    let artifact = compile_program_to_llvm(&program, legacy_fallback_options()).expect("llvm artifact");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -571,7 +606,7 @@ fn llvm_backend_lowers_static_builtin_return_display_without_artifact_shell() {
         },
     };
 
-    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm artifact");
+    let artifact = compile_module_artifact_to_llvm(&artifact, legacy_fallback_options()).expect("llvm artifact");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -611,7 +646,7 @@ fn llvm_backend_lowers_static_module_builtin_return_display_without_artifact_she
         },
     };
 
-    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm artifact");
+    let artifact = compile_module_artifact_to_llvm(&artifact, legacy_fallback_options()).expect("llvm artifact");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -624,7 +659,7 @@ fn llvm_backend_lowers_simple_const_list_return_without_artifact_shell() {
     let tokens = Tokenizer::tokenize("return [1, true, \"longer-than-short\"];").expect("tokens");
     let program = StmtParser::new(&tokens).parse_program().expect("program");
 
-    let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
+    let artifact = compile_program_to_llvm(&program, legacy_fallback_options()).expect("llvm artifact");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -664,7 +699,7 @@ fn llvm_backend_lowers_static_const_list_is_list_without_artifact_shell() {
         },
     };
 
-    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm");
+    let artifact = compile_module_artifact_to_llvm(&artifact, legacy_fallback_options()).expect("llvm");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -703,7 +738,7 @@ fn llvm_backend_lowers_static_string_is_list_like_vm_without_artifact_shell() {
         },
     };
 
-    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm");
+    let artifact = compile_module_artifact_to_llvm(&artifact, legacy_fallback_options()).expect("llvm");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -856,7 +891,7 @@ fn llvm_backend_lowers_static_const_map_is_map_without_artifact_shell() {
         },
     };
 
-    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm");
+    let artifact = compile_module_artifact_to_llvm(&artifact, legacy_fallback_options()).expect("llvm");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -953,7 +988,7 @@ fn llvm_backend_lowers_static_const_map_get_index_without_artifact_shell() {
         },
     };
 
-    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm");
+    let artifact = compile_module_artifact_to_llvm(&artifact, legacy_fallback_options()).expect("llvm");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -1002,7 +1037,7 @@ fn llvm_backend_lowers_static_const_map_rest_without_artifact_shell() {
         },
     };
 
-    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm");
+    let artifact = compile_module_artifact_to_llvm(&artifact, legacy_fallback_options()).expect("llvm");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -1051,7 +1086,7 @@ fn llvm_backend_lowers_static_map_to_iter_without_artifact_shell() {
         },
     };
 
-    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm");
+    let artifact = compile_module_artifact_to_llvm(&artifact, legacy_fallback_options()).expect("llvm");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -1070,7 +1105,7 @@ fn llvm_backend_lowers_static_string_to_iter_without_artifact_shell() {
         .code
         .insert(1, Instr::abc(Opcode::ToIter, 0, 0, 0).raw());
 
-    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm");
+    let artifact = compile_module_artifact_to_llvm(&artifact, legacy_fallback_options()).expect("llvm");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -1096,7 +1131,7 @@ fn llvm_backend_lowers_source_const_list_equality_without_artifact_shell() {
     let tokens = Tokenizer::tokenize("return [[1, 2], [3, 4]] == [[1, 2], [3, 4]];").expect("tokens");
     let program = StmtParser::new(&tokens).parse_program().expect("program");
 
-    let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
+    let artifact = compile_program_to_llvm(&program, legacy_fallback_options()).expect("llvm artifact");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -1110,7 +1145,7 @@ fn llvm_backend_lowers_source_const_map_inequality_without_artifact_shell() {
         Tokenizer::tokenize(r#"return {"user": {"name": "Alice"}} != {"user": {"name": "Bob"}};"#).expect("tokens");
     let program = StmtParser::new(&tokens).parse_program().expect("program");
 
-    let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
+    let artifact = compile_program_to_llvm(&program, legacy_fallback_options()).expect("llvm artifact");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -1153,7 +1188,7 @@ fn llvm_backend_lowers_static_const_contains_without_artifact_shell() {
         },
     };
 
-    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm");
+    let artifact = compile_module_artifact_to_llvm(&artifact, legacy_fallback_options()).expect("llvm");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -1166,7 +1201,7 @@ fn llvm_backend_lowers_source_const_contains_without_artifact_shell() {
     let tokens = Tokenizer::tokenize("return 2 in [1, 2];").expect("tokens");
     let program = StmtParser::new(&tokens).parse_program().expect("program");
 
-    let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
+    let artifact = compile_program_to_llvm(&program, legacy_fallback_options()).expect("llvm artifact");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -1179,7 +1214,7 @@ fn llvm_backend_lowers_source_static_string_contains_without_artifact_shell() {
     let tokens = Tokenizer::tokenize(r#"return "bc" in "abcd";"#).expect("tokens");
     let program = StmtParser::new(&tokens).parse_program().expect("program");
 
-    let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
+    let artifact = compile_program_to_llvm(&program, legacy_fallback_options()).expect("llvm artifact");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -1192,7 +1227,7 @@ fn llvm_backend_lowers_source_const_map_contains_without_artifact_shell() {
     let tokens = Tokenizer::tokenize(r#"return "b" in {"a": 1, "b": 2};"#).expect("tokens");
     let program = StmtParser::new(&tokens).parse_program().expect("program");
 
-    let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
+    let artifact = compile_program_to_llvm(&program, legacy_fallback_options()).expect("llvm artifact");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -1232,7 +1267,7 @@ fn llvm_backend_lowers_static_string_slice_from_without_artifact_shell() {
         },
     };
 
-    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm");
+    let artifact = compile_module_artifact_to_llvm(&artifact, legacy_fallback_options()).expect("llvm");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -1273,7 +1308,7 @@ fn llvm_backend_lowers_static_new_list_without_artifact_shell() {
         },
     };
 
-    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm");
+    let artifact = compile_module_artifact_to_llvm(&artifact, legacy_fallback_options()).expect("llvm");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -1286,7 +1321,7 @@ fn llvm_backend_lowers_static_new_range_without_artifact_shell() {
     let tokens = Tokenizer::tokenize("return 5..=1..0 - 2;").expect("tokens");
     let program = StmtParser::new(&tokens).parse_program().expect("program");
 
-    let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
+    let artifact = compile_program_to_llvm(&program, legacy_fallback_options()).expect("llvm artifact");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -1352,7 +1387,7 @@ fn llvm_backend_lowers_direct_function_call_static_list_slice_from_without_shell
         },
     };
 
-    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm");
+    let artifact = compile_module_artifact_to_llvm(&artifact, legacy_fallback_options()).expect("llvm");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -1413,7 +1448,7 @@ fn llvm_backend_lowers_direct_function_call_static_new_list_without_shell() {
         },
     };
 
-    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm");
+    let artifact = compile_module_artifact_to_llvm(&artifact, legacy_fallback_options()).expect("llvm");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -1453,7 +1488,7 @@ fn llvm_backend_lowers_static_try_success_path_without_artifact_shell() {
         },
     };
 
-    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm");
+    let artifact = compile_module_artifact_to_llvm(&artifact, legacy_fallback_options()).expect("llvm");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -1492,7 +1527,7 @@ fn llvm_backend_lowers_static_raise_handler_path_without_artifact_shell() {
         },
     };
 
-    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm");
+    let artifact = compile_module_artifact_to_llvm(&artifact, legacy_fallback_options()).expect("llvm");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));

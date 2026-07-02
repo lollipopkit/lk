@@ -13,7 +13,11 @@ use super::{
     ConstHeapValue, ConstPool, ConstRuntimeValue, Function, GlobalSlot, Instr, Module, analysis::PerformanceFacts,
 };
 
-pub const MODULE_ARTIFACT_VERSION: u32 = 3;
+// Version 4: `FunctionData.performance` is serialized (previously `#[serde(skip)]`).
+// Facts are semantically required by the executor (`ForLoopI`, `GetIndexStrI` /
+// `SetIndexStrI`, compare-test branch targets), so version-3 artifacts containing
+// those opcodes hung or failed at runtime and are rejected instead of half-working.
+pub const MODULE_ARTIFACT_VERSION: u32 = 4;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ModuleArtifact {
@@ -48,7 +52,14 @@ impl ModuleArtifact {
 
     pub fn into_module(self) -> Result<Module> {
         self.validate()?;
-        self.module.into_module()
+        let module = self.module.into_module()?;
+        // Artifacts are untrusted external input. Instruction words are already
+        // opcode-validated by `Instr::try_from_raw`, but register indices, jump
+        // targets, const-pool/function/global indices, and deserialized
+        // performance facts must also be proven in-bounds before the executor's
+        // release-mode unchecked paths run over them.
+        super::verify::verify_module(&module)?;
+        Ok(module)
     }
 
     fn validate(&self) -> Result<()> {
@@ -123,7 +134,7 @@ impl ModuleData {
 pub struct FunctionData {
     pub consts: ConstPoolData,
     pub code: Vec<u32>,
-    #[serde(skip)]
+    #[serde(default)]
     pub performance: PerformanceFacts,
     pub register_count: u16,
     pub param_count: u16,
@@ -381,7 +392,7 @@ mod tests {
 
     #[test]
     fn module_artifact_rejects_previous_version() {
-        assert_eq!(MODULE_ARTIFACT_VERSION, 3);
+        assert_eq!(MODULE_ARTIFACT_VERSION, 4);
         let source = "return 1;\n";
         let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
         let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
@@ -390,7 +401,40 @@ mod tests {
         artifact.version = MODULE_ARTIFACT_VERSION - 1;
 
         let json = artifact.to_json_string().expect("json");
-        let err = ModuleArtifact::from_json_str(&json).expect_err("version 2 artifact should be rejected");
-        assert!(err.to_string().contains("unsupported LK module artifact version 2"));
+        let err = ModuleArtifact::from_json_str(&json).expect_err("version 3 artifact should be rejected");
+        assert!(err.to_string().contains("unsupported LK module artifact version 3"));
+    }
+
+    #[test]
+    fn module_artifact_round_trips_performance_facts() {
+        // For-loop facts are semantically required by `ForLoopI`; a facts-less
+        // round trip previously made compiled `.lkm` for-loops fail at runtime.
+        let source = "let total = 0;\nfor i in 0..10 {\n    total += i;\n}\nreturn total;\n";
+        let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
+        let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
+        let module = Compiler::compile_module(&program).expect("compile");
+        let has_for_loop_fact = |module: &Module| {
+            module
+                .functions
+                .iter()
+                .any(|function| function.performance.for_loops.iter().any(Option::is_some))
+        };
+        assert!(has_for_loop_fact(&module), "probe program should compile to ForLoopI");
+
+        let artifact = ModuleArtifact::new(Vec::new(), &module).expect("artifact");
+        let json = artifact.to_json_string().expect("json");
+        let decoded = ModuleArtifact::from_json_str(&json).expect("decode");
+        let decoded_module = decoded.into_module().expect("module");
+
+        assert!(
+            has_for_loop_fact(&decoded_module),
+            "performance facts must survive the artifact round trip"
+        );
+        let result = crate::vm::execute_module(&decoded_module).expect("decoded module runs");
+        assert_eq!(
+            result.returns.first(),
+            Some(&crate::val::RuntimeVal::Int(45)),
+            "decoded module must execute the for loop correctly"
+        );
     }
 }

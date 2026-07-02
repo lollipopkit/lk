@@ -99,6 +99,13 @@ impl Compiler {
             }
         }
 
+        // The load-time bytecode verifier (`vm::verify`) must accept every
+        // module this compiler emits; running it here in debug builds turns the
+        // whole test suite into a guard against both compiler-invariant
+        // regressions and verifier false rejections.
+        #[cfg(debug_assertions)]
+        super::super::verify::verify_module(&module)?;
+
         Ok(module)
     }
 

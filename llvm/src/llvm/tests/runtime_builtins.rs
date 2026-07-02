@@ -22,7 +22,7 @@ fn llvm_backend_lowers_assert_runtime_globals_without_artifact_shell() {
             .expect("compile module");
     let artifact = ModuleArtifact::new(Vec::new(), &module).expect("artifact");
 
-    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm artifact");
+    let artifact = compile_module_artifact_to_llvm(&artifact, super::legacy_fallback_options()).expect("llvm artifact");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -53,7 +53,7 @@ fn llvm_backend_lowers_tcp_and_bytes_runtime_builtins_to_lkrt() {
     let module = compile_program_module_with_ctx(&program, &mut ctx).expect("compile module");
     let artifact = ModuleArtifact::new(collect_program_imports(&program), &module).expect("artifact");
 
-    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm artifact");
+    let artifact = compile_module_artifact_to_llvm(&artifact, super::legacy_fallback_options()).expect("llvm artifact");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -94,7 +94,7 @@ fn llvm_backend_lowers_host_fs_and_env_runtime_builtins_to_lkrt() {
     let module = compile_program_module_with_ctx(&program, &mut ctx).expect("compile module");
     let artifact = ModuleArtifact::new(collect_program_imports(&program), &module).expect("artifact");
 
-    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm artifact");
+    let artifact = compile_module_artifact_to_llvm(&artifact, super::legacy_fallback_options()).expect("llvm artifact");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(artifact.module.ir.contains("declare void @lkrt_cleanup()"));
@@ -124,7 +124,7 @@ fn llvm_backend_static_socket_addr_matches_lkrt_ipv6_format() {
     let module = compile_program_module_with_ctx(&program, &mut ctx).expect("compile module");
     let artifact = ModuleArtifact::new(collect_program_imports(&program), &module).expect("artifact");
 
-    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm artifact");
+    let artifact = compile_module_artifact_to_llvm(&artifact, super::legacy_fallback_options()).expect("llvm artifact");
 
     assert!(artifact.module.ir.contains("[::1]:8080"));
     assert!(!artifact.module.ir.contains("::1:8080"));

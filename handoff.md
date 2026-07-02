@@ -1,38 +1,39 @@
 # Handoff
 
-**目标已达成**:`docs/llvm/aot-redesign.md`(AOT 后端重设计)核心设计 §2-§6 **全部落地**,
-MIR 管线为**默认后端**。`cargo test --workspace --all-features` **1684 passed / 0 failed**。
-细节见 `progress.md` 与 RFC §9.5。
+**本轮:正确性优先加固(plan.md)已全部完成**。`cargo test --workspace
+--all-features` **1701 passed / 0 failed**(基线 1684,+17)。细节见
+`progress.md` 顶部章节与 `plan.md`。
 
-## 最终架构(已 LIVE)
+## 本轮发现并修复的真实 bug
 
-- 四 crate 管线:`aot/abi`(schema 单一真相,`for_each_abi_fn!` 数据宏)→ `aot/mir`
-  (类型化 SSA + `render()` 快照文本 + `validate()`)→ `aot/lower`(总函数
-  `lower() -> Result<MirModule, Unsupported>`,含 Braun SSA/类型追踪/单态化)→
-  `aot/codegen`(total `render_module` → LLVM 文本)。
-- **默认开**:`llvm/src/llvm/backend.rs` gate;`LK_AOT_MIR=0` 或
-  `LlvmBackendOptions::use_mir_pipeline=Some(false)` 退回 legacy text 后端
-  (fallback,拒绝时错误同时带 legacy + MIR `Unsupported::reason()`)。
-- **测试面**:差分 harness `cli/tests/aot_differential_test.rs`(69 例 VM vs native,
-  Path::New 断言走新路径);MIR 快照 `aot/lower/tests/mir_snapshots.rs`(6 形状);
-  lkrt `abi_conformance_test`(140 条 schema ↔ 实现签名,编译期 arity/extern 强制);
-  34 个 legacy-IR 结构断言测试已 pin `legacy_text_backend_options()`(随删 legacy 退役)。
-- **所有权**:默认 arena(字符串 + 容器句柄注册,entry 退出调 `lkrt_cleanup`)+
-  concat 链死临时串 eager `lkrt_string_free`。
-- **覆盖**:标量全量(guarded div/mod、VM-exact 浮点显示)、控制流(if/loop/嵌套/融合分支族/
-  BrMod/BrNil)、直接调用(i64/f64/bool 参数/返回按调用点单态化、递归、死函数跳过)、
-  容器句柄(List<i64/f64/str> + Map{str,i64}×{i64,f64} 全 4 格;Maybe<{i64,f64,str}>
-  present-bit 模型:return→nil、算术→abort=VM halt、==nil→present 位)、字符串
-  (eq/concat/插值/join,显示逐字节 =VM)。
+1. **`.lkm` for 循环运行时错误 + while 死循环(严重)**:`FunctionData.performance`
+   曾为 `#[serde(skip)]`,而 `ForLoopI`/`GetIndexStrI`/`SetIndexStrI` 无 fact 即失败,
+   compare-test 无 fact 时把下一条指令误读为 Jmp → 死循环。修复:全量序列化
+   `PerformanceFacts`,artifact 版本 **3→4**。
+2. **lkrt 测试代码 UB**(Miri Stacked Borrows 抓出):`&CStr::as_ptr().cast_mut()`
+   传给 `CString::from_raw`;已改用原始 owned 指针(`lkrt/src/host.rs`)。
 
-## 已知分歧修复记录
+## 本轮新增防线
 
-`return nil;`:legacy native 打印 `nil`,VM/MIR 打印空 —— 差分测试抓出,CLI 测试已改锁定 VM 行为。
+- **bytecode verifier**(`core/src/vm/verify.rs`):`.lkm` 加载期逐指令验证寄存器/
+  跳转/常量池/函数索引 + facts(不可信输入);`into_module` 无条件跑;
+  `compile_module` debug 下自验(全测试套=防误杀语料)。
+- **MIR validate() 进生产路径**(`llvm/backend.rs`,原先只在测试跑)。
+- **legacy fallback 改 opt-in**:MIR 拒绝默认响亮失败;`LK_AOT_LEGACY=1` 或
+  `allow_legacy_fallback` 显式开启。~200 个 llvm 测试已显式 pin
+  (`legacy_fallback_options()`)。
+- **GC stress**:`LK_GC_STRESS=1` 每安全点强制 collect;core/stdlib/cli 全绿。
+- **差分语料扩展**:examples/ 全目录差分(44 例:2 可 lower 且一致,42 记录
+  Unsupported 快照);生成式差分 fuzz(`cli/tests/aot_fuzz_differential_test.rs`,
+  种子化,600 例两种子全部干净,同时锁定 lower() totality)。
+- **sanitizer**:`LK_NATIVE_SANITIZE=address,undefined` 透传 clang;全部差分语料
+  ASan/UBSan 零报告;lkrt Miri 全绿。Makefile 新增 `miri-lkrt` /
+  `sanitized-differential` / `gc-stress`。
+- **语义仲裁文档** `docs/semantics.md`(golden vectors:div/0、缺失键、nil、
+  float 显示、退出语义)。
 
-## 剩余(均为 RFC §1 非目标 / §7 约定的后续)
+## 剩余 / 后续
 
-1. **阶段 4**:闭包/间接调用/可变全局 + `__lk_call_method` 方法分派(list `.sort()` 等)——
-   RFC 明确非目标;扩展点就位(`Ty` 加变体 + lower 加 arm)。
-2. **删 legacy text 后端**:待 MIR 吸收 legacy 独有形状(方法分派/对象/try)后整体退役
-   (连同 34 个 pinned 测试 + `dynamic_containers/`,预计 -2~4 万行)。
-3. 性能:AOT 侧可跑 `RUN_AOT=1` bench 对比句柄化前基线(VM perf 门禁不受影响,未触碰解释器)。
+1. 阶段 4(闭包/间接调用/可变全局/方法分派)与 legacy 退役 —— 原计划不变。
+2. 性能项(clang `-O2` 仅 MIR、AOT 基线重测)—— 见 plan.md「非本轮」。
+3. fuzz 生成器可扩形状(for-range、int-key map 写、bool 列表)以提升 lower 覆盖率。

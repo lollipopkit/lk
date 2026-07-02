@@ -1079,6 +1079,7 @@ dependencies = [
  "lk-aot-abi",
  "lk-aot-codegen",
  "lk-aot-lower",
+ "lk-aot-mir",
  "lk-core",
  "lk-stdlib",
  "lkrt",

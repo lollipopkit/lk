@@ -13,7 +13,7 @@ fn llvm_backend_lowers_static_module_return_display_without_artifact_shell() {
     let module = Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["iter"]).expect("module");
     let module = ModuleArtifact::new(Vec::new(), &module).expect("module artifact");
 
-    let artifact = compile_module_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
+    let artifact = compile_module_artifact_to_llvm(&module, super::legacy_fallback_options()).expect("llvm artifact");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -46,7 +46,7 @@ fn llvm_backend_lowers_static_parse_result_method_call_with_recovered_key_withou
     .expect("module");
     let module = ModuleArtifact::new(collect_program_imports(&program), &module).expect("module artifact");
 
-    let artifact = compile_module_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
+    let artifact = compile_module_artifact_to_llvm(&module, super::legacy_fallback_options()).expect("llvm artifact");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -68,7 +68,7 @@ fn llvm_backend_lowers_dynamic_bool_list_module_methods_without_artifact_shell()
         .expect("compile module");
     let module = ModuleArtifact::new(Vec::new(), &module).expect("artifact");
 
-    let artifact = compile_module_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
+    let artifact = compile_module_artifact_to_llvm(&module, super::legacy_fallback_options()).expect("llvm artifact");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -103,7 +103,7 @@ fn llvm_backend_lowers_dynamic_bool_list_module_mutators_without_artifact_shell(
         .expect("compile module");
     let module = ModuleArtifact::new(Vec::new(), &module).expect("artifact");
 
-    let artifact = compile_module_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
+    let artifact = compile_module_artifact_to_llvm(&module, super::legacy_fallback_options()).expect("llvm artifact");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -132,7 +132,7 @@ fn llvm_backend_lowers_dynamic_i64_string_map_has_delete_without_artifact_shell(
         .expect("compile module");
     let module = ModuleArtifact::new(Vec::new(), &module).expect("artifact");
 
-    let artifact = compile_module_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
+    let artifact = compile_module_artifact_to_llvm(&module, super::legacy_fallback_options()).expect("llvm artifact");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -186,7 +186,8 @@ fn llvm_backend_lowers_dynamic_i64_map_has_delete_without_artifact_shell() {
                 .expect("compile module");
         let module = ModuleArtifact::new(Vec::new(), &module).expect("artifact");
 
-        let artifact = compile_module_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
+        let artifact =
+            compile_module_artifact_to_llvm(&module, super::legacy_fallback_options()).expect("llvm artifact");
 
         assert!(!artifact.module.ir.contains("@lk_module_json"));
         assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -238,7 +239,8 @@ fn llvm_backend_lowers_dynamic_string_map_has_delete_without_artifact_shell() {
                 .expect("compile module");
         let module = ModuleArtifact::new(Vec::new(), &module).expect("artifact");
 
-        let artifact = compile_module_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
+        let artifact =
+            compile_module_artifact_to_llvm(&module, super::legacy_fallback_options()).expect("llvm artifact");
 
         assert!(!artifact.module.ir.contains("@lk_module_json"));
         assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -287,7 +289,8 @@ fn llvm_backend_lowers_dynamic_string_map_receiver_get_missing_without_artifact_
                 .expect("compile module");
         let module = ModuleArtifact::new(Vec::new(), &module).expect("artifact");
 
-        let artifact = compile_module_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
+        let artifact =
+            compile_module_artifact_to_llvm(&module, super::legacy_fallback_options()).expect("llvm artifact");
 
         assert!(!artifact.module.ir.contains("@lk_module_json"));
         assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -306,7 +309,7 @@ fn llvm_backend_lowers_dynamic_string_string_map_missing_get_without_artifact_sh
                 .expect("compile module");
         let module = ModuleArtifact::new(Vec::new(), &module).expect("artifact");
 
-        let artifact = compile_module_artifact_to_llvm(&module, LlvmBackendOptions::default())
+        let artifact = compile_module_artifact_to_llvm(&module, super::legacy_fallback_options())
             .unwrap_or_else(|err| panic!("{expr}: {err}"));
 
         assert!(!artifact.module.ir.contains("@lk_module_json"));
@@ -346,7 +349,7 @@ fn llvm_backend_lowers_dynamic_i64_list_module_methods_without_artifact_shell() 
         .expect("compile module");
     let module = ModuleArtifact::new(Vec::new(), &module).expect("artifact");
 
-    let artifact = compile_module_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
+    let artifact = compile_module_artifact_to_llvm(&module, super::legacy_fallback_options()).expect("llvm artifact");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -378,7 +381,7 @@ fn llvm_backend_lowers_dynamic_i64_list_module_mutators_without_artifact_shell()
         .expect("compile module");
     let module = ModuleArtifact::new(Vec::new(), &module).expect("artifact");
 
-    let artifact = compile_module_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
+    let artifact = compile_module_artifact_to_llvm(&module, super::legacy_fallback_options()).expect("llvm artifact");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -396,7 +399,7 @@ fn llvm_backend_lowers_block_static_module_return_display_without_artifact_shell
     let module = Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["iter"]).expect("module");
     let module = ModuleArtifact::new(Vec::new(), &module).expect("module artifact");
 
-    let artifact = compile_module_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
+    let artifact = compile_module_artifact_to_llvm(&module, super::legacy_fallback_options()).expect("llvm artifact");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -412,7 +415,7 @@ fn llvm_backend_lowers_math_module_return_display_without_artifact_shell() {
     let module = Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["math"]).expect("module");
     let module = ModuleArtifact::new(Vec::new(), &module).expect("module artifact");
 
-    let artifact = compile_module_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
+    let artifact = compile_module_artifact_to_llvm(&module, super::legacy_fallback_options()).expect("llvm artifact");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -434,7 +437,7 @@ fn llvm_backend_lowers_math_epsilon_member_display_without_artifact_shell() {
     let module = Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["math"]).expect("module");
     let module = ModuleArtifact::new(Vec::new(), &module).expect("module artifact");
 
-    let artifact = compile_module_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
+    let artifact = compile_module_artifact_to_llvm(&module, super::legacy_fallback_options()).expect("llvm artifact");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -473,7 +476,7 @@ return [
     let module = Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["math"]).expect("module");
     let module = ModuleArtifact::new(Vec::new(), &module).expect("module artifact");
 
-    let artifact = compile_module_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
+    let artifact = compile_module_artifact_to_llvm(&module, super::legacy_fallback_options()).expect("llvm artifact");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -492,7 +495,7 @@ fn llvm_backend_lowers_os_module_return_display_without_artifact_shell() {
     let module = Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["os"]).expect("module");
     let module = ModuleArtifact::new(Vec::new(), &module).expect("module artifact");
 
-    let artifact = compile_module_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
+    let artifact = compile_module_artifact_to_llvm(&module, super::legacy_fallback_options()).expect("llvm artifact");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -508,7 +511,7 @@ fn llvm_backend_lowers_os_env_get_member_display_without_artifact_shell() {
     let module = Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["env"]).expect("module");
     let module = ModuleArtifact::new(Vec::new(), &module).expect("module artifact");
 
-    let artifact = compile_module_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
+    let artifact = compile_module_artifact_to_llvm(&module, super::legacy_fallback_options()).expect("llvm artifact");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -522,7 +525,7 @@ fn llvm_backend_lowers_os_module_builtin_return_display_without_artifact_shell()
     let module = Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["os"]).expect("module");
     let module = ModuleArtifact::new(Vec::new(), &module).expect("module artifact");
 
-    let artifact = compile_module_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
+    let artifact = compile_module_artifact_to_llvm(&module, super::legacy_fallback_options()).expect("llvm artifact");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -537,7 +540,7 @@ fn llvm_backend_lowers_list_module_get_without_artifact_shell() {
         .expect("module");
     let module = ModuleArtifact::new(Vec::new(), &module).expect("module artifact");
 
-    let artifact = compile_module_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
+    let artifact = compile_module_artifact_to_llvm(&module, super::legacy_fallback_options()).expect("llvm artifact");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -562,7 +565,7 @@ return [first, last, contains, empty, joined, concat];"#,
         .expect("module");
     let module = ModuleArtifact::new(Vec::new(), &module).expect("module artifact");
 
-    let artifact = compile_module_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
+    let artifact = compile_module_artifact_to_llvm(&module, super::legacy_fallback_options()).expect("llvm artifact");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -591,7 +594,7 @@ return [
         .expect("module");
     let module = ModuleArtifact::new(Vec::new(), &module).expect("module artifact");
 
-    let artifact = compile_module_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
+    let artifact = compile_module_artifact_to_llvm(&module, super::legacy_fallback_options()).expect("llvm artifact");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -619,7 +622,7 @@ return [
         .expect("module");
     let module = ModuleArtifact::new(Vec::new(), &module).expect("module artifact");
 
-    let artifact = compile_module_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
+    let artifact = compile_module_artifact_to_llvm(&module, super::legacy_fallback_options()).expect("llvm artifact");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -655,7 +658,7 @@ return [
             .expect("module");
     let module = ModuleArtifact::new(Vec::new(), &module).expect("module artifact");
 
-    let artifact = compile_module_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
+    let artifact = compile_module_artifact_to_llvm(&module, super::legacy_fallback_options()).expect("llvm artifact");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -694,7 +697,7 @@ return [
             .expect("module");
     let module = ModuleArtifact::new(Vec::new(), &module).expect("module artifact");
 
-    let artifact = compile_module_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
+    let artifact = compile_module_artifact_to_llvm(&module, super::legacy_fallback_options()).expect("llvm artifact");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -725,7 +728,7 @@ return [
         .expect("module");
     let module = ModuleArtifact::new(Vec::new(), &module).expect("module artifact");
 
-    let artifact = compile_module_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
+    let artifact = compile_module_artifact_to_llvm(&module, super::legacy_fallback_options()).expect("llvm artifact");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -748,7 +751,7 @@ return [
     let module = Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["iter", "__lk_call_method"])
         .expect("module");
     let module = ModuleArtifact::new(Vec::new(), &module).expect("module artifact");
-    let artifact = compile_module_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
+    let artifact = compile_module_artifact_to_llvm(&module, super::legacy_fallback_options()).expect("llvm artifact");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -776,7 +779,7 @@ return [
         .expect("module");
     let module = ModuleArtifact::new(Vec::new(), &module).expect("module artifact");
 
-    let artifact = compile_module_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
+    let artifact = compile_module_artifact_to_llvm(&module, super::legacy_fallback_options()).expect("llvm artifact");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
@@ -803,7 +806,7 @@ return [
         .expect("module");
     let module = ModuleArtifact::new(Vec::new(), &module).expect("module artifact");
 
-    let artifact = compile_module_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
+    let artifact = compile_module_artifact_to_llvm(&module, super::legacy_fallback_options()).expect("llvm artifact");
 
     assert!(!artifact.module.ir.contains("@lk_module_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));

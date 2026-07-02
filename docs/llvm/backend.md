@@ -5,12 +5,17 @@
 Since the AOT redesign ([`aot-redesign.md`](./aot-redesign.md)) the backend is
 two-tiered. Every compile first runs the **typed MIR pipeline**:
 `ModuleArtifact` → `lk-aot-lower` (a total `lower() -> Result<MirModule,
-Unsupported>` — the testable capability predicate) → `lk-aot-codegen` (a total
-`MirModule` → LLVM-text rendering). Shapes the lowering rejects fall through to
-the **legacy text backend** described in the rest of this document; if that also
-rejects, the compile fails with both reasons. `LK_AOT_MIR=0` (or
-`LlvmBackendOptions::use_mir_pipeline = Some(false)`) pins a compile to the
-legacy backend.
+Unsupported>` — the testable capability predicate) → `lk_aot_mir::validate`
+(enforced on the production path, not just in tests) → `lk-aot-codegen` (a
+total `MirModule` → LLVM-text rendering). Shapes the lowering rejects **fail
+the compile by default** with the MIR `Unsupported` reason: the legacy text
+backend described in the rest of this document is the less-tested semantic
+surface, so serving MIR rejects from it requires explicit opt-in via
+`LK_AOT_LEGACY=1` (or `LlvmBackendOptions::allow_legacy_fallback =
+Some(true)`). With the fallback opted in, a shape both backends reject fails
+with both reasons. `LK_AOT_MIR=0` (or `LlvmBackendOptions::use_mir_pipeline =
+Some(false)`) pins a compile directly to the legacy backend — an explicit
+request, not a fallback.
 
 The MIR pipeline covers: straight-line and branching/looping scalar code
 (i64/f64/bool/str, guarded div/mod, VM-exact float display), direct function

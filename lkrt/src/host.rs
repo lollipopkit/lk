@@ -275,13 +275,16 @@ mod tests {
 
         let bytes = lkrt_fs_read(file.as_ptr());
         assert!(bytes > 0);
-        let text = crate::lkrt_bytes_to_string_utf8(bytes);
-        assert!(!text.is_null());
-        // SAFETY: text is an lkrt-owned NUL-terminated CString pointer.
-        let text = unsafe { CStr::from_ptr(text) };
+        let text_ptr = crate::lkrt_bytes_to_string_utf8(bytes);
+        assert!(!text_ptr.is_null());
+        // SAFETY: text_ptr is an lkrt-owned NUL-terminated CString pointer.
+        let text = unsafe { CStr::from_ptr(text_ptr) };
         assert_eq!(text.to_str().expect("utf8"), "hello");
-        // SAFETY: the pointer came from an lkrt owned-string return.
-        unsafe { lkrt_string_free(text.as_ptr().cast_mut()) };
+        // SAFETY: frees the original owned pointer. A pointer re-derived via
+        // `&CStr::as_ptr().cast_mut()` only carries shared read-only
+        // provenance, so handing it to `CString::from_raw` is UB (caught by
+        // Miri's Stacked Borrows checking).
+        unsafe { lkrt_string_free(text_ptr) };
         assert_eq!(lkrt_bytes_free(bytes), 0);
 
         let canonical = lkrt_fs_canonicalize(file.as_ptr());

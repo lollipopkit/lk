@@ -859,7 +859,10 @@ fn test_llvm_compile_lowers_long_string_return_without_vm_shell() {
     ensure_clean_dir(&dir);
     write_file(&dir, "long_string.lk", "return \"longer-than-short\";\n");
 
+    // Long-string returns are still a legacy-backend-only shape; the fallback
+    // is opt-in on the production path, so this coverage opts in explicitly.
     let llvm = run_cli(&dir, ["compile", "llvm", "long_string.lk"])
+        .env("LK_AOT_LEGACY", "1")
         .output()
         .expect("spawn llvm compile");
     assert!(
@@ -887,6 +890,7 @@ fn test_llvm_compile_lowers_long_string_return_without_vm_shell() {
     );
 
     let exe = run_cli(&dir, ["compile", "long_string.lk"])
+        .env("LK_AOT_LEGACY", "1")
         .env("RUSTC", dir.join("missing-rustc"))
         .output()
         .expect("spawn exe compile");
@@ -918,7 +922,10 @@ fn test_llvm_compile_lowers_const_list_return_without_vm_shell() {
     ensure_clean_dir(&dir);
     write_file(&dir, "list.lk", "return [1, true, \"longer-than-short\"];\n");
 
+    // Const-list returns are still a legacy-backend-only shape; the fallback
+    // is opt-in on the production path, so this coverage opts in explicitly.
     let llvm = run_cli(&dir, ["compile", "llvm", "list.lk"])
+        .env("LK_AOT_LEGACY", "1")
         .output()
         .expect("spawn llvm compile");
     assert!(
@@ -946,6 +953,7 @@ fn test_llvm_compile_lowers_const_list_return_without_vm_shell() {
     );
 
     let exe = run_cli(&dir, ["compile", "list.lk"])
+        .env("LK_AOT_LEGACY", "1")
         .env("RUSTC", dir.join("missing-rustc"))
         .output()
         .expect("spawn exe compile");
@@ -977,7 +985,10 @@ fn test_llvm_compile_lowers_const_map_return_without_vm_shell() {
     ensure_clean_dir(&dir);
     write_file(&dir, "map.lk", "return {\"a\": 1, \"b\": true};\n");
 
+    // Const-map returns are still a legacy-backend-only shape; the fallback
+    // is opt-in on the production path, so this coverage opts in explicitly.
     let llvm = run_cli(&dir, ["compile", "llvm", "map.lk"])
+        .env("LK_AOT_LEGACY", "1")
         .output()
         .expect("spawn llvm compile");
     assert!(
@@ -1002,6 +1013,7 @@ fn test_llvm_compile_lowers_const_map_return_without_vm_shell() {
     );
 
     let exe = run_cli(&dir, ["compile", "map.lk"])
+        .env("LK_AOT_LEGACY", "1")
         .env("RUSTC", dir.join("missing-rustc"))
         .output()
         .expect("spawn exe compile");
