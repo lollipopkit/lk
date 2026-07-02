@@ -1,0 +1,89 @@
+name: Correctness Harnesses
+
+# Deep correctness passes that are too slow for every PR: GC stress over the
+# whole test surface, ASan/UBSan over the differential corpora, Miri over
+# lkrt's unsafe FFI surface, and a scaled-up generative differential fuzz.
+# Mirrors the local Makefile targets `gc-stress`, `sanitized-differential`,
+# and `miri-lkrt` (see plan.md / docs/llvm/backend.md).
+
+# Test-only jobs: no write access, no persisted credentials.
+permissions:
+  contents: read
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "aot/**"
+      - "lkrt/**"
+      - "llvm/**"
+      - "core/src/vm/**"
+
+jobs:
+  gc-stress:
+    runs-on: ubuntu-latest
+    name: GC stress (collect at every safepoint)
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain-file: rust-toolchain.toml
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo test under LK_GC_STRESS
+        run: LK_GC_STRESS=1 cargo test -p lk-core -p lk-stdlib -p lk-cli
+
+  sanitized-differential:
+    runs-on: ubuntu-latest
+    name: differential corpora under ASan/UBSan
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain-file: rust-toolchain.toml
+      - uses: Swatinem/rust-cache@v2
+      - name: hand-written differential cases
+        run: LK_NATIVE_SANITIZE=address,undefined cargo test -p lk-cli --test aot_differential_test
+      - name: examples corpus differential
+        run: LK_NATIVE_SANITIZE=address,undefined cargo test -p lk-cli --test examples_differential_test
+      - name: scaled generative fuzz differential
+        run: LK_NATIVE_SANITIZE=address,undefined LK_FUZZ_CASES=500 cargo test -p lk-cli --test aot_fuzz_differential_test -- --nocapture
+
+  fuzz-fresh-seed:
+    runs-on: ubuntu-latest
+    name: generative fuzz with a fresh seed
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain-file: rust-toolchain.toml
+      - uses: Swatinem/rust-cache@v2
+      - name: fuzz with the run id as seed (printed for reproduction)
+        run: LK_FUZZ_SEED=${{ github.run_id }} LK_FUZZ_CASES=500 cargo test -p lk-cli --test aot_fuzz_differential_test -- --nocapture
+
+  miri-lkrt:
+    runs-on: ubuntu-latest
+    name: Miri over lkrt (Stacked Borrows)
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: install nightly + miri
+        run: |
+          rustup toolchain install nightly --component miri
+          cargo +nightly miri setup
+      - uses: Swatinem/rust-cache@v2
+      # Leaks are ignored by design: lkrt's arena ownership frees strings and
+      # container handles via lkrt_cleanup() at process exit, which unit tests
+      # sharing the global arena must not call. Stacked Borrows stays on.
+      - name: cargo miri test -p lkrt
+        run: MIRIFLAGS="-Zmiri-disable-isolation -Zmiri-ignore-leaks" cargo +nightly miri test -p lkrt

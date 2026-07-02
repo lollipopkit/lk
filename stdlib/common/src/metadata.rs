@@ -177,20 +177,18 @@ pub fn register_stdlib_module_metadata(metadata: StdlibModuleMetadata) -> Result
             .iter()
             .flat_map(|module| module.callables.iter())
             .find(|existing| existing.path == callable.path)
+            && existing != callable
         {
-            if existing != callable {
-                bail!("conflicting stdlib metadata for export '{}'", callable.path);
-            }
+            bail!("conflicting stdlib metadata for export '{}'", callable.path);
         }
         if let Some(existing) = registry
             .modules
             .iter()
             .flat_map(|module| module.callables.iter())
             .find(|existing| existing.lowering_key == callable.lowering_key)
+            && existing != callable
         {
-            if existing != callable {
-                bail!("conflicting stdlib lowering_key for export '{}'", callable.lowering_key);
-            }
+            bail!("conflicting stdlib lowering_key for export '{}'", callable.lowering_key);
         }
     }
     registry.modules.push(metadata);

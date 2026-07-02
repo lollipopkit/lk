@@ -835,9 +835,9 @@ impl LkAnalyzer {
                         start_line = line;
                     }
                 }
-                ';' => {
+                ';'
                     // Statement terminator outside paren/bracket nesting
-                    if paren == 0 && bracket == 0 {
+                    if paren == 0 && bracket == 0 => {
                         let end_byte = i + 1; // include ';'
                         if !content[start_byte..end_byte].trim().is_empty() {
                             chunks.push((start_byte, end_byte, start_line));
@@ -848,7 +848,6 @@ impl LkAnalyzer {
                         start_byte = end_byte;
                         start_line = line;
                     }
-                }
                 _ => {}
             }
 

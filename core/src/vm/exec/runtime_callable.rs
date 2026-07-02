@@ -82,7 +82,7 @@ pub fn call_runtime_callable_runtime_named_stack(
             &mut local_ctx
         }
     };
-    let mut result = match Executor::new(register_count).run_module_function_with_state_recoverable(
+    let result = match Executor::new(register_count).run_module_function_with_state_recoverable(
         function.module.as_ref(),
         Some(Arc::clone(&function.module)),
         function.function_index,
@@ -113,7 +113,7 @@ pub fn call_runtime_callable_runtime_named_stack(
         }
     };
     let value = result.returns.first().cloned().unwrap_or(RuntimeVal::Nil);
-    let value = copy_runtime_value(&value, &mut result.state.heap, caller_heap)?;
+    let value = copy_runtime_value(&value, &result.state.heap, caller_heap)?;
     commit_runtime_callable_state(function, result.state)?;
     Ok(value)
 }
@@ -221,7 +221,7 @@ fn call_runtime_value_with_map_args(
     module: Option<&Module>,
     ctx: Option<&mut VmContext>,
 ) -> Result<RuntimeVal> {
-    let callee_root = callee.clone();
+    let callee_root = callee;
     let RuntimeVal::Obj(handle) = callee else {
         bail!("runtime callee is not callable");
     };
@@ -387,7 +387,7 @@ impl<'a> RuntimePositionalArgs<'a> {
             Self::ListHandle(handle) => typed_list_arg_value(*handle, heap, index),
             Self::Prefixed { first, rest } => {
                 if index == 0 {
-                    return Ok((*first).clone());
+                    return Ok(*(*first));
                 }
                 rest.get(index - 1)
                     .cloned()
@@ -395,7 +395,7 @@ impl<'a> RuntimePositionalArgs<'a> {
             }
             Self::PrefixedList { first, rest } => {
                 if index == 0 {
-                    return Ok((*first).clone());
+                    return Ok(*(*first));
                 }
                 typed_list_arg_value(*rest, heap, index - 1)
             }
@@ -406,19 +406,19 @@ impl<'a> RuntimePositionalArgs<'a> {
         match self {
             Self::Slice(values) => {
                 for (slot, value) in frame.iter_mut().zip(values) {
-                    *slot = value.clone();
+                    *slot = *value;
                 }
                 Ok(())
             }
             Self::ListHandle(handle) => copy_list_handle_into_slots(handle, heap, frame),
             Self::PrefixedList { first, rest } => {
-                frame[0] = first.clone();
+                frame[0] = *first;
                 copy_list_handle_into_slots(rest, heap, &mut frame[1..])
             }
             Self::Prefixed { first, rest } => {
-                frame[0] = first.clone();
+                frame[0] = *first;
                 for (slot, value) in frame[1..1 + rest.len()].iter_mut().zip(rest) {
-                    *slot = value.clone();
+                    *slot = *value;
                 }
                 Ok(())
             }
@@ -430,11 +430,11 @@ impl<'a> RuntimePositionalArgs<'a> {
             Self::Slice(values) => roots.extend(values.iter().cloned()),
             Self::ListHandle(handle) => roots.push(RuntimeVal::Obj(*handle)),
             Self::Prefixed { first, rest } => {
-                roots.push((*first).clone());
+                roots.push(*(*first));
                 roots.extend(rest.iter().cloned());
             }
             Self::PrefixedList { first, rest } => {
-                roots.push((*first).clone());
+                roots.push(*(*first));
                 roots.push(RuntimeVal::Obj(*rest));
             }
         }
@@ -466,6 +466,7 @@ fn call_runtime_native_positional(
     collect_direct_native_garbage_after_result(state, roots, result)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn call_runtime_native_named_map(
     native: &NativeEntry,
     pos: RuntimePositionalArgs<'_>,
@@ -514,7 +515,7 @@ fn collect_direct_native_garbage_after_result(
     result: Result<RuntimeVal>,
 ) -> Result<RuntimeVal> {
     if let Ok(value) = &result {
-        roots.push(value.clone());
+        roots.push(*value);
     }
     if state.heap.should_collect() {
         state.collect_garbage(roots.iter());
@@ -543,9 +544,9 @@ fn with_runtime_positional_stack_slice<R>(
             let len = rest.len() + 1;
             let start = stack.len();
             stack.resize(start + len, RuntimeVal::Nil);
-            stack[start] = first.clone();
+            stack[start] = *first;
             for (slot, value) in stack[start + 1..start + len].iter_mut().zip(rest) {
-                *slot = value.clone();
+                *slot = *value;
             }
             let result = f(heap, &stack[start..start + len]);
             stack.truncate(start);
@@ -556,7 +557,7 @@ fn with_runtime_positional_stack_slice<R>(
             let len = rest_len + 1;
             let start = stack.len();
             stack.resize(start + len, RuntimeVal::Nil);
-            stack[start] = first.clone();
+            stack[start] = *first;
             copy_list_handle_into_slots(rest, heap, &mut stack[start + 1..start + len])?;
             let result = f(heap, &stack[start..start + len]);
             stack.truncate(start);
@@ -629,7 +630,7 @@ fn copy_list_handle_into_slots(handle: HeapRef, heap: &mut HeapStore, frame: &mu
     {
         HeapValue::List(TypedList::Mixed(values)) => {
             for (slot, value) in frame.iter_mut().zip(values) {
-                *slot = value.clone();
+                *slot = *value;
             }
             return Ok(());
         }
@@ -798,7 +799,7 @@ fn call_runtime_callable_runtime_positional(
             &mut local_ctx
         }
     };
-    let mut result = match Executor::new(register_count).run_module_function_with_state_recoverable(
+    let result = match Executor::new(register_count).run_module_function_with_state_recoverable(
         function.module.as_ref(),
         Some(Arc::clone(&function.module)),
         function.function_index,
@@ -820,7 +821,7 @@ fn call_runtime_callable_runtime_positional(
         }
     };
     let value = result.returns.first().cloned().unwrap_or(RuntimeVal::Nil);
-    let value = copy_runtime_value(&value, &mut result.state.heap, caller_heap)?;
+    let value = copy_runtime_value(&value, &result.state.heap, caller_heap)?;
     commit_runtime_callable_state(function, result.state)?;
     Ok(value)
 }
@@ -847,7 +848,7 @@ fn call_runtime_callable_runtime_named_map_positional(
             &mut local_ctx
         }
     };
-    let mut result = match Executor::new(register_count).run_module_function_with_state_recoverable(
+    let result = match Executor::new(register_count).run_module_function_with_state_recoverable(
         function.module.as_ref(),
         Some(Arc::clone(&function.module)),
         function.function_index,
@@ -876,7 +877,7 @@ fn call_runtime_callable_runtime_named_map_positional(
         }
     };
     let value = result.returns.first().cloned().unwrap_or(RuntimeVal::Nil);
-    let value = copy_runtime_value(&value, &mut result.state.heap, caller_heap)?;
+    let value = copy_runtime_value(&value, &result.state.heap, caller_heap)?;
     commit_runtime_callable_state(function, result.state)?;
     Ok(value)
 }
@@ -1138,7 +1139,7 @@ fn write_named_args_to_frame_from_typed_map(
     match named {
         TypedMap::StringMixed(values) => {
             for (name, value) in values {
-                place_named!(name, value.clone());
+                place_named!(name, *value);
             }
         }
         TypedMap::StringInt(values) => {
@@ -1161,7 +1162,7 @@ fn write_named_args_to_frame_from_typed_map(
                 let Some(name) = key.as_arc_str() else {
                     bail!("named argument key must be a string");
                 };
-                place_named!(name, value.clone());
+                place_named!(name, *value);
             }
         }
     }
@@ -1175,6 +1176,7 @@ fn write_named_args_to_frame_from_typed_map(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn copy_named_stack_args_to_frame(
     function: &crate::vm::Function,
     positional: &[RuntimeVal],
@@ -1320,7 +1322,7 @@ fn copy_heap_value(value: &HeapValue, source_heap: &HeapStore, dest_heap: &mut H
             len: value.len,
         })),
         HeapValue::Resource(value) => HeapValue::Resource(value.clone()),
-        HeapValue::UpvalCell(value) => HeapValue::UpvalCell(copy_runtime_value(&value, source_heap, dest_heap)?),
+        HeapValue::UpvalCell(value) => HeapValue::UpvalCell(copy_runtime_value(value, source_heap, dest_heap)?),
         HeapValue::ErrorVal(error) => HeapValue::ErrorVal(crate::val::ErrorVal {
             message: Arc::clone(&error.message),
             trace: {

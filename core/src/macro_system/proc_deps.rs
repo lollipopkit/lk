@@ -267,13 +267,10 @@ fn stable_directory_hash_hex(path: &Path) -> io::Result<String> {
 
 fn hash_directory(hash: &mut StableHash64, dir: &Path, relative_dir: &Path, depth: u32) -> io::Result<()> {
     if depth > MAX_DIRECTORY_DEPTH {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!(
-                "directory depth exceeds {MAX_DIRECTORY_DEPTH}: {}",
-                relative_dir.display()
-            ),
-        ));
+        return Err(io::Error::other(format!(
+            "directory depth exceeds {MAX_DIRECTORY_DEPTH}: {}",
+            relative_dir.display()
+        )));
     }
     let mut entries = fs::read_dir(dir)?.collect::<io::Result<Vec<_>>>()?;
     entries.sort_by_key(|entry| entry.file_name());
@@ -292,10 +289,17 @@ fn hash_directory(hash: &mut StableHash64, dir: &Path, relative_dir: &Path, dept
         } else if file_type.is_file() {
             hash.str("file");
             hash.u64(metadata.len());
-            if metadata.len() <= MAX_FILE_READ_BYTES {
-                if let Ok(bytes) = fs::read(&path) {
-                    hash.bytes(&bytes);
-                }
+            if metadata.len() <= MAX_FILE_READ_BYTES
+                && let Ok(bytes) = fs::read(&path)
+            {
+                hash.bytes(&bytes);
+            } else if let Ok(modified) = metadata.modified()
+                && let Ok(elapsed) = modified.duration_since(std::time::UNIX_EPOCH)
+            {
+                // Oversized files skip the content read; fold in the mtime so
+                // a same-length content change still invalidates the cache.
+                hash.u64(elapsed.as_secs());
+                hash.u64(u64::from(elapsed.subsec_nanos()));
             }
         } else if file_type.is_symlink() {
             hash.str("symlink");

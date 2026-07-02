@@ -8,10 +8,6 @@ pub(crate) mod vm {
     pub(crate) use lk_core::vm::*;
 }
 
-pub(crate) mod val {
-    pub(crate) use lk_core::val::*;
-}
-
 #[cfg(test)]
 pub(crate) mod token {
     pub(crate) use lk_core::token::*;

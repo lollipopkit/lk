@@ -7,6 +7,10 @@ use super::{
     support::{ast_literal_kind, checked_u8, pattern_binds_scrutinee_directly, pattern_kind},
 };
 
+/// Pattern-arm bindings: `(name, register)` pairs (a `None` register is a
+/// wildcard binding that never materialized).
+type PatternBindings = Vec<(String, Option<u16>)>;
+
 impl Compiler {
     pub(super) fn lower_if_let(
         &mut self,
@@ -110,11 +114,7 @@ impl Compiler {
         Ok(())
     }
 
-    pub(super) fn lower_pattern_match(
-        &mut self,
-        pattern: &Pattern,
-        value: u16,
-    ) -> Result<(u16, Vec<(String, Option<u16>)>)> {
+    pub(super) fn lower_pattern_match(&mut self, pattern: &Pattern, value: u16) -> Result<(u16, PatternBindings)> {
         let mut previous = Vec::new();
         let condition = match pattern {
             Pattern::Variable(name) => {
@@ -280,11 +280,7 @@ impl Compiler {
         Ok(result)
     }
 
-    fn lower_or_pattern_condition(
-        &mut self,
-        patterns: &[Pattern],
-        value: u16,
-    ) -> Result<(u16, Vec<(String, Option<u16>)>)> {
+    fn lower_or_pattern_condition(&mut self, patterns: &[Pattern], value: u16) -> Result<(u16, PatternBindings)> {
         if let Some(name) = or_pattern_common_direct_binding_name(patterns) {
             let previous = vec![(name.to_string(), self.insert_local(name.to_string(), value))];
             let condition = self.lower_or_pattern_condition_without_bindings(patterns, value)?;

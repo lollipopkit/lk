@@ -8,7 +8,7 @@ English | [简体中文](README.zh-CN.md)
 ## Features
 
 - Rust-inspired syntax with first-class named parameters
-- Rust-shaped `macro_rules!` declarative macros with function-like calls, explicit macro exports/re-exports, file/package imports, standard `macros` imports, item attributes, built-in `#[derive(Debug|Show)]`, isolated external derive/attribute/function-like providers, dependency-aware proc macro cache invalidation, LSP macro-origin hover/symbols plus same-file/imported macro and generated item goto-definition, and token-level macro origin/source-map inspection; see [docs/macros.md](docs/macros.md) for the macro ecosystem roadmap
+- Rust-shaped `macro_rules!` declarative macros with function-like calls, explicit macro exports/re-exports, file/package imports, standard `macros` imports, item attributes, built-in `#[derive(Debug|Show)]`, isolated external derive/attribute/function-like providers, dependency-aware proc macro cache invalidation, LSP macro-origin hover/symbols plus same-file/imported macro and generated item goto-definition, and token-level macro origin/source-map inspection
 - VM interpreter and LLVM compiler backend, supporting cross-platform native compilation and browser WASM
 - Built-in standard library and syntax sugar
 - Package manager and REPL, with VS Code LSP extension support

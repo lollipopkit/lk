@@ -1,13 +1,27 @@
 use std::{
+    cell::RefCell,
     collections::{HashMap, HashSet},
-    ffi::{CString, c_char},
+    ffi::{CString, c_char, c_void},
     net::TcpStream,
-    sync::{Mutex, OnceLock},
 };
 
-pub(crate) fn runtime() -> &'static Mutex<RuntimeState> {
-    static RUNTIME: OnceLock<Mutex<RuntimeState>> = OnceLock::new();
-    RUNTIME.get_or_init(|| Mutex::new(RuntimeState::default()))
+use rustc_hash::FxBuildHasher;
+
+thread_local! {
+    static RUNTIME: RefCell<RuntimeState> = const { RefCell::new(RuntimeState::new()) };
+}
+
+/// Frees one arena-registered container handle of its concrete type.
+type ContainerDrop = unsafe fn(*mut c_void);
+
+/// Runs `f` with this thread's runtime state. The state is thread-local rather
+/// than a process-global mutex: AOT binaries are single-threaded (the lowered
+/// subset has no threading), so string/container arena registration sits on the
+/// hot path of every dynamic string operation and must not pay for locking.
+/// Handles and arena strings must not cross threads (unit tests get per-thread
+/// isolation for free).
+pub(crate) fn with_runtime<R>(f: impl FnOnce(&mut RuntimeState) -> R) -> R {
+    RUNTIME.with(|state| f(&mut state.borrow_mut()))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -16,11 +30,24 @@ pub(crate) enum HandleKind {
     TcpStream,
 }
 
-#[derive(Default)]
 pub(crate) struct RuntimeState {
     next_handle: i64,
-    resources: HashMap<i64, Resource>,
-    owned_strings: HashSet<usize>,
+    resources: HashMap<i64, Resource, FxBuildHasher>,
+    owned_strings: HashSet<usize, FxBuildHasher>,
+    /// Container handles (lists/maps) with their typed drop functions — the
+    /// default arena of RFC aot-redesign §3.4, reclaimed by [`Self::cleanup`].
+    owned_containers: Vec<(usize, ContainerDrop)>,
+}
+
+impl RuntimeState {
+    const fn new() -> Self {
+        Self {
+            next_handle: 0,
+            resources: HashMap::with_hasher(FxBuildHasher),
+            owned_strings: HashSet::with_hasher(FxBuildHasher),
+            owned_containers: Vec::new(),
+        }
+    }
 }
 
 enum Resource {
@@ -103,6 +130,12 @@ impl RuntimeState {
         self.owned_strings.remove(&(ptr as usize))
     }
 
+    pub(crate) fn register_container(&mut self, ptr: *mut c_void, drop_fn: ContainerDrop) {
+        if !ptr.is_null() {
+            self.owned_containers.push((ptr as usize, drop_fn));
+        }
+    }
+
     pub(crate) fn cleanup(&mut self) {
         self.resources.clear();
         for ptr in self.owned_strings.drain() {
@@ -112,7 +145,28 @@ impl RuntimeState {
                 drop(CString::from_raw(ptr as *mut c_char));
             }
         }
+        for (ptr, drop_fn) in self.owned_containers.drain(..) {
+            // SAFETY: Each entry was registered by `arena_handle` with the drop
+            // function matching the handle's concrete type; generated code never
+            // uses a handle after `lkrt_cleanup` (it is the last call before exit).
+            unsafe {
+                drop_fn(ptr as *mut c_void);
+            }
+        }
     }
+}
+
+/// Boxes `value`, registers the handle in the runtime arena with a typed drop
+/// function, and returns it as an opaque pointer. All container `new` entry
+/// points allocate through here so `lkrt_cleanup` can reclaim them.
+pub(crate) fn arena_handle<T>(value: T) -> *mut c_void {
+    unsafe fn drop_impl<T>(ptr: *mut c_void) {
+        // SAFETY: `ptr` came from `Box::into_raw` with this exact `T`.
+        drop(unsafe { Box::from_raw(ptr as *mut T) });
+    }
+    let ptr = Box::into_raw(Box::new(value)) as *mut c_void;
+    with_runtime(|rt| rt.register_container(ptr, drop_impl::<T>));
+    ptr
 }
 
 fn wrong_kind_error(handle: i64, expected: HandleKind, actual: HandleKind) -> String {

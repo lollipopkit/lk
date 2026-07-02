@@ -103,9 +103,8 @@ impl Executor {
         ctx: &mut Option<&mut VmContext>,
     ) -> Result<RuntimeVal> {
         let module = module.ok_or_else(|| anyhow!("Call requires Module execution"))?;
-        let callee = self
-            .read(u8::try_from(window.callee.as_usize()).map_err(|_| anyhow!("call callee register overflow"))?)?
-            .clone();
+        let callee = *self
+            .read(u8::try_from(window.callee.as_usize()).map_err(|_| anyhow!("call callee register overflow"))?)?;
         let RuntimeVal::Obj(handle) = callee else {
             bail!("{} is not a function", self.runtime_value_display_string(&callee)?);
         };
@@ -281,7 +280,7 @@ impl Executor {
         let saved_captures = std::mem::replace(&mut self.captures, captures);
         let saved_register_count = self.register_count;
         let saved_handler_depth = self.handler_stack.len();
-        let result = (|| {
+        let result = {
             let new_base = self.state.stack_top;
             let new_top = new_base + function.register_count as usize;
             if self.state.stack.len() < new_top {
@@ -303,7 +302,7 @@ impl Executor {
             self.state.stack_top = new_top;
             self.pc = 0;
             self.run_function_inner(function, Some(module), ctx)
-        })();
+        };
         self.frame_base = saved_base;
         self.register_count = saved_register_count;
         self.state.stack_top = saved_top;

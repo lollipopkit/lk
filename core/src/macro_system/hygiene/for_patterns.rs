@@ -3,6 +3,7 @@ use crate::stmt::{ForPattern, StmtParser};
 
 use super::{BindingRename, collect_simple_generated_id, find_generated_ids_in_range};
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn collect_for_pattern_binding_renames(
     tokens: &[ExpandedToken],
     start: usize,

@@ -304,7 +304,7 @@ fn load_macro_source(
     loading: &mut Vec<PathBuf>,
     crate_anchor: String,
 ) -> Result<LoadedMacroModule, ParseError> {
-    let (tokens, spans) = Tokenizer::tokenize_enhanced_with_spans(&source)?;
+    let (tokens, spans) = Tokenizer::tokenize_enhanced_with_spans(source)?;
     let source_tokens = tokens
         .into_iter()
         .zip(spans)
@@ -318,8 +318,10 @@ fn load_macro_source(
             }
         })
         .collect::<Vec<_>>();
-    let mut module = MacroModule::default();
-    module.crate_anchor = Some(crate_anchor.clone());
+    let mut module = MacroModule {
+        crate_anchor: Some(crate_anchor.clone()),
+        ..Default::default()
+    };
     for spec in macro_import_specs(&source_tokens)? {
         let imported = load_imported_macros(Some(base_dir), &spec, &source_tokens, loading)?;
         register_file_macro_map(&mut module.macros, &imported.public, &spec, &source_tokens)?;

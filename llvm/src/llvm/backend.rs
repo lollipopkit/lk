@@ -5,11 +5,7 @@ use crate::{
     vm::{Compiler, ModuleArtifact},
 };
 
-use super::{
-    diagnostics::unsupported_module_artifact_reason,
-    options::{LlvmBackendOptions, OptLevel},
-    straightline_main::compile_native_scalar_main_artifact,
-};
+use super::options::{LlvmBackendOptions, OptLevel};
 
 pub type LlvmBackendError = anyhow::Error;
 
@@ -21,11 +17,11 @@ pub struct LlvmModule {
     pub target_triple: Option<String>,
 }
 
-/// Aggregates the raw IR plus optional optimized IR produced by `opt`.
+/// The rendered LLVM module plus the optimization level the native executable
+/// build should hand to clang.
 #[derive(Debug, Clone)]
 pub struct LlvmModuleArtifact {
     pub module: LlvmModule,
-    pub optimised_ir: Option<String>,
     pub opt_level: OptLevel,
 }
 
@@ -63,20 +59,41 @@ pub fn compile_module_artifact_to_llvm(
     artifact: &ModuleArtifact,
     options: LlvmBackendOptions,
 ) -> Result<LlvmModuleArtifact> {
-    if let Some(ir) = compile_native_scalar_main_artifact(artifact, &options)? {
-        return Ok(LlvmModuleArtifact {
-            module: LlvmModule {
-                name: options.module_name,
-                ir,
-                target_triple: options.target_triple,
-            },
-            optimised_ir: None,
-            opt_level: options.opt_level,
-        });
+    // The typed MIR pipeline (`docs/llvm/aot-redesign.md`) is the only backend:
+    // `lk-aot-lower` is the total capability predicate, `lk_aot_mir::validate`
+    // is enforced on the production path, and `lk-aot-codegen` renders the
+    // validated module. Shapes the lowering rejects fail with their precise
+    // `Unsupported` reason instead of falling back or embedding a VM shell.
+    let mir = match lk_aot_lower::lower(artifact) {
+        Ok(mir) => mir,
+        Err(unsupported) => {
+            bail!("LLVM native lowering does not support this ModuleArtifact shape yet (MIR lowering: {unsupported})")
+        }
+    };
+    // Correctness gate: codegen documents "renders a *validated* module", so
+    // enforce that precondition on the production path instead of only in
+    // tests. A failure here is a lowering bug, never a user error.
+    if let Err(error) = lk_aot_mir::validate(&mir) {
+        bail!("internal AOT error: MIR validation failed after lowering: {error:?}");
     }
-
-    bail!(
-        "LLVM native lowering does not support this ModuleArtifact shape yet: {}",
-        unsupported_module_artifact_reason(artifact)
-    )
+    let mut ir = lk_aot_codegen::render_module(&mir);
+    if let Some(triple) = &options.target_triple {
+        ir = ir.replacen(
+            "; ModuleID = 'lk_aot'\n",
+            &format!("; ModuleID = 'lk_aot'\ntarget triple = \"{triple}\"\n"),
+            1,
+        );
+    }
+    Ok(LlvmModuleArtifact {
+        module: LlvmModule {
+            name: options.module_name,
+            ir,
+            target_triple: options.target_triple,
+        },
+        opt_level: if options.run_optimizations {
+            options.opt_level
+        } else {
+            OptLevel::None
+        },
+    })
 }

@@ -450,7 +450,7 @@ fn test_compile_writes_module_artifact_output() {
     );
     let module = fs::read_to_string(dir.join("a.lkm")).expect("read module output");
     assert!(
-        module.contains("\"format\": \"lk.module\"") && module.contains("\"code\""),
+        module.contains("\"format\":\"lk.module\"") && module.contains("\"code\""),
         "expected module artifact, got: {module}"
     );
     let run = run_cli(&dir, ["a.lkm"]).output().expect("spawn module run");
@@ -718,10 +718,24 @@ fn test_llvm_compile_lowers_i64_loop_without_vm_shell() {
         "i64 loop should not call artifact runtime: {ir}"
     );
     assert!(
-        ir.contains("%g0.slot = alloca i64"),
-        "expected i64 global slot lowering: {ir}"
+        ir.contains("; ModuleID = 'lk_aot'"),
+        "expected the MIR pipeline to handle an i64 loop: {ir}"
     );
-    assert!(ir.contains("br label %bb"), "expected native CFG lowering: {ir}");
+    assert!(ir.contains("phi i64"), "expected SSA loop-carried phis: {ir}");
+
+    let exe = run_cli(&dir, ["compile", "loop.lk"])
+        .output()
+        .expect("spawn exe compile");
+    assert!(
+        exe.status.success(),
+        "native executable compile failed: {}",
+        String::from_utf8_lossy(&exe.stderr)
+    );
+    let run_exe = Command::new(dir.join("loop"))
+        .output()
+        .expect("spawn compiled executable");
+    assert!(run_exe.status.success());
+    assert_eq!(String::from_utf8(run_exe.stdout).expect("utf8 stdout").trim(), "6");
 
     let _ = fs::remove_dir_all(&dir);
 }
@@ -780,8 +794,26 @@ fn test_llvm_compile_lowers_nil_return_without_vm_shell() {
         !ir.contains("lk_rt_run_module_json"),
         "nil return should not call artifact runtime: {ir}"
     );
-    assert!(ir.contains("@lk_nil_text"), "expected nil text lowering: {ir}");
-    assert!(ir.contains("@lk_str_fmt"), "expected string print lowering: {ir}");
+    assert!(
+        ir.contains("; ModuleID = 'lk_aot'"),
+        "expected the MIR pipeline to handle a nil return: {ir}"
+    );
+    // A top-level `return nil;` prints *nothing* in the VM; the legacy backend
+    // printed "nil" here (a real divergence the MIR path fixed). Prove the
+    // compiled binary matches the VM.
+    let exe = run_cli(&dir, ["compile", "nil.lk"])
+        .output()
+        .expect("spawn exe compile");
+    assert!(
+        exe.status.success(),
+        "native executable compile failed: {}",
+        String::from_utf8_lossy(&exe.stderr)
+    );
+    let run_exe = Command::new(dir.join("nil"))
+        .output()
+        .expect("spawn compiled executable");
+    assert!(run_exe.status.success());
+    assert_eq!(String::from_utf8(run_exe.stdout).expect("utf8 stdout"), "");
 
     let _ = fs::remove_dir_all(&dir);
 }
@@ -810,9 +842,12 @@ fn test_llvm_compile_lowers_short_string_return_without_vm_shell() {
         !ir.contains("lk_rt_run_module_json"),
         "short string return should not call artifact runtime: {ir}"
     );
+    assert!(
+        ir.contains("; ModuleID = 'lk_aot'"),
+        "expected the MIR pipeline to handle a string return: {ir}"
+    );
+    assert!(ir.contains("@lk_str_0"), "expected an interned string global: {ir}");
     assert!(ir.contains("@lk_str_fmt"), "expected string print lowering: {ir}");
-    assert!(ir.contains("@lk_const_str_0"), "expected string const lowering: {ir}");
-    assert!(ir.contains("c\"ok\\00\""), "expected string bytes lowering: {ir}");
 
     let _ = fs::remove_dir_all(&dir);
 }
@@ -842,14 +877,9 @@ fn test_llvm_compile_lowers_long_string_return_without_vm_shell() {
         "long string return should not call artifact runtime: {ir}"
     );
     assert!(ir.contains("@lk_str_fmt"), "expected string print lowering: {ir}");
-    assert!(
-        ir.contains("@lk_const_heap_str_0"),
-        "expected heap string const lowering: {ir}"
-    );
-    assert!(
-        ir.contains("c\"longer-than-short\\00\""),
-        "expected string bytes lowering: {ir}"
-    );
+    // Long strings lower through the MIR pipeline as interned globals now.
+    assert!(ir.contains("; ModuleID = 'lk_aot'"), "expected MIR pipeline: {ir}");
+    assert!(ir.contains("@lk_str_0"), "expected interned string global: {ir}");
 
     let exe = run_cli(&dir, ["compile", "long_string.lk"])
         .env("RUSTC", dir.join("missing-rustc"))
@@ -878,115 +908,40 @@ fn test_llvm_compile_lowers_long_string_return_without_vm_shell() {
 
 #[cfg(feature = "llvm")]
 #[test]
-fn test_llvm_compile_lowers_const_list_return_without_vm_shell() {
-    let dir = unique_tmp_dir("llvm_native_const_list");
+fn test_llvm_compile_rejects_mixed_const_list_shape() {
+    // Mixed-element constant containers are outside the MIR subset (the only
+    // backend since the legacy text backend retired); the compile must fail
+    // loudly with the lowering's Unsupported reason instead of half-working.
+    let dir = unique_tmp_dir("llvm_mixed_const_list");
     ensure_clean_dir(&dir);
     write_file(&dir, "list.lk", "return [1, true, \"longer-than-short\"];\n");
 
     let llvm = run_cli(&dir, ["compile", "llvm", "list.lk"])
         .output()
         .expect("spawn llvm compile");
-    assert!(
-        llvm.status.success(),
-        "LLVM IR compile failed: {}",
-        String::from_utf8_lossy(&llvm.stderr)
-    );
-    let ir = fs::read_to_string(dir.join("list.ll")).expect("read LLVM IR");
-    assert!(
-        !ir.contains("@lk_module_json"),
-        "const list return should not embed artifact shell: {ir}"
-    );
-    assert!(
-        !ir.contains("lk_rt_run_module_json"),
-        "const list return should not call artifact runtime: {ir}"
-    );
-    assert!(ir.contains("@lk_str_fmt"), "expected string print lowering: {ir}");
-    assert!(
-        ir.contains("@lk_const_heap_list_0"),
-        "expected const list lowering: {ir}"
-    );
-    assert!(
-        ir.contains("c\"[1, true, longer-than-short]\\00\""),
-        "expected list display bytes lowering: {ir}"
-    );
-
-    let exe = run_cli(&dir, ["compile", "list.lk"])
-        .env("RUSTC", dir.join("missing-rustc"))
-        .output()
-        .expect("spawn exe compile");
-    assert!(
-        exe.status.success(),
-        "native executable compile failed: {}",
-        String::from_utf8_lossy(&exe.stderr)
-    );
-    let run_exe = Command::new(dir.join("list"))
-        .output()
-        .expect("spawn compiled executable");
-    assert!(
-        run_exe.status.success(),
-        "compiled executable failed: {}",
-        String::from_utf8_lossy(&run_exe.stderr)
-    );
-    assert_eq!(
-        String::from_utf8(run_exe.stdout).expect("utf8 stdout").trim(),
-        "[1, true, longer-than-short]"
-    );
+    assert!(!llvm.status.success(), "mixed const list should not lower natively yet");
+    let stderr = String::from_utf8_lossy(&llvm.stderr);
+    assert!(stderr.contains("MIR lowering:"), "unexpected stderr: {stderr}");
 
     let _ = fs::remove_dir_all(&dir);
 }
 
 #[cfg(feature = "llvm")]
 #[test]
-fn test_llvm_compile_lowers_const_map_return_without_vm_shell() {
-    let dir = unique_tmp_dir("llvm_native_const_map");
+fn test_llvm_compile_rejects_mixed_const_map_shape() {
+    // Mixed-element constant containers are outside the MIR subset (the only
+    // backend since the legacy text backend retired); the compile must fail
+    // loudly with the lowering's Unsupported reason instead of half-working.
+    let dir = unique_tmp_dir("llvm_mixed_const_map");
     ensure_clean_dir(&dir);
     write_file(&dir, "map.lk", "return {\"a\": 1, \"b\": true};\n");
 
     let llvm = run_cli(&dir, ["compile", "llvm", "map.lk"])
         .output()
         .expect("spawn llvm compile");
-    assert!(
-        llvm.status.success(),
-        "LLVM IR compile failed: {}",
-        String::from_utf8_lossy(&llvm.stderr)
-    );
-    let ir = fs::read_to_string(dir.join("map.ll")).expect("read LLVM IR");
-    assert!(
-        !ir.contains("@lk_module_json"),
-        "const map return should not embed artifact shell: {ir}"
-    );
-    assert!(
-        !ir.contains("lk_rt_run_module_json"),
-        "const map return should not call artifact runtime: {ir}"
-    );
-    assert!(ir.contains("@lk_str_fmt"), "expected string print lowering: {ir}");
-    assert!(ir.contains("@lk_const_heap_map_0"), "expected const map lowering: {ir}");
-    assert!(
-        ir.contains("c\"{a: 1, b: true}\\00\""),
-        "expected map display bytes lowering: {ir}"
-    );
-
-    let exe = run_cli(&dir, ["compile", "map.lk"])
-        .env("RUSTC", dir.join("missing-rustc"))
-        .output()
-        .expect("spawn exe compile");
-    assert!(
-        exe.status.success(),
-        "native executable compile failed: {}",
-        String::from_utf8_lossy(&exe.stderr)
-    );
-    let run_exe = Command::new(dir.join("map"))
-        .output()
-        .expect("spawn compiled executable");
-    assert!(
-        run_exe.status.success(),
-        "compiled executable failed: {}",
-        String::from_utf8_lossy(&run_exe.stderr)
-    );
-    assert_eq!(
-        String::from_utf8(run_exe.stdout).expect("utf8 stdout").trim(),
-        "{a: 1, b: true}"
-    );
+    assert!(!llvm.status.success(), "mixed const map should not lower natively yet");
+    let stderr = String::from_utf8_lossy(&llvm.stderr);
+    assert!(stderr.contains("MIR lowering:"), "unexpected stderr: {stderr}");
 
     let _ = fs::remove_dir_all(&dir);
 }
@@ -1071,10 +1026,15 @@ fn test_llvm_compile_lowers_zero_arg_direct_f64_call_without_vm_shell() {
         !ir.contains("lk_rt_run_module_json"),
         "direct f64 call return should not call artifact runtime: {ir}"
     );
-    assert!(ir.contains("@lk_f64_fmt"), "expected f64 print lowering: {ir}");
     assert!(
-        ir.contains("store double 3.75"),
-        "expected direct f64 call constant result lowering: {ir}"
+        ir.contains("; ModuleID = 'lk_aot'"),
+        "expected the MIR pipeline to handle a zero-arg f64 call: {ir}"
+    );
+    // The front end inlines the zero-arg callee, so there is no residual native
+    // call; the observable f64 result still prints via the VM-exact helper.
+    assert!(
+        ir.contains("@lkrt_f64_to_str"),
+        "expected the VM-exact float display helper: {ir}"
     );
 
     let exe = run_cli(&dir, ["compile", "call_float.lk"])
@@ -1175,8 +1135,14 @@ fn test_llvm_compile_lowers_positional_direct_call_without_vm_shell() {
         !ir.contains("lk_rt_run_module_json"),
         "positional direct call should not call artifact runtime: {ir}"
     );
-    assert!(ir.contains("@lk_i64_fmt"), "expected i64 print lowering: {ir}");
-    assert!(ir.contains("i64 42"), "expected direct arg call constant result: {ir}");
+    assert!(
+        ir.contains("; ModuleID = 'lk_aot'"),
+        "expected the MIR pipeline to handle a direct call: {ir}"
+    );
+    assert!(
+        ir.contains("call i64 @lk_fn_1(i64"),
+        "expected a native direct call: {ir}"
+    );
 
     let exe = run_cli(&dir, ["compile", "call_arg.lk"])
         .env("RUSTC", dir.join("missing-rustc"))
@@ -1228,10 +1194,13 @@ fn test_llvm_compile_lowers_f64_positional_direct_call_without_vm_shell() {
         !ir.contains("lk_rt_run_module_json"),
         "f64 positional direct call should not call artifact runtime: {ir}"
     );
-    assert!(ir.contains("@lk_f64_fmt"), "expected f64 print lowering: {ir}");
     assert!(
-        ir.contains("store double 3.75"),
-        "expected f64 direct arg call constant result: {ir}"
+        ir.contains("; ModuleID = 'lk_aot'"),
+        "expected the MIR pipeline to handle an f64 direct call: {ir}"
+    );
+    assert!(
+        ir.contains("call double @lk_fn_1(double"),
+        "expected a monomorphized f64 native call: {ir}"
     );
 
     let exe = run_cli(&dir, ["compile", "call_f64_arg.lk"])
@@ -1280,10 +1249,13 @@ fn test_llvm_compile_lowers_f64_return_without_vm_shell() {
         !ir.contains("lk_rt_run_module_json"),
         "f64 return should not call artifact runtime: {ir}"
     );
-    assert!(ir.contains("@lk_f64_fmt"), "expected f64 print lowering: {ir}");
     assert!(
-        ir.contains("store double 3.75"),
-        "expected native f64 arithmetic constant lowering: {ir}"
+        ir.contains("; ModuleID = 'lk_aot'"),
+        "expected the MIR pipeline to handle an f64 return: {ir}"
+    );
+    assert!(
+        ir.contains("@lkrt_f64_to_str"),
+        "expected the VM-exact float display helper: {ir}"
     );
 
     let _ = fs::remove_dir_all(&dir);
@@ -1400,7 +1372,7 @@ fn test_compile_struct_constructs_to_module_artifact() {
     );
     let module = fs::read_to_string(dir.join("mod.lkm")).expect("read module output");
     assert!(
-        module.contains("\"format\": \"lk.module\""),
+        module.contains("\"format\":\"lk.module\""),
         "expected module artifact, got: {module}"
     );
 }

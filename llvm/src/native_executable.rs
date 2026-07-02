@@ -5,15 +5,32 @@ use std::{
 
 use anyhow::Context;
 
-pub fn compile_native_executable_from_llvm(path: &Path, output: &Path, ir: &str) -> anyhow::Result<()> {
+pub fn compile_native_executable_from_llvm(path: &Path, output: &Path, ir: &str, opt_flag: &str) -> anyhow::Result<()> {
     let _ = lkrt::link_anchor();
     let source_path = temp_llvm_source_path(path);
     std::fs::write(&source_path, ir).with_context(|| format!("write native LLVM IR {}", source_path.display()))?;
     let clang = clang_command();
     let mut command = Command::new(&clang);
-    command.arg(&source_path).arg("-o").arg(output);
+    // The MIR codegen emits naive SSA text and relies on clang's optimizer for
+    // cleanup; `opt_flag` comes from `LlvmBackendOptions` (`-O2` by default,
+    // `-O0` under `--skip-opt`).
+    command.arg(opt_flag).arg(&source_path).arg("-o").arg(output);
+    // `LK_NATIVE_SANITIZE=address,undefined` forwards `-fsanitize=` so the
+    // differential corpora can run native binaries under ASan/UBSan; the
+    // handwritten runtime helpers and generated IR are otherwise only
+    // exercised without sanitizers.
+    if let Some(sanitizers) = std::env::var_os("LK_NATIVE_SANITIZE")
+        && !sanitizers.is_empty()
+    {
+        command.arg(format!("-fsanitize={}", sanitizers.to_string_lossy()));
+    }
     if let Some(staticlib) = lkrt_staticlib_path() {
         add_force_load_staticlib(&mut command, &staticlib);
+    }
+    // lkrt's float math (`powf` etc.) lowers to libm calls; macOS bundles libm
+    // in libSystem, Windows in the CRT, so the explicit link is Linux-only.
+    if cfg!(target_os = "linux") {
+        command.arg("-lm");
     }
     let output_status = match command
         .output()

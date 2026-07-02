@@ -17,6 +17,7 @@ const MAX_CONTENT_LENGTH: usize = 10 * 1024 * 1024; // 10 MiB
 use lk_core::package::{RegistryAsymmetricSigningKey, RegistryService, RegistrySigningKey, RegistrySigningKeyring};
 use serde::Deserialize;
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn serve_registry(
     addr: String,
     storage: PathBuf,

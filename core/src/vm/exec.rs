@@ -107,7 +107,7 @@ impl ProgramResult {
         let mut state = self.state;
         let mut entries = fast_hash_map_new();
         for (slot, value) in self.module.globals.iter().zip(state.globals.iter()) {
-            entries.insert(RuntimeMapKey::String(slot.name.clone()), value.clone());
+            entries.insert(RuntimeMapKey::String(slot.name.clone()), *value);
         }
         let value = RuntimeVal::Obj(state.heap.alloc(HeapValue::Map(typed_map_from_entries(entries))));
         RuntimeExport::new(
@@ -320,6 +320,11 @@ pub struct Executor {
     pc: usize,
     collect_metrics: bool,
     gc_pending: bool,
+    /// `LK_GC_STRESS=1` forces a full collection at every GC safepoint instead
+    /// of waiting for the heap threshold. Root-enumeration gaps then surface
+    /// deterministically as use-after-collect failures in any test run instead
+    /// of as rare allocation-timing-dependent corruption.
+    gc_stress: bool,
     shared_module: Option<Arc<Module>>,
     instruction_budget: Option<u64>,
     instruction_count: u64,
@@ -338,6 +343,7 @@ impl Executor {
             pc: 0,
             collect_metrics: false,
             gc_pending: false,
+            gc_stress: gc_stress_enabled(),
             shared_module: None,
             instruction_budget: None,
             instruction_count: 0,
@@ -449,6 +455,7 @@ impl Executor {
         self.run_module_with_globals_and_ctx(module.as_ref(), globals, heap, ctx)
     }
 
+    #[allow(clippy::too_many_arguments, clippy::result_large_err)] // ExecFailure carries the full recovery state by design
     pub(crate) fn run_module_function_with_state_recoverable<F>(
         mut self,
         module: &Module,
@@ -534,6 +541,22 @@ impl Executor {
         module: Option<&Module>,
         ctx: &mut Option<&mut VmContext>,
     ) -> Result<ReturnValues> {
+        // Monomorphize the dispatch loop on whether an instruction budget is
+        // active: only the WASM playground sets one, so direct execution
+        // should not pay a checked counter increment per instruction.
+        if self.instruction_budget.is_some() {
+            self.run_function_inner_impl::<true>(function, module, ctx)
+        } else {
+            self.run_function_inner_impl::<false>(function, module, ctx)
+        }
+    }
+
+    fn run_function_inner_impl<const BUDGETED: bool>(
+        &mut self,
+        function: &Function,
+        module: Option<&Module>,
+        ctx: &mut Option<&mut VmContext>,
+    ) -> Result<ReturnValues> {
         if self.register_count < function.register_count {
             bail!(
                 "executor frame has {} registers, function requires {}",
@@ -546,7 +569,9 @@ impl Executor {
         let code = &function.code;
         let mut profile = RuntimeProfileFrame::new();
         while self.pc < code.len() {
-            self.consume_instruction()?;
+            if BUDGETED {
+                self.consume_instruction()?;
+            }
             let instr = code[self.pc];
             let opcode = instr.opcode();
             profile.record_opcode(opcode, collect_metrics);
@@ -571,7 +596,9 @@ impl Executor {
                     if self.pc >= code.len() || code[self.pc].opcode() != Opcode::Move {
                         break;
                     }
-                    self.consume_instruction()?;
+                    if BUDGETED {
+                        self.consume_instruction()?;
+                    }
                 },
                 Opcode::Move2 => {
                     let first = *self.read_unchecked(instr.b());
@@ -1269,9 +1296,7 @@ impl Executor {
                     };
                     let value = match int_result {
                         Some(v) => v,
-                        None => match self.compare_test_value_slow(instr, lhs_idx, rhs_idx)? {
-                            v => v,
-                        },
+                        None => self.compare_test_value_slow(instr, lhs_idx, rhs_idx)?,
                     };
                     self.apply_compare_test_branch_unchecked(function, code, instr, value);
                 }
@@ -1599,6 +1624,10 @@ impl Executor {
                 Opcode::CallNamed => {
                     self.dispatch_cold(Opcode::CallNamed, function, module, instr, ctx, collect_metrics)?;
                 }
+                Opcode::CallMethodK => {
+                    self.dispatch_call_method_k(function, module, instr, ctx)?;
+                    profile.record_write_source(VmRegisterWriteSource::CallReturn, collect_metrics);
+                }
                 Opcode::GetGlobal => {
                     let slot = self.global_slot_from_fact_cache_or_instr(function, instr);
                     let value = self.read_global(slot)?;
@@ -1639,6 +1668,10 @@ impl Executor {
         let register = u8::try_from(index).map_err(|_| anyhow!("function arg index {} exceeds u8", index))?;
         self.write(register, value)
     }
+}
+
+fn gc_stress_enabled() -> bool {
+    std::env::var_os("LK_GC_STRESS").is_some_and(|value| value != "0")
 }
 
 pub fn execute(function: &Function) -> Result<ExecResult> {

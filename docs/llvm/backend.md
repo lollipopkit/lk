@@ -1,125 +1,138 @@
 # LLVM Backend
 
-The current LLVM target uses `ModuleArtifact` as its input boundary. A small
-native-lowerable subset of entry functions can return an `i64`, `f64`, `bool`,
-`nil`, short string, long string literal, simple const list, or simple const map
-from scalar loads, integer/float arithmetic, integer and float comparisons,
-mixed integer/float arithmetic promotion for float opcodes,
-simple `Test` / `Jmp` control flow including source-level conditional, match with range/guard/or patterns,
-range `for` including inclusive/negative-step ranges and `break` / `continue`, static-list `for`, static-string `for`, and static-map entry `for` expressions/statements, static template string `ToString` / `ConcatString` chains, static nullish/logical short-circuit expressions, static
-int/float/string comparison folding, bool/nil `Not` and equality checks, static const list/map shape checks, static string/list/map
-length, static string/list/map `GetIndex`, static string/list `SliceFrom`, static string/list/map `Contains`,
-static list/map equality, static object identity equality, static map rest
-destructuring including source-level static `if let` list/map destructuring, static object construction and field access, static list/map/object
-`SetIndex`, static `NewList` / `NewMap` / `NewRange` construction,
-simple scalar module global slots used by top-level variables, static scalar and statically
-displayable string/list/map truthiness branches, static success-path `TryBegin` / `TryEnd`, static truthiness `Not`, and
-straight-line static string globals and string equality checks.
-Control-flow block lowering also supports the covered template-string equality
-shape where dynamic `Text` parts are compared against a static string literal,
-including dynamic string and integer interpolations, plus static string/list
-`Contains` inside branchy source such as assertions.
-Straight-line entry functions can also
-inline simple direct function calls when positional arguments and the callee
-return value stay within those statically displayable values, including
-caller-side f64/bool/nil/string arguments, callee-local i64/f64 arithmetic,
-callee i64/f64 comparisons, callee static string equality, callee static
-list/map equality, callee static string/list `SliceFrom`, callee static
-string/list/map/object `GetIndex`, string/list/map `Contains`, callee static `SetIndex`, callee static `NewList` / `NewMap`,
-static `CallNamed` with fully supplied named arguments, reads from
-static module globals, callee static `MapRest` / `NewRange`, and callee writes back to
-static module globals, callee static i64 branch selection, callee static
-truthiness branch selection, static closure construction with `UpvalCell` capture loads/stores,
-entry/callee static `TryBegin` / `TryEnd` success paths, static handler-local
-`Raise`, source-level static optional access, and callee `bool` / `nil` returns.
-For that covered subset,
-`lk compile llvm FILE.lk` writes `FILE.ll` with a direct native `main`.
-Native `print` / `println` lowering covers static formatted calls with multiple
-`{}` placeholders when the argument values remain statically represented by the
-block compiler.
-Native stdlib lowering includes static OS string helpers for `os.hostname()`,
-`os.arch()`, `os.os()`, plus `os.clock()` and `os.epoch()`. Filesystem,
-environment, and process APIs now live in `fs`, `env`, `path`, and `process`;
-LLVM coverage for those modules should be added as typed native helpers instead
-of routing through the VM runtime.
-Static direct-call folding may also recover immutable heap-const list arguments
-inside the same basic block, which covers statically bounded recursive list
-methods such as `xs.skip(1)` without lowering through the VM runtime.
-Self-recursive function hinting tries scalar and list-like parameter profiles, so
-recursive helpers with mixed signatures such as `contains(List<Int>, Int) ->
-Bool` can be classified without falling back to the VM runtime.
-Dynamic native containers are represented as monomorphized layouts instead of a
-tagged runtime value. The current covered layouts include `List<i64>`,
-`List<f64>`, `List<bool>`, pointer/text lists, text-length lists used by joins,
-`Map<str,i64>`, `Map<str,f64>`, `Map<str,bool>`, `Map<str,str>`,
-`Map<i64,i64>`, `Map<i64,f64>`, `Map<i64,bool>`, and `Map<i64,str>`;
-static string lists can be indexed with a dynamic `i64` index and lower to
-direct string pointer selection. Covered dynamic lists, dynamic pair lists
-including `StrPtr,F64` and `I64,F64` field layouts, and dynamic maps can be
-displayed as direct returns and as nested `ArgList` return elements without
-falling back to the VM runtime.
-String-valued dynamic map writes copy runtime text through `strdup` before
-storing into ptr slots, so loop-local template buffers do not alias later
-iterations.
-For `Map<i64,i64/f64/bool/str>` and `Map<str,i64/f64/bool/str>`, `m.has(k)` and
-`m.delete(k)` also lower natively: delete materializes a fresh dynamic map
-storage for the returned `without` map and preserves the removed value. Missing
-dynamic map `get` results carry a present bit for integer, float, bool, and
-string pointer values, including receiver-method calls such as
-`without.get("missing")`, so nested returns print `nil` instead of the zero
-value. Dynamic `Map<str,str>` also has ptr-value set, direct index, values,
-display, and missing `get` lowering, with runtime text copied through `strdup`
-before it is stored. Optional scalar map-get results can be recovered into
-`ArgList` returns without falling back to the VM runtime.
-`DynamicList<i64>` and `DynamicList<bool>` also support monomorphized
-`xs.contains`, `xs.index_of`, `xs.reverse`, `xs.pop`, `xs.push`,
-`xs.slice`, `xs.insert`, `xs.remove_at`, and `xs.set` lowering through
-i64-slot helpers while preserving element-specific return/display shape,
-including nested `[new_list, old_value]` returns. `List<bool>` also lowers
-receiver `concat([false])` and `xs.sort()` through the same i64-slot
-ABI, with bool-specific display shape preserved at returns.
-`DynamicList<f64>` and dynamic pointer/string lists support the same module
-mutator family from register-recovered builtin calls, including `xs.slice`,
-`xs.insert`, `xs.remove_at`, `xs.set`, and `xs.push`; f64 paths use
-double-list helpers and string paths use ptr-list helpers. This path is intentionally
-kept distinct from static `List<i64>` folding: only storage rooted at
-`NewList`, `ListPush`, or an empty `LoadHeapConst []` is treated as mutable
-dynamic storage, so non-empty static heap lists continue to use static module
-helper folding.
+## Architecture: the typed MIR pipeline (only backend)
 
-Non-nil scalar returns are printed through `printf` using the same user-facing
-spellings as the VM path for the covered values. A nil return is silent, matching
-the CLI VM path. Unsupported shapes are rejected with a compile error; LLVM
-output must not embed a serialized `.lkm` payload or call back into the
-bytecode VM.
+Since the AOT redesign ([`aot-redesign.md`](./aot-redesign.md)) — and the
+retirement of the legacy text backend that followed it — every native compile
+runs one pipeline:
 
-Native integer and float division/modulo preserve the VM divisor-zero boundary:
-static folding refuses zero divisors, and scalar block lowering emits a
-divisor-zero guard instead of directly relying on LLVM `sdiv`, `fdiv`, or `frem`
-semantics.
-
-Control-flow scalar block lowering must treat static branch facts as path-local.
-When a statically known `Test` has an untaken target that is also a merge point,
-the merge remains reachable and must not be skipped. For values loaded before a
-control-flow boundary, the backend may recover narrowly proven immutable shapes
-such as heap-const integer lists for native list indexing and membership checks,
-but it must not preserve arbitrary mutable register facts across branches.
-
-Executable output uses the same `ModuleArtifact` compile-time boundary:
-
-```sh
-lk compile FILE.lk
+```
+ModuleArtifact → lk-aot-lower → lk_aot_mir::validate → lk-aot-codegen → clang + liblkrt.a
 ```
 
-For native-lowerable shapes, the CLI compiles the direct LLVM IR to a native
-executable with `clang` and links the typed `lkrt` native runtime static
-library. Unsupported shapes fail before executable emission; the CLI no longer
-generates a host executable launcher. Use `lk compile bytecode FILE.lk` when
-the desired output is the `.lkm` bytecode module artifact instead of a native
-executable.
+- **`lk-aot-lower`** is the *total capability predicate*: `lower() ->
+  Result<MirModule, Unsupported>`. Shapes outside the subset fail the compile
+  with a precise, user-facing `Unsupported` reason. There is no fallback
+  backend and no VM shell embedding.
+- **`lk_aot_mir::validate`** runs unconditionally on the production path (a
+  failure is a lowering bug, never a user error).
+- **`lk-aot-codegen`** is a total `MirModule` → LLVM-text rendering; the CLI
+  compiles the `.ll` with `clang` and links the typed `lkrt` static runtime
+  (`--whole-archive`, `-force_load` on macOS).
 
-Future native AOT work must continue expanding this `ModuleArtifact` lowering
-surface without adding a VM runtime bridge. The final executable may link Rust
-`std`, libc/libm, and `lkrt`, but it must not embed a serialized `.lkm` payload,
-`ModuleArtifact`, the bytecode executor, `VmContext`, parser, type checker, or
-compiler. See `docs/llvm/native-stdlib.md` for the native stdlib boundary.
+## Covered subset
+
+- Straight-line and branching/looping scalar code (i64/f64/bool/str, guarded
+  div/mod, VM-exact float display) with on-demand SSA construction (block
+  params as phis).
+- Direct function calls with per-callsite-monomorphized i64/f64/bool
+  params/returns, recursion included; dead (uncalled) functions are skipped.
+- Zero-capture closures (`let f = |x| …`) as statically known function
+  references: indirect calls devirtualize to direct calls, both for
+  register-local lambdas and for top-level lambdas stored in a module global
+  (single assignment in the entry prefix, readable from any function).
+- Capturing closures with statically tracked environments: the compiler's
+  upvalue cells (`LoadHeapConst UpvalCell` / `StoreCellVal` / `LoadCellVal`)
+  are modelled as virtual SSA slots, and each closure call resolves its cells
+  to their *current* content and passes the values as hidden trailing
+  parameters — preserving the VM's shared-mutable-cell semantics (mutations
+  between creation and call are visible). Cell state is block-local: closures
+  or mutations crossing control flow reject, as do lambdas that mutate their
+  captures, closures as first-class values (passed as arguments, stored in
+  containers, returned), and string captures flowing into `+` dispatch.
+- Growable handle containers (`List<i64/f64/str>`, `Map<{str,i64} ×
+  {i64,f64}>`) with VM-exact indexing: the `Maybe` present-bit model makes
+  out-of-range/missing reads return-print `nil`, abort on arithmetic (like the
+  VM halt), and answer `== nil`.
+- `push`/`set`/`len`/iteration/`in`/`join`, string
+  equality/concat/interpolation, long-string literals.
+- Runtime builtins recognized from `GetGlobal`: `println`/`print` (constant
+  format strings expand at lower time with exact `format_variadic_runtime`
+  semantics — `{}` substitution, leftover `{}` kept literal, extra args
+  space-appended), `assert`/`assert(cond, message)` (false aborts loudly),
+  `assert_eq`/`assert_ne` (scalar equality with Int/Float coercion and string
+  bytes, VM-format failure message), `panic(args…)` (space-joined display,
+  always fatal), and `typeof` (static scalar names; Maybe carriers select
+  `Nil` vs the value name at runtime). `IsNil` lowers likewise (scalars are
+  never nil, Maybe tests its present bit).
+- Composite string-int keys (`m["n${i}"]`): stores call the zero-allocation
+  `set_ik` map ABI (key built on the lkrt stack); loads build the key with the
+  single-allocation `str.concat_i64` fusion, which also fuses every int
+  operand of template-string concatenation.
+- `math` module: constants resolve at lower time (`pi`/`e`/`inf`/`nan`/
+  `max_int`/`min_int`/`max_float`/`epsilon`); `floor`/`ceil`/`round` dispatch
+  on the static type (Int passthrough, Float → lkrt `as i64` cast); `abs` and
+  `min`/`max` lower to selects preserving the argument type; `sqrt` (aborts on
+  a negative argument like the VM) / `sin`/`cos`/`exp`/`pow` call lkrt with
+  Number→Float promotion. Native links `-lm` on Linux.
+- `os.hostname`/`arch`/`os`, `process.cwd`, `fs.temp_dir` (owned strings),
+  `fs.read_dir` (sorted UTF-8 entry names as `List<str>`), and `time.since`
+  (inline `end - start`). `== nil`/`!= nil` folds for concrete-typed operands
+  and tests the present bit for Maybe carriers; `Bool == Bool` widens to i64.
+- `datetime` module via chrono in lkrt (the stdlib module's exact crate, so
+  formatting/weekday output is byte-identical): `now`/`format`/`parse`/
+  `day_of_week`/`day_of_year`/`is_weekend`; `add`/`sub` inline as Int
+  arithmetic. `io.std` (the `std` global from `use { std } from io`):
+  stdin/stdout/stderr are fixed handles, `write`/`writeln` return the VM's
+  byte counts, `flush` → `true`; the lkrt writers flush C stdio before and
+  their own stream after, so `printf` output and Rust-side writes keep
+  program order. `json` stays out of the subset (dynamic nested values).
+- List HOF over compiled zero-capture lambdas (fn-pointer ABI,
+  `Const::FnAddr` → `ptr @lk_fn_N`): `map`/`filter`/`reduce` over `List<i64>`
+  call the lambda per element inside lkrt; the callback signature goes through
+  the same monomorphization lattice as direct calls.
+- Zero-capture lambdas as user-function arguments (`apply(f, x)`): the lambda
+  parameter is *erased* — call sites record the lambda's identity (every site
+  must pass the same one, else whole-module fallback) and the callee seeds the
+  parameter register with the static ref, so indirect calls through it
+  devirtualize. Capturing closures as arguments, differing identities, and
+  returning closures stay rejected.
+- `CallMethodK` (the boxing-free method-call opcode) lowers through the same
+  per-(receiver type, method) dispatch as the legacy `__lk_call_method` shape;
+  builtin/global refs resolve across blocks when all predecessor paths agree
+  (`assert(a || b)`).
+- Fused compare-branch opcodes (`TestXxxInt(I)`+`Jmp`, `TestEqIntI2`,
+  `BrEqIntI4` family, `BrMod*ZeroIntI4`, nil branches).
+
+Ownership is arena-based by default: strings and container handles register in
+the `lkrt` arena and are reclaimed by `lkrt_cleanup()` at entry exit; the
+lowering eagerly frees provably dead display/concat temporaries. Every fatal
+guard (`div/0`, missing-key arithmetic, failed `assert`) flushes C stdio via
+`lkrt_abort` before aborting so already-printed output is never discarded.
+
+## Semantics and testing
+
+Native behaviour is pinned to the VM by three differential corpora
+(`cli/tests/aot_differential_test.rs` hand-written cases,
+`cli/tests/examples_differential_test.rs` over `examples/`, and the seeded
+generative fuzz in `cli/tests/aot_fuzz_differential_test.rs`), MIR snapshots
+(`aot/lower/tests/mir_snapshots.rs`), and the golden semantics vectors in
+[`docs/semantics.md`](../semantics.md). The ABI schema (`aot/abi`) is the
+single source of truth shared by codegen declarations and `lkrt`'s
+compile-time conformance checks.
+
+Unsupported shapes fail before executable emission; LLVM output must not embed
+a serialized `.lkm` payload, `ModuleArtifact`, the bytecode executor,
+`VmContext`, parser, type checker, or compiler. The final executable may link
+Rust `std`, libc/libm, and `lkrt`. See `docs/llvm/native-stdlib.md` for the
+native stdlib boundary.
+
+## Usage
+
+```sh
+lk compile FILE.lk          # native executable (default)
+lk compile llvm FILE.lk     # emit FILE.ll
+lk compile bytecode FILE.lk # emit the .lkm module artifact instead
+```
+
+Direct `lk file.lk` execution defaults to the bytecode VM; `LK_NATIVE_RUN=1`
+opts into the cached native fast path when the program lowers.
+`LK_NATIVE_SANITIZE=address,undefined` forwards `-fsanitize=` to clang for
+sanitized differential runs.
+
+## Future work
+
+Expanding this lowering surface (module builtins such as `os.clock`/`math.*`,
+closures/indirect calls/mutable globals — RFC §7 phase 4, mixed-element
+constant containers) must go through the MIR pipeline; adding a second lowering
+path or a VM runtime bridge is out of bounds.

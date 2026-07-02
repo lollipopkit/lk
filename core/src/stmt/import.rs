@@ -151,9 +151,8 @@ impl ModuleResolver {
     }
 
     pub fn resolve_runtime_module(&self, name: &str) -> Result<RuntimeExport> {
-        match self.stdlib_registry.get_module(name) {
-            Ok(module) => return module.runtime_exports(),
-            Err(_) => {}
+        if let Ok(module) = self.stdlib_registry.get_module(name) {
+            return module.runtime_exports();
         }
         let Some(root) = self.package_modules.get(name) else {
             return Err(anyhow!("Module '{}' not found", name));
@@ -214,10 +213,10 @@ impl ModuleResolver {
             if base.extension().and_then(|s| s.to_str()) == Some("lk") {
                 let p = root.join(&base);
                 if p.exists() {
-                    if let Ok(canon) = p.canonicalize() {
-                        if canon.starts_with(root) {
-                            return Ok(Self::normalize_path(canon));
-                        }
+                    if let Ok(canon) = p.canonicalize()
+                        && canon.starts_with(root)
+                    {
+                        return Ok(Self::normalize_path(canon));
                     }
                     return Ok(Self::normalize_path(p));
                 }
@@ -226,10 +225,10 @@ impl ModuleResolver {
             // Try ${MOD_NAME}.lk
             let candidate1 = root.join(base.with_extension("lk"));
             if candidate1.exists() {
-                if let Ok(canon) = candidate1.canonicalize() {
-                    if canon.starts_with(root) {
-                        return Ok(Self::normalize_path(canon));
-                    }
+                if let Ok(canon) = candidate1.canonicalize()
+                    && canon.starts_with(root)
+                {
+                    return Ok(Self::normalize_path(canon));
                 }
                 return Ok(Self::normalize_path(candidate1));
             }
@@ -237,10 +236,10 @@ impl ModuleResolver {
             // Try ${MOD_NAME}/mod.lk
             let candidate2 = root.join(base.join("mod.lk"));
             if candidate2.exists() {
-                if let Ok(canon) = candidate2.canonicalize() {
-                    if canon.starts_with(root) {
-                        return Ok(Self::normalize_path(canon));
-                    }
+                if let Ok(canon) = candidate2.canonicalize()
+                    && canon.starts_with(root)
+                {
+                    return Ok(Self::normalize_path(canon));
                 }
                 return Ok(Self::normalize_path(candidate2));
             }

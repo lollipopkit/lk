@@ -44,6 +44,7 @@ impl SmallKey {
 
 impl Executor {
     #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
     pub(in crate::vm::exec) fn set_index(
         &mut self,
         pc: usize,
@@ -71,7 +72,7 @@ impl Executor {
         let value = if move_value {
             self.take(value_reg)?
         } else {
-            self.read(value_reg)?.clone()
+            *self.read(value_reg)?
         };
         let has_static_fact = index_fact.is_some();
         let index_fact = match index_fact {
@@ -129,12 +130,12 @@ impl Executor {
                     Some(key) => record_dynamic_index_key_metric(index_key_metrics.as_deref_mut(), key),
                     None => record_dynamic_index_key_metric(index_key_metrics.as_deref_mut(), self.read(key_reg)?),
                 }
-                record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::RuntimeMapKey);
+                record_index_key_metric(index_key_metrics, VmIndexKeyMetric::RuntimeMapKey);
                 self.map_key_from_register_or_value(key_reg, moved_key)?
             }
         };
 
-        if let Some(done) = self.try_set_string_list(handle, &key, value.clone())? {
+        if let Some(done) = self.try_set_string_list(handle, &key, value)? {
             self.maybe_bump_shape(handle, has_static_fact);
             return Ok(done);
         }
@@ -163,6 +164,7 @@ impl Executor {
     }
 
     #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
     pub(in crate::vm::exec) fn set_string_int_map_index(
         &mut self,
         target_reg: u8,
@@ -184,7 +186,7 @@ impl Executor {
         let value = if move_value {
             self.take(value_reg)?
         } else {
-            self.read(value_reg)?.clone()
+            *self.read(value_reg)?
         };
         record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::DynamicRegisterKey);
         record_index_key_metric(
@@ -197,7 +199,7 @@ impl Executor {
                 record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::TypedMapDirect);
                 return Ok(());
             }
-            record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::GenericMapLookup);
+            record_index_key_metric(index_key_metrics, VmIndexKeyMetric::GenericMapLookup);
             let key = runtime_map_key_from_str(key);
             match self
                 .state
@@ -244,11 +246,10 @@ impl Executor {
         if matches!(
             self.state.heap.get(handle),
             Some(HeapValue::List(crate::val::TypedList::String(_)))
-        ) {
-            if let Some(done) = self.try_set_string_list(handle, &key, value.clone())? {
-                self.maybe_bump_shape(handle, has_static_fact);
-                return Ok(done);
-            }
+        ) && let Some(done) = self.try_set_string_list(handle, &key, value)?
+        {
+            self.maybe_bump_shape(handle, has_static_fact);
+            return Ok(done);
         }
         let index = usize::try_from(index).map_err(|_| anyhow!("list index must be non-negative"))?;
         if self.try_set_typed_list_index(handle, index, &value, known_value_kind)? {
@@ -327,6 +328,7 @@ impl Executor {
     }
 
     #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn set_map_index_handle(
         &mut self,
         handle: HeapRef,
@@ -393,7 +395,7 @@ impl Executor {
             record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::TypedMapDirect);
             return Ok(());
         }
-        record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::GenericMapLookup);
+        record_index_key_metric(index_key_metrics, VmIndexKeyMetric::GenericMapLookup);
         match self
             .state
             .heap

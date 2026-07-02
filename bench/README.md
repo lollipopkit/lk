@@ -29,9 +29,20 @@ By default the runner measures the same bytecode VM path used by direct
 does not accidentally change the default VM baseline. Use `RUN_AOT=1` to compile
 and measure native AOT as an additional explicit engine. If LLVM is disabled or
 the current workload artifact is not native lowerable yet, AOT is reported as
-skipped and the VM/Lua benchmark still runs. The latest smoke currently skips
-full-suite AOT because native lowering does not yet support a loop-after
-dynamic-map `GetIndex` shape.
+skipped and the VM/Lua benchmark still runs. Since the legacy text backend
+retired, AOT coverage equals the MIR pipeline's subset. As of 2026-07-02 the
+MIR pipeline compiles the **full 20-workload suite** (module builtins, mutable
+globals, range-for, fused arithmetic, string-keyed maps, method dispatch), all
+20 checksums match the VM, and a min-of-3 dist-build comparison measured
+**AOT/VM geomean ≈0.26x** (previously 0.329x). The former lkrt string-map
+bottleneck is fixed: the runtime arena is thread-local (no per-operation
+global lock), arena registry and map handles use FxHash, `str.concat_i64`
+builds composite/template int-suffix strings in one allocation, and the
+`set_ik` map ABI stores composite keys with no key allocation at all. The five
+dynamic string-key map workloads (two_sum_map, histogram_group_count,
+log_parse_filter, inventory_reorder, event_join_by_id) went from 2.0–3.5x
+*slower* than the VM to **0.79–1.04x** (geomean ≈0.89x); scalar/control-flow
+workloads stay at 0.02x–0.24x.
 
 The runner executes one workload at a time and prints progress to stderr, so a
 slow or stuck workload can be identified directly. Each workload has a timeout
@@ -406,7 +417,6 @@ Primary bottlenecks:
   copies
 - String conversion and string-key construction
 - Map/list memory layout and cache locality
-- AOT dynamic string-key map helpers and template string construction
 
 ## Files
 

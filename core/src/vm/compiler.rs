@@ -126,10 +126,11 @@ impl Compiler {
             Stmt::Empty => {}
             Stmt::Expr(expr) => {
                 let watermark = self.next_reg;
-                if !self.try_lower_rewritten_set_index_expr(expr)? {
-                    if !self.try_lower_builtin_method_statement(expr)? && !self.try_lower_dead_literal_expr(expr)? {
-                        self.lower_readonly_operand(expr)?;
-                    }
+                if !self.try_lower_rewritten_set_index_expr(expr)?
+                    && !self.try_lower_builtin_method_statement(expr)?
+                    && !self.try_lower_dead_literal_expr(expr)?
+                {
+                    self.lower_readonly_operand(expr)?;
                 }
                 self.next_reg = watermark;
             }
@@ -204,11 +205,9 @@ impl Compiler {
         let mut index = 0;
         while index < statements.len() {
             if index + 1 < statements.len()
-                && self.try_lower_default_assign_if_chain(statements[index].as_ref(), statements[index + 1].as_ref())?
-            {
-                index += 2;
-            } else if index + 1 < statements.len()
-                && self.try_lower_move2_assign_pair(statements[index].as_ref(), statements[index + 1].as_ref())?
+                && (self
+                    .try_lower_default_assign_if_chain(statements[index].as_ref(), statements[index + 1].as_ref())?
+                    || self.try_lower_move2_assign_pair(statements[index].as_ref(), statements[index + 1].as_ref())?)
             {
                 index += 2;
             } else {
@@ -2119,10 +2118,7 @@ fn default_assign_candidate(stmt: &Stmt) -> Option<(&str, &Expr, bool)> {
 }
 
 fn pure_default_expr(expr: &Expr) -> bool {
-    match strip_parens(expr) {
-        Expr::Literal(_) | Expr::Var(_) => true,
-        _ => false,
-    }
+    matches!(strip_parens(expr), Expr::Literal(_) | Expr::Var(_))
 }
 
 fn expr_mentions_name(expr: &Expr, name: &str) -> bool {

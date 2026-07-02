@@ -81,7 +81,7 @@ impl OsModule {
 }
 
 fn no_args(args: NativeArgs<'_>, name: &str) -> Result<()> {
-    if args.len() == 0 {
+    if args.is_empty() {
         Ok(())
     } else {
         bail!("{name}() takes no arguments")

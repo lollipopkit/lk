@@ -55,6 +55,10 @@ pub extern "C" fn lkrt_io_std_read_to_string(resource: i64) -> *mut c_char {
 }
 
 fn write_std_stream(mut stream: impl Write, data: &[u8], newline: bool, name: &str) -> Result<i64, String> {
+    // Generated code prints through C stdio (`printf`); this writes through
+    // Rust's buffered stream. Flush the C side first and the Rust side after,
+    // so interleaved `write`/`println` output keeps the VM's program order.
+    crate::abi::flush_c_stdio();
     stream
         .write_all(data)
         .map_err(|err| format!("{name} write failed: {err}"))?;
@@ -63,5 +67,8 @@ fn write_std_stream(mut stream: impl Write, data: &[u8], newline: bool, name: &s
             .write_all(b"\n")
             .map_err(|err| format!("{name} newline write failed: {err}"))?;
     }
-    Ok(0)
+    stream.flush().map_err(|err| format!("{name} flush failed: {err}"))?;
+    // The VM's `write`/`writeln` return the written byte count (data plus the
+    // trailing newline for `writeln`).
+    Ok(data.len() as i64 + i64::from(newline))
 }

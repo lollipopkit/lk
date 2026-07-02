@@ -13,6 +13,7 @@ use crate::typ::{TraitDef, TraitImpl};
 use std::collections::HashMap;
 
 mod core_methods;
+pub(crate) use core_methods::core_call_method_windowed;
 use core_methods::{core_call_method_builtin, core_call_method_named_builtin, core_set_builtin};
 
 /// VM runtime context.
@@ -541,9 +542,9 @@ fn core_set_field_builtin(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>)
     if args.len() != 3 {
         return Err(anyhow!("__lk_set_field(base, key, value) expects exactly 3 arguments"));
     }
-    let base = args.get(0).expect("arity checked").clone();
+    let base = *args.get(0).expect("arity checked");
     let key = runtime_string_arg(args.get(1).expect("arity checked"), runtime.heap(), "__lk_set_field")?;
-    let field_value = args.get(2).expect("arity checked").clone();
+    let field_value = *args.get(2).expect("arity checked");
     match base {
         RuntimeVal::Obj(handle) => {
             let updated = match runtime
@@ -624,7 +625,7 @@ fn set_string_field_on_object(object: &RuntimeObject, key: Arc<str>, value: Runt
     let mut fields = fast_hash_map_new();
     for (field_key, field_value) in &object.fields {
         if field_key.as_ref() != key.as_ref() {
-            fields.insert(Arc::clone(field_key), field_value.clone());
+            fields.insert(Arc::clone(field_key), *field_value);
         }
     }
     fields.insert(Arc::clone(&key), value);
@@ -648,7 +649,7 @@ fn set_string_field_on_map(map: &TypedMap, key: Arc<str>, value: RuntimeVal) -> 
             let mut out = fast_hash_map_new();
             for (entry_key, entry_value) in entries {
                 if *entry_key != runtime_key {
-                    out.insert(entry_key.clone(), entry_value.clone());
+                    out.insert(entry_key.clone(), *entry_value);
                 }
             }
             out.insert(runtime_key, value);
@@ -658,7 +659,7 @@ fn set_string_field_on_map(map: &TypedMap, key: Arc<str>, value: RuntimeVal) -> 
             let mut out = fast_hash_map_new();
             for (entry_key, entry_value) in entries {
                 if entry_key.as_ref() != key.as_ref() {
-                    out.insert(Arc::clone(entry_key), entry_value.clone());
+                    out.insert(Arc::clone(entry_key), *entry_value);
                 }
             }
             out.insert(key, value);
@@ -738,7 +739,7 @@ fn merge_field_maps(base: FieldMergeBase<'_>, overlay: &TypedMap) -> TypedMap {
             let mut entries = fast_hash_map_new();
             for (key, value) in &object.fields {
                 if !typed_map_contains_str(overlay, key.as_ref()) {
-                    entries.insert(Arc::clone(key), value.clone());
+                    entries.insert(Arc::clone(key), *value);
                 }
             }
             let mut out = TypedMap::StringMixed(entries);
@@ -758,14 +759,14 @@ fn copy_typed_map(map: &TypedMap) -> TypedMap {
         TypedMap::Mixed(entries) => {
             let mut out = fast_hash_map_new();
             for (key, value) in entries {
-                out.insert(key.clone(), value.clone());
+                out.insert(key.clone(), *value);
             }
             TypedMap::Mixed(out)
         }
         TypedMap::StringMixed(entries) => {
             let mut out = fast_hash_map_new();
             for (key, value) in entries {
-                out.insert(Arc::clone(key), value.clone());
+                out.insert(Arc::clone(key), *value);
             }
             TypedMap::StringMixed(out)
         }
@@ -781,7 +782,7 @@ fn copy_typed_map_without_overlay_keys(map: &TypedMap, overlay: &TypedMap) -> Ty
             let mut out = fast_hash_map_new();
             for (key, value) in entries {
                 if !typed_map_contains(overlay, key) {
-                    out.insert(key.clone(), value.clone());
+                    out.insert(key.clone(), *value);
                 }
             }
             TypedMap::Mixed(out)
@@ -790,7 +791,7 @@ fn copy_typed_map_without_overlay_keys(map: &TypedMap, overlay: &TypedMap) -> Ty
             let mut out = fast_hash_map_new();
             for (key, value) in entries {
                 if !typed_map_contains_str(overlay, key.as_ref()) {
-                    out.insert(Arc::clone(key), value.clone());
+                    out.insert(Arc::clone(key), *value);
                 }
             }
             TypedMap::StringMixed(out)
@@ -881,11 +882,11 @@ fn runtime_object_fields_from_map(map: &TypedMap) -> anyhow::Result<FastHashMap<
                 let Some(key) = key.as_arc_str() else {
                     return Err(anyhow!("__lk_make_struct field keys must be strings"));
                 };
-                fields.insert(key, value.clone());
+                fields.insert(key, *value);
             }
         }
         TypedMap::StringMixed(entries) => {
-            fields.extend(entries.iter().map(|(key, value)| (key.clone(), value.clone())));
+            fields.extend(entries.iter().map(|(key, value)| (key.clone(), *value)));
         }
         TypedMap::StringInt(entries) => {
             fields.extend(
@@ -916,12 +917,12 @@ fn extend_typed_map(out: &mut TypedMap, map: &TypedMap) {
     match map {
         TypedMap::Mixed(entries) => {
             for (key, value) in entries {
-                out.set(key.clone(), value.clone());
+                out.set(key.clone(), *value);
             }
         }
         TypedMap::StringMixed(entries) => {
             for (key, value) in entries {
-                out.set(RuntimeMapKey::String(key.clone()), value.clone());
+                out.set(RuntimeMapKey::String(key.clone()), *value);
             }
         }
         TypedMap::StringInt(entries) => {

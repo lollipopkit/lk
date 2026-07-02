@@ -22,6 +22,7 @@ mod repl;
 mod runtime;
 #[allow(dead_code)]
 pub(crate) mod ssa;
+pub mod verify;
 
 pub use artifact::*;
 pub use cache::*;

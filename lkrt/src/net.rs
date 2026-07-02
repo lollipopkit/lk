@@ -1,6 +1,6 @@
 use crate::{
     abi::{aborting, c_str, owned_c_string},
-    state::{HandleKind, runtime},
+    state::{HandleKind, with_runtime},
 };
 use std::{
     ffi::c_char,
@@ -24,7 +24,7 @@ pub extern "C" fn lkrt_tcp_connect(addr: *const c_char) -> i64 {
     aborting(|| {
         let addr = c_str(addr, "tcp.connect addr")?;
         let stream = TcpStream::connect(addr.as_str()).map_err(|err| format!("tcp connect {addr}: {err}"))?;
-        Ok(runtime().lock().expect("lkrt runtime poisoned").insert_stream(stream))
+        Ok(with_runtime(|rt| rt.insert_stream(stream)))
     })
 }
 
@@ -32,16 +32,15 @@ pub extern "C" fn lkrt_tcp_connect(addr: *const c_char) -> i64 {
 pub extern "C" fn lkrt_tcp_read(stream: i64, max_bytes: i64) -> i64 {
     aborting(|| {
         let max = checked_read_len(max_bytes)?;
-        let mut stream = runtime()
-            .lock()
-            .expect("lkrt runtime poisoned")
-            .stream(stream)?
-            .try_clone()
-            .map_err(|err| format!("tcp.read clone stream: {err}"))?;
+        let mut stream = with_runtime(|rt| {
+            rt.stream(stream)?
+                .try_clone()
+                .map_err(|err| format!("tcp.read clone stream: {err}"))
+        })?;
         let mut buffer = vec![0u8; max];
         let read = stream.read(&mut buffer).map_err(|err| format!("tcp read: {err}"))?;
         buffer.truncate(read);
-        Ok(runtime().lock().expect("lkrt runtime poisoned").insert_bytes(buffer))
+        Ok(with_runtime(|rt| rt.insert_bytes(buffer)))
     })
 }
 
@@ -56,26 +55,20 @@ pub extern "C" fn lkrt_tcp_write_str(stream: i64, data: *const c_char) -> i64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_tcp_write_bytes(stream: i64, data: i64) -> i64 {
     aborting(|| {
-        let data = runtime().lock().expect("lkrt runtime poisoned").take_bytes(data)?;
+        let data = with_runtime(|rt| rt.take_bytes(data))?;
         write_stream(stream, &data)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_tcp_close(stream: i64) -> i64 {
-    aborting(|| {
-        runtime()
-            .lock()
-            .expect("lkrt runtime poisoned")
-            .close_kind(stream, HandleKind::TcpStream)
-            .map(i64::from)
-    })
+    aborting(|| with_runtime(|rt| rt.close_kind(stream, HandleKind::TcpStream)).map(i64::from))
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_bytes_to_string_utf8(bytes: i64) -> *mut c_char {
     aborting(|| {
-        let bytes = runtime().lock().expect("lkrt runtime poisoned").take_bytes(bytes)?;
+        let bytes = with_runtime(|rt| rt.take_bytes(bytes))?;
         let value = std::str::from_utf8(&bytes).map_err(|err| format!("bytes are not valid UTF-8: {err}"))?;
         owned_c_string(value)
     })
@@ -83,27 +76,20 @@ pub extern "C" fn lkrt_bytes_to_string_utf8(bytes: i64) -> *mut c_char {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_bytes_free(bytes: i64) -> i64 {
-    aborting(|| {
-        runtime()
-            .lock()
-            .expect("lkrt runtime poisoned")
-            .close_kind(bytes, HandleKind::Bytes)
-            .map(i64::from)
-    })
+    aborting(|| with_runtime(|rt| rt.close_kind(bytes, HandleKind::Bytes)).map(i64::from))
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_handle_close(handle: i64) -> i64 {
-    i64::from(runtime().lock().expect("lkrt runtime poisoned").close_any(handle))
+    i64::from(with_runtime(|rt| rt.close_any(handle)))
 }
 
 fn write_stream(handle: i64, data: &[u8]) -> Result<i64, String> {
-    let mut stream = runtime()
-        .lock()
-        .expect("lkrt runtime poisoned")
-        .stream(handle)?
-        .try_clone()
-        .map_err(|err| format!("tcp.write clone stream: {err}"))?;
+    let mut stream = with_runtime(|rt| {
+        rt.stream(handle)?
+            .try_clone()
+            .map_err(|err| format!("tcp.write clone stream: {err}"))
+    })?;
     stream.write_all(data).map_err(|err| format!("tcp write: {err}"))?;
     Ok(data.len() as i64)
 }
@@ -153,7 +139,8 @@ mod tests {
             .to_str()
             .expect("utf8")
             .to_owned();
-        lkrt_string_free(response);
+        // SAFETY: the pointer came from an lkrt owned-string return.
+        unsafe { lkrt_string_free(response) };
         assert_eq!(response_text, "pong");
         assert_eq!(lkrt_bytes_free(bytes), 0);
         assert_eq!(lkrt_tcp_close(stream), 1);
@@ -165,7 +152,8 @@ mod tests {
     fn last_error_is_owned_string() {
         let error = lkrt_last_error();
         assert!(!error.is_null());
-        lkrt_string_free(error);
+        // SAFETY: the pointer came from an lkrt owned-string return.
+        unsafe { lkrt_string_free(error) };
     }
 
     #[test]
@@ -178,7 +166,8 @@ mod tests {
             .to_str()
             .expect("utf8")
             .to_owned();
-        lkrt_string_free(addr);
+        // SAFETY: the pointer came from an lkrt owned-string return.
+        unsafe { lkrt_string_free(addr) };
         assert_eq!(addr_text, "[::1]:8080");
     }
 }

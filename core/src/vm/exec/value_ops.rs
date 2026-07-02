@@ -12,13 +12,14 @@ impl Executor {
         self.runtime_value_to_plain_string(self.read(register)?)
     }
 
+    #[allow(clippy::wrong_self_convention)] // display conversion may allocate heap strings
     pub(super) fn to_runtime_string_with_display(
         &mut self,
         register: u8,
         module: Option<&Module>,
         ctx: &mut Option<&mut VmContext>,
     ) -> Result<String> {
-        let value = self.read(register)?.clone();
+        let value = *self.read(register)?;
         if let Some(text) = self.runtime_value_to_plain_string_maybe(&value)? {
             return Ok(text);
         }
@@ -108,11 +109,11 @@ impl Executor {
     }
 
     pub(super) fn string_split(&mut self, dst: u8, target: u8, delimiter: u8) -> Result<()> {
-        let target = self.read(target)?.clone();
+        let target = *self.read(target)?;
         let Some(target) = self.runtime_value_to_string(&target)? else {
             bail!("StringSplit target must be string, got {:?}", target.kind());
         };
-        let delimiter = self.read(delimiter)?.clone();
+        let delimiter = *self.read(delimiter)?;
         let Some(delimiter) = self.runtime_value_to_string(&delimiter)? else {
             bail!("StringSplit delimiter must be string, got {:?}", delimiter.kind());
         };
@@ -125,11 +126,11 @@ impl Executor {
     }
 
     pub(super) fn list_join(&mut self, dst: u8, target: u8, separator: u8) -> Result<()> {
-        let target = self.read(target)?.clone();
+        let target = *self.read(target)?;
         let RuntimeVal::Obj(handle) = target else {
             bail!("ListJoin target must be list, got {:?}", target.kind());
         };
-        let separator = self.read(separator)?.clone();
+        let separator = *self.read(separator)?;
         let Some(separator) = self.runtime_value_to_string(&separator)? else {
             bail!("ListJoin separator must be string, got {:?}", separator.kind());
         };

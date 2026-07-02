@@ -43,7 +43,7 @@ impl LkAnalyzer {
     }
 
     pub(crate) fn vars_has_key(&self, context: &RuntimeVal, heap: &HeapStore, key: &str) -> bool {
-        let mut current = context.clone();
+        let mut current = *context;
         for part in key.split('.') {
             let Some(value) = runtime_map_get_str(&current, heap, part) else {
                 return false;
@@ -68,7 +68,7 @@ fn runtime_map_get_str(value: &RuntimeVal, heap: &HeapStore, key: &str) -> Optio
     match map {
         TypedMap::Mixed(entries) => entries
             .iter()
-            .find_map(|(entry_key, value)| (entry_key.as_str() == Some(key)).then(|| value.clone())),
+            .find_map(|(entry_key, value)| (entry_key.as_str() == Some(key)).then_some(*value)),
         TypedMap::StringMixed(entries) => entries.get(key).cloned(),
         TypedMap::StringInt(entries) => entries.get(key).copied().map(RuntimeVal::Int),
         TypedMap::StringFloat(entries) => entries.get(key).copied().map(RuntimeVal::Float),

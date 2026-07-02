@@ -230,6 +230,12 @@ pub enum Opcode {
     TryBegin = 102,
     TryEnd = 103,
     Wide = 104,
+    /// Boxing-free method call: `a` = window base (receiver at `a`, args at
+    /// `[a+1, a+1+c)`, result written to `a`), `b` = method-name string
+    /// constant index, `c` = positional argument count. Replaces the
+    /// `GetGlobal __lk_call_method` + `NewList` + `Call` sequence for
+    /// positional method calls whose name constant index fits in `b`.
+    CallMethodK = 105,
 }
 
 impl Opcode {
@@ -344,6 +350,7 @@ impl Opcode {
             102 => Some(Self::TryBegin),
             103 => Some(Self::TryEnd),
             104 => Some(Self::Wide),
+            105 => Some(Self::CallMethodK),
             _ => None,
         }
     }
@@ -637,7 +644,7 @@ pub fn encode_instr(code: &[Instr]) -> Vec<u8> {
 }
 
 pub fn decode_instr(bytes: &[u8]) -> Result<Vec<Instr>> {
-    if bytes.len() % size_of::<u32>() != 0 {
+    if !bytes.len().is_multiple_of(size_of::<u32>()) {
         bail!("Instr encoded length {} is not 4-byte aligned", bytes.len());
     }
     let mut instrs = Vec::with_capacity(bytes.len() / size_of::<u32>());

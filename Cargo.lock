@@ -980,6 +980,35 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
 
 [[package]]
+name = "lk-aot-abi"
+version = "0.1.0"
+
+[[package]]
+name = "lk-aot-codegen"
+version = "0.1.0"
+dependencies = [
+ "lk-aot-abi",
+ "lk-aot-mir",
+]
+
+[[package]]
+name = "lk-aot-lower"
+version = "0.1.0"
+dependencies = [
+ "lk-aot-abi",
+ "lk-aot-codegen",
+ "lk-aot-mir",
+ "lk-core",
+]
+
+[[package]]
+name = "lk-aot-mir"
+version = "0.1.0"
+dependencies = [
+ "lk-aot-abi",
+]
+
+[[package]]
 name = "lk-cli"
 version = "0.1.3"
 dependencies = [
@@ -1047,6 +1076,9 @@ version = "0.1.3"
 dependencies = [
  "anyhow",
  "chrono",
+ "lk-aot-codegen",
+ "lk-aot-lower",
+ "lk-aot-mir",
  "lk-core",
  "lk-stdlib",
  "lkrt",
@@ -1407,6 +1439,11 @@ dependencies = [
 [[package]]
 name = "lkrt"
 version = "0.1.3"
+dependencies = [
+ "chrono",
+ "lk-aot-abi",
+ "rustc-hash",
+]
 
 [[package]]
 name = "llvm-tools"

@@ -71,7 +71,7 @@ impl Executor {
                     record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::TypedMapDirect);
                     return Ok(value);
                 }
-                record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::GenericMapLookup);
+                record_index_key_metric(index_key_metrics, VmIndexKeyMetric::GenericMapLookup);
                 Ok(map.get_str(key).unwrap_or(RuntimeVal::Nil))
             })?,
             Some(other) => bail!(
@@ -239,19 +239,19 @@ impl Executor {
             // For list with known type, skip the slow path too
             if fact.target_kind == PerfIndexTargetKind::List {
                 let key_val = self.read_unchecked(key_reg);
-                if let RuntimeVal::Int(n) = key_val {
-                    if let Some(HeapValue::List(list)) = self.state.heap.get(handle) {
-                        let index = if *n < 0 {
-                            let index = list.len() as i64 + *n;
-                            if index < 0 {
-                                return Ok(RuntimeVal::Nil);
-                            }
-                            index as usize
-                        } else {
-                            *n as usize
-                        };
-                        return Ok(self.get_typed_list_element(list, index));
-                    }
+                if let RuntimeVal::Int(n) = key_val
+                    && let Some(HeapValue::List(list)) = self.state.heap.get(handle)
+                {
+                    let index = if *n < 0 {
+                        let index = list.len() as i64 + *n;
+                        if index < 0 {
+                            return Ok(RuntimeVal::Nil);
+                        }
+                        index as usize
+                    } else {
+                        *n as usize
+                    };
+                    return Ok(self.get_typed_list_element(list, index));
                 }
             }
             if fact.target_kind == PerfIndexTargetKind::String {
@@ -355,7 +355,7 @@ impl Executor {
             _ => {
                 // Bool, Nil, Float keys - rare, fall back
                 let _ = key_val;
-                record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::RuntimeMapKey);
+                record_index_key_metric(index_key_metrics, VmIndexKeyMetric::RuntimeMapKey);
                 let key = self.map_key_from_register(key_reg)?;
                 Ok(self.lookup_map_handle(handle, &key)?.unwrap_or(RuntimeVal::Nil))
             }
@@ -395,7 +395,7 @@ impl Executor {
         match target_kind {
             IndexTargetKind::List => {
                 if let Some(pos) = self.negative_list_index(handle, key_reg) {
-                    let orig_val = self.read(key_reg)?.clone();
+                    let orig_val = *self.read(key_reg)?;
                     self.write(key_reg, RuntimeVal::Int(pos as i64))?;
                     let result = self.index_list_handle(handle, key_reg, index_fact.map(|fact| fact.value_kind));
                     self.write(key_reg, orig_val)?;
@@ -435,7 +435,7 @@ impl Executor {
                     }
                     None => {
                         record_dynamic_index_key_metric(index_key_metrics.as_deref_mut(), self.read(key_reg)?);
-                        record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::ObjectKey);
+                        record_index_key_metric(index_key_metrics, VmIndexKeyMetric::ObjectKey);
                         self.object_key_from_register(key_reg)?
                     }
                 };
@@ -464,7 +464,7 @@ impl Executor {
     #[cold]
     fn get_heap_string_index(&mut self, handle: crate::val::HeapRef, key_reg: u8) -> Result<RuntimeVal> {
         if let Some(pos) = self.negative_string_index(handle, key_reg) {
-            let orig_val = self.read(key_reg)?.clone();
+            let orig_val = *self.read(key_reg)?;
             self.write(key_reg, RuntimeVal::Int(pos as i64))?;
             let result = self.index_heap_string_at_key(handle, key_reg);
             self.write(key_reg, orig_val)?;

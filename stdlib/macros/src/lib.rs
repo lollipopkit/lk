@@ -620,20 +620,24 @@ impl ParamList {
                 .iter()
                 .filter(|param| !param.optional && !param.variadic)
                 .count();
-            let max = if signature.params.iter().any(|param| param.variadic) {
-                quote!(usize::MAX)
-            } else {
-                let max = signature.params.len();
-                quote!(#max)
-            };
+            let variadic = signature.params.iter().any(|param| param.variadic);
+            let max = signature.params.len();
+            // Shape the generated comparison so expanded code stays
+            // clippy-clean (`double_comparisons`, `manual_range_contains`).
             if has_named {
-                quote! {
-                    (__lk_stdlib_export_arg_len <= #max)
+                if variadic {
+                    quote!(true)
+                } else {
+                    quote!((__lk_stdlib_export_arg_len <= #max))
                 }
+            } else if variadic {
+                quote!((__lk_stdlib_export_arg_len >= #min))
+            } else if min == max {
+                quote!((__lk_stdlib_export_arg_len == #max))
+            } else if min == 0 {
+                quote!((__lk_stdlib_export_arg_len <= #max))
             } else {
-                quote! {
-                    (__lk_stdlib_export_arg_len >= #min && __lk_stdlib_export_arg_len <= #max)
-                }
+                quote!(((#min..=#max).contains(&__lk_stdlib_export_arg_len)))
             }
         });
         let expected = self.argument_count_description(has_named);
@@ -1003,13 +1007,12 @@ fn doc_comments(attrs: &[Attribute]) -> Option<String> {
         if !attr.path().is_ident("doc") {
             continue;
         }
-        if let Meta::NameValue(name_value) = &attr.meta {
-            if let Expr::Lit(ExprLit {
+        if let Meta::NameValue(name_value) = &attr.meta
+            && let Expr::Lit(ExprLit {
                 lit: Lit::Str(value), ..
             }) = &name_value.value
-            {
-                lines.push(value.value().trim().to_string());
-            }
+        {
+            lines.push(value.value().trim().to_string());
         }
     }
     let docs = lines.join("\n").trim().to_string();

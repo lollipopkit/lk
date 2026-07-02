@@ -15,7 +15,7 @@ impl Executor {
             .get(*handle)
             .ok_or_else(|| anyhow!("LoadCellVal heap object {} out of bounds", handle.index()))?
         {
-            HeapValue::UpvalCell(value) => Ok(value.clone()),
+            HeapValue::UpvalCell(value) => Ok(*value),
             other => bail!("LoadCellVal expected UpvalCell, got {}", other.type_name()),
         }
     }
@@ -24,9 +24,9 @@ impl Executor {
         let value = if move_value {
             self.take(src_register)?
         } else {
-            self.read(src_register)?.clone()
+            *self.read(src_register)?
         };
-        let RuntimeVal::Obj(handle) = self.read(cell_register)?.clone() else {
+        let RuntimeVal::Obj(handle) = *self.read(cell_register)? else {
             bail!("StoreCellVal expected UpvalCell object");
         };
         match self

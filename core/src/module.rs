@@ -204,7 +204,7 @@ pub fn runtime_export_from_plain_native_entries(
         entries.insert(Arc::<str>::from(native.name), value);
     }
     for value in values {
-        entries.insert(Arc::<str>::from(value.name), value.value.clone());
+        entries.insert(Arc::<str>::from(value.name), value.value);
     }
     let value = RuntimeVal::Obj(heap.alloc(HeapValue::Map(TypedMap::StringMixed(entries))));
     RuntimeExport::new(

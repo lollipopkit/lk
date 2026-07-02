@@ -44,6 +44,27 @@ intrinsics.
 - `lkrt_abi_version()` exposes the native runtime ABI version. LLVM lowering
   should treat a missing or incompatible ABI as a link/configuration error, not
   as a reason to fall back to the VM.
+- Container method bodies live in `lkrt` as typed helpers rather than as
+  per-shape hand-written LLVM IR. Lists and maps are **opaque growable
+  handles** (`*mut Vec<T>` / `*mut FxHashMap<K, V>` behind `ptr`), created by
+  the `lkrt_lklist_*_new` / `lkrt_lkmap_*_new` entry points in
+  `lkrt/src/lklist.rs` / `lkrt/src/lkmap.rs` and registered in the runtime
+  arena (reclaimed by `lkrt_cleanup()` at exit). There is no fixed capacity
+  and no caller-owned buffer; the raw-buffer `lkrt_list_*`/`lkrt_map_*`
+  helper family described by earlier drafts was retired with the legacy text
+  backend.
+- The schema single source of truth is `aot/abi` (`for_each_abi_fn!`):
+  `list_h.*` covers `i64`/`f64`/`str` element lists (`push`/`set`/`len`/
+  `at`/`contains`/`join` plus the fn-pointer HOF entries
+  `i64_{map,filter,reduce}_fn`), `map_h.*` covers `{str,i64} × {i64,f64}`
+  maps (`new`/`set`/`set_ik`/`len`). Handle-typed parameters are `Ptr`.
+- Reads with missing/out-of-range semantics return a by-value `Maybe`
+  (`lkrt_lklist_*_get_pair` / `lkrt_lkmap_*_get_pair` → `{value, present}`
+  structs); stores with fatal VM semantics (`xs[i] = v` out of range) abort
+  loudly via `lkrt` instead of returning. String elements/keys are
+  `*const c_char`; the map copies its key on insert, so composite-key stores
+  use the zero-allocation `map_h.*_set_ik` (key assembled on the lkrt stack)
+  and key temporaries are freed eagerly by the lowering.
 - Strings returned by `lkrt` are owned by `lkrt` and must be released with
   `lkrt_string_free(ptr)` when generated code starts tracking native ownership.
 - `lkrt_last_error()` returns an owned string for diagnostics. Existing aborting

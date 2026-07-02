@@ -77,7 +77,7 @@ pub(super) fn push_list_value(list: &mut TypedList, value: RuntimeVal, string_va
             (RuntimeVal::Int(value), _) => *list = TypedList::Int(vec![value]),
             (RuntimeVal::Float(value), _) => *list = TypedList::Float(vec![value]),
             (RuntimeVal::Bool(value), _) => *list = TypedList::Bool(vec![value]),
-            (value, Some(string_value)) if matches!(value, RuntimeVal::ShortStr(_) | RuntimeVal::Obj(_)) => {
+            (RuntimeVal::ShortStr(_) | RuntimeVal::Obj(_), Some(string_value)) => {
                 *list = TypedList::String(vec![string_value]);
             }
             (value, _) => values.push(value),
@@ -668,7 +668,7 @@ impl Executor {
         }
         let (positional_count, named_count) = if named {
             let payload = instr.bx();
-            ((payload & 0x7f) as u16, (payload >> 7) as u16)
+            ((payload & 0x7f), (payload >> 7))
         } else {
             (instr.c() as u16, 0)
         };

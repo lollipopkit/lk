@@ -1,0 +1,15 @@
+[package]
+name = "lk-aot-lower"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "lk_aot_lower"
+
+[dependencies]
+lk-core = { path = "../../core", default-features = false }
+lk-aot-abi = { path = "../abi" }
+lk-aot-mir = { path = "../mir" }
+
+[dev-dependencies]
+lk-aot-codegen = { path = "../codegen" }

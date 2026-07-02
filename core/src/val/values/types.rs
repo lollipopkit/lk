@@ -64,7 +64,7 @@ impl ShortStr {
         let prefix = self.as_str().as_bytes();
         let prefix_len = prefix.len();
         // Fast path for common small non-negative integers: write digits directly.
-        if n >= 0 && n < 10000 {
+        if (0..10000).contains(&n) {
             let num_len = decimal_len_under_10000(n as u64);
             let total_len = prefix_len + num_len;
             if total_len <= 7 {
@@ -92,7 +92,7 @@ impl ShortStr {
     pub fn concat_int_prefix(n: i64, suffix: ShortStr) -> ShortStrOrStr {
         let suffix_bytes = suffix.as_str().as_bytes();
         let suffix_len = suffix_bytes.len();
-        if n >= 0 && n < 10000 {
+        if (0..10000).contains(&n) {
             let mut data = [0u8; 7];
             let num_len = write_u64_to_buf(n as u64, &mut data[..]);
             let total_len = num_len + suffix_len;
