@@ -1007,3 +1007,25 @@ fn compiler_inline_arg_closure_promotion_survives_scope_restore() {
     let result = execute_module(&module).expect("execute module");
     assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(1707)]);
 }
+
+#[test]
+fn compiler_inline_arguments_resolve_names_in_caller_scope() {
+    // Inline argument expressions must lower before any parameter binds:
+    // interleaving let `add2(1, a)` resolve the second argument against the
+    // already-bound first parameter `a` (passing 1 instead of the caller's
+    // 100). Regression: printed 2 instead of 101.
+    let module = compile_source_module(
+        r#"
+        fn add2(a, b) {
+            let t = a % 97;
+            return t + b;
+        }
+        let a = 100;
+        return add2(1, a);
+        "#,
+    )
+    .expect("compile module");
+
+    let result = execute_module(&module).expect("execute module");
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(101)]);
+}

@@ -18,7 +18,7 @@ impl Compiler {
                 && let Some(reg) = self.cached_loop_literal_expr(value)
             {
                 self.clear_const_map_local(name);
-                self.insert_local(name.clone(), reg);
+                self.insert_fresh_local(name.clone(), reg);
                 self.next_reg = self.live_register_floor().max(self.next_reg);
                 return Ok(());
             }
@@ -39,7 +39,7 @@ impl Compiler {
                 self.emit_set_global(slot, global_slot)?;
             }
             self.record_const_map_local_from_expr(name, value)?;
-            self.insert_local(name.clone(), slot);
+            self.insert_fresh_local(name.clone(), slot);
             self.next_reg = self.live_register_floor().max(watermark).max(slot + 1);
             return Ok(());
         }
@@ -66,7 +66,7 @@ impl Compiler {
                     self.emit_set_global(value, slot)?;
                 }
                 self.clear_const_map_local(name);
-                self.insert_local(name.clone(), value);
+                self.insert_fresh_local(name.clone(), value);
                 Ok(())
             }
             Pattern::Wildcard => Ok(()),
@@ -83,7 +83,7 @@ impl Compiler {
                         checked_u8("let rest value", value)?,
                         checked_u8("let rest start", start)?,
                     ));
-                    self.insert_local(rest.clone(), slice);
+                    self.insert_fresh_local(rest.clone(), slice);
                 }
                 Ok(())
             }
@@ -103,7 +103,7 @@ impl Compiler {
                 }
                 if let Some(rest) = rest {
                     let map = self.lower_map_rest(value, patterns)?;
-                    self.insert_local(rest.clone(), map);
+                    self.insert_fresh_local(rest.clone(), map);
                 }
                 Ok(())
             }

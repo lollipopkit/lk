@@ -252,7 +252,7 @@ impl Compiler {
             reg
         } else if is_let {
             let reg = self.alloc_reg();
-            self.insert_local(name.to_string(), reg);
+            self.insert_fresh_local(name.to_string(), reg);
             reg
         } else {
             return Ok(false);
@@ -398,7 +398,7 @@ impl Compiler {
             self.emit_set_global(slot, global_slot)?;
         }
         self.record_const_map_local_from_expr(name, value)?;
-        self.insert_local(name.to_string(), slot);
+        self.insert_fresh_local(name.to_string(), slot);
         self.next_reg = self.live_register_floor().max(watermark).max(slot + 1);
         Ok(())
     }
@@ -1401,10 +1401,14 @@ impl Compiler {
     }
 
     fn lower_for(&mut self, pattern: &ForPattern, iterable: &Expr, body: &Stmt) -> Result<()> {
-        self.pre_promote_loop_captures(None, body)?;
+        // The pattern names register *before* the body prescan: inside the
+        // body they lexically refer to the loop variables, so the prescan
+        // must not pre-promote a same-named outer local.
         let snapshot_mark = self.loop_snapshot_vars.len();
         collect_for_pattern_names(pattern, &mut self.loop_snapshot_vars);
-        let result = self.lower_for_dispatch(pattern, iterable, body);
+        let result = self
+            .pre_promote_loop_captures(None, body)
+            .and_then(|()| self.lower_for_dispatch(pattern, iterable, body));
         self.loop_snapshot_vars.truncate(snapshot_mark);
         result
     }
@@ -1559,21 +1563,33 @@ impl Compiler {
         Ok(())
     }
 
-    fn bind_for_pattern(&mut self, pattern: &ForPattern, value: u16) -> Result<Vec<(String, Option<u16>)>> {
+    fn bind_for_pattern(&mut self, pattern: &ForPattern, value: u16) -> Result<Vec<ForPatternBinding>> {
         let mut previous = Vec::new();
         self.bind_for_pattern_inner(pattern, value, &mut previous)?;
         Ok(previous)
+    }
+
+    /// A loop binding is fresh (never a cell), so binding clears any stale
+    /// cell mark of a same-named outer local; the restore re-instates both
+    /// the previous slot and its mark.
+    fn bind_for_name(&mut self, name: &str, value: u16, previous: &mut Vec<ForPatternBinding>) {
+        let was_cell = self.cell_locals.contains(name);
+        previous.push(ForPatternBinding {
+            name: name.to_string(),
+            slot: self.insert_fresh_local(name.to_string(), value),
+            was_cell,
+        });
     }
 
     fn bind_for_pattern_inner(
         &mut self,
         pattern: &ForPattern,
         value: u16,
-        previous: &mut Vec<(String, Option<u16>)>,
+        previous: &mut Vec<ForPatternBinding>,
     ) -> Result<()> {
         match pattern {
             ForPattern::Variable(name) => {
-                previous.push((name.clone(), self.insert_local(name.clone(), value)));
+                self.bind_for_name(name, value, previous);
                 Ok(())
             }
             ForPattern::Ignore => Ok(()),
@@ -1602,7 +1618,7 @@ impl Compiler {
                     checked_u8("for rest value", value)?,
                     checked_u8("for rest start", start)?,
                 ));
-                previous.push((rest.clone(), self.insert_local(rest.clone(), slice)));
+                self.bind_for_name(rest, slice, previous);
                 Ok(())
             }
             ForPattern::Object(entries) => {
@@ -1629,7 +1645,7 @@ impl Compiler {
         &mut self,
         patterns: &[ForPattern],
         value: u16,
-        previous: &mut Vec<(String, Option<u16>)>,
+        previous: &mut Vec<ForPatternBinding>,
     ) -> Result<()> {
         for (index, pattern) in patterns.iter().enumerate() {
             let index = i64::try_from(index).map_err(|_| anyhow!("Compiler for pattern index overflow"))?;
@@ -1646,12 +1662,15 @@ impl Compiler {
         Ok(())
     }
 
-    fn restore_for_pattern(&mut self, previous: Vec<(String, Option<u16>)>) {
-        for (name, old) in previous.into_iter().rev() {
-            if let Some(old) = old {
-                self.insert_local(name, old);
+    fn restore_for_pattern(&mut self, previous: Vec<ForPatternBinding>) {
+        for binding in previous.into_iter().rev() {
+            if let Some(old) = binding.slot {
+                self.insert_local(binding.name.clone(), old);
             } else {
-                self.locals.remove(&name);
+                self.locals.remove(&binding.name);
+            }
+            if binding.was_cell {
+                self.cell_locals.insert(binding.name);
             }
         }
     }
@@ -2392,6 +2411,14 @@ pub fn compile_module_with_natives(program: &Program, natives: Vec<NativeEntry>)
 
 pub fn compile_source(source: &str) -> Result<Function> {
     Compiler::compile_source(source)
+}
+
+/// One name bound by a `for` pattern: the shadowed previous slot (if any) and
+/// whether that previous binding carried a capture-cell mark to re-instate.
+struct ForPatternBinding {
+    name: String,
+    slot: Option<u16>,
+    was_cell: bool,
 }
 
 fn collect_for_pattern_names(pattern: &ForPattern, out: &mut Vec<String>) {

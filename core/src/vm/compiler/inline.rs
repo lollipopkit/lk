@@ -51,6 +51,12 @@ impl Compiler {
         let mutated_names = mutated_names_in_stmt(body);
 
         let result = (|| {
+            // Two phases: every argument expression lowers in the *caller's*
+            // namespace before any parameter binds. Interleaving would let a
+            // later argument resolve a name against an already-bound earlier
+            // parameter (`fn add2(a, b)` called as `add2(1, a)` must pass the
+            // caller's `a`, not the first argument).
+            let mut bindings = Vec::with_capacity(params.len());
             for (param, arg) in params.iter().zip(args.iter()) {
                 if mutated_names.contains(param) {
                     let slot = self.alloc_reg();
@@ -59,11 +65,14 @@ impl Compiler {
                         let move_source = !self.is_current_local_slot(arg);
                         self.emit_move_with_policy(slot, arg, "inline param", move_source)?;
                     }
-                    self.insert_local(param.clone(), slot);
+                    bindings.push((param.clone(), slot));
                 } else {
                     let arg = self.lower_inline_readonly_arg(arg)?;
-                    self.insert_local(param.clone(), arg);
+                    bindings.push((param.clone(), arg));
                 }
+            }
+            for (param, slot) in bindings {
+                self.insert_fresh_local(param, slot);
             }
             self.lower_inline_body(body)
         })();
@@ -151,7 +160,7 @@ impl Compiler {
                     let move_source = !self.is_current_local_slot(value);
                     self.emit_move_with_policy(slot, value, "inline local", move_source)?;
                 }
-                self.insert_local(name.clone(), slot);
+                self.insert_fresh_local(name.clone(), slot);
                 Ok(())
             }
             Stmt::Assign { name, value, .. } => self.lower_assign(name, value),

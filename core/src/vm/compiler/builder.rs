@@ -80,6 +80,17 @@ impl Compiler {
         self.locals.insert(name, reg)
     }
 
+    /// Binds a *fresh declaration*: a new binding is a plain value, so any
+    /// stale cell mark from a previous same-named binding is dropped (a
+    /// leftover mark makes reads `LoadCellVal` a non-cell). Restores that
+    /// re-instate a previous binding use [`Self::insert_local`] and keep —
+    /// or explicitly re-add — the caller's mark.
+    pub(super) fn insert_fresh_local(&mut self, name: impl Into<String>, reg: u16) -> Option<u16> {
+        let name = name.into();
+        self.cell_locals.remove(&name);
+        self.insert_local(name, reg)
+    }
+
     pub(super) fn local_slot_is_shared(&self, reg: u16) -> bool {
         let mut count = 0;
         for slot in self.locals.values().copied() {

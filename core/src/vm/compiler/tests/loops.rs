@@ -957,3 +957,48 @@ fn compiler_loop_escaping_closure_sees_final_cell_value() {
     let result = execute_module(&module).expect("execute module");
     assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(103)]);
 }
+
+#[test]
+fn compiler_redeclared_promoted_name_reads_as_plain_value() {
+    // A fresh `let` of a name whose previous binding was promoted to a cell
+    // must drop the stale cell mark: reads of the new binding are plain
+    // values. Regression: "LoadCellVal expected UpvalCell object".
+    let module = compile_source_module(
+        r#"
+        let a = 1;
+        let f = |x| x + a;
+        let a = 2;
+        return a * 10 + f(0);
+        "#,
+    )
+    .expect("compile module");
+
+    let result = execute_module(&module).expect("execute module");
+    // New binding reads 2; the closure keeps the first binding's cell (1).
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(21)]);
+}
+
+#[test]
+fn compiler_loop_variable_shadowing_promoted_outer_name() {
+    // The loop binding is fresh (clears the outer promotion mark for the
+    // body) and the restore re-instates both the outer slot and its cell
+    // mark, so post-loop reads still go through the cell. Regression:
+    // "LoadCellVal expected UpvalCell object" on the loop body read.
+    let module = compile_source_module(
+        r#"
+        let i = 100;
+        let g = |x| x + i;
+        let total = 0;
+        for i in 0..2 {
+            total = total + i;
+        }
+        i = 200;
+        return total * 1000 + g(0);
+        "#,
+    )
+    .expect("compile module");
+
+    let result = execute_module(&module).expect("execute module");
+    // total = 0 + 1; the escaped closure sees the post-loop mutation (200).
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(1200)]);
+}
