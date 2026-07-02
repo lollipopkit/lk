@@ -356,6 +356,12 @@ struct SigInfer {
     /// assigned exactly once, in the entry prefix, from a zero-capture
     /// `MakeClosure`. Reading such a slot yields [`GlobalRef::Lambda`].
     lambda_globals: Vec<Option<u32>>,
+    /// `lambda_params[f][i]` — call sites always pass this exact zero-capture
+    /// lambda as `f`'s i-th argument. The parameter is *erased* from the MIR
+    /// signature: the callee seeds the register with the [`GlobalRef::Lambda`]
+    /// instead, so indirect calls through it devirtualize. Two call sites
+    /// passing different lambdas mark `conflict` (whole-module fallback).
+    lambda_params: Vec<Vec<Option<u32>>>,
     /// Diagnostic names for the mutable-global table (slot-indexed).
     global_names: Vec<String>,
     /// Final compact `slot → gvar` numbering, built once signatures converge
@@ -400,6 +406,11 @@ pub fn lower(artifact: &ModuleArtifact) -> Result<MirModule, Unsupported> {
         global_tys: vec![None; global_count],
         initialized_globals: prescan_initialized_globals(module, global_count),
         lambda_globals: prescan_lambda_globals(module, global_count),
+        lambda_params: module
+            .functions
+            .iter()
+            .map(|f| vec![None; f.param_count as usize])
+            .collect(),
         global_names: module.globals.clone(),
         gvar_of: std::collections::HashMap::new(),
     };
@@ -887,6 +898,18 @@ fn lower_function(
     // They seed the entry block's register file as its first SSA values.
     let mut fn_params: Vec<(ValueId, Ty)> = Vec::with_capacity(param_count + capture_count);
     for r in 0..param_count {
+        // An erased lambda parameter has no runtime value: the register holds
+        // the statically known function ref (indirect calls devirtualize).
+        if let Some(fidx) = sig
+            .lambda_params
+            .get(func_index as usize)
+            .and_then(|p| p.get(r))
+            .copied()
+            .flatten()
+        {
+            ssa.builtin_regs.insert((0, r as u8), GlobalRef::Lambda(fidx));
+            continue;
+        }
         let pty = sig.param_ty(func_index as usize, r);
         let pv = ssa.new_val();
         ssa.current_def[0][r] = Some((pv, pty));
@@ -1964,6 +1987,32 @@ fn lower_user_call(
     let mut args = Vec::with_capacity(argc + captures.len());
     for i in 0..argc {
         let arg_reg = dst_reg.wrapping_add(1).wrapping_add(i as u8);
+        // A zero-capture lambda argument is erased from the native signature:
+        // record its identity (all call sites must agree) and pass nothing —
+        // the callee seeds the parameter register with the static ref instead.
+        if let Some(GlobalRef::Lambda(fidx)) = ssa.builtin_regs.get(&(block, arg_reg)) {
+            if let Some(slot) = sig.lambda_params.get_mut(callee_idx).and_then(|p| p.get_mut(i)) {
+                match slot {
+                    None => *slot = Some(*fidx),
+                    Some(prev) if *prev != *fidx => sig.conflict = true,
+                    Some(_) => {}
+                }
+            }
+            continue;
+        }
+        // A previously observed lambda parameter fed with a non-lambda value
+        // is polymorphic — fall back rather than miscompile either site.
+        if sig
+            .lambda_params
+            .get(callee_idx)
+            .and_then(|p| p.get(i))
+            .copied()
+            .flatten()
+            .is_some()
+        {
+            sig.conflict = true;
+            return Err(Unsupported::TypeMismatch { pc });
+        }
         let (aval, aty) = read_scalar(ssa, insts, arg_reg, block, pc)?;
         // `Str` and container handles pass as `ptr` (arena-owned until
         // exit, so no ownership transfer is involved). `Maybe` carriers

@@ -125,10 +125,11 @@ AOT 20/20 checksum 一致。
    16% 步数但都是廉价操作,消除上限 ~6-8%(任务25 保留,README 反例
    多)。真正接近 Lua 需要 dispatch 密度级架构(超级指令/计算 goto/寄存
    器分配),属重大专项。
-2. **MIR 一等函数值(真·一等)**:闭包作参数传给用户函数(需按 lambda
-   身份克隆特化或 FnRef 进类型格)、返回闭包(运行时闭包表示:env 结构 +
-   fn 指针)。closure.lk 4/5 节、higher_order.lk 其余方法依赖;list HOF
-   零捕获切片已落地(`Const::FnAddr` 地基可复用)。
+2. **MIR 一等函数值(剩余)**:本 session 已落地"零捕获 lambda 作参数"
+   (参数擦除特化:全部调用点同一 lambda 身份 → callee 入口播种静态 ref;
+   `sig.lambda_params`,不同身份 conflict 回退)。剩余:**多身份**(需按
+   lambda 身份克隆特化函数体)、捕获闭包作参数(env 也要传)、返回闭包
+   (运行时闭包表示:env 结构 + fn 指针)。closure.lk 4/5 节依赖多身份。
    注:str/mixed list HOF 扩展经评估**不是**独立解锁路径——
    list_iter_sugar/iter_pipeline 还需要 iter 模块函数 + **list display
    格式化**(`println("{}", list)`)+ 嵌套 list,应并入本项整体规划。

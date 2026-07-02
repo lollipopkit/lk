@@ -81,6 +81,12 @@ ModuleArtifact → lk-aot-lower → lk_aot_mir::validate → lk-aot-codegen → 
   `Const::FnAddr` → `ptr @lk_fn_N`): `map`/`filter`/`reduce` over `List<i64>`
   call the lambda per element inside lkrt; the callback signature goes through
   the same monomorphization lattice as direct calls.
+- Zero-capture lambdas as user-function arguments (`apply(f, x)`): the lambda
+  parameter is *erased* — call sites record the lambda's identity (every site
+  must pass the same one, else whole-module fallback) and the callee seeds the
+  parameter register with the static ref, so indirect calls through it
+  devirtualize. Capturing closures as arguments, differing identities, and
+  returning closures stay rejected.
 - `CallMethodK` (the boxing-free method-call opcode) lowers through the same
   per-(receiver type, method) dispatch as the legacy `__lk_call_method` shape;
   builtin/global refs resolve across blocks when all predecessor paths agree

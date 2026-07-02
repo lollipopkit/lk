@@ -510,6 +510,13 @@ fn differential_builtins() {
                 "io_std_write",
                 "use { std } from io;\nlet out = std.stdout();\nprintln(std.write(out, \"a\"));\nprintln(std.writeln(out, \"b\"));\nprintln(std.flush(out));\nreturn 0;\n",
             ),
+            // Zero-capture lambdas as user-function arguments: the parameter
+            // is erased and the callee devirtualizes through the static ref
+            // (single lambda identity across call sites).
+            new(
+                "lambda_as_argument",
+                "fn apply(f, x) { return f(x) + f(x + 1); }\nlet double = |v| v * 2;\nprintln(apply(double, 5));\nprintln(apply(double, 10));\nfn twice(g, n) { return g(g(n)); }\nprintln(twice(|v| v + 3, 4));\nreturn 0;\n",
+            ),
             // List HOF over compiled zero-capture lambdas (fn-pointer ABI):
             // map/filter/reduce over List<i64>, including chained pipelines
             // and an aborting callback (div/0 inside the lambda).
