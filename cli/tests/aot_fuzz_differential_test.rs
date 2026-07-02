@@ -227,7 +227,7 @@ impl Generator {
     // ---- statements --------------------------------------------------------
 
     fn statement(&mut self, out: &mut String, indent: &str) {
-        match self.rng.below(12) {
+        match self.rng.below(14) {
             0 | 1 => {
                 let ty = self.random_ty();
                 let name = self.fresh("v");
@@ -361,6 +361,51 @@ impl Generator {
                 let total = self.fresh("v");
                 let _ = writeln!(out, "{indent}let {total} = {map}.len();");
                 self.vars.push((total, Ty::I64));
+            }
+            12 => {
+                // Capturing closure: the environment is a shared mutable cell,
+                // so a mutation between calls must be visible (declaration,
+                // calls, and mutation stay adjacent — cross-block cell flows
+                // are outside the native subset and would only skew coverage).
+                let lam = self.fresh("lam");
+                let result = self.fresh("v");
+                let named = self.vars_of(Ty::I64);
+                if let Some(captured) = named.first().cloned() {
+                    let _ = writeln!(out, "{indent}let {lam} = |p0| p0 * 2 + {captured};");
+                    let arg = self.rng.below(20);
+                    let _ = writeln!(out, "{indent}let {result} = {lam}({arg});");
+                    if self.rng.chance(50) {
+                        let bump = self.rng.below(9);
+                        let second = self.fresh("v");
+                        let _ = writeln!(out, "{indent}{captured} = {captured} + {bump};");
+                        let _ = writeln!(out, "{indent}let {second} = {lam}({arg});");
+                        self.vars.push((second, Ty::I64));
+                    }
+                } else {
+                    let _ = writeln!(out, "{indent}let {lam} = |p0| p0 * 3 + 1;");
+                    let _ = writeln!(out, "{indent}let {result} = {lam}({});", self.rng.below(20));
+                }
+                self.vars.push((result, Ty::I64));
+            }
+            13 => {
+                // List HOF pipeline over a compiled lambda (fn-pointer ABI on
+                // the native side): always folds to an i64 via `reduce`.
+                if let Some(list) = self.lists.iter().map(|l| l.name.clone()).next() {
+                    let result = self.fresh("v");
+                    let k = 1 + self.rng.below(4);
+                    let m = 2 + self.rng.below(3);
+                    let pipeline = match self.rng.below(3) {
+                        0 => format!("{list}.map(|x| x * {k}).reduce(0, |a, b| a + b)"),
+                        1 => format!("{list}.filter(|x| x % {m} == 0).reduce(0, |a, b| a + b)"),
+                        _ => format!("{list}.filter(|x| x % {m} != 0).map(|x| x + {k}).reduce(0, |a, b| a + b)"),
+                    };
+                    let _ = writeln!(out, "{indent}let {result} = {pipeline};");
+                    self.vars.push((result, Ty::I64));
+                } else {
+                    let name = self.fresh("v");
+                    let _ = writeln!(out, "{indent}let {name} = {};", self.int_expr(2));
+                    self.vars.push((name, Ty::I64));
+                }
             }
             _ => {
                 // String list: push templated parts, observe via join.
