@@ -72,6 +72,15 @@ VM 以 `exit 1` + stderr 错误信息结束,native 以 guard `abort()`(SIGABRT,
 | `std.write` 与 `println` 交错 | 程序序 | **stdout 顺序契约**:native 侧 Rust 写者先 `fflush(NULL)` 再写、写后 flush 自身流,保证与 C `printf` 缓冲的输出保持程序序 |
 | `math.sqrt(-4.0)` | 响亮失败 | 负参是致命错误(双方 loud),不是 NaN |
 
+## 容器 display
+
+| 程序 | 期望 stdout | 说明 |
+|------|-------------|------|
+| `println([1,2,3])` | `[1,2,3]` | 逗号分隔无空格;float 元素用 Rust `to_string`(`2.0`→`2`) |
+| `println(["a","b c"])` | `["a","b c"]` | 字符串元素 **Rust `{:?}` 引号+转义**(`"`→`\"`、tab→`\t`) |
+| `println("${xs}")`(xs 是 list) | 响亮失败 | **两条 display 路径**:print/println/panic/assert 消息走 stdlib `runtime_display`(容器可显示);`ToString`/模板插值/`+` 拼接走 exec `runtime_value_display_string`(标量 only,容器 loud error)。native 对后者拒绝编译 |
+| `println(map)` | hash 迭代序 | map display 顺序 = 底层 hash map 迭代序,**跨运行稳定但不可移植**(依赖 hasher+增长历史)——native 侧不进子集,响亮拒绝 |
+
 ## 维护约定
 
 - 新增可下降形状时,先在此登记预期语义(尤其失败路径与显示格式),再写差分用例。

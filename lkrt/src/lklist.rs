@@ -72,6 +72,76 @@ pub unsafe extern "C" fn lkrt_lklist_i64_reduce_fn(
     values.iter().fold(init, |acc, &v| f(acc, v))
 }
 
+/// Renders the list as the VM's display text (`[1,2,3]` — comma separated,
+/// no spaces; see `runtime_display_list` in `stdlib/common`). Returned as an
+/// owned, arena-registered C string.
+///
+/// # Safety
+/// `handle` must be a live `i64` list handle, or null (renders `[]`).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_i64_display(handle: *mut c_void) -> *mut c_char {
+    let values: &[i64] = if handle.is_null() {
+        &[]
+    } else {
+        // SAFETY: `handle` addresses a `Vec<i64>` created by `lkrt_lklist_i64_new`.
+        unsafe { &*(handle as *mut Vec<i64>) }
+    };
+    display_joined(values.iter().map(i64::to_string))
+}
+
+/// `f64` list display (`[1.5,2]` — elements via Rust `f64::to_string`, the
+/// VM's float display).
+///
+/// # Safety
+/// See [`lkrt_lklist_i64_display`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_f64_display(handle: *mut c_void) -> *mut c_char {
+    let values: &[f64] = if handle.is_null() {
+        &[]
+    } else {
+        // SAFETY: `handle` addresses a `Vec<f64>` created by `lkrt_lklist_f64_new`.
+        unsafe { &*(handle as *mut Vec<f64>) }
+    };
+    display_joined(values.iter().map(f64::to_string))
+}
+
+/// `str` list display (`["a","b c"]` — elements quoted/escaped with Rust's
+/// `{:?}`, exactly the VM's `quote_string`).
+///
+/// # Safety
+/// See [`lkrt_lklist_i64_display`]; elements must be valid C strings.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_str_display(handle: *mut c_void) -> *mut c_char {
+    let values: &[*const c_char] = if handle.is_null() {
+        &[]
+    } else {
+        // SAFETY: `handle` addresses a `Vec<*const c_char>` from `lkrt_lklist_str_new`.
+        unsafe { &*(handle as *mut Vec<*const c_char>) }
+    };
+    display_joined(values.iter().map(|&ptr| {
+        let text = if ptr.is_null() {
+            ""
+        } else {
+            // SAFETY: elements are NUL-terminated C strings per the list ABI.
+            unsafe { CStr::from_ptr(ptr) }.to_str().unwrap_or("")
+        };
+        format!("{text:?}")
+    }))
+}
+
+/// `[e1,e2,…]` with the VM's separator convention, as an arena C string.
+fn display_joined(parts: impl Iterator<Item = String>) -> *mut c_char {
+    let mut out = String::from("[");
+    for (i, part) in parts.enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str(&part);
+    }
+    out.push(']');
+    crate::lkstr::arena_c_string(std::ffi::CString::new(out).unwrap_or_default())
+}
+
 /// Appends `value` to the list.
 ///
 /// # Safety

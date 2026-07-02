@@ -441,6 +441,13 @@ fn differential_builtins() {
                 "panic_after_output",
                 "println(\"before\");\nlet x = 1;\nif (x == 1) { panic(\"stop\", x); }\nreturn 7;\n",
             ),
+            // List display: VM-exact separators/quoting through println
+            // (the runtime_display path; template interpolation of containers
+            // rejects — that path is scalar-only in the VM).
+            new(
+                "list_display",
+                "let xs = [1, 2, 3];\nprintln(xs);\nprintln(\"{}\", xs);\nlet fs = [1.5, 2.0, 0.25];\nprintln(fs);\nlet ss = [];\nss.push(\"a\");\nss.push(\"b c\");\nss.push(\"he said \\\"hi\\\"\");\nprintln(ss);\nlet empty = [];\nempty.push(0);\nprintln(empty);\nreturn 0;\n",
+            ),
             // NaN semantics: `!=` must be true when either side is NaN
             // (fcmp une, not one); ordered comparisons stay false.
             new(

@@ -2874,7 +2874,7 @@ fn lower_inst(
             let (v, ty) = ssa.read(instr.b(), block, pc)?;
             // The result is register-visible, so it stays arena-owned (never
             // freed eagerly, reclaimed by `lkrt_cleanup` at exit).
-            let (s, _fresh) = to_display_str(ssa, insts, globals, v, ty, pc)?;
+            let (s, _fresh) = to_display_str(ssa, insts, globals, v, ty, false, pc)?;
             ssa.write(instr.a(), block, (s, Ty::Str));
         }
         Opcode::ConcatString => {
@@ -2883,8 +2883,8 @@ fn lower_inst(
             // an int rhs fuses into a single `concat_i64` call.
             let (lv, lty) = ssa.read(instr.b(), block, pc)?;
             let (rv, rty) = ssa.read(instr.c(), block, pc)?;
-            let (l, l_fresh) = to_display_str(ssa, insts, globals, lv, lty, pc)?;
-            let dst = concat_display(ssa, insts, globals, l, rv, rty, pc)?;
+            let (l, l_fresh) = to_display_str(ssa, insts, globals, lv, lty, false, pc)?;
+            let dst = concat_display(ssa, insts, globals, l, rv, rty, false, pc)?;
             if l_fresh {
                 free_owned_str(insts, l);
             }
@@ -2909,10 +2909,10 @@ fn lower_inst(
                 dst
             } else {
                 let (v0, ty0) = ssa.read(start, block, pc)?;
-                let (mut acc, mut acc_fresh) = to_display_str(ssa, insts, globals, v0, ty0, pc)?;
+                let (mut acc, mut acc_fresh) = to_display_str(ssa, insts, globals, v0, ty0, false, pc)?;
                 for i in 1..count {
                     let (v, ty) = ssa.read(start.wrapping_add(i as u8), block, pc)?;
-                    let dst = concat_display(ssa, insts, globals, acc, v, ty, pc)?;
+                    let dst = concat_display(ssa, insts, globals, acc, v, ty, false, pc)?;
                     // The consumed accumulator is dead; free it if this
                     // lowering allocated it.
                     if acc_fresh {
@@ -3640,12 +3640,18 @@ fn read_typed_scalar(
 /// (`free_owned_str`), realizing the RFC §3.4 ownership model for known-dead
 /// intermediates. A pre-existing `Str` (interned global or register value) is
 /// returned as-is with `false`.
+/// `containers` mirrors the VM's two display paths: the stdlib
+/// `runtime_display` (print/println/panic/assert messages) renders containers,
+/// while the executor's `runtime_value_display_string` (`ToString`, template
+/// interpolation, `+` concatenation) is scalar-only and errors loudly on a
+/// container — so container display must reject in those contexts.
 fn to_display_str(
     ssa: &mut Ssa,
     insts: &mut Vec<Inst>,
     globals: &mut Vec<String>,
     v: ValueId,
     ty: Ty,
+    containers: bool,
     pc: usize,
 ) -> Result<(ValueId, bool), Unsupported> {
     match ty {
@@ -3686,7 +3692,7 @@ fn to_display_str(
                 raw
             };
             let scalar_ty = if ty == Ty::MaybeBool { Ty::Bool } else { scalar_ty };
-            let (value_str, _) = to_display_str(ssa, insts, globals, raw, scalar_ty, pc)?;
+            let (value_str, _) = to_display_str(ssa, insts, globals, raw, scalar_ty, false, pc)?;
             let present = ssa.new_val();
             insts.push(Inst::MaybePresent {
                 dst: present,
@@ -3740,6 +3746,27 @@ fn to_display_str(
             });
             Ok((dst, true))
         }
+        // List display (`[1,2,3]` / `["a","b c"]`) renders inside lkrt with
+        // the VM's exact separators/quoting. Map display stays out of the
+        // subset: its order is the underlying hash iteration order, which is
+        // not portable across the two runtimes (see docs/semantics.md).
+        Ty::ListI64 | Ty::ListF64 | Ty::ListStr => {
+            if !containers {
+                return Err(Unsupported::TypeMismatch { pc });
+            }
+            let display_fn = match ty {
+                Ty::ListI64 => "i64_display",
+                Ty::ListF64 => "f64_display",
+                _ => "str_display",
+            };
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", display_fn),
+                args: vec![v],
+            });
+            Ok((dst, true))
+        }
         _ => Err(Unsupported::TypeMismatch { pc }),
     }
 }
@@ -3755,6 +3782,7 @@ fn concat_display(
     acc: ValueId,
     v: ValueId,
     ty: Ty,
+    containers: bool,
     pc: usize,
 ) -> Result<ValueId, Unsupported> {
     if ty == Ty::I64 {
@@ -3766,7 +3794,7 @@ fn concat_display(
         });
         return Ok(dst);
     }
-    let (s, fresh) = to_display_str(ssa, insts, globals, v, ty, pc)?;
+    let (s, fresh) = to_display_str(ssa, insts, globals, v, ty, containers, pc)?;
     let dst = ssa.new_val();
     insts.push(Inst::Call {
         dst: Some(dst),
@@ -3821,7 +3849,7 @@ fn lower_builtin_call(
                 materialize_key(ssa, insts, globals, "panic")
             } else {
                 let (v0, ty0) = ssa.read(base.wrapping_add(1), block, pc)?;
-                let (mut acc, mut acc_fresh) = to_display_str(ssa, insts, globals, v0, ty0, pc)?;
+                let (mut acc, mut acc_fresh) = to_display_str(ssa, insts, globals, v0, ty0, true, pc)?;
                 for i in 1..argc {
                     let sep = materialize_key(ssa, insts, globals, " ");
                     let with_sep = ssa.new_val();
@@ -3834,7 +3862,7 @@ fn lower_builtin_call(
                         free_owned_str(insts, acc);
                     }
                     let (v, ty) = ssa.read(base.wrapping_add(1 + i as u8), block, pc)?;
-                    acc = concat_display(ssa, insts, globals, with_sep, v, ty, pc)?;
+                    acc = concat_display(ssa, insts, globals, with_sep, v, ty, true, pc)?;
                     free_owned_str(insts, with_sep);
                     acc_fresh = true;
                 }
@@ -3925,7 +3953,7 @@ fn lower_builtin_call(
                 if argc == 3 {
                     let (ev, ety) = ssa.read(base.wrapping_add(3), block, pc)?;
                     let sep = materialize_key(ssa, insts, globals, "values should not be equal - ");
-                    (concat_display(ssa, insts, globals, sep, ev, ety, pc)?, true)
+                    (concat_display(ssa, insts, globals, sep, ev, ety, true, pc)?, true)
                 } else {
                     (
                         materialize_key(ssa, insts, globals, "values should not be equal"),
@@ -3935,7 +3963,7 @@ fn lower_builtin_call(
             } else {
                 // "expected {b}, got {a}" (+ " - {extra}").
                 let head = materialize_key(ssa, insts, globals, "expected ");
-                let with_expected = concat_display(ssa, insts, globals, head, rv, rty, pc)?;
+                let with_expected = concat_display(ssa, insts, globals, head, rv, rty, true, pc)?;
                 let comma = materialize_key(ssa, insts, globals, ", got ");
                 let joined = ssa.new_val();
                 insts.push(Inst::Call {
@@ -3944,7 +3972,7 @@ fn lower_builtin_call(
                     args: vec![with_expected, comma],
                 });
                 free_owned_str(insts, with_expected);
-                let full = concat_display(ssa, insts, globals, joined, lv, lty, pc)?;
+                let full = concat_display(ssa, insts, globals, joined, lv, lty, true, pc)?;
                 free_owned_str(insts, joined);
                 if argc == 3 {
                     let (ev, ety) = ssa.read(base.wrapping_add(3), block, pc)?;
@@ -3956,7 +3984,7 @@ fn lower_builtin_call(
                         args: vec![full, dash],
                     });
                     free_owned_str(insts, full);
-                    let all = concat_display(ssa, insts, globals, with_dash, ev, ety, pc)?;
+                    let all = concat_display(ssa, insts, globals, with_dash, ev, ety, true, pc)?;
                     free_owned_str(insts, with_dash);
                     (all, true)
                 } else {
@@ -4042,7 +4070,7 @@ fn lower_builtin_call(
                 });
             } else {
                 let (mv, mty) = ssa.read(base.wrapping_add(2), block, pc)?;
-                let (msg, fresh) = to_display_str(ssa, insts, globals, mv, mty, pc)?;
+                let (msg, fresh) = to_display_str(ssa, insts, globals, mv, mty, true, pc)?;
                 insts.push(Inst::Call {
                     dst: None,
                     callee: AbiRef::new("rt", "assert_msg"),
@@ -4843,7 +4871,7 @@ fn emit_print(
                     pieces.push((lit, false));
                     pending.clear();
                 }
-                pieces.push(to_display_str(ssa, insts, globals, v, ty, pc)?);
+                pieces.push(to_display_str(ssa, insts, globals, v, ty, true, pc)?);
             }
         }
     }

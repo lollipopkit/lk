@@ -143,6 +143,10 @@ macro_rules! for_each_abi_fn {
             // List HOF over compiled zero-capture lambdas (`ptr @lk_fn_N`
             // callbacks). The callback may abort (div/0 inside the lambda), so
             // none of these are Pure.
+            // VM-exact list display text (`[1,2,3]`), arena-owned.
+            ("list_h", "i64_display", lkrt_lklist_i64_display, WritesHost, [Ptr], StrPtr);
+            ("list_h", "f64_display", lkrt_lklist_f64_display, WritesHost, [Ptr], StrPtr);
+            ("list_h", "str_display", lkrt_lklist_str_display, WritesHost, [Ptr], StrPtr);
             ("list_h", "i64_map_fn", lkrt_lklist_i64_map_fn, WritesHost, [Ptr, Ptr], Ptr);
             ("list_h", "i64_filter_fn", lkrt_lklist_i64_filter_fn, WritesHost, [Ptr, Ptr], Ptr);
             ("list_h", "i64_reduce_fn", lkrt_lklist_i64_reduce_fn, WritesHost, [Ptr, I64, Ptr], I64);
