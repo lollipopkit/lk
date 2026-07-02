@@ -364,15 +364,77 @@ impl Generator {
             }
             12 if self.rng.chance(40) => {
                 // Two different lambda identities through the same helper —
-                // exercises per-identity clone specialization.
+                // exercises per-identity clone specialization. A named i64
+                // sometimes upgrades one identity to a capturing closure
+                // (env as hidden trailing args), with a mutation between
+                // calls that both the VM cell and the native env must see.
                 let helper = self.fresh("hof");
                 let r1 = self.fresh("v");
                 let r2 = self.fresh("v");
                 let k = 1 + self.rng.below(5);
                 let m = self.rng.below(9);
+                let captured = self.vars_of(Ty::I64).first().cloned().filter(|_| self.rng.chance(50));
                 let _ = writeln!(out, "{indent}fn {helper}(f, x) {{ return f(x) + f(x + 1); }}");
                 let _ = writeln!(out, "{indent}let {r1} = {helper}(|p| p * {k}, {});", self.rng.below(12));
-                let _ = writeln!(out, "{indent}let {r2} = {helper}(|p| p + {m}, {});", self.rng.below(12));
+                match captured {
+                    Some(captured) => {
+                        let _ = writeln!(
+                            out,
+                            "{indent}let {r2} = {helper}(|p| p + {captured}, {});",
+                            self.rng.below(12)
+                        );
+                        if self.rng.chance(50) {
+                            let r3 = self.fresh("v");
+                            let _ = writeln!(out, "{indent}{captured} = {captured} + {};", 1 + self.rng.below(7));
+                            let _ = writeln!(
+                                out,
+                                "{indent}let {r3} = {helper}(|p| p + {captured}, {});",
+                                self.rng.below(12)
+                            );
+                            self.vars.push((r3, Ty::I64));
+                        }
+                    }
+                    None => {
+                        let _ = writeln!(out, "{indent}let {r2} = {helper}(|p| p + {m}, {});", self.rng.below(12));
+                    }
+                }
+                self.vars.push((r1, Ty::I64));
+                self.vars.push((r2, Ty::I64));
+            }
+            13 if self.rng.chance(35) => {
+                // Branchy helper with fresh capturing closures at two call
+                // sites: the VM inlines the helper body, and the captured
+                // local's cell promotion must survive the inline scope
+                // restore (regression shape; native side may reject —
+                // cross-block cell flows stay outside the subset).
+                let helper = self.fresh("pick");
+                let r1 = self.fresh("v");
+                let r2 = self.fresh("v");
+                let threshold = 1 + self.rng.below(6);
+                let named = self.vars_of(Ty::I64);
+                let capture = match named.first() {
+                    Some(name) => name.clone(),
+                    None => {
+                        let name = self.fresh("c");
+                        let _ = writeln!(out, "{indent}let {name} = {};", self.rng.below(30));
+                        self.vars.push((name.clone(), Ty::I64));
+                        name
+                    }
+                };
+                let _ = writeln!(
+                    out,
+                    "{indent}fn {helper}(f, x) {{ if x > {threshold} {{ return f(x); }} return f(0); }}"
+                );
+                let _ = writeln!(
+                    out,
+                    "{indent}let {r1} = {helper}(|p| p + {capture}, {});",
+                    self.rng.below(12)
+                );
+                let _ = writeln!(
+                    out,
+                    "{indent}let {r2} = {helper}(|p| p * 2 + {capture}, {});",
+                    self.rng.below(12)
+                );
                 self.vars.push((r1, Ty::I64));
                 self.vars.push((r2, Ty::I64));
             }

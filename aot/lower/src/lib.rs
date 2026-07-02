@@ -177,6 +177,16 @@ enum GlobalRef {
     ArgList(Vec<(ValueId, Ty)>),
 }
 
+/// The statically known identity of a lambda passed as an argument: the
+/// target function plus its capture count (a capturing closure's *environment
+/// values* are runtime data — hidden trailing arguments — and stay out of the
+/// identity, so one clone serves every environment of the same lambda).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct LambdaIdentity {
+    fidx: u32,
+    captures: u16,
+}
+
 /// One captured slot of a [`GlobalRef::Closure`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ClosureCapture {
@@ -357,16 +367,17 @@ struct SigInfer {
     /// `MakeClosure`. Reading such a slot yields [`GlobalRef::Lambda`].
     lambda_globals: Vec<Option<u32>>,
     /// `lambda_params[f][i]` — this function's i-th parameter is an *erased*
-    /// zero-capture lambda with a statically known identity: the callee seeds
-    /// the register with the [`GlobalRef::Lambda`] instead of binding a value,
-    /// so indirect calls through it devirtualize. Set on clone
-    /// materialization (see [`Self::specializations`]).
-    lambda_params: Vec<Vec<Option<u32>>>,
+    /// lambda with a statically known identity: the callee seeds the register
+    /// with a `GlobalRef::Lambda`/`Closure` instead of binding a value, so
+    /// indirect calls through it devirtualize. A capturing identity adds
+    /// hidden environment parameters (after the visible ones, before the
+    /// callee's own captures). Set on clone materialization.
+    lambda_params: Vec<Vec<Option<LambdaIdentity>>>,
     /// Clone specialization table: `(original fn, lambda identity per param)`
     /// → the specialized clone's id. Call sites passing lambdas retarget to
     /// the clone whose identity vector matches, so *different* lambdas at the
     /// same parameter get independent clones instead of a conflict.
-    specializations: std::collections::HashMap<(u32, Vec<Option<u32>>), u32>,
+    specializations: std::collections::HashMap<(u32, Vec<Option<LambdaIdentity>>), u32>,
     /// Clones queued during a pass (original fn ids, in id-assignment order),
     /// materialized into the working function list between passes.
     pending_clones: Vec<u32>,
@@ -938,18 +949,19 @@ fn lower_function(
     // Function parameters occupy r0..r(param_count-1) at entry; each takes its
     // inferred type (the argument type observed at call sites, `I64` by default).
     // They seed the entry block's register file as its first SSA values.
-    let mut fn_params: Vec<(ValueId, Ty)> = Vec::with_capacity(param_count + capture_count);
+    let identities: Vec<Option<LambdaIdentity>> =
+        sig.lambda_params.get(func_index as usize).cloned().unwrap_or_default();
+    let env_total: usize = identities.iter().flatten().map(|id| id.captures as usize).sum();
+    let mut fn_params: Vec<(ValueId, Ty)> = Vec::with_capacity(param_count + env_total + capture_count);
     for r in 0..param_count {
-        // An erased lambda parameter has no runtime value: the register holds
-        // the statically known function ref (indirect calls devirtualize).
-        if let Some(fidx) = sig
-            .lambda_params
-            .get(func_index as usize)
-            .and_then(|p| p.get(r))
-            .copied()
-            .flatten()
-        {
-            ssa.builtin_regs.insert((0, r as u8), GlobalRef::Lambda(fidx));
+        // An erased zero-capture lambda parameter has no runtime value: the
+        // register holds the statically known function ref (indirect calls
+        // devirtualize). Erased capturing identities bind below, after the
+        // visible parameters, so signature order matches the call site.
+        if let Some(id) = identities.get(r).copied().flatten() {
+            if id.captures == 0 {
+                ssa.builtin_regs.insert((0, r as u8), GlobalRef::Lambda(id.fidx));
+            }
             continue;
         }
         let pty = sig.param_ty(func_index as usize, r);
@@ -957,12 +969,34 @@ fn lower_function(
         ssa.current_def[0][r] = Some((pv, pty));
         fn_params.push((pv, pty));
     }
-    // A capturing lambda's environment arrives as hidden trailing parameters
-    // (the closure's by-value snapshot, appended by the `Call` lowering); they
-    // occupy no register — `LoadCapture k` reads them directly.
+    // An erased *capturing* closure argument: its environment (resolved at
+    // the call site) arrives as hidden trailing parameters, one block per
+    // erased parameter in parameter order. The register holds a Closure ref
+    // whose captures alias those parameters by value.
+    let mut env_offset = 0usize;
+    for r in 0..param_count {
+        let Some(id) = identities.get(r).copied().flatten() else {
+            continue;
+        };
+        if id.captures == 0 {
+            continue;
+        }
+        let mut caps = Vec::with_capacity(id.captures as usize);
+        for _ in 0..id.captures {
+            let ety = sig.param_ty(func_index as usize, param_count + env_offset);
+            let ev = ssa.new_val();
+            fn_params.push((ev, ety));
+            caps.push(ClosureCapture::Value(ev, ety));
+            env_offset += 1;
+        }
+        ssa.builtin_regs.insert((0, r as u8), GlobalRef::Closure(id.fidx, caps));
+    }
+    // A capturing lambda's own environment arrives after any erased-argument
+    // env blocks (the closure's by-value snapshot, appended by the `Call`
+    // lowering); it occupies no register — `LoadCapture k` reads it directly.
     let mut capture_params: Vec<(ValueId, Ty)> = Vec::with_capacity(capture_count);
     for k in 0..capture_count {
-        let cty = sig.param_ty(func_index as usize, param_count + k);
+        let cty = sig.param_ty(func_index as usize, param_count + env_total + k);
         let cv = ssa.new_val();
         capture_params.push((cv, cty));
         fn_params.push((cv, cty));
@@ -2031,11 +2065,18 @@ fn lower_user_call(
     // retargets the call to a per-identity *clone* of the callee (created on
     // demand, byte-identical body, `lambda_params` pre-filled so its
     // parameters seed static refs instead of binding values).
-    let identity: Vec<Option<u32>> = (0..argc)
+    let identity: Vec<Option<LambdaIdentity>> = (0..argc)
         .map(|i| {
             let arg_reg = dst_reg.wrapping_add(1).wrapping_add(i as u8);
             match ssa.builtin_regs.get(&(block, arg_reg)) {
-                Some(GlobalRef::Lambda(fidx)) => Some(*fidx),
+                Some(GlobalRef::Lambda(fidx)) => Some(LambdaIdentity {
+                    fidx: *fidx,
+                    captures: 0,
+                }),
+                Some(GlobalRef::Closure(fidx, caps)) => Some(LambdaIdentity {
+                    fidx: *fidx,
+                    captures: caps.len() as u16,
+                }),
                 _ => None,
             }
         })
@@ -2068,7 +2109,13 @@ fn lower_user_call(
                     return Err(Unsupported::TypeMismatch { pc });
                 }
                 let clone = sig.param_obs.len() as u32;
-                sig.param_obs.push(vec![None; funcs[callee_idx].param_count as usize]);
+                let env_total: usize = identity.iter().flatten().map(|id| id.captures as usize).sum();
+                sig.param_obs.push(vec![
+                    None;
+                    funcs[callee_idx].param_count as usize
+                        + env_total
+                        + funcs[callee_idx].capture_count as usize
+                ]);
                 sig.ret_types.push(sig.ret_types[callee_idx]);
                 sig.lambda_params.push(identity.clone());
                 sig.specializations.insert(key, clone);
@@ -2087,11 +2134,35 @@ fn lower_user_call(
         callee_idx
     };
     let mut args = Vec::with_capacity(argc + captures.len());
-    for i in 0..argc {
+    let mut env_args: Vec<(ValueId, Ty)> = Vec::new();
+    for (i, id) in identity.iter().enumerate() {
         let arg_reg = dst_reg.wrapping_add(1).wrapping_add(i as u8);
-        if identity[i].is_some() {
-            // Erased lambda argument: nothing is passed at runtime.
-            continue;
+        match *id {
+            // Erased zero-capture lambda: nothing is passed at runtime.
+            Some(LambdaIdentity { captures: 0, .. }) => continue,
+            // Erased capturing closure: its environment (resolved to current
+            // cell contents at this call site) travels as hidden trailing
+            // arguments, in parameter order.
+            Some(_) => {
+                let Some(GlobalRef::Closure(_, caps)) = ssa.builtin_regs.get(&(block, arg_reg)).cloned() else {
+                    return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+                };
+                for capture in &caps {
+                    let (v, ty) = match capture {
+                        ClosureCapture::Cell(cid) => *ssa
+                            .cell_vals
+                            .get(&(block, *cid))
+                            .ok_or(Unsupported::Opcode { pc, op: Opcode::Call })?,
+                        ClosureCapture::Value(v, ty) => (*v, *ty),
+                    };
+                    if matches!(ty, Ty::Nil | Ty::MaybeI64 | Ty::MaybeF64 | Ty::MaybeStr | Ty::MaybeBool) {
+                        return Err(Unsupported::TypeMismatch { pc });
+                    }
+                    env_args.push((v, ty));
+                }
+                continue;
+            }
+            None => {}
         }
         let (aval, aty) = read_scalar(ssa, insts, arg_reg, block, pc)?;
         // `Str` and container handles pass as `ptr` (arena-owned until
@@ -2110,9 +2181,26 @@ fn lower_user_call(
         }
         args.push(aval);
     }
-    for (k, &(cval, cty)) in captures.iter().enumerate() {
-        // Refine the hidden capture-parameter types the same way.
+    // Hidden trailing arguments, in signature order: the erased closures'
+    // environment values first, then the callee's own captures. Their types
+    // refine the same monomorphization lattice as visible parameters.
+    for (k, &(ev, ety)) in env_args.iter().enumerate() {
         if let Some(slot) = sig.param_obs.get_mut(callee_idx).and_then(|p| p.get_mut(argc + k)) {
+            match slot {
+                None => *slot = Some(ety),
+                Some(prev) if *prev != ety => sig.conflict = true,
+                Some(_) => {}
+            }
+        }
+        args.push(ev);
+    }
+    let env_total = env_args.len();
+    for (k, &(cval, cty)) in captures.iter().enumerate() {
+        if let Some(slot) = sig
+            .param_obs
+            .get_mut(callee_idx)
+            .and_then(|p| p.get_mut(argc + env_total + k))
+        {
             match slot {
                 None => *slot = Some(cty),
                 Some(prev) if *prev != cty => sig.conflict = true,
@@ -2205,8 +2293,10 @@ fn lower_inst(
         Opcode::Move => {
             // A register holding a global ref (no SSA value) propagates the ref
             // instead of a value: the compiler moves the callee into the
-            // call-window base before the `Call`.
-            if let Some(global_ref) = ssa.builtin_regs.get(&(block, instr.b())).cloned() {
+            // call-window base before the `Call`. Cross-block backtracking
+            // covers refs inherited from predecessors (an SSA definition in
+            // this block shadows; conflicting paths resolve to None).
+            if let Some(global_ref) = ssa.builtin_ref_at(instr.b(), block) {
                 ssa.builtin_regs.insert((block, instr.a()), global_ref);
                 return Ok(());
             }
@@ -2216,13 +2306,13 @@ fn lower_inst(
         Opcode::Move2 => {
             // Fused adjacent moves: `a ← b`, then `b ← c`. The VM reads `b`
             // before overwriting it; SSA reads naturally see the old value.
-            if let Some(global_ref) = ssa.builtin_regs.get(&(block, instr.b())).cloned() {
+            if let Some(global_ref) = ssa.builtin_ref_at(instr.b(), block) {
                 ssa.builtin_regs.insert((block, instr.a()), global_ref);
             } else {
                 let first = ssa.read(instr.b(), block, pc)?;
                 ssa.write(instr.a(), block, first);
             }
-            if let Some(global_ref) = ssa.builtin_regs.get(&(block, instr.c())).cloned() {
+            if let Some(global_ref) = ssa.builtin_ref_at(instr.c(), block) {
                 ssa.builtin_regs.insert((block, instr.b()), global_ref);
             } else {
                 let second = ssa.read(instr.c(), block, pc)?;
@@ -3855,6 +3945,7 @@ fn to_display_str(
 /// `str.concat_i64` call (no intermediate suffix string); every other display
 /// type goes through [`to_display_str`] + `str.concat`, eagerly freeing the
 /// fresh display temporary.
+#[allow(clippy::too_many_arguments)]
 fn concat_display(
     ssa: &mut Ssa,
     insts: &mut Vec<Inst>,
