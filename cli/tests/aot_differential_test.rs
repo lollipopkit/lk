@@ -550,6 +550,19 @@ fn differential_builtins() {
                 "closure_as_argument_forwarding",
                 "fn inner(f, x) { return f(x); }\nfn outer(g, y) { return inner(g, y) + inner(g, y * 2); }\nlet base = 100;\nlet addb = |v| v + base;\nprintln(outer(addb, 5));\nbase = 200;\nprintln(outer(addb, 5));\nreturn 0;\n",
             ),
+            // Returned closures via the static summary path: a function whose
+            // single return is a closure with parameter-mapped captures is
+            // consumed at the call site (no call emitted, pure body skipped).
+            // Covers distinct environments from one factory, a zero-capture
+            // return, and factory results feeding closure-as-argument calls.
+            new(
+                "closure_returned",
+                "fn multiplier(n) { return |x| x * n; }\nlet triple = multiplier(3);\nlet quintuple = multiplier(5);\nprintln(triple(4));\nprintln(quintuple(4));\nprintln(triple(7) + quintuple(2));\nfn make_adder() { return |a, b| a + b; }\nlet add = make_adder();\nprintln(add(3, 9));\nreturn 0;\n",
+            ),
+            new(
+                "closure_returned_as_argument",
+                "fn apply(f, x) { return f(x) + f(x + 1); }\nfn multiplier(n) { return |x| x * n; }\nprintln(apply(|v| v * 2, 3));\nprintln(apply(multiplier(3), 5));\nlet k = 7;\nprintln(apply(|v| v + k, 1));\nprintln(apply(multiplier(k), 2));\nreturn 0;\n",
+            ),
             // List HOF over compiled zero-capture lambdas (fn-pointer ABI):
             // map/filter/reduce over List<i64>, including chained pipelines
             // and an aborting callback (div/0 inside the lambda).

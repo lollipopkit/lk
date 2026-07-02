@@ -401,6 +401,23 @@ impl Generator {
                 self.vars.push((r1, Ty::I64));
                 self.vars.push((r2, Ty::I64));
             }
+            12 if self.rng.chance(25) => {
+                // Closure factory: the callee's single return is a closure
+                // capturing its parameter — the summary path constructs the
+                // ref at each call site (distinct environments, no call).
+                let factory = self.fresh("mk");
+                let f1 = self.fresh("f");
+                let f2 = self.fresh("f");
+                let r1 = self.fresh("v");
+                let r2 = self.fresh("v");
+                let _ = writeln!(out, "{indent}fn {factory}(n) {{ return |x| x * n + 1; }}");
+                let _ = writeln!(out, "{indent}let {f1} = {factory}({});", 1 + self.rng.below(6));
+                let _ = writeln!(out, "{indent}let {f2} = {factory}({});", 1 + self.rng.below(6));
+                let _ = writeln!(out, "{indent}let {r1} = {f1}({});", self.rng.below(12));
+                let _ = writeln!(out, "{indent}let {r2} = {f2}({});", self.rng.below(12));
+                self.vars.push((r1, Ty::I64));
+                self.vars.push((r2, Ty::I64));
+            }
             13 if self.rng.chance(35) => {
                 // Branchy helper with fresh capturing closures at two call
                 // sites: the VM inlines the helper body, and the captured

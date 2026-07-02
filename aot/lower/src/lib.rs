@@ -187,6 +187,16 @@ struct LambdaIdentity {
     captures: u16,
 }
 
+/// One capture of a *returned* closure, expressed in caller terms: the
+/// callee's k-th parameter value (i.e. the caller's argument). A returned
+/// closure whose environment reduces entirely to parameters lets the call
+/// site construct the closure ref statically — the effect-free callee body
+/// is never emitted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RetCaptureSrc {
+    Param(usize),
+}
+
 /// One captured slot of a [`GlobalRef::Closure`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ClosureCapture {
@@ -388,6 +398,14 @@ struct SigInfer {
     specialized: Vec<bool>,
     /// Original functions with at least one all-plain call site.
     plain_called: Vec<bool>,
+    /// `ret_closures[f]` — this function's single return is a closure whose
+    /// captures all map to its parameters: `(lambda fidx, capture sources)`.
+    /// Call sites consume the summary (the result register is seeded with the
+    /// closure ref, no call emitted); the pure body is never emitted.
+    ret_closures: Vec<Option<(u32, Vec<RetCaptureSrc>)>>,
+    /// Functions whose returns disagreed with a recorded summary — a poisoned
+    /// function never records again and rejects on lowering instead.
+    ret_closure_poisoned: Vec<bool>,
     /// Diagnostic names for the mutable-global table (slot-indexed).
     global_names: Vec<String>,
     /// Final compact `slot → gvar` numbering, built once signatures converge
@@ -441,6 +459,8 @@ pub fn lower(artifact: &ModuleArtifact) -> Result<MirModule, Unsupported> {
         pending_clones: Vec::new(),
         specialized: vec![false; n],
         plain_called: vec![false; n],
+        ret_closures: vec![None; n],
+        ret_closure_poisoned: vec![false; n],
         global_names: module.globals.clone(),
         gvar_of: std::collections::HashMap::new(),
     };
@@ -456,7 +476,20 @@ pub fn lower(artifact: &ModuleArtifact) -> Result<MirModule, Unsupported> {
     // converged); the final pass below is authoritative and propagates errors.
     let mut passes = 0usize;
     loop {
-        let snapshot = (sig.param_obs.clone(), sig.ret_types.clone(), sig.specializations.len());
+        let snapshot = (
+            sig.param_obs.clone(),
+            sig.ret_types.clone(),
+            sig.specializations.len(),
+            sig.ret_closures.clone(),
+        );
+        // Call-site facts are re-derived every pass: an argument register
+        // that resolves to a closure ref only once a summary lands (e.g. a
+        // summarized callee's result) must not leave a stale plain-call mark
+        // from the pass before the summary existed. The final pass inherits
+        // the converged flags of the last fixpoint pass.
+        sig.specialized.iter_mut().for_each(|flag| *flag = false);
+        sig.plain_called.iter_mut().for_each(|flag| *flag = false);
+        sig.conflict = false;
         for fi in 0..funcs.len() {
             if !reachable[fi] {
                 continue;
@@ -464,6 +497,11 @@ pub fn lower(artifact: &ModuleArtifact) -> Result<MirModule, Unsupported> {
             // Originals whose call sites all pass lambdas are fully replaced
             // by their clones (their bodies would reject without erasure).
             if sig.specialized.get(fi).copied().unwrap_or(false) {
+                continue;
+            }
+            // Summarized closure-returning functions are consumed at call
+            // sites; their pure bodies are never emitted.
+            if sig.ret_closures.get(fi).is_some_and(Option::is_some) {
                 continue;
             }
             let is_entry = fi as u32 == module.entry;
@@ -482,9 +520,6 @@ pub fn lower(artifact: &ModuleArtifact) -> Result<MirModule, Unsupported> {
                 sig.ret_types[fi] = mf.ret;
             }
         }
-        if sig.conflict {
-            return Err(Unsupported::ReturnTypeConflict);
-        }
         // Materialize clones queued during this pass so the next pass lowers
         // them (their `lambda_params` are already in place).
         for orig in std::mem::take(&mut sig.pending_clones) {
@@ -492,11 +527,22 @@ pub fn lower(artifact: &ModuleArtifact) -> Result<MirModule, Unsupported> {
             reachable.push(true);
         }
         passes += 1;
-        if snapshot == (sig.param_obs.clone(), sig.ret_types.clone(), sig.specializations.len())
-            || passes > 2 * funcs.len() + 2
-        {
+        let converged = snapshot
+            == (
+                sig.param_obs.clone(),
+                sig.ret_types.clone(),
+                sig.specializations.len(),
+                sig.ret_closures.clone(),
+            );
+        if converged || passes > 2 * funcs.len() + 2 {
             break;
         }
+    }
+    // A conflict that survives the *converged* pass is real (per-pass resets
+    // clear transient marks left before a closure-return summary landed):
+    // param-type disagreement or function-vs-value polymorphism.
+    if sig.conflict {
+        return Err(Unsupported::ReturnTypeConflict);
     }
 
     // Compact numbering for the mutable globals the fixpoint discovered; the
@@ -520,6 +566,9 @@ pub fn lower(artifact: &ModuleArtifact) -> Result<MirModule, Unsupported> {
             continue;
         }
         if sig.specialized.get(fi).copied().unwrap_or(false) {
+            continue;
+        }
+        if sig.ret_closures.get(fi).is_some_and(Option::is_some) {
             continue;
         }
         let is_entry = fi as u32 == module.entry;
@@ -1035,6 +1084,26 @@ fn lower_function(
         // Resolve the terminator's value reads while this block is current.
         match exit {
             Some(Exit::Ret(Some(reg))) => {
+                // A return of a closure ref has no SSA value. When it is the
+                // function's only return, the body is effect-free, and every
+                // capture resolves to a parameter, record a summary — call
+                // sites construct the closure from their argument values and
+                // this body is never emitted. Everything else rejects below.
+                if !is_entry && let Some(candidate) = ret_closure_candidate(&ssa, reg, bi, &fn_params, param_count) {
+                    let single_ret =
+                        !implicit_ret && exits.iter().flatten().filter(|e| matches!(e, Exit::Ret(_))).count() == 1;
+                    if single_ret
+                        && capture_count == 0
+                        && identities.iter().all(Option::is_none)
+                        && ret_closure_body_is_pure(&instrs)
+                    {
+                        record_ret_closure(sig, func_index as usize, candidate);
+                    }
+                    return Err(Unsupported::Opcode {
+                        pc: start,
+                        op: Opcode::Return1,
+                    });
+                }
                 let (v, ty) = ssa.read(reg, bi, start)?;
                 match ret_ty {
                     Some(prev) if prev != ty => return Err(Unsupported::ReturnTypeConflict),
@@ -2020,6 +2089,75 @@ fn rel(pc: usize, offset: i32, code_len: usize) -> Option<usize> {
     }
 }
 
+/// A `Ret` of a register holding a closure ref whose captures all resolve
+/// (in the returning block) to the function's own parameter values.
+fn ret_closure_candidate(
+    ssa: &Ssa,
+    reg: u8,
+    block: usize,
+    fn_params: &[(ValueId, Ty)],
+    param_count: usize,
+) -> Option<(u32, Vec<RetCaptureSrc>)> {
+    let (fidx, caps) = match ssa.builtin_ref_at(reg, block)? {
+        GlobalRef::Lambda(fidx) => (fidx, Vec::new()),
+        GlobalRef::Closure(fidx, caps) => (fidx, caps),
+        _ => return None,
+    };
+    let params = fn_params.get(..param_count.min(fn_params.len()))?;
+    let mut srcs = Vec::with_capacity(caps.len());
+    for cap in &caps {
+        let (v, _) = match cap {
+            ClosureCapture::Cell(cid) => *ssa.cell_vals.get(&(block, *cid))?,
+            ClosureCapture::Value(v, ty) => (*v, *ty),
+        };
+        let k = params.iter().position(|&(pv, _)| pv == v)?;
+        srcs.push(RetCaptureSrc::Param(k));
+    }
+    Some((fidx, srcs))
+}
+
+/// Effect-free body whitelist for [`SigInfer::ret_closures`]: constant loads,
+/// register/cell moves, and the closure construction itself. Anything that can
+/// abort, write observable state, or call out disqualifies the summary —
+/// callers skip the call entirely, so a lost effect would diverge from the VM.
+fn ret_closure_body_is_pure(instrs: &[Instr]) -> bool {
+    instrs.iter().all(|instr| {
+        matches!(
+            instr.opcode(),
+            Opcode::LoadNil
+                | Opcode::LoadBool
+                | Opcode::LoadInt
+                | Opcode::LoadFloat
+                | Opcode::LoadHeapConst
+                | Opcode::StoreCellVal
+                | Opcode::LoadCellVal
+                | Opcode::Move
+                | Opcode::Move2
+                | Opcode::MakeClosure
+                | Opcode::Return1
+        )
+    })
+}
+
+/// Records a closure-return summary; disagreeing returns poison the function
+/// (no summary, so it rejects on lowering instead of miscompiling).
+fn record_ret_closure(sig: &mut SigInfer, fi: usize, candidate: (u32, Vec<RetCaptureSrc>)) {
+    if sig.ret_closure_poisoned.get(fi).copied().unwrap_or(true) {
+        return;
+    }
+    let Some(slot) = sig.ret_closures.get_mut(fi) else {
+        return;
+    };
+    match slot {
+        None => *slot = Some(candidate),
+        Some(prev) if *prev == candidate => {}
+        Some(_) => {
+            *slot = None;
+            sig.ret_closure_poisoned[fi] = true;
+        }
+    }
+}
+
 /// Lowers a call to user function `callee_idx` with the register-window layout
 /// shared by `CallDirect` and indirect `Call` (callee/result at `dst_reg`,
 /// args at `[dst_reg+1, dst_reg+1+argc)`): reads the typed arguments, refines
@@ -2117,6 +2255,8 @@ fn lower_user_call(
                         + funcs[callee_idx].capture_count as usize
                 ]);
                 sig.ret_types.push(sig.ret_types[callee_idx]);
+                sig.ret_closures.push(None);
+                sig.ret_closure_poisoned.push(false);
                 sig.lambda_params.push(identity.clone());
                 sig.specializations.insert(key, clone);
                 sig.pending_clones.push(callee_idx as u32);
@@ -2133,6 +2273,26 @@ fn lower_user_call(
         }
         callee_idx
     };
+    // A summarized callee (its single return is a closure whose captures map
+    // to parameters) is consumed statically: the result register is seeded
+    // with the closure ref built from this call site's argument values. The
+    // effect-free body is never emitted and no call happens at runtime.
+    if let Some((lf, srcs)) = sig.ret_closures.get(callee_idx).cloned().flatten() {
+        let mut caps = Vec::with_capacity(srcs.len());
+        for RetCaptureSrc::Param(k) in srcs {
+            let arg_reg = dst_reg.wrapping_add(1).wrapping_add(k as u8);
+            let (v, ty) = read_scalar(ssa, insts, arg_reg, block, pc)?;
+            if matches!(ty, Ty::Nil | Ty::MaybeI64 | Ty::MaybeF64 | Ty::MaybeStr | Ty::MaybeBool) {
+                return Err(Unsupported::TypeMismatch { pc });
+            }
+            caps.push(ClosureCapture::Value(v, ty));
+        }
+        if (dst_reg as usize) < ssa.reg_count {
+            ssa.current_def[block][dst_reg as usize] = None;
+        }
+        ssa.builtin_regs.insert((block, dst_reg), GlobalRef::Closure(lf, caps));
+        return Ok(());
+    }
     let mut args = Vec::with_capacity(argc + captures.len());
     let mut env_args: Vec<(ValueId, Ty)> = Vec::new();
     for (i, id) in identity.iter().enumerate() {
