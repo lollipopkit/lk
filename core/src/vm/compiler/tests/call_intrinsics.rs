@@ -972,3 +972,38 @@ fn compiler_lowers_math_floor_of_int_to_identity() {
         "math.floor(Int) should not call through the runtime callable bridge"
     );
 }
+
+#[test]
+fn compiler_inline_arg_closure_promotion_survives_scope_restore() {
+    // Lowering an inline call's closure argument promotes the captured caller
+    // local to a cell *in place*; the promotion record must survive the
+    // inline scope restore. Regression: the second call site re-promoted,
+    // storing the old cell as the new cell's value (Int + Obj at runtime).
+    let module = compile_source_module(
+        r#"
+        fn pick(h, n) {
+            if n > 3 {
+                return h(n);
+            }
+            return h(0);
+        }
+
+        let off = 7;
+        let first = pick(|q| q + off, 10);
+        let second = pick(|q| q + off, 1);
+        return first * 100 + second;
+        "#,
+    )
+    .expect("compile module");
+    let entry = &module.functions[0];
+
+    let promotions = entry
+        .code
+        .iter()
+        .filter(|instr| instr.opcode() == Opcode::StoreCellVal)
+        .count();
+    assert_eq!(promotions, 1, "the captured local must be boxed exactly once");
+
+    let result = execute_module(&module).expect("execute module");
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(1707)]);
+}

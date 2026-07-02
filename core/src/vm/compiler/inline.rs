@@ -68,8 +68,20 @@ impl Compiler {
             self.lower_inline_body(body)
         })();
 
+        // A closure argument capturing a caller local promotes it to a cell
+        // *in place* (the variable's register now holds the cell, see
+        // `lower_capture_value`). That is a code-level side effect on the
+        // caller's frame, so the promotion record must survive the scope
+        // restore; only names the inline shadowed with a fresh binding revert.
+        let mut restored_cell_locals = saved_cell_locals;
+        for name in &self.cell_locals {
+            if !restored_cell_locals.contains(name) && self.locals.get(name).copied() == saved_locals.get(name).copied()
+            {
+                restored_cell_locals.insert(name.clone());
+            }
+        }
         self.locals = saved_locals;
-        self.cell_locals = saved_cell_locals;
+        self.cell_locals = restored_cell_locals;
         result
     }
 
