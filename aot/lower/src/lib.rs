@@ -156,15 +156,39 @@ enum GlobalRef {
     /// prefix's `SetGlobal` storage of a top-level `let f = |x| …` (readable
     /// back via `GetGlobal` when the slot is written exactly once).
     Lambda(u32),
+    /// A capturing closure with its tracked environment: each capture is a
+    /// shared mutable cell (resolved to the cell's *current* value at each
+    /// call site — the VM's cell indirection evaluated statically) or a direct
+    /// value. The resolved values become hidden trailing call arguments, and
+    /// the lambda body reads them as extra parameters. Only an indirect
+    /// `Call` through the tracked register is supported (no global storage —
+    /// the environment is per-creation-site).
+    Closure(u32, Vec<ClosureCapture>),
+    /// An upvalue cell (`LoadHeapConst` of `UpvalCell`): the compiler's shared
+    /// mutable box for captured locals. Its content is tracked per block in
+    /// [`Ssa::cell_vals`]; the handle itself never materializes.
+    Cell(u32),
+    /// Inside a lambda body: `LoadCapture k` yields the k-th captured cell;
+    /// `LoadCellVal` through it reads the hidden capture parameter.
+    CellParam(usize),
     /// A `NewList` argument pack: the compiler boxes method-call arguments
     /// into a list; the lowering keeps the raw elements so method dispatch can
     /// consume them without materializing a runtime list.
     ArgList(Vec<(ValueId, Ty)>),
 }
 
+/// One captured slot of a [`GlobalRef::Closure`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ClosureCapture {
+    /// A shared mutable cell, resolved at each call site.
+    Cell(u32),
+    /// A direct by-value capture.
+    Value(ValueId, Ty),
+}
+
 /// Global names treated as stdlib module objects when read via `GetGlobal`.
 /// Only modules with at least one [`module_call_abi`] mapping belong here.
-const MODULE_GLOBALS: &[&str] = &["os", "time", "env", "math"];
+const MODULE_GLOBALS: &[&str] = &["os", "time", "env", "math", "fs", "process"];
 
 /// Maps a `module.method` call to its typed lkrt ABI entry: the `AbiRef`, the
 /// exact positional argument types, and the return type. `None` means the
@@ -184,6 +208,14 @@ fn module_call_abi(module: &str, name: &str) -> Option<(AbiRef, &'static [Ty], T
         ("time", "sleep") => Some((AbiRef::new("time", "sleep"), &[Ty::I64], Ty::Nil)),
         // Environment lookup with a default; both sides return an owned string.
         ("env", "get_or") => Some((AbiRef::new("env", "get_or"), &[Ty::Str, Ty::Str], Ty::Str)),
+        // System info strings (allocated per call, arena-owned).
+        ("os", "hostname") => Some((AbiRef::new("os", "hostname"), &[], Ty::Str)),
+        ("os", "arch") => Some((AbiRef::new("os", "arch"), &[], Ty::Str)),
+        ("os", "os") => Some((AbiRef::new("os", "name"), &[], Ty::Str)),
+        ("process", "cwd") => Some((AbiRef::new("process", "cwd"), &[], Ty::Str)),
+        ("fs", "temp_dir") => Some((AbiRef::new("fs", "temp_dir"), &[], Ty::Str)),
+        // Sorted entry names as List<str> (the VM's exact shape).
+        ("fs", "read_dir") => Some((AbiRef::new("fs", "read_dir_list"), &[Ty::Str], Ty::ListStr)),
         // Float-typed math (Number args f64-promote at the call site). `sqrt`
         // aborts on a negative argument (the stdlib module's loud error).
         ("math", "sqrt") => Some((AbiRef::new("math", "sqrt"), &[Ty::F64], Ty::F64)),
@@ -350,10 +382,12 @@ pub fn lower(artifact: &ModuleArtifact) -> Result<MirModule, Unsupported> {
 
     let global_count = module.globals.len();
     let mut sig = SigInfer {
+        // Captures are hidden trailing parameters, so a capturing lambda's
+        // signature covers `param_count + capture_count` slots.
         param_obs: module
             .functions
             .iter()
-            .map(|f| vec![None; f.param_count as usize])
+            .map(|f| vec![None; f.param_count as usize + f.capture_count as usize])
             .collect(),
         ret_types: vec![Ty::I64; n],
         conflict: false,
@@ -610,19 +644,10 @@ fn reachable_functions(module: &lk_core::vm::ModuleData) -> Vec<bool> {
             let Ok(instr) = Instr::try_from_raw(*raw) else {
                 continue;
             };
-            // A zero-capture `MakeClosure` target is indirectly callable
-            // (`GlobalRef::Lambda`), so it must be lowered/emitted too;
-            // capturing closures reject their defining function anyway.
+            // A `MakeClosure` target is indirectly callable (Lambda/Closure
+            // refs), so it must be lowered/emitted too.
             let callee = match instr.opcode() {
-                Opcode::CallDirect => instr.b() as usize,
-                Opcode::MakeClosure
-                    if module
-                        .functions
-                        .get(instr.b() as usize)
-                        .is_some_and(|f| f.capture_count == 0) =>
-                {
-                    instr.b() as usize
-                }
+                Opcode::CallDirect | Opcode::MakeClosure => instr.b() as usize,
                 _ => continue,
             };
             if callee < n && !reachable[callee] {
@@ -757,13 +782,14 @@ fn lower_function(
     module_globals: &[String],
     sig: &mut SigInfer,
 ) -> Result<MirFunction, Unsupported> {
-    if func.capture_count != 0 {
+    if is_entry && func.capture_count != 0 {
         return Err(Unsupported::EntryHasCaptures(func.capture_count));
     }
     if is_entry && func.param_count != 0 {
         return Err(Unsupported::EntryHasParams(func.param_count));
     }
     let param_count = func.param_count as usize;
+    let capture_count = func.capture_count as usize;
 
     let code_len = func.code.len();
     let instrs = func
@@ -852,12 +878,22 @@ fn lower_function(
     // Function parameters occupy r0..r(param_count-1) at entry; each takes its
     // inferred type (the argument type observed at call sites, `I64` by default).
     // They seed the entry block's register file as its first SSA values.
-    let mut fn_params: Vec<(ValueId, Ty)> = Vec::with_capacity(param_count);
+    let mut fn_params: Vec<(ValueId, Ty)> = Vec::with_capacity(param_count + capture_count);
     for r in 0..param_count {
         let pty = sig.param_ty(func_index as usize, r);
         let pv = ssa.new_val();
         ssa.current_def[0][r] = Some((pv, pty));
         fn_params.push((pv, pty));
+    }
+    // A capturing lambda's environment arrives as hidden trailing parameters
+    // (the closure's by-value snapshot, appended by the `Call` lowering); they
+    // occupy no register — `LoadCapture k` reads them directly.
+    let mut capture_params: Vec<(ValueId, Ty)> = Vec::with_capacity(capture_count);
+    for k in 0..capture_count {
+        let cty = sig.param_ty(func_index as usize, param_count + k);
+        let cv = ssa.new_val();
+        capture_params.push((cv, cty));
+        fn_params.push((cv, cty));
     }
     let mut block_insts: Vec<Vec<Inst>> = vec![Vec::new(); total_blocks];
     let mut block_exit: Vec<Option<Exit>> = vec![None; total_blocks];
@@ -884,6 +920,7 @@ fn lower_function(
                 globals,
                 module_globals,
                 sig,
+                &capture_params,
                 &instrs[pc],
                 pc,
             )?;
@@ -1359,6 +1396,12 @@ struct Ssa {
     /// propagated by `Move`. Block-local by construction; any write to the
     /// register clears it.
     builtin_regs: std::collections::HashMap<(usize, u8), GlobalRef>,
+    /// Fresh ids for upvalue cells created by `LoadHeapConst`.
+    next_cell: u32,
+    /// `(block, cell id)` → the cell's current content. Block-local like
+    /// [`Self::builtin_regs`]: cross-block cell flows reject rather than
+    /// modelling phi'd cell state.
+    cell_vals: std::collections::HashMap<(usize, u32), (ValueId, Ty)>,
     /// Per-block trailing instructions added for phi-edge type conversions
     /// (`Maybe` ↔ scalar merges); appended after the block's own instructions
     /// when the MIR blocks are assembled.
@@ -1381,6 +1424,8 @@ impl Ssa {
             list_len: std::collections::HashMap::new(),
             const_strs: std::collections::HashMap::new(),
             builtin_regs: std::collections::HashMap::new(),
+            next_cell: 0,
+            cell_vals: std::collections::HashMap::new(),
             edge_insts: vec![Vec::new(); total_blocks],
         }
     }
@@ -1826,7 +1871,10 @@ fn rel(pc: usize, offset: i32, code_len: usize) -> Option<usize> {
 /// shared by `CallDirect` and indirect `Call` (callee/result at `dst_reg`,
 /// args at `[dst_reg+1, dst_reg+1+argc)`): reads the typed arguments, refines
 /// the callee's per-callsite-monomorphized signature, and writes the typed
-/// result.
+/// result. A capturing closure passes its environment snapshot as hidden
+/// trailing arguments (`captures`); their count must match the callee's
+/// `capture_count` (a `CallDirect` to a capturing lambda has no environment
+/// and rejects).
 #[allow(clippy::too_many_arguments)]
 fn lower_user_call(
     ssa: &mut Ssa,
@@ -1837,6 +1885,7 @@ fn lower_user_call(
     callee_idx: usize,
     dst_reg: u8,
     argc: usize,
+    captures: &[(ValueId, Ty)],
     block: usize,
     pc: usize,
 ) -> Result<(), Unsupported> {
@@ -1852,7 +1901,13 @@ fn lower_user_call(
             op: Opcode::CallDirect,
         });
     }
-    let mut args = Vec::with_capacity(argc);
+    if captures.len() != funcs[callee_idx].capture_count as usize {
+        return Err(Unsupported::Opcode {
+            pc,
+            op: Opcode::CallDirect,
+        });
+    }
+    let mut args = Vec::with_capacity(argc + captures.len());
     for i in 0..argc {
         let arg_reg = dst_reg.wrapping_add(1).wrapping_add(i as u8);
         let (aval, aty) = read_scalar(ssa, insts, arg_reg, block, pc)?;
@@ -1871,6 +1926,17 @@ fn lower_user_call(
             }
         }
         args.push(aval);
+    }
+    for (k, &(cval, cty)) in captures.iter().enumerate() {
+        // Refine the hidden capture-parameter types the same way.
+        if let Some(slot) = sig.param_obs.get_mut(callee_idx).and_then(|p| p.get_mut(argc + k)) {
+            match slot {
+                None => *slot = Some(cty),
+                Some(prev) if *prev != cty => sig.conflict = true,
+                Some(_) => {}
+            }
+        }
+        args.push(cval);
     }
     let ret = sig.ret_types.get(callee_idx).copied().unwrap_or(Ty::I64);
     if ret == Ty::Nil {
@@ -1908,6 +1974,7 @@ fn lower_inst(
     globals: &mut Vec<String>,
     module_globals: &[String],
     sig: &mut SigInfer,
+    capture_params: &[(ValueId, Ty)],
     instr: &Instr,
     pc: usize,
 ) -> Result<(), Unsupported> {
@@ -2297,6 +2364,59 @@ fn lower_inst(
             // ints → integer compare; any float operand → float compare (coercing);
             // two strings → a `strcmp`-style helper compared to 0. A `Maybe` operand
             // (dynamic index result) unwraps to `I64` here.
+            //
+            // `== nil` / `!= nil` resolves *before* the scalar read (which would
+            // unwrap a Maybe, aborting on absent): a Maybe operand tests its
+            // present bit, a concrete-typed operand folds to a constant (values
+            // of non-Maybe types are never nil). Ordered nil comparisons are VM
+            // errors, so they reject.
+            let (lv_raw, lty_raw) = ssa.read(instr.b(), block, pc)?;
+            let (rv_raw, rty_raw) = ssa.read(instr.c(), block, pc)?;
+            if lty_raw == Ty::Nil || rty_raw == Ty::Nil {
+                let cop = cmp_op(op);
+                if !matches!(cop, CmpOp::Eq | CmpOp::Ne) {
+                    return Err(Unsupported::TypeMismatch { pc });
+                }
+                let (other_v, other_ty) = if lty_raw == Ty::Nil {
+                    (rv_raw, rty_raw)
+                } else {
+                    (lv_raw, lty_raw)
+                };
+                match other_ty {
+                    Ty::Nil => {
+                        let dst = ssa.new_val();
+                        insts.push(Inst::Const {
+                            dst,
+                            value: Const::Bool(cop == CmpOp::Eq),
+                        });
+                        ssa.write(instr.a(), block, (dst, Ty::Bool));
+                    }
+                    Ty::MaybeI64 | Ty::MaybeF64 | Ty::MaybeStr | Ty::MaybeBool => {
+                        let present = ssa.new_val();
+                        insts.push(Inst::MaybePresent {
+                            dst: present,
+                            src: other_v,
+                            maybe_ty: other_ty,
+                        });
+                        if cop == CmpOp::Ne {
+                            ssa.write(instr.a(), block, (present, Ty::Bool));
+                        } else {
+                            let dst = ssa.new_val();
+                            insts.push(Inst::Not { dst, src: present });
+                            ssa.write(instr.a(), block, (dst, Ty::Bool));
+                        }
+                    }
+                    _ => {
+                        let dst = ssa.new_val();
+                        insts.push(Inst::Const {
+                            dst,
+                            value: Const::Bool(cop == CmpOp::Ne),
+                        });
+                        ssa.write(instr.a(), block, (dst, Ty::Bool));
+                    }
+                }
+                return Ok(());
+            }
             let (lv, lty) = read_scalar(ssa, insts, instr.b(), block, pc)?;
             let (rv, rty) = read_scalar(ssa, insts, instr.c(), block, pc)?;
             let (float, lhs, rhs) = match (lty, rty) {
@@ -2356,6 +2476,7 @@ fn lower_inst(
                 callee_idx,
                 instr.a(),
                 instr.c() as usize,
+                &[],
                 block,
                 pc,
             )?;
@@ -2368,16 +2489,75 @@ fn lower_inst(
         }
         Opcode::MakeClosure => {
             // `a` = dst, `b` = function index, `c` = capture window base. A
-            // zero-capture closure is a statically known function reference
-            // (no environment); capturing closures need cell storage and stay
-            // unsupported.
+            // zero-capture closure is a statically known function reference; a
+            // capturing one additionally snapshots the capture window by value
+            // (exactly the VM's `capture_values` copy) — the values become
+            // hidden trailing arguments at each call. Mutable captures compile
+            // to cells (`LoadCellVal`/`StoreCellVal`), which stay unsupported.
             let fidx = instr.b() as usize;
             let callee = funcs.get(fidx).ok_or(Unsupported::BadConst { pc })?;
-            if callee.capture_count != 0 {
-                return Err(Unsupported::Opcode { pc, op: instr.opcode() });
+            if callee.capture_count == 0 {
+                ssa.builtin_regs
+                    .insert((block, instr.a()), GlobalRef::Lambda(fidx as u32));
+                return Ok(());
+            }
+            let mut captures = Vec::with_capacity(callee.capture_count as usize);
+            for k in 0..callee.capture_count {
+                let reg = instr.c().wrapping_add(k as u8);
+                // The compiler captures locals through upvalue cells (shared
+                // mutable boxes); a plain value is captured directly.
+                if let Some(GlobalRef::Cell(cid)) = ssa.builtin_regs.get(&(block, reg)) {
+                    captures.push(ClosureCapture::Cell(*cid));
+                    continue;
+                }
+                let (v, ty) = ssa.read(reg, block, pc)?;
+                // Same set as call arguments: scalars and handles pass through,
+                // `Maybe`/nil carriers stay out of the function ABI.
+                if matches!(ty, Ty::Nil | Ty::MaybeI64 | Ty::MaybeF64 | Ty::MaybeStr | Ty::MaybeBool) {
+                    return Err(Unsupported::TypeMismatch { pc });
+                }
+                captures.push(ClosureCapture::Value(v, ty));
             }
             ssa.builtin_regs
-                .insert((block, instr.a()), GlobalRef::Lambda(fidx as u32));
+                .insert((block, instr.a()), GlobalRef::Closure(fidx as u32, captures));
+        }
+        Opcode::LoadCapture => {
+            // `a` = dst, `bx` = capture index. Captures are cells: the loaded
+            // register carries a cell ref whose `LoadCellVal` reads the hidden
+            // trailing parameter (the cell's value at the call site). A direct
+            // (non-cell) use of the register finds no SSA value and rejects.
+            let k = instr.bx() as usize;
+            if k >= capture_params.len() {
+                return Err(Unsupported::BadConst { pc });
+            }
+            ssa.builtin_regs.insert((block, instr.a()), GlobalRef::CellParam(k));
+        }
+        Opcode::LoadCellVal => {
+            // `a` = dst, `b` = cell register: reads the cell's current content.
+            match ssa.builtin_regs.get(&(block, instr.b())) {
+                Some(GlobalRef::CellParam(k)) => {
+                    let &(v, ty) = capture_params.get(*k).ok_or(Unsupported::BadConst { pc })?;
+                    ssa.write(instr.a(), block, (v, ty));
+                }
+                Some(GlobalRef::Cell(cid)) => {
+                    let &(v, ty) = ssa
+                        .cell_vals
+                        .get(&(block, *cid))
+                        .ok_or(Unsupported::Opcode { pc, op: instr.opcode() })?;
+                    ssa.write(instr.a(), block, (v, ty));
+                }
+                _ => return Err(Unsupported::Opcode { pc, op: instr.opcode() }),
+            }
+        }
+        Opcode::StoreCellVal => {
+            // `a` = cell register, `b` = value register: updates the tracked
+            // cell content (mutations inside a lambda would need write-back
+            // through the hidden parameter, so `CellParam` stores reject).
+            let Some(GlobalRef::Cell(cid)) = ssa.builtin_regs.get(&(block, instr.a())).cloned() else {
+                return Err(Unsupported::Opcode { pc, op: instr.opcode() });
+            };
+            let (v, ty) = ssa.read(instr.b(), block, pc)?;
+            ssa.cell_vals.insert((block, cid), (v, ty));
         }
         Opcode::SetGlobal => {
             // Storing a function value into the global table is the compiler's
@@ -2502,11 +2682,50 @@ fn lower_inst(
                         fidx as usize,
                         base,
                         instr.c() as usize,
+                        &[],
                         block,
                         pc,
                     )?;
                 }
-                Some(GlobalRef::Module(_)) | Some(GlobalRef::UserFn) | Some(GlobalRef::ArgList(_)) | None => {
+                // A capturing closure devirtualizes the same way; each cell
+                // capture resolves to the cell's content *at this call site*
+                // (the VM's shared-mutable-cell semantics) and is appended as
+                // a hidden trailing argument.
+                Some(GlobalRef::Closure(fidx, captures)) => {
+                    let mut resolved = Vec::with_capacity(captures.len());
+                    for capture in &captures {
+                        let (v, ty) = match capture {
+                            ClosureCapture::Cell(cid) => *ssa
+                                .cell_vals
+                                .get(&(block, *cid))
+                                .ok_or(Unsupported::Opcode { pc, op: instr.opcode() })?,
+                            ClosureCapture::Value(v, ty) => (*v, *ty),
+                        };
+                        if matches!(ty, Ty::Nil | Ty::MaybeI64 | Ty::MaybeF64 | Ty::MaybeStr | Ty::MaybeBool) {
+                            return Err(Unsupported::TypeMismatch { pc });
+                        }
+                        resolved.push((v, ty));
+                    }
+                    lower_user_call(
+                        ssa,
+                        insts,
+                        funcs,
+                        entry,
+                        sig,
+                        fidx as usize,
+                        base,
+                        instr.c() as usize,
+                        &resolved,
+                        block,
+                        pc,
+                    )?;
+                }
+                Some(GlobalRef::Module(_))
+                | Some(GlobalRef::UserFn)
+                | Some(GlobalRef::ArgList(_))
+                | Some(GlobalRef::Cell(_))
+                | Some(GlobalRef::CellParam(_))
+                | None => {
                     return Err(Unsupported::Opcode { pc, op: instr.opcode() });
                 }
             }
@@ -2776,6 +2995,26 @@ fn lower_inst(
                     });
                     ssa.const_strs.insert(dst, s.clone());
                     ssa.write(instr.a(), block, (dst, Ty::Str));
+                }
+                ConstHeapValueData::UpvalCell(initial) => {
+                    // The compiler's shared mutable box for a captured local.
+                    // The cell never materializes: its content is tracked as a
+                    // virtual SSA slot (`Ssa::cell_vals`), read/written by
+                    // `LoadCellVal`/`StoreCellVal` and resolved at closure call
+                    // sites. Cells start nil (any pre-store read is a `Nil`
+                    // value, exactly the VM's fresh-cell content).
+                    if !matches!(initial.as_ref(), ConstRuntimeValueData::Nil) {
+                        return Err(Unsupported::Opcode { pc, op: instr.opcode() });
+                    }
+                    let cid = ssa.next_cell;
+                    ssa.next_cell += 1;
+                    let nil = ssa.new_val();
+                    insts.push(Inst::Const {
+                        dst: nil,
+                        value: Const::Nil,
+                    });
+                    ssa.cell_vals.insert((block, cid), (nil, Ty::Nil));
+                    ssa.builtin_regs.insert((block, instr.a()), GlobalRef::Cell(cid));
                 }
                 _ => return Err(Unsupported::Opcode { pc, op: instr.opcode() }),
             }
@@ -3961,6 +4200,25 @@ fn lower_module_call(
             ty,
         });
         ssa.write(base, block, (dst, ty));
+        return Ok(());
+    }
+    // `time.since(start, end)` is `end - start` (the VM's `numeric_millis`
+    // subtraction); Int-typed millisecond values only — Float coercion stays
+    // out of the subset.
+    if module == "time" && name == "since" {
+        if argc != 2 {
+            return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+        }
+        let start = read_typed_scalar(ssa, insts, base.wrapping_add(1), block, Ty::I64, pc)?;
+        let end = read_typed_scalar(ssa, insts, base.wrapping_add(2), block, Ty::I64, pc)?;
+        let dst = ssa.new_val();
+        insts.push(Inst::IntBin {
+            dst,
+            op: IntBinOp::Sub,
+            lhs: end,
+            rhs: start,
+        });
+        ssa.write(base, block, (dst, Ty::I64));
         return Ok(());
     }
     // `math.min`/`max` return one of the *original* arguments (comparison per

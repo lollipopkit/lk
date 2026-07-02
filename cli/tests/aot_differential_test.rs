@@ -474,6 +474,31 @@ fn differential_builtins() {
                 "lambda_local_reassign",
                 "let f = |x| x + 1;\nprintln(f(1));\nf = |x| x * 10;\nprintln(f(2));\nreturn 0;\n",
             ),
+            // Capturing closures: the environment is a shared mutable cell —
+            // a mutation *after* closure creation must be visible at the call
+            // (the lowering resolves cells at each call site).
+            new(
+                "closure_capture_basic",
+                "let factor = 3;\nlet scale = |x| x * factor;\nprintln(scale(4));\nreturn 0;\n",
+            ),
+            new(
+                "closure_capture_mutation_after",
+                "let factor = 3;\nlet scale = |x| x * factor;\nfactor = 5;\nprintln(scale(1));\nreturn 0;\n",
+            ),
+            new(
+                "closure_capture_two_vars_intercall",
+                "let a = 2;\nlet b = 30;\nlet f = |x| x * a + b;\nprintln(f(5));\na = 7;\nprintln(f(5));\nreturn 0;\n",
+            ),
+            new(
+                "closure_capture_in_fn",
+                "fn area(w) { let unit = 10;\n let mul = |v| v * unit;\n return mul(w); }\nprintln(area(6));\nreturn 0;\n",
+            ),
+            // (String captures flowing into `+` stay unsupported: the AddInt
+            // string-operand prescan cannot see through `LoadCellVal`.)
+            new(
+                "closure_capture_float",
+                "let rate = 1.5;\nlet scale = |x| x * rate;\nprintln(scale(2));\nprintln(scale(3));\nreturn 0;\n",
+            ),
             // typeof: static scalar names plus the runtime Maybe (missing map
             // key → Nil) selection. One println per call — a *dynamic* Str as
             // the first println argument with extra args is the (rejected)

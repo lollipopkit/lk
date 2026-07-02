@@ -1,7 +1,29 @@
 # Handoff
 
-**本轮(续):VM 方法分派免分配优化 + math 模块 MIR 吸收**。
-workspace 全绿,ASan/UBSan 差分零报告,Miri lkrt 23/23,GC stress 全绿。
+**本轮(三):捕获闭包 MIR 支持 + os/fs/process/time 模块吸收,examples 8/44**。
+workspace 全绿,ASan/UBSan 差分零报告,Miri lkrt 23/23。
+
+## 本轮新增(2026-07-02 第三场)
+
+- **捕获闭包(阶段 4 第二切片)**:编译器把捕获变量装进 **UpvalCell**
+  (共享可变盒,VM 语义:捕获后突变对闭包可见——`factor=5` 后调用打印 5)。
+  lower 把 cell 建模为虚拟 SSA 槽(`Ssa::cell_vals`,(block, cell_id) 键):
+  `LoadHeapConst UpvalCell` → 分配 cell id(初值 Nil);`StoreCellVal` 更新
+  追踪值;`LoadCellVal` 读取;`MakeClosure` 记录 `ClosureCapture::Cell(id)`;
+  **调用点**解析 cell 当前值追加为隐藏尾参(`LoadCapture k` → CellParam ref,
+  `LoadCellVal` 经它读第 param_count+k 个参数)。capture 参数进 param_obs
+  单态化格。**拒绝面**(全部响亮):跨块 cell 流、lambda 内改捕获变量、
+  闭包作一等值(传参/进容器/返回)、Str 捕获流入 `+` 分派(AddInt 启发式
+  看不穿 LoadCellVal)。差分 +5(基本捕获/捕获后突变/双捕获+调用间突变/
+  函数内捕获/float 捕获)。
+- **模块吸收(任务#7 续)**:os.hostname/arch/os、process.cwd、fs.temp_dir
+  (existing lkrt helper 直接映射)、fs.read_dir(新 `lkrt_fs_read_dir_list`,
+  排序 UTF-8 文件名 ListStr,旧 count 版本保留)、time.since(内联 end-start)。
+  MODULE_GLOBALS += fs/process。
+- **`== nil`/`!= nil` 值化比较**:在 read_scalar(会 unwrap Maybe)之前分流
+  ——Maybe 载体测 present 位,具体类型折叠常量,Nil==Nil 常量,有序比较拒绝。
+  (此前只支持 BrNil/BrNotNil 分支形式。)
+- **examples 差分 6/44 → 8/44**(os_demo、time_demo 解锁),地板 ≥8。
 
 ## 本轮新增(2026-07-02 下半场)
 
@@ -63,9 +85,10 @@ workspace 全绿,ASan/UBSan 差分零报告,Miri lkrt 23/23,GC stress 全绿。
 1. **CallMethod 专用 opcode**(见上,本轮 profiling 的头号发现):方法
    调用免 NewList 装箱 + 免 GetGlobal,预计再砍每调用 ~100-200ns;
    fraud/cart 仍 4.1x/4.4x behind Lua(本地),这是主要剩余差距。
-2. **MIR 捕获闭包 + 一等函数值**(阶段 4 剩余):cell 环境建模、闭包作
-   参数/容器元素(需 FnRef 进单态化格)、list HOF(map/filter/reduce 接
-   静态 lambda)。closure.lk/higher_order.lk 解锁依赖这些。
+2. **MIR 一等函数值**(阶段 4 最后一块):闭包作参数/容器元素/返回值
+   (需 FnRef/闭包环境进单态化格或 fn-pointer ABI + `Const::FnAddr`)、
+   list HOF(map/filter/reduce 接静态 lambda)。closure.lk/higher_order.lk
+   解锁依赖这些;捕获闭包的 cell 建模(本轮)已就位。
 3. **VM 字符串 interning/hash 缓存**(任务24)+ **循环 Move 消除**(任务25):
    本地 Lua 已可预筛;README 历史反例多,小步验证。
 4. examples 覆盖长尾:模块函数(json/datetime/io/stream/tcp,含解构

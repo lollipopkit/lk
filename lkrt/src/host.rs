@@ -188,6 +188,55 @@ pub extern "C" fn lkrt_process_cwd() -> *mut c_char {
     })
 }
 
+/// `os.hostname()` — `HOSTNAME`/`COMPUTERNAME` env var or `localhost`, the
+/// stdlib os module's exact fallback chain.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_os_hostname() -> *mut c_char {
+    aborting(|| {
+        let hostname = std::env::var_os("HOSTNAME")
+            .or_else(|| std::env::var_os("COMPUTERNAME"))
+            .and_then(|value| value.into_string().ok())
+            .unwrap_or_else(|| "localhost".to_string());
+        owned_c_string(hostname)
+    })
+}
+
+/// `os.arch()` — `std::env::consts::ARCH` (identical to the VM: lkrt compiles
+/// for the same target the interpreter runs on).
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_os_arch() -> *mut c_char {
+    aborting(|| owned_c_string(std::env::consts::ARCH))
+}
+
+/// `os.os()` — `std::env::consts::OS`.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_os_name() -> *mut c_char {
+    aborting(|| owned_c_string(std::env::consts::OS))
+}
+
+/// `fs.read_dir(path)` — the sorted list of entry *names* (UTF-8 names only,
+/// the VM's `to_str` filter) as a `List<str>` handle; IO errors abort loudly
+/// (the VM's error is equally fatal).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_fs_read_dir_list(path: *const c_char) -> *mut core::ffi::c_void {
+    aborting(|| {
+        let path = c_str(path, "fs.read_dir path")?;
+        let mut names = Vec::new();
+        for entry in fs::read_dir(path.as_str()).map_err(|err| format!("failed to read directory '{path}': {err}"))? {
+            let entry = entry.map_err(|err| format!("failed to read directory entry '{path}': {err}"))?;
+            if let Some(name) = entry.file_name().to_str() {
+                names.push(name.to_string());
+            }
+        }
+        names.sort();
+        let mut list: Vec<*const std::ffi::c_char> = Vec::with_capacity(names.len());
+        for name in names {
+            list.push(owned_c_string(name)?.cast_const());
+        }
+        Ok(crate::state::arena_handle(list))
+    })
+}
+
 /// `math.floor(Float)` with the VM's exact semantics: `value.floor() as i64`
 /// (a saturating cast, matching `integer_round` in the stdlib math module).
 /// `Int` arguments never reach here — the lowering passes them through.

@@ -31,8 +31,15 @@ ModuleArtifact → lk-aot-lower → lk_aot_mir::validate → lk-aot-codegen → 
   references: indirect calls devirtualize to direct calls, both for
   register-local lambdas and for top-level lambdas stored in a module global
   (single assignment in the entry prefix, readable from any function).
-  Capturing closures and closures used as first-class values (passed as
-  arguments, stored in containers) reject.
+- Capturing closures with statically tracked environments: the compiler's
+  upvalue cells (`LoadHeapConst UpvalCell` / `StoreCellVal` / `LoadCellVal`)
+  are modelled as virtual SSA slots, and each closure call resolves its cells
+  to their *current* content and passes the values as hidden trailing
+  parameters — preserving the VM's shared-mutable-cell semantics (mutations
+  between creation and call are visible). Cell state is block-local: closures
+  or mutations crossing control flow reject, as do lambdas that mutate their
+  captures, closures as first-class values (passed as arguments, stored in
+  containers, returned), and string captures flowing into `+` dispatch.
 - Growable handle containers (`List<i64/f64/str>`, `Map<{str,i64} ×
   {i64,f64}>`) with VM-exact indexing: the `Maybe` present-bit model makes
   out-of-range/missing reads return-print `nil`, abort on arithmetic (like the
@@ -58,6 +65,10 @@ ModuleArtifact → lk-aot-lower → lk_aot_mir::validate → lk-aot-codegen → 
   `min`/`max` lower to selects preserving the argument type; `sqrt` (aborts on
   a negative argument like the VM) / `sin`/`cos`/`exp`/`pow` call lkrt with
   Number→Float promotion. Native links `-lm` on Linux.
+- `os.hostname`/`arch`/`os`, `process.cwd`, `fs.temp_dir` (owned strings),
+  `fs.read_dir` (sorted UTF-8 entry names as `List<str>`), and `time.since`
+  (inline `end - start`). `== nil`/`!= nil` folds for concrete-typed operands
+  and tests the present bit for Maybe carriers.
 - Fused compare-branch opcodes (`TestXxxInt(I)`+`Jmp`, `TestEqIntI2`,
   `BrEqIntI4` family, `BrMod*ZeroIntI4`, nil branches).
 

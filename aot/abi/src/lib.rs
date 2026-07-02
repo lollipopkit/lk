@@ -106,6 +106,13 @@ macro_rules! for_each_abi_fn {
             ("process", "cwd", lkrt_process_cwd, ReadsHost, [], StrPtr);
             ("os", "clock", lkrt_os_clock, ReadsHost, [], F64);
             ("os", "epoch", lkrt_os_epoch, ReadsHost, [], I64);
+            ("os", "hostname", lkrt_os_hostname, ReadsHost, [], StrPtr);
+            ("os", "arch", lkrt_os_arch, ReadsHost, [], StrPtr);
+            // The module member is `os.os` (renamed: the schema name pairs with
+            // the exported symbol, not the LK-visible member).
+            ("os", "name", lkrt_os_name, ReadsHost, [], StrPtr);
+            // Sorted UTF-8 entry names as a List<str> handle (VM-exact).
+            ("fs", "read_dir_list", lkrt_fs_read_dir_list, ReadsHost, [StrPtr], Ptr);
             // `math.floor(Float) -> Int` with the VM's exact rounding (`floor()
             // as i64`, saturating); an `Int` argument short-circuits in the lowering.
             ("math", "floor", lkrt_math_floor, Pure, [F64], I64);

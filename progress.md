@@ -1,6 +1,33 @@
 # 实现进度
 
-**当前**:lkrt string-map 性能轮 + VM 方法分派优化轮完成。细节见 handoff.md。
+**当前**:捕获闭包 + 模块吸收轮完成(examples 8/44)。细节见 handoff.md。
+
+## 捕获闭包轮(本轮第三场)
+
+- **关键语义发现**:编译器对被捕获局部变量总是发 UpvalCell(LoadHeapConst
+  堆常量 `{"UpvalCell":"Nil"}`)+ StoreCellVal 初始化;MakeClosure 捕获的是
+  cell 句柄;lambda 体 LoadCapture(取 cell)+ LoadCellVal(解引用)。
+  **共享可变**:`let f=|x|x*k; k=5; f(1)` VM 打印 5——MakeClosure 时快照是
+  错的,必须调用点解析。用 /tmp 微例 + `lk compile bytecode` dump JSON
+  (`python3 -c ... heap_values`)确认,先于实现。
+- 实现要点见 handoff;capture 隐藏参数复用 param_obs fixpoint(不同调用点
+  类型冲突 → conflict → 整模块 fallback,安全)。`cell_move` fact
+  (move_value)不影响正确性:fact 只在源寄存器死后成立,SSA 读旧值无观察者。
+- 单测:zero-capture 4 个原有;捕获行为由差分 5 例锁定(含突变语义)。
+  fuzz 未加捕获形状(生成器 helper 作用域清空 vars,捕获需要外层变量,
+  留给后续)。
+
+## 模块吸收续(os/fs/process/time)
+
+- lkrt 新 helper:os_hostname(HOSTNAME/COMPUTERNAME/localhost 链)、
+  os_arch/os_name(env::consts)、fs_read_dir_list(排序 UTF-8 名单
+  ListStr = `Vec<*const c_char>`,与 lklist 表示一致;旧 count 版
+  `lkrt_fs_read_dir` 保留未映射)。process.cwd/fs.temp_dir 映射既有 helper
+  (注意 process.cwd:VM 失败返回 Nil,native abort——极端边缘,未建模)。
+- `time.since` 内联 IntBin Sub(I64 限定;stdlib numeric_millis 的 Float
+  分支不进子集)。
+- **nil 值化比较**是 os_demo 的隐性门槛(`assert(x != nil)` 产生 Bool 值,
+  与 BrNil 分支形式不同);放在 read_scalar 前处理避免 Maybe 误 unwrap。
 
 ## VM 方法分派免分配轮(本轮下半场)
 
