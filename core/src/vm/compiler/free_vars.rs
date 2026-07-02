@@ -212,3 +212,168 @@ fn collect_pattern_bound_vars(pattern: &Pattern, bound: &mut HashSet<String>) {
         Pattern::Literal(_) | Pattern::Wildcard | Pattern::Range { .. } => {}
     }
 }
+
+/// Collects the names each closure occurring anywhere under `stmt` captures
+/// (the closure body's free variables, with the closure's parameters bound).
+/// Loop lowering pre-promotes the collected names that are already locals to
+/// cells *before* emitting any loop code: a promotion emitted mid-body would
+/// leave the condition/increment reads (emitted earlier, re-executed each
+/// iteration) reading the raw register that now holds the cell.
+pub(super) fn collect_stmt_closure_captures(stmt: &Stmt, out: &mut Vec<String>) {
+    match stmt {
+        Stmt::Attributed { item, .. } => collect_stmt_closure_captures(item, out),
+        Stmt::Block { statements } => {
+            for stmt in statements {
+                collect_stmt_closure_captures(stmt, out);
+            }
+        }
+        Stmt::Let { value, .. } | Stmt::Define { value, .. } => collect_expr_closure_captures(value, out),
+        Stmt::Assign { value, .. } | Stmt::CompoundAssign { value, .. } => collect_expr_closure_captures(value, out),
+        Stmt::If {
+            condition,
+            then_stmt,
+            else_stmt,
+        } => {
+            collect_expr_closure_captures(condition, out);
+            collect_stmt_closure_captures(then_stmt, out);
+            if let Some(else_stmt) = else_stmt {
+                collect_stmt_closure_captures(else_stmt, out);
+            }
+        }
+        Stmt::IfLet {
+            value,
+            then_stmt,
+            else_stmt,
+            ..
+        } => {
+            collect_expr_closure_captures(value, out);
+            collect_stmt_closure_captures(then_stmt, out);
+            if let Some(else_stmt) = else_stmt {
+                collect_stmt_closure_captures(else_stmt, out);
+            }
+        }
+        Stmt::While { condition, body } => {
+            collect_expr_closure_captures(condition, out);
+            collect_stmt_closure_captures(body, out);
+        }
+        Stmt::WhileLet { value, body, .. } => {
+            collect_expr_closure_captures(value, out);
+            collect_stmt_closure_captures(body, out);
+        }
+        Stmt::For { iterable, body, .. } => {
+            collect_expr_closure_captures(iterable, out);
+            collect_stmt_closure_captures(body, out);
+        }
+        Stmt::Expr(expr) => collect_expr_closure_captures(expr, out),
+        Stmt::Return { value } => {
+            if let Some(value) = value {
+                collect_expr_closure_captures(value, out);
+            }
+        }
+        // A nested `fn` captures nothing from locals (functions are compiled
+        // separately); the remaining statement kinds carry no expressions
+        // that can hold closures.
+        _ => {}
+    }
+}
+
+pub(super) fn collect_expr_closure_captures(expr: &Expr, out: &mut Vec<String>) {
+    match expr {
+        // `collect_expr_free_vars`'s `Closure` arm binds the parameters and
+        // walks the body (including nested closures with their own params).
+        Expr::Closure { .. } => collect_expr_free_vars(expr, &mut HashSet::new(), out),
+        Expr::Paren(inner) | Expr::Unary(_, inner) => collect_expr_closure_captures(inner, out),
+        Expr::Bin(lhs, _, rhs)
+        | Expr::And(lhs, rhs)
+        | Expr::Or(lhs, rhs)
+        | Expr::NullishCoalescing(lhs, rhs)
+        | Expr::Access(lhs, rhs)
+        | Expr::OptionalAccess(lhs, rhs) => {
+            collect_expr_closure_captures(lhs, out);
+            collect_expr_closure_captures(rhs, out);
+        }
+        Expr::Conditional(condition, then_expr, else_expr) => {
+            collect_expr_closure_captures(condition, out);
+            collect_expr_closure_captures(then_expr, out);
+            collect_expr_closure_captures(else_expr, out);
+        }
+        Expr::Call(_, args) => {
+            for arg in args {
+                collect_expr_closure_captures(arg, out);
+            }
+        }
+        Expr::CallExpr(callee, args) => {
+            collect_expr_closure_captures(callee, out);
+            for arg in args {
+                collect_expr_closure_captures(arg, out);
+            }
+        }
+        Expr::CallNamed(callee, positional, named) => {
+            collect_expr_closure_captures(callee, out);
+            for arg in positional {
+                collect_expr_closure_captures(arg, out);
+            }
+            for (_, arg) in named {
+                collect_expr_closure_captures(arg, out);
+            }
+        }
+        Expr::List(values) => {
+            for value in values {
+                collect_expr_closure_captures(value, out);
+            }
+        }
+        Expr::Map(entries) => {
+            for (key, value) in entries {
+                collect_expr_closure_captures(key, out);
+                collect_expr_closure_captures(value, out);
+            }
+        }
+        Expr::StructLiteral { fields, .. } => {
+            for (_, value) in fields {
+                collect_expr_closure_captures(value, out);
+            }
+        }
+        Expr::TemplateString(parts) => {
+            for part in parts {
+                if let TemplateStringPart::Expr(expr) = part {
+                    collect_expr_closure_captures(expr, out);
+                }
+            }
+        }
+        Expr::Block(statements) => {
+            for stmt in statements {
+                collect_stmt_closure_captures(stmt, out);
+            }
+        }
+        Expr::Match { value, arms } => {
+            collect_expr_closure_captures(value, out);
+            for arm in arms {
+                collect_expr_closure_captures(&arm.body, out);
+            }
+        }
+        Expr::Range { start, end, step, .. } => {
+            for value in [start, end, step].into_iter().flatten() {
+                collect_expr_closure_captures(value, out);
+            }
+        }
+        Expr::Select { cases, default_case } => {
+            for case in cases {
+                match &case.pattern {
+                    SelectPattern::Recv { channel, .. } => collect_expr_closure_captures(channel, out),
+                    SelectPattern::Send { channel, value } => {
+                        collect_expr_closure_captures(channel, out);
+                        collect_expr_closure_captures(value, out);
+                    }
+                }
+                if let Some(guard) = &case.guard {
+                    collect_expr_closure_captures(guard, out);
+                }
+                collect_expr_closure_captures(&case.body, out);
+            }
+            if let Some(default_case) = default_case {
+                collect_expr_closure_captures(default_case, out);
+            }
+        }
+        Expr::Literal(_) | Expr::Var(_) => {}
+    }
+}

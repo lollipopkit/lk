@@ -887,3 +887,73 @@ fn moves_from_range_condition_register(function: &Function, sign_pc: usize) -> b
         .iter()
         .any(|instr| instr.opcode() == Opcode::Move && condition_regs.contains(&instr.b()))
 }
+
+#[test]
+fn compiler_while_loop_captured_outer_local_promotes_at_loop_entry() {
+    // The capture promotion must run before the condition is emitted: a
+    // promotion emitted mid-body re-executes each iteration (orphaning the
+    // shared cell) and the condition's raw register read breaks on the back
+    // edge once the register holds the cell. Regression: iteration 2 failed
+    // with "expected Int, got Obj".
+    let module = compile_source_module(
+        r#"
+        let i = 0;
+        let total = 0;
+        while (i < 3) {
+            let f = |x| x + i;
+            total = total + f(10);
+            i = i + 1;
+        }
+        return total;
+        "#,
+    )
+    .expect("compile module");
+
+    let result = execute_module(&module).expect("execute module");
+    // Shared-cell doctrine: each call sees the current i (10 + 11 + 12).
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(33)]);
+}
+
+#[test]
+fn compiler_range_for_loop_variable_captures_as_snapshot_cell() {
+    // A `for` loop variable cannot be re-bound to a cell (the fused loop
+    // opcode drives the raw register): each capture copies the counter into
+    // a fresh snapshot cell — and must *copy*, not move (regression: the
+    // counter register became Nil and ForLoopI failed).
+    let module = compile_source_module(
+        r#"
+        let total = 0;
+        for i in 0..3 {
+            let f = |x| x + i;
+            total = total + f(10);
+        }
+        return total;
+        "#,
+    )
+    .expect("compile module");
+
+    let result = execute_module(&module).expect("execute module");
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(33)]);
+}
+
+#[test]
+fn compiler_loop_escaping_closure_sees_final_cell_value() {
+    // A closure assigned inside the loop and called after it reads the
+    // shared cell's final content (the capture is one cell across
+    // iterations, pre-promoted at loop entry).
+    let module = compile_source_module(
+        r#"
+        let i = 0;
+        let g = |x| x;
+        while (i < 3) {
+            g = |x| x + i;
+            i = i + 1;
+        }
+        return g(100);
+        "#,
+    )
+    .expect("compile module");
+
+    let result = execute_module(&module).expect("execute module");
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(103)]);
+}

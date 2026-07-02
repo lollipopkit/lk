@@ -47,7 +47,7 @@ use crate::vm::analysis::{
 };
 use facts::*;
 use for_value_usage::{stmt_shadows_name_deep, stmt_uses_for_binding_value};
-use free_vars::collect_expr_free_vars;
+use free_vars::{collect_expr_closure_captures, collect_expr_free_vars, collect_stmt_closure_captures};
 use loop_consts::ScalarLoopConstKey;
 use support::*;
 
@@ -65,6 +65,11 @@ pub struct Compiler {
     capture_names: HashMap<String, u16>,
     capture_cells: HashSet<String>,
     cell_locals: HashSet<String>,
+    /// Loop-pattern variables of the enclosing `for` loops: the fused loop
+    /// opcodes own the raw register, so a capture takes a fresh snapshot cell
+    /// per capture site instead of re-binding the register (per-iteration
+    /// binding semantics).
+    loop_snapshot_vars: Vec<String>,
     dynamic_function_base: u32,
     pending_functions: Vec<Function>,
     inline_stack: Vec<String>,
@@ -1322,7 +1327,35 @@ impl Compiler {
         Ok(true)
     }
 
+    /// Promotes every local a closure inside the loop captures to a cell
+    /// *now*, before any loop code is emitted. A promotion emitted mid-body
+    /// re-executes each iteration (re-boxing an outer variable and orphaning
+    /// the shared cell) and leaves earlier-emitted reads — the condition and
+    /// increment, re-executed on the back edge — reading the raw register
+    /// that meanwhile holds the cell.
+    fn pre_promote_loop_captures(&mut self, condition: Option<&Expr>, body: &Stmt) -> Result<()> {
+        let mut captured = Vec::new();
+        if let Some(condition) = condition {
+            collect_expr_closure_captures(condition, &mut captured);
+        }
+        collect_stmt_closure_captures(body, &mut captured);
+        for name in captured {
+            if self.loop_snapshot_vars.iter().any(|v| v == &name) {
+                continue;
+            }
+            let Some(local) = self.locals.get(&name).copied() else {
+                continue;
+            };
+            if self.cell_locals.insert(name) {
+                let cell = self.emit_upval_cell(local)?;
+                self.emit_move(local, cell, "box captured local")?;
+            }
+        }
+        Ok(())
+    }
+
     fn lower_while(&mut self, condition: &Expr, body: &Stmt) -> Result<()> {
+        self.pre_promote_loop_captures(Some(condition), body)?;
         let watermark = self.next_reg;
         self.begin_loop_scalar_const_scope(condition, body)?;
         let condition_start = self.function.code.len();
@@ -1368,6 +1401,15 @@ impl Compiler {
     }
 
     fn lower_for(&mut self, pattern: &ForPattern, iterable: &Expr, body: &Stmt) -> Result<()> {
+        self.pre_promote_loop_captures(None, body)?;
+        let snapshot_mark = self.loop_snapshot_vars.len();
+        collect_for_pattern_names(pattern, &mut self.loop_snapshot_vars);
+        let result = self.lower_for_dispatch(pattern, iterable, body);
+        self.loop_snapshot_vars.truncate(snapshot_mark);
+        result
+    }
+
+    fn lower_for_dispatch(&mut self, pattern: &ForPattern, iterable: &Expr, body: &Stmt) -> Result<()> {
         match iterable {
             Expr::Range {
                 start,
@@ -1837,6 +1879,13 @@ impl Compiler {
 
     fn lower_capture_value(&mut self, name: &str) -> Result<(u16, bool)> {
         if let Some(local) = self.locals.get(name).copied() {
+            // A `for` loop variable cannot be re-bound to a cell (the fused
+            // loop opcodes drive the raw register): each capture snapshots
+            // the current value into a fresh cell — per-iteration binding.
+            if self.loop_snapshot_vars.iter().any(|v| v == name) {
+                let cell = self.emit_upval_cell_with_policy(local, false)?;
+                return Ok((cell, true));
+            }
             if self.cell_locals.insert(name.to_string()) {
                 let cell = self.emit_upval_cell(local)?;
                 self.emit_move(local, cell, "box captured local")?;
@@ -1852,10 +1901,17 @@ impl Compiler {
     }
 
     fn emit_upval_cell(&mut self, src: u16) -> Result<u16> {
+        self.emit_upval_cell_with_policy(src, true)
+    }
+
+    /// `move_value: false` keeps `src` intact — the snapshot capture of a
+    /// loop variable copies the counter into the cell (the fused loop opcode
+    /// keeps driving the raw register afterwards).
+    fn emit_upval_cell_with_policy(&mut self, src: u16, move_value: bool) -> Result<u16> {
         let dst = self.alloc_reg();
         let k = self.push_heap_value(ConstHeapValue::UpvalCell(Box::new(ConstRuntimeValue::Nil)))?;
         self.emit(Instr::abx(Opcode::LoadHeapConst, checked_u8("upval cell dst", dst)?, k));
-        self.emit_store_cell_value(dst, src, "upval cell")?;
+        self.emit_store_cell_value_with_policy(dst, src, "upval cell", move_value)?;
         Ok(dst)
     }
 
@@ -2336,6 +2392,31 @@ pub fn compile_module_with_natives(program: &Program, natives: Vec<NativeEntry>)
 
 pub fn compile_source(source: &str) -> Result<Function> {
     Compiler::compile_source(source)
+}
+
+fn collect_for_pattern_names(pattern: &ForPattern, out: &mut Vec<String>) {
+    match pattern {
+        ForPattern::Variable(name) => out.push(name.clone()),
+        ForPattern::Ignore => {}
+        ForPattern::Tuple(patterns) => {
+            for pattern in patterns {
+                collect_for_pattern_names(pattern, out);
+            }
+        }
+        ForPattern::Array { patterns, rest } => {
+            for pattern in patterns {
+                collect_for_pattern_names(pattern, out);
+            }
+            if let Some(rest) = rest {
+                out.push(rest.clone());
+            }
+        }
+        ForPattern::Object(entries) => {
+            for (_, pattern) in entries {
+                collect_for_pattern_names(pattern, out);
+            }
+        }
+    }
 }
 
 pub fn compile_source_module(source: &str) -> Result<Module> {
