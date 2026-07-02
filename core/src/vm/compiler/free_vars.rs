@@ -265,11 +265,8 @@ pub(super) fn collect_stmt_closure_captures(stmt: &Stmt, out: &mut Vec<String>) 
             collect_stmt_closure_captures(body, out);
         }
         Stmt::Expr(expr) => collect_expr_closure_captures(expr, out),
-        Stmt::Return { value } => {
-            if let Some(value) = value {
-                collect_expr_closure_captures(value, out);
-            }
-        }
+        Stmt::Return { value: Some(value) } => collect_expr_closure_captures(value, out),
+        Stmt::Return { value: None } => {}
         // A nested `fn` captures nothing from locals (functions are compiled
         // separately); the remaining statement kinds carry no expressions
         // that can hold closures.

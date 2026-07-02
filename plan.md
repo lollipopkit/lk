@@ -28,15 +28,22 @@
    `RUSTFLAGS="-D warnings"` test-target 干净、AOT bench 20/20 checksum
    (AOT/LK geomean 0.251x,单次运行参考值)、fmt + clippy 清零。
 
+## 追加轮(2026-07-03,同 PR):list 相等 + 跨块 cell ✅
+
+- **list 结构相等**已落地(lkrt eq helpers + CmpXx 容器分派 +
+  `list_base_len` 非空下界折叠)→ **closure.lk 全文件 native==VM**,
+  examples 差分 10→11。
+- **跨块 cell 状态**已落地(cell = Braun 虚拟槽,phi 化;循环隔离由
+  ref 一致性天然保证)→ 分支 mutation/loop-carried/branchy-helper
+  闭包实参全部解锁。
+- 又修掉一个 VM 真 miscompile:循环内 mid-body cell promotion(循环
+  入口预提升 + for 循环变量快照 cell)。
+
 ## 下一轮候选(记录不做)
 
-- **list/容器结构相等**(`xs == [1,2]`)—— closure.lk 全文件 native
-  只差这一块(第 6 节 `evens == [...]`);需要 heap-const list 物化 +
-  lkrt eq helper + CmpInt 容器分派。
-- **跨块 cell 状态**(虚拟槽进 Braun phi)—— 解锁"分支/循环里创建或
-  变异的捕获闭包";Ssa 把 cell 并入寄存器文件的推广改造。
+- map 结构相等、闭包进容器(容器相等/一等函数的收尾长尾)。
 - VM dispatch 密度专项(超级指令/computed goto)—— fraud/cart 剩
-  2.0x/2.3x 的本质差距,重大专项单独立项。
+  ~2x 的本质差距,重大专项单独立项。
 - json/动态值表示 —— 需要 native 侧 tagged 动态值,独立立项。
 - Move 消除(上限 6-8%)、histogram AOT 1.04x。
 - clippy `--all-targets` gate(先清 test 代码剩余 ~33 条 lint)。
