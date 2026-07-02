@@ -157,6 +157,7 @@ macro_rules! for_each_abi_fn {
             // `a ++ b` → a freshly allocated C string (`WritesHost`: allocates/leaks).
             ("str", "concat", lkrt_str_concat, WritesHost, [StrPtr, StrPtr], StrPtr);
             ("str", "char_len", lkrt_str_char_len, Pure, [StrPtr], I64);
+            ("str", "starts_with", lkrt_str_starts_with, Pure, [StrPtr, StrPtr], I64);
             // Scalar → display string (the VM's `ToString`), allocating/leaking a C string.
             ("str", "from_i64", lkrt_i64_to_str, WritesHost, [I64], StrPtr);
             ("str", "from_f64", lkrt_f64_to_str, WritesHost, [F64], StrPtr);

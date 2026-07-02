@@ -43,7 +43,10 @@ pub use lkmap::{
     lkrt_lkmap_str_f64_get_pair, lkrt_lkmap_str_f64_len, lkrt_lkmap_str_f64_new, lkrt_lkmap_str_f64_set,
     lkrt_lkmap_str_i64_get_pair, lkrt_lkmap_str_i64_len, lkrt_lkmap_str_i64_new, lkrt_lkmap_str_i64_set,
 };
-pub use lkstr::{lkrt_bool_to_str, lkrt_f64_to_str, lkrt_i64_to_str, lkrt_str_char_len, lkrt_str_cmp, lkrt_str_concat};
+pub use lkstr::{
+    lkrt_bool_to_str, lkrt_f64_to_str, lkrt_i64_to_str, lkrt_str_char_len, lkrt_str_cmp, lkrt_str_concat,
+    lkrt_str_starts_with,
+};
 pub use net::{
     lkrt_bytes_free, lkrt_bytes_to_string_utf8, lkrt_handle_close, lkrt_socket_addr, lkrt_tcp_close, lkrt_tcp_connect,
     lkrt_tcp_read, lkrt_tcp_write_bytes, lkrt_tcp_write_str,

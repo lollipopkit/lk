@@ -97,9 +97,10 @@ fn ty_str(t: Ty) -> &'static str {
         | Ty::MapStrI64
         | Ty::MapI64I64
         | Ty::MapStrF64
-        | Ty::MapI64F64 => "ptr",
+        | Ty::MapI64F64
+        | Ty::MapStrBool => "ptr",
         Ty::Nil => "void",
-        Ty::MaybeI64 => "{ i64, i64 }",
+        Ty::MaybeI64 | Ty::MaybeBool => "{ i64, i64 }",
         Ty::MaybeF64 => "{ double, i64 }",
         Ty::MaybeStr => "{ ptr, i64 }",
     }
@@ -241,6 +242,7 @@ fn render_inst(out: &mut String, module: &MirModule, inst: &Inst) {
             let value_ty = match maybe_ty {
                 Ty::MaybeF64 => "double",
                 Ty::MaybeStr => "ptr",
+                Ty::MaybeBool => "i64",
                 _ => "i64",
             };
             let _ = writeln!(
@@ -631,6 +633,26 @@ fn render_ret(out: &mut String, ret_ty: Ty, value: Option<ValueId>, is_entry: bo
                     let _ = writeln!(out, "  ret i32 0");
                     return;
                 }
+                Ty::MaybeBool => {
+                    let n = v.0;
+                    let _ = writeln!(out, "  %m{n}p = extractvalue {{ i64, i64 }} {}, 1", val(v));
+                    let _ = writeln!(out, "  %m{n}v = extractvalue {{ i64, i64 }} {}, 0", val(v));
+                    let _ = writeln!(out, "  %m{n}c = icmp ne i64 %m{n}p, 0");
+                    let _ = writeln!(out, "  br i1 %m{n}c, label %m{n}some, label %m{n}none");
+                    let _ = writeln!(out, "m{n}some:");
+                    let _ = writeln!(out, "  %m{n}b = icmp ne i64 %m{n}v, 0");
+                    let _ = writeln!(
+                        out,
+                        "  %m{n}s = select i1 %m{n}b, ptr @lk_bool_true, ptr @lk_bool_false"
+                    );
+                    let _ = writeln!(out, "  call i32 (ptr, ...) @printf(ptr @lk_str_fmt, ptr %m{n}s)");
+                    let _ = writeln!(out, "  call void @lkrt_cleanup()");
+                    let _ = writeln!(out, "  ret i32 0");
+                    let _ = writeln!(out, "m{n}none:");
+                    let _ = writeln!(out, "  call void @lkrt_cleanup()");
+                    let _ = writeln!(out, "  ret i32 0");
+                    return;
+                }
                 // Printing a returned container/nil is not modelled; the lowering
                 // rejects an entry that returns these, so this is unreachable.
                 Ty::Nil
@@ -640,7 +662,8 @@ fn render_ret(out: &mut String, ret_ty: Ty, value: Option<ValueId>, is_entry: bo
                 | Ty::MapStrI64
                 | Ty::MapI64I64
                 | Ty::MapStrF64
-                | Ty::MapI64F64 => {}
+                | Ty::MapI64F64
+                | Ty::MapStrBool => {}
             }
         }
         // Default-arena ownership (RFC §3.4): reclaim every runtime allocation

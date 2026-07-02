@@ -26,6 +26,24 @@ pub(crate) fn arena_c_string(s: CString) -> *mut c_char {
 ///
 /// # Safety
 /// `a` and `b` must be valid NUL-terminated C strings, or null (treated as empty).
+/// `s.starts_with(prefix)` — byte-prefix test (Rust `str::starts_with`, the
+/// VM's exact semantics). Null pointers count as empty strings.
+///
+/// # Safety
+/// Both pointers must be null or NUL-terminated strings.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_str_starts_with(s: *const std::ffi::c_char, prefix: *const std::ffi::c_char) -> i64 {
+    let bytes = |p: *const std::ffi::c_char| {
+        if p.is_null() {
+            &[][..]
+        } else {
+            // SAFETY: non-null pointers are NUL-terminated per the ABI.
+            unsafe { std::ffi::CStr::from_ptr(p) }.to_bytes()
+        }
+    };
+    i64::from(bytes(s).starts_with(bytes(prefix)))
+}
+
 /// `s.len()` with the VM's exact semantics: the number of Unicode scalar
 /// values (`chars().count()`), not bytes.
 ///

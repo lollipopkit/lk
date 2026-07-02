@@ -58,6 +58,9 @@ pub enum Ty {
     MapStrF64,
     /// A growable int-keyed `Map<i64, f64>` handle (opaque `ptr` at the ABI).
     MapI64F64,
+    /// A string-keyed `Map<str, bool>` handle. Values ride the `str_i64` map
+    /// ABI as `0`/`1`; the type keeps bool display/compare semantics exact.
+    MapStrBool,
     /// The result of a dynamic (not provably in-range) `List<i64>` index: a
     /// `Maybe<i64>` carried as an LLVM `{i64, i64}` (value, present). Its only
     /// supported consumer today is a function return (which prints the value or
@@ -67,6 +70,9 @@ pub enum Ty {
     MaybeF64,
     /// The `str` analogue of [`Ty::MaybeI64`], carried as LLVM `{ptr, i64}`.
     MaybeStr,
+    /// The `bool` analogue of [`Ty::MaybeI64`]: carried as `{i64, i64}` (value
+    /// `0`/`1`, present bit), narrowing to `Bool` on use.
+    MaybeBool,
 }
 
 /// Integer binary operators. `Div`/`Mod` are lowered to the divisor-guarded
@@ -514,9 +520,11 @@ fn ty_name(ty: Ty) -> &'static str {
         Ty::MapI64I64 => "map<i64,i64>",
         Ty::MapStrF64 => "map<str,f64>",
         Ty::MapI64F64 => "map<i64,f64>",
+        Ty::MapStrBool => "map<str,bool>",
         Ty::MaybeI64 => "maybe<i64>",
         Ty::MaybeF64 => "maybe<f64>",
         Ty::MaybeStr => "maybe<str>",
+        Ty::MaybeBool => "maybe<bool>",
     }
 }
 

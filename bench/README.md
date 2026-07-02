@@ -30,10 +30,17 @@ does not accidentally change the default VM baseline. Use `RUN_AOT=1` to compile
 and measure native AOT as an additional explicit engine. If LLVM is disabled or
 the current workload artifact is not native lowerable yet, AOT is reported as
 skipped and the VM/Lua benchmark still runs. Since the legacy text backend
-retired, AOT coverage equals the MIR pipeline's subset; the full workload suite
-currently skips AOT (the first blocking shape is the `os.clock` module-call
-timing preamble), so historical AOT numbers below were measured on the retired
-backend and are not reproducible until the MIR pipeline absorbs those shapes.
+retired, AOT coverage equals the MIR pipeline's subset. As of 2026-07-02 the
+MIR pipeline compiles the **full 20-workload suite** (module builtins, mutable
+globals, range-for, fused arithmetic, string-keyed maps, method dispatch), all
+20 checksums match the VM, and a single-sample dist-build comparison measured
+**AOT/VM geomean 0.329x** — on par with the retired backend's historical
+0.331x, now via clang `-O2`. Per-workload: scalar/control-flow workloads run
+at 0.02x–0.19x of VM time; the five dynamic string-key map workloads
+(two_sum_map, histogram_group_count, log_parse_filter, inventory_reorder,
+event_join_by_id) are 2.0–3.5x *slower* than the VM — the known lkrt
+string-map bottleneck (per-operation global-lock arena registration plus
+`CStr`→`String` conversions), the next native performance target.
 
 The runner executes one workload at a time and prints progress to stderr, so a
 slow or stuck workload can be identified directly. Each workload has a timeout
