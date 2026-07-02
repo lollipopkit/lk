@@ -2,11 +2,7 @@ use crate::{
     llvm::{LlvmBackendOptions, compile_module_artifact_to_llvm, compile_program_to_llvm},
     stmt::stmt_parser::StmtParser,
     token::Tokenizer,
-    vm::{
-        Compiler, ConstHeapValueData, ConstPoolData, ConstRuntimeValueData, FunctionData, Instr,
-        MODULE_ARTIFACT_VERSION, ModuleArtifact, ModuleData, Opcode, RuntimeMapKeyData, VmContext,
-        compile_program_module_with_ctx,
-    },
+    vm::{Compiler, ModuleArtifact},
 };
 
 #[test]

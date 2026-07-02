@@ -1,11 +1,10 @@
 use super::*;
 use crate::{
-    stmt::import::ImportStmt,
     stmt::stmt_parser::StmtParser,
     token::Tokenizer,
     vm::{
         Compiler, ConstHeapValueData, ConstPoolData, ConstRuntimeValueData, FunctionData, Instr,
-        MODULE_ARTIFACT_VERSION, ModuleArtifact, ModuleData, Opcode, RuntimeMapKeyData,
+        MODULE_ARTIFACT_VERSION, ModuleArtifact, ModuleData, Opcode,
     },
 };
 

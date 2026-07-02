@@ -407,7 +407,7 @@ impl Generator {
                     self.vars.push((name, Ty::I64));
                 }
             }
-            _ => {
+            11 => {
                 // String list: push templated parts, observe via join.
                 let list = self.fresh("sl");
                 let counter = self.fresh("i");

@@ -1,11 +1,10 @@
 use crate::{
     llvm::{LlvmBackendOptions, compile_module_artifact_to_llvm, compile_program_to_llvm},
-    stmt::import::collect_program_imports,
     stmt::stmt_parser::StmtParser,
     token::Tokenizer,
     vm::{
-        Compiler, ConstHeapValueData, ConstPoolData, ConstRuntimeValueData, FunctionData, Instr,
-        MODULE_ARTIFACT_VERSION, ModuleArtifact, ModuleData, Opcode, RuntimeMapKeyData,
+        ConstHeapValueData, ConstPoolData, ConstRuntimeValueData, FunctionData, Instr, MODULE_ARTIFACT_VERSION,
+        ModuleArtifact, ModuleData, Opcode,
     },
 };
 
