@@ -335,6 +335,21 @@ impl FunctionVerifier<'_> {
                     // A = call window base (callee slot), args at A+1..A+1+C.
                     self.check_window(pc, "call", instr.a() as usize, 1 + instr.c() as usize)?;
                 }
+                Opcode::CallMethodK => {
+                    // A = window base (receiver slot, args at A+1..A+1+C), B =
+                    // method-name string constant index.
+                    self.check_window(pc, "method call", instr.a() as usize, 1 + instr.c() as usize)?;
+                    let name = instr.b() as usize;
+                    if name >= self.function.consts.strings.len() {
+                        return Err(self.fail(
+                            pc,
+                            format_args!(
+                                "CallMethodK method-name const {name} out of bounds ({} strings)",
+                                self.function.consts.strings.len()
+                            ),
+                        ));
+                    }
+                }
                 Opcode::CallDirect => {
                     self.check_window(pc, "call", instr.a() as usize, 1 + instr.c() as usize)?;
                     let callee = instr.b() as usize;

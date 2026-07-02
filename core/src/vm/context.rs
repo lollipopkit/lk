@@ -13,6 +13,7 @@ use crate::typ::{TraitDef, TraitImpl};
 use std::collections::HashMap;
 
 mod core_methods;
+pub(crate) use core_methods::core_call_method_windowed;
 use core_methods::{core_call_method_builtin, core_call_method_named_builtin, core_set_builtin};
 
 /// VM runtime context.

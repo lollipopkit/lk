@@ -142,6 +142,72 @@ fn dispatch_builtin_method(
     }
 }
 
+/// `CallMethodK` entry: dispatches a positional method call whose arguments
+/// live in a register window (no boxed argument list). The hot builtin paths
+/// consume the slice directly; only the rare tails (callable property, list
+/// HOF, trait method) materialize a heap list, which the generic
+/// `__lk_call_method` shape would have allocated anyway.
+pub(crate) fn core_call_method_windowed(
+    receiver: RuntimeVal,
+    method_name: &str,
+    args: &[RuntimeVal],
+    runtime: &mut NativeRuntime<'_>,
+) -> anyhow::Result<RuntimeVal> {
+    if !matches!(method_name, "filter" | "map" | "reduce")
+        && let Some(prop) = runtime_access(&receiver, method_name, runtime.heap_mut())?
+    {
+        if runtime_is_callable(&prop, runtime.heap())? {
+            let Some((state, ctx, module)) = runtime.parts_mut() else {
+                bail!("method call requires full runtime state for callable receiver");
+            };
+            let handle = materialize_positional_list(args, &mut state.heap);
+            return call_runtime_value_runtime_list_args(prop, handle, state, module, ctx);
+        }
+        if args.is_empty() {
+            return Ok(prop);
+        }
+    }
+    if let Some(result) = dispatch_builtin_method_slice(&receiver, method_name, args, runtime)? {
+        return Ok(result);
+    }
+    // Rare tails share the list-shaped generic path.
+    let positional = match materialize_positional_list(args, runtime.heap_mut()) {
+        Some(handle) => MethodPositionalArgs::List(handle),
+        None => MethodPositionalArgs::Empty,
+    };
+    if matches!(method_name, "filter" | "map" | "reduce") {
+        let name = DetachedStr::Short(ShortStr::new(method_name).expect("method names are short"));
+        return call_method_positional_runtime(receiver, name, positional, runtime);
+    }
+    call_trait_method_runtime(receiver, ArcStr::from(method_name), positional, runtime)
+}
+
+/// Boxes window arguments into a heap list for the generic method paths
+/// (`None` for an empty window, matching `MethodPositionalArgs::Empty`).
+fn materialize_positional_list(args: &[RuntimeVal], heap: &mut HeapStore) -> Option<HeapRef> {
+    if args.is_empty() {
+        return None;
+    }
+    Some(heap.alloc(HeapValue::List(TypedList::Mixed(args.to_vec()))))
+}
+
+/// [`dispatch_builtin_method`] over a direct argument slice (no
+/// `MethodPositionalArgs` copy).
+fn dispatch_builtin_method_slice(
+    receiver: &RuntimeVal,
+    method: &str,
+    args: &[RuntimeVal],
+    runtime: &mut NativeRuntime<'_>,
+) -> anyhow::Result<Option<RuntimeVal>> {
+    match builtin_receiver_kind(receiver, runtime.heap()) {
+        BuiltinReceiver::Map => dispatch_map_builtin_method(receiver, method, args, runtime.heap_mut()),
+        BuiltinReceiver::Set => dispatch_set_builtin_method(receiver, method, args, runtime.heap_mut()),
+        BuiltinReceiver::Str => dispatch_string_builtin_method(receiver, method, args, runtime.heap_mut()),
+        BuiltinReceiver::List => dispatch_list_builtin_method(receiver, method, args, runtime.heap_mut()),
+        BuiltinReceiver::Other => Ok(None),
+    }
+}
+
 fn call_method_positional_runtime(
     receiver: RuntimeVal,
     method: DetachedStr,

@@ -2459,6 +2459,9 @@ fn lower_inst(
             });
             ssa.write(instr.a(), block, (dst, Ty::Bool));
         }
+        Opcode::CallMethodK => {
+            lower_method_call_k(ssa, insts, globals, func, instr, block, pc)?;
+        }
         Opcode::CallDirect => {
             // Register-window call: `a`=dst register, `b`=callee function index,
             // `c`=argument count; the args occupy registers `[a+1, a+1+c)`. Each
@@ -3996,7 +3999,56 @@ fn lower_method_call(
         Some(GlobalRef::ArgList(elems)) => elems.clone(),
         _ => return Err(Unsupported::Opcode { pc, op: Opcode::Call }),
     };
-    let result: Reg = match (receiver_ty, name.as_str(), args.as_slice()) {
+    let result = lower_method_dispatch(ssa, insts, globals, receiver, receiver_ty, &name, &args, block, pc)?;
+    ssa.write(base, block, result);
+    Ok(())
+}
+
+/// `CallMethodK` — the boxing-free method-call opcode: receiver at the window
+/// base, args in the window, method name a string constant. Shares the
+/// per-(receiver type, method) dispatch with the legacy
+/// `__lk_call_method` shape.
+fn lower_method_call_k(
+    ssa: &mut Ssa,
+    insts: &mut Vec<Inst>,
+    globals: &mut Vec<String>,
+    func: &FunctionData,
+    instr: &Instr,
+    block: usize,
+    pc: usize,
+) -> Result<(), Unsupported> {
+    let base = instr.a();
+    let name = func
+        .consts
+        .strings
+        .get(instr.b() as usize)
+        .ok_or(Unsupported::BadConst { pc })?
+        .clone();
+    let (receiver, receiver_ty) = ssa.read(base, block, pc)?;
+    let argc = instr.c() as usize;
+    let mut args = Vec::with_capacity(argc);
+    for i in 0..argc {
+        args.push(ssa.read(base.wrapping_add(1).wrapping_add(i as u8), block, pc)?);
+    }
+    let result = lower_method_dispatch(ssa, insts, globals, receiver, receiver_ty, &name, &args, block, pc)?;
+    ssa.write(base, block, result);
+    Ok(())
+}
+
+/// The shared per-(receiver type, method name, argument types) dispatch table.
+#[allow(clippy::too_many_arguments)]
+fn lower_method_dispatch(
+    ssa: &mut Ssa,
+    insts: &mut Vec<Inst>,
+    globals: &mut Vec<String>,
+    receiver: ValueId,
+    receiver_ty: Ty,
+    name: &str,
+    args: &[(ValueId, Ty)],
+    block: usize,
+    pc: usize,
+) -> Result<Reg, Unsupported> {
+    let result: Reg = match (receiver_ty, name, args) {
         // `s.starts_with(prefix)` — byte-prefix test, exactly Rust/VM semantics.
         (Ty::Str, "starts_with", [(prefix, Ty::Str)]) => {
             let dst = ssa.new_val();
@@ -4105,8 +4157,8 @@ fn lower_method_call(
         _ => return Err(Unsupported::Opcode { pc, op: Opcode::Call }),
     };
     let _ = globals;
-    ssa.write(base, block, result);
-    Ok(())
+    let _ = block;
+    Ok(result)
 }
 
 /// Lowers a `module.method(args)` call whose member [`module_call_abi`] maps to

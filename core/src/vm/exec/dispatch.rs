@@ -21,6 +21,50 @@ use crate::vm::{
 
 impl Executor {
     #[cold]
+    /// `CallMethodK`: boxing-free positional method call — receiver at the
+    /// window base, args at `[base+1, base+1+c)`, result written to the base.
+    /// The method name comes straight from the string constant pool; no
+    /// `__lk_call_method` global load and no argument list allocation.
+    pub(super) fn dispatch_call_method_k(
+        &mut self,
+        function: &Function,
+        module: Option<&Module>,
+        instr: Instr,
+        ctx: &mut Option<&mut VmContext>,
+    ) -> Result<()> {
+        self.collect_pending_garbage();
+        let base = instr.a();
+        let argc = instr.c() as usize;
+        // Borrowed from `function` (not `self`), so it stays valid across the
+        // runtime construction below.
+        let name = function
+            .consts
+            .string(u16::from(instr.b()))
+            .ok_or_else(|| anyhow!("CallMethodK method-name const {} out of bounds", instr.b()))?;
+        let receiver = self.read(base)?.clone();
+        let mut inline: [RuntimeVal; 8] = std::array::from_fn(|_| RuntimeVal::Nil);
+        let mut spill: Vec<RuntimeVal>;
+        let args: &[RuntimeVal] = if argc <= inline.len() {
+            for (i, slot) in inline.iter_mut().take(argc).enumerate() {
+                *slot = self.read(base.wrapping_add(1).wrapping_add(i as u8))?.clone();
+            }
+            &inline[..argc]
+        } else {
+            spill = Vec::with_capacity(argc);
+            for i in 0..argc {
+                spill.push(self.read(base.wrapping_add(1).wrapping_add(i as u8))?.clone());
+            }
+            &spill
+        };
+        let result = {
+            let mut runtime = crate::vm::NativeRuntime::new(&mut self.state, ctx.as_deref_mut(), module);
+            crate::vm::context::core_call_method_windowed(receiver, name, args, &mut runtime)?
+        };
+        self.write(base, result)?;
+        self.pc += 1;
+        Ok(())
+    }
+
     pub(super) fn dispatch_load_capture(&mut self, instr: Instr) -> Result<()> {
         let value = self
             .captures

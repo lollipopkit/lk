@@ -1625,6 +1625,10 @@ impl Executor {
                 Opcode::CallNamed => {
                     self.dispatch_cold(Opcode::CallNamed, function, module, instr, ctx, collect_metrics)?;
                 }
+                Opcode::CallMethodK => {
+                    self.dispatch_call_method_k(function, module, instr, ctx)?;
+                    profile.record_write_source(VmRegisterWriteSource::CallReturn, collect_metrics);
+                }
                 Opcode::GetGlobal => {
                     let slot = self.global_slot_from_fact_cache_or_instr(function, instr);
                     let value = self.read_global(slot)?;

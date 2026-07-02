@@ -480,6 +480,32 @@ impl Compiler {
     }
 
     fn lower_dynamic_method_call(&mut self, target: &Expr, method: &str, args: &[Box<Expr>]) -> Result<u16> {
+        // Fast shape: `CallMethodK` calls the method with the receiver and the
+        // args in a plain register window — no argument list is boxed and no
+        // `__lk_call_method` global is loaded. `b` carries the method-name
+        // string constant, so a (pathological) name index beyond u8 falls back
+        // to the generic helper call below.
+        let name_const = self.push_string(method)?;
+        if name_const <= u16::from(u8::MAX) && args.len() <= u8::MAX as usize {
+            let receiver = self.lower_readonly_operand(target)?;
+            let mut arg_regs = Vec::with_capacity(args.len());
+            for arg in args {
+                arg_regs.push(self.lower_readonly_operand(arg)?);
+            }
+            let base = self.alloc_regs(args.len() + 1)?;
+            self.emit_call_window_move(base, receiver, "method receiver")?;
+            for (offset, arg) in arg_regs.iter().copied().enumerate() {
+                self.emit_call_window_move(base + 1 + offset as u16, arg, "method arg")?;
+            }
+            self.emit(Instr::abc(
+                Opcode::CallMethodK,
+                checked_u8("method call base", base)?,
+                checked_u8("method name const", name_const)?,
+                checked_u8("method argc", args.len() as u16)?,
+            ));
+            self.function.performance.clear_register(base);
+            return Ok(base);
+        }
         let helper = self.load_callable_by_name("__lk_call_method")?;
         let receiver = self.lower_readonly_operand(target)?;
         let method = self.lower_val(&LiteralVal::from_str(method))?;
