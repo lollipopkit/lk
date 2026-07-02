@@ -563,6 +563,14 @@ fn differential_builtins() {
                 "closure_returned_as_argument",
                 "fn apply(f, x) { return f(x) + f(x + 1); }\nfn multiplier(n) { return |x| x * n; }\nprintln(apply(|v| v * 2, 3));\nprintln(apply(multiplier(3), 5));\nlet k = 7;\nprintln(apply(|v| v + k, 1));\nprintln(apply(multiplier(k), 2));\nreturn 0;\n",
             ),
+            // List structural equality: length/element mismatches, empty
+            // lists, Int/Float coercion ([1] == [1.0] is true), NaN elements
+            // breaking equality, str lists, != inversion, and the non-empty
+            // cross-typed fold ([1] == ["1"] is false).
+            new(
+                "list_structural_eq",
+                "let a = [1, 2, 3];\nprintln(a == [1, 2, 3]);\nprintln(a == [1, 2]);\nprintln(a == [1, 2, 4]);\nprintln(a != [1, 2, 3]);\nprintln([] == []);\nlet f = [1.5, 2.0];\nprintln(f == [1.5, 2.0]);\nprintln(f == [1.5, 2.1]);\nlet s = [\"x\", \"y\"];\nprintln(s == [\"x\", \"y\"]);\nprintln(s == [\"x\", \"z\"]);\nprintln([1] == [1.0]);\nprintln([1] == [\"1\"]);\nuse math;\nprintln([math.nan] == [math.nan]);\nlet grown = [1];\ngrown.push(2);\nprintln(grown == [1, 2]);\nreturn 0;\n",
+            ),
             // List HOF over compiled zero-capture lambdas (fn-pointer ABI):
             // map/filter/reduce over List<i64>, including chained pipelines
             // and an aborting callback (div/0 inside the lambda).

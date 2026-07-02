@@ -51,6 +51,7 @@ enum Ty {
     Str,
 }
 
+#[derive(Clone)]
 struct ListVar {
     name: String,
     len: usize,
@@ -227,7 +228,7 @@ impl Generator {
     // ---- statements --------------------------------------------------------
 
     fn statement(&mut self, out: &mut String, indent: &str) {
-        match self.rng.below(14) {
+        match self.rng.below(15) {
             0 | 1 => {
                 let ty = self.random_ty();
                 let name = self.fresh("v");
@@ -498,6 +499,25 @@ impl Generator {
                     let name = self.fresh("v");
                     let _ = writeln!(out, "{indent}let {name} = {};", self.int_expr(2));
                     self.vars.push((name, Ty::I64));
+                }
+            }
+            14 => {
+                // List structural equality against a literal: exact match,
+                // length mismatch, or a perturbed element — printed directly
+                // (native lowers via the lkrt eq helpers; `!=` half the time).
+                if let Some(list) = self.lists.first().cloned() {
+                    let items: Vec<String> = (0..list.len).map(|_| format!("{}", self.rng.below(61))).collect();
+                    let mut literal = items.join(", ");
+                    if self.rng.chance(30) && !items.is_empty() {
+                        literal = items[..items.len() - 1].join(", ");
+                    }
+                    let op = if self.rng.chance(50) { "==" } else { "!=" };
+                    let _ = writeln!(out, "{indent}println({} {op} [{literal}]);", list.name);
+                } else {
+                    let name = self.fresh("xs");
+                    let _ = writeln!(out, "{indent}let {name} = [4, 5, 6];");
+                    let _ = writeln!(out, "{indent}println({name} == [4, 5, 6]);");
+                    self.lists.push(ListVar { name, len: 3 });
                 }
             }
             11 => {

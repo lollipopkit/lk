@@ -549,9 +549,152 @@ pub unsafe extern "C" fn lkrt_lklist_str_join(handle: *mut c_void, separator: *c
     crate::lkstr::arena_c_string(CString::new(parts.join(sep)).unwrap_or_default())
 }
 
+/// Structural equality for two `i64` lists (1 = equal), the VM's typed-list
+/// `==`: same length and element-wise `==`. Null handles compare as empty.
+///
+/// # Safety
+/// Both handles must be live handles from [`lkrt_lklist_i64_new`], or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_i64_eq(a: *mut c_void, b: *mut c_void) -> i64 {
+    // SAFETY: handles address `Vec<i64>`s per the list ABI.
+    let lhs: &[i64] = if a.is_null() {
+        &[]
+    } else {
+        unsafe { &*(a as *mut Vec<i64>) }
+    };
+    let rhs: &[i64] = if b.is_null() {
+        &[]
+    } else {
+        unsafe { &*(b as *mut Vec<i64>) }
+    };
+    i64::from(lhs == rhs)
+}
+
+/// Structural equality for two `f64` lists (element-wise `==`, so a NaN
+/// element makes the lists unequal — the VM's float semantics).
+///
+/// # Safety
+/// Both handles must be live handles from [`lkrt_lklist_f64_new`], or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_f64_eq(a: *mut c_void, b: *mut c_void) -> i64 {
+    // SAFETY: handles address `Vec<f64>`s per the list ABI.
+    let lhs: &[f64] = if a.is_null() {
+        &[]
+    } else {
+        unsafe { &*(a as *mut Vec<f64>) }
+    };
+    let rhs: &[f64] = if b.is_null() {
+        &[]
+    } else {
+        unsafe { &*(b as *mut Vec<f64>) }
+    };
+    i64::from(lhs == rhs)
+}
+
+/// Structural equality of an `i64` list against an `f64` list: the VM
+/// compares Int/Float typed lists with numeric coercion (`[1] == [1.0]`).
+///
+/// # Safety
+/// `a` must be a live `i64`-list handle and `b` a live `f64`-list handle
+/// (either may be null).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_i64_f64_eq(a: *mut c_void, b: *mut c_void) -> i64 {
+    // SAFETY: handles address a `Vec<i64>` / `Vec<f64>` per the list ABI.
+    let ints: &[i64] = if a.is_null() {
+        &[]
+    } else {
+        unsafe { &*(a as *mut Vec<i64>) }
+    };
+    let floats: &[f64] = if b.is_null() {
+        &[]
+    } else {
+        unsafe { &*(b as *mut Vec<f64>) }
+    };
+    let equal = ints.len() == floats.len() && ints.iter().zip(floats).all(|(&i, &f)| i as f64 == f);
+    i64::from(equal)
+}
+
+/// Structural equality for two `str` lists (element bytes compared as C
+/// strings; a null element equals only another null/empty element).
+///
+/// # Safety
+/// Both handles must be live handles from [`lkrt_lklist_str_new`], or null;
+/// elements must be valid C strings per the list ABI.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_str_eq(a: *mut c_void, b: *mut c_void) -> i64 {
+    // SAFETY: handles address `Vec<*const c_char>`s per the list ABI.
+    let lhs: &[*const c_char] = if a.is_null() {
+        &[]
+    } else {
+        unsafe { &*(a as *mut Vec<*const c_char>) }
+    };
+    let rhs: &[*const c_char] = if b.is_null() {
+        &[]
+    } else {
+        unsafe { &*(b as *mut Vec<*const c_char>) }
+    };
+    let bytes = |p: *const c_char| {
+        if p.is_null() {
+            &b""[..]
+        } else {
+            // SAFETY: elements are NUL-terminated C strings per the list ABI.
+            unsafe { CStr::from_ptr(p) }.to_bytes()
+        }
+    };
+    let equal = lhs.len() == rhs.len() && lhs.iter().zip(rhs).all(|(&l, &r)| bytes(l) == bytes(r));
+    i64::from(equal)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn list_structural_eq() {
+        use std::ffi::CString;
+        unsafe {
+            let a = lkrt_lklist_i64_new();
+            let b = lkrt_lklist_i64_new();
+            for v in [1, 2, 3] {
+                lkrt_lklist_i64_push(a, v);
+                lkrt_lklist_i64_push(b, v);
+            }
+            assert_eq!(lkrt_lklist_i64_eq(a, b), 1);
+            lkrt_lklist_i64_push(b, 4);
+            assert_eq!(lkrt_lklist_i64_eq(a, b), 0);
+            assert_eq!(lkrt_lklist_i64_eq(std::ptr::null_mut(), std::ptr::null_mut()), 1);
+
+            let f = lkrt_lklist_f64_new();
+            lkrt_lklist_f64_push(f, 1.0);
+            lkrt_lklist_f64_push(f, 2.0);
+            let g = lkrt_lklist_f64_new();
+            lkrt_lklist_f64_push(g, 1.0);
+            lkrt_lklist_f64_push(g, 2.0);
+            assert_eq!(lkrt_lklist_f64_eq(f, g), 1);
+            lkrt_lklist_f64_push(g, f64::NAN);
+            lkrt_lklist_f64_push(f, f64::NAN);
+            assert_eq!(lkrt_lklist_f64_eq(f, g), 0, "NaN element must break equality");
+
+            let ints = lkrt_lklist_i64_new();
+            lkrt_lklist_i64_push(ints, 1);
+            let floats = lkrt_lklist_f64_new();
+            lkrt_lklist_f64_push(floats, 1.0);
+            assert_eq!(lkrt_lklist_i64_f64_eq(ints, floats), 1);
+            lkrt_lklist_f64_push(floats, 0.5);
+            assert_eq!(lkrt_lklist_i64_f64_eq(ints, floats), 0);
+
+            let s1 = lkrt_lklist_str_new();
+            let s2 = lkrt_lklist_str_new();
+            let x1 = CString::new("x").unwrap();
+            let x2 = CString::new("x").unwrap();
+            lkrt_lklist_str_push(s1, x1.as_ptr());
+            lkrt_lklist_str_push(s2, x2.as_ptr());
+            assert_eq!(lkrt_lklist_str_eq(s1, s2), 1);
+            let y = CString::new("y").unwrap();
+            lkrt_lklist_str_push(s1, y.as_ptr());
+            assert_eq!(lkrt_lklist_str_eq(s1, s2), 0);
+        }
+    }
 
     #[test]
     fn str_list_join() {

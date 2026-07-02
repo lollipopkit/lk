@@ -1563,6 +1563,12 @@ struct Ssa {
     const_int: std::collections::HashMap<ValueId, i64>,
     /// SSA value of a const-materialized list handle → its known element count.
     list_len: std::collections::HashMap<ValueId, i64>,
+    /// Element count at materialization (never bumped by pushes): a sound
+    /// *lower bound* on the runtime length — the subset has no removal ops,
+    /// while `list_len`'s static push increments can overshoot (a push in an
+    /// untaken branch). Used to prove both operands of a cross-typed list
+    /// comparison non-empty.
+    list_base_len: std::collections::HashMap<ValueId, i64>,
     /// SSA value → its compile-time string content (`LoadString` /
     /// `LoadHeapConst` long strings), used to expand `println` format strings
     /// at lower time.
@@ -1598,6 +1604,7 @@ impl Ssa {
             next_val: 0,
             const_int: std::collections::HashMap::new(),
             list_len: std::collections::HashMap::new(),
+            list_base_len: std::collections::HashMap::new(),
             const_strs: std::collections::HashMap::new(),
             builtin_regs: std::collections::HashMap::new(),
             next_cell: 0,
@@ -2602,6 +2609,7 @@ fn lower_inst(
                     });
                 }
                 ssa.list_len.insert(handle, elems.len() as i64);
+                ssa.list_base_len.insert(handle, elems.len() as i64);
                 ssa.write(instr.a(), block, (handle, list_ty));
             }
             // Recorded after the write (which clears the slot) so both views
@@ -2872,6 +2880,64 @@ fn lower_inst(
                     coerce_to_f64(ssa, insts, lv, lty),
                     coerce_to_f64(ssa, insts, rv, rty),
                 ),
+                // List structural equality: same length + element-wise `==` via
+                // an lkrt helper returning 1/0, compared against 1 (so `!=`
+                // reuses the same op). Int/Float lists compare with numeric
+                // coercion (`[1] == [1.0]` is true); other cross-typed pairs
+                // reject — folding them to `false` would be wrong for two
+                // empty lists, which the VM deems equal regardless of type.
+                (Ty::ListI64, Ty::ListI64)
+                | (Ty::ListF64, Ty::ListF64)
+                | (Ty::ListStr, Ty::ListStr)
+                | (Ty::ListI64, Ty::ListF64)
+                | (Ty::ListF64, Ty::ListI64) => {
+                    if !matches!(cmp_op(op), CmpOp::Eq | CmpOp::Ne) {
+                        return Err(Unsupported::TypeMismatch { pc });
+                    }
+                    let (helper, a, b) = match (lty, rty) {
+                        (Ty::ListI64, Ty::ListI64) => ("i64_eq", lv, rv),
+                        (Ty::ListF64, Ty::ListF64) => ("f64_eq", lv, rv),
+                        (Ty::ListStr, Ty::ListStr) => ("str_eq", lv, rv),
+                        // The mixed helper takes (ints, floats).
+                        (Ty::ListI64, Ty::ListF64) => ("i64_f64_eq", lv, rv),
+                        _ => ("i64_f64_eq", rv, lv),
+                    };
+                    let eq = ssa.new_val();
+                    insts.push(Inst::Call {
+                        dst: Some(eq),
+                        callee: AbiRef::new("list_h", helper),
+                        args: vec![a, b],
+                    });
+                    let one = ssa.new_val();
+                    insts.push(Inst::Const {
+                        dst: one,
+                        value: Const::I64(1),
+                    });
+                    (false, eq, one)
+                }
+                // Cross-typed list pairs beyond Int/Float can only be equal
+                // when *both* are empty (the VM compares structurally
+                // regardless of the typed-list representation). With both
+                // proven non-empty at materialization (lengths never shrink),
+                // the comparison folds; an unproven side could be empty at
+                // runtime, so it rejects instead of guessing.
+                (Ty::ListI64 | Ty::ListF64 | Ty::ListStr, Ty::ListI64 | Ty::ListF64 | Ty::ListStr) => {
+                    if !matches!(cmp_op(op), CmpOp::Eq | CmpOp::Ne) {
+                        return Err(Unsupported::TypeMismatch { pc });
+                    }
+                    let lbase = ssa.list_base_len.get(&lv).copied().unwrap_or(0);
+                    let rbase = ssa.list_base_len.get(&rv).copied().unwrap_or(0);
+                    if lbase < 1 || rbase < 1 {
+                        return Err(Unsupported::TypeMismatch { pc });
+                    }
+                    let dst = ssa.new_val();
+                    insts.push(Inst::Const {
+                        dst,
+                        value: Const::Bool(cmp_op(op) == CmpOp::Ne),
+                    });
+                    ssa.write(instr.a(), block, (dst, Ty::Bool));
+                    return Ok(());
+                }
                 (Ty::Str, Ty::Str) => {
                     // The VM only supports `==`/`!=` on strings (ordered comparisons
                     // are a runtime error), so reject the rest — falling back rather
@@ -3294,6 +3360,7 @@ fn lower_inst(
                             args: Vec::new(),
                         });
                         ssa.list_len.insert(handle, 0);
+                        ssa.list_base_len.insert(handle, 0);
                         ssa.write(instr.a(), block, (handle, Ty::ListStr));
                         return Ok(());
                     }
@@ -3331,6 +3398,7 @@ fn lower_inst(
                         });
                     }
                     ssa.list_len.insert(handle, elems.len() as i64);
+                    ssa.list_base_len.insert(handle, elems.len() as i64);
                     ssa.write(instr.a(), block, (handle, list_ty));
                 }
                 ConstHeapValueData::Map(entries) => {
