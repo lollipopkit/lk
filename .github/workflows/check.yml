@@ -20,7 +20,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: cargo test
         run: cargo test --workspace --all-features
-      # - name: cargo fmt
-      #   run: cargo fmt --all -- --check
-      # - name: cargo clippy
-      #   run: cargo clippy --workspace --all-features -D warnings
+      - name: cargo fmt
+        run: cargo fmt --all -- --check
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-features -- -D warnings

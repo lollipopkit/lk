@@ -60,10 +60,10 @@ impl Compiler {
     fn bind_let_pattern(&mut self, pattern: &Pattern, value: u16) -> Result<()> {
         match pattern {
             Pattern::Variable(name) => {
-                if self.top_level {
-                    if let Some(slot) = self.global_names.get(name).copied() {
-                        self.emit_set_global(value, slot)?;
-                    }
+                if self.top_level
+                    && let Some(slot) = self.global_names.get(name).copied()
+                {
+                    self.emit_set_global(value, slot)?;
                 }
                 self.clear_const_map_local(name);
                 self.insert_local(name.clone(), value);

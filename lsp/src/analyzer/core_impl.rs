@@ -80,10 +80,14 @@ impl LkAnalyzer {
                     T::RBrace => brace -= 1,
                     // A named arg appears as Id ':' at the top call level (paren==1),
                     // and not inside nested brackets/braces within the argument list.
-                    T::Id(n) if paren == 1 && bracket == 0 && brace == 0 => {
-                        if j + 1 < tokens.len() && matches!(tokens[j + 1], T::Colon) {
-                            provided.push((n.clone(), j));
-                        }
+                    T::Id(n)
+                        if paren == 1
+                            && bracket == 0
+                            && brace == 0
+                            && j + 1 < tokens.len()
+                            && matches!(tokens[j + 1], T::Colon) =>
+                    {
+                        provided.push((n.clone(), j));
                     }
                     _ => {}
                 }

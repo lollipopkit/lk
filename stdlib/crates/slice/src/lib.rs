@@ -99,7 +99,7 @@ impl SliceModule {
         };
         let len = end.saturating_sub(start);
         Ok(slice_value(
-            slice.source.clone(),
+            slice.source,
             slice.kind,
             slice.start + start,
             len,

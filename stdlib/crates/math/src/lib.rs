@@ -345,9 +345,5 @@ fn min_max(args: NativeArgs<'_>, name: &str, take_left: fn(f64, f64) -> bool) ->
     let values = args.as_slice();
     let left = number_arg(&values[0], &format!("{name} first argument"))?;
     let right = number_arg(&values[1], &format!("{name} second argument"))?;
-    Ok(if take_left(left, right) {
-        values[0].clone()
-    } else {
-        values[1].clone()
-    })
+    Ok(if take_left(left, right) { values[0] } else { values[1] })
 }

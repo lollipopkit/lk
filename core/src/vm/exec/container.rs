@@ -86,7 +86,7 @@ impl Executor {
                 .checked_add(1)
                 .ok_or_else(|| anyhow!("map value register overflow"))?;
             let key = self.map_key_from_register(key_reg)?;
-            let value = self.read(value_reg)?.clone();
+            let value = *self.read(value_reg)?;
             values.insert(key, value);
         }
         Ok(values)
@@ -112,7 +112,7 @@ impl Executor {
             let value = if move_values {
                 self.take(value_reg)?
             } else {
-                self.read(value_reg)?.clone()
+                *self.read(value_reg)?
             };
             values.insert(key, value);
         }
@@ -137,7 +137,7 @@ impl Executor {
                 .ok_or_else(|| anyhow!("object value register overflow"))?;
             fields.insert(
                 Arc::<str>::from(self.to_runtime_string(key_reg)?),
-                self.read(value_reg)?.clone(),
+                *self.read(value_reg)?,
             );
         }
         Ok(RuntimeObject::new(type_name, fields))
@@ -262,7 +262,7 @@ impl Executor {
         let needle = &self.state.stack[needle_index];
         match &self.state.stack[haystack_index] {
             RuntimeVal::ShortStr(haystack) => {
-                let Some(needle) = self.runtime_value_to_string(&needle)? else {
+                let Some(needle) = self.runtime_value_to_string(needle)? else {
                     return Ok(false);
                 };
                 Ok(haystack.as_str().contains(needle.as_ref()))
@@ -274,14 +274,14 @@ impl Executor {
                 .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
             {
                 HeapValue::String(haystack) => {
-                    let Some(needle) = self.runtime_value_to_string(&needle)? else {
+                    let Some(needle) = self.runtime_value_to_string(needle)? else {
                         return Ok(false);
                     };
                     Ok(haystack.contains(needle.as_ref()))
                 }
-                HeapValue::List(values) => self.list_contains(values, &needle),
-                HeapValue::Map(values) => self.map_contains(values, &needle),
-                HeapValue::Set(values) => self.set_contains(values, &needle),
+                HeapValue::List(values) => self.list_contains(values, needle),
+                HeapValue::Map(values) => self.map_contains(values, needle),
+                HeapValue::Set(values) => self.set_contains(values, needle),
                 other => bail!("Contains haystack object is not searchable: {:?}", heap_kind(other)),
             },
             other => bail!("Contains haystack expected string/list/map/set, got {:?}", other.kind()),
@@ -291,7 +291,7 @@ impl Executor {
     pub(super) fn slice_from(&mut self, target_reg: u8, start_reg: u8) -> Result<RuntimeVal> {
         let start = usize::try_from(self.read_int(start_reg)?)
             .map_err(|_| anyhow!("SliceFrom start index must be non-negative"))?;
-        match self.read(target_reg)?.clone() {
+        match *self.read(target_reg)? {
             RuntimeVal::ShortStr(value) => self.slice_string_from(Arc::<str>::from(value.as_str()), start),
             RuntimeVal::Obj(handle) => {
                 let plan = match self
@@ -322,7 +322,7 @@ impl Executor {
     }
 
     pub(super) fn map_rest(&mut self, base: u8, key_count: u8) -> Result<RuntimeVal> {
-        let RuntimeVal::Obj(handle) = self.read(base)?.clone() else {
+        let RuntimeVal::Obj(handle) = *self.read(base)? else {
             bail!("MapRest base expected map object");
         };
         let source = match self
@@ -380,8 +380,9 @@ impl Executor {
         Ok(values.contains(&key))
     }
 
+    #[allow(clippy::wrong_self_convention)] // allocates on the heap, so it needs `&mut self`
     pub(super) fn to_iter(&mut self, register: u8) -> Result<RuntimeVal> {
-        match self.read(register)?.clone() {
+        match *self.read(register)? {
             RuntimeVal::ShortStr(value) => {
                 let list = string_chars_to_list(value.as_str());
                 self.finish_to_iter_plan(ToIterPlan::StringChars(list))
@@ -507,7 +508,7 @@ impl Executor {
         let value = if move_value {
             self.take(value_reg)?
         } else {
-            self.read(value_reg)?.clone()
+            *self.read(value_reg)?
         };
         let string_value = self.runtime_value_to_string(&value)?;
 
@@ -614,6 +615,7 @@ impl Executor {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn set_object_index_handle(
         &mut self,
         handle: HeapRef,
@@ -634,7 +636,7 @@ impl Executor {
                     Some(key) => record_dynamic_index_key_metric(index_key_metrics.as_deref_mut(), key),
                     None => record_dynamic_index_key_metric(index_key_metrics.as_deref_mut(), self.read(key_reg)?),
                 }
-                record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::ObjectKey);
+                record_index_key_metric(index_key_metrics, VmIndexKeyMetric::ObjectKey);
                 self.object_key_from_register_or_value(key_reg, moved_key)?
             }
         };
@@ -1050,7 +1052,7 @@ fn typed_map_without_keys(map: &TypedMap, removed_keys: &[RuntimeMapKey]) -> Typ
             let mut out = fast_hash_map_new();
             for (key, value) in entries {
                 if !typed_map_key_removed(key, removed_keys) {
-                    out.insert(key.clone(), value.clone());
+                    out.insert(key.clone(), *value);
                 }
             }
             TypedMap::Mixed(out)
@@ -1059,7 +1061,7 @@ fn typed_map_without_keys(map: &TypedMap, removed_keys: &[RuntimeMapKey]) -> Typ
             let mut out = fast_hash_map_new();
             for (key, value) in entries {
                 if !string_map_key_removed(key, removed_keys) {
-                    out.insert(Arc::clone(key), value.clone());
+                    out.insert(Arc::clone(key), *value);
                 }
             }
             TypedMap::StringMixed(out)
@@ -1117,14 +1119,14 @@ fn typed_map_iter_snapshot(map: &TypedMap) -> TypedMapIterSnapshot {
         TypedMap::Mixed(entries) => {
             let mut out = Vec::with_capacity(entries.len());
             for (key, value) in entries {
-                out.push((key.clone(), value.clone()));
+                out.push((key.clone(), *value));
             }
             TypedMapIterSnapshot::Mixed(out)
         }
         TypedMap::StringMixed(entries) => {
             let mut out = Vec::with_capacity(entries.len());
             for (key, value) in entries {
-                out.push((Arc::clone(key), value.clone()));
+                out.push((Arc::clone(key), *value));
             }
             TypedMapIterSnapshot::StringMixed(out)
         }

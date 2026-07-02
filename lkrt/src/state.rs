@@ -11,6 +11,9 @@ thread_local! {
     static RUNTIME: RefCell<RuntimeState> = const { RefCell::new(RuntimeState::new()) };
 }
 
+/// Frees one arena-registered container handle of its concrete type.
+type ContainerDrop = unsafe fn(*mut c_void);
+
 /// Runs `f` with this thread's runtime state. The state is thread-local rather
 /// than a process-global mutex: AOT binaries are single-threaded (the lowered
 /// subset has no threading), so string/container arena registration sits on the
@@ -33,7 +36,7 @@ pub(crate) struct RuntimeState {
     owned_strings: HashSet<usize, FxBuildHasher>,
     /// Container handles (lists/maps) with their typed drop functions — the
     /// default arena of RFC aot-redesign §3.4, reclaimed by [`Self::cleanup`].
-    owned_containers: Vec<(usize, unsafe fn(*mut c_void))>,
+    owned_containers: Vec<(usize, ContainerDrop)>,
 }
 
 impl RuntimeState {
@@ -127,7 +130,7 @@ impl RuntimeState {
         self.owned_strings.remove(&(ptr as usize))
     }
 
-    pub(crate) fn register_container(&mut self, ptr: *mut c_void, drop_fn: unsafe fn(*mut c_void)) {
+    pub(crate) fn register_container(&mut self, ptr: *mut c_void, drop_fn: ContainerDrop) {
         if !ptr.is_null() {
             self.owned_containers.push((ptr as usize, drop_fn));
         }

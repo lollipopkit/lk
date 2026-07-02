@@ -20,7 +20,6 @@ use crate::vm::{
 };
 
 impl Executor {
-    #[cold]
     /// `CallMethodK`: boxing-free positional method call — receiver at the
     /// window base, args at `[base+1, base+1+c)`, result written to the base.
     /// The method name comes straight from the string constant pool; no
@@ -41,18 +40,18 @@ impl Executor {
             .consts
             .string(u16::from(instr.b()))
             .ok_or_else(|| anyhow!("CallMethodK method-name const {} out of bounds", instr.b()))?;
-        let receiver = self.read(base)?.clone();
+        let receiver = *self.read(base)?;
         let mut inline: [RuntimeVal; 8] = std::array::from_fn(|_| RuntimeVal::Nil);
         let mut spill: Vec<RuntimeVal>;
         let args: &[RuntimeVal] = if argc <= inline.len() {
             for (i, slot) in inline.iter_mut().take(argc).enumerate() {
-                *slot = self.read(base.wrapping_add(1).wrapping_add(i as u8))?.clone();
+                *slot = *self.read(base.wrapping_add(1).wrapping_add(i as u8))?;
             }
             &inline[..argc]
         } else {
             spill = Vec::with_capacity(argc);
             for i in 0..argc {
-                spill.push(self.read(base.wrapping_add(1).wrapping_add(i as u8))?.clone());
+                spill.push(*self.read(base.wrapping_add(1).wrapping_add(i as u8))?);
             }
             &spill
         };
@@ -65,6 +64,7 @@ impl Executor {
         Ok(())
     }
 
+    #[cold]
     pub(super) fn dispatch_load_capture(&mut self, instr: Instr) -> Result<()> {
         let value = self
             .captures
@@ -518,7 +518,7 @@ impl Executor {
         let value = if global_fact.is_some_and(|fact| fact.move_source) {
             self.take(instr.a())?
         } else {
-            self.read(instr.a())?.clone()
+            *self.read(instr.a())?
         };
         let slot = self.global_slot_from_fact_cache_or_instr(function, instr);
         self.write_global(slot, value)?;

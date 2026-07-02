@@ -778,6 +778,7 @@ fn intern_global(globals: &mut Vec<String>, s: &str) -> u32 {
 /// the `(i64, ...) -> i64` ABI in this slice: params and return are `I64`, verified
 /// via typed reads / a return-type check — a mismatch rejects (falls back) rather
 /// than miscompiles.
+#[allow(clippy::too_many_arguments)]
 fn lower_function(
     func: &FunctionData,
     funcs: &[FunctionData],
@@ -915,6 +916,7 @@ fn lower_function(
             ssa.single_fallthrough_target[bi] = Some(end);
         }
         let mut insts = Vec::new();
+        #[allow(clippy::needless_range_loop)] // `pc` is the semantic bytecode index
         for pc in start..body_end {
             lower_inst(
                 &mut ssa,
@@ -3084,7 +3086,6 @@ fn lower_inst(
                     ssa.cell_vals.insert((block, cid), (nil, Ty::Nil));
                     ssa.builtin_regs.insert((block, instr.a()), GlobalRef::Cell(cid));
                 }
-                _ => return Err(Unsupported::Opcode { pc, op: instr.opcode() }),
             }
         }
         Opcode::Len => {
@@ -3477,27 +3478,6 @@ fn lower_inst(
             });
             ssa.write(instr.a(), block, (dst, Ty::Bool));
         }
-        op @ (Opcode::AddListInt | Opcode::SubListInt) => {
-            // Fused `acc ±= list[index]` (a = accumulator/dst, b = list, c = index).
-            // The VM reads the element with `read_known_int_list_index` (halts on an
-            // out-of-range index — *not* nil), so the element read unwraps with a
-            // present-assert, matching that halt; in a `for`/`while i<len` loop the
-            // index is always in range so the assert never fires.
-            let acc = ssa.read_typed(instr.a(), block, Ty::I64, pc)?;
-            let elem = list_i64_element_scalar(ssa, insts, instr.b(), instr.c(), block, pc)?;
-            let dst = ssa.new_val();
-            insts.push(Inst::IntBin {
-                dst,
-                op: if matches!(op, Opcode::AddListInt) {
-                    IntBinOp::Add
-                } else {
-                    IntBinOp::Sub
-                },
-                lhs: acc,
-                rhs: elem,
-            });
-            ssa.write(instr.a(), block, (dst, Ty::I64));
-        }
         // Control-flow opcodes are terminators, normally handled outside lower_inst.
         // Reaching here means a branch targeted the middle of a fused pair or an
         // otherwise malformed shape — reject cleanly (fall back) rather than panic.
@@ -3825,7 +3805,7 @@ fn lower_builtin_call(
             // Int/Float coercion, byte-equal strings). The failure message is
             // built eagerly (dead on the success path) so no extra control
             // flow is needed.
-            if argc < 2 || argc > 3 {
+            if !(2..=3).contains(&argc) {
                 return Err(Unsupported::Opcode { pc, op: Opcode::Call });
             }
             let negated = builtin == Builtin::AssertNe;

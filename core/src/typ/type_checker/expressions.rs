@@ -56,7 +56,7 @@ impl TypeChecker {
             Type::Any => {
                 if self.strict_any() {
                     Err(Self::type_err(
-                        &format!("Expected boolean type"),
+                        "Expected boolean type",
                         Some(Type::Bool),
                         Some(ty.clone()),
                         Some(expr.clone()),
@@ -80,7 +80,7 @@ impl TypeChecker {
                     Ok(())
                 } else {
                     Err(Self::type_err(
-                        &format!("Expected boolean type"),
+                        "Expected boolean type",
                         Some(Type::Bool),
                         Some(ty.clone()),
                         Some(expr.clone()),
@@ -88,7 +88,7 @@ impl TypeChecker {
                 }
             }
             other => Err(Self::type_err(
-                &format!("Expected boolean type"),
+                "Expected boolean type",
                 Some(Type::Bool),
                 Some(other.clone()),
                 Some(expr.clone()),
@@ -818,11 +818,11 @@ impl TypeChecker {
             let kt = self.check_expr(k)?;
             let vt = self.check_expr(v)?;
             match kt {
-                Type::Union(ts) => key_tys.extend(ts.into_iter()),
+                Type::Union(ts) => key_tys.extend(ts),
                 other => key_tys.push(other),
             }
             match vt {
-                Type::Union(ts) => val_tys.extend(ts.into_iter()),
+                Type::Union(ts) => val_tys.extend(ts),
                 other => val_tys.push(other),
             }
         }
@@ -938,7 +938,7 @@ impl TypeChecker {
                     }
                 }
                 // Fallback: unknown index -> union of all element types
-                let u = Type::Union(elems.iter().cloned().collect());
+                let u = Type::Union(elems.to_vec());
                 Ok(u)
             }
             Type::Map(key_type, value_type) => {
@@ -955,12 +955,12 @@ impl TypeChecker {
                 if self.is_assignable(&field_type, &Type::Int) {
                     return Ok(Type::String);
                 }
-                return Err(Self::type_err(
+                Err(Self::type_err(
                     "String index must be integer or range",
                     Some(Type::Int),
                     Some(field_type),
                     None,
-                ));
+                ))
             }
             Type::Named(name) => self.struct_field_type(name, field),
             Type::Variable(_) => {

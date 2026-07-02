@@ -644,7 +644,7 @@ pub fn encode_instr(code: &[Instr]) -> Vec<u8> {
 }
 
 pub fn decode_instr(bytes: &[u8]) -> Result<Vec<Instr>> {
-    if bytes.len() % size_of::<u32>() != 0 {
+    if !bytes.len().is_multiple_of(size_of::<u32>()) {
         bail!("Instr encoded length {} is not 4-byte aligned", bytes.len());
     }
     let mut instrs = Vec::with_capacity(bytes.len() / size_of::<u32>());

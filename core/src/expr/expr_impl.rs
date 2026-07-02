@@ -358,10 +358,10 @@ impl Expr {
                         if let Some(result_val) = fold_literal_arith(lval, &op, rval) {
                             return Expr::Literal(result_val);
                         }
-                    } else if op.is_cmp() {
-                        if let Some(res_bool) = op.cmp_literals(lval, rval) {
-                            return Expr::Literal(LiteralVal::Bool(res_bool));
-                        }
+                    } else if op.is_cmp()
+                        && let Some(res_bool) = op.cmp_literals(lval, rval)
+                    {
+                        return Expr::Literal(LiteralVal::Bool(res_bool));
                     }
                     // Other cases (like type mismatch) don't fold, keep expression form
                 }

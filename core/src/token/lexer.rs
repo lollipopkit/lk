@@ -947,10 +947,11 @@ impl<'a> Tokenizer<'a> {
             }
             '+' => {
                 let next = self.chars.get(self.idx + 1);
-                if let Some(&c) = next {
-                    if self.signed_number_can_start() && (c.is_ascii_digit() || c == '.') {
-                        return self.parse_num();
-                    }
+                if let Some(&c) = next
+                    && self.signed_number_can_start()
+                    && (c.is_ascii_digit() || c == '.')
+                {
+                    return self.parse_num();
                 }
                 let start = self.current_position();
                 if self.expect("+=") {
@@ -966,10 +967,11 @@ impl<'a> Tokenizer<'a> {
             }
             '-' => {
                 let next = self.chars.get(self.idx + 1);
-                if let Some(&c) = next {
-                    if self.signed_number_can_start() && (c.is_ascii_digit() || c == '.') {
-                        return self.parse_num();
-                    }
+                if let Some(&c) = next
+                    && self.signed_number_can_start()
+                    && (c.is_ascii_digit() || c == '.')
+                {
+                    return self.parse_num();
                 }
                 let start = self.current_position();
                 if self.expect("->") {

@@ -533,9 +533,8 @@ fn main() -> anyhow::Result<()> {
                 #[cfg(feature = "llvm")]
                 let output = output_arg
                     .map(|p| {
-                        sanitize_path(p.to_string_lossy().as_ref()).map_err(|e| {
-                            diagnostic::error(&e);
-                            e
+                        sanitize_path(p.to_string_lossy().as_ref()).inspect_err(|e| {
+                            diagnostic::error(e);
                         })
                     })
                     .transpose()?;
@@ -612,9 +611,8 @@ fn main() -> anyhow::Result<()> {
     }
     // Otherwise: execute FILE as statements
     let file = file.expect("internal: file should be present when no subcommand");
-    let safe = sanitize_path(file.to_string_lossy().as_ref()).map_err(|e| {
-        diagnostic::error(&e);
-        e
+    let safe = sanitize_path(file.to_string_lossy().as_ref()).inspect_err(|e| {
+        diagnostic::error(e);
     })?;
     let src_path_str = safe.to_string_lossy().to_string();
     let raw = std::fs::read(&safe).map_err(|e| anyhow::anyhow!("Failed to read file '{}': {}", src_path_str, e))?;
@@ -870,7 +868,7 @@ fn run_type_check(path: &Path) -> anyhow::Result<()> {
             message.push('\n');
             message.push_str(&note);
         }
-        diagnostic::error(&anyhow::anyhow!(message));
+        diagnostic::error(anyhow::anyhow!(message));
         std::process::exit(1);
     }
     Ok(())
@@ -938,7 +936,7 @@ fn compile_executable_to_path_with_dependencies(
     let compiled = compile_instr_artifact_with_dependencies(path)?;
     let llvm = lk_llvm::compile_module_artifact_to_llvm(&compiled.artifact, options)
         .with_context(|| format!("compile native executable LLVM IR for {}", path.display()))?;
-    lk_llvm::compile_native_executable_from_llvm(path, &output, &llvm.module.ir, llvm.opt_level.as_flag())?;
+    lk_llvm::compile_native_executable_from_llvm(path, output, &llvm.module.ir, llvm.opt_level.as_flag())?;
     Ok(compiled.proc_macro_dependencies)
 }
 

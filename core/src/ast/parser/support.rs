@@ -213,7 +213,7 @@ impl<'a> Parser<'a> {
             && let Stmt::Expr(expr) = last.as_ref()
         {
             let value = expr.clone();
-            *last = Box::new(Stmt::Return { value: Some(value) });
+            **last = Stmt::Return { value: Some(value) };
         }
         Ok(Expr::Block(statements))
     }

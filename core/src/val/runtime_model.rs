@@ -467,12 +467,12 @@ impl TypedMap {
         match self {
             Self::Mixed(entries) => {
                 for (k, v) in entries {
-                    out.push((k.clone(), v.clone()));
+                    out.push((k.clone(), *v));
                 }
             }
             Self::StringMixed(entries) => {
                 for (k, v) in entries {
-                    out.push((RuntimeMapKey::String(k.clone()), v.clone()));
+                    out.push((RuntimeMapKey::String(k.clone()), *v));
                 }
             }
             Self::StringInt(entries) => {
@@ -652,27 +652,19 @@ impl TypedMap {
         match self {
             Self::Mixed(entries) => entries.remove(key),
             Self::StringMixed(entries) => {
-                let Some(key_str) = key.as_str() else {
-                    return None;
-                };
+                let key_str = key.as_str()?;
                 entries.remove(key_str)
             }
             Self::StringInt(entries) => {
-                let Some(key_str) = key.as_str() else {
-                    return None;
-                };
+                let key_str = key.as_str()?;
                 entries.remove(key_str).map(RuntimeVal::Int)
             }
             Self::StringFloat(entries) => {
-                let Some(key_str) = key.as_str() else {
-                    return None;
-                };
+                let key_str = key.as_str()?;
                 entries.remove(key_str).map(RuntimeVal::Float)
             }
             Self::StringBool(entries) => {
-                let Some(key_str) = key.as_str() else {
-                    return None;
-                };
+                let key_str = key.as_str()?;
                 entries.remove(key_str).map(RuntimeVal::Bool)
             }
         }
@@ -794,10 +786,10 @@ fn typed_map_entries_equal(left: &TypedMap, right: &TypedMap) -> bool {
 
 fn typed_map_entries_all(map: &TypedMap, mut visit: impl FnMut(RuntimeMapKey, RuntimeVal) -> bool) -> bool {
     match map {
-        TypedMap::Mixed(entries) => entries.iter().all(|(key, value)| visit(key.clone(), value.clone())),
+        TypedMap::Mixed(entries) => entries.iter().all(|(key, value)| visit(key.clone(), *value)),
         TypedMap::StringMixed(entries) => entries
             .iter()
-            .all(|(key, value)| visit(RuntimeMapKey::String(key.clone()), value.clone())),
+            .all(|(key, value)| visit(RuntimeMapKey::String(key.clone()), *value)),
         TypedMap::StringInt(entries) => entries
             .iter()
             .all(|(key, value)| visit(RuntimeMapKey::String(key.clone()), RuntimeVal::Int(*value))),

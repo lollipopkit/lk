@@ -142,6 +142,7 @@ impl Compiler {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn compile_function_body(
         params: &[String],
         named_params: &[crate::stmt::NamedParamDecl],

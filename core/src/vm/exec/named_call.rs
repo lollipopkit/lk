@@ -126,9 +126,8 @@ impl Executor {
         ctx: &mut Option<&mut VmContext>,
     ) -> Result<RuntimeVal> {
         let module = module.ok_or_else(|| anyhow!("CallNamed requires Module execution"))?;
-        let callee = self
-            .read(u8::try_from(window.callee.as_usize()).map_err(|_| anyhow!("call callee register overflow"))?)?
-            .clone();
+        let callee = *self
+            .read(u8::try_from(window.callee.as_usize()).map_err(|_| anyhow!("call callee register overflow"))?)?;
         let RuntimeVal::Obj(handle) = callee else {
             bail!("CallNamed callee is not callable");
         };

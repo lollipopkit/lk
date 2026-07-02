@@ -172,7 +172,7 @@ impl RuntimeExport {
 
     pub fn shallow_clone_shared(&self) -> Self {
         Self {
-            value: self.value.clone(),
+            value: self.value,
             state: Arc::clone(&self.state),
             module: Arc::clone(&self.module),
         }

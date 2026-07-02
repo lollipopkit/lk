@@ -49,7 +49,7 @@ pub fn module_export(
         map.insert(Arc::<str>::from(native.name), value);
     }
     for value in values {
-        map.insert(Arc::<str>::from(value.name), value.value.clone());
+        map.insert(Arc::<str>::from(value.name), value.value);
     }
     for (name, export) in namespaces {
         map.insert(Arc::<str>::from(*name), import_runtime_export(export, &mut heap)?);

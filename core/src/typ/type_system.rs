@@ -416,7 +416,7 @@ impl TypeInferenceEngine {
                 if a.len() != b.len() {
                     return Err(anyhow!("Tuple arity mismatch"));
                 }
-                for (x, y) in a.into_iter().zip(b.into_iter()) {
+                for (x, y) in a.into_iter().zip(b) {
                     self.unify(x, y)?;
                 }
                 Ok(())
@@ -436,7 +436,7 @@ impl TypeInferenceEngine {
                 if a_params.len() != b_params.len() {
                     return Err(anyhow!("Function arity mismatch"));
                 }
-                for (a_param, b_param) in a_params.into_iter().zip(b_params.into_iter()) {
+                for (a_param, b_param) in a_params.into_iter().zip(b_params) {
                     self.unify(a_param, b_param)?;
                 }
                 if a_named.len() != b_named.len() {

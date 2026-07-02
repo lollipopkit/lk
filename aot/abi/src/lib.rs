@@ -95,7 +95,6 @@ macro_rules! for_each_abi_fn {
             ("fs", "write_str", lkrt_fs_write_str, WritesHost, [StrPtr, StrPtr], I64);
             ("fs", "write_bytes", lkrt_fs_write_bytes, WritesHost, [StrPtr, I64], I64);
             ("fs", "exists", lkrt_fs_exists, ReadsHost, [StrPtr], I64);
-            ("fs", "read_dir", lkrt_fs_read_dir, ReadsHost, [StrPtr], I64);
             ("fs", "metadata_len", lkrt_fs_metadata_len, ReadsHost, [StrPtr], I64);
             ("fs", "metadata_is_file", lkrt_fs_metadata_is_file, ReadsHost, [StrPtr], I64);
             ("fs", "metadata_is_dir", lkrt_fs_metadata_is_dir, ReadsHost, [StrPtr], I64);

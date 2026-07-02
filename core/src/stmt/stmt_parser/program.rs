@@ -171,13 +171,9 @@ impl<'a> StmtParser<'a> {
                                 }
                                 self.pos += 1;
                             }
-                            Token::Semicolon => {
-                                if paren == 0 && bracket == 0 && brace == 0 {
-                                    self.pos += 1; // consume ';'
-                                    break;
-                                } else {
-                                    self.pos += 1;
-                                }
+                            Token::Semicolon if paren == 0 && bracket == 0 && brace == 0 => {
+                                self.pos += 1; // consume ';'
+                                break;
                             }
                             _ => {
                                 self.pos += 1;

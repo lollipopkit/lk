@@ -848,9 +848,7 @@ fn typed_list_items_equal(
             typed_list_runtime_item_equal(RuntimeVal::Bool(left[left_index]), right, right_index, heap)
         }
         (TypedList::String(left), _) => typed_list_string_item_equal(&left[left_index], right, right_index, heap),
-        (TypedList::Mixed(left), _) => {
-            typed_list_runtime_item_equal(left[left_index].clone(), right, right_index, heap)
-        }
+        (TypedList::Mixed(left), _) => typed_list_runtime_item_equal(left[left_index], right, right_index, heap),
     }
 }
 

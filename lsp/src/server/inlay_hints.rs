@@ -183,15 +183,13 @@ pub(crate) fn compute_inlay_hints_with_margin(content: &str, range: Range, margi
                         depth -= 1;
                     }
                 }
-                ',' => {
-                    if depth == 0 {
-                        let (hint_pos, ok) = first_sig_pos(content, arg_start, pos);
-                        if ok && arg_index < params.len() && within_range(hint_pos) {
-                            hints.push(make_param_hint(&params[arg_index], hint_pos, &line_starts));
-                        }
-                        arg_index += 1;
-                        arg_start = pos + 1;
+                ',' if depth == 0 => {
+                    let (hint_pos, ok) = first_sig_pos(content, arg_start, pos);
+                    if ok && arg_index < params.len() && within_range(hint_pos) {
+                        hints.push(make_param_hint(&params[arg_index], hint_pos, &line_starts));
                     }
+                    arg_index += 1;
+                    arg_start = pos + 1;
                 }
                 _ => {}
             }

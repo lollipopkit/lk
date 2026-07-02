@@ -133,8 +133,8 @@ impl Executor {
             return Ok(());
         }
 
-        let lhs = self.read(instr.b())?.clone();
-        let rhs = self.read(instr.c())?.clone();
+        let lhs = *self.read(instr.b())?;
+        let rhs = *self.read(instr.c())?;
         let value = match (&lhs, &rhs) {
             _ if self.runtime_value_is_map(&lhs)? && self.runtime_value_is_map(&rhs)? => {
                 let lhs = self.runtime_value_to_typed_map(&lhs)?.expect("checked map");
@@ -183,8 +183,8 @@ impl Executor {
             return Ok(());
         }
 
-        let lhs = self.read(instr.b())?.clone();
-        let rhs = self.read(instr.c())?.clone();
+        let lhs = *self.read(instr.b())?;
+        let rhs = *self.read(instr.c())?;
         let value = match (&lhs, &rhs) {
             _ if self.runtime_value_is_heap_list(&lhs)? && self.runtime_value_is_heap_list(&rhs)? => {
                 let lhs_values = self.runtime_value_to_list_snapshot(&lhs)?.expect("checked list");
@@ -404,7 +404,7 @@ impl Executor {
                     .ok_or_else(|| anyhow::anyhow!("heap object {} out of bounds", rhs.index()))?;
                 self.heap_values_equal(lhs, rhs)?
             }
-            _ => match (self.runtime_value_to_string(&lhs)?, self.runtime_value_to_string(&rhs)?) {
+            _ => match (self.runtime_value_to_string(lhs)?, self.runtime_value_to_string(rhs)?) {
                 (Some(lhs), Some(rhs)) => lhs == rhs,
                 _ => false,
             },
@@ -423,7 +423,7 @@ impl Executor {
 
     fn runtime_value_to_list_add_operand(&self, value: &RuntimeVal) -> Result<ListAddOperand> {
         let RuntimeVal::Obj(handle) = value else {
-            return Ok(ListAddOperand::Value(value.clone()));
+            return Ok(ListAddOperand::Value(*value));
         };
         let Some(value) = self.state.heap.get(*handle) else {
             bail!("heap object {} out of bounds", handle.index());
@@ -761,7 +761,7 @@ impl Executor {
                 let mut out = Vec::with_capacity(values.len());
                 'outer_mixed: for value in values {
                     for rhs_index in 0..rhs.len() {
-                        if self.list_snapshot_runtime_item_equal(value.clone(), rhs, rhs_index)? {
+                        if self.list_snapshot_runtime_item_equal(value, rhs, rhs_index)? {
                             continue 'outer_mixed;
                         }
                     }
@@ -921,7 +921,7 @@ impl Executor {
                 self.typed_list_runtime_item_equal(RuntimeVal::Bool(lhs[lhs_index]), rhs, rhs_index)
             }
             (TypedList::String(lhs), _) => self.typed_list_string_item_equal(&lhs[lhs_index], rhs, rhs_index),
-            (TypedList::Mixed(lhs), _) => self.typed_list_runtime_item_equal(lhs[lhs_index].clone(), rhs, rhs_index),
+            (TypedList::Mixed(lhs), _) => self.typed_list_runtime_item_equal(lhs[lhs_index], rhs, rhs_index),
         }
     }
 
@@ -1045,12 +1045,12 @@ fn for_each_typed_map_entry(map: &TypedMap, mut visit: impl FnMut(RuntimeMapKey,
     match map {
         TypedMap::Mixed(entries) => {
             for (key, value) in entries {
-                visit(key.clone(), value.clone());
+                visit(key.clone(), *value);
             }
         }
         TypedMap::StringMixed(entries) => {
             for (key, value) in entries {
-                visit(RuntimeMapKey::String(key.clone()), value.clone());
+                visit(RuntimeMapKey::String(key.clone()), *value);
             }
         }
         TypedMap::StringInt(entries) => {
@@ -1111,7 +1111,7 @@ fn typed_map_without_merge_keys(map: &TypedMap, replaced_keys: &[RuntimeMapKey])
             let mut out = fast_hash_map_new();
             for (key, value) in entries {
                 if !replaced_keys.contains(key) {
-                    out.insert(key.clone(), value.clone());
+                    out.insert(key.clone(), *value);
                 }
             }
             TypedMap::Mixed(out)
@@ -1120,7 +1120,7 @@ fn typed_map_without_merge_keys(map: &TypedMap, replaced_keys: &[RuntimeMapKey])
             let mut out = fast_hash_map_new();
             for (key, value) in entries {
                 if !string_map_key_removed(key, replaced_keys) {
-                    out.insert(key.clone(), value.clone());
+                    out.insert(key.clone(), *value);
                 }
             }
             TypedMap::StringMixed(out)
@@ -1161,7 +1161,7 @@ fn typed_map_without_keys(map: &TypedMap, removed_keys: &[RuntimeMapKey]) -> Typ
             let mut out = fast_hash_map_new();
             for (key, value) in entries {
                 if !runtime_map_key_removed(key, removed_keys) {
-                    out.insert(key.clone(), value.clone());
+                    out.insert(key.clone(), *value);
                 }
             }
             TypedMap::Mixed(out)
@@ -1170,7 +1170,7 @@ fn typed_map_without_keys(map: &TypedMap, removed_keys: &[RuntimeMapKey]) -> Typ
             let mut out = fast_hash_map_new();
             for (key, value) in entries {
                 if !string_map_key_removed(key, removed_keys) {
-                    out.insert(key.clone(), value.clone());
+                    out.insert(key.clone(), *value);
                 }
             }
             TypedMap::StringMixed(out)

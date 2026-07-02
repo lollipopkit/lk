@@ -8,7 +8,7 @@
 ## 特性
 
 - 类 Rust 语法，支持一等 named parameters
-- Rust 形态的 `macro_rules!` 声明式宏，支持函数式调用、显式宏导出/re-export、文件/package 导入、标准 `macros` 导入、item attributes、内置 `#[derive(Debug|Show)]`、隔离进程外部 derive/attribute/function-like provider、dependency-aware proc macro 缓存失效、LSP macro-origin hover/symbols、同文件/导入宏与 generated item goto-definition，以及逐 token macro origin/source-map 检查；宏生态路线图见 [docs/macros.md](docs/macros.md)
+- Rust 形态的 `macro_rules!` 声明式宏，支持函数式调用、显式宏导出/re-export、文件/package 导入、标准 `macros` 导入、item attributes、内置 `#[derive(Debug|Show)]`、隔离进程外部 derive/attribute/function-like provider、dependency-aware proc macro 缓存失效、LSP macro-origin hover/symbols、同文件/导入宏与 generated item goto-definition，以及逐 token macro origin/source-map 检查
 - VM 解释器和 LLVM 编译器后端，支持跨平台原生编译和浏览器 WASM
 - 内置标准库/各类语法糖
 - 包管理器和 REPL，支持 VS Code LSP 扩展

@@ -5,6 +5,7 @@ use super::{LiteralVal, types::ShortStr};
 impl LiteralVal {
     /// Build an AST literal string. Runtime long strings are materialized as heap strings during lowering.
     #[inline]
+    #[allow(clippy::should_implement_trait)] // infallible, unlike `FromStr::from_str`
     pub fn from_str(s: &str) -> Self {
         if let Some(short) = ShortStr::new(s) {
             Self::ShortStr(short)

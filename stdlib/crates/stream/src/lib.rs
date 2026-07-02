@@ -109,10 +109,10 @@ impl StreamSpec {
                 end: *end,
                 step: *step,
             }),
-            StreamSpec::Repeat(value) => Box::new(RepeatCursor { value: value.clone() }),
+            StreamSpec::Repeat(value) => Box::new(RepeatCursor { value: *value }),
             StreamSpec::Iterate { seed, func } => Box::new(IterateCursor {
-                current: seed.clone(),
-                func: func.clone(),
+                current: *seed,
+                func: *func,
                 first: true,
             }),
             StreamSpec::FromChannel { channel_id } => Box::new(ChannelCursor {
@@ -120,11 +120,11 @@ impl StreamSpec {
             }),
             StreamSpec::Map { upstream, func } => Box::new(MapCursor {
                 upstream: upstream.open_cursor(),
-                func: func.clone(),
+                func: *func,
             }),
             StreamSpec::Filter { upstream, func } => Box::new(FilterCursor {
                 upstream: upstream.open_cursor(),
-                func: func.clone(),
+                func: *func,
             }),
             StreamSpec::Take { upstream, n } => Box::new(TakeCursor {
                 upstream: upstream.open_cursor(),
@@ -145,11 +145,11 @@ impl StreamSpec {
     fn roots(&self) -> Vec<RuntimeVal> {
         match self {
             StreamSpec::FromList(data) => typed_list_roots(data),
-            StreamSpec::Repeat(value) => vec![value.clone()],
-            StreamSpec::Iterate { seed, func } => vec![seed.clone(), func.clone()],
+            StreamSpec::Repeat(value) => vec![*value],
+            StreamSpec::Iterate { seed, func } => vec![*seed, *func],
             StreamSpec::Map { upstream, func } | StreamSpec::Filter { upstream, func } => {
                 let mut roots = upstream.roots();
-                roots.push(func.clone());
+                roots.push(*func);
                 roots
             }
             StreamSpec::Take { upstream, .. } | StreamSpec::Skip { upstream, .. } => upstream.roots(),
@@ -229,11 +229,11 @@ struct RepeatCursor {
 
 impl StreamCursor for RepeatCursor {
     fn next(&mut self, _runtime: &mut NativeRuntime<'_>) -> Result<Option<RuntimeVal>> {
-        Ok(Some(self.value.clone()))
+        Ok(Some(self.value))
     }
 
     fn roots(&self) -> Vec<RuntimeVal> {
-        vec![self.value.clone()]
+        vec![self.value]
     }
 }
 
@@ -248,7 +248,7 @@ impl StreamCursor for IterateCursor {
     fn next(&mut self, runtime: &mut NativeRuntime<'_>) -> Result<Option<RuntimeVal>> {
         if self.first {
             self.first = false;
-            return Ok(Some(self.current.clone()));
+            return Ok(Some(self.current));
         }
         let next = call_runtime_callable_value(
             &self.func,
@@ -256,12 +256,12 @@ impl StreamCursor for IterateCursor {
             runtime,
             "stream.iterate",
         )?;
-        self.current = next.clone();
+        self.current = next;
         Ok(Some(next))
     }
 
     fn roots(&self) -> Vec<RuntimeVal> {
-        vec![self.current.clone(), self.func.clone()]
+        vec![self.current, self.func]
     }
 }
 
@@ -280,7 +280,7 @@ impl StreamCursor for MapCursor {
 
     fn roots(&self) -> Vec<RuntimeVal> {
         let mut roots = self.upstream.roots();
-        roots.push(self.func.clone());
+        roots.push(self.func);
         roots
     }
 }
@@ -305,7 +305,7 @@ impl StreamCursor for FilterCursor {
 
     fn roots(&self) -> Vec<RuntimeVal> {
         let mut roots = self.upstream.roots();
-        roots.push(self.func.clone());
+        roots.push(self.func);
         roots
     }
 }
@@ -430,8 +430,8 @@ impl StreamModule {
         ensure_runtime_callable(&values[1], runtime, "stream.iterate function")?;
         create_stream(
             StreamSpec::Iterate {
-                seed: values[0].clone(),
-                func: values[1].clone(),
+                seed: values[0],
+                func: values[1],
             },
             Type::Any,
             runtime.heap_mut(),
@@ -440,11 +440,7 @@ impl StreamModule {
 
     #[stdlib_export(params(value: Any), returns = Stream)]
     fn repeat(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        create_stream(
-            StreamSpec::Repeat(args.as_slice()[0].clone()),
-            Type::Any,
-            runtime.heap_mut(),
-        )
+        create_stream(StreamSpec::Repeat(args.as_slice()[0]), Type::Any, runtime.heap_mut())
     }
 
     #[stdlib_export(params(channel: Channel), returns = Stream)]
@@ -465,7 +461,7 @@ impl StreamModule {
         create_stream(
             StreamSpec::Map {
                 upstream,
-                func: values[1].clone(),
+                func: values[1],
             },
             Type::Any,
             runtime.heap_mut(),
@@ -480,7 +476,7 @@ impl StreamModule {
         create_stream(
             StreamSpec::Filter {
                 upstream,
-                func: values[1].clone(),
+                func: values[1],
             },
             Type::Any,
             runtime.heap_mut(),

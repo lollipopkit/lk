@@ -578,11 +578,7 @@ fn collect_assigned_names(stmt: &Stmt, names: &mut HashSet<String>) {
             }
         }
         Stmt::Expr(expr) => collect_assigned_names_in_expr(expr, names),
-        Stmt::Return { value } => {
-            if let Some(value) = value {
-                collect_assigned_names_in_expr(value, names);
-            }
-        }
+        Stmt::Return { value: Some(value) } => collect_assigned_names_in_expr(value, names),
         _ => {}
     }
 }

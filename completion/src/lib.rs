@@ -261,7 +261,7 @@ impl CompletionEngine {
         let module_prefix = trimmed
             .strip_prefix("use ")
             .or_else(|| trimmed.strip_prefix("from "))
-            .filter(|rest| rest.chars().all(|ch| is_ident_continue(ch)));
+            .filter(|rest| rest.chars().all(is_ident_continue));
         let Some(typed) = module_prefix else {
             return false;
         };
@@ -706,39 +706,37 @@ impl SymbolIndex {
         for line in source.lines() {
             let trimmed = line.trim_start();
             if let Some(rest) = trimmed.strip_prefix("fn ") {
-                if let Some(name) = leading_identifier(rest) {
-                    if seen.insert((name.to_string(), CompletionKind::Function)) {
-                        index.symbols.push(SymbolInfo {
-                            name: name.to_string(),
-                            kind: CompletionKind::Function,
-                            detail: Some("function".to_string()),
-                        });
-                    }
+                if let Some(name) = leading_identifier(rest)
+                    && seen.insert((name.to_string(), CompletionKind::Function))
+                {
+                    index.symbols.push(SymbolInfo {
+                        name: name.to_string(),
+                        kind: CompletionKind::Function,
+                        detail: Some("function".to_string()),
+                    });
                 }
             } else if let Some(rest) = trimmed.strip_prefix("let ").or_else(|| trimmed.strip_prefix("const ")) {
-                if let Some(name) = leading_identifier(rest) {
-                    if seen.insert((name.to_string(), CompletionKind::Variable)) {
-                        index.symbols.push(SymbolInfo {
-                            name: name.to_string(),
-                            kind: CompletionKind::Variable,
-                            detail: Some("local".to_string()),
-                        });
-                    }
+                if let Some(name) = leading_identifier(rest)
+                    && seen.insert((name.to_string(), CompletionKind::Variable))
+                {
+                    index.symbols.push(SymbolInfo {
+                        name: name.to_string(),
+                        kind: CompletionKind::Variable,
+                        detail: Some("local".to_string()),
+                    });
                 }
             } else if let Some(rest) = trimmed
                 .strip_prefix("trait ")
                 .or_else(|| trimmed.strip_prefix("struct "))
                 .or_else(|| trimmed.strip_prefix("type "))
+                && let Some(name) = leading_identifier(rest)
+                && seen.insert((name.to_string(), CompletionKind::Type))
             {
-                if let Some(name) = leading_identifier(rest) {
-                    if seen.insert((name.to_string(), CompletionKind::Type)) {
-                        index.symbols.push(SymbolInfo {
-                            name: name.to_string(),
-                            kind: CompletionKind::Type,
-                            detail: Some("type".to_string()),
-                        });
-                    }
-                }
+                index.symbols.push(SymbolInfo {
+                    name: name.to_string(),
+                    kind: CompletionKind::Type,
+                    detail: Some("type".to_string()),
+                });
             }
         }
         index
@@ -768,9 +766,8 @@ fn scan_fn_params(tokens: &[Token], start: usize) -> Option<(FnParams, usize)> {
             Token::Id(name) if paren == 1 && named_depth == 0 => {
                 let previous_is_param_boundary =
                     matches!(tokens.get(i.wrapping_sub(1)), Some(Token::LParen | Token::Comma));
-                if previous_is_param_boundary && matches!(tokens.get(i + 1), Some(Token::Colon)) {
-                    params.positional.push(name.clone());
-                } else if previous_is_param_boundary && matches!(tokens.get(i + 1), Some(Token::Comma | Token::RParen))
+                if previous_is_param_boundary
+                    && matches!(tokens.get(i + 1), Some(Token::Colon | Token::Comma | Token::RParen))
                 {
                     params.positional.push(name.clone());
                 }
@@ -791,17 +788,17 @@ where
 {
     match tokens.get(start + 1) {
         Some(Token::Id(module)) => {
-            if matches!(tokens.get(start + 2), Some(Token::As)) {
-                if let Some(Token::Id(alias)) = tokens.get(start + 3) {
-                    index.import_aliases.insert(alias.clone(), module.clone());
-                    push(
-                        index,
-                        alias.clone(),
-                        CompletionKind::Module,
-                        Some(format!("alias for {module}")),
-                    );
-                    return start + 4;
-                }
+            if matches!(tokens.get(start + 2), Some(Token::As))
+                && let Some(Token::Id(alias)) = tokens.get(start + 3)
+            {
+                index.import_aliases.insert(alias.clone(), module.clone());
+                push(
+                    index,
+                    alias.clone(),
+                    CompletionKind::Module,
+                    Some(format!("alias for {module}")),
+                );
+                return start + 4;
             }
             index.import_aliases.insert(module.clone(), module.clone());
             push(

@@ -1,3 +1,6 @@
+// The parser's AST hands statements around as `Vec<Box<Stmt>>`; keeping the
+// macro system on the same shape avoids re-boxing at every parse boundary.
+#![allow(clippy::vec_box, clippy::boxed_local)]
 use super::{proc_deps::ProcMacroDependencyRecorder, proc_output::parse_tokens_from_proc_output};
 mod derive;
 mod origins;

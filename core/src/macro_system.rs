@@ -893,8 +893,8 @@ fn find_group(tokens: &[SourceToken], open: usize) -> Result<(usize, usize), Par
         _ => return Err(error_at(tokens, open, "Expected macro delimiter")),
     };
     let mut depth = 0usize;
-    for index in open..tokens.len() {
-        let token = &tokens[index].token;
+    for (index, expanded) in tokens.iter().enumerate().skip(open) {
+        let token = &expanded.token;
         if token_matches(&open_token.token, token) {
             depth += 1;
         } else if token_matches(&expected_close, token) {

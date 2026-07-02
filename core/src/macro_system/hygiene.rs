@@ -182,34 +182,33 @@ fn collect_if_while_let_binding_renames(tokens: &[ExpandedToken], site: usize, r
             && matches!(tokens[index].token.token, Token::If | Token::While)
             && !tokens[index + 1].from_capture
             && matches!(tokens[index + 1].token.token, Token::Let)
+            && let Some((pattern, consumed)) = parse_generated_pattern_prefix(tokens, index + 2)
         {
-            if let Some((pattern, consumed)) = parse_generated_pattern_prefix(tokens, index + 2) {
-                let scope_start =
-                    find_if_while_let_value_start(tokens, index + 2).map_or(index + 2 + consumed, |assign| assign + 1);
-                let body_start = find_control_flow_body_start(tokens, scope_start);
-                let scope_end = body_start
-                    .and_then(|start| {
-                        find_matching_delimiter(tokens, start, Token::LBrace, Token::RBrace).map(|index| index + 1)
-                    })
-                    .unwrap_or_else(|| generated_binding_scope_end(tokens, index));
-                let reference_start = index + 2;
-                let excluded_start = find_if_while_let_value_start(tokens, index + 2).map(|assign| assign + 1);
-                let excluded_end = body_start;
-                collect_pattern_binding_renames(
-                    tokens,
-                    index + 2,
-                    consumed,
-                    &pattern,
-                    site,
-                    reference_start,
-                    excluded_start,
-                    excluded_end,
-                    scope_end,
-                    renames,
-                );
-                index = scope_end.max(index + consumed + 2);
-                continue;
-            }
+            let scope_start =
+                find_if_while_let_value_start(tokens, index + 2).map_or(index + 2 + consumed, |assign| assign + 1);
+            let body_start = find_control_flow_body_start(tokens, scope_start);
+            let scope_end = body_start
+                .and_then(|start| {
+                    find_matching_delimiter(tokens, start, Token::LBrace, Token::RBrace).map(|index| index + 1)
+                })
+                .unwrap_or_else(|| generated_binding_scope_end(tokens, index));
+            let reference_start = index + 2;
+            let excluded_start = find_if_while_let_value_start(tokens, index + 2).map(|assign| assign + 1);
+            let excluded_end = body_start;
+            collect_pattern_binding_renames(
+                tokens,
+                index + 2,
+                consumed,
+                &pattern,
+                site,
+                reference_start,
+                excluded_start,
+                excluded_end,
+                scope_end,
+                renames,
+            );
+            index = scope_end.max(index + consumed + 2);
+            continue;
         }
         index += 1;
     }
@@ -440,6 +439,7 @@ fn push_parameter_binding_renames(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn collect_pattern_binding_renames(
     tokens: &[ExpandedToken],
     start: usize,
@@ -522,6 +522,7 @@ fn find_generated_ids_in_range(tokens: &[ExpandedToken], start: usize, end: usiz
         .collect()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn collect_simple_generated_id(
     tokens: &[ExpandedToken],
     index: usize,

@@ -107,7 +107,7 @@ impl ProgramResult {
         let mut state = self.state;
         let mut entries = fast_hash_map_new();
         for (slot, value) in self.module.globals.iter().zip(state.globals.iter()) {
-            entries.insert(RuntimeMapKey::String(slot.name.clone()), value.clone());
+            entries.insert(RuntimeMapKey::String(slot.name.clone()), *value);
         }
         let value = RuntimeVal::Obj(state.heap.alloc(HeapValue::Map(typed_map_from_entries(entries))));
         RuntimeExport::new(
@@ -455,6 +455,7 @@ impl Executor {
         self.run_module_with_globals_and_ctx(module.as_ref(), globals, heap, ctx)
     }
 
+    #[allow(clippy::too_many_arguments, clippy::result_large_err)] // ExecFailure carries the full recovery state by design
     pub(crate) fn run_module_function_with_state_recoverable<F>(
         mut self,
         module: &Module,
@@ -1295,9 +1296,7 @@ impl Executor {
                     };
                     let value = match int_result {
                         Some(v) => v,
-                        None => match self.compare_test_value_slow(instr, lhs_idx, rhs_idx)? {
-                            v => v,
-                        },
+                        None => self.compare_test_value_slow(instr, lhs_idx, rhs_idx)?,
                     };
                     self.apply_compare_test_branch_unchecked(function, code, instr, value);
                 }

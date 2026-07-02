@@ -19,13 +19,6 @@ pub(crate) fn arena_c_string(s: CString) -> *mut c_char {
     ptr
 }
 
-/// Byte-wise lexicographic comparison of two C strings, returning `-1`/`0`/`1`
-/// (the sign of the ordering). The caller compares the result against `0` to
-/// realize `==`/`!=`/`<`/`<=`/`>`/`>=`, matching the VM's string comparison
-/// (exact equality for `==`, lexicographic otherwise).
-///
-/// # Safety
-/// `a` and `b` must be valid NUL-terminated C strings, or null (treated as empty).
 /// `s.starts_with(prefix)` — byte-prefix test (Rust `str::starts_with`, the
 /// VM's exact semantics). Null pointers count as empty strings.
 ///
@@ -81,6 +74,13 @@ pub unsafe extern "C" fn lkrt_str_contains(s: *const c_char, needle: *const c_ch
     i64::from(s.windows(needle.len().max(1)).any(|w| w == needle) || needle.is_empty())
 }
 
+/// Byte-wise lexicographic comparison of two C strings, returning `-1`/`0`/`1`
+/// (the sign of the ordering). The caller compares the result against `0` to
+/// realize `==`/`!=`/`<`/`<=`/`>`/`>=`, matching the VM's string comparison
+/// (exact equality for `==`, lexicographic otherwise).
+///
+/// # Safety
+/// `a` and `b` must be valid NUL-terminated C strings, or null (treated as empty).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_str_cmp(a: *const c_char, b: *const c_char) -> i64 {
     // SAFETY: caller guarantees valid NUL-terminated strings (or null → empty).

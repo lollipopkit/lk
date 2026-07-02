@@ -58,7 +58,7 @@ pub(super) fn core_call_method_builtin(
     if args.len() != 3 {
         bail!("__lk_call_method expects 3 arguments: receiver, method name, positional args list");
     }
-    let receiver = args.get(0).expect("arity checked").clone();
+    let receiver = *args.get(0).expect("arity checked");
     let method = method_name_detached("__lk_call_method", args.get(1).expect("arity checked"), runtime.heap())?;
     let positional =
         runtime_positional_arg_list("__lk_call_method", args.get(2).expect("arity checked"), runtime.heap())?;
@@ -74,7 +74,7 @@ pub(super) fn core_call_method_named_builtin(
             "__lk_call_method_named expects 4 arguments: receiver, method name, positional args list, named args map"
         );
     }
-    let receiver = args.get(0).expect("arity checked").clone();
+    let receiver = *args.get(0).expect("arity checked");
     let method = method_name_detached(
         "__lk_call_method_named",
         args.get(1).expect("arity checked"),
@@ -316,7 +316,7 @@ fn dispatch_map_builtin_method(
                 bail!("map.set() expects 2 arguments (key, value), got {}", positional.len());
             }
             let key = runtime_map_key_from_value(&positional[0], heap, "map.set() key")?;
-            let value = positional[1].clone();
+            let value = positional[1];
             if let Some(HeapValue::Map(map)) = heap.get_mut(handle) {
                 map.set(key, value);
             }
@@ -809,7 +809,7 @@ fn dispatch_list_builtin_method(
                 bail!("list.first() expects no arguments, got {}", positional.len());
             }
             let list = clone_list(receiver, heap)?;
-            if list.len() == 0 {
+            if list.is_empty() {
                 return Ok(Some(RuntimeVal::Nil));
             }
             let first = list.into_iter_owned().into_iter().next().unwrap_or(RuntimeVal::Nil);
@@ -902,7 +902,7 @@ fn dispatch_list_builtin_method(
             if !positional.is_empty() {
                 bail!("list.is_empty() expects no arguments, got {}", positional.len());
             }
-            Ok(Some(RuntimeVal::Bool(clone_list(receiver, heap)?.len() == 0)))
+            Ok(Some(RuntimeVal::Bool(clone_list(receiver, heap)?.is_empty())))
         }
         "reverse" => {
             if !positional.is_empty() {
@@ -926,7 +926,7 @@ fn dispatch_list_builtin_method(
                 bail!("list.push() expects 1 argument (value), got {}", positional.len());
             }
             let mut items = list_runtime_items(clone_list(receiver, heap)?, heap);
-            items.push(positional[0].clone());
+            items.push(positional[0]);
             Ok(Some(RuntimeVal::Obj(
                 heap.alloc(HeapValue::List(TypedList::Mixed(items))),
             )))
@@ -965,7 +965,7 @@ fn dispatch_list_builtin_method(
             if index > items.len() {
                 bail!("list.insert() index {} out of bounds (len={})", index, items.len());
             }
-            items.insert(index, positional[1].clone());
+            items.insert(index, positional[1]);
             Ok(Some(RuntimeVal::Obj(
                 heap.alloc(HeapValue::List(TypedList::Mixed(items))),
             )))
@@ -997,7 +997,7 @@ fn dispatch_list_builtin_method(
             let Some(slot) = items.get_mut(index) else {
                 bail!("list.set() index {} out of bounds (len={})", index, items.len());
             };
-            let old = std::mem::replace(slot, positional[1].clone());
+            let old = std::mem::replace(slot, positional[1]);
             let updated = RuntimeVal::Obj(heap.alloc(HeapValue::List(TypedList::Mixed(items))));
             Ok(Some(RuntimeVal::Obj(
                 heap.alloc(HeapValue::List(TypedList::Mixed(vec![updated, old]))),
@@ -1019,7 +1019,7 @@ fn dispatch_list_builtin_method(
             }
             let lhs = clone_list(receiver, heap)?.into_iter_owned();
             let rhs = clone_list(&positional[0], heap)?.into_iter_owned();
-            let merged: Vec<RuntimeVal> = lhs.into_iter().chain(rhs.into_iter()).collect();
+            let merged: Vec<RuntimeVal> = lhs.into_iter().chain(rhs).collect();
             Ok(Some(RuntimeVal::Obj(
                 heap.alloc(HeapValue::List(TypedList::Mixed(merged))),
             )))
@@ -1031,7 +1031,7 @@ fn dispatch_list_builtin_method(
             let lhs = clone_list(receiver, heap)?.into_iter_owned();
             let rhs = clone_list(&positional[0], heap)?.into_iter_owned();
             let mut pairs = Vec::with_capacity(lhs.len().min(rhs.len()));
-            for (a, b) in lhs.into_iter().zip(rhs.into_iter()) {
+            for (a, b) in lhs.into_iter().zip(rhs) {
                 pairs.push(RuntimeVal::Obj(
                     heap.alloc(HeapValue::List(TypedList::Mixed(vec![a, b]))),
                 ));
@@ -1047,11 +1047,11 @@ fn dispatch_list_builtin_method(
             let items = clone_list(receiver, heap)?.into_iter_owned();
             let mut flat: Vec<RuntimeVal> = Vec::new();
             for item in items {
-                if let RuntimeVal::Obj(h) = &item {
-                    if let Some(HeapValue::List(inner)) = heap.get(*h) {
-                        flat.extend(inner.clone().into_iter_owned());
-                        continue;
-                    }
+                if let RuntimeVal::Obj(h) = &item
+                    && let Some(HeapValue::List(inner)) = heap.get(*h)
+                {
+                    flat.extend(inner.clone().into_iter_owned());
+                    continue;
                 }
                 flat.push(item);
             }
@@ -1104,7 +1104,7 @@ fn dispatch_list_builtin_method(
             }
             let lhs = clone_list(receiver, heap)?.into_iter_owned();
             let rhs = clone_list(&positional[0], heap)?.into_iter_owned();
-            let merged: Vec<RuntimeVal> = lhs.into_iter().chain(rhs.into_iter()).collect();
+            let merged: Vec<RuntimeVal> = lhs.into_iter().chain(rhs).collect();
             Ok(Some(RuntimeVal::Obj(
                 heap.alloc(HeapValue::List(TypedList::Mixed(merged))),
             )))
@@ -1231,18 +1231,17 @@ fn list_filter(
     if args.len() != 1 {
         bail!("list.filter() expects 1 argument (predicate), got {}", args.len());
     }
-    let pred = args[0].clone();
+    let pred = args[0];
     let mut filtered = Vec::with_capacity(items.len());
     for item in items {
-        let result =
-            crate::vm::call_runtime_value_runtime(pred.clone(), &[item.clone()], state, module, ctx.as_deref_mut())?;
+        let result = crate::vm::call_runtime_value_runtime(pred, &[*item], state, module, ctx.as_deref_mut())?;
         let keep = match &result {
             RuntimeVal::Bool(b) => *b,
             RuntimeVal::Nil => false,
             _ => true,
         };
         if keep {
-            filtered.push(item.clone());
+            filtered.push(*item);
         }
     }
     let result = TypedList::Mixed(filtered);
@@ -1259,16 +1258,10 @@ fn list_map(
     if args.len() != 1 {
         bail!("list.map() expects 1 argument (transform), got {}", args.len());
     }
-    let transform = args[0].clone();
+    let transform = args[0];
     let mut mapped = Vec::with_capacity(items.len());
     for item in items {
-        let result = crate::vm::call_runtime_value_runtime(
-            transform.clone(),
-            &[item.clone()],
-            state,
-            module,
-            ctx.as_deref_mut(),
-        )?;
+        let result = crate::vm::call_runtime_value_runtime(transform, &[*item], state, module, ctx.as_deref_mut())?;
         mapped.push(result);
     }
     let result = TypedList::Mixed(mapped);
@@ -1288,16 +1281,10 @@ fn list_reduce(
             args.len()
         );
     }
-    let acc_fn = args[1].clone();
-    let mut acc = args[0].clone();
+    let acc_fn = args[1];
+    let mut acc = args[0];
     for item in items {
-        acc = crate::vm::call_runtime_value_runtime(
-            acc_fn.clone(),
-            &[acc, item.clone()],
-            state,
-            module,
-            ctx.as_deref_mut(),
-        )?;
+        acc = crate::vm::call_runtime_value_runtime(acc_fn, &[acc, *item], state, module, ctx.as_deref_mut())?;
     }
     Ok(Some(acc))
 }
@@ -1374,7 +1361,7 @@ fn runtime_access(receiver: &RuntimeVal, field: &str, heap: &mut HeapStore) -> a
                     None => RuntimeAccess::Ready(Some(RuntimeVal::Nil)),
                 },
                 HeapValue::Channel(channel) => match field {
-                    "capacity" => RuntimeAccess::Ready(Some(RuntimeVal::Int(channel.capacity.unwrap_or(0) as i64))),
+                    "capacity" => RuntimeAccess::Ready(Some(RuntimeVal::Int(channel.capacity.unwrap_or(0)))),
                     "type" => RuntimeAccess::String(format!("{:?}", channel.inner_type)),
                     _ => RuntimeAccess::Ready(None),
                 },
@@ -1492,7 +1479,7 @@ fn copy_method_positional_list(handle: HeapRef, heap: &mut HeapStore, frame: &mu
     {
         HeapValue::List(TypedList::Mixed(values)) => {
             for (slot, value) in frame.iter_mut().zip(values) {
-                *slot = value.clone();
+                *slot = *value;
             }
             return Ok(());
         }

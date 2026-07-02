@@ -63,7 +63,7 @@ impl IterModule {
     fn reduce(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let values = args.as_slice();
         let input = list_snapshot_arg(&values[0], runtime.heap(), "iter.reduce first argument")?;
-        let mut acc = values[1].clone();
+        let mut acc = values[1];
         input.for_each_item(|item| {
             let value = item.into_runtime_value(runtime.heap_mut());
             let previous = std::mem::replace(&mut acc, RuntimeVal::Nil);
@@ -330,7 +330,7 @@ impl RuntimeListItemSnapshot {
 
 fn typed_list_item_snapshot(list: &TypedList, index: usize) -> Option<RuntimeListItemSnapshot> {
     Some(match list {
-        TypedList::Mixed(values) => RuntimeListItemSnapshot::Value(values.get(index)?.clone()),
+        TypedList::Mixed(values) => RuntimeListItemSnapshot::Value(*values.get(index)?),
         TypedList::Int(values) => RuntimeListItemSnapshot::Value(RuntimeVal::Int(*values.get(index)?)),
         TypedList::Float(values) => RuntimeListItemSnapshot::Value(RuntimeVal::Float(*values.get(index)?)),
         TypedList::Bool(values) => RuntimeListItemSnapshot::Value(RuntimeVal::Bool(*values.get(index)?)),
@@ -538,7 +538,7 @@ fn flatten_typed_list(input: &TypedList, heap: &HeapStore) -> Result<FlattenPlan
         if let Some(list) = maybe_typed_list_arg_ref(value, heap)? {
             items.push(FlattenItem::List(RuntimeListSnapshot::from_typed(list)));
         } else {
-            items.push(FlattenItem::Value(value.clone()));
+            items.push(FlattenItem::Value(*value));
         }
     }
     Ok(FlattenPlan::Items(items))
@@ -628,7 +628,7 @@ fn unique_mixed_values(values: &[RuntimeVal], heap: &HeapStore) -> TypedList {
     let mut out: Vec<RuntimeVal> = Vec::with_capacity(values.len());
     for value in values {
         if !out.iter().any(|existing| runtime_values_equal(existing, value, heap)) {
-            out.push(value.clone());
+            out.push(*value);
         }
     }
     crate::typed_list_from_values(out, heap)
@@ -856,9 +856,7 @@ fn runtime_list_items_equal(
             runtime_list_runtime_item_equal(RuntimeVal::Bool(left[left_index]), right, right_index, heap)
         }
         (TypedList::String(left), _) => runtime_list_string_item_equal(&left[left_index], right, right_index, heap),
-        (TypedList::Mixed(left), _) => {
-            runtime_list_runtime_item_equal(left[left_index].clone(), right, right_index, heap)
-        }
+        (TypedList::Mixed(left), _) => runtime_list_runtime_item_equal(left[left_index], right, right_index, heap),
     }
 }
 

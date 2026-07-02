@@ -131,17 +131,6 @@ pub extern "C" fn lkrt_fs_write_bytes(path: *const c_char, data: i64) -> i64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn lkrt_fs_read_dir(path: *const c_char) -> i64 {
-    aborting(|| {
-        let path = c_str(path, "fs.read_dir path")?;
-        let count = fs::read_dir(path.as_str())
-            .map_err(|err| format!("fs.read_dir {path}: {err}"))?
-            .count();
-        Ok(count as i64)
-    })
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn lkrt_fs_metadata_len(path: *const c_char) -> i64 {
     aborting(|| fs_metadata_field(path, MetadataField::Len))
 }
@@ -217,6 +206,9 @@ pub extern "C" fn lkrt_os_name() -> *mut c_char {
 /// `fs.read_dir(path)` — the sorted list of entry *names* (UTF-8 names only,
 /// the VM's `to_str` filter) as a `List<str>` handle; IO errors abort loudly
 /// (the VM's error is equally fatal).
+///
+/// # Safety
+/// `path` must be a valid NUL-terminated C string, or null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_fs_read_dir_list(path: *const c_char) -> *mut core::ffi::c_void {
     aborting(|| {
@@ -455,7 +447,8 @@ mod tests {
         let dir = CString::new(dir.to_string_lossy().as_ref()).expect("dir path");
 
         assert_eq!(lkrt_fs_exists(file.as_ptr()), 1);
-        assert_eq!(lkrt_fs_read_dir(dir.as_ptr()), 1);
+        let listing = unsafe { lkrt_fs_read_dir_list(dir.as_ptr()) };
+        assert_eq!(unsafe { crate::lkrt_lklist_str_len(listing) }, 1);
         assert_eq!(lkrt_fs_metadata_len(file.as_ptr()), 5);
         assert_eq!(lkrt_fs_metadata_is_file(file.as_ptr()), 1);
         assert_eq!(lkrt_fs_metadata_is_dir(file.as_ptr()), 0);

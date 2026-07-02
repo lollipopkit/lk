@@ -67,7 +67,7 @@ impl Executor {
         let start = self.frame_base + usize::from(base);
         let mut captures = Vec::with_capacity(count);
         for value in &self.state.stack[start..start + count] {
-            captures.push(value.clone());
+            captures.push(*value);
         }
         Ok(captures)
     }
