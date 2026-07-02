@@ -1,65 +1,46 @@
 # Handoff
 
-**当前状态(2026-07-02,四轮优化+特性 session 完成)**:
-- **examples 差分 10/44**(fib、math/os/time/datetime/io_demo、internal、
-  named_args/params、numeric_auto_promotion),地板断言 ≥10。
-- **VM/Lua geomean 1.033x**(本地 dist;session 起点 1.175x)。fraud/cart
-  剩 2.0x/2.3x,已到 dispatch 密度层(5.4ns/步)。
-- **AOT/VM geomean ≈0.26x**,20/20 checksum 一致。
-- **artifact v6**(CallMethodK opcode;v5 `.lkm` 被干净拒绝)。
-- **clippy 0 警告**,check.yml 已启用 fmt+clippy(-D warnings)门禁
-  (下次 PR CI 首次执行)。
-- 防线全绿:workspace / ASan+UBSan 三套差分 / fuzz(含闭包与 HOF 形状,
-  双种子)/ Miri lkrt / GC stress。
-- 本 session 四轮详情见 progress.md(方法分派两轮、CallMethodK、闭包三切
-  片、模块吸收、lkrt string-map、修复轮)。
+**当前状态(2026-07-03,一等函数值收官轮完成,待 push)**:
+- **RFC 阶段 4 一等函数值全部落地**:多身份 lambda 克隆特化(上限 8)、
+  捕获闭包作参数(env 隐藏尾实参)、返回闭包(静态摘要,零运行时开销,
+  无需 `{fn_ptr, env}` 表示)。closure.lk 1-5 节 native==VM,全文件只差
+  list 结构相等(第 6 节 `evens == [...]`)。
+- **修掉一个 VM inline 真 miscompile**:inline 恢复丢外层 cell promotion
+  记录 → 第二个调用点二次 promotion 把旧 cell 当初值(Int + Obj 运行期
+  报错);修复=绑定未被遮蔽的 promotion 在恢复时保留。回归测试
+  `compiler_inline_arg_closure_promotion_survives_scope_restore`。
+- **list display**(println 语境 VM-exact 渲染,ToString/插值语境照 VM
+  拒绝)。`docs/semantics.md` 已钉死两条 display 路径语义。
+- **AOT/LK geomean 0.251x**,20/20 checksum 一致;VM/Lua 1.055x(单次
+  运行参考)。artifact 仍 v6。
+- 防线全绿:workspace 全量 / 三套差分 / fuzz 4 种子(新形状:捕获闭包
+  身份混跑、分支 helper inline 回归形状、闭包工厂)/ ASan+UBSan 三套 /
+  Miri lkrt 24/24 / `-D warnings` test-target / fmt+clippy 0。
+- 本轮 5 个 commit(inline fix、闭包实参、返回闭包、list display、
+  多身份克隆,见 git log);文档 backend.md/plan.md 已同步。
 
 ## 能力面速览(AOT/MIR)
 
-标量/控制流/直接调用单态化;闭包:零捕获去虚化 + 捕获 cell 建模(调用点
-解析)+ list HOF(fn-pointer ABI)+ lambda 作参数(单身份擦除);容器与
-composite key(set_ik/concat_i64);builtin:println/print/assert(_eq/_ne)/
-panic/typeof/IsNil;模块:os/time/env/math/fs/process/datetime/io.std;
-nil/Bool 值化比较、跨块 builtin ref 回溯。VM:CallMethodK 免装箱方法调用
-+ DetachedStr 免分配分派。
+标量/控制流/直接调用单态化;**一等函数值**:零捕获去虚化、多身份克隆
+特化、捕获闭包作参数(调用点解析 env)、返回闭包(静态摘要)、list HOF
+(fn-pointer ABI);容器 + composite key + **list display**;builtin:
+println/print/assert(_eq/_ne)/panic/typeof/IsNil;模块:os/time/env/math/
+fs/process/datetime/io.std;跨块 builtin/closure ref 回溯(Move/Move2)。
+限制:cell **内容**跨块不流动(分支/循环中创建或变异的捕获闭包拒绝)、
+容器相等、json。VM:CallMethodK 免装箱 + DetachedStr 免分配分派。
 
-## 下一轮计划(已定)
+## 下一轮候选(按解锁面排序)
 
-1. **list display 格式化**(`println("{}", list)`):iter_sugar、
-   for_loop_patterns 等多个 example 的公共依赖;lkrt 递归格式化 helper +
-   lower display 分派,先做。
-2. **一等函数值收官**:多身份 lambda 参数(按身份克隆特化)→ 捕获闭包作
-   参数 → 返回闭包(运行时 env+fn 指针)。
+1. **list/容器结构相等**(`xs == [1,2]`):closure.lk 全文件的最后一块;
+   heap-const list 物化 + lkrt eq helper + CmpInt 容器分派。
+2. **跨块 cell 状态**(cell 并入 Braun 虚拟槽做 phi):解锁分支/循环内
+   的捕获闭包,Ssa 通用化改造。
+3. VM dispatch 密度专项(fraud/cart 剩 2.0x/2.3x 的本质差距,重大专项)。
+4. json/动态 tagged 值(独立立项)、Move 消除(上限 6-8%)、
+   histogram AOT 1.04x、clippy `--all-targets`(剩 ~33 条 test lint)。
 
-## 待办(需专门轮次)
+## 数据驱动判定存档(仍有效)
 
-1. **VM 剩余性能差距(数据驱动重定位,2026-07-02)**:fraud 现在
-   16ms/2.99M steps ≈ **5.4ns/步**,方法调用净成本已 ~25ns(starts_with
-   微基准 350→25ns,inline cache 边际收益不足,判定不做);interning
-   (任务24)profile 显示 `heap_clones=0` **无收益,判定不做**;Move 仍占
-   16% 步数但都是廉价操作,消除上限 ~6-8%(任务25 保留,README 反例
-   多)。真正接近 Lua 需要 dispatch 密度级架构(超级指令/计算 goto/寄存
-   器分配),属重大专项。
-2. **MIR 一等函数值(剩余)**:本 session 已落地"零捕获 lambda 作参数"
-   (参数擦除特化:全部调用点同一 lambda 身份 → callee 入口播种静态 ref;
-   `sig.lambda_params`,不同身份 conflict 回退)。剩余:**多身份**(需按
-   lambda 身份克隆特化函数体)、捕获闭包作参数(env 也要传)、返回闭包
-   (运行时闭包表示:env 结构 + fn 指针)。closure.lk 4/5 节依赖多身份。
-   注:str/mixed list HOF 扩展经评估**不是**独立解锁路径——
-   list_iter_sugar/iter_pipeline 还需要 iter 模块函数 + **list display
-   格式化**(`println("{}", list)`)+ 嵌套 list,应并入本项整体规划。
-3. examples 覆盖长尾:json(动态嵌套值,子集外——需运行时动态值表示,
-   单独立项)、stream/tcp_demo(句柄+bytes 流)、LoadHeapConst 常量
-   混合容器、match/struct/NewRange、iter/list_iter_sugar(HOF over
-   str/mixed list)。
-4. histogram_group_count AOT 仍 ≈1.04x(let-bound 模板 key 每迭代一次
-   分配),收益小,最低优先级。
-5. `.lkm` v6:CallMethodK 后旧 v5 artifact 被拒(设计如此);发布渠道如
-   有缓存 artifact 需重编译。
-
-## 上轮成果(仍有效)
-
-bench 全套 20 workload MIR 原生化;方法分派/bool map/void fn/模块
-builtin/可变全局;clang -O2 默认;`.lkm` v5(-83%);correctness CI
-(GC stress/sanitizer 差分/fuzz/Miri);budget 特化 dispatch(-6%);
-legacy text 后端已退役,MIR 唯一后端。
+方法调用净成本 ~25ns(inline cache 不做);interning `heap_clones=0`
+(不做);Move 占 16% 步数但廉价,消除上限 6-8%;`.lkm` v5 被 v6 干净
+拒绝(设计如此)。
