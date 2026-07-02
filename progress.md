@@ -1,7 +1,9 @@
 # 实现进度
 
-**当前**:"先补再删"轮**已完成**——MIR 补形状后 legacy text 后端整体退役,
-workspace **1460 测试全绿**(-4.8 万行,~240 legacy 测试退役)。
+**当前**:全量优化轮已完成(CI 化/-O2/模块 builtin/可变全局/方法分派/.lkm v5/
+budget 特化),**bench 全套 20 workload MIR 原生化,AOT/VM 几何平均 0.329x,
+20/20 checksum 一致**,workspace 1461 全绿。细节见 handoff.md。
+此前:"先补再删"轮——legacy text 后端整体退役(-4.8 万行)。
 
 ## "先补再删"轮(本轮)
 

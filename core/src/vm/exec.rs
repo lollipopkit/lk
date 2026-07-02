@@ -540,6 +540,22 @@ impl Executor {
         module: Option<&Module>,
         ctx: &mut Option<&mut VmContext>,
     ) -> Result<ReturnValues> {
+        // Monomorphize the dispatch loop on whether an instruction budget is
+        // active: only the WASM playground sets one, so direct execution
+        // should not pay a checked counter increment per instruction.
+        if self.instruction_budget.is_some() {
+            self.run_function_inner_impl::<true>(function, module, ctx)
+        } else {
+            self.run_function_inner_impl::<false>(function, module, ctx)
+        }
+    }
+
+    fn run_function_inner_impl<const BUDGETED: bool>(
+        &mut self,
+        function: &Function,
+        module: Option<&Module>,
+        ctx: &mut Option<&mut VmContext>,
+    ) -> Result<ReturnValues> {
         if self.register_count < function.register_count {
             bail!(
                 "executor frame has {} registers, function requires {}",
@@ -552,7 +568,9 @@ impl Executor {
         let code = &function.code;
         let mut profile = RuntimeProfileFrame::new();
         while self.pc < code.len() {
-            self.consume_instruction()?;
+            if BUDGETED {
+                self.consume_instruction()?;
+            }
             let instr = code[self.pc];
             let opcode = instr.opcode();
             profile.record_opcode(opcode, collect_metrics);
@@ -577,7 +595,9 @@ impl Executor {
                     if self.pc >= code.len() || code[self.pc].opcode() != Opcode::Move {
                         break;
                     }
-                    self.consume_instruction()?;
+                    if BUDGETED {
+                        self.consume_instruction()?;
+                    }
                 },
                 Opcode::Move2 => {
                     let first = *self.read_unchecked(instr.b());

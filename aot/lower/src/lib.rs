@@ -2132,7 +2132,10 @@ fn lower_inst(
                     args,
                 });
                 let nil = ssa.new_val();
-                insts.push(Inst::Const { dst: nil, value: Const::Nil });
+                insts.push(Inst::Const {
+                    dst: nil,
+                    value: Const::Nil,
+                });
                 ssa.write(dst_reg, block, (nil, Ty::Nil));
             } else {
                 let dst = ssa.new_val();
@@ -2419,8 +2422,8 @@ fn lower_inst(
                     // `Map<str,i64>` / `Map<i64,i64>` / `Map<str,f64>` / `Map<str,bool>`
                     // — keys uniformly string or int, values uniformly int, float, or
                     // bool. Other shapes (mixed, non-scalar values) fall back.
-                    let all_bool_vals = !entries.is_empty()
-                        && entries.iter().all(|(_, v)| matches!(v, ConstRuntimeValueData::Bool(_)));
+                    let all_bool_vals =
+                        !entries.is_empty() && entries.iter().all(|(_, v)| matches!(v, ConstRuntimeValueData::Bool(_)));
                     let all_str_keys = entries
                         .iter()
                         .all(|(k, _)| matches!(k, RuntimeMapKeyData::ShortStr(_) | RuntimeMapKeyData::String(_)));
@@ -3318,7 +3321,10 @@ fn lower_method_call(
                 args: vec![receiver, *key, *value],
             });
             let nil = ssa.new_val();
-            insts.push(Inst::Const { dst: nil, value: Const::Nil });
+            insts.push(Inst::Const {
+                dst: nil,
+                value: Const::Nil,
+            });
             (nil, Ty::Nil)
         }
         (Ty::MapStrF64, "set", [(key, Ty::Str), (value, Ty::F64)]) => {
@@ -3328,7 +3334,10 @@ fn lower_method_call(
                 args: vec![receiver, *key, *value],
             });
             let nil = ssa.new_val();
-            insts.push(Inst::Const { dst: nil, value: Const::Nil });
+            insts.push(Inst::Const {
+                dst: nil,
+                value: Const::Nil,
+            });
             (nil, Ty::Nil)
         }
         // `xs.contains(v)` on typed lists (fcmp semantics for f64, like the VM).

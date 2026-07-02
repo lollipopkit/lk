@@ -1,41 +1,49 @@
 # Handoff
 
-**本轮:"先补再删"完成** —— MIR 补齐 println/print/assert/长字符串/TestEqIntI2 形状后,
-**legacy text 后端整体退役**(净 -4.8 万行)。`cargo test --workspace --all-features`
-**1460 passed / 0 failed**(约 240 个 legacy 测试随后端退役)。细节见 `progress.md`。
+**本轮:九项计划全部执行完毕**(CI 化 / -O2 / 模块 builtin / .lkm 体积 /
+死代码 / fuzz 扩形状 / AOT 基线 / budget 特化 / 方法分派),其中 24/25
+(字符串 interning、循环 Move 消除)以评估落档待专门轮次。
+workspace **1461 passed / 0 failed**。
 
-## 现状架构
+## 里程碑
 
-- **MIR 管线是唯一 AOT 后端**:`ModuleArtifact → lk-aot-lower →
-  lk_aot_mir::validate(生产路径强制)→ lk-aot-codegen → clang + liblkrt.a`。
-  MIR 拒绝即响亮失败(带 `Unsupported` reason);无 fallback、无 VM shell。
-  `use_mir_pipeline`/`allow_legacy_fallback`/`LK_AOT_MIR`/`LK_AOT_LEGACY` 全部移除。
-- **本轮新增 MIR 形状**:`LoadHeapConst` 长字符串;`GetGlobal` runtime builtin
-  (`println`/`print`/`assert`)——常量格式串在 lower 期按 `format_variadic_runtime`
-  精确展开(`{}` 消耗、缺参保字面、多参空格追加;唯一运行时歧义 case 拒绝),
-  循环外提的格式串靠只读到达定义回溯(`reg_const_str`,穿 phi 防环)恢复;
-  `TestEqIntI2` 双寄存器 fused 比较(MIR 加 `BoolAnd`)。
-- **本轮发现并修复的分歧**:native abort 丢弃 C stdio 缓冲的 stdout(assert
-  失败/除零后已打印内容消失,VM 保留)→ 所有 abort 路径统一走 `lkrt_abort`
-  (`fflush(NULL)` 后 abort),codegen `Term::Abort` 同步。差分用例
-  `assert_false_after_output`/`div_zero_after_output` 锁定。
-- **覆盖现状**:手写差分 7 组(新增 builtins 16 例);fuzz 92%
-  可比较(println 形状入生成器);examples 3/44(长尾在模块 builtin:
-  `os.clock`/`math.*`、closures、NewObject 等);bench 全套 AOT 仍 skip
-  (第一个卡点 `os.clock`)。
-- lkrt:legacy 线性容器 helper(containers.rs ~2000 行)+ abi schema 60 条一并删除;
-  新增 `lkrt_abort`/`lkrt_assert`/`lkrt_assert_msg`。
+- **bench 全套 20 workload 通过 MIR 编译为 native,20/20 checksum 与 VM
+  一致;dist 单样本 AOT/VM 几何平均 0.329x**(退役 legacy 历史值 0.331x,
+  现在还带 -O2)。标量/控制流 workload 0.02–0.19x;5 个动态字符串键 map
+  workload 慢 2.0–3.5x(lkrt string-map 每操作全局锁 arena 注册 +
+  CStr→String 转换,下一个 native 性能靶)。
+- MIR 本轮新形状:方法分派(`__lk_call_method` → str.starts_with/map
+  get/set/list.contains,经 ArgList 免物化参数包)、Map<str,bool>+MaybeBool、
+  void 用户函数、模块 builtin(os/time/env/math)、可变标量全局(entry 前缀
+  初始化守卫)、ForLoopI/Move2/融合算术族、Get/SetIndexStrI、动态字符串键
+  map 读写、ListStr push、Maybe↔标量 phi 边转换(MaybeValue/MaybeWrap)、
+  Maybe display(Select)、Str/句柄参数与 Str 返回。
+- clang **-O2 默认生效**(--skip-opt→-O0);fib(32) 17ms→12ms。
+- `.lkm` v5:facts 稀疏编码 + compact JSON(bench 577KB→98KB,-83%)。
+- CI:`.github/workflows/correctness.yml`(nightly GC stress / sanitizer
+  差分 / 新种子放大 fuzz / Miri lkrt)。
+- VM:dispatch 主循环按 instruction budget 单态化(非 WASM 路径去掉每指令
+  计数),本地 min 对 min 约 -6%,无回归。
+- fuzz 扩形状(range-for/动态模板键 map/str list/随机格式串轰炸),
+  ~99% 用例可 native 比较;差分新增 modules 组 12 例。
+- 本轮差分/CLI 测试抓到并修复:emit 隐式 nil 返回被拒(void 函数支持)、
+  `return nil` 的 lower panic(totality 违约)、GetIndex bool map 缺口、
+  融合算术不 unwrap Maybe。
 
-## 剩余(阶段 4 / 后续)
+## 待办(需专门轮次)
 
-1. **模块 builtin 下降**(`os.clock`/`math.floor` 等 GetGlobal+GetIndex+Call 形状)——
-   bench 全套 AOT 与 examples 覆盖的最大头。
-2. 阶段 4:闭包/间接调用/可变全局/`__lk_call_method` 方法分派。
-3. 混合元素常量容器(`[1, true, "s"]`)。
-4. 性能项(plan.md「非本轮」):clang `-O2`(现在只有 MIR 管线,阻碍已清)、AOT 基线重测。
+1. **lkrt string-map 性能**:arena 注册免锁/临时 key 不进 arena、map hasher
+   换 fxhash——目标把 5 个 map workload 的 AOT 拉回 <1x。
+2. **VM 字符串 interning/hash 缓存**(任务24):触碰 heap/eq/GC 全链路,
+   需在有 Lua 门禁的环境做 wall-clock 判定(本机无 Lua、噪声 ±20%)。
+3. **VM 循环体 Move 消除**(任务25):phi/loop-carried slot lowering,
+   同样需要门禁环境;README 记录的历史反例多,须小步验证。
+4. bench runner 本机无 Lua;RUN_AOT=1 的 runner 路径用 target/release
+   (非 dist),后续对齐。
+5. examples 覆盖 3/44:长尾在 assert_eq/typeof/match/closure/struct。
 
-## 上轮(正确性加固)成果仍然有效
+## 上两轮成果(仍有效)
 
-bytecode verifier、facts 序列化(artifact v4)、GC stress、三大差分语料、
-sanitizer/Miri 接入、docs/semantics.md。Makefile:`miri-lkrt` /
-`sanitized-differential` / `gc-stress`。
+正确性:bytecode verifier、facts 序列化(v4→v5)、GC stress、三大差分
+语料、sanitizer/Miri、docs/semantics.md。架构:legacy text 后端已退役
+(-4.8 万行),MIR 唯一后端,无 fallback。
