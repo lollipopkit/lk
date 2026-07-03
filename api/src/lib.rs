@@ -45,6 +45,25 @@ impl Vm {
         }
     }
 
+    /// Create a sandboxed VM: only the core builtins (`println`/`pcall`/`typeof`/
+    /// …) and the explicitly allowed stdlib modules are registered. OS-capable
+    /// modules (`fs`/`net`/`process`/…) are withheld unless named, so untrusted
+    /// scripts cannot reach them — the module-whitelist knob of the sandbox model
+    /// (plan M2.6). Combine with [`with_fuel`](Self::with_fuel) for a bounded,
+    /// capability-restricted instance.
+    pub fn sandboxed(allow_modules: &[&str]) -> Self {
+        let mut registry = ModuleRegistry::new();
+        lk_stdlib::register_stdlib_core_globals(&mut registry);
+        let names: Vec<String> = allow_modules.iter().map(|m| (*m).to_string()).collect();
+        lk_stdlib::register_stdlib_modules_named(&mut registry, &names)
+            .expect("named stdlib registration should not fail");
+        Self {
+            registry: Some(registry),
+            ctx: None,
+            fuel: None,
+        }
+    }
+
     /// Bound execution to `budget` instructions (fuel). Beyond it the VM aborts
     /// with a step-limit error instead of running unbounded (sandbox, plan M2.6).
     pub fn with_fuel(mut self, budget: u64) -> Self {
@@ -131,6 +150,15 @@ mod tests {
         let mut vm = Vm::new();
         vm.register_fn("host_add100", 1, host_add100);
         assert_eq!(vm.eval("return host_add100(5);").unwrap(), "105");
+    }
+
+    #[test]
+    fn sandbox_allows_whitelisted_modules_only() {
+        // `math` is allowed; `fs` is withheld.
+        let mut vm = Vm::sandboxed(&["math"]);
+        assert_eq!(vm.eval("use math; return math.max(3, 7);").unwrap(), "7");
+        let denied = Vm::sandboxed(&["math"]).eval("use fs; return fs.exists(\"/\");");
+        assert!(denied.is_err(), "fs must be unavailable in a math-only sandbox");
     }
 
     #[test]
