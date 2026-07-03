@@ -170,7 +170,12 @@
       `map_native_error` 透传(如 LanguageRaise),`pcall` 经 `root_cause().downcast` 取回→`[false, v]`(原值原型)。
       验证:`error(404)`→pcall `[false, 404]`(**Int**,typeof=Int);`error("nope")`→String;
       `examples/syntax/pcall_error.lk` 断言 `coded[1]==404`。**全量 1484 tests 0 失败,0 回退**。
-      **待做**:① 堆对象一等值(需 GC rooting 跨展开);② 结构化 traceback(需 call-frame 追踪入热路径)。
+      **traceback 地基已落地**:`Function` 加 `debug_name: Option<Arc<str>>`,命名 `fn` 编译时把源码名下沉进
+      字节码(`compile_function_body`),`FunctionData` 序列化 + artifact 版本 6→7;执行器不读 → **调用热路径零开销**。
+      往返测试证明 `fn greet(){}`→module.debug_name==greet 且经 `.lkm` 序列化+解码后仍在。**1486 tests 0 失败**。
+      **待做(显示端,专注会话)**:① 堆对象一等值(需 GC rooting 跨展开);② traceback **显示**——两条路都被真实约束卡住:
+      走错误展开(anyhow context)会改 `err.to_string()`,**波及全仓 111 处错误字符串断言**;走 ctx 帧栈(`push_call_frame`
+      已存在但死)则每次调用 push/pop 撞 **perf 硬门禁**。需连同错误显示契约(CLI `{:#}` 全链)+ 那批断言一次性重做。
 - [x] **M2.3** fatal guard 可 `pcall` 捕获 —— **基本达成**。调查+改动:**除零**本就是可捕获 Err;
       **assert/assert_eq/assert_ne** 从 Rust `panic!`(abort,不可捕获)改为返回 `Err`(可捕获,
       未捕获仍非零退出且**消除 panic backtrace 噪声**);**缺键/越界**返回 nil(非 fatal,无需捕获);
