@@ -510,7 +510,7 @@ fn assert(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Runti
     } else {
         "assertion failed".to_string()
     };
-    panic_runtime_message(message);
+    Err(anyhow!("{message}"))
 }
 
 fn assert_eq(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
@@ -526,7 +526,7 @@ fn assert_eq(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Ru
         message.push_str(" - ");
         message.push_str(&runtime_display(extra, runtime)?);
     }
-    panic_runtime_message(message);
+    Err(anyhow!("{message}"))
 }
 
 fn assert_ne(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
@@ -540,7 +540,7 @@ fn assert_ne(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Ru
         message.push_str(" - ");
         message.push_str(&runtime_display(extra, runtime)?);
     }
-    panic_runtime_message(message);
+    Err(anyhow!("{message}"))
 }
 
 fn expect_assert_args(args: NativeArgs<'_>, min: usize, max: usize, name: &str) -> Result<()> {
@@ -559,13 +559,6 @@ fn expect_assert_args(args: NativeArgs<'_>, min: usize, max: usize, name: &str) 
 
 fn assert_truthy(value: &RuntimeVal) -> bool {
     !matches!(value, RuntimeVal::Nil | RuntimeVal::Bool(false))
-}
-
-fn panic_runtime_message(mut message: String) -> ! {
-    let bt = std::backtrace::Backtrace::force_capture();
-    message.push_str("\nBacktrace:\n");
-    message.push_str(&format!("{}", bt));
-    panic!("{}", message);
 }
 
 fn spawn(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {

@@ -132,7 +132,11 @@
       ③ fatal guard(div/0/缺键/assert)走 abort,需改为可 `pcall` 捕获(M2.3)。
       → M2.1 落地=加 `pcall`/`error` 内建 + 扩 `Raise`/`ErrorVal` 载任意值 + 桥接现有 TryBegin/handler。多小时活。
 - [ ] **M2.2** 错误为一等值（可携带任意 lk 值）+ 栈展开前采集结构化 traceback。
-- [ ] **M2.3** fatal guard（div/0、缺键、assert）从 abort 改为可 `pcall` 捕获的可恢复错误。
+- [x] **M2.3** fatal guard 可 `pcall` 捕获 —— **基本达成**。调查+改动:**除零**本就是可捕获 Err;
+      **assert/assert_eq/assert_ne** 从 Rust `panic!`(abort,不可捕获)改为返回 `Err`(可捕获,
+      未捕获仍非零退出且**消除 panic backtrace 噪声**);**缺键/越界**返回 nil(非 fatal,无需捕获);
+      **panic** 保持故意 fatal(`error()` 是可捕获替代)。**验证**:pcall 捕获 assert/除零;未捕获 assert
+      exit=1「VM execution failed」;**全量 1479 tests / 0 failed(0 回归)**。
 - [ ] **M2.4** `try`/`?` 语法糖。
 - [ ] **M2.5** VM 改 stackless（trampoline `Sequence::step`）——大工程，落地时再拆子步。
 - [ ] **M2.6** fuel（`step(fuel)` 中断）/ 内存上限（allocator 计账）/ 模块白名单。
