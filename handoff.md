@@ -20,8 +20,20 @@
 - **fuel 已实现**(`execute_program_with_ctx_and_budget`,wasm 在用)→ M2.6 经 `LK_FUEL` 暴露。
 - 无 `try`/`catch` 前端(`?` 仅 optional 类型);无 `lk fmt` 格式化器;包管理是中心化 registry(M5.4 要移除)。
 
-## 剩余(均多小时/多天专注工程,「暴露快赢」已用尽)
-- **M0.1 关键路径**:选项 **A**(trait 反转 callable 断 val→vm)——深改 call 热路径+GC。**待用户定 A/B/C**。
+## 🎉 M0.1 突破(本会话 fix-forward 攻破关键路径)
+**`lk-values` L0 crate 已抽取**(commit a702c88):前端值/类型模型(LiteralVal/Type/ShortStr/
+ShortStrOrStr/FunctionNamedParamType/NumericClass/NumericHierarchy)独立成 crate,`core::val` 经
+`pub use lk_values::{…}` 再导出→全 core 路径不变。workspace `-D warnings` 0/0、wasm32 编译、tests 全绿。
+- 前置子步(均已 push):val→typ 解耦 → 分离前端/运行时值模型 → 抽 crate。
+- **范围收敛**:L0 装**前端/编译期模型**(干净);**运行时模型**(RuntimeVal/HeapValue/CallableValue+资源句柄)
+  因内嵌 vm callable 留 core。
+
+## 剩余(均多小时/多天专注工程)
+- **lk-values 真 no_std**(M0.8,清晰下一步):`#![no_std]`+alloc;障碍已勘清——`std::fmt`→`core::fmt`、
+  `std::sync::Arc`→`alloc::sync::Arc`、`std::str`→`core::str`(机械);`std::collections::HashMap` 2 处
+  (含 `Type::substitute` 公共 API 参数,9 调用点)→ hashbrown(有涟漪);`use anyhow::Result` 疑似死 import。
+- **callable trait 反转(A)**:让运行时模型也能 L0——深改 call 热路径+GC(`RuntimeCallable` 内嵌
+  `Module`+`RuntimeModuleState`,executor 热路径直接访问),硬阻塞。
 - **M0.7–9** no_std 化 78k 行 core(tokio + 102 use std 需 feature-gate)。
 - **M2.2**(error 载一等值 + traceback:`push_call_frame` 未接入执行,需入 call 热路径,perf 敏感)、
   **M2.4**(try/? 糖:parser+lowering)、**M2.5**(stackless VM 重写)。
