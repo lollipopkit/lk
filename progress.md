@@ -61,6 +61,13 @@
       core 编译 0 warning、`cargo test -p lk-core` 950 passed / 0 failed。**G3 清除。**
       *(注：将来若实现逃逸分析分配，须按 plan 走实例化 arena，不得再引入 thread_local。)*
 - [ ] **M0.5** 消除 G2（tokio 运行时）→ 收进实例；no_std 走 HAL/feature-gate。
+      **可行性勘察（本轮）**：native 函数 ABI **已**接收 `NativeRuntime`，可 `runtime.ctx() -> &VmContext`
+      （见 `stdlib/src/lib.rs::spawn`）——穿线基础设施部分就位。但 `GLOBAL_RUNTIME`
+      （`rt/runtime.rs:420` tokio 执行器）**仍是真全局**，`VmContext.shallow_clone_shared_runtime`
+      指的是 runtime_globals（值），非 tokio。落地要点：① VmContext 加 `Arc<tokio::Runtime>` 字段；
+      ② 改 `rt::with_runtime` 的 ~30 调用点（core + task/chan/net/time/stream/stdlib 共 9 crate）
+      从 ctx 取 runtime；③ 处理无 ctx 分支（`new_without_core_vm_builtins`）；④ 全量测试 + async
+      正确性 + 无 perf 回归。**大步：落地时先拆子步**（先加字段并双写→逐 crate 迁调用点→删全局）。
 - [ ] **M0.6** 消除 G4/G5（lkrt thread_local）→ 实例传递，守住 lkrt 边界铁律。
 - [ ] **M0.7** core 机械换 `core::`/`alloc::`（fmt/ops/mem/cmp/pin/collections），std-only 路径 feature-gate。
 - [ ] **M0.8** `lk-vm-core` 加 `#![no_std]` + `extern crate alloc`，std 部分门控到 `std` feature。
