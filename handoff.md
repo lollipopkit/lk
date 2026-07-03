@@ -27,19 +27,23 @@
   (仅自测用),删除;保留在用的 `AllocationRegion`/`RegionPlan`。`cargo test -p lk-core` **950 passed**。
 - 全局状态 **5 → 3**(剩 G2、G4、G5)。两处易摘的死代码已清完。
 
-## 下一步:G2 是「大步」(勘察已记 progress.md M0.5)
-**G2** `rt/runtime.rs::GLOBAL_RUNTIME`(tokio 执行器)是**活代码**,~30 调用点跨 9 crate。
-基础设施部分就位(native 函数已可 `NativeRuntime::ctx() -> &VmContext`),但落地需:
-VmContext 加 `Arc<tokio::Runtime>` + 迁 30 调用点 + 处理无 ctx 分支 + 全量 async 测试/perf。
-**并含设计权衡**:每 VM 独立 tokio 反应堆 vs 进程共享反应堆(仅 VM 堆/状态隔离)——
-影响 M3 isolate 语义,需定夺。其后 G4/G5(lkrt)、M0.1 抽 `lk-values`(与 RuntimeVal 迁移合流)
-均为大步,须先拆子步、先跑通编译再迁逻辑。
+- **M0.5 消除 G2**(本轮大步,已完成):`static GLOBAL_RUNTIME`(tokio)→ 新
+  `rt::AsyncRuntimeHandle`(`Send+Sync` 可共享 `Arc`,懒初始化)收进 `VmContext`;
+  `shallow_clone_shared_runtime` 克隆共享 → spawn 子任务/克隆同一反应堆(选项 A,用户已定)。
+  迁 ~30 调用点跨 9 crate;自由 helper 加 handle 参数;CLI init 改懒、shutdown→ctx。
+  **验证**:workspace `-D warnings` 0/0、**全量 1478 tests 0 failed**、fmt+clippy 0、
+  `concurrency_demo.lk` 端到端 chan 往返正确(共享反应堆语义验证)。
+- 全局状态 **5 → 2**(剩 **G4/G5** = lkrt thread_local)。
+
+## 下一步:Phase M0 续
+- **G4/G5**:`lkrt/state.rs` RUNTIME、`lkrt/abi.rs` LAST_ERROR(lkrt 是 AOT native 运行时,
+  thread_local 或本就合理,评估后再定是否迁移;守 lkrt 边界铁律)。
+- **M0.1 抽 `lk-values`**(与 RuntimeVal 迁移合流,大步先拆子步)、M0.7/M0.8 no_std 化。
+- 原则:严格按 Phase 顺序;大步先拆子步、先跑通编译再迁逻辑;改动 async 用全量测试+端到端 .lk 核对。
 
 ## 护栏(每步 exit gate,不回退基线)
-workspace 95 套 / 三套差分(手工 13 组)/ fuzz 7 种子 / ASan+UBSan / Miri lkrt 25 /
-fmt+clippy 0 / AOT bench 20/20 checksum、**VM/Lua≈1.008x、AOT/LK≈0.259x**。
-原则:严格按 Phase 顺序;渐进抽离 crate 不重排 workspace;动代码即跑对应测试+全量门禁。
+全量 workspace tests 绿(现 1478)/ 三套差分 / fuzz / ASan+UBSan / Miri lkrt /
+fmt+clippy 0 / AOT bench checksum、**VM/Lua≈1.008x、AOT/LK≈0.259x**(G2 非热路径,bench 不受影响)。
 
-## git
-在 dev(6427901「md」= plan.md 改动)。plan.md 本轮又改了 Caveats(已核实事实),
-progress.md 新建、handoff.md 刷新——待与用户确认后 commit。
+## git(dev,每步 commit+push)
+已推送:a4ad78a(G1)、2ac2bd5(G3)、31e2117+c25e94b(docs)。本轮 G2 待提交推送。

@@ -6,7 +6,6 @@ use std::{
 
 use lk_core::{
     module::ModuleRegistry,
-    rt,
     stmt::ModuleResolver,
     syntax::{ParseOptions, parse_program_source},
     typ::TypeChecker,
@@ -128,7 +127,7 @@ impl ReplSession {
 
 impl Drop for ReplSession {
     fn drop(&mut self) {
-        rt::shutdown_runtime();
+        self.vm.ctx().shutdown_async_runtime();
     }
 }
 

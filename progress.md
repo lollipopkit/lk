@@ -21,7 +21,7 @@
   | # | 位置 | 内容 | 迁移方向 |
   |---|---|---|---|
   | ~~G1~~ | ~~`core/src/expr/expr_impl.rs`~~ | ~~`once_cell::Lazy<DashMap>` 缓存~~ | ✅ 已删(死代码,M0.3) |
-  | G2 | `core/src/rt/runtime.rs:6` | `once_cell::Lazy` + tokio 异步运行时状态 | 收进实例；no_std 下走 HAL |
+  | ~~G2~~ | ~~`core/src/rt/runtime.rs`~~ | ~~`once_cell::Lazy` + tokio 异步运行时状态~~ | ✅ 已移入 VmContext(M0.5) |
   | ~~G3~~ | ~~`core/src/vm/alloc.rs`~~ | ~~`thread_local! TLS_ARENA`（RegionAllocator）~~ | ✅ 已删(死代码,M0.4) |
   | — | `core/src/vm/analysis.rs:827` | `#[cfg(test)]` metrics thread_local | 测试专用，**不计** |
   | G4 | `lkrt/src/state.rs:11` | `thread_local! RefCell<RuntimeState>` | 实例传递（lkrt 边界铁律） |
@@ -60,14 +60,17 @@
       `RegionAllocator` 整体，保留在用的 `AllocationRegion`/`RegionPlan`（逃逸分析规划类型）。
       core 编译 0 warning、`cargo test -p lk-core` 950 passed / 0 failed。**G3 清除。**
       *(注：将来若实现逃逸分析分配，须按 plan 走实例化 arena，不得再引入 thread_local。)*
-- [ ] **M0.5** 消除 G2（tokio 运行时）→ 收进实例；no_std 走 HAL/feature-gate。
-      **可行性勘察（本轮）**：native 函数 ABI **已**接收 `NativeRuntime`，可 `runtime.ctx() -> &VmContext`
-      （见 `stdlib/src/lib.rs::spawn`）——穿线基础设施部分就位。但 `GLOBAL_RUNTIME`
-      （`rt/runtime.rs:420` tokio 执行器）**仍是真全局**，`VmContext.shallow_clone_shared_runtime`
-      指的是 runtime_globals（值），非 tokio。落地要点：① VmContext 加 `Arc<tokio::Runtime>` 字段；
-      ② 改 `rt::with_runtime` 的 ~30 调用点（core + task/chan/net/time/stream/stdlib 共 9 crate）
-      从 ctx 取 runtime；③ 处理无 ctx 分支（`new_without_core_vm_builtins`）；④ 全量测试 + async
-      正确性 + 无 perf 回归。**大步：落地时先拆子步**（先加字段并双写→逐 crate 迁调用点→删全局）。
+- [x] **M0.5** 消除 G2（tokio 运行时）→ **已收进 VmContext 实例**（选项 A：可共享 `Arc`）。
+      新 `rt::AsyncRuntimeHandle`（`Arc<Mutex<Option<Arc<Runtime>>>>`，`Send+Sync`，懒初始化）替代
+      `static GLOBAL_RUNTIME`；VmContext 持有该 handle，`shallow_clone_shared_runtime` **克隆共享**
+      → spawn 子任务/克隆上下文同一反应堆。`NativeRuntime::async_runtime()` 从 ctx 取 handle
+      （无 ctx 则独立默认）。迁移 ~30 调用点跨 9 crate（core/chan/task/net/time/stream/stdlib/cli）；
+      自由 helper（`spawn_timer`/`recv_channel_blocking*`）加 handle 参数向下穿线，async 块捕获
+      `Send` handle clone；CLI `init_runtime` 改懒初始化删除、`shutdown_runtime`→`ctx.shutdown_async_runtime()`；
+      往返测试改共享 `VmContext`（贴近真实执行，native 调用总有 ctx）。
+      **验证**：`cargo build --workspace -D warnings` 0/0；全量 **1478 tests / 0 failed**；
+      fmt+clippy 0；**`concurrency_demo.lk` 端到端 chan create→send→recv 正确**（共享反应堆语义验证）。
+      *(反应堆粒度：共享 Arc，每 VM 独立 vs 进程共享的策略推迟到 M3 builder；性能上共享 A 在多 VM 严格更优。)*
 - [ ] **M0.6** 消除 G4/G5（lkrt thread_local）→ 实例传递，守住 lkrt 边界铁律。
 - [ ] **M0.7** core 机械换 `core::`/`alloc::`（fmt/ops/mem/cmp/pin/collections），std-only 路径 feature-gate。
 - [ ] **M0.8** `lk-vm-core` 加 `#![no_std]` + `extern crate alloc`，std 部分门控到 `std` feature。

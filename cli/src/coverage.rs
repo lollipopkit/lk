@@ -3,7 +3,6 @@ use std::path::Path;
 
 use anyhow::Context;
 use lk_core::{
-    rt,
     stmt::Program,
     syntax::{ParseOptions, parse_program_source},
     vm::{
@@ -24,7 +23,7 @@ pub(crate) fn run_coverage_report(path: &Path, disassemble: bool, runtime: bool)
         let result = program
             .execute_with_ctx(&mut ctx)
             .with_context(|| format!("execute {} for runtime coverage", path.display()))?;
-        rt::shutdown_runtime();
+        ctx.shutdown_async_runtime();
         print_static_coverage(path, &result.module);
         if disassemble {
             println!("{}", lk_core::vm::disassemble_module(&result.module));

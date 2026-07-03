@@ -5,7 +5,6 @@
 
 use anyhow::{Result, anyhow, bail};
 use lk_core::{
-    rt,
     val::{HeapStore, HeapValue, RuntimeVal, TaskValue},
     vm::{NativeArgs, NativeRuntime},
 };
@@ -25,7 +24,9 @@ impl TaskModule {
     #[stdlib_export(name = "await", params(task: Task), returns = Any)]
     fn task_await(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let task = task_arg(args.get(0).expect("checked arity"), runtime.heap(), "task.await()")?;
-        let value = rt::with_runtime(|rt| rt.block_on(rt.join_task(task.id)))
+        let value = runtime
+            .async_runtime()
+            .with(|rt| rt.block_on(rt.join_task(task.id)))
             .map_err(|err| anyhow!("Failed to await task: {err}"))?;
         value.into_value(runtime.heap_mut())
     }
@@ -47,7 +48,9 @@ impl TaskModule {
         let mut values = Vec::with_capacity(args.len());
         for arg in args.as_slice() {
             let task = task_arg(arg, runtime.heap(), "task.join_all()")?;
-            let value = rt::with_runtime(|rt| rt.block_on(rt.join_task(task.id)))
+            let value = runtime
+                .async_runtime()
+                .with(|rt| rt.block_on(rt.join_task(task.id)))
                 .map_err(|err| anyhow!("Failed to await task: {err}"))?;
             values.push(value.into_value(runtime.heap_mut())?);
         }
@@ -56,19 +59,21 @@ impl TaskModule {
     }
 
     #[stdlib_export(name = "sleep", params(ms: Int | Float), returns = Nil)]
-    fn sleep(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+    fn sleep(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let duration_ms = numeric_millis(args.get(0).expect("checked arity"), "task.sleep()")?;
         if duration_ms < 0 {
             bail!("task.sleep() duration must be non-negative");
         }
-        rt::with_runtime(|rt| {
-            let duration = std::time::Duration::from_millis(duration_ms as u64);
-            rt.block_on(async {
-                tokio::time::sleep(duration).await;
-                Ok(RuntimeVal::Nil)
+        runtime
+            .async_runtime()
+            .with(|rt| {
+                let duration = std::time::Duration::from_millis(duration_ms as u64);
+                rt.block_on(async {
+                    tokio::time::sleep(duration).await;
+                    Ok(RuntimeVal::Nil)
+                })
             })
-        })
-        .map_err(|err| anyhow!("Failed to sleep: {err}"))
+            .map_err(|err| anyhow!("Failed to sleep: {err}"))
     }
 
     #[stdlib_export(name = "spawn_blocking", params(f: Fn), returns = Task)]

@@ -13,7 +13,6 @@ use lk_core::{
     macro_system::{AstMacroOrigin, MacroTokenOrigin, ProcMacroDependency},
     module::ModuleRegistry,
     package::{PackageGraph, PackageModule},
-    rt,
     stmt::{ModuleResolver, import::collect_program_imports},
     syntax::{
         expand_program_source, macro_origin_note_for_span, parse_program_source, render_program, render_tokens,
@@ -620,9 +619,6 @@ fn main() -> anyhow::Result<()> {
     if safe.extension().and_then(|ext| ext.to_str()) == Some("lkm") {
         let input =
             String::from_utf8(raw).map_err(|e| anyhow::anyhow!("Input file is not valid UTF-8 LK module: {}", e))?;
-        if let Err(e) = rt::init_runtime() {
-            diagnostic::warning(format_args!("Failed to initialize runtime: {}", e));
-        }
         let artifact =
             ModuleArtifact::from_json_str(&input).with_context(|| format!("decode Instr module {}", safe.display()))?;
         let mut base_env = build_vm_context(&safe)?;
@@ -630,7 +626,7 @@ fn main() -> anyhow::Result<()> {
         maybe_start_vm_profile(profile_enabled);
         let exec_result =
             execute_module_artifact_with_ctx(artifact, &mut base_env).with_context(|| "VM module execution failed");
-        rt::shutdown_runtime();
+        base_env.shutdown_async_runtime();
         let result = exec_result?;
         maybe_print_vm_profile(profile_enabled);
         if !result.first_return_is_nil() {
@@ -645,11 +641,6 @@ fn main() -> anyhow::Result<()> {
     #[cfg(feature = "llvm")]
     if try_execute_cached_native(&safe, input.as_bytes())? {
         return Ok(());
-    }
-
-    // Initialize runtime for concurrency if enabled
-    if let Err(e) = rt::init_runtime() {
-        diagnostic::warning(format_args!("Failed to initialize runtime: {}", e));
     }
 
     // Parse, expand macros, and execute as statements.
@@ -673,7 +664,7 @@ fn main() -> anyhow::Result<()> {
         .with_context(|| "VM execution failed");
 
     // Shutdown runtime after execution
-    rt::shutdown_runtime();
+    base_env.shutdown_async_runtime();
 
     let result = exec_result?;
     maybe_print_vm_profile(profile_enabled);

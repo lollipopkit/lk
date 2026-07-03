@@ -6,7 +6,7 @@ use std::sync::{
 use anyhow::{Result, anyhow, bail};
 use dashmap::DashMap;
 use lk_core::{
-    rt::{self, RuntimePayload},
+    rt::{AsyncRuntimeHandle, RuntimePayload},
     val::{CallableValue, HeapStore, HeapValue, RuntimeVal, ShortStr, StreamCursorValue, StreamValue, Type, TypedList},
     vm::{NativeArgs, NativeEntry, NativeRuntime, call_runtime_callable_runtime, call_runtime_value_runtime},
 };
@@ -384,7 +384,10 @@ struct ChannelCursor {
 
 impl StreamCursor for ChannelCursor {
     fn next(&mut self, runtime: &mut NativeRuntime<'_>) -> Result<Option<RuntimeVal>> {
-        match rt::with_runtime(|runtime| runtime.try_recv(self.channel_id))? {
+        match runtime
+            .async_runtime()
+            .with(|runtime| runtime.try_recv(self.channel_id))?
+        {
             Some((true, value)) => Ok(Some(value.into_value(runtime.heap_mut())?)),
             Some((false, _)) | None => Ok(None),
         }
@@ -611,7 +614,7 @@ fn next_block_cursor(cursor_id: u64, timeout_ms: Option<i64>, runtime: &mut Nati
     let Some(channel_id) = info.channel_id else {
         return next_cursor(cursor_id, runtime);
     };
-    let (ok, value) = recv_channel_blocking(channel_id, timeout_ms)?;
+    let (ok, value) = recv_channel_blocking(channel_id, timeout_ms, &runtime.async_runtime())?;
     let value = value.into_value(runtime.heap_mut())?;
     runtime_list(vec![RuntimeVal::Bool(ok), value], runtime.heap_mut())
 }
@@ -631,13 +634,14 @@ fn collect_block_cursor(
     };
     let mut out = Vec::new();
     let mut taken = 0i64;
+    let handle = runtime.async_runtime();
     loop {
         if let Some(limit) = limit
             && taken >= limit
         {
             break;
         }
-        let Some((ok, value)) = recv_channel_blocking_optional(channel_id, timeout_ms)? else {
+        let Some((ok, value)) = recv_channel_blocking_optional(channel_id, timeout_ms, &handle)? else {
             break;
         };
         if !ok {
@@ -649,13 +653,21 @@ fn collect_block_cursor(
     runtime_list(out, runtime.heap_mut())
 }
 
-fn recv_channel_blocking(channel_id: u64, timeout_ms: Option<i64>) -> Result<(bool, RuntimePayload)> {
-    Ok(recv_channel_blocking_optional(channel_id, timeout_ms)?.unwrap_or((false, RuntimePayload::nil())))
+fn recv_channel_blocking(
+    channel_id: u64,
+    timeout_ms: Option<i64>,
+    handle: &AsyncRuntimeHandle,
+) -> Result<(bool, RuntimePayload)> {
+    Ok(recv_channel_blocking_optional(channel_id, timeout_ms, handle)?.unwrap_or((false, RuntimePayload::nil())))
 }
 
-fn recv_channel_blocking_optional(channel_id: u64, timeout_ms: Option<i64>) -> Result<Option<(bool, RuntimePayload)>> {
+fn recv_channel_blocking_optional(
+    channel_id: u64,
+    timeout_ms: Option<i64>,
+    handle: &AsyncRuntimeHandle,
+) -> Result<Option<(bool, RuntimePayload)>> {
     use std::time::Duration;
-    let value = rt::with_runtime(|runtime| match timeout_ms {
+    let value = handle.with(|runtime| match timeout_ms {
         Some(ms) if ms > 0 => {
             let future = runtime.recv_async(channel_id);
             match runtime.block_on(async move { tokio::time::timeout(Duration::from_millis(ms as u64), future).await })

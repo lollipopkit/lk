@@ -327,6 +327,17 @@ impl<'a> NativeRuntime<'a> {
         self.ctx.as_deref()
     }
 
+    /// The async (tokio) runtime handle for this call, taken from the VM
+    /// context. Returns an independent handle when there is no context (e.g.
+    /// native-compilation shims), so callers never reach for a global.
+    #[inline]
+    pub fn async_runtime(&self) -> crate::rt::AsyncRuntimeHandle {
+        self.ctx
+            .as_deref()
+            .map(|ctx| ctx.async_runtime().clone())
+            .unwrap_or_default()
+    }
+
     #[inline]
     pub fn ctx_mut(&mut self) -> Option<&mut VmContext> {
         self.ctx.as_deref_mut()

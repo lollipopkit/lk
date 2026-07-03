@@ -29,6 +29,10 @@ pub struct VmContext {
     type_checker: Option<TypeChecker>,
     structs: FastHashMap<String, FastHashMap<String, Type>>,
     call_stack: Vec<CallFrameInfo>,
+    /// Per-context handle to the async (tokio) runtime. Replaces the former
+    /// process-global runtime; clones (spawned tasks, shallow clones) share the
+    /// same lazily-initialized reactor.
+    async_runtime: crate::rt::AsyncRuntimeHandle,
 }
 
 impl Default for VmContext {
@@ -66,6 +70,7 @@ impl VmContext {
             type_checker: None,
             structs: fast_hash_map_new(),
             call_stack: Vec::new(),
+            async_runtime: crate::rt::AsyncRuntimeHandle::new(),
         }
     }
 
@@ -87,7 +92,21 @@ impl VmContext {
             type_checker: self.type_checker.clone(),
             structs: self.structs.clone(),
             call_stack: self.call_stack.clone(),
+            // Share the same async runtime so spawned tasks run on one reactor.
+            async_runtime: self.async_runtime.clone(),
         }
+    }
+
+    /// Per-context async (tokio) runtime handle.
+    #[inline]
+    pub fn async_runtime(&self) -> &crate::rt::AsyncRuntimeHandle {
+        &self.async_runtime
+    }
+
+    /// Shut down this context's async runtime if it was initialized.
+    #[inline]
+    pub fn shutdown_async_runtime(&self) {
+        self.async_runtime.shutdown();
     }
 
     #[inline]

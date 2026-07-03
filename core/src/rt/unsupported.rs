@@ -38,17 +38,31 @@ impl RuntimePayload {
     }
 }
 
-pub fn init_runtime() -> Result<()> {
-    Ok(())
-}
+/// Stub async-runtime handle for builds without the `async-runtime` feature.
+///
+/// Mirrors the real `AsyncRuntimeHandle` API so `VmContext` and native call
+/// sites are feature-agnostic; every operation reports that async is
+/// unavailable rather than reaching for a global.
+#[derive(Clone, Default, Debug)]
+pub struct AsyncRuntimeHandle;
 
-pub fn shutdown_runtime() {}
+impl AsyncRuntimeHandle {
+    pub fn new() -> Self {
+        Self
+    }
 
-pub fn with_runtime<F, R>(_f: F) -> Result<R>
-where
-    F: FnOnce(&Runtime) -> Result<R>,
-{
-    Err(anyhow!("LK async runtime is not available in this build"))
+    pub fn init(&self) -> Result<()> {
+        Ok(())
+    }
+
+    pub fn with<F, R>(&self, _f: F) -> Result<R>
+    where
+        F: FnOnce(&Runtime) -> Result<R>,
+    {
+        Err(anyhow!("LK async runtime is not available in this build"))
+    }
+
+    pub fn shutdown(&self) {}
 }
 
 #[derive(Debug)]

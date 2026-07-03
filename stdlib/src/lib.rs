@@ -534,8 +534,10 @@ fn spawn(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Runtim
             Ok(RuntimePayload::new(result, heap))
         });
 
-    let task_id =
-        rt::with_runtime(|runtime| runtime.spawn(fut)).map_err(|error| anyhow!("Failed to spawn task: {}", error))?;
+    let task_id = runtime
+        .async_runtime()
+        .with(|runtime| runtime.spawn(fut))
+        .map_err(|error| anyhow!("Failed to spawn task: {}", error))?;
     Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::Task(Arc::new(
         TaskValue {
             id: task_id,
@@ -571,7 +573,9 @@ fn chan(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Runtime
         val::Type::Nil
     };
     let cap_opt = if capacity <= 0 { None } else { Some(capacity as usize) };
-    let channel_id = rt::with_runtime(|runtime| runtime.create_channel(cap_opt))
+    let channel_id = runtime
+        .async_runtime()
+        .with(|runtime| runtime.create_channel(cap_opt))
         .map_err(|error| anyhow!("Failed to create channel: {}", error))?;
     Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::Channel(Arc::new(
         ChannelValue {
@@ -587,7 +591,9 @@ fn send(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Runtime
     let values = args.as_slice();
     let channel_id = channel_id_arg(&values[0], runtime.heap(), "send first argument")?;
     let value = RuntimePayload::copy_from_value(&values[1], runtime.heap())?;
-    let sent = rt::with_runtime(|runtime| runtime.block_on(runtime.send_async(channel_id, value)))
+    let sent = runtime
+        .async_runtime()
+        .with(|runtime| runtime.block_on(runtime.send_async(channel_id, value)))
         .map_err(|error| anyhow!("Send operation failed: {}", error))?;
     Ok(RuntimeVal::Bool(sent))
 }
@@ -599,7 +605,9 @@ fn recv(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Runtime
         runtime.heap(),
         "recv first argument",
     )?;
-    let (ok, value) = rt::with_runtime(|runtime| runtime.block_on(runtime.recv_async(channel_id)))
+    let (ok, value) = runtime
+        .async_runtime()
+        .with(|runtime| runtime.block_on(runtime.recv_async(channel_id)))
         .map_err(|error| anyhow!("Receive operation failed: {}", error))?;
     let value = value.into_value(runtime.heap_mut())?;
     runtime_list(vec![RuntimeVal::Bool(ok), value], runtime.heap_mut())
@@ -610,7 +618,9 @@ fn chan_try_send(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Resul
     let values = args.as_slice();
     let channel_id = channel_id_arg(&values[0], runtime.heap(), "chan::try_send first argument")?;
     let value = RuntimePayload::copy_from_value(&values[1], runtime.heap())?;
-    let sent = rt::with_runtime(|runtime| runtime.try_send(channel_id, value))
+    let sent = runtime
+        .async_runtime()
+        .with(|runtime| runtime.try_send(channel_id, value))
         .map_err(|error| anyhow!("Failed to send to channel: {}", error))?;
     Ok(RuntimeVal::Bool(sent))
 }
@@ -622,7 +632,7 @@ fn chan_try_recv(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Resul
         runtime.heap(),
         "chan::try_recv first argument",
     )?;
-    let payload = match rt::with_runtime(|runtime| runtime.try_recv(channel_id))? {
+    let payload = match runtime.async_runtime().with(|runtime| runtime.try_recv(channel_id))? {
         Some((ok, value)) => vec![RuntimeVal::Bool(ok), value.into_value(runtime.heap_mut())?],
         None => vec![RuntimeVal::Bool(false), RuntimeVal::Nil],
     };
@@ -671,7 +681,9 @@ fn select_block(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result
         }
     }
 
-    let result = rt::with_runtime(|runtime| runtime.block_on(select.execute(runtime, has_default)))?;
+    let result = runtime
+        .async_runtime()
+        .with(|runtime| runtime.block_on(select.execute(runtime, has_default)))?;
     if result.is_default {
         return runtime_list(
             vec![RuntimeVal::Bool(true), RuntimeVal::Int(-1), RuntimeVal::Nil],
@@ -1219,8 +1231,9 @@ mod runtime_registration_tests {
 
     #[test]
     fn select_block_reads_typed_control_lists_without_materializing_inactive_values() -> Result<()> {
+        let mut ctx = lk_core::vm::VmContext::new_without_core_vm_builtins();
         let mut state = RuntimeModuleState::default();
-        let channel_id = rt::with_runtime(|runtime| runtime.create_channel(Some(1)))?;
+        let channel_id = ctx.async_runtime().with(|runtime| runtime.create_channel(Some(1)))?;
         let channel = RuntimeVal::Obj(state.heap_mut().alloc(HeapValue::Channel(Arc::new(ChannelValue {
             id: channel_id,
             capacity: Some(1),
@@ -1238,7 +1251,7 @@ mod runtime_registration_tests {
             );
         let guards = RuntimeVal::Obj(state.heap_mut().alloc(HeapValue::List(TypedList::Bool(vec![false]))));
         let args = [types, channels, values, guards, RuntimeVal::Bool(true)];
-        let mut runtime = NativeRuntime::new(&mut state, None, None);
+        let mut runtime = NativeRuntime::new(&mut state, Some(&mut ctx), None);
 
         let result = select_block(NativeArgs::new(&args), &mut runtime)?;
 

@@ -4,7 +4,7 @@
 
 use anyhow::{Result, anyhow};
 use lk_core::{
-    rt::{RuntimePayload, with_runtime},
+    rt::{AsyncRuntimeHandle, RuntimePayload},
     val::{ChannelValue, HeapValue, RuntimeVal, Type},
     vm::{NativeArgs, NativeRuntime},
 };
@@ -22,29 +22,31 @@ pub struct TimeModule;
 #[lk_stdlib_common::stdlib_exports(module = "time", runtime_builtins = true)]
 impl TimeModule {
     #[stdlib_export(name = "sleep", params(ms: Int | Float), returns = Nil)]
-    fn sleep(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+    fn sleep(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let duration_ms = numeric_millis(args.get(0).expect("checked arity"), "time.sleep()")?;
-        with_runtime(|runtime| {
-            let duration = Duration::from_millis(duration_ms as u64);
-            runtime.block_on(async {
-                tokio::time::sleep(duration).await;
-                Ok(RuntimeVal::Nil)
+        runtime
+            .async_runtime()
+            .with(|runtime| {
+                let duration = Duration::from_millis(duration_ms as u64);
+                runtime.block_on(async {
+                    tokio::time::sleep(duration).await;
+                    Ok(RuntimeVal::Nil)
+                })
             })
-        })
-        .map_err(|err| anyhow!("Failed to sleep: {err}"))
+            .map_err(|err| anyhow!("Failed to sleep: {err}"))
     }
 
     #[stdlib_export(name = "timeout", params(ms: Int | Float), returns = Channel)]
     fn timeout(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let duration_ms = numeric_millis(args.get(0).expect("checked arity"), "time.timeout()")?;
-        let channel_id = spawn_timer(duration_ms, RuntimeVal::Nil)?;
+        let channel_id = spawn_timer(&runtime.async_runtime(), duration_ms, RuntimeVal::Nil)?;
         Ok(runtime_channel(channel_id, 1, Type::Nil, runtime))
     }
 
     #[stdlib_export(name = "after", params(ms: Int | Float), returns = Channel)]
     fn after(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let duration_ms = numeric_millis(args.get(0).expect("checked arity"), "time.after()")?;
-        let channel_id = spawn_timer(duration_ms, RuntimeVal::Int(epoch_millis()))?;
+        let channel_id = spawn_timer(&runtime.async_runtime(), duration_ms, RuntimeVal::Int(epoch_millis()))?;
         Ok(runtime_channel(channel_id, 1, Type::Int, runtime))
     }
 
@@ -82,26 +84,29 @@ fn runtime_channel(id: u64, capacity: i64, inner_type: Type, runtime: &mut Nativ
     }))))
 }
 
-fn spawn_timer(duration_ms: i64, payload: RuntimeVal) -> Result<u64> {
-    with_runtime(|runtime| {
-        let channel_id = runtime.create_channel(Some(1))?;
-        let future = async move {
-            tokio::time::sleep(Duration::from_millis(duration_ms as u64)).await;
-            let value = match payload {
-                RuntimeVal::Nil => RuntimePayload::nil(),
-                RuntimeVal::Int(_) => {
-                    RuntimePayload::new(RuntimeVal::Int(epoch_millis()), lk_core::val::HeapStore::new())
-                }
-                other => return Err(anyhow!("unsupported timer payload {:?}", other.kind())),
+fn spawn_timer(handle: &AsyncRuntimeHandle, duration_ms: i64, payload: RuntimeVal) -> Result<u64> {
+    let send_handle = handle.clone();
+    handle
+        .with(|runtime| {
+            let channel_id = runtime.create_channel(Some(1))?;
+            let future = async move {
+                tokio::time::sleep(Duration::from_millis(duration_ms as u64)).await;
+                let value = match payload {
+                    RuntimeVal::Nil => RuntimePayload::nil(),
+                    RuntimeVal::Int(_) => {
+                        RuntimePayload::new(RuntimeVal::Int(epoch_millis()), lk_core::val::HeapStore::new())
+                    }
+                    other => return Err(anyhow!("unsupported timer payload {:?}", other.kind())),
+                };
+                send_handle
+                    .with(|runtime| runtime.try_send(channel_id, value))
+                    .map_err(|err| anyhow!("Failed to send timer signal: {err}"))?;
+                Ok(RuntimePayload::nil())
             };
-            with_runtime(|runtime| runtime.try_send(channel_id, value))
-                .map_err(|err| anyhow!("Failed to send timer signal: {err}"))?;
-            Ok(RuntimePayload::nil())
-        };
-        runtime.spawn(future)?;
-        Ok(channel_id)
-    })
-    .map_err(|err| anyhow!("Failed to create timer: {err}"))
+            runtime.spawn(future)?;
+            Ok(channel_id)
+        })
+        .map_err(|err| anyhow!("Failed to create timer: {err}"))
 }
 
 #[cfg(test)]
