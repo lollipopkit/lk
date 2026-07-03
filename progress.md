@@ -165,7 +165,12 @@
       ② **无语言层 `pcall`/`error(value)`/`try` 表面**(前端无 `try` 关键字;当前用户级错误处理是 nil+`??`);
       ③ fatal guard(div/0/缺键/assert)走 abort,需改为可 `pcall` 捕获(M2.3)。
       → M2.1 落地=加 `pcall`/`error` 内建 + 扩 `Raise`/`ErrorVal` 载任意值 + 桥接现有 TryBegin/handler。多小时活。
-- [ ] **M2.2** 错误为一等值（可携带任意 lk 值）+ 栈展开前采集结构化 traceback。
+- [~] **M2.2** 错误为一等值 + traceback。**一等基本值已达成**:新 `lk_core::vm::LkRaisedValue{value}`
+      载 `RuntimeVal`(Send+Sync+'static);`error(v)` 对单个非堆值(Int/Float/Bool/ShortStr/Nil)抛之,
+      `map_native_error` 透传(如 LanguageRaise),`pcall` 经 `root_cause().downcast` 取回→`[false, v]`(原值原型)。
+      验证:`error(404)`→pcall `[false, 404]`(**Int**,typeof=Int);`error("nope")`→String;
+      `examples/syntax/pcall_error.lk` 断言 `coded[1]==404`。**全量 1484 tests 0 失败,0 回退**。
+      **待做**:① 堆对象一等值(需 GC rooting 跨展开);② 结构化 traceback(需 call-frame 追踪入热路径)。
 - [x] **M2.3** fatal guard 可 `pcall` 捕获 —— **基本达成**。调查+改动:**除零**本就是可捕获 Err;
       **assert/assert_eq/assert_ne** 从 Rust `panic!`(abort,不可捕获)改为返回 `Err`(可捕获,
       未捕获仍非零退出且**消除 panic backtrace 噪声**);**缺键/越界**返回 nil(非 fatal,无需捕获);

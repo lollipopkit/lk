@@ -314,7 +314,9 @@ pub(super) fn call_native_entry_parts_with_args(
 
 fn map_native_error(native: &NativeEntry, result: Result<RuntimeVal>) -> Result<RuntimeVal> {
     result.map_err(|err| {
-        if err.is::<super::LanguageRaise>() {
+        // Pass raised errors through unwrapped so `pcall` can recover them: a
+        // LanguageRaise, or a first-class value from `error(v)` (M2.2).
+        if err.is::<super::LanguageRaise>() || err.is::<super::LkRaisedValue>() {
             err
         } else {
             anyhow!("native `{}` failed: {err}", native.name)

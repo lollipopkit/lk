@@ -23,3 +23,10 @@ let divided = pcall(div_zero);
 assert(divided[0] == false);
 
 println("pcall/error: ok");
+
+// error(v) with a primitive value round-trips through pcall as that value
+// (first-class primitive errors, M2.2), not a string.
+fn fail_with_code() { error(404); return 0; }
+let coded = pcall(fail_with_code);
+assert(coded[0] == false);
+assert(coded[1] == 404);          // the Int 404 itself, not "404"

@@ -53,6 +53,7 @@ use super::{
 };
 #[cfg(test)]
 use super::{Compiler, GlobalSlot};
+pub use handler::LkRaisedValue;
 use handler::{ErrorHandler, LanguageRaise};
 use profile::{RuntimeProfileFrame, index_metric_kind};
 use return_values::ReturnValues;

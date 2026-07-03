@@ -452,11 +452,18 @@ fn panic(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Runtim
     panic!("{}", msg);
 }
 
-/// `error(value...)` — raise a recoverable error carrying `value` (stringified).
-/// Unlike `panic`, this propagates as a catchable error rather than aborting, so
-/// it can be caught by `pcall`; uncaught, it fails the program with the message.
-/// (M2.1; carrying an arbitrary first-class value rather than a string is M2.2.)
+/// `error(value...)` — raise a recoverable error. Unlike `panic`, it propagates
+/// as a catchable error (caught by `pcall`) rather than aborting; uncaught, it
+/// fails the program. A single non-heap value (Int/Float/Bool/ShortStr/Nil) is
+/// carried first-class so `pcall` returns it as-is (M2.2, primitives); otherwise
+/// a stringified message is raised (heap-object first-class values need GC
+/// rooting across unwinding — deferred).
 fn error(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+    if let [value] = args.as_slice()
+        && !matches!(value, RuntimeVal::Obj(_))
+    {
+        return Err(anyhow!(lk_core::vm::LkRaisedValue { value: *value }));
+    }
     let msg = if args.is_empty() {
         "error".to_string()
     } else {
@@ -484,13 +491,19 @@ fn pcall(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Runtim
     let (ok, value) = match outcome {
         Ok(result) => (true, result),
         Err(err) => {
-            // Surface the deepest cause so `error("msg")` round-trips as "msg"
-            // rather than the call machinery's wrapping context.
-            let message = err.root_cause().to_string();
-            let handle = runtime
-                .heap_mut()
-                .alloc(HeapValue::String(Arc::<str>::from(message.as_str())));
-            (false, RuntimeVal::Obj(handle))
+            // The call machinery wraps errors with context, so inspect the
+            // deepest cause. A first-class primitive error value round-trips as
+            // itself (M2.2); otherwise the message string is returned.
+            let root = err.root_cause();
+            if let Some(raised) = root.downcast_ref::<lk_core::vm::LkRaisedValue>() {
+                (false, raised.value)
+            } else {
+                let message = root.to_string();
+                let handle = runtime
+                    .heap_mut()
+                    .alloc(HeapValue::String(Arc::<str>::from(message.as_str())));
+                (false, RuntimeVal::Obj(handle))
+            }
         }
     };
     let list = runtime

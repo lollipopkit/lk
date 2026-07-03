@@ -17,6 +17,31 @@ impl std::fmt::Display for LanguageRaise {
 
 impl std::error::Error for LanguageRaise {}
 
+/// A recoverable error carrying a first-class LK value (primitives only for now —
+/// heap objects would need GC rooting across unwinding). `error(v)` raises this
+/// and `pcall` extracts the value, so an errored value round-trips as itself
+/// rather than a string. Public so the stdlib's `error`/`pcall` can construct and
+/// downcast it.
+#[derive(Clone, Debug)]
+pub struct LkRaisedValue {
+    pub value: RuntimeVal,
+}
+
+impl std::fmt::Display for LkRaisedValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.value {
+            RuntimeVal::Int(n) => write!(f, "{n}"),
+            RuntimeVal::Float(x) => write!(f, "{x}"),
+            RuntimeVal::Bool(b) => write!(f, "{b}"),
+            RuntimeVal::ShortStr(s) => f.write_str(s.as_str()),
+            RuntimeVal::Nil => f.write_str("nil"),
+            RuntimeVal::Obj(_) => f.write_str("<error value>"),
+        }
+    }
+}
+
+impl std::error::Error for LkRaisedValue {}
+
 #[derive(Clone, Debug)]
 pub(super) struct ErrorHandler {
     pub(super) catch_reg: u8,
