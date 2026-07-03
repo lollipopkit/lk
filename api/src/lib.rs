@@ -13,11 +13,22 @@ use lk_core::module::ModuleRegistry;
 use lk_core::stmt::ModuleResolver;
 use lk_core::syntax::{ParseOptions, parse_program_source};
 use lk_core::typ::TypeChecker;
-use lk_core::vm::{VmContext, execute_program_with_ctx_and_budget};
+use lk_core::vm::{NativeFunction, VmContext, execute_program_with_ctx_and_budget};
+
+pub use lk_core::val::RuntimeVal;
+pub use lk_core::vm::{NativeArgs, NativeRuntime};
+
+/// Signature of a host-provided native function, callable from LK. Receives the
+/// raw runtime ABI (positional/named [`NativeArgs`] and the [`NativeRuntime`]
+/// for heap access) and returns a [`RuntimeVal`].
+pub type HostFn = fn(NativeArgs<'_>, &mut NativeRuntime<'_>) -> Result<RuntimeVal>;
 
 /// An isolated LK virtual machine instance.
 pub struct Vm {
-    ctx: VmContext,
+    /// Pending module/builtin registry; consumed into the context on first eval
+    /// so host functions can be registered before execution.
+    registry: Option<ModuleRegistry>,
+    ctx: Option<VmContext>,
     fuel: Option<u64>,
 }
 
@@ -27,11 +38,11 @@ impl Vm {
         let mut registry = ModuleRegistry::new();
         lk_stdlib::register_stdlib_globals(&mut registry);
         lk_stdlib::register_stdlib_modules(&mut registry).expect("stdlib registration should not fail");
-        let resolver = Arc::new(ModuleResolver::with_registry(registry));
-        let ctx = VmContext::new()
-            .with_resolver(resolver)
-            .with_type_checker(Some(TypeChecker::new_strict()));
-        Self { ctx, fuel: None }
+        Self {
+            registry: Some(registry),
+            ctx: None,
+            fuel: None,
+        }
     }
 
     /// Bound execution to `budget` instructions (fuel). Beyond it the VM aborts
@@ -41,14 +52,41 @@ impl Vm {
         self
     }
 
+    /// Register a host native function callable from LK as `name` with the given
+    /// `arity`. Must be called before the first [`eval`](Self::eval) (the context
+    /// is finalized on first evaluation). Host extension point (plan M3.2).
+    pub fn register_fn(&mut self, name: &str, arity: u16, f: HostFn) -> &mut Self {
+        self.registry
+            .as_mut()
+            .expect("register_fn must be called before the first eval")
+            .register_runtime_builtin(name, NativeFunction::Plain(f), arity);
+        self
+    }
+
+    /// Finalize the pending registry into a context on first use.
+    fn ctx_mut(&mut self) -> &mut VmContext {
+        if self.ctx.is_none() {
+            let registry = self.registry.take().expect("registry present before first eval");
+            let resolver = Arc::new(ModuleResolver::with_registry(registry));
+            self.ctx = Some(
+                VmContext::new()
+                    .with_resolver(resolver)
+                    .with_type_checker(Some(TypeChecker::new_strict())),
+            );
+        }
+        self.ctx.as_mut().expect("context finalized")
+    }
+
     /// Parse and execute `source`, returning the display of the program's first
     /// return value (empty string when it is `nil`).
     pub fn eval(&mut self, source: &str) -> Result<String> {
         let program = parse_program_source(source, ParseOptions::default())
             .map_err(|err| anyhow::anyhow!("parse error: {err}"))?;
-        let result = match self.fuel {
-            Some(budget) => execute_program_with_ctx_and_budget(&program, &mut self.ctx, budget)?,
-            None => program.execute_with_ctx(&mut self.ctx)?,
+        let fuel = self.fuel;
+        let ctx = self.ctx_mut();
+        let result = match fuel {
+            Some(budget) => execute_program_with_ctx_and_budget(&program, ctx, budget)?,
+            None => program.execute_with_ctx(ctx)?,
         };
         if result.first_return_is_nil() {
             Ok(String::new())
@@ -81,6 +119,18 @@ mod tests {
         let mut b = Vm::new();
         assert_eq!(a.eval("let x = 10; return x;").unwrap(), "10");
         assert_eq!(b.eval("let y = 20; return y;").unwrap(), "20");
+    }
+
+    fn host_add100(args: NativeArgs<'_>, _rt: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let n = args.get(0).and_then(RuntimeVal::as_int).unwrap_or(0);
+        Ok(RuntimeVal::Int(n + 100))
+    }
+
+    #[test]
+    fn register_host_fn() {
+        let mut vm = Vm::new();
+        vm.register_fn("host_add100", 1, host_add100);
+        assert_eq!(vm.eval("return host_add100(5);").unwrap(), "105");
     }
 
     #[test]

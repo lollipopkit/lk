@@ -186,7 +186,11 @@
       **验证**:3 测试全绿——`eval("6*7")→42`、**两 VM 实例隔离**(证 M0 去全局状态使多实例可行)、
       fuel 耗尽中断。workspace `-D warnings` 0/0、clippy 0。**待做**:`register_fn`/`register_module`
       (宿主原生扩展,需 Value 转换 ergonomics)、rooted handle、C ABI(M3.3)。
-- [ ] **M3.2** 多实例隔离：每 `Vm` 独立堆/驻留表/注册表，无 `thread_local`（依赖 M0）。
+- [x] **M3.2** register_fn(宿主原生扩展)+ 多实例隔离 —— **已落地**。`Vm::register_fn(name, arity, HostFn)`
+      在 eval 前注册宿主原生函数(延迟 ctx 构建:pending registry 首次 eval 时定型),`HostFn` = 原始运行时
+      ABI `fn(NativeArgs, &mut NativeRuntime)->Result<RuntimeVal>`。**多实例隔离**已由 M3.1 测试证明(每 Vm
+      独立 VmContext/heap,无 thread_local,依赖 M0 去全局)。测试:`host_add100(5)→105`。workspace 0/0、clippy 0。
+      **待做**:更 ergonomic 的 Value 转换层(host 类型↔RuntimeVal)、register_module、rooted handle。
 - [~] **M3.3** C ABI —— **`ffi` feature 的 `extern "C"` 面已落地**(lk-api `ffi` feature)。
       `lk_vm_new()->*mut Vm`、`lk_vm_eval(vm,src)->*mut c_char`、`lk_vm_free`、`lk_string_free`(不透明指针 +
       owned C string,配对释放)。`--features ffi` 编译 + clippy 0;默认构建不含 ffi(0 开销)。
