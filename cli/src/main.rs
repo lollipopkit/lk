@@ -89,8 +89,13 @@ impl From<OptLevelCli> for OptLevel {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub(crate) enum CompileMode {
+    /// Emit a `.lkm` bytecode module. This is an INTERNAL artifact (version-locked
+    /// to this build, like Python's `.pyc`), not a distribution format — ship
+    /// source or a native executable instead.
     Bytecode,
+    /// Emit LLVM IR (`.ll`).
     Llvm,
+    /// Emit a native executable (default).
     Exe,
 }
 
@@ -871,6 +876,10 @@ fn compile_instr_module(path: &Path) -> anyhow::Result<()> {
     std::fs::write(&output, artifact.to_json_string()?)
         .with_context(|| format!("write Instr module {}", output.display()))?;
     println!("{}", output.display());
+    // `.lkm` is version-locked to this build and rejected by any other version
+    // (see MODULE_ARTIFACT_VERSION); it is an internal/cache artifact, not a
+    // distribution format — ship source or a native executable.
+    eprintln!("note: `.lkm` is an internal build-locked artifact, not a distribution format");
     Ok(())
 }
 

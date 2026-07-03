@@ -112,7 +112,10 @@
 - [x] **M1.2** `VM(source)==VM(bytecode)` 差分测试入 CI。`cli/tests/vm_bytecode_differential_test.rs`
       (不依赖 llvm):对 examples 语料,源码跑 vs `compile bytecode`→`.lkm`→跑,比对 stdout/success;
       「源码跑两次」自动过滤非确定性样例。**41 比对 / 0 分歧 / 3 跳过**——ModuleArtifact 序列化往返语义一致。
-- [ ] **M1.3** `.lkm` 降级为 `$LK_HOME/cache` 编译缓存（源哈希失效）；CLI 停止宣传 `.lkm` 作分发。
+- [~] **M1.3** `.lkm` 降级为缓存 + 停止宣传作分发。**已做**:CLI `compile bytecode` 打印
+      「note: `.lkm` is an internal build-locked artifact, not a distribution format」;`CompileMode::Bytecode`
+      clap 文档标注为内部产物(类比 `.pyc`,version-locked)。**待做**:移到 `$LK_HOME/cache` + 源哈希失效自动重编译。
+      *(现有 `MODULE_ARTIFACT_VERSION` 已保证旧版本干净拒绝;缓存目录化是增量。)*
 - **Exit**：conformance 全绿并声明为语义定义；差分框架进 CI。
 
 ## Phase M2 — 可恢复错误模型 + stackless 协程 + fuel 沙箱（问题 4、5）
