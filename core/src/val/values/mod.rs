@@ -1,93 +1,16 @@
-use std::{fmt::Debug, sync::Arc};
-
-use crate::val::RuntimeVal;
+use std::sync::Arc;
 
 mod strings;
 mod types;
 
 pub use types::{FunctionNamedParamType, ShortStr, ShortStrOrStr, Type};
 
-#[derive(Debug, Clone)]
-pub struct TaskValue {
-    pub id: u64,
-    pub value: Option<crate::rt::RuntimePayload>,
-}
-
-#[derive(Debug, Clone)]
-pub struct ChannelValue {
-    pub id: u64,
-    pub capacity: Option<i64>,
-    pub inner_type: Type,
-}
-
-#[derive(Debug, Clone)]
-pub struct StreamValue {
-    pub id: u64,
-    pub inner_type: Type,
-    pub roots: Vec<RuntimeVal>,
-}
-
-#[derive(Debug, Clone)]
-pub struct StreamCursorValue {
-    pub id: u64,
-    pub stream_id: u64,
-    pub roots: Vec<RuntimeVal>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SliceKind {
-    List,
-    String,
-}
-
-#[derive(Debug, Clone)]
-pub struct SliceValue {
-    pub source: RuntimeVal,
-    pub kind: SliceKind,
-    pub start: usize,
-    pub len: usize,
-}
-
-#[derive(Clone)]
-pub struct ResourceValue {
-    pub kind: &'static str,
-    pub handle: Arc<std::sync::Mutex<ResourceHandle>>,
-}
-
-impl Debug for ResourceValue {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ResourceValue")
-            .field("kind", &self.kind)
-            .finish_non_exhaustive()
-    }
-}
-
-impl Debug for ResourceHandle {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let name = match self {
-            Self::File(_) => "File",
-            Self::Stdin => "Stdin",
-            Self::Stdout => "Stdout",
-            Self::Stderr => "Stderr",
-            Self::TcpStream(_) => "TcpStream",
-            Self::TcpListener(_) => "TcpListener",
-            Self::UdpSocket(_) => "UdpSocket",
-            Self::Closed => "Closed",
-        };
-        f.write_str(name)
-    }
-}
-
-pub enum ResourceHandle {
-    File(std::fs::File),
-    Stdin,
-    Stdout,
-    Stderr,
-    TcpStream(std::net::TcpStream),
-    TcpListener(std::net::TcpListener),
-    UdpSocket(std::net::UdpSocket),
-    Closed,
-}
+// NOTE: runtime resource-handle values (TaskValue/ChannelValue/StreamValue/
+// StreamCursorValue/SliceValue/ResourceValue/ResourceHandle) live in
+// `super::runtime_model` — they embed `RuntimeVal`/`RuntimePayload` (the runtime
+// model), whereas this module is the front-end literal/type model (a clean L0
+// candidate: `LiteralVal`, `Type`, `ShortStr`, `numeric`). Both are re-exported
+// at `crate::val`, so external `val::TaskValue` etc. paths are unchanged.
 
 #[derive(Debug, Clone, Default)]
 pub enum LiteralVal {

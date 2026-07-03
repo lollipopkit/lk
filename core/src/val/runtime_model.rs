@@ -6,7 +6,7 @@
 use crate::util::fast_map::{FastHashMap, FastHashSet, fast_hash_map_from_iter, fast_hash_map_new, fast_hash_set_new};
 use std::sync::Arc;
 
-use super::values::{ChannelValue, ResourceValue, ShortStr, SliceValue, StreamCursorValue, StreamValue, TaskValue};
+use super::values::{ShortStr, Type};
 
 mod heap;
 
@@ -983,4 +983,93 @@ mod tests {
         assert_eq!(typed, exact_mixed);
         assert_ne!(typed, short_key_mixed);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Runtime resource-handle values (moved from `super::values`, M0.1 decoupling).
+// These embed `RuntimeVal`/`RuntimePayload`, so they belong with the runtime
+// model rather than the front-end literal/type model. Re-exported at
+// `crate::val` via `pub use runtime_model::*`, so external paths are unchanged.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub struct TaskValue {
+    pub id: u64,
+    pub value: Option<crate::rt::RuntimePayload>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ChannelValue {
+    pub id: u64,
+    pub capacity: Option<i64>,
+    pub inner_type: Type,
+}
+
+#[derive(Debug, Clone)]
+pub struct StreamValue {
+    pub id: u64,
+    pub inner_type: Type,
+    pub roots: Vec<RuntimeVal>,
+}
+
+#[derive(Debug, Clone)]
+pub struct StreamCursorValue {
+    pub id: u64,
+    pub stream_id: u64,
+    pub roots: Vec<RuntimeVal>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SliceKind {
+    List,
+    String,
+}
+
+#[derive(Debug, Clone)]
+pub struct SliceValue {
+    pub source: RuntimeVal,
+    pub kind: SliceKind,
+    pub start: usize,
+    pub len: usize,
+}
+
+#[derive(Clone)]
+pub struct ResourceValue {
+    pub kind: &'static str,
+    pub handle: Arc<std::sync::Mutex<ResourceHandle>>,
+}
+
+impl std::fmt::Debug for ResourceValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ResourceValue")
+            .field("kind", &self.kind)
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for ResourceHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let name = match self {
+            Self::File(_) => "File",
+            Self::Stdin => "Stdin",
+            Self::Stdout => "Stdout",
+            Self::Stderr => "Stderr",
+            Self::TcpStream(_) => "TcpStream",
+            Self::TcpListener(_) => "TcpListener",
+            Self::UdpSocket(_) => "UdpSocket",
+            Self::Closed => "Closed",
+        };
+        f.write_str(name)
+    }
+}
+
+pub enum ResourceHandle {
+    File(std::fs::File),
+    Stdin,
+    Stdout,
+    Stderr,
+    TcpStream(std::net::TcpStream),
+    TcpListener(std::net::TcpListener),
+    UdpSocket(std::net::UdpSocket),
+    Closed,
 }

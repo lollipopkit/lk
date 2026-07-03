@@ -54,6 +54,12 @@
       - [x] **解耦 val→typ**：`NumericClass`/`NumericHierarchy`（只依赖 `Type`，本就属于它）从 `typ`
         移进 `val`；`typ` 改从 `val` 再导出（`crate::typ::Numeric*` 向后兼容，免改 type_checker）。
         core 0/0、950 tests。val（生产码）不再依赖 typ。
+      - [x] **分离前端/运行时值模型**(M0.1-A 子步,收敛):把运行时资源句柄(`TaskValue`/`ChannelValue`/
+        `StreamValue`/`StreamCursorValue`/`SliceValue`/`ResourceValue`/`ResourceHandle`,embed RuntimeVal/RuntimePayload)
+        从前端 `val/values/mod.rs` 移入 `val/runtime_model.rs`。→ **`val/values/`(LiteralVal/Type/ShortStr/numeric)
+        现无任何 RuntimeVal/rt/vm 依赖 = 干净 L0 前端候选**。经 `val::*` 再导出,外部路径不变。
+        full workspace `-D warnings` 0/0、core 950 tests。**剩:把 `values/`+numeric 抽为 lk-values crate
+        (需 runtime_model 从新 crate import Type/ShortStr)+ callable 的 val→vm(trait 反转 A)仍是硬阻塞。**
       - [x] **厘清 in-flight `RuntimeVal` 迁移**（用户选定,已完成）。结论:
         - **迁移护栏** `vm/migration_guard.rs` 是 **VM 重写不变量**守卫(禁旧 `Op` enum/`Frame`、bench 融合
           opcode、quickening、**src/vm 与 src/val 里的 `unsafe`**)——约束「值/VM 代码保持 safe Rust」,
