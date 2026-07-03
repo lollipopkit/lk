@@ -9,14 +9,10 @@ use crate::macro_system::{ProcMacroProcessConfig, ProcMacroProviders};
 use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 
-mod registry;
-pub use registry::{
-    RegistryAsymmetricSigningKey, RegistryIndex, RegistryManifestSignature, RegistryPackageIndex,
-    RegistryPackageIndexResponse, RegistryPackageVersionResponse, RegistryPublicSigningKey, RegistryPublishDependency,
-    RegistryPublishIntegrity, RegistryPublishMacroProviders, RegistryPublishManifest, RegistryPublishRequest,
-    RegistryPublishServerValidation, RegistryPublishStoredManifest, RegistryService, RegistrySigningKey,
-    RegistrySigningKeyring, RegistryStoredPackage, RegistryStoredVersion,
-};
+// The centralized signing registry (server / publish / keyring / signed
+// registry dependencies) was removed in favour of Deno/Go-style decentralized
+// git+lockfile dependencies (plan M5.4). Dependencies are git URLs pinned in
+// `Lk.lock`; there is no registry to run, publish to, or sign.
 
 pub const MANIFEST_FILE: &str = "Lk.toml";
 pub const LOCK_FILE: &str = "Lk.lock";
@@ -25,8 +21,6 @@ pub const LOCK_FILE: &str = "Lk.lock";
 pub struct Manifest {
     pub package: Option<PackageSection>,
     pub workspace: Option<WorkspaceSection>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub registry: Option<RegistrySection>,
     #[serde(default)]
     pub dependencies: BTreeMap<String, DependencySpec>,
     #[serde(default, skip_serializing_if = "MacroSection::is_empty")]
@@ -50,14 +44,6 @@ pub struct WorkspaceSection {
     pub members: Vec<String>,
     #[serde(default)]
     pub dependencies: BTreeMap<String, DependencySpec>,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct RegistrySection {
-    pub name: Option<String>,
-    pub url: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub include: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -95,8 +81,6 @@ pub struct DetailedDependency {
     pub github: Option<String>,
     pub git: Option<String>,
     pub path: Option<String>,
-    pub registry: Option<String>,
-    pub version: Option<String>,
     pub branch: Option<String>,
     pub tag: Option<String>,
     pub rev: Option<String>,
@@ -259,20 +243,6 @@ impl DependencySpec {
 
     pub fn is_workspace(&self) -> bool {
         matches!(self, DependencySpec::Detailed(dep) if dep.workspace)
-    }
-
-    pub fn registry_version(&self) -> Option<&str> {
-        match self {
-            DependencySpec::GitHub(_) => None,
-            DependencySpec::Detailed(dep) => dep.version.as_deref(),
-        }
-    }
-
-    pub fn registry_override(&self) -> Option<&str> {
-        match self {
-            DependencySpec::GitHub(_) => None,
-            DependencySpec::Detailed(dep) => dep.registry.as_deref(),
-        }
     }
 }
 
@@ -568,59 +538,6 @@ fn is_valid_macro_provider_name(name: &str) -> bool {
     };
     (first == '_' || first.is_ascii_alphabetic())
         && chars.all(|ch| ch == '_' || ch == '-' || ch.is_ascii_alphanumeric())
-}
-
-pub(super) fn is_publish_version(version: &str) -> bool {
-    let parts = version.split('.').collect::<Vec<_>>();
-    parts.len() == 3
-        && parts.iter().all(|part| {
-            !part.is_empty()
-                && part
-                    .split_once('-')
-                    .map_or(*part, |(base, _)| base)
-                    .chars()
-                    .all(|ch| ch.is_ascii_digit())
-        })
-}
-
-fn registry_include(registry: &RegistrySection) -> Vec<String> {
-    if registry.include.is_empty() {
-        vec!["Lk.toml".to_string(), "src/**".to_string()]
-    } else {
-        registry.include.clone()
-    }
-}
-
-fn dependency_publish_source(spec: &DependencySpec) -> String {
-    match spec {
-        DependencySpec::GitHub(repo) => format!("github:{repo}"),
-        DependencySpec::Detailed(dep) if dep.workspace => "workspace".to_string(),
-        DependencySpec::Detailed(dep) if dep.path.is_some() => {
-            format!("path:{}", dep.path.as_deref().unwrap_or_default())
-        }
-        DependencySpec::Detailed(dep) if dep.github.is_some() => {
-            format!("github:{}", dep.github.as_deref().unwrap_or_default())
-        }
-        DependencySpec::Detailed(dep) if dep.git.is_some() => format!("git:{}", dep.git.as_deref().unwrap_or_default()),
-        DependencySpec::Detailed(dep) if dep.version.is_some() => dep
-            .registry
-            .as_deref()
-            .map(|registry| format!("registry:{registry}"))
-            .unwrap_or_else(|| "registry:default".to_string()),
-        DependencySpec::Detailed(_) => "unknown".to_string(),
-    }
-}
-
-fn dependency_version(spec: &DependencySpec) -> Option<String> {
-    match spec {
-        DependencySpec::GitHub(_) => None,
-        DependencySpec::Detailed(dep) => dep
-            .version
-            .clone()
-            .or_else(|| dep.rev.clone())
-            .or_else(|| dep.tag.clone())
-            .or_else(|| dep.branch.clone()),
-    }
 }
 
 pub fn lk_home() -> PathBuf {
