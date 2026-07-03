@@ -117,7 +117,14 @@
 
 ## Phase M2 — 可恢复错误模型 + stackless 协程 + fuel 沙箱（问题 4、5）
 
-- [ ] **M2.1** `pcall(f, args) -> (ok, result_or_err)` + `error(value)` 内建（复用 `LanguageRaise`）。
+- [~] **M2.1** `pcall(f, args) -> (ok, result_or_err)` + `error(value)` 内建（复用 `LanguageRaise`）。
+      **调查结论(本会话)**：**M2 后端基础设施大体已就绪**——`Opcode::Raise`(`dispatch_raise` 读常量
+      字符串消息→`raise_language_message`)、`TryBegin`/`TryEnd`(`begin_try`/`end_try` + `ErrorHandler`:
+      catch_reg/catch_pc/frame_base/stack_top)、`ErrorVal { message, trace }`(带 trace 字段的结构化错误值,
+      GC-rooted)。缺口:① `Raise` 只载**字符串**,需扩展为携带任意 `RuntimeVal`(error-as-first-class,M2.2);
+      ② **无语言层 `pcall`/`error(value)`/`try` 表面**(前端无 `try` 关键字;当前用户级错误处理是 nil+`??`);
+      ③ fatal guard(div/0/缺键/assert)走 abort,需改为可 `pcall` 捕获(M2.3)。
+      → M2.1 落地=加 `pcall`/`error` 内建 + 扩 `Raise`/`ErrorVal` 载任意值 + 桥接现有 TryBegin/handler。多小时活。
 - [ ] **M2.2** 错误为一等值（可携带任意 lk 值）+ 栈展开前采集结构化 traceback。
 - [ ] **M2.3** fatal guard（div/0、缺键、assert）从 abort 改为可 `pcall` 捕获的可恢复错误。
 - [ ] **M2.4** `try`/`?` 语法糖。
