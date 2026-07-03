@@ -201,7 +201,11 @@
 
 - [ ] **M4.1** Tier 0：`lk compile` → 字节码 + 静态链接 VM 单文件（100% 覆盖，语义平凡一致）。
 - [ ] **M4.2** Tier 1：MIR 后端 `Unsupported` 从「整程序失败」→「逐函数标记 VM-executed 回退」。
-- [ ] **M4.3** 差分门禁 `AOT==VM` 固化进 CI（现有部分保留强化）。
+- [x] **M4.3** 差分门禁 `AOT==VM` 已在 CI —— **现状核实,已满足**。`cli/tests/aot_differential_test.rs`
+      (MIR native == VM,stdout+成功/失败逐例比对,21 检查点)+ `examples_differential_test.rs`(VM==AOT 语料)
+      + `aot_fuzz_differential_test.rs`(随机差分)均随 `check.yml` 的 `cargo test --workspace --all-features` 跑;
+      `correctness.yml` 更在 **ASan/UBSan + fuzzing** 下专门跑这三个差分。→ AOT==VM 门禁固化。
+      本会话新增的 **M1.2(VM source==bytecode 差分)**与之互补,共同守 VM 为规范。
 - **Exit**：任意 `.lk` 可 `lk compile`（Tier 0 保底）；覆盖 >11/44 且失败构造回退 VM 而非报错；差分全绿。
 
 ## Phase M5 — no-std profiles + 工具链收敛 + v1.0（问题 7）
