@@ -80,6 +80,36 @@ impl Compiler {
         self.locals.insert(name, reg)
     }
 
+    /// Binds a *fresh declaration*: a new binding is a plain value, so any
+    /// stale cell mark from a previous same-named binding is dropped (a
+    /// leftover mark makes reads `LoadCellVal` a non-cell). Restores that
+    /// re-instate a previous binding use [`Self::insert_local`] and keep —
+    /// or explicitly re-add — the caller's mark.
+    pub(super) fn insert_fresh_local(&mut self, name: impl Into<String>, reg: u16) -> Option<u16> {
+        let name = name.into();
+        self.cell_locals.remove(&name);
+        self.insert_local(name, reg)
+    }
+
+    /// Computes the cell marks that survive a scope restore: a mark the scope
+    /// added for a name whose binding is *unchanged* is a promotion of an
+    /// outer local — the variable's register now holds the cell, a code-level
+    /// side effect on the enclosing frame — and must persist; marks for
+    /// scope-local shadow bindings revert. Call *before* restoring
+    /// `self.locals` (the comparison needs the scope's bindings).
+    pub(super) fn scope_restored_cell_locals(
+        &self,
+        saved_locals: &std::collections::HashMap<String, u16>,
+        mut saved_cell_locals: std::collections::HashSet<String>,
+    ) -> std::collections::HashSet<String> {
+        for name in &self.cell_locals {
+            if !saved_cell_locals.contains(name) && self.locals.get(name).copied() == saved_locals.get(name).copied() {
+                saved_cell_locals.insert(name.clone());
+            }
+        }
+        saved_cell_locals
+    }
+
     pub(super) fn local_slot_is_shared(&self, reg: u16) -> bool {
         let mut count = 0;
         for slot in self.locals.values().copied() {

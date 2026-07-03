@@ -47,7 +47,7 @@ use crate::vm::analysis::{
 };
 use facts::*;
 use for_value_usage::{stmt_shadows_name_deep, stmt_uses_for_binding_value};
-use free_vars::collect_expr_free_vars;
+use free_vars::{collect_expr_closure_captures, collect_expr_free_vars, collect_stmt_closure_captures};
 use loop_consts::ScalarLoopConstKey;
 use support::*;
 
@@ -65,6 +65,13 @@ pub struct Compiler {
     capture_names: HashMap<String, u16>,
     capture_cells: HashSet<String>,
     cell_locals: HashSet<String>,
+    /// Loop-pattern variables of the enclosing `for` loops: the fused loop
+    /// opcodes own the raw register, so a capture takes a fresh snapshot cell
+    /// per capture site instead of re-binding the register (per-iteration
+    /// binding semantics). `slot` is filled when the pattern binds; a
+    /// same-named local whose binding differs (a fresh `let` in the body) is
+    /// an ordinary local, not the loop variable.
+    loop_snapshot_vars: Vec<LoopSnapshotVar>,
     dynamic_function_base: u32,
     pending_functions: Vec<Function>,
     inline_stack: Vec<String>,
@@ -190,8 +197,11 @@ impl Compiler {
                 self.local_rebind_suppression += 1;
                 self.lower_stmt_sequence(statements)?;
                 self.local_rebind_suppression -= 1;
+                // In-block promotions of *outer* locals must survive the
+                // scope restore (the register now holds the cell); dropping
+                // them left later reads loading the raw cell object.
+                self.cell_locals = self.scope_restored_cell_locals(&locals, cell_locals);
                 self.locals = locals;
-                self.cell_locals = cell_locals;
                 self.const_map_locals = const_map_locals;
                 if !self.emitted_return {
                     self.next_reg = self.live_register_floor().max(watermark);
@@ -244,10 +254,16 @@ impl Compiler {
 
         let watermark = self.next_reg;
         let target = if let Some(reg) = self.locals.get(name).copied() {
+            // A re-`let` over a promoted cell or over a live loop counter
+            // must not write the old register in place — the generic path
+            // allocates the fresh binding.
+            if is_let && (self.cell_locals.contains(name) || self.active_loop_binding_slot(name) == Some(reg)) {
+                return Ok(false);
+            }
             reg
         } else if is_let {
             let reg = self.alloc_reg();
-            self.insert_local(name.to_string(), reg);
+            self.insert_fresh_local(name.to_string(), reg);
             reg
         } else {
             return Ok(false);
@@ -378,7 +394,17 @@ impl Compiler {
         }
         let watermark = self.next_reg;
         let slot = if let Some(slot) = self.locals.get(name).copied() {
-            self.local_write_slot(slot).0
+            if self.active_loop_binding_slot(name) == Some(slot) || self.cell_locals.contains(name) {
+                // A fresh binding must not write the old register in place:
+                // it would clobber the counter the fused loop opcodes drive
+                // (`for i { let i = …; }`), or overwrite a promoted cell that
+                // earlier-emitted reads (a loop condition or a statement
+                // before this `let`, re-executed on the back edge) still
+                // load through.
+                self.alloc_reg()
+            } else {
+                self.local_write_slot(slot).0
+            }
         } else {
             self.alloc_reg()
         };
@@ -393,7 +419,7 @@ impl Compiler {
             self.emit_set_global(slot, global_slot)?;
         }
         self.record_const_map_local_from_expr(name, value)?;
-        self.insert_local(name.to_string(), slot);
+        self.insert_fresh_local(name.to_string(), slot);
         self.next_reg = self.live_register_floor().max(watermark).max(slot + 1);
         Ok(())
     }
@@ -1322,7 +1348,44 @@ impl Compiler {
         Ok(true)
     }
 
+    /// Promotes every local a closure inside the loop captures to a cell
+    /// *now*, before any loop code is emitted. A promotion emitted mid-body
+    /// re-executes each iteration (re-boxing an outer variable and orphaning
+    /// the shared cell) and leaves earlier-emitted reads — the condition and
+    /// increment, re-executed on the back edge — reading the raw register
+    /// that meanwhile holds the cell.
+    fn pre_promote_loop_captures(&mut self, condition: Option<&Expr>, body: &Stmt) -> Result<()> {
+        let mut captured = Vec::new();
+        if let Some(condition) = condition {
+            collect_expr_closure_captures(condition, &mut captured);
+        }
+        collect_stmt_closure_captures(body, &mut captured);
+        for name in captured {
+            // Inside the loop body the pattern names lexically bind the loop
+            // variables, so a name-level skip is exact here.
+            if self.loop_snapshot_vars.iter().any(|v| v.name == name) {
+                continue;
+            }
+            self.promote_captured_local(&name)?;
+        }
+        Ok(())
+    }
+
+    /// Promotes `name` (if it is a plain local) to a capture cell right now:
+    /// box the current value and re-bind the register to the cell.
+    pub(super) fn promote_captured_local(&mut self, name: &str) -> Result<()> {
+        let Some(local) = self.locals.get(name).copied() else {
+            return Ok(());
+        };
+        if self.cell_locals.insert(name.to_string()) {
+            let cell = self.emit_upval_cell(local)?;
+            self.emit_move(local, cell, "box captured local")?;
+        }
+        Ok(())
+    }
+
     fn lower_while(&mut self, condition: &Expr, body: &Stmt) -> Result<()> {
+        self.pre_promote_loop_captures(Some(condition), body)?;
         let watermark = self.next_reg;
         self.begin_loop_scalar_const_scope(condition, body)?;
         let condition_start = self.function.code.len();
@@ -1368,6 +1431,19 @@ impl Compiler {
     }
 
     fn lower_for(&mut self, pattern: &ForPattern, iterable: &Expr, body: &Stmt) -> Result<()> {
+        // The pattern names register *before* the body prescan: inside the
+        // body they lexically refer to the loop variables, so the prescan
+        // must not pre-promote a same-named outer local.
+        let snapshot_mark = self.loop_snapshot_vars.len();
+        collect_for_pattern_names(pattern, &mut self.loop_snapshot_vars);
+        let result = self
+            .pre_promote_loop_captures(None, body)
+            .and_then(|()| self.lower_for_dispatch(pattern, iterable, body));
+        self.loop_snapshot_vars.truncate(snapshot_mark);
+        result
+    }
+
+    fn lower_for_dispatch(&mut self, pattern: &ForPattern, iterable: &Expr, body: &Stmt) -> Result<()> {
         match iterable {
             Expr::Range {
                 start,
@@ -1517,21 +1593,53 @@ impl Compiler {
         Ok(())
     }
 
-    fn bind_for_pattern(&mut self, pattern: &ForPattern, value: u16) -> Result<Vec<(String, Option<u16>)>> {
+    fn bind_for_pattern(&mut self, pattern: &ForPattern, value: u16) -> Result<Vec<ForPatternBinding>> {
         let mut previous = Vec::new();
         self.bind_for_pattern_inner(pattern, value, &mut previous)?;
         Ok(previous)
+    }
+
+    /// A loop binding is fresh (never a cell), so binding clears any stale
+    /// cell mark of a same-named outer local; the restore re-instates both
+    /// the previous slot and its mark.
+    fn bind_for_name(&mut self, name: &str, value: u16, previous: &mut Vec<ForPatternBinding>) {
+        let was_cell = self.cell_locals.contains(name);
+        previous.push(ForPatternBinding {
+            name: name.to_string(),
+            slot: self.insert_fresh_local(name.to_string(), value),
+            was_cell,
+        });
+        // Fill the innermost pending snapshot entry: captures and re-`let`s
+        // recognize the loop variable by this slot, not by name alone.
+        if let Some(entry) = self
+            .loop_snapshot_vars
+            .iter_mut()
+            .rev()
+            .find(|entry| entry.name == name && entry.slot.is_none())
+        {
+            entry.slot = Some(value);
+        }
+    }
+
+    /// The binding slot of the innermost enclosing `for` variable named
+    /// `name`, if that loop has already bound its pattern.
+    pub(super) fn active_loop_binding_slot(&self, name: &str) -> Option<u16> {
+        self.loop_snapshot_vars
+            .iter()
+            .rev()
+            .find(|entry| entry.name == name)
+            .and_then(|entry| entry.slot)
     }
 
     fn bind_for_pattern_inner(
         &mut self,
         pattern: &ForPattern,
         value: u16,
-        previous: &mut Vec<(String, Option<u16>)>,
+        previous: &mut Vec<ForPatternBinding>,
     ) -> Result<()> {
         match pattern {
             ForPattern::Variable(name) => {
-                previous.push((name.clone(), self.insert_local(name.clone(), value)));
+                self.bind_for_name(name, value, previous);
                 Ok(())
             }
             ForPattern::Ignore => Ok(()),
@@ -1560,7 +1668,7 @@ impl Compiler {
                     checked_u8("for rest value", value)?,
                     checked_u8("for rest start", start)?,
                 ));
-                previous.push((rest.clone(), self.insert_local(rest.clone(), slice)));
+                self.bind_for_name(rest, slice, previous);
                 Ok(())
             }
             ForPattern::Object(entries) => {
@@ -1587,7 +1695,7 @@ impl Compiler {
         &mut self,
         patterns: &[ForPattern],
         value: u16,
-        previous: &mut Vec<(String, Option<u16>)>,
+        previous: &mut Vec<ForPatternBinding>,
     ) -> Result<()> {
         for (index, pattern) in patterns.iter().enumerate() {
             let index = i64::try_from(index).map_err(|_| anyhow!("Compiler for pattern index overflow"))?;
@@ -1604,12 +1712,15 @@ impl Compiler {
         Ok(())
     }
 
-    fn restore_for_pattern(&mut self, previous: Vec<(String, Option<u16>)>) {
-        for (name, old) in previous.into_iter().rev() {
-            if let Some(old) = old {
-                self.insert_local(name, old);
+    fn restore_for_pattern(&mut self, previous: Vec<ForPatternBinding>) {
+        for binding in previous.into_iter().rev() {
+            if let Some(old) = binding.slot {
+                self.insert_local(binding.name.clone(), old);
             } else {
-                self.locals.remove(&name);
+                self.locals.remove(&binding.name);
+            }
+            if binding.was_cell {
+                self.cell_locals.insert(binding.name);
             }
         }
     }
@@ -1837,6 +1948,15 @@ impl Compiler {
 
     fn lower_capture_value(&mut self, name: &str) -> Result<(u16, bool)> {
         if let Some(local) = self.locals.get(name).copied() {
+            // A `for` loop variable cannot be re-bound to a cell (the fused
+            // loop opcodes drive the raw register): each capture snapshots
+            // the current value into a fresh cell — per-iteration binding.
+            // Only the loop's own binding slot qualifies: a same-named fresh
+            // `let` in the body is an ordinary local and promotes normally.
+            if self.active_loop_binding_slot(name) == Some(local) {
+                let cell = self.emit_upval_cell_with_policy(local, false)?;
+                return Ok((cell, true));
+            }
             if self.cell_locals.insert(name.to_string()) {
                 let cell = self.emit_upval_cell(local)?;
                 self.emit_move(local, cell, "box captured local")?;
@@ -1852,10 +1972,17 @@ impl Compiler {
     }
 
     fn emit_upval_cell(&mut self, src: u16) -> Result<u16> {
+        self.emit_upval_cell_with_policy(src, true)
+    }
+
+    /// `move_value: false` keeps `src` intact — the snapshot capture of a
+    /// loop variable copies the counter into the cell (the fused loop opcode
+    /// keeps driving the raw register afterwards).
+    fn emit_upval_cell_with_policy(&mut self, src: u16, move_value: bool) -> Result<u16> {
         let dst = self.alloc_reg();
         let k = self.push_heap_value(ConstHeapValue::UpvalCell(Box::new(ConstRuntimeValue::Nil)))?;
         self.emit(Instr::abx(Opcode::LoadHeapConst, checked_u8("upval cell dst", dst)?, k));
-        self.emit_store_cell_value(dst, src, "upval cell")?;
+        self.emit_store_cell_value_with_policy(dst, src, "upval cell", move_value)?;
         Ok(dst)
     }
 
@@ -2336,6 +2463,54 @@ pub fn compile_module_with_natives(program: &Program, natives: Vec<NativeEntry>)
 
 pub fn compile_source(source: &str) -> Result<Function> {
     Compiler::compile_source(source)
+}
+
+/// One active `for`-pattern variable: the binding slot is recorded when the
+/// pattern binds (`None` while the loop head — range/iterable expressions —
+/// still lowers against the enclosing scope).
+#[derive(Debug)]
+struct LoopSnapshotVar {
+    name: String,
+    slot: Option<u16>,
+}
+
+/// One name bound by a `for` pattern: the shadowed previous slot (if any) and
+/// whether that previous binding carried a capture-cell mark to re-instate.
+struct ForPatternBinding {
+    name: String,
+    slot: Option<u16>,
+    was_cell: bool,
+}
+
+fn collect_for_pattern_names(pattern: &ForPattern, out: &mut Vec<LoopSnapshotVar>) {
+    match pattern {
+        ForPattern::Variable(name) => out.push(LoopSnapshotVar {
+            name: name.clone(),
+            slot: None,
+        }),
+        ForPattern::Ignore => {}
+        ForPattern::Tuple(patterns) => {
+            for pattern in patterns {
+                collect_for_pattern_names(pattern, out);
+            }
+        }
+        ForPattern::Array { patterns, rest } => {
+            for pattern in patterns {
+                collect_for_pattern_names(pattern, out);
+            }
+            if let Some(rest) = rest {
+                out.push(LoopSnapshotVar {
+                    name: rest.clone(),
+                    slot: None,
+                });
+            }
+        }
+        ForPattern::Object(entries) => {
+            for (_, pattern) in entries {
+                collect_for_pattern_names(pattern, out);
+            }
+        }
+    }
 }
 
 pub fn compile_source_module(source: &str) -> Result<Module> {

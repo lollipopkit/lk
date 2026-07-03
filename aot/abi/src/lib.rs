@@ -143,6 +143,17 @@ macro_rules! for_each_abi_fn {
             // List HOF over compiled zero-capture lambdas (`ptr @lk_fn_N`
             // callbacks). The callback may abort (div/0 inside the lambda), so
             // none of these are Pure.
+            // VM-exact list display text (`[1,2,3]`), arena-owned.
+            ("list_h", "i64_display", lkrt_lklist_i64_display, WritesHost, [Ptr], StrPtr);
+            ("list_h", "f64_display", lkrt_lklist_f64_display, WritesHost, [Ptr], StrPtr);
+            ("list_h", "str_display", lkrt_lklist_str_display, WritesHost, [Ptr], StrPtr);
+            // Structural equality (1/0): same length + element-wise `==`;
+            // `i64_f64_eq` compares Int against Float lists with numeric
+            // coercion (`[1] == [1.0]` is true in the VM).
+            ("list_h", "i64_eq", lkrt_lklist_i64_eq, ReadsHost, [Ptr, Ptr], I64);
+            ("list_h", "f64_eq", lkrt_lklist_f64_eq, ReadsHost, [Ptr, Ptr], I64);
+            ("list_h", "i64_f64_eq", lkrt_lklist_i64_f64_eq, ReadsHost, [Ptr, Ptr], I64);
+            ("list_h", "str_eq", lkrt_lklist_str_eq, ReadsHost, [Ptr, Ptr], I64);
             ("list_h", "i64_map_fn", lkrt_lklist_i64_map_fn, WritesHost, [Ptr, Ptr], Ptr);
             ("list_h", "i64_filter_fn", lkrt_lklist_i64_filter_fn, WritesHost, [Ptr, Ptr], Ptr);
             ("list_h", "i64_reduce_fn", lkrt_lklist_i64_reduce_fn, WritesHost, [Ptr, I64, Ptr], I64);

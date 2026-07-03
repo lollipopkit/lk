@@ -6,7 +6,7 @@ use crate::{
     stmt::Stmt,
 };
 
-use super::{Compiler, support::mutated_names_in_stmt};
+use super::{Compiler, free_vars::collect_expr_closure_captures, support::mutated_names_in_stmt};
 
 #[derive(Default)]
 struct InlineReturnPatches {
@@ -51,6 +51,31 @@ impl Compiler {
         let mutated_names = mutated_names_in_stmt(body);
 
         let result = (|| {
+            // Locals a closure *argument* captures promote before any
+            // argument lowers: a read-only `Var` argument binds its parameter
+            // to the local's register directly, and a later closure argument
+            // boxing that register in place would leave the parameter
+            // aliasing a cell (`use2(y, |q| q + y)` read the cell as `a`).
+            // Loop variables are exempt — their captures snapshot into a
+            // fresh cell without re-binding the register.
+            let mut captured = Vec::new();
+            for arg in args {
+                collect_expr_closure_captures(arg, &mut captured);
+            }
+            for name in captured {
+                if self.active_loop_binding_slot(&name) == self.locals.get(&name).copied()
+                    && self.locals.contains_key(&name)
+                {
+                    continue;
+                }
+                self.promote_captured_local(&name)?;
+            }
+            // Two phases: every argument expression lowers in the *caller's*
+            // namespace before any parameter binds. Interleaving would let a
+            // later argument resolve a name against an already-bound earlier
+            // parameter (`fn add2(a, b)` called as `add2(1, a)` must pass the
+            // caller's `a`, not the first argument).
+            let mut bindings = Vec::with_capacity(params.len());
             for (param, arg) in params.iter().zip(args.iter()) {
                 if mutated_names.contains(param) {
                     let slot = self.alloc_reg();
@@ -59,17 +84,25 @@ impl Compiler {
                         let move_source = !self.is_current_local_slot(arg);
                         self.emit_move_with_policy(slot, arg, "inline param", move_source)?;
                     }
-                    self.insert_local(param.clone(), slot);
+                    bindings.push((param.clone(), slot));
                 } else {
                     let arg = self.lower_inline_readonly_arg(arg)?;
-                    self.insert_local(param.clone(), arg);
+                    bindings.push((param.clone(), arg));
                 }
+            }
+            for (param, slot) in bindings {
+                self.insert_fresh_local(param, slot);
             }
             self.lower_inline_body(body)
         })();
 
+        // A closure argument capturing a caller local promotes it to a cell
+        // *in place* (the variable's register now holds the cell, see
+        // `lower_capture_value`). That is a code-level side effect on the
+        // caller's frame, so the promotion record must survive the scope
+        // restore; only names the inline shadowed with a fresh binding revert.
+        self.cell_locals = self.scope_restored_cell_locals(&saved_locals, saved_cell_locals);
         self.locals = saved_locals;
-        self.cell_locals = saved_cell_locals;
         result
     }
 
@@ -139,7 +172,7 @@ impl Compiler {
                     let move_source = !self.is_current_local_slot(value);
                     self.emit_move_with_policy(slot, value, "inline local", move_source)?;
                 }
-                self.insert_local(name.clone(), slot);
+                self.insert_fresh_local(name.clone(), slot);
                 Ok(())
             }
             Stmt::Assign { name, value, .. } => self.lower_assign(name, value),

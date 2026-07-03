@@ -33,13 +33,24 @@ ModuleArtifact → lk-aot-lower → lk_aot_mir::validate → lk-aot-codegen → 
   (single assignment in the entry prefix, readable from any function).
 - Capturing closures with statically tracked environments: the compiler's
   upvalue cells (`LoadHeapConst UpvalCell` / `StoreCellVal` / `LoadCellVal`)
-  are modelled as virtual SSA slots, and each closure call resolves its cells
-  to their *current* content and passes the values as hidden trailing
-  parameters — preserving the VM's shared-mutable-cell semantics (mutations
-  between creation and call are visible). Cell state is block-local: closures
-  or mutations crossing control flow reject, as do lambdas that mutate their
-  captures, closures as first-class values (passed as arguments, stored in
-  containers, returned), and string captures flowing into `+` dispatch.
+  live in virtual SSA slots appended after the registers, under the same
+  Braun construction — cross-block cell state (mutation in a branch arm,
+  loop-carried updates) gets phis, and each closure call resolves its cells
+  to their *current* content, passed as hidden trailing parameters (the VM's
+  shared-mutable-cell semantics). Closure refs propagate across blocks
+  through `Move`/`Move2` when every predecessor path agrees; ref consistency
+  dies at loop headers whose entry edge lacks the ref, which is exactly what
+  keeps per-iteration cells isolated (a loop-created closure cannot leak into
+  the next iteration — such escapes reject loudly). Still rejected: lambdas
+  that mutate their captures, closures stored in containers, and string
+  captures flowing into `+` dispatch.
+- List structural equality (`xs == [1, 2, 3]`, `!=`): same-typed
+  `List<i64/f64/str>` pairs compare via lkrt helpers (length + element-wise
+  `==`, so a NaN element breaks equality); Int/Float pairs coerce
+  numerically (`[1] == [1.0]` is true); other cross-typed pairs fold to
+  false only when both sides are provably non-empty at materialization
+  (two empty lists are equal in the VM regardless of type — unproven
+  emptiness rejects instead of guessing).
 - Growable handle containers (`List<i64/f64/str>`, `Map<{str,i64} ×
   {i64,f64}>`) with VM-exact indexing: the `Maybe` present-bit model makes
   out-of-range/missing reads return-print `nil`, abort on arithmetic (like the
@@ -81,12 +92,29 @@ ModuleArtifact → lk-aot-lower → lk_aot_mir::validate → lk-aot-codegen → 
   `Const::FnAddr` → `ptr @lk_fn_N`): `map`/`filter`/`reduce` over `List<i64>`
   call the lambda per element inside lkrt; the callback signature goes through
   the same monomorphization lattice as direct calls.
-- Zero-capture lambdas as user-function arguments (`apply(f, x)`): the lambda
-  parameter is *erased* — call sites record the lambda's identity (every site
-  must pass the same one, else whole-module fallback) and the callee seeds the
-  parameter register with the static ref, so indirect calls through it
-  devirtualize. Capturing closures as arguments, differing identities, and
-  returning closures stay rejected.
+- Lambdas as user-function arguments (`apply(f, x)`): the lambda parameter is
+  *erased* and the call retargets to a per-identity **clone** of the callee
+  (identity = target function + capture count, capped at 8 clones per
+  original; a function called with both lambdas and plain values is
+  polymorphic over functions vs values and rejects loudly). A *capturing*
+  closure argument additionally appends its environment — resolved to current
+  cell contents at the call site — as hidden trailing arguments, so mutation
+  between calls stays visible and the identity (hence the clone) is shared
+  across environments; forwarding through further helpers nests naturally.
+- Returned closures via static summaries: a non-entry function whose *single*
+  return is a closure with every capture mapping to one of its own parameters,
+  with an effect-free body (constant loads, moves, cell setup, the
+  `MakeClosure` itself — anything that can abort or observe state
+  disqualifies), is summarized; call sites seed the result register with the
+  closure ref built from their argument values and no call is emitted (the
+  body is skipped entirely). Factory results feed straight into the
+  closure-as-argument path. Mutating returned closures (counters), multiple
+  returns, and effectful factories reject loudly.
+- Container display through the print family: `println(xs)` / `println("{}",
+  xs)` render `List<i64/f64/str>` with VM-exact separators and `{:?}` string
+  quoting via lkrt display helpers; the scalar-only contexts
+  (`ToString`/template interpolation/`+` concat) keep rejecting containers
+  exactly like the VM's runtime error.
 - `CallMethodK` (the boxing-free method-call opcode) lowers through the same
   per-(receiver type, method) dispatch as the legacy `__lk_call_method` shape;
   builtin/global refs resolve across blocks when all predecessor paths agree
@@ -132,7 +160,10 @@ sanitized differential runs.
 
 ## Future work
 
-Expanding this lowering surface (module builtins such as `os.clock`/`math.*`,
-closures/indirect calls/mutable globals — RFC §7 phase 4, mixed-element
-constant containers) must go through the MIR pipeline; adding a second lowering
-path or a VM runtime bridge is out of bounds.
+Expanding this lowering surface (map structural equality, `json`/dynamic
+tagged values, mixed-element constant containers, closures stored in
+containers) must go through the MIR pipeline; adding a second lowering path
+or a VM runtime bridge is out of bounds. The RFC §7 phase-4 first-class-function arc (indirect calls, lambdas
+and capturing closures as arguments, returned closures) landed via erasure,
+clone specialization, and static summaries — a runtime `{fn_ptr, env}`
+representation was never needed for the observed corpus.

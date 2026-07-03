@@ -56,10 +56,11 @@ pub enum Unsupported {
     BadConst {
         pc: usize,
     },
-    /// A register was read with no reaching definition on any predecessor path.
+    /// A register (or virtual cell slot) was read with no reaching definition
+    /// on any predecessor path.
     UndefinedOperand {
         pc: usize,
-        reg: u8,
+        reg: usize,
     },
     /// An operand had the wrong type for the operation.
     TypeMismatch {
@@ -166,7 +167,7 @@ enum GlobalRef {
     Closure(u32, Vec<ClosureCapture>),
     /// An upvalue cell (`LoadHeapConst` of `UpvalCell`): the compiler's shared
     /// mutable box for captured locals. Its content is tracked per block in
-    /// [`Ssa::cell_vals`]; the handle itself never materializes.
+    /// a virtual SSA slot; the handle itself never materializes.
     Cell(u32),
     /// Inside a lambda body: `LoadCapture k` yields the k-th captured cell;
     /// `LoadCellVal` through it reads the hidden capture parameter.
@@ -175,6 +176,26 @@ enum GlobalRef {
     /// into a list; the lowering keeps the raw elements so method dispatch can
     /// consume them without materializing a runtime list.
     ArgList(Vec<(ValueId, Ty)>),
+}
+
+/// The statically known identity of a lambda passed as an argument: the
+/// target function plus its capture count (a capturing closure's *environment
+/// values* are runtime data — hidden trailing arguments — and stay out of the
+/// identity, so one clone serves every environment of the same lambda).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct LambdaIdentity {
+    fidx: u32,
+    captures: u16,
+}
+
+/// One capture of a *returned* closure, expressed in caller terms: the
+/// callee's k-th parameter value (i.e. the caller's argument). A returned
+/// closure whose environment reduces entirely to parameters lets the call
+/// site construct the closure ref statically — the effect-free callee body
+/// is never emitted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RetCaptureSrc {
+    Param(usize),
 }
 
 /// One captured slot of a [`GlobalRef::Closure`].
@@ -356,12 +377,36 @@ struct SigInfer {
     /// assigned exactly once, in the entry prefix, from a zero-capture
     /// `MakeClosure`. Reading such a slot yields [`GlobalRef::Lambda`].
     lambda_globals: Vec<Option<u32>>,
-    /// `lambda_params[f][i]` — call sites always pass this exact zero-capture
-    /// lambda as `f`'s i-th argument. The parameter is *erased* from the MIR
-    /// signature: the callee seeds the register with the [`GlobalRef::Lambda`]
-    /// instead, so indirect calls through it devirtualize. Two call sites
-    /// passing different lambdas mark `conflict` (whole-module fallback).
-    lambda_params: Vec<Vec<Option<u32>>>,
+    /// `lambda_params[f][i]` — this function's i-th parameter is an *erased*
+    /// lambda with a statically known identity: the callee seeds the register
+    /// with a `GlobalRef::Lambda`/`Closure` instead of binding a value, so
+    /// indirect calls through it devirtualize. A capturing identity adds
+    /// hidden environment parameters (after the visible ones, before the
+    /// callee's own captures). Set on clone materialization.
+    lambda_params: Vec<Vec<Option<LambdaIdentity>>>,
+    /// Clone specialization table: `(original fn, lambda identity per param)`
+    /// → the specialized clone's id. Call sites passing lambdas retarget to
+    /// the clone whose identity vector matches, so *different* lambdas at the
+    /// same parameter get independent clones instead of a conflict.
+    specializations: std::collections::HashMap<(u32, Vec<Option<LambdaIdentity>>), u32>,
+    /// Clones queued during a pass (original fn ids, in id-assignment order),
+    /// materialized into the working function list between passes.
+    pending_clones: Vec<u32>,
+    /// Original functions that have at least one specialized (lambda-passing)
+    /// call site. If such a function also has a plain call site
+    /// (`plain_called`), the program is polymorphic over functions vs values —
+    /// reject. Otherwise the original body is skipped (all callers use clones).
+    specialized: Vec<bool>,
+    /// Original functions with at least one all-plain call site.
+    plain_called: Vec<bool>,
+    /// `ret_closures[f]` — this function's single return is a closure whose
+    /// captures all map to its parameters: `(lambda fidx, capture sources)`.
+    /// Call sites consume the summary (the result register is seeded with the
+    /// closure ref, no call emitted); the pure body is never emitted.
+    ret_closures: Vec<Option<(u32, Vec<RetCaptureSrc>)>>,
+    /// Functions whose returns disagreed with a recorded summary — a poisoned
+    /// function never records again and rejects on lowering instead.
+    ret_closure_poisoned: Vec<bool>,
     /// Diagnostic names for the mutable-global table (slot-indexed).
     global_names: Vec<String>,
     /// Final compact `slot → gvar` numbering, built once signatures converge
@@ -390,7 +435,7 @@ pub fn lower(artifact: &ModuleArtifact) -> Result<MirModule, Unsupported> {
     // never directly called (e.g. a small helper the front end inlined at every use)
     // are dead for AOT; lowering them would pointlessly fail the whole module if they
     // use a shape we don't support, so we skip them entirely.
-    let reachable = reachable_functions(module);
+    let mut reachable = reachable_functions(module);
 
     let global_count = module.globals.len();
     let mut sig = SigInfer {
@@ -411,25 +456,60 @@ pub fn lower(artifact: &ModuleArtifact) -> Result<MirModule, Unsupported> {
             .iter()
             .map(|f| vec![None; f.param_count as usize])
             .collect(),
+        specializations: std::collections::HashMap::new(),
+        pending_clones: Vec::new(),
+        specialized: vec![false; n],
+        plain_called: vec![false; n],
+        ret_closures: vec![None; n],
+        ret_closure_poisoned: vec![false; n],
         global_names: module.globals.clone(),
         gvar_of: std::collections::HashMap::new(),
     };
+
+    // Working function list: module functions plus lambda-argument clone
+    // specializations materialized between fixpoint passes (byte-identical
+    // bodies whose `lambda_params` erase the lambda parameters).
+    let mut funcs: Vec<FunctionData> = module.functions.to_vec();
 
     // Fixpoint: re-lower every function, refining inferred parameter/return types
     // (bounded — the scalar lattice converges quickly). Transient failures are
     // tolerated here (a function may not lower until the types it depends on have
     // converged); the final pass below is authoritative and propagates errors.
-    for _ in 0..2 * n + 2 {
-        let snapshot = (sig.param_obs.clone(), sig.ret_types.clone());
-        for (fi, func) in module.functions.iter().enumerate() {
+    let mut passes = 0usize;
+    loop {
+        let snapshot = (
+            sig.param_obs.clone(),
+            sig.ret_types.clone(),
+            sig.specializations.len(),
+            sig.ret_closures.clone(),
+        );
+        // Call-site facts are re-derived every pass: an argument register
+        // that resolves to a closure ref only once a summary lands (e.g. a
+        // summarized callee's result) must not leave a stale plain-call mark
+        // from the pass before the summary existed. The final pass inherits
+        // the converged flags of the last fixpoint pass.
+        sig.specialized.iter_mut().for_each(|flag| *flag = false);
+        sig.plain_called.iter_mut().for_each(|flag| *flag = false);
+        sig.conflict = false;
+        for fi in 0..funcs.len() {
             if !reachable[fi] {
+                continue;
+            }
+            // Originals whose call sites all pass lambdas are fully replaced
+            // by their clones (their bodies would reject without erasure).
+            if sig.specialized.get(fi).copied().unwrap_or(false) {
+                continue;
+            }
+            // Summarized closure-returning functions are consumed at call
+            // sites; their pure bodies are never emitted.
+            if sig.ret_closures.get(fi).is_some_and(Option::is_some) {
                 continue;
             }
             let is_entry = fi as u32 == module.entry;
             let mut scratch = Vec::new();
             if let Ok(mf) = lower_function(
-                func,
-                &module.functions,
+                &funcs[fi],
+                &funcs,
                 fi as u32,
                 module.entry,
                 is_entry,
@@ -441,12 +521,29 @@ pub fn lower(artifact: &ModuleArtifact) -> Result<MirModule, Unsupported> {
                 sig.ret_types[fi] = mf.ret;
             }
         }
-        if sig.conflict {
-            return Err(Unsupported::ReturnTypeConflict);
+        // Materialize clones queued during this pass so the next pass lowers
+        // them (their `lambda_params` are already in place).
+        for orig in std::mem::take(&mut sig.pending_clones) {
+            funcs.push(funcs[orig as usize].clone());
+            reachable.push(true);
         }
-        if snapshot == (sig.param_obs.clone(), sig.ret_types.clone()) {
+        passes += 1;
+        let converged = snapshot
+            == (
+                sig.param_obs.clone(),
+                sig.ret_types.clone(),
+                sig.specializations.len(),
+                sig.ret_closures.clone(),
+            );
+        if converged || passes > 2 * funcs.len() + 2 {
             break;
         }
+    }
+    // A conflict that survives the *converged* pass is real (per-pass resets
+    // clear transient marks left before a closure-return summary landed):
+    // param-type disagreement or function-vs-value polymorphism.
+    if sig.conflict {
+        return Err(Unsupported::ReturnTypeConflict);
     }
 
     // Compact numbering for the mutable globals the fixpoint discovered; the
@@ -464,15 +561,21 @@ pub fn lower(artifact: &ModuleArtifact) -> Result<MirModule, Unsupported> {
     // the reachable functions. Any reachable function outside the subset fails the
     // whole module (caller falls back); `FuncId`s keep their original module indices.
     let mut globals: Vec<String> = Vec::new();
-    let mut functions = Vec::with_capacity(n);
-    for (fi, func) in module.functions.iter().enumerate() {
+    let mut functions = Vec::with_capacity(funcs.len());
+    for fi in 0..funcs.len() {
         if !reachable[fi] {
+            continue;
+        }
+        if sig.specialized.get(fi).copied().unwrap_or(false) {
+            continue;
+        }
+        if sig.ret_closures.get(fi).is_some_and(Option::is_some) {
             continue;
         }
         let is_entry = fi as u32 == module.entry;
         functions.push(lower_function(
-            func,
-            &module.functions,
+            &funcs[fi],
+            &funcs,
             fi as u32,
             module.entry,
             is_entry,
@@ -892,22 +995,35 @@ fn lower_function(
     }
 
     // 5. Lower each block in leader order via Braun on-demand SSA construction.
-    let mut ssa = Ssa::new(reg_count, preds, total_blocks);
+    // One virtual cell slot per `LoadHeapConst UpvalCell` site (cell ids are
+    // assigned in lowering order, so the site count bounds them).
+    let cell_capacity = instrs
+        .iter()
+        .filter(|i| {
+            i.opcode() == Opcode::LoadHeapConst
+                && matches!(
+                    func.consts.heap_values.get(i.bx() as usize),
+                    Some(ConstHeapValueData::UpvalCell(_))
+                )
+        })
+        .count();
+    let mut ssa = Ssa::new(reg_count, cell_capacity, preds, total_blocks);
     // Function parameters occupy r0..r(param_count-1) at entry; each takes its
     // inferred type (the argument type observed at call sites, `I64` by default).
     // They seed the entry block's register file as its first SSA values.
-    let mut fn_params: Vec<(ValueId, Ty)> = Vec::with_capacity(param_count + capture_count);
+    let identities: Vec<Option<LambdaIdentity>> =
+        sig.lambda_params.get(func_index as usize).cloned().unwrap_or_default();
+    let env_total: usize = identities.iter().flatten().map(|id| id.captures as usize).sum();
+    let mut fn_params: Vec<(ValueId, Ty)> = Vec::with_capacity(param_count + env_total + capture_count);
     for r in 0..param_count {
-        // An erased lambda parameter has no runtime value: the register holds
-        // the statically known function ref (indirect calls devirtualize).
-        if let Some(fidx) = sig
-            .lambda_params
-            .get(func_index as usize)
-            .and_then(|p| p.get(r))
-            .copied()
-            .flatten()
-        {
-            ssa.builtin_regs.insert((0, r as u8), GlobalRef::Lambda(fidx));
+        // An erased zero-capture lambda parameter has no runtime value: the
+        // register holds the statically known function ref (indirect calls
+        // devirtualize). Erased capturing identities bind below, after the
+        // visible parameters, so signature order matches the call site.
+        if let Some(id) = identities.get(r).copied().flatten() {
+            if id.captures == 0 {
+                ssa.builtin_regs.insert((0, r as u8), GlobalRef::Lambda(id.fidx));
+            }
             continue;
         }
         let pty = sig.param_ty(func_index as usize, r);
@@ -915,12 +1031,34 @@ fn lower_function(
         ssa.current_def[0][r] = Some((pv, pty));
         fn_params.push((pv, pty));
     }
-    // A capturing lambda's environment arrives as hidden trailing parameters
-    // (the closure's by-value snapshot, appended by the `Call` lowering); they
-    // occupy no register — `LoadCapture k` reads them directly.
+    // An erased *capturing* closure argument: its environment (resolved at
+    // the call site) arrives as hidden trailing parameters, one block per
+    // erased parameter in parameter order. The register holds a Closure ref
+    // whose captures alias those parameters by value.
+    let mut env_offset = 0usize;
+    for r in 0..param_count {
+        let Some(id) = identities.get(r).copied().flatten() else {
+            continue;
+        };
+        if id.captures == 0 {
+            continue;
+        }
+        let mut caps = Vec::with_capacity(id.captures as usize);
+        for _ in 0..id.captures {
+            let ety = sig.param_ty(func_index as usize, param_count + env_offset);
+            let ev = ssa.new_val();
+            fn_params.push((ev, ety));
+            caps.push(ClosureCapture::Value(ev, ety));
+            env_offset += 1;
+        }
+        ssa.builtin_regs.insert((0, r as u8), GlobalRef::Closure(id.fidx, caps));
+    }
+    // A capturing lambda's own environment arrives after any erased-argument
+    // env blocks (the closure's by-value snapshot, appended by the `Call`
+    // lowering); it occupies no register — `LoadCapture k` reads it directly.
     let mut capture_params: Vec<(ValueId, Ty)> = Vec::with_capacity(capture_count);
     for k in 0..capture_count {
-        let cty = sig.param_ty(func_index as usize, param_count + k);
+        let cty = sig.param_ty(func_index as usize, param_count + env_total + k);
         let cv = ssa.new_val();
         capture_params.push((cv, cty));
         fn_params.push((cv, cty));
@@ -959,6 +1097,27 @@ fn lower_function(
         // Resolve the terminator's value reads while this block is current.
         match exit {
             Some(Exit::Ret(Some(reg))) => {
+                // A return of a closure ref has no SSA value. When it is the
+                // function's only return, the body is effect-free, and every
+                // capture resolves to a parameter, record a summary — call
+                // sites construct the closure from their argument values and
+                // this body is never emitted. Everything else rejects below.
+                if !is_entry && let Some(candidate) = ret_closure_candidate(&mut ssa, reg, bi, &fn_params, param_count)
+                {
+                    let single_ret =
+                        !implicit_ret && exits.iter().flatten().filter(|e| matches!(e, Exit::Ret(_))).count() == 1;
+                    if single_ret
+                        && capture_count == 0
+                        && identities.iter().all(Option::is_none)
+                        && ret_closure_body_is_pure(&instrs)
+                    {
+                        record_ret_closure(sig, func_index as usize, candidate);
+                    }
+                    return Err(Unsupported::Opcode {
+                        pc: start,
+                        op: Opcode::Return1,
+                    });
+                }
                 let (v, ty) = ssa.read(reg, bi, start)?;
                 match ret_ty {
                     Some(prev) if prev != ty => return Err(Unsupported::ReturnTypeConflict),
@@ -1404,6 +1563,9 @@ struct Phi {
 
 struct Ssa {
     reg_count: usize,
+    /// Register slots plus the virtual cell slots appended after them
+    /// (`reg_count + cid` addresses cell `cid`'s content).
+    slot_count: usize,
     preds: Vec<Vec<usize>>,
     current_def: Vec<Vec<Option<Reg>>>,
     sealed: Vec<bool>,
@@ -1418,6 +1580,12 @@ struct Ssa {
     const_int: std::collections::HashMap<ValueId, i64>,
     /// SSA value of a const-materialized list handle → its known element count.
     list_len: std::collections::HashMap<ValueId, i64>,
+    /// Element count at materialization (never bumped by pushes): a sound
+    /// *lower bound* on the runtime length — the subset has no removal ops,
+    /// while `list_len`'s static push increments can overshoot (a push in an
+    /// untaken branch). Used to prove both operands of a cross-typed list
+    /// comparison non-empty.
+    list_base_len: std::collections::HashMap<ValueId, i64>,
     /// SSA value → its compile-time string content (`LoadString` /
     /// `LoadHeapConst` long strings), used to expand `println` format strings
     /// at lower time.
@@ -1427,12 +1595,14 @@ struct Ssa {
     /// propagated by `Move`. Block-local by construction; any write to the
     /// register clears it.
     builtin_regs: std::collections::HashMap<(usize, u8), GlobalRef>,
-    /// Fresh ids for upvalue cells created by `LoadHeapConst`.
+    /// Fresh ids for upvalue cells created by `LoadHeapConst`; each cell's
+    /// content lives in virtual slot `reg_count + cid`, participating in the
+    /// same Braun construction as registers (cross-block cell state gets
+    /// phis). Iteration isolation needs no extra guard: the only path to a
+    /// cell read is a `Cell`/`Closure` ref in `builtin_regs`, and ref
+    /// propagation dies at loop headers whose entry edge lacks the ref, while
+    /// the creation site re-initializes the slot each iteration.
     next_cell: u32,
-    /// `(block, cell id)` → the cell's current content. Block-local like
-    /// [`Self::builtin_regs`]: cross-block cell flows reject rather than
-    /// modelling phi'd cell state.
-    cell_vals: std::collections::HashMap<(usize, u32), (ValueId, Ty)>,
     /// Per-block trailing instructions added for phi-edge type conversions
     /// (`Maybe` ↔ scalar merges); appended after the block's own instructions
     /// when the MIR blocks are assembled.
@@ -1440,11 +1610,13 @@ struct Ssa {
 }
 
 impl Ssa {
-    fn new(reg_count: usize, preds: Vec<Vec<usize>>, total_blocks: usize) -> Self {
+    fn new(reg_count: usize, cell_capacity: usize, preds: Vec<Vec<usize>>, total_blocks: usize) -> Self {
+        let slot_count = reg_count + cell_capacity;
         Self {
             reg_count,
+            slot_count,
             preds,
-            current_def: vec![vec![None; reg_count]; total_blocks],
+            current_def: vec![vec![None; slot_count]; total_blocks],
             sealed: vec![false; total_blocks],
             filled: vec![false; total_blocks],
             phis: (0..total_blocks).map(|_| Vec::new()).collect(),
@@ -1453,10 +1625,10 @@ impl Ssa {
             next_val: 0,
             const_int: std::collections::HashMap::new(),
             list_len: std::collections::HashMap::new(),
+            list_base_len: std::collections::HashMap::new(),
             const_strs: std::collections::HashMap::new(),
             builtin_regs: std::collections::HashMap::new(),
             next_cell: 0,
-            cell_vals: std::collections::HashMap::new(),
             edge_insts: vec![Vec::new(); total_blocks],
         }
     }
@@ -1469,16 +1641,33 @@ impl Ssa {
 
     fn write(&mut self, reg: u8, block: usize, value: Reg) {
         if (reg as usize) < self.reg_count {
-            self.current_def[block][reg as usize] = Some(value);
-            self.builtin_regs.remove(&(block, reg));
+            self.write_slot(reg as usize, block, value);
+        }
+    }
+
+    fn write_slot(&mut self, slot: usize, block: usize, value: Reg) {
+        if slot < self.slot_count {
+            self.current_def[block][slot] = Some(value);
+            if slot < self.reg_count {
+                self.builtin_regs.remove(&(block, slot as u8));
+            }
         }
     }
 
     fn read(&mut self, reg: u8, block: usize, pc: usize) -> Result<Reg, Unsupported> {
-        if let Some(v) = self.current_def[block][reg as usize] {
+        self.read_slot(reg as usize, block, pc)
+    }
+
+    fn read_slot(&mut self, slot: usize, block: usize, pc: usize) -> Result<Reg, Unsupported> {
+        if let Some(v) = self.current_def[block][slot] {
             return Ok(v);
         }
-        self.read_recursive(reg, block, pc)
+        self.read_recursive(slot, block, pc)
+    }
+
+    /// The virtual slot holding cell `cid`'s content.
+    fn cell_slot(&self, cid: u32) -> usize {
+        self.reg_count + cid as usize
     }
 
     fn read_typed(&mut self, reg: u8, block: usize, want: Ty, pc: usize) -> Result<ValueId, Unsupported> {
@@ -1546,7 +1735,7 @@ impl Ssa {
     fn reg_const_str(&self, reg: u8, block: usize) -> Option<String> {
         let mut visited = std::collections::HashSet::new();
         let mut found: Option<String> = None;
-        if self.collect_reg_const_str(reg, block, &mut visited, &mut found) {
+        if self.collect_reg_const_str(reg as usize, block, &mut visited, &mut found) {
             found
         } else {
             None
@@ -1555,15 +1744,15 @@ impl Ssa {
 
     fn collect_reg_const_str(
         &self,
-        reg: u8,
+        reg: usize,
         block: usize,
-        visited: &mut std::collections::HashSet<(usize, u8)>,
+        visited: &mut std::collections::HashSet<(usize, usize)>,
         found: &mut Option<String>,
     ) -> bool {
         if !visited.insert((block, reg)) {
             return true;
         }
-        if let Some((v, ty)) = self.current_def[block][reg as usize] {
+        if let Some((v, ty)) = self.current_def[block][reg] {
             if ty != Ty::Str {
                 return false;
             }
@@ -1583,7 +1772,7 @@ impl Ssa {
             // non-constant definition makes the value dynamic.
             for (phi_block, phis) in self.phis.iter().enumerate() {
                 if let Some(phi) = phis.iter().find(|phi| phi.param == v) {
-                    let phi_reg = phi.reg as u8;
+                    let phi_reg = phi.reg;
                     for p in self.preds[phi_block].clone() {
                         if !self.collect_reg_const_str(phi_reg, p, visited, found) {
                             return false;
@@ -1604,24 +1793,24 @@ impl Ssa {
 
     /// The type of `reg` as seen from an already-filled predecessor (loop-invariant
     /// for the register classes we lower), used to type a freshly created phi.
-    fn phi_ty(&mut self, reg: u8, block: usize, pc: usize) -> Result<Ty, Unsupported> {
+    fn phi_ty(&mut self, slot: usize, block: usize, pc: usize) -> Result<Ty, Unsupported> {
         let preds = self.preds[block].clone();
         for p in preds {
             if self.filled[p] {
-                return Ok(self.read(reg, p, pc)?.1);
+                return Ok(self.read_slot(slot, p, pc)?.1);
             }
         }
-        Err(Unsupported::UndefinedOperand { pc, reg })
+        Err(Unsupported::UndefinedOperand { pc, reg: slot })
     }
 
-    fn read_recursive(&mut self, reg: u8, block: usize, pc: usize) -> Result<Reg, Unsupported> {
+    fn read_recursive(&mut self, slot: usize, block: usize, pc: usize) -> Result<Reg, Unsupported> {
         let value: Reg = if !self.sealed[block] {
-            let ty = self.phi_ty(reg, block, pc)?;
+            let ty = self.phi_ty(slot, block, pc)?;
             let param = self.new_val();
             let idx = self.phis[block].len();
             self.phis[block].push(Phi {
                 param,
-                reg: reg as usize,
+                reg: slot,
                 ty,
                 operands: Vec::new(),
             });
@@ -1629,34 +1818,34 @@ impl Ssa {
             (param, ty)
         } else if self.preds[block].len() == 1 {
             let p = self.preds[block][0];
-            self.read(reg, p, pc)?
+            self.read_slot(slot, p, pc)?
         } else if self.preds[block].is_empty() {
-            return Err(Unsupported::UndefinedOperand { pc, reg });
+            return Err(Unsupported::UndefinedOperand { pc, reg: slot });
         } else {
-            let ty = self.phi_ty(reg, block, pc)?;
+            let ty = self.phi_ty(slot, block, pc)?;
             let param = self.new_val();
             let idx = self.phis[block].len();
             self.phis[block].push(Phi {
                 param,
-                reg: reg as usize,
+                reg: slot,
                 ty,
                 operands: Vec::new(),
             });
             // Break cycles before reading operands.
-            self.current_def[block][reg as usize] = Some((param, ty));
+            self.current_def[block][slot] = Some((param, ty));
             self.add_phi_operands(block, idx, pc)?;
             (param, ty)
         };
-        self.current_def[block][reg as usize] = Some(value);
+        self.current_def[block][slot] = Some(value);
         Ok(value)
     }
 
     fn add_phi_operands(&mut self, block: usize, phi_idx: usize, pc: usize) -> Result<(), Unsupported> {
-        let reg = self.phis[block][phi_idx].reg as u8;
+        let slot = self.phis[block][phi_idx].reg;
         let phi_ty = self.phis[block][phi_idx].ty;
         let preds = self.preds[block].clone();
         for p in preds {
-            let (v, ty) = self.read(reg, p, pc)?;
+            let (v, ty) = self.read_slot(slot, p, pc)?;
             // Every incoming edge must agree on the type (the phi was typed from
             // one filled predecessor). A `Maybe` merging with its scalar (the
             // `let v = m[k]; if v == nil { v = default; }` shape) converts on
@@ -1944,6 +2133,80 @@ fn rel(pc: usize, offset: i32, code_len: usize) -> Option<usize> {
     }
 }
 
+/// A `Ret` of a register holding a closure ref whose captures all resolve
+/// (in the returning block) to the function's own parameter values.
+fn ret_closure_candidate(
+    ssa: &mut Ssa,
+    reg: u8,
+    block: usize,
+    fn_params: &[(ValueId, Ty)],
+    param_count: usize,
+) -> Option<(u32, Vec<RetCaptureSrc>)> {
+    let (fidx, caps) = match ssa.builtin_ref_at(reg, block)? {
+        GlobalRef::Lambda(fidx) => (fidx, Vec::new()),
+        GlobalRef::Closure(fidx, caps) => (fidx, caps),
+        _ => return None,
+    };
+    let mut srcs = Vec::with_capacity(caps.len());
+    for cap in &caps {
+        let (v, _) = match cap {
+            ClosureCapture::Cell(cid) => {
+                let slot = ssa.cell_slot(*cid);
+                ssa.read_slot(slot, block, 0).ok()?
+            }
+            ClosureCapture::Value(v, ty) => (*v, *ty),
+        };
+        let k = fn_params
+            .get(..param_count.min(fn_params.len()))?
+            .iter()
+            .position(|&(pv, _)| pv == v)?;
+        srcs.push(RetCaptureSrc::Param(k));
+    }
+    Some((fidx, srcs))
+}
+
+/// Effect-free body whitelist for [`SigInfer::ret_closures`]: constant loads,
+/// register/cell moves, and the closure construction itself. Anything that can
+/// abort, write observable state, or call out disqualifies the summary —
+/// callers skip the call entirely, so a lost effect would diverge from the VM.
+fn ret_closure_body_is_pure(instrs: &[Instr]) -> bool {
+    instrs.iter().all(|instr| {
+        matches!(
+            instr.opcode(),
+            Opcode::LoadNil
+                | Opcode::LoadBool
+                | Opcode::LoadInt
+                | Opcode::LoadFloat
+                | Opcode::LoadHeapConst
+                | Opcode::StoreCellVal
+                | Opcode::LoadCellVal
+                | Opcode::Move
+                | Opcode::Move2
+                | Opcode::MakeClosure
+                | Opcode::Return1
+        )
+    })
+}
+
+/// Records a closure-return summary; disagreeing returns poison the function
+/// (no summary, so it rejects on lowering instead of miscompiling).
+fn record_ret_closure(sig: &mut SigInfer, fi: usize, candidate: (u32, Vec<RetCaptureSrc>)) {
+    if sig.ret_closure_poisoned.get(fi).copied().unwrap_or(true) {
+        return;
+    }
+    let Some(slot) = sig.ret_closures.get_mut(fi) else {
+        return;
+    };
+    match slot {
+        None => *slot = Some(candidate),
+        Some(prev) if *prev == candidate => {}
+        Some(_) => {
+            *slot = None;
+            sig.ret_closure_poisoned[fi] = true;
+        }
+    }
+}
+
 /// Lowers a call to user function `callee_idx` with the register-window layout
 /// shared by `CallDirect` and indirect `Call` (callee/result at `dst_reg`,
 /// args at `[dst_reg+1, dst_reg+1+argc)`): reads the typed arguments, refines
@@ -1984,34 +2247,131 @@ fn lower_user_call(
             op: Opcode::CallDirect,
         });
     }
-    let mut args = Vec::with_capacity(argc + captures.len());
-    for i in 0..argc {
-        let arg_reg = dst_reg.wrapping_add(1).wrapping_add(i as u8);
-        // A zero-capture lambda argument is erased from the native signature:
-        // record its identity (all call sites must agree) and pass nothing —
-        // the callee seeds the parameter register with the static ref instead.
-        if let Some(GlobalRef::Lambda(fidx)) = ssa.builtin_regs.get(&(block, arg_reg)) {
-            if let Some(slot) = sig.lambda_params.get_mut(callee_idx).and_then(|p| p.get_mut(i)) {
-                match slot {
-                    None => *slot = Some(*fidx),
-                    Some(prev) if *prev != *fidx => sig.conflict = true,
-                    Some(_) => {}
-                }
+    // Zero-capture lambda arguments are erased from the native signature:
+    // collect the call site's lambda identity vector; a non-empty vector
+    // retargets the call to a per-identity *clone* of the callee (created on
+    // demand, byte-identical body, `lambda_params` pre-filled so its
+    // parameters seed static refs instead of binding values).
+    // Identity resolution backtracks across blocks like the hidden-env
+    // lookup below (an argument register may inherit its lambda/closure ref
+    // from a predecessor), so both paths agree on what the register holds.
+    let identity: Vec<Option<LambdaIdentity>> = (0..argc)
+        .map(|i| {
+            let arg_reg = dst_reg.wrapping_add(1).wrapping_add(i as u8);
+            match ssa.builtin_ref_at(arg_reg, block) {
+                Some(GlobalRef::Lambda(fidx)) => Some(LambdaIdentity { fidx, captures: 0 }),
+                Some(GlobalRef::Closure(fidx, caps)) => Some(LambdaIdentity {
+                    fidx,
+                    captures: caps.len() as u16,
+                }),
+                _ => None,
             }
-            continue;
+        })
+        .collect();
+    let callee_idx = if identity.iter().any(Option::is_some) {
+        // The clone carries `lambda_params`; the original body would treat the
+        // parameter as a plain value and reject. A function called both ways
+        // is polymorphic over functions vs values — outside the subset.
+        if let Some(flag) = sig.specialized.get_mut(callee_idx) {
+            *flag = true;
         }
-        // A previously observed lambda parameter fed with a non-lambda value
-        // is polymorphic — fall back rather than miscompile either site.
-        if sig
-            .lambda_params
-            .get(callee_idx)
-            .and_then(|p| p.get(i))
-            .copied()
-            .flatten()
-            .is_some()
-        {
+        if sig.plain_called.get(callee_idx).copied().unwrap_or(false) {
             sig.conflict = true;
             return Err(Unsupported::TypeMismatch { pc });
+        }
+        let key = (callee_idx as u32, identity.clone());
+        match sig.specializations.get(&key) {
+            Some(&clone) => clone as usize,
+            None => {
+                // Cap the clone count per original so a pathological program
+                // cannot explode the module (falls back loudly instead).
+                const MAX_SPECIALIZATIONS: usize = 8;
+                let existing = sig
+                    .specializations
+                    .keys()
+                    .filter(|(orig, _)| *orig == callee_idx as u32)
+                    .count();
+                if existing >= MAX_SPECIALIZATIONS {
+                    sig.conflict = true;
+                    return Err(Unsupported::TypeMismatch { pc });
+                }
+                let clone = sig.param_obs.len() as u32;
+                let env_total: usize = identity.iter().flatten().map(|id| id.captures as usize).sum();
+                sig.param_obs.push(vec![
+                    None;
+                    funcs[callee_idx].param_count as usize
+                        + env_total
+                        + funcs[callee_idx].capture_count as usize
+                ]);
+                sig.ret_types.push(sig.ret_types[callee_idx]);
+                sig.ret_closures.push(None);
+                sig.ret_closure_poisoned.push(false);
+                sig.lambda_params.push(identity.clone());
+                sig.specializations.insert(key, clone);
+                sig.pending_clones.push(callee_idx as u32);
+                clone as usize
+            }
+        }
+    } else {
+        if sig.specialized.get(callee_idx).copied().unwrap_or(false) {
+            sig.conflict = true;
+            return Err(Unsupported::TypeMismatch { pc });
+        }
+        if let Some(flag) = sig.plain_called.get_mut(callee_idx) {
+            *flag = true;
+        }
+        callee_idx
+    };
+    // A summarized callee (its single return is a closure whose captures map
+    // to parameters) is consumed statically: the result register is seeded
+    // with the closure ref built from this call site's argument values. The
+    // effect-free body is never emitted and no call happens at runtime.
+    if let Some((lf, srcs)) = sig.ret_closures.get(callee_idx).cloned().flatten() {
+        let mut caps = Vec::with_capacity(srcs.len());
+        for RetCaptureSrc::Param(k) in srcs {
+            let arg_reg = dst_reg.wrapping_add(1).wrapping_add(k as u8);
+            let (v, ty) = read_scalar(ssa, insts, arg_reg, block, pc)?;
+            if matches!(ty, Ty::Nil | Ty::MaybeI64 | Ty::MaybeF64 | Ty::MaybeStr | Ty::MaybeBool) {
+                return Err(Unsupported::TypeMismatch { pc });
+            }
+            caps.push(ClosureCapture::Value(v, ty));
+        }
+        if (dst_reg as usize) < ssa.reg_count {
+            ssa.current_def[block][dst_reg as usize] = None;
+        }
+        ssa.builtin_regs.insert((block, dst_reg), GlobalRef::Closure(lf, caps));
+        return Ok(());
+    }
+    let mut args = Vec::with_capacity(argc + captures.len());
+    let mut env_args: Vec<(ValueId, Ty)> = Vec::new();
+    for (i, id) in identity.iter().enumerate() {
+        let arg_reg = dst_reg.wrapping_add(1).wrapping_add(i as u8);
+        match *id {
+            // Erased zero-capture lambda: nothing is passed at runtime.
+            Some(LambdaIdentity { captures: 0, .. }) => continue,
+            // Erased capturing closure: its environment (resolved to current
+            // cell contents at this call site) travels as hidden trailing
+            // arguments, in parameter order.
+            Some(_) => {
+                let Some(GlobalRef::Closure(_, caps)) = ssa.builtin_ref_at(arg_reg, block) else {
+                    return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+                };
+                for capture in &caps {
+                    let (v, ty) = match capture {
+                        ClosureCapture::Cell(cid) => {
+                            let slot = ssa.cell_slot(*cid);
+                            ssa.read_slot(slot, block, pc)?
+                        }
+                        ClosureCapture::Value(v, ty) => (*v, *ty),
+                    };
+                    if matches!(ty, Ty::Nil | Ty::MaybeI64 | Ty::MaybeF64 | Ty::MaybeStr | Ty::MaybeBool) {
+                        return Err(Unsupported::TypeMismatch { pc });
+                    }
+                    env_args.push((v, ty));
+                }
+                continue;
+            }
+            None => {}
         }
         let (aval, aty) = read_scalar(ssa, insts, arg_reg, block, pc)?;
         // `Str` and container handles pass as `ptr` (arena-owned until
@@ -2030,9 +2390,26 @@ fn lower_user_call(
         }
         args.push(aval);
     }
-    for (k, &(cval, cty)) in captures.iter().enumerate() {
-        // Refine the hidden capture-parameter types the same way.
+    // Hidden trailing arguments, in signature order: the erased closures'
+    // environment values first, then the callee's own captures. Their types
+    // refine the same monomorphization lattice as visible parameters.
+    for (k, &(ev, ety)) in env_args.iter().enumerate() {
         if let Some(slot) = sig.param_obs.get_mut(callee_idx).and_then(|p| p.get_mut(argc + k)) {
+            match slot {
+                None => *slot = Some(ety),
+                Some(prev) if *prev != ety => sig.conflict = true,
+                Some(_) => {}
+            }
+        }
+        args.push(ev);
+    }
+    let env_total = env_args.len();
+    for (k, &(cval, cty)) in captures.iter().enumerate() {
+        if let Some(slot) = sig
+            .param_obs
+            .get_mut(callee_idx)
+            .and_then(|p| p.get_mut(argc + env_total + k))
+        {
             match slot {
                 None => *slot = Some(cty),
                 Some(prev) if *prev != cty => sig.conflict = true,
@@ -2125,8 +2502,10 @@ fn lower_inst(
         Opcode::Move => {
             // A register holding a global ref (no SSA value) propagates the ref
             // instead of a value: the compiler moves the callee into the
-            // call-window base before the `Call`.
-            if let Some(global_ref) = ssa.builtin_regs.get(&(block, instr.b())).cloned() {
+            // call-window base before the `Call`. Cross-block backtracking
+            // covers refs inherited from predecessors (an SSA definition in
+            // this block shadows; conflicting paths resolve to None).
+            if let Some(global_ref) = ssa.builtin_ref_at(instr.b(), block) {
                 ssa.builtin_regs.insert((block, instr.a()), global_ref);
                 return Ok(());
             }
@@ -2136,13 +2515,13 @@ fn lower_inst(
         Opcode::Move2 => {
             // Fused adjacent moves: `a ← b`, then `b ← c`. The VM reads `b`
             // before overwriting it; SSA reads naturally see the old value.
-            if let Some(global_ref) = ssa.builtin_regs.get(&(block, instr.b())).cloned() {
+            if let Some(global_ref) = ssa.builtin_ref_at(instr.b(), block) {
                 ssa.builtin_regs.insert((block, instr.a()), global_ref);
             } else {
                 let first = ssa.read(instr.b(), block, pc)?;
                 ssa.write(instr.a(), block, first);
             }
-            if let Some(global_ref) = ssa.builtin_regs.get(&(block, instr.c())).cloned() {
+            if let Some(global_ref) = ssa.builtin_ref_at(instr.c(), block) {
                 ssa.builtin_regs.insert((block, instr.b()), global_ref);
             } else {
                 let second = ssa.read(instr.c(), block, pc)?;
@@ -2272,6 +2651,7 @@ fn lower_inst(
                     });
                 }
                 ssa.list_len.insert(handle, elems.len() as i64);
+                ssa.list_base_len.insert(handle, elems.len() as i64);
                 ssa.write(instr.a(), block, (handle, list_ty));
             }
             // Recorded after the write (which clears the slot) so both views
@@ -2542,6 +2922,64 @@ fn lower_inst(
                     coerce_to_f64(ssa, insts, lv, lty),
                     coerce_to_f64(ssa, insts, rv, rty),
                 ),
+                // List structural equality: same length + element-wise `==` via
+                // an lkrt helper returning 1/0, compared against 1 (so `!=`
+                // reuses the same op). Int/Float lists compare with numeric
+                // coercion (`[1] == [1.0]` is true); other cross-typed pairs
+                // reject — folding them to `false` would be wrong for two
+                // empty lists, which the VM deems equal regardless of type.
+                (Ty::ListI64, Ty::ListI64)
+                | (Ty::ListF64, Ty::ListF64)
+                | (Ty::ListStr, Ty::ListStr)
+                | (Ty::ListI64, Ty::ListF64)
+                | (Ty::ListF64, Ty::ListI64) => {
+                    if !matches!(cmp_op(op), CmpOp::Eq | CmpOp::Ne) {
+                        return Err(Unsupported::TypeMismatch { pc });
+                    }
+                    let (helper, a, b) = match (lty, rty) {
+                        (Ty::ListI64, Ty::ListI64) => ("i64_eq", lv, rv),
+                        (Ty::ListF64, Ty::ListF64) => ("f64_eq", lv, rv),
+                        (Ty::ListStr, Ty::ListStr) => ("str_eq", lv, rv),
+                        // The mixed helper takes (ints, floats).
+                        (Ty::ListI64, Ty::ListF64) => ("i64_f64_eq", lv, rv),
+                        _ => ("i64_f64_eq", rv, lv),
+                    };
+                    let eq = ssa.new_val();
+                    insts.push(Inst::Call {
+                        dst: Some(eq),
+                        callee: AbiRef::new("list_h", helper),
+                        args: vec![a, b],
+                    });
+                    let one = ssa.new_val();
+                    insts.push(Inst::Const {
+                        dst: one,
+                        value: Const::I64(1),
+                    });
+                    (false, eq, one)
+                }
+                // Cross-typed list pairs beyond Int/Float can only be equal
+                // when *both* are empty (the VM compares structurally
+                // regardless of the typed-list representation). With both
+                // proven non-empty at materialization (lengths never shrink),
+                // the comparison folds; an unproven side could be empty at
+                // runtime, so it rejects instead of guessing.
+                (Ty::ListI64 | Ty::ListF64 | Ty::ListStr, Ty::ListI64 | Ty::ListF64 | Ty::ListStr) => {
+                    if !matches!(cmp_op(op), CmpOp::Eq | CmpOp::Ne) {
+                        return Err(Unsupported::TypeMismatch { pc });
+                    }
+                    let lbase = ssa.list_base_len.get(&lv).copied().unwrap_or(0);
+                    let rbase = ssa.list_base_len.get(&rv).copied().unwrap_or(0);
+                    if lbase < 1 || rbase < 1 {
+                        return Err(Unsupported::TypeMismatch { pc });
+                    }
+                    let dst = ssa.new_val();
+                    insts.push(Inst::Const {
+                        dst,
+                        value: Const::Bool(cmp_op(op) == CmpOp::Ne),
+                    });
+                    ssa.write(instr.a(), block, (dst, Ty::Bool));
+                    return Ok(());
+                }
                 (Ty::Str, Ty::Str) => {
                     // The VM only supports `==`/`!=` on strings (ordered comparisons
                     // are a runtime error), so reject the rest — falling back rather
@@ -2653,16 +3091,16 @@ fn lower_inst(
         }
         Opcode::LoadCellVal => {
             // `a` = dst, `b` = cell register: reads the cell's current content.
-            match ssa.builtin_regs.get(&(block, instr.b())) {
+            // The cell ref backtracks across blocks like any global ref; the
+            // content read goes through the virtual slot (phis on demand).
+            match ssa.builtin_ref_at(instr.b(), block) {
                 Some(GlobalRef::CellParam(k)) => {
-                    let &(v, ty) = capture_params.get(*k).ok_or(Unsupported::BadConst { pc })?;
+                    let &(v, ty) = capture_params.get(k).ok_or(Unsupported::BadConst { pc })?;
                     ssa.write(instr.a(), block, (v, ty));
                 }
                 Some(GlobalRef::Cell(cid)) => {
-                    let &(v, ty) = ssa
-                        .cell_vals
-                        .get(&(block, *cid))
-                        .ok_or(Unsupported::Opcode { pc, op: instr.opcode() })?;
+                    let slot = ssa.cell_slot(cid);
+                    let (v, ty) = ssa.read_slot(slot, block, pc)?;
                     ssa.write(instr.a(), block, (v, ty));
                 }
                 _ => return Err(Unsupported::Opcode { pc, op: instr.opcode() }),
@@ -2672,11 +3110,12 @@ fn lower_inst(
             // `a` = cell register, `b` = value register: updates the tracked
             // cell content (mutations inside a lambda would need write-back
             // through the hidden parameter, so `CellParam` stores reject).
-            let Some(GlobalRef::Cell(cid)) = ssa.builtin_regs.get(&(block, instr.a())).cloned() else {
+            let Some(GlobalRef::Cell(cid)) = ssa.builtin_ref_at(instr.a(), block) else {
                 return Err(Unsupported::Opcode { pc, op: instr.opcode() });
             };
             let (v, ty) = ssa.read(instr.b(), block, pc)?;
-            ssa.cell_vals.insert((block, cid), (v, ty));
+            let slot = ssa.cell_slot(cid);
+            ssa.write_slot(slot, block, (v, ty));
         }
         Opcode::SetGlobal => {
             // Storing a function value into the global table is the compiler's
@@ -2814,10 +3253,10 @@ fn lower_inst(
                     let mut resolved = Vec::with_capacity(captures.len());
                     for capture in &captures {
                         let (v, ty) = match capture {
-                            ClosureCapture::Cell(cid) => *ssa
-                                .cell_vals
-                                .get(&(block, *cid))
-                                .ok_or(Unsupported::Opcode { pc, op: instr.opcode() })?,
+                            ClosureCapture::Cell(cid) => {
+                                let slot = ssa.cell_slot(*cid);
+                                ssa.read_slot(slot, block, pc)?
+                            }
                             ClosureCapture::Value(v, ty) => (*v, *ty),
                         };
                         if matches!(ty, Ty::Nil | Ty::MaybeI64 | Ty::MaybeF64 | Ty::MaybeStr | Ty::MaybeBool) {
@@ -2874,7 +3313,7 @@ fn lower_inst(
             let (v, ty) = ssa.read(instr.b(), block, pc)?;
             // The result is register-visible, so it stays arena-owned (never
             // freed eagerly, reclaimed by `lkrt_cleanup` at exit).
-            let (s, _fresh) = to_display_str(ssa, insts, globals, v, ty, pc)?;
+            let (s, _fresh) = to_display_str(ssa, insts, globals, v, ty, false, pc)?;
             ssa.write(instr.a(), block, (s, Ty::Str));
         }
         Opcode::ConcatString => {
@@ -2883,8 +3322,8 @@ fn lower_inst(
             // an int rhs fuses into a single `concat_i64` call.
             let (lv, lty) = ssa.read(instr.b(), block, pc)?;
             let (rv, rty) = ssa.read(instr.c(), block, pc)?;
-            let (l, l_fresh) = to_display_str(ssa, insts, globals, lv, lty, pc)?;
-            let dst = concat_display(ssa, insts, globals, l, rv, rty, pc)?;
+            let (l, l_fresh) = to_display_str(ssa, insts, globals, lv, lty, false, pc)?;
+            let dst = concat_display(ssa, insts, globals, l, rv, rty, false, pc)?;
             if l_fresh {
                 free_owned_str(insts, l);
             }
@@ -2909,10 +3348,10 @@ fn lower_inst(
                 dst
             } else {
                 let (v0, ty0) = ssa.read(start, block, pc)?;
-                let (mut acc, mut acc_fresh) = to_display_str(ssa, insts, globals, v0, ty0, pc)?;
+                let (mut acc, mut acc_fresh) = to_display_str(ssa, insts, globals, v0, ty0, false, pc)?;
                 for i in 1..count {
                     let (v, ty) = ssa.read(start.wrapping_add(i as u8), block, pc)?;
-                    let dst = concat_display(ssa, insts, globals, acc, v, ty, pc)?;
+                    let dst = concat_display(ssa, insts, globals, acc, v, ty, false, pc)?;
                     // The consumed accumulator is dead; free it if this
                     // lowering allocated it.
                     if acc_fresh {
@@ -2964,6 +3403,7 @@ fn lower_inst(
                             args: Vec::new(),
                         });
                         ssa.list_len.insert(handle, 0);
+                        ssa.list_base_len.insert(handle, 0);
                         ssa.write(instr.a(), block, (handle, Ty::ListStr));
                         return Ok(());
                     }
@@ -3001,6 +3441,7 @@ fn lower_inst(
                         });
                     }
                     ssa.list_len.insert(handle, elems.len() as i64);
+                    ssa.list_base_len.insert(handle, elems.len() as i64);
                     ssa.write(instr.a(), block, (handle, list_ty));
                 }
                 ConstHeapValueData::Map(entries) => {
@@ -3117,11 +3558,14 @@ fn lower_inst(
                 }
                 ConstHeapValueData::UpvalCell(initial) => {
                     // The compiler's shared mutable box for a captured local.
-                    // The cell never materializes: its content is tracked as a
-                    // virtual SSA slot (`Ssa::cell_vals`), read/written by
-                    // `LoadCellVal`/`StoreCellVal` and resolved at closure call
-                    // sites. Cells start nil (any pre-store read is a `Nil`
-                    // value, exactly the VM's fresh-cell content).
+                    // The cell never materializes: its content lives in a
+                    // virtual SSA slot (`reg_count + cid`) under the same
+                    // Braun construction as registers, so cross-block state
+                    // (mutation in a branch, reads after a merge, loop-carried
+                    // updates) gets phis. Cells start nil (any pre-store read
+                    // is a `Nil` value, exactly the VM's fresh-cell content);
+                    // re-executing this site (a loop-created cell) re-
+                    // initializes the slot, matching the VM's fresh cell.
                     if !matches!(initial.as_ref(), ConstRuntimeValueData::Nil) {
                         return Err(Unsupported::Opcode { pc, op: instr.opcode() });
                     }
@@ -3132,7 +3576,8 @@ fn lower_inst(
                         dst: nil,
                         value: Const::Nil,
                     });
-                    ssa.cell_vals.insert((block, cid), (nil, Ty::Nil));
+                    let slot = ssa.cell_slot(cid);
+                    ssa.write_slot(slot, block, (nil, Ty::Nil));
                     ssa.builtin_regs.insert((block, instr.a()), GlobalRef::Cell(cid));
                 }
             }
@@ -3640,12 +4085,18 @@ fn read_typed_scalar(
 /// (`free_owned_str`), realizing the RFC §3.4 ownership model for known-dead
 /// intermediates. A pre-existing `Str` (interned global or register value) is
 /// returned as-is with `false`.
+/// `containers` mirrors the VM's two display paths: the stdlib
+/// `runtime_display` (print/println/panic/assert messages) renders containers,
+/// while the executor's `runtime_value_display_string` (`ToString`, template
+/// interpolation, `+` concatenation) is scalar-only and errors loudly on a
+/// container — so container display must reject in those contexts.
 fn to_display_str(
     ssa: &mut Ssa,
     insts: &mut Vec<Inst>,
     globals: &mut Vec<String>,
     v: ValueId,
     ty: Ty,
+    containers: bool,
     pc: usize,
 ) -> Result<(ValueId, bool), Unsupported> {
     match ty {
@@ -3686,7 +4137,7 @@ fn to_display_str(
                 raw
             };
             let scalar_ty = if ty == Ty::MaybeBool { Ty::Bool } else { scalar_ty };
-            let (value_str, _) = to_display_str(ssa, insts, globals, raw, scalar_ty, pc)?;
+            let (value_str, _) = to_display_str(ssa, insts, globals, raw, scalar_ty, false, pc)?;
             let present = ssa.new_val();
             insts.push(Inst::MaybePresent {
                 dst: present,
@@ -3740,6 +4191,27 @@ fn to_display_str(
             });
             Ok((dst, true))
         }
+        // List display (`[1,2,3]` / `["a","b c"]`) renders inside lkrt with
+        // the VM's exact separators/quoting. Map display stays out of the
+        // subset: its order is the underlying hash iteration order, which is
+        // not portable across the two runtimes (see docs/semantics.md).
+        Ty::ListI64 | Ty::ListF64 | Ty::ListStr => {
+            if !containers {
+                return Err(Unsupported::TypeMismatch { pc });
+            }
+            let display_fn = match ty {
+                Ty::ListI64 => "i64_display",
+                Ty::ListF64 => "f64_display",
+                _ => "str_display",
+            };
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", display_fn),
+                args: vec![v],
+            });
+            Ok((dst, true))
+        }
         _ => Err(Unsupported::TypeMismatch { pc }),
     }
 }
@@ -3748,6 +4220,7 @@ fn to_display_str(
 /// `str.concat_i64` call (no intermediate suffix string); every other display
 /// type goes through [`to_display_str`] + `str.concat`, eagerly freeing the
 /// fresh display temporary.
+#[allow(clippy::too_many_arguments)]
 fn concat_display(
     ssa: &mut Ssa,
     insts: &mut Vec<Inst>,
@@ -3755,6 +4228,7 @@ fn concat_display(
     acc: ValueId,
     v: ValueId,
     ty: Ty,
+    containers: bool,
     pc: usize,
 ) -> Result<ValueId, Unsupported> {
     if ty == Ty::I64 {
@@ -3766,7 +4240,7 @@ fn concat_display(
         });
         return Ok(dst);
     }
-    let (s, fresh) = to_display_str(ssa, insts, globals, v, ty, pc)?;
+    let (s, fresh) = to_display_str(ssa, insts, globals, v, ty, containers, pc)?;
     let dst = ssa.new_val();
     insts.push(Inst::Call {
         dst: Some(dst),
@@ -3821,7 +4295,7 @@ fn lower_builtin_call(
                 materialize_key(ssa, insts, globals, "panic")
             } else {
                 let (v0, ty0) = ssa.read(base.wrapping_add(1), block, pc)?;
-                let (mut acc, mut acc_fresh) = to_display_str(ssa, insts, globals, v0, ty0, pc)?;
+                let (mut acc, mut acc_fresh) = to_display_str(ssa, insts, globals, v0, ty0, true, pc)?;
                 for i in 1..argc {
                     let sep = materialize_key(ssa, insts, globals, " ");
                     let with_sep = ssa.new_val();
@@ -3834,7 +4308,7 @@ fn lower_builtin_call(
                         free_owned_str(insts, acc);
                     }
                     let (v, ty) = ssa.read(base.wrapping_add(1 + i as u8), block, pc)?;
-                    acc = concat_display(ssa, insts, globals, with_sep, v, ty, pc)?;
+                    acc = concat_display(ssa, insts, globals, with_sep, v, ty, true, pc)?;
                     free_owned_str(insts, with_sep);
                     acc_fresh = true;
                 }
@@ -3925,7 +4399,7 @@ fn lower_builtin_call(
                 if argc == 3 {
                     let (ev, ety) = ssa.read(base.wrapping_add(3), block, pc)?;
                     let sep = materialize_key(ssa, insts, globals, "values should not be equal - ");
-                    (concat_display(ssa, insts, globals, sep, ev, ety, pc)?, true)
+                    (concat_display(ssa, insts, globals, sep, ev, ety, true, pc)?, true)
                 } else {
                     (
                         materialize_key(ssa, insts, globals, "values should not be equal"),
@@ -3935,7 +4409,7 @@ fn lower_builtin_call(
             } else {
                 // "expected {b}, got {a}" (+ " - {extra}").
                 let head = materialize_key(ssa, insts, globals, "expected ");
-                let with_expected = concat_display(ssa, insts, globals, head, rv, rty, pc)?;
+                let with_expected = concat_display(ssa, insts, globals, head, rv, rty, true, pc)?;
                 let comma = materialize_key(ssa, insts, globals, ", got ");
                 let joined = ssa.new_val();
                 insts.push(Inst::Call {
@@ -3944,7 +4418,7 @@ fn lower_builtin_call(
                     args: vec![with_expected, comma],
                 });
                 free_owned_str(insts, with_expected);
-                let full = concat_display(ssa, insts, globals, joined, lv, lty, pc)?;
+                let full = concat_display(ssa, insts, globals, joined, lv, lty, true, pc)?;
                 free_owned_str(insts, joined);
                 if argc == 3 {
                     let (ev, ety) = ssa.read(base.wrapping_add(3), block, pc)?;
@@ -3956,7 +4430,7 @@ fn lower_builtin_call(
                         args: vec![full, dash],
                     });
                     free_owned_str(insts, full);
-                    let all = concat_display(ssa, insts, globals, with_dash, ev, ety, pc)?;
+                    let all = concat_display(ssa, insts, globals, with_dash, ev, ety, true, pc)?;
                     free_owned_str(insts, with_dash);
                     (all, true)
                 } else {
@@ -4042,7 +4516,7 @@ fn lower_builtin_call(
                 });
             } else {
                 let (mv, mty) = ssa.read(base.wrapping_add(2), block, pc)?;
-                let (msg, fresh) = to_display_str(ssa, insts, globals, mv, mty, pc)?;
+                let (msg, fresh) = to_display_str(ssa, insts, globals, mv, mty, true, pc)?;
                 insts.push(Inst::Call {
                     dst: None,
                     callee: AbiRef::new("rt", "assert_msg"),
@@ -4843,7 +5317,7 @@ fn emit_print(
                     pieces.push((lit, false));
                     pending.clear();
                 }
-                pieces.push(to_display_str(ssa, insts, globals, v, ty, pc)?);
+                pieces.push(to_display_str(ssa, insts, globals, v, ty, true, pc)?);
             }
         }
     }

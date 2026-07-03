@@ -441,6 +441,19 @@ fn differential_builtins() {
                 "panic_after_output",
                 "println(\"before\");\nlet x = 1;\nif (x == 1) { panic(\"stop\", x); }\nreturn 7;\n",
             ),
+            // Multi-identity lambda arguments: each identity gets its own
+            // specialized clone of the callee (apply itself may be a lambda).
+            new(
+                "lambda_multi_identity",
+                "fn apply(f, x) { return f(x) + f(x + 1); }\nlet double = |v| v * 2;\nlet square = |v| v * v;\nprintln(apply(double, 5));\nprintln(apply(square, 5));\nprintln(apply(|v| v + 100, 1));\nlet lapply = |g, n| g(n);\nprintln(lapply(double, 7));\nprintln(lapply(square, 5));\nreturn 0;\n",
+            ),
+            // List display: VM-exact separators/quoting through println
+            // (the runtime_display path; template interpolation of containers
+            // rejects — that path is scalar-only in the VM).
+            new(
+                "list_display",
+                "let xs = [1, 2, 3];\nprintln(xs);\nprintln(\"{}\", xs);\nlet fs = [1.5, 2.0, 0.25];\nprintln(fs);\nlet ss = [];\nss.push(\"a\");\nss.push(\"b c\");\nss.push(\"he said \\\"hi\\\"\");\nprintln(ss);\nlet empty = [];\nempty.push(0);\nprintln(empty);\nreturn 0;\n",
+            ),
             // NaN semantics: `!=` must be true when either side is NaN
             // (fcmp une, not one); ordered comparisons stay false.
             new(
@@ -522,6 +535,86 @@ fn differential_builtins() {
             new(
                 "lambda_as_argument",
                 "fn apply(f, x) { return f(x) + f(x + 1); }\nlet double = |v| v * 2;\nprintln(apply(double, 5));\nprintln(apply(double, 10));\nfn twice(g, n) { return g(g(n)); }\nprintln(twice(|v| v + 3, 4));\nreturn 0;\n",
+            ),
+            // Capturing closures as user-function arguments: the environment
+            // (resolved to current cell contents at the call site) travels as
+            // hidden trailing arguments, so mutation between calls is visible;
+            // zero-capture and capturing identities mix at the same helper.
+            new(
+                "closure_as_argument",
+                "fn apply(f, x) { return f(x) + f(x + 1); }\nlet k = 10;\nlet addk = |v| v + k;\nprintln(apply(addk, 1));\nlet m = 3;\nlet mulm = |v| v * m;\nprintln(apply(mulm, 2));\nm = 5;\nprintln(apply(mulm, 2));\nlet double = |v| v * 2;\nprintln(apply(double, 4));\nprintln(apply(|v| v - k, 100));\nlet a = 2;\nlet b = 30;\nlet two = |x| x * a + b;\nprintln(apply(two, 5));\nreturn 0;\n",
+            ),
+            // A capturing closure forwarded through two helpers: the erased
+            // identity and the hidden env arguments propagate transitively.
+            new(
+                "closure_as_argument_forwarding",
+                "fn inner(f, x) { return f(x); }\nfn outer(g, y) { return inner(g, y) + inner(g, y * 2); }\nlet base = 100;\nlet addb = |v| v + base;\nprintln(outer(addb, 5));\nbase = 200;\nprintln(outer(addb, 5));\nreturn 0;\n",
+            ),
+            // Cross-block cell state (virtual-slot phis): mutation in branch
+            // arms visible after the merge, loop-carried cell updates, a
+            // capturing closure through a branchy (VM-inlined) helper, and
+            // loop-variable snapshot capture (per-iteration cell copy).
+            new(
+                "closure_cell_across_blocks",
+                "let c = 1;\nlet f = |x| x * c;\nlet n = 4;\nif n > 2 { c = 5; } else { c = 7; }\nprintln(f(2));\nc = 9;\nprintln(f(2));\nreturn 0;\n",
+            ),
+            new(
+                "closure_cell_loop_carried",
+                "let c = 0;\nlet f = |x| x + c;\nfor i in 0..3 {\n  println(f(0));\n  c = c + 1;\n}\nprintln(f(100));\nreturn 0;\n",
+            ),
+            new(
+                "closure_arg_branchy_helper",
+                "fn pick(h, n) { if n > 3 { return h(n); } return h(0); }\nlet off = 7;\nprintln(pick(|q| q + off, 10));\nprintln(pick(|q| q + off, 1));\noff = 20;\nprintln(pick(|q| q + off, 1));\nreturn 0;\n",
+            ),
+            new(
+                "closure_loop_var_snapshot",
+                "for i in 0..3 {\n  let f = |x| x + i;\n  println(f(10));\n}\nlet j = 0;\nwhile (j < 3) {\n  let g = |x| x * 10 + j;\n  println(g(j));\n  j = j + 1;\n}\nreturn 0;\n",
+            ),
+            // A body re-`let` of the loop variable's name is a fresh binding:
+            // the counter register stays intact (two iterations), the capture
+            // promotes a shared cell (assignment visible), per-iteration.
+            new(
+                "closure_loop_name_re_let",
+                "for i in 0..2 {\n  let i = i * 10;\n  let f = |x| x + i;\n  i = i + 5;\n  println(f(0));\n}\nreturn 0;\n",
+            ),
+            // A read-only Var argument to an inlined helper must not alias a
+            // register a later closure argument boxes (captured locals
+            // pre-promote before any argument lowers).
+            new(
+                "closure_inline_arg_alias",
+                "fn use2(a, g) { let t = a + 1; return g(t); }\nlet y = 10;\nprintln(use2(y, |q| q + y));\ny = 20;\nprintln(use2(y, |q| q + y));\nreturn 0;\n",
+            ),
+            // Re-`let` of a promoted name in a loop body: earlier-emitted
+            // reads (re-executed on the back edge) keep loading the outer
+            // cell; block-scope promotions of outer locals survive restore.
+            new(
+                "closure_re_let_promoted_in_loop",
+                "let x = 100;\nlet g = |q| q + x;\nlet i = 0;\nwhile (i < 2) {\n  println(x);\n  let x = 5;\n  println(x);\n  i = i + 1;\n}\nprintln(g(0));\nreturn 0;\n",
+            ),
+            new(
+                "closure_block_capture_survives",
+                "let y = 1;\n{\n  let f = |q| q + y;\n  println(f(0));\n}\nprintln(y);\ny = 9;\nprintln(y);\nreturn 0;\n",
+            ),
+            // Returned closures via the static summary path: a function whose
+            // single return is a closure with parameter-mapped captures is
+            // consumed at the call site (no call emitted, pure body skipped).
+            // Covers distinct environments from one factory, a zero-capture
+            // return, and factory results feeding closure-as-argument calls.
+            new(
+                "closure_returned",
+                "fn multiplier(n) { return |x| x * n; }\nlet triple = multiplier(3);\nlet quintuple = multiplier(5);\nprintln(triple(4));\nprintln(quintuple(4));\nprintln(triple(7) + quintuple(2));\nfn make_adder() { return |a, b| a + b; }\nlet add = make_adder();\nprintln(add(3, 9));\nreturn 0;\n",
+            ),
+            new(
+                "closure_returned_as_argument",
+                "fn apply(f, x) { return f(x) + f(x + 1); }\nfn multiplier(n) { return |x| x * n; }\nprintln(apply(|v| v * 2, 3));\nprintln(apply(multiplier(3), 5));\nlet k = 7;\nprintln(apply(|v| v + k, 1));\nprintln(apply(multiplier(k), 2));\nreturn 0;\n",
+            ),
+            // List structural equality: length/element mismatches, empty
+            // lists, Int/Float coercion ([1] == [1.0] is true), NaN elements
+            // breaking equality, str lists, != inversion, and the non-empty
+            // cross-typed fold ([1] == ["1"] is false).
+            new(
+                "list_structural_eq",
+                "let a = [1, 2, 3];\nprintln(a == [1, 2, 3]);\nprintln(a == [1, 2]);\nprintln(a == [1, 2, 4]);\nprintln(a != [1, 2, 3]);\nprintln([] == []);\nlet f = [1.5, 2.0];\nprintln(f == [1.5, 2.0]);\nprintln(f == [1.5, 2.1]);\nlet s = [\"x\", \"y\"];\nprintln(s == [\"x\", \"y\"]);\nprintln(s == [\"x\", \"z\"]);\nprintln([1] == [1.0]);\nprintln([1] == [\"1\"]);\nuse math;\nprintln([math.nan] == [math.nan]);\nlet grown = [1];\ngrown.push(2);\nprintln(grown == [1, 2]);\nreturn 0;\n",
             ),
             // List HOF over compiled zero-capture lambdas (fn-pointer ABI):
             // map/filter/reduce over List<i64>, including chained pipelines

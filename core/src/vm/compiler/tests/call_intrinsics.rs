@@ -972,3 +972,84 @@ fn compiler_lowers_math_floor_of_int_to_identity() {
         "math.floor(Int) should not call through the runtime callable bridge"
     );
 }
+
+#[test]
+fn compiler_inline_arg_closure_promotion_survives_scope_restore() {
+    // Lowering an inline call's closure argument promotes the captured caller
+    // local to a cell *in place*; the promotion record must survive the
+    // inline scope restore. Regression: the second call site re-promoted,
+    // storing the old cell as the new cell's value (Int + Obj at runtime).
+    let module = compile_source_module(
+        r#"
+        fn pick(h, n) {
+            if n > 3 {
+                return h(n);
+            }
+            return h(0);
+        }
+
+        let off = 7;
+        let first = pick(|q| q + off, 10);
+        let second = pick(|q| q + off, 1);
+        return first * 100 + second;
+        "#,
+    )
+    .expect("compile module");
+    let entry = &module.functions[0];
+
+    let promotions = entry
+        .code
+        .iter()
+        .filter(|instr| instr.opcode() == Opcode::StoreCellVal)
+        .count();
+    assert_eq!(promotions, 1, "the captured local must be boxed exactly once");
+
+    let result = execute_module(&module).expect("execute module");
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(1707)]);
+}
+
+#[test]
+fn compiler_inline_arguments_resolve_names_in_caller_scope() {
+    // Inline argument expressions must lower before any parameter binds:
+    // interleaving let `add2(1, a)` resolve the second argument against the
+    // already-bound first parameter `a` (passing 1 instead of the caller's
+    // 100). Regression: printed 2 instead of 101.
+    let module = compile_source_module(
+        r#"
+        fn add2(a, b) {
+            let t = a % 97;
+            return t + b;
+        }
+        let a = 100;
+        return add2(1, a);
+        "#,
+    )
+    .expect("compile module");
+
+    let result = execute_module(&module).expect("execute module");
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(101)]);
+}
+
+#[test]
+fn compiler_inline_readonly_param_survives_later_closure_promotion() {
+    // A read-only `Var` argument binds its parameter to the local's register
+    // directly; a later closure argument capturing the same local promotes
+    // it in place. The promotion must happen *before* the binding (locals a
+    // closure argument captures pre-promote), or the parameter aliases the
+    // cell. Regression: "Add expected numbers or strings, got Obj and Int".
+    let module = compile_source_module(
+        r#"
+        fn use2(a, g) {
+            let t = a + 1;
+            return g(t);
+        }
+        let y = 10;
+        return use2(y, |q| q + y);
+        "#,
+    )
+    .expect("compile module");
+
+    let result = execute_module(&module).expect("execute module");
+    // t = 10 + 1; g(11) = 11 + 10.
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(21)]);
+}

@@ -51,9 +51,14 @@ enum Ty {
     Str,
 }
 
+#[derive(Clone)]
 struct ListVar {
     name: String,
     len: usize,
+    /// The literal elements at creation, so the equality shape (case 14) can
+    /// generate genuine exact matches instead of comparing against unrelated
+    /// random literals.
+    items: Vec<String>,
 }
 
 struct MapVar {
@@ -227,7 +232,7 @@ impl Generator {
     // ---- statements --------------------------------------------------------
 
     fn statement(&mut self, out: &mut String, indent: &str) {
-        match self.rng.below(14) {
+        match self.rng.below(15) {
             0 | 1 => {
                 let ty = self.random_ty();
                 let name = self.fresh("v");
@@ -251,7 +256,7 @@ impl Generator {
                 let len = 3 + self.rng.below(3) as usize;
                 let items = (0..len).map(|_| format!("{}", self.rng.below(61))).collect::<Vec<_>>();
                 let _ = writeln!(out, "{indent}let {name} = [{}];", items.join(", "));
-                self.lists.push(ListVar { name, len });
+                self.lists.push(ListVar { name, len, items });
             }
             4 => {
                 let name = self.fresh("m");
@@ -362,11 +367,104 @@ impl Generator {
                 let _ = writeln!(out, "{indent}let {total} = {map}.len();");
                 self.vars.push((total, Ty::I64));
             }
+            12 if self.rng.chance(40) => {
+                // Two different lambda identities through the same helper —
+                // exercises per-identity clone specialization. A named i64
+                // sometimes upgrades one identity to a capturing closure
+                // (env as hidden trailing args), with a mutation between
+                // calls that both the VM cell and the native env must see.
+                let helper = self.fresh("hof");
+                let r1 = self.fresh("v");
+                let r2 = self.fresh("v");
+                let k = 1 + self.rng.below(5);
+                let m = self.rng.below(9);
+                let captured = self.vars_of(Ty::I64).first().cloned().filter(|_| self.rng.chance(50));
+                let _ = writeln!(out, "{indent}fn {helper}(f, x) {{ return f(x) + f(x + 1); }}");
+                let _ = writeln!(out, "{indent}let {r1} = {helper}(|p| p * {k}, {});", self.rng.below(12));
+                match captured {
+                    Some(captured) => {
+                        let _ = writeln!(
+                            out,
+                            "{indent}let {r2} = {helper}(|p| p + {captured}, {});",
+                            self.rng.below(12)
+                        );
+                        if self.rng.chance(50) {
+                            let r3 = self.fresh("v");
+                            let _ = writeln!(out, "{indent}{captured} = {captured} + {};", 1 + self.rng.below(7));
+                            let _ = writeln!(
+                                out,
+                                "{indent}let {r3} = {helper}(|p| p + {captured}, {});",
+                                self.rng.below(12)
+                            );
+                            self.vars.push((r3, Ty::I64));
+                        }
+                    }
+                    None => {
+                        let _ = writeln!(out, "{indent}let {r2} = {helper}(|p| p + {m}, {});", self.rng.below(12));
+                    }
+                }
+                self.vars.push((r1, Ty::I64));
+                self.vars.push((r2, Ty::I64));
+            }
+            12 if self.rng.chance(25) => {
+                // Closure factory: the callee's single return is a closure
+                // capturing its parameter — the summary path constructs the
+                // ref at each call site (distinct environments, no call).
+                let factory = self.fresh("mk");
+                let f1 = self.fresh("f");
+                let f2 = self.fresh("f");
+                let r1 = self.fresh("v");
+                let r2 = self.fresh("v");
+                let _ = writeln!(out, "{indent}fn {factory}(n) {{ return |x| x * n + 1; }}");
+                let _ = writeln!(out, "{indent}let {f1} = {factory}({});", 1 + self.rng.below(6));
+                let _ = writeln!(out, "{indent}let {f2} = {factory}({});", 1 + self.rng.below(6));
+                let _ = writeln!(out, "{indent}let {r1} = {f1}({});", self.rng.below(12));
+                let _ = writeln!(out, "{indent}let {r2} = {f2}({});", self.rng.below(12));
+                self.vars.push((r1, Ty::I64));
+                self.vars.push((r2, Ty::I64));
+            }
+            13 if self.rng.chance(35) => {
+                // Branchy helper with fresh capturing closures at two call
+                // sites: the VM inlines the helper body, and the captured
+                // local's cell promotion must survive the inline scope
+                // restore (regression shape); the native side lowers it via
+                // cross-block cell phis.
+                let helper = self.fresh("pick");
+                let r1 = self.fresh("v");
+                let r2 = self.fresh("v");
+                let threshold = 1 + self.rng.below(6);
+                let named = self.vars_of(Ty::I64);
+                let capture = match named.first() {
+                    Some(name) => name.clone(),
+                    None => {
+                        let name = self.fresh("c");
+                        let _ = writeln!(out, "{indent}let {name} = {};", self.rng.below(30));
+                        self.vars.push((name.clone(), Ty::I64));
+                        name
+                    }
+                };
+                let _ = writeln!(
+                    out,
+                    "{indent}fn {helper}(f, x) {{ if x > {threshold} {{ return f(x); }} return f(0); }}"
+                );
+                let _ = writeln!(
+                    out,
+                    "{indent}let {r1} = {helper}(|p| p + {capture}, {});",
+                    self.rng.below(12)
+                );
+                let _ = writeln!(
+                    out,
+                    "{indent}let {r2} = {helper}(|p| p * 2 + {capture}, {});",
+                    self.rng.below(12)
+                );
+                self.vars.push((r1, Ty::I64));
+                self.vars.push((r2, Ty::I64));
+            }
             12 => {
                 // Capturing closure: the environment is a shared mutable cell,
-                // so a mutation between calls must be visible (declaration,
-                // calls, and mutation stay adjacent — cross-block cell flows
-                // are outside the native subset and would only skew coverage).
+                // so a mutation between calls must be visible — including a
+                // mutation inside a branch (cross-block cell state lowers via
+                // virtual-slot phis).
                 let lam = self.fresh("lam");
                 let result = self.fresh("v");
                 let named = self.vars_of(Ty::I64);
@@ -377,7 +475,12 @@ impl Generator {
                     if self.rng.chance(50) {
                         let bump = self.rng.below(9);
                         let second = self.fresh("v");
-                        let _ = writeln!(out, "{indent}{captured} = {captured} + {bump};");
+                        if self.rng.chance(40) {
+                            let cond = self.bool_expr(1);
+                            let _ = writeln!(out, "{indent}if ({cond}) {{ {captured} = {captured} + {bump}; }}");
+                        } else {
+                            let _ = writeln!(out, "{indent}{captured} = {captured} + {bump};");
+                        }
                         let _ = writeln!(out, "{indent}let {second} = {lam}({arg});");
                         self.vars.push((second, Ty::I64));
                     }
@@ -405,6 +508,38 @@ impl Generator {
                     let name = self.fresh("v");
                     let _ = writeln!(out, "{indent}let {name} = {};", self.int_expr(2));
                     self.vars.push((name, Ty::I64));
+                }
+            }
+            14 => {
+                // List structural equality against a literal built from the
+                // list's *creation* elements: an exact match, a truncation,
+                // or a single perturbed element — printed directly (native
+                // lowers via the lkrt eq helpers; `!=` half the time).
+                if let Some(list) = self.lists.first().cloned() {
+                    let mut items = list.items.clone();
+                    match self.rng.below(3) {
+                        0 => {}
+                        1 => {
+                            items.pop();
+                        }
+                        _ => {
+                            if !items.is_empty() {
+                                let idx = self.rng.below(items.len() as u64) as usize;
+                                items[idx] = format!("{}", self.rng.below(61));
+                            }
+                        }
+                    }
+                    let op = if self.rng.chance(50) { "==" } else { "!=" };
+                    let _ = writeln!(out, "{indent}println({} {op} [{}]);", list.name, items.join(", "));
+                } else {
+                    let name = self.fresh("xs");
+                    let _ = writeln!(out, "{indent}let {name} = [4, 5, 6];");
+                    let _ = writeln!(out, "{indent}println({name} == [4, 5, 6]);");
+                    self.lists.push(ListVar {
+                        name,
+                        len: 3,
+                        items: vec!["4".into(), "5".into(), "6".into()],
+                    });
                 }
             }
             11 => {
