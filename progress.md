@@ -121,6 +121,11 @@
       但更大:VM 核心还依赖 `rt`/`module`/`syntax`,需先理清 VM 核心↔std-heavy 边界)。**多天结构重构,非 scaffold**;
       lk-values 抽取已验证方法(渐进解耦→分离→抽 crate→no_std)可复用。
       *(纠正 plan「给 lk-vm-core 加 #![no_std]」的隐含假设:那是抽新 crate,不是给现单体 core 加属性。)*
+      **增量进展(可保绿,渐进解耦法)**:① core 加 `std` feature(default 含),把 std-heavy 的 `package` 模块
+      (Lk.toml/git/fs,VM 核心零依赖)gate 其后 + macro_system 唯一 PackageGraph 用点一并 cfg-gate →
+      `cargo build -p lk-core --no-default-features` 产出**不含 package/async 的 VM 核心表面**,CI 守卫固化。
+      ② async(tokio)已在 `async-runtime` feature 后(去 async 已验证)。**下一步增量**:gate macro_system 的
+      proc-macro 进程执行(std::process)→ vm/val/typ ~60 文件逐个 std→alloc(每个保绿)→ `#![no_std]`。
 - [x] **M0.8**(lk-values 部分)**lk-values 已真 `#![no_std]` + alloc**:`#![no_std]`/`extern crate alloc`;
       `std::fmt`→`core::fmt`、`std::sync::Arc`→`alloc::sync::Arc`、`std::str`→`core::str`、String/Vec/Box/format!/vec!
       →`alloc::*`;`std::collections::HashMap`→`hashbrown`;删死的 anyhow(依赖也移除);serde/arcstr 改 no_std
