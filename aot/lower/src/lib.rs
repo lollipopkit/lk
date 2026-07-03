@@ -4078,6 +4078,27 @@ fn lower_inst(
             });
             ssa.write(instr.a(), block, (dst, Ty::Bool));
         }
+        Opcode::Raise => {
+            // `bx` = the raised message string constant. A `Raise` with no
+            // enclosing handler aborts, exactly like `panic`. The native path
+            // only reaches here when the module has no try/catch at all: `TryBegin`
+            // is itself unsupported and forces the Tier 0 fallback, so any module
+            // that lowers natively cannot catch a raise — every lowered `Raise` is
+            // uncaught. (The differential harness already treats VM exit-1 and a
+            // native SIGABRT as matching failures, as it does for `assert`/`panic`.)
+            let message = func
+                .consts
+                .strings
+                .get(instr.bx() as usize)
+                .ok_or(Unsupported::BadConst { pc })?
+                .clone();
+            let msg = materialize_key(ssa, insts, globals, &message);
+            insts.push(Inst::Call {
+                dst: None,
+                callee: AbiRef::new("rt", "panic"),
+                args: vec![msg],
+            });
+        }
         // Control-flow opcodes are terminators, normally handled outside lower_inst.
         // Reaching here means a branch targeted the middle of a fused pair or an
         // otherwise malformed shape — reject cleanly (fall back) rather than panic.

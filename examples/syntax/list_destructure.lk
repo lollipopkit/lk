@@ -12,6 +12,12 @@ if let [a, b, c] = xs {
     assert(a + b + c == 60);
 }
 
+// An irrefutable `let [..]` destructure lowers too: it emits a shape-mismatch
+// guard (`Raise`) that, uncaught, aborts like `panic` — but a well-shaped list
+// never trips it, so this runs to completion natively.
+let [d, e, f] = [7, 8, 9];
+assert(d + e + f == 24);
+
 // The bound elements participate in ordinary native arithmetic.
 let ys = [3, 4];
 let sum = 0;
