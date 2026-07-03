@@ -33,13 +33,17 @@
   迁 ~30 调用点跨 9 crate;自由 helper 加 handle 参数;CLI init 改懒、shutdown→ctx。
   **验证**:workspace `-D warnings` 0/0、**全量 1478 tests 0 failed**、fmt+clippy 0、
   `concurrency_demo.lk` 端到端 chan 往返正确(共享反应堆语义验证)。
-- 全局状态 **5 → 2**(剩 **G4/G5** = lkrt thread_local)。
+- **M0.6 G4/G5(lkrt thread_local)→ 决定按设计保留**:lkrt 是 AOT native 运行时(单线程、
+  边界铁律禁依赖 VM/ctx),`state.rs` 注释明确 thread_local 是刻意选择(热路径免锁、handle 不跨线程);
+  改实例传递需穿线整个生成代码 ABI 且回退性能。与 VM 全局状态性质不同,保留正确。
+- **✅ M0「去全局状态」达成**:**core(L1)已无生产全局可变状态**(唯一剩 `vm/analysis.rs`
+  thread_local 为 `#[cfg(test)]`)。G1/G2/G3 消除、G4/G5 按设计保留。VM 多实例安全地基就位。
 
-## 下一步:Phase M0 续
-- **G4/G5**:`lkrt/state.rs` RUNTIME、`lkrt/abi.rs` LAST_ERROR(lkrt 是 AOT native 运行时,
-  thread_local 或本就合理,评估后再定是否迁移;守 lkrt 边界铁律)。
-- **M0.1 抽 `lk-values`**(与 RuntimeVal 迁移合流,大步先拆子步)、M0.7/M0.8 no_std 化。
-- 原则:严格按 Phase 顺序;大步先拆子步、先跑通编译再迁逻辑;改动 async 用全量测试+端到端 .lk 核对。
+## 下一步:Phase M0 续(结构性大步)
+- **M0.1 抽 `lk-values`**(把 `RuntimeVal`/`LiteralVal`/`HeapValue`/`HeapStore`/GC 类型移出 core
+  到 `no_std`+`alloc` 新 crate,**与进行中的 RuntimeVal 迁移合流**)——大步,先拆子步、先跑通编译再迁。
+- **M0.2 抽 `lk-hal`** trait;**M0.7/M0.8** core 换 `core::`/`alloc::` + `#![no_std]`;**M0.9** CI alloc-only+wasm32。
+- 原则:严格按 Phase 顺序;大步先拆子步、先跑通编译再迁逻辑;改动 async/runtime 用全量测试+端到端 .lk 核对。
 
 ## 护栏(每步 exit gate,不回退基线)
 全量 workspace tests 绿(现 1478)/ 三套差分 / fuzz / ASan+UBSan / Miri lkrt /

@@ -24,8 +24,8 @@
   | ~~G2~~ | ~~`core/src/rt/runtime.rs`~~ | ~~`once_cell::Lazy` + tokio 异步运行时状态~~ | ✅ 已移入 VmContext(M0.5) |
   | ~~G3~~ | ~~`core/src/vm/alloc.rs`~~ | ~~`thread_local! TLS_ARENA`（RegionAllocator）~~ | ✅ 已删(死代码,M0.4) |
   | — | `core/src/vm/analysis.rs:827` | `#[cfg(test)]` metrics thread_local | 测试专用，**不计** |
-  | G4 | `lkrt/src/state.rs:11` | `thread_local! RefCell<RuntimeState>` | 实例传递（lkrt 边界铁律） |
-  | G5 | `lkrt/src/abi.rs:43` | `thread_local! RefCell LAST_ERROR` | 实例传递 |
+  | G4 | `lkrt/src/state.rs:11` | `thread_local! RefCell<RuntimeState>` | ✅ 按设计保留(单线程 AOT 热路径,M0.6) |
+  | G5 | `lkrt/src/abi.rs:43` | `thread_local! RefCell LAST_ERROR` | ✅ 按设计保留(同上) |
 - **no_std 障碍（core 102 处 `use std`，无 `#![no_std]`）**：
   - 易（机械换 `core::`/`alloc::`）：`fmt`(6) `ops`(2) `mem`(1) `cmp`(1) `pin`(1) `collections`(29→alloc/hashbrown)
   - 难（`std::sync` 37）：`Arc`→`alloc::sync::Arc` 易；`Mutex/RwLock`→需 `spin`/`critical-section`
@@ -71,7 +71,14 @@
       **验证**：`cargo build --workspace -D warnings` 0/0；全量 **1478 tests / 0 failed**；
       fmt+clippy 0；**`concurrency_demo.lk` 端到端 chan create→send→recv 正确**（共享反应堆语义验证）。
       *(反应堆粒度：共享 Arc，每 VM 独立 vs 进程共享的策略推迟到 M3 builder；性能上共享 A 在多 VM 严格更优。)*
-- [ ] **M0.6** 消除 G4/G5（lkrt thread_local）→ 实例传递，守住 lkrt 边界铁律。
+- [x] **M0.6** G4/G5（lkrt thread_local）→ **决定按设计保留，不消除**。lkrt 是 AOT native 运行时
+      （每原生二进制自成进程、单线程；边界铁律禁止依赖 VM/ctx）。`state.rs` 注释明确：thread_local
+      而非进程级 mutex 是**刻意选择**——arena 注册在每次动态字符串操作的热路径上，不能付锁开销，
+      且 handle 不跨线程。改成实例传递需穿线整个生成代码 ABI（巨大 codegen 改动）且**回退性能**、
+      违反 lkrt 边界。→ **与 VM 全局状态（G1/G2/G3）性质不同,保留是正确工程决策。**
+      *(问题 5「多实例 VM 安全」由 core 侧 G1-G3 消除达成;lkrt 无多实例概念。)*
+- **✅ M0 去全局状态达成**：**core（L1）已无生产全局可变状态**（唯一剩 `vm/analysis.rs` thread_local
+  是 `#[cfg(test)]`）。G1/G2/G3 消除、G4/G5 按设计保留。VM 多实例安全地基就位。
 - [ ] **M0.7** core 机械换 `core::`/`alloc::`（fmt/ops/mem/cmp/pin/collections），std-only 路径 feature-gate。
 - [ ] **M0.8** `lk-vm-core` 加 `#![no_std]` + `extern crate alloc`，std 部分门控到 `std` feature。
 - [ ] **M0.9** CI 加 `--no-default-features --features alloc` 编译 + `wasm32-unknown-unknown` build 冒烟。
