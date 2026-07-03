@@ -22,7 +22,7 @@
   |---|---|---|---|
   | ~~G1~~ | ~~`core/src/expr/expr_impl.rs`~~ | ~~`once_cell::Lazy<DashMap>` 缓存~~ | ✅ 已删(死代码,M0.3) |
   | G2 | `core/src/rt/runtime.rs:6` | `once_cell::Lazy` + tokio 异步运行时状态 | 收进实例；no_std 下走 HAL |
-  | G3 | `core/src/vm/alloc.rs:34` | `thread_local! TLS_ARENA`（RegionAllocator） | 实例持有 arena，或显式传入 |
+  | ~~G3~~ | ~~`core/src/vm/alloc.rs`~~ | ~~`thread_local! TLS_ARENA`（RegionAllocator）~~ | ✅ 已删(死代码,M0.4) |
   | — | `core/src/vm/analysis.rs:827` | `#[cfg(test)]` metrics thread_local | 测试专用，**不计** |
   | G4 | `lkrt/src/state.rs:11` | `thread_local! RefCell<RuntimeState>` | 实例传递（lkrt 边界铁律） |
   | G5 | `lkrt/src/abi.rs:43` | `thread_local! RefCell LAST_ERROR` | 实例传递 |
@@ -55,7 +55,11 @@
 - [x] **M0.3** 消除 G1（expr_impl `PARSE_CACHE`）→ **实为死代码**（`parse_cached_arc` 全仓零调用），
       连同 `once_cell::Lazy`/`dashmap::DashMap`/`Arc` 未用 import 一并删除。core 编译 0 warning、
       `cargo test -p lk-core` 953 passed / 0 failed。**G1 清除,不留全局状态。**
-- [ ] **M0.4** 消除 G3（TLS_ARENA）→ RegionAllocator 实例化 / 显式传入。
+- [x] **M0.4** 消除 G3（TLS_ARENA）→ **实为死代码**：`RegionAllocator`/`with_thread_local`/
+      `allocate_heap`/`heap_bytes` 全 core 零调用（仅自身单测用）；删 `TLS_ARENA` thread_local +
+      `RegionAllocator` 整体，保留在用的 `AllocationRegion`/`RegionPlan`（逃逸分析规划类型）。
+      core 编译 0 warning、`cargo test -p lk-core` 950 passed / 0 failed。**G3 清除。**
+      *(注：将来若实现逃逸分析分配，须按 plan 走实例化 arena，不得再引入 thread_local。)*
 - [ ] **M0.5** 消除 G2（tokio 运行时）→ 收进实例；no_std 走 HAL/feature-gate。
 - [ ] **M0.6** 消除 G4/G5（lkrt thread_local）→ 实例传递，守住 lkrt 边界铁律。
 - [ ] **M0.7** core 机械换 `core::`/`alloc::`（fmt/ops/mem/cmp/pin/collections），std-only 路径 feature-gate。
