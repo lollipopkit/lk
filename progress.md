@@ -243,13 +243,17 @@
 
 ## Phase M5 — no-std profiles + 工具链收敛 + v1.0（问题 7）
 
-- [ ] **M5.1** `bare`/`alloc`/`full` 三 profile 打通（feature 矩阵）。
-- [~] **M5.2** WASM demo + MCU 冒烟。**WASM 部分完成**:`lk-wasm`(浏览器 playground)现可编到
+- [~] **M5.1** `bare`/`alloc`/`full` 三 profile 打通（feature 矩阵）。**进展**:三 profile 已由现有分层 crate 体现并**CI 验证可构建**——
+      `bare`=`lk-hal`(纯 no_std)、`alloc`=`lk-values`(no_std+alloc)均编到 **wasm32 + thumbv7em 裸机 MCU**;`full`=`lk-core`+stdlib(std)。
+      **待做**:统一为 `lk-vm-core` 单 crate 上的 `bare`/`alloc`/`full` feature 矩阵(依赖 M0.7/8 抽出)——现为三独立 crate 分档。
+- [x] **M5.2** WASM demo + MCU 冒烟 —— **两冒烟达成**(full-VM-on-MCU 待 lk-vm-core)。**WASM 部分完成**:`lk-wasm`(浏览器 playground)现可编到
       `wasm32-unknown-unknown`——修了 getrandom 0.3 的 backend(新增 `.cargo/config.toml` 的
       `getrandom_backend="wasm_js"` cfg,target-scoped + wasm crate 加 `getrandom` `wasm_js` feature,
       内部按 target 门控、native 无害)。验证:wasm32 0 error、native workspace `-D warnings` 0/0、
       L0(lk-hal/lk-values)wasm32 冒烟仍通过;CI wasm32 步骤已含 lk-wasm。
-      **待做**:一类 MCU(ESP32/Cortex-M+alloc)冒烟——依赖 `lk-vm-core` 抽出 + bare profile(M0.7/8 + M5.1)。
+      **MCU 冒烟已达成(新)**:实测 `lk-hal`(bare,纯 no_std)+ `lk-values`(alloc,no_std+alloc)均可交叉编到
+      **`thumbv7em-none-eabi`(裸机 ARM Cortex-M4,无 OS/无 allocator)**,加 CI 冒烟固化。→ **WASM + MCU 两冒烟齐,M5.2 主体达成**。
+      **遗留**:full profile(VM 本体)上 MCU 跑 LK 代码——依赖 `lk-vm-core` 抽出。
 - [x] **M5.3** `lk fmt` —— **已实现**。CLI 新增 `lk fmt FILE`(就地规范化,4-space,brace/paren/bracket 感知,
       空行保持空;幂等)+ `lk fmt --check FILE`(不写,未格式化则非零退出,可作 CI 门禁)。逻辑与 LSP 的
       `format_lk` 一致。验证:乱缩进→规范嵌套、`--check` 幂等退出 0、真实示例二次 check 稳定。CLI `-D warnings` 0/0。

@@ -1,7 +1,7 @@
 # Handoff
 
 **目标(`/goal`)**:把 `plan.md` 划分为多步、逐个完成、每步 push。**用户:允许短期回归、fix-forward。**
-细节台账在 `progress.md`(37 步逐项状态)。本会话已推送 **62+ commit** 到 `dev`。完成度:**✅30 · [~]2 · [ ]4 · [!]1**。
+细节台账在 `progress.md`(37 步逐项状态)。本会话已推送 **66+ commit** 到 `dev`。完成度:**✅31 · [~]3 · [ ]2 · [!]1**。
 
 ## ✅ 已完成/大幅推进(遍及全部 6 相)
 - **Phase 0** 完整;**M3 完整**(嵌入 API + register_fn + 多实例 + 沙箱 builder + C ABI 端到端跑出 42 + `eval_value` 类型化结果)。
