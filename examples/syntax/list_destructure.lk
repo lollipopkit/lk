@@ -1,0 +1,23 @@
+// List-shape destructuring via `if let`: the runtime list-shape check (`IsList`)
+// and typed-list element binds now lower natively (plan M4.2 — generic lowering
+// improvement, not a workload-specific fused op). Each assert defines the VM's
+// semantics; the VM==AOT differential gate proves the native lowering matches.
+
+// A matching fixed-length list binds its elements.
+let xs = [10, 20, 30];
+if let [a, b, c] = xs {
+    assert(a == 10);
+    assert(b == 20);
+    assert(c == 30);
+    assert(a + b + c == 60);
+}
+
+// The bound elements participate in ordinary native arithmetic.
+let ys = [3, 4];
+let sum = 0;
+if let [p, q] = ys {
+    sum = p * p + q * q;
+}
+assert(sum == 25);
+
+println("list destructure: ok");

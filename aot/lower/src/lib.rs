@@ -2556,6 +2556,21 @@ fn lower_inst(
             }
             ssa.write(instr.a(), block, (dst, Ty::Bool));
         }
+        Opcode::IsList => {
+            // `a` = dst, `b` = src. In the statically-typed subset the list-ness
+            // of a register is known at lower time: a typed list handle is a
+            // list; every other lowerable type (scalars, maps, maybe-carriers,
+            // nil) is not. Const-folds to a `Bool`, mirroring the VM's
+            // `runtime_value_is_list`.
+            let (_, ty) = ssa.read(instr.b(), block, pc)?;
+            let is_list = matches!(ty, Ty::ListI64 | Ty::ListF64 | Ty::ListStr);
+            let dst = ssa.new_val();
+            insts.push(Inst::Const {
+                dst,
+                value: Const::Bool(is_list),
+            });
+            ssa.write(instr.a(), block, (dst, Ty::Bool));
+        }
         Opcode::Not => {
             // `!x`: `a` = dst, `b` = src. The VM negates a `Bool` and treats `Nil` as
             // `true`; a non-bool/non-nil operand is a VM error, so reject (fall back).
