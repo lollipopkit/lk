@@ -24,8 +24,8 @@
 - **M2.2 traceback**:需 call-frame 追踪入 call 热路径(perf 敏感);`push_call_frame` 已存在但未接入执行。堆对象一等错误值需 GC rooting。
 - **M5.4 删中心 registry —— ✅ 已完成**:净删 ~5000 行(registry.rs 1343 + signing 197 + registry_server 791 + key + 客户端解析 ~600 +
   Serve/Publish/Yank/Index/Key 命令 + Manifest.registry 模型 + 全部 registry 测试 + 无用依赖 ed25519-dalek/base64/ureq/semver)。
-  `fetch_dependencies` 收敛为纯 git+path。保留 init/add/fetch/update/check/tree + Lk.toml/Lk.lock。1445 tests 0 失败,不触及 VM。
-  遗留(非阻塞):`docs/packages.md` 仍述旧注册表待刷新;可选补一个纯 git 依赖 fetch 集成测试(原集成测试全是 registry,已删)。
+  `fetch_dependencies` 收敛为纯 git+path。保留 init/add/fetch/update/check/tree + Lk.toml/Lk.lock。1446 tests 0 失败,不触及 VM。
+  follow-up 已闭合:补了纯 git 依赖 fetch 集成测试(`cli/tests/pkg_git_test.rs`)+ 刷新 `docs/packages.md` 为 git-only。
 
 ## 代码层已核实的精确阻塞点(下一会话零摸索)
 - **callable 反转**:`CallableValue::Runtime(Arc<vm::RuntimeCallable>)` @ `core/src/val/runtime_model.rs:182`;`RuntimeCallable` 内嵌
