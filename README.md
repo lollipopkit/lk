@@ -83,7 +83,7 @@ assert_eq!(result.display_first_return(), "true");
 - Compile to a native executable: `lk compile [FILE]` (omitting `FILE` uses `./main.lk`, package `./src/main.lk`, or a single workspace app entry; unsupported LLVM-native shapes fail)
 - Compile to a bytecode module artifact: `lk compile bytecode [FILE]` → `FILE.lkm`
 - Compile to LLVM IR: `lk compile llvm [FILE]` (see [docs/llvm/backend.md](docs/llvm/backend.md) for backend details)
-- Create packages, manage dependencies, publish registry manifests, manage signing keyrings, and run a local signed registry: `lk pkg init`, `lk pkg add`, `lk pkg fetch`, `lk pkg check`, `lk pkg publish`, `lk pkg key`, `lk pkg serve`, `lk pkg tree` (see [docs/packages.md](docs/packages.md))
+- Create packages and manage decentralized git + lockfile dependencies (no central registry): `lk pkg init`, `lk pkg add`, `lk pkg fetch`, `lk pkg update`, `lk pkg check`, `lk pkg tree` (see [docs/packages.md](docs/packages.md))
 
 Note: command-line argument paths must be sanitized relative paths.
 

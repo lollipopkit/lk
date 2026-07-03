@@ -295,7 +295,8 @@
       `fetch_dependencies` 收敛为纯 git+path);`Manifest.registry`/`RegistrySection`/`DetailedDependency.{registry,version}`/
       `DependencySpec::{registry_version,registry_override}`;全部 registry 测试;无用依赖 core `ed25519-dalek`/`base64`、cli `ureq`/`semver`。
       **全量 1445 tests 0 失败(-41 为删除的 registry 测试),clippy/fmt 0,不触及 VM。** 更新 CLAUDE.md CLI 速查。
-      **待做(文档)**:`docs/packages.md` 仍描述旧注册表,需刷新为 git-only(非阻塞)。
+      **文档遗留已闭合**:`docs/packages.md` 已是 git-only 描述;`README.md` 速查行(过时引用 `pkg publish`/`key`/`serve`/
+      signed registry)已刷新为 git+lockfile 命令(init/add/fetch/update/check/tree)。全仓无残留 registry 过时引用。
 - [x] **M5.5** LSP **保留并持续维护**（不砍）+ tree-sitter —— **双轨保留,现状核实**。plan 决策(本会话已改 plan.md)
       = 不砍 LSP,与 tree-sitter 双轨。现状:`lsp/`(13k 行,hover/goto/semantic-tokens/inlay/completion/diagnostic
       共 424 引用点,macro-origin 感知)+ `ecosystem/tree-sitter-lk`(grammar.js)+ `vsc-ext`/`zed-ext` 编辑器集成
