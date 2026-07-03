@@ -2571,6 +2571,22 @@ fn lower_inst(
             });
             ssa.write(instr.a(), block, (dst, Ty::Bool));
         }
+        Opcode::IsMap => {
+            // `a` = dst, `b` = src. Analogous to `IsList`: a typed map handle is
+            // a map at lower time; every other lowerable type is not. Const-folds
+            // to a `Bool`, mirroring the VM's `runtime_value_is_map`.
+            let (_, ty) = ssa.read(instr.b(), block, pc)?;
+            let is_map = matches!(
+                ty,
+                Ty::MapStrI64 | Ty::MapI64I64 | Ty::MapStrF64 | Ty::MapI64F64 | Ty::MapStrBool
+            );
+            let dst = ssa.new_val();
+            insts.push(Inst::Const {
+                dst,
+                value: Const::Bool(is_map),
+            });
+            ssa.write(instr.a(), block, (dst, Ty::Bool));
+        }
         Opcode::Not => {
             // `!x`: `a` = dst, `b` = src. The VM negates a `Bool` and treats `Nil` as
             // `true`; a non-bool/non-nil operand is a VM error, so reject (fall back).
@@ -3983,10 +3999,50 @@ fn lower_inst(
             });
         }
         Opcode::Contains => {
-            // `a` = dst (bool), `b` = needle, `c` = haystack. Only list haystacks
-            // (with a matching element type) are lowered; string/map/set haystacks
-            // fall back. The runtime helper returns 0/1, narrowed here to an `i1`.
+            // `a` = dst (bool), `b` = needle, `c` = haystack. List and string-keyed
+            // map haystacks are lowered; other haystacks fall back.
             let (handle, list_ty) = ssa.read(instr.c(), block, pc)?;
+            // `key in map` tests key membership (VM `map_contains`): read the
+            // map's `Maybe` for the key and take its present bit — no value
+            // materialization needed. Mirrors the map `GetIndex` path.
+            if matches!(list_ty, Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool) {
+                let key = ssa.read_typed(instr.b(), block, Ty::Str, pc)?;
+                let maybe = ssa.new_val();
+                let maybe_ty = match list_ty {
+                    Ty::MapStrF64 => {
+                        insts.push(Inst::MapGetMaybeStrF64 {
+                            dst: maybe,
+                            handle,
+                            key,
+                        });
+                        Ty::MaybeF64
+                    }
+                    Ty::MapStrBool => {
+                        insts.push(Inst::MapGetMaybe {
+                            dst: maybe,
+                            handle,
+                            key,
+                        });
+                        Ty::MaybeBool
+                    }
+                    _ => {
+                        insts.push(Inst::MapGetMaybe {
+                            dst: maybe,
+                            handle,
+                            key,
+                        });
+                        Ty::MaybeI64
+                    }
+                };
+                let dst = ssa.new_val();
+                insts.push(Inst::MaybePresent {
+                    dst,
+                    src: maybe,
+                    maybe_ty,
+                });
+                ssa.write(instr.a(), block, (dst, Ty::Bool));
+                return Ok(());
+            }
             let (fn_name, needle) = match list_ty {
                 Ty::ListI64 => (
                     "i64_contains",

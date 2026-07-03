@@ -1,0 +1,30 @@
+// Map key membership (`key in map`) and map-shape destructuring lower natively
+// (plan M4.2): `in` reads the map's `get_pair` present bit, and `if let {..} = m`
+// combines the map-shape check (`IsMap`) with a per-key membership test. Each
+// assert defines the VM semantics; the VM==AOT differential gate proves the
+// native lowering matches (also memory-safe under ASan/UBSan).
+
+let m = {"a": 1, "b": 2, "c": 3};
+
+// `key in map` is a native present-bit test.
+assert("a" in m);
+assert("b" in m);
+assert("c" in m);
+assert(!("z" in m));
+
+// Map-shape destructuring runs the shape + key-membership checks; here the value
+// is bound but not returned (so the branch types stay consistent for the AOT).
+let matched = false;
+if let {"a": v} = m {
+    matched = true;
+}
+assert(matched);
+
+// A key that isn't present skips the branch.
+let missing = false;
+if let {"absent": v} = m {
+    missing = true;
+}
+assert(!missing);
+
+println("map contains: ok");
