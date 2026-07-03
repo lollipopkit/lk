@@ -268,9 +268,11 @@
       AOT 差分(可 lowering 用例走原生不触发回退)全绿;cli 93 tests。→ **Exit「任意 .lk 可 compile(Tier 0 保底)、
       失败回退 VM 而非报错」达成(程序粒度)**。
       **typed-subset 覆盖增量(本轮,找到可增量路径)**:当 AOT 类型系统已有 type+ops、仅缺某 opcode 的 lowering 时,
-      加该 opcode 是有界低风险 win。加 `IsList`(const-fold,类比 IsNil;Ty 已有 ListI64/F64/Str)→ `if let [a,b,c]=xs`
-      列表形状解构现**整体原生编译**(新 `examples/syntax/list_destructure.lk` 经 native==VM 差分验证,真原生 exe 输出一致)。
-      commit `ef55604`。→ **朝 Exit「覆盖 >11/44」的可增量方向**。
+      加该 opcode 是有界低风险 win。本轮两组:**① `IsList`**(const-fold,类比 IsNil;commit `ef55604`);
+      **② `SliceFrom`**(rest 尾切片,lkrt `lkrt_lklist_{i64,f64,str}_slice_from` 类比 map_fn arena_handle + abi + lower;
+      negative start abort 匹配 VM;commit `6b52a3a`/`47199c1`)。→ `if let [a,b,c]=xs` **和** `if let [head,..tail]=xs`
+      列表形状/rest 解构现对所有 typed list 原生编译(`list_destructure.lk` 经 native==VM 差分 + **ASan/UBSan** 验证)。
+      **可复用模式**:const-fold opcode(零 runtime)或小 lkrt 函数+abi+lower(差分/ASan 守卫)。→ 朝 Exit「覆盖 >11/44」落地。
       **待做(逐函数 Tier 1 混合)**:同一程序内 native 函数 + VM-executed 函数混合 + native↔VM ABI 桥——多天架构工程。
       更深 blocker(Raise 需 catch 处理、NewObject/NewRange/StringSplit/map-access/动态 Call/GetGlobal builtin)需扩类型系统+lkrt。
 - [x] **M4.3** 差分门禁 `AOT==VM` 已在 CI —— **现状核实,已满足**。`cli/tests/aot_differential_test.rs`

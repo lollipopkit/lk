@@ -43,11 +43,13 @@ commit `3c0a83e`。cli 93 / 全量 1451 全绿。**Exit「任意 .lk 可 compile
 - **文档**:README pkg 速查 git+lockfile 化(M5.4);`docs/llvm/backend.md` 更正「无回退」为记录 M4.2 Tier 0 回退。
 
 ## 剩余(真正的深度架构工作,均确认无干净子单元)
-- **[~] M4.2 AOT 覆盖 typed-subset 扩展**(找到可增量路径):**当 type+ops 已存在、仅缺某 opcode 的 lowering 时,
-  加该 opcode 是有界低风险 win**。本轮加 `IsList`(const-fold,类比 IsNil;Ty 已有 ListI64/F64/Str)→ `if let [..]=xs`
-  列表形状解构现整体原生编译(新 example `list_destructure.lk` 经 native==VM 差分验证)。**下一候选**:`IsMap`
-  (类比 IsList,但 map **访问**未 lowering 故暂无法端到端验证,待 map-get lowering);更深的 blocker(pcall/error 的
-  `Raise` 需 catch 处理、NewObject 结构体、NewRange、StringSplit、动态 Call/GetGlobal builtin)仍需扩类型系统+lkrt(多天)。
+- **[~] M4.2 AOT 覆盖 typed-subset 扩展**(**可复用模式已验证**):type+ops 已存在、仅缺某 opcode lowering 时,加该
+  opcode 是有界低风险 win。**两法**:(a) const-fold opcode(零 runtime,如 `IsList`);(b) 小 lkrt 函数+abi 声明+lower arm
+  (如 `SliceFrom`:lkrt `lkrt_lklist_{i64,f64,str}_slice_from` 类比 `map_fn` 的 arena_handle、negative abort 匹配 VM)。
+  均由 **native==VM 差分 + ASan/UBSan** 守卫。本轮:`IsList`+`SliceFrom` → `if let [a,b,c]=xs` / `[head,..tail]=xs`
+  列表形状/rest 解构对所有 typed list 原生编译(commit `ef55604`/`6b52a3a`/`47199c1`)。
+  **下一候选**:`StringSplit`(需 lkrt split→ListStr,语义匹配风险高些)、`IsMap`(待 map-access lowering)。
+  **更深 blocker**(pcall/error 的 `Raise` 需 catch 处理、NewObject 结构体、NewRange、动态 Call/GetGlobal builtin)需扩类型系统(多天)。
 - **[ ] M4.2 逐函数 Tier 1 混合**:同一程序 native + VM-executed 函数 + native↔VM ABI 桥——多天(程序粒度回退已达成)。
   MIR lower 已按 CallDirect 可达性处理多函数(dead 函数已跳过)。
 - **[ ] M2.5 stackless**:VM 执行模型重写(trampoline `Sequence::step`)——多天,触碰最热路径+bench 门禁,partial 不可安全提交。

@@ -72,8 +72,11 @@ ModuleArtifact → lk-aot-lower → lk_aot_mir::validate → lk-aot-codegen → 
   always fatal), and `typeof` (static scalar names; Maybe carriers select
   `Nil` vs the value name at runtime). `IsNil` lowers likewise (scalars are
   never nil, Maybe tests its present bit). `IsList` const-folds the same way
-  (typed `List<…>` handles are lists, every other lowerable type is not), so
-  `if let [a, b, c] = xs { … }` list-shape destructuring lowers natively.
+  (typed `List<…>` handles are lists, every other lowerable type is not), and
+  `SliceFrom` (the rest-pattern tail slice) calls `list_h::{i64,f64,str}_slice_from`
+  for a fresh tail handle (negative start aborts, like the VM). Together they
+  lower list-shape and rest destructuring — `if let [a, b, c] = xs { … }` and
+  `if let [head, ..tail] = xs { … }` — natively.
 - Composite string-int keys (`m["n${i}"]`): stores call the zero-allocation
   `set_ik` map ABI (key built on the lkrt stack); loads build the key with the
   single-allocation `str.concat_i64` fusion, which also fuses every int
