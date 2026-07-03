@@ -11,9 +11,15 @@ ModuleArtifact → lk-aot-lower → lk_aot_mir::validate → lk-aot-codegen → 
 ```
 
 - **`lk-aot-lower`** is the *total capability predicate*: `lower() ->
-  Result<MirModule, Unsupported>`. Shapes outside the subset fail the compile
-  with a precise, user-facing `Unsupported` reason. There is no fallback
-  backend and no VM shell embedding.
+  Result<MirModule, Unsupported>`. Shapes outside the subset return a precise
+  `Unsupported` reason. The MIR/LLVM path itself embeds no VM shell — but at the
+  CLI level `lk compile FILE` no longer fails outright on `Unsupported`
+  (plan M4.2, 问题 2): it **falls back to the Tier 0 VM bundle** (`lk bundle`,
+  which embeds the interpreter and runs any valid program), emitting a warning.
+  Genuine source errors (syntax/type) still surface up front — they are detected
+  before the native attempt, so the fallback never masks them. Set
+  `LK_AOT_NO_FALLBACK=1` to disable the fallback and require native-only lowering
+  (used by tooling/tests that verify the lowering in isolation).
 - **`lk_aot_mir::validate`** runs unconditionally on the production path (a
   failure is a lowering bug, never a user error).
 - **`lk-aot-codegen`** is a total `MirModule` → LLVM-text rendering; the CLI
@@ -139,19 +145,27 @@ generative fuzz in `cli/tests/aot_fuzz_differential_test.rs`), MIR snapshots
 single source of truth shared by codegen declarations and `lkrt`'s
 compile-time conformance checks.
 
-Unsupported shapes fail before executable emission; LLVM output must not embed
-a serialized `.lkm` payload, `ModuleArtifact`, the bytecode executor,
-`VmContext`, parser, type checker, or compiler. The final executable may link
-Rust `std`, libc/libm, and `lkrt`. See `docs/llvm/native-stdlib.md` for the
-native stdlib boundary.
+The LLVM path itself stays pure: unsupported shapes produce no `.ll`, and the
+LLVM output must not embed a serialized `.lkm` payload, `ModuleArtifact`, the
+bytecode executor, `VmContext`, parser, type checker, or compiler. The final
+native executable may link Rust `std`, libc/libm, and `lkrt`. See
+`docs/llvm/native-stdlib.md` for the native stdlib boundary. (The CLI's Tier 0
+fallback — used when the LLVM path reports `Unsupported` — is a *separate*
+bundle path that embeds the VM via the C ABI; it does not compromise this LLVM
+path's no-VM invariant.)
 
 ## Usage
 
 ```sh
-lk compile FILE.lk          # native executable (default)
-lk compile llvm FILE.lk     # emit FILE.ll
+lk compile FILE.lk          # native executable (default); falls back to the
+                            #   Tier 0 VM bundle if not natively lowerable
+lk compile llvm FILE.lk     # emit FILE.ll (no fallback: fails on Unsupported)
 lk compile bytecode FILE.lk # emit the .lkm module artifact instead
+lk bundle FILE.lk           # Tier 0: self-contained exe that embeds the VM
 ```
+
+`LK_AOT_NO_FALLBACK=1` makes `lk compile FILE.lk` require native lowering (no
+Tier 0 fallback).
 
 Direct `lk file.lk` execution defaults to the bytecode VM; `LK_NATIVE_RUN=1`
 opts into the cached native fast path when the program lowers.
