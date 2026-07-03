@@ -21,8 +21,8 @@ use lk_core::{
     typ::TypeChecker,
     vm::{
         ModuleArtifact, Opcode, VM_INDEX_KEY_METRIC_NAMES, VM_REGISTER_WRITE_SOURCE_NAMES, VmContext, VmRuntimeMetrics,
-        compile_program_module_with_ctx, execute_module_artifact_with_ctx, vm_runtime_metrics_reset,
-        vm_runtime_metrics_snapshot,
+        compile_program_module_with_ctx, execute_module_artifact_with_ctx, execute_program_with_ctx_and_budget,
+        vm_runtime_metrics_reset, vm_runtime_metrics_snapshot,
     },
 };
 #[cfg(feature = "llvm")]
@@ -664,9 +664,11 @@ fn main() -> anyhow::Result<()> {
 
     let profile_enabled = vm_profile_enabled();
     maybe_start_vm_profile(profile_enabled);
-    let exec_result = program
-        .execute_with_ctx(&mut base_env)
-        .with_context(|| "VM execution failed");
+    let exec_result = match fuel_budget_from_env() {
+        Some(budget) => execute_program_with_ctx_and_budget(&program, &mut base_env, budget),
+        None => program.execute_with_ctx(&mut base_env),
+    }
+    .with_context(|| "VM execution failed");
 
     // Shutdown runtime after execution
     base_env.shutdown_async_runtime();
@@ -868,6 +870,17 @@ fn run_type_check(path: &Path) -> anyhow::Result<()> {
         std::process::exit(1);
     }
     Ok(())
+}
+
+/// Optional instruction budget (fuel) for sandboxed execution, read from the
+/// `LK_FUEL` environment variable. When set to a positive integer the VM aborts
+/// after that many instructions instead of running unbounded — the fuel knob of
+/// the sandbox model (plan M2.6). Absent/0/invalid means unlimited.
+fn fuel_budget_from_env() -> Option<u64> {
+    std::env::var("LK_FUEL")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|&budget| budget > 0)
 }
 
 fn compile_instr_module(path: &Path) -> anyhow::Result<()> {

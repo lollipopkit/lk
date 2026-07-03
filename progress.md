@@ -147,7 +147,10 @@
       exit=1「VM execution failed」;**全量 1479 tests / 0 failed(0 回归)**。
 - [ ] **M2.4** `try`/`?` 语法糖。
 - [ ] **M2.5** VM 改 stackless（trampoline `Sequence::step`）——大工程，落地时再拆子步。
-- [ ] **M2.6** fuel（`step(fuel)` 中断）/ 内存上限（allocator 计账）/ 模块白名单。
+- [~] **M2.6** fuel / 内存上限 / 模块白名单。**fuel 已暴露**:VM 早有 `execute_program_with_ctx_and_budget` + `Executor::with_instruction_budget`(wasm playground 在用),
+      本步经 CLI 环境变量 **`LK_FUEL=N`** 暴露(匹配 `LK_FORCE_VM`/`LK_GC_STRESS` 约定):设正整数则
+      VM 达 N 条指令后中断(`execution step limit exceeded`)。验证:无预算完成、`LK_FUEL=500` 耗尽中断。
+      **待做**:内存上限(allocator 计账)、模块白名单(registry 过滤)——属 M3 沙箱 builder。
 - **Exit**：`pcall` 捕获所有可恢复错误；fuzz 验证器无 panic；沙箱指标可配。
 
 ## Phase M3 — 嵌入 API + 多实例 + C ABI（问题 10）
