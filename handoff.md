@@ -1,7 +1,7 @@
 # Handoff
 
 **目标(`/goal`)**:把 `plan.md` 划分为多步、逐个完成、每步 push。**用户:允许短期回归、fix-forward。**
-细节台账在 `progress.md`。已推送 **75+ commit** 到 `dev`。完成度:**✅34 · [~]1 · [ ]2 · [!]1**(M0.7/8 flip + M2.2 本轮完成)。
+细节台账在 `progress.md`。已推送 **78+ commit** 到 `dev`。完成度:**✅34 · [~]2 · [ ]1 · [!]1**(本轮:M0.7/8 flip、M2.2、M4.2 程序粒度回退)。
 
 ## ✅ 已完成/大幅推进(遍及全部 6 相)
 - **Phase 0** 完整;**M3 完整**(嵌入 API + register_fn + 多实例 + 沙箱 builder + C ABI 端到端跑出 42 + `eval_value` 类型化结果)。
@@ -31,9 +31,14 @@
 `error(String/List/…)` 一等携带(`RuntimeModuleState.pending_raise_root` GC-root pin 跨展开),pcall 原样取回;
 uncaught 用 `LkRaisedValue.rendered` 出消息。commit `a3533a4`。GC-stress 1095 验证 rooting。**M2.2 无遗留**。
 
+## 本轮完成 ③:M4.2 程序粒度回退(消除「全有或全无」问题 2)✅
+`lk compile FILE`(native)遇 `Unsupported` 时不再整程序报错,warn + 回退 **Tier 0 VM bundle**(内嵌解释器)
+→ 任何有效程序都能 compile。先解析(真错误暴露)再试 native;`LK_AOT_NO_FALLBACK=1` 关回退供 strict native-only。
+commit `3c0a83e`。cli 93 / 全量 1451 全绿。**Exit「任意 .lk 可 compile(Tier 0 保底)」达成(程序粒度)**。
+
 ## 剩余(真正的深度架构工作)
-- **[ ] M2.5 stackless**:VM 执行模型重写(trampoline `Sequence::step`)——多天。
-- **[ ] M4.2 Tier 1**:MIR `Unsupported` 改逐函数回退 VM——大改 codegen/lower,多天。
+- **[ ] M4.2 逐函数 Tier 1**:同一程序内 native 函数 + VM-executed 函数混合 + native↔VM ABI 桥——多天(程序粒度回退已达成)。
+- **[ ] M2.5 stackless**:VM 执行模型重写(trampoline `Sequence::step`)——多天,触碰最热路径+bench 门禁。
 - **[!] callable trait 反转**:`CallableValue::Runtime(Arc<vm::RuntimeCallable>)` @ `val/runtime_model.rs`,内嵌
   `Arc<Module>`。改 `dyn` 需同步改 GC 追踪/跨模块传递/调用点——枚举变体一变全部 match 原子断裂。lk-core **内部**优化,非阻塞。
 - **[~] M5.1 三 profile**:lk-core 现已承载 alloc(no_std,`--no-default-features`)↔ full(std,默认)二档 feature;

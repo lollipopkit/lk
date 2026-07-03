@@ -260,7 +260,14 @@
       staticlib 静态链接 VM → **自包含 native 可执行程序**(启动即跑 VM,**100% 覆盖**——任何 VM 能跑的程序都能
       bundle,不像 MIR 原生「全有或全无」)。语义**平凡一致**(同一 VM)。验证:`bundle demo.lk`→20MB 自包含 ELF,
       直接运行(无 lk/无源码)输出与 VM **完全一致**。workspace 0/0。*(Linux/cc;后续字节码嵌入/跨平台/瘦身。)*
-- [ ] **M4.2** Tier 1：MIR 后端 `Unsupported` 从「整程序失败」→「逐函数标记 VM-executed 回退」。
+- [~] **M4.2** Tier 1 —— **程序粒度回退已达成**(commit `3c0a83e`);逐函数混合仍 future。
+      **已做(消除「全有或全无」问题 2 的程序粒度)**:`lk compile FILE`(native)在 MIR/LLVM lowering 返回
+      `Unsupported` 时,不再整程序报错,而是 warn + 回退 **Tier 0 VM bundle**(内嵌解释器)→ **任何有效程序都能 compile**
+      (可 lowering 走原生,否则 VM 内嵌)。先解析(真源码错误暴露、不被 Tier 0 掩盖)再试 native。`LK_AOT_NO_FALLBACK=1`
+      关闭回退供 strict native-only 验证。验证:算术→原生 42;pcall→回退 Tier 0 exe 跑对;语法错误→exit 1 不产 exe;
+      AOT 差分(可 lowering 用例走原生不触发回退)全绿;cli 93 tests。→ **Exit「任意 .lk 可 compile(Tier 0 保底)、
+      失败回退 VM 而非报错」达成(程序粒度)**。
+      **待做(逐函数 Tier 1 混合)**:同一程序内 native 函数 + VM-executed 函数混合 + native↔VM ABI 桥——多天架构工程。
 - [x] **M4.3** 差分门禁 `AOT==VM` 已在 CI —— **现状核实,已满足**。`cli/tests/aot_differential_test.rs`
       (MIR native == VM,stdout+成功/失败逐例比对,21 检查点)+ `examples_differential_test.rs`(VM==AOT 语料)
       + `aot_fuzz_differential_test.rs`(随机差分)均随 `check.yml` 的 `cargo test --workspace --all-features` 跑;
