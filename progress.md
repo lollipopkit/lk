@@ -114,7 +114,18 @@
       *(问题 5「多实例 VM 安全」由 core 侧 G1-G3 消除达成;lkrt 无多实例概念。)*
 - **✅ M0 去全局状态达成**：**core（L1）已无生产全局可变状态**（唯一剩 `vm/analysis.rs` thread_local
   是 `#[cfg(test)]`）。G1/G2/G3 消除、G4/G5 按设计保留。VM 多实例安全地基就位。
-- [!] **M0.7/M0.8(core 主体)—— 重新界定范围(重要架构澄清)**:给**当前单体 `core`** 加 `#![no_std]` 是
+- [x] **M0.7/M0.8(core 主体)—— ✅ 完成:lk-core VM 核心 `#![no_std]`**(commit `2ec839a`)。
+      `cargo build -p lk-core --no-default-features` 现为**真 no_std 构建**(0 error 0 warning):无 std feature 时
+      lk-core `#![no_std]`(+alloc),VM 核心(token/ast/expr/stmt/typ/val/vm/gc/resolve + 声明宏展开)不依赖 std。
+      **关键澄清**:host 上 no_std 只禁 lk-core **自身源码**用 `std::`,其 std 依赖(anyhow/dashmap/serde_json)仍
+      链接 std → flip **无需**改依赖 Cargo 配置,也无需抽新 crate(渐进 gate 优于 big-bang 移动)。
+      std-only 叶子按 `std` feature gate(no_std 上语义正确不可用):`stmt::import` 文件/包解析(保留 registry 内存解析)、
+      macro_system 文件加载宏(保留 builtin+声明宏)、proc_deps 指纹、procedural/proc_function/derive 外部 proc-macro
+      进程执行(3 个 external 叶子在 provider 检查后 gate,no_std 返回「requires std」)、ResourceValue.handle 走 compat Mutex。
+      dead-under-no_std 的进程/fs 机器用 `#[cfg_attr(not(std), allow(dead_code, unused_imports))]` 于 mod 声明消警告。
+      验证:default std + **1451 tests** / clippy / fmt 全绿;no_std 构建 0/0。CI check.yml 守卫升级为真 no_std 检查。
+      *(历史范围澄清见下,保留供参考)*
+- [~] **M0.7/M0.8(历史范围澄清)**:给**当前单体 `core`** 加 `#![no_std]` 是
       **错误目标**——它含 `package`(Lk.toml/lock)/`net`/`process`/`rt`(tokio),本质 std,不该 no_std。
       plan 的 L1 `lk-vm-core`(no_std)是要**从单体抽出** VM 核心(token/ast/expr/stmt/typ/vm/val/gc),把
       std-heavy 的 package/net/process/aot 留上层。→ **M0.7/8 真身 = 抽 `lk-vm-core` crate**(类似 lk-values
@@ -133,21 +144,17 @@
       每个用 Vec/String 的 VM-core 文件加 `#[cfg(not(std))] use compat::prelude::*`。按 std feature gate 掉
       no_std 无意义叶子(ResourceHandle 的 File/Tcp/Udp 变体、gc_stress env)。**no_std 错误从 2481 降到 ~20**
       (全在 std-only 叶子:`stmt::import` 文件导入 resolver + macro_system 文件/proc-macro 函数)。
-      验证:default std + **1451 tests** / fmt / clippy(-D warnings)全绿;`--no-default-features` 构建 0 警告
-      (hashbrown/spin/compat 路径已被该 config 实际编译)。**`#![no_std]` flip 暂缓**——待 gate 下述两叶子。
-      **下一步(flip 收尾)**:① gate `stmt::import` 的 ImportResolver(DashMap/PathBuf/fs)+ 消费者 program.rs
-      execute_imports;② gate macro_system 的 imports.rs(fs 文件加载)/procedural.rs(std::process 外部 proc-macro)/
-      proc_deps.rs(fs 指纹)——保留纯数据类型、只 gate fs/process 函数;③ 翻 `#![cfg_attr(not(std), no_std)]`。
+      ~~**`#![no_std]` flip 暂缓**~~ → **flip 已在后续 commit `2ec839a` 完成(见上方 [x] M0.7/8)。**
 - [x] **M0.8**(lk-values 部分)**lk-values 已真 `#![no_std]` + alloc**:`#![no_std]`/`extern crate alloc`;
       `std::fmt`→`core::fmt`、`std::sync::Arc`→`alloc::sync::Arc`、`std::str`→`core::str`、String/Vec/Box/format!/vec!
       →`alloc::*`;`std::collections::HashMap`→`hashbrown`;删死的 anyhow(依赖也移除);serde/arcstr 改 no_std
       (`default-features=false`+alloc)。`substitute` API 变 hashbrown 的涟漪 fix-forward:typ→stmt→vm/context
       逐点改 HashMap import。**验证**:host+**wasm32 真 no_std 交叉编译**、workspace `-D warnings` 0/0、tests 全绿;
-      CI wasm32 冒烟已含 lk-values。**待做**:`lk-vm-core`(core 主体)no_std 化仍是大工程(tokio+102 use std)。
+      CI wasm32 冒烟已含 lk-values。~~**待做**:lk-vm-core no_std~~ → **已达成**:lk-core 主体现 `#![no_std]`(见 M0.7/8)。
 - [x] **M0.9** CI no_std 冒烟 —— **达成**(Exit:alloc-only 编译通过 + wasm32 build 通过均满足)。`check.yml` 现有**三重 no_std 守卫**:
       ① **wasm32**:lk-hal(bare)+ lk-values(alloc)+ lk-wasm;② **thumbv7em 裸机 MCU**:lk-hal + lk-values;
-      ③ **lk-core `--no-default-features`**(去 package/async 的 VM 核心表面)。alloc-only 的 lk-values 在 wasm32+MCU 均编过 → Exit 满足。
-      **遗留**:`lk-vm-core --features alloc` 冒烟待 lk-vm-core 抽出(那是更大的 alloc-only 目标;当前 alloc-only 的 L0 已 CI 守卫)。
+      ③ **lk-core `--no-default-features`** —— **现为真 no_std 构建**(lk-core 主体 `#![no_std]`,commit `2ec839a`),
+      不再只是「去 package/async 的表面」,而是完整 VM 核心的 alloc-only no_std 编译验证。→ **M0.9 遗留清除**。
 - **Exit**：alloc-only 编译通过；`wasm32` build 通过；grep 断言无生产全局可变状态。
 
 ## Phase M1 — VM 定规范 + conformance + 差分框架（问题 1、3、8）
@@ -263,9 +270,12 @@
 
 ## Phase M5 — no-std profiles + 工具链收敛 + v1.0（问题 7）
 
-- [~] **M5.1** `bare`/`alloc`/`full` 三 profile 打通（feature 矩阵）。**进展**:三 profile 已由现有分层 crate 体现并**CI 验证可构建**——
-      `bare`=`lk-hal`(纯 no_std)、`alloc`=`lk-values`(no_std+alloc)均编到 **wasm32 + thumbv7em 裸机 MCU**;`full`=`lk-core`+stdlib(std)。
-      **待做**:统一为 `lk-vm-core` 单 crate 上的 `bare`/`alloc`/`full` feature 矩阵(依赖 M0.7/8 抽出)——现为三独立 crate 分档。
+- [~] **M5.1** `bare`/`alloc`/`full` 三 profile 打通（feature 矩阵）。**进展**:三 profile 已由分层 crate 体现并**CI 验证可构建**——
+      `bare`=`lk-hal`(纯 no_std)、`alloc`=`lk-values`(no_std+alloc)均编到 **wasm32 + thumbv7em 裸机 MCU**;
+      **`alloc`(VM 核心级)= `lk-core --no-default-features`**(现真 no_std,M0.7/8 已达成)、`full`=`lk-core`(默认 std)+stdlib。
+      → **M0.7/8 flip 后,`lk-core` 单 crate 已承载 alloc(no_std)↔full(std)两档**(`std` feature 切换)。
+      **待做**:host no_std 是「lk-core 源码不用 std」;真 bare-metal(thumbv7em 跑 VM)还需 std 依赖(dashmap/anyhow/tokio)
+      的 no_std 替代——那是 M5.2 full-VM-on-MCU,更大工程。当前 alloc/full 二档 feature 已就位。
 - [x] **M5.2** WASM demo + MCU 冒烟 —— **两冒烟达成**(full-VM-on-MCU 待 lk-vm-core)。**WASM 部分完成**:`lk-wasm`(浏览器 playground)现可编到
       `wasm32-unknown-unknown`——修了 getrandom 0.3 的 backend(新增 `.cargo/config.toml` 的
       `getrandom_backend="wasm_js"` cfg,target-scoped + wasm crate 加 `getrandom` `wasm_js` feature,
