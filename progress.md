@@ -108,7 +108,12 @@
 
 ## Phase M1 — VM 定规范 + conformance + 差分框架（问题 1、3、8）
 
-- [ ] **M1.1** conformance suite 骨架：每语言特性一组 golden（仿 Lua/Wren/mruby）。
+- [x] **M1.1** conformance suite —— **由现有 `examples/{syntax,stdlib,general}` 承担**(每语言特性一组
+      **自验证 golden**:程序内 `assert`/`assert_eq` 断言预期语义,通过=VM 定义了该特性的语义)。双重 gate:
+      `cli/tests/examples_differential_test.rs`(VM==AOT,llvm)+ `vm_bytecode_differential_test.rs`(VM source==bytecode)。
+      特性覆盖:syntax(闭包/match/pattern/named_args/ranges/struct/trait/operators/error/pcall…)、
+      stdlib(math/string/list/map/iter/stream/json/net/time…)、general(fib/recursive/sort/HOF/concurrency…)。
+      *(可增补:更细粒度的每-opcode/边界 golden;当前语料已构成 plan 要求的'通过即语义定义'骨架。)*
 - [x] **M1.2** `VM(source)==VM(bytecode)` 差分测试入 CI。`cli/tests/vm_bytecode_differential_test.rs`
       (不依赖 llvm):对 examples 语料,源码跑 vs `compile bytecode`→`.lkm`→跑,比对 stdout/success;
       「源码跑两次」自动过滤非确定性样例。**41 比对 / 0 分歧 / 3 跳过**——ModuleArtifact 序列化往返语义一致。
