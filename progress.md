@@ -267,7 +267,12 @@
       关闭回退供 strict native-only 验证。验证:算术→原生 42;pcall→回退 Tier 0 exe 跑对;语法错误→exit 1 不产 exe;
       AOT 差分(可 lowering 用例走原生不触发回退)全绿;cli 93 tests。→ **Exit「任意 .lk 可 compile(Tier 0 保底)、
       失败回退 VM 而非报错」达成(程序粒度)**。
+      **typed-subset 覆盖增量(本轮,找到可增量路径)**:当 AOT 类型系统已有 type+ops、仅缺某 opcode 的 lowering 时,
+      加该 opcode 是有界低风险 win。加 `IsList`(const-fold,类比 IsNil;Ty 已有 ListI64/F64/Str)→ `if let [a,b,c]=xs`
+      列表形状解构现**整体原生编译**(新 `examples/syntax/list_destructure.lk` 经 native==VM 差分验证,真原生 exe 输出一致)。
+      commit `ef55604`。→ **朝 Exit「覆盖 >11/44」的可增量方向**。
       **待做(逐函数 Tier 1 混合)**:同一程序内 native 函数 + VM-executed 函数混合 + native↔VM ABI 桥——多天架构工程。
+      更深 blocker(Raise 需 catch 处理、NewObject/NewRange/StringSplit/map-access/动态 Call/GetGlobal builtin)需扩类型系统+lkrt。
 - [x] **M4.3** 差分门禁 `AOT==VM` 已在 CI —— **现状核实,已满足**。`cli/tests/aot_differential_test.rs`
       (MIR native == VM,stdout+成功/失败逐例比对,21 检查点)+ `examples_differential_test.rs`(VM==AOT 语料)
       + `aot_fuzz_differential_test.rs`(随机差分)均随 `check.yml` 的 `cargo test --workspace --all-features` 跑;

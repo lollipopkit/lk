@@ -43,10 +43,13 @@ commit `3c0a83e`。cli 93 / 全量 1451 全绿。**Exit「任意 .lk 可 compile
 - **文档**:README pkg 速查 git+lockfile 化(M5.4);`docs/llvm/backend.md` 更正「无回退」为记录 M4.2 Tier 0 回退。
 
 ## 剩余(真正的深度架构工作,均确认无干净子单元)
-- **[ ] M4.2 逐函数 Tier 1 + AOT 覆盖 >11/44**:**定论(已穷尽测绘,勿重复调查)**——所有失败 AOT 例子都是
-  「operand type outside natively lowerable subset」/未识别 builtin(pcall/error/map/NewObject/NewRange/StringSplit/
-  动态 Call),即 AOT **静态类型子集**边界。无近失、无快速 opcode win;扩覆盖 = 扩 AOT 类型系统+lkrt 运行时(每类型多天)。
-  逐函数混合还需 native↔VM ABI 桥。MIR lower 已按 CallDirect 可达性处理多函数(dead 函数已跳过)。
+- **[~] M4.2 AOT 覆盖 typed-subset 扩展**(找到可增量路径):**当 type+ops 已存在、仅缺某 opcode 的 lowering 时,
+  加该 opcode 是有界低风险 win**。本轮加 `IsList`(const-fold,类比 IsNil;Ty 已有 ListI64/F64/Str)→ `if let [..]=xs`
+  列表形状解构现整体原生编译(新 example `list_destructure.lk` 经 native==VM 差分验证)。**下一候选**:`IsMap`
+  (类比 IsList,但 map **访问**未 lowering 故暂无法端到端验证,待 map-get lowering);更深的 blocker(pcall/error 的
+  `Raise` 需 catch 处理、NewObject 结构体、NewRange、StringSplit、动态 Call/GetGlobal builtin)仍需扩类型系统+lkrt(多天)。
+- **[ ] M4.2 逐函数 Tier 1 混合**:同一程序 native + VM-executed 函数 + native↔VM ABI 桥——多天(程序粒度回退已达成)。
+  MIR lower 已按 CallDirect 可达性处理多函数(dead 函数已跳过)。
 - **[ ] M2.5 stackless**:VM 执行模型重写(trampoline `Sequence::step`)——多天,触碰最热路径+bench 门禁,partial 不可安全提交。
 - **[!] callable trait 反转**:`CallableValue::Runtime(Arc<vm::RuntimeCallable>)` @ `val/runtime_model.rs`,内嵌
   `Arc<Module>`。改 `dyn` 需同步改 GC 追踪/跨模块传递/调用点——枚举变体一变全部 match 原子断裂。lk-core **内部**优化,非阻塞。
