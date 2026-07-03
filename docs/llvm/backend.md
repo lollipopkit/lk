@@ -84,6 +84,11 @@ ModuleArtifact → lk-aot-lower → lk_aot_mir::validate → lk-aot-codegen → 
   for a fresh tail handle (negative start aborts, like the VM). Together they
   lower list-shape and rest destructuring — `if let [a, b, c] = xs { … }` and
   `if let [head, ..tail] = xs { … }` — natively.
+- `Raise` (the shape-mismatch guard of an irrefutable `let [a, b, c] = xs`)
+  aborts via `rt::panic` with its message constant. This is sound because
+  `TryBegin` is itself unsupported: any module with try/catch takes the Tier 0
+  fallback, so a natively-lowered module has no handler and every `Raise` is
+  uncaught — an abort matches the VM's uncaught-raise exit.
 - Composite string-int keys (`m["n${i}"]`): stores call the zero-allocation
   `set_ik` map ABI (key built on the lkrt stack); loads build the key with the
   single-allocation `str.concat_i64` fusion, which also fuses every int
