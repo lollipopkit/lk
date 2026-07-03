@@ -27,4 +27,10 @@ if let {"absent": v} = m {
 }
 assert(!missing);
 
+// Int-keyed maps use the same present-bit membership test.
+let nums = {1: 10, 2: 20, 3: 30};
+assert(1 in nums);
+assert(3 in nums);
+assert(!(9 in nums));
+
 println("map contains: ok");

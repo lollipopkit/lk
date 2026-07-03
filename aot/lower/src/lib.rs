@@ -4043,6 +4043,34 @@ fn lower_inst(
                 ssa.write(instr.a(), block, (dst, Ty::Bool));
                 return Ok(());
             }
+            // Int-keyed maps: same present-bit test with an `I64` key.
+            if matches!(list_ty, Ty::MapI64I64 | Ty::MapI64F64) {
+                let key = read_typed_scalar(ssa, insts, instr.b(), block, Ty::I64, pc)?;
+                let maybe = ssa.new_val();
+                let maybe_ty = if list_ty == Ty::MapI64F64 {
+                    insts.push(Inst::MapGetMaybeI64F64 {
+                        dst: maybe,
+                        handle,
+                        key,
+                    });
+                    Ty::MaybeF64
+                } else {
+                    insts.push(Inst::MapGetMaybeI64Key {
+                        dst: maybe,
+                        handle,
+                        key,
+                    });
+                    Ty::MaybeI64
+                };
+                let dst = ssa.new_val();
+                insts.push(Inst::MaybePresent {
+                    dst,
+                    src: maybe,
+                    maybe_ty,
+                });
+                ssa.write(instr.a(), block, (dst, Ty::Bool));
+                return Ok(());
+            }
             let (fn_name, needle) = match list_ty {
                 Ty::ListI64 => (
                     "i64_contains",
