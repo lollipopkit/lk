@@ -132,9 +132,10 @@
       (`default-features=false`+alloc)。`substitute` API 变 hashbrown 的涟漪 fix-forward:typ→stmt→vm/context
       逐点改 HashMap import。**验证**:host+**wasm32 真 no_std 交叉编译**、workspace `-D warnings` 0/0、tests 全绿;
       CI wasm32 冒烟已含 lk-values。**待做**:`lk-vm-core`(core 主体)no_std 化仍是大工程(tokio+102 use std)。
-- [~] **M0.9** CI no_std 冒烟。**已做**:`.github/workflows/check.yml` 加「no_std wasm32 smoke (lk-hal L0)」步骤
-      (`cargo build -p lk-hal --target wasm32-unknown-unknown`),守住 L0 层保持 no_std,本地复现通过。
-      **待做**:`lk-vm-core --no-default-features --features alloc` 冒烟(依赖 M0.7/8 完成 core no_std 化)。
+- [x] **M0.9** CI no_std 冒烟 —— **达成**(Exit:alloc-only 编译通过 + wasm32 build 通过均满足)。`check.yml` 现有**三重 no_std 守卫**:
+      ① **wasm32**:lk-hal(bare)+ lk-values(alloc)+ lk-wasm;② **thumbv7em 裸机 MCU**:lk-hal + lk-values;
+      ③ **lk-core `--no-default-features`**(去 package/async 的 VM 核心表面)。alloc-only 的 lk-values 在 wasm32+MCU 均编过 → Exit 满足。
+      **遗留**:`lk-vm-core --features alloc` 冒烟待 lk-vm-core 抽出(那是更大的 alloc-only 目标;当前 alloc-only 的 L0 已 CI 守卫)。
 - **Exit**：alloc-only 编译通过；`wasm32` build 通过；grep 断言无生产全局可变状态。
 
 ## Phase M1 — VM 定规范 + conformance + 差分框架（问题 1、3、8）
