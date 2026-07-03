@@ -207,7 +207,12 @@
 ## Phase M5 — no-std profiles + 工具链收敛 + v1.0（问题 7）
 
 - [ ] **M5.1** `bare`/`alloc`/`full` 三 profile 打通（feature 矩阵）。
-- [ ] **M5.2** WASM demo 可跑 + 一类 MCU（ESP32/Cortex-M+alloc）冒烟。
+- [~] **M5.2** WASM demo + MCU 冒烟。**WASM 部分完成**:`lk-wasm`(浏览器 playground)现可编到
+      `wasm32-unknown-unknown`——修了 getrandom 0.3 的 backend(新增 `.cargo/config.toml` 的
+      `getrandom_backend="wasm_js"` cfg,target-scoped + wasm crate 加 `getrandom` `wasm_js` feature,
+      内部按 target 门控、native 无害)。验证:wasm32 0 error、native workspace `-D warnings` 0/0、
+      L0(lk-hal/lk-values)wasm32 冒烟仍通过;CI wasm32 步骤已含 lk-wasm。
+      **待做**:一类 MCU(ESP32/Cortex-M+alloc)冒烟——依赖 `lk-vm-core` 抽出 + bare profile(M0.7/8 + M5.1)。
 - [ ] **M5.3** `lk fmt`。
 - [ ] **M5.4** 包管理缩减为 git+lockfile 去中心化依赖（砍中心化注册表/keyring/`lk pkg serve`）。
 - [x] **M5.5** LSP **保留并持续维护**（不砍）+ tree-sitter —— **双轨保留,现状核实**。plan 决策(本会话已改 plan.md)
