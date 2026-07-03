@@ -4,7 +4,7 @@ use anyhow::Result;
 use arcstr::ArcStr;
 use serde::{Deserialize, Serialize, Serializer};
 
-use crate::typ::{NumericClass, NumericHierarchy};
+use crate::val::{NumericClass, NumericHierarchy};
 
 /// 内联短字符串：0–7 字节 UTF-8，完全存储在 LiteralVal 内（零堆分配）。
 /// 实现了 Copy，克隆无需原子操作。

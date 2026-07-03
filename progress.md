@@ -49,8 +49,19 @@
 
 ## Phase M0 — 去全局状态 + Value/GC 收进独立 crate（问题 5、9 地基）
 
-- [ ] **M0.1** 抽 `lk-values`：把 `RuntimeVal`/`LiteralVal`/`HeapValue`/`HeapStore`/GC 类型移出 core
+- [~] **M0.1** 抽 `lk-values`：把 `RuntimeVal`/`LiteralVal`/`HeapValue`/`HeapStore`/GC 类型移出 core
       到新 crate（`no_std`+`alloc`）。**与进行中的 RuntimeVal 迁移合流。**
+      - [x] **解耦 val→typ**：`NumericClass`/`NumericHierarchy`（只依赖 `Type`，本就属于它）从 `typ`
+        移进 `val`；`typ` 改从 `val` 再导出（`crate::typ::Numeric*` 向后兼容，免改 type_checker）。
+        core 0/0、950 tests。val（生产码）不再依赖 typ。
+      - [ ] **⚠️ 硬阻塞:val↔vm 内嵌**（plan 未预料的架构约束）。值模型**内嵌执行模型**:
+        `CallableValue::Runtime(Arc<crate::vm::RuntimeCallable>)`、`HeapValue` 持 `crate::vm::NativeFunction`/
+        `Module`（`runtime_model.rs`/`heap.rs`）、`TaskValue.value: Option<crate::rt::RuntimePayload>`。
+        → 值不能作为 L0 独立于 vm。**破解需设计决策**（三选一）:
+        (A) **依赖反转**:把 callable/module 抽象为 trait，`lk-values` 只持 `Arc<dyn Callable>`，vm 实现之——干净但改动大;
+        (B) **callable 一并下沉** lk-values（值+可调用一起走，层次调整为 values 含 callable 抽象）;
+        (C) **暂缓 crate 拆分**，先在 core 内把 val 做成 no_std-ready（M0.7/8 路线），crate 边界后置。
+        *(另需先厘清 in-flight `RuntimeVal` 迁移边界，避免冲突。)*
 - [ ] **M0.2** 抽 `lk-hal`：定义 `Clock`/`Rng`/`Stdout`/`FsProvider`/`NetProvider` trait（`no_std`）。
 - [x] **M0.3** 消除 G1（expr_impl `PARSE_CACHE`）→ **实为死代码**（`parse_cached_arc` 全仓零调用），
       连同 `once_cell::Lazy`/`dashmap::DashMap`/`Arc` 未用 import 一并删除。core 编译 0 warning、
