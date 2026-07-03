@@ -124,8 +124,20 @@
       **增量进展(可保绿,渐进解耦法)**:① core 加 `std` feature(default 含),把 std-heavy 的 `package` 模块
       (Lk.toml/git/fs,VM 核心零依赖)gate 其后 + macro_system 唯一 PackageGraph 用点一并 cfg-gate →
       `cargo build -p lk-core --no-default-features` 产出**不含 package/async 的 VM 核心表面**,CI 守卫固化。
-      ② async(tokio)已在 `async-runtime` feature 后(去 async 已验证)。**下一步增量**:gate macro_system 的
-      proc-macro 进程执行(std::process)→ vm/val/typ ~60 文件逐个 std→alloc(每个保绿)→ `#![no_std]`。
+      ② async(tokio)已在 `async-runtime` feature 后(去 async 已验证)。
+      ③ **(本轮,大进展)VM 核心 no_std 就绪地基落地**:新 `core/src/compat.rs` 兼容层
+      (collections:std HashMap / no_std hashbrown;sync::Mutex:保留 `.lock()->Result` 形状,no_std 走 spin;
+      path:no_std 下 `PathBuf=String`;prelude:no_std 补 Vec/String/Box/format!/vec!)。**140+ 文件机械转换**:
+      `std::{mem,fmt,cmp,error,...}`→`core::`、`std::sync::Arc`→`alloc::sync::Arc`、
+      `std::collections::{BTree*,VecDeque}`→`alloc::`、HashMap/HashSet→compat、RuntimeModuleState 的 Mutex→compat;
+      每个用 Vec/String 的 VM-core 文件加 `#[cfg(not(std))] use compat::prelude::*`。按 std feature gate 掉
+      no_std 无意义叶子(ResourceHandle 的 File/Tcp/Udp 变体、gc_stress env)。**no_std 错误从 2481 降到 ~20**
+      (全在 std-only 叶子:`stmt::import` 文件导入 resolver + macro_system 文件/proc-macro 函数)。
+      验证:default std + **1451 tests** / fmt / clippy(-D warnings)全绿;`--no-default-features` 构建 0 警告
+      (hashbrown/spin/compat 路径已被该 config 实际编译)。**`#![no_std]` flip 暂缓**——待 gate 下述两叶子。
+      **下一步(flip 收尾)**:① gate `stmt::import` 的 ImportResolver(DashMap/PathBuf/fs)+ 消费者 program.rs
+      execute_imports;② gate macro_system 的 imports.rs(fs 文件加载)/procedural.rs(std::process 外部 proc-macro)/
+      proc_deps.rs(fs 指纹)——保留纯数据类型、只 gate fs/process 函数;③ 翻 `#![cfg_attr(not(std), no_std)]`。
 - [x] **M0.8**(lk-values 部分)**lk-values 已真 `#![no_std]` + alloc**:`#![no_std]`/`extern crate alloc`;
       `std::fmt`→`core::fmt`、`std::sync::Arc`→`alloc::sync::Arc`、`std::str`→`core::str`、String/Vec/Box/format!/vec!
       →`alloc::*`;`std::collections::HashMap`→`hashbrown`;删死的 anyhow(依赖也移除);serde/arcstr 改 no_std

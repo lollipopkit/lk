@@ -1,7 +1,7 @@
 # Handoff
 
 **目标(`/goal`)**:把 `plan.md` 划分为多步、逐个完成、每步 push。**用户:允许短期回归、fix-forward。**
-细节台账在 `progress.md`(37 步逐项状态)。本会话已推送 **66+ commit** 到 `dev`。完成度:**✅32 · [~]1 · [ ]3 · [!]1**。
+细节台账在 `progress.md`(37 步逐项状态)。已推送 **67+ commit** 到 `dev`。完成度:**✅32 · [~]1 · [ ]3 · [!]1**;当前主线=M0.7/8 no_std flip 收尾。
 
 ## ✅ 已完成/大幅推进(遍及全部 6 相)
 - **Phase 0** 完整;**M3 完整**(嵌入 API + register_fn + 多实例 + 沙箱 builder + C ABI 端到端跑出 42 + `eval_value` 类型化结果)。
@@ -15,21 +15,28 @@
 - **新 crate**:`values/`(L0 no_std)· `hal/`(L0 no_std)· `api/`(L5,ffi+lk.h+eval_value)。
 - 端到端验证:C ABI、Tier 0 exe、三沙箱、一等错误值、try/catch、WASM、fmt、git 依赖 fetch、字节码缓存。**全量 1449 tests 0 失败。**
 
-## 剩余(真正的深度架构工作,单会话不可做成 green 连贯单元)
-- **[!] callable trait 反转**:`CallableValue::Runtime(Arc<vm::RuntimeCallable>)` @ `val/runtime_model.rs:182`,内嵌
-  `Arc<Module>` @ `vm/runtime.rs:16`。改 `dyn` 需同步改 GC 追踪 `val/runtime_model/heap.rs:185-193`、跨模块传递 `heap.rs:430`、
-  调用点 `vm/exec/runtime_callable.rs`——**枚举变体一变全部 match 原子断裂**。**注意**:它是 lk-vm-core **内部**依赖(val+vm 同 crate),
-  **不是**抽 lk-vm-core 的前置。
-- **[!/M0.7/8] 抽 `lk-vm-core`**:分离 VM 核心(token/ast/expr/stmt/typ/vm/val/gc)↔std-heavy(package/net/process/rt/aot)。
-  **地基已就绪**:`cargo build -p lk-core --no-default-features` 通过(async 已可选,CI 已守卫)。**下一步阻塞**:core 仍用
-  `std::fs/process/env` → 需先把 std-heavy 模块移出(big-bang crate 移动,`crate::` 路径全改,非增量)。解锁 M0.9/M5.1/M5.2。
+## 本轮进展(M0.7/8 no_std 大推进)
+- **VM 核心 no_std 就绪地基**(commit `0b2b284`):新 `core/src/compat.rs`(collections/sync::Mutex/path/prelude
+  兼容层,std 默认逐字节不变);**140+ 文件**机械转换 std→core/alloc/compat + prelude;gate 掉 no_std 无意义叶子
+  (ResourceHandle OS 变体、gc_stress env)。**no_std 编译错误 2481→~20**(仅剩 std-only 叶子)。
+- 验证:default std + **1451 tests** / fmt / clippy(-D warnings)全绿;`--no-default-features` 0 警告
+  (hashbrown/spin/compat 路径已被该 config 实际编译)。**`#![no_std]` flip 暂缓**(见下)。
+
+## 剩余(真正的深度架构工作)
+- **[!/M0.7/8] `#![no_std]` flip 收尾**(最连贯续接,~20 错误全在 2 处 std-only 叶子):
+  ① gate `stmt::import` 的 `ImportResolver`(DashMap/PathBuf/fs 文件导入)+ 消费者 `vm/exec/program.rs` 的
+     `execute_imports`/`collect_program_imports`;保留纯数据类型 `ImportStmt/ImportSource/ImportItem`。
+  ② gate macro_system 3 文件的 fs/process 函数:`imports.rs`(fs 加载宏文件)/`procedural.rs`(std::process 跑外部
+     proc-macro)/`proc_deps.rs`(fs 指纹)——**保留纯数据类型**(ProcMacroRequest 等),只 gate fs/process 叶子;
+     syntax.rs 用的宏类型随之保留、`base_dir`/`expand_*` 走 compat::path + std-gate。
+  ③ 翻 `#![cfg_attr(not(feature="std"), no_std)]`(lib.rs 已有注释占位)→ CI `--no-default-features` 变真 no_std 检查。
+  解锁 M0.9(`lk-vm-core --features alloc` 冒烟)/M5.1(三 profile 单 crate)/M5.2(full-VM-on-MCU)。
+- **[!] callable trait 反转**:`CallableValue::Runtime(Arc<vm::RuntimeCallable>)` @ `val/runtime_model.rs`,内嵌
+  `Arc<Module>`。改 `dyn` 需同步改 GC 追踪/跨模块传递/调用点——枚举变体一变全部 match 原子断裂。lk-vm-core **内部**事,非 flip 前置。
 - **[ ] M2.5 stackless**:VM 执行模型重写(trampoline)——多天。
 - **[ ] M4.2 Tier 1**:MIR `Unsupported` 改逐函数回退 VM——大改 codegen/lower,多天。
-- **[ ] M5.1 三 profile / [~] M5.2 MCU / [~] M0.9 alloc-only CI**:均依赖 lk-vm-core 先抽出。
-- **M2.2 堆对象一等错误值**(唯一小遗留):`error("str")`/`error([..])` 目前 native 包装;首类化需 GC rooting 跨错误展开(把堆值 root 住直到 pcall 取回)。
-
-**剩余全部要么是 big-bang crate 移动(lk-vm-core → 解锁 3 步)、原子热路径改动(callable)、执行模型/codegen 重写(M2.5/M4.2)。**
+- **M2.2 堆对象一等错误值**(小遗留):`error("str")`/`error([..])` 目前 native 包装;需 GC rooting 跨错误展开。
 
 ## 护栏 & 续接
-全量 1451 tests 0 失败 / `-D warnings` 0 / fmt+clippy 0 / bench 不受影响(沙箱限额+traceback 均仅 Err/单态化冷路径;字节码缓存 opt-in 默认关)。
-**下一会话最连贯续接 = 抽 `lk-vm-core`**(已核实无需先做 callable、去 async 已就绪 → 从移 std-heavy 模块出核心开始),解锁 no_std profile 整条线。
+全量 **1451 tests** 0 失败 / `-D warnings` 0 / fmt+clippy 0 / bench 不受影响(compat 在 std 下路由到 std HashMap/Mutex,零行为变化)。
+**下一会话最连贯续接 = flip 收尾**(gate 上述 2 叶子 → 翻 no_std),解锁 no_std profile 整条线。
