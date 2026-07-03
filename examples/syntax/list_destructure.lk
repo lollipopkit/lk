@@ -20,4 +20,14 @@ if let [p, q] = ys {
 }
 assert(sum == 25);
 
+// A list rest pattern binds the head element(s) and slices off the tail
+// (`SliceFrom`), which also lowers natively — the tail is a fresh typed list.
+let zs = [1, 2, 3, 4, 5];
+let head_plus_tail_len = 0;
+if let [first, ..rest] = zs {
+    assert(first == 1);
+    head_plus_tail_len = first + rest.len();   // 1 + 4
+}
+assert(head_plus_tail_len == 5);
+
 println("list destructure: ok");

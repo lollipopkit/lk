@@ -53,6 +53,27 @@ pub unsafe extern "C" fn lkrt_lklist_i64_filter_fn(handle: *mut c_void, p: exter
     crate::state::arena_handle(kept)
 }
 
+/// `xs[start..]` over an `i64` list: elements from `start` onward (the VM's
+/// `slice_from`). A negative `start` aborts (the VM requires it non-negative);
+/// `start >= len` yields a fresh empty list. The result is a new handle.
+///
+/// # Safety
+/// `handle` must be a live `i64` list handle (or null → empty result).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_i64_slice_from(handle: *mut c_void, start: i64) -> *mut c_void {
+    if start < 0 {
+        crate::abi::flush_and_abort();
+    }
+    let values: &[i64] = if handle.is_null() {
+        &[]
+    } else {
+        // SAFETY: `handle` addresses a `Vec<i64>` from `lkrt_lklist_i64_new`.
+        unsafe { &*(handle as *mut Vec<i64>) }
+    };
+    let tail: Vec<i64> = values.iter().copied().skip(start as usize).collect();
+    crate::state::arena_handle(tail)
+}
+
 /// `xs.reduce(init, f)` over an `i64` list: left fold with `f(acc, element)`.
 ///
 /// # Safety

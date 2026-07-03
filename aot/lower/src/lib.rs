@@ -3621,6 +3621,25 @@ fn lower_inst(
             });
             ssa.write(instr.a(), block, (dst, Ty::I64));
         }
+        Opcode::SliceFrom => {
+            // `a` = dst, `b` = target (list) register, `c` = start register. Only
+            // typed lists lower natively — the runtime returns a fresh handle
+            // with the elements from `start` on (negative `start` aborts, like
+            // the VM). String slicing and other element types fall back for now.
+            let (handle, ty) = ssa.read(instr.b(), block, pc)?;
+            let slice_fn = match ty {
+                Ty::ListI64 => "i64_slice_from",
+                _ => return Err(Unsupported::TypeMismatch { pc }),
+            };
+            let start = read_typed_scalar(ssa, insts, instr.c(), block, Ty::I64, pc)?;
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", slice_fn),
+                args: vec![handle, start],
+            });
+            ssa.write(instr.a(), block, (dst, ty));
+        }
         Opcode::ListPush => {
             // `a` = list register (mutated in place), `b` = value register. The list
             // handle is a reference (matching the VM), so the push is visible through

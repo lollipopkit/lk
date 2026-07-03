@@ -165,6 +165,9 @@ macro_rules! for_each_abi_fn {
             ("list_h", "i64_set", lkrt_lklist_i64_set, WritesHost, [Ptr, I64, I64], Nil);
             // Linear membership test; returns 0/1 (the caller narrows to `i1`).
             ("list_h", "i64_contains", lkrt_lklist_i64_contains, ReadsHost, [Ptr, I64], I64);
+            // `xs[start..]`: a fresh handle with the elements from `start` on
+            // (negative `start` aborts, matching the VM's fatal slice error).
+            ("list_h", "i64_slice_from", lkrt_lklist_i64_slice_from, WritesHost, [Ptr, I64], Ptr);
             ("list_h", "f64_new", lkrt_lklist_f64_new, WritesHost, [], Ptr);
             ("list_h", "f64_push", lkrt_lklist_f64_push, WritesHost, [Ptr, F64], Nil);
             ("list_h", "f64_len", lkrt_lklist_f64_len, ReadsHost, [Ptr], I64);
