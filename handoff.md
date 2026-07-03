@@ -1,7 +1,7 @@
 # Handoff
 
 **目标(`/goal`)**:把 `plan.md` 划分为多步、逐个完成、每步 push。**用户:允许短期回归、fix-forward。**
-细节台账在 `progress.md`(37 步逐项状态)。已推送 **67+ commit** 到 `dev`。完成度:**✅32 · [~]1 · [ ]3 · [!]1**;当前主线=M0.7/8 no_std flip 收尾。
+细节台账在 `progress.md`(37 步逐项状态)。已推送 **70+ commit** 到 `dev`。完成度:**✅33 · [~]1 · [ ]3 · [!]1**(M2.2 收尾完成);当前主线=M0.7/8 no_std flip 收尾。
 
 ## ✅ 已完成/大幅推进(遍及全部 6 相)
 - **Phase 0** 完整;**M3 完整**(嵌入 API + register_fn + 多实例 + 沙箱 builder + C ABI 端到端跑出 42 + `eval_value` 类型化结果)。
@@ -45,8 +45,13 @@
   `Arc<Module>`。改 `dyn` 需同步改 GC 追踪/跨模块传递/调用点——枚举变体一变全部 match 原子断裂。lk-vm-core **内部**事,非 flip 前置。
 - **[ ] M2.5 stackless**:VM 执行模型重写(trampoline)——多天。
 - **[ ] M4.2 Tier 1**:MIR `Unsupported` 改逐函数回退 VM——大改 codegen/lower,多天。
-- **M2.2 堆对象一等错误值**(小遗留):`error("str")`/`error([..])` 目前 native 包装;需 GC rooting 跨错误展开。
+
+## 本轮另完成:M2.2 堆对象一等错误值(遗留清除)
+`error(String/List/…)` 现一等携带(GC-root pin 跨展开),pcall 原样取回;uncaught 用 `LkRaisedValue.rendered`
+出消息。commit `a3533a4`。**M2.2 无遗留**。GC-stress 1095 tests 验证 rooting。
 
 ## 护栏 & 续接
-全量 **1451 tests** 0 失败 / `-D warnings` 0 / fmt+clippy 0 / bench 不受影响(compat 在 std 下路由到 std HashMap/Mutex,零行为变化)。
-**下一会话最连贯续接 = flip 收尾**(gate 上述 2 叶子 → 翻 no_std),解锁 no_std profile 整条线。
+全量 **1451 tests** 0 失败 / **GC-stress 1095** / `-D warnings` 0 / fmt+clippy 0 / bench 不受影响
+(compat 在 std 下路由到 std HashMap/Mutex 零行为变化;M2.2 rooting 仅 Err 冷路径)。
+**下一会话最连贯续接 = no_std flip 收尾**(gate `stmt::import` resolver + macro_system 3 文件 fs/process + 依赖级
+anyhow/serde_json no_std → 翻 `#![no_std]`),解锁 no_std profile 整条线。剩余深度项:M2.5 stackless、M4.2 Tier 1、callable trait 反转。

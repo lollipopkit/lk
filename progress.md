@@ -198,7 +198,14 @@
       → 111 断言全安全**。复用死掉的 `CallFrameInfo`/`push_call_frame`/`call_stack_report`。正确性:每次 top-level 开头清空;
       **pcall 捕获时 truncate(0)** 丢弃已捕获帧(try/catch 脱糖 pcall 一并覆盖)。CLI `unwrap_with_traceback` 失败时打印。
       测试:递归错误打印命名调用链;pcall 捕获不泄漏帧。**全量 1451 tests 0 失败**。
-      **唯一遗留**:堆对象(String/List)一等错误值(需 GC rooting 跨展开)——`error(int)` 已一等,`error("str")` 仍 native 包装。
+      **堆对象一等值(本轮收尾,遗留清除)**:`error(v)` 现对**任意单值(含 String/List 等堆对象)**一等携带,
+      pcall 原样取回,不再对堆值做 native 字符串包装。关键 GC 安全:展开路径上 `collect_direct_native_garbage_
+      after_result` 的 native-call safepoint 在错误路径也会 collect → 堆错误值须 pin 为 GC root 才不被回收。
+      新 `RuntimeModuleState.pending_raise_root`(纳入 `gc_roots` 基础 roots),error() 置位 / pcall 取回后清除;
+      `LkRaisedValue` 加 `rendered`(raise 时捕获 display,供 uncaught 展开后堆已消失时出消息,不再 `<error value>`)。
+      stdlib io/net crate 启用 `lk-core/std`(构造 ResourceHandle 的 OS 变体,按 lk-core std feature gate)。
+      验证:pcall_error.lk 增 String/List 原样取回断言;全量 **1451** / **GC-stress(LK_GC_STRESS=1)1095** /
+      clippy / fmt / no_std 构建全绿;uncaught 堆错误正确出消息(long string、`[1,2,3]`)。→ **M2.2 完成,无遗留。**
 - [x] **M2.3** fatal guard 可 `pcall` 捕获 —— **基本达成**。调查+改动:**除零**本就是可捕获 Err;
       **assert/assert_eq/assert_ne** 从 Rust `panic!`(abort,不可捕获)改为返回 `Err`(可捕获,
       未捕获仍非零退出且**消除 panic backtrace 噪声**);**缺键/越界**返回 nil(非 fatal,无需捕获);
