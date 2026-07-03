@@ -4127,6 +4127,36 @@ fn lower_inst(
                 args: vec![msg],
             });
         }
+        Opcode::MapRest => {
+            // `a` = dst, `b` = base (source map), `c` = key_count. The result is
+            // the map with the `key_count` string keys in registers
+            // base+1..=base+key_count removed — one `without` call chained per
+            // key (matching the VM's `map_rest`). Only string-keyed maps lower.
+            let base = instr.b();
+            let key_count = instr.c();
+            let (map_handle, map_ty) = ssa.read(base, block, pc)?;
+            let without_fn = match map_ty {
+                Ty::MapStrI64 | Ty::MapStrBool => "str_i64_without",
+                Ty::MapStrF64 => "str_f64_without",
+                _ => return Err(Unsupported::TypeMismatch { pc }),
+            };
+            let mut current = map_handle;
+            for offset in 0..key_count {
+                let key_reg = base
+                    .checked_add(1)
+                    .and_then(|r| r.checked_add(offset))
+                    .ok_or(Unsupported::TypeMismatch { pc })?;
+                let key = ssa.read_typed(key_reg, block, Ty::Str, pc)?;
+                let next = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(next),
+                    callee: AbiRef::new("map_h", without_fn),
+                    args: vec![current, key],
+                });
+                current = next;
+            }
+            ssa.write(instr.a(), block, (current, map_ty));
+        }
         // Control-flow opcodes are terminators, normally handled outside lower_inst.
         // Reaching here means a branch targeted the middle of a fused pair or an
         // otherwise malformed shape — reject cleanly (fall back) rather than panic.

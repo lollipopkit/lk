@@ -152,6 +152,42 @@ pub unsafe extern "C" fn lkrt_lkmap_str_i64_get_pair(handle: *mut c_void, key: *
     }
 }
 
+/// `{ ..rest }` over a `Map<str, i64>` (also the `Map<str, bool>` ABI): a fresh
+/// handle with `key` removed, mirroring the VM's `MapRest`. Chained once per
+/// removed key by the lowering.
+///
+/// # Safety
+/// `handle` must be a live `Map<str, i64>` handle (or null → empty); `key` a
+/// NUL-terminated C string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lkmap_str_i64_without(handle: *mut c_void, key: *const c_char) -> *mut c_void {
+    let mut copy: StrI64Map = if handle.is_null() {
+        StrI64Map::default()
+    } else {
+        // SAFETY: `handle` addresses a `StrI64Map` from `lkrt_lkmap_str_i64_new`.
+        unsafe { (*(handle as *mut StrI64Map)).clone() }
+    };
+    copy.remove(unsafe { key_str(key) });
+    crate::state::arena_handle(copy)
+}
+
+/// `{ ..rest }` over a `Map<str, f64>`. See [`lkrt_lkmap_str_i64_without`].
+///
+/// # Safety
+/// `handle` must be a live `Map<str, f64>` handle (or null → empty); `key` a
+/// NUL-terminated C string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lkmap_str_f64_without(handle: *mut c_void, key: *const c_char) -> *mut c_void {
+    let mut copy: StrF64Map = if handle.is_null() {
+        StrF64Map::default()
+    } else {
+        // SAFETY: `handle` addresses a `StrF64Map` from `lkrt_lkmap_str_f64_new`.
+        unsafe { (*(handle as *mut StrF64Map)).clone() }
+    };
+    copy.remove(unsafe { key_str(key) });
+    crate::state::arena_handle(copy)
+}
+
 /// Creates a fresh, empty `Map<i64, i64>` handle.
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_lkmap_i64_i64_new() -> *mut c_void {

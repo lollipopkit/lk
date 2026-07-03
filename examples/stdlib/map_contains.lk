@@ -33,4 +33,13 @@ assert(1 in nums);
 assert(3 in nums);
 assert(!(9 in nums));
 
+// A map rest pattern binds the head key(s) and the remaining map as a fresh
+// handle (`MapRest` chains a per-key `without`), which also lowers natively.
+let full = {"a": 1, "b": 2, "c": 3, "d": 4};
+let rest_len = 0;
+if let {"a": v1, "b": v2, ..rest} = full {
+    rest_len = rest.len();
+}
+assert(rest_len == 2);
+
 println("map contains: ok");

@@ -187,6 +187,9 @@ macro_rules! for_each_abi_fn {
             ("map_h", "str_i64_new", lkrt_lkmap_str_i64_new, WritesHost, [], Ptr);
             ("map_h", "str_i64_set", lkrt_lkmap_str_i64_set, WritesHost, [Ptr, StrPtr, I64], Nil);
             ("map_h", "str_i64_len", lkrt_lkmap_str_i64_len, ReadsHost, [Ptr], I64);
+            // `{ ..rest }`: a fresh handle with one key removed (chained per key).
+            ("map_h", "str_i64_without", lkrt_lkmap_str_i64_without, WritesHost, [Ptr, StrPtr], Ptr);
+            ("map_h", "str_f64_without", lkrt_lkmap_str_f64_without, WritesHost, [Ptr, StrPtr], Ptr);
             // Int-keyed map handle. `get_pair` (by-value `Maybe<i64>`) is declared in codegen.
             ("map_h", "i64_i64_new", lkrt_lkmap_i64_i64_new, WritesHost, [], Ptr);
             ("map_h", "i64_i64_set", lkrt_lkmap_i64_i64_set, WritesHost, [Ptr, I64, I64], Nil);
