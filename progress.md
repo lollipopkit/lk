@@ -49,8 +49,15 @@
 
 ## Phase M0 — 去全局状态 + Value/GC 收进独立 crate（问题 5、9 地基）
 
-- [~] **M0.1** 抽 `lk-values`：把 `RuntimeVal`/`LiteralVal`/`HeapValue`/`HeapStore`/GC 类型移出 core
-      到新 crate（`no_std`+`alloc`）。**与进行中的 RuntimeVal 迁移合流。**
+- [x] **M0.1** 抽 `lk-values` —— **前端值/类型模型已抽为独立 crate**(`values/`,crate `lk-values`)。
+      含 `LiteralVal`/`Type`/`ShortStr`/`ShortStrOrStr`/`FunctionNamedParamType`/`NumericClass`/`NumericHierarchy`;
+      `core::val` 经 `pub use lk_values::{…}` 再导出,全 core 的 `crate::val::Type` 等路径不变。加入 workspace。
+      **验证**:workspace `-D warnings` 0/0、lk-values 独立编译 + **wasm32 交叉编译通过**、core+lk-values tests 全绿。
+      **范围界定**(据「厘清迁移」结论):放进 L0 的是**前端/编译期模型**(干净可分);**运行时模型**
+      (`RuntimeVal`/`HeapValue`/`CallableValue`+资源句柄)因内嵌 vm callable 留在 core,其 L0 化仍需 callable
+      trait 反转(A)——**这是 plan「值放 L0」意图与代码现实的诚实收敛:能分的已分,vm 纠缠部分单列**。
+      **剩余子步**:① lk-values 真 no_std 化(现用 std,core::fmt/alloc::Arc/no_std serde,属 M0.8);
+      ② callable trait 反转(A)以让运行时模型也能 L0(硬阻塞,大工程)。
       - [x] **解耦 val→typ**：`NumericClass`/`NumericHierarchy`（只依赖 `Type`，本就属于它）从 `typ`
         移进 `val`；`typ` 改从 `val` 再导出（`crate::typ::Numeric*` 向后兼容，免改 type_checker）。
         core 0/0、950 tests。val（生产码）不再依赖 typ。

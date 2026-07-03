@@ -1,4 +1,4 @@
-use crate::val::Type;
+use crate::Type;
 
 /// Coarse-grained numeric hierarchy used by the type system and compiler.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]

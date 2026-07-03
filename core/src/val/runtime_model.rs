@@ -6,7 +6,7 @@
 use crate::util::fast_map::{FastHashMap, FastHashSet, fast_hash_map_from_iter, fast_hash_map_new, fast_hash_set_new};
 use std::sync::Arc;
 
-use super::values::{ShortStr, Type};
+use crate::val::{ShortStr, Type};
 
 mod heap;
 

@@ -1,8 +1,18 @@
+//! `lk-values` — L0 front-end value/type model for LK.
+//!
+//! The compile-time literal/type model (`LiteralVal`, `Type`, `ShortStr`, the
+//! numeric hierarchy). Extracted from `core::val` so it can become a clean
+//! dependency-free L0 layer; the runtime value model (`RuntimeVal`, heap,
+//! callables) stays in `core` (it embeds the execution model). Re-exported at
+//! `lk_core::val`, so in-crate paths like `crate::val::Type` are unchanged.
+
 use std::sync::Arc;
 
+mod numeric;
 mod strings;
 mod types;
 
+pub use numeric::{NumericClass, NumericHierarchy};
 pub use types::{FunctionNamedParamType, ShortStr, ShortStrOrStr, Type};
 
 // NOTE: runtime resource-handle values (TaskValue/ChannelValue/StreamValue/

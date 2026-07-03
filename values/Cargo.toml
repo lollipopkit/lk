@@ -1,0 +1,12 @@
+[package]
+name = "lk-values"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "lk_values"
+
+[dependencies]
+anyhow = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+arcstr = { workspace = true, features = ["serde"] }

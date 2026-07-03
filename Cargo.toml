@@ -2,6 +2,7 @@
 members = [
     "core",
     "hal",
+    "values",
     "cli",
     "completion",
     "aot/abi",

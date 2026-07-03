@@ -16,6 +16,7 @@ async-runtime = ["dep:futures", "dep:tokio"]
 vm-profile = []
 
 [dependencies]
+lk-values = { path = "../values" }
 anyhow = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
