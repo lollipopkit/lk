@@ -191,10 +191,10 @@
       ABI `fn(NativeArgs, &mut NativeRuntime)->Result<RuntimeVal>`。**多实例隔离**已由 M3.1 测试证明(每 Vm
       独立 VmContext/heap,无 thread_local,依赖 M0 去全局)。测试:`host_add100(5)→105`。workspace 0/0、clippy 0。
       **待做**:更 ergonomic 的 Value 转换层(host 类型↔RuntimeVal)、register_module、rooted handle。
-- [~] **M3.3** C ABI —— **`ffi` feature 的 `extern "C"` 面已落地**(lk-api `ffi` feature)。
-      `lk_vm_new()->*mut Vm`、`lk_vm_eval(vm,src)->*mut c_char`、`lk_vm_free`、`lk_string_free`(不透明指针 +
-      owned C string,配对释放)。`--features ffi` 编译 + clippy 0;默认构建不含 ffi(0 开销)。
-      **待做**:cbindgen 生成 `lk.h`(工具链步骤)+ Dart FFI 示例。
+- [x] **M3.3** C ABI —— **完成,端到端验证**。lk-api `ffi` feature 的 `extern "C"`(`lk_vm_new`/`lk_vm_eval`/
+      `lk_vm_free`/`lk_string_free`,不透明指针+owned C string 配对释放)+ 手写 `api/include/lk.h` + `api/examples/embed.c`;
+      lk-api 加 `staticlib` crate-type。**C 程序 `embed.c` 编译链接 staticlib 并运行 `return 6*7;` → 输出 `42`**
+      (退出 0)。可从 C/C++/Dart FFI 嵌入 LK VM。默认构建不含 ffi(0 开销)。*(cbindgen 可选自动重生成 lk.h。)*
 - **Exit**：示例宿主并存 2 个隔离 VM；C ABI 冒烟；无实例间可变共享。
 
 ## Phase M4 — AOT Tier 0 + Tier 1（问题 2、6）
