@@ -52,10 +52,13 @@ commit `3c0a83e`。cli 93 / 全量 1451 全绿。**Exit「任意 .lk 可 compile
   **`Raise`→abort**(不可反驳 `let [a,b,c]=xs` 形状守卫;安全因 `TryBegin` unsupported→有 try/catch 的程序已回退 Tier 0→
   原生模块必无 handler)。commit `ef55604`/`6b52a3a`/`47199c1`/`8755e02`/`fbcb2d9`/`23845c0`。
   → 列表形状/rest 解构、`str.split()`、`key in map`+map-shape 解构、不可反驳 let 解构均原生编译。**覆盖 11→14/50**。
-  **下一候选**:`MapRest`(`{..rest}` 类比 slice)、int-key map、**return-type 统一**(I64 vs MaybeI64 `ReturnTypeConflict`;
-  经核实 0 现有例受阻,价值低)。**更深 blocker(需扩类型系统,多天)**:`LoadHeapConst` mixed/heap 常量(mixed list `[1,"a"]`
-  无同构类型)、`NewObject` 结构体、`NewRange`、`ToIter` 迭代器、**`try/catch`(`TryBegin` 需原生错误处理→解锁 pcall/error 原生)**、
-  动态 `Call`/method/GetGlobal builtin(pcall/error/string 方法)、`operand type outside subset`(operators/control_flow 的动态类型)。
+  **✅ clean「复用现有类型」opcode wins 已穷尽(8 个)。** 剩余全撞**同一根**——AOT 只有同构 `ListI64/F64/Str` + typed maps,
+  **无 mixed/动态类型**:`LoadHeapConst` mixed 常量(`[1,"a"]`)、`ToIter` map 迭代(**已测绘:ToIter 把 map 转成 [key,value]
+  对的列表,pair 是 mixed `[str,i64]` → 撞 mixed-list 边界**)、`operand type outside subset`(operators/control_flow/null_coalescing
+  的动态类型)全需**加 mixed/tagged 元素类型系统**(新 Ty 变体 + 异构 runtime handle + 全套操作,多天)。
+  独立深项:`NewObject` 结构体、`NewRange` range 值(新类型)、**`try/catch`(`TryBegin` 需原生错误处理/控制流 → 解锁 pcall/error 原生,高价值)**、
+  动态 `Call`/method/GetGlobal builtin(pcall/error/string 方法,需 native↔VM 调用或 per-method lowering)。
+  return-type 统一经核实 0 现有例受阻(价值低)。
 - **[ ] M4.2 逐函数 Tier 1 混合**:同一程序 native + VM-executed 函数 + native↔VM ABI 桥——多天(程序粒度回退已达成)。
   MIR lower 已按 CallDirect 可达性处理多函数(dead 函数已跳过)。
 - **[ ] M2.5 stackless**:VM 执行模型重写(trampoline `Sequence::step`)——多天,触碰最热路径+bench 门禁,partial 不可安全提交。
