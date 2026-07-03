@@ -217,7 +217,9 @@
       内部按 target 门控、native 无害)。验证:wasm32 0 error、native workspace `-D warnings` 0/0、
       L0(lk-hal/lk-values)wasm32 冒烟仍通过;CI wasm32 步骤已含 lk-wasm。
       **待做**:一类 MCU(ESP32/Cortex-M+alloc)冒烟——依赖 `lk-vm-core` 抽出 + bare profile(M0.7/8 + M5.1)。
-- [ ] **M5.3** `lk fmt`。
+- [x] **M5.3** `lk fmt` —— **已实现**。CLI 新增 `lk fmt FILE`(就地规范化,4-space,brace/paren/bracket 感知,
+      空行保持空;幂等)+ `lk fmt --check FILE`(不写,未格式化则非零退出,可作 CI 门禁)。逻辑与 LSP 的
+      `format_lk` 一致。验证:乱缩进→规范嵌套、`--check` 幂等退出 0、真实示例二次 check 稳定。CLI `-D warnings` 0/0。
 - [ ] **M5.4** 包管理缩减为 git+lockfile 去中心化依赖（砍中心化注册表/keyring/`lk pkg serve`）。
 - [x] **M5.5** LSP **保留并持续维护**（不砍）+ tree-sitter —— **双轨保留,现状核实**。plan 决策(本会话已改 plan.md)
       = 不砍 LSP,与 tree-sitter 双轨。现状:`lsp/`(13k 行,hover/goto/semantic-tokens/inlay/completion/diagnostic

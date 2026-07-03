@@ -133,6 +133,15 @@ enum Commands {
         #[arg(value_name = "FILE", value_parser = parse_sanitized_path)]
         file: PathBuf,
     },
+    /// Format a source file in place (4-space indent). `--check` reports without writing.
+    Fmt {
+        /// Source file to format
+        #[arg(value_name = "FILE", value_parser = parse_sanitized_path)]
+        file: PathBuf,
+        /// Do not write; exit non-zero if the file is not already formatted.
+        #[arg(long)]
+        check: bool,
+    },
     /// Report VM coverage for a source file.
     Coverage {
         /// Source file to inspect
@@ -595,6 +604,10 @@ fn main() -> anyhow::Result<()> {
                 run_type_check(&file)?;
                 return Ok(());
             }
+            Commands::Fmt { file, check } => {
+                run_fmt(&file, check)?;
+                return Ok(());
+            }
             Commands::Coverage {
                 file,
                 disassemble,
@@ -881,6 +894,60 @@ fn fuel_budget_from_env() -> Option<u64> {
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
         .filter(|&budget| budget > 0)
+}
+
+/// `lk fmt FILE` — normalize indentation of `.lk` source in place (4-space,
+/// brace/paren/bracket aware; blank lines kept blank). Mirrors the LSP document
+/// formatter. `check` reports drift without writing (plan M5.3).
+fn run_fmt(path: &Path, check: bool) -> anyhow::Result<()> {
+    let input = std::fs::read_to_string(path).map_err(|e| anyhow::anyhow!("read {}: {}", path.display(), e))?;
+    let formatted = format_lk_source(&input);
+    if check {
+        if formatted != input {
+            anyhow::bail!("{} is not formatted (run `lk fmt {}`)", path.display(), path.display());
+        }
+        return Ok(());
+    }
+    if formatted != input {
+        std::fs::write(path, &formatted).map_err(|e| anyhow::anyhow!("write {}: {}", path.display(), e))?;
+        println!("formatted {}", path.display());
+    }
+    Ok(())
+}
+
+/// Indentation formatter (idempotent): 4-space, brace/paren/bracket aware.
+fn format_lk_source(input: &str) -> String {
+    const TAB: usize = 4;
+    let mut out = String::with_capacity(input.len() + 16);
+    let mut indent: isize = 0;
+    for raw in input.lines() {
+        let line = raw.trim();
+        let leading_closers = line
+            .chars()
+            .take_while(|c| c.is_whitespace() || matches!(c, '}' | ')' | ']'))
+            .filter(|c| matches!(c, '}' | ')' | ']'))
+            .count();
+        if leading_closers > 0 && indent > 0 {
+            indent = (indent - leading_closers as isize).max(0);
+        }
+        if !line.is_empty() {
+            for _ in 0..(indent.max(0) as usize * TAB) {
+                out.push(' ');
+            }
+            out.push_str(line);
+        }
+        out.push('\n');
+        let delta: isize = line
+            .chars()
+            .map(|c| match c {
+                '{' | '(' | '[' => 1,
+                '}' | ')' | ']' => -1,
+                _ => 0,
+            })
+            .sum();
+        indent = (indent + delta).max(0);
+    }
+    out
 }
 
 fn compile_instr_module(path: &Path) -> anyhow::Result<()> {
