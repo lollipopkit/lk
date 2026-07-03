@@ -1,3 +1,6 @@
+use alloc::boxed::Box;
+use alloc::vec;
+
 use crate::Type;
 
 /// Coarse-grained numeric hierarchy used by the type system and compiler.

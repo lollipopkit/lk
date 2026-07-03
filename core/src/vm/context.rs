@@ -10,7 +10,7 @@ use crate::val::{HeapStore, HeapValue, RuntimeMapKey, RuntimeObject, RuntimeVal,
 use crate::vm::{NativeArgs, NativeEntry, NativeFunction, NativeRuntime, RuntimeExport, collect_runtime_export};
 
 use crate::typ::{TraitDef, TraitImpl};
-use std::collections::HashMap;
+use hashbrown::HashMap;
 
 mod core_methods;
 pub(crate) use core_methods::core_call_method_windowed;

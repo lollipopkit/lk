@@ -4,7 +4,8 @@ use crate::{
     val::{FunctionNamedParamType, Type},
 };
 use anyhow::Result;
-use std::collections::{HashMap, HashSet};
+use hashbrown::HashMap;
+use std::collections::HashSet;
 
 mod expressions;
 mod patterns;

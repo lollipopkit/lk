@@ -1,4 +1,5 @@
-use std::sync::Arc;
+use alloc::string::String;
+use alloc::sync::Arc;
 
 use super::{LiteralVal, types::ShortStr};
 

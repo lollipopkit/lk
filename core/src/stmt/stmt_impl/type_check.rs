@@ -9,7 +9,7 @@ use crate::{
     val::{FunctionNamedParamType, Type},
 };
 use anyhow::{Result, anyhow};
-use std::collections::HashMap;
+use hashbrown::HashMap;
 
 impl Stmt {
     /// 静态类型检查语句

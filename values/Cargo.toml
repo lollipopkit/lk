@@ -7,6 +7,6 @@ edition = "2024"
 name = "lk_values"
 
 [dependencies]
-anyhow = { workspace = true }
-serde = { workspace = true, features = ["derive"] }
-arcstr = { workspace = true, features = ["serde"] }
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
+arcstr = { version = "1", default-features = false, features = ["serde"] }
+hashbrown = { version = "0.15", features = ["serde"] }

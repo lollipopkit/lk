@@ -1,7 +1,12 @@
-use std::fmt;
+use core::fmt;
 
-use anyhow::Result;
+use alloc::boxed::Box;
+use alloc::format;
+use alloc::string::{String, ToString};
+use alloc::vec;
+use alloc::vec::Vec;
 use arcstr::ArcStr;
+use hashbrown::HashMap;
 use serde::{Deserialize, Serialize, Serializer};
 
 use crate::{NumericClass, NumericHierarchy};
@@ -43,7 +48,7 @@ impl ShortStr {
     #[inline]
     pub fn as_str(&self) -> &str {
         // SAFETY: data 在构造时已验证为合法 UTF-8。
-        std::str::from_utf8(&self.data[..self.len as usize]).expect("ShortStr contains valid UTF-8")
+        core::str::from_utf8(&self.data[..self.len as usize]).expect("ShortStr contains valid UTF-8")
     }
 
     #[inline]
@@ -544,8 +549,7 @@ impl Type {
                     if a_named.len() != b_named.len() {
                         return false;
                     }
-                    let mut a_map =
-                        std::collections::HashMap::<&str, &FunctionNamedParamType>::with_capacity(a_named.len());
+                    let mut a_map = HashMap::<&str, &FunctionNamedParamType>::with_capacity(a_named.len());
                     for np in a_named {
                         a_map.insert(np.name.as_str(), np);
                     }
@@ -603,7 +607,7 @@ impl Type {
     }
 
     /// Substitute type variables with concrete types
-    pub fn substitute(&self, substitutions: &std::collections::HashMap<String, Type>) -> Type {
+    pub fn substitute(&self, substitutions: &HashMap<String, Type>) -> Type {
         match self {
             Type::Variable(name) => substitutions.get(name).cloned().unwrap_or_else(|| self.clone()),
             Type::List(inner) => Type::List(Box::new(inner.substitute(substitutions))),

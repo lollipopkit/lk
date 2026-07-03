@@ -164,7 +164,8 @@ impl TypeChecker {
             Pattern::Or(alts) => {
                 // For OR patterns, only bind variables that appear in all alternatives.
                 // Their type becomes the union of the types from each alternative.
-                use std::collections::{HashMap, HashSet};
+                use hashbrown::HashMap;
+                use std::collections::HashSet;
                 let mut alt_maps: Vec<HashMap<String, Type>> = Vec::with_capacity(alts.len());
                 for alt in alts {
                     let entries = self.collect_bindings_for_pattern(alt, value_type)?;

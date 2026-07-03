@@ -1,6 +1,6 @@
 use crate::val::{RuntimeVal, Type};
 use anyhow::{Result, anyhow};
-use std::collections::HashMap;
+use hashbrown::HashMap;
 
 /// Struct definition with field types
 #[derive(Debug, Clone, PartialEq)]

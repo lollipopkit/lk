@@ -8,7 +8,7 @@ use crate::operator::{BinOp, UnaryOp};
 use crate::typ::{NumericClass, NumericHierarchy};
 use crate::val::{FunctionNamedParamType, LiteralVal, Type};
 use anyhow::Result;
-use std::collections::HashMap;
+use hashbrown::HashMap;
 
 impl TypeChecker {
     fn enforce_int_type(&mut self, expr: &Expr, ty: Type, context: &str) -> Result<()> {
