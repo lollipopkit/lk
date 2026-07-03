@@ -205,7 +205,10 @@
 
 ## Phase M4 — AOT Tier 0 + Tier 1（问题 2、6）
 
-- [ ] **M4.1** Tier 0：`lk compile` → 字节码 + 静态链接 VM 单文件（100% 覆盖，语义平凡一致）。
+- [x] **M4.1** Tier 0 —— **已实现,端到端验证**。CLI `lk bundle FILE -o OUT`:嵌入源码 + 经 lk-api C-ABI
+      staticlib 静态链接 VM → **自包含 native 可执行程序**(启动即跑 VM,**100% 覆盖**——任何 VM 能跑的程序都能
+      bundle,不像 MIR 原生「全有或全无」)。语义**平凡一致**(同一 VM)。验证:`bundle demo.lk`→20MB 自包含 ELF,
+      直接运行(无 lk/无源码)输出与 VM **完全一致**。workspace 0/0。*(Linux/cc;后续字节码嵌入/跨平台/瘦身。)*
 - [ ] **M4.2** Tier 1：MIR 后端 `Unsupported` 从「整程序失败」→「逐函数标记 VM-executed 回退」。
 - [x] **M4.3** 差分门禁 `AOT==VM` 已在 CI —— **现状核实,已满足**。`cli/tests/aot_differential_test.rs`
       (MIR native == VM,stdout+成功/失败逐例比对,21 检查点)+ `examples_differential_test.rs`(VM==AOT 语料)
