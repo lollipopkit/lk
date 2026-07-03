@@ -14,15 +14,12 @@ use lk_core::{
     module::ModuleRegistry,
     package::{PackageGraph, PackageModule},
     stmt::{ModuleResolver, import::collect_program_imports},
-    syntax::{
-        expand_program_source, macro_origin_note_for_span, parse_program_source, render_program, render_tokens,
-        type_error_span,
-    },
+    syntax::{expand_program_source, macro_origin_note_for_span, render_program, render_tokens, type_error_span},
     typ::TypeChecker,
     vm::{
         ModuleArtifact, Opcode, VM_INDEX_KEY_METRIC_NAMES, VM_REGISTER_WRITE_SOURCE_NAMES, VmContext, VmRuntimeMetrics,
-        compile_program_module_with_ctx, execute_module_artifact_with_ctx, execute_program_with_ctx_and_budget,
-        vm_runtime_metrics_reset, vm_runtime_metrics_snapshot,
+        compile_program_module_with_ctx, execute_compiled_module_with_ctx, execute_module_artifact_with_ctx,
+        execute_program_with_ctx_and_budget, vm_runtime_metrics_reset, vm_runtime_metrics_snapshot,
     },
 };
 #[cfg(feature = "llvm")]
@@ -30,6 +27,7 @@ use lk_llvm::{LlvmBackendOptions, OptLevel};
 
 use anyhow::Context;
 
+mod bytecode_cache;
 mod coverage;
 mod diagnostic;
 #[cfg(test)]
@@ -549,17 +547,47 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    // Optional bytecode cache (plan M1.3): with `LK_CACHE=1`, an unchanged
+    // macro-free source skips parsing/compilation and runs its cached `.lkm`.
+    // Fuel-limited runs bypass the cache (the artifact-execution path is not
+    // budget-parameterized).
+    let cache_file = if fuel_budget_from_env().is_none() {
+        bytecode_cache::cache_path(&safe, input.as_bytes())
+    } else {
+        None
+    };
+    if let Some(cache_file) = cache_file.as_ref()
+        && let Some(artifact) = bytecode_cache::load(cache_file)
+    {
+        let mut base_env = build_vm_context(&safe)?;
+        let profile_enabled = vm_profile_enabled();
+        maybe_start_vm_profile(profile_enabled);
+        let exec_result = execute_module_artifact_with_ctx(artifact, &mut base_env)
+            .with_context(|| "VM cached-module execution failed");
+        base_env.shutdown_async_runtime();
+        let result = exec_result?;
+        maybe_print_vm_profile(profile_enabled);
+        if !result.first_return_is_nil() {
+            println!("{}", result.display_first_return());
+        }
+        return Ok(());
+    }
+
     // Parse, expand macros, and execute as statements.
     // NOTE: Direct `.lk` execution does not check proc-macro dependency
     // freshness against cached native binaries. Proc macros are always
     // re-expanded through the macro system when running in VM mode.
-    let program = match parse_program_source(&input, parse_options_for_file(&safe)?) {
-        Ok(program) => program,
+    let expansion = match expand_program_source(&input, parse_options_for_file(&safe)?) {
+        Ok(expansion) => expansion,
         Err(parse_err) => {
             diagnostic::parse_error(&parse_err, &input);
             std::process::exit(1);
         }
     };
+    // Only macro-free programs are cacheable: their bytecode is a pure function
+    // of the source bytes (external proc-macro output is not).
+    let macro_free = expansion.proc_macro_dependencies.is_empty();
+    let program = expansion.program;
 
     let mut base_env = build_vm_context(&safe)?;
 
@@ -567,7 +595,17 @@ fn main() -> anyhow::Result<()> {
     maybe_start_vm_profile(profile_enabled);
     let exec_result = match fuel_budget_from_env() {
         Some(budget) => execute_program_with_ctx_and_budget(&program, &mut base_env, budget),
-        None => program.execute_with_ctx(&mut base_env),
+        None => match cache_file.as_ref().filter(|_| macro_free) {
+            // Compile once so the module can be both cached and executed.
+            Some(cache_file) => match compile_program_module_with_ctx(&program, &mut base_env) {
+                Ok(module) => {
+                    bytecode_cache::store(cache_file, &program, &module);
+                    execute_compiled_module_with_ctx(module, &mut base_env)
+                }
+                Err(err) => Err(err),
+            },
+            None => program.execute_with_ctx(&mut base_env),
+        },
     }
     .with_context(|| "VM execution failed");
 
