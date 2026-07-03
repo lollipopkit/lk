@@ -21,7 +21,12 @@
 - **M2.5 stackless**:VM 执行模型重写(trampoline `Sequence::step`)——多天。
 - **M4.2 Tier 1**:MIR 后端 `Unsupported` 改逐函数回退 VM——大改 codegen/lower,多天。
 - **M2.2 traceback**:需 call-frame 追踪入 call 热路径(perf 敏感);`push_call_frame` 已存在但未接入执行。堆对象一等错误值需 GC rooting。
-- **M5.4 删中心 registry**:破坏性删除(删 `registry.rs`/`pkg serve`/publish/keyring + 其测试)——**删工作代码,需用户显式确认**;git+lockfile 去中心化核心已具备。
+- **M5.4 删中心 registry**:plan 第 239 行明确授权删除、第 303 行框为可逆范围取舍。**已代码层核实:非「删自包含叶子」而是 ~3500 行织入式改动**:
+  ① 服务端叶子(`cli/src/pkg/registry_server.rs` 791 行 + `key.rs` 53 行 + `Serve`/`Publish`/`Yank`/`Key` 命令)可分离删;
+  ② 但**客户端 registry 依赖解析深织入核心 `fetch_dependencies`**(`cli/src/pkg.rs:113-164` + ~400 行 RegistryDependencyResolution/
+  resolve_registry_dependency/RegistryIndexCache/checksum);③ `core/src/package/registry.rs`(1343 行)**混合客户端响应类型与服务端**,
+  非纯服务端。完整删除须重写依赖解析器主函数(去 registry 依赖、留 git+path)。**在压缩上下文里做半截会断裂 resolver → 专注会话任务。**
+  已恢复试探性 main.rs 改动,pkg 保持完整编译。**顺序**:先删服务端叶子(serve/publish/keyring)→ 再拆 registry.rs 客户端/服务端 → 最后瘦身 fetch_dependencies。
 
 ## 代码层已核实的精确阻塞点(下一会话零摸索)
 - **callable 反转**:`CallableValue::Runtime(Arc<vm::RuntimeCallable>)` @ `core/src/val/runtime_model.rs:182`;`RuntimeCallable` 内嵌
