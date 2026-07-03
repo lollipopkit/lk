@@ -109,7 +109,9 @@
 ## Phase M1 — VM 定规范 + conformance + 差分框架（问题 1、3、8）
 
 - [ ] **M1.1** conformance suite 骨架：每语言特性一组 golden（仿 Lua/Wren/mruby）。
-- [ ] **M1.2** `VM(source)==VM(bytecode)` 差分测试入 CI。
+- [x] **M1.2** `VM(source)==VM(bytecode)` 差分测试入 CI。`cli/tests/vm_bytecode_differential_test.rs`
+      (不依赖 llvm):对 examples 语料,源码跑 vs `compile bytecode`→`.lkm`→跑,比对 stdout/success;
+      「源码跑两次」自动过滤非确定性样例。**41 比对 / 0 分歧 / 3 跳过**——ModuleArtifact 序列化往返语义一致。
 - [ ] **M1.3** `.lkm` 降级为 `$LK_HOME/cache` 编译缓存（源哈希失效）；CLI 停止宣传 `.lkm` 作分发。
 - **Exit**：conformance 全绿并声明为语义定义；差分框架进 CI。
 
