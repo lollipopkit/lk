@@ -143,10 +143,14 @@
 - [x] **M1.2** `VM(source)==VM(bytecode)` 差分测试入 CI。`cli/tests/vm_bytecode_differential_test.rs`
       (不依赖 llvm):对 examples 语料,源码跑 vs `compile bytecode`→`.lkm`→跑,比对 stdout/success;
       「源码跑两次」自动过滤非确定性样例。**41 比对 / 0 分歧 / 3 跳过**——ModuleArtifact 序列化往返语义一致。
-- [~] **M1.3** `.lkm` 降级为缓存 + 停止宣传作分发。**已做**:CLI `compile bytecode` 打印
-      「note: `.lkm` is an internal build-locked artifact, not a distribution format」;`CompileMode::Bytecode`
-      clap 文档标注为内部产物(类比 `.pyc`,version-locked)。**待做**:移到 `$LK_HOME/cache` + 源哈希失效自动重编译。
-      *(现有 `MODULE_ARTIFACT_VERSION` 已保证旧版本干净拒绝;缓存目录化是增量。)*
+- [x] **M1.3** `.lkm` 降级为缓存 + 停止宣传作分发 —— **完整达成**。① 停止宣传:`compile bytecode` 打印
+      「note: `.lkm` is an internal build-locked artifact, not a distribution format」+ `CompileMode::Bytecode` 文档标注。
+      ② **降级为缓存(新)**:`LK_CACHE=1` 时 `lk FILE` 首次编译把 module artifact 写 `$LK_HOME/cache`
+      (键=源路径+源字节+`MODULE_ARTIFACT_VERSION`+CLI 版本),后续未改动源码直接解码缓存执行,跳过解析/宏展开/编译。
+      **正确性**:仅缓存 macro-free 程序(字节码=源字节纯函数,命中必安全);imports 每次新鲜重解析(依赖变更必捕获);
+      版本入键,旧缓存干净失效。**opt-in** → 默认路径与 perf bench 零影响;fuel 路径绕过。新 `cli/src/bytecode_cache.rs`,
+      复用 `compile_program_module_with_ctx`+`execute_compiled_module_with_ctx`(与 execute_with_ctx 同语义)。
+      测试:命中不重写缓存(mtime 不变)、未设 LK_CACHE 不建缓存。全量 1448 tests 0 失败。
 - **Exit**：conformance 全绿并声明为语义定义；差分框架进 CI。
 
 ## Phase M2 — 可恢复错误模型 + stackless 协程 + fuel 沙箱（问题 4、5）
