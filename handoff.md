@@ -1,9 +1,9 @@
 # Handoff
 
 **目标(`/goal`)**:把 `plan.md` 划分为多步、逐个完成、每步 push。**用户:允许短期回归、fix-forward。**
-细节台账在 `progress.md`。已推送 **88+ commit** 到 `dev`。完成度:**✅34 · [~]2 · [ ]1 · [!]1**。
-本轮:**M0.7/8 no_std flip、M2.2 堆错误值、M4.2 程序粒度回退**(三里程碑)+ **4 个 AOT 覆盖 win**
-(IsList/SliceFrom×3/StringSplit,列表解构+str.split 原生化)+ conformance/健壮性/文档。
+细节台账在 `progress.md`。已推送 **89+ commit** 到 `dev`。完成度:**✅35 · [~]1 · [ ]1 · [!]1**。
+本轮:**M0.7/8 no_std flip、M2.2 堆错误值、M4.2(Exit 达成:覆盖 13/49 >11 + 程序粒度回退)**(三里程碑)+
+**4 个 AOT 覆盖 win**(IsList/SliceFrom×3/StringSplit,列表解构+str.split 原生化,覆盖 11→13)+ conformance/健壮性/文档。
 
 ## ✅ 已完成/大幅推进(遍及全部 6 相)
 - **Phase 0** 完整;**M3 完整**(嵌入 API + register_fn + 多实例 + 沙箱 builder + C ABI 端到端跑出 42 + `eval_value` 类型化结果)。
