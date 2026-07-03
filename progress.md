@@ -204,11 +204,12 @@
 
 ## Phase M3 — 嵌入 API + 多实例 + C ABI（问题 10）
 
-- [~] **M3.1** `lk-api` 嵌入 API —— **最小可用已落地**(新 crate `api/`)。`Vm` 实例(拥有独立 VmContext,
-      **去全局后天然多实例隔离**)+ `Vm::new()`(注册全 stdlib)+ `with_fuel(N)` 沙箱 + `eval(src)->Result<String>`。
-      **验证**:3 测试全绿——`eval("6*7")→42`、**两 VM 实例隔离**(证 M0 去全局状态使多实例可行)、
-      fuel 耗尽中断。workspace `-D warnings` 0/0、clippy 0。**待做**:`register_fn`/`register_module`
-      (宿主原生扩展,需 Value 转换 ergonomics)、rooted handle、C ABI(M3.3)。
+- [x] **M3.1** `lk-api` 嵌入 API —— **完整达成**(Exit:2 实例隔离 + C ABI + 无共享可变全达标)。`Vm` 实例
+      (拥有独立 VmContext,**去全局后天然多实例隔离**)+ `Vm::new()`/`sandboxed()` + `with_fuel(N)`/`with_heap_limit(N)`
+      沙箱 + `register_fn`(M3.2)+ C ABI(M3.3)。**ergonomic 结果层已补**:`eval(src)->String`(display)
+      + 新 `eval_value(src)->Value`(宿主友好枚举:primitives 类型化,字符串/堆对象展平为 display)。
+      **验证**:7 测试全绿——eval/eval_value 类型化、两 VM 隔离、register_fn、sandbox 白名单、fuel/heap 限额。
+      workspace 0/0、clippy 0。*(可选后续增强:register_module 命名空间、rooted handle——超出 M3 Exit。)*
 - [x] **M3.2** register_fn(宿主原生扩展)+ 多实例隔离 —— **已落地**。`Vm::register_fn(name, arity, HostFn)`
       在 eval 前注册宿主原生函数(延迟 ctx 构建:pending registry 首次 eval 时定型),`HostFn` = 原始运行时
       ABI `fn(NativeArgs, &mut NativeRuntime)->Result<RuntimeVal>`。**多实例隔离**已由 M3.1 测试证明(每 Vm
