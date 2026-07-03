@@ -30,6 +30,14 @@ jobs:
           cargo build -p lk-hal --target wasm32-unknown-unknown
           cargo build -p lk-values --target wasm32-unknown-unknown
           cargo build -p lk-wasm --target wasm32-unknown-unknown
+      - name: thumbv7em MCU smoke (bare + alloc L0 profiles on bare-metal ARM)
+        # Proves the L0 foundations cross-compile to a real Cortex-M MCU target
+        # (no OS, no allocator provided): lk-hal is the `bare` profile, lk-values
+        # the `alloc` profile (plan M5.1 profiles / M5.2 MCU smoke).
+        run: |
+          rustup target add thumbv7em-none-eabi
+          cargo build -p lk-hal --target thumbv7em-none-eabi
+          cargo build -p lk-values --target thumbv7em-none-eabi
       - name: lk-core builds without std-heavy modules (lk-vm-core groundwork)
         # `--no-default-features` drops the `std` feature (the `package`
         # manager: Lk.toml/git/fs) and `async-runtime` (tokio). This guards the
