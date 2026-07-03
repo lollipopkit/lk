@@ -107,25 +107,59 @@ impl Vm {
         self.ctx.as_mut().expect("context finalized")
     }
 
-    /// Parse and execute `source`, returning the display of the program's first
-    /// return value (empty string when it is `nil`).
-    pub fn eval(&mut self, source: &str) -> Result<String> {
+    /// Parse and execute `source`, returning the compiled program's result.
+    fn run(&mut self, source: &str) -> Result<lk_core::vm::ProgramResult> {
         let program = parse_program_source(source, ParseOptions::default())
             .map_err(|err| anyhow::anyhow!("parse error: {err}"))?;
         let fuel = self.fuel;
         let heap_limit = self.heap_limit;
         let ctx = self.ctx_mut();
-        let result = if fuel.is_some() || heap_limit.is_some() {
-            execute_program_with_ctx_and_limits(&program, ctx, fuel, heap_limit)?
+        if fuel.is_some() || heap_limit.is_some() {
+            execute_program_with_ctx_and_limits(&program, ctx, fuel, heap_limit)
         } else {
-            program.execute_with_ctx(ctx)?
-        };
+            program.execute_with_ctx(ctx)
+        }
+    }
+
+    /// Parse and execute `source`, returning the display of the program's first
+    /// return value (empty string when it is `nil`).
+    pub fn eval(&mut self, source: &str) -> Result<String> {
+        let result = self.run(source)?;
         if result.first_return_is_nil() {
             Ok(String::new())
         } else {
             Ok(result.display_first_return())
         }
     }
+
+    /// Parse and execute `source`, returning the program's first return value as
+    /// a host-owned [`Value`]. Primitives (`nil`/`bool`/`int`/`float`) come back
+    /// typed; strings and heap objects (lists/maps/structs) are flattened to
+    /// their display string, since a bare heap reference is meaningless outside
+    /// the VM that owns it. This is the ergonomic typed counterpart to
+    /// [`eval`](Self::eval) (plan M3.1).
+    pub fn eval_value(&mut self, source: &str) -> Result<Value> {
+        let result = self.run(source)?;
+        Ok(match result.first_return() {
+            RuntimeVal::Nil => Value::Nil,
+            RuntimeVal::Bool(value) => Value::Bool(*value),
+            RuntimeVal::Int(value) => Value::Int(*value),
+            RuntimeVal::Float(value) => Value::Float(*value),
+            // ShortStr / heap strings / lists / maps / structs → display string.
+            _ => Value::Str(result.display_first_return()),
+        })
+    }
+}
+
+/// A host-owned LK value returned from [`Vm::eval_value`]. Primitives are typed;
+/// strings and heap objects arrive as their display string.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Value {
+    Nil,
+    Bool(bool),
+    Int(i64),
+    Float(f64),
+    Str(String),
 }
 
 impl Default for Vm {
@@ -142,6 +176,21 @@ mod tests {
     fn eval_returns_value() {
         let mut vm = Vm::new();
         assert_eq!(vm.eval("return 6 * 7;").unwrap(), "42");
+    }
+
+    #[test]
+    fn eval_value_returns_typed_primitives() {
+        let mut vm = Vm::new();
+        assert_eq!(vm.eval_value("return 6 * 7;").unwrap(), Value::Int(42));
+        assert_eq!(vm.eval_value("return 1 < 2;").unwrap(), Value::Bool(true));
+        assert_eq!(vm.eval_value("return 3.5;").unwrap(), Value::Float(3.5));
+        assert_eq!(vm.eval_value("return nil;").unwrap(), Value::Nil);
+        // Strings and heap objects flatten to their display string.
+        assert_eq!(vm.eval_value("return \"hi\";").unwrap(), Value::Str("hi".to_string()));
+        assert_eq!(
+            vm.eval_value("return [1, 2, 3];").unwrap(),
+            Value::Str("[1, 2, 3]".to_string())
+        );
     }
 
     #[test]
