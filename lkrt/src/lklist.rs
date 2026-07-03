@@ -74,6 +74,45 @@ pub unsafe extern "C" fn lkrt_lklist_i64_slice_from(handle: *mut c_void, start: 
     crate::state::arena_handle(tail)
 }
 
+/// `xs[start..]` over an `f64` list. See [`lkrt_lklist_i64_slice_from`].
+///
+/// # Safety
+/// `handle` must be a live `f64` list handle (or null → empty result).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_f64_slice_from(handle: *mut c_void, start: i64) -> *mut c_void {
+    if start < 0 {
+        crate::abi::flush_and_abort();
+    }
+    let values: &[f64] = if handle.is_null() {
+        &[]
+    } else {
+        // SAFETY: `handle` addresses a `Vec<f64>` from `lkrt_lklist_f64_new`.
+        unsafe { &*(handle as *mut Vec<f64>) }
+    };
+    let tail: Vec<f64> = values.iter().copied().skip(start as usize).collect();
+    crate::state::arena_handle(tail)
+}
+
+/// `xs[start..]` over a `str` list; elements are interned string-constant
+/// pointers, copied as-is. See [`lkrt_lklist_i64_slice_from`].
+///
+/// # Safety
+/// `handle` must be a live `str` list handle (or null → empty result).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_str_slice_from(handle: *mut c_void, start: i64) -> *mut c_void {
+    if start < 0 {
+        crate::abi::flush_and_abort();
+    }
+    let values: &[*const c_char] = if handle.is_null() {
+        &[]
+    } else {
+        // SAFETY: `handle` addresses a `Vec<*const c_char>` from `lkrt_lklist_str_new`.
+        unsafe { &*(handle as *mut Vec<*const c_char>) }
+    };
+    let tail: Vec<*const c_char> = values.iter().copied().skip(start as usize).collect();
+    crate::state::arena_handle(tail)
+}
+
 /// `xs.reduce(init, f)` over an `i64` list: left fold with `f(acc, element)`.
 ///
 /// # Safety

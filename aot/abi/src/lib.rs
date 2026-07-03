@@ -168,6 +168,8 @@ macro_rules! for_each_abi_fn {
             // `xs[start..]`: a fresh handle with the elements from `start` on
             // (negative `start` aborts, matching the VM's fatal slice error).
             ("list_h", "i64_slice_from", lkrt_lklist_i64_slice_from, WritesHost, [Ptr, I64], Ptr);
+            ("list_h", "f64_slice_from", lkrt_lklist_f64_slice_from, WritesHost, [Ptr, I64], Ptr);
+            ("list_h", "str_slice_from", lkrt_lklist_str_slice_from, WritesHost, [Ptr, I64], Ptr);
             ("list_h", "f64_new", lkrt_lklist_f64_new, WritesHost, [], Ptr);
             ("list_h", "f64_push", lkrt_lklist_f64_push, WritesHost, [Ptr, F64], Nil);
             ("list_h", "f64_len", lkrt_lklist_f64_len, ReadsHost, [Ptr], I64);

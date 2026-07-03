@@ -3629,6 +3629,8 @@ fn lower_inst(
             let (handle, ty) = ssa.read(instr.b(), block, pc)?;
             let slice_fn = match ty {
                 Ty::ListI64 => "i64_slice_from",
+                Ty::ListF64 => "f64_slice_from",
+                Ty::ListStr => "str_slice_from",
                 _ => return Err(Unsupported::TypeMismatch { pc }),
             };
             let start = read_typed_scalar(ssa, insts, instr.c(), block, Ty::I64, pc)?;
