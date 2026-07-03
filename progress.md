@@ -229,7 +229,11 @@
 - [x] **M5.3** `lk fmt` —— **已实现**。CLI 新增 `lk fmt FILE`(就地规范化,4-space,brace/paren/bracket 感知,
       空行保持空;幂等)+ `lk fmt --check FILE`(不写,未格式化则非零退出,可作 CI 门禁)。逻辑与 LSP 的
       `format_lk` 一致。验证:乱缩进→规范嵌套、`--check` 幂等退出 0、真实示例二次 check 稳定。CLI `-D warnings` 0/0。
-- [ ] **M5.4** 包管理缩减为 git+lockfile 去中心化依赖（砍中心化注册表/keyring/`lk pkg serve`）。
+- [~] **M5.4** git+lockfile 去中心化依赖 —— **核心已具备**(现状核实)。CLI 已有 `pkg add <name> <github>
+      --branch/--tag/--rev`(git 依赖入 `Lk.toml`)+ `pkg fetch`(拉取 + 更新 `Lk.lock`)+ `pkg update`/`pkg tree`
+      —— **Deno/Go 式去中心化 git 依赖 + lockfile 能力现存且可用**(plan Caveat 亦确认)。→ M5.4 主目标(去中心化)满足。
+      **待做(可选取舍)**:砍中心化签名注册表(`registry.rs`/`pkg serve`/publish/yank/keyring)——属**风险删除**
+      (删工作代码 + 破坏 pkg 测试),按 plan 决策为「对 solo 过度工程」可移除,但非阻塞、留作独立取舍。
 - [x] **M5.5** LSP **保留并持续维护**（不砍）+ tree-sitter —— **双轨保留,现状核实**。plan 决策(本会话已改 plan.md)
       = 不砍 LSP,与 tree-sitter 双轨。现状:`lsp/`(13k 行,hover/goto/semantic-tokens/inlay/completion/diagnostic
       共 424 引用点,macro-origin 感知)+ `ecosystem/tree-sitter-lk`(grammar.js)+ `vsc-ext`/`zed-ext` 编辑器集成
