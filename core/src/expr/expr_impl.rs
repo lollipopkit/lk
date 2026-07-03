@@ -6,12 +6,9 @@ use crate::{
     val::{LiteralVal, Type},
 };
 use anyhow::Result;
-use dashmap::DashMap;
-use once_cell::sync::Lazy;
 use std::{
     collections::HashSet,
     fmt::{Debug, Display},
-    sync::Arc,
 };
 /// Grammar (abridged):
 /// exp     ::= paren
@@ -322,27 +319,6 @@ impl Expr {
             // Only collect string values when they are actual identifier roots, not field names
             Expr::Literal(_) => {} // Receive operator: collect from inner expression
         }
-    }
-    /// Cached parsing: parse expression string and return a shared Arc<Expr>.
-    pub fn parse_cached_arc(expression: &str) -> Result<Arc<Expr>> {
-        use dashmap::mapref::entry::Entry;
-        // Global static cache: Key is expression string, Value is parsed Expr wrapped in Arc
-        static PARSE_CACHE: Lazy<DashMap<String, Arc<Expr>>> = Lazy::new(DashMap::new);
-        // Fast read path
-        if let Some(found) = PARSE_CACHE.get(expression) {
-            return Ok(found.value().clone());
-        }
-        // Parse on miss, then insert with write lock
-        let tokens = Tokenizer::tokenize(expression)?;
-        let expr = Parser::new(&tokens).parse()?; // Constant folding happens in parser
-        let expr_arc = Arc::new(expr);
-        Ok(match PARSE_CACHE.entry(expression.to_string()) {
-            Entry::Vacant(v) => {
-                v.insert(expr_arc.clone());
-                expr_arc
-            }
-            Entry::Occupied(o) => o.get().clone(),
-        })
     }
     /// Constant folding: calculate pure constant sub-expressions as LiteralVal constants
     pub(crate) fn fold_constants(self) -> Expr {
