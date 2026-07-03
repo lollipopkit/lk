@@ -1009,14 +1009,49 @@ fn compile_llvm_ir(path: &Path, options: LlvmBackendOptions) -> anyhow::Result<(
 #[cfg(feature = "llvm")]
 fn compile_executable(path: &Path, output: Option<&Path>, options: LlvmBackendOptions) -> anyhow::Result<()> {
     let output = output.map(Path::to_path_buf).unwrap_or_else(|| path.with_extension(""));
-    compile_executable_to_path(path, &output, options)?;
-    println!("{}", output.display());
-    Ok(())
+    // Parse + compile up front so genuine source errors (syntax/type) surface
+    // here, rather than being masked by the Tier 0 fallback below — that path
+    // embeds the source verbatim and would only fail at runtime (plan M4.2).
+    let compiled = compile_instr_artifact_with_dependencies(path)?;
+    match compile_native_executable_from_artifact(path, &output, &compiled.artifact, options) {
+        Ok(()) => {
+            println!("{}", output.display());
+            Ok(())
+        }
+        Err(native_err) => {
+            // Opt-out (strict native-only) for tooling/tests that want to verify
+            // the native lowering in isolation rather than the graceful fallback.
+            if std::env::var_os("LK_AOT_NO_FALLBACK").is_some_and(|value| value != "0") {
+                return Err(native_err);
+            }
+            // The native (MIR/LLVM) backend covers only a lowerable subset.
+            // Instead of failing the whole program (the old all-or-nothing —
+            // plan 问题 2), fall back to the Tier 0 VM bundle, which embeds the
+            // interpreter and runs any valid program. `lk compile` thus never
+            // rejects a valid program: native when possible, VM-embed otherwise.
+            diagnostic::warning(format!(
+                "native AOT does not support this program yet ({native_err:#}); \
+                 falling back to the Tier 0 VM bundle (embeds the interpreter)"
+            ));
+            run_bundle(path, &output)
+        }
+    }
 }
 
+/// Lower an already-compiled bytecode artifact to a native executable via LLVM.
+/// Returns the (subset-only) lowering error so `compile_executable` can decide
+/// whether to fall back to the Tier 0 VM bundle.
 #[cfg(feature = "llvm")]
-fn compile_executable_to_path(path: &Path, output: &Path, options: LlvmBackendOptions) -> anyhow::Result<()> {
-    compile_executable_to_path_with_dependencies(path, output, options).map(|_| ())
+fn compile_native_executable_from_artifact(
+    path: &Path,
+    output: &Path,
+    artifact: &ModuleArtifact,
+    options: LlvmBackendOptions,
+) -> anyhow::Result<()> {
+    let llvm = lk_llvm::compile_module_artifact_to_llvm(artifact, options)
+        .with_context(|| format!("compile native executable LLVM IR for {}", path.display()))?;
+    lk_llvm::compile_native_executable_from_llvm(path, output, &llvm.module.ir, llvm.opt_level.as_flag())?;
+    Ok(())
 }
 
 #[cfg(feature = "llvm")]

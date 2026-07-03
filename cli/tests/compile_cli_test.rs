@@ -667,8 +667,12 @@ fn test_llvm_compile_exe_rejects_unsupported_shape_without_host_launcher() {
     ensure_clean_dir(&dir);
     write_file(&dir, "unsupported.lk", "return !([1, 2, 3]);\n");
 
+    // `LK_AOT_NO_FALLBACK` disables the Tier 0 VM-bundle fallback so we can
+    // verify the native lowering rejects the unsupported shape in isolation
+    // (without it, `lk compile` would gracefully fall back — plan M4.2).
     let exe = run_cli(&dir, ["compile", "unsupported.lk"])
         .env("LK_CLANG", dir.join("missing-clang"))
+        .env("LK_AOT_NO_FALLBACK", "1")
         .output()
         .expect("spawn exe compile");
     assert!(
