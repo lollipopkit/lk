@@ -488,6 +488,15 @@ fn pcall(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Runtim
         };
         call_runtime_value_runtime(callee, &call_args, state, module, ctx)
     };
+    if outcome.is_err()
+        && let Some((_, Some(ctx), _)) = runtime.state_ctx_module_mut()
+    {
+        // The error is caught here, so discard the traceback frames it
+        // accumulated — a later uncaught error should report a clean call stack
+        // (plan M2.2). try/catch desugars to pcall, so this also covers caught
+        // language errors.
+        ctx.truncate_call_stack(0);
+    }
     let (ok, value) = match outcome {
         Ok(result) => (true, result),
         Err(err) => {

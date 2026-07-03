@@ -88,6 +88,9 @@ fn execute_compiled_module_with_ctx_inner(
     instruction_budget: Option<u64>,
     heap_object_limit: Option<usize>,
 ) -> Result<ProgramResult> {
+    // Start each top-level run with an empty traceback so a reused context
+    // (REPL / embedded `Vm`) does not carry frames from a previous error.
+    ctx.truncate_call_stack(0);
     let mut seed_heap = HeapStore::new();
     let globals = seed_module_globals(&module.globals, ctx, &mut seed_heap)?;
     let register_count = module

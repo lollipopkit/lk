@@ -256,9 +256,15 @@ impl Executor {
             Ok(returns) => Ok(returns.into_first()),
             Err(error) => {
                 if let Some(raise) = error.downcast_ref::<super::LanguageRaise>() {
-                    self.handle_language_raise(raise)?;
-                    Ok(RuntimeVal::Nil)
+                    match self.handle_language_raise(raise) {
+                        Ok(()) => Ok(RuntimeVal::Nil),
+                        Err(propagated) => {
+                            push_traceback_frame(ctx, function);
+                            Err(propagated)
+                        }
+                    }
                 } else {
+                    push_traceback_frame(ctx, function);
                     Err(error)
                 }
             }
@@ -313,13 +319,33 @@ impl Executor {
             Ok(returns) => Ok(returns.into_first()),
             Err(error) => {
                 if let Some(raise) = error.downcast_ref::<super::LanguageRaise>() {
-                    self.handle_language_raise(raise)?;
-                    Ok(RuntimeVal::Nil)
+                    match self.handle_language_raise(raise) {
+                        Ok(()) => Ok(RuntimeVal::Nil),
+                        Err(propagated) => {
+                            push_traceback_frame(ctx, function);
+                            Err(propagated)
+                        }
+                    }
                 } else {
+                    push_traceback_frame(ctx, function);
                     Err(error)
                 }
             }
         }
+    }
+}
+
+/// Record a call frame for an error that is propagating out of `function`
+/// (uncaught here). Runs only on the error path — successful calls never touch
+/// the traceback, so this is zero-cost for normal execution. Anonymous
+/// functions (no `debug_name`) are skipped. Reuses the `VmContext` call-stack;
+/// the top level formats it via `call_stack_report`, and `pcall` clears it when
+/// it catches (plan M2.2 traceback).
+fn push_traceback_frame(ctx: &mut Option<&mut VmContext>, function: &Function) {
+    if let Some(ctx) = ctx.as_deref_mut()
+        && let Some(name) = function.debug_name.as_ref()
+    {
+        ctx.push_call_frame(Arc::clone(name), None::<Arc<str>>);
     }
 }
 

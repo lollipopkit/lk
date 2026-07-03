@@ -224,6 +224,18 @@ enum PkgCommand {
     Tree,
 }
 
+/// Unwrap an execution result, printing the VM call-stack traceback to stderr
+/// first when it failed (plan M2.2). The traceback is only populated while an
+/// error unwinds, so successful runs pay nothing.
+fn unwrap_with_traceback<T>(result: anyhow::Result<T>, ctx: &VmContext) -> anyhow::Result<T> {
+    if result.is_err()
+        && let Some(report) = ctx.call_stack_report()
+    {
+        eprintln!("{report}");
+    }
+    result
+}
+
 fn env_toggle_enabled(raw: &str) -> bool {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -531,7 +543,7 @@ fn main() -> anyhow::Result<()> {
         let exec_result =
             execute_module_artifact_with_ctx(artifact, &mut base_env).with_context(|| "VM module execution failed");
         base_env.shutdown_async_runtime();
-        let result = exec_result?;
+        let result = unwrap_with_traceback(exec_result, &base_env)?;
         maybe_print_vm_profile(profile_enabled);
         if !result.first_return_is_nil() {
             println!("{}", result.display_first_return());
@@ -565,7 +577,7 @@ fn main() -> anyhow::Result<()> {
         let exec_result = execute_module_artifact_with_ctx(artifact, &mut base_env)
             .with_context(|| "VM cached-module execution failed");
         base_env.shutdown_async_runtime();
-        let result = exec_result?;
+        let result = unwrap_with_traceback(exec_result, &base_env)?;
         maybe_print_vm_profile(profile_enabled);
         if !result.first_return_is_nil() {
             println!("{}", result.display_first_return());
@@ -612,7 +624,7 @@ fn main() -> anyhow::Result<()> {
     // Shutdown runtime after execution
     base_env.shutdown_async_runtime();
 
-    let result = exec_result?;
+    let result = unwrap_with_traceback(exec_result, &base_env)?;
     maybe_print_vm_profile(profile_enabled);
 
     if !result.first_return_is_nil() {
