@@ -92,3 +92,71 @@ mod tests {
         assert!(err.to_string().contains("step limit"), "unexpected error: {err}");
     }
 }
+
+/// C ABI surface (`ffi` feature). Opaque `Vm` pointer + eval returning an owned
+/// C string; pair every `lk_vm_new`/`lk_vm_eval` with the matching free. A
+/// header can be generated with cbindgen. Enables embedding from C/C++/Dart FFI
+/// (plan M3.3).
+#[cfg(feature = "ffi")]
+pub mod ffi {
+    use core::ffi::{CStr, c_char};
+
+    use alloc::boxed::Box;
+    use alloc::ffi::CString;
+
+    extern crate alloc;
+
+    use super::Vm;
+
+    /// Create a new isolated VM. Free with [`lk_vm_free`].
+    #[unsafe(no_mangle)]
+    pub extern "C" fn lk_vm_new() -> *mut Vm {
+        Box::into_raw(Box::new(Vm::new()))
+    }
+
+    /// Evaluate `src` (a NUL-terminated UTF-8 string) on `vm`, returning an owned
+    /// C string with the first return value's display (free with [`lk_string_free`]),
+    /// or NULL on error/invalid input.
+    ///
+    /// # Safety
+    /// `vm` must come from [`lk_vm_new`] and not be freed; `src` must be a valid
+    /// NUL-terminated string valid for the call.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn lk_vm_eval(vm: *mut Vm, src: *const c_char) -> *mut c_char {
+        if vm.is_null() || src.is_null() {
+            return core::ptr::null_mut();
+        }
+        let vm = unsafe { &mut *vm };
+        let Ok(src) = (unsafe { CStr::from_ptr(src) }).to_str() else {
+            return core::ptr::null_mut();
+        };
+        match vm.eval(src) {
+            Ok(out) => CString::new(out)
+                .map(CString::into_raw)
+                .unwrap_or(core::ptr::null_mut()),
+            Err(_) => core::ptr::null_mut(),
+        }
+    }
+
+    /// Free a VM created by [`lk_vm_new`].
+    ///
+    /// # Safety
+    /// `vm` must come from [`lk_vm_new`] and not be used afterwards.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn lk_vm_free(vm: *mut Vm) {
+        if !vm.is_null() {
+            drop(unsafe { Box::from_raw(vm) });
+        }
+    }
+
+    /// Free a string returned by [`lk_vm_eval`].
+    ///
+    /// # Safety
+    /// `s` must come from [`lk_vm_eval`] and not be used afterwards.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn lk_string_free(s: *mut c_char) {
+        if !s.is_null() {
+            drop(unsafe { CString::from_raw(s) });
+        }
+    }
+}

@@ -181,7 +181,10 @@
       fuel 耗尽中断。workspace `-D warnings` 0/0、clippy 0。**待做**:`register_fn`/`register_module`
       (宿主原生扩展,需 Value 转换 ergonomics)、rooted handle、C ABI(M3.3)。
 - [ ] **M3.2** 多实例隔离：每 `Vm` 独立堆/驻留表/注册表，无 `thread_local`（依赖 M0）。
-- [ ] **M3.3** `ffi` feature + cbindgen 生成 `lk.h`（Dart FFI 示例）。
+- [~] **M3.3** C ABI —— **`ffi` feature 的 `extern "C"` 面已落地**(lk-api `ffi` feature)。
+      `lk_vm_new()->*mut Vm`、`lk_vm_eval(vm,src)->*mut c_char`、`lk_vm_free`、`lk_string_free`(不透明指针 +
+      owned C string,配对释放)。`--features ffi` 编译 + clippy 0;默认构建不含 ffi(0 开销)。
+      **待做**:cbindgen 生成 `lk.h`(工具链步骤)+ Dart FFI 示例。
 - **Exit**：示例宿主并存 2 个隔离 VM；C ABI 冒烟；无实例间可变共享。
 
 ## Phase M4 — AOT Tier 0 + Tier 1（问题 2、6）

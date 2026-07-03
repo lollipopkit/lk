@@ -6,6 +6,9 @@ edition = "2024"
 [lib]
 name = "lk_api"
 
+[features]
+ffi = []
+
 [dependencies]
 lk-core = { path = "../core" }
 lk-stdlib = { path = "../stdlib" }
