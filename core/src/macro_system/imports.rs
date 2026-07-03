@@ -1,7 +1,8 @@
 use std::path::{Component, Path, PathBuf};
 
+#[cfg(feature = "std")]
+use crate::package::PackageGraph;
 use crate::{
-    package::PackageGraph,
     token::{ParseError, Token, Tokenizer},
     util::fast_map::FastHashMap,
 };
@@ -247,7 +248,16 @@ fn load_imported_macros(
             let Some(base_dir) = base_dir else {
                 return Ok(LoadedMacroModule::default());
             };
-            let Some(resolved) = resolve_package_macro_module(base_dir, name, tokens, spec.span_index)? else {
+            // Package-based macro imports need the `package` manager, which is
+            // gated out of the no_std VM-core surface (plan M0.7/8).
+            #[cfg(feature = "std")]
+            let resolved = resolve_package_macro_module(base_dir, name, tokens, spec.span_index)?;
+            #[cfg(not(feature = "std"))]
+            let resolved: Option<PathBuf> = {
+                let _ = (base_dir, name, &tokens, spec.span_index);
+                None
+            };
+            let Some(resolved) = resolved else {
                 return Ok(LoadedMacroModule::default());
             };
             load_macro_file(&resolved, loading)
@@ -627,6 +637,7 @@ fn default_namespace_alias(raw: &str) -> Option<String> {
     if stem.is_empty() { None } else { Some(stem.to_string()) }
 }
 
+#[cfg(feature = "std")]
 fn resolve_package_macro_module(
     base_dir: &Path,
     name: &str,

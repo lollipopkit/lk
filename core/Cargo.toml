@@ -11,7 +11,12 @@ name = "lk_core"
 crate-type = ["rlib", "staticlib"]
 
 [features]
-default = ["async-runtime"]
+default = ["std", "async-runtime"]
+# `std` gates the std-heavy, VM-core-independent modules (currently the
+# `package` manager: Lk.toml/lock, git, filesystem). Disabling it is a step
+# toward the no_std `lk-vm-core` split (plan M0.7/8): the VM core (token/ast/
+# stmt/typ/vm/val/gc) does not depend on `package`, so it drops out cleanly.
+std = []
 async-runtime = ["dep:futures", "dep:tokio"]
 vm-profile = []
 
