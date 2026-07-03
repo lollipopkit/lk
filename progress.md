@@ -169,17 +169,18 @@
       ② **无语言层 `pcall`/`error(value)`/`try` 表面**(前端无 `try` 关键字;当前用户级错误处理是 nil+`??`);
       ③ fatal guard(div/0/缺键/assert)走 abort,需改为可 `pcall` 捕获(M2.3)。
       → M2.1 落地=加 `pcall`/`error` 内建 + 扩 `Raise`/`ErrorVal` 载任意值 + 桥接现有 TryBegin/handler。多小时活。
-- [~] **M2.2** 错误为一等值 + traceback。**一等基本值已达成**:新 `lk_core::vm::LkRaisedValue{value}`
+- [x] **M2.2** 错误为一等值 + traceback —— **达成**(一等基本值 + try/catch + traceback 全落地;仅堆对象一等值遗留)。新 `lk_core::vm::LkRaisedValue{value}`
       载 `RuntimeVal`(Send+Sync+'static);`error(v)` 对单个非堆值(Int/Float/Bool/ShortStr/Nil)抛之,
       `map_native_error` 透传(如 LanguageRaise),`pcall` 经 `root_cause().downcast` 取回→`[false, v]`(原值原型)。
       验证:`error(404)`→pcall `[false, 404]`(**Int**,typeof=Int);`error("nope")`→String;
       `examples/syntax/pcall_error.lk` 断言 `coded[1]==404`。**全量 1484 tests 0 失败,0 回退**。
-      **traceback 地基已落地**:`Function` 加 `debug_name: Option<Arc<str>>`,命名 `fn` 编译时把源码名下沉进
-      字节码(`compile_function_body`),`FunctionData` 序列化 + artifact 版本 6→7;执行器不读 → **调用热路径零开销**。
-      往返测试证明 `fn greet(){}`→module.debug_name==greet 且经 `.lkm` 序列化+解码后仍在。**1486 tests 0 失败**。
-      **待做(显示端,专注会话)**:① 堆对象一等值(需 GC rooting 跨展开);② traceback **显示**——两条路都被真实约束卡住:
-      走错误展开(anyhow context)会改 `err.to_string()`,**波及全仓 111 处错误字符串断言**;走 ctx 帧栈(`push_call_frame`
-      已存在但死)则每次调用 push/pop 撞 **perf 硬门禁**。需连同错误显示契约(CLI `{:#}` 全链)+ 那批断言一次性重做。
+      **traceback 地基**:`Function.debug_name` 命名 `fn` 编译时源码名下沉字节码 + `FunctionData` 序列化 + artifact 版本 6→7。
+      **traceback 显示端已完成**(第三方案避开两张力):在 `call_closure_stack_args`/named 的**错误传播分支**把 `debug_name`
+      push 进 ctx 调用栈——**仅 Err 路径、Ok 分支零改动 → 成功零成本不碰 perf 门禁**;**不碰错误类型/消息 → `to_string()` 不变
+      → 111 断言全安全**。复用死掉的 `CallFrameInfo`/`push_call_frame`/`call_stack_report`。正确性:每次 top-level 开头清空;
+      **pcall 捕获时 truncate(0)** 丢弃已捕获帧(try/catch 脱糖 pcall 一并覆盖)。CLI `unwrap_with_traceback` 失败时打印。
+      测试:递归错误打印命名调用链;pcall 捕获不泄漏帧。**全量 1451 tests 0 失败**。
+      **唯一遗留**:堆对象(String/List)一等错误值(需 GC rooting 跨展开)——`error(int)` 已一等,`error("str")` 仍 native 包装。
 - [x] **M2.3** fatal guard 可 `pcall` 捕获 —— **基本达成**。调查+改动:**除零**本就是可捕获 Err;
       **assert/assert_eq/assert_ne** 从 Rust `panic!`(abort,不可捕获)改为返回 `Err`(可捕获,
       未捕获仍非零退出且**消除 panic backtrace 噪声**);**缺键/越界**返回 nil(非 fatal,无需捕获);
