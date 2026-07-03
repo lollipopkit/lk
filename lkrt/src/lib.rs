@@ -40,7 +40,7 @@ pub use lklist::{
     lkrt_lklist_i64_push, lkrt_lklist_i64_reduce_fn, lkrt_lklist_i64_set, lkrt_lklist_i64_slice_from,
     lkrt_lklist_str_at, lkrt_lklist_str_display, lkrt_lklist_str_eq, lkrt_lklist_str_get_pair, lkrt_lklist_str_join,
     lkrt_lklist_str_len, lkrt_lklist_str_new, lkrt_lklist_str_push, lkrt_lklist_str_slice_from, lkrt_maybe_f64_unwrap,
-    lkrt_maybe_i64_unwrap, lkrt_maybe_str_unwrap,
+    lkrt_maybe_i64_unwrap, lkrt_maybe_str_unwrap, lkrt_str_split,
 };
 pub use lkmap::{
     lkrt_lkmap_i64_f64_get_pair, lkrt_lkmap_i64_f64_len, lkrt_lkmap_i64_f64_new, lkrt_lkmap_i64_f64_set,

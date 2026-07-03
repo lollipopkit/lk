@@ -213,6 +213,9 @@ macro_rules! for_each_abi_fn {
             ("str", "char_len", lkrt_str_char_len, Pure, [StrPtr], I64);
             ("str", "starts_with", lkrt_str_starts_with, Pure, [StrPtr, StrPtr], I64);
             ("str", "contains", lkrt_str_contains, Pure, [StrPtr, StrPtr], I64);
+            // `s.split(sep)` → a fresh `str` list handle (Rust `str::split`, so
+            // VM-exact); parts are arena-owned C strings.
+            ("str", "split", lkrt_str_split, WritesHost, [StrPtr, StrPtr], Ptr);
             // Scalar → display string (the VM's `ToString`), allocating/leaking a C string.
             ("str", "from_i64", lkrt_i64_to_str, WritesHost, [I64], StrPtr);
             ("str", "from_f64", lkrt_f64_to_str, WritesHost, [F64], StrPtr);

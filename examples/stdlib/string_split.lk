@@ -1,0 +1,27 @@
+// String `split` → list of substrings. Lowers natively (plan M4.2): the runtime
+// uses Rust's `str::split`, so the native result matches the VM's `string_split`
+// exactly — including empty parts on consecutive/leading/trailing separators.
+// Each assert defines the VM semantics; the VM==AOT differential gate proves the
+// native lowering matches, and the parts are memory-safe under ASan/UBSan.
+
+// Basic split on a single-char separator.
+let parts = "a,b,c,d".split(",");
+assert(parts.len() == 4);
+assert(parts.join("|") == "a|b|c|d");
+
+// A multi-char separator.
+let words = "one--two--three".split("--");
+assert(words.len() == 3);
+assert(words.join(" ") == "one two three");
+
+// Consecutive separators keep the empty part in between.
+let gapped = "a,,c".split(",");
+assert(gapped.len() == 3);
+assert(gapped.join("/") == "a//c");
+
+// A separator that isn't present yields the whole string as one part.
+let whole = "abc".split(",");
+assert(whole.len() == 1);
+assert(whole.join("") == "abc");
+
+println("string split: ok");

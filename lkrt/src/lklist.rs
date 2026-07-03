@@ -11,7 +11,7 @@
 //! and an out-of-range index yields "absent" (`present = 0`) rather than a value —
 //! the caller models the result as `Maybe<Int>`.
 
-use std::ffi::{CStr, c_char, c_void};
+use std::ffi::{CStr, CString, c_char, c_void};
 
 /// Creates a fresh, empty `i64` list handle.
 #[unsafe(no_mangle)]
@@ -111,6 +111,33 @@ pub unsafe extern "C" fn lkrt_lklist_str_slice_from(handle: *mut c_void, start: 
     };
     let tail: Vec<*const c_char> = values.iter().copied().skip(start as usize).collect();
     crate::state::arena_handle(tail)
+}
+
+/// `s.split(sep)` → a fresh `str` list handle. Uses Rust's `str::split`, so it
+/// matches the VM's `string_split` exactly (same empty-part behavior on
+/// leading/trailing/consecutive separators, and an empty separator splits
+/// between every char). Each part is copied into an arena-owned C string so the
+/// element pointers outlive the list (the str-list ABI otherwise expects
+/// interned string-constant globals).
+///
+/// # Safety
+/// `s` and `sep` must be NUL-terminated C strings (or null → treated as empty).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_str_split(s: *const c_char, sep: *const c_char) -> *mut c_void {
+    let read = |p: *const c_char| -> &str {
+        if p.is_null() {
+            ""
+        } else {
+            // SAFETY: non-null pointers are NUL-terminated per the ABI.
+            unsafe { CStr::from_ptr(p) }.to_str().unwrap_or("")
+        }
+    };
+    let (haystack, sep) = (read(s), read(sep));
+    let parts: Vec<*const c_char> = haystack
+        .split(sep)
+        .map(|part| crate::lkstr::arena_c_string(CString::new(part).unwrap_or_default()) as *const c_char)
+        .collect();
+    crate::state::arena_handle(parts)
 }
 
 /// `xs.reduce(init, f)` over an `i64` list: left fold with `f(acc, element)`.

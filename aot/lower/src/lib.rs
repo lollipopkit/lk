@@ -3642,6 +3642,20 @@ fn lower_inst(
             });
             ssa.write(instr.a(), block, (dst, ty));
         }
+        Opcode::StringSplit => {
+            // `a` = dst (List<str>), `b` = target string, `c` = separator string.
+            // The runtime uses Rust `str::split`, so the result matches the VM's
+            // `string_split` exactly.
+            let target = ssa.read_typed(instr.b(), block, Ty::Str, pc)?;
+            let sep = ssa.read_typed(instr.c(), block, Ty::Str, pc)?;
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("str", "split"),
+                args: vec![target, sep],
+            });
+            ssa.write(instr.a(), block, (dst, Ty::ListStr));
+        }
         Opcode::ListPush => {
             // `a` = list register (mutated in place), `b` = value register. The list
             // handle is a reference (matching the VM), so the push is visible through
