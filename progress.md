@@ -210,7 +210,10 @@
 - [ ] **M5.2** WASM demo 可跑 + 一类 MCU（ESP32/Cortex-M+alloc）冒烟。
 - [ ] **M5.3** `lk fmt`。
 - [ ] **M5.4** 包管理缩减为 git+lockfile 去中心化依赖（砍中心化注册表/keyring/`lk pkg serve`）。
-- [ ] **M5.5** LSP **保留并持续维护**（不砍）+ tree-sitter 完善。
+- [x] **M5.5** LSP **保留并持续维护**（不砍）+ tree-sitter —— **双轨保留,现状核实**。plan 决策(本会话已改 plan.md)
+      = 不砍 LSP,与 tree-sitter 双轨。现状:`lsp/`(13k 行,hover/goto/semantic-tokens/inlay/completion/diagnostic
+      共 424 引用点,macro-origin 感知)+ `ecosystem/tree-sitter-lk`(grammar.js)+ `vsc-ext`/`zed-ext` 编辑器集成
+      均在树中、随 workspace 编译通过。→ **满足「保留双轨」**。tree-sitter 完善为持续项(非本步阻塞)。
 - **Exit**：CI 矩阵全绿；v1.0 定义达成。
 
 ---
