@@ -31,6 +31,16 @@
      syntax.rs 用的宏类型随之保留、`base_dir`/`expand_*` 走 compat::path + std-gate。
   ③ 翻 `#![cfg_attr(not(feature="std"), no_std)]`(lib.rs 已有注释占位)→ CI `--no-default-features` 变真 no_std 检查。
   解锁 M0.9(`lk-vm-core --features alloc` 冒烟)/M5.1(三 profile 单 crate)/M5.2(full-VM-on-MCU)。
+  **本轮深挖发现(flip 还需依赖级 no_std 改造,非纯源码 gate)**:
+  - `anyhow`(VM 核心 `execute()->anyhow::Result` 遍布)需改 `default-features=false` + lk-core `std` feature 转发
+    `anyhow/std`(1.81+ 用 `core::error::Error`,已把 5 处 `std::error::Error`→`core::error::Error`)。
+  - `serde_json`(artifact.rs 字节码序列化 / val/de.rs / import.rs)需 `default-features=false,features=["alloc"]`+std 转发。
+  - `serde_yaml`/`toml`(val/de.rs 反序列化)std-only → no_std 下 gate。
+  - `dashmap`(import.rs ModuleResolver 的 file/package 缓存)std-only → 字段+方法 `#[cfg(std)]` gate;
+    ModuleResolver 无需整体 gate(VmContext 不动),内部 no_std 化=保留 stdlib_registry 解析、gate 掉
+    search_paths/runtime_file_modules/package_modules + 所有 Path/fs 方法(components/canonicalize/exists/join/…全 std)。
+  - `serialize_imports`/`deserialize_imports`(serde_json)+ `resolve_source_runtime_with_base` 的 `base_dir:Option<PathBuf>`
+    随之 gate。→ **flip 是跨 4+ 依赖 + 热路径(artifact 序列化)的多会话单元**,须整体绿再翻,勿半成品提交。
 - **[!] callable trait 反转**:`CallableValue::Runtime(Arc<vm::RuntimeCallable>)` @ `val/runtime_model.rs`,内嵌
   `Arc<Module>`。改 `dyn` 需同步改 GC 追踪/跨模块传递/调用点——枚举变体一变全部 match 原子断裂。lk-vm-core **内部**事,非 flip 前置。
 - **[ ] M2.5 stackless**:VM 执行模型重写(trampoline)——多天。
