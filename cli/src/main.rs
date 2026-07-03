@@ -1033,7 +1033,16 @@ fn compile_executable(path: &Path, output: Option<&Path>, options: LlvmBackendOp
                 "native AOT does not support this program yet ({native_err:#}); \
                  falling back to the Tier 0 VM bundle (embeds the interpreter)"
             ));
-            run_bundle(path, &output)
+            // If the Tier 0 fallback also fails (e.g. the VM staticlib is
+            // unavailable outside the dev workspace), surface both reasons so the
+            // failure is understandable rather than a bare bundle error.
+            run_bundle(path, &output).map_err(|bundle_err| {
+                anyhow::anyhow!(
+                    "cannot compile `{}`: it is not natively AOT-lowerable ({native_err:#}), \
+                     and the Tier 0 VM-bundle fallback also failed ({bundle_err:#})",
+                    path.display()
+                )
+            })
         }
     }
 }
