@@ -8,7 +8,8 @@
 - **M0**:🎯 去全局状态 · **lk-values 抽取 + 真 no_std**(wasm32)· **lk-hal**(no_std)· CI no_std 冒烟 + **lk-core 无 async 可构建守卫**。
 - **M1**:VM(source)==VM(bytecode) 差分 · conformance 声明 · **`.lkm` 字节码缓存**(`LK_CACHE=1`,坐实其为缓存非分发)。
 - **M2**(错误/沙箱模型完整):**pcall/error · 可捕获 assert · 一等基本错误值 · try/catch · fuel+内存+模块白名单三沙箱**;
-  **traceback debug-name 地基已落地**(`Function.debug_name` 源码名下沉字节码 + artifact 序列化,往返测试)。
+  **traceback 完整**(`Function.debug_name` 下沉字节码 + 错误传播分支 push ctx 调用栈 + pcall 捕获清空,CLI 打印命名调用链;
+  仅 Err 路径零热成本、不碰 to_string 断言)。**唯一遗留**:堆对象(String/List)一等错误值(需 GC rooting 跨展开)。
 - **M4**:**AOT Tier 0**(`lk bundle`→自包含 ELF)· AOT==VM 差分门禁(CI+ASan/UBSan/fuzz)。
 - **M5**:**WASM(wasm32+CI)· lk fmt · M5.4 删中心化注册表(-5000 行,收敛为 git+lockfile 去中心化依赖)· LSP 双轨**。
 - **新 crate**:`values/`(L0 no_std)· `hal/`(L0 no_std)· `api/`(L5,ffi+lk.h+eval_value)。
@@ -22,13 +23,13 @@
 - **[!/M0.7/8] 抽 `lk-vm-core`**:分离 VM 核心(token/ast/expr/stmt/typ/vm/val/gc)↔std-heavy(package/net/process/rt/aot)。
   **地基已就绪**:`cargo build -p lk-core --no-default-features` 通过(async 已可选,CI 已守卫)。**下一步阻塞**:core 仍用
   `std::fs/process/env` → 需先把 std-heavy 模块移出(big-bang crate 移动,`crate::` 路径全改,非增量)。解锁 M0.9/M5.1/M5.2。
-- **[~] M2.2 traceback 显示端**:地基(debug_name)已完成。显示端两条路都被真实约束卡住:错误展开(anyhow context)改
-  `err.to_string()` → 断掉**全仓 111 处**错误字符串断言;ctx 帧栈(`push_call_frame` @ `vm/context.rs:185` 已存在但死)
-  每次调用 push/pop 撞 **perf 硬门禁**。须连同错误显示契约(CLI `{:#}` 全链)+ 那批断言一次性重做。
 - **[ ] M2.5 stackless**:VM 执行模型重写(trampoline)——多天。
 - **[ ] M4.2 Tier 1**:MIR `Unsupported` 改逐函数回退 VM——大改 codegen/lower,多天。
 - **[ ] M5.1 三 profile / [~] M5.2 MCU / [~] M0.9 alloc-only CI**:均依赖 lk-vm-core 先抽出。
+- **M2.2 堆对象一等错误值**(唯一小遗留):`error("str")`/`error([..])` 目前 native 包装;首类化需 GC rooting 跨错误展开(把堆值 root 住直到 pcall 取回)。
+
+**剩余全部要么是 big-bang crate 移动(lk-vm-core → 解锁 3 步)、原子热路径改动(callable)、执行模型/codegen 重写(M2.5/M4.2)。**
 
 ## 护栏 & 续接
-全量 1449 tests 0 失败 / `-D warnings` 0 / fmt+clippy 0 / bench 不受影响(沙箱限额单态化零开销;字节码缓存 opt-in 默认关)。
+全量 1451 tests 0 失败 / `-D warnings` 0 / fmt+clippy 0 / bench 不受影响(沙箱限额+traceback 均仅 Err/单态化冷路径;字节码缓存 opt-in 默认关)。
 **下一会话最连贯续接 = 抽 `lk-vm-core`**(已核实无需先做 callable、去 async 已就绪 → 从移 std-heavy 模块出核心开始),解锁 no_std profile 整条线。
