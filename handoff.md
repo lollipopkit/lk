@@ -1,7 +1,8 @@
 # Handoff
 
 **目标(`/goal`)**:把 `plan.md` 划分为多步、逐个完成、每步 push。**用户:允许短期回归、fix-forward。**
-细节台账在 `progress.md`。已推送 **78+ commit** 到 `dev`。完成度:**✅34 · [~]2 · [ ]1 · [!]1**(本轮:M0.7/8 flip、M2.2、M4.2 程序粒度回退)。
+细节台账在 `progress.md`。已推送 **82+ commit** 到 `dev`。完成度:**✅34 · [~]2 · [ ]1 · [!]1**。
+本轮:**M0.7/8 no_std flip、M2.2 堆错误值、M4.2 程序粒度回退**(三里程碑)+ conformance/健壮性/文档。
 
 ## ✅ 已完成/大幅推进(遍及全部 6 相)
 - **Phase 0** 完整;**M3 完整**(嵌入 API + register_fn + 多实例 + 沙箱 builder + C ABI 端到端跑出 42 + `eval_value` 类型化结果)。
@@ -36,9 +37,17 @@ uncaught 用 `LkRaisedValue.rendered` 出消息。commit `a3533a4`。GC-stress 1
 → 任何有效程序都能 compile。先解析(真错误暴露)再试 native;`LK_AOT_NO_FALLBACK=1` 关回退供 strict native-only。
 commit `3c0a83e`。cli 93 / 全量 1451 全绿。**Exit「任意 .lk 可 compile(Tier 0 保底)」达成(程序粒度)**。
 
-## 剩余(真正的深度架构工作)
-- **[ ] M4.2 逐函数 Tier 1**:同一程序内 native 函数 + VM-executed 函数混合 + native↔VM ABI 桥——多天(程序粒度回退已达成)。
-- **[ ] M2.5 stackless**:VM 执行模型重写(trampoline `Sequence::step`)——多天,触碰最热路径+bench 门禁。
+## 本轮另完成:conformance + 健壮性 + 文档
+- **M1 conformance**:`examples/syntax/error_model_edges.lk`(嵌套 pcall/堆错误值/多帧传播/运行时错误,锁定 M2 语义,走三重 gate)。
+- **M4.2 健壮性**:Tier 0 回退失败时给组合错误(native 不可 lower + Tier 0 不可用)。
+- **文档**:README pkg 速查 git+lockfile 化(M5.4);`docs/llvm/backend.md` 更正「无回退」为记录 M4.2 Tier 0 回退。
+
+## 剩余(真正的深度架构工作,均确认无干净子单元)
+- **[ ] M4.2 逐函数 Tier 1 + AOT 覆盖 >11/44**:**定论(已穷尽测绘,勿重复调查)**——所有失败 AOT 例子都是
+  「operand type outside natively lowerable subset」/未识别 builtin(pcall/error/map/NewObject/NewRange/StringSplit/
+  动态 Call),即 AOT **静态类型子集**边界。无近失、无快速 opcode win;扩覆盖 = 扩 AOT 类型系统+lkrt 运行时(每类型多天)。
+  逐函数混合还需 native↔VM ABI 桥。MIR lower 已按 CallDirect 可达性处理多函数(dead 函数已跳过)。
+- **[ ] M2.5 stackless**:VM 执行模型重写(trampoline `Sequence::step`)——多天,触碰最热路径+bench 门禁,partial 不可安全提交。
 - **[!] callable trait 反转**:`CallableValue::Runtime(Arc<vm::RuntimeCallable>)` @ `val/runtime_model.rs`,内嵌
   `Arc<Module>`。改 `dyn` 需同步改 GC 追踪/跨模块传递/调用点——枚举变体一变全部 match 原子断裂。lk-core **内部**优化,非阻塞。
 - **[~] M5.1 三 profile**:lk-core 现已承载 alloc(no_std,`--no-default-features`)↔ full(std,默认)二档 feature;
