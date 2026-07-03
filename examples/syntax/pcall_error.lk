@@ -1,0 +1,25 @@
+// Recoverable errors: `error(...)` raises, `pcall(...)` catches. (plan M2.1)
+//
+// `pcall(f, args...)` invokes `f` under protection and returns `[ok, value]`:
+//   - `[true, result]`  when `f` returns normally
+//   - `[false, message]` when `f` raises (via `error(...)`) or hits a runtime error
+// Unlike `panic(...)`, `error(...)` is recoverable rather than fatal.
+
+fn double(x) { return x * 2; }
+fn boom() { error("kaboom"); return 0; }
+fn div_zero() { return 1 / 0; }
+
+// Success path: f returns normally.
+let ok = pcall(double, 21);
+assert(ok[0] == true);
+assert(ok[1] == 42);
+
+// error() inside a pcall'd function is caught, not fatal.
+let raised = pcall(boom);
+assert(raised[0] == false);
+
+// Ordinary runtime errors (division by zero) are caught too.
+let divided = pcall(div_zero);
+assert(divided[0] == false);
+
+println("pcall/error: ok");

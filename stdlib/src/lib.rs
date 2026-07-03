@@ -55,7 +55,7 @@ use lk_core::{
     },
     vm::{
         NativeArgs, NativeEntry, NativeFunction, NativeRuntime, call_runtime_callable_runtime,
-        call_runtime_value_runtime_with_receiver,
+        call_runtime_value_runtime, call_runtime_value_runtime_with_receiver,
     },
 };
 pub use lk_stdlib_common::metadata::{
@@ -383,6 +383,8 @@ pub fn register_stdlib_core_globals(registry: &mut ModuleRegistry) {
     register_full_state_builtin!(registry, print => print / NativeEntry::VARIADIC => core.print: Nil);
     register_full_state_builtin!(registry, println => println / NativeEntry::VARIADIC => core.println: Nil);
     register_full_state_builtin!(registry, panic => panic / NativeEntry::VARIADIC => core.panic: Nil);
+    register_full_state_builtin!(registry, error => error / NativeEntry::VARIADIC => core.error: Nil);
+    register_full_state_builtin!(registry, pcall => pcall / NativeEntry::VARIADIC => core.pcall: RuntimeValue);
     register_full_state_builtin!(registry, assert => assert / NativeEntry::VARIADIC => core.assert: Nil);
     register_full_state_builtin!(registry, assert_eq => assert_eq / NativeEntry::VARIADIC => core.assert_eq: Nil);
     register_full_state_builtin!(registry, assert_ne => assert_ne / NativeEntry::VARIADIC => core.assert_ne: Nil);
@@ -448,6 +450,53 @@ fn panic(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Runtim
     msg.push_str("\nBacktrace:\n");
     msg.push_str(&format!("{}", bt));
     panic!("{}", msg);
+}
+
+/// `error(value...)` — raise a recoverable error carrying `value` (stringified).
+/// Unlike `panic`, this propagates as a catchable error rather than aborting, so
+/// it can be caught by `pcall`; uncaught, it fails the program with the message.
+/// (M2.1; carrying an arbitrary first-class value rather than a string is M2.2.)
+fn error(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+    let msg = if args.is_empty() {
+        "error".to_string()
+    } else {
+        join_runtime_display(args.as_slice(), runtime)?
+    };
+    Err(anyhow!("{msg}"))
+}
+
+/// `pcall(f, args...) -> [ok, result_or_error]` — a protected call. Invokes `f`
+/// with `args`; on success returns `[true, result]`, on any raised error returns
+/// `[false, message]` instead of propagating. This is the recoverable-error
+/// primitive (plan M2.1); it catches both `error(...)` and other runtime errors.
+fn pcall(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+    let values = args.as_slice();
+    let Some((&callee, call_args)) = values.split_first() else {
+        return Err(anyhow!("pcall expects at least 1 argument: the function to call"));
+    };
+    let call_args = call_args.to_vec();
+    let outcome = {
+        let Some((state, ctx, module)) = runtime.state_ctx_module_mut() else {
+            return Err(anyhow!("pcall requires full VM state"));
+        };
+        call_runtime_value_runtime(callee, &call_args, state, module, ctx)
+    };
+    let (ok, value) = match outcome {
+        Ok(result) => (true, result),
+        Err(err) => {
+            // Surface the deepest cause so `error("msg")` round-trips as "msg"
+            // rather than the call machinery's wrapping context.
+            let message = err.root_cause().to_string();
+            let handle = runtime
+                .heap_mut()
+                .alloc(HeapValue::String(Arc::<str>::from(message.as_str())));
+            (false, RuntimeVal::Obj(handle))
+        }
+    };
+    let list = runtime
+        .heap_mut()
+        .alloc(HeapValue::List(TypedList::Mixed(vec![RuntimeVal::Bool(ok), value])));
+    Ok(RuntimeVal::Obj(list))
 }
 
 fn assert(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
