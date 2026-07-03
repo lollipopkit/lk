@@ -103,7 +103,9 @@
   是 `#[cfg(test)]`）。G1/G2/G3 消除、G4/G5 按设计保留。VM 多实例安全地基就位。
 - [ ] **M0.7** core 机械换 `core::`/`alloc::`（fmt/ops/mem/cmp/pin/collections），std-only 路径 feature-gate。
 - [ ] **M0.8** `lk-vm-core` 加 `#![no_std]` + `extern crate alloc`，std 部分门控到 `std` feature。
-- [ ] **M0.9** CI 加 `--no-default-features --features alloc` 编译 + `wasm32-unknown-unknown` build 冒烟。
+- [~] **M0.9** CI no_std 冒烟。**已做**:`.github/workflows/check.yml` 加「no_std wasm32 smoke (lk-hal L0)」步骤
+      (`cargo build -p lk-hal --target wasm32-unknown-unknown`),守住 L0 层保持 no_std,本地复现通过。
+      **待做**:`lk-vm-core --no-default-features --features alloc` 冒烟(依赖 M0.7/8 完成 core no_std 化)。
 - **Exit**：alloc-only 编译通过；`wasm32` build 通过；grep 断言无生产全局可变状态。
 
 ## Phase M1 — VM 定规范 + conformance + 差分框架（问题 1、3、8）
