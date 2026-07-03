@@ -142,6 +142,16 @@ enum Commands {
         #[arg(long)]
         check: bool,
     },
+    /// AOT Tier 0: bundle a source file into a self-contained native executable
+    /// that embeds the program and the VM (100% coverage; runs the VM at launch).
+    Bundle {
+        /// Source file to bundle
+        #[arg(value_name = "FILE", value_parser = parse_sanitized_path)]
+        file: PathBuf,
+        /// Output executable path
+        #[arg(short, long, value_name = "OUT", value_parser = parse_sanitized_path)]
+        output: PathBuf,
+    },
     /// Report VM coverage for a source file.
     Coverage {
         /// Source file to inspect
@@ -608,6 +618,10 @@ fn main() -> anyhow::Result<()> {
                 run_fmt(&file, check)?;
                 return Ok(());
             }
+            Commands::Bundle { file, output } => {
+                run_bundle(&file, &output)?;
+                return Ok(());
+            }
             Commands::Coverage {
                 file,
                 disassemble,
@@ -946,6 +960,80 @@ fn format_lk_source(input: &str) -> String {
             })
             .sum();
         indent = (indent + delta).max(0);
+    }
+    out
+}
+
+/// AOT Tier 0: bundle `source_path` into a self-contained native executable that
+/// embeds the program source and the VM (via lk-api's C-ABI staticlib). 100%
+/// coverage — the produced binary just runs the VM at launch, so any program that
+/// runs under the VM bundles (unlike the MIR native path). Linux/`cc` for now.
+fn run_bundle(source_path: &Path, output: &Path) -> anyhow::Result<()> {
+    let source =
+        std::fs::read_to_string(source_path).map_err(|e| anyhow::anyhow!("read {}: {}", source_path.display(), e))?;
+    // Dev workspace layout: the C-ABI staticlib + header live in the workspace.
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("cannot locate workspace root"))?
+        .to_path_buf();
+    let staticlib = workspace.join("target/release/liblk_api.a");
+    let header_dir = workspace.join("api/include");
+    if !staticlib.exists() {
+        eprintln!("building lk-api staticlib (one-time)…");
+        let status = std::process::Command::new("cargo")
+            .current_dir(&workspace)
+            .args(["build", "-p", "lk-api", "--features", "ffi", "--release"])
+            .status()
+            .map_err(|e| anyhow::anyhow!("cargo build lk-api: {e}"))?;
+        if !status.success() {
+            anyhow::bail!("failed to build lk-api staticlib");
+        }
+    }
+    let escaped = c_escape(&source);
+    let wrapper = format!(
+        "#include <stdio.h>\n#include \"lk.h\"\nstatic const char *LK_SRC = \"{escaped}\";\n\
+         int main(void) {{\n  LkVm *vm = lk_vm_new();\n  char *out = lk_vm_eval(vm, LK_SRC);\n\
+         if (out) {{ if (out[0]) printf(\"%s\\n\", out); lk_string_free(out); lk_vm_free(vm); return 0; }}\n\
+         lk_vm_free(vm); fprintf(stderr, \"lk: execution failed\\n\"); return 1;\n}}\n"
+    );
+    let scratch = std::env::temp_dir().join(format!("lk_bundle_{}", std::process::id()));
+    std::fs::create_dir_all(&scratch)?;
+    let wrapper_c = scratch.join("wrapper.c");
+    std::fs::write(&wrapper_c, wrapper)?;
+    let status = std::process::Command::new("cc")
+        .arg(&wrapper_c)
+        .arg("-I")
+        .arg(&header_dir)
+        .arg(&staticlib)
+        .args(["-lpthread", "-ldl", "-lm"])
+        .arg("-o")
+        .arg(output)
+        .status()
+        .map_err(|e| anyhow::anyhow!("cc: {e}"))?;
+    let _ = std::fs::remove_dir_all(&scratch);
+    if !status.success() {
+        anyhow::bail!("cc failed to link the bundle");
+    }
+    println!(
+        "bundled {} -> {} (self-contained; embeds the VM)",
+        source_path.display(),
+        output.display()
+    );
+    Ok(())
+}
+
+/// Escape a string for embedding as a C double-quoted string literal.
+fn c_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 16);
+    for ch in s.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c => out.push(c),
+        }
     }
     out
 }
