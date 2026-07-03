@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "core",
+    "hal",
     "cli",
     "completion",
     "aot/abi",

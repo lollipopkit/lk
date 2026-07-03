@@ -69,7 +69,11 @@
         vm 实现;干净但改动大、触热路径需评估 perf);(B) callable 下沉 lk-values(层次含执行模型片段,边界不纯);
         (C) 暂缓 crate 拆分,先在 core 内 no_std-ready(M0.7/8;但 no_std 化 78k 行 core + tokio feature-gate
         本身多天)。**待用户定 A/B/C 后继续 M0.1。**
-- [ ] **M0.2** 抽 `lk-hal`：定义 `Clock`/`Rng`/`Stdout`/`FsProvider`/`NetProvider` trait（`no_std`）。
+- [x] **M0.2** 抽 `lk-hal`（新 crate `hal/`，`#![no_std]` core-only）：定义 `Clock`/`Rng`/`Stdout`/
+      `FsProvider`/`NetProvider` trait + `Hal<'a>` 注入结构 + `HalError`（无 alloc）。fs/net 为 `Option`
+      （bare profile 可缺省），buffer-based（`&mut [u8]`）以免 alloc。加入 workspace members。
+      **验证**：host `-D warnings` 0、clippy 0、**`wasm32-unknown-unknown` 交叉编译通过**（真 no_std 证明）。
+      *(独立于 M0.1 的 callable 决策;为 L1/L2 提供平台抽象契约,后续 no_std 化的地基。)*
 - [x] **M0.3** 消除 G1（expr_impl `PARSE_CACHE`）→ **实为死代码**（`parse_cached_arc` 全仓零调用），
       连同 `once_cell::Lazy`/`dashmap::DashMap`/`Arc` 未用 import 一并删除。core 编译 0 warning、
       `cargo test -p lk-core` 953 passed / 0 failed。**G1 清除,不留全局状态。**
