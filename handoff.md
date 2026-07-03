@@ -1,7 +1,8 @@
 # Handoff
 
 **目标(`/goal`)**:把 `plan.md` 划分为多步、逐个完成、每步 push。**用户:允许短期回归、fix-forward。**
-细节台账在 `progress.md`(37 步逐项状态)。本会话已推送 **44 commit** 到 `dev`。完成度:**✅26 · [~]6 · [ ]4 · [!]1**。
+细节台账在 `progress.md`(37 步逐项状态)。本会话已推送 **50 commit** 到 `dev`。完成度:**✅28 · [~]4 · [ ]4 · [!]1**。
+本轮新完成:**M2.6 内存上限**、**M2.2 traceback debug-name 地基**、**M5.4 删中心化注册表(净删 ~5000 行)**。
 
 ## ✅ 已完成/大幅推进(遍及全部 6 相)
 - **Phase 0** 完整;**M3** 完整(嵌入 API + register_fn + 多实例 + **沙箱 builder** + **C ABI 端到端跑出 42**)。
@@ -21,12 +22,10 @@
 - **M2.5 stackless**:VM 执行模型重写(trampoline `Sequence::step`)——多天。
 - **M4.2 Tier 1**:MIR 后端 `Unsupported` 改逐函数回退 VM——大改 codegen/lower,多天。
 - **M2.2 traceback**:需 call-frame 追踪入 call 热路径(perf 敏感);`push_call_frame` 已存在但未接入执行。堆对象一等错误值需 GC rooting。
-- **M5.4 删中心 registry**:plan 第 239 行明确授权删除、第 303 行框为可逆范围取舍。**已代码层核实:非「删自包含叶子」而是 ~3500 行织入式改动**:
-  ① 服务端叶子(`cli/src/pkg/registry_server.rs` 791 行 + `key.rs` 53 行 + `Serve`/`Publish`/`Yank`/`Key` 命令)可分离删;
-  ② 但**客户端 registry 依赖解析深织入核心 `fetch_dependencies`**(`cli/src/pkg.rs:113-164` + ~400 行 RegistryDependencyResolution/
-  resolve_registry_dependency/RegistryIndexCache/checksum);③ `core/src/package/registry.rs`(1343 行)**混合客户端响应类型与服务端**,
-  非纯服务端。完整删除须重写依赖解析器主函数(去 registry 依赖、留 git+path)。**在压缩上下文里做半截会断裂 resolver → 专注会话任务。**
-  已恢复试探性 main.rs 改动,pkg 保持完整编译。**顺序**:先删服务端叶子(serve/publish/keyring)→ 再拆 registry.rs 客户端/服务端 → 最后瘦身 fetch_dependencies。
+- **M5.4 删中心 registry —— ✅ 已完成**:净删 ~5000 行(registry.rs 1343 + signing 197 + registry_server 791 + key + 客户端解析 ~600 +
+  Serve/Publish/Yank/Index/Key 命令 + Manifest.registry 模型 + 全部 registry 测试 + 无用依赖 ed25519-dalek/base64/ureq/semver)。
+  `fetch_dependencies` 收敛为纯 git+path。保留 init/add/fetch/update/check/tree + Lk.toml/Lk.lock。1445 tests 0 失败,不触及 VM。
+  遗留(非阻塞):`docs/packages.md` 仍述旧注册表待刷新;可选补一个纯 git 依赖 fetch 集成测试(原集成测试全是 registry,已删)。
 
 ## 代码层已核实的精确阻塞点(下一会话零摸索)
 - **callable 反转**:`CallableValue::Runtime(Arc<vm::RuntimeCallable>)` @ `core/src/val/runtime_model.rs:182`;`RuntimeCallable` 内嵌
