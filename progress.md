@@ -175,7 +175,11 @@
 
 ## Phase M3 — 嵌入 API + 多实例 + C ABI（问题 10）
 
-- [ ] **M3.1** `lk-api`：`Vm::builder()`、`register_fn`/`register_module`、rooted handle。
+- [~] **M3.1** `lk-api` 嵌入 API —— **最小可用已落地**(新 crate `api/`)。`Vm` 实例(拥有独立 VmContext,
+      **去全局后天然多实例隔离**)+ `Vm::new()`(注册全 stdlib)+ `with_fuel(N)` 沙箱 + `eval(src)->Result<String>`。
+      **验证**:3 测试全绿——`eval("6*7")→42`、**两 VM 实例隔离**(证 M0 去全局状态使多实例可行)、
+      fuel 耗尽中断。workspace `-D warnings` 0/0、clippy 0。**待做**:`register_fn`/`register_module`
+      (宿主原生扩展,需 Value 转换 ergonomics)、rooted handle、C ABI(M3.3)。
 - [ ] **M3.2** 多实例隔离：每 `Vm` 独立堆/驻留表/注册表，无 `thread_local`（依赖 M0）。
 - [ ] **M3.3** `ffi` feature + cbindgen 生成 `lk.h`（Dart FFI 示例）。
 - **Exit**：示例宿主并存 2 个隔离 VM；C ABI 冒烟；无实例间可变共享。

@@ -1,0 +1,12 @@
+[package]
+name = "lk-api"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "lk_api"
+
+[dependencies]
+lk-core = { path = "../core" }
+lk-stdlib = { path = "../stdlib" }
+anyhow = { workspace = true }
