@@ -30,6 +30,11 @@ pub struct RuntimeModuleState {
     pub(crate) stack: Vec<RuntimeVal>,
     pub(crate) stack_top: usize,
     pub(crate) inline_caches: InlineCaches,
+    /// A first-class error value raised via `error(v)` and still unwinding
+    /// toward its `pcall`. Kept as a GC root (see `gc_roots`) so a heap object
+    /// carried as an error survives collection at the native-call safepoints hit
+    /// during unwinding (plan M2.2). Cleared once `pcall` extracts it.
+    pub(crate) pending_raise_root: Option<RuntimeVal>,
 }
 
 impl RuntimeModuleState {
@@ -42,7 +47,14 @@ impl RuntimeModuleState {
             stack: Vec::with_capacity(Self::INITIAL_STACK_CAPACITY),
             stack_top: 0,
             inline_caches: InlineCaches::default(),
+            pending_raise_root: None,
         }
+    }
+
+    /// Pin (or clear) the first-class error value currently unwinding so it is
+    /// treated as a GC root until `pcall` recovers it (plan M2.2).
+    pub fn set_pending_raise_root(&mut self, value: Option<RuntimeVal>) {
+        self.pending_raise_root = value;
     }
 
     pub fn root_refs<'a>(&self, extra_roots: impl IntoIterator<Item = &'a RuntimeVal>) -> Vec<crate::val::HeapRef> {

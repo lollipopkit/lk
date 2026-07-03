@@ -19,26 +19,23 @@ impl core::fmt::Display for LanguageRaise {
 
 impl core::error::Error for LanguageRaise {}
 
-/// A recoverable error carrying a first-class LK value (primitives only for now —
-/// heap objects would need GC rooting across unwinding). `error(v)` raises this
-/// and `pcall` extracts the value, so an errored value round-trips as itself
-/// rather than a string. Public so the stdlib's `error`/`pcall` can construct and
-/// downcast it.
+/// A recoverable error carrying a first-class LK value. `error(v)` raises this
+/// and `pcall` extracts `value`, so an errored value round-trips as itself
+/// rather than a string — including heap objects (String/List/…), which are
+/// pinned as a GC root while unwinding (see `RuntimeModuleState::pending_raise_root`,
+/// plan M2.2). `rendered` is the display captured at raise time, used for the
+/// top-level message when the error is *uncaught*: by then the heap is gone, so a
+/// live `Obj` handle can no longer be formatted. Public so the stdlib's
+/// `error`/`pcall` can construct and downcast it.
 #[derive(Clone, Debug)]
 pub struct LkRaisedValue {
     pub value: RuntimeVal,
+    pub rendered: Arc<str>,
 }
 
 impl core::fmt::Display for LkRaisedValue {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self.value {
-            RuntimeVal::Int(n) => write!(f, "{n}"),
-            RuntimeVal::Float(x) => write!(f, "{x}"),
-            RuntimeVal::Bool(b) => write!(f, "{b}"),
-            RuntimeVal::ShortStr(s) => f.write_str(s.as_str()),
-            RuntimeVal::Nil => f.write_str("nil"),
-            RuntimeVal::Obj(_) => f.write_str("<error value>"),
-        }
+        f.write_str(self.rendered.as_ref())
     }
 }
 

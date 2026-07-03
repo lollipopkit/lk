@@ -459,10 +459,33 @@ fn panic(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Runtim
 /// a stringified message is raised (heap-object first-class values need GC
 /// rooting across unwinding — deferred).
 fn error(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    if let [value] = args.as_slice()
-        && !matches!(value, RuntimeVal::Obj(_))
-    {
-        return Err(anyhow!(lk_core::vm::LkRaisedValue { value: *value }));
+    if let [value] = args.as_slice() {
+        let value = *value;
+        // Capture the display up-front: an uncaught heap error can't be rendered
+        // later (the heap is gone once execution unwinds out) (plan M2.2).
+        let rendered = join_runtime_display(args.as_slice(), runtime)?;
+        // A heap object must be pinned as a GC root so it survives collection at
+        // the native-call safepoints hit while the error unwinds to its `pcall`
+        // (plan M2.2). Primitives are Copy and need no pinning. If full VM state
+        // is unavailable we can't pin, so fall back to a stringified message.
+        let carry_first_class = if matches!(value, RuntimeVal::Obj(_)) {
+            match runtime.state_ctx_module_mut() {
+                Some((state, _, _)) => {
+                    state.set_pending_raise_root(Some(value));
+                    true
+                }
+                None => false,
+            }
+        } else {
+            true
+        };
+        if carry_first_class {
+            return Err(anyhow!(lk_core::vm::LkRaisedValue {
+                value,
+                rendered: Arc::<str>::from(rendered.as_str()),
+            }));
+        }
+        return Err(anyhow!("{rendered}"));
     }
     let msg = if args.is_empty() {
         "error".to_string()
@@ -489,13 +512,20 @@ fn pcall(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Runtim
         call_runtime_value_runtime(callee, &call_args, state, module, ctx)
     };
     if outcome.is_err()
-        && let Some((_, Some(ctx), _)) = runtime.state_ctx_module_mut()
+        && let Some((state, ctx, _)) = runtime.state_ctx_module_mut()
     {
-        // The error is caught here, so discard the traceback frames it
-        // accumulated — a later uncaught error should report a clean call stack
-        // (plan M2.2). try/catch desugars to pcall, so this also covers caught
-        // language errors.
-        ctx.truncate_call_stack(0);
+        // The error is caught here: release the GC-root pin on any first-class
+        // heap error value now that it's about to be handed back (plan M2.2).
+        // The value stays valid — the following `pcall` allocations use the raw
+        // heap (no collection) — but it no longer needs to survive as a stray
+        // root once execution resumes normally.
+        state.set_pending_raise_root(None);
+        // Discard the traceback frames the errored call accumulated — a later
+        // uncaught error should report a clean call stack (plan M2.2). try/catch
+        // desugars to pcall, so this also covers caught language errors.
+        if let Some(ctx) = ctx {
+            ctx.truncate_call_stack(0);
+        }
     }
     let (ok, value) = match outcome {
         Ok(result) => (true, result),

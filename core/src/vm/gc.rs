@@ -78,6 +78,9 @@ impl RuntimeModuleState {
         roots.extend_values(&self.globals);
         roots.extend_values(&self.stack[..active_stack_end]);
         roots.extend_values(extra_roots);
+        // A first-class error value unwinding toward its `pcall` must survive GC
+        // even though it is no longer on the VM stack (plan M2.2).
+        roots.extend_values(self.pending_raise_root.iter());
         roots
     }
 }

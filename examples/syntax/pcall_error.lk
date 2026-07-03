@@ -30,3 +30,17 @@ fn fail_with_code() { error(404); return 0; }
 let coded = pcall(fail_with_code);
 assert(coded[0] == false);
 assert(coded[1] == 404);          // the Int 404 itself, not "404"
+
+// Heap objects (long strings, lists, ...) are first-class error values too:
+// they're pinned as a GC root while the error unwinds, so pcall hands back the
+// original value rather than a stringification (M2.2 heap objects).
+fn fail_with_text() { error("a long heap-allocated error payload string!!"); return 0; }
+let texted = pcall(fail_with_text);
+assert(texted[0] == false);
+assert(texted[1] == "a long heap-allocated error payload string!!");
+
+fn fail_with_list() { error([1, 2, 3]); return 0; }
+let listed = pcall(fail_with_list);
+assert(listed[0] == false);
+assert(listed[1][0] == 1);        // the list itself, indexable
+assert(listed[1][2] == 3);
