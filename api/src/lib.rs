@@ -13,7 +13,7 @@ use lk_core::module::ModuleRegistry;
 use lk_core::stmt::ModuleResolver;
 use lk_core::syntax::{ParseOptions, parse_program_source};
 use lk_core::typ::TypeChecker;
-use lk_core::vm::{NativeFunction, VmContext, execute_program_with_ctx_and_budget};
+use lk_core::vm::{NativeFunction, VmContext, execute_program_with_ctx_and_limits};
 
 pub use lk_core::val::RuntimeVal;
 pub use lk_core::vm::{NativeArgs, NativeRuntime};
@@ -30,6 +30,7 @@ pub struct Vm {
     registry: Option<ModuleRegistry>,
     ctx: Option<VmContext>,
     fuel: Option<u64>,
+    heap_limit: Option<usize>,
 }
 
 impl Vm {
@@ -42,6 +43,7 @@ impl Vm {
             registry: Some(registry),
             ctx: None,
             fuel: None,
+            heap_limit: None,
         }
     }
 
@@ -61,6 +63,7 @@ impl Vm {
             registry: Some(registry),
             ctx: None,
             fuel: None,
+            heap_limit: None,
         }
     }
 
@@ -68,6 +71,14 @@ impl Vm {
     /// with a step-limit error instead of running unbounded (sandbox, plan M2.6).
     pub fn with_fuel(mut self, budget: u64) -> Self {
         self.fuel = Some(budget);
+        self
+    }
+
+    /// Cap the number of live heap objects — a coarse memory bound for the
+    /// sandbox: allocation beyond `max_objects` aborts with a heap-limit error
+    /// (plan M2.6). Zero-cost when unset.
+    pub fn with_heap_limit(mut self, max_objects: usize) -> Self {
+        self.heap_limit = Some(max_objects);
         self
     }
 
@@ -102,10 +113,12 @@ impl Vm {
         let program = parse_program_source(source, ParseOptions::default())
             .map_err(|err| anyhow::anyhow!("parse error: {err}"))?;
         let fuel = self.fuel;
+        let heap_limit = self.heap_limit;
         let ctx = self.ctx_mut();
-        let result = match fuel {
-            Some(budget) => execute_program_with_ctx_and_budget(&program, ctx, budget)?,
-            None => program.execute_with_ctx(ctx)?,
+        let result = if fuel.is_some() || heap_limit.is_some() {
+            execute_program_with_ctx_and_limits(&program, ctx, fuel, heap_limit)?
+        } else {
+            program.execute_with_ctx(ctx)?
         };
         if result.first_return_is_nil() {
             Ok(String::new())
@@ -159,6 +172,15 @@ mod tests {
         assert_eq!(vm.eval("use math; return math.max(3, 7);").unwrap(), "7");
         let denied = Vm::sandboxed(&["math"]).eval("use fs; return fs.exists(\"/\");");
         assert!(denied.is_err(), "fs must be unavailable in a math-only sandbox");
+    }
+
+    #[test]
+    fn heap_limit_bounds_allocation() {
+        let mut vm = Vm::new().with_heap_limit(1000);
+        let err = vm
+            .eval("let xs = []; for i in 1..=1000000 { xs.push([i]); } return 0;")
+            .expect_err("heap-exhausted run should error");
+        assert!(err.to_string().contains("heap object limit"), "unexpected error: {err}");
     }
 
     #[test]

@@ -58,8 +58,20 @@ pub fn execute_module_artifact_with_ctx(artifact: ModuleArtifact, ctx: &mut VmCo
     execute_compiled_module_with_ctx(module, ctx)
 }
 
+/// Execute with optional sandbox limits (instruction budget / heap-object cap).
+/// Both are zero-cost when `None` (plan M2.6).
+pub fn execute_program_with_ctx_and_limits(
+    program: &Program,
+    ctx: &mut VmContext,
+    instruction_budget: Option<u64>,
+    heap_object_limit: Option<usize>,
+) -> Result<ProgramResult> {
+    let module = compile_program_module_with_ctx(program, ctx)?;
+    execute_compiled_module_with_ctx_inner(module, ctx, instruction_budget, heap_object_limit)
+}
+
 pub fn execute_compiled_module_with_ctx(module: Arc<crate::vm::Module>, ctx: &mut VmContext) -> Result<ProgramResult> {
-    execute_compiled_module_with_ctx_inner(module, ctx, None)
+    execute_compiled_module_with_ctx_inner(module, ctx, None, None)
 }
 
 fn execute_compiled_module_with_ctx_and_budget(
@@ -67,13 +79,14 @@ fn execute_compiled_module_with_ctx_and_budget(
     ctx: &mut VmContext,
     instruction_budget: u64,
 ) -> Result<ProgramResult> {
-    execute_compiled_module_with_ctx_inner(module, ctx, Some(instruction_budget))
+    execute_compiled_module_with_ctx_inner(module, ctx, Some(instruction_budget), None)
 }
 
 fn execute_compiled_module_with_ctx_inner(
     module: Arc<crate::vm::Module>,
     ctx: &mut VmContext,
     instruction_budget: Option<u64>,
+    heap_object_limit: Option<usize>,
 ) -> Result<ProgramResult> {
     let mut seed_heap = HeapStore::new();
     let globals = seed_module_globals(&module.globals, ctx, &mut seed_heap)?;
@@ -84,6 +97,9 @@ fn execute_compiled_module_with_ctx_inner(
     let mut executor = Executor::new(register_count);
     if let Some(instruction_budget) = instruction_budget {
         executor = executor.with_instruction_budget(instruction_budget);
+    }
+    if let Some(heap_object_limit) = heap_object_limit {
+        executor = executor.with_heap_object_limit(heap_object_limit);
     }
     let result =
         executor.run_shared_module_with_globals_and_heap_and_ctx(Arc::clone(&module), globals, seed_heap, ctx)?;

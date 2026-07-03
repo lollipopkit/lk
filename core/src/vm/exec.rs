@@ -24,7 +24,8 @@ pub use super::RuntimeCallable;
 pub use imports::import_runtime_export;
 pub use program::{
     compile_program_module_with_ctx, execute_compiled_module_with_ctx, execute_module_artifact_with_ctx,
-    execute_program, execute_program_with_ctx, execute_program_with_ctx_and_budget, execute_source,
+    execute_program, execute_program_with_ctx, execute_program_with_ctx_and_budget,
+    execute_program_with_ctx_and_limits, execute_source,
 };
 #[cfg(test)]
 pub(crate) use runtime_callable::call_runtime_callable_test;
@@ -329,6 +330,8 @@ pub struct Executor {
     shared_module: Option<Arc<Module>>,
     instruction_budget: Option<u64>,
     instruction_count: u64,
+    /// Optional cap on the number of live heap objects (sandbox memory bound).
+    heap_object_limit: Option<usize>,
 }
 
 impl Executor {
@@ -348,6 +351,7 @@ impl Executor {
             shared_module: None,
             instruction_budget: None,
             instruction_count: 0,
+            heap_object_limit: None,
         };
         this.reset_entry_frame(register_count);
         this
@@ -355,6 +359,14 @@ impl Executor {
 
     pub fn with_instruction_budget(mut self, budget: u64) -> Self {
         self.instruction_budget = Some(budget);
+        self
+    }
+
+    /// Cap the number of live heap objects (a coarse memory bound for the
+    /// sandbox model, plan M2.6). Checked at the same per-instruction cadence as
+    /// the instruction budget, so it is zero-cost when unset.
+    pub fn with_heap_object_limit(mut self, limit: usize) -> Self {
+        self.heap_object_limit = Some(limit);
         self
     }
 
@@ -368,6 +380,11 @@ impl Executor {
             && self.instruction_count > budget
         {
             bail!("execution step limit exceeded ({budget} instructions)");
+        }
+        if let Some(limit) = self.heap_object_limit
+            && self.state.heap.len() > limit
+        {
+            bail!("heap object limit exceeded ({limit} objects)");
         }
         Ok(())
     }
@@ -545,7 +562,7 @@ impl Executor {
         // Monomorphize the dispatch loop on whether an instruction budget is
         // active: only the WASM playground sets one, so direct execution
         // should not pay a checked counter increment per instruction.
-        if self.instruction_budget.is_some() {
+        if self.instruction_budget.is_some() || self.heap_object_limit.is_some() {
             self.run_function_inner_impl::<true>(function, module, ctx)
         } else {
             self.run_function_inner_impl::<false>(function, module, ctx)

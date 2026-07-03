@@ -187,7 +187,10 @@
       (lk-api)经 `execute_program_with_ctx_and_budget`。**模块白名单**:`Vm::sandboxed(&["math",…])`(lk-api)
       只注册核心 builtin + 白名单模块,OS 模块(fs/net/process)默认拒。测试:`sandboxed(["math"])` 下
       `math.max(3,7)→7` 而 `use fs` 报错。→ **fuel + 模块白名单沙箱就绪**(也补全 M3 沙箱 builder)。
-      **待做**:内存上限(allocator 计账)。
+      **内存上限**:Executor 加 `heap_object_limit`(活堆对象数上限),在与 fuel 同频的 per-instruction 检查点校验,
+      **折进 `const BUDGETED` 单态化路径 → 无 limit 时零开销(bench 走 false 分支不受影响)**;`execute_program_with_ctx_and_limits`
+      + lk-api `Vm::with_heap_limit(n)` 暴露。测试:分配超限程序报「heap object limit exceeded」。全量 1485 tests 0 失败。
+      → **三沙箱知(fuel/内存/模块白名单)齐**。
 - **Exit**：`pcall` 捕获所有可恢复错误；fuzz 验证器无 panic；沙箱指标可配。
 
 ## Phase M3 — 嵌入 API + 多实例 + C ABI（问题 10）
