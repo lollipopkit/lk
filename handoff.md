@@ -39,11 +39,22 @@
 - **✅ M0「去全局状态」达成**:**core(L1)已无生产全局可变状态**(唯一剩 `vm/analysis.rs`
   thread_local 为 `#[cfg(test)]`)。G1/G2/G3 消除、G4/G5 按设计保留。VM 多实例安全地基就位。
 
-## 下一步:Phase M0 续(结构性大步)
-- **M0.1 抽 `lk-values`**(把 `RuntimeVal`/`LiteralVal`/`HeapValue`/`HeapStore`/GC 类型移出 core
-  到 `no_std`+`alloc` 新 crate,**与进行中的 RuntimeVal 迁移合流**)——大步,先拆子步、先跑通编译再迁。
-- **M0.2 抽 `lk-hal`** trait;**M0.7/M0.8** core 换 `core::`/`alloc::` + `#![no_std]`;**M0.9** CI alloc-only+wasm32。
+- **M0.1 抽 `lk-values`(进行中)**:
+  - ✅ 已断 **val→typ**(commit 8c46a28):`NumericClass`/`NumericHierarchy` 移 typ→val,typ 再导出。
+  - ⚠️ **硬阻塞 val↔vm**:值模型内嵌执行模型——`CallableValue::Runtime(Arc<vm::RuntimeCallable>)`、
+    `HeapValue` 持 `vm::NativeFunction`/`Module`、`TaskValue` 持 `rt::RuntimePayload`。值无法作为 L0 独立于 vm。
+    **需设计决策**(见 progress.md M0.1):(A) trait 反转 callable(干净但大);(B) callable 下沉 lk-values;
+    (C) 暂缓 crate 拆分、先让 val 在 core 内 no_std-ready。**推荐默认 C**(crate 边界是手段,no_std 是目的;
+    A/B 是大架构承诺不宜擅定)。另需先厘清 in-flight `RuntimeVal` 迁移边界。
+
+## 下一步(均为多会话结构性工程)
+- **M0.1 续**按上面选定方向;**M0.2 lk-hal**;**M0.7/M0.8** core no_std 化(102 处 use std + tokio 需 feature-gate);
+  **M0.9** CI。之后 **M1–M5**(conformance/pcall/stackless/AOT 分层/no-std profile/MCU)——每项多天。
 - 原则:严格按 Phase 顺序;大步先拆子步、先跑通编译再迁逻辑;改动 async/runtime 用全量测试+端到端 .lk 核对。
+
+## 本会话总结
+Phase 0 + M0.3(G1)/M0.4(G3)/M0.5(G2 大)/M0.6(G4/G5 保留)+ M0.1(val→typ 解耦)已完成并推送(9 commit)。
+**M0「去全局状态」子里程碑达成**(core L1 无生产全局可变状态)。M0.1 clean 抽取被 val↔vm 设计决策阻塞。
 
 ## 护栏(每步 exit gate,不回退基线)
 全量 workspace tests 绿(现 1478)/ 三套差分 / fuzz / ASan+UBSan / Miri lkrt /
