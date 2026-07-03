@@ -63,6 +63,9 @@ ModuleArtifact → lk-aot-lower → lk_aot_mir::validate → lk-aot-codegen → 
   VM halt), and answer `== nil`.
 - `push`/`set`/`len`/iteration/`in`/`join`, string
   equality/concat/interpolation, long-string literals.
+- `str.split(sep)` → `List<str>`: `str::split` in `lkrt` (VM-exact, so empty
+  parts on consecutive/leading/trailing separators match), with each part
+  copied into an arena-owned C string.
 - Runtime builtins recognized from `GetGlobal`: `println`/`print` (constant
   format strings expand at lower time with exact `format_variadic_runtime`
   semantics — `{}` substitution, leftover `{}` kept literal, extra args

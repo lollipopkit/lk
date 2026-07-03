@@ -1,8 +1,9 @@
 # Handoff
 
 **目标(`/goal`)**:把 `plan.md` 划分为多步、逐个完成、每步 push。**用户:允许短期回归、fix-forward。**
-细节台账在 `progress.md`。已推送 **82+ commit** 到 `dev`。完成度:**✅34 · [~]2 · [ ]1 · [!]1**。
-本轮:**M0.7/8 no_std flip、M2.2 堆错误值、M4.2 程序粒度回退**(三里程碑)+ conformance/健壮性/文档。
+细节台账在 `progress.md`。已推送 **88+ commit** 到 `dev`。完成度:**✅34 · [~]2 · [ ]1 · [!]1**。
+本轮:**M0.7/8 no_std flip、M2.2 堆错误值、M4.2 程序粒度回退**(三里程碑)+ **4 个 AOT 覆盖 win**
+(IsList/SliceFrom×3/StringSplit,列表解构+str.split 原生化)+ conformance/健壮性/文档。
 
 ## ✅ 已完成/大幅推进(遍及全部 6 相)
 - **Phase 0** 完整;**M3 完整**(嵌入 API + register_fn + 多实例 + 沙箱 builder + C ABI 端到端跑出 42 + `eval_value` 类型化结果)。
@@ -46,10 +47,11 @@ commit `3c0a83e`。cli 93 / 全量 1451 全绿。**Exit「任意 .lk 可 compile
 - **[~] M4.2 AOT 覆盖 typed-subset 扩展**(**可复用模式已验证**):type+ops 已存在、仅缺某 opcode lowering 时,加该
   opcode 是有界低风险 win。**两法**:(a) const-fold opcode(零 runtime,如 `IsList`);(b) 小 lkrt 函数+abi 声明+lower arm
   (如 `SliceFrom`:lkrt `lkrt_lklist_{i64,f64,str}_slice_from` 类比 `map_fn` 的 arena_handle、negative abort 匹配 VM)。
-  均由 **native==VM 差分 + ASan/UBSan** 守卫。本轮:`IsList`+`SliceFrom` → `if let [a,b,c]=xs` / `[head,..tail]=xs`
-  列表形状/rest 解构对所有 typed list 原生编译(commit `ef55604`/`6b52a3a`/`47199c1`)。
-  **下一候选**:`StringSplit`(需 lkrt split→ListStr,语义匹配风险高些)、`IsMap`(待 map-access lowering)。
-  **更深 blocker**(pcall/error 的 `Raise` 需 catch 处理、NewObject 结构体、NewRange、动态 Call/GetGlobal builtin)需扩类型系统(多天)。
+  均由 **native==VM 差分 + ASan/UBSan** 守卫。本轮 **4 个 win**:`IsList` + `SliceFrom`(i64/f64/str)+ `StringSplit`
+  (commit `ef55604`/`6b52a3a`/`47199c1`/`8755e02`)→ `if let [a,b,c]=xs` / `[head,..tail]=xs` 列表形状/rest 解构 +
+  `str.split(sep)` 均原生编译。StringSplit 用 lkrt `str::split`(与 VM 同函数,语义零风险),parts 经 `arena_c_string` 永生。
+  **更深 blocker**(pcall/error 的 `Raise` 需 catch 处理、NewObject 结构体、NewMap/NewRange 新类型、ToIter 迭代器、
+  IsMap 待 map-access、动态 Call/GetGlobal builtin)需扩类型系统(多天)。
 - **[ ] M4.2 逐函数 Tier 1 混合**:同一程序 native + VM-executed 函数 + native↔VM ABI 桥——多天(程序粒度回退已达成)。
   MIR lower 已按 CallDirect 可达性处理多函数(dead 函数已跳过)。
 - **[ ] M2.5 stackless**:VM 执行模型重写(trampoline `Sequence::step`)——多天,触碰最热路径+bench 门禁,partial 不可安全提交。
