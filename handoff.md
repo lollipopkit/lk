@@ -2,8 +2,8 @@
 
 **目标(`/goal`)**:把 `plan.md` 划分为多步、逐个完成、每步 push。**用户:允许短期回归、fix-forward。**
 细节台账在 `progress.md`。已推送 **89+ commit** 到 `dev`。完成度:**✅35 · [~]1 · [ ]1 · [!]1**。
-本轮:**M0.7/8 no_std flip、M2.2 堆错误值、M4.2(Exit 达成:覆盖 13/49 >11 + 程序粒度回退)**(三里程碑)+
-**4 个 AOT 覆盖 win**(IsList/SliceFrom×3/StringSplit,列表解构+str.split 原生化,覆盖 11→13)+ conformance/健壮性/文档。
+本轮:**M0.7/8 no_std flip、M2.2 堆错误值、M4.2(Exit 达成:覆盖 14/50 >11 + 程序粒度回退)**(三里程碑)+
+**5 个 AOT 覆盖 win**(IsList/SliceFrom×3/StringSplit/IsMap+map-Contains,列表解构+str.split 原生化,覆盖 11→14)+ conformance/健壮性/文档。
 
 ## ✅ 已完成/大幅推进(遍及全部 6 相)
 - **Phase 0** 完整;**M3 完整**(嵌入 API + register_fn + 多实例 + 沙箱 builder + C ABI 端到端跑出 42 + `eval_value` 类型化结果)。
@@ -47,7 +47,7 @@ commit `3c0a83e`。cli 93 / 全量 1451 全绿。**Exit「任意 .lk 可 compile
 - **[~] M4.2 AOT 覆盖 typed-subset 扩展**(**可复用模式已验证**):type+ops 已存在、仅缺某 opcode lowering 时,加该
   opcode 是有界低风险 win。**两法**:(a) const-fold opcode(零 runtime,如 `IsList`);(b) 小 lkrt 函数+abi 声明+lower arm
   (如 `SliceFrom`:lkrt `lkrt_lklist_{i64,f64,str}_slice_from` 类比 `map_fn` 的 arena_handle、negative abort 匹配 VM)。
-  均由 **native==VM 差分 + ASan/UBSan** 守卫。本轮 **4 个 win**:`IsList` + `SliceFrom`(i64/f64/str)+ `StringSplit`
+  均由 **native==VM 差分 + ASan/UBSan** 守卫。本轮 **5 个 win**:`IsList` + `SliceFrom`(i64/f64/str)+ `StringSplit`
   (commit `ef55604`/`6b52a3a`/`47199c1`/`8755e02`)→ `if let [a,b,c]=xs` / `[head,..tail]=xs` 列表形状/rest 解构 +
   `str.split(sep)` 均原生编译。StringSplit 用 lkrt `str::split`(与 VM 同函数,语义零风险),parts 经 `arena_c_string` 永生。
   **更深 blocker**(pcall/error 的 `Raise` 需 catch 处理、NewObject 结构体、NewMap/NewRange 新类型、ToIter 迭代器、

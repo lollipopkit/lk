@@ -66,6 +66,10 @@ ModuleArtifact → lk-aot-lower → lk_aot_mir::validate → lk-aot-codegen → 
 - `str.split(sep)` → `List<str>`: `str::split` in `lkrt` (VM-exact, so empty
   parts on consecutive/leading/trailing separators match), with each part
   copied into an arena-owned C string.
+- `key in map` for string-keyed maps: the `get_pair` present bit (no value
+  materialization), so `IsMap` + `in` let `if let {"a": x} = m { … }` map-shape
+  destructuring lower natively (as long as the branch return types agree —
+  returning the `Maybe` map value alongside a plain scalar still rejects).
 - Runtime builtins recognized from `GetGlobal`: `println`/`print` (constant
   format strings expand at lower time with exact `format_variadic_runtime`
   semantics — `{}` substitution, leftover `{}` kept literal, extra args

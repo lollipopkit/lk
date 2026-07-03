@@ -261,7 +261,7 @@
       bundle,不像 MIR 原生「全有或全无」)。语义**平凡一致**(同一 VM)。验证:`bundle demo.lk`→20MB 自包含 ELF,
       直接运行(无 lk/无源码)输出与 VM **完全一致**。workspace 0/0。*(Linux/cc;后续字节码嵌入/跨平台/瘦身。)*
 - [x] **M4.2** —— **Exit 达成**(程序粒度);逐函数混合是超出 Exit 的 future 优化。
-      **Exit 逐条**:① 任意 `.lk` 可 `lk compile`(Tier 0 保底)✓;② **覆盖 >11/44 ✓**(现 **13/49** native,
+      **Exit 逐条**:① 任意 `.lk` 可 `lk compile`(Tier 0 保底)✓;② **覆盖 >11/44 ✓**(现 **14/50** native,
       baseline 11——本轮 4 个 AOT win 使 `list_destructure.lk`(IsList+SliceFrom)、`string_split.lk`(StringSplit)进入
       可原生编译集);③ 失败构造回退 VM 而非报错 ✓;④ 差分全绿 ✓(1451 tests + ASan/UBSan)。
       **已做(消除「全有或全无」问题 2 的程序粒度)**:`lk compile FILE`(native)在 MIR/LLVM lowering 返回
@@ -285,7 +285,7 @@
       + `aot_fuzz_differential_test.rs`(随机差分)均随 `check.yml` 的 `cargo test --workspace --all-features` 跑;
       `correctness.yml` 更在 **ASan/UBSan + fuzzing** 下专门跑这三个差分。→ AOT==VM 门禁固化。
       本会话新增的 **M1.2(VM source==bytecode 差分)**与之互补,共同守 VM 为规范。
-- **Exit**：任意 `.lk` 可 `lk compile`（Tier 0 保底）✓；覆盖 >11/44 ✓（13/49）且失败构造回退 VM 而非报错 ✓；差分全绿 ✓。
+- **Exit**：任意 `.lk` 可 `lk compile`（Tier 0 保底）✓；覆盖 >11/44 ✓（14/50）且失败构造回退 VM 而非报错 ✓；差分全绿 ✓。
   → **M4.2 Exit 达成**（程序粒度）。唯 M4.2.2 逐函数原生+VM 混合(native↔VM ABI 桥)是超出 Exit 的 future 优化。
 
 ## Phase M5 — no-std profiles + 工具链收敛 + v1.0（问题 7）
