@@ -1,0 +1,113 @@
+# plan.md 执行分解（步骤化路线图）
+
+> 目标（`/goal`）：把 `plan.md` 划分为多个可执行步骤，逐个完成。
+> 本文件是 `plan.md`（M0–M5 里程碑）落到「一次一小步、可验证、可交接」粒度的执行台账。
+> `handoff.md` 保持简短最新；细节留此。
+
+## 状态图例
+`[ ]` 未开始 · `[~]` 进行中 · `[x]` 完成 · `[!]` 阻塞/存疑
+
+---
+
+## 已核实的地基事实（2026-07-03，源自当前工作区源码，非文档推断）
+
+- **值模型两套并存**：`LiteralVal`（legacy，`core/src/val/values/mod.rs:93`，仍活跃）+ `RuntimeVal`
+  （新，`core/src/val/runtime_model.rs:16`：`Nil/Bool/Int/Float/ShortStr/Obj(HeapRef)` + `HeapStore`，
+  注释「New VM code should target these types first」）。tagged union + `Arc` 堆载荷，**无 NaN-boxing**。
+  → **M0 抽 `lk-values` 要与这场进行中的迁移合流，不另起。**
+- **错误模型**：VM `execute() -> anyhow::Result<ExecResult>`（`vm/exec.rs:1677`）；已有
+  `vm/exec/handler.rs` 的 `ErrorHandler`/`LanguageRaise` 抬升机制 → **M2 pcall/error 在其上构建**。
+- **全局可变状态（M0 去除清单，问题 5）**：
+  | # | 位置 | 内容 | 迁移方向 |
+  |---|---|---|---|
+  | ~~G1~~ | ~~`core/src/expr/expr_impl.rs`~~ | ~~`once_cell::Lazy<DashMap>` 缓存~~ | ✅ 已删(死代码,M0.3) |
+  | G2 | `core/src/rt/runtime.rs:6` | `once_cell::Lazy` + tokio 异步运行时状态 | 收进实例；no_std 下走 HAL |
+  | G3 | `core/src/vm/alloc.rs:34` | `thread_local! TLS_ARENA`（RegionAllocator） | 实例持有 arena，或显式传入 |
+  | — | `core/src/vm/analysis.rs:827` | `#[cfg(test)]` metrics thread_local | 测试专用，**不计** |
+  | G4 | `lkrt/src/state.rs:11` | `thread_local! RefCell<RuntimeState>` | 实例传递（lkrt 边界铁律） |
+  | G5 | `lkrt/src/abi.rs:43` | `thread_local! RefCell LAST_ERROR` | 实例传递 |
+- **no_std 障碍（core 102 处 `use std`，无 `#![no_std]`）**：
+  - 易（机械换 `core::`/`alloc::`）：`fmt`(6) `ops`(2) `mem`(1) `cmp`(1) `pin`(1) `collections`(29→alloc/hashbrown)
+  - 难（`std::sync` 37）：`Arc`→`alloc::sync::Arc` 易；`Mutex/RwLock`→需 `spin`/`critical-section`
+  - 真 std-only（feature-gate 或移 L3 std-os）：`path`(4) `fs`(1) `os`(1) `thread`(1) + tokio 运行时(G2)
+- **规模**：core 78k 行（单体）、lkrt 2.9k、aot/lower 6.9k、lsp 13k。
+- **现有 crate 布局 ≠ plan 目标布局**：现为 `core`+`lkrt`+`aot/{abi,mir,codegen,lower}`+`llvm`+
+  `stdlib/*`+`lsp`+`wasm`+`completion`+`ecosystem/tree-sitter-lk`；plan 目标为 `lk-values`/`lk-hal`/
+  `lk-vm-core`/`lk-runtime`/`lk-std-core`/`lk-std-os`/`lk-aot`/`lk-api`/`lk-cli`/`lk-lsp`。
+  → 分层是**渐进抽离**，不是一次性重排 workspace。
+
+---
+
+## Phase 0 — 地基与护栏（前置，低风险，先做）
+
+- [x] **0.1** 核实并更正 plan Caveats 事实（值模型/错误模型/全局状态/no_std），写回 plan.md。
+- [x] **0.2** 全局可变状态精确清单（见上表 G1–G5）。
+- [x] **0.3** no_std 障碍分类（见上）。
+- [x] **0.4** 不回退基线（取自上次绿色运行，见 handoff）：workspace 95 套测试全绿 / 三套差分（手工 13 组）/
+      fuzz 7 种子 / ASan+UBSan / Miri lkrt 25 / fmt+clippy 0 / AOT bench 20/20 checksum，
+      **VM/Lua≈1.008x、AOT/LK≈0.259x**。每步以此为 exit gate，任何回退阻断。
+
+## Phase M0 — 去全局状态 + Value/GC 收进独立 crate（问题 5、9 地基）
+
+- [ ] **M0.1** 抽 `lk-values`：把 `RuntimeVal`/`LiteralVal`/`HeapValue`/`HeapStore`/GC 类型移出 core
+      到新 crate（`no_std`+`alloc`）。**与进行中的 RuntimeVal 迁移合流。**
+- [ ] **M0.2** 抽 `lk-hal`：定义 `Clock`/`Rng`/`Stdout`/`FsProvider`/`NetProvider` trait（`no_std`）。
+- [x] **M0.3** 消除 G1（expr_impl `PARSE_CACHE`）→ **实为死代码**（`parse_cached_arc` 全仓零调用），
+      连同 `once_cell::Lazy`/`dashmap::DashMap`/`Arc` 未用 import 一并删除。core 编译 0 warning、
+      `cargo test -p lk-core` 953 passed / 0 failed。**G1 清除,不留全局状态。**
+- [ ] **M0.4** 消除 G3（TLS_ARENA）→ RegionAllocator 实例化 / 显式传入。
+- [ ] **M0.5** 消除 G2（tokio 运行时）→ 收进实例；no_std 走 HAL/feature-gate。
+- [ ] **M0.6** 消除 G4/G5（lkrt thread_local）→ 实例传递，守住 lkrt 边界铁律。
+- [ ] **M0.7** core 机械换 `core::`/`alloc::`（fmt/ops/mem/cmp/pin/collections），std-only 路径 feature-gate。
+- [ ] **M0.8** `lk-vm-core` 加 `#![no_std]` + `extern crate alloc`，std 部分门控到 `std` feature。
+- [ ] **M0.9** CI 加 `--no-default-features --features alloc` 编译 + `wasm32-unknown-unknown` build 冒烟。
+- **Exit**：alloc-only 编译通过；`wasm32` build 通过；grep 断言无生产全局可变状态。
+
+## Phase M1 — VM 定规范 + conformance + 差分框架（问题 1、3、8）
+
+- [ ] **M1.1** conformance suite 骨架：每语言特性一组 golden（仿 Lua/Wren/mruby）。
+- [ ] **M1.2** `VM(source)==VM(bytecode)` 差分测试入 CI。
+- [ ] **M1.3** `.lkm` 降级为 `$LK_HOME/cache` 编译缓存（源哈希失效）；CLI 停止宣传 `.lkm` 作分发。
+- **Exit**：conformance 全绿并声明为语义定义；差分框架进 CI。
+
+## Phase M2 — 可恢复错误模型 + stackless 协程 + fuel 沙箱（问题 4、5）
+
+- [ ] **M2.1** `pcall(f, args) -> (ok, result_or_err)` + `error(value)` 内建（复用 `LanguageRaise`）。
+- [ ] **M2.2** 错误为一等值（可携带任意 lk 值）+ 栈展开前采集结构化 traceback。
+- [ ] **M2.3** fatal guard（div/0、缺键、assert）从 abort 改为可 `pcall` 捕获的可恢复错误。
+- [ ] **M2.4** `try`/`?` 语法糖。
+- [ ] **M2.5** VM 改 stackless（trampoline `Sequence::step`）——大工程，落地时再拆子步。
+- [ ] **M2.6** fuel（`step(fuel)` 中断）/ 内存上限（allocator 计账）/ 模块白名单。
+- **Exit**：`pcall` 捕获所有可恢复错误；fuzz 验证器无 panic；沙箱指标可配。
+
+## Phase M3 — 嵌入 API + 多实例 + C ABI（问题 10）
+
+- [ ] **M3.1** `lk-api`：`Vm::builder()`、`register_fn`/`register_module`、rooted handle。
+- [ ] **M3.2** 多实例隔离：每 `Vm` 独立堆/驻留表/注册表，无 `thread_local`（依赖 M0）。
+- [ ] **M3.3** `ffi` feature + cbindgen 生成 `lk.h`（Dart FFI 示例）。
+- **Exit**：示例宿主并存 2 个隔离 VM；C ABI 冒烟；无实例间可变共享。
+
+## Phase M4 — AOT Tier 0 + Tier 1（问题 2、6）
+
+- [ ] **M4.1** Tier 0：`lk compile` → 字节码 + 静态链接 VM 单文件（100% 覆盖，语义平凡一致）。
+- [ ] **M4.2** Tier 1：MIR 后端 `Unsupported` 从「整程序失败」→「逐函数标记 VM-executed 回退」。
+- [ ] **M4.3** 差分门禁 `AOT==VM` 固化进 CI（现有部分保留强化）。
+- **Exit**：任意 `.lk` 可 `lk compile`（Tier 0 保底）；覆盖 >11/44 且失败构造回退 VM 而非报错；差分全绿。
+
+## Phase M5 — no-std profiles + 工具链收敛 + v1.0（问题 7）
+
+- [ ] **M5.1** `bare`/`alloc`/`full` 三 profile 打通（feature 矩阵）。
+- [ ] **M5.2** WASM demo 可跑 + 一类 MCU（ESP32/Cortex-M+alloc）冒烟。
+- [ ] **M5.3** `lk fmt`。
+- [ ] **M5.4** 包管理缩减为 git+lockfile 去中心化依赖（砍中心化注册表/keyring/`lk pkg serve`）。
+- [ ] **M5.5** LSP **保留并持续维护**（不砍）+ tree-sitter 完善。
+- **Exit**：CI 矩阵全绿；v1.0 定义达成。
+
+---
+
+## 执行原则
+1. 严格按 Phase 顺序；M0 是所有后续的地基（问题 1/5/8/9），风险最低收益最高。
+2. 每步独立可验证：动代码即跑对应测试 + 不回退 `cargo test --workspace` 与 bench 门禁。
+3. 大步（M0.1 抽 crate、M2.5 stackless）落地前先拆子步、先跑通编译再迁移逻辑。
+4. 渐进抽离 crate，绝不一次性重排整个 workspace。
+5. 每轮结束更新本文件勾选项 + `handoff.md`。

@@ -1,48 +1,40 @@
 # Handoff
 
-**当前状态(2026-07-03,一等函数值收官 + list 相等 + 跨块 cell,PR 待开)**:
-- **RFC 阶段 4 一等函数值全部落地**:多身份克隆特化(上限 8)、捕获闭包
-  作参数(env 隐藏尾实参)、返回闭包(静态摘要,零运行时开销)。
-- **closure.lk 全文件 native==VM**(7 节含 list HOF 断言);examples
-  差分 **10→11**。
-- **list 结构相等**:lkrt eq helpers(i64/f64/str + Int/Float coercion,
-  NaN 破相等);跨型非数值对仅在两侧物化非空时折叠 false(`list_base_len`
-  下界),否则响亮拒绝(空 list 跨型恒等)。
-- **跨块 cell 状态**:cell 升级为 Braun SSA 虚拟槽(`reg_count+cid`),
-  分支 mutation / loop-carried 更新 / 分支 helper + 闭包实参全部获得 phi;
-  循环隔离靠 ref 一致性在 loop header 终止,无需额外 pin。
-- **修掉两个 VM 真 miscompile**(均为 cell promotion 生命周期):
-  ① inline 恢复丢外层 promotion 记录;② 循环内 mid-body promotion
-  (修复=循环入口预提升 + for 循环变量快照 cell(copy 不 move))。
-  回归测试 4 个;semantics.md 已钉循环捕获语义。
-- 防线全绿:workspace 95 套 / 三套差分(手工 13 组)/ fuzz 7 种子累计
-  (新形状:list 相等、分支 mutation、闭包工厂、branchy-helper)/
-  ASan+UBSan 三套 / Miri lkrt 25 / `-D warnings` test targets /
-  fmt+clippy 0 / AOT bench 20/20 checksum(VM/Lua 1.008x 零回归,
-  AOT/LK 0.259x)。
-- dev 分支 12 个 commit 待 PR(7 个上轮 + 5 个本轮)。
+**目标(`/goal`,2026-07-03)**:把 `plan.md` 划分为多个步骤,逐个完成。
+**前情**:PR #16(一等函数值收官/list 相等/跨块 cell)已合并进 main;dev 现承接本 goal。
 
-## 能力面速览(AOT/MIR)
+## 本轮完成(Phase 0 地基与护栏,全绿)
+- **步骤化路线图落地** → `progress.md`:plan M0–M5 拆成 Phase 0 + M0.1–M5.5 细粒度步骤,
+  带依赖、exit criteria、状态勾选。任务台账见 Task #1–#7(#1 Phase0 已完成,#2 M0 next,
+  #3–#7 链式 blocked)。
+- **plan Caveats 就地核实并写回**(不再是文档推断):
+  - 值模型**两套并存**:`LiteralVal`(legacy)+ `RuntimeVal`(新,`Obj(HeapRef)`+`HeapStore`,
+    "New VM code should target these first")→ **M0 抽 lk-values 要与这场迁移合流**。
+  - 错误:VM `anyhow::Result<ExecResult>` + 已有 `vm/exec/handler.rs` 的 `ErrorHandler`/
+    `LanguageRaise` → M2 pcall/error 在其上建。无独立 VmError 枚举。tagged union+Arc,无 NaN-boxing。
+- **M0 去全局状态清单锁定**(问题 5):G1 `expr_impl.rs` once_cell+DashMap 缓存 /
+  G2 `rt/runtime.rs` once_cell+tokio 运行时 / G3 `vm/alloc.rs` TLS_ARENA /
+  G4 `lkrt/state.rs` RUNTIME / G5 `lkrt/abi.rs` LAST_ERROR。
+  (`vm/analysis.rs` thread_local 是 `#[cfg(test)]`,不计)。
+- **no_std 障碍分类**(core 102 处 use std、无 `#![no_std]`):易换 core/alloc 的
+  fmt/ops/mem/cmp/pin/collections(29);难点 std::sync(37,Mutex 需 no_std 替代);
+  真 std-only path/fs/os/thread+tokio 走 HAL/feature-gate。
 
-标量/控制流/直接调用单态化;**一等函数值**:零捕获去虚化、多身份克隆
-特化、捕获闭包作参数(调用点解析 env)、返回闭包(静态摘要)、list HOF
-(fn-pointer ABI);容器 + composite key + list display + **list 结构
-相等**;**跨块 cell 状态(虚拟槽 phi)**;builtin:println/print/
-assert(_eq/_ne)/panic/typeof/IsNil;模块:os/time/env/math/fs/process/
-datetime/io.std;跨块 builtin/closure ref 回溯(Move/Move2)。
-仍拒绝:闭包变异自身捕获、闭包进容器、跨迭代闭包逃逸、map 相等、json。
-VM:CallMethodK 免装箱 + DetachedStr 免分配分派。
+## 本轮已起步 M0(Task #2,in_progress)
+- **M0.3 完成:消除 G1**。`expr_impl.rs` 的 `PARSE_CACHE`(once_cell+DashMap)+ `parse_cached_arc`
+  **全仓零调用,是死代码**,直接删除(连未用 `Lazy`/`DashMap`/`Arc` import)。
+  core 编译 0 warning、`cargo test -p lk-core` **953 passed / 0 failed**。全局状态 G1→G2/G3/G4/G5 剩 4 处。
 
-## 下一轮候选
+## 下一轮:Phase M0 续
+剩余全局状态:**G3** `vm/alloc.rs` TLS_ARENA(下一个较独立单点)、**G2** `rt/runtime.rs` tokio 运行时、
+**G4/G5** lkrt thread_local;以及 **M0.1 抽 `lk-values`**(与 RuntimeVal 迁移合流,大步先拆子步)。
+详见 progress.md「Phase M0」。
 
-1. map 结构相等(补齐容器相等面)、闭包进容器。
-2. VM dispatch 密度专项(fraud/cart 剩 ~2x 的本质差距,重大专项)。
-3. json/动态 tagged 值(独立立项)、Move 消除(上限 6-8%)、
-   histogram AOT 1.04x、clippy `--all-targets`(剩 ~33 条 test lint)。
+## 护栏(每步 exit gate,不回退基线)
+workspace 95 套 / 三套差分(手工 13 组)/ fuzz 7 种子 / ASan+UBSan / Miri lkrt 25 /
+fmt+clippy 0 / AOT bench 20/20 checksum、**VM/Lua≈1.008x、AOT/LK≈0.259x**。
+原则:严格按 Phase 顺序;渐进抽离 crate 不重排 workspace;动代码即跑对应测试+全量门禁。
 
-## 数据驱动判定存档(仍有效)
-
-方法调用净成本 ~25ns(inline cache 不做);interning `heap_clones=0`
-(不做);Move 占 16% 步数但廉价,消除上限 6-8%;`.lkm` v5 被 v6 干净
-拒绝(设计如此);返回闭包的 runtime `{fn_ptr,env}` 表示不需要(静态
-摘要覆盖观测语料)。
+## git
+在 dev(6427901「md」= plan.md 改动)。plan.md 本轮又改了 Caveats(已核实事实),
+progress.md 新建、handoff.md 刷新——待与用户确认后 commit。
