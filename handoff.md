@@ -64,6 +64,13 @@ B callable 下沉/C 暂缓拆分先 no_std。**定了才能续 M0.1**。
 ## 已完成(独立于该决策)
 - **M0.2** ✅ lk-hal crate。
 - **M1.2** ✅ `cli/tests/vm_bytecode_differential_test.rs`(41 比对/0 分歧,不依赖 llvm)。
+- **M2.1** ✅ `pcall`/`error` 内建(stdlib core globals):`error(v)` 返回可捕获 Err,`pcall(f,args)`→
+  `[ok, result_or_msg]`。`examples/syntax/pcall_error.lk` 自验证。
+- **M2.3** ✅ assert 从 `panic!` 改可捕获 Err(除零本就可捕获;缺键/越界返回 nil;panic 保持 fatal)。
+  全量 1479 tests 0 失败,0 回归。
+- **M2 语言层调查**:`try`/`catch` 无前端构造(`?` token 仅用于 optional 类型);TryBegin/TryEnd/ErrorVal
+  后端就绪但无用户级 try 接线 → **M2.4(try/? 错误传播糖)需真实 parser+lowering**。
+  **M2.2(error 载一等值+traceback)**:现 error 只载字符串,ErrorVal 有 trace 字段待填。
 
 ## 关键调查发现(降低后续步骤难度)
 - **M2 后端基础设施大体就绪**(codebase 比 plan 假设成熟):`Opcode::Raise`/`TryBegin`/`TryEnd`、
