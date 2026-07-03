@@ -19,6 +19,10 @@
   executor 直接访问字段;改 trait 对象/索引需**原子改所有访问点**,且触发调用热路径 perf。**这是抽 lk-vm-core 的前置。**
 - **M0.7/8 抽 `lk-vm-core`**:从单体 core 分离 VM 核心(token/ast/expr/stmt/typ/vm/val/gc)↔std-heavy(package/net/
   process/rt-tokio/aot),feature-gate rt/net。方法同已验证的 lk-values(解耦→分离→抽 crate→no_std)。**多天。** 解锁 M0.9/M5.1/M5.2。
+  **地基已核实(本会话)**:`cargo build -p lk-core --no-default-features` **已通过** → VM 核心不硬依赖 tokio/futures
+  (async 在可选 `async-runtime` feature 后),已加 CI 守卫。**下一步阻塞**:core 仍用 `std::fs/process/env`(package/rt/部分 stdlib)
+  → no_std 需先把这些 std-heavy 模块移出 lk-vm-core(big-bang crate 移动:`crate::` 路径全改,非增量)。callable 的 val→vm
+  是 lk-vm-core **内部**依赖(val+vm 同 crate),**不是**跨 crate 阻塞 → 抽 lk-vm-core 无需先做 callable 反转。
 - **M2.5 stackless**:VM 执行模型重写(trampoline `Sequence::step`)——多天。
 - **M4.2 Tier 1**:MIR 后端 `Unsupported` 改逐函数回退 VM——大改 codegen/lower,多天。
 - **M2.2 traceback**:需 call-frame 追踪入 call 热路径(perf 敏感);`push_call_frame` 已存在但未接入执行。堆对象一等错误值需 GC rooting。
