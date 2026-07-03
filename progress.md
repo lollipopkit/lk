@@ -54,14 +54,21 @@
       - [x] **解耦 val→typ**：`NumericClass`/`NumericHierarchy`（只依赖 `Type`，本就属于它）从 `typ`
         移进 `val`；`typ` 改从 `val` 再导出（`crate::typ::Numeric*` 向后兼容，免改 type_checker）。
         core 0/0、950 tests。val（生产码）不再依赖 typ。
-      - [ ] **⚠️ 硬阻塞:val↔vm 内嵌**（plan 未预料的架构约束）。值模型**内嵌执行模型**:
-        `CallableValue::Runtime(Arc<crate::vm::RuntimeCallable>)`、`HeapValue` 持 `crate::vm::NativeFunction`/
-        `Module`（`runtime_model.rs`/`heap.rs`）、`TaskValue.value: Option<crate::rt::RuntimePayload>`。
-        → 值不能作为 L0 独立于 vm。**破解需设计决策**（三选一）:
-        (A) **依赖反转**:把 callable/module 抽象为 trait，`lk-values` 只持 `Arc<dyn Callable>`，vm 实现之——干净但改动大;
-        (B) **callable 一并下沉** lk-values（值+可调用一起走，层次调整为 values 含 callable 抽象）;
-        (C) **暂缓 crate 拆分**，先在 core 内把 val 做成 no_std-ready（M0.7/8 路线），crate 边界后置。
-        *(另需先厘清 in-flight `RuntimeVal` 迁移边界，避免冲突。)*
+      - [x] **厘清 in-flight `RuntimeVal` 迁移**（用户选定,已完成）。结论:
+        - **迁移护栏** `vm/migration_guard.rs` 是 **VM 重写不变量**守卫(禁旧 `Op` enum/`Frame`、bench 融合
+          opcode、quickening、**src/vm 与 src/val 里的 `unsafe`**)——约束「值/VM 代码保持 safe Rust」,
+          对抽 crate 是硬约束(lk-values 须 safe)。**不是** RuntimeVal↔LiteralVal 值迁移本身。
+        - **两个值模型、角色不同**:**前端/编译期**(`values/types.rs` `Type`/`ShortStr`、`numeric`、
+          `LiteralVal`,注释「AST inline literal」)——parser/AST/typechecker 用,**干净可 L0**;
+          **运行时**(`runtime_model.rs` `RuntimeVal`/`HeapValue`/`CallableValue` + `values/mod.rs` 的
+          Task/Channel/Stream 句柄)——executor(`vm/exec` 19 处)/heap/rt 用,**vm 纠缠**。
+        - **迁移** = 运行时从 `LiteralVal`→`RuntimeVal`,**前沿在 `vm/compiler`**(13 LiteralVal + 4 RuntimeVal 桥接)。
+        - **关键判断**:plan 想放进 L0 的正是**运行时值**,而它**必然内嵌** `vm::RuntimeCallable/Module/
+          NativeFunction`(`CallableValue::Runtime`)——这是运行时值模型的**本质**(值持可调用),非意外。
+      - [ ] **⚠️ callable 设计决策(不可回避)**:(A) trait 反转 callable(`lk-values` 持 `Arc<dyn Callable>`,
+        vm 实现;干净但改动大、触热路径需评估 perf);(B) callable 下沉 lk-values(层次含执行模型片段,边界不纯);
+        (C) 暂缓 crate 拆分,先在 core 内 no_std-ready(M0.7/8;但 no_std 化 78k 行 core + tokio feature-gate
+        本身多天)。**待用户定 A/B/C 后继续 M0.1。**
 - [ ] **M0.2** 抽 `lk-hal`：定义 `Clock`/`Rng`/`Stdout`/`FsProvider`/`NetProvider` trait（`no_std`）。
 - [x] **M0.3** 消除 G1（expr_impl `PARSE_CACHE`）→ **实为死代码**（`parse_cached_arc` 全仓零调用），
       连同 `once_cell::Lazy`/`dashmap::DashMap`/`Arc` 未用 import 一并删除。core 编译 0 warning、
