@@ -1,13 +1,14 @@
 // The parser's AST hands statements around as `Vec<Box<Stmt>>`; keeping the
 // macro system on the same shape avoids re-boxing at every parse boundary.
 #![allow(clippy::vec_box, clippy::boxed_local)]
+#[cfg(feature = "std")]
+use super::run_proc_macro_process;
 use super::{
     AstGeneratedItemOrigin, AstMacroOrigin, AstMacroOriginKind, AstMacroState, BUILTIN_SHOW_TRAIT,
     PROC_MACRO_PROTOCOL_VERSION, ProcMacroKind, ProcMacroOptions, ProcMacroRequest, ProcMacroToken,
     apply_preserved_attributes, error_at_attr, error_from_span, origins,
     origins::{builtin_show_generated_member_origins, stmt_label},
-    parse_proc_macro_output_items, record_ast_origin, reject_error_diagnostics, run_proc_macro_process,
-    stmt_item_tokens,
+    parse_proc_macro_output_items, record_ast_origin, reject_error_diagnostics, stmt_item_tokens,
 };
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
@@ -291,12 +292,24 @@ fn expand_external_derive(
             &format!("No procedural derive provider registered for `{derive}`"),
         ));
     };
-    let request = derive_request(derive, item, options, fallback_span)?;
-    let response = run_proc_macro_process(&request, config)
-        .map_err(|err| error_from_span(fallback_span, &format!("Procedural derive `{derive}` failed: {err}")))?;
-    reject_error_diagnostics(derive, &response.diagnostics, fallback_span)?;
-    options.dependency_recorder.record(&response.dependencies);
-    parse_proc_macro_output_items(derive, &response.output_tokens, fallback_span)
+    // Invoking an external provider needs a process, which no_std lacks (M0.7/8).
+    #[cfg(not(feature = "std"))]
+    {
+        let _ = (config, item);
+        Err(error_from_span(
+            fallback_span,
+            &format!("Procedural derive `{derive}` requires the std feature"),
+        ))
+    }
+    #[cfg(feature = "std")]
+    {
+        let request = derive_request(derive, item, options, fallback_span)?;
+        let response = run_proc_macro_process(&request, config)
+            .map_err(|err| error_from_span(fallback_span, &format!("Procedural derive `{derive}` failed: {err}")))?;
+        reject_error_diagnostics(derive, &response.diagnostics, fallback_span)?;
+        options.dependency_recorder.record(&response.dependencies);
+        parse_proc_macro_output_items(derive, &response.output_tokens, fallback_span)
+    }
 }
 
 fn derive_request(

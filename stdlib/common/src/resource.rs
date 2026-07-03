@@ -1,7 +1,8 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use anyhow::{Result, anyhow, bail};
 use lk_core::{
+    compat::sync::Mutex,
     rt::RuntimePayload,
     val::{HeapStore, HeapValue, ResourceHandle, ResourceValue, RuntimeVal, TaskValue},
 };

@@ -1,3 +1,4 @@
+use crate::compat::path::PathBuf;
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
 use crate::{
@@ -13,7 +14,6 @@ use crate::{
     typ,
     val::LiteralVal,
 };
-use std::path::PathBuf;
 
 #[derive(Debug, Clone)]
 pub struct ParseOptions {

@@ -4,25 +4,30 @@
 use super::{proc_deps::ProcMacroDependencyRecorder, proc_output::parse_tokens_from_proc_output};
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
+#[cfg_attr(not(feature = "std"), allow(dead_code, unused_imports))]
 mod derive;
 mod origins;
 
 use self::origins::{generated_item_origins, stmt_label};
+use crate::compat::collections::{HashMap, HashSet};
+use crate::compat::path::PathBuf;
 use crate::{
     macro_system::token_lexeme,
     stmt::{Attribute, Program, Stmt, StmtParser},
     token::{ParseError, Position, Span, Token, Tokenizer},
 };
+use core::fmt;
+use core::sync::atomic::{AtomicU64, Ordering};
+use core::time::Duration;
 use serde::{Deserialize, Serialize};
+// Running an external proc-macro provider needs a process + filesystem, which
+// don't exist under no_std; the spawn path is std-only (plan M0.7/8).
+#[cfg(feature = "std")]
 use std::{
-    collections::{HashMap, HashSet},
-    fmt,
     fs::{self, File},
     io::Write,
-    path::PathBuf,
     process::{Command, Stdio},
-    sync::atomic::{AtomicU64, Ordering},
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 pub const PROC_MACRO_PROTOCOL_VERSION: u32 = 1;
@@ -206,23 +211,41 @@ impl ProcMacroProviders {
 #[derive(Debug)]
 pub enum ProcMacroProcessError {
     EmptyProgram,
+    #[cfg(feature = "std")]
     Spawn(std::io::Error),
+    #[cfg(feature = "std")]
     WriteStdin(std::io::Error),
+    #[cfg(feature = "std")]
     Wait(std::io::Error),
-    Timeout { timeout: Duration },
-    Exit { status: String, stderr: String },
-    OutputTooLarge { max: usize, actual: u64 },
+    Timeout {
+        timeout: Duration,
+    },
+    Exit {
+        status: String,
+        stderr: String,
+    },
+    OutputTooLarge {
+        max: usize,
+        actual: u64,
+    },
+    #[cfg(feature = "std")]
     ReadOutput(std::io::Error),
     Decode(serde_json::Error),
-    ProtocolVersion { expected: u32, actual: u32 },
+    ProtocolVersion {
+        expected: u32,
+        actual: u32,
+    },
 }
 
 impl fmt::Display for ProcMacroProcessError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::EmptyProgram => write!(f, "procedural macro process program is empty"),
+            #[cfg(feature = "std")]
             Self::Spawn(err) => write!(f, "failed to spawn procedural macro process: {err}"),
+            #[cfg(feature = "std")]
             Self::WriteStdin(err) => write!(f, "failed to write procedural macro request: {err}"),
+            #[cfg(feature = "std")]
             Self::Wait(err) => write!(f, "failed while waiting for procedural macro process: {err}"),
             Self::Timeout { timeout } => write!(f, "procedural macro process timed out after {timeout:?}"),
             Self::Exit { status, stderr } => {
@@ -235,6 +258,7 @@ impl fmt::Display for ProcMacroProcessError {
             Self::OutputTooLarge { max, actual } => {
                 write!(f, "procedural macro output exceeded {max} bytes: {actual} bytes")
             }
+            #[cfg(feature = "std")]
             Self::ReadOutput(err) => write!(f, "failed to read procedural macro output: {err}"),
             Self::Decode(err) => write!(f, "failed to decode procedural macro response: {err}"),
             Self::ProtocolVersion { expected, actual } => write!(
@@ -310,6 +334,7 @@ impl AstMacroOriginKind {
     }
 }
 
+#[cfg(feature = "std")]
 pub fn run_proc_macro_process(
     request: &ProcMacroRequest,
     config: &ProcMacroProcessConfig,
@@ -379,11 +404,13 @@ pub fn run_proc_macro_process(
     Ok(response)
 }
 
+#[cfg(feature = "std")]
 struct TempProcMacroOutput {
     stdout: PathBuf,
     stderr: PathBuf,
 }
 
+#[cfg(feature = "std")]
 impl TempProcMacroOutput {
     fn new() -> Self {
         let nonce = SystemTime::now()
@@ -399,6 +426,7 @@ impl TempProcMacroOutput {
     }
 }
 
+#[cfg(feature = "std")]
 impl Drop for TempProcMacroOutput {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.stdout);
@@ -406,6 +434,7 @@ impl Drop for TempProcMacroOutput {
     }
 }
 
+#[cfg(feature = "std")]
 fn read_limited_file(path: &PathBuf, max_bytes: usize) -> Result<Vec<u8>, ProcMacroProcessError> {
     let metadata = fs::metadata(path).map_err(ProcMacroProcessError::ReadOutput)?;
     if metadata.len() > max_bytes as u64 {
@@ -867,12 +896,24 @@ fn expand_external_attribute(
             &format!("No procedural attribute provider registered for `{name}`"),
         ));
     };
-    let request = attribute_request(name, attr, &item, options)?;
-    let response = run_proc_macro_process(&request, config)
-        .map_err(|err| error_at_attr(attr, &format!("Procedural attribute `{name}` failed: {err}")))?;
-    reject_error_diagnostics(name, &response.diagnostics, attr.span.as_ref())?;
-    options.dependency_recorder.record(&response.dependencies);
-    parse_proc_macro_output_items(name, &response.output_tokens, attr.span.as_ref())
+    // Invoking an external provider needs a process, which no_std lacks (M0.7/8).
+    #[cfg(not(feature = "std"))]
+    {
+        let _ = (config, item);
+        Err(error_at_attr(
+            attr,
+            &format!("Procedural attribute `{name}` requires the std feature"),
+        ))
+    }
+    #[cfg(feature = "std")]
+    {
+        let request = attribute_request(name, attr, &item, options)?;
+        let response = run_proc_macro_process(&request, config)
+            .map_err(|err| error_at_attr(attr, &format!("Procedural attribute `{name}` failed: {err}")))?;
+        reject_error_diagnostics(name, &response.diagnostics, attr.span.as_ref())?;
+        options.dependency_recorder.record(&response.dependencies);
+        parse_proc_macro_output_items(name, &response.output_tokens, attr.span.as_ref())
+    }
 }
 
 fn attribute_request(

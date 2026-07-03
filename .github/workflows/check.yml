@@ -38,9 +38,11 @@ jobs:
           rustup target add thumbv7em-none-eabi
           cargo build -p lk-hal --target thumbv7em-none-eabi
           cargo build -p lk-values --target thumbv7em-none-eabi
-      - name: lk-core builds without std-heavy modules (lk-vm-core groundwork)
-        # `--no-default-features` drops the `std` feature (the `package`
-        # manager: Lk.toml/git/fs) and `async-runtime` (tokio). This guards the
-        # future lk-vm-core split (plan M0.7/8) and no-std profiles (M5.1) by
-        # proving the VM core does not hard-depend on those std-heavy modules.
+      - name: lk-core builds as no_std (VM core no-std guard)
+        # `--no-default-features` drops the `std` feature, which now makes
+        # lk-core `#![no_std]` (+ alloc). The VM core (token/ast/expr/stmt/typ/
+        # val/vm/gc/resolve/macro-expansion) compiles without std; std-only
+        # leaves (package manager, file imports, proc-macro processes, fs-based
+        # macro/module resolution, tokio) are `std`-feature-gated. This guards
+        # the no_std profiles (plan M0.7/8, M5.1).
         run: cargo build -p lk-core --no-default-features

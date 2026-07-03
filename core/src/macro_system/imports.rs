@@ -1,6 +1,8 @@
+use crate::compat::path::{Path, PathBuf};
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
-use std::path::{Component, Path, PathBuf};
+#[cfg(feature = "std")]
+use std::path::Component;
 
 #[cfg(feature = "std")]
 use crate::package::PackageGraph;
@@ -236,37 +238,49 @@ fn load_imported_macros(
 ) -> Result<LoadedMacroModule, ParseError> {
     match &spec.source {
         MacroImportSource::File(path) => {
-            let Some(base_dir) = base_dir else {
-                return Ok(LoadedMacroModule::default());
-            };
-            let resolved = resolve_macro_import_path(base_dir, path)
-                .map_err(|message| error_at(tokens, spec.span_index, &message))?;
-            load_macro_file(&resolved, loading)
+            // File-based macro imports require the filesystem, which is gated out
+            // of the no_std VM-core surface (plan M0.7/8).
+            #[cfg(feature = "std")]
+            {
+                let Some(base_dir) = base_dir else {
+                    return Ok(LoadedMacroModule::default());
+                };
+                let resolved = resolve_macro_import_path(base_dir, path)
+                    .map_err(|message| error_at(tokens, spec.span_index, &message))?;
+                load_macro_file(&resolved, loading)
+            }
+            #[cfg(not(feature = "std"))]
+            {
+                let _ = (base_dir, path, tokens, &mut *loading);
+                Ok(LoadedMacroModule::default())
+            }
         }
         MacroImportSource::Module(name) => {
             if let Some(macros) = load_builtin_macro_module(name, loading)? {
                 return Ok(macros);
             }
-            let Some(base_dir) = base_dir else {
-                return Ok(LoadedMacroModule::default());
-            };
-            // Package-based macro imports need the `package` manager, which is
-            // gated out of the no_std VM-core surface (plan M0.7/8).
+            // Package-based macro imports need the `package` manager and the
+            // filesystem, both gated out of the no_std VM-core surface (M0.7/8).
             #[cfg(feature = "std")]
-            let resolved = resolve_package_macro_module(base_dir, name, tokens, spec.span_index)?;
+            {
+                let Some(base_dir) = base_dir else {
+                    return Ok(LoadedMacroModule::default());
+                };
+                let Some(resolved) = resolve_package_macro_module(base_dir, name, tokens, spec.span_index)? else {
+                    return Ok(LoadedMacroModule::default());
+                };
+                load_macro_file(&resolved, loading)
+            }
             #[cfg(not(feature = "std"))]
-            let resolved: Option<PathBuf> = {
-                let _ = (base_dir, name, &tokens, spec.span_index);
-                None
-            };
-            let Some(resolved) = resolved else {
-                return Ok(LoadedMacroModule::default());
-            };
-            load_macro_file(&resolved, loading)
+            {
+                let _ = (base_dir, name, tokens, &mut *loading);
+                Ok(LoadedMacroModule::default())
+            }
         }
     }
 }
 
+#[cfg(feature = "std")]
 fn load_macro_file(path: &Path, loading: &mut Vec<PathBuf>) -> Result<LoadedMacroModule, ParseError> {
     let canonical = path.canonicalize();
     let path = match &canonical {
@@ -290,6 +304,7 @@ fn load_macro_file(path: &Path, loading: &mut Vec<PathBuf>) -> Result<LoadedMacr
     result
 }
 
+#[cfg(feature = "std")]
 fn load_macro_file_inner(path: &Path, loading: &mut Vec<PathBuf>) -> Result<LoadedMacroModule, ParseError> {
     let source = std::fs::read_to_string(path)
         .map_err(|error| ParseError::new(format!("Failed to read macro import '{}': {error}", path.display())))?;
@@ -302,9 +317,15 @@ fn load_builtin_macro_module(name: &str, loading: &mut Vec<PathBuf>) -> Result<O
     if !is_builtin_macro_module(name) {
         return Ok(None);
     }
+    // The builtin macro source has no file imports, so `base_dir` is unused; it
+    // is a real `Path` under std and a plain `&str` under no_std (compat `Path`).
+    #[cfg(feature = "std")]
+    let base_dir = Path::new(".");
+    #[cfg(not(feature = "std"))]
+    let base_dir = ".";
     Ok(Some(load_macro_source(
         BUILTIN_MACRO_SOURCE,
-        Path::new("."),
+        base_dir,
         loading,
         macro_crate_anchor_for_label(BUILTIN_MACRO_MODULE),
     )?))
@@ -635,7 +656,14 @@ fn parse_named_macro_import_items(
 }
 
 fn default_namespace_alias(raw: &str) -> Option<String> {
+    #[cfg(feature = "std")]
     let stem = Path::new(raw).file_stem()?.to_str()?;
+    // no_std has no `Path`; take the final path segment minus its extension.
+    #[cfg(not(feature = "std"))]
+    let stem = {
+        let name = raw.rsplit(['/', '\\']).next().unwrap_or(raw);
+        name.rsplit_once('.').map(|(head, _)| head).unwrap_or(name)
+    };
     if stem.is_empty() { None } else { Some(stem.to_string()) }
 }
 
@@ -674,6 +702,7 @@ fn use_statement_end(tokens: &[SourceToken], mut index: usize) -> usize {
     index
 }
 
+#[cfg(feature = "std")]
 fn resolve_macro_import_path(base_dir: &Path, raw: &str) -> Result<PathBuf, String> {
     let path = Path::new(raw);
     if !path.is_relative() {

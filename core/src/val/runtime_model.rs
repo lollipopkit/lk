@@ -1038,10 +1038,11 @@ pub struct SliceValue {
 #[derive(Clone)]
 pub struct ResourceValue {
     pub kind: &'static str,
-    // `ResourceValue` wraps OS resources (files/sockets); it is a std-only
-    // concern (gated at the no_std flip), so its guard stays on std's Mutex to
-    // avoid rippling the compat shim into the stdlib resource constructors.
-    pub handle: Arc<std::sync::Mutex<ResourceHandle>>,
+    // `ResourceValue` wraps OS resources (files/sockets). The guard goes through
+    // the compat `Mutex` so the type resolves under no_std too (std's `Mutex`
+    // is absent there); its `.lock() -> Result` shape keeps the stdlib
+    // `.lock().map_err(..)` call sites unchanged.
+    pub handle: Arc<crate::compat::sync::Mutex<ResourceHandle>>,
 }
 
 impl core::fmt::Debug for ResourceValue {

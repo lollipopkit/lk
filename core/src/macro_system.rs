@@ -1,7 +1,7 @@
 use crate::compat::collections::HashMap;
+use crate::compat::path::{Path, PathBuf};
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
-use std::path::{Path, PathBuf};
 
 use crate::token::{ParseError, Span, Token};
 
@@ -10,9 +10,15 @@ mod follow;
 mod hygiene;
 mod imports;
 mod origin;
+// Under no_std the proc-macro/dependency-fingerprint machinery (process + fs)
+// is gated out, leaving these modules' helpers legitimately unused (M0.7/8).
+#[cfg_attr(not(feature = "std"), allow(dead_code, unused_imports))]
 mod proc_deps;
+#[cfg_attr(not(feature = "std"), allow(dead_code, unused_imports))]
 mod proc_function;
+#[cfg_attr(not(feature = "std"), allow(dead_code, unused_imports))]
 mod proc_output;
+#[cfg_attr(not(feature = "std"), allow(dead_code, unused_imports))]
 mod procedural;
 mod runtime_anchor;
 mod validation;
@@ -26,16 +32,23 @@ mod validation_tests;
 pub use origin::{MacroOriginFrame, MacroOriginKind, MacroTokenOrigin};
 pub use proc_deps::{
     ProcMacroDependencyFileState, ProcMacroDependencyFingerprint, ProcMacroDependencyFingerprintEntry,
-    ProcMacroDependencyGraph, ProcMacroDependencyRecorder, fingerprint_dependency_paths,
-    fingerprint_proc_macro_dependencies, normalize_proc_macro_dependency_path, resolve_proc_macro_dependency_path,
+    ProcMacroDependencyGraph, ProcMacroDependencyRecorder,
+};
+// Dependency fingerprinting reads the filesystem, so it's std-only (M0.7/8).
+#[cfg(feature = "std")]
+pub use proc_deps::{
+    fingerprint_dependency_paths, fingerprint_proc_macro_dependencies, normalize_proc_macro_dependency_path,
+    resolve_proc_macro_dependency_path,
 };
 pub use procedural::{
     AstGeneratedItemOrigin, AstGeneratedMemberOrigin, AstMacroExpansionResult, AstMacroOrigin, AstMacroOriginKind,
     PROC_MACRO_PROTOCOL_VERSION, ProcMacroDependency, ProcMacroDiagnostic, ProcMacroDiagnosticLevel, ProcMacroKind,
     ProcMacroOptions, ProcMacroProcessConfig, ProcMacroProcessError, ProcMacroProviders, ProcMacroRequest,
     ProcMacroResponse, ProcMacroSpan, ProcMacroToken, expand_ast_macros, expand_ast_macros_with_metadata,
-    run_proc_macro_process,
 };
+// Spawning an external proc-macro provider is std-only (M0.7/8).
+#[cfg(feature = "std")]
+pub use procedural::run_proc_macro_process;
 
 const DEFAULT_RECURSION_LIMIT: usize = 128;
 

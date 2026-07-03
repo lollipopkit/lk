@@ -1,11 +1,11 @@
-// no_std flip for the VM core is staged. The compat shims (below) and the
-// `core::`/`alloc::` relocations across every VM-core module are in place and
-// exercised by the `--no-default-features` build (which selects
-// hashbrown/spin/compat-path via `not(feature = "std")`). The final
-// `#![no_std]` attribute lands once the remaining std-only leaves are gated:
-// the file-import resolver in `stmt::import` (fs/dashmap/std::path) and the
-// `macro_system` file-import/proc-macro functions. `alloc` is always available
-// so the shims compile identically under both builds.
+// The VM core builds as no_std under `--no-default-features`. On a std-capable
+// host, no_std only forbids `lk-core`'s *own* source from using `std::` — its
+// std-using dependencies (anyhow/dashmap/serde_json) still link std themselves,
+// so only lk-core's direct std leaves (macro_system file-imports/proc-macros,
+// stmt::import file resolver) are `std`-feature-gated. `alloc` is always
+// available so the compat shims compile identically under both builds.
+#![cfg_attr(not(feature = "std"), no_std)]
+
 extern crate alloc;
 
 pub mod compat;
