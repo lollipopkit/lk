@@ -5483,6 +5483,7 @@ mod tests {
                     positional_param_count: 0,
                     param_names: Vec::new(),
                     capture_count: 0,
+                    debug_name: None,
                 }],
             },
         }
@@ -5516,6 +5517,7 @@ mod tests {
             positional_param_count: param_count,
             param_names: Vec::new(),
             capture_count: 0,
+            debug_name: None,
         }
     }
 

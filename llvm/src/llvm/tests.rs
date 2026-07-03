@@ -75,6 +75,7 @@ fn llvm_backend_lowers_static_const_contains_without_artifact_shell() {
                 positional_param_count: 0,
                 param_names: Vec::new(),
                 capture_count: 0,
+                debug_name: None,
             }],
         },
     };

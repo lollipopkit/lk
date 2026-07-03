@@ -94,6 +94,7 @@ impl Compiler {
                     HashMap::new(),
                     module.functions.len() as u32,
                 )?;
+                compiled.function.debug_name = Some(std::sync::Arc::<str>::from(name.as_str()));
                 module.functions[function_index as usize] = compiled.function;
                 module.functions.append(&mut compiled.pending_functions);
             }

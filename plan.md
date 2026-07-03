@@ -1,5 +1,7 @@
 # lk（lkr）推倒重写技术规划：以 VM 为语义基准的双后端、可嵌入且可降级到 no-std 的脚本语言
 
+**允许短期内回归**
+
 > **重要事实更正（贯穿全文）**：本规划基于对当前仓库 `github.com/lollipopkit/lk` 的实测。原始需求假设 lk 用 Go 实现、"Go 无法做 no-std 需考虑改写"。**实测证明 lk 当前已经用 Rust 实现**——Cargo workspace，crate 含 `core`/`lkrt`/`aot/{abi,mir,lower,codegen}`/`llvm`/`stdlib/*`/`lsp`/`wasm`/`ecosystem/tree-sitter-lk`，用 `serde`/`ed25519-dalek`/`tokio`/`llvm-tools`，Rust edition 2024。因此"用 Go 无法做 no-std"这一前提不成立——**Rust 原生支持 `#![no_std]`+`alloc`**。此外实测发现 lk 已相当成熟：register VM、手写 tracing GC（`alloc_heap_value`/`collect_pending_garbage`/`LK_GC_STRESS` root 压测）、load-time 字节码验证器、MIR-based AOT（`lower→mir→codegen→clang+liblkrt.a`）、约 1460 个测试、Miri/ASan/UBSan/fuzz CI。本规划据此把"推倒重写"重新定义为**重整架构 + 补齐能力 + 无情砍范围**，而非从零重写。
 
 ---
