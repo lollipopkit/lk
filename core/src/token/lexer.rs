@@ -60,6 +60,8 @@ pub enum Token {
     Fn,       // fn (function definition)
     For,      // for (for loop)
     Match,    // match (pattern matching)
+    Try,      // try (recoverable error handling; desugars to pcall)
+    Catch,    // catch (try's error handler)
     Case,     // case
     Default,  // default
     // Concurrency keywords
@@ -676,6 +678,14 @@ impl<'a> Tokenizer<'a> {
         }
         if let Some(sp) = match_kw(self, "match") {
             self.push_span_only(Token::Match, sp);
+            return Ok(());
+        }
+        if let Some(sp) = match_kw(self, "try") {
+            self.push_span_only(Token::Try, sp);
+            return Ok(());
+        }
+        if let Some(sp) = match_kw(self, "catch") {
+            self.push_span_only(Token::Catch, sp);
             return Ok(());
         }
         if let Some(sp) = match_kw(self, "select") {

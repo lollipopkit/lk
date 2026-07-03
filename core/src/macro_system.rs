@@ -338,6 +338,8 @@ pub fn token_lexeme(token: &Token) -> String {
         Token::Fn => "fn".to_string(),
         Token::For => "for".to_string(),
         Token::Match => "match".to_string(),
+        Token::Try => "try".to_string(),
+        Token::Catch => "catch".to_string(),
         Token::Case => "case".to_string(),
         Token::Default => "default".to_string(),
         Token::Select => "select".to_string(),

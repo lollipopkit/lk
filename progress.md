@@ -176,7 +176,12 @@
       未捕获仍非零退出且**消除 panic backtrace 噪声**);**缺键/越界**返回 nil(非 fatal,无需捕获);
       **panic** 保持故意 fatal(`error()` 是可捕获替代)。**验证**:pcall 捕获 assert/除零;未捕获 assert
       exit=1「VM execution failed」;**全量 1479 tests / 0 failed(0 回归)**。
-- [ ] **M2.4** `try`/`?` 语法糖。
+- [x] **M2.4** `try`/`catch` 语法糖 —— **已实现,端到端验证**。加 `try`/`catch` 关键字(lexer+Token),
+      parser `parse_try_stmt` **脱糖**为 `let [__try_ok, e] = pcall(fn(){BODY}); if !__try_ok { HANDLER }`
+      ——**复用已验证的 pcall + closure/if,无 AST 变体/lowering 改动**(仅 1 处 Token match 需补,fix-forward)。
+      `try { BODY } catch e { HANDLER }`:成功跳过 handler;失败把错误值绑定 e 跑 handler;**一等基本错误值**
+      (`error(404)`→`catch code` 得 Int 404)。`examples/syntax/try_catch.lk` 断言全过,source==bytecode 一致,
+      **全量 1484 tests 0 失败**。*(已知限制:try 体内 `return` 从脱糖闭包返回,非外层函数——已在文档标注。)*
 - [ ] **M2.5** VM 改 stackless（trampoline `Sequence::step`）——大工程，落地时再拆子步。
 - [x] **M2.6** fuel + 模块白名单 —— **基本达成**(内存上限待)。**fuel**:`LK_FUEL=N`(CLI)+ `Vm::with_fuel(N)`
       (lk-api)经 `execute_program_with_ctx_and_budget`。**模块白名单**:`Vm::sandboxed(&["math",…])`(lk-api)

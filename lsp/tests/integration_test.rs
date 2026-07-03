@@ -395,6 +395,8 @@ impl TestLanguageServer {
             T::Select => "Keyword: select".to_string(),
             T::Case => "Keyword: case".to_string(),
             T::Default => "Keyword: default".to_string(),
+            T::Try => "Keyword: try".to_string(),
+            T::Catch => "Keyword: catch".to_string(),
             T::Arrow => "Operator: =>".to_string(),
             T::LeftArrow => "Operator: <-".to_string(),
             T::OptionalDot => "Operator: ?.".to_string(),

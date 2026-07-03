@@ -1,11 +1,72 @@
 use super::StmtParser;
 use crate::{
+    expr::{Expr, Pattern},
+    operator::UnaryOp,
     stmt::{ForPattern, Stmt},
     token::Token,
 };
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 
 impl<'a> StmtParser<'a> {
+    /// Parse `try { BODY } catch e { HANDLER }`. Desugars to a block that runs the
+    /// body under `pcall` and, on failure, binds the error value and runs the
+    /// handler — reusing the (verified) recoverable-error primitive (plan M2.4):
+    ///
+    /// ```text
+    /// let [__try_ok, e] = pcall(fn() { BODY });
+    /// if (!__try_ok) { HANDLER }
+    /// ```
+    ///
+    /// Note: `return` inside a `try` body returns from the desugared closure, not
+    /// the enclosing function (a known limitation of the desugaring).
+    pub fn parse_try_stmt(&mut self) -> Result<Stmt> {
+        self.expect_token(Token::Try)?;
+        let Stmt::Block { statements: body_stmts } = self.parse_block_stmt()? else {
+            bail!("`try` body must be a block");
+        };
+        self.expect_token(Token::Catch)?;
+        let catch_var = match self.tokens.get(self.pos) {
+            Some(Token::Id(name)) => {
+                let name = name.clone();
+                self.pos += 1;
+                name
+            }
+            _ => bail!("expected an identifier after `catch`"),
+        };
+        let Stmt::Block {
+            statements: handler_stmts,
+        } = self.parse_block_stmt()?
+        else {
+            bail!("`catch` body must be a block");
+        };
+
+        let closure = Expr::Closure {
+            params: Vec::new(),
+            body: Box::new(Expr::Block(body_stmts)),
+        };
+        let pcall = Expr::Call("pcall".to_string(), vec![Box::new(closure)]);
+        let let_result = Stmt::Let {
+            pattern: Pattern::List {
+                patterns: vec![Pattern::Variable("__try_ok".to_string()), Pattern::Variable(catch_var)],
+                rest: None,
+            },
+            type_annotation: None,
+            value: Box::new(pcall),
+            span: None,
+            is_const: false,
+        };
+        let on_error = Stmt::If {
+            condition: Box::new(Expr::Unary(UnaryOp::Not, Box::new(Expr::Var("__try_ok".to_string())))),
+            then_stmt: Box::new(Stmt::Block {
+                statements: handler_stmts,
+            }),
+            else_stmt: None,
+        };
+        Ok(Stmt::Block {
+            statements: vec![Box::new(let_result), Box::new(on_error)],
+        })
+    }
+
     /// 解析 if 语句
     pub fn parse_if_stmt(&mut self) -> Result<Stmt> {
         self.expect_token(Token::If)?;
