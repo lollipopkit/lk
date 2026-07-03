@@ -1,5 +1,7 @@
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 use crate::util::fast_map::fast_hash_map_new;
-use std::sync::Arc;
+use alloc::sync::Arc;
 
 use anyhow::{Result, anyhow, bail};
 use serde::{Deserialize, Serialize};

@@ -1,4 +1,6 @@
-use std::sync::Arc;
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
+use alloc::sync::Arc;
 
 use anyhow::{Result, anyhow, bail};
 
@@ -219,7 +221,7 @@ impl Executor {
         let saved_base = self.frame_base;
         let saved_top = self.state.stack_top;
         let saved_pc = self.pc;
-        let saved_captures = std::mem::replace(&mut self.captures, captures);
+        let saved_captures = core::mem::replace(&mut self.captures, captures);
         let saved_register_count = self.register_count;
         let saved_handler_depth = self.handler_stack.len();
         let result = (|| {
@@ -283,7 +285,7 @@ impl Executor {
         let saved_base = self.frame_base;
         let saved_top = self.state.stack_top;
         let saved_pc = self.pc;
-        let saved_captures = std::mem::replace(&mut self.captures, captures);
+        let saved_captures = core::mem::replace(&mut self.captures, captures);
         let saved_register_count = self.register_count;
         let saved_handler_depth = self.handler_stack.len();
         let result = {
@@ -301,7 +303,7 @@ impl Executor {
             for i in 0..param_count {
                 let src = arg_range.start + i;
                 let dst = callee_frame_start + i;
-                self.state.stack[dst] = std::mem::take(&mut self.state.stack[src]);
+                self.state.stack[dst] = core::mem::take(&mut self.state.stack[src]);
             }
             self.frame_base = new_base;
             self.register_count = function.register_count;

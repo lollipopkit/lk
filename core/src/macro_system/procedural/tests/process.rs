@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 
 #[test]
 fn proc_macro_process_decodes_versioned_response() {

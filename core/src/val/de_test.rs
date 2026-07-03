@@ -1,3 +1,5 @@
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 #[cfg(test)]
 mod tests {
     use crate::val::{HeapStore, HeapValue, RuntimeVal, ShortStr, TypedList, TypedMap, de::*};
@@ -69,7 +71,7 @@ count: 42
         assert!(matches!(
             perms,
             TypedList::String(values)
-                if values.as_slice() == [std::sync::Arc::<str>::from("read"), std::sync::Arc::<str>::from("write")]
+                if values.as_slice() == [alloc::sync::Arc::<str>::from("read"), alloc::sync::Arc::<str>::from("write")]
         ));
     }
 

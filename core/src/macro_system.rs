@@ -1,7 +1,7 @@
-use std::{
-    collections::HashMap,
-    path::{Path, PathBuf},
-};
+use crate::compat::collections::HashMap;
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
+use std::path::{Path, PathBuf};
 
 use crate::token::{ParseError, Span, Token};
 
@@ -924,7 +924,7 @@ fn token_matches(expected: &Token, actual: &Token) -> bool {
         (Token::Int(a), Token::Int(b)) => a == b,
         (Token::Float(a), Token::Float(b)) => a == b,
         (Token::Bool(a), Token::Bool(b)) => a == b,
-        _ => std::mem::discriminant(expected) == std::mem::discriminant(actual),
+        _ => core::mem::discriminant(expected) == core::mem::discriminant(actual),
     }
 }
 

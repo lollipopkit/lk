@@ -1,4 +1,6 @@
-use std::fmt;
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
+use core::fmt;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Position {
@@ -129,7 +131,7 @@ impl fmt::Display for ParseError {
     }
 }
 
-impl std::error::Error for ParseError {}
+impl core::error::Error for ParseError {}
 
 /// Helper to convert character index to line/column position
 pub fn offset_to_position(text: &str, offset: usize) -> Position {

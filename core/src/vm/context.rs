@@ -1,5 +1,7 @@
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 use crate::util::fast_map::{FastHashMap, fast_hash_map_new};
-use std::sync::Arc;
+use alloc::sync::Arc;
 
 use anyhow::{Result, anyhow};
 
@@ -1025,7 +1027,7 @@ mod tests {
             "module",
             RuntimeExport::new(
                 RuntimeVal::Obj(exported),
-                Arc::new(std::sync::Mutex::new(RuntimeModuleState::new(
+                Arc::new(crate::compat::sync::Mutex::new(RuntimeModuleState::new(
                     heap,
                     vec![RuntimeVal::Obj(global)],
                 ))),

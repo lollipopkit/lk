@@ -1,3 +1,6 @@
+use crate::compat::collections::HashSet;
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 use crate::{
     ast::Parser,
     operator::{BinOp, UnaryOp},
@@ -6,10 +9,7 @@ use crate::{
     val::{LiteralVal, Type},
 };
 use anyhow::Result;
-use std::{
-    collections::HashSet,
-    fmt::{Debug, Display},
-};
+use core::fmt::{Debug, Display};
 /// Grammar (abridged):
 /// exp     ::= paren
 /// paren   ::= {'('} or {')'}
@@ -625,7 +625,7 @@ impl TryFrom<String> for Expr {
     }
 }
 impl Display for Expr {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Expr::Bin(left, op, right) => write!(f, "{left} {op:?} {right}"),
             Expr::Unary(op, expr) => write!(f, "{op:?}{expr}"),

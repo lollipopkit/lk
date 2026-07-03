@@ -1,3 +1,5 @@
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 #[cfg(test)]
 mod tests {
     use anyhow::Result;

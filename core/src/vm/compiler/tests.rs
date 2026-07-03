@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 use crate::vm::{NativeArgs, NativeFunction, execute, execute_module};
 use crate::{stmt::stmt_parser::StmtParser, token::Tokenizer};
 
@@ -766,7 +768,7 @@ fn compiler_midpoint_floor_preserves_current_int_division_semantics() {
         function.code
     );
     let result = crate::vm::exec::execute_compiled_module_with_ctx(
-        std::sync::Arc::new(module),
+        alloc::sync::Arc::new(module),
         &mut crate::vm::VmContext::new(),
     )
     .expect("execute module");

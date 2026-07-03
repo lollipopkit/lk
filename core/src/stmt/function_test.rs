@@ -1,6 +1,9 @@
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
+    use crate::compat::sync::Mutex;
+    use alloc::sync::Arc;
 
     use crate::{
         expr::Expr,

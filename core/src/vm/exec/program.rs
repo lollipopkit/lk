@@ -1,4 +1,6 @@
-use std::sync::Arc;
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
+use alloc::sync::Arc;
 
 use anyhow::Result;
 
@@ -131,7 +133,7 @@ fn seed_module_globals(slots: &[GlobalSlot], ctx: &VmContext, heap: &mut HeapSto
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use alloc::sync::Arc;
 
     use crate::{
         val::{HeapStore, HeapValue, RuntimeVal},
@@ -149,7 +151,10 @@ mod tests {
             "external",
             RuntimeExport::new(
                 RuntimeVal::Obj(source_string),
-                Arc::new(std::sync::Mutex::new(RuntimeModuleState::new(source_heap, Vec::new()))),
+                Arc::new(crate::compat::sync::Mutex::new(RuntimeModuleState::new(
+                    source_heap,
+                    Vec::new(),
+                ))),
                 Arc::new(crate::vm::Module::default()),
             ),
         );

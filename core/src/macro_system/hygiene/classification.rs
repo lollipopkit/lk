@@ -1,3 +1,5 @@
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 use crate::token::Token;
 
 use crate::macro_system::ExpandedToken;

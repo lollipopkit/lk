@@ -1,5 +1,7 @@
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 use crate::util::fast_map::fast_hash_map_new;
-use std::sync::Arc;
+use alloc::sync::Arc;
 
 use anyhow::{Result, bail};
 
@@ -1102,7 +1104,7 @@ fn for_each_typed_map_key(map: &TypedMap, mut visit: impl FnMut(RuntimeMapKey)) 
 }
 
 fn typed_map_without_key(map: &TypedMap, removed_key: &RuntimeMapKey) -> TypedMap {
-    typed_map_without_keys(map, std::slice::from_ref(removed_key))
+    typed_map_without_keys(map, core::slice::from_ref(removed_key))
 }
 
 fn typed_map_without_merge_keys(map: &TypedMap, replaced_keys: &[RuntimeMapKey]) -> TypedMap {

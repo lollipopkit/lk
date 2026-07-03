@@ -1,3 +1,5 @@
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 use anyhow::{Result, anyhow};
 
 use crate::val::{HeapRef, RuntimeVal};
@@ -93,7 +95,7 @@ impl RuntimeCallable {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use alloc::sync::Arc;
 
     use crate::{
         val::{HeapStore, HeapValue},
@@ -128,7 +130,7 @@ mod tests {
         let dead = heap.alloc(HeapValue::String(Arc::<str>::from("dead")));
         let export = RuntimeExport::new(
             RuntimeVal::Obj(exported),
-            Arc::new(std::sync::Mutex::new(RuntimeModuleState::new(
+            Arc::new(crate::compat::sync::Mutex::new(RuntimeModuleState::new(
                 heap,
                 vec![RuntimeVal::Obj(global)],
             ))),

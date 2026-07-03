@@ -1,3 +1,5 @@
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 use crate::{
     syntax::{expand_source, render_tokens},
     token::Token,

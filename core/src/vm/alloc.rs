@@ -1,3 +1,5 @@
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 /// Allocation region selected by escape analysis.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AllocationRegion {

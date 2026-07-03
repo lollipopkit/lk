@@ -1,4 +1,6 @@
 use super::{Executor, handler::ErrorHandler};
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 
 impl Executor {
     pub(super) fn alloc_heap_value(&mut self, value: crate::val::HeapValue) -> crate::val::HeapRef {
@@ -38,7 +40,7 @@ impl Executor {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use alloc::sync::Arc;
 
     use crate::val::{HeapValue, RuntimeVal};
 

@@ -1,3 +1,5 @@
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 use anyhow::{Result, bail};
 
 use crate::{expr::Pattern, stmt::Stmt, val::LiteralVal, vm::analysis::PerfValueKind};

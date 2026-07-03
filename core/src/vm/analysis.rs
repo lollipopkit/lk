@@ -1,6 +1,8 @@
-use std::sync::Arc;
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
+use alloc::sync::Arc;
 #[cfg(all(not(test), feature = "vm-profile"))]
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 
@@ -142,6 +144,8 @@ pub struct PerfRegisterFact {
 /// `None`, so the wire format is `(len, [(index, value), ...])` instead of a
 /// dense array of nulls (a size fix for serialized `ModuleArtifact`s).
 mod sparse_facts {
+    #[cfg(not(feature = "std"))]
+    use crate::compat::prelude::*;
     use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error};
 
     pub fn serialize<S: Serializer, T: Serialize>(table: &[Option<T>], serializer: S) -> Result<S::Ok, S::Error> {
@@ -168,7 +172,7 @@ mod sparse_facts {
                 "sparse fact table length {len} exceeds the {MAX_FACT_TABLE_LEN} ceiling"
             )));
         }
-        let mut table: Vec<Option<T>> = std::iter::repeat_with(|| None).take(len as usize).collect();
+        let mut table: Vec<Option<T>> = core::iter::repeat_with(|| None).take(len as usize).collect();
         for (index, value) in entries {
             let slot = table
                 .get_mut(index as usize)
@@ -825,8 +829,8 @@ impl VmRuntimeMetrics {
 
 #[cfg(test)]
 thread_local! {
-    static THREAD_RUNTIME_METRICS: std::cell::Cell<VmRuntimeMetrics> =
-        const { std::cell::Cell::new(VmRuntimeMetrics::ZERO) };
+    static THREAD_RUNTIME_METRICS: core::cell::Cell<VmRuntimeMetrics> =
+        const { core::cell::Cell::new(VmRuntimeMetrics::ZERO) };
 }
 
 #[cfg(test)]
@@ -970,7 +974,7 @@ pub(crate) fn record_container_op_known_enabled(kind: VmContainerMetric) {
 
 #[cfg(test)]
 pub fn vm_runtime_metrics_snapshot() -> VmRuntimeMetrics {
-    THREAD_RUNTIME_METRICS.with(std::cell::Cell::get)
+    THREAD_RUNTIME_METRICS.with(core::cell::Cell::get)
 }
 
 #[cfg(test)]

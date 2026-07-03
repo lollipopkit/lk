@@ -993,6 +993,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "sha2",
+ "spin",
  "tempfile",
  "tokio",
  "toml",
@@ -2019,6 +2020,12 @@ dependencies = [
  "libc",
  "windows-sys 0.61.2",
 ]
+
+[[package]]
+name = "spin"
+version = "0.9.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6980e8d7511241f8acf4aebddbb1ff938df5eebe98691418c4468d0b72a96a67"
 
 [[package]]
 name = "stable_deref_trait"

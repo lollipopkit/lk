@@ -1,4 +1,7 @@
-use std::sync::{Arc, Mutex, MutexGuard};
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
+use crate::compat::sync::{Mutex, MutexGuard};
+use alloc::sync::Arc;
 
 use anyhow::{Result, anyhow};
 
@@ -512,7 +515,7 @@ fn runtime_named_arg_name<'a>(value: &'a RuntimeVal, heap: &'a HeapStore) -> Res
 
 impl<'a> IntoIterator for NativeArgs<'a> {
     type Item = &'a RuntimeVal;
-    type IntoIter = std::slice::Iter<'a, RuntimeVal>;
+    type IntoIter = core::slice::Iter<'a, RuntimeVal>;
 
     #[inline]
     fn into_iter(self) -> Self::IntoIter {
@@ -553,7 +556,7 @@ impl NativeEntry {
 #[cfg(test)]
 mod tests {
     use crate::util::fast_map::fast_hash_map_from_iter;
-    use std::sync::Arc;
+    use alloc::sync::Arc;
 
     use crate::val::{HeapStore, HeapValue, RuntimeVal, TypedMap};
 

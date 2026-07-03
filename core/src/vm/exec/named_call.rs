@@ -1,4 +1,6 @@
-use std::ops::Range;
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
+use core::ops::Range;
 
 use anyhow::{Result, anyhow, bail};
 
@@ -73,13 +75,13 @@ pub(super) fn move_named_args_to_frame_from_stack(
             else {
                 bail!("unknown named argument `{name}`");
             };
-            if std::mem::replace(&mut seen[offset], true) {
+            if core::mem::replace(&mut seen[offset], true) {
                 bail!("duplicate named argument `{name}`");
             }
             offset
         };
         caller_stack[pair_start] = RuntimeVal::Nil;
-        frame[positional_count + offset] = std::mem::take(&mut caller_stack[pair_start + 1]);
+        frame[positional_count + offset] = core::mem::take(&mut caller_stack[pair_start + 1]);
     }
 
     if let Some(index) = seen.iter().position(|seen| !*seen) {
@@ -96,7 +98,7 @@ fn move_range_into_frame(caller_stack: &mut [RuntimeVal], range: Range<usize>, f
         bail!("call argument window {}..{} out of bounds", range.start, range.end);
     }
     for (slot, value_index) in frame.iter_mut().zip(range) {
-        *slot = std::mem::take(&mut caller_stack[value_index]);
+        *slot = core::mem::take(&mut caller_stack[value_index]);
     }
     Ok(())
 }

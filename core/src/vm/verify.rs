@@ -57,7 +57,7 @@ fn verify_function(function: &Function, function_index: usize, module: &Module) 
 }
 
 impl FunctionVerifier<'_> {
-    fn fail(&self, pc: usize, message: impl std::fmt::Display) -> anyhow::Error {
+    fn fail(&self, pc: usize, message: impl core::fmt::Display) -> anyhow::Error {
         anyhow::anyhow!("bytecode verifier: fn {} pc {pc}: {message}", self.function_index)
     }
 

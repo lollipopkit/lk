@@ -1,3 +1,5 @@
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 use std::path::{Component, Path, PathBuf};
 
 #[cfg(feature = "std")]
@@ -1232,7 +1234,7 @@ return answer!();
         .expect("program should parse with injected runtime anchor import");
         let mut resolver = ModuleResolver::new();
         resolver.set_base_dir(temp.path().to_path_buf());
-        let mut ctx = VmContext::new().with_resolver(std::sync::Arc::new(resolver));
+        let mut ctx = VmContext::new().with_resolver(alloc::sync::Arc::new(resolver));
         let result = program
             .execute_with_ctx(&mut ctx)
             .expect("injected runtime anchor import should execute");
@@ -1270,7 +1272,7 @@ return answer!();
         .expect("program should parse with injected package runtime anchor import");
         let resolver = ModuleResolver::new();
         resolver.register_package_module("util", temp.path().join("deps/util/src/mod.lk"));
-        let mut ctx = VmContext::new().with_resolver(std::sync::Arc::new(resolver));
+        let mut ctx = VmContext::new().with_resolver(alloc::sync::Arc::new(resolver));
         let result = program
             .execute_with_ctx(&mut ctx)
             .expect("injected package runtime anchor import should execute");

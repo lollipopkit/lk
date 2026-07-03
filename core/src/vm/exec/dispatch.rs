@@ -4,9 +4,11 @@
 //! slow/error work. String, branch, call, and container helpers can be hot in
 //! real workloads, so they intentionally avoid a cold hint unless measured.
 
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 use anyhow::{Result, anyhow, bail};
 
-use std::fmt::Write;
+use core::fmt::Write;
 
 use crate::val::{HeapValue, RuntimeVal, ShortStr, TypedList};
 
@@ -41,7 +43,7 @@ impl Executor {
             .string(u16::from(instr.b()))
             .ok_or_else(|| anyhow!("CallMethodK method-name const {} out of bounds", instr.b()))?;
         let receiver = *self.read(base)?;
-        let mut inline: [RuntimeVal; 8] = std::array::from_fn(|_| RuntimeVal::Nil);
+        let mut inline: [RuntimeVal; 8] = core::array::from_fn(|_| RuntimeVal::Nil);
         let mut spill: Vec<RuntimeVal>;
         let args: &[RuntimeVal] = if argc <= inline.len() {
             for (i, slot) in inline.iter_mut().take(argc).enumerate() {
@@ -667,7 +669,7 @@ impl Executor {
         }
 
         if all_short && short_len > 0 {
-            let result_str = std::str::from_utf8(&short_buf[..short_len]).unwrap_or("");
+            let result_str = core::str::from_utf8(&short_buf[..short_len]).unwrap_or("");
             if let Some(short) = ShortStr::new(result_str) {
                 self.write_unchecked(instr.a(), RuntimeVal::ShortStr(short));
                 self.pc += 1;

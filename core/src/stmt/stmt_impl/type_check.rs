@@ -1,4 +1,6 @@
 use super::{ForPattern, Program, Stmt};
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 use crate::{
     expr::Pattern,
     token::ParseError,
@@ -371,7 +373,7 @@ impl Stmt {
                             other => flat.push(other),
                         }
                     }
-                    use std::collections::BTreeMap;
+                    use alloc::collections::BTreeMap;
                     let mut by_key: BTreeMap<String, Type> = BTreeMap::new();
                     for t in flat {
                         by_key.entry(t.display()).or_insert(t);

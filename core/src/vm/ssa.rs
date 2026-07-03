@@ -1,4 +1,6 @@
-use std::collections::HashMap;
+use crate::compat::collections::HashMap;
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 
 mod escape;
 pub mod pipeline;
@@ -142,13 +144,13 @@ pub struct SsaLoweringError {
     msg: String,
 }
 
-impl std::fmt::Display for SsaLoweringError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for SsaLoweringError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "SSA lowering failed: {}", self.msg)
     }
 }
 
-impl std::error::Error for SsaLoweringError {}
+impl core::error::Error for SsaLoweringError {}
 
 pub fn lower_expr_to_ssa(expr: &Expr) -> Result<SsaFunction, SsaLoweringError> {
     let mut ctx = LoweringContext::new();

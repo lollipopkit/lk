@@ -1,4 +1,6 @@
-use std::fmt::Debug;
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
+use core::fmt::Debug;
 
 use crate::token::{ParseError, Position, Span};
 use anyhow::{Result, anyhow};
@@ -185,7 +187,7 @@ impl<'a> Tokenizer<'a> {
     }
 
     /// Tokenize with enhanced error information (line/column span) for LSP
-    pub fn tokenize_enhanced(s: &str) -> std::result::Result<Vec<Token>, ParseError> {
+    pub fn tokenize_enhanced(s: &str) -> core::result::Result<Vec<Token>, ParseError> {
         let mut t = Tokenizer::new_enhanced(s);
         match t.parse() {
             Ok(()) => Ok(t.tokens),
@@ -197,7 +199,7 @@ impl<'a> Tokenizer<'a> {
     }
 
     /// Tokenize and return tokens with precise spans aligned by index
-    pub fn tokenize_enhanced_with_spans(s: &str) -> std::result::Result<(Vec<Token>, Vec<Span>), ParseError> {
+    pub fn tokenize_enhanced_with_spans(s: &str) -> core::result::Result<(Vec<Token>, Vec<Span>), ParseError> {
         let mut t = Tokenizer::new_enhanced(s);
         match t.parse() {
             Ok(()) => Ok((t.tokens, t.token_spans.unwrap_or_default())),

@@ -1,4 +1,6 @@
-use std::sync::Arc;
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
+use alloc::sync::Arc;
 
 use anyhow::{anyhow, bail};
 use arcstr::ArcStr;
@@ -1003,7 +1005,7 @@ fn dispatch_list_builtin_method(
             let Some(slot) = items.get_mut(index) else {
                 bail!("list.set() index {} out of bounds (len={})", index, items.len());
             };
-            let old = std::mem::replace(slot, positional[1]);
+            let old = core::mem::replace(slot, positional[1]);
             let updated = RuntimeVal::Obj(heap.alloc(HeapValue::List(TypedList::Mixed(items))));
             Ok(Some(RuntimeVal::Obj(
                 heap.alloc(HeapValue::List(TypedList::Mixed(vec![updated, old]))),
@@ -1168,19 +1170,19 @@ fn runtime_values_equal(left: &RuntimeVal, right: &RuntimeVal) -> bool {
     }
 }
 
-fn compare_runtime_values(left: &RuntimeVal, right: &RuntimeVal) -> std::cmp::Ordering {
+fn compare_runtime_values(left: &RuntimeVal, right: &RuntimeVal) -> core::cmp::Ordering {
     match (left, right) {
-        (RuntimeVal::Nil, RuntimeVal::Nil) => std::cmp::Ordering::Equal,
+        (RuntimeVal::Nil, RuntimeVal::Nil) => core::cmp::Ordering::Equal,
         (RuntimeVal::Bool(left), RuntimeVal::Bool(right)) => left.cmp(right),
         (RuntimeVal::Int(left), RuntimeVal::Int(right)) => left.cmp(right),
         (RuntimeVal::Float(left), RuntimeVal::Float(right)) => {
-            left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal)
+            left.partial_cmp(right).unwrap_or(core::cmp::Ordering::Equal)
         }
         (RuntimeVal::Int(left), RuntimeVal::Float(right)) => {
-            (*left as f64).partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal)
+            (*left as f64).partial_cmp(right).unwrap_or(core::cmp::Ordering::Equal)
         }
         (RuntimeVal::Float(left), RuntimeVal::Int(right)) => {
-            left.partial_cmp(&(*right as f64)).unwrap_or(std::cmp::Ordering::Equal)
+            left.partial_cmp(&(*right as f64)).unwrap_or(core::cmp::Ordering::Equal)
         }
         (RuntimeVal::ShortStr(left), RuntimeVal::ShortStr(right)) => left.as_str().cmp(right.as_str()),
         _ => runtime_val_kind_rank(left).cmp(&runtime_val_kind_rank(right)),
@@ -1447,7 +1449,7 @@ impl MethodPositionalArgs {
                     );
                 }
                 let mut values: [RuntimeVal; MAX_INLINE_METHOD_POSITIONAL_ARGS] =
-                    std::array::from_fn(|_| RuntimeVal::Nil);
+                    core::array::from_fn(|_| RuntimeVal::Nil);
                 copy_method_positional_list(handle, heap, &mut values[..len])?;
                 f(&values[..len], heap)
             }

@@ -1,4 +1,6 @@
-use std::collections::HashMap;
+use crate::compat::collections::HashMap;
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 
 use anyhow::{Result, anyhow, bail};
 
@@ -33,7 +35,7 @@ impl Compiler {
     }
 
     pub fn compile_module_with_natives(program: &Program, natives: Vec<NativeEntry>) -> Result<Module> {
-        Self::compile_module_with_natives_and_globals(program, natives, std::iter::empty::<&str>())
+        Self::compile_module_with_natives_and_globals(program, natives, core::iter::empty::<&str>())
     }
 
     pub fn compile_module_with_natives_and_globals<I, S>(
@@ -94,7 +96,7 @@ impl Compiler {
                     HashMap::new(),
                     module.functions.len() as u32,
                 )?;
-                compiled.function.debug_name = Some(std::sync::Arc::<str>::from(name.as_str()));
+                compiled.function.debug_name = Some(alloc::sync::Arc::<str>::from(name.as_str()));
                 module.functions[function_index as usize] = compiled.function;
                 module.functions.append(&mut compiled.pending_functions);
             }
@@ -177,7 +179,7 @@ impl Compiler {
             compiler
                 .function
                 .param_names
-                .push(std::sync::Arc::<str>::from(name.as_str()));
+                .push(alloc::sync::Arc::<str>::from(name.as_str()));
         }
         compiler.function.capture_count = compiler.capture_names.len() as u16;
         compiler.next_reg = compiler.function.param_count;

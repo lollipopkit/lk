@@ -7,7 +7,9 @@
 //! VarSlot (depth, index) where possible. The output is an analysis-only
 //! structure and does not mutate the AST.
 
-use std::collections::HashMap;
+use crate::compat::collections::HashMap;
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 
 use crate::{
     expr::{Expr, MatchArm, Pattern, SelectCase, SelectPattern, TemplateStringPart},

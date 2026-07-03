@@ -1,3 +1,5 @@
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 use anyhow::{Result, anyhow, bail};
 
 use crate::{

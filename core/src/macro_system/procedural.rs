@@ -2,6 +2,8 @@
 // macro system on the same shape avoids re-boxing at every parse boundary.
 #![allow(clippy::vec_box, clippy::boxed_local)]
 use super::{proc_deps::ProcMacroDependencyRecorder, proc_output::parse_tokens_from_proc_output};
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 mod derive;
 mod origins;
 
@@ -243,7 +245,7 @@ impl fmt::Display for ProcMacroProcessError {
     }
 }
 
-impl std::error::Error for ProcMacroProcessError {}
+impl core::error::Error for ProcMacroProcessError {}
 
 #[derive(Debug, Clone, Default)]
 pub struct ProcMacroOptions {

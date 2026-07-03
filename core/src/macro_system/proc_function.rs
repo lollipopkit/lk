@@ -2,6 +2,8 @@ use super::{
     MacroExpandOptions, MacroOriginFrame, MacroOriginKind, SourceToken, origin,
     proc_output::source_tokens_from_proc_output,
 };
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 use crate::{
     macro_system::{
         PROC_MACRO_PROTOCOL_VERSION, ProcMacroDiagnostic, ProcMacroDiagnosticLevel, ProcMacroKind, ProcMacroRequest,

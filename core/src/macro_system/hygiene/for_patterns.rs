@@ -1,3 +1,5 @@
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 use crate::macro_system::ExpandedToken;
 use crate::stmt::{ForPattern, StmtParser};
 

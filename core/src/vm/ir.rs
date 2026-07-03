@@ -3,8 +3,12 @@
 //! Compiler and executor work should target this representation directly;
 //! alternate instruction models must not be reintroduced.
 
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 use crate::util::fast_map::FastHashMap;
-use std::{fmt::Write as _, mem::size_of, sync::Arc};
+use alloc::sync::Arc;
+use core::fmt::Write as _;
+use core::mem::size_of;
 
 use anyhow::{Result, bail};
 

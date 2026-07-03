@@ -1,3 +1,5 @@
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 use crate::val::Type;
 
 use super::analysis::{PerfKeyFact, PerfValueKind, PerformanceFacts};

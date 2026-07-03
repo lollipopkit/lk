@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use alloc::sync::Arc;
 
 use anyhow::{Result, anyhow, bail};
 
@@ -37,7 +37,7 @@ impl SmallKey {
     fn as_str(&self) -> Option<&str> {
         match self {
             SmallKey::None => None,
-            SmallKey::Short { len, data } => std::str::from_utf8(&data[..*len as usize]).ok(),
+            SmallKey::Short { len, data } => core::str::from_utf8(&data[..*len as usize]).ok(),
         }
     }
 }

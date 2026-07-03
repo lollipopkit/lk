@@ -1,5 +1,7 @@
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 use crate::util::fast_map::{FastHashMap, fast_hash_map_new};
-use std::sync::Arc;
+use alloc::sync::Arc;
 
 use anyhow::{Result, anyhow, bail};
 
@@ -718,7 +720,7 @@ impl Executor {
         let Some(HeapValue::List(TypedList::String(values))) = self.state.heap.get_mut(handle) else {
             bail!("heap object {} changed while taking string list", handle.index());
         };
-        let strings = std::mem::take(values);
+        let strings = core::mem::take(values);
         let mut mixed = Vec::with_capacity(strings.len());
         for value in strings {
             mixed.push(self.runtime_value_from_string(value));

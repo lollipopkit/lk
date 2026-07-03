@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 
 #[test]
 fn external_attribute_provider_replaces_item() {

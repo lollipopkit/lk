@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 use crate::{
     macro_system::{
         PROC_MACRO_PROTOCOL_VERSION, ProcMacroKind, ProcMacroProcessConfig, ProcMacroProcessError, ProcMacroProviders,

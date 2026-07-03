@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 
 #[test]
 fn compiler_for_over_local_string_does_not_clone_iterable_local() {
@@ -329,7 +331,7 @@ fn compiler_keeps_dynamic_for_range_step_sign_fallback() {
     let step_sign_pc = function
         .code
         .iter()
-        .position(|instr| std::ptr::eq(instr, step_sign_check))
+        .position(|instr| core::ptr::eq(instr, step_sign_check))
         .expect("step sign pc");
     let zero_load_pc = load_int_register_pc(&function, step_sign_check.c(), 0).expect("step sign zero load");
     let loop_target = first_backward_loop_target_after(&function, step_sign_pc);

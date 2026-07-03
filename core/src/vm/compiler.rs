@@ -3,6 +3,8 @@
 //! This is the first migration point from AST to the new VM path. It is
 //! deliberately small and independent from the previous `FunctionBuilder`.
 
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 mod assign;
 mod builder;
 mod call;
@@ -25,10 +27,8 @@ mod support;
 #[cfg(test)]
 mod tests;
 
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-};
+use crate::compat::collections::{HashMap, HashSet};
+use alloc::sync::Arc;
 
 use anyhow::{Result, anyhow, bail};
 
@@ -2198,7 +2198,7 @@ fn string_int_template_key(expr: &Expr) -> Option<(&str, &Expr)> {
 
 fn string_int_key_suffix_is_int_like(
     expr: &Expr,
-    locals: &std::collections::HashMap<String, u16>,
+    locals: &crate::compat::collections::HashMap<String, u16>,
     facts: &crate::vm::analysis::PerformanceFacts,
 ) -> bool {
     match strip_expr_parens(expr) {

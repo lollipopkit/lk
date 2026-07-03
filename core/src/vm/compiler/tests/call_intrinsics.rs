@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 
 #[test]
 fn compiler_dynamic_method_helper_reads_runtime_properties() {

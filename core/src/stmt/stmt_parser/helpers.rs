@@ -1,4 +1,6 @@
 use super::StmtParser;
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 use crate::{
     ast::Parser as ExprParser,
     expr::{Expr, Pattern},
@@ -19,7 +21,7 @@ impl<'a> StmtParser<'a> {
             ));
         }
 
-        if std::mem::discriminant(&self.tokens[self.pos]) != std::mem::discriminant(&expected) {
+        if core::mem::discriminant(&self.tokens[self.pos]) != core::mem::discriminant(&expected) {
             return Err(anyhow!(
                 self.err(&format!("Expected {:?}, found {:?}", expected, self.tokens[self.pos]))
             ));

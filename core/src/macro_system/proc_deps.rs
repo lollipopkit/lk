@@ -1,4 +1,6 @@
 use super::procedural::ProcMacroDependency;
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::{
     cell::RefCell,

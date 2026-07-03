@@ -1,4 +1,6 @@
-use std::collections::{HashMap, HashSet};
+use crate::compat::collections::{HashMap, HashSet};
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 
 use anyhow::Result;
 

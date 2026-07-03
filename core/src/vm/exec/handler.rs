@@ -1,4 +1,6 @@
-use std::sync::Arc;
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
+use alloc::sync::Arc;
 
 use anyhow::{Result, anyhow, bail};
 
@@ -6,16 +8,16 @@ use crate::val::{ErrorVal, HeapValue, RuntimeVal};
 
 #[derive(Clone, Debug)]
 pub(super) struct LanguageRaise {
-    pub(super) message: std::sync::Arc<str>,
+    pub(super) message: alloc::sync::Arc<str>,
 }
 
-impl std::fmt::Display for LanguageRaise {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for LanguageRaise {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str(self.message.as_ref())
     }
 }
 
-impl std::error::Error for LanguageRaise {}
+impl core::error::Error for LanguageRaise {}
 
 /// A recoverable error carrying a first-class LK value (primitives only for now —
 /// heap objects would need GC rooting across unwinding). `error(v)` raises this
@@ -27,8 +29,8 @@ pub struct LkRaisedValue {
     pub value: RuntimeVal,
 }
 
-impl std::fmt::Display for LkRaisedValue {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for LkRaisedValue {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self.value {
             RuntimeVal::Int(n) => write!(f, "{n}"),
             RuntimeVal::Float(x) => write!(f, "{x}"),
@@ -40,7 +42,7 @@ impl std::fmt::Display for LkRaisedValue {
     }
 }
 
-impl std::error::Error for LkRaisedValue {}
+impl core::error::Error for LkRaisedValue {}
 
 #[derive(Clone, Debug)]
 pub(super) struct ErrorHandler {

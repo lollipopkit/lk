@@ -1,4 +1,6 @@
 use super::StmtParser;
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 use crate::{
     stmt::{Attribute, Program, Stmt},
     token::{ParseError, Position, Span, Token, offset_to_position},
@@ -25,7 +27,7 @@ impl<'a> StmtParser<'a> {
     }
 
     /// Parse program with enhanced error reporting
-    pub fn parse_program_with_enhanced_errors(&mut self, input: &str) -> std::result::Result<Program, ParseError> {
+    pub fn parse_program_with_enhanced_errors(&mut self, input: &str) -> core::result::Result<Program, ParseError> {
         let mut statements = Vec::new();
 
         while !self.eof() {

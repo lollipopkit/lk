@@ -1,4 +1,6 @@
-use std::collections::HashSet;
+use crate::compat::collections::HashSet;
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 
 use crate::{
     expr::{Expr, Pattern, SelectPattern, TemplateStringPart},

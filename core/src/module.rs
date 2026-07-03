@@ -1,13 +1,14 @@
+use crate::compat::collections::HashMap;
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
+use crate::compat::sync::Mutex;
 use crate::util::fast_map::fast_hash_map_new;
 use crate::{
     val::{CallableValue, HeapStore, HeapValue, RuntimeVal, TypedMap},
     vm::{ContextNativeFunction, Module, NativeFunction, PlainNativeFunction, RuntimeExport, RuntimeModuleState},
 };
+use alloc::sync::Arc;
 use anyhow::{Result, anyhow};
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex},
-};
 
 /// Central module registry inspired by Lua's linit.c
 ///
@@ -106,7 +107,7 @@ impl Default for ModuleRegistry {
 ///
 /// Each module implements this trait to provide its functionality
 /// in a standardized way, similar to how Lua's standard libraries work.
-pub trait ModuleProvider: Send + Sync + std::fmt::Debug {
+pub trait ModuleProvider: Send + Sync + core::fmt::Debug {
     /// Get the module name
     fn name(&self) -> &str;
 

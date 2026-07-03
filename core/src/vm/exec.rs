@@ -1,5 +1,7 @@
 //! Minimal safe executor for the new `Instr` VM path.
 
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 mod arithmetic;
 mod call;
 mod callable_ops;
@@ -37,7 +39,7 @@ pub use runtime_callable::{
 };
 
 use crate::util::fast_map::{FastHashMap, fast_hash_map_new};
-use std::sync::Arc;
+use alloc::sync::Arc;
 
 use anyhow::{Result, anyhow, bail};
 
@@ -114,7 +116,7 @@ impl ProgramResult {
         let value = RuntimeVal::Obj(state.heap.alloc(HeapValue::Map(typed_map_from_entries(entries))));
         RuntimeExport::new(
             value,
-            Arc::new(std::sync::Mutex::new(RuntimeModuleState::new(
+            Arc::new(crate::compat::sync::Mutex::new(RuntimeModuleState::new(
                 state.heap,
                 state.globals,
             ))),
@@ -259,7 +261,7 @@ fn append_separator(out: &mut String, first: &mut bool) {
     *first = false;
 }
 
-fn append_display_items<T: std::fmt::Display>(out: &mut String, values: impl IntoIterator<Item = T>) {
+fn append_display_items<T: core::fmt::Display>(out: &mut String, values: impl IntoIterator<Item = T>) {
     let mut first = true;
     for value in values {
         append_separator(out, &mut first);
@@ -290,7 +292,7 @@ fn append_string_runtime_map_entries(
     }
 }
 
-fn append_string_display_map_entries<T: std::fmt::Display>(out: &mut String, entries: &FastHashMap<Arc<str>, T>) {
+fn append_string_display_map_entries<T: core::fmt::Display>(out: &mut String, entries: &FastHashMap<Arc<str>, T>) {
     let mut first = true;
     for (key, value) in entries {
         append_separator(out, &mut first);
@@ -483,7 +485,7 @@ impl Executor {
         state: RuntimeModuleState,
         ctx: &mut VmContext,
         seed_args: F,
-    ) -> std::result::Result<ExecResult, ExecFailure>
+    ) -> core::result::Result<ExecResult, ExecFailure>
     where
         F: FnOnce(&mut Self) -> Result<u16>,
     {
@@ -1670,7 +1672,7 @@ impl Executor {
                     self.collect_pending_garbage();
                     profile.flush(collect_metrics);
                     let index = self.stack_index_unchecked(instr.a());
-                    return Ok(ReturnValues::One(std::mem::take(&mut self.state.stack[index])));
+                    return Ok(ReturnValues::One(core::mem::take(&mut self.state.stack[index])));
                 }
                 other => bail!("Opcode {:?} is not implemented in Executor yet", other),
             }
@@ -1689,7 +1691,14 @@ impl Executor {
 }
 
 fn gc_stress_enabled() -> bool {
-    std::env::var_os("LK_GC_STRESS").is_some_and(|value| value != "0")
+    #[cfg(feature = "std")]
+    {
+        std::env::var_os("LK_GC_STRESS").is_some_and(|value| value != "0")
+    }
+    #[cfg(not(feature = "std"))]
+    {
+        false
+    }
 }
 
 pub fn execute(function: &Function) -> Result<ExecResult> {

@@ -1,3 +1,5 @@
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 use crate::{
     module::ModuleRegistry,
     stmt::{Program, Stmt},
@@ -5,11 +7,11 @@ use crate::{
     val::{HeapValue, RuntimeVal},
     vm::{RuntimeExport, VmContext},
 };
+use alloc::sync::Arc;
 use anyhow::{Result, anyhow};
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
 
 /// Import system for LK - supports various `use` syntaxes and plugin-style module resolution
 ///

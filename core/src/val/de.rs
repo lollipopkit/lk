@@ -1,6 +1,8 @@
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 use crate::util::fast_map::fast_hash_map_new;
 use crate::val::{HeapStore, HeapValue, RuntimeMapKey, RuntimeVal, ShortStr, TypedList};
-use std::sync::Arc;
+use alloc::sync::Arc;
 
 #[derive(Debug)]
 pub struct RuntimeDecodedValue {

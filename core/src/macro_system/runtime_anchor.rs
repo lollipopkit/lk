@@ -1,4 +1,6 @@
-use std::collections::BTreeSet;
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
+use alloc::collections::BTreeSet;
 
 use crate::token::{Position, Span, Token};
 

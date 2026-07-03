@@ -1,3 +1,5 @@
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 use anyhow::{Result, anyhow, bail};
 
 use crate::vm::analysis::{
@@ -99,9 +101,9 @@ impl Compiler {
     /// `self.locals` (the comparison needs the scope's bindings).
     pub(super) fn scope_restored_cell_locals(
         &self,
-        saved_locals: &std::collections::HashMap<String, u16>,
-        mut saved_cell_locals: std::collections::HashSet<String>,
-    ) -> std::collections::HashSet<String> {
+        saved_locals: &crate::compat::collections::HashMap<String, u16>,
+        mut saved_cell_locals: crate::compat::collections::HashSet<String>,
+    ) -> crate::compat::collections::HashSet<String> {
         for name in &self.cell_locals {
             if !saved_cell_locals.contains(name) && self.locals.get(name).copied() == saved_locals.get(name).copied() {
                 saved_cell_locals.insert(name.clone());
@@ -394,7 +396,7 @@ impl Compiler {
         self.function.register_count = self.peak_reg;
         let control_flow = build_control_flow_facts(&self.function.code, &self.function.performance)?;
         self.function.performance.set_control_flow_facts(control_flow);
-        Ok(std::mem::take(&mut self.function))
+        Ok(core::mem::take(&mut self.function))
     }
 }
 

@@ -1,5 +1,7 @@
+use crate::compat::collections::{HashMap, HashSet};
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 use crate::util::fast_map::fast_hash_map_new;
-use std::collections::{HashMap, HashSet};
 
 use anyhow::{Result, anyhow, bail};
 
@@ -11,7 +13,7 @@ use crate::{
     vm::ConstRuntimeValue,
 };
 
-use std::sync::Arc;
+use alloc::sync::Arc;
 
 use super::{ConstHeapValue, GlobalSlot, NativeEntry, free_vars::collect_function_free_vars};
 

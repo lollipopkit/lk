@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 #[test]
 fn execute_compares_int_ordering() {
     let function = Function {
@@ -209,7 +211,7 @@ fn execute_compares_const_string_key_maps_across_short_and_heap_keys() {
     );
     let mut heap_key_map = fast_hash_map_new();
     heap_key_map.insert(
-        RuntimeMapKey::String(std::sync::Arc::<str>::from("a")),
+        RuntimeMapKey::String(alloc::sync::Arc::<str>::from("a")),
         crate::vm::ConstRuntimeValue::Int(42),
     );
     let function = Function {
@@ -240,7 +242,7 @@ fn execute_compares_const_string_key_maps_across_short_and_heap_keys() {
 fn execute_mixed_map_set_index_uses_exact_string_key_semantics() {
     let mut map = fast_hash_map_new();
     map.insert(
-        RuntimeMapKey::String(std::sync::Arc::<str>::from("a")),
+        RuntimeMapKey::String(alloc::sync::Arc::<str>::from("a")),
         crate::vm::ConstRuntimeValue::Int(1),
     );
     map.insert(RuntimeMapKey::Int(7), crate::vm::ConstRuntimeValue::Int(0));
@@ -250,7 +252,7 @@ fn execute_mixed_map_set_index_uses_exact_string_key_semantics() {
             strings: vec!["a".to_string()],
             heap_values: vec![
                 ConstHeapValue::Map(map),
-                ConstHeapValue::LongString(std::sync::Arc::<str>::from("a")),
+                ConstHeapValue::LongString(alloc::sync::Arc::<str>::from("a")),
             ],
             ..ConstPool::default()
         },

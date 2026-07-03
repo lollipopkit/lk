@@ -1,4 +1,6 @@
 use super::StmtParser;
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 use crate::{ast::Parser as ExprParser, expr::Expr, operator::BinOp, stmt::Stmt, token::Token, val::LiteralVal};
 use anyhow::{Result, anyhow};
 

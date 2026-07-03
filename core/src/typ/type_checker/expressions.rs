@@ -1,3 +1,5 @@
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 mod calls;
 mod literals;
 mod stdlib;
@@ -210,7 +212,7 @@ impl TypeChecker {
                             None,
                         ));
                     }
-                    use std::collections::HashSet;
+                    use crate::compat::collections::HashSet;
                     let mut seen_names: HashSet<&str> = HashSet::with_capacity(named_args.len());
                     // Check named arguments
                     for (n, e) in named_args {
@@ -304,7 +306,7 @@ impl TypeChecker {
                     }
 
                     // Duplicate/unknown
-                    use std::collections::{HashMap as Map, HashSet};
+                    use crate::compat::collections::{HashMap as Map, HashSet};
                     let mut sig_lookup: Map<&str, &NamedParamSig> = Map::with_capacity(sig.named.len());
                     for decl in &sig.named {
                         sig_lookup.insert(decl.name.as_str(), decl);
@@ -373,7 +375,7 @@ impl TypeChecker {
                             self.inference_engine.add_constraint(pt.clone(), at.clone());
                         }
                         if !named_params.is_empty() || !named_types.is_empty() {
-                            use std::collections::{HashMap as Map, HashSet};
+                            use crate::compat::collections::{HashMap as Map, HashSet};
                             let decl_map: Map<&str, &FunctionNamedParamType> =
                                 named_params.iter().map(|np| (np.name.as_str(), np)).collect();
                             let mut provided: HashSet<&str> = HashSet::with_capacity(named_types.len());
@@ -391,7 +393,7 @@ impl TypeChecker {
                                 let decl_ty = &decl_map[key].ty;
                                 self.inference_engine.add_constraint(decl_ty.clone(), ty.clone());
                             }
-                            for decl in named_params {
+                            for decl in &named_params {
                                 let is_optional = matches!(decl.ty, Type::Optional(_)) || decl.has_default;
                                 if !is_optional && !provided.contains(decl.name.as_str()) {
                                     return Err(Self::type_err(
@@ -781,7 +783,7 @@ impl TypeChecker {
         }
 
         // Deduplicate and produce a stable order by display string
-        use std::collections::BTreeMap;
+        use alloc::collections::BTreeMap;
         let mut by_key: BTreeMap<String, Type> = BTreeMap::new();
         for ty in item_types {
             if let Type::Union(types) = ty {
@@ -827,7 +829,7 @@ impl TypeChecker {
             }
         }
 
-        use std::collections::BTreeMap;
+        use alloc::collections::BTreeMap;
         let mut key_by_str: BTreeMap<String, Type> = BTreeMap::new();
         for t in key_tys {
             key_by_str.entry(t.display()).or_insert(t);

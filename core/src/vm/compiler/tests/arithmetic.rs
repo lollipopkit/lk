@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 
 #[test]
 fn compiler_lowers_small_int_literal_add_sub_to_add_int_immediate() {

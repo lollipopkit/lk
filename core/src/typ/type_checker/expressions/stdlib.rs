@@ -1,8 +1,10 @@
+use crate::compat::collections::HashSet;
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 use crate::expr::Expr;
 use crate::typ::type_checker::TypeChecker;
 use crate::val::{FunctionNamedParamType, Type};
 use anyhow::Result;
-use std::collections::HashSet;
 
 impl TypeChecker {
     pub(super) fn check_stdlib_function_call(&mut self, func: &Expr, args: &[Box<Expr>]) -> Result<Option<Type>> {

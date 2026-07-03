@@ -1,3 +1,5 @@
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 use crate::{
     expr::{Expr, MatchArm, Pattern, SelectCase, SelectPattern, TemplateStringPart},
     operator::{BinOp, UnaryOp},
@@ -51,7 +53,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse with enhanced error information that includes position
-    pub fn parse_with_enhanced_errors(&mut self, input: &str) -> std::result::Result<Expr, ParseError> {
+    pub fn parse_with_enhanced_errors(&mut self, input: &str) -> core::result::Result<Expr, ParseError> {
         if self.eof() {
             return Ok(Expr::Literal(LiteralVal::Nil));
         }
@@ -1207,7 +1209,7 @@ impl<'a> Parser<'a> {
                 i += 2;
 
                 if !current_literal.is_empty() {
-                    parts.push(TemplateStringPart::Literal(std::mem::take(&mut current_literal)));
+                    parts.push(TemplateStringPart::Literal(core::mem::take(&mut current_literal)));
                 }
 
                 in_expr = true;
@@ -1290,7 +1292,7 @@ impl<'a> Parser<'a> {
             if self.tokens[self.pos] == Token::Range {
                 saw_spread = true;
                 if !elements.is_empty() {
-                    segments.push(Expr::List(std::mem::take(&mut elements)));
+                    segments.push(Expr::List(core::mem::take(&mut elements)));
                 }
                 self.pos += 1;
                 if self.eof() || !self.is_valid_expr_start() {

@@ -9,6 +9,8 @@ use super::{
     parse_proc_macro_output_items, record_ast_origin, reject_error_diagnostics, run_proc_macro_process,
     stmt_item_tokens,
 };
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 use crate::{
     expr::{Expr, TemplateStringPart},
     stmt::{Attribute, Stmt},

@@ -1,3 +1,5 @@
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 use std::{fs, path::Path};
 
 const FORBIDDEN_TOKENS: &[(&str, &str)] = &[

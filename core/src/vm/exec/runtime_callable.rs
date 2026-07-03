@@ -1,5 +1,8 @@
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
+use crate::compat::sync::Mutex;
 use crate::util::fast_map::{FastHashMap, fast_hash_map_new, fast_hash_set_new};
-use std::sync::{Arc, Mutex};
+use alloc::sync::Arc;
 
 use anyhow::{Result, anyhow, bail};
 
@@ -685,7 +688,7 @@ fn call_closure_value(
         .ok_or_else(|| anyhow!("function index {} out of bounds", function_index))?;
     let mut ctx = ctx;
     let mut callee = Executor::new(function.register_count);
-    callee.state = std::mem::take(state);
+    callee.state = core::mem::take(state);
     callee.captures = captures;
     let saved_top = callee.state.stack_top;
     let result = (|| {
@@ -734,7 +737,7 @@ fn call_closure_value_typed_map(
         .ok_or_else(|| anyhow!("function index {} out of bounds", function_index))?;
     let mut ctx = ctx;
     let mut callee = Executor::new(function.register_count);
-    callee.state = std::mem::take(state);
+    callee.state = core::mem::take(state);
     callee.captures = captures;
     let saved_top = callee.state.stack_top;
     let result = (|| {
@@ -896,7 +899,7 @@ fn take_runtime_callable_state(function: &RuntimeCallable) -> Result<RuntimeModu
         .state
         .lock()
         .map_err(|_| anyhow!("RuntimeCallable state lock poisoned"))?;
-    Ok(std::mem::take(&mut *state))
+    Ok(core::mem::take(&mut *state))
 }
 
 #[cfg(test)]
@@ -1055,7 +1058,7 @@ fn copy_typed_map_named_args_to_frame(
             else {
                 bail!("unknown named argument `{name_str}`");
             };
-            if std::mem::replace(&mut seen[offset], true) {
+            if core::mem::replace(&mut seen[offset], true) {
                 bail!("duplicate named argument `{name_str}`");
             }
             frame[positional_count + offset] = $value;
@@ -1129,7 +1132,7 @@ fn write_named_args_to_frame_from_typed_map(
             else {
                 bail!("unknown named argument `{name_str}`");
             };
-            if std::mem::replace(&mut seen[offset], true) {
+            if core::mem::replace(&mut seen[offset], true) {
                 bail!("duplicate named argument `{name_str}`");
             }
             frame[positional_count + offset] = $value;
@@ -1224,7 +1227,7 @@ fn copy_named_stack_args_to_frame(
             else {
                 bail!("unknown named argument `{name}`");
             };
-            if std::mem::replace(&mut seen[offset], true) {
+            if core::mem::replace(&mut seen[offset], true) {
                 bail!("duplicate named argument `{name}`");
             }
             offset

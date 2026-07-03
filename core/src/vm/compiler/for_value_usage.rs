@@ -1,3 +1,5 @@
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 use crate::{
     expr::{Expr, Pattern, TemplateStringPart},
     stmt::Stmt,

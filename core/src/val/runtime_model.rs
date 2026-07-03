@@ -3,8 +3,10 @@
 //! The `LiteralVal` enum remains active while the compiler and executor are migrated.
 //! New VM code should target these types first.
 
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 use crate::util::fast_map::{FastHashMap, FastHashSet, fast_hash_map_from_iter, fast_hash_map_new, fast_hash_set_new};
-use std::sync::Arc;
+use alloc::sync::Arc;
 
 use crate::val::{ShortStr, Type};
 
@@ -610,7 +612,7 @@ impl TypedMap {
     }
 
     fn materialize_string_map_to_mixed(&mut self, key: RuntimeMapKey, value: RuntimeVal) {
-        let mut mixed = match std::mem::replace(self, Self::Mixed(fast_hash_map_new())) {
+        let mut mixed = match core::mem::replace(self, Self::Mixed(fast_hash_map_new())) {
             Self::Mixed(values) => values,
             Self::StringMixed(values) => {
                 let mut mixed = fast_hash_map_new();
@@ -1036,26 +1038,33 @@ pub struct SliceValue {
 #[derive(Clone)]
 pub struct ResourceValue {
     pub kind: &'static str,
+    // `ResourceValue` wraps OS resources (files/sockets); it is a std-only
+    // concern (gated at the no_std flip), so its guard stays on std's Mutex to
+    // avoid rippling the compat shim into the stdlib resource constructors.
     pub handle: Arc<std::sync::Mutex<ResourceHandle>>,
 }
 
-impl std::fmt::Debug for ResourceValue {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for ResourceValue {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("ResourceValue")
             .field("kind", &self.kind)
             .finish_non_exhaustive()
     }
 }
 
-impl std::fmt::Debug for ResourceHandle {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for ResourceHandle {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let name = match self {
+            #[cfg(feature = "std")]
             Self::File(_) => "File",
             Self::Stdin => "Stdin",
             Self::Stdout => "Stdout",
             Self::Stderr => "Stderr",
+            #[cfg(feature = "std")]
             Self::TcpStream(_) => "TcpStream",
+            #[cfg(feature = "std")]
             Self::TcpListener(_) => "TcpListener",
+            #[cfg(feature = "std")]
             Self::UdpSocket(_) => "UdpSocket",
             Self::Closed => "Closed",
         };
@@ -1064,12 +1073,16 @@ impl std::fmt::Debug for ResourceHandle {
 }
 
 pub enum ResourceHandle {
+    #[cfg(feature = "std")]
     File(std::fs::File),
     Stdin,
     Stdout,
     Stderr,
+    #[cfg(feature = "std")]
     TcpStream(std::net::TcpStream),
+    #[cfg(feature = "std")]
     TcpListener(std::net::TcpListener),
+    #[cfg(feature = "std")]
     UdpSocket(std::net::UdpSocket),
     Closed,
 }
