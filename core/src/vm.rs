@@ -23,6 +23,8 @@ mod runtime;
 #[allow(dead_code)]
 pub(crate) mod ssa;
 pub mod verify;
+#[cfg(all(test, feature = "std"))]
+mod verify_fuzz_tests;
 
 pub use artifact::*;
 pub use cache::*;

@@ -55,6 +55,8 @@ jobs:
         run: LK_NATIVE_SANITIZE=address,undefined cargo test -p lk-cli --test examples_differential_test
       - name: scaled generative fuzz differential
         run: LK_NATIVE_SANITIZE=address,undefined LK_FUZZ_CASES=500 cargo test -p lk-cli --test aot_fuzz_differential_test -- --nocapture
+      - name: scaled artifact decoder/verifier fuzz
+        run: LK_FUZZ_CASES=50000 cargo test -p lk-core verify_fuzz -- --nocapture
 
   fuzz-fresh-seed:
     runs-on: ubuntu-latest
@@ -69,6 +71,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: fuzz with the run id as seed (printed for reproduction)
         run: LK_FUZZ_SEED=${{ github.run_id }} LK_FUZZ_CASES=500 cargo test -p lk-cli --test aot_fuzz_differential_test -- --nocapture
+      - name: artifact decoder/verifier fuzz with the run id as seed
+        run: LK_FUZZ_SEED=${{ github.run_id }} LK_FUZZ_CASES=20000 cargo test -p lk-core verify_fuzz -- --nocapture
 
   miri-lkrt:
     runs-on: ubuntu-latest
