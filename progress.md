@@ -290,6 +290,33 @@
       及 entry 回退 Tier 0;stdio flush 顺序/未捕获错误 abort 对齐/artifact 复用(M2.7 加固面)为硬约束。
       **5 个可提交子步**:① lk-api hybrid 运行时+单测 → ② lower 标记+资格分析+MIR 快照 → ③ codegen declare+桥调用
       +.ll 快照 → ④ cli 混合链接+端到端差分 → ⑤ fuzz 生成器扩展。
+      **✅ 子步① 完成**(commit `2e19e94`):core `call_module_function_with_ctx`(exec/program.rs,seed globals 同
+      模块运行、CallableValue::Closure+call_runtime_value_runtime 调 fidx、ModuleFunctionArg 标量 marshal)+
+      lk-api `HybridModule`(from_artifact_json→imports→verify;find_function 按 debug_name;call_discard)+
+      ffi `lk_hybrid_register/lk_hybrid_call_v`(进程单例,错误即 exit(1))+ lk.h。core 947/api 11 全绿。
+      **子步② 实现方案(已测绘定稿,代码级锚点)**:
+      - **关键更正**:`dead_writes` fact 只标纯字面量表达式语句(compiler/builder.rs `mark_last_dead_write`),
+        **不覆盖调用结果** → 设计中「用 dead_writes 证明结果废弃」不可用。**替代方案(更优,零证明)**:VM-executed
+        被调方在 `lower_user_call` 里**不 `ssa.write` dst 寄存器**(并清 `current_def[block][dst]`+`builtin_regs`)——
+        `ssa.read` 对未绑定寄存器本就返回 Unsupported(lib.rs:3116 注释明说)→ 结果被读=整模块回退,sound。
+      - **两阶段结构**(改 `lower()` final pass,lib.rs:560-589):final pass 从逐函数 `?` 改为收集
+        `Vec<Result<MirFunction>>`;全 Ok→照旧;有 Err→对每个失败函数跑资格审查,全合格→设
+        `sig.vm_functions: HashSet<u32>` 后**整体重跑 final pass**(globals 重建),否则返回首个错误(现行为)。
+      - **资格审查**:f≠entry;capture_count==0;!sig.specialized[f];lambda_params[f] 全 None;param_obs[f] 全
+        Some(I64|F64|Bool|Str);globals 扫描:从 f 经 CallDirect/MakeClosure(b 操作数)BFS 全子树,任何 SetGlobal
+        →拒;GetGlobal 到「全模块任意处被 SetGlobal 的 slot」→拒(未写 slot=builtin 读,VM 侧 ctx seed 等价,安全)。
+      - **lower_user_call 桥分支**(lib.rs:2219,在 clone/summary 机制后、CallFn 发射前):callee∈vm_functions →
+        读标量 args(仅 I64/F64/Bool/Str,容器句柄拒)→ 发 `Inst::CallVm { func, args }` → dst 不绑定。
+      - **MIR**:`Inst::CallVm` 变体 + `MirModule.vm_functions: Vec<VmFunction{id,params:Vec<Ty>}>`(构造点:
+        lower、mir tests div_module、codegen tests/examples demo);render 仅非空时打印(既有快照稳定);validate 加臂。
+      - **codegen**:vm_functions 非空时 prelude 加 `%LkHybridArg = type {i8,i64}` + `declare void
+        @lk_hybrid_call_v(i32,ptr,i64)`;CallVm 渲染:alloca 数组+逐 arg store(tag i8@field0,值@field1,Bool zext
+        i64,F64 store double,Str store ptr)+ **先 `call @lkrt_io_std_flush(1)`(stdio 顺序)** + call_v。
+      - **门控**:`pub fn lower_with_hybrid(artifact, hybrid: bool)`,`lower()`=默认关+`LK_AOT_HYBRID=1` env 开
+        (edition 2024 set_var unsafe→测试用显式参数不用 env)。**在 ④ 前不能默认开**:aot fuzz 断言失败必含
+        「does not support」,hybrid 后 clang 会因 lk_hybrid_* 未链接报 undefined symbol,破坏该断言。
+      - **测试**:lower 单测(hybrid on:混合程序产出 vm_functions+CallVm;结果被读→仍 Unsupported;SetGlobal 子树
+        →拒)+ mir_snapshots 加 hybrid 快照(调 lower_with_hybrid)。
       **backend.md 已整体删除(用户裁决)**:活引用全清(README×2、CLAUDE.md、correctness.yml、tier1-hybrid、
       aot-gaps/aot-redesign 死链);顺带修 README 过时描述(「不支持即失败」→回退 Tier 0;中文版 pkg 行仍在
       宣传 M5.4 已删的 publish/key/serve → git+lockfile)。子集清单不再单独维护,历史见 git。
