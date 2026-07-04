@@ -251,7 +251,7 @@ fn collect_mutated_names(stmt: &Stmt, names: &mut HashSet<String>) {
 
 fn collect_mutated_names_in_expr(expr: &Expr, names: &mut HashSet<String>) {
     match expr {
-        Expr::Paren(inner) | Expr::Unary(_, inner) => collect_mutated_names_in_expr(inner, names),
+        Expr::Paren(inner) | Expr::Unary(_, inner) | Expr::Yield(inner) => collect_mutated_names_in_expr(inner, names),
         Expr::Bin(lhs, _, rhs)
         | Expr::And(lhs, rhs)
         | Expr::Or(lhs, rhs)
@@ -728,6 +728,7 @@ pub(super) fn expr_kind(expr: &Expr) -> &'static str {
         Expr::Block(..) => "Block",
         Expr::Match { .. } => "Match",
         Expr::Literal(..) => "LiteralVal",
+        Expr::Yield(..) => "Yield",
     }
 }
 

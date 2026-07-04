@@ -117,6 +117,7 @@ impl Compiler {
             Expr::Conditional(condition, then_expr, else_expr) => {
                 self.lower_conditional(condition, then_expr, else_expr)
             }
+            Expr::Yield(inner) => self.lower_yield(inner),
             other => bail!("Compiler does not support expression yet: {:?}", expr_kind(other)),
         }
     }
@@ -661,6 +662,20 @@ impl Compiler {
         }
         let end = self.function.code.len();
         self.patch_test_true_jump(skip_get, end)?;
+        Ok(dst)
+    }
+
+    /// `yield expr`: lower the value into a *fresh* register (never an
+    /// existing local's own slot — `Yield` overwrites it in place with the
+    /// resumed value, and aliasing a local would silently clobber it across
+    /// the suspend point) and emit the single-register in/out `Yield` opcode.
+    /// The register's static-type fact must be reset: after resuming, it can
+    /// hold any type, not whatever `inner` produced.
+    fn lower_yield(&mut self, inner: &Expr) -> Result<u16> {
+        let dst = self.alloc_reg();
+        self.lower_expr_to_register(dst, inner, "yield value")?;
+        self.emit(Instr::abc(Opcode::Yield, checked_u8("yield reg", dst)?, 0, 0));
+        self.set_register_kind(dst, PerfValueKind::Unknown);
         Ok(dst)
     }
 

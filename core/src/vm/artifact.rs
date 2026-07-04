@@ -27,7 +27,9 @@ use super::{
 // Version 7: `FunctionData.debug_name` carries the source function name for
 // diagnostics/tracebacks (serde-defaulted, but the version bump keeps stale
 // artifacts cleanly rejected rather than silently name-less).
-pub const MODULE_ARTIFACT_VERSION: u32 = 7;
+// Version 8: the `Yield` opcode (coroutines) joins the instruction encoding;
+// older runtimes would mis-decode it, same reasoning as `CallMethodK`.
+pub const MODULE_ARTIFACT_VERSION: u32 = 8;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ModuleArtifact {
@@ -406,7 +408,7 @@ mod tests {
 
     #[test]
     fn module_artifact_rejects_previous_version() {
-        assert_eq!(MODULE_ARTIFACT_VERSION, 7);
+        assert_eq!(MODULE_ARTIFACT_VERSION, 8);
         let source = "return 1;\n";
         let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
         let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
@@ -416,7 +418,7 @@ mod tests {
 
         let json = artifact.to_json_string().expect("json");
         let err = ModuleArtifact::from_json_str(&json).expect_err("previous-version artifact should be rejected");
-        assert!(err.to_string().contains("unsupported LK module artifact version 6"));
+        assert!(err.to_string().contains("unsupported LK module artifact version 7"));
     }
 
     #[test]

@@ -80,7 +80,7 @@ fn expr_uses_for_binding_value(expr: &Expr, name: &str) -> bool {
         return false;
     }
     match expr {
-        Expr::Paren(inner) | Expr::Unary(_, inner) => expr_uses_for_binding_value(inner, name),
+        Expr::Paren(inner) | Expr::Unary(_, inner) | Expr::Yield(inner) => expr_uses_for_binding_value(inner, name),
         Expr::Var(value) => value == name,
         Expr::CallExpr(callee, args) if is_single_char_len_call(callee, args, name) => false,
         Expr::Bin(lhs, _, rhs)

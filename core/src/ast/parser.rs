@@ -107,6 +107,18 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_expr(&mut self) -> Result<Expr> {
+        // `yield expr`: recognized only at the top of the precedence chain
+        // (like `return`'s value), so it binds as loosely as possible —
+        // `yield a + b` means `yield (a + b)`, not `(yield a) + b`. This
+        // means `yield` is legal in "statement-ish" expression positions
+        // (`let x = yield v;`, `yield v;`, ternary branches, ...) but not
+        // nested inside an arbitrary sub-expression like `1 + yield 2`,
+        // matching how Rust's own (nightly) `yield` is restricted.
+        if !self.eof() && self.tokens[self.pos] == Token::Yield {
+            self.pos += 1;
+            let inner = self.parse_expr()?;
+            return Ok(Expr::Yield(Box::new(inner)));
+        }
         self.parse_conditional()
     }
 

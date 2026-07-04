@@ -495,6 +495,14 @@ impl TypeChecker {
             }
             Expr::Paren(expr) => self.check_expr(expr),
             Expr::Block(_) => Ok(Type::Any),
+            // The yielded value is type-checked normally; the expression's
+            // own type is unknowable statically (whatever the next
+            // `coroutine_resume` call passes back) — same `Any` treatment as
+            // other runtime-determined results (native call returns, etc.).
+            Expr::Yield(inner) => {
+                self.check_expr(inner)?;
+                Ok(Type::Any)
+            }
         }
     }
 

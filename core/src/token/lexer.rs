@@ -66,6 +66,7 @@ pub enum Token {
     Catch,    // catch (try's error handler)
     Case,     // case
     Default,  // default
+    Yield,    // yield (suspend the current coroutine)
     // Concurrency keywords
     Select, // select
     // Module-use keywords
@@ -702,6 +703,10 @@ impl<'a> Tokenizer<'a> {
             self.push_span_only(Token::Default, sp);
             return Ok(());
         }
+        if let Some(sp) = match_kw(self, "yield") {
+            self.push_span_only(Token::Yield, sp);
+            return Ok(());
+        }
         // Type system keywords
         if let Some(sp) = match_kw(self, "type") {
             self.push_span_only(Token::Type, sp);
@@ -1144,7 +1149,7 @@ impl<'a> Tokenizer<'a> {
                 // Keywords: true false nil if else while let break continue return goto fn for use as ...
                 // Also: go, select/case/default
                 // NOTE: include starting letters for all keywords so they route to parse_keywords.
-                't' | 'f' | 'n' | 'i' | 'e' | 'w' | 'l' | 'b' | 'c' | 'g' | 's' | 'd' | 'a' | 'm' | 'u' => {
+                't' | 'f' | 'n' | 'i' | 'e' | 'w' | 'l' | 'b' | 'c' | 'g' | 's' | 'd' | 'a' | 'm' | 'u' | 'y' => {
                     self.parse_keywords()?;
                 }
                 _ => {

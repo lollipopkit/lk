@@ -246,7 +246,7 @@ fn collect_expr_scalar_consts(expr: &Expr, keys: &mut Vec<ScalarLoopConstKey>) {
                 keys.push(key);
             }
         }
-        Expr::Paren(inner) | Expr::Unary(_, inner) => collect_expr_scalar_consts(inner, keys),
+        Expr::Paren(inner) | Expr::Unary(_, inner) | Expr::Yield(inner) => collect_expr_scalar_consts(inner, keys),
         Expr::OptionalAccess(inner, field) | Expr::Access(inner, field) => {
             collect_expr_scalar_consts(inner, keys);
             collect_expr_scalar_consts(field, keys);
@@ -429,7 +429,9 @@ fn collect_expr_folded_int_consts(expr: &Expr, locals: &HashMap<String, i64>, ke
         keys.push(ScalarLoopConstKey::Int(value));
     }
     match expr {
-        Expr::Paren(inner) | Expr::Unary(_, inner) => collect_expr_folded_int_consts(inner, locals, keys),
+        Expr::Paren(inner) | Expr::Unary(_, inner) | Expr::Yield(inner) => {
+            collect_expr_folded_int_consts(inner, locals, keys)
+        }
         Expr::Bin(lhs, _, rhs)
         | Expr::And(lhs, rhs)
         | Expr::Or(lhs, rhs)
@@ -643,7 +645,7 @@ fn collect_expr_inline_call_scalar_consts(
             collect_expr_inline_call_scalar_consts(callee, bodies, visiting, keys);
             collect_boxed_exprs_inline_call_scalar_consts(args, bodies, visiting, keys);
         }
-        Expr::Paren(inner) | Expr::Unary(_, inner) => {
+        Expr::Paren(inner) | Expr::Unary(_, inner) | Expr::Yield(inner) => {
             collect_expr_inline_call_scalar_consts(inner, bodies, visiting, keys)
         }
         Expr::OptionalAccess(inner, field) | Expr::Access(inner, field) => {
@@ -846,7 +848,7 @@ fn collect_expr_const_map_get_scalar_consts(
     }
     match expr {
         Expr::Literal(_) | Expr::Var(_) => {}
-        Expr::Paren(inner) | Expr::Unary(_, inner) => {
+        Expr::Paren(inner) | Expr::Unary(_, inner) | Expr::Yield(inner) => {
             collect_expr_const_map_get_scalar_consts(inner, const_maps, keys)?;
         }
         Expr::OptionalAccess(inner, field) | Expr::Access(inner, field) => {
