@@ -895,24 +895,9 @@ fn format_lk_source(input: &str) -> String {
 fn run_bundle(source_path: &Path, output: &Path) -> anyhow::Result<()> {
     let source =
         std::fs::read_to_string(source_path).map_err(|e| anyhow::anyhow!("read {}: {}", source_path.display(), e))?;
-    // Dev workspace layout: the C-ABI staticlib + header live in the workspace.
-    let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .ok_or_else(|| anyhow::anyhow!("cannot locate workspace root"))?
-        .to_path_buf();
-    let staticlib = workspace.join("target/release/liblk_api.a");
-    let header_dir = workspace.join("api/include");
-    if !staticlib.exists() {
-        eprintln!("building lk-api staticlib (one-time)…");
-        let status = std::process::Command::new("cargo")
-            .current_dir(&workspace)
-            .args(["build", "-p", "lk-api", "--features", "ffi", "--release"])
-            .status()
-            .map_err(|e| anyhow::anyhow!("cargo build lk-api: {e}"))?;
-        if !status.success() {
-            anyhow::bail!("failed to build lk-api staticlib");
-        }
-    }
+    let staticlib = ensure_lk_api_staticlib()?;
+    // Dev workspace layout: the C-ABI header lives in the workspace.
+    let header_dir = workspace_root()?.join("api/include");
     let escaped = c_escape(&source);
     let wrapper = format!(
         "#include <stdio.h>\n#include \"lk.h\"\nstatic const char *LK_SRC = \"{escaped}\";\n\
@@ -944,6 +929,35 @@ fn run_bundle(source_path: &Path, output: &Path) -> anyhow::Result<()> {
         output.display()
     );
     Ok(())
+}
+
+fn workspace_root() -> anyhow::Result<PathBuf> {
+    Ok(Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("cannot locate workspace root"))?
+        .to_path_buf())
+}
+
+/// The lk-api C-ABI staticlib (VM + `lk_hybrid_*` bridge), built on demand.
+/// Shared by the Tier 0 bundle and the Tier 1 hybrid link.
+fn ensure_lk_api_staticlib() -> anyhow::Result<PathBuf> {
+    let workspace = workspace_root()?;
+    let staticlib = workspace.join("target/release/liblk_api.a");
+    if !staticlib.exists() {
+        eprintln!("building lk-api staticlib (one-time)…");
+    }
+    // Always run the build: a stale staticlib (missing newer symbols such as
+    // `lk_hybrid_*`) links partially or not at all, and a fresh build is a
+    // sub-second no-op under cargo's fingerprinting.
+    let status = std::process::Command::new("cargo")
+        .current_dir(&workspace)
+        .args(["build", "-p", "lk-api", "--features", "ffi", "--release"])
+        .status()
+        .map_err(|e| anyhow::anyhow!("cargo build lk-api: {e}"))?;
+    if !status.success() {
+        anyhow::bail!("failed to build lk-api staticlib");
+    }
+    Ok(staticlib)
 }
 
 /// Escape a string for embedding as a C double-quoted string literal.
@@ -1059,6 +1073,28 @@ fn compile_native_executable_from_artifact(
 ) -> anyhow::Result<()> {
     let llvm = lk_llvm::compile_module_artifact_to_llvm(artifact, options)
         .with_context(|| format!("compile native executable LLVM IR for {}", path.display()))?;
+    if llvm.module.vm_function_count > 0 {
+        // Tier 1 hybrid (docs/llvm/tier1-hybrid.md): the IR bridges into the
+        // VM for the marked functions, so embed the module artifact and link
+        // the lk-api staticlib alongside lkrt.
+        let artifact_json = artifact.to_json_string()?;
+        let staticlib = ensure_lk_api_staticlib()?;
+        eprintln!(
+            "note: {} function(s) run on the embedded VM (Tier 1 hybrid)",
+            llvm.module.vm_function_count
+        );
+        lk_llvm::compile_native_executable_from_llvm_hybrid(
+            path,
+            output,
+            &llvm.module.ir,
+            llvm.opt_level.as_flag(),
+            Some(lk_llvm::HybridLink {
+                module_artifact_json: &artifact_json,
+                lk_api_staticlib: &staticlib,
+            }),
+        )?;
+        return Ok(());
+    }
     lk_llvm::compile_native_executable_from_llvm(path, output, &llvm.module.ir, llvm.opt_level.as_flag())?;
     Ok(())
 }

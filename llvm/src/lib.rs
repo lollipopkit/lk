@@ -20,4 +20,6 @@ pub use llvm::{
     LlvmBackend, LlvmBackendError, LlvmBackendOptions, LlvmModule, LlvmModuleArtifact, OptLevel,
     compile_module_artifact_to_llvm, compile_program_to_llvm,
 };
-pub use native_executable::compile_native_executable_from_llvm;
+pub use native_executable::{
+    HybridLink, compile_native_executable_from_llvm, compile_native_executable_from_llvm_hybrid,
+};

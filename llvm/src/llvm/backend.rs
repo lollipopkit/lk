@@ -15,6 +15,10 @@ pub struct LlvmModule {
     pub name: String,
     pub ir: String,
     pub target_triple: Option<String>,
+    /// Number of Tier 1 VM-executed functions (`docs/llvm/tier1-hybrid.md`).
+    /// Non-zero means the IR calls `lk_hybrid_call_v`, so the executable link
+    /// must add the bridge wrapper (embedded artifact) and the lk-api staticlib.
+    pub vm_function_count: usize,
 }
 
 /// The rendered LLVM module plus the optimization level the native executable
@@ -89,6 +93,7 @@ pub fn compile_module_artifact_to_llvm(
             name: options.module_name,
             ir,
             target_triple: options.target_triple,
+            vm_function_count: mir.vm_functions.len(),
         },
         opt_level: if options.run_optimizations {
             options.opt_level
