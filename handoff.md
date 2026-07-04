@@ -1,7 +1,7 @@
 # Handoff
 
 **目标(`/goal`)**:把 `plan.md` 划分为多步、逐个完成、每步 push。**用户:允许短期回归、fix-forward。**
-细节台账在 `progress.md`。已推送 **89+ commit** 到 `dev`。完成度:**✅35 · [~]1 · [ ]1 · [!]1**。
+细节台账在 `progress.md`。已推送 **102 commit** 到 `dev`。完成度:**✅35 · [~]2 · [ ]2 · [!]1**(与下方「剩余」清单一致:[~] M4.2 覆盖、M5.1;[ ] Tier 1 混合、M2.5;[!] callable)。
 本轮:**M0.7/8 no_std flip、M2.2 堆错误值、M4.2(Exit 达成:覆盖 14/50 >11 + 程序粒度回退)**(三里程碑)+
 **8 个 AOT 覆盖 win**(IsList/SliceFrom×3/StringSplit/IsMap+map-Contains+MapRest/Raise,列表·map·不可反驳 let 解构+str.split 原生化,覆盖 11→14)+ conformance/健壮性/文档。
 
