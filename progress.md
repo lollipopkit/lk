@@ -363,8 +363,12 @@
       `bare`=`lk-hal`(纯 no_std)、`alloc`=`lk-values`(no_std+alloc)均编到 **wasm32 + thumbv7em 裸机 MCU**;
       **`alloc`(VM 核心级)= `lk-core --no-default-features`**(现真 no_std,M0.7/8 已达成)、`full`=`lk-core`(默认 std)+stdlib。
       → **M0.7/8 flip 后,`lk-core` 单 crate 已承载 alloc(no_std)↔full(std)两档**(`std` feature 切换)。
-      **待做**:host no_std 是「lk-core 源码不用 std」;真 bare-metal(thumbv7em 跑 VM)还需 std 依赖(dashmap/anyhow/tokio)
-      的 no_std 替代——那是 M5.2 full-VM-on-MCU,更大工程。当前 alloc/full 二档 feature 已就位。
+      **待做**:host no_std 是「lk-core 源码不用 std」;真 bare-metal(thumbv7em 跑 VM)还需 std 依赖的 no_std
+      改造——**已实测精确清单**(`cargo build -p lk-core --no-default-features --target thumbv7em-none-eabi`,
+      13 个失败 crate):anyhow/serde_core/once_cell/memchr(有 no_std 模式,default-features=false 可切)、
+      chrono/rand+getrandom/sha2+crypto-common(no_std 模式或需 backend 配置)、dashmap→crossbeam-utils/
+      parking_lot_core(无 no_std,需 hashbrown+spin 替代)、tempfile+fastrand/toml 族+indexmap(std-only,
+      改 optional 依赖绑 std feature)。→ M5.2 = 逐依赖 feature 手术 + Cargo optional 化,机械但多小时。
 - [x] **M5.2** WASM demo + MCU 冒烟 —— **两冒烟达成**(full-VM-on-MCU 待 lk-vm-core)。**WASM 部分完成**:`lk-wasm`(浏览器 playground)现可编到
       `wasm32-unknown-unknown`——修了 getrandom 0.3 的 backend(新增 `.cargo/config.toml` 的
       `getrandom_backend="wasm_js"` cfg,target-scoped + wasm crate 加 `getrandom` `wasm_js` feature,
