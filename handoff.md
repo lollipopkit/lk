@@ -38,11 +38,11 @@ v1 资格=调用点标量参数+结果
 桥调用+.ll 快照 → ④ cli 混合链接+端到端差分 → ⑤ fuzz 生成器扩展。
 
 ## 剩余(深度架构工作)
-- **[~] M4.2.2 逐函数 Tier 1 混合**:**子步①②③④ 完成,端到端打通**(`LK_AOT_HYBRID=1`:不可 lower 的合格函数
-  跑嵌入 VM,混合 exe 输出与 VM 逐字节一致、错误行为对齐;commits `2e19e94`/`e194d11`/`27745be`)。
-  **仅剩⑤**:fuzz 生成器扩展(eligible-but-unsupported 被调方入差分/ASan 语料)+ 默认开关裁决(翻默认前
-  aot fuzz「does not support」断言需适配)。资格 v1=标量参数+结果废弃(dst 不绑定,被读即回退)+子树
-  global-free+无 captures。
+- **✅ M4.2.2 逐函数 Tier 1 混合:五子步全部完成**(commits `2e19e94`/`e194d11`/`27745be`/`2427323`)。
+  `LK_AOT_HYBRID=1`:不可 lower 的合格函数跑嵌入 VM,混合 exe 输出与 VM 逐字节一致(含跨 stdio 顺序)、
+  uncaught 错误行为对齐;fuzz 生成器半数程序带 hybrid 帮手,800 例 0 分歧(首轮即抓到并修掉 flush 打错
+  缓冲区的真顺序 bug:C printf 缓冲 vs lkrt Rust stdout → 改 fflush(NULL))。资格 v1=标量参数+结果废弃
+  (dst 不绑定,被读即回退)+子树 global-free+无 captures。**默认仍 opt-in**,correctness.yml 数轮全绿后翻。
 - **[~] M4.2 AOT 深覆盖**:clean opcode win 已穷尽;剩余全撞同一根(缺 mixed/动态类型系统:mixed 常量、
   ToIter map 迭代=[key,value] mixed pair、动态 operators)或需原生 try/catch(解锁 pcall/error,高价值)或
   动态分派——Tier 1 桥落地后,这些函数可先走 VM-executed,压力大减。

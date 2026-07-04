@@ -299,8 +299,12 @@
       ensure_lk_api_staticlib 改总是 cargo build(修旧 staticlib 缺符号)。**端到端验证:混合 exe 输出与 VM
       完全一致(含跨 native/VM stdio 顺序),uncaught 桥错误 exit 非零+消息达 stderr**。测试:hybrid_lowering 4
       + hybrid_compile 2;既有快照/差分全绿。
-      **剩余子步⑤**:fuzz 生成器扩展(生成 eligible-but-unsupported 被调方入差分/ASan 语料)+ **默认开关裁决**
-      (差分充分后再考虑把 hybrid 从 opt-in 翻默认;翻默认前 aot fuzz 的「does not support」断言需适配)。
+      **✅ 子步⑤ 完成**(commit `2427323`):fuzz 生成器约半数程序带 hybrid 帮手(try/catch 包 println、标量参数、
+      语句位调用),compile 走 LK_AOT_HYBRID=1 → hybrid 二进制入差分语料(correctness.yml 自动覆盖)。
+      **首轮 120 例即抓到真 bug**:桥前 flush 用 lkrt_io_std_flush(冲 lkrt Rust stdout)而 codegen println 走
+      C printf(C stdio 缓冲)——两缓冲区,native 输出滞后桥内 VM 输出;修复=桥前 `fflush(NULL)`(libc)。
+      500+300 例 100% 对比 0 分歧。**默认开关裁决:保持 opt-in**,correctness.yml 数轮全绿后翻默认
+      (翻时确认 aot fuzz/differential 断言与 ensure_lk_api_staticlib 的 CI 成本)。→ **M4.2.2 五子步全部完成**。
       **✅ 子步① 完成**(commit `2e19e94`):core `call_module_function_with_ctx`(exec/program.rs,seed globals 同
       模块运行、CallableValue::Closure+call_runtime_value_runtime 调 fidx、ModuleFunctionArg 标量 marshal)+
       lk-api `HybridModule`(from_artifact_json→imports→verify;find_function 按 debug_name;call_discard)+
