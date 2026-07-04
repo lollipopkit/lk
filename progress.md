@@ -233,7 +233,12 @@
       **折进 `const BUDGETED` 单态化路径 → 无 limit 时零开销(bench 走 false 分支不受影响)**;`execute_program_with_ctx_and_limits`
       + lk-api `Vm::with_heap_limit(n)` 暴露。测试:分配超限程序报「heap object limit exceeded」。全量 1485 tests 0 失败。
       → **三沙箱知(fuel/内存/模块白名单)齐**。
-- **Exit**：`pcall` 捕获所有可恢复错误；fuzz 验证器无 panic；沙箱指标可配。
+- [x] **M2.7** 字节码验证器 fuzz（Exit「fuzz 验证器无 panic」证据闭合）：`core/src/vm/verify_fuzz_tests.rs`——
+      三路生成器（字节级破坏/JSON 结构感知变异/随机垃圾）+ 定向敌意语料（entry 越界、指令字全 1、寄存器数清零、
+      fact 表长度炸弹、深嵌套 JSON），断言 `from_json_str`→`into_module`→`verify_module` 只 Err 不 panic。
+      本地 2 万例 + 新种子 5 千例 0 panic；correctness.yml 挂 5 万例 scaled + run-id 种子 2 万例。commit `9d7fedd`。
+- **Exit**：`pcall` 捕获所有可恢复错误 ✓；fuzz 验证器无 panic ✓（M2.7）；沙箱指标可配 ✓。
+  → **M2 Exit 三项均有证据**（M2.5 stackless 是超出 Exit 的 deliverable，未做）。
 
 ## Phase M3 — 嵌入 API + 多实例 + C ABI（问题 10）
 

@@ -9,7 +9,8 @@
 - **Phase 0** 完整;**M3 完整**(嵌入 API + register_fn + 多实例 + 沙箱 builder + C ABI 端到端跑出 42 + `eval_value` 类型化结果)。
 - **M0**:🎯 去全局状态 · **lk-values 抽取 + 真 no_std**(wasm32)· **lk-hal**(no_std)· CI no_std 冒烟 + **lk-core 无 async 可构建守卫**。
 - **M1**:VM(source)==VM(bytecode) 差分 · conformance 声明 · **`.lkm` 字节码缓存**(`LK_CACHE=1`,坐实其为缓存非分发)。
-- **M2**(错误/沙箱模型完整):**pcall/error · 可捕获 assert · 一等基本错误值 · try/catch · fuel+内存+模块白名单三沙箱**;
+- **M2**(错误/沙箱模型完整,Exit 三项均有证据):**pcall/error · 可捕获 assert · 一等基本错误值 · try/catch ·
+  fuel+内存+模块白名单三沙箱 · 验证器 fuzz**(M2.7 新:畸形 `.lkm` 干净拒绝绝不 panic,2 万例本地 + CI 5 万例);
   **traceback 完整**(`Function.debug_name` 下沉字节码 + 错误传播分支 push ctx 调用栈 + pcall 捕获清空,CLI 打印命名调用链;
   仅 Err 路径零热成本、不碰 to_string 断言)。**唯一遗留**:堆对象(String/List)一等错误值(需 GC rooting 跨展开)。
 - **M4**:**AOT Tier 0**(`lk bundle`→自包含 ELF)· AOT==VM 差分门禁(CI+ASan/UBSan/fuzz)。
