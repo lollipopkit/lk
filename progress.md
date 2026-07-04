@@ -425,6 +425,30 @@
   剩余项均为 post-v1.0:M2.5 ①-③(2026-07-04 后已完整完成,见上)、callable 反转(建议不做,见下)、
   M4.2 深覆盖(mixed 类型系统,Tier 1 已供函数级出路)、MCU 真机 demo/细粒度 feature(nice-to-have/建议不做)。
 
+## Post-v1.0 — 协程/`yield`(plan.md 4.5 真正目标收益,M2.5 stackless 之后落地)
+
+- [x] **子步A** 核心 VM 机制 —— `HeapValue::Coroutine(Box<CoroutineState>)` + 新 opcode `Yield`(106/128)+
+      `Executor.active_coroutine`(跨原生调用边界 yield 天然报错,靠"专用 Executor 才设置该字段"免记账)+
+      `coroutine::resume_coroutine_runtime`(check-out/check-in,heap/globals 与 resumer 共享、stack/frames/
+      call_depth 协程私有)。**实测踩坑**:`LK_GC_STRESS=1` 下 resumer 自己的栈整体换出会导致其活跃寄存器
+      (含持有协程值本身的寄存器)运行期间不被 GC 扫到——修复=新增 `Executor.extra_gc_roots`。手写字节码
+      测试 6 个(含跨原生边界 yield 报错、协程挂起时 GC 存活两个高价值场景),commit `a5f6725`。
+- [x] **子步B** 语言层语法 + stdlib 内建 —— `yield` 关键字(lexer/parser,`parse_expr` 顶层识别,绑定尽量
+      松)、`Expr::Yield` 补齐 18 处编译期分析穷尽匹配、`lower_yield`(值落新寄存器防污染 local,yield 后
+      重置寄存器类型 fact 为 Unknown)、`coroutine_create/resume/status` 三个全局内建(同 pcall/error 待遇,
+      不需要 `use`)。`MODULE_ARTIFACT_VERSION` 7→8。新增 `examples/syntax/coroutines.lk`(自动纳入
+      VM==bytecode 与 VM==AOT 差分语料库)。**端到端一次跑通**:生成器循环、双向传值、协程内错误捕获、
+      协程外裸 yield 报错,commit `5cf2a32`。
+- [x] **子步C** AOT 兜底 + 文档 —— **实测确认无需新增 AOT 代码**:`Yield` 天然命中 aot/lower 既有的
+      `_ => Unsupported::Opcode` 兜底分支,`lk compile` 自动回退 Tier 0 VM bundle(验证:
+      `lk compile examples/syntax/coroutines.lk` 产出自包含可执行文件,跑通输出正确)。新增
+      `docs/coroutines.md`(API、示例、v1 限制:yield 仅顶层表达式位置合法、任意函数可含 yield 但非
+      resume 直接调用时运行时报错、跨原生边界 yield 报错、AOT 暂不原生支持)。
+- **验证(贯穿三子步)**:workspace 全量 + `LK_GC_STRESS=1` 全绿(957 lk-core 测试)· clippy/fmt 0 ·
+  `lk-core --no-default-features` 真 no_std 构建 0/0 · dist bench 门禁三次测量均不劣于基线
+  (0.991x/0.988x/—,新增字段/opcode 未进入非协程程序热路径)。
+  → **协程/`yield` 完整达成**,plan.md 4.5 的 stackless 协程目标全部兑现。
+
 ---
 
 ## 执行原则
