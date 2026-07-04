@@ -1785,7 +1785,10 @@ impl Executor {
                     return Ok(FrameOutcome::Switch(function_index));
                 }
                 Opcode::CallNamed => {
-                    self.dispatch_cold(Opcode::CallNamed, function, module, instr, ctx, collect_metrics)?;
+                    if let Some(idx) = self.dispatch_call_named(function, module, instr, ctx, collect_metrics)? {
+                        profile.flush(collect_metrics);
+                        return Ok(FrameOutcome::Switch(idx));
+                    }
                 }
                 Opcode::CallMethodK => {
                     self.dispatch_call_method_k(function, module, instr, ctx)?;
@@ -1848,7 +1851,7 @@ impl Executor {
         self.captures = frame.captures;
         self.handler_stack.truncate(frame.handler_depth);
         self.pc = frame.pc + 1;
-        self.clear_call_window_temps(frame.window, 0)?;
+        self.clear_call_window_temps(frame.window, frame.named_count)?;
         self.write_returns(frame.window, [value])?;
         Ok(FrameOutcome::Switch(frame.function_index))
     }

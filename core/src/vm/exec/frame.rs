@@ -30,6 +30,10 @@ pub(super) struct CallFrame {
     /// clear argument temporaries and write the result (mirrors
     /// `clear_call_window_temps`/`write_returns` at the old recursive call site).
     pub(super) window: CallWindow,
+    /// Named-argument pair count for `CallNamed` (0 for `CallDirect`/`Call`),
+    /// needed to clear the named k/v temp registers on pop, same as
+    /// `clear_call_window_temps(window, named_count)` at the old call site.
+    pub(super) named_count: u16,
     pub(super) stack_top: usize,
 }
 

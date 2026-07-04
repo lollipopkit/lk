@@ -245,6 +245,7 @@ impl Executor {
             captures: core::mem::replace(&mut self.captures, captures),
             handler_depth: self.handler_stack.len(),
             window,
+            named_count: 0,
             stack_top: self.state.stack_top,
         });
         self.current_function_index = function_index;
@@ -255,79 +256,55 @@ impl Executor {
         Ok(())
     }
 
-    pub(super) fn call_closure_named_stack_args(
+    /// Named-argument counterpart of `push_call_frame` (plan M2.5 sub-step
+    /// ②): replaces what the old recursive `call_closure_named_stack_args`
+    /// did before its nested `run_function_inner` call.
+    pub(super) fn push_call_frame_named(
         &mut self,
-        module: &Module,
         function_index: u32,
+        function: &Function,
         captures: Arc<Vec<RuntimeVal>>,
         window: CallWindow,
         named_count: u16,
-        ctx: &mut Option<&mut VmContext>,
-    ) -> Result<RuntimeVal> {
-        let function = module
-            .functions
-            .get(function_index as usize)
-            .ok_or_else(|| anyhow!("function index {} out of bounds", function_index))?;
-
+    ) -> Result<()> {
         let positional = self.call_args_stack_range(window)?;
         let named_start = positional.end;
-        let saved_base = self.frame_base;
-        let saved_top = self.state.stack_top;
-        let saved_pc = self.pc;
-        let saved_captures = core::mem::replace(&mut self.captures, captures);
-        let saved_register_count = self.register_count;
-        let saved_handler_depth = self.handler_stack.len();
-        let result = (|| {
-            let new_base = self.state.stack_top;
-            let new_top = new_base + function.register_count as usize;
-            if self.state.stack.len() < new_top {
-                self.state.stack.resize(new_top, RuntimeVal::Nil);
-            }
-            let (caller_stack, callee_stack) = self.state.stack.split_at_mut(new_base);
-            let callee_frame = &mut callee_stack[..function.register_count as usize];
-            callee_frame.fill(RuntimeVal::Nil);
-            move_named_args_to_frame_from_stack(
-                function,
-                positional,
-                caller_stack,
-                named_start,
-                named_count,
-                &self.state.heap,
-                callee_frame,
-            )?;
-            self.frame_base = new_base;
-            self.register_count = function.register_count;
-            self.state.stack_top = new_top;
-            self.pc = 0;
-            self.enter_lk_call()?;
-            let returns =
-                super::grow_stack_if_needed(|| self.run_function_inner(function, function_index, Some(module), ctx));
-            self.exit_lk_call();
-            returns
-        })();
-        self.frame_base = saved_base;
-        self.register_count = saved_register_count;
-        self.state.stack_top = saved_top;
-        self.pc = saved_pc;
-        self.captures = saved_captures;
-        self.handler_stack.truncate(saved_handler_depth);
-        match result {
-            Ok(returns) => Ok(returns.into_first()),
-            Err(error) => {
-                if let Some(raise) = error.downcast_ref::<super::LanguageRaise>() {
-                    match self.handle_language_raise(raise) {
-                        Ok(()) => Ok(RuntimeVal::Nil),
-                        Err(propagated) => {
-                            push_traceback_frame(ctx, function);
-                            Err(propagated)
-                        }
-                    }
-                } else {
-                    push_traceback_frame(ctx, function);
-                    Err(error)
-                }
-            }
+        // Checked before any state mutation, same rationale as `push_call_frame`.
+        self.enter_lk_call()?;
+        let new_base = self.state.stack_top;
+        let new_top = new_base + function.register_count as usize;
+        if self.state.stack.len() < new_top {
+            self.state.stack.resize(new_top, RuntimeVal::Nil);
         }
+        let (caller_stack, callee_stack) = self.state.stack.split_at_mut(new_base);
+        let callee_frame = &mut callee_stack[..function.register_count as usize];
+        callee_frame.fill(RuntimeVal::Nil);
+        move_named_args_to_frame_from_stack(
+            function,
+            positional,
+            caller_stack,
+            named_start,
+            named_count,
+            &self.state.heap,
+            callee_frame,
+        )?;
+        self.frames.push(CallFrame {
+            function_index: self.current_function_index,
+            pc: self.pc,
+            frame_base: self.frame_base,
+            register_count: self.register_count,
+            captures: core::mem::replace(&mut self.captures, captures),
+            handler_depth: self.handler_stack.len(),
+            window,
+            named_count,
+            stack_top: self.state.stack_top,
+        });
+        self.current_function_index = function_index;
+        self.frame_base = new_base;
+        self.register_count = function.register_count;
+        self.state.stack_top = new_top;
+        self.pc = 0;
+        Ok(())
     }
 }
 

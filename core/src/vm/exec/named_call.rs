@@ -11,7 +11,7 @@ use crate::{
 
 use super::{
     Executor,
-    call::{CallableTarget, callable_target},
+    call::{CallOutcome, CallableTarget, callable_target},
     runtime_callable,
     support::{
         call_native_entry_parts_with_args, call_native_entry_with_args, move_inline_native_args_from_stack,
@@ -126,7 +126,7 @@ impl Executor {
         named_count: u16,
         known_target_kind: Option<PerfCallTargetKind>,
         ctx: &mut Option<&mut VmContext>,
-    ) -> Result<RuntimeVal> {
+    ) -> Result<CallOutcome> {
         let module = module.ok_or_else(|| anyhow!("CallNamed requires Module execution"))?;
         let callee = *self
             .read(u8::try_from(window.callee.as_usize()).map_err(|_| anyhow!("call callee register overflow"))?)?;
@@ -194,12 +194,21 @@ impl Executor {
                     )
                 };
                 self.sync_heap_gc_threshold();
-                result.or_else(|error| self.handle_call_error(error))
+                result
+                    .or_else(|error| self.handle_call_error(error))
+                    .map(CallOutcome::Value)
             }
             CallableTarget::Closure {
                 function_index,
                 captures,
-            } => self.call_closure_named_stack_args(module, function_index, captures, window, named_count, ctx),
+            } => {
+                let function = module
+                    .functions
+                    .get(function_index as usize)
+                    .ok_or_else(|| anyhow!("function index {} out of bounds", function_index))?;
+                self.push_call_frame_named(function_index, function, captures, window, named_count)?;
+                Ok(CallOutcome::Pushed(function_index))
+            }
             CallableTarget::Runtime(function) => {
                 let args = self.call_args_stack_range(window)?;
                 let named_start = args.end;
@@ -212,7 +221,9 @@ impl Executor {
                     &mut self.state.heap,
                     ctx.as_deref_mut(),
                 );
-                result.or_else(|error| self.handle_call_error(error))
+                result
+                    .or_else(|error| self.handle_call_error(error))
+                    .map(CallOutcome::Value)
             }
         }
     }

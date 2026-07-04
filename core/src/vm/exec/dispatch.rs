@@ -498,6 +498,9 @@ impl Executor {
         }
     }
 
+    /// Dispatch `CallNamed`. Same `Some`/`None` protocol as `dispatch_call`
+    /// (plan M2.5 sub-step ②): `Some(function_index)` means a `CallFrame` was
+    /// pushed and the caller must switch dispatch to it.
     #[cold]
     pub(super) fn dispatch_call_named(
         &mut self,
@@ -506,7 +509,7 @@ impl Executor {
         instr: Instr,
         ctx: &mut Option<&mut VmContext>,
         collect_metrics: bool,
-    ) -> Result<()> {
+    ) -> Result<Option<u32>> {
         self.collect_pending_garbage();
         if collect_metrics {
             record_call_op_known_enabled(VmCallMetric::Named);
@@ -514,15 +517,18 @@ impl Executor {
         let call_fact = self.call_fact_from_static_cache_or_instr(function, instr, true);
         let window = CallWindow::new(RegisterIndex::new(call_fact.call_base), call_fact.positional_count, 1);
         let call_pc = self.pc;
-        let value =
-            self.call_function_named(module, window, call_fact.named_count, Some(call_fact.target_kind), ctx)?;
-        if self.pc != call_pc {
-            return Ok(());
+        match self.call_function_named(module, window, call_fact.named_count, Some(call_fact.target_kind), ctx)? {
+            CallOutcome::Pushed(function_index) => Ok(Some(function_index)),
+            CallOutcome::Value(value) => {
+                if self.pc != call_pc {
+                    return Ok(None);
+                }
+                self.clear_call_window_temps(window, call_fact.named_count)?;
+                self.write_returns(window, [value])?;
+                self.pc += 1;
+                Ok(None)
+            }
         }
-        self.clear_call_window_temps(window, call_fact.named_count)?;
-        self.write_returns(window, [value])?;
-        self.pc += 1;
-        Ok(())
     }
 
     #[cold]
@@ -610,9 +616,6 @@ impl Executor {
             }
             Opcode::NewRange => {
                 self.dispatch_new_range(instr, collect_metrics)?;
-            }
-            Opcode::CallNamed => {
-                self.dispatch_call_named(function, module, instr, ctx, collect_metrics)?;
             }
             Opcode::SetGlobal => self.dispatch_set_global(function, instr)?,
             _ => unreachable!("dispatch_cold called for non-cold opcode: {:?}", opcode),
