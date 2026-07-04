@@ -38,7 +38,11 @@ v1 资格=调用点标量参数+结果
 桥调用+.ll 快照 → ④ cli 混合链接+端到端差分 → ⑤ fuzz 生成器扩展。
 
 ## 剩余(深度架构工作)
-- **[ ] M4.2.2 逐函数 Tier 1 混合**:设计已定稿(见上),按 5 子步实施,每步可提交——**下一会话从子步①开始**。
+- **[~] M4.2.2 逐函数 Tier 1 混合**:**子步①②③④ 完成,端到端打通**(`LK_AOT_HYBRID=1`:不可 lower 的合格函数
+  跑嵌入 VM,混合 exe 输出与 VM 逐字节一致、错误行为对齐;commits `2e19e94`/`e194d11`/`27745be`)。
+  **仅剩⑤**:fuzz 生成器扩展(eligible-but-unsupported 被调方入差分/ASan 语料)+ 默认开关裁决(翻默认前
+  aot fuzz「does not support」断言需适配)。资格 v1=标量参数+结果废弃(dst 不绑定,被读即回退)+子树
+  global-free+无 captures。
 - **[~] M4.2 AOT 深覆盖**:clean opcode win 已穷尽;剩余全撞同一根(缺 mixed/动态类型系统:mixed 常量、
   ToIter map 迭代=[key,value] mixed pair、动态 operators)或需原生 try/catch(解锁 pcall/error,高价值)或
   动态分派——Tier 1 桥落地后,这些函数可先走 VM-executed,压力大减。
@@ -49,5 +53,5 @@ v1 资格=调用点标量参数+结果
 ## 护栏 & 续接
 全量 1453 tests 0 失败 / clippy(CI 口径,无 --tests)/ fmt / no_std 构建 0/0 / bench 不受影响(本轮零 VM
 热路径改动:fuzz 是纯测试,Tier 1 是纯设计文档)。
-**下一会话最连贯续接**:Tier 1 子步①——lk-api `lk_hybrid_init/call` 运行时 + Rust 单测(无 lower/codegen
-耦合,独立可提交);其后子步②(lower 标记)。设计全部前置决策见 `docs/llvm/tier1-hybrid.md`。
+**下一会话最连贯续接**:Tier 1 子步⑤(fuzz 生成器扩展 + 默认开关裁决)收尾 M4.2.2;其后 M2.5 stackless 或
+M5.1/M5.2。实现细节与代码锚点全在 progress.md 的 Tier 1 小节。

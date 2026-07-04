@@ -290,6 +290,17 @@
       及 entry 回退 Tier 0;stdio flush 顺序/未捕获错误 abort 对齐/artifact 复用(M2.7 加固面)为硬约束。
       **5 个可提交子步**:① lk-api hybrid 运行时+单测 → ② lower 标记+资格分析+MIR 快照 → ③ codegen declare+桥调用
       +.ll 快照 → ④ cli 混合链接+端到端差分 → ⑤ fuzz 生成器扩展。
+      **✅ 子步②③④ 完成(端到端打通)**:② lower 标记(commit `e194d11`):final pass 收集失败→资格审查→
+      native-reachable 重算(不进 VM 函数,try/catch 脱糖闭包免 lower)→重跑;CallVm 发射 + **dst 不绑定**
+      (ssa.read 未绑定寄存器天然 Unsupported → 结果被读=回退,零 liveness 证明);`lower_with_hybrid` 显式参数,
+      默认关 + `LK_AOT_HYBRID=1` opt-in。③ mir CallVm/vm_functions/render/validate + codegen(%LkHybridArg +
+      单一 global 参数缓冲防循环 alloca 长栈 + **先 lkrt_io_std_flush(1) 再桥调**)。④ cli 混合链接(commit
+      `27745be`):LlvmModule.vm_function_count → wrapper C(constructor 注册嵌入 artifact)+ liblk_api.a 链接;
+      ensure_lk_api_staticlib 改总是 cargo build(修旧 staticlib 缺符号)。**端到端验证:混合 exe 输出与 VM
+      完全一致(含跨 native/VM stdio 顺序),uncaught 桥错误 exit 非零+消息达 stderr**。测试:hybrid_lowering 4
+      + hybrid_compile 2;既有快照/差分全绿。
+      **剩余子步⑤**:fuzz 生成器扩展(生成 eligible-but-unsupported 被调方入差分/ASan 语料)+ **默认开关裁决**
+      (差分充分后再考虑把 hybrid 从 opt-in 翻默认;翻默认前 aot fuzz 的「does not support」断言需适配)。
       **✅ 子步① 完成**(commit `2e19e94`):core `call_module_function_with_ctx`(exec/program.rs,seed globals 同
       模块运行、CallableValue::Closure+call_runtime_value_runtime 调 fidx、ModuleFunctionArg 标量 marshal)+
       lk-api `HybridModule`(from_artifact_json→imports→verify;find_function 按 debug_name;call_discard)+
