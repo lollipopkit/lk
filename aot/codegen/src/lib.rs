@@ -45,6 +45,11 @@ fn render_hybrid_prelude(out: &mut String, module: &MirModule) {
     }
     out.push_str("%LkHybridArg = type { i8, i64 }\n");
     out.push_str("declare void @lk_hybrid_call_v(i32, ptr, i64)\n");
+    // C stdio flush: generated prints go through C `printf` (block-buffered on
+    // pipes) while the bridge VM prints through Rust's line-buffered stdout —
+    // flushing *C* stdio before each bridge call keeps output ordered. (The
+    // lkrt io flush helper flushes lkrt's Rust-side stdout: wrong buffer.)
+    out.push_str("declare i32 @fflush(ptr)\n");
     let max_args = hybrid_argbuf_len(module);
     if max_args > 0 {
         let _ = writeln!(
@@ -114,7 +119,7 @@ fn render_call_vm(out: &mut String, module: &MirModule, func: FuncId, args: &[Va
             other => unreachable!("non-scalar hybrid marshaling type {other:?}"),
         }
     }
-    let _ = writeln!(out, "  %hyflush{uid} = call i64 @lkrt_io_std_flush(i64 1)");
+    let _ = writeln!(out, "  %hyflush{uid} = call i32 @fflush(ptr null)");
     let buffer = if args.is_empty() {
         "null".to_string()
     } else {

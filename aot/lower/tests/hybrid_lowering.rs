@@ -60,7 +60,7 @@ fn hybrid_marks_eligible_unlowerable_callee_as_vm_executed() {
         "codegen emits the bridge call:\n{codegen}"
     );
     assert!(
-        codegen.contains("call i64 @lkrt_io_std_flush(i64 1)"),
+        codegen.contains("call i32 @fflush(ptr null)"),
         "C stdio flushes before entering the VM:\n{codegen}"
     );
 }

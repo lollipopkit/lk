@@ -567,8 +567,31 @@ impl Generator {
         }
     }
 
+    /// Tier 1 hybrid shape (`docs/llvm/tier1-hybrid.md`): an *eligible-but-
+    /// unsupported* helper — its body uses try/catch (pcall desugar, outside
+    /// the native subset) so it can only run bridged on the embedded VM, while
+    /// its interface stays scalar and its call sites discard the result. The
+    /// `println` inside makes the bridge observable: output content *and*
+    /// native/VM interleaving order both join the differential.
+    fn hybrid_helper(&mut self, out: &mut String) -> String {
+        let name = self.fresh("hyb");
+        let _ = writeln!(
+            out,
+            "fn {name}(p0) {{ try {{ println(\"{name}=${{p0}}\"); }} catch e {{ }} }}"
+        );
+        name
+    }
+
     fn program(&mut self) -> String {
         let mut out = String::new();
+
+        // Roughly half the programs carry a hybrid helper, called in statement
+        // position between the regular statements and again near the end.
+        let hybrid = if self.rng.chance(50) {
+            Some(self.hybrid_helper(&mut out))
+        } else {
+            None
+        };
 
         for _ in 0..self.rng.below(3) {
             let name = self.fresh("fn_helper");
@@ -601,6 +624,10 @@ impl Generator {
         let statements = 3 + self.rng.below(5);
         for _ in 0..statements {
             self.statement(&mut out, "");
+        }
+        if let Some(name) = &hybrid {
+            let arg = self.int_expr(1);
+            let _ = writeln!(out, "{name}({arg});");
         }
 
         // `println` lowers natively now (GetGlobal builtin + format expansion);
@@ -729,10 +756,15 @@ fn run_case(dir: &std::path::Path, name: &str, source: &str, seed: u64) -> CaseO
         context("VM rejected a generated program")
     );
 
-    // MIR-gated native compile: either it lowers, or it must fail with a
-    // graceful Unsupported reason (lower() totality) — never a panic.
+    // MIR-gated native compile: either it lowers (fully native or Tier 1
+    // hybrid — LK_AOT_HYBRID exercises the bridge on the generated hybrid
+    // helpers), or it must fail with a graceful Unsupported reason (lower()
+    // totality) — never a panic.
     let mut exe_cmd = Command::new(bin_path());
-    exe_cmd.current_dir(dir).args(["compile", &file]);
+    exe_cmd
+        .current_dir(dir)
+        .args(["compile", &file])
+        .env("LK_AOT_HYBRID", "1");
     let exe = output_with_timeout(exe_cmd, "native compile", &context("native compile"));
     let exe_stderr = String::from_utf8_lossy(&exe.stderr).into_owned();
     assert!(
