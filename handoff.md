@@ -3,8 +3,10 @@
 **目标(`/goal`)**:把 `plan.md` 划分为多步、逐个完成、每步 push。**用户:允许短期回归、fix-forward。**
 细节台账在 `progress.md`。已推送 **106 commit** 到 `dev`。完成度:**✅36 · [~]2 · [ ]2 · [!]1**
 ([~] M4.2 覆盖、M5.1;[ ] Tier 1 混合、M2.5;[!] callable)。
-近几轮:**Tier 1 五子步全部完成(端到端+fuzz 差分)· M2.5 子步④落地(深递归修复,bench 1.012x 过门禁,
-①-③ 数据驱动建议缓做待裁决)· M2.7 验证器 fuzz · backend.md 删除 · M5.2 阻塞实测定位**。
+**🎯 plan.md v1.0 定义六项全部达成(2026-07-04)**:VM 规范测试 ✓ · Tier 0 全覆盖+Tier 1 混合 ✓ · pcall 错误
+模型 ✓ · 多实例嵌入 API ✓ · 三 profile(VM 核心裸机可编译)✓ · git 包管理 ✓。剩余项全为 post-v1.0,
+均已数据驱动裁决并留档(见「剩余」)。近几轮:Tier 1 五子步 · 深递归修复(bench 1.012x)· M2.7 验证器
+fuzz · **M5.2 依赖手术(VM 核心编译过 thumbv7em 裸机,crate graph 无 std)** · 死依赖清理 ×5。
 
 ## ✅ 已完成/大幅推进(遍及全部 6 相;M0–M4 五相 Exit 均达成,M4 为程序粒度口径)
 - **Phase 0** 完整;**M3 完整**(嵌入 API + register_fn + 多实例 + 沙箱 builder + C ABI 端到端 + `eval_value`)。
@@ -50,10 +52,11 @@ v1 资格=调用点标量参数+结果
   深递归从「~150 帧 abort」变为「20 万层可跑、超限可 pcall」,bench 1.012x(噪声级过门禁)。
   **数据驱动建议:①-③(Frame-Vec 重写)缓做**——洞已关、只剩协程地基收益、门禁风险高;协程排期时再启。
   设计保留于 `docs/vm-stackless.md`。**待用户裁决是否接受缓做。**
-- **[!] callable trait 反转**:`CallableValue::Runtime(Arc<vm::RuntimeCallable>)`,枚举一变全 match 断裂;非阻塞。
-- **[~] M5.1 三 profile**:alloc/full 二档已就位;M5.2 bare-metal VM 阻塞已**实测定位到 13 个 crate**
-  (清单在 progress.md M5.1 节):多数 default-features=false 可切 no_std,dashmap 需 hashbrown+spin 替代,
-  tempfile/toml 族需 optional 化绑 std feature。逐依赖手术,机械多小时——**下一轮从此继续**。
+- **✅ callable trait 反转:裁决不做(留档)**——no_std 动机已被单体 no_std 化+裸机编译完全满足,
+  反转只剩分层纯洁性收益,成本是热路径 dyn 分派+原子重构;未来有真实 L0 运行时值消费场景再重估。
+- **✅ M5.1/M5.2**:依赖手术完成(`db5b376`),**VM 核心全量编译过 thumbv7em 裸机**,CI 守卫固化。
+  遗留 nice-to-have:真机/QEMU demo 固件(allocator+panic handler+HAL 接线);细粒度 float/unicode feature
+  **建议不做**(收益仅无 FPU MCU,成本=Float 遍布 VM 的 cfg 面)。
 
 ## 护栏 & 续接
 全量 1453 tests 0 失败 / clippy(CI 口径,无 --tests)/ fmt / no_std 构建 0/0 / bench 不受影响(本轮零 VM

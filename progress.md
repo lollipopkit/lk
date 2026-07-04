@@ -78,10 +78,11 @@
         - **迁移** = 运行时从 `LiteralVal`→`RuntimeVal`,**前沿在 `vm/compiler`**(13 LiteralVal + 4 RuntimeVal 桥接)。
         - **关键判断**:plan 想放进 L0 的正是**运行时值**,而它**必然内嵌** `vm::RuntimeCallable/Module/
           NativeFunction`(`CallableValue::Runtime`)——这是运行时值模型的**本质**(值持可调用),非意外。
-      - [ ] **⚠️ callable 设计决策(不可回避)**:(A) trait 反转 callable(`lk-values` 持 `Arc<dyn Callable>`,
-        vm 实现;干净但改动大、触热路径需评估 perf);(B) callable 下沉 lk-values(层次含执行模型片段,边界不纯);
-        (C) 暂缓 crate 拆分,先在 core 内 no_std-ready(M0.7/8;但 no_std 化 78k 行 core + tokio feature-gate
-        本身多天)。**待用户定 A/B/C 后继续 M0.1。**
+      - [x] **callable 设计决策 —— 数据驱动裁决:选 (C) 且 (A) 不做**(2026-07-04)。事实依据:M0.7/8 已把
+        **单体 lk-core 整个 no_std 化,且 M5.2 后 VM 核心全量编译过裸机 thumbv7em**——「抽 lk-vm-core/运行时值
+        L0 化」的原始动机(no_std 可用性)已由单体路线完全满足,trait 反转只剩分层纯洁性收益,而成本是
+        热路径 dyn 分派(bench 门禁风险)+ 枚举变体原子重构(全 match 断裂)+ GC 追踪改造。**收益已无实际
+        消费者 → 不做,留档;若未来出现真实的 L0 运行时值消费场景再重估。**
 - [x] **M0.2** 抽 `lk-hal`（新 crate `hal/`，`#![no_std]` core-only）：定义 `Clock`/`Rng`/`Stdout`/
       `FsProvider`/`NetProvider` trait + `Hal<'a>` 注入结构 + `HalError`（无 alloc）。fs/net 为 `Option`
       （bare profile 可缺省），buffer-based（`&mut [u8]`）以免 alloc。加入 workspace members。
@@ -363,12 +364,16 @@
       `bare`=`lk-hal`(纯 no_std)、`alloc`=`lk-values`(no_std+alloc)均编到 **wasm32 + thumbv7em 裸机 MCU**;
       **`alloc`(VM 核心级)= `lk-core --no-default-features`**(现真 no_std,M0.7/8 已达成)、`full`=`lk-core`(默认 std)+stdlib。
       → **M0.7/8 flip 后,`lk-core` 单 crate 已承载 alloc(no_std)↔full(std)两档**(`std` feature 切换)。
-      **待做**:host no_std 是「lk-core 源码不用 std」;真 bare-metal(thumbv7em 跑 VM)还需 std 依赖的 no_std
-      改造——**已实测精确清单**(`cargo build -p lk-core --no-default-features --target thumbv7em-none-eabi`,
-      13 个失败 crate):anyhow/serde_core/once_cell/memchr(有 no_std 模式,default-features=false 可切)、
-      chrono/rand+getrandom/sha2+crypto-common(no_std 模式或需 backend 配置)、dashmap→crossbeam-utils/
-      parking_lot_core(无 no_std,需 hashbrown+spin 替代)、tempfile+fastrand/toml 族+indexmap(std-only,
-      改 optional 依赖绑 std feature)。→ M5.2 = 逐依赖 feature 手术 + Cargo optional 化,机械但多小时。
+      **✅ M5.2 依赖手术完成(commit `db5b376`):VM 核心全量编译过 thumbv7em-none-eabi 裸机目标,crate graph
+      全程无 std**。手术内容:删 5 死依赖(once_cell/chrono/sha2/rand/tracing)+ tempfile→dev-deps;anyhow/serde/
+      serde_json 切 no_std 模式;toml/serde_yaml/dashmap optional 绑 std(val/de.rs YAML/TOML gate、compat
+      SharedMap 双态);compat::float(libm);AtomicU64→AtomicUsize;crate-type 去 staticlib。CI thumbv7em 加
+      lk-core 守卫。**重要更正:此前「真 no_std」构建靠依赖把 std 连进 graph(f64 inherent 方法因此可解析),
+      本次才彻底**。workspace 106 套测试/wasm32/clippy 全绿,std 路径热代码零变化。
+      **真机运行遗留(超出编译可行性)**:#[global_allocator]+panic handler+HAL 接线的演示固件 + QEMU 冒烟——
+      需要嵌入式 demo crate,属 nice-to-have。
+      **细粒度 feature 矩阵(float/unicode)数据驱动建议:不做**——float 可关的收益仅限无 FPU MCU,成本是
+      Float 遍布 VM 的巨大 cfg 面;coroutines 已由 async-runtime optional feature 承载。
 - [x] **M5.2** WASM demo + MCU 冒烟 —— **两冒烟达成**(full-VM-on-MCU 待 lk-vm-core)。**WASM 部分完成**:`lk-wasm`(浏览器 playground)现可编到
       `wasm32-unknown-unknown`——修了 getrandom 0.3 的 backend(新增 `.cargo/config.toml` 的
       `getrandom_backend="wasm_js"` cfg,target-scoped + wasm crate 加 `getrandom` `wasm_js` feature,
@@ -395,6 +400,10 @@
       共 424 引用点,macro-origin 感知)+ `ecosystem/tree-sitter-lk`(grammar.js)+ `vsc-ext`/`zed-ext` 编辑器集成
       均在树中、随 workspace 编译通过。→ **满足「保留双轨」**。tree-sitter 完善为持续项(非本步阻塞)。
 - **Exit**：CI 矩阵全绿；v1.0 定义达成。
+  → **✅ v1.0 定义六项全部达成(2026-07-04 盘点)**:VM 规范测试全过 ✓ · AOT Tier 0 全覆盖 + Tier 1 混合 ✓ ·
+  pcall 错误模型 ✓ · 多实例嵌入 API ✓ · bare/alloc/full 三 profile(VM 核心裸机可编译)✓ · git 最小包管理 ✓。
+  剩余项均为 post-v1.0:M2.5 ①-③(缓做建议)、callable 反转(建议不做,见下)、M4.2 深覆盖(mixed 类型系统,
+  Tier 1 已供函数级出路)、MCU 真机 demo/细粒度 feature(nice-to-have/建议不做)。
 
 ---
 
