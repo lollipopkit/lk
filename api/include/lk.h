@@ -29,6 +29,40 @@ void lk_vm_free(LkVm *vm);
 /* Free a string returned by lk_vm_eval. */
 void lk_string_free(char *s);
 
+/* ---- Tier 1 hybrid bridge (docs/llvm/tier1-hybrid.md) --------------------
+ * A hybrid native binary embeds its module artifact and calls VM-executed
+ * functions through this one-way bridge. Process-singleton by design.
+ */
+
+#include <stddef.h>
+#include <stdint.h>
+
+/* Argument tags. LK_HYBRID_ARG_BOOL reads the `i` field as 0/1. */
+#define LK_HYBRID_ARG_I64 0
+#define LK_HYBRID_ARG_F64 1
+#define LK_HYBRID_ARG_BOOL 2
+#define LK_HYBRID_ARG_STR 3
+
+typedef struct LkHybridArg {
+    uint8_t tag;
+    union {
+        int64_t i;
+        double f;
+        const char *s;
+    } value;
+} LkHybridArg;
+
+/* Register the embedded module artifact JSON (NUL-terminated; must outlive
+ * every bridge call — wrappers pass a static constant). Decoding is deferred
+ * to the first lk_hybrid_call_v. */
+void lk_hybrid_register(const char *module_artifact_json);
+
+/* Call VM-executed function `func_index` with `argc` tagged scalar arguments,
+ * discarding the result. On any error (bad artifact, unknown function,
+ * uncaught VM error) prints the message to stderr and exits nonzero — the
+ * uncaught-error behavior of the VM itself. */
+void lk_hybrid_call_v(uint32_t func_index, const LkHybridArg *args, size_t argc);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

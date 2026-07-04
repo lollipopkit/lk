@@ -131,6 +131,67 @@ fn seed_module_globals(slots: &[GlobalSlot], ctx: &VmContext, heap: &mut HeapSto
     Ok(globals)
 }
 
+/// A scalar argument for [`call_module_function_with_ctx`]. The Tier 1 hybrid
+/// bridge marshals native scalars into VM values with these tags — containers
+/// and closures are deliberately absent (see `docs/llvm/tier1-hybrid.md`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum ModuleFunctionArg {
+    Nil,
+    Bool(bool),
+    Int(i64),
+    Float(f64),
+    Str(String),
+}
+
+/// Call one function of a compiled module with positional scalar arguments —
+/// the Tier 1 hybrid bridge entry (`docs/llvm/tier1-hybrid.md`): globals and
+/// builtins are seeded exactly like a module run, but `function_index` is
+/// invoked instead of the entry, against a fresh per-call state. Bridge-eligible
+/// functions touch no user globals (the lowering proves it), so per-call state
+/// is semantically invisible.
+///
+/// The returned value is only meaningful for scalars: a heap-backed return
+/// references the per-call state, which drops with this call (the v1 bridge
+/// proves results discarded before marking a callee VM-executed).
+pub fn call_module_function_with_ctx(
+    module: &crate::vm::Module,
+    function_index: u32,
+    args: &[ModuleFunctionArg],
+    ctx: &mut VmContext,
+) -> Result<RuntimeVal> {
+    use crate::val::{CallableValue, HeapValue, ShortStr};
+
+    if module.functions.get(function_index as usize).is_none() {
+        anyhow::bail!(
+            "hybrid bridge: function index {} out of bounds for {} functions",
+            function_index,
+            module.functions.len()
+        );
+    }
+    ctx.truncate_call_stack(0);
+    let mut seed_heap = HeapStore::new();
+    let globals = seed_module_globals(&module.globals, ctx, &mut seed_heap)?;
+    let mut state = crate::vm::RuntimeModuleState::new(seed_heap, globals);
+    let callee = RuntimeVal::Obj(state.heap_mut().alloc(HeapValue::Callable(CallableValue::Closure {
+        function_index,
+        captures: Arc::new(Vec::new()),
+    })));
+    let mut values = Vec::with_capacity(args.len());
+    for arg in args {
+        values.push(match arg {
+            ModuleFunctionArg::Nil => RuntimeVal::Nil,
+            ModuleFunctionArg::Bool(value) => RuntimeVal::Bool(*value),
+            ModuleFunctionArg::Int(value) => RuntimeVal::Int(*value),
+            ModuleFunctionArg::Float(value) => RuntimeVal::Float(*value),
+            ModuleFunctionArg::Str(value) => match ShortStr::new(value) {
+                Some(short) => RuntimeVal::ShortStr(short),
+                None => RuntimeVal::Obj(state.heap_mut().alloc(HeapValue::String(Arc::from(value.as_str())))),
+            },
+        });
+    }
+    super::call_runtime_value_runtime(callee, &values, &mut state, Some(module), Some(ctx))
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::sync::Arc;
@@ -175,6 +236,70 @@ mod tests {
             panic!("external global should use as heap object");
         };
         assert!(matches!(dest_heap.get(imported), Some(HeapValue::String(value)) if value.as_ref() == "external"));
+    }
+
+    fn compile_source(source: &str) -> crate::vm::Module {
+        let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
+        let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
+        crate::vm::Compiler::compile_module(&program).expect("compile")
+    }
+
+    fn function_index(module: &crate::vm::Module, name: &str) -> u32 {
+        module
+            .functions
+            .iter()
+            .position(|function| function.debug_name.as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("function `{name}` present")) as u32
+    }
+
+    #[test]
+    fn call_module_function_invokes_named_function_with_args() {
+        let module = compile_source("fn add(a, b) { return a + b; }\nreturn add(1, 2);\n");
+        let index = function_index(&module, "add");
+        let mut ctx = VmContext::new_without_core_vm_builtins();
+        let result = super::call_module_function_with_ctx(
+            &module,
+            index,
+            &[super::ModuleFunctionArg::Int(2), super::ModuleFunctionArg::Int(40)],
+            &mut ctx,
+        )
+        .expect("bridge call");
+        assert_eq!(result, RuntimeVal::Int(42));
+    }
+
+    #[test]
+    fn call_module_function_marshals_long_string_args_through_the_heap() {
+        // 40 chars exceeds the inline short-string limit, forcing the
+        // heap-string marshaling path.
+        let module = compile_source("fn slen(s) { return s.len(); }\nreturn slen(\"x\");\n");
+        let index = function_index(&module, "slen");
+        let mut ctx = VmContext::new_without_core_vm_builtins();
+        let long = "a".repeat(40);
+        let result =
+            super::call_module_function_with_ctx(&module, index, &[super::ModuleFunctionArg::Str(long)], &mut ctx)
+                .expect("bridge call");
+        assert_eq!(result, RuntimeVal::Int(40));
+    }
+
+    #[test]
+    fn call_module_function_propagates_runtime_errors() {
+        // `% 0` is the VM's catchable arithmetic error — the bridge must
+        // surface it as `Err`, matching an uncaught raise.
+        let module = compile_source("fn boom(a) { return a % 0; }\nreturn 0;\n");
+        let index = function_index(&module, "boom");
+        let mut ctx = VmContext::new_without_core_vm_builtins();
+        let err = super::call_module_function_with_ctx(&module, index, &[super::ModuleFunctionArg::Int(1)], &mut ctx)
+            .expect_err("mod-zero must error");
+        assert!(!err.to_string().is_empty());
+    }
+
+    #[test]
+    fn call_module_function_rejects_out_of_bounds_index() {
+        let module = compile_source("return 0;\n");
+        let mut ctx = VmContext::new_without_core_vm_builtins();
+        let err = super::call_module_function_with_ctx(&module, 99, &[], &mut ctx)
+            .expect_err("index out of bounds must error");
+        assert!(err.to_string().contains("out of bounds"), "unexpected error: {err}");
     }
 
     #[test]
