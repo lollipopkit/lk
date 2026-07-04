@@ -232,6 +232,12 @@
       → ② CallNamed/CallMethodK → ③ raise 展开改帧栈行走 → ④ 深度保护+bench 验证。每步 exit=全量+GC-stress+
       **bench 门禁**(dist 构建实测,geomean 回退>10% 阻断;若①被 bench 拒,退路=只加深度保护、数据留档缓 M2.5)。
       最高风险:`handle_language_raise` 恢复语义的移植(①前先精读)。协程/yield 是后续项非 M2.5。
+      **✅ 子步④ 提前落地**(commit `238324f`):stacker 分段栈(红区 128KiB/段 2MiB,三递归点)+ 可捕获深度
+      上限(默认 10 万,计数器在 RuntimeModuleState 跨 native 再入累积,env 覆盖只在冷路径读)+ traceback
+      深栈截断(头 20+尾 10)。实测:此前 debug ~150 帧即 abort;现 30k 递归过 2MiB 测试线程、20 万层过
+      env 提额、pcall 捕获失控递归;**bench 门禁 1.012x vs 基线 1.008x(噪声级,通过)**。
+      **数据驱动裁决(建议)**:栈溢出洞已以噪声级成本关闭,①-③(最热循环的 Frame-Vec 重写)只剩边际收益
+      (更干净的 raise 展开+协程地基)但门禁风险高 → **缓做,待协程真正排期时再启**(设计文档保留)。
 - [x] **M2.6** fuel + 模块白名单 —— **基本达成**(内存上限待)。**fuel**:`LK_FUEL=N`(CLI)+ `Vm::with_fuel(N)`
       (lk-api)经 `execute_program_with_ctx_and_budget`。**模块白名单**:`Vm::sandboxed(&["math",…])`(lk-api)
       只注册核心 builtin + 白名单模块,OS 模块(fs/net/process)默认拒。测试:`sandboxed(["math"])` 下

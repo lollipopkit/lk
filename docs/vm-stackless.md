@@ -1,7 +1,17 @@
 # M2.5 Stackless VM: Design & Staging (plan.md 4.5)
 
-Status: **design, not yet implemented.** Mapped against the tree at the time
-of writing (`core/src/vm/exec.rs`, `exec/call.rs`, `exec/handler.rs`).
+Status: **sub-step ④ landed early** (commit `238324f`): segmented-stack growth
+(`stacker::maybe_grow`, rustc's pattern) + a catchable call-depth cap (default
+100k, `LK_MAX_CALL_DEPTH`) + truncated deep tracebacks. Deep recursion now
+works to the cap (200k levels verified) instead of aborting at ~150 (debug) /
+~4000 (release) frames, at a measured geomean cost of 1.012x vs the 1.008x
+baseline (noise-level — the bench gate passed).
+
+**Data-driven recommendation:** with the stack-overflow hole closed this
+cheaply, sub-steps ①–③ (the frame-Vec rewrite of the hottest loop) retain only
+marginal payoffs — cleaner raise-unwinding and coroutine groundwork — at high
+perf-gate risk. Defer them until coroutines (plan 4.5's real payoff, post-M2.5
+anyway) are actually scheduled. Design below kept for that day.
 
 ## Current state (mapped)
 
