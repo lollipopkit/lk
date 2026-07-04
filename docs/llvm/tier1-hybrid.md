@@ -30,16 +30,13 @@ native and executes only the unsupported ones on the VM, inside one binary.
    the bytecode executor. The bridge is a new `lk_hybrid_*` C-ABI surface in
    `lk-api` (`ffi` feature), the same staticlib the Tier 0 bundle links.
 
-3. **The LLVM path's no-VM invariant is preserved at the `.ll` level and
-   amended at the executable level.** `backend.md` declares a VM runtime
-   bridge "out of bounds" — that rule was written to keep *lowered code*
-   free of dynamic boxing/VM types, and it survives intact: MIR and the
-   generated IR never represent a dynamic value; VM-executed functions appear
-   only as `declare`d extern `lk_hybrid_*` symbols called with statically
-   typed scalar arguments. The serialized artifact is embedded by the *link
-   wrapper* (exactly like Tier 0 embeds source today), never by the IR. The
-   VM enters at link time: a hybrid executable links `liblkrt.a` *and*
-   `liblk_api.a`.
+3. **Lowered code stays free of VM/dynamic-value representations.** MIR and
+   the generated IR never represent a dynamic value; VM-executed functions
+   appear only as `declare`d extern `lk_hybrid_*` symbols called with
+   statically typed scalar arguments. The serialized artifact is embedded by
+   the *link wrapper* (exactly like Tier 0 embeds source today), never by
+   the IR. The VM enters at link time: a hybrid executable links `liblkrt.a`
+   *and* `liblk_api.a`.
 
 4. **Eligibility (v1) — a reachable non-entry function `f` may be marked
    VM-executed instead of failing the module when:**

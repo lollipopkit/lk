@@ -9,7 +9,7 @@
 > 清晰项目结构、优雅**。
 >
 > 关联:能力边界与拒绝原因见 [`aot-gaps-and-lkrt.md`](./aot-gaps-and-lkrt.md);
-> 现行 ABI 约束见 [`native-stdlib.md`](./native-stdlib.md);已支持形状见 [`backend.md`](./backend.md)。
+> 现行 ABI 约束见 [`native-stdlib.md`](./native-stdlib.md)。
 
 ---
 

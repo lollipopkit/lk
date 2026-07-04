@@ -80,9 +80,9 @@ assert_eq!(result.display_first_return(), "true");
 - Run REPL: `lk`
 - Execute a source file or module artifact: `lk FILE` (supports `.lk` and `.lkm`)
 - Type-check without executing: `lk check FILE` (reports compile-time diagnostics)
-- Compile to a native executable: `lk compile [FILE]` (omitting `FILE` uses `./main.lk`, package `./src/main.lk`, or a single workspace app entry; unsupported LLVM-native shapes fail)
+- Compile to a native executable: `lk compile [FILE]` (omitting `FILE` uses `./main.lk`, package `./src/main.lk`, or a single workspace app entry; unsupported LLVM-native shapes fall back to the Tier 0 VM bundle)
 - Compile to a bytecode module artifact: `lk compile bytecode [FILE]` → `FILE.lkm`
-- Compile to LLVM IR: `lk compile llvm [FILE]` (see [docs/llvm/backend.md](docs/llvm/backend.md) for backend details)
+- Compile to LLVM IR: `lk compile llvm [FILE]`
 - Create packages and manage decentralized git + lockfile dependencies (no central registry): `lk pkg init`, `lk pkg add`, `lk pkg fetch`, `lk pkg update`, `lk pkg check`, `lk pkg tree` (see [docs/packages.md](docs/packages.md))
 
 Note: command-line argument paths must be sanitized relative paths.

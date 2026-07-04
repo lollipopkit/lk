@@ -289,7 +289,10 @@
       v1 资格=标量参数+结果全废弃(dead_writes)+传递闭包无用户 globals+无 captures、不满足则感染调用者、
       及 entry 回退 Tier 0;stdio flush 顺序/未捕获错误 abort 对齐/artifact 复用(M2.7 加固面)为硬约束。
       **5 个可提交子步**:① lk-api hybrid 运行时+单测 → ② lower 标记+资格分析+MIR 快照 → ③ codegen declare+桥调用
-      +.ll 快照 → ④ cli 混合链接+端到端差分 → ⑤ fuzz 生成器扩展。backend.md「no VM bridge」段已调和。
+      +.ll 快照 → ④ cli 混合链接+端到端差分 → ⑤ fuzz 生成器扩展。
+      **backend.md 已整体删除(用户裁决)**:活引用全清(README×2、CLAUDE.md、correctness.yml、tier1-hybrid、
+      aot-gaps/aot-redesign 死链);顺带修 README 过时描述(「不支持即失败」→回退 Tier 0;中文版 pkg 行仍在
+      宣传 M5.4 已删的 publish/key/serve → git+lockfile)。子集清单不再单独维护,历史见 git。
       更深 blocker(Raise 需 catch 处理、NewObject/NewRange/StringSplit/map-access/动态 Call/GetGlobal builtin)需扩类型系统+lkrt。
 - [x] **M4.3** 差分门禁 `AOT==VM` 已在 CI —— **现状核实,已满足**。`cli/tests/aot_differential_test.rs`
       (MIR native == VM,stdout+成功/失败逐例比对,21 检查点)+ `examples_differential_test.rs`(VM==AOT 语料)

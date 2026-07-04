@@ -4,7 +4,7 @@ name: Correctness Harnesses
 # whole test surface, ASan/UBSan over the differential corpora, Miri over
 # lkrt's unsafe FFI surface, and a scaled-up generative differential fuzz.
 # Mirrors the local Makefile targets `gc-stress`, `sanitized-differential`,
-# and `miri-lkrt` (see plan.md / docs/llvm/backend.md).
+# and `miri-lkrt` (see plan.md).
 
 # Test-only jobs: no write access, no persisted credentials.
 permissions:

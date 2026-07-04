@@ -80,10 +80,10 @@ assert_eq!(result.display_first_return(), "true");
 - 进入 REPL：`lk`
 - 执行源码或模块产物：`lk FILE`（支持 `.lk` 和 `.lkm`）
 - 仅做静态类型检查：`lk check FILE`（输出编译期诊断信息）
-- 编译为 native 可执行文件：`lk compile [FILE]`（省略 `FILE` 时使用当前目录的 `main.lk`、package 的 `src/main.lk`，或单一 workspace app 入口；不支持的 LLVM native lowering 形状会失败）
+- 编译为 native 可执行文件：`lk compile [FILE]`（省略 `FILE` 时使用当前目录的 `main.lk`、package 的 `src/main.lk`，或单一 workspace app 入口；不支持的 LLVM native lowering 形状回退到 Tier 0 VM bundle）
 - 编译为 bytecode 模块产物：`lk compile bytecode [FILE]` → `FILE.lkm`
-- 编译为 LLVM IR：`lk compile llvm [FILE]`（详见 [docs/llvm/backend.md](docs/llvm/backend.md)）
-- 创建包、管理依赖、发布 registry manifest、管理签名 keyring，并运行本地签名 registry：`lk pkg init`、`lk pkg add`、`lk pkg fetch`、`lk pkg check`、`lk pkg publish`、`lk pkg key`、`lk pkg serve`、`lk pkg tree`（详见 [docs/packages.md](docs/packages.md)）
+- 编译为 LLVM IR：`lk compile llvm [FILE]`
+- 创建包并管理去中心化 git + lockfile 依赖（无中心 registry）：`lk pkg init`、`lk pkg add`、`lk pkg fetch`、`lk pkg update`、`lk pkg check`、`lk pkg tree`（详见 [docs/packages.md](docs/packages.md)）
 
 注意：命令行参数路径必须为经净化的相对路径。
 

@@ -4,7 +4,7 @@
 细节台账在 `progress.md`。已推送 **106 commit** 到 `dev`。完成度:**✅36 · [~]2 · [ ]2 · [!]1**
 ([~] M4.2 覆盖、M5.1;[ ] Tier 1 混合、M2.5;[!] callable)。
 本轮:**M2.7 验证器 fuzz(M2 Exit 三项证据闭合)+ Tier 1 逐函数混合设计定稿**(`docs/llvm/tier1-hybrid.md`)
-+ handoff 计数修正。
++ handoff 计数修正 + **backend.md 删除**(用户裁决,活引用全清)。
 
 ## ✅ 已完成/大幅推进(遍及全部 6 相;M0–M4 五相 Exit 均达成,M4 为程序粒度口径)
 - **Phase 0** 完整;**M3 完整**(嵌入 API + register_fn + 多实例 + 沙箱 builder + C ABI 端到端 + `eval_value`)。
@@ -29,8 +29,9 @@
 
 ## 本轮完成 ②:Tier 1 逐函数混合设计定稿 ✅(实现未动,commit `83c8b4a`)
 实测绘 lower(final pass 单点 `?`)/abi(lkrt 一致性表)/codegen/链接(clang+liblkrt.a)/cli 五处后,
-`docs/llvm/tier1-hybrid.md` 定稿:**单向 native→VM 桥、桥居 lk-api(lkrt 铁律不破)、.ll 级无 VM 不变量
-保留(VM 链接期经 wrapper 进入,调和了 backend.md「no VM bridge」禁令)**。v1 资格=调用点标量参数+结果
+`docs/llvm/tier1-hybrid.md` 定稿:**单向 native→VM 桥、桥居 lk-api(lkrt 铁律不破)、lowered 代码内不出现
+VM/动态值表示(VM 链接期经 wrapper 进入)**。backend.md(含其「no VM bridge」禁令)已按用户裁决整体删除。
+v1 资格=调用点标量参数+结果
 全废弃(dead_writes)+传递闭包无用户 globals+无 captures;不满足感染调用者,及 entry 回退 Tier 0。
 硬约束:stdio flush 顺序(lkrt C 缓冲 vs VM Rust 行缓冲)、未捕获错误 abort 对齐、artifact 复用。
 **5 个可提交子步**:① lk-api hybrid 运行时+单测 → ② lower 标记+资格分析+MIR 快照 → ③ codegen declare+
