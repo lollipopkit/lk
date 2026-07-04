@@ -331,9 +331,12 @@ pub struct Executor {
     /// without needing to search `frames` or `module` (plan M2.5 sub-step ①).
     current_function_index: u32,
     /// Suspended caller activations for flattened LK→LK calls (`CallDirect`,
-    /// and `Call` when the target is a closure): LK call depth grows this
-    /// `Vec` instead of the Rust stack. `CallNamed`/`CallMethodK` and
-    /// native/runtime re-entry still recurse (plan M2.5 sub-steps ②/③).
+    /// `Call`, and `CallNamed` when the target is a closure): LK call depth
+    /// grows this `Vec` instead of the Rust stack (plan M2.5 sub-steps ①/②).
+    /// `CallMethodK` and native/runtime re-entry (`pcall`, stdlib HOFs, the
+    /// `Runtime` callable family) are unaffected by design — they run on a
+    /// fresh, separate `Executor`/Rust call, not `self`, so there is nothing
+    /// here for them to flatten.
     frames: Vec<CallFrame>,
     collect_metrics: bool,
     gc_pending: bool,
@@ -347,10 +350,16 @@ pub struct Executor {
     instruction_count: u64,
     /// Optional cap on the number of live heap objects (sandbox memory bound).
     heap_object_limit: Option<usize>,
-    /// Cap on live LK call depth (`RuntimeModuleState::call_depth`). Recursion
-    /// beyond it raises a *catchable* error instead of overflowing the Rust
-    /// stack: the dispatch recurses per LK call, and `grow_stack_if_needed`
-    /// keeps growing segments until memory — this cap bounds the runaway case.
+    /// Cap on live LK call depth (`RuntimeModuleState::call_depth`), checked
+    /// by `enter_lk_call`/`exit_lk_call` at every `CallFrame` push/pop
+    /// (`CallDirect`/`Call`/`CallNamed` to a closure, plan M2.5 sub-steps
+    /// ①/②) and at the `run_module_function_with_state_recoverable` native
+    /// entry boundary. Beyond it, a *catchable* error is raised instead of
+    /// exhausting memory. Native re-entry that recurses through a *separate*
+    /// `Executor` (`pcall`, stdlib HOFs, `CallMethodK`'s callable-property/
+    /// trait-method/list-HOF tails, in `runtime_callable.rs`) isn't counted
+    /// here and has no segmented-stack backstop either — unchanged from
+    /// before this plan, and out of M2.5's LK→LK-call scope.
     max_call_depth: usize,
 }
 
@@ -360,10 +369,14 @@ pub struct Executor {
 /// on the exceed path, so the hot path never reads the environment).
 const DEFAULT_MAX_CALL_DEPTH: usize = 100_000;
 
-/// Red zone / segment size for the recursive dispatch (rustc's
-/// `ensure_sufficient_stack` pattern): when fewer than 128KiB of Rust stack
-/// remain at an LK call boundary, run the callee on a fresh 2MiB segment
-/// instead of overflowing. Deep recursion measured before this: ~150 frames
+/// Red zone / segment size (rustc's `ensure_sufficient_stack` pattern): when
+/// fewer than 128KiB of Rust stack remain, run on a fresh 2MiB segment
+/// instead of overflowing. Since plan M2.5 sub-steps ①/②, `CallDirect`/
+/// `Call`/`CallNamed` to a closure no longer recurse through Rust at all (LK
+/// call depth grows `Executor::frames` instead) — this now only guards the
+/// `run_module_function_with_state_recoverable` native-entry boundary, which
+/// can still nest if a host callback re-enters the VM from inside a native
+/// call. Deep *LK* recursion measured before the M2.5 flattening: ~150 frames
 /// (debug) / ~4000 (release) to a hard abort. no_std targets keep plain
 /// recursion (their stack discipline is platform-specific).
 #[cfg(feature = "std")]

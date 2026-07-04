@@ -1,17 +1,22 @@
 # M2.5 Stackless VM: Design & Staging (plan.md 4.5)
 
-Status: **sub-step ④ landed early** (commit `238324f`): segmented-stack growth
-(`stacker::maybe_grow`, rustc's pattern) + a catchable call-depth cap (default
-100k, `LK_MAX_CALL_DEPTH`) + truncated deep tracebacks. Deep recursion now
-works to the cap (200k levels verified) instead of aborting at ~150 (debug) /
-~4000 (release) frames, at a measured geomean cost of 1.012x vs the 1.008x
-baseline (noise-level — the bench gate passed).
+Status: **all four sub-steps landed** (commits `238324f` for ④, `5884829` for
+①, `4e86dd5` for ②, this commit for ③). `CallDirect`/`Call`/`CallNamed` to a
+closure no longer recurse through Rust at all — they push a `CallFrame` onto
+`Executor::frames` (a heap `Vec`) and resume dispatch in place; LK call depth
+now grows that `Vec` instead of the Rust stack. `CallMethodK` and native
+re-entry (`pcall`, stdlib HOFs, the `Runtime` callable family) are unaffected
+by design: they run on a *separate* `Executor`/Rust call, not `self`, so there
+is nothing for them to flatten (confirmed by tracing `core_call_method_windowed`
+during ② — it was never on the `call_closure_stack_args`-style same-`Executor`
+recursion path this plan targets, contrary to this doc's original assumption).
 
-**Data-driven recommendation:** with the stack-overflow hole closed this
-cheaply, sub-steps ①–③ (the frame-Vec rewrite of the hottest loop) retain only
-marginal payoffs — cleaner raise-unwinding and coroutine groundwork — at high
-perf-gate risk. Defer them until coroutines (plan 4.5's real payoff, post-M2.5
-anyway) are actually scheduled. Design below kept for that day.
+Bench: geomean stayed at parity with baseline throughout (0.989x after ①,
+0.997x after ②/③ — both comfortably inside the 10% perf gate, and below the
+1.012x/1.008x figures recorded for sub-step ④ alone). The frame push/pop
+replaced six Rust-local saves plus a recursive call plus a `stacker::maybe_grow`
+check with a `Vec` push/pop — net cost turned out to be roughly a wash, as
+the original "risks" section anticipated but did not assume.
 
 ## Current state (mapped)
 
@@ -92,3 +97,43 @@ anyway) are actually scheduled. Design below kept for that day.
   frame ops are cheap; if the bench gate rejects ①, the fallback is keeping
   recursion for calls but adding only the depth guard (bounded loss, plan
   M2.5 deferred with data — the "measured rejection" outcome plan.md allows).
+
+## Implementation notes (post-hoc, ①–③ actually landed)
+
+What shipped matches the shape above with a few corrections found while
+building it (see `core/src/vm/exec/frame.rs`, `exec/call.rs`, `exec.rs`):
+
+- **`TryBegin`/`TryEnd`/`handler_stack`/`LanguageRaise` turned out to be dead
+  code for real `.lk` programs.** `try { } catch(e) { }` desugars at parse
+  time (`core/src/stmt/stmt_parser/control.rs`) into `pcall(fn(){...})` — a
+  native call, not a `TryBegin` opcode. No compiler pass ever emits
+  `TryBegin`; it's only exercised by hand-written bytecode unit tests
+  (`exec_tests/gc_cell_error.rs`, `exec_tests/native.rs`). Real error
+  recovery (`error()`/`pcall`/`try`) goes entirely through `pcall`'s native
+  re-entry, untouched by this flattening. This simplified "Decision 4"
+  considerably: the flattened unwind loop (`unwind_flat_run` in `exec.rs`)
+  only needs to reproduce the *single-hop* catch the old recursive code
+  actually supported (a `try` in the *immediate* caller of a failing call) —
+  not a general multi-frame handler search. It still pushes a traceback
+  frame per popped activation for *any* error, which is the mechanism real
+  programs depend on (verified against `cli/tests/traceback_test.rs`'s
+  multi-level `recurse` case).
+- **`CallMethodK` was never on this recursion path** (see the ② note above)
+  — sub-step ② ended up being CallNamed-only.
+- **`CallFrame` (not `Frame`)**: named `Frame` to match this doc's original
+  sketch, but `core/src/vm/migration_guard.rs` bans the literal token
+  `"struct Frame"` (a guard against reintroducing the pre-rewrite VM's
+  tree-walk frame concept). Renamed to avoid the collision; same design,
+  different name.
+- **Frame fields**: `{ function_index, pc, frame_base, register_count,
+  captures, handler_depth, window: CallWindow, named_count, stack_top }`.
+  Storing the whole `CallWindow` (not just a `ret_dst` register) turned out
+  necessary because popping a frame must replay `clear_call_window_temps`
+  exactly as the old call site did, which needs `arg_count` too;
+  `named_count` was added in ② for the same reason on `CallNamed`'s k/v
+  temp region.
+- **The depth guard was already done** — sub-step ④'s `max_call_depth`/
+  `call_depth`/`LK_MAX_CALL_DEPTH` (via `enter_lk_call`/`exit_lk_call`)
+  landed *before* ①–③ and needed no changes: it's called at every
+  `CallFrame` push/pop exactly where the old code called it, so it now
+  transparently bounds `Executor::frames.len()` too.

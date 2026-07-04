@@ -225,20 +225,40 @@
       `try { BODY } catch e { HANDLER }`:成功跳过 handler;失败把错误值绑定 e 跑 handler;**一等基本错误值**
       (`error(404)`→`catch code` 得 Int 404)。`examples/syntax/try_catch.lk` 断言全过,source==bytecode 一致,
       **全量 1484 tests 0 失败**。*(已知限制:try 体内 `return` 从脱糖闭包返回,非外层函数——已在文档标注。)*
-- [~] **M2.5** VM 改 stackless —— **设计+子步分解已定稿 `docs/vm-stackless.md`**(实测绘 exec.rs/call.rs/handler.rs)。
-      现状:LK→LK 调用经 `call_closure_stack_args` 保存 6 项状态后**Rust 递归** `run_function_inner`;值栈已是
-      连续 Vec+帧窗口(stackless-ready);**无递归深度保护**(深递归=Rust 栈溢出 abort)。
-      v1 范围:仅拍平 LK→LK 调用(显式 `Vec<Frame>`,Frame=6 项+ret_dst);native→VM 再入(pcall/stdlib HOF/
-      Tier 1 桥)保持递归——piccolo 式 Sequence 状态机明确出范围。**4 子步**:① Frame+拍平 positional 调用族
-      → ② CallNamed/CallMethodK → ③ raise 展开改帧栈行走 → ④ 深度保护+bench 验证。每步 exit=全量+GC-stress+
-      **bench 门禁**(dist 构建实测,geomean 回退>10% 阻断;若①被 bench 拒,退路=只加深度保护、数据留档缓 M2.5)。
-      最高风险:`handle_language_raise` 恢复语义的移植(①前先精读)。协程/yield 是后续项非 M2.5。
-      **✅ 子步④ 提前落地**(commit `238324f`):stacker 分段栈(红区 128KiB/段 2MiB,三递归点)+ 可捕获深度
-      上限(默认 10 万,计数器在 RuntimeModuleState 跨 native 再入累积,env 覆盖只在冷路径读)+ traceback
-      深栈截断(头 20+尾 10)。实测:此前 debug ~150 帧即 abort;现 30k 递归过 2MiB 测试线程、20 万层过
-      env 提额、pcall 捕获失控递归;**bench 门禁 1.012x vs 基线 1.008x(噪声级,通过)**。
-      **数据驱动裁决(建议)**:栈溢出洞已以噪声级成本关闭,①-③(最热循环的 Frame-Vec 重写)只剩边际收益
-      (更干净的 raise 展开+协程地基)但门禁风险高 → **缓做,待协程真正排期时再启**(设计文档保留)。
+- [x] **M2.5** VM 改 stackless —— **四子步全部完成**(设计 `docs/vm-stackless.md`,实测绘 exec.rs/call.rs/handler.rs)。
+      **✅ 子步④ 提前落地**(commit `238324f`):stacker 分段栈(红区 128KiB/段 2MiB)+ 可捕获深度上限(默认
+      10 万,`LK_MAX_CALL_DEPTH`)+ traceback 深栈截断;30k 递归过测试线程、20 万层过 env 提额;
+      bench 1.012x vs 基线 1.008x(噪声级)。
+      **✅ 子步①**(commit `5884829`):新 `CallFrame` struct(`exec/frame.rs`)+ `Executor.frames: Vec<CallFrame>`
+      —— `CallDirect` 与命中闭包目标的泛型 `Call` 不再 `self.run_function_inner` 递归,改为
+      `push_call_frame`(存 caller 的 function_index/pc/frame_base/register_count/captures/handler_depth/
+      window)后原地 `continue`("trampoline":`run_function_inner_impl` 外层 loop + `dispatch_within_frame`
+      内层循环,`FrameOutcome::{Switch,Done}` 传递控制)。`Return*` 经 `finish_return` 按
+      `frames.len()==base_frame_depth` 判定 pop 回调用点或真正返回。错误路径新增 `unwind_flat_run`:逐帧
+      pop 补 `push_traceback_frame`(对任意错误,多级 traceback 命名靠此),仅 `LanguageRaise` 且
+      immediate-caller 有 `try` 时经 `handler_stack` 恢复(与旧递归"仅一次机会"语义等价——**关键实测澄清**:
+      `TryBegin`/`handler_stack`/`LanguageRaise` 对真实 `.lk` 程序是死代码,`try/catch` 在 parse 期就糖化成
+      `pcall(closure)`,只有手写字节码单测用到 TryBegin,故展开逻辑不必支持真正的多帧 handler 搜索)。
+      GC `root_refs` 补 `frames` 各级 captures root(比旧递归更保守正确:旧实现祖先帧 captures 只活在 Rust
+      局部变量里未显式 root)。`CallFrame` 命名(非 `Frame`)避开 `migration_guard.rs` 的 `"struct Frame"` 禁用
+      token。bench geomean **0.989x**(不劣于基线,示例还更快——省了 flattened 路径每次调用的
+      `stacker::maybe_grow` 检查)。
+      **✅ 子步②**(commit `4e86dd5`):`CallNamed` 同款改造(`push_call_frame_named` 复用
+      `move_named_args_to_frame_from_stack`,`CallFrame` 加 `named_count` 字段供 pop 时对齐 named k/v 临时
+      寄存器清理)。**实测澄清 design doc 原假设**:`CallMethodK` 查明并不走 `call_closure_stack_args` 这条
+      同 Executor 递归路径——`core_call_method_windowed` 命中可调用属性/trait 方法/list HOF 时,走
+      `call_runtime_value_runtime_list_args` 系,每次调用 new 一个临时 `Executor`(runtime_callable.rs 的
+      `call_closure_value`/`_typed_map`,状态整体 move 进出),本就是 native re-entry 形态,天然在决策①
+      "native re-entry 保持递归"范围内,无需改造。bench geomean 0.997x。
+      **✅ 子步③**(本轮):`call_closure_stack_args`/`call_closure_named_stack_args` 在①②实现时已直接删除
+      (非只标记死代码);唯一剩余工作是文档准确性——更新 `max_call_depth`/`grow_stack_if_needed` 的doc注释
+      (深度 guard 经 `enter_lk_call`/`exit_lk_call` 在 push/pop 处调用,子步④机制不改代码即自动覆盖
+      `frames.len()`,无需新写)+ `docs/vm-stackless.md` 补"Implementation notes"记录与原设计的偏差
+      (`CallFrame` 存整个 `CallWindow` 而非仅 `ret_dst`、单跳 catch 语义等)。
+      **验证(每子步)**:workspace 全量测试 + `LK_GC_STRESS=1` 全绿(951 lk-core 测试,0 回归)+
+      `traceback_test` 两多级用例(`uncaught_error_prints_named_call_stack`/
+      `pcall_caught_error_leaves_no_stale_frames`)+ clippy/fmt 0 + dist bench 门禁(①0.989x/②0.997x,
+      均不劣于 1.008-1.033x 历史基线)。→ **M2.5 stackless 完整达成,协程/`yield` 地基就绪**(留作独立后续项)。
 - [x] **M2.6** fuel + 模块白名单 —— **基本达成**(内存上限待)。**fuel**:`LK_FUEL=N`(CLI)+ `Vm::with_fuel(N)`
       (lk-api)经 `execute_program_with_ctx_and_budget`。**模块白名单**:`Vm::sandboxed(&["math",…])`(lk-api)
       只注册核心 builtin + 白名单模块,OS 模块(fs/net/process)默认拒。测试:`sandboxed(["math"])` 下
@@ -252,7 +272,7 @@
       fact 表长度炸弹、深嵌套 JSON），断言 `from_json_str`→`into_module`→`verify_module` 只 Err 不 panic。
       本地 2 万例 + 新种子 5 千例 0 panic；correctness.yml 挂 5 万例 scaled + run-id 种子 2 万例。commit `9d7fedd`。
 - **Exit**：`pcall` 捕获所有可恢复错误 ✓；fuzz 验证器无 panic ✓（M2.7）；沙箱指标可配 ✓。
-  → **M2 Exit 三项均有证据**（M2.5 stackless 是超出 Exit 的 deliverable，未做）。
+  → **M2 Exit 三项均有证据**（M2.5 stackless 是超出 Exit 的 deliverable，现已完整达成，见上）。
 
 ## Phase M3 — 嵌入 API + 多实例 + C ABI（问题 10）
 
@@ -402,8 +422,8 @@
 - **Exit**：CI 矩阵全绿；v1.0 定义达成。
   → **✅ v1.0 定义六项全部达成(2026-07-04 盘点)**:VM 规范测试全过 ✓ · AOT Tier 0 全覆盖 + Tier 1 混合 ✓ ·
   pcall 错误模型 ✓ · 多实例嵌入 API ✓ · bare/alloc/full 三 profile(VM 核心裸机可编译)✓ · git 最小包管理 ✓。
-  剩余项均为 post-v1.0:M2.5 ①-③(缓做建议)、callable 反转(建议不做,见下)、M4.2 深覆盖(mixed 类型系统,
-  Tier 1 已供函数级出路)、MCU 真机 demo/细粒度 feature(nice-to-have/建议不做)。
+  剩余项均为 post-v1.0:M2.5 ①-③(2026-07-04 后已完整完成,见上)、callable 反转(建议不做,见下)、
+  M4.2 深覆盖(mixed 类型系统,Tier 1 已供函数级出路)、MCU 真机 demo/细粒度 feature(nice-to-have/建议不做)。
 
 ---
 
