@@ -193,8 +193,13 @@ sanitized differential runs.
 
 Expanding this lowering surface (map structural equality, `json`/dynamic
 tagged values, mixed-element constant containers, closures stored in
-containers) must go through the MIR pipeline; adding a second lowering path
-or a VM runtime bridge is out of bounds. The RFC §7 phase-4 first-class-function arc (indirect calls, lambdas
+containers) must go through the MIR pipeline; a second lowering path, or any
+VM/dynamic-value representation *inside lowered code*, stays out of bounds.
+The planned per-function Tier 1 hybrid (plan.md M4.2.2) does not breach this:
+VM-executed functions appear in the IR only as extern `lk_hybrid_*` calls and
+the VM enters at link time — see
+[`docs/llvm/tier1-hybrid.md`](tier1-hybrid.md) for the accepted design. The
+RFC §7 phase-4 first-class-function arc (indirect calls, lambdas
 and capturing closures as arguments, returned closures) landed via erasure,
 clone specialization, and static summaries — a runtime `{fn_ptr, env}`
 representation was never needed for the observed corpus.
