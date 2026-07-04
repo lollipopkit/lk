@@ -168,7 +168,7 @@ impl FunctionVerifier<'_> {
                 Opcode::Return => {
                     self.check_window(pc, "return", instr.a() as usize, instr.b() as usize)?;
                 }
-                Opcode::Return1 => {
+                Opcode::Return1 | Opcode::Yield => {
                     self.check_reg(pc, "a", instr.a())?;
                 }
                 Opcode::LoadNil | Opcode::LoadBool => {

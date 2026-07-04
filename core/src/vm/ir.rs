@@ -240,6 +240,11 @@ pub enum Opcode {
     /// `GetGlobal __lk_call_method` + `NewList` + `Call` sequence for
     /// positional method calls whose name constant index fits in `b`.
     CallMethodK = 105,
+    /// `yield EXPR`: `a` = register holding the value to yield *and* the
+    /// slot the next `coroutine_resume` value is written into on resume.
+    /// Only legal while `Executor::active_coroutine` is set (checked at
+    /// runtime, not statically) — see `core/src/vm/exec/coroutine.rs`.
+    Yield = 106,
 }
 
 impl Opcode {
@@ -355,6 +360,7 @@ impl Opcode {
             103 => Some(Self::TryEnd),
             104 => Some(Self::Wide),
             105 => Some(Self::CallMethodK),
+            106 => Some(Self::Yield),
             _ => None,
         }
     }

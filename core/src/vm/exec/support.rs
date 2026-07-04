@@ -344,6 +344,7 @@ pub(super) fn heap_kind(value: &HeapValue) -> &'static str {
         HeapValue::Object(_) => "Object",
         HeapValue::UpvalCell(_) => "UpvalCell",
         HeapValue::ErrorVal(_) => "Error",
+        HeapValue::Coroutine(_) => "Coroutine",
     }
 }
 

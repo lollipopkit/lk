@@ -1336,6 +1336,7 @@ fn copy_heap_value(value: &HeapValue, source_heap: &HeapStore, dest_heap: &mut H
                 trace
             },
         }),
+        HeapValue::Coroutine(_) => bail!("coroutine values cannot cross VM/heap boundaries"),
     })
 }
 

@@ -154,6 +154,9 @@ fn import_heap_value(
             source_module,
             source_state,
         )?),
+        HeapValue::Coroutine(_) => {
+            return Err(anyhow!("coroutine values cannot cross VM/heap boundaries"));
+        }
         HeapValue::ErrorVal(error) => HeapValue::ErrorVal(crate::val::ErrorVal {
             message: error.message.clone(),
             trace: {
