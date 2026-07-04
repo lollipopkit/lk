@@ -224,7 +224,14 @@
       `try { BODY } catch e { HANDLER }`:成功跳过 handler;失败把错误值绑定 e 跑 handler;**一等基本错误值**
       (`error(404)`→`catch code` 得 Int 404)。`examples/syntax/try_catch.lk` 断言全过,source==bytecode 一致,
       **全量 1484 tests 0 失败**。*(已知限制:try 体内 `return` 从脱糖闭包返回,非外层函数——已在文档标注。)*
-- [ ] **M2.5** VM 改 stackless（trampoline `Sequence::step`）——大工程，落地时再拆子步。
+- [~] **M2.5** VM 改 stackless —— **设计+子步分解已定稿 `docs/vm-stackless.md`**(实测绘 exec.rs/call.rs/handler.rs)。
+      现状:LK→LK 调用经 `call_closure_stack_args` 保存 6 项状态后**Rust 递归** `run_function_inner`;值栈已是
+      连续 Vec+帧窗口(stackless-ready);**无递归深度保护**(深递归=Rust 栈溢出 abort)。
+      v1 范围:仅拍平 LK→LK 调用(显式 `Vec<Frame>`,Frame=6 项+ret_dst);native→VM 再入(pcall/stdlib HOF/
+      Tier 1 桥)保持递归——piccolo 式 Sequence 状态机明确出范围。**4 子步**:① Frame+拍平 positional 调用族
+      → ② CallNamed/CallMethodK → ③ raise 展开改帧栈行走 → ④ 深度保护+bench 验证。每步 exit=全量+GC-stress+
+      **bench 门禁**(dist 构建实测,geomean 回退>10% 阻断;若①被 bench 拒,退路=只加深度保护、数据留档缓 M2.5)。
+      最高风险:`handle_language_raise` 恢复语义的移植(①前先精读)。协程/yield 是后续项非 M2.5。
 - [x] **M2.6** fuel + 模块白名单 —— **基本达成**(内存上限待)。**fuel**:`LK_FUEL=N`(CLI)+ `Vm::with_fuel(N)`
       (lk-api)经 `execute_program_with_ctx_and_budget`。**模块白名单**:`Vm::sandboxed(&["math",…])`(lk-api)
       只注册核心 builtin + 白名单模块,OS 模块(fs/net/process)默认拒。测试:`sandboxed(["math"])` 下

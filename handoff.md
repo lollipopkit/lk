@@ -46,7 +46,10 @@ v1 资格=调用点标量参数+结果
 - **[~] M4.2 AOT 深覆盖**:clean opcode win 已穷尽;剩余全撞同一根(缺 mixed/动态类型系统:mixed 常量、
   ToIter map 迭代=[key,value] mixed pair、动态 operators)或需原生 try/catch(解锁 pcall/error,高价值)或
   动态分派——Tier 1 桥落地后,这些函数可先走 VM-executed,压力大减。
-- **[ ] M2.5 stackless**:VM 执行模型重写(trampoline)——多天,触最热路径+bench 门禁,partial 不可安全提交。
+- **[~] M2.5 stackless**:**设计+4 子步已定稿 `docs/vm-stackless.md`**(实测绘:调用=Rust 递归存 6 项状态;
+  值栈已 stackless-ready;无深度保护)。v1 只拍平 LK→LK(显式 Frame Vec),native 再入保持递归;
+  每子步 bench 门禁把关,被拒则退路=仅深度保护+数据留档。**下一步:子步①(Frame+positional 调用族)**,
+  动手前精读 handle_language_raise。
 - **[!] callable trait 反转**:`CallableValue::Runtime(Arc<vm::RuntimeCallable>)`,枚举一变全 match 断裂;非阻塞。
 - **[~] M5.1 三 profile**:alloc/full 二档已就位;真 bare-metal 跑 VM 需 dashmap/anyhow/tokio 的 no_std 替代(M5.2)。
 
