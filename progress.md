@@ -284,6 +284,12 @@
       现对所有 typed list 原生编译(均经 native==VM 差分 + **ASan/UBSan** 验证)。
       **可复用模式**:const-fold opcode(零 runtime)或小 lkrt 函数+abi+lower(差分/ASan 守卫)。→ 朝 Exit「覆盖 >11/44」落地。
       **待做(逐函数 Tier 1 混合)**:同一程序内 native 函数 + VM-executed 函数混合 + native↔VM ABI 桥——多天架构工程。
+      **→ 设计已定稿 `docs/llvm/tier1-hybrid.md`(commit `83c8b4a`,实测绘 lower/abi/codegen/link/cli 后)**:
+      单向 native→VM 桥、桥居 lk-api(lkrt 铁律不破)、.ll 级无 VM 不变量保留(VM 链接期经 wrapper 进入)、
+      v1 资格=标量参数+结果全废弃(dead_writes)+传递闭包无用户 globals+无 captures、不满足则感染调用者、
+      及 entry 回退 Tier 0;stdio flush 顺序/未捕获错误 abort 对齐/artifact 复用(M2.7 加固面)为硬约束。
+      **5 个可提交子步**:① lk-api hybrid 运行时+单测 → ② lower 标记+资格分析+MIR 快照 → ③ codegen declare+桥调用
+      +.ll 快照 → ④ cli 混合链接+端到端差分 → ⑤ fuzz 生成器扩展。backend.md「no VM bridge」段已调和。
       更深 blocker(Raise 需 catch 处理、NewObject/NewRange/StringSplit/map-access/动态 Call/GetGlobal builtin)需扩类型系统+lkrt。
 - [x] **M4.3** 差分门禁 `AOT==VM` 已在 CI —— **现状核实,已满足**。`cli/tests/aot_differential_test.rs`
       (MIR native == VM,stdout+成功/失败逐例比对,21 检查点)+ `examples_differential_test.rs`(VM==AOT 语料)
