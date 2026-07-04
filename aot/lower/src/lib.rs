@@ -34,7 +34,7 @@ use std::collections::BTreeMap;
 
 use lk_aot_mir::{
     AbiRef, Block, BlockId, CmpOp, Const, FloatBinOp, FuncId, GlobalId, Inst, IntBinOp, MirFunction, MirModule, Term,
-    Ty, ValueId,
+    Ty, ValueId, VmFunction,
 };
 use lk_core::vm::{
     ConstHeapValueData, ConstRuntimeValueData, FunctionData, Instr, ModuleArtifact, Opcode, RuntimeMapKeyData,
@@ -412,6 +412,11 @@ struct SigInfer {
     /// Final compact `slot → gvar` numbering, built once signatures converge
     /// (empty during the fixpoint passes, whose emitted MIR is discarded).
     gvar_of: std::collections::HashMap<u16, u32>,
+    /// Tier 1 hybrid: functions whose bodies did not lower but whose call
+    /// sites bridge into the embedded VM (`fidx → scalar marshaling types`).
+    /// Empty during the fixpoint; filled between the failing final pass and
+    /// its hybrid retry (`docs/llvm/tier1-hybrid.md`).
+    vm_functions: std::collections::HashMap<u32, Vec<Ty>>,
 }
 
 impl SigInfer {
@@ -425,6 +430,20 @@ impl SigInfer {
 }
 
 pub fn lower(artifact: &ModuleArtifact) -> Result<MirModule, Unsupported> {
+    // Opt-in until the CLI links the bridge runtime (tier1-hybrid.md sub-step
+    // ④): emitting `CallVm` without the lk-api staticlib linked would turn
+    // graceful `Unsupported` fallbacks into link errors.
+    let hybrid = std::env::var_os("LK_AOT_HYBRID").is_some_and(|value| value != "0");
+    lower_with_hybrid(artifact, hybrid)
+}
+
+/// [`lower`] with the Tier 1 hybrid mode passed explicitly (tests use this to
+/// avoid process-global env mutation): when `hybrid` is set, a reachable
+/// non-entry function whose body does not lower can be marked *VM-executed*
+/// instead of failing the module, provided it is bridge-eligible (scalar
+/// parameters, no captures or lambda machinery, transitively user-global-free
+/// — see `docs/llvm/tier1-hybrid.md`).
+pub fn lower_with_hybrid(artifact: &ModuleArtifact, hybrid: bool) -> Result<MirModule, Unsupported> {
     let module = &artifact.module;
     if module.functions.is_empty() {
         return Err(Unsupported::NoEntry);
@@ -464,6 +483,7 @@ pub fn lower(artifact: &ModuleArtifact) -> Result<MirModule, Unsupported> {
         ret_closure_poisoned: vec![false; n],
         global_names: module.globals.clone(),
         gvar_of: std::collections::HashMap::new(),
+        vm_functions: std::collections::HashMap::new(),
     };
 
     // Working function list: module functions plus lambda-argument clone
@@ -559,41 +579,227 @@ pub fn lower(artifact: &ModuleArtifact) -> Result<MirModule, Unsupported> {
 
     // Final pass with stable signatures: produce the real MIR + interned globals for
     // the reachable functions. Any reachable function outside the subset fails the
-    // whole module (caller falls back); `FuncId`s keep their original module indices.
-    let mut globals: Vec<String> = Vec::new();
-    let mut functions = Vec::with_capacity(funcs.len());
-    for fi in 0..funcs.len() {
-        if !reachable[fi] {
-            continue;
+    // whole module (caller falls back) — unless `hybrid` is set and every failing
+    // function is bridge-eligible, in which case the pass reruns with those
+    // functions marked VM-executed (their call sites emit `CallVm`, their bodies
+    // are skipped). `FuncId`s keep their original module indices.
+    let final_pass = |sig: &mut SigInfer, reach: &[bool]| {
+        let mut globals: Vec<String> = Vec::new();
+        let mut functions = Vec::with_capacity(funcs.len());
+        let mut failures: Vec<(usize, Unsupported)> = Vec::new();
+        for fi in 0..funcs.len() {
+            if !reach.get(fi).copied().unwrap_or(false) {
+                continue;
+            }
+            if sig.specialized.get(fi).copied().unwrap_or(false) {
+                continue;
+            }
+            if sig.ret_closures.get(fi).is_some_and(Option::is_some) {
+                continue;
+            }
+            if sig.vm_functions.contains_key(&(fi as u32)) {
+                continue;
+            }
+            let is_entry = fi as u32 == module.entry;
+            match lower_function(
+                &funcs[fi],
+                &funcs,
+                fi as u32,
+                module.entry,
+                is_entry,
+                &mut globals,
+                &module.globals,
+                sig,
+            ) {
+                Ok(function) => functions.push(function),
+                Err(err) => failures.push((fi, err)),
+            }
         }
-        if sig.specialized.get(fi).copied().unwrap_or(false) {
-            continue;
+        (globals, functions, failures)
+    };
+    let (mut globals, mut functions, failures) = final_pass(&mut sig, &reachable);
+    if !failures.is_empty() {
+        let first_error = failures[0].1.clone();
+        if !hybrid {
+            return Err(first_error);
         }
-        if sig.ret_closures.get(fi).is_some_and(Option::is_some) {
-            continue;
+        // Mark every *eligible* failure VM-executed, then recompute
+        // reachability without descending into VM-executed functions: their
+        // subtrees (e.g. a try/catch desugar closure with captures) run on the
+        // VM from the embedded artifact and need no native body. A failure
+        // that stays native-reachable and is not eligible fails the module
+        // whole (the current Tier 0 behavior).
+        let written = written_global_slots(&funcs);
+        for (fi, _) in &failures {
+            if let Some(params) = bridge_eligibility(*fi, &funcs, module.entry, &sig, &written) {
+                sig.vm_functions.insert(*fi as u32, params);
+            }
         }
-        let is_entry = fi as u32 == module.entry;
-        functions.push(lower_function(
-            &funcs[fi],
-            &funcs,
-            fi as u32,
-            module.entry,
-            is_entry,
-            &mut globals,
-            &module.globals,
-            &mut sig,
-        )?);
+        let native_reachable = native_reachable_functions(&funcs, module.entry, &sig.vm_functions);
+        for (fi, _) in &failures {
+            if native_reachable.get(*fi).copied().unwrap_or(false) && !sig.vm_functions.contains_key(&(*fi as u32)) {
+                return Err(first_error);
+            }
+        }
+        // Drop VM marks without any native-reachable call site (a callee only
+        // ever called from inside the VM needs no bridge signature).
+        sig.vm_functions
+            .retain(|fidx, _| native_reachable.get(*fidx as usize).copied().unwrap_or(false));
+        // Rerun with the VM-executed set in place: callers now emit `CallVm`
+        // and leave result registers unbound, so a caller that *uses* a
+        // bridged result fails here — results never cross the bridge (v1).
+        let (retry_globals, retry_functions, retry_failures) = final_pass(&mut sig, &native_reachable);
+        if let Some((_, err)) = retry_failures.into_iter().next() {
+            return Err(err);
+        }
+        globals = retry_globals;
+        functions = retry_functions;
     }
     if sig.conflict {
         return Err(Unsupported::ReturnTypeConflict);
     }
+    let mut vm_functions: Vec<VmFunction> = sig
+        .vm_functions
+        .iter()
+        .map(|(&fidx, params)| VmFunction {
+            id: FuncId(fidx),
+            params: params.clone(),
+        })
+        .collect();
+    vm_functions.sort_by_key(|vm_fn| vm_fn.id.0);
     Ok(MirModule {
         abi_version: lk_aot_abi::ABI_VERSION,
         globals,
         mutable_globals,
+        vm_functions,
         entry: FuncId(module.entry),
         functions,
     })
+}
+
+/// Reachability from the entry over `CallDirect`/`MakeClosure` edges that does
+/// **not** descend into VM-executed functions: their bodies (and everything
+/// only they reach) run on the embedded VM, so no native lowering is needed.
+/// VM-executed functions themselves stay marked (they need native call sites).
+fn native_reachable_functions(
+    funcs: &[FunctionData],
+    entry: u32,
+    vm_functions: &std::collections::HashMap<u32, Vec<Ty>>,
+) -> Vec<bool> {
+    let n = funcs.len();
+    let mut reachable = vec![false; n];
+    let entry = entry as usize;
+    if entry >= n {
+        return reachable;
+    }
+    let mut stack = vec![entry];
+    reachable[entry] = true;
+    while let Some(fi) = stack.pop() {
+        if vm_functions.contains_key(&(fi as u32)) {
+            continue;
+        }
+        for raw in &funcs[fi].code {
+            let Ok(instr) = Instr::try_from_raw(*raw) else {
+                continue;
+            };
+            let callee = match instr.opcode() {
+                Opcode::CallDirect | Opcode::MakeClosure => instr.b() as usize,
+                _ => continue,
+            };
+            if callee < n && !reachable[callee] {
+                reachable[callee] = true;
+                stack.push(callee);
+            }
+        }
+    }
+    reachable
+}
+
+/// Global slots written by a `SetGlobal` anywhere in the module. Native code
+/// keeps these in native storage, so a VM-executed function must never read
+/// them (the bridge VM's copies would diverge); slots *never* written are
+/// runtime-builtin reads, which the bridge seeds identically to a VM run.
+fn written_global_slots(funcs: &[FunctionData]) -> std::collections::HashSet<u16> {
+    let mut written = std::collections::HashSet::new();
+    for func in funcs {
+        for raw in &func.code {
+            let Ok(instr) = Instr::try_from_raw(*raw) else {
+                continue;
+            };
+            if instr.opcode() == Opcode::SetGlobal {
+                written.insert(instr.bx());
+            }
+        }
+    }
+    written
+}
+
+/// Whether failing function `fi` can run on the bridge VM instead of failing
+/// the module (`docs/llvm/tier1-hybrid.md`, v1): not the entry, no captures or
+/// lambda-erasure machinery, every parameter observed as one scalar type, and
+/// its whole `CallDirect`/`MakeClosure`-reachable subtree writes no globals
+/// and reads none that the module writes. Returns the scalar marshaling types.
+fn bridge_eligibility(
+    fi: usize,
+    funcs: &[FunctionData],
+    entry: u32,
+    sig: &SigInfer,
+    written_slots: &std::collections::HashSet<u16>,
+) -> Option<Vec<Ty>> {
+    if fi as u32 == entry {
+        return None;
+    }
+    let func = funcs.get(fi)?;
+    if func.capture_count != 0 {
+        return None;
+    }
+    if sig.specialized.get(fi).copied().unwrap_or(false) {
+        return None;
+    }
+    if sig
+        .lambda_params
+        .get(fi)
+        .is_some_and(|params| params.iter().any(Option::is_some))
+    {
+        return None;
+    }
+    if sig.ret_closures.get(fi).is_some_and(Option::is_some) {
+        return None;
+    }
+    let mut params = Vec::with_capacity(func.param_count as usize);
+    for i in 0..func.param_count as usize {
+        match sig.param_obs.get(fi).and_then(|obs| obs.get(i)).copied().flatten() {
+            Some(ty @ (Ty::I64 | Ty::F64 | Ty::Bool | Ty::Str)) => params.push(ty),
+            _ => return None,
+        }
+    }
+    let mut visited = vec![false; funcs.len()];
+    let mut work = vec![fi];
+    visited[fi] = true;
+    while let Some(cur) = work.pop() {
+        for raw in &funcs[cur].code {
+            let Ok(instr) = Instr::try_from_raw(*raw) else {
+                return None;
+            };
+            match instr.opcode() {
+                Opcode::SetGlobal => return None,
+                Opcode::GetGlobal => {
+                    if written_slots.contains(&instr.bx()) {
+                        return None;
+                    }
+                }
+                Opcode::CallDirect | Opcode::MakeClosure => {
+                    let callee = instr.b() as usize;
+                    if callee < funcs.len() && !visited[callee] {
+                        visited[callee] = true;
+                        work.push(callee);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    Some(params)
 }
 
 /// Slots the entry function writes before any control flow or user-function
@@ -2340,6 +2546,34 @@ fn lower_user_call(
             ssa.current_def[block][dst_reg as usize] = None;
         }
         ssa.builtin_regs.insert((block, dst_reg), GlobalRef::Closure(lf, caps));
+        return Ok(());
+    }
+    // Tier 1 bridge call (`docs/llvm/tier1-hybrid.md`): the callee runs on the
+    // embedded VM. Arguments must match the recorded scalar marshaling types;
+    // the destination register stays *unbound*, so any later use of the result
+    // rejects the module (results never cross the bridge in v1).
+    if let Some(param_tys) = sig.vm_functions.get(&(callee_idx as u32)).cloned() {
+        if !captures.is_empty() {
+            return Err(Unsupported::Opcode {
+                pc,
+                op: Opcode::CallDirect,
+            });
+        }
+        let mut args = Vec::with_capacity(argc);
+        for (i, param_ty) in param_tys.iter().enumerate().take(argc) {
+            let arg_reg = dst_reg.wrapping_add(1).wrapping_add(i as u8);
+            let (aval, aty) = read_scalar(ssa, insts, arg_reg, block, pc)?;
+            if aty != *param_ty {
+                return Err(Unsupported::TypeMismatch { pc });
+            }
+            args.push(aval);
+        }
+        insts.push(Inst::CallVm {
+            func: FuncId(callee_idx as u32),
+            args,
+        });
+        ssa.current_def[block][dst_reg as usize] = None;
+        ssa.builtin_regs.remove(&(block, dst_reg));
         return Ok(());
     }
     let mut args = Vec::with_capacity(argc + captures.len());

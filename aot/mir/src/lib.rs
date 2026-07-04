@@ -178,6 +178,13 @@ pub enum Inst {
         func: FuncId,
         args: Vec<ValueId>,
     },
+    /// `call.vm f{func}(args)` — a one-way Tier 1 bridge call to a VM-executed
+    /// function of this module (`docs/llvm/tier1-hybrid.md`): the callee's body
+    /// did not lower, so codegen marshals the scalar arguments into tagged
+    /// bridge values and calls `lk_hybrid_call_v`. Results never flow back
+    /// (the lowering leaves the destination register unbound, so any use of
+    /// the result rejects the module).
+    CallVm { func: FuncId, args: Vec<ValueId> },
     /// `dst = lkrt_lklist_i64_get_pair(handle, index)` — a dynamic `List<i64>` read
     /// producing a [`Ty::MaybeI64`]. Kept a dedicated instruction (not a generic
     /// [`Inst::Call`]) because its `{i64, i64}` return is outside the scalar ABI
@@ -347,13 +354,29 @@ pub struct MirModule {
     /// addressed by index from [`Inst::GlobalGet`] / [`Inst::GlobalSet`]. The
     /// name is diagnostic only; codegen emits one typed LLVM global per entry.
     pub mutable_globals: Vec<(String, Ty)>,
+    /// VM-executed functions (Tier 1 hybrid): reachable functions whose bodies
+    /// did not lower but whose call sites bridge into the embedded VM. `params`
+    /// are the scalar marshaling types for [`Inst::CallVm`] arguments.
+    pub vm_functions: Vec<VmFunction>,
     pub functions: Vec<MirFunction>,
     pub entry: FuncId,
+}
+
+/// One VM-executed function of a Tier 1 hybrid module (see [`Inst::CallVm`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct VmFunction {
+    pub id: FuncId,
+    /// Scalar parameter types, in order — the bridge marshaling contract.
+    pub params: Vec<Ty>,
 }
 
 impl MirModule {
     pub fn function(&self, id: FuncId) -> Option<&MirFunction> {
         self.functions.iter().find(|f| f.id == id)
+    }
+
+    pub fn vm_function(&self, id: FuncId) -> Option<&VmFunction> {
+        self.vm_functions.iter().find(|f| f.id == id)
     }
 
     pub fn global(&self, id: GlobalId) -> Option<&str> {
@@ -451,6 +474,14 @@ pub fn validate(module: &MirModule) -> Result<(), MirError> {
                         return Err(MirError::ArityMismatch { func: func.id });
                     }
                 }
+                if let Inst::CallVm { func: callee, args } = inst {
+                    let Some(target) = module.vm_function(*callee) else {
+                        return Err(MirError::MissingEntry);
+                    };
+                    if args.len() != target.params.len() {
+                        return Err(MirError::ArityMismatch { func: func.id });
+                    }
+                }
                 if let Some(def) = inst_def(inst)
                     && !defined.insert(def)
                 {
@@ -514,6 +545,15 @@ pub fn render(module: &MirModule) -> String {
     let _ = writeln!(out, "mir module (abi v{})", module.abi_version);
     for (i, g) in module.globals.iter().enumerate() {
         let _ = writeln!(out, "global g{i} = {g:?}");
+    }
+    for vm_fn in &module.vm_functions {
+        let params = vm_fn
+            .params
+            .iter()
+            .map(|ty| ty_name(*ty))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let _ = writeln!(out, "vm fn f{}({params})", vm_fn.id.0);
     }
     for func in &module.functions {
         let entry = if func.id == module.entry { " entry" } else { "" };
@@ -638,6 +678,7 @@ fn render_inst(inst: &Inst) -> String {
                 None => call,
             }
         }
+        Inst::CallVm { func, args: a } => format!("call.vm f{}({})", func.0, args(a)),
         Inst::ListGetMaybe { dst, handle, index } => {
             format!("{} = list.i64.get_maybe {}, {}", v(*dst), v(*handle), v(*index))
         }
@@ -735,7 +776,7 @@ fn inst_def(inst: &Inst) -> Option<ValueId> {
         | Inst::Select { dst, .. }
         | Inst::GlobalGet { dst, .. } => Some(*dst),
         Inst::Call { dst, .. } | Inst::CallFn { dst, .. } => *dst,
-        Inst::PrintStr { .. } | Inst::GlobalSet { .. } => None,
+        Inst::PrintStr { .. } | Inst::GlobalSet { .. } | Inst::CallVm { .. } => None,
     }
 }
 
@@ -770,7 +811,7 @@ fn inst_uses(inst: &Inst) -> Vec<ValueId> {
         | Inst::MapGetMaybeI64F64 { handle, key, .. } => {
             vec![*handle, *key]
         }
-        Inst::Call { args, .. } | Inst::CallFn { args, .. } => args.clone(),
+        Inst::Call { args, .. } | Inst::CallFn { args, .. } | Inst::CallVm { args, .. } => args.clone(),
         Inst::PrintStr { value, .. } => vec![*value],
         Inst::Select {
             cond, then_v, else_v, ..
@@ -818,6 +859,7 @@ mod tests {
             abi_version: lk_aot_abi::ABI_VERSION,
             globals: vec![],
             mutable_globals: Vec::new(),
+            vm_functions: Vec::new(),
             entry: FuncId(0),
             functions: vec![MirFunction {
                 id: FuncId(0),

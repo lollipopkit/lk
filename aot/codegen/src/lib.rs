@@ -23,12 +23,109 @@ pub fn render_module(module: &MirModule) -> String {
     let mut out = String::new();
     out.push_str("; ModuleID = 'lk_aot'\n\n");
     render_prelude(&mut out);
+    render_hybrid_prelude(&mut out, module);
     for func in &module.functions {
         let is_entry = func.id == module.entry;
         render_function(&mut out, module, func, is_entry);
     }
     render_globals(&mut out, module);
     out
+}
+
+/// Tier 1 hybrid support (`docs/llvm/tier1-hybrid.md`), emitted only when the
+/// module has VM-executed functions: the tagged-argument struct (layout matches
+/// lk-api's `#[repr(C)] LkHybridArg`), the one-way bridge declaration, and a
+/// single `internal global` marshaling buffer sized to the widest call site.
+/// A global (not per-call `alloca`) keeps bridge calls inside loops from
+/// growing the stack; it is safe because native binaries are single-threaded
+/// and the bridge never re-enters native code (no nested buffer use).
+fn render_hybrid_prelude(out: &mut String, module: &MirModule) {
+    if module.vm_functions.is_empty() {
+        return;
+    }
+    out.push_str("%LkHybridArg = type { i8, i64 }\n");
+    out.push_str("declare void @lk_hybrid_call_v(i32, ptr, i64)\n");
+    let max_args = hybrid_argbuf_len(module);
+    if max_args > 0 {
+        let _ = writeln!(
+            out,
+            "@lk_hybrid_argbuf = internal global [{max_args} x %LkHybridArg] zeroinitializer"
+        );
+    }
+    out.push('\n');
+}
+
+fn hybrid_argbuf_len(module: &MirModule) -> usize {
+    module
+        .functions
+        .iter()
+        .flat_map(|f| f.blocks.iter())
+        .flat_map(|b| b.insts.iter())
+        .filter_map(|inst| match inst {
+            Inst::CallVm { args, .. } => Some(args.len()),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+/// One bridge call: marshal each scalar into its tagged slot, flush C stdio
+/// (the VM prints through Rust's line-buffered stdout — unflushed C buffers
+/// would reorder pipe output; precedent: `lkrt_abort` flushes), then call the
+/// bridge. No result: the lowering left the destination register unbound.
+fn render_call_vm(out: &mut String, module: &MirModule, func: FuncId, args: &[ValueId]) {
+    let params = &module
+        .vm_function(func)
+        .expect("validated: CallVm target is recorded in vm_functions")
+        .params;
+    let uid = out.len();
+    let buf_len = hybrid_argbuf_len(module);
+    for (i, (value, ty)) in args.iter().zip(params.iter()).enumerate() {
+        let tag = match ty {
+            Ty::I64 => 0,
+            Ty::F64 => 1,
+            Ty::Bool => 2,
+            Ty::Str => 3,
+            other => unreachable!("non-scalar hybrid marshaling type {other:?}"),
+        };
+        let _ = writeln!(
+            out,
+            "  %hytag{uid}_{i} = getelementptr inbounds [{buf_len} x %LkHybridArg], ptr @lk_hybrid_argbuf, i64 0, i64 {i}, i32 0"
+        );
+        let _ = writeln!(out, "  store i8 {tag}, ptr %hytag{uid}_{i}");
+        let _ = writeln!(
+            out,
+            "  %hyval{uid}_{i} = getelementptr inbounds [{buf_len} x %LkHybridArg], ptr @lk_hybrid_argbuf, i64 0, i64 {i}, i32 1"
+        );
+        match ty {
+            Ty::I64 => {
+                let _ = writeln!(out, "  store i64 {}, ptr %hyval{uid}_{i}", val(*value));
+            }
+            Ty::F64 => {
+                let _ = writeln!(out, "  store double {}, ptr %hyval{uid}_{i}", val(*value));
+            }
+            Ty::Bool => {
+                let _ = writeln!(out, "  %hyzext{uid}_{i} = zext i1 {} to i64", val(*value));
+                let _ = writeln!(out, "  store i64 %hyzext{uid}_{i}, ptr %hyval{uid}_{i}");
+            }
+            Ty::Str => {
+                let _ = writeln!(out, "  store ptr {}, ptr %hyval{uid}_{i}", val(*value));
+            }
+            other => unreachable!("non-scalar hybrid marshaling type {other:?}"),
+        }
+    }
+    let _ = writeln!(out, "  %hyflush{uid} = call i64 @lkrt_io_std_flush(i64 1)");
+    let buffer = if args.is_empty() {
+        "null".to_string()
+    } else {
+        "@lk_hybrid_argbuf".to_string()
+    };
+    let _ = writeln!(
+        out,
+        "  call void @lk_hybrid_call_v(i32 {}, ptr {buffer}, i64 {})",
+        func.0,
+        args.len()
+    );
 }
 
 fn render_prelude(out: &mut String) {
@@ -211,6 +308,7 @@ fn render_inst(out: &mut String, module: &MirModule, inst: &Inst) {
         }
         Inst::Call { dst, callee, args } => render_call(out, *dst, *callee, args),
         Inst::CallFn { dst, func, args } => render_call_fn(out, module, *dst, *func, args),
+        Inst::CallVm { func, args } => render_call_vm(out, module, *func, args),
         Inst::PrintStr { value, newline } => {
             let fmt = if *newline { "@lk_str_fmt" } else { "@lk_str_raw_fmt" };
             let _ = writeln!(out, "  call i32 (ptr, ...) @printf(ptr {fmt}, ptr {})", val(*value));
@@ -731,6 +829,7 @@ mod tests {
             abi_version: lk_aot_abi::ABI_VERSION,
             globals: vec![],
             mutable_globals: Vec::new(),
+            vm_functions: Vec::new(),
             entry: FuncId(0),
             functions: vec![MirFunction {
                 id: FuncId(0),
@@ -786,6 +885,7 @@ mod tests {
             abi_version: lk_aot_abi::ABI_VERSION,
             globals: vec![],
             mutable_globals: Vec::new(),
+            vm_functions: Vec::new(),
             entry: FuncId(0),
             functions: vec![MirFunction {
                 id: FuncId(0),

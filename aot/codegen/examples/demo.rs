@@ -8,6 +8,7 @@ fn main() {
         abi_version: lk_aot_abi::ABI_VERSION,
         globals: vec![],
         mutable_globals: Vec::new(),
+        vm_functions: Vec::new(),
         entry: FuncId(0),
         functions: vec![MirFunction {
             id: FuncId(0),
