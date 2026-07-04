@@ -16,12 +16,14 @@ pub fn from_json_str_runtime(input: &str) -> anyhow::Result<RuntimeDecodedValue>
     Ok(RuntimeDecodedValue { value, heap })
 }
 
+#[cfg(feature = "std")]
 pub fn from_yaml_str_runtime(input: &str) -> anyhow::Result<RuntimeDecodedValue> {
     let mut heap = HeapStore::new();
     let value = parse_runtime_with_format_into_heap(input, Format::Yaml, &mut heap)?;
     Ok(RuntimeDecodedValue { value, heap })
 }
 
+#[cfg(feature = "std")]
 pub fn from_toml_str_runtime(input: &str) -> anyhow::Result<RuntimeDecodedValue> {
     let mut heap = HeapStore::new();
     let value = parse_runtime_with_format_into_heap(input, Format::Toml, &mut heap)?;
@@ -68,11 +70,13 @@ pub fn detect_format(input: &str) -> Format {
     }
 
     // Try parsing as YAML
+    #[cfg(feature = "std")]
     if serde_yaml::from_str::<serde_yaml::Value>(input).is_ok() {
         return Format::Yaml;
     }
 
     // Try parsing as TOML
+    #[cfg(feature = "std")]
     if toml::from_str::<toml::Value>(input).is_ok() {
         return Format::Toml;
     }
@@ -177,13 +181,21 @@ pub fn parse_runtime_with_format_into_heap(
             let value = serde_json::from_str::<serde_json::Value>(input).map_err(|e| anyhow::anyhow!(e))?;
             json_to_runtime(value, heap)
         }
+        #[cfg(feature = "std")]
         Format::Yaml => {
             let value = serde_yaml::from_str::<serde_yaml::Value>(input).map_err(|e| anyhow::anyhow!(e))?;
             yaml_to_runtime(value, heap)
         }
+        #[cfg(feature = "std")]
         Format::Toml => {
             let value = toml::from_str::<toml::Value>(input).map_err(|e| anyhow::anyhow!(e))?;
             toml_to_runtime(value, heap)
+        }
+        // YAML/TOML decoding is std-only (serde_yaml/toml link std); the
+        // no_std VM core keeps JSON (serde_json in alloc mode).
+        #[cfg(not(feature = "std"))]
+        Format::Yaml | Format::Toml => {
+            anyhow::bail!("YAML/TOML decoding requires the std feature")
         }
     }
 }
@@ -211,6 +223,7 @@ fn json_to_runtime(value: serde_json::Value, heap: &mut HeapStore) -> anyhow::Re
     })
 }
 
+#[cfg(feature = "std")]
 fn yaml_to_runtime(value: serde_yaml::Value, heap: &mut HeapStore) -> anyhow::Result<RuntimeVal> {
     Ok(match value {
         serde_yaml::Value::Null => RuntimeVal::Nil,
@@ -235,6 +248,7 @@ fn yaml_to_runtime(value: serde_yaml::Value, heap: &mut HeapStore) -> anyhow::Re
     })
 }
 
+#[cfg(feature = "std")]
 fn toml_to_runtime(value: toml::Value, heap: &mut HeapStore) -> anyhow::Result<RuntimeVal> {
     Ok(match value {
         toml::Value::String(value) => runtime_string_value(&value, heap),
@@ -350,6 +364,7 @@ fn runtime_string_key(value: &str) -> RuntimeMapKey {
     }
 }
 
+#[cfg(feature = "std")]
 fn yaml_key_to_runtime(value: serde_yaml::Value) -> anyhow::Result<RuntimeMapKey> {
     Ok(match value {
         serde_yaml::Value::Null => RuntimeMapKey::Nil,

@@ -17,7 +17,10 @@ use crate::{
     token::{ParseError, Position, Span, Token, Tokenizer},
 };
 use core::fmt;
-use core::sync::atomic::{AtomicU64, Ordering};
+// Temp-file name uniqueness counter: 64-bit atomics do not exist on
+// Cortex-M-class targets (`target_has_atomic = "64"` is off), and usize is
+// plenty for a per-process temp counter.
+use core::sync::atomic::{AtomicUsize, Ordering};
 use core::time::Duration;
 use serde::{Deserialize, Serialize};
 // Running an external proc-macro provider needs a process + filesystem, which
@@ -32,7 +35,7 @@ use std::{
 
 pub const PROC_MACRO_PROTOCOL_VERSION: u32 = 1;
 const BUILTIN_SHOW_TRAIT: &str = "__LKShow";
-static PROC_MACRO_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+static PROC_MACRO_TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProcMacroKind {

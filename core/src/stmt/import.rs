@@ -1,6 +1,7 @@
 use crate::compat::path::{Path, PathBuf};
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
+use crate::compat::shared_map::SharedMap;
 use crate::{
     module::ModuleRegistry,
     stmt::{Program, Stmt},
@@ -10,7 +11,6 @@ use crate::{
 };
 use alloc::sync::Arc;
 use anyhow::{Result, anyhow};
-use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 // File-based module resolution (fs + path normalization) is std-only; the
 // no_std VM core keeps only in-memory registry resolution (plan M0.7/8).
@@ -67,11 +67,11 @@ pub struct ModuleResolver {
     /// Standard library registry
     stdlib_registry: Arc<ModuleRegistry>,
     /// Loaded file modules as new VM runtime exports.
-    runtime_file_modules: Arc<DashMap<PathBuf, RuntimeExport>>,
+    runtime_file_modules: Arc<SharedMap<PathBuf, RuntimeExport>>,
     /// Search paths for module resolution
     search_paths: Vec<PathBuf>,
     /// Package modules resolved from Lk.toml dependencies/workspace members
-    package_modules: Arc<DashMap<String, PathBuf>>,
+    package_modules: Arc<SharedMap<String, PathBuf>>,
 }
 
 impl PartialEq for ModuleResolver {
@@ -90,10 +90,10 @@ impl ModuleResolver {
     pub fn with_registry(registry: ModuleRegistry) -> Self {
         Self {
             stdlib_registry: Arc::new(registry),
-            runtime_file_modules: Arc::new(DashMap::new()),
+            runtime_file_modules: Arc::new(SharedMap::new()),
             // Prefer current directory; also allow `core/` for workspace runs.
             search_paths: vec![PathBuf::from("."), PathBuf::from("core")],
-            package_modules: Arc::new(DashMap::new()),
+            package_modules: Arc::new(SharedMap::new()),
         }
     }
 

@@ -8,7 +8,10 @@ license = "Apache-2.0"
 
 [lib]
 name = "lk_core"
-crate-type = ["rlib", "staticlib"]
+crate-type = ["rlib"]
+
+[dev-dependencies]
+tempfile = { workspace = true }
 
 [features]
 default = ["std", "async-runtime"]
@@ -16,30 +19,34 @@ default = ["std", "async-runtime"]
 # `package` manager: Lk.toml/lock, git, filesystem). Disabling it is a step
 # toward the no_std `lk-vm-core` split (plan M0.7/8): the VM core (token/ast/
 # stmt/typ/vm/val/gc) does not depend on `package`, so it drops out cleanly.
-std = ["dep:stacker"]
+std = [
+    "dep:stacker",
+    "dep:dashmap",
+    "dep:toml",
+    "dep:serde_yaml",
+    "anyhow/std",
+    "serde/std",
+    "serde_json/std",
+]
 async-runtime = ["dep:futures", "dep:tokio"]
 vm-profile = []
 
 [dependencies]
 lk-values = { path = "../values" }
-anyhow = { workspace = true }
-serde = { workspace = true, features = ["derive"] }
-serde_json = { workspace = true }
-serde_yaml = { workspace = true }
-toml = { workspace = true }
-sha2 = { workspace = true }
-rand = { workspace = true }
-once_cell = { workspace = true }
+anyhow = { version = "1", default-features = false }
+serde = { version = "1", default-features = false, features = ["derive", "rc", "alloc"] }
+serde_json = { version = "1", default-features = false, features = ["alloc"] }
+serde_yaml = { workspace = true, optional = true }
+toml = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
 futures = { workspace = true, optional = true }
-dashmap = { workspace = true }
-tracing = { workspace = true }
-chrono = { workspace = true }
-tempfile = { workspace = true }
+dashmap = { workspace = true, optional = true }
 rustc-hash = { version = "2", default-features = false }
 # Segmented-stack growth for the recursive dispatch (rustc's own approach):
 # deep LK recursion grows the stack instead of aborting. std-only.
 stacker = { version = "0.1", optional = true }
+# Pure-Rust float math for no_std (the inherent f64 methods live in std).
+libm = { version = "0.2", default-features = false }
 hashbrown = { version = "0.15", features = ["serde"] }
 spin = { version = "0.9", default-features = false, features = ["mutex", "spin_mutex"] }
 itoa = { version = "1" }

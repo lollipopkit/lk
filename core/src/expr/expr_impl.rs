@@ -843,7 +843,7 @@ fn fold_literal_div(lhs: &LiteralVal, rhs: &LiteralVal) -> Option<LiteralVal> {
     match (lhs, rhs) {
         (LiteralVal::Int(a), LiteralVal::Int(b)) => {
             let result = (*a as f64) / (*b as f64);
-            if result.fract() == 0.0 {
+            if crate::compat::float::fract(result) == 0.0 {
                 Some(LiteralVal::Int(result as i64))
             } else {
                 Some(LiteralVal::Float(result))

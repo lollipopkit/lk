@@ -86,3 +86,91 @@ pub mod prelude {
     pub use alloc::vec::Vec;
     pub use alloc::{format, vec};
 }
+
+/// Float helpers: the inherent `f64` methods (`fract`, `abs`, …) are defined
+/// in std, not core — under no_std they resolve only while some dependency
+/// links std into the graph (which the bare-metal build must not). Route the
+/// few VM-core uses through here; `libm` provides the exact IEEE semantics.
+pub(crate) mod float {
+    #[cfg(feature = "std")]
+    #[inline]
+    pub(crate) fn fract(x: f64) -> f64 {
+        x.fract()
+    }
+
+    #[cfg(not(feature = "std"))]
+    #[inline]
+    pub(crate) fn fract(x: f64) -> f64 {
+        libm::modf(x).0
+    }
+
+    #[cfg(feature = "std")]
+    #[inline]
+    pub(crate) fn abs(x: f64) -> f64 {
+        x.abs()
+    }
+
+    #[cfg(not(feature = "std"))]
+    #[inline]
+    pub(crate) fn abs(x: f64) -> f64 {
+        libm::fabs(x)
+    }
+}
+
+/// Shared concurrent map for cold-path caches (module resolver): the real
+/// `DashMap` under std; a spin-Mutex'd `hashbrown::HashMap` returning cloned
+/// values under no_std (resolution is cold, the clone is fine). Only the
+/// `new`/`insert`/`get(&Q)→.value()` surface the resolver uses is provided.
+pub(crate) mod shared_map {
+    #[cfg(feature = "std")]
+    pub(crate) use dashmap::DashMap as SharedMap;
+
+    #[cfg(not(feature = "std"))]
+    pub(crate) struct SharedMap<K, V> {
+        // Entries ride in an `Arc` so `get` hands out an owned guard without
+        // requiring `V: Clone` (RuntimeExport is not `Clone`).
+        inner: spin::Mutex<hashbrown::HashMap<K, alloc::sync::Arc<V>>>,
+    }
+
+    #[cfg(not(feature = "std"))]
+    impl<K: Eq + core::hash::Hash, V> SharedMap<K, V> {
+        pub(crate) fn new() -> Self {
+            Self {
+                inner: spin::Mutex::new(hashbrown::HashMap::new()),
+            }
+        }
+
+        pub(crate) fn insert(&self, key: K, value: V) -> Option<alloc::sync::Arc<V>> {
+            self.inner.lock().insert(key, alloc::sync::Arc::new(value))
+        }
+
+        pub(crate) fn get<Q>(&self, key: &Q) -> Option<ValueGuard<V>>
+        where
+            K: core::borrow::Borrow<Q>,
+            Q: ?Sized + Eq + core::hash::Hash,
+        {
+            self.inner
+                .lock()
+                .get(key)
+                .map(|value| ValueGuard(alloc::sync::Arc::clone(value)))
+        }
+    }
+
+    #[cfg(not(feature = "std"))]
+    impl<K, V> core::fmt::Debug for SharedMap<K, V> {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            f.debug_struct("SharedMap").finish_non_exhaustive()
+        }
+    }
+
+    /// Owned stand-in for `dashmap`'s `Ref` guard: `.value()` yields the entry.
+    #[cfg(not(feature = "std"))]
+    pub(crate) struct ValueGuard<V>(alloc::sync::Arc<V>);
+
+    #[cfg(not(feature = "std"))]
+    impl<V> ValueGuard<V> {
+        pub(crate) fn value(&self) -> &V {
+            &self.0
+        }
+    }
+}

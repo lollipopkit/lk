@@ -217,7 +217,7 @@ fn span_for_literal(value: &LiteralVal, tokens: &[Token], spans: &[crate::token:
         LiteralVal::Float(expected) => find_token_span(
             tokens,
             spans,
-            |token| matches!(token, Token::Float(actual) if (*actual - *expected).abs() < f64::EPSILON),
+            |token| matches!(token, Token::Float(actual) if crate::compat::float::abs(*actual - *expected) < f64::EPSILON),
         ),
         LiteralVal::Bool(expected) => find_token_span(
             tokens,
