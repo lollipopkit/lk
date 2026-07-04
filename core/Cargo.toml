@@ -16,7 +16,7 @@ default = ["std", "async-runtime"]
 # `package` manager: Lk.toml/lock, git, filesystem). Disabling it is a step
 # toward the no_std `lk-vm-core` split (plan M0.7/8): the VM core (token/ast/
 # stmt/typ/vm/val/gc) does not depend on `package`, so it drops out cleanly.
-std = []
+std = ["dep:stacker"]
 async-runtime = ["dep:futures", "dep:tokio"]
 vm-profile = []
 
@@ -37,6 +37,9 @@ tracing = { workspace = true }
 chrono = { workspace = true }
 tempfile = { workspace = true }
 rustc-hash = { version = "2", default-features = false }
+# Segmented-stack growth for the recursive dispatch (rustc's own approach):
+# deep LK recursion grows the stack instead of aborting. std-only.
+stacker = { version = "0.1", optional = true }
 hashbrown = { version = "0.15", features = ["serde"] }
 spin = { version = "0.9", default-features = false, features = ["mutex", "spin_mutex"] }
 itoa = { version = "1" }

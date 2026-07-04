@@ -35,6 +35,12 @@ pub struct RuntimeModuleState {
     /// carried as an error survives collection at the native-call safepoints hit
     /// during unwinding (plan M2.2). Cleared once `pcall` extracts it.
     pub(crate) pending_raise_root: Option<RuntimeVal>,
+    /// Live LK call depth. Lives in the shared state (not the executor) so it
+    /// keeps accumulating across native→VM re-entries (pcall, stdlib HOFs, the
+    /// Tier 1 bridge), which each construct a fresh executor: the runaway-
+    /// recursion cap (see `Executor::max_call_depth`) cannot be reset by
+    /// routing recursion through a native boundary.
+    pub(crate) call_depth: usize,
 }
 
 impl RuntimeModuleState {
@@ -48,6 +54,7 @@ impl RuntimeModuleState {
             stack_top: 0,
             inline_caches: InlineCaches::default(),
             pending_raise_root: None,
+            call_depth: 0,
         }
     }
 

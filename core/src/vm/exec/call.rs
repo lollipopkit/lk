@@ -246,7 +246,10 @@ impl Executor {
             self.register_count = function.register_count;
             self.state.stack_top = new_top;
             self.pc = 0;
-            self.run_function_inner(function, Some(module), ctx)
+            self.enter_lk_call()?;
+            let returns = super::grow_stack_if_needed(|| self.run_function_inner(function, Some(module), ctx));
+            self.exit_lk_call();
+            returns
         })();
         self.frame_base = saved_base;
         self.register_count = saved_register_count;
@@ -309,7 +312,11 @@ impl Executor {
             self.register_count = function.register_count;
             self.state.stack_top = new_top;
             self.pc = 0;
-            self.run_function_inner(function, Some(module), ctx)
+            self.enter_lk_call().and_then(|()| {
+                let returns = super::grow_stack_if_needed(|| self.run_function_inner(function, Some(module), ctx));
+                self.exit_lk_call();
+                returns
+            })
         };
         self.frame_base = saved_base;
         self.register_count = saved_register_count;

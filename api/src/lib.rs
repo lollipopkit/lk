@@ -352,6 +352,18 @@ mod tests {
     }
 
     #[test]
+    fn runaway_recursion_is_catchable_not_fatal() {
+        // Unbounded LK recursion must surface as a pcall-catchable error (the
+        // call-depth cap) instead of overflowing the Rust stack and aborting
+        // the process — segmented-stack growth carries it to the cap.
+        let mut vm = Vm::new();
+        let out = vm
+            .eval("fn f(n) { return f(n + 1); }\nlet r = pcall(f, 0);\nassert(!r[0]);\nreturn 1;")
+            .expect("runaway recursion is caught");
+        assert_eq!(out, "1");
+    }
+
+    #[test]
     fn hybrid_module_rejects_garbage_artifacts() {
         assert!(HybridModule::from_artifact_json("{}").is_err());
         assert!(HybridModule::from_artifact_json("not json").is_err());

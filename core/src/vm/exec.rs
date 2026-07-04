@@ -334,6 +334,35 @@ pub struct Executor {
     instruction_count: u64,
     /// Optional cap on the number of live heap objects (sandbox memory bound).
     heap_object_limit: Option<usize>,
+    /// Cap on live LK call depth (`RuntimeModuleState::call_depth`). Recursion
+    /// beyond it raises a *catchable* error instead of overflowing the Rust
+    /// stack: the dispatch recurses per LK call, and `grow_stack_if_needed`
+    /// keeps growing segments until memory — this cap bounds the runaway case.
+    max_call_depth: usize,
+}
+
+/// Default LK call-depth cap. Far beyond any sane program (Python defaults to
+/// 1000), small enough that infinite recursion errors before exhausting
+/// memory on stack segments. `LK_MAX_CALL_DEPTH` overrides it (consulted only
+/// on the exceed path, so the hot path never reads the environment).
+const DEFAULT_MAX_CALL_DEPTH: usize = 100_000;
+
+/// Red zone / segment size for the recursive dispatch (rustc's
+/// `ensure_sufficient_stack` pattern): when fewer than 128KiB of Rust stack
+/// remain at an LK call boundary, run the callee on a fresh 2MiB segment
+/// instead of overflowing. Deep recursion measured before this: ~150 frames
+/// (debug) / ~4000 (release) to a hard abort. no_std targets keep plain
+/// recursion (their stack discipline is platform-specific).
+#[cfg(feature = "std")]
+#[inline]
+fn grow_stack_if_needed<R>(f: impl FnOnce() -> R) -> R {
+    stacker::maybe_grow(128 * 1024, 2 * 1024 * 1024, f)
+}
+
+#[cfg(not(feature = "std"))]
+#[inline]
+fn grow_stack_if_needed<R>(f: impl FnOnce() -> R) -> R {
+    f()
 }
 
 impl Executor {
@@ -354,6 +383,7 @@ impl Executor {
             instruction_budget: None,
             instruction_count: 0,
             heap_object_limit: None,
+            max_call_depth: DEFAULT_MAX_CALL_DEPTH,
         };
         this.reset_entry_frame(register_count);
         this
@@ -362,6 +392,48 @@ impl Executor {
     pub fn with_instruction_budget(mut self, budget: u64) -> Self {
         self.instruction_budget = Some(budget);
         self
+    }
+
+    /// Cap live LK call depth (default [`DEFAULT_MAX_CALL_DEPTH`]); recursion
+    /// beyond it raises a catchable error instead of exhausting memory.
+    pub fn with_max_call_depth(mut self, limit: usize) -> Self {
+        self.max_call_depth = limit;
+        self
+    }
+
+    /// Depth check at every LK call boundary. The env override is consulted
+    /// only on the exceed path (cold), so the hot path costs one compare.
+    #[inline]
+    pub(super) fn enter_lk_call(&mut self) -> Result<()> {
+        if self.state.call_depth >= self.max_call_depth {
+            self.call_depth_exceeded()?;
+        }
+        self.state.call_depth += 1;
+        Ok(())
+    }
+
+    #[inline]
+    pub(super) fn exit_lk_call(&mut self) {
+        self.state.call_depth = self.state.call_depth.saturating_sub(1);
+    }
+
+    #[cold]
+    fn call_depth_exceeded(&mut self) -> Result<()> {
+        #[cfg(feature = "std")]
+        if let Some(raised) = std::env::var("LK_MAX_CALL_DEPTH")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            && raised > self.max_call_depth
+        {
+            self.max_call_depth = raised;
+            if self.state.call_depth < self.max_call_depth {
+                return Ok(());
+            }
+        }
+        bail!(
+            "call depth limit exceeded ({}); set LK_MAX_CALL_DEPTH to raise it",
+            self.max_call_depth
+        )
     }
 
     /// Cap the number of live heap objects (a coarse memory bound for the
@@ -532,7 +604,16 @@ impl Executor {
             });
         }
         let mut ctx = Some(ctx);
-        match self.run_function_inner(function, Some(module), &mut ctx) {
+        if let Err(error) = self.enter_lk_call() {
+            self.state.stack_top = saved_top;
+            return Err(ExecFailure {
+                error,
+                state: self.state,
+            });
+        }
+        let result = grow_stack_if_needed(|| self.run_function_inner(function, Some(module), &mut ctx));
+        self.exit_lk_call();
+        match result {
             Ok(returns) => {
                 let returns = returns.into_vec();
                 self.state.stack_top = saved_top;

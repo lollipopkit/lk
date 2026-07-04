@@ -294,6 +294,37 @@ mod tests {
     }
 
     #[test]
+    fn deep_lk_recursion_grows_the_stack_instead_of_overflowing() {
+        // Before segmented-stack growth, ~150 frames overflowed the Rust stack
+        // in debug (test threads: 2MiB) and aborted the whole process; 30k
+        // recursion now completes and stays under the call-depth cap.
+        let module = compile_source("fn f(n) { if (n == 0) { return 0; } return f(n - 1); }\nreturn f(30000);\n");
+        let result = crate::vm::execute_module(&module).expect("deep recursion completes");
+        assert_eq!(result.returns.first(), Some(&RuntimeVal::Int(0)));
+    }
+
+    #[test]
+    fn call_depth_cap_raises_a_catchable_error() {
+        let module = compile_source("fn f(n) { if (n == 0) { return 0; } return f(n - 1); }\nreturn f(100);\n");
+        let module = alloc::sync::Arc::new(module);
+        let mut ctx = VmContext::new_without_core_vm_builtins();
+        let register_count = module.entry_function().map(|f| f.register_count).unwrap_or_default();
+        let err = crate::vm::Executor::new(register_count)
+            .with_max_call_depth(50)
+            .run_shared_module_with_globals_and_heap_and_ctx(
+                alloc::sync::Arc::clone(&module),
+                vec![RuntimeVal::Nil; module.globals.len()],
+                HeapStore::new(),
+                &mut ctx,
+            )
+            .expect_err("recursion beyond the cap must error, not abort");
+        assert!(
+            err.to_string().contains("call depth limit exceeded"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
     fn call_module_function_rejects_out_of_bounds_index() {
         let module = compile_source("return 0;\n");
         let mut ctx = VmContext::new_without_core_vm_builtins();

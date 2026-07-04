@@ -211,25 +211,43 @@ impl VmContext {
         self.call_stack.last().map(|frame| frame.function_name.as_ref())
     }
 
-    /// 返回当前调用栈的格式化字符串。
+    /// 返回当前调用栈的格式化字符串。深栈截断打印(头 20 帧 + 尾 10 帧):
+    /// 递归打满调用深度上限时,完整 traceback 会有几十万行,淹没真正的错误。
     pub fn call_stack_report(&self) -> Option<String> {
+        const HEAD_FRAMES: usize = 20;
+        const TAIL_FRAMES: usize = 10;
         if self.call_stack.is_empty() {
-            None
-        } else {
-            let mut msg = String::from("Call stack:\n");
-            for frame in self.call_stack.iter().rev() {
-                msg.push_str("  [");
-                msg.push_str(&frame.depth.to_string());
-                msg.push_str("] ");
-                msg.push_str(frame.function_name.as_ref());
-                if let Some(location) = frame.location.as_ref() {
-                    msg.push_str(" at ");
-                    msg.push_str(location.as_ref());
-                }
-                msg.push('\n');
-            }
-            Some(msg)
+            return None;
         }
+        fn push_frame(msg: &mut String, frame: &CallFrameInfo) {
+            msg.push_str("  [");
+            msg.push_str(&frame.depth.to_string());
+            msg.push_str("] ");
+            msg.push_str(frame.function_name.as_ref());
+            if let Some(location) = frame.location.as_ref() {
+                msg.push_str(" at ");
+                msg.push_str(location.as_ref());
+            }
+            msg.push('\n');
+        }
+        let mut msg = String::from("Call stack:\n");
+        let total = self.call_stack.len();
+        if total <= HEAD_FRAMES + TAIL_FRAMES {
+            for frame in self.call_stack.iter().rev() {
+                push_frame(&mut msg, frame);
+            }
+        } else {
+            for frame in self.call_stack.iter().rev().take(HEAD_FRAMES) {
+                push_frame(&mut msg, frame);
+            }
+            msg.push_str("  … ");
+            msg.push_str(&(total - HEAD_FRAMES - TAIL_FRAMES).to_string());
+            msg.push_str(" frames elided …\n");
+            for frame in self.call_stack.iter().take(TAIL_FRAMES).rev() {
+                push_frame(&mut msg, frame);
+            }
+        }
+        Some(msg)
     }
 
     /// 生成增强的错误信息，包含调用栈上下文
@@ -1015,6 +1033,31 @@ mod tests {
     use super::*;
     use crate::util::fast_map::fast_hash_map_from_iter;
     use crate::vm::{Module, RuntimeModuleState};
+
+    #[test]
+    fn deep_call_stack_report_is_truncated() {
+        let mut ctx = VmContext::new_without_core_vm_builtins();
+        for i in 0..100 {
+            ctx.push_call_frame(format!("f{i}"), None::<String>);
+        }
+        let report = ctx.call_stack_report().expect("frames present");
+        assert!(report.contains("70 frames elided"), "unexpected report:\n{report}");
+        assert!(report.lines().count() < 40, "report must stay short:\n{report}");
+        // Innermost and outermost frames both survive the truncation.
+        assert!(report.contains("f99"));
+        assert!(report.contains("f0"));
+    }
+
+    #[test]
+    fn shallow_call_stack_report_is_complete() {
+        let mut ctx = VmContext::new_without_core_vm_builtins();
+        for i in 0..5 {
+            ctx.push_call_frame(format!("g{i}"), None::<String>);
+        }
+        let report = ctx.call_stack_report().expect("frames present");
+        assert!(!report.contains("elided"));
+        assert_eq!(report.lines().count(), 6, "header + 5 frames:\n{report}");
+    }
 
     #[test]
     fn collect_runtime_globals_garbage_keeps_export_values_and_globals() {
