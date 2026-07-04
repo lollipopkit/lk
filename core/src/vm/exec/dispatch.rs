@@ -12,7 +12,7 @@ use core::fmt::Write;
 
 use crate::val::{HeapValue, RuntimeVal, ShortStr, TypedList};
 
-use super::Executor;
+use super::{Executor, call::CallOutcome};
 use crate::vm::{
     CallWindow, Function, Instr, Module, Opcode, RegisterIndex, VmContext,
     analysis::{
@@ -462,6 +462,13 @@ impl Executor {
         Ok(())
     }
 
+    /// Dispatch the generic `Call` opcode. Returns `Some(function_index)`
+    /// when the target was a closure and a `Frame` was pushed (plan M2.5 sub-
+    /// step ①) — the caller (the `Opcode::Call` arm in `exec.rs`) must stop
+    /// dispatching this activation and switch to it. Returns `None` when the
+    /// call already ran to completion synchronously (native/runtime target,
+    /// still recursive) and the result is already written — the caller keeps
+    /// looping.
     pub(super) fn dispatch_call(
         &mut self,
         function: &Function,
@@ -469,7 +476,7 @@ impl Executor {
         instr: Instr,
         ctx: &mut Option<&mut VmContext>,
         collect_metrics: bool,
-    ) -> Result<()> {
+    ) -> Result<Option<u32>> {
         self.collect_pending_garbage();
         if collect_metrics {
             record_call_op_known_enabled(VmCallMetric::Generic);
@@ -477,14 +484,18 @@ impl Executor {
         let call_fact = self.call_fact_from_static_cache_or_instr(function, instr, false);
         let window = CallWindow::new(RegisterIndex::new(call_fact.call_base), call_fact.positional_count, 1);
         let call_pc = self.pc;
-        let value = self.call_function(module, window, Some(call_fact.target_kind), ctx)?;
-        if self.pc != call_pc {
-            return Ok(());
+        match self.call_function(module, window, Some(call_fact.target_kind), ctx)? {
+            CallOutcome::Pushed(function_index) => Ok(Some(function_index)),
+            CallOutcome::Value(value) => {
+                if self.pc != call_pc {
+                    return Ok(None);
+                }
+                self.clear_call_window_temps(window, 0)?;
+                self.write_returns(window, [value])?;
+                self.pc += 1;
+                Ok(None)
+            }
         }
-        self.clear_call_window_temps(window, 0)?;
-        self.write_returns(window, [value])?;
-        self.pc += 1;
-        Ok(())
     }
 
     #[cold]

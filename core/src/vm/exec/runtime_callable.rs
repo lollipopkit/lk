@@ -711,7 +711,7 @@ fn call_closure_value(
         callee.register_count = function.register_count;
         callee.state.stack_top = new_top;
         callee.pc = 0;
-        callee.run_function_inner(function, Some(module), &mut ctx)
+        callee.run_function_inner(function, function_index, Some(module), &mut ctx)
     })();
     callee.state.stack_top = saved_top;
     *state = callee.state;
@@ -771,7 +771,7 @@ fn call_closure_value_typed_map(
         callee.register_count = function.register_count;
         callee.state.stack_top = new_top;
         callee.pc = 0;
-        callee.run_function_inner(function, Some(module), &mut ctx)
+        callee.run_function_inner(function, function_index, Some(module), &mut ctx)
     })();
     callee.state.stack_top = saved_top;
     *state = callee.state;

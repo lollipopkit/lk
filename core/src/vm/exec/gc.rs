@@ -13,8 +13,12 @@ impl Executor {
 
     pub(crate) fn root_refs(&self) -> Vec<crate::val::HeapRef> {
         let handler_roots = self.handler_stack.iter().flat_map(ErrorHandler::roots);
+        // Ancestor frames' captures (plan M2.5 sub-step ①: flattened LK→LK
+        // calls no longer keep them alive implicitly on the Rust stack) must
+        // be rooted explicitly here, same as the current frame's `captures`.
+        let frame_roots = self.frames.iter().flat_map(|frame| frame.captures.iter());
         self.state
-            .gc_roots(self.captures.iter().chain(handler_roots))
+            .gc_roots(self.captures.iter().chain(frame_roots).chain(handler_roots))
             .into_refs()
     }
 
