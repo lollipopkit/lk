@@ -8,10 +8,53 @@ English | [简体中文](README.zh-CN.md)
 ## Features
 
 - Rust-inspired syntax with first-class named parameters
+- **Go-style concurrency**: `go` statements spawn true-parallel goroutines (isolate semantics — no data races by construction), blocking channels, and `select`
+- **Swift-style error handling**: errors raise and are caught with `try`/`catch`; postfix `!` force-unwraps nil
 - Rust-shaped `macro_rules!` declarative macros with function-like calls, explicit macro exports/re-exports, file/package imports, standard `macros` imports, item attributes, built-in `#[derive(Debug|Show)]`, isolated external derive/attribute/function-like providers, dependency-aware proc macro cache invalidation, LSP macro-origin hover/symbols plus same-file/imported macro and generated item goto-definition, and token-level macro origin/source-map inspection
 - VM interpreter and LLVM compiler backend, supporting cross-platform native compilation and browser WASM
 - Built-in standard library and syntax sugar
 - Package manager and REPL, with VS Code LSP extension support
+
+## A Taste
+
+```lk
+use task;
+use chan as ch;
+
+// Goroutines + channels (Go-style, but isolate: crossing values are
+// deep-copied — no shared mutable state, no data races by construction).
+fn producer(c, n) {
+    for i in 0..n {
+        send(c, i * i);
+    }
+    ch.close(c);
+}
+
+let c = chan(4);
+go producer(c, 5);
+
+// Errors raise; try/catch is the error-handling surface (Swift-style).
+let total = 0;
+try {
+    while (true) {
+        total += recv(c);        // raises once c is closed and drained
+    }
+} catch e {
+    // drained: 0 + 1 + 4 + 9 + 16
+}
+
+// select multiplexes channels; postfix `!` force-unwraps nil.
+let done = chan(1);
+send(done, "ok");
+let status = select {
+    case v <- recv(done) => v;
+    default => "pending";
+};
+let m = {"total": total};
+println("{} (total: {})", status, m["total"]!);   // ok (total: 30)
+```
+
+See `docs/concurrency.md` and `docs/semantics.md` for the full semantics.
 
 ## Examples
 
