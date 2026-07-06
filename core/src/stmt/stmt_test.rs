@@ -1122,4 +1122,38 @@ mod tests {
         let mut checker = TypeChecker::new_strict();
         assert!(program.type_check(&mut checker).is_ok());
     }
+    /// `go <expr>;` is parse-time sugar: a zero-param closure over the
+    /// operand handed to the `spawn` builtin, handle discarded.
+    #[test]
+    fn go_statement_desugars_to_spawn_closure() {
+        use crate::expr::Expr;
+        let program = parse_program("go f(1, 2);");
+        let Stmt::Expr(call) = program.statements[0].as_ref() else {
+            panic!("go must desugar to an expression statement");
+        };
+        let Expr::Call(name, args) = call.as_ref() else {
+            panic!("go must desugar to a spawn call, got {call:?}");
+        };
+        assert_eq!(name, "spawn");
+        assert_eq!(args.len(), 1);
+        let Expr::Closure { params, body } = args[0].as_ref() else {
+            panic!("spawn argument must be a closure");
+        };
+        assert!(params.is_empty());
+        // The operand call survives verbatim as the closure body (exact node
+        // kind — Call vs CallExpr — is the expression parser's business).
+        let body_repr = format!("{body:?}");
+        assert!(
+            body_repr.contains("\"f\""),
+            "closure body must be the f(...) call: {body_repr}"
+        );
+    }
+
+    /// `go` stays usable as an ordinary identifier prefix (`golang`,
+    /// `gopher`) — only the standalone keyword parses as a statement.
+    #[test]
+    fn go_prefixed_identifiers_still_parse() {
+        let program = parse_program("let golang = 1; let gopher = golang + 1; return gopher;");
+        assert_eq!(program.statements.len(), 3);
+    }
 }

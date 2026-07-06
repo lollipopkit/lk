@@ -356,6 +356,7 @@ pub fn token_lexeme(token: &Token) -> String {
         Token::Case => "case".to_string(),
         Token::Default => "default".to_string(),
         Token::Select => "select".to_string(),
+        Token::Go => "go".to_string(),
         Token::Use => "use".to_string(),
         Token::From => "from".to_string(),
         Token::As => "as".to_string(),

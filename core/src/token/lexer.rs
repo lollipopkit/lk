@@ -68,6 +68,7 @@ pub enum Token {
     Default,  // default
     // Concurrency keywords
     Select, // select
+    Go,     // go (spawn a goroutine, Go-style)
     // Module-use keywords
     Use,  // use
     From, // from
@@ -676,6 +677,10 @@ impl<'a> Tokenizer<'a> {
         }
         if let Some(sp) = match_kw(self, "for") {
             self.push_span_only(Token::For, sp);
+            return Ok(());
+        }
+        if let Some(sp) = match_kw(self, "go") {
+            self.push_span_only(Token::Go, sp);
             return Ok(());
         }
         if let Some(sp) = match_kw(self, "match") {

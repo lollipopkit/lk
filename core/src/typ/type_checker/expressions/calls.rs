@@ -125,6 +125,13 @@ impl TypeChecker {
                             self.inference_engine.add_constraint((*inner).clone(), value_ty);
                             return Ok(Type::Nil);
                         }
+                        // Un-inferred (e.g. a plain fn parameter): constrain
+                        // to Channel instead of rejecting.
+                        Type::Any | Type::Variable(_) => {
+                            self.inference_engine
+                                .add_constraint(channel_ty, Type::Channel(Box::new(Type::Any)));
+                            return Ok(Type::Nil);
+                        }
                         other => {
                             return Err(Self::type_err(
                                 "send() pattern requires a channel",
@@ -142,6 +149,12 @@ impl TypeChecker {
                     let channel_ty = self.check_expr(&args[0])?;
                     return match self.resolve_aliases(&channel_ty) {
                         Type::Channel(inner) => Ok((*inner).clone()),
+                        // Same latitude as `send` for un-inferred operands.
+                        Type::Any | Type::Variable(_) => {
+                            self.inference_engine
+                                .add_constraint(channel_ty, Type::Channel(Box::new(Type::Any)));
+                            Ok(Type::Any)
+                        }
                         other => Err(Self::type_err(
                             "recv() pattern requires a channel",
                             Some(Type::Channel(Box::new(Type::Any))),

@@ -200,6 +200,7 @@ impl<'a> StmtParser<'a> {
             Token::Use => self.parse_import_stmt(),
             Token::If => self.parse_if_stmt(),
             Token::Try => self.parse_try_stmt(),
+            Token::Go => self.parse_go_stmt(),
             Token::While => self.parse_while_stmt(),
             Token::For => self.parse_for_stmt(),
             Token::Struct => self.parse_struct_stmt(),

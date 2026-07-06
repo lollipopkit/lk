@@ -160,4 +160,47 @@ mod tests {
         let err = run("spawn(42);").expect_err("non-callable must fail");
         assert!(err.to_string().contains("function"), "{err}");
     }
+
+    /// `go f(x);` fire-and-forget: the call runs on another thread; a
+    /// channel provides the rendezvous.
+    #[test]
+    fn go_statement_runs_the_call_as_a_goroutine() {
+        assert_true(
+            r#"
+            let c = chan(1);
+            go send(c, 42);
+            return recv(c) == [true, 42];
+            "#,
+        );
+    }
+
+    #[test]
+    fn go_statement_with_named_function_and_args() {
+        assert_true(
+            r#"
+            fn work(ch, v) { send(ch, v * 2); }
+            let out = chan(1);
+            go work(out, 21);
+            return recv(out) == [true, 42];
+            "#,
+        );
+    }
+
+    /// Argument snapshot semantics: `go` captures by value at spawn time —
+    /// later mutation of the local doesn't affect the goroutine.
+    #[test]
+    fn go_statement_snapshots_operands_at_spawn_time() {
+        assert_true(
+            r#"
+            use task;
+            let c = chan(1);
+            let v = 1;
+            let t = spawn(|| v);   // snapshot of v == 1
+            v = 2;
+            go send(c, v);         // snapshot of v == 2
+            let sent = recv(c)[1];
+            return task.await(t) == 1 && sent == 2;
+            "#,
+        );
+    }
 }

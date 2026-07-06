@@ -21,6 +21,26 @@ impl<'a> StmtParser<'a> {
     ///
     /// Note: `return` inside a `try` body returns from the desugared closure, not
     /// the enclosing function (a known limitation of the desugaring).
+    /// `go <expr>;` — Go-style fire-and-forget goroutine. Parse-time sugar
+    /// (same treatment as try/catch → pcall): the operand is wrapped in a
+    /// zero-param closure and handed to the `spawn` builtin, discarding the
+    /// Task handle. Captures are snapshotted at spawn time (isolate
+    /// semantics — see `spawn`); use `let t = spawn(|| …);` when the handle
+    /// is needed.
+    pub fn parse_go_stmt(&mut self) -> Result<Stmt> {
+        self.expect_token(Token::Go)?;
+        let operand = self.parse_expression()?;
+        self.expect_token(Token::Semicolon)?;
+        let closure = Expr::Closure {
+            params: Vec::new(),
+            body: Box::new(operand),
+        };
+        Ok(Stmt::Expr(Box::new(Expr::Call(
+            "spawn".to_string(),
+            vec![Box::new(closure)],
+        ))))
+    }
+
     pub fn parse_try_stmt(&mut self) -> Result<Stmt> {
         self.expect_token(Token::Try)?;
         let Stmt::Block { statements: body_stmts } = self.parse_block_stmt()? else {
