@@ -2841,6 +2841,33 @@ fn lower_inst(
             // integer op; any float operand → coerce ints to float and use the float
             // op (matching `dynamic_add`/etc.). We resolve that dispatch statically.
             // A `Maybe` operand (dynamic index result) unwraps to `I64` here.
+            //
+            // A Dyn operand routes both sides through the `dyn.*` helpers,
+            // which carry the same promotion rules at runtime (`/` always
+            // Float, type errors abort like the VM). Result stays `Ty::Dyn`.
+            {
+                let (lv_raw, lty_raw) = ssa.read(instr.b(), block, pc)?;
+                let (rv_raw, rty_raw) = ssa.read(instr.c(), block, pc)?;
+                if lty_raw == Ty::Dyn || rty_raw == Ty::Dyn {
+                    let lhs = to_dyn(ssa, insts, lv_raw, lty_raw, pc)?;
+                    let rhs = to_dyn(ssa, insts, rv_raw, rty_raw, pc)?;
+                    let helper = match op {
+                        Opcode::AddInt => "add",
+                        Opcode::SubInt => "sub",
+                        Opcode::MulInt => "mul",
+                        Opcode::DivInt => "div",
+                        _ => "mod",
+                    };
+                    let dst = ssa.new_val();
+                    insts.push(Inst::Call {
+                        dst: Some(dst),
+                        callee: AbiRef::new("dyn", helper),
+                        args: vec![lhs, rhs],
+                    });
+                    ssa.write(instr.a(), block, (dst, Ty::Dyn));
+                    return Ok(());
+                }
+            }
             let (lv, lty) = read_scalar(ssa, insts, instr.b(), block, pc)?;
             let (rv, rty) = read_scalar(ssa, insts, instr.c(), block, pc)?;
             match (lty, rty) {
