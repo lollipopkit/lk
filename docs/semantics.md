@@ -55,10 +55,17 @@ VM 以 `exit 1` + stderr 错误信息结束,native 以 guard `abort()`(SIGABRT,
 - `while` 条件**必须**带括号;`if` 条件可不带,但 `if (expr) op rhs` 形式会把
   首个括号组解析为整个条件——生成器 / 工具生成的 `if` 条件应整体加一层括号。
 - 语句以 `;` 结尾。
-- `try`/`catch` 与 `select` 均为 **parse 时糖**(分别降到 `pcall` 与
-  `select$block` + 普通 AST),不存在专用 AST 节点;`select` 语义裁决见
-  `docs/coroutines.md`(急切求值、守卫先于 binding、closed 报错、全禁用无
-  default 得 nil)。
+- `try`/`catch`、`select`、`go`、后缀 `!` 均为 **parse 时糖**(分别降到隐藏
+  native `try$call`、`select$block`、`spawn(闭包)`、nil 检查 Conditional),
+  不存在专用 AST 节点;`select`/并发语义见 `docs/concurrency.md`。
+- **后缀 `!`(force unwrap)**:`expr!` 在 nil 时 raise "unwrap of nil value"
+  (可 catch),否则原值。两条边界:`!` 紧跟 `(`/`[`/`{` 是**宏调用**语法
+  (`name!(...)`),解包后调用/索引需加括号 `(x!)(...)`;lexer 贪婪 `!=`→Ne,
+  `x!==1` 是 parse 错误,写 `x! == 1`。
+- **v2 错误模型**:错误一律 **raise**(Swift 式),try/catch 是唯一捕获面,
+  无用户级 `pcall`、无 `[ok, value]` 状态对。`error(v)` 抛一等错误值;
+  并发原语失败即抛(`recv`/`send` on closed),非错误的"暂无"用 nil 表达
+  (`chan.try_recv` 空、`task.try_await` 未完成),配合 `!` 断言。
 
 ## 闭包与捕获
 

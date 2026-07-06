@@ -16,11 +16,10 @@ exports.
   and process execution/state.
 - `encoding` is a parent namespace for data formats and byte/text encodings:
   `json`, `yaml`, `toml`, `base64`, `hex`, and `url`.
-- Concurrency splits three ways: `chan` owns channel operations, `task` owns
-  tokio task management (`await`, `join_all`, `sleep`), and `sched` owns the
-  cooperative coroutine scheduler that multiplexes coroutines over channels,
-  timers, and tasks on one VM thread (see `docs/coroutines.md` — the sched
-  builders construct wait descriptors for `yield`, they never block).
+- Concurrency is Go-shaped (see `docs/concurrency.md`): the `go` statement /
+  `spawn` global start goroutines, `chan` owns channel operations, and
+  `task` owns task management (`await`, `try_await`, `join_all`, `sleep`).
+  Failures raise (v2 error model) — there are no `[ok, value]` pairs.
 
 ## Common Modules
 
