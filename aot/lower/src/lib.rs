@@ -2927,6 +2927,28 @@ fn lower_inst(
                     });
                     insts.push(Inst::Not { dst, src: present });
                 }
+                // A boxed Dyn (struct field / mixed-container read): nil-ness
+                // is its tag (`0` = Nil), same as the Cmp `== nil` arm.
+                Ty::Dyn => {
+                    let tag = ssa.new_val();
+                    insts.push(Inst::Call {
+                        dst: Some(tag),
+                        callee: AbiRef::new("dyn", "tag"),
+                        args: vec![v],
+                    });
+                    let zero = ssa.new_val();
+                    insts.push(Inst::Const {
+                        dst: zero,
+                        value: Const::I64(0),
+                    });
+                    insts.push(Inst::Cmp {
+                        dst,
+                        op: CmpOp::Eq,
+                        float: false,
+                        lhs: tag,
+                        rhs: zero,
+                    });
+                }
                 _ => return Err(Unsupported::TypeMismatch { pc }),
             }
             ssa.write(instr.a(), block, (dst, Ty::Bool));
@@ -3303,8 +3325,29 @@ fn lower_inst(
             // The compiler emits these when it expects float arithmetic, but an
             // operand may still be an `I64` (e.g. an `I64` parameter in `x / 2.0`) —
             // the VM coerces it, so we widen `I64`/`Maybe` operands to `F64` here.
+            // A Dyn operand (a typed struct field read back as Dyn) routes
+            // through the `dyn.*` helpers, same as the Int family above.
             let (lv, lty) = read_scalar(ssa, insts, instr.b(), block, pc)?;
             let (rv, rty) = read_scalar(ssa, insts, instr.c(), block, pc)?;
+            if lty == Ty::Dyn || rty == Ty::Dyn {
+                let lhs = to_dyn(ssa, insts, lv, lty, pc)?;
+                let rhs = to_dyn(ssa, insts, rv, rty, pc)?;
+                let helper = match op {
+                    Opcode::AddFloat => "add",
+                    Opcode::SubFloat => "sub",
+                    Opcode::MulFloat => "mul",
+                    Opcode::DivFloat => "div",
+                    _ => "mod",
+                };
+                let dst = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(dst),
+                    callee: AbiRef::new("dyn", helper),
+                    args: vec![lhs, rhs],
+                });
+                ssa.write(instr.a(), block, (dst, Ty::Dyn));
+                return Ok(());
+            }
             if !matches!(lty, Ty::I64 | Ty::F64) || !matches!(rty, Ty::I64 | Ty::F64) {
                 return Err(Unsupported::TypeMismatch { pc });
             }
@@ -3767,7 +3810,63 @@ fn lower_inst(
                     lower_builtin_call(ssa, insts, globals, builtin, base, instr.c() as usize, block, pc)?;
                 }
                 Some(GlobalRef::ModuleFn(module, name)) => {
-                    lower_module_call(ssa, insts, &module, &name, base, instr.c() as usize, block, pc)?;
+                    // `iter.map(xs, f)`, `iter.take(xs, n)`, … are the
+                    // module-function spellings of the list methods (the VM
+                    // routes both through the same core_methods) — forward
+                    // to the same lowering with the receiver at `base+1`.
+                    let argc = instr.c() as usize;
+                    if module == "iter"
+                        && matches!(
+                            name.as_str(),
+                            "map"
+                                | "filter"
+                                | "reduce"
+                                | "enumerate"
+                                | "zip"
+                                | "take"
+                                | "skip"
+                                | "chain"
+                                | "flatten"
+                                | "unique"
+                                | "chunk"
+                        )
+                        && argc >= 1
+                    {
+                        let (receiver, receiver_ty) = ssa.read(base.wrapping_add(1), block, pc)?;
+                        // The HOF spellings reuse the lambda-aware method
+                        // path (the lambda register offset matches with the
+                        // window base shifted one slot right).
+                        if matches!(name.as_str(), "map" | "filter" | "reduce") {
+                            if receiver_ty == Ty::ListI64
+                                && let Some(result) = lower_list_hof_k(
+                                    ssa,
+                                    insts,
+                                    funcs,
+                                    entry,
+                                    sig,
+                                    receiver,
+                                    &name,
+                                    base.wrapping_add(1),
+                                    argc - 1,
+                                    block,
+                                    pc,
+                                )?
+                            {
+                                ssa.write(base, block, result);
+                                return Ok(());
+                            }
+                            return Err(Unsupported::Opcode { pc, op: instr.opcode() });
+                        }
+                        let mut args = Vec::with_capacity(argc - 1);
+                        for i in 0..argc - 1 {
+                            args.push(ssa.read(base.wrapping_add(2).wrapping_add(i as u8), block, pc)?);
+                        }
+                        let result =
+                            lower_method_dispatch(ssa, insts, globals, receiver, receiver_ty, &name, &args, block, pc)?;
+                        ssa.write(base, block, result);
+                        return Ok(());
+                    }
+                    lower_module_call(ssa, insts, &module, &name, base, argc, block, pc)?;
                 }
                 // An indirect call through a statically known capture-free
                 // closure devirtualizes to a direct call (same register-window
@@ -4269,6 +4368,40 @@ fn lower_inst(
                 ssa.range_def.insert(handle, (s0, end_excl));
             }
             ssa.write(instr.a(), block, (handle, Ty::ListI64));
+        }
+        Opcode::NewObject => {
+            // `a` = dst, `b` = base, `c` = field count: `base` holds the type
+            // name, fields at `base+1+2k` (constant-string key) / `base+2+2k`
+            // (value). A struct instance is carried as a string-keyed Dyn map
+            // (plan M4.2 D4 裁决): `GetFieldK` reads work unchanged, an
+            // absent optional field is `str_dyn_get`'s Nil — matching the
+            // VM's absent-Object-field nil. The type name is dropped: whole-
+            // object display/`typeof` are not in the native subset.
+            let map = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(map),
+                callee: AbiRef::new("map_h", "str_dyn_new"),
+                args: Vec::new(),
+            });
+            for i in 0..instr.c() as usize {
+                let key_reg = instr.b().wrapping_add(1).wrapping_add((i * 2) as u8);
+                let value_reg = key_reg.wrapping_add(1);
+                let key = {
+                    let kv = ssa.read(key_reg, block, pc).ok().map(|(v, _)| v);
+                    kv.and_then(|v| ssa.const_strs.get(&v).cloned())
+                        .or_else(|| ssa.reg_const_str(key_reg, block))
+                }
+                .ok_or(Unsupported::Opcode { pc, op: instr.opcode() })?;
+                let key_v = materialize_key(ssa, insts, globals, &key);
+                let (vv, vty) = ssa.read(value_reg, block, pc)?;
+                let boxed = to_dyn(ssa, insts, vv, vty, pc)?;
+                insts.push(Inst::Call {
+                    dst: None,
+                    callee: AbiRef::new("map_h", "str_dyn_set"),
+                    args: vec![map, key_v, boxed],
+                });
+            }
+            ssa.write(instr.a(), block, (map, Ty::MapStrDyn));
         }
         Opcode::ListPush => {
             // `a` = list register (mutated in place), `b` = value register. The list
@@ -6117,15 +6250,26 @@ fn lower_module_call(
     block: usize,
     pc: usize,
 ) -> Result<(), Unsupported> {
-    // `iter.range(start, end[, step])` — an exclusive integer range,
+    // `iter.range([start,] end[, step])` — an exclusive integer range,
     // materialized eagerly like the VM (reuses the `NewRange` helper; zero
-    // step aborts inside it).
+    // step aborts inside it). The one-arg form counts from 0.
     if module == "iter" && name == "range" {
-        if !(argc == 2 || argc == 3) {
+        if !(1..=3).contains(&argc) {
             return Err(Unsupported::Opcode { pc, op: Opcode::Call });
         }
-        let start = read_typed_scalar(ssa, insts, base.wrapping_add(1), block, Ty::I64, pc)?;
-        let end = read_typed_scalar(ssa, insts, base.wrapping_add(2), block, Ty::I64, pc)?;
+        let (start, end) = if argc == 1 {
+            let zero = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: zero,
+                value: Const::I64(0),
+            });
+            let end = read_typed_scalar(ssa, insts, base.wrapping_add(1), block, Ty::I64, pc)?;
+            (zero, end)
+        } else {
+            let start = read_typed_scalar(ssa, insts, base.wrapping_add(1), block, Ty::I64, pc)?;
+            let end = read_typed_scalar(ssa, insts, base.wrapping_add(2), block, Ty::I64, pc)?;
+            (start, end)
+        };
         let step = if argc == 3 {
             read_typed_scalar(ssa, insts, base.wrapping_add(3), block, Ty::I64, pc)?
         } else {
