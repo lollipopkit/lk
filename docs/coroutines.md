@@ -25,10 +25,9 @@ global functions plus a `yield` expression.
   passed.
 
 These are global builtins (no `use` needed), like `pcall`/`error`/`assert` —
-coroutines are core control flow, not an optional OS-facing module (unlike
-`task`/`chan`, which front the tokio-backed async runtime and are unrelated
-to this feature: coroutines are purely synchronous and cooperative within a
-single VM instance).
+coroutines are core control flow, not an optional OS-facing module. They are
+purely synchronous and cooperative within a single VM instance; the bridge to
+the tokio-backed `task`/`chan` runtime is the `sched` stdlib module (below).
 
 ## Example
 
@@ -80,3 +79,74 @@ conformance corpus (VM==bytecode and VM==AOT gates).
   Tier 0 VM bundle automatically (program-grain fallback, same as any other
   `Unsupported` construct — see `progress.md`'s M4.2 notes); it still
   produces a working, self-contained binary, just not natively-compiled.
+
+## The `sched` cooperative scheduler (`use sched;`)
+
+Because natives can't yield (previous section), a blocking channel `recv(c)`
+inside a coroutine can't transparently suspend it Go-style — it would block
+the whole VM thread. The `sched` module is the stackless answer: its builders
+never block and never yield, they only **construct wait descriptors** (small
+tagged lists), user code suspends itself explicitly with `yield`, and
+`sched.run` interprets the descriptors:
+
+- `sched.run(...fns_or_cos) -> List` — wraps plain functions as coroutines
+  and drives everything round-robin until all coroutines (including any they
+  `sched.spawn`) finish. Returns one `[ok, value]` per argument, in order;
+  one coroutine erroring doesn't stop the rest. When every coroutine is
+  parked, it blocks on a tokio select over all parked channel/task arms,
+  bounded by the earliest sleep deadline.
+- `yield sched.recv(c)` → `[ok, value]` (like the blocking `recv`; `[false,
+  nil]` once the channel closes).
+- `yield sched.send(c, v)` → Bool (like the blocking `send`; `false` if the
+  channel closed).
+- `yield sched.sleep(ms)` → Nil, parking on a timer instead of the thread.
+- `yield sched.pause()` → Nil, an explicit fairness point (back of the run
+  queue).
+- `yield sched.spawn(f, ...args)` → the new coroutine's handle; `args` seed
+  `f`'s parameters.
+- `yield sched.join(co)` → that coroutine's `[ok, value]` once it finishes
+  (only for coroutines managed by this `sched.run`).
+- `yield sched.await(t)` → `[ok, value]` of a tokio `Task` (as produced by
+  task-returning natives, e.g. `net.tcp`'s async ops) without blocking the
+  sibling coroutines.
+
+```lk
+use sched;
+use chan as ch;
+
+let c = chan(1);
+let producer = || {
+    for i in 0..4 { yield sched.send(c, i); }
+    ch.close(c);
+    return "done";
+};
+let consumer = || {
+    let n = 0;
+    while (true) {
+        let r = yield sched.recv(c);
+        if (!r[0]) { break; }
+        n = n + 1;
+    }
+    return n;
+};
+let results = sched.run(producer, consumer);   // [[true, "done"], [true, 4]]
+```
+
+Semantics worth knowing:
+
+- Parked channel/task waits may legitimately block forever if nothing ever
+  delivers (an external tokio task may send at any time — same stance as Go).
+  A **join cycle**, however, is provably stuck and reported as a deadlock
+  error instead of hanging.
+- Yielding anything that isn't a `sched` descriptor inside `sched.run` is a
+  catchable error — generator-style coroutines belong to bare
+  `coroutine_resume`, not the scheduler.
+- Don't resume scheduler-managed coroutines manually mid-`sched.run`; the
+  scheduler owns their lifecycle (worst case is a clear runtime error, but
+  it's still misuse).
+- Channel values are deep-copied across `send`/`recv` (channels are cross-VM
+  by design), so coroutine handles can't travel through channels — share
+  them through captured maps/lists instead.
+
+`examples/stdlib/sched_demo.lk` is the runnable, differential-gated corpus
+for all of the above.

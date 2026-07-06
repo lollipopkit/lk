@@ -1,0 +1,103 @@
+// Cooperative coroutine scheduler (`sched` module): multiplexes coroutines
+// over channels/timers on one VM thread. Natives can't yield (see
+// docs/coroutines.md), so the sched builders only construct *wait
+// descriptors*; `yield sched.recv(c)` is the explicit suspension point and
+// `sched.run` interprets the descriptors, blocking only when every coroutine
+// is parked. Also part of the VM==bytecode differential corpus, so all
+// output below must be deterministic.
+
+use sched;
+use chan as ch;
+
+// --- producer/consumer over a capacity-1 channel: both sides must park ---
+let c = chan(1);
+let seen = [];
+
+let producer = || {
+    let i = 0;
+    while (i < 4) {
+        yield sched.send(c, i * 10);
+        i = i + 1;
+    }
+    ch.close(c);
+    return "producer-done";
+};
+
+let consumer = || {
+    let n = 0;
+    while (true) {
+        let r = yield sched.recv(c);
+        if (!r[0]) { break; }
+        seen.push(r[1]);
+        n = n + 1;
+    }
+    return n;
+};
+
+let results = sched.run(producer, consumer);
+assert(results[0] == [true, "producer-done"]);
+assert(results[1] == [true, 4]);
+assert(seen == [0, 10, 20, 30]);
+
+// --- sched.spawn with arguments + sched.join for the child's result ---
+let root = || {
+    let child = yield sched.spawn(|a, b| {
+        yield sched.sleep(1);   // parks on a timer, not the thread
+        return a + b;
+    }, 20, 22);
+    let joined = yield sched.join(child);
+    assert(joined == [true, 42]);
+    return "root-done";
+};
+assert(sched.run(root) == [[true, "root-done"]]);
+
+// --- pause: explicit fairness; sleep doesn't block siblings ---
+let order = [];
+let sleeper = || {
+    yield sched.sleep(10);
+    order.push("slept");
+    return 1;
+};
+let worker = || {
+    let i = 0;
+    while (i < 3) {
+        yield sched.pause();
+        i = i + 1;
+    }
+    order.push("worked");
+    return 2;
+};
+assert(sched.run(sleeper, worker) == [[true, 1], [true, 2]]);
+assert(order == ["worked", "slept"]);
+
+// --- error isolation: one coroutine failing doesn't stop the others,
+//     its result is [false, value] (the pcall convention throughout) ---
+let bad = || { error("kaboom"); };
+let good = || { yield sched.pause(); return "still-here"; };
+let mixed = sched.run(bad, good);
+assert(mixed[0] == [false, "kaboom"]);
+assert(mixed[1] == [true, "still-here"]);
+
+// --- misuse is caught, not hung: non-descriptor yields error out... ---
+let stray = || { yield 42; };
+let caught = pcall(|| sched.run(stray));
+assert(caught[0] == false);
+
+// --- ...and so do join cycles (the one provably-stuck wait) ---
+let m = {"ready": false, "a": nil, "b": nil};
+let waiter = |own, other| {
+    while (!m["ready"]) {
+        yield sched.pause();
+    }
+    return yield sched.join(m[other]);
+};
+let wire = || {
+    m["a"] = yield sched.spawn(waiter, "a", "b");
+    m["b"] = yield sched.spawn(waiter, "b", "a");
+    m["ready"] = true;
+    return 0;
+};
+let deadlocked = pcall(|| sched.run(wire));
+assert(deadlocked[0] == false);
+
+println("sched: ok");

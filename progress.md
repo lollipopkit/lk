@@ -449,6 +449,43 @@
   (0.991x/0.988x/—,新增字段/opcode 未进入非协程程序热路径)。
   → **协程/`yield` 完整达成**,plan.md 4.5 的 stackless 协程目标全部兑现。
 
+## Post-v1.0 — `sched` 协作式调度器(chan/task × 协程整合,handoff 记录的"下一自然大步")
+
+**设计裁决**:native 不能 yield(协程轮已定死的结构性限制)⇒ Go 式"阻塞原语自动挂起协程"走不通;
+采用 stackless 经典的 **yield-descriptor + 调度器** 模式——`sched.recv/send/sleep/pause/spawn/join/await`
+只构造等待描述符(≤7 字节 ShortStr tag 的 tagged list,零堆分配 tag),`yield sched.recv(c)` 是显式挂起点
+(类似 await),`sched.run` 解释描述符驱动 N 个协程。
+
+- [x] **子步A** core 支撑 —— `resume_coroutine_runtime` 新增 `extra_roots: &[RuntimeVal]` 参数(调度器在
+      Rust 局部变量里跨 resume 持有的工作集对 GC 安全点不可见,必须显式进 root;上轮 GC 坑的正面延伸)+
+      `rt::Runtime::take_task(id)`(取出 JoinHandle 所有权,`&mut` 跨 select 轮 cancel-safe 重试;
+      `join_task` 的 remove+await 形态在 select 半途 drop 会丢 task)。顺手修复 lsp integration_test 漏掉的
+      `Token::Yield` match 臂。commit `c6057c1`。
+- [x] **GC bug(fix-forward)** —— stress 跑 sched 测试暴露**死协程 GC trace panic**:协程 Done/Errored 时
+      清空 stack 但未重置 stack_top,`gc_edges` 对 `stack[..stack_top]` 切片越界;任何"死了但句柄仍被引用"
+      的协程被 GC 追踪即 panic(上轮遗留,调度器把完成协程句柄存 results 表后继续跑 VM 恰好触发)。
+      修复 + `tracing_a_dead_coroutine_does_not_panic` 回归测试,commit `3560927`。
+- [x] **子步B** `lk-stdlib-sched` crate —— 描述符 natives(plain)+ `sched.run`(full_state,先例:stream 的
+      `kind = "full_state"` 模块导出)。调度核心:round-robin 队列 + parked 表(Recv/Send/Sleep/Await)+
+      joiners 表;try_recv/try_send 快路径,不 ready 才 park;全员 parked 时自建 `(index, Wake)` futures
+      走 `select_all`(**不用**现成 `SelectOperation`——它 send-closed 直接 Err 丢 case index),sleep 最早
+      deadline 做 timeout 上界;**join-only 死锁可证明**(join 只能由本调度器完成)→ 确定性报错,而
+      channel/await 阻塞合法(外部 tokio task 可投递,同 Go)。**实测踩坑**:`tokio::time::sleep` 在
+      runtime 上下文外创建即 panic("no reactor running")——必须包进 `block_on(async {...})` 内创建。
+      测试 17 个:crate 内 9(描述符构造/校验 + 手工字节码驱动 await park/recv 外部唤醒/join 环死锁;
+      注意手工双函数需错开 pc——global inline cache 按 pc 共享,真实编译码有 per-function facts 不受影响)
+      + umbrella 8 个 LK 源码行为测试(`stdlib/src/sched_test.rs`)。bench 门禁 1.007x。commit `b077544`。
+- [x] **子步C** 语料 + 文档 —— `examples/stdlib/sched_demo.lk`(全场景确定性输出,自动进 VM==bytecode 与
+      VM==AOT 差分门禁;AOT 兜底实测:GetGlobal 不可 lower → Tier 0 bundle,产物跑通)。`docs/coroutines.md`
+      新增 sched 章节(API/示例/语义要点,示例逐字验证可跑)+ `docs/stdlib.md` 并发模块边界(chan/task/sched
+      三分)。
+- **已知边界(留档)**:全局 `spawn(闭包)` 是**既有断点**(闭包无 promote 到 `CallableValue::Runtime` 的
+  路径,`task.spawn_blocking` 同因 bail;顶层就复现,与本轮无关)——`sched.await` 的 LK 级用例因此只能用
+  task-returning natives(net.tcp 等),Rust 级测试已覆盖 await park/wake。协程值不可穿 channel(深拷贝
+  边界既有守卫),句柄经共享 map/list 传递。
+- **验证(贯穿)**:workspace 全量 1498+ 0 失败 · `LK_GC_STRESS=1`(core 959 + stdlib sched 8)全绿 ·
+  clippy/fmt 0 · no_std 构建 0/0 · dist bench 1.007x 基线内。
+
 ---
 
 ## 执行原则
