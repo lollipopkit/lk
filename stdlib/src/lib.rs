@@ -1169,6 +1169,12 @@ fn spawnable_callable(
         _ => return Err(anyhow!("{context} must be a function")),
     };
     let (function_index, captures) = closure_parts;
+    // The main execution path already runs the module behind an Arc
+    // (`run_shared_module_with_globals_and_heap_and_ctx`), which native calls
+    // carry as `shared_module` — reuse it instead of deep-cloning the whole
+    // Module per spawn. The clone remains only as a fallback for bare
+    // `&Module` re-entry paths.
+    let shared_module = runtime.shared_module();
     let Some((state, _, module)) = runtime.state_ctx_module_mut() else {
         return Err(anyhow!("{context}: spawning a closure requires full VM state"));
     };
@@ -1186,8 +1192,9 @@ fn spawnable_callable(
         copied_globals.push(copy_runtime_value_same_module(value, state.heap(), &mut task_heap)?);
     }
     let snapshot = lk_core::vm::RuntimeModuleState::new(task_heap, copied_globals);
+    let module = shared_module.unwrap_or_else(|| Arc::new(module.clone()));
     Ok(Arc::new(lk_core::vm::RuntimeCallable::with_state(
-        Arc::new(module.clone()),
+        module,
         function_index,
         Arc::new(copied_captures),
         Arc::new(lk_core::compat::sync::Mutex::new(snapshot)),

@@ -57,6 +57,36 @@ impl TaskModule {
         Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(list))))
     }
 
+    /// Concurrency observability (goroutine-leak diagnosis): counts of
+    /// not-yet-awaited tasks and live channels on this VM's runtime. A
+    /// steadily growing `active_tasks` means goroutines are being spawned
+    /// and never awaited/finished.
+    #[stdlib_export(name = "stats", params(), returns = Map)]
+    fn stats(_args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let stats = runtime
+            .async_runtime()
+            .with(|rt| Ok(rt.stats()))
+            .map_err(|err| anyhow!("Failed to read runtime stats: {err}"))?;
+        let mut map = lk_core::util::fast_map::fast_hash_map_new();
+        map.insert(
+            Arc::<str>::from("active_tasks"),
+            RuntimeVal::Int(stats.active_tasks as i64),
+        );
+        map.insert(
+            Arc::<str>::from("active_channels"),
+            RuntimeVal::Int(stats.active_channels as i64),
+        );
+        map.insert(
+            Arc::<str>::from("multi_threaded"),
+            RuntimeVal::Bool(stats.is_multi_threaded),
+        );
+        Ok(RuntimeVal::Obj(
+            runtime
+                .heap_mut()
+                .alloc(HeapValue::Map(lk_core::val::TypedMap::StringMixed(map))),
+        ))
+    }
+
     #[stdlib_export(name = "sleep", params(ms: Int | Float), returns = Nil)]
     fn sleep(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let duration_ms = numeric_millis(args.get(0).expect("checked arity"), "task.sleep()")?;

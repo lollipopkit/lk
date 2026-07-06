@@ -161,6 +161,29 @@ mod tests {
         assert!(err.to_string().contains("function"), "{err}");
     }
 
+    /// `task.stats()` — goroutine-leak observability: un-awaited tasks and
+    /// live channels are countable from LK.
+    #[test]
+    fn task_stats_tracks_unawaited_tasks_and_channels() {
+        assert_true(
+            r#"
+            use task;
+            let t = spawn(|| {
+                task.sleep(30);
+                return 1;
+            });
+            let mid = task.stats();
+            task.await(t);
+            let after = task.stats();
+            let c = chan(1);
+            let with_chan = task.stats();
+            return mid["active_tasks"] == 1
+                && after["active_tasks"] == 0
+                && with_chan["active_channels"] == 1;
+            "#,
+        );
+    }
+
     /// `go f(x);` fire-and-forget: the call runs on another thread; a
     /// channel provides the rendezvous.
     #[test]
