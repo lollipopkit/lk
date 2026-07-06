@@ -544,6 +544,30 @@ isolate**(单线程无锁 GC 是热路径底线,无数据竞争,推翻=重写堆
 - **验证(贯穿)**:workspace 全量 1499+ 0 失败 · GC-stress 全绿 · clippy/fmt 0 · no_std 0/0 ·
   差分门禁全过 · dist bench 见子步5 记录。
 
+## M4.2 循环轮记录:phi 装箱 + in 语义 + range 切片(2026-07-06)
+
+- **phi 混型合流装箱**:add_phi_operands 重构(收集全边→决策),混型且全
+  dyn-boxable 时 phi 宽化 Ty::Dyn、每边 edge_insts 装箱(dyn_box_on_edge)。
+  安全边界:仅 read_recursive sealed 臂新建的前向 join phi(allow_widen);
+  loop header(seal_block)与自引用边 reject——param 已按旧类型被体内消费。
+  解锁 a ?? "default" 与 match 混型臂;match.lk 翻转。
+- **'in' 第三套 eq 勘探**(VM 真源,三套语义各不同):
+  - `==`(exec runtime_values_equal):数值跨型 true、结构比较
+  - `unique()`(core_methods 版):数值 to_bits、Obj 句柄
+  - `in`(list_contains):typed 列表**严格同变体**(1.0 in [1,2] false!)、
+    Mixed=RuntimeVal derive PartialEq(float 按值 ==、NaN 永 false)
+  - **发现既有 native bug**:(ListF64,I64) coerce 臂与 VM 分歧,probe 实测
+    2 in [1.0,2.0] native true / VM false。教训:**每个消费点的 eq 语义
+    必须单独 probe,不能假设复用**。
+- **range 切片双 VM bug**:字符串切片按字节 panic('héllo'[1..3] char 边界)
+  ——改 char 语义与 s[i]/len 统一;GetIndex range-key 识别 gate 在物化列表
+  len<=3(跨度>3 的切片 s[8..20] 直接 error)——去掉限制+空 range 切空前缀。
+  native:NewRange 全常量 step==1 记 range_def side-table(ValueId→
+  (start,end_excl)),GetIndex 查表发射 str.slice_chars/list_h.i64_slice。
+  非常量 range 索引 reject(回退面,VM 修后语义一致)。
+- 覆盖率 18→20/51(match/operators);门禁:1505 tests、四套差分、
+  clippy/fmt 0、bench 0.995x(8 workloads checksum 一致)。
+
 ## M4.2 循环轮记录:HOF 方法批次 + unique 句柄语义(2026-07-06)
 
 - **list_ops.lk 翻转**(chunk/enumerate/zip/unique/flatten 五方法),覆盖率

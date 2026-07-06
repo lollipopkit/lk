@@ -89,11 +89,22 @@
     >7B 字符串 double-unwrap 必 panic(into_iter_owned String 臂)→ 全换
     list_runtime_items 并删病灶;AOT F64 常量 `fadd 0.0,x` 丢 -0.0 符号
     (IEEE 754 加法恒等元是 -0.0)
-  - **下一步**:operand 类型长尾(null_coalescing pc6 / match pc25 /
-    control_flow pc78 —— 疑 phi 混型合流装箱,lower:1815 Maybe edge_insts
-    机制照抄)· Call 长尾(comprehensive pc8 / iter_pipeline pc5 /
-    list_iter_sugar pc9)· NewObject 裁决(struct/struct_trait 2 例)·
-    空列表延迟物化(留档)
+  - ✅ **phi 混型合流装箱**(commit `59f02db`,match.lk 翻转,19/51):
+    add_phi_operands 收集全边后决策,混型全 dyn-boxable → phi 宽化 Ty::Dyn +
+    edge_insts 装箱;仅前向 join phi(loop header/自引用 reject)
+  - ✅ **'in' 操作符 VM-exact**(commit `dd013c4`,operators.lk 翻转,20/51):
+    VM 的 in 是第三套 eq(typed 严格同型无数值 coercion、Mixed=derive
+    PartialEq)。**修既有 bug**:(ListF64,I64) coerce 臂 2 in [1.0,2.0] 与
+    VM(false)分歧。dyn_contains 换 contains_eq;semantics.md 新增裁决
+  - ✅ **range 切片**(commits `7918884`/`e69b007`):**两个 VM bug**——
+    字符串切片按字节(多字节 panic,与 s[i]/len 的 char 语义不一致)+
+    len<=3 heuristic(s[8..20] 全坏);修后 native 以 range_def side-table
+    (全常量 step==1)发射真切片(str slice_chars/i64_slice ABI)
+  - **下一步**:Call 长尾(comprehensive pc8 / iter_pipeline pc5 /
+    list_iter_sugar pc9 —— 方法分发表增量)· NewObject 裁决(struct/
+    struct_trait 2 例)· 空列表延迟物化(留档)。**跨函数 Dyn 流动**
+    (null_coalescing pc94 CallDirect 可空参数 / sort_search 无类型参数 /
+    unsupported mutable 全局)已确认为首版不做,独立留档
   - 每步必须:aot_coverage.sh 单调不降 + 差分门禁逐字节 + bench 纯噪声
   - GetGlobal 14(try$call/并发/模块白名单)是**另一根因**,独立大项未启
 - **✅ 裁决不做**:callable trait 反转 · 真机/QEMU demo · 细粒度 feature 拆分。
