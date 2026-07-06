@@ -2740,7 +2740,17 @@ fn lower_inst(
             // covers refs inherited from predecessors (an SSA definition in
             // this block shadows; conflicting paths resolve to None).
             if let Some(global_ref) = ssa.builtin_ref_at(instr.b(), block) {
+                // An `ArgList` view coexists with a materialized SSA handle
+                // ("both views", see `NewList`): propagate the SSA half too,
+                // so index/display through the moved register keep working.
+                // Only for ArgList — for every other ref kind an SSA write
+                // would shadow the ref at its consumers (e.g. a recycled
+                // register's stale definition burying a `println` ref).
+                let dual_view = matches!(global_ref, GlobalRef::ArgList(_));
                 ssa.builtin_regs.insert((block, instr.a()), global_ref);
+                if dual_view && let Some(src) = ssa.current_def[block][instr.b() as usize] {
+                    ssa.write(instr.a(), block, src);
+                }
                 return Ok(());
             }
             let src = ssa.read(instr.b(), block, pc)?;
@@ -2945,6 +2955,31 @@ fn lower_inst(
                 ssa.list_len.insert(handle, elems.len() as i64);
                 ssa.list_base_len.insert(handle, elems.len() as i64);
                 ssa.write(instr.a(), block, (handle, list_ty));
+            } else if !elems.is_empty()
+                && elems
+                    .iter()
+                    .all(|&(_, ty)| matches!(ty, Ty::I64 | Ty::F64 | Ty::Str | Ty::Bool | Ty::Nil | Ty::Dyn))
+            {
+                // Mixed (or Dyn-carrying) elements: materialize a boxed-dynamic
+                // list (plan M4.2), same as the constant mixed-list path but
+                // boxing runtime values via `to_dyn`.
+                let handle = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(handle),
+                    callee: AbiRef::new("list_h", "dyn_new"),
+                    args: Vec::new(),
+                });
+                for &(v, ty) in &elems {
+                    let boxed = to_dyn(ssa, insts, v, ty, pc)?;
+                    insts.push(Inst::Call {
+                        dst: None,
+                        callee: AbiRef::new("list_h", "dyn_push"),
+                        args: vec![handle, boxed],
+                    });
+                }
+                ssa.list_len.insert(handle, elems.len() as i64);
+                ssa.list_base_len.insert(handle, elems.len() as i64);
+                ssa.write(instr.a(), block, (handle, Ty::ListDyn));
             }
             // Recorded after the write (which clears the slot) so both views
             // coexist: SSA reads see the handle, method dispatch sees elements.
@@ -4097,6 +4132,16 @@ fn lower_inst(
                         dst: None,
                         callee: AbiRef::new("list_h", "str_push"),
                         args: vec![handle, value],
+                    });
+                }
+                // Mixed list: any boxable value pushes as a Dyn carrier.
+                Ty::ListDyn => {
+                    let (bv, bty) = ssa.read(instr.b(), block, pc)?;
+                    let boxed = to_dyn(ssa, insts, bv, bty, pc)?;
+                    insts.push(Inst::Call {
+                        dst: None,
+                        callee: AbiRef::new("list_h", "dyn_push"),
+                        args: vec![handle, boxed],
                     });
                 }
                 _ => return Err(Unsupported::TypeMismatch { pc }),
