@@ -363,6 +363,23 @@ pub unsafe extern "C" fn lkrt_dyn_display_quoted(v: LkDyn) -> *mut c_char {
     arena_c_string(CString::new(out).unwrap_or_default())
 }
 
+/// Index into a Dyn: a List tag indexes like `lkrt_lklist_dyn_at`
+/// (negative-from-tail, OOB → Nil); any non-container tag is the VM's
+/// "index on a non-container" loud failure.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_dyn_index(v: LkDyn, index: i64) -> LkDyn {
+    if v.tag != DYN_LIST {
+        crate::abi::flush_and_abort();
+    }
+    let values = dyn_list(v);
+    let len = values.len() as i64;
+    let idx = if index < 0 { len + index } else { index };
+    if idx < 0 || idx >= len {
+        return LkDyn::NIL;
+    }
+    values[idx as usize]
+}
+
 // ── Mixed list (`Box<Vec<LkDyn>>` behind the usual arena handle) ───────
 
 #[unsafe(no_mangle)]

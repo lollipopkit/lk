@@ -253,6 +253,7 @@ macro_rules! for_each_abi_fn {
             ("dyn", "le", lkrt_dyn_le, ReadsHost, [DynVal, DynVal], I64);
             ("dyn", "gt", lkrt_dyn_gt, ReadsHost, [DynVal, DynVal], I64);
             ("dyn", "ge", lkrt_dyn_ge, ReadsHost, [DynVal, DynVal], I64);
+            ("dyn", "index", lkrt_dyn_index, ReadsHost, [DynVal, I64], DynVal);
             ("dyn", "display", lkrt_dyn_display, WritesHost, [DynVal], StrPtr);
             ("dyn", "display_quoted", lkrt_dyn_display_quoted, WritesHost, [DynVal], StrPtr);
             ("map_h", "str_dyn_new", lkrt_lkmap_str_dyn_new, WritesHost, [], Ptr);

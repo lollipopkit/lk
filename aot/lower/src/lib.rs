@@ -3805,17 +3805,7 @@ fn lower_inst(
                     } else {
                         // Mixed scalar elements: a boxed-dynamic list (plan
                         // M4.2 Dyn). Nested containers still fall back.
-                        let scalar_only = elems.iter().all(|e| {
-                            matches!(
-                                e,
-                                ConstRuntimeValueData::Nil
-                                    | ConstRuntimeValueData::Bool(_)
-                                    | ConstRuntimeValueData::Int(_)
-                                    | ConstRuntimeValueData::Float(_)
-                                    | ConstRuntimeValueData::ShortStr(_)
-                            )
-                        });
-                        if !scalar_only {
+                        if !elems.iter().all(const_is_dyn_boxable) {
                             return Err(Unsupported::Opcode { pc, op: instr.opcode() });
                         }
                         let handle = ssa.new_val();
@@ -3914,17 +3904,8 @@ fn lower_inst(
                         // map (`Map<str, LkDyn>`, plan M4.2). Display stays out
                         // of the subset (hash order); nested containers and
                         // non-string keys still fall back.
-                        let scalar_vals = entries.iter().all(|(_, v)| {
-                            matches!(
-                                v,
-                                ConstRuntimeValueData::Nil
-                                    | ConstRuntimeValueData::Bool(_)
-                                    | ConstRuntimeValueData::Int(_)
-                                    | ConstRuntimeValueData::Float(_)
-                                    | ConstRuntimeValueData::ShortStr(_)
-                            )
-                        });
-                        if !(all_str_keys && scalar_vals && !entries.is_empty()) {
+                        let boxable_vals = entries.iter().all(|(_, v)| const_is_dyn_boxable(v));
+                        if !(all_str_keys && boxable_vals && !entries.is_empty()) {
                             return Err(Unsupported::Opcode { pc, op: instr.opcode() });
                         }
                         let handle = ssa.new_val();
@@ -4182,6 +4163,20 @@ fn lower_inst(
             }
             // `a` = dst, `b` = container register, `c` = key register.
             let (handle, list_ty) = ssa.read(instr.b(), block, pc)?;
+            // A boxed Dyn container (e.g. a nested list read out of a mixed
+            // list): index through the runtime tag check — a non-list tag is
+            // the VM's loud failure, OOB is nil (the Dyn's own Nil tag).
+            if list_ty == Ty::Dyn {
+                let index = read_typed_scalar(ssa, insts, instr.c(), block, Ty::I64, pc)?;
+                let dst = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(dst),
+                    callee: AbiRef::new("dyn", "index"),
+                    args: vec![handle, index],
+                });
+                ssa.write(instr.a(), block, (dst, Ty::Dyn));
+                return Ok(());
+            }
             // String-keyed map reads take a `Str` key (dynamic template keys
             // included); a missing key is the `Maybe` nil model.
             if matches!(list_ty, Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool) {
@@ -6017,6 +6012,23 @@ fn emit_print(
 
 /// Materializes a constant map key as a `Str` value (an interned global) for the
 /// map ABI, which takes the key as a `*const c_char`.
+/// Whether a constant value has a Dyn boxed form (`box_const_scalar`):
+/// scalars, long strings, and (recursively) nested constant lists.
+fn const_is_dyn_boxable(value: &ConstRuntimeValueData) -> bool {
+    match value {
+        ConstRuntimeValueData::Nil
+        | ConstRuntimeValueData::Bool(_)
+        | ConstRuntimeValueData::Int(_)
+        | ConstRuntimeValueData::Float(_)
+        | ConstRuntimeValueData::ShortStr(_) => true,
+        ConstRuntimeValueData::Heap(heap) => match heap.as_ref() {
+            ConstHeapValueData::LongString(_) => true,
+            ConstHeapValueData::List(elems) => elems.iter().all(const_is_dyn_boxable),
+            _ => false,
+        },
+    }
+}
+
 /// Boxes a typed runtime value into a `Dyn` carrier (plan M4.2): identity
 /// for `Ty::Dyn`, a `dyn.from_*` call for scalars/strings/mixed lists.
 /// Types without a boxed form (Maybe carriers, typed containers) reject —
@@ -6117,7 +6129,45 @@ fn box_const_scalar(
                 args: vec![raw],
             });
         }
-        ConstRuntimeValueData::Heap(_) => unreachable!("callers filter to scalar variants"),
+        ConstRuntimeValueData::Heap(heap) => match heap.as_ref() {
+            // A long string literal boxes like a short one (interned global).
+            ConstHeapValueData::LongString(s) => {
+                let raw = ssa.new_val();
+                insts.push(Inst::Const {
+                    dst: raw,
+                    value: Const::Str(GlobalId(intern_global(globals, s))),
+                });
+                insts.push(Inst::Call {
+                    dst: Some(boxed),
+                    callee: AbiRef::new("dyn", "from_str"),
+                    args: vec![raw],
+                });
+            }
+            // A nested constant list: build its own dyn list recursively and
+            // box the handle (`[[1,"a"],[2,"b"]]`-shaped constants).
+            ConstHeapValueData::List(elems) => {
+                let handle = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(handle),
+                    callee: AbiRef::new("list_h", "dyn_new"),
+                    args: Vec::new(),
+                });
+                for e in elems {
+                    let inner = box_const_scalar(ssa, insts, globals, e);
+                    insts.push(Inst::Call {
+                        dst: None,
+                        callee: AbiRef::new("list_h", "dyn_push"),
+                        args: vec![handle, inner],
+                    });
+                }
+                insts.push(Inst::Call {
+                    dst: Some(boxed),
+                    callee: AbiRef::new("dyn", "from_list"),
+                    args: vec![handle],
+                });
+            }
+            _ => unreachable!("callers filter to boxable variants"),
+        },
     }
     boxed
 }
