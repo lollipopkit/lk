@@ -31,13 +31,26 @@
 导致缓冲丢失 + "Channel not found" → 改标记式关闭;native raise 带 "native ... failed:" 前缀
 (LK 层 catch 到的字符串,error() 一等值无此前缀)。
 
-## 剩余(均已裁决/留档)
-- **[~] M4.2 AOT 深覆盖**:缺 mixed/动态类型系统;Tier 1 桥供出路,不紧迫。
+## 本轮追加(用户指示:修小项+文档+LSP 补齐+AOT 排查)
+- ✅ spawn 复用 shared Arc<Module>(免每次深克隆)+ `task.stats()` 观测面(commit `3bca22e`)
+- ✅ LSP/编辑器补齐 v2 语法(commit `eea81f0`):lk-lsp 语义 token + completion 关键字
+  (go/try/catch,后两者是既有缺口);tree-sitter 新增 go_statement/try_statement/
+  unwrap_expression(**踩坑**:macro_invocation 静态 prec(21) 会压过 unwrap 且跳过 GLR,
+  改 prec.dynamic + conflict 对;语料 9/9);tmLanguage/highlights.scm 同步。
+  zed-ext-check 失败是既有工具链问题(futures-core@wasm32-wasip1,基线同样失败)
+- ✅ README/README.zh-CN「A Taste/一瞥」可运行示例(commit `5c5ec5f`,实测输出锁定)
+- ✅ **M4.2 排查完成**(本 commit):`scripts/aot_coverage.sh` 可复现扫描,14/51,
+  阻塞排行+路线图入 progress.md「M4.2 AOT 深覆盖」章节
+
+## 剩余
+- **[~] M4.2 AOT 深覆盖(排查已毕,实现待启)**:GetGlobal 14(try$call/并发/模块白名单)·
+  operand 超子集 9 + LoadHeapConst 4 + NewObject 2(共同根因=**Dyn 装箱值地基**,M4.2 本体)·
+  Call 5(方法 ABI 长尾)· NewRange 1。**下会话从 Dyn 地基开始**(路线细节见 progress.md)。
 - **✅ 裁决不做**:callable trait 反转 · 真机/QEMU demo · 细粒度 feature 拆分。
-- **可选后续**:goroutine 泄漏诊断(阻塞 goroutine 不回收,同 Go)· spawn 的 module.clone()
-  按 spawn 频率高时可缓存 Arc(现无热路径)· native raise 前缀统一(见踩坑)。
+- **可选后续**:native raise 前缀统一(catch 到的 native 错误带 "native ... failed:" 前缀,
+  error() 一等值无)· goroutine 泄漏之外的死锁检测。
 
 ## 护栏 & 续接
 全量 tests 0 失败 / clippy 0 / fmt 0 / no_std 0/0 / GC-stress 全绿 / bench 1.021x(基线内)/
-差分门禁全过。**下一会话候选**:① goroutine/错误模型的深度语料与文档打磨(README 语言示例还是
-旧语法?待查);② M4.2 AOT 深覆盖;③ 征询用户新方向。
+差分门禁全过。**下一会话首选:M4.2 Dyn 装箱值地基**(MIR Ty::Dyn + lkrt tagged value,
+注意 display/错误信息 VM-exact 逐字节 + semantics.md 已裁决混合 map display 不进子集)。

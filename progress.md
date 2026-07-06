@@ -544,6 +544,25 @@ isolate**(单线程无锁 GC 是热路径底线,无数据竞争,推翻=重写堆
 - **验证(贯穿)**:workspace 全量 1499+ 0 失败 · GC-stress 全绿 · clippy/fmt 0 · no_std 0/0 ·
   差分门禁全过 · dist bench 见子步5 记录。
 
+## M4.2 AOT 深覆盖 —— 阻塞点排查(2026-07-06,数据驱动裁决)
+
+**可复现扫描**:`bash scripts/aot_coverage.sh`(compile llvm 全 examples + 原因排行)。
+**现状 14/51**,37 个失败按频次:
+
+| 频次 | 阻塞 | 实质 | 路线 |
+|---|---|---|---|
+| 14 | `GetGlobal` | 白名单外全局:v2 错误模型(`try$call`/`error`——**每个 try/catch 程序**)、并发全局(chan/send/recv/spawn/select$block)、未识别模块(json/encoding/stream/net/task) | (a) try$call 原生=保护调用/unwinding,大;(b) 并发进 lkrt=无 VM 复刻 rt::Runtime,大;(c) module_call_abi 增量补条目,小 |
+| 9 | operand 超类型子集 | **混合/动态类型**——真正的 M4.2 核心 | **Dyn 装箱值地基**:MIR `Ty::Dyn` + lkrt tagged value + 装箱运算(display/错误信息须 VM-exact 逐字节) |
+| 4 | `LoadHeapConst` | 混合/嵌套常量容器(`{"name":…,"age":30,"active":true}`)——同上 Dyn 根因(同质容器/长串/UpvalCell 已支持) | 随 Dyn 地基解决(`map_h str_dyn_*` 等 ABI) |
+| 5 | `Call` | 方法 ABI 长尾:分发表仅 6 对(Str contains/len、ListI64 contains、MapStr* set、list map/filter HOF);`.first()/.last()/.push()` 即倒 | lkrt 薄封装逐个补,增量;但 list_ops 类"deep dive"语料需大量方法才翻转 |
+| 2 | `NewObject` | struct 字面量 → 对象模型 | 依赖 Dyn/对象表示 |
+| 1 | `NewRange` | range 值物化 | 独立小项 |
+
+**下一步建议(优先序)**:① **Dyn 地基**(9+4+2 例的共同根因,plan.md M4.2 的"mixed/动态类型系统"本体;
+注意 semantics.md 裁决:混合 map display 明确不进子集,创建+类型化读取可进);② 方法 ABI 快速增量
+(翻转难但每条目独立可验);③ NewRange。try$call/并发进 lkrt 属大工程,建议单独立项。
+本会话交付排查+路线(context 预算不足以安全落地 Dyn 子步);实现从下会话新鲜上下文开始。
+
 ---
 
 ## 执行原则
