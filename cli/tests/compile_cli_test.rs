@@ -924,7 +924,10 @@ fn test_llvm_compile_lowers_mixed_const_list_shape() {
         .output()
         .expect("spawn llvm compile");
     let stderr = String::from_utf8_lossy(&llvm.stderr);
-    assert!(llvm.status.success(), "mixed const list should lower natively: {stderr}");
+    assert!(
+        llvm.status.success(),
+        "mixed const list should lower natively: {stderr}"
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }

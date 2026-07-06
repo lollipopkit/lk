@@ -4167,12 +4167,21 @@ fn lower_inst(
             // list): index through the runtime tag check — a non-list tag is
             // the VM's loud failure, OOB is nil (the Dyn's own Nil tag).
             if list_ty == Ty::Dyn {
-                let index = read_typed_scalar(ssa, insts, instr.c(), block, Ty::I64, pc)?;
+                // Key type picks the accessor: an integer indexes a boxed
+                // list, a string reads a boxed map's field (the compiler
+                // emits GetIndex for nested member chains). Runtime tag
+                // checks live in the dyn helpers.
+                let (kv, kty) = read_scalar(ssa, insts, instr.c(), block, pc)?;
+                let (helper, key) = match kty {
+                    Ty::I64 => ("index", kv),
+                    Ty::Str => ("field", kv),
+                    _ => return Err(Unsupported::TypeMismatch { pc }),
+                };
                 let dst = ssa.new_val();
                 insts.push(Inst::Call {
                     dst: Some(dst),
-                    callee: AbiRef::new("dyn", "index"),
-                    args: vec![handle, index],
+                    callee: AbiRef::new("dyn", helper),
+                    args: vec![handle, key],
                 });
                 ssa.write(instr.a(), block, (dst, Ty::Dyn));
                 return Ok(());
@@ -4415,6 +4424,17 @@ fn lower_inst(
                     insts.push(Inst::Call {
                         dst: Some(dst),
                         callee: AbiRef::new("map_h", "str_dyn_get"),
+                        args: vec![handle, key_v],
+                    });
+                    Ty::Dyn
+                }
+                // A boxed Dyn (e.g. a nested map read out of a MapStrDyn):
+                // the runtime tag check lives in `dyn.field` (non-map = the
+                // VM's loud failure on member access).
+                Ty::Dyn => {
+                    insts.push(Inst::Call {
+                        dst: Some(dst),
+                        callee: AbiRef::new("dyn", "field"),
                         args: vec![handle, key_v],
                     });
                     Ty::Dyn
@@ -6024,6 +6044,9 @@ fn const_is_dyn_boxable(value: &ConstRuntimeValueData) -> bool {
         ConstRuntimeValueData::Heap(heap) => match heap.as_ref() {
             ConstHeapValueData::LongString(_) => true,
             ConstHeapValueData::List(elems) => elems.iter().all(const_is_dyn_boxable),
+            ConstHeapValueData::Map(entries) => entries.iter().all(|(k, v)| {
+                matches!(k, RuntimeMapKeyData::ShortStr(_) | RuntimeMapKeyData::String(_)) && const_is_dyn_boxable(v)
+            }),
             _ => false,
         },
     }
@@ -6163,6 +6186,35 @@ fn box_const_scalar(
                 insts.push(Inst::Call {
                     dst: Some(boxed),
                     callee: AbiRef::new("dyn", "from_list"),
+                    args: vec![handle],
+                });
+            }
+            // A nested constant map (string keys): build its own str_dyn map
+            // and box the handle.
+            ConstHeapValueData::Map(entries) => {
+                let handle = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(handle),
+                    callee: AbiRef::new("map_h", "str_dyn_new"),
+                    args: Vec::new(),
+                });
+                for (k, v) in entries {
+                    let key_v = match k {
+                        RuntimeMapKeyData::ShortStr(key) | RuntimeMapKeyData::String(key) => {
+                            materialize_key(ssa, insts, globals, key)
+                        }
+                        _ => unreachable!("const_is_dyn_boxable filters to string keys"),
+                    };
+                    let inner = box_const_scalar(ssa, insts, globals, v);
+                    insts.push(Inst::Call {
+                        dst: None,
+                        callee: AbiRef::new("map_h", "str_dyn_set"),
+                        args: vec![handle, key_v, inner],
+                    });
+                }
+                insts.push(Inst::Call {
+                    dst: Some(boxed),
+                    callee: AbiRef::new("dyn", "from_map"),
                     args: vec![handle],
                 });
             }

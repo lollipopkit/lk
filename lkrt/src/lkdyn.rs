@@ -21,6 +21,7 @@ pub const DYN_I64: i64 = 2;
 pub const DYN_F64: i64 = 3;
 pub const DYN_STR: i64 = 4;
 pub const DYN_LIST: i64 = 5;
+pub const DYN_MAP: i64 = 6;
 
 /// The by-value dynamic carrier. `payload` holds the value bits: `0`/`1` for
 /// Bool, the integer itself for I64, `f64::to_bits` for F64, a `*const
@@ -285,6 +286,15 @@ fn dyn_eq_inner(a: LkDyn, b: LkDyn) -> bool {
             let (xs, ys) = (dyn_list(a), dyn_list(b));
             xs.len() == ys.len() && xs.iter().zip(ys).all(|(&x, &y)| dyn_eq_inner(x, y))
         }
+        DYN_MAP => {
+            if (a.payload as *mut c_void).is_null() || (b.payload as *mut c_void).is_null() {
+                return a.payload == b.payload;
+            }
+            let (xs, ys) = (dyn_map(a), dyn_map(b));
+            // Structural, order-free (hash iteration order is not portable,
+            // but key-lookup equality is).
+            xs.len() == ys.len() && xs.iter().all(|(k, &v)| ys.get(k).is_some_and(|&w| dyn_eq_inner(v, w)))
+        }
         _ => false,
     }
 }
@@ -361,6 +371,40 @@ pub unsafe extern "C" fn lkrt_dyn_display_quoted(v: LkDyn) -> *mut c_char {
     let mut out = String::new();
     display_into(&mut out, v, true);
     arena_c_string(CString::new(out).unwrap_or_default())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_dyn_from_map(handle: *mut c_void) -> LkDyn {
+    LkDyn {
+        tag: DYN_MAP,
+        payload: handle as i64,
+    }
+}
+
+fn dyn_map<'a>(v: LkDyn) -> &'a rustc_hash::FxHashMap<String, LkDyn> {
+    let handle = v.payload as *mut c_void;
+    debug_assert!(!handle.is_null());
+    unsafe { &*(handle as *mut rustc_hash::FxHashMap<String, LkDyn>) }
+}
+
+/// Constant-string field read on a Dyn: a Map tag looks the key up (missing
+/// key → Nil, the VM's nil-on-missing); any non-map tag is the VM's loud
+/// failure on member access.
+///
+/// # Safety
+/// `key` must be a NUL-terminated string; a Map payload must be a live
+/// `map_h str_dyn` handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_dyn_field(v: LkDyn, key: *const c_char) -> LkDyn {
+    if v.tag != DYN_MAP || (v.payload as *mut c_void).is_null() {
+        crate::abi::flush_and_abort();
+    }
+    let key = if key.is_null() {
+        ""
+    } else {
+        unsafe { CStr::from_ptr(key) }.to_str().unwrap_or("")
+    };
+    dyn_map(v).get(key).copied().unwrap_or(LkDyn::NIL)
 }
 
 /// Index into a Dyn: a List tag indexes like `lkrt_lklist_dyn_at`
