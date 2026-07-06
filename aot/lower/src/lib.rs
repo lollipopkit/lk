@@ -2956,9 +2956,22 @@ fn lower_inst(
                 ssa.list_base_len.insert(handle, elems.len() as i64);
                 ssa.write(instr.a(), block, (handle, list_ty));
             } else if !elems.is_empty()
-                && elems
-                    .iter()
-                    .all(|&(_, ty)| matches!(ty, Ty::I64 | Ty::F64 | Ty::Str | Ty::Bool | Ty::Nil | Ty::Dyn))
+                && elems.iter().all(|&(_, ty)| {
+                    matches!(
+                        ty,
+                        Ty::I64
+                            | Ty::F64
+                            | Ty::Str
+                            | Ty::Bool
+                            | Ty::Nil
+                            | Ty::Dyn
+                            | Ty::ListI64
+                            | Ty::ListF64
+                            | Ty::ListStr
+                            | Ty::ListDyn
+                            | Ty::MapStrDyn
+                    )
+                })
             {
                 // Mixed (or Dyn-carrying) elements: materialize a boxed-dynamic
                 // list (plan M4.2), same as the constant mixed-list path but
@@ -2969,8 +2982,19 @@ fn lower_inst(
                     callee: AbiRef::new("list_h", "dyn_new"),
                     args: Vec::new(),
                 });
+                // A repeated element boxes once: the VM pushes the same heap
+                // handle twice (`[l, l]` dedups under `unique()`), so the
+                // boxed views must share pointer identity too.
+                let mut boxed_memo: std::collections::HashMap<ValueId, ValueId> = std::collections::HashMap::new();
                 for &(v, ty) in &elems {
-                    let boxed = to_dyn(ssa, insts, v, ty, pc)?;
+                    let boxed = match boxed_memo.get(&v) {
+                        Some(&cached) => cached,
+                        None => {
+                            let boxed = to_dyn(ssa, insts, v, ty, pc)?;
+                            boxed_memo.insert(v, boxed);
+                            boxed
+                        }
+                    };
                     insts.push(Inst::Call {
                         dst: None,
                         callee: AbiRef::new("list_h", "dyn_push"),
@@ -3250,10 +3274,11 @@ fn lower_inst(
                 }
                 return Ok(());
             }
-            // A Dyn operand: box the other side and compare through the
-            // `dyn.*` helpers (VM equality semantics live in lkrt; ordered
-            // compares are numeric-only there, aborting like the VM).
-            if lty_raw == Ty::Dyn || rty_raw == Ty::Dyn {
+            // A Dyn (or mixed-list) operand: box the other side and compare
+            // through the `dyn.*` helpers (VM equality semantics live in
+            // lkrt; ordered compares are numeric-only there, aborting like
+            // the VM — which also errors on ordered list compares).
+            if matches!(lty_raw, Ty::Dyn | Ty::ListDyn) || matches!(rty_raw, Ty::Dyn | Ty::ListDyn) {
                 let lhs = to_dyn(ssa, insts, lv_raw, lty_raw, pc)?;
                 let rhs = to_dyn(ssa, insts, rv_raw, rty_raw, pc)?;
                 let (helper, negate) = match cmp_op(op) {
@@ -5714,6 +5739,64 @@ fn lower_method_dispatch(
             });
             (dst, Ty::I64)
         }
+        // Methods whose VM result is a mixed list regardless of the receiver
+        // (chunk/enumerate/zip pairs are nested; unique/flatten come back
+        // `TypedList::Mixed`): the receiver converts to a dyn-list handle up
+        // front, one lkrt helper per method mirrors core_methods.rs.
+        (Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn, "chunk", [(n, Ty::I64)]) => {
+            let handle = to_dyn_list_handle(ssa, insts, receiver, receiver_ty, pc)?;
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", "dyn_chunk"),
+                args: vec![handle, *n],
+            });
+            (dst, Ty::ListDyn)
+        }
+        (Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn, "enumerate", []) => {
+            let handle = to_dyn_list_handle(ssa, insts, receiver, receiver_ty, pc)?;
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", "dyn_enumerate"),
+                args: vec![handle],
+            });
+            (dst, Ty::ListDyn)
+        }
+        (
+            Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn,
+            "zip",
+            [(other, Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn)],
+        ) => {
+            let lhs = to_dyn_list_handle(ssa, insts, receiver, receiver_ty, pc)?;
+            let rhs = to_dyn_list_handle(ssa, insts, *other, args[0].1, pc)?;
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", "dyn_zip"),
+                args: vec![lhs, rhs],
+            });
+            (dst, Ty::ListDyn)
+        }
+        (Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn, "unique", []) => {
+            let handle = to_dyn_list_handle(ssa, insts, receiver, receiver_ty, pc)?;
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", "dyn_unique"),
+                args: vec![handle],
+            });
+            (dst, Ty::ListDyn)
+        }
+        (Ty::ListDyn, "flatten", []) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", "dyn_flatten"),
+                args: vec![receiver],
+            });
+            (dst, Ty::ListDyn)
+        }
         (Ty::Str, "contains", [(needle, Ty::Str)]) => {
             let dst = ssa.new_val();
             insts.push(Inst::Call {
@@ -6376,6 +6459,32 @@ fn const_is_dyn_boxable(value: &ConstRuntimeValueData) -> bool {
 /// for `Ty::Dyn`, a `dyn.from_*` call for scalars/strings/mixed lists.
 /// Types without a boxed form (Maybe carriers, typed containers) reject —
 /// their typed paths stay typed.
+/// Coerces a list-typed value to a dyn-list *handle* (not a boxed carrier):
+/// ListDyn passes through, typed lists convert element-wise (cold path —
+/// only emitted for methods whose VM result is a mixed list anyway).
+fn to_dyn_list_handle(
+    ssa: &mut Ssa,
+    insts: &mut Vec<Inst>,
+    v: ValueId,
+    ty: Ty,
+    pc: usize,
+) -> Result<ValueId, Unsupported> {
+    let converter = match ty {
+        Ty::ListDyn => return Ok(v),
+        Ty::ListI64 => "i64_to_dyn",
+        Ty::ListF64 => "f64_to_dyn",
+        Ty::ListStr => "str_to_dyn",
+        _ => return Err(Unsupported::TypeMismatch { pc }),
+    };
+    let converted = ssa.new_val();
+    insts.push(Inst::Call {
+        dst: Some(converted),
+        callee: AbiRef::new("list_h", converter),
+        args: vec![v],
+    });
+    Ok(converted)
+}
+
 fn to_dyn(ssa: &mut Ssa, insts: &mut Vec<Inst>, v: ValueId, ty: Ty, pc: usize) -> Result<ValueId, Unsupported> {
     let from = match ty {
         Ty::Dyn => return Ok(v),
@@ -6384,6 +6493,7 @@ fn to_dyn(ssa: &mut Ssa, insts: &mut Vec<Inst>, v: ValueId, ty: Ty, pc: usize) -
         Ty::Str => "from_str",
         Ty::Nil => "from_nil",
         Ty::ListDyn => "from_list",
+        Ty::MapStrDyn => "from_map",
         // Typed lists box via an element-wise conversion (cold path: only
         // emitted where a typed list actually meets a Dyn).
         Ty::ListI64 | Ty::ListF64 | Ty::ListStr => {

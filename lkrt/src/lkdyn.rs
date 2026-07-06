@@ -580,6 +580,115 @@ pub unsafe extern "C" fn lkrt_lklist_dyn_contains(handle: *mut c_void, value: Lk
     i64::from(values.iter().any(|&e| dyn_eq_inner(e, value)))
 }
 
+fn dyn_slice<'a>(handle: *mut c_void) -> &'a [LkDyn] {
+    if handle.is_null() {
+        &[]
+    } else {
+        unsafe { &*(handle as *mut Vec<LkDyn>) }
+    }
+}
+
+/// `xs.chunk(size)` — split into `size`-element groups, last group short.
+/// `size <= 0` is a VM error (loud failure).
+/// # Safety
+/// `handle` must be a live handle from [`lkrt_lklist_dyn_new`], or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_dyn_chunk(handle: *mut c_void, size: i64) -> *mut c_void {
+    if size <= 0 {
+        eprintln!("list.chunk() size must be positive");
+        crate::abi::flush_and_abort();
+    }
+    let chunks: Vec<LkDyn> = dyn_slice(handle)
+        .chunks(size as usize)
+        .map(|chunk| lkrt_dyn_from_list(arena_handle(chunk.to_vec())))
+        .collect();
+    arena_handle(chunks)
+}
+
+/// `xs.enumerate()` — `[[0, x0], [1, x1], …]` pairs.
+/// # Safety
+/// `handle` must be a live handle from [`lkrt_lklist_dyn_new`], or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_dyn_enumerate(handle: *mut c_void) -> *mut c_void {
+    let pairs: Vec<LkDyn> = dyn_slice(handle)
+        .iter()
+        .enumerate()
+        .map(|(i, &v)| lkrt_dyn_from_list(arena_handle(vec![from_i64(i as i64), v])))
+        .collect();
+    arena_handle(pairs)
+}
+
+/// `xs.zip(ys)` — `[[a0, b0], …]`, truncated to the shorter side.
+/// # Safety
+/// Both handles must be live handles from [`lkrt_lklist_dyn_new`], or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_dyn_zip(a: *mut c_void, b: *mut c_void) -> *mut c_void {
+    let pairs: Vec<LkDyn> = dyn_slice(a)
+        .iter()
+        .zip(dyn_slice(b))
+        .map(|(&x, &y)| lkrt_dyn_from_list(arena_handle(vec![x, y])))
+        .collect();
+    arena_handle(pairs)
+}
+
+/// The VM's `runtime_values_equal` (core_methods.rs) — used by `unique()`,
+/// and deliberately *not* `dyn_eq_inner`: numerics compare by `to_bits`
+/// (`0.0 != -0.0`, `1 == 1.0`), strings compare by content only when both
+/// fit the VM's 7-byte `ShortStr` inline form (longer strings are heap
+/// objects there and compare by handle), lists/maps compare by handle.
+fn unique_eq(a: LkDyn, b: LkDyn) -> bool {
+    match (a.tag, b.tag) {
+        (DYN_NIL, DYN_NIL) => true,
+        (DYN_BOOL, DYN_BOOL) | (DYN_I64, DYN_I64) | (DYN_F64, DYN_F64) => a.payload == b.payload,
+        (DYN_I64, DYN_F64) => (a.payload as f64).to_bits() == b.payload as u64,
+        (DYN_F64, DYN_I64) => a.payload as u64 == (b.payload as f64).to_bits(),
+        (DYN_STR, DYN_STR) => {
+            // Longer strings are heap objects in the VM with no stable
+            // identity across list representations (typed String lists
+            // re-alloc every element on read, so `[s, s].unique()` keeps
+            // both) — and native constants intern, so pointer identity
+            // over-merges literals. "Never equal" matches the VM on every
+            // shape except a Mixed-list variable repeat (docs/semantics.md).
+            let (sa, sb) = unsafe { (dyn_str(a), dyn_str(b)) };
+            sa.len() <= 7 && sb.len() <= 7 && sa == sb
+        }
+        (DYN_LIST, DYN_LIST) | (DYN_MAP, DYN_MAP) => a.payload == b.payload,
+        _ => false,
+    }
+}
+
+/// `xs.unique()` — order-preserving dedup under [`unique_eq`]. O(n²) like
+/// the VM.
+/// # Safety
+/// `handle` must be a live handle from [`lkrt_lklist_dyn_new`], or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_dyn_unique(handle: *mut c_void) -> *mut c_void {
+    let mut unique: Vec<LkDyn> = Vec::new();
+    for &item in dyn_slice(handle) {
+        if !unique.iter().any(|&seen| unique_eq(seen, item)) {
+            unique.push(item);
+        }
+    }
+    arena_handle(unique)
+}
+
+/// `xs.flatten()` — one level: list elements splice, everything else passes
+/// through unchanged.
+/// # Safety
+/// `handle` must be a live handle from [`lkrt_lklist_dyn_new`], or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_dyn_flatten(handle: *mut c_void) -> *mut c_void {
+    let mut flat: Vec<LkDyn> = Vec::new();
+    for &item in dyn_slice(handle) {
+        if item.tag == DYN_LIST {
+            flat.extend_from_slice(dyn_list(item));
+        } else {
+            flat.push(item);
+        }
+    }
+    arena_handle(flat)
+}
+
 /// # Safety
 /// `handle` must be a live handle from [`lkrt_lklist_dyn_new`], or null.
 #[unsafe(no_mangle)]
@@ -655,6 +764,41 @@ mod tests {
         assert_eq!(text(unsafe { lkrt_lklist_dyn_display(xs) }), "[1,b c,2,true,nil]");
         assert_eq!(text(unsafe { lkrt_dyn_display(s("b c")) }), "b c");
         assert_eq!(text(unsafe { lkrt_dyn_display_quoted(s("b c")) }), "\"b c\"");
+    }
+
+    #[test]
+    fn unique_eq_is_vm_handle_semantics() {
+        // Numerics by to_bits: 1 == 1.0 dedups, 0.0 vs -0.0 does not.
+        assert!(unique_eq(lkrt_dyn_from_i64(1), lkrt_dyn_from_f64(1.0)));
+        assert!(!unique_eq(lkrt_dyn_from_f64(0.0), lkrt_dyn_from_f64(-0.0)));
+        // ShortStr (≤7 bytes) by content; longer strings never dedup
+        // (docs/semantics.md unique() 裁决).
+        assert!(unique_eq(s("ab"), s("ab")));
+        assert!(!unique_eq(s("longer-than-seven"), s("longer-than-seven")));
+        // Lists by handle, not structure.
+        let xs = lkrt_lklist_dyn_new();
+        let ys = lkrt_lklist_dyn_new();
+        unsafe {
+            lkrt_lklist_dyn_push(xs, lkrt_dyn_from_i64(7));
+            lkrt_lklist_dyn_push(ys, lkrt_dyn_from_i64(7));
+        }
+        assert!(unique_eq(lkrt_dyn_from_list(xs), lkrt_dyn_from_list(xs)));
+        assert!(!unique_eq(lkrt_dyn_from_list(xs), lkrt_dyn_from_list(ys)));
+        // The chunk/enumerate/zip/flatten family (VM core_methods shapes).
+        let src = lkrt_lklist_dyn_new();
+        unsafe {
+            for v in [1, 2, 3] {
+                lkrt_lklist_dyn_push(src, lkrt_dyn_from_i64(v));
+            }
+            let chunks = lkrt_lklist_dyn_chunk(src, 2);
+            assert_eq!(text(lkrt_lklist_dyn_display(chunks)), "[[1,2],[3]]");
+            let pairs = lkrt_lklist_dyn_enumerate(src);
+            assert_eq!(text(lkrt_lklist_dyn_display(pairs)), "[[0,1],[1,2],[2,3]]");
+            let zipped = lkrt_lklist_dyn_zip(src, chunks);
+            assert_eq!(text(lkrt_lklist_dyn_display(zipped)), "[[1,[1,2]],[2,[3]]]");
+            let flat = lkrt_lklist_dyn_flatten(zipped);
+            assert_eq!(text(lkrt_lklist_dyn_display(flat)), "[1,[1,2],2,[3]]");
+        }
     }
 
     #[test]

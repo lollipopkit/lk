@@ -37,8 +37,9 @@ pub use lkdyn::{
     lkrt_dyn_display_quoted, lkrt_dyn_div, lkrt_dyn_eq, lkrt_dyn_field, lkrt_dyn_from_bool, lkrt_dyn_from_f64,
     lkrt_dyn_from_i64, lkrt_dyn_from_list, lkrt_dyn_from_map, lkrt_dyn_from_nil, lkrt_dyn_from_str, lkrt_dyn_ge,
     lkrt_dyn_gt, lkrt_dyn_index, lkrt_dyn_le, lkrt_dyn_len_of, lkrt_dyn_lt, lkrt_dyn_mod, lkrt_dyn_mul, lkrt_dyn_sub,
-    lkrt_dyn_tag, lkrt_lklist_dyn_at, lkrt_lklist_dyn_contains, lkrt_lklist_dyn_display, lkrt_lklist_dyn_eq,
-    lkrt_lklist_dyn_len, lkrt_lklist_dyn_new, lkrt_lklist_dyn_push, lkrt_lklist_dyn_set, lkrt_lklist_f64_to_dyn,
+    lkrt_dyn_tag, lkrt_lklist_dyn_at, lkrt_lklist_dyn_chunk, lkrt_lklist_dyn_contains, lkrt_lklist_dyn_display,
+    lkrt_lklist_dyn_enumerate, lkrt_lklist_dyn_eq, lkrt_lklist_dyn_flatten, lkrt_lklist_dyn_len, lkrt_lklist_dyn_new,
+    lkrt_lklist_dyn_push, lkrt_lklist_dyn_set, lkrt_lklist_dyn_unique, lkrt_lklist_dyn_zip, lkrt_lklist_f64_to_dyn,
     lkrt_lklist_i64_to_dyn, lkrt_lklist_str_to_dyn,
 };
 pub use lklist::{

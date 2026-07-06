@@ -95,6 +95,18 @@ VM 以 `exit 1` + stderr 错误信息结束,native 以 guard `abort()`(SIGABRT,
 | `println("${xs}")`(xs 是 list) | 响亮失败 | **两条 display 路径**:print/println/panic/assert 消息走 stdlib `runtime_display`(容器可显示);`ToString`/模板插值/`+` 拼接走 exec `runtime_value_display_string`(标量 only,容器 loud error)。native 对后者拒绝编译 |
 | `println(map)` | hash 迭代序 | map display 顺序 = 底层 hash map 迭代序,**跨运行稳定但不可移植**(依赖 hasher+增长历史)——native 侧不进子集,响亮拒绝 |
 
+## `unique()` 等值语义(2026-07-06 裁决)
+
+`list.unique()` 走 VM `core_methods` 的 `runtime_values_equal`:数值按 `to_bits`
+(`1 == 1.0` 去重、`0.0 != -0.0` 保留)、≤7 字节字符串(`ShortStr`)按内容、
+**列表/map/长字符串按 heap 句柄**。句柄同一性是 VM 内部表示细节,长字符串
+(>7 字节)在 typed String 列表里每次读出重新 alloc(`[s, s].unique()` 保留两个),
+在 Mixed 列表里直存句柄(`[1, s, s].unique()` 去重)。native 侧字符串常量 intern,
+指针无法区分这两种,**裁决:native 对长字符串永不去重**——对齐字面量重复与
+typed 列表两种常见形状;Mixed 列表同变量长串重复是已知分歧,不进差分子集。
+列表元素的句柄同一性 native 以「NewList 窗口内同寄存器装箱一次」保持
+(`let l=[7]; [l,l].unique()` 去重,两个 `[1]` 字面量不去重)。
+
 ## 维护约定
 
 - 新增可下降形状时,先在此登记预期语义(尤其失败路径与显示格式),再写差分用例。

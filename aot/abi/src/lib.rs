@@ -277,6 +277,11 @@ macro_rules! for_each_abi_fn {
             ("list_h", "dyn_set", lkrt_lklist_dyn_set, WritesHost, [Ptr, I64, DynVal], Nil);
             ("list_h", "dyn_len", lkrt_lklist_dyn_len, ReadsHost, [Ptr], I64);
             ("list_h", "dyn_eq", lkrt_lklist_dyn_eq, ReadsHost, [Ptr, Ptr], I64);
+            ("list_h", "dyn_chunk", lkrt_lklist_dyn_chunk, WritesHost, [Ptr, I64], Ptr);
+            ("list_h", "dyn_enumerate", lkrt_lklist_dyn_enumerate, WritesHost, [Ptr], Ptr);
+            ("list_h", "dyn_zip", lkrt_lklist_dyn_zip, WritesHost, [Ptr, Ptr], Ptr);
+            ("list_h", "dyn_unique", lkrt_lklist_dyn_unique, WritesHost, [Ptr], Ptr);
+            ("list_h", "dyn_flatten", lkrt_lklist_dyn_flatten, WritesHost, [Ptr], Ptr);
             ("list_h", "dyn_contains", lkrt_lklist_dyn_contains, ReadsHost, [Ptr, DynVal], I64);
             ("list_h", "dyn_display", lkrt_lklist_dyn_display, WritesHost, [Ptr], StrPtr);
             ("arith", "i64_div", lkrt_i64_div_checked, ReadsHost, [I64, I64], I64);
