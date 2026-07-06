@@ -46,10 +46,14 @@
 - **[~] M4.2 AOT 深覆盖(Dyn 实现进行中,计划文件 synthetic-plotting-pony.md 有完整设计)**:
   - ✅ **D1 已落地**(commit `0928b58`):LkDyn{tag,payload} 载体 + abi DynVal 词表 +
     32 个 dyn ABI 条目 + mir Ty::Dyn/ListDyn + codegen llvm_ty;零 lowering 改动,覆盖率 14/51 不变
-  - **D2 待做**:aot/lower LoadHeapConst 混合列表臂(lower:3648 区,现 reject 处改
-    dyn_new+dyn_from_*+dyn_push → Ty::ListDyn)+ GetIndex on ListDyn(→dyn_at→Ty::Dyn)
-    + display(containers=true 走 list_h dyn_display;Dyn 标量 dyn_display)+ eq/nil 判定
-    (dyn_tag==0);目标翻转 template_strings/pattern_matching/for_loop_patterns 类
+  - ✅ **D2 混合列表已落地**(commit `2e42ffd`):LoadHeapConst 混合标量列表→ListDyn、
+    GetIndex(const/动态统一 dyn_at→Dyn)、display、入口 return Dyn 打印;probe 与 VM
+    逐字节一致。**实测钉下 VM 怪癖:混合列表字符串元素裸文显示([1,a b,2]),与
+    ListStr 的引号路径不同**(lkrt display_into 已按此实现)
+  - **D2b 待做**:剩余 4 个 LoadHeapConst 例是**混合 str-keyed map**(map_demo pc0 =
+    {"name":…,"age":30,"active":true})→ 需 map_h str_dyn_new/set/get 家族 + GetFieldK
+    消费臂 + display 保持 reject(semantics.md 裁决);eq on Dyn 的 Cmp 臂也未接
+    (dyn.eq/lt… ABI 已就绪)
   - **D3 待做**:NewList 混合(lower:2883 else 臂)+ phi 混型装箱(照抄 Maybe edge_insts 机制)
     + Dyn 算术全消费点;**D4**:NewRange/方法 ABI 增量/NewObject 裁决
   - 每步必须:aot_coverage.sh 单调不降 + 差分门禁逐字节 + bench 纯噪声
