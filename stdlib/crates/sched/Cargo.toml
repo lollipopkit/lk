@@ -1,0 +1,14 @@
+[package]
+name = "lk-stdlib-sched"
+description = "LK standard library cooperative coroutine scheduler module"
+version = "0.1.0"
+edition = "2024"
+authors = ["lollipopkit <a@lpkt.cn>"]
+license = "Apache-2.0"
+
+[dependencies]
+lk-core = { path = "../../../core", default-features = false, features = ["async-runtime"] }
+lk-stdlib-common = { path = "../../common" }
+anyhow = { workspace = true }
+tokio = { workspace = true }
+futures = { workspace = true }

@@ -1083,6 +1083,7 @@ dependencies = [
  "lk-stdlib-process",
  "lk-stdlib-random",
  "lk-stdlib-regex",
+ "lk-stdlib-sched",
  "lk-stdlib-slice",
  "lk-stdlib-stream",
  "lk-stdlib-string",
@@ -1288,6 +1289,17 @@ dependencies = [
  "lk-stdlib-common",
  "once_cell",
  "regex",
+]
+
+[[package]]
+name = "lk-stdlib-sched"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "futures",
+ "lk-core",
+ "lk-stdlib-common",
+ "tokio",
 ]
 
 [[package]]

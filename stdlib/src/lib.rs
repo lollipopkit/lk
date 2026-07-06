@@ -15,6 +15,7 @@ pub use lk_stdlib_path as path;
 pub use lk_stdlib_process as process;
 pub use lk_stdlib_random as random;
 pub use lk_stdlib_regex as regex;
+pub use lk_stdlib_sched as sched;
 pub use lk_stdlib_slice as slice;
 pub use lk_stdlib_stream as stream;
 pub use lk_stdlib_string as string;
@@ -35,6 +36,8 @@ mod globals_test;
 mod math_test;
 #[cfg(test)]
 mod os_test;
+#[cfg(test)]
+mod sched_test;
 #[cfg(test)]
 mod stdlib_modules_test;
 #[cfg(test)]
@@ -152,6 +155,7 @@ define_stdlib_modules!(
     "stream" => stream::register as register_stdlib_module_stream,
     "task" => concurrency_task::register as register_stdlib_module_task,
     "chan" => concurrency_chan::register as register_stdlib_module_chan,
+    "sched" => sched::register as register_stdlib_module_sched,
     "time" => time::register as register_stdlib_module_time,
 );
 
