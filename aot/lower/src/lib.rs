@@ -5504,6 +5504,147 @@ fn lower_method_dispatch(
         // `s.contains(needle)` — byte-substring test, exactly Rust/VM semantics.
         // `m.has(key)` on a mixed-value map — key membership (stored-nil
         // still counts, see `str_dyn_has`).
+        // `xs.first()` / `xs.last()` — nil when empty: exactly the dynamic-
+        // index `Maybe` model (an OOB/absent `get_pair` is `present = 0`),
+        // so both reuse the existing ListGetMaybe machinery, no new ABI.
+        (Ty::ListI64 | Ty::ListF64 | Ty::ListStr, "first", []) => {
+            let idx = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: idx,
+                value: Const::I64(0),
+            });
+            let dst = ssa.new_val();
+            let maybe_ty = match receiver_ty {
+                Ty::ListI64 => {
+                    insts.push(Inst::ListGetMaybe {
+                        dst,
+                        handle: receiver,
+                        index: idx,
+                    });
+                    Ty::MaybeI64
+                }
+                Ty::ListF64 => {
+                    insts.push(Inst::ListGetMaybeF64 {
+                        dst,
+                        handle: receiver,
+                        index: idx,
+                    });
+                    Ty::MaybeF64
+                }
+                _ => {
+                    insts.push(Inst::ListGetMaybeStr {
+                        dst,
+                        handle: receiver,
+                        index: idx,
+                    });
+                    Ty::MaybeStr
+                }
+            };
+            (dst, maybe_ty)
+        }
+        (Ty::ListI64 | Ty::ListF64 | Ty::ListStr, "last", []) => {
+            let (len_module, len_fn) = match receiver_ty {
+                Ty::ListI64 => ("list_h", "i64_len"),
+                Ty::ListF64 => ("list_h", "f64_len"),
+                _ => ("list_h", "str_len"),
+            };
+            let len = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(len),
+                callee: AbiRef::new(len_module, len_fn),
+                args: vec![receiver],
+            });
+            let one = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: one,
+                value: Const::I64(1),
+            });
+            let idx = ssa.new_val();
+            insts.push(Inst::IntBin {
+                dst: idx,
+                op: IntBinOp::Sub,
+                lhs: len,
+                rhs: one,
+            });
+            let dst = ssa.new_val();
+            let maybe_ty = match receiver_ty {
+                Ty::ListI64 => {
+                    insts.push(Inst::ListGetMaybe {
+                        dst,
+                        handle: receiver,
+                        index: idx,
+                    });
+                    Ty::MaybeI64
+                }
+                Ty::ListF64 => {
+                    insts.push(Inst::ListGetMaybeF64 {
+                        dst,
+                        handle: receiver,
+                        index: idx,
+                    });
+                    Ty::MaybeF64
+                }
+                _ => {
+                    insts.push(Inst::ListGetMaybeStr {
+                        dst,
+                        handle: receiver,
+                        index: idx,
+                    });
+                    Ty::MaybeStr
+                }
+            };
+            (dst, maybe_ty)
+        }
+        // `xs.concat(ys)` — same semantics as chain (the VM implements both
+        // as lhs ++ rhs into a fresh list).
+        (Ty::ListI64, "concat", [(other, Ty::ListI64)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", "i64_chain"),
+                args: vec![receiver, *other],
+            });
+            (dst, Ty::ListI64)
+        }
+        // `xs.join(sep)` on a string list → one string.
+        (Ty::ListStr, "join", [(sep, Ty::Str)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", "str_join"),
+                args: vec![receiver, *sep],
+            });
+            (dst, Ty::Str)
+        }
+        // `xs.get(i)` — safe index: nil on OOB, i.e. exactly the dynamic-
+        // index Maybe model (reused, no new ABI).
+        (Ty::ListI64, "get", [(idx, Ty::I64)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::ListGetMaybe {
+                dst,
+                handle: receiver,
+                index: *idx,
+            });
+            (dst, Ty::MaybeI64)
+        }
+        (Ty::ListF64, "get", [(idx, Ty::I64)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::ListGetMaybeF64 {
+                dst,
+                handle: receiver,
+                index: *idx,
+            });
+            (dst, Ty::MaybeF64)
+        }
+        (Ty::ListStr, "get", [(idx, Ty::I64)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::ListGetMaybeStr {
+                dst,
+                handle: receiver,
+                index: *idx,
+            });
+            (dst, Ty::MaybeStr)
+        }
         // `List<i64>` slicing/concat helpers (VM core_methods semantics).
         (Ty::ListI64, "take", [(n, Ty::I64)]) => {
             let dst = ssa.new_val();
