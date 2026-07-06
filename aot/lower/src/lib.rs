@@ -4082,6 +4082,27 @@ fn lower_inst(
             });
             ssa.write(instr.a(), block, (dst, Ty::ListStr));
         }
+        Opcode::NewRange => {
+            // `a` = dst; `b`..`b+2` = start/end/step registers; `c` != 0 =
+            // inclusive. The VM materializes the range eagerly as a
+            // `List<Int>` (`build_int_range`) — same here via one lkrt call
+            // (zero step / stepping overflow abort inside the helper).
+            let start = read_typed_scalar(ssa, insts, instr.b(), block, Ty::I64, pc)?;
+            let end = read_typed_scalar(ssa, insts, instr.b().wrapping_add(1), block, Ty::I64, pc)?;
+            let step = read_typed_scalar(ssa, insts, instr.b().wrapping_add(2), block, Ty::I64, pc)?;
+            let inclusive = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: inclusive,
+                value: Const::I64(i64::from(instr.c() != 0)),
+            });
+            let handle = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(handle),
+                callee: AbiRef::new("list_h", "i64_from_range"),
+                args: vec![start, end, step, inclusive],
+            });
+            ssa.write(instr.a(), block, (handle, Ty::ListI64));
+        }
         Opcode::ListPush => {
             // `a` = list register (mutated in place), `b` = value register. The list
             // handle is a reference (matching the VM), so the push is visible through

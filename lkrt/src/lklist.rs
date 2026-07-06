@@ -14,6 +14,36 @@
 use std::ffi::{CStr, CString, c_char, c_void};
 
 /// Creates a fresh, empty `i64` list handle.
+/// Materializes an integer range (`a..b` / `a..=b`, optional step) as a
+/// `List<i64>` — the VM's `build_int_range` semantics exactly: zero step and
+/// stepping overflow are loud failures.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_lklist_i64_from_range(start: i64, end: i64, step: i64, inclusive: i64) -> *mut c_void {
+    if step == 0 {
+        crate::abi::flush_and_abort();
+    }
+    let mut out = Vec::new();
+    let mut current = start;
+    if step > 0 {
+        while if inclusive != 0 { current <= end } else { current < end } {
+            out.push(current);
+            current = match current.checked_add(step) {
+                Some(v) => v,
+                None => crate::abi::flush_and_abort(),
+            };
+        }
+    } else {
+        while if inclusive != 0 { current >= end } else { current > end } {
+            out.push(current);
+            current = match current.checked_add(step) {
+                Some(v) => v,
+                None => crate::abi::flush_and_abort(),
+            };
+        }
+    }
+    crate::state::arena_handle(out)
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_lklist_i64_new() -> *mut c_void {
     crate::state::arena_handle(Vec::<i64>::new())
