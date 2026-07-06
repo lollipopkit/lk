@@ -4035,6 +4035,8 @@ fn lower_inst(
                 Ty::MapI64F64 => ("map_h", "i64_f64_len"),
                 Ty::ListDyn => ("list_h", "dyn_len"),
                 Ty::MapStrDyn => ("map_h", "str_dyn_len"),
+                // A boxed Dyn: length dispatches on the runtime tag.
+                Ty::Dyn => ("dyn", "len_of"),
                 _ => return Err(Unsupported::TypeMismatch { pc }),
             };
             let dst = ssa.new_val();
@@ -4183,6 +4185,19 @@ fn lower_inst(
                 insts.push(Inst::Call {
                     dst: Some(dst),
                     callee: AbiRef::new("dyn", helper),
+                    args: vec![handle, key],
+                });
+                ssa.write(instr.a(), block, (dst, Ty::Dyn));
+                return Ok(());
+            }
+            // Mixed-value map indexed by string key: same accessor as
+            // `GetFieldK` (missing key = Nil-tag Dyn).
+            if list_ty == Ty::MapStrDyn {
+                let key = read_typed_scalar(ssa, insts, instr.c(), block, Ty::Str, pc)?;
+                let dst = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(dst),
+                    callee: AbiRef::new("map_h", "str_dyn_get"),
                     args: vec![handle, key],
                 });
                 ssa.write(instr.a(), block, (dst, Ty::Dyn));
@@ -5466,6 +5481,49 @@ fn lower_method_dispatch(
             (b, Ty::Bool)
         }
         // `s.contains(needle)` — byte-substring test, exactly Rust/VM semantics.
+        // `m.has(key)` on a mixed-value map — key membership (stored-nil
+        // still counts, see `str_dyn_has`).
+        (Ty::MapStrDyn, "has", [(key, Ty::Str)]) => {
+            let raw = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(raw),
+                callee: AbiRef::new("map_h", "str_dyn_has"),
+                args: vec![receiver, *key],
+            });
+            let zero = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: zero,
+                value: Const::I64(0),
+            });
+            let b = ssa.new_val();
+            insts.push(Inst::Cmp {
+                dst: b,
+                op: CmpOp::Ne,
+                float: false,
+                lhs: raw,
+                rhs: zero,
+            });
+            (b, Ty::Bool)
+        }
+        // `m.len()` / `xs.len()` on Dyn containers (method form of `Len`).
+        (Ty::MapStrDyn, "len", []) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("map_h", "str_dyn_len"),
+                args: vec![receiver],
+            });
+            (dst, Ty::I64)
+        }
+        (Ty::ListDyn, "len", []) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", "dyn_len"),
+                args: vec![receiver],
+            });
+            (dst, Ty::I64)
+        }
         (Ty::Str, "contains", [(needle, Ty::Str)]) => {
             let dst = ssa.new_val();
             insts.push(Inst::Call {

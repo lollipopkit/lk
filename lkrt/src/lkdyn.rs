@@ -373,6 +373,24 @@ pub unsafe extern "C" fn lkrt_dyn_display_quoted(v: LkDyn) -> *mut c_char {
     arena_c_string(CString::new(out).unwrap_or_default())
 }
 
+/// `len` of a Dyn by runtime tag: list length, map entry count, string
+/// Unicode scalar count; scalars are the VM's loud failure.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_dyn_len_of(v: LkDyn) -> i64 {
+    match v.tag {
+        DYN_LIST => dyn_list(v).len() as i64,
+        DYN_MAP => {
+            if (v.payload as *mut c_void).is_null() {
+                0
+            } else {
+                dyn_map(v).len() as i64
+            }
+        }
+        DYN_STR => unsafe { dyn_str(v) }.chars().count() as i64,
+        _ => crate::abi::flush_and_abort(),
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_dyn_from_map(handle: *mut c_void) -> LkDyn {
     LkDyn {
