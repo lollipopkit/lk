@@ -18,13 +18,7 @@ impl Executor {
         // be rooted explicitly here, same as the current frame's `captures`.
         let frame_roots = self.frames.iter().flat_map(|frame| frame.captures.iter());
         self.state
-            .gc_roots(
-                self.captures
-                    .iter()
-                    .chain(frame_roots)
-                    .chain(handler_roots)
-                    .chain(self.extra_gc_roots.iter()),
-            )
+            .gc_roots(self.captures.iter().chain(frame_roots).chain(handler_roots))
             .into_refs()
     }
 

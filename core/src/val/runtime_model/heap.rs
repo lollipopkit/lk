@@ -199,11 +199,6 @@ fn collect_heap_value_edges(
                 collect_runtime_value_edge(value, refs);
             }
         }
-        HeapValue::Coroutine(state) => {
-            for value in state.gc_edges() {
-                collect_runtime_value_edge(value, refs);
-            }
-        }
     }
 }
 

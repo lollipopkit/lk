@@ -14,7 +14,6 @@ mod attributes;
 mod basic;
 mod calls;
 mod container;
-mod coroutine;
 mod cross_heap;
 mod gc_cell_error;
 mod native;

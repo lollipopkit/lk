@@ -8,7 +8,6 @@ mod callable_ops;
 mod cell;
 mod const_load;
 mod container;
-mod coroutine;
 mod dispatch;
 mod frame;
 mod gc;
@@ -25,9 +24,6 @@ mod support;
 mod value_ops;
 
 pub use super::RuntimeCallable;
-pub use coroutine::{
-    CoroutineState, CoroutineStatus, coroutine_status_runtime, create_coroutine_runtime, resume_coroutine_runtime,
-};
 pub use imports::import_runtime_export;
 pub use program::{
     ModuleFunctionArg, call_module_function_with_ctx, compile_program_module_with_ctx,
@@ -49,7 +45,7 @@ use alloc::sync::Arc;
 use anyhow::{Result, anyhow, bail};
 
 use crate::val::{
-    HeapRef, HeapStore, HeapValue, RuntimeMapKey, RuntimeSet, RuntimeVal, TypedList, TypedMap, typed_map_from_entries,
+    HeapStore, HeapValue, RuntimeMapKey, RuntimeSet, RuntimeVal, TypedList, TypedMap, typed_map_from_entries,
 };
 
 use super::{
@@ -342,24 +338,6 @@ pub struct Executor {
     /// fresh, separate `Executor`/Rust call, not `self`, so there is nothing
     /// here for them to flatten.
     frames: Vec<CallFrame>,
-    /// Set only on the one dedicated `Executor` that `coroutine::
-    /// resume_coroutine_runtime` constructs to drive a coroutine's own
-    /// `frames`/stack for the duration of a single resume call — never
-    /// toggled mid-run, and never set on any other `Executor` (in particular
-    /// not on the fresh, separate instances native re-entry constructs, e.g.
-    /// `runtime_callable.rs`'s `call_closure_value`). This is what makes
-    /// "yield across a native-call boundary" a runtime error for free: the
-    /// `Yield` opcode handler checks this field, and a nested native
-    /// re-entry's own `Executor` never has it set.
-    active_coroutine: Option<HeapRef>,
-    /// Extra values to root alongside the usual stack/globals/captures scan
-    /// (`root_refs`, `exec/gc.rs`). Empty for every ordinary `Executor`.
-    /// `coroutine::resume_coroutine_runtime` is the one user: it swaps the
-    /// coroutine's *own* independent stack into `self.state.stack` for the
-    /// run's duration, which would otherwise leave the resumer's own
-    /// register window (e.g. whatever register holds the coroutine value
-    /// itself) completely unscanned until the swap is undone.
-    extra_gc_roots: Vec<RuntimeVal>,
     collect_metrics: bool,
     gc_pending: bool,
     /// `LK_GC_STRESS=1` forces a full collection at every GC safepoint instead
@@ -426,8 +404,6 @@ impl Executor {
             pc: 0,
             current_function_index: 0,
             frames: Vec::new(),
-            active_coroutine: None,
-            extra_gc_roots: Vec::new(),
             collect_metrics: false,
             gc_pending: false,
             gc_stress: gc_stress_enabled(),
@@ -749,13 +725,6 @@ impl Executor {
                         .ok_or_else(|| anyhow!("function index {} out of bounds", idx))?;
                 }
                 Ok(FrameOutcome::Done(values)) => return Ok(values),
-                Ok(FrameOutcome::Yielded { .. }) => {
-                    // The `Yield` opcode handler only ever produces this
-                    // outcome when `self.active_coroutine` is set, which is
-                    // exclusively true inside `coroutine::run_coroutine_step`'s
-                    // own dispatch loop — never here.
-                    bail!("internal error: yield outcome outside coroutine dispatch");
-                }
                 Err(error) => {
                     let idx = self.unwind_flat_run(error, function, module, ctx, base_frame_depth)?;
                     function = module
@@ -1865,17 +1834,6 @@ impl Executor {
                     let index = self.stack_index_unchecked(instr.a());
                     let value = core::mem::take(&mut self.state.stack[index]);
                     return self.finish_return(ReturnValues::One(value), base_frame_depth);
-                }
-                Opcode::Yield => {
-                    if self.active_coroutine.is_none() {
-                        bail!("yield used outside a running coroutine");
-                    }
-                    self.collect_pending_garbage();
-                    let value = *self.read(instr.a())?;
-                    let dst = instr.a();
-                    self.pc += 1; // resume continues here, writing the resumed value into `dst`
-                    profile.flush(collect_metrics);
-                    return Ok(FrameOutcome::Yielded { value, dst });
                 }
                 other => bail!("Opcode {:?} is not implemented in Executor yet", other),
             }

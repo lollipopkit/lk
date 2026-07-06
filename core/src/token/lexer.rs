@@ -66,7 +66,6 @@ pub enum Token {
     Catch,    // catch (try's error handler)
     Case,     // case
     Default,  // default
-    Yield,    // yield (suspend the current coroutine)
     // Concurrency keywords
     Select, // select
     // Module-use keywords
@@ -701,10 +700,6 @@ impl<'a> Tokenizer<'a> {
         }
         if let Some(sp) = match_kw(self, "default") {
             self.push_span_only(Token::Default, sp);
-            return Ok(());
-        }
-        if let Some(sp) = match_kw(self, "yield") {
-            self.push_span_only(Token::Yield, sp);
             return Ok(());
         }
         // Type system keywords

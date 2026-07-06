@@ -116,11 +116,9 @@ impl Compiler {
             Expr::Bin(lhs, op, rhs) => self.lower_bin(lhs, op, rhs),
             Expr::Conditional(condition, then_expr, else_expr) => {
                 self.lower_conditional(condition, then_expr, else_expr)
-            }
-            Expr::Yield(inner) => self.lower_yield(inner),
-            // Every `Expr` variant lowers — parse-time-desugared sugar
-            // (try/catch → pcall, select → select$block) never reaches here
-            // as a dedicated node.
+            } // Every `Expr` variant lowers — parse-time-desugared sugar
+              // (try/catch → pcall, select → select$block) never reaches here
+              // as a dedicated node.
         }
     }
 
@@ -673,14 +671,6 @@ impl Compiler {
     /// the suspend point) and emit the single-register in/out `Yield` opcode.
     /// The register's static-type fact must be reset: after resuming, it can
     /// hold any type, not whatever `inner` produced.
-    fn lower_yield(&mut self, inner: &Expr) -> Result<u16> {
-        let dst = self.alloc_reg();
-        self.lower_expr_to_register(dst, inner, "yield value")?;
-        self.emit(Instr::abc(Opcode::Yield, checked_u8("yield reg", dst)?, 0, 0));
-        self.set_register_kind(dst, PerfValueKind::Unknown);
-        Ok(dst)
-    }
-
     fn lower_unary(&mut self, op: &UnaryOp, inner: &Expr) -> Result<u16> {
         let src = self.lower_readonly_operand(inner)?;
         let dst = self.alloc_reg();

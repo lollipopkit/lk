@@ -414,7 +414,6 @@ impl ResolverCore {
                 self.resolve_expr(r);
             }
             Expr::Paren(e) => self.resolve_expr(e),
-            Expr::Yield(e) => self.resolve_expr(e),
             Expr::List(items) => {
                 for e in items {
                     self.resolve_expr(e);

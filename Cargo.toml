@@ -32,7 +32,6 @@ members = [
     "stdlib/crates/process",
     "stdlib/crates/random",
     "stdlib/crates/regex",
-    "stdlib/crates/sched",
     "stdlib/crates/slice",
     "stdlib/crates/stream",
     "stdlib/crates/string",

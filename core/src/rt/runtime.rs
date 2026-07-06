@@ -369,18 +369,6 @@ impl Runtime {
         }
     }
 
-    /// Take ownership of a task's handle, removing it from the runtime.
-    ///
-    /// Unlike `join_task` this doesn't await — the caller owns the
-    /// `JoinHandle` and can poll it cancel-safely (`&mut handle` re-awaited
-    /// across select rounds), which `join_task` can't offer because dropping
-    /// its future after the remove loses the handle. Returns `None` if the
-    /// task was already joined, taken, or cancelled.
-    pub fn take_task(&self, task_id: u64) -> Option<Task> {
-        let mut tasks = self.tasks.lock().unwrap();
-        tasks.remove(&task_id)
-    }
-
     /// Cancel a task
     pub fn cancel_task(&self, task_id: u64) -> Result<()> {
         let mut tasks = self.tasks.lock().unwrap();
@@ -517,30 +505,6 @@ impl AsyncRuntimeHandle {
         if let Some(runtime) = runtime_arc {
             drop_runtime_arc(runtime);
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::val::RuntimeVal;
-
-    #[test]
-    fn take_task_transfers_handle_ownership_out_of_the_runtime() -> Result<()> {
-        let runtime = Runtime::new_current_thread()?;
-        let task_id = runtime.spawn(async { Ok(RuntimePayload::new(RuntimeVal::Int(7), HeapStore::new())) })?;
-
-        let mut task = runtime.take_task(task_id).expect("task should be takeable once");
-        assert_eq!(task.id, task_id);
-        // Gone from the runtime: neither takeable again nor joinable by id.
-        assert!(runtime.take_task(task_id).is_none());
-        assert!(runtime.block_on(runtime.join_task(task_id)).is_err());
-
-        // The taken handle is still awaitable — `&mut` (JoinHandle is Unpin +
-        // cancel-safe), the property the scheduler's select loop relies on.
-        let payload = runtime.block_on(&mut task.handle)??;
-        assert_eq!(payload.value, RuntimeVal::Int(7));
-        Ok(())
     }
 }
 

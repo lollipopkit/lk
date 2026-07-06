@@ -15,7 +15,6 @@ pub use lk_stdlib_path as path;
 pub use lk_stdlib_process as process;
 pub use lk_stdlib_random as random;
 pub use lk_stdlib_regex as regex;
-pub use lk_stdlib_sched as sched;
 pub use lk_stdlib_slice as slice;
 pub use lk_stdlib_stream as stream;
 pub use lk_stdlib_string as string;
@@ -36,8 +35,6 @@ mod globals_test;
 mod math_test;
 #[cfg(test)]
 mod os_test;
-#[cfg(test)]
-mod sched_test;
 #[cfg(test)]
 mod select_test;
 #[cfg(test)]
@@ -60,8 +57,7 @@ use lk_core::{
     },
     vm::{
         NativeArgs, NativeEntry, NativeFunction, NativeRuntime, call_runtime_callable_runtime,
-        call_runtime_value_runtime, call_runtime_value_runtime_with_receiver, coroutine_status_runtime,
-        create_coroutine_runtime, resume_coroutine_runtime,
+        call_runtime_value_runtime, call_runtime_value_runtime_with_receiver,
     },
 };
 pub use lk_stdlib_common::metadata::{
@@ -72,7 +68,7 @@ pub use lk_stdlib_common::metadata::{
 };
 use std::sync::{Arc, OnceLock};
 
-use runtime_native::{runtime_display_value, runtime_string_value};
+use runtime_native::runtime_display_value;
 
 static STDLIB_CATALOG: OnceLock<StdlibCatalog> = OnceLock::new();
 
@@ -157,7 +153,6 @@ define_stdlib_modules!(
     "stream" => stream::register as register_stdlib_module_stream,
     "task" => concurrency_task::register as register_stdlib_module_task,
     "chan" => concurrency_chan::register as register_stdlib_module_chan,
-    "sched" => sched::register as register_stdlib_module_sched,
     "time" => time::register as register_stdlib_module_time,
 );
 
@@ -395,9 +390,6 @@ pub fn register_stdlib_core_globals(registry: &mut ModuleRegistry) {
     register_full_state_builtin!(registry, assert => assert / NativeEntry::VARIADIC => core.assert: Nil);
     register_full_state_builtin!(registry, assert_eq => assert_eq / NativeEntry::VARIADIC => core.assert_eq: Nil);
     register_full_state_builtin!(registry, assert_ne => assert_ne / NativeEntry::VARIADIC => core.assert_ne: Nil);
-    register_plain_builtin!(registry, coroutine_create => coroutine_create / 1);
-    register_full_state_builtin!(registry, coroutine_resume => coroutine_resume / NativeEntry::VARIADIC => core.coroutine_resume: RuntimeValue);
-    register_plain_builtin!(registry, coroutine_status => coroutine_status / 1);
 }
 
 pub fn register_stdlib_concurrency_globals(registry: &mut ModuleRegistry) {
@@ -559,41 +551,6 @@ fn pcall(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Runtim
         .heap_mut()
         .alloc(HeapValue::List(TypedList::Mixed(vec![RuntimeVal::Bool(ok), value])));
     Ok(RuntimeVal::Obj(list))
-}
-
-/// `coroutine_create(fn) -> Coroutine`: wraps a plain LK function as a
-/// stackless coroutine (plan: coroutines/`yield`, post-M2.5). Does not run
-/// any of the function's code — that happens on the first `coroutine_resume`.
-fn coroutine_create(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    let Some(&callee) = args.as_slice().first() else {
-        return Err(anyhow!("coroutine_create expects 1 argument: the function"));
-    };
-    create_coroutine_runtime(callee, runtime.heap_mut())
-}
-
-/// `coroutine_resume(co, ...args) -> [ok, value]` — mirrors `pcall`'s
-/// `[ok, value]` convention. `args` seed the entry function's parameters on
-/// the first resume; on later resumes only `args[0]` (or `Nil`) is delivered
-/// as the paused `yield` expression's result.
-fn coroutine_resume(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    let values = args.as_slice();
-    let Some((&coroutine, resume_args)) = values.split_first() else {
-        return Err(anyhow!("coroutine_resume expects at least 1 argument: the coroutine"));
-    };
-    let resume_args = resume_args.to_vec();
-    let Some((state, ctx, module)) = runtime.state_ctx_module_mut() else {
-        return Err(anyhow!("coroutine_resume requires full VM state"));
-    };
-    resume_coroutine_runtime(coroutine, &resume_args, &[], state, module, ctx)
-}
-
-/// `coroutine_status(co) -> "suspended" | "running" | "dead"`.
-fn coroutine_status(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    let Some(&coroutine) = args.as_slice().first() else {
-        return Err(anyhow!("coroutine_status expects 1 argument: the coroutine"));
-    };
-    let status = coroutine_status_runtime(coroutine, runtime.heap())?;
-    Ok(runtime_string_value(status, runtime.heap_mut()))
 }
 
 fn assert(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {

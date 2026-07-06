@@ -472,7 +472,6 @@ fn expr_contains_call_to(expr: &Expr, target: &str) -> bool {
         Expr::Paren(inner)
         | Expr::Unary(_, inner)
         | Expr::OptionalAccess(inner, _)
-        | Expr::Yield(inner)
         | Expr::Match { value: inner, .. } => expr_contains_call_to(inner, target),
         Expr::Bin(lhs, _, rhs)
         | Expr::And(lhs, rhs)
@@ -603,7 +602,6 @@ fn collect_assigned_names_in_expr(expr: &Expr, names: &mut HashSet<String>) {
         Expr::Paren(inner)
         | Expr::Unary(_, inner)
         | Expr::OptionalAccess(inner, _)
-        | Expr::Yield(inner)
         | Expr::Match { value: inner, .. } => collect_assigned_names_in_expr(inner, names),
         Expr::Bin(lhs, _, rhs)
         | Expr::And(lhs, rhs)

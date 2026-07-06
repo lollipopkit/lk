@@ -1596,7 +1596,6 @@ fn heap_dispatch_type(value: &HeapValue) -> Type {
         HeapValue::Object(object) => Type::Named(object.type_name.to_string()),
         HeapValue::UpvalCell(_) => Type::Any,
         HeapValue::ErrorVal(_) => Type::Named("Error".to_string()),
-        HeapValue::Coroutine(_) => Type::Named("Coroutine".to_string()),
     }
 }
 

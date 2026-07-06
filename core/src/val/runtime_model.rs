@@ -88,12 +88,6 @@ pub enum HeapValue {
     Object(RuntimeObject),
     UpvalCell(RuntimeVal),
     ErrorVal(ErrorVal),
-    /// A stackless coroutine (post-M2.5 plan; see `crate::vm::CoroutineState`
-    /// and `core/src/vm/exec/coroutine.rs`). `val::` depends on `vm::` here
-    /// the same way `CallableValue::Runtime` already does for `RuntimeCallable`
-    /// — an accepted, already-established coupling (see M0's callable
-    /// decision), not a new layering violation.
-    Coroutine(Box<crate::vm::CoroutineState>),
 }
 
 impl HeapValue {
@@ -115,7 +109,6 @@ impl HeapValue {
             Self::Object(_) => "Object",
             Self::UpvalCell(_) => "UpvalCell",
             Self::ErrorVal(_) => "Error",
-            Self::Coroutine(_) => "Coroutine",
         }
     }
 }

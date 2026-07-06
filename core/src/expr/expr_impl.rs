@@ -156,9 +156,6 @@ pub enum Expr {
         arms: Vec<MatchArm>,
     },
     Literal(LiteralVal),
-    /// yield expr — suspend the current coroutine, evaluating to whatever
-    /// value the next `coroutine_resume` call passes (plan: coroutines).
-    Yield(Box<Expr>),
 }
 impl Expr {
     /// Get the identifier roots referenced by the expression.
@@ -278,9 +275,6 @@ impl Expr {
             }
             // Only collect string values when they are actual identifier roots, not field names
             Expr::Literal(_) => {} // Receive operator: collect from inner expression
-            Expr::Yield(expr) => {
-                expr.collect_ctx_names(names);
-            }
         }
     }
     /// Constant folding: calculate pure constant sub-expressions as LiteralVal constants
@@ -541,10 +535,8 @@ impl Expr {
                     name,
                     fields: new_fields,
                 }
-            }
-            // Never itself a constant (always a runtime suspend); fold the
-            // yielded value's own sub-expression only.
-            Expr::Yield(expr) => Expr::Yield(Box::new(expr.fold_constants())),
+            } // Never itself a constant (always a runtime suspend); fold the
+              // yielded value's own sub-expression only.
         }
     }
 }
@@ -670,7 +662,6 @@ impl Display for Expr {
                 write!(f, "}}")
             }
             Expr::Literal(val) => write!(f, "{}", val),
-            Expr::Yield(expr) => write!(f, "yield {}", expr),
         }
     }
 }

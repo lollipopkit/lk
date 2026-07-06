@@ -43,7 +43,7 @@ pub(super) struct CallFrame {
 }
 
 /// What `dispatch_within_frame` hands back to the trampoline loop in
-/// `run_function_inner_impl` (or, for `Yielded`, `coroutine::run_coroutine_step`).
+/// `run_function_inner_impl`.
 pub(super) enum FrameOutcome {
     /// A frame was pushed (LK call) or popped (LK return); resume dispatch
     /// at `module.functions[_]` with the executor's now-current state.
@@ -52,11 +52,4 @@ pub(super) enum FrameOutcome {
     /// whatever Rust caller invoked `run_function_inner_impl` (native
     /// re-entry, or the true top-level entry).
     Done(ReturnValues),
-    /// A `Yield` instruction suspended the *entire* flat run (not just the
-    /// innermost frame) inside a coroutine-driving `Executor`
-    /// (`Executor::active_coroutine.is_some()` — the `Yield` opcode handler
-    /// checks this and only ever produces this outcome when it holds).
-    /// `dst` is the register (in the *current*, about-to-be-parked, frame)
-    /// that the next resume's value must be written into.
-    Yielded { value: RuntimeVal, dst: u8 },
 }

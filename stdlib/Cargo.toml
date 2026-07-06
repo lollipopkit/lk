@@ -33,7 +33,6 @@ lk-stdlib-path = { path = "crates/path" }
 lk-stdlib-process = { path = "crates/process" }
 lk-stdlib-random = { path = "crates/random" }
 lk-stdlib-regex = { path = "crates/regex" }
-lk-stdlib-sched = { path = "crates/sched" }
 lk-stdlib-slice = { path = "crates/slice" }
 lk-stdlib-stream = { path = "crates/stream" }
 lk-stdlib-string = { path = "crates/string" }

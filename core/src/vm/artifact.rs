@@ -29,7 +29,10 @@ use super::{
 // artifacts cleanly rejected rather than silently name-less).
 // Version 8: the `Yield` opcode (coroutines) joins the instruction encoding;
 // older runtimes would mis-decode it, same reasoning as `CallMethodK`.
-pub const MODULE_ARTIFACT_VERSION: u32 = 8;
+// Version 9: `Yield` removed again (v2 direction: coroutines/`yield` dropped
+// in favor of Go-style go/spawn concurrency) — v8 artifacts may contain an
+// opcode this runtime no longer decodes.
+pub const MODULE_ARTIFACT_VERSION: u32 = 9;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ModuleArtifact {
@@ -408,7 +411,7 @@ mod tests {
 
     #[test]
     fn module_artifact_rejects_previous_version() {
-        assert_eq!(MODULE_ARTIFACT_VERSION, 8);
+        assert_eq!(MODULE_ARTIFACT_VERSION, 9);
         let source = "return 1;\n";
         let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
         let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
@@ -418,7 +421,7 @@ mod tests {
 
         let json = artifact.to_json_string().expect("json");
         let err = ModuleArtifact::from_json_str(&json).expect_err("previous-version artifact should be rejected");
-        assert!(err.to_string().contains("unsupported LK module artifact version 7"));
+        assert!(err.to_string().contains("unsupported LK module artifact version 8"));
     }
 
     #[test]

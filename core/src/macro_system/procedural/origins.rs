@@ -852,11 +852,6 @@ fn collect_generated_expr_origins(expr: &Expr, span: Option<Span>, origins: &mut
             push_generated_statement_origin("expr literal", span.clone(), origins);
             push_generated_statement_origin(generated_literal_origin_label(literal), span, origins);
         }
-        Expr::Yield(inner) => {
-            push_generated_statement_origin("expr yield", span.clone(), origins);
-            push_generated_statement_origin("expr yield_operand", span.clone(), origins);
-            collect_generated_expr_origins(inner, span, origins);
-        }
     }
 }
 

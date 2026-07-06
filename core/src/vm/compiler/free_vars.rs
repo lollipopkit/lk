@@ -48,7 +48,7 @@ pub(super) fn collect_expr_free_vars(expr: &Expr, bound: &mut HashSet<String>, f
                 collect_expr_free_vars(arg, bound, free);
             }
         }
-        Expr::Unary(_, inner) | Expr::Paren(inner) | Expr::Yield(inner) => collect_expr_free_vars(inner, bound, free),
+        Expr::Unary(_, inner) | Expr::Paren(inner) => collect_expr_free_vars(inner, bound, free),
         Expr::Conditional(condition, then_expr, else_expr) => {
             collect_expr_free_vars(condition, bound, free);
             collect_expr_free_vars(then_expr, bound, free);
@@ -263,7 +263,7 @@ pub(super) fn collect_expr_closure_captures(expr: &Expr, out: &mut Vec<String>) 
         // `collect_expr_free_vars`'s `Closure` arm binds the parameters and
         // walks the body (including nested closures with their own params).
         Expr::Closure { .. } => collect_expr_free_vars(expr, &mut HashSet::new(), out),
-        Expr::Paren(inner) | Expr::Unary(_, inner) | Expr::Yield(inner) => collect_expr_closure_captures(inner, out),
+        Expr::Paren(inner) | Expr::Unary(_, inner) => collect_expr_closure_captures(inner, out),
         Expr::Bin(lhs, _, rhs)
         | Expr::And(lhs, rhs)
         | Expr::Or(lhs, rhs)
