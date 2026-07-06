@@ -20,7 +20,7 @@ let fired = select {
     default => "skipped";
 };
 assert(fired == "sent");
-assert(recv(out) == [true, 7]);
+assert(recv(out) == 7);
 
 // --- default fires when no arm is ready ---
 let empty = chan(1);
@@ -37,7 +37,7 @@ let guarded = select {
     default => "guarded-out";
 };
 assert(guarded == "guarded-out");
-assert(recv(empty) == [true, 1]);
+assert(recv(empty) == 1);
 
 // --- operands and guards evaluate eagerly, once, in source order ---
 let trace = [];
@@ -63,15 +63,22 @@ let blocking = select {
 };
 assert(blocking == "go");
 
-// --- selecting on a closed channel is a catchable error ---
+// --- a closed channel is always ready (Go semantics): buffered values
+//     drain first, then the recv arm keeps firing with a nil binding ---
 use chan as ch;
 let closed = chan(1);
+send(closed, 9);
 ch.close(closed);
-let caught = pcall(|| select {
+let drained = select {
     case v <- recv(closed) => v;
     default => "never";
-});
-assert(caught[0] == false);
+};
+assert(drained == 9);
+let after = select {
+    case v <- recv(closed) => v == nil ? "closed" : "value";
+    default => "never";
+};
+assert(after == "closed");
 
 // --- nested select in a case body ---
 let outer = chan(1);

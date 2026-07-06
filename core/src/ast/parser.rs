@@ -17,9 +17,9 @@ pub struct Parser<'a> {
     len: usize,
     token_spans: Option<&'a [Span]>,
     prefix_mode: bool,
-    /// Monotonic id for `select` desugaring, so nested selects don't shadow
-    /// each other's synthesized `__select{n}_*` locals.
-    pub(super) select_counter: usize,
+    /// Monotonic id for parse-time desugars (`select`, postfix `!`), so
+    /// nested instances don't shadow each other's synthesized locals.
+    pub(super) desugar_counter: usize,
 }
 
 struct StructLiteralParts {
@@ -38,6 +38,33 @@ struct ParsedSelectCase {
     arm: ParsedSelectArm,
     guard: Option<Expr>,
     body: Expr,
+}
+
+/// Build the desugared AST for a postfix `!` unwrap (see `parse_postfix`).
+fn desugar_unwrap(id: usize, operand: Expr) -> Expr {
+    use crate::stmt::Stmt;
+
+    let name = format!("__unwrap{id}");
+    let binding = Box::new(Stmt::Let {
+        pattern: Pattern::Variable(name.clone()),
+        type_annotation: None,
+        value: Box::new(operand),
+        span: None,
+        is_const: false,
+    });
+    let check = Expr::Conditional(
+        Box::new(Expr::Bin(
+            Box::new(Expr::Var(name.clone())),
+            BinOp::Eq,
+            Box::new(Expr::Literal(LiteralVal::Nil)),
+        )),
+        Box::new(Expr::Call(
+            "error".to_string(),
+            vec![Box::new(Expr::Literal(LiteralVal::from_str("unwrap of nil value")))],
+        )),
+        Box::new(Expr::Var(name)),
+    );
+    Expr::Block(vec![binding, Box::new(Stmt::Expr(Box::new(check)))])
 }
 
 /// Build the desugared AST for a parsed `select` (see `parse_select` for the
@@ -624,6 +651,26 @@ impl<'a> Parser<'a> {
 
                 // Build bracket Access
                 expr = Expr::Access(Box::new(expr), index_expr);
+            } else if !self.eof()
+                && self.tokens[self.pos] == Token::Not
+                && !matches!(
+                    self.tokens.get(self.pos + 1),
+                    Some(Token::LParen | Token::LBracket | Token::LBrace)
+                )
+            {
+                // Postfix `!` — Swift-style force unwrap, parse-time sugar:
+                // `expr!` ⇒ `{ let __unwrap{n} = expr;
+                //              __unwrap{n} == nil ? error("unwrap of nil value")
+                //                                 : __unwrap{n} }`
+                // Raises a catchable error on nil, evaluates to the value
+                // otherwise. Two boundaries: `!` immediately followed by an
+                // open delimiter stays a *macro invocation* (`name!(...)` /
+                // `name![...]` / `name!{...}` — parenthesize as `(x!)(...)`
+                // to call an unwrapped value), and the lexer greedily takes
+                // `!=` as Ne, so `x!== 1` is a parse error — write `x! == 1`.
+                self.pos += 1;
+                self.desugar_counter += 1;
+                expr = desugar_unwrap(self.desugar_counter, expr);
             } else {
                 break; // No more postfix operations
             }
@@ -897,8 +944,8 @@ impl<'a> Parser<'a> {
         }
         self.pos += 1;
 
-        self.select_counter += 1;
-        Ok(desugar_select(self.select_counter, cases, default_case))
+        self.desugar_counter += 1;
+        Ok(desugar_select(self.desugar_counter, cases, default_case))
     }
 
     /// Parse match expression: match value { pattern => expr, ... }

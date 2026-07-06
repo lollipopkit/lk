@@ -205,13 +205,8 @@ mod tests {
         let mut env = vm::VmContext::new().with_resolver(resolver);
 
         let result = program.execute_with_ctx(&mut env)?;
-        let RuntimeVal::Obj(handle) = result.first_return() else {
-            panic!("expected list object");
-        };
-        let Some(HeapValue::List(TypedList::Mixed(values))) = result.state.heap().get(*handle) else {
-            panic!("expected mixed list return");
-        };
-        assert_eq!(values, &vec![RuntimeVal::Bool(true), RuntimeVal::Int(7)]);
+        // v2 error model: recv returns the value directly (closed raises).
+        assert_eq!(result.first_return(), &RuntimeVal::Int(7));
         Ok(())
     }
 }

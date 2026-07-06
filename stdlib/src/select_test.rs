@@ -60,7 +60,7 @@ mod tests {
                 default => "skipped";
             };
             let r = recv(c);
-            return fired == "sent" && r == [true, 7];
+            return fired == "sent" && r == 7;
             "#,
         );
     }
@@ -91,7 +91,7 @@ mod tests {
             };
             // The arm was skipped, so the value is still buffered.
             let still_there = recv(c);
-            return got == "guarded-out" && still_there == [true, 1];
+            return got == "guarded-out" && still_there == 1;
             "#,
         );
     }
@@ -158,20 +158,28 @@ mod tests {
         );
     }
 
-    /// Selecting on a closed channel is a catchable error (close removes the
-    /// channel from the runtime — same stance as the blocking `recv`).
+    /// A closed channel is always ready (Go semantics): its recv arm fires
+    /// with a nil binding once the buffer is drained, so consumers can
+    /// observe shutdown through select.
     #[test]
-    fn select_on_closed_channel_errors_catchably() {
+    fn select_on_closed_channel_fires_with_nil_binding() {
         assert_true(
             r#"
             use chan as ch;
             let c = chan(1);
+            send(c, 9);
             ch.close(c);
-            let caught = pcall(|| select {
+            // Buffered value first...
+            let first = select {
                 case v <- recv(c) => v;
                 default => "never";
-            });
-            return caught[0] == false;
+            };
+            // ...then the drained+closed channel stays selectable with nil.
+            let second = select {
+                case v <- recv(c) => v == nil ? "closed" : "value";
+                default => "never";
+            };
+            return first == 9 && second == "closed";
             "#,
         );
     }

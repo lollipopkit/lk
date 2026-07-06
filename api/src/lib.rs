@@ -47,7 +47,7 @@ impl Vm {
         }
     }
 
-    /// Create a sandboxed VM: only the core builtins (`println`/`pcall`/`typeof`/
+    /// Create a sandboxed VM: only the core builtins (`println`/`typeof`/
     /// …) and the explicitly allowed stdlib modules are registered. OS-capable
     /// modules (`fs`/`net`/`process`/…) are withheld unless named, so untrusted
     /// scripts cannot reach them — the module-whitelist knob of the sandbox model
@@ -353,12 +353,12 @@ mod tests {
 
     #[test]
     fn runaway_recursion_is_catchable_not_fatal() {
-        // Unbounded LK recursion must surface as a pcall-catchable error (the
+        // Unbounded LK recursion must surface as a try/catch-able error (the
         // call-depth cap) instead of overflowing the Rust stack and aborting
         // the process — segmented-stack growth carries it to the cap.
         let mut vm = Vm::new();
         let out = vm
-            .eval("fn f(n) { return f(n + 1); }\nlet r = pcall(f, 0);\nassert(!r[0]);\nreturn 1;")
+            .eval("fn f(n) { return f(n + 1); }\nlet caught = false;\ntry { f(0); } catch e { caught = true; }\nassert(caught);\nreturn 1;")
             .expect("runaway recursion is caught");
         assert_eq!(out, "1");
     }

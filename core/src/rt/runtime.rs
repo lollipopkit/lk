@@ -52,11 +52,14 @@ pub struct Task {
     pub result: Option<Result<RuntimePayload>>,
 }
 
-/// Channel sender wrapper to handle both bounded and unbounded channels
+/// Channel sender wrapper to handle both bounded and unbounded channels.
+/// `Closed` replaces the sender once the channel is closed: the receiver can
+/// still drain buffered values (Go semantics), but new sends fail.
 #[derive(Debug)]
 pub enum ChannelSender {
     Bounded(mpsc::Sender<RuntimePayload>),
     Unbounded(mpsc::UnboundedSender<RuntimePayload>),
+    Closed,
 }
 
 impl ChannelSender {
@@ -64,6 +67,7 @@ impl ChannelSender {
         match self {
             ChannelSender::Bounded(sender) => ChannelSender::Bounded(sender.clone()),
             ChannelSender::Unbounded(sender) => ChannelSender::Unbounded(sender.clone()),
+            ChannelSender::Closed => ChannelSender::Closed,
         }
     }
 }
@@ -213,6 +217,7 @@ impl Runtime {
                     Err(anyhow!("Channel is closed"))
                 }
             },
+            ChannelSender::Closed => Err(anyhow!("Channel is closed")),
         }
     }
 
@@ -239,6 +244,7 @@ impl Runtime {
                     Ok(false)
                 }
             },
+            ChannelSender::Closed => Ok(false),
         }
     }
 
@@ -339,11 +345,15 @@ impl Runtime {
         }
     }
 
-    /// Close a channel
+    /// Close a channel: mark it closed and drop its stored sender so the
+    /// receiver observes end-of-stream once the buffer drains — buffered
+    /// values remain receivable (Go semantics). The entry stays in the map,
+    /// so later operations see "closed", never "not found".
     pub fn close_channel(&self, channel_id: u64) -> Result<()> {
         let mut channels = self.channels.lock().unwrap();
-        if let Some(channel) = channels.remove(&channel_id) {
+        if let Some(channel) = channels.get_mut(&channel_id) {
             channel.closed.store(true, Ordering::SeqCst);
+            channel.sender = ChannelSender::Closed;
             Ok(())
         } else {
             Err(anyhow!("Channel not found"))

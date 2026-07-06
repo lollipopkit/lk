@@ -31,16 +31,15 @@ impl TaskModule {
         value.into_value(runtime.heap_mut())
     }
 
-    #[stdlib_export(name = "try_await", params(task: Task), returns = List)]
+    /// Non-blocking await: the task's value once resolved, `nil` while still
+    /// running (pairs with postfix `!` to assert completion).
+    #[stdlib_export(name = "try_await", params(task: Task), returns = Any)]
     fn try_await(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let task = task_arg(args.get(0).expect("checked arity"), runtime.heap(), "task.try_await()")?;
-        let value = match &task.value {
-            Some(value) => value.clone_value_into(runtime.heap_mut())?,
-            None => RuntimeVal::Nil,
-        };
-        Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(
-            lk_core::val::TypedList::Mixed(vec![RuntimeVal::Bool(task.value.is_some()), value]),
-        ))))
+        match &task.value {
+            Some(value) => value.clone_value_into(runtime.heap_mut()),
+            None => Ok(RuntimeVal::Nil),
+        }
     }
 
     #[stdlib_export(name = "join_all", params(...tasks: Task), returns = List)]
@@ -161,10 +160,7 @@ mod tests {
         let mut state = RuntimeModuleState::default();
         let task = resolved_task(RuntimeVal::Int(42), state.heap_mut());
         let result = call("try_await", &[task], &mut state)?;
-        assert_eq!(
-            expect_list(&result, state.heap()),
-            vec![RuntimeVal::Bool(true), RuntimeVal::Int(42)]
-        );
+        assert_eq!(result, RuntimeVal::Int(42));
         Ok(())
     }
 
@@ -184,17 +180,14 @@ mod tests {
     }
 
     #[test]
-    fn task_try_await_pending_returns_false_nil() -> Result<()> {
+    fn task_try_await_pending_returns_nil() -> Result<()> {
         let mut state = RuntimeModuleState::default();
         let task = RuntimeVal::Obj(state.heap_mut().alloc(HeapValue::Task(Arc::new(TaskValue {
             id: 999_999,
             value: None,
         }))));
         let result = call("try_await", &[task], &mut state)?;
-        assert_eq!(
-            expect_list(&result, state.heap()),
-            vec![RuntimeVal::Bool(false), RuntimeVal::Nil]
-        );
+        assert_eq!(result, RuntimeVal::Nil);
         Ok(())
     }
 }

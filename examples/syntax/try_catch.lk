@@ -1,4 +1,5 @@
-// try/catch: recoverable error handling (desugars to pcall). (plan M2.4)
+// try/catch: recoverable error handling (parse-time sugar over a hidden
+// protected-call primitive). (plan M2.4; v2: the only error-handling surface)
 //
 //   try { BODY } catch e { HANDLER }
 // runs BODY; if it raises (via error(...) or a runtime error), binds the error

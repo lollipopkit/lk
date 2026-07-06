@@ -89,9 +89,9 @@ mod tests {
                 return "done";
             });
             let got = [];
-            got.push(recv(c)[1]);
-            got.push(recv(c)[1]);
-            got.push(recv(c)[1]);
+            got.push(recv(c));
+            got.push(recv(c));
+            got.push(recv(c));
             return task.await(t) == "done" && got == [0, 100, 200];
             "#,
         );
@@ -143,8 +143,8 @@ mod tests {
                 return nil;
             });
             let consumer = spawn(|| {
-                let a = recv(c)[1];
-                let b = recv(c)[1];
+                let a = recv(c);
+                let b = recv(c);
                 return a + b;
             });
             task.await(producer);
@@ -169,7 +169,7 @@ mod tests {
             r#"
             let c = chan(1);
             go send(c, 42);
-            return recv(c) == [true, 42];
+            return recv(c) == 42;
             "#,
         );
     }
@@ -181,7 +181,7 @@ mod tests {
             fn work(ch, v) { send(ch, v * 2); }
             let out = chan(1);
             go work(out, 21);
-            return recv(out) == [true, 42];
+            return recv(out) == 42;
             "#,
         );
     }
@@ -198,7 +198,7 @@ mod tests {
             let t = spawn(|| v);   // snapshot of v == 1
             v = 2;
             go send(c, v);         // snapshot of v == 2
-            let sent = recv(c)[1];
+            let sent = recv(c);
             return task.await(t) == 1 && sent == 2;
             "#,
         );

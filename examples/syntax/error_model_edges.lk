@@ -1,60 +1,62 @@
 // Error-model edge cases: nested protection, first-class heap error values,
 // multi-frame propagation, and runtime errors. Each assert defines the VM's
 // semantics (conformance golden; also exercised by the VM==bytecode and
-// VM==AOT/Tier-0 differential gates). Complements pcall_error.lk / try_catch.lk.
-// (plan M1 conformance; locks in M2.1/M2.2/M2.3 error model.)
+// VM==AOT/Tier-0 differential gates). Complements error_unwrap.lk /
+// try_catch.lk. (v2 error model: raises + try/catch, no user-facing pcall.)
 
-// --- pcall round-trips the result of a successful call, typed ---
+// --- try/catch round-trips the result of a successful call, typed ---
 fn add(a, b) { return a + b; }
-let ok = pcall(add, 2, 3);
-assert(ok[0] == true);
-assert(ok[1] == 5);
+let ok = 0;
+try { ok = add(2, 3); } catch e { ok = -1; }
+assert(ok == 5);
 
-// --- first-class HEAP error values survive pcall (M2.2): a long (heap) string
-//     and a list come back as themselves, not a stringification ---
+// --- first-class HEAP error values survive the catch (M2.2): a long (heap)
+//     string and a list come back as themselves, not a stringification ---
 fn raise_text() { error("a sufficiently long heap-allocated error payload"); return 0; }
-let texted = pcall(raise_text);
-assert(texted[0] == false);
-assert(texted[1] == "a sufficiently long heap-allocated error payload");
+try { raise_text(); } catch texted {
+    assert(texted == "a sufficiently long heap-allocated error payload");
+}
 
 fn raise_list() { error([7, 8, 9]); return 0; }
-let listed = pcall(raise_list);
-assert(listed[0] == false);
-assert(listed[1][0] == 7);
-assert(listed[1][2] == 9);
+try { raise_list(); } catch listed {
+    assert(listed[0] == 7);
+    assert(listed[2] == 9);
+}
 
 // --- error value type is preserved (Int stays Int, not "404") ---
 fn raise_code() { error(404); return 0; }
-let coded = pcall(raise_code);
-assert(coded[0] == false);
-assert(coded[1] == 404);
-assert(coded[1] + 1 == 405);   // arithmetic proves it's a real Int
-
-// --- nested protection: an inner pcall that catches does NOT leak to the outer;
-//     the outer sees the inner function's normal return ---
-fn inner_guarded() {
-    let r = pcall(raise_code);   // caught here, returns [false, 404]
-    return r[1] + 100;           // 504
+try { raise_code(); } catch coded {
+    assert(coded == 404);
+    assert(coded + 1 == 405);   // arithmetic proves it's a real Int
 }
-let nested = pcall(inner_guarded);
-assert(nested[0] == true);
-assert(nested[1] == 504);
 
-// --- multi-frame propagation: an error raised deep unwinds through frames that
-//     don't catch, up to the pcall boundary ---
+// --- nested protection: an inner catch does NOT leak to the outer; the
+//     outer sees the inner function's normal return ---
+fn inner_guarded() {
+    let recovered = 0;
+    try { raise_code(); } catch code { recovered = code; }   // caught here: 404
+    return recovered + 100;                                  // 504
+}
+let nested = 0;
+try { nested = inner_guarded(); } catch e { nested = -1; }
+assert(nested == 504);
+
+// --- multi-frame propagation: an error raised deep unwinds through frames
+//     that don't catch, up to the nearest try boundary ---
 fn deep3() { error("from-deep"); return 0; }
 fn deep2() { return deep3(); }
 fn deep1() { return deep2(); }
-let deep = pcall(deep1);
-assert(deep[0] == false);
-assert(deep[1] == "from-deep");
+try { deep1(); } catch deep {
+    assert(deep == "from-deep");
+}
 
 // --- runtime errors (not error()) are recoverable too: division by zero ---
 fn div_zero() { return 1 / 0; }
-let divided = pcall(div_zero);
-assert(divided[0] == false);
+let div_caught = false;
+try { div_zero(); } catch e { div_caught = true; }
+assert(div_caught);
 
-// --- try/catch is sugar over pcall: heap error value binds to the handler var ---
+// --- heap error value binds to the handler var ---
 let seen = [];
 try {
     error([1, 2]);

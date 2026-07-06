@@ -66,14 +66,14 @@ impl<'a> StmtParser<'a> {
             params: Vec::new(),
             body: Box::new(Expr::Block(body_stmts)),
         };
-        let pcall = Expr::Call("pcall".to_string(), vec![Box::new(closure)]);
+        let protected = Expr::Call("try$call".to_string(), vec![Box::new(closure)]);
         let let_result = Stmt::Let {
             pattern: Pattern::List {
                 patterns: vec![Pattern::Variable("__try_ok".to_string()), Pattern::Variable(catch_var)],
                 rest: None,
             },
             type_annotation: None,
-            value: Box::new(pcall),
+            value: Box::new(protected),
             span: None,
             is_const: false,
         };

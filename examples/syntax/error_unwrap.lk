@@ -1,0 +1,66 @@
+// v2 error model: errors RAISE (Swift-style), try/catch is the only catch
+// surface, and postfix `!` force-unwraps nil. There is no user-facing pcall
+// and no `[ok, value]` convention — a failing operation raises a catchable
+// error instead of returning a status pair.
+
+fn double(x) { return x * 2; }
+fn boom() { error("kaboom"); return 0; }
+fn div_zero() { return 1 / 0; }
+
+// Success path: no raise, catch skipped.
+let ok = 0;
+try { ok = double(21); } catch e { ok = -1; }
+assert(ok == 42);
+
+// error() raises; try/catch binds the raised value.
+let caught = nil;
+try { boom(); } catch e { caught = e; }
+assert(caught == "kaboom");
+
+// Ordinary runtime errors (division by zero) are caught the same way.
+let div_caught = false;
+try { div_zero(); } catch e { div_caught = true; }
+assert(div_caught);
+
+// error(v) with a primitive value round-trips as that value, not a string.
+try { error(404); } catch code { assert(code == 404); }
+
+// Heap objects (long strings, lists, ...) are first-class error values too:
+// pinned as a GC root while unwinding, handed back as the original value.
+try {
+    error("a long heap-allocated error payload string!!");
+} catch text {
+    assert(text == "a long heap-allocated error payload string!!");
+}
+try { error([1, 2, 3]); } catch listed {
+    assert(listed[0] == 1);
+    assert(listed[2] == 3);
+}
+
+// --- postfix `!`: Swift-style force unwrap ---
+
+// Non-nil values pass through unchanged.
+let x = 5;
+assert(x! == 5);
+
+// nil raises "unwrap of nil value" — catchable like any other raise.
+let missing = {"a": 1};
+let unwrap_caught = nil;
+try {
+    let v = missing["nope"]!;
+} catch e {
+    unwrap_caught = e;
+}
+assert(unwrap_caught == "unwrap of nil value");
+
+// Chains: unwrap mid-chain (parenthesize to call/index the unwrapped value:
+// `!` directly before `(`/`[`/`{` is macro-invocation syntax).
+assert(missing["a"]! + 1 == 2);
+let nested = {"xs": [10, 20]};
+assert((nested["xs"]!)[1] == 20);
+
+// Prefix `!` (logical not) is unaffected.
+assert(!false);
+assert(!(1 == 2));
+
+println("error/unwrap: ok");

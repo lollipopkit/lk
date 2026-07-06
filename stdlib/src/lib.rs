@@ -28,6 +28,8 @@ mod runtime_native {
 #[cfg(test)]
 mod bytes_test;
 #[cfg(test)]
+mod chan_semantics_test;
+#[cfg(test)]
 mod datetime_test;
 #[cfg(test)]
 mod globals_test;
@@ -388,7 +390,11 @@ pub fn register_stdlib_core_globals(registry: &mut ModuleRegistry) {
     register_full_state_builtin!(registry, println => println / NativeEntry::VARIADIC => core.println: Nil);
     register_full_state_builtin!(registry, panic => panic / NativeEntry::VARIADIC => core.panic: Nil);
     register_full_state_builtin!(registry, error => error / NativeEntry::VARIADIC => core.error: Nil);
-    register_full_state_builtin!(registry, pcall => pcall / NativeEntry::VARIADIC => core.pcall: RuntimeValue);
+    // `try$call` is the hidden protected-call primitive behind try/catch's
+    // parse-time desugar (`$` names are untokenizable, so user code can't
+    // reach it) — the former user-facing `pcall` global, removed in v2:
+    // try/catch is the only error-handling surface.
+    register_runtime_builtin_full_state(registry, "try$call", pcall, NativeEntry::VARIADIC, None);
     register_full_state_builtin!(registry, assert => assert / NativeEntry::VARIADIC => core.assert: Nil);
     register_full_state_builtin!(registry, assert_eq => assert_eq / NativeEntry::VARIADIC => core.assert_eq: Nil);
     register_full_state_builtin!(registry, assert_ne => assert_ne / NativeEntry::VARIADIC => core.assert_ne: Nil);
@@ -691,6 +697,9 @@ fn chan(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Runtime
     )))))
 }
 
+/// `send(c, v)` — blocking send. Returns Nil on delivery; raises a
+/// catchable error once the channel is closed (v2 error model: failures
+/// raise, they don't return status values — Go's panic-on-closed-send).
 fn send(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_runtime_arity(args, 2, "send")?;
     let values = args.as_slice();
@@ -700,9 +709,16 @@ fn send(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Runtime
         .async_runtime()
         .with(|runtime| runtime.block_on(runtime.send_async(channel_id, value)))
         .map_err(|error| anyhow!("Send operation failed: {}", error))?;
-    Ok(RuntimeVal::Bool(sent))
+    if !sent {
+        return Err(anyhow!("send on closed channel"));
+    }
+    Ok(RuntimeVal::Nil)
 }
 
+/// `recv(c)` — blocking receive. Returns the value; raises a catchable
+/// error once the channel is closed and drained (v2 error model: no
+/// `[ok, value]` pairs — consume-until-closed loops wrap the loop in
+/// try/catch, or poll `chan.is_closed`/`chan.try_recv`).
 fn recv(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_runtime_arity(args, 1, "recv")?;
     let channel_id = channel_id_arg(
@@ -714,10 +730,14 @@ fn recv(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Runtime
         .async_runtime()
         .with(|runtime| runtime.block_on(runtime.recv_async(channel_id)))
         .map_err(|error| anyhow!("Receive operation failed: {}", error))?;
-    let value = value.into_value(runtime.heap_mut())?;
-    runtime_list(vec![RuntimeVal::Bool(ok), value], runtime.heap_mut())
+    if !ok {
+        return Err(anyhow!("receive on closed channel"));
+    }
+    value.into_value(runtime.heap_mut())
 }
 
+/// Non-blocking send: `true` delivered, `false` full (not an error);
+/// closed → raises.
 fn chan_try_send(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_runtime_arity(args, 2, "chan::try_send")?;
     let values = args.as_slice();
@@ -730,6 +750,9 @@ fn chan_try_send(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Resul
     Ok(RuntimeVal::Bool(sent))
 }
 
+/// Non-blocking receive: the value when one is ready, `nil` when the
+/// channel is empty (pairs with postfix `!` to assert), raises once the
+/// channel is closed.
 fn chan_try_recv(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_runtime_arity(args, 1, "chan::try_recv")?;
     let channel_id = channel_id_arg(
@@ -737,11 +760,11 @@ fn chan_try_recv(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Resul
         runtime.heap(),
         "chan::try_recv first argument",
     )?;
-    let payload = match runtime.async_runtime().with(|runtime| runtime.try_recv(channel_id))? {
-        Some((ok, value)) => vec![RuntimeVal::Bool(ok), value.into_value(runtime.heap_mut())?],
-        None => vec![RuntimeVal::Bool(false), RuntimeVal::Nil],
-    };
-    runtime_list(payload, runtime.heap_mut())
+    match runtime.async_runtime().with(|runtime| runtime.try_recv(channel_id))? {
+        Some((true, value)) => value.into_value(runtime.heap_mut()),
+        Some((false, _)) => Err(anyhow!("receive on closed channel")),
+        None => Ok(RuntimeVal::Nil),
+    }
 }
 
 fn select_block(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {

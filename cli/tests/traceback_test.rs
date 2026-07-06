@@ -47,13 +47,14 @@ fn uncaught_error_prints_named_call_stack() {
 }
 
 #[test]
-fn pcall_caught_error_leaves_no_stale_frames() {
-    // `boom` errors but is caught by pcall; the later uncaught `later` error's
-    // traceback must contain only `later`, not the discarded `boom` frame.
+fn caught_error_leaves_no_stale_frames() {
+    // `boom` errors but is caught by try/catch; the later uncaught `later`
+    // error's traceback must contain only `later`, not the discarded `boom`
+    // frame.
     let stderr = run_stderr(
         "fn boom() { return error(\"caught\"); }\n\
          fn later() { return error(\"real\"); }\n\
-         let r = pcall(boom);\n\
+         try { boom(); } catch e { }\n\
          return later();\n",
     );
     assert!(
@@ -62,6 +63,6 @@ fn pcall_caught_error_leaves_no_stale_frames() {
     );
     assert!(
         !stderr.contains("boom"),
-        "the pcall-caught frame must not leak into a later traceback: {stderr}"
+        "the caught frame must not leak into a later traceback: {stderr}"
     );
 }
