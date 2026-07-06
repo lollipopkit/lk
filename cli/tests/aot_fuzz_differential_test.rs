@@ -232,7 +232,7 @@ impl Generator {
     // ---- statements --------------------------------------------------------
 
     fn statement(&mut self, out: &mut String, indent: &str) {
-        match self.rng.below(15) {
+        match self.rng.below(19) {
             0 | 1 => {
                 let ty = self.random_ty();
                 let name = self.fresh("v");
@@ -556,6 +556,95 @@ impl Generator {
                 let joined = self.fresh("v");
                 let _ = writeln!(out, "{indent}let {joined} = {list}.join(\"-\");");
                 self.vars.push((joined, Ty::Str));
+            }
+            15 => {
+                // Mixed-constant list (boxed-dynamic on the native side):
+                // display, constant indexing (negative / OOB-nil included),
+                // and len all ride the Dyn carrier (plan M4.2).
+                let name = self.fresh("dl");
+                let i = self.rng.below(50);
+                let f = format!("{}.5", self.rng.below(9));
+                let s = format!("\"s{}\"", self.rng.below(9));
+                let _ = writeln!(out, "{indent}let {name} = [{i}, {s}, {f}, true];");
+                match self.rng.below(3) {
+                    0 => {
+                        let _ = writeln!(out, "{indent}println({name});");
+                    }
+                    1 => {
+                        // -4..=4 covers in-bounds, negative and OOB (nil).
+                        let idx = self.rng.below(9) as i64 - 4;
+                        let _ = writeln!(out, "{indent}println({name}[{idx}]);");
+                    }
+                    _ => {
+                        let _ = writeln!(out, "{indent}println({name}.len());");
+                    }
+                }
+            }
+            16 => {
+                // Empty `[]` + mixed pushes: the guessed materialization is
+                // contradicted mid-loop, exercising the fixpoint re-guess
+                // (EmptyListGuessWrong) and Dyn boxing on every push.
+                let name = self.fresh("ml");
+                let counter = self.fresh("i");
+                let bound = 2 + self.rng.below(5);
+                let modulus = 2 + self.rng.below(2);
+                let _ = writeln!(out, "{indent}let {name} = [];");
+                let _ = writeln!(out, "{indent}let {counter} = 0;");
+                let _ = writeln!(out, "{indent}while ({counter} < {bound}) {{");
+                let _ = writeln!(
+                    out,
+                    "{indent}    if ({counter} % {modulus} == 0) {{ {name}.push({counter}); }} else {{ {name}.push(\"e${{{counter}}}\"); }}"
+                );
+                let _ = writeln!(out, "{indent}    {counter} = {counter} + 1;");
+                let _ = writeln!(out, "{indent}}}");
+                let _ = writeln!(out, "{indent}println({name});");
+                let _ = writeln!(out, "{indent}println({name}.len());");
+            }
+            17 => {
+                // Nested-result method family over an int list: chunk /
+                // enumerate / zip / unique / take+chain — every result is a
+                // Dyn list of lists (or a dedup) printed bare-text.
+                if let Some(list) = self.lists.iter().map(|l| l.name.clone()).next() {
+                    let n = 1 + self.rng.below(3);
+                    let call = match self.rng.below(5) {
+                        0 => format!("{list}.chunk({n})"),
+                        1 => format!("{list}.enumerate()"),
+                        2 => format!("{list}.zip({list})"),
+                        3 => format!("{list}.unique()"),
+                        _ => format!("{list}.take({n}).chain({list}.skip({n}))"),
+                    };
+                    let _ = writeln!(out, "{indent}println({call});");
+                } else {
+                    let name = self.fresh("xs");
+                    let _ = writeln!(out, "{indent}let {name} = [7, 8, 9];");
+                    let _ = writeln!(out, "{indent}println({name}.enumerate());");
+                    self.lists.push(ListVar {
+                        name,
+                        len: 3,
+                        items: vec!["7".into(), "8".into(), "9".into()],
+                    });
+                }
+            }
+            18 => {
+                // Struct literal (MapStrDyn carrier): typed + optional
+                // fields, reads feed arithmetic / display / ?? — including
+                // the absent-field nil path.
+                let ty_name = format!("S{}", self.fresh("t").trim_start_matches('t').to_owned());
+                let inst = self.fresh("st");
+                let a = self.rng.below(40);
+                let with_opt = self.rng.chance(50);
+                let _ = writeln!(out, "{indent}struct {ty_name} {{ a: Int, note: String?, on: Bool }}");
+                if with_opt {
+                    let _ = writeln!(
+                        out,
+                        "{indent}let {inst} = {ty_name} {{ a: {a}, note: \"n{a}\", on: true }};"
+                    );
+                } else {
+                    let _ = writeln!(out, "{indent}let {inst} = {ty_name} {{ a: {a}, on: false }};");
+                }
+                let _ = writeln!(out, "{indent}println({inst}.a + {});", self.rng.below(7));
+                let _ = writeln!(out, "{indent}println({inst}.note ?? \"none\");");
+                let _ = writeln!(out, "{indent}println({inst}.on);");
             }
             _ => {
                 let ty = self.random_ty();
