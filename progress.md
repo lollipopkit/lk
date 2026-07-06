@@ -544,6 +544,25 @@ isolate**(单线程无锁 GC 是热路径底线,无数据竞争,推翻=重写堆
 - **验证(贯穿)**:workspace 全量 1499+ 0 失败 · GC-stress 全绿 · clippy/fmt 0 · no_std 0/0 ·
   差分门禁全过 · dist bench 见子步5 记录。
 
+## M4.2 循环轮记录:Dyn 折叠点安全审计(2026-07-07)
+
+- **两个静默语义 bug**(比 reject 危险一个量级——产出错误结果的原生二进制):
+  1. IsList/IsMap 对 Ty::Dyn 编译期折叠 Const false——rest 解构
+     'for [head, ..tail]' 的模式守卫恒失败,原生错误 Raise(幸 loud)。
+  2. Exit::NilBranch 的 \`_ =>\` 臂把 Dyn 折叠为'恒非 nil'——struct
+     optional 缺省字段 'if (b.v != nil)' **静默走错分支**输出错误结果,
+     若非 probe 实测无法发现(examples 差分面没有该形状)。
+- **方法论教训**:引入新的"运行时才知道内容"的类型(Dyn)时,必须**全量
+  审计既有的类型驱动编译期折叠点**——折叠假设"类型即语义"对 Dyn 不成立。
+  本次 grep 'value: Const::Bool' 全扫,四处折叠点(IsNil/IsList/IsMap/
+  NilBranch)全部 Dyn-aware 化。
+- SliceFrom 补 Dyn(as_list 拆箱)/ListDyn(dyn_slice_from) 臂;
+  空 [] 猜测 lookahead 源扩展 SliceFrom/ToIter。
+- 再踩二进制新鲜度坑:compile 失败被 grep -c 吞掉,/tmp/rp 跑的是上一个
+  probe 的旧二进制(输出驴唇不对马嘴才察觉)。**probe 流程固化:rm -f 目标
+  → compile → ls 确认存在 → 跑**。
+- 覆盖率 25/51 持平(修正确性,非扩面);全门禁绿。
+
 ## M4.2 循环轮记录:迭代/空列表/字符索引(2026-07-07)
 
 - **s[i] 单字符索引**:VM index_string_at = char 索引、越界 nil、负索引按

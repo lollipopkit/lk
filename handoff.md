@@ -121,8 +121,14 @@
     留档/大项:13 GetGlobal(单独立项)· 8 跨函数 Dyn 流动 + MapRest ·
     comprehensive(Set 类型)· word_count(sort_words 无类型参数,其内
     str-lambda HOF/动态 map 链路已部分就绪)· 2 use 多文件
+  - ✅ **Dyn 折叠点安全审计**(commits `2c586c2`/本次):IsList/IsMap 对
+    Dyn 编译期折叠 false → rest 解构守卫错误 Raise;NilBranch 折叠'恒非
+    nil' → struct 缺省字段 if 判断**静默走错分支**。四处折叠点(IsNil/
+    IsList/IsMap/NilBranch)全部改运行时 tag 判断。SliceFrom 补 Dyn/
+    ListDyn 臂(rest 解构 tail 全链路);空 [] 猜测源扩展 SliceFrom/ToIter
   - **留档小项**:混合 push(push(1) 再 push("x"))需 fixpoint 重猜机制;
-    typed 列表方法长尾对 ListDyn receiver(take/skip 等)按需补
+    typed 列表方法长尾对 ListDyn receiver(take/skip 等)按需补;
+    for_loop_patterns 永久卡 map 迭代(hash 序,与 map_demo 同类)
   - 每步必须:aot_coverage.sh 单调不降 + 差分门禁逐字节 + bench 纯噪声
   - GetGlobal 14(try$call/并发/模块白名单)是**另一根因**,独立大项未启
 - **✅ 裁决不做**:callable trait 反转 · 真机/QEMU demo · 细粒度 feature 拆分。
