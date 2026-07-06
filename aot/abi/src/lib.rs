@@ -34,6 +34,9 @@ pub enum AbiType {
     Ptr,
     StrPtr,
     Nil,
+    /// The boxed dynamic value carrier (`LkDyn { tag, payload }`), passed by
+    /// value as LLVM `{ i64, i64 }` — same shape as the `Maybe` carriers.
+    DynVal,
 }
 
 /// One native runtime function: its module/name identity (as referenced by the
@@ -226,6 +229,40 @@ macro_rules! for_each_abi_fn {
             // Divisor-guarded arithmetic: abort on a zero divisor (matching the VM's fatal
             // error) instead of raw `sdiv`/`fdiv`/`frem` UB. `ReadsHost` keeps codegen from
             // ever treating them as removable pure math (the abort is an observable effect).
+            // Boxed dynamic values (`LkDyn`, plan M4.2 deep coverage): boxing,
+            // guarded unboxing, VM-promotion arithmetic, equality/ordering,
+            // the two display modes, and the mixed-element list family.
+            ("dyn", "from_nil", lkrt_dyn_from_nil, Pure, [], DynVal);
+            ("dyn", "from_bool", lkrt_dyn_from_bool, Pure, [I64], DynVal);
+            ("dyn", "from_i64", lkrt_dyn_from_i64, Pure, [I64], DynVal);
+            ("dyn", "from_f64", lkrt_dyn_from_f64, Pure, [F64], DynVal);
+            ("dyn", "from_str", lkrt_dyn_from_str, Pure, [StrPtr], DynVal);
+            ("dyn", "from_list", lkrt_dyn_from_list, Pure, [Ptr], DynVal);
+            ("dyn", "tag", lkrt_dyn_tag, Pure, [DynVal], I64);
+            ("dyn", "as_i64", lkrt_dyn_as_i64, ReadsHost, [DynVal], I64);
+            ("dyn", "as_f64", lkrt_dyn_as_f64, ReadsHost, [DynVal], F64);
+            ("dyn", "as_str", lkrt_dyn_as_str, ReadsHost, [DynVal], StrPtr);
+            ("dyn", "as_bool", lkrt_dyn_as_bool, ReadsHost, [DynVal], I64);
+            ("dyn", "add", lkrt_dyn_add, WritesHost, [DynVal, DynVal], DynVal);
+            ("dyn", "sub", lkrt_dyn_sub, ReadsHost, [DynVal, DynVal], DynVal);
+            ("dyn", "mul", lkrt_dyn_mul, ReadsHost, [DynVal, DynVal], DynVal);
+            ("dyn", "div", lkrt_dyn_div, ReadsHost, [DynVal, DynVal], DynVal);
+            ("dyn", "mod", lkrt_dyn_mod, ReadsHost, [DynVal, DynVal], DynVal);
+            ("dyn", "eq", lkrt_dyn_eq, ReadsHost, [DynVal, DynVal], I64);
+            ("dyn", "lt", lkrt_dyn_lt, ReadsHost, [DynVal, DynVal], I64);
+            ("dyn", "le", lkrt_dyn_le, ReadsHost, [DynVal, DynVal], I64);
+            ("dyn", "gt", lkrt_dyn_gt, ReadsHost, [DynVal, DynVal], I64);
+            ("dyn", "ge", lkrt_dyn_ge, ReadsHost, [DynVal, DynVal], I64);
+            ("dyn", "display", lkrt_dyn_display, WritesHost, [DynVal], StrPtr);
+            ("dyn", "display_quoted", lkrt_dyn_display_quoted, WritesHost, [DynVal], StrPtr);
+            ("list_h", "dyn_new", lkrt_lklist_dyn_new, WritesHost, [], Ptr);
+            ("list_h", "dyn_push", lkrt_lklist_dyn_push, WritesHost, [Ptr, DynVal], Nil);
+            ("list_h", "dyn_at", lkrt_lklist_dyn_at, ReadsHost, [Ptr, I64], DynVal);
+            ("list_h", "dyn_set", lkrt_lklist_dyn_set, WritesHost, [Ptr, I64, DynVal], Nil);
+            ("list_h", "dyn_len", lkrt_lklist_dyn_len, ReadsHost, [Ptr], I64);
+            ("list_h", "dyn_eq", lkrt_lklist_dyn_eq, ReadsHost, [Ptr, Ptr], I64);
+            ("list_h", "dyn_contains", lkrt_lklist_dyn_contains, ReadsHost, [Ptr, DynVal], I64);
+            ("list_h", "dyn_display", lkrt_lklist_dyn_display, WritesHost, [Ptr], StrPtr);
             ("arith", "i64_div", lkrt_i64_div_checked, ReadsHost, [I64, I64], I64);
             ("arith", "i64_mod", lkrt_i64_mod_checked, ReadsHost, [I64, I64], I64);
             ("arith", "f64_div", lkrt_f64_div_checked, ReadsHost, [F64, F64], F64);

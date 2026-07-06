@@ -10,6 +10,7 @@ mod abi_conformance_test;
 mod arith;
 mod host;
 mod io;
+mod lkdyn;
 mod lklist;
 mod lkmap;
 mod lkstr;
@@ -31,6 +32,14 @@ pub use host::{
     lkrt_os_hostname, lkrt_os_name, lkrt_path_temp_dir, lkrt_process_cwd, lkrt_time_now_ms, lkrt_time_sleep_ms,
 };
 pub use io::{lkrt_io_std_flush, lkrt_io_std_read_to_string, lkrt_io_std_write};
+pub use lkdyn::{
+    LkDyn, lkrt_dyn_add, lkrt_dyn_as_bool, lkrt_dyn_as_f64, lkrt_dyn_as_i64, lkrt_dyn_as_str, lkrt_dyn_display,
+    lkrt_dyn_display_quoted, lkrt_dyn_div, lkrt_dyn_eq, lkrt_dyn_from_bool, lkrt_dyn_from_f64, lkrt_dyn_from_i64,
+    lkrt_dyn_from_list, lkrt_dyn_from_nil, lkrt_dyn_from_str, lkrt_dyn_ge, lkrt_dyn_gt, lkrt_dyn_le, lkrt_dyn_lt,
+    lkrt_dyn_mod, lkrt_dyn_mul, lkrt_dyn_sub, lkrt_dyn_tag, lkrt_lklist_dyn_at, lkrt_lklist_dyn_contains,
+    lkrt_lklist_dyn_display, lkrt_lklist_dyn_eq, lkrt_lklist_dyn_len, lkrt_lklist_dyn_new, lkrt_lklist_dyn_push,
+    lkrt_lklist_dyn_set,
+};
 pub use lklist::{
     LkMaybeF64, LkMaybeI64, LkMaybeStr, lkrt_lklist_f64_at, lkrt_lklist_f64_contains, lkrt_lklist_f64_display,
     lkrt_lklist_f64_eq, lkrt_lklist_f64_get_pair, lkrt_lklist_f64_len, lkrt_lklist_f64_new, lkrt_lklist_f64_push,

@@ -73,6 +73,14 @@ pub enum Ty {
     /// The `bool` analogue of [`Ty::MaybeI64`]: carried as `{i64, i64}` (value
     /// `0`/`1`, present bit), narrowing to `Bool` on use.
     MaybeBool,
+    /// A boxed dynamic value (`LkDyn { tag, payload }`, LLVM `{i64, i64}` by
+    /// value): the escape hatch for genuinely mixed-type data (plan M4.2).
+    /// Never appears on already-typed paths — lowering only boxes where the
+    /// closed typed subset would otherwise reject.
+    Dyn,
+    /// A growable `List<LkDyn>` handle (opaque `ptr`): the mixed-element
+    /// list backing `[1, "a", true]`-shaped literals.
+    ListDyn,
 }
 
 /// Integer binary operators. `Div`/`Mod` are lowered to the divisor-guarded
@@ -601,6 +609,8 @@ fn ty_name(ty: Ty) -> &'static str {
         Ty::MaybeF64 => "maybe<f64>",
         Ty::MaybeStr => "maybe<str>",
         Ty::MaybeBool => "maybe<bool>",
+        Ty::Dyn => "dyn",
+        Ty::ListDyn => "list<dyn>",
     }
 }
 

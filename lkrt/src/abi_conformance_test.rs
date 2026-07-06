@@ -21,6 +21,7 @@ enum Class {
     F64,
     Ptr,
     Nil,
+    DynVal,
 }
 
 trait ClassOf {
@@ -34,6 +35,9 @@ impl ClassOf for f64 {
 }
 impl ClassOf for () {
     const CLASS: Class = Class::Nil;
+}
+impl ClassOf for crate::LkDyn {
+    const CLASS: Class = Class::DynVal;
 }
 impl<T> ClassOf for *const T {
     const CLASS: Class = Class::Ptr;
@@ -85,6 +89,7 @@ fn abi_class(ty: AbiType) -> Class {
         AbiType::F64 => Class::F64,
         AbiType::Ptr | AbiType::StrPtr => Class::Ptr,
         AbiType::Nil => Class::Nil,
+        AbiType::DynVal => Class::DynVal,
     }
 }
 

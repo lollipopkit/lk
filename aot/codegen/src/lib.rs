@@ -184,6 +184,7 @@ fn llvm_ty(t: AbiType) -> &'static str {
         AbiType::F64 => "double",
         AbiType::Ptr | AbiType::StrPtr => "ptr",
         AbiType::Nil => "void",
+        AbiType::DynVal => "{ i64, i64 }",
     }
 }
 
@@ -205,6 +206,8 @@ fn ty_str(t: Ty) -> &'static str {
         Ty::MaybeI64 | Ty::MaybeBool => "{ i64, i64 }",
         Ty::MaybeF64 => "{ double, i64 }",
         Ty::MaybeStr => "{ ptr, i64 }",
+        Ty::Dyn => "{ i64, i64 }",
+        Ty::ListDyn => "ptr",
     }
 }
 
@@ -777,7 +780,11 @@ fn render_ret(out: &mut String, ret_ty: Ty, value: Option<ValueId>, is_entry: bo
                 | Ty::MapI64I64
                 | Ty::MapStrF64
                 | Ty::MapI64F64
-                | Ty::MapStrBool => {}
+                | Ty::MapStrBool
+                // D1: lowering never returns Dyn from the entry yet (Dyn is
+                // function-body-local); silent like the container arm.
+                | Ty::Dyn
+                | Ty::ListDyn => {}
             }
         }
         // Default-arena ownership (RFC §3.4): reclaim every runtime allocation
