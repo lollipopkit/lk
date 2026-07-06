@@ -6147,6 +6147,121 @@ fn lower_method_dispatch(
             });
             (dst, Ty::I64)
         }
+        // `s.is_empty()` — char_len == 0 (an empty string is empty in both
+        // byte and char terms), no new ABI.
+        (Ty::Str, "is_empty", []) => {
+            let len = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(len),
+                callee: AbiRef::new("str", "char_len"),
+                args: vec![receiver],
+            });
+            let zero = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: zero,
+                value: Const::I64(0),
+            });
+            let b = ssa.new_val();
+            insts.push(Inst::Cmp {
+                dst: b,
+                op: CmpOp::Eq,
+                float: false,
+                lhs: len,
+                rhs: zero,
+            });
+            (b, Ty::Bool)
+        }
+        // `s.ends_with(suffix)` — byte-suffix test (see `starts_with`).
+        (Ty::Str, "ends_with", [(suffix, Ty::Str)]) => {
+            let raw = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(raw),
+                callee: AbiRef::new("str", "ends_with"),
+                args: vec![receiver, *suffix],
+            });
+            let zero = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: zero,
+                value: Const::I64(0),
+            });
+            let b = ssa.new_val();
+            insts.push(Inst::Cmp {
+                dst: b,
+                op: CmpOp::Ne,
+                float: false,
+                lhs: raw,
+                rhs: zero,
+            });
+            (b, Ty::Bool)
+        }
+        // `s.find(needle)` — byte index or -1 (the VM's `str::find`).
+        (Ty::Str, "find", [(needle, Ty::Str)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("str", "find"),
+                args: vec![receiver, *needle],
+            });
+            (dst, Ty::I64)
+        }
+        // Fresh-string unary transforms (VM core_methods semantics: `lower`/
+        // `upper` are Unicode `to_lowercase`/`to_uppercase`, `reverse` is
+        // char-wise, `trim` is Rust `str::trim`).
+        (Ty::Str, "lower" | "upper" | "trim" | "reverse", []) => {
+            let helper = match name {
+                "lower" => "lower",
+                "upper" => "upper",
+                "trim" => "trim",
+                _ => "reverse",
+            };
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("str", helper),
+                args: vec![receiver],
+            });
+            (dst, Ty::Str)
+        }
+        (Ty::Str, "repeat", [(n, Ty::I64)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("str", "repeat"),
+                args: vec![receiver, *n],
+            });
+            (dst, Ty::Str)
+        }
+        // `s.substring(start, length)` — byte-indexed in the VM (a
+        // non-boundary index aborts loudly, like the VM's panic).
+        (Ty::Str, "substring", [(start, Ty::I64), (length, Ty::I64)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("str", "substring"),
+                args: vec![receiver, *start, *length],
+            });
+            (dst, Ty::Str)
+        }
+        (Ty::Str, "replace", [(from, Ty::Str), (to, Ty::Str)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("str", "replace"),
+                args: vec![receiver, *from, *to],
+            });
+            (dst, Ty::Str)
+        }
+        // `s.chars()` — the VM returns a *Mixed* list (bare-text display),
+        // so the native carrier is a dyn list, not a typed string list.
+        (Ty::Str, "chars", []) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("str", "chars"),
+                args: vec![receiver],
+            });
+            (dst, Ty::ListDyn)
+        }
         // `m.get(key)` on string-keyed maps: the missing-key `Maybe` model.
         (Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool, "get", [(key, Ty::Str)]) => {
             let dst = ssa.new_val();

@@ -226,6 +226,16 @@ macro_rules! for_each_abi_fn {
             ("str", "starts_with", lkrt_str_starts_with, Pure, [StrPtr, StrPtr], I64);
             ("str", "contains", lkrt_str_contains, Pure, [StrPtr, StrPtr], I64);
             ("str", "slice_chars", lkrt_str_slice_chars, WritesHost, [StrPtr, I64, I64], StrPtr);
+            ("str", "ends_with", lkrt_str_ends_with, Pure, [StrPtr, StrPtr], I64);
+            ("str", "lower", lkrt_str_lower, WritesHost, [StrPtr], StrPtr);
+            ("str", "upper", lkrt_str_upper, WritesHost, [StrPtr], StrPtr);
+            ("str", "trim", lkrt_str_trim, WritesHost, [StrPtr], StrPtr);
+            ("str", "find", lkrt_str_find, Pure, [StrPtr, StrPtr], I64);
+            ("str", "substring", lkrt_str_substring, WritesHost, [StrPtr, I64, I64], StrPtr);
+            ("str", "reverse", lkrt_str_reverse, WritesHost, [StrPtr], StrPtr);
+            ("str", "repeat", lkrt_str_repeat, WritesHost, [StrPtr, I64], StrPtr);
+            ("str", "replace", lkrt_str_replace, WritesHost, [StrPtr, StrPtr, StrPtr], StrPtr);
+            ("str", "chars", lkrt_str_chars, WritesHost, [StrPtr], Ptr);
             // `s.split(sep)` → a fresh `str` list handle (Rust `str::split`, so
             // VM-exact); parts are arena-owned C strings.
             ("str", "split", lkrt_str_split, WritesHost, [StrPtr, StrPtr], Ptr);
