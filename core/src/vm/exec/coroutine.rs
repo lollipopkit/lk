@@ -298,6 +298,11 @@ pub fn resume_coroutine_runtime(
             coroutine_state.status = CoroutineStatus::Done;
             coroutine_state.frames = Vec::new();
             coroutine_state.stack = Vec::new();
+            // `stack_top` was restored from the executor above and must be
+            // zeroed along with the stack: `gc_edges` slices
+            // `stack[..stack_top]`, and a dead-but-still-referenced coroutine
+            // is still traced by the GC.
+            coroutine_state.stack_top = 0;
             (true, values.into_first())
         }
         Ok(CoroutineStepOutcome::Yielded { value, dst }) => {
@@ -314,6 +319,7 @@ pub fn resume_coroutine_runtime(
             coroutine_state.status = CoroutineStatus::Errored;
             coroutine_state.frames = Vec::new();
             coroutine_state.stack = Vec::new();
+            coroutine_state.stack_top = 0;
             let root = error.root_cause();
             if let Some(raised) = root.downcast_ref::<LkRaisedValue>() {
                 (false, raised.value)

@@ -397,6 +397,53 @@ fn extra_roots_survive_gc_during_resume() {
     assert_eq!(text.as_ref(), "only-alive-in-extra-roots");
 }
 
+/// Regression: a *dead* coroutine that is still referenced gets traced by
+/// the GC like any other heap value — `gc_edges` slices `stack[..stack_top]`,
+/// so completion must zero `stack_top` along with the cleared stack or the
+/// trace panics (caught by `LK_GC_STRESS=1` the moment a scheduler held
+/// finished coroutines' handles across further VM work).
+#[test]
+fn tracing_a_dead_coroutine_does_not_panic() {
+    let body = Function {
+        consts: ConstPool {
+            ints: vec![1],
+            ..ConstPool::default()
+        },
+        code: vec![
+            Instr::abx(Opcode::LoadInt, 0, 0),
+            Instr::abc(Opcode::Yield, 1, 0, 0),
+            Instr::abc(Opcode::Return, 0, 1, 0),
+        ],
+        register_count: 2,
+        param_count: 0,
+        positional_param_count: 0,
+        param_names: Vec::new(),
+        capture_count: 0,
+        ..Function::default()
+    };
+    let module = Module {
+        functions: vec![body],
+        natives: Vec::new(),
+        globals: Vec::new(),
+        entry: 0,
+    };
+    let mut state = RuntimeModuleState::new(HeapStore::new(), Vec::new());
+    let closure = empty_closure(0, &mut state.heap);
+    let co = create_coroutine_runtime(closure, &mut state.heap).expect("create");
+    state.globals = vec![co];
+    let mut ctx = VmContext::new_without_core_vm_builtins();
+
+    // Run through a yield (so the parked state records a non-zero stack_top),
+    // then to completion.
+    resume_coroutine_runtime(co, &[], &[], &mut state, Some(&module), Some(&mut ctx)).expect("first resume");
+    resume_coroutine_runtime(co, &[], &[], &mut state, Some(&module), Some(&mut ctx)).expect("second resume");
+    assert_eq!(coroutine_status_runtime(co, &state.heap).unwrap(), "dead");
+
+    // Tracing the dead-but-referenced coroutine must not panic.
+    state.heap.collect(vec![co_ref(co)]);
+    assert_eq!(coroutine_status_runtime(co, &state.heap).unwrap(), "dead");
+}
+
 fn co_ref(value: RuntimeVal) -> HeapRef {
     let RuntimeVal::Obj(handle) = value else {
         panic!("expected an object reference");
