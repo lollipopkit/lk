@@ -1559,6 +1559,30 @@ fn lower_function(
                         });
                         c
                     }
+                    // A boxed Dyn's nil-ness is its runtime tag — folding it
+                    // like a scalar would silently take the wrong branch.
+                    Ty::Dyn => {
+                        let tag = ssa.new_val();
+                        insts.push(Inst::Call {
+                            dst: Some(tag),
+                            callee: AbiRef::new("dyn", "tag"),
+                            args: vec![v],
+                        });
+                        let zero = ssa.new_val();
+                        insts.push(Inst::Const {
+                            dst: zero,
+                            value: Const::I64(0),
+                        });
+                        let c = ssa.new_val();
+                        insts.push(Inst::Cmp {
+                            dst: c,
+                            op: if jump_when_nil { CmpOp::Eq } else { CmpOp::Ne },
+                            float: false,
+                            lhs: tag,
+                            rhs: zero,
+                        });
+                        c
+                    }
                     _ => {
                         let c = ssa.new_val();
                         insts.push(Inst::Const {
