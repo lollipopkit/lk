@@ -626,6 +626,20 @@ fn dyn_slice<'a>(handle: *mut c_void) -> &'a [LkDyn] {
     }
 }
 
+/// `xs[start..]` over a mixed list (the VM's `slice_from`): negative
+/// `start` aborts, `start >= len` yields a fresh empty list.
+///
+/// # Safety
+/// `handle` must be a live handle from [`lkrt_lklist_dyn_new`], or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_dyn_slice_from(handle: *mut c_void, start: i64) -> *mut c_void {
+    if start < 0 {
+        crate::abi::flush_and_abort();
+    }
+    let tail: Vec<LkDyn> = dyn_slice(handle).iter().copied().skip(start as usize).collect();
+    arena_handle(tail)
+}
+
 /// `xs.chunk(size)` — split into `size`-element groups, last group short.
 /// `size <= 0` is a VM error (loud failure).
 /// # Safety

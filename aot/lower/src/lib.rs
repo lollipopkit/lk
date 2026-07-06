@@ -1071,7 +1071,7 @@ fn empty_list_elem_guess(code: &[u32], start_pc: usize, dst_reg: u8) -> EmptyLis
                 str_regs.insert(instr.a());
                 indexed_regs.remove(&instr.a());
             }
-            Opcode::GetIndex | Opcode::GetList | Opcode::GetFieldK => {
+            Opcode::GetIndex | Opcode::GetList | Opcode::GetFieldK | Opcode::SliceFrom | Opcode::ToIter => {
                 indexed_regs.insert(instr.a());
                 str_regs.remove(&instr.a());
             }
@@ -2985,8 +2985,33 @@ fn lower_inst(
             // list; every other lowerable type (scalars, maps, maybe-carriers,
             // nil) is not. Const-folds to a `Bool`, mirroring the VM's
             // `runtime_value_is_list`.
-            let (_, ty) = ssa.read(instr.b(), block, pc)?;
-            let is_list = matches!(ty, Ty::ListI64 | Ty::ListF64 | Ty::ListStr);
+            let (v, ty) = ssa.read(instr.b(), block, pc)?;
+            // A boxed Dyn is list-ness only at runtime: test its tag (5 =
+            // DYN_LIST). Everything else const-folds.
+            if ty == Ty::Dyn {
+                let tag = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(tag),
+                    callee: AbiRef::new("dyn", "tag"),
+                    args: vec![v],
+                });
+                let want = ssa.new_val();
+                insts.push(Inst::Const {
+                    dst: want,
+                    value: Const::I64(5),
+                });
+                let dst = ssa.new_val();
+                insts.push(Inst::Cmp {
+                    dst,
+                    op: CmpOp::Eq,
+                    float: false,
+                    lhs: tag,
+                    rhs: want,
+                });
+                ssa.write(instr.a(), block, (dst, Ty::Bool));
+                return Ok(());
+            }
+            let is_list = matches!(ty, Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn);
             let dst = ssa.new_val();
             insts.push(Inst::Const {
                 dst,
@@ -2998,10 +3023,33 @@ fn lower_inst(
             // `a` = dst, `b` = src. Analogous to `IsList`: a typed map handle is
             // a map at lower time; every other lowerable type is not. Const-folds
             // to a `Bool`, mirroring the VM's `runtime_value_is_map`.
-            let (_, ty) = ssa.read(instr.b(), block, pc)?;
+            let (v, ty) = ssa.read(instr.b(), block, pc)?;
+            if ty == Ty::Dyn {
+                let tag = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(tag),
+                    callee: AbiRef::new("dyn", "tag"),
+                    args: vec![v],
+                });
+                let want = ssa.new_val();
+                insts.push(Inst::Const {
+                    dst: want,
+                    value: Const::I64(6),
+                });
+                let dst = ssa.new_val();
+                insts.push(Inst::Cmp {
+                    dst,
+                    op: CmpOp::Eq,
+                    float: false,
+                    lhs: tag,
+                    rhs: want,
+                });
+                ssa.write(instr.a(), block, (dst, Ty::Bool));
+                return Ok(());
+            }
             let is_map = matches!(
                 ty,
-                Ty::MapStrI64 | Ty::MapI64I64 | Ty::MapStrF64 | Ty::MapI64F64 | Ty::MapStrBool
+                Ty::MapStrI64 | Ty::MapI64I64 | Ty::MapStrF64 | Ty::MapI64F64 | Ty::MapStrBool | Ty::MapStrDyn
             );
             let dst = ssa.new_val();
             insts.push(Inst::Const {
@@ -4385,10 +4433,24 @@ fn lower_inst(
             // with the elements from `start` on (negative `start` aborts, like
             // the VM). String slicing and other element types fall back for now.
             let (handle, ty) = ssa.read(instr.b(), block, pc)?;
+            // A boxed Dyn target (`for [head, ..tail] in matrix` slices the
+            // iterated row) unwraps through the as_list guard first.
+            let (handle, ty) = if ty == Ty::Dyn {
+                let unboxed = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(unboxed),
+                    callee: AbiRef::new("dyn", "as_list"),
+                    args: vec![handle],
+                });
+                (unboxed, Ty::ListDyn)
+            } else {
+                (handle, ty)
+            };
             let slice_fn = match ty {
                 Ty::ListI64 => "i64_slice_from",
                 Ty::ListF64 => "f64_slice_from",
                 Ty::ListStr => "str_slice_from",
+                Ty::ListDyn => "dyn_slice_from",
                 _ => return Err(Unsupported::TypeMismatch { pc }),
             };
             let start = read_typed_scalar(ssa, insts, instr.c(), block, Ty::I64, pc)?;
