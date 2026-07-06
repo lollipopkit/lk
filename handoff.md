@@ -59,10 +59,14 @@
     **Move 双视图修复**(`8e9b07f`,通用缺陷:带 ArgList ref 的寄存器 Move 丢 SSA handle;
     修复仅对 ArgList 传双半边,其它 ref 会被过期 SSA 掩埋——回归实测踩过)。
     **剩余**:phi 混型合流装箱(Maybe edge_insts 机制,lower:1815)
-  - **D2 尾巴**:for_loop_patterns pc34 = **嵌套列表常量**([[1,"a"],[2,"b"]])→
-    box_const_scalar 加 Heap(List) 递归臂(子列表构造 dyn 列表→from_list);
-    template_strings pc23 待 dump 常量形状(用 compile bytecode + json 解码 code[])。
+  - ✅ **嵌套常量全套落地**(commits `a5966ba`/`f3661bb`):嵌套列表([[1,"a"],…])+
+    嵌套 map({"address":{"city":…}})递归装箱;DYN_MAP tag + dyn.from_map/field/index;
+    GetIndex on Dyn 按键类型分派(I64→index,Str→field);**首例翻转
+    template_strings.lk,覆盖率 14→15/51**。两个旧限制测试翻转为 lowers。
     注:VM 前端对混合 map 字段算术 union 推断直接拒绝——native 更宽不构成差分风险
+  - **下一步**:map_demo pc16/pattern_matching pc65/for_loop_patterns pc40 的
+    operand 类型阻塞(dump 字节码定位具体 op)+ phi 混型合流装箱(lower:1815
+    Maybe edge 机制)
   - **D3 待做**:NewList 混合(lower:2883 else 臂)+ phi 混型装箱(照抄 Maybe edge_insts 机制)
     + Dyn 算术全消费点;**D4**:NewRange/方法 ABI 增量/NewObject 裁决
   - 每步必须:aot_coverage.sh 单调不降 + 差分门禁逐字节 + bench 纯噪声
