@@ -151,3 +151,78 @@ return ans!();
     (macro_invocation
       name: (identifier)
       (macro_group))))
+
+================================================================================
+// Go statement (v2 concurrency)
+================================================================================
+
+go send(c, 42);
+
+---
+
+(program
+  (go_statement
+    (send_expression
+      (primary_expression
+        (identifier))
+      (primary_expression
+        (integer_literal)))))
+
+================================================================================
+// Try/catch (v2 error model)
+================================================================================
+
+try {
+    let x = f();
+} catch e {
+    println(e);
+}
+
+---
+
+(program
+  (try_statement
+    body: (block
+      (let_statement
+        (pattern
+          (identifier_pattern
+            (identifier)))
+        (primary_expression
+          (call_expression
+            function: (primary_expression
+              (identifier))))))
+    binding: (identifier)
+    handler: (block
+      (expression_statement
+        (primary_expression
+          (call_expression
+            function: (primary_expression
+              (identifier))
+            (primary_expression
+              (identifier))))))))
+
+================================================================================
+// Postfix unwrap (v2 error model)
+================================================================================
+
+let v = m["k"]! + 1;
+
+---
+
+(program
+  (let_statement
+    (pattern
+      (identifier_pattern
+        (identifier)))
+    (binary_expression
+      left: (primary_expression
+        (unwrap_expression
+          operand: (primary_expression
+            (index_access
+              object: (primary_expression
+                (identifier))
+              index: (primary_expression
+                (string_literal
+                  (double_string)))))))
+      right: (primary_expression
+        (integer_literal)))))

@@ -509,7 +509,7 @@
       "patterns": [
         {
           "name": "keyword.control.lk",
-          "match": "\\b(if|else|while|for|in|match|case|default|select|return|break|continue)\\b"
+          "match": "\\b(if|else|while|for|in|match|case|default|select|return|break|continue|go|try|catch)\\b"
         },
         {
           "name": "storage.type.lk",

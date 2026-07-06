@@ -14,6 +14,7 @@ module.exports = grammar({
 
   conflicts: $ => [
     [$._expression, $.pattern],
+    [$.primary_expression, $.macro_invocation],
     [$.struct_literal, $.map_expression],
     [$.struct_literal, $.block],
     [$.map_expression, $.block],
@@ -162,6 +163,7 @@ module.exports = grammar({
       $.index_access,
       $.optional_field_access,
       $.optional_index_access,
+      $.unwrap_expression,
     ),
 
     parenthesized_expression: $ => seq('(', $._full_expression, ')'),
@@ -260,6 +262,15 @@ module.exports = grammar({
     unary_expression: $ => prec.left('binary_unary', seq(
       field('operator', '!'),
       field('operand', $._expression),
+    )),
+
+    // ── Postfix `!` (force unwrap, v2 error model) ────────────────────
+    // Same shape as field_access/index_access (numeric 20 = postfix
+    // tightness); `name!(...)` stays a macro invocation (macro_invocation
+    // is prec 21 and GLR-conflicted against primary_expression).
+    unwrap_expression: $ => prec.left(20, seq(
+      field('operand', $._expression),
+      '!',
     )),
 
     // ── Binary ─────────────────────────────────────────────────────────
@@ -467,6 +478,8 @@ module.exports = grammar({
         $.trait_definition,
         $.impl_definition,
         $.return_statement,
+      $.go_statement,
+      $.try_statement,
         $.break_statement,
       $.continue_statement,
       $.expression_statement,
@@ -522,7 +535,12 @@ module.exports = grammar({
       $.macro_group,
     ),
 
-    macro_invocation: $ => prec(21, seq(
+    // No static precedence: the `identifier !` prefix is genuinely ambiguous
+    // with postfix unwrap (`x!`), so the conflict resolves via GLR — the
+    // dynamic precedence picks the macro reading when both parses survive
+    // (`name!(...)`), and the unwrap reading wins when the macro's delimiter
+    // never appears (`x! + 1`).
+    macro_invocation: $ => prec.dynamic(1, seq(
       field('name', $.identifier),
       '!',
       $.macro_group,
@@ -749,6 +767,18 @@ module.exports = grammar({
     continue_statement: $ => seq('continue', ';'),
 
     expression_statement: $ => seq($._full_expression, ';'),
+
+    // `go <expr>;` — fire-and-forget goroutine (v2 concurrency).
+    go_statement: $ => seq('go', $._full_expression, ';'),
+
+    // `try { ... } catch e { ... }` — the v2 error-handling surface.
+    try_statement: $ => seq(
+      'try',
+      field('body', $.block),
+      'catch',
+      field('binding', $.identifier),
+      field('handler', $.block),
+    ),
 
     block: $ => seq(
       '{',
