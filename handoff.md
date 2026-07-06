@@ -77,7 +77,9 @@
   - ✅ 方法臂批次 first/last/get/concat/join(Maybe 模型复用,近零新 ABI);
     list_ops pc49→99。**踩坑**:cargo build -q 2>/dev/null 吞编译错误致 probe
     跑旧二进制——先验证二进制新鲜度再下结论
-  - **下一步**:list_ops pc99 定位 · phi 混型合流装箱(lower:1815)·
+  - ✅ typed 列表↔Dyn 跨型比较(i64/f64/str_to_dyn 冷路径转换)
+  - **下一步**:list_ops pc120 = chunk/enumerate/zip/unique/flatten 批次
+    (各 ~40 行 lkrt,返回 ListDyn 嵌套)· phi 混型合流装箱(lower:1815)·
     sort_search(fn 参数无类型)· NewObject 裁决 · 空列表延迟物化(留档)
   - **D3 待做**:NewList 混合(lower:2883 else 臂)+ phi 混型装箱(照抄 Maybe edge_insts 机制)
     + Dyn 算术全消费点;**D4**:NewRange/方法 ABI 增量/NewObject 裁决
