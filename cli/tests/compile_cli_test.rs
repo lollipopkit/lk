@@ -932,10 +932,10 @@ fn test_llvm_compile_rejects_mixed_const_list_shape() {
 
 #[cfg(feature = "llvm")]
 #[test]
-fn test_llvm_compile_rejects_mixed_const_map_shape() {
-    // Mixed-element constant containers are outside the MIR subset (the only
-    // backend since the legacy text backend retired); the compile must fail
-    // loudly with the lowering's Unsupported reason instead of half-working.
+fn test_llvm_compile_lowers_mixed_const_map_shape() {
+    // Mixed-value string-keyed constant maps lower natively since the Dyn
+    // boxed-value work (plan M4.2): `{"a": 1, "b": true}` becomes a
+    // `Map<str, LkDyn>` handle. (This test used to assert the rejection.)
     let dir = unique_tmp_dir("llvm_mixed_const_map");
     ensure_clean_dir(&dir);
     write_file(&dir, "map.lk", "return {\"a\": 1, \"b\": true};\n");
@@ -943,9 +943,8 @@ fn test_llvm_compile_rejects_mixed_const_map_shape() {
     let llvm = run_cli(&dir, ["compile", "llvm", "map.lk"])
         .output()
         .expect("spawn llvm compile");
-    assert!(!llvm.status.success(), "mixed const map should not lower natively yet");
     let stderr = String::from_utf8_lossy(&llvm.stderr);
-    assert!(stderr.contains("MIR lowering:"), "unexpected stderr: {stderr}");
+    assert!(llvm.status.success(), "mixed const map should lower natively: {stderr}");
 
     let _ = fs::remove_dir_all(&dir);
 }

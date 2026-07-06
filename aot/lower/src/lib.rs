@@ -3154,6 +3154,29 @@ fn lower_inst(
                             ssa.write(instr.a(), block, (dst, Ty::Bool));
                         }
                     }
+                    // A boxed Dyn: nil-ness is its tag (`0` = Nil).
+                    Ty::Dyn => {
+                        let tag = ssa.new_val();
+                        insts.push(Inst::Call {
+                            dst: Some(tag),
+                            callee: AbiRef::new("dyn", "tag"),
+                            args: vec![other_v],
+                        });
+                        let zero = ssa.new_val();
+                        insts.push(Inst::Const {
+                            dst: zero,
+                            value: Const::I64(0),
+                        });
+                        let dst = ssa.new_val();
+                        insts.push(Inst::Cmp {
+                            dst,
+                            op: if cop == CmpOp::Eq { CmpOp::Eq } else { CmpOp::Ne },
+                            float: false,
+                            lhs: tag,
+                            rhs: zero,
+                        });
+                        ssa.write(instr.a(), block, (dst, Ty::Bool));
+                    }
                     _ => {
                         let dst = ssa.new_val();
                         insts.push(Inst::Const {
@@ -3163,6 +3186,42 @@ fn lower_inst(
                         ssa.write(instr.a(), block, (dst, Ty::Bool));
                     }
                 }
+                return Ok(());
+            }
+            // A Dyn operand: box the other side and compare through the
+            // `dyn.*` helpers (VM equality semantics live in lkrt; ordered
+            // compares are numeric-only there, aborting like the VM).
+            if lty_raw == Ty::Dyn || rty_raw == Ty::Dyn {
+                let lhs = to_dyn(ssa, insts, lv_raw, lty_raw, pc)?;
+                let rhs = to_dyn(ssa, insts, rv_raw, rty_raw, pc)?;
+                let (helper, negate) = match cmp_op(op) {
+                    CmpOp::Eq => ("eq", false),
+                    CmpOp::Ne => ("eq", true),
+                    CmpOp::Lt => ("lt", false),
+                    CmpOp::Le => ("le", false),
+                    CmpOp::Gt => ("gt", false),
+                    CmpOp::Ge => ("ge", false),
+                };
+                let raw = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(raw),
+                    callee: AbiRef::new("dyn", helper),
+                    args: vec![lhs, rhs],
+                });
+                let zero = ssa.new_val();
+                insts.push(Inst::Const {
+                    dst: zero,
+                    value: Const::I64(0),
+                });
+                let dst = ssa.new_val();
+                insts.push(Inst::Cmp {
+                    dst,
+                    op: if negate { CmpOp::Eq } else { CmpOp::Ne },
+                    float: false,
+                    lhs: raw,
+                    rhs: zero,
+                });
+                ssa.write(instr.a(), block, (dst, Ty::Bool));
                 return Ok(());
             }
             let (lv, lty) = read_scalar(ssa, insts, instr.b(), block, pc)?;
@@ -3789,7 +3848,45 @@ fn lower_inst(
                         .all(|(_, v)| matches!(v, ConstRuntimeValueData::Float(_)));
                     let all_int_keys = entries.iter().all(|(k, _)| matches!(k, RuntimeMapKeyData::Int(_)));
                     if !(all_int_vals || all_f64_vals) || !(all_str_keys || all_int_keys) {
-                        return Err(Unsupported::Opcode { pc, op: instr.opcode() });
+                        // Mixed scalar values with string keys: a boxed-dynamic
+                        // map (`Map<str, LkDyn>`, plan M4.2). Display stays out
+                        // of the subset (hash order); nested containers and
+                        // non-string keys still fall back.
+                        let scalar_vals = entries.iter().all(|(_, v)| {
+                            matches!(
+                                v,
+                                ConstRuntimeValueData::Nil
+                                    | ConstRuntimeValueData::Bool(_)
+                                    | ConstRuntimeValueData::Int(_)
+                                    | ConstRuntimeValueData::Float(_)
+                                    | ConstRuntimeValueData::ShortStr(_)
+                            )
+                        });
+                        if !(all_str_keys && scalar_vals && !entries.is_empty()) {
+                            return Err(Unsupported::Opcode { pc, op: instr.opcode() });
+                        }
+                        let handle = ssa.new_val();
+                        insts.push(Inst::Call {
+                            dst: Some(handle),
+                            callee: AbiRef::new("map_h", "str_dyn_new"),
+                            args: Vec::new(),
+                        });
+                        for (k, v) in entries {
+                            let key_v = match k {
+                                RuntimeMapKeyData::ShortStr(key) | RuntimeMapKeyData::String(key) => {
+                                    materialize_key(ssa, insts, globals, key)
+                                }
+                                _ => unreachable!("filtered to string keys above"),
+                            };
+                            let boxed = box_const_scalar(ssa, insts, globals, v);
+                            insts.push(Inst::Call {
+                                dst: None,
+                                callee: AbiRef::new("map_h", "str_dyn_set"),
+                                args: vec![handle, key_v, boxed],
+                            });
+                        }
+                        ssa.write(instr.a(), block, (handle, Ty::MapStrDyn));
+                        return Ok(());
                     }
                     // An empty `{}` is ambiguous: a lookahead types the key (a wrong
                     // guess only costs a fallback), and the value defaults to `i64`.
@@ -4244,6 +4341,16 @@ fn lower_inst(
                         key: key_v,
                     });
                     Ty::MaybeF64
+                }
+                // Mixed-value map: the Dyn carrier's Nil tag *is* the
+                // missing-key case — no Maybe wrapper needed.
+                Ty::MapStrDyn => {
+                    insts.push(Inst::Call {
+                        dst: Some(dst),
+                        callee: AbiRef::new("map_h", "str_dyn_get"),
+                        args: vec![handle, key_v],
+                    });
+                    Ty::Dyn
                 }
                 _ => return Err(Unsupported::TypeMismatch { pc }),
             };
@@ -5838,6 +5945,40 @@ fn emit_print(
 
 /// Materializes a constant map key as a `Str` value (an interned global) for the
 /// map ABI, which takes the key as a `*const c_char`.
+/// Boxes a typed runtime value into a `Dyn` carrier (plan M4.2): identity
+/// for `Ty::Dyn`, a `dyn.from_*` call for scalars/strings/mixed lists.
+/// Types without a boxed form (Maybe carriers, typed containers) reject —
+/// their typed paths stay typed.
+fn to_dyn(ssa: &mut Ssa, insts: &mut Vec<Inst>, v: ValueId, ty: Ty, pc: usize) -> Result<ValueId, Unsupported> {
+    let from = match ty {
+        Ty::Dyn => return Ok(v),
+        Ty::I64 => "from_i64",
+        Ty::F64 => "from_f64",
+        Ty::Str => "from_str",
+        Ty::Nil => "from_nil",
+        Ty::ListDyn => "from_list",
+        Ty::Bool => {
+            let wide = ssa.new_val();
+            insts.push(Inst::ZextBool { dst: wide, src: v });
+            let boxed = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(boxed),
+                callee: AbiRef::new("dyn", "from_bool"),
+                args: vec![wide],
+            });
+            return Ok(boxed);
+        }
+        _ => return Err(Unsupported::TypeMismatch { pc }),
+    };
+    let boxed = ssa.new_val();
+    insts.push(Inst::Call {
+        dst: Some(boxed),
+        callee: AbiRef::new("dyn", from),
+        args: if ty == Ty::Nil { Vec::new() } else { vec![v] },
+    });
+    Ok(boxed)
+}
+
 /// Boxes one constant scalar into a `Dyn` carrier value (plan M4.2): emits
 /// the scalar `Const` plus the matching `dyn.from_*` call. Callers filtered
 /// to scalar variants.

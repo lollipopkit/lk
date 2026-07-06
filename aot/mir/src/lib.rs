@@ -81,6 +81,10 @@ pub enum Ty {
     /// A growable `List<LkDyn>` handle (opaque `ptr`): the mixed-element
     /// list backing `[1, "a", true]`-shaped literals.
     ListDyn,
+    /// A growable string-keyed `Map<str, LkDyn>` handle (opaque `ptr`):
+    /// mixed-value maps (`{"name": …, "age": 30, "active": true}`). Display
+    /// stays out of the subset (hash order, docs/semantics.md).
+    MapStrDyn,
 }
 
 /// Integer binary operators. `Div`/`Mod` are lowered to the divisor-guarded
@@ -611,6 +615,7 @@ fn ty_name(ty: Ty) -> &'static str {
         Ty::MaybeBool => "maybe<bool>",
         Ty::Dyn => "dyn",
         Ty::ListDyn => "list<dyn>",
+        Ty::MapStrDyn => "map<str,dyn>",
     }
 }
 

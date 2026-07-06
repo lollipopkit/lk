@@ -445,3 +445,51 @@ mod tests {
         }
     }
 }
+
+// ── Mixed-value map (`Map<str, LkDyn>`, plan M4.2 Dyn) ────────────────
+
+type StrDynMap = FxHashMap<String, crate::lkdyn::LkDyn>;
+
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_lkmap_str_dyn_new() -> *mut c_void {
+    crate::state::arena_handle(StrDynMap::default())
+}
+
+/// # Safety
+/// `handle` must be a live handle from [`lkrt_lkmap_str_dyn_new`], or null;
+/// `key` must be a NUL-terminated string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lkmap_str_dyn_set(handle: *mut c_void, key: *const c_char, value: crate::lkdyn::LkDyn) {
+    if handle.is_null() {
+        return;
+    }
+    let map = unsafe { &mut *(handle as *mut StrDynMap) };
+    set_str_key(map, unsafe { key_str(key) }, value);
+}
+
+/// A missing key is `nil` — the Dyn carrier's Nil tag *is* the absent case,
+/// so no `Maybe` wrapper is needed (matches the VM's nil-on-missing-key).
+///
+/// # Safety
+/// `handle` must be a live handle from [`lkrt_lkmap_str_dyn_new`], or null;
+/// `key` must be a NUL-terminated string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lkmap_str_dyn_get(handle: *mut c_void, key: *const c_char) -> crate::lkdyn::LkDyn {
+    if handle.is_null() {
+        return crate::lkdyn::LkDyn::NIL;
+    }
+    let map = unsafe { &*(handle as *mut StrDynMap) };
+    map.get(unsafe { key_str(key) })
+        .copied()
+        .unwrap_or(crate::lkdyn::LkDyn::NIL)
+}
+
+/// # Safety
+/// `handle` must be a live handle from [`lkrt_lkmap_str_dyn_new`], or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lkmap_str_dyn_len(handle: *mut c_void) -> i64 {
+    if handle.is_null() {
+        return 0;
+    }
+    unsafe { &*(handle as *mut StrDynMap) }.len() as i64
+}
