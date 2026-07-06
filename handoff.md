@@ -135,9 +135,14 @@
     ——lookahead 猜错由消费点证伪后 fixpoint 强制 ListDyn 重物化;混合
     push(顺序/循环内 if-else)两形状真原生一致。**Dyn 化重猜机制全套完备**
     (loop phi + 空[]两版)
+  - ✅ **fuzz 生成器扩 Dyn 面**(commit 本次):混合列表/混合 push 重猜/
+    HOF 嵌套族/struct 四类新 case,LK_FUZZ_CASES=120 全部真原生对比通过
+    ——M4.2 语义面(三套 eq/句柄/重猜)自此有 fuzz 回归保护
   - **留档小项**:typed 列表方法长尾对 ListDyn receiver 按需补;
     for_loop_patterns 永久卡 map 迭代(hash 序,与 map_demo 同类);
     lkrt 静态库 sanitizer instrument(-Zsanitizer 重编)
+  - **循环任务状态**:清单(D1-D4+机制项+验证面)全部完成,下轮起仅回归
+    检查;建议 GetGlobal 立项或 CronDelete f5db44fa
   - 每步必须:aot_coverage.sh 单调不降 + 差分门禁逐字节 + bench 纯噪声
   - GetGlobal 14(try$call/并发/模块白名单)是**另一根因**,独立大项未启
 - **✅ 裁决不做**:callable trait 反转 · 真机/QEMU demo · 细粒度 feature 拆分。
