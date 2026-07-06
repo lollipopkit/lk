@@ -544,6 +544,29 @@ isolate**(单线程无锁 GC 是热路径底线,无数据竞争,推翻=重写堆
 - **验证(贯穿)**:workspace 全量 1499+ 0 失败 · GC-stress 全绿 · clippy/fmt 0 · no_std 0/0 ·
   差分门禁全过 · dist bench 见子步5 记录。
 
+## M4.2 循环轮记录:iter 转发 + NewObject + Str 批次(2026-07-07)
+
+- **iter 模块函数版 = 方法的模块拼写**:Call 臂对 iter.{map,filter,reduce,
+  enumerate,zip,take,skip,chain,flatten,unique,chunk} 转发方法 lowering,
+  HOF 复用 lambda-aware 的 lower_list_hof_k(窗口 base 右移一格对齐 lambda
+  寄存器);iter.range 补 1 参(0..n)。iter_pipeline/list_iter_sugar 两例
+  翻转——注意 [left,middle,right](NewList 列表元素)+ iter.flatten(ListDyn)
+  + ListDyn==ListI64 Cmp 是三轮改动的组合生效。
+- **NewObject 裁决落地**:MapStrDyn 承载(GetFieldK 零改动、缺省 optional
+  字段=str_dyn_get Nil 与 VM absent-field 同构);type_name 丢弃(整对象
+  display/typeof 不进子集)。连锁补齐:AddFloat 家族 Dyn 装箱路由(struct
+  字段类型注解让编译器发射 typed float opcode,而字段读回 Dyn)、IsNil Dyn
+  臂(tag==0,`p.s ?? "none"` 的 nil 测试)。struct.lk 翻转;struct_trait
+  卡 trait 方法分发(GetGlobal 大项)。
+- **Str 方法批次**(9 lkrt helper):字节语义钉齐——find 返回字节 index、
+  substring 字节切片(非 char 边界 VM panic → native abort)、ends_with
+  字节后缀;unicode 语义——lower/upper 用 Rust to_lowercase、reverse
+  char-wise;**chars() 返回 VM Mixed 列表 → native 必须 ListDyn**
+  (ListStr 的引号 display 会差分,裸文才对)。string_methods.lk 翻转。
+- comprehensive.lk 裁决留档:Set 内建类型(has/add/delete,native 无 Set
+  表示)是独立特性,加上 fs/path/string 模块长尾,整例翻转性价比出子集。
+- 覆盖率 20→24/51;全门禁绿(1505 tests/四套差分/clippy/fmt 0)。
+
 ## M4.2 循环轮记录:phi 装箱 + in 语义 + range 切片(2026-07-06)
 
 - **phi 混型合流装箱**:add_phi_operands 重构(收集全边→决策),混型且全

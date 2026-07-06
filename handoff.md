@@ -100,11 +100,20 @@
     字符串切片按字节(多字节 panic,与 s[i]/len 的 char 语义不一致)+
     len<=3 heuristic(s[8..20] 全坏);修后 native 以 range_def side-table
     (全常量 step==1)发射真切片(str slice_chars/i64_slice ABI)
-  - **下一步**:Call 长尾(comprehensive pc8 / iter_pipeline pc5 /
-    list_iter_sugar pc9 —— 方法分发表增量)· NewObject 裁决(struct/
-    struct_trait 2 例)· 空列表延迟物化(留档)。**跨函数 Dyn 流动**
-    (null_coalescing pc94 CallDirect 可空参数 / sort_search 无类型参数 /
-    unsupported mutable 全局)已确认为首版不做,独立留档
+  - ✅ **iter 模块转发 + NewObject=MapStrDyn**(commit `d0f562d`,3 例翻转,
+    23/51):iter.map/filter/…/chunk 转发到方法 lowering(HOF 复用
+    lower_list_hof_k);struct 实例以 str_dyn map 承载(type_name 不存,
+    整对象 display/typeof 不进子集);typed float 算术 + IsNil 补 Dyn 臂
+  - ✅ **Str 方法批次**(commit `1e959ee`,string_methods 翻转,**24/51**):
+    lower/upper/trim/reverse/repeat/ends_with/find(字节)/substring(字节+
+    边界 abort)/replace/chars(→ListDyn 保 Mixed 裸文 display)/is_empty
+  - **剩余 27 例全部是已裁决留档或独立大项**:13 GetGlobal(try$call/并发/
+    trait 分发——用户明示单独立项)· 9 operand(跨函数 Dyn 流动:可空参数/
+    无类型参数/mutable 全局——首版不做)+ MapRest + 空[]延迟物化(留档)·
+    4 Call(comprehensive 需 Set 内建类型 + word_count 需 str-lambda HOF/
+    动态 map,均留档)· 2 use 文件依赖(compile llvm 不支持多文件)
+  - **M4.2 Dyn 深覆盖可收割面已尽**:14/51 → 24/51(+10 例),
+    下一步建议启动 GetGlobal 独立大项或按需扩 str-lambda HOF
   - 每步必须:aot_coverage.sh 单调不降 + 差分门禁逐字节 + bench 纯噪声
   - GetGlobal 14(try$call/并发/模块白名单)是**另一根因**,独立大项未启
 - **✅ 裁决不做**:callable trait 反转 · 真机/QEMU demo · 细粒度 feature 拆分。
