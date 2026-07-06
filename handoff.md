@@ -74,9 +74,11 @@
     **空列表 lazy 物化评估留档**:dyn 猜测会破坏 [] 与 typed 列表的 eq lowering
     (回归风险),需要真正的延迟物化设计(ArgList 机制扩展),不可 rush
   - ✅ iter.range + ListI64 take/skip/chain(**ranges.lk 翻转,16/51**)
-  - **下一步**:phi 混型合流装箱(lower:1815)· sort_search pc12(fn 参数无类型)·
-    NewObject 裁决 · 空列表延迟物化(设计已留档)· 方法 ABI 继续增量
-    (list_ops/string_methods/comprehensive 的长尾)
+  - ✅ 方法臂批次 first/last/get/concat/join(Maybe 模型复用,近零新 ABI);
+    list_ops pc49→99。**踩坑**:cargo build -q 2>/dev/null 吞编译错误致 probe
+    跑旧二进制——先验证二进制新鲜度再下结论
+  - **下一步**:list_ops pc99 定位 · phi 混型合流装箱(lower:1815)·
+    sort_search(fn 参数无类型)· NewObject 裁决 · 空列表延迟物化(留档)
   - **D3 待做**:NewList 混合(lower:2883 else 臂)+ phi 混型装箱(照抄 Maybe edge_insts 机制)
     + Dyn 算术全消费点;**D4**:NewRange/方法 ABI 增量/NewObject 裁决
   - 每步必须:aot_coverage.sh 单调不降 + 差分门禁逐字节 + bench 纯噪声
