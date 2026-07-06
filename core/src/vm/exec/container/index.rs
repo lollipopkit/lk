@@ -172,21 +172,26 @@ impl Executor {
         index_fact: Option<PerfIndexFact>,
         index_key_metrics: Option<&mut [u64; VM_INDEX_KEY_METRIC_COUNT]>,
     ) -> Result<RuntimeVal> {
-        // Fast path: check if key is a List object for slice indexing (rare case).
+        // A List key is a materialized range (`s[1..3]` compiles to
+        // `NewRange` + `GetIndex`): slice from its first/last elements. An
+        // empty range (`s[3..2]`) slices to the empty prefix. (Formerly
+        // gated on `len <= 3`, which broke every slice spanning more than
+        // three elements — `s[8..20]` errored out.)
         if let RuntimeVal::Obj(h) = self.read_unchecked(key_reg)
             && let Some(HeapValue::List(list)) = self.state.heap.get(*h)
         {
             let items = list.collect_owned();
-            if !items.is_empty() && items.len() <= 3 {
-                let start = match &items[0] {
-                    RuntimeVal::Int(i) => *i,
-                    _ => 0i64,
-                };
-                let last = items
-                    .last()
-                    .and_then(|v| if let RuntimeVal::Int(i) = v { Some(*i) } else { None });
-                return self.get_index_slice(target_reg, start, last.map(|i| i + 1), None);
+            if items.is_empty() {
+                return self.get_index_slice(target_reg, 0, Some(0), None);
             }
+            let start = match &items[0] {
+                RuntimeVal::Int(i) => *i,
+                _ => 0i64,
+            };
+            let last = items
+                .last()
+                .and_then(|v| if let RuntimeVal::Int(i) = v { Some(*i) } else { None });
+            return self.get_index_slice(target_reg, start, last.map(|i| i + 1), None);
         }
         match self.read_unchecked(target_reg) {
             RuntimeVal::ShortStr(value) => {

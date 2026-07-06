@@ -196,7 +196,10 @@ impl Executor {
     }
 
     fn slice_string_general(&mut self, value: Arc<str>, start: i64, end: Option<i64>) -> Result<RuntimeVal> {
-        let s_len = value.len() as i64;
+        // Char-based indices, consistent with `s[i]` (chars().nth) and
+        // `s.len()` (char count) — byte indices would panic on a multi-byte
+        // boundary.
+        let s_len = value.chars().count() as i64;
         let start = if start < 0 {
             (s_len + start).max(0)
         } else {
@@ -212,10 +215,9 @@ impl Executor {
             }
             None => s_len,
         } as usize;
-        let end = end.min(value.len());
         let start = start.min(end);
-        let sliced: &str = &value[start..end];
-        if let Some(short) = ShortStr::new(sliced) {
+        let sliced: String = value.chars().skip(start).take(end - start).collect();
+        if let Some(short) = ShortStr::new(&sliced) {
             Ok(RuntimeVal::ShortStr(short))
         } else {
             Ok(RuntimeVal::Obj(
