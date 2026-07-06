@@ -62,6 +62,12 @@ pub enum Unsupported {
         pc: usize,
         reg: usize,
     },
+    /// An empty `[]` literal's guessed element type was contradicted by a
+    /// later consumer: retriable — the fixpoint re-lowers with the literal
+    /// materialized as a Dyn list (`pc` identifies the `LoadHeapConst`).
+    EmptyListGuessWrong {
+        pcs: Vec<usize>,
+    },
     /// A loop-header phi merged heterogeneous boxable types: retriable —
     /// the fixpoint re-lowers the function with this phi pre-typed `Dyn`
     /// (its body then consumes it through the Dyn arms from the start).
@@ -105,6 +111,9 @@ impl Unsupported {
             }
             Unsupported::TypeMismatch { pc } => {
                 format!("an operand at pc {pc} has a type outside the natively lowerable subset")
+            }
+            Unsupported::EmptyListGuessWrong { pcs } => {
+                format!("empty list literal(s) at pc {pcs:?} were mis-guessed (retried as Dyn)")
             }
             Unsupported::DynLoopPhi { block, slot } => {
                 format!("a loop-header phi (block {block}, slot {slot}) merges heterogeneous types")
@@ -374,6 +383,10 @@ struct SigInfer {
     param_obs: Vec<Vec<Option<Ty>>>,
     ret_types: Vec<Ty>,
     conflict: bool,
+    /// Empty-`[]` literals whose guessed element type a consumer
+    /// contradicted (`(function, pc)`): the next fixpoint pass materializes
+    /// them as Dyn lists.
+    dyn_empty_lists: std::collections::HashSet<(u32, usize)>,
     /// Loop-header phis discovered to merge heterogeneous boxable types
     /// (`(function, block, slot)`): the next fixpoint pass pre-types them
     /// `Dyn` so the loop body consumes them through the Dyn arms.
@@ -482,6 +495,7 @@ pub fn lower_with_hybrid(artifact: &ModuleArtifact, hybrid: bool) -> Result<MirM
         ret_types: vec![Ty::I64; n],
         conflict: false,
         dyn_loop_phis: std::collections::HashSet::new(),
+        dyn_empty_lists: std::collections::HashSet::new(),
         global_tys: vec![None; global_count],
         initialized_globals: prescan_initialized_globals(module, global_count),
         lambda_globals: prescan_lambda_globals(module, global_count),
@@ -518,6 +532,7 @@ pub fn lower_with_hybrid(artifact: &ModuleArtifact, hybrid: bool) -> Result<MirM
             sig.specializations.len(),
             sig.ret_closures.clone(),
             sig.dyn_loop_phis.len(),
+            sig.dyn_empty_lists.len(),
         );
         // Call-site facts are re-derived every pass: an argument register
         // that resolves to a closure ref only once a summary lands (e.g. a
@@ -563,6 +578,11 @@ pub fn lower_with_hybrid(artifact: &ModuleArtifact, hybrid: bool) -> Result<MirM
                 Err(Unsupported::DynLoopPhi { block, slot }) => {
                     sig.dyn_loop_phis.insert((fi as u32, block, slot));
                 }
+                Err(Unsupported::EmptyListGuessWrong { pcs }) => {
+                    for pc in pcs {
+                        sig.dyn_empty_lists.insert((fi as u32, pc));
+                    }
+                }
                 _ => {}
             }
         }
@@ -580,6 +600,7 @@ pub fn lower_with_hybrid(artifact: &ModuleArtifact, hybrid: bool) -> Result<MirM
                 sig.specializations.len(),
                 sig.ret_closures.clone(),
                 sig.dyn_loop_phis.len(),
+                sig.dyn_empty_lists.len(),
             );
         if converged || passes > 2 * funcs.len() + 2 {
             break;
@@ -1307,6 +1328,12 @@ fn lower_function(
         .filter(|&&(fi, _, _)| fi == func_index)
         .map(|&(_, b, s)| (b, s))
         .collect();
+    ssa.dyn_empty_pcs = sig
+        .dyn_empty_lists
+        .iter()
+        .filter(|&&(fi, _)| fi == func_index)
+        .map(|&(_, p)| p)
+        .collect();
     // Function parameters occupy r0..r(param_count-1) at entry; each takes its
     // inferred type (the argument type observed at call sites, `I64` by default).
     // They seed the entry block's register file as its first SSA values.
@@ -1904,6 +1931,11 @@ struct Ssa {
     /// Loop-header phis pre-typed `Dyn` by a fixpoint retry (slots keyed by
     /// `(block, slot)`; see `Unsupported::DynLoopPhi`).
     dyn_loop_slots: std::collections::HashSet<(usize, usize)>,
+    /// Empty-`[]` literal pcs forced to Dyn by a fixpoint retry.
+    dyn_empty_pcs: std::collections::HashSet<usize>,
+    /// Guessed empty-list handles → their literal pc (a consumer that
+    /// contradicts the guess reports `EmptyListGuessWrong`).
+    empty_guess: std::collections::HashMap<ValueId, usize>,
     /// Constant-range materializations (`NewRange` with all-const operands,
     /// step 1): handle → exclusive `(start, end)`. Lets `GetIndex` recognize
     /// a range key (`s[1..3]`) and emit a real slice.
@@ -1955,6 +1987,8 @@ impl Ssa {
             next_val: 0,
             const_int: std::collections::HashMap::new(),
             dyn_loop_slots: std::collections::HashSet::new(),
+            dyn_empty_pcs: std::collections::HashSet::new(),
+            empty_guess: std::collections::HashMap::new(),
             range_def: std::collections::HashMap::new(),
             list_len: std::collections::HashMap::new(),
             list_base_len: std::collections::HashMap::new(),
@@ -2222,6 +2256,26 @@ impl Ssa {
             .iter()
             .all(|&(_, _, ty)| ty == phi_ty || maybe_pair(ty, phi_ty))
         {
+            // A guessed empty-`[]` handle read through a phi (loop/branch)
+            // keeps its provenance: every non-self edge must carry the same
+            // literal pc for the param to inherit it.
+            let mut guess_pc: Option<usize> = None;
+            let mut all_guessed = true;
+            for &(_, v, _) in &incoming {
+                if v == param {
+                    continue;
+                }
+                match self.empty_guess.get(&v) {
+                    Some(&p0) if guess_pc.is_none() || guess_pc == Some(p0) => guess_pc = Some(p0),
+                    _ => {
+                        all_guessed = false;
+                        break;
+                    }
+                }
+            }
+            if all_guessed && let Some(p0) = guess_pc {
+                self.empty_guess.insert(param, p0);
+            }
             for (p, v, ty) in incoming {
                 let v = if ty == phi_ty {
                     v
@@ -4270,10 +4324,16 @@ fn lower_inst(
                     // An empty `[]` is ambiguous — a lookahead types it from the
                     // first value pushed (a wrong guess only costs a fallback).
                     if elems.is_empty() {
-                        let (new_fn, list_ty) = match empty_list_elem_guess(func, pc, instr.a()) {
-                            EmptyListGuess::Str => ("str_new", Ty::ListStr),
-                            EmptyListGuess::Dyn => ("dyn_new", Ty::ListDyn),
-                            EmptyListGuess::Default => ("i64_new", Ty::ListI64),
+                        let (new_fn, list_ty) = if ssa.dyn_empty_pcs.contains(&pc) {
+                            // A consumer contradicted an earlier guess — the
+                            // fixpoint retry forces the Dyn materialization.
+                            ("dyn_new", Ty::ListDyn)
+                        } else {
+                            match empty_list_elem_guess(func, pc, instr.a()) {
+                                EmptyListGuess::Str => ("str_new", Ty::ListStr),
+                                EmptyListGuess::Dyn => ("dyn_new", Ty::ListDyn),
+                                EmptyListGuess::Default => ("i64_new", Ty::ListI64),
+                            }
                         };
                         let handle = ssa.new_val();
                         insts.push(Inst::Call {
@@ -4281,6 +4341,9 @@ fn lower_inst(
                             callee: AbiRef::new("list_h", new_fn),
                             args: Vec::new(),
                         });
+                        if list_ty != Ty::ListDyn {
+                            ssa.empty_guess.insert(handle, pc);
+                        }
                         ssa.list_len.insert(handle, 0);
                         ssa.list_base_len.insert(handle, 0);
                         ssa.write(instr.a(), block, (handle, list_ty));
@@ -4695,9 +4758,29 @@ fn lower_inst(
             let (handle, list_ty) = ssa.read(instr.a(), block, pc)?;
             // Values read through `read_scalar` so a `Maybe` (a dynamic list
             // read like `xs[i]` in `flat.push(xs[i])`) unwraps first.
+            // A push whose value type contradicts a guessed empty-`[]`
+            // element type retries the literal as a Dyn list (fixpoint).
+            let guess_wrong = |ssa: &Ssa| {
+                if ssa.empty_guess.is_empty() {
+                    None
+                } else {
+                    // The handle itself when known, otherwise every pending
+                    // guess (a handle read through an unsealed loop phi has
+                    // no provenance yet — over-marking only costs typed-ness,
+                    // never correctness: Dyn boxes everything).
+                    let pcs = match ssa.empty_guess.get(&handle) {
+                        Some(&pc0) => vec![pc0],
+                        None => ssa.empty_guess.values().copied().collect(),
+                    };
+                    Some(Unsupported::EmptyListGuessWrong { pcs })
+                }
+            };
             match list_ty {
                 Ty::ListI64 => {
-                    let value = read_typed_scalar(ssa, insts, instr.b(), block, Ty::I64, pc)?;
+                    let value = match read_typed_scalar(ssa, insts, instr.b(), block, Ty::I64, pc) {
+                        Ok(v) => v,
+                        Err(e) => return Err(guess_wrong(ssa).unwrap_or(e)),
+                    };
                     insts.push(Inst::Call {
                         dst: None,
                         callee: AbiRef::new("list_h", "i64_push"),
@@ -4707,7 +4790,7 @@ fn lower_inst(
                 Ty::ListF64 => {
                     let (bv, bty) = read_scalar(ssa, insts, instr.b(), block, pc)?;
                     if !matches!(bty, Ty::I64 | Ty::F64) {
-                        return Err(Unsupported::TypeMismatch { pc });
+                        return Err(guess_wrong(ssa).unwrap_or(Unsupported::TypeMismatch { pc }));
                     }
                     let value = coerce_to_f64(ssa, insts, bv, bty);
                     insts.push(Inst::Call {
@@ -4720,7 +4803,10 @@ fn lower_inst(
                     // Stored strings are arena-owned (interned constants or
                     // register-visible arena strings), alive until exit, so the
                     // pointer push involves no ownership transfer.
-                    let value = read_typed_scalar(ssa, insts, instr.b(), block, Ty::Str, pc)?;
+                    let value = match read_typed_scalar(ssa, insts, instr.b(), block, Ty::Str, pc) {
+                        Ok(v) => v,
+                        Err(e) => return Err(guess_wrong(ssa).unwrap_or(e)),
+                    };
                     insts.push(Inst::Call {
                         dst: None,
                         callee: AbiRef::new("list_h", "str_push"),
