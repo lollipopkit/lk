@@ -66,10 +66,12 @@
     注:VM 前端对混合 map 字段算术 union 推断直接拒绝——native 更宽不构成差分风险
   - ✅ Len/Contains Dyn 臂(commit `dc9922b`):person.len()/"k" in m 原生化,
     str_dyn_has 新 ABI(存 nil ≠ 缺键)
-  - **下一步**:pattern_matching pc81(dump 定位)· for_loop_patterns pc51 ·
-    map_demo pc25(map .has() 方法 = CallMethodK 分发表,D4 领域)·
-    phi 混型合流装箱(lower:1815 Maybe edge 机制,sort_search pc12 CmpInt
-    疑似 fn 参数无类型也在此列)
+  - ✅ 方法臂/MapStrDyn Str 索引/dyn.len_of(最新 commit)。**裁决留档**:
+    map_demo 永久卡 .keys()/.values()(hash 序不可移植,同 display 出子集);
+    pattern_matching 卡 MapRest(解构 rest);for_loop_patterns 卡"空 [] push
+    Dyn"(需 lazy 物化)
+  - **下一步**:空列表 lazy 物化(通用收益:[] 后 push 任意型)· phi 混型合流
+    装箱(lower:1815)· sort_search pc12(fn 参数无类型)· NewRange/NewObject
   - **D3 待做**:NewList 混合(lower:2883 else 臂)+ phi 混型装箱(照抄 Maybe edge_insts 机制)
     + Dyn 算术全消费点;**D4**:NewRange/方法 ABI 增量/NewObject 裁决
   - 每步必须:aot_coverage.sh 单调不降 + 差分门禁逐字节 + bench 纯噪声
