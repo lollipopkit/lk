@@ -500,7 +500,9 @@ fn render_const(out: &mut String, dst: ValueId, value: &Const) {
             let _ = writeln!(out, "  {} = add i64 0, {}", val(dst), n);
         }
         Const::F64(x) => {
-            let _ = writeln!(out, "  {} = fadd double 0.0, {}", val(dst), render_f64(*x));
+            // `-0.0` is the additive identity: `fadd 0.0, -0.0` would round
+            // to `+0.0` and lose the sign of a negative-zero constant.
+            let _ = writeln!(out, "  {} = fadd double -0.0, {}", val(dst), render_f64(*x));
         }
         Const::Bool(b) => {
             let _ = writeln!(out, "  {} = add i1 0, {}", val(dst), i32::from(*b));

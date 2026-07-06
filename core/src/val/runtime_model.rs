@@ -332,28 +332,6 @@ impl TypedList {
             }
         }
     }
-
-    /// Iterate owned values (consumes self).
-    pub fn into_iter_owned(self) -> Vec<RuntimeVal> {
-        match self {
-            Self::Mixed(values) => values,
-            Self::Int(values) => values.into_iter().map(RuntimeVal::Int).collect(),
-            Self::Float(values) => values.into_iter().map(RuntimeVal::Float).collect(),
-            Self::Bool(values) => values.into_iter().map(RuntimeVal::Bool).collect(),
-            Self::String(values) => {
-                let mut out = Vec::with_capacity(values.len());
-                for s in values {
-                    if let Some(short) = ShortStr::new(s.as_ref()) {
-                        out.push(RuntimeVal::ShortStr(short));
-                    } else {
-                        // Fallback for core_methods non-heap context
-                        out.push(RuntimeVal::ShortStr(ShortStr::new(s.as_ref()).unwrap()));
-                    }
-                }
-                out
-            }
-        }
-    }
 }
 
 fn copy_slice_tail<T: Clone>(values: &[T], start: usize) -> Vec<T> {

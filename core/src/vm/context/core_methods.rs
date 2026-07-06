@@ -231,7 +231,8 @@ fn call_method_positional_runtime(
             _ => false,
         };
         if is_list {
-            let items: Vec<RuntimeVal> = clone_list(&receiver, runtime.heap_mut())?.into_iter_owned();
+            let list = clone_list(&receiver, runtime.heap_mut())?;
+            let items: Vec<RuntimeVal> = list_runtime_items(list, runtime.heap_mut());
             let pos_args: Vec<RuntimeVal> = match &positional {
                 MethodPositionalArgs::Empty => vec![],
                 MethodPositionalArgs::List(handle) => match runtime.heap().get(*handle) {
@@ -820,7 +821,10 @@ fn dispatch_list_builtin_method(
             if list.is_empty() {
                 return Ok(Some(RuntimeVal::Nil));
             }
-            let first = list.into_iter_owned().into_iter().next().unwrap_or(RuntimeVal::Nil);
+            let first = list_runtime_items(list, heap)
+                .into_iter()
+                .next()
+                .unwrap_or(RuntimeVal::Nil);
             Ok(Some(first))
         }
         "last" => {
@@ -828,7 +832,7 @@ fn dispatch_list_builtin_method(
                 bail!("list.last() expects no arguments, got {}", positional.len());
             }
             let list = clone_list(receiver, heap)?;
-            let items = list.into_iter_owned();
+            let items = list_runtime_items(list, heap);
             let last = items.into_iter().last().unwrap_or(RuntimeVal::Nil);
             Ok(Some(last))
         }
@@ -843,7 +847,7 @@ fn dispatch_list_builtin_method(
             if *idx < 0 || *idx as usize >= list.len() {
                 return Ok(Some(RuntimeVal::Nil));
             }
-            let items = list.into_iter_owned();
+            let items = list_runtime_items(list, heap);
             Ok(Some(items.into_iter().nth(*idx as usize).unwrap_or(RuntimeVal::Nil)))
         }
         "skip" => {
@@ -874,7 +878,7 @@ fn dispatch_list_builtin_method(
             if !positional.is_empty() {
                 bail!("list.unique() expects no arguments, got {}", positional.len());
             }
-            let items = clone_list(receiver, heap)?.into_iter_owned();
+            let items = list_runtime_items(clone_list(receiver, heap)?, heap);
             let mut unique: Vec<RuntimeVal> = Vec::new();
             for item in items {
                 if !unique.iter().any(|seen| runtime_values_equal(seen, &item)) {
@@ -1025,8 +1029,8 @@ fn dispatch_list_builtin_method(
             if positional.len() != 1 {
                 bail!("list.concat() expects 1 argument (list), got {}", positional.len());
             }
-            let lhs = clone_list(receiver, heap)?.into_iter_owned();
-            let rhs = clone_list(&positional[0], heap)?.into_iter_owned();
+            let lhs = list_runtime_items(clone_list(receiver, heap)?, heap);
+            let rhs = list_runtime_items(clone_list(&positional[0], heap)?, heap);
             let merged: Vec<RuntimeVal> = lhs.into_iter().chain(rhs).collect();
             Ok(Some(RuntimeVal::Obj(
                 heap.alloc(HeapValue::List(TypedList::Mixed(merged))),
@@ -1036,8 +1040,8 @@ fn dispatch_list_builtin_method(
             if positional.len() != 1 {
                 bail!("list.zip() expects 1 argument (other list), got {}", positional.len());
             }
-            let lhs = clone_list(receiver, heap)?.into_iter_owned();
-            let rhs = clone_list(&positional[0], heap)?.into_iter_owned();
+            let lhs = list_runtime_items(clone_list(receiver, heap)?, heap);
+            let rhs = list_runtime_items(clone_list(&positional[0], heap)?, heap);
             let mut pairs = Vec::with_capacity(lhs.len().min(rhs.len()));
             for (a, b) in lhs.into_iter().zip(rhs) {
                 pairs.push(RuntimeVal::Obj(
@@ -1052,13 +1056,14 @@ fn dispatch_list_builtin_method(
             if !positional.is_empty() {
                 bail!("list.flatten() expects no arguments, got {}", positional.len());
             }
-            let items = clone_list(receiver, heap)?.into_iter_owned();
+            let items = list_runtime_items(clone_list(receiver, heap)?, heap);
             let mut flat: Vec<RuntimeVal> = Vec::new();
             for item in items {
                 if let RuntimeVal::Obj(h) = &item
                     && let Some(HeapValue::List(inner)) = heap.get(*h)
                 {
-                    flat.extend(inner.clone().into_iter_owned());
+                    let inner = inner.clone();
+                    flat.extend(list_runtime_items(inner, heap));
                     continue;
                 }
                 flat.push(item);
@@ -1077,7 +1082,7 @@ fn dispatch_list_builtin_method(
             if *size <= 0 {
                 bail!("list.chunk() size must be positive");
             }
-            let items = clone_list(receiver, heap)?.into_iter_owned();
+            let items = list_runtime_items(clone_list(receiver, heap)?, heap);
             let mut chunks: Vec<RuntimeVal> = Vec::new();
             let mut i = 0;
             while i < items.len() {
@@ -1094,7 +1099,7 @@ fn dispatch_list_builtin_method(
             if !positional.is_empty() {
                 bail!("list.enumerate() expects no arguments, got {}", positional.len());
             }
-            let items = clone_list(receiver, heap)?.into_iter_owned();
+            let items = list_runtime_items(clone_list(receiver, heap)?, heap);
             let mut pairs = Vec::with_capacity(items.len());
             for (i, item) in items.into_iter().enumerate() {
                 pairs.push(RuntimeVal::Obj(heap.alloc(HeapValue::List(TypedList::Mixed(vec![
@@ -1110,8 +1115,8 @@ fn dispatch_list_builtin_method(
             if positional.len() != 1 {
                 bail!("list.chain() expects 1 argument (list), got {}", positional.len());
             }
-            let lhs = clone_list(receiver, heap)?.into_iter_owned();
-            let rhs = clone_list(&positional[0], heap)?.into_iter_owned();
+            let lhs = list_runtime_items(clone_list(receiver, heap)?, heap);
+            let rhs = list_runtime_items(clone_list(&positional[0], heap)?, heap);
             let merged: Vec<RuntimeVal> = lhs.into_iter().chain(rhs).collect();
             Ok(Some(RuntimeVal::Obj(
                 heap.alloc(HeapValue::List(TypedList::Mixed(merged))),
