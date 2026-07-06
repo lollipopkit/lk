@@ -6384,6 +6384,28 @@ fn to_dyn(ssa: &mut Ssa, insts: &mut Vec<Inst>, v: ValueId, ty: Ty, pc: usize) -
         Ty::Str => "from_str",
         Ty::Nil => "from_nil",
         Ty::ListDyn => "from_list",
+        // Typed lists box via an element-wise conversion (cold path: only
+        // emitted where a typed list actually meets a Dyn).
+        Ty::ListI64 | Ty::ListF64 | Ty::ListStr => {
+            let converter = match ty {
+                Ty::ListI64 => "i64_to_dyn",
+                Ty::ListF64 => "f64_to_dyn",
+                _ => "str_to_dyn",
+            };
+            let converted = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(converted),
+                callee: AbiRef::new("list_h", converter),
+                args: vec![v],
+            });
+            let boxed = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(boxed),
+                callee: AbiRef::new("dyn", "from_list"),
+                args: vec![converted],
+            });
+            return Ok(boxed);
+        }
         Ty::Bool => {
             let wide = ssa.new_val();
             insts.push(Inst::ZextBool { dst: wide, src: v });

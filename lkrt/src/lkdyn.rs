@@ -442,6 +442,51 @@ pub extern "C" fn lkrt_dyn_index(v: LkDyn, index: i64) -> LkDyn {
     values[idx as usize]
 }
 
+/// Converts a typed `List<i64>` handle into a fresh dyn-list handle (each
+/// element boxed). Cold-path only — emitted when a typed list meets a Dyn
+/// in a comparison or a mixed construction.
+///
+/// # Safety
+/// `handle` must be a live `List<i64>` handle, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_i64_to_dyn(handle: *mut c_void) -> *mut c_void {
+    let values: &[i64] = if handle.is_null() {
+        &[]
+    } else {
+        unsafe { &*(handle as *mut Vec<i64>) }
+    };
+    arena_handle(values.iter().map(|&v| from_i64(v)).collect::<Vec<LkDyn>>())
+}
+
+/// The `f64` analogue of [`lkrt_lklist_i64_to_dyn`].
+///
+/// # Safety
+/// `handle` must be a live `List<f64>` handle, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_f64_to_dyn(handle: *mut c_void) -> *mut c_void {
+    let values: &[f64] = if handle.is_null() {
+        &[]
+    } else {
+        unsafe { &*(handle as *mut Vec<f64>) }
+    };
+    arena_handle(values.iter().map(|&v| from_f64(v)).collect::<Vec<LkDyn>>())
+}
+
+/// The `str` analogue of [`lkrt_lklist_i64_to_dyn`] (element pointers are
+/// shared, arena-owned).
+///
+/// # Safety
+/// `handle` must be a live `List<str>` handle, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_str_to_dyn(handle: *mut c_void) -> *mut c_void {
+    let values: &[*const c_char] = if handle.is_null() {
+        &[]
+    } else {
+        unsafe { &*(handle as *mut Vec<*const c_char>) }
+    };
+    arena_handle(values.iter().map(|&p| lkrt_dyn_from_str(p)).collect::<Vec<LkDyn>>())
+}
+
 // ── Mixed list (`Box<Vec<LkDyn>>` behind the usual arena handle) ───────
 
 #[unsafe(no_mangle)]

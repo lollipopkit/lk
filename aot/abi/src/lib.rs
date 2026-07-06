@@ -268,6 +268,9 @@ macro_rules! for_each_abi_fn {
             ("map_h", "str_dyn_get", lkrt_lkmap_str_dyn_get, ReadsHost, [Ptr, StrPtr], DynVal);
             ("map_h", "str_dyn_len", lkrt_lkmap_str_dyn_len, ReadsHost, [Ptr], I64);
             ("map_h", "str_dyn_has", lkrt_lkmap_str_dyn_has, ReadsHost, [Ptr, StrPtr], I64);
+            ("list_h", "i64_to_dyn", lkrt_lklist_i64_to_dyn, WritesHost, [Ptr], Ptr);
+            ("list_h", "f64_to_dyn", lkrt_lklist_f64_to_dyn, WritesHost, [Ptr], Ptr);
+            ("list_h", "str_to_dyn", lkrt_lklist_str_to_dyn, WritesHost, [Ptr], Ptr);
             ("list_h", "dyn_new", lkrt_lklist_dyn_new, WritesHost, [], Ptr);
             ("list_h", "dyn_push", lkrt_lklist_dyn_push, WritesHost, [Ptr, DynVal], Nil);
             ("list_h", "dyn_at", lkrt_lklist_dyn_at, ReadsHost, [Ptr, I64], DynVal);
