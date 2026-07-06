@@ -131,9 +131,13 @@
     fixpoint 重跑时 phi 从创建起就是 Dyn。空[]猜测 lookahead 精化
     (Move 传播/NewList/NewObject 源/LoadHeapConst 按常量种类分流)。
     **sanitizer 欠账补齐**:6 例 + 全特性压力 probe 过 ASan/UBSan 干净
-  - **留档小项**:混合 push(push(1) 再 push("x"))可复用 DynLoopPhi 同款
-    retriable 机制(空[]猜测版);typed 列表方法长尾对 ListDyn receiver
-    按需补;for_loop_patterns 永久卡 map 迭代(hash 序,与 map_demo 同类)
+  - ✅ **空[]重猜落地**(commit 本次):EmptyListGuessWrong{pcs} retriable
+    ——lookahead 猜错由消费点证伪后 fixpoint 强制 ListDyn 重物化;混合
+    push(顺序/循环内 if-else)两形状真原生一致。**Dyn 化重猜机制全套完备**
+    (loop phi + 空[]两版)
+  - **留档小项**:typed 列表方法长尾对 ListDyn receiver 按需补;
+    for_loop_patterns 永久卡 map 迭代(hash 序,与 map_demo 同类);
+    lkrt 静态库 sanitizer instrument(-Zsanitizer 重编)
   - 每步必须:aot_coverage.sh 单调不降 + 差分门禁逐字节 + bench 纯噪声
   - GetGlobal 14(try$call/并发/模块白名单)是**另一根因**,独立大项未启
 - **✅ 裁决不做**:callable trait 反转 · 真机/QEMU demo · 细粒度 feature 拆分。

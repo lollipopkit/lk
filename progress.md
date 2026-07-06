@@ -544,6 +544,18 @@ isolate**(单线程无锁 GC 是热路径底线,无数据竞争,推翻=重写堆
 - **验证(贯穿)**:workspace 全量 1499+ 0 失败 · GC-stress 全绿 · clippy/fmt 0 · no_std 0/0 ·
   差分门禁全过 · dist bench 见子步5 记录。
 
+## M4.2 循环轮记录:空[]重猜(2026-07-07)
+
+- EmptyListGuessWrong{pcs} retriable:与 DynLoopPhi 同模式(错误值携带
+  发现 → fixpoint 记录 → 重跑改物化)。两个机制合起来,"猜测型 lowering"
+  有了统一的证伪-重试通路。
+- **时序死锁教训**:猜测 handle 的 provenance(empty_guess 表)想通过 phi
+  传承,但消费点失败(整函数 Err)早于 loop header 的 seal_block——传承
+  永远来不及。裁决:检测放宽到"函数内全部未定案猜测"(over-mark),正确性
+  由 Dyn 万能装箱兜底,typed 性能损失实测为零(覆盖率无倒退)。精确传承
+  仍保留在 phi 同型路径(能命中时单标)。
+- 覆盖率 25/51 持平;全门禁绿。
+
 ## M4.2 循环轮记录:fixpoint 重猜 + sanitizer(2026-07-07)
 
 - **DynLoopPhi retriable 机制**(loop phi 混型的正解):seal_block 时体内
