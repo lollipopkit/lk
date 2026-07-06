@@ -544,6 +544,27 @@ isolate**(单线程无锁 GC 是热路径底线,无数据竞争,推翻=重写堆
 - **验证(贯穿)**:workspace 全量 1499+ 0 失败 · GC-stress 全绿 · clippy/fmt 0 · no_std 0/0 ·
   差分门禁全过 · dist bench 见子步5 记录。
 
+## M4.2 循环轮记录:HOF 方法批次 + unique 句柄语义(2026-07-06)
+
+- **list_ops.lk 翻转**(chunk/enumerate/zip/unique/flatten 五方法),覆盖率
+  16→18/51(另 list_destructure 被 NewList 列表元素装箱连带解锁)。
+- **VM unique 语义勘探**(真源实测):core_methods 的 runtime_values_equal
+  与 exec/arithmetic 的同名函数**语义不同**——前者数值 to_bits + Obj 句柄
+  相等(不结构比较),后者(`in` 操作符)做结构比较。unique/contains 方法用
+  前者。长字符串在 typed String 列表中每次读出重新 alloc(无同一性),在
+  Mixed 列表直存 handle(有同一性)。native 指针无法区分"同 handle"与
+  "intern 常量",裁决:长串永不去重(semantics.md),Mixed 同变量重复留档分歧。
+- **VM panic bug**:into_iter_owned 的 String 臂对 >7B 字符串 double-unwrap
+  同一 None——['长串'].unique()/zip/chunk/... 必崩。换 list_runtime_items
+  (heap-aware),删病灶方法。
+- **-0.0 bug**:codegen F64 常量 `fadd double 0.0, x` 物化,0.0+(-0.0)=+0.0
+  丢符号;恒等元应为 -0.0。probe [0.0,-0.0] 显示 [0,0] 暴露。
+- **NewList 静默不物化坑**:混合臂元素过滤集合不含列表类型时,[l,l] 只记
+  ArgList ref 不写 SSA,报错却在下游消费点("r6 read before definition"),
+  定位要回看 NewList 而非报错 pc。窗口内 to_dyn memo 保住 [l,l] 去重的
+  句柄同一性。
+- 门禁:1505 tests、四套差分、lkrt 31、clippy/fmt 0、bench 1.038x(基线内)。
+
 ## M4.2 AOT 深覆盖 —— 阻塞点排查(2026-07-06,数据驱动裁决)
 
 **可复现扫描**:`bash scripts/aot_coverage.sh`(compile llvm 全 examples + 原因排行)。

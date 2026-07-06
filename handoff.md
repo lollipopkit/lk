@@ -78,11 +78,22 @@
     list_ops pc49→99。**踩坑**:cargo build -q 2>/dev/null 吞编译错误致 probe
     跑旧二进制——先验证二进制新鲜度再下结论
   - ✅ typed 列表↔Dyn 跨型比较(i64/f64/str_to_dyn 冷路径转换)
-  - **下一步**:list_ops pc120 = chunk/enumerate/zip/unique/flatten 批次
-    (各 ~40 行 lkrt,返回 ListDyn 嵌套)· phi 混型合流装箱(lower:1815)·
-    sort_search(fn 参数无类型)· NewObject 裁决 · 空列表延迟物化(留档)
-  - **D3 待做**:NewList 混合(lower:2883 else 臂)+ phi 混型装箱(照抄 Maybe edge_insts 机制)
-    + Dyn 算术全消费点;**D4**:NewRange/方法 ABI 增量/NewObject 裁决
+  - ✅ **chunk/enumerate/zip/unique/flatten 批次(list_ops 翻转,16→18/51)**
+    (commit `ee57511`)。顺带钉三个深怪癖:(1) unique 走 core_methods 版
+    runtime_values_equal = **句柄语义**(数值 to_bits、≤7B 字符串按内容、
+    列表/map/长串按 handle)→ lkrt unique_eq 专用实现,长串永不去重裁决入
+    semantics.md;(2) NewList 混合臂不收列表元素([l,l] 静默不物化→SSA read
+    挂)→ 过滤集合扩展 + **窗口内装箱 memo 保句柄同一性**;(3) Cmp Dyn 臂并入
+    ListDyn 操作数
+  - ✅ **两个真 bug 修复**(commit `610623a`):VM core_methods 列表方法遇
+    >7B 字符串 double-unwrap 必 panic(into_iter_owned String 臂)→ 全换
+    list_runtime_items 并删病灶;AOT F64 常量 `fadd 0.0,x` 丢 -0.0 符号
+    (IEEE 754 加法恒等元是 -0.0)
+  - **下一步**:operand 类型长尾(null_coalescing pc6 / match pc25 /
+    control_flow pc78 —— 疑 phi 混型合流装箱,lower:1815 Maybe edge_insts
+    机制照抄)· Call 长尾(comprehensive pc8 / iter_pipeline pc5 /
+    list_iter_sugar pc9)· NewObject 裁决(struct/struct_trait 2 例)·
+    空列表延迟物化(留档)
   - 每步必须:aot_coverage.sh 单调不降 + 差分门禁逐字节 + bench 纯噪声
   - GetGlobal 14(try$call/并发/模块白名单)是**另一根因**,独立大项未启
 - **✅ 裁决不做**:callable trait 反转 · 真机/QEMU demo · 细粒度 feature 拆分。
