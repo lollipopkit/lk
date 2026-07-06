@@ -50,10 +50,14 @@
     GetIndex(const/动态统一 dyn_at→Dyn)、display、入口 return Dyn 打印;probe 与 VM
     逐字节一致。**实测钉下 VM 怪癖:混合列表字符串元素裸文显示([1,a b,2]),与
     ListStr 的引号路径不同**(lkrt display_into 已按此实现)
-  - **D2b 待做**:剩余 4 个 LoadHeapConst 例是**混合 str-keyed map**(map_demo pc0 =
-    {"name":…,"age":30,"active":true})→ 需 map_h str_dyn_new/set/get 家族 + GetFieldK
-    消费臂 + display 保持 reject(semantics.md 裁决);eq on Dyn 的 Cmp 臂也未接
-    (dyn.eq/lt… ABI 已就绪)
+  - ✅ **D2b 已落地**(commit `f41a94e`):MapStrDyn 家族(缺键=Nil tag,无需 Maybe)+
+    GetFieldK 臂 + Cmp 全臂(to_dyn 装箱另一侧→dyn.eq/lt…;==nil→dyn.tag==0);probe
+    与 VM 逐字节一致;旧限制测试已翻转。map_demo/pattern_matching 推进到 operand
+    类型阻塞(D3 领域);template_strings pc23/for_loop_patterns pc34 仍 LoadHeapConst
+    (待查常量形状:可能嵌套列表或 LongString 元素——box_const_scalar 现只收 ShortStr)
+  - **D3 进行中**:NewList 混合(lower:2883 区 else 臂→dyn 装箱,照抄 LoadHeapConst 混合臂)
+    + phi 混型合流装箱(Maybe edge_insts 机制,lower:1815)+ Dyn 算术臂(算术 dispatch
+    lower:2839 区加 Dyn 操作数→to_dyn+dyn.add/sub/…,to_dyn 辅助已存在)
   - **D3 待做**:NewList 混合(lower:2883 else 臂)+ phi 混型装箱(照抄 Maybe edge_insts 机制)
     + Dyn 算术全消费点;**D4**:NewRange/方法 ABI 增量/NewObject 裁决
   - 每步必须:aot_coverage.sh 单调不降 + 差分门禁逐字节 + bench 纯噪声
