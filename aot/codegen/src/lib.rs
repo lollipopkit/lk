@@ -781,10 +781,24 @@ fn render_ret(out: &mut String, ret_ty: Ty, value: Option<ValueId>, is_entry: bo
                 | Ty::MapStrF64
                 | Ty::MapI64F64
                 | Ty::MapStrBool
-                // D1: lowering never returns Dyn from the entry yet (Dyn is
-                // function-body-local); silent like the container arm.
-                | Ty::Dyn
                 | Ty::ListDyn => {}
+                // A boxed Dyn return: print its display unless Nil-tagged
+                // (the VM's top-level auto-print of a nil return is silent).
+                Ty::Dyn => {
+                    let n = v.0;
+                    let _ = writeln!(out, "  %d{n}t = extractvalue {{ i64, i64 }} {}, 0", val(v));
+                    let _ = writeln!(out, "  %d{n}c = icmp ne i64 %d{n}t, 0");
+                    let _ = writeln!(out, "  br i1 %d{n}c, label %d{n}some, label %d{n}none");
+                    let _ = writeln!(out, "d{n}some:");
+                    let _ = writeln!(out, "  %d{n}s = call ptr @lkrt_dyn_display({{ i64, i64 }} {})", val(v));
+                    let _ = writeln!(out, "  call i32 (ptr, ...) @printf(ptr @lk_str_fmt, ptr %d{n}s)");
+                    let _ = writeln!(out, "  call void @lkrt_cleanup()");
+                    let _ = writeln!(out, "  ret i32 0");
+                    let _ = writeln!(out, "d{n}none:");
+                    let _ = writeln!(out, "  call void @lkrt_cleanup()");
+                    let _ = writeln!(out, "  ret i32 0");
+                    return;
+                }
             }
         }
         // Default-arena ownership (RFC §3.4): reclaim every runtime allocation

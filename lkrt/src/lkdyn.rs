@@ -327,12 +327,15 @@ fn display_into(out: &mut String, v: LkDyn, quoted: bool) {
             }
         }
         DYN_LIST => {
+            // VM quirk pinned by the differential gate: *mixed* lists render
+            // their string elements bare (`[1,a b,2]`), unlike typed string
+            // lists (`["a","b c"]` via the `{:?}` path). VM is the reference.
             out.push('[');
             for (i, &e) in dyn_list(v).iter().enumerate() {
                 if i > 0 {
                     out.push(',');
                 }
-                display_into(out, e, true);
+                display_into(out, e, false);
             }
             out.push(']');
         }
@@ -524,7 +527,8 @@ mod tests {
         }
         // Comma-separated no spaces; strings {:?}-quoted; 2.0 → "2" (Rust
         // to_string); bare-vs-quoted only differs for strings.
-        assert_eq!(text(unsafe { lkrt_lklist_dyn_display(xs) }), "[1,\"b c\",2,true,nil]");
+        // Mixed lists render string elements bare (VM's Mixed-list path).
+        assert_eq!(text(unsafe { lkrt_lklist_dyn_display(xs) }), "[1,b c,2,true,nil]");
         assert_eq!(text(unsafe { lkrt_dyn_display(s("b c")) }), "b c");
         assert_eq!(text(unsafe { lkrt_dyn_display_quoted(s("b c")) }), "\"b c\"");
     }

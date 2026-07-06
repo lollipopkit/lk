@@ -3682,7 +3682,39 @@ fn lower_inst(
                     } else if all_str {
                         ("str_new", "str_push", Ty::ListStr)
                     } else {
-                        return Err(Unsupported::Opcode { pc, op: instr.opcode() });
+                        // Mixed scalar elements: a boxed-dynamic list (plan
+                        // M4.2 Dyn). Nested containers still fall back.
+                        let scalar_only = elems.iter().all(|e| {
+                            matches!(
+                                e,
+                                ConstRuntimeValueData::Nil
+                                    | ConstRuntimeValueData::Bool(_)
+                                    | ConstRuntimeValueData::Int(_)
+                                    | ConstRuntimeValueData::Float(_)
+                                    | ConstRuntimeValueData::ShortStr(_)
+                            )
+                        });
+                        if !scalar_only {
+                            return Err(Unsupported::Opcode { pc, op: instr.opcode() });
+                        }
+                        let handle = ssa.new_val();
+                        insts.push(Inst::Call {
+                            dst: Some(handle),
+                            callee: AbiRef::new("list_h", "dyn_new"),
+                            args: Vec::new(),
+                        });
+                        for e in elems {
+                            let boxed = box_const_scalar(ssa, insts, globals, e);
+                            insts.push(Inst::Call {
+                                dst: None,
+                                callee: AbiRef::new("list_h", "dyn_push"),
+                                args: vec![handle, boxed],
+                            });
+                        }
+                        ssa.list_len.insert(handle, elems.len() as i64);
+                        ssa.list_base_len.insert(handle, elems.len() as i64);
+                        ssa.write(instr.a(), block, (handle, Ty::ListDyn));
+                        return Ok(());
                     };
                     let handle = ssa.new_val();
                     insts.push(Inst::Call {
@@ -4017,6 +4049,9 @@ fn lower_inst(
                     Ty::ListI64 => ("i64_at", Ty::I64),
                     Ty::ListF64 => ("f64_at", Ty::F64),
                     Ty::ListStr => ("str_at", Ty::Str),
+                    // Mixed list: the element is a boxed Dyn either way
+                    // (`dyn_at` handles negative/OOB as a Nil-tag Dyn).
+                    Ty::ListDyn => ("dyn_at", Ty::Dyn),
                     _ => return Err(Unsupported::TypeMismatch { pc }),
                 };
                 let idx_v = ssa.new_val();
@@ -4041,6 +4076,18 @@ fn lower_inst(
                 // and prints `nil`. Either way there is no eager-abort shortcut that
                 // would diverge from `return xs[oob]` printing `nil`.
                 match list_ty {
+                    // Mixed list: no Maybe carrier needed — the Dyn's Nil tag
+                    // *is* the absent case (`dyn_at` maps OOB/negative-beyond
+                    // to Nil, matching the VM's nil-on-out-of-range).
+                    Ty::ListDyn => {
+                        let dst = ssa.new_val();
+                        insts.push(Inst::Call {
+                            dst: Some(dst),
+                            callee: AbiRef::new("list_h", "dyn_at"),
+                            args: vec![handle, index_val],
+                        });
+                        ssa.write(instr.a(), block, (dst, Ty::Dyn));
+                    }
                     Ty::ListI64 => {
                         let dst = ssa.new_val();
                         insts.push(Inst::ListGetMaybe {
@@ -4614,19 +4661,32 @@ fn to_display_str(
         // the VM's exact separators/quoting. Map display stays out of the
         // subset: its order is the underlying hash iteration order, which is
         // not portable across the two runtimes (see docs/semantics.md).
-        Ty::ListI64 | Ty::ListF64 | Ty::ListStr => {
+        Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn => {
             if !containers {
                 return Err(Unsupported::TypeMismatch { pc });
             }
             let display_fn = match ty {
                 Ty::ListI64 => "i64_display",
                 Ty::ListF64 => "f64_display",
+                Ty::ListDyn => "dyn_display",
                 _ => "str_display",
             };
             let dst = ssa.new_val();
             insts.push(Inst::Call {
                 dst: Some(dst),
                 callee: AbiRef::new("list_h", display_fn),
+                args: vec![v],
+            });
+            Ok((dst, true))
+        }
+        // A boxed Dyn from a mixed-list read: at runtime it is a scalar in
+        // D2 (nested containers never box — see LoadHeapConst's scalar_only
+        // guard), so the bare display mode is exact for both display paths.
+        Ty::Dyn => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("dyn", "display"),
                 args: vec![v],
             });
             Ok((dst, true))
@@ -5778,6 +5838,77 @@ fn emit_print(
 
 /// Materializes a constant map key as a `Str` value (an interned global) for the
 /// map ABI, which takes the key as a `*const c_char`.
+/// Boxes one constant scalar into a `Dyn` carrier value (plan M4.2): emits
+/// the scalar `Const` plus the matching `dyn.from_*` call. Callers filtered
+/// to scalar variants.
+fn box_const_scalar(
+    ssa: &mut Ssa,
+    insts: &mut Vec<Inst>,
+    globals: &mut Vec<String>,
+    value: &ConstRuntimeValueData,
+) -> ValueId {
+    let boxed = ssa.new_val();
+    match value {
+        ConstRuntimeValueData::Nil => {
+            insts.push(Inst::Call {
+                dst: Some(boxed),
+                callee: AbiRef::new("dyn", "from_nil"),
+                args: Vec::new(),
+            });
+        }
+        ConstRuntimeValueData::Bool(b) => {
+            let raw = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: raw,
+                value: Const::I64(i64::from(*b)),
+            });
+            insts.push(Inst::Call {
+                dst: Some(boxed),
+                callee: AbiRef::new("dyn", "from_bool"),
+                args: vec![raw],
+            });
+        }
+        ConstRuntimeValueData::Int(n) => {
+            let raw = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: raw,
+                value: Const::I64(*n),
+            });
+            insts.push(Inst::Call {
+                dst: Some(boxed),
+                callee: AbiRef::new("dyn", "from_i64"),
+                args: vec![raw],
+            });
+        }
+        ConstRuntimeValueData::Float(x) => {
+            let raw = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: raw,
+                value: Const::F64(*x),
+            });
+            insts.push(Inst::Call {
+                dst: Some(boxed),
+                callee: AbiRef::new("dyn", "from_f64"),
+                args: vec![raw],
+            });
+        }
+        ConstRuntimeValueData::ShortStr(s) => {
+            let raw = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: raw,
+                value: Const::Str(GlobalId(intern_global(globals, s))),
+            });
+            insts.push(Inst::Call {
+                dst: Some(boxed),
+                callee: AbiRef::new("dyn", "from_str"),
+                args: vec![raw],
+            });
+        }
+        ConstRuntimeValueData::Heap(_) => unreachable!("callers filter to scalar variants"),
+    }
+    boxed
+}
+
 fn materialize_key(ssa: &mut Ssa, insts: &mut Vec<Inst>, globals: &mut Vec<String>, key: &str) -> ValueId {
     let gid = intern_global(globals, key);
     let dst = ssa.new_val();
