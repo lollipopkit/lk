@@ -4,7 +4,7 @@ use crate::compat::prelude::*;
 use anyhow::{Result, bail};
 
 use crate::{
-    expr::{Expr, Pattern, SelectPattern},
+    expr::{Expr, Pattern},
     stmt::Stmt,
 };
 
@@ -510,29 +510,8 @@ fn expr_contains_call_to(expr: &Expr, target: &str) -> bool {
             .into_iter()
             .flatten()
             .any(|expr| expr_contains_call_to(expr, target)),
-        Expr::Select { cases, default_case } => {
-            cases.iter().any(|case| {
-                select_pattern_contains_call_to(&case.pattern, target)
-                    || case
-                        .guard
-                        .as_ref()
-                        .is_some_and(|guard| expr_contains_call_to(guard, target))
-                    || expr_contains_call_to(&case.body, target)
-            }) || default_case
-                .as_ref()
-                .is_some_and(|expr| expr_contains_call_to(expr, target))
-        }
         Expr::Literal(_) | Expr::Var(_) => false,
         Expr::Closure { body, .. } => expr_contains_call_to(body, target),
-    }
-}
-
-fn select_pattern_contains_call_to(pattern: &SelectPattern, target: &str) -> bool {
-    match pattern {
-        SelectPattern::Recv { channel, .. } => expr_contains_call_to(channel, target),
-        SelectPattern::Send { channel, value } => {
-            expr_contains_call_to(channel, target) || expr_contains_call_to(value, target)
-        }
     }
 }
 
@@ -692,29 +671,7 @@ fn collect_assigned_names_in_expr(expr: &Expr, names: &mut HashSet<String>) {
                 collect_assigned_names_in_expr(expr, names);
             }
         }
-        Expr::Select { cases, default_case } => {
-            for case in cases {
-                collect_assigned_names_in_select_pattern(&case.pattern, names);
-                if let Some(guard) = &case.guard {
-                    collect_assigned_names_in_expr(guard, names);
-                }
-                collect_assigned_names_in_expr(&case.body, names);
-            }
-            if let Some(default_case) = default_case {
-                collect_assigned_names_in_expr(default_case, names);
-            }
-        }
         Expr::Closure { body, .. } => collect_assigned_names_in_expr(body, names),
         Expr::Literal(_) | Expr::Var(_) => {}
-    }
-}
-
-fn collect_assigned_names_in_select_pattern(pattern: &SelectPattern, names: &mut HashSet<String>) {
-    match pattern {
-        SelectPattern::Recv { channel, .. } => collect_assigned_names_in_expr(channel, names),
-        SelectPattern::Send { channel, value } => {
-            collect_assigned_names_in_expr(channel, names);
-            collect_assigned_names_in_expr(value, names);
-        }
     }
 }

@@ -39,6 +39,8 @@ mod os_test;
 #[cfg(test)]
 mod sched_test;
 #[cfg(test)]
+mod select_test;
+#[cfg(test)]
 mod stdlib_modules_test;
 #[cfg(test)]
 mod stdlib_runtime_test;

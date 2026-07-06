@@ -5,7 +5,7 @@ mod literals;
 mod stdlib;
 
 use super::{NamedParamSig, TypeChecker};
-use crate::expr::{Expr, SelectCase, SelectPattern};
+use crate::expr::Expr;
 use crate::operator::{BinOp, UnaryOp};
 use crate::typ::{NumericClass, NumericHierarchy};
 use crate::val::{FunctionNamedParamType, LiteralVal, Type};
@@ -415,10 +415,6 @@ impl TypeChecker {
             }
 
             // Complex expressions
-            Expr::Select {
-                cases,
-                default_case: default,
-            } => self.check_select_expr(cases, default),
             Expr::TemplateString(parts) => self.check_template_string(parts),
 
             // Range expressions behave like synthetic Int lists
@@ -1416,95 +1412,5 @@ impl TypeChecker {
             Type::Nil => Ok(Type::Nil),
             _ => self.check_access(expr, field),
         }
-    }
-
-    /// Check select expression type
-    fn check_select_expr(&mut self, cases: &[SelectCase], default: &Option<Box<Expr>>) -> Result<Type> {
-        // Accumulate unified result type across cases and default
-        let mut unified: Option<Type> = None;
-
-        for case in cases {
-            // Guard must be Bool when present
-            if let Some(guard) = &case.guard {
-                let gty = self.check_expr(guard)?;
-                if gty != Type::Bool {
-                    return Err(Self::type_err(
-                        "Select guard must be Bool",
-                        Some(Type::Bool),
-                        Some(gty),
-                        Some(*guard.clone()),
-                    ));
-                }
-            }
-
-            // Pattern checks and per-case bindings
-            let snapshot = self.local_types.clone();
-            match &case.pattern {
-                SelectPattern::Recv { binding, channel } => {
-                    let ch_ty = self.check_expr(channel)?;
-                    match ch_ty {
-                        Type::Channel(inner) => {
-                            if let Some(name) = binding {
-                                // Bind to a tuple [Bool, T]
-                                self.add_local_type(name.clone(), Type::Tuple(vec![Type::Bool, (*inner).clone()]));
-                            }
-                        }
-                        other => {
-                            return Err(Self::type_err(
-                                "recv() pattern requires a channel",
-                                Some(Type::Channel(Box::new(Type::Any))),
-                                Some(other),
-                                Some(*channel.clone()),
-                            ));
-                        }
-                    }
-                }
-                SelectPattern::Send { channel, value } => {
-                    let ch_ty = self.check_expr(channel)?;
-                    let val_ty = self.check_expr(value)?;
-                    match ch_ty {
-                        Type::Channel(inner) => {
-                            self.inference_engine.add_constraint(*inner, val_ty);
-                        }
-                        other => {
-                            return Err(Self::type_err(
-                                "send() pattern requires a channel",
-                                Some(Type::Channel(Box::new(Type::Any))),
-                                Some(other),
-                                Some(*channel.clone()),
-                            ));
-                        }
-                    }
-                }
-            }
-
-            // Check body with any per-case bindings in scope, then restore
-            let case_ty = self.check_expr(&case.body)?;
-            self.local_types = snapshot;
-
-            if let Some(prev) = &unified {
-                self.inference_engine.add_constraint(prev.clone(), case_ty.clone());
-            } else {
-                unified = Some(case_ty);
-            }
-        }
-
-        if let Some(default_expr) = default {
-            let default_type = self.check_expr(default_expr)?;
-            if let Some(prev) = &unified {
-                self.inference_engine.add_constraint(prev.clone(), default_type.clone());
-            } else {
-                unified = Some(default_type);
-            }
-        }
-
-        unified.ok_or_else(|| {
-            Self::type_err(
-                "Select expression must have at least one case or default",
-                None,
-                None,
-                None,
-            )
-        })
     }
 }

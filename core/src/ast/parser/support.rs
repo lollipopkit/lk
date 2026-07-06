@@ -18,6 +18,7 @@ impl<'a> Parser<'a> {
             len,
             token_spans: None,
             prefix_mode: false,
+            select_counter: 0,
         }
     }
 
@@ -30,6 +31,7 @@ impl<'a> Parser<'a> {
             len,
             token_spans: Some(spans),
             prefix_mode: false,
+            select_counter: 0,
         }
     }
 

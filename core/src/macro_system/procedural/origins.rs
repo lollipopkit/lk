@@ -2,7 +2,7 @@ use super::{AstGeneratedItemOrigin, AstGeneratedMemberOrigin};
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
 use crate::{
-    expr::{Expr, Pattern, SelectCase, SelectPattern, TemplateStringPart},
+    expr::{Expr, Pattern, TemplateStringPart},
     operator::{BinOp, UnaryOp},
     stmt::{Attribute, ForPattern, ImportSource, ImportStmt, Stmt},
     token::{Span, Token},
@@ -799,16 +799,6 @@ fn collect_generated_expr_origins(expr: &Expr, span: Option<Span>, origins: &mut
                 collect_generated_expr_origins(step, span.clone(), origins);
             }
         }
-        Expr::Select { cases, default_case } => {
-            push_generated_statement_origin("expr select", span.clone(), origins);
-            for case in cases {
-                collect_generated_expr_origins_from_select_case(case, span.clone(), origins);
-            }
-            if let Some(default_case) = default_case {
-                push_generated_statement_origin("select default", span.clone(), origins);
-                collect_generated_expr_origins(default_case, span, origins);
-            }
-        }
         Expr::TemplateString(parts) => {
             push_generated_statement_origin("expr template_string", span.clone(), origins);
             for part in parts {
@@ -931,36 +921,6 @@ fn generated_unary_origin_label(op: &UnaryOp) -> &'static str {
     match op {
         UnaryOp::Not => "unary not",
     }
-}
-
-fn collect_generated_expr_origins_from_select_case(
-    case: &SelectCase,
-    span: Option<Span>,
-    origins: &mut Vec<AstGeneratedMemberOrigin>,
-) {
-    match &case.pattern {
-        SelectPattern::Recv { binding, channel } => {
-            push_generated_statement_origin("select recv", span.clone(), origins);
-            if let Some(binding) = binding {
-                push_generated_reference_origin("binding", binding, span.clone(), origins);
-            }
-            push_generated_statement_origin("select recv_channel", span.clone(), origins);
-            collect_generated_expr_origins(channel, span.clone(), origins);
-        }
-        SelectPattern::Send { channel, value } => {
-            push_generated_statement_origin("select send", span.clone(), origins);
-            push_generated_statement_origin("select send_channel", span.clone(), origins);
-            collect_generated_expr_origins(channel, span.clone(), origins);
-            push_generated_statement_origin("select send_value", span.clone(), origins);
-            collect_generated_expr_origins(value, span.clone(), origins);
-        }
-    }
-    if let Some(guard) = &case.guard {
-        push_generated_statement_origin("select guard", span.clone(), origins);
-        collect_generated_expr_origins(guard, span.clone(), origins);
-    }
-    push_generated_statement_origin("select body", span.clone(), origins);
-    collect_generated_expr_origins(&case.body, span, origins);
 }
 
 fn collect_lowered_struct_literal_origins(

@@ -3,7 +3,7 @@ use crate::compat::collections::HashSet;
 use crate::compat::prelude::*;
 
 use crate::{
-    expr::{Expr, Pattern, SelectPattern, TemplateStringPart},
+    expr::{Expr, Pattern, TemplateStringPart},
     stmt::{NamedParamDecl, Stmt},
 };
 
@@ -90,24 +90,6 @@ pub(super) fn collect_expr_free_vars(expr: &Expr, bound: &mut HashSet<String>, f
         Expr::Range { start, end, step, .. } => {
             for value in [start, end, step].into_iter().flatten() {
                 collect_expr_free_vars(value, bound, free);
-            }
-        }
-        Expr::Select { cases, default_case } => {
-            for case in cases {
-                match &case.pattern {
-                    SelectPattern::Recv { channel, .. } => collect_expr_free_vars(channel, bound, free),
-                    SelectPattern::Send { channel, value } => {
-                        collect_expr_free_vars(channel, bound, free);
-                        collect_expr_free_vars(value, bound, free);
-                    }
-                }
-                if let Some(guard) = &case.guard {
-                    collect_expr_free_vars(guard, bound, free);
-                }
-                collect_expr_free_vars(&case.body, bound, free);
-            }
-            if let Some(default_case) = default_case {
-                collect_expr_free_vars(default_case, bound, free);
             }
         }
         Expr::TemplateString(parts) => {
@@ -353,24 +335,6 @@ pub(super) fn collect_expr_closure_captures(expr: &Expr, out: &mut Vec<String>) 
         Expr::Range { start, end, step, .. } => {
             for value in [start, end, step].into_iter().flatten() {
                 collect_expr_closure_captures(value, out);
-            }
-        }
-        Expr::Select { cases, default_case } => {
-            for case in cases {
-                match &case.pattern {
-                    SelectPattern::Recv { channel, .. } => collect_expr_closure_captures(channel, out),
-                    SelectPattern::Send { channel, value } => {
-                        collect_expr_closure_captures(channel, out);
-                        collect_expr_closure_captures(value, out);
-                    }
-                }
-                if let Some(guard) = &case.guard {
-                    collect_expr_closure_captures(guard, out);
-                }
-                collect_expr_closure_captures(&case.body, out);
-            }
-            if let Some(default_case) = default_case {
-                collect_expr_closure_captures(default_case, out);
             }
         }
         Expr::Literal(_) | Expr::Var(_) => {}

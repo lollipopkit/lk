@@ -118,7 +118,9 @@ impl Compiler {
                 self.lower_conditional(condition, then_expr, else_expr)
             }
             Expr::Yield(inner) => self.lower_yield(inner),
-            other => bail!("Compiler does not support expression yet: {:?}", expr_kind(other)),
+            // Every `Expr` variant lowers — parse-time-desugared sugar
+            // (try/catch → pcall, select → select$block) never reaches here
+            // as a dedicated node.
         }
     }
 
