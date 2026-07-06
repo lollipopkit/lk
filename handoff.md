@@ -43,9 +43,17 @@
   阻塞排行+路线图入 progress.md「M4.2 AOT 深覆盖」章节
 
 ## 剩余
-- **[~] M4.2 AOT 深覆盖(排查已毕,实现待启)**:GetGlobal 14(try$call/并发/模块白名单)·
-  operand 超子集 9 + LoadHeapConst 4 + NewObject 2(共同根因=**Dyn 装箱值地基**,M4.2 本体)·
-  Call 5(方法 ABI 长尾)· NewRange 1。**下会话从 Dyn 地基开始**(路线细节见 progress.md)。
+- **[~] M4.2 AOT 深覆盖(Dyn 实现进行中,计划文件 synthetic-plotting-pony.md 有完整设计)**:
+  - ✅ **D1 已落地**(commit `0928b58`):LkDyn{tag,payload} 载体 + abi DynVal 词表 +
+    32 个 dyn ABI 条目 + mir Ty::Dyn/ListDyn + codegen llvm_ty;零 lowering 改动,覆盖率 14/51 不变
+  - **D2 待做**:aot/lower LoadHeapConst 混合列表臂(lower:3648 区,现 reject 处改
+    dyn_new+dyn_from_*+dyn_push → Ty::ListDyn)+ GetIndex on ListDyn(→dyn_at→Ty::Dyn)
+    + display(containers=true 走 list_h dyn_display;Dyn 标量 dyn_display)+ eq/nil 判定
+    (dyn_tag==0);目标翻转 template_strings/pattern_matching/for_loop_patterns 类
+  - **D3 待做**:NewList 混合(lower:2883 else 臂)+ phi 混型装箱(照抄 Maybe edge_insts 机制)
+    + Dyn 算术全消费点;**D4**:NewRange/方法 ABI 增量/NewObject 裁决
+  - 每步必须:aot_coverage.sh 单调不降 + 差分门禁逐字节 + bench 纯噪声
+  - GetGlobal 14(try$call/并发/模块白名单)是**另一根因**,独立大项未启
 - **✅ 裁决不做**:callable trait 反转 · 真机/QEMU demo · 细粒度 feature 拆分。
 - **可选后续**:native raise 前缀统一(catch 到的 native 错误带 "native ... failed:" 前缀,
   error() 一等值无)· goroutine 泄漏之外的死锁检测。
