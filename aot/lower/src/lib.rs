@@ -2039,36 +2039,160 @@ impl Ssa {
             });
             // Break cycles before reading operands.
             self.current_def[block][slot] = Some((param, ty));
-            self.add_phi_operands(block, idx, pc)?;
-            (param, ty)
+            self.add_phi_operands(block, idx, pc, true)?;
+            // A heterogeneous merge may have widened the phi to Dyn.
+            (param, self.phis[block][idx].ty)
         };
         self.current_def[block][slot] = Some(value);
         Ok(value)
     }
 
-    fn add_phi_operands(&mut self, block: usize, phi_idx: usize, pc: usize) -> Result<(), Unsupported> {
+    fn add_phi_operands(
+        &mut self,
+        block: usize,
+        phi_idx: usize,
+        pc: usize,
+        allow_widen: bool,
+    ) -> Result<(), Unsupported> {
         let slot = self.phis[block][phi_idx].reg;
         let phi_ty = self.phis[block][phi_idx].ty;
+        let param = self.phis[block][phi_idx].param;
         let preds = self.preds[block].clone();
+        let mut incoming = Vec::with_capacity(preds.len());
         for p in preds {
             let (v, ty) = self.read_slot(slot, p, pc)?;
-            // Every incoming edge must agree on the type (the phi was typed from
-            // one filled predecessor). A `Maybe` merging with its scalar (the
-            // `let v = m[k]; if v == nil { v = default; }` shape) converts on
-            // the incoming edge: extracting the raw value never observes the
-            // absent case (the phi takes the other edge there), and wrapping a
-            // scalar marks it present. Anything else is a heterogeneous value
-            // our typed MIR cannot represent — reject (fall back).
-            let v = if ty == phi_ty {
-                v
-            } else if let Some(converted) = self.convert_phi_edge(v, ty, phi_ty, p) {
-                converted
-            } else {
-                return Err(Unsupported::TypeMismatch { pc });
-            };
-            self.phis[block][phi_idx].operands.push((p, v));
+            incoming.push((p, v, ty));
+        }
+        // Every incoming edge must agree on the type (the phi was typed from
+        // one filled predecessor). A `Maybe` merging with its scalar (the
+        // `let v = m[k]; if v == nil { v = default; }` shape) converts on
+        // the incoming edge: extracting the raw value never observes the
+        // absent case (the phi takes the other edge there), and wrapping a
+        // scalar marks it present.
+        let maybe_pair = |from: Ty, to: Ty| {
+            matches!(
+                (from, to),
+                (Ty::MaybeI64, Ty::I64)
+                    | (Ty::MaybeF64, Ty::F64)
+                    | (Ty::MaybeStr, Ty::Str)
+                    | (Ty::I64, Ty::MaybeI64)
+                    | (Ty::F64, Ty::MaybeF64)
+                    | (Ty::Str, Ty::MaybeStr)
+            )
+        };
+        if incoming
+            .iter()
+            .all(|&(_, _, ty)| ty == phi_ty || maybe_pair(ty, phi_ty))
+        {
+            for (p, v, ty) in incoming {
+                let v = if ty == phi_ty {
+                    v
+                } else {
+                    self.convert_phi_edge(v, ty, phi_ty, p)
+                        .expect("maybe_pair-checked edge converts")
+                };
+                self.phis[block][phi_idx].operands.push((p, v));
+            }
+            return Ok(());
+        }
+        // A heterogeneous merge of dyn-boxable types (`a ?? "default"`,
+        // `if c { 1 } else { "x" }`) widens the phi to `Dyn` and boxes each
+        // edge (plan M4.2). Only for a freshly created forward-join phi:
+        // a loop-header phi's param may already be consumed at its old type
+        // elsewhere (`allow_widen` = false from `seal_block`), and a
+        // self-referential edge would box the param into itself.
+        let boxable = |ty: Ty| {
+            matches!(
+                ty,
+                Ty::Dyn
+                    | Ty::Nil
+                    | Ty::Bool
+                    | Ty::I64
+                    | Ty::F64
+                    | Ty::Str
+                    | Ty::ListDyn
+                    | Ty::ListI64
+                    | Ty::ListF64
+                    | Ty::ListStr
+                    | Ty::MapStrDyn
+            )
+        };
+        if !allow_widen || incoming.iter().any(|&(_, v, ty)| v == param || !boxable(ty)) {
+            return Err(Unsupported::TypeMismatch { pc });
+        }
+        self.phis[block][phi_idx].ty = Ty::Dyn;
+        for (p, v, ty) in incoming {
+            let boxed = self.dyn_box_on_edge(p, v, ty).expect("boxable-checked edge boxes");
+            self.phis[block][phi_idx].operands.push((p, boxed));
         }
         Ok(())
+    }
+
+    /// Emits the `dyn.from_*` boxing sequence for one phi edge into
+    /// `edge_insts[pred]` (they land after the block body, before the
+    /// terminator). Mirrors `to_dyn`, but targets an edge, not the body.
+    fn dyn_box_on_edge(&mut self, pred: usize, v: ValueId, ty: Ty) -> Option<ValueId> {
+        let simple = match ty {
+            Ty::Dyn => return Some(v),
+            Ty::I64 => Some("from_i64"),
+            Ty::F64 => Some("from_f64"),
+            Ty::Str => Some("from_str"),
+            Ty::ListDyn => Some("from_list"),
+            Ty::MapStrDyn => Some("from_map"),
+            _ => None,
+        };
+        if let Some(name) = simple {
+            let dst = self.new_val();
+            self.edge_insts[pred].push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("dyn", name),
+                args: vec![v],
+            });
+            return Some(dst);
+        }
+        match ty {
+            Ty::Nil => {
+                let dst = self.new_val();
+                self.edge_insts[pred].push(Inst::Call {
+                    dst: Some(dst),
+                    callee: AbiRef::new("dyn", "from_nil"),
+                    args: Vec::new(),
+                });
+                Some(dst)
+            }
+            Ty::Bool => {
+                let wide = self.new_val();
+                self.edge_insts[pred].push(Inst::ZextBool { dst: wide, src: v });
+                let dst = self.new_val();
+                self.edge_insts[pred].push(Inst::Call {
+                    dst: Some(dst),
+                    callee: AbiRef::new("dyn", "from_bool"),
+                    args: vec![wide],
+                });
+                Some(dst)
+            }
+            Ty::ListI64 | Ty::ListF64 | Ty::ListStr => {
+                let converter = match ty {
+                    Ty::ListI64 => "i64_to_dyn",
+                    Ty::ListF64 => "f64_to_dyn",
+                    _ => "str_to_dyn",
+                };
+                let converted = self.new_val();
+                self.edge_insts[pred].push(Inst::Call {
+                    dst: Some(converted),
+                    callee: AbiRef::new("list_h", converter),
+                    args: vec![v],
+                });
+                let dst = self.new_val();
+                self.edge_insts[pred].push(Inst::Call {
+                    dst: Some(dst),
+                    callee: AbiRef::new("dyn", "from_list"),
+                    args: vec![converted],
+                });
+                Some(dst)
+            }
+            _ => None,
+        }
     }
 
     fn convert_phi_edge(&mut self, v: ValueId, from: Ty, to: Ty, pred: usize) -> Option<ValueId> {
@@ -2120,7 +2244,9 @@ impl Ssa {
     fn seal_block(&mut self, block: usize) -> Result<(), Unsupported> {
         let incs = std::mem::take(&mut self.incomplete[block]);
         for idx in incs {
-            self.add_phi_operands(block, idx, 0)?;
+            // No Dyn widening here: an incomplete phi (loop header) has
+            // already been read at its original type inside the loop body.
+            self.add_phi_operands(block, idx, 0, false)?;
         }
         self.sealed[block] = true;
         Ok(())
