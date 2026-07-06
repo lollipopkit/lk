@@ -141,8 +141,11 @@
   - **留档小项**:typed 列表方法长尾对 ListDyn receiver 按需补;
     for_loop_patterns 永久卡 map 迭代(hash 序,与 map_demo 同类);
     lkrt 静态库 sanitizer instrument(-Zsanitizer 重编)
-  - **循环任务状态**:清单(D1-D4+机制项+验证面)全部完成,下轮起仅回归
-    检查;建议 GetGlobal 立项或 CronDelete f5db44fa
+  - **循环任务已收尾**(2026-07-07):清单(D1-D4+机制项+验证面)全部完成,
+    连续三轮回归全绿且零变化后 cron f5db44fa 已删除。最终战果:覆盖率
+    14/51 → 25/51、6 个 VM bug 顺手修复、两套 fixpoint 重猜机制、
+    fuzz Dyn 面 120/120。**下一步由用户决定:GetGlobal 独立大项**
+    (try$call 原生化 + 并发进 lkrt + 模块白名单,剩余 13 例的钥匙)
   - 每步必须:aot_coverage.sh 单调不降 + 差分门禁逐字节 + bench 纯噪声
   - GetGlobal 14(try$call/并发/模块白名单)是**另一根因**,独立大项未启
 - **✅ 裁决不做**:callable trait 反转 · 真机/QEMU demo · 细粒度 feature 拆分。
