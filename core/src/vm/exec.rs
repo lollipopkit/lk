@@ -36,7 +36,7 @@ pub use runtime_callable::{
     call_runtime_callable_runtime, call_runtime_value_runtime, call_runtime_value_runtime_list_args,
     call_runtime_value_runtime_named_map, call_runtime_value_runtime_named_map_list_args,
     call_runtime_value_runtime_with_receiver, call_runtime_value_runtime_with_receiver_list_args, copy_runtime_value,
-    runtime_value_to_callable_shared,
+    copy_runtime_value_same_module, runtime_value_to_callable_shared,
 };
 
 use crate::util::fast_map::{FastHashMap, fast_hash_map_new};

@@ -38,6 +38,8 @@ mod os_test;
 #[cfg(test)]
 mod select_test;
 #[cfg(test)]
+mod spawn_test;
+#[cfg(test)]
 mod stdlib_modules_test;
 #[cfg(test)]
 mod stdlib_runtime_test;
@@ -57,7 +59,7 @@ use lk_core::{
     },
     vm::{
         NativeArgs, NativeEntry, NativeFunction, NativeRuntime, call_runtime_callable_runtime,
-        call_runtime_value_runtime, call_runtime_value_runtime_with_receiver,
+        call_runtime_value_runtime, call_runtime_value_runtime_with_receiver, copy_runtime_value_same_module,
     },
 };
 pub use lk_stdlib_common::metadata::{
@@ -393,7 +395,7 @@ pub fn register_stdlib_core_globals(registry: &mut ModuleRegistry) {
 }
 
 pub fn register_stdlib_concurrency_globals(registry: &mut ModuleRegistry) {
-    register_plain_builtin!(registry, spawn => spawn / 1);
+    register_full_state_builtin!(registry, spawn => spawn / 1 => core.spawn: RuntimeValue);
     register_plain_builtin!(registry, chan => chan / NativeEntry::VARIADIC => core.chan: RuntimeValue);
     register_plain_builtin!(registry, send => send / 2 => core.send: Nil);
     register_plain_builtin!(registry, recv => recv / 1 => core.recv: RuntimeValue);
@@ -615,9 +617,16 @@ fn assert_truthy(value: &RuntimeVal) -> bool {
     !matches!(value, RuntimeVal::Nil | RuntimeVal::Bool(false))
 }
 
+/// `spawn(f) -> Task` — run `f` as a goroutine: true parallelism on the
+/// tokio runtime, isolate semantics. A plain closure is snapshotted at spawn
+/// time — its captures and the current globals are deep-copied into the
+/// task's own private heap (same-module structural copy, so closures nested
+/// in captures/globals stay callable). Mutations inside the goroutine never
+/// leak back; communicate through channels.
 fn spawn(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_runtime_arity(args, 1, "spawn")?;
-    let function = runtime_callable_arg(args.get(0).expect("arity checked"), runtime, "spawn argument")?;
+    let callee = *args.get(0).expect("arity checked");
+    let function = spawnable_callable(callee, runtime, "spawn argument")?;
     let mut ctx = runtime
         .ctx()
         .map(lk_core::vm::VmContext::shallow_clone_shared_runtime)
@@ -1109,25 +1118,57 @@ fn runtime_string_maybe(value: &RuntimeVal, heap: &HeapStore) -> Result<Option<A
     }
 }
 
-fn runtime_callable_arg(
-    value: &RuntimeVal,
-    runtime: &NativeRuntime<'_>,
+/// Resolve a spawn target to a self-contained `RuntimeCallable`. A
+/// `CallableValue::Runtime` already carries its module + state; a plain
+/// `Closure` gets promoted here by snapshotting: `Arc::new(module.clone())`
+/// plus a same-module deep copy of its captures *and* the current globals
+/// (top-level `fn`s live there as closure values — without them the
+/// goroutine couldn't call named functions) into a fresh private
+/// `RuntimeModuleState`.
+fn spawnable_callable(
+    value: RuntimeVal,
+    runtime: &mut NativeRuntime<'_>,
     context: &str,
 ) -> Result<Arc<lk_core::vm::RuntimeCallable>> {
     let RuntimeVal::Obj(handle) = value else {
-        return Err(anyhow!("{context} must be a runtime callable"));
+        return Err(anyhow!("{context} must be a function"));
     };
-    let callable = runtime
+    let closure_parts = match runtime
         .heap()
-        .get(*handle)
-        .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?;
-    match callable {
-        HeapValue::Callable(CallableValue::Runtime(function)) => Ok(Arc::clone(function)),
-        HeapValue::Callable(CallableValue::Closure { .. }) => {
-            Err(anyhow!("{context} closure requires active RuntimeModuleState"))
-        }
-        _ => Err(anyhow!("{context} must be a runtime callable")),
+        .get(handle)
+        .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
+    {
+        HeapValue::Callable(CallableValue::Runtime(function)) => return Ok(Arc::clone(function)),
+        HeapValue::Callable(CallableValue::Closure {
+            function_index,
+            captures,
+        }) => (*function_index, Arc::clone(captures)),
+        _ => return Err(anyhow!("{context} must be a function")),
+    };
+    let (function_index, captures) = closure_parts;
+    let Some((state, _, module)) = runtime.state_ctx_module_mut() else {
+        return Err(anyhow!("{context}: spawning a closure requires full VM state"));
+    };
+    let Some(module) = module else {
+        return Err(anyhow!("{context}: spawning a closure requires module execution"));
+    };
+
+    let mut task_heap = HeapStore::new();
+    let mut copied_captures = Vec::with_capacity(captures.len());
+    for value in captures.iter() {
+        copied_captures.push(copy_runtime_value_same_module(value, state.heap(), &mut task_heap)?);
     }
+    let mut copied_globals = Vec::with_capacity(state.globals().len());
+    for value in state.globals() {
+        copied_globals.push(copy_runtime_value_same_module(value, state.heap(), &mut task_heap)?);
+    }
+    let snapshot = lk_core::vm::RuntimeModuleState::new(task_heap, copied_globals);
+    Ok(Arc::new(lk_core::vm::RuntimeCallable::with_state(
+        Arc::new(module.clone()),
+        function_index,
+        Arc::new(copied_captures),
+        Arc::new(lk_core::compat::sync::Mutex::new(snapshot)),
+    )))
 }
 
 fn channel_id_arg(value: &RuntimeVal, heap: &HeapStore, context: &str) -> Result<u64> {

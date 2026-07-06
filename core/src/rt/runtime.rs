@@ -403,7 +403,24 @@ impl Runtime {
     where
         F: std::future::Future,
     {
-        self.tokio_runtime.block_on(future)
+        // Blocking channel ops (`send`/`recv`/`select`) are also called from
+        // *inside* goroutines — i.e. from a tokio worker thread, where a
+        // plain `block_on` panics ("cannot start a runtime from within a
+        // runtime"). On the multi-thread flavor, `block_in_place` parks this
+        // worker's other tasks elsewhere first, making the Go idiom (a
+        // goroutine blocking on a channel) safe. The current-thread flavor
+        // (LK_SINGLE_THREAD test fallback) has no other worker to hand off
+        // to; there the old direct call remains.
+        if tokio::runtime::Handle::try_current().is_ok()
+            && matches!(
+                self.tokio_runtime.handle().runtime_flavor(),
+                tokio::runtime::RuntimeFlavor::MultiThread
+            )
+        {
+            tokio::task::block_in_place(|| self.tokio_runtime.handle().block_on(future))
+        } else {
+            self.tokio_runtime.block_on(future)
+        }
     }
 }
 

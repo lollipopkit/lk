@@ -75,14 +75,6 @@ impl TaskModule {
             })
             .map_err(|err| anyhow!("Failed to sleep: {err}"))
     }
-
-    #[stdlib_export(name = "spawn_blocking", params(f: Fn), returns = Task)]
-    fn spawn_blocking(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        if !is_callable(args.get(0).expect("checked arity"), runtime.heap())? {
-            bail!("task.spawn_blocking() expects a function argument");
-        }
-        bail!("task.spawn_blocking() needs VmContext lifetime management")
-    }
 }
 
 fn task_arg(value: &RuntimeVal, heap: &HeapStore, name: &str) -> Result<Arc<TaskValue>> {
@@ -104,16 +96,6 @@ fn numeric_millis(value: &RuntimeVal, name: &str) -> Result<i64> {
         RuntimeVal::Float(value) => Ok(*value as i64),
         other => Err(anyhow!("{name} expects a numeric argument, got {:?}", other.kind())),
     }
-}
-
-fn is_callable(value: &RuntimeVal, heap: &HeapStore) -> Result<bool> {
-    let RuntimeVal::Obj(handle) = value else {
-        return Ok(false);
-    };
-    let value = heap
-        .get(*handle)
-        .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?;
-    Ok(matches!(value, HeapValue::Callable(_)))
 }
 
 #[cfg(test)]
@@ -166,7 +148,7 @@ mod tests {
 
     #[test]
     fn task_exports_use_runtime_native() -> Result<()> {
-        for name in ["await", "try_await", "join_all", "sleep", "spawn_blocking"] {
+        for name in ["await", "try_await", "join_all", "sleep"] {
             let (_, function) = task_native(name)?;
             assert!(matches!(function, NativeFunction::Plain(_)));
         }
@@ -199,13 +181,6 @@ mod tests {
         let mut state = RuntimeModuleState::default();
         assert_eq!(call("sleep", &[RuntimeVal::Int(0)], &mut state)?, RuntimeVal::Nil);
         Ok(())
-    }
-
-    #[test]
-    fn task_spawn_blocking_rejects_non_callable() {
-        let mut state = RuntimeModuleState::default();
-        let err = call("spawn_blocking", &[RuntimeVal::Int(1)], &mut state).expect_err("non-callable should fail");
-        assert!(err.to_string().contains("expects a function"));
     }
 
     #[test]

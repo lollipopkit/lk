@@ -87,11 +87,13 @@ mod tests {
             };
             if matches!(
                 name,
-                "print" | "println" | "panic" | "assert" | "assert_eq" | "assert_ne"
+                // `spawn` needs full state to snapshot a closure's captures
+                // and globals into the goroutine's private heap.
+                "print" | "println" | "panic" | "assert" | "assert_eq" | "assert_ne" | "spawn"
             ) {
-                assert!(matches!(function, NativeFunction::FullState(_)));
+                assert!(matches!(function, NativeFunction::FullState(_)), "{name}");
             } else {
-                assert!(matches!(function, NativeFunction::Plain(_)));
+                assert!(matches!(function, NativeFunction::Plain(_)), "{name}");
             }
         }
     }
