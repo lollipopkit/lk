@@ -1784,6 +1784,10 @@ struct Ssa {
     /// Compile-time-known values, for provably-in-bounds constant list indexing:
     /// SSA value → its constant `i64` (recorded for direct `LoadInt`s).
     const_int: std::collections::HashMap<ValueId, i64>,
+    /// Constant-range materializations (`NewRange` with all-const operands,
+    /// step 1): handle → exclusive `(start, end)`. Lets `GetIndex` recognize
+    /// a range key (`s[1..3]`) and emit a real slice.
+    range_def: std::collections::HashMap<ValueId, (i64, i64)>,
     /// SSA value of a const-materialized list handle → its known element count.
     list_len: std::collections::HashMap<ValueId, i64>,
     /// Element count at materialization (never bumped by pushes): a sound
@@ -1830,6 +1834,7 @@ impl Ssa {
             single_fallthrough_target: vec![None; total_blocks],
             next_val: 0,
             const_int: std::collections::HashMap::new(),
+            range_def: std::collections::HashMap::new(),
             list_len: std::collections::HashMap::new(),
             list_base_len: std::collections::HashMap::new(),
             const_strs: std::collections::HashMap::new(),
@@ -4252,6 +4257,17 @@ fn lower_inst(
                 callee: AbiRef::new("list_h", "i64_from_range"),
                 args: vec![start, end, step, inclusive],
             });
+            // A fully-constant unit-step range keeps its slice meaning
+            // alongside the materialized list (`s[1..3]` indexes by range).
+            if let (Some(&s0), Some(&e0), Some(&st)) = (
+                ssa.const_int.get(&start),
+                ssa.const_int.get(&end),
+                ssa.const_int.get(&step),
+            ) && st == 1
+            {
+                let end_excl = if instr.c() != 0 { e0.saturating_add(1) } else { e0 };
+                ssa.range_def.insert(handle, (s0, end_excl));
+            }
             ssa.write(instr.a(), block, (handle, Ty::ListI64));
         }
         Opcode::ListPush => {
@@ -4339,6 +4355,37 @@ fn lower_inst(
             }
             // `a` = dst, `b` = container register, `c` = key register.
             let (handle, list_ty) = ssa.read(instr.b(), block, pc)?;
+            // A range key (`s[1..3]`, `xs[1..5]`): the compiler lowers the
+            // range to a materialized list; the recorded constant bounds
+            // recover the slice. Clamping (negative/OOB) lives in lkrt,
+            // matching the VM's `get_index_slice`.
+            if let Ok((kv, _)) = ssa.read(instr.c(), block, pc)
+                && let Some(&(r_start, r_end)) = ssa.range_def.get(&kv)
+            {
+                let start = ssa.new_val();
+                insts.push(Inst::Const {
+                    dst: start,
+                    value: Const::I64(r_start),
+                });
+                let end = ssa.new_val();
+                insts.push(Inst::Const {
+                    dst: end,
+                    value: Const::I64(r_end),
+                });
+                let (module, name, out_ty) = match list_ty {
+                    Ty::Str => ("str", "slice_chars", Ty::Str),
+                    Ty::ListI64 => ("list_h", "i64_slice", Ty::ListI64),
+                    _ => return Err(Unsupported::TypeMismatch { pc }),
+                };
+                let dst = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(dst),
+                    callee: AbiRef::new(module, name),
+                    args: vec![handle, start, end],
+                });
+                ssa.write(instr.a(), block, (dst, out_ty));
+                return Ok(());
+            }
             // A boxed Dyn container (e.g. a nested list read out of a mixed
             // list): index through the runtime tag check — a non-list tag is
             // the VM's loud failure, OOB is nil (the Dyn's own Nil tag).

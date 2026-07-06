@@ -74,6 +74,33 @@ pub unsafe extern "C" fn lkrt_str_contains(s: *const c_char, needle: *const c_ch
     i64::from(s.windows(needle.len().max(1)).any(|w| w == needle) || needle.is_empty())
 }
 
+/// Char-based range slice (`s[1..3]`), exactly the VM's
+/// `slice_string_general`: negative indices count from the tail, everything
+/// clamps (never a failure), and indices are *chars*, consistent with `s[i]`
+/// and `s.len()`.
+///
+/// # Safety
+/// `s` must be a valid C string, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_str_slice_chars(s: *const c_char, start: i64, end: i64) -> *mut c_char {
+    let text = if s.is_null() {
+        ""
+    } else {
+        // SAFETY: non-null pointers are NUL-terminated per the ABI.
+        unsafe { CStr::from_ptr(s) }.to_str().unwrap_or("")
+    };
+    let s_len = text.chars().count() as i64;
+    let start = if start < 0 {
+        (s_len + start).max(0)
+    } else {
+        start.min(s_len)
+    } as usize;
+    let end = if end < 0 { (s_len + end).max(0) } else { end.min(s_len) } as usize;
+    let start = start.min(end);
+    let sliced: String = text.chars().skip(start).take(end - start).collect();
+    arena_c_string(CString::new(sliced).unwrap_or_default())
+}
+
 /// Byte-wise lexicographic comparison of two C strings, returning `-1`/`0`/`1`
 /// (the sign of the ordering). The caller compares the result against `0` to
 /// realize `==`/`!=`/`<`/`<=`/`>`/`>=`, matching the VM's string comparison

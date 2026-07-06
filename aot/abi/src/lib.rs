@@ -190,6 +190,7 @@ macro_rules! for_each_abi_fn {
             ("list_h", "str_at", lkrt_lklist_str_at, ReadsHost, [Ptr, I64], StrPtr);
             ("list_h", "str_join", lkrt_lklist_str_join, WritesHost, [Ptr, StrPtr], StrPtr);
             ("list_h", "str_contains", lkrt_lklist_str_contains, ReadsHost, [Ptr, StrPtr], I64);
+            ("list_h", "i64_slice", lkrt_lklist_i64_slice, WritesHost, [Ptr, I64, I64], Ptr);
             // String-keyed map handle. `get_pair` (returning a by-value `Maybe<i64>`) is
             // declared directly in codegen, like the list variant.
             ("map_h", "str_i64_new", lkrt_lkmap_str_i64_new, WritesHost, [], Ptr);
@@ -224,6 +225,7 @@ macro_rules! for_each_abi_fn {
             ("str", "char_len", lkrt_str_char_len, Pure, [StrPtr], I64);
             ("str", "starts_with", lkrt_str_starts_with, Pure, [StrPtr, StrPtr], I64);
             ("str", "contains", lkrt_str_contains, Pure, [StrPtr, StrPtr], I64);
+            ("str", "slice_chars", lkrt_str_slice_chars, WritesHost, [StrPtr, I64, I64], StrPtr);
             // `s.split(sep)` → a fresh `str` list handle (Rust `str::split`, so
             // VM-exact); parts are arena-owned C strings.
             ("str", "split", lkrt_str_split, WritesHost, [StrPtr, StrPtr], Ptr);

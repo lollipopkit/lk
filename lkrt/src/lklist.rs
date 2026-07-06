@@ -613,6 +613,26 @@ pub unsafe extern "C" fn lkrt_lklist_str_contains(handle: *mut c_void, needle: *
     )
 }
 
+/// Range slice of an `i64` list (`xs[1..5]`), exactly the VM's list slice:
+/// negative indices count from the tail, everything clamps.
+///
+/// # Safety
+/// `handle` must be a live handle from [`lkrt_lklist_i64_new`], or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_i64_slice(handle: *mut c_void, start: i64, end: i64) -> *mut c_void {
+    let values: &[i64] = if handle.is_null() {
+        &[]
+    } else {
+        // SAFETY: `handle` addresses a `Vec<i64>` from `lkrt_lklist_i64_new`.
+        unsafe { &*(handle as *mut Vec<i64>) }
+    };
+    let len = values.len() as i64;
+    let start = if start < 0 { (len + start).max(0) } else { start } as usize;
+    let end = (if end < 0 { (len + end).max(0) } else { end } as usize).min(values.len());
+    let start = start.min(end);
+    crate::state::arena_handle(values[start..end].to_vec())
+}
+
 /// Creates a fresh, empty `f64` list handle.
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_lklist_f64_new() -> *mut c_void {
