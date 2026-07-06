@@ -236,6 +236,7 @@ macro_rules! for_each_abi_fn {
             ("str", "repeat", lkrt_str_repeat, WritesHost, [StrPtr, I64], StrPtr);
             ("str", "replace", lkrt_str_replace, WritesHost, [StrPtr, StrPtr, StrPtr], StrPtr);
             ("str", "chars", lkrt_str_chars, WritesHost, [StrPtr], Ptr);
+            ("str", "char_at", lkrt_str_char_at, WritesHost, [StrPtr, I64], DynVal);
             // `s.split(sep)` → a fresh `str` list handle (Rust `str::split`, so
             // VM-exact); parts are arena-owned C strings.
             ("str", "split", lkrt_str_split, WritesHost, [StrPtr, StrPtr], Ptr);
@@ -259,6 +260,7 @@ macro_rules! for_each_abi_fn {
             ("dyn", "as_i64", lkrt_dyn_as_i64, ReadsHost, [DynVal], I64);
             ("dyn", "as_f64", lkrt_dyn_as_f64, ReadsHost, [DynVal], F64);
             ("dyn", "as_str", lkrt_dyn_as_str, ReadsHost, [DynVal], StrPtr);
+            ("dyn", "as_list", lkrt_dyn_as_list, ReadsHost, [DynVal], Ptr);
             ("dyn", "as_bool", lkrt_dyn_as_bool, ReadsHost, [DynVal], I64);
             ("dyn", "add", lkrt_dyn_add, WritesHost, [DynVal, DynVal], DynVal);
             ("dyn", "sub", lkrt_dyn_sub, ReadsHost, [DynVal, DynVal], DynVal);

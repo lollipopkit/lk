@@ -1044,10 +1044,23 @@ fn empty_map_is_int_keyed(code: &[u32], start_pc: usize, dst_reg: u8) -> bool {
 /// Whether an empty `[]` literal's first pushed element is a string (tracked
 /// through `Move`s, like the map-key lookahead). A wrong guess only costs a
 /// fallback: the typed push rejects the mismatch, never miscompiles.
-fn empty_list_is_str_elem(code: &[u32], start_pc: usize, dst_reg: u8) -> bool {
+/// The first pushed value's provenance types an empty `[]` literal:
+/// a string source → `ListStr`, an indexed read (`xs[i]`, a field, an
+/// iterated element — possibly a boxed Dyn) → `ListDyn` (safe: everything
+/// boxes), anything else → the `ListI64` default. A wrong guess only costs
+/// a fallback.
+#[derive(PartialEq)]
+enum EmptyListGuess {
+    Str,
+    Dyn,
+    Default,
+}
+
+fn empty_list_elem_guess(code: &[u32], start_pc: usize, dst_reg: u8) -> EmptyListGuess {
     let mut regs = std::collections::HashSet::new();
     regs.insert(dst_reg);
     let mut str_regs = std::collections::HashSet::new();
+    let mut indexed_regs = std::collections::HashSet::new();
     for raw in &code[start_pc + 1..] {
         let Ok(instr) = Instr::try_from_raw(*raw) else { break };
         match instr.opcode() {
@@ -1056,6 +1069,11 @@ fn empty_list_is_str_elem(code: &[u32], start_pc: usize, dst_reg: u8) -> bool {
             }
             Opcode::LoadString | Opcode::ConcatString | Opcode::ConcatN | Opcode::ToString => {
                 str_regs.insert(instr.a());
+                indexed_regs.remove(&instr.a());
+            }
+            Opcode::GetIndex | Opcode::GetList | Opcode::GetFieldK => {
+                indexed_regs.insert(instr.a());
+                str_regs.remove(&instr.a());
             }
             Opcode::AddInt => {
                 if str_regs.contains(&instr.b()) || str_regs.contains(&instr.c()) {
@@ -1063,6 +1081,7 @@ fn empty_list_is_str_elem(code: &[u32], start_pc: usize, dst_reg: u8) -> bool {
                 } else {
                     str_regs.remove(&instr.a());
                 }
+                indexed_regs.remove(&instr.a());
             }
             Opcode::LoadInt
             | Opcode::LoadFloat
@@ -1073,14 +1092,21 @@ fn empty_list_is_str_elem(code: &[u32], start_pc: usize, dst_reg: u8) -> bool {
             | Opcode::ModIntI
             | Opcode::ModInt => {
                 str_regs.remove(&instr.a());
+                indexed_regs.remove(&instr.a());
             }
             Opcode::ListPush if regs.contains(&instr.a()) => {
-                return str_regs.contains(&instr.b());
+                return if str_regs.contains(&instr.b()) {
+                    EmptyListGuess::Str
+                } else if indexed_regs.contains(&instr.b()) {
+                    EmptyListGuess::Dyn
+                } else {
+                    EmptyListGuess::Default
+                };
             }
             _ => {}
         }
     }
-    false
+    EmptyListGuess::Default
 }
 
 /// Interns a string constant into the module globals, returning its [`GlobalId`]
@@ -3011,6 +3037,36 @@ fn lower_inst(
             {
                 let (lv_raw, lty_raw) = ssa.read(instr.b(), block, pc)?;
                 let (rv_raw, rty_raw) = ssa.read(instr.c(), block, pc)?;
+                // `Str + Dyn`: the VM only accepts Str + Str here (anything
+                // else is a loud error), so unbox the Dyn side through the
+                // `as_str` tag guard (same loud failure) and emit a *typed*
+                // concat — the result stays `Str`, keeping a loop
+                // accumulator (`acc += s[i]`) same-typed through its phi.
+                if op == Opcode::AddInt && matches!((lty_raw, rty_raw), (Ty::Str, Ty::Dyn) | (Ty::Dyn, Ty::Str)) {
+                    let unbox = |ssa: &mut Ssa, insts: &mut Vec<Inst>, v: ValueId, ty: Ty| {
+                        if ty == Ty::Dyn {
+                            let dst = ssa.new_val();
+                            insts.push(Inst::Call {
+                                dst: Some(dst),
+                                callee: AbiRef::new("dyn", "as_str"),
+                                args: vec![v],
+                            });
+                            dst
+                        } else {
+                            v
+                        }
+                    };
+                    let lhs = unbox(ssa, insts, lv_raw, lty_raw);
+                    let rhs = unbox(ssa, insts, rv_raw, rty_raw);
+                    let dst = ssa.new_val();
+                    insts.push(Inst::Call {
+                        dst: Some(dst),
+                        callee: AbiRef::new("str", "concat"),
+                        args: vec![lhs, rhs],
+                    });
+                    ssa.write(instr.a(), block, (dst, Ty::Str));
+                    return Ok(());
+                }
                 if lty_raw == Ty::Dyn || rty_raw == Ty::Dyn {
                     let lhs = to_dyn(ssa, insts, lv_raw, lty_raw, pc)?;
                     let rhs = to_dyn(ssa, insts, rv_raw, rty_raw, pc)?;
@@ -3156,6 +3212,22 @@ fn lower_inst(
                 }
                 ssa.list_len.insert(handle, elems.len() as i64);
                 ssa.list_base_len.insert(handle, elems.len() as i64);
+                ssa.write(instr.a(), block, (handle, Ty::ListDyn));
+            } else if elems.is_empty() {
+                // An empty literal (`let flat = [];`) materializes as an
+                // empty dyn list: later pushes box their elements, and the
+                // cross-typed Cmp arms cover `[] == [1, 2]`-style compares.
+                // (Call-window `NewList 0` also lands here; the dead handle
+                // is one no-arg call.) 旧留档顾虑(typed eq lowering)已被
+                // typed↔Dyn 跨型比较解除。
+                let handle = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(handle),
+                    callee: AbiRef::new("list_h", "dyn_new"),
+                    args: Vec::new(),
+                });
+                ssa.list_len.insert(handle, 0);
+                ssa.list_base_len.insert(handle, 0);
                 ssa.write(instr.a(), block, (handle, Ty::ListDyn));
             }
             // Recorded after the write (which clears the slot) so both views
@@ -4036,16 +4108,21 @@ fn lower_inst(
                 ConstHeapValueData::List(elems) => {
                     // An empty `[]` is ambiguous — a lookahead types it from the
                     // first value pushed (a wrong guess only costs a fallback).
-                    if elems.is_empty() && empty_list_is_str_elem(&func.code, pc, instr.a()) {
+                    if elems.is_empty() {
+                        let (new_fn, list_ty) = match empty_list_elem_guess(&func.code, pc, instr.a()) {
+                            EmptyListGuess::Str => ("str_new", Ty::ListStr),
+                            EmptyListGuess::Dyn => ("dyn_new", Ty::ListDyn),
+                            EmptyListGuess::Default => ("i64_new", Ty::ListI64),
+                        };
                         let handle = ssa.new_val();
                         insts.push(Inst::Call {
                             dst: Some(handle),
-                            callee: AbiRef::new("list_h", "str_new"),
+                            callee: AbiRef::new("list_h", new_fn),
                             args: Vec::new(),
                         });
                         ssa.list_len.insert(handle, 0);
                         ssa.list_base_len.insert(handle, 0);
-                        ssa.write(instr.a(), block, (handle, Ty::ListStr));
+                        ssa.write(instr.a(), block, (handle, list_ty));
                         return Ok(());
                     }
                     let all_int = elems.iter().all(|e| matches!(e, ConstRuntimeValueData::Int(_)));
@@ -4369,6 +4446,39 @@ fn lower_inst(
             }
             ssa.write(instr.a(), block, (handle, Ty::ListI64));
         }
+        Opcode::ToIter => {
+            // `a` = dst, `b` = source. The VM normalizes the iterated value
+            // to a list (`to_iter`): lists pass through, a string iterates
+            // per char (a Mixed list there → dyn list here), a boxed Dyn
+            // unwraps through the as_list guard (iterating a non-container
+            // is the VM's loud error). Map iteration order is the VM's hash
+            // order — not portable, so maps reject (semantics.md).
+            let (v, ty) = ssa.read(instr.b(), block, pc)?;
+            match ty {
+                Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn => {
+                    ssa.write(instr.a(), block, (v, ty));
+                }
+                Ty::Str => {
+                    let dst = ssa.new_val();
+                    insts.push(Inst::Call {
+                        dst: Some(dst),
+                        callee: AbiRef::new("str", "chars"),
+                        args: vec![v],
+                    });
+                    ssa.write(instr.a(), block, (dst, Ty::ListDyn));
+                }
+                Ty::Dyn => {
+                    let dst = ssa.new_val();
+                    insts.push(Inst::Call {
+                        dst: Some(dst),
+                        callee: AbiRef::new("dyn", "as_list"),
+                        args: vec![v],
+                    });
+                    ssa.write(instr.a(), block, (dst, Ty::ListDyn));
+                }
+                _ => return Err(Unsupported::TypeMismatch { pc }),
+            }
+        }
         Opcode::NewObject => {
             // `a` = dst, `b` = base, `c` = field count: `base` holds the type
             // name, fields at `base+1+2k` (constant-string key) / `base+2+2k`
@@ -4408,9 +4518,11 @@ fn lower_inst(
             // handle is a reference (matching the VM), so the push is visible through
             // aliases; no new SSA value is produced for the list.
             let (handle, list_ty) = ssa.read(instr.a(), block, pc)?;
+            // Values read through `read_scalar` so a `Maybe` (a dynamic list
+            // read like `xs[i]` in `flat.push(xs[i])`) unwraps first.
             match list_ty {
                 Ty::ListI64 => {
-                    let value = ssa.read_typed(instr.b(), block, Ty::I64, pc)?;
+                    let value = read_typed_scalar(ssa, insts, instr.b(), block, Ty::I64, pc)?;
                     insts.push(Inst::Call {
                         dst: None,
                         callee: AbiRef::new("list_h", "i64_push"),
@@ -4418,7 +4530,7 @@ fn lower_inst(
                     });
                 }
                 Ty::ListF64 => {
-                    let (bv, bty) = ssa.read(instr.b(), block, pc)?;
+                    let (bv, bty) = read_scalar(ssa, insts, instr.b(), block, pc)?;
                     if !matches!(bty, Ty::I64 | Ty::F64) {
                         return Err(Unsupported::TypeMismatch { pc });
                     }
@@ -4433,7 +4545,7 @@ fn lower_inst(
                     // Stored strings are arena-owned (interned constants or
                     // register-visible arena strings), alive until exit, so the
                     // pointer push involves no ownership transfer.
-                    let value = ssa.read_typed(instr.b(), block, Ty::Str, pc)?;
+                    let value = read_typed_scalar(ssa, insts, instr.b(), block, Ty::Str, pc)?;
                     insts.push(Inst::Call {
                         dst: None,
                         callee: AbiRef::new("list_h", "str_push"),
@@ -4442,7 +4554,7 @@ fn lower_inst(
                 }
                 // Mixed list: any boxable value pushes as a Dyn carrier.
                 Ty::ListDyn => {
-                    let (bv, bty) = ssa.read(instr.b(), block, pc)?;
+                    let (bv, bty) = read_scalar(ssa, insts, instr.b(), block, pc)?;
                     let boxed = to_dyn(ssa, insts, bv, bty, pc)?;
                     insts.push(Inst::Call {
                         dst: None,
@@ -4537,6 +4649,20 @@ fn lower_inst(
                 insts.push(Inst::Call {
                     dst: Some(dst),
                     callee: AbiRef::new("dyn", helper),
+                    args: vec![handle, key],
+                });
+                ssa.write(instr.a(), block, (dst, Ty::Dyn));
+                return Ok(());
+            }
+            // `s[i]` — single-char read, char-indexed, OOB = nil (the VM's
+            // `index_string_at`); the Dyn carrier holds the nil itself.
+            // (`for ch in "abc"` desugars to exactly this indexed read.)
+            if list_ty == Ty::Str {
+                let key = read_typed_scalar(ssa, insts, instr.c(), block, Ty::I64, pc)?;
+                let dst = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(dst),
+                    callee: AbiRef::new("str", "char_at"),
                     args: vec![handle, key],
                 });
                 ssa.write(instr.a(), block, (dst, Ty::Dyn));

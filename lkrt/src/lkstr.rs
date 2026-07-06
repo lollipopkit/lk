@@ -413,3 +413,25 @@ pub unsafe extern "C" fn lkrt_str_chars(s: *const c_char) -> *mut std::ffi::c_vo
         .collect();
     crate::state::arena_handle(elements)
 }
+
+/// `s[i]` — single-char read as a Dyn (char-indexed; out of bounds is nil,
+/// exactly the VM's `index_string_at`). A negative index counts back from
+/// the *byte* length (the VM's quirk — exact for ASCII).
+///
+/// # Safety
+/// `s` must be a valid C string, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_str_char_at(s: *const c_char, index: i64) -> crate::lkdyn::LkDyn {
+    let text = view(s);
+    let idx = if index < 0 { text.len() as i64 + index } else { index };
+    if idx < 0 {
+        return crate::lkdyn::LkDyn::NIL;
+    }
+    match text.chars().nth(idx as usize) {
+        Some(ch) => {
+            let owned = arena_c_string(CString::new(ch.to_string()).unwrap_or_default());
+            crate::lkdyn::lkrt_dyn_from_str(owned)
+        }
+        None => crate::lkdyn::LkDyn::NIL,
+    }
+}

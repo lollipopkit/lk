@@ -391,6 +391,16 @@ pub extern "C" fn lkrt_dyn_len_of(v: LkDyn) -> i64 {
     }
 }
 
+/// Guarded list unboxing: the handle behind a `DYN_LIST` tag (loud failure
+/// otherwise — iterating a non-container is a VM error).
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_dyn_as_list(v: LkDyn) -> *mut c_void {
+    if v.tag != DYN_LIST {
+        crate::abi::flush_and_abort();
+    }
+    v.payload as *mut c_void
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_dyn_from_map(handle: *mut c_void) -> LkDyn {
     LkDyn {
