@@ -591,6 +591,28 @@ pub unsafe extern "C" fn lkrt_lklist_f64_contains(handle: *mut c_void, needle: f
     i64::from(values.contains(&needle))
 }
 
+/// Linear membership test for a string list — by *content*, matching the
+/// VM's `TypedList::String` contains (which stringifies and compares text,
+/// for short and long strings alike).
+///
+/// # Safety
+/// `handle` must be a live handle from [`lkrt_lklist_str_new`], or null;
+/// `needle` must be a valid C string, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_str_contains(handle: *mut c_void, needle: *const c_char) -> i64 {
+    if handle.is_null() || needle.is_null() {
+        return 0;
+    }
+    let needle = unsafe { CStr::from_ptr(needle) };
+    // SAFETY: `handle` addresses a `Vec<*const c_char>` from `lkrt_lklist_str_new`.
+    let values = unsafe { &*(handle as *mut Vec<*const c_char>) };
+    i64::from(
+        values
+            .iter()
+            .any(|&p| !p.is_null() && unsafe { CStr::from_ptr(p) } == needle),
+    )
+}
+
 /// Creates a fresh, empty `f64` list handle.
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_lklist_f64_new() -> *mut c_void {

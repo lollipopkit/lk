@@ -4772,17 +4772,29 @@ fn lower_inst(
                 ssa.write(instr.a(), block, (dst, Ty::Bool));
                 return Ok(());
             }
+            // Typed-list `in` is *strictly* same-typed in the VM
+            // (`list_contains` matches on the needle's variant): `1.0 in
+            // [1, 2]` and `1 in [1.0]` are false — no numeric coercion,
+            // unlike `==`. A needle whose proven type can't match folds to
+            // constant false; a Dyn needle (runtime-typed) still rejects.
             let (fn_name, needle) = match list_ty {
-                Ty::ListI64 => (
-                    "i64_contains",
-                    read_typed_scalar(ssa, insts, instr.b(), block, Ty::I64, pc)?,
-                ),
-                Ty::ListF64 => {
+                Ty::ListI64 | Ty::ListF64 | Ty::ListStr => {
                     let (nv, nty) = read_scalar(ssa, insts, instr.b(), block, pc)?;
-                    if !matches!(nty, Ty::I64 | Ty::F64) {
-                        return Err(Unsupported::TypeMismatch { pc });
+                    match (list_ty, nty) {
+                        (Ty::ListI64, Ty::I64) => ("i64_contains", nv),
+                        (Ty::ListF64, Ty::F64) => ("f64_contains", nv),
+                        (Ty::ListStr, Ty::Str) => ("str_contains", nv),
+                        (_, Ty::Dyn) => return Err(Unsupported::TypeMismatch { pc }),
+                        _ => {
+                            let dst = ssa.new_val();
+                            insts.push(Inst::Const {
+                                dst,
+                                value: Const::Bool(false),
+                            });
+                            ssa.write(instr.a(), block, (dst, Ty::Bool));
+                            return Ok(());
+                        }
                     }
-                    ("f64_contains", coerce_to_f64(ssa, insts, nv, nty))
                 }
                 _ => return Err(Unsupported::TypeMismatch { pc }),
             };

@@ -569,6 +569,34 @@ pub unsafe extern "C" fn lkrt_lklist_dyn_eq(a: *mut c_void, b: *mut c_void) -> i
     i64::from(lhs.len() == rhs.len() && lhs.iter().zip(rhs).all(|(&x, &y)| dyn_eq_inner(x, y)))
 }
 
+/// The VM's `Contains` (`in`) equality on a Mixed list is `RuntimeVal`'s
+/// *derived* `PartialEq` — strictly same-variant: no Int/Float coercion
+/// (`1.0 in [1, 2]` is false, unlike `==`), floats by value (`0.0 == -0.0`,
+/// `NaN != NaN`, unlike `unique()`'s to_bits), ShortStr (≤7 bytes) by
+/// content, heap objects (lists/maps/longer strings) by handle.
+fn contains_eq(a: LkDyn, b: LkDyn) -> bool {
+    if a.tag != b.tag {
+        return false;
+    }
+    match a.tag {
+        DYN_NIL => true,
+        DYN_BOOL | DYN_I64 => a.payload == b.payload,
+        DYN_F64 => a.f64_value() == b.f64_value(),
+        DYN_STR => {
+            let (sa, sb) = unsafe { (dyn_str(a), dyn_str(b)) };
+            if sa.len() <= 7 && sb.len() <= 7 {
+                sa == sb
+            } else {
+                a.payload == b.payload
+            }
+        }
+        DYN_LIST | DYN_MAP => a.payload == b.payload,
+        _ => false,
+    }
+}
+
+/// `needle in xs` under [`contains_eq`] (the `in` operator's semantics —
+/// *not* `dyn_eq_inner`, which is the `==` operator's).
 /// # Safety
 /// `handle` must be a live handle from [`lkrt_lklist_dyn_new`], or null.
 #[unsafe(no_mangle)]
@@ -577,7 +605,7 @@ pub unsafe extern "C" fn lkrt_lklist_dyn_contains(handle: *mut c_void, value: Lk
         return 0;
     }
     let values = unsafe { &*(handle as *mut Vec<LkDyn>) };
-    i64::from(values.iter().any(|&e| dyn_eq_inner(e, value)))
+    i64::from(values.iter().any(|&e| contains_eq(e, value)))
 }
 
 fn dyn_slice<'a>(handle: *mut c_void) -> &'a [LkDyn] {

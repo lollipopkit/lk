@@ -107,6 +107,16 @@ typed 列表两种常见形状;Mixed 列表同变量长串重复是已知分歧,
 列表元素的句柄同一性 native 以「NewList 窗口内同寄存器装箱一次」保持
 (`let l=[7]; [l,l].unique()` 去重,两个 `[1]` 字面量不去重)。
 
+## `in` 操作符等值语义(2026-07-06 裁决)
+
+`needle in list` 走 VM `list_contains`,**与 `==`/unique 都不同**——第三套 eq:
+typed 列表严格同型(`1.0 in [1, 2]`、`1 in [1.0]` 均 false,无数值 coercion;
+String 列表按内容,长短一致);Mixed 列表是 `RuntimeVal` 的 derive `PartialEq`
+(同变体严格、float 按值 `==`(`0.0==-0.0` true、NaN 永 false)、ShortStr 内容、
+heap 对象按句柄)。native:typed 列表跨型 needle 编译期折叠 false,Mixed
+(`ListDyn`)走 lkrt `contains_eq`(同款 strict 语义);长字符串/嵌套列表的句柄
+同一性限制与 unique() 同款(intern/转换边界,已留档,不进差分子集)。
+
 ## 维护约定
 
 - 新增可下降形状时,先在此登记预期语义(尤其失败路径与显示格式),再写差分用例。
