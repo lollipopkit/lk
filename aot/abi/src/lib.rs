@@ -143,6 +143,9 @@ macro_rules! for_each_abi_fn {
             // semantics (negative-from-end; out-of-range writes `present = 0`).
             ("list_h", "i64_new", lkrt_lklist_i64_new, WritesHost, [], Ptr);
             ("list_h", "i64_from_range", lkrt_lklist_i64_from_range, WritesHost, [I64, I64, I64, I64], Ptr);
+            ("list_h", "i64_take", lkrt_lklist_i64_take, WritesHost, [Ptr, I64], Ptr);
+            ("list_h", "i64_skip", lkrt_lklist_i64_skip, WritesHost, [Ptr, I64], Ptr);
+            ("list_h", "i64_chain", lkrt_lklist_i64_chain, WritesHost, [Ptr, Ptr], Ptr);
             ("list_h", "i64_push", lkrt_lklist_i64_push, WritesHost, [Ptr, I64], Nil);
             // List HOF over compiled zero-capture lambdas (`ptr @lk_fn_N`
             // callbacks). The callback may abort (div/0 inside the lambda), so

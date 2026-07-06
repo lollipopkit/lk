@@ -44,6 +44,61 @@ pub extern "C" fn lkrt_lklist_i64_from_range(start: i64, end: i64, step: i64, in
     crate::state::arena_handle(out)
 }
 
+/// `xs.take(n)` — a fresh list of the first `n` elements. VM edge exactness:
+/// the count casts through `usize` (`take_prefix(n as usize)`), so a negative
+/// `n` wraps huge and takes everything.
+///
+/// # Safety
+/// `handle` must be a live `List<i64>` handle, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_i64_take(handle: *mut c_void, n: i64) -> *mut c_void {
+    let values: &[i64] = if handle.is_null() {
+        &[]
+    } else {
+        unsafe { &*(handle as *mut Vec<i64>) }
+    };
+    let count = (n as usize).min(values.len());
+    crate::state::arena_handle(values[..count].to_vec())
+}
+
+/// `xs.skip(n)` — a fresh list without the first `n` elements. The VM only
+/// drains for `n > 0` (zero/negative copies everything).
+///
+/// # Safety
+/// `handle` must be a live `List<i64>` handle, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_i64_skip(handle: *mut c_void, n: i64) -> *mut c_void {
+    let values: &[i64] = if handle.is_null() {
+        &[]
+    } else {
+        unsafe { &*(handle as *mut Vec<i64>) }
+    };
+    let start = if n > 0 { (n as usize).min(values.len()) } else { 0 };
+    crate::state::arena_handle(values[start..].to_vec())
+}
+
+/// `xs.chain(ys)` — a fresh concatenation of two `List<i64>`.
+///
+/// # Safety
+/// Both handles must be live `List<i64>` handles, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_i64_chain(a: *mut c_void, b: *mut c_void) -> *mut c_void {
+    let lhs: &[i64] = if a.is_null() {
+        &[]
+    } else {
+        unsafe { &*(a as *mut Vec<i64>) }
+    };
+    let rhs: &[i64] = if b.is_null() {
+        &[]
+    } else {
+        unsafe { &*(b as *mut Vec<i64>) }
+    };
+    let mut out = Vec::with_capacity(lhs.len() + rhs.len());
+    out.extend_from_slice(lhs);
+    out.extend_from_slice(rhs);
+    crate::state::arena_handle(out)
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_lklist_i64_new() -> *mut c_void {
     crate::state::arena_handle(Vec::<i64>::new())

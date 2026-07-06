@@ -209,7 +209,7 @@ enum ClosureCapture {
 
 /// Global names treated as stdlib module objects when read via `GetGlobal`.
 /// Only modules with at least one [`module_call_abi`] mapping belong here.
-const MODULE_GLOBALS: &[&str] = &["os", "time", "env", "math", "fs", "process", "datetime", "std"];
+const MODULE_GLOBALS: &[&str] = &["os", "time", "env", "math", "fs", "process", "datetime", "std", "iter"];
 
 /// Maps a `module.method` call to its typed lkrt ABI entry: the `AbiRef`, the
 /// exact positional argument types, and the return type. `None` means the
@@ -5504,6 +5504,34 @@ fn lower_method_dispatch(
         // `s.contains(needle)` — byte-substring test, exactly Rust/VM semantics.
         // `m.has(key)` on a mixed-value map — key membership (stored-nil
         // still counts, see `str_dyn_has`).
+        // `List<i64>` slicing/concat helpers (VM core_methods semantics).
+        (Ty::ListI64, "take", [(n, Ty::I64)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", "i64_take"),
+                args: vec![receiver, *n],
+            });
+            (dst, Ty::ListI64)
+        }
+        (Ty::ListI64, "skip", [(n, Ty::I64)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", "i64_skip"),
+                args: vec![receiver, *n],
+            });
+            (dst, Ty::ListI64)
+        }
+        (Ty::ListI64, "chain", [(other, Ty::ListI64)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", "i64_chain"),
+                args: vec![receiver, *other],
+            });
+            (dst, Ty::ListI64)
+        }
         (Ty::MapStrDyn, "has", [(key, Ty::Str)]) => {
             let raw = ssa.new_val();
             insts.push(Inst::Call {
@@ -5680,6 +5708,39 @@ fn lower_module_call(
     block: usize,
     pc: usize,
 ) -> Result<(), Unsupported> {
+    // `iter.range(start, end[, step])` — an exclusive integer range,
+    // materialized eagerly like the VM (reuses the `NewRange` helper; zero
+    // step aborts inside it).
+    if module == "iter" && name == "range" {
+        if !(argc == 2 || argc == 3) {
+            return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+        }
+        let start = read_typed_scalar(ssa, insts, base.wrapping_add(1), block, Ty::I64, pc)?;
+        let end = read_typed_scalar(ssa, insts, base.wrapping_add(2), block, Ty::I64, pc)?;
+        let step = if argc == 3 {
+            read_typed_scalar(ssa, insts, base.wrapping_add(3), block, Ty::I64, pc)?
+        } else {
+            let one = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: one,
+                value: Const::I64(1),
+            });
+            one
+        };
+        let exclusive = ssa.new_val();
+        insts.push(Inst::Const {
+            dst: exclusive,
+            value: Const::I64(0),
+        });
+        let handle = ssa.new_val();
+        insts.push(Inst::Call {
+            dst: Some(handle),
+            callee: AbiRef::new("list_h", "i64_from_range"),
+            args: vec![start, end, step, exclusive],
+        });
+        ssa.write(base, block, (handle, Ty::ListI64));
+        return Ok(());
+    }
     // `math.floor`/`ceil`/`round` dispatch on the argument's static type,
     // matching the VM's `integer_round`: an `Int` passes through unchanged, a
     // `Float` rounds via the lkrt helper (`f64::xxx() as i64`).
