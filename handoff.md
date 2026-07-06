@@ -112,8 +112,17 @@
     无类型参数/mutable 全局——首版不做)+ MapRest + 空[]延迟物化(留档)·
     4 Call(comprehensive 需 Set 内建类型 + word_count 需 str-lambda HOF/
     动态 map,均留档)· 2 use 文件依赖(compile llvm 不支持多文件)
-  - **M4.2 Dyn 深覆盖可收割面已尽**:14/51 → 24/51(+10 例),
-    下一步建议启动 GetGlobal 独立大项或按需扩 str-lambda HOF
+  - ✅ **迭代/空列表/字符索引批次**(commit `3a0eac3`,control_flow 翻转,
+    **25/51**):GetIndex(Str,I64) 单字符读(str_char_at→Dyn)· Str+Dyn
+    拆箱 concat(loop 累加器 phi 保型)· ToIter 臂(列表 identity/Str→
+    chars/Dyn→as_list)· 空 [] 三态猜测(str/索引读→ListDyn/默认 i64)·
+    ListPush 全臂 Maybe unwrap
+  - **M4.2 Dyn 深覆盖收官**:14/51 → **25/51**(+11 例)。剩余 26 全为
+    留档/大项:13 GetGlobal(单独立项)· 8 跨函数 Dyn 流动 + MapRest ·
+    comprehensive(Set 类型)· word_count(sort_words 无类型参数,其内
+    str-lambda HOF/动态 map 链路已部分就绪)· 2 use 多文件
+  - **留档小项**:混合 push(push(1) 再 push("x"))需 fixpoint 重猜机制;
+    typed 列表方法长尾对 ListDyn receiver(take/skip 等)按需补
   - 每步必须:aot_coverage.sh 单调不降 + 差分门禁逐字节 + bench 纯噪声
   - GetGlobal 14(try$call/并发/模块白名单)是**另一根因**,独立大项未启
 - **✅ 裁决不做**:callable trait 反转 · 真机/QEMU demo · 细粒度 feature 拆分。

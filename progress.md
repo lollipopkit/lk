@@ -544,6 +544,27 @@ isolate**(单线程无锁 GC 是热路径底线,无数据竞争,推翻=重写堆
 - **验证(贯穿)**:workspace 全量 1499+ 0 失败 · GC-stress 全绿 · clippy/fmt 0 · no_std 0/0 ·
   差分门禁全过 · dist bench 见子步5 记录。
 
+## M4.2 循环轮记录:迭代/空列表/字符索引(2026-07-07)
+
+- **s[i] 单字符索引**:VM index_string_at = char 索引、越界 nil、负索引按
+  **字节** len 回数(怪癖,ascii 下等价)。native str_char_at → Dyn(nil 自含)。
+  'for ch in "abc"' desugar 成按索引循环,连锁需要 AddInt 的 (Str, Dyn)
+  **拆箱特化**:VM 里 Str+非Str 必错,as_str guard 拆箱 = 同款 loud,
+  发射 typed concat 保住 acc 的 Str 类型(loop header phi 禁 widen,
+  装箱路由会把累加器变 Dyn 导致 loop 混型 reject——拆箱是唯一通路)。
+- **ToIter**:编译器仅对"证明是列表"的 for-in 发索引循环,其余(嵌套列表/
+  字符串变量/map)发 ToIter 规范化。native:列表 identity、Str→chars、
+  Dyn→as_list guard;map reject(hash 序)。
+- **空 [] 猜测升级**:实测发现空 [] 走 LoadHeapConst(常量池)而非 NewList
+  ——之前 NewList 空臂白修(保留无害)。empty_list_is_str_elem 泛化为三态:
+  首 push 的字节码级来源 str→ListStr / 索引读→ListDyn / 默认 ListI64。
+  ListDyn 猜测语义安全(一切可装箱,错猜只可能亏性能不亏正确性)。
+- **ListPush Maybe unwrap**:flat.push(xs[i]) 的 xs[i] 是 MaybeI64,
+  旧 read_typed 不 unwrap 直接挂——全臂换 read_scalar 族。
+- 教训:probe diff IDENTICAL 前必须确认 Warning=0(本轮两次差点被
+  双 VM 假象骗过);字节码级 dump 时注意空 [] 与 [x,y] 走不同 opcode。
+- 覆盖率 24→25/51;全门禁绿。
+
 ## M4.2 循环轮记录:iter 转发 + NewObject + Str 批次(2026-07-07)
 
 - **iter 模块函数版 = 方法的模块拼写**:Call 臂对 iter.{map,filter,reduce,
