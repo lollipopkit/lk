@@ -55,11 +55,14 @@
     与 VM 逐字节一致;旧限制测试已翻转。map_demo/pattern_matching 推进到 operand
     类型阻塞(D3 领域);template_strings pc23/for_loop_patterns pc34 仍 LoadHeapConst
     (待查常量形状:可能嵌套列表或 LongString 元素——box_const_scalar 现只收 ShortStr)
-  - **D3 进行中**:✅ Dyn 算术臂已落地(commit `1ad4d7a`,read_scalar 前拦截→to_dyn→
-    dyn.add/…→Ty::Dyn,probe 逐字节一致)。**剩余**:NewList 混合(lower ~2883 区 else 臂
-    →dyn 装箱,照抄 LoadHeapConst 混合臂的 box 模式但用运行时 to_dyn)+ phi 混型合流装箱
-    (Maybe edge_insts 机制,lower:1815)。注:VM 前端对混合 map 字段算术 union 推断直接
-    拒绝——native 更宽不构成差分风险(此类程序 VM 跑不了)
+  - **D3 进行中**:✅ Dyn 算术臂(`1ad4d7a`)+ ✅ NewList 运行时混合/ListPush Dyn 臂/
+    **Move 双视图修复**(`8e9b07f`,通用缺陷:带 ArgList ref 的寄存器 Move 丢 SSA handle;
+    修复仅对 ArgList 传双半边,其它 ref 会被过期 SSA 掩埋——回归实测踩过)。
+    **剩余**:phi 混型合流装箱(Maybe edge_insts 机制,lower:1815)
+  - **D2 尾巴**:for_loop_patterns pc34 = **嵌套列表常量**([[1,"a"],[2,"b"]])→
+    box_const_scalar 加 Heap(List) 递归臂(子列表构造 dyn 列表→from_list);
+    template_strings pc23 待 dump 常量形状(用 compile bytecode + json 解码 code[])。
+    注:VM 前端对混合 map 字段算术 union 推断直接拒绝——native 更宽不构成差分风险
   - **D3 待做**:NewList 混合(lower:2883 else 臂)+ phi 混型装箱(照抄 Maybe edge_insts 机制)
     + Dyn 算术全消费点;**D4**:NewRange/方法 ABI 增量/NewObject 裁决
   - 每步必须:aot_coverage.sh 单调不降 + 差分门禁逐字节 + bench 纯噪声
