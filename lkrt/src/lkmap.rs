@@ -484,6 +484,20 @@ pub unsafe extern "C" fn lkrt_lkmap_str_dyn_get(handle: *mut c_void, key: *const
         .unwrap_or(crate::lkdyn::LkDyn::NIL)
 }
 
+/// Key membership (distinct from `get`: a stored-nil value still counts).
+///
+/// # Safety
+/// `handle` must be a live handle from [`lkrt_lkmap_str_dyn_new`], or null;
+/// `key` must be a NUL-terminated string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lkmap_str_dyn_has(handle: *mut c_void, key: *const c_char) -> i64 {
+    if handle.is_null() {
+        return 0;
+    }
+    let map = unsafe { &*(handle as *mut StrDynMap) };
+    i64::from(map.contains_key(unsafe { key_str(key) }))
+}
+
 /// # Safety
 /// `handle` must be a live handle from [`lkrt_lkmap_str_dyn_new`], or null.
 #[unsafe(no_mangle)]

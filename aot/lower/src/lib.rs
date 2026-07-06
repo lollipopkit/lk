@@ -4033,6 +4033,8 @@ fn lower_inst(
                 Ty::MapI64I64 => ("map_h", "i64_i64_len"),
                 Ty::MapStrF64 => ("map_h", "str_f64_len"),
                 Ty::MapI64F64 => ("map_h", "i64_f64_len"),
+                Ty::ListDyn => ("list_h", "dyn_len"),
+                Ty::MapStrDyn => ("map_h", "str_dyn_len"),
                 _ => return Err(Unsupported::TypeMismatch { pc }),
             };
             let dst = ssa.new_val();
@@ -4477,6 +4479,43 @@ fn lower_inst(
             // `a` = dst (bool), `b` = needle, `c` = haystack. List and string-keyed
             // map haystacks are lowered; other haystacks fall back.
             let (handle, list_ty) = ssa.read(instr.c(), block, pc)?;
+            // Dyn containers: list membership boxes the needle and defers to
+            // the structural `dyn_contains`; map membership is a dedicated
+            // `has` (a stored-nil value still counts, unlike get+tag).
+            if list_ty == Ty::ListDyn || list_ty == Ty::MapStrDyn {
+                let raw = ssa.new_val();
+                if list_ty == Ty::ListDyn {
+                    let (nv, nty) = ssa.read(instr.b(), block, pc)?;
+                    let needle = to_dyn(ssa, insts, nv, nty, pc)?;
+                    insts.push(Inst::Call {
+                        dst: Some(raw),
+                        callee: AbiRef::new("list_h", "dyn_contains"),
+                        args: vec![handle, needle],
+                    });
+                } else {
+                    let key = ssa.read_typed(instr.b(), block, Ty::Str, pc)?;
+                    insts.push(Inst::Call {
+                        dst: Some(raw),
+                        callee: AbiRef::new("map_h", "str_dyn_has"),
+                        args: vec![handle, key],
+                    });
+                }
+                let zero = ssa.new_val();
+                insts.push(Inst::Const {
+                    dst: zero,
+                    value: Const::I64(0),
+                });
+                let dst = ssa.new_val();
+                insts.push(Inst::Cmp {
+                    dst,
+                    op: CmpOp::Ne,
+                    float: false,
+                    lhs: raw,
+                    rhs: zero,
+                });
+                ssa.write(instr.a(), block, (dst, Ty::Bool));
+                return Ok(());
+            }
             // `key in map` tests key membership (VM `map_contains`): read the
             // map's `Maybe` for the key and take its present bit — no value
             // materialization needed. Mirrors the map `GetIndex` path.
