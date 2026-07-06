@@ -578,7 +578,7 @@ fn coroutine_resume(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Re
     let Some((state, ctx, module)) = runtime.state_ctx_module_mut() else {
         return Err(anyhow!("coroutine_resume requires full VM state"));
     };
-    resume_coroutine_runtime(coroutine, &resume_args, state, module, ctx)
+    resume_coroutine_runtime(coroutine, &resume_args, &[], state, module, ctx)
 }
 
 /// `coroutine_status(co) -> "suspended" | "running" | "dead"`.

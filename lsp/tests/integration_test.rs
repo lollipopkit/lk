@@ -357,6 +357,7 @@ impl TestLanguageServer {
             T::From => "Keyword: from".to_string(),
             T::Const => "Keyword: const".to_string(),
             T::As => "Keyword: as".to_string(),
+            T::Yield => "Keyword: yield".to_string(),
             T::Eq => "Operator: ==".to_string(),
             T::Ne => "Operator: !=".to_string(),
             T::Ge => "Operator: >=".to_string(),

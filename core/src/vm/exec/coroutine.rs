@@ -195,9 +195,18 @@ impl Executor {
 /// the *first* resume (arity-checked like a normal call); on later resumes
 /// only `args[0]` (or `Nil`) is delivered as the paused `yield` expression's
 /// result.
+///
+/// `extra_roots` are additional GC roots pinned for the duration of this
+/// resume, on top of the resumer's own register window (which is always
+/// pinned — see the `extra_gc_roots` note below). A caller that holds live
+/// `RuntimeVal`s in plain Rust locals *across* resume calls — a scheduler
+/// driving several coroutines is the motivating case — must pass its whole
+/// working set here, because those locals are invisible to GC safepoints
+/// hit while the coroutine runs. Plain single-coroutine callers pass `&[]`.
 pub fn resume_coroutine_runtime(
     coroutine: RuntimeVal,
     resume_args: &[RuntimeVal],
+    extra_roots: &[RuntimeVal],
     state: &mut RuntimeModuleState,
     module: Option<&Module>,
     ctx: Option<&mut VmContext>,
@@ -274,6 +283,7 @@ pub fn resume_coroutine_runtime(
     // itself) would be invisible to GC safepoints hit *while* the coroutine
     // runs. `LK_GC_STRESS=1` catches a missed root like this deterministically.
     executor.extra_gc_roots = resumer_stack[..resumer_stack_top].to_vec();
+    executor.extra_gc_roots.extend_from_slice(extra_roots);
 
     let mut ctx = ctx;
     let step_result = executor.run_coroutine_step(function, Some(module), &mut ctx);

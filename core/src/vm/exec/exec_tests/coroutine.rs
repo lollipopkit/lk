@@ -58,7 +58,7 @@ fn coroutine_without_yield_completes_on_first_resume() {
     assert_eq!(coroutine_status_runtime(co, &state.heap).unwrap(), "suspended");
 
     let mut ctx = VmContext::new_without_core_vm_builtins();
-    let result = resume_coroutine_runtime(co, &[], &mut state, Some(&module), Some(&mut ctx)).expect("resume");
+    let result = resume_coroutine_runtime(co, &[], &[], &mut state, Some(&module), Some(&mut ctx)).expect("resume");
 
     assert_ok_pair(&state, result, RuntimeVal::Int(42));
     assert_eq!(coroutine_status_runtime(co, &state.heap).unwrap(), "dead");
@@ -99,17 +99,31 @@ fn coroutine_yield_then_resume_completes_with_resumed_value() {
     state.globals = vec![co]; // root it, like a real program's local variable would
     let mut ctx = VmContext::new_without_core_vm_builtins();
 
-    let first = resume_coroutine_runtime(co, &[RuntimeVal::Int(5)], &mut state, Some(&module), Some(&mut ctx))
-        .expect("first resume");
+    let first = resume_coroutine_runtime(
+        co,
+        &[RuntimeVal::Int(5)],
+        &[],
+        &mut state,
+        Some(&module),
+        Some(&mut ctx),
+    )
+    .expect("first resume");
     assert_ok_pair(&state, first, RuntimeVal::Int(5));
     assert_eq!(coroutine_status_runtime(co, &state.heap).unwrap(), "suspended");
 
-    let second = resume_coroutine_runtime(co, &[RuntimeVal::Int(7)], &mut state, Some(&module), Some(&mut ctx))
-        .expect("second resume");
+    let second = resume_coroutine_runtime(
+        co,
+        &[RuntimeVal::Int(7)],
+        &[],
+        &mut state,
+        Some(&module),
+        Some(&mut ctx),
+    )
+    .expect("second resume");
     assert_ok_pair(&state, second, RuntimeVal::Int(107));
     assert_eq!(coroutine_status_runtime(co, &state.heap).unwrap(), "dead");
 
-    let err = resume_coroutine_runtime(co, &[], &mut state, Some(&module), Some(&mut ctx))
+    let err = resume_coroutine_runtime(co, &[], &[], &mut state, Some(&module), Some(&mut ctx))
         .expect_err("resuming a dead coroutine must error");
     assert!(err.to_string().contains("dead"), "unexpected error: {err}");
 }
@@ -149,7 +163,7 @@ fn coroutine_uncaught_error_marks_dead_and_reports_false() {
     let mut ctx = VmContext::new_without_core_vm_builtins();
 
     let result =
-        resume_coroutine_runtime(co, &[], &mut state, Some(&module), Some(&mut ctx)).expect("resume completes");
+        resume_coroutine_runtime(co, &[], &[], &mut state, Some(&module), Some(&mut ctx)).expect("resume completes");
     let error_value = assert_err_pair(&state, result);
     let RuntimeVal::Obj(handle) = error_value else {
         panic!("expected a heap-allocated error message");
@@ -236,7 +250,7 @@ fn yield_across_native_reentry_boundary_errors() {
     let mut ctx = VmContext::new_without_core_vm_builtins();
 
     let result =
-        resume_coroutine_runtime(co, &[], &mut state, Some(&module), Some(&mut ctx)).expect("resume completes");
+        resume_coroutine_runtime(co, &[], &[], &mut state, Some(&module), Some(&mut ctx)).expect("resume completes");
     let error_value = assert_err_pair(&state, result);
     let RuntimeVal::Obj(handle) = error_value else {
         panic!("expected a heap-allocated error message");
@@ -289,7 +303,8 @@ fn suspended_coroutine_stack_survives_gc_between_resumes() {
     state.globals = vec![co]; // root it, like a real program's local variable would
     let mut ctx = VmContext::new_without_core_vm_builtins();
 
-    let first = resume_coroutine_runtime(co, &[], &mut state, Some(&module), Some(&mut ctx)).expect("first resume");
+    let first =
+        resume_coroutine_runtime(co, &[], &[], &mut state, Some(&module), Some(&mut ctx)).expect("first resume");
     assert_ok_pair(&state, first, RuntimeVal::Nil);
     assert_eq!(coroutine_status_runtime(co, &state.heap).unwrap(), "suspended");
 
@@ -302,7 +317,8 @@ fn suspended_coroutine_stack_survives_gc_between_resumes() {
     }
     state.heap.collect(vec![co_ref(co)]);
 
-    let second = resume_coroutine_runtime(co, &[], &mut state, Some(&module), Some(&mut ctx)).expect("second resume");
+    let second =
+        resume_coroutine_runtime(co, &[], &[], &mut state, Some(&module), Some(&mut ctx)).expect("second resume");
     let RuntimeVal::Obj(handle) = second else {
         panic!("expected a [ok, value] list");
     };
@@ -317,6 +333,68 @@ fn suspended_coroutine_stack_survives_gc_between_resumes() {
         panic!("expected a String — the parked coroutine's stack was not rooted correctly");
     };
     assert_eq!(text.as_ref(), "only-alive-in-parked-coroutine");
+}
+
+/// `extra_roots` pins values that live only in the *caller's Rust locals*
+/// across a resume — the scheduler-driving-N-coroutines case, where neither
+/// the resumer's register window nor any global holds them. Passes trivially
+/// without collection; under `LK_GC_STRESS=1` (every safepoint collects) it
+/// fails deterministically if `resume_coroutine_runtime` stops threading
+/// `extra_roots` into `Executor::extra_gc_roots`.
+#[test]
+fn extra_roots_survive_gc_during_resume() {
+    let body = Function {
+        consts: ConstPool {
+            heap_values: vec![ConstHeapValue::LongString(Arc::<str>::from("allocates-at-a-safepoint"))],
+            ..ConstPool::default()
+        },
+        code: vec![
+            Instr::abx(Opcode::LoadHeapConst, 0, 0), // heap alloc → safepoint traffic
+            Instr::abc(Opcode::Yield, 1, 0, 0),
+            Instr::abc(Opcode::Return, 0, 1, 0),
+        ],
+        register_count: 2,
+        param_count: 0,
+        positional_param_count: 0,
+        param_names: Vec::new(),
+        capture_count: 0,
+        ..Function::default()
+    };
+    let module = Module {
+        functions: vec![body],
+        natives: Vec::new(),
+        globals: Vec::new(),
+        entry: 0,
+    };
+    let mut state = RuntimeModuleState::new(HeapStore::new(), Vec::new());
+    let closure = empty_closure(0, &mut state.heap);
+    let co = create_coroutine_runtime(closure, &mut state.heap).expect("create");
+    state.globals = vec![co]; // root the coroutine itself the normal way
+
+    // Alive ONLY through the `extra_roots` argument — a scheduler's working
+    // set (other coroutines' handles, stored results) looks exactly like this.
+    let pinned = RuntimeVal::Obj(
+        state
+            .heap
+            .alloc(HeapValue::String(Arc::<str>::from("only-alive-in-extra-roots"))),
+    );
+    let mut ctx = VmContext::new_without_core_vm_builtins();
+
+    let first =
+        resume_coroutine_runtime(co, &[], &[pinned], &mut state, Some(&module), Some(&mut ctx)).expect("first resume");
+    assert_ok_pair(&state, first, RuntimeVal::Nil);
+    let second =
+        resume_coroutine_runtime(co, &[], &[pinned], &mut state, Some(&module), Some(&mut ctx)).expect("second resume");
+    assert_eq!(coroutine_status_runtime(co, &state.heap).unwrap(), "dead");
+    let _ = second;
+
+    let RuntimeVal::Obj(pinned_handle) = pinned else {
+        panic!("expected an object reference");
+    };
+    let Some(HeapValue::String(text)) = state.heap.get(pinned_handle) else {
+        panic!("expected a String — the extra_roots value was collected mid-resume");
+    };
+    assert_eq!(text.as_ref(), "only-alive-in-extra-roots");
 }
 
 fn co_ref(value: RuntimeVal) -> HeapRef {
