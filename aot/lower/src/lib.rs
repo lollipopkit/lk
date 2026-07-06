@@ -62,6 +62,13 @@ pub enum Unsupported {
         pc: usize,
         reg: usize,
     },
+    /// A loop-header phi merged heterogeneous boxable types: retriable —
+    /// the fixpoint re-lowers the function with this phi pre-typed `Dyn`
+    /// (its body then consumes it through the Dyn arms from the start).
+    DynLoopPhi {
+        block: usize,
+        slot: usize,
+    },
     /// An operand had the wrong type for the operation.
     TypeMismatch {
         pc: usize,
@@ -98,6 +105,9 @@ impl Unsupported {
             }
             Unsupported::TypeMismatch { pc } => {
                 format!("an operand at pc {pc} has a type outside the natively lowerable subset")
+            }
+            Unsupported::DynLoopPhi { block, slot } => {
+                format!("a loop-header phi (block {block}, slot {slot}) merges heterogeneous types")
             }
             Unsupported::NoReturn => "the entry function never returns".to_string(),
             Unsupported::NonBoolCondition { pc } => {
@@ -364,6 +374,10 @@ struct SigInfer {
     param_obs: Vec<Vec<Option<Ty>>>,
     ret_types: Vec<Ty>,
     conflict: bool,
+    /// Loop-header phis discovered to merge heterogeneous boxable types
+    /// (`(function, block, slot)`): the next fixpoint pass pre-types them
+    /// `Dyn` so the loop body consumes them through the Dyn arms.
+    dyn_loop_phis: std::collections::HashSet<(u32, usize, usize)>,
     /// Per module-global slot: the scalar type every `SetGlobal` writes (a
     /// mixed-type global marks `conflict`, rejecting the module rather than
     /// miscompiling one of the writes).
@@ -467,6 +481,7 @@ pub fn lower_with_hybrid(artifact: &ModuleArtifact, hybrid: bool) -> Result<MirM
             .collect(),
         ret_types: vec![Ty::I64; n],
         conflict: false,
+        dyn_loop_phis: std::collections::HashSet::new(),
         global_tys: vec![None; global_count],
         initialized_globals: prescan_initialized_globals(module, global_count),
         lambda_globals: prescan_lambda_globals(module, global_count),
@@ -502,6 +517,7 @@ pub fn lower_with_hybrid(artifact: &ModuleArtifact, hybrid: bool) -> Result<MirM
             sig.ret_types.clone(),
             sig.specializations.len(),
             sig.ret_closures.clone(),
+            sig.dyn_loop_phis.len(),
         );
         // Call-site facts are re-derived every pass: an argument register
         // that resolves to a closure ref only once a summary lands (e.g. a
@@ -527,7 +543,7 @@ pub fn lower_with_hybrid(artifact: &ModuleArtifact, hybrid: bool) -> Result<MirM
             }
             let is_entry = fi as u32 == module.entry;
             let mut scratch = Vec::new();
-            if let Ok(mf) = lower_function(
+            let lowered = lower_function(
                 &funcs[fi],
                 &funcs,
                 fi as u32,
@@ -536,9 +552,18 @@ pub fn lower_with_hybrid(artifact: &ModuleArtifact, hybrid: bool) -> Result<MirM
                 &mut scratch,
                 &module.globals,
                 &mut sig,
-            ) && !is_entry
-            {
-                sig.ret_types[fi] = mf.ret;
+            );
+            match lowered {
+                Ok(mf) if !is_entry => {
+                    sig.ret_types[fi] = mf.ret;
+                }
+                // A retriable loop-phi discovery: record it (the snapshot
+                // includes the set's size, so the fixpoint runs again with
+                // the phi pre-typed Dyn).
+                Err(Unsupported::DynLoopPhi { block, slot }) => {
+                    sig.dyn_loop_phis.insert((fi as u32, block, slot));
+                }
+                _ => {}
             }
         }
         // Materialize clones queued during this pass so the next pass lowers
@@ -554,6 +579,7 @@ pub fn lower_with_hybrid(artifact: &ModuleArtifact, hybrid: bool) -> Result<MirM
                 sig.ret_types.clone(),
                 sig.specializations.len(),
                 sig.ret_closures.clone(),
+                sig.dyn_loop_phis.len(),
             );
         if converged || passes > 2 * funcs.len() + 2 {
             break;
@@ -1056,7 +1082,8 @@ enum EmptyListGuess {
     Default,
 }
 
-fn empty_list_elem_guess(code: &[u32], start_pc: usize, dst_reg: u8) -> EmptyListGuess {
+fn empty_list_elem_guess(func: &FunctionData, start_pc: usize, dst_reg: u8) -> EmptyListGuess {
+    let code = &func.code;
     let mut regs = std::collections::HashSet::new();
     regs.insert(dst_reg);
     let mut str_regs = std::collections::HashSet::new();
@@ -1067,14 +1094,48 @@ fn empty_list_elem_guess(code: &[u32], start_pc: usize, dst_reg: u8) -> EmptyLis
             Opcode::Move if regs.contains(&instr.b()) => {
                 regs.insert(instr.a());
             }
+            // A move propagates the source's provenance to the alias.
+            Opcode::Move => {
+                if str_regs.contains(&instr.b()) {
+                    str_regs.insert(instr.a());
+                    indexed_regs.remove(&instr.a());
+                } else if indexed_regs.contains(&instr.b()) {
+                    indexed_regs.insert(instr.a());
+                    str_regs.remove(&instr.a());
+                } else {
+                    str_regs.remove(&instr.a());
+                    indexed_regs.remove(&instr.a());
+                }
+            }
             Opcode::LoadString | Opcode::ConcatString | Opcode::ConcatN | Opcode::ToString => {
                 str_regs.insert(instr.a());
                 indexed_regs.remove(&instr.a());
             }
-            Opcode::GetIndex | Opcode::GetList | Opcode::GetFieldK | Opcode::SliceFrom | Opcode::ToIter => {
+            // Indexed/iterated/constructed-container reads may hold a boxed
+            // Dyn or a nested list — the Dyn guess is the safe one.
+            Opcode::GetIndex
+            | Opcode::GetList
+            | Opcode::GetFieldK
+            | Opcode::SliceFrom
+            | Opcode::ToIter
+            | Opcode::NewList
+            | Opcode::NewObject => {
                 indexed_regs.insert(instr.a());
                 str_regs.remove(&instr.a());
             }
+            // A heap constant splits by kind: a long string is still a
+            // string (a `ListDyn` guess would change its display quoting);
+            // lists/maps take the Dyn guess.
+            Opcode::LoadHeapConst => match func.consts.heap_values.get(instr.bx() as usize) {
+                Some(ConstHeapValueData::List(_) | ConstHeapValueData::Map(_)) => {
+                    indexed_regs.insert(instr.a());
+                    str_regs.remove(&instr.a());
+                }
+                _ => {
+                    str_regs.insert(instr.a());
+                    indexed_regs.remove(&instr.a());
+                }
+            },
             Opcode::AddInt => {
                 if str_regs.contains(&instr.b()) || str_regs.contains(&instr.c()) {
                     str_regs.insert(instr.a());
@@ -1240,6 +1301,12 @@ fn lower_function(
         })
         .count();
     let mut ssa = Ssa::new(reg_count, cell_capacity, preds, total_blocks);
+    ssa.dyn_loop_slots = sig
+        .dyn_loop_phis
+        .iter()
+        .filter(|&&(fi, _, _)| fi == func_index)
+        .map(|&(_, b, s)| (b, s))
+        .collect();
     // Function parameters occupy r0..r(param_count-1) at entry; each takes its
     // inferred type (the argument type observed at call sites, `I64` by default).
     // They seed the entry block's register file as its first SSA values.
@@ -1834,6 +1901,9 @@ struct Ssa {
     /// Compile-time-known values, for provably-in-bounds constant list indexing:
     /// SSA value → its constant `i64` (recorded for direct `LoadInt`s).
     const_int: std::collections::HashMap<ValueId, i64>,
+    /// Loop-header phis pre-typed `Dyn` by a fixpoint retry (slots keyed by
+    /// `(block, slot)`; see `Unsupported::DynLoopPhi`).
+    dyn_loop_slots: std::collections::HashSet<(usize, usize)>,
     /// Constant-range materializations (`NewRange` with all-const operands,
     /// step 1): handle → exclusive `(start, end)`. Lets `GetIndex` recognize
     /// a range key (`s[1..3]`) and emit a real slice.
@@ -1884,6 +1954,7 @@ impl Ssa {
             single_fallthrough_target: vec![None; total_blocks],
             next_val: 0,
             const_int: std::collections::HashMap::new(),
+            dyn_loop_slots: std::collections::HashSet::new(),
             range_def: std::collections::HashMap::new(),
             list_len: std::collections::HashMap::new(),
             list_base_len: std::collections::HashMap::new(),
@@ -2067,6 +2138,13 @@ impl Ssa {
     fn read_recursive(&mut self, slot: usize, block: usize, pc: usize) -> Result<Reg, Unsupported> {
         let value: Reg = if !self.sealed[block] {
             let ty = self.phi_ty(slot, block, pc)?;
+            // A fixpoint retry pre-types a discovered heterogeneous
+            // loop-header phi as Dyn (the body then consumes it uniformly).
+            let ty = if self.dyn_loop_slots.contains(&(block, slot)) {
+                Ty::Dyn
+            } else {
+                ty
+            };
             let param = self.new_val();
             let idx = self.phis[block].len();
             self.phis[block].push(Phi {
@@ -2084,6 +2162,11 @@ impl Ssa {
             return Err(Unsupported::UndefinedOperand { pc, reg: slot });
         } else {
             let ty = self.phi_ty(slot, block, pc)?;
+            let ty = if self.dyn_loop_slots.contains(&(block, slot)) {
+                Ty::Dyn
+            } else {
+                ty
+            };
             let param = self.new_val();
             let idx = self.phis[block].len();
             self.phis[block].push(Phi {
@@ -2172,7 +2255,13 @@ impl Ssa {
                     | Ty::MapStrDyn
             )
         };
-        if !allow_widen || incoming.iter().any(|&(_, v, ty)| v == param || !boxable(ty)) {
+        if !(allow_widen || phi_ty == Ty::Dyn) || incoming.iter().any(|&(_, v, ty)| v == param || !boxable(ty)) {
+            // A boxable heterogeneous merge on a loop header (`total +=
+            // p.tags` over Dyn fields) is retriable: report it so the
+            // fixpoint re-lowers with this phi pre-typed Dyn.
+            if !allow_widen && phi_ty != Ty::Dyn && incoming.iter().all(|&(_, v, ty)| v != param && boxable(ty)) {
+                return Err(Unsupported::DynLoopPhi { block, slot });
+            }
             return Err(Unsupported::TypeMismatch { pc });
         }
         self.phis[block][phi_idx].ty = Ty::Dyn;
@@ -4181,7 +4270,7 @@ fn lower_inst(
                     // An empty `[]` is ambiguous — a lookahead types it from the
                     // first value pushed (a wrong guess only costs a fallback).
                     if elems.is_empty() {
-                        let (new_fn, list_ty) = match empty_list_elem_guess(&func.code, pc, instr.a()) {
+                        let (new_fn, list_ty) = match empty_list_elem_guess(func, pc, instr.a()) {
                             EmptyListGuess::Str => ("str_new", Ty::ListStr),
                             EmptyListGuess::Dyn => ("dyn_new", Ty::ListDyn),
                             EmptyListGuess::Default => ("i64_new", Ty::ListI64),
