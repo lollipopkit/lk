@@ -1,0 +1,90 @@
+// `select` statement: multi-way channel choice, Go-style. Pure parse-time
+// sugar over the `select$block` runtime builtin (like try/catch → pcall) —
+// see docs/coroutines.md for how it relates to `sched` (select *blocks* the
+// thread; inside sched coroutines use the sched primitives instead).
+// Differential-gated corpus: all output must be deterministic.
+
+// --- ready recv arm fires; the binding receives the value ---
+let c = chan(1);
+send(c, 42);
+let got = select {
+    case v <- recv(c) => v + 1;
+    default => -1;
+};
+assert(got == 43);
+
+// --- ready send arm fires when the channel has space ---
+let out = chan(1);
+let fired = select {
+    case send(out, 7) => "sent";
+    default => "skipped";
+};
+assert(fired == "sent");
+assert(recv(out) == [true, 7]);
+
+// --- default fires when no arm is ready ---
+let empty = chan(1);
+let fallback = select {
+    case v <- recv(empty) => v;
+    default => "empty";
+};
+assert(fallback == "empty");
+
+// --- a false guard disables its arm without consuming anything ---
+send(empty, 1);
+let guarded = select {
+    case v <- recv(empty) if false => v;
+    default => "guarded-out";
+};
+assert(guarded == "guarded-out");
+assert(recv(empty) == [true, 1]);
+
+// --- operands and guards evaluate eagerly, once, in source order ---
+let trace = [];
+let pick = |tag, value| {
+    trace.push(tag);
+    return value;
+};
+let src = chan(1);
+send(src, 5);
+let chosen = select {
+    case v <- recv(pick("ch0", src)) if pick("g0", true) => v;
+    case send(pick("ch1", src), pick("v1", 9)) if pick("g1", false) => -1;
+    default => -2;
+};
+assert(chosen == 5);
+assert(trace == ["ch0", "g0", "ch1", "v1", "g1"]);
+
+// --- blocking form (no default) completes when an arm is ready ---
+let ready = chan(1);
+send(ready, "go");
+let blocking = select {
+    case v <- recv(ready) => v;
+};
+assert(blocking == "go");
+
+// --- selecting on a closed channel is a catchable error ---
+use chan as ch;
+let closed = chan(1);
+ch.close(closed);
+let caught = pcall(|| select {
+    case v <- recv(closed) => v;
+    default => "never";
+});
+assert(caught[0] == false);
+
+// --- nested select in a case body ---
+let outer = chan(1);
+let inner = chan(1);
+send(outer, 1);
+send(inner, 2);
+let nested = select {
+    case a <- recv(outer) => select {
+        case b <- recv(inner) => a + b;
+        default => -1;
+    };
+    default => -2;
+};
+assert(nested == 3);
+
+println("select: ok");

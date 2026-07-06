@@ -486,6 +486,28 @@
 - **验证(贯穿)**:workspace 全量 1498+ 0 失败 · `LK_GC_STRESS=1`(core 959 + stdlib sched 8)全绿 ·
   clippy/fmt 0 · no_std 构建 0/0 · dist bench 1.007x 基线内。
 
+## Post-v1.0 — `select` 语句 lowering(悬空构造收编,sched 之后的自然候选)
+
+**设计裁决**:与 try/catch → pcall 同款 **parse 时 desugar**,不是给 Expr::Select 写专用后端——
+case 的 channel/send 值/守卫按源序急切求值进 `__select{n}_*` 合成局部变量(parser 计数器保证嵌套
+hygiene),调用 `select$block` 老 native(名字含 `$` 用户无法碰撞;底层 tokio SelectOperation 完好),
+尾部 Conditional 链按 index 分派。resolver/typecheck/compiler/AOT **零专用代码**。
+
+- [x] **子步A** desugar + AST 删除(commit `ad02dfe`)—— 删除 `Expr::Select`/`SelectCase`/
+      `SelectPattern` 及 11 个文件的匹配臂/辅助函数;**compiler lower_expr 的"不支持表达式"兜底分支
+      从此不可达并删除**(每个 Expr 变体都有 lowering)。顺手修复:resolver 对裸 `Expr::Block`
+      此前是空处理(只有闭包体路径),现在按语句块正常 resolve;老 resolver 对 Send 分支 channel/value
+      不 resolve 的 bug 随删除消失。**语义定案**(详见 docs/coroutines.md):急切求值(Go 规则)·
+      守卫先于 binding 求值(真值归一化 Bool)· binding=接收值(closed→nil)· case body 单表达式
+      (同 match arm,外层环境求值,赋值/return 语句不可入)· 无 default 阻塞线程 · closed channel
+      参与 → 可捕获错误 · 全守卫禁用+无 default → nil(留档,不同于 Go 死锁 panic)。
+      测试:core 4 个 desugar 形态 + stdlib 10 个 LK 行为(`stdlib/src/select_test.rs`)。
+- [x] **子步B** 语料 + 文档 —— `examples/syntax/select.lk`(9 场景确定性,进 VM==bytecode 与
+      VM==AOT 差分门禁;AOT Tier 0 bundle 实测跑通)。docs/coroutines.md「The select statement」
+      章节 + docs/semantics.md 语法边界补记(try/catch 与 select 均 parse 时糖)。
+- **验证(贯穿)**:workspace 全量 1508+ 0 失败 · GC-stress 全绿 · clippy/fmt 0 · no_std 0/0 ·
+  dist bench 1.014x 基线内 · 差分门禁含新语料全过。
+
 ---
 
 ## 执行原则

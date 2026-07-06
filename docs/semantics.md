@@ -55,6 +55,10 @@ VM 以 `exit 1` + stderr 错误信息结束,native 以 guard `abort()`(SIGABRT,
 - `while` 条件**必须**带括号;`if` 条件可不带,但 `if (expr) op rhs` 形式会把
   首个括号组解析为整个条件——生成器 / 工具生成的 `if` 条件应整体加一层括号。
 - 语句以 `;` 结尾。
+- `try`/`catch` 与 `select` 均为 **parse 时糖**(分别降到 `pcall` 与
+  `select$block` + 普通 AST),不存在专用 AST 节点;`select` 语义裁决见
+  `docs/coroutines.md`(急切求值、守卫先于 binding、closed 报错、全禁用无
+  default 得 nil)。
 
 ## 闭包与捕获
 

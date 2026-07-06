@@ -150,3 +150,38 @@ Semantics worth knowing:
 
 `examples/stdlib/sched_demo.lk` is the runnable, differential-gated corpus
 for all of the above.
+
+## The `select` statement
+
+Go-style multi-way channel choice, as an expression:
+
+```lk
+let got = select {
+    case v <- recv(c) if enabled => v + 1;   // recv arm, binding + guard
+    case send(out, 7) => "sent";             // send arm
+    default => "nothing-ready";              // optional; omit to block
+};
+```
+
+`select` is pure parse-time sugar (the same treatment as `try`/`catch` →
+`pcall`): the parser lowers it onto the `select$block` runtime builtin plus
+ordinary lets and conditionals, so the resolver, type checker, VM compiler,
+and AOT need no dedicated support. Semantics pinned by that lowering:
+
+- Channel operands, send values, and guards evaluate **eagerly, once, in
+  source order** (the Go rule), whether or not their arm fires.
+- Guards evaluate *before* any arm is chosen, so a recv binding is not in
+  scope inside its own guard; any truthy guard value enables the arm.
+- A recv binding receives the **value** (`nil` once the channel closes — the
+  Go zero-value analogue). Case bodies are single expressions, like match
+  arms, evaluated in the enclosing scope.
+- Without `default`, `select` **blocks the OS thread** until an arm is ready
+  — like the blocking `recv`/`send` globals, and like them it must not be
+  used inside `sched.run` coroutines (park with `yield sched.recv/send`
+  instead; a cooperative multi-way wait is a possible future `sched.any`).
+- Selecting on a **closed** channel is a catchable error (`chan.close`
+  removes the channel — same stance as blocking `recv`). With **every arm
+  guarded off and no default**, the select evaluates to `nil` rather than
+  deadlocking (a deliberate deviation from Go's panic).
+
+`examples/syntax/select.lk` is the differential-gated corpus.
