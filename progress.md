@@ -544,6 +544,27 @@ isolate**(单线程无锁 GC 是热路径底线,无数据竞争,推翻=重写堆
 - **验证(贯穿)**:workspace 全量 1499+ 0 失败 · GC-stress 全绿 · clippy/fmt 0 · no_std 0/0 ·
   差分门禁全过 · dist bench 见子步5 记录。
 
+## M4.2 循环轮记录:fixpoint 重猜 + sanitizer(2026-07-07)
+
+- **DynLoopPhi retriable 机制**(loop phi 混型的正解):seal_block 时体内
+  已按旧类型消费,不能就地宽化——把发现编码进 Unsupported::DynLoopPhi
+  {block,slot}(错误值携带数据),fixpoint 调用点捕获记入 sig.dyn_loop_phis
+  (纳入 snapshot 收敛判断)重跑;重跑时 read_recursive 创建 phi 直接
+  Ty::Dyn,体内全走 Dyn 臂,初值边装箱(add_phi_operands 对 phi_ty==Dyn
+  的异型边装箱不算宽化)。集合单调增长且有限 → 终止。**该模式可复用于
+  空[]混合 push 的重猜**(留档)。
+- **lookahead 猜测的教训**:LoadHeapConst 一刀切进 Dyn 源会让 push 长
+  字符串的列表错猜 ListDyn——display 引号差分(ListStr 引号 vs Mixed
+  裸文)。堆常量必须按种类分流。猜测类机制的每次扩面都要过"display/eq
+  语义是否随类型变化"这一关。
+- **sanitizer 验证补齐**(plan 验证清单第 5 条,M4.2 全程欠账):
+  LK_NATIVE_SANITIZE=address,undefined,6 个翻转例 + 200 迭代全特性
+  压力 probe(混合构造/字符串模板/HOF/chunk/zip/struct/切片),ASan+UBSan
+  0 报告,压力 probe 真原生与 VM 逐字节一致。注意 lkrt 静态库本身未
+  instrument(堆越界经 malloc 拦截仍可捕,栈/全局不可)——完整 instrument
+  需 lkrt 以 -Zsanitizer 重编,留档。
+- 覆盖率 25/51 持平;全门禁绿。
+
 ## M4.2 循环轮记录:Dyn 折叠点安全审计(2026-07-07)
 
 - **两个静默语义 bug**(比 reject 危险一个量级——产出错误结果的原生二进制):

@@ -126,9 +126,14 @@
     nil' → struct 缺省字段 if 判断**静默走错分支**。四处折叠点(IsNil/
     IsList/IsMap/NilBranch)全部改运行时 tag 判断。SliceFrom 补 Dyn/
     ListDyn 臂(rest 解构 tail 全链路);空 [] 猜测源扩展 SliceFrom/ToIter
-  - **留档小项**:混合 push(push(1) 再 push("x"))需 fixpoint 重猜机制;
-    typed 列表方法长尾对 ListDyn receiver(take/skip 等)按需补;
-    for_loop_patterns 永久卡 map 迭代(hash 序,与 map_demo 同类)
+  - ✅ **fixpoint 重猜机制落地**(commit `45bd1ce`):loop phi 混型
+    (total += p.tags over Dyn 字段)→ retriable DynLoopPhi 错误 →
+    fixpoint 重跑时 phi 从创建起就是 Dyn。空[]猜测 lookahead 精化
+    (Move 传播/NewList/NewObject 源/LoadHeapConst 按常量种类分流)。
+    **sanitizer 欠账补齐**:6 例 + 全特性压力 probe 过 ASan/UBSan 干净
+  - **留档小项**:混合 push(push(1) 再 push("x"))可复用 DynLoopPhi 同款
+    retriable 机制(空[]猜测版);typed 列表方法长尾对 ListDyn receiver
+    按需补;for_loop_patterns 永久卡 map 迭代(hash 序,与 map_demo 同类)
   - 每步必须:aot_coverage.sh 单调不降 + 差分门禁逐字节 + bench 纯噪声
   - GetGlobal 14(try$call/并发/模块白名单)是**另一根因**,独立大项未启
 - **✅ 裁决不做**:callable trait 反转 · 真机/QEMU demo · 细粒度 feature 拆分。
