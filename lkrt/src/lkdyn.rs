@@ -193,10 +193,21 @@ pub extern "C" fn lkrt_dyn_truthy(v: LkDyn) -> i64 {
     i64::from(!(v.tag == DYN_NIL || (v.tag == DYN_BOOL && v.payload == 0)))
 }
 
+/// `!x`: a Bool negates, Nil is `true`, anything else is the VM's loud
+/// type error.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_dyn_not(v: LkDyn) -> i64 {
+    match v.tag {
+        DYN_NIL => 1,
+        DYN_BOOL => i64::from(v.payload == 0),
+        _ => crate::panic::raise_str("runtime type error"),
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_dyn_as_i64(v: LkDyn) -> i64 {
     if v.tag != DYN_I64 {
-        crate::abi::flush_and_abort();
+        crate::panic::raise_str("runtime type error");
     }
     v.payload
 }
@@ -206,14 +217,14 @@ pub extern "C" fn lkrt_dyn_as_f64(v: LkDyn) -> f64 {
     match v.tag {
         DYN_F64 => v.f64_value(),
         DYN_I64 => v.payload as f64,
-        _ => crate::abi::flush_and_abort(),
+        _ => crate::panic::raise_str("runtime type error"),
     }
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_dyn_as_str(v: LkDyn) -> *const c_char {
     if v.tag != DYN_STR {
-        crate::abi::flush_and_abort();
+        crate::panic::raise_str("runtime type error");
     }
     v.payload as *const c_char
 }
@@ -221,7 +232,7 @@ pub extern "C" fn lkrt_dyn_as_str(v: LkDyn) -> *const c_char {
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_dyn_as_bool(v: LkDyn) -> i64 {
     if v.tag != DYN_BOOL {
-        crate::abi::flush_and_abort();
+        crate::panic::raise_str("runtime type error");
     }
     v.payload
 }
@@ -243,7 +254,7 @@ pub unsafe extern "C" fn lkrt_dyn_add(a: LkDyn, b: LkDyn) -> LkDyn {
     match (a.as_numeric(), b.as_numeric()) {
         (Some(Numeric::Int(x)), Some(Numeric::Int(y))) => from_i64(x.wrapping_add(y)),
         (Some(x), Some(y)) => from_f64(x.as_f64() + y.as_f64()),
-        _ => crate::abi::flush_and_abort(),
+        _ => crate::panic::raise_str("runtime type error"),
     }
 }
 
@@ -252,7 +263,7 @@ pub extern "C" fn lkrt_dyn_sub(a: LkDyn, b: LkDyn) -> LkDyn {
     match (a.as_numeric(), b.as_numeric()) {
         (Some(Numeric::Int(x)), Some(Numeric::Int(y))) => from_i64(x.wrapping_sub(y)),
         (Some(x), Some(y)) => from_f64(x.as_f64() - y.as_f64()),
-        _ => crate::abi::flush_and_abort(),
+        _ => crate::panic::raise_str("runtime type error"),
     }
 }
 
@@ -261,7 +272,7 @@ pub extern "C" fn lkrt_dyn_mul(a: LkDyn, b: LkDyn) -> LkDyn {
     match (a.as_numeric(), b.as_numeric()) {
         (Some(Numeric::Int(x)), Some(Numeric::Int(y))) => from_i64(x.wrapping_mul(y)),
         (Some(x), Some(y)) => from_f64(x.as_f64() * y.as_f64()),
-        _ => crate::abi::flush_and_abort(),
+        _ => crate::panic::raise_str("runtime type error"),
     }
 }
 
@@ -273,11 +284,11 @@ pub extern "C" fn lkrt_dyn_div(a: LkDyn, b: LkDyn) -> LkDyn {
         (Some(x), Some(y)) => {
             let rhs = y.as_f64();
             if rhs == 0.0 {
-                crate::abi::flush_and_abort();
+                crate::panic::raise_str("runtime type error");
             }
             from_f64(x.as_f64() / rhs)
         }
-        _ => crate::abi::flush_and_abort(),
+        _ => crate::panic::raise_str("runtime type error"),
     }
 }
 
@@ -286,18 +297,18 @@ pub extern "C" fn lkrt_dyn_mod(a: LkDyn, b: LkDyn) -> LkDyn {
     match (a.as_numeric(), b.as_numeric()) {
         (Some(Numeric::Int(x)), Some(Numeric::Int(y))) => {
             if y == 0 {
-                crate::abi::flush_and_abort();
+                crate::panic::raise_str("runtime type error");
             }
             from_i64(x.wrapping_rem(y))
         }
         (Some(x), Some(y)) => {
             let rhs = y.as_f64();
             if rhs == 0.0 {
-                crate::abi::flush_and_abort();
+                crate::panic::raise_str("runtime type error");
             }
             from_f64(x.as_f64() % rhs)
         }
-        _ => crate::abi::flush_and_abort(),
+        _ => crate::panic::raise_str("runtime type error"),
     }
 }
 
@@ -359,7 +370,7 @@ macro_rules! dyn_ord {
             match (a.as_numeric(), b.as_numeric()) {
                 (Some(Numeric::Int(x)), Some(Numeric::Int(y))) => i64::from(x $op y),
                 (Some(x), Some(y)) => i64::from(x.as_f64() $op y.as_f64()),
-                _ => crate::abi::flush_and_abort(),
+                _ => crate::panic::raise_str("runtime type error"),
             }
         }
     };
@@ -402,7 +413,7 @@ fn display_into(out: &mut String, v: LkDyn, quoted: bool) {
             }
             out.push(']');
         }
-        _ => crate::abi::flush_and_abort(),
+        _ => crate::panic::raise_str("runtime type error"),
     }
 }
 
@@ -440,7 +451,7 @@ pub extern "C" fn lkrt_dyn_len_of(v: LkDyn) -> i64 {
             }
         }
         DYN_STR => unsafe { dyn_str(v) }.chars().count() as i64,
-        _ => crate::abi::flush_and_abort(),
+        _ => crate::panic::raise_str("runtime type error"),
     }
 }
 
@@ -449,7 +460,7 @@ pub extern "C" fn lkrt_dyn_len_of(v: LkDyn) -> i64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_dyn_as_list(v: LkDyn) -> *mut c_void {
     if v.tag != DYN_LIST {
-        crate::abi::flush_and_abort();
+        crate::panic::raise_str("runtime type error");
     }
     v.payload as *mut c_void
 }
@@ -478,7 +489,7 @@ fn dyn_map<'a>(v: LkDyn) -> &'a crate::lkmap::StrDynMap {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_dyn_field(v: LkDyn, key: *const c_char) -> LkDyn {
     if v.tag != DYN_MAP || (v.payload as *mut c_void).is_null() {
-        crate::abi::flush_and_abort();
+        crate::panic::raise_str("runtime type error");
     }
     let key = if key.is_null() {
         ""
@@ -494,7 +505,7 @@ pub unsafe extern "C" fn lkrt_dyn_field(v: LkDyn, key: *const c_char) -> LkDyn {
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_dyn_index(v: LkDyn, index: i64) -> LkDyn {
     if v.tag != DYN_LIST {
-        crate::abi::flush_and_abort();
+        crate::panic::raise_str("runtime type error");
     }
     let values = dyn_list(v);
     let len = values.len() as i64;
@@ -687,7 +698,7 @@ fn dyn_slice<'a>(handle: *mut c_void) -> &'a [LkDyn] {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_lklist_dyn_slice_from(handle: *mut c_void, start: i64) -> *mut c_void {
     if start < 0 {
-        crate::abi::flush_and_abort();
+        crate::panic::raise_str("runtime type error");
     }
     let tail: Vec<LkDyn> = dyn_slice(handle).iter().copied().skip(start as usize).collect();
     arena_handle(tail)
@@ -767,7 +778,7 @@ pub unsafe extern "C" fn lkrt_lklist_dyn_reduce_fn(
 pub unsafe extern "C" fn lkrt_lklist_dyn_chunk(handle: *mut c_void, size: i64) -> *mut c_void {
     if size <= 0 {
         eprintln!("list.chunk() size must be positive");
-        crate::abi::flush_and_abort();
+        crate::panic::raise_str("runtime type error");
     }
     let chunks: Vec<LkDyn> = dyn_slice(handle)
         .chunks(size as usize)

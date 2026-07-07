@@ -305,6 +305,9 @@ macro_rules! for_each_abi_fn {
             ("dyn", "tag", lkrt_dyn_tag, Pure, [DynVal], I64);
             // VM truthiness (`truthy_unchecked`): only nil and false are falsy.
             ("dyn", "truthy", lkrt_dyn_truthy, Pure, [DynVal], I64);
+            // `!x` on a boxed value: Bool negates, Nil is true, anything else
+            // is the VM's loud type error.
+            ("dyn", "not", lkrt_dyn_not, ReadsHost, [DynVal], I64);
             ("dyn", "as_i64", lkrt_dyn_as_i64, ReadsHost, [DynVal], I64);
             ("dyn", "as_f64", lkrt_dyn_as_f64, ReadsHost, [DynVal], F64);
             ("dyn", "as_str", lkrt_dyn_as_str, ReadsHost, [DynVal], StrPtr);
@@ -363,6 +366,12 @@ macro_rules! for_each_abi_fn {
             ("map_h", "str_dyn_values", lkrt_lkmap_str_dyn_values, WritesHost, [Ptr], Ptr);
             ("map_h", "str_dyn_delete", lkrt_lkmap_str_dyn_delete, WritesHost, [Ptr, StrPtr], DynVal);
             ("list_h", "i64_to_dyn", lkrt_lklist_i64_to_dyn, WritesHost, [Ptr], Ptr);
+            // Typed map → `Map<str, Dyn>` conversion (cold: a typed map
+            // crossing a `try$call` cell boundary boxes). Replayed inserts in
+            // iteration order keep the layout — same keys, same order.
+            ("map_h", "str_i64_to_dyn", lkrt_lkmap_str_i64_to_dyn, WritesHost, [Ptr], Ptr);
+            ("map_h", "str_f64_to_dyn", lkrt_lkmap_str_f64_to_dyn, WritesHost, [Ptr], Ptr);
+            ("map_h", "str_bool_to_dyn", lkrt_lkmap_str_bool_to_dyn, WritesHost, [Ptr], Ptr);
             ("list_h", "f64_to_dyn", lkrt_lklist_f64_to_dyn, WritesHost, [Ptr], Ptr);
             ("list_h", "str_to_dyn", lkrt_lklist_str_to_dyn, WritesHost, [Ptr], Ptr);
             ("list_h", "dyn_new", lkrt_lklist_dyn_new, WritesHost, [], Ptr);

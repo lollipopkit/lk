@@ -13,7 +13,7 @@ fn bin_path() -> PathBuf {
 }
 
 const HYBRID_PROGRAM: &str = "\
-fn report(x) { try { println(\"acc=${x}\"); } catch e { } }\n\
+fn report(x) { let f = \"acc={}\".trim(); println(f, x); }\n\
 let acc = 0;\n\
 for i in 0..10 { acc += i; }\n\
 report(acc);\n\
@@ -73,7 +73,7 @@ fn hybrid_uncaught_vm_error_exits_nonzero_like_the_vm() {
     let file = dir.join("boom.lk");
     std::fs::write(
         &file,
-        "fn boom(x) { try { assert(x > 100); } catch e { error(\"bad: ${x}\"); } }\n\
+        "fn boom(x) { let f = \"x={}\".trim(); println(f, x); error(\"bad: ${x}\"); }\n\
          boom(5);\n\
          return 0;\n",
     )

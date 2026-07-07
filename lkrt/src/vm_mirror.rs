@@ -22,7 +22,6 @@
 
 use core::ffi::{CStr, c_char, c_void};
 
-use crate::abi::flush_and_abort;
 use crate::lkdyn::{DYN_BOOL, DYN_F64, DYN_I64, DYN_NIL, DYN_STR, LkDyn};
 use crate::lkmap::{FxMap, StrDynMap};
 use crate::state::arena_handle;
@@ -76,7 +75,7 @@ fn key_from_dyn(v: LkDyn) -> RtKey {
         }
         // Float keys are the VM's loud "cannot be used as a key" error;
         // container keys (heap-handle identity) are outside the subset.
-        _ => flush_and_abort(),
+        _ => crate::panic::raise_str("runtime error"),
     }
 }
 
@@ -84,7 +83,7 @@ fn key_str(key: &RtKey) -> &str {
     match key {
         RtKey::ShortStr(s) => core::str::from_utf8(&s.data[..s.len as usize]).unwrap_or(""),
         RtKey::String(s) => s.as_str(),
-        _ => flush_and_abort(),
+        _ => crate::panic::raise_str("runtime error"),
     }
 }
 
@@ -125,7 +124,7 @@ pub unsafe extern "C" fn lkrt_lkmap_lit_finish_str_i64(handle: *mut c_void) -> *
     let mut out: FxMap<String, i64> = FxMap::default();
     for (key, value) in builder(handle) {
         if value.tag != DYN_I64 {
-            flush_and_abort();
+            crate::panic::raise_str("runtime error");
         }
         out.insert(key_str(key).to_owned(), value.payload);
     }
@@ -141,7 +140,7 @@ pub unsafe extern "C" fn lkrt_lkmap_lit_finish_str_f64(handle: *mut c_void) -> *
     let mut out: FxMap<String, f64> = FxMap::default();
     for (key, value) in builder(handle) {
         if value.tag != DYN_F64 {
-            flush_and_abort();
+            crate::panic::raise_str("runtime error");
         }
         out.insert(key_str(key).to_owned(), f64::from_bits(value.payload as u64));
     }
@@ -158,7 +157,7 @@ pub unsafe extern "C" fn lkrt_lkmap_lit_finish_str_bool(handle: *mut c_void) -> 
     let mut out: FxMap<String, i64> = FxMap::default();
     for (key, value) in builder(handle) {
         if value.tag != DYN_BOOL {
-            flush_and_abort();
+            crate::panic::raise_str("runtime error");
         }
         out.insert(key_str(key).to_owned(), value.payload);
     }
@@ -186,9 +185,11 @@ pub unsafe extern "C" fn lkrt_lkmap_lit_finish_str_dyn(handle: *mut c_void) -> *
 pub unsafe extern "C" fn lkrt_lkmap_lit_finish_i64_i64(handle: *mut c_void) -> *mut c_void {
     let mut out: FxMap<i64, i64> = FxMap::default();
     for (key, value) in builder(handle) {
-        let RtKey::Int(k) = key else { flush_and_abort() };
+        let RtKey::Int(k) = key else {
+            crate::panic::raise_str("runtime error")
+        };
         if value.tag != DYN_I64 {
-            flush_and_abort();
+            crate::panic::raise_str("runtime error");
         }
         out.insert(*k, value.payload);
     }
@@ -203,9 +204,11 @@ pub unsafe extern "C" fn lkrt_lkmap_lit_finish_i64_i64(handle: *mut c_void) -> *
 pub unsafe extern "C" fn lkrt_lkmap_lit_finish_i64_f64(handle: *mut c_void) -> *mut c_void {
     let mut out: FxMap<i64, f64> = FxMap::default();
     for (key, value) in builder(handle) {
-        let RtKey::Int(k) = key else { flush_and_abort() };
+        let RtKey::Int(k) = key else {
+            crate::panic::raise_str("runtime error")
+        };
         if value.tag != DYN_F64 {
-            flush_and_abort();
+            crate::panic::raise_str("runtime error");
         }
         out.insert(*k, f64::from_bits(value.payload as u64));
     }

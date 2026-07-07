@@ -256,7 +256,7 @@ pub extern "C" fn lkrt_math_round(value: f64) -> i64 {
 pub extern "C" fn lkrt_math_sqrt(value: f64) -> f64 {
     if value < 0.0 {
         eprintln!("lkrt error: sqrt() argument must be non-negative");
-        crate::abi::flush_and_abort();
+        crate::panic::raise_str("runtime error");
     }
     value.sqrt()
 }
@@ -337,7 +337,7 @@ fn datetime_utc(timestamp: i64, context: &str) -> chrono::DateTime<chrono::Utc> 
         Some(dt) => dt,
         None => {
             eprintln!("lkrt error: {context}: invalid timestamp");
-            crate::abi::flush_and_abort();
+            crate::panic::raise_str("runtime error");
         }
     }
 }

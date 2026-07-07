@@ -62,6 +62,10 @@ pub enum Ty {
     /// ABI as `0`/`1`; the type keeps bool display/compare semantics exact.
     MapStrBool,
     /// The result of a dynamic (not provably in-range) `List<i64>` index: a
+    /// A mutable capture cell (`rt.cell_*`, the VM's `UpvalCell`): an
+    /// arena-owned boxed-Dyn slot passed by pointer, so a `try` body's
+    /// assignment to an outer local writes through. Opaque pointer.
+    Cell,
     /// A native `Set` handle (`*mut c_void` → `FxHashSet` of map keys),
     /// mirroring the VM's `RuntimeSet`. Opaque pointer; iteration and display
     /// stay outside the subset (hash order).
@@ -191,6 +195,16 @@ pub enum Inst {
     /// module (the native function ABI).
     CallFn {
         dst: Option<ValueId>,
+        func: FuncId,
+        args: Vec<ValueId>,
+    },
+    /// `dst = try.call f{func}(args)` — a native protected call (`try$call`,
+    /// plan G): codegen expands to `rt.try_push` + `_setjmp` + a conditional
+    /// call of the try-body function (which returns `Dyn`), joining into the
+    /// `[ok, value]` dyn-list the desugared destructuring consumes. A raise
+    /// inside the body longjmps back to the `_setjmp`.
+    TryCall {
+        dst: ValueId,
         func: FuncId,
         args: Vec<ValueId>,
     },
@@ -621,6 +635,7 @@ fn ty_name(ty: Ty) -> &'static str {
         Ty::ListDyn => "list<dyn>",
         Ty::MapStrDyn => "map<str,dyn>",
         Ty::Set => "set",
+        Ty::Cell => "cell",
     }
 }
 
@@ -699,6 +714,7 @@ fn render_inst(inst: &Inst) -> String {
             }
         }
         Inst::CallVm { func, args: a } => format!("call.vm f{}({})", func.0, args(a)),
+        Inst::TryCall { dst, func, args: a } => format!("{} = try.call f{}({})", v(*dst), func.0, args(a)),
         Inst::ListGetMaybe { dst, handle, index } => {
             format!("{} = list.i64.get_maybe {}, {}", v(*dst), v(*handle), v(*index))
         }
@@ -797,6 +813,7 @@ fn inst_def(inst: &Inst) -> Option<ValueId> {
         | Inst::GlobalGet { dst, .. } => Some(*dst),
         Inst::Call { dst, .. } | Inst::CallFn { dst, .. } => *dst,
         Inst::PrintStr { .. } | Inst::GlobalSet { .. } | Inst::CallVm { .. } => None,
+        Inst::TryCall { dst, .. } => Some(*dst),
     }
 }
 
@@ -831,7 +848,10 @@ fn inst_uses(inst: &Inst) -> Vec<ValueId> {
         | Inst::MapGetMaybeI64F64 { handle, key, .. } => {
             vec![*handle, *key]
         }
-        Inst::Call { args, .. } | Inst::CallFn { args, .. } | Inst::CallVm { args, .. } => args.clone(),
+        Inst::Call { args, .. }
+        | Inst::CallFn { args, .. }
+        | Inst::CallVm { args, .. }
+        | Inst::TryCall { args, .. } => args.clone(),
         Inst::PrintStr { value, .. } => vec![*value],
         Inst::Select {
             cond, then_v, else_v, ..

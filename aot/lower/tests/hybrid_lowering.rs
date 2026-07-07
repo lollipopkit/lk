@@ -19,10 +19,12 @@ fn artifact(source: &str) -> ModuleArtifact {
     ModuleArtifact::new(Vec::new(), &module).expect("artifact")
 }
 
-/// A statement-position call to a function whose body uses try/catch (pcall
-/// desugar — dynamic `Call`, outside the subset) with a scalar parameter.
+/// A statement-position call to a function whose body does not lower (a
+/// *dynamic* format string with extra args is the documented println
+/// reject) with a scalar parameter. try/catch — the previous ingredient —
+/// lowers natively since plan G.
 const REPORT_PROGRAM: &str = "\
-fn report(x) { try { assert(x > 0); } catch e { } }\n\
+fn report(x) { let f = \"v={}\".trim(); println(f, x); }\n\
 let acc = 0;\n\
 for i in 0..10 { acc += i; }\n\
 report(acc);\n\
@@ -48,8 +50,7 @@ fn hybrid_marks_eligible_unlowerable_callee_as_vm_executed() {
         "render lists the VM function:\n{rendered}"
     );
     assert!(rendered.contains("call.vm f"), "the call site bridges:\n{rendered}");
-    // The try/catch desugar closure is reachable only through `report` — it
-    // must not appear as a native function or a VM signature.
+    // Nothing beyond `report` may leak into the bridge surface.
     let codegen = lk_aot_codegen::render_module(&mir);
     assert!(
         codegen.contains("declare void @lk_hybrid_call_v(i32, ptr, i64)"),
@@ -70,7 +71,7 @@ fn hybrid_rejects_a_used_bridge_result() {
     // The bridged callee's result is *used* — the destination register stays
     // unbound, so the module must fall back whole rather than miscompile.
     let artifact = artifact(
-        "fn get(x) { try { return x; } catch e { return 0; } }\n\
+        "fn get(x) { let f = \"v={}\".trim(); println(f, x); return x; }\n\
          let v = get(3);\n\
          return v;\n",
     );
@@ -83,7 +84,7 @@ fn hybrid_rejects_a_global_touching_callee() {
     // copy would diverge from native storage, so it must reject.
     let artifact = artifact(
         "let counter = 0;\n\
-         fn bump() { try { counter = counter + 1; } catch e { } }\n\
+         fn bump() { let f = \"v={}\".trim(); println(f, counter); counter = counter + 1; }\n\
          bump();\n\
          return counter;\n",
     );

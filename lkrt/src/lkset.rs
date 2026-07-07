@@ -8,7 +8,6 @@ use core::ffi::{CStr, c_char, c_void};
 
 use rustc_hash::FxHashSet;
 
-use crate::abi::flush_and_abort;
 use crate::lkdyn::{DYN_BOOL, DYN_F64, DYN_I64, DYN_NIL, DYN_STR, LkDyn};
 
 /// The VM's `RuntimeMapKey` equality, minus heap-handle identity: the VM's
@@ -42,8 +41,8 @@ fn key_from_dyn(v: LkDyn) -> RtKey {
         // Float is the VM's loud "cannot be used as a key" error; containers
         // compare by heap-handle identity, which native cannot mirror. The
         // loud-failure contract compares success + stdout only, not text.
-        DYN_F64 => flush_and_abort(),
-        _ => flush_and_abort(),
+        DYN_F64 => crate::panic::raise_str("runtime error"),
+        _ => crate::panic::raise_str("runtime error"),
     }
 }
 

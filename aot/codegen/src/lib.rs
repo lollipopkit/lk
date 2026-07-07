@@ -142,6 +142,9 @@ fn render_prelude(out: &mut String) {
     out.push_str("@lk_bool_false = private unnamed_addr constant [6 x i8] c\"false\\00\", align 1\n\n");
     out.push_str("declare i32 @printf(ptr, ...)\n");
     out.push_str("declare void @abort()\n");
+    // Native protected calls (`try$call`): the generated code runs `_setjmp`
+    // itself; `returns_twice` is load-bearing for correct codegen around it.
+    out.push_str("declare i32 @_setjmp(ptr) returns_twice\n");
     // Dynamic `List<i64>` indexing returns a by-value `Maybe<i64>` (`{i64, i64}`),
     // which is outside the scalar ABI schema, so declare it directly here.
     out.push_str("declare { i64, i64 } @lkrt_lklist_i64_get_pair(ptr, i64)\n");
@@ -202,7 +205,8 @@ fn ty_str(t: Ty) -> &'static str {
         | Ty::MapStrF64
         | Ty::MapI64F64
         | Ty::MapStrBool
-        | Ty::Set => "ptr",
+        | Ty::Set
+        | Ty::Cell => "ptr",
         Ty::Nil => "void",
         Ty::MaybeI64 | Ty::MaybeBool => "{ i64, i64 }",
         Ty::MaybeF64 => "{ double, i64 }",
@@ -319,6 +323,7 @@ fn render_inst(out: &mut String, module: &MirModule, inst: &Inst) {
         Inst::Call { dst, callee, args } => render_call(out, *dst, *callee, args),
         Inst::CallFn { dst, func, args } => render_call_fn(out, module, *dst, *func, args),
         Inst::CallVm { func, args } => render_call_vm(out, module, *func, args),
+        Inst::TryCall { dst, func, args } => render_try_call(out, module, *dst, *func, args),
         Inst::PrintStr { value, newline } => {
             let fmt = if *newline { "@lk_str_fmt" } else { "@lk_str_raw_fmt" };
             let _ = writeln!(out, "  call i32 (ptr, ...) @printf(ptr {fmt}, ptr {})", val(*value));
@@ -491,6 +496,61 @@ fn render_call_fn(out: &mut String, module: &MirModule, dst: Option<ValueId>, fu
             let _ = writeln!(out, "  call {ret} @lk_fn_{}({})", func.0, arg_list);
         }
     }
+}
+
+/// A native protected call: push a handler frame, `_setjmp`, and either run
+/// the try body (a `Dyn`-returning function; `try_pop` on the success path)
+/// or land here from a raise and read the carried error. Both edges join
+/// into the `[ok, value]` dyn list the desugared `let [__try_ok, e] = …`
+/// destructures. Labels are namespaced by the destination id — codegen is
+/// free to open blocks textually.
+fn render_try_call(out: &mut String, module: &MirModule, dst: ValueId, func: FuncId, args: &[ValueId]) {
+    let n = dst.0;
+    let callee = module.function(func);
+    let arg_list = args
+        .iter()
+        .enumerate()
+        .map(|(i, v)| {
+            let ty = callee
+                .and_then(|f| f.params.get(i))
+                .map(|(_, t)| ty_str(*t))
+                .unwrap_or("i64");
+            format!("{ty} {}", val(*v))
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let _ = writeln!(out, "  %try{n}buf = call ptr @lkrt_rt_try_push()");
+    let _ = writeln!(out, "  %try{n}jv = call i32 @_setjmp(ptr %try{n}buf)");
+    let _ = writeln!(out, "  %try{n}ok = icmp eq i32 %try{n}jv, 0");
+    let _ = writeln!(out, "  br i1 %try{n}ok, label %try{n}body, label %try{n}catch");
+    let _ = writeln!(out, "try{n}body:");
+    let _ = writeln!(out, "  %try{n}ret = call {{ i64, i64 }} @lk_fn_{}({arg_list})", func.0);
+    let _ = writeln!(out, "  call void @lkrt_rt_try_pop()");
+    let _ = writeln!(out, "  br label %try{n}join");
+    let _ = writeln!(out, "try{n}catch:");
+    let _ = writeln!(out, "  %try{n}err = call {{ i64, i64 }} @lkrt_rt_current_error()");
+    let _ = writeln!(out, "  br label %try{n}join");
+    let _ = writeln!(out, "try{n}join:");
+    let _ = writeln!(out, "  %try{n}okv = phi i64 [ 1, %try{n}body ], [ 0, %try{n}catch ]");
+    let _ = writeln!(
+        out,
+        "  %try{n}val = phi {{ i64, i64 }} [ %try{n}ret, %try{n}body ], [ %try{n}err, %try{n}catch ]"
+    );
+    let _ = writeln!(out, "  {} = call ptr @lkrt_lklist_dyn_new()", val(dst));
+    let _ = writeln!(
+        out,
+        "  %try{n}okd = call {{ i64, i64 }} @lkrt_dyn_from_bool(i64 %try{n}okv)"
+    );
+    let _ = writeln!(
+        out,
+        "  call void @lkrt_lklist_dyn_push(ptr {}, {{ i64, i64 }} %try{n}okd)",
+        val(dst)
+    );
+    let _ = writeln!(
+        out,
+        "  call void @lkrt_lklist_dyn_push(ptr {}, {{ i64, i64 }} %try{n}val)",
+        val(dst)
+    );
 }
 
 fn render_const(out: &mut String, dst: ValueId, value: &Const) {
@@ -787,7 +847,8 @@ fn render_ret(out: &mut String, ret_ty: Ty, value: Option<ValueId>, is_entry: bo
                 | Ty::MapStrBool
                 | Ty::ListDyn
                 | Ty::MapStrDyn
-                | Ty::Set => {}
+                | Ty::Set
+                | Ty::Cell => {}
                 // A boxed Dyn return: print its display unless Nil-tagged
                 // (the VM's top-level auto-print of a nil return is silent).
                 Ty::Dyn => {

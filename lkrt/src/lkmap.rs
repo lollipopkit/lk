@@ -329,6 +329,44 @@ map_iter_family!(
     "`for pair in m` snapshot over `Map<str, Dyn>`."
 );
 
+macro_rules! map_to_dyn {
+    ($name:ident, $carrier:ty, $box_val:expr, $doc:literal) => {
+        #[doc = $doc]
+        /// # Safety
+        /// `handle` must be a live map handle of the matching carrier.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $name(handle: *mut c_void) -> *mut c_void {
+            // SAFETY: `handle` addresses the matching carrier map.
+            let map = unsafe { &*(handle as *mut $carrier) };
+            let mut out = StrDynMap::default();
+            for (k, v) in map.iter() {
+                #[allow(clippy::redundant_closure_call)]
+                out.insert(k.clone(), ($box_val)(v));
+            }
+            crate::state::arena_handle(out)
+        }
+    };
+}
+
+map_to_dyn!(
+    lkrt_lkmap_str_i64_to_dyn,
+    StrI64Map,
+    |v: &i64| crate::lkdyn::lkrt_dyn_from_i64(*v),
+    "`Map<str, i64>` → boxed-value map (iteration-order-preserving)."
+);
+map_to_dyn!(
+    lkrt_lkmap_str_f64_to_dyn,
+    StrF64Map,
+    |v: &f64| crate::lkdyn::lkrt_dyn_from_f64(*v),
+    "`Map<str, f64>` → boxed-value map."
+);
+map_to_dyn!(
+    lkrt_lkmap_str_bool_to_dyn,
+    StrI64Map,
+    |v: &i64| crate::lkdyn::lkrt_dyn_from_bool(*v),
+    "The bool map carrier → boxed-value map."
+);
+
 /// Creates a fresh, empty `Map<i64, i64>` handle.
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_lkmap_i64_i64_new() -> *mut c_void {

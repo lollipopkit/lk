@@ -85,6 +85,14 @@ fn raise_current(value: LkDyn) -> ! {
     }
 }
 
+/// Internal guard entry: raises a message string to the nearest `try` frame
+/// (arena-owned), or aborts loudly — every lkrt guard that mirrors a
+/// *catchable* VM error routes through here (G3). `panic` stays fatal.
+pub(crate) fn raise_str(message: &str) -> ! {
+    let owned = arena_c_string(CString::new(message).unwrap_or_default());
+    raise_current(crate::lkdyn::lkrt_dyn_from_str(owned))
+}
+
 /// `error(v)` and every runtime guard: raises a boxed value to the nearest
 /// `try` frame, or aborts loudly (the uncaught behaviour, byte-unchanged).
 /// Diverges (longjmp or abort); the `()` signature keeps it inside the ABI

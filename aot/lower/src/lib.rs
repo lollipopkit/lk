@@ -153,6 +153,10 @@ enum Builtin {
     CallMethod,
     /// `Set()` / `Set(list)` — the VM's set constructor builtin.
     SetCtor,
+    /// `try$call(closure)` — the try/catch desugar's protected call.
+    TryCall,
+    /// `error(v)` — raises a first-class error value (`rt.raise_dyn`).
+    ErrorRaise,
 }
 
 /// What a register loaded from the global table refers to. Like [`Builtin`],
@@ -842,6 +846,14 @@ pub fn lower_bundled(
     };
     let (mut globals, mut functions, failures) = final_pass(&mut sig, &reachable);
     if !failures.is_empty() {
+        // `LK_AOT_DEBUG_FAILURES=1` lists every failing function (the
+        // returned error is only the first; a callee's real blocker often
+        // hides behind its caller's transient ret-type check).
+        if std::env::var_os("LK_AOT_DEBUG_FAILURES").is_some() {
+            for (fi, err) in &failures {
+                eprintln!("lk-aot-lower: final-pass failure: fn{fi}: {err:?}");
+            }
+        }
         let first_error = failures[0].1.clone();
         if !hybrid {
             return Err(first_error);
@@ -1788,7 +1800,8 @@ fn lower_function(
                     | Ty::MapI64F64
                     | Ty::MapStrBool
                     | Ty::MapStrDyn
-                    | Ty::Set => {
+                    | Ty::Set
+                    | Ty::Cell => {
                         let c = ssa.new_val();
                         insts.push(Inst::Const {
                             dst: c,
@@ -2736,6 +2749,10 @@ impl Ssa {
                     | Ty::ListF64
                     | Ty::ListStr
                     | Ty::MapStrDyn
+                    | Ty::MaybeI64
+                    | Ty::MaybeF64
+                    | Ty::MaybeStr
+                    | Ty::MaybeBool
             )
         };
         if phi_ty != Ty::Dyn || incoming.iter().any(|&(_, v, ty)| v == param || !boxable(ty)) {
@@ -2797,6 +2814,40 @@ impl Ssa {
                     dst: Some(dst),
                     callee: AbiRef::new("dyn", "from_bool"),
                     args: vec![wide],
+                });
+                Some(dst)
+            }
+            // Nullable carriers box via `(value, present)` — a nil edge
+            // arrives as nil, exactly the VM (`m[k]!` join shapes).
+            Ty::MaybeI64 | Ty::MaybeF64 | Ty::MaybeStr | Ty::MaybeBool => {
+                let from = match ty {
+                    Ty::MaybeI64 => "from_maybe_i64",
+                    Ty::MaybeF64 => "from_maybe_f64",
+                    Ty::MaybeStr => "from_maybe_str",
+                    _ => "from_maybe_bool",
+                };
+                let value = self.new_val();
+                self.edge_insts[pred].push(Inst::MaybeValue {
+                    dst: value,
+                    src: v,
+                    maybe_ty: ty,
+                });
+                let present_b = self.new_val();
+                self.edge_insts[pred].push(Inst::MaybePresent {
+                    dst: present_b,
+                    src: v,
+                    maybe_ty: ty,
+                });
+                let present = self.new_val();
+                self.edge_insts[pred].push(Inst::ZextBool {
+                    dst: present,
+                    src: present_b,
+                });
+                let dst = self.new_val();
+                self.edge_insts[pred].push(Inst::Call {
+                    dst: Some(dst),
+                    callee: AbiRef::new("dyn", from),
+                    args: vec![value, present],
                 });
                 Some(dst)
             }
@@ -3166,6 +3217,95 @@ fn record_ret_closure(sig: &mut SigInfer, fi: usize, candidate: (u32, Vec<RetCap
             sig.ret_closure_poisoned[fi] = true;
         }
     }
+}
+
+/// `try$call(closure)` — the try/catch desugar's protected call (plan G).
+/// The body closure lowers as a normal `Dyn`-returning function; the call
+/// site emits [`Inst::TryCall`], which codegen expands into `rt.try_push` +
+/// `_setjmp` + a conditional body call joining into the `[ok, value]` dyn
+/// list the desugared destructuring consumes. Mutable captures (`UpvalCell`)
+/// materialize as *runtime cells* across the boundary: the body writes
+/// through the shared slot, and the caller re-reads it afterwards, so the
+/// SSA-tracked cell world stays coherent.
+#[allow(clippy::too_many_arguments)]
+fn lower_try_call(
+    ssa: &mut Ssa,
+    insts: &mut Vec<Inst>,
+    funcs: &[FunctionData],
+    entry: u32,
+    sig: &mut SigInfer,
+    base: u8,
+    argc: usize,
+    block: usize,
+    pc: usize,
+) -> Result<(), Unsupported> {
+    if argc != 1 {
+        return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+    }
+    let arg_reg = base.wrapping_add(1);
+    let (fidx, caps) = match ssa.builtin_ref_at(arg_reg, block) {
+        Some(GlobalRef::Closure(f, caps)) => (f as usize, caps),
+        Some(GlobalRef::Lambda(f)) => (f as usize, Vec::new()),
+        _ => return Err(Unsupported::Opcode { pc, op: Opcode::Call }),
+    };
+    if fidx >= funcs.len()
+        || fidx == entry as usize
+        || funcs[fidx].param_count != 0
+        || caps.len() != funcs[fidx].capture_count as usize
+    {
+        return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+    }
+    let mut args = Vec::with_capacity(caps.len());
+    let mut cell_writebacks: Vec<(u32, ValueId)> = Vec::new();
+    for (k, capture) in caps.iter().enumerate() {
+        let (v, ty) = match capture {
+            ClosureCapture::Cell(cid) => {
+                // Seed a runtime cell with the current content; the body
+                // mutates through it, the write-back below re-syncs.
+                let slot = ssa.cell_slot(*cid);
+                let (cur, cur_ty) = ssa.read_slot(slot, block, pc)?;
+                let boxed = to_dyn_any(ssa, insts, cur, cur_ty, pc)?;
+                let cell = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(cell),
+                    callee: AbiRef::new("rt", "cell_new"),
+                    args: vec![boxed],
+                });
+                cell_writebacks.push((*cid, cell));
+                (cell, Ty::Cell)
+            }
+            ClosureCapture::Value(v, ty) => (*v, *ty),
+        };
+        let want = sig.observe_param(fidx, k, ty);
+        args.push(coerce_arg(ssa, insts, v, ty, want, pc)?);
+    }
+    // The body's return crosses the boundary boxed (`dyn_rets`, the same
+    // retriable convergence the dyn HOF family uses).
+    if !sig.dyn_rets.contains(&(fidx as u32)) {
+        sig.dyn_rets.insert(fidx as u32);
+        return Err(Unsupported::TypeMismatch { pc });
+    }
+    if sig.ret_types.get(fidx).copied() != Some(Ty::Dyn) {
+        return Err(Unsupported::TypeMismatch { pc });
+    }
+    let dst = ssa.new_val();
+    insts.push(Inst::TryCall {
+        dst,
+        func: FuncId(fidx as u32),
+        args,
+    });
+    for (cid, cell) in cell_writebacks {
+        let cur = ssa.new_val();
+        insts.push(Inst::Call {
+            dst: Some(cur),
+            callee: AbiRef::new("rt", "cell_get"),
+            args: vec![cell],
+        });
+        let slot = ssa.cell_slot(cid);
+        ssa.write_slot(slot, block, (cur, Ty::Dyn));
+    }
+    ssa.write(base, block, (dst, Ty::ListDyn));
+    Ok(())
 }
 
 /// Lowers a call to user function `callee_idx` with the register-window layout
@@ -3646,6 +3786,28 @@ fn lower_inst(
                     dst,
                     value: Const::Bool(true),
                 }),
+                // A boxed value dispatches at runtime (Bool/Nil legal,
+                // anything else the VM's loud error): `dyn.not` → 0/1.
+                Ty::Dyn => {
+                    let wide = ssa.new_val();
+                    insts.push(Inst::Call {
+                        dst: Some(wide),
+                        callee: AbiRef::new("dyn", "not"),
+                        args: vec![v],
+                    });
+                    let zero = ssa.new_val();
+                    insts.push(Inst::Const {
+                        dst: zero,
+                        value: Const::I64(0),
+                    });
+                    insts.push(Inst::Cmp {
+                        dst,
+                        op: CmpOp::Ne,
+                        float: false,
+                        lhs: wide,
+                        rhs: zero,
+                    });
+                }
                 _ => return Err(Unsupported::TypeMismatch { pc }),
             }
             ssa.write(instr.a(), block, (dst, Ty::Bool));
@@ -4378,7 +4540,19 @@ fn lower_inst(
             match ssa.builtin_ref_at(instr.b(), block) {
                 Some(GlobalRef::CellParam(k)) => {
                     let &(v, ty) = capture_params.get(k).ok_or(Unsupported::BadConst { pc })?;
-                    ssa.write(instr.a(), block, (v, ty));
+                    // A runtime cell (a `try$call` boundary capture) reads
+                    // through the shared slot; by-value captures stay as-is.
+                    if ty == Ty::Cell {
+                        let dst = ssa.new_val();
+                        insts.push(Inst::Call {
+                            dst: Some(dst),
+                            callee: AbiRef::new("rt", "cell_get"),
+                            args: vec![v],
+                        });
+                        ssa.write(instr.a(), block, (dst, Ty::Dyn));
+                    } else {
+                        ssa.write(instr.a(), block, (v, ty));
+                    }
                 }
                 Some(GlobalRef::Cell(cid)) => {
                     let slot = ssa.cell_slot(cid);
@@ -4390,14 +4564,30 @@ fn lower_inst(
         }
         Opcode::StoreCellVal => {
             // `a` = cell register, `b` = value register: updates the tracked
-            // cell content (mutations inside a lambda would need write-back
-            // through the hidden parameter, so `CellParam` stores reject).
-            let Some(GlobalRef::Cell(cid)) = ssa.builtin_ref_at(instr.a(), block) else {
-                return Err(Unsupported::Opcode { pc, op: instr.opcode() });
-            };
-            let (v, ty) = ssa.read(instr.b(), block, pc)?;
-            let slot = ssa.cell_slot(cid);
-            ssa.write_slot(slot, block, (v, ty));
+            // cell content. A `CellParam` backed by a *runtime* cell (the
+            // `try$call` boundary) writes through the shared slot; a
+            // by-value capture parameter still rejects (no write-back path).
+            match ssa.builtin_ref_at(instr.a(), block) {
+                Some(GlobalRef::Cell(cid)) => {
+                    let (v, ty) = ssa.read(instr.b(), block, pc)?;
+                    let slot = ssa.cell_slot(cid);
+                    ssa.write_slot(slot, block, (v, ty));
+                }
+                Some(GlobalRef::CellParam(k)) => {
+                    let &(cell, cty) = capture_params.get(k).ok_or(Unsupported::BadConst { pc })?;
+                    if cty != Ty::Cell {
+                        return Err(Unsupported::Opcode { pc, op: instr.opcode() });
+                    }
+                    let (v, ty) = ssa.read(instr.b(), block, pc)?;
+                    let boxed = to_dyn_any(ssa, insts, v, ty, pc)?;
+                    insts.push(Inst::Call {
+                        dst: None,
+                        callee: AbiRef::new("rt", "cell_set"),
+                        args: vec![cell, boxed],
+                    });
+                }
+                _ => return Err(Unsupported::Opcode { pc, op: instr.opcode() }),
+            }
         }
         Opcode::SetGlobal => {
             // Storing a function value into the global table is the compiler's
@@ -4480,6 +4670,8 @@ fn lower_inst(
                 Some("typeof") => Some(GlobalRef::Builtin(Builtin::Typeof)),
                 Some("__lk_call_method") => Some(GlobalRef::Builtin(Builtin::CallMethod)),
                 Some("Set") => Some(GlobalRef::Builtin(Builtin::SetCtor)),
+                Some("try$call") => Some(GlobalRef::Builtin(Builtin::TryCall)),
+                Some("error") => Some(GlobalRef::Builtin(Builtin::ErrorRaise)),
                 Some(name) if MODULE_GLOBALS.contains(&name) => Some(GlobalRef::Module(name.to_string())),
                 _ => None,
             };
@@ -4545,6 +4737,9 @@ fn lower_inst(
             // (closures, runtime values) rejects.
             let base = instr.a();
             match ssa.builtin_ref_at(base, block) {
+                Some(GlobalRef::Builtin(Builtin::TryCall)) => {
+                    lower_try_call(ssa, insts, funcs, entry, sig, base, instr.c() as usize, block, pc)?;
+                }
                 Some(GlobalRef::Builtin(Builtin::CallMethod)) => {
                     if instr.c() != 3 {
                         return Err(Unsupported::Opcode { pc, op: instr.opcode() });
@@ -5204,6 +5399,20 @@ fn lower_inst(
             // handle is a reference (matching the VM), so the push is visible through
             // aliases; no new SSA value is produced for the list.
             let (handle, list_ty) = ssa.read(instr.a(), block, pc)?;
+            // A boxed receiver (a cell readback across a `try$call` boundary)
+            // unwraps through the as_list guard: the push mutates the shared
+            // handle, exactly the VM's aliasing.
+            let (handle, list_ty) = if list_ty == Ty::Dyn {
+                let unboxed = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(unboxed),
+                    callee: AbiRef::new("dyn", "as_list"),
+                    args: vec![handle],
+                });
+                (unboxed, Ty::ListDyn)
+            } else {
+                (handle, list_ty)
+            };
             // Values read through `read_scalar` so a `Maybe` (a dynamic list
             // read like `xs[i]` in `flat.push(xs[i])`) unwraps first.
             // A push whose value type contradicts a guessed empty-`[]`
@@ -5852,13 +6061,11 @@ fn lower_inst(
             ssa.write(instr.a(), block, (dst, Ty::Bool));
         }
         Opcode::Raise => {
-            // `bx` = the raised message string constant. A `Raise` with no
-            // enclosing handler aborts, exactly like `panic`. The native path
-            // only reaches here when the module has no try/catch at all: `TryBegin`
-            // is itself unsupported and forces the Tier 0 fallback, so any module
-            // that lowers natively cannot catch a raise — every lowered `Raise` is
-            // uncaught. (The differential harness already treats VM exit-1 and a
-            // native SIGABRT as matching failures, as it does for `assert`/`panic`.)
+            // `bx` = the raised message string constant. The raise unwinds to
+            // the nearest native `try` frame (`try$call` — plan G); with no
+            // handler it aborts, exactly the VM's uncaught raise (the
+            // differential harness treats VM exit-1 and a native SIGABRT as
+            // matching failures).
             let message = func
                 .consts
                 .strings
@@ -5868,7 +6075,7 @@ fn lower_inst(
             let msg = materialize_key(ssa, insts, globals, &message);
             insts.push(Inst::Call {
                 dst: None,
-                callee: AbiRef::new("rt", "panic"),
+                callee: AbiRef::new("rt", "raise_msg"),
                 args: vec![msg],
             });
         }
@@ -6230,6 +6437,34 @@ fn lower_builtin_call(
         Builtin::CallMethod => {
             // Dispatched by the caller before reaching here.
             return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+        }
+        Builtin::TryCall => {
+            // Dispatched by the caller before reaching here (it needs the
+            // function table and the signature lattice).
+            return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+        }
+        Builtin::ErrorRaise => {
+            // `error(v)`: raise the boxed value to the nearest `try` frame
+            // (`raise_dyn` diverges: longjmp with a handler, abort without —
+            // the VM's uncaught behaviour). The statement's result register
+            // is never observed on the raise path; nil keeps SSA total.
+            if argc != 1 {
+                return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+            }
+            let (v, ty) = ssa.read(base.wrapping_add(1), block, pc)?;
+            let boxed = to_dyn_any(ssa, insts, v, ty, pc)?;
+            insts.push(Inst::Call {
+                dst: None,
+                callee: AbiRef::new("rt", "raise_dyn"),
+                args: vec![boxed],
+            });
+            let nil = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: nil,
+                value: Const::Nil,
+            });
+            ssa.write(base, block, (nil, Ty::Nil));
+            return Ok(());
         }
         Builtin::SetCtor => {
             // `Set()` / `Set(list)` — a fresh native set handle. `Set(set)`
@@ -8324,6 +8559,9 @@ fn dyn_boxable_ty(ty: Ty) -> bool {
             | Ty::ListF64
             | Ty::ListStr
             | Ty::MapStrDyn
+            | Ty::MapStrI64
+            | Ty::MapStrF64
+            | Ty::MapStrBool
             | Ty::MaybeI64
             | Ty::MaybeF64
             | Ty::MaybeStr
@@ -8399,6 +8637,28 @@ fn to_dyn(ssa: &mut Ssa, insts: &mut Vec<Inst>, v: ValueId, ty: Ty, pc: usize) -
         Ty::Nil => "from_nil",
         Ty::ListDyn => "from_list",
         Ty::MapStrDyn => "from_map",
+        // Typed string maps box via a value-boxing conversion (cold path:
+        // a typed map crossing a `try$call` cell boundary).
+        Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool => {
+            let converter = match ty {
+                Ty::MapStrI64 => "str_i64_to_dyn",
+                Ty::MapStrF64 => "str_f64_to_dyn",
+                _ => "str_bool_to_dyn",
+            };
+            let converted = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(converted),
+                callee: AbiRef::new("map_h", converter),
+                args: vec![v],
+            });
+            let boxed = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(boxed),
+                callee: AbiRef::new("dyn", "from_map"),
+                args: vec![converted],
+            });
+            return Ok(boxed);
+        }
         // Typed lists box via an element-wise conversion (cold path: only
         // emitted where a typed list actually meets a Dyn).
         Ty::ListI64 | Ty::ListF64 | Ty::ListStr => {

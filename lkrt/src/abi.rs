@@ -32,7 +32,9 @@ pub(crate) fn flush_c_stdio() {
 /// FFI surface of [`flush_and_abort`] for generated code (`Term::Abort`).
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_abort() {
-    flush_and_abort();
+    // Generated-code guards (`Term::Abort`) mirror catchable VM errors:
+    // raise first, abort only without a handler.
+    crate::panic::raise_str("runtime error");
 }
 
 pub(crate) use lk_aot_abi::ABI_VERSION;
@@ -124,8 +126,9 @@ pub unsafe extern "C" fn lkrt_panic(message: *const c_char) {
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_assert(cond: i64) {
     if cond == 0 {
-        eprintln!("assertion failed");
-        flush_and_abort();
+        // Catchable in the VM (a try around a failing assert recovers):
+        // raise to the nearest frame, abort when uncaught (same as before).
+        crate::panic::raise_str("Assertion failed");
     }
 }
 
@@ -144,8 +147,7 @@ pub unsafe extern "C" fn lkrt_assert_msg(cond: i64, message: *const c_char) {
             // SAFETY: non-null message pointers are NUL-terminated per the ABI.
             unsafe { CStr::from_ptr(message) }.to_string_lossy().into_owned()
         };
-        eprintln!("assertion failed: {text}");
-        flush_and_abort();
+        crate::panic::raise_str(&format!("Assertion failed: {text}"));
     }
 }
 

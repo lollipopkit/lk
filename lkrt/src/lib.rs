@@ -44,12 +44,12 @@ pub use lkdyn::{
     lkrt_dyn_from_f64, lkrt_dyn_from_i64, lkrt_dyn_from_list, lkrt_dyn_from_map, lkrt_dyn_from_maybe_bool,
     lkrt_dyn_from_maybe_f64, lkrt_dyn_from_maybe_i64, lkrt_dyn_from_maybe_str, lkrt_dyn_from_nil, lkrt_dyn_from_str,
     lkrt_dyn_ge, lkrt_dyn_gt, lkrt_dyn_index, lkrt_dyn_le, lkrt_dyn_len_of, lkrt_dyn_lt, lkrt_dyn_mod, lkrt_dyn_mul,
-    lkrt_dyn_sub, lkrt_dyn_tag, lkrt_dyn_truthy, lkrt_lklist_dyn_at, lkrt_lklist_dyn_chain, lkrt_lklist_dyn_chunk,
-    lkrt_lklist_dyn_contains, lkrt_lklist_dyn_display, lkrt_lklist_dyn_enumerate, lkrt_lklist_dyn_eq,
-    lkrt_lklist_dyn_filter_fn, lkrt_lklist_dyn_flatten, lkrt_lklist_dyn_len, lkrt_lklist_dyn_map_fn,
-    lkrt_lklist_dyn_new, lkrt_lklist_dyn_push, lkrt_lklist_dyn_reduce_fn, lkrt_lklist_dyn_set, lkrt_lklist_dyn_skip,
-    lkrt_lklist_dyn_slice_from, lkrt_lklist_dyn_take, lkrt_lklist_dyn_unique, lkrt_lklist_dyn_zip,
-    lkrt_lklist_f64_to_dyn, lkrt_lklist_i64_to_dyn, lkrt_lklist_str_to_dyn,
+    lkrt_dyn_not, lkrt_dyn_sub, lkrt_dyn_tag, lkrt_dyn_truthy, lkrt_lklist_dyn_at, lkrt_lklist_dyn_chain,
+    lkrt_lklist_dyn_chunk, lkrt_lklist_dyn_contains, lkrt_lklist_dyn_display, lkrt_lklist_dyn_enumerate,
+    lkrt_lklist_dyn_eq, lkrt_lklist_dyn_filter_fn, lkrt_lklist_dyn_flatten, lkrt_lklist_dyn_len,
+    lkrt_lklist_dyn_map_fn, lkrt_lklist_dyn_new, lkrt_lklist_dyn_push, lkrt_lklist_dyn_reduce_fn, lkrt_lklist_dyn_set,
+    lkrt_lklist_dyn_skip, lkrt_lklist_dyn_slice_from, lkrt_lklist_dyn_take, lkrt_lklist_dyn_unique,
+    lkrt_lklist_dyn_zip, lkrt_lklist_f64_to_dyn, lkrt_lklist_i64_to_dyn, lkrt_lklist_str_to_dyn,
 };
 pub use lklist::{
     LkMaybeF64, LkMaybeI64, LkMaybeStr, lkrt_lklist_f64_at, lkrt_lklist_f64_contains, lkrt_lklist_f64_display,
@@ -75,10 +75,11 @@ pub use lkmap::{
     lkrt_lkmap_str_i64_set_ik, lkrt_lkmap_str_i64_without,
 };
 pub use lkmap::{
-    lkrt_lkmap_str_bool_delete, lkrt_lkmap_str_bool_iter_pairs, lkrt_lkmap_str_bool_keys, lkrt_lkmap_str_bool_values,
-    lkrt_lkmap_str_dyn_delete, lkrt_lkmap_str_dyn_iter_pairs, lkrt_lkmap_str_dyn_keys, lkrt_lkmap_str_dyn_values,
-    lkrt_lkmap_str_f64_delete, lkrt_lkmap_str_f64_iter_pairs, lkrt_lkmap_str_f64_keys, lkrt_lkmap_str_f64_values,
-    lkrt_lkmap_str_i64_delete, lkrt_lkmap_str_i64_iter_pairs, lkrt_lkmap_str_i64_keys, lkrt_lkmap_str_i64_values,
+    lkrt_lkmap_str_bool_delete, lkrt_lkmap_str_bool_iter_pairs, lkrt_lkmap_str_bool_keys, lkrt_lkmap_str_bool_to_dyn,
+    lkrt_lkmap_str_bool_values, lkrt_lkmap_str_dyn_delete, lkrt_lkmap_str_dyn_iter_pairs, lkrt_lkmap_str_dyn_keys,
+    lkrt_lkmap_str_dyn_values, lkrt_lkmap_str_f64_delete, lkrt_lkmap_str_f64_iter_pairs, lkrt_lkmap_str_f64_keys,
+    lkrt_lkmap_str_f64_to_dyn, lkrt_lkmap_str_f64_values, lkrt_lkmap_str_i64_delete, lkrt_lkmap_str_i64_iter_pairs,
+    lkrt_lkmap_str_i64_keys, lkrt_lkmap_str_i64_to_dyn, lkrt_lkmap_str_i64_values,
 };
 pub use lkset::{
     lkrt_lkset_add, lkrt_lkset_clear, lkrt_lkset_delete, lkrt_lkset_from_i64_list, lkrt_lkset_from_str_list,
