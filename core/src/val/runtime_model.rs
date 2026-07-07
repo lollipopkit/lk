@@ -651,6 +651,26 @@ impl TypedMap {
     }
 }
 
+/// Test-support for lkrt's map-order conformance: the key iteration order of
+/// a string→int map built exactly like a literal (stage-1 `RuntimeMapKey`
+/// insertion in the given order, then [`typed_map_from_entries`]). The native
+/// runtime mirrors this construction; the lkrt test compares against this
+/// function so any drift (hasher, table layout, key shape) fails loudly.
+pub fn typed_map_iteration_keys<'a>(entries: impl Iterator<Item = (&'a str, i64)>) -> Vec<String> {
+    let mut stage1 = fast_hash_map_new();
+    for (key, value) in entries {
+        let key = match ShortStr::new(key) {
+            Some(short) => RuntimeMapKey::ShortStr(short),
+            None => RuntimeMapKey::String(Arc::from(key)),
+        };
+        stage1.insert(key, RuntimeVal::Int(value));
+    }
+    match typed_map_from_entries(stage1) {
+        TypedMap::StringInt(map) => map.keys().map(|k| k.to_string()).collect(),
+        other => unreachable!("string→int literal always shapes to StringInt, got {other:?}"),
+    }
+}
+
 pub(crate) fn typed_map_from_entries(entries: FastHashMap<RuntimeMapKey, RuntimeVal>) -> TypedMap {
     if entries.is_empty() {
         return TypedMap::Mixed(entries);

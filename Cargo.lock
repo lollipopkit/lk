@@ -1397,7 +1397,9 @@ name = "lkrt"
 version = "0.1.3"
 dependencies = [
  "chrono",
+ "hashbrown 0.15.5",
  "lk-aot-abi",
+ "lk-core",
  "rustc-hash",
 ]
 

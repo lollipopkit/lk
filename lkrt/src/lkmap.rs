@@ -12,22 +12,24 @@
 
 use std::ffi::{CStr, c_char, c_void};
 
-use rustc_hash::FxHashMap;
-
 use crate::lklist::{LkMaybeF64, LkMaybeI64};
 
-// FxHash instead of SipHash: map keys here are short strings / i64s hashed on
-// every dynamic get/set, there is no iteration-order ABI (no keys/values/iter
-// helper), and the inputs are program data, not untrusted external input.
-type StrI64Map = FxHashMap<String, i64>;
-type I64I64Map = FxHashMap<i64, i64>;
-type StrF64Map = FxHashMap<String, f64>;
-type I64F64Map = FxHashMap<i64, f64>;
+// The exact carrier the VM uses (`core::util::fast_map::FastHashMap` =
+// `hashbrown::HashMap` + `FxBuildHasher`, fixed seed): iteration order is a
+// deterministic function of key hashes + operation sequence, so a native map
+// built by the same operation sequence iterates in the *same* order — the
+// deep-coverage plan's "mirror the Fx order" adjudication. Do not swap either
+// piece independently of `core/src/util/fast_map.rs`.
+pub(crate) type FxMap<K, V> = hashbrown::HashMap<K, V, rustc_hash::FxBuildHasher>;
+type StrI64Map = FxMap<String, i64>;
+type I64I64Map = FxMap<i64, i64>;
+type StrF64Map = FxMap<String, f64>;
+type I64F64Map = FxMap<i64, f64>;
 
 /// Insert-or-update without allocating when the key is already present: the
 /// common map workload pattern is repeated updates of existing keys, and
 /// `insert(key.to_string(), ..)` would heap-allocate the key on every call.
-fn set_str_key<V>(map: &mut FxHashMap<String, V>, key: &str, value: V) {
+fn set_str_key<V>(map: &mut FxMap<String, V>, key: &str, value: V) {
     match map.get_mut(key) {
         Some(slot) => *slot = value,
         None => {
@@ -205,6 +207,127 @@ pub unsafe extern "C" fn lkrt_lkmap_str_dyn_without(handle: *mut c_void, key: *c
     copy.remove(unsafe { key_str(key) });
     crate::state::arena_handle(copy)
 }
+
+// ── Iteration family (order = the VM's, by the layout-mirror argument in
+// `vm_mirror.rs`): pair lists for `for pair in map`, keys/values snapshots,
+// and delete-with-removed-value. Every produced list is a dyn list (the VM
+// returns Mixed lists — bare-text display).
+
+fn boxed_str_key(key: &str) -> crate::lkdyn::LkDyn {
+    let owned = crate::lkstr::arena_c_string(std::ffi::CString::new(key).unwrap_or_default());
+    crate::lkdyn::LkDyn {
+        tag: crate::lkdyn::DYN_STR,
+        payload: owned as i64,
+    }
+}
+
+fn pair_list(entries: Vec<(crate::lkdyn::LkDyn, crate::lkdyn::LkDyn)>) -> *mut c_void {
+    let pairs: Vec<crate::lkdyn::LkDyn> = entries
+        .into_iter()
+        .map(|(k, v)| {
+            let pair: Vec<crate::lkdyn::LkDyn> = vec![k, v];
+            crate::lkdyn::LkDyn {
+                tag: crate::lkdyn::DYN_LIST,
+                payload: crate::state::arena_handle(pair) as i64,
+            }
+        })
+        .collect();
+    crate::state::arena_handle(pairs)
+}
+
+macro_rules! map_iter_family {
+    ($carrier:ty, $iter:ident, $keys:ident, $values:ident, $delete:ident, $box_val:expr, $unbox_doc:literal) => {
+        #[doc = $unbox_doc]
+        /// # Safety
+        /// `handle` must be a live map handle of the matching carrier.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $iter(handle: *mut c_void) -> *mut c_void {
+            // SAFETY: `handle` addresses the matching carrier map.
+            let map = unsafe { &*(handle as *mut $carrier) };
+            #[allow(clippy::redundant_closure_call)]
+            pair_list(
+                map.iter()
+                    .map(|(k, v)| (boxed_str_key(k), ($box_val)(v)))
+                    .collect(),
+            )
+        }
+
+        /// `.keys()` — a dyn list in iteration order.
+        /// # Safety
+        /// `handle` must be a live map handle of the matching carrier.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $keys(handle: *mut c_void) -> *mut c_void {
+            // SAFETY: as above.
+            let map = unsafe { &*(handle as *mut $carrier) };
+            let keys: Vec<crate::lkdyn::LkDyn> = map.keys().map(|k| boxed_str_key(k)).collect();
+            crate::state::arena_handle(keys)
+        }
+
+        /// `.values()` — a dyn list in iteration order.
+        /// # Safety
+        /// `handle` must be a live map handle of the matching carrier.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $values(handle: *mut c_void) -> *mut c_void {
+            // SAFETY: as above.
+            let map = unsafe { &*(handle as *mut $carrier) };
+            #[allow(clippy::redundant_closure_call)]
+            let values: Vec<crate::lkdyn::LkDyn> = map.values().map(|v| ($box_val)(v)).collect();
+            crate::state::arena_handle(values)
+        }
+
+        /// `.delete(k)` — removes and returns the value, or nil when absent.
+        /// # Safety
+        /// `handle` must be a live map handle; `key` a NUL-terminated string.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $delete(handle: *mut c_void, key: *const c_char) -> crate::lkdyn::LkDyn {
+            // SAFETY: as above.
+            let map = unsafe { &mut *(handle as *mut $carrier) };
+            #[allow(clippy::redundant_closure_call)]
+            match map.remove(unsafe { key_str(key) }) {
+                Some(v) => ($box_val)(&v),
+                None => crate::lkdyn::LkDyn::NIL,
+            }
+        }
+    };
+}
+
+map_iter_family!(
+    StrI64Map,
+    lkrt_lkmap_str_i64_iter_pairs,
+    lkrt_lkmap_str_i64_keys,
+    lkrt_lkmap_str_i64_values,
+    lkrt_lkmap_str_i64_delete,
+    |v: &i64| crate::lkdyn::lkrt_dyn_from_i64(*v),
+    "`for pair in m` snapshot over `Map<str, i64>`."
+);
+map_iter_family!(
+    StrF64Map,
+    lkrt_lkmap_str_f64_iter_pairs,
+    lkrt_lkmap_str_f64_keys,
+    lkrt_lkmap_str_f64_values,
+    lkrt_lkmap_str_f64_delete,
+    |v: &f64| crate::lkdyn::lkrt_dyn_from_f64(*v),
+    "`for pair in m` snapshot over `Map<str, f64>`."
+);
+// `Map<str, bool>` rides the i64 carrier; values box as Bool.
+map_iter_family!(
+    StrI64Map,
+    lkrt_lkmap_str_bool_iter_pairs,
+    lkrt_lkmap_str_bool_keys,
+    lkrt_lkmap_str_bool_values,
+    lkrt_lkmap_str_bool_delete,
+    |v: &i64| crate::lkdyn::lkrt_dyn_from_bool(*v),
+    "`for pair in m` snapshot over the bool map carrier."
+);
+map_iter_family!(
+    StrDynMap,
+    lkrt_lkmap_str_dyn_iter_pairs,
+    lkrt_lkmap_str_dyn_keys,
+    lkrt_lkmap_str_dyn_values,
+    lkrt_lkmap_str_dyn_delete,
+    |v: &crate::lkdyn::LkDyn| *v,
+    "`for pair in m` snapshot over `Map<str, Dyn>`."
+);
 
 /// Creates a fresh, empty `Map<i64, i64>` handle.
 #[unsafe(no_mangle)]
@@ -466,7 +589,7 @@ mod tests {
 
 // ── Mixed-value map (`Map<str, LkDyn>`, plan M4.2 Dyn) ────────────────
 
-type StrDynMap = FxHashMap<String, crate::lkdyn::LkDyn>;
+pub(crate) type StrDynMap = FxMap<String, crate::lkdyn::LkDyn>;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_lkmap_str_dyn_new() -> *mut c_void {

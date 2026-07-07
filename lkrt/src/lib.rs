@@ -17,6 +17,7 @@ mod lkset;
 mod lkstr;
 mod net;
 mod state;
+mod vm_mirror;
 
 pub use abi::{
     lkrt_abi_check, lkrt_abi_version, lkrt_abort, lkrt_assert, lkrt_assert_msg, lkrt_cleanup, lkrt_error_clear,
@@ -72,6 +73,12 @@ pub use lkmap::{
     lkrt_lkmap_str_i64_get_pair, lkrt_lkmap_str_i64_len, lkrt_lkmap_str_i64_new, lkrt_lkmap_str_i64_set,
     lkrt_lkmap_str_i64_set_ik, lkrt_lkmap_str_i64_without,
 };
+pub use lkmap::{
+    lkrt_lkmap_str_bool_delete, lkrt_lkmap_str_bool_iter_pairs, lkrt_lkmap_str_bool_keys, lkrt_lkmap_str_bool_values,
+    lkrt_lkmap_str_dyn_delete, lkrt_lkmap_str_dyn_iter_pairs, lkrt_lkmap_str_dyn_keys, lkrt_lkmap_str_dyn_values,
+    lkrt_lkmap_str_f64_delete, lkrt_lkmap_str_f64_iter_pairs, lkrt_lkmap_str_f64_keys, lkrt_lkmap_str_f64_values,
+    lkrt_lkmap_str_i64_delete, lkrt_lkmap_str_i64_iter_pairs, lkrt_lkmap_str_i64_keys, lkrt_lkmap_str_i64_values,
+};
 pub use lkset::{
     lkrt_lkset_add, lkrt_lkset_clear, lkrt_lkset_delete, lkrt_lkset_from_i64_list, lkrt_lkset_from_str_list,
     lkrt_lkset_has, lkrt_lkset_len, lkrt_lkset_new,
@@ -86,6 +93,11 @@ pub use lkstr::{
 pub use net::{
     lkrt_bytes_free, lkrt_bytes_to_string_utf8, lkrt_handle_close, lkrt_socket_addr, lkrt_tcp_close, lkrt_tcp_connect,
     lkrt_tcp_read, lkrt_tcp_write_bytes, lkrt_tcp_write_str,
+};
+pub use vm_mirror::{
+    lkrt_lkmap_lit_finish_i64_f64, lkrt_lkmap_lit_finish_i64_i64, lkrt_lkmap_lit_finish_str_bool,
+    lkrt_lkmap_lit_finish_str_dyn, lkrt_lkmap_lit_finish_str_f64, lkrt_lkmap_lit_finish_str_i64, lkrt_lkmap_lit_new,
+    lkrt_lkmap_lit_set,
 };
 
 /// Called by the CLI to make the Cargo dependency explicit.

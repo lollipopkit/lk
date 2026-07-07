@@ -319,6 +319,36 @@ macro_rules! for_each_abi_fn {
             ("map_h", "str_dyn_len", lkrt_lkmap_str_dyn_len, ReadsHost, [Ptr], I64);
             ("map_h", "str_dyn_has", lkrt_lkmap_str_dyn_has, ReadsHost, [Ptr, StrPtr], I64);
             ("map_h", "str_dyn_without", lkrt_lkmap_str_dyn_without, WritesHost, [Ptr, StrPtr], Ptr);
+            // Map-literal protocol (VM-order mirror, plan D1): stage-1 build
+            // in source order, then finish into the typed carrier — the
+            // result iterates exactly like the VM's two-stage construction.
+            ("map_h", "lit_new", lkrt_lkmap_lit_new, WritesHost, [], Ptr);
+            ("map_h", "lit_set", lkrt_lkmap_lit_set, WritesHost, [Ptr, DynVal, DynVal], Nil);
+            ("map_h", "lit_finish_str_i64", lkrt_lkmap_lit_finish_str_i64, WritesHost, [Ptr], Ptr);
+            ("map_h", "lit_finish_str_f64", lkrt_lkmap_lit_finish_str_f64, WritesHost, [Ptr], Ptr);
+            ("map_h", "lit_finish_str_bool", lkrt_lkmap_lit_finish_str_bool, WritesHost, [Ptr], Ptr);
+            ("map_h", "lit_finish_str_dyn", lkrt_lkmap_lit_finish_str_dyn, WritesHost, [Ptr], Ptr);
+            ("map_h", "lit_finish_i64_i64", lkrt_lkmap_lit_finish_i64_i64, WritesHost, [Ptr], Ptr);
+            ("map_h", "lit_finish_i64_f64", lkrt_lkmap_lit_finish_i64_f64, WritesHost, [Ptr], Ptr);
+            // Iteration family (VM order by the layout mirror): pair lists
+            // (`for pair in m`), keys/values snapshots (Mixed → dyn lists),
+            // delete-with-removed-value (nil when absent).
+            ("map_h", "str_i64_iter_pairs", lkrt_lkmap_str_i64_iter_pairs, WritesHost, [Ptr], Ptr);
+            ("map_h", "str_i64_keys", lkrt_lkmap_str_i64_keys, WritesHost, [Ptr], Ptr);
+            ("map_h", "str_i64_values", lkrt_lkmap_str_i64_values, WritesHost, [Ptr], Ptr);
+            ("map_h", "str_i64_delete", lkrt_lkmap_str_i64_delete, WritesHost, [Ptr, StrPtr], DynVal);
+            ("map_h", "str_f64_iter_pairs", lkrt_lkmap_str_f64_iter_pairs, WritesHost, [Ptr], Ptr);
+            ("map_h", "str_f64_keys", lkrt_lkmap_str_f64_keys, WritesHost, [Ptr], Ptr);
+            ("map_h", "str_f64_values", lkrt_lkmap_str_f64_values, WritesHost, [Ptr], Ptr);
+            ("map_h", "str_f64_delete", lkrt_lkmap_str_f64_delete, WritesHost, [Ptr, StrPtr], DynVal);
+            ("map_h", "str_bool_iter_pairs", lkrt_lkmap_str_bool_iter_pairs, WritesHost, [Ptr], Ptr);
+            ("map_h", "str_bool_keys", lkrt_lkmap_str_bool_keys, WritesHost, [Ptr], Ptr);
+            ("map_h", "str_bool_values", lkrt_lkmap_str_bool_values, WritesHost, [Ptr], Ptr);
+            ("map_h", "str_bool_delete", lkrt_lkmap_str_bool_delete, WritesHost, [Ptr, StrPtr], DynVal);
+            ("map_h", "str_dyn_iter_pairs", lkrt_lkmap_str_dyn_iter_pairs, WritesHost, [Ptr], Ptr);
+            ("map_h", "str_dyn_keys", lkrt_lkmap_str_dyn_keys, WritesHost, [Ptr], Ptr);
+            ("map_h", "str_dyn_values", lkrt_lkmap_str_dyn_values, WritesHost, [Ptr], Ptr);
+            ("map_h", "str_dyn_delete", lkrt_lkmap_str_dyn_delete, WritesHost, [Ptr, StrPtr], DynVal);
             ("list_h", "i64_to_dyn", lkrt_lklist_i64_to_dyn, WritesHost, [Ptr], Ptr);
             ("list_h", "f64_to_dyn", lkrt_lklist_f64_to_dyn, WritesHost, [Ptr], Ptr);
             ("list_h", "str_to_dyn", lkrt_lklist_str_to_dyn, WritesHost, [Ptr], Ptr);

@@ -462,10 +462,10 @@ pub extern "C" fn lkrt_dyn_from_map(handle: *mut c_void) -> LkDyn {
     }
 }
 
-fn dyn_map<'a>(v: LkDyn) -> &'a rustc_hash::FxHashMap<String, LkDyn> {
+fn dyn_map<'a>(v: LkDyn) -> &'a crate::lkmap::StrDynMap {
     let handle = v.payload as *mut c_void;
     debug_assert!(!handle.is_null());
-    unsafe { &*(handle as *mut rustc_hash::FxHashMap<String, LkDyn>) }
+    unsafe { &*(handle as *mut crate::lkmap::StrDynMap) }
 }
 
 /// Constant-string field read on a Dyn: a Map tag looks the key up (missing

@@ -407,6 +407,10 @@ enum Exit {
 struct SigInfer {
     param_obs: Vec<Vec<Option<Ty>>>,
     ret_types: Vec<Ty>,
+    /// Whether `ret_types[f]` reflects an actual lowering of `f`'s body (vs
+    /// the pristine `I64` default): HOF re-route decisions must not treat the
+    /// default as a real mismatch.
+    ret_known: Vec<bool>,
     conflict: bool,
     /// Empty-`[]` literals whose guessed element type a consumer
     /// contradicted (`(function, pc)`): the next fixpoint pass materializes
@@ -653,6 +657,7 @@ pub fn lower_bundled(
             .map(|f| vec![None; f.param_count as usize + f.capture_count as usize])
             .collect(),
         ret_types: vec![Ty::I64; n],
+        ret_known: vec![false; n],
         conflict: false,
         dyn_loop_phis: std::collections::HashSet::new(),
         dyn_rets: std::collections::HashSet::new(),
@@ -735,6 +740,7 @@ pub fn lower_bundled(
             match lowered {
                 Ok(mf) if !is_entry => {
                     sig.ret_types[fi] = mf.ret;
+                    sig.ret_known[fi] = true;
                 }
                 // A retriable loop-phi discovery: record it (the snapshot
                 // includes the set's size, so the fixpoint runs again with
@@ -768,7 +774,11 @@ pub fn lower_bundled(
                 sig.dyn_rets.len(),
                 sig.global_tys.clone(),
             );
-        if converged || passes > 2 * funcs.len() + 2 {
+        // Each retriable discovery (Dyn loop phi, empty-list re-guess,
+        // boxed-returns function) legitimately consumes one extra pass, so
+        // the safety valve budgets for them on top of the type lattice.
+        let discovery_budget = sig.dyn_loop_phis.len() + sig.dyn_empty_lists.len() + sig.dyn_rets.len();
+        if converged || passes > 2 * funcs.len() + 2 + discovery_budget {
             break;
         }
     }
@@ -1211,21 +1221,108 @@ fn reachable_functions(module: &lk_core::vm::ModuleData, extra_roots: &[usize]) 
 /// `SetFieldK`/`GetFieldK` ⇒ string-keyed. This only affects *coverage*: a wrong
 /// guess makes a later op mismatch and the whole module falls back — never a
 /// miscompile. Defaults to string-keyed if no keyed use is seen.
-fn empty_map_is_int_keyed(code: &[u32], start_pc: usize, dst_reg: u8) -> bool {
+fn empty_map_is_int_keyed(func: &FunctionData, start_pc: usize, dst_reg: u8) -> bool {
+    let code = &func.code;
     let mut regs = std::collections::HashSet::new();
-    regs.insert(dst_reg);
     // Registers most recently written by a string producer: an index through
     // one of these means the map is string-keyed. A wrong guess only costs a
     // fallback (the typed lowering rejects the mismatch), never a miscompile.
     let mut str_regs = std::collections::HashSet::new();
-    for raw in &code[start_pc + 1..] {
+    // Registers holding a string *list* (a constant list of strings, a
+    // `split` result): an element read out of one is a string key producer
+    // (`freq[words[i]]`).
+    let mut strlist_regs = std::collections::HashSet::new();
+    // Producers are tracked from the top of the function (a key's string-ness
+    // is often established *before* the map literal — `text.split` feeding a
+    // later `freq[word]`); the map-register set only exists from the literal.
+    for (pc, raw) in code.iter().enumerate() {
         let Ok(instr) = Instr::try_from_raw(*raw) else { break };
+        if pc == start_pc {
+            regs.insert(dst_reg);
+            continue;
+        }
+        let after = pc > start_pc;
         match instr.opcode() {
-            Opcode::Move if regs.contains(&instr.b()) => {
-                regs.insert(instr.a());
+            // A move re-types the destination: membership follows the
+            // *source* in every set (a tracked register overwritten by an
+            // unrelated value must drop out, or a later index through it
+            // mis-attributes — the `regs` map-set is the dangerous one).
+            Opcode::Move => {
+                let b = instr.b();
+                let a = instr.a();
+                if regs.contains(&b) {
+                    regs.insert(a);
+                } else {
+                    regs.remove(&a);
+                }
+                if strlist_regs.contains(&b) {
+                    strlist_regs.insert(a);
+                } else {
+                    strlist_regs.remove(&a);
+                }
+                if str_regs.contains(&b) {
+                    str_regs.insert(a);
+                } else {
+                    str_regs.remove(&a);
+                }
+            }
+            Opcode::StringSplit => {
+                strlist_regs.insert(instr.a());
+                regs.remove(&instr.a());
+                str_regs.remove(&instr.a());
+            }
+            // Iteration normalization keeps the element kind.
+            Opcode::ToIter => {
+                let a = instr.a();
+                if strlist_regs.contains(&instr.b()) {
+                    strlist_regs.insert(a);
+                } else {
+                    strlist_regs.remove(&a);
+                }
+                regs.remove(&a);
+                str_regs.remove(&a);
+            }
+            // A list-shape-preserving method on a string list keeps the mark
+            // (`words.map(|w| w.lower())` — a lambda returning non-strings
+            // only mis-guesses toward a fallback, never a miscompile).
+            Opcode::CallMethodK => {
+                let a = instr.a();
+                let keeps = strlist_regs.contains(&a)
+                    && matches!(
+                        func.consts.strings.get(instr.b() as usize).map(String::as_str),
+                        Some("map" | "filter" | "unique" | "sort" | "reverse" | "take" | "skip" | "slice" | "concat")
+                    );
+                if !keeps {
+                    strlist_regs.remove(&a);
+                }
+                regs.remove(&a);
+                str_regs.remove(&a);
+            }
+            Opcode::LoadHeapConst => {
+                let all_str = matches!(
+                    func.consts.heap_values.get(instr.bx() as usize),
+                    Some(ConstHeapValueData::List(elems))
+                        if !elems.is_empty()
+                            && elems.iter().all(|e| match e {
+                                ConstRuntimeValueData::ShortStr(_) => true,
+                                ConstRuntimeValueData::Heap(boxed) => {
+                                    matches!(**boxed, ConstHeapValueData::LongString(_))
+                                }
+                                _ => false,
+                            })
+                );
+                if all_str {
+                    strlist_regs.insert(instr.a());
+                } else {
+                    strlist_regs.remove(&instr.a());
+                }
+                regs.remove(&instr.a());
+                str_regs.remove(&instr.a());
             }
             Opcode::LoadString | Opcode::ConcatString | Opcode::ConcatN | Opcode::ToString => {
                 str_regs.insert(instr.a());
+                regs.remove(&instr.a());
+                strlist_regs.remove(&instr.a());
             }
             // String `+` compiles to AddInt (runtime dispatch): the result is a
             // string iff an operand is.
@@ -1245,14 +1342,17 @@ fn empty_map_is_int_keyed(code: &[u32], start_pc: usize, dst_reg: u8) -> bool {
             | Opcode::ModInt => {
                 str_regs.remove(&instr.a());
             }
-            Opcode::SetFieldK if regs.contains(&instr.a()) => return false,
-            Opcode::GetFieldK if regs.contains(&instr.b()) => return false,
+            Opcode::SetFieldK if after && regs.contains(&instr.a()) => return false,
+            Opcode::GetFieldK if after && regs.contains(&instr.b()) => return false,
             // Composite string-int keys are string-keyed by construction.
-            Opcode::SetIndexStrI if regs.contains(&instr.a()) => return false,
-            Opcode::GetIndexStrI if regs.contains(&instr.b()) => return false,
-            Opcode::SetIndex if regs.contains(&instr.a()) => return !str_regs.contains(&instr.b()),
-            Opcode::GetIndex | Opcode::GetList if regs.contains(&instr.b()) => {
+            Opcode::SetIndexStrI if after && regs.contains(&instr.a()) => return false,
+            Opcode::GetIndexStrI if after && regs.contains(&instr.b()) => return false,
+            Opcode::SetIndex if after && regs.contains(&instr.a()) => return !str_regs.contains(&instr.b()),
+            Opcode::GetIndex | Opcode::GetList if after && regs.contains(&instr.b()) => {
                 return !str_regs.contains(&instr.c());
+            }
+            Opcode::GetIndex | Opcode::GetList if strlist_regs.contains(&instr.b()) => {
+                str_regs.insert(instr.a());
             }
             _ => {}
         }
@@ -1648,6 +1748,9 @@ fn lower_function(
                             && let Some(slot) = sig.ret_types.get_mut(func_index as usize)
                         {
                             *slot = ty;
+                            if let Some(known) = sig.ret_known.get_mut(func_index as usize) {
+                                *known = true;
+                            }
                         }
                         ret_ty = Some(ty);
                     }
@@ -2539,7 +2642,7 @@ impl Ssa {
             });
             // Break cycles before reading operands.
             self.current_def[block][slot] = Some((param, ty));
-            self.add_phi_operands(block, idx, pc, true)?;
+            self.add_phi_operands(block, idx, pc)?;
             // A heterogeneous merge may have widened the phi to Dyn.
             (param, self.phis[block][idx].ty)
         };
@@ -2547,13 +2650,7 @@ impl Ssa {
         Ok(value)
     }
 
-    fn add_phi_operands(
-        &mut self,
-        block: usize,
-        phi_idx: usize,
-        pc: usize,
-        allow_widen: bool,
-    ) -> Result<(), Unsupported> {
+    fn add_phi_operands(&mut self, block: usize, phi_idx: usize, pc: usize) -> Result<(), Unsupported> {
         let slot = self.phis[block][phi_idx].reg;
         let phi_ty = self.phis[block][phi_idx].ty;
         let param = self.phis[block][phi_idx].param;
@@ -2641,16 +2738,18 @@ impl Ssa {
                     | Ty::MapStrDyn
             )
         };
-        if !(allow_widen || phi_ty == Ty::Dyn) || incoming.iter().any(|&(_, v, ty)| v == param || !boxable(ty)) {
-            // A boxable heterogeneous merge on a loop header (`total +=
-            // p.tags` over Dyn fields) is retriable: report it so the
-            // fixpoint re-lowers with this phi pre-typed Dyn.
-            if !allow_widen && phi_ty != Ty::Dyn && incoming.iter().all(|&(_, v, ty)| v != param && boxable(ty)) {
+        if phi_ty != Ty::Dyn || incoming.iter().any(|&(_, v, ty)| v == param || !boxable(ty)) {
+            // A boxable heterogeneous merge is retriable: report it so the
+            // fixpoint re-lowers with this phi pre-typed `Dyn` *from
+            // creation*. Widening in place is unsound even for a fresh
+            // forward join — a same-pass consumer (an inner if-join phi over
+            // the same slot) may already have read the param at its old type
+            // and boxed the Dyn value as if it were that type.
+            if phi_ty != Ty::Dyn && incoming.iter().all(|&(_, v, ty)| v != param && boxable(ty)) {
                 return Err(Unsupported::DynLoopPhi { block, slot });
             }
             return Err(Unsupported::TypeMismatch { pc });
         }
-        self.phis[block][phi_idx].ty = Ty::Dyn;
         for (p, v, ty) in incoming {
             let boxed = self.dyn_box_on_edge(p, v, ty).expect("boxable-checked edge boxes");
             self.phis[block][phi_idx].operands.push((p, boxed));
@@ -2776,7 +2875,7 @@ impl Ssa {
         for idx in incs {
             // No Dyn widening here: an incomplete phi (loop header) has
             // already been read at its original type inside the loop body.
-            self.add_phi_operands(block, idx, 0, false)?;
+            self.add_phi_operands(block, idx, 0)?;
         }
         self.sealed[block] = true;
         Ok(())
@@ -3166,6 +3265,8 @@ fn lower_user_call(
                         + funcs[callee_idx].capture_count as usize
                 ]);
                 sig.ret_types.push(sig.ret_types[callee_idx]);
+                sig.ret_known
+                    .push(sig.ret_known.get(callee_idx).copied().unwrap_or(false));
                 sig.ret_closures.push(None);
                 sig.ret_closure_poisoned.push(false);
                 sig.lambda_params.push(identity.clone());
@@ -4768,132 +4869,103 @@ fn lower_inst(
                     ssa.write(instr.a(), block, (handle, list_ty));
                 }
                 ConstHeapValueData::Map(entries) => {
-                    // `Map<str,i64>` / `Map<i64,i64>` / `Map<str,f64>` / `Map<str,bool>`
-                    // — keys uniformly string or int, values uniformly int, float, or
-                    // bool. Other shapes (mixed, non-scalar values) fall back.
-                    let all_bool_vals =
-                        !entries.is_empty() && entries.iter().all(|(_, v)| matches!(v, ConstRuntimeValueData::Bool(_)));
+                    // Map literals build through the lit protocol (plan D1):
+                    // stage-1 inserts in serialized order, the finisher
+                    // replays the VM's two-stage construction so iteration
+                    // order (`for k in m`, `.keys()`) is VM-exact. Shapes:
+                    // uniform str/int keys with int/float/bool values take a
+                    // typed carrier; mixed boxable values a `Map<str, Dyn>`.
                     let all_str_keys = entries
                         .iter()
                         .all(|(k, _)| matches!(k, RuntimeMapKeyData::ShortStr(_) | RuntimeMapKeyData::String(_)));
-                    if all_bool_vals && all_str_keys {
-                        // Values ride the str_i64 map ABI as 0/1; the MapStrBool
-                        // type keeps display/compare semantics exact.
-                        let handle = ssa.new_val();
-                        insts.push(Inst::Call {
-                            dst: Some(handle),
-                            callee: AbiRef::new("map_h", "str_i64_new"),
-                            args: Vec::new(),
-                        });
-                        for (k, v) in entries {
-                            let key_v = match k {
-                                RuntimeMapKeyData::ShortStr(key) | RuntimeMapKeyData::String(key) => {
-                                    materialize_key(ssa, insts, globals, key)
-                                }
-                                _ => unreachable!("filtered to string keys above"),
-                            };
-                            let ConstRuntimeValueData::Bool(b) = v else {
-                                unreachable!("filtered to bool values above");
-                            };
-                            let val_v = ssa.new_val();
-                            insts.push(Inst::Const {
-                                dst: val_v,
-                                value: Const::I64(i64::from(*b)),
-                            });
-                            insts.push(Inst::Call {
-                                dst: None,
-                                callee: AbiRef::new("map_h", "str_i64_set"),
-                                args: vec![handle, key_v, val_v],
-                            });
-                        }
-                        ssa.write(instr.a(), block, (handle, Ty::MapStrBool));
-                        return Ok(());
-                    }
+                    let all_int_keys = entries.iter().all(|(k, _)| matches!(k, RuntimeMapKeyData::Int(_)));
+                    let all_bool_vals =
+                        !entries.is_empty() && entries.iter().all(|(_, v)| matches!(v, ConstRuntimeValueData::Bool(_)));
                     let all_int_vals = entries.iter().all(|(_, v)| matches!(v, ConstRuntimeValueData::Int(_)));
                     let all_f64_vals = entries
                         .iter()
                         .all(|(_, v)| matches!(v, ConstRuntimeValueData::Float(_)));
-                    let all_int_keys = entries.iter().all(|(k, _)| matches!(k, RuntimeMapKeyData::Int(_)));
-                    if !(all_int_vals || all_f64_vals) || !(all_str_keys || all_int_keys) {
-                        // Mixed scalar values with string keys: a boxed-dynamic
-                        // map (`Map<str, LkDyn>`, plan M4.2). Display stays out
-                        // of the subset (hash order); nested containers and
-                        // non-string keys still fall back.
-                        let boxable_vals = entries.iter().all(|(_, v)| const_is_dyn_boxable(v));
-                        if !(all_str_keys && boxable_vals && !entries.is_empty()) {
-                            return Err(Unsupported::Opcode { pc, op: instr.opcode() });
-                        }
+                    // An empty `{}` is ambiguous: a lookahead types the key (a
+                    // wrong guess only costs a fallback), the value defaults
+                    // to `i64`; no entries means no order to mirror.
+                    if entries.is_empty() {
+                        let new_fn = if empty_map_is_int_keyed(func, pc, instr.a()) {
+                            ("i64_i64_new", Ty::MapI64I64)
+                        } else {
+                            ("str_i64_new", Ty::MapStrI64)
+                        };
                         let handle = ssa.new_val();
                         insts.push(Inst::Call {
                             dst: Some(handle),
-                            callee: AbiRef::new("map_h", "str_dyn_new"),
+                            callee: AbiRef::new("map_h", new_fn.0),
                             args: Vec::new(),
                         });
-                        for (k, v) in entries {
-                            let key_v = match k {
-                                RuntimeMapKeyData::ShortStr(key) | RuntimeMapKeyData::String(key) => {
-                                    materialize_key(ssa, insts, globals, key)
-                                }
-                                _ => unreachable!("filtered to string keys above"),
-                            };
-                            let boxed = box_const_scalar(ssa, insts, globals, v);
-                            insts.push(Inst::Call {
-                                dst: None,
-                                callee: AbiRef::new("map_h", "str_dyn_set"),
-                                args: vec![handle, key_v, boxed],
-                            });
-                        }
-                        ssa.write(instr.a(), block, (handle, Ty::MapStrDyn));
+                        ssa.write(instr.a(), block, (handle, new_fn.1));
                         return Ok(());
                     }
-                    // An empty `{}` is ambiguous: a lookahead types the key (a wrong
-                    // guess only costs a fallback), and the value defaults to `i64`.
-                    let int_keyed = if entries.is_empty() {
-                        empty_map_is_int_keyed(&func.code, pc, instr.a())
+                    let (finish_fn, map_ty) = if all_str_keys && all_bool_vals {
+                        ("lit_finish_str_bool", Ty::MapStrBool)
+                    } else if all_str_keys && all_int_vals {
+                        ("lit_finish_str_i64", Ty::MapStrI64)
+                    } else if all_str_keys && all_f64_vals {
+                        ("lit_finish_str_f64", Ty::MapStrF64)
+                    } else if all_int_keys && all_int_vals {
+                        ("lit_finish_i64_i64", Ty::MapI64I64)
+                    } else if all_int_keys && all_f64_vals {
+                        ("lit_finish_i64_f64", Ty::MapI64F64)
+                    } else if all_str_keys && entries.iter().all(|(_, v)| const_is_dyn_boxable(v)) {
+                        ("lit_finish_str_dyn", Ty::MapStrDyn)
                     } else {
-                        all_int_keys
+                        // Non-scalar values / mixed key kinds fall back.
+                        return Err(Unsupported::Opcode { pc, op: instr.opcode() });
                     };
-                    let f64_valued = !entries.is_empty() && all_f64_vals;
-                    let (new_fn, set_fn, map_ty) = match (int_keyed, f64_valued) {
-                        (false, false) => ("str_i64_new", "str_i64_set", Ty::MapStrI64),
-                        (true, false) => ("i64_i64_new", "i64_i64_set", Ty::MapI64I64),
-                        (false, true) => ("str_f64_new", "str_f64_set", Ty::MapStrF64),
-                        (true, true) => ("i64_f64_new", "i64_f64_set", Ty::MapI64F64),
-                    };
-                    let handle = ssa.new_val();
+                    let lit = ssa.new_val();
                     insts.push(Inst::Call {
-                        dst: Some(handle),
-                        callee: AbiRef::new("map_h", new_fn),
+                        dst: Some(lit),
+                        callee: AbiRef::new("map_h", "lit_new"),
                         args: Vec::new(),
                     });
                     for (k, v) in entries {
-                        let key_v = match k {
+                        let boxed_key = match k {
                             RuntimeMapKeyData::ShortStr(key) | RuntimeMapKeyData::String(key) => {
-                                materialize_key(ssa, insts, globals, key)
+                                let raw = materialize_key(ssa, insts, globals, key);
+                                let boxed = ssa.new_val();
+                                insts.push(Inst::Call {
+                                    dst: Some(boxed),
+                                    callee: AbiRef::new("dyn", "from_str"),
+                                    args: vec![raw],
+                                });
+                                boxed
                             }
                             RuntimeMapKeyData::Int(ik) => {
-                                let kv = ssa.new_val();
+                                let raw = ssa.new_val();
                                 insts.push(Inst::Const {
-                                    dst: kv,
+                                    dst: raw,
                                     value: Const::I64(*ik),
                                 });
-                                kv
+                                let boxed = ssa.new_val();
+                                insts.push(Inst::Call {
+                                    dst: Some(boxed),
+                                    callee: AbiRef::new("dyn", "from_i64"),
+                                    args: vec![raw],
+                                });
+                                boxed
                             }
-                            _ => unreachable!("filtered to string/int keys above"),
+                            _ => return Err(Unsupported::Opcode { pc, op: instr.opcode() }),
                         };
-                        let value = match v {
-                            ConstRuntimeValueData::Int(iv) => Const::I64(*iv),
-                            ConstRuntimeValueData::Float(fv) => Const::F64(*fv),
-                            _ => unreachable!("filtered to int/float values above"),
-                        };
-                        let val_v = ssa.new_val();
-                        insts.push(Inst::Const { dst: val_v, value });
+                        let boxed_value = box_const_scalar(ssa, insts, globals, v);
                         insts.push(Inst::Call {
                             dst: None,
-                            callee: AbiRef::new("map_h", set_fn),
-                            args: vec![handle, key_v, val_v],
+                            callee: AbiRef::new("map_h", "lit_set"),
+                            args: vec![lit, boxed_key, boxed_value],
                         });
                     }
+                    let handle = ssa.new_val();
+                    insts.push(Inst::Call {
+                        dst: Some(handle),
+                        callee: AbiRef::new("map_h", finish_fn),
+                        args: vec![lit],
+                    });
                     ssa.write(instr.a(), block, (handle, map_ty));
                 }
                 ConstHeapValueData::LongString(s) => {
@@ -5049,12 +5121,28 @@ fn lower_inst(
             // to a list (`to_iter`): lists pass through, a string iterates
             // per char (a Mixed list there → dyn list here), a boxed Dyn
             // unwraps through the as_list guard (iterating a non-container
-            // is the VM's loud error). Map iteration order is the VM's hash
-            // order — not portable, so maps reject (semantics.md).
+            // is the VM's loud error). A map snapshots to `[key, value]`
+            // pair lists — in the VM's exact order, by the layout mirror
+            // (`lkrt vm_mirror.rs`, plan D1/D2).
             let (v, ty) = ssa.read(instr.b(), block, pc)?;
             match ty {
                 Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn => {
                     ssa.write(instr.a(), block, (v, ty));
+                }
+                Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool | Ty::MapStrDyn => {
+                    let iter_fn = match ty {
+                        Ty::MapStrI64 => "str_i64_iter_pairs",
+                        Ty::MapStrF64 => "str_f64_iter_pairs",
+                        Ty::MapStrBool => "str_bool_iter_pairs",
+                        _ => "str_dyn_iter_pairs",
+                    };
+                    let dst = ssa.new_val();
+                    insts.push(Inst::Call {
+                        dst: Some(dst),
+                        callee: AbiRef::new("map_h", iter_fn),
+                        args: vec![v],
+                    });
+                    ssa.write(instr.a(), block, (dst, Ty::ListDyn));
                 }
                 Ty::Str => {
                     let dst = ssa.new_val();
@@ -5320,7 +5408,9 @@ fn lower_inst(
             // String-keyed map reads take a `Str` key (dynamic template keys
             // included); a missing key is the `Maybe` nil model.
             if matches!(list_ty, Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool) {
-                let key = ssa.read_typed(instr.c(), block, Ty::Str, pc)?;
+                // A `Maybe` key (`freq[xs[i]]`) unwraps first (absent aborts —
+                // the scalar-context rule).
+                let key = read_typed_scalar(ssa, insts, instr.c(), block, Ty::Str, pc)?;
                 let dst = ssa.new_val();
                 let maybe_ty = match list_ty {
                     Ty::MapStrF64 => {
@@ -5453,7 +5543,7 @@ fn lower_inst(
             // String-keyed map stores take a `Str` key (dynamic template keys
             // included); the map ABI copies the key.
             if matches!(list_ty, Ty::MapStrI64 | Ty::MapStrF64) {
-                let key = ssa.read_typed(instr.b(), block, Ty::Str, pc)?;
+                let key = read_typed_scalar(ssa, insts, instr.b(), block, Ty::Str, pc)?;
                 let (cv, cty) = read_scalar(ssa, insts, instr.c(), block, pc)?;
                 let (set_fn, value) = match (list_ty, cty) {
                     (Ty::MapStrI64, Ty::I64) => ("str_i64_set", cv),
@@ -6655,6 +6745,7 @@ fn lower_list_hof_k(
                         // dyn family (`|x| tostr(x)` over ints); filter's Bool
                         // is a hard requirement.
                         if !is_filter
+                            && sig.ret_known.get(fidx).copied().unwrap_or(false)
                             && sig
                                 .ret_types
                                 .get(fidx)
@@ -6737,11 +6828,12 @@ fn lower_list_hof_k(
                     return Err(Unsupported::TypeMismatch { pc });
                 }
                 if sig.ret_types.get(fidx).copied() != Some(Ty::I64) {
-                    if sig
-                        .ret_types
-                        .get(fidx)
-                        .copied()
-                        .is_some_and(|t| t != Ty::I64 && dyn_boxable_ty(t))
+                    if sig.ret_known.get(fidx).copied().unwrap_or(false)
+                        && sig
+                            .ret_types
+                            .get(fidx)
+                            .copied()
+                            .is_some_and(|t| t != Ty::I64 && dyn_boxable_ty(t))
                     {
                         sig.dyn_rets.insert(fidx as u32);
                     }
@@ -6916,6 +7008,79 @@ fn lower_method_dispatch(
                 args: vec![receiver, *start, *end],
             });
             (dst, Ty::ListI64)
+        }
+        // Map iteration family (order = the VM's, layout mirror): keys/
+        // values snapshots (Mixed → dyn lists), delete-with-removed-value.
+        (Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool | Ty::MapStrDyn, "keys" | "values", []) => {
+            let family = match receiver_ty {
+                Ty::MapStrI64 => "str_i64",
+                Ty::MapStrF64 => "str_f64",
+                Ty::MapStrBool => "str_bool",
+                _ => "str_dyn",
+            };
+            let abi_name: &'static str = match (family, name) {
+                ("str_i64", "keys") => "str_i64_keys",
+                ("str_i64", _) => "str_i64_values",
+                ("str_f64", "keys") => "str_f64_keys",
+                ("str_f64", _) => "str_f64_values",
+                ("str_bool", "keys") => "str_bool_keys",
+                ("str_bool", _) => "str_bool_values",
+                (_, "keys") => "str_dyn_keys",
+                _ => "str_dyn_values",
+            };
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("map_h", abi_name),
+                args: vec![receiver],
+            });
+            (dst, Ty::ListDyn)
+        }
+        (Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool | Ty::MapStrDyn, "delete" | "remove", [(k, Ty::Str)]) => {
+            let abi_name = match receiver_ty {
+                Ty::MapStrI64 => "str_i64_delete",
+                Ty::MapStrF64 => "str_f64_delete",
+                Ty::MapStrBool => "str_bool_delete",
+                _ => "str_dyn_delete",
+            };
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("map_h", abi_name),
+                args: vec![receiver, *k],
+            });
+            (dst, Ty::Dyn)
+        }
+        // `m.has(k)` on typed string maps — the dynamic-lookup present bit.
+        (Ty::MapStrI64 | Ty::MapStrBool, "has", [(k, Ty::Str)]) => {
+            let looked = ssa.new_val();
+            insts.push(Inst::MapGetMaybe {
+                dst: looked,
+                handle: receiver,
+                key: *k,
+            });
+            let present = ssa.new_val();
+            insts.push(Inst::MaybePresent {
+                dst: present,
+                src: looked,
+                maybe_ty: Ty::MaybeI64,
+            });
+            (present, Ty::Bool)
+        }
+        (Ty::MapStrF64, "has", [(k, Ty::Str)]) => {
+            let looked = ssa.new_val();
+            insts.push(Inst::MapGetMaybeStrF64 {
+                dst: looked,
+                handle: receiver,
+                key: *k,
+            });
+            let present = ssa.new_val();
+            insts.push(Inst::MaybePresent {
+                dst: present,
+                src: looked,
+                maybe_ty: Ty::MaybeF64,
+            });
+            (present, Ty::Bool)
         }
         // Set methods (VM `core_methods` set family): membership/mutation
         // return Bool, `len` Int, `clear` Nil. Elements box to Dyn — a Float
@@ -9216,8 +9381,8 @@ mod tests {
         assert_eq!(mir.globals, vec!["a".to_string()], "key interned once");
         assert_eq!(lk_aot_mir::validate(&mir), Ok(()));
         let ir = lk_aot_codegen::render_module(&mir);
-        assert!(ir.contains("call ptr @lkrt_lkmap_str_i64_new()"), "{ir}");
-        assert!(ir.contains("call void @lkrt_lkmap_str_i64_set(ptr"), "{ir}");
+        assert!(ir.contains("call ptr @lkrt_lkmap_lit_new()"), "{ir}");
+        assert!(ir.contains("call ptr @lkrt_lkmap_lit_finish_str_i64(ptr"), "{ir}");
         assert!(
             ir.contains("call { i64, i64 } @lkrt_lkmap_str_i64_get_pair(ptr"),
             "{ir}"
@@ -9571,7 +9736,7 @@ mod tests {
         let mir = lower(&art).expect("int-f64 map lowers");
         assert_eq!(lk_aot_mir::validate(&mir), Ok(()));
         let ir = lk_aot_codegen::render_module(&mir);
-        assert!(ir.contains("call ptr @lkrt_lkmap_i64_f64_new()"), "{ir}");
+        assert!(ir.contains("call ptr @lkrt_lkmap_lit_finish_i64_f64(ptr"), "{ir}");
         assert!(
             ir.contains("call { double, i64 } @lkrt_lkmap_i64_f64_get_pair(ptr"),
             "{ir}"
@@ -9605,8 +9770,8 @@ mod tests {
         let mir = lower(&art).expect("str-f64 map lowers");
         assert_eq!(lk_aot_mir::validate(&mir), Ok(()));
         let ir = lk_aot_codegen::render_module(&mir);
-        assert!(ir.contains("call ptr @lkrt_lkmap_str_f64_new()"), "{ir}");
-        assert!(ir.contains("call void @lkrt_lkmap_str_f64_set(ptr"), "{ir}");
+        assert!(ir.contains("call ptr @lkrt_lkmap_lit_new()"), "{ir}");
+        assert!(ir.contains("call ptr @lkrt_lkmap_lit_finish_str_f64(ptr"), "{ir}");
         assert!(
             ir.contains("call { double, i64 } @lkrt_lkmap_str_f64_get_pair(ptr"),
             "{ir}"
@@ -9641,8 +9806,10 @@ mod tests {
         let mir = lower(&art).expect("int-key map lowers");
         assert_eq!(lk_aot_mir::validate(&mir), Ok(()));
         let ir = lk_aot_codegen::render_module(&mir);
-        assert!(ir.contains("call ptr @lkrt_lkmap_i64_i64_new()"), "{ir}");
-        assert!(ir.contains("call void @lkrt_lkmap_i64_i64_set(ptr"), "{ir}");
+        // The literal builds through the lit protocol (VM-order mirror).
+        assert!(ir.contains("call ptr @lkrt_lkmap_lit_new()"), "{ir}");
+        assert!(ir.contains("call void @lkrt_lkmap_lit_set(ptr"), "{ir}");
+        assert!(ir.contains("call ptr @lkrt_lkmap_lit_finish_i64_i64(ptr"), "{ir}");
         assert!(
             ir.contains("call { i64, i64 } @lkrt_lkmap_i64_i64_get_pair(ptr"),
             "{ir}"

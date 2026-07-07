@@ -166,16 +166,21 @@ global g0 = "a"
 global g1 = "b"
 fn f0() -> maybe<i64> entry {
 bb0():
-  v0 = call map_h.str_i64_new()
+  v0 = call map_h.lit_new()
   v1 = const.str g0
-  v2 = const.i64 1
-  call map_h.str_i64_set(v0, v1, v2)
-  v3 = const.str g1
-  v4 = const.i64 2
-  call map_h.str_i64_set(v0, v3, v4)
+  v2 = call dyn.from_str(v1)
+  v4 = const.i64 1
+  v3 = call dyn.from_i64(v4)
+  call map_h.lit_set(v0, v2, v3)
   v5 = const.str g1
-  v6 = map.str_i64.get_maybe v0, v5
-  ret v6
+  v6 = call dyn.from_str(v5)
+  v8 = const.i64 2
+  v7 = call dyn.from_i64(v8)
+  call map_h.lit_set(v0, v6, v7)
+  v9 = call map_h.lit_finish_str_i64(v0)
+  v10 = const.str g1
+  v11 = map.str_i64.get_maybe v9, v10
+  ret v11
 }
 "#,
     );
