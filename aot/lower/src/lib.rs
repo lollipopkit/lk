@@ -157,6 +157,16 @@ enum Builtin {
     TryCall,
     /// `error(v)` — raises a first-class error value (`rt.raise_dyn`).
     ErrorRaise,
+    /// `chan(capacity[, type])` — a native channel (its `i64` id).
+    ChanNew,
+    /// `send(c, v)` — blocking, deep-copy, raises on closed.
+    ChanSend,
+    /// `recv(c)` — blocking, raises once closed and drained.
+    ChanRecv,
+    /// `spawn(closure)` / the `go` desugar — a goroutine OS thread.
+    Spawn,
+    /// `select$block(types, chans, values, guards, has_default)`.
+    SelectBlock,
 }
 
 /// What a register loaded from the global table refers to. Like [`Builtin`],
@@ -240,7 +250,7 @@ enum ClosureCapture {
 /// Global names treated as stdlib module objects when read via `GetGlobal`.
 /// Only modules with at least one [`module_call_abi`] mapping belong here.
 const MODULE_GLOBALS: &[&str] = &[
-    "os", "time", "env", "math", "fs", "process", "datetime", "std", "iter", "string", "path",
+    "os", "time", "env", "math", "fs", "process", "datetime", "std", "iter", "string", "path", "task",
 ];
 
 /// Maps a `module.method` call to its typed lkrt ABI entry: the `AbiRef`, the
@@ -297,6 +307,14 @@ fn module_call_abi(module: &str, name: &str) -> Option<(AbiRef, &'static [Ty], T
         ("string", "len") => Some((AbiRef::new("str", "byte_len"), &[Ty::Str], Ty::I64)),
         ("string", "capitalize") => Some((AbiRef::new("str", "capitalize"), &[Ty::Str], Ty::Str)),
         ("string", "title") => Some((AbiRef::new("str", "title"), &[Ty::Str], Ty::Str)),
+        // Native channels/goroutines (plan H): channel/task values are i64
+        // ids; blocking semantics + raises live in lkrt.
+        ("chan", "close") => Some((AbiRef::new("chan", "close"), &[Ty::I64], Ty::Nil)),
+        ("chan", "len") => Some((AbiRef::new("chan", "len"), &[Ty::I64], Ty::I64)),
+        ("chan", "is_closed") => Some((AbiRef::new("chan", "is_closed"), &[Ty::I64], Ty::Bool)),
+        ("chan", "try_send") => Some((AbiRef::new("chan", "try_send"), &[Ty::I64, Ty::Dyn], Ty::Bool)),
+        ("chan", "try_recv") => Some((AbiRef::new("chan", "try_recv"), &[Ty::I64], Ty::Dyn)),
+        ("task", "await") => Some((AbiRef::new("rt", "task_await"), &[Ty::I64], Ty::Dyn)),
         _ => None,
     }
 }
@@ -483,6 +501,10 @@ struct SigInfer {
     vm_functions: std::collections::HashMap<u32, Vec<Ty>>,
     /// Import-derived name bindings (aliases, module items, bundled files).
     imports: ImportEnv,
+    /// Functions spawned as goroutines (isolate semantics): their cell
+    /// captures snapshot by value and cell *writes* land in a
+    /// thread-private virtual slot instead of rejecting.
+    spawned_isolate: std::collections::HashSet<u32>,
 }
 
 impl SigInfer {
@@ -666,6 +688,7 @@ pub fn lower_bundled(
         dyn_loop_phis: std::collections::HashSet::new(),
         dyn_rets: std::collections::HashSet::new(),
         imports: ImportEnv::build(&artifact.imports, bundles),
+        spawned_isolate: std::collections::HashSet::new(),
         dyn_empty_lists: std::collections::HashSet::new(),
         global_tys: vec![None; global_count],
         initialized_globals: prescan_initialized_globals(module, global_count),
@@ -706,6 +729,7 @@ pub fn lower_bundled(
             sig.dyn_empty_lists.len(),
             sig.dyn_rets.len(),
             sig.global_tys.clone(),
+            sig.spawned_isolate.len(),
         );
         // Call-site facts are re-derived every pass: an argument register
         // that resolves to a closure ref only once a summary lands (e.g. a
@@ -777,6 +801,7 @@ pub fn lower_bundled(
                 sig.dyn_empty_lists.len(),
                 sig.dyn_rets.len(),
                 sig.global_tys.clone(),
+                sig.spawned_isolate.len(),
             );
         // Each retriable discovery (Dyn loop phi, empty-list re-guess,
         // boxed-returns function) legitimately consumes one extra pass, so
@@ -1396,6 +1421,13 @@ fn empty_list_elem_guess(func: &FunctionData, start_pc: usize, dst_reg: u8) -> E
     for raw in &code[start_pc + 1..] {
         let Ok(instr) = Instr::try_from_raw(*raw) else { break };
         match instr.opcode() {
+            // The literal escaping into a capture cell means closures push
+            // into it — their element types are invisible here, so the
+            // boxed-list guess is the only safe one (boxing never breaks
+            // correctness, a typed guess would ping-pong across functions).
+            Opcode::StoreCellVal if regs.contains(&instr.b()) => {
+                return EmptyListGuess::Dyn;
+            }
             Opcode::Move if regs.contains(&instr.b()) => {
                 regs.insert(instr.a());
             }
@@ -1605,7 +1637,7 @@ fn lower_function(
                 )
         })
         .count();
-    let mut ssa = Ssa::new(reg_count, cell_capacity, preds, total_blocks);
+    let mut ssa = Ssa::new(reg_count, cell_capacity, capture_count, preds, total_blocks);
     ssa.dyn_loop_slots = sig
         .dyn_loop_phis
         .iter()
@@ -1666,12 +1698,21 @@ fn lower_function(
     // A capturing lambda's own environment arrives after any erased-argument
     // env blocks (the closure's by-value snapshot, appended by the `Call`
     // lowering); it occupies no register — `LoadCapture k` reads it directly.
+    let spawned_isolate = sig.spawned_isolate.contains(&func_index);
+    ssa.spawned_isolate = spawned_isolate;
     let mut capture_params: Vec<(ValueId, Ty)> = Vec::with_capacity(capture_count);
     for k in 0..capture_count {
         let cty = sig.param_ty(func_index as usize, param_count + env_total + k);
         let cv = ssa.new_val();
         capture_params.push((cv, cty));
         fn_params.push((cv, cty));
+        // A spawned goroutine's cell captures are thread-private copies:
+        // seed the virtual slot so body writes (isolate — never visible to
+        // the spawner) go through plain SSA.
+        if spawned_isolate {
+            let slot = ssa.cellparam_slot(k);
+            ssa.write_slot(slot, 0, (cv, cty));
+        }
     }
     let mut block_insts: Vec<Vec<Inst>> = vec![Vec::new(); total_blocks];
     let mut block_exit: Vec<Option<Exit>> = vec![None; total_blocks];
@@ -2360,6 +2401,10 @@ struct Ssa {
     /// Register slots plus the virtual cell slots appended after them
     /// (`reg_count + cid` addresses cell `cid`'s content).
     slot_count: usize,
+    capture_slots: usize,
+    /// This function runs as a spawned goroutine (isolate): cell-capture
+    /// writes go to the thread-private slots.
+    spawned_isolate: bool,
     preds: Vec<Vec<usize>>,
     current_def: Vec<Vec<Option<Reg>>>,
     sealed: Vec<bool>,
@@ -2416,11 +2461,22 @@ struct Ssa {
 }
 
 impl Ssa {
-    fn new(reg_count: usize, cell_capacity: usize, preds: Vec<Vec<usize>>, total_blocks: usize) -> Self {
-        let slot_count = reg_count + cell_capacity;
+    fn new(
+        reg_count: usize,
+        cell_capacity: usize,
+        capture_count: usize,
+        preds: Vec<Vec<usize>>,
+        total_blocks: usize,
+    ) -> Self {
+        // Virtual slot layout: registers, then `UpvalCell` cells, then one
+        // slot per capture parameter (a spawned goroutine's thread-private
+        // cell copies — isolate semantics).
+        let slot_count = reg_count + cell_capacity + capture_count;
         Self {
             reg_count,
             slot_count,
+            capture_slots: capture_count,
+            spawned_isolate: false,
             preds,
             current_def: vec![vec![None; slot_count]; total_blocks],
             sealed: vec![false; total_blocks],
@@ -2478,6 +2534,12 @@ impl Ssa {
     /// The virtual slot holding cell `cid`'s content.
     fn cell_slot(&self, cid: u32) -> usize {
         self.reg_count + cid as usize
+    }
+
+    /// The thread-private slot backing capture parameter `k` in a spawned
+    /// goroutine (seeded from the boxed snapshot at entry).
+    fn cellparam_slot(&self, k: usize) -> usize {
+        self.slot_count - self.capture_slots + k
     }
 
     fn read_typed(&mut self, reg: u8, block: usize, want: Ty, pc: usize) -> Result<ValueId, Unsupported> {
@@ -3217,6 +3279,107 @@ fn record_ret_closure(sig: &mut SigInfer, fi: usize, candidate: (u32, Vec<RetCap
             sig.ret_closure_poisoned[fi] = true;
         }
     }
+}
+
+/// `spawn(closure)` / the `go` desugar (plan H): the closure's captures all
+/// cross the isolate boundary *boxed* (its signature joins to
+/// `fn(Dyn, …) -> Dyn`), so a per-arity lkrt trampoline launches the
+/// compiled body on a fresh OS thread. Captures snapshot by value —
+/// including cells (isolate: a goroutine's mutation never leaks back; the
+/// body's cell writes land in a thread-private virtual slot).
+#[allow(clippy::too_many_arguments)]
+fn lower_spawn(
+    ssa: &mut Ssa,
+    insts: &mut Vec<Inst>,
+    funcs: &[FunctionData],
+    entry: u32,
+    sig: &mut SigInfer,
+    base: u8,
+    argc: usize,
+    block: usize,
+    pc: usize,
+) -> Result<(), Unsupported> {
+    if argc != 1 {
+        return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+    }
+    let arg_reg = base.wrapping_add(1);
+    let (fidx, caps) = match ssa.builtin_ref_at(arg_reg, block) {
+        Some(GlobalRef::Closure(f, caps)) => (f as usize, caps),
+        Some(GlobalRef::Lambda(f)) => (f as usize, Vec::new()),
+        _ => return Err(Unsupported::Opcode { pc, op: Opcode::Call }),
+    };
+    if fidx >= funcs.len()
+        || fidx == entry as usize
+        || funcs[fidx].param_count != 0
+        || caps.len() != funcs[fidx].capture_count as usize
+        || caps.len() > 4
+    {
+        return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+    }
+    sig.spawned_isolate.insert(fidx as u32);
+    // Snapshot the captures into the argument block, boxed.
+    let block_v = if caps.is_empty() {
+        None
+    } else {
+        let b = ssa.new_val();
+        insts.push(Inst::Call {
+            dst: Some(b),
+            callee: AbiRef::new("rt", "spawn_args_new"),
+            args: Vec::new(),
+        });
+        for (k, capture) in caps.iter().enumerate() {
+            let (v, ty) = match capture {
+                ClosureCapture::Cell(cid) => {
+                    let slot = ssa.cell_slot(*cid);
+                    ssa.read_slot(slot, block, pc)?
+                }
+                ClosureCapture::Value(v, ty) => (*v, *ty),
+            };
+            let boxed = to_dyn_any(ssa, insts, v, ty, pc)?;
+            insts.push(Inst::Call {
+                dst: None,
+                callee: AbiRef::new("rt", "spawn_args_push"),
+                args: vec![b, boxed],
+            });
+            let want = sig.observe_param(fidx, k, Ty::Dyn);
+            if want != Ty::Dyn {
+                return Err(Unsupported::TypeMismatch { pc });
+            }
+        }
+        Some(b)
+    };
+    // The body's result crosses back boxed on `task.await`.
+    if !sig.dyn_rets.contains(&(fidx as u32)) {
+        sig.dyn_rets.insert(fidx as u32);
+        return Err(Unsupported::TypeMismatch { pc });
+    }
+    if sig.ret_types.get(fidx).copied() != Some(Ty::Dyn) {
+        return Err(Unsupported::TypeMismatch { pc });
+    }
+    let fnaddr = ssa.new_val();
+    insts.push(Inst::Const {
+        dst: fnaddr,
+        value: Const::FnAddr(FuncId(fidx as u32)),
+    });
+    let spawn_fn: &'static str = match caps.len() {
+        0 => "spawn0",
+        1 => "spawn1",
+        2 => "spawn2",
+        3 => "spawn3",
+        _ => "spawn4",
+    };
+    let mut args = vec![fnaddr];
+    if let Some(b) = block_v {
+        args.push(b);
+    }
+    let dst = ssa.new_val();
+    insts.push(Inst::Call {
+        dst: Some(dst),
+        callee: AbiRef::new("rt", spawn_fn),
+        args,
+    });
+    ssa.write(base, block, (dst, Ty::I64));
+    Ok(())
 }
 
 /// `try$call(closure)` — the try/catch desugar's protected call (plan G).
@@ -4401,6 +4564,29 @@ fn lower_inst(
                     });
                     (false, eq, one)
                 }
+                // A dyn list against any list: both sides normalize to dyn
+                // lists and compare structurally (`dyn_eq` recurses with the
+                // VM's numeric coercion).
+                (Ty::ListDyn, Ty::ListDyn | Ty::ListI64 | Ty::ListF64 | Ty::ListStr)
+                | (Ty::ListI64 | Ty::ListF64 | Ty::ListStr, Ty::ListDyn) => {
+                    if !matches!(cmp_op(op), CmpOp::Eq | CmpOp::Ne) {
+                        return Err(Unsupported::TypeMismatch { pc });
+                    }
+                    let a = to_dyn_list_handle(ssa, insts, lv, lty, pc)?;
+                    let b = to_dyn_list_handle(ssa, insts, rv, rty, pc)?;
+                    let eq = ssa.new_val();
+                    insts.push(Inst::Call {
+                        dst: Some(eq),
+                        callee: AbiRef::new("list_h", "dyn_eq"),
+                        args: vec![a, b],
+                    });
+                    let one = ssa.new_val();
+                    insts.push(Inst::Const {
+                        dst: one,
+                        value: Const::I64(1),
+                    });
+                    (false, eq, one)
+                }
                 // Cross-typed list pairs beyond Int/Float can only be equal
                 // when *both* are empty (the VM compares structurally
                 // regardless of the typed-list representation). With both
@@ -4541,7 +4727,8 @@ fn lower_inst(
                 Some(GlobalRef::CellParam(k)) => {
                     let &(v, ty) = capture_params.get(k).ok_or(Unsupported::BadConst { pc })?;
                     // A runtime cell (a `try$call` boundary capture) reads
-                    // through the shared slot; by-value captures stay as-is.
+                    // through the shared slot; a spawned goroutine reads its
+                    // thread-private copy; by-value captures stay as-is.
                     if ty == Ty::Cell {
                         let dst = ssa.new_val();
                         insts.push(Inst::Call {
@@ -4550,6 +4737,10 @@ fn lower_inst(
                             args: vec![v],
                         });
                         ssa.write(instr.a(), block, (dst, Ty::Dyn));
+                    } else if ssa.spawned_isolate {
+                        let slot = ssa.cellparam_slot(k);
+                        let (sv, sty) = ssa.read_slot(slot, block, pc)?;
+                        ssa.write(instr.a(), block, (sv, sty));
                     } else {
                         ssa.write(instr.a(), block, (v, ty));
                     }
@@ -4575,16 +4766,24 @@ fn lower_inst(
                 }
                 Some(GlobalRef::CellParam(k)) => {
                     let &(cell, cty) = capture_params.get(k).ok_or(Unsupported::BadConst { pc })?;
-                    if cty != Ty::Cell {
+                    if cty == Ty::Cell {
+                        let (v, ty) = ssa.read(instr.b(), block, pc)?;
+                        let boxed = to_dyn_any(ssa, insts, v, ty, pc)?;
+                        insts.push(Inst::Call {
+                            dst: None,
+                            callee: AbiRef::new("rt", "cell_set"),
+                            args: vec![cell, boxed],
+                        });
+                    } else if ssa.spawned_isolate {
+                        // Isolate: the write lands in the goroutine's private
+                        // slot, never visible to the spawner (VM snapshot).
+                        let (v, ty) = ssa.read(instr.b(), block, pc)?;
+                        let slot = ssa.cellparam_slot(k);
+                        ssa.write_slot(slot, block, (v, ty));
+                    } else {
+                        // A by-value capture parameter has no write-back path.
                         return Err(Unsupported::Opcode { pc, op: instr.opcode() });
                     }
-                    let (v, ty) = ssa.read(instr.b(), block, pc)?;
-                    let boxed = to_dyn_any(ssa, insts, v, ty, pc)?;
-                    insts.push(Inst::Call {
-                        dst: None,
-                        callee: AbiRef::new("rt", "cell_set"),
-                        args: vec![cell, boxed],
-                    });
                 }
                 _ => return Err(Unsupported::Opcode { pc, op: instr.opcode() }),
             }
@@ -4672,6 +4871,17 @@ fn lower_inst(
                 Some("Set") => Some(GlobalRef::Builtin(Builtin::SetCtor)),
                 Some("try$call") => Some(GlobalRef::Builtin(Builtin::TryCall)),
                 Some("error") => Some(GlobalRef::Builtin(Builtin::ErrorRaise)),
+                Some("chan") => Some(GlobalRef::Builtin(Builtin::ChanNew)),
+                Some("send") => Some(GlobalRef::Builtin(Builtin::ChanSend)),
+                Some("recv") => Some(GlobalRef::Builtin(Builtin::ChanRecv)),
+                Some("spawn") => Some(GlobalRef::Builtin(Builtin::Spawn)),
+                Some("select$block") => Some(GlobalRef::Builtin(Builtin::SelectBlock)),
+                // Two-level stdlib exports arrive as `module::member` global
+                // names (`chan.close(c)` → `GetGlobal "chan::close"`).
+                Some(name) if name.contains("::") => {
+                    let (module, member) = name.split_once("::").expect("checked");
+                    Some(GlobalRef::ModuleFn(module.to_string(), member.to_string()))
+                }
                 Some(name) if MODULE_GLOBALS.contains(&name) => Some(GlobalRef::Module(name.to_string())),
                 _ => None,
             };
@@ -4739,6 +4949,9 @@ fn lower_inst(
             match ssa.builtin_ref_at(base, block) {
                 Some(GlobalRef::Builtin(Builtin::TryCall)) => {
                     lower_try_call(ssa, insts, funcs, entry, sig, base, instr.c() as usize, block, pc)?;
+                }
+                Some(GlobalRef::Builtin(Builtin::Spawn)) => {
+                    lower_spawn(ssa, insts, funcs, entry, sig, base, instr.c() as usize, block, pc)?;
                 }
                 Some(GlobalRef::Builtin(Builtin::CallMethod)) => {
                     if instr.c() != 3 {
@@ -6464,6 +6677,90 @@ fn lower_builtin_call(
                 value: Const::Nil,
             });
             ssa.write(base, block, (nil, Ty::Nil));
+            return Ok(());
+        }
+        Builtin::ChanNew => {
+            // `chan(capacity[, type])` — the type string is a VM checker
+            // hint, dropped natively. The channel value is its i64 id.
+            if !(1..=2).contains(&argc) {
+                return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+            }
+            let cap = read_typed_scalar(ssa, insts, base.wrapping_add(1), block, Ty::I64, pc)?;
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("chan", "new"),
+                args: vec![cap],
+            });
+            ssa.write(base, block, (dst, Ty::I64));
+            return Ok(());
+        }
+        Builtin::ChanSend => {
+            if argc != 2 {
+                return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+            }
+            let ch = read_channel_id(ssa, insts, base.wrapping_add(1), block, pc)?;
+            let (v, ty) = ssa.read(base.wrapping_add(2), block, pc)?;
+            let boxed = to_dyn_any(ssa, insts, v, ty, pc)?;
+            insts.push(Inst::Call {
+                dst: None,
+                callee: AbiRef::new("chan", "send"),
+                args: vec![ch, boxed],
+            });
+            let nil = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: nil,
+                value: Const::Nil,
+            });
+            ssa.write(base, block, (nil, Ty::Nil));
+            return Ok(());
+        }
+        Builtin::ChanRecv => {
+            if argc != 1 {
+                return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+            }
+            let ch = read_channel_id(ssa, insts, base.wrapping_add(1), block, pc)?;
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("chan", "recv"),
+                args: vec![ch],
+            });
+            ssa.write(base, block, (dst, Ty::Dyn));
+            return Ok(());
+        }
+        Builtin::Spawn => {
+            // Dispatched by the caller (needs the function table/signatures).
+            return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+        }
+        Builtin::SelectBlock => {
+            // Four parallel lists + the default flag; every list normalizes
+            // to a dyn list, the result is the VM's exact
+            // `[is_default, index, payload]` shape.
+            if argc != 5 {
+                return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+            }
+            let mut lists = Vec::with_capacity(4);
+            for i in 0..4 {
+                let (v, ty) = ssa.read(base.wrapping_add(1 + i), block, pc)?;
+                lists.push(to_dyn_list_handle(ssa, insts, v, ty, pc)?);
+            }
+            let has_default = {
+                let (v, ty) = ssa.read(base.wrapping_add(5), block, pc)?;
+                if ty != Ty::Bool {
+                    return Err(Unsupported::TypeMismatch { pc });
+                }
+                let wide = ssa.new_val();
+                insts.push(Inst::ZextBool { dst: wide, src: v });
+                wide
+            };
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("chan", "select"),
+                args: vec![lists[0], lists[1], lists[2], lists[3], has_default],
+            });
+            ssa.write(base, block, (dst, Ty::ListDyn));
             return Ok(());
         }
         Builtin::SetCtor => {
@@ -8567,6 +8864,32 @@ fn dyn_boxable_ty(ty: Ty) -> bool {
             | Ty::MaybeStr
             | Ty::MaybeBool
     )
+}
+
+/// Reads a channel/task id operand: a plain `I64`, or a boxed value
+/// unwrapped through the `as_i64` guard (a channel captured into a spawn
+/// closure arrives boxed).
+fn read_channel_id(
+    ssa: &mut Ssa,
+    insts: &mut Vec<Inst>,
+    reg: u8,
+    block: usize,
+    pc: usize,
+) -> Result<ValueId, Unsupported> {
+    let (v, ty) = ssa.read(reg, block, pc)?;
+    match ty {
+        Ty::I64 => Ok(v),
+        Ty::Dyn => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("dyn", "as_i64"),
+                args: vec![v],
+            });
+            Ok(dst)
+        }
+        _ => Err(Unsupported::TypeMismatch { pc }),
+    }
 }
 
 /// Marshals one argument for a user call: a `Dyn` parameter takes any

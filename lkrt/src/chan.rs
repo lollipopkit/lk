@@ -269,6 +269,140 @@ pub extern "C" fn lkrt_chan_is_closed(id: i64) -> i64 {
     i64::from(channel(id).state.lock().expect("channel poisoned").closed)
 }
 
+/// `select { … }` (the desugared `select$block`): four parallel dyn lists
+/// (types 0=recv/1=send, channel ids, send values, guards) plus the default
+/// flag. Enabled arms poll in order; with none ready and no default, a
+/// short parked spin retries (timing is not part of the observable
+/// contract). Returns the VM's exact result shape:
+/// `[is_default, index, payload]` — payload is `[ok, value]` for a recv arm
+/// (`ok = false` + nil once closed-and-drained, Go's zero-value model), nil
+/// for a send arm; a closed-channel *send* arm raises.
+///
+/// # Safety
+/// The four list handles must be live dyn-list handles.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_chan_select(
+    types: *mut c_void,
+    channels: *mut c_void,
+    values: *mut c_void,
+    guards: *mut c_void,
+    has_default: i64,
+) -> *mut c_void {
+    fn dyn_items<'a>(handle: *mut c_void) -> &'a [LkDyn] {
+        if handle.is_null() {
+            &[]
+        } else {
+            // SAFETY: callers pass live dyn-list handles.
+            unsafe { &*(handle as *mut Vec<LkDyn>) }
+        }
+    }
+    let types = dyn_items(types);
+    let channels = dyn_items(channels);
+    let values = dyn_items(values);
+    let guards = dyn_items(guards);
+    let len = types.len();
+    if channels.len() != len || values.len() != len || guards.len() != len {
+        crate::panic::raise_str("select$block: all lists must have equal length");
+    }
+    let result = |is_default: bool, index: i64, payload: LkDyn| -> *mut c_void {
+        let list = vec![
+            LkDyn {
+                tag: DYN_BOOL,
+                payload: i64::from(is_default),
+            },
+            LkDyn {
+                tag: DYN_I64,
+                payload: index,
+            },
+            payload,
+        ];
+        arena_handle(list)
+    };
+    loop {
+        for index in 0..len {
+            // Guard must be exactly `true` (the VM normalizes to Bool).
+            if !(guards[index].tag == DYN_BOOL && guards[index].payload != 0) {
+                continue;
+            }
+            let id = match channels[index].tag {
+                DYN_I64 => channels[index].payload,
+                _ => crate::panic::raise_str("select$block: invalid channel arm"),
+            };
+            let kind = match types[index].tag {
+                DYN_I64 => types[index].payload,
+                _ => crate::panic::raise_str("select$block: invalid arm entry types"),
+            };
+            let inner = channel(id);
+            let mut state = inner.state.lock().expect("channel poisoned");
+            match kind {
+                0 => {
+                    if let Some(value) = state.queue.pop_front() {
+                        drop(state);
+                        inner.send_cv.notify_one();
+                        let payload = arena_handle(vec![
+                            LkDyn {
+                                tag: DYN_BOOL,
+                                payload: 1,
+                            },
+                            materialize(&value),
+                        ]);
+                        return result(
+                            false,
+                            index as i64,
+                            LkDyn {
+                                tag: DYN_LIST,
+                                payload: payload as i64,
+                            },
+                        );
+                    }
+                    if state.closed {
+                        // Closed recv arm: always-ready with a nil binding.
+                        drop(state);
+                        let payload = arena_handle(vec![
+                            LkDyn {
+                                tag: DYN_BOOL,
+                                payload: 0,
+                            },
+                            LkDyn::NIL,
+                        ]);
+                        return result(
+                            false,
+                            index as i64,
+                            LkDyn {
+                                tag: DYN_LIST,
+                                payload: payload as i64,
+                            },
+                        );
+                    }
+                }
+                1 => {
+                    if state.closed {
+                        drop(state);
+                        crate::panic::raise_str("send on closed channel");
+                    }
+                    if inner.cap.is_none_or(|cap| state.queue.len() < cap) {
+                        state.queue.push_back(own(values[index]));
+                        drop(state);
+                        inner.recv_cv.notify_one();
+                        return result(false, index as i64, LkDyn::NIL);
+                    }
+                }
+                _ => crate::panic::raise_str("select$block: invalid arm entry types"),
+            }
+        }
+        if has_default != 0 {
+            return result(true, -1, LkDyn::NIL);
+        }
+        if len == 0 || !guards.iter().any(|g| g.tag == DYN_BOOL && g.payload != 0) {
+            // Every arm disabled and no default: the VM yields nil-ish;
+            // mirror its documented "all guards off → nil" rule by
+            // reporting the default shape.
+            return result(true, -1, LkDyn::NIL);
+        }
+        std::thread::sleep(std::time::Duration::from_micros(200));
+    }
+}
+
 // ── Goroutine threads + task registry (H2) ─────────────────────────────
 
 struct TaskSlot {
@@ -315,32 +449,54 @@ pub unsafe extern "C" fn lkrt_spawn_arg(block: *mut c_void, index: i64) -> LkDyn
     }
 }
 
-/// `spawn(closure)` / `go f(x)`: launches the compiled wrapper on a fresh OS
-/// thread (its own arena) and returns the task id. The wrapper takes the
-/// argument block and returns its boxed result.
-///
-/// # Safety
-/// `wrapper` must be a compiled `extern "C" fn(*mut c_void) -> LkDyn`;
-/// `block` a live handle from [`lkrt_spawn_args_new`] (ownership moves).
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn lkrt_spawn(wrapper: extern "C" fn(*mut c_void) -> LkDyn, block: *mut c_void) -> i64 {
+fn register_task(handle: std::thread::JoinHandle<OwnedVal>) -> i64 {
     let id = NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed);
-    let block_addr = block as usize;
-    let handle = std::thread::spawn(move || {
-        let block = block_addr as *mut c_void;
-        let result = wrapper(block);
-        let owned = own(result);
-        // SAFETY: ownership of the block moved into this thread; nothing
-        // else references it.
-        drop(unsafe { Box::from_raw(block as *mut Vec<OwnedVal>) });
-        owned
-    });
     tasks()
         .lock()
         .expect("task registry poisoned")
         .insert(id, TaskSlot { handle: Some(handle) });
     id
 }
+
+/// `spawn(closure)` / `go f(x)` — per-arity trampolines: the spawned
+/// function's captures all cross boxed (`fn(LkDyn, …) -> LkDyn`, the
+/// lowering joins its signature to Dyn), so a fixed set of entry shapes
+/// covers every closure. The argument block's snapshot values materialize
+/// *inside* the goroutine (its own arena); the block's ownership moves.
+macro_rules! spawn_arity {
+    ($name:ident, $($idx:literal),*) => {
+        /// # Safety
+        /// `f` must be a compiled function of the matching boxed arity;
+        /// `block` a live handle from [`lkrt_spawn_args_new`] with at least
+        /// that many entries (ownership moves).
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $name(f: extern "C" fn($(spawn_arity!(@ty $idx)),*) -> LkDyn, block: *mut c_void) -> i64 {
+            let block_addr = block as usize;
+            register_task(std::thread::spawn(move || {
+                let block = block_addr as *mut c_void;
+                // SAFETY: ownership of the block moved into this thread.
+                let args = unsafe { Box::from_raw(block as *mut Vec<OwnedVal>) };
+                let result = f($(materialize(&args[$idx])),*);
+                own(result)
+            }))
+        }
+    };
+    (@ty $idx:literal) => { LkDyn };
+}
+
+/// Zero-capture spawn (no argument block).
+///
+/// # Safety
+/// `f` must be a compiled zero-argument function returning a boxed value.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_spawn0(f: extern "C" fn() -> LkDyn) -> i64 {
+    register_task(std::thread::spawn(move || own(f())))
+}
+
+spawn_arity!(lkrt_spawn1, 0);
+spawn_arity!(lkrt_spawn2, 0, 1);
+spawn_arity!(lkrt_spawn3, 0, 1, 2);
+spawn_arity!(lkrt_spawn4, 0, 1, 2, 3);
 
 /// `task.await(t)`: joins the goroutine and materializes its result into
 /// this thread's arena. A second await on the same task raises (the VM's

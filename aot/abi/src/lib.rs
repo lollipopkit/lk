@@ -101,10 +101,15 @@ macro_rules! for_each_abi_fn {
             ("chan", "try_recv", lkrt_chan_try_recv, WritesHost, [I64], DynVal);
             ("chan", "len", lkrt_chan_len, ReadsHost, [I64], I64);
             ("chan", "is_closed", lkrt_chan_is_closed, ReadsHost, [I64], I64);
+            ("chan", "select", lkrt_chan_select, WritesHost, [Ptr, Ptr, Ptr, Ptr, I64], Ptr);
             ("rt", "spawn_args_new", lkrt_spawn_args_new, WritesHost, [], Ptr);
             ("rt", "spawn_args_push", lkrt_spawn_args_push, WritesHost, [Ptr, DynVal], Nil);
             ("rt", "spawn_arg", lkrt_spawn_arg, ReadsHost, [Ptr, I64], DynVal);
-            ("rt", "spawn", lkrt_spawn, WritesHost, [Ptr, Ptr], I64);
+            ("rt", "spawn0", lkrt_spawn0, WritesHost, [Ptr], I64);
+            ("rt", "spawn1", lkrt_spawn1, WritesHost, [Ptr, Ptr], I64);
+            ("rt", "spawn2", lkrt_spawn2, WritesHost, [Ptr, Ptr], I64);
+            ("rt", "spawn3", lkrt_spawn3, WritesHost, [Ptr, Ptr], I64);
+            ("rt", "spawn4", lkrt_spawn4, WritesHost, [Ptr, Ptr], I64);
             ("rt", "task_await", lkrt_task_await, WritesHost, [I64], DynVal);
             ("socket", "addr", lkrt_socket_addr, Pure, [StrPtr, I64], StrPtr);
             ("tcp", "connect", lkrt_tcp_connect, WritesHost, [StrPtr], I64);
