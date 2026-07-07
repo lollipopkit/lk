@@ -183,8 +183,17 @@
     rebind 后内层回边读旧寄存器(word_count 在 VM 挂死,差分语料
     一直当 timeout skipped 漏网)。**覆盖率 33→36/51**
     (for_loop_patterns/map_demo/word_count)。
-  - 下一步:阶段⑤ E1 方法长尾 → ⑥ F1 sanitizer 基建 → 再修 a-d。
-    macros.lk 卡整对象插值 display(裁决出子集,J1 或可回收)
+  - ✅ **先修①-⑥全部完成**(⑤ E1 长尾已在途中被覆盖,无独立工作;
+    ⑥ F1 commit `ad38f0a`:build_lkrt_asan.sh + LKRT_STATICLIB 注入
+    + make asan-lkrt + CI 非阻塞 job;-Zbuild-std 触发 E0152 留档,
+    混合配置实测差分全绿)。**覆盖率 25→36/51**。
+  - **再修进行中:G(try$call sjlj)→ H(并发)→ I(json 等模块)
+    → J(trait 分发)**。剩余 15 例:try_catch/error_unwrap/
+    error_model_edges(a)· select/concurrency_demo(b)· json_demo/
+    json_process/yaml_toml/config_parser/stream_demo/tcp_demo(c,
+    json 系已推进到 register-read 错误面)· struct_trait/trait_impl
+    (d)· macros.lk(整对象插值 display,J1 或可回收)·
+    unsupported.lk(留档合集)
 - GetGlobal 13(try$call/并发/模块白名单/trait)= 再修阶段 a-d,未启
 - **✅ 裁决不做**:callable trait 反转 · 真机/QEMU demo · 细粒度 feature 拆分。
 - **可选后续**:native raise 前缀统一(catch 到的 native 错误带 "native ... failed:" 前缀,

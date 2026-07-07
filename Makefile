@@ -81,6 +81,13 @@ install:
 miri-lkrt:
 	MIRIFLAGS="-Zmiri-disable-isolation -Zmiri-ignore-leaks" cargo +nightly miri test -p lkrt
 
+# ASan-instrumented lkrt + the differential suites linked against it
+# (scripts/build_lkrt_asan.sh; F1 harness, not a PR gate).
+asan-lkrt:
+	bash scripts/build_lkrt_asan.sh
+	LKRT_STATICLIB=$(PWD)/target/lkrt-asan/x86_64-unknown-linux-gnu/release/liblkrt.a \
+	LK_NATIVE_SANITIZE=address cargo test -p lk-cli --test aot_differential_test --test examples_differential_test
+
 # Differential corpora with the native side compiled under ASan/UBSan.
 sanitized-differential:
 	LK_NATIVE_SANITIZE=address,undefined cargo test -p lk-cli --test aot_differential_test
