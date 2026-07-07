@@ -357,6 +357,12 @@ macro_rules! for_each_abi_fn {
             ("dyn", "len_of", lkrt_dyn_len_of, ReadsHost, [DynVal], I64);
             ("dyn", "display", lkrt_dyn_display, WritesHost, [DynVal], StrPtr);
             ("dyn", "display_quoted", lkrt_dyn_display_quoted, WritesHost, [DynVal], StrPtr);
+            // Trait-method dispatch marks (plan J1): a struct instance's map
+            // handle carries its type id in a side registry (no hidden key);
+            // `TraitDispatch` codegen reads the mark, no match raises.
+            ("map_h", "obj_mark", lkrt_lkmap_obj_mark, WritesHost, [Ptr, I64], Nil);
+            ("dyn", "obj_type_id", lkrt_dyn_obj_type_id, ReadsHost, [DynVal], I64);
+            ("dyn", "method_missing", lkrt_dyn_method_missing, WritesHost, [], Nil);
             ("map_h", "str_dyn_new", lkrt_lkmap_str_dyn_new, WritesHost, [], Ptr);
             ("map_h", "str_dyn_set", lkrt_lkmap_str_dyn_set, WritesHost, [Ptr, StrPtr, DynVal], Nil);
             ("map_h", "str_dyn_get", lkrt_lkmap_str_dyn_get, ReadsHost, [Ptr, StrPtr], DynVal);

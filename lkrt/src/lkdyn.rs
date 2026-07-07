@@ -246,6 +246,42 @@ pub extern "C" fn lkrt_dyn_as_bool(v: LkDyn) -> i64 {
     v.payload
 }
 
+// ── Trait-method dispatch marks (plan J1) ──────────────────────────────
+//
+// A struct instance is carried as a plain string-keyed map (no hidden
+// "$type" key — `len`/iteration/display stay exact); its *runtime* type
+// identity lives in a side registry keyed by the arena handle. Handles are
+// never freed before process exit, so a mark can't dangle or alias.
+
+std::thread_local! {
+    static OBJ_TYPE_MARKS: core::cell::RefCell<crate::lkmap::FxMap<usize, i64>> =
+        core::cell::RefCell::new(crate::lkmap::FxMap::default());
+}
+
+/// Marks a freshly built struct-instance map with its lowering-assigned
+/// type id (`NewObject` of a type that has trait impls).
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_lkmap_obj_mark(handle: *mut c_void, type_id: i64) {
+    OBJ_TYPE_MARKS.with(|marks| marks.borrow_mut().insert(handle as usize, type_id));
+}
+
+/// Reads a boxed value's struct type mark; `0` = unmarked (not a struct
+/// instance, or a type with no trait impls).
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_dyn_obj_type_id(v: LkDyn) -> i64 {
+    if v.tag != DYN_MAP {
+        return 0;
+    }
+    OBJ_TYPE_MARKS.with(|marks| marks.borrow().get(&(v.payload as usize)).copied().unwrap_or(0))
+}
+
+/// Dispatch fall-through: no registered impl matched the receiver's mark —
+/// the VM's unknown-method error is a catchable raise.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_dyn_method_missing() {
+    crate::panic::raise_str("runtime type error");
+}
+
 // ── Arithmetic (VM promotion rules; type errors are loud failures) ─────
 
 /// # Safety

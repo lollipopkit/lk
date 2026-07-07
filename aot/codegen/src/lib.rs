@@ -324,6 +324,7 @@ fn render_inst(out: &mut String, module: &MirModule, inst: &Inst) {
         Inst::CallFn { dst, func, args } => render_call_fn(out, module, *dst, *func, args),
         Inst::CallVm { func, args } => render_call_vm(out, module, *func, args),
         Inst::TryCall { dst, func, args } => render_try_call(out, module, *dst, *func, args),
+        Inst::TraitDispatch { dst, self_arg, arms } => render_trait_dispatch(out, *dst, *self_arg, arms),
         Inst::PrintStr { value, newline } => {
             let fmt = if *newline { "@lk_str_fmt" } else { "@lk_str_raw_fmt" };
             let _ = writeln!(out, "  call i32 (ptr, ...) @printf(ptr {fmt}, ptr {})", val(*value));
@@ -551,6 +552,45 @@ fn render_try_call(out: &mut String, module: &MirModule, dst: ValueId, func: Fun
         "  call void @lkrt_lklist_dyn_push(ptr {}, {{ i64, i64 }} %try{n}val)",
         val(dst)
     );
+}
+
+/// Runtime trait-method dispatch (plan J1): read the boxed receiver's arena
+/// type mark, then an `icmp` chain calls the matching impl — every arm takes
+/// the boxed `self` and returns `Dyn` (one rendered signature). A receiver
+/// whose mark matches no arm raises (the VM's unknown-method error). Labels
+/// are namespaced by the destination id, like `render_try_call`.
+fn render_trait_dispatch(out: &mut String, dst: ValueId, self_arg: ValueId, arms: &[(i64, FuncId)]) {
+    let n = dst.0;
+    let _ = writeln!(
+        out,
+        "  %td{n}id = call i64 @lkrt_dyn_obj_type_id({{ i64, i64 }} {})",
+        val(self_arg)
+    );
+    let _ = writeln!(out, "  br label %td{n}c0");
+    for (k, (tid, func)) in arms.iter().enumerate() {
+        let _ = writeln!(out, "td{n}c{k}:");
+        let _ = writeln!(out, "  %td{n}e{k} = icmp eq i64 %td{n}id, {tid}");
+        let _ = writeln!(out, "  br i1 %td{n}e{k}, label %td{n}a{k}, label %td{n}c{}", k + 1);
+        let _ = writeln!(out, "td{n}a{k}:");
+        let _ = writeln!(
+            out,
+            "  %td{n}r{k} = call {{ i64, i64 }} @lk_fn_{}({{ i64, i64 }} {})",
+            func.0,
+            val(self_arg)
+        );
+        let _ = writeln!(out, "  br label %td{n}join");
+    }
+    let _ = writeln!(out, "td{n}c{}:", arms.len());
+    let _ = writeln!(out, "  call void @lkrt_dyn_method_missing()");
+    let _ = writeln!(out, "  unreachable");
+    let _ = writeln!(out, "td{n}join:");
+    let phi_arms = arms
+        .iter()
+        .enumerate()
+        .map(|(k, _)| format!("[ %td{n}r{k}, %td{n}a{k} ]"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let _ = writeln!(out, "  {} = phi {{ i64, i64 }} {phi_arms}", val(dst));
 }
 
 fn render_const(out: &mut String, dst: ValueId, value: &Const) {

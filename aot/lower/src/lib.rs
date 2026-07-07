@@ -513,6 +513,8 @@ struct SigInfer {
     vm_functions: std::collections::HashMap<u32, Vec<Ty>>,
     /// Import-derived name bindings (aliases, module items, bundled files).
     imports: ImportEnv,
+    /// Trait/impl registrations lifted from the entry (plan J1).
+    traits: TraitEnv,
     /// Functions spawned as goroutines (isolate semantics): their cell
     /// captures snapshot by value and cell *writes* land in a
     /// thread-private virtual slot instead of rejecting.
@@ -641,6 +643,179 @@ impl ImportEnv {
     }
 }
 
+/// Trait/impl registrations extracted from the entry's compiler-generated
+/// `__lk_register_trait` / `__lk_register_trait_impl` call sequences (plan
+/// J1). The registration itself never runs natively: the prescan lifts each
+/// sequence into this table and marks its pcs skipped; method calls
+/// devirtualize statically through `impls` (known `NewObject` provenance) or
+/// dynamically through `methods` (boxed receivers, via arena type marks).
+#[derive(Debug, Clone, Default)]
+struct TraitEnv {
+    /// `(type name, method name)` → impl function index.
+    impls: std::collections::HashMap<(String, String), u32>,
+    /// Type name → runtime type id (1-based, first-registration order).
+    type_ids: std::collections::HashMap<String, i64>,
+    /// Method name → dispatch arms `(type id, impl fn)`, registration order.
+    methods: std::collections::HashMap<String, Vec<(i64, u32)>>,
+    /// Entry pcs covered by registration sequences (skipped when lowering).
+    skip_pcs: std::collections::HashSet<usize>,
+}
+
+/// The abstract register contents the registration prescan tracks — exactly
+/// the value kinds the compiler's `lower_trait_decl`/`lower_impl_decl` emit.
+#[derive(Debug, Clone)]
+enum TraitAbs {
+    Str(String),
+    Fn(u32),
+    List(Vec<TraitAbs>),
+    /// The helper callable; `true` = `__lk_register_trait_impl`.
+    Helper(bool),
+}
+
+fn trait_env_prescan(module: &lk_core::vm::ModuleData) -> TraitEnv {
+    let mut env = TraitEnv::default();
+    let Some(entry_fn) = module.functions.get(module.entry as usize) else {
+        return env;
+    };
+    // A registration sequence is contiguous straight-line compiler output:
+    // the helper `GetGlobal`, then only Load*/Move/NewList building the call
+    // window, then the `Call`. Anything unexpected abandons the candidate —
+    // its `GetGlobal` then rejects loudly during lowering (never a silent
+    // half-registration).
+    let mut regs: std::collections::HashMap<u8, TraitAbs> = std::collections::HashMap::new();
+    let mut seq_pcs: Vec<usize> = Vec::new();
+    let mut in_seq = false;
+    for (pc, raw) in entry_fn.code.iter().enumerate() {
+        let Ok(instr) = Instr::try_from_raw(*raw) else {
+            regs.clear();
+            in_seq = false;
+            continue;
+        };
+        match instr.opcode() {
+            Opcode::GetGlobal => {
+                let is_impl = match module.globals.get(instr.bx() as usize).map(String::as_str) {
+                    Some("__lk_register_trait") => Some(false),
+                    Some("__lk_register_trait_impl") => Some(true),
+                    _ => None,
+                };
+                let Some(is_impl) = is_impl else {
+                    regs.remove(&instr.a());
+                    in_seq = false;
+                    continue;
+                };
+                regs.insert(instr.a(), TraitAbs::Helper(is_impl));
+                seq_pcs = vec![pc];
+                in_seq = true;
+            }
+            Opcode::LoadString if in_seq => {
+                let text = entry_fn.consts.strings.get(instr.bx() as usize).cloned();
+                match text {
+                    Some(text) => {
+                        regs.insert(instr.a(), TraitAbs::Str(text));
+                        seq_pcs.push(pc);
+                    }
+                    None => in_seq = false,
+                }
+            }
+            Opcode::LoadHeapConst if in_seq => {
+                // Method-type display strings land in the heap-const pool
+                // when longer than the inline form.
+                match entry_fn.consts.heap_values.get(instr.bx() as usize) {
+                    Some(ConstHeapValueData::LongString(text)) => {
+                        regs.insert(instr.a(), TraitAbs::Str(text.to_string()));
+                        seq_pcs.push(pc);
+                    }
+                    _ => in_seq = false,
+                }
+            }
+            Opcode::LoadFunction if in_seq => {
+                regs.insert(instr.a(), TraitAbs::Fn(instr.bx() as u32));
+                seq_pcs.push(pc);
+            }
+            Opcode::Move if in_seq => match regs.get(&instr.b()).cloned() {
+                Some(v) => {
+                    regs.insert(instr.a(), v);
+                    seq_pcs.push(pc);
+                }
+                None => in_seq = false,
+            },
+            Opcode::NewList if in_seq => {
+                let mut items = Vec::with_capacity(instr.c() as usize);
+                for i in 0..instr.c() {
+                    match regs.get(&instr.b().wrapping_add(i)) {
+                        Some(v) => items.push(v.clone()),
+                        None => {
+                            in_seq = false;
+                            break;
+                        }
+                    }
+                }
+                if in_seq {
+                    regs.insert(instr.a(), TraitAbs::List(items));
+                    seq_pcs.push(pc);
+                }
+            }
+            Opcode::Call if in_seq => {
+                in_seq = false;
+                let base = instr.a();
+                let argc = instr.c() as usize;
+                let arg = |i: u8| regs.get(&base.wrapping_add(1).wrapping_add(i));
+                match regs.get(&base) {
+                    Some(TraitAbs::Helper(false)) if argc == 2 => {
+                        // Trait declaration: nothing to record, skip the pcs.
+                        seq_pcs.push(pc);
+                        env.skip_pcs.extend(seq_pcs.drain(..));
+                    }
+                    Some(TraitAbs::Helper(true)) if argc == 3 => {
+                        let (
+                            Some(TraitAbs::Str(_trait_name)),
+                            Some(TraitAbs::Str(type_name)),
+                            Some(TraitAbs::List(entries)),
+                        ) = (arg(0), arg(1), arg(2))
+                        else {
+                            continue;
+                        };
+                        let mut extracted = Vec::with_capacity(entries.len());
+                        for entry in entries {
+                            let TraitAbs::List(parts) = entry else {
+                                extracted.clear();
+                                break;
+                            };
+                            let (Some(TraitAbs::Str(method)), Some(TraitAbs::Fn(fidx))) = (parts.first(), parts.get(1))
+                            else {
+                                extracted.clear();
+                                break;
+                            };
+                            extracted.push((method.clone(), *fidx));
+                        }
+                        if extracted.is_empty() {
+                            continue;
+                        }
+                        let next_id = env.type_ids.len() as i64 + 1;
+                        let tid = *env.type_ids.entry(type_name.clone()).or_insert(next_id);
+                        for (method, fidx) in extracted {
+                            env.impls.insert((type_name.clone(), method.clone()), fidx);
+                            let arms = env.methods.entry(method).or_default();
+                            arms.retain(|&(t, _)| t != tid);
+                            arms.push((tid, fidx));
+                        }
+                        seq_pcs.push(pc);
+                        env.skip_pcs.extend(seq_pcs.drain(..));
+                    }
+                    _ => {}
+                }
+            }
+            _ => {
+                // Branches, stores, anything else: the abstract state is
+                // only trusted within a contiguous builder sequence.
+                regs.clear();
+                in_seq = false;
+            }
+        }
+    }
+    env
+}
+
 pub fn lower(artifact: &ModuleArtifact) -> Result<MirModule, Unsupported> {
     // Opt-in until the CLI links the bridge runtime (tier1-hybrid.md sub-step
     // ④): emitting `CallVm` without the lk-api staticlib linked would turn
@@ -679,10 +854,15 @@ pub fn lower_bundled(
     // Bundled file-module functions are reached through import bindings
     // (`GetGlobal` → Lambda), invisible to the bytecode scan: root them too
     // (the BFS then covers their own callees).
-    let bundle_roots: Vec<usize> = bundles
+    let mut bundle_roots: Vec<usize> = bundles
         .iter()
         .flat_map(|b| b.fns.values().map(|&fidx| fidx as usize))
         .collect();
+    // Trait impl methods are reached through the lifted registration table
+    // (their `LoadFunction` sites are skipped), invisible to the CallDirect/
+    // MakeClosure scan: root them like bundled imports.
+    let traits = trait_env_prescan(module);
+    bundle_roots.extend(traits.impls.values().map(|&fidx| fidx as usize));
     let mut reachable = reachable_functions(module, &bundle_roots);
 
     let global_count = module.globals.len();
@@ -700,6 +880,7 @@ pub fn lower_bundled(
         dyn_loop_phis: std::collections::HashSet::new(),
         dyn_rets: std::collections::HashSet::new(),
         imports: ImportEnv::build(&artifact.imports, bundles),
+        traits,
         spawned_isolate: std::collections::HashSet::new(),
         dyn_empty_lists: std::collections::HashSet::new(),
         global_tys: vec![None; global_count],
@@ -1742,6 +1923,11 @@ fn lower_function(
         let mut insts = Vec::new();
         #[allow(clippy::needless_range_loop)] // `pc` is the semantic bytecode index
         for pc in start..body_end {
+            // Trait registration sequences were lifted into `sig.traits` by
+            // the prescan; their instructions never lower (plan J1).
+            if is_entry && sig.traits.skip_pcs.contains(&pc) {
+                continue;
+            }
             lower_inst(
                 &mut ssa,
                 bi,
@@ -2470,6 +2656,11 @@ struct Ssa {
     /// (`Maybe` ↔ scalar merges); appended after the block's own instructions
     /// when the MIR blocks are assembled.
     edge_insts: Vec<Vec<Inst>>,
+    /// `NewObject` provenance: the struct type name behind a `MapStrDyn`
+    /// handle value (plan J1). Method calls and display contexts consult the
+    /// trait table through it; `Move` preserves the `ValueId`, so the entry
+    /// follows the value across registers for free.
+    struct_types: std::collections::HashMap<ValueId, String>,
 }
 
 impl Ssa {
@@ -2508,6 +2699,7 @@ impl Ssa {
             builtin_regs: std::collections::HashMap::new(),
             next_cell: 0,
             edge_insts: vec![Vec::new(); total_blocks],
+            struct_types: std::collections::HashMap::new(),
         }
     }
 
@@ -4980,6 +5172,20 @@ fn lower_inst(
                     lower_method_call(ssa, insts, globals, base, block, pc)?;
                 }
                 Some(GlobalRef::Builtin(builtin)) => {
+                    // Auto-Display (plan J1): a struct-instance print argument
+                    // with a registered `show` prints its result, like the VM's
+                    // `try_runtime_display_show`.
+                    if matches!(builtin, Builtin::Println | Builtin::Print) {
+                        for i in 0..instr.c() as usize {
+                            let reg = base.wrapping_add(1).wrapping_add(i as u8);
+                            if let Ok((v, ty)) = ssa.read(reg, block, pc) {
+                                let (nv, nty) = apply_display_show(ssa, insts, funcs, entry, sig, v, ty, pc)?;
+                                if nv != v {
+                                    ssa.write(reg, block, (nv, nty));
+                                }
+                            }
+                        }
+                    }
                     lower_builtin_call(ssa, insts, globals, builtin, base, instr.c() as usize, block, pc)?;
                 }
                 Some(GlobalRef::ModuleFn(module, name)) => {
@@ -5138,6 +5344,10 @@ fn lower_inst(
             // an int rhs fuses into a single `concat_i64` call.
             let (lv, lty) = ssa.read(instr.b(), block, pc)?;
             let (rv, rty) = ssa.read(instr.c(), block, pc)?;
+            // Auto-Display (plan J1): a struct-instance operand with a
+            // registered `show` interpolates its result, like the VM.
+            let (lv, lty) = apply_display_show(ssa, insts, funcs, entry, sig, lv, lty, pc)?;
+            let (rv, rty) = apply_display_show(ssa, insts, funcs, entry, sig, rv, rty, pc)?;
             let (l, l_fresh) = to_display_str(ssa, insts, globals, lv, lty, false, pc)?;
             let dst = concat_display(ssa, insts, globals, l, rv, rty, false, pc)?;
             if l_fresh {
@@ -5164,9 +5374,11 @@ fn lower_inst(
                 dst
             } else {
                 let (v0, ty0) = ssa.read(start, block, pc)?;
+                let (v0, ty0) = apply_display_show(ssa, insts, funcs, entry, sig, v0, ty0, pc)?;
                 let (mut acc, mut acc_fresh) = to_display_str(ssa, insts, globals, v0, ty0, false, pc)?;
                 for i in 1..count {
                     let (v, ty) = ssa.read(start.wrapping_add(i as u8), block, pc)?;
+                    let (v, ty) = apply_display_show(ssa, insts, funcs, entry, sig, v, ty, pc)?;
                     let dst = concat_display(ssa, insts, globals, acc, v, ty, false, pc)?;
                     // The consumed accumulator is dead; free it if this
                     // lowering allocated it.
@@ -5624,6 +5836,29 @@ fn lower_inst(
                     callee: AbiRef::new("map_h", "str_dyn_set"),
                     args: vec![map, key_v, boxed],
                 });
+            }
+            // Struct provenance (plan J1): the type name drives static
+            // method devirtualization; a type with registered trait impls
+            // also marks the handle for boxed runtime dispatch.
+            let type_name = {
+                let tv = ssa.read(instr.b(), block, pc).ok().map(|(v, _)| v);
+                tv.and_then(|v| ssa.const_strs.get(&v).cloned())
+                    .or_else(|| ssa.reg_const_str(instr.b(), block))
+            };
+            if let Some(type_name) = type_name {
+                if let Some(&tid) = sig.traits.type_ids.get(&type_name) {
+                    let tid_v = ssa.new_val();
+                    insts.push(Inst::Const {
+                        dst: tid_v,
+                        value: Const::I64(tid),
+                    });
+                    insts.push(Inst::Call {
+                        dst: None,
+                        callee: AbiRef::new("map_h", "obj_mark"),
+                        args: vec![map, tid_v],
+                    });
+                }
+                ssa.struct_types.insert(map, type_name);
             }
             ssa.write(instr.a(), block, (map, Ty::MapStrDyn));
         }
@@ -7185,6 +7420,26 @@ fn lower_method_call_k(
     } else {
         (receiver, receiver_ty)
     };
+    // Trait method dispatch (plan J1): a receiver with known `NewObject`
+    // provenance devirtualizes to a direct call of the registered impl; a
+    // boxed receiver dispatches at runtime over the arena type marks.
+    if let Some(result) = lower_trait_method_k(
+        ssa,
+        insts,
+        funcs,
+        entry,
+        sig,
+        receiver,
+        receiver_ty,
+        &name,
+        base,
+        argc,
+        block,
+        pc,
+    )? {
+        ssa.write(base, block, result);
+        return Ok(());
+    }
     // List HOF with a compiled zero-capture lambda callback (fn-pointer ABI):
     // handled before the generic argument reads, because the lambda register
     // carries a `GlobalRef::Lambda`, not an SSA value.
@@ -7214,6 +7469,173 @@ fn lower_method_call_k(
     let result = lower_method_dispatch(ssa, insts, globals, receiver, receiver_ty, &name, &args, block, pc)?;
     ssa.write(base, block, result);
     Ok(())
+}
+
+/// Trait-method dispatch for `CallMethodK` (plan J1). Two shapes:
+///
+///  - **Static devirtualization**: the receiver is a `MapStrDyn` whose
+///    `NewObject` provenance names a type with a registered `(type, method)`
+///    impl — a plain direct call (`self` first, then the window arguments),
+///    through the same monomorphization lattice as user calls.
+///  - **Runtime dispatch**: the receiver is boxed (`Dyn` — a struct instance
+///    that flowed through a mixed list or a `Dyn` parameter) and the method
+///    name has registered impls — [`Inst::TraitDispatch`] reads the arena
+///    type mark and calls the matching impl. Every arm is forced to the
+///    uniform boxed signature (`Dyn` self via the parameter lattice, `Dyn`
+///    return via `dyn_rets` — both retriable discoveries).
+///
+/// Returns `Ok(None)` when neither shape applies (generic dispatch decides).
+#[allow(clippy::too_many_arguments)]
+fn lower_trait_method_k(
+    ssa: &mut Ssa,
+    insts: &mut Vec<Inst>,
+    funcs: &[FunctionData],
+    entry: u32,
+    sig: &mut SigInfer,
+    receiver: ValueId,
+    receiver_ty: Ty,
+    name: &str,
+    base: u8,
+    argc: usize,
+    block: usize,
+    pc: usize,
+) -> Result<Option<(ValueId, Ty)>, Unsupported> {
+    if receiver_ty == Ty::MapStrDyn
+        && let Some(type_name) = ssa.struct_types.get(&receiver).cloned()
+        && let Some(&fidx) = sig.traits.impls.get(&(type_name, name.to_string()))
+    {
+        let mut call_args = Vec::with_capacity(argc + 1);
+        call_args.push((receiver, Ty::MapStrDyn));
+        for i in 0..argc {
+            call_args.push(ssa.read(base.wrapping_add(1).wrapping_add(i as u8), block, pc)?);
+        }
+        return emit_trait_call(ssa, insts, funcs, entry, sig, fidx as usize, call_args, pc).map(Some);
+    }
+    if receiver_ty == Ty::Dyn
+        && argc == 0
+        && let Some(arms) = sig.traits.methods.get(name).cloned()
+        && !arms.is_empty()
+    {
+        let mut retry = false;
+        for &(_, fidx) in &arms {
+            let f = fidx as usize;
+            if f >= funcs.len()
+                || fidx == entry
+                || funcs[f].param_count != 1
+                || funcs[f].capture_count != 0
+                || sig.specialized.get(f).copied().unwrap_or(false)
+            {
+                return Err(Unsupported::TypeMismatch { pc });
+            }
+            if let Some(flag) = sig.plain_called.get_mut(f) {
+                *flag = true;
+            }
+            sig.observe_param(f, 0, Ty::Dyn);
+            if !sig.dyn_rets.contains(&fidx) {
+                sig.dyn_rets.insert(fidx);
+                retry = true;
+            }
+            if sig.ret_types.get(f).copied() != Some(Ty::Dyn) {
+                retry = true;
+            }
+        }
+        // Boxed-signature discoveries converge through the fixpoint like
+        // every other retriable widening.
+        if retry {
+            return Err(Unsupported::TypeMismatch { pc });
+        }
+        let dst = ssa.new_val();
+        insts.push(Inst::TraitDispatch {
+            dst,
+            self_arg: receiver,
+            arms: arms.iter().map(|&(tid, f)| (tid, FuncId(f))).collect(),
+        });
+        return Ok(Some((dst, Ty::Dyn)));
+    }
+    Ok(None)
+}
+
+/// Emits a devirtualized trait-impl call (`self` is the first argument),
+/// refining the callee's signature through the shared parameter lattice.
+#[allow(clippy::too_many_arguments)]
+fn emit_trait_call(
+    ssa: &mut Ssa,
+    insts: &mut Vec<Inst>,
+    funcs: &[FunctionData],
+    entry: u32,
+    sig: &mut SigInfer,
+    fidx: usize,
+    call_args: Vec<(ValueId, Ty)>,
+    pc: usize,
+) -> Result<(ValueId, Ty), Unsupported> {
+    if fidx >= funcs.len()
+        || fidx as u32 == entry
+        || funcs[fidx].param_count as usize != call_args.len()
+        || funcs[fidx].capture_count != 0
+    {
+        return Err(Unsupported::Opcode {
+            pc,
+            op: Opcode::CallMethodK,
+        });
+    }
+    if sig.specialized.get(fidx).copied().unwrap_or(false) {
+        sig.conflict = true;
+        return Err(Unsupported::TypeMismatch { pc });
+    }
+    if let Some(flag) = sig.plain_called.get_mut(fidx) {
+        *flag = true;
+    }
+    let mut args = Vec::with_capacity(call_args.len());
+    for (i, (v, ty)) in call_args.into_iter().enumerate() {
+        let want = sig.observe_param(fidx, i, ty);
+        args.push(coerce_arg(ssa, insts, v, ty, want, pc)?);
+    }
+    let ret = sig.ret_types.get(fidx).copied().unwrap_or(Ty::I64);
+    if ret == Ty::Nil {
+        insts.push(Inst::CallFn {
+            dst: None,
+            func: FuncId(fidx as u32),
+            args,
+        });
+        let nil = ssa.new_val();
+        insts.push(Inst::Const {
+            dst: nil,
+            value: Const::Nil,
+        });
+        return Ok((nil, Ty::Nil));
+    }
+    let dst = ssa.new_val();
+    insts.push(Inst::CallFn {
+        dst: Some(dst),
+        func: FuncId(fidx as u32),
+        args,
+    });
+    Ok((dst, ret))
+}
+
+/// The VM's auto-Display (`try_runtime_display_show`): `print`/`println`
+/// formatting and string interpolation call a struct instance's registered
+/// `show` method. Mirrors it in display contexts: an operand with struct
+/// provenance and a `(type, "show")` impl is replaced by that call's result
+/// before generic display conversion.
+#[allow(clippy::too_many_arguments)]
+fn apply_display_show(
+    ssa: &mut Ssa,
+    insts: &mut Vec<Inst>,
+    funcs: &[FunctionData],
+    entry: u32,
+    sig: &mut SigInfer,
+    v: ValueId,
+    ty: Ty,
+    pc: usize,
+) -> Result<(ValueId, Ty), Unsupported> {
+    if ty == Ty::MapStrDyn
+        && let Some(type_name) = ssa.struct_types.get(&v).cloned()
+        && let Some(&fidx) = sig.traits.impls.get(&(type_name, "show".to_string()))
+    {
+        return emit_trait_call(ssa, insts, funcs, entry, sig, fidx as usize, vec![(v, ty)], pc);
+    }
+    Ok((v, ty))
 }
 
 /// `xs.map(|x| …)` / `filter` / `reduce(init, |acc, x| …)` with a

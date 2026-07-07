@@ -208,6 +208,18 @@ pub enum Inst {
         func: FuncId,
         args: Vec<ValueId>,
     },
+    /// `dst = trait.dispatch(self, arms)` — a runtime trait-method dispatch
+    /// over a boxed struct instance (plan J1): codegen reads the receiver's
+    /// arena type mark (`lkrt_dyn_obj_type_id`) and expands an `icmp` chain
+    /// calling the matching impl. Every arm takes the boxed `self` and
+    /// returns `Dyn` (the lowering forces `dyn_rets`), so one rendered
+    /// signature serves all arms; no matching mark raises.
+    TraitDispatch {
+        dst: ValueId,
+        self_arg: ValueId,
+        /// `(runtime type id, impl function)` in registration order.
+        arms: Vec<(i64, FuncId)>,
+    },
     /// `call.vm f{func}(args)` — a one-way Tier 1 bridge call to a VM-executed
     /// function of this module (`docs/llvm/tier1-hybrid.md`): the callee's body
     /// did not lower, so codegen marshals the scalar arguments into tagged
@@ -512,6 +524,18 @@ pub fn validate(module: &MirModule) -> Result<(), MirError> {
                         return Err(MirError::ArityMismatch { func: func.id });
                     }
                 }
+                if let Inst::TraitDispatch { arms, .. } = inst {
+                    for (_, callee) in arms {
+                        let Some(target) = module.function(*callee) else {
+                            return Err(MirError::MissingEntry);
+                        };
+                        // One boxed `self` parameter — the rendered arm call
+                        // shape.
+                        if target.params.len() != 1 {
+                            return Err(MirError::ArityMismatch { func: func.id });
+                        }
+                    }
+                }
                 if let Some(def) = inst_def(inst)
                     && !defined.insert(def)
                 {
@@ -715,6 +739,14 @@ fn render_inst(inst: &Inst) -> String {
         }
         Inst::CallVm { func, args: a } => format!("call.vm f{}({})", func.0, args(a)),
         Inst::TryCall { dst, func, args: a } => format!("{} = try.call f{}({})", v(*dst), func.0, args(a)),
+        Inst::TraitDispatch { dst, self_arg, arms } => {
+            let arm_list = arms
+                .iter()
+                .map(|(tid, f)| format!("{tid} => f{}", f.0))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{} = trait.dispatch {}, [{arm_list}]", v(*dst), v(*self_arg))
+        }
         Inst::ListGetMaybe { dst, handle, index } => {
             format!("{} = list.i64.get_maybe {}, {}", v(*dst), v(*handle), v(*index))
         }
@@ -813,7 +845,7 @@ fn inst_def(inst: &Inst) -> Option<ValueId> {
         | Inst::GlobalGet { dst, .. } => Some(*dst),
         Inst::Call { dst, .. } | Inst::CallFn { dst, .. } => *dst,
         Inst::PrintStr { .. } | Inst::GlobalSet { .. } | Inst::CallVm { .. } => None,
-        Inst::TryCall { dst, .. } => Some(*dst),
+        Inst::TryCall { dst, .. } | Inst::TraitDispatch { dst, .. } => Some(*dst),
     }
 }
 
@@ -852,6 +884,7 @@ fn inst_uses(inst: &Inst) -> Vec<ValueId> {
         | Inst::CallFn { args, .. }
         | Inst::CallVm { args, .. }
         | Inst::TryCall { args, .. } => args.clone(),
+        Inst::TraitDispatch { self_arg, .. } => vec![*self_arg],
         Inst::PrintStr { value, .. } => vec![*value],
         Inst::Select {
             cond, then_v, else_v, ..
