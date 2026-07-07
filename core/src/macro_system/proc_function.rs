@@ -2,10 +2,14 @@ use super::{
     MacroExpandOptions, MacroOriginFrame, MacroOriginKind, SourceToken, origin,
     proc_output::source_tokens_from_proc_output,
 };
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
+#[cfg(feature = "std")]
+use crate::macro_system::run_proc_macro_process;
 use crate::{
     macro_system::{
         PROC_MACRO_PROTOCOL_VERSION, ProcMacroDiagnostic, ProcMacroDiagnosticLevel, ProcMacroKind, ProcMacroRequest,
-        ProcMacroSpan, ProcMacroToken, run_proc_macro_process,
+        ProcMacroSpan, ProcMacroToken,
     },
     token::{ParseError, Span},
 };
@@ -23,30 +27,42 @@ pub(in crate::macro_system) fn expand_function_like_proc_macro(
             call_span.clone(),
         ));
     };
-    let request = ProcMacroRequest {
-        protocol_version: PROC_MACRO_PROTOCOL_VERSION,
-        kind: ProcMacroKind::FunctionLike,
-        macro_name: name.to_string(),
-        input_tokens: input.iter().map(proc_token_from_source).collect(),
-        item_tokens: Vec::new(),
-        package: None,
-        module: None,
-        features: options.proc_macro_features.clone(),
-    };
-    let response = run_proc_macro_process(&request, config).map_err(|err| {
-        ParseError::with_span(
-            format!("Procedural function-like macro `{name}` failed: {err}"),
+    // Invoking an external provider needs a process, which no_std lacks (M0.7/8).
+    #[cfg(not(feature = "std"))]
+    {
+        let _ = (config, input, call_origins);
+        return Err(ParseError::with_span(
+            format!("Procedural function-like macro `{name}` requires the std feature"),
             call_span.clone(),
-        )
-    })?;
-    reject_error_diagnostics(name, &response.diagnostics, call_span)?;
-    options.proc_macro_dependency_recorder.record(&response.dependencies);
-    let mut output = source_tokens_from_proc_output(name, &response.output_tokens, call_span)?;
-    for token in &mut output {
-        origin::inherit_call_origin(token, call_origins);
-        origin::push_origin(token, name, call_span, MacroOriginKind::ProcMacroOutput);
+        ));
     }
-    Ok(output)
+    #[cfg(feature = "std")]
+    {
+        let request = ProcMacroRequest {
+            protocol_version: PROC_MACRO_PROTOCOL_VERSION,
+            kind: ProcMacroKind::FunctionLike,
+            macro_name: name.to_string(),
+            input_tokens: input.iter().map(proc_token_from_source).collect(),
+            item_tokens: Vec::new(),
+            package: None,
+            module: None,
+            features: options.proc_macro_features.clone(),
+        };
+        let response = run_proc_macro_process(&request, config).map_err(|err| {
+            ParseError::with_span(
+                format!("Procedural function-like macro `{name}` failed: {err}"),
+                call_span.clone(),
+            )
+        })?;
+        reject_error_diagnostics(name, &response.diagnostics, call_span)?;
+        options.proc_macro_dependency_recorder.record(&response.dependencies);
+        let mut output = source_tokens_from_proc_output(name, &response.output_tokens, call_span)?;
+        for token in &mut output {
+            origin::inherit_call_origin(token, call_origins);
+            origin::push_origin(token, name, call_span, MacroOriginKind::ProcMacroOutput);
+        }
+        Ok(output)
+    }
 }
 
 fn proc_token_from_source(token: &SourceToken) -> ProcMacroToken {

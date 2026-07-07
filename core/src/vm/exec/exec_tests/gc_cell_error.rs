@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 use crate::vm::analysis::{PerfCellMoveFact, PerformanceFacts};
 #[test]
 fn execute_triggers_heap_gc_from_runtime_roots() {

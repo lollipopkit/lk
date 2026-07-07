@@ -646,3 +646,83 @@ fn differential_builtins() {
         ],
     );
 }
+
+#[test]
+fn differential_global_containers() {
+    run_differential(
+        "global_containers",
+        &[
+            // Module globals holding containers cross functions as boxed Dyn
+            // (typed zero-init would diverge from the VM's nil); methods on
+            // them dispatch as methods (the compiler routing fix), natively
+            // through the Dyn arms.
+            new(
+                "global_list_methods",
+                "let nums = [1, 2, 3];\nfn count() { return nums.len(); }\nfn first() { return nums[0]; }\nprintln(count());\nprintln(first());\nreturn 0;\n",
+            ),
+            new(
+                "global_str_list",
+                "let names = [\"ada\", \"bob\"];\nfn count() { return names.len(); }\nfn pick() { return names[1]; }\nprintln(count());\nprintln(pick());\nreturn 0;\n",
+            ),
+            new(
+                "global_map_field",
+                "let cfg = {\"host\": \"prod.io\", \"port\": 8080};\nfn host() { return cfg.host; }\nfn port() { return cfg.port; }\nprintln(host());\nprintln(port());\nreturn 0;\n",
+            ),
+        ],
+    );
+}
+
+#[test]
+fn differential_dyn_cross_function() {
+    run_differential(
+        "dyn_cross_fn",
+        &[
+            // Disagreeing call-site types join the parameter to Dyn (each
+            // site boxes); the body consumes through the Dyn arms.
+            new(
+                "param_join_int_str",
+                "fn id(x) { return x; }\nprintln(id(1));\nprintln(id(\"s\"));\nprintln(id(2.5));\nprintln(id(true));\nreturn 0;\n",
+            ),
+            // A nullable (Maybe) argument crosses the call boxed: the callee
+            // receives nil as nil — VM call semantics, no unwrap abort.
+            new(
+                "param_maybe_passes_nil",
+                "fn show(x) { return x ?? -1; }\nlet m = {};\nm.set(\"a\", 1);\nprintln(show(m.get(\"a\")));\nprintln(show(m.get(\"zz\")));\nreturn 0;\n",
+            ),
+            // An explicit nil argument at one site, a typed value at another.
+            new(
+                "param_nil_vs_int",
+                "fn f(x) { if (x == nil) { return 0; } return 1; }\nprintln(f(nil));\nprintln(f(3));\nreturn 0;\n",
+            ),
+            // VM truthiness: only nil and false are falsy — 0, 0.0 and \"\"
+            // are truthy; a Dyn condition tests its tag at runtime.
+            new(
+                "truthiness_zero_and_nil",
+                "let z = 0;\nif (z) { println(\"zero truthy\"); }\nlet n = nil;\nif (n) { println(\"unreachable\"); } else { println(\"nil falsy\"); }\nfn pick(x) { if (x) { return \"t\"; } return \"f\"; }\nprintln(pick(0));\nprintln(pick(nil));\nprintln(pick(false));\nprintln(pick(\"\"));\nreturn 0;\n",
+            ),
+            // A Bool-typed self-recursive return chain must not look
+            // heterogeneous against the stale I64 ret default.
+            new(
+                "bool_recursive_ret",
+                "fn has(xs, t) {\n  if (xs.len() == 0) { return false; }\n  if (xs[0] == t) { return true; }\n  return has(xs.skip(1), t);\n}\nprintln(has([1, 3, 5], 5));\nprintln(has([1, 3, 5], 4));\nreturn 0;\n",
+            ),
+            // Genuinely mixed return types box every return point: the
+            // function returns Dyn, nil crosses as nil.
+            new(
+                "mixed_ret_types",
+                "fn pick(n) {\n  if (n == 0) { return 0; }\n  if (n == 1) { return \"one\"; }\n  if (n == 2) { return 2.5; }\n  return nil;\n}\nprintln(pick(0));\nprintln(pick(1));\nprintln(pick(2));\nprintln(pick(9) == nil);\nreturn 0;\n",
+            ),
+            // A Maybe-returning function boxes: absent arrives as nil.
+            new(
+                "maybe_ret_boxes",
+                "fn lookup(k) {\n  let m = {};\n  m.set(\"a\", 7);\n  return m.get(k);\n}\nprintln(lookup(\"a\"));\nprintln(lookup(\"zz\") == nil);\nreturn 0;\n",
+            ),
+            // An all-nil branch join must not build a Nil-typed phi: it widens
+            // to Dyn (boxed nil) and compares by tag.
+            new(
+                "nil_phi_join",
+                "let user = { \"name\": \"Alice\", \"address\": nil };\nlet city = nil;\nif (user.address != nil) {\n  city = user.address.city;\n} else {\n  city = nil;\n}\nprintln(city == nil);\nreturn 0;\n",
+            ),
+        ],
+    );
+}

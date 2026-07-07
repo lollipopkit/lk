@@ -1,8 +1,10 @@
-use std::ops::Range;
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
+use core::ops::Range;
 
 use anyhow::{Result, bail};
 
-use std::sync::Arc;
+use alloc::sync::Arc;
 
 use crate::{
     val::{HeapStore, HeapValue, RuntimeVal, TypedList},
@@ -50,7 +52,7 @@ impl Executor {
     #[inline]
     pub(super) fn take(&mut self, register: u8) -> Result<RuntimeVal> {
         let index = self.stack_index(register)?;
-        Ok(std::mem::take(&mut self.state.stack[index]))
+        Ok(core::mem::take(&mut self.state.stack[index]))
     }
 
     /// Unchecked version of `stack_index` — elides bounds check in release builds.
@@ -248,14 +250,14 @@ fn take_typed_list_from_runtime_slots(values: &mut [RuntimeVal], heap: &HeapStor
         RuntimeSlotListShape::Mixed => {
             let mut out = Vec::with_capacity(values.len());
             for value in values {
-                out.push(std::mem::take(value));
+                out.push(core::mem::take(value));
             }
             TypedList::Mixed(out)
         }
         RuntimeSlotListShape::Int => {
             let mut out = Vec::with_capacity(values.len());
             for value in values {
-                let value = match std::mem::take(value) {
+                let value = match core::mem::take(value) {
                     RuntimeVal::Int(value) => value,
                     _ => unreachable!("shape scan only returns Int for int slots"),
                 };
@@ -266,7 +268,7 @@ fn take_typed_list_from_runtime_slots(values: &mut [RuntimeVal], heap: &HeapStor
         RuntimeSlotListShape::Float => {
             let mut out = Vec::with_capacity(values.len());
             for value in values {
-                let value = match std::mem::take(value) {
+                let value = match core::mem::take(value) {
                     RuntimeVal::Float(value) => value,
                     _ => unreachable!("shape scan only returns Float for float slots"),
                 };
@@ -277,7 +279,7 @@ fn take_typed_list_from_runtime_slots(values: &mut [RuntimeVal], heap: &HeapStor
         RuntimeSlotListShape::Bool => {
             let mut out = Vec::with_capacity(values.len());
             for value in values {
-                let value = match std::mem::take(value) {
+                let value = match core::mem::take(value) {
                     RuntimeVal::Bool(value) => value,
                     _ => unreachable!("shape scan only returns Bool for bool slots"),
                 };
@@ -288,7 +290,7 @@ fn take_typed_list_from_runtime_slots(values: &mut [RuntimeVal], heap: &HeapStor
         RuntimeSlotListShape::String => {
             let mut out = Vec::with_capacity(values.len());
             for value in values {
-                let value = match std::mem::take(value) {
+                let value = match core::mem::take(value) {
                     RuntimeVal::ShortStr(value) => Arc::<str>::from(value.as_str()),
                     RuntimeVal::Obj(handle) => match heap.get(handle) {
                         Some(HeapValue::String(value)) => Arc::clone(value),

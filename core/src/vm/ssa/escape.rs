@@ -1,4 +1,6 @@
-use std::cmp::max;
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
+use core::cmp::max;
 
 use crate::vm::analysis::{EscapeClass, EscapeSummary};
 

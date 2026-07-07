@@ -1,6 +1,8 @@
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 use crate::val::{RuntimeVal, Type};
 use anyhow::{Result, anyhow};
-use std::collections::HashMap;
+use hashbrown::HashMap;
 
 /// Struct definition with field types
 #[derive(Debug, Clone, PartialEq)]
@@ -351,7 +353,7 @@ impl TypeInferenceEngine {
         let mut items = Vec::new();
         collect(t, &mut items);
         // Deduplicate by display string to be stable
-        use std::collections::BTreeSet;
+        use alloc::collections::BTreeSet;
         let mut seen = BTreeSet::new();
         let mut uniq = Vec::new();
         for ty in items {

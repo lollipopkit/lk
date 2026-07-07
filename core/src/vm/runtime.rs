@@ -1,4 +1,7 @@
-use std::sync::{Arc, Mutex, MutexGuard};
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
+use crate::compat::sync::{Mutex, MutexGuard};
+use alloc::sync::Arc;
 
 use anyhow::{Result, anyhow};
 
@@ -27,6 +30,17 @@ pub struct RuntimeModuleState {
     pub(crate) stack: Vec<RuntimeVal>,
     pub(crate) stack_top: usize,
     pub(crate) inline_caches: InlineCaches,
+    /// A first-class error value raised via `error(v)` and still unwinding
+    /// toward its `pcall`. Kept as a GC root (see `gc_roots`) so a heap object
+    /// carried as an error survives collection at the native-call safepoints hit
+    /// during unwinding (plan M2.2). Cleared once `pcall` extracts it.
+    pub(crate) pending_raise_root: Option<RuntimeVal>,
+    /// Live LK call depth. Lives in the shared state (not the executor) so it
+    /// keeps accumulating across native→VM re-entries (pcall, stdlib HOFs, the
+    /// Tier 1 bridge), which each construct a fresh executor: the runaway-
+    /// recursion cap (see `Executor::max_call_depth`) cannot be reset by
+    /// routing recursion through a native boundary.
+    pub(crate) call_depth: usize,
 }
 
 impl RuntimeModuleState {
@@ -39,7 +53,15 @@ impl RuntimeModuleState {
             stack: Vec::with_capacity(Self::INITIAL_STACK_CAPACITY),
             stack_top: 0,
             inline_caches: InlineCaches::default(),
+            pending_raise_root: None,
+            call_depth: 0,
         }
+    }
+
+    /// Pin (or clear) the first-class error value currently unwinding so it is
+    /// treated as a GC root until `pcall` recovers it (plan M2.2).
+    pub fn set_pending_raise_root(&mut self, value: Option<RuntimeVal>) {
+        self.pending_raise_root = value;
     }
 
     pub fn root_refs<'a>(&self, extra_roots: impl IntoIterator<Item = &'a RuntimeVal>) -> Vec<crate::val::HeapRef> {
@@ -327,6 +349,17 @@ impl<'a> NativeRuntime<'a> {
         self.ctx.as_deref()
     }
 
+    /// The async (tokio) runtime handle for this call, taken from the VM
+    /// context. Returns an independent handle when there is no context (e.g.
+    /// native-compilation shims), so callers never reach for a global.
+    #[inline]
+    pub fn async_runtime(&self) -> crate::rt::AsyncRuntimeHandle {
+        self.ctx
+            .as_deref()
+            .map(|ctx| ctx.async_runtime().clone())
+            .unwrap_or_default()
+    }
+
     #[inline]
     pub fn ctx_mut(&mut self) -> Option<&mut VmContext> {
         self.ctx.as_deref_mut()
@@ -501,7 +534,7 @@ fn runtime_named_arg_name<'a>(value: &'a RuntimeVal, heap: &'a HeapStore) -> Res
 
 impl<'a> IntoIterator for NativeArgs<'a> {
     type Item = &'a RuntimeVal;
-    type IntoIter = std::slice::Iter<'a, RuntimeVal>;
+    type IntoIter = core::slice::Iter<'a, RuntimeVal>;
 
     #[inline]
     fn into_iter(self) -> Self::IntoIter {
@@ -542,7 +575,7 @@ impl NativeEntry {
 #[cfg(test)]
 mod tests {
     use crate::util::fast_map::fast_hash_map_from_iter;
-    use std::sync::Arc;
+    use alloc::sync::Arc;
 
     use crate::val::{HeapStore, HeapValue, RuntimeVal, TypedMap};
 

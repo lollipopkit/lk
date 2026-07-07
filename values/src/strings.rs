@@ -1,4 +1,5 @@
-use std::sync::Arc;
+use alloc::string::String;
+use alloc::sync::Arc;
 
 use super::{LiteralVal, types::ShortStr};
 
@@ -34,7 +35,7 @@ impl LiteralVal {
 
     /// String literal concatenation used by AST constant folding.
     #[inline]
-    pub(crate) fn concat_strings(a: &str, b: &str) -> Self {
+    pub fn concat_strings(a: &str, b: &str) -> Self {
         if a.is_empty() {
             return Self::from_str(b);
         }

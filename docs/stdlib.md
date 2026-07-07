@@ -16,6 +16,10 @@ exports.
   and process execution/state.
 - `encoding` is a parent namespace for data formats and byte/text encodings:
   `json`, `yaml`, `toml`, `base64`, `hex`, and `url`.
+- Concurrency is Go-shaped (see `docs/concurrency.md`): the `go` statement /
+  `spawn` global start goroutines, `chan` owns channel operations, and
+  `task` owns task management (`await`, `try_await`, `join_all`, `sleep`).
+  Failures raise (v2 error model) — there are no `[ok, value]` pairs.
 
 ## Common Modules
 

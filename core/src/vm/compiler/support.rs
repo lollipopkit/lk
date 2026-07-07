@@ -1,17 +1,19 @@
+use crate::compat::collections::{HashMap, HashSet};
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 use crate::util::fast_map::fast_hash_map_new;
-use std::collections::{HashMap, HashSet};
 
 use anyhow::{Result, anyhow, bail};
 
 use crate::{
-    expr::{Expr, Pattern, SelectPattern},
+    expr::{Expr, Pattern},
     operator::BinOp,
     stmt::{NamedParamDecl, Program, Stmt},
     val::{LiteralVal, RuntimeMapKey, ShortStr},
     vm::ConstRuntimeValue,
 };
 
-use std::sync::Arc;
+use alloc::sync::Arc;
 
 use super::{ConstHeapValue, GlobalSlot, NativeEntry, free_vars::collect_function_free_vars};
 
@@ -317,18 +319,6 @@ fn collect_mutated_names_in_expr(expr: &Expr, names: &mut HashSet<String>) {
                 collect_mutated_names_in_expr(expr, names);
             }
         }
-        Expr::Select { cases, default_case } => {
-            for case in cases {
-                collect_mutated_names_in_select_pattern(&case.pattern, names);
-                if let Some(guard) = &case.guard {
-                    collect_mutated_names_in_expr(guard, names);
-                }
-                collect_mutated_names_in_expr(&case.body, names);
-            }
-            if let Some(default_case) = default_case {
-                collect_mutated_names_in_expr(default_case, names);
-            }
-        }
         Expr::Match { value, arms } => {
             collect_mutated_names_in_expr(value, names);
             for arm in arms {
@@ -365,16 +355,6 @@ fn collect_mutated_names_in_pattern(pattern: &Pattern, names: &mut HashSet<Strin
     }
 }
 
-fn collect_mutated_names_in_select_pattern(pattern: &SelectPattern, names: &mut HashSet<String>) {
-    match pattern {
-        SelectPattern::Recv { channel, .. } => collect_mutated_names_in_expr(channel, names),
-        SelectPattern::Send { channel, value } => {
-            collect_mutated_names_in_expr(channel, names);
-            collect_mutated_names_in_expr(value, names);
-        }
-    }
-}
-
 fn const_int_expr_value(expr: &Expr) -> Option<i64> {
     match expr {
         Expr::Paren(inner) => const_int_expr_value(inner),
@@ -384,6 +364,16 @@ fn const_int_expr_value(expr: &Expr) -> Option<i64> {
         Expr::Bin(lhs, BinOp::Mul, rhs) => const_int_expr_value(lhs)?.checked_mul(const_int_expr_value(rhs)?),
         _ => None,
     }
+}
+
+/// Top-level `let` names visible to callables (function/closure bodies).
+/// These occupy global slots but hold *user data*, not module objects: a
+/// method call on one must dispatch as a method (`CallMethodK`), never as a
+/// module-member property read (`GetIndex(recv, "name")` on a list/map value
+/// reads data — or crashes — instead of calling the method).
+pub(super) fn collect_function_visible_let_names(program: &Program) -> HashSet<String> {
+    let top_level_lets = collect_top_level_let_names(program);
+    collect_callable_visible_top_level_lets(program, &top_level_lets)
 }
 
 pub(super) fn collect_global_names_with_external<I, S>(
@@ -698,34 +688,6 @@ pub(super) fn ast_literal_kind(value: &LiteralVal) -> &'static str {
         LiteralVal::Int(_) => "Int",
         LiteralVal::Float(_) => "Float",
         LiteralVal::ShortStr(_) | LiteralVal::String(_) => "String",
-    }
-}
-
-pub(super) fn expr_kind(expr: &Expr) -> &'static str {
-    match expr {
-        Expr::Bin(..) => "Bin",
-        Expr::Unary(..) => "Unary",
-        Expr::Conditional(..) => "Conditional",
-        Expr::And(..) => "And",
-        Expr::Or(..) => "Or",
-        Expr::NullishCoalescing(..) => "NullishCoalescing",
-        Expr::Access(..) => "Access",
-        Expr::OptionalAccess(..) => "OptionalAccess",
-        Expr::Paren(..) => "Paren",
-        Expr::List(..) => "List",
-        Expr::Map(..) => "Map",
-        Expr::StructLiteral { .. } => "StructLiteral",
-        Expr::Var(..) => "Var",
-        Expr::Call(..) => "Call",
-        Expr::CallExpr(..) => "CallExpr",
-        Expr::CallNamed(..) => "CallNamed",
-        Expr::Range { .. } => "Range",
-        Expr::Select { .. } => "Select",
-        Expr::TemplateString(..) => "TemplateString",
-        Expr::Closure { .. } => "Closure",
-        Expr::Block(..) => "Block",
-        Expr::Match { .. } => "Match",
-        Expr::Literal(..) => "LiteralVal",
     }
 }
 

@@ -28,6 +28,8 @@ mod runtime_native {
 #[cfg(test)]
 mod bytes_test;
 #[cfg(test)]
+mod chan_semantics_test;
+#[cfg(test)]
 mod datetime_test;
 #[cfg(test)]
 mod globals_test;
@@ -35,6 +37,10 @@ mod globals_test;
 mod math_test;
 #[cfg(test)]
 mod os_test;
+#[cfg(test)]
+mod select_test;
+#[cfg(test)]
+mod spawn_test;
 #[cfg(test)]
 mod stdlib_modules_test;
 #[cfg(test)]
@@ -55,7 +61,7 @@ use lk_core::{
     },
     vm::{
         NativeArgs, NativeEntry, NativeFunction, NativeRuntime, call_runtime_callable_runtime,
-        call_runtime_value_runtime_with_receiver,
+        call_runtime_value_runtime, call_runtime_value_runtime_with_receiver, copy_runtime_value_same_module,
     },
 };
 pub use lk_stdlib_common::metadata::{
@@ -383,13 +389,19 @@ pub fn register_stdlib_core_globals(registry: &mut ModuleRegistry) {
     register_full_state_builtin!(registry, print => print / NativeEntry::VARIADIC => core.print: Nil);
     register_full_state_builtin!(registry, println => println / NativeEntry::VARIADIC => core.println: Nil);
     register_full_state_builtin!(registry, panic => panic / NativeEntry::VARIADIC => core.panic: Nil);
+    register_full_state_builtin!(registry, error => error / NativeEntry::VARIADIC => core.error: Nil);
+    // `try$call` is the hidden protected-call primitive behind try/catch's
+    // parse-time desugar (`$` names are untokenizable, so user code can't
+    // reach it) — the former user-facing `pcall` global, removed in v2:
+    // try/catch is the only error-handling surface.
+    register_runtime_builtin_full_state(registry, "try$call", pcall, NativeEntry::VARIADIC, None);
     register_full_state_builtin!(registry, assert => assert / NativeEntry::VARIADIC => core.assert: Nil);
     register_full_state_builtin!(registry, assert_eq => assert_eq / NativeEntry::VARIADIC => core.assert_eq: Nil);
     register_full_state_builtin!(registry, assert_ne => assert_ne / NativeEntry::VARIADIC => core.assert_ne: Nil);
 }
 
 pub fn register_stdlib_concurrency_globals(registry: &mut ModuleRegistry) {
-    register_plain_builtin!(registry, spawn => spawn / 1);
+    register_full_state_builtin!(registry, spawn => spawn / 1 => core.spawn: RuntimeValue);
     register_plain_builtin!(registry, chan => chan / NativeEntry::VARIADIC => core.chan: RuntimeValue);
     register_plain_builtin!(registry, send => send / 2 => core.send: Nil);
     register_plain_builtin!(registry, recv => recv / 1 => core.recv: RuntimeValue);
@@ -450,6 +462,105 @@ fn panic(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Runtim
     panic!("{}", msg);
 }
 
+/// `error(value...)` — raise a recoverable error. Unlike `panic`, it propagates
+/// as a catchable error (caught by `pcall`) rather than aborting; uncaught, it
+/// fails the program. A single non-heap value (Int/Float/Bool/ShortStr/Nil) is
+/// carried first-class so `pcall` returns it as-is (M2.2, primitives); otherwise
+/// a stringified message is raised (heap-object first-class values need GC
+/// rooting across unwinding — deferred).
+fn error(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+    if let [value] = args.as_slice() {
+        let value = *value;
+        // Capture the display up-front: an uncaught heap error can't be rendered
+        // later (the heap is gone once execution unwinds out) (plan M2.2).
+        let rendered = join_runtime_display(args.as_slice(), runtime)?;
+        // A heap object must be pinned as a GC root so it survives collection at
+        // the native-call safepoints hit while the error unwinds to its `pcall`
+        // (plan M2.2). Primitives are Copy and need no pinning. If full VM state
+        // is unavailable we can't pin, so fall back to a stringified message.
+        let carry_first_class = if matches!(value, RuntimeVal::Obj(_)) {
+            match runtime.state_ctx_module_mut() {
+                Some((state, _, _)) => {
+                    state.set_pending_raise_root(Some(value));
+                    true
+                }
+                None => false,
+            }
+        } else {
+            true
+        };
+        if carry_first_class {
+            return Err(anyhow!(lk_core::vm::LkRaisedValue {
+                value,
+                rendered: Arc::<str>::from(rendered.as_str()),
+            }));
+        }
+        return Err(anyhow!("{rendered}"));
+    }
+    let msg = if args.is_empty() {
+        "error".to_string()
+    } else {
+        join_runtime_display(args.as_slice(), runtime)?
+    };
+    Err(anyhow!("{msg}"))
+}
+
+/// `pcall(f, args...) -> [ok, result_or_error]` — a protected call. Invokes `f`
+/// with `args`; on success returns `[true, result]`, on any raised error returns
+/// `[false, message]` instead of propagating. This is the recoverable-error
+/// primitive (plan M2.1); it catches both `error(...)` and other runtime errors.
+fn pcall(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+    let values = args.as_slice();
+    let Some((&callee, call_args)) = values.split_first() else {
+        return Err(anyhow!("pcall expects at least 1 argument: the function to call"));
+    };
+    let call_args = call_args.to_vec();
+    let outcome = {
+        let Some((state, ctx, module)) = runtime.state_ctx_module_mut() else {
+            return Err(anyhow!("pcall requires full VM state"));
+        };
+        call_runtime_value_runtime(callee, &call_args, state, module, ctx)
+    };
+    if outcome.is_err()
+        && let Some((state, ctx, _)) = runtime.state_ctx_module_mut()
+    {
+        // The error is caught here: release the GC-root pin on any first-class
+        // heap error value now that it's about to be handed back (plan M2.2).
+        // The value stays valid — the following `pcall` allocations use the raw
+        // heap (no collection) — but it no longer needs to survive as a stray
+        // root once execution resumes normally.
+        state.set_pending_raise_root(None);
+        // Discard the traceback frames the errored call accumulated — a later
+        // uncaught error should report a clean call stack (plan M2.2). try/catch
+        // desugars to pcall, so this also covers caught language errors.
+        if let Some(ctx) = ctx {
+            ctx.truncate_call_stack(0);
+        }
+    }
+    let (ok, value) = match outcome {
+        Ok(result) => (true, result),
+        Err(err) => {
+            // The call machinery wraps errors with context, so inspect the
+            // deepest cause. A first-class primitive error value round-trips as
+            // itself (M2.2); otherwise the message string is returned.
+            let root = err.root_cause();
+            if let Some(raised) = root.downcast_ref::<lk_core::vm::LkRaisedValue>() {
+                (false, raised.value)
+            } else {
+                let message = root.to_string();
+                let handle = runtime
+                    .heap_mut()
+                    .alloc(HeapValue::String(Arc::<str>::from(message.as_str())));
+                (false, RuntimeVal::Obj(handle))
+            }
+        }
+    };
+    let list = runtime
+        .heap_mut()
+        .alloc(HeapValue::List(TypedList::Mixed(vec![RuntimeVal::Bool(ok), value])));
+    Ok(RuntimeVal::Obj(list))
+}
+
 fn assert(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_assert_args(args, 1, 2, "assert")?;
     let values = args.as_slice();
@@ -461,7 +572,7 @@ fn assert(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Runti
     } else {
         "assertion failed".to_string()
     };
-    panic_runtime_message(message);
+    Err(anyhow!("{message}"))
 }
 
 fn assert_eq(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
@@ -477,7 +588,7 @@ fn assert_eq(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Ru
         message.push_str(" - ");
         message.push_str(&runtime_display(extra, runtime)?);
     }
-    panic_runtime_message(message);
+    Err(anyhow!("{message}"))
 }
 
 fn assert_ne(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
@@ -491,7 +602,7 @@ fn assert_ne(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Ru
         message.push_str(" - ");
         message.push_str(&runtime_display(extra, runtime)?);
     }
-    panic_runtime_message(message);
+    Err(anyhow!("{message}"))
 }
 
 fn expect_assert_args(args: NativeArgs<'_>, min: usize, max: usize, name: &str) -> Result<()> {
@@ -512,16 +623,16 @@ fn assert_truthy(value: &RuntimeVal) -> bool {
     !matches!(value, RuntimeVal::Nil | RuntimeVal::Bool(false))
 }
 
-fn panic_runtime_message(mut message: String) -> ! {
-    let bt = std::backtrace::Backtrace::force_capture();
-    message.push_str("\nBacktrace:\n");
-    message.push_str(&format!("{}", bt));
-    panic!("{}", message);
-}
-
+/// `spawn(f) -> Task` — run `f` as a goroutine: true parallelism on the
+/// tokio runtime, isolate semantics. A plain closure is snapshotted at spawn
+/// time — its captures and the current globals are deep-copied into the
+/// task's own private heap (same-module structural copy, so closures nested
+/// in captures/globals stay callable). Mutations inside the goroutine never
+/// leak back; communicate through channels.
 fn spawn(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_runtime_arity(args, 1, "spawn")?;
-    let function = runtime_callable_arg(args.get(0).expect("arity checked"), runtime, "spawn argument")?;
+    let callee = *args.get(0).expect("arity checked");
+    let function = spawnable_callable(callee, runtime, "spawn argument")?;
     let mut ctx = runtime
         .ctx()
         .map(lk_core::vm::VmContext::shallow_clone_shared_runtime)
@@ -534,8 +645,10 @@ fn spawn(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Runtim
             Ok(RuntimePayload::new(result, heap))
         });
 
-    let task_id =
-        rt::with_runtime(|runtime| runtime.spawn(fut)).map_err(|error| anyhow!("Failed to spawn task: {}", error))?;
+    let task_id = runtime
+        .async_runtime()
+        .with(|runtime| runtime.spawn(fut))
+        .map_err(|error| anyhow!("Failed to spawn task: {}", error))?;
     Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::Task(Arc::new(
         TaskValue {
             id: task_id,
@@ -571,7 +684,9 @@ fn chan(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Runtime
         val::Type::Nil
     };
     let cap_opt = if capacity <= 0 { None } else { Some(capacity as usize) };
-    let channel_id = rt::with_runtime(|runtime| runtime.create_channel(cap_opt))
+    let channel_id = runtime
+        .async_runtime()
+        .with(|runtime| runtime.create_channel(cap_opt))
         .map_err(|error| anyhow!("Failed to create channel: {}", error))?;
     Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::Channel(Arc::new(
         ChannelValue {
@@ -582,16 +697,28 @@ fn chan(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Runtime
     )))))
 }
 
+/// `send(c, v)` — blocking send. Returns Nil on delivery; raises a
+/// catchable error once the channel is closed (v2 error model: failures
+/// raise, they don't return status values — Go's panic-on-closed-send).
 fn send(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_runtime_arity(args, 2, "send")?;
     let values = args.as_slice();
     let channel_id = channel_id_arg(&values[0], runtime.heap(), "send first argument")?;
     let value = RuntimePayload::copy_from_value(&values[1], runtime.heap())?;
-    let sent = rt::with_runtime(|runtime| runtime.block_on(runtime.send_async(channel_id, value)))
+    let sent = runtime
+        .async_runtime()
+        .with(|runtime| runtime.block_on(runtime.send_async(channel_id, value)))
         .map_err(|error| anyhow!("Send operation failed: {}", error))?;
-    Ok(RuntimeVal::Bool(sent))
+    if !sent {
+        return Err(anyhow!("send on closed channel"));
+    }
+    Ok(RuntimeVal::Nil)
 }
 
+/// `recv(c)` — blocking receive. Returns the value; raises a catchable
+/// error once the channel is closed and drained (v2 error model: no
+/// `[ok, value]` pairs — consume-until-closed loops wrap the loop in
+/// try/catch, or poll `chan.is_closed`/`chan.try_recv`).
 fn recv(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_runtime_arity(args, 1, "recv")?;
     let channel_id = channel_id_arg(
@@ -599,22 +726,33 @@ fn recv(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Runtime
         runtime.heap(),
         "recv first argument",
     )?;
-    let (ok, value) = rt::with_runtime(|runtime| runtime.block_on(runtime.recv_async(channel_id)))
+    let (ok, value) = runtime
+        .async_runtime()
+        .with(|runtime| runtime.block_on(runtime.recv_async(channel_id)))
         .map_err(|error| anyhow!("Receive operation failed: {}", error))?;
-    let value = value.into_value(runtime.heap_mut())?;
-    runtime_list(vec![RuntimeVal::Bool(ok), value], runtime.heap_mut())
+    if !ok {
+        return Err(anyhow!("receive on closed channel"));
+    }
+    value.into_value(runtime.heap_mut())
 }
 
+/// Non-blocking send: `true` delivered, `false` full (not an error);
+/// closed → raises.
 fn chan_try_send(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_runtime_arity(args, 2, "chan::try_send")?;
     let values = args.as_slice();
     let channel_id = channel_id_arg(&values[0], runtime.heap(), "chan::try_send first argument")?;
     let value = RuntimePayload::copy_from_value(&values[1], runtime.heap())?;
-    let sent = rt::with_runtime(|runtime| runtime.try_send(channel_id, value))
+    let sent = runtime
+        .async_runtime()
+        .with(|runtime| runtime.try_send(channel_id, value))
         .map_err(|error| anyhow!("Failed to send to channel: {}", error))?;
     Ok(RuntimeVal::Bool(sent))
 }
 
+/// Non-blocking receive: the value when one is ready, `nil` when the
+/// channel is empty (pairs with postfix `!` to assert), raises once the
+/// channel is closed.
 fn chan_try_recv(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_runtime_arity(args, 1, "chan::try_recv")?;
     let channel_id = channel_id_arg(
@@ -622,11 +760,11 @@ fn chan_try_recv(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Resul
         runtime.heap(),
         "chan::try_recv first argument",
     )?;
-    let payload = match rt::with_runtime(|runtime| runtime.try_recv(channel_id))? {
-        Some((ok, value)) => vec![RuntimeVal::Bool(ok), value.into_value(runtime.heap_mut())?],
-        None => vec![RuntimeVal::Bool(false), RuntimeVal::Nil],
-    };
-    runtime_list(payload, runtime.heap_mut())
+    match runtime.async_runtime().with(|runtime| runtime.try_recv(channel_id))? {
+        Some((true, value)) => value.into_value(runtime.heap_mut()),
+        Some((false, _)) => Err(anyhow!("receive on closed channel")),
+        None => Ok(RuntimeVal::Nil),
+    }
 }
 
 fn select_block(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
@@ -671,7 +809,9 @@ fn select_block(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result
         }
     }
 
-    let result = rt::with_runtime(|runtime| runtime.block_on(select.execute(runtime, has_default)))?;
+    let result = runtime
+        .async_runtime()
+        .with(|runtime| runtime.block_on(select.execute(runtime, has_default)))?;
     if result.is_default {
         return runtime_list(
             vec![RuntimeVal::Bool(true), RuntimeVal::Int(-1), RuntimeVal::Nil],
@@ -1001,25 +1141,64 @@ fn runtime_string_maybe(value: &RuntimeVal, heap: &HeapStore) -> Result<Option<A
     }
 }
 
-fn runtime_callable_arg(
-    value: &RuntimeVal,
-    runtime: &NativeRuntime<'_>,
+/// Resolve a spawn target to a self-contained `RuntimeCallable`. A
+/// `CallableValue::Runtime` already carries its module + state; a plain
+/// `Closure` gets promoted here by snapshotting: `Arc::new(module.clone())`
+/// plus a same-module deep copy of its captures *and* the current globals
+/// (top-level `fn`s live there as closure values — without them the
+/// goroutine couldn't call named functions) into a fresh private
+/// `RuntimeModuleState`.
+fn spawnable_callable(
+    value: RuntimeVal,
+    runtime: &mut NativeRuntime<'_>,
     context: &str,
 ) -> Result<Arc<lk_core::vm::RuntimeCallable>> {
     let RuntimeVal::Obj(handle) = value else {
-        return Err(anyhow!("{context} must be a runtime callable"));
+        return Err(anyhow!("{context} must be a function"));
     };
-    let callable = runtime
+    let closure_parts = match runtime
         .heap()
-        .get(*handle)
-        .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?;
-    match callable {
-        HeapValue::Callable(CallableValue::Runtime(function)) => Ok(Arc::clone(function)),
-        HeapValue::Callable(CallableValue::Closure { .. }) => {
-            Err(anyhow!("{context} closure requires active RuntimeModuleState"))
-        }
-        _ => Err(anyhow!("{context} must be a runtime callable")),
+        .get(handle)
+        .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
+    {
+        HeapValue::Callable(CallableValue::Runtime(function)) => return Ok(Arc::clone(function)),
+        HeapValue::Callable(CallableValue::Closure {
+            function_index,
+            captures,
+        }) => (*function_index, Arc::clone(captures)),
+        _ => return Err(anyhow!("{context} must be a function")),
+    };
+    let (function_index, captures) = closure_parts;
+    // The main execution path already runs the module behind an Arc
+    // (`run_shared_module_with_globals_and_heap_and_ctx`), which native calls
+    // carry as `shared_module` — reuse it instead of deep-cloning the whole
+    // Module per spawn. The clone remains only as a fallback for bare
+    // `&Module` re-entry paths.
+    let shared_module = runtime.shared_module();
+    let Some((state, _, module)) = runtime.state_ctx_module_mut() else {
+        return Err(anyhow!("{context}: spawning a closure requires full VM state"));
+    };
+    let Some(module) = module else {
+        return Err(anyhow!("{context}: spawning a closure requires module execution"));
+    };
+
+    let mut task_heap = HeapStore::new();
+    let mut copied_captures = Vec::with_capacity(captures.len());
+    for value in captures.iter() {
+        copied_captures.push(copy_runtime_value_same_module(value, state.heap(), &mut task_heap)?);
     }
+    let mut copied_globals = Vec::with_capacity(state.globals().len());
+    for value in state.globals() {
+        copied_globals.push(copy_runtime_value_same_module(value, state.heap(), &mut task_heap)?);
+    }
+    let snapshot = lk_core::vm::RuntimeModuleState::new(task_heap, copied_globals);
+    let module = shared_module.unwrap_or_else(|| Arc::new(module.clone()));
+    Ok(Arc::new(lk_core::vm::RuntimeCallable::with_state(
+        module,
+        function_index,
+        Arc::new(copied_captures),
+        Arc::new(lk_core::compat::sync::Mutex::new(snapshot)),
+    )))
 }
 
 fn channel_id_arg(value: &RuntimeVal, heap: &HeapStore, context: &str) -> Result<u64> {
@@ -1219,8 +1398,9 @@ mod runtime_registration_tests {
 
     #[test]
     fn select_block_reads_typed_control_lists_without_materializing_inactive_values() -> Result<()> {
+        let mut ctx = lk_core::vm::VmContext::new_without_core_vm_builtins();
         let mut state = RuntimeModuleState::default();
-        let channel_id = rt::with_runtime(|runtime| runtime.create_channel(Some(1)))?;
+        let channel_id = ctx.async_runtime().with(|runtime| runtime.create_channel(Some(1)))?;
         let channel = RuntimeVal::Obj(state.heap_mut().alloc(HeapValue::Channel(Arc::new(ChannelValue {
             id: channel_id,
             capacity: Some(1),
@@ -1238,7 +1418,7 @@ mod runtime_registration_tests {
             );
         let guards = RuntimeVal::Obj(state.heap_mut().alloc(HeapValue::List(TypedList::Bool(vec![false]))));
         let args = [types, channels, values, guards, RuntimeVal::Bool(true)];
-        let mut runtime = NativeRuntime::new(&mut state, None, None);
+        let mut runtime = NativeRuntime::new(&mut state, Some(&mut ctx), None);
 
         let result = select_block(NativeArgs::new(&args), &mut runtime)?;
 

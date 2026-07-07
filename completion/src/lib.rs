@@ -1182,7 +1182,7 @@ fn method_candidates(receiver_type: Option<ReceiverType>) -> Vec<(&'static str, 
 
 const KEYWORDS: &[&str] = &[
     "if", "else", "while", "for", "let", "const", "fn", "return", "break", "continue", "use", "from", "as", "match",
-    "case", "default", "true", "false", "nil", "select", "struct", "trait", "impl", "type",
+    "case", "default", "true", "false", "nil", "select", "struct", "trait", "impl", "type", "go", "try", "catch",
 ];
 
 const OPERATORS: &[&str] = &["==", "!=", "<=", ">=", "&&", "||", "in", "<-", "??", "..", "..="];

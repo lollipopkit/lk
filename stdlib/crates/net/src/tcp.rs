@@ -1,6 +1,6 @@
 use anyhow::{Result, anyhow, bail};
 use lk_core::{
-    rt::{self, RuntimePayload},
+    rt::RuntimePayload,
     val::{HeapStore, ResourceHandle, RuntimeVal},
     vm::{NativeArgs, NativeRuntime},
 };
@@ -180,7 +180,10 @@ fn spawn_task(
     runtime: &mut NativeRuntime<'_>,
     future: impl std::future::Future<Output = Result<RuntimePayload>> + Send + 'static,
 ) -> Result<RuntimeVal> {
-    let task_id = rt::with_runtime(|rt| rt.spawn(future)).map_err(|err| anyhow!("failed to spawn task: {err}"))?;
+    let task_id = runtime
+        .async_runtime()
+        .with(|rt| rt.spawn(future))
+        .map_err(|err| anyhow!("failed to spawn task: {err}"))?;
     Ok(task_value(task_id, runtime.heap_mut()))
 }
 

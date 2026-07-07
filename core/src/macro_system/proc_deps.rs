@@ -1,13 +1,18 @@
 use super::procedural::ProcMacroDependency;
+use crate::compat::collections::{HashMap, HashSet};
+#[cfg(feature = "std")]
+use crate::compat::path::Path;
+use crate::compat::path::PathBuf;
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
+use alloc::rc::Rc;
+use core::cell::RefCell;
+use core::hash;
 use serde::{Deserialize, Serialize};
-use std::{
-    cell::RefCell,
-    collections::{HashMap, HashSet},
-    fs, hash, io,
-    path::{Path, PathBuf},
-    rc::Rc,
-    time::UNIX_EPOCH,
-};
+// Filesystem/time — only the (std-only) dependency-fingerprinting paths use
+// these; proc-macro deps can't be fingerprinted without a filesystem (M0.7/8).
+#[cfg(feature = "std")]
+use std::{fs, io, time::UNIX_EPOCH};
 
 #[derive(Debug, Clone, Default)]
 pub struct ProcMacroDependencyRecorder {
@@ -37,6 +42,7 @@ pub struct ProcMacroDependencyFingerprint {
 }
 
 impl ProcMacroDependencyFingerprint {
+    #[cfg(feature = "std")]
     pub fn is_current(&self, dependencies: &[ProcMacroDependency], base_dir: Option<&Path>) -> bool {
         self == &fingerprint_proc_macro_dependencies(dependencies, base_dir)
     }
@@ -88,6 +94,7 @@ where
         self.dependents.clear();
     }
 
+    #[cfg(feature = "std")]
     pub fn insert(&mut self, dependent: T, dependencies: &[ProcMacroDependency], base_dir: &Path) {
         self.remove_dependent(&dependent);
         for dependency in dependencies {
@@ -95,6 +102,7 @@ where
         }
     }
 
+    #[cfg(feature = "std")]
     pub fn insert_paths<P>(&mut self, dependent: T, paths: &[P], base_dir: &Path)
     where
         P: AsRef<Path>,
@@ -112,6 +120,7 @@ where
         });
     }
 
+    #[cfg(feature = "std")]
     pub fn take_dependents_for_changed_path(&mut self, changed_path: &Path) -> HashSet<T> {
         let changed = normalize_proc_macro_dependency_path(changed_path);
         let matching_dependencies = self
@@ -131,6 +140,7 @@ where
         self.dependents.is_empty()
     }
 
+    #[cfg(feature = "std")]
     fn insert_dependency_path(&mut self, dependent: T, path: &Path, base_dir: &Path) {
         if let Some(path) = resolve_dependency_path(path, Some(base_dir)) {
             self.dependents.entry(path).or_default().insert(dependent);
@@ -138,6 +148,7 @@ where
     }
 }
 
+#[cfg(feature = "std")]
 pub fn fingerprint_proc_macro_dependencies(
     dependencies: &[ProcMacroDependency],
     base_dir: Option<&Path>,
@@ -149,6 +160,7 @@ pub fn fingerprint_proc_macro_dependencies(
     fingerprint_entries(entries)
 }
 
+#[cfg(feature = "std")]
 pub fn fingerprint_dependency_paths<P>(paths: &[P], base_dir: Option<&Path>) -> ProcMacroDependencyFingerprint
 where
     P: AsRef<Path>,
@@ -181,6 +193,7 @@ fn fingerprint_entries(mut entries: Vec<ProcMacroDependencyFingerprintEntry>) ->
     }
 }
 
+#[cfg(feature = "std")]
 fn fingerprint_entry(
     path: &str,
     digest: Option<String>,
@@ -200,10 +213,12 @@ fn fingerprint_entry(
     }
 }
 
+#[cfg(feature = "std")]
 pub fn resolve_proc_macro_dependency_path(path: &str, base_dir: Option<&Path>) -> Option<PathBuf> {
     resolve_dependency_path(Path::new(path), base_dir)
 }
 
+#[cfg(feature = "std")]
 fn resolve_dependency_path(path: &Path, base_dir: Option<&Path>) -> Option<PathBuf> {
     if path.as_os_str().is_empty() {
         return None;
@@ -218,10 +233,12 @@ fn resolve_dependency_path(path: &Path, base_dir: Option<&Path>) -> Option<PathB
     Some(normalize_proc_macro_dependency_path(&resolved))
 }
 
+#[cfg(feature = "std")]
 pub fn normalize_proc_macro_dependency_path(path: &Path) -> PathBuf {
     path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
 
+#[cfg(feature = "std")]
 fn fingerprint_file_state(path: &Path) -> ProcMacroDependencyFileState {
     let Ok(metadata) = fs::metadata(path) else {
         return ProcMacroDependencyFileState::Missing;
@@ -240,6 +257,7 @@ fn fingerprint_file_state(path: &Path) -> ProcMacroDependencyFileState {
     }
 }
 
+#[cfg(feature = "std")]
 fn dependency_content_hash(path: &Path, metadata: &fs::Metadata) -> Option<String> {
     if metadata.is_dir() {
         return stable_directory_hash_hex(path).ok();
@@ -258,6 +276,7 @@ const MAX_DIRECTORY_DEPTH: u32 = 64;
 // Maximum individual file size to hash; skip hashing (but record length) beyond this.
 const MAX_FILE_READ_BYTES: u64 = 10 * 1024 * 1024; // 10 MiB
 
+#[cfg(feature = "std")]
 fn stable_directory_hash_hex(path: &Path) -> io::Result<String> {
     let mut hash = StableHash64::new();
     hash.str("dir");
@@ -265,6 +284,7 @@ fn stable_directory_hash_hex(path: &Path) -> io::Result<String> {
     Ok(format!("{:016x}", hash.finish()))
 }
 
+#[cfg(feature = "std")]
 fn hash_directory(hash: &mut StableHash64, dir: &Path, relative_dir: &Path, depth: u32) -> io::Result<()> {
     if depth > MAX_DIRECTORY_DEPTH {
         return Err(io::Error::other(format!(
@@ -314,6 +334,7 @@ fn hash_directory(hash: &mut StableHash64, dir: &Path, relative_dir: &Path, dept
     Ok(())
 }
 
+#[cfg(feature = "std")]
 fn display_path(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }

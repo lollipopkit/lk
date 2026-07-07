@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 
 #[test]
 fn external_attribute_provider_replaces_item() {
@@ -352,18 +354,9 @@ fn external_attribute_records_remaining_generated_expression_shape_origins() {
         "expr call_arg",
         "expr call_named",
         "expr named_arg_value",
-        "expr select",
         "expr var",
         "expr match_value",
         "expr match_arm_body",
-        "select recv",
-        "select recv_channel",
-        "select send",
-        "select send_channel",
-        "select send_value",
-        "select guard",
-        "select body",
-        "select default",
         "named_arg current",
         "struct_field id",
         "type_ref User",

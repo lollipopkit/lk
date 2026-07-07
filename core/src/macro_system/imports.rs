@@ -1,7 +1,9 @@
-use std::path::{Component, Path, PathBuf};
-
+use crate::compat::path::{Path, PathBuf};
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
+#[cfg(feature = "std")]
+use crate::package::PackageGraph;
 use crate::{
-    package::PackageGraph,
     token::{ParseError, Token, Tokenizer},
     util::fast_map::FastHashMap,
 };
@@ -233,28 +235,49 @@ fn load_imported_macros(
 ) -> Result<LoadedMacroModule, ParseError> {
     match &spec.source {
         MacroImportSource::File(path) => {
-            let Some(base_dir) = base_dir else {
-                return Ok(LoadedMacroModule::default());
-            };
-            let resolved = resolve_macro_import_path(base_dir, path)
-                .map_err(|message| error_at(tokens, spec.span_index, &message))?;
-            load_macro_file(&resolved, loading)
+            // File-based macro imports require the filesystem, which is gated out
+            // of the no_std VM-core surface (plan M0.7/8).
+            #[cfg(feature = "std")]
+            {
+                let Some(base_dir) = base_dir else {
+                    return Ok(LoadedMacroModule::default());
+                };
+                let resolved = resolve_macro_import_path(base_dir, path)
+                    .map_err(|message| error_at(tokens, spec.span_index, &message))?;
+                load_macro_file(&resolved, loading)
+            }
+            #[cfg(not(feature = "std"))]
+            {
+                let _ = (base_dir, path, tokens, &mut *loading);
+                Ok(LoadedMacroModule::default())
+            }
         }
         MacroImportSource::Module(name) => {
             if let Some(macros) = load_builtin_macro_module(name, loading)? {
                 return Ok(macros);
             }
-            let Some(base_dir) = base_dir else {
-                return Ok(LoadedMacroModule::default());
-            };
-            let Some(resolved) = resolve_package_macro_module(base_dir, name, tokens, spec.span_index)? else {
-                return Ok(LoadedMacroModule::default());
-            };
-            load_macro_file(&resolved, loading)
+            // Package-based macro imports need the `package` manager and the
+            // filesystem, both gated out of the no_std VM-core surface (M0.7/8).
+            #[cfg(feature = "std")]
+            {
+                let Some(base_dir) = base_dir else {
+                    return Ok(LoadedMacroModule::default());
+                };
+                let Some(resolved) = resolve_package_macro_module(base_dir, name, tokens, spec.span_index)? else {
+                    return Ok(LoadedMacroModule::default());
+                };
+                load_macro_file(&resolved, loading)
+            }
+            #[cfg(not(feature = "std"))]
+            {
+                let _ = (base_dir, name, tokens, &mut *loading);
+                Ok(LoadedMacroModule::default())
+            }
         }
     }
 }
 
+#[cfg(feature = "std")]
 fn load_macro_file(path: &Path, loading: &mut Vec<PathBuf>) -> Result<LoadedMacroModule, ParseError> {
     let canonical = path.canonicalize();
     let path = match &canonical {
@@ -278,6 +301,7 @@ fn load_macro_file(path: &Path, loading: &mut Vec<PathBuf>) -> Result<LoadedMacr
     result
 }
 
+#[cfg(feature = "std")]
 fn load_macro_file_inner(path: &Path, loading: &mut Vec<PathBuf>) -> Result<LoadedMacroModule, ParseError> {
     let source = std::fs::read_to_string(path)
         .map_err(|error| ParseError::new(format!("Failed to read macro import '{}': {error}", path.display())))?;
@@ -290,9 +314,15 @@ fn load_builtin_macro_module(name: &str, loading: &mut Vec<PathBuf>) -> Result<O
     if !is_builtin_macro_module(name) {
         return Ok(None);
     }
+    // The builtin macro source has no file imports, so `base_dir` is unused; it
+    // is a real `Path` under std and a plain `&str` under no_std (compat `Path`).
+    #[cfg(feature = "std")]
+    let base_dir = Path::new(".");
+    #[cfg(not(feature = "std"))]
+    let base_dir = ".";
     Ok(Some(load_macro_source(
         BUILTIN_MACRO_SOURCE,
-        Path::new("."),
+        base_dir,
         loading,
         macro_crate_anchor_for_label(BUILTIN_MACRO_MODULE),
     )?))
@@ -623,10 +653,18 @@ fn parse_named_macro_import_items(
 }
 
 fn default_namespace_alias(raw: &str) -> Option<String> {
+    #[cfg(feature = "std")]
     let stem = Path::new(raw).file_stem()?.to_str()?;
+    // no_std has no `Path`; take the final path segment minus its extension.
+    #[cfg(not(feature = "std"))]
+    let stem = {
+        let name = raw.rsplit(['/', '\\']).next().unwrap_or(raw);
+        name.rsplit_once('.').map(|(head, _)| head).unwrap_or(name)
+    };
     if stem.is_empty() { None } else { Some(stem.to_string()) }
 }
 
+#[cfg(feature = "std")]
 fn resolve_package_macro_module(
     base_dir: &Path,
     name: &str,
@@ -661,6 +699,7 @@ fn use_statement_end(tokens: &[SourceToken], mut index: usize) -> usize {
     index
 }
 
+#[cfg(feature = "std")]
 fn resolve_macro_import_path(base_dir: &Path, raw: &str) -> Result<PathBuf, String> {
     let path = Path::new(raw);
     if !path.is_relative() {
@@ -669,15 +708,11 @@ fn resolve_macro_import_path(base_dir: &Path, raw: &str) -> Result<PathBuf, Stri
             path.display()
         ));
     }
-    if path
-        .components()
-        .any(|component| matches!(component, Component::ParentDir))
-    {
-        return Err(format!(
-            "Parent directory components are not allowed for macro imports: {}",
-            path.display()
-        ));
-    }
+    // Parent components are allowed: every `use "path"` statement passes
+    // through this scan (a file module may export macros), and the runtime
+    // module resolver accepts `use "../general/fib"` — rejecting here would
+    // fail programs the resolver happily loads. Absolute paths stay rejected
+    // (same sandbox intent as the CLI's sanitized-path rule).
     let candidates = if path.extension().and_then(|ext| ext.to_str()) == Some("lk") {
         vec![base_dir.join(path)]
     } else {
@@ -1221,7 +1256,7 @@ return answer!();
         .expect("program should parse with injected runtime anchor import");
         let mut resolver = ModuleResolver::new();
         resolver.set_base_dir(temp.path().to_path_buf());
-        let mut ctx = VmContext::new().with_resolver(std::sync::Arc::new(resolver));
+        let mut ctx = VmContext::new().with_resolver(alloc::sync::Arc::new(resolver));
         let result = program
             .execute_with_ctx(&mut ctx)
             .expect("injected runtime anchor import should execute");
@@ -1259,7 +1294,7 @@ return answer!();
         .expect("program should parse with injected package runtime anchor import");
         let resolver = ModuleResolver::new();
         resolver.register_package_module("util", temp.path().join("deps/util/src/mod.lk"));
-        let mut ctx = VmContext::new().with_resolver(std::sync::Arc::new(resolver));
+        let mut ctx = VmContext::new().with_resolver(alloc::sync::Arc::new(resolver));
         let result = program
             .execute_with_ctx(&mut ctx)
             .expect("injected package runtime anchor import should execute");

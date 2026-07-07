@@ -1,5 +1,7 @@
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 use crate::{
-    expr::{Expr, MatchArm, Pattern, SelectCase, SelectPattern, TemplateStringPart},
+    expr::{Expr, MatchArm, Pattern, TemplateStringPart},
     operator::{BinOp, UnaryOp},
     token::{ParseError, Span, Token, Tokenizer, offset_to_position},
     val::LiteralVal,
@@ -15,11 +17,167 @@ pub struct Parser<'a> {
     len: usize,
     token_spans: Option<&'a [Span]>,
     prefix_mode: bool,
+    /// Monotonic id for parse-time desugars (`select`, postfix `!`), so
+    /// nested instances don't shadow each other's synthesized locals.
+    pub(super) desugar_counter: usize,
 }
 
 struct StructLiteralParts {
     fields: Vec<(String, Box<Expr>)>,
     update_base: Option<Box<Expr>>,
+}
+
+/// Parser-local shape of one parsed `case` arm — consumed immediately by
+/// `desugar_select`, never part of the public AST.
+enum ParsedSelectArm {
+    Recv { binding: Option<String>, channel: Expr },
+    Send { channel: Expr, value: Expr },
+}
+
+struct ParsedSelectCase {
+    arm: ParsedSelectArm,
+    guard: Option<Expr>,
+    body: Expr,
+}
+
+/// Build the desugared AST for a postfix `!` unwrap (see `parse_postfix`).
+fn desugar_unwrap(id: usize, operand: Expr) -> Expr {
+    use crate::stmt::Stmt;
+
+    let name = format!("__unwrap{id}");
+    let binding = Box::new(Stmt::Let {
+        pattern: Pattern::Variable(name.clone()),
+        type_annotation: None,
+        value: Box::new(operand),
+        span: None,
+        is_const: false,
+    });
+    let check = Expr::Conditional(
+        Box::new(Expr::Bin(
+            Box::new(Expr::Var(name.clone())),
+            BinOp::Eq,
+            Box::new(Expr::Literal(LiteralVal::Nil)),
+        )),
+        Box::new(Expr::Call(
+            "error".to_string(),
+            vec![Box::new(Expr::Literal(LiteralVal::from_str("unwrap of nil value")))],
+        )),
+        Box::new(Expr::Var(name)),
+    );
+    Expr::Block(vec![binding, Box::new(Stmt::Expr(Box::new(check)))])
+}
+
+/// Build the desugared AST for a parsed `select` (see `parse_select` for the
+/// full shape and the semantics it pins).
+fn desugar_select(id: usize, cases: Vec<ParsedSelectCase>, default_case: Option<Expr>) -> Expr {
+    use crate::stmt::Stmt;
+
+    fn let_stmt(name: String, value: Expr) -> Box<Stmt> {
+        Box::new(Stmt::Let {
+            pattern: Pattern::Variable(name),
+            type_annotation: None,
+            value: Box::new(value),
+            span: None,
+            is_const: false,
+        })
+    }
+    fn int_lit(value: i64) -> Expr {
+        Expr::Literal(LiteralVal::Int(value))
+    }
+    fn bool_lit(value: bool) -> Expr {
+        Expr::Literal(LiteralVal::Bool(value))
+    }
+    fn nil_lit() -> Expr {
+        Expr::Literal(LiteralVal::Nil)
+    }
+    fn index(expr: Expr, at: i64) -> Expr {
+        Expr::Access(Box::new(expr), Box::new(int_lit(at)))
+    }
+
+    let has_default = default_case.is_some();
+    let mut statements: Vec<Box<Stmt>> = Vec::new();
+    let mut types: Vec<Box<Expr>> = Vec::with_capacity(cases.len());
+    let mut channels: Vec<Box<Expr>> = Vec::with_capacity(cases.len());
+    let mut values: Vec<Box<Expr>> = Vec::with_capacity(cases.len());
+    let mut guards: Vec<Box<Expr>> = Vec::with_capacity(cases.len());
+    let mut arms: Vec<(Option<String>, Expr)> = Vec::with_capacity(cases.len());
+
+    // Channel operands, send values, and guards evaluate eagerly, in source
+    // order (Go's rule), into synthesized locals.
+    for (i, case) in cases.into_iter().enumerate() {
+        let channel_name = format!("__select{id}_ch_{i}");
+        let (kind, binding) = match case.arm {
+            ParsedSelectArm::Recv { binding, channel } => {
+                statements.push(let_stmt(channel_name.clone(), channel));
+                values.push(Box::new(nil_lit()));
+                (0, binding)
+            }
+            ParsedSelectArm::Send { channel, value } => {
+                statements.push(let_stmt(channel_name.clone(), channel));
+                let value_name = format!("__select{id}_v_{i}");
+                statements.push(let_stmt(value_name.clone(), value));
+                values.push(Box::new(Expr::Var(value_name)));
+                (1, None)
+            }
+        };
+        let guard_name = format!("__select{id}_g_{i}");
+        // Normalize any truthy guard to a real Bool — `select$block` treats
+        // non-Bool guard entries as disabled.
+        let guard_value = match case.guard {
+            Some(guard) => Expr::Conditional(Box::new(guard), Box::new(bool_lit(true)), Box::new(bool_lit(false))),
+            None => bool_lit(true),
+        };
+        statements.push(let_stmt(guard_name.clone(), guard_value));
+        types.push(Box::new(int_lit(kind)));
+        channels.push(Box::new(Expr::Var(channel_name)));
+        guards.push(Box::new(Expr::Var(guard_name)));
+        arms.push((binding, case.body));
+    }
+
+    let result_name = format!("__select{id}_r");
+    statements.push(let_stmt(
+        result_name.clone(),
+        Expr::Call(
+            "select$block".to_string(),
+            vec![
+                Box::new(Expr::List(types)),
+                Box::new(Expr::List(channels)),
+                Box::new(Expr::List(values)),
+                Box::new(Expr::List(guards)),
+                Box::new(bool_lit(has_default)),
+            ],
+        ),
+    ));
+
+    // Innermost-out conditional chain over the fired arm's index; a recv
+    // binding is a plain let over `r[2][1]` (payload = [ok, value]) scoped to
+    // its own arm block.
+    let mut dispatch = nil_lit();
+    for (i, (binding, body)) in arms.into_iter().enumerate().rev() {
+        let arm_body = match binding {
+            Some(name) => Expr::Block(vec![
+                let_stmt(name, index(index(Expr::Var(result_name.clone()), 2), 1)),
+                Box::new(Stmt::Expr(Box::new(body))),
+            ]),
+            None => body,
+        };
+        dispatch = Expr::Conditional(
+            Box::new(Expr::Bin(
+                Box::new(index(Expr::Var(result_name.clone()), 1)),
+                BinOp::Eq,
+                Box::new(int_lit(i as i64)),
+            )),
+            Box::new(arm_body),
+            Box::new(dispatch),
+        );
+    }
+    let top = Expr::Conditional(
+        Box::new(index(Expr::Var(result_name), 0)),
+        Box::new(default_case.unwrap_or_else(nil_lit)),
+        Box::new(dispatch),
+    );
+    statements.push(Box::new(Stmt::Expr(Box::new(top))));
+    Expr::Block(statements)
 }
 
 impl<'a> Parser<'a> {
@@ -51,7 +209,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse with enhanced error information that includes position
-    pub fn parse_with_enhanced_errors(&mut self, input: &str) -> std::result::Result<Expr, ParseError> {
+    pub fn parse_with_enhanced_errors(&mut self, input: &str) -> core::result::Result<Expr, ParseError> {
         if self.eof() {
             return Ok(Expr::Literal(LiteralVal::Nil));
         }
@@ -493,6 +651,26 @@ impl<'a> Parser<'a> {
 
                 // Build bracket Access
                 expr = Expr::Access(Box::new(expr), index_expr);
+            } else if !self.eof()
+                && self.tokens[self.pos] == Token::Not
+                && !matches!(
+                    self.tokens.get(self.pos + 1),
+                    Some(Token::LParen | Token::LBracket | Token::LBrace)
+                )
+            {
+                // Postfix `!` — Swift-style force unwrap, parse-time sugar:
+                // `expr!` ⇒ `{ let __unwrap{n} = expr;
+                //              __unwrap{n} == nil ? error("unwrap of nil value")
+                //                                 : __unwrap{n} }`
+                // Raises a catchable error on nil, evaluates to the value
+                // otherwise. Two boundaries: `!` immediately followed by an
+                // open delimiter stays a *macro invocation* (`name!(...)` /
+                // `name![...]` / `name!{...}` — parenthesize as `(x!)(...)`
+                // to call an unwrapped value), and the lexer greedily takes
+                // `!=` as Ne, so `x!== 1` is a parse error — write `x! == 1`.
+                self.pos += 1;
+                self.desugar_counter += 1;
+                expr = desugar_unwrap(self.desugar_counter, expr);
             } else {
                 break; // No more postfix operations
             }
@@ -678,7 +856,37 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Parse select expression: select { case ...; default ... }
+    /// Parse a `select` expression and desugar it at parse time — the same
+    /// treatment `try`/`catch` gets (→ `pcall`): there is no `Expr::Select`
+    /// node. The cases lower onto the `select$block` runtime builtin (whose
+    /// `$` name is untokenizable, so user code can't collide with it) plus
+    /// ordinary let/list/conditional AST, so the resolver, type checker, VM
+    /// compiler, and AOT all handle `select` with zero dedicated code:
+    ///
+    /// ```text
+    /// select { case v <- recv(ch) if g => b0; case send(ch2, x) => b1; default => d }
+    /// ⇓
+    /// {
+    ///     let __select{n}_ch_0 = ch;   let __select{n}_g_0 = g ? true : false;
+    ///     let __select{n}_ch_1 = ch2;  let __select{n}_v_1 = x;  let __select{n}_g_1 = true;
+    ///     let __select{n}_r = select$block([0, 1], [ch_0, ch_1], [nil, v_1], [g_0, g_1], true);
+    ///     __select{n}_r[0] ? d
+    ///         : __select{n}_r[1] == 0 ? { let v = __select{n}_r[2][1]; b0 }
+    ///         : __select{n}_r[1] == 1 ? b1
+    ///         : nil
+    /// }
+    /// ```
+    ///
+    /// Semantics pinned by this shape: channel operands, send values, and
+    /// guards evaluate eagerly in source order (like Go); guards normalize to
+    /// Bool via the conditional (any truthy value enables the arm) and are
+    /// evaluated *outside* the recv binding's scope (the binding doesn't
+    /// exist until an arm is chosen); a recv binding gets the received
+    /// *value* (`nil` once the channel is closed — the Go zero-value
+    /// analogue); with no `default` and no ready arm the call blocks the
+    /// thread, and with no arms *and* no default it evaluates to `nil`.
+    /// `{n}` is a per-parser counter so nested selects don't shadow each
+    /// other's synthesized locals.
     fn parse_select(&mut self) -> Result<Expr> {
         if self.tokens[self.pos] != Token::Select {
             let msg = format!("Expecting 'select', found {:?}", self.tokens[self.pos]);
@@ -719,7 +927,7 @@ impl<'a> Parser<'a> {
                         self.pos += 1;
                     }
 
-                    default_case = Some(Box::new(expr));
+                    default_case = Some(expr);
                 }
                 Token::Semicolon => {
                     self.pos += 1; // Skip semicolons between cases
@@ -736,7 +944,8 @@ impl<'a> Parser<'a> {
         }
         self.pos += 1;
 
-        Ok(Expr::Select { cases, default_case })
+        self.desugar_counter += 1;
+        Ok(desugar_select(self.desugar_counter, cases, default_case))
     }
 
     /// Parse match expression: match value { pattern => expr, ... }
@@ -1049,7 +1258,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse a select case: case pattern [if guard] => expr;
-    fn parse_select_case(&mut self) -> Result<SelectCase> {
+    fn parse_select_case(&mut self) -> Result<ParsedSelectCase> {
         // Parse optional binding for recv pattern (identifier <- ...)
         if self.eof() {
             return Err(anyhow!(self.err("Expecting pattern after 'case'")));
@@ -1071,7 +1280,7 @@ impl<'a> Parser<'a> {
         }
 
         // Parse pattern
-        let pattern = if matches!(&self.tokens[self.pos], Token::Id(name) if name == "recv") {
+        let arm = if matches!(&self.tokens[self.pos], Token::Id(name) if name == "recv") {
             let binding_value = binding;
             self.pos += 1;
             if self.eof() || self.tokens[self.pos] != Token::LParen {
@@ -1086,9 +1295,9 @@ impl<'a> Parser<'a> {
             }
             self.pos += 1;
 
-            SelectPattern::Recv {
+            ParsedSelectArm::Recv {
                 binding: binding_value,
-                channel: Box::new(channel),
+                channel,
             }
         } else if matches!(&self.tokens[self.pos], Token::Id(name) if name == "send") {
             if binding.is_some() {
@@ -1114,10 +1323,7 @@ impl<'a> Parser<'a> {
             }
             self.pos += 1;
 
-            SelectPattern::Send {
-                channel: Box::new(channel),
-                value: Box::new(value),
-            }
+            ParsedSelectArm::Send { channel, value }
         } else {
             let msg = format!("Unexpected pattern token: {:?}", self.tokens[self.pos]);
             return Err(anyhow!(self.err(&msg)));
@@ -1130,7 +1336,7 @@ impl<'a> Parser<'a> {
                 return Err(anyhow!(self.err("Expecting guard expression after 'if'")));
             }
             let g = self.parse_expr()?;
-            Some(Box::new(g))
+            Some(g)
         } else {
             None
         };
@@ -1152,11 +1358,7 @@ impl<'a> Parser<'a> {
             self.pos += 1;
         }
 
-        Ok(SelectCase {
-            pattern,
-            guard,
-            body: Box::new(body),
-        })
+        Ok(ParsedSelectCase { arm, guard, body })
     }
 
     /// Parse template string content from a TemplateString token
@@ -1207,7 +1409,7 @@ impl<'a> Parser<'a> {
                 i += 2;
 
                 if !current_literal.is_empty() {
-                    parts.push(TemplateStringPart::Literal(std::mem::take(&mut current_literal)));
+                    parts.push(TemplateStringPart::Literal(core::mem::take(&mut current_literal)));
                 }
 
                 in_expr = true;
@@ -1290,7 +1492,7 @@ impl<'a> Parser<'a> {
             if self.tokens[self.pos] == Token::Range {
                 saw_spread = true;
                 if !elements.is_empty() {
-                    segments.push(Expr::List(std::mem::take(&mut elements)));
+                    segments.push(Expr::List(core::mem::take(&mut elements)));
                 }
                 self.pos += 1;
                 if self.eof() || !self.is_valid_expr_start() {

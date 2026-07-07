@@ -1,3 +1,5 @@
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 use anyhow::{Result, anyhow};
 
 use super::Parser;
@@ -16,6 +18,7 @@ impl<'a> Parser<'a> {
             len,
             token_spans: None,
             prefix_mode: false,
+            desugar_counter: 0,
         }
     }
 
@@ -28,6 +31,7 @@ impl<'a> Parser<'a> {
             len,
             token_spans: Some(spans),
             prefix_mode: false,
+            desugar_counter: 0,
         }
     }
 

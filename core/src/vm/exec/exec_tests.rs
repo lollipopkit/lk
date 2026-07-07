@@ -1,5 +1,6 @@
 use super::*;
-use std::sync::{Arc, Mutex};
+use crate::compat::sync::Mutex;
+use alloc::sync::Arc;
 
 use crate::{
     val::{CallableValue, HeapRef, HeapStore, HeapValue, RuntimeMapKey, RuntimeVal, ShortStr, TypedList, TypedMap},

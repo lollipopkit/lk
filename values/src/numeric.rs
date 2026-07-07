@@ -1,4 +1,7 @@
-use crate::val::Type;
+use alloc::boxed::Box;
+use alloc::vec;
+
+use crate::Type;
 
 /// Coarse-grained numeric hierarchy used by the type system and compiler.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]

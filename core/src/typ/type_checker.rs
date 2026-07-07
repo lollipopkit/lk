@@ -1,10 +1,13 @@
+use crate::compat::collections::HashSet;
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 use crate::{
     expr::Expr,
     typ::{TypeInferenceEngine, TypeRegistry},
     val::{FunctionNamedParamType, Type},
 };
 use anyhow::Result;
-use std::collections::{HashMap, HashSet};
+use hashbrown::HashMap;
 
 mod expressions;
 mod patterns;
@@ -36,8 +39,8 @@ pub struct TypeError {
     pub parameter_name: Option<String>,
 }
 
-impl std::fmt::Display for TypeError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for TypeError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "Type Error: {}", self.message)?;
         if let (Some(expected), Some(actual)) = (&self.expected, &self.actual) {
             write!(f, " (expected {}, got {})", expected.display(), actual.display())?;
@@ -46,7 +49,7 @@ impl std::fmt::Display for TypeError {
     }
 }
 
-impl std::error::Error for TypeError {}
+impl core::error::Error for TypeError {}
 
 /// Type checker for LK expressions
 #[derive(Debug, Clone, PartialEq)]
@@ -169,7 +172,7 @@ impl TypeChecker {
 
     /// Set the active impl `self` type, returning the previous value for restoration.
     pub fn set_impl_self_type(&mut self, ty: Option<Type>) -> Option<Type> {
-        std::mem::replace(&mut self.impl_self_type, ty)
+        core::mem::replace(&mut self.impl_self_type, ty)
     }
 
     fn method_sig_key(&self, receiver: &Type, name: &str) -> (String, String) {
@@ -316,7 +319,7 @@ impl TypeChecker {
     }
 
     pub fn finalize_deferred_strict_function_checks(&mut self) -> Result<()> {
-        let pending = std::mem::take(&mut self.pending_strict_functions);
+        let pending = core::mem::take(&mut self.pending_strict_functions);
         let subs = self.solve_constraints()?;
         self.apply_substitutions_to_environment(&subs);
         self.check_pending_strict_functions(&pending, &subs)

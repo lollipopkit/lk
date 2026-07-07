@@ -1,3 +1,5 @@
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 use crate::{
     stmt::{Stmt, stmt_parser::StmtParser},
     token::{Token, Tokenizer},

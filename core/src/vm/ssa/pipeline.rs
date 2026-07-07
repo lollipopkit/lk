@@ -1,4 +1,6 @@
-use std::sync::Arc;
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
+use alloc::sync::Arc;
 
 use crate::operator::BinOp;
 use crate::vm::alloc::{AllocationRegion, RegionPlan};

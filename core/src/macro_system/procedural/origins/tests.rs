@@ -1,5 +1,7 @@
 use super::*;
-use crate::expr::{MatchArm, SelectCase, SelectPattern};
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
+use crate::expr::MatchArm;
 
 #[test]
 fn generated_type_variable_origin_is_recorded() {
@@ -429,17 +431,6 @@ fn generated_remaining_expression_child_role_origins_are_recorded() {
                 },
             ],
         }))),
-        Box::new(Stmt::Expr(Box::new(Expr::Select {
-            cases: vec![SelectCase {
-                pattern: SelectPattern::Recv {
-                    binding: Some("message".to_string()),
-                    channel: Box::new(Expr::Var("channel".to_string())),
-                },
-                guard: Some(Box::new(Expr::Var("ready".to_string()))),
-                body: Box::new(Expr::Var("message".to_string())),
-            }],
-            default_case: Some(Box::new(Expr::Literal(LiteralVal::Nil))),
-        }))),
     ]);
     let mut origins = Vec::new();
 
@@ -466,7 +457,6 @@ fn generated_remaining_expression_child_role_origins_are_recorded() {
         "binding guarded",
         "ref ready",
         "pattern literal_int",
-        "select body",
     ] {
         assert!(
             labels.contains(&label),

@@ -1,9 +1,11 @@
-use std::collections::{HashMap, HashSet};
+use crate::compat::collections::{HashMap, HashSet};
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 
 use anyhow::Result;
 
 use crate::{
-    expr::{Expr, MatchArm, SelectCase},
+    expr::{Expr, MatchArm},
     stmt::Stmt,
     util::fast_map::FastHashMap,
     val::{LiteralVal, RuntimeMapKey, ShortStr},
@@ -81,14 +83,6 @@ impl Compiler {
             .iter()
             .rev()
             .find_map(|scope| scope.get(&key).copied())
-    }
-
-    pub(super) fn cached_loop_literal_expr(&self, expr: &Expr) -> Option<u16> {
-        match expr {
-            Expr::Paren(inner) => self.cached_loop_literal_expr(inner),
-            Expr::Literal(value) => self.cached_loop_literal(value),
-            _ => None,
-        }
     }
 
     pub(super) fn cached_loop_int_expr_value(&self, expr: &Expr) -> Option<i64> {
@@ -309,14 +303,6 @@ fn collect_expr_scalar_consts(expr: &Expr, keys: &mut Vec<ScalarLoopConstKey>) {
                 collect_expr_scalar_consts(step, keys);
             }
         }
-        Expr::Select { cases, default_case } => {
-            for SelectCase { body, .. } in cases {
-                collect_expr_scalar_consts(body, keys);
-            }
-            if let Some(default_case) = default_case {
-                collect_expr_scalar_consts(default_case, keys);
-            }
-        }
         Expr::Match { value, arms } => {
             collect_expr_scalar_consts(value, keys);
             for MatchArm { body, .. } in arms {
@@ -482,17 +468,6 @@ fn collect_expr_folded_int_consts(expr: &Expr, locals: &HashMap<String, i64>, ke
         Expr::Range { start, end, step, .. } => {
             for expr in [start, end, step].into_iter().flatten() {
                 collect_expr_folded_int_consts(expr, locals, keys);
-            }
-        }
-        Expr::Select { cases, default_case } => {
-            for case in cases {
-                if let Some(guard) = &case.guard {
-                    collect_expr_folded_int_consts(guard, locals, keys);
-                }
-                collect_expr_folded_int_consts(&case.body, locals, keys);
-            }
-            if let Some(default_case) = default_case {
-                collect_expr_folded_int_consts(default_case, locals, keys);
             }
         }
         Expr::Match { value, arms } => {
@@ -697,17 +672,6 @@ fn collect_expr_inline_call_scalar_consts(
                 collect_expr_inline_call_scalar_consts(expr, bodies, visiting, keys);
             }
         }
-        Expr::Select { cases, default_case } => {
-            for SelectCase { guard, body, .. } in cases {
-                if let Some(guard) = guard {
-                    collect_expr_inline_call_scalar_consts(guard, bodies, visiting, keys);
-                }
-                collect_expr_inline_call_scalar_consts(body, bodies, visiting, keys);
-            }
-            if let Some(default_case) = default_case {
-                collect_expr_inline_call_scalar_consts(default_case, bodies, visiting, keys);
-            }
-        }
         Expr::Match { value, arms } => {
             collect_expr_inline_call_scalar_consts(value, bodies, visiting, keys);
             for MatchArm { body, .. } in arms {
@@ -909,17 +873,6 @@ fn collect_expr_const_map_get_scalar_consts(
             collect_expr_const_map_get_scalar_consts(condition, const_maps, keys)?;
             collect_expr_const_map_get_scalar_consts(then_expr, const_maps, keys)?;
             collect_expr_const_map_get_scalar_consts(else_expr, const_maps, keys)?;
-        }
-        Expr::Select { cases, default_case } => {
-            for case in cases {
-                if let Some(guard) = &case.guard {
-                    collect_expr_const_map_get_scalar_consts(guard, const_maps, keys)?;
-                }
-                collect_expr_const_map_get_scalar_consts(&case.body, const_maps, keys)?;
-            }
-            if let Some(default_case) = default_case {
-                collect_expr_const_map_get_scalar_consts(default_case, const_maps, keys)?;
-            }
         }
     }
     Ok(())

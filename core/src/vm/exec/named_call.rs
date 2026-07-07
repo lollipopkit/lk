@@ -1,4 +1,6 @@
-use std::ops::Range;
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
+use core::ops::Range;
 
 use anyhow::{Result, anyhow, bail};
 
@@ -9,7 +11,7 @@ use crate::{
 
 use super::{
     Executor,
-    call::{CallableTarget, callable_target},
+    call::{CallOutcome, CallableTarget, callable_target},
     runtime_callable,
     support::{
         call_native_entry_parts_with_args, call_native_entry_with_args, move_inline_native_args_from_stack,
@@ -73,13 +75,13 @@ pub(super) fn move_named_args_to_frame_from_stack(
             else {
                 bail!("unknown named argument `{name}`");
             };
-            if std::mem::replace(&mut seen[offset], true) {
+            if core::mem::replace(&mut seen[offset], true) {
                 bail!("duplicate named argument `{name}`");
             }
             offset
         };
         caller_stack[pair_start] = RuntimeVal::Nil;
-        frame[positional_count + offset] = std::mem::take(&mut caller_stack[pair_start + 1]);
+        frame[positional_count + offset] = core::mem::take(&mut caller_stack[pair_start + 1]);
     }
 
     if let Some(index) = seen.iter().position(|seen| !*seen) {
@@ -96,7 +98,7 @@ fn move_range_into_frame(caller_stack: &mut [RuntimeVal], range: Range<usize>, f
         bail!("call argument window {}..{} out of bounds", range.start, range.end);
     }
     for (slot, value_index) in frame.iter_mut().zip(range) {
-        *slot = std::mem::take(&mut caller_stack[value_index]);
+        *slot = core::mem::take(&mut caller_stack[value_index]);
     }
     Ok(())
 }
@@ -124,7 +126,7 @@ impl Executor {
         named_count: u16,
         known_target_kind: Option<PerfCallTargetKind>,
         ctx: &mut Option<&mut VmContext>,
-    ) -> Result<RuntimeVal> {
+    ) -> Result<CallOutcome> {
         let module = module.ok_or_else(|| anyhow!("CallNamed requires Module execution"))?;
         let callee = *self
             .read(u8::try_from(window.callee.as_usize()).map_err(|_| anyhow!("call callee register overflow"))?)?;
@@ -192,12 +194,21 @@ impl Executor {
                     )
                 };
                 self.sync_heap_gc_threshold();
-                result.or_else(|error| self.handle_call_error(error))
+                result
+                    .or_else(|error| self.handle_call_error(error))
+                    .map(CallOutcome::Value)
             }
             CallableTarget::Closure {
                 function_index,
                 captures,
-            } => self.call_closure_named_stack_args(module, function_index, captures, window, named_count, ctx),
+            } => {
+                let function = module
+                    .functions
+                    .get(function_index as usize)
+                    .ok_or_else(|| anyhow!("function index {} out of bounds", function_index))?;
+                self.push_call_frame_named(function_index, function, captures, window, named_count)?;
+                Ok(CallOutcome::Pushed(function_index))
+            }
             CallableTarget::Runtime(function) => {
                 let args = self.call_args_stack_range(window)?;
                 let named_start = args.end;
@@ -210,7 +221,9 @@ impl Executor {
                     &mut self.state.heap,
                     ctx.as_deref_mut(),
                 );
-                result.or_else(|error| self.handle_call_error(error))
+                result
+                    .or_else(|error| self.handle_call_error(error))
+                    .map(CallOutcome::Value)
             }
         }
     }

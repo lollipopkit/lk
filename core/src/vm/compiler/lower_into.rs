@@ -1,4 +1,6 @@
-use std::collections::HashSet;
+use crate::compat::collections::HashSet;
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 
 use anyhow::{Result, bail};
 
@@ -215,7 +217,8 @@ impl Compiler {
                 && self.global_names.contains_key(name)
                 && !self.locals.contains_key(name)
                 && !self.function_names.contains_key(name)
-                && !self.native_names.contains_key(name))
+                && !self.native_names.contains_key(name)
+                && !self.user_let_globals.contains(name))
             && matches!(field.as_ref(), Expr::Literal(value) if value.as_str() == Some(method))
     }
 
@@ -225,13 +228,14 @@ impl Compiler {
                 && self.global_names.contains_key(name)
                 && !self.locals.contains_key(name)
                 && !self.function_names.contains_key(name)
-                && !self.native_names.contains_key(name))
+                && !self.native_names.contains_key(name)
+                && !self.user_let_globals.contains(name))
     }
 }
 
 fn math_floor_arg_is_int_like(
     expr: &Expr,
-    locals: &std::collections::HashMap<String, u16>,
+    locals: &crate::compat::collections::HashMap<String, u16>,
     facts: &crate::vm::analysis::PerformanceFacts,
 ) -> bool {
     match expr {
@@ -259,7 +263,7 @@ fn math_floor_arg_is_int_like(
 
 fn int_midpoint_terms<'a>(
     expr: &'a Expr,
-    locals: &std::collections::HashMap<String, u16>,
+    locals: &crate::compat::collections::HashMap<String, u16>,
     facts: &crate::vm::analysis::PerformanceFacts,
 ) -> Option<(&'a Expr, &'a Expr)> {
     let Expr::Bin(numerator, BinOp::Div, divisor) = strip_parens(expr) else {

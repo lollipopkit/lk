@@ -256,7 +256,7 @@ pub extern "C" fn lkrt_math_round(value: f64) -> i64 {
 pub extern "C" fn lkrt_math_sqrt(value: f64) -> f64 {
     if value < 0.0 {
         eprintln!("lkrt error: sqrt() argument must be non-negative");
-        crate::abi::flush_and_abort();
+        crate::panic::raise_str("runtime error");
     }
     value.sqrt()
 }
@@ -285,6 +285,51 @@ pub extern "C" fn lkrt_math_pow(base: f64, exponent: f64) -> f64 {
     base.powf(exponent)
 }
 
+/// `math.hypot(x, y)` → Float (`f64::hypot`).
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_math_hypot(x: f64, y: f64) -> f64 {
+    x.hypot(y)
+}
+
+/// `math.cbrt(x)` → Float (`f64::cbrt`).
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_math_cbrt(x: f64) -> f64 {
+    x.cbrt()
+}
+
+/// `math.is_nan(x)` → 0/1 (only a Float NaN is true in the VM; the lowering
+/// promotes Int args, whose result is always false — same as the module).
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_math_is_nan(x: f64) -> i64 {
+    i64::from(x.is_nan())
+}
+
+/// `math.sign(Int)` → `i64::signum` (the module's Int arm).
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_math_sign_i64(v: i64) -> i64 {
+    v.signum()
+}
+
+/// `math.sign(Float)` → ±1.0/0.0 (the module's Float arm: NaN → 0.0 via the
+/// final else, exactly the stdlib comparison chain).
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_math_sign_f64(v: f64) -> f64 {
+    if v > 0.0 {
+        1.0
+    } else if v < 0.0 {
+        -1.0
+    } else {
+        0.0
+    }
+}
+
+/// `path.sep()` — the platform's main separator (the stdlib module's
+/// `MAIN_SEPARATOR_STR`).
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_path_sep() -> *mut c_char {
+    crate::lkstr::arena_c_string(std::ffi::CString::new(std::path::MAIN_SEPARATOR_STR).unwrap_or_default())
+}
+
 /// The stdlib datetime module's `utc_datetime`: aborts on an out-of-range
 /// timestamp (the VM's loud `invalid timestamp` error).
 fn datetime_utc(timestamp: i64, context: &str) -> chrono::DateTime<chrono::Utc> {
@@ -292,7 +337,7 @@ fn datetime_utc(timestamp: i64, context: &str) -> chrono::DateTime<chrono::Utc> 
         Some(dt) => dt,
         None => {
             eprintln!("lkrt error: {context}: invalid timestamp");
-            crate::abi::flush_and_abort();
+            crate::panic::raise_str("runtime error");
         }
     }
 }

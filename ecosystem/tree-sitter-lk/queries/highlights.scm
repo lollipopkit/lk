@@ -25,6 +25,9 @@
   "select"
   "case"
   "default"
+  "go"
+  "try"
+  "catch"
 ] @keyword
 
 ; Statement keywords

@@ -1,4 +1,6 @@
-use std::sync::Arc;
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
+use alloc::sync::Arc;
 
 use anyhow::{Result, anyhow, bail};
 
@@ -6,16 +8,38 @@ use crate::val::{ErrorVal, HeapValue, RuntimeVal};
 
 #[derive(Clone, Debug)]
 pub(super) struct LanguageRaise {
-    pub(super) message: std::sync::Arc<str>,
+    pub(super) message: alloc::sync::Arc<str>,
 }
 
-impl std::fmt::Display for LanguageRaise {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for LanguageRaise {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str(self.message.as_ref())
     }
 }
 
-impl std::error::Error for LanguageRaise {}
+impl core::error::Error for LanguageRaise {}
+
+/// A recoverable error carrying a first-class LK value. `error(v)` raises this
+/// and `pcall` extracts `value`, so an errored value round-trips as itself
+/// rather than a string — including heap objects (String/List/…), which are
+/// pinned as a GC root while unwinding (see `RuntimeModuleState::pending_raise_root`,
+/// plan M2.2). `rendered` is the display captured at raise time, used for the
+/// top-level message when the error is *uncaught*: by then the heap is gone, so a
+/// live `Obj` handle can no longer be formatted. Public so the stdlib's
+/// `error`/`pcall` can construct and downcast it.
+#[derive(Clone, Debug)]
+pub struct LkRaisedValue {
+    pub value: RuntimeVal,
+    pub rendered: Arc<str>,
+}
+
+impl core::fmt::Display for LkRaisedValue {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(self.rendered.as_ref())
+    }
+}
+
+impl core::error::Error for LkRaisedValue {}
 
 #[derive(Clone, Debug)]
 pub(super) struct ErrorHandler {

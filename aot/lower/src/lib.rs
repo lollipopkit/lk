@@ -34,7 +34,7 @@ use std::collections::BTreeMap;
 
 use lk_aot_mir::{
     AbiRef, Block, BlockId, CmpOp, Const, FloatBinOp, FuncId, GlobalId, Inst, IntBinOp, MirFunction, MirModule, Term,
-    Ty, ValueId,
+    Ty, ValueId, VmFunction,
 };
 use lk_core::vm::{
     ConstHeapValueData, ConstRuntimeValueData, FunctionData, Instr, ModuleArtifact, Opcode, RuntimeMapKeyData,
@@ -61,6 +61,19 @@ pub enum Unsupported {
     UndefinedOperand {
         pc: usize,
         reg: usize,
+    },
+    /// An empty `[]` literal's guessed element type was contradicted by a
+    /// later consumer: retriable — the fixpoint re-lowers with the literal
+    /// materialized as a Dyn list (`pc` identifies the `LoadHeapConst`).
+    EmptyListGuessWrong {
+        pcs: Vec<usize>,
+    },
+    /// A loop-header phi merged heterogeneous boxable types: retriable —
+    /// the fixpoint re-lowers the function with this phi pre-typed `Dyn`
+    /// (its body then consumes it through the Dyn arms from the start).
+    DynLoopPhi {
+        block: usize,
+        slot: usize,
     },
     /// An operand had the wrong type for the operation.
     TypeMismatch {
@@ -99,6 +112,12 @@ impl Unsupported {
             Unsupported::TypeMismatch { pc } => {
                 format!("an operand at pc {pc} has a type outside the natively lowerable subset")
             }
+            Unsupported::EmptyListGuessWrong { pcs } => {
+                format!("empty list literal(s) at pc {pcs:?} were mis-guessed (retried as Dyn)")
+            }
+            Unsupported::DynLoopPhi { block, slot } => {
+                format!("a loop-header phi (block {block}, slot {slot}) merges heterogeneous types")
+            }
             Unsupported::NoReturn => "the entry function never returns".to_string(),
             Unsupported::NonBoolCondition { pc } => {
                 format!("the branch condition at pc {pc} is not a bool")
@@ -132,6 +151,22 @@ enum Builtin {
     /// `__lk_call_method(receiver, name, args_list)` — the compiler's generic
     /// method-dispatch entry; lowered per (receiver type, method name).
     CallMethod,
+    /// `Set()` / `Set(list)` — the VM's set constructor builtin.
+    SetCtor,
+    /// `try$call(closure)` — the try/catch desugar's protected call.
+    TryCall,
+    /// `error(v)` — raises a first-class error value (`rt.raise_dyn`).
+    ErrorRaise,
+    /// `chan(capacity[, type])` — a native channel (its `i64` id).
+    ChanNew,
+    /// `send(c, v)` — blocking, deep-copy, raises on closed.
+    ChanSend,
+    /// `recv(c)` — blocking, raises once closed and drained.
+    ChanRecv,
+    /// `spawn(closure)` / the `go` desugar — a goroutine OS thread.
+    Spawn,
+    /// `select$block(types, chans, values, guards, has_default)`.
+    SelectBlock,
 }
 
 /// What a register loaded from the global table refers to. Like [`Builtin`],
@@ -147,6 +182,11 @@ enum GlobalRef {
     /// A member function resolved from `module.name`, callable when
     /// [`module_call_abi`] maps it to a typed lkrt ABI entry.
     ModuleFn(String, String),
+    /// A compile-time-bundled file module (`use "path"` → `GetGlobal` of the
+    /// file-stem binding); the payload indexes `SigInfer::imports.bundles`.
+    /// Its only consumer is a constant-name member read, which resolves to
+    /// [`GlobalRef::Lambda`] of the merged function.
+    UserModule(usize),
     /// A user function value (`LoadFunction`); its only supported consumer is
     /// the compiler's `SetGlobal` storage of top-level `fn` declarations
     /// (direct calls address the callee by index instead).
@@ -209,7 +249,10 @@ enum ClosureCapture {
 
 /// Global names treated as stdlib module objects when read via `GetGlobal`.
 /// Only modules with at least one [`module_call_abi`] mapping belong here.
-const MODULE_GLOBALS: &[&str] = &["os", "time", "env", "math", "fs", "process", "datetime", "std"];
+const MODULE_GLOBALS: &[&str] = &[
+    "os", "time", "env", "math", "fs", "process", "datetime", "std", "iter", "string", "path", "task", "stream",
+    "bytes",
+];
 
 /// Maps a `module.method` call to its typed lkrt ABI entry: the `AbiRef`, the
 /// exact positional argument types, and the return type. `None` means the
@@ -250,6 +293,40 @@ fn module_call_abi(module: &str, name: &str) -> Option<(AbiRef, &'static [Ty], T
         ("math", "cos") => Some((AbiRef::new("math", "cos"), &[Ty::F64], Ty::F64)),
         ("math", "exp") => Some((AbiRef::new("math", "exp"), &[Ty::F64], Ty::F64)),
         ("math", "pow") => Some((AbiRef::new("math", "pow"), &[Ty::F64, Ty::F64], Ty::F64)),
+        ("math", "hypot") => Some((AbiRef::new("math", "hypot"), &[Ty::F64, Ty::F64], Ty::F64)),
+        ("math", "cbrt") => Some((AbiRef::new("math", "cbrt"), &[Ty::F64], Ty::F64)),
+        // Only a Float NaN is true; an Int argument f64-promotes (never NaN),
+        // exactly the module's `matches!(.., Float(v) if v.is_nan())`.
+        ("math", "is_nan") => Some((AbiRef::new("math", "is_nan"), &[Ty::F64], Ty::Bool)),
+        ("fs", "exists") => Some((AbiRef::new("fs", "exists"), &[Ty::Str], Ty::Bool)),
+        ("path", "sep") => Some((AbiRef::new("path", "sep"), &[], Ty::Str)),
+        // String-or-nil results arrive boxed (`String?` in the module schema).
+        ("string", "strip_prefix") => Some((AbiRef::new("str", "strip_prefix"), &[Ty::Str, Ty::Str], Ty::Dyn)),
+        ("string", "strip_suffix") => Some((AbiRef::new("str", "strip_suffix"), &[Ty::Str, Ty::Str], Ty::Dyn)),
+        ("string", "count") => Some((AbiRef::new("str", "count"), &[Ty::Str, Ty::Str], Ty::I64)),
+        // The module spelling counts bytes (`str::len`), unlike `.len()`.
+        ("string", "len") => Some((AbiRef::new("str", "byte_len"), &[Ty::Str], Ty::I64)),
+        ("string", "capitalize") => Some((AbiRef::new("str", "capitalize"), &[Ty::Str], Ty::Str)),
+        ("string", "title") => Some((AbiRef::new("str", "title"), &[Ty::Str], Ty::Str)),
+        // Native channels/goroutines (plan H): channel/task values are i64
+        // ids; blocking semantics + raises live in lkrt.
+        ("chan", "close") => Some((AbiRef::new("chan", "close"), &[Ty::I64], Ty::Nil)),
+        ("chan", "len") => Some((AbiRef::new("chan", "len"), &[Ty::I64], Ty::I64)),
+        ("chan", "is_closed") => Some((AbiRef::new("chan", "is_closed"), &[Ty::I64], Ty::Bool)),
+        ("chan", "try_send") => Some((AbiRef::new("chan", "try_send"), &[Ty::I64, Ty::Dyn], Ty::Bool)),
+        ("chan", "try_recv") => Some((AbiRef::new("chan", "try_recv"), &[Ty::I64], Ty::Dyn)),
+        ("task", "await") => Some((AbiRef::new("rt", "task_await"), &[Ty::I64], Ty::Dyn)),
+        // `encoding` submodules (VM `de.rs` mirrored in lkrt).
+        ("json", "parse") => Some((AbiRef::new("json", "parse"), &[Ty::Str], Ty::Dyn)),
+        // `net` submodules + `bytes` (the lkrt tcp family predates this).
+        ("socket", "addr") => Some((AbiRef::new("socket", "addr"), &[Ty::Str, Ty::I64], Ty::Str)),
+        ("tcp", "connect") => Some((AbiRef::new("tcp", "connect"), &[Ty::Str], Ty::I64)),
+        ("tcp", "write") => Some((AbiRef::new("tcp", "write_str"), &[Ty::I64, Ty::Str], Ty::I64)),
+        ("tcp", "read") => Some((AbiRef::new("tcp", "read"), &[Ty::I64, Ty::I64], Ty::I64)),
+        ("tcp", "close") => Some((AbiRef::new("tcp", "close"), &[Ty::I64], Ty::I64)),
+        ("bytes", "to_string_utf8") => Some((AbiRef::new("bytes", "to_string_utf8"), &[Ty::I64], Ty::Str)),
+        ("yaml", "parse") => Some((AbiRef::new("yaml", "parse"), &[Ty::Str], Ty::Dyn)),
+        ("toml", "parse") => Some((AbiRef::new("toml", "parse"), &[Ty::Str], Ty::Dyn)),
         _ => None,
     }
 }
@@ -357,13 +434,30 @@ enum Exit {
 ///  - `ret_types[f]` — from `f`'s return value type (returns can chain: `f` returns
 ///    `g()`), so it iterates.
 ///  - `param_obs[f][i]` — the argument type observed at `f`'s `CallDirect` sites. If
-///    every site agrees, that is the parameter type; if two sites disagree, `f` is
-///    polymorphic (`conflict`) and cannot be monomorphized, so the whole module
-///    falls back rather than miscompiling one of the call sites.
+///    every site agrees, that is the parameter type; disagreeing sites join the
+///    parameter to `Dyn` (each site boxes, the body consumes through the Dyn
+///    arms — plan M4.2 cross-function Dyn flow). `conflict` still rejects
+///    function-vs-value polymorphism (`lambda_params`/`specialized`).
 struct SigInfer {
     param_obs: Vec<Vec<Option<Ty>>>,
     ret_types: Vec<Ty>,
+    /// Whether `ret_types[f]` reflects an actual lowering of `f`'s body (vs
+    /// the pristine `I64` default): HOF re-route decisions must not treat the
+    /// default as a real mismatch.
+    ret_known: Vec<bool>,
     conflict: bool,
+    /// Empty-`[]` literals whose guessed element type a consumer
+    /// contradicted (`(function, pc)`): the next fixpoint pass materializes
+    /// them as Dyn lists.
+    dyn_empty_lists: std::collections::HashSet<(u32, usize)>,
+    /// Loop-header phis discovered to merge heterogeneous boxable types
+    /// (`(function, block, slot)`): the next fixpoint pass pre-types them
+    /// `Dyn` so the loop body consumes them through the Dyn arms.
+    dyn_loop_phis: std::collections::HashSet<(u32, usize, usize)>,
+    /// Functions whose returns disagreed on a boxable type (or returned a
+    /// nullable carrier): the next fixpoint pass boxes every return point,
+    /// making the function return `Dyn` instead of rejecting the module.
+    dyn_rets: std::collections::HashSet<u32>,
     /// Per module-global slot: the scalar type every `SetGlobal` writes (a
     /// mixed-type global marks `conflict`, rejecting the module rather than
     /// miscompiling one of the writes).
@@ -412,6 +506,19 @@ struct SigInfer {
     /// Final compact `slot → gvar` numbering, built once signatures converge
     /// (empty during the fixpoint passes, whose emitted MIR is discarded).
     gvar_of: std::collections::HashMap<u16, u32>,
+    /// Tier 1 hybrid: functions whose bodies did not lower but whose call
+    /// sites bridge into the embedded VM (`fidx → scalar marshaling types`).
+    /// Empty during the fixpoint; filled between the failing final pass and
+    /// its hybrid retry (`docs/llvm/tier1-hybrid.md`).
+    vm_functions: std::collections::HashMap<u32, Vec<Ty>>,
+    /// Import-derived name bindings (aliases, module items, bundled files).
+    imports: ImportEnv,
+    /// Trait/impl registrations lifted from the entry (plan J1).
+    traits: TraitEnv,
+    /// Functions spawned as goroutines (isolate semantics): their cell
+    /// captures snapshot by value and cell *writes* land in a
+    /// thread-private virtual slot instead of rejecting.
+    spawned_isolate: std::collections::HashSet<u32>,
 }
 
 impl SigInfer {
@@ -419,12 +526,321 @@ impl SigInfer {
         self.param_obs[func].get(i).copied().flatten().unwrap_or(Ty::I64)
     }
 
+    /// Records one call-site observation of `callee`'s parameter `slot_idx`
+    /// and returns the parameter's (possibly widened) type. Disagreeing
+    /// observations join to `Dyn` — the parameter becomes dynamically typed
+    /// and every call site boxes — instead of rejecting the module. Nullable
+    /// shapes (`Nil`, the `Maybe` carriers) have no typed parameter form and
+    /// observe as `Dyn` directly. The join is monotonic on a two-level
+    /// lattice, so the fixpoint still terminates; function-vs-value
+    /// polymorphism keeps its own reject (`lambda_params`).
+    fn observe_param(&mut self, callee: usize, slot_idx: usize, arg_ty: Ty) -> Ty {
+        let obs = match arg_ty {
+            Ty::Nil | Ty::MaybeI64 | Ty::MaybeF64 | Ty::MaybeStr | Ty::MaybeBool => Ty::Dyn,
+            other => other,
+        };
+        match self.param_obs.get_mut(callee).and_then(|p| p.get_mut(slot_idx)) {
+            Some(slot) => {
+                let joined = match *slot {
+                    None => obs,
+                    Some(prev) if prev == obs => prev,
+                    Some(_) => Ty::Dyn,
+                };
+                *slot = Some(joined);
+                joined
+            }
+            None => obs,
+        }
+    }
+
     fn gvar(&self, slot: u16) -> u32 {
         self.gvar_of.get(&slot).copied().unwrap_or(u32::from(slot))
     }
 }
 
+/// One compile-time-bundled file import (`use "../general/fib"`): the CLI
+/// appended the dep's functions to the artifact's function table (indices
+/// rewritten) and reports each of its top-level `fn` names here.
+#[derive(Debug, Clone, Default)]
+pub struct BundledImport {
+    /// The import path exactly as written in the source.
+    pub path: String,
+    /// Top-level `fn` name → merged function index.
+    pub fns: std::collections::HashMap<String, u32>,
+}
+
+/// Import-derived name bindings, resolved once from `artifact.imports` (+ the
+/// CLI's bundled file modules): how a `GetGlobal` name maps to a module
+/// object, a module member, or a bundled user function.
+#[derive(Debug, Clone, Default)]
+struct ImportEnv {
+    /// `use math as m;` / `use * as sm from string;` → alias → module.
+    module_aliases: std::collections::HashMap<String, String>,
+    /// `use { abs, sqrt as s } from math;` → bound name → (module, member).
+    module_items: std::collections::HashMap<String, (String, String)>,
+    /// `use "path";` → binding (file stem) → index into `bundles`.
+    file_namespaces: std::collections::HashMap<String, usize>,
+    /// `use { f } from "path";` → bound name → merged function index.
+    file_items: std::collections::HashMap<String, u32>,
+    bundles: Vec<BundledImport>,
+}
+
+impl ImportEnv {
+    fn build(imports: &[lk_core::stmt::ImportStmt], bundles: &[BundledImport]) -> Self {
+        use lk_core::stmt::{ImportSource, ImportStmt};
+        let mut env = ImportEnv {
+            bundles: bundles.to_vec(),
+            ..ImportEnv::default()
+        };
+        let bundle_by_path = |path: &str| bundles.iter().position(|b| b.path == path);
+        for import in imports {
+            match import {
+                ImportStmt::ModuleAlias { module, alias } => {
+                    env.module_aliases.insert(alias.clone(), module.clone());
+                }
+                ImportStmt::Namespace { alias, source } => match source {
+                    ImportSource::Module(module) => {
+                        env.module_aliases.insert(alias.clone(), module.clone());
+                    }
+                    ImportSource::File(path) => {
+                        if let Some(b) = bundle_by_path(path) {
+                            env.file_namespaces.insert(alias.clone(), b);
+                        }
+                    }
+                },
+                ImportStmt::Items { items, source } => {
+                    for item in items {
+                        let bound = item.alias.clone().unwrap_or_else(|| item.name.clone());
+                        match source {
+                            ImportSource::Module(module) => {
+                                env.module_items.insert(bound, (module.clone(), item.name.clone()));
+                            }
+                            ImportSource::File(path) => {
+                                if let Some(fidx) = bundle_by_path(path)
+                                    .and_then(|b| bundles[b].fns.get(&item.name))
+                                    .copied()
+                                {
+                                    env.file_items.insert(bound, fidx);
+                                }
+                            }
+                        }
+                    }
+                }
+                ImportStmt::File { path } => {
+                    let stem = std::path::Path::new(path)
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("module")
+                        .to_string();
+                    if let Some(b) = bundle_by_path(path) {
+                        env.file_namespaces.insert(stem, b);
+                    }
+                }
+                ImportStmt::Module { .. } => {}
+            }
+        }
+        env
+    }
+}
+
+/// Trait/impl registrations extracted from the entry's compiler-generated
+/// `__lk_register_trait` / `__lk_register_trait_impl` call sequences (plan
+/// J1). The registration itself never runs natively: the prescan lifts each
+/// sequence into this table and marks its pcs skipped; method calls
+/// devirtualize statically through `impls` (known `NewObject` provenance) or
+/// dynamically through `methods` (boxed receivers, via arena type marks).
+#[derive(Debug, Clone, Default)]
+struct TraitEnv {
+    /// `(type name, method name)` → impl function index.
+    impls: std::collections::HashMap<(String, String), u32>,
+    /// Type name → runtime type id (1-based, first-registration order).
+    type_ids: std::collections::HashMap<String, i64>,
+    /// Method name → dispatch arms `(type id, impl fn)`, registration order.
+    methods: std::collections::HashMap<String, Vec<(i64, u32)>>,
+    /// Entry pcs covered by registration sequences (skipped when lowering).
+    skip_pcs: std::collections::HashSet<usize>,
+}
+
+/// The abstract register contents the registration prescan tracks — exactly
+/// the value kinds the compiler's `lower_trait_decl`/`lower_impl_decl` emit.
+#[derive(Debug, Clone)]
+enum TraitAbs {
+    Str(String),
+    Fn(u32),
+    List(Vec<TraitAbs>),
+    /// The helper callable; `true` = `__lk_register_trait_impl`.
+    Helper(bool),
+}
+
+fn trait_env_prescan(module: &lk_core::vm::ModuleData) -> TraitEnv {
+    let mut env = TraitEnv::default();
+    let Some(entry_fn) = module.functions.get(module.entry as usize) else {
+        return env;
+    };
+    // A registration sequence is contiguous straight-line compiler output:
+    // the helper `GetGlobal`, then only Load*/Move/NewList building the call
+    // window, then the `Call`. Anything unexpected abandons the candidate —
+    // its `GetGlobal` then rejects loudly during lowering (never a silent
+    // half-registration).
+    let mut regs: std::collections::HashMap<u8, TraitAbs> = std::collections::HashMap::new();
+    let mut seq_pcs: Vec<usize> = Vec::new();
+    let mut in_seq = false;
+    for (pc, raw) in entry_fn.code.iter().enumerate() {
+        let Ok(instr) = Instr::try_from_raw(*raw) else {
+            regs.clear();
+            in_seq = false;
+            continue;
+        };
+        match instr.opcode() {
+            Opcode::GetGlobal => {
+                let is_impl = match module.globals.get(instr.bx() as usize).map(String::as_str) {
+                    Some("__lk_register_trait") => Some(false),
+                    Some("__lk_register_trait_impl") => Some(true),
+                    _ => None,
+                };
+                let Some(is_impl) = is_impl else {
+                    regs.remove(&instr.a());
+                    in_seq = false;
+                    continue;
+                };
+                regs.insert(instr.a(), TraitAbs::Helper(is_impl));
+                seq_pcs = vec![pc];
+                in_seq = true;
+            }
+            Opcode::LoadString if in_seq => {
+                let text = entry_fn.consts.strings.get(instr.bx() as usize).cloned();
+                match text {
+                    Some(text) => {
+                        regs.insert(instr.a(), TraitAbs::Str(text));
+                        seq_pcs.push(pc);
+                    }
+                    None => in_seq = false,
+                }
+            }
+            Opcode::LoadHeapConst if in_seq => {
+                // Method-type display strings land in the heap-const pool
+                // when longer than the inline form.
+                match entry_fn.consts.heap_values.get(instr.bx() as usize) {
+                    Some(ConstHeapValueData::LongString(text)) => {
+                        regs.insert(instr.a(), TraitAbs::Str(text.to_string()));
+                        seq_pcs.push(pc);
+                    }
+                    _ => in_seq = false,
+                }
+            }
+            Opcode::LoadFunction if in_seq => {
+                regs.insert(instr.a(), TraitAbs::Fn(instr.bx() as u32));
+                seq_pcs.push(pc);
+            }
+            Opcode::Move if in_seq => match regs.get(&instr.b()).cloned() {
+                Some(v) => {
+                    regs.insert(instr.a(), v);
+                    seq_pcs.push(pc);
+                }
+                None => in_seq = false,
+            },
+            Opcode::NewList if in_seq => {
+                let mut items = Vec::with_capacity(instr.c() as usize);
+                for i in 0..instr.c() {
+                    match regs.get(&instr.b().wrapping_add(i)) {
+                        Some(v) => items.push(v.clone()),
+                        None => {
+                            in_seq = false;
+                            break;
+                        }
+                    }
+                }
+                if in_seq {
+                    regs.insert(instr.a(), TraitAbs::List(items));
+                    seq_pcs.push(pc);
+                }
+            }
+            Opcode::Call if in_seq => {
+                in_seq = false;
+                let base = instr.a();
+                let argc = instr.c() as usize;
+                let arg = |i: u8| regs.get(&base.wrapping_add(1).wrapping_add(i));
+                match regs.get(&base) {
+                    Some(TraitAbs::Helper(false)) if argc == 2 => {
+                        // Trait declaration: nothing to record, skip the pcs.
+                        seq_pcs.push(pc);
+                        env.skip_pcs.extend(seq_pcs.drain(..));
+                    }
+                    Some(TraitAbs::Helper(true)) if argc == 3 => {
+                        let (
+                            Some(TraitAbs::Str(_trait_name)),
+                            Some(TraitAbs::Str(type_name)),
+                            Some(TraitAbs::List(entries)),
+                        ) = (arg(0), arg(1), arg(2))
+                        else {
+                            continue;
+                        };
+                        let mut extracted = Vec::with_capacity(entries.len());
+                        for entry in entries {
+                            let TraitAbs::List(parts) = entry else {
+                                extracted.clear();
+                                break;
+                            };
+                            let (Some(TraitAbs::Str(method)), Some(TraitAbs::Fn(fidx))) = (parts.first(), parts.get(1))
+                            else {
+                                extracted.clear();
+                                break;
+                            };
+                            extracted.push((method.clone(), *fidx));
+                        }
+                        if extracted.is_empty() {
+                            continue;
+                        }
+                        let next_id = env.type_ids.len() as i64 + 1;
+                        let tid = *env.type_ids.entry(type_name.clone()).or_insert(next_id);
+                        for (method, fidx) in extracted {
+                            env.impls.insert((type_name.clone(), method.clone()), fidx);
+                            let arms = env.methods.entry(method).or_default();
+                            arms.retain(|&(t, _)| t != tid);
+                            arms.push((tid, fidx));
+                        }
+                        seq_pcs.push(pc);
+                        env.skip_pcs.extend(seq_pcs.drain(..));
+                    }
+                    _ => {}
+                }
+            }
+            _ => {
+                // Branches, stores, anything else: the abstract state is
+                // only trusted within a contiguous builder sequence.
+                regs.clear();
+                in_seq = false;
+            }
+        }
+    }
+    env
+}
+
 pub fn lower(artifact: &ModuleArtifact) -> Result<MirModule, Unsupported> {
+    // Opt-in until the CLI links the bridge runtime (tier1-hybrid.md sub-step
+    // ④): emitting `CallVm` without the lk-api staticlib linked would turn
+    // graceful `Unsupported` fallbacks into link errors.
+    let hybrid = std::env::var_os("LK_AOT_HYBRID").is_some_and(|value| value != "0");
+    lower_with_hybrid(artifact, hybrid)
+}
+
+/// [`lower`] with the Tier 1 hybrid mode passed explicitly (tests use this to
+/// avoid process-global env mutation): when `hybrid` is set, a reachable
+/// non-entry function whose body does not lower can be marked *VM-executed*
+/// instead of failing the module, provided it is bridge-eligible (scalar
+/// parameters, no captures or lambda machinery, transitively user-global-free
+/// — see `docs/llvm/tier1-hybrid.md`).
+pub fn lower_with_hybrid(artifact: &ModuleArtifact, hybrid: bool) -> Result<MirModule, Unsupported> {
+    lower_bundled(artifact, &[], hybrid)
+}
+
+/// [`lower_with_hybrid`] over an artifact whose function table already
+/// contains compile-time-bundled file imports (multi-file `lk compile`).
+pub fn lower_bundled(
+    artifact: &ModuleArtifact,
+    bundles: &[BundledImport],
+    hybrid: bool,
+) -> Result<MirModule, Unsupported> {
     let module = &artifact.module;
     if module.functions.is_empty() {
         return Err(Unsupported::NoEntry);
@@ -435,7 +851,19 @@ pub fn lower(artifact: &ModuleArtifact) -> Result<MirModule, Unsupported> {
     // never directly called (e.g. a small helper the front end inlined at every use)
     // are dead for AOT; lowering them would pointlessly fail the whole module if they
     // use a shape we don't support, so we skip them entirely.
-    let mut reachable = reachable_functions(module);
+    // Bundled file-module functions are reached through import bindings
+    // (`GetGlobal` → Lambda), invisible to the bytecode scan: root them too
+    // (the BFS then covers their own callees).
+    let mut bundle_roots: Vec<usize> = bundles
+        .iter()
+        .flat_map(|b| b.fns.values().map(|&fidx| fidx as usize))
+        .collect();
+    // Trait impl methods are reached through the lifted registration table
+    // (their `LoadFunction` sites are skipped), invisible to the CallDirect/
+    // MakeClosure scan: root them like bundled imports.
+    let traits = trait_env_prescan(module);
+    bundle_roots.extend(traits.impls.values().map(|&fidx| fidx as usize));
+    let mut reachable = reachable_functions(module, &bundle_roots);
 
     let global_count = module.globals.len();
     let mut sig = SigInfer {
@@ -447,7 +875,14 @@ pub fn lower(artifact: &ModuleArtifact) -> Result<MirModule, Unsupported> {
             .map(|f| vec![None; f.param_count as usize + f.capture_count as usize])
             .collect(),
         ret_types: vec![Ty::I64; n],
+        ret_known: vec![false; n],
         conflict: false,
+        dyn_loop_phis: std::collections::HashSet::new(),
+        dyn_rets: std::collections::HashSet::new(),
+        imports: ImportEnv::build(&artifact.imports, bundles),
+        traits,
+        spawned_isolate: std::collections::HashSet::new(),
+        dyn_empty_lists: std::collections::HashSet::new(),
         global_tys: vec![None; global_count],
         initialized_globals: prescan_initialized_globals(module, global_count),
         lambda_globals: prescan_lambda_globals(module, global_count),
@@ -464,6 +899,7 @@ pub fn lower(artifact: &ModuleArtifact) -> Result<MirModule, Unsupported> {
         ret_closure_poisoned: vec![false; n],
         global_names: module.globals.clone(),
         gvar_of: std::collections::HashMap::new(),
+        vm_functions: std::collections::HashMap::new(),
     };
 
     // Working function list: module functions plus lambda-argument clone
@@ -482,6 +918,11 @@ pub fn lower(artifact: &ModuleArtifact) -> Result<MirModule, Unsupported> {
             sig.ret_types.clone(),
             sig.specializations.len(),
             sig.ret_closures.clone(),
+            sig.dyn_loop_phis.len(),
+            sig.dyn_empty_lists.len(),
+            sig.dyn_rets.len(),
+            sig.global_tys.clone(),
+            sig.spawned_isolate.len(),
         );
         // Call-site facts are re-derived every pass: an argument register
         // that resolves to a closure ref only once a summary lands (e.g. a
@@ -507,7 +948,7 @@ pub fn lower(artifact: &ModuleArtifact) -> Result<MirModule, Unsupported> {
             }
             let is_entry = fi as u32 == module.entry;
             let mut scratch = Vec::new();
-            if let Ok(mf) = lower_function(
+            let lowered = lower_function(
                 &funcs[fi],
                 &funcs,
                 fi as u32,
@@ -516,9 +957,24 @@ pub fn lower(artifact: &ModuleArtifact) -> Result<MirModule, Unsupported> {
                 &mut scratch,
                 &module.globals,
                 &mut sig,
-            ) && !is_entry
-            {
-                sig.ret_types[fi] = mf.ret;
+            );
+            match lowered {
+                Ok(mf) if !is_entry => {
+                    sig.ret_types[fi] = mf.ret;
+                    sig.ret_known[fi] = true;
+                }
+                // A retriable loop-phi discovery: record it (the snapshot
+                // includes the set's size, so the fixpoint runs again with
+                // the phi pre-typed Dyn).
+                Err(Unsupported::DynLoopPhi { block, slot }) => {
+                    sig.dyn_loop_phis.insert((fi as u32, block, slot));
+                }
+                Err(Unsupported::EmptyListGuessWrong { pcs }) => {
+                    for pc in pcs {
+                        sig.dyn_empty_lists.insert((fi as u32, pc));
+                    }
+                }
+                _ => {}
             }
         }
         // Materialize clones queued during this pass so the next pass lowers
@@ -534,8 +990,17 @@ pub fn lower(artifact: &ModuleArtifact) -> Result<MirModule, Unsupported> {
                 sig.ret_types.clone(),
                 sig.specializations.len(),
                 sig.ret_closures.clone(),
+                sig.dyn_loop_phis.len(),
+                sig.dyn_empty_lists.len(),
+                sig.dyn_rets.len(),
+                sig.global_tys.clone(),
+                sig.spawned_isolate.len(),
             );
-        if converged || passes > 2 * funcs.len() + 2 {
+        // Each retriable discovery (Dyn loop phi, empty-list re-guess,
+        // boxed-returns function) legitimately consumes one extra pass, so
+        // the safety valve budgets for them on top of the type lattice.
+        let discovery_budget = sig.dyn_loop_phis.len() + sig.dyn_empty_lists.len() + sig.dyn_rets.len();
+        if converged || passes > 2 * funcs.len() + 2 + discovery_budget {
             break;
         }
     }
@@ -559,41 +1024,235 @@ pub fn lower(artifact: &ModuleArtifact) -> Result<MirModule, Unsupported> {
 
     // Final pass with stable signatures: produce the real MIR + interned globals for
     // the reachable functions. Any reachable function outside the subset fails the
-    // whole module (caller falls back); `FuncId`s keep their original module indices.
-    let mut globals: Vec<String> = Vec::new();
-    let mut functions = Vec::with_capacity(funcs.len());
-    for fi in 0..funcs.len() {
-        if !reachable[fi] {
-            continue;
+    // whole module (caller falls back) — unless `hybrid` is set and every failing
+    // function is bridge-eligible, in which case the pass reruns with those
+    // functions marked VM-executed (their call sites emit `CallVm`, their bodies
+    // are skipped). `FuncId`s keep their original module indices.
+    let final_pass = |sig: &mut SigInfer, reach: &[bool]| {
+        let mut globals: Vec<String> = Vec::new();
+        let mut functions = Vec::with_capacity(funcs.len());
+        let mut failures: Vec<(usize, Unsupported)> = Vec::new();
+        for fi in 0..funcs.len() {
+            if !reach.get(fi).copied().unwrap_or(false) {
+                continue;
+            }
+            if sig.specialized.get(fi).copied().unwrap_or(false) {
+                continue;
+            }
+            if sig.ret_closures.get(fi).is_some_and(Option::is_some) {
+                continue;
+            }
+            if sig.vm_functions.contains_key(&(fi as u32)) {
+                continue;
+            }
+            let is_entry = fi as u32 == module.entry;
+            match lower_function(
+                &funcs[fi],
+                &funcs,
+                fi as u32,
+                module.entry,
+                is_entry,
+                &mut globals,
+                &module.globals,
+                sig,
+            ) {
+                Ok(function) => functions.push(function),
+                Err(err) => failures.push((fi, err)),
+            }
         }
-        if sig.specialized.get(fi).copied().unwrap_or(false) {
-            continue;
+        (globals, functions, failures)
+    };
+    let (mut globals, mut functions, failures) = final_pass(&mut sig, &reachable);
+    if !failures.is_empty() {
+        // `LK_AOT_DEBUG_FAILURES=1` lists every failing function (the
+        // returned error is only the first; a callee's real blocker often
+        // hides behind its caller's transient ret-type check).
+        if std::env::var_os("LK_AOT_DEBUG_FAILURES").is_some() {
+            for (fi, err) in &failures {
+                eprintln!("lk-aot-lower: final-pass failure: fn{fi}: {err:?}");
+            }
         }
-        if sig.ret_closures.get(fi).is_some_and(Option::is_some) {
-            continue;
+        let first_error = failures[0].1.clone();
+        if !hybrid {
+            return Err(first_error);
         }
-        let is_entry = fi as u32 == module.entry;
-        functions.push(lower_function(
-            &funcs[fi],
-            &funcs,
-            fi as u32,
-            module.entry,
-            is_entry,
-            &mut globals,
-            &module.globals,
-            &mut sig,
-        )?);
+        // Mark every *eligible* failure VM-executed, then recompute
+        // reachability without descending into VM-executed functions: their
+        // subtrees (e.g. a try/catch desugar closure with captures) run on the
+        // VM from the embedded artifact and need no native body. A failure
+        // that stays native-reachable and is not eligible fails the module
+        // whole (the current Tier 0 behavior).
+        let written = written_global_slots(&funcs);
+        for (fi, _) in &failures {
+            if let Some(params) = bridge_eligibility(*fi, &funcs, module.entry, &sig, &written) {
+                sig.vm_functions.insert(*fi as u32, params);
+            }
+        }
+        let native_reachable = native_reachable_functions(&funcs, module.entry, &sig.vm_functions);
+        for (fi, _) in &failures {
+            if native_reachable.get(*fi).copied().unwrap_or(false) && !sig.vm_functions.contains_key(&(*fi as u32)) {
+                return Err(first_error);
+            }
+        }
+        // Drop VM marks without any native-reachable call site (a callee only
+        // ever called from inside the VM needs no bridge signature).
+        sig.vm_functions
+            .retain(|fidx, _| native_reachable.get(*fidx as usize).copied().unwrap_or(false));
+        // Rerun with the VM-executed set in place: callers now emit `CallVm`
+        // and leave result registers unbound, so a caller that *uses* a
+        // bridged result fails here — results never cross the bridge (v1).
+        let (retry_globals, retry_functions, retry_failures) = final_pass(&mut sig, &native_reachable);
+        if let Some((_, err)) = retry_failures.into_iter().next() {
+            return Err(err);
+        }
+        globals = retry_globals;
+        functions = retry_functions;
     }
     if sig.conflict {
         return Err(Unsupported::ReturnTypeConflict);
     }
+    let mut vm_functions: Vec<VmFunction> = sig
+        .vm_functions
+        .iter()
+        .map(|(&fidx, params)| VmFunction {
+            id: FuncId(fidx),
+            params: params.clone(),
+        })
+        .collect();
+    vm_functions.sort_by_key(|vm_fn| vm_fn.id.0);
     Ok(MirModule {
         abi_version: lk_aot_abi::ABI_VERSION,
         globals,
         mutable_globals,
+        vm_functions,
         entry: FuncId(module.entry),
         functions,
     })
+}
+
+/// Reachability from the entry over `CallDirect`/`MakeClosure` edges that does
+/// **not** descend into VM-executed functions: their bodies (and everything
+/// only they reach) run on the embedded VM, so no native lowering is needed.
+/// VM-executed functions themselves stay marked (they need native call sites).
+fn native_reachable_functions(
+    funcs: &[FunctionData],
+    entry: u32,
+    vm_functions: &std::collections::HashMap<u32, Vec<Ty>>,
+) -> Vec<bool> {
+    let n = funcs.len();
+    let mut reachable = vec![false; n];
+    let entry = entry as usize;
+    if entry >= n {
+        return reachable;
+    }
+    let mut stack = vec![entry];
+    reachable[entry] = true;
+    while let Some(fi) = stack.pop() {
+        if vm_functions.contains_key(&(fi as u32)) {
+            continue;
+        }
+        for raw in &funcs[fi].code {
+            let Ok(instr) = Instr::try_from_raw(*raw) else {
+                continue;
+            };
+            let callee = match instr.opcode() {
+                Opcode::CallDirect | Opcode::MakeClosure => instr.b() as usize,
+                _ => continue,
+            };
+            if callee < n && !reachable[callee] {
+                reachable[callee] = true;
+                stack.push(callee);
+            }
+        }
+    }
+    reachable
+}
+
+/// Global slots written by a `SetGlobal` anywhere in the module. Native code
+/// keeps these in native storage, so a VM-executed function must never read
+/// them (the bridge VM's copies would diverge); slots *never* written are
+/// runtime-builtin reads, which the bridge seeds identically to a VM run.
+fn written_global_slots(funcs: &[FunctionData]) -> std::collections::HashSet<u16> {
+    let mut written = std::collections::HashSet::new();
+    for func in funcs {
+        for raw in &func.code {
+            let Ok(instr) = Instr::try_from_raw(*raw) else {
+                continue;
+            };
+            if instr.opcode() == Opcode::SetGlobal {
+                written.insert(instr.bx());
+            }
+        }
+    }
+    written
+}
+
+/// Whether failing function `fi` can run on the bridge VM instead of failing
+/// the module (`docs/llvm/tier1-hybrid.md`, v1): not the entry, no captures or
+/// lambda-erasure machinery, every parameter observed as one scalar type, and
+/// its whole `CallDirect`/`MakeClosure`-reachable subtree writes no globals
+/// and reads none that the module writes. Returns the scalar marshaling types.
+fn bridge_eligibility(
+    fi: usize,
+    funcs: &[FunctionData],
+    entry: u32,
+    sig: &SigInfer,
+    written_slots: &std::collections::HashSet<u16>,
+) -> Option<Vec<Ty>> {
+    if fi as u32 == entry {
+        return None;
+    }
+    let func = funcs.get(fi)?;
+    if func.capture_count != 0 {
+        return None;
+    }
+    if sig.specialized.get(fi).copied().unwrap_or(false) {
+        return None;
+    }
+    if sig
+        .lambda_params
+        .get(fi)
+        .is_some_and(|params| params.iter().any(Option::is_some))
+    {
+        return None;
+    }
+    if sig.ret_closures.get(fi).is_some_and(Option::is_some) {
+        return None;
+    }
+    let mut params = Vec::with_capacity(func.param_count as usize);
+    for i in 0..func.param_count as usize {
+        match sig.param_obs.get(fi).and_then(|obs| obs.get(i)).copied().flatten() {
+            Some(ty @ (Ty::I64 | Ty::F64 | Ty::Bool | Ty::Str)) => params.push(ty),
+            _ => return None,
+        }
+    }
+    let mut visited = vec![false; funcs.len()];
+    let mut work = vec![fi];
+    visited[fi] = true;
+    while let Some(cur) = work.pop() {
+        for raw in &funcs[cur].code {
+            let Ok(instr) = Instr::try_from_raw(*raw) else {
+                return None;
+            };
+            match instr.opcode() {
+                Opcode::SetGlobal => return None,
+                Opcode::GetGlobal => {
+                    if written_slots.contains(&instr.bx()) {
+                        return None;
+                    }
+                }
+                Opcode::CallDirect | Opcode::MakeClosure => {
+                    let callee = instr.b() as usize;
+                    if callee < funcs.len() && !visited[callee] {
+                        visited[callee] = true;
+                        work.push(callee);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    Some(params)
 }
 
 /// Slots the entry function writes before any control flow or user-function
@@ -750,7 +1409,7 @@ fn prescan_initialized_globals(module: &lk_core::vm::ModuleData, global_count: u
 /// edges (a worklist over the static call graph). Unreachable functions are dead for
 /// AOT — they are never emitted, so an unsupported shape in dead code cannot fail the
 /// module.
-fn reachable_functions(module: &lk_core::vm::ModuleData) -> Vec<bool> {
+fn reachable_functions(module: &lk_core::vm::ModuleData, extra_roots: &[usize]) -> Vec<bool> {
     let n = module.functions.len();
     let mut reachable = vec![false; n];
     let entry = module.entry as usize;
@@ -759,6 +1418,12 @@ fn reachable_functions(module: &lk_core::vm::ModuleData) -> Vec<bool> {
     }
     let mut stack = vec![entry];
     reachable[entry] = true;
+    for &root in extra_roots {
+        if root < n && !reachable[root] {
+            reachable[root] = true;
+            stack.push(root);
+        }
+    }
     while let Some(fi) = stack.pop() {
         for raw in &module.functions[fi].code {
             let Ok(instr) = Instr::try_from_raw(*raw) else {
@@ -786,21 +1451,108 @@ fn reachable_functions(module: &lk_core::vm::ModuleData) -> Vec<bool> {
 /// `SetFieldK`/`GetFieldK` ⇒ string-keyed. This only affects *coverage*: a wrong
 /// guess makes a later op mismatch and the whole module falls back — never a
 /// miscompile. Defaults to string-keyed if no keyed use is seen.
-fn empty_map_is_int_keyed(code: &[u32], start_pc: usize, dst_reg: u8) -> bool {
+fn empty_map_is_int_keyed(func: &FunctionData, start_pc: usize, dst_reg: u8) -> bool {
+    let code = &func.code;
     let mut regs = std::collections::HashSet::new();
-    regs.insert(dst_reg);
     // Registers most recently written by a string producer: an index through
     // one of these means the map is string-keyed. A wrong guess only costs a
     // fallback (the typed lowering rejects the mismatch), never a miscompile.
     let mut str_regs = std::collections::HashSet::new();
-    for raw in &code[start_pc + 1..] {
+    // Registers holding a string *list* (a constant list of strings, a
+    // `split` result): an element read out of one is a string key producer
+    // (`freq[words[i]]`).
+    let mut strlist_regs = std::collections::HashSet::new();
+    // Producers are tracked from the top of the function (a key's string-ness
+    // is often established *before* the map literal — `text.split` feeding a
+    // later `freq[word]`); the map-register set only exists from the literal.
+    for (pc, raw) in code.iter().enumerate() {
         let Ok(instr) = Instr::try_from_raw(*raw) else { break };
+        if pc == start_pc {
+            regs.insert(dst_reg);
+            continue;
+        }
+        let after = pc > start_pc;
         match instr.opcode() {
-            Opcode::Move if regs.contains(&instr.b()) => {
-                regs.insert(instr.a());
+            // A move re-types the destination: membership follows the
+            // *source* in every set (a tracked register overwritten by an
+            // unrelated value must drop out, or a later index through it
+            // mis-attributes — the `regs` map-set is the dangerous one).
+            Opcode::Move => {
+                let b = instr.b();
+                let a = instr.a();
+                if regs.contains(&b) {
+                    regs.insert(a);
+                } else {
+                    regs.remove(&a);
+                }
+                if strlist_regs.contains(&b) {
+                    strlist_regs.insert(a);
+                } else {
+                    strlist_regs.remove(&a);
+                }
+                if str_regs.contains(&b) {
+                    str_regs.insert(a);
+                } else {
+                    str_regs.remove(&a);
+                }
+            }
+            Opcode::StringSplit => {
+                strlist_regs.insert(instr.a());
+                regs.remove(&instr.a());
+                str_regs.remove(&instr.a());
+            }
+            // Iteration normalization keeps the element kind.
+            Opcode::ToIter => {
+                let a = instr.a();
+                if strlist_regs.contains(&instr.b()) {
+                    strlist_regs.insert(a);
+                } else {
+                    strlist_regs.remove(&a);
+                }
+                regs.remove(&a);
+                str_regs.remove(&a);
+            }
+            // A list-shape-preserving method on a string list keeps the mark
+            // (`words.map(|w| w.lower())` — a lambda returning non-strings
+            // only mis-guesses toward a fallback, never a miscompile).
+            Opcode::CallMethodK => {
+                let a = instr.a();
+                let keeps = strlist_regs.contains(&a)
+                    && matches!(
+                        func.consts.strings.get(instr.b() as usize).map(String::as_str),
+                        Some("map" | "filter" | "unique" | "sort" | "reverse" | "take" | "skip" | "slice" | "concat")
+                    );
+                if !keeps {
+                    strlist_regs.remove(&a);
+                }
+                regs.remove(&a);
+                str_regs.remove(&a);
+            }
+            Opcode::LoadHeapConst => {
+                let all_str = matches!(
+                    func.consts.heap_values.get(instr.bx() as usize),
+                    Some(ConstHeapValueData::List(elems))
+                        if !elems.is_empty()
+                            && elems.iter().all(|e| match e {
+                                ConstRuntimeValueData::ShortStr(_) => true,
+                                ConstRuntimeValueData::Heap(boxed) => {
+                                    matches!(**boxed, ConstHeapValueData::LongString(_))
+                                }
+                                _ => false,
+                            })
+                );
+                if all_str {
+                    strlist_regs.insert(instr.a());
+                } else {
+                    strlist_regs.remove(&instr.a());
+                }
+                regs.remove(&instr.a());
+                str_regs.remove(&instr.a());
             }
             Opcode::LoadString | Opcode::ConcatString | Opcode::ConcatN | Opcode::ToString => {
                 str_regs.insert(instr.a());
+                regs.remove(&instr.a());
+                strlist_regs.remove(&instr.a());
             }
             // String `+` compiles to AddInt (runtime dispatch): the result is a
             // string iff an operand is.
@@ -820,14 +1572,17 @@ fn empty_map_is_int_keyed(code: &[u32], start_pc: usize, dst_reg: u8) -> bool {
             | Opcode::ModInt => {
                 str_regs.remove(&instr.a());
             }
-            Opcode::SetFieldK if regs.contains(&instr.a()) => return false,
-            Opcode::GetFieldK if regs.contains(&instr.b()) => return false,
+            Opcode::SetFieldK if after && regs.contains(&instr.a()) => return false,
+            Opcode::GetFieldK if after && regs.contains(&instr.b()) => return false,
             // Composite string-int keys are string-keyed by construction.
-            Opcode::SetIndexStrI if regs.contains(&instr.a()) => return false,
-            Opcode::GetIndexStrI if regs.contains(&instr.b()) => return false,
-            Opcode::SetIndex if regs.contains(&instr.a()) => return !str_regs.contains(&instr.b()),
-            Opcode::GetIndex | Opcode::GetList if regs.contains(&instr.b()) => {
+            Opcode::SetIndexStrI if after && regs.contains(&instr.a()) => return false,
+            Opcode::GetIndexStrI if after && regs.contains(&instr.b()) => return false,
+            Opcode::SetIndex if after && regs.contains(&instr.a()) => return !str_regs.contains(&instr.b()),
+            Opcode::GetIndex | Opcode::GetList if after && regs.contains(&instr.b()) => {
                 return !str_regs.contains(&instr.c());
+            }
+            Opcode::GetIndex | Opcode::GetList if strlist_regs.contains(&instr.b()) => {
+                str_regs.insert(instr.a());
             }
             _ => {}
         }
@@ -838,25 +1593,86 @@ fn empty_map_is_int_keyed(code: &[u32], start_pc: usize, dst_reg: u8) -> bool {
 /// Whether an empty `[]` literal's first pushed element is a string (tracked
 /// through `Move`s, like the map-key lookahead). A wrong guess only costs a
 /// fallback: the typed push rejects the mismatch, never miscompiles.
-fn empty_list_is_str_elem(code: &[u32], start_pc: usize, dst_reg: u8) -> bool {
+/// The first pushed value's provenance types an empty `[]` literal:
+/// a string source → `ListStr`, an indexed read (`xs[i]`, a field, an
+/// iterated element — possibly a boxed Dyn) → `ListDyn` (safe: everything
+/// boxes), anything else → the `ListI64` default. A wrong guess only costs
+/// a fallback.
+#[derive(PartialEq)]
+enum EmptyListGuess {
+    Str,
+    Dyn,
+    Default,
+}
+
+fn empty_list_elem_guess(func: &FunctionData, start_pc: usize, dst_reg: u8) -> EmptyListGuess {
+    let code = &func.code;
     let mut regs = std::collections::HashSet::new();
     regs.insert(dst_reg);
     let mut str_regs = std::collections::HashSet::new();
+    let mut indexed_regs = std::collections::HashSet::new();
     for raw in &code[start_pc + 1..] {
         let Ok(instr) = Instr::try_from_raw(*raw) else { break };
         match instr.opcode() {
+            // The literal escaping into a capture cell means closures push
+            // into it — their element types are invisible here, so the
+            // boxed-list guess is the only safe one (boxing never breaks
+            // correctness, a typed guess would ping-pong across functions).
+            Opcode::StoreCellVal if regs.contains(&instr.b()) => {
+                return EmptyListGuess::Dyn;
+            }
             Opcode::Move if regs.contains(&instr.b()) => {
                 regs.insert(instr.a());
             }
+            // A move propagates the source's provenance to the alias.
+            Opcode::Move => {
+                if str_regs.contains(&instr.b()) {
+                    str_regs.insert(instr.a());
+                    indexed_regs.remove(&instr.a());
+                } else if indexed_regs.contains(&instr.b()) {
+                    indexed_regs.insert(instr.a());
+                    str_regs.remove(&instr.a());
+                } else {
+                    str_regs.remove(&instr.a());
+                    indexed_regs.remove(&instr.a());
+                }
+            }
             Opcode::LoadString | Opcode::ConcatString | Opcode::ConcatN | Opcode::ToString => {
                 str_regs.insert(instr.a());
+                indexed_regs.remove(&instr.a());
             }
+            // Indexed/iterated/constructed-container reads may hold a boxed
+            // Dyn or a nested list — the Dyn guess is the safe one.
+            Opcode::GetIndex
+            | Opcode::GetList
+            | Opcode::GetFieldK
+            | Opcode::SliceFrom
+            | Opcode::ToIter
+            | Opcode::NewList
+            | Opcode::NewObject => {
+                indexed_regs.insert(instr.a());
+                str_regs.remove(&instr.a());
+            }
+            // A heap constant splits by kind: a long string is still a
+            // string (a `ListDyn` guess would change its display quoting);
+            // lists/maps take the Dyn guess.
+            Opcode::LoadHeapConst => match func.consts.heap_values.get(instr.bx() as usize) {
+                Some(ConstHeapValueData::List(_) | ConstHeapValueData::Map(_)) => {
+                    indexed_regs.insert(instr.a());
+                    str_regs.remove(&instr.a());
+                }
+                _ => {
+                    str_regs.insert(instr.a());
+                    indexed_regs.remove(&instr.a());
+                }
+            },
             Opcode::AddInt => {
                 if str_regs.contains(&instr.b()) || str_regs.contains(&instr.c()) {
                     str_regs.insert(instr.a());
                 } else {
                     str_regs.remove(&instr.a());
                 }
+                indexed_regs.remove(&instr.a());
             }
             Opcode::LoadInt
             | Opcode::LoadFloat
@@ -867,14 +1683,21 @@ fn empty_list_is_str_elem(code: &[u32], start_pc: usize, dst_reg: u8) -> bool {
             | Opcode::ModIntI
             | Opcode::ModInt => {
                 str_regs.remove(&instr.a());
+                indexed_regs.remove(&instr.a());
             }
             Opcode::ListPush if regs.contains(&instr.a()) => {
-                return str_regs.contains(&instr.b());
+                return if str_regs.contains(&instr.b()) {
+                    EmptyListGuess::Str
+                } else if indexed_regs.contains(&instr.b()) {
+                    EmptyListGuess::Dyn
+                } else {
+                    EmptyListGuess::Default
+                };
             }
             _ => {}
         }
     }
-    false
+    EmptyListGuess::Default
 }
 
 /// Interns a string constant into the module globals, returning its [`GlobalId`]
@@ -1007,7 +1830,19 @@ fn lower_function(
                 )
         })
         .count();
-    let mut ssa = Ssa::new(reg_count, cell_capacity, preds, total_blocks);
+    let mut ssa = Ssa::new(reg_count, cell_capacity, capture_count, preds, total_blocks);
+    ssa.dyn_loop_slots = sig
+        .dyn_loop_phis
+        .iter()
+        .filter(|&&(fi, _, _)| fi == func_index)
+        .map(|&(_, b, s)| (b, s))
+        .collect();
+    ssa.dyn_empty_pcs = sig
+        .dyn_empty_lists
+        .iter()
+        .filter(|&&(fi, _)| fi == func_index)
+        .map(|&(_, p)| p)
+        .collect();
     // Function parameters occupy r0..r(param_count-1) at entry; each takes its
     // inferred type (the argument type observed at call sites, `I64` by default).
     // They seed the entry block's register file as its first SSA values.
@@ -1056,12 +1891,21 @@ fn lower_function(
     // A capturing lambda's own environment arrives after any erased-argument
     // env blocks (the closure's by-value snapshot, appended by the `Call`
     // lowering); it occupies no register — `LoadCapture k` reads it directly.
+    let spawned_isolate = sig.spawned_isolate.contains(&func_index);
+    ssa.spawned_isolate = spawned_isolate;
     let mut capture_params: Vec<(ValueId, Ty)> = Vec::with_capacity(capture_count);
     for k in 0..capture_count {
         let cty = sig.param_ty(func_index as usize, param_count + env_total + k);
         let cv = ssa.new_val();
         capture_params.push((cv, cty));
         fn_params.push((cv, cty));
+        // A spawned goroutine's cell captures are thread-private copies:
+        // seed the virtual slot so body writes (isolate — never visible to
+        // the spawner) go through plain SSA.
+        if spawned_isolate {
+            let slot = ssa.cellparam_slot(k);
+            ssa.write_slot(slot, 0, (cv, cty));
+        }
     }
     let mut block_insts: Vec<Vec<Inst>> = vec![Vec::new(); total_blocks];
     let mut block_exit: Vec<Option<Exit>> = vec![None; total_blocks];
@@ -1079,6 +1923,11 @@ fn lower_function(
         let mut insts = Vec::new();
         #[allow(clippy::needless_range_loop)] // `pc` is the semantic bytecode index
         for pc in start..body_end {
+            // Trait registration sequences were lifted into `sig.traits` by
+            // the prescan; their instructions never lower (plan J1).
+            if is_entry && sig.traits.skip_pcs.contains(&pc) {
+                continue;
+            }
             lower_inst(
                 &mut ssa,
                 bi,
@@ -1119,18 +1968,153 @@ fn lower_function(
                     });
                 }
                 let (v, ty) = ssa.read(reg, bi, start)?;
+                // A function discovered to mix return types boxes every
+                // return point: it returns `Dyn`, callers consume through
+                // the Dyn arms (plan M4.2 cross-function Dyn flow).
+                let force_dyn = !is_entry && sig.dyn_rets.contains(&func_index);
+                let (v, ty) = if force_dyn && ty != Ty::Dyn {
+                    (to_dyn_any(&mut ssa, &mut insts, v, ty, start)?, Ty::Dyn)
+                } else {
+                    (v, ty)
+                };
                 match ret_ty {
-                    Some(prev) if prev != ty => return Err(Unsupported::ReturnTypeConflict),
-                    _ => ret_ty = Some(ty),
+                    Some(prev) if prev != ty => {
+                        // Heterogeneous but boxable returns are retriable:
+                        // record the function, the fixpoint re-lowers it with
+                        // every return boxed (the snapshot includes the set's
+                        // size). Everything else stays a real reject.
+                        if !is_entry && dyn_boxable_ty(prev) && dyn_boxable_ty(ty) {
+                            sig.dyn_rets.insert(func_index);
+                        }
+                        return Err(Unsupported::ReturnTypeConflict);
+                    }
+                    _ => {
+                        // Eagerly publish the first concrete return type so a
+                        // self-recursive call later in this same body observes
+                        // it instead of the stale `I64` default (a Bool-typed
+                        // `return f(xs.skip(1))` chain would otherwise look
+                        // heterogeneous forever).
+                        if ret_ty.is_none()
+                            && !is_entry
+                            && let Some(slot) = sig.ret_types.get_mut(func_index as usize)
+                        {
+                            *slot = ty;
+                            if let Some(known) = sig.ret_known.get_mut(func_index as usize) {
+                                *known = true;
+                            }
+                        }
+                        ret_ty = Some(ty);
+                    }
                 }
                 // A `Nil` return value renders as `ret void`.
                 ret_val[bi] = if ty == Ty::Nil { None } else { Some(v) };
             }
             Some(Exit::Cond { cond, .. }) => {
+                // VM truthiness (`truthy_unchecked`): only nil and false are
+                // falsy — every number (0 included), string, and container is
+                // truthy. Typed conditions fold at compile time; a Dyn
+                // condition tests tag/payload at runtime; a Maybe tests its
+                // present bit (its payload is truthy except for MaybeBool).
                 let (v, ty) = ssa.read(cond, bi, start)?;
-                if ty != Ty::Bool {
-                    return Err(Unsupported::NonBoolCondition { pc: start });
-                }
+                let v = match ty {
+                    Ty::Bool => v,
+                    Ty::Nil => {
+                        let c = ssa.new_val();
+                        insts.push(Inst::Const {
+                            dst: c,
+                            value: Const::Bool(false),
+                        });
+                        c
+                    }
+                    Ty::I64
+                    | Ty::F64
+                    | Ty::Str
+                    | Ty::ListI64
+                    | Ty::ListF64
+                    | Ty::ListStr
+                    | Ty::ListDyn
+                    | Ty::MapStrI64
+                    | Ty::MapI64I64
+                    | Ty::MapStrF64
+                    | Ty::MapI64F64
+                    | Ty::MapStrBool
+                    | Ty::MapStrDyn
+                    | Ty::Set
+                    | Ty::Cell => {
+                        let c = ssa.new_val();
+                        insts.push(Inst::Const {
+                            dst: c,
+                            value: Const::Bool(true),
+                        });
+                        c
+                    }
+                    Ty::MaybeI64 | Ty::MaybeF64 | Ty::MaybeStr => {
+                        let present = ssa.new_val();
+                        insts.push(Inst::MaybePresent {
+                            dst: present,
+                            src: v,
+                            maybe_ty: ty,
+                        });
+                        present
+                    }
+                    Ty::MaybeBool => {
+                        // Absent is nil (falsy); present carries the payload.
+                        let present = ssa.new_val();
+                        insts.push(Inst::MaybePresent {
+                            dst: present,
+                            src: v,
+                            maybe_ty: ty,
+                        });
+                        let value = ssa.new_val();
+                        insts.push(Inst::MaybeValue {
+                            dst: value,
+                            src: v,
+                            maybe_ty: ty,
+                        });
+                        let zero = ssa.new_val();
+                        insts.push(Inst::Const {
+                            dst: zero,
+                            value: Const::I64(0),
+                        });
+                        let value_b = ssa.new_val();
+                        insts.push(Inst::Cmp {
+                            dst: value_b,
+                            op: CmpOp::Ne,
+                            float: false,
+                            lhs: value,
+                            rhs: zero,
+                        });
+                        let both = ssa.new_val();
+                        insts.push(Inst::BoolAnd {
+                            dst: both,
+                            lhs: present,
+                            rhs: value_b,
+                        });
+                        both
+                    }
+                    Ty::Dyn => {
+                        let wide = ssa.new_val();
+                        insts.push(Inst::Call {
+                            dst: Some(wide),
+                            callee: AbiRef::new("dyn", "truthy"),
+                            args: vec![v],
+                        });
+                        let zero = ssa.new_val();
+                        insts.push(Inst::Const {
+                            dst: zero,
+                            value: Const::I64(0),
+                        });
+                        let cond_b = ssa.new_val();
+                        insts.push(Inst::Cmp {
+                            dst: cond_b,
+                            op: CmpOp::Ne,
+                            float: false,
+                            lhs: wide,
+                            rhs: zero,
+                        });
+                        cond_b
+                    }
+                };
                 cond_val[bi] = Some(v);
             }
             Some(Exit::FusedCmp { reg_a, rhs, op, .. }) => {
@@ -1327,6 +2311,30 @@ fn lower_function(
                         });
                         c
                     }
+                    // A boxed Dyn's nil-ness is its runtime tag — folding it
+                    // like a scalar would silently take the wrong branch.
+                    Ty::Dyn => {
+                        let tag = ssa.new_val();
+                        insts.push(Inst::Call {
+                            dst: Some(tag),
+                            callee: AbiRef::new("dyn", "tag"),
+                            args: vec![v],
+                        });
+                        let zero = ssa.new_val();
+                        insts.push(Inst::Const {
+                            dst: zero,
+                            value: Const::I64(0),
+                        });
+                        let c = ssa.new_val();
+                        insts.push(Inst::Cmp {
+                            dst: c,
+                            op: if jump_when_nil { CmpOp::Eq } else { CmpOp::Ne },
+                            float: false,
+                            lhs: tag,
+                            rhs: zero,
+                        });
+                        c
+                    }
                     _ => {
                         let c = ssa.new_val();
                         insts.push(Inst::Const {
@@ -1337,6 +2345,18 @@ fn lower_function(
                     }
                 };
                 cond_val[bi] = Some(cond);
+            }
+            // A Dyn-returning function's bare `return` returns boxed nil
+            // (`ret void` is invalid once the signature is `{i64,i64}`);
+            // `build_term` picks the resolved value up via `ret_val`.
+            Some(Exit::Ret(None)) if !is_entry && sig.dyn_rets.contains(&func_index) => {
+                let dummy = ssa.new_val();
+                let boxed = to_dyn(&mut ssa, &mut insts, dummy, Ty::Nil, start).expect("nil always boxes");
+                match ret_ty {
+                    Some(prev) if prev != Ty::Dyn => return Err(Unsupported::ReturnTypeConflict),
+                    _ => ret_ty = Some(Ty::Dyn),
+                }
+                ret_val[bi] = Some(boxed);
             }
             _ => {}
         }
@@ -1378,20 +2398,32 @@ fn lower_function(
     }
     if let Some(id) = implicit_ret_block {
         let params: Vec<(ValueId, Ty)> = ssa.phis[id as usize].iter().map(|p| (p.param, p.ty)).collect();
+        // A Dyn-returning function's implicit return (falling off the end)
+        // returns boxed nil — `ret void` in a `{i64,i64}` function is invalid.
+        let (insts, term) = if !is_entry && sig.dyn_rets.contains(&func_index) {
+            let dummy = ssa.new_val();
+            let mut iv = Vec::new();
+            let boxed = to_dyn(&mut ssa, &mut iv, dummy, Ty::Nil, 0).expect("nil always boxes");
+            (iv, Term::Ret(Some(boxed)))
+        } else {
+            (Vec::new(), Term::Ret(None))
+        };
         mir_blocks.push(Block {
             id: BlockId(id),
             params,
-            insts: Vec::new(),
-            term: Term::Ret(None),
+            insts,
+            term,
         });
     }
 
     let ret = ret_ty.unwrap_or(Ty::Nil);
     // User (non-entry) functions return scalars, `Str`/handle pointers
     // (arena-owned until exit), or nothing (`Nil` renders as `void`).
-    // Returning a `Maybe` carrier across the direct-call boundary isn't
-    // modelled — reject (fall back).
+    // A `Maybe` carrier has no direct-call return form: retriable — the
+    // fixpoint re-lowers with every return boxed, so the function returns
+    // `Dyn` (nil crosses as nil, VM-exact).
     if !is_entry && matches!(ret, Ty::MaybeI64 | Ty::MaybeF64 | Ty::MaybeStr | Ty::MaybeBool) {
+        sig.dyn_rets.insert(func_index);
         return Err(Unsupported::ReturnTypeConflict);
     }
     // The entry can return scalars (printed), but not a container handle (printing
@@ -1454,9 +2486,10 @@ fn build_term(
                 args: args_to(ssa, bi, t as usize),
             }
         }
-        Some(Exit::Ret(None)) => Term::Ret(None),
-        // `ret_val` is `None` for a resolved `Nil` return value (`ret void`).
-        Some(Exit::Ret(Some(_))) => Term::Ret(ret_val),
+        // `ret_val` is `None` for a resolved `Nil` return value (`ret void`)
+        // and `Some` for a bare `return` in a Dyn-returning function (nil
+        // crosses the call boundary boxed).
+        Some(Exit::Ret(None)) | Some(Exit::Ret(Some(_))) => Term::Ret(ret_val),
         Some(Exit::Jump(pc)) => br(pc),
         Some(Exit::Cond { then_pc, else_pc, .. }) => {
             let cond = cond_val.expect("cond resolved");
@@ -1566,6 +2599,10 @@ struct Ssa {
     /// Register slots plus the virtual cell slots appended after them
     /// (`reg_count + cid` addresses cell `cid`'s content).
     slot_count: usize,
+    capture_slots: usize,
+    /// This function runs as a spawned goroutine (isolate): cell-capture
+    /// writes go to the thread-private slots.
+    spawned_isolate: bool,
     preds: Vec<Vec<usize>>,
     current_def: Vec<Vec<Option<Reg>>>,
     sealed: Vec<bool>,
@@ -1578,6 +2615,18 @@ struct Ssa {
     /// Compile-time-known values, for provably-in-bounds constant list indexing:
     /// SSA value → its constant `i64` (recorded for direct `LoadInt`s).
     const_int: std::collections::HashMap<ValueId, i64>,
+    /// Loop-header phis pre-typed `Dyn` by a fixpoint retry (slots keyed by
+    /// `(block, slot)`; see `Unsupported::DynLoopPhi`).
+    dyn_loop_slots: std::collections::HashSet<(usize, usize)>,
+    /// Empty-`[]` literal pcs forced to Dyn by a fixpoint retry.
+    dyn_empty_pcs: std::collections::HashSet<usize>,
+    /// Guessed empty-list handles → their literal pc (a consumer that
+    /// contradicts the guess reports `EmptyListGuessWrong`).
+    empty_guess: std::collections::HashMap<ValueId, (usize, Ty)>,
+    /// Constant-range materializations (`NewRange` with all-const operands,
+    /// step 1): handle → exclusive `(start, end)`. Lets `GetIndex` recognize
+    /// a range key (`s[1..3]`) and emit a real slice.
+    range_def: std::collections::HashMap<ValueId, (i64, i64)>,
     /// SSA value of a const-materialized list handle → its known element count.
     list_len: std::collections::HashMap<ValueId, i64>,
     /// Element count at materialization (never bumped by pushes): a sound
@@ -1607,14 +2656,30 @@ struct Ssa {
     /// (`Maybe` ↔ scalar merges); appended after the block's own instructions
     /// when the MIR blocks are assembled.
     edge_insts: Vec<Vec<Inst>>,
+    /// `NewObject` provenance: the struct type name behind a `MapStrDyn`
+    /// handle value (plan J1). Method calls and display contexts consult the
+    /// trait table through it; `Move` preserves the `ValueId`, so the entry
+    /// follows the value across registers for free.
+    struct_types: std::collections::HashMap<ValueId, String>,
 }
 
 impl Ssa {
-    fn new(reg_count: usize, cell_capacity: usize, preds: Vec<Vec<usize>>, total_blocks: usize) -> Self {
-        let slot_count = reg_count + cell_capacity;
+    fn new(
+        reg_count: usize,
+        cell_capacity: usize,
+        capture_count: usize,
+        preds: Vec<Vec<usize>>,
+        total_blocks: usize,
+    ) -> Self {
+        // Virtual slot layout: registers, then `UpvalCell` cells, then one
+        // slot per capture parameter (a spawned goroutine's thread-private
+        // cell copies — isolate semantics).
+        let slot_count = reg_count + cell_capacity + capture_count;
         Self {
             reg_count,
             slot_count,
+            capture_slots: capture_count,
+            spawned_isolate: false,
             preds,
             current_def: vec![vec![None; slot_count]; total_blocks],
             sealed: vec![false; total_blocks],
@@ -1624,12 +2689,17 @@ impl Ssa {
             single_fallthrough_target: vec![None; total_blocks],
             next_val: 0,
             const_int: std::collections::HashMap::new(),
+            dyn_loop_slots: std::collections::HashSet::new(),
+            dyn_empty_pcs: std::collections::HashSet::new(),
+            empty_guess: std::collections::HashMap::new(),
+            range_def: std::collections::HashMap::new(),
             list_len: std::collections::HashMap::new(),
             list_base_len: std::collections::HashMap::new(),
             const_strs: std::collections::HashMap::new(),
             builtin_regs: std::collections::HashMap::new(),
             next_cell: 0,
             edge_insts: vec![Vec::new(); total_blocks],
+            struct_types: std::collections::HashMap::new(),
         }
     }
 
@@ -1668,6 +2738,12 @@ impl Ssa {
     /// The virtual slot holding cell `cid`'s content.
     fn cell_slot(&self, cid: u32) -> usize {
         self.reg_count + cid as usize
+    }
+
+    /// The thread-private slot backing capture parameter `k` in a spawned
+    /// goroutine (seeded from the boxed snapshot at entry).
+    fn cellparam_slot(&self, k: usize) -> usize {
+        self.slot_count - self.capture_slots + k
     }
 
     fn read_typed(&mut self, reg: u8, block: usize, want: Ty, pc: usize) -> Result<ValueId, Unsupported> {
@@ -1806,6 +2882,13 @@ impl Ssa {
     fn read_recursive(&mut self, slot: usize, block: usize, pc: usize) -> Result<Reg, Unsupported> {
         let value: Reg = if !self.sealed[block] {
             let ty = self.phi_ty(slot, block, pc)?;
+            // A fixpoint retry pre-types a discovered heterogeneous
+            // loop-header phi as Dyn (the body then consumes it uniformly).
+            let ty = if self.dyn_loop_slots.contains(&(block, slot)) {
+                Ty::Dyn
+            } else {
+                ty
+            };
             let param = self.new_val();
             let idx = self.phis[block].len();
             self.phis[block].push(Phi {
@@ -1823,6 +2906,11 @@ impl Ssa {
             return Err(Unsupported::UndefinedOperand { pc, reg: slot });
         } else {
             let ty = self.phi_ty(slot, block, pc)?;
+            let ty = if self.dyn_loop_slots.contains(&(block, slot)) {
+                Ty::Dyn
+            } else {
+                ty
+            };
             let param = self.new_val();
             let idx = self.phis[block].len();
             self.phis[block].push(Phi {
@@ -1834,7 +2922,8 @@ impl Ssa {
             // Break cycles before reading operands.
             self.current_def[block][slot] = Some((param, ty));
             self.add_phi_operands(block, idx, pc)?;
-            (param, ty)
+            // A heterogeneous merge may have widened the phi to Dyn.
+            (param, self.phis[block][idx].ty)
         };
         self.current_def[block][slot] = Some(value);
         Ok(value)
@@ -1843,26 +2932,213 @@ impl Ssa {
     fn add_phi_operands(&mut self, block: usize, phi_idx: usize, pc: usize) -> Result<(), Unsupported> {
         let slot = self.phis[block][phi_idx].reg;
         let phi_ty = self.phis[block][phi_idx].ty;
+        let param = self.phis[block][phi_idx].param;
         let preds = self.preds[block].clone();
+        let mut incoming = Vec::with_capacity(preds.len());
         for p in preds {
             let (v, ty) = self.read_slot(slot, p, pc)?;
-            // Every incoming edge must agree on the type (the phi was typed from
-            // one filled predecessor). A `Maybe` merging with its scalar (the
-            // `let v = m[k]; if v == nil { v = default; }` shape) converts on
-            // the incoming edge: extracting the raw value never observes the
-            // absent case (the phi takes the other edge there), and wrapping a
-            // scalar marks it present. Anything else is a heterogeneous value
-            // our typed MIR cannot represent — reject (fall back).
-            let v = if ty == phi_ty {
-                v
-            } else if let Some(converted) = self.convert_phi_edge(v, ty, phi_ty, p) {
-                converted
-            } else {
-                return Err(Unsupported::TypeMismatch { pc });
-            };
-            self.phis[block][phi_idx].operands.push((p, v));
+            incoming.push((p, v, ty));
+        }
+        // Every incoming edge must agree on the type (the phi was typed from
+        // one filled predecessor). A `Maybe` merging with its scalar (the
+        // `let v = m[k]; if v == nil { v = default; }` shape) converts on
+        // the incoming edge: extracting the raw value never observes the
+        // absent case (the phi takes the other edge there), and wrapping a
+        // scalar marks it present.
+        let maybe_pair = |from: Ty, to: Ty| {
+            matches!(
+                (from, to),
+                (Ty::MaybeI64, Ty::I64)
+                    | (Ty::MaybeF64, Ty::F64)
+                    | (Ty::MaybeStr, Ty::Str)
+                    | (Ty::I64, Ty::MaybeI64)
+                    | (Ty::F64, Ty::MaybeF64)
+                    | (Ty::Str, Ty::MaybeStr)
+            )
+        };
+        // A Nil-typed phi has no LLVM value form (`phi void`): even a
+        // homogeneous all-nil merge widens to Dyn below (each edge boxes
+        // `from_nil`; consumers test the tag at runtime, VM-exact).
+        if phi_ty != Ty::Nil
+            && incoming
+                .iter()
+                .all(|&(_, _, ty)| ty == phi_ty || maybe_pair(ty, phi_ty))
+        {
+            // A guessed empty-`[]` handle read through a phi (loop/branch)
+            // keeps its provenance: every non-self edge must carry the same
+            // literal pc for the param to inherit it.
+            let mut guess: Option<(usize, Ty)> = None;
+            let mut all_guessed = true;
+            for &(_, v, _) in &incoming {
+                if v == param {
+                    continue;
+                }
+                match self.empty_guess.get(&v) {
+                    Some(&g) if guess.is_none() || guess == Some(g) => guess = Some(g),
+                    _ => {
+                        all_guessed = false;
+                        break;
+                    }
+                }
+            }
+            if all_guessed && let Some(g) = guess {
+                self.empty_guess.insert(param, g);
+            }
+            for (p, v, ty) in incoming {
+                let v = if ty == phi_ty {
+                    v
+                } else {
+                    self.convert_phi_edge(v, ty, phi_ty, p)
+                        .expect("maybe_pair-checked edge converts")
+                };
+                self.phis[block][phi_idx].operands.push((p, v));
+            }
+            return Ok(());
+        }
+        // A heterogeneous merge of dyn-boxable types (`a ?? "default"`,
+        // `if c { 1 } else { "x" }`) widens the phi to `Dyn` and boxes each
+        // edge (plan M4.2). Only for a freshly created forward-join phi:
+        // a loop-header phi's param may already be consumed at its old type
+        // elsewhere (`allow_widen` = false from `seal_block`), and a
+        // self-referential edge would box the param into itself.
+        let boxable = |ty: Ty| {
+            matches!(
+                ty,
+                Ty::Dyn
+                    | Ty::Nil
+                    | Ty::Bool
+                    | Ty::I64
+                    | Ty::F64
+                    | Ty::Str
+                    | Ty::ListDyn
+                    | Ty::ListI64
+                    | Ty::ListF64
+                    | Ty::ListStr
+                    | Ty::MapStrDyn
+                    | Ty::MaybeI64
+                    | Ty::MaybeF64
+                    | Ty::MaybeStr
+                    | Ty::MaybeBool
+            )
+        };
+        if phi_ty != Ty::Dyn || incoming.iter().any(|&(_, v, ty)| v == param || !boxable(ty)) {
+            // A boxable heterogeneous merge is retriable: report it so the
+            // fixpoint re-lowers with this phi pre-typed `Dyn` *from
+            // creation*. Widening in place is unsound even for a fresh
+            // forward join — a same-pass consumer (an inner if-join phi over
+            // the same slot) may already have read the param at its old type
+            // and boxed the Dyn value as if it were that type.
+            if phi_ty != Ty::Dyn && incoming.iter().all(|&(_, v, ty)| v != param && boxable(ty)) {
+                return Err(Unsupported::DynLoopPhi { block, slot });
+            }
+            return Err(Unsupported::TypeMismatch { pc });
+        }
+        for (p, v, ty) in incoming {
+            let boxed = self.dyn_box_on_edge(p, v, ty).expect("boxable-checked edge boxes");
+            self.phis[block][phi_idx].operands.push((p, boxed));
         }
         Ok(())
+    }
+
+    /// Emits the `dyn.from_*` boxing sequence for one phi edge into
+    /// `edge_insts[pred]` (they land after the block body, before the
+    /// terminator). Mirrors `to_dyn`, but targets an edge, not the body.
+    fn dyn_box_on_edge(&mut self, pred: usize, v: ValueId, ty: Ty) -> Option<ValueId> {
+        let simple = match ty {
+            Ty::Dyn => return Some(v),
+            Ty::I64 => Some("from_i64"),
+            Ty::F64 => Some("from_f64"),
+            Ty::Str => Some("from_str"),
+            Ty::ListDyn => Some("from_list"),
+            Ty::MapStrDyn => Some("from_map"),
+            _ => None,
+        };
+        if let Some(name) = simple {
+            let dst = self.new_val();
+            self.edge_insts[pred].push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("dyn", name),
+                args: vec![v],
+            });
+            return Some(dst);
+        }
+        match ty {
+            Ty::Nil => {
+                let dst = self.new_val();
+                self.edge_insts[pred].push(Inst::Call {
+                    dst: Some(dst),
+                    callee: AbiRef::new("dyn", "from_nil"),
+                    args: Vec::new(),
+                });
+                Some(dst)
+            }
+            Ty::Bool => {
+                let wide = self.new_val();
+                self.edge_insts[pred].push(Inst::ZextBool { dst: wide, src: v });
+                let dst = self.new_val();
+                self.edge_insts[pred].push(Inst::Call {
+                    dst: Some(dst),
+                    callee: AbiRef::new("dyn", "from_bool"),
+                    args: vec![wide],
+                });
+                Some(dst)
+            }
+            // Nullable carriers box via `(value, present)` — a nil edge
+            // arrives as nil, exactly the VM (`m[k]!` join shapes).
+            Ty::MaybeI64 | Ty::MaybeF64 | Ty::MaybeStr | Ty::MaybeBool => {
+                let from = match ty {
+                    Ty::MaybeI64 => "from_maybe_i64",
+                    Ty::MaybeF64 => "from_maybe_f64",
+                    Ty::MaybeStr => "from_maybe_str",
+                    _ => "from_maybe_bool",
+                };
+                let value = self.new_val();
+                self.edge_insts[pred].push(Inst::MaybeValue {
+                    dst: value,
+                    src: v,
+                    maybe_ty: ty,
+                });
+                let present_b = self.new_val();
+                self.edge_insts[pred].push(Inst::MaybePresent {
+                    dst: present_b,
+                    src: v,
+                    maybe_ty: ty,
+                });
+                let present = self.new_val();
+                self.edge_insts[pred].push(Inst::ZextBool {
+                    dst: present,
+                    src: present_b,
+                });
+                let dst = self.new_val();
+                self.edge_insts[pred].push(Inst::Call {
+                    dst: Some(dst),
+                    callee: AbiRef::new("dyn", from),
+                    args: vec![value, present],
+                });
+                Some(dst)
+            }
+            Ty::ListI64 | Ty::ListF64 | Ty::ListStr => {
+                let converter = match ty {
+                    Ty::ListI64 => "i64_to_dyn",
+                    Ty::ListF64 => "f64_to_dyn",
+                    _ => "str_to_dyn",
+                };
+                let converted = self.new_val();
+                self.edge_insts[pred].push(Inst::Call {
+                    dst: Some(converted),
+                    callee: AbiRef::new("list_h", converter),
+                    args: vec![v],
+                });
+                let dst = self.new_val();
+                self.edge_insts[pred].push(Inst::Call {
+                    dst: Some(dst),
+                    callee: AbiRef::new("dyn", "from_list"),
+                    args: vec![converted],
+                });
+                Some(dst)
+            }
+            _ => None,
+        }
     }
 
     fn convert_phi_edge(&mut self, v: ValueId, from: Ty, to: Ty, pred: usize) -> Option<ValueId> {
@@ -1914,6 +3190,8 @@ impl Ssa {
     fn seal_block(&mut self, block: usize) -> Result<(), Unsupported> {
         let incs = std::mem::take(&mut self.incomplete[block]);
         for idx in incs {
+            // No Dyn widening here: an incomplete phi (loop header) has
+            // already been read at its original type inside the loop body.
             self.add_phi_operands(block, idx, 0)?;
         }
         self.sealed[block] = true;
@@ -2207,6 +3485,196 @@ fn record_ret_closure(sig: &mut SigInfer, fi: usize, candidate: (u32, Vec<RetCap
     }
 }
 
+/// `spawn(closure)` / the `go` desugar (plan H): the closure's captures all
+/// cross the isolate boundary *boxed* (its signature joins to
+/// `fn(Dyn, …) -> Dyn`), so a per-arity lkrt trampoline launches the
+/// compiled body on a fresh OS thread. Captures snapshot by value —
+/// including cells (isolate: a goroutine's mutation never leaks back; the
+/// body's cell writes land in a thread-private virtual slot).
+#[allow(clippy::too_many_arguments)]
+fn lower_spawn(
+    ssa: &mut Ssa,
+    insts: &mut Vec<Inst>,
+    funcs: &[FunctionData],
+    entry: u32,
+    sig: &mut SigInfer,
+    base: u8,
+    argc: usize,
+    block: usize,
+    pc: usize,
+) -> Result<(), Unsupported> {
+    if argc != 1 {
+        return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+    }
+    let arg_reg = base.wrapping_add(1);
+    let (fidx, caps) = match ssa.builtin_ref_at(arg_reg, block) {
+        Some(GlobalRef::Closure(f, caps)) => (f as usize, caps),
+        Some(GlobalRef::Lambda(f)) => (f as usize, Vec::new()),
+        _ => return Err(Unsupported::Opcode { pc, op: Opcode::Call }),
+    };
+    if fidx >= funcs.len()
+        || fidx == entry as usize
+        || funcs[fidx].param_count != 0
+        || caps.len() != funcs[fidx].capture_count as usize
+        || caps.len() > 4
+    {
+        return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+    }
+    sig.spawned_isolate.insert(fidx as u32);
+    // Snapshot the captures into the argument block, boxed.
+    let block_v = if caps.is_empty() {
+        None
+    } else {
+        let b = ssa.new_val();
+        insts.push(Inst::Call {
+            dst: Some(b),
+            callee: AbiRef::new("rt", "spawn_args_new"),
+            args: Vec::new(),
+        });
+        for (k, capture) in caps.iter().enumerate() {
+            let (v, ty) = match capture {
+                ClosureCapture::Cell(cid) => {
+                    let slot = ssa.cell_slot(*cid);
+                    ssa.read_slot(slot, block, pc)?
+                }
+                ClosureCapture::Value(v, ty) => (*v, *ty),
+            };
+            let boxed = to_dyn_any(ssa, insts, v, ty, pc)?;
+            insts.push(Inst::Call {
+                dst: None,
+                callee: AbiRef::new("rt", "spawn_args_push"),
+                args: vec![b, boxed],
+            });
+            let want = sig.observe_param(fidx, k, Ty::Dyn);
+            if want != Ty::Dyn {
+                return Err(Unsupported::TypeMismatch { pc });
+            }
+        }
+        Some(b)
+    };
+    // The body's result crosses back boxed on `task.await`.
+    if !sig.dyn_rets.contains(&(fidx as u32)) {
+        sig.dyn_rets.insert(fidx as u32);
+        return Err(Unsupported::TypeMismatch { pc });
+    }
+    if sig.ret_types.get(fidx).copied() != Some(Ty::Dyn) {
+        return Err(Unsupported::TypeMismatch { pc });
+    }
+    let fnaddr = ssa.new_val();
+    insts.push(Inst::Const {
+        dst: fnaddr,
+        value: Const::FnAddr(FuncId(fidx as u32)),
+    });
+    let spawn_fn: &'static str = match caps.len() {
+        0 => "spawn0",
+        1 => "spawn1",
+        2 => "spawn2",
+        3 => "spawn3",
+        _ => "spawn4",
+    };
+    let mut args = vec![fnaddr];
+    if let Some(b) = block_v {
+        args.push(b);
+    }
+    let dst = ssa.new_val();
+    insts.push(Inst::Call {
+        dst: Some(dst),
+        callee: AbiRef::new("rt", spawn_fn),
+        args,
+    });
+    ssa.write(base, block, (dst, Ty::I64));
+    Ok(())
+}
+
+/// `try$call(closure)` — the try/catch desugar's protected call (plan G).
+/// The body closure lowers as a normal `Dyn`-returning function; the call
+/// site emits [`Inst::TryCall`], which codegen expands into `rt.try_push` +
+/// `_setjmp` + a conditional body call joining into the `[ok, value]` dyn
+/// list the desugared destructuring consumes. Mutable captures (`UpvalCell`)
+/// materialize as *runtime cells* across the boundary: the body writes
+/// through the shared slot, and the caller re-reads it afterwards, so the
+/// SSA-tracked cell world stays coherent.
+#[allow(clippy::too_many_arguments)]
+fn lower_try_call(
+    ssa: &mut Ssa,
+    insts: &mut Vec<Inst>,
+    funcs: &[FunctionData],
+    entry: u32,
+    sig: &mut SigInfer,
+    base: u8,
+    argc: usize,
+    block: usize,
+    pc: usize,
+) -> Result<(), Unsupported> {
+    if argc != 1 {
+        return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+    }
+    let arg_reg = base.wrapping_add(1);
+    let (fidx, caps) = match ssa.builtin_ref_at(arg_reg, block) {
+        Some(GlobalRef::Closure(f, caps)) => (f as usize, caps),
+        Some(GlobalRef::Lambda(f)) => (f as usize, Vec::new()),
+        _ => return Err(Unsupported::Opcode { pc, op: Opcode::Call }),
+    };
+    if fidx >= funcs.len()
+        || fidx == entry as usize
+        || funcs[fidx].param_count != 0
+        || caps.len() != funcs[fidx].capture_count as usize
+    {
+        return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+    }
+    let mut args = Vec::with_capacity(caps.len());
+    let mut cell_writebacks: Vec<(u32, ValueId)> = Vec::new();
+    for (k, capture) in caps.iter().enumerate() {
+        let (v, ty) = match capture {
+            ClosureCapture::Cell(cid) => {
+                // Seed a runtime cell with the current content; the body
+                // mutates through it, the write-back below re-syncs.
+                let slot = ssa.cell_slot(*cid);
+                let (cur, cur_ty) = ssa.read_slot(slot, block, pc)?;
+                let boxed = to_dyn_any(ssa, insts, cur, cur_ty, pc)?;
+                let cell = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(cell),
+                    callee: AbiRef::new("rt", "cell_new"),
+                    args: vec![boxed],
+                });
+                cell_writebacks.push((*cid, cell));
+                (cell, Ty::Cell)
+            }
+            ClosureCapture::Value(v, ty) => (*v, *ty),
+        };
+        let want = sig.observe_param(fidx, k, ty);
+        args.push(coerce_arg(ssa, insts, v, ty, want, pc)?);
+    }
+    // The body's return crosses the boundary boxed (`dyn_rets`, the same
+    // retriable convergence the dyn HOF family uses).
+    if !sig.dyn_rets.contains(&(fidx as u32)) {
+        sig.dyn_rets.insert(fidx as u32);
+        return Err(Unsupported::TypeMismatch { pc });
+    }
+    if sig.ret_types.get(fidx).copied() != Some(Ty::Dyn) {
+        return Err(Unsupported::TypeMismatch { pc });
+    }
+    let dst = ssa.new_val();
+    insts.push(Inst::TryCall {
+        dst,
+        func: FuncId(fidx as u32),
+        args,
+    });
+    for (cid, cell) in cell_writebacks {
+        let cur = ssa.new_val();
+        insts.push(Inst::Call {
+            dst: Some(cur),
+            callee: AbiRef::new("rt", "cell_get"),
+            args: vec![cell],
+        });
+        let slot = ssa.cell_slot(cid);
+        ssa.write_slot(slot, block, (cur, Ty::Dyn));
+    }
+    ssa.write(base, block, (dst, Ty::ListDyn));
+    Ok(())
+}
+
 /// Lowers a call to user function `callee_idx` with the register-window layout
 /// shared by `CallDirect` and indirect `Call` (callee/result at `dst_reg`,
 /// args at `[dst_reg+1, dst_reg+1+argc)`): reads the typed arguments, refines
@@ -2304,6 +3772,8 @@ fn lower_user_call(
                         + funcs[callee_idx].capture_count as usize
                 ]);
                 sig.ret_types.push(sig.ret_types[callee_idx]);
+                sig.ret_known
+                    .push(sig.ret_known.get(callee_idx).copied().unwrap_or(false));
                 sig.ret_closures.push(None);
                 sig.ret_closure_poisoned.push(false);
                 sig.lambda_params.push(identity.clone());
@@ -2330,16 +3800,48 @@ fn lower_user_call(
         let mut caps = Vec::with_capacity(srcs.len());
         for RetCaptureSrc::Param(k) in srcs {
             let arg_reg = dst_reg.wrapping_add(1).wrapping_add(k as u8);
-            let (v, ty) = read_scalar(ssa, insts, arg_reg, block, pc)?;
-            if matches!(ty, Ty::Nil | Ty::MaybeI64 | Ty::MaybeF64 | Ty::MaybeStr | Ty::MaybeBool) {
-                return Err(Unsupported::TypeMismatch { pc });
-            }
+            let (v, ty) = ssa.read(arg_reg, block, pc)?;
+            // Nullable shapes have no typed capture form: box to Dyn, so the
+            // eventual consumer joins its parameter to Dyn like any call site.
+            let (v, ty) = if matches!(ty, Ty::Nil | Ty::MaybeI64 | Ty::MaybeF64 | Ty::MaybeStr | Ty::MaybeBool) {
+                (to_dyn_any(ssa, insts, v, ty, pc)?, Ty::Dyn)
+            } else {
+                (v, ty)
+            };
             caps.push(ClosureCapture::Value(v, ty));
         }
         if (dst_reg as usize) < ssa.reg_count {
             ssa.current_def[block][dst_reg as usize] = None;
         }
         ssa.builtin_regs.insert((block, dst_reg), GlobalRef::Closure(lf, caps));
+        return Ok(());
+    }
+    // Tier 1 bridge call (`docs/llvm/tier1-hybrid.md`): the callee runs on the
+    // embedded VM. Arguments must match the recorded scalar marshaling types;
+    // the destination register stays *unbound*, so any later use of the result
+    // rejects the module (results never cross the bridge in v1).
+    if let Some(param_tys) = sig.vm_functions.get(&(callee_idx as u32)).cloned() {
+        if !captures.is_empty() {
+            return Err(Unsupported::Opcode {
+                pc,
+                op: Opcode::CallDirect,
+            });
+        }
+        let mut args = Vec::with_capacity(argc);
+        for (i, param_ty) in param_tys.iter().enumerate().take(argc) {
+            let arg_reg = dst_reg.wrapping_add(1).wrapping_add(i as u8);
+            let (aval, aty) = read_scalar(ssa, insts, arg_reg, block, pc)?;
+            if aty != *param_ty {
+                return Err(Unsupported::TypeMismatch { pc });
+            }
+            args.push(aval);
+        }
+        insts.push(Inst::CallVm {
+            func: FuncId(callee_idx as u32),
+            args,
+        });
+        ssa.current_def[block][dst_reg as usize] = None;
+        ssa.builtin_regs.remove(&(block, dst_reg));
         return Ok(());
     }
     let mut args = Vec::with_capacity(argc + captures.len());
@@ -2364,59 +3866,32 @@ fn lower_user_call(
                         }
                         ClosureCapture::Value(v, ty) => (*v, *ty),
                     };
-                    if matches!(ty, Ty::Nil | Ty::MaybeI64 | Ty::MaybeF64 | Ty::MaybeStr | Ty::MaybeBool) {
-                        return Err(Unsupported::TypeMismatch { pc });
-                    }
                     env_args.push((v, ty));
                 }
                 continue;
             }
             None => {}
         }
-        let (aval, aty) = read_scalar(ssa, insts, arg_reg, block, pc)?;
-        // `Str` and container handles pass as `ptr` (arena-owned until
-        // exit, so no ownership transfer is involved). `Maybe` carriers
-        // and nil stay out of the function ABI.
-        if matches!(aty, Ty::Nil | Ty::MaybeI64 | Ty::MaybeF64 | Ty::MaybeStr) {
-            return Err(Unsupported::TypeMismatch { pc });
-        }
-        // Refine the callee's parameter type from this observed argument.
-        if let Some(slot) = sig.param_obs.get_mut(callee_idx).and_then(|p| p.get_mut(i)) {
-            match slot {
-                None => *slot = Some(aty),
-                Some(prev) if *prev != aty => sig.conflict = true,
-                Some(_) => {}
-            }
-        }
-        args.push(aval);
+        // `Str` and container handles pass as `ptr` (arena-owned until exit,
+        // so no ownership transfer is involved). The raw register read keeps
+        // nullable carriers intact: they observe as `Dyn` and box, so the
+        // callee receives nil as nil (VM call semantics) instead of the
+        // scalar-context unwrap abort.
+        let (aval, aty) = ssa.read(arg_reg, block, pc)?;
+        let want = sig.observe_param(callee_idx, i, aty);
+        args.push(coerce_arg(ssa, insts, aval, aty, want, pc)?);
     }
     // Hidden trailing arguments, in signature order: the erased closures'
     // environment values first, then the callee's own captures. Their types
     // refine the same monomorphization lattice as visible parameters.
     for (k, &(ev, ety)) in env_args.iter().enumerate() {
-        if let Some(slot) = sig.param_obs.get_mut(callee_idx).and_then(|p| p.get_mut(argc + k)) {
-            match slot {
-                None => *slot = Some(ety),
-                Some(prev) if *prev != ety => sig.conflict = true,
-                Some(_) => {}
-            }
-        }
-        args.push(ev);
+        let want = sig.observe_param(callee_idx, argc + k, ety);
+        args.push(coerce_arg(ssa, insts, ev, ety, want, pc)?);
     }
     let env_total = env_args.len();
     for (k, &(cval, cty)) in captures.iter().enumerate() {
-        if let Some(slot) = sig
-            .param_obs
-            .get_mut(callee_idx)
-            .and_then(|p| p.get_mut(argc + env_total + k))
-        {
-            match slot {
-                None => *slot = Some(cty),
-                Some(prev) if *prev != cty => sig.conflict = true,
-                Some(_) => {}
-            }
-        }
-        args.push(cval);
+        let want = sig.observe_param(callee_idx, argc + env_total + k, cty);
+        args.push(coerce_arg(ssa, insts, cval, cty, want, pc)?);
     }
     let ret = sig.ret_types.get(callee_idx).copied().unwrap_or(Ty::I64);
     if ret == Ty::Nil {
@@ -2506,7 +3981,17 @@ fn lower_inst(
             // covers refs inherited from predecessors (an SSA definition in
             // this block shadows; conflicting paths resolve to None).
             if let Some(global_ref) = ssa.builtin_ref_at(instr.b(), block) {
+                // An `ArgList` view coexists with a materialized SSA handle
+                // ("both views", see `NewList`): propagate the SSA half too,
+                // so index/display through the moved register keep working.
+                // Only for ArgList — for every other ref kind an SSA write
+                // would shadow the ref at its consumers (e.g. a recycled
+                // register's stale definition burying a `println` ref).
+                let dual_view = matches!(global_ref, GlobalRef::ArgList(_));
                 ssa.builtin_regs.insert((block, instr.a()), global_ref);
+                if dual_view && let Some(src) = ssa.current_def[block][instr.b() as usize] {
+                    ssa.write(instr.a(), block, src);
+                }
                 return Ok(());
             }
             let src = ssa.read(instr.b(), block, pc)?;
@@ -2552,8 +4037,109 @@ fn lower_inst(
                     });
                     insts.push(Inst::Not { dst, src: present });
                 }
+                // A boxed Dyn (struct field / mixed-container read): nil-ness
+                // is its tag (`0` = Nil), same as the Cmp `== nil` arm.
+                Ty::Dyn => {
+                    let tag = ssa.new_val();
+                    insts.push(Inst::Call {
+                        dst: Some(tag),
+                        callee: AbiRef::new("dyn", "tag"),
+                        args: vec![v],
+                    });
+                    let zero = ssa.new_val();
+                    insts.push(Inst::Const {
+                        dst: zero,
+                        value: Const::I64(0),
+                    });
+                    insts.push(Inst::Cmp {
+                        dst,
+                        op: CmpOp::Eq,
+                        float: false,
+                        lhs: tag,
+                        rhs: zero,
+                    });
+                }
                 _ => return Err(Unsupported::TypeMismatch { pc }),
             }
+            ssa.write(instr.a(), block, (dst, Ty::Bool));
+        }
+        Opcode::IsList => {
+            // `a` = dst, `b` = src. In the statically-typed subset the list-ness
+            // of a register is known at lower time: a typed list handle is a
+            // list; every other lowerable type (scalars, maps, maybe-carriers,
+            // nil) is not. Const-folds to a `Bool`, mirroring the VM's
+            // `runtime_value_is_list`.
+            let (v, ty) = ssa.read(instr.b(), block, pc)?;
+            // A boxed Dyn is list-ness only at runtime: test its tag (5 =
+            // DYN_LIST). Everything else const-folds.
+            if ty == Ty::Dyn {
+                let tag = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(tag),
+                    callee: AbiRef::new("dyn", "tag"),
+                    args: vec![v],
+                });
+                let want = ssa.new_val();
+                insts.push(Inst::Const {
+                    dst: want,
+                    value: Const::I64(5),
+                });
+                let dst = ssa.new_val();
+                insts.push(Inst::Cmp {
+                    dst,
+                    op: CmpOp::Eq,
+                    float: false,
+                    lhs: tag,
+                    rhs: want,
+                });
+                ssa.write(instr.a(), block, (dst, Ty::Bool));
+                return Ok(());
+            }
+            let is_list = matches!(ty, Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn);
+            let dst = ssa.new_val();
+            insts.push(Inst::Const {
+                dst,
+                value: Const::Bool(is_list),
+            });
+            ssa.write(instr.a(), block, (dst, Ty::Bool));
+        }
+        Opcode::IsMap => {
+            // `a` = dst, `b` = src. Analogous to `IsList`: a typed map handle is
+            // a map at lower time; every other lowerable type is not. Const-folds
+            // to a `Bool`, mirroring the VM's `runtime_value_is_map`.
+            let (v, ty) = ssa.read(instr.b(), block, pc)?;
+            if ty == Ty::Dyn {
+                let tag = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(tag),
+                    callee: AbiRef::new("dyn", "tag"),
+                    args: vec![v],
+                });
+                let want = ssa.new_val();
+                insts.push(Inst::Const {
+                    dst: want,
+                    value: Const::I64(6),
+                });
+                let dst = ssa.new_val();
+                insts.push(Inst::Cmp {
+                    dst,
+                    op: CmpOp::Eq,
+                    float: false,
+                    lhs: tag,
+                    rhs: want,
+                });
+                ssa.write(instr.a(), block, (dst, Ty::Bool));
+                return Ok(());
+            }
+            let is_map = matches!(
+                ty,
+                Ty::MapStrI64 | Ty::MapI64I64 | Ty::MapStrF64 | Ty::MapI64F64 | Ty::MapStrBool | Ty::MapStrDyn
+            );
+            let dst = ssa.new_val();
+            insts.push(Inst::Const {
+                dst,
+                value: Const::Bool(is_map),
+            });
             ssa.write(instr.a(), block, (dst, Ty::Bool));
         }
         Opcode::Not => {
@@ -2567,6 +4153,28 @@ fn lower_inst(
                     dst,
                     value: Const::Bool(true),
                 }),
+                // A boxed value dispatches at runtime (Bool/Nil legal,
+                // anything else the VM's loud error): `dyn.not` → 0/1.
+                Ty::Dyn => {
+                    let wide = ssa.new_val();
+                    insts.push(Inst::Call {
+                        dst: Some(wide),
+                        callee: AbiRef::new("dyn", "not"),
+                        args: vec![v],
+                    });
+                    let zero = ssa.new_val();
+                    insts.push(Inst::Const {
+                        dst: zero,
+                        value: Const::I64(0),
+                    });
+                    insts.push(Inst::Cmp {
+                        dst,
+                        op: CmpOp::Ne,
+                        float: false,
+                        lhs: wide,
+                        rhs: zero,
+                    });
+                }
                 _ => return Err(Unsupported::TypeMismatch { pc }),
             }
             ssa.write(instr.a(), block, (dst, Ty::Bool));
@@ -2576,6 +4184,63 @@ fn lower_inst(
             // integer op; any float operand → coerce ints to float and use the float
             // op (matching `dynamic_add`/etc.). We resolve that dispatch statically.
             // A `Maybe` operand (dynamic index result) unwraps to `I64` here.
+            //
+            // A Dyn operand routes both sides through the `dyn.*` helpers,
+            // which carry the same promotion rules at runtime (`/` always
+            // Float, type errors abort like the VM). Result stays `Ty::Dyn`.
+            {
+                let (lv_raw, lty_raw) = ssa.read(instr.b(), block, pc)?;
+                let (rv_raw, rty_raw) = ssa.read(instr.c(), block, pc)?;
+                // `Str + Dyn`: the VM only accepts Str + Str here (anything
+                // else is a loud error), so unbox the Dyn side through the
+                // `as_str` tag guard (same loud failure) and emit a *typed*
+                // concat — the result stays `Str`, keeping a loop
+                // accumulator (`acc += s[i]`) same-typed through its phi.
+                if op == Opcode::AddInt && matches!((lty_raw, rty_raw), (Ty::Str, Ty::Dyn) | (Ty::Dyn, Ty::Str)) {
+                    let unbox = |ssa: &mut Ssa, insts: &mut Vec<Inst>, v: ValueId, ty: Ty| {
+                        if ty == Ty::Dyn {
+                            let dst = ssa.new_val();
+                            insts.push(Inst::Call {
+                                dst: Some(dst),
+                                callee: AbiRef::new("dyn", "as_str"),
+                                args: vec![v],
+                            });
+                            dst
+                        } else {
+                            v
+                        }
+                    };
+                    let lhs = unbox(ssa, insts, lv_raw, lty_raw);
+                    let rhs = unbox(ssa, insts, rv_raw, rty_raw);
+                    let dst = ssa.new_val();
+                    insts.push(Inst::Call {
+                        dst: Some(dst),
+                        callee: AbiRef::new("str", "concat"),
+                        args: vec![lhs, rhs],
+                    });
+                    ssa.write(instr.a(), block, (dst, Ty::Str));
+                    return Ok(());
+                }
+                if lty_raw == Ty::Dyn || rty_raw == Ty::Dyn {
+                    let lhs = to_dyn(ssa, insts, lv_raw, lty_raw, pc)?;
+                    let rhs = to_dyn(ssa, insts, rv_raw, rty_raw, pc)?;
+                    let helper = match op {
+                        Opcode::AddInt => "add",
+                        Opcode::SubInt => "sub",
+                        Opcode::MulInt => "mul",
+                        Opcode::DivInt => "div",
+                        _ => "mod",
+                    };
+                    let dst = ssa.new_val();
+                    insts.push(Inst::Call {
+                        dst: Some(dst),
+                        callee: AbiRef::new("dyn", helper),
+                        args: vec![lhs, rhs],
+                    });
+                    ssa.write(instr.a(), block, (dst, Ty::Dyn));
+                    return Ok(());
+                }
+            }
             let (lv, lty) = read_scalar(ssa, insts, instr.b(), block, pc)?;
             let (rv, rty) = read_scalar(ssa, insts, instr.c(), block, pc)?;
             match (lty, rty) {
@@ -2653,6 +4318,71 @@ fn lower_inst(
                 ssa.list_len.insert(handle, elems.len() as i64);
                 ssa.list_base_len.insert(handle, elems.len() as i64);
                 ssa.write(instr.a(), block, (handle, list_ty));
+            } else if !elems.is_empty()
+                && elems.iter().all(|&(_, ty)| {
+                    matches!(
+                        ty,
+                        Ty::I64
+                            | Ty::F64
+                            | Ty::Str
+                            | Ty::Bool
+                            | Ty::Nil
+                            | Ty::Dyn
+                            | Ty::ListI64
+                            | Ty::ListF64
+                            | Ty::ListStr
+                            | Ty::ListDyn
+                            | Ty::MapStrDyn
+                    )
+                })
+            {
+                // Mixed (or Dyn-carrying) elements: materialize a boxed-dynamic
+                // list (plan M4.2), same as the constant mixed-list path but
+                // boxing runtime values via `to_dyn`.
+                let handle = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(handle),
+                    callee: AbiRef::new("list_h", "dyn_new"),
+                    args: Vec::new(),
+                });
+                // A repeated element boxes once: the VM pushes the same heap
+                // handle twice (`[l, l]` dedups under `unique()`), so the
+                // boxed views must share pointer identity too.
+                let mut boxed_memo: std::collections::HashMap<ValueId, ValueId> = std::collections::HashMap::new();
+                for &(v, ty) in &elems {
+                    let boxed = match boxed_memo.get(&v) {
+                        Some(&cached) => cached,
+                        None => {
+                            let boxed = to_dyn(ssa, insts, v, ty, pc)?;
+                            boxed_memo.insert(v, boxed);
+                            boxed
+                        }
+                    };
+                    insts.push(Inst::Call {
+                        dst: None,
+                        callee: AbiRef::new("list_h", "dyn_push"),
+                        args: vec![handle, boxed],
+                    });
+                }
+                ssa.list_len.insert(handle, elems.len() as i64);
+                ssa.list_base_len.insert(handle, elems.len() as i64);
+                ssa.write(instr.a(), block, (handle, Ty::ListDyn));
+            } else if elems.is_empty() {
+                // An empty literal (`let flat = [];`) materializes as an
+                // empty dyn list: later pushes box their elements, and the
+                // cross-typed Cmp arms cover `[] == [1, 2]`-style compares.
+                // (Call-window `NewList 0` also lands here; the dead handle
+                // is one no-arg call.) 旧留档顾虑(typed eq lowering)已被
+                // typed↔Dyn 跨型比较解除。
+                let handle = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(handle),
+                    callee: AbiRef::new("list_h", "dyn_new"),
+                    args: Vec::new(),
+                });
+                ssa.list_len.insert(handle, 0);
+                ssa.list_base_len.insert(handle, 0);
+                ssa.write(instr.a(), block, (handle, Ty::ListDyn));
             }
             // Recorded after the write (which clears the slot) so both views
             // coexist: SSA reads see the handle, method dispatch sees elements.
@@ -2821,8 +4551,29 @@ fn lower_inst(
             // The compiler emits these when it expects float arithmetic, but an
             // operand may still be an `I64` (e.g. an `I64` parameter in `x / 2.0`) —
             // the VM coerces it, so we widen `I64`/`Maybe` operands to `F64` here.
+            // A Dyn operand (a typed struct field read back as Dyn) routes
+            // through the `dyn.*` helpers, same as the Int family above.
             let (lv, lty) = read_scalar(ssa, insts, instr.b(), block, pc)?;
             let (rv, rty) = read_scalar(ssa, insts, instr.c(), block, pc)?;
+            if lty == Ty::Dyn || rty == Ty::Dyn {
+                let lhs = to_dyn(ssa, insts, lv, lty, pc)?;
+                let rhs = to_dyn(ssa, insts, rv, rty, pc)?;
+                let helper = match op {
+                    Opcode::AddFloat => "add",
+                    Opcode::SubFloat => "sub",
+                    Opcode::MulFloat => "mul",
+                    Opcode::DivFloat => "div",
+                    _ => "mod",
+                };
+                let dst = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(dst),
+                    callee: AbiRef::new("dyn", helper),
+                    args: vec![lhs, rhs],
+                });
+                ssa.write(instr.a(), block, (dst, Ty::Dyn));
+                return Ok(());
+            }
             if !matches!(lty, Ty::I64 | Ty::F64) || !matches!(rty, Ty::I64 | Ty::F64) {
                 return Err(Unsupported::TypeMismatch { pc });
             }
@@ -2889,6 +4640,29 @@ fn lower_inst(
                             ssa.write(instr.a(), block, (dst, Ty::Bool));
                         }
                     }
+                    // A boxed Dyn: nil-ness is its tag (`0` = Nil).
+                    Ty::Dyn => {
+                        let tag = ssa.new_val();
+                        insts.push(Inst::Call {
+                            dst: Some(tag),
+                            callee: AbiRef::new("dyn", "tag"),
+                            args: vec![other_v],
+                        });
+                        let zero = ssa.new_val();
+                        insts.push(Inst::Const {
+                            dst: zero,
+                            value: Const::I64(0),
+                        });
+                        let dst = ssa.new_val();
+                        insts.push(Inst::Cmp {
+                            dst,
+                            op: if cop == CmpOp::Eq { CmpOp::Eq } else { CmpOp::Ne },
+                            float: false,
+                            lhs: tag,
+                            rhs: zero,
+                        });
+                        ssa.write(instr.a(), block, (dst, Ty::Bool));
+                    }
                     _ => {
                         let dst = ssa.new_val();
                         insts.push(Inst::Const {
@@ -2898,6 +4672,43 @@ fn lower_inst(
                         ssa.write(instr.a(), block, (dst, Ty::Bool));
                     }
                 }
+                return Ok(());
+            }
+            // A Dyn (or mixed-list) operand: box the other side and compare
+            // through the `dyn.*` helpers (VM equality semantics live in
+            // lkrt; ordered compares are numeric-only there, aborting like
+            // the VM — which also errors on ordered list compares).
+            if matches!(lty_raw, Ty::Dyn | Ty::ListDyn) || matches!(rty_raw, Ty::Dyn | Ty::ListDyn) {
+                let lhs = to_dyn(ssa, insts, lv_raw, lty_raw, pc)?;
+                let rhs = to_dyn(ssa, insts, rv_raw, rty_raw, pc)?;
+                let (helper, negate) = match cmp_op(op) {
+                    CmpOp::Eq => ("eq", false),
+                    CmpOp::Ne => ("eq", true),
+                    CmpOp::Lt => ("lt", false),
+                    CmpOp::Le => ("le", false),
+                    CmpOp::Gt => ("gt", false),
+                    CmpOp::Ge => ("ge", false),
+                };
+                let raw = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(raw),
+                    callee: AbiRef::new("dyn", helper),
+                    args: vec![lhs, rhs],
+                });
+                let zero = ssa.new_val();
+                insts.push(Inst::Const {
+                    dst: zero,
+                    value: Const::I64(0),
+                });
+                let dst = ssa.new_val();
+                insts.push(Inst::Cmp {
+                    dst,
+                    op: if negate { CmpOp::Eq } else { CmpOp::Ne },
+                    float: false,
+                    lhs: raw,
+                    rhs: zero,
+                });
+                ssa.write(instr.a(), block, (dst, Ty::Bool));
                 return Ok(());
             }
             let (lv, lty) = read_scalar(ssa, insts, instr.b(), block, pc)?;
@@ -2948,6 +4759,29 @@ fn lower_inst(
                     insts.push(Inst::Call {
                         dst: Some(eq),
                         callee: AbiRef::new("list_h", helper),
+                        args: vec![a, b],
+                    });
+                    let one = ssa.new_val();
+                    insts.push(Inst::Const {
+                        dst: one,
+                        value: Const::I64(1),
+                    });
+                    (false, eq, one)
+                }
+                // A dyn list against any list: both sides normalize to dyn
+                // lists and compare structurally (`dyn_eq` recurses with the
+                // VM's numeric coercion).
+                (Ty::ListDyn, Ty::ListDyn | Ty::ListI64 | Ty::ListF64 | Ty::ListStr)
+                | (Ty::ListI64 | Ty::ListF64 | Ty::ListStr, Ty::ListDyn) => {
+                    if !matches!(cmp_op(op), CmpOp::Eq | CmpOp::Ne) {
+                        return Err(Unsupported::TypeMismatch { pc });
+                    }
+                    let a = to_dyn_list_handle(ssa, insts, lv, lty, pc)?;
+                    let b = to_dyn_list_handle(ssa, insts, rv, rty, pc)?;
+                    let eq = ssa.new_val();
+                    insts.push(Inst::Call {
+                        dst: Some(eq),
+                        callee: AbiRef::new("list_h", "dyn_eq"),
                         args: vec![a, b],
                     });
                     let one = ssa.new_val();
@@ -3096,7 +4930,24 @@ fn lower_inst(
             match ssa.builtin_ref_at(instr.b(), block) {
                 Some(GlobalRef::CellParam(k)) => {
                     let &(v, ty) = capture_params.get(k).ok_or(Unsupported::BadConst { pc })?;
-                    ssa.write(instr.a(), block, (v, ty));
+                    // A runtime cell (a `try$call` boundary capture) reads
+                    // through the shared slot; a spawned goroutine reads its
+                    // thread-private copy; by-value captures stay as-is.
+                    if ty == Ty::Cell {
+                        let dst = ssa.new_val();
+                        insts.push(Inst::Call {
+                            dst: Some(dst),
+                            callee: AbiRef::new("rt", "cell_get"),
+                            args: vec![v],
+                        });
+                        ssa.write(instr.a(), block, (dst, Ty::Dyn));
+                    } else if ssa.spawned_isolate {
+                        let slot = ssa.cellparam_slot(k);
+                        let (sv, sty) = ssa.read_slot(slot, block, pc)?;
+                        ssa.write(instr.a(), block, (sv, sty));
+                    } else {
+                        ssa.write(instr.a(), block, (v, ty));
+                    }
                 }
                 Some(GlobalRef::Cell(cid)) => {
                     let slot = ssa.cell_slot(cid);
@@ -3108,14 +4959,38 @@ fn lower_inst(
         }
         Opcode::StoreCellVal => {
             // `a` = cell register, `b` = value register: updates the tracked
-            // cell content (mutations inside a lambda would need write-back
-            // through the hidden parameter, so `CellParam` stores reject).
-            let Some(GlobalRef::Cell(cid)) = ssa.builtin_ref_at(instr.a(), block) else {
-                return Err(Unsupported::Opcode { pc, op: instr.opcode() });
-            };
-            let (v, ty) = ssa.read(instr.b(), block, pc)?;
-            let slot = ssa.cell_slot(cid);
-            ssa.write_slot(slot, block, (v, ty));
+            // cell content. A `CellParam` backed by a *runtime* cell (the
+            // `try$call` boundary) writes through the shared slot; a
+            // by-value capture parameter still rejects (no write-back path).
+            match ssa.builtin_ref_at(instr.a(), block) {
+                Some(GlobalRef::Cell(cid)) => {
+                    let (v, ty) = ssa.read(instr.b(), block, pc)?;
+                    let slot = ssa.cell_slot(cid);
+                    ssa.write_slot(slot, block, (v, ty));
+                }
+                Some(GlobalRef::CellParam(k)) => {
+                    let &(cell, cty) = capture_params.get(k).ok_or(Unsupported::BadConst { pc })?;
+                    if cty == Ty::Cell {
+                        let (v, ty) = ssa.read(instr.b(), block, pc)?;
+                        let boxed = to_dyn_any(ssa, insts, v, ty, pc)?;
+                        insts.push(Inst::Call {
+                            dst: None,
+                            callee: AbiRef::new("rt", "cell_set"),
+                            args: vec![cell, boxed],
+                        });
+                    } else if ssa.spawned_isolate {
+                        // Isolate: the write lands in the goroutine's private
+                        // slot, never visible to the spawner (VM snapshot).
+                        let (v, ty) = ssa.read(instr.b(), block, pc)?;
+                        let slot = ssa.cellparam_slot(k);
+                        ssa.write_slot(slot, block, (v, ty));
+                    } else {
+                        // A by-value capture parameter has no write-back path.
+                        return Err(Unsupported::Opcode { pc, op: instr.opcode() });
+                    }
+                }
+                _ => return Err(Unsupported::Opcode { pc, op: instr.opcode() }),
+            }
         }
         Opcode::SetGlobal => {
             // Storing a function value into the global table is the compiler's
@@ -3142,23 +5017,38 @@ fn lower_inst(
             if let Some(name) = name
                 && (matches!(
                     name,
-                    "println" | "print" | "assert" | "assert_eq" | "assert_ne" | "panic" | "typeof"
+                    "println" | "print" | "assert" | "assert_eq" | "assert_ne" | "panic" | "typeof" | "Set"
                 ) || MODULE_GLOBALS.contains(&name))
             {
                 return Err(Unsupported::Opcode { pc, op: instr.opcode() });
             }
-            // Mutable scalar module global (a top-level `let` shared with
-            // functions): the write's type must agree across the whole module.
+            // Mutable module global (a top-level `let` shared with functions).
+            // Scalar slots stay typed when every write agrees; disagreeing or
+            // non-scalar (but boxable) writes join the slot to `Dyn` — each
+            // write boxes, reads flow through the Dyn arms (plan M4.2).
             let (v, ty) = ssa.read(instr.a(), block, pc)?;
-            if !matches!(ty, Ty::I64 | Ty::F64 | Ty::Bool | Ty::Str) {
-                return Err(Unsupported::TypeMismatch { pc });
-            }
-            match sig.global_tys.get_mut(slot as usize) {
-                Some(state @ None) => *state = Some(ty),
-                Some(Some(prev)) if *prev != ty => return Err(Unsupported::TypeMismatch { pc }),
-                Some(Some(_)) => {}
+            let obs = match ty {
+                Ty::I64 | Ty::F64 | Ty::Bool | Ty::Str => ty,
+                t if dyn_boxable_ty(t) => Ty::Dyn,
+                _ => return Err(Unsupported::TypeMismatch { pc }),
+            };
+            let slot_ty = match sig.global_tys.get_mut(slot as usize) {
+                Some(state @ None) => {
+                    *state = Some(obs);
+                    obs
+                }
+                Some(Some(prev)) if *prev != obs => {
+                    *prev = Ty::Dyn;
+                    Ty::Dyn
+                }
+                Some(Some(prev)) => *prev,
                 None => return Err(Unsupported::Opcode { pc, op: instr.opcode() }),
-            }
+            };
+            let v = if slot_ty == Ty::Dyn && ty != Ty::Dyn {
+                to_dyn_any(ssa, insts, v, ty, pc)?
+            } else {
+                v
+            };
             insts.push(Inst::GlobalSet {
                 gvar: sig.gvar(slot),
                 src: v,
@@ -3182,12 +5072,60 @@ fn lower_inst(
                 Some("panic") => Some(GlobalRef::Builtin(Builtin::Panic)),
                 Some("typeof") => Some(GlobalRef::Builtin(Builtin::Typeof)),
                 Some("__lk_call_method") => Some(GlobalRef::Builtin(Builtin::CallMethod)),
+                Some("Set") => Some(GlobalRef::Builtin(Builtin::SetCtor)),
+                Some("try$call") => Some(GlobalRef::Builtin(Builtin::TryCall)),
+                Some("error") => Some(GlobalRef::Builtin(Builtin::ErrorRaise)),
+                Some("chan") => Some(GlobalRef::Builtin(Builtin::ChanNew)),
+                Some("send") => Some(GlobalRef::Builtin(Builtin::ChanSend)),
+                Some("recv") => Some(GlobalRef::Builtin(Builtin::ChanRecv)),
+                Some("spawn") => Some(GlobalRef::Builtin(Builtin::Spawn)),
+                Some("select$block") => Some(GlobalRef::Builtin(Builtin::SelectBlock)),
+                // Two-level stdlib exports arrive as `module::member` global
+                // names (`chan.close(c)` → `GetGlobal "chan::close"`).
+                Some(name) if name.contains("::") => {
+                    let (module, member) = name.split_once("::").expect("checked");
+                    Some(GlobalRef::ModuleFn(module.to_string(), member.to_string()))
+                }
                 Some(name) if MODULE_GLOBALS.contains(&name) => Some(GlobalRef::Module(name.to_string())),
                 _ => None,
             };
             if let Some(global_ref) = global_ref {
                 ssa.builtin_regs.insert((block, instr.a()), global_ref);
                 return Ok(());
+            }
+            // Import-derived bindings (aliases, `use {..} from`, bundled file
+            // modules): only when the slot is never written (a user global of
+            // the same name shadows the import, like the VM's environment).
+            if sig.global_tys.get(slot as usize).copied().flatten().is_none()
+                && let Some(name) = name
+            {
+                if let Some(module) = sig.imports.module_aliases.get(name) {
+                    let global_ref = GlobalRef::Module(module.clone());
+                    ssa.builtin_regs.insert((block, instr.a()), global_ref);
+                    return Ok(());
+                }
+                if let Some((module, member)) = sig.imports.module_items.get(name) {
+                    // `use { json } from encoding` binds a *submodule* object,
+                    // not a function: member reads route through Module.
+                    let global_ref = if (module == "encoding" && matches!(member.as_str(), "json" | "yaml" | "toml"))
+                        || (module == "net" && matches!(member.as_str(), "socket" | "tcp"))
+                    {
+                        GlobalRef::Module(member.clone())
+                    } else {
+                        GlobalRef::ModuleFn(module.clone(), member.clone())
+                    };
+                    ssa.builtin_regs.insert((block, instr.a()), global_ref);
+                    return Ok(());
+                }
+                if let Some(&fidx) = sig.imports.file_items.get(name) {
+                    ssa.builtin_regs.insert((block, instr.a()), GlobalRef::Lambda(fidx));
+                    return Ok(());
+                }
+                if let Some(&bundle) = sig.imports.file_namespaces.get(name) {
+                    ssa.builtin_regs
+                        .insert((block, instr.a()), GlobalRef::UserModule(bundle));
+                    return Ok(());
+                }
             }
             // A single-assignment top-level lambda slot resolves statically to
             // its function reference (initialization-order safe: the prescan
@@ -3198,9 +5136,15 @@ fn lower_inst(
             }
             let initialized = sig.initialized_globals.get(slot as usize).copied().unwrap_or(false);
             let ty = sig.global_tys.get(slot as usize).copied().flatten();
-            let (Some(ty), true) = (ty, initialized) else {
+            let Some(ty) = ty else {
                 return Err(Unsupported::Opcode { pc, op: instr.opcode() });
             };
+            // A typed slot read before its entry-prefix initialization could
+            // observe native zero where the VM has nil — reject. A `Dyn` slot
+            // is exempt: its zeroinit `{0, 0}` *is* the nil tag, VM-exact.
+            if !initialized && ty != Ty::Dyn {
+                return Err(Unsupported::Opcode { pc, op: instr.opcode() });
+            }
             let dst = ssa.new_val();
             insts.push(Inst::GlobalGet {
                 dst,
@@ -3215,6 +5159,12 @@ fn lower_inst(
             // (closures, runtime values) rejects.
             let base = instr.a();
             match ssa.builtin_ref_at(base, block) {
+                Some(GlobalRef::Builtin(Builtin::TryCall)) => {
+                    lower_try_call(ssa, insts, funcs, entry, sig, base, instr.c() as usize, block, pc)?;
+                }
+                Some(GlobalRef::Builtin(Builtin::Spawn)) => {
+                    lower_spawn(ssa, insts, funcs, entry, sig, base, instr.c() as usize, block, pc)?;
+                }
                 Some(GlobalRef::Builtin(Builtin::CallMethod)) => {
                     if instr.c() != 3 {
                         return Err(Unsupported::Opcode { pc, op: instr.opcode() });
@@ -3222,10 +5172,81 @@ fn lower_inst(
                     lower_method_call(ssa, insts, globals, base, block, pc)?;
                 }
                 Some(GlobalRef::Builtin(builtin)) => {
+                    // Auto-Display (plan J1): a struct-instance print argument
+                    // with a registered `show` prints its result, like the VM's
+                    // `try_runtime_display_show`.
+                    if matches!(builtin, Builtin::Println | Builtin::Print) {
+                        for i in 0..instr.c() as usize {
+                            let reg = base.wrapping_add(1).wrapping_add(i as u8);
+                            if let Ok((v, ty)) = ssa.read(reg, block, pc) {
+                                let (nv, nty) = apply_display_show(ssa, insts, funcs, entry, sig, v, ty, pc)?;
+                                if nv != v {
+                                    ssa.write(reg, block, (nv, nty));
+                                }
+                            }
+                        }
+                    }
                     lower_builtin_call(ssa, insts, globals, builtin, base, instr.c() as usize, block, pc)?;
                 }
                 Some(GlobalRef::ModuleFn(module, name)) => {
-                    lower_module_call(ssa, insts, &module, &name, base, instr.c() as usize, block, pc)?;
+                    // `iter.map(xs, f)`, `iter.take(xs, n)`, … are the
+                    // module-function spellings of the list methods (the VM
+                    // routes both through the same core_methods) — forward
+                    // to the same lowering with the receiver at `base+1`.
+                    let argc = instr.c() as usize;
+                    if matches!(module.as_str(), "iter" | "stream")
+                        && matches!(
+                            name.as_str(),
+                            "map"
+                                | "filter"
+                                | "reduce"
+                                | "enumerate"
+                                | "zip"
+                                | "take"
+                                | "skip"
+                                | "chain"
+                                | "flatten"
+                                | "unique"
+                                | "chunk"
+                        )
+                        && argc >= 1
+                    {
+                        let (receiver, receiver_ty) = ssa.read(base.wrapping_add(1), block, pc)?;
+                        // The HOF spellings reuse the lambda-aware method
+                        // path (the lambda register offset matches with the
+                        // window base shifted one slot right).
+                        if matches!(name.as_str(), "map" | "filter" | "reduce") {
+                            if matches!(receiver_ty, Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn)
+                                && let Some(result) = lower_list_hof_k(
+                                    ssa,
+                                    insts,
+                                    funcs,
+                                    entry,
+                                    sig,
+                                    receiver,
+                                    receiver_ty,
+                                    &name,
+                                    base.wrapping_add(1),
+                                    argc - 1,
+                                    block,
+                                    pc,
+                                )?
+                            {
+                                ssa.write(base, block, result);
+                                return Ok(());
+                            }
+                            return Err(Unsupported::Opcode { pc, op: instr.opcode() });
+                        }
+                        let mut args = Vec::with_capacity(argc - 1);
+                        for i in 0..argc - 1 {
+                            args.push(ssa.read(base.wrapping_add(2).wrapping_add(i as u8), block, pc)?);
+                        }
+                        let result =
+                            lower_method_dispatch(ssa, insts, globals, receiver, receiver_ty, &name, &args, block, pc)?;
+                        ssa.write(base, block, result);
+                        return Ok(());
+                    }
+                    lower_module_call(ssa, insts, &module, &name, base, argc, block, pc)?;
                 }
                 // An indirect call through a statically known capture-free
                 // closure devirtualizes to a direct call (same register-window
@@ -3279,6 +5300,7 @@ fn lower_inst(
                     )?;
                 }
                 Some(GlobalRef::Module(_))
+                | Some(GlobalRef::UserModule(_))
                 | Some(GlobalRef::UserFn)
                 | Some(GlobalRef::ArgList(_))
                 | Some(GlobalRef::Cell(_))
@@ -3311,6 +5333,9 @@ fn lower_inst(
             // `a` = dst, `b` = source. Display-convert to a `Str` (Str/Int/Bool
             // supported; float/other fall back).
             let (v, ty) = ssa.read(instr.b(), block, pc)?;
+            // Auto-Display (plan J1): a single-interpolation template string
+            // (`"${point}"`) compiles to a bare `ToString`.
+            let (v, ty) = apply_display_show(ssa, insts, funcs, entry, sig, v, ty, pc)?;
             // The result is register-visible, so it stays arena-owned (never
             // freed eagerly, reclaimed by `lkrt_cleanup` at exit).
             let (s, _fresh) = to_display_str(ssa, insts, globals, v, ty, false, pc)?;
@@ -3322,6 +5347,10 @@ fn lower_inst(
             // an int rhs fuses into a single `concat_i64` call.
             let (lv, lty) = ssa.read(instr.b(), block, pc)?;
             let (rv, rty) = ssa.read(instr.c(), block, pc)?;
+            // Auto-Display (plan J1): a struct-instance operand with a
+            // registered `show` interpolates its result, like the VM.
+            let (lv, lty) = apply_display_show(ssa, insts, funcs, entry, sig, lv, lty, pc)?;
+            let (rv, rty) = apply_display_show(ssa, insts, funcs, entry, sig, rv, rty, pc)?;
             let (l, l_fresh) = to_display_str(ssa, insts, globals, lv, lty, false, pc)?;
             let dst = concat_display(ssa, insts, globals, l, rv, rty, false, pc)?;
             if l_fresh {
@@ -3348,9 +5377,11 @@ fn lower_inst(
                 dst
             } else {
                 let (v0, ty0) = ssa.read(start, block, pc)?;
+                let (v0, ty0) = apply_display_show(ssa, insts, funcs, entry, sig, v0, ty0, pc)?;
                 let (mut acc, mut acc_fresh) = to_display_str(ssa, insts, globals, v0, ty0, false, pc)?;
                 for i in 1..count {
                     let (v, ty) = ssa.read(start.wrapping_add(i as u8), block, pc)?;
+                    let (v, ty) = apply_display_show(ssa, insts, funcs, entry, sig, v, ty, pc)?;
                     let dst = concat_display(ssa, insts, globals, acc, v, ty, false, pc)?;
                     // The consumed accumulator is dead; free it if this
                     // lowering allocated it.
@@ -3395,16 +5426,30 @@ fn lower_inst(
                 ConstHeapValueData::List(elems) => {
                     // An empty `[]` is ambiguous — a lookahead types it from the
                     // first value pushed (a wrong guess only costs a fallback).
-                    if elems.is_empty() && empty_list_is_str_elem(&func.code, pc, instr.a()) {
+                    if elems.is_empty() {
+                        let (new_fn, list_ty) = if ssa.dyn_empty_pcs.contains(&pc) {
+                            // A consumer contradicted an earlier guess — the
+                            // fixpoint retry forces the Dyn materialization.
+                            ("dyn_new", Ty::ListDyn)
+                        } else {
+                            match empty_list_elem_guess(func, pc, instr.a()) {
+                                EmptyListGuess::Str => ("str_new", Ty::ListStr),
+                                EmptyListGuess::Dyn => ("dyn_new", Ty::ListDyn),
+                                EmptyListGuess::Default => ("i64_new", Ty::ListI64),
+                            }
+                        };
                         let handle = ssa.new_val();
                         insts.push(Inst::Call {
                             dst: Some(handle),
-                            callee: AbiRef::new("list_h", "str_new"),
+                            callee: AbiRef::new("list_h", new_fn),
                             args: Vec::new(),
                         });
+                        if list_ty != Ty::ListDyn {
+                            ssa.empty_guess.insert(handle, (pc, list_ty));
+                        }
                         ssa.list_len.insert(handle, 0);
                         ssa.list_base_len.insert(handle, 0);
-                        ssa.write(instr.a(), block, (handle, Ty::ListStr));
+                        ssa.write(instr.a(), block, (handle, list_ty));
                         return Ok(());
                     }
                     let all_int = elems.iter().all(|e| matches!(e, ConstRuntimeValueData::Int(_)));
@@ -3417,7 +5462,29 @@ fn lower_inst(
                     } else if all_str {
                         ("str_new", "str_push", Ty::ListStr)
                     } else {
-                        return Err(Unsupported::Opcode { pc, op: instr.opcode() });
+                        // Mixed scalar elements: a boxed-dynamic list (plan
+                        // M4.2 Dyn). Nested containers still fall back.
+                        if !elems.iter().all(const_is_dyn_boxable) {
+                            return Err(Unsupported::Opcode { pc, op: instr.opcode() });
+                        }
+                        let handle = ssa.new_val();
+                        insts.push(Inst::Call {
+                            dst: Some(handle),
+                            callee: AbiRef::new("list_h", "dyn_new"),
+                            args: Vec::new(),
+                        });
+                        for e in elems {
+                            let boxed = box_const_scalar(ssa, insts, globals, e);
+                            insts.push(Inst::Call {
+                                dst: None,
+                                callee: AbiRef::new("list_h", "dyn_push"),
+                                args: vec![handle, boxed],
+                            });
+                        }
+                        ssa.list_len.insert(handle, elems.len() as i64);
+                        ssa.list_base_len.insert(handle, elems.len() as i64);
+                        ssa.write(instr.a(), block, (handle, Ty::ListDyn));
+                        return Ok(());
                     };
                     let handle = ssa.new_val();
                     insts.push(Inst::Call {
@@ -3445,103 +5512,103 @@ fn lower_inst(
                     ssa.write(instr.a(), block, (handle, list_ty));
                 }
                 ConstHeapValueData::Map(entries) => {
-                    // `Map<str,i64>` / `Map<i64,i64>` / `Map<str,f64>` / `Map<str,bool>`
-                    // — keys uniformly string or int, values uniformly int, float, or
-                    // bool. Other shapes (mixed, non-scalar values) fall back.
-                    let all_bool_vals =
-                        !entries.is_empty() && entries.iter().all(|(_, v)| matches!(v, ConstRuntimeValueData::Bool(_)));
+                    // Map literals build through the lit protocol (plan D1):
+                    // stage-1 inserts in serialized order, the finisher
+                    // replays the VM's two-stage construction so iteration
+                    // order (`for k in m`, `.keys()`) is VM-exact. Shapes:
+                    // uniform str/int keys with int/float/bool values take a
+                    // typed carrier; mixed boxable values a `Map<str, Dyn>`.
                     let all_str_keys = entries
                         .iter()
                         .all(|(k, _)| matches!(k, RuntimeMapKeyData::ShortStr(_) | RuntimeMapKeyData::String(_)));
-                    if all_bool_vals && all_str_keys {
-                        // Values ride the str_i64 map ABI as 0/1; the MapStrBool
-                        // type keeps display/compare semantics exact.
-                        let handle = ssa.new_val();
-                        insts.push(Inst::Call {
-                            dst: Some(handle),
-                            callee: AbiRef::new("map_h", "str_i64_new"),
-                            args: Vec::new(),
-                        });
-                        for (k, v) in entries {
-                            let key_v = match k {
-                                RuntimeMapKeyData::ShortStr(key) | RuntimeMapKeyData::String(key) => {
-                                    materialize_key(ssa, insts, globals, key)
-                                }
-                                _ => unreachable!("filtered to string keys above"),
-                            };
-                            let ConstRuntimeValueData::Bool(b) = v else {
-                                unreachable!("filtered to bool values above");
-                            };
-                            let val_v = ssa.new_val();
-                            insts.push(Inst::Const {
-                                dst: val_v,
-                                value: Const::I64(i64::from(*b)),
-                            });
-                            insts.push(Inst::Call {
-                                dst: None,
-                                callee: AbiRef::new("map_h", "str_i64_set"),
-                                args: vec![handle, key_v, val_v],
-                            });
-                        }
-                        ssa.write(instr.a(), block, (handle, Ty::MapStrBool));
-                        return Ok(());
-                    }
+                    let all_int_keys = entries.iter().all(|(k, _)| matches!(k, RuntimeMapKeyData::Int(_)));
+                    let all_bool_vals =
+                        !entries.is_empty() && entries.iter().all(|(_, v)| matches!(v, ConstRuntimeValueData::Bool(_)));
                     let all_int_vals = entries.iter().all(|(_, v)| matches!(v, ConstRuntimeValueData::Int(_)));
                     let all_f64_vals = entries
                         .iter()
                         .all(|(_, v)| matches!(v, ConstRuntimeValueData::Float(_)));
-                    let all_int_keys = entries.iter().all(|(k, _)| matches!(k, RuntimeMapKeyData::Int(_)));
-                    if !(all_int_vals || all_f64_vals) || !(all_str_keys || all_int_keys) {
-                        return Err(Unsupported::Opcode { pc, op: instr.opcode() });
+                    // An empty `{}` is ambiguous: a lookahead types the key (a
+                    // wrong guess only costs a fallback), the value defaults
+                    // to `i64`; no entries means no order to mirror.
+                    if entries.is_empty() {
+                        let new_fn = if empty_map_is_int_keyed(func, pc, instr.a()) {
+                            ("i64_i64_new", Ty::MapI64I64)
+                        } else {
+                            ("str_i64_new", Ty::MapStrI64)
+                        };
+                        let handle = ssa.new_val();
+                        insts.push(Inst::Call {
+                            dst: Some(handle),
+                            callee: AbiRef::new("map_h", new_fn.0),
+                            args: Vec::new(),
+                        });
+                        ssa.write(instr.a(), block, (handle, new_fn.1));
+                        return Ok(());
                     }
-                    // An empty `{}` is ambiguous: a lookahead types the key (a wrong
-                    // guess only costs a fallback), and the value defaults to `i64`.
-                    let int_keyed = if entries.is_empty() {
-                        empty_map_is_int_keyed(&func.code, pc, instr.a())
+                    let (finish_fn, map_ty) = if all_str_keys && all_bool_vals {
+                        ("lit_finish_str_bool", Ty::MapStrBool)
+                    } else if all_str_keys && all_int_vals {
+                        ("lit_finish_str_i64", Ty::MapStrI64)
+                    } else if all_str_keys && all_f64_vals {
+                        ("lit_finish_str_f64", Ty::MapStrF64)
+                    } else if all_int_keys && all_int_vals {
+                        ("lit_finish_i64_i64", Ty::MapI64I64)
+                    } else if all_int_keys && all_f64_vals {
+                        ("lit_finish_i64_f64", Ty::MapI64F64)
+                    } else if all_str_keys && entries.iter().all(|(_, v)| const_is_dyn_boxable(v)) {
+                        ("lit_finish_str_dyn", Ty::MapStrDyn)
                     } else {
-                        all_int_keys
+                        // Non-scalar values / mixed key kinds fall back.
+                        return Err(Unsupported::Opcode { pc, op: instr.opcode() });
                     };
-                    let f64_valued = !entries.is_empty() && all_f64_vals;
-                    let (new_fn, set_fn, map_ty) = match (int_keyed, f64_valued) {
-                        (false, false) => ("str_i64_new", "str_i64_set", Ty::MapStrI64),
-                        (true, false) => ("i64_i64_new", "i64_i64_set", Ty::MapI64I64),
-                        (false, true) => ("str_f64_new", "str_f64_set", Ty::MapStrF64),
-                        (true, true) => ("i64_f64_new", "i64_f64_set", Ty::MapI64F64),
-                    };
-                    let handle = ssa.new_val();
+                    let lit = ssa.new_val();
                     insts.push(Inst::Call {
-                        dst: Some(handle),
-                        callee: AbiRef::new("map_h", new_fn),
+                        dst: Some(lit),
+                        callee: AbiRef::new("map_h", "lit_new"),
                         args: Vec::new(),
                     });
                     for (k, v) in entries {
-                        let key_v = match k {
+                        let boxed_key = match k {
                             RuntimeMapKeyData::ShortStr(key) | RuntimeMapKeyData::String(key) => {
-                                materialize_key(ssa, insts, globals, key)
+                                let raw = materialize_key(ssa, insts, globals, key);
+                                let boxed = ssa.new_val();
+                                insts.push(Inst::Call {
+                                    dst: Some(boxed),
+                                    callee: AbiRef::new("dyn", "from_str"),
+                                    args: vec![raw],
+                                });
+                                boxed
                             }
                             RuntimeMapKeyData::Int(ik) => {
-                                let kv = ssa.new_val();
+                                let raw = ssa.new_val();
                                 insts.push(Inst::Const {
-                                    dst: kv,
+                                    dst: raw,
                                     value: Const::I64(*ik),
                                 });
-                                kv
+                                let boxed = ssa.new_val();
+                                insts.push(Inst::Call {
+                                    dst: Some(boxed),
+                                    callee: AbiRef::new("dyn", "from_i64"),
+                                    args: vec![raw],
+                                });
+                                boxed
                             }
-                            _ => unreachable!("filtered to string/int keys above"),
+                            _ => return Err(Unsupported::Opcode { pc, op: instr.opcode() }),
                         };
-                        let value = match v {
-                            ConstRuntimeValueData::Int(iv) => Const::I64(*iv),
-                            ConstRuntimeValueData::Float(fv) => Const::F64(*fv),
-                            _ => unreachable!("filtered to int/float values above"),
-                        };
-                        let val_v = ssa.new_val();
-                        insts.push(Inst::Const { dst: val_v, value });
+                        let boxed_value = box_const_scalar(ssa, insts, globals, v);
                         insts.push(Inst::Call {
                             dst: None,
-                            callee: AbiRef::new("map_h", set_fn),
-                            args: vec![handle, key_v, val_v],
+                            callee: AbiRef::new("map_h", "lit_set"),
+                            args: vec![lit, boxed_key, boxed_value],
                         });
                     }
+                    let handle = ssa.new_val();
+                    insts.push(Inst::Call {
+                        dst: Some(handle),
+                        callee: AbiRef::new("map_h", finish_fn),
+                        args: vec![lit],
+                    });
                     ssa.write(instr.a(), block, (handle, map_ty));
                 }
                 ConstHeapValueData::LongString(s) => {
@@ -3596,6 +5663,11 @@ fn lower_inst(
                 Ty::MapI64I64 => ("map_h", "i64_i64_len"),
                 Ty::MapStrF64 => ("map_h", "str_f64_len"),
                 Ty::MapI64F64 => ("map_h", "i64_f64_len"),
+                Ty::ListDyn => ("list_h", "dyn_len"),
+                Ty::MapStrDyn => ("map_h", "str_dyn_len"),
+                Ty::Set => ("set", "len"),
+                // A boxed Dyn: length dispatches on the runtime tag.
+                Ty::Dyn => ("dyn", "len_of"),
                 _ => return Err(Unsupported::TypeMismatch { pc }),
             };
             let dst = ssa.new_val();
@@ -3606,14 +5678,256 @@ fn lower_inst(
             });
             ssa.write(instr.a(), block, (dst, Ty::I64));
         }
+        Opcode::SliceFrom => {
+            // `a` = dst, `b` = target (list) register, `c` = start register. Only
+            // typed lists lower natively — the runtime returns a fresh handle
+            // with the elements from `start` on (negative `start` aborts, like
+            // the VM). String slicing and other element types fall back for now.
+            let (handle, ty) = ssa.read(instr.b(), block, pc)?;
+            // A boxed Dyn target (`for [head, ..tail] in matrix` slices the
+            // iterated row) unwraps through the as_list guard first.
+            let (handle, ty) = if ty == Ty::Dyn {
+                let unboxed = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(unboxed),
+                    callee: AbiRef::new("dyn", "as_list"),
+                    args: vec![handle],
+                });
+                (unboxed, Ty::ListDyn)
+            } else {
+                (handle, ty)
+            };
+            let slice_fn = match ty {
+                Ty::ListI64 => "i64_slice_from",
+                Ty::ListF64 => "f64_slice_from",
+                Ty::ListStr => "str_slice_from",
+                Ty::ListDyn => "dyn_slice_from",
+                _ => return Err(Unsupported::TypeMismatch { pc }),
+            };
+            let start = read_typed_scalar(ssa, insts, instr.c(), block, Ty::I64, pc)?;
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", slice_fn),
+                args: vec![handle, start],
+            });
+            ssa.write(instr.a(), block, (dst, ty));
+        }
+        Opcode::StringSplit => {
+            // `a` = dst (List<str>), `b` = target string, `c` = separator string.
+            // The runtime uses Rust `str::split`, so the result matches the VM's
+            // `string_split` exactly.
+            let target = ssa.read_typed(instr.b(), block, Ty::Str, pc)?;
+            let sep = ssa.read_typed(instr.c(), block, Ty::Str, pc)?;
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("str", "split"),
+                args: vec![target, sep],
+            });
+            ssa.write(instr.a(), block, (dst, Ty::ListStr));
+        }
+        Opcode::NewRange => {
+            // `a` = dst; `b`..`b+2` = start/end/step registers; `c` != 0 =
+            // inclusive. The VM materializes the range eagerly as a
+            // `List<Int>` (`build_int_range`) — same here via one lkrt call
+            // (zero step / stepping overflow abort inside the helper).
+            let start = read_typed_scalar(ssa, insts, instr.b(), block, Ty::I64, pc)?;
+            let end = read_typed_scalar(ssa, insts, instr.b().wrapping_add(1), block, Ty::I64, pc)?;
+            let step = read_typed_scalar(ssa, insts, instr.b().wrapping_add(2), block, Ty::I64, pc)?;
+            let inclusive = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: inclusive,
+                value: Const::I64(i64::from(instr.c() != 0)),
+            });
+            let handle = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(handle),
+                callee: AbiRef::new("list_h", "i64_from_range"),
+                args: vec![start, end, step, inclusive],
+            });
+            // A fully-constant unit-step range keeps its slice meaning
+            // alongside the materialized list (`s[1..3]` indexes by range).
+            if let (Some(&s0), Some(&e0), Some(&st)) = (
+                ssa.const_int.get(&start),
+                ssa.const_int.get(&end),
+                ssa.const_int.get(&step),
+            ) && st == 1
+            {
+                let end_excl = if instr.c() != 0 { e0.saturating_add(1) } else { e0 };
+                ssa.range_def.insert(handle, (s0, end_excl));
+            }
+            ssa.write(instr.a(), block, (handle, Ty::ListI64));
+        }
+        Opcode::ToIter => {
+            // `a` = dst, `b` = source. The VM normalizes the iterated value
+            // to a list (`to_iter`): lists pass through, a string iterates
+            // per char (a Mixed list there → dyn list here), a boxed Dyn
+            // unwraps through the as_list guard (iterating a non-container
+            // is the VM's loud error). A map snapshots to `[key, value]`
+            // pair lists — in the VM's exact order, by the layout mirror
+            // (`lkrt vm_mirror.rs`, plan D1/D2).
+            let (v, ty) = ssa.read(instr.b(), block, pc)?;
+            match ty {
+                Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn => {
+                    ssa.write(instr.a(), block, (v, ty));
+                }
+                Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool | Ty::MapStrDyn => {
+                    let iter_fn = match ty {
+                        Ty::MapStrI64 => "str_i64_iter_pairs",
+                        Ty::MapStrF64 => "str_f64_iter_pairs",
+                        Ty::MapStrBool => "str_bool_iter_pairs",
+                        _ => "str_dyn_iter_pairs",
+                    };
+                    let dst = ssa.new_val();
+                    insts.push(Inst::Call {
+                        dst: Some(dst),
+                        callee: AbiRef::new("map_h", iter_fn),
+                        args: vec![v],
+                    });
+                    ssa.write(instr.a(), block, (dst, Ty::ListDyn));
+                }
+                Ty::Str => {
+                    let dst = ssa.new_val();
+                    insts.push(Inst::Call {
+                        dst: Some(dst),
+                        callee: AbiRef::new("str", "chars"),
+                        args: vec![v],
+                    });
+                    ssa.write(instr.a(), block, (dst, Ty::ListDyn));
+                }
+                Ty::Dyn => {
+                    let dst = ssa.new_val();
+                    insts.push(Inst::Call {
+                        dst: Some(dst),
+                        callee: AbiRef::new("dyn", "as_list"),
+                        args: vec![v],
+                    });
+                    ssa.write(instr.a(), block, (dst, Ty::ListDyn));
+                }
+                _ => return Err(Unsupported::TypeMismatch { pc }),
+            }
+        }
+        Opcode::NewObject => {
+            // `a` = dst, `b` = base, `c` = field count: `base` holds the type
+            // name, fields at `base+1+2k` (constant-string key) / `base+2+2k`
+            // (value). A struct instance is carried as a string-keyed Dyn map
+            // (plan M4.2 D4 裁决): `GetFieldK` reads work unchanged, an
+            // absent optional field is `str_dyn_get`'s Nil — matching the
+            // VM's absent-Object-field nil. The type name is dropped: whole-
+            // object display/`typeof` are not in the native subset.
+            let map = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(map),
+                callee: AbiRef::new("map_h", "str_dyn_new"),
+                args: Vec::new(),
+            });
+            for i in 0..instr.c() as usize {
+                let key_reg = instr.b().wrapping_add(1).wrapping_add((i * 2) as u8);
+                let value_reg = key_reg.wrapping_add(1);
+                let key = {
+                    let kv = ssa.read(key_reg, block, pc).ok().map(|(v, _)| v);
+                    kv.and_then(|v| ssa.const_strs.get(&v).cloned())
+                        .or_else(|| ssa.reg_const_str(key_reg, block))
+                }
+                .ok_or(Unsupported::Opcode { pc, op: instr.opcode() })?;
+                let key_v = materialize_key(ssa, insts, globals, &key);
+                let (vv, vty) = ssa.read(value_reg, block, pc)?;
+                // `to_dyn_any`: a dynamically indexed field value arrives as
+                // a `Maybe` carrier and boxes through `from_maybe_*` (nil
+                // stays nil, like the VM's absent-element field value).
+                let boxed = to_dyn_any(ssa, insts, vv, vty, pc)?;
+                insts.push(Inst::Call {
+                    dst: None,
+                    callee: AbiRef::new("map_h", "str_dyn_set"),
+                    args: vec![map, key_v, boxed],
+                });
+            }
+            // Struct provenance (plan J1): the type name drives static
+            // method devirtualization; a type with registered trait impls
+            // also marks the handle for boxed runtime dispatch.
+            let type_name = {
+                let tv = ssa.read(instr.b(), block, pc).ok().map(|(v, _)| v);
+                tv.and_then(|v| ssa.const_strs.get(&v).cloned())
+                    .or_else(|| ssa.reg_const_str(instr.b(), block))
+            };
+            if let Some(type_name) = type_name {
+                if let Some(&tid) = sig.traits.type_ids.get(&type_name) {
+                    let tid_v = ssa.new_val();
+                    insts.push(Inst::Const {
+                        dst: tid_v,
+                        value: Const::I64(tid),
+                    });
+                    insts.push(Inst::Call {
+                        dst: None,
+                        callee: AbiRef::new("map_h", "obj_mark"),
+                        args: vec![map, tid_v],
+                    });
+                }
+                ssa.struct_types.insert(map, type_name);
+            }
+            ssa.write(instr.a(), block, (map, Ty::MapStrDyn));
+        }
         Opcode::ListPush => {
             // `a` = list register (mutated in place), `b` = value register. The list
             // handle is a reference (matching the VM), so the push is visible through
             // aliases; no new SSA value is produced for the list.
             let (handle, list_ty) = ssa.read(instr.a(), block, pc)?;
+            // A boxed receiver (a cell readback across a `try$call` boundary)
+            // unwraps through the as_list guard: the push mutates the shared
+            // handle, exactly the VM's aliasing.
+            let (handle, list_ty) = if list_ty == Ty::Dyn {
+                let unboxed = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(unboxed),
+                    callee: AbiRef::new("dyn", "as_list"),
+                    args: vec![handle],
+                });
+                (unboxed, Ty::ListDyn)
+            } else {
+                (handle, list_ty)
+            };
+            // Values read through `read_scalar` so a `Maybe` (a dynamic list
+            // read like `xs[i]` in `flat.push(xs[i])`) unwraps first.
+            // A push whose value type contradicts a guessed empty-`[]`
+            // element type retries the literal as a Dyn list (fixpoint).
+            let guess_wrong = |ssa: &Ssa| {
+                if ssa.empty_guess.is_empty() {
+                    None
+                } else {
+                    // The handle itself when known; otherwise a handle read
+                    // through an unsealed loop phi has no provenance yet —
+                    // mark the pending guesses *of the receiver's own shape*
+                    // (only those can be the contradicted literal; a
+                    // correctly guessed `ListStr` elsewhere in the function
+                    // must keep its typed lowering — `join` etc. have no Dyn
+                    // arm). If shape-filtering leaves nothing, over-mark all
+                    // (costs typed-ness, never correctness).
+                    let pcs = match ssa.empty_guess.get(&handle) {
+                        Some(&(pc0, _)) => vec![pc0],
+                        None => {
+                            let same_shape: Vec<usize> = ssa
+                                .empty_guess
+                                .values()
+                                .filter(|&&(_, gty)| gty == list_ty)
+                                .map(|&(p0, _)| p0)
+                                .collect();
+                            if same_shape.is_empty() {
+                                ssa.empty_guess.values().map(|&(p0, _)| p0).collect()
+                            } else {
+                                same_shape
+                            }
+                        }
+                    };
+                    Some(Unsupported::EmptyListGuessWrong { pcs })
+                }
+            };
             match list_ty {
                 Ty::ListI64 => {
-                    let value = ssa.read_typed(instr.b(), block, Ty::I64, pc)?;
+                    let value = match read_typed_scalar(ssa, insts, instr.b(), block, Ty::I64, pc) {
+                        Ok(v) => v,
+                        Err(e) => return Err(guess_wrong(ssa).unwrap_or(e)),
+                    };
                     insts.push(Inst::Call {
                         dst: None,
                         callee: AbiRef::new("list_h", "i64_push"),
@@ -3621,9 +5935,9 @@ fn lower_inst(
                     });
                 }
                 Ty::ListF64 => {
-                    let (bv, bty) = ssa.read(instr.b(), block, pc)?;
+                    let (bv, bty) = read_scalar(ssa, insts, instr.b(), block, pc)?;
                     if !matches!(bty, Ty::I64 | Ty::F64) {
-                        return Err(Unsupported::TypeMismatch { pc });
+                        return Err(guess_wrong(ssa).unwrap_or(Unsupported::TypeMismatch { pc }));
                     }
                     let value = coerce_to_f64(ssa, insts, bv, bty);
                     insts.push(Inst::Call {
@@ -3636,11 +5950,24 @@ fn lower_inst(
                     // Stored strings are arena-owned (interned constants or
                     // register-visible arena strings), alive until exit, so the
                     // pointer push involves no ownership transfer.
-                    let value = ssa.read_typed(instr.b(), block, Ty::Str, pc)?;
+                    let value = match read_typed_scalar(ssa, insts, instr.b(), block, Ty::Str, pc) {
+                        Ok(v) => v,
+                        Err(e) => return Err(guess_wrong(ssa).unwrap_or(e)),
+                    };
                     insts.push(Inst::Call {
                         dst: None,
                         callee: AbiRef::new("list_h", "str_push"),
                         args: vec![handle, value],
+                    });
+                }
+                // Mixed list: any boxable value pushes as a Dyn carrier.
+                Ty::ListDyn => {
+                    let (bv, bty) = read_scalar(ssa, insts, instr.b(), block, pc)?;
+                    let boxed = to_dyn(ssa, insts, bv, bty, pc)?;
+                    insts.push(Inst::Call {
+                        dst: None,
+                        callee: AbiRef::new("list_h", "dyn_push"),
+                        args: vec![handle, boxed],
                     });
                 }
                 _ => return Err(Unsupported::TypeMismatch { pc }),
@@ -3660,6 +5987,21 @@ fn lower_inst(
             // module function ref (`os.clock` → `GetIndex` on the module with a
             // constant string key) — or, for constant members (`math.pi`), to
             // the literal value itself.
+            // A constant-name member read on a bundled file module resolves
+            // to the merged function (`fib.iterative` → direct call target).
+            if let Some(GlobalRef::UserModule(bundle)) = ssa.builtin_regs.get(&(block, instr.b())).cloned() {
+                let name = {
+                    let key = ssa.read(instr.c(), block, pc).ok().map(|(v, _)| v);
+                    key.and_then(|v| ssa.const_strs.get(&v).cloned())
+                        .or_else(|| ssa.reg_const_str(instr.c(), block))
+                };
+                let fidx = name.and_then(|n| sig.imports.bundles.get(bundle).and_then(|b| b.fns.get(&n)).copied());
+                let Some(fidx) = fidx else {
+                    return Err(Unsupported::Opcode { pc, op: instr.opcode() });
+                };
+                ssa.builtin_regs.insert((block, instr.a()), GlobalRef::Lambda(fidx));
+                return Ok(());
+            }
             if let Some(GlobalRef::Module(module)) = ssa.builtin_regs.get(&(block, instr.b())).cloned() {
                 let name = {
                     let key = ssa.read(instr.c(), block, pc).ok().map(|(v, _)| v);
@@ -3681,10 +6023,93 @@ fn lower_inst(
             }
             // `a` = dst, `b` = container register, `c` = key register.
             let (handle, list_ty) = ssa.read(instr.b(), block, pc)?;
+            // A range key (`s[1..3]`, `xs[1..5]`): the compiler lowers the
+            // range to a materialized list; the recorded constant bounds
+            // recover the slice. Clamping (negative/OOB) lives in lkrt,
+            // matching the VM's `get_index_slice`.
+            if let Ok((kv, _)) = ssa.read(instr.c(), block, pc)
+                && let Some(&(r_start, r_end)) = ssa.range_def.get(&kv)
+            {
+                let start = ssa.new_val();
+                insts.push(Inst::Const {
+                    dst: start,
+                    value: Const::I64(r_start),
+                });
+                let end = ssa.new_val();
+                insts.push(Inst::Const {
+                    dst: end,
+                    value: Const::I64(r_end),
+                });
+                let (module, name, out_ty) = match list_ty {
+                    Ty::Str => ("str", "slice_chars", Ty::Str),
+                    Ty::ListI64 => ("list_h", "i64_slice", Ty::ListI64),
+                    _ => return Err(Unsupported::TypeMismatch { pc }),
+                };
+                let dst = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(dst),
+                    callee: AbiRef::new(module, name),
+                    args: vec![handle, start, end],
+                });
+                ssa.write(instr.a(), block, (dst, out_ty));
+                return Ok(());
+            }
+            // A boxed Dyn container (e.g. a nested list read out of a mixed
+            // list): index through the runtime tag check — a non-list tag is
+            // the VM's loud failure, OOB is nil (the Dyn's own Nil tag).
+            if list_ty == Ty::Dyn {
+                // Key type picks the accessor: an integer indexes a boxed
+                // list, a string reads a boxed map's field (the compiler
+                // emits GetIndex for nested member chains). Runtime tag
+                // checks live in the dyn helpers.
+                let (kv, kty) = read_scalar(ssa, insts, instr.c(), block, pc)?;
+                let (helper, key) = match kty {
+                    Ty::I64 => ("index", kv),
+                    Ty::Str => ("field", kv),
+                    _ => return Err(Unsupported::TypeMismatch { pc }),
+                };
+                let dst = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(dst),
+                    callee: AbiRef::new("dyn", helper),
+                    args: vec![handle, key],
+                });
+                ssa.write(instr.a(), block, (dst, Ty::Dyn));
+                return Ok(());
+            }
+            // `s[i]` — single-char read, char-indexed, OOB = nil (the VM's
+            // `index_string_at`); the Dyn carrier holds the nil itself.
+            // (`for ch in "abc"` desugars to exactly this indexed read.)
+            if list_ty == Ty::Str {
+                let key = read_typed_scalar(ssa, insts, instr.c(), block, Ty::I64, pc)?;
+                let dst = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(dst),
+                    callee: AbiRef::new("str", "char_at"),
+                    args: vec![handle, key],
+                });
+                ssa.write(instr.a(), block, (dst, Ty::Dyn));
+                return Ok(());
+            }
+            // Mixed-value map indexed by string key: same accessor as
+            // `GetFieldK` (missing key = Nil-tag Dyn).
+            if list_ty == Ty::MapStrDyn {
+                let key = read_typed_scalar(ssa, insts, instr.c(), block, Ty::Str, pc)?;
+                let dst = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(dst),
+                    callee: AbiRef::new("map_h", "str_dyn_get"),
+                    args: vec![handle, key],
+                });
+                ssa.write(instr.a(), block, (dst, Ty::Dyn));
+                return Ok(());
+            }
             // String-keyed map reads take a `Str` key (dynamic template keys
             // included); a missing key is the `Maybe` nil model.
             if matches!(list_ty, Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool) {
-                let key = ssa.read_typed(instr.c(), block, Ty::Str, pc)?;
+                // A `Maybe` key (`freq[xs[i]]`) unwraps first (absent aborts —
+                // the scalar-context rule).
+                let key = read_typed_scalar(ssa, insts, instr.c(), block, Ty::Str, pc)?;
                 let dst = ssa.new_val();
                 let maybe_ty = match list_ty {
                     Ty::MapStrF64 => {
@@ -3717,6 +6142,9 @@ fn lower_inst(
                     Ty::ListI64 => ("i64_at", Ty::I64),
                     Ty::ListF64 => ("f64_at", Ty::F64),
                     Ty::ListStr => ("str_at", Ty::Str),
+                    // Mixed list: the element is a boxed Dyn either way
+                    // (`dyn_at` handles negative/OOB as a Nil-tag Dyn).
+                    Ty::ListDyn => ("dyn_at", Ty::Dyn),
                     _ => return Err(Unsupported::TypeMismatch { pc }),
                 };
                 let idx_v = ssa.new_val();
@@ -3741,6 +6169,18 @@ fn lower_inst(
                 // and prints `nil`. Either way there is no eager-abort shortcut that
                 // would diverge from `return xs[oob]` printing `nil`.
                 match list_ty {
+                    // Mixed list: no Maybe carrier needed — the Dyn's Nil tag
+                    // *is* the absent case (`dyn_at` maps OOB/negative-beyond
+                    // to Nil, matching the VM's nil-on-out-of-range).
+                    Ty::ListDyn => {
+                        let dst = ssa.new_val();
+                        insts.push(Inst::Call {
+                            dst: Some(dst),
+                            callee: AbiRef::new("list_h", "dyn_at"),
+                            args: vec![handle, index_val],
+                        });
+                        ssa.write(instr.a(), block, (dst, Ty::Dyn));
+                    }
                     Ty::ListI64 => {
                         let dst = ssa.new_val();
                         insts.push(Inst::ListGetMaybe {
@@ -3802,7 +6242,7 @@ fn lower_inst(
             // String-keyed map stores take a `Str` key (dynamic template keys
             // included); the map ABI copies the key.
             if matches!(list_ty, Ty::MapStrI64 | Ty::MapStrF64) {
-                let key = ssa.read_typed(instr.b(), block, Ty::Str, pc)?;
+                let key = read_typed_scalar(ssa, insts, instr.b(), block, Ty::Str, pc)?;
                 let (cv, cty) = read_scalar(ssa, insts, instr.c(), block, pc)?;
                 let (set_fn, value) = match (list_ty, cty) {
                     (Ty::MapStrI64, Ty::I64) => ("str_i64_set", cv),
@@ -3898,6 +6338,27 @@ fn lower_inst(
                     });
                     Ty::MaybeF64
                 }
+                // Mixed-value map: the Dyn carrier's Nil tag *is* the
+                // missing-key case — no Maybe wrapper needed.
+                Ty::MapStrDyn => {
+                    insts.push(Inst::Call {
+                        dst: Some(dst),
+                        callee: AbiRef::new("map_h", "str_dyn_get"),
+                        args: vec![handle, key_v],
+                    });
+                    Ty::Dyn
+                }
+                // A boxed Dyn (e.g. a nested map read out of a MapStrDyn):
+                // the runtime tag check lives in `dyn.field` (non-map = the
+                // VM's loud failure on member access).
+                Ty::Dyn => {
+                    insts.push(Inst::Call {
+                        dst: Some(dst),
+                        callee: AbiRef::new("dyn", "field"),
+                        args: vec![handle, key_v],
+                    });
+                    Ty::Dyn
+                }
                 _ => return Err(Unsupported::TypeMismatch { pc }),
             };
             ssa.write(instr.a(), block, (dst, result_ty));
@@ -3933,21 +6394,138 @@ fn lower_inst(
             });
         }
         Opcode::Contains => {
-            // `a` = dst (bool), `b` = needle, `c` = haystack. Only list haystacks
-            // (with a matching element type) are lowered; string/map/set haystacks
-            // fall back. The runtime helper returns 0/1, narrowed here to an `i1`.
+            // `a` = dst (bool), `b` = needle, `c` = haystack. List and string-keyed
+            // map haystacks are lowered; other haystacks fall back.
             let (handle, list_ty) = ssa.read(instr.c(), block, pc)?;
-            let (fn_name, needle) = match list_ty {
-                Ty::ListI64 => (
-                    "i64_contains",
-                    read_typed_scalar(ssa, insts, instr.b(), block, Ty::I64, pc)?,
-                ),
-                Ty::ListF64 => {
-                    let (nv, nty) = read_scalar(ssa, insts, instr.b(), block, pc)?;
-                    if !matches!(nty, Ty::I64 | Ty::F64) {
-                        return Err(Unsupported::TypeMismatch { pc });
+            // Dyn containers: list membership boxes the needle and defers to
+            // the structural `dyn_contains`; map membership is a dedicated
+            // `has` (a stored-nil value still counts, unlike get+tag).
+            if list_ty == Ty::ListDyn || list_ty == Ty::MapStrDyn {
+                let raw = ssa.new_val();
+                if list_ty == Ty::ListDyn {
+                    let (nv, nty) = ssa.read(instr.b(), block, pc)?;
+                    let needle = to_dyn(ssa, insts, nv, nty, pc)?;
+                    insts.push(Inst::Call {
+                        dst: Some(raw),
+                        callee: AbiRef::new("list_h", "dyn_contains"),
+                        args: vec![handle, needle],
+                    });
+                } else {
+                    let key = ssa.read_typed(instr.b(), block, Ty::Str, pc)?;
+                    insts.push(Inst::Call {
+                        dst: Some(raw),
+                        callee: AbiRef::new("map_h", "str_dyn_has"),
+                        args: vec![handle, key],
+                    });
+                }
+                let zero = ssa.new_val();
+                insts.push(Inst::Const {
+                    dst: zero,
+                    value: Const::I64(0),
+                });
+                let dst = ssa.new_val();
+                insts.push(Inst::Cmp {
+                    dst,
+                    op: CmpOp::Ne,
+                    float: false,
+                    lhs: raw,
+                    rhs: zero,
+                });
+                ssa.write(instr.a(), block, (dst, Ty::Bool));
+                return Ok(());
+            }
+            // `key in map` tests key membership (VM `map_contains`): read the
+            // map's `Maybe` for the key and take its present bit — no value
+            // materialization needed. Mirrors the map `GetIndex` path.
+            if matches!(list_ty, Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool) {
+                let key = ssa.read_typed(instr.b(), block, Ty::Str, pc)?;
+                let maybe = ssa.new_val();
+                let maybe_ty = match list_ty {
+                    Ty::MapStrF64 => {
+                        insts.push(Inst::MapGetMaybeStrF64 {
+                            dst: maybe,
+                            handle,
+                            key,
+                        });
+                        Ty::MaybeF64
                     }
-                    ("f64_contains", coerce_to_f64(ssa, insts, nv, nty))
+                    Ty::MapStrBool => {
+                        insts.push(Inst::MapGetMaybe {
+                            dst: maybe,
+                            handle,
+                            key,
+                        });
+                        Ty::MaybeBool
+                    }
+                    _ => {
+                        insts.push(Inst::MapGetMaybe {
+                            dst: maybe,
+                            handle,
+                            key,
+                        });
+                        Ty::MaybeI64
+                    }
+                };
+                let dst = ssa.new_val();
+                insts.push(Inst::MaybePresent {
+                    dst,
+                    src: maybe,
+                    maybe_ty,
+                });
+                ssa.write(instr.a(), block, (dst, Ty::Bool));
+                return Ok(());
+            }
+            // Int-keyed maps: same present-bit test with an `I64` key.
+            if matches!(list_ty, Ty::MapI64I64 | Ty::MapI64F64) {
+                let key = read_typed_scalar(ssa, insts, instr.b(), block, Ty::I64, pc)?;
+                let maybe = ssa.new_val();
+                let maybe_ty = if list_ty == Ty::MapI64F64 {
+                    insts.push(Inst::MapGetMaybeI64F64 {
+                        dst: maybe,
+                        handle,
+                        key,
+                    });
+                    Ty::MaybeF64
+                } else {
+                    insts.push(Inst::MapGetMaybeI64Key {
+                        dst: maybe,
+                        handle,
+                        key,
+                    });
+                    Ty::MaybeI64
+                };
+                let dst = ssa.new_val();
+                insts.push(Inst::MaybePresent {
+                    dst,
+                    src: maybe,
+                    maybe_ty,
+                });
+                ssa.write(instr.a(), block, (dst, Ty::Bool));
+                return Ok(());
+            }
+            // Typed-list `in` is *strictly* same-typed in the VM
+            // (`list_contains` matches on the needle's variant): `1.0 in
+            // [1, 2]` and `1 in [1.0]` are false — no numeric coercion,
+            // unlike `==`. A needle whose proven type can't match folds to
+            // constant false; a Dyn needle (runtime-typed) still rejects.
+            let (fn_name, needle) = match list_ty {
+                Ty::ListI64 | Ty::ListF64 | Ty::ListStr => {
+                    let (nv, nty) = read_scalar(ssa, insts, instr.b(), block, pc)?;
+                    match (list_ty, nty) {
+                        (Ty::ListI64, Ty::I64) => ("i64_contains", nv),
+                        (Ty::ListF64, Ty::F64) => ("f64_contains", nv),
+                        (Ty::ListStr, Ty::Str) => ("str_contains", nv),
+                        (_, Ty::Dyn) => return Err(Unsupported::TypeMismatch { pc }),
+                        _ => {
+                            let dst = ssa.new_val();
+                            insts.push(Inst::Const {
+                                dst,
+                                value: Const::Bool(false),
+                            });
+                            ssa.write(instr.a(), block, (dst, Ty::Bool));
+                            return Ok(());
+                        }
+                    }
                 }
                 _ => return Err(Unsupported::TypeMismatch { pc }),
             };
@@ -3971,6 +6549,56 @@ fn lower_inst(
                 rhs: zero,
             });
             ssa.write(instr.a(), block, (dst, Ty::Bool));
+        }
+        Opcode::Raise => {
+            // `bx` = the raised message string constant. The raise unwinds to
+            // the nearest native `try` frame (`try$call` — plan G); with no
+            // handler it aborts, exactly the VM's uncaught raise (the
+            // differential harness treats VM exit-1 and a native SIGABRT as
+            // matching failures).
+            let message = func
+                .consts
+                .strings
+                .get(instr.bx() as usize)
+                .ok_or(Unsupported::BadConst { pc })?
+                .clone();
+            let msg = materialize_key(ssa, insts, globals, &message);
+            insts.push(Inst::Call {
+                dst: None,
+                callee: AbiRef::new("rt", "raise_msg"),
+                args: vec![msg],
+            });
+        }
+        Opcode::MapRest => {
+            // `a` = dst, `b` = base (source map), `c` = key_count. The result is
+            // the map with the `key_count` string keys in registers
+            // base+1..=base+key_count removed — one `without` call chained per
+            // key (matching the VM's `map_rest`). Only string-keyed maps lower.
+            let base = instr.b();
+            let key_count = instr.c();
+            let (map_handle, map_ty) = ssa.read(base, block, pc)?;
+            let without_fn = match map_ty {
+                Ty::MapStrI64 | Ty::MapStrBool => "str_i64_without",
+                Ty::MapStrF64 => "str_f64_without",
+                Ty::MapStrDyn => "str_dyn_without",
+                _ => return Err(Unsupported::TypeMismatch { pc }),
+            };
+            let mut current = map_handle;
+            for offset in 0..key_count {
+                let key_reg = base
+                    .checked_add(1)
+                    .and_then(|r| r.checked_add(offset))
+                    .ok_or(Unsupported::TypeMismatch { pc })?;
+                let key = ssa.read_typed(key_reg, block, Ty::Str, pc)?;
+                let next = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(next),
+                    callee: AbiRef::new("map_h", without_fn),
+                    args: vec![current, key],
+                });
+                current = next;
+            }
+            ssa.write(instr.a(), block, (current, map_ty));
         }
         // Control-flow opcodes are terminators, normally handled outside lower_inst.
         // Reaching here means a branch targeted the middle of a fused pair or an
@@ -4195,19 +6823,32 @@ fn to_display_str(
         // the VM's exact separators/quoting. Map display stays out of the
         // subset: its order is the underlying hash iteration order, which is
         // not portable across the two runtimes (see docs/semantics.md).
-        Ty::ListI64 | Ty::ListF64 | Ty::ListStr => {
+        Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn => {
             if !containers {
                 return Err(Unsupported::TypeMismatch { pc });
             }
             let display_fn = match ty {
                 Ty::ListI64 => "i64_display",
                 Ty::ListF64 => "f64_display",
+                Ty::ListDyn => "dyn_display",
                 _ => "str_display",
             };
             let dst = ssa.new_val();
             insts.push(Inst::Call {
                 dst: Some(dst),
                 callee: AbiRef::new("list_h", display_fn),
+                args: vec![v],
+            });
+            Ok((dst, true))
+        }
+        // A boxed Dyn from a mixed-list read: at runtime it is a scalar in
+        // D2 (nested containers never box — see LoadHeapConst's scalar_only
+        // guard), so the bare display mode is exact for both display paths.
+        Ty::Dyn => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("dyn", "display"),
                 args: vec![v],
             });
             Ok((dst, true))
@@ -4286,6 +6927,151 @@ fn lower_builtin_call(
         Builtin::CallMethod => {
             // Dispatched by the caller before reaching here.
             return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+        }
+        Builtin::TryCall => {
+            // Dispatched by the caller before reaching here (it needs the
+            // function table and the signature lattice).
+            return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+        }
+        Builtin::ErrorRaise => {
+            // `error(v)`: raise the boxed value to the nearest `try` frame
+            // (`raise_dyn` diverges: longjmp with a handler, abort without —
+            // the VM's uncaught behaviour). The statement's result register
+            // is never observed on the raise path; nil keeps SSA total.
+            if argc != 1 {
+                return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+            }
+            let (v, ty) = ssa.read(base.wrapping_add(1), block, pc)?;
+            let boxed = to_dyn_any(ssa, insts, v, ty, pc)?;
+            insts.push(Inst::Call {
+                dst: None,
+                callee: AbiRef::new("rt", "raise_dyn"),
+                args: vec![boxed],
+            });
+            let nil = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: nil,
+                value: Const::Nil,
+            });
+            ssa.write(base, block, (nil, Ty::Nil));
+            return Ok(());
+        }
+        Builtin::ChanNew => {
+            // `chan(capacity[, type])` — the type string is a VM checker
+            // hint, dropped natively. The channel value is its i64 id.
+            if !(1..=2).contains(&argc) {
+                return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+            }
+            let cap = read_typed_scalar(ssa, insts, base.wrapping_add(1), block, Ty::I64, pc)?;
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("chan", "new"),
+                args: vec![cap],
+            });
+            ssa.write(base, block, (dst, Ty::I64));
+            return Ok(());
+        }
+        Builtin::ChanSend => {
+            if argc != 2 {
+                return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+            }
+            let ch = read_channel_id(ssa, insts, base.wrapping_add(1), block, pc)?;
+            let (v, ty) = ssa.read(base.wrapping_add(2), block, pc)?;
+            let boxed = to_dyn_any(ssa, insts, v, ty, pc)?;
+            insts.push(Inst::Call {
+                dst: None,
+                callee: AbiRef::new("chan", "send"),
+                args: vec![ch, boxed],
+            });
+            let nil = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: nil,
+                value: Const::Nil,
+            });
+            ssa.write(base, block, (nil, Ty::Nil));
+            return Ok(());
+        }
+        Builtin::ChanRecv => {
+            if argc != 1 {
+                return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+            }
+            let ch = read_channel_id(ssa, insts, base.wrapping_add(1), block, pc)?;
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("chan", "recv"),
+                args: vec![ch],
+            });
+            ssa.write(base, block, (dst, Ty::Dyn));
+            return Ok(());
+        }
+        Builtin::Spawn => {
+            // Dispatched by the caller (needs the function table/signatures).
+            return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+        }
+        Builtin::SelectBlock => {
+            // Four parallel lists + the default flag; every list normalizes
+            // to a dyn list, the result is the VM's exact
+            // `[is_default, index, payload]` shape.
+            if argc != 5 {
+                return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+            }
+            let mut lists = Vec::with_capacity(4);
+            for i in 0..4 {
+                let (v, ty) = ssa.read(base.wrapping_add(1 + i), block, pc)?;
+                lists.push(to_dyn_list_handle(ssa, insts, v, ty, pc)?);
+            }
+            let has_default = {
+                let (v, ty) = ssa.read(base.wrapping_add(5), block, pc)?;
+                if ty != Ty::Bool {
+                    return Err(Unsupported::TypeMismatch { pc });
+                }
+                let wide = ssa.new_val();
+                insts.push(Inst::ZextBool { dst: wide, src: v });
+                wide
+            };
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("chan", "select"),
+                args: vec![lists[0], lists[1], lists[2], lists[3], has_default],
+            });
+            ssa.write(base, block, (dst, Ty::ListDyn));
+            return Ok(());
+        }
+        Builtin::SetCtor => {
+            // `Set()` / `Set(list)` — a fresh native set handle. `Set(set)`
+            // (copy) and mixed/Dyn element lists stay out (heap-handle keys).
+            let result = match argc {
+                0 => {
+                    let dst = ssa.new_val();
+                    insts.push(Inst::Call {
+                        dst: Some(dst),
+                        callee: AbiRef::new("set", "new"),
+                        args: Vec::new(),
+                    });
+                    dst
+                }
+                1 => {
+                    let (list, list_ty) = ssa.read(base.wrapping_add(1), block, pc)?;
+                    let from = match list_ty {
+                        Ty::ListStr => "from_str_list",
+                        Ty::ListI64 => "from_i64_list",
+                        _ => return Err(Unsupported::TypeMismatch { pc }),
+                    };
+                    let dst = ssa.new_val();
+                    insts.push(Inst::Call {
+                        dst: Some(dst),
+                        callee: AbiRef::new("set", from),
+                        args: vec![list],
+                    });
+                    dst
+                }
+                _ => return Err(Unsupported::Opcode { pc, op: Opcode::Call }),
+            };
+            ssa.write(base, block, (result, Ty::Set));
+            return Ok(());
         }
         Builtin::Panic => {
             // `panic(args…)`: the message is the space-joined display of the
@@ -4388,6 +7174,35 @@ fn lower_builtin_call(
                         float: false,
                         lhs: cmp,
                         rhs: zero,
+                    });
+                    dst
+                }
+                // Anything else boxable (lists, Maybe carriers, Dyn) compares
+                // through `dyn.eq` — deep structural equality with numeric
+                // coercion, exactly the VM's `runtime_values_equal` (an absent
+                // Maybe is nil: `assert_eq(m.get(missing), 3)` fails loud on
+                // both sides).
+                _ if dyn_boxable_ty(lty) && dyn_boxable_ty(rty) => {
+                    let lb = to_dyn_any(ssa, insts, lv, lty, pc)?;
+                    let rb = to_dyn_any(ssa, insts, rv, rty, pc)?;
+                    let eq = ssa.new_val();
+                    insts.push(Inst::Call {
+                        dst: Some(eq),
+                        callee: AbiRef::new("dyn", "eq"),
+                        args: vec![lb, rb],
+                    });
+                    let one = ssa.new_val();
+                    insts.push(Inst::Const {
+                        dst: one,
+                        value: Const::I64(1),
+                    });
+                    let dst = ssa.new_val();
+                    insts.push(Inst::Cmp {
+                        dst,
+                        op,
+                        float: false,
+                        lhs: eq,
+                        rhs: one,
                     });
                     dst
                 }
@@ -4500,14 +7315,29 @@ fn lower_builtin_call(
         }
         Builtin::Assert => {
             // `assert(cond)` / `assert(cond, message)`: a false condition is a
-            // fatal error, matching the VM's loud halt. The condition must be a
-            // `Bool` (the VM's truthiness for other values is not modelled).
+            // fatal error, matching the VM's loud halt. A `Bool` condition
+            // widens directly; a boxed condition evaluates the VM's
+            // truthiness (`assert_truthy` = `!(Nil | Bool(false))`).
             if argc == 0 || argc > 2 {
                 return Err(Unsupported::Opcode { pc, op: Opcode::Call });
             }
-            let cond = ssa.read_typed(base.wrapping_add(1), block, Ty::Bool, pc)?;
-            let wide = ssa.new_val();
-            insts.push(Inst::ZextBool { dst: wide, src: cond });
+            let wide = match ssa.read(base.wrapping_add(1), block, pc)? {
+                (v, Ty::Dyn) => {
+                    let t = ssa.new_val();
+                    insts.push(Inst::Call {
+                        dst: Some(t),
+                        callee: AbiRef::new("dyn", "truthy"),
+                        args: vec![v],
+                    });
+                    t
+                }
+                _ => {
+                    let cond = ssa.read_typed(base.wrapping_add(1), block, Ty::Bool, pc)?;
+                    let wide = ssa.new_val();
+                    insts.push(Inst::ZextBool { dst: wide, src: cond });
+                    wide
+                }
+            };
             if argc == 1 {
                 insts.push(Inst::Call {
                     dst: None,
@@ -4598,11 +7428,73 @@ fn lower_method_call_k(
         .clone();
     let (receiver, receiver_ty) = ssa.read(base, block, pc)?;
     let argc = instr.c() as usize;
+    // A boxed Dyn receiver unwraps through the as_list guard for list-only
+    // method names (a non-list tag aborts — the VM's method-on-wrong-type is
+    // a loud error too). Names shared with str/map receivers stay boxed.
+    let (receiver, receiver_ty) = if receiver_ty == Ty::Dyn
+        && matches!(
+            name.as_str(),
+            "take" | "skip" | "concat" | "reduce" | "map" | "filter" | "unique" | "sort" | "reverse"
+        ) {
+        let unboxed = ssa.new_val();
+        insts.push(Inst::Call {
+            dst: Some(unboxed),
+            callee: AbiRef::new("dyn", "as_list"),
+            args: vec![receiver],
+        });
+        (unboxed, Ty::ListDyn)
+    } else if receiver_ty == Ty::Dyn && matches!(name.as_str(), "has" | "keys" | "values" | "delete" | "remove") {
+        // Map-only method names unbox through the as_map guard (a parsed
+        // json/yaml value flows as Dyn); `get` stays ambiguous (lists have
+        // it too) and keeps rejecting.
+        let unboxed = ssa.new_val();
+        insts.push(Inst::Call {
+            dst: Some(unboxed),
+            callee: AbiRef::new("dyn", "as_map"),
+            args: vec![receiver],
+        });
+        (unboxed, Ty::MapStrDyn)
+    } else {
+        (receiver, receiver_ty)
+    };
+    // Trait method dispatch (plan J1): a receiver with known `NewObject`
+    // provenance devirtualizes to a direct call of the registered impl; a
+    // boxed receiver dispatches at runtime over the arena type marks.
+    if let Some(result) = lower_trait_method_k(
+        ssa,
+        insts,
+        funcs,
+        entry,
+        sig,
+        receiver,
+        receiver_ty,
+        &name,
+        base,
+        argc,
+        block,
+        pc,
+    )? {
+        ssa.write(base, block, result);
+        return Ok(());
+    }
     // List HOF with a compiled zero-capture lambda callback (fn-pointer ABI):
     // handled before the generic argument reads, because the lambda register
     // carries a `GlobalRef::Lambda`, not an SSA value.
-    if receiver_ty == Ty::ListI64
-        && let Some(result) = lower_list_hof_k(ssa, insts, funcs, entry, sig, receiver, &name, base, argc, block, pc)?
+    if matches!(receiver_ty, Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn)
+        && let Some(result) = lower_list_hof_k(
+            ssa,
+            insts,
+            funcs,
+            entry,
+            sig,
+            receiver,
+            receiver_ty,
+            &name,
+            base,
+            argc,
+            block,
+            pc,
+        )?
     {
         ssa.write(base, block, result);
         return Ok(());
@@ -4616,13 +7508,186 @@ fn lower_method_call_k(
     Ok(())
 }
 
-/// `xs.map(|x| …)` / `filter` / `reduce(init, |acc, x| …)` over `List<i64>`
-/// with a zero-capture lambda: the compiled `@lk_fn_N` address is passed to an
-/// lkrt fold helper. The lambda's signature is seeded/enforced through the
-/// same monomorphization lattice as direct calls (`i64 → i64` for map,
-/// `i64 → Bool` for filter, `(i64, i64) → i64` for reduce). Returns
-/// `Ok(None)` when the shape doesn't apply (the generic path then rejects
-/// loudly — never a silent semantic change).
+/// Trait-method dispatch for `CallMethodK` (plan J1). Two shapes:
+///
+///  - **Static devirtualization**: the receiver is a `MapStrDyn` whose
+///    `NewObject` provenance names a type with a registered `(type, method)`
+///    impl — a plain direct call (`self` first, then the window arguments),
+///    through the same monomorphization lattice as user calls.
+///  - **Runtime dispatch**: the receiver is boxed (`Dyn` — a struct instance
+///    that flowed through a mixed list or a `Dyn` parameter) and the method
+///    name has registered impls — [`Inst::TraitDispatch`] reads the arena
+///    type mark and calls the matching impl. Every arm is forced to the
+///    uniform boxed signature (`Dyn` self via the parameter lattice, `Dyn`
+///    return via `dyn_rets` — both retriable discoveries).
+///
+/// Returns `Ok(None)` when neither shape applies (generic dispatch decides).
+#[allow(clippy::too_many_arguments)]
+fn lower_trait_method_k(
+    ssa: &mut Ssa,
+    insts: &mut Vec<Inst>,
+    funcs: &[FunctionData],
+    entry: u32,
+    sig: &mut SigInfer,
+    receiver: ValueId,
+    receiver_ty: Ty,
+    name: &str,
+    base: u8,
+    argc: usize,
+    block: usize,
+    pc: usize,
+) -> Result<Option<(ValueId, Ty)>, Unsupported> {
+    if receiver_ty == Ty::MapStrDyn
+        && let Some(type_name) = ssa.struct_types.get(&receiver).cloned()
+        && let Some(&fidx) = sig.traits.impls.get(&(type_name, name.to_string()))
+    {
+        let mut call_args = Vec::with_capacity(argc + 1);
+        call_args.push((receiver, Ty::MapStrDyn));
+        for i in 0..argc {
+            call_args.push(ssa.read(base.wrapping_add(1).wrapping_add(i as u8), block, pc)?);
+        }
+        return emit_trait_call(ssa, insts, funcs, entry, sig, fidx as usize, call_args, pc).map(Some);
+    }
+    if receiver_ty == Ty::Dyn
+        && argc == 0
+        && let Some(arms) = sig.traits.methods.get(name).cloned()
+        && !arms.is_empty()
+    {
+        let mut retry = false;
+        for &(_, fidx) in &arms {
+            let f = fidx as usize;
+            if f >= funcs.len()
+                || fidx == entry
+                || funcs[f].param_count != 1
+                || funcs[f].capture_count != 0
+                || sig.specialized.get(f).copied().unwrap_or(false)
+            {
+                return Err(Unsupported::TypeMismatch { pc });
+            }
+            if let Some(flag) = sig.plain_called.get_mut(f) {
+                *flag = true;
+            }
+            sig.observe_param(f, 0, Ty::Dyn);
+            if !sig.dyn_rets.contains(&fidx) {
+                sig.dyn_rets.insert(fidx);
+                retry = true;
+            }
+            if sig.ret_types.get(f).copied() != Some(Ty::Dyn) {
+                retry = true;
+            }
+        }
+        // Boxed-signature discoveries converge through the fixpoint like
+        // every other retriable widening.
+        if retry {
+            return Err(Unsupported::TypeMismatch { pc });
+        }
+        let dst = ssa.new_val();
+        insts.push(Inst::TraitDispatch {
+            dst,
+            self_arg: receiver,
+            arms: arms.iter().map(|&(tid, f)| (tid, FuncId(f))).collect(),
+        });
+        return Ok(Some((dst, Ty::Dyn)));
+    }
+    Ok(None)
+}
+
+/// Emits a devirtualized trait-impl call (`self` is the first argument),
+/// refining the callee's signature through the shared parameter lattice.
+#[allow(clippy::too_many_arguments)]
+fn emit_trait_call(
+    ssa: &mut Ssa,
+    insts: &mut Vec<Inst>,
+    funcs: &[FunctionData],
+    entry: u32,
+    sig: &mut SigInfer,
+    fidx: usize,
+    call_args: Vec<(ValueId, Ty)>,
+    pc: usize,
+) -> Result<(ValueId, Ty), Unsupported> {
+    if fidx >= funcs.len()
+        || fidx as u32 == entry
+        || funcs[fidx].param_count as usize != call_args.len()
+        || funcs[fidx].capture_count != 0
+    {
+        return Err(Unsupported::Opcode {
+            pc,
+            op: Opcode::CallMethodK,
+        });
+    }
+    if sig.specialized.get(fidx).copied().unwrap_or(false) {
+        sig.conflict = true;
+        return Err(Unsupported::TypeMismatch { pc });
+    }
+    if let Some(flag) = sig.plain_called.get_mut(fidx) {
+        *flag = true;
+    }
+    let mut args = Vec::with_capacity(call_args.len());
+    for (i, (v, ty)) in call_args.into_iter().enumerate() {
+        let want = sig.observe_param(fidx, i, ty);
+        args.push(coerce_arg(ssa, insts, v, ty, want, pc)?);
+    }
+    let ret = sig.ret_types.get(fidx).copied().unwrap_or(Ty::I64);
+    if ret == Ty::Nil {
+        insts.push(Inst::CallFn {
+            dst: None,
+            func: FuncId(fidx as u32),
+            args,
+        });
+        let nil = ssa.new_val();
+        insts.push(Inst::Const {
+            dst: nil,
+            value: Const::Nil,
+        });
+        return Ok((nil, Ty::Nil));
+    }
+    let dst = ssa.new_val();
+    insts.push(Inst::CallFn {
+        dst: Some(dst),
+        func: FuncId(fidx as u32),
+        args,
+    });
+    Ok((dst, ret))
+}
+
+/// The VM's auto-Display (`try_runtime_display_show`): `print`/`println`
+/// formatting and string interpolation call a struct instance's registered
+/// `show` method. Mirrors it in display contexts: an operand with struct
+/// provenance and a `(type, "show")` impl is replaced by that call's result
+/// before generic display conversion.
+#[allow(clippy::too_many_arguments)]
+fn apply_display_show(
+    ssa: &mut Ssa,
+    insts: &mut Vec<Inst>,
+    funcs: &[FunctionData],
+    entry: u32,
+    sig: &mut SigInfer,
+    v: ValueId,
+    ty: Ty,
+    pc: usize,
+) -> Result<(ValueId, Ty), Unsupported> {
+    if ty == Ty::MapStrDyn
+        && let Some(type_name) = ssa.struct_types.get(&v).cloned()
+        && let Some(&fidx) = sig.traits.impls.get(&(type_name, "show".to_string()))
+    {
+        return emit_trait_call(ssa, insts, funcs, entry, sig, fidx as usize, vec![(v, ty)], pc);
+    }
+    Ok((v, ty))
+}
+
+/// `xs.map(|x| …)` / `filter` / `reduce(init, |acc, x| …)` with a
+/// zero-capture lambda: the compiled `@lk_fn_N` address is passed to an lkrt
+/// fold helper. Three ABI families, chosen from the receiver's element type
+/// and the lambda's converged signature:
+///  - `i64` (typed fast path, `i64 → i64`/`Bool`, `(i64, i64) → i64`);
+///  - `str` (`str → str`/`Bool` — `words.map(|w| w.lower())`);
+///  - boxed `dyn` (everything else): the receiver converts to a dyn list,
+///    the lambda's parameters seed `Dyn` and its returns box (`dyn_rets`),
+///    so one compiled body serves runtime-polymorphic call sites.
+///
+/// The lambda's signature converges through the same monomorphization
+/// lattice as direct calls. Returns `Ok(None)` when the shape doesn't apply
+/// (the generic path then rejects loudly — never a silent semantic change).
 #[allow(clippy::too_many_arguments)]
 fn lower_list_hof_k(
     ssa: &mut Ssa,
@@ -4631,6 +7696,7 @@ fn lower_list_hof_k(
     entry: u32,
     sig: &mut SigInfer,
     receiver: ValueId,
+    receiver_ty: Ty,
     name: &str,
     base: u8,
     argc: usize,
@@ -4641,16 +7707,23 @@ fn lower_list_hof_k(
         Some(GlobalRef::Lambda(fidx)) => Some(*fidx as usize),
         _ => None,
     };
-    let seed_params = |sig: &mut SigInfer, fidx: usize, arity: usize| {
+    let elem = match receiver_ty {
+        Ty::ListI64 => Ty::I64,
+        Ty::ListF64 => Ty::F64,
+        Ty::ListStr => Ty::Str,
+        Ty::ListDyn => Ty::Dyn,
+        _ => return Ok(None),
+    };
+    let seed_params = |sig: &mut SigInfer, fidx: usize, arity: usize, ty: Ty| {
         for i in 0..arity {
-            if let Some(slot) = sig.param_obs.get_mut(fidx).and_then(|p| p.get_mut(i)) {
-                match slot {
-                    None => *slot = Some(Ty::I64),
-                    Some(prev) if *prev != Ty::I64 => sig.conflict = true,
-                    Some(_) => {}
-                }
-            }
+            sig.observe_param(fidx, i, ty);
         }
+    };
+    // The dyn family: convert the receiver, seed `Dyn` parameters; `map`/
+    // `reduce` callbacks must *return* boxed values, so the lambda joins
+    // `dyn_rets` (a fresh entry re-runs the fixpoint with boxed returns).
+    let dyn_list_of = |ssa: &mut Ssa, insts: &mut Vec<Inst>, receiver: ValueId| -> Result<ValueId, Unsupported> {
+        to_dyn_list_handle(ssa, insts, receiver, receiver_ty, pc)
     };
     match (name, argc) {
         ("map" | "filter", 1) => {
@@ -4663,26 +7736,91 @@ fn lower_list_hof_k(
                     op: Opcode::CallMethodK,
                 });
             }
-            seed_params(sig, fidx, 1);
-            let want_ret = if name == "map" { Ty::I64 } else { Ty::Bool };
-            if sig.ret_types.get(fidx).copied() != Some(want_ret) {
-                // Transiently wrong before the fixpoint converges; final pass
-                // rejects real mismatches loudly.
-                return Err(Unsupported::TypeMismatch { pc });
-            }
+            let is_filter = name == "filter";
+            // Typed fast paths only while nothing has widened the lambda.
+            let widened = sig.dyn_rets.contains(&(fidx as u32))
+                || sig
+                    .param_obs
+                    .get(fidx)
+                    .is_some_and(|p| p.first().copied().flatten() == Some(Ty::Dyn));
+            let family = match elem {
+                Ty::I64 | Ty::Str if !widened => elem,
+                _ => Ty::Dyn,
+            };
             let fnaddr = ssa.new_val();
             insts.push(Inst::Const {
                 dst: fnaddr,
                 value: Const::FnAddr(FuncId(fidx as u32)),
             });
-            let dst = ssa.new_val();
-            let hof = if name == "map" { "i64_map_fn" } else { "i64_filter_fn" };
-            insts.push(Inst::Call {
-                dst: Some(dst),
-                callee: AbiRef::new("list_h", hof),
-                args: vec![receiver, fnaddr],
-            });
-            Ok(Some((dst, Ty::ListI64)))
+            match family {
+                Ty::I64 | Ty::Str => {
+                    seed_params(sig, fidx, 1, family);
+                    if sig.param_ty(fidx, 0) != family {
+                        // Joined wider by another call site: re-route through
+                        // the dyn family on the re-run.
+                        return Err(Unsupported::TypeMismatch { pc });
+                    }
+                    let want_ret = if is_filter { Ty::Bool } else { family };
+                    if sig.ret_types.get(fidx).copied() != Some(want_ret) {
+                        // Transiently wrong before the fixpoint converges; a
+                        // dyn-boxable mismatch re-routes the *map* through the
+                        // dyn family (`|x| tostr(x)` over ints); filter's Bool
+                        // is a hard requirement.
+                        if !is_filter
+                            && sig.ret_known.get(fidx).copied().unwrap_or(false)
+                            && sig
+                                .ret_types
+                                .get(fidx)
+                                .copied()
+                                .is_some_and(|t| t != want_ret && dyn_boxable_ty(t))
+                        {
+                            sig.dyn_rets.insert(fidx as u32);
+                        }
+                        return Err(Unsupported::TypeMismatch { pc });
+                    }
+                    let hof: &'static str = match (family, is_filter) {
+                        (Ty::I64, false) => "i64_map_fn",
+                        (Ty::I64, true) => "i64_filter_fn",
+                        (_, false) => "str_map_fn",
+                        (_, true) => "str_filter_fn",
+                    };
+                    let dst = ssa.new_val();
+                    insts.push(Inst::Call {
+                        dst: Some(dst),
+                        callee: AbiRef::new("list_h", hof),
+                        args: vec![receiver, fnaddr],
+                    });
+                    Ok(Some((dst, receiver_ty)))
+                }
+                _ => {
+                    seed_params(sig, fidx, 1, Ty::Dyn);
+                    if sig.param_ty(fidx, 0) != Ty::Dyn {
+                        return Err(Unsupported::TypeMismatch { pc });
+                    }
+                    if is_filter {
+                        if sig.ret_types.get(fidx).copied() != Some(Ty::Bool) {
+                            return Err(Unsupported::TypeMismatch { pc });
+                        }
+                    } else {
+                        if !sig.dyn_rets.contains(&(fidx as u32)) {
+                            sig.dyn_rets.insert(fidx as u32);
+                            return Err(Unsupported::TypeMismatch { pc });
+                        }
+                        if sig.ret_types.get(fidx).copied() != Some(Ty::Dyn) {
+                            return Err(Unsupported::TypeMismatch { pc });
+                        }
+                    }
+                    let list = dyn_list_of(ssa, insts, receiver)?;
+                    let hof = if is_filter { "dyn_filter_fn" } else { "dyn_map_fn" };
+                    let dst = ssa.new_val();
+                    insts.push(Inst::Call {
+                        dst: Some(dst),
+                        callee: AbiRef::new("list_h", hof),
+                        args: vec![list, fnaddr],
+                    });
+                    Ok(Some((dst, Ty::ListDyn)))
+                }
+            }
         }
         ("reduce", 2) => {
             let Some(fidx) = lambda_at(ssa, base.wrapping_add(2)) else {
@@ -4694,23 +7832,66 @@ fn lower_list_hof_k(
                     op: Opcode::CallMethodK,
                 });
             }
-            let init = read_typed_scalar(ssa, insts, base.wrapping_add(1), block, Ty::I64, pc)?;
-            seed_params(sig, fidx, 2);
-            if sig.ret_types.get(fidx).copied() != Some(Ty::I64) {
-                return Err(Unsupported::TypeMismatch { pc });
-            }
+            let (init_raw, init_ty) = ssa.read(base.wrapping_add(1), block, pc)?;
+            let widened = sig.dyn_rets.contains(&(fidx as u32))
+                || sig
+                    .param_obs
+                    .get(fidx)
+                    .is_some_and(|p| p.iter().take(2).any(|slot| *slot == Some(Ty::Dyn)));
             let fnaddr = ssa.new_val();
             insts.push(Inst::Const {
                 dst: fnaddr,
                 value: Const::FnAddr(FuncId(fidx as u32)),
             });
+            if elem == Ty::I64 && init_ty == Ty::I64 && !widened {
+                // Typed fast path: `(i64, i64) → i64`.
+                seed_params(sig, fidx, 2, Ty::I64);
+                if sig.param_ty(fidx, 0) != Ty::I64 || sig.param_ty(fidx, 1) != Ty::I64 {
+                    return Err(Unsupported::TypeMismatch { pc });
+                }
+                if sig.ret_types.get(fidx).copied() != Some(Ty::I64) {
+                    if sig.ret_known.get(fidx).copied().unwrap_or(false)
+                        && sig
+                            .ret_types
+                            .get(fidx)
+                            .copied()
+                            .is_some_and(|t| t != Ty::I64 && dyn_boxable_ty(t))
+                    {
+                        sig.dyn_rets.insert(fidx as u32);
+                    }
+                    return Err(Unsupported::TypeMismatch { pc });
+                }
+                let dst = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(dst),
+                    callee: AbiRef::new("list_h", "i64_reduce_fn"),
+                    args: vec![receiver, init_raw, fnaddr],
+                });
+                return Ok(Some((dst, Ty::I64)));
+            }
+            // Dyn accumulator: `(Dyn, Dyn) → Dyn` — a list-building reduce
+            // (`xs.reduce([], |sorted, item| …)`), a Maybe/nil init, or a
+            // runtime-polymorphic receiver.
+            seed_params(sig, fidx, 2, Ty::Dyn);
+            if sig.param_ty(fidx, 0) != Ty::Dyn || sig.param_ty(fidx, 1) != Ty::Dyn {
+                return Err(Unsupported::TypeMismatch { pc });
+            }
+            if !sig.dyn_rets.contains(&(fidx as u32)) {
+                sig.dyn_rets.insert(fidx as u32);
+                return Err(Unsupported::TypeMismatch { pc });
+            }
+            if sig.ret_types.get(fidx).copied() != Some(Ty::Dyn) {
+                return Err(Unsupported::TypeMismatch { pc });
+            }
+            let list = dyn_list_of(ssa, insts, receiver)?;
+            let init = to_dyn_any(ssa, insts, init_raw, init_ty, pc)?;
             let dst = ssa.new_val();
             insts.push(Inst::Call {
                 dst: Some(dst),
-                callee: AbiRef::new("list_h", "i64_reduce_fn"),
-                args: vec![receiver, init, fnaddr],
+                callee: AbiRef::new("list_h", "dyn_reduce_fn"),
+                args: vec![list, init, fnaddr],
             });
-            Ok(Some((dst, Ty::I64)))
+            Ok(Some((dst, Ty::Dyn)))
         }
         _ => Ok(None),
     }
@@ -4730,6 +7911,274 @@ fn lower_method_dispatch(
     pc: usize,
 ) -> Result<Reg, Unsupported> {
     let result: Reg = match (receiver_ty, name, args) {
+        // Boxed-element list long tail (runtime-polymorphic receivers).
+        (Ty::ListDyn, "take", [(n, Ty::I64)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", "dyn_take"),
+                args: vec![receiver, *n],
+            });
+            (dst, Ty::ListDyn)
+        }
+        (Ty::ListDyn, "skip", [(n, Ty::I64)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", "dyn_skip"),
+                args: vec![receiver, *n],
+            });
+            (dst, Ty::ListDyn)
+        }
+        // `concat` with any dyn-list side: both sides normalize to dyn lists
+        // (typed sides convert element-wise, cold path) and chain.
+        (Ty::ListDyn | Ty::ListI64 | Ty::ListF64 | Ty::ListStr, "concat", [(other, oty)])
+            if receiver_ty == Ty::ListDyn || *oty == Ty::ListDyn || *oty == Ty::Dyn =>
+        {
+            let lhs = to_dyn_list_handle(ssa, insts, receiver, receiver_ty, pc)?;
+            let rhs = match *oty {
+                Ty::Dyn => {
+                    let unboxed = ssa.new_val();
+                    insts.push(Inst::Call {
+                        dst: Some(unboxed),
+                        callee: AbiRef::new("dyn", "as_list"),
+                        args: vec![*other],
+                    });
+                    unboxed
+                }
+                oty => to_dyn_list_handle(ssa, insts, *other, oty, pc)?,
+            };
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", "dyn_chain"),
+                args: vec![lhs, rhs],
+            });
+            (dst, Ty::ListDyn)
+        }
+        (Ty::ListI64, "unique", []) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", "i64_unique"),
+                args: vec![receiver],
+            });
+            (dst, Ty::ListI64)
+        }
+        // `xs.sort()` / `xs.reverse()` — fresh copies (the VM sorts/reverses
+        // a snapshot; the receiver is untouched).
+        (Ty::ListI64, "sort", []) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", "i64_sort"),
+                args: vec![receiver],
+            });
+            (dst, Ty::ListI64)
+        }
+        (Ty::ListI64, "reverse", []) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", "i64_reverse"),
+                args: vec![receiver],
+            });
+            (dst, Ty::ListI64)
+        }
+        // `.is_empty()` — `len == 0` over the same per-type len ABI.
+        (
+            Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn | Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrDyn,
+            "is_empty",
+            [],
+        ) => {
+            let (module, len_fn) = match receiver_ty {
+                Ty::ListI64 => ("list_h", "i64_len"),
+                Ty::ListF64 => ("list_h", "f64_len"),
+                Ty::ListStr => ("list_h", "str_len"),
+                Ty::ListDyn => ("list_h", "dyn_len"),
+                Ty::MapStrI64 => ("map_h", "str_i64_len"),
+                Ty::MapStrF64 => ("map_h", "str_f64_len"),
+                _ => ("map_h", "str_dyn_len"),
+            };
+            let len = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(len),
+                callee: AbiRef::new(module, len_fn),
+                args: vec![receiver],
+            });
+            let zero = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: zero,
+                value: Const::I64(0),
+            });
+            let b = ssa.new_val();
+            insts.push(Inst::Cmp {
+                dst: b,
+                op: CmpOp::Eq,
+                float: false,
+                lhs: len,
+                rhs: zero,
+            });
+            (b, Ty::Bool)
+        }
+        // `.slice(start[, end])` — negative aborts (VM loud), end clamps.
+        (Ty::ListI64, "slice", [(start, Ty::I64), (end, Ty::I64)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", "i64_slice_method"),
+                args: vec![receiver, *start, *end],
+            });
+            (dst, Ty::ListI64)
+        }
+        // Map iteration family (order = the VM's, layout mirror): keys/
+        // values snapshots (Mixed → dyn lists), delete-with-removed-value.
+        (Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool | Ty::MapStrDyn, "keys" | "values", []) => {
+            let family = match receiver_ty {
+                Ty::MapStrI64 => "str_i64",
+                Ty::MapStrF64 => "str_f64",
+                Ty::MapStrBool => "str_bool",
+                _ => "str_dyn",
+            };
+            let abi_name: &'static str = match (family, name) {
+                ("str_i64", "keys") => "str_i64_keys",
+                ("str_i64", _) => "str_i64_values",
+                ("str_f64", "keys") => "str_f64_keys",
+                ("str_f64", _) => "str_f64_values",
+                ("str_bool", "keys") => "str_bool_keys",
+                ("str_bool", _) => "str_bool_values",
+                (_, "keys") => "str_dyn_keys",
+                _ => "str_dyn_values",
+            };
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("map_h", abi_name),
+                args: vec![receiver],
+            });
+            (dst, Ty::ListDyn)
+        }
+        (Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool | Ty::MapStrDyn, "delete" | "remove", [(k, Ty::Str)]) => {
+            let abi_name = match receiver_ty {
+                Ty::MapStrI64 => "str_i64_delete",
+                Ty::MapStrF64 => "str_f64_delete",
+                Ty::MapStrBool => "str_bool_delete",
+                _ => "str_dyn_delete",
+            };
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("map_h", abi_name),
+                args: vec![receiver, *k],
+            });
+            (dst, Ty::Dyn)
+        }
+        // `m.has(k)` on typed string maps — the dynamic-lookup present bit.
+        (Ty::MapStrI64 | Ty::MapStrBool, "has", [(k, Ty::Str)]) => {
+            let looked = ssa.new_val();
+            insts.push(Inst::MapGetMaybe {
+                dst: looked,
+                handle: receiver,
+                key: *k,
+            });
+            let present = ssa.new_val();
+            insts.push(Inst::MaybePresent {
+                dst: present,
+                src: looked,
+                maybe_ty: Ty::MaybeI64,
+            });
+            (present, Ty::Bool)
+        }
+        (Ty::MapStrF64, "has", [(k, Ty::Str)]) => {
+            let looked = ssa.new_val();
+            insts.push(Inst::MapGetMaybeStrF64 {
+                dst: looked,
+                handle: receiver,
+                key: *k,
+            });
+            let present = ssa.new_val();
+            insts.push(Inst::MaybePresent {
+                dst: present,
+                src: looked,
+                maybe_ty: Ty::MaybeF64,
+            });
+            (present, Ty::Bool)
+        }
+        // Set methods (VM `core_methods` set family): membership/mutation
+        // return Bool, `len` Int, `clear` Nil. Elements box to Dyn — a Float
+        // aborts inside lkrt (the VM's loud "cannot be used as a key").
+        (Ty::Set, "len", []) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("set", "len"),
+                args: vec![receiver],
+            });
+            (dst, Ty::I64)
+        }
+        (Ty::Set, "is_empty", []) => {
+            let len = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(len),
+                callee: AbiRef::new("set", "len"),
+                args: vec![receiver],
+            });
+            let zero = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: zero,
+                value: Const::I64(0),
+            });
+            let b = ssa.new_val();
+            insts.push(Inst::Cmp {
+                dst: b,
+                op: CmpOp::Eq,
+                float: false,
+                lhs: len,
+                rhs: zero,
+            });
+            (b, Ty::Bool)
+        }
+        (Ty::Set, "has" | "contains" | "add" | "delete" | "remove", [(v, vty)]) => {
+            let boxed = to_dyn_any(ssa, insts, *v, *vty, pc)?;
+            let abi_name = match name {
+                "has" | "contains" => "has",
+                "add" => "add",
+                _ => "delete",
+            };
+            let wide = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(wide),
+                callee: AbiRef::new("set", abi_name),
+                args: vec![receiver, boxed],
+            });
+            let zero = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: zero,
+                value: Const::I64(0),
+            });
+            let b = ssa.new_val();
+            insts.push(Inst::Cmp {
+                dst: b,
+                op: CmpOp::Ne,
+                float: false,
+                lhs: wide,
+                rhs: zero,
+            });
+            (b, Ty::Bool)
+        }
+        (Ty::Set, "clear", []) => {
+            insts.push(Inst::Call {
+                dst: None,
+                callee: AbiRef::new("set", "clear"),
+                args: vec![receiver],
+            });
+            let nil = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: nil,
+                value: Const::Nil,
+            });
+            (nil, Ty::Nil)
+        }
         // `s.starts_with(prefix)` — byte-prefix test, exactly Rust/VM semantics.
         (Ty::Str, "starts_with", [(prefix, Ty::Str)]) => {
             let dst = ssa.new_val();
@@ -4754,6 +8203,276 @@ fn lower_method_dispatch(
             (b, Ty::Bool)
         }
         // `s.contains(needle)` — byte-substring test, exactly Rust/VM semantics.
+        // `m.has(key)` on a mixed-value map — key membership (stored-nil
+        // still counts, see `str_dyn_has`).
+        // `xs.first()` / `xs.last()` — nil when empty: exactly the dynamic-
+        // index `Maybe` model (an OOB/absent `get_pair` is `present = 0`),
+        // so both reuse the existing ListGetMaybe machinery, no new ABI.
+        (Ty::ListI64 | Ty::ListF64 | Ty::ListStr, "first", []) => {
+            let idx = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: idx,
+                value: Const::I64(0),
+            });
+            let dst = ssa.new_val();
+            let maybe_ty = match receiver_ty {
+                Ty::ListI64 => {
+                    insts.push(Inst::ListGetMaybe {
+                        dst,
+                        handle: receiver,
+                        index: idx,
+                    });
+                    Ty::MaybeI64
+                }
+                Ty::ListF64 => {
+                    insts.push(Inst::ListGetMaybeF64 {
+                        dst,
+                        handle: receiver,
+                        index: idx,
+                    });
+                    Ty::MaybeF64
+                }
+                _ => {
+                    insts.push(Inst::ListGetMaybeStr {
+                        dst,
+                        handle: receiver,
+                        index: idx,
+                    });
+                    Ty::MaybeStr
+                }
+            };
+            (dst, maybe_ty)
+        }
+        (Ty::ListI64 | Ty::ListF64 | Ty::ListStr, "last", []) => {
+            let (len_module, len_fn) = match receiver_ty {
+                Ty::ListI64 => ("list_h", "i64_len"),
+                Ty::ListF64 => ("list_h", "f64_len"),
+                _ => ("list_h", "str_len"),
+            };
+            let len = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(len),
+                callee: AbiRef::new(len_module, len_fn),
+                args: vec![receiver],
+            });
+            let one = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: one,
+                value: Const::I64(1),
+            });
+            let idx = ssa.new_val();
+            insts.push(Inst::IntBin {
+                dst: idx,
+                op: IntBinOp::Sub,
+                lhs: len,
+                rhs: one,
+            });
+            let dst = ssa.new_val();
+            let maybe_ty = match receiver_ty {
+                Ty::ListI64 => {
+                    insts.push(Inst::ListGetMaybe {
+                        dst,
+                        handle: receiver,
+                        index: idx,
+                    });
+                    Ty::MaybeI64
+                }
+                Ty::ListF64 => {
+                    insts.push(Inst::ListGetMaybeF64 {
+                        dst,
+                        handle: receiver,
+                        index: idx,
+                    });
+                    Ty::MaybeF64
+                }
+                _ => {
+                    insts.push(Inst::ListGetMaybeStr {
+                        dst,
+                        handle: receiver,
+                        index: idx,
+                    });
+                    Ty::MaybeStr
+                }
+            };
+            (dst, maybe_ty)
+        }
+        // `xs.concat(ys)` — same semantics as chain (the VM implements both
+        // as lhs ++ rhs into a fresh list).
+        (Ty::ListI64, "concat", [(other, Ty::ListI64)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", "i64_chain"),
+                args: vec![receiver, *other],
+            });
+            (dst, Ty::ListI64)
+        }
+        // `xs.join(sep)` on a string list → one string.
+        (Ty::ListStr, "join", [(sep, Ty::Str)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", "str_join"),
+                args: vec![receiver, *sep],
+            });
+            (dst, Ty::Str)
+        }
+        // `xs.get(i)` — safe index: nil on OOB, i.e. exactly the dynamic-
+        // index Maybe model (reused, no new ABI).
+        (Ty::ListI64, "get", [(idx, Ty::I64)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::ListGetMaybe {
+                dst,
+                handle: receiver,
+                index: *idx,
+            });
+            (dst, Ty::MaybeI64)
+        }
+        (Ty::ListF64, "get", [(idx, Ty::I64)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::ListGetMaybeF64 {
+                dst,
+                handle: receiver,
+                index: *idx,
+            });
+            (dst, Ty::MaybeF64)
+        }
+        (Ty::ListStr, "get", [(idx, Ty::I64)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::ListGetMaybeStr {
+                dst,
+                handle: receiver,
+                index: *idx,
+            });
+            (dst, Ty::MaybeStr)
+        }
+        // `List<i64>` slicing/concat helpers (VM core_methods semantics).
+        (Ty::ListI64, "take", [(n, Ty::I64)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", "i64_take"),
+                args: vec![receiver, *n],
+            });
+            (dst, Ty::ListI64)
+        }
+        (Ty::ListI64, "skip", [(n, Ty::I64)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", "i64_skip"),
+                args: vec![receiver, *n],
+            });
+            (dst, Ty::ListI64)
+        }
+        (Ty::ListI64, "chain", [(other, Ty::ListI64)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", "i64_chain"),
+                args: vec![receiver, *other],
+            });
+            (dst, Ty::ListI64)
+        }
+        (Ty::MapStrDyn, "has", [(key, Ty::Str)]) => {
+            let raw = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(raw),
+                callee: AbiRef::new("map_h", "str_dyn_has"),
+                args: vec![receiver, *key],
+            });
+            let zero = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: zero,
+                value: Const::I64(0),
+            });
+            let b = ssa.new_val();
+            insts.push(Inst::Cmp {
+                dst: b,
+                op: CmpOp::Ne,
+                float: false,
+                lhs: raw,
+                rhs: zero,
+            });
+            (b, Ty::Bool)
+        }
+        // `m.len()` / `xs.len()` on Dyn containers (method form of `Len`).
+        (Ty::MapStrDyn, "len", []) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("map_h", "str_dyn_len"),
+                args: vec![receiver],
+            });
+            (dst, Ty::I64)
+        }
+        (Ty::ListDyn, "len", []) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", "dyn_len"),
+                args: vec![receiver],
+            });
+            (dst, Ty::I64)
+        }
+        // Methods whose VM result is a mixed list regardless of the receiver
+        // (chunk/enumerate/zip pairs are nested; unique/flatten come back
+        // `TypedList::Mixed`): the receiver converts to a dyn-list handle up
+        // front, one lkrt helper per method mirrors core_methods.rs.
+        (Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn, "chunk", [(n, Ty::I64)]) => {
+            let handle = to_dyn_list_handle(ssa, insts, receiver, receiver_ty, pc)?;
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", "dyn_chunk"),
+                args: vec![handle, *n],
+            });
+            (dst, Ty::ListDyn)
+        }
+        (Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn, "enumerate", []) => {
+            let handle = to_dyn_list_handle(ssa, insts, receiver, receiver_ty, pc)?;
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", "dyn_enumerate"),
+                args: vec![handle],
+            });
+            (dst, Ty::ListDyn)
+        }
+        (
+            Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn,
+            "zip",
+            [(other, Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn)],
+        ) => {
+            let lhs = to_dyn_list_handle(ssa, insts, receiver, receiver_ty, pc)?;
+            let rhs = to_dyn_list_handle(ssa, insts, *other, args[0].1, pc)?;
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", "dyn_zip"),
+                args: vec![lhs, rhs],
+            });
+            (dst, Ty::ListDyn)
+        }
+        (Ty::ListF64 | Ty::ListStr | Ty::ListDyn, "unique", []) => {
+            let handle = to_dyn_list_handle(ssa, insts, receiver, receiver_ty, pc)?;
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", "dyn_unique"),
+                args: vec![handle],
+            });
+            (dst, Ty::ListDyn)
+        }
+        (Ty::ListDyn, "flatten", []) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", "dyn_flatten"),
+                args: vec![receiver],
+            });
+            (dst, Ty::ListDyn)
+        }
         (Ty::Str, "contains", [(needle, Ty::Str)]) => {
             let dst = ssa.new_val();
             insts.push(Inst::Call {
@@ -4785,6 +8504,121 @@ fn lower_method_dispatch(
                 args: vec![receiver],
             });
             (dst, Ty::I64)
+        }
+        // `s.is_empty()` — char_len == 0 (an empty string is empty in both
+        // byte and char terms), no new ABI.
+        (Ty::Str, "is_empty", []) => {
+            let len = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(len),
+                callee: AbiRef::new("str", "char_len"),
+                args: vec![receiver],
+            });
+            let zero = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: zero,
+                value: Const::I64(0),
+            });
+            let b = ssa.new_val();
+            insts.push(Inst::Cmp {
+                dst: b,
+                op: CmpOp::Eq,
+                float: false,
+                lhs: len,
+                rhs: zero,
+            });
+            (b, Ty::Bool)
+        }
+        // `s.ends_with(suffix)` — byte-suffix test (see `starts_with`).
+        (Ty::Str, "ends_with", [(suffix, Ty::Str)]) => {
+            let raw = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(raw),
+                callee: AbiRef::new("str", "ends_with"),
+                args: vec![receiver, *suffix],
+            });
+            let zero = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: zero,
+                value: Const::I64(0),
+            });
+            let b = ssa.new_val();
+            insts.push(Inst::Cmp {
+                dst: b,
+                op: CmpOp::Ne,
+                float: false,
+                lhs: raw,
+                rhs: zero,
+            });
+            (b, Ty::Bool)
+        }
+        // `s.find(needle)` — byte index or -1 (the VM's `str::find`).
+        (Ty::Str, "find", [(needle, Ty::Str)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("str", "find"),
+                args: vec![receiver, *needle],
+            });
+            (dst, Ty::I64)
+        }
+        // Fresh-string unary transforms (VM core_methods semantics: `lower`/
+        // `upper` are Unicode `to_lowercase`/`to_uppercase`, `reverse` is
+        // char-wise, `trim` is Rust `str::trim`).
+        (Ty::Str, "lower" | "upper" | "trim" | "reverse", []) => {
+            let helper = match name {
+                "lower" => "lower",
+                "upper" => "upper",
+                "trim" => "trim",
+                _ => "reverse",
+            };
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("str", helper),
+                args: vec![receiver],
+            });
+            (dst, Ty::Str)
+        }
+        (Ty::Str, "repeat", [(n, Ty::I64)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("str", "repeat"),
+                args: vec![receiver, *n],
+            });
+            (dst, Ty::Str)
+        }
+        // `s.substring(start, length)` — byte-indexed in the VM (a
+        // non-boundary index aborts loudly, like the VM's panic).
+        (Ty::Str, "substring", [(start, Ty::I64), (length, Ty::I64)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("str", "substring"),
+                args: vec![receiver, *start, *length],
+            });
+            (dst, Ty::Str)
+        }
+        (Ty::Str, "replace", [(from, Ty::Str), (to, Ty::Str)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("str", "replace"),
+                args: vec![receiver, *from, *to],
+            });
+            (dst, Ty::Str)
+        }
+        // `s.chars()` — the VM returns a *Mixed* list (bare-text display),
+        // so the native carrier is a dyn list, not a typed string list.
+        (Ty::Str, "chars", []) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("str", "chars"),
+                args: vec![receiver],
+            });
+            (dst, Ty::ListDyn)
         }
         // `m.get(key)` on string-keyed maps: the missing-key `Maybe` model.
         (Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool, "get", [(key, Ty::Str)]) => {
@@ -4889,6 +8723,95 @@ fn lower_module_call(
     block: usize,
     pc: usize,
 ) -> Result<(), Unsupported> {
+    // `iter.range([start,] end[, step])` — an exclusive integer range,
+    // materialized eagerly like the VM (reuses the `NewRange` helper; zero
+    // step aborts inside it). The one-arg form counts from 0.
+    // Streams over finite sources with pure lambdas are observationally an
+    // eager list pipeline (the corpus is differential-gated on stdout, and
+    // laziness has no side channel there): `from_list`/`collect` pass
+    // through, `range` materializes.
+    if module == "stream" {
+        match name {
+            "from_list" | "collect" => {
+                if argc != 1 {
+                    return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+                }
+                let (v, ty) = ssa.read(base.wrapping_add(1), block, pc)?;
+                if !matches!(ty, Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn) {
+                    return Err(Unsupported::TypeMismatch { pc });
+                }
+                ssa.write(base, block, (v, ty));
+                return Ok(());
+            }
+            "range" => {
+                if argc != 2 {
+                    return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+                }
+                let start = read_typed_scalar(ssa, insts, base.wrapping_add(1), block, Ty::I64, pc)?;
+                let end = read_typed_scalar(ssa, insts, base.wrapping_add(2), block, Ty::I64, pc)?;
+                let one = ssa.new_val();
+                insts.push(Inst::Const {
+                    dst: one,
+                    value: Const::I64(1),
+                });
+                let exclusive = ssa.new_val();
+                insts.push(Inst::Const {
+                    dst: exclusive,
+                    value: Const::I64(0),
+                });
+                let handle = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(handle),
+                    callee: AbiRef::new("list_h", "i64_from_range"),
+                    args: vec![start, end, one, exclusive],
+                });
+                ssa.write(base, block, (handle, Ty::ListI64));
+                return Ok(());
+            }
+            _ => {}
+        }
+    }
+    if module == "iter" && name == "range" {
+        if !(1..=3).contains(&argc) {
+            return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+        }
+        let (start, end) = if argc == 1 {
+            let zero = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: zero,
+                value: Const::I64(0),
+            });
+            let end = read_typed_scalar(ssa, insts, base.wrapping_add(1), block, Ty::I64, pc)?;
+            (zero, end)
+        } else {
+            let start = read_typed_scalar(ssa, insts, base.wrapping_add(1), block, Ty::I64, pc)?;
+            let end = read_typed_scalar(ssa, insts, base.wrapping_add(2), block, Ty::I64, pc)?;
+            (start, end)
+        };
+        let step = if argc == 3 {
+            read_typed_scalar(ssa, insts, base.wrapping_add(3), block, Ty::I64, pc)?
+        } else {
+            let one = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: one,
+                value: Const::I64(1),
+            });
+            one
+        };
+        let exclusive = ssa.new_val();
+        insts.push(Inst::Const {
+            dst: exclusive,
+            value: Const::I64(0),
+        });
+        let handle = ssa.new_val();
+        insts.push(Inst::Call {
+            dst: Some(handle),
+            callee: AbiRef::new("list_h", "i64_from_range"),
+            args: vec![start, end, step, exclusive],
+        });
+        ssa.write(base, block, (handle, Ty::ListI64));
+        return Ok(());
+    }
     // `math.floor`/`ceil`/`round` dispatch on the argument's static type,
     // matching the VM's `integer_round`: an `Int` passes through unchanged, a
     // `Float` rounds via the lkrt helper (`f64::xxx() as i64`).
@@ -5140,6 +9063,26 @@ fn lower_module_call(
         ssa.write(base, block, (dst, lty));
         return Ok(());
     }
+    // `math.sign` keeps its argument's numeric flavor (the module's two arms).
+    if module == "math" && name == "sign" {
+        if argc != 1 {
+            return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+        }
+        let (v, ty) = read_scalar(ssa, insts, base.wrapping_add(1), block, pc)?;
+        let sign_fn = match ty {
+            Ty::I64 => "sign_i64",
+            Ty::F64 => "sign_f64",
+            _ => return Err(Unsupported::TypeMismatch { pc }),
+        };
+        let dst = ssa.new_val();
+        insts.push(Inst::Call {
+            dst: Some(dst),
+            callee: AbiRef::new("math", sign_fn),
+            args: vec![v],
+        });
+        ssa.write(base, block, (dst, ty));
+        return Ok(());
+    }
     let Some((callee, param_tys, ret_ty)) = module_call_abi(module, name) else {
         return Err(Unsupported::Opcode { pc, op: Opcode::Call });
     };
@@ -5179,6 +9122,30 @@ fn lower_module_call(
                 value: Const::Nil,
             });
             (nil, Ty::Nil)
+        }
+        // The ABI vocabulary has no Bool: a Bool-typed member returns 0/1 as
+        // I64 and narrows here.
+        Ty::Bool => {
+            let wide = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(wide),
+                callee,
+                args,
+            });
+            let zero = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: zero,
+                value: Const::I64(0),
+            });
+            let b = ssa.new_val();
+            insts.push(Inst::Cmp {
+                dst: b,
+                op: CmpOp::Ne,
+                float: false,
+                lhs: wide,
+                rhs: zero,
+            });
+            (b, Ty::Bool)
         }
         _ => {
             let dst = ssa.new_val();
@@ -5359,6 +9326,379 @@ fn emit_print(
 
 /// Materializes a constant map key as a `Str` value (an interned global) for the
 /// map ABI, which takes the key as a `*const c_char`.
+/// Whether a constant value has a Dyn boxed form (`box_const_scalar`):
+/// scalars, long strings, and (recursively) nested constant lists.
+fn const_is_dyn_boxable(value: &ConstRuntimeValueData) -> bool {
+    match value {
+        ConstRuntimeValueData::Nil
+        | ConstRuntimeValueData::Bool(_)
+        | ConstRuntimeValueData::Int(_)
+        | ConstRuntimeValueData::Float(_)
+        | ConstRuntimeValueData::ShortStr(_) => true,
+        ConstRuntimeValueData::Heap(heap) => match heap.as_ref() {
+            ConstHeapValueData::LongString(_) => true,
+            ConstHeapValueData::List(elems) => elems.iter().all(const_is_dyn_boxable),
+            ConstHeapValueData::Map(entries) => entries.iter().all(|(k, v)| {
+                matches!(k, RuntimeMapKeyData::ShortStr(_) | RuntimeMapKeyData::String(_)) && const_is_dyn_boxable(v)
+            }),
+            _ => false,
+        },
+    }
+}
+
+/// Boxes a typed runtime value into a `Dyn` carrier (plan M4.2): identity
+/// for `Ty::Dyn`, a `dyn.from_*` call for scalars/strings/mixed lists.
+/// Types without a boxed form (Maybe carriers, typed containers) reject —
+/// their typed paths stay typed.
+/// Coerces a list-typed value to a dyn-list *handle* (not a boxed carrier):
+/// ListDyn passes through, typed lists convert element-wise (cold path —
+/// only emitted for methods whose VM result is a mixed list anyway).
+fn to_dyn_list_handle(
+    ssa: &mut Ssa,
+    insts: &mut Vec<Inst>,
+    v: ValueId,
+    ty: Ty,
+    pc: usize,
+) -> Result<ValueId, Unsupported> {
+    let converter = match ty {
+        Ty::ListDyn => return Ok(v),
+        Ty::ListI64 => "i64_to_dyn",
+        Ty::ListF64 => "f64_to_dyn",
+        Ty::ListStr => "str_to_dyn",
+        _ => return Err(Unsupported::TypeMismatch { pc }),
+    };
+    let converted = ssa.new_val();
+    insts.push(Inst::Call {
+        dst: Some(converted),
+        callee: AbiRef::new("list_h", converter),
+        args: vec![v],
+    });
+    Ok(converted)
+}
+
+/// Types [`to_dyn_any`] can box into a `Dyn` carrier.
+fn dyn_boxable_ty(ty: Ty) -> bool {
+    matches!(
+        ty,
+        Ty::Dyn
+            | Ty::Nil
+            | Ty::Bool
+            | Ty::I64
+            | Ty::F64
+            | Ty::Str
+            | Ty::ListDyn
+            | Ty::ListI64
+            | Ty::ListF64
+            | Ty::ListStr
+            | Ty::MapStrDyn
+            | Ty::MapStrI64
+            | Ty::MapStrF64
+            | Ty::MapStrBool
+            | Ty::MaybeI64
+            | Ty::MaybeF64
+            | Ty::MaybeStr
+            | Ty::MaybeBool
+    )
+}
+
+/// Reads a channel/task id operand: a plain `I64`, or a boxed value
+/// unwrapped through the `as_i64` guard (a channel captured into a spawn
+/// closure arrives boxed).
+fn read_channel_id(
+    ssa: &mut Ssa,
+    insts: &mut Vec<Inst>,
+    reg: u8,
+    block: usize,
+    pc: usize,
+) -> Result<ValueId, Unsupported> {
+    let (v, ty) = ssa.read(reg, block, pc)?;
+    match ty {
+        Ty::I64 => Ok(v),
+        Ty::Dyn => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("dyn", "as_i64"),
+                args: vec![v],
+            });
+            Ok(dst)
+        }
+        _ => Err(Unsupported::TypeMismatch { pc }),
+    }
+}
+
+/// Marshals one argument for a user call: a `Dyn` parameter takes any
+/// boxable value (nullable carriers included), a typed parameter takes
+/// exactly its type. A residual mismatch is a stale observation from an
+/// earlier fixpoint pass — tolerated there, fatal only on the final pass.
+fn coerce_arg(
+    ssa: &mut Ssa,
+    insts: &mut Vec<Inst>,
+    v: ValueId,
+    ty: Ty,
+    want: Ty,
+    pc: usize,
+) -> Result<ValueId, Unsupported> {
+    if want == Ty::Dyn && ty != Ty::Dyn {
+        return to_dyn_any(ssa, insts, v, ty, pc);
+    }
+    if ty != want {
+        return Err(Unsupported::TypeMismatch { pc });
+    }
+    Ok(v)
+}
+
+/// [`to_dyn`] extended to the nullable carriers: a `Maybe` boxes to its
+/// payload's tag when present and to nil when absent (`dyn.from_maybe_*`),
+/// preserving VM call semantics — a nil argument arrives as nil instead of
+/// hitting the scalar-context unwrap abort.
+fn to_dyn_any(ssa: &mut Ssa, insts: &mut Vec<Inst>, v: ValueId, ty: Ty, pc: usize) -> Result<ValueId, Unsupported> {
+    let from = match ty {
+        Ty::MaybeI64 => "from_maybe_i64",
+        Ty::MaybeF64 => "from_maybe_f64",
+        Ty::MaybeStr => "from_maybe_str",
+        Ty::MaybeBool => "from_maybe_bool",
+        _ => return to_dyn(ssa, insts, v, ty, pc),
+    };
+    let value = ssa.new_val();
+    insts.push(Inst::MaybeValue {
+        dst: value,
+        src: v,
+        maybe_ty: ty,
+    });
+    let present_b = ssa.new_val();
+    insts.push(Inst::MaybePresent {
+        dst: present_b,
+        src: v,
+        maybe_ty: ty,
+    });
+    let present = ssa.new_val();
+    insts.push(Inst::ZextBool {
+        dst: present,
+        src: present_b,
+    });
+    let boxed = ssa.new_val();
+    insts.push(Inst::Call {
+        dst: Some(boxed),
+        callee: AbiRef::new("dyn", from),
+        args: vec![value, present],
+    });
+    Ok(boxed)
+}
+
+fn to_dyn(ssa: &mut Ssa, insts: &mut Vec<Inst>, v: ValueId, ty: Ty, pc: usize) -> Result<ValueId, Unsupported> {
+    let from = match ty {
+        Ty::Dyn => return Ok(v),
+        Ty::I64 => "from_i64",
+        Ty::F64 => "from_f64",
+        Ty::Str => "from_str",
+        Ty::Nil => "from_nil",
+        Ty::ListDyn => "from_list",
+        Ty::MapStrDyn => "from_map",
+        // Typed string maps box via a value-boxing conversion (cold path:
+        // a typed map crossing a `try$call` cell boundary).
+        Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool => {
+            let converter = match ty {
+                Ty::MapStrI64 => "str_i64_to_dyn",
+                Ty::MapStrF64 => "str_f64_to_dyn",
+                _ => "str_bool_to_dyn",
+            };
+            let converted = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(converted),
+                callee: AbiRef::new("map_h", converter),
+                args: vec![v],
+            });
+            let boxed = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(boxed),
+                callee: AbiRef::new("dyn", "from_map"),
+                args: vec![converted],
+            });
+            return Ok(boxed);
+        }
+        // Typed lists box via an element-wise conversion (cold path: only
+        // emitted where a typed list actually meets a Dyn).
+        Ty::ListI64 | Ty::ListF64 | Ty::ListStr => {
+            let converter = match ty {
+                Ty::ListI64 => "i64_to_dyn",
+                Ty::ListF64 => "f64_to_dyn",
+                _ => "str_to_dyn",
+            };
+            let converted = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(converted),
+                callee: AbiRef::new("list_h", converter),
+                args: vec![v],
+            });
+            let boxed = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(boxed),
+                callee: AbiRef::new("dyn", "from_list"),
+                args: vec![converted],
+            });
+            return Ok(boxed);
+        }
+        Ty::Bool => {
+            let wide = ssa.new_val();
+            insts.push(Inst::ZextBool { dst: wide, src: v });
+            let boxed = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(boxed),
+                callee: AbiRef::new("dyn", "from_bool"),
+                args: vec![wide],
+            });
+            return Ok(boxed);
+        }
+        _ => return Err(Unsupported::TypeMismatch { pc }),
+    };
+    let boxed = ssa.new_val();
+    insts.push(Inst::Call {
+        dst: Some(boxed),
+        callee: AbiRef::new("dyn", from),
+        args: if ty == Ty::Nil { Vec::new() } else { vec![v] },
+    });
+    Ok(boxed)
+}
+
+/// Boxes one constant scalar into a `Dyn` carrier value (plan M4.2): emits
+/// the scalar `Const` plus the matching `dyn.from_*` call. Callers filtered
+/// to scalar variants.
+fn box_const_scalar(
+    ssa: &mut Ssa,
+    insts: &mut Vec<Inst>,
+    globals: &mut Vec<String>,
+    value: &ConstRuntimeValueData,
+) -> ValueId {
+    let boxed = ssa.new_val();
+    match value {
+        ConstRuntimeValueData::Nil => {
+            insts.push(Inst::Call {
+                dst: Some(boxed),
+                callee: AbiRef::new("dyn", "from_nil"),
+                args: Vec::new(),
+            });
+        }
+        ConstRuntimeValueData::Bool(b) => {
+            let raw = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: raw,
+                value: Const::I64(i64::from(*b)),
+            });
+            insts.push(Inst::Call {
+                dst: Some(boxed),
+                callee: AbiRef::new("dyn", "from_bool"),
+                args: vec![raw],
+            });
+        }
+        ConstRuntimeValueData::Int(n) => {
+            let raw = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: raw,
+                value: Const::I64(*n),
+            });
+            insts.push(Inst::Call {
+                dst: Some(boxed),
+                callee: AbiRef::new("dyn", "from_i64"),
+                args: vec![raw],
+            });
+        }
+        ConstRuntimeValueData::Float(x) => {
+            let raw = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: raw,
+                value: Const::F64(*x),
+            });
+            insts.push(Inst::Call {
+                dst: Some(boxed),
+                callee: AbiRef::new("dyn", "from_f64"),
+                args: vec![raw],
+            });
+        }
+        ConstRuntimeValueData::ShortStr(s) => {
+            let raw = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: raw,
+                value: Const::Str(GlobalId(intern_global(globals, s))),
+            });
+            insts.push(Inst::Call {
+                dst: Some(boxed),
+                callee: AbiRef::new("dyn", "from_str"),
+                args: vec![raw],
+            });
+        }
+        ConstRuntimeValueData::Heap(heap) => match heap.as_ref() {
+            // A long string literal boxes like a short one (interned global).
+            ConstHeapValueData::LongString(s) => {
+                let raw = ssa.new_val();
+                insts.push(Inst::Const {
+                    dst: raw,
+                    value: Const::Str(GlobalId(intern_global(globals, s))),
+                });
+                insts.push(Inst::Call {
+                    dst: Some(boxed),
+                    callee: AbiRef::new("dyn", "from_str"),
+                    args: vec![raw],
+                });
+            }
+            // A nested constant list: build its own dyn list recursively and
+            // box the handle (`[[1,"a"],[2,"b"]]`-shaped constants).
+            ConstHeapValueData::List(elems) => {
+                let handle = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(handle),
+                    callee: AbiRef::new("list_h", "dyn_new"),
+                    args: Vec::new(),
+                });
+                for e in elems {
+                    let inner = box_const_scalar(ssa, insts, globals, e);
+                    insts.push(Inst::Call {
+                        dst: None,
+                        callee: AbiRef::new("list_h", "dyn_push"),
+                        args: vec![handle, inner],
+                    });
+                }
+                insts.push(Inst::Call {
+                    dst: Some(boxed),
+                    callee: AbiRef::new("dyn", "from_list"),
+                    args: vec![handle],
+                });
+            }
+            // A nested constant map (string keys): build its own str_dyn map
+            // and box the handle.
+            ConstHeapValueData::Map(entries) => {
+                let handle = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(handle),
+                    callee: AbiRef::new("map_h", "str_dyn_new"),
+                    args: Vec::new(),
+                });
+                for (k, v) in entries {
+                    let key_v = match k {
+                        RuntimeMapKeyData::ShortStr(key) | RuntimeMapKeyData::String(key) => {
+                            materialize_key(ssa, insts, globals, key)
+                        }
+                        _ => unreachable!("const_is_dyn_boxable filters to string keys"),
+                    };
+                    let inner = box_const_scalar(ssa, insts, globals, v);
+                    insts.push(Inst::Call {
+                        dst: None,
+                        callee: AbiRef::new("map_h", "str_dyn_set"),
+                        args: vec![handle, key_v, inner],
+                    });
+                }
+                insts.push(Inst::Call {
+                    dst: Some(boxed),
+                    callee: AbiRef::new("dyn", "from_map"),
+                    args: vec![handle],
+                });
+            }
+            _ => unreachable!("callers filter to boxable variants"),
+        },
+    }
+    boxed
+}
+
 fn materialize_key(ssa: &mut Ssa, insts: &mut Vec<Inst>, globals: &mut Vec<String>, key: &str) -> ValueId {
     let gid = intern_global(globals, key);
     let dst = ssa.new_val();
@@ -5483,6 +9823,7 @@ mod tests {
                     positional_param_count: 0,
                     param_names: Vec::new(),
                     capture_count: 0,
+                    debug_name: None,
                 }],
             },
         }
@@ -5516,6 +9857,7 @@ mod tests {
             positional_param_count: param_count,
             param_names: Vec::new(),
             capture_count: 0,
+            debug_name: None,
         }
     }
 
@@ -6157,8 +10499,8 @@ mod tests {
         assert_eq!(mir.globals, vec!["a".to_string()], "key interned once");
         assert_eq!(lk_aot_mir::validate(&mir), Ok(()));
         let ir = lk_aot_codegen::render_module(&mir);
-        assert!(ir.contains("call ptr @lkrt_lkmap_str_i64_new()"), "{ir}");
-        assert!(ir.contains("call void @lkrt_lkmap_str_i64_set(ptr"), "{ir}");
+        assert!(ir.contains("call ptr @lkrt_lkmap_lit_new()"), "{ir}");
+        assert!(ir.contains("call ptr @lkrt_lkmap_lit_finish_str_i64(ptr"), "{ir}");
         assert!(
             ir.contains("call { i64, i64 } @lkrt_lkmap_str_i64_get_pair(ptr"),
             "{ir}"
@@ -6512,7 +10854,7 @@ mod tests {
         let mir = lower(&art).expect("int-f64 map lowers");
         assert_eq!(lk_aot_mir::validate(&mir), Ok(()));
         let ir = lk_aot_codegen::render_module(&mir);
-        assert!(ir.contains("call ptr @lkrt_lkmap_i64_f64_new()"), "{ir}");
+        assert!(ir.contains("call ptr @lkrt_lkmap_lit_finish_i64_f64(ptr"), "{ir}");
         assert!(
             ir.contains("call { double, i64 } @lkrt_lkmap_i64_f64_get_pair(ptr"),
             "{ir}"
@@ -6546,8 +10888,8 @@ mod tests {
         let mir = lower(&art).expect("str-f64 map lowers");
         assert_eq!(lk_aot_mir::validate(&mir), Ok(()));
         let ir = lk_aot_codegen::render_module(&mir);
-        assert!(ir.contains("call ptr @lkrt_lkmap_str_f64_new()"), "{ir}");
-        assert!(ir.contains("call void @lkrt_lkmap_str_f64_set(ptr"), "{ir}");
+        assert!(ir.contains("call ptr @lkrt_lkmap_lit_new()"), "{ir}");
+        assert!(ir.contains("call ptr @lkrt_lkmap_lit_finish_str_f64(ptr"), "{ir}");
         assert!(
             ir.contains("call { double, i64 } @lkrt_lkmap_str_f64_get_pair(ptr"),
             "{ir}"
@@ -6582,8 +10924,10 @@ mod tests {
         let mir = lower(&art).expect("int-key map lowers");
         assert_eq!(lk_aot_mir::validate(&mir), Ok(()));
         let ir = lk_aot_codegen::render_module(&mir);
-        assert!(ir.contains("call ptr @lkrt_lkmap_i64_i64_new()"), "{ir}");
-        assert!(ir.contains("call void @lkrt_lkmap_i64_i64_set(ptr"), "{ir}");
+        // The literal builds through the lit protocol (VM-order mirror).
+        assert!(ir.contains("call ptr @lkrt_lkmap_lit_new()"), "{ir}");
+        assert!(ir.contains("call void @lkrt_lkmap_lit_set(ptr"), "{ir}");
+        assert!(ir.contains("call ptr @lkrt_lkmap_lit_finish_i64_i64(ptr"), "{ir}");
         assert!(
             ir.contains("call { i64, i64 } @lkrt_lkmap_i64_i64_get_pair(ptr"),
             "{ir}"

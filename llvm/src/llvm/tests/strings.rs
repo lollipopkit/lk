@@ -50,6 +50,7 @@ fn llvm_backend_lowers_static_float_divisor_zero_tostring_guard_without_artifact
                 positional_param_count: 0,
                 param_names: Vec::new(),
                 capture_count: 0,
+                debug_name: None,
             }],
         },
     };
@@ -90,6 +91,7 @@ fn llvm_backend_rejects_static_list_tostring_to_match_exec() {
                 positional_param_count: 0,
                 param_names: Vec::new(),
                 capture_count: 0,
+                debug_name: None,
             }],
         },
     };

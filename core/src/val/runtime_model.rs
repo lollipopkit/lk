@@ -3,10 +3,12 @@
 //! The `LiteralVal` enum remains active while the compiler and executor are migrated.
 //! New VM code should target these types first.
 
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 use crate::util::fast_map::{FastHashMap, FastHashSet, fast_hash_map_from_iter, fast_hash_map_new, fast_hash_set_new};
-use std::sync::Arc;
+use alloc::sync::Arc;
 
-use super::values::{ChannelValue, ResourceValue, ShortStr, SliceValue, StreamCursorValue, StreamValue, TaskValue};
+use crate::val::{ShortStr, Type};
 
 mod heap;
 
@@ -330,28 +332,6 @@ impl TypedList {
             }
         }
     }
-
-    /// Iterate owned values (consumes self).
-    pub fn into_iter_owned(self) -> Vec<RuntimeVal> {
-        match self {
-            Self::Mixed(values) => values,
-            Self::Int(values) => values.into_iter().map(RuntimeVal::Int).collect(),
-            Self::Float(values) => values.into_iter().map(RuntimeVal::Float).collect(),
-            Self::Bool(values) => values.into_iter().map(RuntimeVal::Bool).collect(),
-            Self::String(values) => {
-                let mut out = Vec::with_capacity(values.len());
-                for s in values {
-                    if let Some(short) = ShortStr::new(s.as_ref()) {
-                        out.push(RuntimeVal::ShortStr(short));
-                    } else {
-                        // Fallback for core_methods non-heap context
-                        out.push(RuntimeVal::ShortStr(ShortStr::new(s.as_ref()).unwrap()));
-                    }
-                }
-                out
-            }
-        }
-    }
 }
 
 fn copy_slice_tail<T: Clone>(values: &[T], start: usize) -> Vec<T> {
@@ -610,7 +590,7 @@ impl TypedMap {
     }
 
     fn materialize_string_map_to_mixed(&mut self, key: RuntimeMapKey, value: RuntimeVal) {
-        let mut mixed = match std::mem::replace(self, Self::Mixed(fast_hash_map_new())) {
+        let mut mixed = match core::mem::replace(self, Self::Mixed(fast_hash_map_new())) {
             Self::Mixed(values) => values,
             Self::StringMixed(values) => {
                 let mut mixed = fast_hash_map_new();
@@ -668,6 +648,26 @@ impl TypedMap {
                 entries.remove(key_str).map(RuntimeVal::Bool)
             }
         }
+    }
+}
+
+/// Test-support for lkrt's map-order conformance: the key iteration order of
+/// a string→int map built exactly like a literal (stage-1 `RuntimeMapKey`
+/// insertion in the given order, then [`typed_map_from_entries`]). The native
+/// runtime mirrors this construction; the lkrt test compares against this
+/// function so any drift (hasher, table layout, key shape) fails loudly.
+pub fn typed_map_iteration_keys<'a>(entries: impl Iterator<Item = (&'a str, i64)>) -> Vec<String> {
+    let mut stage1 = fast_hash_map_new();
+    for (key, value) in entries {
+        let key = match ShortStr::new(key) {
+            Some(short) => RuntimeMapKey::ShortStr(short),
+            None => RuntimeMapKey::String(Arc::from(key)),
+        };
+        stage1.insert(key, RuntimeVal::Int(value));
+    }
+    match typed_map_from_entries(stage1) {
+        TypedMap::StringInt(map) => map.keys().map(|k| k.to_string()).collect(),
+        other => unreachable!("string→int literal always shapes to StringInt, got {other:?}"),
     }
 }
 
@@ -983,4 +983,105 @@ mod tests {
         assert_eq!(typed, exact_mixed);
         assert_ne!(typed, short_key_mixed);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Runtime resource-handle values (moved from `super::values`, M0.1 decoupling).
+// These embed `RuntimeVal`/`RuntimePayload`, so they belong with the runtime
+// model rather than the front-end literal/type model. Re-exported at
+// `crate::val` via `pub use runtime_model::*`, so external paths are unchanged.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub struct TaskValue {
+    pub id: u64,
+    pub value: Option<crate::rt::RuntimePayload>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ChannelValue {
+    pub id: u64,
+    pub capacity: Option<i64>,
+    pub inner_type: Type,
+}
+
+#[derive(Debug, Clone)]
+pub struct StreamValue {
+    pub id: u64,
+    pub inner_type: Type,
+    pub roots: Vec<RuntimeVal>,
+}
+
+#[derive(Debug, Clone)]
+pub struct StreamCursorValue {
+    pub id: u64,
+    pub stream_id: u64,
+    pub roots: Vec<RuntimeVal>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SliceKind {
+    List,
+    String,
+}
+
+#[derive(Debug, Clone)]
+pub struct SliceValue {
+    pub source: RuntimeVal,
+    pub kind: SliceKind,
+    pub start: usize,
+    pub len: usize,
+}
+
+#[derive(Clone)]
+pub struct ResourceValue {
+    pub kind: &'static str,
+    // `ResourceValue` wraps OS resources (files/sockets). The guard goes through
+    // the compat `Mutex` so the type resolves under no_std too (std's `Mutex`
+    // is absent there); its `.lock() -> Result` shape keeps the stdlib
+    // `.lock().map_err(..)` call sites unchanged.
+    pub handle: Arc<crate::compat::sync::Mutex<ResourceHandle>>,
+}
+
+impl core::fmt::Debug for ResourceValue {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ResourceValue")
+            .field("kind", &self.kind)
+            .finish_non_exhaustive()
+    }
+}
+
+impl core::fmt::Debug for ResourceHandle {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let name = match self {
+            #[cfg(feature = "std")]
+            Self::File(_) => "File",
+            Self::Stdin => "Stdin",
+            Self::Stdout => "Stdout",
+            Self::Stderr => "Stderr",
+            #[cfg(feature = "std")]
+            Self::TcpStream(_) => "TcpStream",
+            #[cfg(feature = "std")]
+            Self::TcpListener(_) => "TcpListener",
+            #[cfg(feature = "std")]
+            Self::UdpSocket(_) => "UdpSocket",
+            Self::Closed => "Closed",
+        };
+        f.write_str(name)
+    }
+}
+
+pub enum ResourceHandle {
+    #[cfg(feature = "std")]
+    File(std::fs::File),
+    Stdin,
+    Stdout,
+    Stderr,
+    #[cfg(feature = "std")]
+    TcpStream(std::net::TcpStream),
+    #[cfg(feature = "std")]
+    TcpListener(std::net::TcpListener),
+    #[cfg(feature = "std")]
+    UdpSocket(std::net::UdpSocket),
+    Closed,
 }

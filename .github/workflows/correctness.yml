@@ -4,7 +4,7 @@ name: Correctness Harnesses
 # whole test surface, ASan/UBSan over the differential corpora, Miri over
 # lkrt's unsafe FFI surface, and a scaled-up generative differential fuzz.
 # Mirrors the local Makefile targets `gc-stress`, `sanitized-differential`,
-# and `miri-lkrt` (see plan.md / docs/llvm/backend.md).
+# and `miri-lkrt` (see plan.md).
 
 # Test-only jobs: no write access, no persisted credentials.
 permissions:
@@ -55,6 +55,31 @@ jobs:
         run: LK_NATIVE_SANITIZE=address,undefined cargo test -p lk-cli --test examples_differential_test
       - name: scaled generative fuzz differential
         run: LK_NATIVE_SANITIZE=address,undefined LK_FUZZ_CASES=500 cargo test -p lk-cli --test aot_fuzz_differential_test -- --nocapture
+      - name: scaled artifact decoder/verifier fuzz
+        run: LK_FUZZ_CASES=50000 cargo test -p lk-core verify_fuzz -- --nocapture
+
+  asan-lkrt-differential:
+    runs-on: ubuntu-latest
+    name: differential corpora with an ASan-instrumented lkrt
+    # Harness, not a gate: the nightly rustc ASan runtime and the runner's
+    # clang ASan runtime can skew across LLVM majors.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain-file: rust-toolchain.toml
+      - name: install nightly (sanitizer build)
+        run: rustup toolchain install nightly --profile minimal
+      - uses: Swatinem/rust-cache@v2
+      - name: build ASan lkrt
+        run: bash scripts/build_lkrt_asan.sh
+      - name: differential suites against the instrumented lkrt
+        run: |
+          LKRT_STATICLIB=$PWD/target/lkrt-asan/x86_64-unknown-linux-gnu/release/liblkrt.a \
+          LK_NATIVE_SANITIZE=address cargo test -p lk-cli --test aot_differential_test --test examples_differential_test
 
   fuzz-fresh-seed:
     runs-on: ubuntu-latest
@@ -69,6 +94,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: fuzz with the run id as seed (printed for reproduction)
         run: LK_FUZZ_SEED=${{ github.run_id }} LK_FUZZ_CASES=500 cargo test -p lk-cli --test aot_fuzz_differential_test -- --nocapture
+      - name: artifact decoder/verifier fuzz with the run id as seed
+        run: LK_FUZZ_SEED=${{ github.run_id }} LK_FUZZ_CASES=20000 cargo test -p lk-core verify_fuzz -- --nocapture
 
   miri-lkrt:
     runs-on: ubuntu-latest

@@ -3,7 +3,6 @@
 //! Provides Go-style concurrency primitives using tokio for multithreading support.
 
 use anyhow::{Result, anyhow};
-use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -53,11 +52,14 @@ pub struct Task {
     pub result: Option<Result<RuntimePayload>>,
 }
 
-/// Channel sender wrapper to handle both bounded and unbounded channels
+/// Channel sender wrapper to handle both bounded and unbounded channels.
+/// `Closed` replaces the sender once the channel is closed: the receiver can
+/// still drain buffered values (Go semantics), but new sends fail.
 #[derive(Debug)]
 pub enum ChannelSender {
     Bounded(mpsc::Sender<RuntimePayload>),
     Unbounded(mpsc::UnboundedSender<RuntimePayload>),
+    Closed,
 }
 
 impl ChannelSender {
@@ -65,6 +67,7 @@ impl ChannelSender {
         match self {
             ChannelSender::Bounded(sender) => ChannelSender::Bounded(sender.clone()),
             ChannelSender::Unbounded(sender) => ChannelSender::Unbounded(sender.clone()),
+            ChannelSender::Closed => ChannelSender::Closed,
         }
     }
 }
@@ -214,6 +217,7 @@ impl Runtime {
                     Err(anyhow!("Channel is closed"))
                 }
             },
+            ChannelSender::Closed => Err(anyhow!("Channel is closed")),
         }
     }
 
@@ -240,6 +244,7 @@ impl Runtime {
                     Ok(false)
                 }
             },
+            ChannelSender::Closed => Ok(false),
         }
     }
 
@@ -340,11 +345,15 @@ impl Runtime {
         }
     }
 
-    /// Close a channel
+    /// Close a channel: mark it closed and drop its stored sender so the
+    /// receiver observes end-of-stream once the buffer drains — buffered
+    /// values remain receivable (Go semantics). The entry stays in the map,
+    /// so later operations see "closed", never "not found".
     pub fn close_channel(&self, channel_id: u64) -> Result<()> {
         let mut channels = self.channels.lock().unwrap();
-        if let Some(channel) = channels.remove(&channel_id) {
+        if let Some(channel) = channels.get_mut(&channel_id) {
             channel.closed.store(true, Ordering::SeqCst);
+            channel.sender = ChannelSender::Closed;
             Ok(())
         } else {
             Err(anyhow!("Channel not found"))
@@ -404,7 +413,24 @@ impl Runtime {
     where
         F: std::future::Future,
     {
-        self.tokio_runtime.block_on(future)
+        // Blocking channel ops (`send`/`recv`/`select`) are also called from
+        // *inside* goroutines — i.e. from a tokio worker thread, where a
+        // plain `block_on` panics ("cannot start a runtime from within a
+        // runtime"). On the multi-thread flavor, `block_in_place` parks this
+        // worker's other tasks elsewhere first, making the Go idiom (a
+        // goroutine blocking on a channel) safe. The current-thread flavor
+        // (LK_SINGLE_THREAD test fallback) has no other worker to hand off
+        // to; there the old direct call remains.
+        if tokio::runtime::Handle::try_current().is_ok()
+            && matches!(
+                self.tokio_runtime.handle().runtime_flavor(),
+                tokio::runtime::RuntimeFlavor::MultiThread
+            )
+        {
+            tokio::task::block_in_place(|| self.tokio_runtime.handle().block_on(future))
+        } else {
+            self.tokio_runtime.block_on(future)
+        }
     }
 }
 
@@ -415,9 +441,6 @@ pub struct RuntimeStats {
     pub active_channels: usize,
     pub is_multi_threaded: bool,
 }
-
-/// Global runtime instance
-static GLOBAL_RUNTIME: Lazy<Mutex<Option<Arc<Runtime>>>> = Lazy::new(|| Mutex::new(None));
 
 fn drop_runtime_arc(runtime: Arc<Runtime>) {
     if tokio::runtime::Handle::try_current().is_ok() {
@@ -447,41 +470,69 @@ fn create_runtime() -> Result<Runtime> {
     }
 }
 
-/// Initialize the global runtime
-pub fn init_runtime() -> Result<()> {
-    let mut runtime = GLOBAL_RUNTIME.lock().unwrap();
-    if runtime.is_none() {
-        let rt = create_runtime()?;
-        *runtime = Some(Arc::new(rt));
-    }
-    Ok(())
+/// Shareable handle to the async (tokio) runtime.
+///
+/// Replaces the former process-global `GLOBAL_RUNTIME`. The handle lives on
+/// `VmContext`; clones share the same lazily-initialized runtime, so a VM and
+/// any contexts derived from it (spawned tasks, shallow clones) run on one
+/// reactor. Cheap to clone and `Send + Sync`, so it can be captured into
+/// spawned futures.
+#[derive(Clone, Default)]
+pub struct AsyncRuntimeHandle {
+    inner: Arc<Mutex<Option<Arc<Runtime>>>>,
 }
 
-/// Get a reference to the global runtime, initializing if needed
-pub fn with_runtime<F, R>(f: F) -> Result<R>
-where
-    F: FnOnce(&Runtime) -> Result<R>,
-{
-    let runtime_arc = {
-        let mut runtime_guard = GLOBAL_RUNTIME.lock().unwrap();
+impl std::fmt::Debug for AsyncRuntimeHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let initialized = self.inner.lock().map(|guard| guard.is_some()).unwrap_or(false);
+        f.debug_struct("AsyncRuntimeHandle")
+            .field("initialized", &initialized)
+            .finish()
+    }
+}
 
-        if runtime_guard.is_none() {
-            // Initialize runtime automatically
-            let rt = create_runtime()?;
-            *runtime_guard = Some(Arc::new(rt));
+impl AsyncRuntimeHandle {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn get_or_init(&self) -> Result<Arc<Runtime>> {
+        let mut guard = self.inner.lock().unwrap();
+        if guard.is_none() {
+            *guard = Some(Arc::new(create_runtime()?));
         }
-
-        runtime_guard
+        guard
             .as_ref()
             .cloned()
-            .ok_or_else(|| anyhow!("Runtime initialization failed"))?
-    };
+            .ok_or_else(|| anyhow!("Runtime initialization failed"))
+    }
 
-    let result = f(runtime_arc.as_ref());
+    /// Eagerly initialize the runtime (optional warm-up).
+    pub fn init(&self) -> Result<()> {
+        self.get_or_init().map(|_| ())
+    }
 
-    drop_runtime_arc(runtime_arc);
+    /// Run `f` with a reference to the runtime, initializing it on first use.
+    pub fn with<F, R>(&self, f: F) -> Result<R>
+    where
+        F: FnOnce(&Runtime) -> Result<R>,
+    {
+        let runtime_arc = self.get_or_init()?;
+        let result = f(runtime_arc.as_ref());
+        drop_runtime_arc(runtime_arc);
+        result
+    }
 
-    result
+    /// Shut down and drop the runtime if it was initialized.
+    pub fn shutdown(&self) {
+        let runtime_arc = {
+            let mut guard = self.inner.lock().unwrap();
+            guard.take()
+        };
+        if let Some(runtime) = runtime_arc {
+            drop_runtime_arc(runtime);
+        }
+    }
 }
 
 /// Select operation result
@@ -628,17 +679,5 @@ impl SelectOperation {
 
         let (result, _index, _remaining) = select_all(futures).await;
         result
-    }
-}
-
-/// Shutdown the global runtime
-pub fn shutdown_runtime() {
-    let runtime_arc = {
-        let mut runtime = GLOBAL_RUNTIME.lock().unwrap();
-        runtime.take()
-    };
-
-    if let Some(runtime) = runtime_arc {
-        drop_runtime_arc(runtime);
     }
 }

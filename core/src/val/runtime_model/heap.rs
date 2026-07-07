@@ -1,4 +1,6 @@
-use std::sync::Arc;
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
+use alloc::sync::Arc;
 
 use super::{CallableValue, HeapValue, RuntimeMapKey, RuntimeSet, RuntimeVal, TypedList, TypedMap};
 use crate::vm::RuntimeCallable;
@@ -272,8 +274,9 @@ impl Default for HeapStore {
 
 #[cfg(test)]
 mod tests {
+    use crate::compat::sync::Mutex;
     use crate::util::fast_map::{fast_hash_map_from_iter, fast_hash_map_new};
-    use std::sync::{Arc, Mutex};
+    use alloc::sync::Arc;
 
     use super::*;
     use crate::{

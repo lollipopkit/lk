@@ -1,5 +1,7 @@
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 use crate::util::fast_map::{FastHashMap, fast_hash_map_new, fast_hash_set_new};
-use std::sync::Arc;
+use alloc::sync::Arc;
 
 use anyhow::{Result, anyhow};
 
@@ -26,7 +28,7 @@ fn import_runtime_value(
     source_heap: &HeapStore,
     dest_heap: &mut HeapStore,
     source_module: Arc<Module>,
-    source_state: std::sync::Arc<std::sync::Mutex<crate::vm::RuntimeModuleState>>,
+    source_state: alloc::sync::Arc<crate::compat::sync::Mutex<crate::vm::RuntimeModuleState>>,
 ) -> Result<RuntimeVal> {
     match value {
         RuntimeVal::Nil => Ok(RuntimeVal::Nil),
@@ -64,7 +66,7 @@ fn import_heap_value(
     source_heap: &HeapStore,
     dest_heap: &mut HeapStore,
     source_module: Arc<Module>,
-    source_state: std::sync::Arc<std::sync::Mutex<crate::vm::RuntimeModuleState>>,
+    source_state: alloc::sync::Arc<crate::compat::sync::Mutex<crate::vm::RuntimeModuleState>>,
 ) -> Result<HeapValue> {
     Ok(match value {
         HeapValue::String(value) => HeapValue::String(value.clone()),
@@ -176,7 +178,7 @@ fn import_runtime_set(
     source_heap: &HeapStore,
     dest_heap: &mut HeapStore,
     source_module: Arc<Module>,
-    source_state: std::sync::Arc<std::sync::Mutex<crate::vm::RuntimeModuleState>>,
+    source_state: alloc::sync::Arc<crate::compat::sync::Mutex<crate::vm::RuntimeModuleState>>,
 ) -> Result<RuntimeSet> {
     let mut out = fast_hash_set_new();
     for key in values.entries() {
@@ -196,7 +198,7 @@ fn import_typed_list(
     source_heap: &HeapStore,
     dest_heap: &mut HeapStore,
     source_module: Arc<Module>,
-    source_state: std::sync::Arc<std::sync::Mutex<crate::vm::RuntimeModuleState>>,
+    source_state: alloc::sync::Arc<crate::compat::sync::Mutex<crate::vm::RuntimeModuleState>>,
 ) -> Result<TypedList> {
     Ok(match values {
         TypedList::Mixed(values) => {
@@ -224,7 +226,7 @@ fn import_typed_map(
     source_heap: &HeapStore,
     dest_heap: &mut HeapStore,
     source_module: Arc<Module>,
-    source_state: std::sync::Arc<std::sync::Mutex<crate::vm::RuntimeModuleState>>,
+    source_state: alloc::sync::Arc<crate::compat::sync::Mutex<crate::vm::RuntimeModuleState>>,
 ) -> Result<TypedMap> {
     Ok(match values {
         TypedMap::Mixed(values) => {
@@ -276,7 +278,7 @@ fn import_runtime_map_key(
     source_heap: &HeapStore,
     dest_heap: &mut HeapStore,
     source_module: Arc<Module>,
-    source_state: std::sync::Arc<std::sync::Mutex<crate::vm::RuntimeModuleState>>,
+    source_state: alloc::sync::Arc<crate::compat::sync::Mutex<crate::vm::RuntimeModuleState>>,
 ) -> Result<RuntimeMapKey> {
     Ok(match key {
         RuntimeMapKey::Nil => RuntimeMapKey::Nil,

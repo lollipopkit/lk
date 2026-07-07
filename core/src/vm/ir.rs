@@ -3,8 +3,12 @@
 //! Compiler and executor work should target this representation directly;
 //! alternate instruction models must not be reintroduced.
 
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 use crate::util::fast_map::FastHashMap;
-use std::{fmt::Write as _, mem::size_of, sync::Arc};
+use alloc::sync::Arc;
+use core::fmt::Write as _;
+use core::mem::size_of;
 
 use anyhow::{Result, bail};
 
@@ -666,6 +670,10 @@ pub struct Function {
     pub positional_param_count: u16,
     pub param_names: Vec<Arc<str>>,
     pub capture_count: u16,
+    /// Optional source name for this function (e.g. `foo` for `fn foo(){}`),
+    /// kept purely for diagnostics / tracebacks. `None` for anonymous lambdas.
+    /// The executor never reads it, so it is zero-cost on the hot path.
+    pub debug_name: Option<Arc<str>>,
 }
 
 #[derive(Clone, Debug, Default)]

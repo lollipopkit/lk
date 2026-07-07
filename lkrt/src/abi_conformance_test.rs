@@ -21,6 +21,7 @@ enum Class {
     F64,
     Ptr,
     Nil,
+    DynVal,
 }
 
 trait ClassOf {
@@ -34,6 +35,9 @@ impl ClassOf for f64 {
 }
 impl ClassOf for () {
     const CLASS: Class = Class::Nil;
+}
+impl ClassOf for crate::LkDyn {
+    const CLASS: Class = Class::DynVal;
 }
 impl<T> ClassOf for *const T {
     const CLASS: Class = Class::Ptr;
@@ -49,6 +53,33 @@ impl ClassOf for extern "C" fn(i64) -> bool {
     const CLASS: Class = Class::Ptr;
 }
 impl ClassOf for extern "C" fn(i64, i64) -> i64 {
+    const CLASS: Class = Class::Ptr;
+}
+impl ClassOf for extern "C" fn(crate::LkDyn) -> crate::LkDyn {
+    const CLASS: Class = Class::Ptr;
+}
+impl ClassOf for extern "C" fn(crate::LkDyn) -> bool {
+    const CLASS: Class = Class::Ptr;
+}
+impl ClassOf for extern "C" fn(crate::LkDyn, crate::LkDyn) -> crate::LkDyn {
+    const CLASS: Class = Class::Ptr;
+}
+impl ClassOf for extern "C" fn(*const core::ffi::c_char) -> *const core::ffi::c_char {
+    const CLASS: Class = Class::Ptr;
+}
+impl ClassOf for extern "C" fn(*const core::ffi::c_char) -> bool {
+    const CLASS: Class = Class::Ptr;
+}
+impl ClassOf for extern "C" fn(*mut core::ffi::c_void) -> crate::LkDyn {
+    const CLASS: Class = Class::Ptr;
+}
+impl ClassOf for extern "C" fn() -> crate::LkDyn {
+    const CLASS: Class = Class::Ptr;
+}
+impl ClassOf for extern "C" fn(crate::LkDyn, crate::LkDyn, crate::LkDyn) -> crate::LkDyn {
+    const CLASS: Class = Class::Ptr;
+}
+impl ClassOf for extern "C" fn(crate::LkDyn, crate::LkDyn, crate::LkDyn, crate::LkDyn) -> crate::LkDyn {
     const CLASS: Class = Class::Ptr;
 }
 
@@ -85,6 +116,7 @@ fn abi_class(ty: AbiType) -> Class {
         AbiType::F64 => Class::F64,
         AbiType::Ptr | AbiType::StrPtr => Class::Ptr,
         AbiType::Nil => Class::Nil,
+        AbiType::DynVal => Class::DynVal,
     }
 }
 

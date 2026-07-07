@@ -1,3 +1,5 @@
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 use crate::{
     expr::{Expr, Pattern, TemplateStringPart},
     stmt::Stmt,
@@ -127,16 +129,6 @@ fn expr_uses_for_binding_value(expr: &Expr, name: &str) -> bool {
             .into_iter()
             .flatten()
             .any(|expr| expr_uses_for_binding_value(expr, name)),
-        Expr::Select { cases, default_case } => {
-            cases.iter().any(|case| {
-                case.guard
-                    .as_ref()
-                    .is_some_and(|guard| expr_uses_for_binding_value(guard, name))
-                    || expr_uses_for_binding_value(&case.body, name)
-            }) || default_case
-                .as_ref()
-                .is_some_and(|case| expr_uses_for_binding_value(case, name))
-        }
         Expr::Match { value, arms } => {
             expr_uses_for_binding_value(value, name)
                 || arms.iter().any(|arm| expr_uses_for_binding_value(&arm.body, name))

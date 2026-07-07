@@ -1,775 +1,899 @@
-# 实现进度
+# plan.md 执行分解（步骤化路线图）
 
-**当前**:CallMethodK opcode + list HOF + datetime/io.std 轮完成
-(examples 10/44,VM/Lua 1.033x)。细节见 handoff.md。
+> 目标（`/goal`）：把 `plan.md` 划分为多个可执行步骤，逐个完成。
+> 本文件是 `plan.md`（M0–M5 里程碑）落到「一次一小步、可验证、可交接」粒度的执行台账。
+> `handoff.md` 保持简短最新；细节留此。
 
-## 归档:2026-07-02 session 各轮 handoff 摘要
-
-## 本轮新增(2026-07-02 第四场)
-
-- **CallMethodK opcode(ISA 级,artifact v6)**:`a`=窗口基址(receiver 在
-  a、args 在 a+1..、结果写 a)、`b`=方法名字符串常量索引、`c`=argc。编译器
-  `lower_dynamic_method_call` 直接发射(名字索引 >u8 回退旧 helper 形状);
-  exec 主循环热路径直接窗口分派(`core_call_method_windowed`:builtin
-  分派吃 slice 零装箱,罕见尾路径〔可调用属性/list HOF/trait〕才物化
-  args list);verifier 校验窗口+名字常量;AOT lower 经共享
-  `lower_method_dispatch` 消费。**每次方法调用消灭 NewList 堆分配 +
-  GetGlobal + 泛型 Call 机制。fraud 33→16ms、cart 6.1→3.2ms(自轮初
-  49/9.2ms 累计 -67%);全套 VM/Lua geomean 1.120x→1.033x**,
-  template_render 转 ahead(0.98x),零回归。
-- **list HOF(阶段 4 第三切片)**:`map`/`filter`/`reduce` over `List<i64>`
-  接零捕获 lambda——MIR 新 `Const::FnAddr(FuncId)`(codegen 渲染
-  `ptr @lk_fn_N`),lkrt `i64_{map,filter,reduce}_fn` 以 `extern "C"` fn
-  指针逐元素回调;lambda 签名过同一单态化格(map: i64→i64、filter:
-  i64→Bool、reduce: (i64,i64)→i64,不符响亮拒绝)。链式 pipeline 与
-  回调内除零 abort 差分锁定。
-- **datetime 模块**:lkrt 引 chrono(与 stdlib 同 crate,格式化/星期
-  字节一致);now/format/parse/day_of_week/day_of_year/is_weekend 经
-  ABI,add/sub 内联 Int 算术。**发现并修复 example bug**:datetime_demo
-  假设 now() 返回微秒(实际秒)→ VM 自己也断言失败(从未被执行过的
-  example);已修正 demo。
-- **io.std 模块**(`use { std } from io` 的解构 import 绑 "std" 全局):
-  stdin/stdout/stderr = 固定句柄 0/1/2,write/writeln 返回 VM 字节数
-  (lkrt 返回值已对齐),flush→true。**修复真实分歧**:native 里
-  Rust-stdout 缓冲与 printf 的 C 缓冲交错错序——lkrt 写者先
-  fflush(NULL) 后 flush 自身流,保持程序序。
-- **杂项通用形状**:Bool==Bool 比较(ZextBool→icmp)、跨块 builtin ref
-  回溯(`assert(a || b)` 的 merge 块调用,全前驱一致才命中)、
-  Str.contains/.len 方法。json 明确记录为子集外(动态嵌套值)。
-- **examples 8/44 → 10/44**(datetime_demo、io_demo),地板 ≥10;
-  手写差分 +5 组。
-
-## 本轮新增(2026-07-02 第三场)
-
-- **捕获闭包(阶段 4 第二切片)**:编译器把捕获变量装进 **UpvalCell**
-  (共享可变盒,VM 语义:捕获后突变对闭包可见——`factor=5` 后调用打印 5)。
-  lower 把 cell 建模为虚拟 SSA 槽(`Ssa::cell_vals`,(block, cell_id) 键):
-  `LoadHeapConst UpvalCell` → 分配 cell id(初值 Nil);`StoreCellVal` 更新
-  追踪值;`LoadCellVal` 读取;`MakeClosure` 记录 `ClosureCapture::Cell(id)`;
-  **调用点**解析 cell 当前值追加为隐藏尾参(`LoadCapture k` → CellParam ref,
-  `LoadCellVal` 经它读第 param_count+k 个参数)。capture 参数进 param_obs
-  单态化格。**拒绝面**(全部响亮):跨块 cell 流、lambda 内改捕获变量、
-  闭包作一等值(传参/进容器/返回)、Str 捕获流入 `+` 分派(AddInt 启发式
-  看不穿 LoadCellVal)。差分 +5(基本捕获/捕获后突变/双捕获+调用间突变/
-  函数内捕获/float 捕获)。
-- **模块吸收(任务#7 续)**:os.hostname/arch/os、process.cwd、fs.temp_dir
-  (existing lkrt helper 直接映射)、fs.read_dir(新 `lkrt_fs_read_dir_list`,
-  排序 UTF-8 文件名 ListStr,旧 count 版本保留)、time.since(内联 end-start)。
-  MODULE_GLOBALS += fs/process。
-- **`== nil`/`!= nil` 值化比较**:在 read_scalar(会 unwrap Maybe)之前分流
-  ——Maybe 载体测 present 位,具体类型折叠常量,Nil==Nil 常量,有序比较拒绝。
-  (此前只支持 BrNil/BrNotNil 分支形式。)
-- **examples 差分 6/44 → 8/44**(os_demo、time_demo 解锁),地板 ≥8。
-
-## 本轮新增(2026-07-02 下半场)
-
-- **VM 方法分派 generic 优化**(profiling 驱动):`__lk_call_method` 每调用
-  3 次分配(方法名 ArcStr、字符串 receiver `Arc::from` 全拷、参数试探×4 次
-  with_slice)。修复:`DetachedStr` 载体(ShortStr Copy / Arc refcount clone,
-  零字节拷贝)统一方法名/receiver/字符串参数;receiver 类型先行定向分派
-  (四个 dispatcher 互斥,只试探一个)。**fraud_rule_scoring 49→33ms(-32%)、
-  cart_pricing_rules 9.2→6.1ms(-34%)、template_render 1.82→1.40x;
-  全套 VM/Lua geomean 1.175x→1.120x(本地 dist)**,其余 workload 无回归。
-  - 归因数据(留档):fraud 每迭代 ~40ms/44ms 在字符串方法调用
-    (`starts_with` 85k 次 ×350ns);map 查找仅 ~2ms、调用机制 ~0.2ms。
-  - **下一杠杆(需专门轮次,ISA 级)**:方法调用仍是
-    GetGlobal+NewList 装箱+泛型 Call(每调用一次堆分配 args list)。
-    专用 CallMethod opcode(receiver+名字常量+参数窗口)可免装箱与
-    global 查找,惠及全语言方法调用;涉及 compiler/exec/verifier/facts/
-    artifact v6/AOT lower,参照 GetIndexStrI 先例。
-- **math 模块 MIR 吸收**(任务#7 首模块):常量 lower 期解析
-  (pi/e/inf/nan/max_int/min_int/max_float/epsilon)、floor/ceil/round
-  静态类型分派、abs/min/max 保型 Select、sqrt(负参 abort 同 VM 响亮
-  失败)/sin/cos/exp/pow 经 lkrt(Number→F64 提升)。native 链接补 `-lm`
-  (Linux)。**math_demo 解锁,examples 6/44**,地板 ≥6;差分 +2 例。
-  - math_demo 原报错 "r3 read before def" 已解:是模块常量成员读
-    (ModuleFn ref 无 SSA 值)的误导性报错,非 bug。
-
-## 里程碑
-
-- **5 个动态字符串键 map workload:2.0–3.5x → 0.79–1.04x(几何平均
-  ≈0.89x);全套 20 workload AOT/VM 几何平均 0.329x → ≈0.26x**,20/20
-  checksum 一致。手段(全部通用,无 workload 特化):
-  - lkrt 运行时 arena 从全局 `Mutex` 改 **thread_local RefCell**(AOT 单线程,
-    单测反而获得线程隔离);arena 注册表与全部 map 句柄换 **FxHash**。
-  - map `set` 命中走 `get_mut` 就地更新(免每次 `to_string` 分配)。
-  - 新 ABI `str.concat_i64`:`prefix ++ decimal(i64)` 单次分配(免 NUL 扫描,
-    `from_vec_unchecked`);`ConcatString`/`ConcatN` 的 int 操作数经
-    `concat_display` 通用融合(模板串 `"b${i}"` 少一次分配+注册+free)。
-  - 新 ABI `map_h.str_i64/f64_set_ik`:`SetIndexStrI` 直接传 (prefix, suffix),
-    key 在 lkrt 栈上拼(88B inline,超长 spill),存储路径零 key 分配。
-- **MIR 新 builtin**:`panic`(空格 join display,致命)、`assert_eq`/
-  `assert_ne`(标量相等 + Int/Float 交叉、Str 字节比较,VM 同格式失败消息,
-  消息 eager 构造)、`typeof`(静态标量名;Maybe 载体 Select "Nil" vs 值名)、
-  `IsNil`(标量恒 false / Nil 恒 true / Maybe 取 !present)。
-- **examples 差分覆盖 3/44 → 5/44**(named_args、named_params 解锁),
-  地板断言 ≥3 → ≥5;手写差分新增 14 例(assert_eq/ne/panic/typeof/lambda 组)。
-- **零捕获闭包(RFC 阶段 4 第一切片)**:`MakeClosure(capture_count==0)` →
-  `GlobalRef::Lambda(fidx)`,间接 `Call` 去虚化为直接调用(复用
-  per-callsite 单态化);顶层 `let f = |x|…` 经 prescan(entry 前缀 +
-  全模块唯一写)升为静态 lambda 全局,任意函数可读;可达性沿 MakeClosure
-  边扩展。捕获闭包/一等函数值仍拒绝。fuzz 生成器 30% 概率把 helper 发成
-  lambda 形式。lower 单测 +4。
-- **bench runner 对齐 dist**(原待办4):`resolve_lk_bin` 现选
-  dist/release 中更新者(CI perf gate 本就 pin dist);本机源码构建
-  Lua 5.4.7(`~/.local/bin/lua`),本地 VM/Lua 基线 **dist geomean
-  ≈1.18x**(WSL2 + Lua 5.4.7,与 CI 的 Lua 5.5/机器不可直接比,仅作
-  本地相对参照)。
-
-
-## CallMethodK / list HOF / 重模块轮(本轮第四场)
-
-- **CallMethodK 实现要点**:opcode=105(追加,artifact v5→v6,版本测试
-  同步改 6/拒绝 5);编译器在 `lower_dynamic_method_call` 先试
-  `push_string`(去重)拿名字常量,≤u8 才发新形状(receiver+args 搬进
-  连续窗口,`clear_register(base)`);exec 端 `dispatch_call_method_k`
-  借 `function.consts`(与 `self.state` 无借用冲突,方法名不需 detach),
-  args 拷进 8 槽 inline buffer(超出 spill Vec),`NativeRuntime::new`
-  后进 `core_call_method_windowed`。**语义顺序保持**:filter/map/reduce
-  整体委托旧路径;runtime_access(属性优先)在 builtin 前;trait 尾物化
-  list。老 `__lk_call_method` 路径保留(名字索引溢出回退 + 兼容)。
-- **AOT 侧**:`lower_method_call` 拆出共享 `lower_method_dispatch`;
-  `lower_method_call_k` 直接读窗口。**跨块 builtin ref 回溯**
-  (`builtin_ref_at`,mirror `reg_const_str`:visited 防环、全前驱一致、
-  本块 SSA def 遮蔽)解决 `assert(a || b)` merge 块调用。
-- **list HOF**:`Const::FnAddr(FuncId)` → `getelementptr i8, ptr @lk_fn_N`;
-  lkrt 回调签名过 conformance(fn 指针加 ClassOf=Ptr impl);filter 回调
-  Rust `bool` ↔ LLVM i1(icmp 产出 0/1,实测 UBSan 干净)。HOF arm 在
-  泛型参数读取**之前**(lambda 寄存器是 builtin_regs ref 无 SSA 值)。
-- **datetime**:lkrt 引 chrono(workspace 版本);`datetime_utc` 越界
-  abort;demo 的微秒假设是 example 自身 bug(VM 也断言失败)已修。
-- **io.std**:`std` 进 MODULE_GLOBALS(解构 import 绑定名);句柄
-  0/1/2 编译期常量;lkrt `write_std_stream` 返回字节数(对齐 VM 的
-  written count)且 **fflush(NULL) 前置 + 自身 flush 后置**(两套
-  stdout 缓冲的交错错序,差分 io_std_write 用例当场抓出)。
-- Bool==Bool:ZextBool→i64 icmp(codegen 整型 icmp 硬编码 i64,i1
-  直接喂会 IR 类型错)。
-- 验证:workspace 全绿、三套 sanitized 差分 + 200 fuzz、Miri 23/23、
-  AOT 20/20 checksum、GC stress(CallMethodK 轮跑过)。
-
-## 捕获闭包轮(本轮第三场)
-
-- **关键语义发现**:编译器对被捕获局部变量总是发 UpvalCell(LoadHeapConst
-  堆常量 `{"UpvalCell":"Nil"}`)+ StoreCellVal 初始化;MakeClosure 捕获的是
-  cell 句柄;lambda 体 LoadCapture(取 cell)+ LoadCellVal(解引用)。
-  **共享可变**:`let f=|x|x*k; k=5; f(1)` VM 打印 5——MakeClosure 时快照是
-  错的,必须调用点解析。用 /tmp 微例 + `lk compile bytecode` dump JSON
-  (`python3 -c ... heap_values`)确认,先于实现。
-- 实现要点见 handoff;capture 隐藏参数复用 param_obs fixpoint(不同调用点
-  类型冲突 → conflict → 整模块 fallback,安全)。`cell_move` fact
-  (move_value)不影响正确性:fact 只在源寄存器死后成立,SSA 读旧值无观察者。
-- 单测:zero-capture 4 个原有;捕获行为由差分 5 例锁定(含突变语义)。
-  fuzz 未加捕获形状(生成器 helper 作用域清空 vars,捕获需要外层变量,
-  留给后续)。
-
-## 模块吸收续(os/fs/process/time)
-
-- lkrt 新 helper:os_hostname(HOSTNAME/COMPUTERNAME/localhost 链)、
-  os_arch/os_name(env::consts)、fs_read_dir_list(排序 UTF-8 名单
-  ListStr = `Vec<*const c_char>`,与 lklist 表示一致;旧 count 版
-  `lkrt_fs_read_dir` 保留未映射)。process.cwd/fs.temp_dir 映射既有 helper
-  (注意 process.cwd:VM 失败返回 Nil,native abort——极端边缘,未建模)。
-- `time.since` 内联 IntBin Sub(I64 限定;stdlib numeric_millis 的 Float
-  分支不进子集)。
-- **nil 值化比较**是 os_demo 的隐性门槛(`assert(x != nil)` 产生 Bool 值,
-  与 BrNil 分支形式不同);放在 read_scalar 前处理避免 Maybe 误 unwrap。
-
-## VM 方法分派免分配轮(本轮下半场)
-
-- **Profiling 方法**:`cargo build --profile dist -p lk-cli --features
-  vm-profile` + `LK_VM_PROFILE=1 LK_WORKLOAD_FILTER=x`(直接跑,不必走
-  runner);归因用手写 .lk 微基准逐成分剥离(全量/换索引/去 map/去字符串),
-  比 opcode 计数更快定位——fraud 的 40ms/44ms 在 `starts_with` 方法调用,
-  不在 map。
-- **core_methods.rs 改动**:`DetachedStr { Short(ShortStr), Heap(Arc<str>) }`
-  取代三处 per-call 分配(`method_name_arc`→`method_name_detached`、
-  string receiver 的 `Arc::<str>::from` 全拷、`extract_string_arc`→
-  `extract_string_detached`);`dispatch_builtin_method` 按 receiver kind
-  (`builtin_receiver_kind`)定向调用四个互斥 dispatcher 之一(原顺序试探
-  map→set→string→list,每次 with_slice 都拷参数)。**语义保持**:
-  runtime_access(属性优先)仍在 builtin 之前、trait 尾路径不变,
-  ArcStr 仅在 trait 尾惰性构造。
-- 验证:workspace 全绿、GC stress core 全绿、三套 sanitized 差分零报告、
-  Miri lkrt 23/23;全套 bench checksum 一致,geomean 1.175→1.120(dist,
-  本地),无 workload 回归。
-
-## math 模块 MIR 吸收(本轮下半场)
-
-- lkrt(host.rs):`lkrt_math_{ceil,round}`(`integer_round` 语义,
-  `as i64` saturating cast)、`lkrt_math_sqrt`(负参 eprintln+
-  flush_and_abort,对应 stdlib bail)、`lkrt_math_{sin,cos,exp,pow}`。
-  abi 8 条新表项(sqrt 标 ReadsHost 防 DCE,其余 Pure)。
-- lower:`module_const(module, name)`(GetIndex 的 Module 成员读 arm 先查
-  常量表再落 ModuleFn);floor arm 泛化为 floor/ceil/round;abs = 保型
-  Select(Int 用 `0 - x` sub 自然 wrap,对齐 VM release 的 wrapping_abs);
-  min/max = 同型 Select(返回原值,fcmp olt/ogt 与 Rust `<`/`>` NaN 语义
-  一致);module_call_abi 的 F64 形参统一接受 I64 提升(IntToFloat,
-  对应 stdlib `number_arg`)。
-- **native 链接 `-lm`**(Linux;powf 未内联导致 undefined reference,
-  macOS/Windows 由 libSystem/CRT 覆盖)。
-- math_demo 解锁(native==VM),examples 6/44,地板 ≥6;差分 +2
-  (math_consts_and_fns、sqrt 负参响亮失败保留已刷 stdout)。
-
-## lkrt string-map 性能轮(本轮)
-
-**运行时(lkrt)**:
-- `state.rs`:全局 `Mutex<RuntimeState>` → `thread_local RefCell`(const 初始化,
-  `with_runtime(f)` 统一入口)。前提:AOT 二进制单线程(lowered 子集无线程);
-  句柄/arena 串不得跨线程。单测因此天然隔离,Miri 23/23 依旧全绿。
-- arena `owned_strings`/`resources` 与 lkmap 四种句柄 map 全部 FxHash
-  (rustc-hash 2,workspace 已有);**map 无 iter/keys ABI,无迭代序依赖**。
-- `set` 走 `get_mut` 命中就地更新,miss 才 `to_string()`(更新型 workload
-  免每 op key 分配)。
-- `lkrt_str_concat_i64(prefix, i64)`:手写 `i64_decimal`(栈上 [u8;20])+
-  `CString::from_vec_unchecked`(输入是 C 串,无内部 NUL,免扫描免 realloc),
-  单次分配;`str_concat`/`i64_to_str` 同样改 unchecked 路径。
-- `lkrt_lkmap_str_{i64,f64}_set_ik(handle, prefix, suffix, value)`:key 在
-  lkrt 栈上拼(88B inline + 超长 spill 到 Vec),存储零 key 分配;
-  非法 UTF-8 与 `key_str` 一致降级为空 key。
-- `lkrt_panic(msg)`:eprintln + `flush_and_abort`。
-
-**lower(aot/lower)**:
-- `GetIndexStrI`:key 改 `concat_i64` 单调用(原 from_i64+concat+free 三连);
-  `SetIndexStrI`:直接 `set_ik`,完全不物化 key。
-- 新 helper `concat_display(acc, v, ty)`:`ty==I64` 融合成 `concat_i64`,
-  否则 to_display_str+concat+eager free。`ConcatString`/`ConcatN` 重写为
-  逐元素折叠(原先全量预转换再折叠;display 转换无用户可见副作用,重排安全)。
-- 新 builtin:`Builtin::{Panic,AssertEq,AssertNe,Typeof}` + `IsNil` opcode。
-  - panic:参数空格 join(`join_runtime_display` 语义),0 参 = "panic"。
-  - assert_eq/ne:相等按 `runtime_values_equal` 子集(同型标量、Int/Float
-    互转 `IntToFloat`、Str 走 str.cmp==0);失败消息 **eager 构造**
-    ("expected {b}, got {a}"[+" - {extra}"])免控制流,过 `rt.assert_msg`。
-  - typeof:静态标量名(Int/Float/Bool/String/Nil);Maybe 载体
-    MaybePresent + Select(值名, "Nil")。**注意**:lower_builtin_call 尾部
-    统一写 nil 返回值,Typeof 提前 return 写 Str 结果。
-  - IsNil:标量→Const false、Nil→true、Maybe→Not(MaybePresent);
-    fused_bool fact 只是 VM 执行捷径,后续分支指令仍在码流中被正常
-    lower,直线化安全。
-  - SetGlobal 黑名单同步(写这些名字的程序整体拒绝)。
-
-**abi**:`("str","concat_i64")`、`("map_h","str_{i64,f64}_set_ik")`、
-`("rt","panic")` 共 4 条新表项(conformance 编译期自动跟随)。
-
-**测量**(dist,min-of-3,AOT/VM):two_sum 0.894 / histogram 1.044 /
-log_parse 0.787 / inventory 0.947 / event_join 0.807;对照组标量 workload
-0.02–0.24 不变;20/20 checksum 一致。逐步归因:免锁+fxhash+set 免分配 →
-2.0–2.4x 降到 1.24–1.51x;concat_i64+模板融合 → 0.76–1.10x;set_ik →
-最终值。剩余:histogram 的 let-bound key(`let key = "b${b}"` 复用于
-get+set)每迭代仍一次 key 分配。
-
-**测试/防线**:workspace 全绿;手写差分 +9 例(assert_eq pass/fail/msg、
-assert_ne、panic_after_output、typeof 标量+map Maybe);examples 地板 3→5
-(named_args/named_params 解锁);fuzz 200 例;ASan/UBSan 差分零报告;
-Miri lkrt 全绿。
-
-**踩坑**:println 首参为**动态** Str 且带额外参数是既有的拒绝形状
-(动态格式串仅单参),差分用例里 `println(typeof(a), typeof(b))` 要拆行;
-`materialize_key` 实为通用常量串物化 helper(名字историч)。
-
-## 零捕获闭包切片(本轮,RFC 阶段 4 第一步)
-
-- `GlobalRef::Lambda(u32)`:`MakeClosure`(a=dst, b=fn 索引, c=捕获窗口)
-  在 `capture_count == 0` 时按静态函数引用进 builtin_regs(Move/Move2
-  传播);捕获闭包拒绝(原样)。
-- **间接 Call 去虚化**:`Call` 的 callee 寄存器命中 Lambda → 走抽出的
-  `lower_user_call`(与 `CallDirect` 完全同窗布局:结果=base,参数
-  [base+1, base+1+c)),进同一 per-callsite 单态化(param_obs/ret_types
-  fixpoint)。
-- **顶层 lambda 全局**(`let f = |x|…` 顶层是模块全局):
-  `prescan_lambda_globals` 认"entry 前缀内、全模块唯一一次 SetGlobal、
-  写入值是零捕获 MakeClosure(经寄存器追踪,Move/Move2 传播)"的槽位;
-  GetGlobal 命中 → Lambda ref(初始化序安全:前缀写先于一切用户调用);
-  SetGlobal(Lambda) 与 prescan 不符 → 响亮拒绝。**entry 局部** lambda
-  重赋值天然正确((block,reg) 按 pc 序覆盖);跨块用局部 lambda 拒绝。
-- 可达性:`reachable_functions` 沿零捕获 MakeClosure 边扩展(lambda 体
-  必须被 lower/emit)。
-- fuzz 生成器:helper 30% 概率发成 `let f = |…| expr;`(调用点语法同名
-  函数,天然覆盖去虚化);200 例×2 种子干净。
-- 差分 +5(顶层/跨函数/函数局部/float 单态/局部重赋值);lower 单测 +4
-  (全局 lambda 调用、局部调用、捕获拒绝、重赋值全局拒绝)。
-- **验证过的语义边界**:`let f=|x|x; fn g(n){return f(n);} f=|x|x*2;` —
-  VM 自身把函数内 `f` 静态绑定到首个赋值(输出一致);双写全局在手写
-  artifact 层面必须拒绝(单测锁定)。
-
-## bench runner / 环境(本轮)
-
-- `resolve_lk_bin`:优先 dist/release 中 mtime 更新者(CI perf.yml 本就
-  pin dist bin;本地默认原是 release,数字系统性偏慢);`LK:` 行回显真实
-  路径。
-- 本机源码构建 Lua 5.4.7 → `~/.local/bin/lua`(runner 用 `LUA_BIN` 指定),
-  解锁任务 24/25 本地预筛;本地 dist VM/Lua geomean ≈1.18x(仅本地参照,
-  CI 用 Lua 5.5 且机器不同)。
-
-此前:全量优化轮(CI 化/-O2/模块 builtin/可变全局/方法分派/.lkm v5/
-budget 特化),bench 全套 MIR 原生化 0.329x;"先补再删"轮——legacy text
-后端整体退役(-4.8 万行)。
-
-## "先补再删"轮(本轮)
-
-**补(MIR 新形状)**:
-- `LoadHeapConst::LongString` → 与 `LoadString` 同构(interned global + hex 转义),
-  记入 `const_strs`。
-- `GetGlobal` runtime builtin:`builtin_regs: (block, reg) → Builtin` 侧表
-  (`Ssa::write` 失效,`Move` 传播,不写 SSA 值——其他用途读到 undefined 即拒);
-  `Call`(A=窗口基址,C=参数数)命中 builtin 时下降:
-  - println/print:`print_parts` 在 lower 期精确复刻 `format_variadic_runtime`
-    (`{}` 逐个消耗、缺参保留字面 `{}`、多余参数空格追加且"格式部分非空才加前导
-    空格"——唯一运行时相关的 case(纯 Str 占位符且无字面量)拒绝);动态格式串仅
-    单参形状(输出=原串);非 Str 首参=空格 join。`emit_print` 合并相邻字面量、
-    display 转换、concat 折叠(eager free),新 `Inst::PrintStr{value,newline}`
-    (codegen printf `@lk_str_fmt`/新增 `@lk_str_raw_fmt`)。返回 nil 写窗口基址。
-  - **循环坑**:编译器把循环体格式串外提(loop-literal cache),循环体读到的是
-    未 seal 的 header phi param,`const_strs` 查不到 → `Ssa::reg_const_str`
-    只读回溯到达定义(命中 phi 时**重定向到 phi 自己的 reg/block**——Move 换寄存器;
-    visited 按 (block,reg) 防环;多路径必须同一常量)。
-  - assert(1-2 参):cond 限 `Ty::Bool` → `ZextBool` + `lkrt_assert(_msg)`。
-- `TestEqIntI2`(bench 全套第一道墙):`Exit::FusedCmp2` + MIR `Inst::BoolAnd`,
-  false 边走尾随 Jmp,true 边 fallthrough(与 VM false-branch 应用一致)。
-
-**本轮抓到的真实分歧(差分立刻命中)**:native abort 不 flush C stdio →
-assert 失败/除零前已 printf 的 stdout 整体丢失(VM 保留)。修复:lkrt 所有
-abort 路径统一 `flush_and_abort()`(`fflush(NULL)`),FFI 面 `lkrt_abort`,
-codegen `Term::Abort` 调它。差分用例 `assert_false_after_output` /
-`div_zero_after_output` 锁定。
-
-**删(legacy 退役)**:
-- llvm crate:scalar/(23.8k)、dynamic_containers、straightline_*、subfunction、
-  callee_eval、const_display、diagnostics、intrinsics、ir_text、known_key、
-  map_mutate、output、stdlib_catalog 全删;backend.rs 重写为纯 MIR 管线;
-  options 删 `use_mir_pipeline`/`allow_legacy_fallback`(连同两个 env 开关)。
-- 测试:先把 helper 改为过渡 shim 跑测试分类——26 过(MIR 覆盖,保留)/
-  224 失败(legacy 覆盖,脚本按失败名批量删,注意别吞文件尾的 `mod` 声明);
-  空文件 modules/objects/runtime_builtins 删除。CLI 的 const list/map(混合元素)
-  测试改写为"响亮失败 + MIR reason"断言;long_string 测试改断 MIR 特征。
-- lkrt:containers.rs(~2000 行 legacy 线性容器 helper)+ abi schema 60 条
-  (list.i64/f64/str、map.i64/str、fmt)删除;conformance 自动跟随。
-- 文档:backend.md 重写(单管线架构);aot-redesign.md 状态=已退役;
-  bench README AOT 段更新(历史 AOT 数字标注为退役后端所测,不可复现直到
-  MIR 吸收 os.clock 等模块形状)。
-
-**验证**:workspace 1460 全绿;手写差分 7 组(新增 builtins 16 例)、examples
-3/44(地板断言 ≥3)、fuzz 92/100 两种子、sanitizer 差分零报告、GC stress 全绿。
-
-## 正确性优先加固轮(上轮,plan.md)
-
-## 正确性优先加固轮(本轮,plan.md)
-
-按 plan.md 九步全部落地。两个真实 bug + 一处测试 UB:
-
-- **`.lkm` facts 丢失(严重,差分思路当场抓出)**:`FunctionData.performance`
-  是 `#[serde(skip)]` → `.lkm` 加载后 facts 为空。实测:`for i in 0..10` 的
-  `.lkm` 运行报 `ForLoopI missing performance fact`;`while (a < b)` 的 `.lkm`
-  **死循环**(compare-test 无 fact 时 fallback 把下一条指令按 Jmp 解码)。
-  `GetIndexStrI`/`SetIndexStrI` 同样硬依赖 fact。修复:`analysis.rs` 全部
-  Perf* 类型加 serde derive,`performance` 改 `#[serde(default)]` 序列化,
-  `MODULE_ARTIFACT_VERSION` 3→4(旧 artifact 本就半坏,拒绝优于半工作)。
-  回归:`module_artifact_round_trips_performance_facts`(编译→JSON→加载→执行=45)。
-- **lkrt 测试 UB(Miri 抓出)**:`host.rs` fs 测试用 `&CStr::as_ptr().cast_mut()`
-  喂 `CString::from_raw`——SharedReadOnly provenance 不能 Unique 回收。改存
-  原始 owned 指针。lkrt 37 测试 Miri 全绿(`-Zmiri-disable-isolation
-  -Zmiri-ignore-leaks`;ignore-leaks 因 arena 设计:句柄由 exit 前
-  `lkrt_cleanup` 统一释放,单测共享全局 arena 不能各自 cleanup)。
-- **bytecode verifier**(`core/src/vm/verify.rs`,新):`.lkm` 是不可信输入,
-  而执行器热路径 `stack_index_unchecked`/`relative_pc_unchecked` 在 release
-  下无检查 → 损坏 artifact 可静默跨帧读写/跳出函数。加载期逐指令验证:
-  寄存器 < register_count、寄存器窗口(call/容器构造/Return/ConcatN)、跳转
-  目标 ∈ [0, len]、常量池/函数/native/global/capture 索引;facts 验证:
-  for_loop/compare_test/fused_bool 目标、call_base 窗口、global slot、key
-  fact 常量索引;`ForLoopI` 必须有 fact,compare-test 无 fact 时 pc+1 必须是
-  Jmp。`into_module()` 无条件跑;`compile_module` 在 `debug_assertions` 下
-  自验(整个测试套变成 verifier 的防误杀语料)。13 个单测。
-  - 操作数语义逐 opcode 对照执行器核实(exec.rs 主循环 + dispatch/const_load/
-    callable_ops/cell/handler/container/support)。关键点:Call/CallDirect/
-    CallNamed 的 A=窗口基址(B 只有 7 位会截断)、CallNamed bx=pos(7b)|named、
-    MakeClosure 的捕获窗口大小取 callee.capture_count、GetFieldK/SetFieldK 的
-    C 是字符串常量索引、branch_i4 的 12 位偏移。
-- **MIR validate() 进生产路径**:`backend.rs` 在 lower 成功后、render 前无条件
-  `lk_aot_mir::validate()`(此前只在 codegen 测试里跑,"renders a validated
-  module" 前置条件生产路径无人保证)。llvm crate 新增 `lk-aot-mir` 依赖。
-- **legacy fallback 改 opt-in**:`allow_legacy_fallback: Option<bool>`(env
-  `LK_AOT_LEGACY`),默认关——MIR 拒绝直接报错(带 Unsupported reason +
-  opt-in 提示);`use_mir_pipeline=Some(false)` 仍是显式直选 legacy。
-  **~200 个 llvm 测试原来靠静默 fallback 存活**(251 中 199 失败),批量改为
-  `legacy_fallback_options()` 显式 opt-in(tests.rs helper,与 legacy 同退役);
-  CLI 3 个 legacy-only 形状测试(const list/map、long string)加
-  `LK_AOT_LEGACY=1`。错误信息保持 "LLVM native lowering does not support" 前缀。
-- **GC stress**:`LK_GC_STRESS=1` 时 `collect_pending_garbage` 每安全点强制
-  collect(不在分配点——新句柄未入根)。core/stdlib/cli 全测 + 复杂 examples
-  stress 下全绿。
-- **examples/ 差分**(`cli/tests/examples_differential_test.rs`):整树拷贝到
-  temp(相对 import 可用),逐 .lk:MIR 编译→VM vs native 比对;不可 lower
-  记录 reason 快照。当前 2/44 可 lower(fib、numeric_auto_promotion),42 个
-  卡 GetGlobal(println/assert 也是 global!)/LoadHeapConst/MakeClosure/
-  NewObject/IsNil/NewRange。地板断言 ≥2 防退化。
-- **生成式差分 fuzz**(`cli/tests/aot_fuzz_differential_test.rs`):splitmix64
-  种子化生成器,限定 MIR 子集(标量、计数 while、直接调用、List<i64>、const
-  key map、模板串插值)。观察面=把全部活变量插进 `return "${v0}|${acc2}"`
-  模板(println 会引入 GetGlobal 不可 lower,仅留 8% 概率作 Unsupported 探针)。
-  VM 必须接受生成程序;AOT 拒绝必须是 graceful Unsupported(lower totality,
-  stderr 含 panic 即 fail)。默认 40 例(30 可比较),`LK_FUZZ_CASES`/`LK_FUZZ_SEED`
-  放大:400+200 例两种子全部干净。
-  - 生成器踩坑:LK `/` 是 Int/Int→Float(整数表达式只用 %);`if (expr) != x`
-    会把首个括号组当条件(if 条件必须整体加括号)。已记入 docs/semantics.md。
-- **sanitizer**:`native_executable.rs` 支持 `LK_NATIVE_SANITIZE` 透传
-  `-fsanitize=`;native cache key 加入该变量与 `LK_AOT_LEGACY`(缓存正确性),
-  并注释 import-content-not-in-key 地雷。全部差分语料 ASan/UBSan 零报告
-  (arena cleanup 无泄漏顺带被 LSan 验证)。Makefile:`miri-lkrt`、
-  `sanitized-differential`、`gc-stress`。
-- **docs/semantics.md**(新):golden vectors 第三仲裁(div/0、缺失键算术、
-  nil 静默返回、float 显示、`/`→Float、负索引、退出语义 VM exit-1 vs native
-  abort-134 等),含维护约定:分歧先查表,裁决后加条目+差分用例。
-- **backend.md** 顶部两层架构章节更新(validate 强制 + fallback opt-in)。
-
-## AOT 重设计收官轮(本轮)
-
-- **差分 harness 一等公民(§6)**:`cli/tests/aot_differential_test.rs`,69 例
-  (标量/控制流/函数/list/map/字符串)。每例:VM 运行 vs MIR 管线 native 运行,stdout +
-  成功/失败逐项比对;`Path::New` 断言确实走 MIR 管线(IR 含 `ModuleID = 'lk_aot'`)。
-  含失败语义用例(div/0、缺失键算术 → 双方都响亮失败、stdout 均空)。
-- **MIR 快照(§6)**:`lk_aot_mir::render()` 稳定行式文本;`aot/lower/tests/mir_snapshots.rs`
-  6 形状 golden(直线除法 / if-else / 循环 / 直接调用 / 列表+动态索引 / map 查找)。
-- **ABI 单一真相闭环(§3.3)**:表 → `for_each_abi_fn!` 数据宏(140 条,`aot/abi`)。
-  `ABI_FUNCTIONS` const 与 lkrt `abi_conformance_test` 从同一宏展开:符号存在/`extern "C"`/
-  arity 由 fn-pointer coercion **编译期**强制;参数/返回寄存器类(i64/f64/ptr/void)测试期
-  与 schema 比对(StrPtr/Ptr 同 class——LLVM 不透明指针下调用约定相同)。
-- **所有权(§3.4)**:默认 arena——`arena_c_string`/`arena_handle` 注册所有字符串+容器句柄
-  (state.rs `owned_containers: Vec<(usize, drop_fn)>`);codegen 在 entry 各退出点打印后发
-  `lkrt_cleanup()`。lower 对 ConcatString/ConcatN 已知死亡的 display 临时串与中间累加串发
-  eager `lkrt_string_free`(`to_display_str` 返回 `(ValueId, fresh)`);循环内插值不再累积。
-- **`Unsupported::reason()` + Display(§3.5)**:每变体一句解释;双后端都拒时错误带双原因。
-- **Maybe<Str>(元素矩阵补齐)**:`lkrt_lklist_str_get_pair -> LkMaybeStr {ptr,i64}` +
-  `lkrt_maybe_str_unwrap`;MIR `Ty::MaybeStr` + `ListGetMaybeStr`/`UnwrapMaybeStr`;
-  `MaybePresent.float: bool` 重构为 `maybe_ty: Ty`(三载体)。差分:动态索引 concat 循环
-  `"abc"`、越界→nil、负索引→"c"、`==nil` 全 =VM。
-- **翻默认**:gate 默认开;退出通道 `LK_AOT_MIR=0` **或** `LlvmBackendOptions::
-  use_mir_pipeline: Option<bool>`(测试用选项 pin,避免进程内 env 竞态)。
-  - llvm crate:34 个 legacy-IR 结构断言测试(`*_without_shell` 等)pin
-    `legacy_text_backend_options()`(tests.rs 的 helper;它们是 legacy 后端的覆盖,随删除退役)。
-  - CLI:7 个集成测试改写为 MIR 断言(`ModuleID='lk_aot'`、`phi i64`、`call i64 @lk_fn_1`、
-    `@lkrt_f64_to_str`、`@lk_str_0`),并加真实运行断言(loop=6、call=42、f64=3.75)。
-  - **差分抓出 legacy 真实分歧**:`return nil;` legacy native 打印 `nil` / VM 与 MIR 打印空。
-    nil 测试改为锁定 VM 行为(空输出)并注明。
-- **文档**:RFC 状态改"已实现" + §9.5 收官记录;`backend.md` 顶部加两层架构章节
-  (MIR 默认 + legacy fallback 的能力面)。
-
-### 本轮踩坑/决策
-
-- fish 下 `sed` BRE 捕获组把 `\1` 写成字面量 → 语料文件损坏,重写文件解决;LK `while`
-  条件必须带括号(`if` 不用)。
-- CLI 差分/集成测试里 exit code 只比 `success()`(VM 错误 exit 1 vs native abort 134,
-  语义等价"响亮失败")。
-- 零参小函数会被前端内联 → CLI 测试不能断言 `call @lk_fn_1()`,改断言 display helper。
-- lkrt 测试回收 arena 字符串用 `lkrt_string_free`(不再 `CString::from_raw`,避免注册表
-  悬挂条目)。
-- `render_ret` 的 cleanup 必须在 printf **之后**(打印值可能是 arena 串)。
-
-## 剩余(RFC §1 非目标 / §7 约定后续)
-
-1. 阶段 4:闭包/间接调用/可变全局 + `__lk_call_method` 方法分派(`.sort()`/`.pop()` 等)。
-2. legacy text 后端整体退役(待 MIR 吸收其独有形状;连同 34 pinned 测试 +
-   `dynamic_containers/`)。
-
-## AOT 重设计(aot-redesign.md,更早轮次)
-
-新 crate 家族(`aot/`):`lk-aot-abi`(schema 单一真相,零依赖)、`lk-aot-mir`(类型化
-SSA + `validate`)、`lk-aot-lower`(bytecode→`Result<MirModule,Unsupported>`,总函数)、
-`lk-aot-codegen`(total `render_module`→LLVM)。
-
-- **阶段 0**:abi crate(表迁自 intrinsics.rs;llvm/intrinsics.rs 缩为薄适配;lkrt 复用
-  `ABI_VERSION`)。除零守卫 `lkrt/src/arith.rs`(`lkrt_{i64,f64}_{div,mod}_checked`),
-  emit 主标量/混合浮点/call-slot 改调 helper —— `x/0` native 由 UB 变确定性 abort(exit
-  134),float `/0` 由静默 inf 变 abort。`lkrt_abi_check` 在 main 入口(不改 entry CFG)。
-  修了 3 个断言旧 `sdiv/fdiv/lk_divisor_zero` 的测试(gcd/mixed-float/float-guard)。
-- **阶段 1**:mir(block 参数替代 phi;容器=`Inst::Call{AbiRef}`;`Ty` 封闭枚举=可 lower
-  子集定义)+ codegen(block 参数→phi 扫前驱;Div/Mod→helper;entry→`@main` 打印)。
-  `examples/demo.rs` `20/4`→clang→liblkrt→运行 `5` 端到端验证。
-- **阶段 1b**:lower 首切片(无参无捕获单入口 + 标量直线整数);`lowers_straightline_
-  integer_division` 全链路(手写 artifact→lower→validate→render→guarded-div LLVM)。
-- **验证**:`cargo test --workspace` **1622 passed / 0 failed**;四 crate 各自单测
-  (abi 2 / mir 4 / lower 3 / codegen 2)。
-- **下一步**:绞刑架切换 `lk-llvm` 入口到 `lower→codegen`(Unsupported 回退旧后端)+
-  扩片(float/比较/分支/调用),见 aot-redesign §9.5;阶段 2-4(容器句柄化 / 控制流块 /
-  闭包+间接调用+可变全局)见 §7。
-
-### 关键决策/踩坑
-
-- **ABI 版本 assert 不能拆 entry 块**:条件分支会破坏下游 `[x,%entry]` phi;改用 lkrt
-  `lkrt_abi_check(expected)` 内部 abort,main 入口只加一条 call。
-- **除零 helper 不标 Pure**:标 `ReadsHost` 防 codegen 未来把"可 abort"当纯函数 DCE 掉
-  (当前 text 路径无属性,是元数据前瞻)。
-- **迁 intrinsics 表用 `cp` 复制再改**,避免手抄 1200 行;类型名 replace_all
-  (`NativeIntrinsic*`→`Abi*`),llvm 侧 re-export 旧名减少 crate 内改动。
+## 状态图例
+`[ ]` 未开始 · `[~]` 进行中 · `[x]` 完成 · `[!]` 阻塞/存疑
 
 ---
 
-# (更早)LLVM 容器操作下沉到 lkrt
+## 已核实的地基事实（2026-07-03，源自当前工作区源码，非文档推断）
 
-目标:落地 `docs/llvm/aot-gaps-and-lkrt.md` —— 把单态动态容器操作从 llvm crate
-的手写 LLVM IR 下沉为 `lkrt` 的 typed ABI helper,llvm 侧只声明 intrinsic + 生成调用。
-
-## 架构关键点(供后续 batch 复用)
-
-- LLVM 后端是**文本 IR 生成**(非 inkwell)。入口 `llvm/src/llvm/backend.rs:66`
-  `compile_native_scalar_main_artifact`,全有或全无,任意未覆盖形状整程序 `bail!`。
-- 容器 helper 原本是"**手写 LLVM IR 纯函数**(`lk_*_i64_list`,只操作 `ptr+len`)
-  + `emit_*` 生成 `call`"。见 `llvm/src/llvm/dynamic_containers/*.rs`。
-- **intrinsic 声明**:`llvm/src/llvm/intrinsics.rs` 的 `NATIVE_INTRINSICS` 数组是
-  registry;`native_intrinsic_declarations()`(被 `ir_text.rs:69` 调用)为所有
-  `lkrt_` 符号自动生成 `declare`。往数组加条目即可。
-- **helper IR 注入点**:`llvm/src/llvm/scalar/blocks/finalize.rs:27-31`
-  push `native_dynamic_*_helpers()` 返回的 IR 定义到最终 .ll。
-- **链接**:`llvm/src/native_executable.rs` 用 clang 编译 .ll 并
-  `--whole-archive liblkrt.a`(macOS 用 `-force_load`)。`link_anchor()` 防裁剪。
-  新增 `lkrt_*` 符号自动链上。
-- lkrt ABI 基础设施在 `lkrt/src/abi.rs`(`c_str`/`owned_c_string`/`status`/
-  `write_out`),资源管理在 `state.rs`。`ABI_VERSION=1`。
-
-## 下沉一个布局的标准步骤(模板)
-
-1. `lkrt/src/containers.rs` 用 Rust `#[unsafe(no_mangle)] pub unsafe extern "C"`
-   实现纯函数,签名与旧手写 IR helper **逐字对齐**(`ptr, i64 len, ...`)。
-2. `lkrt/src/lib.rs` `pub use` 导出。
-3. `intrinsics.rs` 往 `NATIVE_INTRINSICS` 加条目(effect=Pure,module 用
-   `list.i64` 之类)。
-4. 对应 `dynamic_containers/<layout>.rs`:`native_dynamic_*_helpers()` 返回 `""`
-   (helper 已下沉),`emit_*` 里 `@lk_*` 调用符号改成 `@lkrt_*`。
-5. 同步 `llvm/src/llvm/tests/modules.rs` 里断言的符号名。
-
-## 语义对齐备忘(i64 list,已核对手写 IR)
-
-- `contains`→1/0;`index_of`→找到 index 否则 -1。
-- `reverse`:dst[i]=src[len-1-i];`sort`:升序(i64 相等无差别,用 sort_unstable)。
-- `pop`:返回末元素,空返回 0,**不改 list**。
-- `slice_range`:start/end 各 clamp 到 `0..=len`,再 `end=max(end,start)`。
-- `push`:追加,新长 len+1。
-- `insert`:index clamp `0..=len`,新长 len+1。
-- `remove_at`:紧凑复制,返回被移除值(越界返回 0 且全量复制)。
-- `set`:复制并替换 index,返回旧值(越界返回 0),长度不变。
-
-## 已完成(batch 1:DynamicList<i64>)
-
-- `lkrt/src/containers.rs`:10 个 `lkrt_list_i64_*` 函数 + 单元测试(4 个,全过)。
-- `lkrt/src/lib.rs`:导出。
-- `intrinsics.rs`:10 条 registry 条目(module=`list.i64`,Pure)。
-- `dynamic_containers/i64_lists.rs`:helper 返回 `""`,emit 改调 `@lkrt_list_i64_*`。
-- `tests/modules.rs`:断言符号名同步。
-- 注意 `@lk_concat_i64_list`(bool-list concat 走 i64-slot)**未**下沉,保留。
-
-## 关键 bug 与修复:in-place 别名(重要)
-
-首版用 `copy_from_slice` 实现 slice/sort/push,端到端跑 `xs.slice(1,3)` 时 native
-panic:`ptr::copy_nonoverlapping requires ... non-null ... ranges do not overlap`。
-
-- **根因**:LLVM 把 `xs.slice(..)` / `xs.sort()` lower 成 `src == dst` 同一 buffer
-  (in-place)。`copy_from_slice` 走 `copy_nonoverlapping`,重叠即 panic;而且在
-  Rust 里同时持有别名的 `&[T]` 和 `&mut [T]` 本身是 UB(debug 断言直接 abort)。
-- **修复**:`containers.rs` 全面改用**裸指针** + `ptr::copy`(memmove);只向更低/
-  相等目标索引前向写;`sort` 先 memmove 物化再取单一 `&mut` 排序;`insert` 先右移
-  尾段。新增 `in_place_aliasing` 单测锁定 `src == dst`。
-- 详见 `docs/llvm/aot-gaps-and-lkrt.md` §7「关键教训」——后续 batch 必读。
-
-## 验证结果
-
-- [x] `cargo test -p lkrt`:5 tests pass(含 `in_place_aliasing`)。
-- [x] `cargo test -p lk-llvm`:251 passed,0 failed(含 IR 符号断言)。
-- [x] AOT 端到端:`lk compile` native 输出与 VM 逐项一致
-      (contains=true / index_of=1 / pop=2 / reverse=2 / slice=1);
-      `nm` 确认 10 个 `lkrt_list_i64_*` 符号已链接进二进制。
-- [~] `cargo test --workspace --all-features`:进行中(后台 buhvcrw5n)。
-
-## batch 2/3/4 进展
-
-- **batch 2 `list.f64`**(14 方法):`containers.rs` 内部 helper 泛型化后复用;
-  sort/contains 用手写 selection sort / `==` 匹配 `fcmp` NaN 语义。lkrt+llvm 全绿,
-  端到端 contains/index_of/sort 一致。
-- **batch 3 `list.str`**(14 方法):元素 `*const c_char`;结构操作移动指针,
-  push/insert/set 用 `dup_cstr`(Box::leak 泄漏,匹配 strdup);空/越界返回稳定空
-  C 串;`CStr` 比较(strcmp 字节序)。注意 slice/take/concat 原在
-  `dynamic_containers.rs` 顶层混合池 + `subfunction.rs`,已一并下沉。lkrt+llvm 全绿。
-  str list receiver 形状受既有 lowering 长尾限制无法 CLI 端到端触发(非下沉问题)。
-- **batch 4 `map.i64`**(6 helper:lookup/set × int/f64/ptr):用泛型 `map_lookup`/
-  `map_set`;present-bit 由 emit 侧处理(helper 返回 found + 写 out),strdup 也在
-  emit 侧,下沉很干净。map 的 has/delete/iter/values/keys 是**内联 IR**(非 helper
-  池),不在下沉范围。lkrt 11 tests 全过;llvm 测试进行中。
-
-## batch 5 进展(string-key map + decimal_len,本轮完成)
-
-`map.str` 复合短字符串 key(prefix 串 + 整数后缀)。分三步,全部 drop-in / 镜像
-int/f64 版本,签名与旧 `@lk_*` 手写 IR 逐字对齐:
-
-- **Phase A(int/f64 + split_key + decimal_len)**:`dynamic_containers.rs` 的
-  `emit_dynamic_string_{int,f64}_map_{set,get}` 早已是 helper-call 形式,但调的是
-  `native_dynamic_container_helpers()` 里的**手写 IR** `@lk_{lookup,set}_string_{int,f64}_map`
-  / `@lk_split_string_int_key` / `@lk_i64_decimal_len`。本步:删这 6 个手写定义(该 fn
-  现只剩注释),call site 换成 `@lkrt_map_str_{int,f64}_{lookup,set}` / `@lkrt_map_str_split_key`
-  / `@lkrt_i64_decimal_len`。
-- **Phase B(ptr map set/get)**:`containers.rs` 复用泛型 `str_map_lookup/set` 加
-  `lkrt_map_str_ptr_{lookup,set}`;`string_maps.rs` 的 `emit_dynamic_string_ptr_map_{set,get}`
-  从内联循环(`emit_string_map_{set,get}_loop`)改调 helper,删这两个 loop fn。
-- **Phase C(has/delete)**:加 `lkrt_map_str_contains` + 泛型 `str_map_delete` 的
-  `lkrt_map_str_{int,f64,ptr}_delete`(压缩式,`out_value`+`out_present`,容忍 `src==dst`,
-  `dst_i<=i` 前向写);`emit_dynamic_string_map_has`/`_delete` 改调 helper,删
-  `emit_string_key_match`/`emit_string_map_copy_item`。
-
-改动文件:`lkrt/src/{containers.rs,lib.rs}`、`llvm/src/llvm/intrinsics.rs`(map.str
-新增 ptr_lookup/ptr_set/contains/int_delete/f64_delete/ptr_delete 6 条)、
-`dynamic_containers.rs`(删 helper 池 6 定义 + 6 call site 改名)、
-`dynamic_containers/string_maps.rs`(ptr set/get + has/delete 改调 helper,删 4 个内联
-fn)、`tests/{basic,strings,modules,direct_calls}.rs`(符号断言同步 + 修复样板断言)。
-
-### 关键坑:helper 池样板导致的假断言
-
-`native_dynamic_container_helpers()` 无条件注入每个模块 IR,所以 `@lk_i64_decimal_len`
-的 `select i1` 和 map helper 的 `call i32 @strcmp` 出现在**所有**模块里。删除下沉后,
-3 个测试(bool 直接调用、closure、模板比较)的断言(`select i1`/`strcmp`)失效——它们
-其实在测样板。已改断被测程序自身:bool/字符串比较常量折叠成静态串经 `@lk_str_fmt`
-打印(`@lk_block_return_static`);模板 `${x+y}==N` 比较分解为 `icmp eq i64`。
-
-### 语义核对(map.str,已对旧手写 IR 逐字核对)
-
-- `split_key`:尾部 ASCII 数字为后缀;"raw"(空/全数字/无尾数字)保留原指针 + number 0,
-  否则 leak 截断 prefix。与 `@lk_split_string_int_key` 的 raw/parse 分支等价。
-- lookup/set/contains:`strcmp(prefix)==0 && number==`;lookup 只在命中写 `out` 返回 1/0,
-  emit 侧存 present。
-- delete:非匹配项拷进 dst(prefix/number/value),命中写 `out_value`+`out_present=1`,
-  返回 dst 长度;emit 侧预存 missing 默认 + present=0。
-- decimal_len:0→1,负数含 `-`;单测对 `i64::MIN/MAX` 与 `v.to_string().len()` 逐项核对。
-
-## 验证结果(本轮)
-
-- [x] `cargo test -p lkrt`:21 passed(+4:split_key / str-map int+ptr set/lookup/
-      contains/delete / decimal_len)。
-- [x] `cargo test -p lk-llvm`:251 passed。
-- [x] `cargo test --workspace --all-features`:**1609 passed,0 failed**(cargo 退出码 0)。
-- [x] `nm` 确认 `lkrt_map_str_*` + `lkrt_i64_decimal_len` 链接进 native 二进制;
-      string-int-map `m.k=v` set/get 端到端与 VM 一致。
-- [~] 非折叠 native RUN string map helper:受阻(`map` 模块非 CLI 可达 + 常量折叠 +
-      env.get_or 既有 bug `@lk_const_str_0` undefined)。靠 llvm 结构断言(动态词频 /
-      has/delete over f64/bool/str map)+ lkrt 单测 + list helper 已证同款调用约定覆盖。
-- [—] bench:改动仅在 llvm/ + lkrt/(AOT),core/VM 解释器零改动,perf 门禁(VM LK/Lua
-      比)不受影响,未跑重型 bench。
-
-## 剩余待下沉
-
-- `@lk_concat_i64_list`(bool-list concat 借 i64-slot ABI)仍手写 IR。
-- 两种 map 的 `iter`/`values`/`keys`(索引拷贝 / snprintf 重建 key,收益低)。
-- 结构性硬限制(aot-gaps §2.1:闭包 / 间接调用 / 可变全局)—— 单独立项。
+- **值模型两套并存**：`LiteralVal`（legacy，`core/src/val/values/mod.rs:93`，仍活跃）+ `RuntimeVal`
+  （新，`core/src/val/runtime_model.rs:16`：`Nil/Bool/Int/Float/ShortStr/Obj(HeapRef)` + `HeapStore`，
+  注释「New VM code should target these types first」）。tagged union + `Arc` 堆载荷，**无 NaN-boxing**。
+  → **M0 抽 `lk-values` 要与这场进行中的迁移合流，不另起。**
+- **错误模型**：VM `execute() -> anyhow::Result<ExecResult>`（`vm/exec.rs:1677`）；已有
+  `vm/exec/handler.rs` 的 `ErrorHandler`/`LanguageRaise` 抬升机制 → **M2 pcall/error 在其上构建**。
+- **全局可变状态（M0 去除清单，问题 5）**：
+  | # | 位置 | 内容 | 迁移方向 |
+  |---|---|---|---|
+  | ~~G1~~ | ~~`core/src/expr/expr_impl.rs`~~ | ~~`once_cell::Lazy<DashMap>` 缓存~~ | ✅ 已删(死代码,M0.3) |
+  | ~~G2~~ | ~~`core/src/rt/runtime.rs`~~ | ~~`once_cell::Lazy` + tokio 异步运行时状态~~ | ✅ 已移入 VmContext(M0.5) |
+  | ~~G3~~ | ~~`core/src/vm/alloc.rs`~~ | ~~`thread_local! TLS_ARENA`（RegionAllocator）~~ | ✅ 已删(死代码,M0.4) |
+  | — | `core/src/vm/analysis.rs:827` | `#[cfg(test)]` metrics thread_local | 测试专用，**不计** |
+  | G4 | `lkrt/src/state.rs:11` | `thread_local! RefCell<RuntimeState>` | ✅ 按设计保留(单线程 AOT 热路径,M0.6) |
+  | G5 | `lkrt/src/abi.rs:43` | `thread_local! RefCell LAST_ERROR` | ✅ 按设计保留(同上) |
+- **no_std 障碍（core 102 处 `use std`，无 `#![no_std]`）**：
+  - 易（机械换 `core::`/`alloc::`）：`fmt`(6) `ops`(2) `mem`(1) `cmp`(1) `pin`(1) `collections`(29→alloc/hashbrown)
+  - 难（`std::sync` 37）：`Arc`→`alloc::sync::Arc` 易；`Mutex/RwLock`→需 `spin`/`critical-section`
+  - 真 std-only（feature-gate 或移 L3 std-os）：`path`(4) `fs`(1) `os`(1) `thread`(1) + tokio 运行时(G2)
+- **规模**：core 78k 行（单体）、lkrt 2.9k、aot/lower 6.9k、lsp 13k。
+- **现有 crate 布局 ≠ plan 目标布局**：现为 `core`+`lkrt`+`aot/{abi,mir,codegen,lower}`+`llvm`+
+  `stdlib/*`+`lsp`+`wasm`+`completion`+`ecosystem/tree-sitter-lk`；plan 目标为 `lk-values`/`lk-hal`/
+  `lk-vm-core`/`lk-runtime`/`lk-std-core`/`lk-std-os`/`lk-aot`/`lk-api`/`lk-cli`/`lk-lsp`。
+  → 分层是**渐进抽离**，不是一次性重排 workspace。
 
 ---
 
-# 2026-07-02/03:一等函数值收官轮(list display + 闭包四步)
+## Phase 0 — 地基与护栏（前置，低风险，先做）
 
-## 落地内容(5 commits,dev 待 push)
+- [x] **0.1** 核实并更正 plan Caveats 事实（值模型/错误模型/全局状态/no_std），写回 plan.md。
+- [x] **0.2** 全局可变状态精确清单（见上表 G1–G5）。
+- [x] **0.3** no_std 障碍分类（见上）。
+- [x] **0.4** 不回退基线（取自上次绿色运行，见 handoff）：workspace 95 套测试全绿 / 三套差分（手工 13 组）/
+      fuzz 7 种子 / ASan+UBSan / Miri lkrt 25 / fmt+clippy 0 / AOT bench 20/20 checksum，
+      **VM/Lua≈1.008x、AOT/LK≈0.259x**。每步以此为 exit gate，任何回退阻断。
 
-1. **docs: plan** — 本轮计划落 plan.md。
-2. **feat: list display lowering** — lkrt `lkrt_lklist_{i64,f64,str}_display`
-   (VM-exact `[`+逗号+`]`,str 元素 `{:?}` 引号);lower `to_display_str`
-   增 `containers: bool` 分叉:print/panic/assert 语境渲染,ToString/模板
-   插值/concat 语境拒绝(VM 的 scalar-only 路径,曾抓到真分歧:native 把
-   `"${xs}"` 渲染成功而 VM 报 "object cannot be converted to string")。
-   `docs/semantics.md` 新增容器 display 节(map 顺序不可移植,排除子集)。
-3. **feat: 多身份 lambda 克隆特化** — `sig.specializations:
-   (orig, identity_vec) → clone`;克隆 = FunctionData 逐字节拷贝 +
-   `lambda_params` 预填;每原函数上限 8;specialized×plain_called 双态
-   响亮拒绝。closure.lk 第 4 节形状 native==VM。
-4. **fix: VM inline cell-promotion 丢失(真 miscompile)** —
-   `inline_direct_function_body` 恢复 `cell_locals` 时把 inline 实参 lambda
-   触发的外层变量 promotion 记录一并回滚,但发射的代码已把变量寄存器就地
-   重绑为 cell;第二个调用点重新 promotion,把旧 cell(Obj)当初值存入新
-   cell → 闭包体内 Int + Obj 报错。触发条件:helper 带分支(可 inline 的
-   多语句体)+ 两个内联捕获 lambda 实参。修复:恢复时保留"绑定未被 inline
-   遮蔽"的新 promotion(binding-equality 判据,别名传参场景同样正确)。
-   回归测试断言 StoreCellVal 恰好 1 次 + 执行值 1707。
-5. **feat: 捕获闭包作参数** — `LambdaIdentity { fidx, captures }`(env 值
-   不进身份键,同 fidx 不同 env 共享克隆);调用点把 Closure ref 的 cell
-   按当前块解析成值,追加为隐藏尾实参(签名序:可见参数 → 各擦除闭包的
-   env 块 → callee 自身捕获);`lower_function` 为擦除的捕获身份分配隐藏
-   env 参数并播种 `Closure(fidx, [Value(env_param)…])`,调用间 mutation
-   可见;跨 helper 转发自然嵌套。Move/Move2 的 builtin ref 查找升级为
-   `builtin_ref_at` 跨块回溯(cell 内容仍块局部,分支形状响亮拒绝)。
-6. **feat: 返回闭包(静态摘要)** — `sig.ret_closures[f] = (fidx,
-   [Param(k)…])`:非 entry、唯一 return、纯函数体(白名单:常量加载/
-   Move/cell 建立/MakeClosure/Return1,任何可 abort/副作用指令取消资格)、
-   捕获全映射到自身参数 → 调用点用实参值构造 Closure ref 播种结果寄存器,
-   不发射调用,函数体永不发射(fixpoint/final 双跳过)。工厂结果直通闭包
-   实参路径(`apply(multiplier(3), 5)` ✓)。**关键修复**:call-site 事实
-   (specialized/plain_called/conflict)每 pass 重置重推导——摘要在 pass 1
-   尚未发现时实参是普通值,pass 2 变 ref,陈旧标记曾触发假 function-vs-
-   value 冲突;收敛后的 conflict 才是真的。counter/多 return/副作用工厂
-   全部响亮拒绝(手工验证 neg1/neg2/neg3)。
+## Phase M0 — 去全局状态 + Value/GC 收进独立 crate（问题 5、9 地基）
 
-## 验证矩阵(全绿)
+- [x] **M0.1** 抽 `lk-values` —— **前端值/类型模型已抽为独立 crate**(`values/`,crate `lk-values`)。
+      含 `LiteralVal`/`Type`/`ShortStr`/`ShortStrOrStr`/`FunctionNamedParamType`/`NumericClass`/`NumericHierarchy`;
+      `core::val` 经 `pub use lk_values::{…}` 再导出,全 core 的 `crate::val::Type` 等路径不变。加入 workspace。
+      **验证**:workspace `-D warnings` 0/0、lk-values 独立编译 + **wasm32 交叉编译通过**、core+lk-values tests 全绿。
+      **范围界定**(据「厘清迁移」结论):放进 L0 的是**前端/编译期模型**(干净可分);**运行时模型**
+      (`RuntimeVal`/`HeapValue`/`CallableValue`+资源句柄)因内嵌 vm callable 留在 core,其 L0 化仍需 callable
+      trait 反转(A)——**这是 plan「值放 L0」意图与代码现实的诚实收敛:能分的已分,vm 纠缠部分单列**。
+      **剩余子步**:① lk-values 真 no_std 化(现用 std,core::fmt/alloc::Arc/no_std serde,属 M0.8);
+      ② callable trait 反转(A)以让运行时模型也能 L0(硬阻塞,大工程)。
+      - [x] **解耦 val→typ**：`NumericClass`/`NumericHierarchy`（只依赖 `Type`，本就属于它）从 `typ`
+        移进 `val`；`typ` 改从 `val` 再导出（`crate::typ::Numeric*` 向后兼容，免改 type_checker）。
+        core 0/0、950 tests。val（生产码）不再依赖 typ。
+      - [x] **分离前端/运行时值模型**(M0.1-A 子步,收敛):把运行时资源句柄(`TaskValue`/`ChannelValue`/
+        `StreamValue`/`StreamCursorValue`/`SliceValue`/`ResourceValue`/`ResourceHandle`,embed RuntimeVal/RuntimePayload)
+        从前端 `val/values/mod.rs` 移入 `val/runtime_model.rs`。→ **`val/values/`(LiteralVal/Type/ShortStr/numeric)
+        现无任何 RuntimeVal/rt/vm 依赖 = 干净 L0 前端候选**。经 `val::*` 再导出,外部路径不变。
+        full workspace `-D warnings` 0/0、core 950 tests。**剩:把 `values/`+numeric 抽为 lk-values crate
+        (需 runtime_model 从新 crate import Type/ShortStr)+ callable 的 val→vm(trait 反转 A)仍是硬阻塞。**
+      - [x] **厘清 in-flight `RuntimeVal` 迁移**（用户选定,已完成）。结论:
+        - **迁移护栏** `vm/migration_guard.rs` 是 **VM 重写不变量**守卫(禁旧 `Op` enum/`Frame`、bench 融合
+          opcode、quickening、**src/vm 与 src/val 里的 `unsafe`**)——约束「值/VM 代码保持 safe Rust」,
+          对抽 crate 是硬约束(lk-values 须 safe)。**不是** RuntimeVal↔LiteralVal 值迁移本身。
+        - **两个值模型、角色不同**:**前端/编译期**(`values/types.rs` `Type`/`ShortStr`、`numeric`、
+          `LiteralVal`,注释「AST inline literal」)——parser/AST/typechecker 用,**干净可 L0**;
+          **运行时**(`runtime_model.rs` `RuntimeVal`/`HeapValue`/`CallableValue` + `values/mod.rs` 的
+          Task/Channel/Stream 句柄)——executor(`vm/exec` 19 处)/heap/rt 用,**vm 纠缠**。
+        - **迁移** = 运行时从 `LiteralVal`→`RuntimeVal`,**前沿在 `vm/compiler`**(13 LiteralVal + 4 RuntimeVal 桥接)。
+        - **关键判断**:plan 想放进 L0 的正是**运行时值**,而它**必然内嵌** `vm::RuntimeCallable/Module/
+          NativeFunction`(`CallableValue::Runtime`)——这是运行时值模型的**本质**(值持可调用),非意外。
+      - [x] **callable 设计决策 —— 数据驱动裁决:选 (C) 且 (A) 不做**(2026-07-04)。事实依据:M0.7/8 已把
+        **单体 lk-core 整个 no_std 化,且 M5.2 后 VM 核心全量编译过裸机 thumbv7em**——「抽 lk-vm-core/运行时值
+        L0 化」的原始动机(no_std 可用性)已由单体路线完全满足,trait 反转只剩分层纯洁性收益,而成本是
+        热路径 dyn 分派(bench 门禁风险)+ 枚举变体原子重构(全 match 断裂)+ GC 追踪改造。**收益已无实际
+        消费者 → 不做,留档;若未来出现真实的 L0 运行时值消费场景再重估。**
+- [x] **M0.2** 抽 `lk-hal`（新 crate `hal/`，`#![no_std]` core-only）：定义 `Clock`/`Rng`/`Stdout`/
+      `FsProvider`/`NetProvider` trait + `Hal<'a>` 注入结构 + `HalError`（无 alloc）。fs/net 为 `Option`
+      （bare profile 可缺省），buffer-based（`&mut [u8]`）以免 alloc。加入 workspace members。
+      **验证**：host `-D warnings` 0、clippy 0、**`wasm32-unknown-unknown` 交叉编译通过**（真 no_std 证明）。
+      *(独立于 M0.1 的 callable 决策;为 L1/L2 提供平台抽象契约,后续 no_std 化的地基。)*
+- [x] **M0.3** 消除 G1（expr_impl `PARSE_CACHE`）→ **实为死代码**（`parse_cached_arc` 全仓零调用），
+      连同 `once_cell::Lazy`/`dashmap::DashMap`/`Arc` 未用 import 一并删除。core 编译 0 warning、
+      `cargo test -p lk-core` 953 passed / 0 failed。**G1 清除,不留全局状态。**
+- [x] **M0.4** 消除 G3（TLS_ARENA）→ **实为死代码**：`RegionAllocator`/`with_thread_local`/
+      `allocate_heap`/`heap_bytes` 全 core 零调用（仅自身单测用）；删 `TLS_ARENA` thread_local +
+      `RegionAllocator` 整体，保留在用的 `AllocationRegion`/`RegionPlan`（逃逸分析规划类型）。
+      core 编译 0 warning、`cargo test -p lk-core` 950 passed / 0 failed。**G3 清除。**
+      *(注：将来若实现逃逸分析分配，须按 plan 走实例化 arena，不得再引入 thread_local。)*
+- [x] **M0.5** 消除 G2（tokio 运行时）→ **已收进 VmContext 实例**（选项 A：可共享 `Arc`）。
+      新 `rt::AsyncRuntimeHandle`（`Arc<Mutex<Option<Arc<Runtime>>>>`，`Send+Sync`，懒初始化）替代
+      `static GLOBAL_RUNTIME`；VmContext 持有该 handle，`shallow_clone_shared_runtime` **克隆共享**
+      → spawn 子任务/克隆上下文同一反应堆。`NativeRuntime::async_runtime()` 从 ctx 取 handle
+      （无 ctx 则独立默认）。迁移 ~30 调用点跨 9 crate（core/chan/task/net/time/stream/stdlib/cli）；
+      自由 helper（`spawn_timer`/`recv_channel_blocking*`）加 handle 参数向下穿线，async 块捕获
+      `Send` handle clone；CLI `init_runtime` 改懒初始化删除、`shutdown_runtime`→`ctx.shutdown_async_runtime()`；
+      往返测试改共享 `VmContext`（贴近真实执行，native 调用总有 ctx）。
+      **验证**：`cargo build --workspace -D warnings` 0/0；全量 **1478 tests / 0 failed**；
+      fmt+clippy 0；**`concurrency_demo.lk` 端到端 chan create→send→recv 正确**（共享反应堆语义验证）。
+      *(反应堆粒度：共享 Arc，每 VM 独立 vs 进程共享的策略推迟到 M3 builder；性能上共享 A 在多 VM 严格更优。)*
+- [x] **M0.6** G4/G5（lkrt thread_local）→ **决定按设计保留，不消除**。lkrt 是 AOT native 运行时
+      （每原生二进制自成进程、单线程；边界铁律禁止依赖 VM/ctx）。`state.rs` 注释明确：thread_local
+      而非进程级 mutex 是**刻意选择**——arena 注册在每次动态字符串操作的热路径上，不能付锁开销，
+      且 handle 不跨线程。改成实例传递需穿线整个生成代码 ABI（巨大 codegen 改动）且**回退性能**、
+      违反 lkrt 边界。→ **与 VM 全局状态（G1/G2/G3）性质不同,保留是正确工程决策。**
+      *(问题 5「多实例 VM 安全」由 core 侧 G1-G3 消除达成;lkrt 无多实例概念。)*
+- **✅ M0 去全局状态达成**：**core（L1）已无生产全局可变状态**（唯一剩 `vm/analysis.rs` thread_local
+  是 `#[cfg(test)]`）。G1/G2/G3 消除、G4/G5 按设计保留。VM 多实例安全地基就位。
+- [x] **M0.7/M0.8(core 主体)—— ✅ 完成:lk-core VM 核心 `#![no_std]`**(commit `2ec839a`)。
+      `cargo build -p lk-core --no-default-features` 现为**真 no_std 构建**(0 error 0 warning):无 std feature 时
+      lk-core `#![no_std]`(+alloc),VM 核心(token/ast/expr/stmt/typ/val/vm/gc/resolve + 声明宏展开)不依赖 std。
+      **关键澄清**:host 上 no_std 只禁 lk-core **自身源码**用 `std::`,其 std 依赖(anyhow/dashmap/serde_json)仍
+      链接 std → flip **无需**改依赖 Cargo 配置,也无需抽新 crate(渐进 gate 优于 big-bang 移动)。
+      std-only 叶子按 `std` feature gate(no_std 上语义正确不可用):`stmt::import` 文件/包解析(保留 registry 内存解析)、
+      macro_system 文件加载宏(保留 builtin+声明宏)、proc_deps 指纹、procedural/proc_function/derive 外部 proc-macro
+      进程执行(3 个 external 叶子在 provider 检查后 gate,no_std 返回「requires std」)、ResourceValue.handle 走 compat Mutex。
+      dead-under-no_std 的进程/fs 机器用 `#[cfg_attr(not(std), allow(dead_code, unused_imports))]` 于 mod 声明消警告。
+      验证:default std + **1451 tests** / clippy / fmt 全绿;no_std 构建 0/0。CI check.yml 守卫升级为真 no_std 检查。
+      *(历史范围澄清见下,保留供参考)*
+- [~] **M0.7/M0.8(历史范围澄清)**:给**当前单体 `core`** 加 `#![no_std]` 是
+      **错误目标**——它含 `package`(Lk.toml/lock)/`net`/`process`/`rt`(tokio),本质 std,不该 no_std。
+      plan 的 L1 `lk-vm-core`(no_std)是要**从单体抽出** VM 核心(token/ast/expr/stmt/typ/vm/val/gc),把
+      std-heavy 的 package/net/process/aot 留上层。→ **M0.7/8 真身 = 抽 `lk-vm-core` crate**(类似 lk-values
+      但更大:VM 核心还依赖 `rt`/`module`/`syntax`,需先理清 VM 核心↔std-heavy 边界)。**多天结构重构,非 scaffold**;
+      lk-values 抽取已验证方法(渐进解耦→分离→抽 crate→no_std)可复用。
+      *(纠正 plan「给 lk-vm-core 加 #![no_std]」的隐含假设:那是抽新 crate,不是给现单体 core 加属性。)*
+      **增量进展(可保绿,渐进解耦法)**:① core 加 `std` feature(default 含),把 std-heavy 的 `package` 模块
+      (Lk.toml/git/fs,VM 核心零依赖)gate 其后 + macro_system 唯一 PackageGraph 用点一并 cfg-gate →
+      `cargo build -p lk-core --no-default-features` 产出**不含 package/async 的 VM 核心表面**,CI 守卫固化。
+      ② async(tokio)已在 `async-runtime` feature 后(去 async 已验证)。
+      ③ **(本轮,大进展)VM 核心 no_std 就绪地基落地**:新 `core/src/compat.rs` 兼容层
+      (collections:std HashMap / no_std hashbrown;sync::Mutex:保留 `.lock()->Result` 形状,no_std 走 spin;
+      path:no_std 下 `PathBuf=String`;prelude:no_std 补 Vec/String/Box/format!/vec!)。**140+ 文件机械转换**:
+      `std::{mem,fmt,cmp,error,...}`→`core::`、`std::sync::Arc`→`alloc::sync::Arc`、
+      `std::collections::{BTree*,VecDeque}`→`alloc::`、HashMap/HashSet→compat、RuntimeModuleState 的 Mutex→compat;
+      每个用 Vec/String 的 VM-core 文件加 `#[cfg(not(std))] use compat::prelude::*`。按 std feature gate 掉
+      no_std 无意义叶子(ResourceHandle 的 File/Tcp/Udp 变体、gc_stress env)。**no_std 错误从 2481 降到 ~20**
+      (全在 std-only 叶子:`stmt::import` 文件导入 resolver + macro_system 文件/proc-macro 函数)。
+      ~~**`#![no_std]` flip 暂缓**~~ → **flip 已在后续 commit `2ec839a` 完成(见上方 [x] M0.7/8)。**
+- [x] **M0.8**(lk-values 部分)**lk-values 已真 `#![no_std]` + alloc**:`#![no_std]`/`extern crate alloc`;
+      `std::fmt`→`core::fmt`、`std::sync::Arc`→`alloc::sync::Arc`、`std::str`→`core::str`、String/Vec/Box/format!/vec!
+      →`alloc::*`;`std::collections::HashMap`→`hashbrown`;删死的 anyhow(依赖也移除);serde/arcstr 改 no_std
+      (`default-features=false`+alloc)。`substitute` API 变 hashbrown 的涟漪 fix-forward:typ→stmt→vm/context
+      逐点改 HashMap import。**验证**:host+**wasm32 真 no_std 交叉编译**、workspace `-D warnings` 0/0、tests 全绿;
+      CI wasm32 冒烟已含 lk-values。~~**待做**:lk-vm-core no_std~~ → **已达成**:lk-core 主体现 `#![no_std]`(见 M0.7/8)。
+- [x] **M0.9** CI no_std 冒烟 —— **达成**(Exit:alloc-only 编译通过 + wasm32 build 通过均满足)。`check.yml` 现有**三重 no_std 守卫**:
+      ① **wasm32**:lk-hal(bare)+ lk-values(alloc)+ lk-wasm;② **thumbv7em 裸机 MCU**:lk-hal + lk-values;
+      ③ **lk-core `--no-default-features`** —— **现为真 no_std 构建**(lk-core 主体 `#![no_std]`,commit `2ec839a`),
+      不再只是「去 package/async 的表面」,而是完整 VM 核心的 alloc-only no_std 编译验证。→ **M0.9 遗留清除**。
+- **Exit**：alloc-only 编译通过；`wasm32` build 通过；grep 断言无生产全局可变状态。
 
-- workspace 全量(95 个 test result: ok,0 failed)
-- 手写差分 8 组(新增 closure_as_argument / _forwarding /
-  closure_returned / _as_argument)+ examples corpus + fuzz
-- fuzz 新形状:变体 12(同 helper 捕获/零捕获身份混跑 + 调用间 mutation;
-  闭包工厂 25%)、变体 13(分支 helper + 两内联捕获 lambda = inline 回归
-  形状,35%);4 个种子(默认、20260702、777、20260703、99881)×200-300 例
-- ASan/UBSan:三套差分全过(手写/examples/300 例 fuzz)
-- Miri lkrt 24/24;`RUSTFLAGS="-D warnings" cargo test --no-run` 干净
-- AOT bench 20/20 checksum;AOT/LK geomean **0.251x**、AOT/Lua 0.265x、
-  VM/Lua 1.055x(RUNS=1 参考值)
-- fmt + clippy 0 警告
+## Phase M1 — VM 定规范 + conformance + 差分框架（问题 1、3、8）
 
-## 关键发现/边界
+- [x] **M1.1** conformance suite —— **由现有 `examples/{syntax,stdlib,general}` 承担**(每语言特性一组
+      **自验证 golden**:程序内 `assert`/`assert_eq` 断言预期语义,通过=VM 定义了该特性的语义)。双重 gate:
+      `cli/tests/examples_differential_test.rs`(VM==AOT,llvm)+ `vm_bytecode_differential_test.rs`(VM source==bytecode)。
+      特性覆盖:syntax(闭包/match/pattern/named_args/ranges/struct/trait/operators/error/pcall…)、
+      stdlib(math/string/list/map/iter/stream/json/net/time…)、general(fib/recursive/sort/HOF/concurrency…)。
+      *(可增补:更细粒度的每-opcode/边界 golden;当前语料已构成 plan 要求的'通过即语义定义'骨架。)*
+- [x] **M1.2** `VM(source)==VM(bytecode)` 差分测试入 CI。`cli/tests/vm_bytecode_differential_test.rs`
+      (不依赖 llvm):对 examples 语料,源码跑 vs `compile bytecode`→`.lkm`→跑,比对 stdout/success;
+      「源码跑两次」自动过滤非确定性样例。**41 比对 / 0 分歧 / 3 跳过**——ModuleArtifact 序列化往返语义一致。
+- [x] **M1.3** `.lkm` 降级为缓存 + 停止宣传作分发 —— **完整达成**。① 停止宣传:`compile bytecode` 打印
+      「note: `.lkm` is an internal build-locked artifact, not a distribution format」+ `CompileMode::Bytecode` 文档标注。
+      ② **降级为缓存(新)**:`LK_CACHE=1` 时 `lk FILE` 首次编译把 module artifact 写 `$LK_HOME/cache`
+      (键=源路径+源字节+`MODULE_ARTIFACT_VERSION`+CLI 版本),后续未改动源码直接解码缓存执行,跳过解析/宏展开/编译。
+      **正确性**:仅缓存 macro-free 程序(字节码=源字节纯函数,命中必安全);imports 每次新鲜重解析(依赖变更必捕获);
+      版本入键,旧缓存干净失效。**opt-in** → 默认路径与 perf bench 零影响;fuel 路径绕过。新 `cli/src/bytecode_cache.rs`,
+      复用 `compile_program_module_with_ctx`+`execute_compiled_module_with_ctx`(与 execute_with_ctx 同语义)。
+      测试:命中不重写缓存(mtime 不变)、未设 LK_CACHE 不建缓存。全量 1448 tests 0 失败。
+- **Exit**：conformance 全绿并声明为语义定义；差分框架进 CI。
 
-- closure.lk 全文件只差 **list 结构相等**(第 6 节 `evens == [2,4,...]`,
-  CmpInt over (ListI64, heap-const list))——独立特性,下轮候选 #1。
-- cell 内容跨块不流动是当前主要闭包限制(`cell_vals` 按 (block, cid)
-  键),升级路径:cell 并入 Braun 虚拟槽做 phi(候选 #2)。
-- 返回闭包的静态摘要覆盖了观测语料,runtime `{fn_ptr, env}` 表示
-  **不需要**(plan 原设想的重方案避免了)。
+## Phase M2 — 可恢复错误模型 + stackless 协程 + fuel 沙箱（问题 4、5）
+
+- [x] **M2.1** `pcall(f, args) -> [ok, result_or_err]` + `error(value)` 内建 —— **已实现**。
+      `error(msg)`(stdlib core global)返回 `Err`(可捕获,区别于 `panic!` abort);`pcall(f, ...args)`
+      (FullState builtin)用 `call_runtime_value_runtime` 调 f、捕获任意 `Err`→返回 `[false, message]`,
+      成功→`[true, result]`。**验证**:`examples/syntax/pcall_error.lk`(自验证 assert,source==bytecode 一致);
+      `pcall(div_zero)` 连除零也捕获(→ M2.3 部分:运行时错误已是可捕获 Err 非 abort)。core 950/stdlib 61 全绿。
+      *(遗留:错误消息带 native 前缀噪声、`error` 只载字符串→一等错误值是 M2.2。)*
+      **原调查结论(基础设施)**：
+      **调查结论(本会话)**：**M2 后端基础设施大体已就绪**——`Opcode::Raise`(`dispatch_raise` 读常量
+      字符串消息→`raise_language_message`)、`TryBegin`/`TryEnd`(`begin_try`/`end_try` + `ErrorHandler`:
+      catch_reg/catch_pc/frame_base/stack_top)、`ErrorVal { message, trace }`(带 trace 字段的结构化错误值,
+      GC-rooted)。缺口:① `Raise` 只载**字符串**,需扩展为携带任意 `RuntimeVal`(error-as-first-class,M2.2);
+      ② **无语言层 `pcall`/`error(value)`/`try` 表面**(前端无 `try` 关键字;当前用户级错误处理是 nil+`??`);
+      ③ fatal guard(div/0/缺键/assert)走 abort,需改为可 `pcall` 捕获(M2.3)。
+      → M2.1 落地=加 `pcall`/`error` 内建 + 扩 `Raise`/`ErrorVal` 载任意值 + 桥接现有 TryBegin/handler。多小时活。
+- [x] **M2.2** 错误为一等值 + traceback —— **达成**(一等基本值 + try/catch + traceback 全落地;仅堆对象一等值遗留)。新 `lk_core::vm::LkRaisedValue{value}`
+      载 `RuntimeVal`(Send+Sync+'static);`error(v)` 对单个非堆值(Int/Float/Bool/ShortStr/Nil)抛之,
+      `map_native_error` 透传(如 LanguageRaise),`pcall` 经 `root_cause().downcast` 取回→`[false, v]`(原值原型)。
+      验证:`error(404)`→pcall `[false, 404]`(**Int**,typeof=Int);`error("nope")`→String;
+      `examples/syntax/pcall_error.lk` 断言 `coded[1]==404`。**全量 1484 tests 0 失败,0 回退**。
+      **traceback 地基**:`Function.debug_name` 命名 `fn` 编译时源码名下沉字节码 + `FunctionData` 序列化 + artifact 版本 6→7。
+      **traceback 显示端已完成**(第三方案避开两张力):在 `call_closure_stack_args`/named 的**错误传播分支**把 `debug_name`
+      push 进 ctx 调用栈——**仅 Err 路径、Ok 分支零改动 → 成功零成本不碰 perf 门禁**;**不碰错误类型/消息 → `to_string()` 不变
+      → 111 断言全安全**。复用死掉的 `CallFrameInfo`/`push_call_frame`/`call_stack_report`。正确性:每次 top-level 开头清空;
+      **pcall 捕获时 truncate(0)** 丢弃已捕获帧(try/catch 脱糖 pcall 一并覆盖)。CLI `unwrap_with_traceback` 失败时打印。
+      测试:递归错误打印命名调用链;pcall 捕获不泄漏帧。**全量 1451 tests 0 失败**。
+      **堆对象一等值(本轮收尾,遗留清除)**:`error(v)` 现对**任意单值(含 String/List 等堆对象)**一等携带,
+      pcall 原样取回,不再对堆值做 native 字符串包装。关键 GC 安全:展开路径上 `collect_direct_native_garbage_
+      after_result` 的 native-call safepoint 在错误路径也会 collect → 堆错误值须 pin 为 GC root 才不被回收。
+      新 `RuntimeModuleState.pending_raise_root`(纳入 `gc_roots` 基础 roots),error() 置位 / pcall 取回后清除;
+      `LkRaisedValue` 加 `rendered`(raise 时捕获 display,供 uncaught 展开后堆已消失时出消息,不再 `<error value>`)。
+      stdlib io/net crate 启用 `lk-core/std`(构造 ResourceHandle 的 OS 变体,按 lk-core std feature gate)。
+      验证:pcall_error.lk 增 String/List 原样取回断言;全量 **1451** / **GC-stress(LK_GC_STRESS=1)1095** /
+      clippy / fmt / no_std 构建全绿;uncaught 堆错误正确出消息(long string、`[1,2,3]`)。→ **M2.2 完成,无遗留。**
+- [x] **M2.3** fatal guard 可 `pcall` 捕获 —— **基本达成**。调查+改动:**除零**本就是可捕获 Err;
+      **assert/assert_eq/assert_ne** 从 Rust `panic!`(abort,不可捕获)改为返回 `Err`(可捕获,
+      未捕获仍非零退出且**消除 panic backtrace 噪声**);**缺键/越界**返回 nil(非 fatal,无需捕获);
+      **panic** 保持故意 fatal(`error()` 是可捕获替代)。**验证**:pcall 捕获 assert/除零;未捕获 assert
+      exit=1「VM execution failed」;**全量 1479 tests / 0 failed(0 回归)**。
+- [x] **M2.4** `try`/`catch` 语法糖 —— **已实现,端到端验证**。加 `try`/`catch` 关键字(lexer+Token),
+      parser `parse_try_stmt` **脱糖**为 `let [__try_ok, e] = pcall(fn(){BODY}); if !__try_ok { HANDLER }`
+      ——**复用已验证的 pcall + closure/if,无 AST 变体/lowering 改动**(仅 1 处 Token match 需补,fix-forward)。
+      `try { BODY } catch e { HANDLER }`:成功跳过 handler;失败把错误值绑定 e 跑 handler;**一等基本错误值**
+      (`error(404)`→`catch code` 得 Int 404)。`examples/syntax/try_catch.lk` 断言全过,source==bytecode 一致,
+      **全量 1484 tests 0 失败**。*(已知限制:try 体内 `return` 从脱糖闭包返回,非外层函数——已在文档标注。)*
+- [x] **M2.5** VM 改 stackless —— **四子步全部完成**(设计 `docs/vm-stackless.md`,实测绘 exec.rs/call.rs/handler.rs)。
+      **✅ 子步④ 提前落地**(commit `238324f`):stacker 分段栈(红区 128KiB/段 2MiB)+ 可捕获深度上限(默认
+      10 万,`LK_MAX_CALL_DEPTH`)+ traceback 深栈截断;30k 递归过测试线程、20 万层过 env 提额;
+      bench 1.012x vs 基线 1.008x(噪声级)。
+      **✅ 子步①**(commit `5884829`):新 `CallFrame` struct(`exec/frame.rs`)+ `Executor.frames: Vec<CallFrame>`
+      —— `CallDirect` 与命中闭包目标的泛型 `Call` 不再 `self.run_function_inner` 递归,改为
+      `push_call_frame`(存 caller 的 function_index/pc/frame_base/register_count/captures/handler_depth/
+      window)后原地 `continue`("trampoline":`run_function_inner_impl` 外层 loop + `dispatch_within_frame`
+      内层循环,`FrameOutcome::{Switch,Done}` 传递控制)。`Return*` 经 `finish_return` 按
+      `frames.len()==base_frame_depth` 判定 pop 回调用点或真正返回。错误路径新增 `unwind_flat_run`:逐帧
+      pop 补 `push_traceback_frame`(对任意错误,多级 traceback 命名靠此),仅 `LanguageRaise` 且
+      immediate-caller 有 `try` 时经 `handler_stack` 恢复(与旧递归"仅一次机会"语义等价——**关键实测澄清**:
+      `TryBegin`/`handler_stack`/`LanguageRaise` 对真实 `.lk` 程序是死代码,`try/catch` 在 parse 期就糖化成
+      `pcall(closure)`,只有手写字节码单测用到 TryBegin,故展开逻辑不必支持真正的多帧 handler 搜索)。
+      GC `root_refs` 补 `frames` 各级 captures root(比旧递归更保守正确:旧实现祖先帧 captures 只活在 Rust
+      局部变量里未显式 root)。`CallFrame` 命名(非 `Frame`)避开 `migration_guard.rs` 的 `"struct Frame"` 禁用
+      token。bench geomean **0.989x**(不劣于基线,示例还更快——省了 flattened 路径每次调用的
+      `stacker::maybe_grow` 检查)。
+      **✅ 子步②**(commit `4e86dd5`):`CallNamed` 同款改造(`push_call_frame_named` 复用
+      `move_named_args_to_frame_from_stack`,`CallFrame` 加 `named_count` 字段供 pop 时对齐 named k/v 临时
+      寄存器清理)。**实测澄清 design doc 原假设**:`CallMethodK` 查明并不走 `call_closure_stack_args` 这条
+      同 Executor 递归路径——`core_call_method_windowed` 命中可调用属性/trait 方法/list HOF 时,走
+      `call_runtime_value_runtime_list_args` 系,每次调用 new 一个临时 `Executor`(runtime_callable.rs 的
+      `call_closure_value`/`_typed_map`,状态整体 move 进出),本就是 native re-entry 形态,天然在决策①
+      "native re-entry 保持递归"范围内,无需改造。bench geomean 0.997x。
+      **✅ 子步③**(本轮):`call_closure_stack_args`/`call_closure_named_stack_args` 在①②实现时已直接删除
+      (非只标记死代码);唯一剩余工作是文档准确性——更新 `max_call_depth`/`grow_stack_if_needed` 的doc注释
+      (深度 guard 经 `enter_lk_call`/`exit_lk_call` 在 push/pop 处调用,子步④机制不改代码即自动覆盖
+      `frames.len()`,无需新写)+ `docs/vm-stackless.md` 补"Implementation notes"记录与原设计的偏差
+      (`CallFrame` 存整个 `CallWindow` 而非仅 `ret_dst`、单跳 catch 语义等)。
+      **验证(每子步)**:workspace 全量测试 + `LK_GC_STRESS=1` 全绿(951 lk-core 测试,0 回归)+
+      `traceback_test` 两多级用例(`uncaught_error_prints_named_call_stack`/
+      `pcall_caught_error_leaves_no_stale_frames`)+ clippy/fmt 0 + dist bench 门禁(①0.989x/②0.997x,
+      均不劣于 1.008-1.033x 历史基线)。→ **M2.5 stackless 完整达成,协程/`yield` 地基就绪**(留作独立后续项)。
+- [x] **M2.6** fuel + 模块白名单 —— **基本达成**(内存上限待)。**fuel**:`LK_FUEL=N`(CLI)+ `Vm::with_fuel(N)`
+      (lk-api)经 `execute_program_with_ctx_and_budget`。**模块白名单**:`Vm::sandboxed(&["math",…])`(lk-api)
+      只注册核心 builtin + 白名单模块,OS 模块(fs/net/process)默认拒。测试:`sandboxed(["math"])` 下
+      `math.max(3,7)→7` 而 `use fs` 报错。→ **fuel + 模块白名单沙箱就绪**(也补全 M3 沙箱 builder)。
+      **内存上限**:Executor 加 `heap_object_limit`(活堆对象数上限),在与 fuel 同频的 per-instruction 检查点校验,
+      **折进 `const BUDGETED` 单态化路径 → 无 limit 时零开销(bench 走 false 分支不受影响)**;`execute_program_with_ctx_and_limits`
+      + lk-api `Vm::with_heap_limit(n)` 暴露。测试:分配超限程序报「heap object limit exceeded」。全量 1485 tests 0 失败。
+      → **三沙箱知(fuel/内存/模块白名单)齐**。
+- [x] **M2.7** 字节码验证器 fuzz（Exit「fuzz 验证器无 panic」证据闭合）：`core/src/vm/verify_fuzz_tests.rs`——
+      三路生成器（字节级破坏/JSON 结构感知变异/随机垃圾）+ 定向敌意语料（entry 越界、指令字全 1、寄存器数清零、
+      fact 表长度炸弹、深嵌套 JSON），断言 `from_json_str`→`into_module`→`verify_module` 只 Err 不 panic。
+      本地 2 万例 + 新种子 5 千例 0 panic；correctness.yml 挂 5 万例 scaled + run-id 种子 2 万例。commit `9d7fedd`。
+- **Exit**：`pcall` 捕获所有可恢复错误 ✓；fuzz 验证器无 panic ✓（M2.7）；沙箱指标可配 ✓。
+  → **M2 Exit 三项均有证据**（M2.5 stackless 是超出 Exit 的 deliverable，现已完整达成，见上）。
+
+## Phase M3 — 嵌入 API + 多实例 + C ABI（问题 10）
+
+- [x] **M3.1** `lk-api` 嵌入 API —— **完整达成**(Exit:2 实例隔离 + C ABI + 无共享可变全达标)。`Vm` 实例
+      (拥有独立 VmContext,**去全局后天然多实例隔离**)+ `Vm::new()`/`sandboxed()` + `with_fuel(N)`/`with_heap_limit(N)`
+      沙箱 + `register_fn`(M3.2)+ C ABI(M3.3)。**ergonomic 结果层已补**:`eval(src)->String`(display)
+      + 新 `eval_value(src)->Value`(宿主友好枚举:primitives 类型化,字符串/堆对象展平为 display)。
+      **验证**:7 测试全绿——eval/eval_value 类型化、两 VM 隔离、register_fn、sandbox 白名单、fuel/heap 限额。
+      workspace 0/0、clippy 0。*(可选后续增强:register_module 命名空间、rooted handle——超出 M3 Exit。)*
+- [x] **M3.2** register_fn(宿主原生扩展)+ 多实例隔离 —— **已落地**。`Vm::register_fn(name, arity, HostFn)`
+      在 eval 前注册宿主原生函数(延迟 ctx 构建:pending registry 首次 eval 时定型),`HostFn` = 原始运行时
+      ABI `fn(NativeArgs, &mut NativeRuntime)->Result<RuntimeVal>`。**多实例隔离**已由 M3.1 测试证明(每 Vm
+      独立 VmContext/heap,无 thread_local,依赖 M0 去全局)。测试:`host_add100(5)→105`。workspace 0/0、clippy 0。
+      **待做**:更 ergonomic 的 Value 转换层(host 类型↔RuntimeVal)、register_module、rooted handle。
+- [x] **M3.3** C ABI —— **完成,端到端验证**。lk-api `ffi` feature 的 `extern "C"`(`lk_vm_new`/`lk_vm_eval`/
+      `lk_vm_free`/`lk_string_free`,不透明指针+owned C string 配对释放)+ 手写 `api/include/lk.h` + `api/examples/embed.c`;
+      lk-api 加 `staticlib` crate-type。**C 程序 `embed.c` 编译链接 staticlib 并运行 `return 6*7;` → 输出 `42`**
+      (退出 0)。可从 C/C++/Dart FFI 嵌入 LK VM。默认构建不含 ffi(0 开销)。*(cbindgen 可选自动重生成 lk.h。)*
+- **Exit**：示例宿主并存 2 个隔离 VM；C ABI 冒烟；无实例间可变共享。
+
+## Phase M4 — AOT Tier 0 + Tier 1（问题 2、6）
+
+- [x] **M4.1** Tier 0 —— **已实现,端到端验证**。CLI `lk bundle FILE -o OUT`:嵌入源码 + 经 lk-api C-ABI
+      staticlib 静态链接 VM → **自包含 native 可执行程序**(启动即跑 VM,**100% 覆盖**——任何 VM 能跑的程序都能
+      bundle,不像 MIR 原生「全有或全无」)。语义**平凡一致**(同一 VM)。验证:`bundle demo.lk`→20MB 自包含 ELF,
+      直接运行(无 lk/无源码)输出与 VM **完全一致**。workspace 0/0。*(Linux/cc;后续字节码嵌入/跨平台/瘦身。)*
+- [x] **M4.2** —— **Exit 达成**(程序粒度);逐函数混合是超出 Exit 的 future 优化。
+      **Exit 逐条**:① 任意 `.lk` 可 `lk compile`(Tier 0 保底)✓;② **覆盖 >11/44 ✓**(现 **14/50** native,
+      baseline 11——本轮 4 个 AOT win 使 `list_destructure.lk`(IsList+SliceFrom)、`string_split.lk`(StringSplit)进入
+      可原生编译集);③ 失败构造回退 VM 而非报错 ✓;④ 差分全绿 ✓(1451 tests + ASan/UBSan)。
+      **已做(消除「全有或全无」问题 2 的程序粒度)**:`lk compile FILE`(native)在 MIR/LLVM lowering 返回
+      `Unsupported` 时,不再整程序报错,而是 warn + 回退 **Tier 0 VM bundle**(内嵌解释器)→ **任何有效程序都能 compile**
+      (可 lowering 走原生,否则 VM 内嵌)。先解析(真源码错误暴露、不被 Tier 0 掩盖)再试 native。`LK_AOT_NO_FALLBACK=1`
+      关闭回退供 strict native-only 验证。验证:算术→原生 42;pcall→回退 Tier 0 exe 跑对;语法错误→exit 1 不产 exe;
+      AOT 差分(可 lowering 用例走原生不触发回退)全绿;cli 93 tests。→ **Exit「任意 .lk 可 compile(Tier 0 保底)、
+      失败回退 VM 而非报错」达成(程序粒度)**。
+      **typed-subset 覆盖增量(本轮,找到可增量路径)**:当 AOT 类型系统已有 type+ops、仅缺某 opcode 的 lowering 时,
+      加该 opcode 是有界低风险 win。本轮两组:**① `IsList`**(const-fold,类比 IsNil;commit `ef55604`);
+      **② `SliceFrom`**(rest 尾切片,lkrt `lkrt_lklist_{i64,f64,str}_slice_from` 类比 map_fn arena_handle + abi + lower;
+      negative start abort 匹配 VM;commit `6b52a3a`/`47199c1`)。**③ `StringSplit`**(`str.split(sep)`→ListStr;lkrt 用
+      Rust `str::split`——与 VM `string_split` 同函数**零语义风险**;parts 经 `arena_c_string` 永生;commit `8755e02`;
+      `examples/stdlib/string_split.lk`)。→ `if let [a,b,c]=xs` / `[head,..tail]=xs` 列表形状/rest 解构 + `str.split`
+      现对所有 typed list 原生编译(均经 native==VM 差分 + **ASan/UBSan** 验证)。
+      **可复用模式**:const-fold opcode(零 runtime)或小 lkrt 函数+abi+lower(差分/ASan 守卫)。→ 朝 Exit「覆盖 >11/44」落地。
+      **待做(逐函数 Tier 1 混合)**:同一程序内 native 函数 + VM-executed 函数混合 + native↔VM ABI 桥——多天架构工程。
+      **→ 设计已定稿 `docs/llvm/tier1-hybrid.md`(commit `83c8b4a`,实测绘 lower/abi/codegen/link/cli 后)**:
+      单向 native→VM 桥、桥居 lk-api(lkrt 铁律不破)、.ll 级无 VM 不变量保留(VM 链接期经 wrapper 进入)、
+      v1 资格=标量参数+结果全废弃(dead_writes)+传递闭包无用户 globals+无 captures、不满足则感染调用者、
+      及 entry 回退 Tier 0;stdio flush 顺序/未捕获错误 abort 对齐/artifact 复用(M2.7 加固面)为硬约束。
+      **5 个可提交子步**:① lk-api hybrid 运行时+单测 → ② lower 标记+资格分析+MIR 快照 → ③ codegen declare+桥调用
+      +.ll 快照 → ④ cli 混合链接+端到端差分 → ⑤ fuzz 生成器扩展。
+      **✅ 子步②③④ 完成(端到端打通)**:② lower 标记(commit `e194d11`):final pass 收集失败→资格审查→
+      native-reachable 重算(不进 VM 函数,try/catch 脱糖闭包免 lower)→重跑;CallVm 发射 + **dst 不绑定**
+      (ssa.read 未绑定寄存器天然 Unsupported → 结果被读=回退,零 liveness 证明);`lower_with_hybrid` 显式参数,
+      默认关 + `LK_AOT_HYBRID=1` opt-in。③ mir CallVm/vm_functions/render/validate + codegen(%LkHybridArg +
+      单一 global 参数缓冲防循环 alloca 长栈 + **先 lkrt_io_std_flush(1) 再桥调**)。④ cli 混合链接(commit
+      `27745be`):LlvmModule.vm_function_count → wrapper C(constructor 注册嵌入 artifact)+ liblk_api.a 链接;
+      ensure_lk_api_staticlib 改总是 cargo build(修旧 staticlib 缺符号)。**端到端验证:混合 exe 输出与 VM
+      完全一致(含跨 native/VM stdio 顺序),uncaught 桥错误 exit 非零+消息达 stderr**。测试:hybrid_lowering 4
+      + hybrid_compile 2;既有快照/差分全绿。
+      **✅ 子步⑤ 完成**(commit `2427323`):fuzz 生成器约半数程序带 hybrid 帮手(try/catch 包 println、标量参数、
+      语句位调用),compile 走 LK_AOT_HYBRID=1 → hybrid 二进制入差分语料(correctness.yml 自动覆盖)。
+      **首轮 120 例即抓到真 bug**:桥前 flush 用 lkrt_io_std_flush(冲 lkrt Rust stdout)而 codegen println 走
+      C printf(C stdio 缓冲)——两缓冲区,native 输出滞后桥内 VM 输出;修复=桥前 `fflush(NULL)`(libc)。
+      500+300 例 100% 对比 0 分歧。**默认开关裁决:保持 opt-in**,correctness.yml 数轮全绿后翻默认
+      (翻时确认 aot fuzz/differential 断言与 ensure_lk_api_staticlib 的 CI 成本)。→ **M4.2.2 五子步全部完成**。
+      **✅ 子步① 完成**(commit `2e19e94`):core `call_module_function_with_ctx`(exec/program.rs,seed globals 同
+      模块运行、CallableValue::Closure+call_runtime_value_runtime 调 fidx、ModuleFunctionArg 标量 marshal)+
+      lk-api `HybridModule`(from_artifact_json→imports→verify;find_function 按 debug_name;call_discard)+
+      ffi `lk_hybrid_register/lk_hybrid_call_v`(进程单例,错误即 exit(1))+ lk.h。core 947/api 11 全绿。
+      **子步② 实现方案(已测绘定稿,代码级锚点)**:
+      - **关键更正**:`dead_writes` fact 只标纯字面量表达式语句(compiler/builder.rs `mark_last_dead_write`),
+        **不覆盖调用结果** → 设计中「用 dead_writes 证明结果废弃」不可用。**替代方案(更优,零证明)**:VM-executed
+        被调方在 `lower_user_call` 里**不 `ssa.write` dst 寄存器**(并清 `current_def[block][dst]`+`builtin_regs`)——
+        `ssa.read` 对未绑定寄存器本就返回 Unsupported(lib.rs:3116 注释明说)→ 结果被读=整模块回退,sound。
+      - **两阶段结构**(改 `lower()` final pass,lib.rs:560-589):final pass 从逐函数 `?` 改为收集
+        `Vec<Result<MirFunction>>`;全 Ok→照旧;有 Err→对每个失败函数跑资格审查,全合格→设
+        `sig.vm_functions: HashSet<u32>` 后**整体重跑 final pass**(globals 重建),否则返回首个错误(现行为)。
+      - **资格审查**:f≠entry;capture_count==0;!sig.specialized[f];lambda_params[f] 全 None;param_obs[f] 全
+        Some(I64|F64|Bool|Str);globals 扫描:从 f 经 CallDirect/MakeClosure(b 操作数)BFS 全子树,任何 SetGlobal
+        →拒;GetGlobal 到「全模块任意处被 SetGlobal 的 slot」→拒(未写 slot=builtin 读,VM 侧 ctx seed 等价,安全)。
+      - **lower_user_call 桥分支**(lib.rs:2219,在 clone/summary 机制后、CallFn 发射前):callee∈vm_functions →
+        读标量 args(仅 I64/F64/Bool/Str,容器句柄拒)→ 发 `Inst::CallVm { func, args }` → dst 不绑定。
+      - **MIR**:`Inst::CallVm` 变体 + `MirModule.vm_functions: Vec<VmFunction{id,params:Vec<Ty>}>`(构造点:
+        lower、mir tests div_module、codegen tests/examples demo);render 仅非空时打印(既有快照稳定);validate 加臂。
+      - **codegen**:vm_functions 非空时 prelude 加 `%LkHybridArg = type {i8,i64}` + `declare void
+        @lk_hybrid_call_v(i32,ptr,i64)`;CallVm 渲染:alloca 数组+逐 arg store(tag i8@field0,值@field1,Bool zext
+        i64,F64 store double,Str store ptr)+ **先 `call @lkrt_io_std_flush(1)`(stdio 顺序)** + call_v。
+      - **门控**:`pub fn lower_with_hybrid(artifact, hybrid: bool)`,`lower()`=默认关+`LK_AOT_HYBRID=1` env 开
+        (edition 2024 set_var unsafe→测试用显式参数不用 env)。**在 ④ 前不能默认开**:aot fuzz 断言失败必含
+        「does not support」,hybrid 后 clang 会因 lk_hybrid_* 未链接报 undefined symbol,破坏该断言。
+      - **测试**:lower 单测(hybrid on:混合程序产出 vm_functions+CallVm;结果被读→仍 Unsupported;SetGlobal 子树
+        →拒)+ mir_snapshots 加 hybrid 快照(调 lower_with_hybrid)。
+      **backend.md 已整体删除(用户裁决)**:活引用全清(README×2、CLAUDE.md、correctness.yml、tier1-hybrid、
+      aot-gaps/aot-redesign 死链);顺带修 README 过时描述(「不支持即失败」→回退 Tier 0;中文版 pkg 行仍在
+      宣传 M5.4 已删的 publish/key/serve → git+lockfile)。子集清单不再单独维护,历史见 git。
+      更深 blocker(Raise 需 catch 处理、NewObject/NewRange/StringSplit/map-access/动态 Call/GetGlobal builtin)需扩类型系统+lkrt。
+- [x] **M4.3** 差分门禁 `AOT==VM` 已在 CI —— **现状核实,已满足**。`cli/tests/aot_differential_test.rs`
+      (MIR native == VM,stdout+成功/失败逐例比对,21 检查点)+ `examples_differential_test.rs`(VM==AOT 语料)
+      + `aot_fuzz_differential_test.rs`(随机差分)均随 `check.yml` 的 `cargo test --workspace --all-features` 跑;
+      `correctness.yml` 更在 **ASan/UBSan + fuzzing** 下专门跑这三个差分。→ AOT==VM 门禁固化。
+      本会话新增的 **M1.2(VM source==bytecode 差分)**与之互补,共同守 VM 为规范。
+- **Exit**：任意 `.lk` 可 `lk compile`（Tier 0 保底）✓；覆盖 >11/44 ✓（14/50）且失败构造回退 VM 而非报错 ✓；差分全绿 ✓。
+  → **M4.2 Exit 达成**（程序粒度）。唯 M4.2.2 逐函数原生+VM 混合(native↔VM ABI 桥)是超出 Exit 的 future 优化。
+
+## Phase M5 — no-std profiles + 工具链收敛 + v1.0（问题 7）
+
+- [~] **M5.1** `bare`/`alloc`/`full` 三 profile 打通（feature 矩阵）。**进展**:三 profile 已由分层 crate 体现并**CI 验证可构建**——
+      `bare`=`lk-hal`(纯 no_std)、`alloc`=`lk-values`(no_std+alloc)均编到 **wasm32 + thumbv7em 裸机 MCU**;
+      **`alloc`(VM 核心级)= `lk-core --no-default-features`**(现真 no_std,M0.7/8 已达成)、`full`=`lk-core`(默认 std)+stdlib。
+      → **M0.7/8 flip 后,`lk-core` 单 crate 已承载 alloc(no_std)↔full(std)两档**(`std` feature 切换)。
+      **✅ M5.2 依赖手术完成(commit `db5b376`):VM 核心全量编译过 thumbv7em-none-eabi 裸机目标,crate graph
+      全程无 std**。手术内容:删 5 死依赖(once_cell/chrono/sha2/rand/tracing)+ tempfile→dev-deps;anyhow/serde/
+      serde_json 切 no_std 模式;toml/serde_yaml/dashmap optional 绑 std(val/de.rs YAML/TOML gate、compat
+      SharedMap 双态);compat::float(libm);AtomicU64→AtomicUsize;crate-type 去 staticlib。CI thumbv7em 加
+      lk-core 守卫。**重要更正:此前「真 no_std」构建靠依赖把 std 连进 graph(f64 inherent 方法因此可解析),
+      本次才彻底**。workspace 106 套测试/wasm32/clippy 全绿,std 路径热代码零变化。
+      **真机运行遗留(超出编译可行性)**:#[global_allocator]+panic handler+HAL 接线的演示固件 + QEMU 冒烟——
+      需要嵌入式 demo crate,属 nice-to-have。
+      **细粒度 feature 矩阵(float/unicode)数据驱动建议:不做**——float 可关的收益仅限无 FPU MCU,成本是
+      Float 遍布 VM 的巨大 cfg 面;coroutines 已由 async-runtime optional feature 承载。
+- [x] **M5.2** WASM demo + MCU 冒烟 —— **两冒烟达成**(full-VM-on-MCU 待 lk-vm-core)。**WASM 部分完成**:`lk-wasm`(浏览器 playground)现可编到
+      `wasm32-unknown-unknown`——修了 getrandom 0.3 的 backend(新增 `.cargo/config.toml` 的
+      `getrandom_backend="wasm_js"` cfg,target-scoped + wasm crate 加 `getrandom` `wasm_js` feature,
+      内部按 target 门控、native 无害)。验证:wasm32 0 error、native workspace `-D warnings` 0/0、
+      L0(lk-hal/lk-values)wasm32 冒烟仍通过;CI wasm32 步骤已含 lk-wasm。
+      **MCU 冒烟已达成(新)**:实测 `lk-hal`(bare,纯 no_std)+ `lk-values`(alloc,no_std+alloc)均可交叉编到
+      **`thumbv7em-none-eabi`(裸机 ARM Cortex-M4,无 OS/无 allocator)**,加 CI 冒烟固化。→ **WASM + MCU 两冒烟齐,M5.2 主体达成**。
+      **遗留**:full profile(VM 本体)上 MCU 跑 LK 代码——依赖 `lk-vm-core` 抽出。
+- [x] **M5.3** `lk fmt` —— **已实现**。CLI 新增 `lk fmt FILE`(就地规范化,4-space,brace/paren/bracket 感知,
+      空行保持空;幂等)+ `lk fmt --check FILE`(不写,未格式化则非零退出,可作 CI 门禁)。逻辑与 LSP 的
+      `format_lk` 一致。验证:乱缩进→规范嵌套、`--check` 幂等退出 0、真实示例二次 check 稳定。CLI `-D warnings` 0/0。
+- [x] **M5.4** git+lockfile 去中心化依赖 —— **完整达成**。保留 `pkg init/add/fetch/update/check/tree`、git+GitHub+path
+      依赖、`Lk.toml`/`Lk.lock`(Deno/Go 式:git URL + lockfile 锁 rev)。**并按 plan 第 239 行砍掉中心化签名注册表**:
+      净删 ~5000 行 —— `core/src/package/registry.rs`(1343,RegistryService/RegistryPublishManifest/HMAC+Ed25519 签名/
+      keyring/index 存储)+ `registry/signing.rs`+ `cli/src/pkg/registry_server.rs`(791,`pkg serve` HTTP 服务端)+ `key.rs`;
+      pkg 子命令 `Serve/Publish/Yank/Index/Key` + `PkgKeyCommand/PkgIndexCommand`;pkg.rs 客户端 registry 解析(~600 行,
+      `fetch_dependencies` 收敛为纯 git+path);`Manifest.registry`/`RegistrySection`/`DetailedDependency.{registry,version}`/
+      `DependencySpec::{registry_version,registry_override}`;全部 registry 测试;无用依赖 core `ed25519-dalek`/`base64`、cli `ureq`/`semver`。
+      **全量 1445 tests 0 失败(-41 为删除的 registry 测试),clippy/fmt 0,不触及 VM。** 更新 CLAUDE.md CLI 速查。
+      **文档遗留已闭合**:`docs/packages.md` 已是 git-only 描述;`README.md` 速查行(过时引用 `pkg publish`/`key`/`serve`/
+      signed registry)已刷新为 git+lockfile 命令(init/add/fetch/update/check/tree)。全仓无残留 registry 过时引用。
+- [x] **M5.5** LSP **保留并持续维护**（不砍）+ tree-sitter —— **双轨保留,现状核实**。plan 决策(本会话已改 plan.md)
+      = 不砍 LSP,与 tree-sitter 双轨。现状:`lsp/`(13k 行,hover/goto/semantic-tokens/inlay/completion/diagnostic
+      共 424 引用点,macro-origin 感知)+ `ecosystem/tree-sitter-lk`(grammar.js)+ `vsc-ext`/`zed-ext` 编辑器集成
+      均在树中、随 workspace 编译通过。→ **满足「保留双轨」**。tree-sitter 完善为持续项(非本步阻塞)。
+- **Exit**：CI 矩阵全绿；v1.0 定义达成。
+  → **✅ v1.0 定义六项全部达成(2026-07-04 盘点)**:VM 规范测试全过 ✓ · AOT Tier 0 全覆盖 + Tier 1 混合 ✓ ·
+  pcall 错误模型 ✓ · 多实例嵌入 API ✓ · bare/alloc/full 三 profile(VM 核心裸机可编译)✓ · git 最小包管理 ✓。
+  剩余项均为 post-v1.0:M2.5 ①-③(2026-07-04 后已完整完成,见上)、callable 反转(建议不做,见下)、
+  M4.2 深覆盖(mixed 类型系统,Tier 1 已供函数级出路)、MCU 真机 demo/细粒度 feature(nice-to-have/建议不做)。
+
+## Post-v1.0 — 协程/`yield`(plan.md 4.5 真正目标收益,M2.5 stackless 之后落地)
+
+- [x] **子步A** 核心 VM 机制 —— `HeapValue::Coroutine(Box<CoroutineState>)` + 新 opcode `Yield`(106/128)+
+      `Executor.active_coroutine`(跨原生调用边界 yield 天然报错,靠"专用 Executor 才设置该字段"免记账)+
+      `coroutine::resume_coroutine_runtime`(check-out/check-in,heap/globals 与 resumer 共享、stack/frames/
+      call_depth 协程私有)。**实测踩坑**:`LK_GC_STRESS=1` 下 resumer 自己的栈整体换出会导致其活跃寄存器
+      (含持有协程值本身的寄存器)运行期间不被 GC 扫到——修复=新增 `Executor.extra_gc_roots`。手写字节码
+      测试 6 个(含跨原生边界 yield 报错、协程挂起时 GC 存活两个高价值场景),commit `a5f6725`。
+- [x] **子步B** 语言层语法 + stdlib 内建 —— `yield` 关键字(lexer/parser,`parse_expr` 顶层识别,绑定尽量
+      松)、`Expr::Yield` 补齐 18 处编译期分析穷尽匹配、`lower_yield`(值落新寄存器防污染 local,yield 后
+      重置寄存器类型 fact 为 Unknown)、`coroutine_create/resume/status` 三个全局内建(同 pcall/error 待遇,
+      不需要 `use`)。`MODULE_ARTIFACT_VERSION` 7→8。新增 `examples/syntax/coroutines.lk`(自动纳入
+      VM==bytecode 与 VM==AOT 差分语料库)。**端到端一次跑通**:生成器循环、双向传值、协程内错误捕获、
+      协程外裸 yield 报错,commit `5cf2a32`。
+- [x] **子步C** AOT 兜底 + 文档 —— **实测确认无需新增 AOT 代码**:`Yield` 天然命中 aot/lower 既有的
+      `_ => Unsupported::Opcode` 兜底分支,`lk compile` 自动回退 Tier 0 VM bundle(验证:
+      `lk compile examples/syntax/coroutines.lk` 产出自包含可执行文件,跑通输出正确)。新增
+      `docs/coroutines.md`(API、示例、v1 限制:yield 仅顶层表达式位置合法、任意函数可含 yield 但非
+      resume 直接调用时运行时报错、跨原生边界 yield 报错、AOT 暂不原生支持)。
+- **验证(贯穿三子步)**:workspace 全量 + `LK_GC_STRESS=1` 全绿(957 lk-core 测试)· clippy/fmt 0 ·
+  `lk-core --no-default-features` 真 no_std 构建 0/0 · dist bench 门禁三次测量均不劣于基线
+  (0.991x/0.988x/—,新增字段/opcode 未进入非协程程序热路径)。
+  → **协程/`yield` 完整达成**,plan.md 4.5 的 stackless 协程目标全部兑现。
+
+## Post-v1.0 — `sched` 协作式调度器(chan/task × 协程整合,handoff 记录的"下一自然大步")
+
+**设计裁决**:native 不能 yield(协程轮已定死的结构性限制)⇒ Go 式"阻塞原语自动挂起协程"走不通;
+采用 stackless 经典的 **yield-descriptor + 调度器** 模式——`sched.recv/send/sleep/pause/spawn/join/await`
+只构造等待描述符(≤7 字节 ShortStr tag 的 tagged list,零堆分配 tag),`yield sched.recv(c)` 是显式挂起点
+(类似 await),`sched.run` 解释描述符驱动 N 个协程。
+
+- [x] **子步A** core 支撑 —— `resume_coroutine_runtime` 新增 `extra_roots: &[RuntimeVal]` 参数(调度器在
+      Rust 局部变量里跨 resume 持有的工作集对 GC 安全点不可见,必须显式进 root;上轮 GC 坑的正面延伸)+
+      `rt::Runtime::take_task(id)`(取出 JoinHandle 所有权,`&mut` 跨 select 轮 cancel-safe 重试;
+      `join_task` 的 remove+await 形态在 select 半途 drop 会丢 task)。顺手修复 lsp integration_test 漏掉的
+      `Token::Yield` match 臂。commit `c6057c1`。
+- [x] **GC bug(fix-forward)** —— stress 跑 sched 测试暴露**死协程 GC trace panic**:协程 Done/Errored 时
+      清空 stack 但未重置 stack_top,`gc_edges` 对 `stack[..stack_top]` 切片越界;任何"死了但句柄仍被引用"
+      的协程被 GC 追踪即 panic(上轮遗留,调度器把完成协程句柄存 results 表后继续跑 VM 恰好触发)。
+      修复 + `tracing_a_dead_coroutine_does_not_panic` 回归测试,commit `3560927`。
+- [x] **子步B** `lk-stdlib-sched` crate —— 描述符 natives(plain)+ `sched.run`(full_state,先例:stream 的
+      `kind = "full_state"` 模块导出)。调度核心:round-robin 队列 + parked 表(Recv/Send/Sleep/Await)+
+      joiners 表;try_recv/try_send 快路径,不 ready 才 park;全员 parked 时自建 `(index, Wake)` futures
+      走 `select_all`(**不用**现成 `SelectOperation`——它 send-closed 直接 Err 丢 case index),sleep 最早
+      deadline 做 timeout 上界;**join-only 死锁可证明**(join 只能由本调度器完成)→ 确定性报错,而
+      channel/await 阻塞合法(外部 tokio task 可投递,同 Go)。**实测踩坑**:`tokio::time::sleep` 在
+      runtime 上下文外创建即 panic("no reactor running")——必须包进 `block_on(async {...})` 内创建。
+      测试 17 个:crate 内 9(描述符构造/校验 + 手工字节码驱动 await park/recv 外部唤醒/join 环死锁;
+      注意手工双函数需错开 pc——global inline cache 按 pc 共享,真实编译码有 per-function facts 不受影响)
+      + umbrella 8 个 LK 源码行为测试(`stdlib/src/sched_test.rs`)。bench 门禁 1.007x。commit `b077544`。
+- [x] **子步C** 语料 + 文档 —— `examples/stdlib/sched_demo.lk`(全场景确定性输出,自动进 VM==bytecode 与
+      VM==AOT 差分门禁;AOT 兜底实测:GetGlobal 不可 lower → Tier 0 bundle,产物跑通)。`docs/coroutines.md`
+      新增 sched 章节(API/示例/语义要点,示例逐字验证可跑)+ `docs/stdlib.md` 并发模块边界(chan/task/sched
+      三分)。
+- **已知边界(留档)**:全局 `spawn(闭包)` 是**既有断点**(闭包无 promote 到 `CallableValue::Runtime` 的
+  路径,`task.spawn_blocking` 同因 bail;顶层就复现,与本轮无关)——`sched.await` 的 LK 级用例因此只能用
+  task-returning natives(net.tcp 等),Rust 级测试已覆盖 await park/wake。协程值不可穿 channel(深拷贝
+  边界既有守卫),句柄经共享 map/list 传递。
+- **验证(贯穿)**:workspace 全量 1498+ 0 失败 · `LK_GC_STRESS=1`(core 959 + stdlib sched 8)全绿 ·
+  clippy/fmt 0 · no_std 构建 0/0 · dist bench 1.007x 基线内。
+
+## Post-v1.0 — `select` 语句 lowering(悬空构造收编,sched 之后的自然候选)
+
+**设计裁决**:与 try/catch → pcall 同款 **parse 时 desugar**,不是给 Expr::Select 写专用后端——
+case 的 channel/send 值/守卫按源序急切求值进 `__select{n}_*` 合成局部变量(parser 计数器保证嵌套
+hygiene),调用 `select$block` 老 native(名字含 `$` 用户无法碰撞;底层 tokio SelectOperation 完好),
+尾部 Conditional 链按 index 分派。resolver/typecheck/compiler/AOT **零专用代码**。
+
+- [x] **子步A** desugar + AST 删除(commit `ad02dfe`)—— 删除 `Expr::Select`/`SelectCase`/
+      `SelectPattern` 及 11 个文件的匹配臂/辅助函数;**compiler lower_expr 的"不支持表达式"兜底分支
+      从此不可达并删除**(每个 Expr 变体都有 lowering)。顺手修复:resolver 对裸 `Expr::Block`
+      此前是空处理(只有闭包体路径),现在按语句块正常 resolve;老 resolver 对 Send 分支 channel/value
+      不 resolve 的 bug 随删除消失。**语义定案**(详见 docs/coroutines.md):急切求值(Go 规则)·
+      守卫先于 binding 求值(真值归一化 Bool)· binding=接收值(closed→nil)· case body 单表达式
+      (同 match arm,外层环境求值,赋值/return 语句不可入)· 无 default 阻塞线程 · closed channel
+      参与 → 可捕获错误 · 全守卫禁用+无 default → nil(留档,不同于 Go 死锁 panic)。
+      测试:core 4 个 desugar 形态 + stdlib 10 个 LK 行为(`stdlib/src/select_test.rs`)。
+- [x] **子步B** 语料 + 文档 —— `examples/syntax/select.lk`(9 场景确定性,进 VM==bytecode 与
+      VM==AOT 差分门禁;AOT Tier 0 bundle 实测跑通)。docs/coroutines.md「The select statement」
+      章节 + docs/semantics.md 语法边界补记(try/catch 与 select 均 parse 时糖)。
+- **验证(贯穿)**:workspace 全量 1508+ 0 失败 · GC-stress 全绿 · clippy/fmt 0 · no_std 0/0 ·
+  dist bench 1.014x 基线内 · 差分门禁含新语料全过。
+
+## v2 语言面重设计(用户裁决 2026-07-06):Swift 式错误模型 + Go 式并发
+
+**用户四项裁决**:① 协程/yield/sched **全删**(Go 无此概念);② 上 **`go` 关键字**;③ `!` 走
+"出错即抛"(整体从 `[ok,value]` 对迁移到 raise);④ 数据语义由 agent 从架构裁决 → **保留深拷贝
+isolate**(单线程无锁 GC 是热路径底线,无数据竞争,推翻=重写堆/GC)。plan.md 4.4/4.5 已加裁决注记。
+
+- [x] **子步1 全删协程/yield/sched**(commit `33d3fb9`,-2587 行):上一轮加法的精确逆操作——
+      yield 关键字/Expr::Yield/Opcode::Yield/HeapValue::Coroutine/coroutine.rs/coroutine_* 全局/
+      sched crate/相关语料文档。`MODULE_ARTIFACT_VERSION` 8→9。M2.5 CallFrame 地基保留;
+      select/chan/task/spawn 存活(= Go 并发组成部分)。
+- [x] **子步2 修 spawn(闭包)**(commit `a16da0e`):`spawnable_callable` 快照 promote——
+      `Arc::new(module.clone())` + 捕获与 globals **同模块结构深拷贝**(core 新增
+      `copy_runtime_value_same_module`,`ClosureCopy::SameModule` 模式;跨模块路径保持 Reject)
+      → `RuntimeCallable::with_state`。**关键修复** `Runtime::block_on`:goroutine(tokio worker)
+      内阻塞 send/recv 直接 block_on 会 panic,多线程 flavor 改走 `block_in_place`——Go 惯用法
+      (goroutine 里阻塞收发)从此成立。spawn 改 FullState 注册;删除从未工作的 task.spawn_blocking。
+- [x] **子步3 go 关键字**(commit `cbf0e10`):`go <expr>;` → `spawn(|| expr)` parse 时糖,火忘。
+      顺手修 send/recv typecheck 对未推断操作数(fn 参数类型变量)的误报(约束 Channel 而非拒绝)。
+- [x] **子步4 错误模型**(commit `a910eb3`):
+      - pcall → 隐藏名 `try$call`(select$block 同款 `$` 先例),try/catch desugar 改目标,
+        用户面 pcall 消失
+      - 后缀 `!` force-unwrap(parse 时糖):nil → raise "unwrap of nil value"。**消歧**:`!` 紧跟
+        `(`/`[`/`{` 保留给宏调用(`name!(...)`,宏系统三种定界符都在用——stress 测试先撞出冲突);
+        `x!==1` 因 lexer 贪婪 Ne 是 parse 错误(写 `x! == 1`)
+      - raise 迁移:recv → 值|closed 抛;send → Nil|closed 抛;chan.try_recv → 值|nil(空)|closed 抛;
+        task.try_await → 值|nil。**chan.close 改 Go 语义**:标记+丢 sender、条目保留——缓冲可排空
+        (旧行为 remove,缓冲丢失、后续 "Channel not found");**select 对 closed channel 变
+        always-ready**(排空后 recv arm 以 nil binding 命中,Go 零值模拟)
+      - 语料全迁:pcall_error.lk → error_unwrap.lk,error_model_edges/try_catch/select.lk 改写,
+        api/traceback/aot-hybrid 测试迁移,新增 chan_semantics_test ×5
+- [x] **子步5 文档收尾**(本 commit):新 `docs/concurrency.md`(go/spawn/chan/select 全貌 +
+      与 Go 差异表)· semantics.md(v2 错误模型 + `!` 边界)· stdlib.md 并发段 · plan.md 4.4/4.5
+      裁决注记 · concurrency_demo.lk 补 goroutine 段。
+- **验证(贯穿)**:workspace 全量 1499+ 0 失败 · GC-stress 全绿 · clippy/fmt 0 · no_std 0/0 ·
+  差分门禁全过 · dist bench 见子步5 记录。
+
+## M4.2 循环轮记录:空[]重猜(2026-07-07)
+
+- EmptyListGuessWrong{pcs} retriable:与 DynLoopPhi 同模式(错误值携带
+  发现 → fixpoint 记录 → 重跑改物化)。两个机制合起来,"猜测型 lowering"
+  有了统一的证伪-重试通路。
+- **时序死锁教训**:猜测 handle 的 provenance(empty_guess 表)想通过 phi
+  传承,但消费点失败(整函数 Err)早于 loop header 的 seal_block——传承
+  永远来不及。裁决:检测放宽到"函数内全部未定案猜测"(over-mark),正确性
+  由 Dyn 万能装箱兜底,typed 性能损失实测为零(覆盖率无倒退)。精确传承
+  仍保留在 phi 同型路径(能命中时单标)。
+- 覆盖率 25/51 持平;全门禁绿。
+
+## M4.2 循环轮记录:fixpoint 重猜 + sanitizer(2026-07-07)
+
+- **DynLoopPhi retriable 机制**(loop phi 混型的正解):seal_block 时体内
+  已按旧类型消费,不能就地宽化——把发现编码进 Unsupported::DynLoopPhi
+  {block,slot}(错误值携带数据),fixpoint 调用点捕获记入 sig.dyn_loop_phis
+  (纳入 snapshot 收敛判断)重跑;重跑时 read_recursive 创建 phi 直接
+  Ty::Dyn,体内全走 Dyn 臂,初值边装箱(add_phi_operands 对 phi_ty==Dyn
+  的异型边装箱不算宽化)。集合单调增长且有限 → 终止。**该模式可复用于
+  空[]混合 push 的重猜**(留档)。
+- **lookahead 猜测的教训**:LoadHeapConst 一刀切进 Dyn 源会让 push 长
+  字符串的列表错猜 ListDyn——display 引号差分(ListStr 引号 vs Mixed
+  裸文)。堆常量必须按种类分流。猜测类机制的每次扩面都要过"display/eq
+  语义是否随类型变化"这一关。
+- **sanitizer 验证补齐**(plan 验证清单第 5 条,M4.2 全程欠账):
+  LK_NATIVE_SANITIZE=address,undefined,6 个翻转例 + 200 迭代全特性
+  压力 probe(混合构造/字符串模板/HOF/chunk/zip/struct/切片),ASan+UBSan
+  0 报告,压力 probe 真原生与 VM 逐字节一致。注意 lkrt 静态库本身未
+  instrument(堆越界经 malloc 拦截仍可捕,栈/全局不可)——完整 instrument
+  需 lkrt 以 -Zsanitizer 重编,留档。
+- 覆盖率 25/51 持平;全门禁绿。
+
+## M4.2 循环轮记录:Dyn 折叠点安全审计(2026-07-07)
+
+- **两个静默语义 bug**(比 reject 危险一个量级——产出错误结果的原生二进制):
+  1. IsList/IsMap 对 Ty::Dyn 编译期折叠 Const false——rest 解构
+     'for [head, ..tail]' 的模式守卫恒失败,原生错误 Raise(幸 loud)。
+  2. Exit::NilBranch 的 \`_ =>\` 臂把 Dyn 折叠为'恒非 nil'——struct
+     optional 缺省字段 'if (b.v != nil)' **静默走错分支**输出错误结果,
+     若非 probe 实测无法发现(examples 差分面没有该形状)。
+- **方法论教训**:引入新的"运行时才知道内容"的类型(Dyn)时,必须**全量
+  审计既有的类型驱动编译期折叠点**——折叠假设"类型即语义"对 Dyn 不成立。
+  本次 grep 'value: Const::Bool' 全扫,四处折叠点(IsNil/IsList/IsMap/
+  NilBranch)全部 Dyn-aware 化。
+- SliceFrom 补 Dyn(as_list 拆箱)/ListDyn(dyn_slice_from) 臂;
+  空 [] 猜测 lookahead 源扩展 SliceFrom/ToIter。
+- 再踩二进制新鲜度坑:compile 失败被 grep -c 吞掉,/tmp/rp 跑的是上一个
+  probe 的旧二进制(输出驴唇不对马嘴才察觉)。**probe 流程固化:rm -f 目标
+  → compile → ls 确认存在 → 跑**。
+- 覆盖率 25/51 持平(修正确性,非扩面);全门禁绿。
+
+## M4.2 循环轮记录:迭代/空列表/字符索引(2026-07-07)
+
+- **s[i] 单字符索引**:VM index_string_at = char 索引、越界 nil、负索引按
+  **字节** len 回数(怪癖,ascii 下等价)。native str_char_at → Dyn(nil 自含)。
+  'for ch in "abc"' desugar 成按索引循环,连锁需要 AddInt 的 (Str, Dyn)
+  **拆箱特化**:VM 里 Str+非Str 必错,as_str guard 拆箱 = 同款 loud,
+  发射 typed concat 保住 acc 的 Str 类型(loop header phi 禁 widen,
+  装箱路由会把累加器变 Dyn 导致 loop 混型 reject——拆箱是唯一通路)。
+- **ToIter**:编译器仅对"证明是列表"的 for-in 发索引循环,其余(嵌套列表/
+  字符串变量/map)发 ToIter 规范化。native:列表 identity、Str→chars、
+  Dyn→as_list guard;map reject(hash 序)。
+- **空 [] 猜测升级**:实测发现空 [] 走 LoadHeapConst(常量池)而非 NewList
+  ——之前 NewList 空臂白修(保留无害)。empty_list_is_str_elem 泛化为三态:
+  首 push 的字节码级来源 str→ListStr / 索引读→ListDyn / 默认 ListI64。
+  ListDyn 猜测语义安全(一切可装箱,错猜只可能亏性能不亏正确性)。
+- **ListPush Maybe unwrap**:flat.push(xs[i]) 的 xs[i] 是 MaybeI64,
+  旧 read_typed 不 unwrap 直接挂——全臂换 read_scalar 族。
+- 教训:probe diff IDENTICAL 前必须确认 Warning=0(本轮两次差点被
+  双 VM 假象骗过);字节码级 dump 时注意空 [] 与 [x,y] 走不同 opcode。
+- 覆盖率 24→25/51;全门禁绿。
+
+## M4.2 循环轮记录:iter 转发 + NewObject + Str 批次(2026-07-07)
+
+- **iter 模块函数版 = 方法的模块拼写**:Call 臂对 iter.{map,filter,reduce,
+  enumerate,zip,take,skip,chain,flatten,unique,chunk} 转发方法 lowering,
+  HOF 复用 lambda-aware 的 lower_list_hof_k(窗口 base 右移一格对齐 lambda
+  寄存器);iter.range 补 1 参(0..n)。iter_pipeline/list_iter_sugar 两例
+  翻转——注意 [left,middle,right](NewList 列表元素)+ iter.flatten(ListDyn)
+  + ListDyn==ListI64 Cmp 是三轮改动的组合生效。
+- **NewObject 裁决落地**:MapStrDyn 承载(GetFieldK 零改动、缺省 optional
+  字段=str_dyn_get Nil 与 VM absent-field 同构);type_name 丢弃(整对象
+  display/typeof 不进子集)。连锁补齐:AddFloat 家族 Dyn 装箱路由(struct
+  字段类型注解让编译器发射 typed float opcode,而字段读回 Dyn)、IsNil Dyn
+  臂(tag==0,`p.s ?? "none"` 的 nil 测试)。struct.lk 翻转;struct_trait
+  卡 trait 方法分发(GetGlobal 大项)。
+- **Str 方法批次**(9 lkrt helper):字节语义钉齐——find 返回字节 index、
+  substring 字节切片(非 char 边界 VM panic → native abort)、ends_with
+  字节后缀;unicode 语义——lower/upper 用 Rust to_lowercase、reverse
+  char-wise;**chars() 返回 VM Mixed 列表 → native 必须 ListDyn**
+  (ListStr 的引号 display 会差分,裸文才对)。string_methods.lk 翻转。
+- comprehensive.lk 裁决留档:Set 内建类型(has/add/delete,native 无 Set
+  表示)是独立特性,加上 fs/path/string 模块长尾,整例翻转性价比出子集。
+- 覆盖率 20→24/51;全门禁绿(1505 tests/四套差分/clippy/fmt 0)。
+
+## M4.2 循环轮记录:phi 装箱 + in 语义 + range 切片(2026-07-06)
+
+- **phi 混型合流装箱**:add_phi_operands 重构(收集全边→决策),混型且全
+  dyn-boxable 时 phi 宽化 Ty::Dyn、每边 edge_insts 装箱(dyn_box_on_edge)。
+  安全边界:仅 read_recursive sealed 臂新建的前向 join phi(allow_widen);
+  loop header(seal_block)与自引用边 reject——param 已按旧类型被体内消费。
+  解锁 a ?? "default" 与 match 混型臂;match.lk 翻转。
+- **'in' 第三套 eq 勘探**(VM 真源,三套语义各不同):
+  - `==`(exec runtime_values_equal):数值跨型 true、结构比较
+  - `unique()`(core_methods 版):数值 to_bits、Obj 句柄
+  - `in`(list_contains):typed 列表**严格同变体**(1.0 in [1,2] false!)、
+    Mixed=RuntimeVal derive PartialEq(float 按值 ==、NaN 永 false)
+  - **发现既有 native bug**:(ListF64,I64) coerce 臂与 VM 分歧,probe 实测
+    2 in [1.0,2.0] native true / VM false。教训:**每个消费点的 eq 语义
+    必须单独 probe,不能假设复用**。
+- **range 切片双 VM bug**:字符串切片按字节 panic('héllo'[1..3] char 边界)
+  ——改 char 语义与 s[i]/len 统一;GetIndex range-key 识别 gate 在物化列表
+  len<=3(跨度>3 的切片 s[8..20] 直接 error)——去掉限制+空 range 切空前缀。
+  native:NewRange 全常量 step==1 记 range_def side-table(ValueId→
+  (start,end_excl)),GetIndex 查表发射 str.slice_chars/list_h.i64_slice。
+  非常量 range 索引 reject(回退面,VM 修后语义一致)。
+- 覆盖率 18→20/51(match/operators);门禁:1505 tests、四套差分、
+  clippy/fmt 0、bench 0.995x(8 workloads checksum 一致)。
+
+## M4.2 循环轮记录:HOF 方法批次 + unique 句柄语义(2026-07-06)
+
+- **list_ops.lk 翻转**(chunk/enumerate/zip/unique/flatten 五方法),覆盖率
+  16→18/51(另 list_destructure 被 NewList 列表元素装箱连带解锁)。
+- **VM unique 语义勘探**(真源实测):core_methods 的 runtime_values_equal
+  与 exec/arithmetic 的同名函数**语义不同**——前者数值 to_bits + Obj 句柄
+  相等(不结构比较),后者(`in` 操作符)做结构比较。unique/contains 方法用
+  前者。长字符串在 typed String 列表中每次读出重新 alloc(无同一性),在
+  Mixed 列表直存 handle(有同一性)。native 指针无法区分"同 handle"与
+  "intern 常量",裁决:长串永不去重(semantics.md),Mixed 同变量重复留档分歧。
+- **VM panic bug**:into_iter_owned 的 String 臂对 >7B 字符串 double-unwrap
+  同一 None——['长串'].unique()/zip/chunk/... 必崩。换 list_runtime_items
+  (heap-aware),删病灶方法。
+- **-0.0 bug**:codegen F64 常量 `fadd double 0.0, x` 物化,0.0+(-0.0)=+0.0
+  丢符号;恒等元应为 -0.0。probe [0.0,-0.0] 显示 [0,0] 暴露。
+- **NewList 静默不物化坑**:混合臂元素过滤集合不含列表类型时,[l,l] 只记
+  ArgList ref 不写 SSA,报错却在下游消费点("r6 read before definition"),
+  定位要回看 NewList 而非报错 pc。窗口内 to_dyn memo 保住 [l,l] 去重的
+  句柄同一性。
+- 门禁:1505 tests、四套差分、lkrt 31、clippy/fmt 0、bench 1.038x(基线内)。
+
+## M4.2 AOT 深覆盖 —— 阻塞点排查(2026-07-06,数据驱动裁决)
+
+**可复现扫描**:`bash scripts/aot_coverage.sh`(compile llvm 全 examples + 原因排行)。
+**现状 14/51**,37 个失败按频次:
+
+| 频次 | 阻塞 | 实质 | 路线 |
+|---|---|---|---|
+| 14 | `GetGlobal` | 白名单外全局:v2 错误模型(`try$call`/`error`——**每个 try/catch 程序**)、并发全局(chan/send/recv/spawn/select$block)、未识别模块(json/encoding/stream/net/task) | (a) try$call 原生=保护调用/unwinding,大;(b) 并发进 lkrt=无 VM 复刻 rt::Runtime,大;(c) module_call_abi 增量补条目,小 |
+| 9 | operand 超类型子集 | **混合/动态类型**——真正的 M4.2 核心 | **Dyn 装箱值地基**:MIR `Ty::Dyn` + lkrt tagged value + 装箱运算(display/错误信息须 VM-exact 逐字节) |
+| 4 | `LoadHeapConst` | 混合/嵌套常量容器(`{"name":…,"age":30,"active":true}`)——同上 Dyn 根因(同质容器/长串/UpvalCell 已支持) | 随 Dyn 地基解决(`map_h str_dyn_*` 等 ABI) |
+| 5 | `Call` | 方法 ABI 长尾:分发表仅 6 对(Str contains/len、ListI64 contains、MapStr* set、list map/filter HOF);`.first()/.last()/.push()` 即倒 | lkrt 薄封装逐个补,增量;但 list_ops 类"deep dive"语料需大量方法才翻转 |
+| 2 | `NewObject` | struct 字面量 → 对象模型 | 依赖 Dyn/对象表示 |
+| 1 | `NewRange` | range 值物化 | 独立小项 |
+
+**下一步建议(优先序)**:① **Dyn 地基**(9+4+2 例的共同根因,plan.md M4.2 的"mixed/动态类型系统"本体;
+注意 semantics.md 裁决:混合 map display 明确不进子集,创建+类型化读取可进);② 方法 ABI 快速增量
+(翻转难但每条目独立可验);③ NewRange。try$call/并发进 lkrt 属大工程,建议单独立项。
+本会话交付排查+路线(context 预算不足以安全落地 Dyn 子步);实现从下会话新鲜上下文开始。
 
 ---
 
-# 2026-07-03(续):list 相等 + 跨块 cell 状态(PR 前最后两项)
+## 执行原则
+1. 严格按 Phase 顺序；M0 是所有后续的地基（问题 1/5/8/9），风险最低收益最高。
+2. 每步独立可验证：动代码即跑对应测试 + 不回退 `cargo test --workspace` 与 bench 门禁。
+3. 大步（M0.1 抽 crate、M2.5 stackless）落地前先拆子步、先跑通编译再迁移逻辑。
+4. 渐进抽离 crate，绝不一次性重排整个 workspace。
+5. 每轮结束更新本文件勾选项 + `handoff.md`。
 
-## 落地内容(5 commits)
+## 深覆盖收尾大计划:阶段①(2026-07-07)
 
-1. **feat: list 结构相等** — lkrt `lkrt_lklist_{i64,f64,str,i64_f64}_eq`
-   (长度 + 逐元素 `==`;f64 用 `==` 保 NaN 破相等;i64×f64 数值 coercion,
-   `[1]==[1.0]` true);lower 在 CmpInt/CmpNeInt 上按 (ListX, ListX) 分派,
-   helper 返回 1/0 与常量 1 比较复用 cmp_op;跨型非数值对:引入
-   `list_base_len`(物化时长度,push 不增 → 可靠下界,`list_len` 的静态
-   push 增量在未走分支时会高估),两侧 base≥1 才折叠 false(两个空 list
-   在 VM 中恒等,不可猜)。**closure.lk 全文件 native==VM**,examples
-   差分 10→11。
-2. **fix: VM 循环内 cell promotion(第二个真 miscompile)** — mid-body
-   promotion 的 box 序列每迭代重执行:外层变量每迭代被塞进新 cell(共享
-   cell 语义破坏),且条件/自增读(promotion 之前发射)在第 2 迭代读到
-   cell Obj。触发:`while (i<3) { let f = |x| x+i; ...; i=i+1; }`(报
-   "expected Int, got Obj")。修复两部分:①循环入口预提升——
-   `collect_{stmt,expr}_closure_captures` 走查循环体+条件里所有闭包的
-   自由变量,凡当前已是 local 的在发射任何循环代码前 box(此后所有读经
-   cell_locals 走 LoadCellVal,单一共享 cell);②for 循环变量(fused
-   ForLoopI 驱动原始寄存器,不可重绑)捕获改为每站点**快照 cell**,
-   且 StoreCellVal 用 copy 而非 move(move 曾把计数器变 Nil)。
-   循环体内声明的变量本来就对(box 随 let 每迭代重执行 = 每迭代新绑定)。
-   3 个回归测试(loops.rs);semantics.md 增 3 行循环捕获语义。
-3. **fix: lkrt 根导出 eq helpers**(ABI conformance check 需要)。
-4. **feat: 跨块 cell 状态** — cell 从 `(block, cid)` 块局部表升级为
-   Braun SSA **虚拟槽**(`reg_count + cid`,read/write/phi 机制全部
-   usize slot 化,cell 容量由 UpvalCell LoadHeapConst 站点数预扫描);
-   LoadCellVal/StoreCellVal 的 cell 寄存器 ref 查找升级 builtin_ref_at
-   跨块回溯。**无需 pin 循环限制**:cell 读的唯一入口是 builtin_regs 的
-   Cell/Closure ref,而 ref 一致性在 entry 边无 ref 的 loop header 处
-   终止 → 循环内创建的闭包无法泄漏到下一迭代(逃逸形状响亮拒绝),
-   创建站点每迭代重初始化槽恰好等价"每迭代新 cell";循环前创建、循环内
-   变异 = loop-carried phi(VM 共享 cell 语义)✓。解锁:分支内 mutation
-   合流后可见、分支 helper(VM inline)+ 捕获闭包实参(capclo2)、
-   循环携带 cell 更新。
-5. 差分用例 +5(list_structural_eq、closure_cell_across_blocks、
-   closure_cell_loop_carried、closure_arg_branchy_helper、
-   closure_loop_var_snapshot);fuzz:变体 14 list 相等、变体 12 分支
-   mutation、ListVar derive Clone。
+- **A1 参数格点 join→Dyn**(`e34841e`):param_obs 冲突不再 reject,
+  join 到 Dyn + 调用点装箱;Nil/Maybe 观测归一 Dyn(from_maybe_* 走
+  值+present 两标量参,**免新 AbiType/codegen 零改动**)。顺手修
+  潜在分歧:实参路径原用 read_scalar 的 Maybe unwrap-abort,VM 语义
+  是传 nil。dyn.truthy + Exit::Cond 全类型真值表(VM truthy:仅
+  nil/false 假;`if (0)` 走 then!)。**坑**:全 Nil 入边同质 phi 建成
+  `phi void`(非法 LLVM)→ Nil phi 强制 Dyn 宽化。
+- **A2 返回 join→Dyn**(`ed284d1`):dyn_rets retriable(镜像
+  DynLoopPhi 模式,入收敛快照);bare return/implicit-ret 装箱 nil。
+  **真因修复**:recursive.lk 卡点不是异型返回,是 ret_types 默认 I64
+  被自递归调用点读到 → 首个具体 return 类型即时发布进 sig.ret_types。
+- **A3 Dyn 全局 + VM 路由 bug**(`7925690`):SetGlobal 混型/容器
+  join→Dyn 槽(zeroinitializer {0,0}=nil tag,豁免 initialized 守卫);
+  global_tys 入快照。**VM bug(既有)**:`let nums=[…]; fn f(){nums.len()}`
+  被 lower_call_expr 当外部模块对象编成 GetIndex(list,"len") → executor
+  必崩("expected Int, got ShortStr");map 全局同坑(读 nil 属性)。
+  修复=collect_function_visible_let_names → user_let_globals 穿线
+  5 个编译器构造点,分类判定排除用户 let。**注意**:VM 前端 checker
+  拒绝混型全局赋值(变量类型不变式),混型全局只能经动态值产生——
+  Dyn 全局的主要价值是容器/可空值跨函数。
+- **A4 MapRest→MapStrDyn**(`56db77f`):map_h.str_dyn_without 一条
+  ABI + 一臂。pattern_matching 翻转。
+- 差分新组:differential_dyn_cross_function ×8 + differential_global_containers ×3。
+- bench 观察:1.035/1.044/1.076/1.046x 波动(同二进制复测 ±3%,
+  机器负载噪声;10% 门禁内)。
 
-## 验证矩阵(全绿)
+## 深覆盖收尾:阶段②(2026-07-07)
 
-- workspace 95 套(lk-core 946);手工语料 17 形状全 MATCH(loopesc
-  逃逸 = 设计内 native 拒绝)
-- 三套差分 + fuzz 放大(种子 424242/161803/271828 ×250)
-- ASan/UBSan 三套(fuzz 300 例);Miri lkrt 25/25
-- `-D warnings` test targets 干净;fmt + clippy 清零
-- AOT bench 20/20 checksum;VM/Lua 1.008x(VM 修复零回归)、
-  AOT/LK 0.259x
+- **B1 Set**(`27ce681`):Ty::Set(ptr)+ lkrt lkset.rs(FxHashSet<RtKey>,
+  键 Nil/Bool/Int/Str,Float 键 abort,迭代/display 不进子集)+ SetCtor
+  builtin + 方法臂全套。**坑**:lower_builtin_call 尾部统一写 nil 结果
+  (println/assert 约定),值返回 builtin 必须 early-return(Typeof 先例)
+  ——SetCtor 结果被覆写 Nil,probe 差分抓出。
+- **B2 模块小批**(同 commit):string/path 进 MODULE_GLOBALS;
+  strip_prefix/suffix 返回 String?→DynVal;count 空模式=字节 len+1;
+  capitalize/title unicode 状态机逐字节抄 stdlib;math sign 按类型分派;
+  通用尾部 Bool 收窄;assert_eq 兜底=双侧 to_dyn_any→dyn.eq(深比较+
+  数值 coercion=runtime_values_equal;absent Maybe=nil)。
+- **B3 HOF 泛化**(`0ea88ca`):三 ABI 家族按 receiver 元素类型+lambda
+  收敛签名选择;**dyn 家族对 map/reduce 强制 sig.dyn_rets.insert(fidx)
+  → lambda 返回装箱 → 回调签名 fn(LkDyn,..)->LkDyn 成立**(A2 机制
+  复用,retriable 转一圈收敛)。Dyn receiver 对 list-only 方法名预拆箱
+  (as_list guard;与 str/map 共享名不入列表防误拆)。
+  **dyn_lt/le/gt/ge 补双字符串字典序**——VM typechecker 拒静态 Str 比较
+  但动态路径放行(number_compare_value string 臂),sort_search 排字符串
+  时 native abort 抓出。sort_search 的 insertion_sort 同时吃 int 列表和
+  str 列表(跨函数 join→Dyn),阶段①机制在此全链路兑现。
+- 覆盖率 29→31/51;bench 1.003/1.010x。
+
+## 深覆盖收尾:阶段③(2026-07-07)
+
+- **C1**(`a32b530`):macro_system/imports.rs 拒 `..` 是 use.lk 连 VM
+  都跑不了的真因(每条 use 都过宏导入扫描);放行父目录、绝对路径仍拒。
+- **C2**(`5e99f07`):bundling 设计落地——依赖 entry 守卫(仅
+  LoadFunction/SetGlobal/Return0)、fidx 重写仅 CallDirect.b/
+  MakeClosure.b/LoadFunction.bx(**CallNamed.bx 是计数 payload 不是
+  fidx,勿动**)、全局槽按名重映射(pc 不变故 facts 有效)。
+  ImportEnv 挂在 SigInfer 上免穿线;文件命名空间绑定名=file_stem。
+  string.len(模块)=字节长 ≠ .len()(方法)=char 数,新 byte_len ABI。
+- 覆盖率 31→33/51;bench 1.007x。
+
+## 深覆盖收尾:阶段④(2026-07-07)
+
+- **VM 死循环 miscompile**(`ad39276`,本轮最重发现):lower_let/
+  lower_define 把 let-循环缓存字面量直接别名到共享缓存寄存器;COW
+  只对同深度赋值健全,嵌套循环内重赋值(min_idx=i)rebind 后内层
+  回边读旧寄存器 → 静默死循环。word_count 在 VM 挂死却被差分语料
+  当 VM-timeout skipped 放行多轮——**timeout-skip 是差分门禁盲区**。
+  修复=删别名快路径(通用路径 Move-from-cache 保 hoisting 收益,
+  bench 1.010x 零代价)。
+- **D1 镜像**(`43aab93`):迭代序=f(键hash+操作序) 论题由
+  order-conformance(lkrt dev-dep lk-core,64 键)首跑即过实证。
+  lit 两段协议镜像 const_load 的 stage1(RtKey 按序插)+
+  typed_map_from_entries(stage1 迭代序重建)。
+- **D2/D3 连锁修复群**:str-map 键 Maybe unwrap;空 {} lookahead
+  全函数扫描重构(寄存器成员随 Move 三集合维护——旧版被覆写寄存器
+  不退场,r1 从 map 换 str list 后仍被当 map);HOF ret_known 门
+  (pristine I64 默认误判成真失配,str lambda 被永久 Dyn 化);
+  **phi 原地宽化删除,统一 DynLoopPhi retriable**(同 pass 内层
+  if-join 已按旧型读参并装箱 → from_str 收到 {i64,i64} 的 clang
+  类型错;预置化是唯一健全通路);fixpoint pass 上限计入发现数
+  (match.lk 一度因预算耗尽回归)。
+- 覆盖率 33→36/51;bench 1.010x。
+
+## 深覆盖收尾:再修 G(try$call 原生化,2026-07-07)
+
+- **G1**(`4fd02d7`):lkrt panic.rs——handler 栈(Box<JmpBuf> 512B,
+  glibc _setjmp/_longjmp BSD 对)+ CURRENT_ERROR + rt.cell_*。
+  raise 签名用 () 留在 ABI 词表(conformance 的 fn-ptr 强制不认 !)。
+- **G2/G3**(`9b9aebe`):设计从「字节码内联」改为 **MIR TryCall 单
+  指令 + codegen 文本 diamond**(codegen 可自由开 label,免 lower 的
+  块结构手术);**运行时 cell 只在 try 边界物化**(SSA cell 模型的
+  phi/loop 优化保留;物化=当前值装箱播种,调用后 cell_get 写回)。
+  踩坑集:hybrid 测试的不可 lower 样本=try/catch,G 后全 lower 导致
+  测试反转——换 trim() 动态格式串(**常量折叠会吃掉 "x"+"" 拼接**);
+  cell 内容为 MapStrI64 时 to_dyn 不可装箱 → typed map→StrDynMap
+  转换 ABI(迭代序=重放插入,保序);`!x` 语义≠truthiness(Bool 取反/
+  Nil→true/其余 error)。LK_AOT_DEBUG_FAILURES=1 列出 final-pass
+  全部失败函数——「callee 真因藏在 caller 瞬态 ret 检查后」是常态。
+- 覆盖率 36→39/51;bench 0.998x。
+
+## 深覆盖收尾:再修 H(并发原生化,2026-07-07)
+
+- **H1**(`8c364cb`):chan.rs 进程级注册表(Mutex+双 Condvar,与
+  thread_local arena 分离);OwnedVal 深拷贝(**map 条目按迭代序捕获、
+  收方按序重放 → Fx 布局跨线程保序**,D1 论题的延伸应用)。
+- **H2/H3**(`2b0fa77`):spawn 免 wrapper 合成——捕获全 join→Dyn 后
+  签名统一,lkrt spawn0..4 按 arity trampoline;isolate=线程私有虚拟
+  SSA 槽(spawned_isolate 集合;直接调用路径 cell 写仍拒,同函数两种
+  语义并存时靠 reject 保护)。select 用 spin-poll(200µs park)——
+  时序不进可观察契约,语料全部单臂就绪/default 确定性。
+  连锁:module::member 全局名路由(chan::close 等两级导出)·
+  Cmp (ListDyn, typed) 归一 dyn_eq · **空 [] 逃逸进 capture cell →
+  猜 ListDyn**(闭包内 push 对 entry lookahead 不可见,typed 猜测
+  跨函数 ping-pong——select eager-trace 场景)。
+- 覆盖率 39→41/51;bench 0.986x。
+
+## 深覆盖收尾:再修 I(模块白名单增量,2026-07-07)
+
+- **I1/I2**(`b90c6c1`):lkrt encoding.rs——json/yaml/toml 解码用与
+  VM core/src/val/de.rs **完全相同的 crate + 转换规则**(同 lockfile
+  版本;serde_json Value::Object=BTreeMap 排序键序);对象经
+  str_dyn_map_mirrored 两段重放(serde 迭代序充当 VM stage-1 插入序)
+  → 键迭代序逐字节一致。数字规则 as_i64 优先(整数装 int,溢出/小数
+  装 float);解析错误 → raise("Invalid JSON/YAML/TOML")可 catch。
+  数组产 ListDyn(VM 会把 uniform 标量 typed 化,差异只在 uniform
+  字符串数组的 display 引号——语料未触,差分门禁守)。encoding 子模块
+  `use {json} from encoding` → GlobalRef::Module 绑定。
+- **I3 stream**(同 commit):全纯语料下 eager 列表管道与 lazy 可观察
+  等价——stream.from_list/collect 透传、stream.range 物化为
+  i64_from_range(step 1 exclusive)、map/filter/take/skip/chain 复用
+  iter 模块转发(模块匹配扩成 `"iter" | "stream"`)。担心的副作用
+  求值序问题在语料里不存在(lambda 全纯),留档解除。
+- **I4 tcp**(同 commit):socket/tcp/bytes 的 lkrt ABI 早已存在
+  (net.rs),缺的只是 lower 侧绑定——net 子模块 → GlobalRef::Module
+  + module_call_abi ×6(socket.addr/tcp.connect/write→write_str/
+  read/close/bytes.to_string_utf8)。tcp_demo 输出(连接失败路径)
+  确定,非确定担忧解除。
+- 连锁:dyn.as_map + Dyn receiver 的 map-only 方法名(has/keys/
+  values/delete)预拆箱;get 因与 list 语义歧义保持拒绝。
+- **覆盖率 41→47/51**(json_demo/json_process/yaml_toml/
+  config_parser/stream_demo/tcp_demo);bench 0.990x。剩 4:
+  struct_trait/trait_impl(J)· macros(整对象插值 display,J 后评估)·
+  unsupported(留档合集)。
+
+## 深覆盖收尾:再修 J(trait 方法分发,2026-07-07)
+
+- **J1**(`5c8cc4f`):prescan 把 entry 的 __lk_register_trait(_impl)
+  注册序列(GetGlobal→Load*/Move/NewList→Call 连续直线形状,严格
+  验形,不匹配即放弃回退响亮拒绝)提升为 TraitEnv,序列 pc 跳过,
+  impl fn 补进可达根。三层分发:静态 devirt(NewObject provenance
+  side-table,Move 沿 ValueId 零成本传播)· 动态分发(MIR
+  TraitDispatch 单指令 + codegen 文本 diamond,lkrt_dyn_obj_type_id
+  读 arena 句柄侧表——**无 "$type" 隐藏键**,len/迭代/display 零污染;
+  各臂 Dyn self + dyn_rets 强制 Dyn ret 统一签名)· auto-Display
+  (println/print/ConcatString/ConcatN 操作数带 provenance 且注册
+  show → 直调,镜像 VM try_runtime_display_show 硬编码 "show")。
+  struct_trait/trait_impl 翻转(含 [Rect,Circle].map(|s| s.area())
+  混型动态分发),**41→49/51**。
+- **J2**(`12bb2ee`):assert(Dyn)→dyn.truthy(VM assert_truthy 同
+  语义)· NewObject 字段值 to_dyn_any(MaybeI64 经 from_maybe_*)·
+  ToString 挂 auto-Display(单插值 "${point}" desugar 成裸 ToString)。
+  **关键发现:#[derive(Debug)] 展开 = 普通 impl __LKShow{show} 注册
+  → J1 机制零改动覆盖整对象插值**。macros.lk 翻转,**49→50/51
+  (计划上限)**。
+- 裁决入 semantics.md:类型标记不跨 channel(OwnedVal 不带标记)·
+  auto-Display 只镜像 show · 无 show 的整对象 display 不进子集 ·
+  动态分发限 argc==0。
+- unsupported.lk 维持留档(probe 确认:list spread concat/负索引/
+  位运算/字符串乘等 ≥9 个互不相关 blocker,无单一搭车项)。
+- bench:J1 0.996x / J2 0.990x(纯噪声)。
+
+## 🏁 深覆盖收尾大计划终局(2026-07-07)
+
+**25/51 → 50/51**,计划目标 47-50 的上限。唯一未覆盖:
+unsupported.lk(裁决留档合集)。全程:2 个 VM miscompile 顺手修复
+(循环字面量别名死循环、全局容器方法路由)、1 个宏导入 bug(`..`)、
+lkrt 新增 panic/chan/encoding/vm_mirror/lkset 五个模块 + ~80 ABI 条目、
+MIR 新增 TryCall/TraitDispatch 两条文本展开指令、fixpoint 新增
+dyn_rets/spawned_isolate/TraitEnv 三套机制。门禁纪律全程保持:
+每 commit 覆盖率单调不降 + 四套差分 + workspace + fuzz + clippy/fmt/
+no_std + dist bench 噪声带(0.986-1.076x)。

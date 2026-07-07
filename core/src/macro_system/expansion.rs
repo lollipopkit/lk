@@ -1,4 +1,6 @@
-use std::collections::HashMap;
+use crate::compat::collections::HashMap;
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 
 use crate::{
     ast::Parser as ExprParser,

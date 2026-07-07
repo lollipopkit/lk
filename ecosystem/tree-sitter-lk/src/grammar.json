@@ -319,6 +319,10 @@
         {
           "type": "SYMBOL",
           "name": "optional_index_access"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "unwrap_expression"
         }
       ]
     },
@@ -900,6 +904,27 @@
               "type": "SYMBOL",
               "name": "_expression"
             }
+          }
+        ]
+      }
+    },
+    "unwrap_expression": {
+      "type": "PREC_LEFT",
+      "value": 20,
+      "content": {
+        "type": "SEQ",
+        "members": [
+          {
+            "type": "FIELD",
+            "name": "operand",
+            "content": {
+              "type": "SYMBOL",
+              "name": "_expression"
+            }
+          },
+          {
+            "type": "STRING",
+            "value": "!"
           }
         ]
       }
@@ -2408,6 +2433,14 @@
         },
         {
           "type": "SYMBOL",
+          "name": "go_statement"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "try_statement"
+        },
+        {
+          "type": "SYMBOL",
           "name": "break_statement"
         },
         {
@@ -2841,8 +2874,8 @@
       ]
     },
     "macro_invocation": {
-      "type": "PREC",
-      "value": 21,
+      "type": "PREC_DYNAMIC",
+      "value": 1,
       "content": {
         "type": "SEQ",
         "members": [
@@ -4110,6 +4143,60 @@
         }
       ]
     },
+    "go_statement": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "STRING",
+          "value": "go"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "_full_expression"
+        },
+        {
+          "type": "STRING",
+          "value": ";"
+        }
+      ]
+    },
+    "try_statement": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "STRING",
+          "value": "try"
+        },
+        {
+          "type": "FIELD",
+          "name": "body",
+          "content": {
+            "type": "SYMBOL",
+            "name": "block"
+          }
+        },
+        {
+          "type": "STRING",
+          "value": "catch"
+        },
+        {
+          "type": "FIELD",
+          "name": "binding",
+          "content": {
+            "type": "SYMBOL",
+            "name": "identifier"
+          }
+        },
+        {
+          "type": "FIELD",
+          "name": "handler",
+          "content": {
+            "type": "SYMBOL",
+            "name": "block"
+          }
+        }
+      ]
+    },
     "block": {
       "type": "SEQ",
       "members": [
@@ -4149,6 +4236,10 @@
     [
       "_expression",
       "pattern"
+    ],
+    [
+      "primary_expression",
+      "macro_invocation"
     ],
     [
       "struct_literal",

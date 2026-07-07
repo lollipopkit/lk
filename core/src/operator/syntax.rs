@@ -1,7 +1,7 @@
 use core::cmp::Ordering;
 use core::fmt::Debug;
+use core::fmt::Display;
 use serde::{Deserialize, Serialize};
-use std::fmt::Display;
 
 use crate::val::LiteralVal;
 
@@ -11,7 +11,7 @@ pub enum UnaryOp {
 }
 
 impl Display for UnaryOp {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             UnaryOp::Not => write!(f, "!"),
         }
@@ -85,7 +85,7 @@ fn cmp_literal_ordering(l: &LiteralVal, r: &LiteralVal) -> Option<Ordering> {
 }
 
 impl Display for BinOp {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             BinOp::Add => write!(f, "+"),
             BinOp::Div => write!(f, "/"),

@@ -62,6 +62,14 @@ pub enum Ty {
     /// ABI as `0`/`1`; the type keeps bool display/compare semantics exact.
     MapStrBool,
     /// The result of a dynamic (not provably in-range) `List<i64>` index: a
+    /// A mutable capture cell (`rt.cell_*`, the VM's `UpvalCell`): an
+    /// arena-owned boxed-Dyn slot passed by pointer, so a `try` body's
+    /// assignment to an outer local writes through. Opaque pointer.
+    Cell,
+    /// A native `Set` handle (`*mut c_void` → `FxHashSet` of map keys),
+    /// mirroring the VM's `RuntimeSet`. Opaque pointer; iteration and display
+    /// stay outside the subset (hash order).
+    Set,
     /// `Maybe<i64>` carried as an LLVM `{i64, i64}` (value, present). Its only
     /// supported consumer today is a function return (which prints the value or
     /// `nil`, matching the VM); using it in arithmetic rejects (falls back).
@@ -73,6 +81,18 @@ pub enum Ty {
     /// The `bool` analogue of [`Ty::MaybeI64`]: carried as `{i64, i64}` (value
     /// `0`/`1`, present bit), narrowing to `Bool` on use.
     MaybeBool,
+    /// A boxed dynamic value (`LkDyn { tag, payload }`, LLVM `{i64, i64}` by
+    /// value): the escape hatch for genuinely mixed-type data (plan M4.2).
+    /// Never appears on already-typed paths — lowering only boxes where the
+    /// closed typed subset would otherwise reject.
+    Dyn,
+    /// A growable `List<LkDyn>` handle (opaque `ptr`): the mixed-element
+    /// list backing `[1, "a", true]`-shaped literals.
+    ListDyn,
+    /// A growable string-keyed `Map<str, LkDyn>` handle (opaque `ptr`):
+    /// mixed-value maps (`{"name": …, "age": 30, "active": true}`). Display
+    /// stays out of the subset (hash order, docs/semantics.md).
+    MapStrDyn,
 }
 
 /// Integer binary operators. `Div`/`Mod` are lowered to the divisor-guarded
@@ -178,6 +198,35 @@ pub enum Inst {
         func: FuncId,
         args: Vec<ValueId>,
     },
+    /// `dst = try.call f{func}(args)` — a native protected call (`try$call`,
+    /// plan G): codegen expands to `rt.try_push` + `_setjmp` + a conditional
+    /// call of the try-body function (which returns `Dyn`), joining into the
+    /// `[ok, value]` dyn-list the desugared destructuring consumes. A raise
+    /// inside the body longjmps back to the `_setjmp`.
+    TryCall {
+        dst: ValueId,
+        func: FuncId,
+        args: Vec<ValueId>,
+    },
+    /// `dst = trait.dispatch(self, arms)` — a runtime trait-method dispatch
+    /// over a boxed struct instance (plan J1): codegen reads the receiver's
+    /// arena type mark (`lkrt_dyn_obj_type_id`) and expands an `icmp` chain
+    /// calling the matching impl. Every arm takes the boxed `self` and
+    /// returns `Dyn` (the lowering forces `dyn_rets`), so one rendered
+    /// signature serves all arms; no matching mark raises.
+    TraitDispatch {
+        dst: ValueId,
+        self_arg: ValueId,
+        /// `(runtime type id, impl function)` in registration order.
+        arms: Vec<(i64, FuncId)>,
+    },
+    /// `call.vm f{func}(args)` — a one-way Tier 1 bridge call to a VM-executed
+    /// function of this module (`docs/llvm/tier1-hybrid.md`): the callee's body
+    /// did not lower, so codegen marshals the scalar arguments into tagged
+    /// bridge values and calls `lk_hybrid_call_v`. Results never flow back
+    /// (the lowering leaves the destination register unbound, so any use of
+    /// the result rejects the module).
+    CallVm { func: FuncId, args: Vec<ValueId> },
     /// `dst = lkrt_lklist_i64_get_pair(handle, index)` — a dynamic `List<i64>` read
     /// producing a [`Ty::MaybeI64`]. Kept a dedicated instruction (not a generic
     /// [`Inst::Call`]) because its `{i64, i64}` return is outside the scalar ABI
@@ -347,13 +396,29 @@ pub struct MirModule {
     /// addressed by index from [`Inst::GlobalGet`] / [`Inst::GlobalSet`]. The
     /// name is diagnostic only; codegen emits one typed LLVM global per entry.
     pub mutable_globals: Vec<(String, Ty)>,
+    /// VM-executed functions (Tier 1 hybrid): reachable functions whose bodies
+    /// did not lower but whose call sites bridge into the embedded VM. `params`
+    /// are the scalar marshaling types for [`Inst::CallVm`] arguments.
+    pub vm_functions: Vec<VmFunction>,
     pub functions: Vec<MirFunction>,
     pub entry: FuncId,
+}
+
+/// One VM-executed function of a Tier 1 hybrid module (see [`Inst::CallVm`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct VmFunction {
+    pub id: FuncId,
+    /// Scalar parameter types, in order — the bridge marshaling contract.
+    pub params: Vec<Ty>,
 }
 
 impl MirModule {
     pub fn function(&self, id: FuncId) -> Option<&MirFunction> {
         self.functions.iter().find(|f| f.id == id)
+    }
+
+    pub fn vm_function(&self, id: FuncId) -> Option<&VmFunction> {
+        self.vm_functions.iter().find(|f| f.id == id)
     }
 
     pub fn global(&self, id: GlobalId) -> Option<&str> {
@@ -451,6 +516,26 @@ pub fn validate(module: &MirModule) -> Result<(), MirError> {
                         return Err(MirError::ArityMismatch { func: func.id });
                     }
                 }
+                if let Inst::CallVm { func: callee, args } = inst {
+                    let Some(target) = module.vm_function(*callee) else {
+                        return Err(MirError::MissingEntry);
+                    };
+                    if args.len() != target.params.len() {
+                        return Err(MirError::ArityMismatch { func: func.id });
+                    }
+                }
+                if let Inst::TraitDispatch { arms, .. } = inst {
+                    for (_, callee) in arms {
+                        let Some(target) = module.function(*callee) else {
+                            return Err(MirError::MissingEntry);
+                        };
+                        // One boxed `self` parameter — the rendered arm call
+                        // shape.
+                        if target.params.len() != 1 {
+                            return Err(MirError::ArityMismatch { func: func.id });
+                        }
+                    }
+                }
                 if let Some(def) = inst_def(inst)
                     && !defined.insert(def)
                 {
@@ -515,6 +600,15 @@ pub fn render(module: &MirModule) -> String {
     for (i, g) in module.globals.iter().enumerate() {
         let _ = writeln!(out, "global g{i} = {g:?}");
     }
+    for vm_fn in &module.vm_functions {
+        let params = vm_fn
+            .params
+            .iter()
+            .map(|ty| ty_name(*ty))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let _ = writeln!(out, "vm fn f{}({params})", vm_fn.id.0);
+    }
     for func in &module.functions {
         let entry = if func.id == module.entry { " entry" } else { "" };
         let params = func
@@ -561,6 +655,11 @@ fn ty_name(ty: Ty) -> &'static str {
         Ty::MaybeF64 => "maybe<f64>",
         Ty::MaybeStr => "maybe<str>",
         Ty::MaybeBool => "maybe<bool>",
+        Ty::Dyn => "dyn",
+        Ty::ListDyn => "list<dyn>",
+        Ty::MapStrDyn => "map<str,dyn>",
+        Ty::Set => "set",
+        Ty::Cell => "cell",
     }
 }
 
@@ -637,6 +736,16 @@ fn render_inst(inst: &Inst) -> String {
                 Some(d) => format!("{} = {call}", v(*d)),
                 None => call,
             }
+        }
+        Inst::CallVm { func, args: a } => format!("call.vm f{}({})", func.0, args(a)),
+        Inst::TryCall { dst, func, args: a } => format!("{} = try.call f{}({})", v(*dst), func.0, args(a)),
+        Inst::TraitDispatch { dst, self_arg, arms } => {
+            let arm_list = arms
+                .iter()
+                .map(|(tid, f)| format!("{tid} => f{}", f.0))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{} = trait.dispatch {}, [{arm_list}]", v(*dst), v(*self_arg))
         }
         Inst::ListGetMaybe { dst, handle, index } => {
             format!("{} = list.i64.get_maybe {}, {}", v(*dst), v(*handle), v(*index))
@@ -735,7 +844,8 @@ fn inst_def(inst: &Inst) -> Option<ValueId> {
         | Inst::Select { dst, .. }
         | Inst::GlobalGet { dst, .. } => Some(*dst),
         Inst::Call { dst, .. } | Inst::CallFn { dst, .. } => *dst,
-        Inst::PrintStr { .. } | Inst::GlobalSet { .. } => None,
+        Inst::PrintStr { .. } | Inst::GlobalSet { .. } | Inst::CallVm { .. } => None,
+        Inst::TryCall { dst, .. } | Inst::TraitDispatch { dst, .. } => Some(*dst),
     }
 }
 
@@ -770,7 +880,11 @@ fn inst_uses(inst: &Inst) -> Vec<ValueId> {
         | Inst::MapGetMaybeI64F64 { handle, key, .. } => {
             vec![*handle, *key]
         }
-        Inst::Call { args, .. } | Inst::CallFn { args, .. } => args.clone(),
+        Inst::Call { args, .. }
+        | Inst::CallFn { args, .. }
+        | Inst::CallVm { args, .. }
+        | Inst::TryCall { args, .. } => args.clone(),
+        Inst::TraitDispatch { self_arg, .. } => vec![*self_arg],
         Inst::PrintStr { value, .. } => vec![*value],
         Inst::Select {
             cond, then_v, else_v, ..
@@ -818,6 +932,7 @@ mod tests {
             abi_version: lk_aot_abi::ABI_VERSION,
             globals: vec![],
             mutable_globals: Vec::new(),
+            vm_functions: Vec::new(),
             entry: FuncId(0),
             functions: vec![MirFunction {
                 id: FuncId(0),

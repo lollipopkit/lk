@@ -10,10 +10,11 @@ use crate::{
 
 #[test]
 fn llvm_backend_rejects_mir_unsupported_shape_with_precise_reason() {
-    // Nested container literals are outside the MIR subset; with the MIR
+    // Range values are (still) outside the MIR subset; with the MIR
     // pipeline as the only backend the compile must fail loudly with the
-    // lowering's precise `Unsupported` reason.
-    let tokens = Tokenizer::tokenize("return [[1]];\n").expect("tokens");
+    // lowering's precise `Unsupported` reason. (Nested container literals,
+    // the previous specimen here, lower natively since the Dyn work.)
+    let tokens = Tokenizer::tokenize("let r = 0..3;\nreturn r;\n").expect("tokens");
     let program = StmtParser::new(&tokens).parse_program().expect("program");
 
     let err = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect_err("unsupported must fail");
@@ -75,6 +76,7 @@ fn llvm_backend_lowers_static_const_contains_without_artifact_shell() {
                 positional_param_count: 0,
                 param_names: Vec::new(),
                 capture_count: 0,
+                debug_name: None,
             }],
         },
     };

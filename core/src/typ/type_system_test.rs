@@ -1,9 +1,11 @@
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 #[cfg(test)]
 mod tests {
     use crate::token::Tokenizer;
     use crate::typ::type_system::*;
     use crate::val::Type;
-    use std::collections::HashMap;
+    use hashbrown::HashMap;
 
     #[test]
     fn test_type_parsing_primitives() {

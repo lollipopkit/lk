@@ -1,7 +1,9 @@
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 use crate::util::fast_map::fast_hash_map_new;
 use anyhow::{Result, anyhow};
 
-use std::sync::Arc;
+use alloc::sync::Arc;
 
 use crate::{
     val::{HeapValue, RuntimeVal, ShortStr, TypedList, typed_map_from_entries},

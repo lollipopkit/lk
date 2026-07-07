@@ -1,3 +1,5 @@
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 use anyhow::{Result, bail};
 
 use crate::{expr::Expr, operator::BinOp, val::LiteralVal};
@@ -436,7 +438,7 @@ fn strip_parens(expr: &Expr) -> &Expr {
 
 fn additive_expr_is_int_like(
     expr: &Expr,
-    locals: &std::collections::HashMap<String, u16>,
+    locals: &crate::compat::collections::HashMap<String, u16>,
     facts: &crate::vm::analysis::PerformanceFacts,
 ) -> bool {
     match expr {

@@ -1,0 +1,12 @@
+[package]
+name = "lk-values"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "lk_values"
+
+[dependencies]
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
+arcstr = { version = "1", default-features = false, features = ["serde"] }
+hashbrown = { version = "0.15", features = ["serde"] }

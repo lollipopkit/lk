@@ -1,10 +1,12 @@
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 #[cfg(test)]
 mod tests {
     use crate::{
         val::{LiteralVal, RuntimeVal},
         vm::execute_source,
     };
-    use std::mem::size_of;
+    use core::mem::size_of;
 
     #[test]
     fn runtime_val_stays_within_two_words() {

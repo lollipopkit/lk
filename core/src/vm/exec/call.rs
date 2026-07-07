@@ -1,4 +1,6 @@
-use std::sync::Arc;
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
+use alloc::sync::Arc;
 
 use anyhow::{Result, anyhow, bail};
 
@@ -8,11 +10,21 @@ use crate::{
 };
 
 use super::{
-    Executor,
+    CallFrame, Executor,
     named_call::move_named_args_to_frame_from_stack,
     runtime_callable,
     support::{call_native_entry, call_native_entry_parts, move_inline_native_args_from_stack},
 };
+
+/// What resolving a call site produced (plan M2.5 sub-step ①): a `Runtime`/
+/// `RuntimeNative` target still runs to completion synchronously (native
+/// re-entry, unaffected by flattening); a `Closure` target instead pushes a
+/// `CallFrame` and hands back its function index for the dispatch trampoline in
+/// `exec.rs` to switch to.
+pub(super) enum CallOutcome {
+    Value(RuntimeVal),
+    Pushed(u32),
+}
 
 pub(super) enum CallableTarget {
     Closure {
@@ -101,7 +113,7 @@ impl Executor {
         window: CallWindow,
         known_target_kind: Option<PerfCallTargetKind>,
         ctx: &mut Option<&mut VmContext>,
-    ) -> Result<RuntimeVal> {
+    ) -> Result<CallOutcome> {
         let module = module.ok_or_else(|| anyhow!("Call requires Module execution"))?;
         let callee = *self
             .read(u8::try_from(window.callee.as_usize()).map_err(|_| anyhow!("call callee register overflow"))?)?;
@@ -121,7 +133,11 @@ impl Executor {
             CallableTarget::Closure {
                 function_index,
                 captures,
-            } => self.call_closure_window(module, function_index, captures, window, ctx),
+            } => {
+                let function = checked_positional_function(module, function_index, window.arg_count)?;
+                self.push_call_frame(function_index, function, captures, window)?;
+                Ok(CallOutcome::Pushed(function_index))
+            }
             CallableTarget::RuntimeNative { arity, function } => {
                 if arity != NativeEntry::VARIADIC && arity != window.arg_count {
                     bail!(
@@ -159,7 +175,9 @@ impl Executor {
                     )
                 };
                 self.sync_heap_gc_threshold();
-                result.or_else(|error| self.handle_call_error(error))
+                result
+                    .or_else(|error| self.handle_call_error(error))
+                    .map(CallOutcome::Value)
             }
             CallableTarget::Runtime(function) => {
                 let args = self.call_args_stack_range(window)?;
@@ -169,7 +187,9 @@ impl Executor {
                     &mut self.state.heap,
                     ctx.as_deref_mut(),
                 );
-                result.or_else(|error| self.handle_call_error(error))
+                result
+                    .or_else(|error| self.handle_call_error(error))
+                    .map(CallOutcome::Value)
             }
         }
     }
@@ -180,146 +200,126 @@ impl Executor {
         module: Option<&Module>,
         function_index: u32,
         window: CallWindow,
-        ctx: &mut Option<&mut VmContext>,
-    ) -> Result<RuntimeVal> {
+    ) -> Result<()> {
         let module = module.ok_or_else(|| anyhow!("CallDirect requires Module execution"))?;
         let captures = Arc::clone(&self.empty_captures);
         let function = checked_positional_function(module, function_index, window.arg_count)?;
-        self.call_closure_stack_args(module, function, captures, window, ctx)
+        self.push_call_frame(function_index, function, captures, window)
     }
 
-    pub(super) fn call_closure_window(
+    /// Push a suspended caller `CallFrame` and switch the executor's "current
+    /// frame" fields to the callee (plan M2.5 sub-step ①). Replaces what the
+    /// old recursive `call_closure_stack_args` did before its nested
+    /// `run_function_inner` call — the callee's code doesn't run here; the
+    /// dispatch trampoline in `exec.rs` picks it up on the next loop turn.
+    fn push_call_frame(
         &mut self,
-        module: &Module,
         function_index: u32,
-        captures: Arc<Vec<RuntimeVal>>,
-        window: CallWindow,
-        ctx: &mut Option<&mut VmContext>,
-    ) -> Result<RuntimeVal> {
-        let function = checked_positional_function(module, function_index, window.arg_count)?;
-        self.call_closure_stack_args(module, function, captures, window, ctx)
-    }
-
-    pub(super) fn call_closure_named_stack_args(
-        &mut self,
-        module: &Module,
-        function_index: u32,
-        captures: Arc<Vec<RuntimeVal>>,
-        window: CallWindow,
-        named_count: u16,
-        ctx: &mut Option<&mut VmContext>,
-    ) -> Result<RuntimeVal> {
-        let function = module
-            .functions
-            .get(function_index as usize)
-            .ok_or_else(|| anyhow!("function index {} out of bounds", function_index))?;
-
-        let positional = self.call_args_stack_range(window)?;
-        let named_start = positional.end;
-        let saved_base = self.frame_base;
-        let saved_top = self.state.stack_top;
-        let saved_pc = self.pc;
-        let saved_captures = std::mem::replace(&mut self.captures, captures);
-        let saved_register_count = self.register_count;
-        let saved_handler_depth = self.handler_stack.len();
-        let result = (|| {
-            let new_base = self.state.stack_top;
-            let new_top = new_base + function.register_count as usize;
-            if self.state.stack.len() < new_top {
-                self.state.stack.resize(new_top, RuntimeVal::Nil);
-            }
-            let (caller_stack, callee_stack) = self.state.stack.split_at_mut(new_base);
-            let callee_frame = &mut callee_stack[..function.register_count as usize];
-            callee_frame.fill(RuntimeVal::Nil);
-            move_named_args_to_frame_from_stack(
-                function,
-                positional,
-                caller_stack,
-                named_start,
-                named_count,
-                &self.state.heap,
-                callee_frame,
-            )?;
-            self.frame_base = new_base;
-            self.register_count = function.register_count;
-            self.state.stack_top = new_top;
-            self.pc = 0;
-            self.run_function_inner(function, Some(module), ctx)
-        })();
-        self.frame_base = saved_base;
-        self.register_count = saved_register_count;
-        self.state.stack_top = saved_top;
-        self.pc = saved_pc;
-        self.captures = saved_captures;
-        self.handler_stack.truncate(saved_handler_depth);
-        match result {
-            Ok(returns) => Ok(returns.into_first()),
-            Err(error) => {
-                if let Some(raise) = error.downcast_ref::<super::LanguageRaise>() {
-                    self.handle_language_raise(raise)?;
-                    Ok(RuntimeVal::Nil)
-                } else {
-                    Err(error)
-                }
-            }
-        }
-    }
-
-    fn call_closure_stack_args(
-        &mut self,
-        module: &Module,
         function: &Function,
         captures: Arc<Vec<RuntimeVal>>,
         window: CallWindow,
-        ctx: &mut Option<&mut VmContext>,
-    ) -> Result<RuntimeVal> {
+    ) -> Result<()> {
         let arg_range = self.call_args_stack_range(window)?;
-        let saved_base = self.frame_base;
-        let saved_top = self.state.stack_top;
-        let saved_pc = self.pc;
-        let saved_captures = std::mem::replace(&mut self.captures, captures);
-        let saved_register_count = self.register_count;
-        let saved_handler_depth = self.handler_stack.len();
-        let result = {
-            let new_base = self.state.stack_top;
-            let new_top = new_base + function.register_count as usize;
-            if self.state.stack.len() < new_top {
-                self.state.stack.resize(new_top, RuntimeVal::Nil);
-            }
-            // Zero the entire callee frame at once, then copy args over.
-            let callee_frame_start = new_base;
-            let reg_count = function.register_count as usize;
-            self.state.stack[callee_frame_start..callee_frame_start + reg_count].fill(RuntimeVal::Nil);
-            // Move args from caller frame into callee registers r0..rN.
-            let param_count = window.arg_count as usize;
-            for i in 0..param_count {
-                let src = arg_range.start + i;
-                let dst = callee_frame_start + i;
-                self.state.stack[dst] = std::mem::take(&mut self.state.stack[src]);
-            }
-            self.frame_base = new_base;
-            self.register_count = function.register_count;
-            self.state.stack_top = new_top;
-            self.pc = 0;
-            self.run_function_inner(function, Some(module), ctx)
-        };
-        self.frame_base = saved_base;
-        self.register_count = saved_register_count;
-        self.state.stack_top = saved_top;
-        self.pc = saved_pc;
-        self.captures = saved_captures;
-        self.handler_stack.truncate(saved_handler_depth);
-        match result {
-            Ok(returns) => Ok(returns.into_first()),
-            Err(error) => {
-                if let Some(raise) = error.downcast_ref::<super::LanguageRaise>() {
-                    self.handle_language_raise(raise)?;
-                    Ok(RuntimeVal::Nil)
-                } else {
-                    Err(error)
-                }
-            }
+        // Checked before any state mutation: a failure here (call depth cap)
+        // must leave the caller's frame untouched, exactly like the old
+        // `self.enter_lk_call().and_then(...)` short-circuit.
+        self.enter_lk_call()?;
+        let new_base = self.state.stack_top;
+        let new_top = new_base + function.register_count as usize;
+        if self.state.stack.len() < new_top {
+            self.state.stack.resize(new_top, RuntimeVal::Nil);
         }
+        let reg_count = function.register_count as usize;
+        self.state.stack[new_base..new_base + reg_count].fill(RuntimeVal::Nil);
+        let param_count = window.arg_count as usize;
+        for i in 0..param_count {
+            let src = arg_range.start + i;
+            let dst = new_base + i;
+            self.state.stack[dst] = core::mem::take(&mut self.state.stack[src]);
+        }
+        self.frames.push(CallFrame {
+            function_index: self.current_function_index,
+            pc: self.pc,
+            frame_base: self.frame_base,
+            register_count: self.register_count,
+            captures: core::mem::replace(&mut self.captures, captures),
+            handler_depth: self.handler_stack.len(),
+            window,
+            named_count: 0,
+            stack_top: self.state.stack_top,
+        });
+        self.current_function_index = function_index;
+        self.frame_base = new_base;
+        self.register_count = function.register_count;
+        self.state.stack_top = new_top;
+        self.pc = 0;
+        Ok(())
+    }
+
+    /// Named-argument counterpart of `push_call_frame` (plan M2.5 sub-step
+    /// ②): replaces what the old recursive `call_closure_named_stack_args`
+    /// did before its nested `run_function_inner` call.
+    pub(super) fn push_call_frame_named(
+        &mut self,
+        function_index: u32,
+        function: &Function,
+        captures: Arc<Vec<RuntimeVal>>,
+        window: CallWindow,
+        named_count: u16,
+    ) -> Result<()> {
+        let positional = self.call_args_stack_range(window)?;
+        let named_start = positional.end;
+        // Checked before any state mutation, same rationale as `push_call_frame`.
+        self.enter_lk_call()?;
+        let new_base = self.state.stack_top;
+        let new_top = new_base + function.register_count as usize;
+        if self.state.stack.len() < new_top {
+            self.state.stack.resize(new_top, RuntimeVal::Nil);
+        }
+        let (caller_stack, callee_stack) = self.state.stack.split_at_mut(new_base);
+        let callee_frame = &mut callee_stack[..function.register_count as usize];
+        callee_frame.fill(RuntimeVal::Nil);
+        move_named_args_to_frame_from_stack(
+            function,
+            positional,
+            caller_stack,
+            named_start,
+            named_count,
+            &self.state.heap,
+            callee_frame,
+        )?;
+        self.frames.push(CallFrame {
+            function_index: self.current_function_index,
+            pc: self.pc,
+            frame_base: self.frame_base,
+            register_count: self.register_count,
+            captures: core::mem::replace(&mut self.captures, captures),
+            handler_depth: self.handler_stack.len(),
+            window,
+            named_count,
+            stack_top: self.state.stack_top,
+        });
+        self.current_function_index = function_index;
+        self.frame_base = new_base;
+        self.register_count = function.register_count;
+        self.state.stack_top = new_top;
+        self.pc = 0;
+        Ok(())
+    }
+}
+
+/// Record a call frame for an error that is propagating out of `function`
+/// (uncaught here). Runs only on the error path — successful calls never touch
+/// the traceback, so this is zero-cost for normal execution. Anonymous
+/// functions (no `debug_name`) are skipped. Reuses the `VmContext` call-stack;
+/// the top level formats it via `call_stack_report`, and `pcall` clears it when
+/// it catches (plan M2.2 traceback). Also used by the flattened unwind loop
+/// in `exec.rs` (`unwind_flat_run`, plan M2.5 sub-step ①).
+pub(super) fn push_traceback_frame(ctx: &mut Option<&mut VmContext>, function: &Function) {
+    if let Some(ctx) = ctx.as_deref_mut()
+        && let Some(name) = function.debug_name.as_ref()
+    {
+        ctx.push_call_frame(Arc::clone(name), None::<Arc<str>>);
     }
 }
 

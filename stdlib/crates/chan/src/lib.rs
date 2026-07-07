@@ -6,9 +6,8 @@
 
 use anyhow::{Result, anyhow, bail};
 use lk_core::{
-    rt,
     rt::RuntimePayload,
-    val::{ChannelValue, HeapStore, HeapValue, RuntimeVal, TypedList},
+    val::{ChannelValue, HeapStore, HeapValue, RuntimeVal},
     vm::{NativeArgs, NativeRuntime},
 };
 use std::sync::Arc;
@@ -26,7 +25,9 @@ impl ChannelModule {
     #[stdlib_export(name = "close", params(channel: Channel), returns = Nil)]
     fn close(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let channel = channel_arg(args.get(0).expect("checked arity"), runtime.heap(), "chan.close()")?;
-        rt::with_runtime(|runtime| runtime.close_channel(channel.id))
+        runtime
+            .async_runtime()
+            .with(|runtime| runtime.close_channel(channel.id))
             .map_err(|err| anyhow!("Failed to close channel: {err}"))?;
         Ok(RuntimeVal::Nil)
     }
@@ -34,7 +35,9 @@ impl ChannelModule {
     #[stdlib_export(name = "len", params(channel: Channel), returns = Int)]
     fn len(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let channel = channel_arg(args.get(0).expect("checked arity"), runtime.heap(), "chan.len()")?;
-        let len = rt::with_runtime(|runtime| runtime.channel_len(channel.id))
+        let len = runtime
+            .async_runtime()
+            .with(|runtime| runtime.channel_len(channel.id))
             .map_err(|err| anyhow!("Failed to read channel length: {err}"))?;
         Ok(RuntimeVal::Int(len as i64))
     }
@@ -48,7 +51,9 @@ impl ChannelModule {
     #[stdlib_export(name = "is_closed", params(channel: Channel), returns = Bool)]
     fn is_closed(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let channel = channel_arg(args.get(0).expect("checked arity"), runtime.heap(), "chan.is_closed()")?;
-        let closed = rt::with_runtime(|runtime| runtime.channel_is_closed(channel.id))
+        let closed = runtime
+            .async_runtime()
+            .with(|runtime| runtime.channel_is_closed(channel.id))
             .map_err(|err| anyhow!("Failed to read channel closed state: {err}"))?;
         Ok(RuntimeVal::Bool(closed))
     }
@@ -58,19 +63,26 @@ impl ChannelModule {
         let values = args.as_slice();
         let channel = channel_arg(&values[0], runtime.heap(), "chan.try_send()")?;
         let value = RuntimePayload::copy_from_value(&values[1], runtime.heap())?;
-        let sent = rt::with_runtime(|runtime| runtime.try_send(channel.id, value))
+        let sent = runtime
+            .async_runtime()
+            .with(|runtime| runtime.try_send(channel.id, value))
             .map_err(|err| anyhow!("Failed to send to channel: {err}"))?;
         Ok(RuntimeVal::Bool(sent))
     }
 
-    #[stdlib_export(name = "try_recv", params(channel: Channel), returns = List)]
+    /// Non-blocking receive: the value when one is ready, `nil` when empty
+    /// (pairs with postfix `!` to assert), raises once the channel closed.
+    #[stdlib_export(name = "try_recv", params(channel: Channel), returns = Any)]
     fn try_recv(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let channel = channel_arg(args.get(0).expect("checked arity"), runtime.heap(), "chan.try_recv()")?;
-        match rt::with_runtime(|rt| rt.try_recv(channel.id))
+        match runtime
+            .async_runtime()
+            .with(|rt| rt.try_recv(channel.id))
             .map_err(|err| anyhow!("Failed to receive from channel: {err}"))?
         {
-            Some((ok, value)) => Ok(pair(ok, value.into_value(runtime.heap_mut())?, runtime)),
-            None => Ok(pair(false, RuntimeVal::Nil, runtime)),
+            Some((true, value)) => value.into_value(runtime.heap_mut()),
+            Some((false, _)) => Err(anyhow!("receive on closed channel")),
+            None => Ok(RuntimeVal::Nil),
         }
     }
 }
@@ -88,28 +100,21 @@ fn channel_arg(value: &RuntimeVal, heap: &HeapStore, name: &str) -> Result<Arc<C
     }
 }
 
-fn pair(ok: bool, value: RuntimeVal, runtime: &mut NativeRuntime<'_>) -> RuntimeVal {
-    RuntimeVal::Obj(
-        runtime
-            .heap_mut()
-            .alloc(HeapValue::List(TypedList::Mixed(vec![RuntimeVal::Bool(ok), value]))),
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use lk_core::{
+        rt::AsyncRuntimeHandle,
         val::{ShortStr, Type},
-        vm::{NativeFunction, RuntimeModuleState},
+        vm::{NativeFunction, RuntimeModuleState, VmContext},
     };
 
     fn chan_native(name: &str) -> Result<(u16, NativeFunction)> {
         crate::runtime_native::runtime_native_export(&ChannelModule::new(), name)
     }
 
-    fn runtime_channel(capacity: i64, heap: &mut HeapStore) -> Result<RuntimeVal> {
-        let id = rt::with_runtime(|runtime| runtime.create_channel(Some(capacity as usize)))?;
+    fn runtime_channel(capacity: i64, heap: &mut HeapStore, handle: &AsyncRuntimeHandle) -> Result<RuntimeVal> {
+        let id = handle.with(|runtime| runtime.create_channel(Some(capacity as usize)))?;
         Ok(RuntimeVal::Obj(heap.alloc(HeapValue::Channel(Arc::new(
             ChannelValue {
                 id,
@@ -119,32 +124,21 @@ mod tests {
         )))))
     }
 
-    fn call(name: &str, args: &[RuntimeVal], state: &mut RuntimeModuleState) -> Result<RuntimeVal> {
+    // Share one VmContext (hence one async runtime) across channel creation and
+    // every call so the channel is visible to send/recv, matching real VM
+    // execution where native calls always receive the running context.
+    fn call(
+        name: &str,
+        args: &[RuntimeVal],
+        state: &mut RuntimeModuleState,
+        ctx: &mut VmContext,
+    ) -> Result<RuntimeVal> {
         let (_, function) = chan_native(name)?;
         let NativeFunction::Plain(function) = function else {
             bail!("{name} must use plain RuntimeNative");
         };
-        let mut runtime = NativeRuntime::new(state, None, None);
+        let mut runtime = NativeRuntime::new(state, Some(ctx), None);
         function(NativeArgs::new(args), &mut runtime)
-    }
-
-    fn expect_list(value: &RuntimeVal, heap: &HeapStore) -> Vec<RuntimeVal> {
-        let RuntimeVal::Obj(handle) = value else {
-            panic!("expected runtime list object");
-        };
-        let Some(HeapValue::List(list)) = heap.get(*handle) else {
-            panic!("expected runtime list heap value");
-        };
-        match list {
-            TypedList::Mixed(values) => values.clone(),
-            TypedList::Int(values) => values.iter().copied().map(RuntimeVal::Int).collect(),
-            TypedList::Float(values) => values.iter().copied().map(RuntimeVal::Float).collect(),
-            TypedList::Bool(values) => values.iter().copied().map(RuntimeVal::Bool).collect(),
-            TypedList::String(values) => values
-                .iter()
-                .map(|value| RuntimeVal::ShortStr(ShortStr::new(value).expect("short test string")))
-                .collect(),
-        }
     }
 
     #[test]
@@ -159,18 +153,19 @@ mod tests {
 
     #[test]
     fn chan_capacity_len_and_is_closed_use_runtime_channel() -> Result<()> {
+        let mut ctx = VmContext::new_without_core_vm_builtins();
         let mut state = RuntimeModuleState::default();
-        let channel = runtime_channel(3, state.heap_mut())?;
+        let channel = runtime_channel(3, state.heap_mut(), ctx.async_runtime())?;
         assert_eq!(
-            call("capacity", std::slice::from_ref(&channel), &mut state)?,
+            call("capacity", std::slice::from_ref(&channel), &mut state, &mut ctx)?,
             RuntimeVal::Int(3)
         );
         assert_eq!(
-            call("len", std::slice::from_ref(&channel), &mut state)?,
+            call("len", std::slice::from_ref(&channel), &mut state, &mut ctx)?,
             RuntimeVal::Int(0)
         );
         assert_eq!(
-            call("is_closed", std::slice::from_ref(&channel), &mut state)?,
+            call("is_closed", std::slice::from_ref(&channel), &mut state, &mut ctx)?,
             RuntimeVal::Bool(false)
         );
         Ok(())
@@ -178,34 +173,30 @@ mod tests {
 
     #[test]
     fn chan_try_send_and_recv_round_trips_runtime_values() -> Result<()> {
+        let mut ctx = VmContext::new_without_core_vm_builtins();
         let mut state = RuntimeModuleState::default();
-        let channel = runtime_channel(1, state.heap_mut())?;
+        let channel = runtime_channel(1, state.heap_mut(), ctx.async_runtime())?;
         let value = RuntimeVal::ShortStr(ShortStr::new("payload").expect("short string"));
         assert_eq!(
-            call("try_send", &[channel.clone(), value], &mut state)?,
+            call("try_send", &[channel.clone(), value], &mut state, &mut ctx)?,
             RuntimeVal::Bool(true)
         );
 
-        let received = call("try_recv", std::slice::from_ref(&channel), &mut state)?;
-        let received = expect_list(&received, state.heap());
-        assert_eq!(received.len(), 2);
-        assert_eq!(received[0], RuntimeVal::Bool(true));
+        let received = call("try_recv", std::slice::from_ref(&channel), &mut state, &mut ctx)?;
         assert_eq!(
-            received[1],
+            received,
             RuntimeVal::ShortStr(ShortStr::new("payload").expect("short string"))
         );
         Ok(())
     }
 
     #[test]
-    fn chan_try_recv_empty_returns_false_nil_pair() -> Result<()> {
+    fn chan_try_recv_empty_returns_nil() -> Result<()> {
+        let mut ctx = VmContext::new_without_core_vm_builtins();
         let mut state = RuntimeModuleState::default();
-        let channel = runtime_channel(1, state.heap_mut())?;
-        let received = call("try_recv", std::slice::from_ref(&channel), &mut state)?;
-        assert_eq!(
-            expect_list(&received, state.heap()),
-            vec![RuntimeVal::Bool(false), RuntimeVal::Nil]
-        );
+        let channel = runtime_channel(1, state.heap_mut(), ctx.async_runtime())?;
+        let received = call("try_recv", std::slice::from_ref(&channel), &mut state, &mut ctx)?;
+        assert_eq!(received, RuntimeVal::Nil);
         Ok(())
     }
 }

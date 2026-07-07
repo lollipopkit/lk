@@ -1,5 +1,7 @@
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
+use alloc::sync::Arc;
 use anyhow::{Result, anyhow, bail};
-use std::sync::Arc;
 
 use crate::val::{CallableValue, HeapValue, RuntimeVal};
 use crate::vm::Module;

@@ -1,0 +1,41 @@
+// try/catch: recoverable error handling (parse-time sugar over a hidden
+// protected-call primitive). (plan M2.4; v2: the only error-handling surface)
+//
+//   try { BODY } catch e { HANDLER }
+// runs BODY; if it raises (via error(...) or a runtime error), binds the error
+// value to `e` and runs HANDLER instead of propagating.
+
+fn checked_div(a, b) {
+    if (b == 0) { error("division by zero"); }
+    return a / b;
+}
+
+let log = [];
+
+// success: HANDLER is skipped
+try {
+    let q = checked_div(10, 2);
+    assert(q > 4.9);
+    log.push("ok");
+} catch e {
+    log.push("unexpected");
+}
+
+// failure: error(...) is caught, e bound to the raised value
+try {
+    let q = checked_div(1, 0);
+    log.push("unreachable");
+} catch e {
+    log.push("caught");
+}
+
+// first-class primitive error value: error(code) round-trips as the value
+try {
+    error(404);
+} catch code {
+    assert(code == 404);
+    log.push("code-404");
+}
+
+assert(log == ["ok", "caught", "code-404"]);
+println("try/catch: ok");

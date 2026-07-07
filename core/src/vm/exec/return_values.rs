@@ -1,3 +1,5 @@
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 use crate::val::RuntimeVal;
 
 pub(super) enum ReturnValues {
@@ -13,19 +15,19 @@ impl ReturnValues {
     pub(super) fn take_from_slots(values: &mut [RuntimeVal]) -> Self {
         match values {
             [] => Self::None,
-            [one] => Self::One(std::mem::take(one)),
-            [one, two] => Self::Two([std::mem::take(one), std::mem::take(two)]),
-            [one, two, three] => Self::Three([std::mem::take(one), std::mem::take(two), std::mem::take(three)]),
+            [one] => Self::One(core::mem::take(one)),
+            [one, two] => Self::Two([core::mem::take(one), core::mem::take(two)]),
+            [one, two, three] => Self::Three([core::mem::take(one), core::mem::take(two), core::mem::take(three)]),
             [one, two, three, four] => Self::Four([
-                std::mem::take(one),
-                std::mem::take(two),
-                std::mem::take(three),
-                std::mem::take(four),
+                core::mem::take(one),
+                core::mem::take(two),
+                core::mem::take(three),
+                core::mem::take(four),
             ]),
             values => {
                 let mut out = Vec::with_capacity(values.len());
                 for value in values {
-                    out.push(std::mem::take(value));
+                    out.push(core::mem::take(value));
                 }
                 Self::Many(out)
             }

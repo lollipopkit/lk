@@ -1,4 +1,6 @@
-use std::fmt::Debug;
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
+use core::fmt::Debug;
 
 use crate::token::{ParseError, Position, Span};
 use anyhow::{Result, anyhow};
@@ -60,10 +62,13 @@ pub enum Token {
     Fn,       // fn (function definition)
     For,      // for (for loop)
     Match,    // match (pattern matching)
+    Try,      // try (recoverable error handling; desugars to pcall)
+    Catch,    // catch (try's error handler)
     Case,     // case
     Default,  // default
     // Concurrency keywords
     Select, // select
+    Go,     // go (spawn a goroutine, Go-style)
     // Module-use keywords
     Use,  // use
     From, // from
@@ -183,7 +188,7 @@ impl<'a> Tokenizer<'a> {
     }
 
     /// Tokenize with enhanced error information (line/column span) for LSP
-    pub fn tokenize_enhanced(s: &str) -> std::result::Result<Vec<Token>, ParseError> {
+    pub fn tokenize_enhanced(s: &str) -> core::result::Result<Vec<Token>, ParseError> {
         let mut t = Tokenizer::new_enhanced(s);
         match t.parse() {
             Ok(()) => Ok(t.tokens),
@@ -195,7 +200,7 @@ impl<'a> Tokenizer<'a> {
     }
 
     /// Tokenize and return tokens with precise spans aligned by index
-    pub fn tokenize_enhanced_with_spans(s: &str) -> std::result::Result<(Vec<Token>, Vec<Span>), ParseError> {
+    pub fn tokenize_enhanced_with_spans(s: &str) -> core::result::Result<(Vec<Token>, Vec<Span>), ParseError> {
         let mut t = Tokenizer::new_enhanced(s);
         match t.parse() {
             Ok(()) => Ok((t.tokens, t.token_spans.unwrap_or_default())),
@@ -674,8 +679,20 @@ impl<'a> Tokenizer<'a> {
             self.push_span_only(Token::For, sp);
             return Ok(());
         }
+        if let Some(sp) = match_kw(self, "go") {
+            self.push_span_only(Token::Go, sp);
+            return Ok(());
+        }
         if let Some(sp) = match_kw(self, "match") {
             self.push_span_only(Token::Match, sp);
+            return Ok(());
+        }
+        if let Some(sp) = match_kw(self, "try") {
+            self.push_span_only(Token::Try, sp);
+            return Ok(());
+        }
+        if let Some(sp) = match_kw(self, "catch") {
+            self.push_span_only(Token::Catch, sp);
             return Ok(());
         }
         if let Some(sp) = match_kw(self, "select") {
@@ -1132,7 +1149,7 @@ impl<'a> Tokenizer<'a> {
                 // Keywords: true false nil if else while let break continue return goto fn for use as ...
                 // Also: go, select/case/default
                 // NOTE: include starting letters for all keywords so they route to parse_keywords.
-                't' | 'f' | 'n' | 'i' | 'e' | 'w' | 'l' | 'b' | 'c' | 'g' | 's' | 'd' | 'a' | 'm' | 'u' => {
+                't' | 'f' | 'n' | 'i' | 'e' | 'w' | 'l' | 'b' | 'c' | 'g' | 's' | 'd' | 'a' | 'm' | 'u' | 'y' => {
                     self.parse_keywords()?;
                 }
                 _ => {

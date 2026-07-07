@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 
 fn load_int_register(function: &Function, value: i64) -> u8 {
     function

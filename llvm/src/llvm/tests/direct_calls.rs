@@ -46,6 +46,7 @@ fn llvm_backend_lowers_control_flow_call_direct_without_shell() {
                     positional_param_count: 0,
                     param_names: Vec::new(),
                     capture_count: 0,
+                    debug_name: None,
                 },
                 FunctionData {
                     consts: ConstPoolData {
@@ -67,6 +68,7 @@ fn llvm_backend_lowers_control_flow_call_direct_without_shell() {
                     positional_param_count: 1,
                     param_names: vec!["value".to_string()],
                     capture_count: 0,
+                    debug_name: None,
                 },
             ],
         },

@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 use crate::vm::analysis::{PerfCallFact, PerfCallTargetKind};
 
 #[test]

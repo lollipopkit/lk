@@ -1,3 +1,6 @@
+use crate::compat::collections::HashSet;
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 use crate::{
     ast::Parser,
     operator::{BinOp, UnaryOp},
@@ -6,13 +9,7 @@ use crate::{
     val::{LiteralVal, Type},
 };
 use anyhow::Result;
-use dashmap::DashMap;
-use once_cell::sync::Lazy;
-use std::{
-    collections::HashSet,
-    fmt::{Debug, Display},
-    sync::Arc,
-};
+use core::fmt::{Debug, Display};
 /// Grammar (abridged):
 /// exp     ::= paren
 /// paren   ::= {'('} or {')'}
@@ -29,24 +26,6 @@ use std::{
 /// list    ::= '[' [expr {',' expr}] ']'
 /// map     ::= '{' [expr ':' expr {',' expr ':' expr}] '}'
 ///
-/// Select case pattern for select statements
-#[derive(Debug, Clone, PartialEq)]
-pub enum SelectPattern {
-    /// recv(channel) pattern with optional binding
-    Recv {
-        binding: Option<String>,
-        channel: Box<Expr>,
-    },
-    /// send(channel, expr) pattern
-    Send { channel: Box<Expr>, value: Box<Expr> },
-}
-/// Select case: case pattern => expr
-#[derive(Debug, Clone, PartialEq)]
-pub struct SelectCase {
-    pub pattern: SelectPattern,
-    pub guard: Option<Box<Expr>>, // Optional guard expression
-    pub body: Box<Expr>,
-}
 /// Template string part: either a literal string or an interpolated expression
 #[derive(Debug, Clone, PartialEq)]
 pub enum TemplateStringPart {
@@ -162,11 +141,6 @@ pub enum Expr {
         inclusive: bool,         // .. vs ..=
         step: Option<Box<Expr>>, // optional explicit step (positive or negative, non-zero)
     },
-    /// select { case pattern => expr; ...; default => expr }
-    Select {
-        cases: Vec<SelectCase>,
-        default_case: Option<Box<Expr>>,
-    },
     /// Template string: `Hello ${name}!`
     TemplateString(Vec<TemplateStringPart>),
     /// Closure: |param1, param2| expr
@@ -270,26 +244,6 @@ impl Expr {
                     st.collect_ctx_names(names);
                 }
             }
-            Expr::Select { cases, default_case } => {
-                for case in cases {
-                    match &case.pattern {
-                        SelectPattern::Recv { channel, .. } => {
-                            channel.collect_ctx_names(names);
-                        }
-                        SelectPattern::Send { channel, value } => {
-                            channel.collect_ctx_names(names);
-                            value.collect_ctx_names(names);
-                        }
-                    }
-                    if let Some(guard) = &case.guard {
-                        guard.collect_ctx_names(names);
-                    }
-                    case.body.collect_ctx_names(names);
-                }
-                if let Some(default_expr) = default_case {
-                    default_expr.collect_ctx_names(names);
-                }
-            }
             Expr::TemplateString(parts) => {
                 for part in parts {
                     match part {
@@ -322,27 +276,6 @@ impl Expr {
             // Only collect string values when they are actual identifier roots, not field names
             Expr::Literal(_) => {} // Receive operator: collect from inner expression
         }
-    }
-    /// Cached parsing: parse expression string and return a shared Arc<Expr>.
-    pub fn parse_cached_arc(expression: &str) -> Result<Arc<Expr>> {
-        use dashmap::mapref::entry::Entry;
-        // Global static cache: Key is expression string, Value is parsed Expr wrapped in Arc
-        static PARSE_CACHE: Lazy<DashMap<String, Arc<Expr>>> = Lazy::new(DashMap::new);
-        // Fast read path
-        if let Some(found) = PARSE_CACHE.get(expression) {
-            return Ok(found.value().clone());
-        }
-        // Parse on miss, then insert with write lock
-        let tokens = Tokenizer::tokenize(expression)?;
-        let expr = Parser::new(&tokens).parse()?; // Constant folding happens in parser
-        let expr_arc = Arc::new(expr);
-        Ok(match PARSE_CACHE.entry(expression.to_string()) {
-            Entry::Vacant(v) => {
-                v.insert(expr_arc.clone());
-                expr_arc
-            }
-            Entry::Occupied(o) => o.get().clone(),
-        })
     }
     /// Constant folding: calculate pure constant sub-expressions as LiteralVal constants
     pub(crate) fn fold_constants(self) -> Expr {
@@ -522,30 +455,6 @@ impl Expr {
                     step: folded_step,
                 }
             }
-            Expr::Select { cases, default_case } => {
-                let folded_cases = cases
-                    .into_iter()
-                    .map(|case| SelectCase {
-                        pattern: match case.pattern {
-                            SelectPattern::Recv { binding, channel } => SelectPattern::Recv {
-                                binding,
-                                channel: Box::new(channel.fold_constants()),
-                            },
-                            SelectPattern::Send { channel, value } => SelectPattern::Send {
-                                channel: Box::new(channel.fold_constants()),
-                                value: Box::new(value.fold_constants()),
-                            },
-                        },
-                        guard: case.guard.map(|g| Box::new(g.fold_constants())),
-                        body: Box::new(case.body.fold_constants()),
-                    })
-                    .collect();
-                let folded_default = default_case.map(|d| Box::new(d.fold_constants()));
-                Expr::Select {
-                    cases: folded_cases,
-                    default_case: folded_default,
-                }
-            }
             Expr::TemplateString(parts) => {
                 // Template string constant folding: if all interpolated expressions are constants, fold to constant string
                 let folded_parts: Vec<TemplateStringPart> = parts
@@ -626,7 +535,8 @@ impl Expr {
                     name,
                     fields: new_fields,
                 }
-            }
+            } // Never itself a constant (always a runtime suspend); fold the
+              // yielded value's own sub-expression only.
         }
     }
 }
@@ -649,7 +559,7 @@ impl TryFrom<String> for Expr {
     }
 }
 impl Display for Expr {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Expr::Bin(left, op, right) => write!(f, "{left} {op:?} {right}"),
             Expr::Unary(op, expr) => write!(f, "{op:?}{expr}"),
@@ -704,36 +614,6 @@ impl Display for Expr {
                 } else {
                     write!(f, "{}{}{}", start_str, op, end_str)
                 }
-            }
-            Expr::Select { cases, default_case } => {
-                write!(f, "select {{")?;
-                for (i, case) in cases.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, "; ")?;
-                    }
-                    write!(f, "case ")?;
-                    match &case.pattern {
-                        SelectPattern::Recv { binding, channel } => {
-                            if let Some(name) = binding {
-                                write!(f, "{} <- recv({})", name, channel)?;
-                            } else {
-                                write!(f, "recv({})", channel)?;
-                            }
-                        }
-                        SelectPattern::Send { channel, value } => write!(f, "{} <= send({})", channel, value)?,
-                    }
-                    if let Some(g) = &case.guard {
-                        write!(f, " if {}", g)?;
-                    }
-                    write!(f, " => {}", case.body)?;
-                }
-                if let Some(default) = default_case {
-                    if !cases.is_empty() {
-                        write!(f, "; ")?;
-                    }
-                    write!(f, "default => {}", default)?;
-                }
-                write!(f, "}}")
             }
             Expr::TemplateString(parts) => {
                 write!(f, "\"")?;
@@ -867,7 +747,7 @@ fn fold_literal_div(lhs: &LiteralVal, rhs: &LiteralVal) -> Option<LiteralVal> {
     match (lhs, rhs) {
         (LiteralVal::Int(a), LiteralVal::Int(b)) => {
             let result = (*a as f64) / (*b as f64);
-            if result.fract() == 0.0 {
+            if crate::compat::float::fract(result) == 0.0 {
                 Some(LiteralVal::Int(result as i64))
             } else {
                 Some(LiteralVal::Float(result))

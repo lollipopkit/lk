@@ -1,11 +1,13 @@
 use super::{ForPattern, Stmt};
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 use crate::{
     macro_system::token_lexeme,
     operator::BinOp,
     stmt::{ImportSource, ImportStmt},
     token::Token,
 };
-use std::fmt::{self, Display};
+use core::fmt::{self, Display};
 
 impl Display for Stmt {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

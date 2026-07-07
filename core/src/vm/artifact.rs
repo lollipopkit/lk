@@ -1,5 +1,7 @@
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 use crate::util::fast_map::fast_hash_map_new;
-use std::sync::Arc;
+use alloc::sync::Arc;
 
 use anyhow::{Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
@@ -22,7 +24,15 @@ use super::{
 // tiny artifacts kilobytes large).
 // Version 6: the `CallMethodK` opcode (boxing-free positional method calls)
 // joins the instruction encoding; older runtimes would mis-decode it.
-pub const MODULE_ARTIFACT_VERSION: u32 = 6;
+// Version 7: `FunctionData.debug_name` carries the source function name for
+// diagnostics/tracebacks (serde-defaulted, but the version bump keeps stale
+// artifacts cleanly rejected rather than silently name-less).
+// Version 8: the `Yield` opcode (coroutines) joins the instruction encoding;
+// older runtimes would mis-decode it, same reasoning as `CallMethodK`.
+// Version 9: `Yield` removed again (v2 direction: coroutines/`yield` dropped
+// in favor of Go-style go/spawn concurrency) — v8 artifacts may contain an
+// opcode this runtime no longer decodes.
+pub const MODULE_ARTIFACT_VERSION: u32 = 9;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ModuleArtifact {
@@ -146,6 +156,8 @@ pub struct FunctionData {
     pub positional_param_count: u16,
     pub param_names: Vec<String>,
     pub capture_count: u16,
+    #[serde(default)]
+    pub debug_name: Option<String>,
 }
 
 impl FunctionData {
@@ -167,6 +179,7 @@ impl FunctionData {
             positional_param_count: function.positional_param_count,
             param_names,
             capture_count: function.capture_count,
+            debug_name: function.debug_name.as_ref().map(|name| name.to_string()),
         }
     }
 
@@ -193,6 +206,7 @@ impl FunctionData {
                 names
             },
             capture_count: self.capture_count,
+            debug_name: self.debug_name.map(Arc::<str>::from),
         })
     }
 }
@@ -397,7 +411,7 @@ mod tests {
 
     #[test]
     fn module_artifact_rejects_previous_version() {
-        assert_eq!(MODULE_ARTIFACT_VERSION, 6);
+        assert_eq!(MODULE_ARTIFACT_VERSION, 9);
         let source = "return 1;\n";
         let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
         let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
@@ -407,7 +421,34 @@ mod tests {
 
         let json = artifact.to_json_string().expect("json");
         let err = ModuleArtifact::from_json_str(&json).expect_err("previous-version artifact should be rejected");
-        assert!(err.to_string().contains("unsupported LK module artifact version 5"));
+        assert!(err.to_string().contains("unsupported LK module artifact version 8"));
+    }
+
+    #[test]
+    fn function_debug_name_survives_compile_and_artifact_round_trip() {
+        // A named `fn` carries its source name into the bytecode (diagnostics /
+        // tracebacks) and that name survives the `.lkm` serialization round trip.
+        let source = "fn greet() { return 1; }\nreturn greet();\n";
+        let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
+        let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
+        let module = Compiler::compile_module(&program).expect("compile");
+
+        let named = |module: &Module| {
+            module
+                .functions
+                .iter()
+                .any(|function| function.debug_name.as_deref() == Some("greet"))
+        };
+        assert!(named(&module), "compiled module should tag `greet` with its debug name");
+
+        let artifact = ModuleArtifact::new(Vec::new(), &module).expect("artifact");
+        let json = artifact.to_json_string().expect("json");
+        let decoded = ModuleArtifact::from_json_str(&json).expect("decode");
+        let decoded_module = decoded.into_module().expect("into module");
+        assert!(
+            named(&decoded_module),
+            "debug name should survive the artifact round trip"
+        );
     }
 
     #[test]

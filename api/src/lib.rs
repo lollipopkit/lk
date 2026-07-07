@@ -1,0 +1,556 @@
+//! `lk-api` — L5 host-embedding API for LK.
+//!
+//! A minimal, safe surface for embedding the LK VM in a Rust host. Each [`Vm`]
+//! is an **isolated instance**: it owns its own `VmContext` (heap, globals,
+//! async runtime handle), so multiple VMs are fully independent with no shared
+//! global state — this is exactly what the M0 "去全局状态" work enabled. Add a
+//! fuel budget to sandbox execution (the instruction-budget knob of M2.6).
+
+use std::sync::Arc;
+
+use anyhow::Result;
+use lk_core::module::ModuleRegistry;
+use lk_core::stmt::ModuleResolver;
+use lk_core::syntax::{ParseOptions, parse_program_source};
+use lk_core::typ::TypeChecker;
+use lk_core::vm::{NativeFunction, VmContext, execute_program_with_ctx_and_limits};
+
+pub use lk_core::val::RuntimeVal;
+pub use lk_core::vm::{NativeArgs, NativeRuntime};
+
+/// Signature of a host-provided native function, callable from LK. Receives the
+/// raw runtime ABI (positional/named [`NativeArgs`] and the [`NativeRuntime`]
+/// for heap access) and returns a [`RuntimeVal`].
+pub type HostFn = fn(NativeArgs<'_>, &mut NativeRuntime<'_>) -> Result<RuntimeVal>;
+
+/// An isolated LK virtual machine instance.
+pub struct Vm {
+    /// Pending module/builtin registry; consumed into the context on first eval
+    /// so host functions can be registered before execution.
+    registry: Option<ModuleRegistry>,
+    ctx: Option<VmContext>,
+    fuel: Option<u64>,
+    heap_limit: Option<usize>,
+}
+
+impl Vm {
+    /// Create a VM with the full standard library registered.
+    pub fn new() -> Self {
+        let mut registry = ModuleRegistry::new();
+        lk_stdlib::register_stdlib_globals(&mut registry);
+        lk_stdlib::register_stdlib_modules(&mut registry).expect("stdlib registration should not fail");
+        Self {
+            registry: Some(registry),
+            ctx: None,
+            fuel: None,
+            heap_limit: None,
+        }
+    }
+
+    /// Create a sandboxed VM: only the core builtins (`println`/`typeof`/
+    /// …) and the explicitly allowed stdlib modules are registered. OS-capable
+    /// modules (`fs`/`net`/`process`/…) are withheld unless named, so untrusted
+    /// scripts cannot reach them — the module-whitelist knob of the sandbox model
+    /// (plan M2.6). Combine with [`with_fuel`](Self::with_fuel) for a bounded,
+    /// capability-restricted instance.
+    pub fn sandboxed(allow_modules: &[&str]) -> Self {
+        let mut registry = ModuleRegistry::new();
+        lk_stdlib::register_stdlib_core_globals(&mut registry);
+        let names: Vec<String> = allow_modules.iter().map(|m| (*m).to_string()).collect();
+        lk_stdlib::register_stdlib_modules_named(&mut registry, &names)
+            .expect("named stdlib registration should not fail");
+        Self {
+            registry: Some(registry),
+            ctx: None,
+            fuel: None,
+            heap_limit: None,
+        }
+    }
+
+    /// Bound execution to `budget` instructions (fuel). Beyond it the VM aborts
+    /// with a step-limit error instead of running unbounded (sandbox, plan M2.6).
+    pub fn with_fuel(mut self, budget: u64) -> Self {
+        self.fuel = Some(budget);
+        self
+    }
+
+    /// Cap the number of live heap objects — a coarse memory bound for the
+    /// sandbox: allocation beyond `max_objects` aborts with a heap-limit error
+    /// (plan M2.6). Zero-cost when unset.
+    pub fn with_heap_limit(mut self, max_objects: usize) -> Self {
+        self.heap_limit = Some(max_objects);
+        self
+    }
+
+    /// Register a host native function callable from LK as `name` with the given
+    /// `arity`. Must be called before the first [`eval`](Self::eval) (the context
+    /// is finalized on first evaluation). Host extension point (plan M3.2).
+    pub fn register_fn(&mut self, name: &str, arity: u16, f: HostFn) -> &mut Self {
+        self.registry
+            .as_mut()
+            .expect("register_fn must be called before the first eval")
+            .register_runtime_builtin(name, NativeFunction::Plain(f), arity);
+        self
+    }
+
+    /// Finalize the pending registry into a context on first use.
+    fn ctx_mut(&mut self) -> &mut VmContext {
+        if self.ctx.is_none() {
+            let registry = self.registry.take().expect("registry present before first eval");
+            let resolver = Arc::new(ModuleResolver::with_registry(registry));
+            self.ctx = Some(
+                VmContext::new()
+                    .with_resolver(resolver)
+                    .with_type_checker(Some(TypeChecker::new_strict())),
+            );
+        }
+        self.ctx.as_mut().expect("context finalized")
+    }
+
+    /// Parse and execute `source`, returning the compiled program's result.
+    fn run(&mut self, source: &str) -> Result<lk_core::vm::ProgramResult> {
+        let program = parse_program_source(source, ParseOptions::default())
+            .map_err(|err| anyhow::anyhow!("parse error: {err}"))?;
+        let fuel = self.fuel;
+        let heap_limit = self.heap_limit;
+        let ctx = self.ctx_mut();
+        if fuel.is_some() || heap_limit.is_some() {
+            execute_program_with_ctx_and_limits(&program, ctx, fuel, heap_limit)
+        } else {
+            program.execute_with_ctx(ctx)
+        }
+    }
+
+    /// Parse and execute `source`, returning the display of the program's first
+    /// return value (empty string when it is `nil`).
+    pub fn eval(&mut self, source: &str) -> Result<String> {
+        let result = self.run(source)?;
+        if result.first_return_is_nil() {
+            Ok(String::new())
+        } else {
+            Ok(result.display_first_return())
+        }
+    }
+
+    /// Parse and execute `source`, returning the program's first return value as
+    /// a host-owned [`Value`]. Primitives (`nil`/`bool`/`int`/`float`) come back
+    /// typed; strings and heap objects (lists/maps/structs) are flattened to
+    /// their display string, since a bare heap reference is meaningless outside
+    /// the VM that owns it. This is the ergonomic typed counterpart to
+    /// [`eval`](Self::eval) (plan M3.1).
+    pub fn eval_value(&mut self, source: &str) -> Result<Value> {
+        let result = self.run(source)?;
+        Ok(match result.first_return() {
+            RuntimeVal::Nil => Value::Nil,
+            RuntimeVal::Bool(value) => Value::Bool(*value),
+            RuntimeVal::Int(value) => Value::Int(*value),
+            RuntimeVal::Float(value) => Value::Float(*value),
+            // ShortStr / heap strings / lists / maps / structs → display string.
+            _ => Value::Str(result.display_first_return()),
+        })
+    }
+}
+
+/// A host-owned LK value returned from [`Vm::eval_value`]. Primitives are typed;
+/// strings and heap objects arrive as their display string.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Value {
+    Nil,
+    Bool(bool),
+    Int(i64),
+    Float(f64),
+    Str(String),
+}
+
+/// Scalar argument for [`HybridModule::call_discard`] (re-exported core type).
+pub use lk_core::vm::ModuleFunctionArg as HybridArg;
+
+/// Tier 1 hybrid bridge (`docs/llvm/tier1-hybrid.md`): a decoded module
+/// artifact plus an isolated VM context, so a native binary can execute
+/// individual VM-only functions of the *same* module it was compiled from.
+/// The artifact goes through the verified decode path (`from_json_str` →
+/// `into_module` → `verify_module`) and its imports are resolved against the
+/// full stdlib once at load; each call then seeds fresh per-call state
+/// (bridge-eligible functions touch no user globals, so this is invisible).
+pub struct HybridModule {
+    module: Arc<lk_core::vm::Module>,
+    ctx: VmContext,
+}
+
+impl HybridModule {
+    /// Decode a serialized `ModuleArtifact` (the `.lkm` JSON form) and prepare
+    /// an isolated context with the full stdlib and the artifact's imports.
+    pub fn from_artifact_json(json: &str) -> Result<Self> {
+        let artifact = lk_core::vm::ModuleArtifact::from_json_str(json)?;
+        let imports = artifact.imports.clone();
+        let module = Arc::new(artifact.into_module()?);
+        let mut registry = ModuleRegistry::new();
+        lk_stdlib::register_stdlib_globals(&mut registry);
+        lk_stdlib::register_stdlib_modules(&mut registry)?;
+        let resolver = Arc::new(ModuleResolver::with_registry(registry));
+        let mut ctx = VmContext::new().with_resolver(Arc::clone(&resolver));
+        lk_core::stmt::import::execute_imports(&imports, resolver.as_ref(), &mut ctx)?;
+        Ok(Self { module, ctx })
+    }
+
+    /// Find a named `fn` by its bytecode debug name (compile-time source name).
+    pub fn find_function(&self, debug_name: &str) -> Option<u32> {
+        self.module
+            .functions
+            .iter()
+            .position(|function| function.debug_name.as_deref() == Some(debug_name))
+            .map(|index| index as u32)
+    }
+
+    /// Call function `function_index` with scalar `args`, discarding the result
+    /// (the v1 bridge only marks callees whose results are proven discarded).
+    /// An uncaught VM error comes back as `Err` with the rendered message.
+    pub fn call_discard(&mut self, function_index: u32, args: &[HybridArg]) -> Result<()> {
+        lk_core::vm::call_module_function_with_ctx(&self.module, function_index, args, &mut self.ctx).map(|_| ())
+    }
+}
+
+impl Default for Vm {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn eval_returns_value() {
+        let mut vm = Vm::new();
+        assert_eq!(vm.eval("return 6 * 7;").unwrap(), "42");
+    }
+
+    #[test]
+    fn eval_value_returns_typed_primitives() {
+        let mut vm = Vm::new();
+        assert_eq!(vm.eval_value("return 6 * 7;").unwrap(), Value::Int(42));
+        assert_eq!(vm.eval_value("return 1 < 2;").unwrap(), Value::Bool(true));
+        assert_eq!(vm.eval_value("return 3.5;").unwrap(), Value::Float(3.5));
+        assert_eq!(vm.eval_value("return nil;").unwrap(), Value::Nil);
+        // Strings and heap objects flatten to their display string.
+        assert_eq!(vm.eval_value("return \"hi\";").unwrap(), Value::Str("hi".to_string()));
+        assert_eq!(
+            vm.eval_value("return [1, 2, 3];").unwrap(),
+            Value::Str("[1, 2, 3]".to_string())
+        );
+    }
+
+    #[test]
+    fn instances_are_isolated() {
+        // Two independent VMs share no global state (M0 去全局状态).
+        let mut a = Vm::new();
+        let mut b = Vm::new();
+        assert_eq!(a.eval("let x = 10; return x;").unwrap(), "10");
+        assert_eq!(b.eval("let y = 20; return y;").unwrap(), "20");
+    }
+
+    fn host_add100(args: NativeArgs<'_>, _rt: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        let n = args.get(0).and_then(RuntimeVal::as_int).unwrap_or(0);
+        Ok(RuntimeVal::Int(n + 100))
+    }
+
+    #[test]
+    fn register_host_fn() {
+        let mut vm = Vm::new();
+        vm.register_fn("host_add100", 1, host_add100);
+        assert_eq!(vm.eval("return host_add100(5);").unwrap(), "105");
+    }
+
+    #[test]
+    fn sandbox_allows_whitelisted_modules_only() {
+        // `math` is allowed; `fs` is withheld.
+        let mut vm = Vm::sandboxed(&["math"]);
+        assert_eq!(vm.eval("use math; return math.max(3, 7);").unwrap(), "7");
+        let denied = Vm::sandboxed(&["math"]).eval("use fs; return fs.exists(\"/\");");
+        assert!(denied.is_err(), "fs must be unavailable in a math-only sandbox");
+    }
+
+    #[test]
+    fn heap_limit_bounds_allocation() {
+        let mut vm = Vm::new().with_heap_limit(1000);
+        let err = vm
+            .eval("let xs = []; for i in 1..=1000000 { xs.push([i]); } return 0;")
+            .expect_err("heap-exhausted run should error");
+        assert!(err.to_string().contains("heap object limit"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn fuel_bounds_execution() {
+        let mut vm = Vm::new().with_fuel(200);
+        let err = vm
+            .eval("let s = 0; for i in 1..=1000000 { s += i; } return s;")
+            .expect_err("fuel-exhausted run should error");
+        assert!(err.to_string().contains("step limit"), "unexpected error: {err}");
+    }
+
+    /// Compile `source` to the serialized module-artifact JSON a hybrid binary
+    /// would embed (same pipeline as `lk compile bytecode`).
+    fn artifact_json(source: &str) -> String {
+        let program = parse_program_source(source, ParseOptions::default()).expect("parse");
+        let mut registry = ModuleRegistry::new();
+        lk_stdlib::register_stdlib_globals(&mut registry);
+        lk_stdlib::register_stdlib_modules(&mut registry).expect("stdlib registration");
+        let resolver = Arc::new(ModuleResolver::with_registry(registry));
+        let mut ctx = VmContext::new().with_resolver(resolver);
+        let module = lk_core::vm::compile_program_module_with_ctx(&program, &mut ctx).expect("compile");
+        let artifact =
+            lk_core::vm::ModuleArtifact::new(lk_core::stmt::import::collect_program_imports(&program), &module)
+                .expect("artifact");
+        artifact.to_json_string().expect("serialize artifact")
+    }
+
+    #[test]
+    fn hybrid_module_calls_functions_by_index() {
+        // The callee asserts its own inputs via `error(...)`: an Ok call proves
+        // the computation actually ran (v1 bridge results are discarded).
+        let json = artifact_json("fn check(a, b) { if a + b != 42 { error(\"bad sum\"); } }\nreturn 0;\n");
+        let mut hybrid = HybridModule::from_artifact_json(&json).expect("load artifact");
+        let index = hybrid.find_function("check").expect("check fn present");
+        hybrid
+            .call_discard(index, &[HybridArg::Int(2), HybridArg::Int(40)])
+            .expect("42 passes");
+        let err = hybrid
+            .call_discard(index, &[HybridArg::Int(1), HybridArg::Int(1)])
+            .expect_err("wrong sum raises");
+        assert!(format!("{err:#}").contains("bad sum"), "unexpected error: {err:#}");
+    }
+
+    #[test]
+    fn hybrid_module_resolves_stdlib_imports() {
+        let json =
+            artifact_json("use math;\nfn check(a, b) { if math.max(a, b) != 7 { error(\"bad max\"); } }\nreturn 0;\n");
+        let mut hybrid = HybridModule::from_artifact_json(&json).expect("load artifact");
+        let index = hybrid.find_function("check").expect("check fn present");
+        hybrid
+            .call_discard(index, &[HybridArg::Int(3), HybridArg::Int(7)])
+            .expect("stdlib import works across the bridge");
+    }
+
+    #[test]
+    fn hybrid_module_marshals_scalars() {
+        let json = artifact_json(
+            "fn check(s, f, b) { if s.len() != 30 { error(\"len\"); } if f < 1.4 { error(\"f\"); } if !b { error(\"b\"); } }\nreturn 0;\n",
+        );
+        let mut hybrid = HybridModule::from_artifact_json(&json).expect("load artifact");
+        let index = hybrid.find_function("check").expect("check fn present");
+        hybrid
+            .call_discard(
+                index,
+                &[
+                    HybridArg::Str("a".repeat(30)),
+                    HybridArg::Float(1.5),
+                    HybridArg::Bool(true),
+                ],
+            )
+            .expect("scalar marshaling round-trips");
+    }
+
+    #[test]
+    fn runaway_recursion_is_catchable_not_fatal() {
+        // Unbounded LK recursion must surface as a try/catch-able error (the
+        // call-depth cap) instead of overflowing the Rust stack and aborting
+        // the process — segmented-stack growth carries it to the cap.
+        let mut vm = Vm::new();
+        let out = vm
+            .eval("fn f(n) { return f(n + 1); }\nlet caught = false;\ntry { f(0); } catch e { caught = true; }\nassert(caught);\nreturn 1;")
+            .expect("runaway recursion is caught");
+        assert_eq!(out, "1");
+    }
+
+    #[test]
+    fn hybrid_module_rejects_garbage_artifacts() {
+        assert!(HybridModule::from_artifact_json("{}").is_err());
+        assert!(HybridModule::from_artifact_json("not json").is_err());
+    }
+}
+
+/// C ABI surface (`ffi` feature). Opaque `Vm` pointer + eval returning an owned
+/// C string; pair every `lk_vm_new`/`lk_vm_eval` with the matching free. A
+/// header can be generated with cbindgen. Enables embedding from C/C++/Dart FFI
+/// (plan M3.3).
+#[cfg(feature = "ffi")]
+pub mod ffi {
+    use core::ffi::{CStr, c_char};
+
+    use alloc::boxed::Box;
+    use alloc::ffi::CString;
+
+    extern crate alloc;
+
+    use super::Vm;
+
+    /// Create a new isolated VM. Free with [`lk_vm_free`].
+    #[unsafe(no_mangle)]
+    pub extern "C" fn lk_vm_new() -> *mut Vm {
+        Box::into_raw(Box::new(Vm::new()))
+    }
+
+    /// Evaluate `src` (a NUL-terminated UTF-8 string) on `vm`, returning an owned
+    /// C string with the first return value's display (free with [`lk_string_free`]),
+    /// or NULL on error/invalid input.
+    ///
+    /// # Safety
+    /// `vm` must come from [`lk_vm_new`] and not be freed; `src` must be a valid
+    /// NUL-terminated string valid for the call.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn lk_vm_eval(vm: *mut Vm, src: *const c_char) -> *mut c_char {
+        if vm.is_null() || src.is_null() {
+            return core::ptr::null_mut();
+        }
+        let vm = unsafe { &mut *vm };
+        let Ok(src) = (unsafe { CStr::from_ptr(src) }).to_str() else {
+            return core::ptr::null_mut();
+        };
+        match vm.eval(src) {
+            Ok(out) => CString::new(out)
+                .map(CString::into_raw)
+                .unwrap_or(core::ptr::null_mut()),
+            Err(_) => core::ptr::null_mut(),
+        }
+    }
+
+    /// Free a VM created by [`lk_vm_new`].
+    ///
+    /// # Safety
+    /// `vm` must come from [`lk_vm_new`] and not be used afterwards.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn lk_vm_free(vm: *mut Vm) {
+        if !vm.is_null() {
+            drop(unsafe { Box::from_raw(vm) });
+        }
+    }
+
+    /// Free a string returned by [`lk_vm_eval`].
+    ///
+    /// # Safety
+    /// `s` must come from [`lk_vm_eval`] and not be used afterwards.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn lk_string_free(s: *mut c_char) {
+        if !s.is_null() {
+            drop(unsafe { CString::from_raw(s) });
+        }
+    }
+
+    // ---- Tier 1 hybrid bridge (docs/llvm/tier1-hybrid.md) -------------------
+    //
+    // Process-singleton by design: a hybrid native binary embeds exactly one
+    // module artifact, and threading a handle through every generated function
+    // would churn the whole codegen ABI for nothing (the same reasoning that
+    // keeps lkrt's per-process runtime state, M0.6/G4-G5). Registration is a
+    // pointer store; the artifact decodes lazily on the first bridge call, so
+    // a hybrid binary that never crosses the bridge pays nothing.
+
+    use core::sync::atomic::{AtomicPtr, Ordering};
+    use std::sync::{Mutex, OnceLock};
+
+    use super::{HybridArg, HybridModule};
+
+    static HYBRID_ARTIFACT_JSON: AtomicPtr<c_char> = AtomicPtr::new(core::ptr::null_mut());
+    static HYBRID: OnceLock<Mutex<HybridModule>> = OnceLock::new();
+
+    /// Argument tags for [`LkHybridArg`]. Tag 2 (bool) reads the `i` union
+    /// field as 0/1.
+    pub const LK_HYBRID_ARG_I64: u8 = 0;
+    pub const LK_HYBRID_ARG_F64: u8 = 1;
+    pub const LK_HYBRID_ARG_BOOL: u8 = 2;
+    pub const LK_HYBRID_ARG_STR: u8 = 3;
+
+    /// Payload of one bridge argument (matches the `lk.h` union).
+    #[repr(C)]
+    pub union LkHybridArgValue {
+        pub i: i64,
+        pub f: f64,
+        pub s: *const c_char,
+    }
+
+    /// One tagged scalar argument for [`lk_hybrid_call_v`].
+    #[repr(C)]
+    pub struct LkHybridArg {
+        pub tag: u8,
+        pub value: LkHybridArgValue,
+    }
+
+    /// Bridge failures abort the process: an uncaught VM error in a hybrid
+    /// binary matches the VM's uncaught behavior (message + nonzero exit),
+    /// and generated code stays branch-free around bridge calls.
+    fn hybrid_die(message: core::fmt::Arguments<'_>) -> ! {
+        eprintln!("lk hybrid bridge: {message}");
+        std::process::exit(1)
+    }
+
+    /// Register the embedded module artifact JSON (NUL-terminated, 'static —
+    /// hybrid wrappers embed it as a constant). Decoding is deferred to the
+    /// first [`lk_hybrid_call_v`].
+    ///
+    /// # Safety
+    /// `module_artifact_json` must be a NUL-terminated string that outlives
+    /// every bridge call (hybrid wrappers pass a static constant).
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn lk_hybrid_register(module_artifact_json: *const c_char) {
+        HYBRID_ARTIFACT_JSON.store(module_artifact_json.cast_mut(), Ordering::Release);
+    }
+
+    /// Call VM-executed function `func_index` with `argc` tagged scalar
+    /// arguments, discarding the result (v1 bridge: results are proven
+    /// discarded before a callee is marked VM-executed). Never returns on
+    /// error — see [`hybrid_die`].
+    ///
+    /// # Safety
+    /// `args` must point to `argc` valid [`LkHybridArg`] values (may be null
+    /// when `argc == 0`); string payloads must be valid NUL-terminated UTF-8.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn lk_hybrid_call_v(func_index: u32, args: *const LkHybridArg, argc: usize) {
+        let hybrid = HYBRID.get_or_init(|| {
+            let json_ptr = HYBRID_ARTIFACT_JSON.load(Ordering::Acquire);
+            if json_ptr.is_null() {
+                hybrid_die(format_args!("no module artifact registered (lk_hybrid_register)"));
+            }
+            let Ok(json) = (unsafe { CStr::from_ptr(json_ptr) }).to_str() else {
+                hybrid_die(format_args!("embedded module artifact is not valid UTF-8"));
+            };
+            match HybridModule::from_artifact_json(json) {
+                Ok(module) => Mutex::new(module),
+                Err(err) => hybrid_die(format_args!("cannot load the embedded module artifact: {err:#}")),
+            }
+        });
+        let raw_args = if argc == 0 {
+            &[][..]
+        } else {
+            if args.is_null() {
+                hybrid_die(format_args!("null args with argc {argc}"));
+            }
+            unsafe { core::slice::from_raw_parts(args, argc) }
+        };
+        let mut marshaled = alloc::vec::Vec::with_capacity(argc);
+        for arg in raw_args {
+            marshaled.push(match arg.tag {
+                LK_HYBRID_ARG_I64 => HybridArg::Int(unsafe { arg.value.i }),
+                LK_HYBRID_ARG_F64 => HybridArg::Float(unsafe { arg.value.f }),
+                LK_HYBRID_ARG_BOOL => HybridArg::Bool(unsafe { arg.value.i } != 0),
+                LK_HYBRID_ARG_STR => {
+                    let ptr = unsafe { arg.value.s };
+                    if ptr.is_null() {
+                        hybrid_die(format_args!("null string argument"));
+                    }
+                    match (unsafe { CStr::from_ptr(ptr) }).to_str() {
+                        Ok(s) => HybridArg::Str(s.to_string()),
+                        Err(_) => hybrid_die(format_args!("string argument is not valid UTF-8")),
+                    }
+                }
+                other => hybrid_die(format_args!("unknown hybrid arg tag {other}")),
+            });
+        }
+        let mut module = hybrid
+            .lock()
+            .unwrap_or_else(|_| hybrid_die(format_args!("bridge state poisoned")));
+        if let Err(err) = module.call_discard(func_index, &marshaled) {
+            hybrid_die(format_args!("VM-executed function {func_index} failed: {err:#}"));
+        }
+    }
+}

@@ -1,4 +1,6 @@
 use super::StmtParser;
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 use crate::{
     stmt::{ImportItem, ImportSource, ImportStmt, Stmt},
     token::Token,

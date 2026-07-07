@@ -19,4 +19,36 @@ send(ch, 99);
 let msg4 = recv(ch);
 println("Received after re-send: {}", msg4);
 
+println("2. Goroutines:");
+use task;
+
+// go = fire-and-forget; spawn keeps the Task handle.
+let results = chan(4);
+go send(results, 1);
+fn worker(ch, v) { send(ch, v * 10); }
+go worker(results, 2);
+let t = spawn(|| {
+    let total = 0;
+    let i = 0;
+    while (i < 3) {
+        total = total + recv(results);
+        i = i + 1;
+    }
+    return total;
+});
+send(results, 100);
+let total = task.await(t);   // 1 + 20 + 100, arrival order irrelevant
+println("Goroutine total: {}", total);
+assert(total == 121);
+
+// Isolate semantics: goroutine mutations don't leak back.
+let counter = 0;
+let iso = spawn(|| {
+    counter = counter + 1;
+    return counter;
+});
+assert(task.await(iso) == 1);
+assert(counter == 0);
+println("Isolation confirmed: counter still {}", counter);
+
 println("concurrency_demo: completed");

@@ -11,6 +11,7 @@ name = "lk_wasm"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+getrandom = { version = "0.3", features = ["wasm_js"] }
 anyhow = { workspace = true }
 js-sys = { workspace = true }
 lk-core = { path = "../core", default-features = false }

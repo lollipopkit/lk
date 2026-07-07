@@ -13,17 +13,13 @@ use lk_core::{
     macro_system::{AstMacroOrigin, MacroTokenOrigin, ProcMacroDependency},
     module::ModuleRegistry,
     package::{PackageGraph, PackageModule},
-    rt,
     stmt::{ModuleResolver, import::collect_program_imports},
-    syntax::{
-        expand_program_source, macro_origin_note_for_span, parse_program_source, render_program, render_tokens,
-        type_error_span,
-    },
+    syntax::{expand_program_source, macro_origin_note_for_span, render_program, render_tokens, type_error_span},
     typ::TypeChecker,
     vm::{
         ModuleArtifact, Opcode, VM_INDEX_KEY_METRIC_NAMES, VM_REGISTER_WRITE_SOURCE_NAMES, VmContext, VmRuntimeMetrics,
-        compile_program_module_with_ctx, execute_module_artifact_with_ctx, vm_runtime_metrics_reset,
-        vm_runtime_metrics_snapshot,
+        compile_program_module_with_ctx, execute_compiled_module_with_ctx, execute_module_artifact_with_ctx,
+        execute_program_with_ctx_and_budget, vm_runtime_metrics_reset, vm_runtime_metrics_snapshot,
     },
 };
 #[cfg(feature = "llvm")]
@@ -31,6 +27,7 @@ use lk_llvm::{LlvmBackendOptions, OptLevel};
 
 use anyhow::Context;
 
+mod bytecode_cache;
 mod coverage;
 mod diagnostic;
 #[cfg(test)]
@@ -90,8 +87,13 @@ impl From<OptLevelCli> for OptLevel {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub(crate) enum CompileMode {
+    /// Emit a `.lkm` bytecode module. This is an INTERNAL artifact (version-locked
+    /// to this build, like Python's `.pyc`), not a distribution format — ship
+    /// source or a native executable instead.
     Bytecode,
+    /// Emit LLVM IR (`.ll`).
     Llvm,
+    /// Emit a native executable (default).
     Exe,
 }
 
@@ -128,6 +130,25 @@ enum Commands {
         /// Source file to type-check
         #[arg(value_name = "FILE", value_parser = parse_sanitized_path)]
         file: PathBuf,
+    },
+    /// Format a source file in place (4-space indent). `--check` reports without writing.
+    Fmt {
+        /// Source file to format
+        #[arg(value_name = "FILE", value_parser = parse_sanitized_path)]
+        file: PathBuf,
+        /// Do not write; exit non-zero if the file is not already formatted.
+        #[arg(long)]
+        check: bool,
+    },
+    /// AOT Tier 0: bundle a source file into a self-contained native executable
+    /// that embeds the program and the VM (100% coverage; runs the VM at launch).
+    Bundle {
+        /// Source file to bundle
+        #[arg(value_name = "FILE", value_parser = parse_sanitized_path)]
+        file: PathBuf,
+        /// Output executable path
+        #[arg(short, long, value_name = "OUT", value_parser = parse_sanitized_path)]
+        output: PathBuf,
     },
     /// Report VM coverage for a source file.
     Coverage {
@@ -194,139 +215,25 @@ enum PkgCommand {
         rev: Option<String>,
     },
     /// Fetch dependencies and update Lk.lock.
-    Fetch {
-        /// Resolve registry dependencies from the local index cache without network requests.
-        #[arg(long)]
-        offline: bool,
-    },
+    Fetch,
     /// Update one dependency or all dependencies.
-    Update {
-        name: Option<String>,
-        /// Resolve registry dependencies from the local index cache without network requests.
-        #[arg(long)]
-        offline: bool,
-    },
+    Update { name: Option<String> },
     /// Validate package graph and macro provider distribution metadata.
     Check,
-    /// Publish a registry manifest, or print it with --dry-run.
-    Publish {
-        /// Print the registry publish manifest without uploading.
-        #[arg(long)]
-        dry_run: bool,
-    },
-    /// Yank or un-yank a registry package version.
-    Yank {
-        /// Package name to yank.
-        name: String,
-        /// Package version to yank.
-        version: String,
-        /// Reverse a previous yank.
-        #[arg(long)]
-        undo: bool,
-    },
-    /// Manage the local registry index cache.
-    Index {
-        #[command(subcommand)]
-        command: PkgIndexCommand,
-    },
-    /// Manage registry signing keys.
-    Key {
-        #[command(subcommand)]
-        command: PkgKeyCommand,
-    },
-    /// Serve a local LK package registry.
-    Serve {
-        /// Address to bind, for example 127.0.0.1:3899.
-        #[arg(long, default_value = "127.0.0.1:3899")]
-        addr: String,
-        /// Durable registry storage directory.
-        #[arg(long, value_parser = parse_sanitized_path)]
-        storage: PathBuf,
-        /// Public registry URL clients will validate in publish manifests.
-        #[arg(long)]
-        registry_url: String,
-        /// Bearer token required for publish/index/yank requests.
-        #[arg(long)]
-        token: Option<String>,
-        /// JSON auth policy with scoped bearer tokens for index/publish/yank routes.
-        #[arg(long, value_parser = parse_sanitized_path)]
-        auth_policy: Option<PathBuf>,
-        /// Load the HMAC signing key from a JSON file.
-        #[arg(long, value_parser = parse_sanitized_path)]
-        signing_key_file: Option<PathBuf>,
-        /// Load an HMAC signing keyring and sign with its active key.
-        #[arg(long, value_parser = parse_sanitized_path)]
-        signing_keyring_file: Option<PathBuf>,
-        /// Load an Ed25519 private signing key from a JSON file.
-        #[arg(long, value_parser = parse_sanitized_path)]
-        signing_private_key_file: Option<PathBuf>,
-        /// Optional HMAC signing key id for generated registry signatures.
-        #[arg(long)]
-        signing_key_id: Option<String>,
-        /// Optional HMAC signing secret for generated registry signatures.
-        #[arg(long)]
-        signing_secret: Option<String>,
-    },
     /// Print the resolved dependency tree.
     Tree,
 }
 
-#[derive(Debug, Subcommand)]
-enum PkgIndexCommand {
-    /// Download [registry].url/api/v1/index into $LK_HOME/registry/<name>/index.json.
-    Sync,
-}
-
-#[derive(Debug, Subcommand)]
-enum PkgKeyCommand {
-    /// Generate an HMAC registry signing key JSON file.
-    Generate {
-        /// Output path for the key JSON file.
-        #[arg(long, value_parser = parse_sanitized_path)]
-        out: PathBuf,
-        /// Key id embedded in registry signatures.
-        #[arg(long)]
-        key_id: String,
-    },
-    /// Generate an Ed25519 private/public registry signing key pair.
-    GenerateAsymmetric {
-        /// Output path for the private key JSON file.
-        #[arg(long, value_parser = parse_sanitized_path)]
-        private_out: PathBuf,
-        /// Output path for the public key JSON file.
-        #[arg(long, value_parser = parse_sanitized_path)]
-        public_out: PathBuf,
-        /// Key id embedded in registry signatures.
-        #[arg(long)]
-        key_id: String,
-    },
-    /// Initialize an HMAC registry signing keyring JSON file.
-    InitKeyring {
-        /// Output path for the keyring JSON file.
-        #[arg(long, value_parser = parse_sanitized_path)]
-        out: PathBuf,
-        /// Initial active key id embedded in registry signatures.
-        #[arg(long)]
-        key_id: String,
-    },
-    /// Add a new active key to an existing keyring.
-    Rotate {
-        /// Keyring JSON file to update.
-        #[arg(long, value_parser = parse_sanitized_path)]
-        keyring: PathBuf,
-        /// New active key id.
-        #[arg(long)]
-        key_id: String,
-    },
-    /// Mark a non-active key id as revoked in a keyring.
-    Revoke {
-        /// Keyring JSON file to update.
-        #[arg(long, value_parser = parse_sanitized_path)]
-        keyring: PathBuf,
-        /// Existing non-active key id to revoke.
-        #[arg(long)]
-        key_id: String,
-    },
+/// Unwrap an execution result, printing the VM call-stack traceback to stderr
+/// first when it failed (plan M2.2). The traceback is only populated while an
+/// error unwinds, so successful runs pay nothing.
+fn unwrap_with_traceback<T>(result: anyhow::Result<T>, ctx: &VmContext) -> anyhow::Result<T> {
+    if result.is_err()
+        && let Some(report) = ctx.call_stack_report()
+    {
+        eprintln!("{report}");
+    }
+    result
 }
 
 fn env_toggle_enabled(raw: &str) -> bool {
@@ -591,6 +498,14 @@ fn main() -> anyhow::Result<()> {
                 run_type_check(&file)?;
                 return Ok(());
             }
+            Commands::Fmt { file, check } => {
+                run_fmt(&file, check)?;
+                return Ok(());
+            }
+            Commands::Bundle { file, output } => {
+                run_bundle(&file, &output)?;
+                return Ok(());
+            }
             Commands::Coverage {
                 file,
                 disassemble,
@@ -620,9 +535,6 @@ fn main() -> anyhow::Result<()> {
     if safe.extension().and_then(|ext| ext.to_str()) == Some("lkm") {
         let input =
             String::from_utf8(raw).map_err(|e| anyhow::anyhow!("Input file is not valid UTF-8 LK module: {}", e))?;
-        if let Err(e) = rt::init_runtime() {
-            diagnostic::warning(format_args!("Failed to initialize runtime: {}", e));
-        }
         let artifact =
             ModuleArtifact::from_json_str(&input).with_context(|| format!("decode Instr module {}", safe.display()))?;
         let mut base_env = build_vm_context(&safe)?;
@@ -630,8 +542,8 @@ fn main() -> anyhow::Result<()> {
         maybe_start_vm_profile(profile_enabled);
         let exec_result =
             execute_module_artifact_with_ctx(artifact, &mut base_env).with_context(|| "VM module execution failed");
-        rt::shutdown_runtime();
-        let result = exec_result?;
+        base_env.shutdown_async_runtime();
+        let result = unwrap_with_traceback(exec_result, &base_env)?;
         maybe_print_vm_profile(profile_enabled);
         if !result.first_return_is_nil() {
             println!("{}", result.display_first_return());
@@ -647,35 +559,72 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // Initialize runtime for concurrency if enabled
-    if let Err(e) = rt::init_runtime() {
-        diagnostic::warning(format_args!("Failed to initialize runtime: {}", e));
+    // Optional bytecode cache (plan M1.3): with `LK_CACHE=1`, an unchanged
+    // macro-free source skips parsing/compilation and runs its cached `.lkm`.
+    // Fuel-limited runs bypass the cache (the artifact-execution path is not
+    // budget-parameterized).
+    let cache_file = if fuel_budget_from_env().is_none() {
+        bytecode_cache::cache_path(&safe, input.as_bytes())
+    } else {
+        None
+    };
+    if let Some(cache_file) = cache_file.as_ref()
+        && let Some(artifact) = bytecode_cache::load(cache_file)
+    {
+        let mut base_env = build_vm_context(&safe)?;
+        let profile_enabled = vm_profile_enabled();
+        maybe_start_vm_profile(profile_enabled);
+        let exec_result = execute_module_artifact_with_ctx(artifact, &mut base_env)
+            .with_context(|| "VM cached-module execution failed");
+        base_env.shutdown_async_runtime();
+        let result = unwrap_with_traceback(exec_result, &base_env)?;
+        maybe_print_vm_profile(profile_enabled);
+        if !result.first_return_is_nil() {
+            println!("{}", result.display_first_return());
+        }
+        return Ok(());
     }
 
     // Parse, expand macros, and execute as statements.
     // NOTE: Direct `.lk` execution does not check proc-macro dependency
     // freshness against cached native binaries. Proc macros are always
     // re-expanded through the macro system when running in VM mode.
-    let program = match parse_program_source(&input, parse_options_for_file(&safe)?) {
-        Ok(program) => program,
+    let expansion = match expand_program_source(&input, parse_options_for_file(&safe)?) {
+        Ok(expansion) => expansion,
         Err(parse_err) => {
             diagnostic::parse_error(&parse_err, &input);
             std::process::exit(1);
         }
     };
+    // Only macro-free programs are cacheable: their bytecode is a pure function
+    // of the source bytes (external proc-macro output is not).
+    let macro_free = expansion.proc_macro_dependencies.is_empty();
+    let program = expansion.program;
 
     let mut base_env = build_vm_context(&safe)?;
 
     let profile_enabled = vm_profile_enabled();
     maybe_start_vm_profile(profile_enabled);
-    let exec_result = program
-        .execute_with_ctx(&mut base_env)
-        .with_context(|| "VM execution failed");
+    let exec_result = match fuel_budget_from_env() {
+        Some(budget) => execute_program_with_ctx_and_budget(&program, &mut base_env, budget),
+        None => match cache_file.as_ref().filter(|_| macro_free) {
+            // Compile once so the module can be both cached and executed.
+            Some(cache_file) => match compile_program_module_with_ctx(&program, &mut base_env) {
+                Ok(module) => {
+                    bytecode_cache::store(cache_file, &program, &module);
+                    execute_compiled_module_with_ctx(module, &mut base_env)
+                }
+                Err(err) => Err(err),
+            },
+            None => program.execute_with_ctx(&mut base_env),
+        },
+    }
+    .with_context(|| "VM execution failed");
 
     // Shutdown runtime after execution
-    rt::shutdown_runtime();
+    base_env.shutdown_async_runtime();
 
-    let result = exec_result?;
+    let result = unwrap_with_traceback(exec_result, &base_env)?;
     maybe_print_vm_profile(profile_enabled);
 
     if !result.first_return_is_nil() {
@@ -874,12 +823,169 @@ fn run_type_check(path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Optional instruction budget (fuel) for sandboxed execution, read from the
+/// `LK_FUEL` environment variable. When set to a positive integer the VM aborts
+/// after that many instructions instead of running unbounded — the fuel knob of
+/// the sandbox model (plan M2.6). Absent/0/invalid means unlimited.
+fn fuel_budget_from_env() -> Option<u64> {
+    std::env::var("LK_FUEL")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|&budget| budget > 0)
+}
+
+/// `lk fmt FILE` — normalize indentation of `.lk` source in place (4-space,
+/// brace/paren/bracket aware; blank lines kept blank). Mirrors the LSP document
+/// formatter. `check` reports drift without writing (plan M5.3).
+fn run_fmt(path: &Path, check: bool) -> anyhow::Result<()> {
+    let input = std::fs::read_to_string(path).map_err(|e| anyhow::anyhow!("read {}: {}", path.display(), e))?;
+    let formatted = format_lk_source(&input);
+    if check {
+        if formatted != input {
+            anyhow::bail!("{} is not formatted (run `lk fmt {}`)", path.display(), path.display());
+        }
+        return Ok(());
+    }
+    if formatted != input {
+        std::fs::write(path, &formatted).map_err(|e| anyhow::anyhow!("write {}: {}", path.display(), e))?;
+        println!("formatted {}", path.display());
+    }
+    Ok(())
+}
+
+/// Indentation formatter (idempotent): 4-space, brace/paren/bracket aware.
+fn format_lk_source(input: &str) -> String {
+    const TAB: usize = 4;
+    let mut out = String::with_capacity(input.len() + 16);
+    let mut indent: isize = 0;
+    for raw in input.lines() {
+        let line = raw.trim();
+        let leading_closers = line
+            .chars()
+            .take_while(|c| c.is_whitespace() || matches!(c, '}' | ')' | ']'))
+            .filter(|c| matches!(c, '}' | ')' | ']'))
+            .count();
+        if leading_closers > 0 && indent > 0 {
+            indent = (indent - leading_closers as isize).max(0);
+        }
+        if !line.is_empty() {
+            for _ in 0..(indent.max(0) as usize * TAB) {
+                out.push(' ');
+            }
+            out.push_str(line);
+        }
+        out.push('\n');
+        let delta: isize = line
+            .chars()
+            .map(|c| match c {
+                '{' | '(' | '[' => 1,
+                '}' | ')' | ']' => -1,
+                _ => 0,
+            })
+            .sum();
+        indent = (indent + delta).max(0);
+    }
+    out
+}
+
+/// AOT Tier 0: bundle `source_path` into a self-contained native executable that
+/// embeds the program source and the VM (via lk-api's C-ABI staticlib). 100%
+/// coverage — the produced binary just runs the VM at launch, so any program that
+/// runs under the VM bundles (unlike the MIR native path). Linux/`cc` for now.
+fn run_bundle(source_path: &Path, output: &Path) -> anyhow::Result<()> {
+    let source =
+        std::fs::read_to_string(source_path).map_err(|e| anyhow::anyhow!("read {}: {}", source_path.display(), e))?;
+    let staticlib = ensure_lk_api_staticlib()?;
+    // Dev workspace layout: the C-ABI header lives in the workspace.
+    let header_dir = workspace_root()?.join("api/include");
+    let escaped = c_escape(&source);
+    let wrapper = format!(
+        "#include <stdio.h>\n#include \"lk.h\"\nstatic const char *LK_SRC = \"{escaped}\";\n\
+         int main(void) {{\n  LkVm *vm = lk_vm_new();\n  char *out = lk_vm_eval(vm, LK_SRC);\n\
+         if (out) {{ if (out[0]) printf(\"%s\\n\", out); lk_string_free(out); lk_vm_free(vm); return 0; }}\n\
+         lk_vm_free(vm); fprintf(stderr, \"lk: execution failed\\n\"); return 1;\n}}\n"
+    );
+    let scratch = std::env::temp_dir().join(format!("lk_bundle_{}", std::process::id()));
+    std::fs::create_dir_all(&scratch)?;
+    let wrapper_c = scratch.join("wrapper.c");
+    std::fs::write(&wrapper_c, wrapper)?;
+    let status = std::process::Command::new("cc")
+        .arg(&wrapper_c)
+        .arg("-I")
+        .arg(&header_dir)
+        .arg(&staticlib)
+        .args(["-lpthread", "-ldl", "-lm"])
+        .arg("-o")
+        .arg(output)
+        .status()
+        .map_err(|e| anyhow::anyhow!("cc: {e}"))?;
+    let _ = std::fs::remove_dir_all(&scratch);
+    if !status.success() {
+        anyhow::bail!("cc failed to link the bundle");
+    }
+    println!(
+        "bundled {} -> {} (self-contained; embeds the VM)",
+        source_path.display(),
+        output.display()
+    );
+    Ok(())
+}
+
+fn workspace_root() -> anyhow::Result<PathBuf> {
+    Ok(Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("cannot locate workspace root"))?
+        .to_path_buf())
+}
+
+/// The lk-api C-ABI staticlib (VM + `lk_hybrid_*` bridge), built on demand.
+/// Shared by the Tier 0 bundle and the Tier 1 hybrid link.
+fn ensure_lk_api_staticlib() -> anyhow::Result<PathBuf> {
+    let workspace = workspace_root()?;
+    let staticlib = workspace.join("target/release/liblk_api.a");
+    if !staticlib.exists() {
+        eprintln!("building lk-api staticlib (one-time)…");
+    }
+    // Always run the build: a stale staticlib (missing newer symbols such as
+    // `lk_hybrid_*`) links partially or not at all, and a fresh build is a
+    // sub-second no-op under cargo's fingerprinting.
+    let status = std::process::Command::new("cargo")
+        .current_dir(&workspace)
+        .args(["build", "-p", "lk-api", "--features", "ffi", "--release"])
+        .status()
+        .map_err(|e| anyhow::anyhow!("cargo build lk-api: {e}"))?;
+    if !status.success() {
+        anyhow::bail!("failed to build lk-api staticlib");
+    }
+    Ok(staticlib)
+}
+
+/// Escape a string for embedding as a C double-quoted string literal.
+fn c_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 16);
+    for ch in s.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 fn compile_instr_module(path: &Path) -> anyhow::Result<()> {
     let artifact = compile_instr_artifact(path)?;
     let output = path.with_extension("lkm");
     std::fs::write(&output, artifact.to_json_string()?)
         .with_context(|| format!("write Instr module {}", output.display()))?;
     println!("{}", output.display());
+    // `.lkm` is version-locked to this build and rejected by any other version
+    // (see MODULE_ARTIFACT_VERSION); it is an internal/cache artifact, not a
+    // distribution format — ship source or a native executable.
+    eprintln!("note: `.lkm` is an internal build-locked artifact, not a distribution format");
     Ok(())
 }
 
@@ -906,7 +1012,12 @@ fn compile_instr_artifact_with_dependencies(path: &Path) -> anyhow::Result<Compi
 #[cfg(feature = "llvm")]
 fn compile_llvm_ir(path: &Path, options: LlvmBackendOptions) -> anyhow::Result<()> {
     let artifact = compile_instr_artifact(path)?;
-    let llvm = lk_llvm::compile_module_artifact_to_llvm(&artifact, options)
+    let bundled = bundle_file_imports(path, &artifact)?;
+    let (artifact, bundles): (&ModuleArtifact, Vec<lk_llvm::BundledImport>) = match &bundled {
+        Some((merged, bundles)) => (merged, bundles.clone()),
+        None => (&artifact, Vec::new()),
+    };
+    let llvm = lk_llvm::compile_bundled_module_artifact_to_llvm(artifact, &bundles, options)
         .with_context(|| format!("compile LLVM IR for {}", path.display()))?;
     let output = path.with_extension("ll");
     std::fs::write(&output, llvm.module.ir).with_context(|| format!("write LLVM IR {}", output.display()))?;
@@ -917,14 +1028,85 @@ fn compile_llvm_ir(path: &Path, options: LlvmBackendOptions) -> anyhow::Result<(
 #[cfg(feature = "llvm")]
 fn compile_executable(path: &Path, output: Option<&Path>, options: LlvmBackendOptions) -> anyhow::Result<()> {
     let output = output.map(Path::to_path_buf).unwrap_or_else(|| path.with_extension(""));
-    compile_executable_to_path(path, &output, options)?;
-    println!("{}", output.display());
-    Ok(())
+    // Parse + compile up front so genuine source errors (syntax/type) surface
+    // here, rather than being masked by the Tier 0 fallback below — that path
+    // embeds the source verbatim and would only fail at runtime (plan M4.2).
+    let compiled = compile_instr_artifact_with_dependencies(path)?;
+    match compile_native_executable_from_artifact(path, &output, &compiled.artifact, options) {
+        Ok(()) => {
+            println!("{}", output.display());
+            Ok(())
+        }
+        Err(native_err) => {
+            // Opt-out (strict native-only) for tooling/tests that want to verify
+            // the native lowering in isolation rather than the graceful fallback.
+            if std::env::var_os("LK_AOT_NO_FALLBACK").is_some_and(|value| value != "0") {
+                return Err(native_err);
+            }
+            // The native (MIR/LLVM) backend covers only a lowerable subset.
+            // Instead of failing the whole program (the old all-or-nothing —
+            // plan 问题 2), fall back to the Tier 0 VM bundle, which embeds the
+            // interpreter and runs any valid program. `lk compile` thus never
+            // rejects a valid program: native when possible, VM-embed otherwise.
+            diagnostic::warning(format!(
+                "native AOT does not support this program yet ({native_err:#}); \
+                 falling back to the Tier 0 VM bundle (embeds the interpreter)"
+            ));
+            // If the Tier 0 fallback also fails (e.g. the VM staticlib is
+            // unavailable outside the dev workspace), surface both reasons so the
+            // failure is understandable rather than a bare bundle error.
+            run_bundle(path, &output).map_err(|bundle_err| {
+                anyhow::anyhow!(
+                    "cannot compile `{}`: it is not natively AOT-lowerable ({native_err:#}), \
+                     and the Tier 0 VM-bundle fallback also failed ({bundle_err:#})",
+                    path.display()
+                )
+            })
+        }
+    }
 }
 
+/// Lower an already-compiled bytecode artifact to a native executable via LLVM.
+/// Returns the (subset-only) lowering error so `compile_executable` can decide
+/// whether to fall back to the Tier 0 VM bundle.
 #[cfg(feature = "llvm")]
-fn compile_executable_to_path(path: &Path, output: &Path, options: LlvmBackendOptions) -> anyhow::Result<()> {
-    compile_executable_to_path_with_dependencies(path, output, options).map(|_| ())
+fn compile_native_executable_from_artifact(
+    path: &Path,
+    output: &Path,
+    artifact: &ModuleArtifact,
+    options: LlvmBackendOptions,
+) -> anyhow::Result<()> {
+    let bundled = bundle_file_imports(path, artifact)?;
+    let (artifact, bundles): (&ModuleArtifact, Vec<lk_llvm::BundledImport>) = match &bundled {
+        Some((merged, bundles)) => (merged, bundles.clone()),
+        None => (artifact, Vec::new()),
+    };
+    let llvm = lk_llvm::compile_bundled_module_artifact_to_llvm(artifact, &bundles, options)
+        .with_context(|| format!("compile native executable LLVM IR for {}", path.display()))?;
+    if llvm.module.vm_function_count > 0 {
+        // Tier 1 hybrid (docs/llvm/tier1-hybrid.md): the IR bridges into the
+        // VM for the marked functions, so embed the module artifact and link
+        // the lk-api staticlib alongside lkrt.
+        let artifact_json = artifact.to_json_string()?;
+        let staticlib = ensure_lk_api_staticlib()?;
+        eprintln!(
+            "note: {} function(s) run on the embedded VM (Tier 1 hybrid)",
+            llvm.module.vm_function_count
+        );
+        lk_llvm::compile_native_executable_from_llvm_hybrid(
+            path,
+            output,
+            &llvm.module.ir,
+            llvm.opt_level.as_flag(),
+            Some(lk_llvm::HybridLink {
+                module_artifact_json: &artifact_json,
+                lk_api_staticlib: &staticlib,
+            }),
+        )?;
+        return Ok(());
+    }
+    lk_llvm::compile_native_executable_from_llvm(path, output, &llvm.module.ir, llvm.opt_level.as_flag())?;
+    Ok(())
 }
 
 #[cfg(feature = "llvm")]
@@ -934,7 +1116,12 @@ fn compile_executable_to_path_with_dependencies(
     options: LlvmBackendOptions,
 ) -> anyhow::Result<Vec<ProcMacroDependency>> {
     let compiled = compile_instr_artifact_with_dependencies(path)?;
-    let llvm = lk_llvm::compile_module_artifact_to_llvm(&compiled.artifact, options)
+    let bundled = bundle_file_imports(path, &compiled.artifact)?;
+    let (artifact, bundles): (&ModuleArtifact, Vec<lk_llvm::BundledImport>) = match &bundled {
+        Some((merged, bundles)) => (merged, bundles.clone()),
+        None => (&compiled.artifact, Vec::new()),
+    };
+    let llvm = lk_llvm::compile_bundled_module_artifact_to_llvm(artifact, &bundles, options)
         .with_context(|| format!("compile native executable LLVM IR for {}", path.display()))?;
     lk_llvm::compile_native_executable_from_llvm(path, output, &llvm.module.ir, llvm.opt_level.as_flag())?;
     Ok(compiled.proc_macro_dependencies)
@@ -1230,4 +1417,175 @@ fn register_package_modules(resolver: &ModuleResolver, modules: &[PackageModule]
         resolver.register_package_module(module.name.clone(), module.root.clone());
     }
     Ok(())
+}
+
+/// Compile-time bundling of file imports (`use "../general/fib"`) for the
+/// native path: each imported file compiles on its own, its functions merge
+/// into the main artifact's table (indices/global slots rewritten), and the
+/// binding map goes to the lowering. Only *pure function-definition* modules
+/// bundle (an entry with top-level effects, nested file imports, or non-file
+/// import forms in the dep fails → the caller falls back to Tier 0).
+#[cfg(feature = "llvm")]
+fn bundle_file_imports(
+    source: &Path,
+    artifact: &ModuleArtifact,
+) -> anyhow::Result<Option<(ModuleArtifact, Vec<lk_llvm::BundledImport>)>> {
+    use lk_core::stmt::{ImportSource, ImportStmt};
+    use lk_core::vm::{Instr, Opcode};
+
+    let mut paths: Vec<String> = Vec::new();
+    for import in &artifact.imports {
+        let path = match import {
+            ImportStmt::File { path } => Some(path),
+            ImportStmt::Items {
+                source: ImportSource::File(path),
+                ..
+            }
+            | ImportStmt::Namespace {
+                source: ImportSource::File(path),
+                ..
+            } => Some(path),
+            _ => None,
+        };
+        if let Some(path) = path
+            && !paths.contains(path)
+        {
+            paths.push(path.clone());
+        }
+    }
+    if paths.is_empty() {
+        return Ok(None);
+    }
+
+    let base_dir = source.parent().unwrap_or_else(|| Path::new("."));
+    let mut merged = artifact.clone();
+    let mut bundles = Vec::with_capacity(paths.len());
+    for import_path in paths {
+        let raw = Path::new(&import_path);
+        // Mirror the runtime resolver's candidates: `p` (already .lk),
+        // `p.lk`, `p/mod.lk`, under the importing file's directory.
+        let mut candidates = Vec::new();
+        if raw.extension().and_then(|e| e.to_str()) == Some("lk") {
+            candidates.push(base_dir.join(raw));
+        }
+        candidates.push(base_dir.join(raw.with_extension("lk")));
+        candidates.push(base_dir.join(raw).join("mod.lk"));
+        let dep_path = candidates
+            .into_iter()
+            .find(|c| c.exists())
+            .ok_or_else(|| anyhow::anyhow!("bundled import not found: {import_path}"))?;
+
+        let dep = compile_instr_artifact_with_dependencies(&dep_path)?.artifact;
+        // v1 guards: no nested file imports, no item/alias imports (their
+        // bindings would need the dep's own import environment).
+        for dep_import in &dep.imports {
+            match dep_import {
+                ImportStmt::Module { .. } => {}
+                other => anyhow::bail!("bundled import '{import_path}' has an unsupported nested import: {other:?}"),
+            }
+        }
+        let dep_entry = dep.module.entry as usize;
+        // The dep entry must be pure `fn` bookkeeping: LoadFunction+SetGlobal
+        // pairs and the implicit return. Anything else is a top-level effect
+        // the bundle would silently skip — reject instead.
+        let mut reg_fn: std::collections::HashMap<u8, u32> = std::collections::HashMap::new();
+        let mut fns: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+        let mut pairs: Vec<(String, u32)> = Vec::new();
+        for raw_instr in &dep.module.functions[dep_entry].code {
+            let instr = Instr::try_from_raw(*raw_instr)
+                .map_err(|_| anyhow::anyhow!("bundled import '{import_path}': bad instruction"))?;
+            match instr.opcode() {
+                Opcode::LoadFunction => {
+                    reg_fn.insert(instr.a(), u32::from(instr.bx()));
+                }
+                Opcode::SetGlobal => {
+                    let Some(&fidx) = reg_fn.get(&instr.a()) else {
+                        anyhow::bail!("bundled import '{import_path}' has a non-function top-level binding");
+                    };
+                    let name = dep.module.globals.get(instr.bx() as usize).cloned().unwrap_or_default();
+                    pairs.push((name, fidx));
+                }
+                Opcode::Return0 => {}
+                other => {
+                    anyhow::bail!("bundled import '{import_path}' has top-level effects (opcode {other:?})")
+                }
+            }
+        }
+
+        // Merge: append every dep function except its entry; function indices
+        // and global slots (by name) rewrite in place — pcs are unchanged, so
+        // pc-keyed facts stay valid.
+        let base = merged.module.functions.len() as u32;
+        let mut remap: Vec<Option<u32>> = vec![None; dep.module.functions.len()];
+        let mut next = base;
+        for (i, slot) in remap.iter_mut().enumerate() {
+            if i != dep_entry {
+                *slot = Some(next);
+                next += 1;
+            }
+        }
+        let slot_of = |name: &str, globals: &mut Vec<String>| -> u16 {
+            match globals.iter().position(|g| g == name) {
+                Some(slot) => slot as u16,
+                None => {
+                    globals.push(name.to_string());
+                    (globals.len() - 1) as u16
+                }
+            }
+        };
+        for (i, function) in dep.module.functions.iter().enumerate() {
+            if i == dep_entry {
+                continue;
+            }
+            let mut function = function.clone();
+            for raw_instr in &mut function.code {
+                let instr = Instr::try_from_raw(*raw_instr)
+                    .map_err(|_| anyhow::anyhow!("bundled import '{import_path}': bad instruction"))?;
+                let rewritten = match instr.opcode() {
+                    Opcode::CallDirect | Opcode::MakeClosure => {
+                        let fidx = instr.b() as usize;
+                        let new = remap
+                            .get(fidx)
+                            .copied()
+                            .flatten()
+                            .ok_or_else(|| anyhow::anyhow!("bundled import '{import_path}' calls its entry"))?;
+                        let new = u8::try_from(new)
+                            .map_err(|_| anyhow::anyhow!("bundled import '{import_path}': function index overflow"))?;
+                        Some(Instr::abc(instr.opcode(), instr.a(), new, instr.c()))
+                    }
+                    Opcode::LoadFunction => {
+                        let fidx = instr.bx() as usize;
+                        let new = remap
+                            .get(fidx)
+                            .copied()
+                            .flatten()
+                            .ok_or_else(|| anyhow::anyhow!("bundled import '{import_path}' loads its entry"))?;
+                        let new = u16::try_from(new)
+                            .map_err(|_| anyhow::anyhow!("bundled import '{import_path}': function index overflow"))?;
+                        Some(Instr::abx(instr.opcode(), instr.a(), new))
+                    }
+                    Opcode::GetGlobal | Opcode::SetGlobal => {
+                        let name = dep.module.globals.get(instr.bx() as usize).cloned().unwrap_or_default();
+                        let slot = slot_of(&name, &mut merged.module.globals);
+                        Some(Instr::abx(instr.opcode(), instr.a(), slot))
+                    }
+                    _ => None,
+                };
+                if let Some(instr) = rewritten {
+                    *raw_instr = instr.raw();
+                }
+            }
+            merged.module.functions.push(function);
+        }
+        for (name, fidx) in pairs {
+            let merged_fidx = remap
+                .get(fidx as usize)
+                .copied()
+                .flatten()
+                .ok_or_else(|| anyhow::anyhow!("bundled import '{import_path}': dangling fn binding"))?;
+            fns.insert(name, merged_fidx);
+        }
+        bundles.push(lk_llvm::BundledImport { path: import_path, fns });
+    }
+    Ok(Some((merged, bundles)))
 }

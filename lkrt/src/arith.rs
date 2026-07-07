@@ -16,7 +16,7 @@
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_i64_div_checked(lhs: i64, rhs: i64) -> i64 {
     if rhs == 0 {
-        crate::abi::flush_and_abort();
+        crate::panic::raise_str("Division by zero");
     }
     lhs.wrapping_div(rhs)
 }
@@ -26,7 +26,7 @@ pub extern "C" fn lkrt_i64_div_checked(lhs: i64, rhs: i64) -> i64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_i64_mod_checked(lhs: i64, rhs: i64) -> i64 {
     if rhs == 0 {
-        crate::abi::flush_and_abort();
+        crate::panic::raise_str("Division by zero");
     }
     lhs.wrapping_rem(rhs)
 }
@@ -36,7 +36,7 @@ pub extern "C" fn lkrt_i64_mod_checked(lhs: i64, rhs: i64) -> i64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_f64_div_checked(lhs: f64, rhs: f64) -> f64 {
     if rhs == 0.0 {
-        crate::abi::flush_and_abort();
+        crate::panic::raise_str("Division by zero");
     }
     lhs / rhs
 }
@@ -45,7 +45,7 @@ pub extern "C" fn lkrt_f64_div_checked(lhs: f64, rhs: f64) -> f64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_f64_mod_checked(lhs: f64, rhs: f64) -> f64 {
     if rhs == 0.0 {
-        crate::abi::flush_and_abort();
+        crate::panic::raise_str("Division by zero");
     }
     lhs % rhs
 }

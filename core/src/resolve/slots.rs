@@ -7,10 +7,12 @@
 //! VarSlot (depth, index) where possible. The output is an analysis-only
 //! structure and does not mutate the AST.
 
-use std::collections::HashMap;
+use crate::compat::collections::HashMap;
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 
 use crate::{
-    expr::{Expr, MatchArm, Pattern, SelectCase, SelectPattern, TemplateStringPart},
+    expr::{Expr, MatchArm, Pattern, TemplateStringPart},
     stmt::{ForPattern, Program, Stmt},
     token::Span,
 };
@@ -462,28 +464,6 @@ impl ResolverCore {
                     self.resolve_expr(st);
                 }
             }
-            Expr::Select { cases, default_case } => {
-                for SelectCase { pattern, guard, body } in cases {
-                    // Each case executes in its own block; optional binding
-                    self.current_fn().push_block();
-                    if let SelectPattern::Recv { binding, channel } = pattern {
-                        self.resolve_expr(channel);
-                        if let Some(b) = binding {
-                            let _ = self.current_fn().define(b.clone(), false);
-                        }
-                    }
-                    if let Some(g) = guard {
-                        self.resolve_expr(g);
-                    }
-                    self.resolve_expr(body);
-                    self.current_fn().pop_block();
-                }
-                if let Some(def) = default_case {
-                    self.current_fn().push_block();
-                    self.resolve_expr(def);
-                    self.current_fn().pop_block();
-                }
-            }
             Expr::TemplateString(parts) => {
                 for p in parts {
                     if let TemplateStringPart::Expr(e) = p {
@@ -523,7 +503,18 @@ impl ResolverCore {
                     self.current_fn().pop_block();
                 }
             }
-            Expr::Block(_) => {}
+            // Block expressions in general expression position (today only
+            // synthesized — e.g. the `select` desugar; closure bodies take
+            // the dedicated path above): resolve their statements in a block
+            // scope of their own, same as a statement-level block.
+            Expr::Block(statements) => {
+                self.resolve_stmt(
+                    &Stmt::Block {
+                        statements: statements.clone(),
+                    },
+                    &mut Vec::new(),
+                );
+            }
         }
     }
 

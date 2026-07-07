@@ -1,7 +1,8 @@
-use std::{
-    collections::BTreeSet,
-    sync::{Arc, Mutex},
-};
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
+use crate::compat::sync::Mutex;
+use alloc::collections::BTreeSet;
+use alloc::sync::Arc;
 
 use anyhow::{Result, anyhow};
 

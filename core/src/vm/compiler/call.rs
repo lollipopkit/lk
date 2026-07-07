@@ -1,4 +1,6 @@
-use std::collections::{HashMap, HashSet};
+use crate::compat::collections::{HashMap, HashSet};
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 
 use anyhow::{Result, bail};
 
@@ -71,10 +73,15 @@ impl Compiler {
         let Expr::Var(name) = target else {
             return false;
         };
+        // A top-level `let` occupies a global slot but holds user data:
+        // `names.len()` inside a function must dispatch as a method, not as a
+        // module-member property read (which would index the list/map value
+        // with the method name).
         self.global_names.contains_key(name)
             && !self.locals.contains_key(name)
             && !self.function_names.contains_key(name)
             && !self.native_names.contains_key(name)
+            && !self.user_let_globals.contains(name)
     }
 
     fn is_stdlib_module_method(&self, target: &Expr, module: &str, method: &str, actual_method: &str) -> bool {

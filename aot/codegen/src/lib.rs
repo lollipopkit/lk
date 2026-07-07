@@ -23,12 +23,114 @@ pub fn render_module(module: &MirModule) -> String {
     let mut out = String::new();
     out.push_str("; ModuleID = 'lk_aot'\n\n");
     render_prelude(&mut out);
+    render_hybrid_prelude(&mut out, module);
     for func in &module.functions {
         let is_entry = func.id == module.entry;
         render_function(&mut out, module, func, is_entry);
     }
     render_globals(&mut out, module);
     out
+}
+
+/// Tier 1 hybrid support (`docs/llvm/tier1-hybrid.md`), emitted only when the
+/// module has VM-executed functions: the tagged-argument struct (layout matches
+/// lk-api's `#[repr(C)] LkHybridArg`), the one-way bridge declaration, and a
+/// single `internal global` marshaling buffer sized to the widest call site.
+/// A global (not per-call `alloca`) keeps bridge calls inside loops from
+/// growing the stack; it is safe because native binaries are single-threaded
+/// and the bridge never re-enters native code (no nested buffer use).
+fn render_hybrid_prelude(out: &mut String, module: &MirModule) {
+    if module.vm_functions.is_empty() {
+        return;
+    }
+    out.push_str("%LkHybridArg = type { i8, i64 }\n");
+    out.push_str("declare void @lk_hybrid_call_v(i32, ptr, i64)\n");
+    // C stdio flush: generated prints go through C `printf` (block-buffered on
+    // pipes) while the bridge VM prints through Rust's line-buffered stdout —
+    // flushing *C* stdio before each bridge call keeps output ordered. (The
+    // lkrt io flush helper flushes lkrt's Rust-side stdout: wrong buffer.)
+    out.push_str("declare i32 @fflush(ptr)\n");
+    let max_args = hybrid_argbuf_len(module);
+    if max_args > 0 {
+        let _ = writeln!(
+            out,
+            "@lk_hybrid_argbuf = internal global [{max_args} x %LkHybridArg] zeroinitializer"
+        );
+    }
+    out.push('\n');
+}
+
+fn hybrid_argbuf_len(module: &MirModule) -> usize {
+    module
+        .functions
+        .iter()
+        .flat_map(|f| f.blocks.iter())
+        .flat_map(|b| b.insts.iter())
+        .filter_map(|inst| match inst {
+            Inst::CallVm { args, .. } => Some(args.len()),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+/// One bridge call: marshal each scalar into its tagged slot, flush C stdio
+/// (the VM prints through Rust's line-buffered stdout — unflushed C buffers
+/// would reorder pipe output; precedent: `lkrt_abort` flushes), then call the
+/// bridge. No result: the lowering left the destination register unbound.
+fn render_call_vm(out: &mut String, module: &MirModule, func: FuncId, args: &[ValueId]) {
+    let params = &module
+        .vm_function(func)
+        .expect("validated: CallVm target is recorded in vm_functions")
+        .params;
+    let uid = out.len();
+    let buf_len = hybrid_argbuf_len(module);
+    for (i, (value, ty)) in args.iter().zip(params.iter()).enumerate() {
+        let tag = match ty {
+            Ty::I64 => 0,
+            Ty::F64 => 1,
+            Ty::Bool => 2,
+            Ty::Str => 3,
+            other => unreachable!("non-scalar hybrid marshaling type {other:?}"),
+        };
+        let _ = writeln!(
+            out,
+            "  %hytag{uid}_{i} = getelementptr inbounds [{buf_len} x %LkHybridArg], ptr @lk_hybrid_argbuf, i64 0, i64 {i}, i32 0"
+        );
+        let _ = writeln!(out, "  store i8 {tag}, ptr %hytag{uid}_{i}");
+        let _ = writeln!(
+            out,
+            "  %hyval{uid}_{i} = getelementptr inbounds [{buf_len} x %LkHybridArg], ptr @lk_hybrid_argbuf, i64 0, i64 {i}, i32 1"
+        );
+        match ty {
+            Ty::I64 => {
+                let _ = writeln!(out, "  store i64 {}, ptr %hyval{uid}_{i}", val(*value));
+            }
+            Ty::F64 => {
+                let _ = writeln!(out, "  store double {}, ptr %hyval{uid}_{i}", val(*value));
+            }
+            Ty::Bool => {
+                let _ = writeln!(out, "  %hyzext{uid}_{i} = zext i1 {} to i64", val(*value));
+                let _ = writeln!(out, "  store i64 %hyzext{uid}_{i}, ptr %hyval{uid}_{i}");
+            }
+            Ty::Str => {
+                let _ = writeln!(out, "  store ptr {}, ptr %hyval{uid}_{i}", val(*value));
+            }
+            other => unreachable!("non-scalar hybrid marshaling type {other:?}"),
+        }
+    }
+    let _ = writeln!(out, "  %hyflush{uid} = call i32 @fflush(ptr null)");
+    let buffer = if args.is_empty() {
+        "null".to_string()
+    } else {
+        "@lk_hybrid_argbuf".to_string()
+    };
+    let _ = writeln!(
+        out,
+        "  call void @lk_hybrid_call_v(i32 {}, ptr {buffer}, i64 {})",
+        func.0,
+        args.len()
+    );
 }
 
 fn render_prelude(out: &mut String) {
@@ -40,6 +142,9 @@ fn render_prelude(out: &mut String) {
     out.push_str("@lk_bool_false = private unnamed_addr constant [6 x i8] c\"false\\00\", align 1\n\n");
     out.push_str("declare i32 @printf(ptr, ...)\n");
     out.push_str("declare void @abort()\n");
+    // Native protected calls (`try$call`): the generated code runs `_setjmp`
+    // itself; `returns_twice` is load-bearing for correct codegen around it.
+    out.push_str("declare i32 @_setjmp(ptr) returns_twice\n");
     // Dynamic `List<i64>` indexing returns a by-value `Maybe<i64>` (`{i64, i64}`),
     // which is outside the scalar ABI schema, so declare it directly here.
     out.push_str("declare { i64, i64 } @lkrt_lklist_i64_get_pair(ptr, i64)\n");
@@ -82,6 +187,7 @@ fn llvm_ty(t: AbiType) -> &'static str {
         AbiType::F64 => "double",
         AbiType::Ptr | AbiType::StrPtr => "ptr",
         AbiType::Nil => "void",
+        AbiType::DynVal => "{ i64, i64 }",
     }
 }
 
@@ -98,11 +204,16 @@ fn ty_str(t: Ty) -> &'static str {
         | Ty::MapI64I64
         | Ty::MapStrF64
         | Ty::MapI64F64
-        | Ty::MapStrBool => "ptr",
+        | Ty::MapStrBool
+        | Ty::Set
+        | Ty::Cell => "ptr",
         Ty::Nil => "void",
         Ty::MaybeI64 | Ty::MaybeBool => "{ i64, i64 }",
         Ty::MaybeF64 => "{ double, i64 }",
         Ty::MaybeStr => "{ ptr, i64 }",
+        Ty::Dyn => "{ i64, i64 }",
+        Ty::ListDyn => "ptr",
+        Ty::MapStrDyn => "ptr",
     }
 }
 
@@ -211,6 +322,9 @@ fn render_inst(out: &mut String, module: &MirModule, inst: &Inst) {
         }
         Inst::Call { dst, callee, args } => render_call(out, *dst, *callee, args),
         Inst::CallFn { dst, func, args } => render_call_fn(out, module, *dst, *func, args),
+        Inst::CallVm { func, args } => render_call_vm(out, module, *func, args),
+        Inst::TryCall { dst, func, args } => render_try_call(out, module, *dst, *func, args),
+        Inst::TraitDispatch { dst, self_arg, arms } => render_trait_dispatch(out, *dst, *self_arg, arms),
         Inst::PrintStr { value, newline } => {
             let fmt = if *newline { "@lk_str_fmt" } else { "@lk_str_raw_fmt" };
             let _ = writeln!(out, "  call i32 (ptr, ...) @printf(ptr {fmt}, ptr {})", val(*value));
@@ -385,6 +499,100 @@ fn render_call_fn(out: &mut String, module: &MirModule, dst: Option<ValueId>, fu
     }
 }
 
+/// A native protected call: push a handler frame, `_setjmp`, and either run
+/// the try body (a `Dyn`-returning function; `try_pop` on the success path)
+/// or land here from a raise and read the carried error. Both edges join
+/// into the `[ok, value]` dyn list the desugared `let [__try_ok, e] = …`
+/// destructures. Labels are namespaced by the destination id — codegen is
+/// free to open blocks textually.
+fn render_try_call(out: &mut String, module: &MirModule, dst: ValueId, func: FuncId, args: &[ValueId]) {
+    let n = dst.0;
+    let callee = module.function(func);
+    let arg_list = args
+        .iter()
+        .enumerate()
+        .map(|(i, v)| {
+            let ty = callee
+                .and_then(|f| f.params.get(i))
+                .map(|(_, t)| ty_str(*t))
+                .unwrap_or("i64");
+            format!("{ty} {}", val(*v))
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let _ = writeln!(out, "  %try{n}buf = call ptr @lkrt_rt_try_push()");
+    let _ = writeln!(out, "  %try{n}jv = call i32 @_setjmp(ptr %try{n}buf)");
+    let _ = writeln!(out, "  %try{n}ok = icmp eq i32 %try{n}jv, 0");
+    let _ = writeln!(out, "  br i1 %try{n}ok, label %try{n}body, label %try{n}catch");
+    let _ = writeln!(out, "try{n}body:");
+    let _ = writeln!(out, "  %try{n}ret = call {{ i64, i64 }} @lk_fn_{}({arg_list})", func.0);
+    let _ = writeln!(out, "  call void @lkrt_rt_try_pop()");
+    let _ = writeln!(out, "  br label %try{n}join");
+    let _ = writeln!(out, "try{n}catch:");
+    let _ = writeln!(out, "  %try{n}err = call {{ i64, i64 }} @lkrt_rt_current_error()");
+    let _ = writeln!(out, "  br label %try{n}join");
+    let _ = writeln!(out, "try{n}join:");
+    let _ = writeln!(out, "  %try{n}okv = phi i64 [ 1, %try{n}body ], [ 0, %try{n}catch ]");
+    let _ = writeln!(
+        out,
+        "  %try{n}val = phi {{ i64, i64 }} [ %try{n}ret, %try{n}body ], [ %try{n}err, %try{n}catch ]"
+    );
+    let _ = writeln!(out, "  {} = call ptr @lkrt_lklist_dyn_new()", val(dst));
+    let _ = writeln!(
+        out,
+        "  %try{n}okd = call {{ i64, i64 }} @lkrt_dyn_from_bool(i64 %try{n}okv)"
+    );
+    let _ = writeln!(
+        out,
+        "  call void @lkrt_lklist_dyn_push(ptr {}, {{ i64, i64 }} %try{n}okd)",
+        val(dst)
+    );
+    let _ = writeln!(
+        out,
+        "  call void @lkrt_lklist_dyn_push(ptr {}, {{ i64, i64 }} %try{n}val)",
+        val(dst)
+    );
+}
+
+/// Runtime trait-method dispatch (plan J1): read the boxed receiver's arena
+/// type mark, then an `icmp` chain calls the matching impl — every arm takes
+/// the boxed `self` and returns `Dyn` (one rendered signature). A receiver
+/// whose mark matches no arm raises (the VM's unknown-method error). Labels
+/// are namespaced by the destination id, like `render_try_call`.
+fn render_trait_dispatch(out: &mut String, dst: ValueId, self_arg: ValueId, arms: &[(i64, FuncId)]) {
+    let n = dst.0;
+    let _ = writeln!(
+        out,
+        "  %td{n}id = call i64 @lkrt_dyn_obj_type_id({{ i64, i64 }} {})",
+        val(self_arg)
+    );
+    let _ = writeln!(out, "  br label %td{n}c0");
+    for (k, (tid, func)) in arms.iter().enumerate() {
+        let _ = writeln!(out, "td{n}c{k}:");
+        let _ = writeln!(out, "  %td{n}e{k} = icmp eq i64 %td{n}id, {tid}");
+        let _ = writeln!(out, "  br i1 %td{n}e{k}, label %td{n}a{k}, label %td{n}c{}", k + 1);
+        let _ = writeln!(out, "td{n}a{k}:");
+        let _ = writeln!(
+            out,
+            "  %td{n}r{k} = call {{ i64, i64 }} @lk_fn_{}({{ i64, i64 }} {})",
+            func.0,
+            val(self_arg)
+        );
+        let _ = writeln!(out, "  br label %td{n}join");
+    }
+    let _ = writeln!(out, "td{n}c{}:", arms.len());
+    let _ = writeln!(out, "  call void @lkrt_dyn_method_missing()");
+    let _ = writeln!(out, "  unreachable");
+    let _ = writeln!(out, "td{n}join:");
+    let phi_arms = arms
+        .iter()
+        .enumerate()
+        .map(|(k, _)| format!("[ %td{n}r{k}, %td{n}a{k} ]"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let _ = writeln!(out, "  {} = phi {{ i64, i64 }} {phi_arms}", val(dst));
+}
+
 fn render_const(out: &mut String, dst: ValueId, value: &Const) {
     // LK stores scalars in memory-less SSA; a constant is materialized via a no-op
     // `add`/`fadd` with an identity so the value has a definition site.
@@ -393,7 +601,9 @@ fn render_const(out: &mut String, dst: ValueId, value: &Const) {
             let _ = writeln!(out, "  {} = add i64 0, {}", val(dst), n);
         }
         Const::F64(x) => {
-            let _ = writeln!(out, "  {} = fadd double 0.0, {}", val(dst), render_f64(*x));
+            // `-0.0` is the additive identity: `fadd 0.0, -0.0` would round
+            // to `+0.0` and lose the sign of a negative-zero constant.
+            let _ = writeln!(out, "  {} = fadd double -0.0, {}", val(dst), render_f64(*x));
         }
         Const::Bool(b) => {
             let _ = writeln!(out, "  {} = add i1 0, {}", val(dst), i32::from(*b));
@@ -674,7 +884,28 @@ fn render_ret(out: &mut String, ret_ty: Ty, value: Option<ValueId>, is_entry: bo
                 | Ty::MapI64I64
                 | Ty::MapStrF64
                 | Ty::MapI64F64
-                | Ty::MapStrBool => {}
+                | Ty::MapStrBool
+                | Ty::ListDyn
+                | Ty::MapStrDyn
+                | Ty::Set
+                | Ty::Cell => {}
+                // A boxed Dyn return: print its display unless Nil-tagged
+                // (the VM's top-level auto-print of a nil return is silent).
+                Ty::Dyn => {
+                    let n = v.0;
+                    let _ = writeln!(out, "  %d{n}t = extractvalue {{ i64, i64 }} {}, 0", val(v));
+                    let _ = writeln!(out, "  %d{n}c = icmp ne i64 %d{n}t, 0");
+                    let _ = writeln!(out, "  br i1 %d{n}c, label %d{n}some, label %d{n}none");
+                    let _ = writeln!(out, "d{n}some:");
+                    let _ = writeln!(out, "  %d{n}s = call ptr @lkrt_dyn_display({{ i64, i64 }} {})", val(v));
+                    let _ = writeln!(out, "  call i32 (ptr, ...) @printf(ptr @lk_str_fmt, ptr %d{n}s)");
+                    let _ = writeln!(out, "  call void @lkrt_cleanup()");
+                    let _ = writeln!(out, "  ret i32 0");
+                    let _ = writeln!(out, "d{n}none:");
+                    let _ = writeln!(out, "  call void @lkrt_cleanup()");
+                    let _ = writeln!(out, "  ret i32 0");
+                    return;
+                }
             }
         }
         // Default-arena ownership (RFC §3.4): reclaim every runtime allocation
@@ -714,6 +945,9 @@ fn render_globals(out: &mut String, module: &MirModule) {
             Ty::F64 => "0.0",
             Ty::Bool => "false",
             Ty::Str => "null",
+            // `{0, 0}` is the Dyn nil tag — an uninitialized read is nil,
+            // exactly the VM's pre-write global value.
+            Ty::Dyn => "zeroinitializer",
             _ => "0",
         };
         let _ = writeln!(out, "@lk_gvar_{i} = internal global {} {zero} ; {name}", ty_str(*ty));
@@ -731,6 +965,7 @@ mod tests {
             abi_version: lk_aot_abi::ABI_VERSION,
             globals: vec![],
             mutable_globals: Vec::new(),
+            vm_functions: Vec::new(),
             entry: FuncId(0),
             functions: vec![MirFunction {
                 id: FuncId(0),
@@ -786,6 +1021,7 @@ mod tests {
             abi_version: lk_aot_abi::ABI_VERSION,
             globals: vec![],
             mutable_globals: Vec::new(),
+            vm_functions: Vec::new(),
             entry: FuncId(0),
             functions: vec![MirFunction {
                 id: FuncId(0),

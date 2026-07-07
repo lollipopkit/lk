@@ -25,7 +25,7 @@ fn semantic_keyword_token(identifier: &str) -> Option<u32> {
     match identifier {
         "if" | "else" | "while" | "for" | "in" | "fn" | "return" | "break" | "continue" | "use" | "from" | "as"
         | "match" | "case" | "default" | "select" | "type" | "trait" | "impl" | "true" | "false" | "nil" | "spawn"
-        | "chan" | "send" | "recv" | "export" | "macro_rules" => Some(KEYWORD_IDX),
+        | "chan" | "send" | "recv" | "export" | "macro_rules" | "go" | "try" | "catch" => Some(KEYWORD_IDX),
         _ => None,
     }
 }

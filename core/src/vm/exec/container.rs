@@ -1,5 +1,7 @@
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 use crate::util::fast_map::{FastHashMap, fast_hash_map_new};
-use std::sync::Arc;
+use alloc::sync::Arc;
 
 use anyhow::{Result, anyhow, bail};
 
@@ -194,7 +196,10 @@ impl Executor {
     }
 
     fn slice_string_general(&mut self, value: Arc<str>, start: i64, end: Option<i64>) -> Result<RuntimeVal> {
-        let s_len = value.len() as i64;
+        // Char-based indices, consistent with `s[i]` (chars().nth) and
+        // `s.len()` (char count) — byte indices would panic on a multi-byte
+        // boundary.
+        let s_len = value.chars().count() as i64;
         let start = if start < 0 {
             (s_len + start).max(0)
         } else {
@@ -210,10 +215,9 @@ impl Executor {
             }
             None => s_len,
         } as usize;
-        let end = end.min(value.len());
         let start = start.min(end);
-        let sliced: &str = &value[start..end];
-        if let Some(short) = ShortStr::new(sliced) {
+        let sliced: String = value.chars().skip(start).take(end - start).collect();
+        if let Some(short) = ShortStr::new(&sliced) {
             Ok(RuntimeVal::ShortStr(short))
         } else {
             Ok(RuntimeVal::Obj(
@@ -718,7 +722,7 @@ impl Executor {
         let Some(HeapValue::List(TypedList::String(values))) = self.state.heap.get_mut(handle) else {
             bail!("heap object {} changed while taking string list", handle.index());
         };
-        let strings = std::mem::take(values);
+        let strings = core::mem::take(values);
         let mut mixed = Vec::with_capacity(strings.len());
         for value in strings {
             mixed.push(self.runtime_value_from_string(value));

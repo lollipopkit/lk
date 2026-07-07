@@ -1,5 +1,7 @@
 //! Minimal safe executor for the new `Instr` VM path.
 
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 mod arithmetic;
 mod call;
 mod callable_ops;
@@ -7,6 +9,7 @@ mod cell;
 mod const_load;
 mod container;
 mod dispatch;
+mod frame;
 mod gc;
 mod globals;
 mod handler;
@@ -23,8 +26,9 @@ mod value_ops;
 pub use super::RuntimeCallable;
 pub use imports::import_runtime_export;
 pub use program::{
-    compile_program_module_with_ctx, execute_compiled_module_with_ctx, execute_module_artifact_with_ctx,
-    execute_program, execute_program_with_ctx, execute_program_with_ctx_and_budget, execute_source,
+    ModuleFunctionArg, call_module_function_with_ctx, compile_program_module_with_ctx,
+    execute_compiled_module_with_ctx, execute_module_artifact_with_ctx, execute_program, execute_program_with_ctx,
+    execute_program_with_ctx_and_budget, execute_program_with_ctx_and_limits, execute_source,
 };
 #[cfg(test)]
 pub(crate) use runtime_callable::call_runtime_callable_test;
@@ -32,11 +36,11 @@ pub use runtime_callable::{
     call_runtime_callable_runtime, call_runtime_value_runtime, call_runtime_value_runtime_list_args,
     call_runtime_value_runtime_named_map, call_runtime_value_runtime_named_map_list_args,
     call_runtime_value_runtime_with_receiver, call_runtime_value_runtime_with_receiver_list_args, copy_runtime_value,
-    runtime_value_to_callable_shared,
+    copy_runtime_value_same_module, runtime_value_to_callable_shared,
 };
 
 use crate::util::fast_map::{FastHashMap, fast_hash_map_new};
-use std::sync::Arc;
+use alloc::sync::Arc;
 
 use anyhow::{Result, anyhow, bail};
 
@@ -53,6 +57,9 @@ use super::{
 };
 #[cfg(test)]
 use super::{Compiler, GlobalSlot};
+use call::push_traceback_frame;
+use frame::{CallFrame, FrameOutcome};
+pub use handler::LkRaisedValue;
 use handler::{ErrorHandler, LanguageRaise};
 use profile::{RuntimeProfileFrame, index_metric_kind};
 use return_values::ReturnValues;
@@ -112,7 +119,7 @@ impl ProgramResult {
         let value = RuntimeVal::Obj(state.heap.alloc(HeapValue::Map(typed_map_from_entries(entries))));
         RuntimeExport::new(
             value,
-            Arc::new(std::sync::Mutex::new(RuntimeModuleState::new(
+            Arc::new(crate::compat::sync::Mutex::new(RuntimeModuleState::new(
                 state.heap,
                 state.globals,
             ))),
@@ -257,7 +264,7 @@ fn append_separator(out: &mut String, first: &mut bool) {
     *first = false;
 }
 
-fn append_display_items<T: std::fmt::Display>(out: &mut String, values: impl IntoIterator<Item = T>) {
+fn append_display_items<T: core::fmt::Display>(out: &mut String, values: impl IntoIterator<Item = T>) {
     let mut first = true;
     for value in values {
         append_separator(out, &mut first);
@@ -288,7 +295,7 @@ fn append_string_runtime_map_entries(
     }
 }
 
-fn append_string_display_map_entries<T: std::fmt::Display>(out: &mut String, entries: &FastHashMap<Arc<str>, T>) {
+fn append_string_display_map_entries<T: core::fmt::Display>(out: &mut String, entries: &FastHashMap<Arc<str>, T>) {
     let mut first = true;
     for (key, value) in entries {
         append_separator(out, &mut first);
@@ -318,6 +325,19 @@ pub struct Executor {
     frame_base: usize,
     register_count: u16,
     pc: usize,
+    /// The function index currently executing at `frame_base`/`pc`, kept in
+    /// sync at every push/pop so the flattened dispatch trampoline
+    /// (`run_function_inner_impl`) knows which `Function`/`code` to resume
+    /// without needing to search `frames` or `module` (plan M2.5 sub-step ①).
+    current_function_index: u32,
+    /// Suspended caller activations for flattened LK→LK calls (`CallDirect`,
+    /// `Call`, and `CallNamed` when the target is a closure): LK call depth
+    /// grows this `Vec` instead of the Rust stack (plan M2.5 sub-steps ①/②).
+    /// `CallMethodK` and native/runtime re-entry (`pcall`, stdlib HOFs, the
+    /// `Runtime` callable family) are unaffected by design — they run on a
+    /// fresh, separate `Executor`/Rust call, not `self`, so there is nothing
+    /// here for them to flatten.
+    frames: Vec<CallFrame>,
     collect_metrics: bool,
     gc_pending: bool,
     /// `LK_GC_STRESS=1` forces a full collection at every GC safepoint instead
@@ -328,6 +348,47 @@ pub struct Executor {
     shared_module: Option<Arc<Module>>,
     instruction_budget: Option<u64>,
     instruction_count: u64,
+    /// Optional cap on the number of live heap objects (sandbox memory bound).
+    heap_object_limit: Option<usize>,
+    /// Cap on live LK call depth (`RuntimeModuleState::call_depth`), checked
+    /// by `enter_lk_call`/`exit_lk_call` at every `CallFrame` push/pop
+    /// (`CallDirect`/`Call`/`CallNamed` to a closure, plan M2.5 sub-steps
+    /// ①/②) and at the `run_module_function_with_state_recoverable` native
+    /// entry boundary. Beyond it, a *catchable* error is raised instead of
+    /// exhausting memory. Native re-entry that recurses through a *separate*
+    /// `Executor` (`pcall`, stdlib HOFs, `CallMethodK`'s callable-property/
+    /// trait-method/list-HOF tails, in `runtime_callable.rs`) isn't counted
+    /// here and has no segmented-stack backstop either — unchanged from
+    /// before this plan, and out of M2.5's LK→LK-call scope.
+    max_call_depth: usize,
+}
+
+/// Default LK call-depth cap. Far beyond any sane program (Python defaults to
+/// 1000), small enough that infinite recursion errors before exhausting
+/// memory on stack segments. `LK_MAX_CALL_DEPTH` overrides it (consulted only
+/// on the exceed path, so the hot path never reads the environment).
+const DEFAULT_MAX_CALL_DEPTH: usize = 100_000;
+
+/// Red zone / segment size (rustc's `ensure_sufficient_stack` pattern): when
+/// fewer than 128KiB of Rust stack remain, run on a fresh 2MiB segment
+/// instead of overflowing. Since plan M2.5 sub-steps ①/②, `CallDirect`/
+/// `Call`/`CallNamed` to a closure no longer recurse through Rust at all (LK
+/// call depth grows `Executor::frames` instead) — this now only guards the
+/// `run_module_function_with_state_recoverable` native-entry boundary, which
+/// can still nest if a host callback re-enters the VM from inside a native
+/// call. Deep *LK* recursion measured before the M2.5 flattening: ~150 frames
+/// (debug) / ~4000 (release) to a hard abort. no_std targets keep plain
+/// recursion (their stack discipline is platform-specific).
+#[cfg(feature = "std")]
+#[inline]
+fn grow_stack_if_needed<R>(f: impl FnOnce() -> R) -> R {
+    stacker::maybe_grow(128 * 1024, 2 * 1024 * 1024, f)
+}
+
+#[cfg(not(feature = "std"))]
+#[inline]
+fn grow_stack_if_needed<R>(f: impl FnOnce() -> R) -> R {
+    f()
 }
 
 impl Executor {
@@ -341,12 +402,16 @@ impl Executor {
             frame_base: 0,
             register_count,
             pc: 0,
+            current_function_index: 0,
+            frames: Vec::new(),
             collect_metrics: false,
             gc_pending: false,
             gc_stress: gc_stress_enabled(),
             shared_module: None,
             instruction_budget: None,
             instruction_count: 0,
+            heap_object_limit: None,
+            max_call_depth: DEFAULT_MAX_CALL_DEPTH,
         };
         this.reset_entry_frame(register_count);
         this
@@ -354,6 +419,56 @@ impl Executor {
 
     pub fn with_instruction_budget(mut self, budget: u64) -> Self {
         self.instruction_budget = Some(budget);
+        self
+    }
+
+    /// Cap live LK call depth (default [`DEFAULT_MAX_CALL_DEPTH`]); recursion
+    /// beyond it raises a catchable error instead of exhausting memory.
+    pub fn with_max_call_depth(mut self, limit: usize) -> Self {
+        self.max_call_depth = limit;
+        self
+    }
+
+    /// Depth check at every LK call boundary. The env override is consulted
+    /// only on the exceed path (cold), so the hot path costs one compare.
+    #[inline]
+    pub(super) fn enter_lk_call(&mut self) -> Result<()> {
+        if self.state.call_depth >= self.max_call_depth {
+            self.call_depth_exceeded()?;
+        }
+        self.state.call_depth += 1;
+        Ok(())
+    }
+
+    #[inline]
+    pub(super) fn exit_lk_call(&mut self) {
+        self.state.call_depth = self.state.call_depth.saturating_sub(1);
+    }
+
+    #[cold]
+    fn call_depth_exceeded(&mut self) -> Result<()> {
+        #[cfg(feature = "std")]
+        if let Some(raised) = std::env::var("LK_MAX_CALL_DEPTH")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            && raised > self.max_call_depth
+        {
+            self.max_call_depth = raised;
+            if self.state.call_depth < self.max_call_depth {
+                return Ok(());
+            }
+        }
+        bail!(
+            "call depth limit exceeded ({}); set LK_MAX_CALL_DEPTH to raise it",
+            self.max_call_depth
+        )
+    }
+
+    /// Cap the number of live heap objects (a coarse memory bound for the
+    /// sandbox model, plan M2.6). Checked at the same per-instruction cadence as
+    /// the instruction budget, so it is zero-cost when unset.
+    pub fn with_heap_object_limit(mut self, limit: usize) -> Self {
+        self.heap_object_limit = Some(limit);
         self
     }
 
@@ -368,6 +483,11 @@ impl Executor {
         {
             bail!("execution step limit exceeded ({budget} instructions)");
         }
+        if let Some(limit) = self.heap_object_limit
+            && self.state.heap.len() > limit
+        {
+            bail!("heap object limit exceeded ({limit} objects)");
+        }
         Ok(())
     }
 
@@ -375,7 +495,9 @@ impl Executor {
         let mut ctx = None;
         let mut this = self;
         this.reset_entry_frame(function.register_count);
-        let returns = this.run_function_inner(function, None, &mut ctx)?.into_vec();
+        // Module-less execution never pushes a `CallFrame` (CallDirect/`Call`-to-
+        // closure both require a `Module`), so the entry index is never read.
+        let returns = this.run_function_inner(function, 0, None, &mut ctx)?.into_vec();
         Ok(this.finish(returns))
     }
 
@@ -387,7 +509,9 @@ impl Executor {
         this.state.globals = vec![RuntimeVal::Nil; module.globals.len()];
         this.reset_entry_frame(entry.register_count);
         let mut ctx = None;
-        let returns = this.run_function_inner(entry, Some(module), &mut ctx)?.into_vec();
+        let returns = this
+            .run_function_inner(entry, module.entry, Some(module), &mut ctx)?
+            .into_vec();
         Ok(this.finish(returns))
     }
 
@@ -415,7 +539,9 @@ impl Executor {
         self.state.heap = heap;
         self.reset_entry_frame(entry.register_count);
         let mut ctx = None;
-        let returns = self.run_function_inner(entry, Some(module), &mut ctx)?.into_vec();
+        let returns = self
+            .run_function_inner(entry, module.entry, Some(module), &mut ctx)?
+            .into_vec();
         Ok(self.finish(returns))
     }
 
@@ -440,7 +566,9 @@ impl Executor {
         self.state.heap = heap;
         self.reset_entry_frame(entry.register_count);
         let mut ctx = Some(ctx);
-        let returns = self.run_function_inner(entry, Some(module), &mut ctx)?.into_vec();
+        let returns = self
+            .run_function_inner(entry, module.entry, Some(module), &mut ctx)?
+            .into_vec();
         Ok(self.finish(returns))
     }
 
@@ -465,7 +593,7 @@ impl Executor {
         state: RuntimeModuleState,
         ctx: &mut VmContext,
         seed_args: F,
-    ) -> std::result::Result<ExecResult, ExecFailure>
+    ) -> core::result::Result<ExecResult, ExecFailure>
     where
         F: FnOnce(&mut Self) -> Result<u16>,
     {
@@ -512,7 +640,16 @@ impl Executor {
             });
         }
         let mut ctx = Some(ctx);
-        match self.run_function_inner(function, Some(module), &mut ctx) {
+        if let Err(error) = self.enter_lk_call() {
+            self.state.stack_top = saved_top;
+            return Err(ExecFailure {
+                error,
+                state: self.state,
+            });
+        }
+        let result = grow_stack_if_needed(|| self.run_function_inner(function, function_index, Some(module), &mut ctx));
+        self.exit_lk_call();
+        match result {
             Ok(returns) => {
                 let returns = returns.into_vec();
                 self.state.stack_top = saved_top;
@@ -538,22 +675,35 @@ impl Executor {
     fn run_function_inner(
         &mut self,
         function: &Function,
+        function_index: u32,
         module: Option<&Module>,
         ctx: &mut Option<&mut VmContext>,
     ) -> Result<ReturnValues> {
         // Monomorphize the dispatch loop on whether an instruction budget is
         // active: only the WASM playground sets one, so direct execution
         // should not pay a checked counter increment per instruction.
-        if self.instruction_budget.is_some() {
-            self.run_function_inner_impl::<true>(function, module, ctx)
+        if self.instruction_budget.is_some() || self.heap_object_limit.is_some() {
+            self.run_function_inner_impl::<true>(function, function_index, module, ctx)
         } else {
-            self.run_function_inner_impl::<false>(function, module, ctx)
+            self.run_function_inner_impl::<false>(function, function_index, module, ctx)
         }
     }
 
+    /// Trampoline for a "flat run": `dispatch_within_frame` processes
+    /// instructions for one LK function activation at a time and returns
+    /// whenever a `CallDirect`/`Call`-to-closure pushes a callee frame, a
+    /// `Return*` pops back to a caller frame *within this flat run*, or the
+    /// flat run truly finishes. Neither case recurses through Rust — LK call
+    /// depth grows `self.frames` (a `Vec`, heap-allocated) instead of the
+    /// Rust stack (plan M2.5 sub-step ①). Native re-entry (`pcall`, stdlib
+    /// HOFs, `CallNamed`/`CallMethodK`) still calls back into this function
+    /// recursively, exactly as before — each such re-entry just starts a new
+    /// bounded flat run (`base_frame_depth` scopes `self.frames` to frames
+    /// pushed *within* this particular invocation).
     fn run_function_inner_impl<const BUDGETED: bool>(
         &mut self,
         function: &Function,
+        function_index: u32,
         module: Option<&Module>,
         ctx: &mut Option<&mut VmContext>,
     ) -> Result<ReturnValues> {
@@ -564,6 +714,34 @@ impl Executor {
                 function.register_count
             );
         }
+        let base_frame_depth = self.frames.len();
+        self.current_function_index = function_index;
+        let mut function = function;
+        loop {
+            match self.dispatch_within_frame::<BUDGETED>(function, module, ctx, base_frame_depth) {
+                Ok(FrameOutcome::Switch(idx)) => {
+                    function = module
+                        .and_then(|module| module.functions.get(idx as usize))
+                        .ok_or_else(|| anyhow!("function index {} out of bounds", idx))?;
+                }
+                Ok(FrameOutcome::Done(values)) => return Ok(values),
+                Err(error) => {
+                    let idx = self.unwind_flat_run(error, function, module, ctx, base_frame_depth)?;
+                    function = module
+                        .and_then(|module| module.functions.get(idx as usize))
+                        .ok_or_else(|| anyhow!("function index {} out of bounds", idx))?;
+                }
+            }
+        }
+    }
+
+    fn dispatch_within_frame<const BUDGETED: bool>(
+        &mut self,
+        function: &Function,
+        module: Option<&Module>,
+        ctx: &mut Option<&mut VmContext>,
+        base_frame_depth: usize,
+    ) -> Result<FrameOutcome> {
         let collect_metrics = vm_runtime_metrics_enabled();
         self.collect_metrics = collect_metrics;
         let code = &function.code;
@@ -1597,7 +1775,10 @@ impl Executor {
                 Opcode::Call => {
                     #[cfg(any(test, feature = "vm-profile"))]
                     let old_pc = self.pc;
-                    self.dispatch_call(function, module, instr, ctx, collect_metrics)?;
+                    if let Some(idx) = self.dispatch_call(function, module, instr, ctx, collect_metrics)? {
+                        profile.flush(collect_metrics);
+                        return Ok(FrameOutcome::Switch(idx));
+                    }
                     #[cfg(any(test, feature = "vm-profile"))]
                     if collect_metrics && self.pc == old_pc + 1 {
                         profile.record_write_source(VmRegisterWriteSource::CallReturn, collect_metrics);
@@ -1611,18 +1792,16 @@ impl Executor {
                     let call_fact = self.call_fact_from_static_cache_or_instr(function, instr, false);
                     let window =
                         CallWindow::new(RegisterIndex::new(call_fact.call_base), call_fact.positional_count, 1);
-                    let call_pc = self.pc;
-                    let value = self.call_direct_function(module, instr.b() as u32, window, ctx)?;
-                    if self.pc != call_pc {
-                        continue;
-                    }
-                    self.clear_call_window_temps(window, 0)?;
-                    self.write_returns(window, [value])?;
-                    profile.record_write_source(VmRegisterWriteSource::CallReturn, collect_metrics);
-                    self.pc += 1;
+                    let function_index = instr.b() as u32;
+                    self.call_direct_function(module, function_index, window)?;
+                    profile.flush(collect_metrics);
+                    return Ok(FrameOutcome::Switch(function_index));
                 }
                 Opcode::CallNamed => {
-                    self.dispatch_cold(Opcode::CallNamed, function, module, instr, ctx, collect_metrics)?;
+                    if let Some(idx) = self.dispatch_call_named(function, module, instr, ctx, collect_metrics)? {
+                        profile.flush(collect_metrics);
+                        return Ok(FrameOutcome::Switch(idx));
+                    }
                 }
                 Opcode::CallMethodK => {
                     self.dispatch_call_method_k(function, module, instr, ctx)?;
@@ -1641,25 +1820,128 @@ impl Executor {
                 Opcode::Return => {
                     self.collect_pending_garbage();
                     profile.flush(collect_metrics);
-                    return self.take_return_values(instr.a(), instr.b());
+                    let values = self.take_return_values(instr.a(), instr.b())?;
+                    return self.finish_return(values, base_frame_depth);
                 }
                 Opcode::Return0 => {
                     self.collect_pending_garbage();
                     profile.flush(collect_metrics);
-                    return Ok(ReturnValues::None);
+                    return self.finish_return(ReturnValues::None, base_frame_depth);
                 }
                 Opcode::Return1 => {
                     self.collect_pending_garbage();
                     profile.flush(collect_metrics);
                     let index = self.stack_index_unchecked(instr.a());
-                    return Ok(ReturnValues::One(std::mem::take(&mut self.state.stack[index])));
+                    let value = core::mem::take(&mut self.state.stack[index]);
+                    return self.finish_return(ReturnValues::One(value), base_frame_depth);
                 }
                 other => bail!("Opcode {:?} is not implemented in Executor yet", other),
             }
         }
 
         profile.flush(collect_metrics);
-        Ok(ReturnValues::None)
+        self.finish_return(ReturnValues::None, base_frame_depth)
+    }
+
+    /// A `Return*` opcode (or falling off the end of a function's code)
+    /// completed the *currently dispatching* activation. If there's a caller
+    /// frame within this flat run, pop it, restore the caller's context, and
+    /// deliver the value into the call's result register (mirrors what the
+    /// old recursive `call_closure_stack_args` did after its nested
+    /// `run_function_inner` call returned `Ok`). Otherwise this flat run is
+    /// genuinely done.
+    fn finish_return(&mut self, values: ReturnValues, base_frame_depth: usize) -> Result<FrameOutcome> {
+        if self.frames.len() == base_frame_depth {
+            return Ok(FrameOutcome::Done(values));
+        }
+        let frame = self.frames.pop().expect("checked frames.len() above");
+        self.exit_lk_call();
+        let value = values.into_first();
+        self.current_function_index = frame.function_index;
+        self.frame_base = frame.frame_base;
+        self.register_count = frame.register_count;
+        self.state.stack_top = frame.stack_top;
+        self.captures = frame.captures;
+        self.handler_stack.truncate(frame.handler_depth);
+        self.pc = frame.pc + 1;
+        self.clear_call_window_temps(frame.window, frame.named_count)?;
+        self.write_returns(frame.window, [value])?;
+        Ok(FrameOutcome::Switch(frame.function_index))
+    }
+
+    /// An instruction in the currently dispatching activation raised an
+    /// error. Pop frames within this flat run one at a time — mirroring how
+    /// the old recursive implementation unwound one Rust call boundary at a
+    /// time — pushing a traceback entry for each, until either a `try`
+    /// wrapping the *immediate* caller's call catches it (the only case
+    /// `handler_stack` ever supported — see `docs/vm-stackless.md`) or the
+    /// flat run's own frames are exhausted (propagate to whatever Rust caller
+    /// invoked `run_function_inner_impl`, exactly as today).
+    fn unwind_flat_run(
+        &mut self,
+        mut error: anyhow::Error,
+        errored_function: &Function,
+        module: Option<&Module>,
+        ctx: &mut Option<&mut VmContext>,
+        base_frame_depth: usize,
+    ) -> Result<u32> {
+        let mut errored_function = errored_function;
+        loop {
+            if self.frames.len() == base_frame_depth {
+                return Err(error);
+            }
+            let frame = self.frames.pop().expect("checked frames.len() above");
+            self.exit_lk_call();
+            let raise_message = error.downcast_ref::<LanguageRaise>().map(|raise| raise.message.clone());
+            let mut caught = None;
+            if let Some(message) = raise_message {
+                self.handler_stack.truncate(frame.handler_depth);
+                if let Some(handler) = self.handler_stack.pop() {
+                    caught = Some((handler, message));
+                } else {
+                    // Mirrors `handle_language_raise`'s `bail!` conversion:
+                    // once the immediate caller's own try-stack has been
+                    // checked and found no match, this is no longer a
+                    // catchable `LanguageRaise` for any further (still
+                    // flattened) caller — only the single immediate hop ever
+                    // got a chance, exactly like the old per-Rust-frame check.
+                    error = anyhow!("{message}");
+                }
+            }
+            if caught.is_none() {
+                push_traceback_frame(ctx, errored_function);
+                self.handler_stack.truncate(frame.handler_depth);
+            }
+            self.current_function_index = frame.function_index;
+            self.frame_base = frame.frame_base;
+            self.register_count = frame.register_count;
+            self.state.stack_top = frame.stack_top;
+            self.captures = frame.captures;
+            match caught {
+                Some((handler, message)) => {
+                    let error_val = RuntimeVal::Obj(self.alloc_heap_value(HeapValue::ErrorVal(crate::val::ErrorVal {
+                        message,
+                        trace: Vec::new(),
+                    })));
+                    self.write(handler.catch_reg, error_val)?;
+                    self.pc = handler.catch_pc;
+                    return Ok(frame.function_index);
+                }
+                None => {
+                    // Not caught here either: keep propagating. The next pop
+                    // (if any) unwinds out of *this* frame's own activation,
+                    // so it should name `frame.function_index` (the function
+                    // we just restored into) if it's also uncaught — matching
+                    // how the old recursive code named its own `function`
+                    // parameter (the callee it had just invoked) at each
+                    // successive Rust-recursion level.
+                    errored_function = module
+                        .and_then(|module| module.functions.get(frame.function_index as usize))
+                        .ok_or_else(|| anyhow!("function index {} out of bounds", frame.function_index))?;
+                    continue;
+                }
+            }
+        }
     }
 
     #[inline]
@@ -1671,7 +1953,14 @@ impl Executor {
 }
 
 fn gc_stress_enabled() -> bool {
-    std::env::var_os("LK_GC_STRESS").is_some_and(|value| value != "0")
+    #[cfg(feature = "std")]
+    {
+        std::env::var_os("LK_GC_STRESS").is_some_and(|value| value != "0")
+    }
+    #[cfg(not(feature = "std"))]
+    {
+        false
+    }
 }
 
 pub fn execute(function: &Function) -> Result<ExecResult> {

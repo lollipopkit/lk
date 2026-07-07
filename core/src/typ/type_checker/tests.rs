@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 use crate::{
     expr::Pattern,
     operator::BinOp,
@@ -21,7 +23,7 @@ fn test_literal_types() {
     );
     assert_eq!(
         checker
-            .check_expr(&Expr::Literal(LiteralVal::Float(std::f64::consts::PI)))
+            .check_expr(&Expr::Literal(LiteralVal::Float(core::f64::consts::PI)))
             .unwrap(),
         Type::Float
     );

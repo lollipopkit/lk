@@ -256,20 +256,6 @@ mod tests {
     }
 
     #[test]
-    fn test_pkg_publish_dry_run_parses() {
-        let args =
-            CliArgs::try_parse_from(["lk", "pkg", "publish", "--dry-run"]).expect("should parse pkg publish dry-run");
-        if let Some(Commands::Pkg {
-            command: PkgCommand::Publish { dry_run },
-        }) = args.command
-        {
-            assert!(dry_run);
-        } else {
-            panic!("expected pkg publish command");
-        }
-    }
-
-    #[test]
     fn test_split_compile_args_defaults_to_single_workspace_app() {
         let temp = tempfile::tempdir().expect("temp dir");
         std::fs::write(temp.path().join("Lk.toml"), "[workspace]\nmembers = [\"apps/*\"]\n").expect("write manifest");

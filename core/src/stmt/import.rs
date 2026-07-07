@@ -1,3 +1,7 @@
+use crate::compat::path::{Path, PathBuf};
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
+use crate::compat::shared_map::SharedMap;
 use crate::{
     module::ModuleRegistry,
     stmt::{Program, Stmt},
@@ -5,11 +9,13 @@ use crate::{
     val::{HeapValue, RuntimeVal},
     vm::{RuntimeExport, VmContext},
 };
+use alloc::sync::Arc;
 use anyhow::{Result, anyhow};
-use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
-use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
+// File-based module resolution (fs + path normalization) is std-only; the
+// no_std VM core keeps only in-memory registry resolution (plan M0.7/8).
+#[cfg(feature = "std")]
+use std::path::Component;
 
 /// Import system for LK - supports various `use` syntaxes and plugin-style module resolution
 ///
@@ -61,11 +67,11 @@ pub struct ModuleResolver {
     /// Standard library registry
     stdlib_registry: Arc<ModuleRegistry>,
     /// Loaded file modules as new VM runtime exports.
-    runtime_file_modules: Arc<DashMap<PathBuf, RuntimeExport>>,
+    runtime_file_modules: Arc<SharedMap<PathBuf, RuntimeExport>>,
     /// Search paths for module resolution
     search_paths: Vec<PathBuf>,
     /// Package modules resolved from Lk.toml dependencies/workspace members
-    package_modules: Arc<DashMap<String, PathBuf>>,
+    package_modules: Arc<SharedMap<String, PathBuf>>,
 }
 
 impl PartialEq for ModuleResolver {
@@ -84,10 +90,10 @@ impl ModuleResolver {
     pub fn with_registry(registry: ModuleRegistry) -> Self {
         Self {
             stdlib_registry: Arc::new(registry),
-            runtime_file_modules: Arc::new(DashMap::new()),
+            runtime_file_modules: Arc::new(SharedMap::new()),
             // Prefer current directory; also allow `core/` for workspace runs.
             search_paths: vec![PathBuf::from("."), PathBuf::from("core")],
-            package_modules: Arc::new(DashMap::new()),
+            package_modules: Arc::new(SharedMap::new()),
         }
     }
 
@@ -105,6 +111,7 @@ impl ModuleResolver {
     }
 
     /// Set the default base directory for relative file imports.
+    #[cfg(feature = "std")]
     pub fn set_base_dir(&mut self, path: impl Into<PathBuf>) {
         let base = path.into();
         // Keep current directory as a search path; add the file's directory
@@ -130,6 +137,7 @@ impl ModuleResolver {
         self.package_modules.get(name).map(|root| root.value().clone())
     }
 
+    #[cfg(feature = "std")]
     fn normalize_path(path: PathBuf) -> PathBuf {
         let mut normalized = PathBuf::new();
         for comp in path.components() {
@@ -145,6 +153,7 @@ impl ModuleResolver {
         }
     }
 
+    #[cfg(feature = "std")]
     pub fn resolve_runtime_file(&self, path: &str) -> Result<RuntimeExport> {
         let resolved_path = self.resolve_file_path(path)?;
         self.resolve_resolved_runtime_file(&resolved_path)
@@ -154,12 +163,22 @@ impl ModuleResolver {
         if let Ok(module) = self.stdlib_registry.get_module(name) {
             return module.runtime_exports();
         }
-        let Some(root) = self.package_modules.get(name) else {
-            return Err(anyhow!("Module '{}' not found", name));
-        };
-        self.resolve_resolved_runtime_file(root.value())
+        // Package/file-backed module resolution needs the filesystem, which the
+        // no_std VM core lacks; only in-memory registry modules resolve (M0.7/8).
+        #[cfg(feature = "std")]
+        {
+            let Some(root) = self.package_modules.get(name) else {
+                return Err(anyhow!("Module '{}' not found", name));
+            };
+            self.resolve_resolved_runtime_file(root.value())
+        }
+        #[cfg(not(feature = "std"))]
+        {
+            Err(anyhow!("Module '{}' not found", name))
+        }
     }
 
+    #[cfg(feature = "std")]
     fn resolve_resolved_runtime_file(&self, resolved_path: &Path) -> Result<RuntimeExport> {
         let resolved_path = Self::normalize_path(resolved_path.to_path_buf());
         if let Some(module) = self.runtime_file_modules.get(&resolved_path) {
@@ -191,6 +210,7 @@ impl ModuleResolver {
     }
 
     /// Resolve file path using search paths
+    #[cfg(feature = "std")]
     pub fn resolve_file_path(&self, path: &str) -> Result<PathBuf> {
         let path = Path::new(path);
 
@@ -253,6 +273,7 @@ impl ModuleResolver {
         ))
     }
 
+    #[cfg(feature = "std")]
     fn load_file_runtime_module(&self, path: &Path) -> Result<RuntimeExport> {
         let src = std::fs::read_to_string(path)?;
         let mut resolver = self.clone();
@@ -312,13 +333,22 @@ pub fn execute_imports(imports: &[ImportStmt], resolver: &ModuleResolver, env: &
                 env.define_runtime_global(default_module_binding(module), module_export);
             }
             ImportStmt::File { path } => {
-                let module_name = Path::new(path)
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("module")
-                    .to_string();
-                let module = resolver.resolve_runtime_file(path)?;
-                env.define_runtime_global(module_name, module);
+                // File imports read `.lk` files off disk — std-only (M0.7/8).
+                #[cfg(feature = "std")]
+                {
+                    let module_name = Path::new(path)
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("module")
+                        .to_string();
+                    let module = resolver.resolve_runtime_file(path)?;
+                    env.define_runtime_global(module_name, module);
+                }
+                #[cfg(not(feature = "std"))]
+                {
+                    let _ = env;
+                    return Err(anyhow!("File imports require the std feature: '{}'", path));
+                }
             }
             ImportStmt::Items { .. } => unreachable!("items imports are handled before runtime use binding"),
             ImportStmt::Namespace { alias, source } => {
@@ -340,7 +370,11 @@ pub fn default_module_binding(module: &str) -> String {
 
 fn resolve_runtime_import_source(source: &ImportSource, resolver: &ModuleResolver) -> Result<RuntimeExport> {
     match source {
+        #[cfg(feature = "std")]
         ImportSource::File(path) => resolver.resolve_runtime_file(path),
+        // File imports read `.lk` files off disk — std-only (M0.7/8).
+        #[cfg(not(feature = "std"))]
+        ImportSource::File(path) => Err(anyhow!("File imports require the std feature: '{}'", path)),
         ImportSource::Module(name) => resolver.resolve_runtime_module(name),
     }
 }

@@ -74,6 +74,33 @@ pub unsafe extern "C" fn lkrt_str_contains(s: *const c_char, needle: *const c_ch
     i64::from(s.windows(needle.len().max(1)).any(|w| w == needle) || needle.is_empty())
 }
 
+/// Char-based range slice (`s[1..3]`), exactly the VM's
+/// `slice_string_general`: negative indices count from the tail, everything
+/// clamps (never a failure), and indices are *chars*, consistent with `s[i]`
+/// and `s.len()`.
+///
+/// # Safety
+/// `s` must be a valid C string, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_str_slice_chars(s: *const c_char, start: i64, end: i64) -> *mut c_char {
+    let text = if s.is_null() {
+        ""
+    } else {
+        // SAFETY: non-null pointers are NUL-terminated per the ABI.
+        unsafe { CStr::from_ptr(s) }.to_str().unwrap_or("")
+    };
+    let s_len = text.chars().count() as i64;
+    let start = if start < 0 {
+        (s_len + start).max(0)
+    } else {
+        start.min(s_len)
+    } as usize;
+    let end = if end < 0 { (s_len + end).max(0) } else { end.min(s_len) } as usize;
+    let start = start.min(end);
+    let sliced: String = text.chars().skip(start).take(end - start).collect();
+    arena_c_string(CString::new(sliced).unwrap_or_default())
+}
+
 /// Byte-wise lexicographic comparison of two C strings, returning `-1`/`0`/`1`
 /// (the sign of the ordering). The caller compares the result against `0` to
 /// realize `==`/`!=`/`<`/`<=`/`>`/`>=`, matching the VM's string comparison
@@ -258,5 +285,260 @@ mod tests {
             // reclaim the arena-registered allocation in the test
             crate::lkrt_string_free(out);
         }
+    }
+}
+
+fn view<'a>(p: *const c_char) -> &'a str {
+    if p.is_null() {
+        ""
+    } else {
+        // SAFETY: non-null pointers are NUL-terminated per the ABI.
+        unsafe { CStr::from_ptr(p) }.to_str().unwrap_or("")
+    }
+}
+
+/// `s.ends_with(suffix)` — byte-suffix test, exactly Rust/VM semantics.
+///
+/// # Safety
+/// Both pointers must be valid C strings, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_str_ends_with(s: *const c_char, suffix: *const c_char) -> i64 {
+    i64::from(view(s).ends_with(view(suffix)))
+}
+
+/// `s.lower()` — Rust `to_lowercase` (Unicode-aware, like the VM).
+///
+/// # Safety
+/// `s` must be a valid C string, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_str_lower(s: *const c_char) -> *mut c_char {
+    arena_c_string(CString::new(view(s).to_lowercase()).unwrap_or_default())
+}
+
+/// `s.upper()` — Rust `to_uppercase`.
+///
+/// # Safety
+/// `s` must be a valid C string, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_str_upper(s: *const c_char) -> *mut c_char {
+    arena_c_string(CString::new(view(s).to_uppercase()).unwrap_or_default())
+}
+
+/// `s.trim()` — Rust `str::trim`.
+///
+/// # Safety
+/// `s` must be a valid C string, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_str_trim(s: *const c_char) -> *mut c_char {
+    arena_c_string(CString::new(view(s).trim()).unwrap_or_default())
+}
+
+/// `s.find(needle)` — *byte* index of the first match, `-1` when absent
+/// (the VM returns the Rust `str::find` byte position).
+///
+/// # Safety
+/// Both pointers must be valid C strings, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_str_find(s: *const c_char, needle: *const c_char) -> i64 {
+    view(s).find(view(needle)).map_or(-1, |pos| pos as i64)
+}
+
+/// `s.substring(start, length)` — *byte*-indexed (the VM slices bytes here,
+/// unlike the char-based range slice): the end clamps to the byte length,
+/// `end <= start` yields the empty string, and a non-boundary index is the
+/// VM's panic — flush-and-abort.
+///
+/// # Safety
+/// `s` must be a valid C string, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_str_substring(s: *const c_char, start: i64, length: i64) -> *mut c_char {
+    let text = view(s);
+    let start = start as usize;
+    let end = start.saturating_add(length as usize).min(text.len());
+    if end <= start {
+        return arena_c_string(CString::default());
+    }
+    let Some(sliced) = text.get(start..end) else {
+        eprintln!("string.substring() index is not a char boundary");
+        crate::panic::raise_str("runtime error");
+    };
+    arena_c_string(CString::new(sliced).unwrap_or_default())
+}
+
+/// `s.reverse()` — char-wise reversal.
+///
+/// # Safety
+/// `s` must be a valid C string, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_str_reverse(s: *const c_char) -> *mut c_char {
+    let reversed: String = view(s).chars().rev().collect();
+    arena_c_string(CString::new(reversed).unwrap_or_default())
+}
+
+/// `s.repeat(n)` — `n <= 0` yields the empty string.
+///
+/// # Safety
+/// `s` must be a valid C string, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_str_repeat(s: *const c_char, n: i64) -> *mut c_char {
+    if n <= 0 {
+        return arena_c_string(CString::default());
+    }
+    arena_c_string(CString::new(view(s).repeat(n as usize)).unwrap_or_default())
+}
+
+/// `s.replace(from, to)` — replaces every occurrence.
+///
+/// # Safety
+/// All pointers must be valid C strings, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_str_replace(s: *const c_char, from: *const c_char, to: *const c_char) -> *mut c_char {
+    arena_c_string(CString::new(view(s).replace(view(from), view(to))).unwrap_or_default())
+}
+
+/// The module `string.len(s)` — **byte** length (`str::len`), unlike the
+/// `.len()` method's char count.
+///
+/// # Safety
+/// `s` must be a valid C string, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_str_byte_len(s: *const c_char) -> i64 {
+    view(s).len() as i64
+}
+
+/// `string.strip_prefix(s, prefix)` — the stripped remainder, or nil (a
+/// boxed Dyn: the module returns `String?`).
+///
+/// # Safety
+/// Both pointers must be valid C strings, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_str_strip_prefix(s: *const c_char, prefix: *const c_char) -> crate::lkdyn::LkDyn {
+    match view(s).strip_prefix(view(prefix)) {
+        Some(rest) => {
+            let owned = arena_c_string(CString::new(rest).unwrap_or_default());
+            crate::lkdyn::lkrt_dyn_from_str(owned)
+        }
+        None => crate::lkdyn::LkDyn::NIL,
+    }
+}
+
+/// `string.strip_suffix(s, suffix)` — see [`lkrt_str_strip_prefix`].
+///
+/// # Safety
+/// Both pointers must be valid C strings, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_str_strip_suffix(s: *const c_char, suffix: *const c_char) -> crate::lkdyn::LkDyn {
+    match view(s).strip_suffix(view(suffix)) {
+        Some(rest) => {
+            let owned = arena_c_string(CString::new(rest).unwrap_or_default());
+            crate::lkdyn::lkrt_dyn_from_str(owned)
+        }
+        None => crate::lkdyn::LkDyn::NIL,
+    }
+}
+
+/// `string.count(s, needle)` — non-overlapping matches; an empty needle
+/// counts *byte* length + 1 (the stdlib module's exact rule).
+///
+/// # Safety
+/// Both pointers must be valid C strings, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_str_count(s: *const c_char, needle: *const c_char) -> i64 {
+    let text = view(s);
+    let pat = view(needle);
+    if pat.is_empty() {
+        return text.len() as i64 + 1;
+    }
+    text.matches(pat).count() as i64
+}
+
+/// `string.capitalize(s)` — first char uppercased, the rest lowercased
+/// (Unicode-aware, byte-identical to the stdlib module).
+///
+/// # Safety
+/// `s` must be a valid C string, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_str_capitalize(s: *const c_char) -> *mut c_char {
+    let value = view(s);
+    let mut chars = value.chars();
+    let mut result = String::with_capacity(value.len());
+    if let Some(first) = chars.next() {
+        for c in first.to_uppercase() {
+            result.push(c);
+        }
+    }
+    for ch in chars {
+        for c in ch.to_lowercase() {
+            result.push(c);
+        }
+    }
+    arena_c_string(CString::new(result).unwrap_or_default())
+}
+
+/// `string.title(s)` — capitalizes after whitespace, lowercases the rest
+/// (the stdlib module's exact whitespace-driven state machine).
+///
+/// # Safety
+/// `s` must be a valid C string, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_str_title(s: *const c_char) -> *mut c_char {
+    let value = view(s);
+    let mut result = String::with_capacity(value.len());
+    let mut capitalize_next = true;
+    for ch in value.chars() {
+        if ch.is_whitespace() {
+            capitalize_next = true;
+            result.push(ch);
+        } else if capitalize_next {
+            for c in ch.to_uppercase() {
+                result.push(c);
+            }
+            capitalize_next = false;
+        } else {
+            for c in ch.to_lowercase() {
+                result.push(c);
+            }
+        }
+    }
+    arena_c_string(CString::new(result).unwrap_or_default())
+}
+
+/// `s.chars()` — one single-char string per element. The VM returns a
+/// *Mixed* list (bare-text display), so this builds a dyn list, not a
+/// typed string list (whose display quotes elements).
+///
+/// # Safety
+/// `s` must be a valid C string, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_str_chars(s: *const c_char) -> *mut std::ffi::c_void {
+    let elements: Vec<crate::lkdyn::LkDyn> = view(s)
+        .chars()
+        .map(|c| {
+            let owned = arena_c_string(CString::new(c.to_string()).unwrap_or_default());
+            crate::lkdyn::lkrt_dyn_from_str(owned)
+        })
+        .collect();
+    crate::state::arena_handle(elements)
+}
+
+/// `s[i]` — single-char read as a Dyn (char-indexed; out of bounds is nil,
+/// exactly the VM's `index_string_at`). A negative index counts back from
+/// the *byte* length (the VM's quirk — exact for ASCII).
+///
+/// # Safety
+/// `s` must be a valid C string, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_str_char_at(s: *const c_char, index: i64) -> crate::lkdyn::LkDyn {
+    let text = view(s);
+    let idx = if index < 0 { text.len() as i64 + index } else { index };
+    if idx < 0 {
+        return crate::lkdyn::LkDyn::NIL;
+    }
+    match text.chars().nth(idx as usize) {
+        Some(ch) => {
+            let owned = arena_c_string(CString::new(ch.to_string()).unwrap_or_default());
+            crate::lkdyn::lkrt_dyn_from_str(owned)
+        }
+        None => crate::lkdyn::LkDyn::NIL,
     }
 }

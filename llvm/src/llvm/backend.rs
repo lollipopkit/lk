@@ -15,6 +15,10 @@ pub struct LlvmModule {
     pub name: String,
     pub ir: String,
     pub target_triple: Option<String>,
+    /// Number of Tier 1 VM-executed functions (`docs/llvm/tier1-hybrid.md`).
+    /// Non-zero means the IR calls `lk_hybrid_call_v`, so the executable link
+    /// must add the bridge wrapper (embedded artifact) and the lk-api staticlib.
+    pub vm_function_count: usize,
 }
 
 /// The rendered LLVM module plus the optimization level the native executable
@@ -59,12 +63,23 @@ pub fn compile_module_artifact_to_llvm(
     artifact: &ModuleArtifact,
     options: LlvmBackendOptions,
 ) -> Result<LlvmModuleArtifact> {
+    compile_bundled_module_artifact_to_llvm(artifact, &[], options)
+}
+
+/// [`compile_module_artifact_to_llvm`] over an artifact whose function table
+/// already contains compile-time-bundled file imports (multi-file compiles).
+pub fn compile_bundled_module_artifact_to_llvm(
+    artifact: &ModuleArtifact,
+    bundles: &[lk_aot_lower::BundledImport],
+    options: LlvmBackendOptions,
+) -> Result<LlvmModuleArtifact> {
     // The typed MIR pipeline (`docs/llvm/aot-redesign.md`) is the only backend:
     // `lk-aot-lower` is the total capability predicate, `lk_aot_mir::validate`
     // is enforced on the production path, and `lk-aot-codegen` renders the
     // validated module. Shapes the lowering rejects fail with their precise
     // `Unsupported` reason instead of falling back or embedding a VM shell.
-    let mir = match lk_aot_lower::lower(artifact) {
+    let hybrid = std::env::var_os("LK_AOT_HYBRID").is_some_and(|value| value != "0");
+    let mir = match lk_aot_lower::lower_bundled(artifact, bundles, hybrid) {
         Ok(mir) => mir,
         Err(unsupported) => {
             bail!("LLVM native lowering does not support this ModuleArtifact shape yet (MIR lowering: {unsupported})")
@@ -89,6 +104,7 @@ pub fn compile_module_artifact_to_llvm(
             name: options.module_name,
             ir,
             target_triple: options.target_triple,
+            vm_function_count: mir.vm_functions.len(),
         },
         opt_level: if options.run_optimizations {
             options.opt_level

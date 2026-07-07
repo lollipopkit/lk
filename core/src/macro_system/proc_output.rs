@@ -1,4 +1,6 @@
 use super::{SourceToken, procedural::ProcMacroToken, token_lexeme};
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
 use crate::token::{ParseError, Span, Token, Tokenizer};
 
 pub(in crate::macro_system) fn source_tokens_from_proc_output(

@@ -1,4 +1,7 @@
-use std::{ops::Range, sync::Arc};
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
+use alloc::sync::Arc;
+use core::ops::Range;
 
 use anyhow::{Result, anyhow, bail};
 
@@ -217,55 +220,55 @@ pub(super) fn move_inline_native_slots_from_stack(
     }
     Ok(match slots.len() {
         0 => InlineNativeArgs::Zero,
-        1 => InlineNativeArgs::One([std::mem::take(&mut stack[slots.start])]),
+        1 => InlineNativeArgs::One([core::mem::take(&mut stack[slots.start])]),
         2 => InlineNativeArgs::Two([
-            std::mem::take(&mut stack[slots.start]),
-            std::mem::take(&mut stack[slots.start + 1]),
+            core::mem::take(&mut stack[slots.start]),
+            core::mem::take(&mut stack[slots.start + 1]),
         ]),
         3 => InlineNativeArgs::Three([
-            std::mem::take(&mut stack[slots.start]),
-            std::mem::take(&mut stack[slots.start + 1]),
-            std::mem::take(&mut stack[slots.start + 2]),
+            core::mem::take(&mut stack[slots.start]),
+            core::mem::take(&mut stack[slots.start + 1]),
+            core::mem::take(&mut stack[slots.start + 2]),
         ]),
         4 => InlineNativeArgs::Four([
-            std::mem::take(&mut stack[slots.start]),
-            std::mem::take(&mut stack[slots.start + 1]),
-            std::mem::take(&mut stack[slots.start + 2]),
-            std::mem::take(&mut stack[slots.start + 3]),
+            core::mem::take(&mut stack[slots.start]),
+            core::mem::take(&mut stack[slots.start + 1]),
+            core::mem::take(&mut stack[slots.start + 2]),
+            core::mem::take(&mut stack[slots.start + 3]),
         ]),
         5 => InlineNativeArgs::Five([
-            std::mem::take(&mut stack[slots.start]),
-            std::mem::take(&mut stack[slots.start + 1]),
-            std::mem::take(&mut stack[slots.start + 2]),
-            std::mem::take(&mut stack[slots.start + 3]),
-            std::mem::take(&mut stack[slots.start + 4]),
+            core::mem::take(&mut stack[slots.start]),
+            core::mem::take(&mut stack[slots.start + 1]),
+            core::mem::take(&mut stack[slots.start + 2]),
+            core::mem::take(&mut stack[slots.start + 3]),
+            core::mem::take(&mut stack[slots.start + 4]),
         ]),
         6 => InlineNativeArgs::Six([
-            std::mem::take(&mut stack[slots.start]),
-            std::mem::take(&mut stack[slots.start + 1]),
-            std::mem::take(&mut stack[slots.start + 2]),
-            std::mem::take(&mut stack[slots.start + 3]),
-            std::mem::take(&mut stack[slots.start + 4]),
-            std::mem::take(&mut stack[slots.start + 5]),
+            core::mem::take(&mut stack[slots.start]),
+            core::mem::take(&mut stack[slots.start + 1]),
+            core::mem::take(&mut stack[slots.start + 2]),
+            core::mem::take(&mut stack[slots.start + 3]),
+            core::mem::take(&mut stack[slots.start + 4]),
+            core::mem::take(&mut stack[slots.start + 5]),
         ]),
         7 => InlineNativeArgs::Seven([
-            std::mem::take(&mut stack[slots.start]),
-            std::mem::take(&mut stack[slots.start + 1]),
-            std::mem::take(&mut stack[slots.start + 2]),
-            std::mem::take(&mut stack[slots.start + 3]),
-            std::mem::take(&mut stack[slots.start + 4]),
-            std::mem::take(&mut stack[slots.start + 5]),
-            std::mem::take(&mut stack[slots.start + 6]),
+            core::mem::take(&mut stack[slots.start]),
+            core::mem::take(&mut stack[slots.start + 1]),
+            core::mem::take(&mut stack[slots.start + 2]),
+            core::mem::take(&mut stack[slots.start + 3]),
+            core::mem::take(&mut stack[slots.start + 4]),
+            core::mem::take(&mut stack[slots.start + 5]),
+            core::mem::take(&mut stack[slots.start + 6]),
         ]),
         8 => InlineNativeArgs::Eight([
-            std::mem::take(&mut stack[slots.start]),
-            std::mem::take(&mut stack[slots.start + 1]),
-            std::mem::take(&mut stack[slots.start + 2]),
-            std::mem::take(&mut stack[slots.start + 3]),
-            std::mem::take(&mut stack[slots.start + 4]),
-            std::mem::take(&mut stack[slots.start + 5]),
-            std::mem::take(&mut stack[slots.start + 6]),
-            std::mem::take(&mut stack[slots.start + 7]),
+            core::mem::take(&mut stack[slots.start]),
+            core::mem::take(&mut stack[slots.start + 1]),
+            core::mem::take(&mut stack[slots.start + 2]),
+            core::mem::take(&mut stack[slots.start + 3]),
+            core::mem::take(&mut stack[slots.start + 4]),
+            core::mem::take(&mut stack[slots.start + 5]),
+            core::mem::take(&mut stack[slots.start + 6]),
+            core::mem::take(&mut stack[slots.start + 7]),
         ]),
         len => bail!(
             "{} FullState native {} count {} exceeds inline buffer",
@@ -314,7 +317,9 @@ pub(super) fn call_native_entry_parts_with_args(
 
 fn map_native_error(native: &NativeEntry, result: Result<RuntimeVal>) -> Result<RuntimeVal> {
     result.map_err(|err| {
-        if err.is::<super::LanguageRaise>() {
+        // Pass raised errors through unwrapped so `pcall` can recover them: a
+        // LanguageRaise, or a first-class value from `error(v)` (M2.2).
+        if err.is::<super::LanguageRaise>() || err.is::<super::LkRaisedValue>() {
             err
         } else {
             anyhow!("native `{}` failed: {err}", native.name)

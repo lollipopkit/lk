@@ -11,9 +11,156 @@
 //! and an out-of-range index yields "absent" (`present = 0`) rather than a value —
 //! the caller models the result as `Maybe<Int>`.
 
-use std::ffi::{CStr, c_char, c_void};
+use std::ffi::{CStr, CString, c_char, c_void};
 
 /// Creates a fresh, empty `i64` list handle.
+/// Materializes an integer range (`a..b` / `a..=b`, optional step) as a
+/// `List<i64>` — the VM's `build_int_range` semantics exactly: zero step and
+/// stepping overflow are loud failures.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_lklist_i64_from_range(start: i64, end: i64, step: i64, inclusive: i64) -> *mut c_void {
+    if step == 0 {
+        crate::panic::raise_str("runtime error");
+    }
+    let mut out = Vec::new();
+    let mut current = start;
+    if step > 0 {
+        while if inclusive != 0 { current <= end } else { current < end } {
+            out.push(current);
+            current = match current.checked_add(step) {
+                Some(v) => v,
+                None => crate::panic::raise_str("runtime error"),
+            };
+        }
+    } else {
+        while if inclusive != 0 { current >= end } else { current > end } {
+            out.push(current);
+            current = match current.checked_add(step) {
+                Some(v) => v,
+                None => crate::panic::raise_str("runtime error"),
+            };
+        }
+    }
+    crate::state::arena_handle(out)
+}
+
+/// `xs.take(n)` — a fresh list of the first `n` elements. VM edge exactness:
+/// the count casts through `usize` (`take_prefix(n as usize)`), so a negative
+/// `n` wraps huge and takes everything.
+///
+/// # Safety
+/// `handle` must be a live `List<i64>` handle, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_i64_take(handle: *mut c_void, n: i64) -> *mut c_void {
+    let values: &[i64] = if handle.is_null() {
+        &[]
+    } else {
+        unsafe { &*(handle as *mut Vec<i64>) }
+    };
+    let count = (n as usize).min(values.len());
+    crate::state::arena_handle(values[..count].to_vec())
+}
+
+/// `xs.skip(n)` — a fresh list without the first `n` elements. The VM only
+/// drains for `n > 0` (zero/negative copies everything).
+///
+/// # Safety
+/// `handle` must be a live `List<i64>` handle, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_i64_skip(handle: *mut c_void, n: i64) -> *mut c_void {
+    let values: &[i64] = if handle.is_null() {
+        &[]
+    } else {
+        unsafe { &*(handle as *mut Vec<i64>) }
+    };
+    let start = if n > 0 { (n as usize).min(values.len()) } else { 0 };
+    crate::state::arena_handle(values[start..].to_vec())
+}
+
+/// `words.map(f)` over a `str` list (`fn(*const c_char) -> *const c_char`
+/// callback returning an arena-owned string).
+///
+/// # Safety
+/// `handle` must be a live `List<str>` handle (or null); `f` a compiled lambda.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_str_map_fn(
+    handle: *mut c_void,
+    f: extern "C" fn(*const c_char) -> *const c_char,
+) -> *mut c_void {
+    let values: &[*const c_char] = if handle.is_null() {
+        &[]
+    } else {
+        // SAFETY: `handle` addresses a `Vec<*const c_char>` from `lkrt_lklist_str_new`.
+        unsafe { &*(handle as *mut Vec<*const c_char>) }
+    };
+    let mapped: Vec<*const c_char> = values.iter().map(|&v| f(v)).collect();
+    crate::state::arena_handle(mapped)
+}
+
+/// `words.filter(p)` over a `str` list (`fn(*const c_char) -> bool`).
+///
+/// # Safety
+/// `handle` must be a live `List<str>` handle (or null); `p` a compiled lambda.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_str_filter_fn(
+    handle: *mut c_void,
+    p: extern "C" fn(*const c_char) -> bool,
+) -> *mut c_void {
+    let values: &[*const c_char] = if handle.is_null() {
+        &[]
+    } else {
+        // SAFETY: as above.
+        unsafe { &*(handle as *mut Vec<*const c_char>) }
+    };
+    let kept: Vec<*const c_char> = values.iter().copied().filter(|&v| p(v)).collect();
+    crate::state::arena_handle(kept)
+}
+
+/// `xs.unique()` over an `i64` list — first-occurrence order (integer
+/// equality equals the VM's `to_bits` rule for Int).
+///
+/// # Safety
+/// `handle` must be a live `List<i64>` handle, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_i64_unique(handle: *mut c_void) -> *mut c_void {
+    let values: &[i64] = if handle.is_null() {
+        &[]
+    } else {
+        // SAFETY: `handle` addresses a `Vec<i64>` from `lkrt_lklist_i64_new`.
+        unsafe { &*(handle as *mut Vec<i64>) }
+    };
+    let mut seen = rustc_hash::FxHashSet::default();
+    let mut out = Vec::new();
+    for &v in values {
+        if seen.insert(v) {
+            out.push(v);
+        }
+    }
+    crate::state::arena_handle(out)
+}
+
+/// `xs.chain(ys)` — a fresh concatenation of two `List<i64>`.
+///
+/// # Safety
+/// Both handles must be live `List<i64>` handles, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_i64_chain(a: *mut c_void, b: *mut c_void) -> *mut c_void {
+    let lhs: &[i64] = if a.is_null() {
+        &[]
+    } else {
+        unsafe { &*(a as *mut Vec<i64>) }
+    };
+    let rhs: &[i64] = if b.is_null() {
+        &[]
+    } else {
+        unsafe { &*(b as *mut Vec<i64>) }
+    };
+    let mut out = Vec::with_capacity(lhs.len() + rhs.len());
+    out.extend_from_slice(lhs);
+    out.extend_from_slice(rhs);
+    crate::state::arena_handle(out)
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_lklist_i64_new() -> *mut c_void {
     crate::state::arena_handle(Vec::<i64>::new())
@@ -51,6 +198,93 @@ pub unsafe extern "C" fn lkrt_lklist_i64_filter_fn(handle: *mut c_void, p: exter
     };
     let kept: Vec<i64> = values.iter().copied().filter(|&v| p(v)).collect();
     crate::state::arena_handle(kept)
+}
+
+/// `xs[start..]` over an `i64` list: elements from `start` onward (the VM's
+/// `slice_from`). A negative `start` aborts (the VM requires it non-negative);
+/// `start >= len` yields a fresh empty list. The result is a new handle.
+///
+/// # Safety
+/// `handle` must be a live `i64` list handle (or null → empty result).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_i64_slice_from(handle: *mut c_void, start: i64) -> *mut c_void {
+    if start < 0 {
+        crate::panic::raise_str("runtime error");
+    }
+    let values: &[i64] = if handle.is_null() {
+        &[]
+    } else {
+        // SAFETY: `handle` addresses a `Vec<i64>` from `lkrt_lklist_i64_new`.
+        unsafe { &*(handle as *mut Vec<i64>) }
+    };
+    let tail: Vec<i64> = values.iter().copied().skip(start as usize).collect();
+    crate::state::arena_handle(tail)
+}
+
+/// `xs[start..]` over an `f64` list. See [`lkrt_lklist_i64_slice_from`].
+///
+/// # Safety
+/// `handle` must be a live `f64` list handle (or null → empty result).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_f64_slice_from(handle: *mut c_void, start: i64) -> *mut c_void {
+    if start < 0 {
+        crate::panic::raise_str("runtime error");
+    }
+    let values: &[f64] = if handle.is_null() {
+        &[]
+    } else {
+        // SAFETY: `handle` addresses a `Vec<f64>` from `lkrt_lklist_f64_new`.
+        unsafe { &*(handle as *mut Vec<f64>) }
+    };
+    let tail: Vec<f64> = values.iter().copied().skip(start as usize).collect();
+    crate::state::arena_handle(tail)
+}
+
+/// `xs[start..]` over a `str` list; elements are interned string-constant
+/// pointers, copied as-is. See [`lkrt_lklist_i64_slice_from`].
+///
+/// # Safety
+/// `handle` must be a live `str` list handle (or null → empty result).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_str_slice_from(handle: *mut c_void, start: i64) -> *mut c_void {
+    if start < 0 {
+        crate::panic::raise_str("runtime error");
+    }
+    let values: &[*const c_char] = if handle.is_null() {
+        &[]
+    } else {
+        // SAFETY: `handle` addresses a `Vec<*const c_char>` from `lkrt_lklist_str_new`.
+        unsafe { &*(handle as *mut Vec<*const c_char>) }
+    };
+    let tail: Vec<*const c_char> = values.iter().copied().skip(start as usize).collect();
+    crate::state::arena_handle(tail)
+}
+
+/// `s.split(sep)` → a fresh `str` list handle. Uses Rust's `str::split`, so it
+/// matches the VM's `string_split` exactly (same empty-part behavior on
+/// leading/trailing/consecutive separators, and an empty separator splits
+/// between every char). Each part is copied into an arena-owned C string so the
+/// element pointers outlive the list (the str-list ABI otherwise expects
+/// interned string-constant globals).
+///
+/// # Safety
+/// `s` and `sep` must be NUL-terminated C strings (or null → treated as empty).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_str_split(s: *const c_char, sep: *const c_char) -> *mut c_void {
+    let read = |p: *const c_char| -> &str {
+        if p.is_null() {
+            ""
+        } else {
+            // SAFETY: non-null pointers are NUL-terminated per the ABI.
+            unsafe { CStr::from_ptr(p) }.to_str().unwrap_or("")
+        }
+    };
+    let (haystack, sep) = (read(s), read(sep));
+    let parts: Vec<*const c_char> = haystack
+        .split(sep)
+        .map(|part| crate::lkstr::arena_c_string(CString::new(part).unwrap_or_default()) as *const c_char)
+        .collect();
+    crate::state::arena_handle(parts)
 }
 
 /// `xs.reduce(init, f)` over an `i64` list: left fold with `f(acc, element)`.
@@ -220,12 +454,12 @@ pub unsafe extern "C" fn lkrt_lklist_i64_get(handle: *mut c_void, index: i64, pr
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_lklist_i64_set(handle: *mut c_void, index: i64, value: i64) {
     if handle.is_null() {
-        crate::abi::flush_and_abort();
+        crate::panic::raise_str("runtime error");
     }
     // SAFETY: `handle` addresses a `Vec<i64>` from `lkrt_lklist_i64_new`.
     let values = unsafe { &mut *(handle as *mut Vec<i64>) };
     if index < 0 || index as usize >= values.len() {
-        crate::abi::flush_and_abort();
+        crate::panic::raise_str("runtime error");
     }
     values[index as usize] = value;
 }
@@ -238,12 +472,12 @@ pub unsafe extern "C" fn lkrt_lklist_i64_set(handle: *mut c_void, index: i64, va
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_lklist_f64_set(handle: *mut c_void, index: i64, value: f64) {
     if handle.is_null() {
-        crate::abi::flush_and_abort();
+        crate::panic::raise_str("runtime error");
     }
     // SAFETY: `handle` addresses a `Vec<f64>` from `lkrt_lklist_f64_new`.
     let values = unsafe { &mut *(handle as *mut Vec<f64>) };
     if index < 0 || index as usize >= values.len() {
-        crate::abi::flush_and_abort();
+        crate::panic::raise_str("runtime error");
     }
     values[index as usize] = value;
 }
@@ -311,7 +545,7 @@ pub unsafe extern "C" fn lkrt_lklist_str_get_pair(handle: *mut c_void, index: i6
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_maybe_str_unwrap(value: *const c_char, present: i64) -> *const c_char {
     if present == 0 {
-        crate::abi::flush_and_abort();
+        crate::panic::raise_str("runtime error");
     }
     value
 }
@@ -345,7 +579,7 @@ pub unsafe extern "C" fn lkrt_lklist_f64_get_pair(handle: *mut c_void, index: i6
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_maybe_f64_unwrap(value: f64, present: i64) -> f64 {
     if present == 0 {
-        crate::abi::flush_and_abort();
+        crate::panic::raise_str("runtime error");
     }
     value
 }
@@ -359,7 +593,7 @@ pub extern "C" fn lkrt_maybe_f64_unwrap(value: f64, present: i64) -> f64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_maybe_i64_unwrap(value: i64, present: i64) -> i64 {
     if present == 0 {
-        crate::abi::flush_and_abort();
+        crate::panic::raise_str("runtime error");
     }
     value
 }
@@ -417,6 +651,102 @@ pub unsafe extern "C" fn lkrt_lklist_f64_contains(handle: *mut c_void, needle: f
     // SAFETY: `handle` addresses a `Vec<f64>` from `lkrt_lklist_f64_new`.
     let values = unsafe { &*(handle as *mut Vec<f64>) };
     i64::from(values.contains(&needle))
+}
+
+/// Linear membership test for a string list — by *content*, matching the
+/// VM's `TypedList::String` contains (which stringifies and compares text,
+/// for short and long strings alike).
+///
+/// # Safety
+/// `handle` must be a live handle from [`lkrt_lklist_str_new`], or null;
+/// `needle` must be a valid C string, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_str_contains(handle: *mut c_void, needle: *const c_char) -> i64 {
+    if handle.is_null() || needle.is_null() {
+        return 0;
+    }
+    let needle = unsafe { CStr::from_ptr(needle) };
+    // SAFETY: `handle` addresses a `Vec<*const c_char>` from `lkrt_lklist_str_new`.
+    let values = unsafe { &*(handle as *mut Vec<*const c_char>) };
+    i64::from(
+        values
+            .iter()
+            .any(|&p| !p.is_null() && unsafe { CStr::from_ptr(p) } == needle),
+    )
+}
+
+/// Range slice of an `i64` list (`xs[1..5]`), exactly the VM's list slice:
+/// negative indices count from the tail, everything clamps.
+///
+/// # Safety
+/// `handle` must be a live handle from [`lkrt_lklist_i64_new`], or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_i64_slice(handle: *mut c_void, start: i64, end: i64) -> *mut c_void {
+    let values: &[i64] = if handle.is_null() {
+        &[]
+    } else {
+        // SAFETY: `handle` addresses a `Vec<i64>` from `lkrt_lklist_i64_new`.
+        unsafe { &*(handle as *mut Vec<i64>) }
+    };
+    let len = values.len() as i64;
+    let start = if start < 0 { (len + start).max(0) } else { start } as usize;
+    let end = (if end < 0 { (len + end).max(0) } else { end } as usize).min(values.len());
+    let start = start.min(end);
+    crate::state::arena_handle(values[start..end].to_vec())
+}
+
+/// `.slice(start, end)` method: negative indexes abort (the VM's loud
+/// non-negative error), `end` clamps to len, `start >= end` yields empty.
+///
+/// # Safety
+/// `handle` must be a live `i64` list handle, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_i64_slice_method(handle: *mut c_void, start: i64, end: i64) -> *mut c_void {
+    if start < 0 || end < 0 {
+        crate::panic::raise_str("runtime error");
+    }
+    let values: &[i64] = if handle.is_null() {
+        &[]
+    } else {
+        // SAFETY: `handle` addresses a `Vec<i64>` from `lkrt_lklist_i64_new`.
+        unsafe { &*(handle as *mut Vec<i64>) }
+    };
+    let end = (end as usize).min(values.len());
+    let start = (start as usize).min(end);
+    crate::state::arena_handle(values[start..end].to_vec())
+}
+
+/// `xs.sort()` — a fresh ascending copy (the VM sorts a snapshot, the
+/// receiver is untouched; integer order equals `compare_runtime_values`).
+///
+/// # Safety
+/// `handle` must be a live `i64` list handle, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_i64_sort(handle: *mut c_void) -> *mut c_void {
+    let mut values: Vec<i64> = if handle.is_null() {
+        Vec::new()
+    } else {
+        // SAFETY: `handle` addresses a `Vec<i64>` from `lkrt_lklist_i64_new`.
+        unsafe { (*(handle as *mut Vec<i64>)).clone() }
+    };
+    values.sort_unstable();
+    crate::state::arena_handle(values)
+}
+
+/// `xs.reverse()` — a fresh reversed copy (non-mutating, like the VM).
+///
+/// # Safety
+/// `handle` must be a live `i64` list handle, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_i64_reverse(handle: *mut c_void) -> *mut c_void {
+    let mut values: Vec<i64> = if handle.is_null() {
+        Vec::new()
+    } else {
+        // SAFETY: `handle` addresses a `Vec<i64>` from `lkrt_lklist_i64_new`.
+        unsafe { (*(handle as *mut Vec<i64>)).clone() }
+    };
+    values.reverse();
+    crate::state::arena_handle(values)
 }
 
 /// Creates a fresh, empty `f64` list handle.
