@@ -168,9 +168,14 @@
     家族(i64 快路径/str/dyn 万能——**dyn_rets 强制 lambda 返回装箱
     是关键机制**;dyn_lt 补字符串字典序)。**覆盖率 29→31/51**
     (comprehensive/sort_search)。
-  - 下一步:阶段③ use 多文件 bundling(C1 宏导入放行 `..` → C2
-    FunctionData 级合并)。macros.lk 卡整对象插值 display
-    (裁决出子集,J1 静态类型名机制或可回收)
+  - ✅ **阶段③完成**(commits `a32b530`/`5e99f07`):C1 宏导入扫描放行
+    `..`(**修 bug**:use.lk 此前连 VM 都跑不了)· C2 编译期 bundling
+    (CLI 合并依赖函数表+fidx/全局槽重写;lower_bundled + ImportEnv
+    解析全部五种 use 形式;GlobalRef::UserModule;str.byte_len)。
+    **覆盖率 31→33/51**(use/use_forms 真原生)。
+  - 下一步:阶段④ map 迭代序 native 复刻(D1 镜像引擎——lkrt 换
+    hashbrown+Fx 载体、两段字面量构造、order-conformance 测试)。
+    macros.lk 卡整对象插值 display(裁决出子集,J1 或可回收)
 - GetGlobal 13(try$call/并发/模块白名单/trait)= 再修阶段 a-d,未启
 - **✅ 裁决不做**:callable trait 反转 · 真机/QEMU demo · 细粒度 feature 拆分。
 - **可选后续**:native raise 前缀统一(catch 到的 native 错误带 "native ... failed:" 前缀,

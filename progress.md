@@ -763,3 +763,15 @@ isolate**(单线程无锁 GC 是热路径底线,无数据竞争,推翻=重写堆
   时 native abort 抓出。sort_search 的 insertion_sort 同时吃 int 列表和
   str 列表(跨函数 join→Dyn),阶段①机制在此全链路兑现。
 - 覆盖率 29→31/51;bench 1.003/1.010x。
+
+## 深覆盖收尾:阶段③(2026-07-07)
+
+- **C1**(`a32b530`):macro_system/imports.rs 拒 `..` 是 use.lk 连 VM
+  都跑不了的真因(每条 use 都过宏导入扫描);放行父目录、绝对路径仍拒。
+- **C2**(`5e99f07`):bundling 设计落地——依赖 entry 守卫(仅
+  LoadFunction/SetGlobal/Return0)、fidx 重写仅 CallDirect.b/
+  MakeClosure.b/LoadFunction.bx(**CallNamed.bx 是计数 payload 不是
+  fidx,勿动**)、全局槽按名重映射(pc 不变故 facts 有效)。
+  ImportEnv 挂在 SigInfer 上免穿线;文件命名空间绑定名=file_stem。
+  string.len(模块)=字节长 ≠ .len()(方法)=char 数,新 byte_len ABI。
+- 覆盖率 31→33/51;bench 1.007x。
