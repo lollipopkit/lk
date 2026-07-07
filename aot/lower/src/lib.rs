@@ -5612,6 +5612,7 @@ fn lower_inst(
             let without_fn = match map_ty {
                 Ty::MapStrI64 | Ty::MapStrBool => "str_i64_without",
                 Ty::MapStrF64 => "str_f64_without",
+                Ty::MapStrDyn => "str_dyn_without",
                 _ => return Err(Unsupported::TypeMismatch { pc }),
             };
             let mut current = map_handle;

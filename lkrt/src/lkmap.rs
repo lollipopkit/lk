@@ -188,6 +188,24 @@ pub unsafe extern "C" fn lkrt_lkmap_str_f64_without(handle: *mut c_void, key: *c
     crate::state::arena_handle(copy)
 }
 
+/// `{ ..rest }` over a `Map<str, Dyn>` (struct instances / mixed maps). See
+/// [`lkrt_lkmap_str_i64_without`].
+///
+/// # Safety
+/// `handle` must be a live `Map<str, Dyn>` handle (or null → empty); `key` a
+/// NUL-terminated C string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lkmap_str_dyn_without(handle: *mut c_void, key: *const c_char) -> *mut c_void {
+    let mut copy: StrDynMap = if handle.is_null() {
+        StrDynMap::default()
+    } else {
+        // SAFETY: `handle` addresses a `StrDynMap` from `lkrt_lkmap_str_dyn_new`.
+        unsafe { (*(handle as *mut StrDynMap)).clone() }
+    };
+    copy.remove(unsafe { key_str(key) });
+    crate::state::arena_handle(copy)
+}
+
 /// Creates a fresh, empty `Map<i64, i64>` handle.
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_lkmap_i64_i64_new() -> *mut c_void {
