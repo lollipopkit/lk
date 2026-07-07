@@ -2622,7 +2622,7 @@ struct Ssa {
     dyn_empty_pcs: std::collections::HashSet<usize>,
     /// Guessed empty-list handles → their literal pc (a consumer that
     /// contradicts the guess reports `EmptyListGuessWrong`).
-    empty_guess: std::collections::HashMap<ValueId, usize>,
+    empty_guess: std::collections::HashMap<ValueId, (usize, Ty)>,
     /// Constant-range materializations (`NewRange` with all-const operands,
     /// step 1): handle → exclusive `(start, end)`. Lets `GetIndex` recognize
     /// a range key (`s[1..3]`) and emit a real slice.
@@ -2967,22 +2967,22 @@ impl Ssa {
             // A guessed empty-`[]` handle read through a phi (loop/branch)
             // keeps its provenance: every non-self edge must carry the same
             // literal pc for the param to inherit it.
-            let mut guess_pc: Option<usize> = None;
+            let mut guess: Option<(usize, Ty)> = None;
             let mut all_guessed = true;
             for &(_, v, _) in &incoming {
                 if v == param {
                     continue;
                 }
                 match self.empty_guess.get(&v) {
-                    Some(&p0) if guess_pc.is_none() || guess_pc == Some(p0) => guess_pc = Some(p0),
+                    Some(&g) if guess.is_none() || guess == Some(g) => guess = Some(g),
                     _ => {
                         all_guessed = false;
                         break;
                     }
                 }
             }
-            if all_guessed && let Some(p0) = guess_pc {
-                self.empty_guess.insert(param, p0);
+            if all_guessed && let Some(g) = guess {
+                self.empty_guess.insert(param, g);
             }
             for (p, v, ty) in incoming {
                 let v = if ty == phi_ty {
@@ -5445,7 +5445,7 @@ fn lower_inst(
                             args: Vec::new(),
                         });
                         if list_ty != Ty::ListDyn {
-                            ssa.empty_guess.insert(handle, pc);
+                            ssa.empty_guess.insert(handle, (pc, list_ty));
                         }
                         ssa.list_len.insert(handle, 0);
                         ssa.list_base_len.insert(handle, 0);
@@ -5895,13 +5895,29 @@ fn lower_inst(
                 if ssa.empty_guess.is_empty() {
                     None
                 } else {
-                    // The handle itself when known, otherwise every pending
-                    // guess (a handle read through an unsealed loop phi has
-                    // no provenance yet — over-marking only costs typed-ness,
-                    // never correctness: Dyn boxes everything).
+                    // The handle itself when known; otherwise a handle read
+                    // through an unsealed loop phi has no provenance yet —
+                    // mark the pending guesses *of the receiver's own shape*
+                    // (only those can be the contradicted literal; a
+                    // correctly guessed `ListStr` elsewhere in the function
+                    // must keep its typed lowering — `join` etc. have no Dyn
+                    // arm). If shape-filtering leaves nothing, over-mark all
+                    // (costs typed-ness, never correctness).
                     let pcs = match ssa.empty_guess.get(&handle) {
-                        Some(&pc0) => vec![pc0],
-                        None => ssa.empty_guess.values().copied().collect(),
+                        Some(&(pc0, _)) => vec![pc0],
+                        None => {
+                            let same_shape: Vec<usize> = ssa
+                                .empty_guess
+                                .values()
+                                .filter(|&&(_, gty)| gty == list_ty)
+                                .map(|&(p0, _)| p0)
+                                .collect();
+                            if same_shape.is_empty() {
+                                ssa.empty_guess.values().map(|&(p0, _)| p0).collect()
+                            } else {
+                                same_shape
+                            }
+                        }
                     };
                     Some(Unsupported::EmptyListGuessWrong { pcs })
                 }
