@@ -117,6 +117,26 @@ heap 对象按句柄)。native:typed 列表跨型 needle 编译期折叠 false,M
 (`ListDyn`)走 lkrt `contains_eq`(同款 strict 语义);长字符串/嵌套列表的句柄
 同一性限制与 unique() 同款(intern/转换边界,已留档,不进差分子集)。
 
+## trait 方法分发与 auto-Display(2026-07-07 裁决,plan J)
+
+native 侧 struct 实例是普通 string-keyed map(**无 `"$type"` 隐藏键**——
+`len()`/迭代/display 与 map 完全一致);运行时类型身份存 arena 句柄侧表
+(lkrt `OBJ_TYPE_MARKS`,`NewObject` 时打标记)。两个已知边界:
+
+- **类型标记不跨 channel**:深拷贝(`OwnedVal`)重建 map 时不复制标记,
+  收方对该 struct 实例的动态 trait 方法调用会 raise(VM 能成功)。语料无
+  此形状;如需支持,`OwnedVal` 捕获/重放需带上标记。
+- **auto-Display 只镜像 `show`**:VM `try_runtime_display_show` 硬编码查
+  方法名 `"show"`(与 trait 名无关;`#[derive(Debug)]` 展开出的
+  `__LKShow::show` 也走它)。native 在 display 上下文(print/println 参数、
+  模板插值 `ToString`/`ConcatString`/`ConcatN`)对带 provenance 的 struct
+  直调注册的 `show`。**无 `show` impl 的整对象 display 不进子集**(VM 内部
+  有 `<Type {...}>` debug 形与 registry 缺失 bail 等多种路径,未统一前不复刻)。
+
+动态分发(boxed receiver,经混合列表/Dyn 参数流动)限 `argc == 0`(self 之外
+无参数)且零捕获 impl;静态 devirt(NewObject provenance 已知)支持任意参数。
+分发臂按注册序排列,标记无匹配 → raise(VM 的 unknown-method 同为错误)。
+
 ## 维护约定
 
 - 新增可下降形状时,先在此登记预期语义(尤其失败路径与显示格式),再写差分用例。

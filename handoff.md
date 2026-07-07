@@ -204,9 +204,18 @@
     ≡ lazy,复用 iter 通路)· tcp/socket/bytes 白名单绑定(ABI 早已在
     net.rs)。**覆盖率 41→47/51**(json_demo/json_process/yaml_toml/
     config_parser/stream_demo/tcp_demo,两项留档担忧均解除)。
-  - **再修进行中:J(trait 静态 devirtualize)**。剩余 4 例:
-    struct_trait/trait_impl(J1)· macros.lk(整对象插值 display,
-    J 后评估)· unsupported.lk(留档合集)
+  - ✅ **J 完成(trait 方法分发,commits `5c8cc4f`/`12bb2ee`)**:
+    注册序列 prescan→TraitEnv(pc 跳过)· 静态 devirt(NewObject
+    provenance)· 动态分发(MIR TraitDispatch 文本 diamond +
+    lkrt 句柄侧表,**无 "$type" 隐藏键**)· auto-Display(镜像 VM
+    硬编码 "show";derive(Debug)=impl __LKShow{show} → 整对象插值
+    零改动覆盖)· assert(Dyn) truthy/NewObject 字段 to_dyn_any/
+    ToString hook。**覆盖率 47→50/51**(struct_trait/trait_impl/
+    macros)。裁决入 semantics.md(标记不跨 channel/show-only/
+    动态分发 argc==0)。
+- **🏁 深覆盖大计划终局:25/51 → 50/51(目标 47-50 的上限)**。
+  唯一未覆盖 unsupported.lk = 裁决留档合集(probe 确认 ≥9 个互不
+  相关 blocker:spread concat/负索引/位运算/字符串乘等,无搭车项)。
 - GetGlobal 13(try$call/并发/模块白名单/trait)= 再修阶段 a-d,未启
 - **✅ 裁决不做**:callable trait 反转 · 真机/QEMU demo · 细粒度 feature 拆分。
 - **可选后续**:native raise 前缀统一(catch 到的 native 错误带 "native ... failed:" 前缀,

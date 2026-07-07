@@ -859,3 +859,41 @@ isolate**(单线程无锁 GC 是热路径底线,无数据竞争,推翻=重写堆
   config_parser/stream_demo/tcp_demo);bench 0.990x。剩 4:
   struct_trait/trait_impl(J)· macros(整对象插值 display,J 后评估)·
   unsupported(留档合集)。
+
+## 深覆盖收尾:再修 J(trait 方法分发,2026-07-07)
+
+- **J1**(`5c8cc4f`):prescan 把 entry 的 __lk_register_trait(_impl)
+  注册序列(GetGlobal→Load*/Move/NewList→Call 连续直线形状,严格
+  验形,不匹配即放弃回退响亮拒绝)提升为 TraitEnv,序列 pc 跳过,
+  impl fn 补进可达根。三层分发:静态 devirt(NewObject provenance
+  side-table,Move 沿 ValueId 零成本传播)· 动态分发(MIR
+  TraitDispatch 单指令 + codegen 文本 diamond,lkrt_dyn_obj_type_id
+  读 arena 句柄侧表——**无 "$type" 隐藏键**,len/迭代/display 零污染;
+  各臂 Dyn self + dyn_rets 强制 Dyn ret 统一签名)· auto-Display
+  (println/print/ConcatString/ConcatN 操作数带 provenance 且注册
+  show → 直调,镜像 VM try_runtime_display_show 硬编码 "show")。
+  struct_trait/trait_impl 翻转(含 [Rect,Circle].map(|s| s.area())
+  混型动态分发),**41→49/51**。
+- **J2**(`12bb2ee`):assert(Dyn)→dyn.truthy(VM assert_truthy 同
+  语义)· NewObject 字段值 to_dyn_any(MaybeI64 经 from_maybe_*)·
+  ToString 挂 auto-Display(单插值 "${point}" desugar 成裸 ToString)。
+  **关键发现:#[derive(Debug)] 展开 = 普通 impl __LKShow{show} 注册
+  → J1 机制零改动覆盖整对象插值**。macros.lk 翻转,**49→50/51
+  (计划上限)**。
+- 裁决入 semantics.md:类型标记不跨 channel(OwnedVal 不带标记)·
+  auto-Display 只镜像 show · 无 show 的整对象 display 不进子集 ·
+  动态分发限 argc==0。
+- unsupported.lk 维持留档(probe 确认:list spread concat/负索引/
+  位运算/字符串乘等 ≥9 个互不相关 blocker,无单一搭车项)。
+- bench:J1 0.996x / J2 0.990x(纯噪声)。
+
+## 🏁 深覆盖收尾大计划终局(2026-07-07)
+
+**25/51 → 50/51**,计划目标 47-50 的上限。唯一未覆盖:
+unsupported.lk(裁决留档合集)。全程:2 个 VM miscompile 顺手修复
+(循环字面量别名死循环、全局容器方法路由)、1 个宏导入 bug(`..`)、
+lkrt 新增 panic/chan/encoding/vm_mirror/lkset 五个模块 + ~80 ABI 条目、
+MIR 新增 TryCall/TraitDispatch 两条文本展开指令、fixpoint 新增
+dyn_rets/spawned_isolate/TraitEnv 三套机制。门禁纪律全程保持:
+每 commit 覆盖率单调不降 + 四套差分 + workspace + fuzz + clippy/fmt/
+no_std + dist bench 噪声带(0.986-1.076x)。
