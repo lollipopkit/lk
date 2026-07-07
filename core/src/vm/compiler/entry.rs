@@ -11,8 +11,9 @@ use crate::{
 };
 
 use super::{
-    CompiledFunction, Compiler, Function, FunctionSignature, Module, NativeEntry, collect_function_inline_bodies,
-    collect_function_names, collect_function_signatures, collect_global_names_with_external, collect_native_names,
+    CompiledFunction, Compiler, Function, FunctionSignature, HashSet, Module, NativeEntry,
+    collect_function_inline_bodies, collect_function_names, collect_function_signatures,
+    collect_function_visible_let_names, collect_global_names_with_external, collect_native_names,
     function_frame_params, global_slots_from_names, item_without_attributes,
 };
 
@@ -52,6 +53,7 @@ impl Compiler {
         let function_bodies = collect_function_inline_bodies(program)?;
         let native_names = collect_native_names(&natives)?;
         let global_names = collect_global_names_with_external(program, external_globals)?;
+        let user_let_globals = collect_function_visible_let_names(program);
         let mut module = Module {
             functions: vec![Function::default(); function_names.len() + 1],
             natives,
@@ -67,6 +69,7 @@ impl Compiler {
             global_names.clone(),
             true,
         );
+        entry.user_let_globals = user_let_globals.clone();
         entry.dynamic_function_base = module.functions.len() as u32;
         entry.lower_program_statements(program)?;
         module.functions[0] = entry.finish()?;
@@ -93,6 +96,7 @@ impl Compiler {
                     function_bodies.clone(),
                     native_names.clone(),
                     global_names.clone(),
+                    user_let_globals.clone(),
                     HashMap::new(),
                     module.functions.len() as u32,
                 )?;
@@ -155,6 +159,7 @@ impl Compiler {
         function_bodies: HashMap<String, super::support::FunctionInlineBody>,
         native_names: HashMap<String, u32>,
         global_names: HashMap<String, u32>,
+        user_let_globals: HashSet<String>,
         capture_names: HashMap<String, u16>,
         dynamic_function_base: u32,
     ) -> Result<CompiledFunction> {
@@ -170,6 +175,7 @@ impl Compiler {
             global_names,
             false,
         );
+        compiler.user_let_globals = user_let_globals;
         compiler.capture_names = capture_names;
         compiler.dynamic_function_base = dynamic_function_base;
         compiler.function.param_count = frame_params.len() as u16;

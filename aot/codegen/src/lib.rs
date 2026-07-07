@@ -842,6 +842,9 @@ fn render_globals(out: &mut String, module: &MirModule) {
             Ty::F64 => "0.0",
             Ty::Bool => "false",
             Ty::Str => "null",
+            // `{0, 0}` is the Dyn nil tag — an uninitialized read is nil,
+            // exactly the VM's pre-write global value.
+            Ty::Dyn => "zeroinitializer",
             _ => "0",
         };
         let _ = writeln!(out, "@lk_gvar_{i} = internal global {} {zero} ; {name}", ty_str(*ty));

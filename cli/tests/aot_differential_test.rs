@@ -648,6 +648,31 @@ fn differential_builtins() {
 }
 
 #[test]
+fn differential_global_containers() {
+    run_differential(
+        "global_containers",
+        &[
+            // Module globals holding containers cross functions as boxed Dyn
+            // (typed zero-init would diverge from the VM's nil); methods on
+            // them dispatch as methods (the compiler routing fix), natively
+            // through the Dyn arms.
+            new(
+                "global_list_methods",
+                "let nums = [1, 2, 3];\nfn count() { return nums.len(); }\nfn first() { return nums[0]; }\nprintln(count());\nprintln(first());\nreturn 0;\n",
+            ),
+            new(
+                "global_str_list",
+                "let names = [\"ada\", \"bob\"];\nfn count() { return names.len(); }\nfn pick() { return names[1]; }\nprintln(count());\nprintln(pick());\nreturn 0;\n",
+            ),
+            new(
+                "global_map_field",
+                "let cfg = {\"host\": \"prod.io\", \"port\": 8080};\nfn host() { return cfg.host; }\nfn port() { return cfg.port; }\nprintln(host());\nprintln(port());\nreturn 0;\n",
+            ),
+        ],
+    );
+}
+
+#[test]
 fn differential_dyn_cross_function() {
     run_differential(
         "dyn_cross_fn",

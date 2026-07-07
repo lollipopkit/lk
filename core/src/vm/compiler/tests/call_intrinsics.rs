@@ -1055,3 +1055,35 @@ fn compiler_inline_readonly_param_survives_later_closure_promotion() {
     // t = 10 + 1; g(11) = 11 + 10.
     assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(21)]);
 }
+
+/// A top-level `let` occupies a global slot but holds user data: a method
+/// call on it from inside a function must dispatch as a method
+/// (`CallMethodK`), never as a module-member property read — the old
+/// `GetIndex(recv, "len")` shape read the method name as a data key and
+/// crashed the executor (list) or called nil (map).
+#[test]
+fn compiler_dispatches_methods_on_global_container_lets() {
+    let module = compile_source_module(
+        r#"
+        let nums = [1, 2, 3];
+        let m = {"a": 41};
+        fn count() { return nums.len(); }
+        fn read() { return m.get("a"); }
+        return count() + read();
+        "#,
+    )
+    .expect("compile module");
+    let uses_method_dispatch = module.functions.iter().any(|function| {
+        function
+            .code
+            .iter()
+            .any(|instr| matches!(instr.opcode(), Opcode::CallMethodK | Opcode::Len))
+    });
+    assert!(
+        uses_method_dispatch,
+        "global-let receivers must use method dispatch, not property reads"
+    );
+
+    let result = execute_module(&module).expect("execute module");
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(44)]);
+}

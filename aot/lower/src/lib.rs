@@ -567,6 +567,7 @@ pub fn lower_with_hybrid(artifact: &ModuleArtifact, hybrid: bool) -> Result<MirM
             sig.dyn_loop_phis.len(),
             sig.dyn_empty_lists.len(),
             sig.dyn_rets.len(),
+            sig.global_tys.clone(),
         );
         // Call-site facts are re-derived every pass: an argument register
         // that resolves to a closure ref only once a summary lands (e.g. a
@@ -636,6 +637,7 @@ pub fn lower_with_hybrid(artifact: &ModuleArtifact, hybrid: bool) -> Result<MirM
                 sig.dyn_loop_phis.len(),
                 sig.dyn_empty_lists.len(),
                 sig.dyn_rets.len(),
+                sig.global_tys.clone(),
             );
         if converged || passes > 2 * funcs.len() + 2 {
             break;
@@ -4190,18 +4192,33 @@ fn lower_inst(
             {
                 return Err(Unsupported::Opcode { pc, op: instr.opcode() });
             }
-            // Mutable scalar module global (a top-level `let` shared with
-            // functions): the write's type must agree across the whole module.
+            // Mutable module global (a top-level `let` shared with functions).
+            // Scalar slots stay typed when every write agrees; disagreeing or
+            // non-scalar (but boxable) writes join the slot to `Dyn` — each
+            // write boxes, reads flow through the Dyn arms (plan M4.2).
             let (v, ty) = ssa.read(instr.a(), block, pc)?;
-            if !matches!(ty, Ty::I64 | Ty::F64 | Ty::Bool | Ty::Str) {
-                return Err(Unsupported::TypeMismatch { pc });
-            }
-            match sig.global_tys.get_mut(slot as usize) {
-                Some(state @ None) => *state = Some(ty),
-                Some(Some(prev)) if *prev != ty => return Err(Unsupported::TypeMismatch { pc }),
-                Some(Some(_)) => {}
+            let obs = match ty {
+                Ty::I64 | Ty::F64 | Ty::Bool | Ty::Str => ty,
+                t if dyn_boxable_ty(t) => Ty::Dyn,
+                _ => return Err(Unsupported::TypeMismatch { pc }),
+            };
+            let slot_ty = match sig.global_tys.get_mut(slot as usize) {
+                Some(state @ None) => {
+                    *state = Some(obs);
+                    obs
+                }
+                Some(Some(prev)) if *prev != obs => {
+                    *prev = Ty::Dyn;
+                    Ty::Dyn
+                }
+                Some(Some(prev)) => *prev,
                 None => return Err(Unsupported::Opcode { pc, op: instr.opcode() }),
-            }
+            };
+            let v = if slot_ty == Ty::Dyn && ty != Ty::Dyn {
+                to_dyn_any(ssa, insts, v, ty, pc)?
+            } else {
+                v
+            };
             insts.push(Inst::GlobalSet {
                 gvar: sig.gvar(slot),
                 src: v,
@@ -4241,9 +4258,15 @@ fn lower_inst(
             }
             let initialized = sig.initialized_globals.get(slot as usize).copied().unwrap_or(false);
             let ty = sig.global_tys.get(slot as usize).copied().flatten();
-            let (Some(ty), true) = (ty, initialized) else {
+            let Some(ty) = ty else {
                 return Err(Unsupported::Opcode { pc, op: instr.opcode() });
             };
+            // A typed slot read before its entry-prefix initialization could
+            // observe native zero where the VM has nil — reject. A `Dyn` slot
+            // is exempt: its zeroinit `{0, 0}` *is* the nil tag, VM-exact.
+            if !initialized && ty != Ty::Dyn {
+                return Err(Unsupported::Opcode { pc, op: instr.opcode() });
+            }
             let dst = ssa.new_val();
             insts.push(Inst::GlobalGet {
                 dst,

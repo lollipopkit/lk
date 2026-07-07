@@ -62,6 +62,9 @@ pub struct Compiler {
     function_bodies: HashMap<String, FunctionInlineBody>,
     native_names: HashMap<String, u32>,
     global_names: HashMap<String, u32>,
+    /// Top-level `let` names visible to callables: user-data globals, not
+    /// module objects — method calls on them dispatch as methods.
+    user_let_globals: HashSet<String>,
     capture_names: HashMap<String, u16>,
     capture_cells: HashSet<String>,
     cell_locals: HashSet<String>,
@@ -1173,6 +1176,7 @@ impl Compiler {
             self.global_names.clone(),
             false,
         );
+        compiler.user_let_globals = self.user_let_globals.clone();
         compiler.capture_names = capture_names;
         compiler.capture_cells = capture_cells;
         compiler.dynamic_function_base = dynamic_function_base;
@@ -1828,6 +1832,7 @@ impl Compiler {
             self.function_bodies.clone(),
             self.native_names.clone(),
             self.global_names.clone(),
+            self.user_let_globals.clone(),
             HashMap::new(),
             function_index + 1,
         )?;

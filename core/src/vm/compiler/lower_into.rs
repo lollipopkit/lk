@@ -217,7 +217,8 @@ impl Compiler {
                 && self.global_names.contains_key(name)
                 && !self.locals.contains_key(name)
                 && !self.function_names.contains_key(name)
-                && !self.native_names.contains_key(name))
+                && !self.native_names.contains_key(name)
+                && !self.user_let_globals.contains(name))
             && matches!(field.as_ref(), Expr::Literal(value) if value.as_str() == Some(method))
     }
 
@@ -227,7 +228,8 @@ impl Compiler {
                 && self.global_names.contains_key(name)
                 && !self.locals.contains_key(name)
                 && !self.function_names.contains_key(name)
-                && !self.native_names.contains_key(name))
+                && !self.native_names.contains_key(name)
+                && !self.user_let_globals.contains(name))
     }
 }
 

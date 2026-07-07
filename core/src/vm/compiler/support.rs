@@ -366,6 +366,16 @@ fn const_int_expr_value(expr: &Expr) -> Option<i64> {
     }
 }
 
+/// Top-level `let` names visible to callables (function/closure bodies).
+/// These occupy global slots but hold *user data*, not module objects: a
+/// method call on one must dispatch as a method (`CallMethodK`), never as a
+/// module-member property read (`GetIndex(recv, "name")` on a list/map value
+/// reads data — or crashes — instead of calling the method).
+pub(super) fn collect_function_visible_let_names(program: &Program) -> HashSet<String> {
+    let top_level_lets = collect_top_level_let_names(program);
+    collect_callable_visible_top_level_lets(program, &top_level_lets)
+}
+
 pub(super) fn collect_global_names_with_external<I, S>(
     program: &Program,
     external_globals: I,
