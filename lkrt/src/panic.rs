@@ -34,8 +34,10 @@ unsafe extern "C" {
 struct JmpBuf([u8; 512]);
 
 thread_local! {
-    /// Live `try` frames, innermost last. Boxed so the buffer address stays
-    /// stable while the vector grows.
+    /// Live `try` frames, innermost last. The boxing is load-bearing (not a
+    /// `vec_box` accident): `_setjmp` captured the buffer's address, which
+    /// must survive the vector growing/reallocating.
+    #[allow(clippy::vec_box)]
     static HANDLERS: RefCell<Vec<Box<JmpBuf>>> = const { RefCell::new(Vec::new()) };
     /// The value carried by the in-flight (or just-caught) raise.
     static CURRENT_ERROR: Cell<LkDyn> = const { Cell::new(LkDyn::NIL) };
