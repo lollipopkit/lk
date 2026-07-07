@@ -8,7 +8,7 @@ mod tests {
         stmt::import::ModuleResolver,
         stmt::stmt_parser::StmtParser,
         token::Tokenizer,
-        val::{CallableValue, HeapValue, RuntimeVal, TypedList},
+        val::{CallableValue, HeapValue, RuntimeVal},
         vm::{self, NativeFunction},
     };
 
