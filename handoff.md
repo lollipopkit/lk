@@ -187,12 +187,15 @@
     ⑥ F1 commit `ad38f0a`:build_lkrt_asan.sh + LKRT_STATICLIB 注入
     + make asan-lkrt + CI 非阻塞 job;-Zbuild-std 触发 E0152 留档,
     混合配置实测差分全绿)。**覆盖率 25→36/51**。
-  - **再修进行中:G(try$call sjlj)→ H(并发)→ I(json 等模块)
-    → J(trait 分发)**。剩余 15 例:try_catch/error_unwrap/
-    error_model_edges(a)· select/concurrency_demo(b)· json_demo/
-    json_process/yaml_toml/config_parser/stream_demo/tcp_demo(c,
-    json 系已推进到 register-read 错误面)· struct_trait/trait_impl
-    (d)· macros.lk(整对象插值 display,J1 或可回收)·
+  - ✅ **G 完成(try$call 原生化,commits `4fd02d7`/`9b9aebe`)**:
+    sjlj(MIR TryCall 单指令,codegen 文本展开 diamond,免块手术)+
+    运行时 cell 跨界(SSA cell 模型保留,try 边界物化+写回)+ 守卫
+    全面改道 raise(panic 保持 fatal;无 handler 落回 abort,try 外
+    行为不变)。**覆盖率 36→39/51**(try 三例真原生)。
+  - **再修进行中:H(并发)→ I(json 等模块)→ J(trait 分发)**。
+    剩余 12 例:select/concurrency_demo(b)· json_demo/json_process/
+    yaml_toml/config_parser/stream_demo/tcp_demo(c)· struct_trait/
+    trait_impl(d)· macros.lk(整对象插值 display,J1 或可回收)·
     unsupported.lk(留档合集)
 - GetGlobal 13(try$call/并发/模块白名单/trait)= 再修阶段 a-d,未启
 - **✅ 裁决不做**:callable trait 反转 · 真机/QEMU demo · 细粒度 feature 拆分。
