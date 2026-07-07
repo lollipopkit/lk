@@ -831,3 +831,31 @@ isolate**(单线程无锁 GC 是热路径底线,无数据竞争,推翻=重写堆
   猜 ListDyn**(闭包内 push 对 entry lookahead 不可见,typed 猜测
   跨函数 ping-pong——select eager-trace 场景)。
 - 覆盖率 39→41/51;bench 0.986x。
+
+## 深覆盖收尾:再修 I(模块白名单增量,2026-07-07)
+
+- **I1/I2**(`b90c6c1`):lkrt encoding.rs——json/yaml/toml 解码用与
+  VM core/src/val/de.rs **完全相同的 crate + 转换规则**(同 lockfile
+  版本;serde_json Value::Object=BTreeMap 排序键序);对象经
+  str_dyn_map_mirrored 两段重放(serde 迭代序充当 VM stage-1 插入序)
+  → 键迭代序逐字节一致。数字规则 as_i64 优先(整数装 int,溢出/小数
+  装 float);解析错误 → raise("Invalid JSON/YAML/TOML")可 catch。
+  数组产 ListDyn(VM 会把 uniform 标量 typed 化,差异只在 uniform
+  字符串数组的 display 引号——语料未触,差分门禁守)。encoding 子模块
+  `use {json} from encoding` → GlobalRef::Module 绑定。
+- **I3 stream**(同 commit):全纯语料下 eager 列表管道与 lazy 可观察
+  等价——stream.from_list/collect 透传、stream.range 物化为
+  i64_from_range(step 1 exclusive)、map/filter/take/skip/chain 复用
+  iter 模块转发(模块匹配扩成 `"iter" | "stream"`)。担心的副作用
+  求值序问题在语料里不存在(lambda 全纯),留档解除。
+- **I4 tcp**(同 commit):socket/tcp/bytes 的 lkrt ABI 早已存在
+  (net.rs),缺的只是 lower 侧绑定——net 子模块 → GlobalRef::Module
+  + module_call_abi ×6(socket.addr/tcp.connect/write→write_str/
+  read/close/bytes.to_string_utf8)。tcp_demo 输出(连接失败路径)
+  确定,非确定担忧解除。
+- 连锁:dyn.as_map + Dyn receiver 的 map-only 方法名(has/keys/
+  values/delete)预拆箱;get 因与 list 语义歧义保持拒绝。
+- **覆盖率 41→47/51**(json_demo/json_process/yaml_toml/
+  config_parser/stream_demo/tcp_demo);bench 0.990x。剩 4:
+  struct_trait/trait_impl(J)· macros(整对象插值 display,J 后评估)·
+  unsupported(留档合集)。

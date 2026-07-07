@@ -198,10 +198,15 @@
     Dyn + dyn_rets)· isolate 虚拟槽(goroutine cell 写线程私有)·
     select spin-poll(closed recv=nil binding/closed send=raise)。
     **覆盖率 39→41/51**(concurrency_demo/select)。
-  - **再修进行中:I(json 等模块)→ J(trait 分发)**。剩余 10 例:
-    json_demo/json_process/yaml_toml/config_parser/stream_demo/
-    tcp_demo(c)· struct_trait/trait_impl(d)· macros.lk(整对象
-    插值 display,J1 或可回收)· unsupported.lk(留档合集)
+  - ✅ **I 完成(模块白名单增量,commit `b90c6c1`)**:lkrt encoding.rs
+    (json/yaml/toml 与 VM de.rs 同 crate 同规则,对象过 vm_mirror 两段
+    重放保键序;解析错误→raise 可 catch)· stream 转发(全纯语料 eager
+    ≡ lazy,复用 iter 通路)· tcp/socket/bytes 白名单绑定(ABI 早已在
+    net.rs)。**覆盖率 41→47/51**(json_demo/json_process/yaml_toml/
+    config_parser/stream_demo/tcp_demo,两项留档担忧均解除)。
+  - **再修进行中:J(trait 静态 devirtualize)**。剩余 4 例:
+    struct_trait/trait_impl(J1)· macros.lk(整对象插值 display,
+    J 后评估)· unsupported.lk(留档合集)
 - GetGlobal 13(try$call/并发/模块白名单/trait)= 再修阶段 a-d,未启
 - **✅ 裁决不做**:callable trait 反转 · 真机/QEMU demo · 细粒度 feature 拆分。
 - **可选后续**:native raise 前缀统一(catch 到的 native 错误带 "native ... failed:" 前缀,
