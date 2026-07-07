@@ -70,6 +70,9 @@ impl ClassOf for extern "C" fn(*const core::ffi::c_char) -> *const core::ffi::c_
 impl ClassOf for extern "C" fn(*const core::ffi::c_char) -> bool {
     const CLASS: Class = Class::Ptr;
 }
+impl ClassOf for extern "C" fn(*mut core::ffi::c_void) -> crate::LkDyn {
+    const CLASS: Class = Class::Ptr;
+}
 
 trait FnClasses {
     fn classes(&self) -> (Vec<Class>, Class);

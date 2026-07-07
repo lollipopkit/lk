@@ -89,6 +89,23 @@ macro_rules! for_each_abi_fn {
             ("rt", "cell_new", lkrt_rt_cell_new, WritesHost, [DynVal], Ptr);
             ("rt", "cell_get", lkrt_rt_cell_get, ReadsHost, [Ptr], DynVal);
             ("rt", "cell_set", lkrt_rt_cell_set, WritesHost, [Ptr, DynVal], Nil);
+            // Native channels + goroutine threads (plan H: OS threads +
+            // deep-copy isolate channels; ids are i64). Blocking send/recv,
+            // Go close semantics (buffer drains, then raises), snapshot
+            // argument blocks for spawn, join-once task await.
+            ("chan", "new", lkrt_chan_new, WritesHost, [I64], I64);
+            ("chan", "send", lkrt_chan_send, WritesHost, [I64, DynVal], Nil);
+            ("chan", "recv", lkrt_chan_recv, WritesHost, [I64], DynVal);
+            ("chan", "close", lkrt_chan_close, WritesHost, [I64], Nil);
+            ("chan", "try_send", lkrt_chan_try_send, WritesHost, [I64, DynVal], I64);
+            ("chan", "try_recv", lkrt_chan_try_recv, WritesHost, [I64], DynVal);
+            ("chan", "len", lkrt_chan_len, ReadsHost, [I64], I64);
+            ("chan", "is_closed", lkrt_chan_is_closed, ReadsHost, [I64], I64);
+            ("rt", "spawn_args_new", lkrt_spawn_args_new, WritesHost, [], Ptr);
+            ("rt", "spawn_args_push", lkrt_spawn_args_push, WritesHost, [Ptr, DynVal], Nil);
+            ("rt", "spawn_arg", lkrt_spawn_arg, ReadsHost, [Ptr, I64], DynVal);
+            ("rt", "spawn", lkrt_spawn, WritesHost, [Ptr, Ptr], I64);
+            ("rt", "task_await", lkrt_task_await, WritesHost, [I64], DynVal);
             ("socket", "addr", lkrt_socket_addr, Pure, [StrPtr, I64], StrPtr);
             ("tcp", "connect", lkrt_tcp_connect, WritesHost, [StrPtr], I64);
             ("tcp", "read", lkrt_tcp_read, WritesHost, [I64, I64], I64);

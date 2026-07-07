@@ -8,6 +8,7 @@ mod abi;
 #[cfg(test)]
 mod abi_conformance_test;
 mod arith;
+mod chan;
 mod host;
 mod io;
 mod lkdyn;
@@ -25,6 +26,11 @@ pub use abi::{
     lkrt_last_error, lkrt_panic, lkrt_string_free,
 };
 pub use arith::{lkrt_f64_div_checked, lkrt_f64_mod_checked, lkrt_i64_div_checked, lkrt_i64_mod_checked};
+pub use chan::{
+    lkrt_chan_close, lkrt_chan_is_closed, lkrt_chan_len, lkrt_chan_new, lkrt_chan_recv, lkrt_chan_send,
+    lkrt_chan_try_recv, lkrt_chan_try_send, lkrt_spawn, lkrt_spawn_arg, lkrt_spawn_args_new, lkrt_spawn_args_push,
+    lkrt_task_await,
+};
 pub use host::{
     lkrt_datetime_day_of_week, lkrt_datetime_day_of_year, lkrt_datetime_format, lkrt_datetime_is_weekend,
     lkrt_datetime_now, lkrt_datetime_parse, lkrt_env_get, lkrt_env_get_or, lkrt_env_has, lkrt_env_remove, lkrt_env_set,
