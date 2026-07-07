@@ -675,6 +675,23 @@ fn differential_dyn_cross_function() {
                 "truthiness_zero_and_nil",
                 "let z = 0;\nif (z) { println(\"zero truthy\"); }\nlet n = nil;\nif (n) { println(\"unreachable\"); } else { println(\"nil falsy\"); }\nfn pick(x) { if (x) { return \"t\"; } return \"f\"; }\nprintln(pick(0));\nprintln(pick(nil));\nprintln(pick(false));\nprintln(pick(\"\"));\nreturn 0;\n",
             ),
+            // A Bool-typed self-recursive return chain must not look
+            // heterogeneous against the stale I64 ret default.
+            new(
+                "bool_recursive_ret",
+                "fn has(xs, t) {\n  if (xs.len() == 0) { return false; }\n  if (xs[0] == t) { return true; }\n  return has(xs.skip(1), t);\n}\nprintln(has([1, 3, 5], 5));\nprintln(has([1, 3, 5], 4));\nreturn 0;\n",
+            ),
+            // Genuinely mixed return types box every return point: the
+            // function returns Dyn, nil crosses as nil.
+            new(
+                "mixed_ret_types",
+                "fn pick(n) {\n  if (n == 0) { return 0; }\n  if (n == 1) { return \"one\"; }\n  if (n == 2) { return 2.5; }\n  return nil;\n}\nprintln(pick(0));\nprintln(pick(1));\nprintln(pick(2));\nprintln(pick(9) == nil);\nreturn 0;\n",
+            ),
+            // A Maybe-returning function boxes: absent arrives as nil.
+            new(
+                "maybe_ret_boxes",
+                "fn lookup(k) {\n  let m = {};\n  m.set(\"a\", 7);\n  return m.get(k);\n}\nprintln(lookup(\"a\"));\nprintln(lookup(\"zz\") == nil);\nreturn 0;\n",
+            ),
             // An all-nil branch join must not build a Nil-typed phi: it widens
             // to Dyn (boxed nil) and compares by tag.
             new(

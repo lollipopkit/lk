@@ -392,6 +392,10 @@ struct SigInfer {
     /// (`(function, block, slot)`): the next fixpoint pass pre-types them
     /// `Dyn` so the loop body consumes them through the Dyn arms.
     dyn_loop_phis: std::collections::HashSet<(u32, usize, usize)>,
+    /// Functions whose returns disagreed on a boxable type (or returned a
+    /// nullable carrier): the next fixpoint pass boxes every return point,
+    /// making the function return `Dyn` instead of rejecting the module.
+    dyn_rets: std::collections::HashSet<u32>,
     /// Per module-global slot: the scalar type every `SetGlobal` writes (a
     /// mixed-type global marks `conflict`, rejecting the module rather than
     /// miscompiling one of the writes).
@@ -523,6 +527,7 @@ pub fn lower_with_hybrid(artifact: &ModuleArtifact, hybrid: bool) -> Result<MirM
         ret_types: vec![Ty::I64; n],
         conflict: false,
         dyn_loop_phis: std::collections::HashSet::new(),
+        dyn_rets: std::collections::HashSet::new(),
         dyn_empty_lists: std::collections::HashSet::new(),
         global_tys: vec![None; global_count],
         initialized_globals: prescan_initialized_globals(module, global_count),
@@ -561,6 +566,7 @@ pub fn lower_with_hybrid(artifact: &ModuleArtifact, hybrid: bool) -> Result<MirM
             sig.ret_closures.clone(),
             sig.dyn_loop_phis.len(),
             sig.dyn_empty_lists.len(),
+            sig.dyn_rets.len(),
         );
         // Call-site facts are re-derived every pass: an argument register
         // that resolves to a closure ref only once a summary lands (e.g. a
@@ -629,6 +635,7 @@ pub fn lower_with_hybrid(artifact: &ModuleArtifact, hybrid: bool) -> Result<MirM
                 sig.ret_closures.clone(),
                 sig.dyn_loop_phis.len(),
                 sig.dyn_empty_lists.len(),
+                sig.dyn_rets.len(),
             );
         if converged || passes > 2 * funcs.len() + 2 {
             break;
@@ -1473,9 +1480,40 @@ fn lower_function(
                     });
                 }
                 let (v, ty) = ssa.read(reg, bi, start)?;
+                // A function discovered to mix return types boxes every
+                // return point: it returns `Dyn`, callers consume through
+                // the Dyn arms (plan M4.2 cross-function Dyn flow).
+                let force_dyn = !is_entry && sig.dyn_rets.contains(&func_index);
+                let (v, ty) = if force_dyn && ty != Ty::Dyn {
+                    (to_dyn_any(&mut ssa, &mut insts, v, ty, start)?, Ty::Dyn)
+                } else {
+                    (v, ty)
+                };
                 match ret_ty {
-                    Some(prev) if prev != ty => return Err(Unsupported::ReturnTypeConflict),
-                    _ => ret_ty = Some(ty),
+                    Some(prev) if prev != ty => {
+                        // Heterogeneous but boxable returns are retriable:
+                        // record the function, the fixpoint re-lowers it with
+                        // every return boxed (the snapshot includes the set's
+                        // size). Everything else stays a real reject.
+                        if !is_entry && dyn_boxable_ty(prev) && dyn_boxable_ty(ty) {
+                            sig.dyn_rets.insert(func_index);
+                        }
+                        return Err(Unsupported::ReturnTypeConflict);
+                    }
+                    _ => {
+                        // Eagerly publish the first concrete return type so a
+                        // self-recursive call later in this same body observes
+                        // it instead of the stale `I64` default (a Bool-typed
+                        // `return f(xs.skip(1))` chain would otherwise look
+                        // heterogeneous forever).
+                        if ret_ty.is_none()
+                            && !is_entry
+                            && let Some(slot) = sig.ret_types.get_mut(func_index as usize)
+                        {
+                            *slot = ty;
+                        }
+                        ret_ty = Some(ty);
+                    }
                 }
                 // A `Nil` return value renders as `ret void`.
                 ret_val[bi] = if ty == Ty::Nil { None } else { Some(v) };
@@ -1815,6 +1853,18 @@ fn lower_function(
                 };
                 cond_val[bi] = Some(cond);
             }
+            // A Dyn-returning function's bare `return` returns boxed nil
+            // (`ret void` is invalid once the signature is `{i64,i64}`);
+            // `build_term` picks the resolved value up via `ret_val`.
+            Some(Exit::Ret(None)) if !is_entry && sig.dyn_rets.contains(&func_index) => {
+                let dummy = ssa.new_val();
+                let boxed = to_dyn(&mut ssa, &mut insts, dummy, Ty::Nil, start).expect("nil always boxes");
+                match ret_ty {
+                    Some(prev) if prev != Ty::Dyn => return Err(Unsupported::ReturnTypeConflict),
+                    _ => ret_ty = Some(Ty::Dyn),
+                }
+                ret_val[bi] = Some(boxed);
+            }
             _ => {}
         }
         block_insts[bi] = insts;
@@ -1855,20 +1905,32 @@ fn lower_function(
     }
     if let Some(id) = implicit_ret_block {
         let params: Vec<(ValueId, Ty)> = ssa.phis[id as usize].iter().map(|p| (p.param, p.ty)).collect();
+        // A Dyn-returning function's implicit return (falling off the end)
+        // returns boxed nil — `ret void` in a `{i64,i64}` function is invalid.
+        let (insts, term) = if !is_entry && sig.dyn_rets.contains(&func_index) {
+            let dummy = ssa.new_val();
+            let mut iv = Vec::new();
+            let boxed = to_dyn(&mut ssa, &mut iv, dummy, Ty::Nil, 0).expect("nil always boxes");
+            (iv, Term::Ret(Some(boxed)))
+        } else {
+            (Vec::new(), Term::Ret(None))
+        };
         mir_blocks.push(Block {
             id: BlockId(id),
             params,
-            insts: Vec::new(),
-            term: Term::Ret(None),
+            insts,
+            term,
         });
     }
 
     let ret = ret_ty.unwrap_or(Ty::Nil);
     // User (non-entry) functions return scalars, `Str`/handle pointers
     // (arena-owned until exit), or nothing (`Nil` renders as `void`).
-    // Returning a `Maybe` carrier across the direct-call boundary isn't
-    // modelled — reject (fall back).
+    // A `Maybe` carrier has no direct-call return form: retriable — the
+    // fixpoint re-lowers with every return boxed, so the function returns
+    // `Dyn` (nil crosses as nil, VM-exact).
     if !is_entry && matches!(ret, Ty::MaybeI64 | Ty::MaybeF64 | Ty::MaybeStr | Ty::MaybeBool) {
+        sig.dyn_rets.insert(func_index);
         return Err(Unsupported::ReturnTypeConflict);
     }
     // The entry can return scalars (printed), but not a container handle (printing
@@ -1931,9 +1993,10 @@ fn build_term(
                 args: args_to(ssa, bi, t as usize),
             }
         }
-        Some(Exit::Ret(None)) => Term::Ret(None),
-        // `ret_val` is `None` for a resolved `Nil` return value (`ret void`).
-        Some(Exit::Ret(Some(_))) => Term::Ret(ret_val),
+        // `ret_val` is `None` for a resolved `Nil` return value (`ret void`)
+        // and `Some` for a bare `return` in a Dyn-returning function (nil
+        // crosses the call boundary boxed).
+        Some(Exit::Ret(None)) | Some(Exit::Ret(Some(_))) => Term::Ret(ret_val),
         Some(Exit::Jump(pc)) => br(pc),
         Some(Exit::Cond { then_pc, else_pc, .. }) => {
             let cond = cond_val.expect("cond resolved");
@@ -7422,6 +7485,28 @@ fn to_dyn_list_handle(
         args: vec![v],
     });
     Ok(converted)
+}
+
+/// Types [`to_dyn_any`] can box into a `Dyn` carrier.
+fn dyn_boxable_ty(ty: Ty) -> bool {
+    matches!(
+        ty,
+        Ty::Dyn
+            | Ty::Nil
+            | Ty::Bool
+            | Ty::I64
+            | Ty::F64
+            | Ty::Str
+            | Ty::ListDyn
+            | Ty::ListI64
+            | Ty::ListF64
+            | Ty::ListStr
+            | Ty::MapStrDyn
+            | Ty::MaybeI64
+            | Ty::MaybeF64
+            | Ty::MaybeStr
+            | Ty::MaybeBool
+    )
 }
 
 /// Marshals one argument for a user call: a `Dyn` parameter takes any
