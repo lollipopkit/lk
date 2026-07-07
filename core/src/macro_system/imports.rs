@@ -2,9 +2,6 @@ use crate::compat::path::{Path, PathBuf};
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
 #[cfg(feature = "std")]
-use std::path::Component;
-
-#[cfg(feature = "std")]
 use crate::package::PackageGraph;
 use crate::{
     token::{ParseError, Token, Tokenizer},
@@ -711,15 +708,11 @@ fn resolve_macro_import_path(base_dir: &Path, raw: &str) -> Result<PathBuf, Stri
             path.display()
         ));
     }
-    if path
-        .components()
-        .any(|component| matches!(component, Component::ParentDir))
-    {
-        return Err(format!(
-            "Parent directory components are not allowed for macro imports: {}",
-            path.display()
-        ));
-    }
+    // Parent components are allowed: every `use "path"` statement passes
+    // through this scan (a file module may export macros), and the runtime
+    // module resolver accepts `use "../general/fib"` — rejecting here would
+    // fail programs the resolver happily loads. Absolute paths stay rejected
+    // (same sandbox intent as the CLI's sanitized-path rule).
     let candidates = if path.extension().and_then(|ext| ext.to_str()) == Some("lk") {
         vec![base_dir.join(path)]
     } else {
