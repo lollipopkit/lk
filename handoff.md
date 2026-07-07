@@ -192,11 +192,16 @@
     运行时 cell 跨界(SSA cell 模型保留,try 边界物化+写回)+ 守卫
     全面改道 raise(panic 保持 fatal;无 handler 落回 abort,try 外
     行为不变)。**覆盖率 36→39/51**(try 三例真原生)。
-  - **再修进行中:H(并发)→ I(json 等模块)→ J(trait 分发)**。
-    剩余 12 例:select/concurrency_demo(b)· json_demo/json_process/
-    yaml_toml/config_parser/stream_demo/tcp_demo(c)· struct_trait/
-    trait_impl(d)· macros.lk(整对象插值 display,J1 或可回收)·
-    unsupported.lk(留档合集)
+  - ✅ **H 完成(并发原生化,commits `8c364cb`/`2b0fa77`)**:OS 线程
+    +深拷贝 channel(OwnedVal;map 条目按迭代序捕获重放=Fx 布局跨线程
+    保序)· spawn0..4 arity trampoline(免 MIR wrapper:捕获全 join→
+    Dyn + dyn_rets)· isolate 虚拟槽(goroutine cell 写线程私有)·
+    select spin-poll(closed recv=nil binding/closed send=raise)。
+    **覆盖率 39→41/51**(concurrency_demo/select)。
+  - **再修进行中:I(json 等模块)→ J(trait 分发)**。剩余 10 例:
+    json_demo/json_process/yaml_toml/config_parser/stream_demo/
+    tcp_demo(c)· struct_trait/trait_impl(d)· macros.lk(整对象
+    插值 display,J1 或可回收)· unsupported.lk(留档合集)
 - GetGlobal 13(try$call/并发/模块白名单/trait)= 再修阶段 a-d,未启
 - **✅ 裁决不做**:callable trait 反转 · 真机/QEMU demo · 细粒度 feature 拆分。
 - **可选后续**:native raise 前缀统一(catch 到的 native 错误带 "native ... failed:" 前缀,

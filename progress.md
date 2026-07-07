@@ -815,3 +815,19 @@ isolate**(单线程无锁 GC 是热路径底线,无数据竞争,推翻=重写堆
   Nil→true/其余 error)。LK_AOT_DEBUG_FAILURES=1 列出 final-pass
   全部失败函数——「callee 真因藏在 caller 瞬态 ret 检查后」是常态。
 - 覆盖率 36→39/51;bench 0.998x。
+
+## 深覆盖收尾:再修 H(并发原生化,2026-07-07)
+
+- **H1**(`8c364cb`):chan.rs 进程级注册表(Mutex+双 Condvar,与
+  thread_local arena 分离);OwnedVal 深拷贝(**map 条目按迭代序捕获、
+  收方按序重放 → Fx 布局跨线程保序**,D1 论题的延伸应用)。
+- **H2/H3**(`2b0fa77`):spawn 免 wrapper 合成——捕获全 join→Dyn 后
+  签名统一,lkrt spawn0..4 按 arity trampoline;isolate=线程私有虚拟
+  SSA 槽(spawned_isolate 集合;直接调用路径 cell 写仍拒,同函数两种
+  语义并存时靠 reject 保护)。select 用 spin-poll(200µs park)——
+  时序不进可观察契约,语料全部单臂就绪/default 确定性。
+  连锁:module::member 全局名路由(chan::close 等两级导出)·
+  Cmp (ListDyn, typed) 归一 dyn_eq · **空 [] 逃逸进 capture cell →
+  猜 ListDyn**(闭包内 push 对 entry lookahead 不可见,typed 猜测
+  跨函数 ping-pong——select eager-trace 场景)。
+- 覆盖率 39→41/51;bench 0.986x。
