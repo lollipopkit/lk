@@ -173,8 +173,17 @@
     (CLI 合并依赖函数表+fidx/全局槽重写;lower_bundled + ImportEnv
     解析全部五种 use 形式;GlobalRef::UserModule;str.byte_len)。
     **覆盖率 31→33/51**(use/use_forms 真原生)。
-  - 下一步:阶段④ map 迭代序 native 复刻(D1 镜像引擎——lkrt 换
-    hashbrown+Fx 载体、两段字面量构造、order-conformance 测试)。
+  - ✅ **阶段④完成**(commits `ad39276`/`43aab93`):map 迭代序 native
+    复刻全套——lkrt 载体换 hashbrown+Fx(与 core fast_map 同款)+
+    vm_mirror.rs(RtKey/ShortStr hash 恒等镜像 + lit 两段协议,
+    **order-conformance 直连 lk-core 首跑即过**)+ 迭代面 ABI ×16
+    (iter_pairs/keys/values/delete)。for_loop_patterns(打印迭代
+    输出)逐字节一致=镜像端到端实证。**又修一个 VM 死循环
+    miscompile**:循环字面量缓存别名作变量 home,嵌套循环内重赋值
+    rebind 后内层回边读旧寄存器(word_count 在 VM 挂死,差分语料
+    一直当 timeout skipped 漏网)。**覆盖率 33→36/51**
+    (for_loop_patterns/map_demo/word_count)。
+  - 下一步:阶段⑤ E1 方法长尾 → ⑥ F1 sanitizer 基建 → 再修 a-d。
     macros.lk 卡整对象插值 display(裁决出子集,J1 或可回收)
 - GetGlobal 13(try$call/并发/模块白名单/trait)= 再修阶段 a-d,未启
 - **✅ 裁决不做**:callable trait 反转 · 真机/QEMU demo · 细粒度 feature 拆分。

@@ -775,3 +775,26 @@ isolate**(单线程无锁 GC 是热路径底线,无数据竞争,推翻=重写堆
   ImportEnv 挂在 SigInfer 上免穿线;文件命名空间绑定名=file_stem。
   string.len(模块)=字节长 ≠ .len()(方法)=char 数,新 byte_len ABI。
 - 覆盖率 31→33/51;bench 1.007x。
+
+## 深覆盖收尾:阶段④(2026-07-07)
+
+- **VM 死循环 miscompile**(`ad39276`,本轮最重发现):lower_let/
+  lower_define 把 let-循环缓存字面量直接别名到共享缓存寄存器;COW
+  只对同深度赋值健全,嵌套循环内重赋值(min_idx=i)rebind 后内层
+  回边读旧寄存器 → 静默死循环。word_count 在 VM 挂死却被差分语料
+  当 VM-timeout skipped 放行多轮——**timeout-skip 是差分门禁盲区**。
+  修复=删别名快路径(通用路径 Move-from-cache 保 hoisting 收益,
+  bench 1.010x 零代价)。
+- **D1 镜像**(`43aab93`):迭代序=f(键hash+操作序) 论题由
+  order-conformance(lkrt dev-dep lk-core,64 键)首跑即过实证。
+  lit 两段协议镜像 const_load 的 stage1(RtKey 按序插)+
+  typed_map_from_entries(stage1 迭代序重建)。
+- **D2/D3 连锁修复群**:str-map 键 Maybe unwrap;空 {} lookahead
+  全函数扫描重构(寄存器成员随 Move 三集合维护——旧版被覆写寄存器
+  不退场,r1 从 map 换 str list 后仍被当 map);HOF ret_known 门
+  (pristine I64 默认误判成真失配,str lambda 被永久 Dyn 化);
+  **phi 原地宽化删除,统一 DynLoopPhi retriable**(同 pass 内层
+  if-join 已按旧型读参并装箱 → from_str 收到 {i64,i64} 的 clang
+  类型错;预置化是唯一健全通路);fixpoint pass 上限计入发现数
+  (match.lk 一度因预算耗尽回归)。
+- 覆盖率 33→36/51;bench 1.010x。
