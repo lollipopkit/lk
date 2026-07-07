@@ -798,3 +798,20 @@ isolate**(单线程无锁 GC 是热路径底线,无数据竞争,推翻=重写堆
   类型错;预置化是唯一健全通路);fixpoint pass 上限计入发现数
   (match.lk 一度因预算耗尽回归)。
 - 覆盖率 33→36/51;bench 1.010x。
+
+## 深覆盖收尾:再修 G(try$call 原生化,2026-07-07)
+
+- **G1**(`4fd02d7`):lkrt panic.rs——handler 栈(Box<JmpBuf> 512B,
+  glibc _setjmp/_longjmp BSD 对)+ CURRENT_ERROR + rt.cell_*。
+  raise 签名用 () 留在 ABI 词表(conformance 的 fn-ptr 强制不认 !)。
+- **G2/G3**(`9b9aebe`):设计从「字节码内联」改为 **MIR TryCall 单
+  指令 + codegen 文本 diamond**(codegen 可自由开 label,免 lower 的
+  块结构手术);**运行时 cell 只在 try 边界物化**(SSA cell 模型的
+  phi/loop 优化保留;物化=当前值装箱播种,调用后 cell_get 写回)。
+  踩坑集:hybrid 测试的不可 lower 样本=try/catch,G 后全 lower 导致
+  测试反转——换 trim() 动态格式串(**常量折叠会吃掉 "x"+"" 拼接**);
+  cell 内容为 MapStrI64 时 to_dyn 不可装箱 → typed map→StrDynMap
+  转换 ABI(迭代序=重放插入,保序);`!x` 语义≠truthiness(Bool 取反/
+  Nil→true/其余 error)。LK_AOT_DEBUG_FAILURES=1 列出 final-pass
+  全部失败函数——「callee 真因藏在 caller 瞬态 ret 检查后」是常态。
+- 覆盖率 36→39/51;bench 0.998x。
