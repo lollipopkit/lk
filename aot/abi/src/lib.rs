@@ -332,6 +332,18 @@ macro_rules! for_each_abi_fn {
             ("list_h", "dyn_flatten", lkrt_lklist_dyn_flatten, WritesHost, [Ptr], Ptr);
             ("list_h", "dyn_slice_from", lkrt_lklist_dyn_slice_from, WritesHost, [Ptr, I64], Ptr);
             ("list_h", "dyn_contains", lkrt_lklist_dyn_contains, ReadsHost, [Ptr, DynVal], I64);
+            ("list_h", "dyn_take", lkrt_lklist_dyn_take, WritesHost, [Ptr, I64], Ptr);
+            ("list_h", "dyn_skip", lkrt_lklist_dyn_skip, WritesHost, [Ptr, I64], Ptr);
+            ("list_h", "dyn_chain", lkrt_lklist_dyn_chain, WritesHost, [Ptr, Ptr], Ptr);
+            // Boxed-element HOFs (`fn(LkDyn) -> LkDyn` / `-> bool` /
+            // `fn(LkDyn, LkDyn) -> LkDyn` callbacks): the runtime-polymorphic
+            // spellings of map/filter/reduce (typed receivers convert first).
+            ("list_h", "dyn_map_fn", lkrt_lklist_dyn_map_fn, WritesHost, [Ptr, Ptr], Ptr);
+            ("list_h", "dyn_filter_fn", lkrt_lklist_dyn_filter_fn, WritesHost, [Ptr, Ptr], Ptr);
+            ("list_h", "dyn_reduce_fn", lkrt_lklist_dyn_reduce_fn, WritesHost, [Ptr, DynVal, Ptr], DynVal);
+            ("list_h", "str_map_fn", lkrt_lklist_str_map_fn, WritesHost, [Ptr, Ptr], Ptr);
+            ("list_h", "str_filter_fn", lkrt_lklist_str_filter_fn, WritesHost, [Ptr, Ptr], Ptr);
+            ("list_h", "i64_unique", lkrt_lklist_i64_unique, WritesHost, [Ptr], Ptr);
             ("list_h", "dyn_display", lkrt_lklist_dyn_display, WritesHost, [Ptr], StrPtr);
             // Native `Set` handles (VM `RuntimeSet`): boxed-key membership,
             // mutation, and size. Iteration/`values()` stays out (hash order).

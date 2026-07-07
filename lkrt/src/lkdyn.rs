@@ -346,8 +346,16 @@ fn dyn_eq_inner(a: LkDyn, b: LkDyn) -> bool {
 
 macro_rules! dyn_ord {
     ($name:ident, $op:tt) => {
+        /// # Safety
+        /// Str payloads must be live NUL-terminated strings.
         #[unsafe(no_mangle)]
-        pub extern "C" fn $name(a: LkDyn, b: LkDyn) -> i64 {
+        pub unsafe extern "C" fn $name(a: LkDyn, b: LkDyn) -> i64 {
+            // Two strings order lexicographically (the VM's
+            // `number_compare_value` string arm — Rust byte order, which is
+            // code-point order for UTF-8); mixed string/number is its error.
+            if a.tag == DYN_STR && b.tag == DYN_STR {
+                return i64::from(unsafe { dyn_str(a) } $op unsafe { dyn_str(b) });
+            }
             match (a.as_numeric(), b.as_numeric()) {
                 (Some(Numeric::Int(x)), Some(Numeric::Int(y))) => i64::from(x $op y),
                 (Some(x), Some(y)) => i64::from(x.as_f64() $op y.as_f64()),
@@ -683,6 +691,72 @@ pub unsafe extern "C" fn lkrt_lklist_dyn_slice_from(handle: *mut c_void, start: 
     }
     let tail: Vec<LkDyn> = dyn_slice(handle).iter().copied().skip(start as usize).collect();
     arena_handle(tail)
+}
+
+/// `xs.take(n)` — the first `n` elements (mirrors `lkrt_lklist_i64_take`).
+/// # Safety
+/// `handle` must be a live handle from [`lkrt_lklist_dyn_new`], or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_dyn_take(handle: *mut c_void, n: i64) -> *mut c_void {
+    let values = dyn_slice(handle);
+    let count = (n as usize).min(values.len());
+    arena_handle(values[..count].to_vec())
+}
+
+/// `xs.skip(n)` — without the first `n` (zero/negative copies everything).
+/// # Safety
+/// `handle` must be a live handle from [`lkrt_lklist_dyn_new`], or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_dyn_skip(handle: *mut c_void, n: i64) -> *mut c_void {
+    let values = dyn_slice(handle);
+    let start = if n > 0 { (n as usize).min(values.len()) } else { 0 };
+    arena_handle(values[start..].to_vec())
+}
+
+/// `xs.chain(ys)` / `xs.concat(ys)` — a fresh concatenation.
+/// # Safety
+/// Both handles must be live dyn-list handles, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_dyn_chain(a: *mut c_void, b: *mut c_void) -> *mut c_void {
+    let lhs = dyn_slice(a);
+    let rhs = dyn_slice(b);
+    let mut out = Vec::with_capacity(lhs.len() + rhs.len());
+    out.extend_from_slice(lhs);
+    out.extend_from_slice(rhs);
+    arena_handle(out)
+}
+
+/// `xs.map(f)` over boxed elements (`fn(LkDyn) -> LkDyn` callback).
+/// # Safety
+/// `handle` must be a live dyn-list handle (or null); `f` a compiled lambda.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_dyn_map_fn(handle: *mut c_void, f: extern "C" fn(LkDyn) -> LkDyn) -> *mut c_void {
+    let mapped: Vec<LkDyn> = dyn_slice(handle).iter().map(|&v| f(v)).collect();
+    arena_handle(mapped)
+}
+
+/// `xs.filter(p)` over boxed elements (`fn(LkDyn) -> bool` callback).
+/// # Safety
+/// `handle` must be a live dyn-list handle (or null); `p` a compiled lambda.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_dyn_filter_fn(
+    handle: *mut c_void,
+    p: extern "C" fn(LkDyn) -> bool,
+) -> *mut c_void {
+    let kept: Vec<LkDyn> = dyn_slice(handle).iter().copied().filter(|&v| p(v)).collect();
+    arena_handle(kept)
+}
+
+/// `xs.reduce(init, f)` over boxed elements (`fn(acc, x) -> LkDyn` callback).
+/// # Safety
+/// `handle` must be a live dyn-list handle (or null); `f` a compiled lambda.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_dyn_reduce_fn(
+    handle: *mut c_void,
+    init: LkDyn,
+    f: extern "C" fn(LkDyn, LkDyn) -> LkDyn,
+) -> LkDyn {
+    dyn_slice(handle).iter().fold(init, |acc, &v| f(acc, v))
 }
 
 /// `xs.chunk(size)` — split into `size`-element groups, last group short.

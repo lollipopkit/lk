@@ -4337,7 +4337,7 @@ fn lower_inst(
                         // path (the lambda register offset matches with the
                         // window base shifted one slot right).
                         if matches!(name.as_str(), "map" | "filter" | "reduce") {
-                            if receiver_ty == Ty::ListI64
+                            if matches!(receiver_ty, Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn)
                                 && let Some(result) = lower_list_hof_k(
                                     ssa,
                                     insts,
@@ -4345,6 +4345,7 @@ fn lower_inst(
                                     entry,
                                     sig,
                                     receiver,
+                                    receiver_ty,
                                     &name,
                                     base.wrapping_add(1),
                                     argc - 1,
@@ -6353,11 +6354,42 @@ fn lower_method_call_k(
         .clone();
     let (receiver, receiver_ty) = ssa.read(base, block, pc)?;
     let argc = instr.c() as usize;
+    // A boxed Dyn receiver unwraps through the as_list guard for list-only
+    // method names (a non-list tag aborts — the VM's method-on-wrong-type is
+    // a loud error too). Names shared with str/map receivers stay boxed.
+    let (receiver, receiver_ty) = if receiver_ty == Ty::Dyn
+        && matches!(
+            name.as_str(),
+            "take" | "skip" | "concat" | "reduce" | "map" | "filter" | "unique" | "sort" | "reverse"
+        ) {
+        let unboxed = ssa.new_val();
+        insts.push(Inst::Call {
+            dst: Some(unboxed),
+            callee: AbiRef::new("dyn", "as_list"),
+            args: vec![receiver],
+        });
+        (unboxed, Ty::ListDyn)
+    } else {
+        (receiver, receiver_ty)
+    };
     // List HOF with a compiled zero-capture lambda callback (fn-pointer ABI):
     // handled before the generic argument reads, because the lambda register
     // carries a `GlobalRef::Lambda`, not an SSA value.
-    if receiver_ty == Ty::ListI64
-        && let Some(result) = lower_list_hof_k(ssa, insts, funcs, entry, sig, receiver, &name, base, argc, block, pc)?
+    if matches!(receiver_ty, Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn)
+        && let Some(result) = lower_list_hof_k(
+            ssa,
+            insts,
+            funcs,
+            entry,
+            sig,
+            receiver,
+            receiver_ty,
+            &name,
+            base,
+            argc,
+            block,
+            pc,
+        )?
     {
         ssa.write(base, block, result);
         return Ok(());
@@ -6371,13 +6403,19 @@ fn lower_method_call_k(
     Ok(())
 }
 
-/// `xs.map(|x| …)` / `filter` / `reduce(init, |acc, x| …)` over `List<i64>`
-/// with a zero-capture lambda: the compiled `@lk_fn_N` address is passed to an
-/// lkrt fold helper. The lambda's signature is seeded/enforced through the
-/// same monomorphization lattice as direct calls (`i64 → i64` for map,
-/// `i64 → Bool` for filter, `(i64, i64) → i64` for reduce). Returns
-/// `Ok(None)` when the shape doesn't apply (the generic path then rejects
-/// loudly — never a silent semantic change).
+/// `xs.map(|x| …)` / `filter` / `reduce(init, |acc, x| …)` with a
+/// zero-capture lambda: the compiled `@lk_fn_N` address is passed to an lkrt
+/// fold helper. Three ABI families, chosen from the receiver's element type
+/// and the lambda's converged signature:
+///  - `i64` (typed fast path, `i64 → i64`/`Bool`, `(i64, i64) → i64`);
+///  - `str` (`str → str`/`Bool` — `words.map(|w| w.lower())`);
+///  - boxed `dyn` (everything else): the receiver converts to a dyn list,
+///    the lambda's parameters seed `Dyn` and its returns box (`dyn_rets`),
+///    so one compiled body serves runtime-polymorphic call sites.
+///
+/// The lambda's signature converges through the same monomorphization
+/// lattice as direct calls. Returns `Ok(None)` when the shape doesn't apply
+/// (the generic path then rejects loudly — never a silent semantic change).
 #[allow(clippy::too_many_arguments)]
 fn lower_list_hof_k(
     ssa: &mut Ssa,
@@ -6386,6 +6424,7 @@ fn lower_list_hof_k(
     entry: u32,
     sig: &mut SigInfer,
     receiver: ValueId,
+    receiver_ty: Ty,
     name: &str,
     base: u8,
     argc: usize,
@@ -6396,16 +6435,23 @@ fn lower_list_hof_k(
         Some(GlobalRef::Lambda(fidx)) => Some(*fidx as usize),
         _ => None,
     };
-    let seed_params = |sig: &mut SigInfer, fidx: usize, arity: usize| {
+    let elem = match receiver_ty {
+        Ty::ListI64 => Ty::I64,
+        Ty::ListF64 => Ty::F64,
+        Ty::ListStr => Ty::Str,
+        Ty::ListDyn => Ty::Dyn,
+        _ => return Ok(None),
+    };
+    let seed_params = |sig: &mut SigInfer, fidx: usize, arity: usize, ty: Ty| {
         for i in 0..arity {
-            if let Some(slot) = sig.param_obs.get_mut(fidx).and_then(|p| p.get_mut(i)) {
-                match slot {
-                    None => *slot = Some(Ty::I64),
-                    Some(prev) if *prev != Ty::I64 => sig.conflict = true,
-                    Some(_) => {}
-                }
-            }
+            sig.observe_param(fidx, i, ty);
         }
+    };
+    // The dyn family: convert the receiver, seed `Dyn` parameters; `map`/
+    // `reduce` callbacks must *return* boxed values, so the lambda joins
+    // `dyn_rets` (a fresh entry re-runs the fixpoint with boxed returns).
+    let dyn_list_of = |ssa: &mut Ssa, insts: &mut Vec<Inst>, receiver: ValueId| -> Result<ValueId, Unsupported> {
+        to_dyn_list_handle(ssa, insts, receiver, receiver_ty, pc)
     };
     match (name, argc) {
         ("map" | "filter", 1) => {
@@ -6418,26 +6464,90 @@ fn lower_list_hof_k(
                     op: Opcode::CallMethodK,
                 });
             }
-            seed_params(sig, fidx, 1);
-            let want_ret = if name == "map" { Ty::I64 } else { Ty::Bool };
-            if sig.ret_types.get(fidx).copied() != Some(want_ret) {
-                // Transiently wrong before the fixpoint converges; final pass
-                // rejects real mismatches loudly.
-                return Err(Unsupported::TypeMismatch { pc });
-            }
+            let is_filter = name == "filter";
+            // Typed fast paths only while nothing has widened the lambda.
+            let widened = sig.dyn_rets.contains(&(fidx as u32))
+                || sig
+                    .param_obs
+                    .get(fidx)
+                    .is_some_and(|p| p.first().copied().flatten() == Some(Ty::Dyn));
+            let family = match elem {
+                Ty::I64 | Ty::Str if !widened => elem,
+                _ => Ty::Dyn,
+            };
             let fnaddr = ssa.new_val();
             insts.push(Inst::Const {
                 dst: fnaddr,
                 value: Const::FnAddr(FuncId(fidx as u32)),
             });
-            let dst = ssa.new_val();
-            let hof = if name == "map" { "i64_map_fn" } else { "i64_filter_fn" };
-            insts.push(Inst::Call {
-                dst: Some(dst),
-                callee: AbiRef::new("list_h", hof),
-                args: vec![receiver, fnaddr],
-            });
-            Ok(Some((dst, Ty::ListI64)))
+            match family {
+                Ty::I64 | Ty::Str => {
+                    seed_params(sig, fidx, 1, family);
+                    if sig.param_ty(fidx, 0) != family {
+                        // Joined wider by another call site: re-route through
+                        // the dyn family on the re-run.
+                        return Err(Unsupported::TypeMismatch { pc });
+                    }
+                    let want_ret = if is_filter { Ty::Bool } else { family };
+                    if sig.ret_types.get(fidx).copied() != Some(want_ret) {
+                        // Transiently wrong before the fixpoint converges; a
+                        // dyn-boxable mismatch re-routes the *map* through the
+                        // dyn family (`|x| tostr(x)` over ints); filter's Bool
+                        // is a hard requirement.
+                        if !is_filter
+                            && sig
+                                .ret_types
+                                .get(fidx)
+                                .copied()
+                                .is_some_and(|t| t != want_ret && dyn_boxable_ty(t))
+                        {
+                            sig.dyn_rets.insert(fidx as u32);
+                        }
+                        return Err(Unsupported::TypeMismatch { pc });
+                    }
+                    let hof: &'static str = match (family, is_filter) {
+                        (Ty::I64, false) => "i64_map_fn",
+                        (Ty::I64, true) => "i64_filter_fn",
+                        (_, false) => "str_map_fn",
+                        (_, true) => "str_filter_fn",
+                    };
+                    let dst = ssa.new_val();
+                    insts.push(Inst::Call {
+                        dst: Some(dst),
+                        callee: AbiRef::new("list_h", hof),
+                        args: vec![receiver, fnaddr],
+                    });
+                    Ok(Some((dst, receiver_ty)))
+                }
+                _ => {
+                    seed_params(sig, fidx, 1, Ty::Dyn);
+                    if sig.param_ty(fidx, 0) != Ty::Dyn {
+                        return Err(Unsupported::TypeMismatch { pc });
+                    }
+                    if is_filter {
+                        if sig.ret_types.get(fidx).copied() != Some(Ty::Bool) {
+                            return Err(Unsupported::TypeMismatch { pc });
+                        }
+                    } else {
+                        if !sig.dyn_rets.contains(&(fidx as u32)) {
+                            sig.dyn_rets.insert(fidx as u32);
+                            return Err(Unsupported::TypeMismatch { pc });
+                        }
+                        if sig.ret_types.get(fidx).copied() != Some(Ty::Dyn) {
+                            return Err(Unsupported::TypeMismatch { pc });
+                        }
+                    }
+                    let list = dyn_list_of(ssa, insts, receiver)?;
+                    let hof = if is_filter { "dyn_filter_fn" } else { "dyn_map_fn" };
+                    let dst = ssa.new_val();
+                    insts.push(Inst::Call {
+                        dst: Some(dst),
+                        callee: AbiRef::new("list_h", hof),
+                        args: vec![list, fnaddr],
+                    });
+                    Ok(Some((dst, Ty::ListDyn)))
+                }
+            }
         }
         ("reduce", 2) => {
             let Some(fidx) = lambda_at(ssa, base.wrapping_add(2)) else {
@@ -6449,23 +6559,65 @@ fn lower_list_hof_k(
                     op: Opcode::CallMethodK,
                 });
             }
-            let init = read_typed_scalar(ssa, insts, base.wrapping_add(1), block, Ty::I64, pc)?;
-            seed_params(sig, fidx, 2);
-            if sig.ret_types.get(fidx).copied() != Some(Ty::I64) {
-                return Err(Unsupported::TypeMismatch { pc });
-            }
+            let (init_raw, init_ty) = ssa.read(base.wrapping_add(1), block, pc)?;
+            let widened = sig.dyn_rets.contains(&(fidx as u32))
+                || sig
+                    .param_obs
+                    .get(fidx)
+                    .is_some_and(|p| p.iter().take(2).any(|slot| *slot == Some(Ty::Dyn)));
             let fnaddr = ssa.new_val();
             insts.push(Inst::Const {
                 dst: fnaddr,
                 value: Const::FnAddr(FuncId(fidx as u32)),
             });
+            if elem == Ty::I64 && init_ty == Ty::I64 && !widened {
+                // Typed fast path: `(i64, i64) → i64`.
+                seed_params(sig, fidx, 2, Ty::I64);
+                if sig.param_ty(fidx, 0) != Ty::I64 || sig.param_ty(fidx, 1) != Ty::I64 {
+                    return Err(Unsupported::TypeMismatch { pc });
+                }
+                if sig.ret_types.get(fidx).copied() != Some(Ty::I64) {
+                    if sig
+                        .ret_types
+                        .get(fidx)
+                        .copied()
+                        .is_some_and(|t| t != Ty::I64 && dyn_boxable_ty(t))
+                    {
+                        sig.dyn_rets.insert(fidx as u32);
+                    }
+                    return Err(Unsupported::TypeMismatch { pc });
+                }
+                let dst = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(dst),
+                    callee: AbiRef::new("list_h", "i64_reduce_fn"),
+                    args: vec![receiver, init_raw, fnaddr],
+                });
+                return Ok(Some((dst, Ty::I64)));
+            }
+            // Dyn accumulator: `(Dyn, Dyn) → Dyn` — a list-building reduce
+            // (`xs.reduce([], |sorted, item| …)`), a Maybe/nil init, or a
+            // runtime-polymorphic receiver.
+            seed_params(sig, fidx, 2, Ty::Dyn);
+            if sig.param_ty(fidx, 0) != Ty::Dyn || sig.param_ty(fidx, 1) != Ty::Dyn {
+                return Err(Unsupported::TypeMismatch { pc });
+            }
+            if !sig.dyn_rets.contains(&(fidx as u32)) {
+                sig.dyn_rets.insert(fidx as u32);
+                return Err(Unsupported::TypeMismatch { pc });
+            }
+            if sig.ret_types.get(fidx).copied() != Some(Ty::Dyn) {
+                return Err(Unsupported::TypeMismatch { pc });
+            }
+            let list = dyn_list_of(ssa, insts, receiver)?;
+            let init = to_dyn_any(ssa, insts, init_raw, init_ty, pc)?;
             let dst = ssa.new_val();
             insts.push(Inst::Call {
                 dst: Some(dst),
-                callee: AbiRef::new("list_h", "i64_reduce_fn"),
-                args: vec![receiver, init, fnaddr],
+                callee: AbiRef::new("list_h", "dyn_reduce_fn"),
+                args: vec![list, init, fnaddr],
             });
-            Ok(Some((dst, Ty::I64)))
+            Ok(Some((dst, Ty::Dyn)))
         }
         _ => Ok(None),
     }
@@ -6485,6 +6637,60 @@ fn lower_method_dispatch(
     pc: usize,
 ) -> Result<Reg, Unsupported> {
     let result: Reg = match (receiver_ty, name, args) {
+        // Boxed-element list long tail (runtime-polymorphic receivers).
+        (Ty::ListDyn, "take", [(n, Ty::I64)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", "dyn_take"),
+                args: vec![receiver, *n],
+            });
+            (dst, Ty::ListDyn)
+        }
+        (Ty::ListDyn, "skip", [(n, Ty::I64)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", "dyn_skip"),
+                args: vec![receiver, *n],
+            });
+            (dst, Ty::ListDyn)
+        }
+        // `concat` with any dyn-list side: both sides normalize to dyn lists
+        // (typed sides convert element-wise, cold path) and chain.
+        (Ty::ListDyn | Ty::ListI64 | Ty::ListF64 | Ty::ListStr, "concat", [(other, oty)])
+            if receiver_ty == Ty::ListDyn || *oty == Ty::ListDyn || *oty == Ty::Dyn =>
+        {
+            let lhs = to_dyn_list_handle(ssa, insts, receiver, receiver_ty, pc)?;
+            let rhs = match *oty {
+                Ty::Dyn => {
+                    let unboxed = ssa.new_val();
+                    insts.push(Inst::Call {
+                        dst: Some(unboxed),
+                        callee: AbiRef::new("dyn", "as_list"),
+                        args: vec![*other],
+                    });
+                    unboxed
+                }
+                oty => to_dyn_list_handle(ssa, insts, *other, oty, pc)?,
+            };
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", "dyn_chain"),
+                args: vec![lhs, rhs],
+            });
+            (dst, Ty::ListDyn)
+        }
+        (Ty::ListI64, "unique", []) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", "i64_unique"),
+                args: vec![receiver],
+            });
+            (dst, Ty::ListI64)
+        }
         // `xs.sort()` / `xs.reverse()` — fresh copies (the VM sorts/reverses
         // a snapshot; the receiver is untouched).
         (Ty::ListI64, "sort", []) => {
@@ -6901,7 +7107,7 @@ fn lower_method_dispatch(
             });
             (dst, Ty::ListDyn)
         }
-        (Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn, "unique", []) => {
+        (Ty::ListF64 | Ty::ListStr | Ty::ListDyn, "unique", []) => {
             let handle = to_dyn_list_handle(ssa, insts, receiver, receiver_ty, pc)?;
             let dst = ssa.new_val();
             insts.push(Inst::Call {

@@ -55,6 +55,21 @@ impl ClassOf for extern "C" fn(i64) -> bool {
 impl ClassOf for extern "C" fn(i64, i64) -> i64 {
     const CLASS: Class = Class::Ptr;
 }
+impl ClassOf for extern "C" fn(crate::LkDyn) -> crate::LkDyn {
+    const CLASS: Class = Class::Ptr;
+}
+impl ClassOf for extern "C" fn(crate::LkDyn) -> bool {
+    const CLASS: Class = Class::Ptr;
+}
+impl ClassOf for extern "C" fn(crate::LkDyn, crate::LkDyn) -> crate::LkDyn {
+    const CLASS: Class = Class::Ptr;
+}
+impl ClassOf for extern "C" fn(*const core::ffi::c_char) -> *const core::ffi::c_char {
+    const CLASS: Class = Class::Ptr;
+}
+impl ClassOf for extern "C" fn(*const core::ffi::c_char) -> bool {
+    const CLASS: Class = Class::Ptr;
+}
 
 trait FnClasses {
     fn classes(&self) -> (Vec<Class>, Class);

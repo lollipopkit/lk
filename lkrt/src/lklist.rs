@@ -77,6 +77,68 @@ pub unsafe extern "C" fn lkrt_lklist_i64_skip(handle: *mut c_void, n: i64) -> *m
     crate::state::arena_handle(values[start..].to_vec())
 }
 
+/// `words.map(f)` over a `str` list (`fn(*const c_char) -> *const c_char`
+/// callback returning an arena-owned string).
+///
+/// # Safety
+/// `handle` must be a live `List<str>` handle (or null); `f` a compiled lambda.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_str_map_fn(
+    handle: *mut c_void,
+    f: extern "C" fn(*const c_char) -> *const c_char,
+) -> *mut c_void {
+    let values: &[*const c_char] = if handle.is_null() {
+        &[]
+    } else {
+        // SAFETY: `handle` addresses a `Vec<*const c_char>` from `lkrt_lklist_str_new`.
+        unsafe { &*(handle as *mut Vec<*const c_char>) }
+    };
+    let mapped: Vec<*const c_char> = values.iter().map(|&v| f(v)).collect();
+    crate::state::arena_handle(mapped)
+}
+
+/// `words.filter(p)` over a `str` list (`fn(*const c_char) -> bool`).
+///
+/// # Safety
+/// `handle` must be a live `List<str>` handle (or null); `p` a compiled lambda.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_str_filter_fn(
+    handle: *mut c_void,
+    p: extern "C" fn(*const c_char) -> bool,
+) -> *mut c_void {
+    let values: &[*const c_char] = if handle.is_null() {
+        &[]
+    } else {
+        // SAFETY: as above.
+        unsafe { &*(handle as *mut Vec<*const c_char>) }
+    };
+    let kept: Vec<*const c_char> = values.iter().copied().filter(|&v| p(v)).collect();
+    crate::state::arena_handle(kept)
+}
+
+/// `xs.unique()` over an `i64` list — first-occurrence order (integer
+/// equality equals the VM's `to_bits` rule for Int).
+///
+/// # Safety
+/// `handle` must be a live `List<i64>` handle, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_i64_unique(handle: *mut c_void) -> *mut c_void {
+    let values: &[i64] = if handle.is_null() {
+        &[]
+    } else {
+        // SAFETY: `handle` addresses a `Vec<i64>` from `lkrt_lklist_i64_new`.
+        unsafe { &*(handle as *mut Vec<i64>) }
+    };
+    let mut seen = rustc_hash::FxHashSet::default();
+    let mut out = Vec::new();
+    for &v in values {
+        if seen.insert(v) {
+            out.push(v);
+        }
+    }
+    crate::state::arena_handle(out)
+}
+
 /// `xs.chain(ys)` — a fresh concatenation of two `List<i64>`.
 ///
 /// # Safety
