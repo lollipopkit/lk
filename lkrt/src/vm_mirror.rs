@@ -87,6 +87,31 @@ fn key_str(key: &RtKey) -> &str {
     }
 }
 
+/// Builds a `Map<str, Dyn>` through the two-stage mirror from already-owned
+/// pairs, in the given order (the decoders' path: serde's document/sorted
+/// order plays the VM's stage-1 insertion order).
+pub(crate) fn str_dyn_map_mirrored(pairs: Vec<(String, LkDyn)>) -> *mut c_void {
+    let mut stage1: LitBuilder = LitBuilder::default();
+    for (key, value) in pairs {
+        let rt_key = if key.len() <= 7 {
+            let mut data = [0u8; 7];
+            data[..key.len()].copy_from_slice(key.as_bytes());
+            RtKey::ShortStr(MirrorShortStr {
+                len: key.len() as u8,
+                data,
+            })
+        } else {
+            RtKey::String(key)
+        };
+        stage1.insert(rt_key, value);
+    }
+    let mut out = StrDynMap::default();
+    for (key, value) in &stage1 {
+        out.insert(key_str(key).to_owned(), *value);
+    }
+    arena_handle(out)
+}
+
 /// Stage-1 literal builder: the mirror of the VM's
 /// `FastHashMap<RuntimeMapKey, RuntimeVal>` (values ride along boxed).
 type LitBuilder = FxMap<RtKey, LkDyn>;

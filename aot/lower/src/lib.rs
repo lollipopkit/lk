@@ -250,7 +250,8 @@ enum ClosureCapture {
 /// Global names treated as stdlib module objects when read via `GetGlobal`.
 /// Only modules with at least one [`module_call_abi`] mapping belong here.
 const MODULE_GLOBALS: &[&str] = &[
-    "os", "time", "env", "math", "fs", "process", "datetime", "std", "iter", "string", "path", "task",
+    "os", "time", "env", "math", "fs", "process", "datetime", "std", "iter", "string", "path", "task", "stream",
+    "bytes",
 ];
 
 /// Maps a `module.method` call to its typed lkrt ABI entry: the `AbiRef`, the
@@ -315,6 +316,17 @@ fn module_call_abi(module: &str, name: &str) -> Option<(AbiRef, &'static [Ty], T
         ("chan", "try_send") => Some((AbiRef::new("chan", "try_send"), &[Ty::I64, Ty::Dyn], Ty::Bool)),
         ("chan", "try_recv") => Some((AbiRef::new("chan", "try_recv"), &[Ty::I64], Ty::Dyn)),
         ("task", "await") => Some((AbiRef::new("rt", "task_await"), &[Ty::I64], Ty::Dyn)),
+        // `encoding` submodules (VM `de.rs` mirrored in lkrt).
+        ("json", "parse") => Some((AbiRef::new("json", "parse"), &[Ty::Str], Ty::Dyn)),
+        // `net` submodules + `bytes` (the lkrt tcp family predates this).
+        ("socket", "addr") => Some((AbiRef::new("socket", "addr"), &[Ty::Str, Ty::I64], Ty::Str)),
+        ("tcp", "connect") => Some((AbiRef::new("tcp", "connect"), &[Ty::Str], Ty::I64)),
+        ("tcp", "write") => Some((AbiRef::new("tcp", "write_str"), &[Ty::I64, Ty::Str], Ty::I64)),
+        ("tcp", "read") => Some((AbiRef::new("tcp", "read"), &[Ty::I64, Ty::I64], Ty::I64)),
+        ("tcp", "close") => Some((AbiRef::new("tcp", "close"), &[Ty::I64], Ty::I64)),
+        ("bytes", "to_string_utf8") => Some((AbiRef::new("bytes", "to_string_utf8"), &[Ty::I64], Ty::Str)),
+        ("yaml", "parse") => Some((AbiRef::new("yaml", "parse"), &[Ty::Str], Ty::Dyn)),
+        ("toml", "parse") => Some((AbiRef::new("toml", "parse"), &[Ty::Str], Ty::Dyn)),
         _ => None,
     }
 }
@@ -4901,7 +4913,15 @@ fn lower_inst(
                     return Ok(());
                 }
                 if let Some((module, member)) = sig.imports.module_items.get(name) {
-                    let global_ref = GlobalRef::ModuleFn(module.clone(), member.clone());
+                    // `use { json } from encoding` binds a *submodule* object,
+                    // not a function: member reads route through Module.
+                    let global_ref = if (module == "encoding" && matches!(member.as_str(), "json" | "yaml" | "toml"))
+                        || (module == "net" && matches!(member.as_str(), "socket" | "tcp"))
+                    {
+                        GlobalRef::Module(member.clone())
+                    } else {
+                        GlobalRef::ModuleFn(module.clone(), member.clone())
+                    };
                     ssa.builtin_regs.insert((block, instr.a()), global_ref);
                     return Ok(());
                 }
@@ -4968,7 +4988,7 @@ fn lower_inst(
                     // routes both through the same core_methods) — forward
                     // to the same lowering with the receiver at `base+1`.
                     let argc = instr.c() as usize;
-                    if module == "iter"
+                    if matches!(module.as_str(), "iter" | "stream")
                         && matches!(
                             name.as_str(),
                             "map"
@@ -7151,6 +7171,17 @@ fn lower_method_call_k(
             args: vec![receiver],
         });
         (unboxed, Ty::ListDyn)
+    } else if receiver_ty == Ty::Dyn && matches!(name.as_str(), "has" | "keys" | "values" | "delete" | "remove") {
+        // Map-only method names unbox through the as_map guard (a parsed
+        // json/yaml value flows as Dyn); `get` stays ambiguous (lists have
+        // it too) and keeps rejecting.
+        let unboxed = ssa.new_val();
+        insts.push(Inst::Call {
+            dst: Some(unboxed),
+            callee: AbiRef::new("dyn", "as_map"),
+            args: vec![receiver],
+        });
+        (unboxed, Ty::MapStrDyn)
     } else {
         (receiver, receiver_ty)
     };
@@ -8236,6 +8267,51 @@ fn lower_module_call(
     // `iter.range([start,] end[, step])` — an exclusive integer range,
     // materialized eagerly like the VM (reuses the `NewRange` helper; zero
     // step aborts inside it). The one-arg form counts from 0.
+    // Streams over finite sources with pure lambdas are observationally an
+    // eager list pipeline (the corpus is differential-gated on stdout, and
+    // laziness has no side channel there): `from_list`/`collect` pass
+    // through, `range` materializes.
+    if module == "stream" {
+        match name {
+            "from_list" | "collect" => {
+                if argc != 1 {
+                    return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+                }
+                let (v, ty) = ssa.read(base.wrapping_add(1), block, pc)?;
+                if !matches!(ty, Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn) {
+                    return Err(Unsupported::TypeMismatch { pc });
+                }
+                ssa.write(base, block, (v, ty));
+                return Ok(());
+            }
+            "range" => {
+                if argc != 2 {
+                    return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+                }
+                let start = read_typed_scalar(ssa, insts, base.wrapping_add(1), block, Ty::I64, pc)?;
+                let end = read_typed_scalar(ssa, insts, base.wrapping_add(2), block, Ty::I64, pc)?;
+                let one = ssa.new_val();
+                insts.push(Inst::Const {
+                    dst: one,
+                    value: Const::I64(1),
+                });
+                let exclusive = ssa.new_val();
+                insts.push(Inst::Const {
+                    dst: exclusive,
+                    value: Const::I64(0),
+                });
+                let handle = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(handle),
+                    callee: AbiRef::new("list_h", "i64_from_range"),
+                    args: vec![start, end, one, exclusive],
+                });
+                ssa.write(base, block, (handle, Ty::ListI64));
+                return Ok(());
+            }
+            _ => {}
+        }
+    }
     if module == "iter" && name == "range" {
         if !(1..=3).contains(&argc) {
             return Err(Unsupported::Opcode { pc, op: Opcode::Call });

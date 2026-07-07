@@ -14,6 +14,9 @@ crate-type = ["rlib", "staticlib"]
 lk-aot-abi = { path = "../aot/abi" }
 rustc-hash = { version = "2" }
 hashbrown = { version = "0.15" }
+serde_json = { version = "1" }
+serde_yaml = { version = "0.9" }
+toml = { version = "1" }
 # Same crate the stdlib datetime module uses, so native formatting/weekday
 # results are byte-identical to the VM.
 chrono = { workspace = true }

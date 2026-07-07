@@ -102,6 +102,11 @@ macro_rules! for_each_abi_fn {
             ("chan", "len", lkrt_chan_len, ReadsHost, [I64], I64);
             ("chan", "is_closed", lkrt_chan_is_closed, ReadsHost, [I64], I64);
             ("chan", "select", lkrt_chan_select, WritesHost, [Ptr, Ptr, Ptr, Ptr, I64], Ptr);
+            // `encoding` submodules: the VM's exact crates + conversion rules
+            // (`core/src/val/de.rs`); object key order mirrors two-stage.
+            ("json", "parse", lkrt_json_parse, WritesHost, [StrPtr], DynVal);
+            ("yaml", "parse", lkrt_yaml_parse, WritesHost, [StrPtr], DynVal);
+            ("toml", "parse", lkrt_toml_parse, WritesHost, [StrPtr], DynVal);
             ("rt", "spawn_args_new", lkrt_spawn_args_new, WritesHost, [], Ptr);
             ("rt", "spawn_args_push", lkrt_spawn_args_push, WritesHost, [Ptr, DynVal], Nil);
             ("rt", "spawn_arg", lkrt_spawn_arg, ReadsHost, [Ptr, I64], DynVal);
@@ -335,6 +340,7 @@ macro_rules! for_each_abi_fn {
             ("dyn", "as_str", lkrt_dyn_as_str, ReadsHost, [DynVal], StrPtr);
             ("dyn", "as_list", lkrt_dyn_as_list, ReadsHost, [DynVal], Ptr);
             ("dyn", "as_bool", lkrt_dyn_as_bool, ReadsHost, [DynVal], I64);
+            ("dyn", "as_map", lkrt_dyn_as_map, ReadsHost, [DynVal], Ptr);
             ("dyn", "add", lkrt_dyn_add, WritesHost, [DynVal, DynVal], DynVal);
             ("dyn", "sub", lkrt_dyn_sub, ReadsHost, [DynVal, DynVal], DynVal);
             ("dyn", "mul", lkrt_dyn_mul, ReadsHost, [DynVal, DynVal], DynVal);

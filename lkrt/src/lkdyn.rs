@@ -229,6 +229,15 @@ pub extern "C" fn lkrt_dyn_as_str(v: LkDyn) -> *const c_char {
     v.payload as *const c_char
 }
 
+/// Unboxes a map handle; a non-map tag is the VM's loud type error.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_dyn_as_map(v: LkDyn) -> *mut c_void {
+    if v.tag != DYN_MAP {
+        crate::panic::raise_str("runtime type error");
+    }
+    v.payload as *mut c_void
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_dyn_as_bool(v: LkDyn) -> i64 {
     if v.tag != DYN_BOOL {

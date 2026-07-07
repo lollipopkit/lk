@@ -1401,6 +1401,9 @@ dependencies = [
  "lk-aot-abi",
  "lk-core",
  "rustc-hash",
+ "serde_json",
+ "serde_yaml",
+ "toml",
 ]
 
 [[package]]
