@@ -216,6 +216,15 @@
 - **🏁 深覆盖大计划终局:25/51 → 50/51(目标 47-50 的上限)**。
   唯一未覆盖 unsupported.lk = 裁决留档合集(probe 确认 ≥9 个互不
   相关 blocker:spread concat/负索引/位运算/字符串乘等,无搭车项)。
+- **✅ PR #17 已 squash 合并进 main(2026-07-07,`f4886d0`)**:
+  v2 错误模型/并发 + 深覆盖全部主线。合并前 CI 抓出并修复两笔:
+  ① `-D warnings` 盲区(unused import + lkrt J1 新符号缺 crate-root
+  导出,conformance 宏要求);② **空[]重猜 over-marking 真 bug**
+  (loop-phi 无 provenance 时 fallback 连坐同函数猜对的 ListStr →
+  join reject → Tier 0 回退在 CI 冷缓存下超时)——empty_guess 改记
+  (pc, 猜测类型),fallback 按 receiver 形状过滤。本地门禁注意:
+  workspace test 需带 --all-features + RUSTFLAGS=-D warnings 才与
+  CI 等价。
 - GetGlobal 13(try$call/并发/模块白名单/trait)= 再修阶段 a-d,未启
 - **✅ 裁决不做**:callable trait 反转 · 真机/QEMU demo · 细粒度 feature 拆分。
 - **可选后续**:native raise 前缀统一(catch 到的 native 错误带 "native ... failed:" 前缀,
