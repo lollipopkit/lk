@@ -16,6 +16,7 @@ mod lkmap;
 mod lkset;
 mod lkstr;
 mod net;
+mod panic;
 mod state;
 mod vm_mirror;
 
@@ -93,6 +94,10 @@ pub use lkstr::{
 pub use net::{
     lkrt_bytes_free, lkrt_bytes_to_string_utf8, lkrt_handle_close, lkrt_socket_addr, lkrt_tcp_close, lkrt_tcp_connect,
     lkrt_tcp_read, lkrt_tcp_write_bytes, lkrt_tcp_write_str,
+};
+pub use panic::{
+    lkrt_rt_cell_get, lkrt_rt_cell_new, lkrt_rt_cell_set, lkrt_rt_current_error, lkrt_rt_raise_dyn, lkrt_rt_raise_msg,
+    lkrt_rt_try_pop, lkrt_rt_try_push,
 };
 pub use vm_mirror::{
     lkrt_lkmap_lit_finish_i64_f64, lkrt_lkmap_lit_finish_i64_i64, lkrt_lkmap_lit_finish_str_bool,

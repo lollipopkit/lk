@@ -76,6 +76,19 @@ macro_rules! for_each_abi_fn {
             ("rt", "assert", lkrt_assert, WritesHost, [I64], Nil);
             ("rt", "assert_msg", lkrt_assert_msg, WritesHost, [I64, StrPtr], Nil);
             ("rt", "panic", lkrt_panic, WritesHost, [StrPtr], Nil);
+            // Native protected calls (`try$call`, plan G): handler-stack
+            // frames around a `_setjmp` in the generated code, the raised
+            // value, and the raise entry points (no live handler → the
+            // existing loud abort). Cells are the VM's `UpvalCell` — shared
+            // mutable boxes for captures assigned inside a closure.
+            ("rt", "try_push", lkrt_rt_try_push, WritesHost, [], Ptr);
+            ("rt", "try_pop", lkrt_rt_try_pop, WritesHost, [], Nil);
+            ("rt", "current_error", lkrt_rt_current_error, ReadsHost, [], DynVal);
+            ("rt", "raise_dyn", lkrt_rt_raise_dyn, WritesHost, [DynVal], Nil);
+            ("rt", "raise_msg", lkrt_rt_raise_msg, WritesHost, [StrPtr], Nil);
+            ("rt", "cell_new", lkrt_rt_cell_new, WritesHost, [DynVal], Ptr);
+            ("rt", "cell_get", lkrt_rt_cell_get, ReadsHost, [Ptr], DynVal);
+            ("rt", "cell_set", lkrt_rt_cell_set, WritesHost, [Ptr, DynVal], Nil);
             ("socket", "addr", lkrt_socket_addr, Pure, [StrPtr, I64], StrPtr);
             ("tcp", "connect", lkrt_tcp_connect, WritesHost, [StrPtr], I64);
             ("tcp", "read", lkrt_tcp_read, WritesHost, [I64, I64], I64);
