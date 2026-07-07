@@ -140,8 +140,13 @@ fn registry() -> &'static Mutex<HashMap<i64, Arc<ChanInner>>> {
 }
 
 fn channel(id: i64) -> Arc<ChanInner> {
-    match registry().lock().expect("channel registry poisoned").get(&id) {
-        Some(inner) => Arc::clone(inner),
+    // The registry guard must be dropped before the unknown-id raise: the
+    // raise longjmps to the nearest handler, skipping Rust drops — a live
+    // guard would leave the *global* registry locked forever, deadlocking
+    // every later channel operation once the raise is caught.
+    let found = registry().lock().expect("channel registry poisoned").get(&id).cloned();
+    match found {
+        Some(inner) => inner,
         None => crate::panic::raise_str("Channel not found"),
     }
 }
@@ -318,6 +323,23 @@ pub unsafe extern "C" fn lkrt_chan_select(
         ];
         arena_handle(list)
     };
+    // Pre-validate arm kinds and deep-copy the armed send payloads *before*
+    // any channel lock is taken: `own` and the shape guards raise, and a
+    // longjmp past a live `MutexGuard` would leave that channel locked
+    // forever (the blocking send/recv paths follow the same
+    // drop-before-raise discipline). A send arm's copy is taken exactly
+    // once, up front; the retry loop consumes it on delivery.
+    let mut kinds = Vec::with_capacity(len);
+    let mut owned_sends: Vec<Option<OwnedVal>> = Vec::with_capacity(len);
+    for index in 0..len {
+        let kind = match types[index].tag {
+            DYN_I64 if matches!(types[index].payload, 0 | 1) => types[index].payload,
+            _ => crate::panic::raise_str("select$block: invalid arm entry types"),
+        };
+        let armed = guards[index].tag == DYN_BOOL && guards[index].payload != 0;
+        owned_sends.push((kind == 1 && armed).then(|| own(values[index])));
+        kinds.push(kind);
+    }
     loop {
         for index in 0..len {
             // Guard must be exactly `true` (the VM normalizes to Bool).
@@ -328,10 +350,7 @@ pub unsafe extern "C" fn lkrt_chan_select(
                 DYN_I64 => channels[index].payload,
                 _ => crate::panic::raise_str("select$block: invalid channel arm"),
             };
-            let kind = match types[index].tag {
-                DYN_I64 => types[index].payload,
-                _ => crate::panic::raise_str("select$block: invalid arm entry types"),
-            };
+            let kind = kinds[index];
             let inner = channel(id);
             let mut state = inner.state.lock().expect("channel poisoned");
             match kind {
@@ -381,13 +400,16 @@ pub unsafe extern "C" fn lkrt_chan_select(
                         crate::panic::raise_str("send on closed channel");
                     }
                     if inner.cap.is_none_or(|cap| state.queue.len() < cap) {
-                        state.queue.push_back(own(values[index]));
+                        let owned = owned_sends[index].take().expect("armed send payload pre-owned");
+                        state.queue.push_back(owned);
                         drop(state);
                         inner.recv_cv.notify_one();
                         return result(false, index as i64, LkDyn::NIL);
                     }
                 }
-                _ => crate::panic::raise_str("select$block: invalid arm entry types"),
+                // Kinds are pre-validated above; reaching this is an
+                // internal invariant break, not a user error.
+                _ => unreachable!("select$block arm kinds pre-validated"),
             }
         }
         if has_default != 0 {

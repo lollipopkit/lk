@@ -726,3 +726,44 @@ fn differential_dyn_cross_function() {
         ],
     );
 }
+
+#[test]
+fn differential_trait_dispatch_contract() {
+    // Locks the trait-registration lowering contract (plan J1): the AOT
+    // prescan pattern-matches the exact instruction sequence the VM compiler
+    // emits for `trait`/`impl` blocks (`GetGlobal __lk_register_trait_impl` →
+    // Load*/Move/NewList builders → `Call`). `run_differential` hard-requires
+    // the MIR lowering to succeed, so a compiler change to that emission
+    // shape turns the otherwise *silent* coverage loss (prescan stops
+    // matching → whole module falls back to Tier 0, examples-differential
+    // merely skips) into a red test here.
+    run_differential(
+        "trait_contract",
+        &[new(
+            "trait_static_dynamic_show",
+            "struct Rect { w: Int, h: Int }\nstruct Circle { r: Int }\ntrait Area { fn area(self) -> Int; }\nimpl Area for Rect { fn area(self) -> Int { return self.w * self.h; } }\nimpl Area for Circle { fn area(self) -> Int { return 3 * self.r * self.r; } }\ntrait Show { fn show(self) -> String; }\nimpl Show for Rect { fn show(self) -> String { return \"Rect(${self.w}x${self.h})\"; } }\nlet r = Rect { w: 3, h: 4 };\nprintln(r.area());\nprintln(\"${r}\");\nlet shapes = [Rect { w: 1, h: 2 }, Circle { r: 2 }];\nprintln(shapes.map(|s| s.area()));\nreturn 0;\n",
+        )],
+    );
+}
+
+#[test]
+fn differential_concurrency_edges() {
+    run_differential(
+        "concurrency_edges",
+        &[
+            // A raised channel error must not leave any lock held across the
+            // longjmp: after catching, the registry and channel stay usable
+            // (regression: `channel()` raised "Channel not found" while the
+            // registry MutexGuard was live, deadlocking every later op).
+            new(
+                "chan_unknown_id_catch_then_use",
+                "try { recv(999); } catch e { println(\"caught\"); }\nlet c = chan(1);\nsend(c, 41);\nprintln(recv(c) + 1);\nreturn 0;\n",
+            ),
+            // Same discipline on the closed-send raise inside select's arm.
+            new(
+                "select_closed_send_catch_then_use",
+                "use chan as ch;\nlet c = chan(1);\nch.close(c);\ntry {\n  let x = select {\n    case send(c, 1) => \"sent\";\n  };\n  println(x);\n} catch e { println(\"caught\"); }\nlet d = chan(1);\nsend(d, 6);\nprintln(recv(d) * 7);\nreturn 0;\n",
+            ),
+        ],
+    );
+}
