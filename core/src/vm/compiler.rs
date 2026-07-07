@@ -387,15 +387,14 @@ impl Compiler {
     }
 
     fn lower_define(&mut self, name: &str, value: &Expr) -> Result<()> {
-        if !self.top_level
-            && !self.cell_locals.contains(name)
-            && let Some(reg) = self.cached_loop_literal_expr(value)
-        {
-            self.clear_const_map_local(name);
-            self.insert_local(name.to_string(), reg);
-            self.next_reg = self.live_register_floor().max(self.next_reg);
-            return Ok(());
-        }
+        // NOTE: a `let` bound to a loop-cached literal must NOT alias the
+        // shared cache register as the variable's home (the old fast path
+        // here). A later reassignment (`let i = 1; … i += 1;`) re-binds the
+        // local to a fresh register, but loop-body reads emitted *before*
+        // the assignment keep loading the cache register on every back edge
+        // — a silent miscompile (`sort_words`' inner scan never advanced).
+        // The general path below still consumes the cache: the literal store
+        // becomes a register move instead of a constant load.
         let watermark = self.next_reg;
         let slot = if let Some(slot) = self.locals.get(name).copied() {
             if self.active_loop_binding_slot(name) == Some(slot) || self.cell_locals.contains(name) {

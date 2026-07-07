@@ -622,7 +622,7 @@ fn compiler_while_reuses_body_scalar_literals_before_loop_target() {
 }
 
 #[test]
-fn compiler_binds_loop_local_literal_to_cached_register_with_copy_on_write() {
+fn compiler_loop_local_literal_copies_from_cache_and_reassigns_in_nested_loops() {
     let function = compile_source(
         r#"
         let i = 0;
@@ -651,26 +651,60 @@ fn compiler_binds_loop_local_literal_to_cached_register_with_copy_on_write() {
         })
         .expect("expected while condition");
     let loop_target = first_backward_loop_target_after(&function, cmp_pc) as usize;
-    let cached_one = function
-        .code
-        .iter()
-        .take(loop_target)
-        .find(|instr| instr.opcode() == Opcode::LoadInt && function.consts.int(instr.bx()) == Some(1))
-        .map(|instr| instr.a())
-        .expect("expected loop cached literal 1");
-
+    // The literal `1` is hoisted before the loop; in-body bindings may copy
+    // it (a register Move) but must not re-load the constant per iteration.
+    // NOTE the binding must *not* alias the shared cache register as the
+    // variable's home: a reassignment inside a nested loop re-binds the
+    // local, while reads emitted before the assignment keep loading the old
+    // register on the inner back edge — a silent infinite loop (the
+    // `sort_words` shape). Copy-from-cache keeps both correctness and the
+    // hoisting benefit.
     assert!(
         function
             .code
             .iter()
             .skip(loop_target)
-            .all(|instr| instr.opcode() != Opcode::Move || instr.b() != cached_one),
-        "loop-local let literal should bind to cached register without per-iteration Move: {:?}",
+            .all(|instr| instr.opcode() != Opcode::LoadInt || function.consts.int(instr.bx()) != Some(1)),
+        "loop-local let literal should reuse the hoisted constant, not re-load it: {:?}",
         function.code,
     );
 
     let result = execute(&function).expect("execute");
     assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(12)]);
+}
+
+/// The `sort_words` shape: a local bound to a loop-cached literal and
+/// *reassigned inside a nested loop*. Reads inside the inner loop were
+/// emitted before the assignment — aliasing the cache register as the
+/// variable's home made them read the stale cache on every inner back edge
+/// (an infinite loop). Regression test for the copy-from-cache fix.
+#[test]
+fn compiler_loop_cached_literal_local_reassigned_in_inner_loop_terminates() {
+    let module = compile_source_module(
+        r#"
+        fn f(xs) {
+          let result = [];
+          let remaining = xs;
+          while (remaining.len() > 0) {
+            let min_idx = 0;
+            let i = 1;
+            while (i < remaining.len()) {
+              if (remaining[i] < remaining[min_idx]) {
+                min_idx = i;
+              }
+              i += 1;
+            }
+            result.push(remaining[min_idx]);
+            remaining = remaining.take(min_idx).concat(remaining.skip(min_idx + 1));
+          }
+          return result.len();
+        }
+        return f(["b", "a", "c"]);
+        "#,
+    )
+    .expect("compile module");
+    let result = execute_module(&module).expect("execute module (must terminate)");
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(3)]);
 }
 
 #[test]

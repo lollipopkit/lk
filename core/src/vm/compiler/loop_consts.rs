@@ -85,14 +85,6 @@ impl Compiler {
             .find_map(|scope| scope.get(&key).copied())
     }
 
-    pub(super) fn cached_loop_literal_expr(&self, expr: &Expr) -> Option<u16> {
-        match expr {
-            Expr::Paren(inner) => self.cached_loop_literal_expr(inner),
-            Expr::Literal(value) => self.cached_loop_literal(value),
-            _ => None,
-        }
-    }
-
     pub(super) fn cached_loop_int_expr_value(&self, expr: &Expr) -> Option<i64> {
         cached_loop_int_expr_value_from_locals(expr, &|name| {
             let reg = self.locals.get(name).copied()?;

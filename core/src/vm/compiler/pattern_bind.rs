@@ -15,15 +15,13 @@ use super::{
 impl Compiler {
     pub(super) fn lower_let(&mut self, pattern: &Pattern, value: &Expr) -> Result<()> {
         if let Pattern::Variable(name) = pattern {
-            if !self.top_level
-                && !self.cell_locals.contains(name)
-                && let Some(reg) = self.cached_loop_literal_expr(value)
-            {
-                self.clear_const_map_local(name);
-                self.insert_fresh_local(name.clone(), reg);
-                self.next_reg = self.live_register_floor().max(self.next_reg);
-                return Ok(());
-            }
+            // NOTE: never alias the binding to a shared loop-literal cache
+            // register (the old fast path here): a later reassignment
+            // (`let i = 1; … i += 1;`) re-binds the local to a fresh
+            // register, but loop-body reads emitted *before* the assignment
+            // keep loading the cache on every back edge — a silent infinite
+            // loop (`sort_words`' inner scan). The general path still uses
+            // the cache: the literal store becomes a register move.
             let watermark = self.next_reg;
             let slot = if let Some(slot) = self.locals.get(name).copied() {
                 if self.active_loop_binding_slot(name) == Some(slot) || self.cell_locals.contains(name) {
