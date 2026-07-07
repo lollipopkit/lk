@@ -62,6 +62,10 @@ pub enum Ty {
     /// ABI as `0`/`1`; the type keeps bool display/compare semantics exact.
     MapStrBool,
     /// The result of a dynamic (not provably in-range) `List<i64>` index: a
+    /// A native `Set` handle (`*mut c_void` → `FxHashSet` of map keys),
+    /// mirroring the VM's `RuntimeSet`. Opaque pointer; iteration and display
+    /// stay outside the subset (hash order).
+    Set,
     /// `Maybe<i64>` carried as an LLVM `{i64, i64}` (value, present). Its only
     /// supported consumer today is a function return (which prints the value or
     /// `nil`, matching the VM); using it in arithmetic rejects (falls back).
@@ -616,6 +620,7 @@ fn ty_name(ty: Ty) -> &'static str {
         Ty::Dyn => "dyn",
         Ty::ListDyn => "list<dyn>",
         Ty::MapStrDyn => "map<str,dyn>",
+        Ty::Set => "set",
     }
 }
 

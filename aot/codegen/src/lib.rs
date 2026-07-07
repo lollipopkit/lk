@@ -201,7 +201,8 @@ fn ty_str(t: Ty) -> &'static str {
         | Ty::MapI64I64
         | Ty::MapStrF64
         | Ty::MapI64F64
-        | Ty::MapStrBool => "ptr",
+        | Ty::MapStrBool
+        | Ty::Set => "ptr",
         Ty::Nil => "void",
         Ty::MaybeI64 | Ty::MaybeBool => "{ i64, i64 }",
         Ty::MaybeF64 => "{ double, i64 }",
@@ -785,7 +786,8 @@ fn render_ret(out: &mut String, ret_ty: Ty, value: Option<ValueId>, is_entry: bo
                 | Ty::MapI64F64
                 | Ty::MapStrBool
                 | Ty::ListDyn
-                | Ty::MapStrDyn => {}
+                | Ty::MapStrDyn
+                | Ty::Set => {}
                 // A boxed Dyn return: print its display unless Nil-tagged
                 // (the VM's top-level auto-print of a nil return is silent).
                 Ty::Dyn => {

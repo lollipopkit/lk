@@ -151,6 +151,8 @@ enum Builtin {
     /// `__lk_call_method(receiver, name, args_list)` — the compiler's generic
     /// method-dispatch entry; lowered per (receiver type, method name).
     CallMethod,
+    /// `Set()` / `Set(list)` — the VM's set constructor builtin.
+    SetCtor,
 }
 
 /// What a register loaded from the global table refers to. Like [`Builtin`],
@@ -228,7 +230,9 @@ enum ClosureCapture {
 
 /// Global names treated as stdlib module objects when read via `GetGlobal`.
 /// Only modules with at least one [`module_call_abi`] mapping belong here.
-const MODULE_GLOBALS: &[&str] = &["os", "time", "env", "math", "fs", "process", "datetime", "std", "iter"];
+const MODULE_GLOBALS: &[&str] = &[
+    "os", "time", "env", "math", "fs", "process", "datetime", "std", "iter", "string", "path",
+];
 
 /// Maps a `module.method` call to its typed lkrt ABI entry: the `AbiRef`, the
 /// exact positional argument types, and the return type. `None` means the
@@ -269,6 +273,19 @@ fn module_call_abi(module: &str, name: &str) -> Option<(AbiRef, &'static [Ty], T
         ("math", "cos") => Some((AbiRef::new("math", "cos"), &[Ty::F64], Ty::F64)),
         ("math", "exp") => Some((AbiRef::new("math", "exp"), &[Ty::F64], Ty::F64)),
         ("math", "pow") => Some((AbiRef::new("math", "pow"), &[Ty::F64, Ty::F64], Ty::F64)),
+        ("math", "hypot") => Some((AbiRef::new("math", "hypot"), &[Ty::F64, Ty::F64], Ty::F64)),
+        ("math", "cbrt") => Some((AbiRef::new("math", "cbrt"), &[Ty::F64], Ty::F64)),
+        // Only a Float NaN is true; an Int argument f64-promotes (never NaN),
+        // exactly the module's `matches!(.., Float(v) if v.is_nan())`.
+        ("math", "is_nan") => Some((AbiRef::new("math", "is_nan"), &[Ty::F64], Ty::Bool)),
+        ("fs", "exists") => Some((AbiRef::new("fs", "exists"), &[Ty::Str], Ty::Bool)),
+        ("path", "sep") => Some((AbiRef::new("path", "sep"), &[], Ty::Str)),
+        // String-or-nil results arrive boxed (`String?` in the module schema).
+        ("string", "strip_prefix") => Some((AbiRef::new("str", "strip_prefix"), &[Ty::Str, Ty::Str], Ty::Dyn)),
+        ("string", "strip_suffix") => Some((AbiRef::new("str", "strip_suffix"), &[Ty::Str, Ty::Str], Ty::Dyn)),
+        ("string", "count") => Some((AbiRef::new("str", "count"), &[Ty::Str, Ty::Str], Ty::I64)),
+        ("string", "capitalize") => Some((AbiRef::new("str", "capitalize"), &[Ty::Str], Ty::Str)),
+        ("string", "title") => Some((AbiRef::new("str", "title"), &[Ty::Str], Ty::Str)),
         _ => None,
     }
 }
@@ -1549,7 +1566,8 @@ fn lower_function(
                     | Ty::MapStrF64
                     | Ty::MapI64F64
                     | Ty::MapStrBool
-                    | Ty::MapStrDyn => {
+                    | Ty::MapStrDyn
+                    | Ty::Set => {
                         let c = ssa.new_val();
                         insts.push(Inst::Const {
                             dst: c,
@@ -4187,7 +4205,7 @@ fn lower_inst(
             if let Some(name) = name
                 && (matches!(
                     name,
-                    "println" | "print" | "assert" | "assert_eq" | "assert_ne" | "panic" | "typeof"
+                    "println" | "print" | "assert" | "assert_eq" | "assert_ne" | "panic" | "typeof" | "Set"
                 ) || MODULE_GLOBALS.contains(&name))
             {
                 return Err(Unsupported::Opcode { pc, op: instr.opcode() });
@@ -4242,6 +4260,7 @@ fn lower_inst(
                 Some("panic") => Some(GlobalRef::Builtin(Builtin::Panic)),
                 Some("typeof") => Some(GlobalRef::Builtin(Builtin::Typeof)),
                 Some("__lk_call_method") => Some(GlobalRef::Builtin(Builtin::CallMethod)),
+                Some("Set") => Some(GlobalRef::Builtin(Builtin::SetCtor)),
                 Some(name) if MODULE_GLOBALS.contains(&name) => Some(GlobalRef::Module(name.to_string())),
                 _ => None,
             };
@@ -4785,6 +4804,7 @@ fn lower_inst(
                 Ty::MapI64F64 => ("map_h", "i64_f64_len"),
                 Ty::ListDyn => ("list_h", "dyn_len"),
                 Ty::MapStrDyn => ("map_h", "str_dyn_len"),
+                Ty::Set => ("set", "len"),
                 // A boxed Dyn: length dispatches on the runtime tag.
                 Ty::Dyn => ("dyn", "len_of"),
                 _ => return Err(Unsupported::TypeMismatch { pc }),
@@ -5960,6 +5980,39 @@ fn lower_builtin_call(
             // Dispatched by the caller before reaching here.
             return Err(Unsupported::Opcode { pc, op: Opcode::Call });
         }
+        Builtin::SetCtor => {
+            // `Set()` / `Set(list)` — a fresh native set handle. `Set(set)`
+            // (copy) and mixed/Dyn element lists stay out (heap-handle keys).
+            let result = match argc {
+                0 => {
+                    let dst = ssa.new_val();
+                    insts.push(Inst::Call {
+                        dst: Some(dst),
+                        callee: AbiRef::new("set", "new"),
+                        args: Vec::new(),
+                    });
+                    dst
+                }
+                1 => {
+                    let (list, list_ty) = ssa.read(base.wrapping_add(1), block, pc)?;
+                    let from = match list_ty {
+                        Ty::ListStr => "from_str_list",
+                        Ty::ListI64 => "from_i64_list",
+                        _ => return Err(Unsupported::TypeMismatch { pc }),
+                    };
+                    let dst = ssa.new_val();
+                    insts.push(Inst::Call {
+                        dst: Some(dst),
+                        callee: AbiRef::new("set", from),
+                        args: vec![list],
+                    });
+                    dst
+                }
+                _ => return Err(Unsupported::Opcode { pc, op: Opcode::Call }),
+            };
+            ssa.write(base, block, (result, Ty::Set));
+            return Ok(());
+        }
         Builtin::Panic => {
             // `panic(args…)`: the message is the space-joined display of the
             // arguments (`join_runtime_display`), or the literal `panic` with
@@ -6061,6 +6114,35 @@ fn lower_builtin_call(
                         float: false,
                         lhs: cmp,
                         rhs: zero,
+                    });
+                    dst
+                }
+                // Anything else boxable (lists, Maybe carriers, Dyn) compares
+                // through `dyn.eq` — deep structural equality with numeric
+                // coercion, exactly the VM's `runtime_values_equal` (an absent
+                // Maybe is nil: `assert_eq(m.get(missing), 3)` fails loud on
+                // both sides).
+                _ if dyn_boxable_ty(lty) && dyn_boxable_ty(rty) => {
+                    let lb = to_dyn_any(ssa, insts, lv, lty, pc)?;
+                    let rb = to_dyn_any(ssa, insts, rv, rty, pc)?;
+                    let eq = ssa.new_val();
+                    insts.push(Inst::Call {
+                        dst: Some(eq),
+                        callee: AbiRef::new("dyn", "eq"),
+                        args: vec![lb, rb],
+                    });
+                    let one = ssa.new_val();
+                    insts.push(Inst::Const {
+                        dst: one,
+                        value: Const::I64(1),
+                    });
+                    let dst = ssa.new_val();
+                    insts.push(Inst::Cmp {
+                        dst,
+                        op,
+                        float: false,
+                        lhs: eq,
+                        rhs: one,
                     });
                     dst
                 }
@@ -6403,6 +6485,147 @@ fn lower_method_dispatch(
     pc: usize,
 ) -> Result<Reg, Unsupported> {
     let result: Reg = match (receiver_ty, name, args) {
+        // `xs.sort()` / `xs.reverse()` — fresh copies (the VM sorts/reverses
+        // a snapshot; the receiver is untouched).
+        (Ty::ListI64, "sort", []) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", "i64_sort"),
+                args: vec![receiver],
+            });
+            (dst, Ty::ListI64)
+        }
+        (Ty::ListI64, "reverse", []) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", "i64_reverse"),
+                args: vec![receiver],
+            });
+            (dst, Ty::ListI64)
+        }
+        // `.is_empty()` — `len == 0` over the same per-type len ABI.
+        (
+            Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn | Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrDyn,
+            "is_empty",
+            [],
+        ) => {
+            let (module, len_fn) = match receiver_ty {
+                Ty::ListI64 => ("list_h", "i64_len"),
+                Ty::ListF64 => ("list_h", "f64_len"),
+                Ty::ListStr => ("list_h", "str_len"),
+                Ty::ListDyn => ("list_h", "dyn_len"),
+                Ty::MapStrI64 => ("map_h", "str_i64_len"),
+                Ty::MapStrF64 => ("map_h", "str_f64_len"),
+                _ => ("map_h", "str_dyn_len"),
+            };
+            let len = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(len),
+                callee: AbiRef::new(module, len_fn),
+                args: vec![receiver],
+            });
+            let zero = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: zero,
+                value: Const::I64(0),
+            });
+            let b = ssa.new_val();
+            insts.push(Inst::Cmp {
+                dst: b,
+                op: CmpOp::Eq,
+                float: false,
+                lhs: len,
+                rhs: zero,
+            });
+            (b, Ty::Bool)
+        }
+        // `.slice(start[, end])` — negative aborts (VM loud), end clamps.
+        (Ty::ListI64, "slice", [(start, Ty::I64), (end, Ty::I64)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("list_h", "i64_slice_method"),
+                args: vec![receiver, *start, *end],
+            });
+            (dst, Ty::ListI64)
+        }
+        // Set methods (VM `core_methods` set family): membership/mutation
+        // return Bool, `len` Int, `clear` Nil. Elements box to Dyn — a Float
+        // aborts inside lkrt (the VM's loud "cannot be used as a key").
+        (Ty::Set, "len", []) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("set", "len"),
+                args: vec![receiver],
+            });
+            (dst, Ty::I64)
+        }
+        (Ty::Set, "is_empty", []) => {
+            let len = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(len),
+                callee: AbiRef::new("set", "len"),
+                args: vec![receiver],
+            });
+            let zero = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: zero,
+                value: Const::I64(0),
+            });
+            let b = ssa.new_val();
+            insts.push(Inst::Cmp {
+                dst: b,
+                op: CmpOp::Eq,
+                float: false,
+                lhs: len,
+                rhs: zero,
+            });
+            (b, Ty::Bool)
+        }
+        (Ty::Set, "has" | "contains" | "add" | "delete" | "remove", [(v, vty)]) => {
+            let boxed = to_dyn_any(ssa, insts, *v, *vty, pc)?;
+            let abi_name = match name {
+                "has" | "contains" => "has",
+                "add" => "add",
+                _ => "delete",
+            };
+            let wide = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(wide),
+                callee: AbiRef::new("set", abi_name),
+                args: vec![receiver, boxed],
+            });
+            let zero = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: zero,
+                value: Const::I64(0),
+            });
+            let b = ssa.new_val();
+            insts.push(Inst::Cmp {
+                dst: b,
+                op: CmpOp::Ne,
+                float: false,
+                lhs: wide,
+                rhs: zero,
+            });
+            (b, Ty::Bool)
+        }
+        (Ty::Set, "clear", []) => {
+            insts.push(Inst::Call {
+                dst: None,
+                callee: AbiRef::new("set", "clear"),
+                args: vec![receiver],
+            });
+            let nil = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: nil,
+                value: Const::Nil,
+            });
+            (nil, Ty::Nil)
+        }
         // `s.starts_with(prefix)` — byte-prefix test, exactly Rust/VM semantics.
         (Ty::Str, "starts_with", [(prefix, Ty::Str)]) => {
             let dst = ssa.new_val();
@@ -7242,6 +7465,26 @@ fn lower_module_call(
         ssa.write(base, block, (dst, lty));
         return Ok(());
     }
+    // `math.sign` keeps its argument's numeric flavor (the module's two arms).
+    if module == "math" && name == "sign" {
+        if argc != 1 {
+            return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+        }
+        let (v, ty) = read_scalar(ssa, insts, base.wrapping_add(1), block, pc)?;
+        let sign_fn = match ty {
+            Ty::I64 => "sign_i64",
+            Ty::F64 => "sign_f64",
+            _ => return Err(Unsupported::TypeMismatch { pc }),
+        };
+        let dst = ssa.new_val();
+        insts.push(Inst::Call {
+            dst: Some(dst),
+            callee: AbiRef::new("math", sign_fn),
+            args: vec![v],
+        });
+        ssa.write(base, block, (dst, ty));
+        return Ok(());
+    }
     let Some((callee, param_tys, ret_ty)) = module_call_abi(module, name) else {
         return Err(Unsupported::Opcode { pc, op: Opcode::Call });
     };
@@ -7281,6 +7524,30 @@ fn lower_module_call(
                 value: Const::Nil,
             });
             (nil, Ty::Nil)
+        }
+        // The ABI vocabulary has no Bool: a Bool-typed member returns 0/1 as
+        // I64 and narrows here.
+        Ty::Bool => {
+            let wide = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(wide),
+                callee,
+                args,
+            });
+            let zero = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: zero,
+                value: Const::I64(0),
+            });
+            let b = ssa.new_val();
+            insts.push(Inst::Cmp {
+                dst: b,
+                op: CmpOp::Ne,
+                float: false,
+                lhs: wide,
+                rhs: zero,
+            });
+            (b, Ty::Bool)
         }
         _ => {
             let dst = ssa.new_val();

@@ -127,6 +127,14 @@ macro_rules! for_each_abi_fn {
             ("math", "cos", lkrt_math_cos, Pure, [F64], F64);
             ("math", "exp", lkrt_math_exp, Pure, [F64], F64);
             ("math", "pow", lkrt_math_pow, Pure, [F64, F64], F64);
+            ("math", "hypot", lkrt_math_hypot, Pure, [F64, F64], F64);
+            ("math", "cbrt", lkrt_math_cbrt, Pure, [F64], F64);
+            ("math", "is_nan", lkrt_math_is_nan, Pure, [F64], I64);
+            // `math.sign` keeps its argument's numeric flavor (Int → signum,
+            // Float → ±1.0/0.0); the lowering dispatches on the static type.
+            ("math", "sign_i64", lkrt_math_sign_i64, Pure, [I64], I64);
+            ("math", "sign_f64", lkrt_math_sign_f64, Pure, [F64], F64);
+            ("path", "sep", lkrt_path_sep, ReadsHost, [], StrPtr);
             // chrono-backed datetime (same crate as the stdlib module, so
             // formatting/weekday output is byte-identical). `format`/`parse`/
             // ordinal helpers abort on invalid input like the VM's loud error.
@@ -191,6 +199,11 @@ macro_rules! for_each_abi_fn {
             ("list_h", "str_join", lkrt_lklist_str_join, WritesHost, [Ptr, StrPtr], StrPtr);
             ("list_h", "str_contains", lkrt_lklist_str_contains, ReadsHost, [Ptr, StrPtr], I64);
             ("list_h", "i64_slice", lkrt_lklist_i64_slice, WritesHost, [Ptr, I64, I64], Ptr);
+            // `.slice(start[, end])` method semantics: negative aborts (the
+            // VM's loud non-negative-index error), `end` clamps to len.
+            ("list_h", "i64_slice_method", lkrt_lklist_i64_slice_method, WritesHost, [Ptr, I64, I64], Ptr);
+            ("list_h", "i64_sort", lkrt_lklist_i64_sort, WritesHost, [Ptr], Ptr);
+            ("list_h", "i64_reverse", lkrt_lklist_i64_reverse, WritesHost, [Ptr], Ptr);
             // String-keyed map handle. `get_pair` (returning a by-value `Maybe<i64>`) is
             // declared directly in codegen, like the list variant.
             ("map_h", "str_i64_new", lkrt_lkmap_str_i64_new, WritesHost, [], Ptr);
@@ -236,6 +249,15 @@ macro_rules! for_each_abi_fn {
             ("str", "repeat", lkrt_str_repeat, WritesHost, [StrPtr, I64], StrPtr);
             ("str", "replace", lkrt_str_replace, WritesHost, [StrPtr, StrPtr, StrPtr], StrPtr);
             ("str", "chars", lkrt_str_chars, WritesHost, [StrPtr], Ptr);
+            // `string.strip_prefix/suffix` return String-or-nil (boxed Dyn);
+            // `count` counts non-overlapping matches (empty needle → byte
+            // len + 1, the stdlib module's exact rule); `capitalize`/`title`
+            // are Unicode-aware, byte-identical to the stdlib module.
+            ("str", "strip_prefix", lkrt_str_strip_prefix, WritesHost, [StrPtr, StrPtr], DynVal);
+            ("str", "strip_suffix", lkrt_str_strip_suffix, WritesHost, [StrPtr, StrPtr], DynVal);
+            ("str", "count", lkrt_str_count, Pure, [StrPtr, StrPtr], I64);
+            ("str", "capitalize", lkrt_str_capitalize, WritesHost, [StrPtr], StrPtr);
+            ("str", "title", lkrt_str_title, WritesHost, [StrPtr], StrPtr);
             ("str", "char_at", lkrt_str_char_at, WritesHost, [StrPtr, I64], DynVal);
             // `s.split(sep)` → a fresh `str` list handle (Rust `str::split`, so
             // VM-exact); parts are arena-owned C strings.
@@ -311,6 +333,16 @@ macro_rules! for_each_abi_fn {
             ("list_h", "dyn_slice_from", lkrt_lklist_dyn_slice_from, WritesHost, [Ptr, I64], Ptr);
             ("list_h", "dyn_contains", lkrt_lklist_dyn_contains, ReadsHost, [Ptr, DynVal], I64);
             ("list_h", "dyn_display", lkrt_lklist_dyn_display, WritesHost, [Ptr], StrPtr);
+            // Native `Set` handles (VM `RuntimeSet`): boxed-key membership,
+            // mutation, and size. Iteration/`values()` stays out (hash order).
+            ("set", "new", lkrt_lkset_new, WritesHost, [], Ptr);
+            ("set", "from_str_list", lkrt_lkset_from_str_list, WritesHost, [Ptr], Ptr);
+            ("set", "from_i64_list", lkrt_lkset_from_i64_list, WritesHost, [Ptr], Ptr);
+            ("set", "has", lkrt_lkset_has, ReadsHost, [Ptr, DynVal], I64);
+            ("set", "add", lkrt_lkset_add, WritesHost, [Ptr, DynVal], I64);
+            ("set", "delete", lkrt_lkset_delete, WritesHost, [Ptr, DynVal], I64);
+            ("set", "len", lkrt_lkset_len, ReadsHost, [Ptr], I64);
+            ("set", "clear", lkrt_lkset_clear, WritesHost, [Ptr], Nil);
             ("arith", "i64_div", lkrt_i64_div_checked, ReadsHost, [I64, I64], I64);
             ("arith", "i64_mod", lkrt_i64_mod_checked, ReadsHost, [I64, I64], I64);
             ("arith", "f64_div", lkrt_f64_div_checked, ReadsHost, [F64, F64], F64);

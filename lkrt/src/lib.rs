@@ -13,6 +13,7 @@ mod io;
 mod lkdyn;
 mod lklist;
 mod lkmap;
+mod lkset;
 mod lkstr;
 mod net;
 mod state;
@@ -30,6 +31,9 @@ pub use host::{
     lkrt_fs_write_bytes, lkrt_fs_write_str, lkrt_math_ceil, lkrt_math_cos, lkrt_math_exp, lkrt_math_floor,
     lkrt_math_pow, lkrt_math_round, lkrt_math_sin, lkrt_math_sqrt, lkrt_os_arch, lkrt_os_clock, lkrt_os_epoch,
     lkrt_os_hostname, lkrt_os_name, lkrt_path_temp_dir, lkrt_process_cwd, lkrt_time_now_ms, lkrt_time_sleep_ms,
+};
+pub use host::{
+    lkrt_math_cbrt, lkrt_math_hypot, lkrt_math_is_nan, lkrt_math_sign_f64, lkrt_math_sign_i64, lkrt_path_sep,
 };
 pub use io::{lkrt_io_std_flush, lkrt_io_std_read_to_string, lkrt_io_std_write};
 pub use lkdyn::{
@@ -51,7 +55,8 @@ pub use lklist::{
     lkrt_lklist_i64_contains, lkrt_lklist_i64_display, lkrt_lklist_i64_eq, lkrt_lklist_i64_f64_eq,
     lkrt_lklist_i64_filter_fn, lkrt_lklist_i64_from_range, lkrt_lklist_i64_get, lkrt_lklist_i64_get_pair,
     lkrt_lklist_i64_len, lkrt_lklist_i64_map_fn, lkrt_lklist_i64_new, lkrt_lklist_i64_push, lkrt_lklist_i64_reduce_fn,
-    lkrt_lklist_i64_set, lkrt_lklist_i64_skip, lkrt_lklist_i64_slice, lkrt_lklist_i64_slice_from, lkrt_lklist_i64_take,
+    lkrt_lklist_i64_reverse, lkrt_lklist_i64_set, lkrt_lklist_i64_skip, lkrt_lklist_i64_slice,
+    lkrt_lklist_i64_slice_from, lkrt_lklist_i64_slice_method, lkrt_lklist_i64_sort, lkrt_lklist_i64_take,
     lkrt_lklist_str_at, lkrt_lklist_str_contains, lkrt_lklist_str_display, lkrt_lklist_str_eq,
     lkrt_lklist_str_get_pair, lkrt_lklist_str_join, lkrt_lklist_str_len, lkrt_lklist_str_new, lkrt_lklist_str_push,
     lkrt_lklist_str_slice_from, lkrt_maybe_f64_unwrap, lkrt_maybe_i64_unwrap, lkrt_maybe_str_unwrap, lkrt_str_split,
@@ -65,11 +70,16 @@ pub use lkmap::{
     lkrt_lkmap_str_i64_get_pair, lkrt_lkmap_str_i64_len, lkrt_lkmap_str_i64_new, lkrt_lkmap_str_i64_set,
     lkrt_lkmap_str_i64_set_ik, lkrt_lkmap_str_i64_without,
 };
+pub use lkset::{
+    lkrt_lkset_add, lkrt_lkset_clear, lkrt_lkset_delete, lkrt_lkset_from_i64_list, lkrt_lkset_from_str_list,
+    lkrt_lkset_has, lkrt_lkset_len, lkrt_lkset_new,
+};
 pub use lkstr::{
-    lkrt_bool_to_str, lkrt_f64_to_str, lkrt_i64_to_str, lkrt_str_char_at, lkrt_str_char_len, lkrt_str_chars,
-    lkrt_str_cmp, lkrt_str_concat, lkrt_str_concat_i64, lkrt_str_contains, lkrt_str_ends_with, lkrt_str_find,
-    lkrt_str_lower, lkrt_str_repeat, lkrt_str_replace, lkrt_str_reverse, lkrt_str_slice_chars, lkrt_str_starts_with,
-    lkrt_str_substring, lkrt_str_trim, lkrt_str_upper,
+    lkrt_bool_to_str, lkrt_f64_to_str, lkrt_i64_to_str, lkrt_str_capitalize, lkrt_str_char_at, lkrt_str_char_len,
+    lkrt_str_chars, lkrt_str_cmp, lkrt_str_concat, lkrt_str_concat_i64, lkrt_str_contains, lkrt_str_count,
+    lkrt_str_ends_with, lkrt_str_find, lkrt_str_lower, lkrt_str_repeat, lkrt_str_replace, lkrt_str_reverse,
+    lkrt_str_slice_chars, lkrt_str_starts_with, lkrt_str_strip_prefix, lkrt_str_strip_suffix, lkrt_str_substring,
+    lkrt_str_title, lkrt_str_trim, lkrt_str_upper,
 };
 pub use net::{
     lkrt_bytes_free, lkrt_bytes_to_string_utf8, lkrt_handle_close, lkrt_socket_addr, lkrt_tcp_close, lkrt_tcp_connect,

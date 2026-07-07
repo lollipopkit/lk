@@ -396,6 +396,103 @@ pub unsafe extern "C" fn lkrt_str_replace(s: *const c_char, from: *const c_char,
     arena_c_string(CString::new(view(s).replace(view(from), view(to))).unwrap_or_default())
 }
 
+/// `string.strip_prefix(s, prefix)` — the stripped remainder, or nil (a
+/// boxed Dyn: the module returns `String?`).
+///
+/// # Safety
+/// Both pointers must be valid C strings, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_str_strip_prefix(s: *const c_char, prefix: *const c_char) -> crate::lkdyn::LkDyn {
+    match view(s).strip_prefix(view(prefix)) {
+        Some(rest) => {
+            let owned = arena_c_string(CString::new(rest).unwrap_or_default());
+            crate::lkdyn::lkrt_dyn_from_str(owned)
+        }
+        None => crate::lkdyn::LkDyn::NIL,
+    }
+}
+
+/// `string.strip_suffix(s, suffix)` — see [`lkrt_str_strip_prefix`].
+///
+/// # Safety
+/// Both pointers must be valid C strings, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_str_strip_suffix(s: *const c_char, suffix: *const c_char) -> crate::lkdyn::LkDyn {
+    match view(s).strip_suffix(view(suffix)) {
+        Some(rest) => {
+            let owned = arena_c_string(CString::new(rest).unwrap_or_default());
+            crate::lkdyn::lkrt_dyn_from_str(owned)
+        }
+        None => crate::lkdyn::LkDyn::NIL,
+    }
+}
+
+/// `string.count(s, needle)` — non-overlapping matches; an empty needle
+/// counts *byte* length + 1 (the stdlib module's exact rule).
+///
+/// # Safety
+/// Both pointers must be valid C strings, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_str_count(s: *const c_char, needle: *const c_char) -> i64 {
+    let text = view(s);
+    let pat = view(needle);
+    if pat.is_empty() {
+        return text.len() as i64 + 1;
+    }
+    text.matches(pat).count() as i64
+}
+
+/// `string.capitalize(s)` — first char uppercased, the rest lowercased
+/// (Unicode-aware, byte-identical to the stdlib module).
+///
+/// # Safety
+/// `s` must be a valid C string, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_str_capitalize(s: *const c_char) -> *mut c_char {
+    let value = view(s);
+    let mut chars = value.chars();
+    let mut result = String::with_capacity(value.len());
+    if let Some(first) = chars.next() {
+        for c in first.to_uppercase() {
+            result.push(c);
+        }
+    }
+    for ch in chars {
+        for c in ch.to_lowercase() {
+            result.push(c);
+        }
+    }
+    arena_c_string(CString::new(result).unwrap_or_default())
+}
+
+/// `string.title(s)` — capitalizes after whitespace, lowercases the rest
+/// (the stdlib module's exact whitespace-driven state machine).
+///
+/// # Safety
+/// `s` must be a valid C string, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_str_title(s: *const c_char) -> *mut c_char {
+    let value = view(s);
+    let mut result = String::with_capacity(value.len());
+    let mut capitalize_next = true;
+    for ch in value.chars() {
+        if ch.is_whitespace() {
+            capitalize_next = true;
+            result.push(ch);
+        } else if capitalize_next {
+            for c in ch.to_uppercase() {
+                result.push(c);
+            }
+            capitalize_next = false;
+        } else {
+            for c in ch.to_lowercase() {
+                result.push(c);
+            }
+        }
+    }
+    arena_c_string(CString::new(result).unwrap_or_default())
+}
+
 /// `s.chars()` — one single-char string per element. The VM returns a
 /// *Mixed* list (bare-text display), so this builds a dyn list, not a
 /// typed string list (whose display quotes elements).
