@@ -740,3 +740,26 @@ isolate**(单线程无锁 GC 是热路径底线,无数据竞争,推翻=重写堆
 - 差分新组:differential_dyn_cross_function ×8 + differential_global_containers ×3。
 - bench 观察:1.035/1.044/1.076/1.046x 波动(同二进制复测 ±3%,
   机器负载噪声;10% 门禁内)。
+
+## 深覆盖收尾:阶段②(2026-07-07)
+
+- **B1 Set**(`27ce681`):Ty::Set(ptr)+ lkrt lkset.rs(FxHashSet<RtKey>,
+  键 Nil/Bool/Int/Str,Float 键 abort,迭代/display 不进子集)+ SetCtor
+  builtin + 方法臂全套。**坑**:lower_builtin_call 尾部统一写 nil 结果
+  (println/assert 约定),值返回 builtin 必须 early-return(Typeof 先例)
+  ——SetCtor 结果被覆写 Nil,probe 差分抓出。
+- **B2 模块小批**(同 commit):string/path 进 MODULE_GLOBALS;
+  strip_prefix/suffix 返回 String?→DynVal;count 空模式=字节 len+1;
+  capitalize/title unicode 状态机逐字节抄 stdlib;math sign 按类型分派;
+  通用尾部 Bool 收窄;assert_eq 兜底=双侧 to_dyn_any→dyn.eq(深比较+
+  数值 coercion=runtime_values_equal;absent Maybe=nil)。
+- **B3 HOF 泛化**(`0ea88ca`):三 ABI 家族按 receiver 元素类型+lambda
+  收敛签名选择;**dyn 家族对 map/reduce 强制 sig.dyn_rets.insert(fidx)
+  → lambda 返回装箱 → 回调签名 fn(LkDyn,..)->LkDyn 成立**(A2 机制
+  复用,retriable 转一圈收敛)。Dyn receiver 对 list-only 方法名预拆箱
+  (as_list guard;与 str/map 共享名不入列表防误拆)。
+  **dyn_lt/le/gt/ge 补双字符串字典序**——VM typechecker 拒静态 Str 比较
+  但动态路径放行(number_compare_value string 臂),sort_search 排字符串
+  时 native abort 抓出。sort_search 的 insertion_sort 同时吃 int 列表和
+  str 列表(跨函数 join→Dyn),阶段①机制在此全链路兑现。
+- 覆盖率 29→31/51;bench 1.003/1.010x。

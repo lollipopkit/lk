@@ -161,8 +161,15 @@
     **顺手修 VM bug**:函数内对顶层 let 全局的方法调用被编译成模块
     属性读(list 崩/map 调 nil)→ user_let_globals 集合修路由;
     Maybe 实参此前 unwrap-abort(VM 传 nil)也一并修正。
-  - 下一步:阶段② B1 Set 内建 → B2 模块小批(comprehensive)→
-    B3 HOF 泛化(sort_search)。macros.lk 卡整对象插值 display
+  - ✅ **阶段②完成**(commits `27ce681`/`0ea88ca`):B1 Set 内建
+    (Ty::Set + lkrt lkset + SetCtor;**修 lowering bug**:值返回型
+    builtin 需 early-return 跳过统一 nil 尾)· B2 模块小批(string/path
+    白名单 + math 长尾 + assert_eq 万能 dyn.eq 兜底)· B3 HOF 三 ABI
+    家族(i64 快路径/str/dyn 万能——**dyn_rets 强制 lambda 返回装箱
+    是关键机制**;dyn_lt 补字符串字典序)。**覆盖率 29→31/51**
+    (comprehensive/sort_search)。
+  - 下一步:阶段③ use 多文件 bundling(C1 宏导入放行 `..` → C2
+    FunctionData 级合并)。macros.lk 卡整对象插值 display
     (裁决出子集,J1 静态类型名机制或可回收)
 - GetGlobal 13(try$call/并发/模块白名单/trait)= 再修阶段 a-d,未启
 - **✅ 裁决不做**:callable trait 反转 · 真机/QEMU demo · 细粒度 feature 拆分。
