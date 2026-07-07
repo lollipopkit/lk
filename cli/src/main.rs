@@ -1012,7 +1012,12 @@ fn compile_instr_artifact_with_dependencies(path: &Path) -> anyhow::Result<Compi
 #[cfg(feature = "llvm")]
 fn compile_llvm_ir(path: &Path, options: LlvmBackendOptions) -> anyhow::Result<()> {
     let artifact = compile_instr_artifact(path)?;
-    let llvm = lk_llvm::compile_module_artifact_to_llvm(&artifact, options)
+    let bundled = bundle_file_imports(path, &artifact)?;
+    let (artifact, bundles): (&ModuleArtifact, Vec<lk_llvm::BundledImport>) = match &bundled {
+        Some((merged, bundles)) => (merged, bundles.clone()),
+        None => (&artifact, Vec::new()),
+    };
+    let llvm = lk_llvm::compile_bundled_module_artifact_to_llvm(artifact, &bundles, options)
         .with_context(|| format!("compile LLVM IR for {}", path.display()))?;
     let output = path.with_extension("ll");
     std::fs::write(&output, llvm.module.ir).with_context(|| format!("write LLVM IR {}", output.display()))?;
@@ -1071,7 +1076,12 @@ fn compile_native_executable_from_artifact(
     artifact: &ModuleArtifact,
     options: LlvmBackendOptions,
 ) -> anyhow::Result<()> {
-    let llvm = lk_llvm::compile_module_artifact_to_llvm(artifact, options)
+    let bundled = bundle_file_imports(path, artifact)?;
+    let (artifact, bundles): (&ModuleArtifact, Vec<lk_llvm::BundledImport>) = match &bundled {
+        Some((merged, bundles)) => (merged, bundles.clone()),
+        None => (artifact, Vec::new()),
+    };
+    let llvm = lk_llvm::compile_bundled_module_artifact_to_llvm(artifact, &bundles, options)
         .with_context(|| format!("compile native executable LLVM IR for {}", path.display()))?;
     if llvm.module.vm_function_count > 0 {
         // Tier 1 hybrid (docs/llvm/tier1-hybrid.md): the IR bridges into the
@@ -1106,7 +1116,12 @@ fn compile_executable_to_path_with_dependencies(
     options: LlvmBackendOptions,
 ) -> anyhow::Result<Vec<ProcMacroDependency>> {
     let compiled = compile_instr_artifact_with_dependencies(path)?;
-    let llvm = lk_llvm::compile_module_artifact_to_llvm(&compiled.artifact, options)
+    let bundled = bundle_file_imports(path, &compiled.artifact)?;
+    let (artifact, bundles): (&ModuleArtifact, Vec<lk_llvm::BundledImport>) = match &bundled {
+        Some((merged, bundles)) => (merged, bundles.clone()),
+        None => (&compiled.artifact, Vec::new()),
+    };
+    let llvm = lk_llvm::compile_bundled_module_artifact_to_llvm(artifact, &bundles, options)
         .with_context(|| format!("compile native executable LLVM IR for {}", path.display()))?;
     lk_llvm::compile_native_executable_from_llvm(path, output, &llvm.module.ir, llvm.opt_level.as_flag())?;
     Ok(compiled.proc_macro_dependencies)
@@ -1402,4 +1417,175 @@ fn register_package_modules(resolver: &ModuleResolver, modules: &[PackageModule]
         resolver.register_package_module(module.name.clone(), module.root.clone());
     }
     Ok(())
+}
+
+/// Compile-time bundling of file imports (`use "../general/fib"`) for the
+/// native path: each imported file compiles on its own, its functions merge
+/// into the main artifact's table (indices/global slots rewritten), and the
+/// binding map goes to the lowering. Only *pure function-definition* modules
+/// bundle (an entry with top-level effects, nested file imports, or non-file
+/// import forms in the dep fails → the caller falls back to Tier 0).
+#[cfg(feature = "llvm")]
+fn bundle_file_imports(
+    source: &Path,
+    artifact: &ModuleArtifact,
+) -> anyhow::Result<Option<(ModuleArtifact, Vec<lk_llvm::BundledImport>)>> {
+    use lk_core::stmt::{ImportSource, ImportStmt};
+    use lk_core::vm::{Instr, Opcode};
+
+    let mut paths: Vec<String> = Vec::new();
+    for import in &artifact.imports {
+        let path = match import {
+            ImportStmt::File { path } => Some(path),
+            ImportStmt::Items {
+                source: ImportSource::File(path),
+                ..
+            }
+            | ImportStmt::Namespace {
+                source: ImportSource::File(path),
+                ..
+            } => Some(path),
+            _ => None,
+        };
+        if let Some(path) = path
+            && !paths.contains(path)
+        {
+            paths.push(path.clone());
+        }
+    }
+    if paths.is_empty() {
+        return Ok(None);
+    }
+
+    let base_dir = source.parent().unwrap_or_else(|| Path::new("."));
+    let mut merged = artifact.clone();
+    let mut bundles = Vec::with_capacity(paths.len());
+    for import_path in paths {
+        let raw = Path::new(&import_path);
+        // Mirror the runtime resolver's candidates: `p` (already .lk),
+        // `p.lk`, `p/mod.lk`, under the importing file's directory.
+        let mut candidates = Vec::new();
+        if raw.extension().and_then(|e| e.to_str()) == Some("lk") {
+            candidates.push(base_dir.join(raw));
+        }
+        candidates.push(base_dir.join(raw.with_extension("lk")));
+        candidates.push(base_dir.join(raw).join("mod.lk"));
+        let dep_path = candidates
+            .into_iter()
+            .find(|c| c.exists())
+            .ok_or_else(|| anyhow::anyhow!("bundled import not found: {import_path}"))?;
+
+        let dep = compile_instr_artifact_with_dependencies(&dep_path)?.artifact;
+        // v1 guards: no nested file imports, no item/alias imports (their
+        // bindings would need the dep's own import environment).
+        for dep_import in &dep.imports {
+            match dep_import {
+                ImportStmt::Module { .. } => {}
+                other => anyhow::bail!("bundled import '{import_path}' has an unsupported nested import: {other:?}"),
+            }
+        }
+        let dep_entry = dep.module.entry as usize;
+        // The dep entry must be pure `fn` bookkeeping: LoadFunction+SetGlobal
+        // pairs and the implicit return. Anything else is a top-level effect
+        // the bundle would silently skip — reject instead.
+        let mut reg_fn: std::collections::HashMap<u8, u32> = std::collections::HashMap::new();
+        let mut fns: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+        let mut pairs: Vec<(String, u32)> = Vec::new();
+        for raw_instr in &dep.module.functions[dep_entry].code {
+            let instr = Instr::try_from_raw(*raw_instr)
+                .map_err(|_| anyhow::anyhow!("bundled import '{import_path}': bad instruction"))?;
+            match instr.opcode() {
+                Opcode::LoadFunction => {
+                    reg_fn.insert(instr.a(), u32::from(instr.bx()));
+                }
+                Opcode::SetGlobal => {
+                    let Some(&fidx) = reg_fn.get(&instr.a()) else {
+                        anyhow::bail!("bundled import '{import_path}' has a non-function top-level binding");
+                    };
+                    let name = dep.module.globals.get(instr.bx() as usize).cloned().unwrap_or_default();
+                    pairs.push((name, fidx));
+                }
+                Opcode::Return0 => {}
+                other => {
+                    anyhow::bail!("bundled import '{import_path}' has top-level effects (opcode {other:?})")
+                }
+            }
+        }
+
+        // Merge: append every dep function except its entry; function indices
+        // and global slots (by name) rewrite in place — pcs are unchanged, so
+        // pc-keyed facts stay valid.
+        let base = merged.module.functions.len() as u32;
+        let mut remap: Vec<Option<u32>> = vec![None; dep.module.functions.len()];
+        let mut next = base;
+        for (i, slot) in remap.iter_mut().enumerate() {
+            if i != dep_entry {
+                *slot = Some(next);
+                next += 1;
+            }
+        }
+        let slot_of = |name: &str, globals: &mut Vec<String>| -> u16 {
+            match globals.iter().position(|g| g == name) {
+                Some(slot) => slot as u16,
+                None => {
+                    globals.push(name.to_string());
+                    (globals.len() - 1) as u16
+                }
+            }
+        };
+        for (i, function) in dep.module.functions.iter().enumerate() {
+            if i == dep_entry {
+                continue;
+            }
+            let mut function = function.clone();
+            for raw_instr in &mut function.code {
+                let instr = Instr::try_from_raw(*raw_instr)
+                    .map_err(|_| anyhow::anyhow!("bundled import '{import_path}': bad instruction"))?;
+                let rewritten = match instr.opcode() {
+                    Opcode::CallDirect | Opcode::MakeClosure => {
+                        let fidx = instr.b() as usize;
+                        let new = remap
+                            .get(fidx)
+                            .copied()
+                            .flatten()
+                            .ok_or_else(|| anyhow::anyhow!("bundled import '{import_path}' calls its entry"))?;
+                        let new = u8::try_from(new)
+                            .map_err(|_| anyhow::anyhow!("bundled import '{import_path}': function index overflow"))?;
+                        Some(Instr::abc(instr.opcode(), instr.a(), new, instr.c()))
+                    }
+                    Opcode::LoadFunction => {
+                        let fidx = instr.bx() as usize;
+                        let new = remap
+                            .get(fidx)
+                            .copied()
+                            .flatten()
+                            .ok_or_else(|| anyhow::anyhow!("bundled import '{import_path}' loads its entry"))?;
+                        let new = u16::try_from(new)
+                            .map_err(|_| anyhow::anyhow!("bundled import '{import_path}': function index overflow"))?;
+                        Some(Instr::abx(instr.opcode(), instr.a(), new))
+                    }
+                    Opcode::GetGlobal | Opcode::SetGlobal => {
+                        let name = dep.module.globals.get(instr.bx() as usize).cloned().unwrap_or_default();
+                        let slot = slot_of(&name, &mut merged.module.globals);
+                        Some(Instr::abx(instr.opcode(), instr.a(), slot))
+                    }
+                    _ => None,
+                };
+                if let Some(instr) = rewritten {
+                    *raw_instr = instr.raw();
+                }
+            }
+            merged.module.functions.push(function);
+        }
+        for (name, fidx) in pairs {
+            let merged_fidx = remap
+                .get(fidx as usize)
+                .copied()
+                .flatten()
+                .ok_or_else(|| anyhow::anyhow!("bundled import '{import_path}': dangling fn binding"))?;
+            fns.insert(name, merged_fidx);
+        }
+        bundles.push(lk_llvm::BundledImport { path: import_path, fns });
+    }
+    Ok(Some((merged, bundles)))
 }

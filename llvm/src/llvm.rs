@@ -9,8 +9,8 @@ mod backend;
 mod options;
 
 pub use backend::{
-    LlvmBackend, LlvmBackendError, LlvmModule, LlvmModuleArtifact, compile_module_artifact_to_llvm,
-    compile_program_to_llvm,
+    LlvmBackend, LlvmBackendError, LlvmModule, LlvmModuleArtifact, compile_bundled_module_artifact_to_llvm,
+    compile_module_artifact_to_llvm, compile_program_to_llvm,
 };
 pub use options::{LlvmBackendOptions, OptLevel};
 

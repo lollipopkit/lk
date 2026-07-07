@@ -168,6 +168,11 @@ enum GlobalRef {
     /// A member function resolved from `module.name`, callable when
     /// [`module_call_abi`] maps it to a typed lkrt ABI entry.
     ModuleFn(String, String),
+    /// A compile-time-bundled file module (`use "path"` → `GetGlobal` of the
+    /// file-stem binding); the payload indexes `SigInfer::imports.bundles`.
+    /// Its only consumer is a constant-name member read, which resolves to
+    /// [`GlobalRef::Lambda`] of the merged function.
+    UserModule(usize),
     /// A user function value (`LoadFunction`); its only supported consumer is
     /// the compiler's `SetGlobal` storage of top-level `fn` declarations
     /// (direct calls address the callee by index instead).
@@ -284,6 +289,8 @@ fn module_call_abi(module: &str, name: &str) -> Option<(AbiRef, &'static [Ty], T
         ("string", "strip_prefix") => Some((AbiRef::new("str", "strip_prefix"), &[Ty::Str, Ty::Str], Ty::Dyn)),
         ("string", "strip_suffix") => Some((AbiRef::new("str", "strip_suffix"), &[Ty::Str, Ty::Str], Ty::Dyn)),
         ("string", "count") => Some((AbiRef::new("str", "count"), &[Ty::Str, Ty::Str], Ty::I64)),
+        // The module spelling counts bytes (`str::len`), unlike `.len()`.
+        ("string", "len") => Some((AbiRef::new("str", "byte_len"), &[Ty::Str], Ty::I64)),
         ("string", "capitalize") => Some((AbiRef::new("str", "capitalize"), &[Ty::Str], Ty::Str)),
         ("string", "title") => Some((AbiRef::new("str", "title"), &[Ty::Str], Ty::Str)),
         _ => None,
@@ -466,6 +473,8 @@ struct SigInfer {
     /// Empty during the fixpoint; filled between the failing final pass and
     /// its hybrid retry (`docs/llvm/tier1-hybrid.md`).
     vm_functions: std::collections::HashMap<u32, Vec<Ty>>,
+    /// Import-derived name bindings (aliases, module items, bundled files).
+    imports: ImportEnv,
 }
 
 impl SigInfer {
@@ -505,6 +514,91 @@ impl SigInfer {
     }
 }
 
+/// One compile-time-bundled file import (`use "../general/fib"`): the CLI
+/// appended the dep's functions to the artifact's function table (indices
+/// rewritten) and reports each of its top-level `fn` names here.
+#[derive(Debug, Clone, Default)]
+pub struct BundledImport {
+    /// The import path exactly as written in the source.
+    pub path: String,
+    /// Top-level `fn` name → merged function index.
+    pub fns: std::collections::HashMap<String, u32>,
+}
+
+/// Import-derived name bindings, resolved once from `artifact.imports` (+ the
+/// CLI's bundled file modules): how a `GetGlobal` name maps to a module
+/// object, a module member, or a bundled user function.
+#[derive(Debug, Clone, Default)]
+struct ImportEnv {
+    /// `use math as m;` / `use * as sm from string;` → alias → module.
+    module_aliases: std::collections::HashMap<String, String>,
+    /// `use { abs, sqrt as s } from math;` → bound name → (module, member).
+    module_items: std::collections::HashMap<String, (String, String)>,
+    /// `use "path";` → binding (file stem) → index into `bundles`.
+    file_namespaces: std::collections::HashMap<String, usize>,
+    /// `use { f } from "path";` → bound name → merged function index.
+    file_items: std::collections::HashMap<String, u32>,
+    bundles: Vec<BundledImport>,
+}
+
+impl ImportEnv {
+    fn build(imports: &[lk_core::stmt::ImportStmt], bundles: &[BundledImport]) -> Self {
+        use lk_core::stmt::{ImportSource, ImportStmt};
+        let mut env = ImportEnv {
+            bundles: bundles.to_vec(),
+            ..ImportEnv::default()
+        };
+        let bundle_by_path = |path: &str| bundles.iter().position(|b| b.path == path);
+        for import in imports {
+            match import {
+                ImportStmt::ModuleAlias { module, alias } => {
+                    env.module_aliases.insert(alias.clone(), module.clone());
+                }
+                ImportStmt::Namespace { alias, source } => match source {
+                    ImportSource::Module(module) => {
+                        env.module_aliases.insert(alias.clone(), module.clone());
+                    }
+                    ImportSource::File(path) => {
+                        if let Some(b) = bundle_by_path(path) {
+                            env.file_namespaces.insert(alias.clone(), b);
+                        }
+                    }
+                },
+                ImportStmt::Items { items, source } => {
+                    for item in items {
+                        let bound = item.alias.clone().unwrap_or_else(|| item.name.clone());
+                        match source {
+                            ImportSource::Module(module) => {
+                                env.module_items.insert(bound, (module.clone(), item.name.clone()));
+                            }
+                            ImportSource::File(path) => {
+                                if let Some(fidx) = bundle_by_path(path)
+                                    .and_then(|b| bundles[b].fns.get(&item.name))
+                                    .copied()
+                                {
+                                    env.file_items.insert(bound, fidx);
+                                }
+                            }
+                        }
+                    }
+                }
+                ImportStmt::File { path } => {
+                    let stem = std::path::Path::new(path)
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("module")
+                        .to_string();
+                    if let Some(b) = bundle_by_path(path) {
+                        env.file_namespaces.insert(stem, b);
+                    }
+                }
+                ImportStmt::Module { .. } => {}
+            }
+        }
+        env
+    }
+}
+
 pub fn lower(artifact: &ModuleArtifact) -> Result<MirModule, Unsupported> {
     // Opt-in until the CLI links the bridge runtime (tier1-hybrid.md sub-step
     // ④): emitting `CallVm` without the lk-api staticlib linked would turn
@@ -520,6 +614,16 @@ pub fn lower(artifact: &ModuleArtifact) -> Result<MirModule, Unsupported> {
 /// parameters, no captures or lambda machinery, transitively user-global-free
 /// — see `docs/llvm/tier1-hybrid.md`).
 pub fn lower_with_hybrid(artifact: &ModuleArtifact, hybrid: bool) -> Result<MirModule, Unsupported> {
+    lower_bundled(artifact, &[], hybrid)
+}
+
+/// [`lower_with_hybrid`] over an artifact whose function table already
+/// contains compile-time-bundled file imports (multi-file `lk compile`).
+pub fn lower_bundled(
+    artifact: &ModuleArtifact,
+    bundles: &[BundledImport],
+    hybrid: bool,
+) -> Result<MirModule, Unsupported> {
     let module = &artifact.module;
     if module.functions.is_empty() {
         return Err(Unsupported::NoEntry);
@@ -530,7 +634,14 @@ pub fn lower_with_hybrid(artifact: &ModuleArtifact, hybrid: bool) -> Result<MirM
     // never directly called (e.g. a small helper the front end inlined at every use)
     // are dead for AOT; lowering them would pointlessly fail the whole module if they
     // use a shape we don't support, so we skip them entirely.
-    let mut reachable = reachable_functions(module);
+    // Bundled file-module functions are reached through import bindings
+    // (`GetGlobal` → Lambda), invisible to the bytecode scan: root them too
+    // (the BFS then covers their own callees).
+    let bundle_roots: Vec<usize> = bundles
+        .iter()
+        .flat_map(|b| b.fns.values().map(|&fidx| fidx as usize))
+        .collect();
+    let mut reachable = reachable_functions(module, &bundle_roots);
 
     let global_count = module.globals.len();
     let mut sig = SigInfer {
@@ -545,6 +656,7 @@ pub fn lower_with_hybrid(artifact: &ModuleArtifact, hybrid: bool) -> Result<MirM
         conflict: false,
         dyn_loop_phis: std::collections::HashSet::new(),
         dyn_rets: std::collections::HashSet::new(),
+        imports: ImportEnv::build(&artifact.imports, bundles),
         dyn_empty_lists: std::collections::HashSet::new(),
         global_tys: vec![None; global_count],
         initialized_globals: prescan_initialized_globals(module, global_count),
@@ -1057,7 +1169,7 @@ fn prescan_initialized_globals(module: &lk_core::vm::ModuleData, global_count: u
 /// edges (a worklist over the static call graph). Unreachable functions are dead for
 /// AOT — they are never emitted, so an unsupported shape in dead code cannot fail the
 /// module.
-fn reachable_functions(module: &lk_core::vm::ModuleData) -> Vec<bool> {
+fn reachable_functions(module: &lk_core::vm::ModuleData, extra_roots: &[usize]) -> Vec<bool> {
     let n = module.functions.len();
     let mut reachable = vec![false; n];
     let entry = module.entry as usize;
@@ -1066,6 +1178,12 @@ fn reachable_functions(module: &lk_core::vm::ModuleData) -> Vec<bool> {
     }
     let mut stack = vec![entry];
     reachable[entry] = true;
+    for &root in extra_roots {
+        if root < n && !reachable[root] {
+            reachable[root] = true;
+            stack.push(root);
+        }
+    }
     while let Some(fi) = stack.pop() {
         for raw in &module.functions[fi].code {
             let Ok(instr) = Instr::try_from_raw(*raw) else {
@@ -4268,6 +4386,32 @@ fn lower_inst(
                 ssa.builtin_regs.insert((block, instr.a()), global_ref);
                 return Ok(());
             }
+            // Import-derived bindings (aliases, `use {..} from`, bundled file
+            // modules): only when the slot is never written (a user global of
+            // the same name shadows the import, like the VM's environment).
+            if sig.global_tys.get(slot as usize).copied().flatten().is_none()
+                && let Some(name) = name
+            {
+                if let Some(module) = sig.imports.module_aliases.get(name) {
+                    let global_ref = GlobalRef::Module(module.clone());
+                    ssa.builtin_regs.insert((block, instr.a()), global_ref);
+                    return Ok(());
+                }
+                if let Some((module, member)) = sig.imports.module_items.get(name) {
+                    let global_ref = GlobalRef::ModuleFn(module.clone(), member.clone());
+                    ssa.builtin_regs.insert((block, instr.a()), global_ref);
+                    return Ok(());
+                }
+                if let Some(&fidx) = sig.imports.file_items.get(name) {
+                    ssa.builtin_regs.insert((block, instr.a()), GlobalRef::Lambda(fidx));
+                    return Ok(());
+                }
+                if let Some(&bundle) = sig.imports.file_namespaces.get(name) {
+                    ssa.builtin_regs
+                        .insert((block, instr.a()), GlobalRef::UserModule(bundle));
+                    return Ok(());
+                }
+            }
             // A single-assignment top-level lambda slot resolves statically to
             // its function reference (initialization-order safe: the prescan
             // only accepts entry-prefix writes, which precede any user call).
@@ -4421,6 +4565,7 @@ fn lower_inst(
                     )?;
                 }
                 Some(GlobalRef::Module(_))
+                | Some(GlobalRef::UserModule(_))
                 | Some(GlobalRef::UserFn)
                 | Some(GlobalRef::ArgList(_))
                 | Some(GlobalRef::Cell(_))
@@ -5055,6 +5200,21 @@ fn lower_inst(
             // module function ref (`os.clock` → `GetIndex` on the module with a
             // constant string key) — or, for constant members (`math.pi`), to
             // the literal value itself.
+            // A constant-name member read on a bundled file module resolves
+            // to the merged function (`fib.iterative` → direct call target).
+            if let Some(GlobalRef::UserModule(bundle)) = ssa.builtin_regs.get(&(block, instr.b())).cloned() {
+                let name = {
+                    let key = ssa.read(instr.c(), block, pc).ok().map(|(v, _)| v);
+                    key.and_then(|v| ssa.const_strs.get(&v).cloned())
+                        .or_else(|| ssa.reg_const_str(instr.c(), block))
+                };
+                let fidx = name.and_then(|n| sig.imports.bundles.get(bundle).and_then(|b| b.fns.get(&n)).copied());
+                let Some(fidx) = fidx else {
+                    return Err(Unsupported::Opcode { pc, op: instr.opcode() });
+                };
+                ssa.builtin_regs.insert((block, instr.a()), GlobalRef::Lambda(fidx));
+                return Ok(());
+            }
             if let Some(GlobalRef::Module(module)) = ssa.builtin_regs.get(&(block, instr.b())).cloned() {
                 let name = {
                     let key = ssa.read(instr.c(), block, pc).ok().map(|(v, _)| v);

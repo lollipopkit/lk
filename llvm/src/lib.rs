@@ -16,9 +16,10 @@ pub(crate) mod token {
 pub mod llvm;
 mod native_executable;
 
+pub use lk_aot_lower::BundledImport;
 pub use llvm::{
     LlvmBackend, LlvmBackendError, LlvmBackendOptions, LlvmModule, LlvmModuleArtifact, OptLevel,
-    compile_module_artifact_to_llvm, compile_program_to_llvm,
+    compile_bundled_module_artifact_to_llvm, compile_module_artifact_to_llvm, compile_program_to_llvm,
 };
 pub use native_executable::{
     HybridLink, compile_native_executable_from_llvm, compile_native_executable_from_llvm_hybrid,

@@ -396,6 +396,16 @@ pub unsafe extern "C" fn lkrt_str_replace(s: *const c_char, from: *const c_char,
     arena_c_string(CString::new(view(s).replace(view(from), view(to))).unwrap_or_default())
 }
 
+/// The module `string.len(s)` — **byte** length (`str::len`), unlike the
+/// `.len()` method's char count.
+///
+/// # Safety
+/// `s` must be a valid C string, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_str_byte_len(s: *const c_char) -> i64 {
+    view(s).len() as i64
+}
+
 /// `string.strip_prefix(s, prefix)` — the stripped remainder, or nil (a
 /// boxed Dyn: the module returns `String?`).
 ///

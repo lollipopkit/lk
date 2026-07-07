@@ -236,6 +236,9 @@ macro_rules! for_each_abi_fn {
             // key shape proven by `GetIndexStrI`/`SetIndexStrI` facts.
             ("str", "concat_i64", lkrt_str_concat_i64, WritesHost, [StrPtr, I64], StrPtr);
             ("str", "char_len", lkrt_str_char_len, Pure, [StrPtr], I64);
+            // The *module* `string.len` counts bytes (`str::len`), unlike the
+            // `.len()` method's char count.
+            ("str", "byte_len", lkrt_str_byte_len, Pure, [StrPtr], I64);
             ("str", "starts_with", lkrt_str_starts_with, Pure, [StrPtr, StrPtr], I64);
             ("str", "contains", lkrt_str_contains, Pure, [StrPtr, StrPtr], I64);
             ("str", "slice_chars", lkrt_str_slice_chars, WritesHost, [StrPtr, I64, I64], StrPtr);
