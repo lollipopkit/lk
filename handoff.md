@@ -144,10 +144,27 @@
   - **循环任务已收尾**(2026-07-07):清单(D1-D4+机制项+验证面)全部完成,
     连续三轮回归全绿且零变化后 cron f5db44fa 已删除。最终战果:覆盖率
     14/51 → 25/51、6 个 VM bug 顺手修复、两套 fixpoint 重猜机制、
-    fuzz Dyn 面 120/120。**下一步由用户决定:GetGlobal 独立大项**
-    (try$call 原生化 + 并发进 lkrt + 模块白名单,剩余 13 例的钥匙)
+    fuzz Dyn 面 120/120。
   - 每步必须:aot_coverage.sh 单调不降 + 差分门禁逐字节 + bench 纯噪声
-  - GetGlobal 14(try$call/并发/模块白名单)是**另一根因**,独立大项未启
+- **[~] 深覆盖收尾大计划进行中(2026-07-07 起,用户裁决全部推进)**:
+  计划文件 `~/.claude/plans/silly-noodling-river.md`(先修①-⑥ + 再修
+  GetGlobal a-d,目标 47-50/51)。**两项用户裁决**:map 迭代序走
+  native 复刻 Fx 序(不改 VM);并发走 OS 线程+深拷贝 channel(不引
+  tokio 进 lkrt)。
+  - ✅ **阶段①完成**(commits `e34841e`/`ed284d1`/`7925690`/`56db77f`):
+    跨函数 Dyn 流动全套——A1 参数格点 join→Dyn(from_maybe_* ×4 +
+    dyn.truthy + 全类型真值表 + Nil-phi 走 Dyn 宽化)· A2 返回类型
+    join→Dyn(dyn_rets retriable + **自递归 ret 即时发布修 stale-I64
+    伪异型**)· A3 Dyn 全局(混型/容器槽位装箱,zeroinit=nil tag)·
+    A4 MapRest→MapStrDyn。**覆盖率 25→29/51**(error_handling/
+    null_coalescing/recursive/pattern_matching)。
+    **顺手修 VM bug**:函数内对顶层 let 全局的方法调用被编译成模块
+    属性读(list 崩/map 调 nil)→ user_let_globals 集合修路由;
+    Maybe 实参此前 unwrap-abort(VM 传 nil)也一并修正。
+  - 下一步:阶段② B1 Set 内建 → B2 模块小批(comprehensive)→
+    B3 HOF 泛化(sort_search)。macros.lk 卡整对象插值 display
+    (裁决出子集,J1 静态类型名机制或可回收)
+- GetGlobal 13(try$call/并发/模块白名单/trait)= 再修阶段 a-d,未启
 - **✅ 裁决不做**:callable trait 反转 · 真机/QEMU demo · 细粒度 feature 拆分。
 - **可选后续**:native raise 前缀统一(catch 到的 native 错误带 "native ... failed:" 前缀,
   error() 一等值无)· goroutine 泄漏之外的死锁检测。

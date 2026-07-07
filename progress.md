@@ -712,3 +712,31 @@ isolate**(单线程无锁 GC 是热路径底线,无数据竞争,推翻=重写堆
 3. 大步（M0.1 抽 crate、M2.5 stackless）落地前先拆子步、先跑通编译再迁移逻辑。
 4. 渐进抽离 crate，绝不一次性重排整个 workspace。
 5. 每轮结束更新本文件勾选项 + `handoff.md`。
+
+## 深覆盖收尾大计划:阶段①(2026-07-07)
+
+- **A1 参数格点 join→Dyn**(`e34841e`):param_obs 冲突不再 reject,
+  join 到 Dyn + 调用点装箱;Nil/Maybe 观测归一 Dyn(from_maybe_* 走
+  值+present 两标量参,**免新 AbiType/codegen 零改动**)。顺手修
+  潜在分歧:实参路径原用 read_scalar 的 Maybe unwrap-abort,VM 语义
+  是传 nil。dyn.truthy + Exit::Cond 全类型真值表(VM truthy:仅
+  nil/false 假;`if (0)` 走 then!)。**坑**:全 Nil 入边同质 phi 建成
+  `phi void`(非法 LLVM)→ Nil phi 强制 Dyn 宽化。
+- **A2 返回 join→Dyn**(`ed284d1`):dyn_rets retriable(镜像
+  DynLoopPhi 模式,入收敛快照);bare return/implicit-ret 装箱 nil。
+  **真因修复**:recursive.lk 卡点不是异型返回,是 ret_types 默认 I64
+  被自递归调用点读到 → 首个具体 return 类型即时发布进 sig.ret_types。
+- **A3 Dyn 全局 + VM 路由 bug**(`7925690`):SetGlobal 混型/容器
+  join→Dyn 槽(zeroinitializer {0,0}=nil tag,豁免 initialized 守卫);
+  global_tys 入快照。**VM bug(既有)**:`let nums=[…]; fn f(){nums.len()}`
+  被 lower_call_expr 当外部模块对象编成 GetIndex(list,"len") → executor
+  必崩("expected Int, got ShortStr");map 全局同坑(读 nil 属性)。
+  修复=collect_function_visible_let_names → user_let_globals 穿线
+  5 个编译器构造点,分类判定排除用户 let。**注意**:VM 前端 checker
+  拒绝混型全局赋值(变量类型不变式),混型全局只能经动态值产生——
+  Dyn 全局的主要价值是容器/可空值跨函数。
+- **A4 MapRest→MapStrDyn**(`56db77f`):map_h.str_dyn_without 一条
+  ABI + 一臂。pattern_matching 翻转。
+- 差分新组:differential_dyn_cross_function ×8 + differential_global_containers ×3。
+- bench 观察:1.035/1.044/1.076/1.046x 波动(同二进制复测 ±3%,
+  机器负载噪声;10% 门禁内)。
