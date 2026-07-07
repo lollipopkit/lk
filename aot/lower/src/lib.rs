@@ -5333,6 +5333,9 @@ fn lower_inst(
             // `a` = dst, `b` = source. Display-convert to a `Str` (Str/Int/Bool
             // supported; float/other fall back).
             let (v, ty) = ssa.read(instr.b(), block, pc)?;
+            // Auto-Display (plan J1): a single-interpolation template string
+            // (`"${point}"`) compiles to a bare `ToString`.
+            let (v, ty) = apply_display_show(ssa, insts, funcs, entry, sig, v, ty, pc)?;
             // The result is register-visible, so it stays arena-owned (never
             // freed eagerly, reclaimed by `lkrt_cleanup` at exit).
             let (s, _fresh) = to_display_str(ssa, insts, globals, v, ty, false, pc)?;
@@ -5830,7 +5833,10 @@ fn lower_inst(
                 .ok_or(Unsupported::Opcode { pc, op: instr.opcode() })?;
                 let key_v = materialize_key(ssa, insts, globals, &key);
                 let (vv, vty) = ssa.read(value_reg, block, pc)?;
-                let boxed = to_dyn(ssa, insts, vv, vty, pc)?;
+                // `to_dyn_any`: a dynamically indexed field value arrives as
+                // a `Maybe` carrier and boxes through `from_maybe_*` (nil
+                // stays nil, like the VM's absent-element field value).
+                let boxed = to_dyn_any(ssa, insts, vv, vty, pc)?;
                 insts.push(Inst::Call {
                     dst: None,
                     callee: AbiRef::new("map_h", "str_dyn_set"),
@@ -7293,14 +7299,29 @@ fn lower_builtin_call(
         }
         Builtin::Assert => {
             // `assert(cond)` / `assert(cond, message)`: a false condition is a
-            // fatal error, matching the VM's loud halt. The condition must be a
-            // `Bool` (the VM's truthiness for other values is not modelled).
+            // fatal error, matching the VM's loud halt. A `Bool` condition
+            // widens directly; a boxed condition evaluates the VM's
+            // truthiness (`assert_truthy` = `!(Nil | Bool(false))`).
             if argc == 0 || argc > 2 {
                 return Err(Unsupported::Opcode { pc, op: Opcode::Call });
             }
-            let cond = ssa.read_typed(base.wrapping_add(1), block, Ty::Bool, pc)?;
-            let wide = ssa.new_val();
-            insts.push(Inst::ZextBool { dst: wide, src: cond });
+            let wide = match ssa.read(base.wrapping_add(1), block, pc)? {
+                (v, Ty::Dyn) => {
+                    let t = ssa.new_val();
+                    insts.push(Inst::Call {
+                        dst: Some(t),
+                        callee: AbiRef::new("dyn", "truthy"),
+                        args: vec![v],
+                    });
+                    t
+                }
+                _ => {
+                    let cond = ssa.read_typed(base.wrapping_add(1), block, Ty::Bool, pc)?;
+                    let wide = ssa.new_val();
+                    insts.push(Inst::ZextBool { dst: wide, src: cond });
+                    wide
+                }
+            };
             if argc == 1 {
                 insts.push(Inst::Call {
                     dst: None,
