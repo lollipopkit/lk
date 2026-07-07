@@ -141,11 +141,56 @@ pub extern "C" fn lkrt_dyn_from_list(handle: *mut c_void) -> LkDyn {
     }
 }
 
+// Nullable-carrier boxing: the lowering passes the `Maybe` struct's two words
+// (`value`, `present`) separately so the ABI stays within the scalar
+// vocabulary. Absent boxes nil (payload zeroed — identical to `from_nil`).
+
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_dyn_from_maybe_i64(value: i64, present: i64) -> LkDyn {
+    if present != 0 { from_i64(value) } else { LkDyn::NIL }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_dyn_from_maybe_f64(value: f64, present: i64) -> LkDyn {
+    if present != 0 { from_f64(value) } else { LkDyn::NIL }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_dyn_from_maybe_str(value: *const c_char, present: i64) -> LkDyn {
+    if present != 0 {
+        LkDyn {
+            tag: DYN_STR,
+            payload: value as i64,
+        }
+    } else {
+        LkDyn::NIL
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_dyn_from_maybe_bool(value: i64, present: i64) -> LkDyn {
+    if present != 0 {
+        LkDyn {
+            tag: DYN_BOOL,
+            payload: i64::from(value != 0),
+        }
+    } else {
+        LkDyn::NIL
+    }
+}
+
 // ── Guarded unboxing (VM loud failure on tag mismatch) ─────────────────
 
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_dyn_tag(v: LkDyn) -> i64 {
     v.tag
+}
+
+/// VM truthiness (`truthy_unchecked`): only nil and `false` are falsy —
+/// every number (including 0), string, and container is truthy.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_dyn_truthy(v: LkDyn) -> i64 {
+    i64::from(!(v.tag == DYN_NIL || (v.tag == DYN_BOOL && v.payload == 0)))
 }
 
 #[unsafe(no_mangle)]
@@ -765,6 +810,31 @@ mod tests {
 
     fn text(ptr: *mut c_char) -> String {
         unsafe { CStr::from_ptr(ptr) }.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn from_maybe_boxes_present_and_nil() {
+        let present = lkrt_dyn_from_maybe_i64(7, 1);
+        assert_eq!((present.tag, present.payload), (DYN_I64, 7));
+        let absent = lkrt_dyn_from_maybe_i64(7, 0);
+        assert_eq!((absent.tag, absent.payload), (DYN_NIL, 0), "absent == from_nil");
+        let f = lkrt_dyn_from_maybe_f64(1.5, 1);
+        assert_eq!(f.tag, DYN_F64);
+        assert_eq!(f.f64_value(), 1.5);
+        assert_eq!(lkrt_dyn_from_maybe_str(std::ptr::null(), 0).tag, DYN_NIL);
+        let b = lkrt_dyn_from_maybe_bool(1, 1);
+        assert_eq!((b.tag, b.payload), (DYN_BOOL, 1));
+    }
+
+    #[test]
+    fn truthy_matches_vm_semantics() {
+        // Only nil and false are falsy; 0/0.0/"" are truthy.
+        assert_eq!(lkrt_dyn_truthy(lkrt_dyn_from_nil()), 0);
+        assert_eq!(lkrt_dyn_truthy(lkrt_dyn_from_bool(0)), 0);
+        assert_eq!(lkrt_dyn_truthy(lkrt_dyn_from_bool(1)), 1);
+        assert_eq!(lkrt_dyn_truthy(lkrt_dyn_from_i64(0)), 1);
+        assert_eq!(lkrt_dyn_truthy(lkrt_dyn_from_f64(0.0)), 1);
+        assert_eq!(lkrt_dyn_truthy(s("")), 1);
     }
 
     #[test]

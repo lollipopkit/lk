@@ -376,9 +376,10 @@ enum Exit {
 ///  - `ret_types[f]` — from `f`'s return value type (returns can chain: `f` returns
 ///    `g()`), so it iterates.
 ///  - `param_obs[f][i]` — the argument type observed at `f`'s `CallDirect` sites. If
-///    every site agrees, that is the parameter type; if two sites disagree, `f` is
-///    polymorphic (`conflict`) and cannot be monomorphized, so the whole module
-///    falls back rather than miscompiling one of the call sites.
+///    every site agrees, that is the parameter type; disagreeing sites join the
+///    parameter to `Dyn` (each site boxes, the body consumes through the Dyn
+///    arms — plan M4.2 cross-function Dyn flow). `conflict` still rejects
+///    function-vs-value polymorphism (`lambda_params`/`specialized`).
 struct SigInfer {
     param_obs: Vec<Vec<Option<Ty>>>,
     ret_types: Vec<Ty>,
@@ -449,6 +450,33 @@ struct SigInfer {
 impl SigInfer {
     fn param_ty(&self, func: usize, i: usize) -> Ty {
         self.param_obs[func].get(i).copied().flatten().unwrap_or(Ty::I64)
+    }
+
+    /// Records one call-site observation of `callee`'s parameter `slot_idx`
+    /// and returns the parameter's (possibly widened) type. Disagreeing
+    /// observations join to `Dyn` — the parameter becomes dynamically typed
+    /// and every call site boxes — instead of rejecting the module. Nullable
+    /// shapes (`Nil`, the `Maybe` carriers) have no typed parameter form and
+    /// observe as `Dyn` directly. The join is monotonic on a two-level
+    /// lattice, so the fixpoint still terminates; function-vs-value
+    /// polymorphism keeps its own reject (`lambda_params`).
+    fn observe_param(&mut self, callee: usize, slot_idx: usize, arg_ty: Ty) -> Ty {
+        let obs = match arg_ty {
+            Ty::Nil | Ty::MaybeI64 | Ty::MaybeF64 | Ty::MaybeStr | Ty::MaybeBool => Ty::Dyn,
+            other => other,
+        };
+        match self.param_obs.get_mut(callee).and_then(|p| p.get_mut(slot_idx)) {
+            Some(slot) => {
+                let joined = match *slot {
+                    None => obs,
+                    Some(prev) if prev == obs => prev,
+                    Some(_) => Ty::Dyn,
+                };
+                *slot = Some(joined);
+                joined
+            }
+            None => obs,
+        }
     }
 
     fn gvar(&self, slot: u16) -> u32 {
@@ -1453,10 +1481,109 @@ fn lower_function(
                 ret_val[bi] = if ty == Ty::Nil { None } else { Some(v) };
             }
             Some(Exit::Cond { cond, .. }) => {
+                // VM truthiness (`truthy_unchecked`): only nil and false are
+                // falsy — every number (0 included), string, and container is
+                // truthy. Typed conditions fold at compile time; a Dyn
+                // condition tests tag/payload at runtime; a Maybe tests its
+                // present bit (its payload is truthy except for MaybeBool).
                 let (v, ty) = ssa.read(cond, bi, start)?;
-                if ty != Ty::Bool {
-                    return Err(Unsupported::NonBoolCondition { pc: start });
-                }
+                let v = match ty {
+                    Ty::Bool => v,
+                    Ty::Nil => {
+                        let c = ssa.new_val();
+                        insts.push(Inst::Const {
+                            dst: c,
+                            value: Const::Bool(false),
+                        });
+                        c
+                    }
+                    Ty::I64
+                    | Ty::F64
+                    | Ty::Str
+                    | Ty::ListI64
+                    | Ty::ListF64
+                    | Ty::ListStr
+                    | Ty::ListDyn
+                    | Ty::MapStrI64
+                    | Ty::MapI64I64
+                    | Ty::MapStrF64
+                    | Ty::MapI64F64
+                    | Ty::MapStrBool
+                    | Ty::MapStrDyn => {
+                        let c = ssa.new_val();
+                        insts.push(Inst::Const {
+                            dst: c,
+                            value: Const::Bool(true),
+                        });
+                        c
+                    }
+                    Ty::MaybeI64 | Ty::MaybeF64 | Ty::MaybeStr => {
+                        let present = ssa.new_val();
+                        insts.push(Inst::MaybePresent {
+                            dst: present,
+                            src: v,
+                            maybe_ty: ty,
+                        });
+                        present
+                    }
+                    Ty::MaybeBool => {
+                        // Absent is nil (falsy); present carries the payload.
+                        let present = ssa.new_val();
+                        insts.push(Inst::MaybePresent {
+                            dst: present,
+                            src: v,
+                            maybe_ty: ty,
+                        });
+                        let value = ssa.new_val();
+                        insts.push(Inst::MaybeValue {
+                            dst: value,
+                            src: v,
+                            maybe_ty: ty,
+                        });
+                        let zero = ssa.new_val();
+                        insts.push(Inst::Const {
+                            dst: zero,
+                            value: Const::I64(0),
+                        });
+                        let value_b = ssa.new_val();
+                        insts.push(Inst::Cmp {
+                            dst: value_b,
+                            op: CmpOp::Ne,
+                            float: false,
+                            lhs: value,
+                            rhs: zero,
+                        });
+                        let both = ssa.new_val();
+                        insts.push(Inst::BoolAnd {
+                            dst: both,
+                            lhs: present,
+                            rhs: value_b,
+                        });
+                        both
+                    }
+                    Ty::Dyn => {
+                        let wide = ssa.new_val();
+                        insts.push(Inst::Call {
+                            dst: Some(wide),
+                            callee: AbiRef::new("dyn", "truthy"),
+                            args: vec![v],
+                        });
+                        let zero = ssa.new_val();
+                        insts.push(Inst::Const {
+                            dst: zero,
+                            value: Const::I64(0),
+                        });
+                        let cond_b = ssa.new_val();
+                        insts.push(Inst::Cmp {
+                            dst: cond_b,
+                            op: CmpOp::Ne,
+                            float: false,
+                            lhs: wide,
+                            rhs: zero,
+                        });
+                        cond_b
+                    }
+                };
                 cond_val[bi] = Some(v);
             }
             Some(Exit::FusedCmp { reg_a, rhs, op, .. }) => {
@@ -2252,9 +2379,13 @@ impl Ssa {
                     | (Ty::Str, Ty::MaybeStr)
             )
         };
-        if incoming
-            .iter()
-            .all(|&(_, _, ty)| ty == phi_ty || maybe_pair(ty, phi_ty))
+        // A Nil-typed phi has no LLVM value form (`phi void`): even a
+        // homogeneous all-nil merge widens to Dyn below (each edge boxes
+        // `from_nil`; consumers test the tag at runtime, VM-exact).
+        if phi_ty != Ty::Nil
+            && incoming
+                .iter()
+                .all(|&(_, _, ty)| ty == phi_ty || maybe_pair(ty, phi_ty))
         {
             // A guessed empty-`[]` handle read through a phi (loop/branch)
             // keeps its provenance: every non-self edge must carry the same
@@ -2860,10 +2991,14 @@ fn lower_user_call(
         let mut caps = Vec::with_capacity(srcs.len());
         for RetCaptureSrc::Param(k) in srcs {
             let arg_reg = dst_reg.wrapping_add(1).wrapping_add(k as u8);
-            let (v, ty) = read_scalar(ssa, insts, arg_reg, block, pc)?;
-            if matches!(ty, Ty::Nil | Ty::MaybeI64 | Ty::MaybeF64 | Ty::MaybeStr | Ty::MaybeBool) {
-                return Err(Unsupported::TypeMismatch { pc });
-            }
+            let (v, ty) = ssa.read(arg_reg, block, pc)?;
+            // Nullable shapes have no typed capture form: box to Dyn, so the
+            // eventual consumer joins its parameter to Dyn like any call site.
+            let (v, ty) = if matches!(ty, Ty::Nil | Ty::MaybeI64 | Ty::MaybeF64 | Ty::MaybeStr | Ty::MaybeBool) {
+                (to_dyn_any(ssa, insts, v, ty, pc)?, Ty::Dyn)
+            } else {
+                (v, ty)
+            };
             caps.push(ClosureCapture::Value(v, ty));
         }
         if (dst_reg as usize) < ssa.reg_count {
@@ -2922,59 +3057,32 @@ fn lower_user_call(
                         }
                         ClosureCapture::Value(v, ty) => (*v, *ty),
                     };
-                    if matches!(ty, Ty::Nil | Ty::MaybeI64 | Ty::MaybeF64 | Ty::MaybeStr | Ty::MaybeBool) {
-                        return Err(Unsupported::TypeMismatch { pc });
-                    }
                     env_args.push((v, ty));
                 }
                 continue;
             }
             None => {}
         }
-        let (aval, aty) = read_scalar(ssa, insts, arg_reg, block, pc)?;
-        // `Str` and container handles pass as `ptr` (arena-owned until
-        // exit, so no ownership transfer is involved). `Maybe` carriers
-        // and nil stay out of the function ABI.
-        if matches!(aty, Ty::Nil | Ty::MaybeI64 | Ty::MaybeF64 | Ty::MaybeStr) {
-            return Err(Unsupported::TypeMismatch { pc });
-        }
-        // Refine the callee's parameter type from this observed argument.
-        if let Some(slot) = sig.param_obs.get_mut(callee_idx).and_then(|p| p.get_mut(i)) {
-            match slot {
-                None => *slot = Some(aty),
-                Some(prev) if *prev != aty => sig.conflict = true,
-                Some(_) => {}
-            }
-        }
-        args.push(aval);
+        // `Str` and container handles pass as `ptr` (arena-owned until exit,
+        // so no ownership transfer is involved). The raw register read keeps
+        // nullable carriers intact: they observe as `Dyn` and box, so the
+        // callee receives nil as nil (VM call semantics) instead of the
+        // scalar-context unwrap abort.
+        let (aval, aty) = ssa.read(arg_reg, block, pc)?;
+        let want = sig.observe_param(callee_idx, i, aty);
+        args.push(coerce_arg(ssa, insts, aval, aty, want, pc)?);
     }
     // Hidden trailing arguments, in signature order: the erased closures'
     // environment values first, then the callee's own captures. Their types
     // refine the same monomorphization lattice as visible parameters.
     for (k, &(ev, ety)) in env_args.iter().enumerate() {
-        if let Some(slot) = sig.param_obs.get_mut(callee_idx).and_then(|p| p.get_mut(argc + k)) {
-            match slot {
-                None => *slot = Some(ety),
-                Some(prev) if *prev != ety => sig.conflict = true,
-                Some(_) => {}
-            }
-        }
-        args.push(ev);
+        let want = sig.observe_param(callee_idx, argc + k, ety);
+        args.push(coerce_arg(ssa, insts, ev, ety, want, pc)?);
     }
     let env_total = env_args.len();
     for (k, &(cval, cty)) in captures.iter().enumerate() {
-        if let Some(slot) = sig
-            .param_obs
-            .get_mut(callee_idx)
-            .and_then(|p| p.get_mut(argc + env_total + k))
-        {
-            match slot {
-                None => *slot = Some(cty),
-                Some(prev) if *prev != cty => sig.conflict = true,
-                Some(_) => {}
-            }
-        }
-        args.push(cval);
+        let want = sig.observe_param(callee_idx, argc + env_total + k, cty);
+        args.push(coerce_arg(ssa, insts, cval, cty, want, pc)?);
     }
     let ret = sig.ret_types.get(callee_idx).copied().unwrap_or(Ty::I64);
     if ret == Ty::Nil {
@@ -7314,6 +7422,65 @@ fn to_dyn_list_handle(
         args: vec![v],
     });
     Ok(converted)
+}
+
+/// Marshals one argument for a user call: a `Dyn` parameter takes any
+/// boxable value (nullable carriers included), a typed parameter takes
+/// exactly its type. A residual mismatch is a stale observation from an
+/// earlier fixpoint pass — tolerated there, fatal only on the final pass.
+fn coerce_arg(
+    ssa: &mut Ssa,
+    insts: &mut Vec<Inst>,
+    v: ValueId,
+    ty: Ty,
+    want: Ty,
+    pc: usize,
+) -> Result<ValueId, Unsupported> {
+    if want == Ty::Dyn && ty != Ty::Dyn {
+        return to_dyn_any(ssa, insts, v, ty, pc);
+    }
+    if ty != want {
+        return Err(Unsupported::TypeMismatch { pc });
+    }
+    Ok(v)
+}
+
+/// [`to_dyn`] extended to the nullable carriers: a `Maybe` boxes to its
+/// payload's tag when present and to nil when absent (`dyn.from_maybe_*`),
+/// preserving VM call semantics — a nil argument arrives as nil instead of
+/// hitting the scalar-context unwrap abort.
+fn to_dyn_any(ssa: &mut Ssa, insts: &mut Vec<Inst>, v: ValueId, ty: Ty, pc: usize) -> Result<ValueId, Unsupported> {
+    let from = match ty {
+        Ty::MaybeI64 => "from_maybe_i64",
+        Ty::MaybeF64 => "from_maybe_f64",
+        Ty::MaybeStr => "from_maybe_str",
+        Ty::MaybeBool => "from_maybe_bool",
+        _ => return to_dyn(ssa, insts, v, ty, pc),
+    };
+    let value = ssa.new_val();
+    insts.push(Inst::MaybeValue {
+        dst: value,
+        src: v,
+        maybe_ty: ty,
+    });
+    let present_b = ssa.new_val();
+    insts.push(Inst::MaybePresent {
+        dst: present_b,
+        src: v,
+        maybe_ty: ty,
+    });
+    let present = ssa.new_val();
+    insts.push(Inst::ZextBool {
+        dst: present,
+        src: present_b,
+    });
+    let boxed = ssa.new_val();
+    insts.push(Inst::Call {
+        dst: Some(boxed),
+        callee: AbiRef::new("dyn", from),
+        args: vec![value, present],
+    });
+    Ok(boxed)
 }
 
 fn to_dyn(ssa: &mut Ssa, insts: &mut Vec<Inst>, v: ValueId, ty: Ty, pc: usize) -> Result<ValueId, Unsupported> {

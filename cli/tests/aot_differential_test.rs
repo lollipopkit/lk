@@ -646,3 +646,41 @@ fn differential_builtins() {
         ],
     );
 }
+
+#[test]
+fn differential_dyn_cross_function() {
+    run_differential(
+        "dyn_cross_fn",
+        &[
+            // Disagreeing call-site types join the parameter to Dyn (each
+            // site boxes); the body consumes through the Dyn arms.
+            new(
+                "param_join_int_str",
+                "fn id(x) { return x; }\nprintln(id(1));\nprintln(id(\"s\"));\nprintln(id(2.5));\nprintln(id(true));\nreturn 0;\n",
+            ),
+            // A nullable (Maybe) argument crosses the call boxed: the callee
+            // receives nil as nil — VM call semantics, no unwrap abort.
+            new(
+                "param_maybe_passes_nil",
+                "fn show(x) { return x ?? -1; }\nlet m = {};\nm.set(\"a\", 1);\nprintln(show(m.get(\"a\")));\nprintln(show(m.get(\"zz\")));\nreturn 0;\n",
+            ),
+            // An explicit nil argument at one site, a typed value at another.
+            new(
+                "param_nil_vs_int",
+                "fn f(x) { if (x == nil) { return 0; } return 1; }\nprintln(f(nil));\nprintln(f(3));\nreturn 0;\n",
+            ),
+            // VM truthiness: only nil and false are falsy — 0, 0.0 and \"\"
+            // are truthy; a Dyn condition tests its tag at runtime.
+            new(
+                "truthiness_zero_and_nil",
+                "let z = 0;\nif (z) { println(\"zero truthy\"); }\nlet n = nil;\nif (n) { println(\"unreachable\"); } else { println(\"nil falsy\"); }\nfn pick(x) { if (x) { return \"t\"; } return \"f\"; }\nprintln(pick(0));\nprintln(pick(nil));\nprintln(pick(false));\nprintln(pick(\"\"));\nreturn 0;\n",
+            ),
+            // An all-nil branch join must not build a Nil-typed phi: it widens
+            // to Dyn (boxed nil) and compares by tag.
+            new(
+                "nil_phi_join",
+                "let user = { \"name\": \"Alice\", \"address\": nil };\nlet city = nil;\nif (user.address != nil) {\n  city = user.address.city;\n} else {\n  city = nil;\n}\nprintln(city == nil);\nreturn 0;\n",
+            ),
+        ],
+    );
+}

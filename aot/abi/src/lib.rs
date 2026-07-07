@@ -256,7 +256,17 @@ macro_rules! for_each_abi_fn {
             ("dyn", "from_f64", lkrt_dyn_from_f64, Pure, [F64], DynVal);
             ("dyn", "from_str", lkrt_dyn_from_str, Pure, [StrPtr], DynVal);
             ("dyn", "from_list", lkrt_dyn_from_list, Pure, [Ptr], DynVal);
+            // Nullable-carrier boxing (`(value, present)` from the Maybe struct's
+            // two words): present boxes the payload, absent boxes nil. Used where
+            // a `Maybe` crosses a user-function call — VM call semantics pass nil
+            // through, unlike the scalar-context unwrap which aborts.
+            ("dyn", "from_maybe_i64", lkrt_dyn_from_maybe_i64, Pure, [I64, I64], DynVal);
+            ("dyn", "from_maybe_f64", lkrt_dyn_from_maybe_f64, Pure, [F64, I64], DynVal);
+            ("dyn", "from_maybe_str", lkrt_dyn_from_maybe_str, Pure, [StrPtr, I64], DynVal);
+            ("dyn", "from_maybe_bool", lkrt_dyn_from_maybe_bool, Pure, [I64, I64], DynVal);
             ("dyn", "tag", lkrt_dyn_tag, Pure, [DynVal], I64);
+            // VM truthiness (`truthy_unchecked`): only nil and false are falsy.
+            ("dyn", "truthy", lkrt_dyn_truthy, Pure, [DynVal], I64);
             ("dyn", "as_i64", lkrt_dyn_as_i64, ReadsHost, [DynVal], I64);
             ("dyn", "as_f64", lkrt_dyn_as_f64, ReadsHost, [DynVal], F64);
             ("dyn", "as_str", lkrt_dyn_as_str, ReadsHost, [DynVal], StrPtr);
