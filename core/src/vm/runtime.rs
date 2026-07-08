@@ -637,7 +637,7 @@ mod tests {
         let heap = HeapStore::new();
         native_args
             .try_for_each_named(&heap, |name, value| {
-                seen.push((name.to_string(), value.clone()));
+                seen.push((name.to_string(), *value));
                 Ok(())
             })
             .expect("iterate named");
@@ -653,7 +653,7 @@ mod tests {
         let mut seen = Vec::new();
         native_args
             .try_for_each_named(&heap, |name, value| {
-                seen.push((name.to_string(), value.clone()));
+                seen.push((name.to_string(), *value));
                 Ok(())
             })
             .expect("iterate map-handle named");

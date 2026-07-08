@@ -226,68 +226,6 @@ pub extern "C" fn lkrt_bool_to_str(b: i64) -> *mut c_char {
     arena_c_string(CString::new(s).unwrap_or_default())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::ffi::CString;
-
-    #[test]
-    fn renders_scalars() {
-        unsafe {
-            let i = lkrt_i64_to_str(-42);
-            assert_eq!(CStr::from_ptr(i).to_bytes(), b"-42");
-            crate::lkrt_string_free(i);
-            let t = lkrt_bool_to_str(1);
-            assert_eq!(CStr::from_ptr(t).to_bytes(), b"true");
-            crate::lkrt_string_free(t);
-            let f = lkrt_bool_to_str(0);
-            assert_eq!(CStr::from_ptr(f).to_bytes(), b"false");
-            crate::lkrt_string_free(f);
-        }
-    }
-
-    #[test]
-    fn compares_c_strings() {
-        let hi = CString::new("hi").unwrap();
-        let hi2 = CString::new("hi").unwrap();
-        let ho = CString::new("ho").unwrap();
-        unsafe {
-            assert_eq!(lkrt_str_cmp(hi.as_ptr(), hi2.as_ptr()), 0);
-            assert_eq!(lkrt_str_cmp(hi.as_ptr(), ho.as_ptr()), -1);
-            assert_eq!(lkrt_str_cmp(ho.as_ptr(), hi.as_ptr()), 1);
-        }
-    }
-
-    #[test]
-    fn concat_i64_matches_two_step_build() {
-        let prefix = CString::new("n").unwrap();
-        for n in [0, 7, -1, 1234567890123456789, i64::MIN, i64::MAX] {
-            unsafe {
-                let fused = lkrt_str_concat_i64(prefix.as_ptr(), n);
-                assert_eq!(CStr::from_ptr(fused).to_str().unwrap(), format!("n{n}"), "suffix {n}");
-                crate::lkrt_string_free(fused);
-            }
-        }
-        unsafe {
-            let empty = lkrt_str_concat_i64(std::ptr::null(), 42);
-            assert_eq!(CStr::from_ptr(empty).to_bytes(), b"42");
-            crate::lkrt_string_free(empty);
-        }
-    }
-
-    #[test]
-    fn concatenates_c_strings() {
-        let foo = CString::new("foo").unwrap();
-        let bar = CString::new("bar").unwrap();
-        unsafe {
-            let out = lkrt_str_concat(foo.as_ptr(), bar.as_ptr());
-            assert_eq!(CStr::from_ptr(out).to_bytes(), b"foobar");
-            // reclaim the arena-registered allocation in the test
-            crate::lkrt_string_free(out);
-        }
-    }
-}
-
 fn view<'a>(p: *const c_char) -> &'a str {
     if p.is_null() {
         ""
@@ -540,5 +478,67 @@ pub unsafe extern "C" fn lkrt_str_char_at(s: *const c_char, index: i64) -> crate
             crate::lkdyn::lkrt_dyn_from_str(owned)
         }
         None => crate::lkdyn::LkDyn::NIL,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::CString;
+
+    #[test]
+    fn renders_scalars() {
+        unsafe {
+            let i = lkrt_i64_to_str(-42);
+            assert_eq!(CStr::from_ptr(i).to_bytes(), b"-42");
+            crate::lkrt_string_free(i);
+            let t = lkrt_bool_to_str(1);
+            assert_eq!(CStr::from_ptr(t).to_bytes(), b"true");
+            crate::lkrt_string_free(t);
+            let f = lkrt_bool_to_str(0);
+            assert_eq!(CStr::from_ptr(f).to_bytes(), b"false");
+            crate::lkrt_string_free(f);
+        }
+    }
+
+    #[test]
+    fn compares_c_strings() {
+        let hi = CString::new("hi").unwrap();
+        let hi2 = CString::new("hi").unwrap();
+        let ho = CString::new("ho").unwrap();
+        unsafe {
+            assert_eq!(lkrt_str_cmp(hi.as_ptr(), hi2.as_ptr()), 0);
+            assert_eq!(lkrt_str_cmp(hi.as_ptr(), ho.as_ptr()), -1);
+            assert_eq!(lkrt_str_cmp(ho.as_ptr(), hi.as_ptr()), 1);
+        }
+    }
+
+    #[test]
+    fn concat_i64_matches_two_step_build() {
+        let prefix = CString::new("n").unwrap();
+        for n in [0, 7, -1, 1234567890123456789, i64::MIN, i64::MAX] {
+            unsafe {
+                let fused = lkrt_str_concat_i64(prefix.as_ptr(), n);
+                assert_eq!(CStr::from_ptr(fused).to_str().unwrap(), format!("n{n}"), "suffix {n}");
+                crate::lkrt_string_free(fused);
+            }
+        }
+        unsafe {
+            let empty = lkrt_str_concat_i64(std::ptr::null(), 42);
+            assert_eq!(CStr::from_ptr(empty).to_bytes(), b"42");
+            crate::lkrt_string_free(empty);
+        }
+    }
+
+    #[test]
+    fn concatenates_c_strings() {
+        let foo = CString::new("foo").unwrap();
+        let bar = CString::new("bar").unwrap();
+        unsafe {
+            let out = lkrt_str_concat(foo.as_ptr(), bar.as_ptr());
+            assert_eq!(CStr::from_ptr(out).to_bytes(), b"foobar");
+            // reclaim the arena-registered allocation in the test
+            crate::lkrt_string_free(out);
+        }
     }
 }

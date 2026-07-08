@@ -336,7 +336,7 @@ fn compiler_keeps_dynamic_for_range_step_sign_fallback() {
     let zero_load_pc = load_int_register_pc(&function, step_sign_check.c(), 0).expect("step sign zero load");
     let loop_target = first_backward_loop_target_after(&function, step_sign_pc);
     assert!(
-        zero_load_pc as i64 <= loop_target - 1,
+        (zero_load_pc as i64) < loop_target,
         "dynamic range step zero should be loaded before the loop-back target"
     );
     assert!(
@@ -404,14 +404,14 @@ fn compiler_for_range_reuses_body_scalar_literals_before_loop_target() {
     assert!(
         load_int_pcs(&function, 1)
             .into_iter()
-            .all(|pc| pc as i64 <= loop_target - 1),
+            .all(|pc| (pc as i64) < loop_target),
         "for range scalar const cache should preload literal 1 before loop target {loop_target}; code: {:?}",
         function.code,
     );
     assert!(
         load_int_pcs(&function, 10)
             .into_iter()
-            .all(|pc| pc as i64 <= loop_target - 1),
+            .all(|pc| (pc as i64) < loop_target),
         "for range scalar const cache should preload literal 10 before loop target {loop_target}; code: {:?}",
         function.code,
     );
@@ -605,14 +605,14 @@ fn compiler_while_reuses_body_scalar_literals_before_loop_target() {
     assert!(
         load_int_pcs(&function, 1)
             .into_iter()
-            .all(|pc| pc as i64 <= loop_target - 1),
+            .all(|pc| (pc as i64) < loop_target),
         "loop scalar const cache should preload literal 1 before loop target {loop_target}; code: {:?}",
         function.code,
     );
     assert!(
         load_int_pcs(&function, 10)
             .into_iter()
-            .all(|pc| pc as i64 <= loop_target - 1),
+            .all(|pc| (pc as i64) < loop_target),
         "loop scalar const cache should preload literal 10 before loop target {loop_target}; code: {:?}",
         function.code,
     );

@@ -717,12 +717,14 @@ mod tests {
 
     #[test]
     fn accepts_for_loop_with_valid_fact() {
-        let mut performance = PerformanceFacts::default();
-        performance.for_loops = vec![Some(PerfForLoopFact {
-            jump_offset: -1,
-            inclusive: false,
-            positive_step: true,
-        })];
+        let performance = PerformanceFacts {
+            for_loops: vec![Some(PerfForLoopFact {
+                jump_offset: -1,
+                inclusive: false,
+                positive_step: true,
+            })],
+            ..Default::default()
+        };
         let module = Module::single(Function {
             code: vec![
                 Instr::abc(Opcode::ForLoopI, 0, 1, 2),
@@ -738,12 +740,14 @@ mod tests {
 
     #[test]
     fn rejects_for_loop_fact_with_out_of_bounds_target() {
-        let mut performance = PerformanceFacts::default();
-        performance.for_loops = vec![Some(PerfForLoopFact {
-            jump_offset: 100,
-            inclusive: false,
-            positive_step: true,
-        })];
+        let performance = PerformanceFacts {
+            for_loops: vec![Some(PerfForLoopFact {
+                jump_offset: 100,
+                inclusive: false,
+                positive_step: true,
+            })],
+            ..Default::default()
+        };
         let module = Module::single(Function {
             code: vec![
                 Instr::abc(Opcode::ForLoopI, 0, 1, 2),

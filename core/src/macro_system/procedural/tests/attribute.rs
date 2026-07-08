@@ -477,7 +477,8 @@ fn external_attribute_records_top_level_statement_origins() {
             .any(|member| member.label == "stmt compound_assign" && member.span.is_some()),
         "top-level generated compound assignment statement should carry a source-map span: {origin:?}"
     );
-    for label in ["stmt compound_assign_value"] {
+    {
+        let label = "stmt compound_assign_value";
         assert!(
             origin
                 .generated_item_origins
