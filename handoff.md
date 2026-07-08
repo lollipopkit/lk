@@ -227,8 +227,8 @@
   CI 等价。
 - GetGlobal 13(try$call/并发/模块白名单/trait)= 再修阶段 a-d,未启
 - **✅ 裁决不做**:callable trait 反转 · 真机/QEMU demo · 细粒度 feature 拆分。
-- **可选后续**:native raise 前缀统一(catch 到的 native 错误带 "native ... failed:" 前缀,
-  error() 一等值无)· goroutine 泄漏之外的死锁检测。
+- **可选后续**:goroutine 泄漏之外的死锁检测。
+  (native raise 前缀统一已完成——2026-07-08 打磨轮 P2,裁决入 semantics.md「错误文本」。)
 
 ## 护栏 & 续接
 全量 tests 0 失败 / clippy 0 / fmt 0 / no_std 0/0 / GC-stress 全绿 / bench 1.021x(基线内)/

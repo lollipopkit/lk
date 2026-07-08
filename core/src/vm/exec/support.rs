@@ -316,15 +316,15 @@ pub(super) fn call_native_entry_parts_with_args(
 }
 
 fn map_native_error(native: &NativeEntry, result: Result<RuntimeVal>) -> Result<RuntimeVal> {
-    result.map_err(|err| {
-        // Pass raised errors through unwrapped so `pcall` can recover them: a
-        // LanguageRaise, or a first-class value from `error(v)` (M2.2).
-        if err.is::<super::LanguageRaise>() || err.is::<super::LkRaisedValue>() {
-            err
-        } else {
-            anyhow!("native `{}` failed: {err}", native.name)
-        }
-    })
+    // Errors pass through unwrapped: raised errors (LanguageRaise /
+    // first-class `error(v)` values) must reach the handler intact, and a
+    // plain native failure's `catch e` text is the bare cause — the same
+    // string `error(v)` would carry and the same text the AOT runtime
+    // raises — not a `"native `{name}` failed: …"` wrapper (docs/semantics.md
+    // "错误文本"). Call-site attribution lives in the traceback, not the
+    // message.
+    let _ = native;
+    result
 }
 
 pub(super) fn heap_kind(value: &HeapValue) -> &'static str {
