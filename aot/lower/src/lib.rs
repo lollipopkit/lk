@@ -1287,18 +1287,21 @@ pub fn lower_bundled(
             reachable.push(true);
         }
         passes += 1;
-        let converged = snapshot
-            == (
-                sig.param_obs.clone(),
-                sig.ret_types.clone(),
-                sig.specializations.len(),
-                sig.ret_closures.clone(),
-                sig.dyn_loop_phis.len(),
-                sig.dyn_empty_lists.len(),
-                sig.dyn_rets.len(),
-                sig.global_tys.clone(),
-                sig.spawned_isolate.len(),
-            );
+        // Field-by-field comparison against the pre-pass snapshot: the same
+        // convergence condition without cloning the whole state a second
+        // time. (A generation-counter scheme was evaluated and rejected:
+        // ~30 mutation sites to instrument, and one missed bump = false
+        // convergence = miscompile; the snapshot clone stays as the
+        // correctness anchor.)
+        let converged = snapshot.0 == sig.param_obs
+            && snapshot.1 == sig.ret_types
+            && snapshot.2 == sig.specializations.len()
+            && snapshot.3 == sig.ret_closures
+            && snapshot.4 == sig.dyn_loop_phis.len()
+            && snapshot.5 == sig.dyn_empty_lists.len()
+            && snapshot.6 == sig.dyn_rets.len()
+            && snapshot.7 == sig.global_tys
+            && snapshot.8 == sig.spawned_isolate.len();
         // Each retriable discovery (Dyn loop phi, empty-list re-guess,
         // boxed-returns function) legitimately consumes one extra pass, so
         // the safety valve budgets for them on top of the type lattice.
