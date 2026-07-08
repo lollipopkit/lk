@@ -161,6 +161,55 @@ pub unsafe extern "C" fn lkrt_lklist_i64_chain(a: *mut c_void, b: *mut c_void) -
     crate::state::arena_handle(out)
 }
 
+/// `xs.chain(ys)` / `xs + ys` — a fresh concatenation of two `List<f64>`.
+///
+/// # Safety
+/// Both handles must be live `List<f64>` handles, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_f64_chain(a: *mut c_void, b: *mut c_void) -> *mut c_void {
+    let lhs: &[f64] = if a.is_null() {
+        &[]
+    } else {
+        // SAFETY: caller passes live `List<f64>` handles.
+        unsafe { &*(a as *mut Vec<f64>) }
+    };
+    let rhs: &[f64] = if b.is_null() {
+        &[]
+    } else {
+        // SAFETY: as above.
+        unsafe { &*(b as *mut Vec<f64>) }
+    };
+    let mut out = Vec::with_capacity(lhs.len() + rhs.len());
+    out.extend_from_slice(lhs);
+    out.extend_from_slice(rhs);
+    crate::state::arena_handle(out)
+}
+
+/// `xs.chain(ys)` / `xs + ys` — a fresh concatenation of two `List<str>`
+/// (the element pointers are arena-owned and shared, never copied).
+///
+/// # Safety
+/// Both handles must be live `List<str>` handles, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_str_chain(a: *mut c_void, b: *mut c_void) -> *mut c_void {
+    let lhs: &[*const c_char] = if a.is_null() {
+        &[]
+    } else {
+        // SAFETY: caller passes live `List<str>` handles.
+        unsafe { &*(a as *mut Vec<*const c_char>) }
+    };
+    let rhs: &[*const c_char] = if b.is_null() {
+        &[]
+    } else {
+        // SAFETY: as above.
+        unsafe { &*(b as *mut Vec<*const c_char>) }
+    };
+    let mut out = Vec::with_capacity(lhs.len() + rhs.len());
+    out.extend_from_slice(lhs);
+    out.extend_from_slice(rhs);
+    crate::state::arena_handle(out)
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_lklist_i64_new() -> *mut c_void {
     crate::state::arena_handle(Vec::<i64>::new())

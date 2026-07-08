@@ -165,6 +165,18 @@ enum Builtin {
     ChanRecv,
     /// `spawn(closure)` / the `go` desugar — a goroutine OS thread.
     Spawn,
+    /// `__lk_merge_fields(base, overlay)` — the struct-update desugar's
+    /// field merge (`P { ..base, k: v }`); the result is a fresh map.
+    MergeFields,
+    /// `__lk_make_struct(name, fields)` — the struct-update desugar's
+    /// object constructor: a fresh field copy + struct provenance.
+    MakeStruct,
+    /// `__lk_bit_and(l, r)` / `__lk_bit_or(l, r)` / `__lk_bit_not(v)` — the
+    /// `&`/`|`/`~` operator desugars (Int-only in the VM; other argument
+    /// types reject and fall back to its loud error).
+    BitAnd,
+    BitOr,
+    BitNot,
     /// `select$block(types, chans, values, guards, has_default)`.
     SelectBlock,
 }
@@ -818,6 +830,12 @@ struct SigInfer {
     imports: ImportEnv,
     /// Trait/impl registrations lifted from the entry (plan J1).
     traits: TraitEnv,
+    /// Global slots first written *outside* the entry prefix but read via
+    /// `GetGlobal` (`fn inc() { counter += 1; }` over a mid-entry `let`):
+    /// forced to the `Dyn` carrier — its zero-initialization `{0, 0}` *is*
+    /// the nil tag, so a read before the first write observes the VM's nil
+    /// instead of a bogus typed zero. Retriable discovery (fixpoint rerun).
+    force_dyn_globals: std::collections::HashSet<u16>,
     /// Functions spawned as goroutines (isolate semantics): their cell
     /// captures snapshot by value and cell *writes* land in a
     /// thread-private virtual slot instead of rejecting.
@@ -1184,6 +1202,7 @@ pub fn lower_bundled(
         dyn_rets: std::collections::HashSet::new(),
         imports: ImportEnv::build(&artifact.imports, bundles),
         traits,
+        force_dyn_globals: std::collections::HashSet::new(),
         spawned_isolate: std::collections::HashSet::new(),
         dyn_empty_lists: std::collections::HashSet::new(),
         global_tys: vec![None; global_count],
@@ -1226,6 +1245,7 @@ pub fn lower_bundled(
             sig.dyn_rets.len(),
             sig.global_tys.clone(),
             sig.spawned_isolate.len(),
+            sig.force_dyn_globals.len(),
         );
         // Call-site facts are re-derived every pass: an argument register
         // that resolves to a closure ref only once a summary lands (e.g. a
@@ -1301,11 +1321,13 @@ pub fn lower_bundled(
             && snapshot.5 == sig.dyn_empty_lists.len()
             && snapshot.6 == sig.dyn_rets.len()
             && snapshot.7 == sig.global_tys
-            && snapshot.8 == sig.spawned_isolate.len();
+            && snapshot.8 == sig.spawned_isolate.len()
+            && snapshot.9 == sig.force_dyn_globals.len();
         // Each retriable discovery (Dyn loop phi, empty-list re-guess,
         // boxed-returns function) legitimately consumes one extra pass, so
         // the safety valve budgets for them on top of the type lattice.
-        let discovery_budget = sig.dyn_loop_phis.len() + sig.dyn_empty_lists.len() + sig.dyn_rets.len();
+        let discovery_budget =
+            sig.dyn_loop_phis.len() + sig.dyn_empty_lists.len() + sig.dyn_rets.len() + sig.force_dyn_globals.len();
         if converged || passes > 2 * funcs.len() + 2 + discovery_budget {
             break;
         }
@@ -3894,6 +3916,120 @@ fn lower_spawn(
     Ok(())
 }
 
+/// Normalizes a map operand to the `Map<str, Dyn>` carrier: `MapStrDyn`
+/// passes through, a typed string-keyed map converts (iteration order is
+/// preserved — the rebuild replays the source order, `vm_mirror`'s
+/// argument), `nil` becomes an empty map (the VM accepts a nil merge base).
+fn to_dyn_map_handle(
+    ssa: &mut Ssa,
+    insts: &mut Vec<Inst>,
+    v: ValueId,
+    ty: Ty,
+    pc: usize,
+) -> Result<ValueId, Unsupported> {
+    let helper = match ty {
+        Ty::MapStrDyn => return Ok(v),
+        Ty::MapStrI64 => "str_i64_to_dyn",
+        Ty::MapStrF64 => "str_f64_to_dyn",
+        Ty::MapStrBool => "str_bool_to_dyn",
+        Ty::Nil => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("map_h", "str_dyn_new"),
+                args: Vec::new(),
+            });
+            return Ok(dst);
+        }
+        _ => return Err(Unsupported::TypeMismatch { pc }),
+    };
+    let dst = ssa.new_val();
+    insts.push(Inst::Call {
+        dst: Some(dst),
+        callee: AbiRef::new("map_h", helper),
+        args: vec![v],
+    });
+    Ok(dst)
+}
+
+/// `__lk_merge_fields(base, overlay)` — the struct-update desugar
+/// (`P { ..base, k: v }`). Mirrors the VM's `merge_field_maps` two-step
+/// insertion (base entries the overlay doesn't shadow, then the overlay),
+/// so the result's iteration order is VM-exact.
+fn lower_merge_fields(
+    ssa: &mut Ssa,
+    insts: &mut Vec<Inst>,
+    base: u8,
+    argc: usize,
+    block: usize,
+    pc: usize,
+) -> Result<(), Unsupported> {
+    if argc != 2 {
+        return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+    }
+    let (bv, bty) = ssa.read(base.wrapping_add(1), block, pc)?;
+    let (ov, oty) = ssa.read(base.wrapping_add(2), block, pc)?;
+    let base_map = to_dyn_map_handle(ssa, insts, bv, bty, pc)?;
+    let overlay_map = to_dyn_map_handle(ssa, insts, ov, oty, pc)?;
+    let dst = ssa.new_val();
+    insts.push(Inst::Call {
+        dst: Some(dst),
+        callee: AbiRef::new("map_h", "str_dyn_merge"),
+        args: vec![base_map, overlay_map],
+    });
+    ssa.write(base, block, (dst, Ty::MapStrDyn));
+    Ok(())
+}
+
+/// `__lk_make_struct(name, fields)` — the struct-update desugar's object
+/// constructor. The VM copies the merged field map into a fresh
+/// `RuntimeObject` (`runtime_object_fields_from_map`); the native carrier
+/// replays that fresh zero-capacity rebuild to keep the iteration order
+/// identical, then records struct provenance (trait dispatch, plan J1).
+fn lower_make_struct(
+    ssa: &mut Ssa,
+    insts: &mut Vec<Inst>,
+    sig: &mut SigInfer,
+    base: u8,
+    argc: usize,
+    block: usize,
+    pc: usize,
+) -> Result<(), Unsupported> {
+    if argc != 2 {
+        return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+    }
+    let name_reg = base.wrapping_add(1);
+    let type_name = {
+        let nv = ssa.read(name_reg, block, pc).ok().map(|(v, _)| v);
+        nv.and_then(|v| ssa.const_strs.get(&v).cloned())
+            .or_else(|| ssa.reg_const_str(name_reg, block))
+    }
+    .ok_or(Unsupported::Opcode { pc, op: Opcode::Call })?;
+    let (fv, fty) = ssa.read(base.wrapping_add(2), block, pc)?;
+    let fields = to_dyn_map_handle(ssa, insts, fv, fty, pc)?;
+    let dst = ssa.new_val();
+    insts.push(Inst::Call {
+        dst: Some(dst),
+        callee: AbiRef::new("map_h", "str_dyn_rebuild"),
+        args: vec![fields],
+    });
+    if let Some(&tid) = sig.traits.type_ids.get(&type_name) {
+        let tid_v = ssa.new_val();
+        insts.push(Inst::Const {
+            dst: tid_v,
+            value: Const::I64(tid),
+        });
+        insts.push(Inst::Call {
+            dst: None,
+            callee: AbiRef::new("map_h", "obj_mark"),
+            args: vec![dst, tid_v],
+        });
+    }
+    ssa.struct_types.insert(dst, type_name);
+    ssa.write(base, block, (dst, Ty::MapStrDyn));
+    Ok(())
+}
+
 /// `try$call(closure)` — the try/catch desugar's protected call (plan G).
 /// The body closure lowers as a normal `Dyn`-returning function; the call
 /// site emits [`Inst::TryCall`], which codegen expands into `rt.try_push` +
@@ -4527,6 +4663,41 @@ fn lower_inst(
                         args: vec![lhs, rhs],
                     });
                     ssa.write(instr.a(), block, (dst, Ty::Str));
+                    return Ok(());
+                }
+                // `list + list` concatenates into a fresh list (the VM's
+                // AddInt dispatch; the `[a, ..spread, b]` literal desugars to
+                // an `+` chain). Same-typed operands keep the typed carrier —
+                // display stays typed-exact (a `List<str>` result still
+                // quotes) — while a Dyn/mixed side chains boxed (the VM's
+                // Mixed result displays bare, matching `dyn_chain`).
+                let is_list = |t: Ty| matches!(t, Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn);
+                let list_chain = |lty: Ty, rty: Ty| match (lty, rty) {
+                    _ if op != Opcode::AddInt => None,
+                    (Ty::ListI64, Ty::ListI64) => Some(("i64_chain", Ty::ListI64)),
+                    (Ty::ListF64, Ty::ListF64) => Some(("f64_chain", Ty::ListF64)),
+                    (Ty::ListStr, Ty::ListStr) => Some(("str_chain", Ty::ListStr)),
+                    // Cross-typed operands chain boxed — the VM's result is a
+                    // Mixed list (bare-text display), exactly `dyn_chain`.
+                    (l, r) if is_list(l) && is_list(r) => Some(("dyn_chain", Ty::ListDyn)),
+                    _ => None,
+                };
+                if let Some((helper, out_ty)) = list_chain(lty_raw, rty_raw) {
+                    let (lhs, rhs) = if out_ty == Ty::ListDyn {
+                        (
+                            to_dyn_list_handle(ssa, insts, lv_raw, lty_raw, pc)?,
+                            to_dyn_list_handle(ssa, insts, rv_raw, rty_raw, pc)?,
+                        )
+                    } else {
+                        (lv_raw, rv_raw)
+                    };
+                    let dst = ssa.new_val();
+                    insts.push(Inst::Call {
+                        dst: Some(dst),
+                        callee: AbiRef::new("list_h", helper),
+                        args: vec![lhs, rhs],
+                    });
+                    ssa.write(instr.a(), block, (dst, out_ty));
                     return Ok(());
                 }
                 if lty_raw == Ty::Dyn || rty_raw == Ty::Dyn {
@@ -5340,6 +5511,13 @@ fn lower_inst(
                 t if dyn_boxable_ty(t) => Ty::Dyn,
                 _ => return Err(Unsupported::TypeMismatch { pc }),
             };
+            // A reader discovered this slot can be observed before its first
+            // (non-prefix) write: only the Dyn carrier's zeroinit is nil.
+            let obs = if sig.force_dyn_globals.contains(&slot) {
+                Ty::Dyn
+            } else {
+                obs
+            };
             let slot_ty = match sig.global_tys.get_mut(slot as usize) {
                 Some(state @ None) => {
                     *state = Some(obs);
@@ -5383,6 +5561,11 @@ fn lower_inst(
                 Some("Set") => Some(GlobalRef::Builtin(Builtin::SetCtor)),
                 Some("try$call") => Some(GlobalRef::Builtin(Builtin::TryCall)),
                 Some("error") => Some(GlobalRef::Builtin(Builtin::ErrorRaise)),
+                Some("__lk_merge_fields") => Some(GlobalRef::Builtin(Builtin::MergeFields)),
+                Some("__lk_make_struct") => Some(GlobalRef::Builtin(Builtin::MakeStruct)),
+                Some("__lk_bit_and") => Some(GlobalRef::Builtin(Builtin::BitAnd)),
+                Some("__lk_bit_or") => Some(GlobalRef::Builtin(Builtin::BitOr)),
+                Some("__lk_bit_not") => Some(GlobalRef::Builtin(Builtin::BitNot)),
                 Some("chan") => Some(GlobalRef::Builtin(Builtin::ChanNew)),
                 Some("send") => Some(GlobalRef::Builtin(Builtin::ChanSend)),
                 Some("recv") => Some(GlobalRef::Builtin(Builtin::ChanRecv)),
@@ -5446,10 +5629,13 @@ fn lower_inst(
                 return Err(Unsupported::Opcode { pc, op: instr.opcode() });
             };
             // A typed slot read before its entry-prefix initialization could
-            // observe native zero where the VM has nil — reject. A `Dyn` slot
-            // is exempt: its zeroinit `{0, 0}` *is* the nil tag, VM-exact.
+            // observe native zero where the VM has nil. A `Dyn` slot is
+            // exempt — its zeroinit `{0, 0}` *is* the nil tag, VM-exact — so
+            // force the slot Dyn and rerun (retriable discovery: writes box,
+            // an early read observes boxed nil).
             if !initialized && ty != Ty::Dyn {
-                return Err(Unsupported::Opcode { pc, op: instr.opcode() });
+                sig.force_dyn_globals.insert(slot);
+                return Err(Unsupported::TypeMismatch { pc });
             }
             let dst = ssa.new_val();
             insts.push(Inst::GlobalGet {
@@ -5470,6 +5656,12 @@ fn lower_inst(
                 }
                 Some(GlobalRef::Builtin(Builtin::Spawn)) => {
                     lower_spawn(ssa, insts, funcs, entry, sig, base, instr.c() as usize, block, pc)?;
+                }
+                Some(GlobalRef::Builtin(Builtin::MergeFields)) => {
+                    lower_merge_fields(ssa, insts, base, instr.c() as usize, block, pc)?;
+                }
+                Some(GlobalRef::Builtin(Builtin::MakeStruct)) => {
+                    lower_make_struct(ssa, insts, sig, base, instr.c() as usize, block, pc)?;
                 }
                 Some(GlobalRef::Builtin(Builtin::CallMethod)) => {
                     if instr.c() != 3 {
@@ -6678,6 +6870,12 @@ fn lower_inst(
                     }
                     ("str_f64_set", coerce_to_f64(ssa, insts, bv, bty))
                 }
+                // Struct-instance field stores (`p.x += 9` on a `NewObject`
+                // map): any boxable value stores boxed, insert-or-update.
+                Ty::MapStrDyn => {
+                    let (bv, bty) = ssa.read(instr.b(), block, pc)?;
+                    ("str_dyn_set", to_dyn_any(ssa, insts, bv, bty, pc)?)
+                }
                 _ => return Err(Unsupported::TypeMismatch { pc }),
             };
             insts.push(Inst::Call {
@@ -7249,6 +7447,47 @@ fn lower_builtin_call(
             ssa.write(base, block, (nil, Ty::Nil));
             return Ok(());
         }
+        Builtin::BitAnd | Builtin::BitOr => {
+            if argc != 2 {
+                return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+            }
+            let lhs = read_typed_scalar(ssa, insts, base.wrapping_add(1), block, Ty::I64, pc)?;
+            let rhs = read_typed_scalar(ssa, insts, base.wrapping_add(2), block, Ty::I64, pc)?;
+            let dst = ssa.new_val();
+            insts.push(Inst::IntBin {
+                dst,
+                op: if matches!(builtin, Builtin::BitAnd) {
+                    IntBinOp::And
+                } else {
+                    IntBinOp::Or
+                },
+                lhs,
+                rhs,
+            });
+            ssa.write(base, block, (dst, Ty::I64));
+            return Ok(());
+        }
+        Builtin::BitNot => {
+            // `~x` = `x xor -1` (two's complement bitwise not).
+            if argc != 1 {
+                return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+            }
+            let v = read_typed_scalar(ssa, insts, base.wrapping_add(1), block, Ty::I64, pc)?;
+            let minus_one = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: minus_one,
+                value: Const::I64(-1),
+            });
+            let dst = ssa.new_val();
+            insts.push(Inst::IntBin {
+                dst,
+                op: IntBinOp::Xor,
+                lhs: v,
+                rhs: minus_one,
+            });
+            ssa.write(base, block, (dst, Ty::I64));
+            return Ok(());
+        }
         Builtin::ChanNew => {
             // `chan(capacity[, type])` — the type string is a VM checker
             // hint, dropped natively. The channel value is its i64 id.
@@ -7301,6 +7540,10 @@ fn lower_builtin_call(
         }
         Builtin::Spawn => {
             // Dispatched by the caller (needs the function table/signatures).
+            return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+        }
+        Builtin::MergeFields | Builtin::MakeStruct => {
+            // Dispatched by the caller (struct provenance needs `sig`).
             return Err(Unsupported::Opcode { pc, op: Opcode::Call });
         }
         Builtin::SelectBlock => {

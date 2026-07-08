@@ -106,6 +106,11 @@ pub enum IntBinOp {
     Mod,
     Min,
     Max,
+    /// Bitwise ops (the `__lk_bit_and`/`__lk_bit_or` builtins; `~x` renders
+    /// as `Xor` with `-1`).
+    And,
+    Or,
+    Xor,
 }
 
 /// Float binary operators. `Div`/`Mod` are lowered to the guarded `lkrt` helpers.
