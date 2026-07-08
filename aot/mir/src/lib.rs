@@ -330,7 +330,7 @@ pub struct AbiRef {
 }
 
 impl AbiRef {
-    pub fn new(module: &'static str, name: &'static str) -> Self {
+    pub const fn new(module: &'static str, name: &'static str) -> Self {
         Self { module, name }
     }
 
