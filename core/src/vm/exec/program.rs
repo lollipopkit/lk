@@ -175,22 +175,41 @@ pub enum ModuleFunctionArg {
     Str(String),
 }
 
-/// Call one function of a compiled module with positional scalar arguments —
-/// the Tier 1 hybrid bridge entry (`docs/llvm/tier1-hybrid.md`): globals and
-/// builtins are seeded exactly like a module run, but `function_index` is
-/// invoked instead of the entry, against a fresh per-call state. Bridge-eligible
-/// functions touch no user globals (the lowering proves it), so per-call state
-/// is semantically invisible.
-///
-/// The returned value is only meaningful for scalars: a heap-backed return
-/// references the per-call state, which drops with this call (the v1 bridge
-/// proves results discarded before marking a callee VM-executed).
+/// The outcome of a bridge call whose result must outlive the call: `value`
+/// may reference `state`'s heap (lists, maps, long strings). The v2 return
+/// bridge walks `value` against `state.heap()` to marshal a deep copy into
+/// native memory before dropping both — returning `value` alone would leave
+/// heap-backed results dangling (the v1 discard bridge masked this).
+pub struct ModuleFunctionOutcome {
+    pub value: RuntimeVal,
+    pub state: crate::vm::RuntimeModuleState,
+}
+
+/// Discarding variant of [`call_module_function_with_ctx_keep_state`] — the
+/// v1 bridge entry (`lk_hybrid_call_v`): the returned value is only
+/// meaningful for scalars, because the per-call state drops here.
 pub fn call_module_function_with_ctx(
     module: &crate::vm::Module,
     function_index: u32,
     args: &[ModuleFunctionArg],
     ctx: &mut VmContext,
 ) -> Result<RuntimeVal> {
+    Ok(call_module_function_with_ctx_keep_state(module, function_index, args, ctx)?.value)
+}
+
+/// Call one function of a compiled module with positional scalar arguments —
+/// the Tier 1 hybrid bridge entry (`docs/llvm/tier1-hybrid.md`): globals and
+/// builtins are seeded exactly like a module run, but `function_index` is
+/// invoked instead of the entry, against a fresh per-call state. Bridge-eligible
+/// functions touch no user globals (the lowering proves it), so per-call state
+/// is semantically invisible. The state rides along in the outcome so callers
+/// can read heap-backed results before dropping it.
+pub fn call_module_function_with_ctx_keep_state(
+    module: &crate::vm::Module,
+    function_index: u32,
+    args: &[ModuleFunctionArg],
+    ctx: &mut VmContext,
+) -> Result<ModuleFunctionOutcome> {
     use crate::val::{CallableValue, HeapValue, ShortStr};
 
     if module.functions.get(function_index as usize).is_none() {
@@ -221,7 +240,8 @@ pub fn call_module_function_with_ctx(
             },
         });
     }
-    super::call_runtime_value_runtime(callee, &values, &mut state, Some(module), Some(ctx))
+    let value = super::call_runtime_value_runtime(callee, &values, &mut state, Some(module), Some(ctx))?;
+    Ok(ModuleFunctionOutcome { value, state })
 }
 
 #[cfg(test)]
@@ -282,6 +302,64 @@ mod tests {
             .iter()
             .position(|function| function.debug_name.as_deref() == Some(name))
             .unwrap_or_else(|| panic!("function `{name}` present")) as u32
+    }
+
+    #[test]
+    fn call_module_function_keep_state_returns_live_heap_containers() {
+        let module = compile_source("fn make(n) { return [n, \"a-long-string-over-7-bytes\", 2.5]; }\nreturn 0;\n");
+        let index = function_index(&module, "make");
+        let mut ctx = VmContext::new_without_core_vm_builtins();
+        let outcome = super::call_module_function_with_ctx_keep_state(
+            &module,
+            index,
+            &[super::ModuleFunctionArg::Int(7)],
+            &mut ctx,
+        )
+        .expect("bridge call");
+
+        let RuntimeVal::Obj(handle) = outcome.value else {
+            panic!("expected a heap-backed list result");
+        };
+        let Some(HeapValue::List(list)) = outcome.state.heap().get(handle) else {
+            panic!("result handle must stay live in the outcome state");
+        };
+        let items = list.collect_owned();
+        assert_eq!(items[0], RuntimeVal::Int(7));
+        let RuntimeVal::Obj(text) = items[1] else {
+            panic!("expected the long string element on the heap");
+        };
+        assert!(matches!(
+            outcome.state.heap().get(text),
+            Some(HeapValue::String(value)) if value.as_ref() == "a-long-string-over-7-bytes"
+        ));
+        assert_eq!(items[2], RuntimeVal::Float(2.5));
+    }
+
+    #[test]
+    fn call_module_function_keep_state_returns_live_map_in_iteration_order() {
+        let module = compile_source("fn make() { return {\"alpha\": 1, \"beta\": 2, \"gamma\": 3}; }\nreturn 0;\n");
+        let index = function_index(&module, "make");
+        let mut ctx = VmContext::new_without_core_vm_builtins();
+        let outcome =
+            super::call_module_function_with_ctx_keep_state(&module, index, &[], &mut ctx).expect("bridge call");
+
+        let RuntimeVal::Obj(handle) = outcome.value else {
+            panic!("expected a heap-backed map result");
+        };
+        let Some(HeapValue::Map(map)) = outcome.state.heap().get(handle) else {
+            panic!("result handle must stay live in the outcome state");
+        };
+        // The v2 bridge replays entries in this iteration order to reproduce
+        // the VM's map layout natively — the walk itself must be stable.
+        let entries = map.entries_iter();
+        assert_eq!(entries.len(), 3);
+        assert_eq!(
+            entries.iter().map(|(_, value)| *value).collect::<alloc::vec::Vec<_>>(),
+            map.entries_iter()
+                .iter()
+                .map(|(_, value)| *value)
+                .collect::<alloc::vec::Vec<_>>(),
+        );
     }
 
     #[test]
