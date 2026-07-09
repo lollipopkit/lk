@@ -63,6 +63,36 @@ void lk_hybrid_register(const char *module_artifact_json);
  * uncaught-error behavior of the VM itself. */
 void lk_hybrid_call_v(uint32_t func_index, const LkHybridArg *args, size_t argc);
 
+/* Mirror of lkrt's LkDyn ({ i64, i64 } by value): the v2 bridge return
+ * carrier. Tags mirror lkrt's DYN_* constants (a conformance test pins
+ * them); string payloads are leaked C strings (arena ownership). */
+#define LK_HYBRID_DYN_NIL 0
+#define LK_HYBRID_DYN_BOOL 1
+#define LK_HYBRID_DYN_I64 2
+#define LK_HYBRID_DYN_F64 3
+#define LK_HYBRID_DYN_STR 4
+#define LK_HYBRID_DYN_LIST 5
+#define LK_HYBRID_DYN_MAP 6
+
+typedef struct LkHybridDyn {
+    int64_t tag;
+    int64_t payload;
+} LkHybridDyn;
+
+/* Call VM-executed function `func_index` and return its result as an
+ * LkDyn-shaped value (v2 bridge). Same error behavior as lk_hybrid_call_v. */
+LkHybridDyn lk_hybrid_call_r(uint32_t func_index, const LkHybridArg *args, size_t argc);
+
+/* Register the lkrt runtime table (the hybrid wrapper does this in its C
+ * constructor): list/map returns deep-convert through the constructors, and
+ * raise_dyn re-raises an uncaught VM error into the nearest native try.
+ * Container returns die without it; raises fall back to exit(1). */
+void lk_hybrid_register_rt(void *(*list_dyn_new)(void),
+                           void (*list_dyn_push)(void *, LkHybridDyn),
+                           void *(*map_str_dyn_new)(void),
+                           void (*map_str_dyn_set)(void *, const char *, LkHybridDyn),
+                           void (*raise_dyn)(LkHybridDyn));
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

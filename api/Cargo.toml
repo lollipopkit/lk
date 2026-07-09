@@ -14,3 +14,9 @@ ffi = []
 lk-core = { path = "../core" }
 lk-stdlib = { path = "../stdlib" }
 anyhow = { workspace = true }
+
+[dev-dependencies]
+# Conformance only (never a shipped link — the hybrid binary links lkrt and
+# liblk_api.a side by side): pins the ffi module's LkDyn mirror against
+# lkrt's real carrier so a drift fails at test time, not at runtime.
+lkrt = { path = "../lkrt" }

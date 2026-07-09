@@ -657,27 +657,46 @@ impl Generator {
     }
 
     /// Tier 1 hybrid shape (`docs/llvm/tier1-hybrid.md`): an *eligible-but-
-    /// unsupported* helper — its body uses try/catch (pcall desugar, outside
-    /// the native subset) so it can only run bridged on the embedded VM, while
-    /// its interface stays scalar and its call sites discard the result. The
-    /// `println` inside makes the bridge observable: output content *and*
-    /// native/VM interleaving order both join the differential.
-    fn hybrid_helper(&mut self, out: &mut String) -> String {
+    /// unsupported* helper — its body prints through a *dynamic format
+    /// string* (the documented println reject; try/catch used to be the
+    /// ingredient until plan G lowered it natively and silently degraded the
+    /// bridge coverage). The interface stays scalar; the `println` inside
+    /// makes the bridge observable: output content *and* native/VM
+    /// interleaving order both join the differential. The v2 return shapes
+    /// (`kind`): 0 = statement position (discarded, the v1 zero-marshal
+    /// path), 1 = scalar return consumed by native arithmetic, 2 = container
+    /// return consumed by display + indexing, 3 = a raise caught by a native
+    /// `try` (first-class value across the bridge).
+    fn hybrid_helper(&mut self, out: &mut String, kind: u8) -> String {
         let name = self.fresh("hyb");
-        let _ = writeln!(
-            out,
-            "fn {name}(p0) {{ try {{ println(\"{name}=${{p0}}\"); }} catch e {{ }} }}"
-        );
+        let print = format!("let f = \"{name}={{}}\".trim(); println(f, p0);");
+        match kind {
+            1 => {
+                let _ = writeln!(out, "fn {name}(p0) {{ {print} return p0 * 2; }}");
+            }
+            2 => {
+                let _ = writeln!(out, "fn {name}(p0) {{ {print} return [p0, p0 + 1, \"tail-{name}\"]; }}");
+            }
+            3 => {
+                let _ = writeln!(out, "fn {name}(p0) {{ {print} error(\"{name}-err: ${{p0}}\"); }}");
+            }
+            _ => {
+                let _ = writeln!(out, "fn {name}(p0) {{ {print} }}");
+            }
+        }
         name
     }
 
-    fn program(&mut self) -> String {
+    /// Generates one program; the flag reports whether it carries a hybrid
+    /// helper (the harness then asserts the bridge actually engaged).
+    fn program(&mut self) -> (String, bool) {
         let mut out = String::new();
 
-        // Roughly half the programs carry a hybrid helper, called in statement
-        // position between the regular statements and again near the end.
+        // Roughly half the programs carry a hybrid helper; its shape cycles
+        // through the v1/v2 bridge surfaces (see `hybrid_helper`).
         let hybrid = if self.rng.chance(50) {
-            Some(self.hybrid_helper(&mut out))
+            let kind = self.rng.below(4) as u8;
+            Some((self.hybrid_helper(&mut out, kind), kind))
         } else {
             None
         };
@@ -714,9 +733,22 @@ impl Generator {
         for _ in 0..statements {
             self.statement(&mut out, "");
         }
-        if let Some(name) = &hybrid {
+        if let Some((name, kind)) = &hybrid {
             let arg = self.int_expr(1);
-            let _ = writeln!(out, "{name}({arg});");
+            match kind {
+                1 => {
+                    let _ = writeln!(out, "let hyv = {name}({arg});\nprintln(hyv + 1);");
+                }
+                2 => {
+                    let _ = writeln!(out, "let hyl = {name}({arg});\nprintln(hyl);\nprintln(hyl[1]);");
+                }
+                3 => {
+                    let _ = writeln!(out, "try {{ {name}({arg}); }} catch e {{ println(\"caught: \" + e); }}");
+                }
+                _ => {
+                    let _ = writeln!(out, "{name}({arg});");
+                }
+            }
         }
 
         // `println` lowers natively now (GetGlobal builtin + format expansion);
@@ -783,7 +815,7 @@ impl Generator {
                 .join("|");
             let _ = writeln!(out, "return \"{template}\";");
         }
-        out
+        (out, hybrid.is_some())
     }
 }
 
@@ -821,7 +853,7 @@ fn output_with_timeout(mut command: Command, what: &str, context: &str) -> std::
         .unwrap_or_else(|err| panic!("collect {what}: {err}"))
 }
 
-fn run_case(dir: &std::path::Path, name: &str, source: &str, seed: u64) -> CaseOutcome {
+fn run_case(dir: &std::path::Path, name: &str, source: &str, seed: u64, expect_hybrid: bool) -> CaseOutcome {
     let file = format!("{name}.lk");
     let mut f = File::create(dir.join(&file)).expect("create case file");
     f.write_all(source.as_bytes()).expect("write case file");
@@ -876,6 +908,18 @@ fn run_case(dir: &std::path::Path, name: &str, source: &str, seed: u64) -> CaseO
             .to_string();
         println!("  unsupported [{name}]: {reason}");
         return CaseOutcome { compared: false };
+    }
+    // A program with a hybrid helper either bridges it ("Tier 1 hybrid") or
+    // falls back whole to Tier 0 for some *other* ineligible shape ("falling
+    // back") — but it must never compile fully native: that means the
+    // helper's documented-unlowerable ingredient became lowerable and the
+    // bridge coverage silently degraded (it happened once, with try/catch).
+    if expect_hybrid {
+        assert!(
+            exe_stderr.contains("Tier 1 hybrid") || exe_stderr.contains("falling back"),
+            "{}\nstderr: {exe_stderr}",
+            context("hybrid helper compiled fully native — bridge coverage degraded")
+        );
     }
 
     // detect_leaks=0: raises longjmp over Rust frames whose temporaries leak
@@ -946,8 +990,8 @@ fn fuzz_differential_vm_vs_native() {
     for case in 0..cases {
         let case_seed = seed.wrapping_add(case);
         let mut generator = Generator::new(case_seed);
-        let source = generator.program();
-        let outcome = run_case(&dir, &format!("fuzz_{case}"), &source, case_seed);
+        let (source, expect_hybrid) = generator.program();
+        let outcome = run_case(&dir, &format!("fuzz_{case}"), &source, case_seed, expect_hybrid);
         if outcome.compared {
             compared += 1;
         }

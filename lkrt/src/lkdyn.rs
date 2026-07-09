@@ -427,7 +427,21 @@ dyn_ord!(lkrt_dyn_ge, >=);
 
 // ── Display (two modes, matching the VM's two display paths) ───────────
 
+/// Diagnostics rendering for the uncaught-error path (`panic.rs`): the plain
+/// display with raising disabled *recursively* — an unknown tag anywhere in a
+/// nested container renders a placeholder instead of re-entering raise while
+/// an uncaught error is already being reported.
+pub(crate) fn display_for_diagnostics(v: LkDyn) -> String {
+    let mut out = String::new();
+    display_into_impl(&mut out, v, false, false);
+    out
+}
+
 fn display_into(out: &mut String, v: LkDyn, quoted: bool) {
+    display_into_impl(out, v, quoted, true)
+}
+
+fn display_into_impl(out: &mut String, v: LkDyn, quoted: bool, raise_on_unknown: bool) {
     match v.tag {
         DYN_NIL => out.push_str("nil"),
         DYN_BOOL => out.push_str(if v.payload != 0 { "true" } else { "false" }),
@@ -454,11 +468,38 @@ fn display_into(out: &mut String, v: LkDyn, quoted: bool) {
                 if i > 0 {
                     out.push(',');
                 }
-                display_into(out, e, false);
+                display_into_impl(out, e, false, raise_on_unknown);
             }
             out.push(']');
         }
-        _ => crate::panic::raise_str("runtime type error"),
+        DYN_MAP => {
+            // VM format: quoted keys, bare values (`{"k":1,"s":txt}`). The
+            // entry order is the Fx layout order — the mirror discipline
+            // (vm_mirror + insert-order replay) makes it the VM's own order,
+            // for bridged returns and mirror-built maps alike. Statically
+            // typed map display stays *out of the lowering subset*
+            // (docs/semantics.md): this arm only serves runtime-tagged Dyn
+            // values, where the alternative would be a raise the VM does not
+            // have.
+            out.push('{');
+            if !(v.payload as *mut c_void).is_null() {
+                for (i, (k, &e)) in dyn_map(v).iter().enumerate() {
+                    if i > 0 {
+                        out.push(',');
+                    }
+                    out.push_str(&format!("{k:?}"));
+                    out.push(':');
+                    display_into_impl(out, e, false, raise_on_unknown);
+                }
+            }
+            out.push('}');
+        }
+        other => {
+            if raise_on_unknown {
+                crate::panic::raise_str("runtime type error");
+            }
+            out.push_str(&format!("<unrenderable value, tag {other}>"));
+        }
     }
 }
 

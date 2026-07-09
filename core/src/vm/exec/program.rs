@@ -170,22 +170,61 @@ pub enum ModuleFunctionArg {
     Str(String),
 }
 
-/// Call one function of a compiled module with positional scalar arguments —
-/// the Tier 1 hybrid bridge entry (`docs/llvm/tier1-hybrid.md`): globals and
-/// builtins are seeded exactly like a module run, but `function_index` is
-/// invoked instead of the entry, against a fresh per-call state. Bridge-eligible
-/// functions touch no user globals (the lowering proves it), so per-call state
-/// is semantically invisible.
-///
-/// The returned value is only meaningful for scalars: a heap-backed return
-/// references the per-call state, which drops with this call (the v1 bridge
-/// proves results discarded before marking a callee VM-executed).
+/// The outcome of a bridge call whose result must outlive the call: `value`
+/// may reference `state`'s heap (lists, maps, long strings). The v2 return
+/// bridge walks `value` against `state.heap()` to marshal a deep copy into
+/// native memory before dropping both — returning `value` alone would leave
+/// heap-backed results dangling (the v1 discard bridge masked this).
+pub struct ModuleFunctionOutcome {
+    pub value: RuntimeVal,
+    pub state: crate::vm::RuntimeModuleState,
+}
+
+/// A bridge call either returns or raises. `Err` on the outer `Result` stays
+/// reserved for infrastructure failures (bad artifact, bad index) — a *raise*
+/// is a language-level outcome the bridge re-raises natively so an enclosing
+/// native `try` observes it exactly like the VM would (v2 C6).
+pub enum ModuleFunctionCall {
+    Return(ModuleFunctionOutcome),
+    /// An uncaught raise: the first-class error value (readable against
+    /// `state`) plus the display rendered at raise time (the uncaught-error
+    /// message).
+    Raise {
+        value: RuntimeVal,
+        rendered: alloc::string::String,
+        state: crate::vm::RuntimeModuleState,
+    },
+}
+
+/// Discarding variant of [`call_module_function_with_ctx_keep_state`] — the
+/// v1 bridge entry (`lk_hybrid_call_v`): the returned value is only
+/// meaningful for scalars, because the per-call state drops here. A raise
+/// comes back as `Err` carrying the rendered message.
 pub fn call_module_function_with_ctx(
     module: &crate::vm::Module,
     function_index: u32,
     args: &[ModuleFunctionArg],
     ctx: &mut VmContext,
 ) -> Result<RuntimeVal> {
+    match call_module_function_with_ctx_keep_state(module, function_index, args, ctx)? {
+        ModuleFunctionCall::Return(outcome) => Ok(outcome.value),
+        ModuleFunctionCall::Raise { rendered, .. } => Err(anyhow::anyhow!(rendered)),
+    }
+}
+
+/// Call one function of a compiled module with positional scalar arguments —
+/// the Tier 1 hybrid bridge entry (`docs/llvm/tier1-hybrid.md`): globals and
+/// builtins are seeded exactly like a module run, but `function_index` is
+/// invoked instead of the entry, against a fresh per-call state. Bridge-eligible
+/// functions touch no user globals (the lowering proves it), so per-call state
+/// is semantically invisible. The state rides along in the outcome so callers
+/// can read heap-backed results before dropping it.
+pub fn call_module_function_with_ctx_keep_state(
+    module: &crate::vm::Module,
+    function_index: u32,
+    args: &[ModuleFunctionArg],
+    ctx: &mut VmContext,
+) -> Result<ModuleFunctionCall> {
     use crate::val::{CallableValue, HeapValue, ShortStr};
 
     if module.functions.get(function_index as usize).is_none() {
@@ -216,7 +255,36 @@ pub fn call_module_function_with_ctx(
             },
         });
     }
-    super::call_runtime_value_runtime(callee, &values, &mut state, Some(module), Some(ctx))
+    match super::call_runtime_value_runtime(callee, &values, &mut state, Some(module), Some(ctx)) {
+        Ok(value) => Ok(ModuleFunctionCall::Return(ModuleFunctionOutcome { value, state })),
+        Err(err) => {
+            // A language-level raise carries its first-class value (heap refs
+            // resolve against the per-call state, which rides along) — the
+            // native bridge re-raises it so `try` semantics match the VM.
+            if let Some(raised) = err.downcast_ref::<super::handler::LkRaisedValue>() {
+                return Ok(ModuleFunctionCall::Raise {
+                    value: raised.value,
+                    rendered: raised.rendered.as_ref().to_string(),
+                    state,
+                });
+            }
+            // A message-only runtime raise: the VM's catch binds the message
+            // *string* (`try { 1/0 } catch e` → `typeof(e) == "String"`).
+            if let Some(raise) = err.downcast_ref::<super::handler::LanguageRaise>() {
+                let message = raise.message.clone();
+                let value = match ShortStr::new(message.as_ref()) {
+                    Some(short) => RuntimeVal::ShortStr(short),
+                    None => RuntimeVal::Obj(state.heap_mut().alloc(HeapValue::String(Arc::from(message.as_ref())))),
+                };
+                return Ok(ModuleFunctionCall::Raise {
+                    value,
+                    rendered: message.as_ref().to_string(),
+                    state,
+                });
+            }
+            Err(err)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -277,6 +345,75 @@ mod tests {
             .iter()
             .position(|function| function.debug_name.as_deref() == Some(name))
             .unwrap_or_else(|| panic!("function `{name}` present")) as u32
+    }
+
+    #[test]
+    fn call_module_function_keep_state_returns_live_heap_containers() {
+        let module = compile_source("fn make(n) { return [n, \"a-long-string-over-7-bytes\", 2.5]; }\nreturn 0;\n");
+        let index = function_index(&module, "make");
+        let mut ctx = VmContext::new_without_core_vm_builtins();
+        let super::ModuleFunctionCall::Return(outcome) = super::call_module_function_with_ctx_keep_state(
+            &module,
+            index,
+            &[super::ModuleFunctionArg::Int(7)],
+            &mut ctx,
+        )
+        .expect("bridge call") else {
+            panic!("expected a returning call");
+        };
+
+        let RuntimeVal::Obj(handle) = outcome.value else {
+            panic!("expected a heap-backed list result");
+        };
+        let Some(HeapValue::List(list)) = outcome.state.heap().get(handle) else {
+            panic!("result handle must stay live in the outcome state");
+        };
+        let items = list.collect_owned();
+        assert_eq!(items[0], RuntimeVal::Int(7));
+        let RuntimeVal::Obj(text) = items[1] else {
+            panic!("expected the long string element on the heap");
+        };
+        assert!(matches!(
+            outcome.state.heap().get(text),
+            Some(HeapValue::String(value)) if value.as_ref() == "a-long-string-over-7-bytes"
+        ));
+        assert_eq!(items[2], RuntimeVal::Float(2.5));
+    }
+
+    #[test]
+    fn call_module_function_keep_state_returns_live_map_in_iteration_order() {
+        let module = compile_source("fn make() { return {\"alpha\": 1, \"beta\": 2, \"gamma\": 3}; }\nreturn 0;\n");
+        let index = function_index(&module, "make");
+        let mut ctx = VmContext::new_without_core_vm_builtins();
+        let super::ModuleFunctionCall::Return(outcome) =
+            super::call_module_function_with_ctx_keep_state(&module, index, &[], &mut ctx).expect("bridge call")
+        else {
+            panic!("expected a returning call");
+        };
+
+        let RuntimeVal::Obj(handle) = outcome.value else {
+            panic!("expected a heap-backed map result");
+        };
+        let Some(HeapValue::Map(map)) = outcome.state.heap().get(handle) else {
+            panic!("result handle must stay live in the outcome state");
+        };
+        // The v2 bridge replays entries in this iteration order to reproduce
+        // the VM's map layout natively. The exact order is the Fx layout's
+        // (not insertion order; pinned end-to-end by the differential gates)
+        // — what this walk must guarantee is completeness and a *stable*
+        // full (key, value) sequence across repeated iterations.
+        let entries = map.entries_iter();
+        assert_eq!(entries, map.entries_iter(), "repeated walks must agree exactly");
+        let mut pairs: alloc::vec::Vec<(String, RuntimeVal)> = entries
+            .iter()
+            .map(|(key, value)| (format!("{key:?}"), *value))
+            .collect();
+        pairs.sort_by(|a, b| a.0.cmp(&b.0));
+        let expected: alloc::vec::Vec<(String, RuntimeVal)> = [("alpha", 1), ("beta", 2), ("gamma", 3)]
+            .into_iter()
+            .map(|(key, value)| (format!("String({key:?})"), RuntimeVal::Int(value)))
+            .collect();
+        assert_eq!(pairs, expected);
     }
 
     #[test]

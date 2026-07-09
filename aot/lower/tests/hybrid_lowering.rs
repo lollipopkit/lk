@@ -67,15 +67,44 @@ fn hybrid_marks_eligible_unlowerable_callee_as_vm_executed() {
 }
 
 #[test]
-fn hybrid_rejects_a_used_bridge_result() {
-    // The bridged callee's result is *used* — the destination register stays
-    // unbound, so the module must fall back whole rather than miscompile.
+fn hybrid_binds_a_used_bridge_result_as_dyn() {
+    // v2 return bridge: the bridged callee's result is *used* — the
+    // destination binds as `Dyn` and codegen emits the value-returning
+    // `lk_hybrid_call_r` (v1 rejected this shape whole-module).
     let artifact = artifact(
         "fn get(x) { let f = \"v={}\".trim(); println(f, x); return x; }\n\
          let v = get(3);\n\
          return v;\n",
     );
-    lk_aot_lower::lower_with_hybrid(&artifact, true).expect_err("using a bridged result must reject");
+    let mir = lk_aot_lower::lower_with_hybrid(&artifact, true).expect("a used bridged result lowers (v2)");
+    lk_aot_mir::validate(&mir).expect("hybrid module validates");
+    let rendered = lk_aot_mir::render(&mir);
+    assert!(
+        rendered.contains("= call.vm f"),
+        "the bridge call binds its destination:\n{rendered}"
+    );
+    let codegen = lk_aot_codegen::render_module(&mir);
+    assert!(
+        codegen.contains("call { i64, i64 } @lk_hybrid_call_r(i32 "),
+        "codegen emits the value-returning bridge call:\n{codegen}"
+    );
+}
+
+#[test]
+fn hybrid_degrades_a_discarded_bridge_result_to_the_void_call() {
+    // Statement-position bridge calls keep the v1 zero-marshal path: the
+    // bound destination is never read, so codegen degrades to call_v.
+    let artifact = artifact(REPORT_PROGRAM);
+    let mir = lk_aot_lower::lower_with_hybrid(&artifact, true).expect("hybrid lowering succeeds");
+    let codegen = lk_aot_codegen::render_module(&mir);
+    assert!(
+        codegen.contains("call void @lk_hybrid_call_v(i32 "),
+        "discarded results stay on the void bridge:\n{codegen}"
+    );
+    assert!(
+        !codegen.contains("@lk_hybrid_call_r(i32 "),
+        "no value-returning call for a discarded result:\n{codegen}"
+    );
 }
 
 #[test]

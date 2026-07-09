@@ -12,6 +12,37 @@ fn bin_path() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_lk"))
 }
 
+/// Runs a hybrid binary with leak detection off: raises longjmp over Rust
+/// frames whose temporaries leak by design (lkrt arena model) — LSan's
+/// exit-time report would fail the run and swallow buffered stdout. ASan
+/// memory-error checks stay on (same discipline as the differential
+/// harnesses). A hard timeout kills a deadlocked binary (e.g. a raise
+/// longjmping over a live lock) so the failure surfaces instead of hanging
+/// CI — same pattern as the fuzz harness's `output_with_timeout`.
+fn native_run(dir: &std::path::Path, name: &str) -> std::process::Output {
+    use std::time::{Duration, Instant};
+    const RUN_TIMEOUT: Duration = Duration::from_secs(60);
+    let mut child = Command::new(dir.join(name))
+        .env("ASAN_OPTIONS", "detect_leaks=0")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn native run");
+    let started = Instant::now();
+    loop {
+        match child.try_wait().expect("poll native run") {
+            Some(_) => break,
+            None if started.elapsed() > RUN_TIMEOUT => {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("native run of `{name}` timed out after {RUN_TIMEOUT:?}");
+            }
+            None => std::thread::sleep(Duration::from_millis(20)),
+        }
+    }
+    child.wait_with_output().expect("collect native run")
+}
+
 const HYBRID_PROGRAM: &str = "\
 fn report(x) { let f = \"acc={}\".trim(); println(f, x); }\n\
 let acc = 0;\n\
@@ -55,11 +86,192 @@ fn hybrid_executable_matches_vm_output_and_ordering() {
         "hybrid compile must not fall back to Tier 0: {compile_stderr}"
     );
 
-    let native = Command::new(dir.join("hybrid")).output().expect("native run");
+    let native = native_run(&dir, "hybrid");
     assert_eq!(
         String::from_utf8_lossy(&vm.stdout),
         String::from_utf8_lossy(&native.stdout),
         "stdout must match the VM (including native/VM print ordering)"
+    );
+    assert_eq!(vm.status.success(), native.status.success());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn hybrid_bridged_results_flow_back_and_match_the_vm() {
+    // v2 return bridge: consumed results come back as `LkDyn` through
+    // `lk_hybrid_call_r` and feed native Dyn arithmetic/display — every
+    // scalar kind, byte-identical to the VM.
+    let dir = std::env::temp_dir().join(format!("lk_hybrid_cli_ret_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create tmp dir");
+    let file = dir.join("ret.lk");
+    std::fs::write(
+        &file,
+        "fn geti(x) { let f = \"i={}\".trim(); println(f, x); return x + 1; }\n\
+         fn getf(x) { let f = \"f={}\".trim(); println(f, x); return x * 2.5; }\n\
+         fn getb(x) { let f = \"b={}\".trim(); println(f, x); return x > 2; }\n\
+         fn gets(x) { let f = \"s={}\".trim(); println(f, x); return \"long-answer-\" + x; }\n\
+         fn getn(x) { let f = \"n={}\".trim(); println(f, x); return nil; }\n\
+         println(geti(3) + 10);\n\
+         println(getf(2.0) + 1.0);\n\
+         println(getb(3));\n\
+         println(gets(\"tail\"));\n\
+         println(getn(1) == nil);\n\
+         return 0;\n",
+    )
+    .expect("write program");
+
+    let vm = Command::new(bin_path())
+        .current_dir(&dir)
+        .arg("ret.lk")
+        .env("LK_FORCE_VM", "1")
+        .output()
+        .expect("vm run");
+    assert!(vm.status.success(), "vm: {}", String::from_utf8_lossy(&vm.stderr));
+
+    let compile = Command::new(bin_path())
+        .current_dir(&dir)
+        .args(["compile", "ret.lk"])
+        .env("LK_AOT_HYBRID", "1")
+        .output()
+        .expect("hybrid compile");
+    let compile_stderr = String::from_utf8_lossy(&compile.stderr).into_owned();
+    assert!(compile.status.success(), "compile: {compile_stderr}");
+    assert!(
+        compile_stderr.contains("Tier 1 hybrid"),
+        "expected the hybrid link path, got: {compile_stderr}"
+    );
+    assert!(
+        !compile_stderr.contains("falling back"),
+        "hybrid compile must not fall back to Tier 0: {compile_stderr}"
+    );
+
+    let native = native_run(&dir, "ret");
+    assert_eq!(
+        String::from_utf8_lossy(&vm.stdout),
+        String::from_utf8_lossy(&native.stdout),
+        "bridged results must match the VM byte-for-byte"
+    );
+    assert_eq!(vm.status.success(), native.status.success());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn hybrid_bridged_containers_deep_convert_and_match_the_vm() {
+    // v2 C5: list/map returns deep-convert through the wrapper-injected lkrt
+    // constructor table — element reads, Dyn arithmetic, nested indexing and
+    // whole-container display all byte-identical to the VM (map entry order
+    // = the VM's own iteration order, replayed insert-by-insert).
+    let dir = std::env::temp_dir().join(format!("lk_hybrid_cli_cont_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create tmp dir");
+    let file = dir.join("cont.lk");
+    std::fs::write(
+        &file,
+        "struct P { tag: Int }\n\
+         fn rows(n) { let f = \"n={}\".trim(); println(f, n); return [n, n * 10, 2.5]; }\n\
+         fn user(name) { let f = \"u={}\".trim(); println(f, name); \
+         return {\"name\": name, \"score\": 95, \"tags\": [1, 2]}; }\n\
+         fn mkp(x: Int) { let f = \"p={}\".trim(); println(f, x); return P { tag: x }; }\n\
+         mkp(7);\n\
+         let r = rows(3);\n\
+         println(r);\n\
+         println(r[1]);\n\
+         let u = user(\"Alice\");\n\
+         println(u);\n\
+         println(u.score + 5);\n\
+         println(u.tags[1]);\n\
+         return 0;\n",
+    )
+    .expect("write program");
+
+    let vm = Command::new(bin_path())
+        .current_dir(&dir)
+        .arg("cont.lk")
+        .env("LK_FORCE_VM", "1")
+        .output()
+        .expect("vm run");
+    assert!(vm.status.success(), "vm: {}", String::from_utf8_lossy(&vm.stderr));
+
+    let compile = Command::new(bin_path())
+        .current_dir(&dir)
+        .args(["compile", "cont.lk"])
+        .env("LK_AOT_HYBRID", "1")
+        .output()
+        .expect("hybrid compile");
+    let compile_stderr = String::from_utf8_lossy(&compile.stderr).into_owned();
+    assert!(compile.status.success(), "compile: {compile_stderr}");
+    assert!(
+        compile_stderr.contains("Tier 1 hybrid"),
+        "expected the hybrid link path, got: {compile_stderr}"
+    );
+    assert!(
+        !compile_stderr.contains("falling back"),
+        "hybrid compile must not fall back to Tier 0: {compile_stderr}"
+    );
+
+    let native = native_run(&dir, "cont");
+    assert_eq!(
+        String::from_utf8_lossy(&vm.stdout),
+        String::from_utf8_lossy(&native.stdout),
+        "bridged containers must match the VM byte-for-byte"
+    );
+    assert_eq!(vm.status.success(), native.status.success());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn hybrid_raises_reach_the_enclosing_native_try_like_the_vm() {
+    // v2 C6: an uncaught raise inside a bridged callee longjmps into the
+    // nearest *native* try frame with its first-class value — string and
+    // container payloads, consumed-result position included — byte-identical
+    // to the VM. (`typeof(e)` stays out of the lowering subset.)
+    let dir = std::env::temp_dir().join(format!("lk_hybrid_cli_raise_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create tmp dir");
+    let file = dir.join("raise.lk");
+    std::fs::write(
+        &file,
+        "fn boom(x) { let f = \"x={}\".trim(); println(f, x); error(\"bad: ${x}\"); }\n\
+         fn boomv(x) { let f = \"v={}\".trim(); println(f, x); error({\"code\": x}); }\n\
+         try { boom(5); } catch e { println(\"caught: \" + e); }\n\
+         try { boomv(7); } catch e { println(e.code + 1); }\n\
+         try { let r = boom(9); println(r); } catch e { println(\"again: \" + e); }\n\
+         println(\"alive\");\n\
+         return 0;\n",
+    )
+    .expect("write program");
+
+    let vm = Command::new(bin_path())
+        .current_dir(&dir)
+        .arg("raise.lk")
+        .env("LK_FORCE_VM", "1")
+        .output()
+        .expect("vm run");
+    assert!(vm.status.success(), "vm: {}", String::from_utf8_lossy(&vm.stderr));
+
+    let compile = Command::new(bin_path())
+        .current_dir(&dir)
+        .args(["compile", "raise.lk"])
+        .env("LK_AOT_HYBRID", "1")
+        .output()
+        .expect("hybrid compile");
+    let compile_stderr = String::from_utf8_lossy(&compile.stderr).into_owned();
+    assert!(compile.status.success(), "compile: {compile_stderr}");
+    assert!(
+        compile_stderr.contains("Tier 1 hybrid"),
+        "expected the hybrid link path, got: {compile_stderr}"
+    );
+    assert!(
+        !compile_stderr.contains("falling back"),
+        "hybrid compile must not fall back to Tier 0: {compile_stderr}"
+    );
+
+    let native = native_run(&dir, "raise");
+    assert_eq!(
+        String::from_utf8_lossy(&vm.stdout),
+        String::from_utf8_lossy(&native.stdout),
+        "bridged raises must reach the native try exactly like the VM"
     );
     assert_eq!(vm.status.success(), native.status.success());
     let _ = std::fs::remove_dir_all(&dir);
@@ -100,7 +312,7 @@ fn hybrid_uncaught_vm_error_exits_nonzero_like_the_vm() {
         "expected the hybrid link path, got: {compile_stderr}"
     );
 
-    let native = Command::new(dir.join("boom")).output().expect("native run");
+    let native = native_run(&dir, "boom");
     assert!(
         !native.status.success(),
         "the bridged uncaught error must fail the hybrid binary too"

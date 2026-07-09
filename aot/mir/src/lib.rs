@@ -225,13 +225,18 @@ pub enum Inst {
         /// `(runtime type id, impl function)` in registration order.
         arms: Vec<(i64, FuncId)>,
     },
-    /// `call.vm f{func}(args)` — a one-way Tier 1 bridge call to a VM-executed
+    /// `dst = call.vm f{func}(args)` — a Tier 1 bridge call to a VM-executed
     /// function of this module (`docs/llvm/tier1-hybrid.md`): the callee's body
     /// did not lower, so codegen marshals the scalar arguments into tagged
-    /// bridge values and calls `lk_hybrid_call_v`. Results never flow back
-    /// (the lowering leaves the destination register unbound, so any use of
-    /// the result rejects the module).
-    CallVm { func: FuncId, args: Vec<ValueId> },
+    /// bridge values and calls the bridge. `dst` is always bound as [`Ty::Dyn`]
+    /// (v2: results flow back as `LkDyn` via `lk_hybrid_call_r`); codegen
+    /// degrades a call whose `dst` is never used to the void `lk_hybrid_call_v`
+    /// so statement-position calls keep the v1 zero-marshal return path.
+    CallVm {
+        dst: Option<ValueId>,
+        func: FuncId,
+        args: Vec<ValueId>,
+    },
     /// `dst = lkrt_lklist_i64_get_pair(handle, index)` — a dynamic `List<i64>` read
     /// producing a [`Ty::MaybeI64`]. Kept a dedicated instruction (not a generic
     /// [`Inst::Call`]) because its `{i64, i64}` return is outside the scalar ABI
@@ -521,7 +526,7 @@ pub fn validate(module: &MirModule) -> Result<(), MirError> {
                         return Err(MirError::ArityMismatch { func: func.id });
                     }
                 }
-                if let Inst::CallVm { func: callee, args } = inst {
+                if let Inst::CallVm { func: callee, args, .. } = inst {
                     let Some(target) = module.vm_function(*callee) else {
                         return Err(MirError::MissingEntry);
                     };
@@ -742,7 +747,13 @@ fn render_inst(inst: &Inst) -> String {
                 None => call,
             }
         }
-        Inst::CallVm { func, args: a } => format!("call.vm f{}({})", func.0, args(a)),
+        Inst::CallVm { dst, func, args: a } => {
+            let call = format!("call.vm f{}({})", func.0, args(a));
+            match dst {
+                Some(d) => format!("{} = {call}", v(*d)),
+                None => call,
+            }
+        }
         Inst::TryCall { dst, func, args: a } => format!("{} = try.call f{}({})", v(*dst), func.0, args(a)),
         Inst::TraitDispatch { dst, self_arg, arms } => {
             let arm_list = arms
@@ -848,8 +859,8 @@ fn inst_def(inst: &Inst) -> Option<ValueId> {
         | Inst::MaybeWrap { dst, .. }
         | Inst::Select { dst, .. }
         | Inst::GlobalGet { dst, .. } => Some(*dst),
-        Inst::Call { dst, .. } | Inst::CallFn { dst, .. } => *dst,
-        Inst::PrintStr { .. } | Inst::GlobalSet { .. } | Inst::CallVm { .. } => None,
+        Inst::Call { dst, .. } | Inst::CallFn { dst, .. } | Inst::CallVm { dst, .. } => *dst,
+        Inst::PrintStr { .. } | Inst::GlobalSet { .. } => None,
         Inst::TryCall { dst, .. } | Inst::TraitDispatch { dst, .. } => Some(*dst),
     }
 }
@@ -916,6 +927,15 @@ fn term_uses(term: &Term) -> Vec<ValueId> {
         }
         Term::Abort => vec![],
     }
+}
+
+/// Whether any instruction or terminator of `function` reads `value` — the
+/// codegen degrades a [`Inst::CallVm`] whose destination is never read back
+/// to the void bridge call (statement-position calls skip return marshaling).
+pub fn value_is_used(function: &MirFunction, value: ValueId) -> bool {
+    function.blocks.iter().any(|block| {
+        block.insts.iter().any(|inst| inst_uses(inst).contains(&value)) || term_uses(&block.term).contains(&value)
+    })
 }
 
 fn term_targets(term: &Term) -> Vec<BlockId> {

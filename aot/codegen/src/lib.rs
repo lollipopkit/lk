@@ -15,7 +15,8 @@ use std::fmt::Write as _;
 
 use lk_aot_abi::{ABI_FUNCTIONS, AbiType};
 use lk_aot_mir::{
-    AbiRef, Block, BlockId, CmpOp, Const, FloatBinOp, FuncId, Inst, IntBinOp, MirFunction, MirModule, Term, Ty, ValueId,
+    AbiRef, Block, BlockId, CmpOp, Const, FloatBinOp, FuncId, Inst, IntBinOp, MirFunction, MirModule, Term, Ty,
+    ValueId, value_is_used,
 };
 
 /// Renders a validated module to LLVM IR text.
@@ -45,6 +46,8 @@ fn render_hybrid_prelude(out: &mut String, module: &MirModule) {
     }
     out.push_str("%LkHybridArg = type { i8, i64 }\n");
     out.push_str("declare void @lk_hybrid_call_v(i32, ptr, i64)\n");
+    // v2 return bridge: the result comes back as an lkrt `LkDyn` by value.
+    out.push_str("declare { i64, i64 } @lk_hybrid_call_r(i32, ptr, i64)\n");
     // C stdio flush: generated prints go through C `printf` (block-buffered on
     // pipes) while the bridge VM prints through Rust's line-buffered stdout —
     // flushing *C* stdio before each bridge call keeps output ordered. (The
@@ -77,8 +80,10 @@ fn hybrid_argbuf_len(module: &MirModule) -> usize {
 /// One bridge call: marshal each scalar into its tagged slot, flush C stdio
 /// (the VM prints through Rust's line-buffered stdout — unflushed C buffers
 /// would reorder pipe output; precedent: `lkrt_abort` flushes), then call the
-/// bridge. No result: the lowering left the destination register unbound.
-fn render_call_vm(out: &mut String, module: &MirModule, func: FuncId, args: &[ValueId]) {
+/// bridge. A used destination binds the `lk_hybrid_call_r` result (an lkrt
+/// `LkDyn` by value); otherwise the void `lk_hybrid_call_v` keeps the v1
+/// zero-marshal return path.
+fn render_call_vm(out: &mut String, module: &MirModule, dst: Option<ValueId>, func: FuncId, args: &[ValueId]) {
     let params = &module
         .vm_function(func)
         .expect("validated: CallVm target is recorded in vm_functions")
@@ -125,12 +130,25 @@ fn render_call_vm(out: &mut String, module: &MirModule, func: FuncId, args: &[Va
     } else {
         "@lk_hybrid_argbuf".to_string()
     };
-    let _ = writeln!(
-        out,
-        "  call void @lk_hybrid_call_v(i32 {}, ptr {buffer}, i64 {})",
-        func.0,
-        args.len()
-    );
+    match dst {
+        Some(dst) => {
+            let _ = writeln!(
+                out,
+                "  {} = call {{ i64, i64 }} @lk_hybrid_call_r(i32 {}, ptr {buffer}, i64 {})",
+                val(dst),
+                func.0,
+                args.len()
+            );
+        }
+        None => {
+            let _ = writeln!(
+                out,
+                "  call void @lk_hybrid_call_v(i32 {}, ptr {buffer}, i64 {})",
+                func.0,
+                args.len()
+            );
+        }
+    }
 }
 
 fn render_prelude(out: &mut String) {
@@ -260,7 +278,7 @@ fn render_block(out: &mut String, module: &MirModule, func: &MirFunction, block:
         let _ = writeln!(out, "  {} = phi {} {}", val(*param), ty_str(*ty), joined);
     }
     for inst in &block.insts {
-        render_inst(out, module, inst);
+        render_inst(out, module, func, inst);
     }
     render_term(out, func, &block.term, is_entry);
 }
@@ -290,7 +308,7 @@ fn collect_phi_incoming(fid: FuncId, pred: &Block, target: BlockId, param_idx: u
     }
 }
 
-fn render_inst(out: &mut String, module: &MirModule, inst: &Inst) {
+fn render_inst(out: &mut String, module: &MirModule, func: &MirFunction, inst: &Inst) {
     match inst {
         Inst::Const { dst, value } => render_const(out, *dst, value),
         Inst::IntBin { dst, op, lhs, rhs } => render_int_bin(out, *dst, *op, *lhs, *rhs),
@@ -322,7 +340,16 @@ fn render_inst(out: &mut String, module: &MirModule, inst: &Inst) {
         }
         Inst::Call { dst, callee, args } => render_call(out, *dst, *callee, args),
         Inst::CallFn { dst, func, args } => render_call_fn(out, module, *dst, *func, args),
-        Inst::CallVm { func, args } => render_call_vm(out, module, *func, args),
+        Inst::CallVm {
+            dst,
+            func: callee,
+            args,
+        } => {
+            // Degrade an unread destination to the void bridge call: the
+            // marshaled return (and its leaked string copies) is v2-only.
+            let live_dst = dst.filter(|d| value_is_used(func, *d));
+            render_call_vm(out, module, live_dst, *callee, args);
+        }
         Inst::TryCall { dst, func, args } => render_try_call(out, module, *dst, *func, args),
         Inst::TraitDispatch { dst, self_arg, arms } => render_trait_dispatch(out, *dst, *self_arg, arms),
         Inst::PrintStr { value, newline } => {
