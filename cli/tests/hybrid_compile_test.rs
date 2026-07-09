@@ -12,6 +12,18 @@ fn bin_path() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_lk"))
 }
 
+/// Runs a hybrid binary with leak detection off: raises longjmp over Rust
+/// frames whose temporaries leak by design (lkrt arena model) — LSan's
+/// exit-time report would fail the run and swallow buffered stdout. ASan
+/// memory-error checks stay on (same discipline as the differential
+/// harnesses).
+fn native_run(dir: &std::path::Path, name: &str) -> std::process::Output {
+    Command::new(dir.join(name))
+        .env("ASAN_OPTIONS", "detect_leaks=0")
+        .output()
+        .expect("native run")
+}
+
 const HYBRID_PROGRAM: &str = "\
 fn report(x) { let f = \"acc={}\".trim(); println(f, x); }\n\
 let acc = 0;\n\
@@ -55,7 +67,7 @@ fn hybrid_executable_matches_vm_output_and_ordering() {
         "hybrid compile must not fall back to Tier 0: {compile_stderr}"
     );
 
-    let native = Command::new(dir.join("hybrid")).output().expect("native run");
+    let native = native_run(&dir, "hybrid");
     assert_eq!(
         String::from_utf8_lossy(&vm.stdout),
         String::from_utf8_lossy(&native.stdout),
@@ -115,7 +127,7 @@ fn hybrid_bridged_results_flow_back_and_match_the_vm() {
         "hybrid compile must not fall back to Tier 0: {compile_stderr}"
     );
 
-    let native = Command::new(dir.join("ret")).output().expect("native run");
+    let native = native_run(&dir, "ret");
     assert_eq!(
         String::from_utf8_lossy(&vm.stdout),
         String::from_utf8_lossy(&native.stdout),
@@ -176,7 +188,7 @@ fn hybrid_bridged_containers_deep_convert_and_match_the_vm() {
         "hybrid compile must not fall back to Tier 0: {compile_stderr}"
     );
 
-    let native = Command::new(dir.join("cont")).output().expect("native run");
+    let native = native_run(&dir, "cont");
     assert_eq!(
         String::from_utf8_lossy(&vm.stdout),
         String::from_utf8_lossy(&native.stdout),
@@ -233,7 +245,7 @@ fn hybrid_raises_reach_the_enclosing_native_try_like_the_vm() {
         "hybrid compile must not fall back to Tier 0: {compile_stderr}"
     );
 
-    let native = Command::new(dir.join("raise")).output().expect("native run");
+    let native = native_run(&dir, "raise");
     assert_eq!(
         String::from_utf8_lossy(&vm.stdout),
         String::from_utf8_lossy(&native.stdout),
@@ -278,7 +290,7 @@ fn hybrid_uncaught_vm_error_exits_nonzero_like_the_vm() {
         "expected the hybrid link path, got: {compile_stderr}"
     );
 
-    let native = Command::new(dir.join("boom")).output().expect("native run");
+    let native = native_run(&dir, "boom");
     assert!(
         !native.status.success(),
         "the bridged uncaught error must fail the hybrid binary too"
