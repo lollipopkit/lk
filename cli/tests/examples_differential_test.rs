@@ -31,11 +31,14 @@ struct RunResult {
 
 impl RunResult {
     /// Diagnostic block for divergence reports: exit code plus the captured
-    /// stderr (the CI log otherwise hides why a side failed).
+    /// stderr (the CI log otherwise hides why a side failed). A missing exit
+    /// code means either the harness timeout killed the child or it died to
+    /// a signal (e.g. SIGABRT) — two very different failures, kept distinct.
     fn diagnostics(&self, side: &str) -> String {
-        let code = match self.exit_code {
-            Some(code) => code.to_string(),
-            None => "killed".to_string(),
+        let code = match (self.exit_code, self.timed_out) {
+            (Some(code), _) => code.to_string(),
+            (None, true) => "killed (harness timeout)".to_string(),
+            (None, false) => "terminated by signal".to_string(),
         };
         format!("--- {side} exit={code} stderr ---\n{}", self.stderr)
     }

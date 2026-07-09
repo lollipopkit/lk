@@ -1307,10 +1307,14 @@ fn list_reduce(
     let acc_fn = args[1];
     let mut acc = args[0];
     for item in items {
-        // Pin the running accumulator: it lives only in this Rust frame
-        // between callbacks (the caller restores the mark).
+        // Pin the running accumulator only for the callback that consumes it
+        // (per-iteration mark/truncate keeps `host_roots` O(1) instead of
+        // growing by one entry per element).
+        let iteration_mark = state.host_roots_mark();
         state.host_root_push(acc);
-        acc = crate::vm::call_runtime_value_runtime(acc_fn, &[acc, *item], state, module, ctx.as_deref_mut())?;
+        let result = crate::vm::call_runtime_value_runtime(acc_fn, &[acc, *item], state, module, ctx.as_deref_mut());
+        state.host_roots_truncate(iteration_mark);
+        acc = result?;
     }
     Ok(Some(acc))
 }

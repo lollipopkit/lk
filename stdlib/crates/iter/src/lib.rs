@@ -72,18 +72,18 @@ impl IterModule {
         let values = args.as_slice();
         let input = list_snapshot_arg(&values[0], runtime.heap(), "iter.reduce first argument")?;
         let mut acc = values[1];
-        // Pin the running accumulator: it lives only in this Rust frame
-        // between callbacks (host_roots discipline).
-        let mark = runtime.host_roots_mark();
-        let run = input.for_each_item(|item| {
+        input.for_each_item(|item| {
             let value = item.into_runtime_value(runtime.heap_mut());
             let previous = std::mem::replace(&mut acc, RuntimeVal::Nil);
+            // Pin the accumulator only for the callback that consumes it
+            // (per-iteration mark/truncate keeps `host_roots` O(1)).
+            let iteration_mark = runtime.host_roots_mark();
             runtime.host_root_push(previous);
-            acc = call_callable(&values[2], &[previous, value], runtime, "iter.reduce third argument")?;
+            let result = call_callable(&values[2], &[previous, value], runtime, "iter.reduce third argument");
+            runtime.host_roots_truncate(iteration_mark);
+            acc = result?;
             Ok(())
-        });
-        runtime.host_roots_truncate(mark);
-        run?;
+        })?;
         Ok(acc)
     }
 
