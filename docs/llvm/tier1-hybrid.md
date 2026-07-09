@@ -1,12 +1,13 @@
 # Tier 1 Hybrid: Per-Function VM Fallback (Design)
 
-Status: **design, not yet implemented** (plan.md M4.2.2). This document fixes
-the architecture decisions so implementation can proceed in bounded,
-independently committable sub-steps. Mapped against the tree at the time of
-writing: `aot/lower/src/lib.rs` (`lower()` final pass fails the whole module),
-`aot/abi` (scalar ABI table), `aot/codegen` (IR text rendering),
-`llvm/src/native_executable.rs` (clang + `liblkrt.a` link),
-`cli/src/main.rs::compile_executable` (program-granularity Tier 0 fallback).
+Status: **implemented — v1 (one-way, results discarded) and the v2 return
+bridge (see the "v2" section below)**; opt-in via `LK_AOT_HYBRID=1` until the
+nightly correctness rounds green-light the default flip. This document fixes
+the architecture decisions; the staged sub-steps at the bottom are the
+implementation record. Key anchors today: `aot/lower/src/lib.rs`
+(eligibility + mark/rerun fixpoint), `aot/mir` (`Inst::CallVm { dst }`),
+`aot/codegen` (bridge declarations + call rendering), `api/src/lib.rs::ffi`
+(`lk_hybrid_*`), `llvm/src/native_executable.rs` (hybrid wrapper + link).
 
 ## Problem
 
@@ -101,12 +102,53 @@ These symbols are declared directly by codegen (like the `get_pair` helpers),
 *not* added to the `aot/abi` table — that table is the lkrt conformance
 contract, and lkrt neither implements nor knows about the bridge.
 
-Later slices, in order of unlock value: typed returns once a return-type
-proof exists (a conservative bytecode return scan, or the VM type checker's
-facts once they reach the artifact); opaque `Any` value handles (native code
-moves them between bridge calls without inspecting them — the stepping stone
-toward the mixed/dynamic type system every remaining AOT blocker shares);
-mutable-global snapshot/sync; container copying.
+## v2: the return bridge (implemented)
+
+Results flow back. `Inst::CallVm` carries `dst: Option<ValueId>`; the
+lowering always binds the destination register as `Ty::Dyn`, and codegen
+degrades a never-read destination to the void `lk_hybrid_call_v` so
+statement-position calls keep the v1 zero-marshal path. A read destination
+renders as
+
+```c
+// v2: the result comes back as an lkrt LkDyn by value ({ i64, i64 }).
+LkHybridDyn lk_hybrid_call_r(uint32_t func_index, const LkHybridArg *args, size_t argc);
+```
+
+- **Carrier**: `LkHybridDyn` mirrors lkrt's `LkDyn` (tags mirrored as
+  `LK_HYBRID_DYN_*`); a conformance test in lk-api (dev-dep on lkrt, never a
+  shipped link) pins tags and layout. Strings marshal as leaked `CString`s —
+  arena ownership, native code never frees them.
+- **Containers deep-convert** through lkrt constructors *injected by the
+  hybrid wrapper* (`lk_hybrid_register_rt`): the wrapper is the only code
+  linking both staticlibs, so lk-api reaches lkrt's builders via function
+  pointers without depending on it. Lists become `ListDyn` (bare-text
+  display matches every VM list display except the *quoted* typed string
+  list — that one dies with a clear message until a typed-list Dyn tag
+  exists); string-keyed maps become `MapStrDyn` replayed in the VM's
+  iteration order (the Fx-layout mirror discipline). Depth cap 128 guards
+  cyclic containers. `display_into` gained a `DYN_MAP` arm for exactly these
+  runtime-tagged values; statically-typed map display stays out of the
+  lowering subset (`docs/semantics.md`).
+- **Raises cross the bridge** (VM `try` semantics): the core call returns
+  `ModuleFunctionCall::{Return,Raise}` — a raise carries its first-class
+  value (`LkRaisedValue` downcast; message-only runtime raises bind a
+  string, matching `try { 1/0 } catch e` → `typeof(e) == "String"`). The
+  bridge marshals the payload, drops every Rust value (the module Mutex
+  guard above all — a longjmp over a live guard deadlocks the next call),
+  and re-raises through the wrapper-injected `lkrt_rt_raise_dyn` into the
+  nearest native `try`. Uncaught, lkrt now prints the rendered error to
+  stderr before aborting (stderr text is outside the differential contract).
+- **Mark/rerun fixpoint** in the lowering: a caller can fail purely on a
+  callee's stale ret assumptions, or abort before reaching a later call site
+  (leaving that callee without the parameter observations its eligibility
+  needs) — so marking and re-lowering iterate until no new function marks
+  (≤ one iteration per function).
+
+Later slices, in order of unlock value: a typed-list Dyn tag (unlocks quoted
+string-list returns); `Dyn`-typed bridge *arguments* (today only scalars
+marshal in); opaque `Any` value handles (native code moves them between
+bridge calls without inspecting them); mutable-global snapshot/sync.
 
 ## Staged sub-steps (each independently committable and gated)
 
