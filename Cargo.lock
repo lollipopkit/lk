@@ -953,6 +953,7 @@ dependencies = [
  "anyhow",
  "lk-core",
  "lk-stdlib",
+ "lkrt",
 ]
 
 [[package]]
