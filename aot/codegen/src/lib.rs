@@ -664,6 +664,15 @@ fn render_int_bin(out: &mut String, dst: ValueId, op: IntBinOp, lhs: ValueId, rh
                 r
             );
         }
+        IntBinOp::And => {
+            let _ = writeln!(out, "  {} = and i64 {}, {}", val(dst), l, r);
+        }
+        IntBinOp::Or => {
+            let _ = writeln!(out, "  {} = or i64 {}, {}", val(dst), l, r);
+        }
+        IntBinOp::Xor => {
+            let _ = writeln!(out, "  {} = xor i64 {}, {}", val(dst), l, r);
+        }
         IntBinOp::Min | IntBinOp::Max => {
             let pred = if matches!(op, IntBinOp::Min) { "slt" } else { "sgt" };
             let cond = format!("{}c", val(dst));

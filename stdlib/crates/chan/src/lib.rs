@@ -178,7 +178,7 @@ mod tests {
         let channel = runtime_channel(1, state.heap_mut(), ctx.async_runtime())?;
         let value = RuntimeVal::ShortStr(ShortStr::new("payload").expect("short string"));
         assert_eq!(
-            call("try_send", &[channel.clone(), value], &mut state, &mut ctx)?,
+            call("try_send", &[channel, value], &mut state, &mut ctx)?,
             RuntimeVal::Bool(true)
         );
 

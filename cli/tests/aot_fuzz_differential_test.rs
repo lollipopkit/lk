@@ -222,7 +222,7 @@ impl Generator {
 
     fn random_ty(&mut self) -> Ty {
         match self.rng.below(6) {
-            0 | 1 | 2 => Ty::I64,
+            0..=2 => Ty::I64,
             3 => Ty::F64,
             4 => Ty::Bool,
             _ => Ty::Str,

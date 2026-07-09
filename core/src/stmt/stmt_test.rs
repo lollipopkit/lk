@@ -21,7 +21,7 @@ mod tests {
         let program = parse_program(source);
         let mut ctx = VmContext::new();
         let result = vm_execute_program_with_ctx(&program, &mut ctx).expect("Failed to execute");
-        (result.first_return().clone(), result.state.heap)
+        (*result.first_return(), result.state.heap)
     }
 
     fn expect_list(value: &RuntimeVal, heap: &HeapStore) -> Vec<RuntimeVal> {

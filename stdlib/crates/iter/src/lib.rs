@@ -909,7 +909,7 @@ mod tests {
     }
 
     fn run_value(source: &str) -> Result<RuntimeVal> {
-        Ok(run(source)?.first_return().clone())
+        Ok(*run(source)?.first_return())
     }
 
     fn expect_list(value: &RuntimeVal, heap: &HeapStore) -> Vec<RuntimeVal> {

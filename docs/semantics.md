@@ -117,6 +117,18 @@ heap 对象按句柄)。native:typed 列表跨型 needle 编译期折叠 false,M
 (`ListDyn`)走 lkrt `contains_eq`(同款 strict 语义);长字符串/嵌套列表的句柄
 同一性限制与 unique() 同款(intern/转换边界,已留档,不进差分子集)。
 
+## 错误文本(2026-07-08 裁决)
+
+`catch e` 绑定的消息 = **裸 cause 文本**,无包装:native(Rust stdlib)函数
+失败不再加 `"native `{name}` failed: "` 前缀(曾有,`map_native_error` 处
+移除),与 `error(v)` 一等值对称;调用点归因由 traceback 承担,不进消息。
+
+**跨后端错误文本不保证逐字一致**:VM 与 native 的错误生成机制不同
+(如 `recv(999)` VM 报 "recv first argument must be a Channel"(类型检查),
+native 报 "Channel not found"(id 查找))。差分语料因此**不打印 catch 到
+的错误文本**,只断言 catch 行为(进入 handler、后续状态可用);若未来要
+开放文本比对,需先逐条对齐两侧消息(fuzz 差分红为发现机制)。
+
 ## trait 方法分发与 auto-Display(2026-07-07 裁决,plan J)
 
 native 侧 struct 实例是普通 string-keyed map(**无 `"$type"` 隐藏键**——

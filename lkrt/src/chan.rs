@@ -139,6 +139,35 @@ fn registry() -> &'static Mutex<HashMap<i64, Arc<ChanInner>>> {
     REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// Process-global select wake-up: a generation counter bumped (and
+/// broadcast) by every state-changing channel operation. A `select` with no
+/// ready arm blocks here instead of spin-polling; the timeout is only a
+/// missed-wakeup safety net, not the discovery mechanism. Ordering
+/// discipline: notifiers take this lock *after* dropping their channel's
+/// `state` guard (never nested), and no raise can fire while it is held.
+struct SelectGen {
+    lock: Mutex<u64>,
+    cv: Condvar,
+}
+
+fn select_gen() -> &'static SelectGen {
+    static INSTANCE: OnceLock<SelectGen> = OnceLock::new();
+    INSTANCE.get_or_init(|| SelectGen {
+        lock: Mutex::new(0),
+        cv: Condvar::new(),
+    })
+}
+
+/// Signals every blocked `select` that some channel changed state.
+fn notify_selects() {
+    let wake = select_gen();
+    {
+        let mut generation = wake.lock.lock().expect("select generation poisoned");
+        *generation = generation.wrapping_add(1);
+    }
+    wake.cv.notify_all();
+}
+
 fn channel(id: i64) -> Arc<ChanInner> {
     // The registry guard must be dropped before the unknown-id raise: the
     // raise longjmps to the nearest handler, skipping Rust drops — a live
@@ -188,6 +217,7 @@ pub extern "C" fn lkrt_chan_send(id: i64, value: LkDyn) {
             state.queue.push_back(owned);
             drop(state);
             inner.recv_cv.notify_one();
+            notify_selects();
             return;
         }
         state = inner.send_cv.wait(state).expect("channel poisoned");
@@ -204,6 +234,7 @@ pub extern "C" fn lkrt_chan_recv(id: i64) -> LkDyn {
         if let Some(value) = state.queue.pop_front() {
             drop(state);
             inner.send_cv.notify_one();
+            notify_selects();
             return materialize(&value);
         }
         if state.closed {
@@ -222,6 +253,7 @@ pub extern "C" fn lkrt_chan_close(id: i64) {
     inner.state.lock().expect("channel poisoned").closed = true;
     inner.recv_cv.notify_all();
     inner.send_cv.notify_all();
+    notify_selects();
 }
 
 /// Non-blocking send: 1 delivered, 0 full; closed raises.
@@ -238,6 +270,7 @@ pub extern "C" fn lkrt_chan_try_send(id: i64, value: LkDyn) -> i64 {
         state.queue.push_back(owned);
         drop(state);
         inner.recv_cv.notify_one();
+        notify_selects();
         1
     } else {
         0
@@ -253,6 +286,7 @@ pub extern "C" fn lkrt_chan_try_recv(id: i64) -> LkDyn {
     if let Some(value) = state.queue.pop_front() {
         drop(state);
         inner.send_cv.notify_one();
+        notify_selects();
         return materialize(&value);
     }
     if state.closed {
@@ -341,6 +375,10 @@ pub unsafe extern "C" fn lkrt_chan_select(
         kinds.push(kind);
     }
     loop {
+        // Read the wake-up generation *before* polling: a channel op that
+        // lands mid-poll bumps it, so the wait below returns immediately
+        // instead of missing the change.
+        let round_gen = *select_gen().lock.lock().expect("select generation poisoned");
         for index in 0..len {
             // Guard must be exactly `true` (the VM normalizes to Bool).
             if !(guards[index].tag == DYN_BOOL && guards[index].payload != 0) {
@@ -358,6 +396,7 @@ pub unsafe extern "C" fn lkrt_chan_select(
                     if let Some(value) = state.queue.pop_front() {
                         drop(state);
                         inner.send_cv.notify_one();
+                        notify_selects();
                         let payload = arena_handle(vec![
                             LkDyn {
                                 tag: DYN_BOOL,
@@ -404,6 +443,7 @@ pub unsafe extern "C" fn lkrt_chan_select(
                         state.queue.push_back(owned);
                         drop(state);
                         inner.recv_cv.notify_one();
+                        notify_selects();
                         return result(false, index as i64, LkDyn::NIL);
                     }
                 }
@@ -421,7 +461,21 @@ pub unsafe extern "C" fn lkrt_chan_select(
             // reporting the default shape.
             return result(true, -1, LkDyn::NIL);
         }
-        std::thread::sleep(std::time::Duration::from_micros(200));
+        // Block until some channel op bumps the generation (or the safety-
+        // net timeout fires — never the discovery mechanism, only insurance
+        // against a lost wakeup).
+        let wake = select_gen();
+        let mut generation = wake.lock.lock().expect("select generation poisoned");
+        while *generation == round_gen {
+            let (next, timeout) = wake
+                .cv
+                .wait_timeout(generation, std::time::Duration::from_millis(1))
+                .expect("select generation poisoned");
+            generation = next;
+            if timeout.timed_out() {
+                break;
+            }
+        }
     }
 }
 
@@ -571,5 +625,36 @@ mod tests {
         }
         sender.join().expect("sender");
         assert_eq!(sum, 45);
+    }
+
+    /// A blocked select (no ready arm, no default) is woken by another
+    /// thread's send — the generation Condvar, not the safety-net timeout,
+    /// is the discovery mechanism. Functional only: asserts completion and
+    /// the delivered payload, never timing.
+    #[test]
+    fn blocked_select_woken_by_cross_thread_send() {
+        let id = lkrt_chan_new(1);
+        let sender = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            lkrt_chan_send(id, lkrt_dyn_from_i64(77));
+        });
+        let types = arena_handle(vec![lkrt_dyn_from_i64(0)]);
+        let channels = arena_handle(vec![lkrt_dyn_from_i64(id)]);
+        let values = arena_handle(vec![LkDyn::NIL]);
+        let guards = arena_handle(vec![LkDyn {
+            tag: DYN_BOOL,
+            payload: 1,
+        }]);
+        // SAFETY: all four handles are live dyn-list handles built above.
+        let out = unsafe { lkrt_chan_select(types, channels, values, guards, 0) };
+        // SAFETY: select returns a live [is_default, index, payload] list.
+        let triple = unsafe { &*(out as *mut Vec<LkDyn>) };
+        assert_eq!(triple[0].payload, 0, "not the default arm");
+        assert_eq!(triple[1].payload, 0, "arm index");
+        // Recv payload is the [present, value] pair.
+        // SAFETY: recv arm payload is a live dyn-list handle.
+        let pair = unsafe { &*(triple[2].payload as *mut Vec<LkDyn>) };
+        assert_eq!(pair[1].payload, 77);
+        sender.join().expect("sender");
     }
 }

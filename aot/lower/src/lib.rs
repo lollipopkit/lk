@@ -165,6 +165,18 @@ enum Builtin {
     ChanRecv,
     /// `spawn(closure)` / the `go` desugar — a goroutine OS thread.
     Spawn,
+    /// `__lk_merge_fields(base, overlay)` — the struct-update desugar's
+    /// field merge (`P { ..base, k: v }`); the result is a fresh map.
+    MergeFields,
+    /// `__lk_make_struct(name, fields)` — the struct-update desugar's
+    /// object constructor: a fresh field copy + struct provenance.
+    MakeStruct,
+    /// `__lk_bit_and(l, r)` / `__lk_bit_or(l, r)` / `__lk_bit_not(v)` — the
+    /// `&`/`|`/`~` operator desugars (Int-only in the VM; other argument
+    /// types reject and fall back to its loud error).
+    BitAnd,
+    BitOr,
+    BitNot,
     /// `select$block(types, chans, values, guards, has_default)`.
     SelectBlock,
 }
@@ -247,88 +259,391 @@ enum ClosureCapture {
     Value(ValueId, Ty),
 }
 
-/// Global names treated as stdlib module objects when read via `GetGlobal`.
-/// Only modules with at least one [`module_call_abi`] mapping belong here.
-const MODULE_GLOBALS: &[&str] = &[
-    "os", "time", "env", "math", "fs", "process", "datetime", "std", "iter", "string", "path", "task", "stream",
-    "bytes",
+/// Module-object metadata: how one stdlib module name binds. Single source
+/// of truth — the bare-`GetGlobal` whitelist and the submodule import
+/// routing both derive from this table (adding a module is one row here
+/// plus its [`MODULE_ABI`] members, never a scattered edit).
+struct ModuleRow {
+    name: &'static str,
+    /// A bare `GetGlobal name` resolves to the module object. Two-level
+    /// exports (`chan::close`) route by the qualified name instead, and
+    /// submodules bind through their parent's import — both stay `false`.
+    bare_global: bool,
+    /// `use { name } from <parent>` binds a *submodule object* (member
+    /// reads route through `GlobalRef::Module`), not a function.
+    submodule_of: Option<&'static str>,
+}
+
+const MODULE_TABLE: &[ModuleRow] = &[
+    ModuleRow {
+        name: "os",
+        bare_global: true,
+        submodule_of: None,
+    },
+    ModuleRow {
+        name: "time",
+        bare_global: true,
+        submodule_of: None,
+    },
+    ModuleRow {
+        name: "env",
+        bare_global: true,
+        submodule_of: None,
+    },
+    ModuleRow {
+        name: "math",
+        bare_global: true,
+        submodule_of: None,
+    },
+    ModuleRow {
+        name: "fs",
+        bare_global: true,
+        submodule_of: None,
+    },
+    ModuleRow {
+        name: "process",
+        bare_global: true,
+        submodule_of: None,
+    },
+    ModuleRow {
+        name: "datetime",
+        bare_global: true,
+        submodule_of: None,
+    },
+    ModuleRow {
+        name: "std",
+        bare_global: true,
+        submodule_of: None,
+    },
+    ModuleRow {
+        name: "iter",
+        bare_global: true,
+        submodule_of: None,
+    },
+    ModuleRow {
+        name: "string",
+        bare_global: true,
+        submodule_of: None,
+    },
+    ModuleRow {
+        name: "path",
+        bare_global: true,
+        submodule_of: None,
+    },
+    ModuleRow {
+        name: "task",
+        bare_global: true,
+        submodule_of: None,
+    },
+    ModuleRow {
+        name: "stream",
+        bare_global: true,
+        submodule_of: None,
+    },
+    ModuleRow {
+        name: "bytes",
+        bare_global: true,
+        submodule_of: None,
+    },
+    // `encoding`/`net` submodules (the parents themselves have no typed
+    // members — only the submodule objects bind).
+    ModuleRow {
+        name: "json",
+        bare_global: false,
+        submodule_of: Some("encoding"),
+    },
+    ModuleRow {
+        name: "yaml",
+        bare_global: false,
+        submodule_of: Some("encoding"),
+    },
+    ModuleRow {
+        name: "toml",
+        bare_global: false,
+        submodule_of: Some("encoding"),
+    },
+    ModuleRow {
+        name: "socket",
+        bare_global: false,
+        submodule_of: Some("net"),
+    },
+    ModuleRow {
+        name: "tcp",
+        bare_global: false,
+        submodule_of: Some("net"),
+    },
 ];
 
-/// Maps a `module.method` call to its typed lkrt ABI entry: the `AbiRef`, the
-/// exact positional argument types, and the return type. `None` means the
-/// member is not natively lowerable (yet) and the program falls back.
+/// A bare `GetGlobal` of this name is a stdlib module object.
+fn module_global(name: &str) -> bool {
+    MODULE_TABLE.iter().any(|row| row.name == name && row.bare_global)
+}
+
+/// `use { member } from parent` binds a submodule object (not a function).
+fn is_submodule(parent: &str, member: &str) -> bool {
+    MODULE_TABLE
+        .iter()
+        .any(|row| row.name == member && row.submodule_of == Some(parent))
+}
+
+/// One natively lowerable `module.member` call: the lkrt `AbiRef`, the exact
+/// positional argument types, and the return type. Members not in the table
+/// are not natively lowerable (yet) and the program falls back.
 /// (`math.floor` dispatches on its argument type in [`lower_module_call`].)
 ///
-/// Every entry must be VM-exact: same value semantics *and* the same display
+/// Every row must be VM-exact: same value semantics *and* the same display
 /// (the differential corpora compare stdout byte-for-byte).
-fn module_call_abi(module: &str, name: &str) -> Option<(AbiRef, &'static [Ty], Ty)> {
-    match (module, name) {
-        // Monotonic in-process seconds (f64) — both sides anchor to first use.
-        ("os", "clock") => Some((AbiRef::new("os", "clock"), &[], Ty::F64)),
-        // Unix epoch milliseconds.
-        ("os", "epoch") => Some((AbiRef::new("os", "epoch"), &[], Ty::I64)),
-        // Monotonic milliseconds / sleep-for-milliseconds.
-        ("time", "now") => Some((AbiRef::new("time", "now"), &[], Ty::I64)),
-        ("time", "sleep") => Some((AbiRef::new("time", "sleep"), &[Ty::I64], Ty::Nil)),
-        // Environment lookup with a default; both sides return an owned string.
-        ("env", "get_or") => Some((AbiRef::new("env", "get_or"), &[Ty::Str, Ty::Str], Ty::Str)),
-        // System info strings (allocated per call, arena-owned).
-        ("os", "hostname") => Some((AbiRef::new("os", "hostname"), &[], Ty::Str)),
-        ("os", "arch") => Some((AbiRef::new("os", "arch"), &[], Ty::Str)),
-        ("os", "os") => Some((AbiRef::new("os", "name"), &[], Ty::Str)),
-        ("process", "cwd") => Some((AbiRef::new("process", "cwd"), &[], Ty::Str)),
-        ("fs", "temp_dir") => Some((AbiRef::new("fs", "temp_dir"), &[], Ty::Str)),
-        // Sorted entry names as List<str> (the VM's exact shape).
-        ("fs", "read_dir") => Some((AbiRef::new("fs", "read_dir_list"), &[Ty::Str], Ty::ListStr)),
-        // chrono-backed datetime (byte-identical to the stdlib module).
-        ("datetime", "now") => Some((AbiRef::new("datetime", "now"), &[], Ty::I64)),
-        ("datetime", "format") => Some((AbiRef::new("datetime", "format"), &[Ty::I64, Ty::Str], Ty::Str)),
-        ("datetime", "parse") => Some((AbiRef::new("datetime", "parse"), &[Ty::Str, Ty::Str], Ty::I64)),
-        ("datetime", "day_of_week") => Some((AbiRef::new("datetime", "day_of_week"), &[Ty::I64], Ty::I64)),
-        ("datetime", "day_of_year") => Some((AbiRef::new("datetime", "day_of_year"), &[Ty::I64], Ty::I64)),
-        // Float-typed math (Number args f64-promote at the call site). `sqrt`
-        // aborts on a negative argument (the stdlib module's loud error).
-        ("math", "sqrt") => Some((AbiRef::new("math", "sqrt"), &[Ty::F64], Ty::F64)),
-        ("math", "sin") => Some((AbiRef::new("math", "sin"), &[Ty::F64], Ty::F64)),
-        ("math", "cos") => Some((AbiRef::new("math", "cos"), &[Ty::F64], Ty::F64)),
-        ("math", "exp") => Some((AbiRef::new("math", "exp"), &[Ty::F64], Ty::F64)),
-        ("math", "pow") => Some((AbiRef::new("math", "pow"), &[Ty::F64, Ty::F64], Ty::F64)),
-        ("math", "hypot") => Some((AbiRef::new("math", "hypot"), &[Ty::F64, Ty::F64], Ty::F64)),
-        ("math", "cbrt") => Some((AbiRef::new("math", "cbrt"), &[Ty::F64], Ty::F64)),
-        // Only a Float NaN is true; an Int argument f64-promotes (never NaN),
-        // exactly the module's `matches!(.., Float(v) if v.is_nan())`.
-        ("math", "is_nan") => Some((AbiRef::new("math", "is_nan"), &[Ty::F64], Ty::Bool)),
-        ("fs", "exists") => Some((AbiRef::new("fs", "exists"), &[Ty::Str], Ty::Bool)),
-        ("path", "sep") => Some((AbiRef::new("path", "sep"), &[], Ty::Str)),
-        // String-or-nil results arrive boxed (`String?` in the module schema).
-        ("string", "strip_prefix") => Some((AbiRef::new("str", "strip_prefix"), &[Ty::Str, Ty::Str], Ty::Dyn)),
-        ("string", "strip_suffix") => Some((AbiRef::new("str", "strip_suffix"), &[Ty::Str, Ty::Str], Ty::Dyn)),
-        ("string", "count") => Some((AbiRef::new("str", "count"), &[Ty::Str, Ty::Str], Ty::I64)),
-        // The module spelling counts bytes (`str::len`), unlike `.len()`.
-        ("string", "len") => Some((AbiRef::new("str", "byte_len"), &[Ty::Str], Ty::I64)),
-        ("string", "capitalize") => Some((AbiRef::new("str", "capitalize"), &[Ty::Str], Ty::Str)),
-        ("string", "title") => Some((AbiRef::new("str", "title"), &[Ty::Str], Ty::Str)),
-        // Native channels/goroutines (plan H): channel/task values are i64
-        // ids; blocking semantics + raises live in lkrt.
-        ("chan", "close") => Some((AbiRef::new("chan", "close"), &[Ty::I64], Ty::Nil)),
-        ("chan", "len") => Some((AbiRef::new("chan", "len"), &[Ty::I64], Ty::I64)),
-        ("chan", "is_closed") => Some((AbiRef::new("chan", "is_closed"), &[Ty::I64], Ty::Bool)),
-        ("chan", "try_send") => Some((AbiRef::new("chan", "try_send"), &[Ty::I64, Ty::Dyn], Ty::Bool)),
-        ("chan", "try_recv") => Some((AbiRef::new("chan", "try_recv"), &[Ty::I64], Ty::Dyn)),
-        ("task", "await") => Some((AbiRef::new("rt", "task_await"), &[Ty::I64], Ty::Dyn)),
-        // `encoding` submodules (VM `de.rs` mirrored in lkrt).
-        ("json", "parse") => Some((AbiRef::new("json", "parse"), &[Ty::Str], Ty::Dyn)),
-        // `net` submodules + `bytes` (the lkrt tcp family predates this).
-        ("socket", "addr") => Some((AbiRef::new("socket", "addr"), &[Ty::Str, Ty::I64], Ty::Str)),
-        ("tcp", "connect") => Some((AbiRef::new("tcp", "connect"), &[Ty::Str], Ty::I64)),
-        ("tcp", "write") => Some((AbiRef::new("tcp", "write_str"), &[Ty::I64, Ty::Str], Ty::I64)),
-        ("tcp", "read") => Some((AbiRef::new("tcp", "read"), &[Ty::I64, Ty::I64], Ty::I64)),
-        ("tcp", "close") => Some((AbiRef::new("tcp", "close"), &[Ty::I64], Ty::I64)),
-        ("bytes", "to_string_utf8") => Some((AbiRef::new("bytes", "to_string_utf8"), &[Ty::I64], Ty::Str)),
-        ("yaml", "parse") => Some((AbiRef::new("yaml", "parse"), &[Ty::Str], Ty::Dyn)),
-        ("toml", "parse") => Some((AbiRef::new("toml", "parse"), &[Ty::Str], Ty::Dyn)),
-        _ => None,
+struct ModuleAbiRow {
+    module: &'static str,
+    member: &'static str,
+    abi: AbiRef,
+    args: &'static [Ty],
+    ret: Ty,
+}
+
+const fn abi_row(
+    module: &'static str,
+    member: &'static str,
+    abi: AbiRef,
+    args: &'static [Ty],
+    ret: Ty,
+) -> ModuleAbiRow {
+    ModuleAbiRow {
+        module,
+        member,
+        abi,
+        args,
+        ret,
     }
+}
+
+const MODULE_ABI: &[ModuleAbiRow] = &[
+    // Monotonic in-process seconds (f64) — both sides anchor to first use.
+    abi_row("os", "clock", AbiRef::new("os", "clock"), &[], Ty::F64),
+    // Unix epoch milliseconds.
+    abi_row("os", "epoch", AbiRef::new("os", "epoch"), &[], Ty::I64),
+    // Monotonic milliseconds / sleep-for-milliseconds.
+    abi_row("time", "now", AbiRef::new("time", "now"), &[], Ty::I64),
+    abi_row("time", "sleep", AbiRef::new("time", "sleep"), &[Ty::I64], Ty::Nil),
+    // Environment lookup with a default; both sides return an owned string.
+    abi_row(
+        "env",
+        "get_or",
+        AbiRef::new("env", "get_or"),
+        &[Ty::Str, Ty::Str],
+        Ty::Str,
+    ),
+    // System info strings (allocated per call, arena-owned).
+    abi_row("os", "hostname", AbiRef::new("os", "hostname"), &[], Ty::Str),
+    abi_row("os", "arch", AbiRef::new("os", "arch"), &[], Ty::Str),
+    abi_row("os", "os", AbiRef::new("os", "name"), &[], Ty::Str),
+    abi_row("process", "cwd", AbiRef::new("process", "cwd"), &[], Ty::Str),
+    abi_row("fs", "temp_dir", AbiRef::new("fs", "temp_dir"), &[], Ty::Str),
+    // Sorted entry names as List<str> (the VM's exact shape).
+    abi_row(
+        "fs",
+        "read_dir",
+        AbiRef::new("fs", "read_dir_list"),
+        &[Ty::Str],
+        Ty::ListStr,
+    ),
+    abi_row("fs", "exists", AbiRef::new("fs", "exists"), &[Ty::Str], Ty::Bool),
+    // chrono-backed datetime (byte-identical to the stdlib module).
+    abi_row("datetime", "now", AbiRef::new("datetime", "now"), &[], Ty::I64),
+    abi_row(
+        "datetime",
+        "format",
+        AbiRef::new("datetime", "format"),
+        &[Ty::I64, Ty::Str],
+        Ty::Str,
+    ),
+    abi_row(
+        "datetime",
+        "parse",
+        AbiRef::new("datetime", "parse"),
+        &[Ty::Str, Ty::Str],
+        Ty::I64,
+    ),
+    abi_row(
+        "datetime",
+        "day_of_week",
+        AbiRef::new("datetime", "day_of_week"),
+        &[Ty::I64],
+        Ty::I64,
+    ),
+    abi_row(
+        "datetime",
+        "day_of_year",
+        AbiRef::new("datetime", "day_of_year"),
+        &[Ty::I64],
+        Ty::I64,
+    ),
+    // Float-typed math (Number args f64-promote at the call site). `sqrt`
+    // aborts on a negative argument (the stdlib module's loud error).
+    abi_row("math", "sqrt", AbiRef::new("math", "sqrt"), &[Ty::F64], Ty::F64),
+    abi_row("math", "sin", AbiRef::new("math", "sin"), &[Ty::F64], Ty::F64),
+    abi_row("math", "cos", AbiRef::new("math", "cos"), &[Ty::F64], Ty::F64),
+    abi_row("math", "exp", AbiRef::new("math", "exp"), &[Ty::F64], Ty::F64),
+    abi_row("math", "pow", AbiRef::new("math", "pow"), &[Ty::F64, Ty::F64], Ty::F64),
+    abi_row(
+        "math",
+        "hypot",
+        AbiRef::new("math", "hypot"),
+        &[Ty::F64, Ty::F64],
+        Ty::F64,
+    ),
+    abi_row("math", "cbrt", AbiRef::new("math", "cbrt"), &[Ty::F64], Ty::F64),
+    // Only a Float NaN is true; an Int argument f64-promotes (never NaN),
+    // exactly the module's `matches!(.., Float(v) if v.is_nan())`.
+    abi_row("math", "is_nan", AbiRef::new("math", "is_nan"), &[Ty::F64], Ty::Bool),
+    abi_row("path", "sep", AbiRef::new("path", "sep"), &[], Ty::Str),
+    // String-or-nil results arrive boxed (`String?` in the module schema).
+    abi_row(
+        "string",
+        "strip_prefix",
+        AbiRef::new("str", "strip_prefix"),
+        &[Ty::Str, Ty::Str],
+        Ty::Dyn,
+    ),
+    abi_row(
+        "string",
+        "strip_suffix",
+        AbiRef::new("str", "strip_suffix"),
+        &[Ty::Str, Ty::Str],
+        Ty::Dyn,
+    ),
+    abi_row(
+        "string",
+        "count",
+        AbiRef::new("str", "count"),
+        &[Ty::Str, Ty::Str],
+        Ty::I64,
+    ),
+    // The module spelling counts bytes (`str::len`), unlike `.len()`.
+    abi_row("string", "len", AbiRef::new("str", "byte_len"), &[Ty::Str], Ty::I64),
+    abi_row(
+        "string",
+        "capitalize",
+        AbiRef::new("str", "capitalize"),
+        &[Ty::Str],
+        Ty::Str,
+    ),
+    abi_row("string", "title", AbiRef::new("str", "title"), &[Ty::Str], Ty::Str),
+    // Native channels/goroutines (plan H): channel/task values are i64
+    // ids; blocking semantics + raises live in lkrt.
+    abi_row("chan", "close", AbiRef::new("chan", "close"), &[Ty::I64], Ty::Nil),
+    abi_row("chan", "len", AbiRef::new("chan", "len"), &[Ty::I64], Ty::I64),
+    abi_row(
+        "chan",
+        "is_closed",
+        AbiRef::new("chan", "is_closed"),
+        &[Ty::I64],
+        Ty::Bool,
+    ),
+    abi_row(
+        "chan",
+        "try_send",
+        AbiRef::new("chan", "try_send"),
+        &[Ty::I64, Ty::Dyn],
+        Ty::Bool,
+    ),
+    abi_row("chan", "try_recv", AbiRef::new("chan", "try_recv"), &[Ty::I64], Ty::Dyn),
+    abi_row("task", "await", AbiRef::new("rt", "task_await"), &[Ty::I64], Ty::Dyn),
+    // `encoding` submodules (VM `de.rs` mirrored in lkrt).
+    abi_row("json", "parse", AbiRef::new("json", "parse"), &[Ty::Str], Ty::Dyn),
+    abi_row("yaml", "parse", AbiRef::new("yaml", "parse"), &[Ty::Str], Ty::Dyn),
+    abi_row("toml", "parse", AbiRef::new("toml", "parse"), &[Ty::Str], Ty::Dyn),
+    // `net` submodules + `bytes` (the lkrt tcp family predates this).
+    abi_row(
+        "socket",
+        "addr",
+        AbiRef::new("socket", "addr"),
+        &[Ty::Str, Ty::I64],
+        Ty::Str,
+    ),
+    abi_row("tcp", "connect", AbiRef::new("tcp", "connect"), &[Ty::Str], Ty::I64),
+    abi_row(
+        "tcp",
+        "write",
+        AbiRef::new("tcp", "write_str"),
+        &[Ty::I64, Ty::Str],
+        Ty::I64,
+    ),
+    abi_row("tcp", "read", AbiRef::new("tcp", "read"), &[Ty::I64, Ty::I64], Ty::I64),
+    abi_row("tcp", "close", AbiRef::new("tcp", "close"), &[Ty::I64], Ty::I64),
+    abi_row(
+        "bytes",
+        "to_string_utf8",
+        AbiRef::new("bytes", "to_string_utf8"),
+        &[Ty::I64],
+        Ty::Str,
+    ),
+];
+
+fn module_call_abi(module: &str, name: &str) -> Option<(AbiRef, &'static [Ty], Ty)> {
+    MODULE_ABI
+        .iter()
+        .find(|row| row.module == module && row.member == name)
+        .map(|row| (row.abi, row.args, row.ret))
+}
+
+/// Method-name roles across the lowering — the single source of truth the
+/// `Dyn`-receiver unbox guards, the string-list lookahead, and the
+/// `iter`/`stream` module-spelling forwarders all derive from. Adding a
+/// stdlib method with any of these behaviours is one row here.
+struct MethodRow {
+    name: &'static str,
+    /// A `Dyn` receiver unboxes through `dyn.as_list` (list-only name; a
+    /// non-list tag aborts, the VM's method-on-wrong-type loud error).
+    unbox_list: bool,
+    /// A `Dyn` receiver unboxes through `dyn.as_map` (map-only name).
+    /// Names shared with other receivers (`get`) stay boxed and reject.
+    unbox_map: bool,
+    /// A string-list receiver's result is still a string list (the
+    /// `strlist_regs` lookahead keeps tracking through the call).
+    strlist: bool,
+    /// `iter.name(xs, …)` / `stream.name(…)` forwards to the method
+    /// lowering (the VM routes both spellings through core_methods).
+    forward: bool,
+}
+
+const fn method_row(name: &'static str, unbox_list: bool, unbox_map: bool, strlist: bool, forward: bool) -> MethodRow {
+    MethodRow {
+        name,
+        unbox_list,
+        unbox_map,
+        strlist,
+        forward,
+    }
+}
+
+#[rustfmt::skip]
+const METHOD_TABLE: &[MethodRow] = &[
+    //          name         unbox_list unbox_map strlist forward
+    method_row("map",        true,      false,    true,   true),
+    method_row("filter",     true,      false,    true,   true),
+    method_row("reduce",     true,      false,    false,  true),
+    method_row("take",       true,      false,    true,   true),
+    method_row("skip",       true,      false,    true,   true),
+    method_row("concat",     true,      false,    true,   false),
+    method_row("unique",     true,      false,    true,   true),
+    method_row("sort",       true,      false,    true,   false),
+    method_row("reverse",    true,      false,    true,   false),
+    method_row("slice",      false,     false,    true,   false),
+    method_row("enumerate",  false,     false,    false,  true),
+    method_row("zip",        false,     false,    false,  true),
+    method_row("chain",      false,     false,    false,  true),
+    method_row("flatten",    false,     false,    false,  true),
+    method_row("chunk",      false,     false,    false,  true),
+    method_row("has",        false,     true,     false,  false),
+    method_row("keys",       false,     true,     false,  false),
+    method_row("values",     false,     true,     false,  false),
+    method_row("delete",     false,     true,     false,  false),
+    method_row("remove",     false,     true,     false,  false),
+];
+
+fn method_role(name: &str) -> Option<&'static MethodRow> {
+    METHOD_TABLE.iter().find(|row| row.name == name)
 }
 
 /// Constant module members (`math.pi`): a member read resolves to the literal
@@ -515,6 +830,12 @@ struct SigInfer {
     imports: ImportEnv,
     /// Trait/impl registrations lifted from the entry (plan J1).
     traits: TraitEnv,
+    /// Global slots first written *outside* the entry prefix but read via
+    /// `GetGlobal` (`fn inc() { counter += 1; }` over a mid-entry `let`):
+    /// forced to the `Dyn` carrier — its zero-initialization `{0, 0}` *is*
+    /// the nil tag, so a read before the first write observes the VM's nil
+    /// instead of a bogus typed zero. Retriable discovery (fixpoint rerun).
+    force_dyn_globals: std::collections::HashSet<u16>,
     /// Functions spawned as goroutines (isolate semantics): their cell
     /// captures snapshot by value and cell *writes* land in a
     /// thread-private virtual slot instead of rejecting.
@@ -881,6 +1202,7 @@ pub fn lower_bundled(
         dyn_rets: std::collections::HashSet::new(),
         imports: ImportEnv::build(&artifact.imports, bundles),
         traits,
+        force_dyn_globals: std::collections::HashSet::new(),
         spawned_isolate: std::collections::HashSet::new(),
         dyn_empty_lists: std::collections::HashSet::new(),
         global_tys: vec![None; global_count],
@@ -923,6 +1245,7 @@ pub fn lower_bundled(
             sig.dyn_rets.len(),
             sig.global_tys.clone(),
             sig.spawned_isolate.len(),
+            sig.force_dyn_globals.len(),
         );
         // Call-site facts are re-derived every pass: an argument register
         // that resolves to a closure ref only once a summary lands (e.g. a
@@ -984,22 +1307,27 @@ pub fn lower_bundled(
             reachable.push(true);
         }
         passes += 1;
-        let converged = snapshot
-            == (
-                sig.param_obs.clone(),
-                sig.ret_types.clone(),
-                sig.specializations.len(),
-                sig.ret_closures.clone(),
-                sig.dyn_loop_phis.len(),
-                sig.dyn_empty_lists.len(),
-                sig.dyn_rets.len(),
-                sig.global_tys.clone(),
-                sig.spawned_isolate.len(),
-            );
+        // Field-by-field comparison against the pre-pass snapshot: the same
+        // convergence condition without cloning the whole state a second
+        // time. (A generation-counter scheme was evaluated and rejected:
+        // ~30 mutation sites to instrument, and one missed bump = false
+        // convergence = miscompile; the snapshot clone stays as the
+        // correctness anchor.)
+        let converged = snapshot.0 == sig.param_obs
+            && snapshot.1 == sig.ret_types
+            && snapshot.2 == sig.specializations.len()
+            && snapshot.3 == sig.ret_closures
+            && snapshot.4 == sig.dyn_loop_phis.len()
+            && snapshot.5 == sig.dyn_empty_lists.len()
+            && snapshot.6 == sig.dyn_rets.len()
+            && snapshot.7 == sig.global_tys
+            && snapshot.8 == sig.spawned_isolate.len()
+            && snapshot.9 == sig.force_dyn_globals.len();
         // Each retriable discovery (Dyn loop phi, empty-list re-guess,
         // boxed-returns function) legitimately consumes one extra pass, so
         // the safety valve budgets for them on top of the type lattice.
-        let discovery_budget = sig.dyn_loop_phis.len() + sig.dyn_empty_lists.len() + sig.dyn_rets.len();
+        let discovery_budget =
+            sig.dyn_loop_phis.len() + sig.dyn_empty_lists.len() + sig.dyn_rets.len() + sig.force_dyn_globals.len();
         if converged || passes > 2 * funcs.len() + 2 + discovery_budget {
             break;
         }
@@ -1518,10 +1846,12 @@ fn empty_map_is_int_keyed(func: &FunctionData, start_pc: usize, dst_reg: u8) -> 
             Opcode::CallMethodK => {
                 let a = instr.a();
                 let keeps = strlist_regs.contains(&a)
-                    && matches!(
-                        func.consts.strings.get(instr.b() as usize).map(String::as_str),
-                        Some("map" | "filter" | "unique" | "sort" | "reverse" | "take" | "skip" | "slice" | "concat")
-                    );
+                    && func
+                        .consts
+                        .strings
+                        .get(instr.b() as usize)
+                        .and_then(|name| method_role(name))
+                        .is_some_and(|role| role.strlist);
                 if !keeps {
                     strlist_regs.remove(&a);
                 }
@@ -3586,6 +3916,120 @@ fn lower_spawn(
     Ok(())
 }
 
+/// Normalizes a map operand to the `Map<str, Dyn>` carrier: `MapStrDyn`
+/// passes through, a typed string-keyed map converts (iteration order is
+/// preserved — the rebuild replays the source order, `vm_mirror`'s
+/// argument), `nil` becomes an empty map (the VM accepts a nil merge base).
+fn to_dyn_map_handle(
+    ssa: &mut Ssa,
+    insts: &mut Vec<Inst>,
+    v: ValueId,
+    ty: Ty,
+    pc: usize,
+) -> Result<ValueId, Unsupported> {
+    let helper = match ty {
+        Ty::MapStrDyn => return Ok(v),
+        Ty::MapStrI64 => "str_i64_to_dyn",
+        Ty::MapStrF64 => "str_f64_to_dyn",
+        Ty::MapStrBool => "str_bool_to_dyn",
+        Ty::Nil => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("map_h", "str_dyn_new"),
+                args: Vec::new(),
+            });
+            return Ok(dst);
+        }
+        _ => return Err(Unsupported::TypeMismatch { pc }),
+    };
+    let dst = ssa.new_val();
+    insts.push(Inst::Call {
+        dst: Some(dst),
+        callee: AbiRef::new("map_h", helper),
+        args: vec![v],
+    });
+    Ok(dst)
+}
+
+/// `__lk_merge_fields(base, overlay)` — the struct-update desugar
+/// (`P { ..base, k: v }`). Mirrors the VM's `merge_field_maps` two-step
+/// insertion (base entries the overlay doesn't shadow, then the overlay),
+/// so the result's iteration order is VM-exact.
+fn lower_merge_fields(
+    ssa: &mut Ssa,
+    insts: &mut Vec<Inst>,
+    base: u8,
+    argc: usize,
+    block: usize,
+    pc: usize,
+) -> Result<(), Unsupported> {
+    if argc != 2 {
+        return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+    }
+    let (bv, bty) = ssa.read(base.wrapping_add(1), block, pc)?;
+    let (ov, oty) = ssa.read(base.wrapping_add(2), block, pc)?;
+    let base_map = to_dyn_map_handle(ssa, insts, bv, bty, pc)?;
+    let overlay_map = to_dyn_map_handle(ssa, insts, ov, oty, pc)?;
+    let dst = ssa.new_val();
+    insts.push(Inst::Call {
+        dst: Some(dst),
+        callee: AbiRef::new("map_h", "str_dyn_merge"),
+        args: vec![base_map, overlay_map],
+    });
+    ssa.write(base, block, (dst, Ty::MapStrDyn));
+    Ok(())
+}
+
+/// `__lk_make_struct(name, fields)` — the struct-update desugar's object
+/// constructor. The VM copies the merged field map into a fresh
+/// `RuntimeObject` (`runtime_object_fields_from_map`); the native carrier
+/// replays that fresh zero-capacity rebuild to keep the iteration order
+/// identical, then records struct provenance (trait dispatch, plan J1).
+fn lower_make_struct(
+    ssa: &mut Ssa,
+    insts: &mut Vec<Inst>,
+    sig: &mut SigInfer,
+    base: u8,
+    argc: usize,
+    block: usize,
+    pc: usize,
+) -> Result<(), Unsupported> {
+    if argc != 2 {
+        return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+    }
+    let name_reg = base.wrapping_add(1);
+    let type_name = {
+        let nv = ssa.read(name_reg, block, pc).ok().map(|(v, _)| v);
+        nv.and_then(|v| ssa.const_strs.get(&v).cloned())
+            .or_else(|| ssa.reg_const_str(name_reg, block))
+    }
+    .ok_or(Unsupported::Opcode { pc, op: Opcode::Call })?;
+    let (fv, fty) = ssa.read(base.wrapping_add(2), block, pc)?;
+    let fields = to_dyn_map_handle(ssa, insts, fv, fty, pc)?;
+    let dst = ssa.new_val();
+    insts.push(Inst::Call {
+        dst: Some(dst),
+        callee: AbiRef::new("map_h", "str_dyn_rebuild"),
+        args: vec![fields],
+    });
+    if let Some(&tid) = sig.traits.type_ids.get(&type_name) {
+        let tid_v = ssa.new_val();
+        insts.push(Inst::Const {
+            dst: tid_v,
+            value: Const::I64(tid),
+        });
+        insts.push(Inst::Call {
+            dst: None,
+            callee: AbiRef::new("map_h", "obj_mark"),
+            args: vec![dst, tid_v],
+        });
+    }
+    ssa.struct_types.insert(dst, type_name);
+    ssa.write(base, block, (dst, Ty::MapStrDyn));
+    Ok(())
+}
+
 /// `try$call(closure)` — the try/catch desugar's protected call (plan G).
 /// The body closure lowers as a normal `Dyn`-returning function; the call
 /// site emits [`Inst::TryCall`], which codegen expands into `rt.try_push` +
@@ -4219,6 +4663,41 @@ fn lower_inst(
                         args: vec![lhs, rhs],
                     });
                     ssa.write(instr.a(), block, (dst, Ty::Str));
+                    return Ok(());
+                }
+                // `list + list` concatenates into a fresh list (the VM's
+                // AddInt dispatch; the `[a, ..spread, b]` literal desugars to
+                // an `+` chain). Same-typed operands keep the typed carrier —
+                // display stays typed-exact (a `List<str>` result still
+                // quotes) — while a Dyn/mixed side chains boxed (the VM's
+                // Mixed result displays bare, matching `dyn_chain`).
+                let is_list = |t: Ty| matches!(t, Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn);
+                let list_chain = |lty: Ty, rty: Ty| match (lty, rty) {
+                    _ if op != Opcode::AddInt => None,
+                    (Ty::ListI64, Ty::ListI64) => Some(("i64_chain", Ty::ListI64)),
+                    (Ty::ListF64, Ty::ListF64) => Some(("f64_chain", Ty::ListF64)),
+                    (Ty::ListStr, Ty::ListStr) => Some(("str_chain", Ty::ListStr)),
+                    // Cross-typed operands chain boxed — the VM's result is a
+                    // Mixed list (bare-text display), exactly `dyn_chain`.
+                    (l, r) if is_list(l) && is_list(r) => Some(("dyn_chain", Ty::ListDyn)),
+                    _ => None,
+                };
+                if let Some((helper, out_ty)) = list_chain(lty_raw, rty_raw) {
+                    let (lhs, rhs) = if out_ty == Ty::ListDyn {
+                        (
+                            to_dyn_list_handle(ssa, insts, lv_raw, lty_raw, pc)?,
+                            to_dyn_list_handle(ssa, insts, rv_raw, rty_raw, pc)?,
+                        )
+                    } else {
+                        (lv_raw, rv_raw)
+                    };
+                    let dst = ssa.new_val();
+                    insts.push(Inst::Call {
+                        dst: Some(dst),
+                        callee: AbiRef::new("list_h", helper),
+                        args: vec![lhs, rhs],
+                    });
+                    ssa.write(instr.a(), block, (dst, out_ty));
                     return Ok(());
                 }
                 if lty_raw == Ty::Dyn || rty_raw == Ty::Dyn {
@@ -5018,7 +5497,7 @@ fn lower_inst(
                 && (matches!(
                     name,
                     "println" | "print" | "assert" | "assert_eq" | "assert_ne" | "panic" | "typeof" | "Set"
-                ) || MODULE_GLOBALS.contains(&name))
+                ) || module_global(name))
             {
                 return Err(Unsupported::Opcode { pc, op: instr.opcode() });
             }
@@ -5031,6 +5510,13 @@ fn lower_inst(
                 Ty::I64 | Ty::F64 | Ty::Bool | Ty::Str => ty,
                 t if dyn_boxable_ty(t) => Ty::Dyn,
                 _ => return Err(Unsupported::TypeMismatch { pc }),
+            };
+            // A reader discovered this slot can be observed before its first
+            // (non-prefix) write: only the Dyn carrier's zeroinit is nil.
+            let obs = if sig.force_dyn_globals.contains(&slot) {
+                Ty::Dyn
+            } else {
+                obs
             };
             let slot_ty = match sig.global_tys.get_mut(slot as usize) {
                 Some(state @ None) => {
@@ -5075,6 +5561,11 @@ fn lower_inst(
                 Some("Set") => Some(GlobalRef::Builtin(Builtin::SetCtor)),
                 Some("try$call") => Some(GlobalRef::Builtin(Builtin::TryCall)),
                 Some("error") => Some(GlobalRef::Builtin(Builtin::ErrorRaise)),
+                Some("__lk_merge_fields") => Some(GlobalRef::Builtin(Builtin::MergeFields)),
+                Some("__lk_make_struct") => Some(GlobalRef::Builtin(Builtin::MakeStruct)),
+                Some("__lk_bit_and") => Some(GlobalRef::Builtin(Builtin::BitAnd)),
+                Some("__lk_bit_or") => Some(GlobalRef::Builtin(Builtin::BitOr)),
+                Some("__lk_bit_not") => Some(GlobalRef::Builtin(Builtin::BitNot)),
                 Some("chan") => Some(GlobalRef::Builtin(Builtin::ChanNew)),
                 Some("send") => Some(GlobalRef::Builtin(Builtin::ChanSend)),
                 Some("recv") => Some(GlobalRef::Builtin(Builtin::ChanRecv)),
@@ -5086,7 +5577,7 @@ fn lower_inst(
                     let (module, member) = name.split_once("::").expect("checked");
                     Some(GlobalRef::ModuleFn(module.to_string(), member.to_string()))
                 }
-                Some(name) if MODULE_GLOBALS.contains(&name) => Some(GlobalRef::Module(name.to_string())),
+                Some(name) if module_global(name) => Some(GlobalRef::Module(name.to_string())),
                 _ => None,
             };
             if let Some(global_ref) = global_ref {
@@ -5107,9 +5598,7 @@ fn lower_inst(
                 if let Some((module, member)) = sig.imports.module_items.get(name) {
                     // `use { json } from encoding` binds a *submodule* object,
                     // not a function: member reads route through Module.
-                    let global_ref = if (module == "encoding" && matches!(member.as_str(), "json" | "yaml" | "toml"))
-                        || (module == "net" && matches!(member.as_str(), "socket" | "tcp"))
-                    {
+                    let global_ref = if is_submodule(module, member) {
                         GlobalRef::Module(member.clone())
                     } else {
                         GlobalRef::ModuleFn(module.clone(), member.clone())
@@ -5140,10 +5629,13 @@ fn lower_inst(
                 return Err(Unsupported::Opcode { pc, op: instr.opcode() });
             };
             // A typed slot read before its entry-prefix initialization could
-            // observe native zero where the VM has nil — reject. A `Dyn` slot
-            // is exempt: its zeroinit `{0, 0}` *is* the nil tag, VM-exact.
+            // observe native zero where the VM has nil. A `Dyn` slot is
+            // exempt — its zeroinit `{0, 0}` *is* the nil tag, VM-exact — so
+            // force the slot Dyn and rerun (retriable discovery: writes box,
+            // an early read observes boxed nil).
             if !initialized && ty != Ty::Dyn {
-                return Err(Unsupported::Opcode { pc, op: instr.opcode() });
+                sig.force_dyn_globals.insert(slot);
+                return Err(Unsupported::TypeMismatch { pc });
             }
             let dst = ssa.new_val();
             insts.push(Inst::GlobalGet {
@@ -5164,6 +5656,12 @@ fn lower_inst(
                 }
                 Some(GlobalRef::Builtin(Builtin::Spawn)) => {
                     lower_spawn(ssa, insts, funcs, entry, sig, base, instr.c() as usize, block, pc)?;
+                }
+                Some(GlobalRef::Builtin(Builtin::MergeFields)) => {
+                    lower_merge_fields(ssa, insts, base, instr.c() as usize, block, pc)?;
+                }
+                Some(GlobalRef::Builtin(Builtin::MakeStruct)) => {
+                    lower_make_struct(ssa, insts, sig, base, instr.c() as usize, block, pc)?;
                 }
                 Some(GlobalRef::Builtin(Builtin::CallMethod)) => {
                     if instr.c() != 3 {
@@ -5195,20 +5693,7 @@ fn lower_inst(
                     // to the same lowering with the receiver at `base+1`.
                     let argc = instr.c() as usize;
                     if matches!(module.as_str(), "iter" | "stream")
-                        && matches!(
-                            name.as_str(),
-                            "map"
-                                | "filter"
-                                | "reduce"
-                                | "enumerate"
-                                | "zip"
-                                | "take"
-                                | "skip"
-                                | "chain"
-                                | "flatten"
-                                | "unique"
-                                | "chunk"
-                        )
+                        && method_role(&name).is_some_and(|role| role.forward)
                         && argc >= 1
                     {
                         let (receiver, receiver_ty) = ssa.read(base.wrapping_add(1), block, pc)?;
@@ -6385,6 +6870,12 @@ fn lower_inst(
                     }
                     ("str_f64_set", coerce_to_f64(ssa, insts, bv, bty))
                 }
+                // Struct-instance field stores (`p.x += 9` on a `NewObject`
+                // map): any boxable value stores boxed, insert-or-update.
+                Ty::MapStrDyn => {
+                    let (bv, bty) = ssa.read(instr.b(), block, pc)?;
+                    ("str_dyn_set", to_dyn_any(ssa, insts, bv, bty, pc)?)
+                }
                 _ => return Err(Unsupported::TypeMismatch { pc }),
             };
             insts.push(Inst::Call {
@@ -6956,6 +7447,47 @@ fn lower_builtin_call(
             ssa.write(base, block, (nil, Ty::Nil));
             return Ok(());
         }
+        Builtin::BitAnd | Builtin::BitOr => {
+            if argc != 2 {
+                return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+            }
+            let lhs = read_typed_scalar(ssa, insts, base.wrapping_add(1), block, Ty::I64, pc)?;
+            let rhs = read_typed_scalar(ssa, insts, base.wrapping_add(2), block, Ty::I64, pc)?;
+            let dst = ssa.new_val();
+            insts.push(Inst::IntBin {
+                dst,
+                op: if matches!(builtin, Builtin::BitAnd) {
+                    IntBinOp::And
+                } else {
+                    IntBinOp::Or
+                },
+                lhs,
+                rhs,
+            });
+            ssa.write(base, block, (dst, Ty::I64));
+            return Ok(());
+        }
+        Builtin::BitNot => {
+            // `~x` = `x xor -1` (two's complement bitwise not).
+            if argc != 1 {
+                return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+            }
+            let v = read_typed_scalar(ssa, insts, base.wrapping_add(1), block, Ty::I64, pc)?;
+            let minus_one = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: minus_one,
+                value: Const::I64(-1),
+            });
+            let dst = ssa.new_val();
+            insts.push(Inst::IntBin {
+                dst,
+                op: IntBinOp::Xor,
+                lhs: v,
+                rhs: minus_one,
+            });
+            ssa.write(base, block, (dst, Ty::I64));
+            return Ok(());
+        }
         Builtin::ChanNew => {
             // `chan(capacity[, type])` — the type string is a VM checker
             // hint, dropped natively. The channel value is its i64 id.
@@ -7008,6 +7540,10 @@ fn lower_builtin_call(
         }
         Builtin::Spawn => {
             // Dispatched by the caller (needs the function table/signatures).
+            return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+        }
+        Builtin::MergeFields | Builtin::MakeStruct => {
+            // Dispatched by the caller (struct provenance needs `sig`).
             return Err(Unsupported::Opcode { pc, op: Opcode::Call });
         }
         Builtin::SelectBlock => {
@@ -7431,11 +7967,8 @@ fn lower_method_call_k(
     // A boxed Dyn receiver unwraps through the as_list guard for list-only
     // method names (a non-list tag aborts — the VM's method-on-wrong-type is
     // a loud error too). Names shared with str/map receivers stay boxed.
-    let (receiver, receiver_ty) = if receiver_ty == Ty::Dyn
-        && matches!(
-            name.as_str(),
-            "take" | "skip" | "concat" | "reduce" | "map" | "filter" | "unique" | "sort" | "reverse"
-        ) {
+    let role = method_role(&name);
+    let (receiver, receiver_ty) = if receiver_ty == Ty::Dyn && role.is_some_and(|role| role.unbox_list) {
         let unboxed = ssa.new_val();
         insts.push(Inst::Call {
             dst: Some(unboxed),
@@ -7443,7 +7976,7 @@ fn lower_method_call_k(
             args: vec![receiver],
         });
         (unboxed, Ty::ListDyn)
-    } else if receiver_ty == Ty::Dyn && matches!(name.as_str(), "has" | "keys" | "values" | "delete" | "remove") {
+    } else if receiver_ty == Ty::Dyn && role.is_some_and(|role| role.unbox_map) {
         // Map-only method names unbox through the as_map guard (a parsed
         // json/yaml value flows as Dyn); `get` stays ambiguous (lists have
         // it too) and keeps rejecting.

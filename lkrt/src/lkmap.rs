@@ -208,6 +208,61 @@ pub unsafe extern "C" fn lkrt_lkmap_str_dyn_without(handle: *mut c_void, key: *c
     crate::state::arena_handle(copy)
 }
 
+/// `Struct { ..base, k: v }` — the VM's `__lk_merge_fields`: a fresh map
+/// takes the base entries (base iteration order) whose keys the overlay
+/// does not shadow, then every overlay entry (overlay iteration order) —
+/// exactly the two-step insertion `merge_field_maps` performs, so the Fx
+/// layout matches by the `vm_mirror` argument.
+///
+/// # Safety
+/// Both handles must be live `Map<str, Dyn>` handles, or null (empty).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lkmap_str_dyn_merge(base: *mut c_void, overlay: *mut c_void) -> *mut c_void {
+    let empty = StrDynMap::default();
+    // SAFETY: caller passes live `StrDynMap` handles (or null).
+    let base: &StrDynMap = if base.is_null() {
+        &empty
+    } else {
+        unsafe { &*(base as *mut StrDynMap) }
+    };
+    // SAFETY: as above.
+    let overlay: &StrDynMap = if overlay.is_null() {
+        &empty
+    } else {
+        unsafe { &*(overlay as *mut StrDynMap) }
+    };
+    let mut out = StrDynMap::default();
+    for (key, &value) in base {
+        if !overlay.contains_key(key) {
+            out.insert(key.clone(), value);
+        }
+    }
+    for (key, &value) in overlay {
+        out.insert(key.clone(), value);
+    }
+    crate::state::arena_handle(out)
+}
+
+/// Fresh zero-capacity rebuild in `src`'s iteration order — the VM's
+/// `__lk_make_struct` copies the merged field map into the new object
+/// (`runtime_object_fields_from_map`), so the native carrier replays the
+/// same build to keep the iteration order identical.
+///
+/// # Safety
+/// `src` must be a live `Map<str, Dyn>` handle, or null (empty).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lkmap_str_dyn_rebuild(src: *mut c_void) -> *mut c_void {
+    let mut out = StrDynMap::default();
+    if !src.is_null() {
+        // SAFETY: caller passes a live `StrDynMap` handle.
+        let src = unsafe { &*(src as *mut StrDynMap) };
+        for (key, &value) in src {
+            out.insert(key.clone(), value);
+        }
+    }
+    crate::state::arena_handle(out)
+}
+
 // ── Iteration family (order = the VM's, by the layout-mirror argument in
 // `vm_mirror.rs`): pair lists for `for pair in map`, keys/values snapshots,
 // and delete-with-removed-value. Every produced list is a dyn list (the VM
@@ -536,6 +591,68 @@ pub unsafe extern "C" fn lkrt_lkmap_i64_f64_get_pair(handle: *mut c_void, key: i
     }
 }
 
+// ── Mixed-value map (`Map<str, LkDyn>`, plan M4.2 Dyn) ────────────────
+
+pub(crate) type StrDynMap = FxMap<String, crate::lkdyn::LkDyn>;
+
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_lkmap_str_dyn_new() -> *mut c_void {
+    crate::state::arena_handle(StrDynMap::default())
+}
+
+/// # Safety
+/// `handle` must be a live handle from [`lkrt_lkmap_str_dyn_new`], or null;
+/// `key` must be a NUL-terminated string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lkmap_str_dyn_set(handle: *mut c_void, key: *const c_char, value: crate::lkdyn::LkDyn) {
+    if handle.is_null() {
+        return;
+    }
+    let map = unsafe { &mut *(handle as *mut StrDynMap) };
+    set_str_key(map, unsafe { key_str(key) }, value);
+}
+
+/// A missing key is `nil` — the Dyn carrier's Nil tag *is* the absent case,
+/// so no `Maybe` wrapper is needed (matches the VM's nil-on-missing-key).
+///
+/// # Safety
+/// `handle` must be a live handle from [`lkrt_lkmap_str_dyn_new`], or null;
+/// `key` must be a NUL-terminated string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lkmap_str_dyn_get(handle: *mut c_void, key: *const c_char) -> crate::lkdyn::LkDyn {
+    if handle.is_null() {
+        return crate::lkdyn::LkDyn::NIL;
+    }
+    let map = unsafe { &*(handle as *mut StrDynMap) };
+    map.get(unsafe { key_str(key) })
+        .copied()
+        .unwrap_or(crate::lkdyn::LkDyn::NIL)
+}
+
+/// Key membership (distinct from `get`: a stored-nil value still counts).
+///
+/// # Safety
+/// `handle` must be a live handle from [`lkrt_lkmap_str_dyn_new`], or null;
+/// `key` must be a NUL-terminated string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lkmap_str_dyn_has(handle: *mut c_void, key: *const c_char) -> i64 {
+    if handle.is_null() {
+        return 0;
+    }
+    let map = unsafe { &*(handle as *mut StrDynMap) };
+    i64::from(map.contains_key(unsafe { key_str(key) }))
+}
+
+/// # Safety
+/// `handle` must be a live handle from [`lkrt_lkmap_str_dyn_new`], or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lkmap_str_dyn_len(handle: *mut c_void) -> i64 {
+    if handle.is_null() {
+        return 0;
+    }
+    unsafe { &*(handle as *mut StrDynMap) }.len() as i64
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -623,66 +740,4 @@ mod tests {
             assert_eq!(lkrt_lkmap_str_i64_get_pair(h, miss.as_ptr()).present, 0);
         }
     }
-}
-
-// ── Mixed-value map (`Map<str, LkDyn>`, plan M4.2 Dyn) ────────────────
-
-pub(crate) type StrDynMap = FxMap<String, crate::lkdyn::LkDyn>;
-
-#[unsafe(no_mangle)]
-pub extern "C" fn lkrt_lkmap_str_dyn_new() -> *mut c_void {
-    crate::state::arena_handle(StrDynMap::default())
-}
-
-/// # Safety
-/// `handle` must be a live handle from [`lkrt_lkmap_str_dyn_new`], or null;
-/// `key` must be a NUL-terminated string.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn lkrt_lkmap_str_dyn_set(handle: *mut c_void, key: *const c_char, value: crate::lkdyn::LkDyn) {
-    if handle.is_null() {
-        return;
-    }
-    let map = unsafe { &mut *(handle as *mut StrDynMap) };
-    set_str_key(map, unsafe { key_str(key) }, value);
-}
-
-/// A missing key is `nil` — the Dyn carrier's Nil tag *is* the absent case,
-/// so no `Maybe` wrapper is needed (matches the VM's nil-on-missing-key).
-///
-/// # Safety
-/// `handle` must be a live handle from [`lkrt_lkmap_str_dyn_new`], or null;
-/// `key` must be a NUL-terminated string.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn lkrt_lkmap_str_dyn_get(handle: *mut c_void, key: *const c_char) -> crate::lkdyn::LkDyn {
-    if handle.is_null() {
-        return crate::lkdyn::LkDyn::NIL;
-    }
-    let map = unsafe { &*(handle as *mut StrDynMap) };
-    map.get(unsafe { key_str(key) })
-        .copied()
-        .unwrap_or(crate::lkdyn::LkDyn::NIL)
-}
-
-/// Key membership (distinct from `get`: a stored-nil value still counts).
-///
-/// # Safety
-/// `handle` must be a live handle from [`lkrt_lkmap_str_dyn_new`], or null;
-/// `key` must be a NUL-terminated string.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn lkrt_lkmap_str_dyn_has(handle: *mut c_void, key: *const c_char) -> i64 {
-    if handle.is_null() {
-        return 0;
-    }
-    let map = unsafe { &*(handle as *mut StrDynMap) };
-    i64::from(map.contains_key(unsafe { key_str(key) }))
-}
-
-/// # Safety
-/// `handle` must be a live handle from [`lkrt_lkmap_str_dyn_new`], or null.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn lkrt_lkmap_str_dyn_len(handle: *mut c_void) -> i64 {
-    if handle.is_null() {
-        return 0;
-    }
-    unsafe { &*(handle as *mut StrDynMap) }.len() as i64
 }

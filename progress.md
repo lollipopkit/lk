@@ -897,3 +897,32 @@ MIR 新增 TryCall/TraitDispatch 两条文本展开指令、fixpoint 新增
 dyn_rets/spawned_isolate/TraitEnv 三套机制。门禁纪律全程保持:
 每 commit 覆盖率单调不降 + 四套差分 + workspace + fuzz + clippy/fmt/
 no_std + dist bench 噪声带(0.986-1.076x)。
+
+## 打磨轮:深覆盖收官后的遗留修复(2026-07-08,分支 polish/post-deep-coverage)
+
+- **P1**:clippy --all-targets 36 条清零(22 条在测试)+ check.yml
+  gate 加 --all-targets——-D warnings 盲区(#17 两轮 CI 红)关闭。
+- **P2**:native raise 前缀统一(map_native_error 去
+  "native `{name}` failed: " 包装,catch 文本 = 裸 cause,与
+  error(v) 对称);semantics.md 新增「错误文本」裁决(跨后端文本仍
+  不保证逐字一致,差分语料不打印 catch 文本)。
+- **P3**:docs/macros.md(声明宏/hygiene/导入四形式/内建 8 宏/
+  provider/CLI 全 flags,示例实测)+ README ×2 补链。
+- **P4**:select 200µs spin-poll → SelectGen 代数 Condvar(7 个
+  通知点 drop-锁后 bump+broadcast;wait_timeout 1ms 仅作丢失唤醒
+  保险);跨线程唤醒功能单测。
+- **P5**:lower 7 处硬编码名单收拢三张声明表(MODULE_TABLE/
+  MODULE_ABI/METHOD_TABLE),新增 stdlib 成员=加一行;纯重构
+  coverage 精确不变。AbiRef::new 升 const。
+- **P6**:fixpoint 收敛比较消第二组 clone(逐字段比较);
+  generation-counter 裁决不做(漏 bump=false convergence=错编)。
+- **P7-P10(51/51 满额)**:AddInt list 臂(spread;f64/str_chain
+  新 ABI,同型保 typed display)· IntBinOp And/Or/Xor(位运算)·
+  SetFieldK Dyn 臂 · struct update(str_dyn_merge 镜像
+  merge_field_maps 两步序 + str_dyn_rebuild 镜像 make_struct fresh
+  copy + provenance/trait 标记)· **force_dyn_globals**(非前缀
+  初始化全局被函数读 → 槽强制 Dyn,zeroinit=nil VM-exact,
+  retriable)——「mutable 全局首版不做」最后残留清除。
+  "ha"*3 编译器常量折叠,无需改动(probe 钉实)。
+- bench 全程噪声带(0.990-1.011x)。**唯一留档遗留:goroutine
+  死锁检测(超范围)。**

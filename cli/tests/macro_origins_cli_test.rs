@@ -87,10 +87,10 @@ impl Drop for TempDirGuard {
 }
 
 fn ensure_clean_dir(dir: &Path) {
-    if let Err(err) = fs::remove_dir_all(dir) {
-        if err.kind() != std::io::ErrorKind::NotFound {
-            eprintln!("warning: failed to remove temp dir {}: {err}", dir.display());
-        }
+    if let Err(err) = fs::remove_dir_all(dir)
+        && err.kind() != std::io::ErrorKind::NotFound
+    {
+        eprintln!("warning: failed to remove temp dir {}: {err}", dir.display());
     }
     create_dir_all(dir).expect("create tmp dir");
 }

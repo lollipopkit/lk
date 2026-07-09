@@ -227,8 +227,12 @@
   CI 等价。
 - GetGlobal 13(try$call/并发/模块白名单/trait)= 再修阶段 a-d,未启
 - **✅ 裁决不做**:callable trait 反转 · 真机/QEMU demo · 细粒度 feature 拆分。
-- **可选后续**:native raise 前缀统一(catch 到的 native 错误带 "native ... failed:" 前缀,
-  error() 一等值无)· goroutine 泄漏之外的死锁检测。
+- **可选后续**:goroutine 泄漏之外的死锁检测。
+- **🏁 打磨轮完成(2026-07-08,分支 polish/post-deep-coverage,未开 PR)**:
+  P1 clippy --all-targets 清零+CI gate · P2 raise 前缀统一 · P3 docs/macros.md ·
+  P4 select Condvar 唤醒 · P5 lower 名单三张表 · P6 收敛检查省 clone ·
+  P7-P10 unsupported.lk 全翻转(list concat/位运算/SetFieldK Dyn/struct update
+  镜像/force_dyn_globals)——**覆盖率 51/51 满额**。细节 progress.md「打磨轮」。
 
 ## 护栏 & 续接
 全量 tests 0 失败 / clippy 0 / fmt 0 / no_std 0/0 / GC-stress 全绿 / bench 1.021x(基线内)/

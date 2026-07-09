@@ -397,7 +397,7 @@ mod tests {
             panic!("expected runtime callable object, got {:?}", closure_value.kind());
         };
         assert!(matches!(
-            closure_result.state.heap.get(*handle).map(|value| value),
+            closure_result.state.heap.get(*handle),
             Some(HeapValue::Callable(_))
         ));
 

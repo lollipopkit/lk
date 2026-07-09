@@ -436,7 +436,7 @@ mod tests {
     fn execute_import_source(source: &str, resolver: Arc<ModuleResolver>) -> Result<RuntimeVal> {
         let program = parse_program(source)?;
         let mut ctx = VmContext::new().with_resolver(resolver);
-        Ok(program.execute_with_ctx(&mut ctx)?.first_return().clone())
+        Ok(*program.execute_with_ctx(&mut ctx)?.first_return())
     }
 
     #[test]

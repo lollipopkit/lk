@@ -194,6 +194,8 @@ macro_rules! for_each_abi_fn {
             ("list_h", "i64_take", lkrt_lklist_i64_take, WritesHost, [Ptr, I64], Ptr);
             ("list_h", "i64_skip", lkrt_lklist_i64_skip, WritesHost, [Ptr, I64], Ptr);
             ("list_h", "i64_chain", lkrt_lklist_i64_chain, WritesHost, [Ptr, Ptr], Ptr);
+            ("list_h", "f64_chain", lkrt_lklist_f64_chain, WritesHost, [Ptr, Ptr], Ptr);
+            ("list_h", "str_chain", lkrt_lklist_str_chain, WritesHost, [Ptr, Ptr], Ptr);
             ("list_h", "i64_push", lkrt_lklist_i64_push, WritesHost, [Ptr, I64], Nil);
             // List HOF over compiled zero-capture lambdas (`ptr @lk_fn_N`
             // callbacks). The callback may abort (div/0 inside the lambda), so
@@ -369,6 +371,10 @@ macro_rules! for_each_abi_fn {
             ("map_h", "str_dyn_len", lkrt_lkmap_str_dyn_len, ReadsHost, [Ptr], I64);
             ("map_h", "str_dyn_has", lkrt_lkmap_str_dyn_has, ReadsHost, [Ptr, StrPtr], I64);
             ("map_h", "str_dyn_without", lkrt_lkmap_str_dyn_without, WritesHost, [Ptr, StrPtr], Ptr);
+            // Struct update (`P { ..base, k: v }`): the VM's merge_field_maps
+            // two-step insertion + make_struct's fresh field copy.
+            ("map_h", "str_dyn_merge", lkrt_lkmap_str_dyn_merge, WritesHost, [Ptr, Ptr], Ptr);
+            ("map_h", "str_dyn_rebuild", lkrt_lkmap_str_dyn_rebuild, WritesHost, [Ptr], Ptr);
             // Map-literal protocol (VM-order mirror, plan D1): stage-1 build
             // in source order, then finish into the typed carrier — the
             // result iterates exactly like the VM's two-stage construction.

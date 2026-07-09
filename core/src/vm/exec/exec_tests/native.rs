@@ -245,8 +245,10 @@ fn direct_runtime_closure_call_restores_state_after_arg_error() {
         ..Function::default()
     };
     let module = Module::single(callee);
-    let mut state = RuntimeModuleState::default();
-    state.stack_top = 1;
+    let mut state = RuntimeModuleState {
+        stack_top: 1,
+        ..Default::default()
+    };
     state.stack.resize(1, RuntimeVal::Nil);
     state.stack[0] = RuntimeVal::Int(99);
     let callable = RuntimeVal::Obj(state.heap.alloc(HeapValue::Callable(CallableValue::Closure {
@@ -255,8 +257,8 @@ fn direct_runtime_closure_call_restores_state_after_arg_error() {
     })));
     let mut ctx = VmContext::new_without_core_vm_builtins();
 
-    let err = call_runtime_value_runtime(callable.clone(), &[], &mut state, Some(&module), Some(&mut ctx))
-        .expect_err("arity error");
+    let err =
+        call_runtime_value_runtime(callable, &[], &mut state, Some(&module), Some(&mut ctx)).expect_err("arity error");
 
     assert!(err.to_string().contains("Function expects 1 positional arguments"));
     assert!(matches!(
@@ -281,8 +283,10 @@ fn direct_runtime_closure_named_call_restores_state_after_named_error() {
         ..Function::default()
     };
     let module = Module::single(callee);
-    let mut state = RuntimeModuleState::default();
-    state.stack_top = 1;
+    let mut state = RuntimeModuleState {
+        stack_top: 1,
+        ..Default::default()
+    };
     state.stack.resize(1, RuntimeVal::Nil);
     state.stack[0] = RuntimeVal::Int(77);
     let callable = RuntimeVal::Obj(state.heap.alloc(HeapValue::Callable(CallableValue::Closure {
@@ -292,15 +296,9 @@ fn direct_runtime_closure_named_call_restores_state_after_named_error() {
     let named = state.heap.alloc(HeapValue::String("not-a-map".into()));
     let mut ctx = VmContext::new_without_core_vm_builtins();
 
-    let err = call_runtime_value_runtime_named_map(
-        callable.clone(),
-        &[],
-        Some(named),
-        &mut state,
-        Some(&module),
-        Some(&mut ctx),
-    )
-    .expect_err("named map error");
+    let err =
+        call_runtime_value_runtime_named_map(callable, &[], Some(named), &mut state, Some(&module), Some(&mut ctx))
+            .expect_err("named map error");
 
     assert!(err.to_string().contains("named arguments must be a map"));
     assert!(matches!(
@@ -356,7 +354,7 @@ fn direct_full_state_native_named_map_uses_heap_map_source() {
 
     let mut ctx = VmContext::new_without_core_vm_builtins();
     let result = call_runtime_value_runtime_named_map(
-        callable.clone(),
+        callable,
         &[RuntimeVal::Int(5)],
         Some(named),
         &mut state,
@@ -401,8 +399,8 @@ fn direct_runtime_native_collects_after_heap_allocation() {
     state.heap.set_gc_threshold(1);
     let mut ctx = VmContext::new_without_core_vm_builtins();
 
-    let result = call_runtime_value_runtime(callable.clone(), &[], &mut state, None, Some(&mut ctx))
-        .expect("direct runtime native");
+    let result =
+        call_runtime_value_runtime(callable, &[], &mut state, None, Some(&mut ctx)).expect("direct runtime native");
 
     let RuntimeVal::Obj(live) = result else {
         panic!("native should return live heap object");
@@ -440,7 +438,7 @@ fn direct_runtime_native_collects_after_heap_allocation_error() {
     state.heap.set_gc_threshold(1);
     let mut ctx = VmContext::new_without_core_vm_builtins();
 
-    let err = call_runtime_value_runtime(callable.clone(), &[], &mut state, None, Some(&mut ctx))
+    let err = call_runtime_value_runtime(callable, &[], &mut state, None, Some(&mut ctx))
         .expect_err("direct runtime native should fail");
 
     assert!(err.to_string().contains("native failed after allocation"));

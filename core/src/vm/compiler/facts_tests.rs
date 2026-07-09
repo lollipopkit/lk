@@ -307,9 +307,8 @@ fn compiler_elides_known_map_and_object_set_key_materialization() {
 
     assert_eq!(set_fields.len(), 2, "expected map and object SetFieldK");
     for (pc, instr) in set_fields {
-        assert_eq!(
+        assert!(
             function.consts.string(instr.c() as u16).is_some(),
-            true,
             "SetFieldK should carry the const key index inline"
         );
         assert!(

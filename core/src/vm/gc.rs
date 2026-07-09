@@ -109,8 +109,10 @@ mod tests {
 
     #[test]
     fn gc_roots_collect_globals_active_stack_and_extra_values() {
-        let mut state = RuntimeModuleState::default();
-        state.globals = vec![RuntimeVal::Obj(HeapRef::new(1)), RuntimeVal::Int(9)];
+        let mut state = RuntimeModuleState {
+            globals: vec![RuntimeVal::Obj(HeapRef::new(1)), RuntimeVal::Int(9)],
+            ..Default::default()
+        };
         state.stack = vec![
             RuntimeVal::Obj(HeapRef::new(2)),
             RuntimeVal::Nil,
