@@ -133,7 +133,14 @@ fn raise_current(value: LkDyn) -> ! {
             let raw = SPARE_BUF.with(|spare| spare.park(buf));
             unsafe { _longjmp(raw as *mut c_void, 1) }
         }
-        None => crate::abi::flush_and_abort(),
+        // Uncaught: surface the error before dying — the VM prints its
+        // uncaught message to stderr, a silent abort loses it. (Only the
+        // stderr *text* differs across backends; the differential contract
+        // compares stdout + success only.)
+        None => {
+            eprintln!("lk: uncaught error: {}", crate::lkdyn::display_for_diagnostics(value));
+            crate::abi::flush_and_abort()
+        }
     }
 }
 

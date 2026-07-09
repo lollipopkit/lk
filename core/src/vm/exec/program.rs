@@ -185,16 +185,36 @@ pub struct ModuleFunctionOutcome {
     pub state: crate::vm::RuntimeModuleState,
 }
 
+/// A bridge call either returns or raises. `Err` on the outer `Result` stays
+/// reserved for infrastructure failures (bad artifact, bad index) — a *raise*
+/// is a language-level outcome the bridge re-raises natively so an enclosing
+/// native `try` observes it exactly like the VM would (v2 C6).
+pub enum ModuleFunctionCall {
+    Return(ModuleFunctionOutcome),
+    /// An uncaught raise: the first-class error value (readable against
+    /// `state`) plus the display rendered at raise time (the uncaught-error
+    /// message).
+    Raise {
+        value: RuntimeVal,
+        rendered: alloc::string::String,
+        state: crate::vm::RuntimeModuleState,
+    },
+}
+
 /// Discarding variant of [`call_module_function_with_ctx_keep_state`] — the
 /// v1 bridge entry (`lk_hybrid_call_v`): the returned value is only
-/// meaningful for scalars, because the per-call state drops here.
+/// meaningful for scalars, because the per-call state drops here. A raise
+/// comes back as `Err` carrying the rendered message.
 pub fn call_module_function_with_ctx(
     module: &crate::vm::Module,
     function_index: u32,
     args: &[ModuleFunctionArg],
     ctx: &mut VmContext,
 ) -> Result<RuntimeVal> {
-    Ok(call_module_function_with_ctx_keep_state(module, function_index, args, ctx)?.value)
+    match call_module_function_with_ctx_keep_state(module, function_index, args, ctx)? {
+        ModuleFunctionCall::Return(outcome) => Ok(outcome.value),
+        ModuleFunctionCall::Raise { rendered, .. } => Err(anyhow::anyhow!(rendered)),
+    }
 }
 
 /// Call one function of a compiled module with positional scalar arguments —
@@ -209,7 +229,7 @@ pub fn call_module_function_with_ctx_keep_state(
     function_index: u32,
     args: &[ModuleFunctionArg],
     ctx: &mut VmContext,
-) -> Result<ModuleFunctionOutcome> {
+) -> Result<ModuleFunctionCall> {
     use crate::val::{CallableValue, HeapValue, ShortStr};
 
     if module.functions.get(function_index as usize).is_none() {
@@ -240,8 +260,36 @@ pub fn call_module_function_with_ctx_keep_state(
             },
         });
     }
-    let value = super::call_runtime_value_runtime(callee, &values, &mut state, Some(module), Some(ctx))?;
-    Ok(ModuleFunctionOutcome { value, state })
+    match super::call_runtime_value_runtime(callee, &values, &mut state, Some(module), Some(ctx)) {
+        Ok(value) => Ok(ModuleFunctionCall::Return(ModuleFunctionOutcome { value, state })),
+        Err(err) => {
+            // A language-level raise carries its first-class value (heap refs
+            // resolve against the per-call state, which rides along) — the
+            // native bridge re-raises it so `try` semantics match the VM.
+            if let Some(raised) = err.downcast_ref::<super::handler::LkRaisedValue>() {
+                return Ok(ModuleFunctionCall::Raise {
+                    value: raised.value,
+                    rendered: raised.rendered.as_ref().to_string(),
+                    state,
+                });
+            }
+            // A message-only runtime raise: the VM's catch binds the message
+            // *string* (`try { 1/0 } catch e` → `typeof(e) == "String"`).
+            if let Some(raise) = err.downcast_ref::<super::handler::LanguageRaise>() {
+                let message = raise.message.clone();
+                let value = match ShortStr::new(message.as_ref()) {
+                    Some(short) => RuntimeVal::ShortStr(short),
+                    None => RuntimeVal::Obj(state.heap_mut().alloc(HeapValue::String(Arc::from(message.as_ref())))),
+                };
+                return Ok(ModuleFunctionCall::Raise {
+                    value,
+                    rendered: message.as_ref().to_string(),
+                    state,
+                });
+            }
+            Err(err)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -309,13 +357,15 @@ mod tests {
         let module = compile_source("fn make(n) { return [n, \"a-long-string-over-7-bytes\", 2.5]; }\nreturn 0;\n");
         let index = function_index(&module, "make");
         let mut ctx = VmContext::new_without_core_vm_builtins();
-        let outcome = super::call_module_function_with_ctx_keep_state(
+        let super::ModuleFunctionCall::Return(outcome) = super::call_module_function_with_ctx_keep_state(
             &module,
             index,
             &[super::ModuleFunctionArg::Int(7)],
             &mut ctx,
         )
-        .expect("bridge call");
+        .expect("bridge call") else {
+            panic!("expected a returning call");
+        };
 
         let RuntimeVal::Obj(handle) = outcome.value else {
             panic!("expected a heap-backed list result");
@@ -340,8 +390,11 @@ mod tests {
         let module = compile_source("fn make() { return {\"alpha\": 1, \"beta\": 2, \"gamma\": 3}; }\nreturn 0;\n");
         let index = function_index(&module, "make");
         let mut ctx = VmContext::new_without_core_vm_builtins();
-        let outcome =
-            super::call_module_function_with_ctx_keep_state(&module, index, &[], &mut ctx).expect("bridge call");
+        let super::ModuleFunctionCall::Return(outcome) =
+            super::call_module_function_with_ctx_keep_state(&module, index, &[], &mut ctx).expect("bridge call")
+        else {
+            panic!("expected a returning call");
+        };
 
         let RuntimeVal::Obj(handle) = outcome.value else {
             panic!("expected a heap-backed map result");

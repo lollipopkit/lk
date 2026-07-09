@@ -210,14 +210,14 @@ impl HybridModule {
     }
 
     /// Call function `function_index` and keep the per-call state alive so
-    /// heap-backed results (lists, maps, long strings) stay readable — the
-    /// v2 return bridge marshals them into native memory before dropping the
-    /// outcome (`docs/llvm/tier1-hybrid.md` v2).
+    /// heap-backed results (returned *or raised*) stay readable — the v2
+    /// bridge marshals them into native memory before dropping the outcome
+    /// (`docs/llvm/tier1-hybrid.md` v2).
     pub fn call_keep_state(
         &mut self,
         function_index: u32,
         args: &[HybridArg],
-    ) -> Result<lk_core::vm::ModuleFunctionOutcome> {
+    ) -> Result<lk_core::vm::ModuleFunctionCall> {
         lk_core::vm::call_module_function_with_ctx_keep_state(&self.module, function_index, args, &mut self.ctx)
     }
 }
@@ -572,12 +572,47 @@ pub mod ffi {
     /// when `argc == 0`); string payloads must be valid NUL-terminated UTF-8.
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn lk_hybrid_call_v(func_index: u32, args: *const LkHybridArg, argc: usize) {
+        let _ = unsafe { bridge_call(func_index, args, argc) };
+    }
+
+    /// Shared v/r bridge body: run the VM call, then either hand back the
+    /// marshaled return or re-raise an uncaught VM error into the nearest
+    /// native `try` frame (VM `try` semantics, v2 C6). Every Rust value —
+    /// including the module Mutex guard and the per-call VM state — drops
+    /// *before* the raise: the longjmp skips Rust drops, and a live guard
+    /// would deadlock the next bridge call.
+    ///
+    /// # Safety
+    /// As documented on [`lk_hybrid_call_v`].
+    unsafe fn bridge_call(func_index: u32, args: *const LkHybridArg, argc: usize) -> LkHybridDyn {
+        use lk_core::vm::ModuleFunctionCall;
+
         let marshaled = unsafe { marshal_args(args, argc) };
         let mut module = hybrid_module()
             .lock()
             .unwrap_or_else(|_| hybrid_die(format_args!("bridge state poisoned")));
-        if let Err(err) = module.call_discard(func_index, &marshaled) {
-            hybrid_die(format_args!("VM-executed function {func_index} failed: {err:#}"));
+        let call = module.call_keep_state(func_index, &marshaled);
+        drop(module);
+        match call {
+            Ok(ModuleFunctionCall::Return(outcome)) => marshal_return(outcome.value, &outcome.state),
+            Ok(ModuleFunctionCall::Raise { value, rendered, state }) => {
+                let raise = RT_RAISE_DYN.load(Ordering::Acquire);
+                if raise == 0 {
+                    // No runtime table (an old wrapper): the v1 behavior.
+                    hybrid_die(format_args!("VM-executed function {func_index} failed: {rendered}"));
+                }
+                let payload = marshal_return(value, &state);
+                drop(state);
+                drop(rendered);
+                drop(marshaled);
+                // SAFETY: stored from a `RaiseDyn` in `lk_hybrid_register_rt`.
+                let raise = unsafe { core::mem::transmute::<usize, RaiseDyn>(raise) };
+                // Diverges: longjmp to the nearest native `try`, or lkrt's
+                // uncaught path (message + abort).
+                unsafe { raise(payload) };
+                unreachable!("lkrt_rt_raise_dyn never returns");
+            }
+            Err(err) => hybrid_die(format_args!("VM-executed function {func_index} failed: {err:#}")),
         }
     }
 
@@ -612,25 +647,31 @@ pub mod ffi {
     type ListDynPush = unsafe extern "C" fn(*mut c_void, LkHybridDyn);
     type MapStrDynNew = unsafe extern "C" fn() -> *mut c_void;
     type MapStrDynSet = unsafe extern "C" fn(*mut c_void, *const c_char, LkHybridDyn);
+    type RaiseDyn = unsafe extern "C" fn(LkHybridDyn);
 
     static RT_LIST_DYN_NEW: AtomicUsize = AtomicUsize::new(0);
     static RT_LIST_DYN_PUSH: AtomicUsize = AtomicUsize::new(0);
     static RT_MAP_STR_DYN_NEW: AtomicUsize = AtomicUsize::new(0);
     static RT_MAP_STR_DYN_SET: AtomicUsize = AtomicUsize::new(0);
+    static RT_RAISE_DYN: AtomicUsize = AtomicUsize::new(0);
 
-    /// Register the lkrt container constructor table (hybrid wrapper C
-    /// constructor). Container returns die without it.
+    /// Register the lkrt runtime table (hybrid wrapper C constructor):
+    /// container constructors for deep-converted returns, and the raise entry
+    /// that re-raises an uncaught VM error into the nearest native `try`.
+    /// Container returns die without it; raises fall back to the v1 exit.
     #[unsafe(no_mangle)]
     pub extern "C" fn lk_hybrid_register_rt(
         list_dyn_new: ListDynNew,
         list_dyn_push: ListDynPush,
         map_str_dyn_new: MapStrDynNew,
         map_str_dyn_set: MapStrDynSet,
+        raise_dyn: RaiseDyn,
     ) {
         RT_LIST_DYN_NEW.store(list_dyn_new as usize, Ordering::Release);
         RT_LIST_DYN_PUSH.store(list_dyn_push as usize, Ordering::Release);
         RT_MAP_STR_DYN_NEW.store(map_str_dyn_new as usize, Ordering::Release);
         RT_MAP_STR_DYN_SET.store(map_str_dyn_set as usize, Ordering::Release);
+        RT_RAISE_DYN.store(raise_dyn as usize, Ordering::Release);
     }
 
     struct HybridRt {
@@ -799,14 +840,7 @@ pub mod ffi {
     /// Same contract as [`lk_hybrid_call_v`].
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn lk_hybrid_call_r(func_index: u32, args: *const LkHybridArg, argc: usize) -> LkHybridDyn {
-        let marshaled = unsafe { marshal_args(args, argc) };
-        let mut module = hybrid_module()
-            .lock()
-            .unwrap_or_else(|_| hybrid_die(format_args!("bridge state poisoned")));
-        match module.call_keep_state(func_index, &marshaled) {
-            Ok(outcome) => marshal_return(outcome.value, &outcome.state),
-            Err(err) => hybrid_die(format_args!("VM-executed function {func_index} failed: {err:#}")),
-        }
+        unsafe { bridge_call(func_index, args, argc) }
     }
 
     #[cfg(test)]

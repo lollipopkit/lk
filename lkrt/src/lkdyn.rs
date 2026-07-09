@@ -427,6 +427,17 @@ dyn_ord!(lkrt_dyn_ge, >=);
 
 // ── Display (two modes, matching the VM's two display paths) ───────────
 
+/// Diagnostics rendering for the uncaught-error path (`panic.rs`): the plain
+/// display, never raising (an uncaught error must not recurse into raise).
+pub(crate) fn display_for_diagnostics(v: LkDyn) -> String {
+    let mut out = String::new();
+    match v.tag {
+        DYN_NIL | DYN_BOOL | DYN_I64 | DYN_F64 | DYN_STR | DYN_LIST | DYN_MAP => display_into(&mut out, v, false),
+        other => out.push_str(&format!("<unrenderable error value, tag {other}>")),
+    }
+    out
+}
+
 fn display_into(out: &mut String, v: LkDyn, quoted: bool) {
     match v.tag {
         DYN_NIL => out.push_str("nil"),

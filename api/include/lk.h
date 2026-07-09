@@ -83,13 +83,15 @@ typedef struct LkHybridDyn {
  * LkDyn-shaped value (v2 bridge). Same error behavior as lk_hybrid_call_v. */
 LkHybridDyn lk_hybrid_call_r(uint32_t func_index, const LkHybridArg *args, size_t argc);
 
-/* Register the lkrt container constructor table (the hybrid wrapper does
- * this in its C constructor): list/map returns deep-convert through these.
- * Container returns die without it. */
+/* Register the lkrt runtime table (the hybrid wrapper does this in its C
+ * constructor): list/map returns deep-convert through the constructors, and
+ * raise_dyn re-raises an uncaught VM error into the nearest native try.
+ * Container returns die without it; raises fall back to exit(1). */
 void lk_hybrid_register_rt(void *(*list_dyn_new)(void),
                            void (*list_dyn_push)(void *, LkHybridDyn),
                            void *(*map_str_dyn_new)(void),
-                           void (*map_str_dyn_set)(void *, const char *, LkHybridDyn));
+                           void (*map_str_dyn_set)(void *, const char *, LkHybridDyn),
+                           void (*raise_dyn)(LkHybridDyn));
 
 #ifdef __cplusplus
 } /* extern "C" */

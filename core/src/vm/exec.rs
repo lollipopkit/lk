@@ -26,9 +26,9 @@ mod value_ops;
 pub use super::RuntimeCallable;
 pub use imports::import_runtime_export;
 pub use program::{
-    ModuleFunctionArg, ModuleFunctionOutcome, call_module_function_with_ctx, call_module_function_with_ctx_keep_state,
-    compile_program_module_with_ctx, execute_compiled_module_with_ctx, execute_module_artifact_with_ctx,
-    execute_program, execute_program_with_ctx, execute_program_with_ctx_and_budget,
+    ModuleFunctionArg, ModuleFunctionCall, ModuleFunctionOutcome, call_module_function_with_ctx,
+    call_module_function_with_ctx_keep_state, compile_program_module_with_ctx, execute_compiled_module_with_ctx,
+    execute_module_artifact_with_ctx, execute_program, execute_program_with_ctx, execute_program_with_ctx_and_budget,
     execute_program_with_ctx_and_gc_threshold, execute_program_with_ctx_and_limits, execute_source,
 };
 #[cfg(test)]
