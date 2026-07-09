@@ -81,18 +81,27 @@ trait StreamCursor {
     fn collect_remaining(&mut self, limit: Option<i64>, runtime: &mut NativeRuntime<'_>) -> Result<TypedList> {
         let mut out = Vec::new();
         let mut taken = 0i64;
-        loop {
-            if let Some(limit) = limit
-                && taken >= limit
-            {
-                break;
+        // Collected values are host-held while `next` re-enters the VM for
+        // map/filter callbacks — pin each one (host_roots discipline).
+        let mark = runtime.host_roots_mark();
+        let run = (|| -> Result<()> {
+            loop {
+                if let Some(limit) = limit
+                    && taken >= limit
+                {
+                    break;
+                }
+                let Some(value) = self.next(runtime)? else {
+                    break;
+                };
+                runtime.host_root_push(value);
+                out.push(value);
+                taken += 1;
             }
-            let Some(value) = self.next(runtime)? else {
-                break;
-            };
-            out.push(value);
-            taken += 1;
-        }
+            Ok(())
+        })();
+        runtime.host_roots_truncate(mark);
+        run?;
         Ok(crate::typed_list_from_values(out, runtime.heap()))
     }
 }

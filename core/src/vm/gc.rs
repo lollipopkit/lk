@@ -81,6 +81,9 @@ impl RuntimeModuleState {
         // A first-class error value unwinding toward its `pcall` must survive GC
         // even though it is no longer on the VM stack (plan M2.2).
         roots.extend_values(self.pending_raise_root.iter());
+        // Values host (native) functions hold across re-entrant VM calls —
+        // e.g. an HOF's accumulated callback results (see `host_roots`).
+        roots.extend_values(&self.host_roots);
         roots
     }
 }
@@ -119,11 +122,12 @@ mod tests {
             RuntimeVal::Obj(HeapRef::new(3)),
         ];
         state.stack_top = 2;
+        state.host_root_push(RuntimeVal::Obj(HeapRef::new(5)));
         let extra = vec![RuntimeVal::Obj(HeapRef::new(4))];
 
         assert_eq!(
             state.gc_roots(&extra).into_refs(),
-            vec![HeapRef::new(1), HeapRef::new(2), HeapRef::new(4)]
+            vec![HeapRef::new(1), HeapRef::new(2), HeapRef::new(4), HeapRef::new(5)]
         );
     }
 

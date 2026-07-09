@@ -241,13 +241,20 @@ fn call_method_positional_runtime(
                 },
             };
             if let Some((state, mut ctx, module)) = runtime.parts_mut() {
+                // `items` may hold heap objects materialized off the receiver
+                // (e.g. long strings) that nothing else references — pin them
+                // for the duration of the callback loop or a GC inside the
+                // callback frees them mid-iteration.
+                let mark = state.host_roots_mark();
+                state.host_roots_extend(items.iter());
                 let result = match method_str {
-                    "filter" => list_filter(&items, &pos_args, state, module, &mut ctx)?,
-                    "map" => list_map(&items, &pos_args, state, module, &mut ctx)?,
-                    "reduce" => list_reduce(&items, &pos_args, state, module, &mut ctx)?,
-                    _ => None,
+                    "filter" => list_filter(&items, &pos_args, state, module, &mut ctx),
+                    "map" => list_map(&items, &pos_args, state, module, &mut ctx),
+                    "reduce" => list_reduce(&items, &pos_args, state, module, &mut ctx),
+                    _ => Ok(None),
                 };
-                if let Some(r) = result {
+                state.host_roots_truncate(mark);
+                if let Some(r) = result? {
                     return Ok(r);
                 }
             }
@@ -1275,6 +1282,9 @@ fn list_map(
     let mut mapped = Vec::with_capacity(items.len());
     for item in items {
         let result = crate::vm::call_runtime_value_runtime(transform, &[*item], state, module, ctx.as_deref_mut())?;
+        // Results accumulated here are invisible to the collector while the
+        // next callback runs — pin each one (the caller restores the mark).
+        state.host_root_push(result);
         mapped.push(result);
     }
     let result = TypedList::Mixed(mapped);
@@ -1297,6 +1307,9 @@ fn list_reduce(
     let acc_fn = args[1];
     let mut acc = args[0];
     for item in items {
+        // Pin the running accumulator: it lives only in this Rust frame
+        // between callbacks (the caller restores the mark).
+        state.host_root_push(acc);
         acc = crate::vm::call_runtime_value_runtime(acc_fn, &[acc, *item], state, module, ctx.as_deref_mut())?;
     }
     Ok(Some(acc))

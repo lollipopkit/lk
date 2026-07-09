@@ -76,6 +76,38 @@ pub fn execute_compiled_module_with_ctx(module: Arc<crate::vm::Module>, ctx: &mu
     execute_compiled_module_with_ctx_inner(module, ctx, None, None)
 }
 
+/// Execute with the heap's GC threshold pinned low so (nearly) every safepoint
+/// collects — the deterministic in-process twin of `LK_GC_STRESS=1`. Test-only
+/// surface for host-root regression tests (core and stdlib crates); not part
+/// of the public API.
+#[doc(hidden)]
+pub fn execute_program_with_ctx_and_gc_threshold(
+    program: &Program,
+    ctx: &mut VmContext,
+    gc_threshold: u32,
+) -> Result<ProgramResult> {
+    let module = compile_program_module_with_ctx(program, ctx)?;
+    ctx.truncate_call_stack(0);
+    let mut seed_heap = HeapStore::new();
+    seed_heap.set_gc_threshold(gc_threshold);
+    let globals = seed_module_globals(&module.globals, ctx, &mut seed_heap)?;
+    let register_count = module
+        .entry_function()
+        .map(|function| function.register_count)
+        .unwrap_or_default();
+    let result = Executor::new(register_count).run_shared_module_with_globals_and_heap_and_ctx(
+        Arc::clone(&module),
+        globals,
+        seed_heap,
+        ctx,
+    )?;
+    Ok(ProgramResult {
+        returns: result.returns,
+        state: result.state,
+        module,
+    })
+}
+
 fn execute_compiled_module_with_ctx_and_budget(
     module: Arc<crate::vm::Module>,
     ctx: &mut VmContext,

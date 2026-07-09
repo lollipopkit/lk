@@ -16,4 +16,5 @@ mod calls;
 mod container;
 mod cross_heap;
 mod gc_cell_error;
+mod gc_host_roots;
 mod native;

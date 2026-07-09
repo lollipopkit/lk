@@ -35,6 +35,13 @@ pub struct RuntimeModuleState {
     /// carried as an error survives collection at the native-call safepoints hit
     /// during unwinding (plan M2.2). Cleared once `pcall` extracts it.
     pub(crate) pending_raise_root: Option<RuntimeVal>,
+    /// Values a host (native) function must keep alive across re-entrant VM
+    /// calls: a stdlib HOF accumulating callback results in a Rust `Vec` holds
+    /// heap references invisible to the collector, so a safepoint inside the
+    /// next callback would free them (`GC stress` exposes this
+    /// deterministically). Hosts push via `host_root_push`/`host_roots_extend`
+    /// and restore their `host_roots_mark` on every exit path.
+    pub(crate) host_roots: Vec<RuntimeVal>,
     /// Live LK call depth. Lives in the shared state (not the executor) so it
     /// keeps accumulating across native→VM re-entries (pcall, stdlib HOFs, the
     /// Tier 1 bridge), which each construct a fresh executor: the runaway-
@@ -54,6 +61,7 @@ impl RuntimeModuleState {
             stack_top: 0,
             inline_caches: InlineCaches::default(),
             pending_raise_root: None,
+            host_roots: Vec::new(),
             call_depth: 0,
         }
     }
@@ -62,6 +70,34 @@ impl RuntimeModuleState {
     /// treated as a GC root until `pcall` recovers it (plan M2.2).
     pub fn set_pending_raise_root(&mut self, value: Option<RuntimeVal>) {
         self.pending_raise_root = value;
+    }
+
+    /// Current host-root stack depth. Take a mark before pushing host roots
+    /// and restore it with [`Self::host_roots_truncate`] on every exit path
+    /// (including errors), or the pins outlive their host call.
+    #[inline]
+    pub fn host_roots_mark(&self) -> usize {
+        self.host_roots.len()
+    }
+
+    /// Pin a value a host function holds across a re-entrant VM call so the
+    /// collector treats it as a root (see the `host_roots` field docs).
+    #[inline]
+    pub fn host_root_push(&mut self, value: RuntimeVal) {
+        self.host_roots.push(value);
+    }
+
+    /// Pin every value of a host-held snapshot (e.g. a materialized list of
+    /// items an HOF iterates while calling back into the VM).
+    #[inline]
+    pub fn host_roots_extend<'a>(&mut self, values: impl IntoIterator<Item = &'a RuntimeVal>) {
+        self.host_roots.extend(values.into_iter().copied());
+    }
+
+    /// Drop every host root pinned after `mark`.
+    #[inline]
+    pub fn host_roots_truncate(&mut self, mark: usize) {
+        self.host_roots.truncate(mark);
     }
 
     pub fn root_refs<'a>(&self, extra_roots: impl IntoIterator<Item = &'a RuntimeVal>) -> Vec<crate::val::HeapRef> {
@@ -363,6 +399,32 @@ impl<'a> NativeRuntime<'a> {
     #[inline]
     pub fn ctx_mut(&mut self) -> Option<&mut VmContext> {
         self.ctx.as_deref_mut()
+    }
+
+    /// Host-root mark for `Self::host_root_push` (see
+    /// `RuntimeModuleState::host_roots`). `Parts` storage has no state to pin
+    /// into, so the mark is 0 and pushes are dropped — re-entrant VM calls
+    /// that could collect the caller's heap only happen with `State` storage.
+    #[inline]
+    pub fn host_roots_mark(&self) -> usize {
+        match &self.storage {
+            NativeRuntimeStorage::State(state) => state.host_roots_mark(),
+            NativeRuntimeStorage::Parts { .. } => 0,
+        }
+    }
+
+    #[inline]
+    pub fn host_root_push(&mut self, value: RuntimeVal) {
+        if let NativeRuntimeStorage::State(state) = &mut self.storage {
+            state.host_root_push(value);
+        }
+    }
+
+    #[inline]
+    pub fn host_roots_truncate(&mut self, mark: usize) {
+        if let NativeRuntimeStorage::State(state) = &mut self.storage {
+            state.host_roots_truncate(mark);
+        }
     }
 }
 
