@@ -428,17 +428,20 @@ dyn_ord!(lkrt_dyn_ge, >=);
 // ── Display (two modes, matching the VM's two display paths) ───────────
 
 /// Diagnostics rendering for the uncaught-error path (`panic.rs`): the plain
-/// display, never raising (an uncaught error must not recurse into raise).
+/// display with raising disabled *recursively* — an unknown tag anywhere in a
+/// nested container renders a placeholder instead of re-entering raise while
+/// an uncaught error is already being reported.
 pub(crate) fn display_for_diagnostics(v: LkDyn) -> String {
     let mut out = String::new();
-    match v.tag {
-        DYN_NIL | DYN_BOOL | DYN_I64 | DYN_F64 | DYN_STR | DYN_LIST | DYN_MAP => display_into(&mut out, v, false),
-        other => out.push_str(&format!("<unrenderable error value, tag {other}>")),
-    }
+    display_into_impl(&mut out, v, false, false);
     out
 }
 
 fn display_into(out: &mut String, v: LkDyn, quoted: bool) {
+    display_into_impl(out, v, quoted, true)
+}
+
+fn display_into_impl(out: &mut String, v: LkDyn, quoted: bool, raise_on_unknown: bool) {
     match v.tag {
         DYN_NIL => out.push_str("nil"),
         DYN_BOOL => out.push_str(if v.payload != 0 { "true" } else { "false" }),
@@ -465,7 +468,7 @@ fn display_into(out: &mut String, v: LkDyn, quoted: bool) {
                 if i > 0 {
                     out.push(',');
                 }
-                display_into(out, e, false);
+                display_into_impl(out, e, false, raise_on_unknown);
             }
             out.push(']');
         }
@@ -486,12 +489,17 @@ fn display_into(out: &mut String, v: LkDyn, quoted: bool) {
                     }
                     out.push_str(&format!("{k:?}"));
                     out.push(':');
-                    display_into(out, e, false);
+                    display_into_impl(out, e, false, raise_on_unknown);
                 }
             }
             out.push('}');
         }
-        _ => crate::panic::raise_str("runtime type error"),
+        other => {
+            if raise_on_unknown {
+                crate::panic::raise_str("runtime type error");
+            }
+            out.push_str(&format!("<unrenderable value, tag {other}>"));
+        }
     }
 }
 

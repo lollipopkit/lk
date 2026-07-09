@@ -1357,6 +1357,12 @@ pub fn lower_bundled(
     // functions marked VM-executed (their call sites emit `CallVm`, their bodies
     // are skipped). `FuncId`s keep their original module indices.
     let final_pass = |sig: &mut SigInfer, reach: &[bool]| {
+        // Same per-pass discipline as the fixpoint: `conflict` reflects *this*
+        // pass only. A hybrid rerun re-derives every native function from
+        // scratch, so a mark left by an earlier pass (a caller lowered
+        // against a callee's stale ret assumptions before that callee was
+        // VM-marked) must not survive into the post-loop check.
+        sig.conflict = false;
         let mut globals: Vec<String> = Vec::new();
         let mut functions = Vec::with_capacity(funcs.len());
         let mut failures: Vec<(usize, Unsupported)> = Vec::new();

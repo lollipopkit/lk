@@ -16,12 +16,31 @@ fn bin_path() -> PathBuf {
 /// frames whose temporaries leak by design (lkrt arena model) — LSan's
 /// exit-time report would fail the run and swallow buffered stdout. ASan
 /// memory-error checks stay on (same discipline as the differential
-/// harnesses).
+/// harnesses). A hard timeout kills a deadlocked binary (e.g. a raise
+/// longjmping over a live lock) so the failure surfaces instead of hanging
+/// CI — same pattern as the fuzz harness's `output_with_timeout`.
 fn native_run(dir: &std::path::Path, name: &str) -> std::process::Output {
-    Command::new(dir.join(name))
+    use std::time::{Duration, Instant};
+    const RUN_TIMEOUT: Duration = Duration::from_secs(60);
+    let mut child = Command::new(dir.join(name))
         .env("ASAN_OPTIONS", "detect_leaks=0")
-        .output()
-        .expect("native run")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn native run");
+    let started = Instant::now();
+    loop {
+        match child.try_wait().expect("poll native run") {
+            Some(_) => break,
+            None if started.elapsed() > RUN_TIMEOUT => {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("native run of `{name}` timed out after {RUN_TIMEOUT:?}");
+            }
+            None => std::thread::sleep(Duration::from_millis(20)),
+        }
+    }
+    child.wait_with_output().expect("collect native run")
 }
 
 const HYBRID_PROGRAM: &str = "\
@@ -149,9 +168,12 @@ fn hybrid_bridged_containers_deep_convert_and_match_the_vm() {
     let file = dir.join("cont.lk");
     std::fs::write(
         &file,
-        "fn rows(n) { let f = \"n={}\".trim(); println(f, n); return [n, n * 10, 2.5]; }\n\
+        "struct P { tag: Int }\n\
+         fn rows(n) { let f = \"n={}\".trim(); println(f, n); return [n, n * 10, 2.5]; }\n\
          fn user(name) { let f = \"u={}\".trim(); println(f, name); \
          return {\"name\": name, \"score\": 95, \"tags\": [1, 2]}; }\n\
+         fn mkp(x: Int) { let f = \"p={}\".trim(); println(f, x); return P { tag: x }; }\n\
+         mkp(7);\n\
          let r = rows(3);\n\
          println(r);\n\
          println(r[1]);\n\

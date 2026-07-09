@@ -572,19 +572,22 @@ pub mod ffi {
     /// when `argc == 0`); string payloads must be valid NUL-terminated UTF-8.
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn lk_hybrid_call_v(func_index: u32, args: *const LkHybridArg, argc: usize) {
-        let _ = unsafe { bridge_call(func_index, args, argc) };
+        let _ = unsafe { bridge_call(func_index, args, argc, false) };
     }
 
     /// Shared v/r bridge body: run the VM call, then either hand back the
-    /// marshaled return or re-raise an uncaught VM error into the nearest
-    /// native `try` frame (VM `try` semantics, v2 C6). Every Rust value —
-    /// including the module Mutex guard and the per-call VM state — drops
-    /// *before* the raise: the longjmp skips Rust drops, and a live guard
-    /// would deadlock the next bridge call.
+    /// marshaled return (`want_result`; the void entry keeps v1's
+    /// zero-marshal discard — a discarded container must not deep-copy, and
+    /// a discarded *unmarshalable* return (struct, closure) must not die) or
+    /// re-raise an uncaught VM error into the nearest native `try` frame (VM
+    /// `try` semantics, v2 C6). Every Rust value — including the module
+    /// Mutex guard and the per-call VM state — drops *before* the raise: the
+    /// longjmp skips Rust drops, and a live guard would deadlock the next
+    /// bridge call.
     ///
     /// # Safety
     /// As documented on [`lk_hybrid_call_v`].
-    unsafe fn bridge_call(func_index: u32, args: *const LkHybridArg, argc: usize) -> LkHybridDyn {
+    unsafe fn bridge_call(func_index: u32, args: *const LkHybridArg, argc: usize, want_result: bool) -> LkHybridDyn {
         use lk_core::vm::ModuleFunctionCall;
 
         let marshaled = unsafe { marshal_args(args, argc) };
@@ -594,7 +597,16 @@ pub mod ffi {
         let call = module.call_keep_state(func_index, &marshaled);
         drop(module);
         match call {
-            Ok(ModuleFunctionCall::Return(outcome)) => marshal_return(outcome.value, &outcome.state),
+            Ok(ModuleFunctionCall::Return(outcome)) => {
+                if want_result {
+                    marshal_return(outcome.value, &outcome.state)
+                } else {
+                    LkHybridDyn {
+                        tag: LK_HYBRID_DYN_NIL,
+                        payload: 0,
+                    }
+                }
+            }
             Ok(ModuleFunctionCall::Raise { value, rendered, state }) => {
                 let raise = RT_RAISE_DYN.load(Ordering::Acquire);
                 if raise == 0 {
@@ -840,7 +852,7 @@ pub mod ffi {
     /// Same contract as [`lk_hybrid_call_v`].
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn lk_hybrid_call_r(func_index: u32, args: *const LkHybridArg, argc: usize) -> LkHybridDyn {
-        unsafe { bridge_call(func_index, args, argc) }
+        unsafe { bridge_call(func_index, args, argc, true) }
     }
 
     #[cfg(test)]

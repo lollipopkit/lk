@@ -398,16 +398,22 @@ mod tests {
             panic!("result handle must stay live in the outcome state");
         };
         // The v2 bridge replays entries in this iteration order to reproduce
-        // the VM's map layout natively — the walk itself must be stable.
+        // the VM's map layout natively. The exact order is the Fx layout's
+        // (not insertion order; pinned end-to-end by the differential gates)
+        // — what this walk must guarantee is completeness and a *stable*
+        // full (key, value) sequence across repeated iterations.
         let entries = map.entries_iter();
-        assert_eq!(entries.len(), 3);
-        assert_eq!(
-            entries.iter().map(|(_, value)| *value).collect::<alloc::vec::Vec<_>>(),
-            map.entries_iter()
-                .iter()
-                .map(|(_, value)| *value)
-                .collect::<alloc::vec::Vec<_>>(),
-        );
+        assert_eq!(entries, map.entries_iter(), "repeated walks must agree exactly");
+        let mut pairs: alloc::vec::Vec<(String, RuntimeVal)> = entries
+            .iter()
+            .map(|(key, value)| (format!("{key:?}"), *value))
+            .collect();
+        pairs.sort_by(|a, b| a.0.cmp(&b.0));
+        let expected: alloc::vec::Vec<(String, RuntimeVal)> = [("alpha", 1), ("beta", 2), ("gamma", 3)]
+            .into_iter()
+            .map(|(key, value)| (format!("String({key:?})"), RuntimeVal::Int(value)))
+            .collect();
+        assert_eq!(pairs, expected);
     }
 
     #[test]
