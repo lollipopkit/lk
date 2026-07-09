@@ -964,3 +964,38 @@ B 翻 LK_AOT_HYBRID 默认 → C v2 桥接返回值,用户裁决全做)。
 - 验证:sanitized 手写 12/12 · examples 51/51 · fuzz 120/120 ·
   LK_GC_STRESS 下 core/stdlib/cli 全绿(CI 原命令)· miri lkrt ·
   clippy --all-targets 0 · fmt 0 · aot_coverage 51/51。
+
+## v2 桥接返回值(C1-C7,2026-07-09,分支 feat/hybrid-v2-return-bridge)
+
+- **C1** core keep-state:ModuleFunctionOutcome 让堆返回值活过调用(v1
+  with_ctx 返回即 drop state,Obj 悬空被 discard 掩盖)。
+- **C2** lk_hybrid_call_r 标量档:LkHybridDyn {i64,i64} 镜像 lkrt LkDyn
+  (lk-api 不能链接 lkrt:Tier 0 无 lkrt/hybrid 双 staticlib 撞符号),
+  lk-api 新 dev-dep lkrt conformance 钉 tag+布局;str 走 CString::into_raw
+  =arena 所有权;嵌套 NUL die(native 全程 C 字符串,本就不可表示)。
+- **C3+C4** MIR CallVm{dst:Option} + lower 桥调点 dst 恒绑 Ty::Dyn +
+  codegen 按 value_is_used 降级(未读→call_v 保 v1 零 marshal)。
+  hybrid_rejects_a_used_bridge_result 翻正测。
+- **C5** 容器深转换:wrapper 注入 lkrt 构造表(lk_hybrid_register_rt 函数
+  指针,wrapper 是唯一同时链两 staticlib 的位置);map 按 VM 迭代序重放
+  (Fx 镜像);深度 cap 128;**String 类型列表 die 留档**(VM 引号 display
+  无 Dyn 载体,待 typed-list tag)。**两个机制修复**:① lower 标记→rerun
+  改不动点迭代(caller 因 callee 过期 ret 假设失败/早退缺 param_obs,每轮
+  暴露新可标函数,上界=函数数;此前 entry 一失败直接弃 rerun);
+  ② lkrt display_into 补 DYN_MAP 臂(VM 格式键引号/值裸文;此前落
+  raise→abort 对 Dyn 持 map 是比 VM 更差的运行时分歧;静态 map display
+  的 lowering 拒绝裁决不动)。
+- **C6** raise 跨桥:core 返回 ModuleFunctionCall::{Return,Raise}
+  (LkRaisedValue downcast 保一等值;LanguageRaise→String 镜像 VM
+  `try{1/0}catch e` typeof==String 语义);lk-api bridge_call 统一 v/r——
+  Raise 先 drop Mutex guard/state/临时(longjmp 跳 drop,guard 活着=下次
+  桥调死锁)再经注入的 lkrt_rt_raise_dyn 进最近 native try;lkrt
+  no-handler 打印 uncaught 错误到 stderr(差分契约只比 stdout+success)。
+  typeof(Dyn) 留在子集外(既有边界)。
+- **C7** fuzz 修退化+扩形状:hybrid 帮手 body 换动态格式串(try/catch 自
+  plan G 原生化后桥覆盖静默退化)+ '全原生编译即报警'断言;形状扩四类
+  (丢弃/标量消费/容器消费/raise 被 try 捕)。tier1-hybrid.md 状态行+v2
+  章节。
+- **验证**:workspace -D warnings 0 失败 · 三差分+sanitized(hybrid e2e
+  native 运行补 detect_leaks=0)· GC stress 1053/0 · miri lkrt ·
+  coverage 51/51 · bench 1.009x(噪声带)· fuzz 40+200 全过。
