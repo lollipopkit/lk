@@ -890,14 +890,19 @@ fn run_case(dir: &std::path::Path, name: &str, source: &str, seed: u64) -> CaseO
     assert_eq!(
         vm_stdout,
         native_stdout,
-        "{}",
-        context("stdout diverged between VM and native")
+        "{}\nvm status: {:?}\nnative status: {:?}\nvm stderr: {vm_stderr}\nnative stderr: {}",
+        context("stdout diverged between VM and native"),
+        vm.status,
+        native.status,
+        String::from_utf8_lossy(&native.stderr)
     );
     assert_eq!(
         vm.status.success(),
         native.status.success(),
-        "{}\nnative stderr: {}",
+        "{}\nvm status: {:?}\nnative status: {:?}\nvm stderr: {vm_stderr}\nnative stderr: {}",
         context("success/failure diverged between VM and native"),
+        vm.status,
+        native.status,
         String::from_utf8_lossy(&native.stderr)
     );
     CaseOutcome { compared: true }

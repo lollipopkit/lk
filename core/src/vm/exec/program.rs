@@ -87,25 +87,7 @@ pub fn execute_program_with_ctx_and_gc_threshold(
     gc_threshold: u32,
 ) -> Result<ProgramResult> {
     let module = compile_program_module_with_ctx(program, ctx)?;
-    ctx.truncate_call_stack(0);
-    let mut seed_heap = HeapStore::new();
-    seed_heap.set_gc_threshold(gc_threshold);
-    let globals = seed_module_globals(&module.globals, ctx, &mut seed_heap)?;
-    let register_count = module
-        .entry_function()
-        .map(|function| function.register_count)
-        .unwrap_or_default();
-    let result = Executor::new(register_count).run_shared_module_with_globals_and_heap_and_ctx(
-        Arc::clone(&module),
-        globals,
-        seed_heap,
-        ctx,
-    )?;
-    Ok(ProgramResult {
-        returns: result.returns,
-        state: result.state,
-        module,
-    })
+    execute_compiled_module_with_ctx_full(module, ctx, None, None, Some(gc_threshold))
 }
 
 fn execute_compiled_module_with_ctx_and_budget(
@@ -122,10 +104,23 @@ fn execute_compiled_module_with_ctx_inner(
     instruction_budget: Option<u64>,
     heap_object_limit: Option<usize>,
 ) -> Result<ProgramResult> {
+    execute_compiled_module_with_ctx_full(module, ctx, instruction_budget, heap_object_limit, None)
+}
+
+fn execute_compiled_module_with_ctx_full(
+    module: Arc<crate::vm::Module>,
+    ctx: &mut VmContext,
+    instruction_budget: Option<u64>,
+    heap_object_limit: Option<usize>,
+    gc_threshold: Option<u32>,
+) -> Result<ProgramResult> {
     // Start each top-level run with an empty traceback so a reused context
     // (REPL / embedded `Vm`) does not carry frames from a previous error.
     ctx.truncate_call_stack(0);
     let mut seed_heap = HeapStore::new();
+    if let Some(gc_threshold) = gc_threshold {
+        seed_heap.set_gc_threshold(gc_threshold);
+    }
     let globals = seed_module_globals(&module.globals, ctx, &mut seed_heap)?;
     let register_count = module
         .entry_function()
