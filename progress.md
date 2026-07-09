@@ -926,3 +926,41 @@ no_std + dist bench 噪声带(0.986-1.076x)。
   "ha"*3 编译器常量折叠,无需改动(probe 钉实)。
 - bench 全程噪声带(0.990-1.011x)。**唯一留档遗留:goroutine
   死锁检测(超范围)。**
+
+## Tier 1 收尾轮:correctness 夜跑三回归修复(2026-07-09,分支 fix/correctness-nightly-regressions)
+
+背景:correctness.yml 自 07-07 深覆盖合并起连续 5 轮红,三个失败签名
+稳定。计划文件 `~/.claude/plans/playful-meandering-sloth.md`(A 修回归 →
+B 翻 LK_AOT_HYBRID 默认 → C v2 桥接返回值,用户裁决全做)。
+
+- **A0**:差分 harness 分歧报告附双侧 stderr+exit code(examples 此前
+  只打两个 stdout,CI 日志看不到 VM 侧真实错误)——A2 排查当场受益。
+- **A3(真 VM bug,GC stress 下 json_process 空 stdout)**:list.map 在
+  Rust Vec 累积回调结果,回调内 safepoint 收集 → 堆槽复用 → 三条
+  summaries 全别名末元素。**机制修复**:RuntimeModuleState::host_roots
+  栈(gc_roots 纳入,类比 pending_raise_root)+ mark/push/extend/truncate
+  纪律 + NativeRuntime 转发;钉 core list_map/filter(长串物化快照)/
+  reduce(acc 保险)+ iter.map/filter/reduce + stream collect_remaining。
+  **回归基建**:execute_program_with_ctx_and_gc_threshold(threshold=1,
+  LK_GC_STRESS 的进程内确定性孪生,doc(hidden) 供跨 crate 测试)+
+  core 4 测 + stdlib 4 测(map/filter/stream 三例验证无修复必红)。
+  **cursor 链路论证安全**:stream Iterate/Map cursor 的中间值恰与回调
+  实参别名(实参=root),collect 累积是唯一的洞。
+- **A1(fuzz 每晚一例 60s 超时,案例号随 seed 漂移)**:根因=lk compile
+  子进程内 ensure_lk_api_staticlib 的 cargo release 全量构建(冷缓存
+  ~4.5min)整个算进首个需桥/回退案例的 per-case 超时;fresh-seed job
+  只编 debug 依赖 + rust-cache 失败不存 → 每晚从零自锁。日志实锤
+  (超时前大片 release Compiling);出事 seed 重放(seed+413 单例)
+  0.5s 过,形状无辜。修:harness 案例循环前免超时预热(镜像同款
+  cargo 命令)+ correctness.yml 四 job prebuild step + cache-on-failure。
+- **A2(chan sanitized 分歧)**:真相=LSan exit-time 报告改非零退出码
+  且 _exit 吞缓冲 stdout → "native 空输出"。两源:① raise_current 每
+  raise 有意泄漏 512B JmpBuf(真·无界泄漏);② longjmp 越过 Rust 帧的
+  普通临时量(select 路径 40B Vec)——sjlj 设计内泄漏,不可逐个消除。
+  修:① SpareJmpBuf 线程本地备用槽(park→下次 push 复用→再 park 释放
+  前一个→线程退出 Drop 回收,每线程至多 1 缓冲,Miri SB 验证);
+  ② 三差分 harness native 运行 ASAN_OPTIONS=detect_leaks=0(留档:
+  arena 模型下 LSan 无意义),ASan UAF/越界全开。
+- 验证:sanitized 手写 12/12 · examples 51/51 · fuzz 120/120 ·
+  LK_GC_STRESS 下 core/stdlib/cli 全绿(CI 原命令)· miri lkrt ·
+  clippy --all-targets 0 · fmt 0 · aot_coverage 51/51。
