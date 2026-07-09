@@ -1138,10 +1138,10 @@ fn trait_env_prescan(module: &lk_core::vm::ModuleData) -> TraitEnv {
 }
 
 pub fn lower(artifact: &ModuleArtifact) -> Result<MirModule, Unsupported> {
-    // Opt-in until the CLI links the bridge runtime (tier1-hybrid.md sub-step
-    // ④): emitting `CallVm` without the lk-api staticlib linked would turn
-    // graceful `Unsupported` fallbacks into link errors.
-    let hybrid = std::env::var_os("LK_AOT_HYBRID").is_some_and(|value| value != "0");
+    // Default-on since the nightly correctness rounds went green on v1+v2
+    // (tier1-hybrid.md): `LK_AOT_HYBRID=0` opts out (pure whole-module
+    // native-or-fallback, e.g. the coverage script's metric).
+    let hybrid = std::env::var_os("LK_AOT_HYBRID").is_none_or(|value| value != "0");
     lower_with_hybrid(artifact, hybrid)
 }
 

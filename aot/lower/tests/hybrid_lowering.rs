@@ -121,11 +121,13 @@ fn hybrid_rejects_a_global_touching_callee() {
 }
 
 #[test]
-fn hybrid_off_by_default() {
-    // `lower()` keeps the pre-hybrid behavior until the CLI links the bridge
-    // runtime (LK_AOT_HYBRID opt-in): same program, whole-module fallback.
+fn hybrid_on_by_default() {
+    // `lower()` bridges by default; `LK_AOT_HYBRID=0` opts out (the same
+    // env-guard discipline as the old opt-in test: skip when the ambient
+    // process env pins the flag either way).
     let artifact = artifact(REPORT_PROGRAM);
     if std::env::var_os("LK_AOT_HYBRID").is_none() {
-        lk_aot_lower::lower(&artifact).expect_err("hybrid stays opt-in by default");
+        let mir = lk_aot_lower::lower(&artifact).expect("hybrid is on by default");
+        assert_eq!(mir.vm_functions.len(), 1, "the helper bridges by default");
     }
 }
