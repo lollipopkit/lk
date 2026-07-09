@@ -898,6 +898,24 @@ fn run_case(dir: &std::path::Path, name: &str, source: &str, seed: u64) -> CaseO
     CaseOutcome { compared: true }
 }
 
+/// `lk compile` builds the lk-api staticlib on demand *inside the compile
+/// child* (`ensure_lk_api_staticlib`, cli/src/main.rs) whenever a case needs
+/// the Tier 0 bundle or the Tier 1 hybrid link. On a cold cache that is a
+/// full release build — minutes, not seconds — and it lands inside a single
+/// case's 60s compile timeout (the nightly fresh-seed job died on exactly
+/// this: the first bridge-needing case's number drifts with the seed). Warm
+/// the build once, untimed, so the per-case timeout measures the compile
+/// itself. Must mirror the cargo invocation in `ensure_lk_api_staticlib`.
+fn warm_lk_api_staticlib() {
+    let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let status = Command::new("cargo")
+        .current_dir(&workspace)
+        .args(["build", "-p", "lk-api", "--features", "ffi", "--release"])
+        .status()
+        .expect("spawn cargo build lk-api");
+    assert!(status.success(), "failed to prebuild the lk-api staticlib");
+}
+
 #[test]
 fn fuzz_differential_vm_vs_native() {
     let cases: u64 = std::env::var("LK_FUZZ_CASES")
@@ -908,6 +926,7 @@ fn fuzz_differential_vm_vs_native() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(0xC0FF_EE00);
+    warm_lk_api_staticlib();
 
     let dir = std::env::temp_dir().join(format!("lk_aot_fuzz_{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);

@@ -35,6 +35,15 @@ jobs:
         with:
           toolchain-file: rust-toolchain.toml
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Keep partial build progress from red runs: a regression that keeps
+          # the job failing must not also keep every following run on a cold
+          # cache (the fresh-seed fuzz timed out for days on exactly this).
+          cache-on-failure: true
+      # `lk compile` builds this on demand inside a test's per-case timeout —
+      # prebuild it so timeouts measure the compile itself, not a cold cargo.
+      - name: prebuild the lk-api staticlib
+        run: cargo build -p lk-api --features ffi --release
       - name: cargo test under LK_GC_STRESS
         run: LK_GC_STRESS=1 cargo test -p lk-core -p lk-stdlib -p lk-cli
 
@@ -49,6 +58,10 @@ jobs:
         with:
           toolchain-file: rust-toolchain.toml
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: prebuild the lk-api staticlib
+        run: cargo build -p lk-api --features ffi --release
       - name: hand-written differential cases
         run: LK_NATIVE_SANITIZE=address,undefined cargo test -p lk-cli --test aot_differential_test
       - name: examples corpus differential
@@ -74,6 +87,10 @@ jobs:
       - name: install nightly (sanitizer build)
         run: rustup toolchain install nightly --profile minimal
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: prebuild the lk-api staticlib
+        run: cargo build -p lk-api --features ffi --release
       - name: build ASan lkrt
         run: bash scripts/build_lkrt_asan.sh
       - name: differential suites against the instrumented lkrt
@@ -92,6 +109,10 @@ jobs:
         with:
           toolchain-file: rust-toolchain.toml
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: prebuild the lk-api staticlib
+        run: cargo build -p lk-api --features ffi --release
       - name: fuzz with the run id as seed (printed for reproduction)
         run: LK_FUZZ_SEED=${{ github.run_id }} LK_FUZZ_CASES=500 cargo test -p lk-cli --test aot_fuzz_differential_test -- --nocapture
       - name: artifact decoder/verifier fuzz with the run id as seed
