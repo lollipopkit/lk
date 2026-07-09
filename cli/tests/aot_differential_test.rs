@@ -98,8 +98,12 @@ fn run_differential(area: &str, cases: &[Case]) {
 
         assert_eq!(
             vm_stdout, native_stdout,
-            "[{area}/{}] stdout diverged (vm vs native)",
-            case.name
+            "[{area}/{}] stdout diverged (vm vs native): vm={:?} native={:?} stderr(vm)={} stderr(native)={}",
+            case.name,
+            vm.status,
+            native.status,
+            String::from_utf8_lossy(&vm.stderr),
+            String::from_utf8_lossy(&native.stderr)
         );
         assert_eq!(
             vm.status.success(),

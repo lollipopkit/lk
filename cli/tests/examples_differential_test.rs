@@ -23,8 +23,22 @@ fn examples_root() -> PathBuf {
 
 struct RunResult {
     stdout: String,
+    stderr: String,
+    exit_code: Option<i32>,
     success: bool,
     timed_out: bool,
+}
+
+impl RunResult {
+    /// Diagnostic block for divergence reports: exit code plus the captured
+    /// stderr (the CI log otherwise hides why a side failed).
+    fn diagnostics(&self, side: &str) -> String {
+        let code = match self.exit_code {
+            Some(code) => code.to_string(),
+            None => "killed".to_string(),
+        };
+        format!("--- {side} exit={code} stderr ---\n{}", self.stderr)
+    }
 }
 
 /// Runs a command with stdout/stderr captured to files (avoids pipe-buffer
@@ -54,6 +68,8 @@ fn run_with_timeout(mut command: Command, scratch: &Path, tag: &str) -> RunResul
     };
     RunResult {
         stdout: fs::read_to_string(&stdout_path).unwrap_or_default(),
+        stderr: fs::read_to_string(&stderr_path).unwrap_or_default(),
+        exit_code: status.and_then(|status| status.code()),
         success: status.is_some_and(|status| status.success()),
         timed_out: status.is_none(),
     }
@@ -165,13 +181,19 @@ fn examples_corpus_differential() {
 
         if vm.stdout != native.stdout {
             divergences.push(format!(
-                "[{label}] stdout diverged\n--- vm ---\n{}\n--- native ---\n{}",
-                vm.stdout, native.stdout
+                "[{label}] stdout diverged\n--- vm ---\n{}\n--- native ---\n{}\n{}\n{}",
+                vm.stdout,
+                native.stdout,
+                vm.diagnostics("vm"),
+                native.diagnostics("native")
             ));
         } else if vm.success != native.success {
             divergences.push(format!(
-                "[{label}] success/failure diverged: vm={} native={}",
-                vm.success, native.success
+                "[{label}] success/failure diverged: vm={} native={}\n{}\n{}",
+                vm.success,
+                native.success,
+                vm.diagnostics("vm"),
+                native.diagnostics("native")
             ));
         } else {
             compared.push(label);
