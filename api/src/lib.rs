@@ -208,6 +208,18 @@ impl HybridModule {
     pub fn call_discard(&mut self, function_index: u32, args: &[HybridArg]) -> Result<()> {
         lk_core::vm::call_module_function_with_ctx(&self.module, function_index, args, &mut self.ctx).map(|_| ())
     }
+
+    /// Call function `function_index` and keep the per-call state alive so
+    /// heap-backed results (lists, maps, long strings) stay readable — the
+    /// v2 return bridge marshals them into native memory before dropping the
+    /// outcome (`docs/llvm/tier1-hybrid.md` v2).
+    pub fn call_keep_state(
+        &mut self,
+        function_index: u32,
+        args: &[HybridArg],
+    ) -> Result<lk_core::vm::ModuleFunctionOutcome> {
+        lk_core::vm::call_module_function_with_ctx_keep_state(&self.module, function_index, args, &mut self.ctx)
+    }
 }
 
 impl Default for Vm {
@@ -496,17 +508,9 @@ pub mod ffi {
         HYBRID_ARTIFACT_JSON.store(module_artifact_json.cast_mut(), Ordering::Release);
     }
 
-    /// Call VM-executed function `func_index` with `argc` tagged scalar
-    /// arguments, discarding the result (v1 bridge: results are proven
-    /// discarded before a callee is marked VM-executed). Never returns on
-    /// error — see [`hybrid_die`].
-    ///
-    /// # Safety
-    /// `args` must point to `argc` valid [`LkHybridArg`] values (may be null
-    /// when `argc == 0`); string payloads must be valid NUL-terminated UTF-8.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn lk_hybrid_call_v(func_index: u32, args: *const LkHybridArg, argc: usize) {
-        let hybrid = HYBRID.get_or_init(|| {
+    /// The lazily-decoded process singleton (see the module header note).
+    fn hybrid_module() -> &'static Mutex<HybridModule> {
+        HYBRID.get_or_init(|| {
             let json_ptr = HYBRID_ARTIFACT_JSON.load(Ordering::Acquire);
             if json_ptr.is_null() {
                 hybrid_die(format_args!("no module artifact registered (lk_hybrid_register)"));
@@ -518,7 +522,15 @@ pub mod ffi {
                 Ok(module) => Mutex::new(module),
                 Err(err) => hybrid_die(format_args!("cannot load the embedded module artifact: {err:#}")),
             }
-        });
+        })
+    }
+
+    /// Marshal the raw tagged argument array into [`HybridArg`]s.
+    ///
+    /// # Safety
+    /// As documented on the callers: `args` must point to `argc` valid
+    /// entries; string payloads must be valid NUL-terminated UTF-8.
+    unsafe fn marshal_args(args: *const LkHybridArg, argc: usize) -> alloc::vec::Vec<HybridArg> {
         let raw_args = if argc == 0 {
             &[][..]
         } else {
@@ -546,11 +558,196 @@ pub mod ffi {
                 other => hybrid_die(format_args!("unknown hybrid arg tag {other}")),
             });
         }
-        let mut module = hybrid
+        marshaled
+    }
+
+    /// Call VM-executed function `func_index` with `argc` tagged scalar
+    /// arguments, discarding the result (v1 bridge: results are proven
+    /// discarded before a callee is marked VM-executed). Never returns on
+    /// error — see [`hybrid_die`].
+    ///
+    /// # Safety
+    /// `args` must point to `argc` valid [`LkHybridArg`] values (may be null
+    /// when `argc == 0`); string payloads must be valid NUL-terminated UTF-8.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn lk_hybrid_call_v(func_index: u32, args: *const LkHybridArg, argc: usize) {
+        let marshaled = unsafe { marshal_args(args, argc) };
+        let mut module = hybrid_module()
             .lock()
             .unwrap_or_else(|_| hybrid_die(format_args!("bridge state poisoned")));
         if let Err(err) = module.call_discard(func_index, &marshaled) {
             hybrid_die(format_args!("VM-executed function {func_index} failed: {err:#}"));
+        }
+    }
+
+    // ---- v2 return bridge --------------------------------------------------
+
+    /// Mirror of lkrt's `LkDyn` (`{ i64, i64 }` by value) — the return type
+    /// of [`lk_hybrid_call_r`]. lk-api must not link lkrt (the Tier 0 bundle
+    /// has no lkrt and the hybrid link would collide two staticlibs), so the
+    /// carrier and its tags are mirrored here; a conformance test in lk-cli
+    /// (which dev-depends on both) pins them against lkrt's constants.
+    #[repr(C)]
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct LkHybridDyn {
+        pub tag: i64,
+        pub payload: i64,
+    }
+
+    /// `LkDyn` tag values (mirror of `lkrt::lkdyn::DYN_*`).
+    pub const LK_HYBRID_DYN_NIL: i64 = 0;
+    pub const LK_HYBRID_DYN_BOOL: i64 = 1;
+    pub const LK_HYBRID_DYN_I64: i64 = 2;
+    pub const LK_HYBRID_DYN_F64: i64 = 3;
+    pub const LK_HYBRID_DYN_STR: i64 = 4;
+    pub const LK_HYBRID_DYN_LIST: i64 = 5;
+    pub const LK_HYBRID_DYN_MAP: i64 = 6;
+
+    /// Marshal a VM result into an `LkDyn`-shaped return. Strings are copied
+    /// into leaked `CString`s — native code treats every `LkDyn` string as
+    /// arena-owned and never frees it, so the leak *is* the ownership model.
+    /// Containers land in C5 (constructor-table deep conversion); until then
+    /// they die with a clear message rather than return a dangling handle.
+    fn marshal_return(value: lk_core::val::RuntimeVal, state: &lk_core::vm::RuntimeModuleState) -> LkHybridDyn {
+        use lk_core::val::{HeapValue, RuntimeVal};
+
+        fn leaked_c_string(text: &str) -> LkHybridDyn {
+            let Ok(owned) = std::ffi::CString::new(text) else {
+                // The native backend's strings are C strings end-to-end; an
+                // embedded NUL is unrepresentable there, not just here.
+                hybrid_die(format_args!("bridged string return contains an embedded NUL"));
+            };
+            LkHybridDyn {
+                tag: LK_HYBRID_DYN_STR,
+                payload: owned.into_raw() as i64,
+            }
+        }
+
+        match value {
+            RuntimeVal::Nil => LkHybridDyn {
+                tag: LK_HYBRID_DYN_NIL,
+                payload: 0,
+            },
+            RuntimeVal::Bool(value) => LkHybridDyn {
+                tag: LK_HYBRID_DYN_BOOL,
+                payload: i64::from(value),
+            },
+            RuntimeVal::Int(value) => LkHybridDyn {
+                tag: LK_HYBRID_DYN_I64,
+                payload: value,
+            },
+            RuntimeVal::Float(value) => LkHybridDyn {
+                tag: LK_HYBRID_DYN_F64,
+                payload: value.to_bits() as i64,
+            },
+            RuntimeVal::ShortStr(value) => leaked_c_string(value.as_str()),
+            RuntimeVal::Obj(handle) => match state.heap().get(handle) {
+                Some(HeapValue::String(value)) => leaked_c_string(value.as_ref()),
+                Some(other) => hybrid_die(format_args!(
+                    "bridged return kind not yet marshalable: {}",
+                    other.type_name()
+                )),
+                None => hybrid_die(format_args!("bridged return handle is out of bounds")),
+            },
+        }
+    }
+
+    /// Call VM-executed function `func_index` and return its result as an
+    /// `LkDyn`-shaped value (v2 bridge: the lowering binds the destination
+    /// register as `Dyn`). Never returns on error — see [`hybrid_die`].
+    ///
+    /// # Safety
+    /// Same contract as [`lk_hybrid_call_v`].
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn lk_hybrid_call_r(func_index: u32, args: *const LkHybridArg, argc: usize) -> LkHybridDyn {
+        let marshaled = unsafe { marshal_args(args, argc) };
+        let mut module = hybrid_module()
+            .lock()
+            .unwrap_or_else(|_| hybrid_die(format_args!("bridge state poisoned")));
+        match module.call_keep_state(func_index, &marshaled) {
+            Ok(outcome) => marshal_return(outcome.value, &outcome.state),
+            Err(err) => hybrid_die(format_args!("VM-executed function {func_index} failed: {err:#}")),
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// The mirror must match lkrt's carrier bit-for-bit: the generated IR
+        /// treats `lk_hybrid_call_r`'s return as an lkrt `LkDyn`.
+        #[test]
+        fn hybrid_dyn_mirrors_lkrt_carrier_and_tags() {
+            assert_eq!(LK_HYBRID_DYN_NIL, lkrt::DYN_NIL);
+            assert_eq!(LK_HYBRID_DYN_BOOL, lkrt::DYN_BOOL);
+            assert_eq!(LK_HYBRID_DYN_I64, lkrt::DYN_I64);
+            assert_eq!(LK_HYBRID_DYN_F64, lkrt::DYN_F64);
+            assert_eq!(LK_HYBRID_DYN_STR, lkrt::DYN_STR);
+            assert_eq!(LK_HYBRID_DYN_LIST, lkrt::DYN_LIST);
+            assert_eq!(LK_HYBRID_DYN_MAP, lkrt::DYN_MAP);
+
+            assert_eq!(core::mem::size_of::<LkHybridDyn>(), core::mem::size_of::<lkrt::LkDyn>());
+            assert_eq!(
+                core::mem::align_of::<LkHybridDyn>(),
+                core::mem::align_of::<lkrt::LkDyn>()
+            );
+            let probe = LkHybridDyn { tag: 4, payload: 7 };
+            // SAFETY: both are #[repr(C)] { i64, i64 } — that is the claim
+            // under test; a layout drift fails the size/align asserts above.
+            let mirrored: lkrt::LkDyn = unsafe { core::mem::transmute(probe) };
+            assert_eq!(mirrored.tag, 4);
+            assert_eq!(mirrored.payload, 7);
+        }
+
+        #[test]
+        fn marshal_return_covers_the_scalar_tier() {
+            use lk_core::val::RuntimeVal;
+            use lk_core::vm::RuntimeModuleState;
+
+            let mut state = RuntimeModuleState::default();
+            assert_eq!(
+                marshal_return(RuntimeVal::Nil, &state),
+                LkHybridDyn {
+                    tag: LK_HYBRID_DYN_NIL,
+                    payload: 0
+                }
+            );
+            assert_eq!(
+                marshal_return(RuntimeVal::Bool(true), &state),
+                LkHybridDyn {
+                    tag: LK_HYBRID_DYN_BOOL,
+                    payload: 1
+                }
+            );
+            assert_eq!(
+                marshal_return(RuntimeVal::Int(-42), &state),
+                LkHybridDyn {
+                    tag: LK_HYBRID_DYN_I64,
+                    payload: -42
+                }
+            );
+            assert_eq!(
+                marshal_return(RuntimeVal::Float(2.5), &state),
+                LkHybridDyn {
+                    tag: LK_HYBRID_DYN_F64,
+                    payload: 2.5f64.to_bits() as i64
+                }
+            );
+
+            let short = RuntimeVal::ShortStr(lk_core::val::ShortStr::new("hey").expect("short"));
+            let out = marshal_return(short, &state);
+            assert_eq!(out.tag, LK_HYBRID_DYN_STR);
+            let text = unsafe { CStr::from_ptr(out.payload as *const c_char) };
+            assert_eq!(text.to_str().unwrap(), "hey");
+
+            let long = "a-long-string-over-7-bytes";
+            let handle = state
+                .heap_mut()
+                .alloc(lk_core::val::HeapValue::String(alloc::sync::Arc::from(long)));
+            let out = marshal_return(RuntimeVal::Obj(handle), &state);
+            assert_eq!(out.tag, LK_HYBRID_DYN_STR);
+            let text = unsafe { CStr::from_ptr(out.payload as *const c_char) };
+            assert_eq!(text.to_str().unwrap(), long);
         }
     }
 }
