@@ -4262,8 +4262,9 @@ fn lower_user_call(
     }
     // Tier 1 bridge call (`docs/llvm/tier1-hybrid.md`): the callee runs on the
     // embedded VM. Arguments must match the recorded scalar marshaling types;
-    // the destination register stays *unbound*, so any later use of the result
-    // rejects the module (results never cross the bridge in v1).
+    // the destination register binds as `Dyn` (v2: the bridge returns an
+    // `LkDyn` by value) — codegen degrades a never-read destination back to
+    // the void bridge call, so statement-position calls stay v1-shaped.
     if let Some(param_tys) = sig.vm_functions.get(&(callee_idx as u32)).cloned() {
         if !captures.is_empty() {
             return Err(Unsupported::Opcode {
@@ -4280,12 +4281,14 @@ fn lower_user_call(
             }
             args.push(aval);
         }
+        let dst = ssa.new_val();
         insts.push(Inst::CallVm {
+            dst: Some(dst),
             func: FuncId(callee_idx as u32),
             args,
         });
-        ssa.current_def[block][dst_reg as usize] = None;
         ssa.builtin_regs.remove(&(block, dst_reg));
+        ssa.write(dst_reg, block, (dst, Ty::Dyn));
         return Ok(());
     }
     let mut args = Vec::with_capacity(argc + captures.len());
