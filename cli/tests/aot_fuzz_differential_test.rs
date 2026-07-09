@@ -878,7 +878,12 @@ fn run_case(dir: &std::path::Path, name: &str, source: &str, seed: u64) -> CaseO
         return CaseOutcome { compared: false };
     }
 
-    let native = output_with_timeout(Command::new(dir.join(name)), "native run", &context("native run"));
+    // detect_leaks=0: raises longjmp over Rust frames whose temporaries leak
+    // by design (lkrt arena model) — LSan would fail the run and swallow
+    // buffered stdout. ASan memory-error checks stay on.
+    let mut native_cmd = Command::new(dir.join(name));
+    native_cmd.env("ASAN_OPTIONS", "detect_leaks=0");
+    let native = output_with_timeout(native_cmd, "native run", &context("native run"));
 
     let vm_stdout = String::from_utf8_lossy(&vm.stdout);
     let native_stdout = String::from_utf8_lossy(&native.stdout);

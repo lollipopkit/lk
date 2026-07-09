@@ -173,7 +173,12 @@ fn examples_corpus_differential() {
             ));
             continue;
         }
-        let native = run_with_timeout(Command::new(dir.join(&stem)), &scratch, &format!("{stem}_native"));
+        // detect_leaks=0: raises longjmp over Rust frames whose temporaries
+        // leak by design (lkrt arena model) — LSan would fail the run and
+        // swallow buffered stdout. ASan memory-error checks stay on.
+        let mut native_cmd = Command::new(dir.join(&stem));
+        native_cmd.env("ASAN_OPTIONS", "detect_leaks=0");
+        let native = run_with_timeout(native_cmd, &scratch, &format!("{stem}_native"));
         if native.timed_out {
             divergences.push(format!("[{label}] native run timed out while the VM completed"));
             continue;
