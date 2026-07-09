@@ -23,8 +23,25 @@ fn examples_root() -> PathBuf {
 
 struct RunResult {
     stdout: String,
+    stderr: String,
+    exit_code: Option<i32>,
     success: bool,
     timed_out: bool,
+}
+
+impl RunResult {
+    /// Diagnostic block for divergence reports: exit code plus the captured
+    /// stderr (the CI log otherwise hides why a side failed). A missing exit
+    /// code means either the harness timeout killed the child or it died to
+    /// a signal (e.g. SIGABRT) — two very different failures, kept distinct.
+    fn diagnostics(&self, side: &str) -> String {
+        let code = match (self.exit_code, self.timed_out) {
+            (Some(code), _) => code.to_string(),
+            (None, true) => "killed (harness timeout)".to_string(),
+            (None, false) => "terminated by signal".to_string(),
+        };
+        format!("--- {side} exit={code} stderr ---\n{}", self.stderr)
+    }
 }
 
 /// Runs a command with stdout/stderr captured to files (avoids pipe-buffer
@@ -54,6 +71,8 @@ fn run_with_timeout(mut command: Command, scratch: &Path, tag: &str) -> RunResul
     };
     RunResult {
         stdout: fs::read_to_string(&stdout_path).unwrap_or_default(),
+        stderr: fs::read_to_string(&stderr_path).unwrap_or_default(),
+        exit_code: status.and_then(|status| status.code()),
         success: status.is_some_and(|status| status.success()),
         timed_out: status.is_none(),
     }
@@ -157,7 +176,12 @@ fn examples_corpus_differential() {
             ));
             continue;
         }
-        let native = run_with_timeout(Command::new(dir.join(&stem)), &scratch, &format!("{stem}_native"));
+        // detect_leaks=0: raises longjmp over Rust frames whose temporaries
+        // leak by design (lkrt arena model) — LSan would fail the run and
+        // swallow buffered stdout. ASan memory-error checks stay on.
+        let mut native_cmd = Command::new(dir.join(&stem));
+        native_cmd.env("ASAN_OPTIONS", "detect_leaks=0");
+        let native = run_with_timeout(native_cmd, &scratch, &format!("{stem}_native"));
         if native.timed_out {
             divergences.push(format!("[{label}] native run timed out while the VM completed"));
             continue;
@@ -165,13 +189,19 @@ fn examples_corpus_differential() {
 
         if vm.stdout != native.stdout {
             divergences.push(format!(
-                "[{label}] stdout diverged\n--- vm ---\n{}\n--- native ---\n{}",
-                vm.stdout, native.stdout
+                "[{label}] stdout diverged\n--- vm ---\n{}\n--- native ---\n{}\n{}\n{}",
+                vm.stdout,
+                native.stdout,
+                vm.diagnostics("vm"),
+                native.diagnostics("native")
             ));
         } else if vm.success != native.success {
             divergences.push(format!(
-                "[{label}] success/failure diverged: vm={} native={}",
-                vm.success, native.success
+                "[{label}] success/failure diverged: vm={} native={}\n{}\n{}",
+                vm.success,
+                native.success,
+                vm.diagnostics("vm"),
+                native.diagnostics("native")
             ));
         } else {
             compared.push(label);

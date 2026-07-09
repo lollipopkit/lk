@@ -878,24 +878,52 @@ fn run_case(dir: &std::path::Path, name: &str, source: &str, seed: u64) -> CaseO
         return CaseOutcome { compared: false };
     }
 
-    let native = output_with_timeout(Command::new(dir.join(name)), "native run", &context("native run"));
+    // detect_leaks=0: raises longjmp over Rust frames whose temporaries leak
+    // by design (lkrt arena model) — LSan would fail the run and swallow
+    // buffered stdout. ASan memory-error checks stay on.
+    let mut native_cmd = Command::new(dir.join(name));
+    native_cmd.env("ASAN_OPTIONS", "detect_leaks=0");
+    let native = output_with_timeout(native_cmd, "native run", &context("native run"));
 
     let vm_stdout = String::from_utf8_lossy(&vm.stdout);
     let native_stdout = String::from_utf8_lossy(&native.stdout);
     assert_eq!(
         vm_stdout,
         native_stdout,
-        "{}",
-        context("stdout diverged between VM and native")
+        "{}\nvm status: {:?}\nnative status: {:?}\nvm stderr: {vm_stderr}\nnative stderr: {}",
+        context("stdout diverged between VM and native"),
+        vm.status,
+        native.status,
+        String::from_utf8_lossy(&native.stderr)
     );
     assert_eq!(
         vm.status.success(),
         native.status.success(),
-        "{}\nnative stderr: {}",
+        "{}\nvm status: {:?}\nnative status: {:?}\nvm stderr: {vm_stderr}\nnative stderr: {}",
         context("success/failure diverged between VM and native"),
+        vm.status,
+        native.status,
         String::from_utf8_lossy(&native.stderr)
     );
     CaseOutcome { compared: true }
+}
+
+/// `lk compile` builds the lk-api staticlib on demand *inside the compile
+/// child* (`ensure_lk_api_staticlib`, cli/src/main.rs) whenever a case needs
+/// the Tier 0 bundle or the Tier 1 hybrid link. On a cold cache that is a
+/// full release build — minutes, not seconds — and it lands inside a single
+/// case's 60s compile timeout (the nightly fresh-seed job died on exactly
+/// this: the first bridge-needing case's number drifts with the seed). Warm
+/// the build once, untimed, so the per-case timeout measures the compile
+/// itself. Must mirror the cargo invocation in `ensure_lk_api_staticlib`.
+fn warm_lk_api_staticlib() {
+    let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let status = Command::new("cargo")
+        .current_dir(&workspace)
+        .args(["build", "-p", "lk-api", "--features", "ffi", "--release"])
+        .status()
+        .expect("spawn cargo build lk-api");
+    assert!(status.success(), "failed to prebuild the lk-api staticlib");
 }
 
 #[test]
@@ -908,6 +936,7 @@ fn fuzz_differential_vm_vs_native() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(0xC0FF_EE00);
+    warm_lk_api_staticlib();
 
     let dir = std::env::temp_dir().join(format!("lk_aot_fuzz_{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);

@@ -32,6 +32,8 @@ mod chan_semantics_test;
 #[cfg(test)]
 mod datetime_test;
 #[cfg(test)]
+mod gc_stress_test;
+#[cfg(test)]
 mod globals_test;
 #[cfg(test)]
 mod math_test;

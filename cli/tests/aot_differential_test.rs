@@ -91,15 +91,26 @@ fn run_differential(area: &str, cases: &[Case]) {
             case.name,
             String::from_utf8_lossy(&exe.stderr)
         );
+        // Leak detection stays off for sanitized native runs: a raise
+        // longjmps over Rust frames whose plain temporaries (Vecs, boxes)
+        // then never drop — leaked *by design* (lkrt's arena model), and
+        // LSan's exit-time report both fails the run and swallows buffered
+        // stdout. ASan's use-after-free/overflow checks remain fully on.
         let native = Command::new(dir.join(case.name))
+            .env("ASAN_OPTIONS", "detect_leaks=0")
             .output()
             .expect("spawn compiled executable");
         let native_stdout = String::from_utf8_lossy(&native.stdout).into_owned();
 
         assert_eq!(
-            vm_stdout, native_stdout,
-            "[{area}/{}] stdout diverged (vm vs native)",
-            case.name
+            vm_stdout,
+            native_stdout,
+            "[{area}/{}] stdout diverged (vm vs native): vm={:?} native={:?} stderr(vm)={} stderr(native)={}",
+            case.name,
+            vm.status,
+            native.status,
+            String::from_utf8_lossy(&vm.stderr),
+            String::from_utf8_lossy(&native.stderr)
         );
         assert_eq!(
             vm.status.success(),

@@ -25,16 +25,18 @@ impl IterModule {
         let values = args.as_slice();
         let input = list_snapshot_arg(&values[0], runtime.heap(), "iter.map first argument")?;
         let mut out = Vec::with_capacity(input.len());
-        input.for_each_item(|item| {
+        // Accumulated callback results are host-held Rust values: pin each one
+        // or a GC inside the next callback frees it (host_roots discipline).
+        let mark = runtime.host_roots_mark();
+        let run = input.for_each_item(|item| {
             let value = item.into_runtime_value(runtime.heap_mut());
-            out.push(call_callable(
-                &values[1],
-                &[value],
-                runtime,
-                "iter.map second argument",
-            )?);
+            let result = call_callable(&values[1], &[value], runtime, "iter.map second argument")?;
+            runtime.host_root_push(result);
+            out.push(result);
             Ok(())
-        })?;
+        });
+        runtime.host_roots_truncate(mark);
+        run?;
         runtime_list(out, runtime.heap_mut())
     }
 
@@ -43,7 +45,10 @@ impl IterModule {
         let values = args.as_slice();
         let input = list_snapshot_arg(&values[0], runtime.heap(), "iter.filter first argument")?;
         let mut out = Vec::with_capacity(input.len());
-        input.for_each_item(|item| {
+        // Kept items can be fresh heap objects materialized off the snapshot
+        // (long strings) — pin them across the remaining predicate callbacks.
+        let mark = runtime.host_roots_mark();
+        let run = input.for_each_item(|item| {
             let value = item.into_runtime_value(runtime.heap_mut());
             let keep = call_callable(
                 &values[1],
@@ -52,10 +57,13 @@ impl IterModule {
                 "iter.filter second argument",
             )?;
             if truthy(&keep) {
+                runtime.host_root_push(value);
                 out.push(value);
             }
             Ok(())
-        })?;
+        });
+        runtime.host_roots_truncate(mark);
+        run?;
         runtime_list(out, runtime.heap_mut())
     }
 
@@ -67,7 +75,13 @@ impl IterModule {
         input.for_each_item(|item| {
             let value = item.into_runtime_value(runtime.heap_mut());
             let previous = std::mem::replace(&mut acc, RuntimeVal::Nil);
-            acc = call_callable(&values[2], &[previous, value], runtime, "iter.reduce third argument")?;
+            // Pin the accumulator only for the callback that consumes it
+            // (per-iteration mark/truncate keeps `host_roots` O(1)).
+            let iteration_mark = runtime.host_roots_mark();
+            runtime.host_root_push(previous);
+            let result = call_callable(&values[2], &[previous, value], runtime, "iter.reduce third argument");
+            runtime.host_roots_truncate(iteration_mark);
+            acc = result?;
             Ok(())
         })?;
         Ok(acc)

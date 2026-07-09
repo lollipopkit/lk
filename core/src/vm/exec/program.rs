@@ -76,6 +76,20 @@ pub fn execute_compiled_module_with_ctx(module: Arc<crate::vm::Module>, ctx: &mu
     execute_compiled_module_with_ctx_inner(module, ctx, None, None)
 }
 
+/// Execute with the heap's GC threshold pinned low so (nearly) every safepoint
+/// collects — the deterministic in-process twin of `LK_GC_STRESS=1`. Test-only
+/// surface for host-root regression tests (core and stdlib crates); not part
+/// of the public API.
+#[doc(hidden)]
+pub fn execute_program_with_ctx_and_gc_threshold(
+    program: &Program,
+    ctx: &mut VmContext,
+    gc_threshold: u32,
+) -> Result<ProgramResult> {
+    let module = compile_program_module_with_ctx(program, ctx)?;
+    execute_compiled_module_with_ctx_full(module, ctx, None, None, Some(gc_threshold))
+}
+
 fn execute_compiled_module_with_ctx_and_budget(
     module: Arc<crate::vm::Module>,
     ctx: &mut VmContext,
@@ -90,10 +104,23 @@ fn execute_compiled_module_with_ctx_inner(
     instruction_budget: Option<u64>,
     heap_object_limit: Option<usize>,
 ) -> Result<ProgramResult> {
+    execute_compiled_module_with_ctx_full(module, ctx, instruction_budget, heap_object_limit, None)
+}
+
+fn execute_compiled_module_with_ctx_full(
+    module: Arc<crate::vm::Module>,
+    ctx: &mut VmContext,
+    instruction_budget: Option<u64>,
+    heap_object_limit: Option<usize>,
+    gc_threshold: Option<u32>,
+) -> Result<ProgramResult> {
     // Start each top-level run with an empty traceback so a reused context
     // (REPL / embedded `Vm`) does not carry frames from a previous error.
     ctx.truncate_call_stack(0);
     let mut seed_heap = HeapStore::new();
+    if let Some(gc_threshold) = gc_threshold {
+        seed_heap.set_gc_threshold(gc_threshold);
+    }
     let globals = seed_module_globals(&module.globals, ctx, &mut seed_heap)?;
     let register_count = module
         .entry_function()

@@ -33,6 +33,55 @@ unsafe extern "C" {
 #[repr(C, align(16))]
 struct JmpBuf([u8; 512]);
 
+/// The jump buffer of the last raise, parked instead of freed: `_longjmp`
+/// still reads the buffer after the handler pop, so freeing at raise time
+/// races the jump — but once the landing pad runs the buffer is dead. It is
+/// reclaimed (reused or freed) at the next `try` push, the next parked
+/// raise, or thread exit, so raise-heavy programs stay at one buffer per
+/// thread instead of leaking 512 bytes per raise (LeakSanitizer flagged the
+/// old leak, and its exit-time report also swallowed buffered stdout).
+struct SpareJmpBuf(Cell<*mut JmpBuf>);
+
+impl SpareJmpBuf {
+    /// Takes the parked buffer for reuse, or allocates fresh. Safe to reuse:
+    /// any longjmp through the parked buffer landed before the control flow
+    /// pushing a new `try` frame could run.
+    fn take_or_alloc(&self) -> Box<JmpBuf> {
+        let parked = self.0.replace(core::ptr::null_mut());
+        if parked.is_null() {
+            Box::new(JmpBuf([0; 512]))
+        } else {
+            // SAFETY: parked pointers come from `Box::into_raw` in `park`
+            // and are handed out exactly once (replaced with null above).
+            unsafe { Box::from_raw(parked) }
+        }
+    }
+
+    /// Parks `buf` for the raise in flight and returns the raw pointer the
+    /// longjmp reads. A previously parked buffer is dead by now (its landing
+    /// pad ran before this raise could execute) and is freed here.
+    fn park(&self, buf: Box<JmpBuf>) -> *mut JmpBuf {
+        let raw = Box::into_raw(buf);
+        let previous = self.0.replace(raw);
+        if !previous.is_null() {
+            // SAFETY: `previous` came from `Box::into_raw` in an earlier
+            // `park`; its longjmp completed before this code could run.
+            drop(unsafe { Box::from_raw(previous) });
+        }
+        raw
+    }
+}
+
+impl Drop for SpareJmpBuf {
+    fn drop(&mut self) {
+        let parked = self.0.replace(core::ptr::null_mut());
+        if !parked.is_null() {
+            // SAFETY: no longjmp is in flight during thread teardown.
+            drop(unsafe { Box::from_raw(parked) });
+        }
+    }
+}
+
 thread_local! {
     /// Live `try` frames, innermost last. The boxing is load-bearing (not a
     /// `vec_box` accident): `_setjmp` captured the buffer's address, which
@@ -41,15 +90,18 @@ thread_local! {
     static HANDLERS: RefCell<Vec<Box<JmpBuf>>> = const { RefCell::new(Vec::new()) };
     /// The value carried by the in-flight (or just-caught) raise.
     static CURRENT_ERROR: Cell<LkDyn> = const { Cell::new(LkDyn::NIL) };
+    /// See [`SpareJmpBuf`].
+    static SPARE_BUF: SpareJmpBuf = const { SpareJmpBuf(Cell::new(core::ptr::null_mut())) };
 }
 
 /// Enters a `try` frame: pushes a fresh jump buffer and returns its address
 /// (the generated code passes it to `_setjmp`).
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_rt_try_push() -> *mut c_void {
+    let fresh = SPARE_BUF.with(SpareJmpBuf::take_or_alloc);
     HANDLERS.with(|handlers| {
         let mut handlers = handlers.borrow_mut();
-        handlers.push(Box::new(JmpBuf([0; 512])));
+        handlers.push(fresh);
         let buf: &mut JmpBuf = handlers.last_mut().expect("just pushed");
         buf as *mut JmpBuf as *mut c_void
     })
@@ -72,15 +124,15 @@ pub extern "C" fn lkrt_rt_current_error() -> LkDyn {
 
 fn raise_current(value: LkDyn) -> ! {
     CURRENT_ERROR.with(|slot| slot.set(value));
-    let target = HANDLERS.with(|handlers| {
-        let mut handlers = handlers.borrow_mut();
-        handlers.pop().map(|buf| Box::into_raw(buf) as *mut c_void)
-    });
+    let target = HANDLERS.with(|handlers| handlers.borrow_mut().pop());
     match target {
-        // The buffer is intentionally leaked (arena model): the landing pad
-        // may still be on the stack that owns it, freeing here would race
-        // the longjmp.
-        Some(buf) => unsafe { _longjmp(buf, 1) },
+        // Park (not free) the buffer: the longjmp still reads it. Bounded at
+        // one parked buffer per thread; reclaimed at the next push/park/
+        // thread end (see `SpareJmpBuf`).
+        Some(buf) => {
+            let raw = SPARE_BUF.with(|spare| spare.park(buf));
+            unsafe { _longjmp(raw as *mut c_void, 1) }
+        }
         None => crate::abi::flush_and_abort(),
     }
 }
@@ -169,4 +221,28 @@ mod tests {
     // The setjmp/longjmp round trip itself is exercised end-to-end by the
     // native differential corpus (Rust tests cannot call `_setjmp` safely);
     // the no-handler path is the existing abort, covered there too.
+}
+
+// No `_setjmp` involved — runs under Miri too (Stacked Borrows over the
+// park/reuse/free raw-pointer choreography).
+#[cfg(test)]
+mod spare_buf_tests {
+    use super::*;
+
+    #[test]
+    fn spare_jmp_buf_parks_reuses_and_frees() {
+        let spare = SpareJmpBuf(Cell::new(core::ptr::null_mut()));
+        // Nothing parked: allocates fresh.
+        let first = spare.take_or_alloc();
+        let first_addr = &*first as *const JmpBuf;
+        // Parking hands back the same address for the longjmp.
+        assert_eq!(spare.park(first), first_addr as *mut JmpBuf);
+        // Reuse: the parked buffer comes back instead of a fresh allocation.
+        let reused = spare.take_or_alloc();
+        assert_eq!(&*reused as *const JmpBuf, first_addr);
+        // Parking twice frees the previous buffer (no growth) — Miri/ASan
+        // validate the frees; Drop reclaims whatever stays parked.
+        spare.park(reused);
+        spare.park(Box::new(JmpBuf([0; 512])));
+    }
 }
