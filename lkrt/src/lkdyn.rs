@@ -458,6 +458,28 @@ fn display_into(out: &mut String, v: LkDyn, quoted: bool) {
             }
             out.push(']');
         }
+        DYN_MAP => {
+            // VM format: quoted keys, bare values (`{"k":1,"s":txt}`). The
+            // entry order is the Fx layout order — the mirror discipline
+            // (vm_mirror + insert-order replay) makes it the VM's own order,
+            // for bridged returns and mirror-built maps alike. Statically
+            // typed map display stays *out of the lowering subset*
+            // (docs/semantics.md): this arm only serves runtime-tagged Dyn
+            // values, where the alternative would be a raise the VM does not
+            // have.
+            out.push('{');
+            if !(v.payload as *mut c_void).is_null() {
+                for (i, (k, &e)) in dyn_map(v).iter().enumerate() {
+                    if i > 0 {
+                        out.push(',');
+                    }
+                    out.push_str(&format!("{k:?}"));
+                    out.push(':');
+                    display_into(out, e, false);
+                }
+            }
+            out.push('}');
+        }
         _ => crate::panic::raise_str("runtime type error"),
     }
 }

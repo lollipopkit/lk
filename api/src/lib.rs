@@ -458,7 +458,8 @@ pub mod ffi {
     // pointer store; the artifact decodes lazily on the first bridge call, so
     // a hybrid binary that never crosses the bridge pays nothing.
 
-    use core::sync::atomic::{AtomicPtr, Ordering};
+    use core::ffi::c_void;
+    use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
     use std::sync::{Mutex, OnceLock};
 
     use super::{HybridArg, HybridModule};
@@ -603,26 +604,105 @@ pub mod ffi {
     pub const LK_HYBRID_DYN_LIST: i64 = 5;
     pub const LK_HYBRID_DYN_MAP: i64 = 6;
 
+    /// lkrt container constructors, injected by the hybrid wrapper's C
+    /// constructor (`lk_hybrid_register_rt`): the wrapper is only compiled
+    /// into hybrid binaries — which link lkrt — so lk-api reaches lkrt's
+    /// arena builders through these pointers without ever linking it.
+    type ListDynNew = unsafe extern "C" fn() -> *mut c_void;
+    type ListDynPush = unsafe extern "C" fn(*mut c_void, LkHybridDyn);
+    type MapStrDynNew = unsafe extern "C" fn() -> *mut c_void;
+    type MapStrDynSet = unsafe extern "C" fn(*mut c_void, *const c_char, LkHybridDyn);
+
+    static RT_LIST_DYN_NEW: AtomicUsize = AtomicUsize::new(0);
+    static RT_LIST_DYN_PUSH: AtomicUsize = AtomicUsize::new(0);
+    static RT_MAP_STR_DYN_NEW: AtomicUsize = AtomicUsize::new(0);
+    static RT_MAP_STR_DYN_SET: AtomicUsize = AtomicUsize::new(0);
+
+    /// Register the lkrt container constructor table (hybrid wrapper C
+    /// constructor). Container returns die without it.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn lk_hybrid_register_rt(
+        list_dyn_new: ListDynNew,
+        list_dyn_push: ListDynPush,
+        map_str_dyn_new: MapStrDynNew,
+        map_str_dyn_set: MapStrDynSet,
+    ) {
+        RT_LIST_DYN_NEW.store(list_dyn_new as usize, Ordering::Release);
+        RT_LIST_DYN_PUSH.store(list_dyn_push as usize, Ordering::Release);
+        RT_MAP_STR_DYN_NEW.store(map_str_dyn_new as usize, Ordering::Release);
+        RT_MAP_STR_DYN_SET.store(map_str_dyn_set as usize, Ordering::Release);
+    }
+
+    struct HybridRt {
+        list_dyn_new: ListDynNew,
+        list_dyn_push: ListDynPush,
+        map_str_dyn_new: MapStrDynNew,
+        map_str_dyn_set: MapStrDynSet,
+    }
+
+    fn hybrid_rt() -> HybridRt {
+        let list_dyn_new = RT_LIST_DYN_NEW.load(Ordering::Acquire);
+        let list_dyn_push = RT_LIST_DYN_PUSH.load(Ordering::Acquire);
+        let map_str_dyn_new = RT_MAP_STR_DYN_NEW.load(Ordering::Acquire);
+        let map_str_dyn_set = RT_MAP_STR_DYN_SET.load(Ordering::Acquire);
+        if list_dyn_new == 0 || list_dyn_push == 0 || map_str_dyn_new == 0 || map_str_dyn_set == 0 {
+            hybrid_die(format_args!(
+                "container return needs the lkrt constructor table (lk_hybrid_register_rt)"
+            ));
+        }
+        // SAFETY: the values were stored from these exact fn-pointer types in
+        // `lk_hybrid_register_rt`.
+        unsafe {
+            HybridRt {
+                list_dyn_new: core::mem::transmute::<usize, ListDynNew>(list_dyn_new),
+                list_dyn_push: core::mem::transmute::<usize, ListDynPush>(list_dyn_push),
+                map_str_dyn_new: core::mem::transmute::<usize, MapStrDynNew>(map_str_dyn_new),
+                map_str_dyn_set: core::mem::transmute::<usize, MapStrDynSet>(map_str_dyn_set),
+            }
+        }
+    }
+
+    /// Deep-conversion depth cap: a VM list can contain its own handle, and
+    /// the marshal must fail loudly instead of recursing forever.
+    const MARSHAL_DEPTH_CAP: usize = 128;
+
+    fn leaked_c_string(text: &str) -> LkHybridDyn {
+        let Ok(owned) = std::ffi::CString::new(text) else {
+            // The native backend's strings are C strings end-to-end; an
+            // embedded NUL is unrepresentable there, not just here.
+            hybrid_die(format_args!("bridged string return contains an embedded NUL"));
+        };
+        LkHybridDyn {
+            tag: LK_HYBRID_DYN_STR,
+            payload: owned.into_raw() as i64,
+        }
+    }
+
     /// Marshal a VM result into an `LkDyn`-shaped return. Strings are copied
     /// into leaked `CString`s — native code treats every `LkDyn` string as
     /// arena-owned and never frees it, so the leak *is* the ownership model.
-    /// Containers land in C5 (constructor-table deep conversion); until then
-    /// they die with a clear message rather than return a dangling handle.
+    /// Containers deep-convert through the injected lkrt constructor table:
+    /// lists become `ListDyn` (whose bare-text display matches every VM list
+    /// display except the *quoted* typed string list — that one dies until a
+    /// typed-list Dyn tag exists), string-keyed maps become `MapStrDyn`
+    /// replayed in the VM's iteration order (Fx-layout preserving, same
+    /// discipline as chan's cross-thread deep copy).
     fn marshal_return(value: lk_core::val::RuntimeVal, state: &lk_core::vm::RuntimeModuleState) -> LkHybridDyn {
+        marshal_value(value, state, 0)
+    }
+
+    fn marshal_value(
+        value: lk_core::val::RuntimeVal,
+        state: &lk_core::vm::RuntimeModuleState,
+        depth: usize,
+    ) -> LkHybridDyn {
         use lk_core::val::{HeapValue, RuntimeVal};
 
-        fn leaked_c_string(text: &str) -> LkHybridDyn {
-            let Ok(owned) = std::ffi::CString::new(text) else {
-                // The native backend's strings are C strings end-to-end; an
-                // embedded NUL is unrepresentable there, not just here.
-                hybrid_die(format_args!("bridged string return contains an embedded NUL"));
-            };
-            LkHybridDyn {
-                tag: LK_HYBRID_DYN_STR,
-                payload: owned.into_raw() as i64,
-            }
+        if depth > MARSHAL_DEPTH_CAP {
+            hybrid_die(format_args!(
+                "bridged return exceeds the marshal depth cap (cyclic or absurdly nested container)"
+            ));
         }
-
         match value {
             RuntimeVal::Nil => LkHybridDyn {
                 tag: LK_HYBRID_DYN_NIL,
@@ -643,12 +723,71 @@ pub mod ffi {
             RuntimeVal::ShortStr(value) => leaked_c_string(value.as_str()),
             RuntimeVal::Obj(handle) => match state.heap().get(handle) {
                 Some(HeapValue::String(value)) => leaked_c_string(value.as_ref()),
+                Some(HeapValue::List(list)) => marshal_list(list, state, depth),
+                Some(HeapValue::Map(map)) => marshal_map(map, state, depth),
                 Some(other) => hybrid_die(format_args!(
                     "bridged return kind not yet marshalable: {}",
                     other.type_name()
                 )),
                 None => hybrid_die(format_args!("bridged return handle is out of bounds")),
             },
+        }
+    }
+
+    fn marshal_list(
+        list: &lk_core::val::TypedList,
+        state: &lk_core::vm::RuntimeModuleState,
+        depth: usize,
+    ) -> LkHybridDyn {
+        // A typed string list displays *quoted* in the VM while `ListDyn`
+        // displays bare (the Mixed-list quirk) — converting would silently
+        // change program output, so it stays unmarshalable for now.
+        if matches!(list, lk_core::val::TypedList::String(_)) {
+            hybrid_die(format_args!(
+                "bridged return kind not yet marshalable: List<Str> (quoted typed display)"
+            ));
+        }
+        let rt = hybrid_rt();
+        // SAFETY: the constructor table points at lkrt's no-mangle builders
+        // (registered by the wrapper); handles stay arena-owned.
+        unsafe {
+            let handle = (rt.list_dyn_new)();
+            for item in list.collect_owned() {
+                let element = marshal_value(item, state, depth + 1);
+                (rt.list_dyn_push)(handle, element);
+            }
+            LkHybridDyn {
+                tag: LK_HYBRID_DYN_LIST,
+                payload: handle as i64,
+            }
+        }
+    }
+
+    fn marshal_map(map: &lk_core::val::TypedMap, state: &lk_core::vm::RuntimeModuleState, depth: usize) -> LkHybridDyn {
+        use lk_core::val::RuntimeMapKey;
+
+        let rt = hybrid_rt();
+        // SAFETY: as in `marshal_list`; keys are leaked C strings (arena).
+        unsafe {
+            let handle = (rt.map_str_dyn_new)();
+            for (key, value) in map.entries_iter() {
+                let key_text = match &key {
+                    RuntimeMapKey::ShortStr(s) => s.as_str().to_string(),
+                    RuntimeMapKey::String(s) => s.as_ref().to_string(),
+                    other => hybrid_die(format_args!(
+                        "bridged return kind not yet marshalable: map with non-string key {other:?}"
+                    )),
+                };
+                let Ok(key_c) = std::ffi::CString::new(key_text) else {
+                    hybrid_die(format_args!("bridged map key contains an embedded NUL"));
+                };
+                let element = marshal_value(value, state, depth + 1);
+                (rt.map_str_dyn_set)(handle, key_c.into_raw(), element);
+            }
+            LkHybridDyn {
+                tag: LK_HYBRID_DYN_MAP,
+                payload: handle as i64,
+            }
         }
     }
 

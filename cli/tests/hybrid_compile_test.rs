@@ -126,6 +126,67 @@ fn hybrid_bridged_results_flow_back_and_match_the_vm() {
 }
 
 #[test]
+fn hybrid_bridged_containers_deep_convert_and_match_the_vm() {
+    // v2 C5: list/map returns deep-convert through the wrapper-injected lkrt
+    // constructor table — element reads, Dyn arithmetic, nested indexing and
+    // whole-container display all byte-identical to the VM (map entry order
+    // = the VM's own iteration order, replayed insert-by-insert).
+    let dir = std::env::temp_dir().join(format!("lk_hybrid_cli_cont_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create tmp dir");
+    let file = dir.join("cont.lk");
+    std::fs::write(
+        &file,
+        "fn rows(n) { let f = \"n={}\".trim(); println(f, n); return [n, n * 10, 2.5]; }\n\
+         fn user(name) { let f = \"u={}\".trim(); println(f, name); \
+         return {\"name\": name, \"score\": 95, \"tags\": [1, 2]}; }\n\
+         let r = rows(3);\n\
+         println(r);\n\
+         println(r[1]);\n\
+         let u = user(\"Alice\");\n\
+         println(u);\n\
+         println(u.score + 5);\n\
+         println(u.tags[1]);\n\
+         return 0;\n",
+    )
+    .expect("write program");
+
+    let vm = Command::new(bin_path())
+        .current_dir(&dir)
+        .arg("cont.lk")
+        .env("LK_FORCE_VM", "1")
+        .output()
+        .expect("vm run");
+    assert!(vm.status.success(), "vm: {}", String::from_utf8_lossy(&vm.stderr));
+
+    let compile = Command::new(bin_path())
+        .current_dir(&dir)
+        .args(["compile", "cont.lk"])
+        .env("LK_AOT_HYBRID", "1")
+        .output()
+        .expect("hybrid compile");
+    let compile_stderr = String::from_utf8_lossy(&compile.stderr).into_owned();
+    assert!(compile.status.success(), "compile: {compile_stderr}");
+    assert!(
+        compile_stderr.contains("Tier 1 hybrid"),
+        "expected the hybrid link path, got: {compile_stderr}"
+    );
+    assert!(
+        !compile_stderr.contains("falling back"),
+        "hybrid compile must not fall back to Tier 0: {compile_stderr}"
+    );
+
+    let native = Command::new(dir.join("cont")).output().expect("native run");
+    assert_eq!(
+        String::from_utf8_lossy(&vm.stdout),
+        String::from_utf8_lossy(&native.stdout),
+        "bridged containers must match the VM byte-for-byte"
+    );
+    assert_eq!(vm.status.success(), native.status.success());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn hybrid_uncaught_vm_error_exits_nonzero_like_the_vm() {
     let dir = std::env::temp_dir().join(format!("lk_hybrid_cli_err_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);

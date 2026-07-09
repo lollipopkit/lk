@@ -1410,31 +1410,53 @@ pub fn lower_bundled(
         // VM from the embedded artifact and need no native body. A failure
         // that stays native-reachable and is not eligible fails the module
         // whole (the current Tier 0 behavior).
+        // Mark-and-rerun to a fixpoint. Two effects force the iteration:
+        // (1) a caller — the entry included — can fail purely on the stale
+        // ret assumptions of a callee that is now VM-executed; re-lowering
+        // it against the bridge's `Dyn` result is the only sound judge.
+        // (2) a first-pass failure can abort a caller *before* it reaches a
+        // later call site, leaving that callee without the parameter
+        // observations its eligibility needs — each rerun lets callers get
+        // further and can surface new eligible callees. Every iteration
+        // must mark at least one new function, so it runs ≤ funcs.len()
+        // times; a failure that persists with nothing new to mark rejects
+        // the module (the current Tier 0 behavior).
         let written = written_global_slots(&funcs);
-        for (fi, _) in &failures {
-            if let Some(params) = bridge_eligibility(*fi, &funcs, module.entry, &sig, &written) {
-                sig.vm_functions.insert(*fi as u32, params);
+        let mut current_failures = failures;
+        loop {
+            let mut marked_any = false;
+            for (fi, _) in &current_failures {
+                if !sig.vm_functions.contains_key(&(*fi as u32))
+                    && let Some(params) = bridge_eligibility(*fi, &funcs, module.entry, &sig, &written)
+                {
+                    sig.vm_functions.insert(*fi as u32, params);
+                    marked_any = true;
+                }
             }
-        }
-        let native_reachable = native_reachable_functions(&funcs, module.entry, &sig.vm_functions);
-        for (fi, _) in &failures {
-            if native_reachable.get(*fi).copied().unwrap_or(false) && !sig.vm_functions.contains_key(&(*fi as u32)) {
-                return Err(first_error);
+            if !marked_any {
+                return Err(current_failures
+                    .first()
+                    .map(|(_, err)| err.clone())
+                    .unwrap_or(first_error));
             }
+            let native_reachable = native_reachable_functions(&funcs, module.entry, &sig.vm_functions);
+            // Drop VM marks without any native-reachable call site (a callee
+            // only ever called from inside the VM needs no bridge signature).
+            sig.vm_functions
+                .retain(|fidx, _| native_reachable.get(*fidx as usize).copied().unwrap_or(false));
+            let (retry_globals, retry_functions, retry_failures) = final_pass(&mut sig, &native_reachable);
+            if retry_failures.is_empty() {
+                globals = retry_globals;
+                functions = retry_functions;
+                break;
+            }
+            if std::env::var_os("LK_AOT_DEBUG_FAILURES").is_some() {
+                for (fi, err) in &retry_failures {
+                    eprintln!("lk-aot-lower: hybrid-rerun failure: fn{fi}: {err:?}");
+                }
+            }
+            current_failures = retry_failures;
         }
-        // Drop VM marks without any native-reachable call site (a callee only
-        // ever called from inside the VM needs no bridge signature).
-        sig.vm_functions
-            .retain(|fidx, _| native_reachable.get(*fidx as usize).copied().unwrap_or(false));
-        // Rerun with the VM-executed set in place: callers now emit `CallVm`
-        // and leave result registers unbound, so a caller that *uses* a
-        // bridged result fails here — results never cross the bridge (v1).
-        let (retry_globals, retry_functions, retry_failures) = final_pass(&mut sig, &native_reachable);
-        if let Some((_, err)) = retry_failures.into_iter().next() {
-            return Err(err);
-        }
-        globals = retry_globals;
-        functions = retry_functions;
     }
     if sig.conflict {
         return Err(Unsupported::ReturnTypeConflict);

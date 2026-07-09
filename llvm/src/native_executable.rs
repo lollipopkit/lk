@@ -100,13 +100,28 @@ pub fn compile_native_executable_from_llvm_hybrid(
 
 /// The hybrid link wrapper: embeds the artifact JSON and registers it before
 /// `main` runs (C constructor), so the first bridge call can decode it lazily.
+/// It also hands lk-api the lkrt container constructors (the v2 return
+/// bridge's deep conversion): only this wrapper is compiled into binaries
+/// that link *both* staticlibs, so it is the one place that can connect them
+/// without lk-api depending on lkrt.
 fn hybrid_wrapper_c(module_artifact_json: &str) -> String {
     let escaped = c_escape(module_artifact_json);
     format!(
-        "extern void lk_hybrid_register(const char *module_artifact_json);\n\
+        "typedef struct LkDyn {{ long long tag; long long payload; }} LkDyn;\n\
+         extern void lk_hybrid_register(const char *module_artifact_json);\n\
+         extern void lk_hybrid_register_rt(void *(*list_dyn_new)(void),\n\
+                                           void (*list_dyn_push)(void *, LkDyn),\n\
+                                           void *(*map_str_dyn_new)(void),\n\
+                                           void (*map_str_dyn_set)(void *, const char *, LkDyn));\n\
+         extern void *lkrt_lklist_dyn_new(void);\n\
+         extern void lkrt_lklist_dyn_push(void *, LkDyn);\n\
+         extern void *lkrt_lkmap_str_dyn_new(void);\n\
+         extern void lkrt_lkmap_str_dyn_set(void *, const char *, LkDyn);\n\
          static const char *LK_HYBRID_ARTIFACT = \"{escaped}\";\n\
          __attribute__((constructor)) static void lk_hybrid_setup(void) {{\n\
              lk_hybrid_register(LK_HYBRID_ARTIFACT);\n\
+             lk_hybrid_register_rt(lkrt_lklist_dyn_new, lkrt_lklist_dyn_push,\n\
+                                   lkrt_lkmap_str_dyn_new, lkrt_lkmap_str_dyn_set);\n\
          }}\n"
     )
 }
