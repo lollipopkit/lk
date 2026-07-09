@@ -6,6 +6,10 @@
 # Output: per-file OK/FAIL lines on stdout, reason ranking on stderr.
 set -u
 LK_BIN="${LK_BIN:-./target/debug/lk}"
+# The metric is *pure native lowering* coverage: with hybrid on (the default
+# since v2), a bridged program would count OK and mask a native-coverage
+# regression — pin it off for the scan.
+export LK_AOT_HYBRID=0
 total=0
 ok=0
 reasons_file="$(mktemp)"

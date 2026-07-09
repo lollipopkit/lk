@@ -877,15 +877,12 @@ fn run_case(dir: &std::path::Path, name: &str, source: &str, seed: u64, expect_h
         context("VM rejected a generated program")
     );
 
-    // MIR-gated native compile: either it lowers (fully native or Tier 1
-    // hybrid — LK_AOT_HYBRID exercises the bridge on the generated hybrid
-    // helpers), or it must fail with a graceful Unsupported reason (lower()
-    // totality) — never a panic.
+    // MIR-gated native compile under the *real default* (hybrid on): either
+    // it lowers (fully native or Tier 1 hybrid — the generated hybrid
+    // helpers exercise the bridge), or it must fail with a graceful
+    // Unsupported reason (lower() totality) — never a panic.
     let mut exe_cmd = Command::new(bin_path());
-    exe_cmd
-        .current_dir(dir)
-        .args(["compile", &file])
-        .env("LK_AOT_HYBRID", "1");
+    exe_cmd.current_dir(dir).args(["compile", &file]);
     let exe = output_with_timeout(exe_cmd, "native compile", &context("native compile"));
     let exe_stderr = String::from_utf8_lossy(&exe.stderr).into_owned();
     assert!(

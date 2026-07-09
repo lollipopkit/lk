@@ -1,8 +1,10 @@
 # Tier 1 Hybrid: Per-Function VM Fallback (Design)
 
-Status: **implemented — v1 (one-way, results discarded) and the v2 return
-bridge (see the "v2" section below)**; opt-in via `LK_AOT_HYBRID=1` until the
-nightly correctness rounds green-light the default flip. This document fixes
+Status: **implemented and on by default — v1 (one-way, results discarded)
+and the v2 return bridge (see the "v2" section below)**; `LK_AOT_HYBRID=0`
+opts out (whole-module native-or-Tier-0, e.g. the coverage script's metric).
+The default flipped after consecutive green nightly correctness rounds over
+v1+v2. This document fixes
 the architecture decisions; the staged sub-steps at the bottom are the
 implementation record. Key anchors today: `aot/lower/src/lib.rs`
 (eligibility + mark/rerun fixpoint), `aot/mir` (`Inst::CallVm { dst }`),
