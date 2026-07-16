@@ -1080,3 +1080,16 @@ B 翻 LK_AOT_HYBRID 默认 → C v2 桥接返回值,用户裁决全做)。
   clippy `-D warnings` 0 · fmt 0 · core module 46 测试。
 - **FFI 收官**:结构化 Value · 双向转换 · 高层 host fn · 命名空间模块 —— 四件
   套齐。仅 rooted handle 留档(复用 #22 host_roots,最niche)。
+
+## P2 · FFI ergonomic:rooted host↔VM 值交换 `set_global`/`get_global`(2026-07-16)
+
+- **rooted handle 的实用形态**:`Vm::set_global(name, Value)` 把结构化值物化进
+  VM 并**持久 rooted**(经 `VmContext::define_runtime_value` 进 runtime_globals,
+  survive GC + 跨 eval),eval'd 程序按名 `config.limit` 可见;`get_global(name)
+  -> Option<Value>` 经 `RuntimeExport::{value, state_lock().heap}` 读回结构化值。
+  比不透明 handle 更实用(宿主交值一次、按名引用),复用双向转换 + globals 天然
+  是 GC root 的事实。
+- 验证:lk-api 19 单测(注入 map → `config.limit` e2e 可见 + 读回 + 跨 eval
+  持久 + missing→None)· clippy/fmt 0。
+- **FFI ergonomic 全线收官**:转换层双向 · 高层 host fn · 命名空间模块 ·
+  rooted 值交换。C-ABI 不透明 handle(`lk.h`)留档待需。

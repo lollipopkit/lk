@@ -140,6 +140,27 @@ impl Vm {
         self
     }
 
+    /// Set a host-owned global variable, visible to every subsequently `eval`'d
+    /// program as `name`. The structured [`Value`] is materialized into the VM
+    /// and **kept rooted** — it survives GC and persists across evals — so this
+    /// is the practical form of a "rooted handle": the host hands a value to the
+    /// VM once and refers to it by name (plan M3.1 host ↔ VM exchange). Overwrites
+    /// any existing global of that name.
+    pub fn set_global(&mut self, name: &str, value: Value) -> &mut Self {
+        let mut heap = lk_core::val::HeapStore::new();
+        let runtime = value_to_runtime(&value, &mut heap);
+        self.ctx_mut().define_runtime_value(name, runtime, heap);
+        self
+    }
+
+    /// Read a host- or VM-defined global back as a detached [`Value`]. Returns
+    /// `None` if no global of that name exists.
+    pub fn get_global(&mut self, name: &str) -> Option<Value> {
+        let export = self.ctx_mut().get_runtime_global(name)?;
+        let guard = export.state_lock().ok()?;
+        Some(value_from_runtime(export.value(), guard.heap()))
+    }
+
     /// Finalize the pending registry into a context on first use.
     fn ctx_mut(&mut self) -> &mut VmContext {
         if self.ctx.is_none() {
@@ -623,6 +644,28 @@ mod tests {
         });
         assert_eq!(vm.eval("use greet; return greet.say(\"lk\");").unwrap(), "hi lk");
         assert_eq!(vm.eval("use greet; return greet.double(21);").unwrap(), "42");
+    }
+
+    #[test]
+    fn host_globals_are_visible_and_round_trip() {
+        let mut vm = Vm::new();
+        vm.set_global(
+            "config",
+            Value::Map(vec![
+                ("limit".to_string(), Value::Int(10)),
+                ("name".to_string(), Value::Str("prod".to_string())),
+            ]),
+        );
+        // Visible to eval'd programs by name.
+        assert_eq!(vm.eval("return config.limit;").unwrap(), "10");
+        assert_eq!(vm.eval("return config.name;").unwrap(), "prod");
+        // Rooted + persists across evals.
+        assert_eq!(vm.eval("return config.limit + 5;").unwrap(), "15");
+        // Readable back by the host as a structured Value.
+        let got = vm.get_global("config").expect("config global");
+        assert_eq!(got.get("limit").and_then(Value::as_int), Some(10));
+        assert_eq!(got.get("name").and_then(Value::as_str), Some("prod"));
+        assert_eq!(vm.get_global("missing"), None);
     }
 
     #[test]
