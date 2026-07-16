@@ -574,9 +574,20 @@ impl Lower {
                         let gv = mctx.module.declare_data_in_func(data_id, b.func);
                         b.ins().global_value(types::I64, gv)
                     }
-                    Const::FnAddr(_) | Const::Nil => {
-                        return Err(ClifError::Unsupported("fnaddr/nil const"));
+                    // The address of a lowered user function (`ptr @lk_fn_N`),
+                    // passed to runtime HOF helpers that invoke compiled callbacks.
+                    Const::FnAddr(f) => {
+                        let callee = *mctx
+                            .fn_ids
+                            .get(f)
+                            .ok_or(ClifError::Unsupported("fnaddr of undeclared function"))?;
+                        let func_ref = mctx.module.declare_func_in_func(callee, b.func);
+                        b.ins().func_addr(types::I64, func_ref)
                     }
+                    // A scalar `nil` is the integer 0 (matching the string-IR
+                    // `add i64 0, 0`); nil flowing into a `Dyn` context is wrapped
+                    // by an explicit `dyn.from_nil` call in the MIR, not here.
+                    Const::Nil => b.ins().iconst(types::I64, 0),
                 };
                 self.set1(*dst, v);
             }

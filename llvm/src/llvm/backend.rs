@@ -66,6 +66,34 @@ pub fn compile_module_artifact_to_llvm(
     compile_bundled_module_artifact_to_llvm(artifact, &[], options)
 }
 
+/// The Cranelift backend's artifact entry point (strangler front): lower to MIR
+/// (pure-native, `hybrid = false` — Cranelift has no VM bridge yet), validate,
+/// and emit a native object. The outer `Result` is a genuine internal failure
+/// (validation/codegen bug), never a user error; the inner result is:
+/// - `Ok(object)` — the whole module lowered; link it against `lkrt` via
+///   [`crate::compile_native_executable_from_object`].
+/// - `Err(reason)` — a shape outside the Cranelift slice (MIR lowering or codegen
+///   `Unsupported`); the caller should fall back to the string-IR path. `reason`
+///   is for diagnostics/coverage tracing only.
+pub fn compile_artifact_to_clif_object(
+    artifact: &ModuleArtifact,
+    bundles: &[lk_aot_lower::BundledImport],
+) -> Result<std::result::Result<Vec<u8>, String>> {
+    let mir = match lk_aot_lower::lower_bundled(artifact, bundles, false) {
+        Ok(mir) => mir,
+        // A shape the MIR lowering itself rejects — fall back, don't fail.
+        Err(unsupported) => return Ok(Err(format!("MIR lowering: {unsupported}"))),
+    };
+    if let Err(error) = lk_aot_mir::validate(&mir) {
+        bail!("internal AOT error: MIR validation failed after lowering: {error:?}");
+    }
+    match lk_aot_codegen::clif::compile_host_object(&mir) {
+        Ok(object) => Ok(Ok(object)),
+        Err(lk_aot_codegen::clif::ClifError::Unsupported(reason)) => Ok(Err(format!("clif: {reason}"))),
+        Err(error) => bail!("Cranelift codegen failed: {error:?}"),
+    }
+}
+
 /// [`compile_module_artifact_to_llvm`] over an artifact whose function table
 /// already contains compile-time-bundled file imports (multi-file compiles).
 pub fn compile_bundled_module_artifact_to_llvm(

@@ -147,6 +147,27 @@ pub(super) fn compile_native_executable_from_artifact(
         Some((merged, bundles)) => (merged, bundles.clone()),
         None => (artifact, Vec::new()),
     };
+    // Strangler front (`docs/llvm/aot-redesign.md`): when opted in via
+    // `LK_AOT_CLIF`, try the Cranelift backend first. It covers a growing slice
+    // and emits a native object directly (no clang optimization pass); anything
+    // outside the slice returns `None`, falling through to the string-IR path
+    // below so no program regresses.
+    if env_flag("LK_AOT_CLIF") {
+        match lk_llvm::compile_artifact_to_clif_object(artifact, &bundles)? {
+            Ok(object) => {
+                if native_trace_enabled() {
+                    eprintln!("clif: native object for {}", path.display());
+                }
+                lk_llvm::compile_native_executable_from_object(path, output, &object)?;
+                return Ok(());
+            }
+            Err(reason) => {
+                if native_trace_enabled() {
+                    eprintln!("clif: fallback for {} ({reason})", path.display());
+                }
+            }
+        }
+    }
     let llvm = lk_llvm::compile_bundled_module_artifact_to_llvm(artifact, &bundles, options)
         .with_context(|| format!("compile native executable LLVM IR for {}", path.display()))?;
     if llvm.module.vm_function_count > 0 {
