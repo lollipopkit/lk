@@ -1063,3 +1063,20 @@ B 翻 LK_AOT_HYBRID 默认 → C v2 桥接返回值,用户裁决全做)。
   测试全量 · clippy `-D warnings` 0 · fmt 0。
 - **FFI 剩余(留档)**:`register_module` 命名空间(吃透 ModuleProvider)·
   rooted handle(复用 #22 host_roots)。转换层双向 + 高层 host fn 已齐。
+
+## P2 · FFI ergonomic:命名空间 host 模块 `register_module`(2026-07-16)
+
+- **core**:`runtime_module_export(&[(Arc<str>,u16,NativeFunction)])` 运行时
+  名版模块构造器(此前 `runtime_export_from_plain_native_entries` 只收
+  `&'static str` + fn 指针)+ 通用 `RuntimeModuleProvider`(名+entries 的
+  `ModuleProvider`,`runtime_exports()` 建 name→callable 的 Map,`register`
+  空操作 —— 函数只在模块名空间,`use mymod` 时解析)。
+- **lk-api**:`Vm::register_module(name, |m| { m.function_v(...); m.function(...) })`
+  builder —— `HostModule::function_v`(ergonomic 捕获闭包)/`function`(raw)。
+  宿主写 `vm.register_module("greet", |m| m.function_v("hi",1,|a| ...))`,LK 侧
+  `use greet; greet.hi("lk")`。闭包包装抽 `host_value_closure`(与 register_fn_v
+  共享)。
+- 验证:lk-api 18 单测 + 1 doctest(命名空间调用 + 捕获闭包 e2e)· workspace
+  clippy `-D warnings` 0 · fmt 0 · core module 46 测试。
+- **FFI 收官**:结构化 Value · 双向转换 · 高层 host fn · 命名空间模块 —— 四件
+  套齐。仅 rooted handle 留档(复用 #22 host_roots,最niche)。

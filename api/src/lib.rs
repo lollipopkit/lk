@@ -103,19 +103,40 @@ impl Vm {
     where
         F: Fn(&[Value]) -> Result<Value> + Send + Sync + 'static,
     {
-        let wrapper = move |args: NativeArgs<'_>, rt: &mut NativeRuntime<'_>| -> Result<RuntimeVal> {
-            let host_args: Vec<Value> = args
-                .as_slice()
-                .iter()
-                .map(|value| value_from_runtime(value, rt.heap()))
-                .collect();
-            let result = f(&host_args)?;
-            Ok(value_to_runtime(&result, rt.heap_mut()))
-        };
         self.registry
             .as_mut()
             .expect("register_fn_v must be called before the first eval")
-            .register_runtime_builtin(name, NativeFunction::Closure(Arc::new(wrapper)), arity);
+            .register_runtime_builtin(name, NativeFunction::Closure(host_value_closure(f)), arity);
+        self
+    }
+
+    /// Register a **namespaced** host module callable as `name.member(...)` from
+    /// LK (after `use name;`). The `build` closure populates the module with raw
+    /// ([`HostModule::function`]) or ergonomic ([`HostModule::function_v`])
+    /// entries. Must be called before the first [`eval`](Self::eval).
+    ///
+    /// ```
+    /// # use lk_api::{Vm, Value};
+    /// let mut vm = Vm::new();
+    /// vm.register_module("greet", |m| {
+    ///     m.function_v("hi", 1, |args| {
+    ///         Ok(Value::Str(format!("hi {}", args[0].as_str().unwrap_or("?"))))
+    ///     });
+    /// });
+    /// assert_eq!(vm.eval("use greet; return greet.hi(\"lk\");").unwrap(), "hi lk");
+    /// ```
+    pub fn register_module<B>(&mut self, name: &str, build: B) -> &mut Self
+    where
+        B: FnOnce(&mut HostModule),
+    {
+        let mut module = HostModule { entries: Vec::new() };
+        build(&mut module);
+        let provider = lk_core::module::RuntimeModuleProvider::new(name, module.entries);
+        self.registry
+            .as_mut()
+            .expect("register_module must be called before the first eval")
+            .register_module(name, Box::new(provider))
+            .expect("host module registration");
         self
     }
 
@@ -356,6 +377,50 @@ fn string_to_runtime(text: &str, heap: &mut lk_core::val::HeapStore) -> RuntimeV
     }
 }
 
+/// Wrap an ergonomic `Fn(&[Value]) -> Result<Value>` host function into the raw
+/// runtime ABI, converting positional args `RuntimeVal → Value` on the way in
+/// and the result `Value → RuntimeVal` on the way out. Shared by
+/// [`Vm::register_fn_v`] and [`HostModule::function_v`].
+fn host_value_closure<F>(f: F) -> lk_core::vm::ClosureNativeFunction
+where
+    F: Fn(&[Value]) -> Result<Value> + Send + Sync + 'static,
+{
+    Arc::new(
+        move |args: NativeArgs<'_>, rt: &mut NativeRuntime<'_>| -> Result<RuntimeVal> {
+            let host_args: Vec<Value> = args
+                .as_slice()
+                .iter()
+                .map(|value| value_from_runtime(value, rt.heap()))
+                .collect();
+            let result = f(&host_args)?;
+            Ok(value_to_runtime(&result, rt.heap_mut()))
+        },
+    )
+}
+
+/// Builder for a host-registered namespaced module (see [`Vm::register_module`]).
+pub struct HostModule {
+    entries: Vec<(Arc<str>, u16, NativeFunction)>,
+}
+
+impl HostModule {
+    /// Add a raw-ABI function (`fn` pointer) to the module.
+    pub fn function(&mut self, name: &str, arity: u16, f: HostFn) -> &mut Self {
+        self.entries.push((Arc::from(name), arity, NativeFunction::Plain(f)));
+        self
+    }
+
+    /// Add an ergonomic [`Value`]-based (capturing) function to the module.
+    pub fn function_v<F>(&mut self, name: &str, arity: u16, f: F) -> &mut Self
+    where
+        F: Fn(&[Value]) -> Result<Value> + Send + Sync + 'static,
+    {
+        self.entries
+            .push((Arc::from(name), arity, NativeFunction::Closure(host_value_closure(f))));
+        self
+    }
+}
+
 /// Scalar argument for [`HybridModule::call_discard`] (re-exported core type).
 pub use lk_core::vm::ModuleFunctionArg as HybridArg;
 
@@ -544,6 +609,20 @@ mod tests {
             vm.eval_value("return make_pair(1, 2);").unwrap(),
             Value::List(vec![Value::Int(1), Value::Int(2)])
         );
+    }
+
+    #[test]
+    fn register_module_exposes_namespaced_functions() {
+        let mut vm = Vm::new();
+        let prefix = "hi ".to_string();
+        vm.register_module("greet", |m| {
+            m.function_v("say", 1, move |args| {
+                Ok(Value::Str(format!("{}{}", prefix, args[0].as_str().unwrap_or("?"))))
+            });
+            m.function_v("double", 1, |args| Ok(Value::Int(args[0].as_int().unwrap_or(0) * 2)));
+        });
+        assert_eq!(vm.eval("use greet; return greet.say(\"lk\");").unwrap(), "hi lk");
+        assert_eq!(vm.eval("use greet; return greet.double(21);").unwrap(), "42");
     }
 
     #[test]

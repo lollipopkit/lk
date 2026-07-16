@@ -225,6 +225,62 @@ pub fn runtime_export_from_runtime_native(name: &str, function: NativeFunction, 
     RuntimeExport::from_value(value, heap)
 }
 
+/// Build a module [`RuntimeExport`] (a `name → callable` map) from
+/// **runtime-named** native entries. The ergonomic host-module path
+/// (`lk-api`'s `register_module`): unlike [`runtime_export_from_plain_native_entries`]
+/// it takes owned names and any [`NativeFunction`], including capturing closures.
+pub fn runtime_module_export(entries: &[(Arc<str>, u16, NativeFunction)]) -> RuntimeExport {
+    let mut heap = HeapStore::new();
+    let mut map = fast_hash_map_new();
+    for (name, arity, function) in entries {
+        let callable = RuntimeVal::Obj(heap.alloc(HeapValue::Callable(CallableValue::RuntimeNative {
+            name: Arc::clone(name),
+            arity: *arity,
+            function: function.clone(),
+        })));
+        map.insert(Arc::clone(name), callable);
+    }
+    let value = RuntimeVal::Obj(heap.alloc(HeapValue::Map(TypedMap::StringMixed(map))));
+    RuntimeExport::new(
+        value,
+        Arc::new(Mutex::new(RuntimeModuleState::new(heap, Vec::new()))),
+        Arc::new(Module::default()),
+    )
+}
+
+/// A [`ModuleProvider`] assembled from runtime-named native entries, so a host
+/// can register a namespaced module (`mymod.foo(...)`) without hand-implementing
+/// the trait. Its functions live in the module namespace only (no global
+/// builtins), resolved on `use mymod;`. See `lk-api`'s `register_module`.
+#[derive(Debug)]
+pub struct RuntimeModuleProvider {
+    name: String,
+    entries: Vec<(Arc<str>, u16, NativeFunction)>,
+}
+
+impl RuntimeModuleProvider {
+    pub fn new(name: impl Into<String>, entries: Vec<(Arc<str>, u16, NativeFunction)>) -> Self {
+        Self {
+            name: name.into(),
+            entries,
+        }
+    }
+}
+
+impl ModuleProvider for RuntimeModuleProvider {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn register(&self, _registry: &mut ModuleRegistry) -> Result<()> {
+        Ok(())
+    }
+
+    fn runtime_exports(&self) -> Result<RuntimeExport> {
+        Ok(runtime_module_export(&self.entries))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
