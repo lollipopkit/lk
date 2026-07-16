@@ -162,6 +162,15 @@ pub(super) fn compile_native_executable_from_artifact(
                 return Ok(());
             }
             Err(reason) => {
+                // `LK_AOT_CLIF_ONLY` turns a fallback into a hard error — the
+                // differential harness uses it to guarantee a case is compiled
+                // *through Cranelift*, not silently by the string-IR path.
+                if env_flag("LK_AOT_CLIF_ONLY") {
+                    anyhow::bail!(
+                        "LK_AOT_CLIF_ONLY: Cranelift cannot compile `{}` yet ({reason})",
+                        path.display()
+                    );
+                }
                 if native_trace_enabled() {
                     eprintln!("clif: fallback for {} ({reason})", path.display());
                 }
