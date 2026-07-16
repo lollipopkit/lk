@@ -790,8 +790,64 @@ impl Lower {
             Inst::UnwrapMaybeStr { dst, src } => {
                 return self.unwrap_call(b, mctx, "lkrt_maybe_str_unwrap", *dst, *src);
             }
+            Inst::TraitDispatch { dst, self_arg, arms } => {
+                return self.trait_dispatch(b, mctx, *dst, *self_arg, arms);
+            }
             _ => return Err(ClifError::Unsupported("instruction outside current slice")),
         }
+        Ok(())
+    }
+
+    /// Runtime trait-method dispatch (plan J1): read the boxed receiver's arena
+    /// type mark (`dyn.obj_type_id`) and walk an `icmp` chain, calling the impl
+    /// whose registered type id matches. Every arm takes the `Dyn` receiver and
+    /// returns `Dyn`, so results merge at a join block via a two-param phi. No
+    /// matching mark calls `dyn.method_missing` (which raises/aborts).
+    fn trait_dispatch(
+        &mut self,
+        b: &mut FunctionBuilder,
+        mctx: &mut ModuleCtx,
+        dst: ValueId,
+        self_arg: ValueId,
+        arms: &[(i64, FuncId)],
+    ) -> Result<(), ClifError> {
+        let (s0, s1) = self.two(self_arg)?;
+        let type_id = self.abi_call(b, mctx, "dyn", "obj_type_id", &[s0, s1])?;
+        // The join block carries the dispatched `Dyn` result as two block params.
+        let join = b.create_block();
+        let j0 = b.append_block_param(join, types::I64);
+        let j1 = b.append_block_param(join, types::I64);
+        for (tid, func) in arms {
+            let arm = b.create_block();
+            let next = b.create_block();
+            let eq = b.ins().icmp_imm(IntCC::Equal, type_id, *tid);
+            b.ins().brif(eq, arm, &[], next, &[]);
+            b.switch_to_block(arm);
+            let callee = *mctx
+                .fn_ids
+                .get(func)
+                .ok_or(ClifError::Unsupported("trait arm to undeclared function"))?;
+            let func_ref = mctx.module.declare_func_in_func(callee, b.func);
+            let call = b.ins().call(func_ref, &[s0, s1]);
+            let (r0, r1) = {
+                let r = b.inst_results(call);
+                (
+                    *r.first().ok_or(ClifError::Unsupported("trait arm result missing lo"))?,
+                    *r.get(1).ok_or(ClifError::Unsupported("trait arm result missing hi"))?,
+                )
+            };
+            b.ins().jump(join, &[BlockArg::Value(r0), BlockArg::Value(r1)]);
+            b.switch_to_block(next);
+        }
+        // Fall-through (no arm matched): raise via `method_missing`, then trap to
+        // terminate the block (the raise aborts, so the trap is unreachable).
+        let missing = mctx.abi_func(resolve_abi("dyn", "method_missing")?)?;
+        self.call(b, mctx, missing, None, &[])?;
+        b.ins()
+            .trap(cranelift_codegen::ir::TrapCode::user(1).expect("nonzero trap code"));
+        // Continue the MIR block from the join, with the result bound.
+        b.switch_to_block(join);
+        self.set2(dst, j0, j1);
         Ok(())
     }
 
