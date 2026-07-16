@@ -93,6 +93,32 @@ impl Vm {
         self
     }
 
+    /// Register a host native function over the ergonomic [`Value`] surface:
+    /// positional arguments arrive as structured [`Value`]s and the returned
+    /// `Value` is converted back into the VM heap. Unlike
+    /// [`register_fn`](Self::register_fn) this accepts a **capturing closure**,
+    /// so the host can close over its own state. Must be called before the first
+    /// [`eval`](Self::eval).
+    pub fn register_fn_v<F>(&mut self, name: &str, arity: u16, f: F) -> &mut Self
+    where
+        F: Fn(&[Value]) -> Result<Value> + Send + Sync + 'static,
+    {
+        let wrapper = move |args: NativeArgs<'_>, rt: &mut NativeRuntime<'_>| -> Result<RuntimeVal> {
+            let host_args: Vec<Value> = args
+                .as_slice()
+                .iter()
+                .map(|value| value_from_runtime(value, rt.heap()))
+                .collect();
+            let result = f(&host_args)?;
+            Ok(value_to_runtime(&result, rt.heap_mut()))
+        };
+        self.registry
+            .as_mut()
+            .expect("register_fn_v must be called before the first eval")
+            .register_runtime_builtin(name, NativeFunction::Closure(Arc::new(wrapper)), arity);
+        self
+    }
+
     /// Finalize the pending registry into a context on first use.
     fn ctx_mut(&mut self) -> &mut VmContext {
         if self.ctx.is_none() {
@@ -486,6 +512,38 @@ mod tests {
         assert_eq!(back.get("pi").and_then(Value::as_float), Some(3.5));
         assert_eq!(back.get("nada"), Some(&Value::Nil));
         assert_eq!(back.as_map().unwrap().len(), 5);
+    }
+
+    #[test]
+    fn register_fn_v_uses_structured_values() {
+        let mut vm = Vm::new();
+        // A capturing closure: sums a list argument plus a captured base.
+        let base = 1000_i64;
+        vm.register_fn_v("sum_plus", 1, move |args| {
+            let total: i64 = args
+                .first()
+                .and_then(Value::as_list)
+                .unwrap_or(&[])
+                .iter()
+                .filter_map(Value::as_int)
+                .sum();
+            Ok(Value::Int(total + base))
+        });
+        assert_eq!(vm.eval("return sum_plus([1, 2, 3]);").unwrap(), "1006");
+    }
+
+    #[test]
+    fn register_fn_v_returns_structured_value() {
+        let mut vm = Vm::new();
+        vm.register_fn_v("make_pair", 2, |args| {
+            Ok(Value::List(vec![args[0].clone(), args[1].clone()]))
+        });
+        // The returned list materializes as a real VM list.
+        assert_eq!(vm.eval("return make_pair(7, \"hi\").0;").unwrap(), "7");
+        assert_eq!(
+            vm.eval_value("return make_pair(1, 2);").unwrap(),
+            Value::List(vec![Value::Int(1), Value::Int(2)])
+        );
     }
 
     #[test]

@@ -941,6 +941,7 @@ fn call_runtime_callable_value(
                 lk_core::vm::NativeFunction::Plain(function)
                 | lk_core::vm::NativeFunction::Context(function)
                 | lk_core::vm::NativeFunction::FullState(function) => function(NativeArgs::new(args), runtime),
+                lk_core::vm::NativeFunction::Closure(function) => function(NativeArgs::new(args), runtime),
             }
         }
     }

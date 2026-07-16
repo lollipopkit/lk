@@ -604,11 +604,32 @@ impl<'a> IntoIterator for NativeArgs<'a> {
     }
 }
 
-#[derive(Clone, Debug)]
+/// A boxed, **capturing** host native function — the ergonomic registration
+/// path (`lk-api`'s `register_fn_v`). Unlike the `fn`-pointer variants it can
+/// close over host state; it is shared across goroutines, hence `Send + Sync`.
+pub type ClosureNativeFunction =
+    Arc<dyn Fn(NativeArgs<'_>, &mut NativeRuntime<'_>) -> Result<RuntimeVal> + Send + Sync>;
+
+#[derive(Clone)]
 pub enum NativeFunction {
     Plain(PlainNativeFunction),
     Context(ContextNativeFunction),
     FullState(ContextNativeFunction),
+    /// A capturing host closure (see [`ClosureNativeFunction`]). Dispatched like
+    /// [`Plain`](Self::Plain) — needs no full state.
+    Closure(ClosureNativeFunction),
+}
+
+impl core::fmt::Debug for NativeFunction {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let variant = match self {
+            Self::Plain(_) => "Plain",
+            Self::Context(_) => "Context",
+            Self::FullState(_) => "FullState",
+            Self::Closure(_) => "Closure",
+        };
+        write!(f, "NativeFunction::{variant}(..)")
+    }
 }
 
 impl NativeFunction {

@@ -1046,9 +1046,20 @@ B 翻 LK_AOT_HYBRID 默认 → C v2 桥接返回值,用户裁决全做)。
   回写(短串走 ShortStr 保 VM 相等语义;list 用 Mixed —— `TypedList` 相等
   表示无关已核实;map 经新 core 公开 `typed_map_from_string_entries`)。
   round-trip 测试(list 保序 + map 按键查 + 长串走 heap)。**转换层两向齐**。
-- **剩余 FFI(留档,需 core 侧改动的增量)**:高层 `register_fn_v(闭包)`
-  需给 `NativeFunction` 加 `Arc<dyn Fn>` 变体(现仅 `fn` 指针,且破 Debug
-  derive)· `register_module` 命名空间 ergonomic 包装(吃透 ModuleProvider)·
-  rooted handle(复用 #22 host_roots)。
 - **验证**:lk-api 15 测试 · workspace clippy `-D warnings` 0 · fmt 0 ·
   core val 40 测试。
+
+## P2 · FFI ergonomic:高层闭包 host fn `register_fn_v`(2026-07-16)
+
+- **core**:`NativeFunction` 加 `Closure(ClosureNativeFunction)` 变体
+  (`Arc<dyn Fn(NativeArgs,&mut NativeRuntime)->Result<RuntimeVal> + Send+Sync>`),
+  首个**可捕获**的 host native(此前仅 `fn` 指针)。`Arc<dyn Fn>` 破 Debug
+  derive → 改手写 Debug;分派同 Plain(exec/support.rs 两处 + iter/stream
+  两个 stdlib HOF 调用点补臂)。
+- **lk-api**:`Vm::register_fn_v(name, arity, F: Fn(&[Value])->Result<Value>
+  + Send+Sync)` —— 参 `RuntimeVal→Value`、返回 `Value→RuntimeVal` 自动转,
+  宿主写 `|args| Ok(Value::List(...))` 即可,可闭包捕获宿主状态。
+- 验证:lk-api 17 测试(捕获闭包求和 + 返回结构化 list e2e)· workspace
+  测试全量 · clippy `-D warnings` 0 · fmt 0。
+- **FFI 剩余(留档)**:`register_module` 命名空间(吃透 ModuleProvider)·
+  rooted handle(复用 #22 host_roots)。转换层双向 + 高层 host fn 已齐。
