@@ -30,6 +30,13 @@ use cranelift_module::{DataDescription, DataId, FuncId as ClifFuncId, Linkage, M
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use lk_aot_mir::{CmpOp, Const, FloatBinOp, FuncId, Inst, IntBinOp, MirFunction, MirModule, Term, Ty, ValueId};
 
+/// Size of one `LkHybridArg` (`#[repr(C)] { i8 tag, i64 value }`): the `i64`
+/// forces 8-byte alignment, so the tag byte at offset 0 is padded and the value
+/// sits at offset 8, for a 16-byte stride.
+const HYBRID_ARG_SIZE: usize = 16;
+/// Byte offset of the value field within an `LkHybridArg`.
+const HYBRID_ARG_VALUE_OFFSET: i32 = 8;
+
 /// Why a MIR shape is not (yet) lowerable through the Cranelift path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClifError {
@@ -92,6 +99,11 @@ struct ModuleCtx<'a> {
     str_data: &'a HashMap<u32, DataId>,
     /// Mutable module-global data symbols (`lk_gvar_{i}`) + their MIR type.
     gvar_data: &'a HashMap<u32, (DataId, Ty)>,
+    /// Tier 1 hybrid marshaling buffer (`lk_hybrid_argbuf`), present iff the
+    /// module has `CallVm` sites; sized to the widest call.
+    hybrid_argbuf: Option<DataId>,
+    /// VM-executed function signatures, for `CallVm` argument tagging.
+    vm_functions: &'a [lk_aot_mir::VmFunction],
 }
 
 impl ModuleCtx<'_> {
@@ -245,6 +257,32 @@ pub fn compile_module(mir: &MirModule, isa: std::sync::Arc<dyn TargetIsa>) -> Re
         gvar_data.insert(i as u32, (id, *ty));
     }
 
+    // Tier 1 hybrid marshaling buffer: an array of `{i8 tag, i64 value}` (16
+    // bytes each, matching lk-api's `#[repr(C)] LkHybridArg`), sized to the
+    // widest `CallVm` site. A single internal global (not a per-call stack slot)
+    // keeps bridge calls inside loops from growing the stack; safe because native
+    // binaries are single-threaded and the bridge never re-enters native code.
+    let max_hybrid_args = mir
+        .functions
+        .iter()
+        .flat_map(|f| f.blocks.iter())
+        .flat_map(|blk| blk.insts.iter())
+        .filter_map(|inst| match inst {
+            Inst::CallVm { args, .. } => Some(args.len()),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0);
+    let hybrid_argbuf = if max_hybrid_args > 0 {
+        let id = module.declare_data("lk_hybrid_argbuf", Linkage::Local, true, false)?;
+        let mut desc = DataDescription::new();
+        desc.define_zeroinit(max_hybrid_args * HYBRID_ARG_SIZE);
+        module.define_data(id, &desc)?;
+        Some(id)
+    } else {
+        None
+    };
+
     // ABI runtime symbols are declared lazily but must dedup across functions.
     let mut abi_ids: HashMap<&'static str, ClifFuncId> = HashMap::new();
 
@@ -266,6 +304,8 @@ pub fn compile_module(mir: &MirModule, isa: std::sync::Arc<dyn TargetIsa>) -> Re
                 abi_ids: &mut abi_ids,
                 str_data: &str_data,
                 gvar_data: &gvar_data,
+                hybrid_argbuf,
+                vm_functions: &mir.vm_functions,
             };
             build_function(func, &mut ctx.func, &mut fb_ctx, &mut mctx, is_entry, mir.abi_version)?;
         }
@@ -360,11 +400,23 @@ fn build_function(
     abi_version: i64,
 ) -> Result<(), ClifError> {
     let mut builder = FunctionBuilder::new(clif_func, fb_ctx);
+    // A `CallVm` destination that no instruction/terminator reads is dead: degrade
+    // its bridge call to the void form (see `Lower::unused_vm_dsts`).
+    let unused_vm_dsts = func
+        .blocks
+        .iter()
+        .flat_map(|block| block.insts.iter())
+        .filter_map(|inst| match inst {
+            Inst::CallVm { dst: Some(d), .. } if !lk_aot_mir::value_is_used(func, *d) => Some(*d),
+            _ => None,
+        })
+        .collect();
     let mut lower = Lower {
         values: HashMap::new(),
         blocks: HashMap::new(),
         is_entry,
         ret_ty: func.ret,
+        unused_vm_dsts,
     };
 
     // Materialize every MIR block up front so branches can target them.
@@ -428,6 +480,11 @@ struct Lower {
     is_entry: bool,
     /// The MIR return type — selects the entry's result-printing conversion.
     ret_ty: Ty,
+    /// `CallVm` destinations that are never read back: their bridge call degrades
+    /// to the void `lk_hybrid_call_v` (no return marshaling), matching the
+    /// string-IR path — a statement-position bridged call must not marshal a
+    /// return the runtime may not support (e.g. a struct/`Object`).
+    unused_vm_dsts: std::collections::HashSet<ValueId>,
 }
 
 impl Lower {
@@ -798,6 +855,9 @@ impl Lower {
             Inst::TryCall { dst, func, args } => {
                 return self.try_call(b, mctx, *dst, *func, args);
             }
+            Inst::CallVm { dst, func, args } => {
+                return self.call_vm(b, mctx, *dst, *func, args);
+            }
             _ => return Err(ClifError::Unsupported("instruction outside current slice")),
         }
         Ok(())
@@ -873,6 +933,83 @@ impl Lower {
         self.call(b, mctx, push, None, &[list, val_t, val_p])?;
         self.set1(dst, list);
         Ok(())
+    }
+
+    /// Tier 1 hybrid bridge call (`docs/llvm/tier1-hybrid.md`): marshal each
+    /// scalar argument into its tagged slot in `lk_hybrid_argbuf`, flush C stdio
+    /// (the bridge VM prints through Rust's line-buffered stdout — unflushed C
+    /// buffers would reorder pipe output), then call the bridge. A used result
+    /// binds the `lk_hybrid_call_r` return (an `LkDyn` pair); a void call keeps
+    /// the zero-marshal `lk_hybrid_call_v` path.
+    fn call_vm(
+        &mut self,
+        b: &mut FunctionBuilder,
+        mctx: &mut ModuleCtx,
+        dst: Option<ValueId>,
+        func: FuncId,
+        args: &[ValueId],
+    ) -> Result<(), ClifError> {
+        let params: Vec<Ty> = mctx
+            .vm_functions
+            .iter()
+            .find(|f| f.id == func)
+            .ok_or(ClifError::Unsupported("CallVm target not in vm_functions"))?
+            .params
+            .clone();
+        let argbuf = mctx.hybrid_argbuf.ok_or(ClifError::Unsupported("no hybrid argbuf"))?;
+        let buf_gv = mctx.module.declare_data_in_func(argbuf, b.func);
+        let buf_addr = b.ins().global_value(types::I64, buf_gv);
+        for (i, (arg, ty)) in args.iter().zip(params.iter()).enumerate() {
+            let elem = (i * HYBRID_ARG_SIZE) as i32;
+            let tag: i64 = match ty {
+                Ty::I64 => 0,
+                Ty::F64 => 1,
+                Ty::Bool => 2,
+                Ty::Str => 3,
+                _ => return Err(ClifError::Unsupported("non-scalar hybrid marshaling type")),
+            };
+            let tag_v = b.ins().iconst(types::I8, tag);
+            b.ins().store(MemFlagsData::trusted(), tag_v, buf_addr, elem);
+            // Value field: `f64` bits for F64, a zero-extended `i64` for Bool,
+            // the raw `i64`/pointer otherwise — all 8 bytes at offset 8.
+            let word = match ty {
+                Ty::Bool => {
+                    let bv = self.v(*arg)?;
+                    b.ins().uextend(types::I64, bv)
+                }
+                _ => self.v(*arg)?,
+            };
+            b.ins()
+                .store(MemFlagsData::trusted(), word, buf_addr, elem + HYBRID_ARG_VALUE_OFFSET);
+        }
+        // Flush C stdio before handing control to the bridge VM.
+        let fflush = mctx.raw_func("fflush", &[types::I64], &[types::I32])?;
+        let null = b.ins().iconst(types::I64, 0);
+        self.call(b, mctx, fflush, None, &[null])?;
+        // An empty arg list passes a null buffer (matches the string-IR path).
+        let bufarg = if args.is_empty() {
+            b.ins().iconst(types::I64, 0)
+        } else {
+            buf_addr
+        };
+        let fid = b.ins().iconst(types::I32, i64::from(func.0));
+        let argc = b.ins().iconst(types::I64, args.len() as i64);
+        // Degrade a never-read destination to the void bridge (no return marshaling).
+        let dst = dst.filter(|d| !self.unused_vm_dsts.contains(d));
+        match dst {
+            Some(d) => {
+                let call_r = mctx.raw_func(
+                    "lk_hybrid_call_r",
+                    &[types::I32, types::I64, types::I64],
+                    &[types::I64, types::I64],
+                )?;
+                self.call_raw(b, mctx, call_r, Some(d), true, &[fid, bufarg, argc])
+            }
+            None => {
+                let call_v = mctx.raw_func("lk_hybrid_call_v", &[types::I32, types::I64, types::I64], &[])?;
+                self.call_raw(b, mctx, call_v, None, false, &[fid, bufarg, argc])
+            }
+        }
     }
 
     /// Call an ABI fn with pre-flattened scalar `args`, returning its `{i64,i64}`

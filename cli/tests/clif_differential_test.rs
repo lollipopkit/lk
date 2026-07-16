@@ -164,6 +164,59 @@ fn clif_differential_higher_order() {
     );
 }
 
+/// A hybrid program (a helper that doesn't lower natively bridges to the VM):
+/// compiled through Cranelift with `LK_AOT_HYBRID` on and forced clif-only, the
+/// stderr must show the Cranelift hybrid link (not a fallback) and stdout must
+/// match the VM — including native/VM print ordering across the bridge.
+#[test]
+fn clif_differential_hybrid_bridge() {
+    let dir = unique_tmp_dir("hybrid");
+    let _ = fs::remove_dir_all(&dir);
+    create_dir_all(&dir).expect("create tmp dir");
+    let file = "hybrid.lk";
+    // `report`/`geti` use `println(fmt, x)` (a bridged shape); `geti`'s result
+    // flows back through `lk_hybrid_call_r` and feeds native arithmetic.
+    let src = "fn report(x) { let f = \"acc={}\".trim(); println(f, x); }\n\
+               fn geti(x) { let f = \"i={}\".trim(); println(f, x); return x + 1; }\n\
+               let acc = 0;\n\
+               for i in 0..10 { acc += i; }\n\
+               report(acc);\n\
+               println(geti(3) + 10);\n\
+               println(\"done\");\n\
+               return 0;\n";
+    File::create(dir.join(file))
+        .and_then(|mut f| f.write_all(src.as_bytes()))
+        .expect("write program");
+
+    let vm = run_cli(&dir, [file]).env("LK_FORCE_VM", "1").output().expect("vm run");
+    let vm_stdout = String::from_utf8_lossy(&vm.stdout).into_owned();
+
+    let compile = run_cli(&dir, ["compile", file])
+        .env("LK_AOT_CLIF", "1")
+        .env("LK_AOT_CLIF_ONLY", "1")
+        .env("LK_AOT_HYBRID", "1")
+        .output()
+        .expect("hybrid compile");
+    let compile_stderr = String::from_utf8_lossy(&compile.stderr).into_owned();
+    assert!(compile.status.success(), "hybrid compile failed: {compile_stderr}");
+    assert!(
+        compile_stderr.contains("Tier 1 hybrid, Cranelift"),
+        "expected the Cranelift hybrid link path, got: {compile_stderr}"
+    );
+
+    let native = Command::new(dir.join("hybrid"))
+        .env("ASAN_OPTIONS", "detect_leaks=0")
+        .output()
+        .expect("run hybrid executable");
+    assert_eq!(
+        vm_stdout,
+        String::from_utf8_lossy(&native.stdout),
+        "hybrid stdout must match the VM (including native/VM ordering)"
+    );
+    assert_eq!(vm.status.success(), native.status.success());
+    let _ = fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn clif_differential_try_catch() {
     run_clif_differential(

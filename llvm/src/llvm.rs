@@ -9,7 +9,7 @@ mod backend;
 mod options;
 
 pub use backend::{
-    LlvmBackend, LlvmBackendError, LlvmModule, LlvmModuleArtifact, compile_artifact_to_clif_object,
+    ClifArtifact, LlvmBackend, LlvmBackendError, LlvmModule, LlvmModuleArtifact, compile_artifact_to_clif_object,
     compile_bundled_module_artifact_to_llvm, compile_module_artifact_to_llvm, compile_program_to_llvm,
 };
 pub use options::{LlvmBackendOptions, OptLevel};

@@ -145,6 +145,65 @@ pub fn compile_native_executable_from_object(path: &Path, output: &Path, object:
     Ok(())
 }
 
+/// Link a Cranelift-produced object that references the Tier 1 bridge
+/// (`lk_hybrid_call_*`) into a native executable: like
+/// [`compile_native_executable_from_object`], but also compiles the hybrid
+/// wrapper (embedded module artifact + rt registration) and links the lk-api
+/// staticlib alongside `lkrt`. The Cranelift counterpart to
+/// [`compile_native_executable_from_llvm_hybrid`]'s hybrid branch.
+pub fn compile_native_executable_from_object_hybrid(
+    path: &Path,
+    output: &Path,
+    object: &[u8],
+    hybrid: HybridLink<'_>,
+) -> anyhow::Result<()> {
+    let _ = lkrt::link_anchor();
+    let object_path = temp_llvm_source_path(path).with_extension("o");
+    std::fs::write(&object_path, object).with_context(|| format!("write native object {}", object_path.display()))?;
+    let wrapper = hybrid_wrapper_c(hybrid.module_artifact_json);
+    let wrapper_path = object_path.with_extension("hybrid.c");
+    if let Err(error) = std::fs::write(&wrapper_path, wrapper) {
+        let _ = std::fs::remove_file(&object_path);
+        return Err(error).with_context(|| format!("write hybrid wrapper {}", wrapper_path.display()));
+    }
+    let clang = clang_command();
+    let mut command = Command::new(&clang);
+    command.arg(&object_path).arg(&wrapper_path).arg("-o").arg(output);
+    if let Some(sanitizers) = std::env::var_os("LK_NATIVE_SANITIZE")
+        && !sanitizers.is_empty()
+    {
+        command.arg(format!("-fsanitize={}", sanitizers.to_string_lossy()));
+    }
+    if let Some(staticlib) = lkrt_staticlib_path() {
+        add_force_load_staticlib(&mut command, &staticlib);
+    }
+    // The bridge VM (lk-api + lk-core + stdlib) rides in via its staticlib; the
+    // wrapper references `lk_hybrid_register`, the object references
+    // `lk_hybrid_call_*`, which pull the objects in.
+    command.arg(hybrid.lk_api_staticlib);
+    command.args(["-lpthread", "-ldl"]);
+    if cfg!(target_os = "linux") {
+        command.arg("-lm");
+    }
+    if cfg!(target_os = "macos") {
+        command.args(["-framework", "CoreFoundation"]);
+    }
+    let status = command
+        .output()
+        .with_context(|| format!("spawn clang to link hybrid native object {}", output.display()));
+    let _ = std::fs::remove_file(&object_path);
+    let _ = std::fs::remove_file(&wrapper_path);
+    let status = status?;
+    if !status.status.success() {
+        anyhow::bail!(
+            "hybrid native object link failed for {}:\n{}",
+            path.display(),
+            String::from_utf8_lossy(&status.stderr)
+        );
+    }
+    Ok(())
+}
+
 /// The hybrid link wrapper: embeds the artifact JSON and registers it before
 /// `main` runs (C constructor), so the first bridge call can decode it lazily.
 /// It also hands lk-api the lkrt container constructors (the v2 return

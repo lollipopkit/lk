@@ -154,11 +154,32 @@ pub(super) fn compile_native_executable_from_artifact(
     // below so no program regresses.
     if env_flag("LK_AOT_CLIF") {
         match lk_llvm::compile_artifact_to_clif_object(artifact, &bundles)? {
-            Ok(object) => {
+            Ok(clif) => {
                 if native_trace_enabled() {
                     eprintln!("clif: native object for {}", path.display());
                 }
-                lk_llvm::compile_native_executable_from_object(path, output, &object)?;
+                if clif.vm_function_count > 0 {
+                    // Tier 1 hybrid: the object bridges to the VM for the
+                    // non-lowering helpers, so embed the artifact and link the
+                    // lk-api staticlib alongside lkrt (mirrors the string-IR path).
+                    let artifact_json = artifact.to_json_string()?;
+                    let staticlib = ensure_lk_api_staticlib()?;
+                    eprintln!(
+                        "note: {} function(s) run on the embedded VM (Tier 1 hybrid, Cranelift)",
+                        clif.vm_function_count
+                    );
+                    lk_llvm::compile_native_executable_from_object_hybrid(
+                        path,
+                        output,
+                        &clif.object,
+                        lk_llvm::HybridLink {
+                            module_artifact_json: &artifact_json,
+                            lk_api_staticlib: &staticlib,
+                        },
+                    )?;
+                } else {
+                    lk_llvm::compile_native_executable_from_object(path, output, &clif.object)?;
+                }
                 return Ok(());
             }
             Err(reason) => {
