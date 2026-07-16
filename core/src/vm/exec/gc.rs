@@ -40,6 +40,46 @@ impl Executor {
             self.gc_pending = true;
         }
     }
+
+    /// Collect unconditionally (regardless of the allocation threshold), using
+    /// the full live-root set. Used by the heap-object sandbox limit: the live
+    /// counter includes garbage not yet swept, so a limit check collects first
+    /// and only fails if the *reachable* set is still over budget.
+    #[cold]
+    pub(super) fn force_collect(&mut self) {
+        let roots = self.root_refs();
+        self.state.heap.collect(roots);
+        self.gc_pending = false;
+    }
+
+    /// GC safepoint run after allocation-heavy opcodes: reclaim pending garbage,
+    /// then enforce the process **byte** budget (plan M2.6, `LK_MAX_HEAP_BYTES`).
+    /// A non-allocating hot loop never reaches a safepoint, so it pays nothing;
+    /// [`mem::over_limit`](crate::mem::over_limit) short-circuits to a single
+    /// atomic load when the limit is unset. When over budget, collect once more
+    /// (returning freed VM memory to the allocator) and abort execution (a hard
+    /// sandbox stop, like fuel) only if the *reachable* footprint is still over.
+    #[inline]
+    pub(super) fn safepoint(&mut self) -> anyhow::Result<()> {
+        self.collect_pending_garbage();
+        if crate::mem::over_limit() {
+            self.enforce_memory_limit()?;
+        }
+        Ok(())
+    }
+
+    #[cold]
+    fn enforce_memory_limit(&mut self) -> anyhow::Result<()> {
+        self.force_collect();
+        if crate::mem::over_limit() {
+            anyhow::bail!(
+                "memory limit exceeded ({} bytes used, limit {} bytes)",
+                crate::mem::used(),
+                crate::mem::limit()
+            );
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

@@ -33,7 +33,7 @@ impl Executor {
         instr: Instr,
         ctx: &mut Option<&mut VmContext>,
     ) -> Result<()> {
-        self.collect_pending_garbage();
+        self.safepoint()?;
         let base = instr.a();
         let argc = instr.c() as usize;
         // Borrowed from `function` (not `self`), so it stays valid across the
@@ -109,7 +109,7 @@ impl Executor {
 
     #[cold]
     pub(super) fn dispatch_make_closure(&mut self, instr: Instr, module: Option<&Module>) -> Result<()> {
-        self.collect_pending_garbage();
+        self.safepoint()?;
         self.make_closure_value(instr.a(), instr.b(), instr.c(), module)?;
         self.pc += 1;
         Ok(())
@@ -190,7 +190,7 @@ impl Executor {
         module: Option<&Module>,
         ctx: &mut Option<&mut VmContext>,
     ) -> Result<()> {
-        self.collect_pending_garbage();
+        self.safepoint()?;
         let lhs_val = self.read_unchecked(instr.b());
         let rhs_val = self.read_unchecked(instr.c());
         match (lhs_val, rhs_val) {
@@ -238,14 +238,14 @@ impl Executor {
     }
 
     pub(super) fn dispatch_string_split(&mut self, instr: Instr) -> Result<()> {
-        self.collect_pending_garbage();
+        self.safepoint()?;
         self.string_split(instr.a(), instr.b(), instr.c())?;
         self.pc += 1;
         Ok(())
     }
 
     pub(super) fn dispatch_list_join(&mut self, instr: Instr) -> Result<()> {
-        self.collect_pending_garbage();
+        self.safepoint()?;
         self.list_join(instr.a(), instr.b(), instr.c())?;
         self.pc += 1;
         Ok(())
@@ -418,7 +418,7 @@ impl Executor {
 
     #[cold]
     pub(super) fn dispatch_new_object(&mut self, instr: Instr, collect_metrics: bool) -> Result<()> {
-        self.collect_pending_garbage();
+        self.safepoint()?;
         if collect_metrics {
             record_container_op_known_enabled(VmContainerMetric::Generic);
         }
@@ -431,7 +431,7 @@ impl Executor {
 
     #[cold]
     pub(super) fn dispatch_new_range(&mut self, instr: Instr, collect_metrics: bool) -> Result<()> {
-        self.collect_pending_garbage();
+        self.safepoint()?;
         if collect_metrics {
             record_container_op_known_enabled(VmContainerMetric::List);
         }
@@ -477,7 +477,7 @@ impl Executor {
         ctx: &mut Option<&mut VmContext>,
         collect_metrics: bool,
     ) -> Result<Option<u32>> {
-        self.collect_pending_garbage();
+        self.safepoint()?;
         if collect_metrics {
             record_call_op_known_enabled(VmCallMetric::Generic);
         }
@@ -510,7 +510,7 @@ impl Executor {
         ctx: &mut Option<&mut VmContext>,
         collect_metrics: bool,
     ) -> Result<Option<u32>> {
-        self.collect_pending_garbage();
+        self.safepoint()?;
         if collect_metrics {
             record_call_op_known_enabled(VmCallMetric::Named);
         }
@@ -645,7 +645,7 @@ impl Executor {
             self.pc += 1;
             return Ok(());
         }
-        self.collect_pending_garbage();
+        self.safepoint()?;
 
         // Fast path: all ShortStr/Int/Float and result fits ShortStr (7 bytes or fewer)
         let mut short_buf = [0u8; 7];

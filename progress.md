@@ -999,3 +999,153 @@ B 翻 LK_AOT_HYBRID 默认 → C v2 桥接返回值,用户裁决全做)。
 - **验证**:workspace -D warnings 0 失败 · 三差分+sanitized(hybrid e2e
   native 运行补 detect_leaks=0)· GC stress 1053/0 · miri lkrt ·
   coverage 51/51 · bench 1.009x(噪声带)· fuzz 40+200 全过。
+
+## P0 拆分 >1500 行文件 + macOS CF 链接修复(2026-07-16)
+
+- **8 个超 1500 行文件全部拆到子模块,零回归**(纯代码搬移,语义不变):
+  - `aot/lower/src/lib.rs` **11778 → 21 文件**(最大 1220)。按职责切:
+    unsupported/vocab/tables/sig/imports/trait_env/prescan/function/ssa/cfg/
+    lower_call/lower_builtin/lower_method/lower_module/dyn_box/ops/scalar/
+    tests;巨型 `lower_inst`(单函数 2700 行)按 opcode 段切成 `lower_inst`
+    /`_b`/`_c` **fallthrough 委托链**(`_ =>` 转下一段,12 参全程透传→无未用参告警)。
+  - `compiler.rs` 2533→1004(抽 stmt_lower/expr_lower/control_flow/decls,
+    方法统一 pub(super);`CompiledFunction`/`emit_bin_op_..._with_flavor` 因
+    含 pub(in crate::vm::compiler) 私有类型改同级可见性)。
+  - `compiler/tests.rs` 1941→1002(内联测试半分到 `tests/misc.rs`)。
+  - `exec.rs` 2009→1434(抽 format/result/runners;**不动热点
+    `dispatch_within_frame` 护 bench**)。
+  - `core_methods.rs` 1633→1295(抽 list_dispatch)· `cli/main.rs`
+    1591→1160(抽 native_compile)· `parser.rs` 1557→1241(抽 patterns)·
+    `runtime_callable.rs` 1505→1233(抽 positional)。
+  - 手法固化:rustfmt 保证「顶层 item 间必有空行」→ 稳健切分;`use super::*`
+    继承父私有 + `pub(super)`/`pub(crate)` 再导出;子模块方法可见性随类型走
+    (impl 组不需再导出)。踩坑留档:`#[cfg]`/`#[test]` 属性与其 item 之间不能
+    插 `mod` 声明(会把 mod 误 cfg 化 → unresolved import)。
+- **顺手清 core clippy**:`proc_function.rs` no-std 分支 `return` 冗余(tail 化)。
+- **修既存 bug**:`llvm/src/native_executable.rs` macOS native 链接漏
+  `-framework CoreFoundation`(staticlib 携带 chrono `iana_time_zone` 的
+  `_CF*` 引用)→ 之前 12 个 differential 逐字节门禁在 macOS 本地全挂。**补上后
+  本地首次全通**,逐字节验证了本轮拆分的 VM↔native 等价。
+- **验证**:`cargo test --workspace --all-features` **1536/0** ·
+  clippy `--all-features --all-targets -D warnings` 0 · fmt 0 ·
+  coverage 51/51 · 全部源文件 ≤1500(当前最大 1483)。
+
+## P2 · FFI ergonomic:结构化 Value 转换层(2026-07-16)
+
+- **`lk-api::Value` 加 `List(Vec<Value>)` / `Map(Vec<(String,Value)>)`**,
+  `eval_value` 从「堆对象拍平成 display 串」升级为**递归结构化转换**:
+  宿主直接拿到嵌套 list/map(键 stringify,保 VM 迭代序),无需碰 VM 堆。
+  Set/struct/callable/channel 等无宿主表示的堆类型仍回退 display 串。
+- 便捷 API:`as_int/as_float/as_bool/as_str/as_list/as_map/get(key)` +
+  `From<{i64,f64,bool,String,&str}>`。
+- core 支撑(纯增量):`ProgramResult::heap()` 只读堆访问器 +
+  `lk_core::vm::display_runtime_value(val, heap)` 公开单值格式化。
+- 验证:lk-api 14 测试(含嵌套 list / map 结构化用例)· clippy/fmt 0 ·
+  workspace clippy 0。
+- **双向闭环**:`value_to_runtime(&Value, &mut HeapStore) -> RuntimeVal`
+  回写(短串走 ShortStr 保 VM 相等语义;list 用 Mixed —— `TypedList` 相等
+  表示无关已核实;map 经新 core 公开 `typed_map_from_string_entries`)。
+  round-trip 测试(list 保序 + map 按键查 + 长串走 heap)。**转换层两向齐**。
+- **验证**:lk-api 15 测试 · workspace clippy `-D warnings` 0 · fmt 0 ·
+  core val 40 测试。
+
+## P2 · FFI ergonomic:高层闭包 host fn `register_fn_v`(2026-07-16)
+
+- **core**:`NativeFunction` 加 `Closure(ClosureNativeFunction)` 变体
+  (`Arc<dyn Fn(NativeArgs,&mut NativeRuntime)->Result<RuntimeVal> + Send+Sync>`),
+  首个**可捕获**的 host native(此前仅 `fn` 指针)。`Arc<dyn Fn>` 破 Debug
+  derive → 改手写 Debug;分派同 Plain(exec/support.rs 两处 + iter/stream
+  两个 stdlib HOF 调用点补臂)。
+- **lk-api**:`Vm::register_fn_v(name, arity, F: Fn(&[Value])->Result<Value>
+  + Send+Sync)` —— 参 `RuntimeVal→Value`、返回 `Value→RuntimeVal` 自动转,
+  宿主写 `|args| Ok(Value::List(...))` 即可,可闭包捕获宿主状态。
+- 验证:lk-api 17 测试(捕获闭包求和 + 返回结构化 list e2e)· workspace
+  测试全量 · clippy `-D warnings` 0 · fmt 0。
+- **FFI 剩余(留档)**:`register_module` 命名空间(吃透 ModuleProvider)·
+  rooted handle(复用 #22 host_roots)。转换层双向 + 高层 host fn 已齐。
+
+## P2 · FFI ergonomic:命名空间 host 模块 `register_module`(2026-07-16)
+
+- **core**:`runtime_module_export(&[(Arc<str>,u16,NativeFunction)])` 运行时
+  名版模块构造器(此前 `runtime_export_from_plain_native_entries` 只收
+  `&'static str` + fn 指针)+ 通用 `RuntimeModuleProvider`(名+entries 的
+  `ModuleProvider`,`runtime_exports()` 建 name→callable 的 Map,`register`
+  空操作 —— 函数只在模块名空间,`use mymod` 时解析)。
+- **lk-api**:`Vm::register_module(name, |m| { m.function_v(...); m.function(...) })`
+  builder —— `HostModule::function_v`(ergonomic 捕获闭包)/`function`(raw)。
+  宿主写 `vm.register_module("greet", |m| m.function_v("hi",1,|a| ...))`,LK 侧
+  `use greet; greet.hi("lk")`。闭包包装抽 `host_value_closure`(与 register_fn_v
+  共享)。
+- 验证:lk-api 18 单测 + 1 doctest(命名空间调用 + 捕获闭包 e2e)· workspace
+  clippy `-D warnings` 0 · fmt 0 · core module 46 测试。
+- **FFI 收官**:结构化 Value · 双向转换 · 高层 host fn · 命名空间模块 —— 四件
+  套齐。仅 rooted handle 留档(复用 #22 host_roots,最niche)。
+
+## P2 · FFI ergonomic:rooted host↔VM 值交换 `set_global`/`get_global`(2026-07-16)
+
+- **rooted handle 的实用形态**:`Vm::set_global(name, Value)` 把结构化值物化进
+  VM 并**持久 rooted**(经 `VmContext::define_runtime_value` 进 runtime_globals,
+  survive GC + 跨 eval),eval'd 程序按名 `config.limit` 可见;`get_global(name)
+  -> Option<Value>` 经 `RuntimeExport::{value, state_lock().heap}` 读回结构化值。
+  比不透明 handle 更实用(宿主交值一次、按名引用),复用双向转换 + globals 天然
+  是 GC root 的事实。
+- 验证:lk-api 19 单测(注入 map → `config.limit` e2e 可见 + 读回 + 跨 eval
+  持久 + missing→None)· clippy/fmt 0。
+- **FFI ergonomic 全线收官**:转换层双向 · 高层 host fn · 命名空间模块 ·
+  rooted 值交换。C-ABI 不透明 handle(`lk.h`)留档待需。
+
+## P2 · goroutine 死锁守卫(opt-in 超时,2026-07-16)
+
+- **修 hang-forever 缺陷**:goroutine 相互阻塞(如 `recv` 一个永不写也不 close
+  的 channel)默认永久挂死。精确「全阻塞」检测在 tokio 无锁调度器上竞态易假阳性
+  (A 判 blocked==live 瞬间 B 的 recv 可能刚被唤醒未减计数)—— 故采**稳健的
+  阻塞超时守卫**而非精确检测。
+- **core**:`Runtime` 加 `deadlock_timeout`(env `LK_DEADLOCK_TIMEOUT_MS`,默认
+  关)+ `guard_blocking(label, fut)`(超时→可捕获 anyhow 错误)+ `with_deadlock_timeout`
+  程序化 setter(测试/宿主)。**stdlib**:recv/send/select 三处阻塞点套 guard。
+- 验证:core rt 2 单测(pending future 超时 + 默认关直通)· stdlib 92 + spawn 12
+  + select 13 无回归 · **e2e**:`LK_DEADLOCK_TIMEOUT_MS=300` 下死锁 recv 0.31s
+  抛「possible deadlock」被 try 捕获(非挂死),默认关时正常阻塞语义不变。
+  docs/concurrency.md 补「死锁守卫」小节。
+
+## P2 · 内存上限(对象计数)接 CLI/env(2026-07-16)
+
+- **M2.6 沙箱内存旋钮的干净小增量**:已有的 per-VM `heap_object_limit`(exec.rs,
+  存活对象计数,lk-api `with_heap_limit` 已测)此前 CLI 无法配置。CLI 加
+  `LK_MAX_HEAP_OBJECTS`(0/未设=无限)→ 走已有 `execute_program_with_ctx_and_limits`,
+  超限抛 heap-object-limit 错误而非无界增长。fuel(LK_FUEL)+ 对象计数 + 死锁守卫
+  三旋钮齐,构成实用沙箱。
+- **诚实边界**:这是**对象计数**(粗粒度内存代理),非字节 —— 单个巨型对象=1 个,
+  不挡「单次超大分配」;但配 LK_FUEL(界定总工作/分配量)即够用。字节准确 cap
+  有架构障碍(global-allocator unsafe+全局计数器 or 逐 mutation 计账),留档。
+  cache 门与 fuel 一致(限额运行跳过字节码缓存)。
+- 验证:cli/tests/sandbox_limits_test.rs(无限跑完返回 5000 / 上限 500 中止报
+  「heap object limit exceeded」)· clippy/fmt 0 · lk-api heap_limit 机制测试已覆盖。
+- **修 collect-then-recheck 语义(回应 review「500够吗」)**:原实现计的是
+  `heap.len()`=存活+**上次 GC 后未回收的垃圾**(GC 每 1024 分配才跑),导致
+  churny 程序(真实存活集~1 但每轮产生垃圾)在低 limit(如 500)误触发——实测
+  churn @500 原本挂,需 ≥2000。修:超限时先 `force_collect()`(无条件 GC,复用
+  完整 root_refs)再复查,仅**真实可达集**仍超限才中止(错误文本改「live objects」)。
+  现 churn @100/@500 跑通(真实存活小),累积 5000 存活的程序 @500 仍正确中止。
+  验证:GC stress 下 churn+limit 结果正确(force_collect root 集完整)·
+  CLI 加 churn-不误触发用例 · core GC 单测过。**limit 现在界定真实存活对象。**
+
+## P2 · 字节级内存上限(global-allocator,默认 70% RAM,2026-07-16)
+
+- **对齐业界惯例**(JVM `-Xmx`/V8 `--max-old-space-size`/Lua `lua_setallocf` 都是
+  字节级):对象计数是少数派且单巨对象绕过。做真·字节 cap。
+- **架构**:`lk_core::mem` 进程级原子计数器(`HEAP_BYTES_USED`/`LIMIT`,无 unsafe)
+  → cli `CountingAllocator`(**唯一 unsafe**,~40 行,包 System + 记账)更新它 →
+  VM 在 **GC 安全点** `over_limit()` 检查(先 force_collect 再复查,超真实可达
+  footprint 才**硬中止**,与 fuel 一致,`try` 不接)。安全点检查不碰非分配热循环。
+- **默认 70% 系统内存**:macOS `sysctl hw.memsize` / Linux `/proc/meminfo` 探测;
+  `LK_MAX_HEAP_BYTES=<字节>` 覆盖(0=无限);探测失败=无限。
+- **零回归工程**:分配器仅在 `limit≠0` 记账(`accounting_enabled()`,unlimited
+  时一次 relaxed 加载短路跳过 RMW);`record_dealloc` saturating 防启动期跨越下溢;
+  **bench 脚本设 `LK_MAX_HEAP_BYTES=0`** → perf 门禁测记账-off 快路。
+- **踩坑修正**:内存/对象上限是**硬中止非可捕获**(沙箱语义:恶意码不能 catch 掉
+  OOM 继续分配);文档措辞已从「catchable」改「abort」(mem/gc/cli 三处)。
+- 验证:全量 **1548/0** · bench(LK_MAX_HEAP_BYTES=0)geo **0.747x** 健康、无回归
+  标记、噪声地板 5-11% >> 改动开销(每 safepoint 一次 relaxed 加载,limit=0 短路)·
+  e2e:8MB 下 string 翻倍 17MB 中止 / churn 不误触发 / 默认不破坏正常程序 ·
+  CLI `sandbox_limits_test` 3 测(对象中止 + churn 忽略 + 字节中止)· clippy/fmt 0。

@@ -168,6 +168,13 @@ pub(super) fn call_native_entry_with_args(
             };
             function(native_args, &mut runtime)
         }
+        NativeFunction::Closure(function) => {
+            let mut runtime = match shared_module {
+                Some(module) => NativeRuntime::new_with_shared_module(state, ctx, module),
+                None => NativeRuntime::new(state, ctx, module),
+            };
+            function(native_args, &mut runtime)
+        }
     };
     map_native_error(native, result)
 }
@@ -302,6 +309,13 @@ pub(super) fn call_native_entry_parts_with_args(
 ) -> Result<RuntimeVal> {
     let result = match &native.function {
         NativeFunction::Plain(function) | NativeFunction::Context(function) => {
+            let mut runtime = match shared_module {
+                Some(module) => NativeRuntime::from_parts_with_shared_module(heap, globals, ctx, module),
+                None => NativeRuntime::from_parts(heap, globals, ctx, module),
+            };
+            function(native_args, &mut runtime)
+        }
+        NativeFunction::Closure(function) => {
             let mut runtime = match shared_module {
                 Some(module) => NativeRuntime::from_parts_with_shared_module(heap, globals, ctx, module),
                 None => NativeRuntime::from_parts(heap, globals, ctx, module),

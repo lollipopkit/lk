@@ -1,0 +1,941 @@
+use super::*;
+
+#[test]
+fn compiler_lowers_struct_literal_and_field_access() {
+    let function = compile_source(
+        r#"
+        let user = User { name: "Ada", score: 42 };
+        return user.score;
+        "#,
+    )
+    .expect("compile source");
+
+    assert!(
+        function.code.iter().any(|instr| instr.opcode() == Opcode::NewObject),
+        "expected NewObject in {:?}",
+        function.code
+    );
+    let object_pc = function
+        .code
+        .iter()
+        .position(|instr| instr.opcode() == Opcode::NewObject)
+        .expect("NewObject");
+    let object_base = function.code[object_pc].b() as u16;
+    assert!(
+        !function.code[..object_pc]
+            .iter()
+            .any(|instr| instr.opcode() == Opcode::Move
+                && matches!(instr.a() as u16, dst if dst >= object_base && dst < object_base + 5)),
+        "struct literal fields should lower directly into the object build window"
+    );
+
+    let result = execute(&function).expect("execute");
+
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
+}
+
+#[test]
+fn compiler_accepts_type_only_declarations_as_noop() {
+    let function = compile_source(
+        r#"
+        struct Point { x: Int, y: Int }
+        type Count = Int;
+        trait Named { fn name() -> String; }
+        let point = Point { x: 40, y: 2 };
+        return point.x + point.y;
+        "#,
+    )
+    .expect("compile source");
+
+    let result = execute(&function).expect("execute");
+
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
+}
+
+#[test]
+fn compiler_trait_method_dispatch_uses_runtime_callable() {
+    let program = parse_program(
+        r#"
+        struct Rect { w: Int, h: Int }
+        fn area(self) {
+            return self.w * self.h;
+        }
+        __lk_register_trait("Area", [["area", "Function"]]);
+        __lk_register_trait_impl("Area", "Rect", [["area", area, nil]]);
+        let rect = Rect { w: 6, h: 7 };
+        return rect.area();
+        "#,
+    );
+    let mut ctx = crate::vm::VmContext::new().with_type_checker(Some(crate::typ::TypeChecker::new_strict()));
+
+    let result = program.execute_with_ctx(&mut ctx).expect("execute program");
+
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
+}
+
+#[test]
+fn compiler_lowers_rewritten_list_assignment_to_set_index() {
+    let function = compile_source(
+        r#"
+        let values = [1, 2, 3];
+        values[1] = 40 + 2;
+        return values.1;
+        "#,
+    )
+    .expect("compile source");
+
+    assert!(
+        function
+            .code
+            .iter()
+            .any(|instr| matches!(instr.opcode(), Opcode::SetIndex | Opcode::SetFieldK)),
+        "expected runtime set opcode in {:?}",
+        function.code
+    );
+
+    let result = execute(&function).expect("execute");
+
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
+}
+
+#[test]
+fn compiler_lowers_rewritten_map_assignment_to_set_index() {
+    let function = compile_source(
+        r#"
+        let values = {"a": 1};
+        values["b"] = 42;
+        return values.b;
+        "#,
+    )
+    .expect("compile source");
+
+    assert!(
+        function
+            .code
+            .iter()
+            .any(|instr| matches!(instr.opcode(), Opcode::SetIndex | Opcode::SetFieldK)),
+        "expected runtime set opcode in {:?}",
+        function.code
+    );
+
+    let result = execute(&function).expect("execute");
+
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
+}
+
+#[test]
+fn compiler_lowers_rewritten_object_assignment_to_set_index() {
+    let function = compile_source(
+        r#"
+        let user = User { score: 1 };
+        user.score = 42;
+        return user.score;
+        "#,
+    )
+    .expect("compile source");
+
+    assert!(
+        function
+            .code
+            .iter()
+            .any(|instr| matches!(instr.opcode(), Opcode::SetIndex | Opcode::SetFieldK)),
+        "expected runtime set opcode in {:?}",
+        function.code
+    );
+
+    let result = execute(&function).expect("execute");
+
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
+}
+
+#[test]
+fn compiler_lowers_list_index_access() {
+    let function = compile_source("return [7, 8, 9].1;").expect("compile source");
+
+    let result = execute(&function).expect("execute");
+
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(8)]);
+}
+
+#[test]
+fn compiler_reads_local_index_target_without_receiver_clone() {
+    let function = compile_source(
+        r#"
+        let values = [40, 2];
+        return values[0] + values[1];
+        "#,
+    )
+    .expect("compile source");
+    for instr in function.code.iter().filter(|instr| instr.opcode() == Opcode::GetIndex) {
+        assert!(
+            function.performance.is_local_slot(instr.b() as u16),
+            "local index receiver should be read from its local slot"
+        );
+    }
+
+    let result = execute(&function).expect("execute");
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
+}
+
+#[test]
+fn compiler_lowers_in_membership_to_contains_opcode() {
+    let function = compile_source(
+        r#"
+        let needle = 2;
+        let list = [1, 2, 3];
+        let list_hit = needle in list;
+        let text_need = "bc";
+        let text = "abcd";
+        let text_hit = text_need in text;
+        let map_key = "answer";
+        let map = {"answer": 42};
+        let map_hit = map_key in map;
+        if (list_hit && text_hit && map_hit) {
+            return 42;
+        }
+        return 0;
+        "#,
+    )
+    .expect("compile source");
+
+    assert!(
+        function.code.iter().any(|instr| instr.opcode() == Opcode::Contains),
+        "expected Contains in {:?}",
+        function.code
+    );
+
+    let result = execute(&function).expect("execute");
+
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
+}
+
+#[test]
+fn compiler_lowers_while_with_int_comparison() {
+    let function = compile_source(
+        r#"
+        let i = 0;
+        let sum = 0;
+        while (i < 4) {
+            sum = sum + i;
+            i = i + 1;
+        }
+        return sum;
+        "#,
+    )
+    .expect("compile source");
+
+    let result = execute(&function).expect("execute");
+
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(6)]);
+}
+
+#[test]
+fn compiler_lowers_for_array_rest_pattern_to_slice_from() {
+    let function = compile_source(
+        r#"
+        let total = 0;
+        for [head, ..tail] in [[40, 1, 2]] {
+            total = head + tail.1;
+        }
+        return total;
+        "#,
+    )
+    .expect("compile source");
+
+    assert!(
+        function.code.iter().any(|instr| instr.opcode() == Opcode::SliceFrom),
+        "expected SliceFrom in {:?}",
+        function.code
+    );
+
+    let result = execute(&function).expect("execute");
+
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
+}
+
+#[test]
+fn compiler_lowers_if_let_map_rest_binding_to_map_rest() {
+    let function = compile_source(
+        r#"
+        let data = {"a": 40, "b": 2};
+        if let {"a": a, ..rest} = data {
+            return a + rest.b;
+        }
+        return 0;
+        "#,
+    )
+    .expect("compile source");
+
+    assert!(
+        function.code.iter().any(|instr| instr.opcode() == Opcode::MapRest),
+        "expected MapRest in {:?}",
+        function.code
+    );
+
+    let result = execute(&function).expect("execute");
+
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
+}
+
+#[test]
+fn compiler_lowers_direct_function_call_through_module() {
+    let module = compile_source_module(
+        r#"
+        fn add(a, b) {
+            return a + b;
+        }
+
+        return add(20, 22);
+        "#,
+    )
+    .expect("compile module");
+
+    let result = execute_module(&module).expect("execute module");
+
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
+}
+
+#[test]
+fn compiler_direct_call_immediate_arithmetic_uses_callee_frame() {
+    let module = compile_source_module(
+        r#"
+        fn classify(n) {
+            for _ in 1..=0 {
+            }
+            let x = 3;
+            return x + 1;
+        }
+
+        return classify(3);
+        "#,
+    )
+    .expect("compile module");
+    let classify = &module.functions[1];
+
+    assert!(
+        classify.code.iter().any(|instr| instr.opcode() == Opcode::AddIntI),
+        "callee should use immediate arithmetic in its own frame: {:?}",
+        classify.code
+    );
+
+    let result = execute_module(&module).expect("execute module");
+
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(4)]);
+}
+
+#[test]
+fn compiler_lowers_recursive_function_call_through_module() {
+    let module = compile_source_module(
+        r#"
+        fn fact(n) {
+            if (n < 2) {
+                return 1;
+            }
+            return n * fact(n - 1);
+        }
+
+        return fact(5);
+        "#,
+    )
+    .expect("compile module");
+
+    let result = execute_module(&module).expect("execute module");
+
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(120)]);
+}
+
+#[test]
+fn compiler_lowers_native_call_through_module() {
+    fn native_add(args: NativeArgs<'_>, _runtime: &mut crate::vm::NativeRuntime<'_>) -> Result<crate::val::RuntimeVal> {
+        let [crate::val::RuntimeVal::Int(lhs), crate::val::RuntimeVal::Int(rhs)] = args.as_slice() else {
+            bail!("native_add expects two ints");
+        };
+        Ok(crate::val::RuntimeVal::Int(lhs + rhs))
+    }
+
+    let module = compile_source_module_with_natives(
+        "return native_add(19, 23);",
+        vec![NativeEntry {
+            name: "native_add".to_string(),
+            arity: 2,
+            function: NativeFunction::Plain(native_add),
+        }],
+    )
+    .expect("compile module");
+
+    let result = execute_module(&module).expect("execute module");
+
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
+}
+
+#[test]
+fn compiler_lowers_top_level_define_to_global_slot() {
+    let module = compile_source_module(
+        r#"
+        answer := 40;
+        fn read_answer() {
+            return answer + 2;
+        }
+        return read_answer();
+        "#,
+    )
+    .expect("compile module");
+
+    assert_eq!(module.globals.len(), 2);
+    assert_eq!(module.globals[0].name.as_ref(), "answer");
+    assert_eq!(module.globals[1].name.as_ref(), "read_answer");
+
+    let result = execute_module(&module).expect("execute module");
+
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
+    assert_eq!(result.state.globals[0], crate::val::RuntimeVal::Int(40));
+    assert!(matches!(result.state.globals[1], crate::val::RuntimeVal::Obj(_)));
+}
+
+#[test]
+fn compiler_keeps_top_level_let_in_entry_frame() {
+    let module = compile_source_module(
+        r#"
+        let local = 40;
+        answer := local + 2;
+        return answer;
+        "#,
+    )
+    .expect("compile module");
+
+    assert_eq!(module.globals.len(), 1);
+    assert_eq!(module.globals[0].name.as_ref(), "answer");
+
+    let result = execute_module(&module).expect("execute module");
+
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
+    assert_eq!(result.state.globals[0], crate::val::RuntimeVal::Int(42));
+}
+
+#[test]
+fn compiler_promotes_top_level_let_to_global_when_function_reads_it() {
+    let module = compile_source_module(
+        r#"
+        let local = 40;
+        fn read_local() {
+            return local + 2;
+        }
+        return read_local();
+        "#,
+    )
+    .expect("compile module");
+
+    assert_eq!(module.globals.len(), 2);
+    assert_eq!(module.globals[0].name.as_ref(), "local");
+    assert_eq!(module.globals[1].name.as_ref(), "read_local");
+
+    let result = execute_module(&module).expect("execute module");
+
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
+    assert_eq!(result.state.globals[0], crate::val::RuntimeVal::Int(40));
+    assert!(matches!(result.state.globals[1], crate::val::RuntimeVal::Obj(_)));
+}
+
+#[test]
+fn compiler_lowers_global_assignment_from_function() {
+    let module = compile_source_module(
+        r#"
+        counter := 1;
+        fn bump() {
+            counter = counter + 41;
+            return counter;
+        }
+        return bump();
+        "#,
+    )
+    .expect("compile module");
+
+    let result = execute_module(&module).expect("execute module");
+
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
+    assert_eq!(result.state.globals[0], crate::val::RuntimeVal::Int(42));
+    assert!(matches!(result.state.globals[1], crate::val::RuntimeVal::Obj(_)));
+}
+
+#[test]
+fn compiler_lowers_closure_capturing_function_param() {
+    let module = compile_source_module(
+        r#"
+        fn make(base) {
+            return |value| base + value;
+        }
+
+        let add40 = make(40);
+        return add40(2);
+        "#,
+    )
+    .expect("compile module");
+
+    let result = execute_module(&module).expect("execute module");
+
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
+}
+
+#[test]
+fn compiler_lowers_nested_closure_captures() {
+    let module = compile_source_module(
+        r#"
+        fn make(base) {
+            return |scale| |value| base + value * scale;
+        }
+
+        let maker = make(10);
+        let f = maker(8);
+        return f(4);
+        "#,
+    )
+    .expect("compile module");
+
+    let result = execute_module(&module).expect("execute module");
+
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
+}
+
+#[test]
+fn compiler_lowers_closure_calling_captured_callable_param() {
+    let module = compile_source_module(
+        r#"
+        fn apply_twice(value, f) {
+            return |extra| f(value + extra);
+        }
+
+        let add_one = |x| x + 1;
+        let apply = apply_twice(40, add_one);
+        return apply(1);
+        "#,
+    )
+    .expect("compile module");
+
+    let result = execute_module(&module).expect("execute module");
+
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
+}
+
+#[test]
+fn compiler_lowers_mutable_closure_capture_to_upval_cell() {
+    let module = compile_source_module(
+        r#"
+        fn make() {
+            let value = 40;
+            let bump = || {
+                value = value + 1;
+                return value;
+            };
+            bump();
+            return bump();
+        }
+
+        return make();
+        "#,
+    )
+    .expect("compile module");
+
+    let result = execute_module(&module).expect("execute module");
+    let opcodes = module
+        .functions
+        .iter()
+        .flat_map(|function| function.code.iter().map(|instr| instr.opcode()))
+        .collect::<Vec<_>>();
+
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
+    assert!(opcodes.contains(&Opcode::LoadCellVal));
+    assert!(opcodes.contains(&Opcode::StoreCellVal));
+}
+
+#[test]
+fn compiler_lowers_inlined_adjacent_assignment_chain_to_move2() {
+    let module = compile_source_module(
+        r#"
+        fn gcd(a0, b0) {
+            let a = a0;
+            let b = b0;
+            while (b != 0) {
+                let t = a % b;
+                a = b;
+                b = t;
+            }
+            return a;
+        }
+
+        return gcd(120, 84);
+        "#,
+    )
+    .expect("compile module");
+    let entry = &module.functions[module.entry as usize];
+
+    assert!(
+        entry.code.iter().any(|instr| instr.opcode() == Opcode::Move2),
+        "inlined adjacent assignment chain should use Move2: {:?}",
+        entry.code
+    );
+
+    let result = execute_module(&module).expect("execute module");
+
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(12)]);
+}
+
+#[test]
+fn compiler_lowers_pair_immediate_equality_condition_to_single_test() {
+    let function = compile_source(
+        r#"
+        let state = 1;
+        let event = 2;
+        if state == 1 && event == 2 {
+            return 42;
+        }
+        return 0;
+        "#,
+    )
+    .expect("compile source");
+
+    assert!(
+        function.code.iter().any(|instr| instr.opcode() == Opcode::TestEqIntI2),
+        "pair immediate equality should use TestEqIntI2: {:?}",
+        function.code
+    );
+
+    let result = execute(&function).expect("execute");
+
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
+}
+
+#[test]
+fn compiler_mutable_capture_observes_outer_write_after_closure_creation() {
+    let module = compile_source_module(
+        r#"
+        fn make() {
+            let value = 1;
+            let read = || value;
+            value = 42;
+            return read();
+        }
+
+        return make();
+        "#,
+    )
+    .expect("compile module");
+
+    let result = execute_module(&module).expect("execute module");
+
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
+}
+
+#[test]
+fn compiler_mutable_capture_is_shared_between_multiple_closures() {
+    let module = compile_source_module(
+        r#"
+        fn make() {
+            let value = 40;
+            let inc = || {
+                value = value + 1;
+                return value;
+            };
+            let read = || value;
+            inc();
+            inc();
+            return read();
+        }
+
+        return make();
+        "#,
+    )
+    .expect("compile module");
+
+    let result = execute_module(&module).expect("execute module");
+
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
+}
+
+#[test]
+fn compiler_lowers_named_args_to_normal_call_window() {
+    let module = compile_source_module(
+        r#"
+        fn add({x: Int, y: Int}) {
+            return x + y;
+        }
+
+        return add(y: 2, x: 40);
+        "#,
+    )
+    .expect("compile module");
+
+    let calls = module
+        .functions
+        .iter()
+        .flat_map(|function| function.code.iter())
+        .filter(|instr| matches!(instr.opcode(), Opcode::Call | Opcode::CallDirect))
+        .collect::<Vec<_>>();
+    assert!(
+        !calls.is_empty(),
+        "expected named-call lowering to reuse a positional call opcode"
+    );
+    assert!(
+        calls
+            .iter()
+            .all(|instr| instr.opcode() == Opcode::CallDirect || instr.a() == instr.b()),
+        "Call must use one window where callee slot is also return base"
+    );
+
+    let result = execute_module(&module).expect("execute module");
+
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
+}
+
+#[test]
+fn compiler_top_level_local_shadow_disables_direct_module_call() {
+    let module = compile_source_module(
+        r#"
+        fn value() {
+            return 1;
+        }
+        let value = || 42;
+        return value();
+        "#,
+    )
+    .expect("compile module");
+    let entry = &module.functions[0];
+
+    assert!(
+        entry.code.iter().any(|instr| instr.opcode() == Opcode::Call),
+        "shadowed function value must use normal callable dispatch"
+    );
+    let result = execute_module(&module).expect("execute module");
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
+}
+
+#[test]
+fn compiler_lowers_default_named_args_in_plain_call() {
+    let module = compile_source_module(
+        r#"
+        fn answer({x: Int? = 42}) {
+            return x;
+        }
+
+        return answer();
+        "#,
+    )
+    .expect("compile module");
+
+    let result = execute_module(&module).expect("execute module");
+
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
+}
+
+#[test]
+fn compiler_lowers_named_default_that_references_positional_param() {
+    let module = compile_source_module(
+        r#"
+        fn add(a, {b: Int? = a + 2}) {
+            return b;
+        }
+
+        return add(40);
+        "#,
+    )
+    .expect("compile module");
+
+    let result = execute_module(&module).expect("execute module");
+
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
+}
+
+#[test]
+fn compiler_lowers_named_default_that_references_earlier_named_param() {
+    let module = compile_source_module(
+        r#"
+        fn add({a: Int? = 40, b: Int? = a + 2}) {
+            return b;
+        }
+
+        return add();
+        "#,
+    )
+    .expect("compile module");
+
+    let result = execute_module(&module).expect("execute module");
+
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
+}
+
+#[test]
+fn compiler_lowers_mixed_positional_and_named_args() {
+    let module = compile_source_module(
+        r#"
+        fn add(a, {b: Int}) {
+            return a + b;
+        }
+
+        return add(40, b: 2);
+        "#,
+    )
+    .expect("compile module");
+
+    let result = execute_module(&module).expect("execute module");
+
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
+}
+
+#[test]
+fn compiler_rejects_missing_required_named_args() {
+    let err = compile_source_module(
+        r#"
+        fn add({x: Int}) {
+            return x;
+        }
+
+        return add();
+        "#,
+    )
+    .expect_err("missing named arg should fail at compile time");
+
+    assert!(
+        err.to_string().contains("missing required named argument `x`"),
+        "{err:?}"
+    );
+}
+
+#[test]
+fn compiler_lowers_if_let_variable_and_literal_patterns() {
+    let function = compile_source(
+        r#"
+        if let x = 41 {
+            if let 0 = x {
+                return 0;
+            } else {
+                return x + 1;
+            }
+        }
+        return 0;
+        "#,
+    )
+    .expect("compile source");
+
+    let result = execute(&function).expect("execute");
+
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
+}
+
+#[test]
+fn compiler_lowers_if_let_range_guard_and_or_patterns() {
+    let function = compile_source(
+        r#"
+        let age = 25;
+        let status = 201;
+        if let 18..65 = age {
+            if let x if x > 20 = age {
+                if let 200 | 201 | 202 = status {
+                    return x + 17;
+                }
+            }
+        }
+        return 0;
+        "#,
+    )
+    .expect("compile source");
+
+    let result = execute(&function).expect("execute");
+
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
+}
+
+#[test]
+fn compiler_lowers_while_let_with_register_binding() {
+    let function = compile_source(
+        r#"
+        let i = 0;
+        while let x = i {
+            if (x == 3) {
+                break;
+            }
+            i += 1;
+        }
+        return i;
+        "#,
+    )
+    .expect("compile source");
+
+    let result = execute(&function).expect("execute");
+
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(3)]);
+}
+
+#[test]
+fn compiler_lowers_match_literal_and_binding_arms() {
+    let function = compile_source(
+        r#"
+        let x = 41;
+        let y = match x {
+            0 => 0,
+            value => value + 1,
+        };
+        return y;
+        "#,
+    )
+    .expect("compile source");
+
+    let result = execute(&function).expect("execute");
+
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
+}
+
+#[test]
+fn compiler_lowers_logical_nullish_optional_and_template_expressions() {
+    let function = compile_source(
+        r#"
+        let x = false || true;
+        let y = true && x;
+        let z = nil ?? 41;
+        let missing = nil?.answer;
+        let text = "answer=${z + 1}";
+        if (!y) {
+            return 0;
+        }
+        if (!(missing == nil)) {
+            return 0;
+        }
+        return text;
+        "#,
+    )
+    .expect("compile source");
+
+    let result = execute(&function).expect("execute");
+
+    let crate::val::RuntimeVal::Obj(handle) = result.returns[0] else {
+        panic!("expected heap string");
+    };
+    let crate::val::HeapValue::String(value) = result.state.heap.get(handle).expect("heap string") else {
+        panic!("expected heap string");
+    };
+    assert_eq!(value.as_ref(), "answer=42");
+}
+
+#[test]
+fn compiler_lowers_compound_assign_break_and_continue_in_while() {
+    let function = compile_source(
+        r#"
+        let i = 0;
+        let sum = 0;
+        while (i < 10) {
+            i += 1;
+            if (i == 3) {
+                continue;
+            }
+            if (i == 7) {
+                break;
+            }
+            sum += i;
+        }
+        return sum;
+        "#,
+    )
+    .expect("compile source");
+
+    let result = execute(&function).expect("execute");
+
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(18)]);
+}

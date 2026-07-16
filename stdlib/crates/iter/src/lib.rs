@@ -764,6 +764,7 @@ fn call_runtime_native_entry(
         NativeFunction::Plain(function) | NativeFunction::Context(function) | NativeFunction::FullState(function) => {
             function(NativeArgs::new(args), runtime)
         }
+        NativeFunction::Closure(function) => function(NativeArgs::new(args), runtime),
     }
 }
 

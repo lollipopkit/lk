@@ -709,7 +709,7 @@ fn send(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Runtime
     let value = RuntimePayload::copy_from_value(&values[1], runtime.heap())?;
     let sent = runtime
         .async_runtime()
-        .with(|runtime| runtime.block_on(runtime.send_async(channel_id, value)))
+        .with(|runtime| runtime.block_on(runtime.guard_blocking("send", runtime.send_async(channel_id, value))))
         .map_err(|error| anyhow!("Send operation failed: {}", error))?;
     if !sent {
         return Err(anyhow!("send on closed channel"));
@@ -730,7 +730,7 @@ fn recv(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Runtime
     )?;
     let (ok, value) = runtime
         .async_runtime()
-        .with(|runtime| runtime.block_on(runtime.recv_async(channel_id)))
+        .with(|runtime| runtime.block_on(runtime.guard_blocking("recv", runtime.recv_async(channel_id))))
         .map_err(|error| anyhow!("Receive operation failed: {}", error))?;
     if !ok {
         return Err(anyhow!("receive on closed channel"));
@@ -813,7 +813,7 @@ fn select_block(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result
 
     let result = runtime
         .async_runtime()
-        .with(|runtime| runtime.block_on(select.execute(runtime, has_default)))?;
+        .with(|runtime| runtime.block_on(runtime.guard_blocking("select", select.execute(runtime, has_default))))?;
     if result.is_default {
         return runtime_list(
             vec![RuntimeVal::Bool(true), RuntimeVal::Int(-1), RuntimeVal::Nil],

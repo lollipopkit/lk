@@ -74,6 +74,13 @@ pub fn compile_native_executable_from_llvm_hybrid(
     if cfg!(target_os = "linux") {
         command.arg("-lm");
     }
+    // On macOS the staticlib carries chrono's local-timezone lookup
+    // (`iana_time_zone`), which references CoreFoundation (`_CFRelease`,
+    // `_CFTimeZoneCopySystem`, …); without the framework the link fails with
+    // undefined symbols. Harmless when those objects are dead-stripped.
+    if cfg!(target_os = "macos") {
+        command.args(["-framework", "CoreFoundation"]);
+    }
     let output_status = match command
         .output()
         .with_context(|| format!("spawn clang to build native executable {}", output.display()))

@@ -102,3 +102,12 @@ captures/globals and channel sends deep-copy payloads — pass handles
 
 `examples/general/concurrency_demo.lk` and the `stdlib/src/spawn_test.rs` /
 `chan_semantics_test.rs` suites are the runnable corpus.
+
+## 死锁守卫（可选，opt-in）
+
+goroutine 相互阻塞（如 `recv` 一个永不写入也不 `close` 的 channel）默认会
+**永久挂死**——与 Go 不同，运行时不做精确的「全 goroutine 阻塞」检测（在
+tokio 调度器上不可靠、易假阳性）。设环境变量 `LK_DEADLOCK_TIMEOUT_MS=<毫秒>`
+开启**阻塞超时守卫**：单个阻塞 `recv`/`send`/`select` 停滞超过该预算即抛一个
+**可捕获**错误（`try`/`catch` 可接），而非挂死。默认关闭（无上限，保留长阻塞
+的合法场景）。
