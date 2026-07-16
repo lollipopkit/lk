@@ -1041,6 +1041,14 @@ B 翻 LK_AOT_HYBRID 默认 → C v2 桥接返回值,用户裁决全做)。
 - core 支撑(纯增量):`ProgramResult::heap()` 只读堆访问器 +
   `lk_core::vm::display_runtime_value(val, heap)` 公开单值格式化。
 - 验证:lk-api 14 测试(含嵌套 list / map 结构化用例)· clippy/fmt 0 ·
-  workspace clippy 0。**剩余 FFI(留档,后续增量)**:Value→RuntimeVal 回写
-  + 高层 `register_fn_v(fn(&[Value])->Value)` · `register_module` 命名空间
-  ergonomic 包装 · rooted handle(可复用 #22 host_roots)。
+  workspace clippy 0。
+- **双向闭环**:`value_to_runtime(&Value, &mut HeapStore) -> RuntimeVal`
+  回写(短串走 ShortStr 保 VM 相等语义;list 用 Mixed —— `TypedList` 相等
+  表示无关已核实;map 经新 core 公开 `typed_map_from_string_entries`)。
+  round-trip 测试(list 保序 + map 按键查 + 长串走 heap)。**转换层两向齐**。
+- **剩余 FFI(留档,需 core 侧改动的增量)**:高层 `register_fn_v(闭包)`
+  需给 `NativeFunction` 加 `Arc<dyn Fn>` 变体(现仅 `fn` 指针,且破 Debug
+  derive)· `register_module` 命名空间 ergonomic 包装(吃透 ModuleProvider)·
+  rooted handle(复用 #22 host_roots)。
+- **验证**:lk-api 15 测试 · workspace clippy `-D warnings` 0 · fmt 0 ·
+  core val 40 测试。

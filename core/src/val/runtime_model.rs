@@ -390,6 +390,13 @@ pub enum TypedMap {
     StringBool(FastHashMap<Arc<str>, bool>),
 }
 
+/// Build a string-keyed [`TypedMap`] from `(key, value)` pairs. Intended for
+/// host embedders converting their own structured maps into VM values (see
+/// `lk-api`'s `Value` → `RuntimeVal`); map iteration order is hash order.
+pub fn typed_map_from_string_entries(entries: impl IntoIterator<Item = (Arc<str>, RuntimeVal)>) -> TypedMap {
+    TypedMap::StringMixed(entries.into_iter().collect())
+}
+
 impl TypedMap {
     #[inline]
     pub fn len(&self) -> usize {

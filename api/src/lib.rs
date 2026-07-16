@@ -294,6 +294,42 @@ fn map_key_to_string(key: &lk_core::val::RuntimeMapKey) -> String {
     }
 }
 
+/// Recursively convert a detached host [`Value`] into a VM [`RuntimeVal`],
+/// allocating strings/lists/maps into `heap`. The inverse of the conversion
+/// [`Vm::eval_value`] performs — a host holding a `&mut HeapStore` (e.g. from a
+/// native function's [`NativeRuntime`]) can build a structured value to hand
+/// back to the VM. Short strings become inline `ShortStr`s (matching the VM's
+/// own representation, so equality holds); lists are heterogeneous.
+pub fn value_to_runtime(value: &Value, heap: &mut lk_core::val::HeapStore) -> RuntimeVal {
+    use lk_core::val::{HeapValue, TypedList, typed_map_from_string_entries};
+    match value {
+        Value::Nil => RuntimeVal::Nil,
+        Value::Bool(inner) => RuntimeVal::Bool(*inner),
+        Value::Int(inner) => RuntimeVal::Int(*inner),
+        Value::Float(inner) => RuntimeVal::Float(*inner),
+        Value::Str(text) => string_to_runtime(text, heap),
+        Value::List(items) => {
+            let converted: Vec<RuntimeVal> = items.iter().map(|item| value_to_runtime(item, heap)).collect();
+            RuntimeVal::Obj(heap.alloc(HeapValue::List(TypedList::Mixed(converted))))
+        }
+        Value::Map(entries) => {
+            let converted: Vec<(Arc<str>, RuntimeVal)> = entries
+                .iter()
+                .map(|(key, val)| (Arc::from(key.as_str()), value_to_runtime(val, heap)))
+                .collect();
+            RuntimeVal::Obj(heap.alloc(HeapValue::Map(typed_map_from_string_entries(converted))))
+        }
+    }
+}
+
+fn string_to_runtime(text: &str, heap: &mut lk_core::val::HeapStore) -> RuntimeVal {
+    use lk_core::val::{HeapValue, ShortStr};
+    match ShortStr::new(text) {
+        Some(short) => RuntimeVal::ShortStr(short),
+        None => RuntimeVal::Obj(heap.alloc(HeapValue::String(Arc::from(text)))),
+    }
+}
+
 /// Scalar argument for [`HybridModule::call_discard`] (re-exported core type).
 pub use lk_core::vm::ModuleFunctionArg as HybridArg;
 
@@ -412,6 +448,44 @@ mod tests {
         );
         // Iteration order is the VM's map order; two known keys are present.
         assert_eq!(value.as_map().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn value_round_trips_through_runtime() {
+        use lk_core::val::HeapStore;
+        let mut heap = HeapStore::new();
+
+        // Lists preserve order; short strings round-trip via ShortStr, long ones
+        // via a heap string.
+        let list = Value::List(vec![
+            Value::Int(1),
+            Value::Str("two".to_string()),
+            Value::Str("x".repeat(100)),
+            Value::List(vec![Value::Bool(false), Value::Nil]),
+        ]);
+        let rv = value_to_runtime(&list, &mut heap);
+        assert_eq!(value_from_runtime(&rv, &heap), list);
+
+        // Maps round-trip by key (iteration order is hash order, so compare via
+        // lookups rather than entry order).
+        let map = Value::Map(vec![
+            ("name".to_string(), Value::Str("lk".to_string())),
+            ("nums".to_string(), Value::List(vec![Value::Int(1), Value::Int(2)])),
+            ("flag".to_string(), Value::Bool(true)),
+            ("pi".to_string(), Value::Float(3.5)),
+            ("nada".to_string(), Value::Nil),
+        ]);
+        let rv = value_to_runtime(&map, &mut heap);
+        let back = value_from_runtime(&rv, &heap);
+        assert_eq!(back.get("name").and_then(Value::as_str), Some("lk"));
+        assert_eq!(
+            back.get("nums").and_then(Value::as_list),
+            Some(&[Value::Int(1), Value::Int(2)][..])
+        );
+        assert_eq!(back.get("flag").and_then(Value::as_bool), Some(true));
+        assert_eq!(back.get("pi").and_then(Value::as_float), Some(3.5));
+        assert_eq!(back.get("nada"), Some(&Value::Nil));
+        assert_eq!(back.as_map().unwrap().len(), 5);
     }
 
     #[test]
