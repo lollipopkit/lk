@@ -373,6 +373,19 @@ impl Lower {
                 let addr = b.ins().global_value(types::I64, gv);
                 b.ins().store(MemFlagsData::trusted(), s, addr, 0);
             }
+            Inst::PrintStr { value, newline } => {
+                // Print via the existing `io.std.write(fd, str, newline)` ABI fn
+                // (Rust `stdout`), not variadic `printf` — Cranelift cannot model
+                // the C vararg calling convention. Single mechanism, byte-exact.
+                let abi = lk_aot_mir::AbiRef::new("io.std", "write")
+                    .resolve()
+                    .ok_or(ClifError::Unsupported("io.std.write ABI fn missing"))?;
+                let clif_id = mctx.abi_func(abi)?;
+                let fd = b.ins().iconst(types::I64, 1);
+                let s = self.v(*value)?;
+                let nl = b.ins().iconst(types::I64, i64::from(*newline));
+                return self.call(b, mctx, clif_id, None, &[fd, s, nl]);
+            }
             Inst::IntBin { dst, op, lhs, rhs } => {
                 let (l, r) = (self.v(*lhs)?, self.v(*rhs)?);
                 let v = match op {
@@ -764,6 +777,42 @@ mod tests {
             functions: vec![set_get, get_str],
         };
         compile_module(&mir, host_isa()).expect("string const + globals must compile");
+    }
+
+    // PrintStr via the `io.std.write` ABI fn — Phase 2b.
+    #[test]
+    fn lowers_print_str() {
+        use lk_aot_mir::GlobalId;
+        let func = MirFunction {
+            id: FuncId(0),
+            params: vec![],
+            blocks: vec![MirBlock {
+                id: BlockId(0),
+                params: vec![],
+                insts: vec![
+                    Inst::Const {
+                        dst: vid(0),
+                        value: Const::Str(GlobalId(0)),
+                    },
+                    Inst::PrintStr {
+                        value: vid(0),
+                        newline: true,
+                    },
+                ],
+                term: Term::Ret(None),
+            }],
+            entry: BlockId(0),
+            ret: Ty::Nil,
+        };
+        let mir = MirModule {
+            abi_version: 0,
+            globals: vec!["hello".to_string()],
+            mutable_globals: vec![],
+            vm_functions: vec![],
+            entry: FuncId(0),
+            functions: vec![func],
+        };
+        compile_module(&mir, host_isa()).expect("print str must compile");
     }
 
     // A shape still outside the slice (a `Dyn` param) rejects at the capability
