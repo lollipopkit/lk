@@ -17,6 +17,12 @@ BENCH_PROGRESS="${BENCH_PROGRESS:-1}"
 LK_PREWARM_TIMEOUT="${LK_PREWARM_TIMEOUT:-120}"
 BENCH_RESULT_TSV="${BENCH_RESULT_TSV:-}"
 
+# The perf gate measures compute throughput, so opt out of the byte memory
+# limit: with LK_MAX_HEAP_BYTES=0 the counting allocator skips its bookkeeping
+# entirely (a single relaxed load per op), keeping the accounting feature
+# orthogonal to the benchmarked hot path. Override to profile the limit itself.
+export LK_MAX_HEAP_BYTES="${LK_MAX_HEAP_BYTES:-0}"
+
 TMPDIR=$(mktemp -d)
 trap 'rm -rf "$TMPDIR"' EXIT
 AOT_BIN="${AOT_BIN:-$TMPDIR/lk-workloads-aot}"

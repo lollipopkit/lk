@@ -96,12 +96,12 @@ impl Executor {
     pub(super) fn handle_call_error(&mut self, error: anyhow::Error) -> Result<RuntimeVal> {
         if let Some(raise) = error.downcast_ref::<super::LanguageRaise>() {
             if let Err(error) = self.handle_language_raise(raise) {
-                self.collect_pending_garbage();
+                self.safepoint()?;
                 return Err(error);
             }
             Ok(RuntimeVal::Nil)
         } else {
-            self.collect_pending_garbage();
+            self.safepoint()?;
             Err(error)
         }
     }

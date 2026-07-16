@@ -32,7 +32,12 @@ mod coverage;
 mod diagnostic;
 #[cfg(test)]
 mod main_test;
+mod mem;
 mod native_compile;
+
+/// Counting global allocator backing the byte-accurate memory limit (`mem`).
+#[global_allocator]
+static GLOBAL_ALLOCATOR: mem::CountingAllocator = mem::CountingAllocator;
 mod paths;
 mod pkg;
 mod repl;
@@ -412,6 +417,7 @@ fn top_opcode_profile(metrics: &VmRuntimeMetrics) -> String {
 
 fn main() -> anyhow::Result<()> {
     let mut startup = startup_trace::StartupTrace::new("main");
+    mem::configure();
     maybe_init_perf_tracing();
     startup.step("perf tracing checked");
 

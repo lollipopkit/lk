@@ -1,7 +1,8 @@
-//! Integration coverage for the opt-in sandbox resource limits (plan M2.6):
-//! `LK_MAX_HEAP_OBJECTS` caps the number of live heap objects, aborting a
-//! runaway allocation with a catchable heap-limit error instead of growing
-//! unbounded. Unset/`0` means unlimited.
+//! Integration coverage for the opt-in sandbox memory limits (plan M2.6):
+//! `LK_MAX_HEAP_OBJECTS` caps live heap *objects* and `LK_MAX_HEAP_BYTES` caps
+//! live *bytes* (default 70% of RAM). Exceeding either aborts the run — a hard
+//! sandbox stop, like fuel — instead of growing unbounded. `0`/unset means
+//! unlimited.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -72,5 +73,34 @@ fn heap_object_limit_ignores_transient_garbage() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "12497500");
+    let _ = fs::remove_file(&source);
+}
+
+// Doubles a string to 2^24 = 16 MiB in a handful of iterations — a fast way to
+// blow past a byte budget.
+const STRING_DOUBLING: &str = "let s = \"x\";\nfor i in 0..24 { s = s + s; }\nreturn s.len();\n";
+
+#[test]
+fn heap_byte_limit_aborts_runaway_allocation() {
+    let source = write_source("bytes", STRING_DOUBLING);
+
+    // `0` = unlimited: the ~16 MiB string builds to completion.
+    let unlimited = run_with(&source, "LK_MAX_HEAP_BYTES", "0");
+    assert!(
+        unlimited.status.success(),
+        "unlimited run should succeed: {}",
+        String::from_utf8_lossy(&unlimited.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&unlimited.stdout).trim(), "16777216");
+
+    // 8 MiB budget: aborts before the string reaches 16 MiB.
+    let capped = run_with(&source, "LK_MAX_HEAP_BYTES", &(8 * 1024 * 1024).to_string());
+    assert!(!capped.status.success(), "capped run should fail");
+    assert!(
+        String::from_utf8_lossy(&capped.stderr).contains("memory limit exceeded"),
+        "unexpected error: {}",
+        String::from_utf8_lossy(&capped.stderr)
+    );
+
     let _ = fs::remove_file(&source);
 }

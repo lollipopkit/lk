@@ -1051,7 +1051,7 @@ impl Executor {
                     }
                 }
                 Opcode::NewList => {
-                    self.collect_pending_garbage();
+                    self.safepoint()?;
                     if collect_metrics {
                         record_container_op_known_enabled(VmContainerMetric::List);
                     }
@@ -1067,7 +1067,7 @@ impl Executor {
                     self.pc += 1;
                 }
                 Opcode::NewMap => {
-                    self.collect_pending_garbage();
+                    self.safepoint()?;
                     if collect_metrics {
                         record_container_op_known_enabled(VmContainerMetric::Map);
                     }
@@ -1319,7 +1319,7 @@ impl Executor {
                     }
                 }
                 Opcode::CallDirect => {
-                    self.collect_pending_garbage();
+                    self.safepoint()?;
                     if collect_metrics {
                         record_call_op_known_enabled(VmCallMetric::Exact);
                     }
@@ -1352,18 +1352,18 @@ impl Executor {
                     self.dispatch_cold(Opcode::SetGlobal, function, module, instr, ctx, collect_metrics)?
                 }
                 Opcode::Return => {
-                    self.collect_pending_garbage();
+                    self.safepoint()?;
                     profile.flush(collect_metrics);
                     let values = self.take_return_values(instr.a(), instr.b())?;
                     return self.finish_return(values, base_frame_depth);
                 }
                 Opcode::Return0 => {
-                    self.collect_pending_garbage();
+                    self.safepoint()?;
                     profile.flush(collect_metrics);
                     return self.finish_return(ReturnValues::None, base_frame_depth);
                 }
                 Opcode::Return1 => {
-                    self.collect_pending_garbage();
+                    self.safepoint()?;
                     profile.flush(collect_metrics);
                     let index = self.stack_index_unchecked(instr.a());
                     let value = core::mem::take(&mut self.state.stack[index]);

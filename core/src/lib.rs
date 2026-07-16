@@ -13,6 +13,7 @@ pub mod compat;
 pub mod ast;
 pub mod expr;
 pub mod macro_system;
+pub mod mem;
 pub mod module;
 mod operator;
 // std-heavy, VM-core-independent; gated so `--no-default-features` yields the

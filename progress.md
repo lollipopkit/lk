@@ -1129,3 +1129,23 @@ B 翻 LK_AOT_HYBRID 默认 → C v2 桥接返回值,用户裁决全做)。
   现 churn @100/@500 跑通(真实存活小),累积 5000 存活的程序 @500 仍正确中止。
   验证:GC stress 下 churn+limit 结果正确(force_collect root 集完整)·
   CLI 加 churn-不误触发用例 · core GC 单测过。**limit 现在界定真实存活对象。**
+
+## P2 · 字节级内存上限(global-allocator,默认 70% RAM,2026-07-16)
+
+- **对齐业界惯例**(JVM `-Xmx`/V8 `--max-old-space-size`/Lua `lua_setallocf` 都是
+  字节级):对象计数是少数派且单巨对象绕过。做真·字节 cap。
+- **架构**:`lk_core::mem` 进程级原子计数器(`HEAP_BYTES_USED`/`LIMIT`,无 unsafe)
+  → cli `CountingAllocator`(**唯一 unsafe**,~40 行,包 System + 记账)更新它 →
+  VM 在 **GC 安全点** `over_limit()` 检查(先 force_collect 再复查,超真实可达
+  footprint 才**硬中止**,与 fuel 一致,`try` 不接)。安全点检查不碰非分配热循环。
+- **默认 70% 系统内存**:macOS `sysctl hw.memsize` / Linux `/proc/meminfo` 探测;
+  `LK_MAX_HEAP_BYTES=<字节>` 覆盖(0=无限);探测失败=无限。
+- **零回归工程**:分配器仅在 `limit≠0` 记账(`accounting_enabled()`,unlimited
+  时一次 relaxed 加载短路跳过 RMW);`record_dealloc` saturating 防启动期跨越下溢;
+  **bench 脚本设 `LK_MAX_HEAP_BYTES=0`** → perf 门禁测记账-off 快路。
+- **踩坑修正**:内存/对象上限是**硬中止非可捕获**(沙箱语义:恶意码不能 catch 掉
+  OOM 继续分配);文档措辞已从「catchable」改「abort」(mem/gc/cli 三处)。
+- 验证:全量 **1548/0** · bench(LK_MAX_HEAP_BYTES=0)geo **0.747x** 健康、无回归
+  标记、噪声地板 5-11% >> 改动开销(每 safepoint 一次 relaxed 加载,limit=0 短路)·
+  e2e:8MB 下 string 翻倍 17MB 中止 / churn 不误触发 / 默认不破坏正常程序 ·
+  CLI `sandbox_limits_test` 3 测(对象中止 + churn 忽略 + 字节中止)· clippy/fmt 0。
