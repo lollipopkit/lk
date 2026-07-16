@@ -128,6 +128,12 @@ pub fn compile_module(mir: &MirModule, isa: std::sync::Arc<dyn TargetIsa>) -> Re
     let builder = ObjectBuilder::new(isa, name, cranelift_module::default_libcall_names())
         .map_err(|e| ClifError::Module(e.to_string()))?;
     let mut module = ObjectModule::new(builder);
+    // Pointer-sized ABI shapes (handles/strings) and the `LkDyn {i64,i64}` carrier
+    // are all 64-bit in the shared `lkrt` ABI, so pointers lower to `I64`. Reject
+    // a non-64-bit target rather than silently emit wrong-width values.
+    if module.isa().pointer_type() != types::I64 {
+        return Err(ClifError::Unsupported("non-64-bit target (the lkrt ABI is 64-bit)"));
+    }
     let cc = module.isa().default_call_conv();
 
     // Declare every function up front so calls can resolve intra-module targets.
@@ -543,7 +549,7 @@ mod tests {
     /// (`compile_module` verifies every function and emits a native object).
     /// Success proves the lowering produced valid, codegen-able CLIF — the
     /// typed-builder correctness win the string-IR path lacked.
-    fn compile_ok(funcs: Vec<MirFunction>) -> Result<Vec<u8>, String> {
+    fn compile_ok(funcs: Vec<MirFunction>) -> Result<Vec<u8>, ClifError> {
         let mir = MirModule {
             abi_version: 0,
             globals: vec![],
@@ -552,7 +558,7 @@ mod tests {
             entry: funcs[0].id,
             functions: funcs,
         };
-        compile_module(&mir, host_isa()).map_err(|e| format!("{e:?}"))
+        compile_module(&mir, host_isa())
     }
 
     fn vid(n: u32) -> ValueId {
@@ -760,7 +766,8 @@ mod tests {
         compile_module(&mir, host_isa()).expect("string const + globals must compile");
     }
 
-    // A shape still outside the slice (a `Dyn` param) rejects cleanly.
+    // A shape still outside the slice (a `Dyn` param) rejects at the capability
+    // boundary — specifically `Unsupported`, not an unrelated module/emit error.
     #[test]
     fn rejects_unsupported_shape() {
         let func = MirFunction {
@@ -775,6 +782,6 @@ mod tests {
             entry: BlockId(0),
             ret: Ty::Dyn,
         };
-        assert!(compile_ok(vec![func]).is_err());
+        assert!(matches!(compile_ok(vec![func]), Err(ClifError::Unsupported(_))));
     }
 }
