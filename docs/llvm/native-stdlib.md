@@ -41,11 +41,11 @@ intrinsics.
 
 - Prefer typed ABI: `i64`, `double`, `(ptr, len)` text, typed list/map handles,
   and monomorphized container layouts.
-- `lkrt_abi_version()` exposes the native runtime ABI version. LLVM lowering
+- `lkrt_abi_version()` exposes the native runtime ABI version. Native lowering
   should treat a missing or incompatible ABI as a link/configuration error, not
   as a reason to fall back to the VM.
 - Container method bodies live in `lkrt` as typed helpers rather than as
-  per-shape hand-written LLVM IR. Lists and maps are **opaque growable
+  per-shape hand-written codegen. Lists and maps are **opaque growable
   handles** (`*mut Vec<T>` / `*mut FxHashMap<K, V>` behind `ptr`), created by
   the `lkrt_lklist_*_new` / `lkrt_lkmap_*_new` entry points in
   `lkrt/src/lklist.rs` / `lkrt/src/lkmap.rs` and registered in the runtime

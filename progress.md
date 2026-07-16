@@ -687,7 +687,8 @@ isolate**(单线程无锁 GC 是热路径底线,无数据竞争,推翻=重写堆
 
 ## M4.2 AOT 深覆盖 —— 阻塞点排查(2026-07-06,数据驱动裁决)
 
-**可复现扫描**:`bash scripts/aot_coverage.sh`(compile llvm 全 examples + 原因排行)。
+**可复现扫描**:`bash scripts/aot_coverage.sh`(native `lk compile` 全 examples + 原因排行;
+codegen 现为 Cranelift,`compile llvm` 已随字符串 IR 后端移除)。
 **现状 14/51**,37 个失败按频次:
 
 | 频次 | 阻塞 | 实质 | 路线 |

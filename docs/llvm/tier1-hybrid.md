@@ -8,8 +8,16 @@ v1+v2. This document fixes
 the architecture decisions; the staged sub-steps at the bottom are the
 implementation record. Key anchors today: `aot/lower/src/lib.rs`
 (eligibility + mark/rerun fixpoint), `aot/mir` (`Inst::CallVm { dst }`),
-`aot/codegen` (bridge declarations + call rendering), `api/src/lib.rs::ffi`
+`aot/codegen` (bridge marshaling + call lowering), `api/src/lib.rs::ffi`
 (`lk_hybrid_*`), `llvm/src/native_executable.rs` (hybrid wrapper + link).
+
+> **Codegen backend note:** `aot/codegen` no longer renders LLVM text — the
+> string-IR renderer was replaced by the **Cranelift** backend
+> (`aot/codegen/src/clif.rs`). The bridge is lowered by `clif.rs::call_vm`
+> (marshal scalar args into `lk_hybrid_argbuf` → `fflush` → `lk_hybrid_call_r`/
+> `_v`), and the hybrid link is `compile_native_executable_from_object_hybrid`.
+> Any `.ll` / `declare` rendering mentioned below is historical (string-IR era);
+> the marking/eligibility/ABI design is unchanged.
 
 ## Problem
 

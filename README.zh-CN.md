@@ -11,7 +11,7 @@
 - **Go 式并发**：`go` 语句启动真并行 goroutine（isolate 语义——结构上无数据竞争）、阻塞 channel、`select` 多路复用
 - **Swift 式错误处理**：错误抛出并用 `try`/`catch` 捕获；后缀 `!` 强制解包 nil
 - Rust 形态的 `macro_rules!` 声明式宏，支持函数式调用、显式宏导出/re-export、文件/package 导入、标准 `macros` 导入、item attributes、内置 `#[derive(Debug|Show)]`、隔离进程外部 derive/attribute/function-like provider、dependency-aware proc macro 缓存失效、LSP macro-origin hover/symbols、同文件/导入宏与 generated item goto-definition，以及逐 token macro origin/source-map 检查（详见 [docs/macros.md](docs/macros.md)）
-- VM 解释器和 LLVM 编译器后端，支持跨平台原生编译和浏览器 WASM
+- VM 解释器和 Cranelift 原生编译器后端，支持跨平台原生编译和浏览器 WASM
 - 内置标准库/各类语法糖
 - 包管理器和 REPL，支持 VS Code LSP 扩展
 
@@ -123,9 +123,8 @@ assert_eq!(result.display_first_return(), "true");
 - 进入 REPL：`lk`
 - 执行源码或模块产物：`lk FILE`（支持 `.lk` 和 `.lkm`）
 - 仅做静态类型检查：`lk check FILE`（输出编译期诊断信息）
-- 编译为 native 可执行文件：`lk compile [FILE]`（省略 `FILE` 时使用当前目录的 `main.lk`、package 的 `src/main.lk`，或单一 workspace app 入口；不支持的 LLVM native lowering 形状回退到 Tier 0 VM bundle）
+- 编译为 native 可执行文件：`lk compile [FILE]`（Cranelift 后端；省略 `FILE` 时使用当前目录的 `main.lk`、package 的 `src/main.lk`，或单一 workspace app 入口；超出原生切片的形状回退到 Tier 0 VM bundle）
 - 编译为 bytecode 模块产物：`lk compile bytecode [FILE]` → `FILE.lkm`
-- 编译为 LLVM IR：`lk compile llvm [FILE]`
 - 创建包并管理去中心化 git + lockfile 依赖（无中心 registry）：`lk pkg init`、`lk pkg add`、`lk pkg fetch`、`lk pkg update`、`lk pkg check`、`lk pkg tree`（详见 [docs/packages.md](docs/packages.md)）
 
 注意：命令行参数路径必须为经净化的相对路径。
