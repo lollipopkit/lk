@@ -1107,3 +1107,17 @@ B 翻 LK_AOT_HYBRID 默认 → C v2 桥接返回值,用户裁决全做)。
   + select 13 无回归 · **e2e**:`LK_DEADLOCK_TIMEOUT_MS=300` 下死锁 recv 0.31s
   抛「possible deadlock」被 try 捕获(非挂死),默认关时正常阻塞语义不变。
   docs/concurrency.md 补「死锁守卫」小节。
+
+## P2 · 内存上限(对象计数)接 CLI/env(2026-07-16)
+
+- **M2.6 沙箱内存旋钮的干净小增量**:已有的 per-VM `heap_object_limit`(exec.rs,
+  存活对象计数,lk-api `with_heap_limit` 已测)此前 CLI 无法配置。CLI 加
+  `LK_MAX_HEAP_OBJECTS`(0/未设=无限)→ 走已有 `execute_program_with_ctx_and_limits`,
+  超限抛 heap-object-limit 错误而非无界增长。fuel(LK_FUEL)+ 对象计数 + 死锁守卫
+  三旋钮齐,构成实用沙箱。
+- **诚实边界**:这是**对象计数**(粗粒度内存代理),非字节 —— 单个巨型对象=1 个,
+  不挡「单次超大分配」;但配 LK_FUEL(界定总工作/分配量)即够用。字节准确 cap
+  有架构障碍(global-allocator unsafe+全局计数器 or 逐 mutation 计账),留档。
+  cache 门与 fuel 一致(限额运行跳过字节码缓存)。
+- 验证:cli/tests/sandbox_limits_test.rs(无限跑完返回 5000 / 上限 500 中止报
+  「heap object limit exceeded」)· clippy/fmt 0 · lk-api heap_limit 机制测试已覆盖。

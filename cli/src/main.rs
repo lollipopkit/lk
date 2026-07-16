@@ -19,7 +19,7 @@ use lk_core::{
     vm::{
         ModuleArtifact, Opcode, VM_INDEX_KEY_METRIC_NAMES, VM_REGISTER_WRITE_SOURCE_NAMES, VmContext, VmRuntimeMetrics,
         compile_program_module_with_ctx, execute_compiled_module_with_ctx, execute_module_artifact_with_ctx,
-        execute_program_with_ctx_and_budget, vm_runtime_metrics_reset, vm_runtime_metrics_snapshot,
+        execute_program_with_ctx_and_limits, vm_runtime_metrics_reset, vm_runtime_metrics_snapshot,
     },
 };
 #[cfg(feature = "llvm")]
@@ -563,9 +563,9 @@ fn main() -> anyhow::Result<()> {
 
     // Optional bytecode cache (plan M1.3): with `LK_CACHE=1`, an unchanged
     // macro-free source skips parsing/compilation and runs its cached `.lkm`.
-    // Fuel-limited runs bypass the cache (the artifact-execution path is not
-    // budget-parameterized).
-    let cache_file = if fuel_budget_from_env().is_none() {
+    // Sandboxed (fuel/heap-limited) runs bypass the cache — the limits are a
+    // per-run policy, not part of the cached artifact.
+    let cache_file = if fuel_budget_from_env().is_none() && heap_object_limit_from_env().is_none() {
         bytecode_cache::cache_path(&safe, input.as_bytes())
     } else {
         None
@@ -607,9 +607,14 @@ fn main() -> anyhow::Result<()> {
 
     let profile_enabled = vm_profile_enabled();
     maybe_start_vm_profile(profile_enabled);
-    let exec_result = match fuel_budget_from_env() {
-        Some(budget) => execute_program_with_ctx_and_budget(&program, &mut base_env, budget),
-        None => match cache_file.as_ref().filter(|_| macro_free) {
+    let fuel = fuel_budget_from_env();
+    let heap_limit = heap_object_limit_from_env();
+    let exec_result = if fuel.is_some() || heap_limit.is_some() {
+        // Sandboxed run: fuel and/or heap-object cap. Skips the bytecode cache
+        // (the limits are a per-run policy, not part of the cached artifact).
+        execute_program_with_ctx_and_limits(&program, &mut base_env, fuel, heap_limit)
+    } else {
+        match cache_file.as_ref().filter(|_| macro_free) {
             // Compile once so the module can be both cached and executed.
             Some(cache_file) => match compile_program_module_with_ctx(&program, &mut base_env) {
                 Ok(module) => {
@@ -619,7 +624,7 @@ fn main() -> anyhow::Result<()> {
                 Err(err) => Err(err),
             },
             None => program.execute_with_ctx(&mut base_env),
-        },
+        }
     }
     .with_context(|| "VM execution failed");
 
@@ -834,6 +839,19 @@ fn fuel_budget_from_env() -> Option<u64> {
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
         .filter(|&budget| budget > 0)
+}
+
+/// Optional cap on live heap objects, read from `LK_MAX_HEAP_OBJECTS`. When set
+/// to a positive integer, allocation beyond it aborts with a catchable
+/// heap-limit error instead of growing unbounded — the memory knob of the
+/// sandbox model (plan M2.6). This bounds the *count* of live objects (a coarse
+/// memory proxy), not bytes; pair with `LK_FUEL` to bound total work/allocation.
+/// Absent/0/invalid means unlimited.
+fn heap_object_limit_from_env() -> Option<usize> {
+    std::env::var("LK_MAX_HEAP_OBJECTS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|&limit| limit > 0)
 }
 
 /// `lk fmt FILE` — normalize indentation of `.lk` source in place (4-space,
