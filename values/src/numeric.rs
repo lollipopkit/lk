@@ -27,11 +27,8 @@ impl NumericHierarchy {
                     if matches!(item, Type::Nil) {
                         continue;
                     }
-                    if let Some(class) = NumericHierarchy::classify(item) {
-                        result = Some(result.map(|r| r.max(class)).unwrap_or(class));
-                    } else {
-                        return None;
-                    }
+                    let class = NumericHierarchy::classify(item)?;
+                    result = Some(result.map(|r| r.max(class)).unwrap_or(class));
                 }
                 result
             }

@@ -115,7 +115,7 @@ impl<'a> Parser<'a> {
                 Ok(expr)
             }
             _ => {
-                let msg = format!("Invalid field name: {:?}", &self.tokens[self.pos]);
+                let msg = format!("Invalid field name: {:?}", self.tokens[self.pos]);
                 Err(anyhow!(self.err(&msg)))
             }
         }
