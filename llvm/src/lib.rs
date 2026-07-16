@@ -23,4 +23,5 @@ pub use llvm::{
 };
 pub use native_executable::{
     HybridLink, compile_native_executable_from_llvm, compile_native_executable_from_llvm_hybrid,
+    compile_native_executable_from_object,
 };

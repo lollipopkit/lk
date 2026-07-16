@@ -105,6 +105,46 @@ pub fn compile_native_executable_from_llvm_hybrid(
     Ok(())
 }
 
+/// Link a Cranelift-produced relocatable object (already machine code — no
+/// `clang` optimization step) into a native executable, against the same `lkrt`
+/// staticlib the string-IR path links. The Cranelift backend's counterpart to
+/// [`compile_native_executable_from_llvm`].
+pub fn compile_native_executable_from_object(path: &Path, output: &Path, object: &[u8]) -> anyhow::Result<()> {
+    let _ = lkrt::link_anchor();
+    let object_path = temp_llvm_source_path(path).with_extension("o");
+    std::fs::write(&object_path, object).with_context(|| format!("write native object {}", object_path.display()))?;
+    let clang = clang_command();
+    let mut command = Command::new(&clang);
+    command.arg(&object_path).arg("-o").arg(output);
+    if let Some(sanitizers) = std::env::var_os("LK_NATIVE_SANITIZE")
+        && !sanitizers.is_empty()
+    {
+        command.arg(format!("-fsanitize={}", sanitizers.to_string_lossy()));
+    }
+    if let Some(staticlib) = lkrt_staticlib_path() {
+        add_force_load_staticlib(&mut command, &staticlib);
+    }
+    command.args(["-lpthread", "-ldl"]);
+    if cfg!(target_os = "linux") {
+        command.arg("-lm");
+    }
+    if cfg!(target_os = "macos") {
+        command.args(["-framework", "CoreFoundation"]);
+    }
+    let status = command
+        .output()
+        .with_context(|| format!("spawn clang to link native object {}", output.display()))?;
+    let _ = std::fs::remove_file(&object_path);
+    if !status.status.success() {
+        anyhow::bail!(
+            "native object link failed for {}:\n{}",
+            path.display(),
+            String::from_utf8_lossy(&status.stderr)
+        );
+    }
+    Ok(())
+}
+
 /// The hybrid link wrapper: embeds the artifact JSON and registers it before
 /// `main` runs (C constructor), so the first bridge call can decode it lazily.
 /// It also hands lk-api the lkrt container constructors (the v2 return
@@ -174,15 +214,20 @@ fn lkrt_staticlib_path() -> Option<PathBuf> {
     } else {
         "liblkrt.a"
     };
-    let candidate = dir.join(file);
-    let mut candidates = vec![candidate];
-    if let Some(path) = latest_lkrt_staticlib_in_deps(&dir.join("deps")) {
-        candidates.push(path);
+    let mut candidates = vec![dir.join(file)];
+    // The `lk` CLI runs from `target/<profile>/`, whose `deps` subdir holds the
+    // hashed `liblkrt-<hash>.a`; a `cargo test` binary runs from
+    // `target/<profile>/deps/` itself, where that hashed archive sits right
+    // beside it. Search both so either launcher resolves the staticlib.
+    for search in [dir.to_path_buf(), dir.join("deps")] {
+        if let Some(path) = latest_lkrt_staticlib_in(&search) {
+            candidates.push(path);
+        }
     }
     newest_existing_path(candidates)
 }
 
-fn latest_lkrt_staticlib_in_deps(deps_dir: &Path) -> Option<PathBuf> {
+fn latest_lkrt_staticlib_in(deps_dir: &Path) -> Option<PathBuf> {
     let entries = std::fs::read_dir(deps_dir).ok()?;
     let prefix = if cfg!(target_os = "windows") {
         "lkrt-"

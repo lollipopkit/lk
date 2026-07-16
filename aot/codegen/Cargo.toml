@@ -10,6 +10,7 @@ name = "lk_aot_codegen"
 cranelift-codegen = "0.133.1"
 cranelift-frontend = "0.133.1"
 cranelift-module = "0.133.1"
+cranelift-native = "0.133.1"
 cranelift-object = "0.133.1"
 lk-aot-abi = { path = "../abi" }
 lk-aot-mir = { path = "../mir" }
@@ -17,4 +18,3 @@ target-lexicon = "0.13.5"
 
 [dev-dependencies]
 cranelift-jit = "0.133.1"
-cranelift-native = "0.133.1"

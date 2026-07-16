@@ -204,6 +204,24 @@ pub fn compile_module(mir: &MirModule, isa: std::sync::Arc<dyn TargetIsa>) -> Re
     product.emit().map_err(|e| ClifError::Module(e.to_string()))
 }
 
+/// Compile a module to a native relocatable object for the **host** target (the
+/// common case: `lk compile` on the current machine). Link the result against
+/// `lkrt` (see `lk-llvm`'s `compile_native_executable_from_object`).
+pub fn compile_host_object(mir: &MirModule) -> Result<Vec<u8>, ClifError> {
+    use cranelift_codegen::settings::{self, Configurable};
+    let mut flags = settings::builder();
+    let _ = flags.set("opt_level", "speed");
+    // Native executables link the runtime dynamically, so calls to `lkrt_*`
+    // must go through position-independent relocations (GOT/PLT). Without this
+    // macOS' linker rejects the object with "illegal text-relocations".
+    let _ = flags.set("is_pic", "true");
+    let isa = cranelift_native::builder()
+        .map_err(|e| ClifError::Module(e.to_string()))?
+        .finish(settings::Flags::new(flags))
+        .map_err(|e| ClifError::Module(e.to_string()))?;
+    compile_module(mir, isa)
+}
+
 /// The Cranelift value type carrying a MIR [`Ty`] at the ABI. Scalars are
 /// native; every handle/pointer shape is a pointer-sized integer, and the
 /// `{i64,i64}`-carried `Maybe`/`Dyn` shapes are out of the Phase 0 slice.
