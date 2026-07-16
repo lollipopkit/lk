@@ -1121,3 +1121,11 @@ B 翻 LK_AOT_HYBRID 默认 → C v2 桥接返回值,用户裁决全做)。
   cache 门与 fuel 一致(限额运行跳过字节码缓存)。
 - 验证:cli/tests/sandbox_limits_test.rs(无限跑完返回 5000 / 上限 500 中止报
   「heap object limit exceeded」)· clippy/fmt 0 · lk-api heap_limit 机制测试已覆盖。
+- **修 collect-then-recheck 语义(回应 review「500够吗」)**:原实现计的是
+  `heap.len()`=存活+**上次 GC 后未回收的垃圾**(GC 每 1024 分配才跑),导致
+  churny 程序(真实存活集~1 但每轮产生垃圾)在低 limit(如 500)误触发——实测
+  churn @500 原本挂,需 ≥2000。修:超限时先 `force_collect()`(无条件 GC,复用
+  完整 root_refs)再复查,仅**真实可达集**仍超限才中止(错误文本改「live objects」)。
+  现 churn @100/@500 跑通(真实存活小),累积 5000 存活的程序 @500 仍正确中止。
+  验证:GC stress 下 churn+limit 结果正确(force_collect root 集完整)·
+  CLI 加 churn-不误触发用例 · core GC 单测过。**limit 现在界定真实存活对象。**

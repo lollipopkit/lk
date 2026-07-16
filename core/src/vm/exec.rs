@@ -257,7 +257,14 @@ impl Executor {
         if let Some(limit) = self.heap_object_limit
             && self.state.heap.len() > limit
         {
-            bail!("heap object limit exceeded ({limit} objects)");
+            // The live counter includes garbage not yet swept (GC runs on an
+            // allocation threshold), so collect first and fail only if the
+            // *reachable* set is still over budget — the limit bounds live
+            // objects, not transient allocation churn.
+            self.force_collect();
+            if self.state.heap.len() > limit {
+                bail!("heap object limit exceeded ({limit} live objects)");
+            }
         }
         Ok(())
     }

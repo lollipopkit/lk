@@ -842,11 +842,12 @@ fn fuel_budget_from_env() -> Option<u64> {
 }
 
 /// Optional cap on live heap objects, read from `LK_MAX_HEAP_OBJECTS`. When set
-/// to a positive integer, allocation beyond it aborts with a catchable
-/// heap-limit error instead of growing unbounded — the memory knob of the
-/// sandbox model (plan M2.6). This bounds the *count* of live objects (a coarse
-/// memory proxy), not bytes; pair with `LK_FUEL` to bound total work/allocation.
-/// Absent/0/invalid means unlimited.
+/// to a positive integer, exceeding it aborts with a heap-limit error instead
+/// of growing unbounded — the memory knob of the sandbox model (plan M2.6). The
+/// cap bounds the count of *reachable* objects (a collect-then-recheck reclaims
+/// transient churn first, so allocation-heavy-but-low-live-set programs are not
+/// tripped), a coarse memory proxy — not bytes; pair with `LK_FUEL` to bound
+/// total work/allocation. Absent/0/invalid means unlimited.
 fn heap_object_limit_from_env() -> Option<usize> {
     std::env::var("LK_MAX_HEAP_OBJECTS")
         .ok()

@@ -54,3 +54,23 @@ fn heap_object_limit_aborts_runaway_allocation() {
 
     let _ = fs::remove_file(&source);
 }
+
+// Allocates heavily (5000 short-lived lists) but keeps almost nothing reachable
+// (`acc` is an int). The cap bounds the *live* set, so a collect-then-recheck
+// must reclaim the churn instead of tripping the limit on transient garbage.
+const CHURN: &str = "let acc = 0;\nfor i in 0..5000 { let tmp = [i, i, i]; acc = acc + i; }\nreturn acc;\n";
+
+#[test]
+fn heap_object_limit_ignores_transient_garbage() {
+    let source = write_source("churn", CHURN);
+    // A cap far below the allocation volume still succeeds — the live set stays
+    // tiny after collection.
+    let out = run_with(&source, "LK_MAX_HEAP_OBJECTS", "200");
+    assert!(
+        out.status.success(),
+        "churn must not trip a live-object cap: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "12497500");
+    let _ = fs::remove_file(&source);
+}

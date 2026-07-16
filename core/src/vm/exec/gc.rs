@@ -40,6 +40,17 @@ impl Executor {
             self.gc_pending = true;
         }
     }
+
+    /// Collect unconditionally (regardless of the allocation threshold), using
+    /// the full live-root set. Used by the heap-object sandbox limit: the live
+    /// counter includes garbage not yet swept, so a limit check collects first
+    /// and only fails if the *reachable* set is still over budget.
+    #[cold]
+    pub(super) fn force_collect(&mut self) {
+        let roots = self.root_refs();
+        self.state.heap.collect(roots);
+        self.gc_pending = false;
+    }
 }
 
 #[cfg(test)]
