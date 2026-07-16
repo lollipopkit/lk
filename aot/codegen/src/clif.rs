@@ -234,7 +234,8 @@ pub fn compile_module(mir: &MirModule, isa: std::sync::Arc<dyn TargetIsa>) -> Re
     // Mutable module globals → writable, zero-initialized data symbols.
     let mut gvar_data: HashMap<u32, (DataId, Ty)> = HashMap::new();
     for (i, (_, ty)) in mir.mutable_globals.iter().enumerate() {
-        let size = ty_to_clif(*ty)?.bytes() as usize;
+        // A carrier global occupies both components (16 bytes); a scalar one.
+        let size: usize = ty_clif_parts(*ty)?.iter().map(|t| t.bytes() as usize).sum();
         let id = module.declare_data(&format!("lk_gvar_{i}"), Linkage::Local, true, false)?;
         let mut desc = DataDescription::new();
         desc.define_zeroinit(size);
@@ -598,18 +599,37 @@ impl Lower {
                     .ok_or(ClifError::Unsupported("undeclared global"))?;
                 let gv = mctx.module.declare_data_in_func(data_id, b.func);
                 let addr = b.ins().global_value(types::I64, gv);
-                let v = b.ins().load(ty_to_clif(ty)?, MemFlagsData::trusted(), addr, 0);
-                self.set1(*dst, v);
+                // A carrier global holds two components at offsets 0 and 8
+                // (component 0 is always 8 bytes: `i64` or `f64`).
+                let parts = ty_clif_parts(ty)?;
+                match parts.as_slice() {
+                    [t] => {
+                        let v = b.ins().load(*t, MemFlagsData::trusted(), addr, 0);
+                        self.set1(*dst, v);
+                    }
+                    [t0, t1] => {
+                        let v0 = b.ins().load(*t0, MemFlagsData::trusted(), addr, 0);
+                        let v1 = b.ins().load(*t1, MemFlagsData::trusted(), addr, 8);
+                        self.set2(*dst, v0, v1);
+                    }
+                    _ => return Err(ClifError::Unsupported("global type arity outside {1,2}")),
+                }
             }
             Inst::GlobalSet { gvar, src } => {
-                let s = self.v(*src)?;
-                let (data_id, _) = *mctx
+                let (data_id, ty) = *mctx
                     .gvar_data
                     .get(gvar)
                     .ok_or(ClifError::Unsupported("undeclared global"))?;
                 let gv = mctx.module.declare_data_in_func(data_id, b.func);
                 let addr = b.ins().global_value(types::I64, gv);
-                b.ins().store(MemFlagsData::trusted(), s, addr, 0);
+                if ty_is_pair(ty) {
+                    let (a, c) = self.two(*src)?;
+                    b.ins().store(MemFlagsData::trusted(), a, addr, 0);
+                    b.ins().store(MemFlagsData::trusted(), c, addr, 8);
+                } else {
+                    let s = self.v(*src)?;
+                    b.ins().store(MemFlagsData::trusted(), s, addr, 0);
+                }
             }
             Inst::PrintStr { value, newline } => {
                 // Print via the existing `io.std.write(fd, str, newline)` ABI fn
