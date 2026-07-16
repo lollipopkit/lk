@@ -61,10 +61,11 @@ fn run_clif_differential(area: &str, cases: &[Case]) {
         let vm = run_cli(&dir, [file.as_str()]).output().expect("spawn vm run");
         let vm_stdout = String::from_utf8_lossy(&vm.stdout).into_owned();
 
-        // Native build, forced through Cranelift (fails if it can't lower).
+        // Native build. Cranelift is the sole native backend; `LK_AOT_NO_FALLBACK`
+        // makes a shape it can't lower a hard error instead of a Tier 0 VM bundle,
+        // so the case is guaranteed to run *through Cranelift*.
         let exe = run_cli(&dir, ["compile", &file])
-            .env("LK_AOT_CLIF", "1")
-            .env("LK_AOT_CLIF_ONLY", "1")
+            .env("LK_AOT_NO_FALLBACK", "1")
             .env("LK_AOT_HYBRID", "0")
             .output()
             .expect("spawn native compile");
@@ -192,16 +193,15 @@ fn clif_differential_hybrid_bridge() {
     let vm_stdout = String::from_utf8_lossy(&vm.stdout).into_owned();
 
     let compile = run_cli(&dir, ["compile", file])
-        .env("LK_AOT_CLIF", "1")
-        .env("LK_AOT_CLIF_ONLY", "1")
+        .env("LK_AOT_NO_FALLBACK", "1")
         .env("LK_AOT_HYBRID", "1")
         .output()
         .expect("hybrid compile");
     let compile_stderr = String::from_utf8_lossy(&compile.stderr).into_owned();
     assert!(compile.status.success(), "hybrid compile failed: {compile_stderr}");
     assert!(
-        compile_stderr.contains("Tier 1 hybrid, Cranelift"),
-        "expected the Cranelift hybrid link path, got: {compile_stderr}"
+        compile_stderr.contains("Tier 1 hybrid"),
+        "expected the hybrid link path, got: {compile_stderr}"
     );
 
     let native = Command::new(dir.join("hybrid"))

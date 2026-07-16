@@ -114,10 +114,10 @@ mod tests {
     #[test]
     fn test_cli_args_compile_positional_target() {
         let args =
-            CliArgs::try_parse_from(["lk", "compile", "llvm", "foo.lk"]).expect("should parse positional target");
+            CliArgs::try_parse_from(["lk", "compile", "bytecode", "foo.lk"]).expect("should parse positional target");
         if let Some(Commands::Compile { positional, .. }) = args.command {
             let (target, file) = split_compile_args(&positional).expect("should split compile args");
-            assert_eq!(target, CompileMode::Llvm);
+            assert_eq!(target, CompileMode::Bytecode);
             assert_eq!(file, PathBuf::from("foo.lk"));
         } else {
             panic!("expected compile command");

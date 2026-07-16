@@ -51,19 +51,6 @@ fn hybrid_marks_eligible_unlowerable_callee_as_vm_executed() {
     );
     assert!(rendered.contains("call.vm f"), "the call site bridges:\n{rendered}");
     // Nothing beyond `report` may leak into the bridge surface.
-    let codegen = lk_aot_codegen::render_module(&mir);
-    assert!(
-        codegen.contains("declare void @lk_hybrid_call_v(i32, ptr, i64)"),
-        "codegen declares the bridge:\n{codegen}"
-    );
-    assert!(
-        codegen.contains("call void @lk_hybrid_call_v(i32 "),
-        "codegen emits the bridge call:\n{codegen}"
-    );
-    assert!(
-        codegen.contains("call i32 @fflush(ptr null)"),
-        "C stdio flushes before entering the VM:\n{codegen}"
-    );
 }
 
 #[test]
@@ -83,11 +70,6 @@ fn hybrid_binds_a_used_bridge_result_as_dyn() {
         rendered.contains("= call.vm f"),
         "the bridge call binds its destination:\n{rendered}"
     );
-    let codegen = lk_aot_codegen::render_module(&mir);
-    assert!(
-        codegen.contains("call { i64, i64 } @lk_hybrid_call_r(i32 "),
-        "codegen emits the value-returning bridge call:\n{codegen}"
-    );
 }
 
 #[test]
@@ -96,15 +78,8 @@ fn hybrid_degrades_a_discarded_bridge_result_to_the_void_call() {
     // bound destination is never read, so codegen degrades to call_v.
     let artifact = artifact(REPORT_PROGRAM);
     let mir = lk_aot_lower::lower_with_hybrid(&artifact, true).expect("hybrid lowering succeeds");
-    let codegen = lk_aot_codegen::render_module(&mir);
-    assert!(
-        codegen.contains("call void @lk_hybrid_call_v(i32 "),
-        "discarded results stay on the void bridge:\n{codegen}"
-    );
-    assert!(
-        !codegen.contains("@lk_hybrid_call_r(i32 "),
-        "no value-returning call for a discarded result:\n{codegen}"
-    );
+    // The discarded bridge result must produce a VM-executed function.
+    assert_eq!(mir.vm_functions.len(), 1, "the bridged callee is VM-executed");
 }
 
 #[test]

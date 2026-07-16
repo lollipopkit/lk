@@ -1,12 +1,11 @@
-//! `MirModule` → Cranelift IR lowering (the typed-builder backend).
+//! `MirModule` → Cranelift IR lowering (the native backend).
 //!
-//! The string-IR renderer ([`crate::render_module`]) emits LLVM text; this path
-//! instead builds Cranelift IR through the typed `FunctionBuilder`, so a
-//! type-mismatched instruction fails to *compile* rather than producing invalid
-//! IR caught only downstream. Being SSA-with-block-params, the MIR maps almost
-//! 1:1 onto Cranelift blocks/params/branches.
+//! Builds Cranelift IR through the typed `FunctionBuilder`, so a type-mismatched
+//! instruction fails to *compile* (and the verifier rejects malformed IR) rather
+//! than producing bad output caught only downstream. Being SSA-with-block-params,
+//! the MIR maps almost 1:1 onto Cranelift blocks/params/branches.
 //!
-//! Current slice (the strangler front): the scalar subset (int/float const and
+//! Coverage: the scalar subset (int/float const and
 //! arithmetic, comparisons, widen/narrow, select, boolean ops), block-param
 //! control flow (`Br`/`CondBr`/`Ret`/`Abort`), guarded div/mod, ABI runtime
 //! calls, string constants and mutable globals, direct calls, the entry/`main`
