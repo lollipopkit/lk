@@ -22,3 +22,6 @@ llvm-tools = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 toml = { workspace = true }
+
+[dev-dependencies]
+lk-aot-abi = { path = "../aot/abi" }

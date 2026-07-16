@@ -11,7 +11,7 @@ English | [简体中文](README.zh-CN.md)
 - **Go-style concurrency**: `go` statements spawn true-parallel goroutines (isolate semantics — no data races by construction), blocking channels, and `select`
 - **Swift-style error handling**: errors raise and are caught with `try`/`catch`; postfix `!` force-unwraps nil
 - Rust-shaped `macro_rules!` declarative macros with function-like calls, explicit macro exports/re-exports, file/package imports, standard `macros` imports, item attributes, built-in `#[derive(Debug|Show)]`, isolated external derive/attribute/function-like providers, dependency-aware proc macro cache invalidation, LSP macro-origin hover/symbols plus same-file/imported macro and generated item goto-definition, and token-level macro origin/source-map inspection (see [docs/macros.md](docs/macros.md))
-- VM interpreter and LLVM compiler backend, supporting cross-platform native compilation and browser WASM
+- VM interpreter and a Cranelift native-compiler backend, supporting cross-platform native compilation and browser WASM
 - Built-in standard library and syntax sugar
 - Package manager and REPL, with VS Code LSP extension support
 
@@ -123,9 +123,8 @@ assert_eq!(result.display_first_return(), "true");
 - Run REPL: `lk`
 - Execute a source file or module artifact: `lk FILE` (supports `.lk` and `.lkm`)
 - Type-check without executing: `lk check FILE` (reports compile-time diagnostics)
-- Compile to a native executable: `lk compile [FILE]` (omitting `FILE` uses `./main.lk`, package `./src/main.lk`, or a single workspace app entry; unsupported LLVM-native shapes fall back to the Tier 0 VM bundle)
+- Compile to a native executable: `lk compile [FILE]` (Cranelift backend; omitting `FILE` uses `./main.lk`, package `./src/main.lk`, or a single workspace app entry; shapes outside the native slice fall back to the Tier 0 VM bundle)
 - Compile to a bytecode module artifact: `lk compile bytecode [FILE]` → `FILE.lkm`
-- Compile to LLVM IR: `lk compile llvm [FILE]`
 - Create packages and manage decentralized git + lockfile dependencies (no central registry): `lk pkg init`, `lk pkg add`, `lk pkg fetch`, `lk pkg update`, `lk pkg check`, `lk pkg tree` (see [docs/packages.md](docs/packages.md))
 
 Note: command-line argument paths must be sanitized relative paths.

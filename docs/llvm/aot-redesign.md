@@ -8,6 +8,17 @@
 > 结构化 SSA 发射 + 单一真相 ABI + 句柄化运行时"。要求:**高性能、现代设计规范、
 > 清晰项目结构、优雅**。
 >
+> **后续更新(codegen 后端已换 Cranelift):** 本 RFC 的 `lk-aot-codegen` 原为
+> **MIR → LLVM 文本(IrBuilder)→ clang** 的字符串 IR 渲染器。此渲染器已被
+> **Cranelift 后端(`aot/codegen/src/clif.rs`)** 取代——`MIR → Cranelift IR
+> (typed FunctionBuilder + verifier)→ 原生 object →(clang 仅作链接驱动)链接
+> lkrt`。字符串 IR 渲染器 `render_module`、`lk compile llvm` 命令、`compile_*_to_llvm`
+> 流水线、`LlvmBackendOptions/OptLevel/--opt-level/--target-triple` 全部移除
+> (约 -3.2 千行)。Cranelift 达与字符串 IR 路径 **100% 差分对等**(纯原生 + Tier 1
+> hybrid,corpus/fuzz/examples 零回落);代价是 AOT 运行时约慢 ~17%(Cranelift
+> `speed` vs clang `-O2`),换 typed-builder + verifier 正确性网与更快编译。
+> **本 RFC 的 §2/§3.2 架构描述以下按字符串 IR 时期保留为历史,codegen 现读作 Cranelift。**
+>
 > 关联:能力边界与拒绝原因见 [`aot-gaps-and-lkrt.md`](./aot-gaps-and-lkrt.md);
 > 现行 ABI 约束见 [`native-stdlib.md`](./native-stdlib.md)。
 
@@ -61,12 +72,13 @@
    │  AOT-MIR    │  类型化、SSA、容器=handle、调用已解析、语义已对齐(除零守卫等)
    └─────────────┘
         │
-        ▼   lk-aot-codegen (total: MIR -> LLVM)
+        ▼   lk-aot-codegen (total: MIR -> 原生 object)
    ┌─────────────┐
-   │ IrBuilder   │  结构化 SSA builder(拥有 Value/BlockId/Type),emit 校验过的 .ll 文本
+   │ clif.rs     │  Cranelift FunctionBuilder(typed Value/Block/Type)+ verifier,
+   │ (Cranelift) │  发射校验过的原生 relocatable object(历史上为 IrBuilder → .ll 文本)
    └─────────────┘
         │
-        ▼   clang/opt 子进程(不变)
+        ▼   clang 仅作链接驱动(原字符串 IR 时期用 clang/opt 编译 .ll)
       native exe  ──链接──▶  liblkrt.a
                                  ▲
         lk-aot-abi (单一真相 schema) ──生成──┤ codegen 侧 declare
@@ -160,6 +172,14 @@ impl IrBuilder {
   (版本 pin、构建重)。若未来 AOT 成为一等目标可切换;MIR 层不变,只换 codegen 后端。
   **MIR 的存在正是为了让 codegen 后端可替换。**
 
+> **已落地(codegen 后端 = Cranelift):** 上述"文本 builder vs inkwell"的权衡已有第三条
+> 出路并被采纳——**Cranelift**(`aot/codegen/src/clif.rs`)。它给了 inkwell 那样的真正
+> **verifier + typed FunctionBuilder**(类型不匹配即编译期报错,而非文本 UB),却**不链接
+> LLVM 库**(纯 Rust crate,无版本 pin、构建轻),正是本节推荐"文本 builder"想要的收益。
+> 代价是优化不及 clang `-O2`(AOT 运行时约 ~17%),换更强正确性网 + 更快编译。字符串 IR
+> 的 `IrBuilder`/`render_module` 已删除;`MIR → Cranelift IR → 原生 object → 链接 lkrt`
+> 为唯一原生 codegen。上面 `IrBuilder` 代码块保留为历史设计。
+
 ### 3.3 `lk-aot-abi`:ABI 单一真相
 
 一张声明式表,`build.rs` 或 proc-macro 生成三份产物,消除 `intrinsics.rs`/`lib.rs`/
@@ -235,8 +255,8 @@ crates(新增/重构):
   lk-aot-abi/        # ABI schema 单一真相;零依赖;生成 codegen decl + lkrt wrapper
   lk-aot-mir/        # 类型化 MIR + 类型定义;依赖 lk-core(仅读字节码类型)
   lk-aot-lower/      # ModuleArtifact -> Result<Mir, Unsupported>(总函数,含语义对齐)
-  lk-aot-codegen/    # Mir -> LLVM 文本(IrBuilder);唯一知道 LLVM 的地方;依赖 lk-aot-abi
-  lk-aot/            # 编排:lower -> codegen -> clang 链接(现 backend.rs + native_executable.rs)
+  lk-aot-codegen/    # Mir -> 原生 object(Cranelift,clif.rs;原 IrBuilder → LLVM 文本);依赖 lk-aot-abi
+  lk-aot/            # 编排:lower -> codegen -> clang 链接驱动(现 backend.rs + native_executable.rs)
   lkrt/              # 运行时静态库;依赖 lk-aot-abi(仅 schema);铁律:不依赖 core/stdlib
 ```
 
@@ -444,6 +464,24 @@ differential harness 直接解决"emit 签名 == helper 签名 == 运行结果 =
   2. 删除 legacy text 后端(§7 "旧路径在被完全替换前保留为 fallback 对拍基准"):
      待 MIR 覆盖吸收 legacy 独有形状(方法分派/对象/try 等)后整体退役,连同其 34 个
      pinned 结构断言测试与 `dynamic_containers/`(预计 -2~4 万行)。
+- **codegen 后端迁移到 Cranelift ✅(字符串 IR 渲染器退役)**:§3.2 预留的"codegen 后端可替换"
+  兑现——`lk-aot-codegen` 的 `render_module`(MIR → LLVM 文本 → clang)由 **Cranelift**
+  (`clif.rs`:`MIR → Cranelift IR(typed FunctionBuilder + verifier)→ 原生 object`)取代。
+  - 覆盖顺序(strangler,`LK_AOT_CLIF` opt-in → 默认 → 唯一):标量/控制流/直接调用 → 字符串/
+    全局/ABI 调用/PrintStr/entry-main → `Dyn`/`Maybe*` `{i64,i64}` 载体(`Slot` 双寄存器,
+    x64 rax:rdx / AArch64 x0:x1 匹配按值结构体 ABI)→ 可变全局载体 → `Const::Nil`/`FnAddr` →
+    `TraitDispatch` → `TryCall`(lkrt C `setjmp` trampoline,Cranelift 无法发 `returns_twice`)→
+    `CallVm` hybrid 桥 → `Maybe<f64>` 载体(lkrt out-pointer shim,规避 `{double,i64}` 混合类
+    聚合的跨平台返回寄存器差异)。`Inst` match 现已穷尽。
+  - 差分对等:clif-only(`LK_AOT_NO_FALLBACK`)跑通全量 `aot_differential` + `aot_fuzz` +
+    examples + hybrid,零回落零分歧;确定性例程 VM vs clif-native stdout+exit 43/43 逐字对齐。
+  - 性能:bench(dist,workload suite)clif AOT/VM ≈0.336x vs 字符串 IR ≈0.288x —— 慢 ~17%
+    (Cranelift `speed` vs clang `-O2`),仍 ~3x 快于 VM;换 typed-builder + verifier 正确性网 +
+    更快编译(省 clang `-O2`)+ 纯 Rust codegen(不链接 LLVM 库)。
+  - 删除:`render_module` + 全部 `render_*`、`lk compile llvm` 命令、`compile_*_to_llvm` 流水线、
+    `LlvmModule/LlvmBackend/LlvmBackendOptions/OptLevel`、`compile_native_executable_from_llvm(_hybrid)`、
+    `llvm/src/llvm/tests/*`、`--opt-level/--skip-opt/--target-triple` 参数(约 -3.2 千行)。
+    `clang` 仅保留作链接驱动。
 
 ## 9. 一句话总结
 

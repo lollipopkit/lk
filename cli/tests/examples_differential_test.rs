@@ -136,26 +136,6 @@ fn examples_corpus_differential() {
             .to_string();
         let label = format!("{}/{}", dir.file_name().and_then(OsStr::to_str).unwrap_or("?"), file);
 
-        // IR compile: success means the MIR pipeline accepted the program.
-        let mut compile_ir = Command::new(bin_path());
-        compile_ir.current_dir(&dir).args(["compile", "llvm", &file]);
-        let ir_result = run_with_timeout(compile_ir, &scratch, &format!("{stem}_ir"));
-        if !ir_result.success {
-            let reason = fs::read_to_string(scratch.join(format!("{stem}_ir.stderr")))
-                .unwrap_or_default()
-                .lines()
-                .last()
-                .unwrap_or("unknown")
-                .to_string();
-            unsupported.push((label, reason));
-            continue;
-        }
-        let ir = fs::read_to_string(dir.join(format!("{stem}.ll"))).unwrap_or_default();
-        if !ir.contains("; ModuleID = 'lk_aot'") {
-            unsupported.push((label, "compiled but not via the MIR pipeline".to_string()));
-            continue;
-        }
-
         // VM reference run.
         let mut vm_cmd = Command::new(bin_path());
         vm_cmd.current_dir(&dir).arg(&file).env("LK_FORCE_VM", "1");
@@ -165,15 +145,33 @@ fn examples_corpus_differential() {
             continue;
         }
 
-        // Native build + run.
+        // Native build (Cranelift, the sole backend). `LK_AOT_NO_FALLBACK`
+        // disables the Tier 0 VM-bundle fallback, so a build failure means the
+        // shape is outside the native slice (unsupported) rather than a silent
+        // bundle — a differential must compare *native* code against the VM.
         let mut compile_exe = Command::new(bin_path());
-        compile_exe.current_dir(&dir).args(["compile", &file]);
+        compile_exe
+            .current_dir(&dir)
+            .args(["compile", &file])
+            .env("LK_AOT_NO_FALLBACK", "1");
         let exe = run_with_timeout(compile_exe, &scratch, &format!("{stem}_exe"));
         if !exe.success {
-            let reason = fs::read_to_string(scratch.join(format!("{stem}_exe.stderr"))).unwrap_or_default();
-            divergences.push(format!(
-                "[{label}] IR compiled via MIR but native executable build failed:\n{reason}"
-            ));
+            let stderr = fs::read_to_string(scratch.join(format!("{stem}_exe.stderr"))).unwrap_or_default();
+            let reason = stderr.lines().last().unwrap_or("unknown").to_string();
+            // Only an explicit lowering/codegen `Unsupported` diagnostic is a
+            // coverage gap; any other failure (clang/linker/lk-api/codegen bug)
+            // is a real divergence that must not be silently recorded as
+            // "unsupported".
+            if stderr.contains("does not support this program yet")
+                || stderr.contains("clif:")
+                || stderr.contains("MIR lowering:")
+            {
+                unsupported.push((label, reason));
+            } else {
+                divergences.push(format!(
+                    "[{label}] native compile failed (not an Unsupported shape):\n{stderr}"
+                ));
+            }
             continue;
         }
         // detect_leaks=0: raises longjmp over Rust frames whose temporaries

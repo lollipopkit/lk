@@ -542,6 +542,27 @@ pub unsafe extern "C" fn lkrt_lkmap_str_f64_get_pair(handle: *mut c_void, key: *
     }
 }
 
+/// Out-pointer form of [`lkrt_lkmap_str_f64_get_pair`] for the Cranelift backend
+/// (see [`crate::lklist::lkrt_lklist_f64_get_out`] for why the by-value
+/// `{double, i64}` return is not portably modelable).
+///
+/// # Safety
+/// `handle`/`key` as in [`lkrt_lkmap_str_f64_get_pair`]; `out_value`/`out_present`
+/// must be valid, aligned, writable pointers.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lkmap_str_f64_get_out(
+    handle: *mut c_void,
+    key: *const c_char,
+    out_value: *mut f64,
+    out_present: *mut i64,
+) {
+    let m = unsafe { lkrt_lkmap_str_f64_get_pair(handle, key) };
+    unsafe {
+        *out_value = m.value;
+        *out_present = m.present;
+    }
+}
+
 /// Creates a fresh, empty `Map<i64, f64>` handle.
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_lkmap_i64_f64_new() -> *mut c_void {
@@ -588,6 +609,26 @@ pub unsafe extern "C" fn lkrt_lkmap_i64_f64_get_pair(handle: *mut c_void, key: i
     match map.get(&key) {
         Some(&value) => LkMaybeF64 { value, present: 1 },
         None => LkMaybeF64 { value: 0.0, present: 0 },
+    }
+}
+
+/// Out-pointer form of [`lkrt_lkmap_i64_f64_get_pair`] for the Cranelift backend
+/// (see [`crate::lklist::lkrt_lklist_f64_get_out`]).
+///
+/// # Safety
+/// `handle`/`key` as in [`lkrt_lkmap_i64_f64_get_pair`]; `out_value`/`out_present`
+/// must be valid, aligned, writable pointers.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lkmap_i64_f64_get_out(
+    handle: *mut c_void,
+    key: i64,
+    out_value: *mut f64,
+    out_present: *mut i64,
+) {
+    let m = unsafe { lkrt_lkmap_i64_f64_get_pair(handle, key) };
+    unsafe {
+        *out_value = m.value;
+        *out_present = m.present;
     }
 }
 

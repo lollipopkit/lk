@@ -1,18 +1,14 @@
-//! LLVM backend entry points.
+//! Native backend entry point.
 //!
-//! The backend lowers `ModuleArtifact`s through the typed MIR pipeline
-//! (`lk-aot-lower` → `lk_aot_mir::validate` → `lk-aot-codegen`). Shapes the
-//! lowering rejects fail the compile with a precise `Unsupported` reason;
-//! there is no fallback backend and no VM shell embedding.
+//! Lowers `ModuleArtifact`s through the typed MIR pipeline
+//! (`lk-aot-lower` → `lk_aot_mir::validate` → `lk-aot-codegen`'s Cranelift
+//! backend). A shape the lowering rejects is surfaced as a precise `Unsupported`
+//! reason (inner `Err(String)`), which the caller (`lk compile`) turns into a
+//! Tier 0 VM-bundle fallback. Tier 1 hybrid is *not* a whole-module VM shell:
+//! only the marked non-lowering helpers are VM-executed, bridged from native
+//! code — `ClifArtifact::vm_function_count` tells the caller to embed the module
+//! artifact and link lk-api (see `compile_native_executable_from_object_hybrid`).
 
 mod backend;
-mod options;
 
-pub use backend::{
-    LlvmBackend, LlvmBackendError, LlvmModule, LlvmModuleArtifact, compile_bundled_module_artifact_to_llvm,
-    compile_module_artifact_to_llvm, compile_program_to_llvm,
-};
-pub use options::{LlvmBackendOptions, OptLevel};
-
-#[cfg(test)]
-mod tests;
+pub use backend::{ClifArtifact, compile_artifact_to_clif_object};

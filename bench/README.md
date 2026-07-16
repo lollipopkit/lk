@@ -27,14 +27,28 @@ By default the runner measures the same bytecode VM path used by direct
 `lk file.lk` execution. LK samples set `LK_FORCE_VM=1` unless
 `LK_NATIVE_RUN=1` is explicitly provided, so an exported shell native-cache flag
 does not accidentally change the default VM baseline. Use `RUN_AOT=1` to compile
-and measure native AOT as an additional explicit engine. If LLVM is disabled or
-the current workload artifact is not native lowerable yet, AOT is reported as
-skipped and the VM/Lua benchmark still runs. Since the legacy text backend
-retired, AOT coverage equals the MIR pipeline's subset. As of 2026-07-02 the
+and measure native AOT as an additional explicit engine. If the native backend
+is disabled (build without `--features llvm`) or the current workload artifact
+is not native lowerable yet, AOT is reported as skipped and the VM/Lua benchmark
+still runs. Since the legacy text backend retired, AOT coverage equals the MIR
+pipeline's subset.
+
+> **Codegen backend note:** the native codegen was migrated from the string-IR
+> renderer (MIR → LLVM text → clang `-O2`) to **Cranelift** (MIR → object;
+> `clang` is now only the linker driver). A same-machine, back-to-back run of
+> this suite measured **AOT/VM geomean ≈0.288x** on the string-IR path vs
+> **≈0.336x** on Cranelift — i.e. Cranelift is **≈17% slower** (0.336/0.288 ≈
+> 1.17; `speed` opt level vs clang `-O2`), traded for a typed builder + verifier
+> and faster compiles. Checksums still match the VM. (The `≈0.26x` figure in the
+> paragraph below is an earlier, separately-dated dist-build measurement under
+> different conditions — a historical data point, not the baseline for the ≈17%
+> comparison above.)
+
+As of 2026-07-02 the
 MIR pipeline compiles the **full 20-workload suite** (module builtins, mutable
 globals, range-for, fused arithmetic, string-keyed maps, method dispatch), all
 20 checksums match the VM, and a min-of-3 dist-build comparison measured
-**AOT/VM geomean ≈0.26x** (previously 0.329x). The former lkrt string-map
+**AOT/VM geomean ≈0.26x** (string-IR era; previously 0.329x). The former lkrt string-map
 bottleneck is fixed: the runtime arena is thread-local (no per-operation
 global lock), arena registry and map handles use FxHash, `str.concat_i64`
 builds composite/template int-suffix strings in one allocation, and the

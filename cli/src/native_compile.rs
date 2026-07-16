@@ -72,50 +72,32 @@ pub(super) fn compile_instr_artifact_with_dependencies(path: &Path) -> anyhow::R
 }
 
 #[cfg(feature = "llvm")]
-pub(super) fn compile_llvm_ir(path: &Path, options: LlvmBackendOptions) -> anyhow::Result<()> {
-    let artifact = compile_instr_artifact(path)?;
-    let bundled = bundle_file_imports(path, &artifact)?;
-    let (artifact, bundles): (&ModuleArtifact, Vec<lk_llvm::BundledImport>) = match &bundled {
-        Some((merged, bundles)) => (merged, bundles.clone()),
-        None => (&artifact, Vec::new()),
-    };
-    let llvm = lk_llvm::compile_bundled_module_artifact_to_llvm(artifact, &bundles, options)
-        .with_context(|| format!("compile LLVM IR for {}", path.display()))?;
-    let output = path.with_extension("ll");
-    std::fs::write(&output, llvm.module.ir).with_context(|| format!("write LLVM IR {}", output.display()))?;
-    println!("{}", output.display());
-    Ok(())
-}
-
-#[cfg(feature = "llvm")]
-pub(super) fn compile_executable(
-    path: &Path,
-    output: Option<&Path>,
-    options: LlvmBackendOptions,
-) -> anyhow::Result<()> {
+pub(super) fn compile_executable(path: &Path, output: Option<&Path>) -> anyhow::Result<()> {
     let output = output.map(Path::to_path_buf).unwrap_or_else(|| path.with_extension(""));
     // Parse + compile up front so genuine source errors (syntax/type) surface
     // here, rather than being masked by the Tier 0 fallback below — that path
     // embeds the source verbatim and would only fail at runtime (plan M4.2).
     let compiled = compile_instr_artifact_with_dependencies(path)?;
-    match compile_native_executable_from_artifact(path, &output, &compiled.artifact, options) {
-        Ok(()) => {
+    // Operational failures (missing clang, lk-api build, linker, codegen bug)
+    // propagate via `?` — only an `Unsupported` shape falls back to the bundle.
+    match compile_native_executable_from_artifact(path, &output, &compiled.artifact)? {
+        NativeOutcome::Compiled => {
             println!("{}", output.display());
             Ok(())
         }
-        Err(native_err) => {
+        NativeOutcome::Unsupported(reason) => {
             // Opt-out (strict native-only) for tooling/tests that want to verify
             // the native lowering in isolation rather than the graceful fallback.
             if std::env::var_os("LK_AOT_NO_FALLBACK").is_some_and(|value| value != "0") {
-                return Err(native_err);
+                anyhow::bail!("native AOT does not support this program yet ({reason})");
             }
-            // The native (MIR/LLVM) backend covers only a lowerable subset.
+            // The Cranelift native backend covers only a lowerable subset.
             // Instead of failing the whole program (the old all-or-nothing —
             // plan 问题 2), fall back to the Tier 0 VM bundle, which embeds the
             // interpreter and runs any valid program. `lk compile` thus never
             // rejects a valid program: native when possible, VM-embed otherwise.
             diagnostic::warning(format!(
-                "native AOT does not support this program yet ({native_err:#}); \
+                "native AOT does not support this program yet ({reason}); \
                  falling back to the Tier 0 VM bundle (embeds the interpreter)"
             ));
             // If the Tier 0 fallback also fails (e.g. the VM staticlib is
@@ -123,7 +105,7 @@ pub(super) fn compile_executable(
             // failure is understandable rather than a bare bundle error.
             run_bundle(path, &output).map_err(|bundle_err| {
                 anyhow::anyhow!(
-                    "cannot compile `{}`: it is not natively AOT-lowerable ({native_err:#}), \
+                    "cannot compile `{}`: it is not natively AOT-lowerable ({reason}), \
                      and the Tier 0 VM-bundle fallback also failed ({bundle_err:#})",
                     path.display()
                 )
@@ -132,65 +114,81 @@ pub(super) fn compile_executable(
     }
 }
 
-/// Lower an already-compiled bytecode artifact to a native executable via LLVM.
-/// Returns the (subset-only) lowering error so `compile_executable` can decide
-/// whether to fall back to the Tier 0 VM bundle.
+/// Outcome of a native compile: a shape outside the native slice (`Unsupported`,
+/// eligible for a Tier 0 VM-bundle fallback) is distinct from an operational
+/// failure (missing clang, lk-api build, link error, codegen bug) — the latter
+/// is returned as the function's `Err` and must propagate, not silently fall
+/// back to the VM bundle.
+#[cfg(feature = "llvm")]
+pub(super) enum NativeOutcome {
+    Compiled,
+    Unsupported(String),
+}
+
+/// Lower an already-compiled bytecode artifact to a native executable through the
+/// Cranelift backend (the sole native codegen). `Ok(Unsupported)` marks a shape
+/// the backend does not cover (caller may fall back to the Tier 0 VM bundle);
+/// `Err` is an operational failure that must propagate unchanged.
 #[cfg(feature = "llvm")]
 pub(super) fn compile_native_executable_from_artifact(
     path: &Path,
     output: &Path,
     artifact: &ModuleArtifact,
-    options: LlvmBackendOptions,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<NativeOutcome> {
     let bundled = bundle_file_imports(path, artifact)?;
     let (artifact, bundles): (&ModuleArtifact, Vec<lk_llvm::BundledImport>) = match &bundled {
         Some((merged, bundles)) => (merged, bundles.clone()),
         None => (artifact, Vec::new()),
     };
-    let llvm = lk_llvm::compile_bundled_module_artifact_to_llvm(artifact, &bundles, options)
-        .with_context(|| format!("compile native executable LLVM IR for {}", path.display()))?;
-    if llvm.module.vm_function_count > 0 {
-        // Tier 1 hybrid (docs/llvm/tier1-hybrid.md): the IR bridges into the
-        // VM for the marked functions, so embed the module artifact and link
-        // the lk-api staticlib alongside lkrt.
+    // Inner `Err(reason)` = Unsupported shape (fall back); outer `?` = internal
+    // codegen/validation bug (propagate).
+    let clif = match lk_llvm::compile_artifact_to_clif_object(artifact, &bundles)? {
+        Ok(clif) => clif,
+        Err(reason) => return Ok(NativeOutcome::Unsupported(reason)),
+    };
+    if native_trace_enabled() {
+        eprintln!("clif: native object for {}", path.display());
+    }
+    // Linking (missing clang, lk-api build, linker error) propagates as `Err`.
+    if clif.vm_function_count > 0 {
+        // Tier 1 hybrid: the object bridges to the VM for the non-lowering
+        // helpers, so embed the artifact and link the lk-api staticlib alongside
+        // lkrt.
         let artifact_json = artifact.to_json_string()?;
         let staticlib = ensure_lk_api_staticlib()?;
         eprintln!(
             "note: {} function(s) run on the embedded VM (Tier 1 hybrid)",
-            llvm.module.vm_function_count
+            clif.vm_function_count
         );
-        lk_llvm::compile_native_executable_from_llvm_hybrid(
+        lk_llvm::compile_native_executable_from_object_hybrid(
             path,
             output,
-            &llvm.module.ir,
-            llvm.opt_level.as_flag(),
-            Some(lk_llvm::HybridLink {
+            &clif.object,
+            lk_llvm::HybridLink {
                 module_artifact_json: &artifact_json,
                 lk_api_staticlib: &staticlib,
-            }),
+            },
         )?;
-        return Ok(());
+    } else {
+        lk_llvm::compile_native_executable_from_object(path, output, &clif.object)?;
     }
-    lk_llvm::compile_native_executable_from_llvm(path, output, &llvm.module.ir, llvm.opt_level.as_flag())?;
-    Ok(())
+    Ok(NativeOutcome::Compiled)
 }
 
 #[cfg(feature = "llvm")]
 pub(super) fn compile_executable_to_path_with_dependencies(
     path: &Path,
     output: &Path,
-    options: LlvmBackendOptions,
 ) -> anyhow::Result<Vec<ProcMacroDependency>> {
     let compiled = compile_instr_artifact_with_dependencies(path)?;
-    let bundled = bundle_file_imports(path, &compiled.artifact)?;
-    let (artifact, bundles): (&ModuleArtifact, Vec<lk_llvm::BundledImport>) = match &bundled {
-        Some((merged, bundles)) => (merged, bundles.clone()),
-        None => (&compiled.artifact, Vec::new()),
-    };
-    let llvm = lk_llvm::compile_bundled_module_artifact_to_llvm(artifact, &bundles, options)
-        .with_context(|| format!("compile native executable LLVM IR for {}", path.display()))?;
-    lk_llvm::compile_native_executable_from_llvm(path, output, &llvm.module.ir, llvm.opt_level.as_flag())?;
-    Ok(compiled.proc_macro_dependencies)
+    // The cached-native path has no VM-bundle fallback: an unsupported shape just
+    // fails to cache (the caller runs the VM instead).
+    match compile_native_executable_from_artifact(path, output, &compiled.artifact)? {
+        NativeOutcome::Compiled => Ok(compiled.proc_macro_dependencies),
+        NativeOutcome::Unsupported(reason) => {
+            anyhow::bail!("native AOT does not support this program yet ({reason})")
+        }
+    }
 }
 
 #[cfg(feature = "llvm")]
@@ -203,11 +201,7 @@ pub(super) fn try_execute_cached_native(path: &Path, source: &[u8]) -> anyhow::R
     };
     if !output.exists() || !native_cache_proc_macro_dependencies_fresh(path, &output) {
         let tmp = native_cache_tmp_path(&output);
-        let options = LlvmBackendOptions {
-            module_name: module_name_from_path(path),
-            ..LlvmBackendOptions::default()
-        };
-        let dependencies = match compile_executable_to_path_with_dependencies(path, &tmp, options) {
+        let dependencies = match compile_executable_to_path_with_dependencies(path, &tmp) {
             Ok(dependencies) => dependencies,
             Err(err) => {
                 let _ = std::fs::remove_file(&tmp);
@@ -422,17 +416,4 @@ impl Fnv64 {
     fn finish(self) -> u64 {
         self.0
     }
-}
-
-#[cfg(feature = "llvm")]
-pub(super) fn module_name_from_path(path: &Path) -> String {
-    path.file_stem()
-        .and_then(|stem| stem.to_str())
-        .map(|stem| {
-            stem.chars()
-                .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
-                .collect::<String>()
-        })
-        .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| "lk_module".to_string())
 }

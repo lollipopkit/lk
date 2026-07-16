@@ -1,26 +1,44 @@
-//! `MirModule` → Cranelift IR lowering (the typed-builder backend).
+//! `MirModule` → Cranelift IR lowering (the native backend).
 //!
-//! The string-IR renderer ([`crate::render_module`]) emits LLVM text; this path
-//! instead builds Cranelift IR through the typed `FunctionBuilder`, so a
-//! type-mismatched instruction fails to *compile* rather than producing invalid
-//! IR caught only downstream. Being SSA-with-block-params, the MIR maps almost
-//! 1:1 onto Cranelift blocks/params/branches.
+//! Builds Cranelift IR through the typed `FunctionBuilder`, so a type-mismatched
+//! instruction fails to *compile* (and the verifier rejects malformed IR) rather
+//! than producing bad output caught only downstream. Being SSA-with-block-params,
+//! the MIR maps almost 1:1 onto Cranelift blocks/params/branches.
 //!
-//! Phase 0 scope (the strangler slice): the scalar subset (int/float const and
-//! arithmetic, comparisons, widen/narrow, select, boolean ops) plus block-param
-//! control flow (`Br`/`CondBr`/`Ret`/`Abort`) of a non-entry function. Guarded
-//! divides, ABI calls, strings, and the entry/`main` shape follow in later
-//! phases; anything outside the slice returns [`ClifError::Unsupported`].
+//! Coverage: every MIR `Inst` variant lowers (the `inst` match is exhaustive).
+//! The scalar subset (int/float const and arithmetic, comparisons, widen/narrow,
+//! select, boolean ops), block-param control flow (`Br`/`CondBr`/`Ret`/`Abort`),
+//! guarded div/mod, ABI runtime calls, string constants and mutable globals,
+//! direct calls, the entry/`main` shape (top-level auto-print + arena cleanup);
+//! the `{i64,i64}` carriers (`Dyn`/`Maybe*` flow as register pairs, [`Slot`]) so
+//! maps, dynamic container reads and unwraps lower — the `{double,i64}` float
+//! carrier goes through the `lkrt_*_f64_get_out` out-pointer shims (its by-value
+//! return is not portably modelable); `TraitDispatch`; `TryCall` (via the lkrt
+//! `setjmp` trampoline); and the Tier 1 hybrid bridge `CallVm`.
+//!
+//! [`ClifError::Unsupported`] is now returned only from *within* arms for
+//! shapes at a capability boundary — e.g. a non-scalar value type in a scalar
+//! slot, a `CallVm`/`TryCall` with a float/carrier operand or arity past the
+//! trampoline cap, or a bridge target absent from `vm_functions`.
 
 use std::collections::HashMap;
 
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
-use cranelift_codegen::ir::{AbiParam, BlockArg, Function, InstBuilder, MemFlagsData, Signature, Value, types};
+use cranelift_codegen::ir::{
+    AbiParam, BlockArg, Function, InstBuilder, MemFlagsData, Signature, StackSlotData, StackSlotKind, Value, types,
+};
 use cranelift_codegen::isa::{CallConv, TargetIsa};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_module::{DataDescription, DataId, FuncId as ClifFuncId, Linkage, Module, ModuleError};
 use cranelift_object::{ObjectBuilder, ObjectModule};
-use lk_aot_mir::{CmpOp, Const, FloatBinOp, FuncId, Inst, IntBinOp, MirFunction, MirModule, Term, Ty};
+use lk_aot_mir::{CmpOp, Const, FloatBinOp, FuncId, Inst, IntBinOp, MirFunction, MirModule, Term, Ty, ValueId};
+
+/// Size of one `LkHybridArg` (`#[repr(C)] { i8 tag, i64 value }`): the `i64`
+/// forces 8-byte alignment, so the tag byte at offset 0 is padded and the value
+/// sits at offset 8, for a 16-byte stride.
+const HYBRID_ARG_SIZE: usize = 16;
+/// Byte offset of the value field within an `LkHybridArg`.
+const HYBRID_ARG_VALUE_OFFSET: i32 = 8;
 
 /// Why a MIR shape is not (yet) lowerable through the Cranelift path.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,6 +90,9 @@ impl Helpers {
 struct ModuleCtx<'a> {
     module: &'a mut dyn Module,
     fn_ids: &'a HashMap<FuncId, ClifFuncId>,
+    /// Intra-module function return types, for binding a [`Inst::CallFn`] result
+    /// as one value or a `{i64,i64}` pair.
+    fn_rets: &'a HashMap<FuncId, Ty>,
     helpers: &'a Helpers,
     /// Declared ABI runtime symbols, cached by C symbol name (declared lazily so
     /// a program that never calls one does not force its — possibly `DynVal` —
@@ -81,12 +102,17 @@ struct ModuleCtx<'a> {
     str_data: &'a HashMap<u32, DataId>,
     /// Mutable module-global data symbols (`lk_gvar_{i}`) + their MIR type.
     gvar_data: &'a HashMap<u32, (DataId, Ty)>,
+    /// Tier 1 hybrid marshaling buffer (`lk_hybrid_argbuf`), present iff the
+    /// module has `CallVm` sites; sized to the widest call.
+    hybrid_argbuf: Option<DataId>,
+    /// VM-executed function signatures, for `CallVm` argument tagging.
+    vm_functions: &'a [lk_aot_mir::VmFunction],
 }
 
 impl ModuleCtx<'_> {
     /// Declare (once) an ABI runtime function by its schema entry and return its
-    /// Cranelift id. Rejects `DynVal`-carrying signatures (the `{i64,i64}`
-    /// carrier is Phase 2b).
+    /// Cranelift id. A `DynVal` param/return expands to a register pair (see
+    /// [`abi_ty_clif_parts`]).
     fn abi_func(&mut self, abi: &lk_aot_abi::AbiFn) -> Result<ClifFuncId, ClifError> {
         if let Some(id) = self.abi_ids.get(abi.symbol) {
             return Ok(*id);
@@ -94,28 +120,86 @@ impl ModuleCtx<'_> {
         let cc = self.module.isa().default_call_conv();
         let mut sig = Signature::new(cc);
         for p in abi.params {
-            sig.params.push(AbiParam::new(abi_ty_to_clif(*p)?));
+            for t in abi_ty_clif_parts(*p)? {
+                sig.params.push(AbiParam::new(t));
+            }
         }
-        if !matches!(abi.result, lk_aot_abi::AbiType::Nil) {
-            sig.returns.push(AbiParam::new(abi_ty_to_clif(abi.result)?));
+        for t in abi_ty_clif_parts(abi.result)? {
+            sig.returns.push(AbiParam::new(t));
         }
         let id = self.module.declare_function(abi.symbol, Linkage::Import, &sig)?;
         self.abi_ids.insert(abi.symbol, id);
         Ok(id)
     }
+
+    /// Declare (once) an imported `lkrt_*` symbol by explicit signature. Used for
+    /// the carrier `get_pair`/`unwrap` helpers, which live outside the ABI schema
+    /// (their by-value `{value, present}` shapes are not scalar-ABI). Deduped in
+    /// the same `abi_ids` table by symbol name.
+    fn raw_func(
+        &mut self,
+        symbol: &'static str,
+        params: &[types::Type],
+        returns: &[types::Type],
+    ) -> Result<ClifFuncId, ClifError> {
+        if let Some(id) = self.abi_ids.get(symbol) {
+            return Ok(*id);
+        }
+        let cc = self.module.isa().default_call_conv();
+        let mut sig = Signature::new(cc);
+        for t in params {
+            sig.params.push(AbiParam::new(*t));
+        }
+        for t in returns {
+            sig.returns.push(AbiParam::new(*t));
+        }
+        let id = self.module.declare_function(symbol, Linkage::Import, &sig)?;
+        self.abi_ids.insert(symbol, id);
+        Ok(id)
+    }
 }
 
-/// The Cranelift type of an ABI parameter/return. Pointers are pointer-sized;
-/// the `{i64,i64}` `DynVal` carrier is Phase 2b.
-fn abi_ty_to_clif(ty: lk_aot_abi::AbiType) -> Result<types::Type, ClifError> {
+/// The Cranelift component types an ABI parameter/return occupies. Scalars and
+/// pointers are one register; the `DynVal` carrier (`LkDyn {i64 tag, i64
+/// payload}`) is two, passed/returned as a register pair — the two-scalar
+/// lowering of a by-value all-integer 16-byte struct, which matches the C ABI on
+/// both x86-64 (rax:rdx) and AArch64 (x0:x1). `Nil` occupies none.
+fn abi_ty_clif_parts(ty: lk_aot_abi::AbiType) -> Result<Vec<types::Type>, ClifError> {
     use lk_aot_abi::AbiType;
     Ok(match ty {
-        AbiType::I64 => types::I64,
-        AbiType::F64 => types::F64,
-        AbiType::Ptr | AbiType::StrPtr => types::I64,
-        AbiType::Nil => return Err(ClifError::Unsupported("nil ABI operand")),
-        AbiType::DynVal => return Err(ClifError::Unsupported("DynVal {i64,i64} ABI carrier")),
+        AbiType::I64 => vec![types::I64],
+        AbiType::F64 => vec![types::F64],
+        AbiType::Ptr | AbiType::StrPtr => vec![types::I64],
+        AbiType::Nil => vec![],
+        AbiType::DynVal => vec![types::I64, types::I64],
     })
+}
+
+/// A lowered MIR value. Scalars and handles occupy one Cranelift SSA value; the
+/// `{i64,i64}` carriers (`Dyn`, `Maybe*`) occupy a pair — component 0 is the
+/// value/tag, component 1 is the present/payload — matching the two-register
+/// carrier ABI [`abi_ty_clif_parts`] describes.
+#[derive(Clone, Copy)]
+enum Slot {
+    One(Value),
+    Two(Value, Value),
+}
+
+/// The Cranelift component types a MIR value of type `ty` occupies (see [`Slot`]).
+/// `MaybeF64`'s value component is an `F64`; every other carrier component is an
+/// `I64`. `Nil` occupies none.
+fn ty_clif_parts(ty: Ty) -> Result<Vec<types::Type>, ClifError> {
+    Ok(match ty {
+        Ty::Nil => vec![],
+        Ty::Dyn | Ty::MaybeI64 | Ty::MaybeBool | Ty::MaybeStr => vec![types::I64, types::I64],
+        Ty::MaybeF64 => vec![types::F64, types::I64],
+        other => vec![ty_to_clif(other)?],
+    })
+}
+
+/// Whether a MIR type is a two-register `{i64,i64}` carrier (see [`Slot`]).
+fn ty_is_pair(ty: Ty) -> bool {
+    matches!(ty, Ty::Dyn | Ty::MaybeI64 | Ty::MaybeF64 | Ty::MaybeBool | Ty::MaybeStr)
 }
 
 /// Compile a whole [`MirModule`]'s non-entry functions to a native object for
@@ -137,12 +221,19 @@ pub fn compile_module(mir: &MirModule, isa: std::sync::Arc<dyn TargetIsa>) -> Re
     let cc = module.isa().default_call_conv();
 
     // Declare every function up front so calls can resolve intra-module targets.
+    // The entry becomes the exported C `main() -> i32`; the rest are local
+    // `lk_fn_N` with their MIR signatures.
     let mut fn_ids = HashMap::new();
+    let mut fn_rets = HashMap::new();
     for func in &mir.functions {
-        let sig = signature_of(func, cc)?;
-        let sym = format!("lk_fn_{}", func.id.0);
-        let id = module.declare_function(&sym, Linkage::Local, &sig)?;
+        let (sym, linkage, sig) = if func.id == mir.entry {
+            ("main".to_string(), Linkage::Export, main_signature(cc))
+        } else {
+            (format!("lk_fn_{}", func.id.0), Linkage::Local, signature_of(func, cc)?)
+        };
+        let id = module.declare_function(&sym, linkage, &sig)?;
         fn_ids.insert(func.id, id);
+        fn_rets.insert(func.id, func.ret);
     }
     let helpers = Helpers::declare(&mut module)?;
 
@@ -160,7 +251,8 @@ pub fn compile_module(mir: &MirModule, isa: std::sync::Arc<dyn TargetIsa>) -> Re
     // Mutable module globals → writable, zero-initialized data symbols.
     let mut gvar_data: HashMap<u32, (DataId, Ty)> = HashMap::new();
     for (i, (_, ty)) in mir.mutable_globals.iter().enumerate() {
-        let size = ty_to_clif(*ty)?.bytes() as usize;
+        // A carrier global occupies both components (16 bytes); a scalar one.
+        let size: usize = ty_clif_parts(*ty)?.iter().map(|t| t.bytes() as usize).sum();
         let id = module.declare_data(&format!("lk_gvar_{i}"), Linkage::Local, true, false)?;
         let mut desc = DataDescription::new();
         desc.define_zeroinit(size);
@@ -168,23 +260,57 @@ pub fn compile_module(mir: &MirModule, isa: std::sync::Arc<dyn TargetIsa>) -> Re
         gvar_data.insert(i as u32, (id, *ty));
     }
 
+    // Tier 1 hybrid marshaling buffer: an array of `{i8 tag, i64 value}` (16
+    // bytes each, matching lk-api's `#[repr(C)] LkHybridArg`), sized to the
+    // widest `CallVm` site. A single internal global (not a per-call stack slot)
+    // keeps bridge calls inside loops from growing the stack; safe because native
+    // binaries are single-threaded and the bridge never re-enters native code.
+    let max_hybrid_args = mir
+        .functions
+        .iter()
+        .flat_map(|f| f.blocks.iter())
+        .flat_map(|blk| blk.insts.iter())
+        .filter_map(|inst| match inst {
+            Inst::CallVm { args, .. } => Some(args.len()),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0);
+    let hybrid_argbuf = if max_hybrid_args > 0 {
+        let id = module.declare_data("lk_hybrid_argbuf", Linkage::Local, true, false)?;
+        let mut desc = DataDescription::new();
+        desc.define_zeroinit(max_hybrid_args * HYBRID_ARG_SIZE);
+        module.define_data(id, &desc)?;
+        Some(id)
+    } else {
+        None
+    };
+
     // ABI runtime symbols are declared lazily but must dedup across functions.
     let mut abi_ids: HashMap<&'static str, ClifFuncId> = HashMap::new();
 
     for func in &mir.functions {
+        let is_entry = func.id == mir.entry;
         let mut ctx = module.make_context();
-        ctx.func.signature = signature_of(func, cc)?;
+        ctx.func.signature = if is_entry {
+            main_signature(cc)
+        } else {
+            signature_of(func, cc)?
+        };
         let mut fb_ctx = FunctionBuilderContext::new();
         {
             let mut mctx = ModuleCtx {
                 module: &mut module,
                 fn_ids: &fn_ids,
+                fn_rets: &fn_rets,
                 helpers: &helpers,
                 abi_ids: &mut abi_ids,
                 str_data: &str_data,
                 gvar_data: &gvar_data,
+                hybrid_argbuf,
+                vm_functions: &mir.vm_functions,
             };
-            build_function(func, &mut ctx.func, &mut fb_ctx, &mut mctx)?;
+            build_function(func, &mut ctx.func, &mut fb_ctx, &mut mctx, is_entry, mir.abi_version)?;
         }
         module.define_function(fn_ids[&func.id], &mut ctx)?;
         module.clear_context(&mut ctx);
@@ -192,6 +318,24 @@ pub fn compile_module(mir: &MirModule, isa: std::sync::Arc<dyn TargetIsa>) -> Re
 
     let product = module.finish();
     product.emit().map_err(|e| ClifError::Module(e.to_string()))
+}
+
+/// Compile a module to a native relocatable object for the **host** target (the
+/// common case: `lk compile` on the current machine). Link the result against
+/// `lkrt` (see `lk-llvm`'s `compile_native_executable_from_object`).
+pub fn compile_host_object(mir: &MirModule) -> Result<Vec<u8>, ClifError> {
+    use cranelift_codegen::settings::{self, Configurable};
+    let mut flags = settings::builder();
+    let _ = flags.set("opt_level", "speed");
+    // Native executables link the runtime dynamically, so calls to `lkrt_*`
+    // must go through position-independent relocations (GOT/PLT). Without this
+    // macOS' linker rejects the object with "illegal text-relocations".
+    let _ = flags.set("is_pic", "true");
+    let isa = cranelift_native::builder()
+        .map_err(|e| ClifError::Module(e.to_string()))?
+        .finish(settings::Flags::new(flags))
+        .map_err(|e| ClifError::Module(e.to_string()))?;
+    compile_module(mir, isa)
 }
 
 /// The Cranelift value type carrying a MIR [`Ty`] at the ABI. Scalars are
@@ -224,30 +368,58 @@ pub fn ty_to_clif(ty: Ty) -> Result<types::Type, ClifError> {
     })
 }
 
-/// The Cranelift call signature of a MIR function under `call_conv`.
+/// The C `main() -> i32` signature the entry function is compiled to.
+fn main_signature(call_conv: CallConv) -> Signature {
+    let mut sig = Signature::new(call_conv);
+    sig.returns.push(AbiParam::new(types::I32));
+    sig
+}
+
+/// The Cranelift call signature of a MIR function under `call_conv`. A `Dyn` or
+/// `Maybe*` param/return expands to a register pair (see [`ty_clif_parts`]).
 pub fn signature_of(func: &MirFunction, call_conv: CallConv) -> Result<Signature, ClifError> {
     let mut sig = Signature::new(call_conv);
     for (_, ty) in &func.params {
-        sig.params.push(AbiParam::new(ty_to_clif(*ty)?));
+        for t in ty_clif_parts(*ty)? {
+            sig.params.push(AbiParam::new(t));
+        }
     }
-    if !matches!(func.ret, Ty::Nil) {
-        sig.returns.push(AbiParam::new(ty_to_clif(func.ret)?));
+    for t in ty_clif_parts(func.ret)? {
+        sig.returns.push(AbiParam::new(t));
     }
     Ok(sig)
 }
 
-/// Lower a non-entry MIR function body into `clif_func` (whose signature must
-/// already match [`signature_of`]).
+/// Lower a MIR function body into `clif_func`. When `is_entry`, `clif_func` must
+/// be the program `main` (`() -> i32`): its entry block gets an `abi_check`
+/// prologue and its returns print the top-level result before `ret 0`, matching
+/// the string-IR backend.
 fn build_function(
     func: &MirFunction,
     clif_func: &mut Function,
     fb_ctx: &mut FunctionBuilderContext,
     mctx: &mut ModuleCtx,
+    is_entry: bool,
+    abi_version: i64,
 ) -> Result<(), ClifError> {
     let mut builder = FunctionBuilder::new(clif_func, fb_ctx);
+    // A `CallVm` destination that no instruction/terminator reads is dead: degrade
+    // its bridge call to the void form (see `Lower::unused_vm_dsts`).
+    let unused_vm_dsts = func
+        .blocks
+        .iter()
+        .flat_map(|block| block.insts.iter())
+        .filter_map(|inst| match inst {
+            Inst::CallVm { dst: Some(d), .. } if !lk_aot_mir::value_is_used(func, *d) => Some(*d),
+            _ => None,
+        })
+        .collect();
     let mut lower = Lower {
         values: HashMap::new(),
         blocks: HashMap::new(),
+        is_entry,
+        ret_ty: func.ret,
+        unused_vm_dsts,
     };
 
     // Materialize every MIR block up front so branches can target them.
@@ -256,30 +428,42 @@ fn build_function(
     }
     let entry = lower.blocks[&func.entry];
     builder.append_block_params_for_function_params(entry);
-    // Bind the function-signature params to the entry block's params.
+    // Bind the function-signature params to the entry block's params, consuming
+    // one or two Cranelift params per MIR value (carriers are a pair).
     let entry_params: Vec<Value> = builder.block_params(entry).to_vec();
-    for ((vid, _), value) in func.params.iter().zip(entry_params) {
-        lower.values.insert(*vid, value);
+    let mut cursor = 0;
+    for (vid, ty) in &func.params {
+        lower.bind_params(*vid, *ty, &entry_params, &mut cursor)?;
     }
-    // Non-entry blocks carry the SSA phi params as block params.
+    // Non-entry blocks carry the SSA phi params as block params (each carrier phi
+    // is two Cranelift block params).
     for block in &func.blocks {
         if block.id == func.entry {
             continue;
         }
         let cb = lower.blocks[&block.id];
         for (vid, ty) in &block.params {
-            let value = builder.append_block_param(cb, ty_to_clif(*ty)?);
-            lower.values.insert(*vid, value);
+            let mut parts = Vec::new();
+            for t in ty_clif_parts(*ty)? {
+                parts.push(builder.append_block_param(cb, t));
+            }
+            lower.bind_slot(*vid, &parts)?;
         }
     }
 
     for block in &func.blocks {
         let cb = lower.blocks[&block.id];
         builder.switch_to_block(cb);
+        // The entry/`main` guards against ABI drift before any user code runs.
+        if is_entry && block.id == func.entry {
+            let check = mctx.abi_func(resolve_abi("lkrt", "abi_check")?)?;
+            let version = builder.ins().iconst(types::I64, abi_version);
+            lower.call(&mut builder, mctx, check, None, &[version])?;
+        }
         for inst in &block.insts {
             lower.inst(&mut builder, mctx, inst)?;
         }
-        lower.term(&mut builder, &block.term)?;
+        lower.term(&mut builder, mctx, &block.term)?;
     }
 
     builder.seal_all_blocks();
@@ -287,47 +471,153 @@ fn build_function(
     Ok(())
 }
 
+fn resolve_abi(module: &str, name: &str) -> Result<&'static lk_aot_abi::AbiFn, ClifError> {
+    lk_aot_abi::find(module, name).ok_or(ClifError::Unsupported("missing ABI function"))
+}
+
 struct Lower {
-    values: HashMap<lk_aot_mir::ValueId, Value>,
+    values: HashMap<ValueId, Slot>,
     blocks: HashMap<lk_aot_mir::BlockId, cranelift_codegen::ir::Block>,
+    /// This function is the program `main` (`() -> i32`): returns print the
+    /// top-level result and `ret 0`.
+    is_entry: bool,
+    /// The MIR return type — selects the entry's result-printing conversion.
+    ret_ty: Ty,
+    /// `CallVm` destinations that are never read back: their bridge call degrades
+    /// to the void `lk_hybrid_call_v` (no return marshaling), matching the
+    /// string-IR path — a statement-position bridged call must not marshal a
+    /// return the runtime may not support (e.g. a struct/`Object`).
+    unused_vm_dsts: std::collections::HashSet<ValueId>,
 }
 
 impl Lower {
-    fn v(&self, id: lk_aot_mir::ValueId) -> Result<Value, ClifError> {
+    fn set1(&mut self, id: ValueId, v: Value) {
+        self.values.insert(id, Slot::One(v));
+    }
+
+    fn set2(&mut self, id: ValueId, a: Value, b: Value) {
+        self.values.insert(id, Slot::Two(a, b));
+    }
+
+    fn slot(&self, id: ValueId) -> Result<Slot, ClifError> {
         self.values
             .get(&id)
             .copied()
             .ok_or(ClifError::Unsupported("value used before def"))
     }
 
-    /// Resolve a list of value operands (call arguments).
-    fn args_v(&self, ids: &[lk_aot_mir::ValueId]) -> Result<Vec<Value>, ClifError> {
-        ids.iter().map(|id| self.v(*id)).collect()
+    /// A scalar value — rejects a `{i64,i64}` carrier used where one register was
+    /// expected (a lowering-consistency guard, not a user error).
+    fn v(&self, id: ValueId) -> Result<Value, ClifError> {
+        match self.slot(id)? {
+            Slot::One(v) => Ok(v),
+            Slot::Two(..) => Err(ClifError::Unsupported("carrier value used as scalar")),
+        }
     }
 
-    /// Block-call arguments (branch-passed values become the target block's params).
-    fn block_args(&self, ids: &[lk_aot_mir::ValueId]) -> Result<Vec<BlockArg>, ClifError> {
-        ids.iter().map(|id| Ok(BlockArg::Value(self.v(*id)?))).collect()
+    /// A carrier's `(component0, component1)` — rejects a scalar used as a pair.
+    fn two(&self, id: ValueId) -> Result<(Value, Value), ClifError> {
+        match self.slot(id)? {
+            Slot::Two(a, b) => Ok((a, b)),
+            Slot::One(_) => Err(ClifError::Unsupported("scalar value used as carrier")),
+        }
     }
 
-    /// Import `callee` into the current function and emit a call, binding the
-    /// single return value (if any) to `dst`.
+    /// Flatten a value into its Cranelift components (one for a scalar, two for a
+    /// carrier) — the call-argument / return / block-argument representation.
+    fn parts(&self, id: ValueId) -> Result<Vec<Value>, ClifError> {
+        Ok(match self.slot(id)? {
+            Slot::One(v) => vec![v],
+            Slot::Two(a, b) => vec![a, b],
+        })
+    }
+
+    /// Bind `parts[*cursor..]` to `vid` per `ty`'s width, advancing the cursor.
+    fn bind_params(&mut self, vid: ValueId, ty: Ty, parts: &[Value], cursor: &mut usize) -> Result<(), ClifError> {
+        let n = ty_clif_parts(ty)?.len();
+        let slice = parts
+            .get(*cursor..*cursor + n)
+            .ok_or(ClifError::Unsupported("function param arity mismatch"))?;
+        self.bind_slot(vid, slice)?;
+        *cursor += n;
+        Ok(())
+    }
+
+    /// Bind an already-sliced component list (one or two values) to `vid`.
+    fn bind_slot(&mut self, vid: ValueId, parts: &[Value]) -> Result<(), ClifError> {
+        match parts {
+            [v] => self.set1(vid, *v),
+            [a, b] => self.set2(vid, *a, *b),
+            _ => return Err(ClifError::Unsupported("value arity outside {1,2}")),
+        }
+        Ok(())
+    }
+
+    /// Flatten every operand into its Cranelift components (call arguments).
+    fn args_v(&self, ids: &[ValueId]) -> Result<Vec<Value>, ClifError> {
+        let mut out = Vec::with_capacity(ids.len());
+        for id in ids {
+            out.extend(self.parts(*id)?);
+        }
+        Ok(out)
+    }
+
+    /// Block-call arguments (branch-passed values become the target block's
+    /// params) — a carrier phi passes two args.
+    fn block_args(&self, ids: &[ValueId]) -> Result<Vec<BlockArg>, ClifError> {
+        let mut out = Vec::with_capacity(ids.len());
+        for id in ids {
+            for v in self.parts(*id)? {
+                out.push(BlockArg::Value(v));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Import `callee` and emit a call with pre-flattened `args`, binding a single
+    /// scalar result to `dst`.
     fn call(
         &mut self,
         b: &mut FunctionBuilder,
         mctx: &mut ModuleCtx,
         callee: ClifFuncId,
-        dst: Option<lk_aot_mir::ValueId>,
+        dst: Option<ValueId>,
+        args: &[Value],
+    ) -> Result<(), ClifError> {
+        self.call_raw(b, mctx, callee, dst, false, args)
+    }
+
+    /// Import `callee` and emit a call with pre-flattened `args`. When `dst` is
+    /// set, bind the result as a `{i64,i64}` pair (`dst_pair`) or a single value.
+    fn call_raw(
+        &mut self,
+        b: &mut FunctionBuilder,
+        mctx: &mut ModuleCtx,
+        callee: ClifFuncId,
+        dst: Option<ValueId>,
+        dst_pair: bool,
         args: &[Value],
     ) -> Result<(), ClifError> {
         let func_ref = mctx.module.declare_func_in_func(callee, b.func);
         let call = b.ins().call(func_ref, args);
         if let Some(dst) = dst {
             let results = b.inst_results(call);
-            let v = *results
-                .first()
-                .ok_or(ClifError::Unsupported("call has no result for dst"))?;
-            self.values.insert(dst, v);
+            if dst_pair {
+                let (a, c) = (
+                    *results
+                        .first()
+                        .ok_or(ClifError::Unsupported("carrier call missing lo"))?,
+                    *results
+                        .get(1)
+                        .ok_or(ClifError::Unsupported("carrier call missing hi"))?,
+                );
+                self.set2(dst, a, c);
+            } else {
+                let v = *results
+                    .first()
+                    .ok_or(ClifError::Unsupported("call has no result for dst"))?;
+                self.set1(dst, v);
+            }
         }
         Ok(())
     }
@@ -347,11 +637,22 @@ impl Lower {
                         let gv = mctx.module.declare_data_in_func(data_id, b.func);
                         b.ins().global_value(types::I64, gv)
                     }
-                    Const::FnAddr(_) | Const::Nil => {
-                        return Err(ClifError::Unsupported("fnaddr/nil const"));
+                    // The address of a lowered user function (`ptr @lk_fn_N`),
+                    // passed to runtime HOF helpers that invoke compiled callbacks.
+                    Const::FnAddr(f) => {
+                        let callee = *mctx
+                            .fn_ids
+                            .get(f)
+                            .ok_or(ClifError::Unsupported("fnaddr of undeclared function"))?;
+                        let func_ref = mctx.module.declare_func_in_func(callee, b.func);
+                        b.ins().func_addr(types::I64, func_ref)
                     }
+                    // A scalar `nil` is the integer 0 (matching the string-IR
+                    // `add i64 0, 0`); nil flowing into a `Dyn` context is wrapped
+                    // by an explicit `dyn.from_nil` call in the MIR, not here.
+                    Const::Nil => b.ins().iconst(types::I64, 0),
                 };
-                self.values.insert(*dst, v);
+                self.set1(*dst, v);
             }
             Inst::GlobalGet { dst, gvar } => {
                 let (data_id, ty) = *mctx
@@ -360,18 +661,50 @@ impl Lower {
                     .ok_or(ClifError::Unsupported("undeclared global"))?;
                 let gv = mctx.module.declare_data_in_func(data_id, b.func);
                 let addr = b.ins().global_value(types::I64, gv);
-                let v = b.ins().load(ty_to_clif(ty)?, MemFlagsData::trusted(), addr, 0);
-                self.values.insert(*dst, v);
+                // A carrier global holds two components at offsets 0 and 8
+                // (component 0 is always 8 bytes: `i64` or `f64`).
+                let parts = ty_clif_parts(ty)?;
+                match parts.as_slice() {
+                    [t] => {
+                        let v = b.ins().load(*t, MemFlagsData::trusted(), addr, 0);
+                        self.set1(*dst, v);
+                    }
+                    [t0, t1] => {
+                        let v0 = b.ins().load(*t0, MemFlagsData::trusted(), addr, 0);
+                        let v1 = b.ins().load(*t1, MemFlagsData::trusted(), addr, 8);
+                        self.set2(*dst, v0, v1);
+                    }
+                    _ => return Err(ClifError::Unsupported("global type arity outside {1,2}")),
+                }
             }
             Inst::GlobalSet { gvar, src } => {
-                let s = self.v(*src)?;
-                let (data_id, _) = *mctx
+                let (data_id, ty) = *mctx
                     .gvar_data
                     .get(gvar)
                     .ok_or(ClifError::Unsupported("undeclared global"))?;
                 let gv = mctx.module.declare_data_in_func(data_id, b.func);
                 let addr = b.ins().global_value(types::I64, gv);
-                b.ins().store(MemFlagsData::trusted(), s, addr, 0);
+                if ty_is_pair(ty) {
+                    let (a, c) = self.two(*src)?;
+                    b.ins().store(MemFlagsData::trusted(), a, addr, 0);
+                    b.ins().store(MemFlagsData::trusted(), c, addr, 8);
+                } else {
+                    let s = self.v(*src)?;
+                    b.ins().store(MemFlagsData::trusted(), s, addr, 0);
+                }
+            }
+            Inst::PrintStr { value, newline } => {
+                // Print via the existing `io.std.write(fd, str, newline)` ABI fn
+                // (Rust `stdout`), not variadic `printf` — Cranelift cannot model
+                // the C vararg calling convention. Single mechanism, byte-exact.
+                let abi = lk_aot_mir::AbiRef::new("io.std", "write")
+                    .resolve()
+                    .ok_or(ClifError::Unsupported("io.std.write ABI fn missing"))?;
+                let clif_id = mctx.abi_func(abi)?;
+                let fd = b.ins().iconst(types::I64, 1);
+                let s = self.v(*value)?;
+                let nl = b.ins().iconst(types::I64, i64::from(*newline));
+                return self.call(b, mctx, clif_id, None, &[fd, s, nl]);
             }
             Inst::IntBin { dst, op, lhs, rhs } => {
                 let (l, r) = (self.v(*lhs)?, self.v(*rhs)?);
@@ -394,7 +727,7 @@ impl Lower {
                     IntBinOp::Div => return self.call(b, mctx, mctx.helpers.i64_div, Some(*dst), &[l, r]),
                     IntBinOp::Mod => return self.call(b, mctx, mctx.helpers.i64_mod, Some(*dst), &[l, r]),
                 };
-                self.values.insert(*dst, v);
+                self.set1(*dst, v);
             }
             Inst::FloatBin { dst, op, lhs, rhs } => {
                 let (l, r) = (self.v(*lhs)?, self.v(*rhs)?);
@@ -405,7 +738,7 @@ impl Lower {
                     FloatBinOp::Div => return self.call(b, mctx, mctx.helpers.f64_div, Some(*dst), &[l, r]),
                     FloatBinOp::Mod => return self.call(b, mctx, mctx.helpers.f64_mod, Some(*dst), &[l, r]),
                 };
-                self.values.insert(*dst, v);
+                self.set1(*dst, v);
             }
             Inst::CallFn { dst, func, args } => {
                 let a = self.args_v(args)?;
@@ -413,13 +746,15 @@ impl Lower {
                     .fn_ids
                     .get(func)
                     .ok_or(ClifError::Unsupported("call to undeclared function"))?;
-                return self.call(b, mctx, callee, *dst, &a);
+                let dst_pair = mctx.fn_rets.get(func).is_some_and(|t| ty_is_pair(*t));
+                return self.call_raw(b, mctx, callee, *dst, dst_pair, &a);
             }
             Inst::Call { dst, callee, args } => {
                 let abi = callee.resolve().ok_or(ClifError::Unsupported("unknown ABI function"))?;
                 let a = self.args_v(args)?;
+                let dst_pair = matches!(abi.result, lk_aot_abi::AbiType::DynVal);
                 let clif_id = mctx.abi_func(abi)?;
-                return self.call(b, mctx, clif_id, *dst, &a);
+                return self.call_raw(b, mctx, clif_id, *dst, dst_pair, &a);
             }
             Inst::Cmp {
                 dst,
@@ -434,52 +769,432 @@ impl Lower {
                 } else {
                     b.ins().icmp(int_cc(*op), l, r)
                 };
-                self.values.insert(*dst, v);
+                self.set1(*dst, v);
             }
             Inst::IntToFloat { dst, src } => {
                 let s = self.v(*src)?;
                 let v = b.ins().fcvt_from_sint(types::F64, s);
-                self.values.insert(*dst, v);
+                self.set1(*dst, v);
             }
             Inst::ZextBool { dst, src } => {
                 let s = self.v(*src)?;
                 let v = b.ins().uextend(types::I64, s);
-                self.values.insert(*dst, v);
+                self.set1(*dst, v);
             }
             Inst::Not { dst, src } => {
                 let s = self.v(*src)?;
                 let v = b.ins().bxor_imm(s, 1);
-                self.values.insert(*dst, v);
+                self.set1(*dst, v);
             }
             Inst::BoolAnd { dst, lhs, rhs } => {
                 let (l, r) = (self.v(*lhs)?, self.v(*rhs)?);
                 let v = b.ins().band(l, r);
-                self.values.insert(*dst, v);
+                self.set1(*dst, v);
             }
             Inst::Select {
                 dst,
                 cond,
                 then_v,
                 else_v,
-                ..
+                ty,
             } => {
-                let (c, t, e) = (self.v(*cond)?, self.v(*then_v)?, self.v(*else_v)?);
-                let v = b.ins().select(c, t, e);
-                self.values.insert(*dst, v);
+                let c = self.v(*cond)?;
+                // A carrier `select` picks each component independently (Cranelift
+                // has no aggregate select); scalars are the common one-value case.
+                if ty_is_pair(*ty) {
+                    let ((t0, t1), (e0, e1)) = (self.two(*then_v)?, self.two(*else_v)?);
+                    let v0 = b.ins().select(c, t0, e0);
+                    let v1 = b.ins().select(c, t1, e1);
+                    self.set2(*dst, v0, v1);
+                } else {
+                    let (t, e) = (self.v(*then_v)?, self.v(*else_v)?);
+                    let v = b.ins().select(c, t, e);
+                    self.set1(*dst, v);
+                }
             }
-            _ => return Err(ClifError::Unsupported("instruction outside Phase 0 slice")),
+            // A `Maybe`'s presence bit (component 1) as a `Bool` (`present != 0`).
+            Inst::MaybePresent { dst, src, .. } => {
+                let (_, present) = self.two(*src)?;
+                let v = b.ins().icmp_imm(IntCC::NotEqual, present, 0);
+                self.set1(*dst, v);
+            }
+            // A `Maybe`'s value (component 0) without asserting presence. The
+            // `MaybeBool` carrier stores its value as `I64` (all carriers are
+            // `{i64,i64}` except `MaybeF64`); a `Bool` scalar is `I8`, so narrow
+            // it back on the way out.
+            Inst::MaybeValue { dst, src, maybe_ty } => {
+                let (value, _) = self.two(*src)?;
+                let value = if matches!(maybe_ty, Ty::MaybeBool) {
+                    b.ins().ireduce(types::I8, value)
+                } else {
+                    value
+                };
+                self.set1(*dst, value);
+            }
+            // Wrap a plain scalar into a present carrier `{value, 1}`. A `Bool`
+            // source is `I8`; widen it to the carrier's `I64` value component.
+            Inst::MaybeWrap { dst, src, maybe_ty } => {
+                let value = self.v(*src)?;
+                let value = if matches!(maybe_ty, Ty::MaybeBool) {
+                    b.ins().uextend(types::I64, value)
+                } else {
+                    value
+                };
+                let present = b.ins().iconst(types::I64, 1);
+                self.set2(*dst, value, present);
+            }
+            // Dynamic container reads returning a `{value, present}` carrier — the
+            // `lkrt_*_get_pair` symbols (declared via the ABI schema's dedicated
+            // entries) return a register pair, bound directly as a [`Slot::Two`].
+            Inst::ListGetMaybe { dst, handle, index } => {
+                return self.pair_call(b, mctx, "lkrt_lklist_i64_get_pair", *dst, &[*handle, *index]);
+            }
+            Inst::ListGetMaybeStr { dst, handle, index } => {
+                return self.pair_call(b, mctx, "lkrt_lklist_str_get_pair", *dst, &[*handle, *index]);
+            }
+            Inst::MapGetMaybe { dst, handle, key } => {
+                return self.pair_call(b, mctx, "lkrt_lkmap_str_i64_get_pair", *dst, &[*handle, *key]);
+            }
+            Inst::MapGetMaybeI64Key { dst, handle, key } => {
+                return self.pair_call(b, mctx, "lkrt_lkmap_i64_i64_get_pair", *dst, &[*handle, *key]);
+            }
+            // Narrow a carrier to a scalar, aborting if absent (the lkrt unwrap
+            // helper takes the two components and halts on `present == 0`).
+            Inst::UnwrapMaybeI64 { dst, src } => {
+                return self.unwrap_call(b, mctx, "lkrt_maybe_i64_unwrap", *dst, *src);
+            }
+            Inst::UnwrapMaybeStr { dst, src } => {
+                return self.unwrap_call(b, mctx, "lkrt_maybe_str_unwrap", *dst, *src);
+            }
+            // `Maybe<f64>` carriers use the out-pointer `lkrt_*_get_out` shims:
+            // a by-value `{double, i64}` return is a mixed-class aggregate whose
+            // registers differ across targets, which Cranelift's scalar
+            // signatures cannot model portably (see the lkrt shims).
+            Inst::ListGetMaybeF64 { dst, handle, index } => {
+                return self.f64_pair_out(b, mctx, "lkrt_lklist_f64_get_out", *dst, &[*handle, *index]);
+            }
+            Inst::MapGetMaybeStrF64 { dst, handle, key } => {
+                return self.f64_pair_out(b, mctx, "lkrt_lkmap_str_f64_get_out", *dst, &[*handle, *key]);
+            }
+            Inst::MapGetMaybeI64F64 { dst, handle, key } => {
+                return self.f64_pair_out(b, mctx, "lkrt_lkmap_i64_f64_get_out", *dst, &[*handle, *key]);
+            }
+            // Narrow a `Maybe<f64>` to `f64`, aborting if absent (scalar args +
+            // scalar return — no aggregate ABI concern).
+            Inst::UnwrapMaybeF64 { dst, src } => {
+                let (value, present) = self.two(*src)?;
+                let clif_id = mctx.raw_func("lkrt_maybe_f64_unwrap", &[types::F64, types::I64], &[types::F64])?;
+                return self.call_raw(b, mctx, clif_id, Some(*dst), false, &[value, present]);
+            }
+            Inst::TraitDispatch { dst, self_arg, arms } => {
+                return self.trait_dispatch(b, mctx, *dst, *self_arg, arms);
+            }
+            Inst::TryCall { dst, func, args } => {
+                return self.try_call(b, mctx, *dst, *func, args);
+            }
+            Inst::CallVm { dst, func, args } => {
+                return self.call_vm(b, mctx, *dst, *func, args);
+            }
         }
         Ok(())
     }
 
-    fn term(&mut self, b: &mut FunctionBuilder, term: &Term) -> Result<(), ClifError> {
+    /// Native protected call (`try$call`, plan G): drive the lkrt `setjmp`
+    /// trampoline (`lkrt_rt_try_call`) — Cranelift cannot emit `setjmp` itself —
+    /// and join its outcome into the `[ok, value]` dyn-list the desugared
+    /// destructuring consumes. Only integer/pointer try-body params are
+    /// supported: each argument is marshaled as one `i64` word into a stack
+    /// buffer (float/carrier args, or arity above the trampoline cap, reject).
+    fn try_call(
+        &mut self,
+        b: &mut FunctionBuilder,
+        mctx: &mut ModuleCtx,
+        dst: ValueId,
+        func: FuncId,
+        args: &[ValueId],
+    ) -> Result<(), ClifError> {
+        // Keep in step with the trampoline's arity switch (`try_trampoline.c`).
+        const MAX_ARGS: usize = 8;
+        if args.len() > MAX_ARGS {
+            return Err(ClifError::Unsupported("try-call arity over trampoline cap"));
+        }
+        // Marshal each argument to an `i64` word in a stack buffer.
+        let slot_bytes = (args.len().max(1) * 8) as u32;
+        let args_slot = b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, slot_bytes, 3));
+        for (i, arg) in args.iter().enumerate() {
+            let word = match self.slot(*arg)? {
+                Slot::Two(..) => return Err(ClifError::Unsupported("try-call carrier argument")),
+                Slot::One(v) => {
+                    let t = b.func.dfg.value_type(v);
+                    if t == types::I64 {
+                        v
+                    } else if t == types::I8 {
+                        b.ins().uextend(types::I64, v)
+                    } else {
+                        return Err(ClifError::Unsupported("try-call non-integer argument"));
+                    }
+                }
+            };
+            b.ins().stack_store(word, args_slot, (i * 8) as i32);
+        }
+        let argv = b.ins().stack_addr(types::I64, args_slot, 0);
+        let ok_slot = b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3));
+        let out_ok = b.ins().stack_addr(types::I64, ok_slot, 0);
+        // The try-body's address (`ptr @lk_fn_N`) and argument count.
+        let callee = *mctx
+            .fn_ids
+            .get(&func)
+            .ok_or(ClifError::Unsupported("try-call to undeclared function"))?;
+        let body_ref = mctx.module.declare_func_in_func(callee, b.func);
+        let body_addr = b.ins().func_addr(types::I64, body_ref);
+        let argc = b.ins().iconst(types::I64, args.len() as i64);
+        // Call the trampoline: returns the body result / caught error as a `Dyn`
+        // pair, and writes the ok flag through `out_ok`.
+        let tramp = mctx.raw_func("lkrt_rt_try_call", &[types::I64; 4], &[types::I64, types::I64])?;
+        let tramp_ref = mctx.module.declare_func_in_func(tramp, b.func);
+        let call = b.ins().call(tramp_ref, &[body_addr, argc, argv, out_ok]);
+        let (val_t, val_p) = {
+            let r = b.inst_results(call);
+            (
+                *r.first().ok_or(ClifError::Unsupported("try-call result missing lo"))?,
+                *r.get(1).ok_or(ClifError::Unsupported("try-call result missing hi"))?,
+            )
+        };
+        let ok = b.ins().stack_load(types::I64, ok_slot, 0);
+        // Join into the `[ok, value]` dyn list the desugaring destructures.
+        let list = self.abi_call(b, mctx, "list_h", "dyn_new", &[])?;
+        let (ok_t, ok_p) = self.abi_call_pair(b, mctx, "dyn", "from_bool", &[ok])?;
+        let push = mctx.abi_func(resolve_abi("list_h", "dyn_push")?)?;
+        self.call(b, mctx, push, None, &[list, ok_t, ok_p])?;
+        self.call(b, mctx, push, None, &[list, val_t, val_p])?;
+        self.set1(dst, list);
+        Ok(())
+    }
+
+    /// Tier 1 hybrid bridge call (`docs/llvm/tier1-hybrid.md`): marshal each
+    /// scalar argument into its tagged slot in `lk_hybrid_argbuf`, flush C stdio
+    /// (the bridge VM prints through Rust's line-buffered stdout — unflushed C
+    /// buffers would reorder pipe output), then call the bridge. A used result
+    /// binds the `lk_hybrid_call_r` return (an `LkDyn` pair); a void call keeps
+    /// the zero-marshal `lk_hybrid_call_v` path.
+    fn call_vm(
+        &mut self,
+        b: &mut FunctionBuilder,
+        mctx: &mut ModuleCtx,
+        dst: Option<ValueId>,
+        func: FuncId,
+        args: &[ValueId],
+    ) -> Result<(), ClifError> {
+        let params: Vec<Ty> = mctx
+            .vm_functions
+            .iter()
+            .find(|f| f.id == func)
+            .ok_or(ClifError::Unsupported("CallVm target not in vm_functions"))?
+            .params
+            .clone();
+        let argbuf = mctx.hybrid_argbuf.ok_or(ClifError::Unsupported("no hybrid argbuf"))?;
+        let buf_gv = mctx.module.declare_data_in_func(argbuf, b.func);
+        let buf_addr = b.ins().global_value(types::I64, buf_gv);
+        for (i, (arg, ty)) in args.iter().zip(params.iter()).enumerate() {
+            let elem = (i * HYBRID_ARG_SIZE) as i32;
+            let tag: i64 = match ty {
+                Ty::I64 => 0,
+                Ty::F64 => 1,
+                Ty::Bool => 2,
+                Ty::Str => 3,
+                _ => return Err(ClifError::Unsupported("non-scalar hybrid marshaling type")),
+            };
+            let tag_v = b.ins().iconst(types::I8, tag);
+            b.ins().store(MemFlagsData::trusted(), tag_v, buf_addr, elem);
+            // Value field: `f64` bits for F64, a zero-extended `i64` for Bool,
+            // the raw `i64`/pointer otherwise — all 8 bytes at offset 8.
+            let word = match ty {
+                Ty::Bool => {
+                    let bv = self.v(*arg)?;
+                    b.ins().uextend(types::I64, bv)
+                }
+                _ => self.v(*arg)?,
+            };
+            b.ins()
+                .store(MemFlagsData::trusted(), word, buf_addr, elem + HYBRID_ARG_VALUE_OFFSET);
+        }
+        // Flush C stdio before handing control to the bridge VM.
+        let fflush = mctx.raw_func("fflush", &[types::I64], &[types::I32])?;
+        let null = b.ins().iconst(types::I64, 0);
+        self.call(b, mctx, fflush, None, &[null])?;
+        // An empty arg list passes a null buffer (matches the string-IR path).
+        let bufarg = if args.is_empty() {
+            b.ins().iconst(types::I64, 0)
+        } else {
+            buf_addr
+        };
+        let fid = b.ins().iconst(types::I32, i64::from(func.0));
+        let argc = b.ins().iconst(types::I64, args.len() as i64);
+        // Degrade a never-read destination to the void bridge (no return marshaling).
+        let dst = dst.filter(|d| !self.unused_vm_dsts.contains(d));
+        match dst {
+            Some(d) => {
+                let call_r = mctx.raw_func(
+                    "lk_hybrid_call_r",
+                    &[types::I32, types::I64, types::I64],
+                    &[types::I64, types::I64],
+                )?;
+                self.call_raw(b, mctx, call_r, Some(d), true, &[fid, bufarg, argc])
+            }
+            None => {
+                let call_v = mctx.raw_func("lk_hybrid_call_v", &[types::I32, types::I64, types::I64], &[])?;
+                self.call_raw(b, mctx, call_v, None, false, &[fid, bufarg, argc])
+            }
+        }
+    }
+
+    /// Call an ABI fn with pre-flattened scalar `args`, returning its `{i64,i64}`
+    /// carrier result as a `(component0, component1)` pair.
+    fn abi_call_pair(
+        &mut self,
+        b: &mut FunctionBuilder,
+        mctx: &mut ModuleCtx,
+        module: &str,
+        name: &str,
+        args: &[Value],
+    ) -> Result<(Value, Value), ClifError> {
+        let id = mctx.abi_func(resolve_abi(module, name)?)?;
+        let func_ref = mctx.module.declare_func_in_func(id, b.func);
+        let call = b.ins().call(func_ref, args);
+        let r = b.inst_results(call);
+        Ok((
+            *r.first().ok_or(ClifError::Unsupported("carrier ABI call missing lo"))?,
+            *r.get(1).ok_or(ClifError::Unsupported("carrier ABI call missing hi"))?,
+        ))
+    }
+
+    /// Runtime trait-method dispatch (plan J1): read the boxed receiver's arena
+    /// type mark (`dyn.obj_type_id`) and walk an `icmp` chain, calling the impl
+    /// whose registered type id matches. Every arm takes the `Dyn` receiver and
+    /// returns `Dyn`, so results merge at a join block via a two-param phi. No
+    /// matching mark calls `dyn.method_missing` (which raises/aborts).
+    fn trait_dispatch(
+        &mut self,
+        b: &mut FunctionBuilder,
+        mctx: &mut ModuleCtx,
+        dst: ValueId,
+        self_arg: ValueId,
+        arms: &[(i64, FuncId)],
+    ) -> Result<(), ClifError> {
+        let (s0, s1) = self.two(self_arg)?;
+        let type_id = self.abi_call(b, mctx, "dyn", "obj_type_id", &[s0, s1])?;
+        // The join block carries the dispatched `Dyn` result as two block params.
+        let join = b.create_block();
+        let j0 = b.append_block_param(join, types::I64);
+        let j1 = b.append_block_param(join, types::I64);
+        for (tid, func) in arms {
+            let arm = b.create_block();
+            let next = b.create_block();
+            let eq = b.ins().icmp_imm(IntCC::Equal, type_id, *tid);
+            b.ins().brif(eq, arm, &[], next, &[]);
+            b.switch_to_block(arm);
+            let callee = *mctx
+                .fn_ids
+                .get(func)
+                .ok_or(ClifError::Unsupported("trait arm to undeclared function"))?;
+            let func_ref = mctx.module.declare_func_in_func(callee, b.func);
+            let call = b.ins().call(func_ref, &[s0, s1]);
+            let (r0, r1) = {
+                let r = b.inst_results(call);
+                (
+                    *r.first().ok_or(ClifError::Unsupported("trait arm result missing lo"))?,
+                    *r.get(1).ok_or(ClifError::Unsupported("trait arm result missing hi"))?,
+                )
+            };
+            b.ins().jump(join, &[BlockArg::Value(r0), BlockArg::Value(r1)]);
+            b.switch_to_block(next);
+        }
+        // Fall-through (no arm matched): raise via `method_missing`, then trap to
+        // terminate the block (the raise aborts, so the trap is unreachable).
+        let missing = mctx.abi_func(resolve_abi("dyn", "method_missing")?)?;
+        self.call(b, mctx, missing, None, &[])?;
+        b.ins()
+            .trap(cranelift_codegen::ir::TrapCode::user(1).expect("nonzero trap code"));
+        // Continue the MIR block from the join, with the result bound.
+        b.switch_to_block(join);
+        self.set2(dst, j0, j1);
+        Ok(())
+    }
+
+    /// Emit a call to a `{value, present}`-returning `lkrt_*_get_pair` symbol
+    /// (declared in codegen, not the ABI schema — its by-value carrier return is
+    /// outside the scalar ABI vocabulary), binding `dst` as a [`Slot::Two`].
+    /// `arg_ids` are scalars/handles, one `I64` component each.
+    fn pair_call(
+        &mut self,
+        b: &mut FunctionBuilder,
+        mctx: &mut ModuleCtx,
+        symbol: &'static str,
+        dst: ValueId,
+        arg_ids: &[ValueId],
+    ) -> Result<(), ClifError> {
+        let args = self.args_v(arg_ids)?;
+        let params = vec![types::I64; args.len()];
+        let clif_id = mctx.raw_func(symbol, &params, &[types::I64, types::I64])?;
+        self.call_raw(b, mctx, clif_id, Some(dst), true, &args)
+    }
+
+    /// Emit an `lkrt_*_get_out(args…, out_value: *f64, out_present: *i64)` call and
+    /// bind `dst` as a `{f64, i64}` carrier pair. Two stack slots receive the
+    /// components; their addresses are passed after the scalar `arg_ids`.
+    fn f64_pair_out(
+        &mut self,
+        b: &mut FunctionBuilder,
+        mctx: &mut ModuleCtx,
+        symbol: &'static str,
+        dst: ValueId,
+        arg_ids: &[ValueId],
+    ) -> Result<(), ClifError> {
+        let value_slot = b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3));
+        let present_slot = b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3));
+        let value_ptr = b.ins().stack_addr(types::I64, value_slot, 0);
+        let present_ptr = b.ins().stack_addr(types::I64, present_slot, 0);
+        let mut args = self.args_v(arg_ids)?;
+        args.push(value_ptr);
+        args.push(present_ptr);
+        // Params: one `I64` per scalar arg, then the two out-pointers; no return.
+        let mut params = vec![types::I64; arg_ids.len()];
+        params.push(types::I64);
+        params.push(types::I64);
+        let clif_id = mctx.raw_func(symbol, &params, &[])?;
+        self.call(b, mctx, clif_id, None, &args)?;
+        let value = b.ins().stack_load(types::F64, value_slot, 0);
+        let present = b.ins().stack_load(types::I64, present_slot, 0);
+        self.set2(dst, value, present);
+        Ok(())
+    }
+
+    /// Emit an `lkrt_maybe_*_unwrap(value, present) -> scalar` call: flatten the
+    /// carrier `src` into its two components and bind the single result to `dst`.
+    fn unwrap_call(
+        &mut self,
+        b: &mut FunctionBuilder,
+        mctx: &mut ModuleCtx,
+        symbol: &'static str,
+        dst: ValueId,
+        src: ValueId,
+    ) -> Result<(), ClifError> {
+        let (value, present) = self.two(src)?;
+        let clif_id = mctx.raw_func(symbol, &[types::I64, types::I64], &[types::I64])?;
+        self.call_raw(b, mctx, clif_id, Some(dst), false, &[value, present])
+    }
+
+    fn term(&mut self, b: &mut FunctionBuilder, mctx: &mut ModuleCtx, term: &Term) -> Result<(), ClifError> {
         match term {
+            Term::Ret(value) if self.is_entry => return self.entry_return(b, mctx, *value),
             Term::Ret(None) => {
                 b.ins().return_(&[]);
             }
             Term::Ret(Some(v)) => {
-                let value = self.v(*v)?;
-                b.ins().return_(&[value]);
+                // A carrier return yields two values (the signature has two
+                // returns); a scalar yields one.
+                let vals = self.parts(*v)?;
+                b.ins().return_(&vals);
             }
             Term::Br { target, args } => {
                 let a = self.block_args(args)?;
@@ -505,6 +1220,116 @@ impl Lower {
             }
         }
         Ok(())
+    }
+
+    /// The entry/`main` return: print the top-level result (matching the
+    /// string-IR auto-print, always via `io.std.write` with a newline), reclaim
+    /// the default arena (`lkrt.cleanup`), then `ret 0`. A `nil` return — and the
+    /// absent branch of a `Maybe`/nil-tagged `Dyn` — prints nothing (the VM's
+    /// top-level auto-print of `nil` is silent, unlike `print(nil)`).
+    fn entry_return(
+        &mut self,
+        b: &mut FunctionBuilder,
+        mctx: &mut ModuleCtx,
+        value: Option<ValueId>,
+    ) -> Result<(), ClifError> {
+        // A shared tail: reclaim the arena and return 0. Present/scalar prints
+        // fall through to it; absent carrier branches jump straight to it.
+        let exit = b.create_block();
+        match value {
+            None => {
+                b.ins().jump(exit, &[]);
+            }
+            Some(v) => match self.ret_ty {
+                Ty::Str => {
+                    let s = self.v(v)?;
+                    self.entry_write(b, mctx, s)?;
+                    b.ins().jump(exit, &[]);
+                }
+                Ty::I64 => {
+                    let s = self.v(v)?;
+                    let sp = self.abi_call(b, mctx, "str", "from_i64", &[s])?;
+                    self.entry_write(b, mctx, sp)?;
+                    b.ins().jump(exit, &[]);
+                }
+                Ty::F64 => {
+                    let s = self.v(v)?;
+                    let sp = self.abi_call(b, mctx, "str", "from_f64", &[s])?;
+                    self.entry_write(b, mctx, sp)?;
+                    b.ins().jump(exit, &[]);
+                }
+                Ty::Bool => {
+                    let s = self.v(v)?;
+                    let widened = b.ins().uextend(types::I64, s);
+                    let sp = self.abi_call(b, mctx, "str", "from_bool", &[widened])?;
+                    self.entry_write(b, mctx, sp)?;
+                    b.ins().jump(exit, &[]);
+                }
+                // A boxed `Dyn`: print its display unless nil-tagged (tag == 0).
+                Ty::Dyn => {
+                    let (tag, payload) = self.two(v)?;
+                    let present = b.ins().icmp_imm(IntCC::NotEqual, tag, 0);
+                    let some = b.create_block();
+                    b.ins().brif(present, some, &[], exit, &[]);
+                    b.switch_to_block(some);
+                    let sp = self.abi_call(b, mctx, "dyn", "display", &[tag, payload])?;
+                    self.entry_write(b, mctx, sp)?;
+                    b.ins().jump(exit, &[]);
+                }
+                // A `Maybe`: print the value when present, nothing when absent.
+                Ty::MaybeI64 | Ty::MaybeF64 | Ty::MaybeStr | Ty::MaybeBool => {
+                    let (val, present_bit) = self.two(v)?;
+                    let present = b.ins().icmp_imm(IntCC::NotEqual, present_bit, 0);
+                    let some = b.create_block();
+                    b.ins().brif(present, some, &[], exit, &[]);
+                    b.switch_to_block(some);
+                    let sp = match self.ret_ty {
+                        Ty::MaybeStr => val,
+                        Ty::MaybeI64 => self.abi_call(b, mctx, "str", "from_i64", &[val])?,
+                        Ty::MaybeF64 => self.abi_call(b, mctx, "str", "from_f64", &[val])?,
+                        Ty::MaybeBool => self.abi_call(b, mctx, "str", "from_bool", &[val])?,
+                        _ => unreachable!("guarded by the outer match"),
+                    };
+                    self.entry_write(b, mctx, sp)?;
+                    b.ins().jump(exit, &[]);
+                }
+                _ => return Err(ClifError::Unsupported("entry return type outside slice")),
+            },
+        }
+        b.switch_to_block(exit);
+        let cleanup = mctx.abi_func(resolve_abi("lkrt", "cleanup")?)?;
+        self.call(b, mctx, cleanup, None, &[])?;
+        let zero = b.ins().iconst(types::I32, 0);
+        b.ins().return_(&[zero]);
+        Ok(())
+    }
+
+    /// Write a finished `Str` value to stdout with a trailing newline, via the
+    /// `io.std.write(fd, str, newline)` ABI fn (the entry auto-print mechanism).
+    fn entry_write(&mut self, b: &mut FunctionBuilder, mctx: &mut ModuleCtx, str_ptr: Value) -> Result<(), ClifError> {
+        let write = mctx.abi_func(resolve_abi("io.std", "write")?)?;
+        let fd = b.ins().iconst(types::I64, 1);
+        let nl = b.ins().iconst(types::I64, 1);
+        self.call(b, mctx, write, None, &[fd, str_ptr, nl])
+    }
+
+    /// Call an ABI fn with pre-flattened scalar `args`, returning its single
+    /// result value.
+    fn abi_call(
+        &mut self,
+        b: &mut FunctionBuilder,
+        mctx: &mut ModuleCtx,
+        module: &str,
+        name: &str,
+        args: &[Value],
+    ) -> Result<Value, ClifError> {
+        let id = mctx.abi_func(resolve_abi(module, name)?)?;
+        let func_ref = mctx.module.declare_func_in_func(id, b.func);
+        let call = b.ins().call(func_ref, args);
+        b.inst_results(call)
+            .first()
+            .copied()
+            .ok_or(ClifError::Unsupported("ABI call produced no result"))
     }
 }
 
@@ -555,7 +1380,10 @@ mod tests {
             globals: vec![],
             mutable_globals: vec![],
             vm_functions: vec![],
-            entry: funcs[0].id,
+            // Sentinel: these helper functions are compiled as ordinary
+            // `lk_fn_N` (with params/returns); the entry/`main` shape has its own
+            // test.
+            entry: FuncId(u32::MAX),
             functions: funcs,
         };
         compile_module(&mir, host_isa())
@@ -766,10 +1594,175 @@ mod tests {
         compile_module(&mir, host_isa()).expect("string const + globals must compile");
     }
 
-    // A shape still outside the slice (a `Dyn` param) rejects at the capability
-    // boundary — specifically `Unsupported`, not an unrelated module/emit error.
+    // PrintStr via the `io.std.write` ABI fn — Phase 2b.
+    #[test]
+    fn lowers_print_str() {
+        use lk_aot_mir::GlobalId;
+        let func = MirFunction {
+            id: FuncId(0),
+            params: vec![],
+            blocks: vec![MirBlock {
+                id: BlockId(0),
+                params: vec![],
+                insts: vec![
+                    Inst::Const {
+                        dst: vid(0),
+                        value: Const::Str(GlobalId(0)),
+                    },
+                    Inst::PrintStr {
+                        value: vid(0),
+                        newline: true,
+                    },
+                ],
+                term: Term::Ret(None),
+            }],
+            entry: BlockId(0),
+            ret: Ty::Nil,
+        };
+        let mir = MirModule {
+            abi_version: 0,
+            globals: vec!["hello".to_string()],
+            mutable_globals: vec![],
+            vm_functions: vec![],
+            entry: FuncId(0),
+            functions: vec![func],
+        };
+        compile_module(&mir, host_isa()).expect("print str must compile");
+    }
+
+    // The entry function compiles to C `main`: `abi_check` prologue + top-level
+    // result print + `ret 0`.
+    #[test]
+    fn lowers_entry_main() {
+        use lk_aot_mir::GlobalId;
+        // `println("hi"); return;` — entry with a print + nil return.
+        let prog = MirFunction {
+            id: FuncId(0),
+            params: vec![],
+            blocks: vec![MirBlock {
+                id: BlockId(0),
+                params: vec![],
+                insts: vec![
+                    Inst::Const {
+                        dst: vid(0),
+                        value: Const::Str(GlobalId(0)),
+                    },
+                    Inst::PrintStr {
+                        value: vid(0),
+                        newline: true,
+                    },
+                ],
+                term: Term::Ret(None),
+            }],
+            entry: BlockId(0),
+            ret: Ty::Nil,
+        };
+        let mir = MirModule {
+            abi_version: 1,
+            globals: vec!["hi".to_string()],
+            mutable_globals: vec![],
+            vm_functions: vec![],
+            entry: FuncId(0),
+            functions: vec![prog],
+        };
+        compile_module(&mir, host_isa()).expect("entry main must compile");
+    }
+
+    // An entry returning an int prints it (top-level auto-print) then `ret 0`.
+    #[test]
+    fn lowers_entry_scalar_return() {
+        let ret42 = MirFunction {
+            id: FuncId(0),
+            params: vec![],
+            blocks: vec![MirBlock {
+                id: BlockId(0),
+                params: vec![],
+                insts: vec![Inst::Const {
+                    dst: vid(0),
+                    value: Const::I64(42),
+                }],
+                term: Term::Ret(Some(vid(0))),
+            }],
+            entry: BlockId(0),
+            ret: Ty::I64,
+        };
+        let mir = MirModule {
+            abi_version: 1,
+            globals: vec![],
+            mutable_globals: vec![],
+            vm_functions: vec![],
+            entry: FuncId(0),
+            functions: vec![ret42],
+        };
+        compile_module(&mir, host_isa()).expect("entry scalar return must compile");
+    }
+
+    // The `inst` match is exhaustive, so the capability boundary lives *inside*
+    // arms. A `Nil`-typed function parameter (zero register components) is one
+    // such rejected shape — it must fail with `Unsupported`, not an unrelated
+    // module/emit error.
     #[test]
     fn rejects_unsupported_shape() {
+        let func = MirFunction {
+            id: FuncId(0),
+            params: vec![(vid(0), Ty::Nil)],
+            blocks: vec![MirBlock {
+                id: BlockId(0),
+                params: vec![],
+                insts: vec![],
+                term: Term::Ret(None),
+            }],
+            entry: BlockId(0),
+            ret: Ty::Nil,
+        };
+        assert!(matches!(compile_ok(vec![func]), Err(ClifError::Unsupported(_))));
+    }
+
+    // A Tier 1 hybrid bridge call (`CallVm`) to a VM-executed function lowers:
+    // its scalar arg is marshaled into `lk_hybrid_argbuf` and it calls the void
+    // bridge (`lk_hybrid_call_v`). The target must be recorded in `vm_functions`.
+    #[test]
+    fn lowers_call_vm_bridge() {
+        let prog = MirFunction {
+            id: FuncId(0),
+            params: vec![],
+            blocks: vec![MirBlock {
+                id: BlockId(0),
+                params: vec![],
+                insts: vec![
+                    Inst::Const {
+                        dst: vid(0),
+                        value: Const::I64(7),
+                    },
+                    Inst::CallVm {
+                        dst: None,
+                        func: FuncId(1),
+                        args: vec![vid(0)],
+                    },
+                ],
+                term: Term::Ret(None),
+            }],
+            entry: BlockId(0),
+            ret: Ty::Nil,
+        };
+        let mir = MirModule {
+            abi_version: 0,
+            globals: vec![],
+            mutable_globals: vec![],
+            vm_functions: vec![lk_aot_mir::VmFunction {
+                id: FuncId(1),
+                params: vec![Ty::I64],
+            }],
+            entry: FuncId(u32::MAX),
+            functions: vec![prog],
+        };
+        compile_module(&mir, host_isa()).expect("CallVm bridge must compile");
+    }
+
+    // A `Dyn`-typed function (pair param → pair return) lowers cleanly: the
+    // carrier ABI expands each `Dyn` to two `I64` registers.
+    #[test]
+    fn lowers_dyn_pair_identity() {
         let func = MirFunction {
             id: FuncId(0),
             params: vec![(vid(0), Ty::Dyn)],
@@ -782,6 +1775,6 @@ mod tests {
             entry: BlockId(0),
             ret: Ty::Dyn,
         };
-        assert!(matches!(compile_ok(vec![func]), Err(ClifError::Unsupported(_))));
+        compile_ok(vec![func]).expect("Dyn pair identity must compile");
     }
 }

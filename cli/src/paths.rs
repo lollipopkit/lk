@@ -88,12 +88,8 @@ fn parse_compile_mode(raw: &str) -> anyhow::Result<Option<CompileMode>> {
     let target = raw.to_ascii_lowercase();
     match target.as_str() {
         "bytecode" => Ok(Some(CompileMode::Bytecode)),
-        #[cfg(feature = "llvm")]
-        "llvm" => Ok(Some(CompileMode::Llvm)),
-        #[cfg(not(feature = "llvm"))]
         "llvm" => anyhow::bail!(
-            "LLVM backend disabled at build time; rebuild with `--features llvm` to use '{}' target",
-            raw
+            "`lk compile llvm` was removed with the LLVM-text backend; native executables are emitted via Cranelift (`lk compile [FILE]`)"
         ),
         "exe" => anyhow::bail!("`lk compile exe` was removed; use `lk compile [FILE]` for native executables"),
         _ => Ok(None),

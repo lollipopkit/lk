@@ -5,10 +5,6 @@ use std::{
 
 use anyhow::Context;
 
-pub fn compile_native_executable_from_llvm(path: &Path, output: &Path, ir: &str, opt_flag: &str) -> anyhow::Result<()> {
-    compile_native_executable_from_llvm_hybrid(path, output, ir, opt_flag, None)
-}
-
 /// Tier 1 hybrid link info (`docs/llvm/tier1-hybrid.md`): the serialized module
 /// artifact to embed (registered via a C constructor so the generated `main`
 /// stays untouched) and the lk-api staticlib providing `lk_hybrid_*`.
@@ -17,42 +13,16 @@ pub struct HybridLink<'a> {
     pub lk_api_staticlib: &'a Path,
 }
 
-pub fn compile_native_executable_from_llvm_hybrid(
-    path: &Path,
-    output: &Path,
-    ir: &str,
-    opt_flag: &str,
-    hybrid: Option<HybridLink<'_>>,
-) -> anyhow::Result<()> {
+/// Link a Cranelift-produced relocatable object (already machine code — no
+/// `clang` optimization step) into a native executable, against the `lkrt`
+/// staticlib. `clang` is used purely as the linker driver.
+pub fn compile_native_executable_from_object(path: &Path, output: &Path, object: &[u8]) -> anyhow::Result<()> {
     let _ = lkrt::link_anchor();
-    let source_path = temp_llvm_source_path(path);
-    std::fs::write(&source_path, ir).with_context(|| format!("write native LLVM IR {}", source_path.display()))?;
-    let wrapper_path = hybrid
-        .as_ref()
-        .map(|link| {
-            let wrapper = hybrid_wrapper_c(link.module_artifact_json);
-            let wrapper_path = source_path.with_extension("hybrid.c");
-            std::fs::write(&wrapper_path, wrapper)
-                .with_context(|| format!("write hybrid wrapper {}", wrapper_path.display()))?;
-            Ok::<_, anyhow::Error>(wrapper_path)
-        })
-        .transpose()
-        .inspect_err(|_| {
-            let _ = std::fs::remove_file(&source_path);
-        })?;
+    let object_path = temp_llvm_source_path(path).with_extension("o");
+    std::fs::write(&object_path, object).with_context(|| format!("write native object {}", object_path.display()))?;
     let clang = clang_command();
     let mut command = Command::new(&clang);
-    // The MIR codegen emits naive SSA text and relies on clang's optimizer for
-    // cleanup; `opt_flag` comes from `LlvmBackendOptions` (`-O2` by default,
-    // `-O0` under `--skip-opt`).
-    command.arg(opt_flag).arg(&source_path).arg("-o").arg(output);
-    if let Some(wrapper_path) = &wrapper_path {
-        command.arg(wrapper_path);
-    }
-    // `LK_NATIVE_SANITIZE=address,undefined` forwards `-fsanitize=` so the
-    // differential corpora can run native binaries under ASan/UBSan; the
-    // handwritten runtime helpers and generated IR are otherwise only
-    // exercised without sanitizers.
+    command.arg(&object_path).arg("-o").arg(output);
     if let Some(sanitizers) = std::env::var_os("LK_NATIVE_SANITIZE")
         && !sanitizers.is_empty()
     {
@@ -61,45 +31,89 @@ pub fn compile_native_executable_from_llvm_hybrid(
     if let Some(staticlib) = lkrt_staticlib_path() {
         add_force_load_staticlib(&mut command, &staticlib);
     }
-    if let Some(link) = &hybrid {
-        // The bridge VM (lk-api + lk-core + stdlib) rides in via the same
-        // staticlib the Tier 0 bundle links; no force-load needed — the
-        // wrapper references `lk_hybrid_register` and the IR references
-        // `lk_hybrid_call_v`, which pulls the objects in.
-        command.arg(link.lk_api_staticlib);
+    // `pthread`/`dl` are Unix libraries; on Windows they are part of the CRT.
+    if !cfg!(target_os = "windows") {
         command.args(["-lpthread", "-ldl"]);
     }
-    // lkrt's float math (`powf` etc.) lowers to libm calls; macOS bundles libm
-    // in libSystem, Windows in the CRT, so the explicit link is Linux-only.
     if cfg!(target_os = "linux") {
         command.arg("-lm");
     }
-    // On macOS the staticlib carries chrono's local-timezone lookup
-    // (`iana_time_zone`), which references CoreFoundation (`_CFRelease`,
-    // `_CFTimeZoneCopySystem`, …); without the framework the link fails with
-    // undefined symbols. Harmless when those objects are dead-stripped.
     if cfg!(target_os = "macos") {
         command.args(["-framework", "CoreFoundation"]);
     }
-    let output_status = match command
+    // Remove the temp object whether or not clang spawns, so a spawn failure
+    // does not leak it.
+    let status = command
         .output()
-        .with_context(|| format!("spawn clang to build native executable {}", output.display()))
-    {
-        Ok(output_status) => output_status,
-        Err(error) => {
-            let _ = std::fs::remove_file(&source_path);
-            return Err(error);
-        }
-    };
-    let _ = std::fs::remove_file(&source_path);
-    if let Some(wrapper_path) = &wrapper_path {
-        let _ = std::fs::remove_file(wrapper_path);
-    }
-    if !output_status.status.success() {
+        .with_context(|| format!("spawn clang to link native object {}", output.display()));
+    let _ = std::fs::remove_file(&object_path);
+    let status = status?;
+    if !status.status.success() {
         anyhow::bail!(
-            "native executable build failed for {}:\n{}",
+            "native object link failed for {}:\n{}",
             path.display(),
-            String::from_utf8_lossy(&output_status.stderr)
+            String::from_utf8_lossy(&status.stderr)
+        );
+    }
+    Ok(())
+}
+
+/// Link a Cranelift-produced object that references the Tier 1 bridge
+/// (`lk_hybrid_call_*`) into a native executable: like
+/// [`compile_native_executable_from_object`], but also compiles the hybrid
+/// wrapper (embedded module artifact + rt registration) and links the lk-api
+/// staticlib alongside `lkrt`.
+pub fn compile_native_executable_from_object_hybrid(
+    path: &Path,
+    output: &Path,
+    object: &[u8],
+    hybrid: HybridLink<'_>,
+) -> anyhow::Result<()> {
+    let _ = lkrt::link_anchor();
+    let object_path = temp_llvm_source_path(path).with_extension("o");
+    std::fs::write(&object_path, object).with_context(|| format!("write native object {}", object_path.display()))?;
+    let wrapper = hybrid_wrapper_c(hybrid.module_artifact_json);
+    let wrapper_path = object_path.with_extension("hybrid.c");
+    if let Err(error) = std::fs::write(&wrapper_path, wrapper) {
+        let _ = std::fs::remove_file(&object_path);
+        return Err(error).with_context(|| format!("write hybrid wrapper {}", wrapper_path.display()));
+    }
+    let clang = clang_command();
+    let mut command = Command::new(&clang);
+    command.arg(&object_path).arg(&wrapper_path).arg("-o").arg(output);
+    if let Some(sanitizers) = std::env::var_os("LK_NATIVE_SANITIZE")
+        && !sanitizers.is_empty()
+    {
+        command.arg(format!("-fsanitize={}", sanitizers.to_string_lossy()));
+    }
+    if let Some(staticlib) = lkrt_staticlib_path() {
+        add_force_load_staticlib(&mut command, &staticlib);
+    }
+    // The bridge VM (lk-api + lk-core + stdlib) rides in via its staticlib; the
+    // wrapper references `lk_hybrid_register`, the object references
+    // `lk_hybrid_call_*`, which pull the objects in.
+    command.arg(hybrid.lk_api_staticlib);
+    // `pthread`/`dl` are Unix libraries; on Windows they are part of the CRT.
+    if !cfg!(target_os = "windows") {
+        command.args(["-lpthread", "-ldl"]);
+    }
+    if cfg!(target_os = "linux") {
+        command.arg("-lm");
+    }
+    if cfg!(target_os = "macos") {
+        command.args(["-framework", "CoreFoundation"]);
+    }
+    let status = command
+        .output()
+        .with_context(|| format!("spawn clang to link hybrid native object {}", output.display()));
+    let _ = std::fs::remove_file(&object_path);
+    let _ = std::fs::remove_file(&wrapper_path);
+    let status = status?;
+    if !status.status.success() {
+        anyhow::bail!(
+            "hybrid native object link failed for {}:\n{}",
+            path.display(),
+            String::from_utf8_lossy(&status.stderr)
         );
     }
     Ok(())
@@ -174,15 +188,20 @@ fn lkrt_staticlib_path() -> Option<PathBuf> {
     } else {
         "liblkrt.a"
     };
-    let candidate = dir.join(file);
-    let mut candidates = vec![candidate];
-    if let Some(path) = latest_lkrt_staticlib_in_deps(&dir.join("deps")) {
-        candidates.push(path);
+    let mut candidates = vec![dir.join(file)];
+    // The `lk` CLI runs from `target/<profile>/`, whose `deps` subdir holds the
+    // hashed `liblkrt-<hash>.a`; a `cargo test` binary runs from
+    // `target/<profile>/deps/` itself, where that hashed archive sits right
+    // beside it. Search both so either launcher resolves the staticlib.
+    for search in [dir.to_path_buf(), dir.join("deps")] {
+        if let Some(path) = latest_lkrt_staticlib_in(&search) {
+            candidates.push(path);
+        }
     }
     newest_existing_path(candidates)
 }
 
-fn latest_lkrt_staticlib_in_deps(deps_dir: &Path) -> Option<PathBuf> {
+fn latest_lkrt_staticlib_in(deps_dir: &Path) -> Option<PathBuf> {
     let entries = std::fs::read_dir(deps_dir).ok()?;
     let prefix = if cfg!(target_os = "windows") {
         "lkrt-"

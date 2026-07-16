@@ -64,23 +64,6 @@ fn run_differential(area: &str, cases: &[Case]) {
         let vm = run_cli(&dir, [file.as_str()]).output().expect("spawn vm run");
         let vm_stdout = String::from_utf8_lossy(&vm.stdout).into_owned();
 
-        // MIR-path IR.
-        let llvm = run_cli(&dir, ["compile", "llvm", &file])
-            .output()
-            .expect("spawn llvm compile");
-        assert!(
-            llvm.status.success(),
-            "[{area}/{}] IR compile failed: {}",
-            case.name,
-            String::from_utf8_lossy(&llvm.stderr)
-        );
-        let ir = fs::read_to_string(dir.join(format!("{}.ll", case.name))).expect("read IR");
-        assert!(
-            ir.contains("; ModuleID = 'lk_aot'"),
-            "[{area}/{}] expected MIR-pipeline IR",
-            case.name
-        );
-
         // Native build + run.
         let exe = run_cli(&dir, ["compile", &file])
             .output()

@@ -412,12 +412,25 @@ pub fn lower_bundled(
         })
         .collect();
     vm_functions.sort_by_key(|vm_fn| vm_fn.id.0);
-    Ok(MirModule {
+    let lowered = MirModule {
         abi_version: lk_aot_abi::ABI_VERSION,
         globals,
         mutable_globals,
         vm_functions,
         entry: FuncId(module.entry),
         functions,
-    })
+    };
+    // Totality guard (RFC §1): a successful `lower` must yield a *valid* module
+    // so codegen never fails mid-emit. A Tier 1 hybrid rerun can re-lower a
+    // caller against a now-bridged callee into structurally-invalid MIR (e.g. a
+    // dangling entry block); catch that here and treat the module as
+    // not-natively-lowerable rather than emitting it as an internal codegen
+    // error. Debug the underlying shape with `LK_AOT_DEBUG_FAILURES=1`.
+    if let Err(error) = lk_aot_mir::validate(&lowered) {
+        if std::env::var_os("LK_AOT_DEBUG_FAILURES").is_some() {
+            eprintln!("lk-aot-lower: lowered module failed validation: {error:?}");
+        }
+        return Err(Unsupported::InvalidMir);
+    }
+    Ok(lowered)
 }

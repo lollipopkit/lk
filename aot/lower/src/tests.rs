@@ -98,8 +98,6 @@ fn lowers_zero_capture_lambda_global_call() {
     let mir = lower(&art).expect("zero-capture lambda lowers");
     assert_eq!(lk_aot_mir::validate(&mir), Ok(()));
     assert_eq!(mir.functions.len(), 2, "lambda body must be reachable/emitted");
-    let ir = lk_aot_codegen::render_module(&mir);
-    assert!(ir.contains("call i64 @lk_fn_1"), "devirtualized direct call: {ir}");
 }
 
 /// A register-local zero-capture lambda (no global storage) calls directly
@@ -262,11 +260,7 @@ fn lowers_direct_call() {
     // fn 1 is (i64, i64) -> i64.
     assert_eq!(mir.functions[1].params.len(), 2);
     assert_eq!(mir.functions[1].ret, Ty::I64);
-    let ir = lk_aot_codegen::render_module(&mir);
-    assert!(ir.contains("define i64 @lk_fn_1(i64 %v0, i64 %v1)"), "{ir}");
-    assert!(ir.contains("call i64 @lk_fn_1(i64 %v"), "{ir}");
     // The callee body adds its two params and returns the sum.
-    assert!(ir.contains("add i64 %v0, %v1"), "{ir}");
 }
 
 /// `["a","b","c"].join("-")` — a constant `List<str>` materializes a str-list
@@ -297,9 +291,6 @@ fn lowers_str_list_join() {
     );
     let mir = lower(&art).expect("str list + join lowers");
     assert_eq!(lk_aot_mir::validate(&mir), Ok(()));
-    let ir = lk_aot_codegen::render_module(&mir);
-    assert_eq!(ir.matches("call void @lkrt_lklist_str_push(ptr").count(), 3, "{ir}");
-    assert!(ir.contains("call ptr @lkrt_lklist_str_join(ptr"), "{ir}");
 }
 
 /// `2 in xs` (`Contains a=dst b=needle c=haystack`) lowers to the list membership
@@ -330,9 +321,6 @@ fn lowers_in_operator() {
     );
     let mir = lower(&art).expect("in-operator lowers");
     assert_eq!(lk_aot_mir::validate(&mir), Ok(()));
-    let ir = lk_aot_codegen::render_module(&mir);
-    assert!(ir.contains("call i64 @lkrt_lklist_i64_contains(ptr"), "{ir}");
-    assert!(ir.contains("icmp ne i64"), "narrowed to bool: {ir}");
 }
 
 /// A defined-but-never-called function (here with an unsupported out-of-range
@@ -412,9 +400,6 @@ fn monomorphizes_f64_parameter() {
     assert_eq!(lk_aot_mir::validate(&mir), Ok(()));
     assert_eq!(mir.functions[1].params[0].1, Ty::F64);
     assert_eq!(mir.functions[1].ret, Ty::F64);
-    let ir = lk_aot_codegen::render_module(&mir);
-    assert!(ir.contains("define double @lk_fn_1(double %v0)"), "{ir}");
-    assert!(ir.contains("call double @lk_fn_1(double %v"), "{ir}");
 }
 
 /// `let xs = [10,20,30]; return xs.len();` — a constant `List<i64>` materialized
@@ -445,10 +430,6 @@ fn lowers_const_list_len() {
     let mir = lower(&art).expect("lowers");
     assert_eq!(lk_aot_mir::validate(&mir), Ok(()));
     assert_eq!(mir.functions[0].ret, Ty::I64);
-    let ir = lk_aot_codegen::render_module(&mir);
-    assert!(ir.contains("call ptr @lkrt_lklist_i64_new()"), "{ir}");
-    assert!(ir.contains("call void @lkrt_lklist_i64_push(ptr"), "{ir}");
-    assert!(ir.contains("call i64 @lkrt_lklist_i64_len(ptr"), "{ir}");
 }
 
 /// `let xs=[10,20,30]; return xs[0];` — a provably in-range constant index on a
@@ -479,7 +460,6 @@ fn lowers_const_inbounds_index() {
     );
     let mir = lower(&art).expect("lowers");
     assert_eq!(lk_aot_mir::validate(&mir), Ok(()));
-    assert!(lk_aot_codegen::render_module(&mir).contains("call i64 @lkrt_lklist_i64_at(ptr"));
 }
 
 /// `let xs=[10]; xs.push(20); xs.push(30); return xs[2];` — in-place push grows
@@ -510,13 +490,6 @@ fn lowers_list_push_then_index() {
     );
     let mir = lower(&art).expect("lowers");
     assert_eq!(lk_aot_mir::validate(&mir), Ok(()));
-    let ir = lk_aot_codegen::render_module(&mir);
-    assert_eq!(
-        ir.matches("call void @lkrt_lklist_i64_push(ptr").count(),
-        3,
-        "1 init + 2 pushes: {ir}"
-    );
-    assert!(ir.contains("call i64 @lkrt_lklist_i64_at(ptr"), "{ir}");
 }
 
 /// `let xs=[10,20,30]; xs[1]=99; return xs[1];` — a store lowers to the
@@ -551,10 +524,7 @@ fn lowers_set_index() {
     );
     let mir = lower(&art).expect("lowers set + read");
     assert_eq!(lk_aot_mir::validate(&mir), Ok(()));
-    let ir = lk_aot_codegen::render_module(&mir);
-    assert!(ir.contains("call void @lkrt_lklist_i64_set(ptr"), "{ir}");
     // The read after the store is provably in range → clean `at`, not a Maybe.
-    assert!(ir.contains("call i64 @lkrt_lklist_i64_at(ptr"), "{ir}");
 }
 
 /// A dynamic index of an `f64` list produces a `MaybeF64`; consumed by a return
@@ -586,12 +556,6 @@ fn dynamic_f64_index_lowers_to_maybe_f64() {
     );
     let mir = lower(&art).expect("f64 dynamic index lowers");
     assert_eq!(lk_aot_mir::validate(&mir), Ok(()));
-    let ir = lk_aot_codegen::render_module(&mir);
-    assert!(
-        ir.contains("call { double, i64 } @lkrt_lklist_f64_get_pair(ptr"),
-        "{ir}"
-    );
-    assert!(ir.contains("@lk_f64_fmt"), "prints f64 element on present: {ir}");
 }
 
 /// The `str` analogue of the dynamic-index `Maybe` model: a non-constant index
@@ -623,9 +587,6 @@ fn dynamic_str_index_lowers_to_maybe_str() {
     );
     let mir = lower(&art).expect("str dynamic index lowers");
     assert_eq!(lk_aot_mir::validate(&mir), Ok(()));
-    let ir = lk_aot_codegen::render_module(&mir);
-    assert!(ir.contains("call { ptr, i64 } @lkrt_lklist_str_get_pair(ptr"), "{ir}");
-    assert!(ir.contains("@lk_str_fmt"), "prints str element on present: {ir}");
 }
 
 /// Fused `acc += list[index]` (`AddListInt`): with a provably in-range constant
@@ -657,12 +618,6 @@ fn lowers_add_list_int() {
     );
     let mir = lower(&art).expect("lowers AddListInt");
     assert_eq!(lk_aot_mir::validate(&mir), Ok(()));
-    let ir = lk_aot_codegen::render_module(&mir);
-    assert!(
-        ir.contains("call i64 @lkrt_lklist_i64_at(ptr"),
-        "in-range element folds to at: {ir}"
-    );
-    assert!(ir.contains("add i64"), "{ir}");
 }
 
 /// `let m = {"a": 7}; return m["a"];` — a constant `Map<str,i64>` materializes a
@@ -693,13 +648,6 @@ fn lowers_str_map_const_and_get() {
     let mir = lower(&art).expect("map const + get lowers");
     assert_eq!(mir.globals, vec!["a".to_string()], "key interned once");
     assert_eq!(lk_aot_mir::validate(&mir), Ok(()));
-    let ir = lk_aot_codegen::render_module(&mir);
-    assert!(ir.contains("call ptr @lkrt_lkmap_lit_new()"), "{ir}");
-    assert!(ir.contains("call ptr @lkrt_lkmap_lit_finish_str_i64(ptr"), "{ir}");
-    assert!(
-        ir.contains("call { i64, i64 } @lkrt_lkmap_str_i64_get_pair(ptr"),
-        "{ir}"
-    );
 }
 
 /// `if (m[k] == nil)` via `BrNotNil` on a map lookup: the `Maybe`'s present bit
@@ -734,9 +682,6 @@ fn lowers_nil_branch_on_maybe() {
     );
     let mir = lower(&art).expect("nil-branch on maybe lowers");
     assert_eq!(lk_aot_mir::validate(&mir), Ok(()));
-    let ir = lk_aot_codegen::render_module(&mir);
-    assert!(ir.contains("extractvalue { i64, i64 }"), "reads present bit: {ir}");
-    assert!(ir.contains("br i1"), "conditional branch: {ir}");
 }
 
 /// `if (x % 4 == 0) { return 1 } else { return 0 }` via the fused
@@ -761,10 +706,6 @@ fn lowers_fused_mod_zero_branch() {
     );
     let mir = lower(&art).expect("fused mod-zero branch lowers");
     assert_eq!(lk_aot_mir::validate(&mir), Ok(()));
-    let ir = lk_aot_codegen::render_module(&mir);
-    assert!(ir.contains("@lkrt_i64_mod_checked"), "guarded modulo: {ir}");
-    assert!(ir.contains("icmp ne i64"), "compare to zero: {ir}");
-    assert!(ir.contains("br i1"), "conditional branch: {ir}");
 }
 
 /// `if (x == 3) { return 100 } else { return 0 }` via the fused `BrNeIntI4`
@@ -791,9 +732,6 @@ fn lowers_fused_ne_immediate_branch() {
     );
     let mir = lower(&art).expect("fused ne-branch lowers");
     assert_eq!(lk_aot_mir::validate(&mir), Ok(()));
-    let ir = lk_aot_codegen::render_module(&mir);
-    assert!(ir.contains("icmp ne i64"), "fused != immediate compare: {ir}");
-    assert!(ir.contains("br i1"), "conditional branch: {ir}");
 }
 
 /// A returned `f64` prints via `lkrt_f64_to_str` (Rust `to_string`, the VM's exact
@@ -812,12 +750,7 @@ fn float_return_uses_display_helper() {
         3,
     );
     let mir = lower(&art).expect("float return lowers");
-    let ir = lk_aot_codegen::render_module(&mir);
-    assert!(
-        ir.contains("call ptr @lkrt_f64_to_str(double"),
-        "float return uses display helper: {ir}"
-    );
-    assert!(!ir.contains("@lk_f64_fmt, double"), "not the %g path: {ir}");
+    assert_eq!(lk_aot_mir::validate(&mir), Ok(()));
 }
 
 /// `"n=${n}"` — numeric interpolation lowers `ConcatString` with an `I64` operand
@@ -843,11 +776,8 @@ fn lowers_concat_string_int_display() {
     );
     let mir = lower(&art).expect("ConcatString with int display lowers");
     assert_eq!(lk_aot_mir::validate(&mir), Ok(()));
-    let ir = lk_aot_codegen::render_module(&mir);
     // The int suffix fuses into a single concat_i64 call — no intermediate
     // display string is materialized (or freed).
-    assert!(ir.contains("call ptr @lkrt_str_concat_i64(ptr"), "fused concat: {ir}");
-    assert!(!ir.contains("call ptr @lkrt_i64_to_str(i64"), "no suffix temp: {ir}");
 }
 
 /// `"${a}-${b}"` — string interpolation of string vars lowers `ConcatN` to a
@@ -874,9 +804,7 @@ fn lowers_concat_n_strings() {
     );
     let mir = lower(&art).expect("ConcatN of strings lowers");
     assert_eq!(lk_aot_mir::validate(&mir), Ok(()));
-    let ir = lk_aot_codegen::render_module(&mir);
     // 3 elements → 2 chained concats.
-    assert_eq!(ir.matches("call ptr @lkrt_str_concat(ptr").count(), 2, "{ir}");
 }
 
 /// `a + b` on two strings is concatenation (the generic `AddInt` opcode) →
@@ -901,10 +829,7 @@ fn lowers_string_concat() {
     );
     let mir = lower(&art).expect("string concat lowers");
     assert_eq!(lk_aot_mir::validate(&mir), Ok(()));
-    let ir = lk_aot_codegen::render_module(&mir);
-    assert!(ir.contains("call ptr @lkrt_str_concat(ptr"), "{ir}");
     // The concat result is a Str, printed via %s on return.
-    assert!(ir.contains("@printf(ptr @lk_str_fmt, ptr"), "{ir}");
 }
 
 /// `"hi" == "hi"` — string equality via the generic `CmpInt` opcode on two `Str`
@@ -929,9 +854,6 @@ fn lowers_string_equality() {
     );
     let mir = lower(&art).expect("string equality lowers");
     assert_eq!(lk_aot_mir::validate(&mir), Ok(()));
-    let ir = lk_aot_codegen::render_module(&mir);
-    assert!(ir.contains("call i64 @lkrt_str_cmp(ptr"), "{ir}");
-    assert!(ir.contains("icmp eq i64"), "compare str_cmp result to 0: {ir}");
 }
 
 /// `!(x > 3)` — logical `Not` on a `Bool` lowers to `xor i1 …, true`.
@@ -950,8 +872,6 @@ fn lowers_logical_not() {
     );
     let mir = lower(&art).expect("logical not lowers");
     assert_eq!(lk_aot_mir::validate(&mir), Ok(()));
-    let ir = lk_aot_codegen::render_module(&mir);
-    assert!(ir.contains("xor i1"), "{ir}");
 }
 
 /// `DivFloat` (and the other float ops) coerce an `I64` operand to `F64` (the VM
@@ -975,9 +895,6 @@ fn float_arith_coerces_int_operand() {
     );
     let mir = lower(&art).expect("float div with int operand lowers");
     assert_eq!(lk_aot_mir::validate(&mir), Ok(()));
-    let ir = lk_aot_codegen::render_module(&mir);
-    assert!(ir.contains("sitofp i64"), "int operand widened to double: {ir}");
-    assert!(ir.contains("@lkrt_f64_div_checked(double"), "{ir}");
 }
 
 /// An empty `{}` used with an int-index store is typed int-keyed by lookahead:
@@ -1007,18 +924,8 @@ fn empty_map_int_key_lookahead() {
     );
     let mir = lower(&art).expect("empty int-key map lowers via lookahead");
     assert_eq!(lk_aot_mir::validate(&mir), Ok(()));
-    let ir = lk_aot_codegen::render_module(&mir);
-    assert!(
-        ir.contains("call ptr @lkrt_lkmap_i64_i64_new()"),
-        "empty {{}} inferred int-keyed: {ir}"
-    );
-    assert!(ir.contains("call void @lkrt_lkmap_i64_i64_set(ptr"), "{ir}");
     // `str_i64` symbols appear in the prelude declarations, but no string-keyed
     // map is *called* here.
-    assert!(
-        !ir.contains("call ptr @lkrt_lkmap_str_i64_new()"),
-        "not string-keyed: {ir}"
-    );
 }
 
 /// `let m = {1: 1.5}; return m[1];` — a constant int-keyed f64-valued map
@@ -1048,12 +955,6 @@ fn lowers_int_f64_map() {
     );
     let mir = lower(&art).expect("int-f64 map lowers");
     assert_eq!(lk_aot_mir::validate(&mir), Ok(()));
-    let ir = lk_aot_codegen::render_module(&mir);
-    assert!(ir.contains("call ptr @lkrt_lkmap_lit_finish_i64_f64(ptr"), "{ir}");
-    assert!(
-        ir.contains("call { double, i64 } @lkrt_lkmap_i64_f64_get_pair(ptr"),
-        "{ir}"
-    );
 }
 
 /// `let m = {"a": 1.5}; return m["a"];` — a constant str-keyed f64-valued map
@@ -1082,13 +983,6 @@ fn lowers_str_f64_map() {
     );
     let mir = lower(&art).expect("str-f64 map lowers");
     assert_eq!(lk_aot_mir::validate(&mir), Ok(()));
-    let ir = lk_aot_codegen::render_module(&mir);
-    assert!(ir.contains("call ptr @lkrt_lkmap_lit_new()"), "{ir}");
-    assert!(ir.contains("call ptr @lkrt_lkmap_lit_finish_str_f64(ptr"), "{ir}");
-    assert!(
-        ir.contains("call { double, i64 } @lkrt_lkmap_str_f64_get_pair(ptr"),
-        "{ir}"
-    );
 }
 
 /// `let m = {1:10, 2:20}; return m[2];` — a constant int-keyed map materializes an
@@ -1118,15 +1012,7 @@ fn lowers_int_key_map() {
     );
     let mir = lower(&art).expect("int-key map lowers");
     assert_eq!(lk_aot_mir::validate(&mir), Ok(()));
-    let ir = lk_aot_codegen::render_module(&mir);
     // The literal builds through the lit protocol (VM-order mirror).
-    assert!(ir.contains("call ptr @lkrt_lkmap_lit_new()"), "{ir}");
-    assert!(ir.contains("call void @lkrt_lkmap_lit_set(ptr"), "{ir}");
-    assert!(ir.contains("call ptr @lkrt_lkmap_lit_finish_i64_i64(ptr"), "{ir}");
-    assert!(
-        ir.contains("call { i64, i64 } @lkrt_lkmap_i64_i64_get_pair(ptr"),
-        "{ir}"
-    );
 }
 
 /// A returned string literal materializes an interned global and prints via the
@@ -1150,9 +1036,6 @@ fn lowers_string_constant_return() {
     let mir = lower(&art).expect("string constant lowers");
     assert_eq!(mir.globals, vec!["hello".to_string()]);
     assert_eq!(lk_aot_mir::validate(&mir), Ok(()));
-    let ir = lk_aot_codegen::render_module(&mir);
-    assert!(ir.contains("@lk_str_0"), "materializes a string global: {ir}");
-    assert!(ir.contains("@printf(ptr @lk_str_fmt, ptr"), "prints via %s: {ir}");
 }
 
 /// Identical string constants intern to a single shared global.
@@ -1187,8 +1070,6 @@ fn dead_string_load_does_not_block_lowering() {
     );
     let mir = lower(&art).expect("dead string load lowers");
     assert_eq!(lk_aot_mir::validate(&mir), Ok(()));
-    let ir = lk_aot_codegen::render_module(&mir);
-    assert!(ir.contains("ret i64 42") || ir.contains(" 42"), "{ir}");
 }
 
 /// An out-of-range constant index rejects (falls back) — never risks the VM's
@@ -1221,15 +1102,8 @@ fn out_of_range_index_lowers_to_maybe_returning_nil() {
     );
     let mir = lower(&art).expect("out-of-range index lowers via Maybe");
     assert_eq!(lk_aot_mir::validate(&mir), Ok(()));
-    let ir = lk_aot_codegen::render_module(&mir);
-    assert!(ir.contains("call { i64, i64 } @lkrt_lklist_i64_get_pair(ptr"), "{ir}");
     // Present branch prints the element; absent branch prints nothing (just
     // the arena cleanup + `ret`), matching the VM's silent top-level nil return.
-    assert!(ir.contains("extractvalue { i64, i64 }"), "{ir}");
-    assert!(
-        ir.contains("none:\n  call void @lkrt_cleanup()\n  ret i32 0"),
-        "absent branch prints nothing: {ir}"
-    );
 }
 
 #[test]
@@ -1246,9 +1120,6 @@ fn lowers_straightline_integer_division() {
     );
     let mir = lower(&art).expect("lowers");
     assert_eq!(lk_aot_mir::validate(&mir), Ok(()));
-    let ir = lk_aot_codegen::render_module(&mir);
-    assert!(ir.contains("call i64 @lkrt_i64_div_checked"));
-    assert!(!ir.contains("sdiv"));
 }
 
 #[test]
@@ -1294,7 +1165,6 @@ fn lowers_if_else_merge_with_phi() {
         .find(|b| matches!(b.term, Term::Ret(Some(_))))
         .unwrap();
     assert_eq!(merge.params.len(), 1, "join block carries one phi param for r3");
-    assert!(lk_aot_codegen::render_module(&mir).contains("phi i64 ["));
 }
 
 #[test]
@@ -1313,9 +1183,6 @@ fn lowers_fused_compare_branch() {
     );
     let mir = lower(&art).expect("lowers");
     assert_eq!(lk_aot_mir::validate(&mir), Ok(()));
-    let ir = lk_aot_codegen::render_module(&mir);
-    assert!(ir.contains("icmp sle i64"), "{ir}");
-    assert!(ir.contains("br i1 "));
 }
 
 /// `s=0; i=1; while (i <= 5) { s += i; i += 1; } return s;` — a real loop with a
@@ -1340,8 +1207,6 @@ fn lowers_counted_loop_with_backedge() {
     assert_eq!(lk_aot_mir::validate(&mir), Ok(()));
     // The loop header (block containing the fused test) carries phi params for
     // the loop-carried s and i.
-    let ir = lk_aot_codegen::render_module(&mir);
-    assert!(ir.contains("phi i64 ["), "loop header needs phis: {ir}");
 }
 
 #[test]
@@ -1359,7 +1224,6 @@ fn lowers_float_arithmetic() {
     let mir = lower(&art).expect("lowers");
     assert_eq!(lk_aot_mir::validate(&mir), Ok(()));
     assert_eq!(mir.functions[0].ret, Ty::F64);
-    assert!(lk_aot_codegen::render_module(&mir).contains("fadd double"));
 }
 
 #[test]
@@ -1378,7 +1242,6 @@ fn int_arith_dispatches_to_float_on_float_operands() {
     let mir = lower(&art).expect("lowers");
     assert_eq!(lk_aot_mir::validate(&mir), Ok(()));
     assert_eq!(mir.functions[0].ret, Ty::F64);
-    assert!(lk_aot_codegen::render_module(&mir).contains("fadd double"));
 }
 
 #[test]
@@ -1402,7 +1265,4 @@ fn int_add_coerces_mixed_operands() {
     );
     let mir = lower(&art).expect("lowers");
     assert_eq!(mir.functions[0].ret, Ty::F64);
-    let ir = lk_aot_codegen::render_module(&mir);
-    assert!(ir.contains("sitofp i64"), "{ir}");
-    assert!(ir.contains("fadd double"), "{ir}");
 }

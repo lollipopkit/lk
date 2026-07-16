@@ -22,8 +22,6 @@ use lk_core::{
         execute_program_with_ctx_and_limits, vm_runtime_metrics_reset, vm_runtime_metrics_snapshot,
     },
 };
-#[cfg(feature = "llvm")]
-use lk_llvm::{LlvmBackendOptions, OptLevel};
 
 use anyhow::Context;
 
@@ -71,35 +69,12 @@ struct CliArgs {
     file: Option<PathBuf>,
 }
 
-#[cfg(feature = "llvm")]
-#[derive(Debug, Clone, Copy, ValueEnum)]
-enum OptLevelCli {
-    O0,
-    O1,
-    O2,
-    O3,
-}
-
-#[cfg(feature = "llvm")]
-impl From<OptLevelCli> for OptLevel {
-    fn from(value: OptLevelCli) -> Self {
-        match value {
-            OptLevelCli::O0 => Self::None,
-            OptLevelCli::O1 => Self::O1,
-            OptLevelCli::O2 => Self::O2,
-            OptLevelCli::O3 => Self::O3,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub(crate) enum CompileMode {
     /// Emit a `.lkm` bytecode module. This is an INTERNAL artifact (version-locked
     /// to this build, like Python's `.pyc`), not a distribution format — ship
     /// source or a native executable instead.
     Bytecode,
-    /// Emit LLVM IR (`.ll`).
-    Llvm,
     /// Emit a native executable (default).
     Exe,
 }
@@ -112,23 +87,7 @@ enum Commands {
         #[arg(value_name = "ARGS", num_args = 0..=2)]
         positional: Vec<String>,
         #[cfg(feature = "llvm")]
-        /// Optimisation level for LLVM backend
-        #[cfg(feature = "llvm")]
-        #[arg(long, value_enum, default_value_t = OptLevelCli::O2)]
-        opt_level: OptLevelCli,
-        #[cfg(feature = "llvm")]
-        /// Skip running LLVM optimisation passes even if opt is available
-        #[cfg(feature = "llvm")]
-        #[arg(long)]
-        skip_opt: bool,
-        #[cfg(feature = "llvm")]
-        /// Overrides LLVM target triple（默认自动推断）
-        #[cfg(feature = "llvm")]
-        #[arg(long)]
-        target_triple: Option<String>,
-        #[cfg(feature = "llvm")]
         /// 输出文件路径（针对默认 exe 目标指定最终可执行文件路径）
-        #[cfg(feature = "llvm")]
         #[arg(long)]
         output: Option<PathBuf>,
     },
@@ -435,12 +394,6 @@ fn main() -> anyhow::Result<()> {
             Commands::Compile {
                 positional,
                 #[cfg(feature = "llvm")]
-                    opt_level: opt_level_cli,
-                #[cfg(feature = "llvm")]
-                skip_opt,
-                #[cfg(feature = "llvm")]
-                target_triple,
-                #[cfg(feature = "llvm")]
                     output: output_arg,
             } => {
                 let (pos_target, safe) = split_compile_args(&positional)?;
@@ -466,37 +419,14 @@ fn main() -> anyhow::Result<()> {
                         compile_instr_module(&safe)?;
                         return Ok(());
                     }
-                    CompileMode::Llvm => {
-                        #[cfg(not(feature = "llvm"))]
-                        anyhow::bail!(
-                            "LLVM backend disabled at build time; rebuild with `--features llvm` to use `llvm` target"
-                        );
-                        #[cfg(feature = "llvm")]
-                        {
-                            let options = LlvmBackendOptions {
-                                module_name: module_name_from_path(&safe),
-                                target_triple,
-                                run_optimizations: !skip_opt,
-                                opt_level: opt_level_cli.into(),
-                            };
-                            compile_llvm_ir(&safe, options)?;
-                            return Ok(());
-                        }
-                    }
                     CompileMode::Exe => {
                         #[cfg(not(feature = "llvm"))]
                         anyhow::bail!(
-                            "LLVM backend disabled at build time; rebuild with `--features llvm` to compile native executables"
+                            "native backend disabled at build time; rebuild with `--features llvm` to compile native executables"
                         );
                         #[cfg(feature = "llvm")]
                         {
-                            let options = LlvmBackendOptions {
-                                module_name: module_name_from_path(&safe),
-                                target_triple,
-                                run_optimizations: !skip_opt,
-                                opt_level: opt_level_cli.into(),
-                            };
-                            compile_executable(&safe, output.as_deref(), options)?;
+                            compile_executable(&safe, output.as_deref())?;
                             return Ok(());
                         }
                     }

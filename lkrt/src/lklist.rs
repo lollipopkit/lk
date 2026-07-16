@@ -623,6 +623,29 @@ pub unsafe extern "C" fn lkrt_lklist_f64_get_pair(handle: *mut c_void, index: i6
     }
 }
 
+/// Out-pointer form of [`lkrt_lklist_f64_get_pair`] for the Cranelift backend:
+/// a `{double, i64}` returned *by value* is a mixed-class 16-byte aggregate
+/// whose registers differ across targets (x86-64 `xmm0:rax`, AArch64 `x0:x1`),
+/// which Cranelift's scalar-only signatures cannot model portably. Writing the
+/// two components through pointers sidesteps the struct-return ABI entirely.
+///
+/// # Safety
+/// `handle` as in [`lkrt_lklist_f64_get_pair`]; `out_value`/`out_present` must be
+/// valid, aligned, writable pointers.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_lklist_f64_get_out(
+    handle: *mut c_void,
+    index: i64,
+    out_value: *mut f64,
+    out_present: *mut i64,
+) {
+    let m = unsafe { lkrt_lklist_f64_get_pair(handle, index) };
+    unsafe {
+        *out_value = m.value;
+        *out_present = m.present;
+    }
+}
+
 /// Unwraps a `Maybe<f64>` in a scalar context, aborting if absent (see
 /// [`lkrt_maybe_i64_unwrap`]).
 #[unsafe(no_mangle)]
