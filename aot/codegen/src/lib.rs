@@ -11,6 +11,8 @@
 //! arrive as [`lk_aot_mir::Inst::Call`]s, so no new codegen arms are needed for
 //! them beyond declaring their ABI symbols.
 
+pub mod clif;
+
 use std::fmt::Write as _;
 
 use lk_aot_abi::{ABI_FUNCTIONS, AbiType};
