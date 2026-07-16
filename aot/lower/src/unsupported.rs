@@ -50,6 +50,12 @@ pub enum Unsupported {
     BadTarget {
         pc: usize,
     },
+    /// The lowered module failed `lk_aot_mir::validate` — an edge-case shape
+    /// combination (e.g. a Tier 1 hybrid rerun re-lowering a caller against a
+    /// now-bridged callee) produced structurally-invalid MIR. Rather than emit
+    /// it (codegen would reject it as an internal error), the module is treated
+    /// as not-natively-lowerable so the caller falls back to the VM.
+    InvalidMir,
 }
 
 impl Unsupported {
@@ -84,6 +90,7 @@ impl Unsupported {
             }
             Unsupported::ReturnTypeConflict => "returns disagree on the value type".to_string(),
             Unsupported::BadTarget { pc } => format!("a branch at pc {pc} targets an out-of-range pc"),
+            Unsupported::InvalidMir => "the lowered module did not pass MIR validation".to_string(),
         }
     }
 }
