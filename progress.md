@@ -1093,3 +1093,17 @@ B 翻 LK_AOT_HYBRID 默认 → C v2 桥接返回值,用户裁决全做)。
   持久 + missing→None)· clippy/fmt 0。
 - **FFI ergonomic 全线收官**:转换层双向 · 高层 host fn · 命名空间模块 ·
   rooted 值交换。C-ABI 不透明 handle(`lk.h`)留档待需。
+
+## P2 · goroutine 死锁守卫(opt-in 超时,2026-07-16)
+
+- **修 hang-forever 缺陷**:goroutine 相互阻塞(如 `recv` 一个永不写也不 close
+  的 channel)默认永久挂死。精确「全阻塞」检测在 tokio 无锁调度器上竞态易假阳性
+  (A 判 blocked==live 瞬间 B 的 recv 可能刚被唤醒未减计数)—— 故采**稳健的
+  阻塞超时守卫**而非精确检测。
+- **core**:`Runtime` 加 `deadlock_timeout`(env `LK_DEADLOCK_TIMEOUT_MS`,默认
+  关)+ `guard_blocking(label, fut)`(超时→可捕获 anyhow 错误)+ `with_deadlock_timeout`
+  程序化 setter(测试/宿主)。**stdlib**:recv/send/select 三处阻塞点套 guard。
+- 验证:core rt 2 单测(pending future 超时 + 默认关直通)· stdlib 92 + spawn 12
+  + select 13 无回归 · **e2e**:`LK_DEADLOCK_TIMEOUT_MS=300` 下死锁 recv 0.31s
+  抛「possible deadlock」被 try 捕获(非挂死),默认关时正常阻塞语义不变。
+  docs/concurrency.md 补「死锁守卫」小节。

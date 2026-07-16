@@ -97,6 +97,20 @@ pub struct Runtime {
     next_task_id: Arc<Mutex<u64>>,
     next_channel_id: Arc<Mutex<u64>>,
     tokio_runtime: tokio::runtime::Runtime,
+    /// Optional cap on how long a single blocking channel op (`recv`/`send`/
+    /// `select`) may park. When set, exceeding it raises a **catchable** error
+    /// instead of hanging forever — the deadlock guard (opt-in via
+    /// `LK_DEADLOCK_TIMEOUT_MS`). Exact all-goroutines-blocked detection is
+    /// unreliable on tokio's scheduler, so a bounded-blocking policy is the
+    /// robust alternative. `None` = block indefinitely (default).
+    deadlock_timeout: Option<std::time::Duration>,
+}
+
+/// Read the opt-in blocking deadlock guard from `LK_DEADLOCK_TIMEOUT_MS`
+/// (milliseconds; `0` or unset disables it).
+fn deadlock_timeout_from_env() -> Option<std::time::Duration> {
+    let ms: u64 = std::env::var("LK_DEADLOCK_TIMEOUT_MS").ok()?.parse().ok()?;
+    (ms > 0).then(|| std::time::Duration::from_millis(ms))
 }
 
 impl Runtime {
@@ -113,6 +127,7 @@ impl Runtime {
             next_task_id: Arc::new(Mutex::new(1)),
             next_channel_id: Arc::new(Mutex::new(1)),
             tokio_runtime,
+            deadlock_timeout: deadlock_timeout_from_env(),
         })
     }
 
@@ -129,7 +144,31 @@ impl Runtime {
             next_task_id: Arc::new(Mutex::new(1)),
             next_channel_id: Arc::new(Mutex::new(1)),
             tokio_runtime,
+            deadlock_timeout: deadlock_timeout_from_env(),
         })
+    }
+
+    /// Override the blocking deadlock-guard budget (bypassing the env default).
+    /// Mainly for tests and hosts that configure the guard programmatically.
+    pub fn with_deadlock_timeout(mut self, timeout: Option<std::time::Duration>) -> Self {
+        self.deadlock_timeout = timeout;
+        self
+    }
+
+    /// Run a blocking channel operation under the deadlock guard: if a
+    /// `LK_DEADLOCK_TIMEOUT_MS` budget is set and `op` parks longer than it,
+    /// raise a catchable error naming `label` rather than hanging forever.
+    pub async fn guard_blocking<T>(&self, label: &str, op: impl core::future::Future<Output = Result<T>>) -> Result<T> {
+        match self.deadlock_timeout {
+            Some(budget) => match tokio::time::timeout(budget, op).await {
+                Ok(result) => result,
+                Err(_) => Err(anyhow!(
+                    "{label} blocked for over {}ms — possible deadlock (LK_DEADLOCK_TIMEOUT_MS)",
+                    budget.as_millis()
+                )),
+            },
+            None => op.await,
+        }
     }
 
     /// Spawn a new task
@@ -679,5 +718,34 @@ impl SelectOperation {
 
         let (result, _index, _remaining) = select_all(futures).await;
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn deadlock_guard_times_out_a_stuck_op() {
+        let rt = Runtime::new_current_thread()
+            .expect("runtime")
+            .with_deadlock_timeout(Some(Duration::from_millis(50)));
+        // A future that never resolves stands in for a `recv` with no possible sender.
+        let stuck = core::future::pending::<Result<()>>();
+        let err = rt
+            .block_on(rt.guard_blocking("recv", stuck))
+            .expect_err("guard must time out a stuck op");
+        assert!(err.to_string().contains("possible deadlock"), "{err}");
+    }
+
+    #[test]
+    fn deadlock_guard_passes_through_when_unset() {
+        let rt = Runtime::new_current_thread().expect("runtime");
+        // No budget (default): a ready op returns normally, never times out.
+        let value = rt
+            .block_on(rt.guard_blocking("recv", async { Ok::<_, anyhow::Error>(7) }))
+            .expect("ready op");
+        assert_eq!(value, 7);
     }
 }
