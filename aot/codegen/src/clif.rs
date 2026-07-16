@@ -6,11 +6,17 @@
 //! IR caught only downstream. Being SSA-with-block-params, the MIR maps almost
 //! 1:1 onto Cranelift blocks/params/branches.
 //!
-//! Phase 0 scope (the strangler slice): the scalar subset (int/float const and
-//! arithmetic, comparisons, widen/narrow, select, boolean ops) plus block-param
-//! control flow (`Br`/`CondBr`/`Ret`/`Abort`) of a non-entry function. Guarded
-//! divides, ABI calls, strings, and the entry/`main` shape follow in later
-//! phases; anything outside the slice returns [`ClifError::Unsupported`].
+//! Current slice (the strangler front): the scalar subset (int/float const and
+//! arithmetic, comparisons, widen/narrow, select, boolean ops), block-param
+//! control flow (`Br`/`CondBr`/`Ret`/`Abort`), guarded div/mod, ABI runtime
+//! calls, string constants and mutable globals, direct calls, the entry/`main`
+//! shape (with top-level auto-print + arena cleanup), and the `{i64,i64}`
+//! carriers — `Dyn` and `Maybe*` flow as register pairs ([`Slot`]), so maps,
+//! dynamic container reads (`*_get_pair`), and unwraps lower. Still outside the
+//! slice — anything returning [`ClifError::Unsupported`]: the Tier 1 VM bridge
+//! (`CallVm`), protected calls (`TryCall`/setjmp), trait dispatch, and the
+//! `{double,i64}` float-carrier `get_pair`s (whose by-value return diverges from
+//! the two-scalar ABI on AArch64).
 
 use std::collections::HashMap;
 
@@ -20,7 +26,7 @@ use cranelift_codegen::isa::{CallConv, TargetIsa};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_module::{DataDescription, DataId, FuncId as ClifFuncId, Linkage, Module, ModuleError};
 use cranelift_object::{ObjectBuilder, ObjectModule};
-use lk_aot_mir::{CmpOp, Const, FloatBinOp, FuncId, Inst, IntBinOp, MirFunction, MirModule, Term, Ty};
+use lk_aot_mir::{CmpOp, Const, FloatBinOp, FuncId, Inst, IntBinOp, MirFunction, MirModule, Term, Ty, ValueId};
 
 /// Why a MIR shape is not (yet) lowerable through the Cranelift path.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,6 +78,9 @@ impl Helpers {
 struct ModuleCtx<'a> {
     module: &'a mut dyn Module,
     fn_ids: &'a HashMap<FuncId, ClifFuncId>,
+    /// Intra-module function return types, for binding a [`Inst::CallFn`] result
+    /// as one value or a `{i64,i64}` pair.
+    fn_rets: &'a HashMap<FuncId, Ty>,
     helpers: &'a Helpers,
     /// Declared ABI runtime symbols, cached by C symbol name (declared lazily so
     /// a program that never calls one does not force its — possibly `DynVal` —
@@ -85,8 +94,8 @@ struct ModuleCtx<'a> {
 
 impl ModuleCtx<'_> {
     /// Declare (once) an ABI runtime function by its schema entry and return its
-    /// Cranelift id. Rejects `DynVal`-carrying signatures (the `{i64,i64}`
-    /// carrier is Phase 2b).
+    /// Cranelift id. A `DynVal` param/return expands to a register pair (see
+    /// [`abi_ty_clif_parts`]).
     fn abi_func(&mut self, abi: &lk_aot_abi::AbiFn) -> Result<ClifFuncId, ClifError> {
         if let Some(id) = self.abi_ids.get(abi.symbol) {
             return Ok(*id);
@@ -94,28 +103,86 @@ impl ModuleCtx<'_> {
         let cc = self.module.isa().default_call_conv();
         let mut sig = Signature::new(cc);
         for p in abi.params {
-            sig.params.push(AbiParam::new(abi_ty_to_clif(*p)?));
+            for t in abi_ty_clif_parts(*p)? {
+                sig.params.push(AbiParam::new(t));
+            }
         }
-        if !matches!(abi.result, lk_aot_abi::AbiType::Nil) {
-            sig.returns.push(AbiParam::new(abi_ty_to_clif(abi.result)?));
+        for t in abi_ty_clif_parts(abi.result)? {
+            sig.returns.push(AbiParam::new(t));
         }
         let id = self.module.declare_function(abi.symbol, Linkage::Import, &sig)?;
         self.abi_ids.insert(abi.symbol, id);
         Ok(id)
     }
+
+    /// Declare (once) an imported `lkrt_*` symbol by explicit signature. Used for
+    /// the carrier `get_pair`/`unwrap` helpers, which live outside the ABI schema
+    /// (their by-value `{value, present}` shapes are not scalar-ABI). Deduped in
+    /// the same `abi_ids` table by symbol name.
+    fn raw_func(
+        &mut self,
+        symbol: &'static str,
+        params: &[types::Type],
+        returns: &[types::Type],
+    ) -> Result<ClifFuncId, ClifError> {
+        if let Some(id) = self.abi_ids.get(symbol) {
+            return Ok(*id);
+        }
+        let cc = self.module.isa().default_call_conv();
+        let mut sig = Signature::new(cc);
+        for t in params {
+            sig.params.push(AbiParam::new(*t));
+        }
+        for t in returns {
+            sig.returns.push(AbiParam::new(*t));
+        }
+        let id = self.module.declare_function(symbol, Linkage::Import, &sig)?;
+        self.abi_ids.insert(symbol, id);
+        Ok(id)
+    }
 }
 
-/// The Cranelift type of an ABI parameter/return. Pointers are pointer-sized;
-/// the `{i64,i64}` `DynVal` carrier is Phase 2b.
-fn abi_ty_to_clif(ty: lk_aot_abi::AbiType) -> Result<types::Type, ClifError> {
+/// The Cranelift component types an ABI parameter/return occupies. Scalars and
+/// pointers are one register; the `DynVal` carrier (`LkDyn {i64 tag, i64
+/// payload}`) is two, passed/returned as a register pair — the two-scalar
+/// lowering of a by-value all-integer 16-byte struct, which matches the C ABI on
+/// both x86-64 (rax:rdx) and AArch64 (x0:x1). `Nil` occupies none.
+fn abi_ty_clif_parts(ty: lk_aot_abi::AbiType) -> Result<Vec<types::Type>, ClifError> {
     use lk_aot_abi::AbiType;
     Ok(match ty {
-        AbiType::I64 => types::I64,
-        AbiType::F64 => types::F64,
-        AbiType::Ptr | AbiType::StrPtr => types::I64,
-        AbiType::Nil => return Err(ClifError::Unsupported("nil ABI operand")),
-        AbiType::DynVal => return Err(ClifError::Unsupported("DynVal {i64,i64} ABI carrier")),
+        AbiType::I64 => vec![types::I64],
+        AbiType::F64 => vec![types::F64],
+        AbiType::Ptr | AbiType::StrPtr => vec![types::I64],
+        AbiType::Nil => vec![],
+        AbiType::DynVal => vec![types::I64, types::I64],
     })
+}
+
+/// A lowered MIR value. Scalars and handles occupy one Cranelift SSA value; the
+/// `{i64,i64}` carriers (`Dyn`, `Maybe*`) occupy a pair — component 0 is the
+/// value/tag, component 1 is the present/payload — matching the two-register
+/// carrier ABI [`abi_ty_clif_parts`] describes.
+#[derive(Clone, Copy)]
+enum Slot {
+    One(Value),
+    Two(Value, Value),
+}
+
+/// The Cranelift component types a MIR value of type `ty` occupies (see [`Slot`]).
+/// `MaybeF64`'s value component is an `F64`; every other carrier component is an
+/// `I64`. `Nil` occupies none.
+fn ty_clif_parts(ty: Ty) -> Result<Vec<types::Type>, ClifError> {
+    Ok(match ty {
+        Ty::Nil => vec![],
+        Ty::Dyn | Ty::MaybeI64 | Ty::MaybeBool | Ty::MaybeStr => vec![types::I64, types::I64],
+        Ty::MaybeF64 => vec![types::F64, types::I64],
+        other => vec![ty_to_clif(other)?],
+    })
+}
+
+/// Whether a MIR type is a two-register `{i64,i64}` carrier (see [`Slot`]).
+fn ty_is_pair(ty: Ty) -> bool {
+    matches!(ty, Ty::Dyn | Ty::MaybeI64 | Ty::MaybeF64 | Ty::MaybeBool | Ty::MaybeStr)
 }
 
 /// Compile a whole [`MirModule`]'s non-entry functions to a native object for
@@ -140,6 +207,7 @@ pub fn compile_module(mir: &MirModule, isa: std::sync::Arc<dyn TargetIsa>) -> Re
     // The entry becomes the exported C `main() -> i32`; the rest are local
     // `lk_fn_N` with their MIR signatures.
     let mut fn_ids = HashMap::new();
+    let mut fn_rets = HashMap::new();
     for func in &mir.functions {
         let (sym, linkage, sig) = if func.id == mir.entry {
             ("main".to_string(), Linkage::Export, main_signature(cc))
@@ -148,6 +216,7 @@ pub fn compile_module(mir: &MirModule, isa: std::sync::Arc<dyn TargetIsa>) -> Re
         };
         let id = module.declare_function(&sym, linkage, &sig)?;
         fn_ids.insert(func.id, id);
+        fn_rets.insert(func.id, func.ret);
     }
     let helpers = Helpers::declare(&mut module)?;
 
@@ -189,6 +258,7 @@ pub fn compile_module(mir: &MirModule, isa: std::sync::Arc<dyn TargetIsa>) -> Re
             let mut mctx = ModuleCtx {
                 module: &mut module,
                 fn_ids: &fn_ids,
+                fn_rets: &fn_rets,
                 helpers: &helpers,
                 abi_ids: &mut abi_ids,
                 str_data: &str_data,
@@ -259,14 +329,17 @@ fn main_signature(call_conv: CallConv) -> Signature {
     sig
 }
 
-/// The Cranelift call signature of a MIR function under `call_conv`.
+/// The Cranelift call signature of a MIR function under `call_conv`. A `Dyn` or
+/// `Maybe*` param/return expands to a register pair (see [`ty_clif_parts`]).
 pub fn signature_of(func: &MirFunction, call_conv: CallConv) -> Result<Signature, ClifError> {
     let mut sig = Signature::new(call_conv);
     for (_, ty) in &func.params {
-        sig.params.push(AbiParam::new(ty_to_clif(*ty)?));
+        for t in ty_clif_parts(*ty)? {
+            sig.params.push(AbiParam::new(t));
+        }
     }
-    if !matches!(func.ret, Ty::Nil) {
-        sig.returns.push(AbiParam::new(ty_to_clif(func.ret)?));
+    for t in ty_clif_parts(func.ret)? {
+        sig.returns.push(AbiParam::new(t));
     }
     Ok(sig)
 }
@@ -297,20 +370,26 @@ fn build_function(
     }
     let entry = lower.blocks[&func.entry];
     builder.append_block_params_for_function_params(entry);
-    // Bind the function-signature params to the entry block's params.
+    // Bind the function-signature params to the entry block's params, consuming
+    // one or two Cranelift params per MIR value (carriers are a pair).
     let entry_params: Vec<Value> = builder.block_params(entry).to_vec();
-    for ((vid, _), value) in func.params.iter().zip(entry_params) {
-        lower.values.insert(*vid, value);
+    let mut cursor = 0;
+    for (vid, ty) in &func.params {
+        lower.bind_params(*vid, *ty, &entry_params, &mut cursor)?;
     }
-    // Non-entry blocks carry the SSA phi params as block params.
+    // Non-entry blocks carry the SSA phi params as block params (each carrier phi
+    // is two Cranelift block params).
     for block in &func.blocks {
         if block.id == func.entry {
             continue;
         }
         let cb = lower.blocks[&block.id];
         for (vid, ty) in &block.params {
-            let value = builder.append_block_param(cb, ty_to_clif(*ty)?);
-            lower.values.insert(*vid, value);
+            let mut parts = Vec::new();
+            for t in ty_clif_parts(*ty)? {
+                parts.push(builder.append_block_param(cb, t));
+            }
+            lower.bind_slot(*vid, &parts)?;
         }
     }
 
@@ -339,7 +418,7 @@ fn resolve_abi(module: &str, name: &str) -> Result<&'static lk_aot_abi::AbiFn, C
 }
 
 struct Lower {
-    values: HashMap<lk_aot_mir::ValueId, Value>,
+    values: HashMap<ValueId, Slot>,
     blocks: HashMap<lk_aot_mir::BlockId, cranelift_codegen::ir::Block>,
     /// This function is the program `main` (`() -> i32`): returns print the
     /// top-level result and `ret 0`.
@@ -349,41 +428,133 @@ struct Lower {
 }
 
 impl Lower {
-    fn v(&self, id: lk_aot_mir::ValueId) -> Result<Value, ClifError> {
+    fn set1(&mut self, id: ValueId, v: Value) {
+        self.values.insert(id, Slot::One(v));
+    }
+
+    fn set2(&mut self, id: ValueId, a: Value, b: Value) {
+        self.values.insert(id, Slot::Two(a, b));
+    }
+
+    fn slot(&self, id: ValueId) -> Result<Slot, ClifError> {
         self.values
             .get(&id)
             .copied()
             .ok_or(ClifError::Unsupported("value used before def"))
     }
 
-    /// Resolve a list of value operands (call arguments).
-    fn args_v(&self, ids: &[lk_aot_mir::ValueId]) -> Result<Vec<Value>, ClifError> {
-        ids.iter().map(|id| self.v(*id)).collect()
+    /// A scalar value — rejects a `{i64,i64}` carrier used where one register was
+    /// expected (a lowering-consistency guard, not a user error).
+    fn v(&self, id: ValueId) -> Result<Value, ClifError> {
+        match self.slot(id)? {
+            Slot::One(v) => Ok(v),
+            Slot::Two(..) => Err(ClifError::Unsupported("carrier value used as scalar")),
+        }
     }
 
-    /// Block-call arguments (branch-passed values become the target block's params).
-    fn block_args(&self, ids: &[lk_aot_mir::ValueId]) -> Result<Vec<BlockArg>, ClifError> {
-        ids.iter().map(|id| Ok(BlockArg::Value(self.v(*id)?))).collect()
+    /// A carrier's `(component0, component1)` — rejects a scalar used as a pair.
+    fn two(&self, id: ValueId) -> Result<(Value, Value), ClifError> {
+        match self.slot(id)? {
+            Slot::Two(a, b) => Ok((a, b)),
+            Slot::One(_) => Err(ClifError::Unsupported("scalar value used as carrier")),
+        }
     }
 
-    /// Import `callee` into the current function and emit a call, binding the
-    /// single return value (if any) to `dst`.
+    /// Flatten a value into its Cranelift components (one for a scalar, two for a
+    /// carrier) — the call-argument / return / block-argument representation.
+    fn parts(&self, id: ValueId) -> Result<Vec<Value>, ClifError> {
+        Ok(match self.slot(id)? {
+            Slot::One(v) => vec![v],
+            Slot::Two(a, b) => vec![a, b],
+        })
+    }
+
+    /// Bind `parts[*cursor..]` to `vid` per `ty`'s width, advancing the cursor.
+    fn bind_params(&mut self, vid: ValueId, ty: Ty, parts: &[Value], cursor: &mut usize) -> Result<(), ClifError> {
+        let n = ty_clif_parts(ty)?.len();
+        let slice = parts
+            .get(*cursor..*cursor + n)
+            .ok_or(ClifError::Unsupported("function param arity mismatch"))?;
+        self.bind_slot(vid, slice)?;
+        *cursor += n;
+        Ok(())
+    }
+
+    /// Bind an already-sliced component list (one or two values) to `vid`.
+    fn bind_slot(&mut self, vid: ValueId, parts: &[Value]) -> Result<(), ClifError> {
+        match parts {
+            [v] => self.set1(vid, *v),
+            [a, b] => self.set2(vid, *a, *b),
+            _ => return Err(ClifError::Unsupported("value arity outside {1,2}")),
+        }
+        Ok(())
+    }
+
+    /// Flatten every operand into its Cranelift components (call arguments).
+    fn args_v(&self, ids: &[ValueId]) -> Result<Vec<Value>, ClifError> {
+        let mut out = Vec::with_capacity(ids.len());
+        for id in ids {
+            out.extend(self.parts(*id)?);
+        }
+        Ok(out)
+    }
+
+    /// Block-call arguments (branch-passed values become the target block's
+    /// params) — a carrier phi passes two args.
+    fn block_args(&self, ids: &[ValueId]) -> Result<Vec<BlockArg>, ClifError> {
+        let mut out = Vec::with_capacity(ids.len());
+        for id in ids {
+            for v in self.parts(*id)? {
+                out.push(BlockArg::Value(v));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Import `callee` and emit a call with pre-flattened `args`, binding a single
+    /// scalar result to `dst`.
     fn call(
         &mut self,
         b: &mut FunctionBuilder,
         mctx: &mut ModuleCtx,
         callee: ClifFuncId,
-        dst: Option<lk_aot_mir::ValueId>,
+        dst: Option<ValueId>,
+        args: &[Value],
+    ) -> Result<(), ClifError> {
+        self.call_raw(b, mctx, callee, dst, false, args)
+    }
+
+    /// Import `callee` and emit a call with pre-flattened `args`. When `dst` is
+    /// set, bind the result as a `{i64,i64}` pair (`dst_pair`) or a single value.
+    fn call_raw(
+        &mut self,
+        b: &mut FunctionBuilder,
+        mctx: &mut ModuleCtx,
+        callee: ClifFuncId,
+        dst: Option<ValueId>,
+        dst_pair: bool,
         args: &[Value],
     ) -> Result<(), ClifError> {
         let func_ref = mctx.module.declare_func_in_func(callee, b.func);
         let call = b.ins().call(func_ref, args);
         if let Some(dst) = dst {
             let results = b.inst_results(call);
-            let v = *results
-                .first()
-                .ok_or(ClifError::Unsupported("call has no result for dst"))?;
-            self.values.insert(dst, v);
+            if dst_pair {
+                let (a, c) = (
+                    *results
+                        .first()
+                        .ok_or(ClifError::Unsupported("carrier call missing lo"))?,
+                    *results
+                        .get(1)
+                        .ok_or(ClifError::Unsupported("carrier call missing hi"))?,
+                );
+                self.set2(dst, a, c);
+            } else {
+                let v = *results
+                    .first()
+                    .ok_or(ClifError::Unsupported("call has no result for dst"))?;
+                self.set1(dst, v);
+            }
         }
         Ok(())
     }
@@ -407,7 +578,7 @@ impl Lower {
                         return Err(ClifError::Unsupported("fnaddr/nil const"));
                     }
                 };
-                self.values.insert(*dst, v);
+                self.set1(*dst, v);
             }
             Inst::GlobalGet { dst, gvar } => {
                 let (data_id, ty) = *mctx
@@ -417,7 +588,7 @@ impl Lower {
                 let gv = mctx.module.declare_data_in_func(data_id, b.func);
                 let addr = b.ins().global_value(types::I64, gv);
                 let v = b.ins().load(ty_to_clif(ty)?, MemFlagsData::trusted(), addr, 0);
-                self.values.insert(*dst, v);
+                self.set1(*dst, v);
             }
             Inst::GlobalSet { gvar, src } => {
                 let s = self.v(*src)?;
@@ -463,7 +634,7 @@ impl Lower {
                     IntBinOp::Div => return self.call(b, mctx, mctx.helpers.i64_div, Some(*dst), &[l, r]),
                     IntBinOp::Mod => return self.call(b, mctx, mctx.helpers.i64_mod, Some(*dst), &[l, r]),
                 };
-                self.values.insert(*dst, v);
+                self.set1(*dst, v);
             }
             Inst::FloatBin { dst, op, lhs, rhs } => {
                 let (l, r) = (self.v(*lhs)?, self.v(*rhs)?);
@@ -474,7 +645,7 @@ impl Lower {
                     FloatBinOp::Div => return self.call(b, mctx, mctx.helpers.f64_div, Some(*dst), &[l, r]),
                     FloatBinOp::Mod => return self.call(b, mctx, mctx.helpers.f64_mod, Some(*dst), &[l, r]),
                 };
-                self.values.insert(*dst, v);
+                self.set1(*dst, v);
             }
             Inst::CallFn { dst, func, args } => {
                 let a = self.args_v(args)?;
@@ -482,13 +653,15 @@ impl Lower {
                     .fn_ids
                     .get(func)
                     .ok_or(ClifError::Unsupported("call to undeclared function"))?;
-                return self.call(b, mctx, callee, *dst, &a);
+                let dst_pair = mctx.fn_rets.get(func).is_some_and(|t| ty_is_pair(*t));
+                return self.call_raw(b, mctx, callee, *dst, dst_pair, &a);
             }
             Inst::Call { dst, callee, args } => {
                 let abi = callee.resolve().ok_or(ClifError::Unsupported("unknown ABI function"))?;
                 let a = self.args_v(args)?;
+                let dst_pair = matches!(abi.result, lk_aot_abi::AbiType::DynVal);
                 let clif_id = mctx.abi_func(abi)?;
-                return self.call(b, mctx, clif_id, *dst, &a);
+                return self.call_raw(b, mctx, clif_id, *dst, dst_pair, &a);
             }
             Inst::Cmp {
                 dst,
@@ -503,42 +676,125 @@ impl Lower {
                 } else {
                     b.ins().icmp(int_cc(*op), l, r)
                 };
-                self.values.insert(*dst, v);
+                self.set1(*dst, v);
             }
             Inst::IntToFloat { dst, src } => {
                 let s = self.v(*src)?;
                 let v = b.ins().fcvt_from_sint(types::F64, s);
-                self.values.insert(*dst, v);
+                self.set1(*dst, v);
             }
             Inst::ZextBool { dst, src } => {
                 let s = self.v(*src)?;
                 let v = b.ins().uextend(types::I64, s);
-                self.values.insert(*dst, v);
+                self.set1(*dst, v);
             }
             Inst::Not { dst, src } => {
                 let s = self.v(*src)?;
                 let v = b.ins().bxor_imm(s, 1);
-                self.values.insert(*dst, v);
+                self.set1(*dst, v);
             }
             Inst::BoolAnd { dst, lhs, rhs } => {
                 let (l, r) = (self.v(*lhs)?, self.v(*rhs)?);
                 let v = b.ins().band(l, r);
-                self.values.insert(*dst, v);
+                self.set1(*dst, v);
             }
             Inst::Select {
                 dst,
                 cond,
                 then_v,
                 else_v,
-                ..
+                ty,
             } => {
-                let (c, t, e) = (self.v(*cond)?, self.v(*then_v)?, self.v(*else_v)?);
-                let v = b.ins().select(c, t, e);
-                self.values.insert(*dst, v);
+                let c = self.v(*cond)?;
+                // A carrier `select` picks each component independently (Cranelift
+                // has no aggregate select); scalars are the common one-value case.
+                if ty_is_pair(*ty) {
+                    let ((t0, t1), (e0, e1)) = (self.two(*then_v)?, self.two(*else_v)?);
+                    let v0 = b.ins().select(c, t0, e0);
+                    let v1 = b.ins().select(c, t1, e1);
+                    self.set2(*dst, v0, v1);
+                } else {
+                    let (t, e) = (self.v(*then_v)?, self.v(*else_v)?);
+                    let v = b.ins().select(c, t, e);
+                    self.set1(*dst, v);
+                }
             }
-            _ => return Err(ClifError::Unsupported("instruction outside Phase 0 slice")),
+            // A `Maybe`'s presence bit (component 1) as a `Bool` (`present != 0`).
+            Inst::MaybePresent { dst, src, .. } => {
+                let (_, present) = self.two(*src)?;
+                let v = b.ins().icmp_imm(IntCC::NotEqual, present, 0);
+                self.set1(*dst, v);
+            }
+            // A `Maybe`'s value (component 0) without asserting presence.
+            Inst::MaybeValue { dst, src, .. } => {
+                let (value, _) = self.two(*src)?;
+                self.set1(*dst, value);
+            }
+            // Wrap a plain scalar into a present carrier `{value, 1}`.
+            Inst::MaybeWrap { dst, src, .. } => {
+                let value = self.v(*src)?;
+                let present = b.ins().iconst(types::I64, 1);
+                self.set2(*dst, value, present);
+            }
+            // Dynamic container reads returning a `{value, present}` carrier — the
+            // `lkrt_*_get_pair` symbols (declared via the ABI schema's dedicated
+            // entries) return a register pair, bound directly as a [`Slot::Two`].
+            Inst::ListGetMaybe { dst, handle, index } => {
+                return self.pair_call(b, mctx, "lkrt_lklist_i64_get_pair", *dst, &[*handle, *index]);
+            }
+            Inst::ListGetMaybeStr { dst, handle, index } => {
+                return self.pair_call(b, mctx, "lkrt_lklist_str_get_pair", *dst, &[*handle, *index]);
+            }
+            Inst::MapGetMaybe { dst, handle, key } => {
+                return self.pair_call(b, mctx, "lkrt_lkmap_str_i64_get_pair", *dst, &[*handle, *key]);
+            }
+            Inst::MapGetMaybeI64Key { dst, handle, key } => {
+                return self.pair_call(b, mctx, "lkrt_lkmap_i64_i64_get_pair", *dst, &[*handle, *key]);
+            }
+            // Narrow a carrier to a scalar, aborting if absent (the lkrt unwrap
+            // helper takes the two components and halts on `present == 0`).
+            Inst::UnwrapMaybeI64 { dst, src } => {
+                return self.unwrap_call(b, mctx, "lkrt_maybe_i64_unwrap", *dst, *src);
+            }
+            Inst::UnwrapMaybeStr { dst, src } => {
+                return self.unwrap_call(b, mctx, "lkrt_maybe_str_unwrap", *dst, *src);
+            }
+            _ => return Err(ClifError::Unsupported("instruction outside current slice")),
         }
         Ok(())
+    }
+
+    /// Emit a call to a `{value, present}`-returning `lkrt_*_get_pair` symbol
+    /// (declared in codegen, not the ABI schema — its by-value carrier return is
+    /// outside the scalar ABI vocabulary), binding `dst` as a [`Slot::Two`].
+    /// `arg_ids` are scalars/handles, one `I64` component each.
+    fn pair_call(
+        &mut self,
+        b: &mut FunctionBuilder,
+        mctx: &mut ModuleCtx,
+        symbol: &'static str,
+        dst: ValueId,
+        arg_ids: &[ValueId],
+    ) -> Result<(), ClifError> {
+        let args = self.args_v(arg_ids)?;
+        let params = vec![types::I64; args.len()];
+        let clif_id = mctx.raw_func(symbol, &params, &[types::I64, types::I64])?;
+        self.call_raw(b, mctx, clif_id, Some(dst), true, &args)
+    }
+
+    /// Emit an `lkrt_maybe_*_unwrap(value, present) -> scalar` call: flatten the
+    /// carrier `src` into its two components and bind the single result to `dst`.
+    fn unwrap_call(
+        &mut self,
+        b: &mut FunctionBuilder,
+        mctx: &mut ModuleCtx,
+        symbol: &'static str,
+        dst: ValueId,
+        src: ValueId,
+    ) -> Result<(), ClifError> {
+        let (value, present) = self.two(src)?;
+        let clif_id = mctx.raw_func(symbol, &[types::I64, types::I64], &[types::I64])?;
+        self.call_raw(b, mctx, clif_id, Some(dst), false, &[value, present])
     }
 
     fn term(&mut self, b: &mut FunctionBuilder, mctx: &mut ModuleCtx, term: &Term) -> Result<(), ClifError> {
@@ -548,8 +804,10 @@ impl Lower {
                 b.ins().return_(&[]);
             }
             Term::Ret(Some(v)) => {
-                let value = self.v(*v)?;
-                b.ins().return_(&[value]);
+                // A carrier return yields two values (the signature has two
+                // returns); a scalar yields one.
+                let vals = self.parts(*v)?;
+                b.ins().return_(&vals);
             }
             Term::Br { target, args } => {
                 let a = self.block_args(args)?;
@@ -578,48 +836,109 @@ impl Lower {
     }
 
     /// The entry/`main` return: print the top-level result (matching the
-    /// string-IR auto-print, always via `io.std.write` with a newline) then
-    /// `ret 0`. A `nil` return prints nothing.
+    /// string-IR auto-print, always via `io.std.write` with a newline), reclaim
+    /// the default arena (`lkrt.cleanup`), then `ret 0`. A `nil` return — and the
+    /// absent branch of a `Maybe`/nil-tagged `Dyn` — prints nothing (the VM's
+    /// top-level auto-print of `nil` is silent, unlike `print(nil)`).
     fn entry_return(
         &mut self,
         b: &mut FunctionBuilder,
         mctx: &mut ModuleCtx,
-        value: Option<lk_aot_mir::ValueId>,
+        value: Option<ValueId>,
     ) -> Result<(), ClifError> {
-        if let Some(v) = value {
-            let sv = self.v(v)?;
-            let str_ptr = match self.ret_ty {
-                Ty::Str => sv,
-                Ty::I64 => self.abi_call1(b, mctx, "str", "from_i64", sv)?,
-                Ty::F64 => self.abi_call1(b, mctx, "str", "from_f64", sv)?,
+        // A shared tail: reclaim the arena and return 0. Present/scalar prints
+        // fall through to it; absent carrier branches jump straight to it.
+        let exit = b.create_block();
+        match value {
+            None => {
+                b.ins().jump(exit, &[]);
+            }
+            Some(v) => match self.ret_ty {
+                Ty::Str => {
+                    let s = self.v(v)?;
+                    self.entry_write(b, mctx, s)?;
+                    b.ins().jump(exit, &[]);
+                }
+                Ty::I64 => {
+                    let s = self.v(v)?;
+                    let sp = self.abi_call(b, mctx, "str", "from_i64", &[s])?;
+                    self.entry_write(b, mctx, sp)?;
+                    b.ins().jump(exit, &[]);
+                }
+                Ty::F64 => {
+                    let s = self.v(v)?;
+                    let sp = self.abi_call(b, mctx, "str", "from_f64", &[s])?;
+                    self.entry_write(b, mctx, sp)?;
+                    b.ins().jump(exit, &[]);
+                }
                 Ty::Bool => {
-                    let widened = b.ins().uextend(types::I64, sv);
-                    self.abi_call1(b, mctx, "str", "from_bool", widened)?
+                    let s = self.v(v)?;
+                    let widened = b.ins().uextend(types::I64, s);
+                    let sp = self.abi_call(b, mctx, "str", "from_bool", &[widened])?;
+                    self.entry_write(b, mctx, sp)?;
+                    b.ins().jump(exit, &[]);
+                }
+                // A boxed `Dyn`: print its display unless nil-tagged (tag == 0).
+                Ty::Dyn => {
+                    let (tag, payload) = self.two(v)?;
+                    let present = b.ins().icmp_imm(IntCC::NotEqual, tag, 0);
+                    let some = b.create_block();
+                    b.ins().brif(present, some, &[], exit, &[]);
+                    b.switch_to_block(some);
+                    let sp = self.abi_call(b, mctx, "dyn", "display", &[tag, payload])?;
+                    self.entry_write(b, mctx, sp)?;
+                    b.ins().jump(exit, &[]);
+                }
+                // A `Maybe`: print the value when present, nothing when absent.
+                Ty::MaybeI64 | Ty::MaybeF64 | Ty::MaybeStr | Ty::MaybeBool => {
+                    let (val, present_bit) = self.two(v)?;
+                    let present = b.ins().icmp_imm(IntCC::NotEqual, present_bit, 0);
+                    let some = b.create_block();
+                    b.ins().brif(present, some, &[], exit, &[]);
+                    b.switch_to_block(some);
+                    let sp = match self.ret_ty {
+                        Ty::MaybeStr => val,
+                        Ty::MaybeI64 => self.abi_call(b, mctx, "str", "from_i64", &[val])?,
+                        Ty::MaybeF64 => self.abi_call(b, mctx, "str", "from_f64", &[val])?,
+                        Ty::MaybeBool => self.abi_call(b, mctx, "str", "from_bool", &[val])?,
+                        _ => unreachable!("guarded by the outer match"),
+                    };
+                    self.entry_write(b, mctx, sp)?;
+                    b.ins().jump(exit, &[]);
                 }
                 _ => return Err(ClifError::Unsupported("entry return type outside slice")),
-            };
-            let write = mctx.abi_func(resolve_abi("io.std", "write")?)?;
-            let fd = b.ins().iconst(types::I64, 1);
-            let nl = b.ins().iconst(types::I64, 1);
-            self.call(b, mctx, write, None, &[fd, str_ptr, nl])?;
+            },
         }
+        b.switch_to_block(exit);
+        let cleanup = mctx.abi_func(resolve_abi("lkrt", "cleanup")?)?;
+        self.call(b, mctx, cleanup, None, &[])?;
         let zero = b.ins().iconst(types::I32, 0);
         b.ins().return_(&[zero]);
         Ok(())
     }
 
-    /// Call an ABI fn with a single argument, returning its single result value.
-    fn abi_call1(
+    /// Write a finished `Str` value to stdout with a trailing newline, via the
+    /// `io.std.write(fd, str, newline)` ABI fn (the entry auto-print mechanism).
+    fn entry_write(&mut self, b: &mut FunctionBuilder, mctx: &mut ModuleCtx, str_ptr: Value) -> Result<(), ClifError> {
+        let write = mctx.abi_func(resolve_abi("io.std", "write")?)?;
+        let fd = b.ins().iconst(types::I64, 1);
+        let nl = b.ins().iconst(types::I64, 1);
+        self.call(b, mctx, write, None, &[fd, str_ptr, nl])
+    }
+
+    /// Call an ABI fn with pre-flattened scalar `args`, returning its single
+    /// result value.
+    fn abi_call(
         &mut self,
         b: &mut FunctionBuilder,
         mctx: &mut ModuleCtx,
         module: &str,
         name: &str,
-        arg: Value,
+        args: &[Value],
     ) -> Result<Value, ClifError> {
         let id = mctx.abi_func(resolve_abi(module, name)?)?;
         let func_ref = mctx.module.declare_func_in_func(id, b.func);
-        let call = b.ins().call(func_ref, &[arg]);
+        let call = b.ins().call(func_ref, args);
         b.inst_results(call)
             .first()
             .copied()
@@ -991,10 +1310,35 @@ mod tests {
         compile_module(&mir, host_isa()).expect("entry scalar return must compile");
     }
 
-    // A shape still outside the slice (a `Dyn` param) rejects at the capability
-    // boundary — specifically `Unsupported`, not an unrelated module/emit error.
+    // A `Dyn` param/return now lowers (as a register pair), so the capability
+    // boundary is checked with an instruction still outside the slice — the Tier
+    // 1 hybrid bridge call (`CallVm`). It must reject with `Unsupported`, not an
+    // unrelated module/emit error.
     #[test]
     fn rejects_unsupported_shape() {
+        let func = MirFunction {
+            id: FuncId(0),
+            params: vec![],
+            blocks: vec![MirBlock {
+                id: BlockId(0),
+                params: vec![],
+                insts: vec![Inst::CallVm {
+                    dst: Some(vid(0)),
+                    func: FuncId(1),
+                    args: vec![],
+                }],
+                term: Term::Ret(Some(vid(0))),
+            }],
+            entry: BlockId(0),
+            ret: Ty::Dyn,
+        };
+        assert!(matches!(compile_ok(vec![func]), Err(ClifError::Unsupported(_))));
+    }
+
+    // A `Dyn`-typed function (pair param → pair return) lowers cleanly: the
+    // carrier ABI expands each `Dyn` to two `I64` registers.
+    #[test]
+    fn lowers_dyn_pair_identity() {
         let func = MirFunction {
             id: FuncId(0),
             params: vec![(vid(0), Ty::Dyn)],
@@ -1007,6 +1351,6 @@ mod tests {
             entry: BlockId(0),
             ret: Ty::Dyn,
         };
-        assert!(matches!(compile_ok(vec![func]), Err(ClifError::Unsupported(_))));
+        compile_ok(vec![func]).expect("Dyn pair identity must compile");
     }
 }

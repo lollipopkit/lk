@@ -158,6 +158,42 @@ fn cranelift_differential_slice() {
             "fn add(a, b) {\n  return a + b;\n}\nreturn add(2, 3);\n",
             "5\n",
         ),
+        // Typed-list construction + scalar element access (`list_h.i64_at` is a
+        // scalar-ABI checked index, not the Maybe carrier) and `while` loops —
+        // the container/loop slice the coverage probe confirmed compiles.
+        ("list_new_len", "let xs = [1, 2, 3];\nreturn xs.len();\n", "3\n"),
+        (
+            "list_push_len",
+            "let xs = [1, 2];\nxs.push(3);\nreturn xs.len();\n",
+            "3\n",
+        ),
+        ("list_index", "let xs = [10, 20, 30];\nreturn xs[1];\n", "20\n"),
+        (
+            "list_index_arith",
+            "let xs = [10, 20, 30];\nreturn xs[1] + xs[2];\n",
+            "50\n",
+        ),
+        ("str_concat_len", "let s = \"a\" + \"b\";\nreturn s.len();\n", "2\n"),
+        (
+            "while_loop",
+            "let i = 0;\nwhile (i < 10) {\n  i = i + 1;\n}\nreturn i;\n",
+            "10\n",
+        ),
+        // Maps exercise the DynVal `{i64,i64}` carrier: `dyn.from_str`/`from_i64`
+        // return a register pair, `map_h.lit_set` consumes two, and `MapGetMaybe`
+        // returns a `{value, present}` pair. A present lookup prints the value; an
+        // absent one prints nothing (the VM's nil-silent top-level auto-print).
+        ("map_new_len", "let m = {\"a\": 1, \"b\": 2};\nreturn m.len();\n", "2\n"),
+        (
+            "map_get_present",
+            "let m = {\"a\": 1, \"b\": 2};\nreturn m[\"a\"];\n",
+            "1\n",
+        ),
+        (
+            "map_get_absent",
+            "let m = {\"a\": 1, \"b\": 2};\nreturn m[\"z\"];\n",
+            "",
+        ),
     ];
 
     let mut ran = 0usize;
