@@ -999,3 +999,33 @@ B 翻 LK_AOT_HYBRID 默认 → C v2 桥接返回值,用户裁决全做)。
 - **验证**:workspace -D warnings 0 失败 · 三差分+sanitized(hybrid e2e
   native 运行补 detect_leaks=0)· GC stress 1053/0 · miri lkrt ·
   coverage 51/51 · bench 1.009x(噪声带)· fuzz 40+200 全过。
+
+## P0 拆分 >1500 行文件 + macOS CF 链接修复(2026-07-16)
+
+- **8 个超 1500 行文件全部拆到子模块,零回归**(纯代码搬移,语义不变):
+  - `aot/lower/src/lib.rs` **11778 → 21 文件**(最大 1220)。按职责切:
+    unsupported/vocab/tables/sig/imports/trait_env/prescan/function/ssa/cfg/
+    lower_call/lower_builtin/lower_method/lower_module/dyn_box/ops/scalar/
+    tests;巨型 `lower_inst`(单函数 2700 行)按 opcode 段切成 `lower_inst`
+    /`_b`/`_c` **fallthrough 委托链**(`_ =>` 转下一段,12 参全程透传→无未用参告警)。
+  - `compiler.rs` 2533→1004(抽 stmt_lower/expr_lower/control_flow/decls,
+    方法统一 pub(super);`CompiledFunction`/`emit_bin_op_..._with_flavor` 因
+    含 pub(in crate::vm::compiler) 私有类型改同级可见性)。
+  - `compiler/tests.rs` 1941→1002(内联测试半分到 `tests/misc.rs`)。
+  - `exec.rs` 2009→1434(抽 format/result/runners;**不动热点
+    `dispatch_within_frame` 护 bench**)。
+  - `core_methods.rs` 1633→1295(抽 list_dispatch)· `cli/main.rs`
+    1591→1160(抽 native_compile)· `parser.rs` 1557→1241(抽 patterns)·
+    `runtime_callable.rs` 1505→1233(抽 positional)。
+  - 手法固化:rustfmt 保证「顶层 item 间必有空行」→ 稳健切分;`use super::*`
+    继承父私有 + `pub(super)`/`pub(crate)` 再导出;子模块方法可见性随类型走
+    (impl 组不需再导出)。踩坑留档:`#[cfg]`/`#[test]` 属性与其 item 之间不能
+    插 `mod` 声明(会把 mod 误 cfg 化 → unresolved import)。
+- **顺手清 core clippy**:`proc_function.rs` no-std 分支 `return` 冗余(tail 化)。
+- **修既存 bug**:`llvm/src/native_executable.rs` macOS native 链接漏
+  `-framework CoreFoundation`(staticlib 携带 chrono `iana_time_zone` 的
+  `_CF*` 引用)→ 之前 12 个 differential 逐字节门禁在 macOS 本地全挂。**补上后
+  本地首次全通**,逐字节验证了本轮拆分的 VM↔native 等价。
+- **验证**:`cargo test --workspace --all-features` **1536/0** ·
+  clippy `--all-features --all-targets -D warnings` 0 · fmt 0 ·
+  coverage 51/51 · 全部源文件 ≤1500(当前最大 1483)。
