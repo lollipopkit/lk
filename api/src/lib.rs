@@ -133,26 +133,23 @@ impl Vm {
     }
 
     /// Parse and execute `source`, returning the program's first return value as
-    /// a host-owned [`Value`]. Primitives (`nil`/`bool`/`int`/`float`) come back
-    /// typed; strings and heap objects (lists/maps/structs) are flattened to
-    /// their display string, since a bare heap reference is meaningless outside
-    /// the VM that owns it. This is the ergonomic typed counterpart to
-    /// [`eval`](Self::eval) (plan M3.1).
+    /// a fully-detached host [`Value`]. Primitives come back typed; strings,
+    /// lists, and maps are converted **structurally** (recursively) so the host
+    /// can walk containers without touching the VM heap. This is the ergonomic
+    /// typed counterpart to [`eval`](Self::eval) (plan M3.1).
     pub fn eval_value(&mut self, source: &str) -> Result<Value> {
         let result = self.run(source)?;
-        Ok(match result.first_return() {
-            RuntimeVal::Nil => Value::Nil,
-            RuntimeVal::Bool(value) => Value::Bool(*value),
-            RuntimeVal::Int(value) => Value::Int(*value),
-            RuntimeVal::Float(value) => Value::Float(*value),
-            // ShortStr / heap strings / lists / maps / structs → display string.
-            _ => Value::Str(result.display_first_return()),
-        })
+        Ok(value_from_runtime(result.first_return(), result.heap()))
     }
 }
 
-/// A host-owned LK value returned from [`Vm::eval_value`]. Primitives are typed;
-/// strings and heap objects arrive as their display string.
+/// A host-owned, fully-detached LK value returned from [`Vm::eval_value`].
+///
+/// Primitives are typed; strings, lists, and maps are converted **structurally**
+/// (recursively) so a host can walk them without touching the VM heap. Map keys
+/// are stringified (LK map keys are typically strings or ints) and entries keep
+/// the VM's iteration order. Heap kinds without a natural host representation
+/// (sets, structs, callables, channels, …) arrive as their display string.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     Nil,
@@ -160,6 +157,141 @@ pub enum Value {
     Int(i64),
     Float(f64),
     Str(String),
+    List(Vec<Value>),
+    Map(Vec<(String, Value)>),
+}
+
+impl Value {
+    /// The integer, if this is an [`Value::Int`].
+    pub fn as_int(&self) -> Option<i64> {
+        match self {
+            Value::Int(value) => Some(*value),
+            _ => None,
+        }
+    }
+
+    /// The float, if this is a [`Value::Float`] (or an [`Value::Int`] widened).
+    pub fn as_float(&self) -> Option<f64> {
+        match self {
+            Value::Float(value) => Some(*value),
+            Value::Int(value) => Some(*value as f64),
+            _ => None,
+        }
+    }
+
+    /// The boolean, if this is a [`Value::Bool`].
+    pub fn as_bool(&self) -> Option<bool> {
+        match self {
+            Value::Bool(value) => Some(*value),
+            _ => None,
+        }
+    }
+
+    /// The string slice, if this is a [`Value::Str`].
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            Value::Str(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    /// The element slice, if this is a [`Value::List`].
+    pub fn as_list(&self) -> Option<&[Value]> {
+        match self {
+            Value::List(values) => Some(values),
+            _ => None,
+        }
+    }
+
+    /// The entry slice, if this is a [`Value::Map`].
+    pub fn as_map(&self) -> Option<&[(String, Value)]> {
+        match self {
+            Value::Map(entries) => Some(entries),
+            _ => None,
+        }
+    }
+
+    /// Look up a key in a [`Value::Map`].
+    pub fn get(&self, key: &str) -> Option<&Value> {
+        match self {
+            Value::Map(entries) => entries.iter().find(|(k, _)| k == key).map(|(_, v)| v),
+            _ => None,
+        }
+    }
+}
+
+impl From<i64> for Value {
+    fn from(value: i64) -> Self {
+        Value::Int(value)
+    }
+}
+impl From<f64> for Value {
+    fn from(value: f64) -> Self {
+        Value::Float(value)
+    }
+}
+impl From<bool> for Value {
+    fn from(value: bool) -> Self {
+        Value::Bool(value)
+    }
+}
+impl From<String> for Value {
+    fn from(value: String) -> Self {
+        Value::Str(value)
+    }
+}
+impl From<&str> for Value {
+    fn from(value: &str) -> Self {
+        Value::Str(value.to_string())
+    }
+}
+
+/// Recursively convert a VM [`RuntimeVal`] plus its owning heap into a detached
+/// host [`Value`]. Strings/lists/maps become structured `Value`s; other heap
+/// kinds fall back to their display string.
+fn value_from_runtime(value: &RuntimeVal, heap: &lk_core::val::HeapStore) -> Value {
+    use lk_core::val::{HeapValue, TypedList};
+    match value {
+        RuntimeVal::Nil => Value::Nil,
+        RuntimeVal::Bool(inner) => Value::Bool(*inner),
+        RuntimeVal::Int(inner) => Value::Int(*inner),
+        RuntimeVal::Float(inner) => Value::Float(*inner),
+        RuntimeVal::ShortStr(inner) => Value::Str(inner.as_str().to_string()),
+        RuntimeVal::Obj(handle) => match heap.get(*handle) {
+            Some(HeapValue::String(text)) => Value::Str(text.to_string()),
+            Some(HeapValue::List(list)) => {
+                let items = match list {
+                    TypedList::Mixed(items) => items.iter().map(|v| value_from_runtime(v, heap)).collect(),
+                    TypedList::Int(items) => items.iter().map(|v| Value::Int(*v)).collect(),
+                    TypedList::Float(items) => items.iter().map(|v| Value::Float(*v)).collect(),
+                    TypedList::Bool(items) => items.iter().map(|v| Value::Bool(*v)).collect(),
+                    TypedList::String(items) => items.iter().map(|v| Value::Str(v.to_string())).collect(),
+                };
+                Value::List(items)
+            }
+            Some(HeapValue::Map(map)) => Value::Map(
+                map.entries_iter()
+                    .into_iter()
+                    .map(|(key, val)| (map_key_to_string(&key), value_from_runtime(&val, heap)))
+                    .collect(),
+            ),
+            // Sets, structs, callables, channels, bytes, … have no structured
+            // host form; hand back the VM's display string.
+            _ => Value::Str(lk_core::vm::display_runtime_value(value, heap)),
+        },
+    }
+}
+
+fn map_key_to_string(key: &lk_core::val::RuntimeMapKey) -> String {
+    use lk_core::val::RuntimeMapKey;
+    match key {
+        RuntimeMapKey::Nil => "nil".to_string(),
+        RuntimeMapKey::Bool(value) => value.to_string(),
+        RuntimeMapKey::Int(value) => value.to_string(),
+        RuntimeMapKey::ShortStr(value) => value.as_str().to_string(),
+        RuntimeMapKey::String(value) => value.to_string(),
+        RuntimeMapKey::Obj(handle) => format!("<obj {}>", handle.index()),
+    }
 }
 
 /// Scalar argument for [`HybridModule::call_discard`] (re-exported core type).
@@ -245,12 +377,41 @@ mod tests {
         assert_eq!(vm.eval_value("return 1 < 2;").unwrap(), Value::Bool(true));
         assert_eq!(vm.eval_value("return 3.5;").unwrap(), Value::Float(3.5));
         assert_eq!(vm.eval_value("return nil;").unwrap(), Value::Nil);
-        // Strings and heap objects flatten to their display string.
         assert_eq!(vm.eval_value("return \"hi\";").unwrap(), Value::Str("hi".to_string()));
+    }
+
+    #[test]
+    fn eval_value_converts_lists_structurally() {
+        let mut vm = Vm::new();
         assert_eq!(
             vm.eval_value("return [1, 2, 3];").unwrap(),
-            Value::Str("[1, 2, 3]".to_string())
+            Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3)])
         );
+        // Mixed and nested containers recurse.
+        let nested = vm.eval_value("return [1, \"two\", [3, 4]];").unwrap();
+        assert_eq!(
+            nested,
+            Value::List(vec![
+                Value::Int(1),
+                Value::Str("two".to_string()),
+                Value::List(vec![Value::Int(3), Value::Int(4)]),
+            ])
+        );
+        assert_eq!(nested.as_list().unwrap().len(), 3);
+        assert_eq!(nested.as_list().unwrap()[1].as_str(), Some("two"));
+    }
+
+    #[test]
+    fn eval_value_converts_maps_structurally() {
+        let mut vm = Vm::new();
+        let value = vm.eval_value("return {\"name\": \"lk\", \"nums\": [1, 2]};").unwrap();
+        assert_eq!(value.get("name").and_then(Value::as_str), Some("lk"));
+        assert_eq!(
+            value.get("nums").and_then(Value::as_list),
+            Some(&[Value::Int(1), Value::Int(2)][..])
+        );
+        // Iteration order is the VM's map order; two known keys are present.
+        assert_eq!(value.as_map().unwrap().len(), 2);
     }
 
     #[test]

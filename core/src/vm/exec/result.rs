@@ -50,6 +50,13 @@ impl ProgramResult {
         matches!(self.first_return(), RuntimeVal::Nil)
     }
 
+    /// The heap backing this result's return values. A host embedding LK can
+    /// walk container returns (lists/maps/strings behind [`RuntimeVal::Obj`])
+    /// into its own structured form — see `lk-api`'s ergonomic `Value`.
+    pub fn heap(&self) -> &HeapStore {
+        &self.state.heap
+    }
+
     /// Format the first return value as a human-readable string for REPL/CLI display.
     pub fn display_first_return(&self) -> String {
         format_runtime_val(self.first_return(), &self.state.heap, 0)

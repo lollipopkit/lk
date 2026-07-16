@@ -1029,3 +1029,18 @@ B 翻 LK_AOT_HYBRID 默认 → C v2 桥接返回值,用户裁决全做)。
 - **验证**:`cargo test --workspace --all-features` **1536/0** ·
   clippy `--all-features --all-targets -D warnings` 0 · fmt 0 ·
   coverage 51/51 · 全部源文件 ≤1500(当前最大 1483)。
+
+## P2 · FFI ergonomic:结构化 Value 转换层(2026-07-16)
+
+- **`lk-api::Value` 加 `List(Vec<Value>)` / `Map(Vec<(String,Value)>)`**,
+  `eval_value` 从「堆对象拍平成 display 串」升级为**递归结构化转换**:
+  宿主直接拿到嵌套 list/map(键 stringify,保 VM 迭代序),无需碰 VM 堆。
+  Set/struct/callable/channel 等无宿主表示的堆类型仍回退 display 串。
+- 便捷 API:`as_int/as_float/as_bool/as_str/as_list/as_map/get(key)` +
+  `From<{i64,f64,bool,String,&str}>`。
+- core 支撑(纯增量):`ProgramResult::heap()` 只读堆访问器 +
+  `lk_core::vm::display_runtime_value(val, heap)` 公开单值格式化。
+- 验证:lk-api 14 测试(含嵌套 list / map 结构化用例)· clippy/fmt 0 ·
+  workspace clippy 0。**剩余 FFI(留档,后续增量)**:Value→RuntimeVal 回写
+  + 高层 `register_fn_v(fn(&[Value])->Value)` · `register_module` 命名空间
+  ergonomic 包装 · rooted handle(可复用 #22 host_roots)。

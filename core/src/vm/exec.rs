@@ -1389,6 +1389,14 @@ fn gc_stress_enabled() -> bool {
     }
 }
 
+/// Format a single [`RuntimeVal`] against its heap into the VM's canonical
+/// display string. Exposed for host embedders that hold a `RuntimeVal` plus the
+/// [`HeapStore`] it came from (e.g. `lk-api`'s ergonomic `Value` conversion for
+/// heap kinds without a structured host representation).
+pub fn display_runtime_value(value: &RuntimeVal, heap: &HeapStore) -> String {
+    format::format_runtime_val(value, heap, 0)
+}
+
 pub fn execute(function: &Function) -> Result<ExecResult> {
     Executor::new(function.register_count).run_function(function)
 }
