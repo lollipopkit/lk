@@ -110,9 +110,10 @@ mod tests {
         assert!(line.contains("container_copy_heap_clones=17"));
     }
 
-    #[cfg(feature = "llvm")]
     #[test]
     fn test_cli_args_compile_positional_target() {
+        // `bytecode` positional parsing is feature-independent (no LLVM/Cranelift
+        // needed), so this runs in every build configuration.
         let args =
             CliArgs::try_parse_from(["lk", "compile", "bytecode", "foo.lk"]).expect("should parse positional target");
         if let Some(Commands::Compile { positional, .. }) = args.command {
