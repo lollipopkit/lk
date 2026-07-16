@@ -80,6 +80,24 @@ fn hybrid_degrades_a_discarded_bridge_result_to_the_void_call() {
     let mir = lk_aot_lower::lower_with_hybrid(&artifact, true).expect("hybrid lowering succeeds");
     // The discarded bridge result must produce a VM-executed function.
     assert_eq!(mir.vm_functions.len(), 1, "the bridged callee is VM-executed");
+    // Lowering always binds a `CallVm` destination; the void-call degrade is a
+    // codegen concern gated on the destination being unread. Assert that
+    // *condition* here: the statement-position bridge call's result is never
+    // used, so codegen (`clif::call_vm`) degrades it to `lk_hybrid_call_v`.
+    let (func, call_dst) = mir
+        .functions
+        .iter()
+        .find_map(|f| {
+            f.blocks.iter().flat_map(|b| &b.insts).find_map(|inst| match inst {
+                lk_aot_mir::Inst::CallVm { dst: Some(dst), .. } => Some((f, *dst)),
+                _ => None,
+            })
+        })
+        .expect("a CallVm with a bound destination");
+    assert!(
+        !lk_aot_mir::value_is_used(func, call_dst),
+        "the discarded bridge result must be unread (so codegen degrades to the void call)"
+    );
 }
 
 #[test]

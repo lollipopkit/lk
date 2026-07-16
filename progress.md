@@ -689,7 +689,8 @@ isolate**(单线程无锁 GC 是热路径底线,无数据竞争,推翻=重写堆
 
 **可复现扫描**:`bash scripts/aot_coverage.sh`(native `lk compile` 全 examples + 原因排行;
 codegen 现为 Cranelift,`compile llvm` 已随字符串 IR 后端移除)。
-**现状 14/51**,37 个失败按频次:
+**2026-07-06 快照 14/51**,37 个失败按频次(下表为当时历史记录;此后覆盖已达 **51/51 零失败**——
+见 §9.5 Cranelift 迁移条目与 `scripts/aot_coverage.sh` 实测):
 
 | 频次 | 阻塞 | 实质 | 路线 |
 |---|---|---|---|

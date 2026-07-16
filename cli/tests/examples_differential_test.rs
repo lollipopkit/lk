@@ -156,13 +156,22 @@ fn examples_corpus_differential() {
             .env("LK_AOT_NO_FALLBACK", "1");
         let exe = run_with_timeout(compile_exe, &scratch, &format!("{stem}_exe"));
         if !exe.success {
-            let reason = fs::read_to_string(scratch.join(format!("{stem}_exe.stderr")))
-                .unwrap_or_default()
-                .lines()
-                .last()
-                .unwrap_or("unknown")
-                .to_string();
-            unsupported.push((label, reason));
+            let stderr = fs::read_to_string(scratch.join(format!("{stem}_exe.stderr"))).unwrap_or_default();
+            let reason = stderr.lines().last().unwrap_or("unknown").to_string();
+            // Only an explicit lowering/codegen `Unsupported` diagnostic is a
+            // coverage gap; any other failure (clang/linker/lk-api/codegen bug)
+            // is a real divergence that must not be silently recorded as
+            // "unsupported".
+            if stderr.contains("does not support this program yet")
+                || stderr.contains("clif:")
+                || stderr.contains("MIR lowering:")
+            {
+                unsupported.push((label, reason));
+            } else {
+                divergences.push(format!(
+                    "[{label}] native compile failed (not an Unsupported shape):\n{stderr}"
+                ));
+            }
             continue;
         }
         // detect_leaks=0: raises longjmp over Rust frames whose temporaries

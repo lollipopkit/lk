@@ -5,17 +5,21 @@
 //! than producing bad output caught only downstream. Being SSA-with-block-params,
 //! the MIR maps almost 1:1 onto Cranelift blocks/params/branches.
 //!
-//! Coverage: the scalar subset (int/float const and
-//! arithmetic, comparisons, widen/narrow, select, boolean ops), block-param
-//! control flow (`Br`/`CondBr`/`Ret`/`Abort`), guarded div/mod, ABI runtime
-//! calls, string constants and mutable globals, direct calls, the entry/`main`
-//! shape (with top-level auto-print + arena cleanup), and the `{i64,i64}`
-//! carriers — `Dyn` and `Maybe*` flow as register pairs ([`Slot`]), so maps,
-//! dynamic container reads (`*_get_pair`), and unwraps lower. Still outside the
-//! slice — anything returning [`ClifError::Unsupported`]: the Tier 1 VM bridge
-//! (`CallVm`), protected calls (`TryCall`/setjmp), trait dispatch, and the
-//! `{double,i64}` float-carrier `get_pair`s (whose by-value return diverges from
-//! the two-scalar ABI on AArch64).
+//! Coverage: every MIR `Inst` variant lowers (the `inst` match is exhaustive).
+//! The scalar subset (int/float const and arithmetic, comparisons, widen/narrow,
+//! select, boolean ops), block-param control flow (`Br`/`CondBr`/`Ret`/`Abort`),
+//! guarded div/mod, ABI runtime calls, string constants and mutable globals,
+//! direct calls, the entry/`main` shape (top-level auto-print + arena cleanup);
+//! the `{i64,i64}` carriers (`Dyn`/`Maybe*` flow as register pairs, [`Slot`]) so
+//! maps, dynamic container reads and unwraps lower — the `{double,i64}` float
+//! carrier goes through the `lkrt_*_f64_get_out` out-pointer shims (its by-value
+//! return is not portably modelable); `TraitDispatch`; `TryCall` (via the lkrt
+//! `setjmp` trampoline); and the Tier 1 hybrid bridge `CallVm`.
+//!
+//! [`ClifError::Unsupported`] is now returned only from *within* arms for
+//! shapes at a capability boundary — e.g. a non-scalar value type in a scalar
+//! slot, a `CallVm`/`TryCall` with a float/carrier operand or arity past the
+//! trampoline cap, or a bridge target absent from `vm_functions`.
 
 use std::collections::HashMap;
 
@@ -814,14 +818,28 @@ impl Lower {
                 let v = b.ins().icmp_imm(IntCC::NotEqual, present, 0);
                 self.set1(*dst, v);
             }
-            // A `Maybe`'s value (component 0) without asserting presence.
-            Inst::MaybeValue { dst, src, .. } => {
+            // A `Maybe`'s value (component 0) without asserting presence. The
+            // `MaybeBool` carrier stores its value as `I64` (all carriers are
+            // `{i64,i64}` except `MaybeF64`); a `Bool` scalar is `I8`, so narrow
+            // it back on the way out.
+            Inst::MaybeValue { dst, src, maybe_ty } => {
                 let (value, _) = self.two(*src)?;
+                let value = if matches!(maybe_ty, Ty::MaybeBool) {
+                    b.ins().ireduce(types::I8, value)
+                } else {
+                    value
+                };
                 self.set1(*dst, value);
             }
-            // Wrap a plain scalar into a present carrier `{value, 1}`.
-            Inst::MaybeWrap { dst, src, .. } => {
+            // Wrap a plain scalar into a present carrier `{value, 1}`. A `Bool`
+            // source is `I8`; widen it to the carrier's `I64` value component.
+            Inst::MaybeWrap { dst, src, maybe_ty } => {
                 let value = self.v(*src)?;
+                let value = if matches!(maybe_ty, Ty::MaybeBool) {
+                    b.ins().uextend(types::I64, value)
+                } else {
+                    value
+                };
                 let present = b.ins().iconst(types::I64, 1);
                 self.set2(*dst, value, present);
             }
@@ -1679,29 +1697,66 @@ mod tests {
         compile_module(&mir, host_isa()).expect("entry scalar return must compile");
     }
 
-    // A `Dyn` param/return now lowers (as a register pair), so the capability
-    // boundary is checked with an instruction still outside the slice — the Tier
-    // 1 hybrid bridge call (`CallVm`). It must reject with `Unsupported`, not an
-    // unrelated module/emit error.
+    // The `inst` match is exhaustive, so the capability boundary lives *inside*
+    // arms. A `Nil`-typed function parameter (zero register components) is one
+    // such rejected shape — it must fail with `Unsupported`, not an unrelated
+    // module/emit error.
     #[test]
     fn rejects_unsupported_shape() {
         let func = MirFunction {
+            id: FuncId(0),
+            params: vec![(vid(0), Ty::Nil)],
+            blocks: vec![MirBlock {
+                id: BlockId(0),
+                params: vec![],
+                insts: vec![],
+                term: Term::Ret(None),
+            }],
+            entry: BlockId(0),
+            ret: Ty::Nil,
+        };
+        assert!(matches!(compile_ok(vec![func]), Err(ClifError::Unsupported(_))));
+    }
+
+    // A Tier 1 hybrid bridge call (`CallVm`) to a VM-executed function lowers:
+    // its scalar arg is marshaled into `lk_hybrid_argbuf` and it calls the void
+    // bridge (`lk_hybrid_call_v`). The target must be recorded in `vm_functions`.
+    #[test]
+    fn lowers_call_vm_bridge() {
+        let prog = MirFunction {
             id: FuncId(0),
             params: vec![],
             blocks: vec![MirBlock {
                 id: BlockId(0),
                 params: vec![],
-                insts: vec![Inst::CallVm {
-                    dst: Some(vid(0)),
-                    func: FuncId(1),
-                    args: vec![],
-                }],
-                term: Term::Ret(Some(vid(0))),
+                insts: vec![
+                    Inst::Const {
+                        dst: vid(0),
+                        value: Const::I64(7),
+                    },
+                    Inst::CallVm {
+                        dst: None,
+                        func: FuncId(1),
+                        args: vec![vid(0)],
+                    },
+                ],
+                term: Term::Ret(None),
             }],
             entry: BlockId(0),
-            ret: Ty::Dyn,
+            ret: Ty::Nil,
         };
-        assert!(matches!(compile_ok(vec![func]), Err(ClifError::Unsupported(_))));
+        let mir = MirModule {
+            abi_version: 0,
+            globals: vec![],
+            mutable_globals: vec![],
+            vm_functions: vec![lk_aot_mir::VmFunction {
+                id: FuncId(1),
+                params: vec![Ty::I64],
+            }],
+            entry: FuncId(u32::MAX),
+            functions: vec![prog],
+        };
+        compile_module(&mir, host_isa()).expect("CallVm bridge must compile");
     }
 
     // A `Dyn`-typed function (pair param → pair return) lowers cleanly: the

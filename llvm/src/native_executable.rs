@@ -31,17 +31,23 @@ pub fn compile_native_executable_from_object(path: &Path, output: &Path, object:
     if let Some(staticlib) = lkrt_staticlib_path() {
         add_force_load_staticlib(&mut command, &staticlib);
     }
-    command.args(["-lpthread", "-ldl"]);
+    // `pthread`/`dl` are Unix libraries; on Windows they are part of the CRT.
+    if !cfg!(target_os = "windows") {
+        command.args(["-lpthread", "-ldl"]);
+    }
     if cfg!(target_os = "linux") {
         command.arg("-lm");
     }
     if cfg!(target_os = "macos") {
         command.args(["-framework", "CoreFoundation"]);
     }
+    // Remove the temp object whether or not clang spawns, so a spawn failure
+    // does not leak it.
     let status = command
         .output()
-        .with_context(|| format!("spawn clang to link native object {}", output.display()))?;
+        .with_context(|| format!("spawn clang to link native object {}", output.display()));
     let _ = std::fs::remove_file(&object_path);
+    let status = status?;
     if !status.status.success() {
         anyhow::bail!(
             "native object link failed for {}:\n{}",
@@ -87,7 +93,10 @@ pub fn compile_native_executable_from_object_hybrid(
     // wrapper references `lk_hybrid_register`, the object references
     // `lk_hybrid_call_*`, which pull the objects in.
     command.arg(hybrid.lk_api_staticlib);
-    command.args(["-lpthread", "-ldl"]);
+    // `pthread`/`dl` are Unix libraries; on Windows they are part of the CRT.
+    if !cfg!(target_os = "windows") {
+        command.args(["-lpthread", "-ldl"]);
+    }
     if cfg!(target_os = "linux") {
         command.arg("-lm");
     }

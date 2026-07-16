@@ -35,10 +35,14 @@ pipeline's subset.
 
 > **Codegen backend note:** the native codegen was migrated from the string-IR
 > renderer (MIR → LLVM text → clang `-O2`) to **Cranelift** (MIR → object;
-> `clang` is now only the linker driver). The `≈0.26x` figure below is the
-> string-IR baseline; on the Cranelift backend the same suite measures **AOT/VM
-> geomean ≈0.336x** (≈17% slower, `speed` opt level vs clang `-O2`), traded for
-> a typed builder + verifier and faster compiles. Checksums still match the VM.
+> `clang` is now only the linker driver). A same-machine, back-to-back run of
+> this suite measured **AOT/VM geomean ≈0.288x** on the string-IR path vs
+> **≈0.336x** on Cranelift — i.e. Cranelift is **≈17% slower** (0.336/0.288 ≈
+> 1.17; `speed` opt level vs clang `-O2`), traded for a typed builder + verifier
+> and faster compiles. Checksums still match the VM. (The `≈0.26x` figure in the
+> paragraph below is an earlier, separately-dated dist-build measurement under
+> different conditions — a historical data point, not the baseline for the ≈17%
+> comparison above.)
 
 As of 2026-07-02 the
 MIR pipeline compiles the **full 20-workload suite** (module builtins, mutable

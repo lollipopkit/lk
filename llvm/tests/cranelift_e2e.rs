@@ -206,7 +206,11 @@ fn cranelift_differential_slice() {
                 assert_eq!(stdout, *expected, "[{name}] Cranelift stdout diverged from semantics");
                 ran += 1;
             }
-            Err(reason) => skipped.push(format!("{name}: {reason}")),
+            // A shape outside the Cranelift slice self-skips (marks the coverage
+            // frontier). A parse/compile/artifact/validate failure is a real
+            // bug (or a broken test case), never a "skip".
+            Err(reason) if reason.starts_with("unsupported(") => skipped.push(format!("{name}: {reason}")),
+            Err(reason) => panic!("[{name}] non-Unsupported failure in the differential slice: {reason}"),
         }
     }
 
@@ -214,8 +218,11 @@ fn cranelift_differential_slice() {
     for note in &skipped {
         eprintln!("  skipped {note}");
     }
-    assert!(
-        ran > 0,
-        "no differential case exercised the Cranelift slice; skips: {skipped:?}"
+    // Every case in this curated slice is currently within the Cranelift slice.
+    assert_eq!(
+        ran,
+        cases.len(),
+        "expected all {} curated cases to lower through Cranelift; skips: {skipped:?}",
+        cases.len()
     );
 }

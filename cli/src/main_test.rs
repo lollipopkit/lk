@@ -304,13 +304,14 @@ mod tests {
         assert!(err.to_string().contains("multiple workspace app entries"));
     }
 
-    #[cfg(not(feature = "llvm"))]
     #[test]
-    fn compile_target_errors_when_llvm_disabled() {
+    fn compile_llvm_target_is_rejected_as_removed() {
+        // `lk compile llvm` was removed with the LLVM-text backend (Cranelift is
+        // the sole native codegen); the target is rejected regardless of feature.
         let args = CliArgs::try_parse_from(["lk", "compile", "llvm", "foo.lk"]).expect("should parse");
         if let Some(Commands::Compile { positional, .. }) = args.command {
-            let err = split_compile_args(&positional).expect_err("llvm target should be rejected without feature");
-            assert!(err.to_string().contains("LLVM backend disabled"));
+            let err = split_compile_args(&positional).expect_err("llvm target should be rejected");
+            assert!(err.to_string().contains("was removed"));
         } else {
             panic!("expected compile command");
         }

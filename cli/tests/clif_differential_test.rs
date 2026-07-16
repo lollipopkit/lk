@@ -1,10 +1,10 @@
-//! Cranelift-backend differential harness (`docs/llvm/aot-redesign.md` §6, the
-//! strangler front): every case is compiled *through Cranelift* — forced via
-//! `LK_AOT_CLIF=1` + `LK_AOT_CLIF_ONLY=1`, so a shape Cranelift can't lower fails
-//! the compile instead of silently falling back to the string-IR path — then run
-//! and diffed against the bytecode VM. Guards the Cranelift coverage frontier
-//! (nil/fn-addr, DynVal maps, carriers, trait dispatch, typed lists) against
-//! regressions as the backend grows toward the default.
+//! Cranelift-backend differential harness (`docs/llvm/aot-redesign.md` §6).
+//! Cranelift is the sole native codegen; each case is compiled with
+//! `LK_AOT_NO_FALLBACK=1` so a shape it can't lower fails the compile instead of
+//! silently falling back to the Tier 0 VM bundle — guaranteeing the case runs
+//! *through Cranelift* — then run and diffed against the bytecode VM. Guards the
+//! native coverage (nil/fn-addr, DynVal maps, carriers, trait dispatch, typed
+//! lists, hybrid bridge) against regressions.
 #![cfg(feature = "llvm")]
 
 use std::ffi::OsStr;

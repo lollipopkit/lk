@@ -78,16 +78,18 @@ pub(super) fn compile_executable(path: &Path, output: Option<&Path>) -> anyhow::
     // here, rather than being masked by the Tier 0 fallback below — that path
     // embeds the source verbatim and would only fail at runtime (plan M4.2).
     let compiled = compile_instr_artifact_with_dependencies(path)?;
-    match compile_native_executable_from_artifact(path, &output, &compiled.artifact) {
-        Ok(()) => {
+    // Operational failures (missing clang, lk-api build, linker, codegen bug)
+    // propagate via `?` — only an `Unsupported` shape falls back to the bundle.
+    match compile_native_executable_from_artifact(path, &output, &compiled.artifact)? {
+        NativeOutcome::Compiled => {
             println!("{}", output.display());
             Ok(())
         }
-        Err(native_err) => {
+        NativeOutcome::Unsupported(reason) => {
             // Opt-out (strict native-only) for tooling/tests that want to verify
             // the native lowering in isolation rather than the graceful fallback.
             if std::env::var_os("LK_AOT_NO_FALLBACK").is_some_and(|value| value != "0") {
-                return Err(native_err);
+                anyhow::bail!("native AOT does not support this program yet ({reason})");
             }
             // The Cranelift native backend covers only a lowerable subset.
             // Instead of failing the whole program (the old all-or-nothing —
@@ -95,7 +97,7 @@ pub(super) fn compile_executable(path: &Path, output: Option<&Path>) -> anyhow::
             // interpreter and runs any valid program. `lk compile` thus never
             // rejects a valid program: native when possible, VM-embed otherwise.
             diagnostic::warning(format!(
-                "native AOT does not support this program yet ({native_err:#}); \
+                "native AOT does not support this program yet ({reason}); \
                  falling back to the Tier 0 VM bundle (embeds the interpreter)"
             ));
             // If the Tier 0 fallback also fails (e.g. the VM staticlib is
@@ -103,7 +105,7 @@ pub(super) fn compile_executable(path: &Path, output: Option<&Path>) -> anyhow::
             // failure is understandable rather than a bare bundle error.
             run_bundle(path, &output).map_err(|bundle_err| {
                 anyhow::anyhow!(
-                    "cannot compile `{}`: it is not natively AOT-lowerable ({native_err:#}), \
+                    "cannot compile `{}`: it is not natively AOT-lowerable ({reason}), \
                      and the Tier 0 VM-bundle fallback also failed ({bundle_err:#})",
                     path.display()
                 )
@@ -112,54 +114,65 @@ pub(super) fn compile_executable(path: &Path, output: Option<&Path>) -> anyhow::
     }
 }
 
+/// Outcome of a native compile: a shape outside the native slice (`Unsupported`,
+/// eligible for a Tier 0 VM-bundle fallback) is distinct from an operational
+/// failure (missing clang, lk-api build, link error, codegen bug) — the latter
+/// is returned as the function's `Err` and must propagate, not silently fall
+/// back to the VM bundle.
+#[cfg(feature = "llvm")]
+pub(super) enum NativeOutcome {
+    Compiled,
+    Unsupported(String),
+}
+
 /// Lower an already-compiled bytecode artifact to a native executable through the
-/// Cranelift backend (the sole native codegen). Returns the (subset-only)
-/// `Unsupported` reason so `compile_executable` can decide whether to fall back
-/// to the Tier 0 VM bundle.
+/// Cranelift backend (the sole native codegen). `Ok(Unsupported)` marks a shape
+/// the backend does not cover (caller may fall back to the Tier 0 VM bundle);
+/// `Err` is an operational failure that must propagate unchanged.
 #[cfg(feature = "llvm")]
 pub(super) fn compile_native_executable_from_artifact(
     path: &Path,
     output: &Path,
     artifact: &ModuleArtifact,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<NativeOutcome> {
     let bundled = bundle_file_imports(path, artifact)?;
     let (artifact, bundles): (&ModuleArtifact, Vec<lk_llvm::BundledImport>) = match &bundled {
         Some((merged, bundles)) => (merged, bundles.clone()),
         None => (artifact, Vec::new()),
     };
-    match lk_llvm::compile_artifact_to_clif_object(artifact, &bundles)? {
-        Ok(clif) => {
-            if native_trace_enabled() {
-                eprintln!("clif: native object for {}", path.display());
-            }
-            if clif.vm_function_count > 0 {
-                // Tier 1 hybrid: the object bridges to the VM for the
-                // non-lowering helpers, so embed the artifact and link the
-                // lk-api staticlib alongside lkrt.
-                let artifact_json = artifact.to_json_string()?;
-                let staticlib = ensure_lk_api_staticlib()?;
-                eprintln!(
-                    "note: {} function(s) run on the embedded VM (Tier 1 hybrid)",
-                    clif.vm_function_count
-                );
-                lk_llvm::compile_native_executable_from_object_hybrid(
-                    path,
-                    output,
-                    &clif.object,
-                    lk_llvm::HybridLink {
-                        module_artifact_json: &artifact_json,
-                        lk_api_staticlib: &staticlib,
-                    },
-                )?;
-            } else {
-                lk_llvm::compile_native_executable_from_object(path, output, &clif.object)?;
-            }
-            Ok(())
-        }
-        // A shape outside the native slice: surface the reason so
-        // `compile_executable` can fall back to the Tier 0 VM bundle.
-        Err(reason) => anyhow::bail!("native AOT does not support this program yet ({reason})"),
+    // Inner `Err(reason)` = Unsupported shape (fall back); outer `?` = internal
+    // codegen/validation bug (propagate).
+    let clif = match lk_llvm::compile_artifact_to_clif_object(artifact, &bundles)? {
+        Ok(clif) => clif,
+        Err(reason) => return Ok(NativeOutcome::Unsupported(reason)),
+    };
+    if native_trace_enabled() {
+        eprintln!("clif: native object for {}", path.display());
     }
+    // Linking (missing clang, lk-api build, linker error) propagates as `Err`.
+    if clif.vm_function_count > 0 {
+        // Tier 1 hybrid: the object bridges to the VM for the non-lowering
+        // helpers, so embed the artifact and link the lk-api staticlib alongside
+        // lkrt.
+        let artifact_json = artifact.to_json_string()?;
+        let staticlib = ensure_lk_api_staticlib()?;
+        eprintln!(
+            "note: {} function(s) run on the embedded VM (Tier 1 hybrid)",
+            clif.vm_function_count
+        );
+        lk_llvm::compile_native_executable_from_object_hybrid(
+            path,
+            output,
+            &clif.object,
+            lk_llvm::HybridLink {
+                module_artifact_json: &artifact_json,
+                lk_api_staticlib: &staticlib,
+            },
+        )?;
+    } else {
+        lk_llvm::compile_native_executable_from_object(path, output, &clif.object)?;
+    }
+    Ok(NativeOutcome::Compiled)
 }
 
 #[cfg(feature = "llvm")]
@@ -168,8 +181,14 @@ pub(super) fn compile_executable_to_path_with_dependencies(
     output: &Path,
 ) -> anyhow::Result<Vec<ProcMacroDependency>> {
     let compiled = compile_instr_artifact_with_dependencies(path)?;
-    compile_native_executable_from_artifact(path, output, &compiled.artifact)?;
-    Ok(compiled.proc_macro_dependencies)
+    // The cached-native path has no VM-bundle fallback: an unsupported shape just
+    // fails to cache (the caller runs the VM instead).
+    match compile_native_executable_from_artifact(path, output, &compiled.artifact)? {
+        NativeOutcome::Compiled => Ok(compiled.proc_macro_dependencies),
+        NativeOutcome::Unsupported(reason) => {
+            anyhow::bail!("native AOT does not support this program yet ({reason})")
+        }
+    }
 }
 
 #[cfg(feature = "llvm")]
