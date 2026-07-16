@@ -31,10 +31,10 @@ pub(in crate::macro_system) fn expand_function_like_proc_macro(
     #[cfg(not(feature = "std"))]
     {
         let _ = (config, input, call_origins);
-        return Err(ParseError::with_span(
+        Err(ParseError::with_span(
             format!("Procedural function-like macro `{name}` requires the std feature"),
             call_span.clone(),
-        ));
+        ))
     }
     #[cfg(feature = "std")]
     {
