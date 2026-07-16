@@ -21,5 +21,10 @@ toml = { version = "1" }
 # results are byte-identical to the VM.
 chrono = { workspace = true }
 
+[build-dependencies]
+# Compiles the native protected-call `setjmp` trampoline (`src/try_trampoline.c`)
+# into the runtime — the Cranelift backend cannot emit `setjmp` itself.
+cc = "1"
+
 [dev-dependencies]
 lk-core = { path = "../core" }

@@ -163,3 +163,26 @@ fn clif_differential_higher_order() {
         ],
     );
 }
+
+#[test]
+fn clif_differential_try_catch() {
+    run_clif_differential(
+        "try_catch",
+        &[
+            // `try$call` through the lkrt `setjmp` trampoline: the success path
+            // runs the body, the failure path binds the raised value.
+            new(
+                "catch_raise",
+                "let out = 0;\ntry {\n  error(\"boom\");\n  out = 1;\n} catch e {\n  out = 2;\n}\nreturn out;\n",
+            ),
+            new(
+                "catch_skipped",
+                "let out = 0;\ntry {\n  out = 5;\n} catch e {\n  out = 9;\n}\nreturn out;\n",
+            ),
+            new(
+                "catch_with_arg",
+                "fn div(a, b) {\n  if (b == 0) { error(\"zero\"); }\n  return a / b;\n}\nlet r = 0;\ntry {\n  r = div(10, 0);\n} catch e {\n  r = -1;\n}\nreturn r;\n",
+            ),
+        ],
+    );
+}

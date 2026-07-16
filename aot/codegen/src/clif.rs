@@ -21,7 +21,9 @@
 use std::collections::HashMap;
 
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
-use cranelift_codegen::ir::{AbiParam, BlockArg, Function, InstBuilder, MemFlagsData, Signature, Value, types};
+use cranelift_codegen::ir::{
+    AbiParam, BlockArg, Function, InstBuilder, MemFlagsData, Signature, StackSlotData, StackSlotKind, Value, types,
+};
 use cranelift_codegen::isa::{CallConv, TargetIsa};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_module::{DataDescription, DataId, FuncId as ClifFuncId, Linkage, Module, ModuleError};
@@ -793,9 +795,104 @@ impl Lower {
             Inst::TraitDispatch { dst, self_arg, arms } => {
                 return self.trait_dispatch(b, mctx, *dst, *self_arg, arms);
             }
+            Inst::TryCall { dst, func, args } => {
+                return self.try_call(b, mctx, *dst, *func, args);
+            }
             _ => return Err(ClifError::Unsupported("instruction outside current slice")),
         }
         Ok(())
+    }
+
+    /// Native protected call (`try$call`, plan G): drive the lkrt `setjmp`
+    /// trampoline (`lkrt_rt_try_call`) — Cranelift cannot emit `setjmp` itself —
+    /// and join its outcome into the `[ok, value]` dyn-list the desugared
+    /// destructuring consumes. Only integer/pointer try-body params are
+    /// supported: each argument is marshaled as one `i64` word into a stack
+    /// buffer (float/carrier args, or arity above the trampoline cap, reject).
+    fn try_call(
+        &mut self,
+        b: &mut FunctionBuilder,
+        mctx: &mut ModuleCtx,
+        dst: ValueId,
+        func: FuncId,
+        args: &[ValueId],
+    ) -> Result<(), ClifError> {
+        // Keep in step with the trampoline's arity switch (`try_trampoline.c`).
+        const MAX_ARGS: usize = 8;
+        if args.len() > MAX_ARGS {
+            return Err(ClifError::Unsupported("try-call arity over trampoline cap"));
+        }
+        // Marshal each argument to an `i64` word in a stack buffer.
+        let slot_bytes = (args.len().max(1) * 8) as u32;
+        let args_slot = b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, slot_bytes, 3));
+        for (i, arg) in args.iter().enumerate() {
+            let word = match self.slot(*arg)? {
+                Slot::Two(..) => return Err(ClifError::Unsupported("try-call carrier argument")),
+                Slot::One(v) => {
+                    let t = b.func.dfg.value_type(v);
+                    if t == types::I64 {
+                        v
+                    } else if t == types::I8 {
+                        b.ins().uextend(types::I64, v)
+                    } else {
+                        return Err(ClifError::Unsupported("try-call non-integer argument"));
+                    }
+                }
+            };
+            b.ins().stack_store(word, args_slot, (i * 8) as i32);
+        }
+        let argv = b.ins().stack_addr(types::I64, args_slot, 0);
+        let ok_slot = b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3));
+        let out_ok = b.ins().stack_addr(types::I64, ok_slot, 0);
+        // The try-body's address (`ptr @lk_fn_N`) and argument count.
+        let callee = *mctx
+            .fn_ids
+            .get(&func)
+            .ok_or(ClifError::Unsupported("try-call to undeclared function"))?;
+        let body_ref = mctx.module.declare_func_in_func(callee, b.func);
+        let body_addr = b.ins().func_addr(types::I64, body_ref);
+        let argc = b.ins().iconst(types::I64, args.len() as i64);
+        // Call the trampoline: returns the body result / caught error as a `Dyn`
+        // pair, and writes the ok flag through `out_ok`.
+        let tramp = mctx.raw_func("lkrt_rt_try_call", &[types::I64; 4], &[types::I64, types::I64])?;
+        let tramp_ref = mctx.module.declare_func_in_func(tramp, b.func);
+        let call = b.ins().call(tramp_ref, &[body_addr, argc, argv, out_ok]);
+        let (val_t, val_p) = {
+            let r = b.inst_results(call);
+            (
+                *r.first().ok_or(ClifError::Unsupported("try-call result missing lo"))?,
+                *r.get(1).ok_or(ClifError::Unsupported("try-call result missing hi"))?,
+            )
+        };
+        let ok = b.ins().stack_load(types::I64, ok_slot, 0);
+        // Join into the `[ok, value]` dyn list the desugaring destructures.
+        let list = self.abi_call(b, mctx, "list_h", "dyn_new", &[])?;
+        let (ok_t, ok_p) = self.abi_call_pair(b, mctx, "dyn", "from_bool", &[ok])?;
+        let push = mctx.abi_func(resolve_abi("list_h", "dyn_push")?)?;
+        self.call(b, mctx, push, None, &[list, ok_t, ok_p])?;
+        self.call(b, mctx, push, None, &[list, val_t, val_p])?;
+        self.set1(dst, list);
+        Ok(())
+    }
+
+    /// Call an ABI fn with pre-flattened scalar `args`, returning its `{i64,i64}`
+    /// carrier result as a `(component0, component1)` pair.
+    fn abi_call_pair(
+        &mut self,
+        b: &mut FunctionBuilder,
+        mctx: &mut ModuleCtx,
+        module: &str,
+        name: &str,
+        args: &[Value],
+    ) -> Result<(Value, Value), ClifError> {
+        let id = mctx.abi_func(resolve_abi(module, name)?)?;
+        let func_ref = mctx.module.declare_func_in_func(id, b.func);
+        let call = b.ins().call(func_ref, args);
+        let r = b.inst_results(call);
+        Ok((
+            *r.first().ok_or(ClifError::Unsupported("carrier ABI call missing lo"))?,
+            *r.get(1).ok_or(ClifError::Unsupported("carrier ABI call missing hi"))?,
+        ))
     }
 
     /// Runtime trait-method dispatch (plan J1): read the boxed receiver's arena

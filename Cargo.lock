@@ -1632,6 +1632,7 @@ dependencies = [
 name = "lkrt"
 version = "0.1.3"
 dependencies = [
+ "cc",
  "chrono",
  "hashbrown 0.15.5",
  "lk-aot-abi",
