@@ -137,11 +137,16 @@ pub fn compile_module(mir: &MirModule, isa: std::sync::Arc<dyn TargetIsa>) -> Re
     let cc = module.isa().default_call_conv();
 
     // Declare every function up front so calls can resolve intra-module targets.
+    // The entry becomes the exported C `main() -> i32`; the rest are local
+    // `lk_fn_N` with their MIR signatures.
     let mut fn_ids = HashMap::new();
     for func in &mir.functions {
-        let sig = signature_of(func, cc)?;
-        let sym = format!("lk_fn_{}", func.id.0);
-        let id = module.declare_function(&sym, Linkage::Local, &sig)?;
+        let (sym, linkage, sig) = if func.id == mir.entry {
+            ("main".to_string(), Linkage::Export, main_signature(cc))
+        } else {
+            (format!("lk_fn_{}", func.id.0), Linkage::Local, signature_of(func, cc)?)
+        };
+        let id = module.declare_function(&sym, linkage, &sig)?;
         fn_ids.insert(func.id, id);
     }
     let helpers = Helpers::declare(&mut module)?;
@@ -172,8 +177,13 @@ pub fn compile_module(mir: &MirModule, isa: std::sync::Arc<dyn TargetIsa>) -> Re
     let mut abi_ids: HashMap<&'static str, ClifFuncId> = HashMap::new();
 
     for func in &mir.functions {
+        let is_entry = func.id == mir.entry;
         let mut ctx = module.make_context();
-        ctx.func.signature = signature_of(func, cc)?;
+        ctx.func.signature = if is_entry {
+            main_signature(cc)
+        } else {
+            signature_of(func, cc)?
+        };
         let mut fb_ctx = FunctionBuilderContext::new();
         {
             let mut mctx = ModuleCtx {
@@ -184,7 +194,7 @@ pub fn compile_module(mir: &MirModule, isa: std::sync::Arc<dyn TargetIsa>) -> Re
                 str_data: &str_data,
                 gvar_data: &gvar_data,
             };
-            build_function(func, &mut ctx.func, &mut fb_ctx, &mut mctx)?;
+            build_function(func, &mut ctx.func, &mut fb_ctx, &mut mctx, is_entry, mir.abi_version)?;
         }
         module.define_function(fn_ids[&func.id], &mut ctx)?;
         module.clear_context(&mut ctx);
@@ -224,6 +234,13 @@ pub fn ty_to_clif(ty: Ty) -> Result<types::Type, ClifError> {
     })
 }
 
+/// The C `main() -> i32` signature the entry function is compiled to.
+fn main_signature(call_conv: CallConv) -> Signature {
+    let mut sig = Signature::new(call_conv);
+    sig.returns.push(AbiParam::new(types::I32));
+    sig
+}
+
 /// The Cranelift call signature of a MIR function under `call_conv`.
 pub fn signature_of(func: &MirFunction, call_conv: CallConv) -> Result<Signature, ClifError> {
     let mut sig = Signature::new(call_conv);
@@ -236,18 +253,24 @@ pub fn signature_of(func: &MirFunction, call_conv: CallConv) -> Result<Signature
     Ok(sig)
 }
 
-/// Lower a non-entry MIR function body into `clif_func` (whose signature must
-/// already match [`signature_of`]).
+/// Lower a MIR function body into `clif_func`. When `is_entry`, `clif_func` must
+/// be the program `main` (`() -> i32`): its entry block gets an `abi_check`
+/// prologue and its returns print the top-level result before `ret 0`, matching
+/// the string-IR backend.
 fn build_function(
     func: &MirFunction,
     clif_func: &mut Function,
     fb_ctx: &mut FunctionBuilderContext,
     mctx: &mut ModuleCtx,
+    is_entry: bool,
+    abi_version: i64,
 ) -> Result<(), ClifError> {
     let mut builder = FunctionBuilder::new(clif_func, fb_ctx);
     let mut lower = Lower {
         values: HashMap::new(),
         blocks: HashMap::new(),
+        is_entry,
+        ret_ty: func.ret,
     };
 
     // Materialize every MIR block up front so branches can target them.
@@ -276,10 +299,16 @@ fn build_function(
     for block in &func.blocks {
         let cb = lower.blocks[&block.id];
         builder.switch_to_block(cb);
+        // The entry/`main` guards against ABI drift before any user code runs.
+        if is_entry && block.id == func.entry {
+            let check = mctx.abi_func(resolve_abi("lkrt", "abi_check")?)?;
+            let version = builder.ins().iconst(types::I64, abi_version);
+            lower.call(&mut builder, mctx, check, None, &[version])?;
+        }
         for inst in &block.insts {
             lower.inst(&mut builder, mctx, inst)?;
         }
-        lower.term(&mut builder, &block.term)?;
+        lower.term(&mut builder, mctx, &block.term)?;
     }
 
     builder.seal_all_blocks();
@@ -287,9 +316,18 @@ fn build_function(
     Ok(())
 }
 
+fn resolve_abi(module: &str, name: &str) -> Result<&'static lk_aot_abi::AbiFn, ClifError> {
+    lk_aot_abi::find(module, name).ok_or(ClifError::Unsupported("missing ABI function"))
+}
+
 struct Lower {
     values: HashMap<lk_aot_mir::ValueId, Value>,
     blocks: HashMap<lk_aot_mir::BlockId, cranelift_codegen::ir::Block>,
+    /// This function is the program `main` (`() -> i32`): returns print the
+    /// top-level result and `ret 0`.
+    is_entry: bool,
+    /// The MIR return type — selects the entry's result-printing conversion.
+    ret_ty: Ty,
 }
 
 impl Lower {
@@ -485,8 +523,9 @@ impl Lower {
         Ok(())
     }
 
-    fn term(&mut self, b: &mut FunctionBuilder, term: &Term) -> Result<(), ClifError> {
+    fn term(&mut self, b: &mut FunctionBuilder, mctx: &mut ModuleCtx, term: &Term) -> Result<(), ClifError> {
         match term {
+            Term::Ret(value) if self.is_entry => return self.entry_return(b, mctx, *value),
             Term::Ret(None) => {
                 b.ins().return_(&[]);
             }
@@ -518,6 +557,55 @@ impl Lower {
             }
         }
         Ok(())
+    }
+
+    /// The entry/`main` return: print the top-level result (matching the
+    /// string-IR auto-print, always via `io.std.write` with a newline) then
+    /// `ret 0`. A `nil` return prints nothing.
+    fn entry_return(
+        &mut self,
+        b: &mut FunctionBuilder,
+        mctx: &mut ModuleCtx,
+        value: Option<lk_aot_mir::ValueId>,
+    ) -> Result<(), ClifError> {
+        if let Some(v) = value {
+            let sv = self.v(v)?;
+            let str_ptr = match self.ret_ty {
+                Ty::Str => sv,
+                Ty::I64 => self.abi_call1(b, mctx, "str", "from_i64", sv)?,
+                Ty::F64 => self.abi_call1(b, mctx, "str", "from_f64", sv)?,
+                Ty::Bool => {
+                    let widened = b.ins().uextend(types::I64, sv);
+                    self.abi_call1(b, mctx, "str", "from_bool", widened)?
+                }
+                _ => return Err(ClifError::Unsupported("entry return type outside slice")),
+            };
+            let write = mctx.abi_func(resolve_abi("io.std", "write")?)?;
+            let fd = b.ins().iconst(types::I64, 1);
+            let nl = b.ins().iconst(types::I64, 1);
+            self.call(b, mctx, write, None, &[fd, str_ptr, nl])?;
+        }
+        let zero = b.ins().iconst(types::I32, 0);
+        b.ins().return_(&[zero]);
+        Ok(())
+    }
+
+    /// Call an ABI fn with a single argument, returning its single result value.
+    fn abi_call1(
+        &mut self,
+        b: &mut FunctionBuilder,
+        mctx: &mut ModuleCtx,
+        module: &str,
+        name: &str,
+        arg: Value,
+    ) -> Result<Value, ClifError> {
+        let id = mctx.abi_func(resolve_abi(module, name)?)?;
+        let func_ref = mctx.module.declare_func_in_func(id, b.func);
+        let call = b.ins().call(func_ref, &[arg]);
+        b.inst_results(call)
+            .first()
+            .copied()
+            .ok_or(ClifError::Unsupported("ABI call produced no result"))
     }
 }
 
@@ -568,7 +656,10 @@ mod tests {
             globals: vec![],
             mutable_globals: vec![],
             vm_functions: vec![],
-            entry: funcs[0].id,
+            // Sentinel: these helper functions are compiled as ordinary
+            // `lk_fn_N` (with params/returns); the entry/`main` shape has its own
+            // test.
+            entry: FuncId(u32::MAX),
             functions: funcs,
         };
         compile_module(&mir, host_isa())
@@ -813,6 +904,73 @@ mod tests {
             functions: vec![func],
         };
         compile_module(&mir, host_isa()).expect("print str must compile");
+    }
+
+    // The entry function compiles to C `main`: `abi_check` prologue + top-level
+    // result print + `ret 0`.
+    #[test]
+    fn lowers_entry_main() {
+        use lk_aot_mir::GlobalId;
+        // `println("hi"); return;` — entry with a print + nil return.
+        let prog = MirFunction {
+            id: FuncId(0),
+            params: vec![],
+            blocks: vec![MirBlock {
+                id: BlockId(0),
+                params: vec![],
+                insts: vec![
+                    Inst::Const {
+                        dst: vid(0),
+                        value: Const::Str(GlobalId(0)),
+                    },
+                    Inst::PrintStr {
+                        value: vid(0),
+                        newline: true,
+                    },
+                ],
+                term: Term::Ret(None),
+            }],
+            entry: BlockId(0),
+            ret: Ty::Nil,
+        };
+        let mir = MirModule {
+            abi_version: 1,
+            globals: vec!["hi".to_string()],
+            mutable_globals: vec![],
+            vm_functions: vec![],
+            entry: FuncId(0),
+            functions: vec![prog],
+        };
+        compile_module(&mir, host_isa()).expect("entry main must compile");
+    }
+
+    // An entry returning an int prints it (top-level auto-print) then `ret 0`.
+    #[test]
+    fn lowers_entry_scalar_return() {
+        let ret42 = MirFunction {
+            id: FuncId(0),
+            params: vec![],
+            blocks: vec![MirBlock {
+                id: BlockId(0),
+                params: vec![],
+                insts: vec![Inst::Const {
+                    dst: vid(0),
+                    value: Const::I64(42),
+                }],
+                term: Term::Ret(Some(vid(0))),
+            }],
+            entry: BlockId(0),
+            ret: Ty::I64,
+        };
+        let mir = MirModule {
+            abi_version: 1,
+            globals: vec![],
+            mutable_globals: vec![],
+            vm_functions: vec![],
+            entry: FuncId(0),
+            functions: vec![ret42],
+        };
+        compile_module(&mir, host_isa()).expect("entry scalar return must compile");
     }
 
     // A shape still outside the slice (a `Dyn` param) rejects at the capability
