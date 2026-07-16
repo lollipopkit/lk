@@ -849,6 +849,26 @@ impl Lower {
             Inst::UnwrapMaybeStr { dst, src } => {
                 return self.unwrap_call(b, mctx, "lkrt_maybe_str_unwrap", *dst, *src);
             }
+            // `Maybe<f64>` carriers use the out-pointer `lkrt_*_get_out` shims:
+            // a by-value `{double, i64}` return is a mixed-class aggregate whose
+            // registers differ across targets, which Cranelift's scalar
+            // signatures cannot model portably (see the lkrt shims).
+            Inst::ListGetMaybeF64 { dst, handle, index } => {
+                return self.f64_pair_out(b, mctx, "lkrt_lklist_f64_get_out", *dst, &[*handle, *index]);
+            }
+            Inst::MapGetMaybeStrF64 { dst, handle, key } => {
+                return self.f64_pair_out(b, mctx, "lkrt_lkmap_str_f64_get_out", *dst, &[*handle, *key]);
+            }
+            Inst::MapGetMaybeI64F64 { dst, handle, key } => {
+                return self.f64_pair_out(b, mctx, "lkrt_lkmap_i64_f64_get_out", *dst, &[*handle, *key]);
+            }
+            // Narrow a `Maybe<f64>` to `f64`, aborting if absent (scalar args +
+            // scalar return — no aggregate ABI concern).
+            Inst::UnwrapMaybeF64 { dst, src } => {
+                let (value, present) = self.two(*src)?;
+                let clif_id = mctx.raw_func("lkrt_maybe_f64_unwrap", &[types::F64, types::I64], &[types::F64])?;
+                return self.call_raw(b, mctx, clif_id, Some(*dst), false, &[value, present]);
+            }
             Inst::TraitDispatch { dst, self_arg, arms } => {
                 return self.trait_dispatch(b, mctx, *dst, *self_arg, arms);
             }
@@ -858,7 +878,6 @@ impl Lower {
             Inst::CallVm { dst, func, args } => {
                 return self.call_vm(b, mctx, *dst, *func, args);
             }
-            _ => return Err(ClifError::Unsupported("instruction outside current slice")),
         }
         Ok(())
     }
@@ -1101,6 +1120,36 @@ impl Lower {
         let params = vec![types::I64; args.len()];
         let clif_id = mctx.raw_func(symbol, &params, &[types::I64, types::I64])?;
         self.call_raw(b, mctx, clif_id, Some(dst), true, &args)
+    }
+
+    /// Emit an `lkrt_*_get_out(args…, out_value: *f64, out_present: *i64)` call and
+    /// bind `dst` as a `{f64, i64}` carrier pair. Two stack slots receive the
+    /// components; their addresses are passed after the scalar `arg_ids`.
+    fn f64_pair_out(
+        &mut self,
+        b: &mut FunctionBuilder,
+        mctx: &mut ModuleCtx,
+        symbol: &'static str,
+        dst: ValueId,
+        arg_ids: &[ValueId],
+    ) -> Result<(), ClifError> {
+        let value_slot = b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3));
+        let present_slot = b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3));
+        let value_ptr = b.ins().stack_addr(types::I64, value_slot, 0);
+        let present_ptr = b.ins().stack_addr(types::I64, present_slot, 0);
+        let mut args = self.args_v(arg_ids)?;
+        args.push(value_ptr);
+        args.push(present_ptr);
+        // Params: one `I64` per scalar arg, then the two out-pointers; no return.
+        let mut params = vec![types::I64; arg_ids.len()];
+        params.push(types::I64);
+        params.push(types::I64);
+        let clif_id = mctx.raw_func(symbol, &params, &[])?;
+        self.call(b, mctx, clif_id, None, &args)?;
+        let value = b.ins().stack_load(types::F64, value_slot, 0);
+        let present = b.ins().stack_load(types::I64, present_slot, 0);
+        self.set2(dst, value, present);
+        Ok(())
     }
 
     /// Emit an `lkrt_maybe_*_unwrap(value, present) -> scalar` call: flatten the
