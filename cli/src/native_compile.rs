@@ -147,12 +147,13 @@ pub(super) fn compile_native_executable_from_artifact(
         Some((merged, bundles)) => (merged, bundles.clone()),
         None => (artifact, Vec::new()),
     };
-    // Strangler front (`docs/llvm/aot-redesign.md`): when opted in via
-    // `LK_AOT_CLIF`, try the Cranelift backend first. It covers a growing slice
-    // and emits a native object directly (no clang optimization pass); anything
-    // outside the slice returns `None`, falling through to the string-IR path
-    // below so no program regresses.
-    if env_flag("LK_AOT_CLIF") {
+    // Strangler front (`docs/llvm/aot-redesign.md`): the Cranelift backend is the
+    // default native path (opt out with `LK_AOT_CLIF=0`). It reaches full example
+    // parity with the string-IR path (pure-native + Tier 1 hybrid) and emits a
+    // native object directly (typed builder + verifier, no clang optimization
+    // pass); any shape it still rejects falls through to the string-IR path below,
+    // so no program regresses.
+    if clif_backend_enabled() {
         match lk_llvm::compile_artifact_to_clif_object(artifact, &bundles)? {
             Ok(clif) => {
                 if native_trace_enabled() {
@@ -338,6 +339,14 @@ pub(super) fn native_run_enabled_from_flags(force_vm: bool, vm_only: bool, vm_pr
 #[cfg(feature = "llvm")]
 pub(super) fn native_trace_enabled() -> bool {
     env_flag("LK_NATIVE_TRACE")
+}
+
+/// Whether the Cranelift backend drives the native compile. Default on since it
+/// reached full example + hybrid parity with the string-IR path; `LK_AOT_CLIF=0`
+/// opts back into string-IR-first (e.g. to compare, or as an escape hatch).
+#[cfg(feature = "llvm")]
+pub(super) fn clif_backend_enabled() -> bool {
+    std::env::var_os("LK_AOT_CLIF").is_none_or(|value| value != "0")
 }
 
 #[cfg(feature = "llvm")]
