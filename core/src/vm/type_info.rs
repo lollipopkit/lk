@@ -29,6 +29,20 @@
 //! Methods reference their compiled body by **function index**, never by a
 //! runtime value — that is what makes this serializable at all, and what lets
 //! the AOT path use it without a VM in the picture.
+//!
+//! # Not done yet
+//!
+//! The runtime `__lk_register_trait{,_impl}` calls are still emitted and still
+//! populate `TypeChecker`'s registry, so this data currently has one consumer
+//! (the AOT lowering) rather than being the single source. Removing the
+//! registration calls means the VM must build its registry from here instead,
+//! and that has a prerequisite: `TypeRegistry` holds method closures as
+//! `RuntimeVal` heap handles, and **the registry is not a GC root**
+//! (`ExecutorState::gc_roots` covers globals, stack, pending raise, and host
+//! roots). Today that is masked because a method is registered while its
+//! closure is still live in a register; registering up front, before execution,
+//! would not have that cover. So: make the registry a GC root first, then drop
+//! the registration calls.
 
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
