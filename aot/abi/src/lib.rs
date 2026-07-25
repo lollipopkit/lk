@@ -89,6 +89,8 @@ macro_rules! for_each_abi_fn {
             ("rt", "cell_new", lkrt_rt_cell_new, WritesHost, [DynVal], Ptr);
             ("rt", "cell_get", lkrt_rt_cell_get, ReadsHost, [Ptr], DynVal);
             ("rt", "cell_set", lkrt_rt_cell_set, WritesHost, [Ptr, DynVal], Nil);
+            // Early release of an arena container proven dead (scope drop).
+            ("rt", "handle_release", lkrt_rt_handle_release, WritesHost, [Ptr], Nil);
             // Native channels + goroutine threads (plan H: OS threads +
             // deep-copy isolate channels; ids are i64). Blocking send/recv,
             // Go close semantics (buffer drains, then raises), snapshot
@@ -487,6 +489,49 @@ pub fn find(module: &str, name: &str) -> Option<&'static AbiFn> {
     ABI_FUNCTIONS
         .iter()
         .find(|intrinsic| intrinsic.module == module && intrinsic.name == name)
+}
+
+/// Whether passing a container handle as this call's **receiver** (parameter 0)
+/// can make the runtime retain it past the call — i.e. store it somewhere that
+/// outlives the callee.
+///
+/// This drives the scope-drop pass (`lk_aot_mir::opt`), which frees a
+/// loop-local container at the end of its block. Getting it wrong is a
+/// use-after-free, so the default is `true` (assume retention) and only calls
+/// audited to merely *read or mutate* their receiver return `false`. A new ABI
+/// entry is conservative until someone adds it here deliberately.
+///
+/// Note the narrow question: it is only about parameter 0. A handle passed in
+/// any *other* position (`list_h.dyn_push(other, handle_as_value)`,
+/// `dyn.from_list(handle)`) is treated as escaping by the caller of this
+/// function, which is why boxing helpers do not need an entry.
+pub fn receiver_escapes(module: &str, name: &str) -> bool {
+    match module {
+        // Element access, length, membership, and in-place mutation all take
+        // the container as a receiver they do not store. `*_chain`/`*_slice*`/
+        // `*_iter_pairs` build a *fresh* container by copying elements — the
+        // receiver itself is not retained.
+        "list_h" | "map_h" | "set" => {
+            !(name.ends_with("_len")
+                || name.ends_with("_at")
+                || name.ends_with("_get_pair")
+                || name.ends_with("_push")
+                || name.ends_with("_set")
+                || name.ends_with("_set_ik")
+                || name.ends_with("_contains")
+                || name.ends_with("_has")
+                || name.ends_with("_join")
+                || name.ends_with("_eq")
+                || name.ends_with("_chain")
+                || name.ends_with("_slice")
+                || name.ends_with("_slice_from")
+                || name.ends_with("_iter_pairs")
+                || name.ends_with("_without"))
+        }
+        // Everything else — notably `dyn.from_list`/`from_map`, which box the
+        // handle into a value that outlives the call.
+        _ => true,
+    }
 }
 
 #[cfg(test)]

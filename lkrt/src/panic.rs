@@ -210,6 +210,31 @@ pub unsafe extern "C" fn lkrt_rt_cell_set(cell: *mut c_void, value: LkDyn) {
     unsafe { *(cell as *mut LkDyn) = value };
 }
 
+/// Releases an arena-owned container handle early, before `lkrt_cleanup`.
+///
+/// Emitted by the scope-drop pass for a container proven dead at the end of
+/// its block (`lk_aot_mir::opt`), so a loop that builds a temporary list per
+/// iteration does not grow the arena without bound. An unknown or already
+/// released pointer is a no-op rather than a double free, which keeps a
+/// lowering bug from turning into memory corruption.
+///
+/// # Safety
+/// `handle` must be a pointer previously returned by an arena container
+/// constructor, and must not be used afterwards.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_rt_handle_release(handle: *mut c_void) {
+    if handle.is_null() {
+        return;
+    }
+    let drop_fn = crate::state::with_runtime(|rt| rt.unregister_container(handle));
+    if let Some(drop_fn) = drop_fn {
+        // SAFETY: the arena stored this drop function alongside the pointer
+        // when the handle was registered, so the type matches. Removing it
+        // from the table first makes a second release a no-op.
+        unsafe { drop_fn(handle) };
+    }
+}
+
 #[cfg(all(test, not(miri)))]
 mod tests {
     use super::*;

@@ -237,3 +237,154 @@ fn optimized_module_still_validates() {
     assert_eq!(stats.dce_insts, 1, "the unused constant goes");
     crate::validate(&module).expect("still valid after");
 }
+
+/// A two-block loop: `bb0` jumps to `bb1`, which branches back to itself.
+/// `insts` go in the loop body (`bb1`).
+fn loop_func(insts: Vec<Inst>, cond: ValueId, extra_args: Vec<ValueId>) -> MirFunction {
+    MirFunction {
+        id: FuncId(0),
+        params: Vec::new(),
+        blocks: vec![
+            Block {
+                id: BlockId(0),
+                params: Vec::new(),
+                insts: vec![Inst::Const {
+                    dst: cond,
+                    value: Const::Bool(true),
+                }],
+                term: Term::Br {
+                    target: BlockId(1),
+                    args: Vec::new(),
+                },
+            },
+            Block {
+                id: BlockId(1),
+                params: Vec::new(),
+                insts,
+                term: Term::CondBr {
+                    cond,
+                    then_blk: BlockId(1),
+                    then_args: extra_args,
+                    else_blk: BlockId(2),
+                    else_args: Vec::new(),
+                },
+            },
+            Block {
+                id: BlockId(2),
+                params: Vec::new(),
+                insts: Vec::new(),
+                term: Term::Ret(None),
+            },
+        ],
+        entry: BlockId(0),
+        ret: Ty::I64,
+    }
+}
+
+fn released_handles(func: &MirFunction) -> Vec<ValueId> {
+    func.blocks
+        .iter()
+        .flat_map(|b| b.insts.iter())
+        .filter_map(|inst| match inst {
+            Inst::Call { callee, args, .. } if callee.module == "rt" && callee.name == "handle_release" => {
+                args.first().copied()
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn scope_drop_releases_a_loop_local_container() {
+    // `let tmp = []; tmp.push(1); tmp.len()` inside a loop body: the handle
+    // never leaves the block, so it is released at the end of each iteration.
+    let mut func = loop_func(
+        vec![
+            call(10, "list_h", "i64_new", &[]),
+            konst(11, 1),
+            Inst::Call {
+                dst: None,
+                callee: AbiRef::new("list_h", "i64_push"),
+                args: vec![ValueId(10), ValueId(11)],
+            },
+            call(12, "list_h", "i64_len", &[10]),
+        ],
+        ValueId(0),
+        Vec::new(),
+    );
+    assert_eq!(scope_drop_loop_locals(&mut func), 1);
+    assert_eq!(released_handles(&func), vec![ValueId(10)]);
+    // The release is the last instruction, i.e. after every use.
+    let body = &func.blocks[1].insts;
+    assert!(matches!(
+        body.last(),
+        Some(Inst::Call { callee, .. }) if callee.name == "handle_release"
+    ));
+}
+
+#[test]
+fn scope_drop_skips_a_handle_escaping_through_the_terminator() {
+    // The handle is passed as a block argument to the next iteration — it
+    // outlives this block, so releasing it would be a use-after-free.
+    let mut func = loop_func(
+        vec![call(10, "list_h", "i64_new", &[]), call(12, "list_h", "i64_len", &[10])],
+        ValueId(0),
+        vec![ValueId(10)],
+    );
+    assert_eq!(scope_drop_loop_locals(&mut func), 0);
+    assert!(released_handles(&func).is_empty());
+}
+
+#[test]
+fn scope_drop_skips_a_handle_stored_into_another_container() {
+    // `outer.push(tmp)` — the handle is a *value* argument, so the callee may
+    // retain it.
+    let mut func = loop_func(
+        vec![
+            call(9, "list_h", "dyn_new", &[]),
+            call(10, "list_h", "dyn_new", &[]),
+            Inst::Call {
+                dst: None,
+                callee: AbiRef::new("list_h", "dyn_push"),
+                args: vec![ValueId(9), ValueId(10)],
+            },
+        ],
+        ValueId(0),
+        vec![ValueId(9)],
+    );
+    assert_eq!(scope_drop_loop_locals(&mut func), 0, "the pushed handle must survive");
+    assert!(released_handles(&func).is_empty());
+}
+
+#[test]
+fn scope_drop_skips_a_handle_boxed_into_a_dyn() {
+    // `dyn.from_list(tmp)` retains the handle inside the boxed value, which
+    // `receiver_escapes` reports — even though `tmp` is the receiver.
+    let mut func = loop_func(
+        vec![call(10, "list_h", "i64_new", &[]), call(11, "dyn", "from_list", &[10])],
+        ValueId(0),
+        vec![ValueId(11)],
+    );
+    assert_eq!(scope_drop_loop_locals(&mut func), 0);
+    assert!(released_handles(&func).is_empty());
+}
+
+#[test]
+fn scope_drop_ignores_containers_outside_loops() {
+    // A straight-line function allocates once; the arena cleanup at exit is
+    // the right owner, and a release would just be dead work.
+    let mut func = one_block(
+        vec![call(10, "list_h", "i64_new", &[]), call(11, "list_h", "i64_len", &[10])],
+        Some(ValueId(11)),
+    );
+    assert_eq!(scope_drop_loop_locals(&mut func), 0);
+}
+
+#[test]
+fn scope_drop_skips_a_handle_read_by_a_later_block() {
+    let mut func = loop_func(vec![call(10, "list_h", "i64_new", &[])], ValueId(0), Vec::new());
+    // Block 2 reads the handle even though the terminator does not pass it.
+    func.blocks[2].insts.push(call(13, "list_h", "i64_len", &[10]));
+    assert_eq!(scope_drop_loop_locals(&mut func), 0);
+    assert!(released_handles(&func).is_empty());
+}

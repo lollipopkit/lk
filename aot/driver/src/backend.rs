@@ -59,13 +59,15 @@ pub fn compile_artifact_to_clif_object(
         let stats = lk_aot_mir::opt::optimize(&mut mir);
         if std::env::var_os("LK_AOT_OPT_STATS").is_some() {
             eprintln!(
-                "lk-aot opt: {} pure call(s) collapsed, {} dead inst(s) removed",
-                stats.cse_calls, stats.dce_insts
+                "lk-aot opt: {} pure call(s) collapsed, {} dead inst(s) removed, {} scope drop(s)",
+                stats.cse_calls, stats.dce_insts, stats.scope_drops
             );
             eprintln!(
                 "lk-aot opt: {} licm candidate(s)",
                 lk_aot_mir::opt::count_licm_candidates(&mir)
             );
+            let (in_loop, block_local) = lk_aot_mir::opt::count_loop_allocations(&mir);
+            eprintln!("lk-aot opt: {in_loop} loop allocation(s), {block_local} block-local");
         }
         // Optimization must preserve MIR validity; a violation here is our bug,
         // not a user-program limitation, so it fails loudly instead of falling back.

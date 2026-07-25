@@ -36,7 +36,10 @@ pub(crate) struct RuntimeState {
     owned_strings: HashSet<usize, FxBuildHasher>,
     /// Container handles (lists/maps) with their typed drop functions — the
     /// default arena of RFC aot-redesign §3.4, reclaimed by [`Self::cleanup`].
-    owned_containers: Vec<(usize, ContainerDrop)>,
+    /// Keyed by address so the scope-drop pass can release a loop-local
+    /// container early (`lkrt_rt_handle_release`) in O(1); without that a
+    /// long-running loop grows this table once per iteration.
+    owned_containers: HashMap<usize, ContainerDrop, FxBuildHasher>,
 }
 
 impl RuntimeState {
@@ -45,7 +48,7 @@ impl RuntimeState {
             next_handle: 0,
             resources: HashMap::with_hasher(FxBuildHasher),
             owned_strings: HashSet::with_hasher(FxBuildHasher),
-            owned_containers: Vec::new(),
+            owned_containers: HashMap::with_hasher(FxBuildHasher),
         }
     }
 }
@@ -132,8 +135,15 @@ impl RuntimeState {
 
     pub(crate) fn register_container(&mut self, ptr: *mut c_void, drop_fn: ContainerDrop) {
         if !ptr.is_null() {
-            self.owned_containers.push((ptr as usize, drop_fn));
+            self.owned_containers.insert(ptr as usize, drop_fn);
         }
+    }
+
+    /// Removes `ptr` from the arena, returning its drop function. `None` when
+    /// the handle is unknown (already released, or never arena-owned) — the
+    /// caller must then leave it alone.
+    pub(crate) fn unregister_container(&mut self, ptr: *mut c_void) -> Option<ContainerDrop> {
+        self.owned_containers.remove(&(ptr as usize))
     }
 
     pub(crate) fn cleanup(&mut self) {
@@ -145,7 +155,7 @@ impl RuntimeState {
                 drop(CString::from_raw(ptr as *mut c_char));
             }
         }
-        for (ptr, drop_fn) in self.owned_containers.drain(..) {
+        for (ptr, drop_fn) in self.owned_containers.drain() {
             // SAFETY: Each entry was registered by `arena_handle` with the drop
             // function matching the handle's concrete type; generated code never
             // uses a handle after `lkrt_cleanup` (it is the last call before exit).

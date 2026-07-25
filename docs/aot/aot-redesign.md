@@ -475,9 +475,19 @@ differential harness 直接解决"emit 签名 == helper 签名 == 运行结果 =
   1. **hybrid 桥的后续切片**(见 `tier1-hybrid.md` "Later slices"):typed-list Dyn tag
      (quoted 字符串列表返回)、`Dyn` 类型的桥**参数**(今天只 marshal 标量入桥)、
      opaque `Any` 值句柄、可变全局 snapshot/sync(`prescan.rs` 遇 `SetGlobal` 即判不合格)。
-  2. **§3.4 分级所有权只做到 arena**:全局 arena + concat 链已知死串的 eager
-     `lkrt_string_free` 已接入;**scope/RAII drop 未做**(长驻程序里非字符串的容器句柄
-     仍活到 `lkrt_cleanup`)。
+  2. **§3.4 分级所有权:arena + 字符串 eager free + 循环局部容器 scope drop**。
+     - 全局 arena 仍是默认;concat 链中已知死亡的字符串走 eager `lkrt_string_free`。
+     - **循环局部容器已加 scope drop**(`opt::scope_drop_loop_locals`):在循环体块内
+       构造、且每一次使用都是"非保留接收者调用"(`lk_aot_abi::receiver_escapes`,
+       默认保守为"会保留")、不经终结符/其他块逃逸的容器句柄,在块尾发
+       `rt.handle_release`。lkrt 的 arena 记账随之从 `Vec` 改为按地址索引的
+       `HashMap`,释放才是 O(1)。
+       **动机是实测的 VM/native 行为差异**:`for i in 0..2_000_000 { let tmp = [i, i+1, i+2]; … }`
+       在 native 下峰值 RSS **190 MB**(每次迭代的临时表全部留在 arena),VM 只有
+       **8.8 MB**(GC 回收);加 scope drop 后 native 降到 **4.7 MB**。
+     - 未做:一般化的逃逸分析。当前语料里循环内共 16 处容器构造,只有 1 处满足
+       "块内局部";其余是真逃逸(结果被累积到外层容器),本就该活着。跨块生命周期
+       + 参数捕获分析是下一步的前提。
   3. **§5 性能要点 2 已落地(收益实测有限)/要点 3 未落地**:
      - `Pure` 不再是死元数据 —— `aot/mir/src/opt.rs` 在 MIR 层做 `Pure` 调用 CSE + DCE
        (Cranelift 无法对不透明 `lkrt` 符号做这件事,只有 ABI schema 知道它纯)。

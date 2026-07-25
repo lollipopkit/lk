@@ -107,8 +107,8 @@ pub use net::{
     lkrt_tcp_read, lkrt_tcp_write_bytes, lkrt_tcp_write_str,
 };
 pub use panic::{
-    lkrt_rt_cell_get, lkrt_rt_cell_new, lkrt_rt_cell_set, lkrt_rt_current_error, lkrt_rt_raise_dyn, lkrt_rt_raise_msg,
-    lkrt_rt_try_pop, lkrt_rt_try_push,
+    lkrt_rt_cell_get, lkrt_rt_cell_new, lkrt_rt_cell_set, lkrt_rt_current_error, lkrt_rt_handle_release,
+    lkrt_rt_raise_dyn, lkrt_rt_raise_msg, lkrt_rt_try_pop, lkrt_rt_try_push,
 };
 pub use vm_mirror::{
     lkrt_lkmap_lit_finish_i64_f64, lkrt_lkmap_lit_finish_i64_i64, lkrt_lkmap_lit_finish_str_bool,

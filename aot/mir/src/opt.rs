@@ -65,7 +65,7 @@
 
 use std::collections::HashMap;
 
-use crate::{Block, FloatBinOp, Inst, IntBinOp, MirFunction, MirModule, Term, ValueId, inst_def};
+use crate::{AbiRef, Block, BlockId, FloatBinOp, Inst, IntBinOp, MirFunction, MirModule, Term, ValueId, inst_def};
 
 /// What a run of [`optimize`] changed. Returned for tests and for the
 /// `LK_AOT_OPT_STATS` reporting hook; callers may ignore it.
@@ -75,12 +75,14 @@ pub struct OptStats {
     pub cse_calls: usize,
     /// Dead pure-data instructions removed.
     pub dce_insts: usize,
+    /// Loop-local container handles released at the end of their block.
+    pub scope_drops: usize,
 }
 
 impl OptStats {
     /// Whether this run changed anything.
     pub fn is_empty(self) -> bool {
-        self.cse_calls == 0 && self.dce_insts == 0
+        self.cse_calls == 0 && self.dce_insts == 0 && self.scope_drops == 0
     }
 }
 
@@ -93,10 +95,163 @@ pub fn optimize(module: &mut MirModule) -> OptStats {
     for func in &mut module.functions {
         let cse = cse_pure_calls(func);
         let dce = eliminate_dead_insts(func);
+        // After DCE, so a handle whose only readers just died is visible as
+        // loop-local.
+        let drops = scope_drop_loop_locals(func);
         stats.cse_calls += cse;
         stats.dce_insts += dce;
+        stats.scope_drops += drops;
     }
     stats
+}
+
+/// Frees loop-local container handles at the end of the block that created
+/// them, so a loop allocating a temporary container per iteration does not
+/// grow the `lkrt` arena without bound.
+///
+/// # Why this is needed
+///
+/// Container handles are arena-owned: `lkrt_cleanup()` reclaims them at exit
+/// (RFC aot-redesign §3.4). That is fine for a short script and wrong for a
+/// loop — `for i in 0..2_000_000 { let tmp = [i, i+1, i+2]; … }` retains every
+/// temporary, measured at ~190 MB RSS against the VM's ~8.8 MB (the VM's GC
+/// collects them). This pass closes that specific gap.
+///
+/// # Why it is this conservative
+///
+/// A wrongly released handle is a use-after-free, so every condition below
+/// must hold, and anything unrecognized keeps the old arena behavior:
+///
+/// - the handle is created by a constructor call *inside a loop body* (no
+///   point paying for a release elsewhere);
+/// - every use is in the defining block, and the terminator does not carry it
+///   to another block (no cross-block liveness question);
+/// - every use passes it as the **receiver** (parameter 0) of a call that
+///   [`lk_aot_abi::receiver_escapes`] says does not retain it. A handle passed
+///   in any other position may be stored into another container, and a handle
+///   read by a non-call instruction is not analyzed at all.
+fn scope_drop_loop_locals(func: &mut MirFunction) -> usize {
+    let looped = loop_blocks(func);
+    let mut dropped = 0;
+    // Indexed rather than iterated: the body needs `&func` (for the cross-block
+    // escape check) before taking `&mut func.blocks[bi]`.
+    #[allow(clippy::needless_range_loop)]
+    for bi in 0..func.blocks.len() {
+        if !looped[bi] {
+            continue;
+        }
+        let candidates = block_local_handles(func, bi);
+        if candidates.is_empty() {
+            continue;
+        }
+        let block = &mut func.blocks[bi];
+        for handle in candidates {
+            block.insts.push(Inst::Call {
+                dst: None,
+                callee: AbiRef::new("rt", "handle_release"),
+                args: vec![handle],
+            });
+            dropped += 1;
+        }
+    }
+    dropped
+}
+
+/// Blocks that lie inside some loop (between a back-edge target and its
+/// source, in the lowering's leader-ordered block list).
+fn loop_blocks(func: &MirFunction) -> Vec<bool> {
+    let mut looped = vec![false; func.blocks.len()];
+    for (bi, block) in func.blocks.iter().enumerate() {
+        for target in term_targets(&block.term) {
+            if let Some(hi) = func.blocks.iter().position(|b| b.id == target)
+                && hi <= bi
+            {
+                for flag in looped.iter_mut().take(bi + 1).skip(hi) {
+                    *flag = true;
+                }
+            }
+        }
+    }
+    looped
+}
+
+fn term_targets(term: &Term) -> Vec<BlockId> {
+    match term {
+        Term::Br { target, .. } => vec![*target],
+        Term::CondBr { then_blk, else_blk, .. } => vec![*then_blk, *else_blk],
+        Term::Ret(_) | Term::Abort => Vec::new(),
+    }
+}
+
+/// Container handles constructed in block `bi` whose every use is a
+/// non-retaining receiver use inside that same block (see
+/// [`scope_drop_loop_locals`] for why each condition is required).
+fn block_local_handles(func: &MirFunction, bi: usize) -> Vec<ValueId> {
+    let block = &func.blocks[bi];
+    let mut created: Vec<ValueId> = Vec::new();
+    for inst in &block.insts {
+        if let Inst::Call {
+            dst: Some(dst), callee, ..
+        } = inst
+            && matches!(callee.module, "list_h" | "map_h" | "set")
+            && constructs_handle(callee.name)
+        {
+            created.push(*dst);
+        }
+    }
+    created.retain(|&handle| {
+        // Carried out of the block by the terminator (including block args)?
+        let mut term = block.term.clone();
+        if term_uses_mut(&mut term).into_iter().any(|u| *u == handle) {
+            return false;
+        }
+        // Read by any other block? (Block params rebind, so a same-id read
+        // elsewhere would still be this value.)
+        for (other, b) in func.blocks.iter().enumerate() {
+            if other == bi {
+                continue;
+            }
+            for inst in &b.insts {
+                let mut inst = inst.clone();
+                if uses_mut(&mut inst).into_iter().any(|u| *u == handle) {
+                    return false;
+                }
+            }
+            let mut t = b.term.clone();
+            if term_uses_mut(&mut t).into_iter().any(|u| *u == handle) {
+                return false;
+            }
+        }
+        // Every in-block use must be a non-retaining receiver use.
+        block.insts.iter().all(|inst| {
+            let mut probe = inst.clone();
+            let mentions = uses_mut(&mut probe).into_iter().any(|u| *u == handle);
+            if !mentions {
+                return true;
+            }
+            match inst {
+                Inst::Call { callee, args, .. } => {
+                    args.first() == Some(&handle)
+                        && args[1..].iter().all(|a| *a != handle)
+                        && !lk_aot_abi::receiver_escapes(callee.module, callee.name)
+                }
+                // Any other instruction reading the handle (a return value, a
+                // carrier, a bridge call) is not analyzed — keep the handle.
+                _ => false,
+            }
+        })
+    });
+    created
+}
+
+/// Whether an ABI call name allocates and returns a fresh container handle.
+fn constructs_handle(name: &str) -> bool {
+    name.ends_with("_new")
+        || name.ends_with("_chain")
+        || name.ends_with("_from_range")
+        || name.ends_with("_iter_pairs")
+        || name.ends_with("_slice")
+        || name.ends_with("_slice_from")
 }
 
 /// Block-local common-subexpression elimination over `Pure` ABI calls.
@@ -376,4 +531,85 @@ pub fn count_licm_candidates(module: &MirModule) -> usize {
         }
     }
     candidates
+}
+
+/// Counts container handles constructed **inside a loop body** — the working
+/// set a scope-drop pass would target. Like [`count_licm_candidates`] this is
+/// a measurement hook, not a transformation: it answers "how much garbage does
+/// a long-running loop accumulate in the lkrt arena".
+///
+/// Returns `(loop_constructions, of_which_block_local)`. The second number is
+/// the subset whose every use stays in the defining block — the only shape a
+/// conservative scope-drop could ever release without escape analysis.
+#[doc(hidden)]
+pub fn count_loop_allocations(module: &MirModule) -> (usize, usize) {
+    let mut in_loop = 0;
+    let mut block_local = 0;
+    for func in &module.functions {
+        // Blocks inside some loop: between a back-edge target and its source.
+        let mut looped = vec![false; func.blocks.len()];
+        for (bi, block) in func.blocks.iter().enumerate() {
+            let mut targets = Vec::new();
+            match &block.term {
+                Term::Br { target, .. } => targets.push(*target),
+                Term::CondBr { then_blk, else_blk, .. } => {
+                    targets.push(*then_blk);
+                    targets.push(*else_blk);
+                }
+                _ => {}
+            }
+            for target in targets {
+                if let Some(hi) = func.blocks.iter().position(|b| b.id == target)
+                    && hi <= bi
+                {
+                    for flag in looped.iter_mut().take(bi + 1).skip(hi) {
+                        *flag = true;
+                    }
+                }
+            }
+        }
+        for (bi, block) in func.blocks.iter().enumerate() {
+            if !looped[bi] {
+                continue;
+            }
+            for inst in &block.insts {
+                let Inst::Call {
+                    dst: Some(dst), callee, ..
+                } = inst
+                else {
+                    continue;
+                };
+                // Handle constructors: the `*_new` family plus the helpers
+                // that return a freshly allocated container.
+                let constructs = matches!(callee.module, "list_h" | "map_h" | "set")
+                    && (callee.name.ends_with("_new")
+                        || callee.name.ends_with("_chain")
+                        || callee.name.ends_with("_from_range")
+                        || callee.name.ends_with("_iter_pairs")
+                        || callee.name.ends_with("_slice")
+                        || callee.name.ends_with("_slice_from"));
+                if !constructs {
+                    continue;
+                }
+                in_loop += 1;
+                // Every use inside the defining block, and never handed to a
+                // terminator (which would carry it to another block).
+                let escapes_via_term = {
+                    let mut t = block.term.clone();
+                    term_uses_mut(&mut t).into_iter().any(|u| *u == *dst)
+                };
+                let used_elsewhere = func.blocks.iter().enumerate().any(|(other, b)| {
+                    other != bi
+                        && b.insts.iter().any(|i| {
+                            let mut i = i.clone();
+                            uses_mut(&mut i).into_iter().any(|u| *u == *dst)
+                        })
+                });
+                if !escapes_via_term && !used_elsewhere {
+                    block_local += 1;
+                }
+            }
+        }
+    }
+    (in_loop, block_local)
 }
