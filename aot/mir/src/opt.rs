@@ -504,17 +504,24 @@ fn immediate_dominators(func: &MirFunction) -> Option<Vec<Option<usize>>> {
     Some(idom)
 }
 
-/// Follows a rewrite chain to its root (`a → b → c` resolves to `c`).
-fn resolve(rewrite: &HashMap<ValueId, ValueId>, mut v: ValueId) -> ValueId {
-    // The chain is short by construction (a collapsed value is never a CSE
-    // table entry), but the bound keeps a malformed map from looping.
-    for _ in 0..64 {
-        match rewrite.get(&v) {
-            Some(&next) if next != v => v = next,
-            _ => return v,
+/// Maps a value to its CSE replacement, if any.
+///
+/// The map is flat by construction — a collapsed value is never itself a CSE
+/// table entry, so a replacement is never replaced again — and the assertion
+/// below states that invariant rather than papering over a violation of it.
+/// (An earlier version chased a chain with an iteration cap, which would have
+/// returned a *wrong* value silently had the invariant ever broken.)
+fn resolve(rewrite: &HashMap<ValueId, ValueId>, v: ValueId) -> ValueId {
+    match rewrite.get(&v) {
+        Some(&replacement) => {
+            debug_assert!(
+                !rewrite.contains_key(&replacement),
+                "CSE replacement {replacement:?} was itself replaced — the rewrite map must stay flat"
+            );
+            replacement
         }
+        None => v,
     }
-    v
 }
 
 /// Removes pure data instructions whose result is never read.
