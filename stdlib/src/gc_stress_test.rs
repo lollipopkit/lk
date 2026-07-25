@@ -6,12 +6,13 @@
 //! `[[Carol,293]] * 3` from a `map` building fresh lists.
 #[cfg(test)]
 mod tests {
+    use lk_core::vm::ModuleResolver;
     use std::sync::Arc;
 
     use anyhow::Result;
     use lk_core::{
         module::ModuleRegistry,
-        stmt::{ModuleResolver, stmt_parser::StmtParser},
+        stmt::stmt_parser::StmtParser,
         token::Tokenizer,
         val::RuntimeVal,
         vm::{ProgramResult, VmContext},

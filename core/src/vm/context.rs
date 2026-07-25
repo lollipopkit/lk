@@ -1,12 +1,12 @@
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
 use crate::util::fast_map::{FastHashMap, fast_hash_map_new};
+use crate::vm::ModuleResolver;
 use alloc::sync::Arc;
 
 use anyhow::{Result, anyhow};
 
 use crate::module::runtime_export_from_runtime_native;
-use crate::stmt::ModuleResolver;
 use crate::typ::TypeChecker;
 use crate::val::{HeapStore, HeapValue, RuntimeMapKey, RuntimeObject, RuntimeVal, ShortStr, Type, TypedMap};
 use crate::vm::{

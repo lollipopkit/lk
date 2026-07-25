@@ -1,8 +1,8 @@
+use lk_core::vm::ModuleResolver;
 use std::sync::Arc;
 
 use lk_core::{
     module::ModuleRegistry,
-    stmt::ModuleResolver,
     syntax::{ParseOptions, parse_program_source},
     typ::TypeChecker,
     vm::{VmContext, execute_program_with_ctx_and_budget},

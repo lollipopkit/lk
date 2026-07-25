@@ -1,5 +1,6 @@
 #[cfg(test)]
 mod tests {
+    use lk_core::vm::ModuleResolver;
     use lk_core::vm::ProgramExec;
     use std::sync::Arc;
 
@@ -8,7 +9,7 @@ mod tests {
     use chrono::{TimeZone, Utc};
     use lk_core::{
         module::ModuleRegistry,
-        stmt::{ModuleResolver, stmt_parser::StmtParser},
+        stmt::stmt_parser::StmtParser,
         token::Tokenizer,
         val::{HeapStore, HeapValue, RuntimeVal},
         vm::{NativeArgs, NativeFunction, NativeRuntime, ProgramResult, RuntimeModuleState, VmContext},

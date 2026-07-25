@@ -1,3 +1,4 @@
+use lk_core::vm::ModuleResolver;
 use lk_core::vm::ProgramExec;
 use std::path::{Path, PathBuf};
 #[cfg(feature = "aot")]
@@ -14,7 +15,7 @@ use lk_core::{
     macro_system::{AstMacroOrigin, MacroTokenOrigin, ProcMacroDependency},
     module::ModuleRegistry,
     package::{PackageGraph, PackageModule},
-    stmt::{ModuleResolver, import::collect_program_imports},
+    stmt::import::collect_program_imports,
     syntax::{expand_program_source, macro_origin_note_for_span, render_program, render_tokens, type_error_span},
     typ::TypeChecker,
     vm::{

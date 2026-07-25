@@ -737,11 +737,11 @@ fn resolve_macro_import_path(base_dir: &Path, raw: &str) -> Result<PathBuf, Stri
 
 #[cfg(test)]
 mod tests {
+    use crate::vm::ModuleResolver;
     use crate::vm::ProgramExec;
     use std::{fs, path::Path};
 
     use crate::{
-        stmt::ModuleResolver,
         syntax::{ParseOptions, expand_source, parse_program_source, render_tokens},
         vm::{VmContext, execute_source},
     };

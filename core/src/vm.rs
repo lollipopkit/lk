@@ -19,6 +19,7 @@ mod ir;
 #[cfg(test)]
 mod migration_guard;
 mod repl;
+mod resolver;
 mod runtime;
 #[allow(dead_code)]
 pub(crate) mod ssa;
@@ -32,10 +33,13 @@ pub use cache::*;
 pub use call_window::*;
 pub use compiler::*;
 pub use context::{MethodImpl, VmContext};
+#[cfg(test)]
+pub use exec::test_support;
 pub use exec::*;
 pub use gc::*;
 pub use ir::*;
 pub use repl::*;
+pub use resolver::*;
 pub use runtime::*;
 pub use type_info::*;
 

@@ -4,10 +4,11 @@ use crate::compat::prelude::*;
 mod tests {
     use crate::{
         expr::{Expr, Pattern},
-        stmt::{Program, Stmt, run_program_default, stmt_parser::StmtParser},
+        stmt::{Program, Stmt, stmt_parser::StmtParser},
         token::Tokenizer,
         val::{LiteralVal, RuntimeVal, ShortStr},
         vm::ProgramResult,
+        vm::test_support::run_program_default,
     };
 
     fn list_expr(values: Vec<Expr>) -> Expr {

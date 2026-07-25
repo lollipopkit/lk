@@ -8,10 +8,11 @@ mod tests {
 
     use crate::{
         expr::Expr,
-        stmt::{Program, Stmt, run_program, run_program_default, stmt_parser::StmtParser},
+        stmt::{Program, Stmt, stmt_parser::StmtParser},
         token::Tokenizer,
         typ::TypeChecker,
         val::{HeapStore, HeapValue, LiteralVal, RuntimeVal, ShortStr, TypedMap},
+        vm::test_support::{run_program, run_program_default},
         vm::{
             ProgramResult, VmContext, call_runtime_callable_runtime, call_runtime_callable_test,
             runtime_value_to_callable_shared,

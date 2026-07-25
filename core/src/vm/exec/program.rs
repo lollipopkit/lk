@@ -4,11 +4,9 @@ use alloc::sync::Arc;
 
 use anyhow::Result;
 
+use crate::vm::execute_imports;
 use crate::{
-    stmt::{
-        Program,
-        import::{collect_program_imports, execute_imports},
-    },
+    stmt::{Program, import::collect_program_imports},
     syntax::{ParseOptions, parse_program_source},
     val::{HeapStore, RuntimeVal},
     vm::{Compiler, GlobalSlot, ModuleArtifact, VmContext},
@@ -559,5 +557,27 @@ mod tests {
         let result = execute_compiled_module_with_ctx_and_budget(module, &mut enough_ctx, 5)
             .expect("budget should count each batched Move and complete");
         assert_eq!(result.returns.first(), Some(&RuntimeVal::Int(7)));
+    }
+}
+
+/// Test helpers for running a parsed program.
+///
+/// They live in the VM layer (and are re-exported from `stmt` for the existing
+/// call sites) because running a program is execution: keeping them in `stmt`
+/// meant the AST module depended on the executor even in test builds, which is
+/// exactly the cycle this move removes.
+#[cfg(test)]
+pub mod test_support {
+    use super::{ProgramExec, ProgramResult, VmContext};
+    use crate::stmt::Program;
+    use anyhow::Result;
+
+    pub fn run_program(program: &Program, ctx: &mut VmContext) -> Result<ProgramResult> {
+        program.execute_with_ctx(ctx)
+    }
+
+    pub fn run_program_default(program: &Program) -> Result<ProgramResult> {
+        let mut ctx = VmContext::new();
+        run_program(program, &mut ctx)
     }
 }

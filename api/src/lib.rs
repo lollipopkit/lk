@@ -6,12 +6,12 @@
 //! global state — this is exactly what the M0 "去全局状态" work enabled. Add a
 //! fuel budget to sandbox execution (the instruction-budget knob of M2.6).
 
+use lk_core::vm::ModuleResolver;
 use lk_core::vm::ProgramExec;
 use std::sync::Arc;
 
 use anyhow::Result;
 use lk_core::module::ModuleRegistry;
-use lk_core::stmt::ModuleResolver;
 use lk_core::syntax::{ParseOptions, parse_program_source};
 use lk_core::typ::TypeChecker;
 use lk_core::vm::{NativeFunction, VmContext, execute_program_with_ctx_and_limits};
@@ -470,7 +470,7 @@ impl HybridModule {
         lk_stdlib::register_stdlib_modules(&mut registry)?;
         let resolver = Arc::new(ModuleResolver::with_registry(registry));
         let mut ctx = VmContext::new().with_resolver(Arc::clone(&resolver));
-        lk_core::stmt::import::execute_imports(&imports, resolver.as_ref(), &mut ctx)?;
+        lk_core::vm::execute_imports(&imports, resolver.as_ref(), &mut ctx)?;
         Ok(Self { module, ctx })
     }
 
@@ -512,6 +512,7 @@ impl Default for Vm {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lk_core::vm::ModuleResolver;
 
     #[test]
     fn eval_returns_value() {

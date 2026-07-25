@@ -28,6 +28,8 @@ mod value_ops;
 
 pub use super::RuntimeCallable;
 pub use imports::import_runtime_export;
+#[cfg(test)]
+pub use program::test_support;
 pub use program::{
     ModuleFunctionArg, ModuleFunctionCall, ModuleFunctionOutcome, ProgramExec, call_module_function_with_ctx,
     call_module_function_with_ctx_keep_state, compile_program_module_with_ctx, execute_compiled_module_with_ctx,
