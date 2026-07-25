@@ -9,7 +9,7 @@ the architecture decisions; the staged sub-steps at the bottom are the
 implementation record. Key anchors today: `aot/lower/src/lib.rs`
 (eligibility + mark/rerun fixpoint), `aot/mir` (`Inst::CallVm { dst }`),
 `aot/codegen` (bridge marshaling + call lowering), `api/src/lib.rs::ffi`
-(`lk_hybrid_*`), `llvm/src/native_executable.rs` (hybrid wrapper + link).
+(`lk_hybrid_*`), `aot/driver/src/native_executable.rs` (hybrid wrapper + link).
 
 > **Codegen backend note:** `aot/codegen` no longer renders LLVM text — the
 > string-IR renderer was replaced by the **Cranelift** backend

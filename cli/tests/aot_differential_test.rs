@@ -1,9 +1,9 @@
-//! Differential harness (docs/llvm/aot-redesign.md §6): every case is compiled
+//! Differential harness (docs/aot/aot-redesign.md §6): every case is compiled
 //! natively through the MIR pipeline (the only backend) and executed, then run
 //! under the bytecode VM, and the observable behaviour (stdout + success/failure)
 //! must match exactly, and the emitted IR must come from the
 //! `lk-aot-lower` → `lk-aot-codegen` path.
-#![cfg(feature = "llvm")]
+#![cfg(feature = "aot")]
 
 use std::ffi::OsStr;
 use std::fs::{self, File, create_dir_all};

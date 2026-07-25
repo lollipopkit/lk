@@ -160,7 +160,7 @@ fn seed_module_globals(slots: &[GlobalSlot], ctx: &VmContext, heap: &mut HeapSto
 
 /// A scalar argument for [`call_module_function_with_ctx`]. The Tier 1 hybrid
 /// bridge marshals native scalars into VM values with these tags — containers
-/// and closures are deliberately absent (see `docs/llvm/tier1-hybrid.md`).
+/// and closures are deliberately absent (see `docs/aot/tier1-hybrid.md`).
 #[derive(Debug, Clone, PartialEq)]
 pub enum ModuleFunctionArg {
     Nil,
@@ -213,7 +213,7 @@ pub fn call_module_function_with_ctx(
 }
 
 /// Call one function of a compiled module with positional scalar arguments —
-/// the Tier 1 hybrid bridge entry (`docs/llvm/tier1-hybrid.md`): globals and
+/// the Tier 1 hybrid bridge entry (`docs/aot/tier1-hybrid.md`): globals and
 /// builtins are seeded exactly like a module run, but `function_index` is
 /// invoked instead of the entry, against a fresh per-call state. Bridge-eligible
 /// functions touch no user globals (the lowering proves it), so per-call state

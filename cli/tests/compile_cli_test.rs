@@ -500,7 +500,7 @@ fn test_compile_with_import_writes_module_artifact_output() {
     let _ = fs::remove_dir_all(&dir);
 }
 
-#[cfg(feature = "llvm")]
+#[cfg(feature = "aot")]
 #[test]
 fn test_source_run_defaults_to_vm_and_cached_native_is_opt_in() {
     let dir = unique_tmp_dir("native_cache_run");

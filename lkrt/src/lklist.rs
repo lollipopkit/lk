@@ -1,7 +1,7 @@
 //! Growable typed list handles for AOT (Phase 2 container handle-ification).
 //!
 //! Unlike the legacy caller-allocated fixed `[4096 x T]` buffers (see
-//! `docs/llvm/native-stdlib.md`), a list is an opaque `*mut Vec<T>` handle that
+//! `docs/aot/native-stdlib.md`), a list is an opaque `*mut Vec<T>` handle that
 //! grows without bound. Handles live in the runtime's default arena
 //! (aot-redesign §3.4): registered on creation and reclaimed by `lkrt_cleanup`,
 //! which generated entry code calls on the clean exit path.

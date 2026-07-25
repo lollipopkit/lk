@@ -10,7 +10,7 @@
 //!
 //! Deterministic by default; scale with `LK_FUZZ_CASES`, reseed with
 //! `LK_FUZZ_SEED`. Failures print the seed and full program source.
-#![cfg(feature = "llvm")]
+#![cfg(feature = "aot")]
 
 use std::fmt::Write as _;
 use std::fs::{self, File};
@@ -656,7 +656,7 @@ impl Generator {
         }
     }
 
-    /// Tier 1 hybrid shape (`docs/llvm/tier1-hybrid.md`): an *eligible-but-
+    /// Tier 1 hybrid shape (`docs/aot/tier1-hybrid.md`): an *eligible-but-
     /// unsupported* helper — its body prints through a *dynamic format
     /// string* (the documented println reject; try/catch used to be the
     /// ingredient until plan G lowered it natively and silently degraded the

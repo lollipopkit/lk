@@ -82,7 +82,7 @@ pub(crate) struct SigInfer {
     /// Tier 1 hybrid: functions whose bodies did not lower but whose call
     /// sites bridge into the embedded VM (`fidx → scalar marshaling types`).
     /// Empty during the fixpoint; filled between the failing final pass and
-    /// its hybrid retry (`docs/llvm/tier1-hybrid.md`).
+    /// its hybrid retry (`docs/aot/tier1-hybrid.md`).
     pub(crate) vm_functions: std::collections::HashMap<u32, Vec<Ty>>,
     /// Import-derived name bindings (aliases, module items, bundled files).
     pub(crate) imports: ImportEnv,

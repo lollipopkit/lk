@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-#[cfg(feature = "llvm")]
+#[cfg(feature = "aot")]
 use std::process::Command;
 use std::sync::{Arc, Once};
 
@@ -7,7 +7,7 @@ static PERF_TRACE_INIT: Once = Once::new();
 const DEFAULT_TRACE_FILTER: &str = "lk::vm::alloc=trace,lk::vm::slowpath=debug,lk_core=info,lk_cli=info";
 
 use clap::{Parser, Subcommand, ValueEnum};
-#[cfg(feature = "llvm")]
+#[cfg(feature = "aot")]
 use lk_core::macro_system::{ProcMacroDependencyFingerprint, fingerprint_proc_macro_dependencies};
 use lk_core::{
     macro_system::{AstMacroOrigin, MacroTokenOrigin, ProcMacroDependency},
@@ -86,7 +86,7 @@ enum Commands {
         /// 支持 `lk compile [TARGET] [FILE]`（默认编译 exe；省略 FILE 时自动查找当前目录入口）
         #[arg(value_name = "ARGS", num_args = 0..=2)]
         positional: Vec<String>,
-        #[cfg(feature = "llvm")]
+        #[cfg(feature = "aot")]
         /// 输出文件路径（针对默认 exe 目标指定最终可执行文件路径）
         #[arg(long)]
         output: Option<PathBuf>,
@@ -393,12 +393,12 @@ fn main() -> anyhow::Result<()> {
         match cmd {
             Commands::Compile {
                 positional,
-                #[cfg(feature = "llvm")]
+                #[cfg(feature = "aot")]
                     output: output_arg,
             } => {
                 let (pos_target, safe) = split_compile_args(&positional)?;
 
-                #[cfg(feature = "llvm")]
+                #[cfg(feature = "aot")]
                 let output = output_arg
                     .map(|p| {
                         sanitize_path(p.to_string_lossy().as_ref()).inspect_err(|e| {
@@ -409,7 +409,7 @@ fn main() -> anyhow::Result<()> {
 
                 let compile_mode = pos_target;
 
-                #[cfg(feature = "llvm")]
+                #[cfg(feature = "aot")]
                 if compile_mode != CompileMode::Exe && output.is_some() {
                     anyhow::bail!("--output is only supported for `lk compile <FILE>`");
                 }
@@ -420,11 +420,11 @@ fn main() -> anyhow::Result<()> {
                         return Ok(());
                     }
                     CompileMode::Exe => {
-                        #[cfg(not(feature = "llvm"))]
+                        #[cfg(not(feature = "aot"))]
                         anyhow::bail!(
-                            "native backend disabled at build time; rebuild with `--features llvm` to compile native executables"
+                            "native backend disabled at build time; rebuild with `--features aot` to compile native executables"
                         );
-                        #[cfg(feature = "llvm")]
+                        #[cfg(feature = "aot")]
                         {
                             compile_executable(&safe, output.as_deref())?;
                             return Ok(());
@@ -492,7 +492,7 @@ fn main() -> anyhow::Result<()> {
     let input =
         String::from_utf8(raw).map_err(|e| anyhow::anyhow!("Input file is not valid UTF-8 LK source: {}", e))?;
 
-    #[cfg(feature = "llvm")]
+    #[cfg(feature = "aot")]
     if try_execute_cached_native(&safe, input.as_bytes())? {
         return Ok(());
     }
@@ -949,11 +949,11 @@ fn register_package_modules(resolver: &ModuleResolver, modules: &[PackageModule]
 /// binding map goes to the lowering. Only *pure function-definition* modules
 /// bundle (an entry with top-level effects, nested file imports, or non-file
 /// import forms in the dep fails → the caller falls back to Tier 0).
-#[cfg(feature = "llvm")]
+#[cfg(feature = "aot")]
 fn bundle_file_imports(
     source: &Path,
     artifact: &ModuleArtifact,
-) -> anyhow::Result<Option<(ModuleArtifact, Vec<lk_llvm::BundledImport>)>> {
+) -> anyhow::Result<Option<(ModuleArtifact, Vec<lk_aot::BundledImport>)>> {
     use lk_core::stmt::{ImportSource, ImportStmt};
     use lk_core::vm::{Instr, Opcode};
 
@@ -1109,7 +1109,7 @@ fn bundle_file_imports(
                 .ok_or_else(|| anyhow::anyhow!("bundled import '{import_path}': dangling fn binding"))?;
             fns.insert(name, merged_fidx);
         }
-        bundles.push(lk_llvm::BundledImport { path: import_path, fns });
+        bundles.push(lk_aot::BundledImport { path: import_path, fns });
     }
     Ok(Some((merged, bundles)))
 }

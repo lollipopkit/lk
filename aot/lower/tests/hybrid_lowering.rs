@@ -1,4 +1,4 @@
-//! Tier 1 hybrid lowering tests (`docs/llvm/tier1-hybrid.md`): with hybrid
+//! Tier 1 hybrid lowering tests (`docs/aot/tier1-hybrid.md`): with hybrid
 //! mode on, a reachable non-entry function whose body does not lower is marked
 //! VM-executed when bridge-eligible (scalar params, no captures, transitively
 //! user-global-free) and its call sites become `call.vm`; anything outside

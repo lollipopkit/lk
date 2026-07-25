@@ -445,7 +445,7 @@ impl HostModule {
 /// Scalar argument for [`HybridModule::call_discard`] (re-exported core type).
 pub use lk_core::vm::ModuleFunctionArg as HybridArg;
 
-/// Tier 1 hybrid bridge (`docs/llvm/tier1-hybrid.md`): a decoded module
+/// Tier 1 hybrid bridge (`docs/aot/tier1-hybrid.md`): a decoded module
 /// artifact plus an isolated VM context, so a native binary can execute
 /// individual VM-only functions of the *same* module it was compiled from.
 /// The artifact goes through the verified decode path (`from_json_str` →
@@ -492,7 +492,7 @@ impl HybridModule {
     /// Call function `function_index` and keep the per-call state alive so
     /// heap-backed results (returned *or raised*) stay readable — the v2
     /// bridge marshals them into native memory before dropping the outcome
-    /// (`docs/llvm/tier1-hybrid.md` v2).
+    /// (`docs/aot/tier1-hybrid.md` v2).
     pub fn call_keep_state(
         &mut self,
         function_index: u32,
@@ -864,7 +864,7 @@ pub mod ffi {
         }
     }
 
-    // ---- Tier 1 hybrid bridge (docs/llvm/tier1-hybrid.md) -------------------
+    // ---- Tier 1 hybrid bridge (docs/aot/tier1-hybrid.md) -------------------
     //
     // Process-singleton by design: a hybrid native binary embeds exactly one
     // module artifact, and threading a handle through every generated function

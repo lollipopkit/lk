@@ -226,7 +226,7 @@ pub enum Inst {
         arms: Vec<(i64, FuncId)>,
     },
     /// `dst = call.vm f{func}(args)` — a Tier 1 bridge call to a VM-executed
-    /// function of this module (`docs/llvm/tier1-hybrid.md`): the callee's body
+    /// function of this module (`docs/aot/tier1-hybrid.md`): the callee's body
     /// did not lower, so codegen marshals the scalar arguments into tagged
     /// bridge values and calls the bridge. `dst` is always bound as [`Ty::Dyn`]
     /// (v2: results flow back as `LkDyn` via `lk_hybrid_call_r`); codegen

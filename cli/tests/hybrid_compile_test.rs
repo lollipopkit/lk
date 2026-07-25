@@ -1,9 +1,9 @@
-//! Tier 1 hybrid end-to-end (`docs/llvm/tier1-hybrid.md`, opt-in via
+//! Tier 1 hybrid end-to-end (`docs/aot/tier1-hybrid.md`, opt-in via
 //! `LK_AOT_HYBRID=1`): a program whose helper does not lower natively compiles
 //! to a *hybrid* executable (native code + bridged VM-executed function), and
 //! its observable behaviour matches the VM exactly — stdout, ordering across
 //! the native/VM stdio boundary, and exit codes for uncaught errors.
-#![cfg(feature = "llvm")]
+#![cfg(feature = "aot")]
 
 use std::path::PathBuf;
 use std::process::Command;

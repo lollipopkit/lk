@@ -29,7 +29,7 @@ void lk_vm_free(LkVm *vm);
 /* Free a string returned by lk_vm_eval. */
 void lk_string_free(char *s);
 
-/* ---- Tier 1 hybrid bridge (docs/llvm/tier1-hybrid.md) --------------------
+/* ---- Tier 1 hybrid bridge (docs/aot/tier1-hybrid.md) --------------------
  * A hybrid native binary embeds its module artifact and calls VM-executed
  * functions through this one-way bridge. Process-singleton by design.
  */

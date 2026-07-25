@@ -67,7 +67,7 @@ fn link_and_run(tag: &str, object: &[u8]) -> (String, bool) {
     std::fs::create_dir_all(&workdir).expect("create work dir");
     let exe = workdir.join("prog");
     let stamp = workdir.join("prog.src");
-    lk_llvm::compile_native_executable_from_object(&stamp, &exe, object).expect("link native object against lkrt");
+    lk_aot::compile_native_executable_from_object(&stamp, &exe, object).expect("link native object against lkrt");
     let run = Command::new(&exe).output().expect("run the compiled executable");
     let stdout = String::from_utf8_lossy(&run.stdout).into_owned();
     let success = run.status.success();

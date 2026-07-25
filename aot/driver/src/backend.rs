@@ -1,3 +1,14 @@
+//! Native backend entry point.
+//!
+//! Lowers `ModuleArtifact`s through the typed MIR pipeline
+//! (`lk-aot-lower` → `lk_aot_mir::validate` → `lk-aot-codegen`'s Cranelift
+//! backend). A shape the lowering rejects is surfaced as a precise `Unsupported`
+//! reason (inner `Err(String)`), which the caller (`lk compile`) turns into a
+//! Tier 0 VM-bundle fallback. Tier 1 hybrid is *not* a whole-module VM shell:
+//! only the marked non-lowering helpers are VM-executed, bridged from native
+//! code — `ClifArtifact::vm_function_count` tells the caller to embed the module
+//! artifact and link lk-api (see `compile_native_executable_from_object_hybrid`).
+
 use anyhow::{Result, bail};
 
 use crate::vm::ModuleArtifact;
@@ -29,7 +40,7 @@ pub fn compile_artifact_to_clif_object(
     bundles: &[lk_aot_lower::BundledImport],
 ) -> Result<std::result::Result<ClifArtifact, String>> {
     // `LK_AOT_HYBRID` on unless `=0`: a reachable helper that does not lower
-    // natively is bridged to the VM (`docs/llvm/tier1-hybrid.md`).
+    // natively is bridged to the VM (`docs/aot/tier1-hybrid.md`).
     let hybrid = std::env::var_os("LK_AOT_HYBRID").is_none_or(|value| value != "0");
     let mir = match lk_aot_lower::lower_bundled(artifact, bundles, hybrid) {
         Ok(mir) => mir,

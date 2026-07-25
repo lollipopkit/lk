@@ -1,5 +1,5 @@
 //! Conformance of lkrt's exported symbols against the shared ABI schema
-//! (single source of truth, `docs/llvm/aot-redesign.md` §3.3).
+//! (single source of truth, `docs/aot/aot-redesign.md` §3.3).
 //!
 //! Both this module and `lk_aot_abi::ABI_FUNCTIONS` expand from the same
 //! `for_each_abi_fn!` data macro, so every schema entry is checked here by

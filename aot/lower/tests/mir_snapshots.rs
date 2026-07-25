@@ -1,4 +1,4 @@
-//! MIR snapshot tests (docs/llvm/aot-redesign.md §6): real LK source is compiled
+//! MIR snapshot tests (docs/aot/aot-redesign.md §6): real LK source is compiled
 //! to bytecode, lowered, and rendered with `lk_aot_mir::render`. The snapshots are
 //! the review surface for lowering changes — they are stable against codegen
 //! (LLVM-text) churn by construction.

@@ -24,7 +24,7 @@
 //!
 //! Anything outside this subset (dynamic indexing, list mutation, maps, closures,
 //! non-`i64` function ABIs, …) returns `Unsupported`; the caller falls back to the
-//! legacy backend. See `docs/llvm/aot-redesign.md` §7/§9.5.
+//! legacy backend. See `docs/aot/aot-redesign.md` §7/§9.5.
 //!
 //! (Trivial-phi elimination is intentionally omitted: the constructed SSA is
 //! correct but not minimal — a self-referential loop phi is valid LLVM and is left
@@ -86,7 +86,7 @@ pub fn lower(artifact: &ModuleArtifact) -> Result<MirModule, Unsupported> {
 /// non-entry function whose body does not lower can be marked *VM-executed*
 /// instead of failing the module, provided it is bridge-eligible (scalar
 /// parameters, no captures or lambda machinery, transitively user-global-free
-/// — see `docs/llvm/tier1-hybrid.md`).
+/// — see `docs/aot/tier1-hybrid.md`).
 pub fn lower_with_hybrid(artifact: &ModuleArtifact, hybrid: bool) -> Result<MirModule, Unsupported> {
     lower_bundled(artifact, &[], hybrid)
 }

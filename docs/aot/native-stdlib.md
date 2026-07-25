@@ -1,10 +1,14 @@
-# LLVM Native Stdlib Architecture
+# AOT Native Stdlib Architecture
 
 ## Goal
 
-LLVM AOT binaries may link a small native runtime, but they must remain true
+AOT binaries may link a small native runtime, but they must remain true
 native executables. The runtime boundary is for typed host primitives and helper
 code, not for running LK bytecode.
+
+> Naming note: this document predates the Cranelift migration and the
+> `llvm` → `lk-aot` crate rename, so "LLVM" below should be read as "the
+> native AOT backend" wherever it describes current rules.
 
 ## Binary Boundary
 
@@ -27,14 +31,14 @@ Stdlib support has two sources:
 
 - Pure stdlib logic lives as LK source and is compiled through the normal
   compiler, VM IR, and LLVM lowering pipeline.
-- Runtime stdlib modules live in `lk-stdlib`; `lk-llvm` may read the stdlib
-  registry at compile time to discover module/global availability and display
-  metadata without making `lk-core` depend on stdlib.
-- Host-only primitives live in `lkrt` and are exposed through typed LLVM
+- Runtime stdlib modules live in `lk-stdlib`; the AOT lowering may read the
+  stdlib registry at compile time to discover module/global availability and
+  display metadata without making `lk-core` depend on stdlib.
+- Host-only primitives live in `lkrt` and are exposed through typed ABI
   capability mappings.
 
-LLVM lowering must not reimplement full stdlib method bodies with ad hoc string
-matches. It may call monomorphized LK stdlib functions or typed `lkrt`
+Native lowering must not reimplement full stdlib method bodies with ad hoc
+string matches. It may call monomorphized LK stdlib functions or typed `lkrt`
 intrinsics.
 
 ## ABI Rules
@@ -93,11 +97,16 @@ intrinsics.
   as the default native ABI.
 - Generic runtime-value ABI is not allowed as a silent fallback. If a shape is
   not native-lowerable, the compiler must report a concrete unsupported reason.
-- Any future exported C ABI in `lkrt` must be isolated there and audited; LLVM
+- Any future exported C ABI in `lkrt` must be isolated there and audited; code
   outside `lkrt` must not introduce unsafe code.
-- Host-effect intrinsic metadata lives in `lk-llvm`'s native intrinsic registry.
-  The registry is the source for `lkrt_*` LLVM declarations and records each
-  intrinsic's typed signature and effect (`Pure`, `ReadsHost`, or `WritesHost`).
+- Host-effect intrinsic metadata lives in the `aot/abi` schema
+  (`for_each_abi_fn!`), not in the AOT driver — the old `llvm` crate's `intrinsics.rs`
+  registry retired with the legacy text backend. The schema
+  records each intrinsic's typed signature and effect (`Pure`, `ReadsHost`, or
+  `WritesHost`) and is the single source for the codegen-side declarations and
+  the lkrt conformance test. **TODO(perf):** `Pure` is currently only
+  documentation — the Cranelift backend does not translate it into a
+  CSE/hoist-enabling call attribute the way the retired LLVM text path did.
 
 ## Implementation Shape
 
@@ -106,12 +115,14 @@ The native stdlib path is:
 ```text
 LK user code
   -> Compiler / ModuleArtifact compile-time boundary
-  -> lk-llvm shape analysis, stdlib discovery, and monomorphization
-  -> direct LLVM IR + typed calls to lkrt
-  -> clang links IR with liblkrt.a
+  -> aot/lower: shape analysis, stdlib discovery, monomorphization -> MIR
+  -> aot/codegen (clif.rs): MIR -> Cranelift IR -> native object
+  -> clang (link driver only) links the object with liblkrt.a
 ```
 
 `lkrt` is linked at final executable build time. It must not depend on `lk-core`
 or `lk-stdlib`; that keeps parser/compiler/VM code out of the final binary.
-`lk-llvm` is a compile-time crate and may depend on both `lk-core` and
-`lk-stdlib`; the CLI only connects it when the `llvm` feature is enabled.
+`lk-aot-lower` is a compile-time crate and may depend on both `lk-core` and
+`lk-stdlib`; the CLI only connects the AOT path when the `aot` feature is
+enabled. A Tier 1 hybrid binary additionally links `liblk_api.a` for the
+bridge (see [`tier1-hybrid.md`](./tier1-hybrid.md)).

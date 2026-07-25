@@ -28,7 +28,7 @@ By default the runner measures the same bytecode VM path used by direct
 `LK_NATIVE_RUN=1` is explicitly provided, so an exported shell native-cache flag
 does not accidentally change the default VM baseline. Use `RUN_AOT=1` to compile
 and measure native AOT as an additional explicit engine. If the native backend
-is disabled (build without `--features llvm`) or the current workload artifact
+is disabled (build without `--features aot`) or the current workload artifact
 is not native lowerable yet, AOT is reported as skipped and the VM/Lua benchmark
 still runs. Since the legacy text backend retired, AOT coverage equals the MIR
 pipeline's subset.

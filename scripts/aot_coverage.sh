@@ -2,7 +2,7 @@
 # AOT native-lowering coverage scan (M4.2): tries a native `lk compile` on every
 # example and tallies the Unsupported reasons, so "deep coverage" work stays
 # data-driven. Usage:
-#   cargo build -p lk-cli --features llvm && bash scripts/aot_coverage.sh
+#   cargo build -p lk-cli --features aot && bash scripts/aot_coverage.sh
 # Output: per-file OK/FAIL lines on stdout, reason ranking on stderr.
 set -u
 LK_BIN="${LK_BIN:-./target/debug/lk}"

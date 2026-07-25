@@ -409,7 +409,7 @@ pub(crate) fn lower_user_call(
         ssa.builtin_regs.insert((block, dst_reg), GlobalRef::Closure(lf, caps));
         return Ok(());
     }
-    // Tier 1 bridge call (`docs/llvm/tier1-hybrid.md`): the callee runs on the
+    // Tier 1 bridge call (`docs/aot/tier1-hybrid.md`): the callee runs on the
     // embedded VM. Arguments must match the recorded scalar marshaling types;
     // the destination register binds as `Dyn` (v2: the bridge returns an
     // `LkDyn` by value) — codegen degrades a never-read destination back to

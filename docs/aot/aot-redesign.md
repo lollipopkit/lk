@@ -2,8 +2,9 @@
 
 > 状态:**已实现,legacy text 后端已退役**(核心设计 §2-§6 全部落地,MIR 管线为
 > **唯一后端**;实现记录见 §9.5。§7 约定的 legacy 退役已完成:约 -4.8 万行,
-> `use_mir_pipeline`/`allow_legacy_fallback`/`LK_AOT_MIR`/`LK_AOT_LEGACY` 开关一并移除;
-> 剩余项均为 §1 划定的非目标——阶段 4 闭包/间接调用/可变全局/方法分派与模块 builtin)。目标是把当前 LLVM
+> `use_mir_pipeline`/`allow_legacy_fallback`/`LK_AOT_MIR`/`LK_AOT_LEGACY` 开关一并移除。
+> §7 阶段 4(原列为非目标)的可变全局/方法分派/函数地址/`try` 事后也已落地,纯原生
+> 覆盖 51/51 examples;当前剩余待办见 §9.5 末尾三条)。目标是把当前 LLVM
 > AOT 后端从"文本 IR 拼接 + 分析发射交织 + 逐 shape 手写"重构为"类型化中间表示(MIR)+
 > 结构化 SSA 发射 + 单一真相 ABI + 句柄化运行时"。要求:**高性能、现代设计规范、
 > 清晰项目结构、优雅**。
@@ -457,13 +458,22 @@ differential harness 直接解决"emit 签名 == helper 签名 == 运行结果 =
     7 个 CLI 集成测试改写为 MIR 路径断言。**差分测试当场抓出并修复 legacy 后端一个真实分歧**:
     `return nil;` legacy native 打印 `nil`,VM 与 MIR 管线都打印空——改写后的 CLI 测试现在锁定
     正确(VM)行为。
-- **RFC 状态:核心设计(§2-§6)全部落地;按 §1 非目标划界的剩余项**:
-  1. 闭包/间接调用/可变全局(§7 阶段 4)= **本 RFC 明确的非目标**,扩展点已就位
-     (`Ty` 封闭枚举加变体 + lower 加 arm 即可);`__lk_call_method` 动态方法分派
-     (list `.sort()`/`.pop()` 等)同属此类,现回退 legacy。
-  2. 删除 legacy text 后端(§7 "旧路径在被完全替换前保留为 fallback 对拍基准"):
-     待 MIR 覆盖吸收 legacy 独有形状(方法分派/对象/try 等)后整体退役,连同其 34 个
-     pinned 结构断言测试与 `dynamic_containers/`(预计 -2~4 万行)。
+- **§7 阶段 4(原列为"非目标")— ✅ 事后已落地**:可变全局(`Inst::GlobalGet`/
+  `GlobalSet` + 全局载体)、方法分派(`Inst::TraitDispatch`)、函数地址
+  (`Const::FnAddr`)、`try`(`Inst::TryCall`,lkrt C `setjmp` trampoline)均已进 MIR,
+  正如 §3.1 所预期的"加枚举变体 + 加 lower arm"。legacy text 后端也已整体退役
+  (见下条 Cranelift 迁移)。纯原生覆盖(`scripts/aot_coverage.sh`,hybrid 关)
+  **51/51 examples,零 blocker**。
+- **RFC 状态:核心设计(§2-§6)全部落地。剩余待办(均有明确后继归属,非遗漏)**:
+  1. **hybrid 桥的后续切片**(见 `tier1-hybrid.md` "Later slices"):typed-list Dyn tag
+     (quoted 字符串列表返回)、`Dyn` 类型的桥**参数**(今天只 marshal 标量入桥)、
+     opaque `Any` 值句柄、可变全局 snapshot/sync(`prescan.rs` 遇 `SetGlobal` 即判不合格)。
+  2. **§3.4 分级所有权只做到 arena**:全局 arena + concat 链已知死串的 eager
+     `lkrt_string_free` 已接入;**scope/RAII drop 未做**(长驻程序里非字符串的容器句柄
+     仍活到 `lkrt_cleanup`)。
+  3. **§5 性能要点 2/3 未落地**:MIR 逃逸分析(非逃逸容器栈/bump 分配)无实现;
+     ABI 表的 `Pure` 标记在 Cranelift codegen 侧**未被读取**——字符串 IR 时代靠 LLVM
+     函数属性拿 CSE/hoist,换后端后这条收益暂缺(TODO,见 `native-stdlib.md` ABI Rules)。
 - **codegen 后端迁移到 Cranelift ✅(字符串 IR 渲染器退役)**:§3.2 预留的"codegen 后端可替换"
   兑现——`lk-aot-codegen` 的 `render_module`(MIR → LLVM 文本 → clang)由 **Cranelift**
   (`clif.rs`:`MIR → Cranelift IR(typed FunctionBuilder + verifier)→ 原生 object`)取代。

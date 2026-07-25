@@ -5,7 +5,7 @@ use std::{
 
 use anyhow::Context;
 
-/// Tier 1 hybrid link info (`docs/llvm/tier1-hybrid.md`): the serialized module
+/// Tier 1 hybrid link info (`docs/aot/tier1-hybrid.md`): the serialized module
 /// artifact to embed (registered via a C constructor so the generated `main`
 /// stays untouched) and the lk-api staticlib providing `lk_hybrid_*`.
 pub struct HybridLink<'a> {

@@ -322,7 +322,7 @@ pub fn compile_module(mir: &MirModule, isa: std::sync::Arc<dyn TargetIsa>) -> Re
 
 /// Compile a module to a native relocatable object for the **host** target (the
 /// common case: `lk compile` on the current machine). Link the result against
-/// `lkrt` (see `lk-llvm`'s `compile_native_executable_from_object`).
+/// `lkrt` (see `lk-aot`'s `compile_native_executable_from_object`).
 pub fn compile_host_object(mir: &MirModule) -> Result<Vec<u8>, ClifError> {
     use cranelift_codegen::settings::{self, Configurable};
     let mut flags = settings::builder();
@@ -971,7 +971,7 @@ impl Lower {
         Ok(())
     }
 
-    /// Tier 1 hybrid bridge call (`docs/llvm/tier1-hybrid.md`): marshal each
+    /// Tier 1 hybrid bridge call (`docs/aot/tier1-hybrid.md`): marshal each
     /// scalar argument into its tagged slot in `lk_hybrid_argbuf`, flush C stdio
     /// (the bridge VM prints through Rust's line-buffered stdout — unflushed C
     /// buffers would reorder pipe output), then call the bridge. A used result

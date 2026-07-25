@@ -58,7 +58,7 @@ pub(crate) fn written_global_slots(funcs: &[FunctionData]) -> std::collections::
 }
 
 /// Whether failing function `fi` can run on the bridge VM instead of failing
-/// the module (`docs/llvm/tier1-hybrid.md`, v1): not the entry, no captures or
+/// the module (`docs/aot/tier1-hybrid.md`, v1): not the entry, no captures or
 /// lambda-erasure machinery, every parameter observed as one scalar type, and
 /// its whole `CallDirect`/`MakeClosure`-reachable subtree writes no globals
 /// and reads none that the module writes. Returns the scalar marshaling types.
