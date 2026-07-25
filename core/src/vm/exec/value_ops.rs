@@ -73,13 +73,14 @@ impl Executor {
         let Some(ctx_ref) = ctx.as_deref_mut() else {
             return Ok(None);
         };
-        let Some(method) = ctx_ref
+        let Some(function_index) = ctx_ref
             .type_checker()
             .as_ref()
-            .and_then(|tc| tc.registry().get_method(&receiver_type, "show").cloned())
+            .and_then(|tc| tc.registry().get_method(&receiver_type, "show"))
         else {
             return Ok(None);
         };
+        let method = crate::vm::method_callable(function_index, &mut self.state.heap);
         let result =
             call_runtime_value_runtime_with_receiver(method, value, &[], &mut self.state, module, Some(ctx_ref))?;
         self.runtime_value_to_plain_string_maybe(&result)

@@ -117,6 +117,10 @@ fn execute_compiled_module_with_ctx_full(
     // Start each top-level run with an empty traceback so a reused context
     // (REPL / embedded `Vm`) does not carry frames from a previous error.
     ctx.truncate_call_stack(0);
+    // Trait/impl declarations come from the artifact, not from executing
+    // registration calls, so the method table is ready before any user code
+    // runs (`VmContext::register_module_types`).
+    ctx.register_module_types(&module.type_info)?;
     let mut seed_heap = HeapStore::new();
     if let Some(gc_threshold) = gc_threshold {
         seed_heap.set_gc_threshold(gc_threshold);
@@ -235,6 +239,10 @@ pub fn call_module_function_with_ctx_keep_state(
         );
     }
     ctx.truncate_call_stack(0);
+    // Trait/impl declarations come from the artifact, not from executing
+    // registration calls, so the method table is ready before any user code
+    // runs (`VmContext::register_module_types`).
+    ctx.register_module_types(&module.type_info)?;
     let mut seed_heap = HeapStore::new();
     let globals = seed_module_globals(&module.globals, ctx, &mut seed_heap)?;
     let mut state = crate::vm::RuntimeModuleState::new(seed_heap, globals);

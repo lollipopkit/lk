@@ -212,11 +212,6 @@ pub(crate) fn lower_function(
         let mut insts = Vec::new();
         #[allow(clippy::needless_range_loop)] // `pc` is the semantic bytecode index
         for pc in start..body_end {
-            // Trait registration sequences were lifted into `sig.traits` by
-            // the prescan; their instructions never lower (plan J1).
-            if is_entry && sig.traits.skip_pcs.contains(&pc) {
-                continue;
-            }
             lower_inst(
                 &mut LowerCtx {
                     ssa: &mut ssa,

@@ -1006,13 +1006,14 @@ fn call_trait_method_runtime(
     let Some(ctx) = ctx else {
         bail!("{} has no method '{}'", receiver_type_name, method);
     };
-    let Some(method_val) = ctx
+    let Some(function_index) = ctx
         .type_checker()
         .as_ref()
-        .and_then(|tc| tc.registry().get_method(&receiver_type, method.as_str()).cloned())
+        .and_then(|tc| tc.registry().get_method(&receiver_type, method.as_str()))
     else {
         bail!("{} has no method '{}'", receiver_type_name, method);
     };
+    let method_val = crate::vm::method_callable(function_index, state.heap_mut());
     call_runtime_value_runtime_with_receiver_list_args(
         method_val,
         &receiver,

@@ -1104,13 +1104,14 @@ fn runtime_display_show(value: &RuntimeVal, runtime: &mut NativeRuntime<'_>) -> 
     let Some(ctx) = ctx else {
         return Ok(None);
     };
-    let Some(method) = ctx
+    let Some(function_index) = ctx
         .type_checker()
         .as_ref()
-        .and_then(|tc| tc.registry().get_method(&receiver_type, "show").cloned())
+        .and_then(|tc| tc.registry().get_method(&receiver_type, "show"))
     else {
         return Ok(None);
     };
+    let method = lk_core::vm::method_callable(function_index, state.heap_mut());
     let result = call_runtime_value_runtime_with_receiver(method, value, &[], state, module, Some(ctx))?;
     runtime_string_maybe(&result, state.heap()).map(|value| value.map(|value| value.to_string()))
 }

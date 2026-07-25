@@ -8,11 +8,10 @@ use anyhow::{Result, anyhow};
 use crate::module::runtime_export_from_runtime_native;
 use crate::stmt::ModuleResolver;
 use crate::typ::TypeChecker;
-use crate::val::{HeapStore, HeapValue, RuntimeMapKey, RuntimeObject, RuntimeVal, ShortStr, Type, TypedList, TypedMap};
+use crate::val::{HeapStore, HeapValue, RuntimeMapKey, RuntimeObject, RuntimeVal, ShortStr, Type, TypedMap};
 use crate::vm::{NativeArgs, NativeEntry, NativeFunction, NativeRuntime, RuntimeExport, collect_runtime_export};
 
 use crate::typ::{TraitDef, TraitImpl};
-use hashbrown::HashMap;
 
 mod core_methods;
 pub(crate) use core_methods::core_call_method_windowed;
@@ -289,16 +288,6 @@ impl VmContext {
 
     fn install_core_vm_builtins(&mut self) {
         self.install_runtime_builtin(
-            "__lk_register_trait",
-            NativeFunction::Plain(core_register_trait_builtin),
-            2,
-        );
-        self.install_runtime_builtin(
-            "__lk_register_trait_impl",
-            NativeFunction::Plain(core_register_trait_impl_builtin),
-            3,
-        );
-        self.install_runtime_builtin(
             "__lk_call_method",
             NativeFunction::FullState(core_call_method_builtin),
             3,
@@ -318,204 +307,59 @@ impl VmContext {
         self.install_runtime_builtin("__lk_bit_not", NativeFunction::Plain(core_bit_not_builtin), 1);
     }
 
+    /// Populates the runtime method table from the module's compiled
+    /// declarations.
+    ///
+    /// This replaces the previous scheme, where the compiler emitted
+    /// `__lk_register_trait_impl` calls that the entry function executed to
+    /// build the same table from string literals and closures. Reading
+    /// [`crate::vm::TypeInfo`] instead means the table is available before any
+    /// user code runs, needs no bytecode, and holds no heap handles — the
+    /// registry was never a GC root, so storing closures there was only safe
+    /// while they happened to still be live in a register.
+    pub fn register_module_types(&mut self, type_info: &crate::vm::TypeInfo) -> anyhow::Result<()> {
+        if type_info.is_empty() {
+            return Ok(());
+        }
+        let Some(checker) = self.type_checker.as_mut() else {
+            return Ok(());
+        };
+        for decl in &type_info.traits {
+            let methods = decl
+                .methods
+                .iter()
+                .filter_map(|(name, ty)| Type::parse(ty).map(|ty| (name.clone(), ty)))
+                .collect();
+            checker.registry_mut().register_trait(TraitDef {
+                name: decl.name.clone(),
+                methods,
+            });
+        }
+        for decl in &type_info.impls {
+            let target_type = Type::parse(&decl.type_name)
+                .ok_or_else(|| anyhow!("failed to parse impl target type '{}'", decl.type_name))?;
+            let methods = decl
+                .methods
+                .iter()
+                .map(|method| (method.name.clone(), (method.function, Type::parse(&method.ty))))
+                .collect();
+            let impl_def = TraitImpl {
+                trait_name: decl.trait_name.clone(),
+                target_type,
+                methods,
+            };
+            checker.registry().validate_trait_impl(&impl_def)?;
+            checker.registry_mut().register_trait_impl(impl_def);
+        }
+        Ok(())
+    }
+
     fn install_runtime_builtin(&mut self, name: &str, function: NativeFunction, arity: u16) {
         if self.runtime_globals.contains_key(name) {
             return;
         }
         let value = runtime_export_from_runtime_native(name, function, arity);
         self.runtime_globals.insert(Arc::<str>::from(name), value);
-    }
-}
-
-fn core_register_trait_builtin(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> anyhow::Result<RuntimeVal> {
-    if args.len() != 2 {
-        return Err(anyhow!(
-            "__lk_register_trait expects 2 arguments: name and methods list"
-        ));
-    }
-    let name = runtime_string_arg(
-        args.get(0).expect("arity checked"),
-        runtime.heap(),
-        "__lk_register_trait",
-    )?
-    .to_string();
-    let method_count = runtime_list_len(
-        args.get(1).expect("arity checked"),
-        runtime.heap(),
-        "__lk_register_trait methods",
-    )?;
-    let mut methods = HashMap::with_capacity(method_count);
-    for index in 0..method_count {
-        let entry = runtime_list_item(
-            args.get(1).expect("arity checked"),
-            index,
-            runtime,
-            "__lk_register_trait methods",
-        )?;
-        let (method_name_value, type_value) = runtime_list_pair(&entry, runtime, "trait method entry")?;
-        let method_name = runtime_string_arg(&method_name_value, runtime.heap(), "trait method name")?.to_string();
-        let type_str = runtime_string_arg(&type_value, runtime.heap(), "trait method type")?;
-        let ty = Type::parse(type_str.as_ref())
-            .ok_or_else(|| anyhow!("failed to parse trait method type '{}'", type_str))?;
-        methods.insert(method_name, ty);
-    }
-    let ctx = runtime
-        .ctx_mut()
-        .ok_or_else(|| anyhow!("__lk_register_trait requires VmContext"))?;
-    let type_checker = ctx
-        .get_type_checker_mut()
-        .ok_or_else(|| anyhow!("type checker not available for trait registration"))?;
-    type_checker.registry_mut().register_trait(TraitDef { name, methods });
-    Ok(RuntimeVal::Nil)
-}
-
-fn core_register_trait_impl_builtin(
-    args: NativeArgs<'_>,
-    runtime: &mut NativeRuntime<'_>,
-) -> anyhow::Result<RuntimeVal> {
-    if args.len() != 3 {
-        return Err(anyhow!(
-            "__lk_register_trait_impl expects 3 arguments: trait_name, target_type, methods"
-        ));
-    }
-    let trait_name = runtime_string_arg(
-        args.get(0).expect("arity checked"),
-        runtime.heap(),
-        "__lk_register_trait_impl",
-    )?
-    .to_string();
-    let target_type_str = runtime_string_arg(
-        args.get(1).expect("arity checked"),
-        runtime.heap(),
-        "__lk_register_trait_impl",
-    )?;
-    let target_type = Type::parse(target_type_str.as_ref())
-        .ok_or_else(|| anyhow!("failed to parse target type '{}'", target_type_str))?;
-    let method_count = runtime_list_len(
-        args.get(2).expect("arity checked"),
-        runtime.heap(),
-        "__lk_register_trait_impl methods",
-    )?;
-    let mut method_map: HashMap<String, (RuntimeVal, Option<Type>)> = HashMap::with_capacity(method_count);
-    for index in 0..method_count {
-        let entry = runtime_list_item(
-            args.get(2).expect("arity checked"),
-            index,
-            runtime,
-            "__lk_register_trait_impl methods",
-        )?;
-        let inner_len = runtime_list_len(&entry, runtime.heap(), "trait impl entry")?;
-        if inner_len != 3 {
-            return Err(anyhow!(
-                "trait impl entry must contain [name, closure, type], found {} items",
-                inner_len
-            ));
-        }
-        let method_name = runtime_string_arg(
-            &runtime_list_item(&entry, 0, runtime, "trait impl entry")?,
-            runtime.heap(),
-            "trait impl method name",
-        )?
-        .to_string();
-        let method_value = runtime_list_item(&entry, 1, runtime, "trait impl entry")?;
-        ensure_runtime_callable(&method_value, runtime, "trait impl method")?;
-        let signature_value = runtime_list_item(&entry, 2, runtime, "trait impl entry")?;
-        let signature_ty = match &signature_value {
-            RuntimeVal::Nil => None,
-            value => {
-                let type_str = runtime_string_arg(value, runtime.heap(), "trait impl method type")?;
-                Some(
-                    Type::parse(type_str.as_ref())
-                        .ok_or_else(|| anyhow!("failed to parse method type '{}'", type_str))?,
-                )
-            }
-        };
-        method_map.insert(method_name, (method_value, signature_ty));
-    }
-    let ctx = runtime
-        .ctx_mut()
-        .ok_or_else(|| anyhow!("__lk_register_trait_impl requires VmContext"))?;
-    let type_checker = ctx
-        .get_type_checker_mut()
-        .ok_or_else(|| anyhow!("type checker not available for trait implementation"))?;
-    let impl_def = TraitImpl {
-        trait_name,
-        target_type,
-        methods: method_map,
-    };
-    type_checker.registry().validate_trait_impl(&impl_def)?;
-    type_checker.registry_mut().register_trait_impl(impl_def);
-    Ok(RuntimeVal::Nil)
-}
-
-fn runtime_list_len(value: &RuntimeVal, heap: &HeapStore, helper: &str) -> anyhow::Result<usize> {
-    let RuntimeVal::Obj(handle) = value else {
-        return Err(anyhow!("{helper} expects list, got {:?}", value.kind()));
-    };
-    let list = heap
-        .get(*handle)
-        .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?;
-    let HeapValue::List(list) = list else {
-        return Err(anyhow!("{helper} expects list, got {}", list.type_name()));
-    };
-    Ok(list.len())
-}
-
-fn runtime_list_item(
-    value: &RuntimeVal,
-    index: usize,
-    runtime: &mut NativeRuntime<'_>,
-    helper: &str,
-) -> anyhow::Result<RuntimeVal> {
-    let RuntimeVal::Obj(handle) = value else {
-        return Err(anyhow!("{helper} expects list, got {:?}", value.kind()));
-    };
-    let item = match runtime
-        .heap()
-        .get(*handle)
-        .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
-    {
-        HeapValue::List(TypedList::Mixed(values)) => values.get(index).cloned(),
-        HeapValue::List(TypedList::Int(values)) => values.get(index).copied().map(RuntimeVal::Int),
-        HeapValue::List(TypedList::Float(values)) => values.get(index).copied().map(RuntimeVal::Float),
-        HeapValue::List(TypedList::Bool(values)) => values.get(index).copied().map(RuntimeVal::Bool),
-        HeapValue::List(TypedList::String(values)) => {
-            let value = values.get(index).cloned();
-            return value
-                .map(|value| runtime_string_value(&value, runtime.heap_mut()))
-                .ok_or_else(|| anyhow!("{helper} index {index} out of bounds"));
-        }
-        other => return Err(anyhow!("{helper} expects list, got {}", other.type_name())),
-    };
-    item.ok_or_else(|| anyhow!("{helper} index {index} out of bounds"))
-}
-
-fn runtime_list_pair(
-    value: &RuntimeVal,
-    runtime: &mut NativeRuntime<'_>,
-    helper: &str,
-) -> anyhow::Result<(RuntimeVal, RuntimeVal)> {
-    let len = runtime_list_len(value, runtime.heap(), helper)?;
-    if len != 2 {
-        return Err(anyhow!("{helper} must contain [name, type], found {len} items"));
-    }
-    Ok((
-        runtime_list_item(value, 0, runtime, helper)?,
-        runtime_list_item(value, 1, runtime, helper)?,
-    ))
-}
-
-fn ensure_runtime_callable(value: &RuntimeVal, runtime: &NativeRuntime<'_>, helper: &str) -> anyhow::Result<()> {
-    let RuntimeVal::Obj(handle) = value else {
-        return Err(anyhow!("{helper} must be callable, got {:?}", value.kind()));
-    };
-    match runtime
-        .heap()
-        .get(*handle)
-        .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
-    {
-        HeapValue::Callable(_) => Ok(()),
-        other => Err(anyhow!("{helper} must be callable, got {}", other.type_name())),
     }
 }
 
@@ -1091,8 +935,6 @@ mod tests {
     fn core_vm_builtins_use_runtime_native() {
         let ctx = VmContext::new();
         for name in [
-            "__lk_register_trait",
-            "__lk_register_trait_impl",
             "__lk_call_method",
             "__lk_call_method_named",
             "__lk_make_struct",

@@ -52,16 +52,22 @@ fn compiler_accepts_type_only_declarations_as_noop() {
     assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
 }
 
+/// Trait dispatch resolves through the method table the VM builds from
+/// `Module::type_info`. This used to be written against the now-removed
+/// `__lk_register_trait{,_impl}` builtins — i.e. it tested the registration
+/// mechanism rather than the language feature; using real `trait`/`impl`
+/// syntax exercises the path programs actually take.
 #[test]
-fn compiler_trait_method_dispatch_uses_runtime_callable() {
+fn compiler_trait_method_dispatch_uses_registered_impl() {
     let program = parse_program(
         r#"
+        trait Area { fn area(self) -> Int; }
         struct Rect { w: Int, h: Int }
-        fn area(self) {
-            return self.w * self.h;
+        impl Area for Rect {
+            fn area(self) -> Int {
+                return self.w * self.h;
+            }
         }
-        __lk_register_trait("Area", [["area", "Function"]]);
-        __lk_register_trait_impl("Area", "Rect", [["area", area, nil]]);
         let rect = Rect { w: 6, h: 7 };
         return rect.area();
         "#,

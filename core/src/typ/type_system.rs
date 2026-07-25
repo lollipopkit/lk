@@ -1,6 +1,6 @@
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
-use crate::val::{RuntimeVal, Type};
+use crate::val::Type;
 use anyhow::{Result, anyhow};
 use hashbrown::HashMap;
 
@@ -18,13 +18,20 @@ pub struct TraitDef {
     pub methods: HashMap<String, Type>, // method_name -> function_type
 }
 
-/// Implementation of a trait for a specific type
+/// Implementation of a trait for a specific type.
+///
+/// Methods are identified by the **index of their compiled body**, not by a
+/// runtime closure. That keeps this table free of heap handles, which matters
+/// for two reasons: the registry is not a GC root (so holding handles here was
+/// only safe by accident, while the closure happened to still be live in a
+/// register), and it lets the table be built directly from the artifact's
+/// [`crate::vm::TypeInfo`] instead of by executing registration calls.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TraitImpl {
     pub trait_name: String,
     pub target_type: Type,
-    // method_name -> (function_value, declared_type)
-    pub methods: HashMap<String, (RuntimeVal, Option<Type>)>,
+    /// `method_name -> (index into the module's function table, declared type)`
+    pub methods: HashMap<String, (u32, Option<Type>)>,
 }
 
 /// Type alias definition
@@ -120,16 +127,15 @@ impl TypeRegistry {
     }
 
     /// Get the method implementation for a type and method name
-    pub fn get_method(&self, typ: &Type, method_name: &str) -> Option<&RuntimeVal> {
+    /// The compiled body index of `typ::method_name`, searching impls in
+    /// registration order (first match wins). Callers turn the index into a
+    /// callable with [`crate::vm::method_callable`].
+    pub fn get_method(&self, typ: &Type, method_name: &str) -> Option<u32> {
         let type_name = Self::type_to_string(typ);
-        if let Some(impls) = self.implementations.get(&type_name) {
-            for impl_def in impls {
-                if let Some((method, _sig)) = impl_def.methods.get(method_name) {
-                    return Some(method);
-                }
-            }
-        }
-        None
+        let impls = self.implementations.get(&type_name)?;
+        impls
+            .iter()
+            .find_map(|impl_def| impl_def.methods.get(method_name).map(|(function, _sig)| *function))
     }
 
     /// Generate a fresh type variable
@@ -200,24 +206,14 @@ impl TypeRegistry {
                 ));
             };
 
-            // Only function values are valid implementations
-            let mut actual_ty = match val {
-                RuntimeVal::Obj(_) => {
-                    // Runtime callable type info is validated elsewhere during the Instr migration.
-                    Type::Function {
-                        params: Vec::new(),
-                        named_params: Vec::new(),
-                        return_type: Box::new(Type::Any),
-                    }
-                }
-                _ => {
-                    return Err(anyhow!(
-                        "Method '{}' for trait '{}' must be a function, got {:?}",
-                        method_name,
-                        impl_def.trait_name,
-                        val
-                    ));
-                }
+            // A registered method is always a compiled function body (the
+            // compiler only records indices for `fn` items in an impl block),
+            // so there is no "is this callable" question left to ask here.
+            let _ = val;
+            let mut actual_ty = Type::Function {
+                params: Vec::new(),
+                named_params: Vec::new(),
+                return_type: Box::new(Type::Any),
             };
 
             // Prefer declared signature if provided for strict matching

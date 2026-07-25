@@ -30,19 +30,21 @@
 //! runtime value — that is what makes this serializable at all, and what lets
 //! the AOT path use it without a VM in the picture.
 //!
-//! # Not done yet
+//! # This is now the only source
 //!
-//! The runtime `__lk_register_trait{,_impl}` calls are still emitted and still
-//! populate `TypeChecker`'s registry, so this data currently has one consumer
-//! (the AOT lowering) rather than being the single source. Removing the
-//! registration calls means the VM must build its registry from here instead,
-//! and that has a prerequisite: `TypeRegistry` holds method closures as
-//! `RuntimeVal` heap handles, and **the registry is not a GC root**
-//! (`ExecutorState::gc_roots` covers globals, stack, pending raise, and host
-//! roots). Today that is masked because a method is registered while its
-//! closure is still live in a register; registering up front, before execution,
-//! would not have that cover. So: make the registry a GC root first, then drop
-//! the registration calls.
+//! The runtime `__lk_register_trait{,_impl}` calls are gone: the compiler emits
+//! no instructions for a declaration, the VM builds its method table from here
+//! (`VmContext::register_module_types`) before any user code runs, and the AOT
+//! lowering reads it directly.
+//!
+//! The GC hazard that blocked this is gone with it rather than being patched
+//! around. `TypeRegistry` used to hold method closures as `RuntimeVal` heap
+//! handles while **not being a GC root** (`ExecutorState::gc_roots` covers
+//! globals, stack, pending raise, and host roots) — safe only by accident,
+//! because a method was registered while its closure still sat in a register.
+//! The registry now stores function *indices*, so it holds no handles at all
+//! and the question does not arise; closures are materialized on demand by
+//! [`method_callable`].
 
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
@@ -109,4 +111,18 @@ impl TypeInfo {
                     .map(|method| method.function)
             })
     }
+}
+
+/// Builds the callable for a registered trait-impl method.
+///
+/// The registry stores a compiled body index rather than a closure (see
+/// [`crate::typ::TraitImpl`]); this materializes one on demand, in the heap
+/// that is about to call it. Impl methods never capture, so the closure's
+/// capture list is always empty.
+pub fn method_callable(function_index: u32, heap: &mut crate::val::HeapStore) -> crate::val::RuntimeVal {
+    use crate::val::{CallableValue, HeapValue, RuntimeVal};
+    RuntimeVal::Obj(heap.alloc(HeapValue::Callable(CallableValue::Closure {
+        function_index,
+        captures: alloc::sync::Arc::new(Vec::new()),
+    })))
 }
