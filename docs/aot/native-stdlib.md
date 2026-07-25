@@ -72,9 +72,13 @@ intrinsics.
 - Strings returned by `lkrt` are owned by `lkrt` and must be released with
   `lkrt_string_free(ptr)` when generated code starts tracking native ownership.
 - Container handles are arena-owned too, but a handle proven dead at the end of
-  a loop body is released early via `lkrt_rt_handle_release(ptr)` (the
-  scope-drop pass in `lk_aot_mir::opt`); without it a loop retains every
-  temporary container until exit. Whether a call may retain a handle passed as
+  its block is released early via `lkrt_rt_handle_release(ptr)` (the scope-drop
+  pass in `lk_aot_mir::opt`); without it a loop — or a repeatedly called
+  function, such as a `try` body — retains every temporary container until exit.
+  The arena is **per thread**: `spawn`/`go` are real OS threads, each owning its
+  own arena and reclaiming it on exit, which is sound only because channels
+  deep-copy (values never cross a thread). Never pass a handle or arena string
+  between threads. Whether a call may retain a handle passed as
   its receiver is answered by `lk_aot_abi::receiver_escapes`, which defaults to
   "yes" — a new ABI entry is non-releasable until someone audits it.
 - `lkrt_last_error()` returns an owned string for diagnostics. Existing aborting

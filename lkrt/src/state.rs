@@ -14,12 +14,21 @@ thread_local! {
 /// Frees one arena-registered container handle of its concrete type.
 type ContainerDrop = unsafe fn(*mut c_void);
 
-/// Runs `f` with this thread's runtime state. The state is thread-local rather
-/// than a process-global mutex: AOT binaries are single-threaded (the lowered
-/// subset has no threading), so string/container arena registration sits on the
-/// hot path of every dynamic string operation and must not pay for locking.
-/// Handles and arena strings must not cross threads (unit tests get per-thread
-/// isolation for free).
+/// Runs `f` with this thread's runtime state.
+///
+/// The state is thread-local rather than a process-global mutex because arena
+/// registration sits on the hot path of every dynamic string and container
+/// operation and must not pay for locking.
+///
+/// **Native binaries are not single-threaded** — `spawn`/`go` create real OS
+/// threads (`std::thread::spawn` in `chan.rs`). What makes the lock-free choice
+/// sound is the isolation, not an absence of threads: each thread owns its own
+/// arena, and values never cross a thread boundary because channels deep-copy
+/// (the isolate model). A handle or arena string must therefore never be passed
+/// between threads — doing so would free it on the wrong arena.
+///
+/// A spawned thread reclaims its own arena on exit (see the [`Drop`] impl on
+/// [`RuntimeState`]); `lkrt_cleanup()` covers the main thread.
 pub(crate) fn with_runtime<R>(f: impl FnOnce(&mut RuntimeState) -> R) -> R {
     RUNTIME.with(|state| f(&mut state.borrow_mut()))
 }
@@ -163,6 +172,23 @@ impl RuntimeState {
                 drop_fn(ptr as *mut c_void);
             }
         }
+    }
+}
+
+/// Reclaims a thread's arena when the thread ends.
+///
+/// Without this, a spawned thread's containers and strings are leaked at exit:
+/// dropping the tables frees the tables, not what they point at. `lkrt_cleanup`
+/// only ever runs on the main thread, so every `spawn`/`go` used to leak
+/// whatever it still held.
+///
+/// Safe to run here because the isolate model keeps values thread-local
+/// (channels deep-copy), so nothing outside this thread can still reference
+/// them. Running twice is harmless — `cleanup` drains, so the main thread's
+/// explicit `lkrt_cleanup()` leaves nothing for this to free.
+impl Drop for RuntimeState {
+    fn drop(&mut self) {
+        self.cleanup();
     }
 }
 
