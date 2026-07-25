@@ -4,8 +4,18 @@
 # data-driven. Usage:
 #   cargo build -p lk-cli --features aot && bash scripts/aot_coverage.sh
 # Output: per-file OK/FAIL lines on stdout, reason ranking on stderr.
+#
+# Gate mode (used by CI): `AOT_COVERAGE_REQUIRE_FULL=1` makes the script exit
+# non-zero unless every example lowers fully native. A program that regresses
+# out of native lowering still *runs* correctly — it silently drops to the
+# hybrid bridge or the Tier 0 VM bundle — so no differential test can catch
+# that; this scan is the only gate. An example that legitimately cannot lower
+# must be listed explicitly in `AOT_COVERAGE_ALLOW` (comma-separated paths),
+# never dropped silently.
 set -u
 LK_BIN="${LK_BIN:-./target/debug/lk}"
+REQUIRE_FULL="${AOT_COVERAGE_REQUIRE_FULL:-0}"
+ALLOW="${AOT_COVERAGE_ALLOW:-}"
 # The metric is *pure native lowering* coverage: with hybrid on (the default),
 # a bridged program would count OK and mask a native-coverage regression — pin
 # it off for the scan. `LK_AOT_NO_FALLBACK=1` turns a shape the Cranelift
@@ -15,6 +25,7 @@ export LK_AOT_HYBRID=0
 export LK_AOT_NO_FALLBACK=1
 total=0
 ok=0
+unexpected=0
 reasons_file="$(mktemp)"
 tmp_bin="$(mktemp)"
 trap 'rm -f "$reasons_file" "$tmp_bin"' EXIT
@@ -29,7 +40,15 @@ for f in examples/syntax/*.lk examples/stdlib/*.lk examples/general/*.lk; do
         # Cranelift/lowering rejects surface as "... (clif: <reason>)" or
         # "... (MIR lowering: <reason>)".
         reason=$(echo "$out" | grep -oE "\((clif: [^)]+|MIR lowering: [^)]+)\)" | head -1)
-        echo "FAIL $f: ${reason:-unknown}"
+        case ",$ALLOW," in
+            *",$f,"*)
+                echo "FAIL $f (allow-listed): ${reason:-unknown}"
+                ;;
+            *)
+                echo "FAIL $f: ${reason:-unknown}"
+                unexpected=$((unexpected + 1))
+                ;;
+        esac
         echo "$reason" | sed 's/(at pc [0-9]*)//; s/at pc [0-9]*/at pc _/' >>"$reasons_file"
     fi
 done
@@ -38,3 +57,10 @@ echo "----------------------------------------" >&2
 echo "coverage: $ok/$total" >&2
 echo "blockers by frequency:" >&2
 sort "$reasons_file" | uniq -c | sort -rn >&2
+
+if [ "$REQUIRE_FULL" = "1" ] && [ "$unexpected" -gt 0 ]; then
+    echo "" >&2
+    echo "FAILED: $unexpected example(s) no longer lower fully native." >&2
+    echo "Fix the lowering, or add the file to AOT_COVERAGE_ALLOW with a rationale." >&2
+    exit 1
+fi

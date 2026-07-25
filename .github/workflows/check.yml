@@ -41,6 +41,20 @@ jobs:
           # Full VM core on bare metal (M5.2): parser/compiler/verifier/
           # executor/GC build with no std anywhere in the crate graph.
           cargo build -p lk-core --no-default-features --target thumbv7em-none-eabi
+      - name: AOT native-lowering coverage gate
+        # A lowering regression does not fail any differential test: the
+        # program silently drops to the hybrid bridge or the Tier 0 VM bundle
+        # and still produces correct output, just ~3x slower. This scan (hybrid
+        # pinned off, no fallback) is the only thing that catches it. Add a
+        # file to AOT_COVERAGE_ALLOW if it legitimately cannot lower.
+        run: |
+          cargo build -p lk-cli --features aot
+          AOT_COVERAGE_REQUIRE_FULL=1 bash scripts/aot_coverage.sh
+      - name: strict native-only differential (no Tier 0 fallback)
+        # Complements the scan above: the corpora must not just *compile*
+        # native, they must produce VM-identical output while pinned to the
+        # native path.
+        run: LK_AOT_NO_FALLBACK=1 cargo test -p lk-cli --test aot_differential_test --test clif_differential_test
       - name: lk-core builds as no_std (VM core no-std guard)
         # `--no-default-features` drops the `std` feature, which now makes
         # lk-core `#![no_std]` (+ alloc). The VM core (token/ast/expr/stmt/typ/
