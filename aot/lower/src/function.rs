@@ -218,16 +218,18 @@ pub(crate) fn lower_function(
                 continue;
             }
             lower_inst(
-                &mut ssa,
+                &mut LowerCtx {
+                    ssa: &mut ssa,
+                    globals,
+                    sig,
+                    func,
+                    funcs,
+                    entry,
+                    module_globals,
+                    capture_params: &capture_params,
+                },
                 bi,
                 &mut insts,
-                func,
-                funcs,
-                entry,
-                globals,
-                module_globals,
-                sig,
-                &capture_params,
                 &instrs[pc],
                 pc,
             )?;

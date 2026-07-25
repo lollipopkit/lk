@@ -5,30 +5,33 @@
 //! [`Unsupported`] reason. Nothing downstream (`lk-aot-codegen`) can fail, because
 //! anything not expressible in the closed MIR type set is rejected right here.
 //!
-//! Scope today (the growing strangler slice):
-//! - A single, parameter-free, capture-free entry function, plus **direct calls**
-//!   to other `(i64, …) -> i64` functions (recursion included).
-//! - Scalar values: int/float/bool/nil constants; register moves. Arithmetic and
-//!   comparisons **dispatch on operand type** (two ints → integer op; any float →
-//!   coerce ints and use the float op), matching the VM's runtime numeric dispatch.
-//! - **Full acyclic + reducible-loop control flow via on-demand SSA construction**
-//!   (Braun et al.): `Test`/`BrTrue`/`BrFalse`/`Jmp` and fused `TestXxxInt(I)`+`Jmp`
-//!   become MIR blocks with `CondBr`/`Br`. Registers live across a merge or a loop
-//!   back-edge become SSA phi params (int or float) constructed on demand, with
-//!   incomplete phis in unsealed (loop-header) blocks filled once the back-edge
-//!   predecessor is lowered.
-//! - **Growable `List<i64>` / `List<f64>` handles** (Phase 2 handle-ification):
-//!   materialize constant list literals; `.len()`; and **provably in-range constant
-//!   indexing** (`GetList`). Dynamic/out-of-range indexing (which is `Maybe<Int>` in
-//!   the VM) still rejects to avoid a nil-semantics divergence.
+//! Scope today: every `examples/` program lowers fully native (the
+//! `AOT_COVERAGE_REQUIRE_FULL` gate) — scalars and typed arithmetic, full
+//! acyclic + reducible-loop control flow, list/map/set/object handles, boxed
+//! `Dyn` values, strings, closures and captures, mutable module globals, trait
+//! dispatch, and `try`. What stays out is enumerated by [`Unsupported`], and a
+//! reachable function that fails may still be bridged to the embedded VM
+//! (Tier 1 hybrid, `docs/aot/tier1-hybrid.md`) instead of failing the module.
 //!
-//! Anything outside this subset (dynamic indexing, list mutation, maps, closures,
-//! non-`i64` function ABIs, …) returns `Unsupported`; the caller falls back to the
-//! legacy backend. See `docs/aot/aot-redesign.md` §7/§9.5.
+//! Control flow uses **on-demand SSA construction** (Braun et al.):
+//! `Test`/`BrTrue`/`BrFalse`/`Jmp` and fused `TestXxxInt(I)`+`Jmp` become MIR
+//! blocks with `CondBr`/`Br`; registers live across a merge or a loop back-edge
+//! become block params, with incomplete phis in unsealed (loop-header) blocks
+//! filled once the back-edge predecessor is lowered. Trivial-phi elimination is
+//! intentionally omitted: the constructed SSA is correct but not minimal.
 //!
-//! (Trivial-phi elimination is intentionally omitted: the constructed SSA is
-//! correct but not minimal — a self-referential loop phi is valid LLVM and is left
-//! for `opt` / a later cleanup pass.)
+//! Module map:
+//! - [`inst`] — per-instruction lowering, routed by semantic family
+//!   (scalar / string / call / global / container / control).
+//! - `function` / `cfg` / `ssa` — block splitting, terminators, SSA construction.
+//! - `convert` — register reads in a scalar context, numeric coercion, display
+//!   conversion (the `Maybe` unwrap rules live here).
+//! - `prescan` / `sig` — whole-module facts gathered before lowering: parameter
+//!   and return observations, global slot types, bridge eligibility.
+//! - `lower_call` / `lower_method` / `lower_builtin` / `lower_module` — callee
+//!   resolution for user functions, method dispatch, builtins, stdlib modules.
+//!
+//! See `docs/aot/aot-redesign.md` §7/§9.5.
 
 use std::collections::BTreeMap;
 
@@ -41,19 +44,17 @@ use lk_core::vm::{
 };
 
 mod cfg;
+mod convert;
 mod dyn_box;
 mod function;
 mod imports;
+mod inst;
 mod lower_builtin;
 mod lower_call;
-mod lower_inst;
-mod lower_inst_b;
-mod lower_inst_c;
 mod lower_method;
 mod lower_module;
 mod ops;
 mod prescan;
-mod scalar;
 mod sig;
 mod ssa;
 mod tables;
@@ -67,8 +68,8 @@ pub use self::imports::BundledImport;
 pub(crate) use self::imports::ImportEnv;
 pub use self::unsupported::Unsupported;
 pub(crate) use self::{
-    cfg::*, dyn_box::*, function::*, lower_builtin::*, lower_call::*, lower_inst::*, lower_inst_b::*, lower_inst_c::*,
-    lower_method::*, lower_module::*, ops::*, prescan::*, scalar::*, sig::*, ssa::*, tables::*, trait_env::*, vocab::*,
+    cfg::*, convert::*, dyn_box::*, function::*, inst::*, lower_builtin::*, lower_call::*, lower_method::*,
+    lower_module::*, ops::*, prescan::*, sig::*, ssa::*, tables::*, trait_env::*, vocab::*,
 };
 
 type Reg = (ValueId, Ty);

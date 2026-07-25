@@ -1,21 +1,187 @@
-use super::*;
+//! Container opcodes: list/map/object construction, indexing, mutation.
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn lower_inst_c(
-    ssa: &mut Ssa,
+use super::LowerCtx;
+use crate::*;
+
+pub(super) fn lower(
+    ctx: &mut LowerCtx<'_>,
     block: usize,
     insts: &mut Vec<Inst>,
-    func: &FunctionData,
-    _funcs: &[FunctionData],
-    _entry: u32,
-    globals: &mut Vec<String>,
-    _module_globals: &[String],
-    sig: &mut SigInfer,
-    _capture_params: &[(ValueId, Ty)],
     instr: &Instr,
     pc: usize,
 ) -> Result<(), Unsupported> {
+    let ssa = &mut *ctx.ssa;
+    let globals = &mut *ctx.globals;
+    let sig = &mut *ctx.sig;
+    let func = ctx.func;
     match instr.opcode() {
+        Opcode::NewList => {
+            // `a` = dst, `b` = base, `c` = count: a register-window list. The
+            // compiler also uses this to box method-call arguments, so the raw
+            // elements are always recorded as an ArgList ref; a homogeneous
+            // scalar window additionally materializes a real list handle.
+            let count = instr.c() as usize;
+            let mut elems = Vec::with_capacity(count);
+            for i in 0..count {
+                let reg = instr.b().wrapping_add(i as u8);
+                elems.push(ssa.read(reg, block, pc)?);
+            }
+            let all = |t: Ty| elems.iter().all(|&(_, ty)| ty == t);
+            let materialized = if !elems.is_empty() && all(Ty::I64) {
+                Some(("i64_new", "i64_push", Ty::ListI64))
+            } else if !elems.is_empty() && all(Ty::F64) {
+                Some(("f64_new", "f64_push", Ty::ListF64))
+            } else if !elems.is_empty() && all(Ty::Str) {
+                Some(("str_new", "str_push", Ty::ListStr))
+            } else {
+                None
+            };
+            if let Some((new_fn, push_fn, list_ty)) = materialized {
+                let handle = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(handle),
+                    callee: AbiRef::new("list_h", new_fn),
+                    args: Vec::new(),
+                });
+                for &(v, _) in &elems {
+                    insts.push(Inst::Call {
+                        dst: None,
+                        callee: AbiRef::new("list_h", push_fn),
+                        args: vec![handle, v],
+                    });
+                }
+                ssa.list_len.insert(handle, elems.len() as i64);
+                ssa.list_base_len.insert(handle, elems.len() as i64);
+                ssa.write(instr.a(), block, (handle, list_ty));
+            } else if !elems.is_empty()
+                && elems.iter().all(|&(_, ty)| {
+                    matches!(
+                        ty,
+                        Ty::I64
+                            | Ty::F64
+                            | Ty::Str
+                            | Ty::Bool
+                            | Ty::Nil
+                            | Ty::Dyn
+                            | Ty::ListI64
+                            | Ty::ListF64
+                            | Ty::ListStr
+                            | Ty::ListDyn
+                            | Ty::MapStrDyn
+                    )
+                })
+            {
+                // Mixed (or Dyn-carrying) elements: materialize a boxed-dynamic
+                // list (plan M4.2), same as the constant mixed-list path but
+                // boxing runtime values via `to_dyn`.
+                let handle = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(handle),
+                    callee: AbiRef::new("list_h", "dyn_new"),
+                    args: Vec::new(),
+                });
+                // A repeated element boxes once: the VM pushes the same heap
+                // handle twice (`[l, l]` dedups under `unique()`), so the
+                // boxed views must share pointer identity too.
+                let mut boxed_memo: std::collections::HashMap<ValueId, ValueId> = std::collections::HashMap::new();
+                for &(v, ty) in &elems {
+                    let boxed = match boxed_memo.get(&v) {
+                        Some(&cached) => cached,
+                        None => {
+                            let boxed = to_dyn(ssa, insts, v, ty, pc)?;
+                            boxed_memo.insert(v, boxed);
+                            boxed
+                        }
+                    };
+                    insts.push(Inst::Call {
+                        dst: None,
+                        callee: AbiRef::new("list_h", "dyn_push"),
+                        args: vec![handle, boxed],
+                    });
+                }
+                ssa.list_len.insert(handle, elems.len() as i64);
+                ssa.list_base_len.insert(handle, elems.len() as i64);
+                ssa.write(instr.a(), block, (handle, Ty::ListDyn));
+            } else if elems.is_empty() {
+                // An empty literal (`let flat = [];`) materializes as an
+                // empty dyn list: later pushes box their elements, and the
+                // cross-typed Cmp arms cover `[] == [1, 2]`-style compares.
+                // (Call-window `NewList 0` also lands here; the dead handle
+                // is one no-arg call.) 旧留档顾虑(typed eq lowering)已被
+                // typed↔Dyn 跨型比较解除。
+                let handle = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(handle),
+                    callee: AbiRef::new("list_h", "dyn_new"),
+                    args: Vec::new(),
+                });
+                ssa.list_len.insert(handle, 0);
+                ssa.list_base_len.insert(handle, 0);
+                ssa.write(instr.a(), block, (handle, Ty::ListDyn));
+            }
+            // Recorded after the write (which clears the slot) so both views
+            // coexist: SSA reads see the handle, method dispatch sees elements.
+            ssa.builtin_regs.insert((block, instr.a()), GlobalRef::ArgList(elems));
+        }
+        Opcode::GetIndexStrI | Opcode::SetIndexStrI => {
+            // Composite string-int key access (`m["n${i}"]`): the key is the
+            // compiler-proven constant prefix plus the decimal suffix register.
+            // A store passes (prefix, suffix) straight to the `set_ik` ABI (key
+            // built on the stack inside lkrt, nothing to free); a load builds
+            // the key via `concat_i64` in one allocation, and the fresh
+            // temporary frees right after the map call.
+            let Some(key_fact) = func.performance.known_key(pc).and_then(|fact| fact.string_int) else {
+                return Err(Unsupported::Opcode { pc, op: instr.opcode() });
+            };
+            let prefix = func
+                .consts
+                .strings
+                .get(key_fact.prefix_key as usize)
+                .ok_or(Unsupported::BadConst { pc })?;
+            let prefix_v = materialize_key(ssa, insts, globals, prefix);
+            let is_set = instr.opcode() == Opcode::SetIndexStrI;
+            let (map_reg, suffix_reg) = if is_set {
+                (instr.a(), instr.b())
+            } else {
+                (instr.b(), instr.c())
+            };
+            let (handle, map_ty) = ssa.read(map_reg, block, pc)?;
+            let suffix = ssa.read_typed(suffix_reg, block, Ty::I64, pc)?;
+            if is_set {
+                let (value, value_ty) = ssa.read(instr.c(), block, pc)?;
+                let set_fn = match (map_ty, value_ty) {
+                    (Ty::MapStrI64, Ty::I64) => "str_i64_set_ik",
+                    (Ty::MapStrF64, Ty::F64) => "str_f64_set_ik",
+                    _ => return Err(Unsupported::TypeMismatch { pc }),
+                };
+                insts.push(Inst::Call {
+                    dst: None,
+                    callee: AbiRef::new("map_h", set_fn),
+                    args: vec![handle, prefix_v, suffix, value],
+                });
+            } else {
+                let key = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(key),
+                    callee: AbiRef::new("str", "concat_i64"),
+                    args: vec![prefix_v, suffix],
+                });
+                let dst = ssa.new_val();
+                let maybe_ty = match map_ty {
+                    Ty::MapStrI64 => {
+                        insts.push(Inst::MapGetMaybe { dst, handle, key });
+                        Ty::MaybeI64
+                    }
+                    Ty::MapStrF64 => {
+                        insts.push(Inst::MapGetMaybeStrF64 { dst, handle, key });
+                        Ty::MaybeF64
+                    }
+                    _ => return Err(Unsupported::TypeMismatch { pc }),
+                };
+                free_owned_str(insts, key);
+                ssa.write(instr.a(), block, (dst, maybe_ty));
+            }
+        }
         Opcode::LoadHeapConst => {
             // Constant container literals: materialize a growable `lkrt` handle.
             //  - `List<i64>` / `List<f64>` → new + push per element.
@@ -317,20 +483,6 @@ pub(crate) fn lower_inst_c(
                 args: vec![handle, start],
             });
             ssa.write(instr.a(), block, (dst, ty));
-        }
-        Opcode::StringSplit => {
-            // `a` = dst (List<str>), `b` = target string, `c` = separator string.
-            // The runtime uses Rust `str::split`, so the result matches the VM's
-            // `string_split` exactly.
-            let target = ssa.read_typed(instr.b(), block, Ty::Str, pc)?;
-            let sep = ssa.read_typed(instr.c(), block, Ty::Str, pc)?;
-            let dst = ssa.new_val();
-            insts.push(Inst::Call {
-                dst: Some(dst),
-                callee: AbiRef::new("str", "split"),
-                args: vec![target, sep],
-            });
-            ssa.write(instr.a(), block, (dst, Ty::ListStr));
         }
         Opcode::NewRange => {
             // `a` = dst; `b`..`b+2` = start/end/step registers; `c` != 0 =
@@ -1161,25 +1313,6 @@ pub(crate) fn lower_inst_c(
             });
             ssa.write(instr.a(), block, (dst, Ty::Bool));
         }
-        Opcode::Raise => {
-            // `bx` = the raised message string constant. The raise unwinds to
-            // the nearest native `try` frame (`try$call` — plan G); with no
-            // handler it aborts, exactly the VM's uncaught raise (the
-            // differential harness treats VM exit-1 and a native SIGABRT as
-            // matching failures).
-            let message = func
-                .consts
-                .strings
-                .get(instr.bx() as usize)
-                .ok_or(Unsupported::BadConst { pc })?
-                .clone();
-            let msg = materialize_key(ssa, insts, globals, &message);
-            insts.push(Inst::Call {
-                dst: None,
-                callee: AbiRef::new("rt", "raise_msg"),
-                args: vec![msg],
-            });
-        }
         Opcode::MapRest => {
             // `a` = dst, `b` = base (source map), `c` = key_count. The result is
             // the map with the `key_count` string keys in registers
@@ -1211,9 +1344,6 @@ pub(crate) fn lower_inst_c(
             }
             ssa.write(instr.a(), block, (current, map_ty));
         }
-        // Control-flow opcodes are terminators, normally handled outside lower_inst.
-        // Reaching here means a branch targeted the middle of a fused pair or an
-        // otherwise malformed shape — reject cleanly (fall back) rather than panic.
         op => return Err(Unsupported::Opcode { pc, op }),
     }
     Ok(())

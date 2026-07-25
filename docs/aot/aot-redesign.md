@@ -263,15 +263,22 @@ crates(新增/重构):
 
 `cli` 的 `llvm` feature 改指 `lk-aot`。`llvm` 老 crate 逐步清空到上述 crate(见 §7)。
 
-**模块层内(以 lk-aot-lower 为例)**:
+**模块层内(以 lk-aot-lower 为例,已落地形态)**:
 ```
 lower/
-  scalar.rs      # 标量 op -> Inst(除零→checked)
-  containers.rs  # 容器 op -> Call{AbiFn}(取代 dynamic_containers/ 全部逐 shape)
-  control.rs     # 块/分支 -> Block/Term(SSA 块参数)
-  calls.rs       # 直接调用解析;间接/闭包在此返回 Unsupported(扩展点)
-  facts.rs       # 类型事实(移自 core::vm::analysis / 现 scalar/facts)
+  inst/mod.rs      # 路由表:opcode → 语义家族(唯一的"谁管这条指令"真相)
+  inst/scalar.rs   # 常量/move/类型谓词/算术/比较(除零→checked helper)
+  inst/string.rs   # 字面量/display 转换/拼接/split/join
+  inst/call.rs     # 直接调用、方法分派、闭包构造、间接调用去虚化
+  inst/global.rs   # 可变模块全局 + 捕获 cell
+  inst/container.rs# list/map/object 构造、索引、变更 → Call{AbiFn}
+  inst/control.rs  # 非终结符的控制流 op(Raise);终结符在 function.rs
+  function.rs cfg.rs ssa.rs  # 块切分/终结符/按需 SSA 构造
+  convert.rs       # 标量上下文读取、数值 coerce、display 转换(Maybe 解包规则)
+  prescan.rs sig.rs# 全模块前置事实:参数/返回观测、全局槽类型、桥接资格
 ```
+每条 lowering 例程取一个 `LowerCtx`(可变的 ssa/globals/sig + 只读的
+func/funcs/entry/module_globals/capture_params),而不是十二个位置参数。
 
 ---
 
