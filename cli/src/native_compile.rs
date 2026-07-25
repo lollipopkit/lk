@@ -62,6 +62,15 @@ pub(super) fn compile_instr_artifact(path: &Path) -> anyhow::Result<ModuleArtifa
 
 pub(super) fn compile_instr_artifact_with_dependencies(path: &Path) -> anyhow::Result<CompiledInstrArtifact> {
     let expansion = expand_program_file(path)?;
+    // Type-check before compiling, exactly as `Program::execute_with_ctx` does
+    // for `lk FILE`. Without this the two paths disagreed on which programs are
+    // valid: `let x: Int = "s"; println(x);` failed at run time under the VM but
+    // compiled and *ran* fine as a native binary, printing `s`.
+    let mut type_checker = lk_core::typ::TypeChecker::new();
+    expansion
+        .program
+        .type_check(&mut type_checker)
+        .with_context(|| format!("type-check {}", path.display()))?;
     let mut ctx = build_vm_context(path)?;
     let module = compile_program_module_with_ctx(&expansion.program, &mut ctx)
         .with_context(|| format!("compile Instr module for {}", path.display()))?;

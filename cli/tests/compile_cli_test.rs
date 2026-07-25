@@ -706,3 +706,36 @@ fn test_run_parse_error_returns_non_zero() {
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+/// `lk FILE`, `lk check FILE` and `lk compile FILE` must agree on whether a
+/// program is valid.
+///
+/// They did not: `Program::execute_with_ctx` type-checks before running, but
+/// the compile path went straight to codegen. A program the VM rejected at run
+/// time therefore compiled to a native binary that *ran successfully* and
+/// printed the ill-typed value — a silent divergence no differential test
+/// caught, because neither the corpus nor the fuzzer emits an annotation that
+/// contradicts its initializer.
+#[test]
+fn test_compile_rejects_what_run_and_check_reject() {
+    let dir = unique_tmp_dir("type_check_parity");
+    ensure_clean_dir(&dir);
+    write_file(&dir, "bad.lk", "let x: Int = \"s\";\nprintln(x);\n");
+
+    let run = run_cli(&dir, ["bad.lk"]).output().expect("spawn run");
+    let check = run_cli(&dir, ["check", "bad.lk"]).output().expect("spawn check");
+    let compile = run_cli(&dir, ["compile", "bad.lk"]).output().expect("spawn compile");
+
+    for (name, out) in [("run", &run), ("check", &check), ("compile", &compile)] {
+        assert!(!out.status.success(), "`lk {name}` accepted an ill-typed program");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("Type mismatch"),
+            "`lk {name}` should report the type error, got: {stderr}"
+        );
+    }
+    // And nothing was produced for the rejected program.
+    assert!(!dir.join("bad").exists(), "a rejected program must not leave a binary");
+
+    let _ = fs::remove_dir_all(&dir);
+}
