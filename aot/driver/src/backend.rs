@@ -42,13 +42,36 @@ pub fn compile_artifact_to_clif_object(
     // `LK_AOT_HYBRID` on unless `=0`: a reachable helper that does not lower
     // natively is bridged to the VM (`docs/aot/tier1-hybrid.md`).
     let hybrid = std::env::var_os("LK_AOT_HYBRID").is_none_or(|value| value != "0");
-    let mir = match lk_aot_lower::lower_bundled(artifact, bundles, hybrid) {
+    let mut mir = match lk_aot_lower::lower_bundled(artifact, bundles, hybrid) {
         Ok(mir) => mir,
         // A shape the MIR lowering itself rejects — fall back, don't fail.
         Err(unsupported) => return Ok(Err(format!("MIR lowering: {unsupported}"))),
     };
     if let Err(error) = lk_aot_mir::validate(&mir) {
         bail!("internal AOT error: MIR validation failed after lowering: {error:?}");
+    }
+    // Backend-independent cleanup (`Pure`-call CSE + dead-code elimination).
+    // Cranelift cannot do this itself for calls to opaque `lkrt` symbols, so
+    // the effect metadata in `aot/abi` is only actionable here.
+    // `LK_AOT_NO_OPT=1` skips it — a bisect handle when a differential case
+    // disagrees, not a supported user knob.
+    if std::env::var_os("LK_AOT_NO_OPT").is_none() {
+        let stats = lk_aot_mir::opt::optimize(&mut mir);
+        if std::env::var_os("LK_AOT_OPT_STATS").is_some() {
+            eprintln!(
+                "lk-aot opt: {} pure call(s) collapsed, {} dead inst(s) removed",
+                stats.cse_calls, stats.dce_insts
+            );
+            eprintln!(
+                "lk-aot opt: {} licm candidate(s)",
+                lk_aot_mir::opt::count_licm_candidates(&mir)
+            );
+        }
+        // Optimization must preserve MIR validity; a violation here is our bug,
+        // not a user-program limitation, so it fails loudly instead of falling back.
+        if let Err(error) = lk_aot_mir::validate(&mir) {
+            bail!("internal AOT error: MIR validation failed after optimization: {error:?}");
+        }
     }
     let vm_function_count = mir.vm_functions.len();
     match lk_aot_codegen::clif::compile_host_object(&mir) {

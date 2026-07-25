@@ -104,9 +104,11 @@ intrinsics.
   registry retired with the legacy text backend. The schema
   records each intrinsic's typed signature and effect (`Pure`, `ReadsHost`, or
   `WritesHost`) and is the single source for the codegen-side declarations and
-  the lkrt conformance test. **TODO(perf):** `Pure` is currently only
-  documentation — the Cranelift backend does not translate it into a
-  CSE/hoist-enabling call attribute the way the retired LLVM text path did.
+  the lkrt conformance test. `Pure` is **load-bearing**: `lk_aot_mir::opt`
+  collapses redundant `Pure` calls (Cranelift cannot — an opaque `lkrt` symbol
+  is a black box to it). Mislabeling a stateful helper `Pure` is therefore a
+  miscompile, not a missed optimization: `bytes.to_string_utf8` *consumes* its
+  handle and was mislabeled until that pass landed.
 
 ## Implementation Shape
 

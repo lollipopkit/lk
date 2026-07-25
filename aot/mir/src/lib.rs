@@ -13,8 +13,14 @@
 //! The type set ([`Ty`]) is deliberately closed: it *is* the definition of the
 //! natively lowerable subset. A lowering that meets a value it cannot place into a
 //! `Ty` rejects the program instead of silently widening the ABI.
+//!
+//! [`opt`] holds the backend-independent optimization passes (`Pure`-call CSE
+//! and dead-code elimination); they live here rather than in codegen because
+//! the effect metadata that makes them sound is the `aot/abi` schema.
 
 use std::collections::HashSet;
+
+pub mod opt;
 
 /// SSA value handle (unique within a function).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -834,7 +840,7 @@ fn render_term(term: &Term) -> String {
     }
 }
 
-fn inst_def(inst: &Inst) -> Option<ValueId> {
+pub(crate) fn inst_def(inst: &Inst) -> Option<ValueId> {
     match inst {
         Inst::Const { dst, .. }
         | Inst::IntBin { dst, .. }

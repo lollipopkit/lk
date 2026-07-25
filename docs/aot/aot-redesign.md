@@ -478,9 +478,19 @@ differential harness 直接解决"emit 签名 == helper 签名 == 运行结果 =
   2. **§3.4 分级所有权只做到 arena**:全局 arena + concat 链已知死串的 eager
      `lkrt_string_free` 已接入;**scope/RAII drop 未做**(长驻程序里非字符串的容器句柄
      仍活到 `lkrt_cleanup`)。
-  3. **§5 性能要点 2/3 未落地**:MIR 逃逸分析(非逃逸容器栈/bump 分配)无实现;
-     ABI 表的 `Pure` 标记在 Cranelift codegen 侧**未被读取**——字符串 IR 时代靠 LLVM
-     函数属性拿 CSE/hoist,换后端后这条收益暂缺(TODO,见 `native-stdlib.md` ABI Rules)。
+  3. **§5 性能要点 2 已落地(收益实测有限)/要点 3 未落地**:
+     - `Pure` 不再是死元数据 —— `aot/mir/src/opt.rs` 在 MIR 层做 `Pure` 调用 CSE + DCE
+       (Cranelift 无法对不透明 `lkrt` 符号做这件事,只有 ABI schema 知道它纯)。
+       **实测**:examples 语料删死指令 1085 条、折叠 Pure 调用 5 处;但
+       `bench/workloads_business_algorithms.lk` 开关此 pass 产出**逐字节相同**的
+       可执行文件、运行时间相同——Cranelift 自己已消除死的纯 CLIF 指令,所以 DCE 那半
+       只买到"MIR 更干净",CSE 那半才是 Cranelift 覆盖不到的能力。**两者都不是那
+       ~17% 差距的来源**(差距在指令选择/寄存器分配)。
+     - **LICM 经测量后决定不做**:全 51 个 example 的循环不变 `Pure` 调用候选 = **0**
+       (`opt::count_licm_candidates`)。结构性原因:循环内的 `Pure` 调用几乎总以循环
+       变量为参数。且提升需要比 `Pure` 更强的"不 abort"性质(0 次迭代的循环会被引入
+       abort),ABI schema 目前没有这一位。
+     - MIR 逃逸分析(非逃逸容器栈/bump 分配)仍无实现。
 - **codegen 后端迁移到 Cranelift ✅(字符串 IR 渲染器退役)**:§3.2 预留的"codegen 后端可替换"
   兑现——`lk-aot-codegen` 的 `render_module`(MIR → LLVM 文本 → clang)由 **Cranelift**
   (`clif.rs`:`MIR → Cranelift IR(typed FunctionBuilder + verifier)→ 原生 object`)取代。

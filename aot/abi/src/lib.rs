@@ -122,7 +122,10 @@ macro_rules! for_each_abi_fn {
             ("tcp", "write_str", lkrt_tcp_write_str, WritesHost, [I64, StrPtr], I64);
             ("tcp", "write_bytes", lkrt_tcp_write_bytes, WritesHost, [I64, I64], I64);
             ("tcp", "close", lkrt_tcp_close, WritesHost, [I64], I64);
-            ("bytes", "to_string_utf8", lkrt_bytes_to_string_utf8, Pure, [I64], StrPtr);
+            // Not `Pure`: it `take_bytes` — the handle is *consumed*, so a
+            // second call with the same handle fails where the first one
+            // succeeded. Mislabeling it would let a CSE pass collapse the two.
+            ("bytes", "to_string_utf8", lkrt_bytes_to_string_utf8, WritesHost, [I64], StrPtr);
             ("bytes", "free", lkrt_bytes_free, WritesHost, [I64], I64);
             ("lkrt", "handle_close", lkrt_handle_close, WritesHost, [I64], I64);
             ("io.std", "write", lkrt_io_std_write, WritesHost, [I64, StrPtr, I64], I64);
