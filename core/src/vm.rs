@@ -31,7 +31,7 @@ pub use artifact::*;
 pub use cache::*;
 pub use call_window::*;
 pub use compiler::*;
-pub use context::VmContext;
+pub use context::{MethodImpl, VmContext};
 pub use exec::*;
 pub use gc::*;
 pub use ir::*;

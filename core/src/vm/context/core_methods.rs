@@ -1006,14 +1006,22 @@ fn call_trait_method_runtime(
     let Some(ctx) = ctx else {
         bail!("{} has no method '{}'", receiver_type_name, method);
     };
-    let Some(function_index) = ctx
-        .type_checker()
-        .as_ref()
-        .and_then(|tc| tc.registry().get_method(&receiver_type, method.as_str()))
-    else {
+    // Dispatch on the *declared* type name (`Sq`), not the diagnostic one
+    // (`runtime_type_name` reports the heap kind, i.e. "Object", for any
+    // struct instance).
+    let Some(impl_ref) = ctx.trait_method(&receiver_type.display(), method.as_str()).cloned() else {
         bail!("{} has no method '{}'", receiver_type_name, method);
     };
-    let method_val = crate::vm::method_callable(function_index, state.heap_mut());
+    let method_val = match impl_ref {
+        crate::vm::MethodImpl::Local(function_index) => crate::vm::method_callable(function_index, state.heap_mut()),
+        // An imported method runs against its own module/heap, so it is
+        // materialized as a `Runtime` callable rather than a local closure.
+        crate::vm::MethodImpl::Imported(callable) => RuntimeVal::Obj(
+            state
+                .heap_mut()
+                .alloc(HeapValue::Callable(crate::val::CallableValue::Runtime(callable))),
+        ),
+    };
     call_runtime_value_runtime_with_receiver_list_args(
         method_val,
         &receiver,

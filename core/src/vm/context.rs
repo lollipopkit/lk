@@ -9,13 +9,31 @@ use crate::module::runtime_export_from_runtime_native;
 use crate::stmt::ModuleResolver;
 use crate::typ::TypeChecker;
 use crate::val::{HeapStore, HeapValue, RuntimeMapKey, RuntimeObject, RuntimeVal, ShortStr, Type, TypedMap};
-use crate::vm::{NativeArgs, NativeEntry, NativeFunction, NativeRuntime, RuntimeExport, collect_runtime_export};
+use crate::vm::{
+    NativeArgs, NativeEntry, NativeFunction, NativeRuntime, RuntimeCallable, RuntimeExport, collect_runtime_export,
+};
 
 use crate::typ::{TraitDef, TraitImpl};
 
 mod core_methods;
 pub(crate) use core_methods::core_call_method_windowed;
 use core_methods::{core_call_method_builtin, core_call_method_named_builtin, core_set_builtin};
+
+/// Where a trait-impl method's body lives.
+///
+/// The distinction is the whole point of this table: a method declared in the
+/// module being executed is addressed by index against that module, while a
+/// method that arrived through an `import` must be called against the module
+/// and heap it was compiled and run in.
+#[derive(Debug, Clone)]
+pub enum MethodImpl {
+    /// Index into the currently executing module's function table.
+    Local(u32),
+    /// A callable carrying its own module and runtime state. `Arc` because
+    /// `RuntimeCallable` owns shared state and a cloned context must keep
+    /// pointing at the same module, not a copy of it.
+    Imported(Arc<RuntimeCallable>),
+}
 
 /// VM runtime context.
 ///
@@ -29,6 +47,14 @@ pub struct VmContext {
     resolver: Arc<ModuleResolver>,
     type_checker: Option<TypeChecker>,
     structs: FastHashMap<String, FastHashMap<String, Type>>,
+    /// Runtime trait-method table: `(type name, method name)` → implementation.
+    ///
+    /// This lives here, not in `TypeChecker`, because it is runtime data: an
+    /// imported module's method must be called against *that* module's
+    /// function table and heap, which the type system has no business knowing
+    /// about. The type checker keeps only what it needs for checking
+    /// (`method_sigs`).
+    methods: FastHashMap<(String, String), MethodImpl>,
     call_stack: Vec<CallFrameInfo>,
     /// Per-context handle to the async (tokio) runtime. Replaces the former
     /// process-global runtime; clones (spawned tasks, shallow clones) share the
@@ -70,6 +96,7 @@ impl VmContext {
             resolver: Arc::new(ModuleResolver::default()),
             type_checker: None,
             structs: fast_hash_map_new(),
+            methods: fast_hash_map_new(),
             call_stack: Vec::new(),
             async_runtime: crate::rt::AsyncRuntimeHandle::new(),
         }
@@ -92,6 +119,7 @@ impl VmContext {
             resolver: Arc::clone(&self.resolver),
             type_checker: self.type_checker.clone(),
             structs: self.structs.clone(),
+            methods: self.methods.clone(),
             call_stack: self.call_stack.clone(),
             // Share the same async runtime so spawned tasks run on one reactor.
             async_runtime: self.async_runtime.clone(),
@@ -307,6 +335,38 @@ impl VmContext {
         self.install_runtime_builtin("__lk_bit_not", NativeFunction::Plain(core_bit_not_builtin), 1);
     }
 
+    /// Looks up a trait-impl method for `type_name`.
+    pub fn trait_method(&self, type_name: &str, method: &str) -> Option<&MethodImpl> {
+        self.methods.get(&(type_name.to_string(), method.to_string()))
+    }
+
+    /// Records an imported module's trait impls, bound to *that* module's
+    /// function table and heap.
+    ///
+    /// Without this an `impl` in an imported file was simply invisible: the
+    /// importer executed the file in a throwaway `VmContext` and kept only its
+    /// exported values, so `use { make } from "./shape.lk"; make(4).area()`
+    /// failed with "Object has no method 'area'".
+    pub fn register_imported_types(&mut self, export: &RuntimeExport) {
+        let module = export.shared_module();
+        if module.type_info.is_empty() {
+            return;
+        }
+        for decl in &module.type_info.impls {
+            for method in &decl.methods {
+                self.methods.insert(
+                    (decl.type_name.clone(), method.name.clone()),
+                    MethodImpl::Imported(Arc::new(RuntimeCallable::with_shared_captures(
+                        Arc::clone(&module),
+                        method.function,
+                        Arc::new(Vec::new()),
+                        export.shared_state(),
+                    ))),
+                );
+            }
+        }
+    }
+
     /// Populates the runtime method table from the module's compiled
     /// declarations.
     ///
@@ -350,6 +410,16 @@ impl VmContext {
             };
             checker.registry().validate_trait_impl(&impl_def)?;
             checker.registry_mut().register_trait_impl(impl_def);
+        }
+        // The dispatch table itself: local methods resolve against whichever
+        // module is executing, so only the index is recorded.
+        for decl in &type_info.impls {
+            for method in &decl.methods {
+                self.methods.insert(
+                    (decl.type_name.clone(), method.name.clone()),
+                    MethodImpl::Local(method.function),
+                );
+            }
         }
         Ok(())
     }

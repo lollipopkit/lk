@@ -4,7 +4,7 @@ use alloc::sync::Arc;
 
 use anyhow::{Result, anyhow, bail};
 
-use crate::val::{HeapValue, RuntimeVal, ShortStr, Type, TypedList};
+use crate::val::{HeapValue, RuntimeVal, ShortStr, TypedList};
 use crate::vm::{Module, VmContext, call_runtime_value_runtime_with_receiver};
 
 use super::{Executor, heap_kind};
@@ -69,18 +69,20 @@ impl Executor {
         let Some(HeapValue::Object(object)) = self.state.heap.get(*handle) else {
             return Ok(None);
         };
-        let receiver_type = Type::Named(object.type_name.to_string());
         let Some(ctx_ref) = ctx.as_deref_mut() else {
             return Ok(None);
         };
-        let Some(function_index) = ctx_ref
-            .type_checker()
-            .as_ref()
-            .and_then(|tc| tc.registry().get_method(&receiver_type, "show"))
-        else {
+        let Some(impl_ref) = ctx_ref.trait_method(&object.type_name, "show").cloned() else {
             return Ok(None);
         };
-        let method = crate::vm::method_callable(function_index, &mut self.state.heap);
+        let method = match impl_ref {
+            crate::vm::MethodImpl::Local(function_index) => {
+                crate::vm::method_callable(function_index, &mut self.state.heap)
+            }
+            crate::vm::MethodImpl::Imported(callable) => RuntimeVal::Obj(self.state.heap.alloc(
+                crate::val::HeapValue::Callable(crate::val::CallableValue::Runtime(callable)),
+            )),
+        };
         let result =
             call_runtime_value_runtime_with_receiver(method, value, &[], &mut self.state, module, Some(ctx_ref))?;
         self.runtime_value_to_plain_string_maybe(&result)

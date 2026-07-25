@@ -1104,14 +1104,22 @@ fn runtime_display_show(value: &RuntimeVal, runtime: &mut NativeRuntime<'_>) -> 
     let Some(ctx) = ctx else {
         return Ok(None);
     };
-    let Some(function_index) = ctx
-        .type_checker()
-        .as_ref()
-        .and_then(|tc| tc.registry().get_method(&receiver_type, "show"))
-    else {
+    let Type::Named(receiver_type_name) = &receiver_type else {
         return Ok(None);
     };
-    let method = lk_core::vm::method_callable(function_index, state.heap_mut());
+    let Some(impl_ref) = ctx.trait_method(receiver_type_name, "show").cloned() else {
+        return Ok(None);
+    };
+    let method = match impl_ref {
+        lk_core::vm::MethodImpl::Local(function_index) => {
+            lk_core::vm::method_callable(function_index, state.heap_mut())
+        }
+        lk_core::vm::MethodImpl::Imported(callable) => RuntimeVal::Obj(
+            state
+                .heap_mut()
+                .alloc(HeapValue::Callable(lk_core::val::CallableValue::Runtime(callable))),
+        ),
+    };
     let result = call_runtime_value_runtime_with_receiver(method, value, &[], state, module, Some(ctx))?;
     runtime_string_maybe(&result, state.heap()).map(|value| value.map(|value| value.to_string()))
 }

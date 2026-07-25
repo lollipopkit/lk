@@ -319,6 +319,9 @@ pub fn execute_imports(imports: &[ImportStmt], resolver: &ModuleResolver, env: &
     for import in imports {
         if let ImportStmt::Items { items, source } = import {
             let module = resolve_runtime_import_source(source, resolver)?;
+            // An imported module's `impl` blocks must dispatch here too; the
+            // methods stay bound to their own module and heap.
+            env.register_imported_types(&module);
             for item in items {
                 let symbol_name = item.alias.as_ref().unwrap_or(&item.name);
                 let export = runtime_export_field(&module, &item.name)?;
@@ -330,6 +333,7 @@ pub fn execute_imports(imports: &[ImportStmt], resolver: &ModuleResolver, env: &
         match import {
             ImportStmt::Module { module } => {
                 let module_export = resolver.resolve_runtime_module(module)?;
+                env.register_imported_types(&module_export);
                 env.define_runtime_global(default_module_binding(module), module_export);
             }
             ImportStmt::File { path } => {
@@ -342,6 +346,7 @@ pub fn execute_imports(imports: &[ImportStmt], resolver: &ModuleResolver, env: &
                         .unwrap_or("module")
                         .to_string();
                     let module = resolver.resolve_runtime_file(path)?;
+                    env.register_imported_types(&module);
                     env.define_runtime_global(module_name, module);
                 }
                 #[cfg(not(feature = "std"))]
@@ -353,6 +358,7 @@ pub fn execute_imports(imports: &[ImportStmt], resolver: &ModuleResolver, env: &
             ImportStmt::Items { .. } => unreachable!("items imports are handled before runtime use binding"),
             ImportStmt::Namespace { alias, source } => {
                 let module = resolve_runtime_import_source(source, resolver)?;
+                env.register_imported_types(&module);
                 env.define_runtime_global(alias.clone(), module);
             }
             ImportStmt::ModuleAlias { module, alias } => {

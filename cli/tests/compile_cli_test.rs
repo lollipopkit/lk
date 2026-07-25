@@ -739,3 +739,39 @@ fn test_compile_rejects_what_run_and_check_reject() {
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+/// A `trait` implemented in an imported file must dispatch in the importer.
+///
+/// It did not: the importer executes an imported file in a throwaway
+/// `VmContext` and keeps only its exported *values*, so the module's `impl`
+/// blocks were dropped on the floor and `make(4).area()` failed with
+/// "Object has no method 'area'". The method table now travels with the
+/// import, bound to the imported module's own function table and heap.
+#[test]
+fn test_trait_impl_from_imported_file_dispatches() {
+    let dir = unique_tmp_dir("cross_module_impl");
+    ensure_clean_dir(&dir);
+    write_file(
+        &dir,
+        "shape.lk",
+        "trait Area { fn area(self) -> Int; }\n\
+         struct Sq { s: Int }\n\
+         impl Area for Sq { fn area(self) -> Int { return self.s * self.s; } }\n\
+         fn make(n: Int) -> Sq { return Sq { s: n }; }\n",
+    );
+    write_file(
+        &dir,
+        "main.lk",
+        "use { make } from \"./shape.lk\";\nlet sq = make(4);\nprintln(sq.area());\n",
+    );
+
+    let out = run_cli(&dir, ["main.lk"]).output().expect("spawn run");
+    assert!(
+        out.status.success(),
+        "cross-module trait dispatch failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "16");
+
+    let _ = fs::remove_dir_all(&dir);
+}
