@@ -359,7 +359,7 @@ fn scope_drop_skips_a_handle_stored_into_another_container() {
 #[test]
 fn scope_drop_skips_a_handle_boxed_into_a_dyn() {
     // `dyn.from_list(tmp)` retains the handle inside the boxed value, which
-    // `receiver_escapes` reports — even though `tmp` is the receiver.
+    // the schema's `Receiver::Retained` records — even though `tmp` is the receiver.
     let mut func = loop_func(
         vec![call(10, "list_h", "i64_new", &[]), call(11, "dyn", "from_list", &[10])],
         ValueId(0),
