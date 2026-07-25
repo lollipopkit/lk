@@ -59,6 +59,7 @@ impl Compiler {
             natives,
             globals: global_slots_from_names(&global_names),
             entry: 0,
+            type_info: crate::vm::TypeInfo::default(),
         };
 
         let mut entry = Self::with_names(
@@ -72,6 +73,7 @@ impl Compiler {
         entry.user_let_globals = user_let_globals.clone();
         entry.dynamic_function_base = module.functions.len() as u32;
         entry.lower_program_statements(program)?;
+        module.type_info = core::mem::take(&mut entry.type_info);
         module.functions[0] = entry.finish()?;
         module.functions.extend(entry.pending_functions);
 

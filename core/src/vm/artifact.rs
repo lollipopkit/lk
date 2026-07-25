@@ -32,7 +32,12 @@ use super::{
 // Version 9: `Yield` removed again (v2 direction: coroutines/`yield` dropped
 // in favor of Go-style go/spawn concurrency) — v8 artifacts may contain an
 // opcode this runtime no longer decodes.
-pub const MODULE_ARTIFACT_VERSION: u32 = 9;
+// Version 10: `ModuleData.type_info` carries the compiler's `trait`/`impl`
+// declarations (see `super::TypeInfo`). Back ends read them instead of
+// reconstructing them from bytecode, so a v9 artifact would leave a v10
+// consumer with an empty table rather than a wrong one — still a semantic
+// difference, hence the bump.
+pub const MODULE_ARTIFACT_VERSION: u32 = 10;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ModuleArtifact {
@@ -97,6 +102,11 @@ pub struct ModuleData {
     pub entry: u32,
     pub globals: Vec<String>,
     pub functions: Vec<FunctionData>,
+    /// Static `trait`/`impl` declarations from the compiler; see
+    /// [`super::TypeInfo`]. Defaulted so a module without declarations costs
+    /// nothing in the encoding.
+    #[serde(default, skip_serializing_if = "super::TypeInfo::is_empty")]
+    pub type_info: super::TypeInfo,
 }
 
 impl ModuleData {
@@ -113,6 +123,7 @@ impl ModuleData {
             entry: module.entry,
             globals,
             functions,
+            type_info: module.type_info.clone(),
         }
     }
 
@@ -129,6 +140,7 @@ impl ModuleData {
             );
         }
         Ok(Module {
+            type_info: self.type_info,
             functions,
             natives: Vec::new(),
             globals: {
@@ -409,9 +421,49 @@ mod tests {
         assert_eq!(decoded_module.functions[0].code, module.functions[0].code);
     }
 
+    /// The compiler's `trait`/`impl` knowledge must survive into the artifact
+    /// in structured form — that is the whole point of `TypeInfo`. Before this,
+    /// the only encoding was string literals inside a registration call, which
+    /// every back end had to decode again.
+    #[test]
+    fn module_artifact_carries_trait_impl_declarations() {
+        let source = "\
+trait Show { fn show(self) -> String; }\n\
+struct Point { x: Int }\n\
+impl Show for Point { fn show(self) -> String { return \"p\"; } }\n\
+return 1;\n";
+        let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
+        let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
+        let module = Compiler::compile_module(&program).expect("compile");
+
+        let info = &module.type_info;
+        assert_eq!(info.traits.len(), 1, "the trait declaration is recorded");
+        assert_eq!(info.traits[0].name, "Show");
+        assert_eq!(info.impls.len(), 1, "the impl block is recorded");
+        assert_eq!(info.impls[0].trait_name, "Show");
+        assert_eq!(info.impls[0].type_name, "Point");
+        assert_eq!(info.impls[0].methods.len(), 1);
+        assert_eq!(info.impls[0].methods[0].name, "show");
+        // The method points at a real compiled body, by index — not a runtime
+        // value, which is what makes this serializable.
+        let target = info.impls[0].methods[0].function as usize;
+        assert!(
+            target < module.functions.len(),
+            "method index addresses a compiled body"
+        );
+        assert_eq!(info.impl_method("Point", "show"), Some(target as u32));
+        assert_eq!(info.impl_method("Point", "missing"), None);
+
+        // And it round-trips through the serialized boundary unchanged.
+        let artifact = ModuleArtifact::new(Vec::new(), &module).expect("artifact");
+        let json = artifact.to_json_string().expect("json");
+        let decoded = ModuleArtifact::from_json_str(&json).expect("decode");
+        assert_eq!(decoded.module.type_info, module.type_info);
+    }
+
     #[test]
     fn module_artifact_rejects_previous_version() {
-        assert_eq!(MODULE_ARTIFACT_VERSION, 9);
+        assert_eq!(MODULE_ARTIFACT_VERSION, 10);
         let source = "return 1;\n";
         let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
         let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
@@ -421,7 +473,7 @@ mod tests {
 
         let json = artifact.to_json_string().expect("json");
         let err = ModuleArtifact::from_json_str(&json).expect_err("previous-version artifact should be rejected");
-        assert!(err.to_string().contains("unsupported LK module artifact version 8"));
+        assert!(err.to_string().contains("unsupported LK module artifact version 9"));
     }
 
     #[test]

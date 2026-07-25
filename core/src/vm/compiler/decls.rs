@@ -14,6 +14,15 @@ impl Compiler {
     }
 
     pub(super) fn lower_trait_decl(&mut self, name: &str, methods: &[(String, Type)]) -> Result<()> {
+        // Record the declaration structurally first: it is valid module type
+        // info whether or not the runtime registration helper is available.
+        self.type_info.traits.push(crate::vm::TraitDecl {
+            name: name.to_string(),
+            methods: methods
+                .iter()
+                .map(|(method_name, method_type)| (method_name.clone(), method_type.display()))
+                .collect(),
+        });
         let Some(helper) = self.try_load_callable_by_name("__lk_register_trait")? else {
             return Ok(());
         };
@@ -30,13 +39,16 @@ impl Compiler {
     }
 
     pub(super) fn lower_impl_decl(&mut self, trait_name: &str, target_type: &Type, methods: &[Stmt]) -> Result<()> {
-        let Some(helper) = self.try_load_callable_by_name("__lk_register_trait_impl")? else {
-            return Ok(());
-        };
-        let trait_name = self.lower_val(&LiteralVal::from_str(trait_name))?;
+        let helper = self.try_load_callable_by_name("__lk_register_trait_impl")?;
         let target_type_text = target_type.display();
-        let target_type_reg = self.lower_val(&LiteralVal::from_str(&target_type_text))?;
+        let trait_name_reg = helper
+            .map(|_| self.lower_val(&LiteralVal::from_str(trait_name)))
+            .transpose()?;
+        let target_type_reg = helper
+            .map(|_| self.lower_val(&LiteralVal::from_str(&target_type_text)))
+            .transpose()?;
         let mut entries = Vec::with_capacity(methods.len());
+        let mut decl_methods = Vec::with_capacity(methods.len());
         for method in methods {
             let Stmt::Function {
                 name,
@@ -49,23 +61,44 @@ impl Compiler {
             else {
                 bail!("Compiler impl block only supports function methods");
             };
-            let method_name = self.lower_val(&LiteralVal::from_str(name))?;
-            let method_value = self.compile_impl_method_function(params, named_params, body)?;
+            // The compiled body's index is the durable identity of this method;
+            // the registration call below only re-encodes it as a runtime value.
+            let (function_index, method_value) =
+                self.compile_impl_method_function_indexed(params, named_params, body)?;
             let method_type = impl_method_type(target_type, params, param_types, named_params, return_type);
-            let method_type = self.lower_val(&LiteralVal::from_str(&method_type.display()))?;
-            entries.push(self.materialize_list(vec![method_name, method_value, method_type])?);
+            let method_type_text = method_type.display();
+            decl_methods.push(crate::vm::ImplMethod {
+                name: name.clone(),
+                function: function_index,
+                ty: method_type_text.clone(),
+            });
+            if helper.is_some() {
+                let method_name = self.lower_val(&LiteralVal::from_str(name))?;
+                let method_type_reg = self.lower_val(&LiteralVal::from_str(&method_type_text))?;
+                entries.push(self.materialize_list(vec![method_name, method_value, method_type_reg])?);
+            }
         }
-        let methods = self.materialize_list(entries)?;
-        self.lower_call_window_regs(helper, &[trait_name, target_type_reg, methods])?;
+        self.type_info.impls.push(crate::vm::ImplDecl {
+            trait_name: trait_name.to_string(),
+            type_name: target_type_text,
+            methods: decl_methods,
+        });
+        if let (Some(helper), Some(trait_name_reg), Some(target_type_reg)) = (helper, trait_name_reg, target_type_reg) {
+            let methods = self.materialize_list(entries)?;
+            self.lower_call_window_regs(helper, &[trait_name_reg, target_type_reg, methods])?;
+        }
         Ok(())
     }
 
-    pub(super) fn compile_impl_method_function(
+    /// Compiles an impl method body, returning `(function index, register
+    /// holding the loaded callable)`. The index is what `Module::type_info`
+    /// records; the register only feeds the runtime registration call.
+    pub(super) fn compile_impl_method_function_indexed(
         &mut self,
         params: &[String],
         named_params: &[crate::stmt::NamedParamDecl],
         body: &Stmt,
-    ) -> Result<u16> {
+    ) -> Result<(u32, u16)> {
         let function_index = self
             .dynamic_function_base
             .checked_add(self.pending_functions.len() as u32)
@@ -99,7 +132,7 @@ impl Compiler {
         );
         self.pending_functions.push(compiled.function);
         self.pending_functions.append(&mut compiled.pending_functions);
-        Ok(dst)
+        Ok((function_index, dst))
     }
 
     pub(super) fn load_callable_by_name(&mut self, name: &str) -> Result<u16> {

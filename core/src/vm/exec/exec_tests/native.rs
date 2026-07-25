@@ -40,6 +40,7 @@ fn execute_module_calls_native_function_with_same_call_opcode() {
         }],
         globals: Vec::new(),
         entry: 0,
+        type_info: Default::default(),
     };
 
     let result = execute_module(&module).expect("execute module");
@@ -81,6 +82,7 @@ fn execute_module_collects_after_native_heap_allocation() {
         }],
         globals: Vec::new(),
         entry: 0,
+        type_info: Default::default(),
     };
     let mut heap = HeapStore::new();
     heap.set_gc_threshold(1);
@@ -160,6 +162,7 @@ fn execute_module_calls_full_state_native_with_named_args() {
         }],
         globals: Vec::new(),
         entry: 0,
+        type_info: Default::default(),
     };
 
     let result = execute_module(&module).expect("execute module");
@@ -222,6 +225,7 @@ fn execute_module_calls_runtime_callable_from_heap() {
         natives: Vec::new(),
         globals: vec![GlobalSlot { name: "f".into() }],
         entry: 0,
+        type_info: Default::default(),
     };
     let mut heap = HeapStore::new();
     let global = RuntimeVal::Obj(heap.alloc(HeapValue::Callable(CallableValue::Runtime(Arc::new(callable)))));
@@ -503,6 +507,7 @@ fn execute_module_uses_global_slot_fact_for_get_and_set() {
             GlobalSlot { name: "answer".into() },
         ],
         entry: 0,
+        type_info: Default::default(),
     };
 
     let result =
@@ -543,6 +548,7 @@ fn execute_module_set_global_move_fact_consumes_source_register() {
         natives: Vec::new(),
         globals: vec![GlobalSlot { name: "stored".into() }],
         entry: 0,
+        type_info: Default::default(),
     };
 
     let result = execute_module_with_globals(&module, vec![RuntimeVal::Nil]).expect("execute module");
@@ -575,6 +581,7 @@ fn execute_module_set_global_without_move_fact_clones_source_register() {
         natives: Vec::new(),
         globals: vec![GlobalSlot { name: "stored".into() }],
         entry: 0,
+        type_info: Default::default(),
     };
 
     let result = execute_module_with_globals(&module, vec![RuntimeVal::Nil]).expect("execute module");
@@ -600,6 +607,7 @@ fn execute_module_falls_back_to_instr_global_slot_without_fact() {
         natives: Vec::new(),
         globals: vec![GlobalSlot { name: "answer".into() }],
         entry: 0,
+        type_info: Default::default(),
     };
 
     let result = execute_module_with_globals(&module, vec![RuntimeVal::Int(42)]).expect("execute module");
@@ -624,6 +632,7 @@ fn execute_caller_handler_catches_raise_from_runtime_callable() {
         natives: Vec::new(),
         globals: Vec::new(),
         entry: 0,
+        type_info: Default::default(),
     });
     let callable = RuntimeCallable::with_state(
         callee_module,
@@ -647,6 +656,7 @@ fn execute_caller_handler_catches_raise_from_runtime_callable() {
         natives: Vec::new(),
         globals: vec![GlobalSlot { name: "f".into() }],
         entry: 0,
+        type_info: Default::default(),
     };
     let mut heap = HeapStore::new();
     let global = RuntimeVal::Obj(heap.alloc(HeapValue::Callable(CallableValue::Runtime(Arc::new(callable)))));
@@ -680,6 +690,7 @@ fn execute_module_calls_runtime_callable_with_named_args() {
         natives: Vec::new(),
         globals: Vec::new(),
         entry: 0,
+        type_info: Default::default(),
     });
     let callable = RuntimeCallable::with_state(
         Arc::clone(&callee_module),
@@ -714,6 +725,7 @@ fn execute_module_calls_runtime_callable_with_named_args() {
         natives: Vec::new(),
         globals: vec![GlobalSlot { name: "f".into() }],
         entry: 0,
+        type_info: Default::default(),
     };
     let mut heap = HeapStore::new();
     let global = RuntimeVal::Obj(heap.alloc(HeapValue::Callable(CallableValue::Runtime(Arc::new(callable)))));
@@ -750,6 +762,7 @@ fn runtime_callable_error_keeps_shared_module_state() {
         natives: Vec::new(),
         globals: vec![GlobalSlot { name: "counter".into() }],
         entry: 0,
+        type_info: Default::default(),
     });
     let callable = RuntimeCallable::with_state(
         Arc::clone(&callee_module),
@@ -801,6 +814,7 @@ fn runtime_callable_native_error_collects_pending_heap_allocations() {
         }],
         globals: Vec::new(),
         entry: 0,
+        type_info: Default::default(),
     });
     let mut state = RuntimeModuleState::new(HeapStore::new(), Vec::new());
     state.heap.set_gc_threshold(1);
@@ -838,6 +852,7 @@ fn direct_runtime_callable_restores_shared_state_stack_top() {
         natives: Vec::new(),
         globals: Vec::new(),
         entry: 0,
+        type_info: Default::default(),
     });
     let state = Arc::new(Mutex::new(RuntimeModuleState::new(HeapStore::new(), Vec::new())));
     let callable = RuntimeCallable::with_state(Arc::clone(&module), 0, Arc::new(Vec::new()), Arc::clone(&state));

@@ -682,6 +682,10 @@ pub struct Module {
     pub natives: Vec<NativeEntry>,
     pub globals: Vec<GlobalSlot>,
     pub entry: u32,
+    /// Static `trait`/`impl` declarations (see [`super::TypeInfo`]). Produced
+    /// by the compiler, consumed by the back ends — none of them has to
+    /// reconstruct it from bytecode.
+    pub type_info: super::TypeInfo,
 }
 
 impl Module {
@@ -692,6 +696,7 @@ impl Module {
             natives: Vec::new(),
             globals: Vec::new(),
             entry: 0,
+            type_info: super::TypeInfo::default(),
         }
     }
 
@@ -930,6 +935,7 @@ mod tests {
                 name: Arc::<str>::from("answer"),
             }],
             entry: 0,
+            type_info: Default::default(),
         };
 
         let text = disassemble_module(&module);

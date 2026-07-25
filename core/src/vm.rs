@@ -22,6 +22,7 @@ mod repl;
 mod runtime;
 #[allow(dead_code)]
 pub(crate) mod ssa;
+mod type_info;
 pub mod verify;
 #[cfg(all(test, feature = "std"))]
 mod verify_fuzz_tests;
@@ -36,6 +37,7 @@ pub use gc::*;
 pub use ir::*;
 pub use repl::*;
 pub use runtime::*;
+pub use type_info::*;
 
 pub use analysis::{
     VM_INDEX_KEY_METRIC_NAMES, VM_REGISTER_WRITE_SOURCE_NAMES, VmRuntimeMetrics, vm_runtime_metrics_enabled,

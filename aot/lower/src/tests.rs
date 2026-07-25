@@ -8,6 +8,7 @@ fn artifact(consts: ConstPoolData, code: Vec<u32>, register_count: u16) -> Modul
         imports: Vec::new(),
         module: ModuleData {
             entry: 0,
+            type_info: Default::default(),
             globals: Vec::new(),
             functions: vec![FunctionData {
                 consts,
@@ -67,6 +68,7 @@ fn lowers_zero_capture_lambda_global_call() {
         imports: Vec::new(),
         module: ModuleData {
             entry: 0,
+            type_info: Default::default(),
             globals: vec!["inc".to_string()],
             functions: vec![
                 func(
@@ -110,6 +112,7 @@ fn lowers_local_lambda_call() {
         imports: Vec::new(),
         module: ModuleData {
             entry: 0,
+            type_info: Default::default(),
             globals: Vec::new(),
             functions: vec![
                 func(
@@ -152,6 +155,7 @@ fn rejects_capturing_closure() {
         imports: Vec::new(),
         module: ModuleData {
             entry: 0,
+            type_info: Default::default(),
             globals: Vec::new(),
             functions: vec![
                 func(
@@ -192,6 +196,7 @@ fn rejects_reassigned_lambda_global() {
         imports: Vec::new(),
         module: ModuleData {
             entry: 0,
+            type_info: Default::default(),
             globals: vec!["f".to_string()],
             functions: vec![
                 func(
@@ -227,6 +232,7 @@ fn lowers_direct_call() {
         imports: Vec::new(),
         module: ModuleData {
             entry: 0,
+            type_info: Default::default(),
             globals: vec!["add".to_string()],
             functions: vec![
                 func(
@@ -334,6 +340,7 @@ fn dead_function_is_skipped() {
         imports: Vec::new(),
         module: ModuleData {
             entry: 0,
+            type_info: Default::default(),
             globals: vec!["dead".to_string()],
             functions: vec![
                 func(
@@ -378,6 +385,7 @@ fn monomorphizes_f64_parameter() {
         imports: Vec::new(),
         module: ModuleData {
             entry: 0,
+            type_info: Default::default(),
             globals: vec!["f".to_string()],
             functions: vec![
                 func(

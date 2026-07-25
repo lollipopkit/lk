@@ -39,6 +39,7 @@ fn execute_module_calls_closure_function() {
         natives: Vec::new(),
         globals: Vec::new(),
         entry: 0,
+        type_info: Default::default(),
     };
 
     let result = execute_module(&module).expect("execute module");
@@ -93,6 +94,7 @@ fn execute_module_uses_call_shape_fact_for_call_window() {
         natives: Vec::new(),
         globals: Vec::new(),
         entry: 0,
+        type_info: Default::default(),
     };
 
     let result = execute_module(&module).expect("execute module");
@@ -136,6 +138,7 @@ fn execute_module_caches_call_shape_without_static_fact() {
         natives: Vec::new(),
         globals: Vec::new(),
         entry: 0,
+        type_info: Default::default(),
     };
     assert!(module.functions[0].performance.call_site(3).is_none());
 
@@ -192,6 +195,7 @@ fn execute_module_caches_named_call_shape_without_static_fact() {
         natives: Vec::new(),
         globals: Vec::new(),
         entry: 0,
+        type_info: Default::default(),
     };
     assert!(module.functions[0].performance.call_site(4).is_none());
 
@@ -253,6 +257,7 @@ fn execute_module_calls_closure_with_captured_value() {
         natives: Vec::new(),
         globals: Vec::new(),
         entry: 0,
+        type_info: Default::default(),
     };
 
     let result = execute_module(&module).expect("execute module");
@@ -308,6 +313,7 @@ fn execute_module_reuses_shared_stack_for_repeated_closure_calls() {
         natives: Vec::new(),
         globals: Vec::new(),
         entry: 0,
+        type_info: Default::default(),
     };
 
     let result = execute_module(&module).expect("execute repeated closure calls");
@@ -375,6 +381,7 @@ fn runtime_value_closure_call_uses_active_shared_stack_window() {
         }],
         globals: vec![GlobalSlot { name: "f".into() }],
         entry: 0,
+        type_info: Default::default(),
     };
     let mut heap = HeapStore::new();
     let closure = RuntimeVal::Obj(heap.alloc(HeapValue::Callable(CallableValue::Closure {

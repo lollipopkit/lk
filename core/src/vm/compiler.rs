@@ -81,6 +81,11 @@ pub struct Compiler {
     loop_snapshot_vars: Vec<LoopSnapshotVar>,
     dynamic_function_base: u32,
     pending_functions: Vec<Function>,
+    /// `trait`/`impl` declarations lowered so far, kept structured instead of
+    /// only being serialized into registration-call string literals. Filled by
+    /// `lower_trait_decl` / `lower_impl_decl`; the module compiler moves the
+    /// entry compiler's copy into `Module::type_info`.
+    type_info: crate::vm::TypeInfo,
     inline_stack: Vec<String>,
     loops: Vec<LoopPatch>,
     loop_const_scopes: Vec<HashMap<ScalarLoopConstKey, u16>>,
