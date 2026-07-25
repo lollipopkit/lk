@@ -83,7 +83,7 @@ pub(crate) struct SigInfer {
     /// sites bridge into the embedded VM (`fidx → scalar marshaling types`).
     /// Empty during the fixpoint; filled between the failing final pass and
     /// its hybrid retry (`docs/aot/tier1-hybrid.md`).
-    pub(crate) vm_functions: std::collections::HashMap<u32, Vec<Ty>>,
+    pub(crate) vm_functions: std::collections::HashMap<u32, usize>,
     /// Import-derived name bindings (aliases, module items, bundled files).
     pub(crate) imports: ImportEnv,
     /// Trait/impl registrations lifted from the entry (plan J1).

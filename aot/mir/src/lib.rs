@@ -238,10 +238,18 @@ pub enum Inst {
     /// (v2: results flow back as `LkDyn` via `lk_hybrid_call_r`); codegen
     /// degrades a call whose `dst` is never used to the void `lk_hybrid_call_v`
     /// so statement-position calls keep the v1 zero-marshal return path.
+    ///
+    /// `arg_tys` carries the marshaling type of each argument **at this call
+    /// site**, parallel to `args`. It is deliberately per-site rather than a
+    /// per-callee signature: the bridge tags every argument individually and
+    /// the VM is dynamically typed, so two call sites may pass different types
+    /// to the same parameter. Requiring one type per parameter (as v1 did)
+    /// rejected such callees for no ABI reason.
     CallVm {
         dst: Option<ValueId>,
         func: FuncId,
         args: Vec<ValueId>,
+        arg_tys: Vec<Ty>,
     },
     /// `dst = lkrt_lklist_i64_get_pair(handle, index)` — a dynamic `List<i64>` read
     /// producing a [`Ty::MaybeI64`]. Kept a dedicated instruction (not a generic
@@ -413,8 +421,7 @@ pub struct MirModule {
     /// name is diagnostic only; codegen emits one typed LLVM global per entry.
     pub mutable_globals: Vec<(String, Ty)>,
     /// VM-executed functions (Tier 1 hybrid): reachable functions whose bodies
-    /// did not lower but whose call sites bridge into the embedded VM. `params`
-    /// are the scalar marshaling types for [`Inst::CallVm`] arguments.
+    /// did not lower but whose call sites bridge into the embedded VM.
     pub vm_functions: Vec<VmFunction>,
     pub functions: Vec<MirFunction>,
     pub entry: FuncId,
@@ -424,8 +431,10 @@ pub struct MirModule {
 #[derive(Debug, Clone, PartialEq)]
 pub struct VmFunction {
     pub id: FuncId,
-    /// Scalar parameter types, in order — the bridge marshaling contract.
-    pub params: Vec<Ty>,
+    /// Number of parameters the VM-executed function takes. The *types* are
+    /// not part of the contract — each [`Inst::CallVm`] site tags its own
+    /// arguments (see `arg_tys` there).
+    pub param_count: usize,
 }
 
 impl MirModule {
@@ -532,11 +541,17 @@ pub fn validate(module: &MirModule) -> Result<(), MirError> {
                         return Err(MirError::ArityMismatch { func: func.id });
                     }
                 }
-                if let Inst::CallVm { func: callee, args, .. } = inst {
+                if let Inst::CallVm {
+                    func: callee,
+                    args,
+                    arg_tys,
+                    ..
+                } = inst
+                {
                     let Some(target) = module.vm_function(*callee) else {
                         return Err(MirError::MissingEntry);
                     };
-                    if args.len() != target.params.len() {
+                    if args.len() != target.param_count || arg_tys.len() != args.len() {
                         return Err(MirError::ArityMismatch { func: func.id });
                     }
                 }
@@ -617,13 +632,7 @@ pub fn render(module: &MirModule) -> String {
         let _ = writeln!(out, "global g{i} = {g:?}");
     }
     for vm_fn in &module.vm_functions {
-        let params = vm_fn
-            .params
-            .iter()
-            .map(|ty| ty_name(*ty))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let _ = writeln!(out, "vm fn f{}({params})", vm_fn.id.0);
+        let _ = writeln!(out, "vm fn f{}/{}", vm_fn.id.0, vm_fn.param_count);
     }
     for func in &module.functions {
         let entry = if func.id == module.entry { " entry" } else { "" };
@@ -753,8 +762,19 @@ fn render_inst(inst: &Inst) -> String {
                 None => call,
             }
         }
-        Inst::CallVm { dst, func, args: a } => {
-            let call = format!("call.vm f{}({})", func.0, args(a));
+        Inst::CallVm {
+            dst,
+            func,
+            args: a,
+            arg_tys,
+        } => {
+            let tagged = a
+                .iter()
+                .zip(arg_tys.iter())
+                .map(|(v, ty)| format!("v{}: {}", v.0, ty_name(*ty)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let call = format!("call.vm f{}({tagged})", func.0);
             match dst {
                 Some(d) => format!("{} = {call}", v(*d)),
                 None => call,

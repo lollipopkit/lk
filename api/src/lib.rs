@@ -883,11 +883,16 @@ pub mod ffi {
     static HYBRID: OnceLock<Mutex<HybridModule>> = OnceLock::new();
 
     /// Argument tags for [`LkHybridArg`]. Tag 2 (bool) reads the `i` union
-    /// field as 0/1.
+    /// field as 0/1; tag 4 (nil) has no payload and ignores the union.
+    ///
+    /// Tagging is *per argument*, not per parameter: the same VM function may
+    /// be called with an `Int` from one site and a `Str` from another, which
+    /// is why the lowering records argument types per `CallVm` site.
     pub const LK_HYBRID_ARG_I64: u8 = 0;
     pub const LK_HYBRID_ARG_F64: u8 = 1;
     pub const LK_HYBRID_ARG_BOOL: u8 = 2;
     pub const LK_HYBRID_ARG_STR: u8 = 3;
+    pub const LK_HYBRID_ARG_NIL: u8 = 4;
 
     /// Payload of one bridge argument (matches the `lk.h` union).
     #[repr(C)]
@@ -961,6 +966,7 @@ pub mod ffi {
                 LK_HYBRID_ARG_I64 => HybridArg::Int(unsafe { arg.value.i }),
                 LK_HYBRID_ARG_F64 => HybridArg::Float(unsafe { arg.value.f }),
                 LK_HYBRID_ARG_BOOL => HybridArg::Bool(unsafe { arg.value.i } != 0),
+                LK_HYBRID_ARG_NIL => HybridArg::Nil,
                 LK_HYBRID_ARG_STR => {
                     let ptr = unsafe { arg.value.s };
                     if ptr.is_null() {

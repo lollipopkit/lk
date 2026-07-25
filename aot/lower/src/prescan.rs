@@ -7,7 +7,7 @@ use super::*;
 pub(crate) fn native_reachable_functions(
     funcs: &[FunctionData],
     entry: u32,
-    vm_functions: &std::collections::HashMap<u32, Vec<Ty>>,
+    vm_functions: &std::collections::HashMap<u32, usize>,
 ) -> Vec<bool> {
     let n = funcs.len();
     let mut reachable = vec![false; n];
@@ -58,17 +58,25 @@ pub(crate) fn written_global_slots(funcs: &[FunctionData]) -> std::collections::
 }
 
 /// Whether failing function `fi` can run on the bridge VM instead of failing
-/// the module (`docs/aot/tier1-hybrid.md`, v1): not the entry, no captures or
-/// lambda-erasure machinery, every parameter observed as one scalar type, and
-/// its whole `CallDirect`/`MakeClosure`-reachable subtree writes no globals
-/// and reads none that the module writes. Returns the scalar marshaling types.
+/// the module (`docs/aot/tier1-hybrid.md`): not the entry, no captures or
+/// lambda-erasure machinery, and its whole `CallDirect`/`MakeClosure`-reachable
+/// subtree writes no globals and reads none that the module writes. Returns the
+/// parameter count.
+///
+/// Parameter *types* are deliberately not checked here. The bridge tags each
+/// argument at its call site and the VM is dynamically typed, so a callee whose
+/// parameter is `Int` at one site and `Str` at another marshals fine. v1 required
+/// one observed scalar type per parameter, which rejected such callees — and a
+/// rejected callee infects its callers all the way up to whole-module Tier 0
+/// fallback. Whether an individual argument can be marshaled is decided per call
+/// site in the lowering, which is where the argument's type is actually known.
 pub(crate) fn bridge_eligibility(
     fi: usize,
     funcs: &[FunctionData],
     entry: u32,
     sig: &SigInfer,
     written_slots: &std::collections::HashSet<u16>,
-) -> Option<Vec<Ty>> {
+) -> Option<usize> {
     if fi as u32 == entry {
         return None;
     }
@@ -88,13 +96,6 @@ pub(crate) fn bridge_eligibility(
     }
     if sig.ret_closures.get(fi).is_some_and(Option::is_some) {
         return None;
-    }
-    let mut params = Vec::with_capacity(func.param_count as usize);
-    for i in 0..func.param_count as usize {
-        match sig.param_obs.get(fi).and_then(|obs| obs.get(i)).copied().flatten() {
-            Some(ty @ (Ty::I64 | Ty::F64 | Ty::Bool | Ty::Str)) => params.push(ty),
-            _ => return None,
-        }
     }
     let mut visited = vec![false; funcs.len()];
     let mut work = vec![fi];
@@ -122,7 +123,7 @@ pub(crate) fn bridge_eligibility(
             }
         }
     }
-    Some(params)
+    Some(func.param_count as usize)
 }
 
 /// Slots the entry function writes before any control flow or user-function

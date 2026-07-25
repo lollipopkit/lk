@@ -96,6 +96,62 @@ fn hybrid_executable_matches_vm_output_and_ordering() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// One VM-executed helper, five call sites, five different argument types.
+/// Before per-site argument tagging this fell out of native compilation
+/// entirely (the parameter's observed type joined to `Dyn`, which failed
+/// bridge eligibility and infected the entry into a Tier 0 fallback).
+const HYBRID_POLYMORPHIC_ARGS: &str = "\
+fn report(x) { let f = \"v={}\".trim(); println(f, x); }\n\
+report(1);\n\
+report(\"a\");\n\
+report(2.5);\n\
+report(true);\n\
+report(nil);\n\
+println(\"done\");\n\
+return 0;\n";
+
+#[test]
+fn hybrid_bridges_mixed_argument_types_and_matches_the_vm() {
+    let dir = std::env::temp_dir().join(format!("lk_hybrid_poly_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create tmp dir");
+    let file = dir.join("poly.lk");
+    std::fs::write(&file, HYBRID_POLYMORPHIC_ARGS).expect("write program");
+
+    let vm = Command::new(bin_path())
+        .current_dir(&dir)
+        .arg("poly.lk")
+        .env("LK_FORCE_VM", "1")
+        .output()
+        .expect("vm run");
+    assert!(vm.status.success(), "vm: {}", String::from_utf8_lossy(&vm.stderr));
+
+    let compile = Command::new(bin_path())
+        .current_dir(&dir)
+        .args(["compile", "poly.lk"])
+        .env("LK_AOT_HYBRID", "1")
+        // No Tier 0 escape hatch: the point is that this program now compiles
+        // through the bridge instead of falling back.
+        .env("LK_AOT_NO_FALLBACK", "1")
+        .output()
+        .expect("hybrid compile");
+    let compile_stderr = String::from_utf8_lossy(&compile.stderr).into_owned();
+    assert!(compile.status.success(), "compile: {compile_stderr}");
+    assert!(
+        compile_stderr.contains("Tier 1 hybrid"),
+        "expected the hybrid link path, got: {compile_stderr}"
+    );
+
+    let native = native_run(&dir, "poly");
+    assert_eq!(
+        String::from_utf8_lossy(&vm.stdout),
+        String::from_utf8_lossy(&native.stdout),
+        "every argument type must marshal to the same VM-side value"
+    );
+    assert_eq!(vm.status.success(), native.status.success());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn hybrid_bridged_results_flow_back_and_match_the_vm() {
     // v2 return bridge: consumed results come back as `LkDyn` through

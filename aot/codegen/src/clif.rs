@@ -892,8 +892,13 @@ impl Lower {
             Inst::TryCall { dst, func, args } => {
                 return self.try_call(b, mctx, *dst, *func, args);
             }
-            Inst::CallVm { dst, func, args } => {
-                return self.call_vm(b, mctx, *dst, *func, args);
+            Inst::CallVm {
+                dst,
+                func,
+                args,
+                arg_tys,
+            } => {
+                return self.call_vm(b, mctx, *dst, *func, args, arg_tys);
             }
         }
         Ok(())
@@ -984,24 +989,23 @@ impl Lower {
         dst: Option<ValueId>,
         func: FuncId,
         args: &[ValueId],
+        arg_tys: &[Ty],
     ) -> Result<(), ClifError> {
-        let params: Vec<Ty> = mctx
-            .vm_functions
-            .iter()
-            .find(|f| f.id == func)
-            .ok_or(ClifError::Unsupported("CallVm target not in vm_functions"))?
-            .params
-            .clone();
+        if !mctx.vm_functions.iter().any(|f| f.id == func) {
+            return Err(ClifError::Unsupported("CallVm target not in vm_functions"));
+        }
         let argbuf = mctx.hybrid_argbuf.ok_or(ClifError::Unsupported("no hybrid argbuf"))?;
         let buf_gv = mctx.module.declare_data_in_func(argbuf, b.func);
         let buf_addr = b.ins().global_value(types::I64, buf_gv);
-        for (i, (arg, ty)) in args.iter().zip(params.iter()).enumerate() {
+        for (i, (arg, ty)) in args.iter().zip(arg_tys.iter()).enumerate() {
             let elem = (i * HYBRID_ARG_SIZE) as i32;
+            // Tags must match `LK_HYBRID_ARG_*` in `api/src/lib.rs` / `lk.h`.
             let tag: i64 = match ty {
                 Ty::I64 => 0,
                 Ty::F64 => 1,
                 Ty::Bool => 2,
                 Ty::Str => 3,
+                Ty::Nil => 4,
                 _ => return Err(ClifError::Unsupported("non-scalar hybrid marshaling type")),
             };
             let tag_v = b.ins().iconst(types::I8, tag);
@@ -1013,6 +1017,9 @@ impl Lower {
                     let bv = self.v(*arg)?;
                     b.ins().uextend(types::I64, bv)
                 }
+                // `Nil` carries no payload; the VM side ignores the value
+                // field for this tag.
+                Ty::Nil => b.ins().iconst(types::I64, 0),
                 _ => self.v(*arg)?,
             };
             b.ins()
@@ -1738,6 +1745,7 @@ mod tests {
                         dst: None,
                         func: FuncId(1),
                         args: vec![vid(0)],
+                        arg_tys: vec![Ty::I64],
                     },
                 ],
                 term: Term::Ret(None),
@@ -1751,7 +1759,7 @@ mod tests {
             mutable_globals: vec![],
             vm_functions: vec![lk_aot_mir::VmFunction {
                 id: FuncId(1),
-                params: vec![Ty::I64],
+                param_count: 1,
             }],
             entry: FuncId(u32::MAX),
             functions: vec![prog],

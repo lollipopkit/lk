@@ -73,6 +73,10 @@ pub fn compile_artifact_to_clif_object(
             bail!("internal AOT error: MIR validation failed after optimization: {error:?}");
         }
     }
+    // Debugging aid: dump the (optimized) MIR that codegen is about to consume.
+    if std::env::var_os("LK_AOT_DUMP_MIR").is_some() {
+        eprintln!("{}", lk_aot_mir::render(&mir));
+    }
     let vm_function_count = mir.vm_functions.len();
     match lk_aot_codegen::clif::compile_host_object(&mir) {
         Ok(object) => Ok(Ok(ClifArtifact {

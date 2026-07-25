@@ -369,10 +369,16 @@ pub fn lower_bundled(
         loop {
             let mut marked_any = false;
             for (fi, _) in &current_failures {
+                let eligible = bridge_eligibility(*fi, &funcs, module.entry, &sig, &written);
+                if std::env::var_os("LK_AOT_DEBUG_FAILURES").is_some() {
+                    // "why was this not bridged" is the usual question when a
+                    // program unexpectedly falls back to Tier 0.
+                    eprintln!("lk-aot-lower: fn{fi} failed to lower; bridge-eligible: {eligible:?}");
+                }
                 if !sig.vm_functions.contains_key(&(*fi as u32))
-                    && let Some(params) = bridge_eligibility(*fi, &funcs, module.entry, &sig, &written)
+                    && let Some(param_count) = eligible
                 {
-                    sig.vm_functions.insert(*fi as u32, params);
+                    sig.vm_functions.insert(*fi as u32, param_count);
                     marked_any = true;
                 }
             }
@@ -407,9 +413,9 @@ pub fn lower_bundled(
     let mut vm_functions: Vec<VmFunction> = sig
         .vm_functions
         .iter()
-        .map(|(&fidx, params)| VmFunction {
+        .map(|(&fidx, &param_count)| VmFunction {
             id: FuncId(fidx),
-            params: params.clone(),
+            param_count,
         })
         .collect();
     vm_functions.sort_by_key(|vm_fn| vm_fn.id.0);

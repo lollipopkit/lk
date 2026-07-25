@@ -414,7 +414,7 @@ pub(crate) fn lower_user_call(
     // the destination register binds as `Dyn` (v2: the bridge returns an
     // `LkDyn` by value) — codegen degrades a never-read destination back to
     // the void bridge call, so statement-position calls stay v1-shaped.
-    if let Some(param_tys) = sig.vm_functions.get(&(callee_idx as u32)).cloned() {
+    if let Some(param_count) = sig.vm_functions.get(&(callee_idx as u32)).copied() {
         if !captures.is_empty() {
             return Err(Unsupported::Opcode {
                 pc,
@@ -422,19 +422,25 @@ pub(crate) fn lower_user_call(
             });
         }
         let mut args = Vec::with_capacity(argc);
-        for (i, param_ty) in param_tys.iter().enumerate().take(argc) {
+        let mut arg_tys = Vec::with_capacity(argc);
+        for i in 0..param_count.min(argc) {
             let arg_reg = dst_reg.wrapping_add(1).wrapping_add(i as u8);
             let (aval, aty) = read_scalar(ssa, insts, arg_reg, block, pc)?;
-            if aty != *param_ty {
+            // Each argument is tagged individually at the bridge, so the type
+            // only has to be marshalable *here* — it need not agree with what
+            // another call site passes for the same parameter.
+            if !matches!(aty, Ty::I64 | Ty::F64 | Ty::Bool | Ty::Str | Ty::Nil) {
                 return Err(Unsupported::TypeMismatch { pc });
             }
             args.push(aval);
+            arg_tys.push(aty);
         }
         let dst = ssa.new_val();
         insts.push(Inst::CallVm {
             dst: Some(dst),
             func: FuncId(callee_idx as u32),
             args,
+            arg_tys,
         });
         ssa.builtin_regs.remove(&(block, dst_reg));
         ssa.write(dst_reg, block, (dst, Ty::Dyn));
