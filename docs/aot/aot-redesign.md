@@ -477,10 +477,13 @@ differential harness 直接解决"emit 签名 == helper 签名 == 运行结果 =
      opaque `Any` 值句柄、可变全局 snapshot/sync(`prescan.rs` 遇 `SetGlobal` 即判不合格)。
   2. **§3.4 分级所有权:arena + 字符串 eager free + 循环局部容器 scope drop**。
      - 全局 arena 仍是默认;concat 链中已知死亡的字符串走 eager `lkrt_string_free`。
-     - **循环局部容器已加 scope drop**(`opt::scope_drop_loop_locals`):在循环体块内
-       构造、且每一次使用都是"非保留接收者调用"(`lk_aot_abi::receiver_escapes`,
-       默认保守为"会保留")、不经终结符/其他块逃逸的容器句柄,在块尾发
-       `rt.handle_release`。lkrt 的 arena 记账随之从 `Vec` 改为按地址索引的
+     - **块局部容器已加 scope drop**(`opt::scope_drop_block_locals`):每一次使用都是
+       "非保留接收者调用"(schema 的 `Receiver` 契约,默认保守为"会保留")、不经
+       终结符/其他块逃逸的容器句柄,在块尾发 `rt.handle_release`。
+       **"必须在循环体内"这个条件已去掉**——它是收益启发不是安全性质,而且恰好漏掉
+       最常见的形态:`try` 体被 lower 成独立函数,循环在调用者里,函数自身看不到循环。
+       实测 20 万次 `try { let tmp = [i, i+1]; … }`:带循环条件时每个临时表都活着
+       (76MB),去掉后 54MB / 0.11s→0.08s;语料里释放点 9 → **259**。lkrt 的 arena 记账随之从 `Vec` 改为按地址索引的
        `HashMap`,释放才是 O(1)。
        **动机是实测的 VM/native 行为差异**:`for i in 0..2_000_000 { let tmp = [i, i+1, i+2]; … }`
        每次迭代的临时表全部留在 arena。加 scope drop 前后(dist 构建):
@@ -497,7 +500,7 @@ differential harness 直接解决"emit 签名 == helper 签名 == 运行结果 =
      - 循环识别用**教科书定义**(回边 = `b → h` 且 `h` 支配 `b`;循环体 = `h` 加上
        不经 `h` 就能到达 `b` 的块),不是"块号顺序"近似。换掉近似后循环内构造
        18 → 30 处、实际释放 3 → **9 处**——近似漏掉了整片循环块。
-     - **跨块一般化经测量后不做**:30 处循环内构造里 9 处块内局部(现有 pass 覆盖),
+     - **跨块一般化经测量后不做**:循环内构造里块内局部的部分已覆盖,
        **0 处**是"跨块但不经终结符"。原因是结构性的:SSA 里跨块传值必须走块参数,
        而经块参数就意味着可能跨迭代存活——块作用域就是这个分析的天花板,不是近似。
        `opt::count_loop_allocations` 可随时重测。

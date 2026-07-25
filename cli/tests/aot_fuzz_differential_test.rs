@@ -988,10 +988,18 @@ fn fuzz_differential_vm_vs_native() {
         let case_seed = seed.wrapping_add(case);
         let mut generator = Generator::new(case_seed);
         let (source, expect_hybrid) = generator.program();
-        let outcome = run_case(&dir, &format!("fuzz_{case}"), &source, case_seed, expect_hybrid);
+        let name = format!("fuzz_{case}");
+        let outcome = run_case(&dir, &name, &source, case_seed, expect_hybrid);
         if outcome.compared {
             compared += 1;
         }
+        // Drop this case's artifacts before generating the next one. Keeping
+        // them all until the end costs ~30 MB per case under a sanitizer, so a
+        // default 800-case run filled a 24 GB tmpfs and then failed with a
+        // *link* error that looks like a lowering bug.
+        let _ = fs::remove_file(dir.join(format!("{name}.lk")));
+        let _ = fs::remove_file(dir.join(&name));
+        let _ = fs::remove_file(dir.join(format!("{name}.lkm")));
     }
 
     println!("fuzz differential: {compared}/{cases} cases natively compared (seed {seed:#x})");

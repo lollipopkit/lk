@@ -102,7 +102,7 @@ pub fn optimize(module: &mut MirModule) -> OptStats {
         let dce = eliminate_dead_insts(func);
         // After DCE, so a handle whose only readers just died is visible as
         // loop-local.
-        let drops = scope_drop_loop_locals(func);
+        let drops = scope_drop_block_locals(func);
         stats.cse_calls += cse;
         stats.dce_insts += dce;
         stats.scope_drops += drops;
@@ -110,9 +110,9 @@ pub fn optimize(module: &mut MirModule) -> OptStats {
     stats
 }
 
-/// Frees loop-local container handles at the end of the block that created
-/// them, so a loop allocating a temporary container per iteration does not
-/// grow the `lkrt` arena without bound.
+/// Frees block-local container handles at the end of the block that created
+/// them, so code allocating a temporary container per iteration — or per call
+/// — does not grow the `lkrt` arena without bound.
 ///
 /// # Why this is needed
 ///
@@ -134,11 +134,18 @@ pub fn optimize(module: &mut MirModule) -> OptStats {
 ///
 /// # Why it is this conservative
 ///
+/// Note what is *not* a condition: being inside a loop. That was the original
+/// gate, on the theory that only loops accumulate — but it is a guess about
+/// payoff, not a safety property, and it misses the common case of a function
+/// that is *called* in a loop. A `try` body is the sharpest example: the
+/// lowering makes it its own function, so the loop lives in the caller and the
+/// body's own blocks look loop-free. Measured on a 200k-iteration
+/// `try { let tmp = [i, i+1]; … }`, gating on loops left every temporary alive
+/// (76 MB); without the gate it is flat.
+///
 /// A wrongly released handle is a use-after-free, so every condition below
 /// must hold, and anything unrecognized keeps the old arena behavior:
 ///
-/// - the handle is created by a constructor call *inside a loop body* (no
-///   point paying for a release elsewhere);
 /// - every use is in the defining block, and the terminator does not carry it
 ///   to another block. This is not the approximation it looks like: SSA passes
 ///   cross-block values as block arguments, so a handle reaching *any*
@@ -150,19 +157,12 @@ pub fn optimize(module: &mut MirModule) -> OptStats {
 ///   [`lk_aot_abi::Receiver`] contract says does not retain it. A handle passed
 ///   in any other position may be stored into another container, and a handle
 ///   read by a non-call instruction is not analyzed at all.
-fn scope_drop_loop_locals(func: &mut MirFunction) -> usize {
-    let Some(idom) = immediate_dominators(func) else {
-        return 0;
-    };
-    let looped = loop_blocks(func, &idom);
+fn scope_drop_block_locals(func: &mut MirFunction) -> usize {
     let mut dropped = 0;
     // Indexed rather than iterated: the body needs `&func` (for the cross-block
     // escape check) before taking `&mut func.blocks[bi]`.
     #[allow(clippy::needless_range_loop)]
     for bi in 0..func.blocks.len() {
-        if !looped[bi] {
-            continue;
-        }
         let candidates = block_local_handles(func, bi);
         if candidates.is_empty() {
             continue;

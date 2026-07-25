@@ -312,7 +312,7 @@ fn scope_drop_releases_a_loop_local_container() {
         ValueId(0),
         Vec::new(),
     );
-    assert_eq!(scope_drop_loop_locals(&mut func), 1);
+    assert_eq!(scope_drop_block_locals(&mut func), 1);
     assert_eq!(released_handles(&func), vec![ValueId(10)]);
     // The release is the last instruction, i.e. after every use.
     let body = &func.blocks[1].insts;
@@ -331,7 +331,7 @@ fn scope_drop_skips_a_handle_escaping_through_the_terminator() {
         ValueId(0),
         vec![ValueId(10)],
     );
-    assert_eq!(scope_drop_loop_locals(&mut func), 0);
+    assert_eq!(scope_drop_block_locals(&mut func), 0);
     assert!(released_handles(&func).is_empty());
 }
 
@@ -352,7 +352,7 @@ fn scope_drop_skips_a_handle_stored_into_another_container() {
         ValueId(0),
         vec![ValueId(9)],
     );
-    assert_eq!(scope_drop_loop_locals(&mut func), 0, "the pushed handle must survive");
+    assert_eq!(scope_drop_block_locals(&mut func), 0, "the pushed handle must survive");
     assert!(released_handles(&func).is_empty());
 }
 
@@ -365,19 +365,21 @@ fn scope_drop_skips_a_handle_boxed_into_a_dyn() {
         ValueId(0),
         vec![ValueId(11)],
     );
-    assert_eq!(scope_drop_loop_locals(&mut func), 0);
+    assert_eq!(scope_drop_block_locals(&mut func), 0);
     assert!(released_handles(&func).is_empty());
 }
 
 #[test]
-fn scope_drop_ignores_containers_outside_loops() {
-    // A straight-line function allocates once; the arena cleanup at exit is
-    // the right owner, and a release would just be dead work.
+fn scope_drop_also_releases_outside_loops() {
+    // Straight-line code is released too: the payoff is not "this block
+    // repeats" but "this *function* may be called repeatedly" — a `try` body
+    // is its own function whose caller holds the loop.
     let mut func = one_block(
         vec![call(10, "list_h", "i64_new", &[]), call(11, "list_h", "i64_len", &[10])],
         Some(ValueId(11)),
     );
-    assert_eq!(scope_drop_loop_locals(&mut func), 0);
+    assert_eq!(scope_drop_block_locals(&mut func), 1);
+    assert_eq!(released_handles(&func), vec![ValueId(10)]);
 }
 
 #[test]
@@ -385,7 +387,7 @@ fn scope_drop_skips_a_handle_read_by_a_later_block() {
     let mut func = loop_func(vec![call(10, "list_h", "i64_new", &[])], ValueId(0), Vec::new());
     // Block 2 reads the handle even though the terminator does not pass it.
     func.blocks[2].insts.push(call(13, "list_h", "i64_len", &[10]));
-    assert_eq!(scope_drop_loop_locals(&mut func), 0);
+    assert_eq!(scope_drop_block_locals(&mut func), 0);
     assert!(released_handles(&func).is_empty());
 }
 
