@@ -1,6 +1,7 @@
 use crate::compat::collections::HashMap;
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
+use crate::token::token_lexeme;
 
 use crate::{
     ast::Parser as ExprParser,
@@ -10,8 +11,7 @@ use crate::{
 
 use super::{
     Capture, ExpandedToken, FragmentKind, MacroDef, MacroOriginFrame, MacroOriginKind, PatternElem, RepeatOp,
-    SourceToken, TemplateElem, find_group, hygiene::apply_simple_hygiene, is_open_delim, origin, token_lexeme,
-    token_matches,
+    SourceToken, TemplateElem, find_group, hygiene::apply_simple_hygiene, is_open_delim, origin, token_matches,
 };
 
 #[derive(Debug, Clone)]

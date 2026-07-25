@@ -6,3 +6,93 @@ mod token_test;
 
 pub use error::*;
 pub use lexer::*;
+
+#[cfg(not(feature = "std"))]
+use crate::compat::prelude::*;
+
+/// The source text a token was written as.
+///
+/// Lives here rather than in the macro system: it is a property of `Token`
+/// itself, and having it there made `stmt` depend on `macro_system` purely to
+/// print a token — a dependency cycle (`macro_system` parses `stmt` patterns)
+/// that blocked separating the two.
+pub fn token_lexeme(token: &Token) -> String {
+    match token {
+        Token::LParen => "(".to_string(),
+        Token::RParen => ")".to_string(),
+        Token::LBrace => "{".to_string(),
+        Token::RBrace => "}".to_string(),
+        Token::LBracket => "[".to_string(),
+        Token::RBracket => "]".to_string(),
+        Token::Dot => ".".to_string(),
+        Token::ColonColon => "::".to_string(),
+        Token::OptionalDot => "?.".to_string(),
+        Token::Colon => ":".to_string(),
+        Token::Comma => ",".to_string(),
+        Token::Semicolon => ";".to_string(),
+        Token::Dollar => "$".to_string(),
+        Token::Hash => "#".to_string(),
+        Token::Assign => "=".to_string(),
+        Token::AddAssign => "+=".to_string(),
+        Token::SubAssign => "-=".to_string(),
+        Token::MulAssign => "*=".to_string(),
+        Token::DivAssign => "/=".to_string(),
+        Token::ModAssign => "%=".to_string(),
+        Token::Nil => "nil".to_string(),
+        Token::Eq => "==".to_string(),
+        Token::Ne => "!=".to_string(),
+        Token::Gt => ">".to_string(),
+        Token::Lt => "<".to_string(),
+        Token::Ge => ">=".to_string(),
+        Token::Le => "<=".to_string(),
+        Token::In => "in".to_string(),
+        Token::And => "&&".to_string(),
+        Token::Or => "||".to_string(),
+        Token::BitAnd => "&".to_string(),
+        Token::BitNot => "~".to_string(),
+        Token::Not => "!".to_string(),
+        Token::Add => "+".to_string(),
+        Token::Sub => "-".to_string(),
+        Token::Mul => "*".to_string(),
+        Token::Div => "/".to_string(),
+        Token::Mod => "%".to_string(),
+        Token::Arrow => "=>".to_string(),
+        Token::LeftArrow => "<-".to_string(),
+        Token::NullishCoalescing => "??".to_string(),
+        Token::Range => "..".to_string(),
+        Token::RangeInclusive => "..=".to_string(),
+        Token::If => "if".to_string(),
+        Token::Else => "else".to_string(),
+        Token::While => "while".to_string(),
+        Token::Let => "let".to_string(),
+        Token::Const => "const".to_string(),
+        Token::Break => "break".to_string(),
+        Token::Continue => "continue".to_string(),
+        Token::Return => "return".to_string(),
+        Token::Fn => "fn".to_string(),
+        Token::For => "for".to_string(),
+        Token::Match => "match".to_string(),
+        Token::Try => "try".to_string(),
+        Token::Catch => "catch".to_string(),
+        Token::Case => "case".to_string(),
+        Token::Default => "default".to_string(),
+        Token::Select => "select".to_string(),
+        Token::Go => "go".to_string(),
+        Token::Use => "use".to_string(),
+        Token::From => "from".to_string(),
+        Token::As => "as".to_string(),
+        Token::Type => "type".to_string(),
+        Token::Struct => "struct".to_string(),
+        Token::Trait => "trait".to_string(),
+        Token::Impl => "impl".to_string(),
+        Token::Pipe => "|".to_string(),
+        Token::Question => "?".to_string(),
+        Token::FnArrow => "->".to_string(),
+        Token::Str(value) => format!("\"{}\"", value.escape_default()),
+        Token::TemplateString(value) => format!("\"{}\"", value.escape_default()),
+        Token::Int(value) => value.to_string(),
+        Token::Float(value) => value.to_string(),
+        Token::Bool(value) => value.to_string(),
+        Token::Id(value) => value.clone(),
+    }
+}

@@ -2,10 +2,10 @@ use super::{ForPattern, Stmt};
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
 use crate::{
-    macro_system::token_lexeme,
     operator::BinOp,
     stmt::{ImportSource, ImportStmt},
     token::Token,
+    token::token_lexeme,
 };
 use core::fmt::{self, Display};
 
