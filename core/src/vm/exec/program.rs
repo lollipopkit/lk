@@ -16,6 +16,32 @@ use crate::{
 
 use super::{Executor, ProgramResult, imports::import_runtime_export};
 
+/// Running a program from its AST.
+///
+/// These used to be inherent methods on `Program`, which made the AST layer
+/// (`stmt`) depend on the execution layer (`vm`) — a cycle that existed only
+/// for call-site convenience. As an extension trait the convenience is kept
+/// while the dependency points the right way (`vm` → `stmt`).
+pub trait ProgramExec {
+    /// Type-checks and runs the program in a fresh context.
+    fn execute(&self) -> Result<ProgramResult>;
+    /// Type-checks and runs the program in `ctx`.
+    fn execute_with_ctx(&self, ctx: &mut VmContext) -> Result<ProgramResult>;
+}
+
+impl ProgramExec for Program {
+    fn execute(&self) -> Result<ProgramResult> {
+        let mut ctx = VmContext::new();
+        self.execute_with_ctx(&mut ctx)
+    }
+
+    fn execute_with_ctx(&self, ctx: &mut VmContext) -> Result<ProgramResult> {
+        let mut type_checker = crate::typ::TypeChecker::new();
+        self.type_check(&mut type_checker)?;
+        execute_program_with_ctx(self, ctx)
+    }
+}
+
 pub fn execute_program(program: &Program) -> Result<ProgramResult> {
     let mut ctx = VmContext::new();
     execute_program_with_ctx(program, &mut ctx)

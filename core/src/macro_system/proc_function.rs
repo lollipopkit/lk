@@ -98,6 +98,7 @@ fn reject_error_diagnostics(
 
 #[cfg(test)]
 mod tests {
+    use crate::vm::ProgramExec;
     use crate::{
         macro_system::{ProcMacroProcessConfig, ProcMacroProviders},
         syntax::{ParseOptions, expand_program_source, parse_program_source},

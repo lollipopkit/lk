@@ -1,6 +1,7 @@
 use super::*;
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
+use crate::vm::ProgramExec;
 
 #[test]
 fn external_attribute_provider_replaces_item() {

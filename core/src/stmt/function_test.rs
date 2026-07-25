@@ -3,6 +3,7 @@ use crate::compat::prelude::*;
 #[cfg(test)]
 mod tests {
     use crate::compat::sync::Mutex;
+    use crate::vm::ProgramExec;
     use alloc::sync::Arc;
 
     use crate::{

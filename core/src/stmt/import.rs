@@ -2,6 +2,7 @@ use crate::compat::path::{Path, PathBuf};
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
 use crate::compat::shared_map::SharedMap;
+use crate::vm::ProgramExec;
 use crate::{
     module::ModuleRegistry,
     stmt::{Program, Stmt},
@@ -433,6 +434,7 @@ pub fn collect_program_imports(program: &Program) -> Vec<ImportStmt> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vm::ProgramExec;
     use std::path::PathBuf;
 
     fn parse_program(source: &str) -> Result<Program> {

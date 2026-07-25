@@ -1,5 +1,6 @@
 #[cfg(test)]
 mod tests {
+    use lk_core::vm::ProgramExec;
     use std::sync::Arc;
 
     use crate::{math::MathModule, register_stdlib_modules};

@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod tests {
     use anyhow::Result;
+    use lk_core::vm::ProgramExec;
     use lk_core::{
         stmt::{ModuleResolver, stmt_parser::StmtParser},
         token::Tokenizer,

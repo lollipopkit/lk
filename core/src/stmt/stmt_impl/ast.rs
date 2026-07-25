@@ -5,9 +5,7 @@ use crate::{
     operator::BinOp,
     stmt::ImportStmt,
     token::Span,
-    typ::TypeChecker,
     val::Type,
-    vm::VmContext,
 };
 use anyhow::Result;
 
@@ -177,16 +175,5 @@ pub struct Program {
 impl Program {
     pub fn new(statements: Vec<Box<Stmt>>) -> Result<Self> {
         Ok(Program { statements })
-    }
-
-    pub fn execute(&self) -> Result<crate::vm::ProgramResult> {
-        let mut ctx = VmContext::new();
-        self.execute_with_ctx(&mut ctx)
-    }
-
-    pub fn execute_with_ctx(&self, ctx: &mut VmContext) -> Result<crate::vm::ProgramResult> {
-        let mut type_checker = TypeChecker::new();
-        self.type_check(&mut type_checker)?;
-        crate::vm::execute_program_with_ctx(self, ctx)
     }
 }

@@ -6,6 +6,7 @@
 //! global state — this is exactly what the M0 "去全局状态" work enabled. Add a
 //! fuel budget to sandbox execution (the instruction-budget knob of M2.6).
 
+use lk_core::vm::ProgramExec;
 use std::sync::Arc;
 
 use anyhow::Result;

@@ -1,5 +1,6 @@
 #[cfg(test)]
 mod tests {
+    use lk_core::vm::ProgramExec;
     use std::sync::Arc;
 
     use crate::{datetime::DateTimeModule, register_stdlib_modules, runtime_native::runtime_string_value};

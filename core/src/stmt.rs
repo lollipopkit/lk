@@ -30,6 +30,7 @@ pub use test_support::*;
 #[cfg(test)]
 pub mod test_support {
     use super::*;
+    use crate::vm::ProgramExec;
     use crate::vm::{ProgramResult, VmContext};
     use anyhow::Result;
 

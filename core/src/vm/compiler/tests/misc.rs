@@ -1,4 +1,5 @@
 use super::*;
+use crate::vm::ProgramExec;
 
 #[test]
 fn compiler_lowers_struct_literal_and_field_access() {

@@ -4,6 +4,7 @@
 
 #[cfg(test)]
 mod tests {
+    use lk_core::vm::ProgramExec;
     use std::sync::Arc;
 
     use anyhow::Result;

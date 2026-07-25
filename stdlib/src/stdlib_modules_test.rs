@@ -1,5 +1,6 @@
 #[cfg(test)]
 mod tests {
+    use lk_core::vm::ProgramExec;
     use std::{fs::File, io::Write, sync::Arc};
 
     use anyhow::Result;

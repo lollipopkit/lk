@@ -1,3 +1,4 @@
+use lk_core::vm::ProgramExec;
 use std::path::{Path, PathBuf};
 #[cfg(feature = "aot")]
 use std::process::Command;

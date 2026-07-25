@@ -906,6 +906,7 @@ fn runtime_value_equals_string(value: &RuntimeVal, expected: &str, heap: &HeapSt
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lk_core::vm::ProgramExec;
     use lk_core::{
         stmt::{ModuleResolver, stmt_parser::StmtParser},
         token::Tokenizer,
