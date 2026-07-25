@@ -119,8 +119,18 @@ pub fn optimize(module: &mut MirModule) -> OptStats {
 /// Container handles are arena-owned: `lkrt_cleanup()` reclaims them at exit
 /// (RFC aot-redesign §3.4). That is fine for a short script and wrong for a
 /// loop — `for i in 0..2_000_000 { let tmp = [i, i+1, i+2]; … }` retains every
-/// temporary, measured at ~190 MB RSS against the VM's ~8.8 MB (the VM's GC
-/// collects them). This pass closes that specific gap.
+/// temporary. Measured on that program:
+///
+/// | | wall | peak RSS |
+/// |---|---|---|
+/// | without this pass | 0.45 s | 250 MB |
+/// | with it | 0.03 s | 2.9 MB |
+/// | VM (for reference) | 0.11 s | 8.8 MB |
+///
+/// The time difference is the arena bookkeeping itself: registering two
+/// million live handles costs more than the work the loop is doing. A program
+/// whose containers genuinely escape is unaffected (300k escaping lists: 44 MB
+/// native vs the VM's 48 MB).
 ///
 /// # Why it is this conservative
 ///

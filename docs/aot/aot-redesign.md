@@ -483,8 +483,10 @@ differential harness 直接解决"emit 签名 == helper 签名 == 运行结果 =
        `rt.handle_release`。lkrt 的 arena 记账随之从 `Vec` 改为按地址索引的
        `HashMap`,释放才是 O(1)。
        **动机是实测的 VM/native 行为差异**:`for i in 0..2_000_000 { let tmp = [i, i+1, i+2]; … }`
-       在 native 下峰值 RSS **190 MB**(每次迭代的临时表全部留在 arena),VM 只有
-       **8.8 MB**(GC 回收);加 scope drop 后 native 降到 **4.7 MB**。
+       每次迭代的临时表全部留在 arena。加 scope drop 前后(dist 构建):
+       0.45s / 250MB → **0.03s / 2.9MB**(VM 参照:0.11s / 8.8MB)。**时间差来自
+       记账本身**——注册两百万个存活句柄比循环干的活还贵。容器真逃逸的程序不受影响
+       (30 万个逃逸 list:native 44MB vs VM 48MB)。
      - 句柄语义是 ABI schema 的一等标注(`Receiver::{Retained,Borrowed,Constructs}`,
        **默认 Retained**),不是名字匹配。逐条对着 lkrt 实现审计过 130 条,审计当场
        抓出两个按名字必错的条目:`map_h.obj_mark` 把句柄**地址**记进全局
