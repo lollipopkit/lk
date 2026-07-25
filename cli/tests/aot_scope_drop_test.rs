@@ -88,8 +88,12 @@ fn loop_local_containers_do_not_grow_the_arena() {
     );
     assert!(native.status.success(), "native run failed");
 
+    // A sanitizer's shadow memory and redzones dominate the measurement
+    // (~45 MiB for this program under ASan), so the footprint assertion only
+    // means anything in an uninstrumented build. The output comparison above
+    // still runs — that is what the sanitized run is for.
     #[cfg(target_os = "linux")]
-    {
+    if std::env::var_os("LK_NATIVE_SANITIZE").is_none() {
         // Measured on this program: ~4.5 MiB with scope drop, ~36.5 MiB
         // without it (`LK_AOT_NO_OPT=1`). 16 MiB sits between the two with
         // room on both sides, so the assert catches the regression without

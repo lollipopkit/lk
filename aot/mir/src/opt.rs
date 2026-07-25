@@ -141,7 +141,10 @@ pub fn optimize(module: &mut MirModule) -> OptStats {
 ///   in any other position may be stored into another container, and a handle
 ///   read by a non-call instruction is not analyzed at all.
 fn scope_drop_loop_locals(func: &mut MirFunction) -> usize {
-    let looped = loop_blocks(func);
+    let Some(idom) = immediate_dominators(func) else {
+        return 0;
+    };
+    let looped = loop_blocks(func, &idom);
     let mut dropped = 0;
     // Indexed rather than iterated: the body needs `&func` (for the cross-block
     // escape check) before taking `&mut func.blocks[bi]`.
@@ -167,17 +170,60 @@ fn scope_drop_loop_locals(func: &mut MirFunction) -> usize {
     dropped
 }
 
-/// Blocks that lie inside some loop (between a back-edge target and its
-/// source, in the lowering's leader-ordered block list).
-fn loop_blocks(func: &MirFunction) -> Vec<bool> {
-    let mut looped = vec![false; func.blocks.len()];
+/// Blocks belonging to some natural loop.
+///
+/// Uses the textbook definition rather than block ordering: an edge `b → h` is
+/// a back edge when `h` dominates `b`, and the loop body is `h` plus every
+/// block that reaches `b` without going through `h`. An ordering-based
+/// approximation would silently mean something different if the lowering ever
+/// changed how it numbers blocks.
+fn loop_blocks(func: &MirFunction, idom: &[Option<usize>]) -> Vec<bool> {
+    let n = func.blocks.len();
+    let mut looped = vec![false; n];
+    let index_of = |id: BlockId| func.blocks.iter().position(|b| b.id == id);
+
+    // `a` dominates `b` iff `a` is `b` or an ancestor of `b` in the dom tree.
+    let dominates = |a: usize, b: usize| {
+        let mut cur = Some(b);
+        while let Some(c) = cur {
+            if c == a {
+                return true;
+            }
+            cur = idom[c];
+        }
+        false
+    };
+
+    let mut preds: Vec<Vec<usize>> = vec![Vec::new(); n];
     for (bi, block) in func.blocks.iter().enumerate() {
         for target in term_targets(&block.term) {
-            if let Some(hi) = func.blocks.iter().position(|b| b.id == target)
-                && hi <= bi
-            {
-                for flag in looped.iter_mut().take(bi + 1).skip(hi) {
-                    *flag = true;
+            if let Some(ti) = index_of(target) {
+                preds[ti].push(bi);
+            }
+        }
+    }
+
+    for (bi, block) in func.blocks.iter().enumerate() {
+        for target in term_targets(&block.term) {
+            let Some(header) = index_of(target) else { continue };
+            if !dominates(header, bi) {
+                continue; // not a back edge
+            }
+            // Natural loop body: walk predecessors back from the latch,
+            // stopping at the header.
+            looped[header] = true;
+            looped[bi] = true;
+            let mut work = vec![bi];
+            let mut seen = vec![false; n];
+            seen[header] = true;
+            seen[bi] = true;
+            while let Some(cur) = work.pop() {
+                for &p in &preds[cur] {
+                    if !seen[p] {
+                        seen[p] = true;
+                        looped[p] = true;
+                        work.push(p);
+                    }
                 }
             }
         }
@@ -621,55 +667,43 @@ mod tests;
 pub fn count_licm_candidates(module: &MirModule) -> usize {
     let mut candidates = 0;
     for func in &module.functions {
-        // Back edges: a branch whose target block id does not exceed its own.
-        let mut loops: Vec<(usize, usize)> = Vec::new();
+        let Some(idom) = immediate_dominators(func) else {
+            continue;
+        };
+        let looped = loop_blocks(func, &idom);
+        // Values defined anywhere in a loop body are not invariant.
+        let mut inside = std::collections::HashSet::new();
         for (bi, block) in func.blocks.iter().enumerate() {
-            let mut targets = Vec::new();
-            match &block.term {
-                Term::Br { target, .. } => targets.push(*target),
-                Term::CondBr { then_blk, else_blk, .. } => {
-                    targets.push(*then_blk);
-                    targets.push(*else_blk);
-                }
-                _ => {}
+            if !looped[bi] {
+                continue;
             }
-            for target in targets {
-                if let Some(hi) = func.blocks.iter().position(|b| b.id == target)
-                    && hi <= bi
-                {
-                    loops.push((hi, bi));
+            inside.extend(block.params.iter().map(|(v, _)| *v));
+            for inst in &block.insts {
+                if let Some(dst) = inst_def(inst) {
+                    inside.insert(dst);
                 }
             }
         }
-        for (header, latch) in loops {
-            // Values defined inside the loop body are not invariant.
-            let mut inside = std::collections::HashSet::new();
-            for block in &func.blocks[header..=latch] {
-                inside.extend(block.params.iter().map(|(v, _)| *v));
-                for inst in &block.insts {
-                    if let Some(dst) = inst_def(inst) {
-                        inside.insert(dst);
-                    }
-                }
+        for (bi, block) in func.blocks.iter().enumerate() {
+            if !looped[bi] {
+                continue;
             }
-            for block in &func.blocks[header..=latch] {
-                for inst in &block.insts {
-                    let Inst::Call {
-                        dst: Some(_),
-                        callee,
-                        args,
-                    } = inst
-                    else {
-                        continue;
-                    };
-                    if !lk_aot_abi::find(callee.module, callee.name)
-                        .is_some_and(|f| f.effect == lk_aot_abi::AbiEffect::Pure)
-                    {
-                        continue;
-                    }
-                    if args.iter().all(|a| !inside.contains(a)) {
-                        candidates += 1;
-                    }
+            for inst in &block.insts {
+                let Inst::Call {
+                    dst: Some(_),
+                    callee,
+                    args,
+                } = inst
+                else {
+                    continue;
+                };
+                if !lk_aot_abi::find(callee.module, callee.name)
+                    .is_some_and(|f| f.effect == lk_aot_abi::AbiEffect::Pure)
+                {
+                    continue;
+                }
+                if args.iter().all(|a| !inside.contains(a)) {
+                    candidates += 1;
                 }
             }
         }
@@ -692,28 +726,10 @@ pub fn count_loop_allocations(module: &MirModule) -> (usize, usize, usize) {
     let mut block_local = 0;
     let mut cross_block = 0;
     for func in &module.functions {
-        // Blocks inside some loop: between a back-edge target and its source.
-        let mut looped = vec![false; func.blocks.len()];
-        for (bi, block) in func.blocks.iter().enumerate() {
-            let mut targets = Vec::new();
-            match &block.term {
-                Term::Br { target, .. } => targets.push(*target),
-                Term::CondBr { then_blk, else_blk, .. } => {
-                    targets.push(*then_blk);
-                    targets.push(*else_blk);
-                }
-                _ => {}
-            }
-            for target in targets {
-                if let Some(hi) = func.blocks.iter().position(|b| b.id == target)
-                    && hi <= bi
-                {
-                    for flag in looped.iter_mut().take(bi + 1).skip(hi) {
-                        *flag = true;
-                    }
-                }
-            }
-        }
+        let Some(idom) = immediate_dominators(func) else {
+            continue;
+        };
+        let looped = loop_blocks(func, &idom);
         for (bi, block) in func.blocks.iter().enumerate() {
             if !looped[bi] {
                 continue;
