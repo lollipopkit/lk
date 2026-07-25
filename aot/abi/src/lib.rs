@@ -39,6 +39,44 @@ pub enum AbiType {
     DynVal,
 }
 
+/// What a call does with the container handle passed as its **receiver**
+/// (parameter 0), and whether it returns a fresh one.
+///
+/// This is the memory-safety input to the scope-drop pass in
+/// `lk_aot_mir::opt`, which releases a loop-local container at the end of its
+/// block. Releasing a handle the runtime still holds is a use-after-free, so
+/// the default is [`Receiver::Retained`]: an ABI entry is un-releasable until
+/// someone audits its implementation and says otherwise here.
+///
+/// The question is deliberately only about parameter 0. A handle appearing in
+/// any other argument position is treated as escaping by the pass itself
+/// (`list_h.dyn_push(other, handle)` stores it), so entries need not describe
+/// what they do with their non-receiver arguments.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Receiver {
+    /// Conservative default: the call may store the receiver somewhere that
+    /// outlives it (`dyn.from_list` boxes the handle into a value).
+    Retained,
+    /// The call only reads or mutates the receiver in place; after it returns,
+    /// the runtime holds no new reference to it.
+    Borrowed,
+    /// Borrows the receiver (or takes none) *and* returns a freshly allocated
+    /// arena container handle — the constructors the pass looks for.
+    Constructs,
+}
+
+impl Receiver {
+    /// Whether the runtime may hold on to the receiver after the call.
+    pub fn retains(self) -> bool {
+        matches!(self, Receiver::Retained)
+    }
+
+    /// Whether the call's result is a fresh arena container handle.
+    pub fn constructs(self) -> bool {
+        matches!(self, Receiver::Constructs)
+    }
+}
+
 /// One native runtime function: its module/name identity (as referenced by the
 /// lowering), its exported C symbol, and its typed signature + effect.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,6 +87,9 @@ pub struct AbiFn {
     pub params: &'static [AbiType],
     pub result: AbiType,
     pub effect: AbiEffect,
+    /// Handle ownership contract; see [`Receiver`]. Defaults to
+    /// [`Receiver::Retained`] for entries that do not state one.
+    pub receiver: Receiver,
 }
 
 /// Invokes the given callback macro with every ABI table entry, in order. This is
@@ -57,7 +98,13 @@ pub struct AbiFn {
 /// from it, so a signature can no longer drift between the schema, the codegen
 /// `declare`s, and the runtime implementation without failing the build/tests.
 ///
-/// Entry shape: `("module", "name", symbol_ident, Effect, [ParamTypes...], RetType);`
+/// Entry shape:
+/// `("module", "name", symbol_ident, Effect, [ParamTypes...], RetType);` or, when
+/// the entry takes or returns a container handle, with an explicit ownership
+/// contract appended:
+/// `("module", "name", symbol_ident, Effect, [ParamTypes...], RetType, Receiver);`
+/// Omitting it means [`Receiver::Retained`] — the conservative choice, so a new
+/// entry can never accidentally become releasable.
 #[macro_export]
 macro_rules! for_each_abi_fn {
     ($callback:ident) => {
@@ -194,87 +241,87 @@ macro_rules! for_each_abi_fn {
             // Growable `List<i64>` handles (Phase 2 container handle-ification). `new`
             // allocates a handle, `push` appends, `len` counts, `get` indexes with VM
             // semantics (negative-from-end; out-of-range writes `present = 0`).
-            ("list_h", "i64_new", lkrt_lklist_i64_new, WritesHost, [], Ptr);
-            ("list_h", "i64_from_range", lkrt_lklist_i64_from_range, WritesHost, [I64, I64, I64, I64], Ptr);
-            ("list_h", "i64_take", lkrt_lklist_i64_take, WritesHost, [Ptr, I64], Ptr);
-            ("list_h", "i64_skip", lkrt_lklist_i64_skip, WritesHost, [Ptr, I64], Ptr);
-            ("list_h", "i64_chain", lkrt_lklist_i64_chain, WritesHost, [Ptr, Ptr], Ptr);
-            ("list_h", "f64_chain", lkrt_lklist_f64_chain, WritesHost, [Ptr, Ptr], Ptr);
-            ("list_h", "str_chain", lkrt_lklist_str_chain, WritesHost, [Ptr, Ptr], Ptr);
-            ("list_h", "i64_push", lkrt_lklist_i64_push, WritesHost, [Ptr, I64], Nil);
+            ("list_h", "i64_new", lkrt_lklist_i64_new, WritesHost, [], Ptr, Constructs);
+            ("list_h", "i64_from_range", lkrt_lklist_i64_from_range, WritesHost, [I64, I64, I64, I64], Ptr, Constructs);
+            ("list_h", "i64_take", lkrt_lklist_i64_take, WritesHost, [Ptr, I64], Ptr, Constructs);
+            ("list_h", "i64_skip", lkrt_lklist_i64_skip, WritesHost, [Ptr, I64], Ptr, Constructs);
+            ("list_h", "i64_chain", lkrt_lklist_i64_chain, WritesHost, [Ptr, Ptr], Ptr, Constructs);
+            ("list_h", "f64_chain", lkrt_lklist_f64_chain, WritesHost, [Ptr, Ptr], Ptr, Constructs);
+            ("list_h", "str_chain", lkrt_lklist_str_chain, WritesHost, [Ptr, Ptr], Ptr, Constructs);
+            ("list_h", "i64_push", lkrt_lklist_i64_push, WritesHost, [Ptr, I64], Nil, Borrowed);
             // List HOF over compiled zero-capture lambdas (`ptr @lk_fn_N`
             // callbacks). The callback may abort (div/0 inside the lambda), so
             // none of these are Pure.
             // VM-exact list display text (`[1,2,3]`), arena-owned.
-            ("list_h", "i64_display", lkrt_lklist_i64_display, WritesHost, [Ptr], StrPtr);
-            ("list_h", "f64_display", lkrt_lklist_f64_display, WritesHost, [Ptr], StrPtr);
-            ("list_h", "str_display", lkrt_lklist_str_display, WritesHost, [Ptr], StrPtr);
+            ("list_h", "i64_display", lkrt_lklist_i64_display, WritesHost, [Ptr], StrPtr, Borrowed);
+            ("list_h", "f64_display", lkrt_lklist_f64_display, WritesHost, [Ptr], StrPtr, Borrowed);
+            ("list_h", "str_display", lkrt_lklist_str_display, WritesHost, [Ptr], StrPtr, Borrowed);
             // Structural equality (1/0): same length + element-wise `==`;
             // `i64_f64_eq` compares Int against Float lists with numeric
             // coercion (`[1] == [1.0]` is true in the VM).
-            ("list_h", "i64_eq", lkrt_lklist_i64_eq, ReadsHost, [Ptr, Ptr], I64);
-            ("list_h", "f64_eq", lkrt_lklist_f64_eq, ReadsHost, [Ptr, Ptr], I64);
-            ("list_h", "i64_f64_eq", lkrt_lklist_i64_f64_eq, ReadsHost, [Ptr, Ptr], I64);
-            ("list_h", "str_eq", lkrt_lklist_str_eq, ReadsHost, [Ptr, Ptr], I64);
-            ("list_h", "i64_map_fn", lkrt_lklist_i64_map_fn, WritesHost, [Ptr, Ptr], Ptr);
-            ("list_h", "i64_filter_fn", lkrt_lklist_i64_filter_fn, WritesHost, [Ptr, Ptr], Ptr);
-            ("list_h", "i64_reduce_fn", lkrt_lklist_i64_reduce_fn, WritesHost, [Ptr, I64, Ptr], I64);
-            ("list_h", "i64_len", lkrt_lklist_i64_len, ReadsHost, [Ptr], I64);
-            ("list_h", "i64_get", lkrt_lklist_i64_get, ReadsHost, [Ptr, I64, Ptr], I64);
-            ("list_h", "i64_at", lkrt_lklist_i64_at, ReadsHost, [Ptr, I64], I64);
+            ("list_h", "i64_eq", lkrt_lklist_i64_eq, ReadsHost, [Ptr, Ptr], I64, Borrowed);
+            ("list_h", "f64_eq", lkrt_lklist_f64_eq, ReadsHost, [Ptr, Ptr], I64, Borrowed);
+            ("list_h", "i64_f64_eq", lkrt_lklist_i64_f64_eq, ReadsHost, [Ptr, Ptr], I64, Borrowed);
+            ("list_h", "str_eq", lkrt_lklist_str_eq, ReadsHost, [Ptr, Ptr], I64, Borrowed);
+            ("list_h", "i64_map_fn", lkrt_lklist_i64_map_fn, WritesHost, [Ptr, Ptr], Ptr, Constructs);
+            ("list_h", "i64_filter_fn", lkrt_lklist_i64_filter_fn, WritesHost, [Ptr, Ptr], Ptr, Constructs);
+            ("list_h", "i64_reduce_fn", lkrt_lklist_i64_reduce_fn, WritesHost, [Ptr, I64, Ptr], I64, Borrowed);
+            ("list_h", "i64_len", lkrt_lklist_i64_len, ReadsHost, [Ptr], I64, Borrowed);
+            ("list_h", "i64_get", lkrt_lklist_i64_get, ReadsHost, [Ptr, I64, Ptr], I64, Borrowed);
+            ("list_h", "i64_at", lkrt_lklist_i64_at, ReadsHost, [Ptr, I64], I64, Borrowed);
             // Store `list[index] = value`; aborts on an out-of-range/negative index
             // (matching the VM's fatal store-index error — a halt, not a nil).
-            ("list_h", "i64_set", lkrt_lklist_i64_set, WritesHost, [Ptr, I64, I64], Nil);
+            ("list_h", "i64_set", lkrt_lklist_i64_set, WritesHost, [Ptr, I64, I64], Nil, Borrowed);
             // Linear membership test; returns 0/1 (the caller narrows to `i1`).
-            ("list_h", "i64_contains", lkrt_lklist_i64_contains, ReadsHost, [Ptr, I64], I64);
+            ("list_h", "i64_contains", lkrt_lklist_i64_contains, ReadsHost, [Ptr, I64], I64, Borrowed);
             // `xs[start..]`: a fresh handle with the elements from `start` on
             // (negative `start` aborts, matching the VM's fatal slice error).
-            ("list_h", "i64_slice_from", lkrt_lklist_i64_slice_from, WritesHost, [Ptr, I64], Ptr);
-            ("list_h", "f64_slice_from", lkrt_lklist_f64_slice_from, WritesHost, [Ptr, I64], Ptr);
-            ("list_h", "str_slice_from", lkrt_lklist_str_slice_from, WritesHost, [Ptr, I64], Ptr);
-            ("list_h", "f64_new", lkrt_lklist_f64_new, WritesHost, [], Ptr);
-            ("list_h", "f64_push", lkrt_lklist_f64_push, WritesHost, [Ptr, F64], Nil);
-            ("list_h", "f64_len", lkrt_lklist_f64_len, ReadsHost, [Ptr], I64);
-            ("list_h", "f64_at", lkrt_lklist_f64_at, ReadsHost, [Ptr, I64], F64);
-            ("list_h", "f64_set", lkrt_lklist_f64_set, WritesHost, [Ptr, I64, F64], Nil);
-            ("list_h", "f64_contains", lkrt_lklist_f64_contains, ReadsHost, [Ptr, F64], I64);
+            ("list_h", "i64_slice_from", lkrt_lklist_i64_slice_from, WritesHost, [Ptr, I64], Ptr, Constructs);
+            ("list_h", "f64_slice_from", lkrt_lklist_f64_slice_from, WritesHost, [Ptr, I64], Ptr, Constructs);
+            ("list_h", "str_slice_from", lkrt_lklist_str_slice_from, WritesHost, [Ptr, I64], Ptr, Constructs);
+            ("list_h", "f64_new", lkrt_lklist_f64_new, WritesHost, [], Ptr, Constructs);
+            ("list_h", "f64_push", lkrt_lklist_f64_push, WritesHost, [Ptr, F64], Nil, Borrowed);
+            ("list_h", "f64_len", lkrt_lklist_f64_len, ReadsHost, [Ptr], I64, Borrowed);
+            ("list_h", "f64_at", lkrt_lklist_f64_at, ReadsHost, [Ptr, I64], F64, Borrowed);
+            ("list_h", "f64_set", lkrt_lklist_f64_set, WritesHost, [Ptr, I64, F64], Nil, Borrowed);
+            ("list_h", "f64_contains", lkrt_lklist_f64_contains, ReadsHost, [Ptr, F64], I64, Borrowed);
             // String-element list handle (elements are interned string-constant pointers).
-            ("list_h", "str_new", lkrt_lklist_str_new, WritesHost, [], Ptr);
-            ("list_h", "str_push", lkrt_lklist_str_push, WritesHost, [Ptr, StrPtr], Nil);
-            ("list_h", "str_len", lkrt_lklist_str_len, ReadsHost, [Ptr], I64);
-            ("list_h", "str_at", lkrt_lklist_str_at, ReadsHost, [Ptr, I64], StrPtr);
-            ("list_h", "str_join", lkrt_lklist_str_join, WritesHost, [Ptr, StrPtr], StrPtr);
-            ("list_h", "str_contains", lkrt_lklist_str_contains, ReadsHost, [Ptr, StrPtr], I64);
-            ("list_h", "i64_slice", lkrt_lklist_i64_slice, WritesHost, [Ptr, I64, I64], Ptr);
+            ("list_h", "str_new", lkrt_lklist_str_new, WritesHost, [], Ptr, Constructs);
+            ("list_h", "str_push", lkrt_lklist_str_push, WritesHost, [Ptr, StrPtr], Nil, Borrowed);
+            ("list_h", "str_len", lkrt_lklist_str_len, ReadsHost, [Ptr], I64, Borrowed);
+            ("list_h", "str_at", lkrt_lklist_str_at, ReadsHost, [Ptr, I64], StrPtr, Borrowed);
+            ("list_h", "str_join", lkrt_lklist_str_join, WritesHost, [Ptr, StrPtr], StrPtr, Borrowed);
+            ("list_h", "str_contains", lkrt_lklist_str_contains, ReadsHost, [Ptr, StrPtr], I64, Borrowed);
+            ("list_h", "i64_slice", lkrt_lklist_i64_slice, WritesHost, [Ptr, I64, I64], Ptr, Constructs);
             // `.slice(start[, end])` method semantics: negative aborts (the
             // VM's loud non-negative-index error), `end` clamps to len.
-            ("list_h", "i64_slice_method", lkrt_lklist_i64_slice_method, WritesHost, [Ptr, I64, I64], Ptr);
-            ("list_h", "i64_sort", lkrt_lklist_i64_sort, WritesHost, [Ptr], Ptr);
-            ("list_h", "i64_reverse", lkrt_lklist_i64_reverse, WritesHost, [Ptr], Ptr);
+            ("list_h", "i64_slice_method", lkrt_lklist_i64_slice_method, WritesHost, [Ptr, I64, I64], Ptr, Constructs);
+            ("list_h", "i64_sort", lkrt_lklist_i64_sort, WritesHost, [Ptr], Ptr, Constructs);
+            ("list_h", "i64_reverse", lkrt_lklist_i64_reverse, WritesHost, [Ptr], Ptr, Constructs);
             // String-keyed map handle. `get_pair` (returning a by-value `Maybe<i64>`) is
             // declared directly in codegen, like the list variant.
-            ("map_h", "str_i64_new", lkrt_lkmap_str_i64_new, WritesHost, [], Ptr);
-            ("map_h", "str_i64_set", lkrt_lkmap_str_i64_set, WritesHost, [Ptr, StrPtr, I64], Nil);
-            ("map_h", "str_i64_len", lkrt_lkmap_str_i64_len, ReadsHost, [Ptr], I64);
+            ("map_h", "str_i64_new", lkrt_lkmap_str_i64_new, WritesHost, [], Ptr, Constructs);
+            ("map_h", "str_i64_set", lkrt_lkmap_str_i64_set, WritesHost, [Ptr, StrPtr, I64], Nil, Borrowed);
+            ("map_h", "str_i64_len", lkrt_lkmap_str_i64_len, ReadsHost, [Ptr], I64, Borrowed);
             // `{ ..rest }`: a fresh handle with one key removed (chained per key).
-            ("map_h", "str_i64_without", lkrt_lkmap_str_i64_without, WritesHost, [Ptr, StrPtr], Ptr);
-            ("map_h", "str_f64_without", lkrt_lkmap_str_f64_without, WritesHost, [Ptr, StrPtr], Ptr);
+            ("map_h", "str_i64_without", lkrt_lkmap_str_i64_without, WritesHost, [Ptr, StrPtr], Ptr, Constructs);
+            ("map_h", "str_f64_without", lkrt_lkmap_str_f64_without, WritesHost, [Ptr, StrPtr], Ptr, Constructs);
             // Int-keyed map handle. `get_pair` (by-value `Maybe<i64>`) is declared in codegen.
-            ("map_h", "i64_i64_new", lkrt_lkmap_i64_i64_new, WritesHost, [], Ptr);
-            ("map_h", "i64_i64_set", lkrt_lkmap_i64_i64_set, WritesHost, [Ptr, I64, I64], Nil);
-            ("map_h", "i64_i64_len", lkrt_lkmap_i64_i64_len, ReadsHost, [Ptr], I64);
+            ("map_h", "i64_i64_new", lkrt_lkmap_i64_i64_new, WritesHost, [], Ptr, Constructs);
+            ("map_h", "i64_i64_set", lkrt_lkmap_i64_i64_set, WritesHost, [Ptr, I64, I64], Nil, Borrowed);
+            ("map_h", "i64_i64_len", lkrt_lkmap_i64_i64_len, ReadsHost, [Ptr], I64, Borrowed);
             // String-keyed, f64-valued map. `get_pair` (by-value `Maybe<f64>`) → codegen.
-            ("map_h", "str_f64_new", lkrt_lkmap_str_f64_new, WritesHost, [], Ptr);
-            ("map_h", "str_f64_set", lkrt_lkmap_str_f64_set, WritesHost, [Ptr, StrPtr, F64], Nil);
-            ("map_h", "str_f64_len", lkrt_lkmap_str_f64_len, ReadsHost, [Ptr], I64);
+            ("map_h", "str_f64_new", lkrt_lkmap_str_f64_new, WritesHost, [], Ptr, Constructs);
+            ("map_h", "str_f64_set", lkrt_lkmap_str_f64_set, WritesHost, [Ptr, StrPtr, F64], Nil, Borrowed);
+            ("map_h", "str_f64_len", lkrt_lkmap_str_f64_len, ReadsHost, [Ptr], I64, Borrowed);
             // Int-keyed, f64-valued map. `get_pair` (by-value `Maybe<f64>`) → codegen.
             // Composite string-int key store (`m["n${i}"] = v`): the key is built
             // on the stack inside lkrt, so the store allocates nothing on updates.
-            ("map_h", "str_i64_set_ik", lkrt_lkmap_str_i64_set_ik, WritesHost, [Ptr, StrPtr, I64, I64], Nil);
-            ("map_h", "str_f64_set_ik", lkrt_lkmap_str_f64_set_ik, WritesHost, [Ptr, StrPtr, I64, F64], Nil);
-            ("map_h", "i64_f64_new", lkrt_lkmap_i64_f64_new, WritesHost, [], Ptr);
-            ("map_h", "i64_f64_set", lkrt_lkmap_i64_f64_set, WritesHost, [Ptr, I64, F64], Nil);
-            ("map_h", "i64_f64_len", lkrt_lkmap_i64_f64_len, ReadsHost, [Ptr], I64);
+            ("map_h", "str_i64_set_ik", lkrt_lkmap_str_i64_set_ik, WritesHost, [Ptr, StrPtr, I64, I64], Nil, Borrowed);
+            ("map_h", "str_f64_set_ik", lkrt_lkmap_str_f64_set_ik, WritesHost, [Ptr, StrPtr, I64, F64], Nil, Borrowed);
+            ("map_h", "i64_f64_new", lkrt_lkmap_i64_f64_new, WritesHost, [], Ptr, Constructs);
+            ("map_h", "i64_f64_set", lkrt_lkmap_i64_f64_set, WritesHost, [Ptr, I64, F64], Nil, Borrowed);
+            ("map_h", "i64_f64_len", lkrt_lkmap_i64_f64_len, ReadsHost, [Ptr], I64, Borrowed);
             // Byte-wise string comparison, returning -1/0/1 (the caller compares to 0).
             ("str", "cmp", lkrt_str_cmp, Pure, [StrPtr, StrPtr], I64);
             // `a ++ b` → a freshly allocated C string (`WritesHost`: allocates/leaks).
@@ -298,7 +345,7 @@ macro_rules! for_each_abi_fn {
             ("str", "reverse", lkrt_str_reverse, WritesHost, [StrPtr], StrPtr);
             ("str", "repeat", lkrt_str_repeat, WritesHost, [StrPtr, I64], StrPtr);
             ("str", "replace", lkrt_str_replace, WritesHost, [StrPtr, StrPtr, StrPtr], StrPtr);
-            ("str", "chars", lkrt_str_chars, WritesHost, [StrPtr], Ptr);
+            ("str", "chars", lkrt_str_chars, WritesHost, [StrPtr], Ptr, Constructs);
             // `string.strip_prefix/suffix` return String-or-nil (boxed Dyn);
             // `count` counts non-overlapping matches (empty needle → byte
             // len + 1, the stdlib module's exact rule); `capitalize`/`title`
@@ -311,7 +358,7 @@ macro_rules! for_each_abi_fn {
             ("str", "char_at", lkrt_str_char_at, WritesHost, [StrPtr, I64], DynVal);
             // `s.split(sep)` → a fresh `str` list handle (Rust `str::split`, so
             // VM-exact); parts are arena-owned C strings.
-            ("str", "split", lkrt_str_split, WritesHost, [StrPtr, StrPtr], Ptr);
+            ("str", "split", lkrt_str_split, WritesHost, [StrPtr, StrPtr], Ptr, Constructs);
             // Scalar → display string (the VM's `ToString`), allocating/leaking a C string.
             ("str", "from_i64", lkrt_i64_to_str, WritesHost, [I64], StrPtr);
             ("str", "from_f64", lkrt_f64_to_str, WritesHost, [F64], StrPtr);
@@ -345,6 +392,9 @@ macro_rules! for_each_abi_fn {
             ("dyn", "as_i64", lkrt_dyn_as_i64, ReadsHost, [DynVal], I64);
             ("dyn", "as_f64", lkrt_dyn_as_f64, ReadsHost, [DynVal], F64);
             ("dyn", "as_str", lkrt_dyn_as_str, ReadsHost, [DynVal], StrPtr);
+            // Deliberately `Retained`: this returns the *existing* handle held
+            // inside the boxed value (`v.payload`), not a fresh one — treating
+            // it as a constructor would let the pass free someone else's list.
             ("dyn", "as_list", lkrt_dyn_as_list, ReadsHost, [DynVal], Ptr);
             ("dyn", "as_bool", lkrt_dyn_as_bool, ReadsHost, [DynVal], I64);
             ("dyn", "as_map", lkrt_dyn_as_map, ReadsHost, [DynVal], Ptr);
@@ -367,94 +417,98 @@ macro_rules! for_each_abi_fn {
             // Trait-method dispatch marks (plan J1): a struct instance's map
             // handle carries its type id in a side registry (no hidden key);
             // `TraitDispatch` codegen reads the mark, no match raises.
+            // Deliberately `Retained` (the default): this records the handle's
+            // *address* in the global `OBJ_TYPE_MARKS` table, so releasing a
+            // marked map would leave a stale entry that a later allocation at
+            // the same address would inherit.
             ("map_h", "obj_mark", lkrt_lkmap_obj_mark, WritesHost, [Ptr, I64], Nil);
             ("dyn", "obj_type_id", lkrt_dyn_obj_type_id, ReadsHost, [DynVal], I64);
             ("dyn", "method_missing", lkrt_dyn_method_missing, WritesHost, [], Nil);
-            ("map_h", "str_dyn_new", lkrt_lkmap_str_dyn_new, WritesHost, [], Ptr);
-            ("map_h", "str_dyn_set", lkrt_lkmap_str_dyn_set, WritesHost, [Ptr, StrPtr, DynVal], Nil);
-            ("map_h", "str_dyn_get", lkrt_lkmap_str_dyn_get, ReadsHost, [Ptr, StrPtr], DynVal);
-            ("map_h", "str_dyn_len", lkrt_lkmap_str_dyn_len, ReadsHost, [Ptr], I64);
-            ("map_h", "str_dyn_has", lkrt_lkmap_str_dyn_has, ReadsHost, [Ptr, StrPtr], I64);
-            ("map_h", "str_dyn_without", lkrt_lkmap_str_dyn_without, WritesHost, [Ptr, StrPtr], Ptr);
+            ("map_h", "str_dyn_new", lkrt_lkmap_str_dyn_new, WritesHost, [], Ptr, Constructs);
+            ("map_h", "str_dyn_set", lkrt_lkmap_str_dyn_set, WritesHost, [Ptr, StrPtr, DynVal], Nil, Borrowed);
+            ("map_h", "str_dyn_get", lkrt_lkmap_str_dyn_get, ReadsHost, [Ptr, StrPtr], DynVal, Borrowed);
+            ("map_h", "str_dyn_len", lkrt_lkmap_str_dyn_len, ReadsHost, [Ptr], I64, Borrowed);
+            ("map_h", "str_dyn_has", lkrt_lkmap_str_dyn_has, ReadsHost, [Ptr, StrPtr], I64, Borrowed);
+            ("map_h", "str_dyn_without", lkrt_lkmap_str_dyn_without, WritesHost, [Ptr, StrPtr], Ptr, Constructs);
             // Struct update (`P { ..base, k: v }`): the VM's merge_field_maps
             // two-step insertion + make_struct's fresh field copy.
-            ("map_h", "str_dyn_merge", lkrt_lkmap_str_dyn_merge, WritesHost, [Ptr, Ptr], Ptr);
-            ("map_h", "str_dyn_rebuild", lkrt_lkmap_str_dyn_rebuild, WritesHost, [Ptr], Ptr);
+            ("map_h", "str_dyn_merge", lkrt_lkmap_str_dyn_merge, WritesHost, [Ptr, Ptr], Ptr, Constructs);
+            ("map_h", "str_dyn_rebuild", lkrt_lkmap_str_dyn_rebuild, WritesHost, [Ptr], Ptr, Constructs);
             // Map-literal protocol (VM-order mirror, plan D1): stage-1 build
             // in source order, then finish into the typed carrier — the
             // result iterates exactly like the VM's two-stage construction.
-            ("map_h", "lit_new", lkrt_lkmap_lit_new, WritesHost, [], Ptr);
-            ("map_h", "lit_set", lkrt_lkmap_lit_set, WritesHost, [Ptr, DynVal, DynVal], Nil);
-            ("map_h", "lit_finish_str_i64", lkrt_lkmap_lit_finish_str_i64, WritesHost, [Ptr], Ptr);
-            ("map_h", "lit_finish_str_f64", lkrt_lkmap_lit_finish_str_f64, WritesHost, [Ptr], Ptr);
-            ("map_h", "lit_finish_str_bool", lkrt_lkmap_lit_finish_str_bool, WritesHost, [Ptr], Ptr);
-            ("map_h", "lit_finish_str_dyn", lkrt_lkmap_lit_finish_str_dyn, WritesHost, [Ptr], Ptr);
-            ("map_h", "lit_finish_i64_i64", lkrt_lkmap_lit_finish_i64_i64, WritesHost, [Ptr], Ptr);
-            ("map_h", "lit_finish_i64_f64", lkrt_lkmap_lit_finish_i64_f64, WritesHost, [Ptr], Ptr);
+            ("map_h", "lit_new", lkrt_lkmap_lit_new, WritesHost, [], Ptr, Constructs);
+            ("map_h", "lit_set", lkrt_lkmap_lit_set, WritesHost, [Ptr, DynVal, DynVal], Nil, Borrowed);
+            ("map_h", "lit_finish_str_i64", lkrt_lkmap_lit_finish_str_i64, WritesHost, [Ptr], Ptr, Constructs);
+            ("map_h", "lit_finish_str_f64", lkrt_lkmap_lit_finish_str_f64, WritesHost, [Ptr], Ptr, Constructs);
+            ("map_h", "lit_finish_str_bool", lkrt_lkmap_lit_finish_str_bool, WritesHost, [Ptr], Ptr, Constructs);
+            ("map_h", "lit_finish_str_dyn", lkrt_lkmap_lit_finish_str_dyn, WritesHost, [Ptr], Ptr, Constructs);
+            ("map_h", "lit_finish_i64_i64", lkrt_lkmap_lit_finish_i64_i64, WritesHost, [Ptr], Ptr, Constructs);
+            ("map_h", "lit_finish_i64_f64", lkrt_lkmap_lit_finish_i64_f64, WritesHost, [Ptr], Ptr, Constructs);
             // Iteration family (VM order by the layout mirror): pair lists
             // (`for pair in m`), keys/values snapshots (Mixed → dyn lists),
             // delete-with-removed-value (nil when absent).
-            ("map_h", "str_i64_iter_pairs", lkrt_lkmap_str_i64_iter_pairs, WritesHost, [Ptr], Ptr);
-            ("map_h", "str_i64_keys", lkrt_lkmap_str_i64_keys, WritesHost, [Ptr], Ptr);
-            ("map_h", "str_i64_values", lkrt_lkmap_str_i64_values, WritesHost, [Ptr], Ptr);
-            ("map_h", "str_i64_delete", lkrt_lkmap_str_i64_delete, WritesHost, [Ptr, StrPtr], DynVal);
-            ("map_h", "str_f64_iter_pairs", lkrt_lkmap_str_f64_iter_pairs, WritesHost, [Ptr], Ptr);
-            ("map_h", "str_f64_keys", lkrt_lkmap_str_f64_keys, WritesHost, [Ptr], Ptr);
-            ("map_h", "str_f64_values", lkrt_lkmap_str_f64_values, WritesHost, [Ptr], Ptr);
-            ("map_h", "str_f64_delete", lkrt_lkmap_str_f64_delete, WritesHost, [Ptr, StrPtr], DynVal);
-            ("map_h", "str_bool_iter_pairs", lkrt_lkmap_str_bool_iter_pairs, WritesHost, [Ptr], Ptr);
-            ("map_h", "str_bool_keys", lkrt_lkmap_str_bool_keys, WritesHost, [Ptr], Ptr);
-            ("map_h", "str_bool_values", lkrt_lkmap_str_bool_values, WritesHost, [Ptr], Ptr);
-            ("map_h", "str_bool_delete", lkrt_lkmap_str_bool_delete, WritesHost, [Ptr, StrPtr], DynVal);
-            ("map_h", "str_dyn_iter_pairs", lkrt_lkmap_str_dyn_iter_pairs, WritesHost, [Ptr], Ptr);
-            ("map_h", "str_dyn_keys", lkrt_lkmap_str_dyn_keys, WritesHost, [Ptr], Ptr);
-            ("map_h", "str_dyn_values", lkrt_lkmap_str_dyn_values, WritesHost, [Ptr], Ptr);
-            ("map_h", "str_dyn_delete", lkrt_lkmap_str_dyn_delete, WritesHost, [Ptr, StrPtr], DynVal);
-            ("list_h", "i64_to_dyn", lkrt_lklist_i64_to_dyn, WritesHost, [Ptr], Ptr);
+            ("map_h", "str_i64_iter_pairs", lkrt_lkmap_str_i64_iter_pairs, WritesHost, [Ptr], Ptr, Constructs);
+            ("map_h", "str_i64_keys", lkrt_lkmap_str_i64_keys, WritesHost, [Ptr], Ptr, Constructs);
+            ("map_h", "str_i64_values", lkrt_lkmap_str_i64_values, WritesHost, [Ptr], Ptr, Constructs);
+            ("map_h", "str_i64_delete", lkrt_lkmap_str_i64_delete, WritesHost, [Ptr, StrPtr], DynVal, Borrowed);
+            ("map_h", "str_f64_iter_pairs", lkrt_lkmap_str_f64_iter_pairs, WritesHost, [Ptr], Ptr, Constructs);
+            ("map_h", "str_f64_keys", lkrt_lkmap_str_f64_keys, WritesHost, [Ptr], Ptr, Constructs);
+            ("map_h", "str_f64_values", lkrt_lkmap_str_f64_values, WritesHost, [Ptr], Ptr, Constructs);
+            ("map_h", "str_f64_delete", lkrt_lkmap_str_f64_delete, WritesHost, [Ptr, StrPtr], DynVal, Borrowed);
+            ("map_h", "str_bool_iter_pairs", lkrt_lkmap_str_bool_iter_pairs, WritesHost, [Ptr], Ptr, Constructs);
+            ("map_h", "str_bool_keys", lkrt_lkmap_str_bool_keys, WritesHost, [Ptr], Ptr, Constructs);
+            ("map_h", "str_bool_values", lkrt_lkmap_str_bool_values, WritesHost, [Ptr], Ptr, Constructs);
+            ("map_h", "str_bool_delete", lkrt_lkmap_str_bool_delete, WritesHost, [Ptr, StrPtr], DynVal, Borrowed);
+            ("map_h", "str_dyn_iter_pairs", lkrt_lkmap_str_dyn_iter_pairs, WritesHost, [Ptr], Ptr, Constructs);
+            ("map_h", "str_dyn_keys", lkrt_lkmap_str_dyn_keys, WritesHost, [Ptr], Ptr, Constructs);
+            ("map_h", "str_dyn_values", lkrt_lkmap_str_dyn_values, WritesHost, [Ptr], Ptr, Constructs);
+            ("map_h", "str_dyn_delete", lkrt_lkmap_str_dyn_delete, WritesHost, [Ptr, StrPtr], DynVal, Borrowed);
+            ("list_h", "i64_to_dyn", lkrt_lklist_i64_to_dyn, WritesHost, [Ptr], Ptr, Constructs);
             // Typed map → `Map<str, Dyn>` conversion (cold: a typed map
             // crossing a `try$call` cell boundary boxes). Replayed inserts in
             // iteration order keep the layout — same keys, same order.
-            ("map_h", "str_i64_to_dyn", lkrt_lkmap_str_i64_to_dyn, WritesHost, [Ptr], Ptr);
-            ("map_h", "str_f64_to_dyn", lkrt_lkmap_str_f64_to_dyn, WritesHost, [Ptr], Ptr);
-            ("map_h", "str_bool_to_dyn", lkrt_lkmap_str_bool_to_dyn, WritesHost, [Ptr], Ptr);
-            ("list_h", "f64_to_dyn", lkrt_lklist_f64_to_dyn, WritesHost, [Ptr], Ptr);
-            ("list_h", "str_to_dyn", lkrt_lklist_str_to_dyn, WritesHost, [Ptr], Ptr);
-            ("list_h", "dyn_new", lkrt_lklist_dyn_new, WritesHost, [], Ptr);
-            ("list_h", "dyn_push", lkrt_lklist_dyn_push, WritesHost, [Ptr, DynVal], Nil);
-            ("list_h", "dyn_at", lkrt_lklist_dyn_at, ReadsHost, [Ptr, I64], DynVal);
-            ("list_h", "dyn_set", lkrt_lklist_dyn_set, WritesHost, [Ptr, I64, DynVal], Nil);
-            ("list_h", "dyn_len", lkrt_lklist_dyn_len, ReadsHost, [Ptr], I64);
-            ("list_h", "dyn_eq", lkrt_lklist_dyn_eq, ReadsHost, [Ptr, Ptr], I64);
-            ("list_h", "dyn_chunk", lkrt_lklist_dyn_chunk, WritesHost, [Ptr, I64], Ptr);
-            ("list_h", "dyn_enumerate", lkrt_lklist_dyn_enumerate, WritesHost, [Ptr], Ptr);
-            ("list_h", "dyn_zip", lkrt_lklist_dyn_zip, WritesHost, [Ptr, Ptr], Ptr);
-            ("list_h", "dyn_unique", lkrt_lklist_dyn_unique, WritesHost, [Ptr], Ptr);
-            ("list_h", "dyn_flatten", lkrt_lklist_dyn_flatten, WritesHost, [Ptr], Ptr);
-            ("list_h", "dyn_slice_from", lkrt_lklist_dyn_slice_from, WritesHost, [Ptr, I64], Ptr);
-            ("list_h", "dyn_contains", lkrt_lklist_dyn_contains, ReadsHost, [Ptr, DynVal], I64);
-            ("list_h", "dyn_take", lkrt_lklist_dyn_take, WritesHost, [Ptr, I64], Ptr);
-            ("list_h", "dyn_skip", lkrt_lklist_dyn_skip, WritesHost, [Ptr, I64], Ptr);
-            ("list_h", "dyn_chain", lkrt_lklist_dyn_chain, WritesHost, [Ptr, Ptr], Ptr);
+            ("map_h", "str_i64_to_dyn", lkrt_lkmap_str_i64_to_dyn, WritesHost, [Ptr], Ptr, Constructs);
+            ("map_h", "str_f64_to_dyn", lkrt_lkmap_str_f64_to_dyn, WritesHost, [Ptr], Ptr, Constructs);
+            ("map_h", "str_bool_to_dyn", lkrt_lkmap_str_bool_to_dyn, WritesHost, [Ptr], Ptr, Constructs);
+            ("list_h", "f64_to_dyn", lkrt_lklist_f64_to_dyn, WritesHost, [Ptr], Ptr, Constructs);
+            ("list_h", "str_to_dyn", lkrt_lklist_str_to_dyn, WritesHost, [Ptr], Ptr, Constructs);
+            ("list_h", "dyn_new", lkrt_lklist_dyn_new, WritesHost, [], Ptr, Constructs);
+            ("list_h", "dyn_push", lkrt_lklist_dyn_push, WritesHost, [Ptr, DynVal], Nil, Borrowed);
+            ("list_h", "dyn_at", lkrt_lklist_dyn_at, ReadsHost, [Ptr, I64], DynVal, Borrowed);
+            ("list_h", "dyn_set", lkrt_lklist_dyn_set, WritesHost, [Ptr, I64, DynVal], Nil, Borrowed);
+            ("list_h", "dyn_len", lkrt_lklist_dyn_len, ReadsHost, [Ptr], I64, Borrowed);
+            ("list_h", "dyn_eq", lkrt_lklist_dyn_eq, ReadsHost, [Ptr, Ptr], I64, Borrowed);
+            ("list_h", "dyn_chunk", lkrt_lklist_dyn_chunk, WritesHost, [Ptr, I64], Ptr, Constructs);
+            ("list_h", "dyn_enumerate", lkrt_lklist_dyn_enumerate, WritesHost, [Ptr], Ptr, Constructs);
+            ("list_h", "dyn_zip", lkrt_lklist_dyn_zip, WritesHost, [Ptr, Ptr], Ptr, Constructs);
+            ("list_h", "dyn_unique", lkrt_lklist_dyn_unique, WritesHost, [Ptr], Ptr, Constructs);
+            ("list_h", "dyn_flatten", lkrt_lklist_dyn_flatten, WritesHost, [Ptr], Ptr, Constructs);
+            ("list_h", "dyn_slice_from", lkrt_lklist_dyn_slice_from, WritesHost, [Ptr, I64], Ptr, Constructs);
+            ("list_h", "dyn_contains", lkrt_lklist_dyn_contains, ReadsHost, [Ptr, DynVal], I64, Borrowed);
+            ("list_h", "dyn_take", lkrt_lklist_dyn_take, WritesHost, [Ptr, I64], Ptr, Constructs);
+            ("list_h", "dyn_skip", lkrt_lklist_dyn_skip, WritesHost, [Ptr, I64], Ptr, Constructs);
+            ("list_h", "dyn_chain", lkrt_lklist_dyn_chain, WritesHost, [Ptr, Ptr], Ptr, Constructs);
             // Boxed-element HOFs (`fn(LkDyn) -> LkDyn` / `-> bool` /
             // `fn(LkDyn, LkDyn) -> LkDyn` callbacks): the runtime-polymorphic
             // spellings of map/filter/reduce (typed receivers convert first).
-            ("list_h", "dyn_map_fn", lkrt_lklist_dyn_map_fn, WritesHost, [Ptr, Ptr], Ptr);
-            ("list_h", "dyn_filter_fn", lkrt_lklist_dyn_filter_fn, WritesHost, [Ptr, Ptr], Ptr);
-            ("list_h", "dyn_reduce_fn", lkrt_lklist_dyn_reduce_fn, WritesHost, [Ptr, DynVal, Ptr], DynVal);
-            ("list_h", "str_map_fn", lkrt_lklist_str_map_fn, WritesHost, [Ptr, Ptr], Ptr);
-            ("list_h", "str_filter_fn", lkrt_lklist_str_filter_fn, WritesHost, [Ptr, Ptr], Ptr);
-            ("list_h", "i64_unique", lkrt_lklist_i64_unique, WritesHost, [Ptr], Ptr);
-            ("list_h", "dyn_display", lkrt_lklist_dyn_display, WritesHost, [Ptr], StrPtr);
+            ("list_h", "dyn_map_fn", lkrt_lklist_dyn_map_fn, WritesHost, [Ptr, Ptr], Ptr, Constructs);
+            ("list_h", "dyn_filter_fn", lkrt_lklist_dyn_filter_fn, WritesHost, [Ptr, Ptr], Ptr, Constructs);
+            ("list_h", "dyn_reduce_fn", lkrt_lklist_dyn_reduce_fn, WritesHost, [Ptr, DynVal, Ptr], DynVal, Borrowed);
+            ("list_h", "str_map_fn", lkrt_lklist_str_map_fn, WritesHost, [Ptr, Ptr], Ptr, Constructs);
+            ("list_h", "str_filter_fn", lkrt_lklist_str_filter_fn, WritesHost, [Ptr, Ptr], Ptr, Constructs);
+            ("list_h", "i64_unique", lkrt_lklist_i64_unique, WritesHost, [Ptr], Ptr, Constructs);
+            ("list_h", "dyn_display", lkrt_lklist_dyn_display, WritesHost, [Ptr], StrPtr, Borrowed);
             // Native `Set` handles (VM `RuntimeSet`): boxed-key membership,
             // mutation, and size. Iteration/`values()` stays out (hash order).
-            ("set", "new", lkrt_lkset_new, WritesHost, [], Ptr);
-            ("set", "from_str_list", lkrt_lkset_from_str_list, WritesHost, [Ptr], Ptr);
-            ("set", "from_i64_list", lkrt_lkset_from_i64_list, WritesHost, [Ptr], Ptr);
-            ("set", "has", lkrt_lkset_has, ReadsHost, [Ptr, DynVal], I64);
-            ("set", "add", lkrt_lkset_add, WritesHost, [Ptr, DynVal], I64);
-            ("set", "delete", lkrt_lkset_delete, WritesHost, [Ptr, DynVal], I64);
-            ("set", "len", lkrt_lkset_len, ReadsHost, [Ptr], I64);
-            ("set", "clear", lkrt_lkset_clear, WritesHost, [Ptr], Nil);
+            ("set", "new", lkrt_lkset_new, WritesHost, [], Ptr, Constructs);
+            ("set", "from_str_list", lkrt_lkset_from_str_list, WritesHost, [Ptr], Ptr, Constructs);
+            ("set", "from_i64_list", lkrt_lkset_from_i64_list, WritesHost, [Ptr], Ptr, Constructs);
+            ("set", "has", lkrt_lkset_has, ReadsHost, [Ptr, DynVal], I64, Borrowed);
+            ("set", "add", lkrt_lkset_add, WritesHost, [Ptr, DynVal], I64, Borrowed);
+            ("set", "delete", lkrt_lkset_delete, WritesHost, [Ptr, DynVal], I64, Borrowed);
+            ("set", "len", lkrt_lkset_len, ReadsHost, [Ptr], I64, Borrowed);
+            ("set", "clear", lkrt_lkset_clear, WritesHost, [Ptr], Nil, Borrowed);
             ("arith", "i64_div", lkrt_i64_div_checked, ReadsHost, [I64, I64], I64);
             ("arith", "i64_mod", lkrt_i64_mod_checked, ReadsHost, [I64, I64], I64);
             ("arith", "f64_div", lkrt_f64_div_checked, ReadsHost, [F64, F64], F64);
@@ -464,8 +518,19 @@ macro_rules! for_each_abi_fn {
 }
 
 /// Expands the ABI table into the [`ABI_FUNCTIONS`] const slice.
+/// Resolves an entry's optional receiver contract, defaulting to the
+/// conservative [`Receiver::Retained`].
+macro_rules! receiver_or_default {
+    () => {
+        Receiver::Retained
+    };
+    ($role:ident) => {
+        Receiver::$role
+    };
+}
+
 macro_rules! define_abi_functions {
-    ($( ($module:literal, $name:literal, $symbol:ident, $effect:ident, [$($param:ident),* $(,)?], $ret:ident) );* $(;)?) => {
+    ($( ($module:literal, $name:literal, $symbol:ident, $effect:ident, [$($param:ident),* $(,)?], $ret:ident $(, $role:ident)?) );* $(;)?) => {
         /// The complete native ABI surface. Codegen renders `declare`s from this; `lkrt`
         /// provides one `#[no_mangle]` implementation per `symbol` (checked against this
         /// table by `lkrt`'s conformance test via [`for_each_abi_fn`]).
@@ -477,6 +542,7 @@ macro_rules! define_abi_functions {
                 params: &[$(AbiType::$param),*],
                 result: AbiType::$ret,
                 effect: AbiEffect::$effect,
+                receiver: receiver_or_default!($($role)?),
             } ),*
         ];
     };
@@ -551,5 +617,58 @@ mod tests {
         let f = find("map_h", "str_i64_set").expect("known entry");
         assert_eq!(f.symbol, "lkrt_lkmap_str_i64_set");
         assert_eq!(f.result, AbiType::Nil);
+    }
+
+    /// The receiver contract drives an early `free`, so these specific
+    /// classifications are load-bearing. Each was checked against the `lkrt`
+    /// implementation; this test keeps an edit from silently reclassifying one.
+    #[test]
+    fn receiver_contracts_match_the_audited_implementations() {
+        let receiver = |m, n| find(m, n).expect("known entry").receiver;
+
+        // Fresh arena handles: releasing their result is the whole point.
+        assert_eq!(receiver("list_h", "i64_new"), Receiver::Constructs);
+        assert_eq!(receiver("map_h", "lit_new"), Receiver::Constructs);
+        // `sort`/`reverse` clone into a new handle rather than mutating.
+        assert_eq!(receiver("list_h", "i64_sort"), Receiver::Constructs);
+        assert_eq!(receiver("list_h", "i64_reverse"), Receiver::Constructs);
+        // Reached through `pair_list`/`arena_handle` helpers, not a literal
+        // `arena_handle` call in the entry's own body.
+        assert_eq!(receiver("map_h", "str_i64_iter_pairs"), Receiver::Constructs);
+        assert_eq!(receiver("map_h", "str_i64_keys"), Receiver::Constructs);
+
+        // Read/mutate in place: safe to release the receiver afterwards.
+        assert_eq!(receiver("list_h", "i64_len"), Receiver::Borrowed);
+        assert_eq!(receiver("list_h", "i64_push"), Receiver::Borrowed);
+        assert_eq!(receiver("map_h", "str_dyn_set"), Receiver::Borrowed);
+
+        // The two audited exceptions, both of which a name-based rule gets
+        // wrong. `obj_mark` records the handle's address in a global table;
+        // `dyn.as_list` returns an *existing* handle, so treating it as a
+        // constructor would free a container someone else still owns.
+        assert_eq!(receiver("map_h", "obj_mark"), Receiver::Retained);
+        assert_eq!(receiver("dyn", "as_list"), Receiver::Retained);
+
+        // Anything unannotated stays conservative.
+        assert_eq!(receiver("dyn", "from_list"), Receiver::Retained);
+        assert_eq!(receiver("json", "parse"), Receiver::Retained);
+    }
+
+    /// Every entry that returns a raw pointer either declares itself a
+    /// constructor or stays `Retained`; a `Borrowed` pointer-returning entry
+    /// would be a classification mistake (it hands back a handle nobody owns).
+    #[test]
+    fn pointer_returning_entries_are_not_marked_borrowed() {
+        for f in ABI_FUNCTIONS {
+            if f.result == AbiType::Ptr {
+                assert_ne!(
+                    f.receiver,
+                    Receiver::Borrowed,
+                    "{}.{} returns a handle but is marked Borrowed",
+                    f.module,
+                    f.name
+                );
+            }
+        }
     }
 }

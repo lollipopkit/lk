@@ -13,21 +13,26 @@
 //!
 //! # Measured effect (do not overstate this)
 //!
-//! On the `examples/` corpus: **1085 dead instructions** removed and **5**
-//! redundant `Pure` calls collapsed across 51 programs. The *runtime* effect
-//! of the DCE half is nil — compiling `bench/workloads_business_algorithms.lk`
-//! with and without this pass produces byte-identical executables (7530368 B)
-//! and the same wall time, because Cranelift already eliminates dead pure
-//! CLIF instructions itself.
+//! On the `examples/` corpus: **~1085 dead instructions** removed, **33**
+//! redundant `Pure` calls collapsed, and **3** loop-local container handles
+//! released per iteration, across 51 programs.
 //!
-//! So DCE here buys readable MIR snapshots and a smaller codegen input, not
-//! speed. CSE is the half that earns its place: Cranelift *cannot* do it,
-//! since a call to an opaque `lkrt` symbol is a black box to it — only the
-//! `aot/abi` effect schema knows the call is pure. The corpus just does not
-//! happen to repeat many pure calls; user code that calls `s.len()` twice in
-//! one expression does.
+//! The *runtime* effect of the DCE half is nil — compiling
+//! `bench/workloads_business_algorithms.lk` with and without this pass
+//! produces byte-identical executables (7530368 B) and the same wall time,
+//! because Cranelift already eliminates dead pure CLIF instructions itself.
+//! DCE here buys readable MIR snapshots and a smaller codegen input, not
+//! speed.
 //!
-//! Neither pass closes the ~17% gap to the retired clang `-O2` path. That gap
+//! CSE is the half Cranelift *cannot* do: a call to an opaque `lkrt` symbol
+//! is a black box to it, and only the `aot/abi` effect schema knows the call
+//! is pure. Scoping it by dominance rather than by block is what makes it
+//! worth having — 5 collapses are block-local, 33 with dominance.
+//!
+//! Scope drop is not an optimization at all but a correctness-of-resources
+//! fix; see [`scope_drop_loop_locals`].
+//!
+//! None of this closes the ~17% gap to the retired clang `-O2` path. That gap
 //! is in instruction selection and register allocation, not in redundancy.
 //!
 //! # Soundness rules
@@ -125,9 +130,14 @@ pub fn optimize(module: &mut MirModule) -> OptStats {
 /// - the handle is created by a constructor call *inside a loop body* (no
 ///   point paying for a release elsewhere);
 /// - every use is in the defining block, and the terminator does not carry it
-///   to another block (no cross-block liveness question);
+///   to another block. This is not the approximation it looks like: SSA passes
+///   cross-block values as block arguments, so a handle reaching *any*
+///   terminator may survive an iteration and must not be released. Measured on
+///   the corpus, of 18 loop allocations 3 are block-local and **0** are
+///   cross-block-but-non-escaping — block scope is the ceiling here, not a
+///   shortcut ([`count_loop_allocations`] re-measures it);
 /// - every use passes it as the **receiver** (parameter 0) of a call that
-///   [`lk_aot_abi::receiver_escapes`] says does not retain it. A handle passed
+///   [`lk_aot_abi::Receiver`] contract says does not retain it. A handle passed
 ///   in any other position may be stored into another container, and a handle
 ///   read by a non-call instruction is not analyzed at all.
 fn scope_drop_loop_locals(func: &mut MirFunction) -> usize {
@@ -194,7 +204,7 @@ fn block_local_handles(func: &MirFunction, bi: usize) -> Vec<ValueId> {
             dst: Some(dst), callee, ..
         } = inst
             && matches!(callee.module, "list_h" | "map_h" | "set")
-            && constructs_handle(callee.name)
+            && constructs_handle(callee)
         {
             created.push(*dst);
         }
@@ -233,7 +243,7 @@ fn block_local_handles(func: &MirFunction, bi: usize) -> Vec<ValueId> {
                 Inst::Call { callee, args, .. } => {
                     args.first() == Some(&handle)
                         && args[1..].iter().all(|a| *a != handle)
-                        && !lk_aot_abi::receiver_escapes(callee.module, callee.name)
+                        && !receiver_of(callee).retains()
                 }
                 // Any other instruction reading the handle (a return value, a
                 // carrier, a bridge call) is not analyzed — keep the handle.
@@ -244,30 +254,62 @@ fn block_local_handles(func: &MirFunction, bi: usize) -> Vec<ValueId> {
     created
 }
 
-/// Whether an ABI call name allocates and returns a fresh container handle.
-fn constructs_handle(name: &str) -> bool {
-    name.ends_with("_new")
-        || name.ends_with("_chain")
-        || name.ends_with("_from_range")
-        || name.ends_with("_iter_pairs")
-        || name.ends_with("_slice")
-        || name.ends_with("_slice_from")
+/// The schema's handle-ownership contract for a callee, defaulting to the
+/// conservative [`lk_aot_abi::Receiver::Retained`] for a callee the schema
+/// does not know (which cannot happen for a validated module, but the pass
+/// must not assume that to stay memory-safe).
+fn receiver_of(callee: &AbiRef) -> lk_aot_abi::Receiver {
+    lk_aot_abi::find(callee.module, callee.name).map_or(lk_aot_abi::Receiver::Retained, |abi| abi.receiver)
 }
 
-/// Block-local common-subexpression elimination over `Pure` ABI calls.
+/// Whether a call allocates and returns a fresh arena container handle —
+/// per the audited schema annotation, never a name pattern. `dyn.as_list`
+/// also returns a `Ptr` but hands back an *existing* handle, which is exactly
+/// the distinction a name match would get wrong.
+fn constructs_handle(callee: &AbiRef) -> bool {
+    receiver_of(callee).constructs()
+}
+
+/// Common-subexpression elimination over `Pure` ABI calls, scoped by
+/// **dominance**.
 ///
-/// Scope is deliberately one block: a cross-block version needs dominance
-/// information to be sound, and the redundancy the lowering actually produces
-/// (repeated `dyn.from_*` boxing of the same value, repeated `str.char_len` in
-/// one expression) is block-local anyway.
+/// A redundant call may be collapsed into an earlier one only if that earlier
+/// call is guaranteed to have executed — i.e. its block dominates this one.
+/// Walking the dominator tree with a scoped table gives exactly that: every
+/// candidate visible at a block was defined on a path that must have run.
+/// (A block-scoped table would miss the majority of the redundancy: measured
+/// on the corpus, 5 collapses are block-local and 52 more span blocks.)
 fn cse_pure_calls(func: &mut MirFunction) -> usize {
-    // Rewrites apply function-wide even though the *candidate* table is
-    // per-block: a collapsed value may well be read from a later block.
+    let Some(idom) = immediate_dominators(func) else {
+        return 0;
+    };
     let mut rewrite: HashMap<ValueId, ValueId> = HashMap::new();
     let mut collapsed = 0;
+    // Children in the dominator tree, walked depth-first so a block's table
+    // holds exactly its dominators' candidates.
+    let mut children: Vec<Vec<usize>> = vec![Vec::new(); func.blocks.len()];
+    let entry = func.blocks.iter().position(|b| b.id == func.entry).unwrap_or(0);
+    for (bi, parent) in idom.iter().enumerate() {
+        if let Some(parent) = parent
+            && *parent != bi
+        {
+            children[*parent].push(bi);
+        }
+    }
 
-    for block in &mut func.blocks {
-        let mut seen: HashMap<(&'static str, &'static str, Vec<ValueId>), ValueId> = HashMap::new();
+    // (block, candidates introduced there) — popped when the subtree is done.
+    let mut table: HashMap<(&'static str, &'static str, Vec<ValueId>), ValueId> = HashMap::new();
+    let mut stack: Vec<(usize, bool)> = vec![(entry, false)];
+    let mut scopes: Vec<Vec<(&'static str, &'static str, Vec<ValueId>)>> = Vec::new();
+    while let Some((bi, exiting)) = stack.pop() {
+        if exiting {
+            for key in scopes.pop().unwrap_or_default() {
+                table.remove(&key);
+            }
+            continue;
+        }
+        let mut introduced = Vec::new();
+        let block = &mut func.blocks[bi];
         let mut keep = Vec::with_capacity(block.insts.len());
         for mut inst in std::mem::take(&mut block.insts) {
             // Resolve operands first so an earlier collapse is visible to this
@@ -283,25 +325,127 @@ fn cse_pure_calls(func: &mut MirFunction) -> usize {
                 && lk_aot_abi::find(callee.module, callee.name).is_some_and(|f| f.effect == lk_aot_abi::AbiEffect::Pure)
             {
                 let key = (callee.module, callee.name, args.clone());
-                match seen.get(&key) {
+                match table.get(&key) {
                     Some(&existing) => {
                         rewrite.insert(*dst, existing);
                         collapsed += 1;
                         continue; // drop the redundant call
                     }
                     None => {
-                        seen.insert(key, *dst);
+                        table.insert(key.clone(), *dst);
+                        introduced.push(key);
                     }
                 }
             }
             keep.push(inst);
         }
         block.insts = keep;
+        scopes.push(introduced);
+        stack.push((bi, true));
+        for &child in &children[bi] {
+            stack.push((child, false));
+        }
+    }
+
+    // Terminators (and any block the dominator walk did not reach) still need
+    // the rewrite applied.
+    for block in &mut func.blocks {
+        for inst in &mut block.insts {
+            for use_ in uses_mut(inst) {
+                *use_ = resolve(&rewrite, *use_);
+            }
+        }
         for use_ in term_uses_mut(&mut block.term) {
             *use_ = resolve(&rewrite, *use_);
         }
     }
     collapsed
+}
+
+/// Immediate dominators by block index (Cooper–Harvey–Kennedy iteration).
+/// `None` for a block the entry cannot reach; `None` overall if the function
+/// has no entry block, in which case callers skip the pass rather than guess.
+fn immediate_dominators(func: &MirFunction) -> Option<Vec<Option<usize>>> {
+    let n = func.blocks.len();
+    let entry = func.blocks.iter().position(|b| b.id == func.entry)?;
+    let index_of = |id: BlockId| func.blocks.iter().position(|b| b.id == id);
+
+    // Reverse postorder over the CFG, plus predecessors.
+    let mut order = Vec::with_capacity(n);
+    let mut visited = vec![false; n];
+    let mut stack = vec![(entry, false)];
+    while let Some((bi, done)) = stack.pop() {
+        if done {
+            order.push(bi);
+            continue;
+        }
+        if visited[bi] {
+            continue;
+        }
+        visited[bi] = true;
+        stack.push((bi, true));
+        for target in term_targets(&func.blocks[bi].term) {
+            if let Some(ti) = index_of(target)
+                && !visited[ti]
+            {
+                stack.push((ti, false));
+            }
+        }
+    }
+    order.reverse(); // now reverse postorder
+    let mut rpo_num = vec![usize::MAX; n];
+    for (rank, &bi) in order.iter().enumerate() {
+        rpo_num[bi] = rank;
+    }
+    let mut preds: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for (bi, block) in func.blocks.iter().enumerate() {
+        for target in term_targets(&block.term) {
+            if let Some(ti) = index_of(target) {
+                preds[ti].push(bi);
+            }
+        }
+    }
+
+    let mut idom: Vec<Option<usize>> = vec![None; n];
+    idom[entry] = Some(entry);
+    let intersect = |idom: &[Option<usize>], mut a: usize, mut b: usize| -> usize {
+        while a != b {
+            while rpo_num[a] > rpo_num[b] {
+                a = idom[a].expect("processed predecessor has an idom");
+            }
+            while rpo_num[b] > rpo_num[a] {
+                b = idom[b].expect("processed predecessor has an idom");
+            }
+        }
+        a
+    };
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for &bi in &order {
+            if bi == entry {
+                continue;
+            }
+            let mut new_idom: Option<usize> = None;
+            for &p in &preds[bi] {
+                if idom[p].is_none() {
+                    continue; // not yet processed on this round
+                }
+                new_idom = Some(match new_idom {
+                    None => p,
+                    Some(current) => intersect(&idom, p, current),
+                });
+            }
+            if new_idom.is_some() && idom[bi] != new_idom {
+                idom[bi] = new_idom;
+                changed = true;
+            }
+        }
+    }
+    // The entry dominates itself; represent that as "no parent" so the caller
+    // does not build a self-edge in the tree.
+    idom[entry] = None;
+    Some(idom)
 }
 
 /// Follows a rewrite chain to its root (`a → b → c` resolves to `c`).
@@ -538,13 +682,15 @@ pub fn count_licm_candidates(module: &MirModule) -> usize {
 /// a measurement hook, not a transformation: it answers "how much garbage does
 /// a long-running loop accumulate in the lkrt arena".
 ///
-/// Returns `(loop_constructions, of_which_block_local)`. The second number is
-/// the subset whose every use stays in the defining block — the only shape a
-/// conservative scope-drop could ever release without escape analysis.
+/// Returns `(loop_constructions, block_local, cross_block_but_not_escaping)`.
+/// The second is what the current pass releases; the third is what a
+/// cross-block liveness analysis could additionally reach. Anything reaching a
+/// terminator is excluded from both — it may survive an iteration.
 #[doc(hidden)]
-pub fn count_loop_allocations(module: &MirModule) -> (usize, usize) {
+pub fn count_loop_allocations(module: &MirModule) -> (usize, usize, usize) {
     let mut in_loop = 0;
     let mut block_local = 0;
+    let mut cross_block = 0;
     for func in &module.functions {
         // Blocks inside some loop: between a back-edge target and its source.
         let mut looped = vec![false; func.blocks.len()];
@@ -579,25 +725,17 @@ pub fn count_loop_allocations(module: &MirModule) -> (usize, usize) {
                 else {
                     continue;
                 };
-                // Handle constructors: the `*_new` family plus the helpers
-                // that return a freshly allocated container.
-                let constructs = matches!(callee.module, "list_h" | "map_h" | "set")
-                    && (callee.name.ends_with("_new")
-                        || callee.name.ends_with("_chain")
-                        || callee.name.ends_with("_from_range")
-                        || callee.name.ends_with("_iter_pairs")
-                        || callee.name.ends_with("_slice")
-                        || callee.name.ends_with("_slice_from"));
-                if !constructs {
+                if !constructs_handle(callee) {
                     continue;
                 }
                 in_loop += 1;
-                // Every use inside the defining block, and never handed to a
-                // terminator (which would carry it to another block).
-                let escapes_via_term = {
-                    let mut t = block.term.clone();
+                // A handle reaching *any* terminator can cross an iteration
+                // (SSA passes cross-block values as block arguments), so that
+                // is the category no liveness analysis can release.
+                let escapes_via_term = func.blocks.iter().any(|b| {
+                    let mut t = b.term.clone();
                     term_uses_mut(&mut t).into_iter().any(|u| *u == *dst)
-                };
+                });
                 let used_elsewhere = func.blocks.iter().enumerate().any(|(other, b)| {
                     other != bi
                         && b.insts.iter().any(|i| {
@@ -607,9 +745,49 @@ pub fn count_loop_allocations(module: &MirModule) -> (usize, usize) {
                 });
                 if !escapes_via_term && !used_elsewhere {
                     block_local += 1;
+                } else if !escapes_via_term {
+                    cross_block += 1;
                 }
             }
         }
     }
-    (in_loop, block_local)
+    (in_loop, block_local, cross_block)
+}
+
+/// Counts `Pure` calls that a *cross-block* CSE could additionally collapse:
+/// an identical `(callee, args)` pair appearing in two different blocks. Like
+/// the other counters this only measures, so the decision to extend CSE past
+/// block scope stays evidence-based.
+#[doc(hidden)]
+pub fn count_cross_block_cse_candidates(module: &MirModule) -> usize {
+    let mut extra = 0;
+    for func in &module.functions {
+        let mut seen: HashMap<(&'static str, &'static str, Vec<ValueId>), usize> = HashMap::new();
+        for (bi, block) in func.blocks.iter().enumerate() {
+            for inst in &block.insts {
+                let Inst::Call {
+                    dst: Some(_),
+                    callee,
+                    args,
+                } = inst
+                else {
+                    continue;
+                };
+                if !lk_aot_abi::find(callee.module, callee.name)
+                    .is_some_and(|f| f.effect == lk_aot_abi::AbiEffect::Pure)
+                {
+                    continue;
+                }
+                let key = (callee.module, callee.name, args.clone());
+                match seen.get(&key) {
+                    Some(&first) if first != bi => extra += 1,
+                    Some(_) => {}
+                    None => {
+                        seen.insert(key, bi);
+                    }
+                }
+            }
+        }
+    }
+    extra
 }

@@ -485,13 +485,23 @@ differential harness 直接解决"emit 签名 == helper 签名 == 运行结果 =
        **动机是实测的 VM/native 行为差异**:`for i in 0..2_000_000 { let tmp = [i, i+1, i+2]; … }`
        在 native 下峰值 RSS **190 MB**(每次迭代的临时表全部留在 arena),VM 只有
        **8.8 MB**(GC 回收);加 scope drop 后 native 降到 **4.7 MB**。
-     - 未做:一般化的逃逸分析。当前语料里循环内共 16 处容器构造,只有 1 处满足
-       "块内局部";其余是真逃逸(结果被累积到外层容器),本就该活着。跨块生命周期
-       + 参数捕获分析是下一步的前提。
+     - 句柄语义是 ABI schema 的一等标注(`Receiver::{Retained,Borrowed,Constructs}`,
+       **默认 Retained**),不是名字匹配。逐条对着 lkrt 实现审计过 130 条,审计当场
+       抓出两个按名字必错的条目:`map_h.obj_mark` 把句柄**地址**记进全局
+       `OBJ_TYPE_MARKS`(释放后地址复用会串味),`dyn.as_list` 返回的是**既有**句柄
+       而非新句柄(当成构造函数会释放别人的容器)。两条都显式留在 `Retained` 并写明
+       原因;另有 `i64_sort`/`i64_reverse`(clone 后返回新句柄)、`*_keys`/`*_values`/
+       `*_iter_pairs`(经 `pair_list` 间接 `arena_handle`)是按名字会漏掉的构造函数。
+     - **跨块一般化经测量后不做**:语料里 18 处循环内构造,3 处块内局部(现有 pass
+       覆盖),**0 处**是"跨块但不经终结符"。原因是结构性的:SSA 里跨块传值必须走块
+       参数,而经块参数就意味着可能跨迭代存活——块作用域就是这个分析的天花板,不是
+       近似。`opt::count_loop_allocations` 可随时重测。
   3. **§5 性能要点 2 已落地(收益实测有限)/要点 3 未落地**:
      - `Pure` 不再是死元数据 —— `aot/mir/src/opt.rs` 在 MIR 层做 `Pure` 调用 CSE + DCE
        (Cranelift 无法对不透明 `lkrt` 符号做这件事,只有 ABI schema 知道它纯)。
-       **实测**:examples 语料删死指令 1085 条、折叠 Pure 调用 5 处;但
+       CSE 按**支配关系**定界(在支配树上带作用域表 DFS),而非按块:块内只能折叠
+       5 处,支配定界折叠 **33** 处;非支配的兄弟分支/循环体→循环后 一律保留
+       (三个单测分别钉住这三种形态)。**实测**:examples 语料删死指令 1085 条;但
        `bench/workloads_business_algorithms.lk` 开关此 pass 产出**逐字节相同**的
        可执行文件、运行时间相同——Cranelift 自己已消除死的纯 CLIF 指令,所以 DCE 那半
        只买到"MIR 更干净",CSE 那半才是 Cranelift 覆盖不到的能力。**两者都不是那

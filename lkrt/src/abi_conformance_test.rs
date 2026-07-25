@@ -127,7 +127,9 @@ macro_rules! underscore {
 }
 
 macro_rules! collect_impl_signatures {
-    ($( ($module:literal, $name:literal, $symbol:ident, $effect:ident, [$($param:ident),* $(,)?], $ret:ident) );* $(;)?) => {
+    // The optional trailing receiver contract is irrelevant to signature
+    // conformance; accept and ignore it.
+    ($( ($module:literal, $name:literal, $symbol:ident, $effect:ident, [$($param:ident),* $(,)?], $ret:ident $(, $role:ident)?) );* $(;)?) => {
         fn impl_signatures() -> Vec<(&'static str, Vec<Class>, Class)> {
             let mut sigs = Vec::new();
             $(

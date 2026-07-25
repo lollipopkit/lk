@@ -388,3 +388,138 @@ fn scope_drop_skips_a_handle_read_by_a_later_block() {
     assert_eq!(scope_drop_loop_locals(&mut func), 0);
     assert!(released_handles(&func).is_empty());
 }
+
+#[test]
+fn cse_collapses_across_blocks_when_the_first_call_dominates() {
+    // bb0 computes `math.sign_i64(v0)` and unconditionally falls into bb1,
+    // which computes it again. bb0 dominates bb1, so the second call is
+    // genuinely redundant.
+    let mut func = MirFunction {
+        id: FuncId(0),
+        params: Vec::new(),
+        blocks: vec![
+            Block {
+                id: BlockId(0),
+                params: Vec::new(),
+                insts: vec![konst(0, 7), call(1, "math", "sign_i64", &[0])],
+                term: Term::Br {
+                    target: BlockId(1),
+                    args: Vec::new(),
+                },
+            },
+            Block {
+                id: BlockId(1),
+                params: Vec::new(),
+                insts: vec![call(2, "math", "sign_i64", &[0])],
+                term: Term::Ret(Some(ValueId(2))),
+            },
+        ],
+        entry: BlockId(0),
+        ret: Ty::I64,
+    };
+    assert_eq!(cse_pure_calls(&mut func), 1);
+    assert!(func.blocks[1].insts.is_empty(), "the dominated repeat is gone");
+    assert!(
+        matches!(&func.blocks[1].term, Term::Ret(Some(v)) if *v == ValueId(1)),
+        "the return reads the dominating call's result"
+    );
+}
+
+#[test]
+fn cse_does_not_collapse_across_sibling_branches() {
+    // bb1 and bb2 are two arms of a conditional: neither dominates the other,
+    // so reusing bb1's result inside bb2 would read a value that never ran.
+    let mut func = MirFunction {
+        id: FuncId(0),
+        params: Vec::new(),
+        blocks: vec![
+            Block {
+                id: BlockId(0),
+                params: Vec::new(),
+                insts: vec![
+                    konst(0, 7),
+                    Inst::Const {
+                        dst: ValueId(9),
+                        value: Const::Bool(true),
+                    },
+                ],
+                term: Term::CondBr {
+                    cond: ValueId(9),
+                    then_blk: BlockId(1),
+                    then_args: Vec::new(),
+                    else_blk: BlockId(2),
+                    else_args: Vec::new(),
+                },
+            },
+            Block {
+                id: BlockId(1),
+                params: Vec::new(),
+                insts: vec![call(1, "math", "sign_i64", &[0])],
+                term: Term::Ret(Some(ValueId(1))),
+            },
+            Block {
+                id: BlockId(2),
+                params: Vec::new(),
+                insts: vec![call(2, "math", "sign_i64", &[0])],
+                term: Term::Ret(Some(ValueId(2))),
+            },
+        ],
+        entry: BlockId(0),
+        ret: Ty::I64,
+    };
+    assert_eq!(cse_pure_calls(&mut func), 0, "sibling arms must keep their own call");
+    assert_eq!(func.blocks[1].insts.len(), 1);
+    assert_eq!(func.blocks[2].insts.len(), 1);
+}
+
+#[test]
+fn cse_does_not_hoist_out_of_a_loop_body_into_a_later_block() {
+    // The call lives in a loop body (bb1); bb2 runs after the loop. bb1 does
+    // not dominate bb2 (the loop may run zero times), so bb2 keeps its call.
+    let mut func = MirFunction {
+        id: FuncId(0),
+        params: Vec::new(),
+        blocks: vec![
+            Block {
+                id: BlockId(0),
+                params: Vec::new(),
+                insts: vec![
+                    konst(0, 7),
+                    Inst::Const {
+                        dst: ValueId(9),
+                        value: Const::Bool(true),
+                    },
+                ],
+                term: Term::CondBr {
+                    cond: ValueId(9),
+                    then_blk: BlockId(1),
+                    then_args: Vec::new(),
+                    else_blk: BlockId(2),
+                    else_args: Vec::new(),
+                },
+            },
+            Block {
+                id: BlockId(1),
+                params: Vec::new(),
+                insts: vec![call(1, "math", "sign_i64", &[0])],
+                term: Term::CondBr {
+                    cond: ValueId(9),
+                    then_blk: BlockId(1),
+                    then_args: Vec::new(),
+                    else_blk: BlockId(2),
+                    else_args: Vec::new(),
+                },
+            },
+            Block {
+                id: BlockId(2),
+                params: Vec::new(),
+                insts: vec![call(2, "math", "sign_i64", &[0])],
+                term: Term::Ret(Some(ValueId(2))),
+            },
+        ],
+        entry: BlockId(0),
+        ret: Ty::I64,
+    };
+    assert_eq!(cse_pure_calls(&mut func), 0);
+    assert_eq!(func.blocks[2].insts.len(), 1, "the post-loop call must stay");
+}

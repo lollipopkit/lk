@@ -66,8 +66,12 @@ pub fn compile_artifact_to_clif_object(
                 "lk-aot opt: {} licm candidate(s)",
                 lk_aot_mir::opt::count_licm_candidates(&mir)
             );
-            let (in_loop, block_local) = lk_aot_mir::opt::count_loop_allocations(&mir);
-            eprintln!("lk-aot opt: {in_loop} loop allocation(s), {block_local} block-local");
+            eprintln!(
+                "lk-aot opt: {} cross-block cse candidate(s)",
+                lk_aot_mir::opt::count_cross_block_cse_candidates(&mir)
+            );
+            let (in_loop, block_local, cross_block) = lk_aot_mir::opt::count_loop_allocations(&mir);
+            eprintln!("lk-aot opt: {in_loop} loop allocation(s), {block_local} block-local, {cross_block} cross-block");
         }
         // Optimization must preserve MIR validity; a violation here is our bug,
         // not a user-program limitation, so it fails loudly instead of falling back.
