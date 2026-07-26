@@ -388,6 +388,51 @@ impl VmContext {
         self.install_runtime_builtin("Set", NativeFunction::Plain(core_set_builtin), NativeEntry::VARIADIC);
         self.install_runtime_builtin("__lk_set_field", NativeFunction::Plain(core_set_field_builtin), 3);
         self.install_runtime_builtin("__lk_merge_fields", NativeFunction::Plain(core_merge_fields_builtin), 2);
+        // Volatile MMIO access. The bytecode VM has no address space, so
+        // these exist only to *fail loudly* there — a driver reading a
+        // register under the interpreter must not get a plausible zero.
+        // The AOT path lowers them to real loads and stores instead of
+        // calling these.
+        self.install_runtime_builtin(
+            "volatile_read_u8",
+            NativeFunction::Plain(core_volatile_unavailable_builtin),
+            1,
+        );
+        self.install_runtime_builtin(
+            "volatile_write_u8",
+            NativeFunction::Plain(core_volatile_unavailable_builtin),
+            2,
+        );
+        self.install_runtime_builtin(
+            "volatile_read_u16",
+            NativeFunction::Plain(core_volatile_unavailable_builtin),
+            1,
+        );
+        self.install_runtime_builtin(
+            "volatile_write_u16",
+            NativeFunction::Plain(core_volatile_unavailable_builtin),
+            2,
+        );
+        self.install_runtime_builtin(
+            "volatile_read_u32",
+            NativeFunction::Plain(core_volatile_unavailable_builtin),
+            1,
+        );
+        self.install_runtime_builtin(
+            "volatile_write_u32",
+            NativeFunction::Plain(core_volatile_unavailable_builtin),
+            2,
+        );
+        self.install_runtime_builtin(
+            "volatile_read_u64",
+            NativeFunction::Plain(core_volatile_unavailable_builtin),
+            1,
+        );
+        self.install_runtime_builtin(
+            "volatile_write_u64",
+            NativeFunction::Plain(core_volatile_unavailable_builtin),
+            2,
+        );
         self.install_runtime_builtin("__lk_bit_and", NativeFunction::Plain(core_bit_and_builtin), 2);
         self.install_runtime_builtin("__lk_bit_or", NativeFunction::Plain(core_bit_or_builtin), 2);
         self.install_runtime_builtin("__lk_bit_not", NativeFunction::Plain(core_bit_not_builtin), 1);
@@ -1115,6 +1160,23 @@ fn core_bit_not_builtin(
         args.get(0).expect("arity checked"),
         "__lk_bit_not",
     )?))
+}
+
+/// The VM side of `volatile_read_*` / `volatile_write_*`.
+///
+/// Always raises. A raw pointer under the bytecode VM is an address with
+/// nothing behind it: there is no honest value to return, and returning a
+/// plausible one would turn a "this cannot run here" into a wrong answer that
+/// looks right. The AOT backend never calls this — it lowers these builtins to
+/// machine loads and stores.
+fn core_volatile_unavailable_builtin(
+    _args: NativeArgs<'_>,
+    _runtime: &mut NativeRuntime<'_>,
+) -> anyhow::Result<crate::val::RuntimeVal> {
+    Err(anyhow!(
+        "volatile memory access requires native execution: the bytecode VM has no address space \
+         behind a raw pointer. Compile with the AOT backend to run this."
+    ))
 }
 
 #[cfg(test)]

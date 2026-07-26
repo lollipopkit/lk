@@ -128,6 +128,90 @@ impl TypeChecker {
         Ok(target.clone())
     }
 
+    /// Checks an `unsafe` block's contents.
+    ///
+    /// `Expr::Block` on its own type-checks to `Any` without looking inside —
+    /// blocks are mostly produced by desugars, which are checked before they
+    /// are built. That is fine for those, but it would make `unsafe { … }` a
+    /// hole in the type system: precisely the construct that needs *more*
+    /// scrutiny would get none. So the statements are checked here.
+    ///
+    /// The block's own type stays `Any` for now, matching `Expr::Block`; a
+    /// block that evaluates to a typed value is a separate change.
+    fn check_unsafe_body(&mut self, inner: &Expr) -> Result<Type> {
+        let Expr::Block(statements) = inner else {
+            return self.check_expr(inner);
+        };
+        for stmt in statements {
+            stmt.type_check(self)?;
+        }
+        Ok(Type::Any)
+    }
+
+    /// `volatile_read_uN(ptr)` / `volatile_write_uN(ptr, value)`.
+    ///
+    /// Returns `None` for any other name, so ordinary calls fall through.
+    ///
+    /// These are intrinsics rather than syntax on purpose. `*p` would need the
+    /// *compiler* to know the pointee's width to emit the right load, and the
+    /// compiler has no access to the type checker — the width lives in the name
+    /// instead. It also makes the volatile-ness explicit, which `*p` never is
+    /// in any language.
+    fn check_volatile_builtin(&mut self, name: &str, args: &[Box<Expr>]) -> Result<Option<Type>> {
+        let Some((is_write, kind)) = parse_volatile_builtin(name) else {
+            return Ok(None);
+        };
+        let expected_args = if is_write { 2 } else { 1 };
+        if args.len() != expected_args {
+            return Err(anyhow!(
+                "{name} expects {expected_args} argument(s), got {}",
+                args.len()
+            ));
+        }
+        if !self.in_unsafe() {
+            return Err(anyhow!(
+                "{name} requires an `unsafe` block: the compiler cannot check that the address is \
+                 mapped, aligned, or safe to access"
+            ));
+        }
+
+        let value_ty = Type::MachineInt(kind);
+        let ptr_ty = self.check_expr(&args[0])?;
+        let resolved = self.resolve_aliases(&ptr_ty);
+        let Type::Ptr { pointee, mutable } = &resolved else {
+            return Err(anyhow!(
+                "{name} expects a pointer as its first argument, got {}",
+                ptr_ty.display()
+            ));
+        };
+        if pointee.as_ref() != &value_ty {
+            return Err(anyhow!(
+                "{name} expects a pointer to {}, got {}",
+                value_ty.display(),
+                ptr_ty.display()
+            ));
+        }
+        if is_write && !mutable {
+            return Err(anyhow!(
+                "{name} needs a `*mut` pointer; {} is read-only",
+                ptr_ty.display()
+            ));
+        }
+
+        if is_write {
+            let written = self.check_expr(&args[1])?;
+            if !self.is_assignable(&written, &value_ty) {
+                return Err(anyhow!(
+                    "{name} expects a {} value, got {}",
+                    value_ty.display(),
+                    written.display()
+                ));
+            }
+            return Ok(Some(Type::Nil));
+        }
+        Ok(Some(value_ty))
+    }
+
     /// Internal expression checker without recording.
     fn check_expr_inner(&mut self, expr: &Expr) -> Result<Type> {
         match expr {
@@ -144,7 +228,7 @@ impl TypeChecker {
             // unchecked operations permitted inside it.
             Expr::Unsafe(inner) => {
                 self.enter_unsafe();
-                let result = self.check_expr(inner);
+                let result = self.check_unsafe_body(inner);
                 self.exit_unsafe();
                 result
             }
@@ -230,11 +314,27 @@ impl TypeChecker {
             }
             // Functions - handle both Call (string name) and CallExpr (expression)
             Expr::Call(func, args) => {
+                // Volatile access is checked here rather than through an
+                // ordinary signature: its argument must be a *pointer of the
+                // matching width*, which a plain `(usize) -> u32` signature
+                // cannot express, and it has to demand `unsafe`.
+                if let Some(result) = self.check_volatile_builtin(func, args)? {
+                    return Ok(result);
+                }
                 // For Call with string name, create a variable expression for the function
                 let func_expr = Expr::Var(func.clone());
                 self.check_function_call(&func_expr, args)
             }
-            Expr::CallExpr(func_expr, args) => self.check_function_call(func_expr, args),
+            Expr::CallExpr(func_expr, args) => {
+                // Source-level calls parse to `CallExpr`; `Call` is only built
+                // by internal desugars.
+                if let Expr::Var(name) = func_expr.as_ref()
+                    && let Some(result) = self.check_volatile_builtin(name, args)?
+                {
+                    return Ok(result);
+                }
+                self.check_function_call(func_expr, args)
+            }
             Expr::CallNamed(callee, pos_args, named_args) => {
                 // Struct constructor sugar: TypeName(field: expr, ...)
                 if let Expr::Var(name) = callee.as_ref()
@@ -1512,4 +1612,25 @@ fn cast_is_meaningful(source: &Type, target: &Type) -> bool {
         (Type::Ptr { .. }, Type::Ptr { .. }) => true,
         _ => is_scalar(source) && is_scalar(target),
     }
+}
+
+/// Splits a `volatile_{read,write}_uN` name into its direction and width.
+fn parse_volatile_builtin(name: &str) -> Option<(bool, lk_values::IntKind)> {
+    let (is_write, rest) = if let Some(rest) = name.strip_prefix("volatile_read_") {
+        (false, rest)
+    } else if let Some(rest) = name.strip_prefix("volatile_write_") {
+        (true, rest)
+    } else {
+        return None;
+    };
+    // Only unsigned widths: a hardware register is a bit pattern, and a signed
+    // reading of one is the caller's interpretation, made with a cast.
+    let kind = match rest {
+        "u8" => lk_values::IntKind::U8,
+        "u16" => lk_values::IntKind::U16,
+        "u32" => lk_values::IntKind::U32,
+        "u64" => lk_values::IntKind::U64,
+        _ => return None,
+    };
+    Some((is_write, kind))
 }
