@@ -10,16 +10,27 @@
 
 ## P1 · 正确性,可复现
 
-### P1 类型检查器不看带标注的局部做返回类型推导
+### P1.1 解构 `let` 的元素类型没有分发
+
+`let [ok, v] = f()` 现在把 `v` 绑成 `Any`,因为原来的"每个名字都绑整个右值的类型"
+明显是错的(`v` 会被绑成整个 tuple)。**正解是把模式分发到类型上**:tuple 按位置、
+`List<T>` 按元素、union 逐成员分发。
+
+`Any` 是诚实的占位(不会凭空拒绝),但也就检查不出解构元素的类型错误。做完之后
+`core/src/stmt/stmt_impl/type_check.rs` 里那段注释要一并删掉。
+
+### P1.2 tuple 返回类型和自身的标注对不上
 
 ```lk
-fn f() -> Int { let r: Int = 0; r = 7; return r; }   // expected Int, got 'T0
+fn pick(m: Map<String, String>, k: String) -> Tuple<Bool, String> {
+  if (m.get(k) == nil) { return [false, "missing"]; }
+  return [true, "found"];
+}
+// Return type mismatch in function 'pick': expected Tuple<Bool, String>, got Tuple<Bool, String>
 ```
 
-不带 try/catch 也复现,`lk check` / VM / AOT 三条路都中。**列表里唯一"写正常代码就
-撞得到、且 `lk check` 直接失败"的一条**,且和 AOT 那堆决策完全独立。
-
-(注:之前一度把它记成 try/catch 的 bug,是错的。)
+**显示完全一致却 unify 失败**,所以问题在 `Tuple` 的结构比较而不是显示。既存(和
+P1.1 的修复无关,是写它的回归测试时撞到的)。带标注的 tuple 返回目前写不出来。
 
 ---
 

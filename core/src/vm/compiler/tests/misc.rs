@@ -1018,3 +1018,39 @@ fn impl_methods_record_how_their_subtree_uses_globals() {
         Some("pure")
     );
 }
+
+/// A function body's block scope *is* the function scope, so an annotated local
+/// is still known when the declared return type is validated.
+///
+/// It was not: the body was checked through `Stmt::Block`, which pushes a scope
+/// and pops it, so `collect_return_types` inferred `return r` with `r` unknown
+/// and reported "expected Int, got 'T0" for perfectly well-typed code.
+#[test]
+fn annotated_local_is_visible_to_the_declared_return_type() {
+    let ok = crate::syntax::parse_program_source(
+        "fn f() -> Int { let r: Int = 0; r = 7; return r; }\nreturn f();\n",
+        crate::syntax::ParseOptions::default(),
+    )
+    .expect("parse");
+    let mut tc = crate::typ::TypeChecker::new();
+    for stmt in &ok.statements {
+        stmt.type_check(&mut tc)
+            .expect("an annotated local satisfies the declared return type");
+    }
+
+    // Still rejects a genuinely wrong return, including inside a `try` body
+    // (whose `return` returns from this function).
+    for bad in [
+        "fn f() -> Int { let r: Int = 0; return \"s\"; }\nreturn 0;\n",
+        "fn f() -> Int { try { return \"s\"; } catch e { return 1; } }\nreturn 0;\n",
+    ] {
+        let program = crate::syntax::parse_program_source(bad, crate::syntax::ParseOptions::default()).expect("parse");
+        let mut tc = crate::typ::TypeChecker::new();
+        let err = program
+            .statements
+            .iter()
+            .try_for_each(|stmt| stmt.type_check(&mut tc))
+            .expect_err("a wrong return type must still be rejected");
+        assert!(err.to_string().contains("Return type mismatch"), "got: {err}");
+    }
+}

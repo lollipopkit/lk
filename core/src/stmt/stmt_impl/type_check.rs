@@ -107,7 +107,22 @@ impl Stmt {
 
                 // Extract variables from pattern and add their types to the type checker
                 if let Some(pattern_vars) = extract_pattern_variables(pattern) {
-                    let var_type = type_annotation.clone().unwrap_or(expr_type);
+                    // A single-variable pattern binds the expression's type. A
+                    // *destructuring* one does not: giving every element the type
+                    // of the whole value is simply wrong (`let [ok, v] = f()`
+                    // where `f` returns a tuple would type `v` as that tuple),
+                    // and it stayed invisible only while inference was too coarse
+                    // to produce a precise enough right-hand side. Distributing a
+                    // pattern over a type — tuple positions, list elements, and
+                    // over each member of a union — is the real fix; until then
+                    // the binding is `Any`, which is honest about what is known
+                    // and never rejects on a type it invented.
+                    let destructuring = !matches!(pattern, crate::expr::Pattern::Variable(_));
+                    let var_type = match type_annotation.clone() {
+                        Some(annotated) => annotated,
+                        None if destructuring => Type::Any,
+                        None => expr_type,
+                    };
                     for var_name in pattern_vars {
                         type_checker.add_local_binding(var_name, var_type.clone(), *is_const);
                     }
@@ -311,7 +326,23 @@ impl Stmt {
                     },
                 );
 
-                body.type_check(type_checker)?;
+                // A function body's block scope *is* the function scope, so its
+                // statements are checked directly here rather than through
+                // `Stmt::Block` — which pushes a scope and pops it, discarding
+                // the body's bindings before `collect_return_types` below runs.
+                // That is why an annotated local came back as a fresh type
+                // variable: `fn f() -> Int { let r: Int = 0; r = 7; return r; }`
+                // reported "expected Int, got 'T0", because `r` was unknown by
+                // the time `return r` was inferred. The function's own scope
+                // (pushed above, popped below) still bounds the bindings.
+                match body.as_ref() {
+                    Stmt::Block { statements } => {
+                        for stmt in statements {
+                            stmt.type_check(type_checker)?;
+                        }
+                    }
+                    other => other.type_check(type_checker)?,
+                }
 
                 fn collect_return_types(stmt: &Stmt, tc: &mut TypeChecker, out: &mut Vec<Type>) -> anyhow::Result<()> {
                     match stmt {
