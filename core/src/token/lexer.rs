@@ -120,9 +120,6 @@ const fn build_ascii_class() -> [u8; 256] {
         if c == b'_' {
             table[i] |= ASCII_IDENT_START | ASCII_IDENT_CONT;
         }
-        if c == b'-' {
-            table[i] |= ASCII_IDENT_CONT;
-        }
         i += 1;
     }
     table
@@ -151,7 +148,7 @@ fn is_ident_continue(c: char) -> bool {
     if flags != 0 {
         flags & ASCII_IDENT_CONT != 0
     } else {
-        c.is_alphanumeric() || matches!(c, '_' | '-')
+        c.is_alphanumeric() || c == '_'
     }
 }
 

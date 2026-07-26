@@ -120,13 +120,21 @@ mod tests {
         assert_eq!(t.unwrap(), e);
     }
 
+    /// `-` is an operator, never part of a name.
+    ///
+    /// It used to be an identifier-continue character, which made `n-1` a
+    /// single identifier called `n-1` — so `f(n-1)` failed with "undefined
+    /// local/global `n-1`" instead of subtracting. Nothing needed kebab-case
+    /// names; every C-family user writes `a-1`.
     #[test]
     fn ids() {
         let t3 = Tokenizer::tokenize("id1 id_2 id-3");
         let e3 = vec![
             Token::Id("id1".to_string()),
             Token::Id("id_2".to_string()),
-            Token::Id("id-3".to_string()),
+            Token::Id("id".to_string()),
+            Token::Sub,
+            Token::Int(3),
         ];
         assert_eq!(t3.unwrap(), e3);
     }
