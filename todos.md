@@ -8,31 +8,22 @@
 
 ---
 
-## P1 · 正确性,可复现
+## P1 · 小,已定性
 
-### P1.1 解构 `let` 的元素类型没有分发
-
-`let [ok, v] = f()` 现在把 `v` 绑成 `Any`,因为原来的"每个名字都绑整个右值的类型"
-明显是错的(`v` 会被绑成整个 tuple)。**正解是把模式分发到类型上**:tuple 按位置、
-`List<T>` 按元素、union 逐成员分发。
-
-`Any` 是诚实的占位(不会凭空拒绝),但也就检查不出解构元素的类型错误。做完之后
-`core/src/stmt/stmt_impl/type_check.rs` 里那段注释要一并删掉。
-
-### P1.2 tuple 返回类型和自身的标注对不上
+### P1.1 同质列表字面量对不上 `Tuple` 标注
 
 ```lk
-fn pick(m: Map<String, String>, k: String) -> Tuple<Bool, String> {
-  if (m.get(k) == nil) { return [false, "missing"]; }
-  return [true, "found"];
-}
-// Return type mismatch in function 'pick': expected Tuple<Bool, String>, got Tuple<Bool, String>
+fn f() -> Tuple<Int, Int> { return [1, 2]; }   // expected Tuple<Int, Int>, got List<Int>
+fn g() -> Tuple<Bool, String> { return [true, "x"]; }   // 通过
 ```
 
-**显示完全一致却 unify 失败**,所以问题在 `Tuple` 的结构比较而不是显示。既存(和
-P1.1 的修复无关,是写它的回归测试时撞到的)。带标注的 tuple 返回目前写不出来。
+**同一种语法**按元素同质/异质推成 `List<Int>` 或 `Tuple<Bool, String>`,而只有后者
+能赋给 `Tuple` 标注。两条候选:
 
----
+1. 让 `is_assignable(List<T>, Tuple<T, …, T>)` 成立 —— 小,但丢掉 arity 保证
+   (长度 3 的 `List<Int>` 也能通过 `Tuple<Int, Int>`);
+2. 列表字面量按**期望类型**推导(双向检查),保留 arity —— 正解,但要把期望类型
+   传到字面量处。
 
 ## P2 · 最大的一件,做完能收回一条硬门禁
 

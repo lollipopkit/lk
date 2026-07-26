@@ -1054,3 +1054,65 @@ fn annotated_local_is_visible_to_the_declared_return_type() {
         assert!(err.to_string().contains("Return type mismatch"), "got: {err}");
     }
 }
+
+/// A destructuring `let` binds each name to *its own* element type.
+///
+/// It used to bind the whole right-hand side to every name, so `v` in
+/// `let [ok, v] = pick()` was typed as the entire tuple — invisible only while
+/// inference was too coarse to produce a precise enough right-hand side.
+#[test]
+fn destructuring_let_distributes_the_pattern_over_the_type() {
+    let check = |src: &str| -> anyhow::Result<()> {
+        let program = crate::syntax::parse_program_source(src, crate::syntax::ParseOptions::default()).expect("parse");
+        let mut tc = crate::typ::TypeChecker::new();
+        program.statements.iter().try_for_each(|stmt| stmt.type_check(&mut tc))
+    };
+
+    // `Tuple<Bool, String>` gives `v: String` — usable as a string…
+    check(
+        "fn pick() -> Tuple<Bool, String> { return [true, \"x\"]; }\n\
+         let [ok, v] = pick();\n\
+         let s: String = v;\n\
+         return 0;\n",
+    )
+    .expect("the second element is a String");
+
+    // …and *only* as a string.
+    let err = check(
+        "fn pick() -> Tuple<Bool, String> { return [true, \"x\"]; }\n\
+         let [ok, v] = pick();\n\
+         let n: Int = v;\n\
+         return 0;\n",
+    )
+    .expect_err("an element's type is now checked");
+    assert!(err.to_string().contains("Int"), "got: {err}");
+
+    // A `List<T>` distributes its element type to every position, and `..rest`
+    // keeps the container shape.
+    check(
+        "fn nums() -> List<Int> { return [1, 2, 3]; }\n\
+         let [a, ..tail] = nums();\n\
+         let x: Int = a;\n\
+         let t: List<Int> = tail;\n\
+         return 0;\n",
+    )
+    .expect("list elements and tail distribute");
+}
+
+/// `Tuple<..>` in an annotation is the `Tuple` type, not a user generic that
+/// merely *displays* the same.
+///
+/// `Type::parse` handled `List`/`Map`/`Set`/`Task`/`Channel` but not `Tuple`, so
+/// the annotation became `Generic { name: "Tuple" }` while a heterogeneous list
+/// literal infers `Type::Tuple` — hence "expected Tuple<Bool, String>, got
+/// Tuple<Bool, String>".
+#[test]
+fn tuple_annotation_parses_as_the_tuple_type() {
+    assert_eq!(
+        crate::val::Type::parse("Tuple<Bool, String>"),
+        Some(crate::val::Type::Tuple(vec![
+            crate::val::Type::Bool,
+            crate::val::Type::String
+        ]))
+    );
+}

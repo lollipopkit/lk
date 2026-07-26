@@ -105,28 +105,12 @@ impl Stmt {
                     };
                 }
 
-                // Extract variables from pattern and add their types to the type checker
-                if let Some(pattern_vars) = extract_pattern_variables(pattern) {
-                    // A single-variable pattern binds the expression's type. A
-                    // *destructuring* one does not: giving every element the type
-                    // of the whole value is simply wrong (`let [ok, v] = f()`
-                    // where `f` returns a tuple would type `v` as that tuple),
-                    // and it stayed invisible only while inference was too coarse
-                    // to produce a precise enough right-hand side. Distributing a
-                    // pattern over a type — tuple positions, list elements, and
-                    // over each member of a union — is the real fix; until then
-                    // the binding is `Any`, which is honest about what is known
-                    // and never rejects on a type it invented.
-                    let destructuring = !matches!(pattern, crate::expr::Pattern::Variable(_));
-                    let var_type = match type_annotation.clone() {
-                        Some(annotated) => annotated,
-                        None if destructuring => Type::Any,
-                        None => expr_type,
-                    };
-                    for var_name in pattern_vars {
-                        type_checker.add_local_binding(var_name, var_type.clone(), *is_const);
-                    }
-                }
+                // The pattern is distributed over the value's type, so each name
+                // gets *its own* element type. Binding the whole right-hand side
+                // to every name (what this used to do) types `v` in
+                // `let [ok, v] = f()` as the entire tuple.
+                let bound_type = type_annotation.clone().unwrap_or(expr_type);
+                bind_pattern_types(pattern, &bound_type, *is_const, type_checker);
 
                 Ok(())
             }
@@ -859,49 +843,86 @@ impl Program {
     }
 }
 
-/// Helper method to extract variable names from a pattern for type checking
-fn extract_pattern_variables(pattern: &Pattern) -> Option<Vec<String>> {
-    let mut variables = Vec::new();
+/// Binds every name in `pattern` to the type that position holds in `value_ty`.
+///
+/// Distribution, not the whole value: a list/tuple pattern takes tuple positions
+/// or the list's element type, a map pattern takes the map's value type, and a
+/// union distributes into a union of what each member yields. Anything this
+/// cannot see through (a type variable, `Any`, a mismatched shape) yields `Any`
+/// — permissive on purpose, so an unknown shape never rejects on an invented
+/// type.
+fn bind_pattern_types(pattern: &Pattern, value_ty: &Type, is_const: bool, tc: &mut TypeChecker) {
+    match pattern {
+        Pattern::Variable(name) => tc.add_local_binding(name.clone(), value_ty.clone(), is_const),
+        Pattern::List { patterns, rest } => {
+            for (index, sub) in patterns.iter().enumerate() {
+                bind_pattern_types(sub, &element_type_at(value_ty, index), is_const, tc);
+            }
+            if let Some(rest) = rest {
+                // The tail keeps the container's own shape: a list of the same
+                // element type. Positions are lost, hence `List`, not `Tuple`.
+                let tail = match element_type_at(value_ty, patterns.len()) {
+                    Type::Any => Type::Any,
+                    element => Type::List(Box::new(element)),
+                };
+                tc.add_local_binding(rest.clone(), tail, is_const);
+            }
+        }
+        Pattern::Map { patterns, rest } => {
+            for (_, sub) in patterns {
+                bind_pattern_types(sub, &map_value_type(value_ty), is_const, tc);
+            }
+            if let Some(rest) = rest {
+                tc.add_local_binding(rest.clone(), value_ty.clone(), is_const);
+            }
+        }
+        // A guard does not change what the inner pattern binds; alternatives bind
+        // the same names, so each alternative is distributed independently.
+        Pattern::Guard { pattern, .. } => bind_pattern_types(pattern, value_ty, is_const, tc),
+        Pattern::Or(alternatives) => {
+            for alternative in alternatives {
+                bind_pattern_types(alternative, value_ty, is_const, tc);
+            }
+        }
+        Pattern::Literal(_) | Pattern::Wildcard | Pattern::Range { .. } => {}
+    }
+}
 
-    fn collect_vars(pattern: &Pattern, vars: &mut Vec<String>) {
-        match pattern {
-            Pattern::Variable(name) => {
-                vars.push(name.clone());
-            }
-            Pattern::List { patterns, rest } => {
-                for pattern in patterns {
-                    collect_vars(pattern, vars);
-                }
-                if let Some(rest_var) = rest {
-                    vars.push(rest_var.clone());
-                }
-            }
-            Pattern::Map { patterns, rest } => {
-                for (_, pattern) in patterns {
-                    collect_vars(pattern, vars);
-                }
-                if let Some(rest_var) = rest {
-                    vars.push(rest_var.clone());
-                }
-            }
-            Pattern::Or(patterns) => {
-                for pattern in patterns {
-                    collect_vars(pattern, vars);
-                }
-            }
-            Pattern::Guard { pattern, .. } => {
-                collect_vars(pattern, vars);
-            }
-            // Other pattern types don't bind variables
-            Pattern::Literal(_) | Pattern::Wildcard | Pattern::Range { .. } => {}
+/// The type at position `index` of a destructured value.
+fn element_type_at(value_ty: &Type, index: usize) -> Type {
+    match value_ty {
+        Type::Tuple(elements) => elements.get(index).cloned().unwrap_or(Type::Any),
+        Type::List(element) => (**element).clone(),
+        Type::Optional(inner) => element_type_at(inner, index),
+        Type::Union(members) => union_of(members.iter().map(|member| element_type_at(member, index))),
+        _ => Type::Any,
+    }
+}
+
+fn map_value_type(value_ty: &Type) -> Type {
+    match value_ty {
+        Type::Map(_, value) => (**value).clone(),
+        Type::Optional(inner) => map_value_type(inner),
+        Type::Union(members) => union_of(members.iter().map(map_value_type)),
+        _ => Type::Any,
+    }
+}
+
+/// Collapses distributed alternatives: identical types stay themselves, `Any`
+/// anywhere swallows the rest (nothing is known), otherwise a union.
+fn union_of(types: impl IntoIterator<Item = Type>) -> Type {
+    let mut out: Vec<Type> = Vec::new();
+    for ty in types {
+        if ty == Type::Any {
+            return Type::Any;
+        }
+        if !out.contains(&ty) {
+            out.push(ty);
         }
     }
-
-    collect_vars(pattern, &mut variables);
-
-    // Remove duplicates (can happen with OR patterns)
-    variables.sort();
-    variables.dedup();
-
-    if variables.is_empty() { None } else { Some(variables) }
+    match out.len() {
+        0 => Type::Any,
+        1 => out.pop().expect("checked len"),
+        _ => Type::Union(out),
+    }
 }
