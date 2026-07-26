@@ -39,6 +39,76 @@ jobs:
           # Full VM core on bare metal (M5.2): parser/compiler/verifier/
           # executor/GC build with no std anywhere in the crate graph.
           cargo build -p lk-core --no-default-features --target thumbv7em-none-eabi
+          # The computation-only stdlib modules must cross-compile too, each
+          # on its own: a crate that only builds because a sibling happened to
+          # enable `std` for it is not actually no_std.
+          for m in bytes encoding hash iter math slice string; do
+            cargo build -p "lk-stdlib-$m" --no-default-features --target thumbv7em-none-eabi
+          done
+          cargo build -p lk-stdlib-bare --target thumbv7em-none-eabi
+          # A no_std stdlib crate must not assume lk-core is also no_std:
+          # feature unification can give lk-core `std` while the crate itself
+          # stays no_std. Building one of each together is what catches it —
+          # `--workspace` does not, because there the union enables `std`
+          # everywhere.
+          cargo check -p lk-stdlib-bare -p lk-stdlib-string
+      - name: bare-metal QEMU smoke (LK actually runs with no OS)
+        # Building for thumbv7em proves the code compiles; it does not prove the
+        # VM works without std. This boots a real Cortex-M image under QEMU,
+        # runs an LK program through parse → type-check → execute, and checks
+        # the answer. LK's own `println` goes through stdlib/bare to
+        # semihosting, so the module surface is exercised too. A wrong answer or
+        # a raise exits non-zero.
+        run: |
+          rustup target add thumbv7em-none-eabi
+          sudo apt-get update && sudo apt-get install -y qemu-system-arm
+          # Regenerate the bytecode the artifact-only probe embeds. `.lkm` is
+          # build-locked, so a committed one goes stale the moment the artifact
+          # version is bumped; generating it here keeps the probe honest
+          # instead of failing for an unrelated reason.
+          cargo run -p lk-cli --no-default-features --features stdlib -- \
+            compile bytecode bare-metal/demo.lk
+          cd bare-metal
+          cargo build --release
+          # Assert on the output, not just the exit status: if semihosting
+          # silently stopped working the program would print nothing and still
+          # exit 0. The timeout is because a fault parks the core in `wfi`
+          # rather than exiting, which would otherwise hang the job.
+          assert_printed() {
+            printf '%s' "$1" | grep -qF -- "$2" || {
+              echo "::error::$3 did not print: $2"
+              exit 1
+            }
+          }
+          for image in lk-bare-metal artifact_only; do
+            if ! output=$(timeout 120 qemu-system-arm -cpu cortex-m4 -machine mps2-an386 -nographic \
+                -semihosting-config enable=on,target=native \
+                -kernel "target/thumbv7em-none-eabi/release/$image" 2>&1); then
+              echo "$output"
+              echo "::error::$image failed or timed out"
+              exit 1
+            fi
+            echo "$output"
+            # One line per module surface, so a module silently dropping out of
+            # the registry fails here instead of passing quietly.
+            assert_printed "$output" "sum(fib(0..9)) = 88" "$image"
+            assert_printed "$output" "sqrt(144) = 12" "$image"
+            assert_printed "$output" "upper = BARE METAL" "$image"
+            assert_printed "$output" "bytes.len = 2" "$image"
+            assert_printed "$output" "doubled = [2,4,6]" "$image"
+            assert_printed "$output" "crc32 = 1391562372" "$image"
+            assert_printed "$output" "json.n = 42" "$image"
+            assert_printed "$output" "base64 = bGs=" "$image"
+            assert_printed "$output" "hex = 6c6b" "$image"
+            # Each image reports under its own name, so a build that ran the
+            # wrong binary twice cannot pass.
+            case "$image" in
+              lk-bare-metal) ok="OK: lk ran on bare metal, returned 88" ;;
+              artifact_only) ok="OK: artifact ran on bare metal, returned 88" ;;
+              *) echo "::error::unknown image $image"; exit 1 ;;
+            esac
+            assert_printed "$output" "$ok" "$image"
+          done
       - name: AOT native-lowering coverage gate
         # A lowering regression does not fail any differential test: the
         # program silently drops to the hybrid bridge or the Tier 0 VM bundle
@@ -63,11 +133,29 @@ jobs:
         # native, they must produce VM-identical output while pinned to the
         # native path.
         run: LK_AOT_NO_FALLBACK=1 cargo test -p lk-cli --test aot_differential_test --test clif_differential_test
-      - name: lk-core builds as no_std (VM core no-std guard)
+      - name: lk-core builds and *tests* as no_std (VM core no-std guard)
         # `--no-default-features` drops the `std` feature, which now makes
         # lk-core `#![no_std]` (+ alloc). The VM core (token/ast/expr/stmt/typ/
         # val/vm/gc/resolve/macro-expansion) compiles without std; std-only
         # leaves (package manager, file imports, proc-macro processes, fs-based
         # macro/module resolution, tokio) are `std`-feature-gated. This guards
         # the no_std profiles (plan M0.7/8, M5.1).
-        run: cargo build -p lk-core --no-default-features
+        #
+        # Running the tests — not just building the lib — is the point: until
+        # this ran, the no_std configuration's *behaviour* had never been
+        # executed once, only type-checked. The no_std-only branches (spin
+        # Mutex for std Mutex, the fs-less resolver, gc-stress off) had zero
+        # coverage. libtest is std-only, so the test build links std as
+        # scaffolding (see the `extern crate std` in core/src/lib.rs); every
+        # non-test item is still compiled `#![no_std]`.
+        run: cargo test -p lk-core --no-default-features
+      - name: lk-core feature matrix
+        # `cargo test --all-features` and the no_std build above only exercise
+        # the two endpoints. The combinations in between drift unnoticed: until
+        # `async-runtime` was made to imply `std`, enabling it alone failed with
+        # 24 errors, because tokio/futures cannot build without std.
+        run: |
+          cargo check -p lk-core --no-default-features
+          cargo check -p lk-core --no-default-features --features std
+          cargo check -p lk-core --no-default-features --features async-runtime
+          cargo check -p lk-core --no-default-features --features std,async-runtime

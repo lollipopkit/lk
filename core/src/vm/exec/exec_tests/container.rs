@@ -1,6 +1,4 @@
 use super::*;
-#[cfg(not(feature = "std"))]
-use crate::compat::prelude::*;
 #[test]
 fn execute_compares_int_ordering() {
     let function = Function {

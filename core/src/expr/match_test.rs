@@ -1,7 +1,7 @@
-#[cfg(not(feature = "std"))]
-use crate::compat::prelude::*;
 #[cfg(test)]
 mod tests {
+    #[cfg(not(feature = "std"))]
+    use crate::compat::prelude::*;
     use crate::vm::execute_source;
 
     fn expect_source(source: &str, expected_display: &str) {

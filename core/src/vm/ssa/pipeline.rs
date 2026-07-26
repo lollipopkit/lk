@@ -184,6 +184,8 @@ fn ensure_len<T: Default>(vec: &mut Vec<T>, len: usize) {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(not(feature = "std"))]
+    use crate::compat::prelude::*;
     use crate::{expr::Expr, val::LiteralVal, vm::analysis::PerfValueKind};
 
     use super::analyze_expr;

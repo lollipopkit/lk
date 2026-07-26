@@ -626,6 +626,8 @@ impl FunctionVerifier<'_> {
 mod tests {
     use super::super::{ConstPool, Function, Instr, Module, Opcode};
     use super::*;
+    #[cfg(not(feature = "std"))]
+    use crate::compat::prelude::*;
     use crate::vm::analysis::{PerfForLoopFact, PerformanceFacts};
 
     fn module_with_code(register_count: u16, code: Vec<Instr>) -> Module {

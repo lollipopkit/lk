@@ -67,6 +67,9 @@ pub(super) fn compile_instr_module(path: &Path) -> anyhow::Result<()> {
 
 pub(super) struct CompiledInstrArtifact {
     pub(super) artifact: ModuleArtifact,
+    // Only read by `compile_executable_to_path_with_dependencies`, which is
+    // itself `#[cfg(feature = "aot")]`.
+    #[cfg_attr(not(feature = "aot"), allow(dead_code))]
     pub(super) proc_macro_dependencies: Vec<ProcMacroDependency>,
 }
 

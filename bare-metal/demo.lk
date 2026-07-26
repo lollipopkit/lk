@@ -1,0 +1,51 @@
+// Runs on Cortex-M with no OS — see README.md.
+//
+// Beyond plain language features, this exercises the stdlib modules that work
+// without an OS, so the QEMU run proves the whole bare-metal module surface
+// rather than just the VM.
+use math;
+use string;
+use bytes;
+use iter;
+use hash;
+use { json, base64, hex } from encoding;
+
+fn fib(n) {
+    if (n < 2) { return n; }
+    return fib(n - 1) + fib(n - 2);
+}
+
+let total = 0;
+for i in 0..10 {
+    total = total + fib(i);
+}
+println("sum(fib(0..9)) = {}", total);
+
+// math: libm on bare metal, std's inherent f64 methods on a host.
+println("sqrt(144) = {}", math.sqrt(144.0));
+println("max(3, 7) = {}", math.max(3, 7));
+println("floor(2.7) = {}", math.floor(2.7));
+
+// string
+println("upper = {}", string.upper("bare metal"));
+println("split = {}", string.split("a,b,c", ","));
+
+// bytes
+let raw = bytes.from_string("lk");
+println("bytes.len = {}", bytes.len(raw));
+
+// iter
+let doubled = iter.collect(iter.map([1, 2, 3], fn(x) => x * 2));
+println("doubled = {}", doubled);
+
+// hash: sha2/crc32fast are no_std-capable, so these need no special casing.
+println("crc32 = {}", hash.crc32("lk"));
+
+// encoding: json/base64/hex work without an OS. yaml/toml/url do not and are
+// not registered here.
+let parsed = json.parse("{\"n\": 42}");
+println("json.n = {}", parsed["n"]);
+println("base64 = {}", base64.encode("lk"));
+println("hex = {}", hex.encode("lk"));
+
+return total;

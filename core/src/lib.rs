@@ -8,6 +8,16 @@
 
 extern crate alloc;
 
+// The unit-test harness (libtest) is std-only, so a no_std build still has to
+// link std to *run* its tests. This is scaffolding, not a hole in the no_std
+// guarantee: `#![no_std]` still applies to every non-test item, so what the
+// tests exercise is the real no_std VM core. `#[macro_use]` puts std's exported
+// macros (`println!`, `thread_local!`, …) back in scope for test code that
+// needs them; types still come from `compat::prelude`.
+#[cfg(all(test, not(feature = "std")))]
+#[macro_use]
+extern crate std;
+
 pub mod compat;
 
 pub mod ast;

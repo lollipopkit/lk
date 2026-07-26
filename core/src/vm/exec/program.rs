@@ -329,6 +329,8 @@ pub fn call_module_function_with_ctx_keep_state(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(not(feature = "std"))]
+    use crate::compat::prelude::*;
     use alloc::sync::Arc;
 
     use crate::{
@@ -502,7 +504,17 @@ mod tests {
         // Before segmented-stack growth, ~150 frames overflowed the Rust stack
         // in debug (test threads: 2MiB) and aborted the whole process; 30k
         // recursion now completes and stays under the call-depth cap.
-        let module = compile_source("fn f(n) { if (n == 0) { return 0; } return f(n - 1); }\nreturn f(30000);\n");
+        //
+        // The depth tracks `DEFAULT_MAX_CALL_DEPTH`, which is deliberately far
+        // lower under no_std: LK frames are a heap commitment, and an MCU heap
+        // cannot absorb 30k of them.
+        #[cfg(feature = "std")]
+        let depth = 30000;
+        #[cfg(not(feature = "std"))]
+        let depth = 512;
+        let module = compile_source(&format!(
+            "fn f(n) {{ if (n == 0) {{ return 0; }} return f(n - 1); }}\nreturn f({depth});\n"
+        ));
         let result = crate::vm::execute_module(&module).expect("deep recursion completes");
         assert_eq!(result.returns.first(), Some(&RuntimeVal::Int(0)));
     }

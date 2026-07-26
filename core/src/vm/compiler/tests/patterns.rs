@@ -1,6 +1,4 @@
 use super::*;
-#[cfg(not(feature = "std"))]
-use crate::compat::prelude::*;
 
 #[test]
 fn compiler_lowers_match_range_guard_and_or_patterns() {

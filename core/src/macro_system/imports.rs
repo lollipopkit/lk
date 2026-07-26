@@ -735,7 +735,7 @@ fn resolve_macro_import_path(base_dir: &Path, raw: &str) -> Result<PathBuf, Stri
         })
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 mod tests {
     use crate::vm::ModuleResolver;
     use crate::vm::ProgramExec;

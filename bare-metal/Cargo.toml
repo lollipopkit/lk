@@ -1,0 +1,31 @@
+[package]
+name = "lk-bare-metal"
+description = "Bootable Cortex-M demo running LK with no OS and no std"
+version = "0.1.3"
+edition = "2024"
+authors = ["lollipopkit <a@lpkt.cn>"]
+license = "Apache-2.0"
+publish = false
+
+[[bin]]
+name = "lk-bare-metal"
+path = "src/main.rs"
+# There is no libtest on a bare-metal target, so `--all-targets` must not try
+# to build a test harness for this binary.
+test = false
+bench = false
+
+[dependencies]
+lk-core = { path = "../core", default-features = false }
+lk-stdlib-bare = { path = "../stdlib/bare", default-features = false, features = ["math","string","bytes","iter","slice","hash","encoding"] }
+cortex-m = "0.7"
+cortex-m-rt = "0.7"
+cortex-m-semihosting = "0.5"
+
+# `panic = "abort"` because unwinding needs std; `opt-level = "z"` because the
+# binding constraint on an MCU is flash, not speed.
+[profile.release]
+panic = "abort"
+opt-level = "z"
+lto = true
+codegen-units = 1

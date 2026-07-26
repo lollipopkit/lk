@@ -1,4 +1,23 @@
-use std::sync::Arc;
+#![cfg_attr(not(feature = "std"), no_std)]
+
+extern crate alloc;
+
+// From `alloc` directly, not `lk_core::compat::prelude`: feature
+// unification can give lk-core `std` while this crate stays no_std, and
+// then that prelude does not exist. What alloc provides does not depend
+// on anyone else's features.
+#[cfg(not(feature = "std"))]
+#[allow(unused_imports)]
+use alloc::{
+    borrow::ToOwned,
+    boxed::Box,
+    format,
+    string::{String, ToString},
+    vec,
+    vec::Vec,
+};
+
+use alloc::sync::Arc;
 
 use anyhow::{Result, anyhow, bail};
 use lk_core::{
@@ -119,7 +138,7 @@ impl BytesModule {
             runtime.heap(),
             "bytes.to_string_utf8()",
         )?;
-        let value = std::str::from_utf8(&bytes).map_err(|err| anyhow!("bytes are not valid UTF-8: {err}"))?;
+        let value = core::str::from_utf8(&bytes).map_err(|err| anyhow!("bytes are not valid UTF-8: {err}"))?;
         Ok(runtime_string_value(value, runtime.heap_mut()))
     }
 

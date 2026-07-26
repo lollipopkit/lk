@@ -1,5 +1,24 @@
-use std::collections::HashSet;
-use std::sync::Arc;
+#![cfg_attr(not(feature = "std"), no_std)]
+
+extern crate alloc;
+
+// From `alloc` directly, not `lk_core::compat::prelude`: feature
+// unification can give lk-core `std` while this crate stays no_std, and
+// then that prelude does not exist. What alloc provides does not depend
+// on anyone else's features.
+#[cfg(not(feature = "std"))]
+#[allow(unused_imports)]
+use alloc::{
+    borrow::ToOwned,
+    boxed::Box,
+    format,
+    string::{String, ToString},
+    vec,
+    vec::Vec,
+};
+
+use alloc::sync::Arc;
+use lk_core::compat::collections::HashSet;
 
 use anyhow::{Result, anyhow, bail};
 use lk_core::{
@@ -139,7 +158,11 @@ impl StringModule {
         if start > value.len() {
             bail!("substring() start index out of bounds");
         }
-        let end = std::cmp::min(start + length, value.len());
+        // `saturating_add`, not `+`: `usize` is 32-bit on the bare-metal
+        // targets, where two large `Int` arguments overflow it. In release
+        // that wraps to a small `end`, and `value[start..end]` with
+        // `end < start` panics — which on an MCU means a halt, not a message.
+        let end = core::cmp::min(start.saturating_add(length), value.len());
         Ok(runtime_string_value(&value[start..end], runtime.heap_mut()))
     }
 

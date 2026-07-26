@@ -21,7 +21,34 @@ pub struct Parser<'a> {
     /// Monotonic id for parse-time desugars (`select`, postfix `!`), so
     /// nested instances don't shadow each other's synthesized locals.
     pub(super) desugar_counter: usize,
+    /// Live nesting depth of `parse_expr`, bounded by [`MAX_EXPR_DEPTH`].
+    ///
+    /// Expression parsing is recursive descent, so nesting depth in the source
+    /// is Rust stack depth. Without a bound, `((((…1…))))` overflows the stack
+    /// and *aborts the process* — 500 levels was enough in a debug build. On a
+    /// host that abort is at least clean (the guard page traps); on bare metal
+    /// there is no guard page, so the same input silently walks off the stack
+    /// into whatever is below it.
+    pub(super) depth: usize,
 }
+
+/// Cap on expression nesting depth (see [`Parser::depth`]).
+///
+/// Hand-written code does not approach this — the bound exists to turn a
+/// pathological or hostile input into a syntax error instead of an abort.
+///
+/// The value is set from measurement, not taste. One level of *source* nesting
+/// costs about 18KiB of debug stack, because it unwinds the whole precedence
+/// chain (`conditional` → `nullish` → `or` → … → `postfix` → `primary` →
+/// `paren`) rather than one frame. A debug `lk check` (8MiB main stack) aborts
+/// somewhere between 400 and 500 levels; a libtest thread only gets 2MiB, so
+/// its ceiling is nearer 110. 64 sits under that with room to spare and is
+/// still far past anything real code nests to.
+#[cfg(feature = "std")]
+pub(super) const MAX_EXPR_DEPTH: usize = 64;
+/// An MCU stack is kilobytes, not megabytes, so bare metal gets a tighter cap.
+#[cfg(not(feature = "std"))]
+pub(super) const MAX_EXPR_DEPTH: usize = 16;
 
 struct StructLiteralParts {
     fields: Vec<(String, Box<Expr>)>,
@@ -263,8 +290,43 @@ impl<'a> Parser<'a> {
         Ok(exp.fold_constants())
     }
 
+    /// Runs `parse` one level deeper, refusing to go past [`MAX_EXPR_DEPTH`].
+    ///
+    /// Every recursive descent that can nest without bound has to go through
+    /// here, not just `parse_expr`: prefix operators recurse into themselves
+    /// (`!!!…x`) and `match` arms recurse into `parse_conditional` directly,
+    /// so bounding only `parse_expr` left both able to overflow the stack.
+    fn deeper<T>(&mut self, parse: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
+        if self.depth >= MAX_EXPR_DEPTH {
+            return Err(anyhow!(self.err("Expression nesting too deep")));
+        }
+        self.depth += 1;
+        // Decremented on the error path too — a bounded parse that fails must
+        // not leave the counter raised for whatever the caller tries next.
+        let parsed = parse(self);
+        self.depth -= 1;
+        parsed
+    }
+
+    /// A parser over a token sub-slice that continues *this* parser's depth
+    /// budget. A nested parse is still nesting even when it gets its own
+    /// `Parser`, so starting the sub-parser back at zero would hand a
+    /// deeply-nested construct an unbounded budget one slice at a time.
+    fn sub_parser<'b>(&self, tokens: &'b [Token]) -> Parser<'b> {
+        let mut parser = Parser::new(tokens);
+        parser.depth = self.depth;
+        parser
+    }
+
+    fn sub_parser_with_spans<'b>(&self, tokens: &'b [Token], spans: &'b [Span]) -> Parser<'b> {
+        let mut parser = Parser::new_with_spans(tokens, spans);
+        parser.depth = self.depth;
+        parser
+    }
+
+    /// Every nested expression form routes back through here.
     fn parse_expr(&mut self) -> Result<Expr> {
-        self.parse_conditional()
+        self.deeper(Self::parse_conditional)
     }
 
     /// - `cond ? then : else` (ternary conditional)
@@ -481,12 +543,12 @@ impl<'a> Parser<'a> {
         match token {
             Token::Not => {
                 self.pos += 1;
-                let expr = self.parse_unary()?;
+                let expr = self.deeper(Self::parse_unary)?;
                 Ok(Expr::Unary(UnaryOp::Not, Box::new(expr)))
             }
             Token::BitNot => {
                 self.pos += 1;
-                let expr = self.parse_unary()?;
+                let expr = self.deeper(Self::parse_unary)?;
                 Ok(Self::builtin_call("__lk_bit_not", vec![expr]))
             }
             _ => self.parse_postfix(),
@@ -999,9 +1061,9 @@ impl<'a> Parser<'a> {
         let value_tokens = &self.tokens[start_pos..i];
         let value_spans = self.token_spans.map(|sp| &sp[start_pos..i]);
         let mut sub = if let Some(spans) = value_spans {
-            Parser::new_with_spans(value_tokens, spans)
+            self.sub_parser_with_spans(value_tokens, spans)
         } else {
-            Parser::new(value_tokens)
+            self.sub_parser(value_tokens)
         };
         let value = Box::new(sub.parse_expr()?);
         self.pos = i;
@@ -1022,8 +1084,10 @@ impl<'a> Parser<'a> {
             }
             self.pos += 1;
 
-            // Parse body expression
-            let body = Box::new(self.parse_conditional()?);
+            // Parse body expression. Through `parse_expr`, not
+            // `parse_conditional`: the arm body is where `match` nests into
+            // itself, so it has to be counted.
+            let body = Box::new(self.parse_expr()?);
 
             arms.push(MatchArm { pattern, body });
 
@@ -1074,7 +1138,7 @@ impl<'a> Parser<'a> {
                         };
 
                         if !expr_tokens.is_empty() {
-                            let mut expr_parser = Parser::new(&expr_tokens);
+                            let mut expr_parser = self.sub_parser(&expr_tokens);
                             match expr_parser.parse_expr() {
                                 Ok(expr) => parts.push(TemplateStringPart::Expr(Box::new(expr))),
                                 Err(e) => {

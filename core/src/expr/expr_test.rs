@@ -1,8 +1,8 @@
-#[cfg(not(feature = "std"))]
-use crate::compat::prelude::*;
 #[cfg(test)]
 mod test {
     use crate::compat::collections::HashSet;
+    #[cfg(not(feature = "std"))]
+    use crate::compat::prelude::*;
 
     use crate::{expr::Expr, vm::execute_source};
 

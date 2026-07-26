@@ -1,6 +1,4 @@
 use super::*;
-#[cfg(not(feature = "std"))]
-use crate::compat::prelude::*;
 use crate::util::fast_map::fast_hash_map_from_iter;
 use crate::vm::ProgramExec;
 use crate::vm::analysis::PerfGlobalFact;

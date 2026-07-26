@@ -1039,5 +1039,5 @@ fn error_from_span(span: Option<&Span>, message: &str) -> ParseError {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 mod tests;

@@ -1,4 +1,19 @@
+use alloc::sync::Arc;
 use anyhow::{Result, anyhow, bail};
+use core::fmt::Write as _;
+// From `alloc` directly, not `lk_core::compat::prelude`: feature
+// unification can give lk-core `std` while this crate stays no_std, and
+// then that prelude does not exist.
+#[cfg(not(feature = "std"))]
+#[allow(unused_imports)]
+use alloc::{
+    borrow::ToOwned,
+    boxed::Box,
+    format,
+    string::{String, ToString},
+    vec,
+    vec::Vec,
+};
 use lk_core::{
     module::{RuntimeNativeExport, RuntimeValueExport},
     util::fast_map::fast_hash_map_new,
@@ -7,7 +22,6 @@ use lk_core::{
     },
     vm::{NativeArgs, NativeRuntime, RuntimeExport, import_runtime_export},
 };
-use std::{fmt::Write as _, sync::Arc};
 
 pub fn runtime_native_export(
     module: &dyn lk_core::module::ModuleProvider,
@@ -300,8 +314,8 @@ fn quote_string(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use alloc::sync::Arc;
     use lk_core::util::fast_map::fast_hash_map_from_iter;
-    use std::sync::Arc;
 
     use super::*;
     use lk_core::val::TypedMap;

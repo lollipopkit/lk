@@ -96,7 +96,8 @@ fn reject_error_diagnostics(
     Err(ParseError::with_span(message, span))
 }
 
-#[cfg(test)]
+// Proc macros run as external processes — std-only by construction.
+#[cfg(all(test, feature = "std"))]
 mod tests {
     use crate::vm::ProgramExec;
     use crate::{

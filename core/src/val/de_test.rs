@@ -1,7 +1,7 @@
-#[cfg(not(feature = "std"))]
-use crate::compat::prelude::*;
 #[cfg(test)]
 mod tests {
+    #[cfg(not(feature = "std"))]
+    use crate::compat::prelude::*;
     use crate::val::{HeapStore, HeapValue, RuntimeVal, ShortStr, TypedList, TypedMap, de::*};
 
     fn short(value: &str) -> RuntimeVal {
@@ -40,6 +40,9 @@ mod tests {
         assert!(matches!(list, TypedList::Int(values) if values == &vec![1, 2, 3]));
     }
 
+    // serde_yaml / toml are `std`-only optional deps; JSON stays covered
+    // under no_std.
+    #[cfg(feature = "std")]
     #[test]
     fn yaml_decodes_nested_runtime_containers() {
         let decoded = from_yaml_str_runtime(
@@ -75,6 +78,7 @@ count: 42
         ));
     }
 
+    #[cfg(feature = "std")]
     #[test]
     fn toml_decodes_tables_and_arrays_to_runtime_heap_values() {
         let decoded = from_toml_str_runtime(
@@ -111,15 +115,26 @@ tags = ["read", "write"]
         let json = parse_runtime_with_format(r#"{"key": "value"}"#, None).unwrap();
         assert_eq!(root_map(&json).get_str("key"), Some(short("value")));
 
-        let yaml = parse_runtime_with_format("key: value\nother: 123", Some(Format::Yaml)).unwrap();
-        let map = root_map(&yaml);
-        assert_eq!(map.get_str("key"), Some(short("value")));
-        assert_eq!(map.get_str("other"), Some(RuntimeVal::Int(123)));
+        #[cfg(feature = "std")]
+        {
+            let yaml = parse_runtime_with_format("key: value\nother: 123", Some(Format::Yaml)).unwrap();
+            let map = root_map(&yaml);
+            assert_eq!(map.get_str("key"), Some(short("value")));
+            assert_eq!(map.get_str("other"), Some(RuntimeVal::Int(123)));
 
-        let toml = parse_runtime_with_format("key = \"value\"\nother = 123", Some(Format::Toml)).unwrap();
-        let map = root_map(&toml);
-        assert_eq!(map.get_str("key"), Some(short("value")));
-        assert_eq!(map.get_str("other"), Some(RuntimeVal::Int(123)));
+            let toml = parse_runtime_with_format("key = \"value\"\nother = 123", Some(Format::Toml)).unwrap();
+            let map = root_map(&toml);
+            assert_eq!(map.get_str("key"), Some(short("value")));
+            assert_eq!(map.get_str("other"), Some(RuntimeVal::Int(123)));
+        }
+
+        // Without std these must *reject*, not silently fall back to JSON and
+        // produce something wrong-but-plausible.
+        #[cfg(not(feature = "std"))]
+        {
+            assert!(parse_runtime_with_format("key: value\nother: 123", Some(Format::Yaml)).is_err());
+            assert!(parse_runtime_with_format("key = \"value\"", Some(Format::Toml)).is_err());
+        }
     }
 
     #[test]
@@ -133,8 +148,11 @@ tags = ["read", "write"]
     #[test]
     fn invalid_inputs_return_errors() {
         assert!(from_json_str_runtime(r#"{"invalid": json"#).is_err());
-        assert!(from_yaml_str_runtime("invalid: [\n  - yaml\n  - structure\n").is_err());
-        assert!(from_toml_str_runtime("invalid = toml = syntax").is_err());
+        #[cfg(feature = "std")]
+        {
+            assert!(from_yaml_str_runtime("invalid: [\n  - yaml\n  - structure\n").is_err());
+            assert!(from_toml_str_runtime("invalid = toml = syntax").is_err());
+        }
     }
 
     #[test]

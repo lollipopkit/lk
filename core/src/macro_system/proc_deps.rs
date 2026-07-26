@@ -420,7 +420,9 @@ impl StableHash64 {
     }
 }
 
-#[cfg(test)]
+// The dependency graph itself is std-gated (proc macros run as processes),
+// so its tests are too.
+#[cfg(all(test, feature = "std"))]
 mod tests {
     use super::*;
 

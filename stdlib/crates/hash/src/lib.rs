@@ -1,3 +1,22 @@
+#![cfg_attr(not(feature = "std"), no_std)]
+
+extern crate alloc;
+
+// From `alloc` directly, not `lk_core::compat::prelude`: feature
+// unification can give lk-core `std` while this crate stays no_std, and
+// then that prelude does not exist. What alloc provides does not depend
+// on anyone else's features.
+#[cfg(not(feature = "std"))]
+#[allow(unused_imports)]
+use alloc::{
+    borrow::ToOwned,
+    boxed::Box,
+    format,
+    string::{String, ToString},
+    vec,
+    vec::Vec,
+};
+
 use anyhow::Result;
 use lk_core::{
     val::RuntimeVal,
@@ -51,6 +70,6 @@ impl HashModule {
     }
 }
 
-fn data_arg(args: NativeArgs<'_>, runtime: &NativeRuntime<'_>, name: &str) -> Result<std::sync::Arc<[u8]>> {
+fn data_arg(args: NativeArgs<'_>, runtime: &NativeRuntime<'_>, name: &str) -> Result<alloc::sync::Arc<[u8]>> {
     runtime_bytes_or_string_arg(args.get(0).expect("checked arity"), runtime.heap(), name)
 }
