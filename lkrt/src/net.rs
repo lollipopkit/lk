@@ -69,7 +69,7 @@ pub extern "C" fn lkrt_tcp_close(stream: i64) -> i64 {
 pub extern "C" fn lkrt_bytes_to_string_utf8(bytes: i64) -> *mut c_char {
     aborting(|| {
         let bytes = with_runtime(|rt| rt.take_bytes(bytes))?;
-        let value = std::str::from_utf8(&bytes).map_err(|err| format!("bytes are not valid UTF-8: {err}"))?;
+        let value = core::str::from_utf8(&bytes).map_err(|err| format!("bytes are not valid UTF-8: {err}"))?;
         owned_c_string(value)
     })
 }
@@ -135,7 +135,7 @@ mod tests {
         let bytes = lkrt_tcp_read(stream, 4);
         let response = lkrt_bytes_to_string_utf8(bytes);
         // SAFETY: response is an lkrt-owned NUL-terminated CString pointer.
-        let response_text = unsafe { std::ffi::CStr::from_ptr(response) }
+        let response_text = unsafe { core::ffi::CStr::from_ptr(response) }
             .to_str()
             .expect("utf8")
             .to_owned();
@@ -162,7 +162,7 @@ mod tests {
         let addr = lkrt_socket_addr(host.as_ptr(), 8080);
         assert!(!addr.is_null());
         // SAFETY: addr is an lkrt-owned NUL-terminated CString pointer.
-        let addr_text = unsafe { std::ffi::CStr::from_ptr(addr) }
+        let addr_text = unsafe { core::ffi::CStr::from_ptr(addr) }
             .to_str()
             .expect("utf8")
             .to_owned();

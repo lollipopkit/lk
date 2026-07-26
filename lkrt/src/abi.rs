@@ -1,3 +1,14 @@
+// `alloc`, not the std prelude: this module is part of the computation-only
+// subset that builds without an OS.
+#[allow(unused_imports)]
+use alloc::{
+    boxed::Box,
+    format,
+    string::{String, ToString},
+    vec,
+    vec::Vec,
+};
+
 use std::{
     cell::RefCell,
     ffi::{CStr, CString, c_char},
@@ -25,7 +36,7 @@ pub(crate) fn flush_and_abort() -> ! {
 pub(crate) fn flush_c_stdio() {
     // SAFETY: fflush(NULL) is defined by C99 to flush all open output streams.
     unsafe {
-        fflush(std::ptr::null_mut());
+        fflush(core::ptr::null_mut());
     }
 }
 

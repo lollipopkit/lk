@@ -15,8 +15,19 @@
 //! array would differ, which the differential gates would catch if the
 //! corpus exercised it).
 
+// `alloc`, not the std prelude: this module is part of the computation-only
+// subset that builds without an OS.
+#[allow(unused_imports)]
+use alloc::{
+    boxed::Box,
+    format,
+    string::{String, ToString},
+    vec,
+    vec::Vec,
+};
+
+use alloc::ffi::CString;
 use core::ffi::{CStr, c_char};
-use std::ffi::CString;
 
 use crate::lkdyn::{DYN_BOOL, DYN_F64, DYN_I64, DYN_LIST, DYN_MAP, LkDyn};
 use crate::lkstr::arena_c_string;

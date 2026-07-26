@@ -9,8 +9,20 @@
 //! VM's loud failures — `flush_and_abort()` (the contract compares only
 //! `success()` + stdout, not stderr text).
 
+// `alloc`, not the std prelude: this module is part of the computation-only
+// subset that builds without an OS.
+#[allow(unused_imports)]
+use alloc::{
+    boxed::Box,
+    format,
+    string::{String, ToString},
+    vec,
+    vec::Vec,
+};
+
+use alloc::ffi::CString;
+use core::ffi::CStr;
 use core::ffi::{c_char, c_void};
-use std::ffi::{CStr, CString};
 
 use crate::lkstr::arena_c_string;
 use crate::state::arena_handle;
@@ -1049,7 +1061,7 @@ mod tests {
         let f = lkrt_dyn_from_maybe_f64(1.5, 1);
         assert_eq!(f.tag, DYN_F64);
         assert_eq!(f.f64_value(), 1.5);
-        assert_eq!(lkrt_dyn_from_maybe_str(std::ptr::null(), 0).tag, DYN_NIL);
+        assert_eq!(lkrt_dyn_from_maybe_str(core::ptr::null(), 0).tag, DYN_NIL);
         let b = lkrt_dyn_from_maybe_bool(1, 1);
         assert_eq!((b.tag, b.payload), (DYN_BOOL, 1));
     }

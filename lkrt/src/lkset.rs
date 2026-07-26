@@ -4,6 +4,17 @@
 //! identity and stay out of the native subset). Elements arrive as boxed
 //! `LkDyn` values; iteration/`values()` is *not* exposed (hash order).
 
+// `alloc`, not the std prelude: this module is part of the computation-only
+// subset that builds without an OS.
+#[allow(unused_imports)]
+use alloc::{
+    boxed::Box,
+    format,
+    string::{String, ToString},
+    vec,
+    vec::Vec,
+};
+
 use core::ffi::{CStr, c_char, c_void};
 
 use rustc_hash::FxHashSet;
@@ -151,7 +162,7 @@ mod tests {
     use super::*;
     use crate::lkdyn::{lkrt_dyn_from_i64, lkrt_dyn_from_str};
     use crate::lkstr::arena_c_string;
-    use std::ffi::CString;
+    use alloc::ffi::CString;
 
     fn s(text: &str) -> LkDyn {
         let ptr = arena_c_string(CString::new(text).unwrap());

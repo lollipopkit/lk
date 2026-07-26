@@ -5,8 +5,20 @@
 //! operations the MIR path lowers — currently ordered comparison, used to lower the
 //! generic integer-compare opcodes when they dispatch on two string operands.
 
-use std::cmp::Ordering;
-use std::ffi::{CStr, CString, c_char};
+// `alloc`, not the std prelude: this module is part of the computation-only
+// subset that builds without an OS.
+#[allow(unused_imports)]
+use alloc::{
+    boxed::Box,
+    format,
+    string::{String, ToString},
+    vec,
+    vec::Vec,
+};
+
+use alloc::ffi::CString;
+use core::cmp::Ordering;
+use core::ffi::{CStr, c_char};
 
 use crate::state::with_runtime;
 
@@ -25,13 +37,13 @@ pub(crate) fn arena_c_string(s: CString) -> *mut c_char {
 /// # Safety
 /// Both pointers must be null or NUL-terminated strings.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn lkrt_str_starts_with(s: *const std::ffi::c_char, prefix: *const std::ffi::c_char) -> i64 {
-    let bytes = |p: *const std::ffi::c_char| {
+pub unsafe extern "C" fn lkrt_str_starts_with(s: *const core::ffi::c_char, prefix: *const core::ffi::c_char) -> i64 {
+    let bytes = |p: *const core::ffi::c_char| {
         if p.is_null() {
             &[][..]
         } else {
             // SAFETY: non-null pointers are NUL-terminated per the ABI.
-            unsafe { std::ffi::CStr::from_ptr(p) }.to_bytes()
+            unsafe { core::ffi::CStr::from_ptr(p) }.to_bytes()
         }
     };
     i64::from(bytes(s).starts_with(bytes(prefix)))
@@ -43,12 +55,12 @@ pub unsafe extern "C" fn lkrt_str_starts_with(s: *const std::ffi::c_char, prefix
 /// # Safety
 /// `s` must be null or a NUL-terminated string pointer.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn lkrt_str_char_len(s: *const std::ffi::c_char) -> i64 {
+pub unsafe extern "C" fn lkrt_str_char_len(s: *const core::ffi::c_char) -> i64 {
     if s.is_null() {
         return 0;
     }
     // SAFETY: non-null pointers are NUL-terminated per the ABI.
-    let text = unsafe { std::ffi::CStr::from_ptr(s) };
+    let text = unsafe { core::ffi::CStr::from_ptr(s) };
     match text.to_str() {
         Ok(text) => text.chars().count() as i64,
         Err(_) => text.to_bytes().len() as i64,
@@ -448,7 +460,7 @@ pub unsafe extern "C" fn lkrt_str_title(s: *const c_char) -> *mut c_char {
 /// # Safety
 /// `s` must be a valid C string, or null.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn lkrt_str_chars(s: *const c_char) -> *mut std::ffi::c_void {
+pub unsafe extern "C" fn lkrt_str_chars(s: *const c_char) -> *mut core::ffi::c_void {
     let elements: Vec<crate::lkdyn::LkDyn> = view(s)
         .chars()
         .map(|c| {
@@ -458,7 +470,7 @@ pub unsafe extern "C" fn lkrt_str_chars(s: *const c_char) -> *mut std::ffi::c_vo
         .collect();
     // As in `str.split`: each element string is minted here and reachable from
     // nowhere else, so a proven-dead list can release them with it.
-    unsafe fn owned(ptr: *mut std::ffi::c_void) -> Vec<*mut c_char> {
+    unsafe fn owned(ptr: *mut core::ffi::c_void) -> Vec<*mut c_char> {
         // SAFETY: registered with this exact element type below.
         let elements = unsafe { &*(ptr as *const Vec<crate::lkdyn::LkDyn>) };
         elements
@@ -495,7 +507,7 @@ pub unsafe extern "C" fn lkrt_str_char_at(s: *const c_char, index: i64) -> crate
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::CString;
+    use alloc::ffi::CString;
 
     #[test]
     fn renders_scalars() {
@@ -535,7 +547,7 @@ mod tests {
             }
         }
         unsafe {
-            let empty = lkrt_str_concat_i64(std::ptr::null(), 42);
+            let empty = lkrt_str_concat_i64(core::ptr::null(), 42);
             assert_eq!(CStr::from_ptr(empty).to_bytes(), b"42");
             crate::lkrt_string_free(empty);
         }

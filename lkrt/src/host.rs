@@ -2,7 +2,7 @@ use crate::{
     abi::{aborting, c_str, owned_c_string, status, write_out},
     state::with_runtime,
 };
-use std::ffi::c_char;
+use core::ffi::c_char;
 use std::{
     fs,
     path::Path,
@@ -28,7 +28,7 @@ pub extern "C" fn lkrt_env_get(key: *const c_char, out: *mut *mut c_char) -> i64
         }
         .map(owned_c_string)
         .transpose()?
-        .unwrap_or(std::ptr::null_mut());
+        .unwrap_or(core::ptr::null_mut());
         write_out(out, value, "env.get")
     })
 }
@@ -222,7 +222,7 @@ pub unsafe extern "C" fn lkrt_fs_read_dir_list(path: *const c_char) -> *mut core
             }
         }
         names.sort();
-        let mut list: Vec<*const std::ffi::c_char> = Vec::with_capacity(names.len());
+        let mut list: Vec<*const core::ffi::c_char> = Vec::with_capacity(names.len());
         for name in names {
             list.push(owned_c_string(name)?.cast_const());
         }
@@ -327,7 +327,7 @@ pub extern "C" fn lkrt_math_sign_f64(v: f64) -> f64 {
 /// `MAIN_SEPARATOR_STR`).
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_path_sep() -> *mut c_char {
-    crate::lkstr::arena_c_string(std::ffi::CString::new(std::path::MAIN_SEPARATOR_STR).unwrap_or_default())
+    crate::lkstr::arena_c_string(alloc::ffi::CString::new(std::path::MAIN_SEPARATOR_STR).unwrap_or_default())
 }
 
 /// The stdlib datetime module's `utc_datetime`: aborts on an out-of-range
@@ -471,12 +471,13 @@ fn env_lock() -> MutexGuard<'static, ()> {
 mod tests {
     use super::*;
     use crate::{lkrt_bytes_free, lkrt_string_free};
-    use std::ffi::{CStr, CString};
+    use alloc::ffi::CString;
+    use core::ffi::CStr;
 
     #[test]
     fn env_get_reports_absent_value_without_string_handle() {
         let key = CString::new(format!("LKRT_TEST_MISSING_{}", std::process::id())).expect("key");
-        let mut out = std::ptr::null_mut();
+        let mut out = core::ptr::null_mut();
 
         assert_eq!(lkrt_env_get(key.as_ptr(), &mut out), 0);
         assert!(out.is_null());

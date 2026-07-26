@@ -15,9 +15,20 @@
 //! stay set) — the raise paths below touch only their own `RefCell`s, and
 //! every ABI entry that can raise takes care to drop runtime borrows first.
 
+// `alloc`, not the std prelude: this module is part of the computation-only
+// subset that builds without an OS.
+#[allow(unused_imports)]
+use alloc::{
+    boxed::Box,
+    format,
+    string::{String, ToString},
+    vec,
+    vec::Vec,
+};
+
+use alloc::ffi::CString;
+use core::cell::{Cell, RefCell};
 use core::ffi::{c_char, c_int, c_void};
-use std::cell::{Cell, RefCell};
-use std::ffi::CString;
 
 use crate::lkdyn::LkDyn;
 use crate::lkstr::arena_c_string;

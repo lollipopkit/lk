@@ -13,9 +13,9 @@
 //! raises; `recv` drains the buffer after close, then raises; a bounded
 //! `send` blocks while full.
 
+use alloc::ffi::CString;
 use core::ffi::{CStr, c_char, c_void};
 use std::collections::{HashMap, VecDeque};
-use std::ffi::CString;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 

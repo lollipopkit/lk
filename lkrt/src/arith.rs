@@ -13,6 +13,17 @@
 
 /// `lhs / rhs` for integers, aborting on a zero divisor. `i64::MIN / -1` wraps to
 /// `i64::MIN` instead of overflowing (defined, matching release-mode wrapping).
+// `alloc`, not the std prelude: this module is part of the computation-only
+// subset that builds without an OS.
+#[allow(unused_imports)]
+use alloc::{
+    boxed::Box,
+    format,
+    string::{String, ToString},
+    vec,
+    vec::Vec,
+};
+
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_i64_div_checked(lhs: i64, rhs: i64) -> i64 {
     if rhs == 0 {

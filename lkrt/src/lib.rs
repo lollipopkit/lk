@@ -4,6 +4,8 @@
 //! helpers that LLVM-generated code links against, but it must not depend on the
 //! parser, compiler, `ModuleArtifact`, `VmContext`, or the bytecode executor.
 
+extern crate alloc;
+
 mod abi;
 #[cfg(test)]
 mod abi_conformance_test;
