@@ -201,16 +201,6 @@ pub enum Inst {
         bits: u8,
         signed: bool,
     },
-    /// `dst = *(addr as *uN)` — a volatile load of `bits` width, zero-extended
-    /// into the `I64` carrier.
-    ///
-    /// Volatile means the access must happen exactly as written: not moved,
-    /// not merged with a neighbour, not deleted when the result looks unused.
-    /// Reading a hardware register can have side effects, and reading it twice
-    /// can legitimately give two different answers.
-    VolatileLoad { dst: ValueId, addr: ValueId, bits: u8 },
-    /// `*(addr as *uN) = value` — a volatile store of `bits` width.
-    VolatileStore { addr: ValueId, value: ValueId, bits: u8 },
     /// `dst = zext(src)` — widen a `Bool` (`i1`) to `I64` (`0`/`1`).
     ZextBool { dst: ValueId, src: ValueId },
     /// `dst = !src` — boolean negation (`xor i1 src, true`).
@@ -771,10 +761,6 @@ fn render_inst(inst: &Inst) -> String {
         }
         Inst::IntToFloat { dst, src } => format!("{} = sitofp {}", v(*dst), v(*src)),
         Inst::ZextBool { dst, src } => format!("{} = zext.bool {}", v(*dst), v(*src)),
-        Inst::VolatileLoad { dst, addr, bits } => format!("{} = volatile.load.u{} {}", v(*dst), bits, v(*addr)),
-        Inst::VolatileStore { addr, value, bits } => {
-            format!("volatile.store.u{} {}, {}", bits, v(*addr), v(*value))
-        }
         Inst::IntTruncate { dst, src, bits, signed } => format!(
             "{} = trunc.i{} {} ({})",
             v(*dst),
@@ -901,8 +887,6 @@ fn render_term(term: &Term) -> String {
 
 pub(crate) fn inst_def(inst: &Inst) -> Option<ValueId> {
     match inst {
-        // A store produces no value.
-        Inst::VolatileStore { .. } => None,
         Inst::Const { dst, .. }
         | Inst::IntBin { dst, .. }
         | Inst::FloatBin { dst, .. }
@@ -910,7 +894,6 @@ pub(crate) fn inst_def(inst: &Inst) -> Option<ValueId> {
         | Inst::IntToFloat { dst, .. }
         | Inst::ZextBool { dst, .. }
         | Inst::IntTruncate { dst, .. }
-        | Inst::VolatileLoad { dst, .. }
         | Inst::Not { dst, .. }
         | Inst::BoolAnd { dst, .. }
         | Inst::MaybePresent { dst, .. }
@@ -937,8 +920,6 @@ pub(crate) fn inst_def(inst: &Inst) -> Option<ValueId> {
 fn inst_uses(inst: &Inst) -> Vec<ValueId> {
     match inst {
         Inst::Const { .. } => vec![],
-        Inst::VolatileLoad { addr, .. } => vec![*addr],
-        Inst::VolatileStore { addr, value, .. } => vec![*addr, *value],
         Inst::IntBin { lhs, rhs, .. }
         | Inst::FloatBin { lhs, rhs, .. }
         | Inst::Cmp { lhs, rhs, .. }

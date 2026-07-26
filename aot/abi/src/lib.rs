@@ -109,6 +109,19 @@ pub struct AbiFn {
 macro_rules! for_each_abi_fn {
     ($callback:ident) => {
         $callback! {
+            // Volatile MMIO. `WritesHost` even for the reads: the effect
+            // annotation is what drives CSE, and a device read that can change
+            // state or return a different value each time is not pure. These
+            // are calls rather than inline loads because Cranelift has no
+            // volatile flag — see lkrt/src/mmio.rs.
+            ("mmio", "read_u8", lkrt_mmio_read_u8, WritesHost, [I64], I64);
+            ("mmio", "read_u16", lkrt_mmio_read_u16, WritesHost, [I64], I64);
+            ("mmio", "read_u32", lkrt_mmio_read_u32, WritesHost, [I64], I64);
+            ("mmio", "read_u64", lkrt_mmio_read_u64, WritesHost, [I64], I64);
+            ("mmio", "write_u8", lkrt_mmio_write_u8, WritesHost, [I64, I64], Nil);
+            ("mmio", "write_u16", lkrt_mmio_write_u16, WritesHost, [I64, I64], Nil);
+            ("mmio", "write_u32", lkrt_mmio_write_u32, WritesHost, [I64, I64], Nil);
+            ("mmio", "write_u64", lkrt_mmio_write_u64, WritesHost, [I64, I64], Nil);
             ("lkrt", "abi_version", lkrt_abi_version, Pure, [], I64);
             ("lkrt", "abi_check", lkrt_abi_check, WritesHost, [I64], Nil);
             ("lkrt", "cleanup", lkrt_cleanup, WritesHost, [], Nil);

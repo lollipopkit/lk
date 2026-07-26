@@ -415,7 +415,15 @@ pub(crate) fn lower_builtin_call(
                 return Err(Unsupported::TypeMismatch { pc });
             }
             let dst = ssa.new_val();
-            insts.push(Inst::VolatileLoad { dst, addr, bits });
+            // An opaque `lkrt` call, not an inline load: Cranelift has no
+            // volatile flag, and its egraph pass will happily collapse two
+            // loads of one address into one. A call it cannot see through
+            // keeps both accesses. See lkrt/src/mmio.rs.
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("mmio", mmio_read_name(bits)),
+                args: vec![addr],
+            });
             // The VM writes a builtin's result to the call-window base.
             //
             // `return`, not `break`: this function ends by writing `nil` to
@@ -434,7 +442,11 @@ pub(crate) fn lower_builtin_call(
             if !matches!(addr_ty, Ty::I64) || !matches!(value_ty, Ty::I64) {
                 return Err(Unsupported::TypeMismatch { pc });
             }
-            insts.push(Inst::VolatileStore { addr, value, bits });
+            insts.push(Inst::Call {
+                dst: None,
+                callee: AbiRef::new("mmio", mmio_write_name(bits)),
+                args: vec![addr, value],
+            });
             // A write produces nothing, so the shared nil-return tail below is
             // exactly right — fall through to it rather than duplicating it.
         }
@@ -542,4 +554,26 @@ pub(crate) fn lower_builtin_call(
     });
     ssa.write(base, block, (nil, Ty::Nil));
     Ok(())
+}
+
+/// ABI entry names for volatile access, keyed by width.
+///
+/// The widths are fixed by the intrinsic names the front end accepts, so an
+/// unknown one here is a lowering bug rather than a user error.
+fn mmio_read_name(bits: u8) -> &'static str {
+    match bits {
+        8 => "read_u8",
+        16 => "read_u16",
+        32 => "read_u32",
+        _ => "read_u64",
+    }
+}
+
+fn mmio_write_name(bits: u8) -> &'static str {
+    match bits {
+        8 => "write_u8",
+        16 => "write_u16",
+        32 => "write_u32",
+        _ => "write_u64",
+    }
 }

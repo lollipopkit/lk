@@ -579,10 +579,6 @@ fn is_removable(inst: &Inst) -> bool {
         // a program-visible check.
         Inst::IntBin { op, .. } => !matches!(op, IntBinOp::Div | IntBinOp::Mod),
         Inst::FloatBin { op, .. } => !matches!(op, FloatBinOp::Div | FloatBinOp::Mod),
-        // Never: the access itself is the point. A volatile read whose value
-        // goes unused is still a read the device observes, and dropping a
-        // store is dropping the write that configures the hardware.
-        Inst::VolatileLoad { .. } | Inst::VolatileStore { .. } => false,
         Inst::Const { .. }
         | Inst::Cmp { .. }
         | Inst::IntToFloat { .. }
@@ -627,8 +623,6 @@ fn uses_mut(inst: &mut Inst) -> Vec<&mut ValueId> {
         | Inst::FloatBin { lhs, rhs, .. }
         | Inst::Cmp { lhs, rhs, .. }
         | Inst::BoolAnd { lhs, rhs, .. } => vec![lhs, rhs],
-        Inst::VolatileLoad { addr, .. } => vec![addr],
-        Inst::VolatileStore { addr, value, .. } => vec![addr, value],
         Inst::IntToFloat { src, .. }
         | Inst::ZextBool { src, .. }
         | Inst::IntTruncate { src, .. }

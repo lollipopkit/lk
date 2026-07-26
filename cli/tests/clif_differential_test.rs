@@ -426,3 +426,59 @@ fn machine_int_arithmetic_wraps_differential() {
         NativePath::PureCranelift,
     );
 }
+
+/// A volatile read must survive optimisation.
+///
+/// Reading one address twice has to produce two accesses: a device register can
+/// return different values on consecutive reads, and reading it can have side
+/// effects. This is a *disassembly* test rather than a differential one because
+/// the failure is invisible at the value level — with the reads collapsed the
+/// program still returns a plausible number, just one derived from a single
+/// access. That is exactly how the first implementation passed by inspection
+/// and failed here: inline Cranelift loads compiled to one `mov` and a `lea`
+/// doubling it, because Cranelift has no volatile flag and its egraph pass
+/// proved the two loads equal.
+#[test]
+fn volatile_reads_are_not_collapsed() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let source = dir.path().join("volatile_twice.lk");
+    std::fs::write(
+        &source,
+        "fn read_twice(addr: usize) -> Int {\n\
+         \x20   let reg = addr as *mut u32;\n\
+         \x20   let a = unsafe { volatile_read_u32(reg) };\n\
+         \x20   let b = unsafe { volatile_read_u32(reg) };\n\
+         \x20   return a + b;\n\
+         }\n\
+         return read_twice(0x1000);\n",
+    )
+    .expect("write source");
+
+    let exe = dir.path().join("volatile_twice");
+    let status = std::process::Command::new(env!("CARGO_BIN_EXE_lk"))
+        .args(["compile", source.to_str().expect("utf-8 path")])
+        .arg("--output")
+        .arg(exe.to_str().expect("utf-8 path"))
+        .env("LK_AOT_NO_FALLBACK", "1")
+        .env("LK_AOT_HYBRID", "0")
+        .status()
+        .expect("run lk compile");
+    assert!(status.success(), "volatile must lower natively");
+
+    let disassembly = std::process::Command::new("objdump")
+        .args(["-d", exe.to_str().expect("utf-8 path")])
+        .output();
+    let Ok(disassembly) = disassembly else {
+        // objdump is not everywhere; the compile above is still meaningful.
+        return;
+    };
+    let text = String::from_utf8_lossy(&disassembly.stdout);
+    let body: String = text
+        .lines()
+        .skip_while(|line| !line.contains("<lk_fn_1>:"))
+        .take_while(|line| !line.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let accesses = body.matches("lkrt_mmio_read_u32").count();
+    assert_eq!(accesses, 2, "expected two volatile reads, got {accesses}:\n{body}");
+}

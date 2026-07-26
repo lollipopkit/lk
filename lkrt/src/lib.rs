@@ -17,6 +17,7 @@ mod lklist;
 mod lkmap;
 mod lkset;
 mod lkstr;
+mod mmio;
 mod net;
 mod panic;
 mod state;
@@ -33,6 +34,8 @@ pub use chan::{
     lkrt_spawn0, lkrt_spawn1, lkrt_spawn2, lkrt_spawn3, lkrt_spawn4, lkrt_task_await,
 };
 pub use encoding::{lkrt_json_parse, lkrt_toml_parse, lkrt_yaml_parse};
+// Re-exported at the crate root because the ABI conformance macro checks
+// signatures as `crate::$symbol`.
 pub use host::{
     lkrt_datetime_day_of_week, lkrt_datetime_day_of_year, lkrt_datetime_format, lkrt_datetime_is_weekend,
     lkrt_datetime_now, lkrt_datetime_parse, lkrt_env_get, lkrt_env_get_or, lkrt_env_has, lkrt_env_remove, lkrt_env_set,
@@ -101,6 +104,10 @@ pub use lkstr::{
     lkrt_str_count, lkrt_str_ends_with, lkrt_str_find, lkrt_str_lower, lkrt_str_repeat, lkrt_str_replace,
     lkrt_str_reverse, lkrt_str_slice_chars, lkrt_str_starts_with, lkrt_str_strip_prefix, lkrt_str_strip_suffix,
     lkrt_str_substring, lkrt_str_title, lkrt_str_trim, lkrt_str_upper,
+};
+pub use mmio::{
+    lkrt_mmio_read_u8, lkrt_mmio_read_u16, lkrt_mmio_read_u32, lkrt_mmio_read_u64, lkrt_mmio_write_u8,
+    lkrt_mmio_write_u16, lkrt_mmio_write_u32, lkrt_mmio_write_u64,
 };
 pub use net::{
     lkrt_bytes_free, lkrt_bytes_to_string_utf8, lkrt_handle_close, lkrt_socket_addr, lkrt_tcp_close, lkrt_tcp_connect,
