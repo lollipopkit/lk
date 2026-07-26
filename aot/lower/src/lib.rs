@@ -170,105 +170,113 @@ pub fn lower_bundled(
     // (bounded — the scalar lattice converges quickly). Transient failures are
     // tolerated here (a function may not lower until the types it depends on have
     // converged); the final pass below is authoritative and propagates errors.
-    let mut passes = 0usize;
-    loop {
-        let snapshot = (
-            sig.param_obs.clone(),
-            sig.ret_types.clone(),
-            sig.specializations.len(),
-            sig.ret_closures.clone(),
-            sig.dyn_loop_phis.len(),
-            sig.dyn_empty_lists.len(),
-            sig.dyn_rets.len(),
-            sig.global_tys.clone(),
-            sig.spawned_isolate.len(),
-            sig.force_dyn_globals.len(),
-        );
-        // Call-site facts are re-derived every pass: an argument register
-        // that resolves to a closure ref only once a summary lands (e.g. a
-        // summarized callee's result) must not leave a stale plain-call mark
-        // from the pass before the summary existed. The final pass inherits
-        // the converged flags of the last fixpoint pass.
-        sig.specialized.iter_mut().for_each(|flag| *flag = false);
-        sig.plain_called.iter_mut().for_each(|flag| *flag = false);
-        sig.conflict = false;
-        for fi in 0..funcs.len() {
-            if !reachable[fi] {
-                continue;
-            }
-            // Originals whose call sites all pass lambdas are fully replaced
-            // by their clones (their bodies would reject without erasure).
-            if sig.specialized.get(fi).copied().unwrap_or(false) {
-                continue;
-            }
-            // Summarized closure-returning functions are consumed at call
-            // sites; their pure bodies are never emitted.
-            if sig.ret_closures.get(fi).is_some_and(Option::is_some) {
-                continue;
-            }
-            let is_entry = fi as u32 == module.entry;
-            let mut scratch = Vec::new();
-            let lowered = lower_function(
-                &funcs[fi],
-                &funcs,
-                fi as u32,
-                module.entry,
-                is_entry,
-                &mut scratch,
-                &module.globals,
-                &mut sig,
+    // A closure so the hybrid rerun below can re-converge: marking a function
+    // VM-executed changes the type lattice (its callers now see the bridge's
+    // `Dyn` result, which widens their own params and returns), and emitting
+    // against the pre-marking signatures is how a caller ended up calling
+    // `str.from_i64` with a register pair.
+    let refine_signatures = |sig: &mut SigInfer, funcs: &mut Vec<FunctionData>, reachable: &mut Vec<bool>| {
+        let mut passes = 0usize;
+        loop {
+            let snapshot = (
+                sig.param_obs.clone(),
+                sig.ret_types.clone(),
+                sig.specializations.len(),
+                sig.ret_closures.clone(),
+                sig.dyn_loop_phis.len(),
+                sig.dyn_empty_lists.len(),
+                sig.dyn_rets.len(),
+                sig.global_tys.clone(),
+                sig.spawned_isolate.len(),
+                sig.force_dyn_globals.len(),
             );
-            match lowered {
-                Ok(mf) if !is_entry => {
-                    sig.ret_types[fi] = mf.ret;
-                    sig.ret_known[fi] = true;
+            // Call-site facts are re-derived every pass: an argument register
+            // that resolves to a closure ref only once a summary lands (e.g. a
+            // summarized callee's result) must not leave a stale plain-call mark
+            // from the pass before the summary existed. The final pass inherits
+            // the converged flags of the last fixpoint pass.
+            sig.specialized.iter_mut().for_each(|flag| *flag = false);
+            sig.plain_called.iter_mut().for_each(|flag| *flag = false);
+            sig.conflict = false;
+            for fi in 0..funcs.len() {
+                if !reachable[fi] {
+                    continue;
                 }
-                // A retriable loop-phi discovery: record it (the snapshot
-                // includes the set's size, so the fixpoint runs again with
-                // the phi pre-typed Dyn).
-                Err(Unsupported::DynLoopPhi { block, slot }) => {
-                    sig.dyn_loop_phis.insert((fi as u32, block, slot));
+                // Originals whose call sites all pass lambdas are fully replaced
+                // by their clones (their bodies would reject without erasure).
+                if sig.specialized.get(fi).copied().unwrap_or(false) {
+                    continue;
                 }
-                Err(Unsupported::EmptyListGuessWrong { pcs }) => {
-                    for pc in pcs {
-                        sig.dyn_empty_lists.insert((fi as u32, pc));
+                // Summarized closure-returning functions are consumed at call
+                // sites; their pure bodies are never emitted.
+                if sig.ret_closures.get(fi).is_some_and(Option::is_some) {
+                    continue;
+                }
+                let is_entry = fi as u32 == module.entry;
+                let mut scratch = Vec::new();
+                let lowered = lower_function(
+                    &funcs[fi],
+                    funcs.as_slice(),
+                    fi as u32,
+                    module.entry,
+                    is_entry,
+                    &mut scratch,
+                    &module.globals,
+                    sig,
+                );
+                match lowered {
+                    Ok(mf) if !is_entry => {
+                        sig.ret_types[fi] = mf.ret;
+                        sig.ret_known[fi] = true;
                     }
+                    // A retriable loop-phi discovery: record it (the snapshot
+                    // includes the set's size, so the fixpoint runs again with
+                    // the phi pre-typed Dyn).
+                    Err(Unsupported::DynLoopPhi { block, slot }) => {
+                        sig.dyn_loop_phis.insert((fi as u32, block, slot));
+                    }
+                    Err(Unsupported::EmptyListGuessWrong { pcs }) => {
+                        for pc in pcs {
+                            sig.dyn_empty_lists.insert((fi as u32, pc));
+                        }
+                    }
+                    _ => {}
                 }
-                _ => {}
+            }
+            // Materialize clones queued during this pass so the next pass lowers
+            // them (their `lambda_params` are already in place).
+            for orig in std::mem::take(&mut sig.pending_clones) {
+                funcs.push(funcs[orig as usize].clone());
+                reachable.push(true);
+            }
+            passes += 1;
+            // Field-by-field comparison against the pre-pass snapshot: the same
+            // convergence condition without cloning the whole state a second
+            // time. (A generation-counter scheme was evaluated and rejected:
+            // ~30 mutation sites to instrument, and one missed bump = false
+            // convergence = miscompile; the snapshot clone stays as the
+            // correctness anchor.)
+            let converged = snapshot.0 == sig.param_obs
+                && snapshot.1 == sig.ret_types
+                && snapshot.2 == sig.specializations.len()
+                && snapshot.3 == sig.ret_closures
+                && snapshot.4 == sig.dyn_loop_phis.len()
+                && snapshot.5 == sig.dyn_empty_lists.len()
+                && snapshot.6 == sig.dyn_rets.len()
+                && snapshot.7 == sig.global_tys
+                && snapshot.8 == sig.spawned_isolate.len()
+                && snapshot.9 == sig.force_dyn_globals.len();
+            // Each retriable discovery (Dyn loop phi, empty-list re-guess,
+            // boxed-returns function) legitimately consumes one extra pass, so
+            // the safety valve budgets for them on top of the type lattice.
+            let discovery_budget =
+                sig.dyn_loop_phis.len() + sig.dyn_empty_lists.len() + sig.dyn_rets.len() + sig.force_dyn_globals.len();
+            if converged || passes > 2 * funcs.len() + 2 + discovery_budget {
+                break;
             }
         }
-        // Materialize clones queued during this pass so the next pass lowers
-        // them (their `lambda_params` are already in place).
-        for orig in std::mem::take(&mut sig.pending_clones) {
-            funcs.push(funcs[orig as usize].clone());
-            reachable.push(true);
-        }
-        passes += 1;
-        // Field-by-field comparison against the pre-pass snapshot: the same
-        // convergence condition without cloning the whole state a second
-        // time. (A generation-counter scheme was evaluated and rejected:
-        // ~30 mutation sites to instrument, and one missed bump = false
-        // convergence = miscompile; the snapshot clone stays as the
-        // correctness anchor.)
-        let converged = snapshot.0 == sig.param_obs
-            && snapshot.1 == sig.ret_types
-            && snapshot.2 == sig.specializations.len()
-            && snapshot.3 == sig.ret_closures
-            && snapshot.4 == sig.dyn_loop_phis.len()
-            && snapshot.5 == sig.dyn_empty_lists.len()
-            && snapshot.6 == sig.dyn_rets.len()
-            && snapshot.7 == sig.global_tys
-            && snapshot.8 == sig.spawned_isolate.len()
-            && snapshot.9 == sig.force_dyn_globals.len();
-        // Each retriable discovery (Dyn loop phi, empty-list re-guess,
-        // boxed-returns function) legitimately consumes one extra pass, so
-        // the safety valve budgets for them on top of the type lattice.
-        let discovery_budget =
-            sig.dyn_loop_phis.len() + sig.dyn_empty_lists.len() + sig.dyn_rets.len() + sig.force_dyn_globals.len();
-        if converged || passes > 2 * funcs.len() + 2 + discovery_budget {
-            break;
-        }
-    }
+    };
+    refine_signatures(&mut sig, &mut funcs, &mut reachable);
     // A conflict that survives the *converged* pass is real (per-pass resets
     // clear transient marks left before a closure-return summary landed):
     // param-type disagreement or function-vs-value polymorphism.
@@ -278,14 +286,29 @@ pub fn lower_bundled(
 
     // Compact numbering for the mutable globals the fixpoint discovered; the
     // final pass emits `GlobalGet`/`GlobalSet` against these ids.
-    let mut mutable_globals: Vec<(String, Ty)> = Vec::new();
-    for (slot, ty) in sig.global_tys.clone().into_iter().enumerate() {
-        if let Some(ty) = ty {
-            sig.gvar_of.insert(slot as u16, mutable_globals.len() as u32);
-            let name = sig.global_names.get(slot).cloned().unwrap_or_default();
-            mutable_globals.push((name, ty));
+    //
+    // Recomputed from scratch whenever signatures are re-converged, because
+    // lowering *discovers* globals: `inst/global.rs` fills `global_tys` as it
+    // sees accesses (`None → Some(ty)`, and a second, different observation
+    // widens to `Dyn`). Reusing the pre-rerun numbering would leave a
+    // newly-typed slot with no `gvar_of` entry, and `SigInfer::gvar` falls back
+    // to the raw slot number — which can *collide* with a compacted id and
+    // alias two distinct globals onto one cell, with nothing to reject it
+    // (`validate` only bounds-checks). A widened slot would likewise keep its
+    // stale declared `Ty` while the accessors moved to a register pair.
+    fn compact_mutable_globals(sig: &mut SigInfer) -> Vec<(String, Ty)> {
+        let mut mutable_globals: Vec<(String, Ty)> = Vec::new();
+        sig.gvar_of.clear();
+        for (slot, ty) in sig.global_tys.clone().into_iter().enumerate() {
+            if let Some(ty) = ty {
+                sig.gvar_of.insert(slot as u16, mutable_globals.len() as u32);
+                let name = sig.global_names.get(slot).cloned().unwrap_or_default();
+                mutable_globals.push((name, ty));
+            }
         }
+        mutable_globals
     }
+    let mut mutable_globals = compact_mutable_globals(&mut sig);
 
     // Final pass with stable signatures: produce the real MIR + interned globals for
     // the reachable functions. Any reachable function outside the subset fails the
@@ -293,7 +316,7 @@ pub fn lower_bundled(
     // function is bridge-eligible, in which case the pass reruns with those
     // functions marked VM-executed (their call sites emit `CallVm`, their bodies
     // are skipped). `FuncId`s keep their original module indices.
-    let final_pass = |sig: &mut SigInfer, reach: &[bool]| {
+    let final_pass = |sig: &mut SigInfer, reach: &[bool], funcs: &[FunctionData]| {
         // Same per-pass discipline as the fixpoint: `conflict` reflects *this*
         // pass only. A hybrid rerun re-derives every native function from
         // scratch, so a mark left by an earlier pass (a caller lowered
@@ -319,7 +342,7 @@ pub fn lower_bundled(
             let is_entry = fi as u32 == module.entry;
             match lower_function(
                 &funcs[fi],
-                &funcs,
+                funcs,
                 fi as u32,
                 module.entry,
                 is_entry,
@@ -333,7 +356,7 @@ pub fn lower_bundled(
         }
         (globals, functions, failures)
     };
-    let (mut globals, mut functions, failures) = final_pass(&mut sig, &reachable);
+    let (mut globals, mut functions, failures) = final_pass(&mut sig, &reachable, &funcs);
     if !failures.is_empty() {
         // `LK_AOT_DEBUG_FAILURES=1` lists every failing function (the
         // returned error is only the first; a callee's real blocker often
@@ -393,10 +416,17 @@ pub fn lower_bundled(
             // only ever called from inside the VM needs no bridge signature).
             sig.vm_functions
                 .retain(|fidx, _| native_reachable.get(*fidx as usize).copied().unwrap_or(false));
-            let (retry_globals, retry_functions, retry_failures) = final_pass(&mut sig, &native_reachable);
+            // Re-converge before emitting: the marks just added changed what
+            // the remaining native functions see. The global numbering is derived
+            // from that same state, so it is rebuilt too.
+            let mut retry_reachable = native_reachable.clone();
+            refine_signatures(&mut sig, &mut funcs, &mut retry_reachable);
+            let retry_mutable_globals = compact_mutable_globals(&mut sig);
+            let (retry_globals, retry_functions, retry_failures) = final_pass(&mut sig, &retry_reachable, &funcs);
             if retry_failures.is_empty() {
                 globals = retry_globals;
                 functions = retry_functions;
+                mutable_globals = retry_mutable_globals;
                 break;
             }
             if std::env::var_os("LK_AOT_DEBUG_FAILURES").is_some() {

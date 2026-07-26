@@ -357,6 +357,13 @@ impl Type {
 
             // Handle specific generic types
             match base {
+                // `Tuple<..>` is a first-class variant, not a user generic. It was
+                // missing here, so an annotation parsed as `Generic { name: "Tuple" }`
+                // while a heterogeneous list literal infers `Type::Tuple` — two
+                // different variants that `display()` renders identically, which is
+                // why `fn f() -> Tuple<Bool, String> { return [true, "x"]; }` failed
+                // with "expected Tuple<Bool, String>, got Tuple<Bool, String>".
+                "Tuple" => return Some(Type::Tuple(params)),
                 "List" => {
                     if params.len() == 1 {
                         return Some(Type::List(Box::new(params[0].clone())));

@@ -1018,3 +1018,122 @@ fn impl_methods_record_how_their_subtree_uses_globals() {
         Some("pure")
     );
 }
+
+/// A function body's block scope *is* the function scope, so an annotated local
+/// is still known when the declared return type is validated.
+///
+/// It was not: the body was checked through `Stmt::Block`, which pushes a scope
+/// and pops it, so `collect_return_types` inferred `return r` with `r` unknown
+/// and reported "expected Int, got 'T0" for perfectly well-typed code.
+#[test]
+fn annotated_local_is_visible_to_the_declared_return_type() {
+    let ok = crate::syntax::parse_program_source(
+        "fn f() -> Int { let r: Int = 0; r = 7; return r; }\nreturn f();\n",
+        crate::syntax::ParseOptions::default(),
+    )
+    .expect("parse");
+    let mut tc = crate::typ::TypeChecker::new();
+    for stmt in &ok.statements {
+        stmt.type_check(&mut tc)
+            .expect("an annotated local satisfies the declared return type");
+    }
+
+    // Every nested body too: returns are collected as each one is checked, so a
+    // local declared inside an `if`/`while`/`for`/`try` is still in scope when its
+    // `return` is inferred. A traversal after the body saw them all popped.
+    for nested in [
+        "if (1 == 1) { let r: Int = 7; return r; } return 0;",
+        "while (1 == 1) { let r: Int = 7; return r; } return 0;",
+        "for i in 0..1 { let r: Int = 7; return r; } return 0;",
+        "try { let r: Int = 7; return r; } catch e { return 0; }",
+    ] {
+        let src = format!("fn f() -> Int {{ {nested} }}\nreturn f();\n");
+        let program = crate::syntax::parse_program_source(&src, crate::syntax::ParseOptions::default()).expect("parse");
+        let mut tc = crate::typ::TypeChecker::new();
+        program
+            .statements
+            .iter()
+            .try_for_each(|stmt| stmt.type_check(&mut tc))
+            .unwrap_or_else(|err| panic!("`{nested}` should type-check: {err}"));
+    }
+
+    // Still rejects a genuinely wrong return, from any nesting depth.
+    for bad in [
+        "fn f() -> Int { let r: Int = 0; return \"s\"; }\nreturn 0;\n",
+        "fn f() -> Int { try { return \"s\"; } catch e { return 1; } }\nreturn 0;\n",
+        "fn f() -> Int { if (1 == 1) { return \"s\"; } return 0; }\nreturn 0;\n",
+        "fn f() -> Int { for i in 0..1 { return \"s\"; } return 0; }\nreturn 0;\n",
+        "fn f() -> Int { while (1 == 1) { return \"s\"; } return 0; }\nreturn 0;\n",
+    ] {
+        let program = crate::syntax::parse_program_source(bad, crate::syntax::ParseOptions::default()).expect("parse");
+        let mut tc = crate::typ::TypeChecker::new();
+        let err = program
+            .statements
+            .iter()
+            .try_for_each(|stmt| stmt.type_check(&mut tc))
+            .expect_err("a wrong return type must still be rejected");
+        assert!(err.to_string().contains("Return type mismatch"), "got: {err}");
+    }
+}
+
+/// A destructuring `let` binds each name to *its own* element type.
+///
+/// It used to bind the whole right-hand side to every name, so `v` in
+/// `let [ok, v] = pick()` was typed as the entire tuple — invisible only while
+/// inference was too coarse to produce a precise enough right-hand side.
+#[test]
+fn destructuring_let_distributes_the_pattern_over_the_type() {
+    let check = |src: &str| -> anyhow::Result<()> {
+        let program = crate::syntax::parse_program_source(src, crate::syntax::ParseOptions::default()).expect("parse");
+        let mut tc = crate::typ::TypeChecker::new();
+        program.statements.iter().try_for_each(|stmt| stmt.type_check(&mut tc))
+    };
+
+    // `Tuple<Bool, String>` gives `v: String` — usable as a string…
+    check(
+        "fn pick() -> Tuple<Bool, String> { return [true, \"x\"]; }\n\
+         let [ok, v] = pick();\n\
+         let s: String = v;\n\
+         return 0;\n",
+    )
+    .expect("the second element is a String");
+
+    // …and *only* as a string.
+    let err = check(
+        "fn pick() -> Tuple<Bool, String> { return [true, \"x\"]; }\n\
+         let [ok, v] = pick();\n\
+         let n: Int = v;\n\
+         return 0;\n",
+    )
+    .expect_err("an element's type is now checked");
+    assert!(err.to_string().contains("Int"), "got: {err}");
+
+    // A `List<T>` distributes its element type to every position, and `..rest`
+    // keeps the container shape.
+    check(
+        "fn nums() -> List<Int> { return [1, 2, 3]; }\n\
+         let [a, ..tail] = nums();\n\
+         let x: Int = a;\n\
+         let t: List<Int> = tail;\n\
+         return 0;\n",
+    )
+    .expect("list elements and tail distribute");
+}
+
+/// `Tuple<..>` in an annotation is the `Tuple` type, not a user generic that
+/// merely *displays* the same.
+///
+/// `Type::parse` handled `List`/`Map`/`Set`/`Task`/`Channel` but not `Tuple`, so
+/// the annotation became `Generic { name: "Tuple" }` while a heterogeneous list
+/// literal infers `Type::Tuple` — hence "expected Tuple<Bool, String>, got
+/// Tuple<Bool, String>".
+#[test]
+fn tuple_annotation_parses_as_the_tuple_type() {
+    assert_eq!(
+        crate::val::Type::parse("Tuple<Bool, String>"),
+        Some(crate::val::Type::Tuple(vec![
+            crate::val::Type::Bool,
+            crate::val::Type::String
+        ]))
+    );
+}

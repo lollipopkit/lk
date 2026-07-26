@@ -1,11 +1,46 @@
 # 待完成
 
-本轮 review + 修复过程中确认下来的开口项。每条都带复现或证据;没有复现过的会写明。
-做完一条就删掉它,不要在这里留"已完成"。
+本轮 review + 修复过程中确认下来的开口项,**按优先级排序**。每条都带复现或证据;
+没有复现过的会写明。做完一条就删掉它,不要在这里留"已完成"。
 
-## 已定方向、待补齐的
+排序依据:正确性 > 性能;普通代码撞得到 > 需要刻意构造;CI 正红 > 潜在;
+改动小且能消掉一整类问题的往前放。
 
-### try/catch 的 AOT 保护区外联
+---
+
+## P1 · 小,已定性
+
+### P1.1 同质列表字面量对不上 `Tuple` 标注
+
+```lk
+fn f() -> Tuple<Int, Int> { return [1, 2]; }   // expected Tuple<Int, Int>, got List<Int>
+fn g() -> Tuple<Bool, String> { return [true, "x"]; }   // 通过
+```
+
+**同一种语法**按元素同质/异质推成 `List<Int>` 或 `Tuple<Bool, String>`,而只有后者
+能赋给 `Tuple` 标注。两条候选:
+
+1. 让 `is_assignable(List<T>, Tuple<T, …, T>)` 成立 —— 小,但丢掉 arity 保证
+   (长度 3 的 `List<Int>` 也能通过 `Tuple<Int, Int>`);
+2. 列表字面量按**期望类型**推导(双向检查),保留 arity —— 正解,但要把期望类型
+   传到字面量处。
+
+### P1.2 两个 anonymous 模块之间的 builtin impl 冲突查不出来
+
+`claim_builtin_impl` 按声明模块的 `TypeScope` 判定归属,而 `TypeScope::anonymous()`
+两两相等,所以两个匿名模块给同一个 builtin 实现同一个 trait 时,后者仍然静默覆盖
+前者 —— 正是这条检查要消掉的 import 顺序依赖,只是换到了内存/REPL 路径上。
+
+**目前在生产路径上不可达**:一次运行里只有入口程序是匿名的,
+`resolve_source_runtime`(唯一另一个匿名来源)没有生产调用方,只有测试用。加一个
+eval API 就会变得可达。
+
+要修得让匿名 scope 彼此可区分(现在 `type_info.rs` 的文档明确写着它"只靠是本次运行
+唯一的匿名 scope 来区分"),那会牵动 artifact 往返与相等性 —— 不是一处小改。
+
+## P2 · 最大的一件,做完能收回一条硬门禁
+
+### P2 try/catch 的 AOT 保护区外联
 
 `try`/`catch` 已经是真语句(`Stmt::Try` → `TryBegin`/`TryEnd`),VM 侧完成。
 **AOT lowering 没有这两个 opcode 的处理**,优雅降级成 `Unsupported`。
@@ -19,36 +54,21 @@
   VM/native 输出一致 —— 保住的是等价,失去的是"走过 Cranelift";
 - 设计与欠账记在 `docs/aot/tier1-hybrid.md` 末尾。
 
-**补齐之后要做的清理**:删掉 check.yml 里那三条 allow、把
-`try_catch_differential` 改回 `NativePath::PureCranelift`、删掉本条。
+降级不影响正确性(三个例子输出与 VM 逐字节一致),但降级是**整程序** Tier 0 而不是
+部分降级:它们的 try 在入口函数里,hybrid 桥不桥接入口。
 
-降级不影响正确性(三个例子输出与 VM 逐字节一致),但降级是**整程序** Tier 0
-而不是部分降级:它们的 try 在入口函数里,hybrid 桥不桥接入口。
+要做的:在 MIR lowering 里把保护区**外联**成函数(Cranelift 没有异常、lkrt 靠
+longjmp、setjmp 必须待在不会返回的帧里),外联函数返回三态(正常值 / raise /
+**外层函数要 return**),live-in 变参数、region 内写且 region 后仍活的值传回来。
 
-## 开着的 bug
+**补齐之后要做的清理**:删掉 check.yml 里那三条 allow、把 `try_catch_differential`
+改回 `NativePath::PureCranelift`、删掉本条。
 
-### 类型检查器不看带标注的局部做返回类型推导
+---
 
-```lk
-fn f() -> Int { let r: Int = 0; r = 7; return r; }   // expected Int, got 'T0
-```
+## P3 · 只影响内存/性能
 
-不带 try/catch 也复现,`lk check` / VM / AOT 三条路都中。用户直接撞得到,且和上面
-的分支决策无关 —— 建议优先做这条。
-
-(注:之前一度把它记成 try/catch 的 bug,是错的。)
-
-### `try { return x / 0; }` 在函数里过不了 Cranelift verifier
-
-`Error: Cranelift codegen failed: Module("Compilation error: Verifier errors")`。
-既存 —— `LK_AOT_NO_OPT=1` 与改动前的 baseline 都复现。从 `LK_AOT_DUMP_MIR=1` 看得
-很清楚:外联出来的 `f1` 签名是 `-> i64`,但 `bb9` 上有一条裸 `ret`,去糖丢掉了
-"body 返回了"这个情况。
-
-真语句化之后**未复验**(现在 try 不进 AOT)。AOT 外联做完之后应该一起消失,
-做完要回来确认。
-
-### scope drop 的跨块限制
+### P3.1 scope drop 的跨块限制
 
 实测 `for i in 0..200000 { let parts = s.split("-"); if parts[0] == "alpha" {…} }`:
 native 43.6 MB vs VM 22.7 MB,而 `LK_AOT_OPT_STATS=1` 报 `scope drops = 0` ——
@@ -58,36 +78,9 @@ native 43.6 MB vs VM 22.7 MB,而 `LK_AOT_OPT_STATS=1` 报 `scope drops = 0` —�
 内、0 个跨块但不逃逸"那句没覆盖这个形状,先用 `count_loop_allocations` 的第三个
 计数器在这个形状上复测。
 
-### `patch_branch` 用 `as i16` 截断跳转偏移
+---
 
-`core/src/vm/compiler/builder.rs`。超出 signed-bx 范围的分支目标会静默回绕成跳到
-别处,而不是编译失败。同文件新加的 `patch_try_begin` 已经用 checked 转换,旧的那个
-没动。
-
-### builtin 类型的 impl 跨模块撞车
-
-`impl D for Int` 这类 impl 全部落在 `TypeScope::builtin()` 一个 scope 里,最后注册
-的赢。代码里有 `TODO(coherence)`。要一条 orphan rule 才能拒绝重叠 —— 是语言决策,
-不是分派修复。
-
-### `resolve_file_path` 的 `..` 不做真包含检查
-
-`core/src/vm/resolver.rs`,代码里有 `TODO(security)`。`starts_with(root)` 只是归一化
-偏好,逃出 root 的候选照样返回。要先定"`..` import 允许逃到哪个 root"。
-
-### native `println` 打印 `List<str>` 不带引号
-
-与 VM 输出不一致(`[a-b,a-b]` vs `["a-b","a-b"]`)。既存,main 上同样。新加的严格
-native 差分 CI 的语料没覆盖到。**本人未复验**,来自第一轮 review 报告。
-
-### ASan 下 hybrid 程序的 fuzz 差分失败
-
-`aot_fuzz_differential_test` 在 `LK_NATIVE_SANITIZE` 下报 "AOT compile failed
-without a graceful Unsupported reason"。既存(stash 掉改动同样复现):ASan 版 lkrt
-与未插桩的 lk-api staticlib 混链,`scripts/build_lkrt_asan.sh` 自己的注释警告过这种
-ABI 混用。不是 PR 门禁,优先级低。
-
-## 已记档的覆盖上限(不是 bug)
+## 已记档的覆盖上限(不是 bug,不排优先级)
 
 这些是有意的保守取舍,写在这里只为免得被重新"发现"。
 

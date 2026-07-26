@@ -40,9 +40,30 @@ if [ ! -f "$LIB" ]; then
     exit 1
 fi
 
+# `lk-api` too, with the *same* toolchain. A hybrid program links both archives,
+# each of which statically links `std`; two different rustc versions therefore
+# both define `rust_eh_personality` and the link fails. Same nightly for both
+# means the archives carry the identical `std` member, which the linker pulls
+# once. (No sanitizer flags here — instrumenting `lkrt` is the point; partial
+# instrumentation is fine, mismatched toolchains are not.)
+cargo +nightly build \
+    -p lk-api \
+    --features ffi \
+    --release \
+    --target "$TARGET" \
+    --target-dir "$TARGET_DIR" 1>&2
+
+API_LIB="$TARGET_DIR/$TARGET/release/liblk_api.a"
+if [ ! -f "$API_LIB" ]; then
+    echo "error: expected $API_LIB after the build" >&2
+    exit 1
+fi
+
 if [ "${1:-}" = "env" ]; then
     echo "export LKRT_STATICLIB=$(pwd)/$LIB"
+    echo "export LK_API_STATICLIB=$(pwd)/$API_LIB"
 else
     echo "built: $LIB" >&2
-    echo "export LKRT_STATICLIB=$(pwd)/$LIB to use it" >&2
+    echo "built: $API_LIB" >&2
+    echo "export LKRT_STATICLIB=$(pwd)/$LIB LK_API_STATICLIB=$(pwd)/$API_LIB to use them" >&2
 fi

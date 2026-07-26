@@ -8,7 +8,10 @@
 //! `stmt::import` now holds only the syntax (`ImportStmt` and friends) and the
 //! AST walk that collects them.
 
-use crate::compat::path::{Path, PathBuf};
+use crate::compat::path::PathBuf;
+// File loading — and therefore every `Path` use — is a `std` surface.
+#[cfg(feature = "std")]
+use crate::compat::path::Path;
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
 use crate::compat::shared_map::SharedMap;
@@ -31,12 +34,27 @@ use std::path::Component;
 pub struct ModuleResolver {
     /// Standard library registry
     stdlib_registry: Arc<ModuleRegistry>,
-    /// Loaded file modules as new VM runtime exports.
+    /// Loaded file modules as new VM runtime exports. Only ever read by the
+    /// `std`-gated file-loading path; without `std` there are no files to load,
+    /// so the map stays empty rather than the field being conditional (that
+    /// would have to be threaded through every constructor and clone).
+    #[cfg_attr(not(feature = "std"), allow(dead_code))]
     runtime_file_modules: Arc<SharedMap<PathBuf, RuntimeExport>>,
     /// Search paths for module resolution
     search_paths: Vec<PathBuf>,
     /// Package modules resolved from Lk.toml dependencies/workspace members
     package_modules: Arc<SharedMap<String, PathBuf>>,
+    /// The directory a file import may not escape: the package root (the nearest
+    /// ancestor with an `Lk.toml`), falling back to the importing file's own
+    /// directory when there is no manifest.
+    ///
+    /// `..` in an import path is *allowed* — `use "../general/fib";` is used by
+    /// the examples — so the boundary is containment, not a ban on `..`. Set per
+    /// loaded file (`set_base_dir`), which is what makes it "a package's imports
+    /// cannot leave that package": a dependency loaded from elsewhere gets its
+    /// own root, not the importer's.
+    #[cfg(feature = "std")]
+    containment_root: Option<PathBuf>,
 }
 
 impl PartialEq for ModuleResolver {
@@ -59,6 +77,8 @@ impl ModuleResolver {
             // Prefer current directory; also allow `core/` for workspace runs.
             search_paths: vec![PathBuf::from("."), PathBuf::from("core")],
             package_modules: Arc::new(SharedMap::new()),
+            #[cfg(feature = "std")]
+            containment_root: None,
         }
     }
 
@@ -98,6 +118,39 @@ impl ModuleResolver {
         self.add_search_path(base.clone());
         self.add_search_path(base.join("lib"));
         self.add_search_path(base.join("modules"));
+        // Canonicalized *before* the manifest search: `find_manifest` walks
+        // parents, and a relative base like `.` has none to walk — the package
+        // root would silently come back as `.` itself.
+        let anchor = base.canonicalize().unwrap_or(base);
+        let root = crate::package::find_manifest(&anchor)
+            .and_then(|manifest| manifest.parent().map(Path::to_path_buf))
+            .unwrap_or(anchor);
+        self.containment_root = Some(root.canonicalize().unwrap_or(root));
+    }
+
+    /// Whether `candidate` is inside the containment root (see the field docs).
+    /// Unset root — a resolver that was never given a base directory, e.g. the
+    /// in-memory registry-only one — contains everything.
+    #[cfg(feature = "std")]
+    fn within_containment_root(&self, candidate: &Path) -> bool {
+        let Some(root) = &self.containment_root else {
+            return true;
+        };
+        let resolved = candidate.canonicalize();
+        resolved.as_deref().unwrap_or(candidate).starts_with(root)
+    }
+
+    /// `candidate` is expected already canonicalized — the raw join (`././x.lk`)
+    /// says nothing about *which* directory was left.
+    #[cfg(feature = "std")]
+    fn escaped_containment_root(&self, requested: &Path, candidate: &Path) -> anyhow::Error {
+        anyhow!(
+            "import '{}' resolves to '{}', which is outside '{}' — an import may not leave its package \
+             (the nearest directory with an Lk.toml, or the importing file's directory when there is none)",
+            requested.display(),
+            candidate.display(),
+            self.containment_root.as_deref().unwrap_or(Path::new(".")).display()
+        )
     }
 
     /// Register a package root module. `use name;` resolves to this file when
@@ -206,12 +259,10 @@ impl ModuleResolver {
     pub fn resolve_file_path(&self, path: &str) -> Result<PathBuf> {
         let path = Path::new(path);
 
-        // Only relative import paths are accepted. `..` is *not* rejected —
-        // `use "../general/fib";` is supported and used by the examples — so
-        // the `starts_with(root)` checks below are a normalization preference,
-        // not containment: a candidate that escapes its root is still returned.
-        // Tightening that into real containment needs a decision about which
-        // root a `..` import is allowed to escape into. TODO(security): decide.
+        // Only relative import paths are accepted, and a relative one must still
+        // resolve *inside* the containment root — `..` is allowed as a way to
+        // reach a sibling directory of the same package, not as a way out of it
+        // (see `containment_root`).
         if !path.is_relative() {
             return Err(anyhow!(
                 "Absolute paths are not allowed for imports: {}",
@@ -225,41 +276,40 @@ impl ModuleResolver {
         // If the input already contains an extension, also allow it directly.
         let base = PathBuf::from(path);
 
+        // Containment is enforced per candidate, and an out-of-root candidate
+        // *skips* rather than failing the search: `search_paths` always starts
+        // with `.` and `core`, which have nothing to do with the importing file's
+        // directory whenever cwd differs from it. Returning an error on the first
+        // escape meant a name that also existed in cwd shadowed — and hard-failed
+        // — an import whose real target sat under a later root.
+        //
+        // (The `starts_with(root)` tests this replaced were a *normalization*
+        // preference, never a boundary: the fallback returned the path anyway.)
+        let mut escaped: Option<PathBuf> = None;
         for root in &self.search_paths {
-            // If the input already includes .lk and exists under this root, accept it
-            if base.extension().and_then(|s| s.to_str()) == Some("lk") {
-                let p = root.join(&base);
-                if p.exists() {
-                    if let Ok(canon) = p.canonicalize()
-                        && canon.starts_with(root)
-                    {
-                        return Ok(Self::normalize_path(canon));
-                    }
-                    return Ok(Self::normalize_path(p));
+            let candidates = [
+                // The input already includes `.lk`.
+                (base.extension().and_then(|s| s.to_str()) == Some("lk")).then(|| root.join(&base)),
+                Some(root.join(base.with_extension("lk"))),
+                Some(root.join(base.join("mod.lk"))),
+            ];
+            for candidate in candidates.into_iter().flatten() {
+                if !candidate.exists() {
+                    continue;
                 }
+                let resolved = candidate.canonicalize().unwrap_or(candidate);
+                if !self.within_containment_root(&resolved) {
+                    escaped.get_or_insert(resolved);
+                    continue;
+                }
+                return Ok(Self::normalize_path(resolved));
             }
+        }
 
-            // Try ${MOD_NAME}.lk
-            let candidate1 = root.join(base.with_extension("lk"));
-            if candidate1.exists() {
-                if let Ok(canon) = candidate1.canonicalize()
-                    && canon.starts_with(root)
-                {
-                    return Ok(Self::normalize_path(canon));
-                }
-                return Ok(Self::normalize_path(candidate1));
-            }
-
-            // Try ${MOD_NAME}/mod.lk
-            let candidate2 = root.join(base.join("mod.lk"));
-            if candidate2.exists() {
-                if let Ok(canon) = candidate2.canonicalize()
-                    && canon.starts_with(root)
-                {
-                    return Ok(Self::normalize_path(canon));
-                }
-                return Ok(Self::normalize_path(candidate2));
-            }
+        // Nothing in-root matched. If some candidate *did* exist but sat outside,
+        // that is the useful diagnosis — a plain "not found" would hide it.
+        if let Some(escaped) = escaped {
+            return Err(self.escaped_containment_root(path, &escaped));
         }
 
         Err(anyhow!(
@@ -317,7 +367,7 @@ pub fn execute_imports(imports: &[ImportStmt], resolver: &ModuleResolver, env: &
             let module = resolve_runtime_import_source(source, resolver)?;
             // An imported module's `impl` blocks must dispatch here too; the
             // methods stay bound to their own module and heap.
-            env.register_imported_types(&module);
+            env.register_imported_types(&module)?;
             for item in items {
                 let symbol_name = item.alias.as_ref().unwrap_or(&item.name);
                 let export = runtime_export_field(&module, &item.name)?;
@@ -329,7 +379,7 @@ pub fn execute_imports(imports: &[ImportStmt], resolver: &ModuleResolver, env: &
         match import {
             ImportStmt::Module { module } => {
                 let module_export = resolver.resolve_runtime_module(module)?;
-                env.register_imported_types(&module_export);
+                env.register_imported_types(&module_export)?;
                 env.define_runtime_global(default_module_binding(module), module_export);
             }
             ImportStmt::File { path } => {
@@ -342,7 +392,7 @@ pub fn execute_imports(imports: &[ImportStmt], resolver: &ModuleResolver, env: &
                         .unwrap_or("module")
                         .to_string();
                     let module = resolver.resolve_runtime_file(path)?;
-                    env.register_imported_types(&module);
+                    env.register_imported_types(&module)?;
                     env.define_runtime_global(module_name, module);
                 }
                 #[cfg(not(feature = "std"))]
@@ -354,7 +404,7 @@ pub fn execute_imports(imports: &[ImportStmt], resolver: &ModuleResolver, env: &
             ImportStmt::Items { .. } => unreachable!("items imports are handled before runtime use binding"),
             ImportStmt::Namespace { alias, source } => {
                 let module = resolve_runtime_import_source(source, resolver)?;
-                env.register_imported_types(&module);
+                env.register_imported_types(&module)?;
                 env.define_runtime_global(alias.clone(), module);
             }
             ImportStmt::ModuleAlias { module, alias } => {
@@ -362,7 +412,7 @@ pub fn execute_imports(imports: &[ImportStmt], resolver: &ModuleResolver, env: &
                 // Same order as every other variant: an aliased module's trait
                 // impls have to be registered too, or `use shape as s;`
                 // dispatches worse than `use shape;`.
-                env.register_imported_types(&module_export);
+                env.register_imported_types(&module_export)?;
                 env.define_runtime_global(alias.clone(), module_export);
             }
         }
@@ -376,7 +426,7 @@ pub fn execute_imports(imports: &[ImportStmt], resolver: &ModuleResolver, env: &
     // modules cannot clobber anything (see `vm::TypeScope`).
     #[cfg(feature = "std")]
     for module in resolver.loaded_file_modules() {
-        env.register_imported_types(&module);
+        env.register_imported_types(&module)?;
     }
     Ok(())
 }
@@ -513,13 +563,70 @@ mod tests {
         let abs_str = abs.to_string_lossy().to_string();
         assert!(resolver.resolve_file_path(&abs_str).is_err());
 
-        // Parent directory components are now allowed (relative to source file)
-        // but must stay within a search_path root
-
         // Relative simple path that likely does not exist should return not found
         // (error message still OK but not due to security check)
         let rel = PathBuf::from("does_not_exist.lk");
         assert!(resolver.resolve_file_path(&rel.to_string_lossy()).is_err());
+    }
+
+    /// `..` is allowed as a way to reach a sibling directory of the same package,
+    /// not as a way out of it. The boundary is the package root (nearest
+    /// `Lk.toml`), or the importing file's directory when there is no manifest.
+    #[test]
+    fn resolve_file_path_contains_parent_traversal() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let outside = temp.path().join("outside.lk");
+        std::fs::write(&outside, "return nil;\n")?;
+        let proj = temp.path().join("proj");
+        std::fs::create_dir_all(proj.join("sub"))?;
+        std::fs::write(proj.join("sibling.lk"), "return nil;\n")?;
+        std::fs::write(proj.join("sub").join("inner.lk"), "return nil;\n")?;
+
+        // No manifest: the importing file's directory is the boundary.
+        let mut resolver = ModuleResolver::new();
+        resolver.set_base_dir(proj.join("sub"));
+        assert!(
+            resolver.resolve_file_path("inner").is_ok(),
+            "a sibling inside the boundary resolves"
+        );
+        let escaped = resolver.resolve_file_path("../sibling");
+        assert!(escaped.is_err(), "`..` may not leave the boundary");
+        assert!(
+            escaped.unwrap_err().to_string().contains("outside"),
+            "the error must say what boundary was crossed"
+        );
+        assert!(resolver.resolve_file_path("../../outside").is_err());
+
+        // An out-of-root candidate must *skip*, not abort the search: a name that
+        // also exists in cwd (always the first search path) would otherwise
+        // hard-fail an import whose real target sits under a later root.
+        let cwd_shadow = std::env::current_dir()?.join("shadowed.lk");
+        std::fs::write(&cwd_shadow, "return nil;\n")?;
+        std::fs::write(proj.join("sub").join("shadowed.lk"), "return nil;\n")?;
+        let resolved = resolver.resolve_file_path("shadowed");
+        let _ = std::fs::remove_file(&cwd_shadow);
+        assert!(
+            resolved.is_ok(),
+            "the in-root candidate must win over an out-of-root shadow: {resolved:?}"
+        );
+
+        // With a manifest above, the package root is the boundary, so the same
+        // `..` import now resolves.
+        std::fs::write(
+            proj.join(crate::package::MANIFEST_FILE),
+            "name = \"t\"\nversion = \"0.1.0\"\n",
+        )?;
+        let mut resolver = ModuleResolver::new();
+        resolver.set_base_dir(proj.join("sub"));
+        assert!(
+            resolver.resolve_file_path("../sibling").is_ok(),
+            "`..` inside the package is fine"
+        );
+        assert!(
+            resolver.resolve_file_path("../../outside").is_err(),
+            "but not out of the package"
+        );
+        Ok(())
     }
 
     #[test]

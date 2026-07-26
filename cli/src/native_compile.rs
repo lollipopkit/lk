@@ -3,6 +3,20 @@ use super::*;
 /// The lk-api C-ABI staticlib (VM + `lk_hybrid_*` bridge), built on demand.
 /// Shared by the Tier 0 bundle and the Tier 1 hybrid link.
 pub(super) fn ensure_lk_api_staticlib() -> anyhow::Result<PathBuf> {
+    // A caller that supplies its own `lkrt` (`LKRT_STATICLIB`) must be able to
+    // supply a matching `lk-api`. Both archives statically link `std`, so two
+    // *different rustc versions* each bring their own copy and the link fails on
+    // `multiple definition of rust_eh_personality` — which is exactly what the
+    // ASan harness hit: `scripts/build_lkrt_asan.sh` builds `lkrt` with nightly
+    // (`-Zsanitizer` needs it) while this built `lk-api` with the default
+    // toolchain. Only hybrid programs link `lk-api`, so only they failed.
+    if let Some(path) = std::env::var_os("LK_API_STATICLIB") {
+        let path = PathBuf::from(path);
+        if !path.exists() {
+            anyhow::bail!("LK_API_STATICLIB points at a missing file: {}", path.display());
+        }
+        return Ok(path);
+    }
     let workspace = workspace_root()?;
     let staticlib = workspace.join("target/release/liblk_api.a");
     if !staticlib.exists() {

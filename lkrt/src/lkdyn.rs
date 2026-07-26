@@ -828,7 +828,25 @@ pub unsafe extern "C" fn lkrt_lklist_dyn_chain(a: *mut c_void, b: *mut c_void) -
 /// `handle` must be a live dyn-list handle (or null); `f` a compiled lambda.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_lklist_dyn_map_fn(handle: *mut c_void, f: extern "C" fn(LkDyn) -> LkDyn) -> *mut c_void {
-    let mapped: Vec<LkDyn> = dyn_slice(handle).iter().map(|&v| f(v)).collect();
+    // Snapshotted before the callback runs. `f`/`p` re-enters generated code,
+    // which can push to *this* list (reallocating its buffer) or raise and
+    // longjmp past the borrow — either way a slice held across the call is
+    // unsound. CLAUDE.md's lkrt rule ("never call a raise-capable function while
+    // holding a lock guard or RefCell borrow") is the same rule; a slice borrow
+    // is just a third way to hold one.
+    // Indexed, re-dereferencing the handle each step: `f`/`p` re-enters generated
+    // code, which can push to *this* list (reallocating its buffer) or raise and
+    // longjmp past a borrow, so none may be held across the call. Re-deref rather
+    // than a `to_vec()` snapshot — this is the native HOF hot path the perf gate
+    // measures.
+    let len = dyn_slice(handle).len();
+    let mut mapped: Vec<LkDyn> = Vec::with_capacity(len);
+    for index in 0..len {
+        let Some(&value) = dyn_slice(handle).get(index) else {
+            break;
+        };
+        mapped.push(f(value));
+    }
     arena_handle(mapped)
 }
 
@@ -840,7 +858,27 @@ pub unsafe extern "C" fn lkrt_lklist_dyn_filter_fn(
     handle: *mut c_void,
     p: extern "C" fn(LkDyn) -> bool,
 ) -> *mut c_void {
-    let kept: Vec<LkDyn> = dyn_slice(handle).iter().copied().filter(|&v| p(v)).collect();
+    // Snapshotted before the callback runs. `f`/`p` re-enters generated code,
+    // which can push to *this* list (reallocating its buffer) or raise and
+    // longjmp past the borrow — either way a slice held across the call is
+    // unsound. CLAUDE.md's lkrt rule ("never call a raise-capable function while
+    // holding a lock guard or RefCell borrow") is the same rule; a slice borrow
+    // is just a third way to hold one.
+    // Indexed, re-dereferencing the handle each step: `f`/`p` re-enters generated
+    // code, which can push to *this* list (reallocating its buffer) or raise and
+    // longjmp past a borrow, so none may be held across the call. Re-deref rather
+    // than a `to_vec()` snapshot — this is the native HOF hot path the perf gate
+    // measures.
+    let len = dyn_slice(handle).len();
+    let mut kept: Vec<LkDyn> = Vec::new();
+    for index in 0..len {
+        let Some(&value) = dyn_slice(handle).get(index) else {
+            break;
+        };
+        if p(value) {
+            kept.push(value);
+        }
+    }
     arena_handle(kept)
 }
 
@@ -853,7 +891,26 @@ pub unsafe extern "C" fn lkrt_lklist_dyn_reduce_fn(
     init: LkDyn,
     f: extern "C" fn(LkDyn, LkDyn) -> LkDyn,
 ) -> LkDyn {
-    dyn_slice(handle).iter().fold(init, |acc, &v| f(acc, v))
+    // Snapshotted before the callback runs. `f`/`p` re-enters generated code,
+    // which can push to *this* list (reallocating its buffer) or raise and
+    // longjmp past the borrow — either way a slice held across the call is
+    // unsound. CLAUDE.md's lkrt rule ("never call a raise-capable function while
+    // holding a lock guard or RefCell borrow") is the same rule; a slice borrow
+    // is just a third way to hold one.
+    // Indexed, re-dereferencing the handle each step: `f`/`p` re-enters generated
+    // code, which can push to *this* list (reallocating its buffer) or raise and
+    // longjmp past a borrow, so none may be held across the call. Re-deref rather
+    // than a `to_vec()` snapshot — this is the native HOF hot path the perf gate
+    // measures.
+    let len = dyn_slice(handle).len();
+    let mut acc = init;
+    for index in 0..len {
+        let Some(&value) = dyn_slice(handle).get(index) else {
+            break;
+        };
+        acc = f(acc, value);
+    }
+    acc
 }
 
 /// `xs.chunk(size)` — split into `size`-element groups, last group short.

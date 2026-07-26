@@ -105,13 +105,12 @@ impl Stmt {
                     };
                 }
 
-                // Extract variables from pattern and add their types to the type checker
-                if let Some(pattern_vars) = extract_pattern_variables(pattern) {
-                    let var_type = type_annotation.clone().unwrap_or(expr_type);
-                    for var_name in pattern_vars {
-                        type_checker.add_local_binding(var_name, var_type.clone(), *is_const);
-                    }
-                }
+                // The pattern is distributed over the value's type, so each name
+                // gets *its own* element type. Binding the whole right-hand side
+                // to every name (what this used to do) types `v` in
+                // `let [ok, v] = f()` as the entire tuple.
+                let bound_type = type_annotation.clone().unwrap_or(expr_type);
+                bind_pattern_types(pattern, &bound_type, *is_const, type_checker);
 
                 Ok(())
             }
@@ -311,69 +310,18 @@ impl Stmt {
                     },
                 );
 
-                body.type_check(type_checker)?;
-
-                fn collect_return_types(stmt: &Stmt, tc: &mut TypeChecker, out: &mut Vec<Type>) -> anyhow::Result<()> {
-                    match stmt {
-                        Stmt::Return { value } => {
-                            if let Some(expr) = value {
-                                let ty = expr.type_check(tc)?;
-                                out.push(ty);
-                            } else {
-                                out.push(Type::Nil);
-                            }
-                        }
-                        Stmt::If {
-                            condition,
-                            then_stmt,
-                            else_stmt,
-                        } => {
-                            let _ = condition.type_check(tc)?;
-                            collect_return_types(then_stmt, tc, out)?;
-                            if let Some(es) = else_stmt.as_deref() {
-                                collect_return_types(es, tc, out)?;
-                            }
-                        }
-                        Stmt::IfLet {
-                            then_stmt,
-                            else_stmt,
-                            value: _,
-                            pattern: _,
-                        } => {
-                            collect_return_types(then_stmt, tc, out)?;
-                            if let Some(es) = else_stmt.as_deref() {
-                                collect_return_types(es, tc, out)?;
-                            }
-                        }
-                        Stmt::While { condition, body } => {
-                            let _ = condition.type_check(tc)?;
-                            collect_return_types(body, tc, out)?;
-                        }
-                        Stmt::WhileLet { body, .. } => {
-                            collect_return_types(body, tc, out)?;
-                        }
-                        Stmt::For { body, .. } => {
-                            collect_return_types(body, tc, out)?;
-                        }
-                        // A `try` body's `return` returns from *this* function
-                        // (that is what `Stmt::Try` fixed), so both sides have to
-                        // be collected or the declared return type goes
-                        // unchecked: `fn f() -> Int { try { return "s"; } … }`
-                        // passed `lk check` silently.
-                        Stmt::Try { body, handler, .. } => {
-                            for s in body.iter().chain(handler) {
-                                collect_return_types(s, tc, out)?;
-                            }
-                        }
-                        Stmt::Block { statements } => {
-                            for s in statements {
-                                collect_return_types(s, tc, out)?;
-                            }
-                        }
-                        _ => {}
-                    }
-                    Ok(())
-                }
+                // The frame collects every `return` as it is checked, while its
+                // scope is still live (see `TypeChecker::push_return_frame`). A
+                // traversal *after* the body sees every nested `if`/`while`/`for`/
+                // `try` scope already popped, which is why an annotated local
+                // returned from inside one came back as a fresh type variable.
+                // Popped on both paths, like the closure case: propagating the
+                // body's error through `?` before popping would leave a dead frame
+                // on the stack for an enclosing function's returns to land in.
+                type_checker.push_return_frame();
+                let body_checked = body.type_check(type_checker);
+                let collected_returns = type_checker.pop_return_frame();
+                body_checked?;
 
                 fn normalize_union(mut tys: Vec<Type>) -> Type {
                     let mut flat: Vec<Type> = Vec::new();
@@ -395,9 +343,6 @@ impl Stmt {
                         Type::Union(uniq)
                     }
                 }
-
-                let mut collected_returns: Vec<Type> = Vec::new();
-                collect_return_types(body, type_checker, &mut collected_returns)?;
 
                 if return_was_annotated {
                     for ty in &collected_returns {
@@ -709,7 +654,18 @@ impl Stmt {
                 // Use 语句暂时不需要类型检查
                 Ok(())
             }
-            Stmt::Break | Stmt::Continue | Stmt::Return { .. } => {
+            Stmt::Return { value } => {
+                // Recorded here rather than by a traversal after the body: this is
+                // the only point at which the returned expression's scope is still
+                // live (see `TypeChecker::push_return_frame`).
+                let ty = match value {
+                    Some(expr) => expr.type_check(type_checker)?,
+                    None => Type::Nil,
+                };
+                type_checker.record_return(ty);
+                Ok(())
+            }
+            Stmt::Break | Stmt::Continue => {
                 // 控制流语句暂时不需要类型检查
                 Ok(())
             }
@@ -828,49 +784,116 @@ impl Program {
     }
 }
 
-/// Helper method to extract variable names from a pattern for type checking
-fn extract_pattern_variables(pattern: &Pattern) -> Option<Vec<String>> {
-    let mut variables = Vec::new();
+/// Binds every name in `pattern` to the type that position holds in `value_ty`.
+///
+/// Distribution, not the whole value: a list/tuple pattern takes tuple positions
+/// or the list's element type, a map pattern takes the map's value type, and a
+/// union distributes into a union of what each member yields. Anything this
+/// cannot see through (a type variable, `Any`, a mismatched shape) yields `Any`
+/// — permissive on purpose, so an unknown shape never rejects on an invented
+/// type.
+fn bind_pattern_types(pattern: &Pattern, value_ty: &Type, is_const: bool, tc: &mut TypeChecker) {
+    match pattern {
+        Pattern::Variable(name) => tc.add_local_binding(name.clone(), value_ty.clone(), is_const),
+        Pattern::List { patterns, rest } => {
+            for (index, sub) in patterns.iter().enumerate() {
+                bind_pattern_types(sub, &element_type_at(value_ty, index), is_const, tc);
+            }
+            if let Some(rest) = rest {
+                // The tail holds *every* remaining position, so its element type
+                // is their union — taking only position `patterns.len()` typed
+                // `rest` of a `Tuple<Int, String, Bool>` as `List<String>`, which
+                // both rejected `rest[1]` as a `Bool` and accepted `rest` as a
+                // `List<String>`. Positions themselves are lost, hence `List`.
+                let tail = match tail_element_type(value_ty, patterns.len()) {
+                    Type::Any => Type::Any,
+                    element => Type::List(Box::new(element)),
+                };
+                tc.add_local_binding(rest.clone(), tail, is_const);
+            }
+        }
+        Pattern::Map { patterns, rest } => {
+            for (_, sub) in patterns {
+                bind_pattern_types(sub, &map_value_type(value_ty), is_const, tc);
+            }
+            if let Some(rest) = rest {
+                tc.add_local_binding(rest.clone(), value_ty.clone(), is_const);
+            }
+        }
+        // A guard does not change what the inner pattern binds; alternatives bind
+        // the same names, so each alternative is distributed independently.
+        Pattern::Guard { pattern, .. } => bind_pattern_types(pattern, value_ty, is_const, tc),
+        Pattern::Or(alternatives) => {
+            for alternative in alternatives {
+                bind_pattern_types(alternative, value_ty, is_const, tc);
+            }
+        }
+        Pattern::Literal(_) | Pattern::Wildcard | Pattern::Range { .. } => {}
+    }
+}
 
-    fn collect_vars(pattern: &Pattern, vars: &mut Vec<String>) {
-        match pattern {
-            Pattern::Variable(name) => {
-                vars.push(name.clone());
-            }
-            Pattern::List { patterns, rest } => {
-                for pattern in patterns {
-                    collect_vars(pattern, vars);
-                }
-                if let Some(rest_var) = rest {
-                    vars.push(rest_var.clone());
-                }
-            }
-            Pattern::Map { patterns, rest } => {
-                for (_, pattern) in patterns {
-                    collect_vars(pattern, vars);
-                }
-                if let Some(rest_var) = rest {
-                    vars.push(rest_var.clone());
-                }
-            }
-            Pattern::Or(patterns) => {
-                for pattern in patterns {
-                    collect_vars(pattern, vars);
-                }
-            }
-            Pattern::Guard { pattern, .. } => {
-                collect_vars(pattern, vars);
-            }
-            // Other pattern types don't bind variables
-            Pattern::Literal(_) | Pattern::Wildcard | Pattern::Range { .. } => {}
+/// The element type of everything from position `from` onward — what a `..rest`
+/// binding holds.
+fn tail_element_type(value_ty: &Type, from: usize) -> Type {
+    match value_ty {
+        Type::Tuple(elements) => union_of(elements.iter().skip(from).cloned()),
+        Type::List(element) => (**element).clone(),
+        Type::Optional(inner) => tail_element_type(inner, from),
+        Type::Union(members) => union_of(members.iter().map(|member| tail_element_type(member, from))),
+        _ => Type::Any,
+    }
+}
+
+/// The type at position `index` of a destructured value.
+fn element_type_at(value_ty: &Type, index: usize) -> Type {
+    match value_ty {
+        Type::Tuple(elements) => elements.get(index).cloned().unwrap_or(Type::Any),
+        // A `List<T>`'s element type applies to every position — except when `T`
+        // is itself a union, which is the *join* over positions rather than what
+        // any one of them holds (a heterogeneous literal can infer
+        // `List<Int | String>`). Claiming the union per position would reject
+        // `let [first, _] = [1, {…}]; first + 1`, so the honest answer for a lost
+        // per-position type is `Any`.
+        Type::List(element) => match &**element {
+            Type::Union(_) => Type::Any,
+            element => element.clone(),
+        },
+        Type::Optional(inner) => element_type_at(inner, index),
+        Type::Union(members) => union_of(members.iter().map(|member| element_type_at(member, index))),
+        _ => Type::Any,
+    }
+}
+
+fn map_value_type(value_ty: &Type) -> Type {
+    match value_ty {
+        // As with a list's element type: a union value type is the join over *all*
+        // keys, not what the key this pattern names holds, so binding the union
+        // would reject legitimate uses of the extracted value.
+        Type::Map(_, value) => match &**value {
+            Type::Union(_) => Type::Any,
+            value => value.clone(),
+        },
+        Type::Optional(inner) => map_value_type(inner),
+        Type::Union(members) => union_of(members.iter().map(map_value_type)),
+        _ => Type::Any,
+    }
+}
+
+/// Collapses distributed alternatives: identical types stay themselves, `Any`
+/// anywhere swallows the rest (nothing is known), otherwise a union.
+fn union_of(types: impl IntoIterator<Item = Type>) -> Type {
+    let mut out: Vec<Type> = Vec::new();
+    for ty in types {
+        if ty == Type::Any {
+            return Type::Any;
+        }
+        if !out.contains(&ty) {
+            out.push(ty);
         }
     }
-
-    collect_vars(pattern, &mut variables);
-
-    // Remove duplicates (can happen with OR patterns)
-    variables.sort();
-    variables.dedup();
-
-    if variables.is_empty() { None } else { Some(variables) }
+    match out.len() {
+        0 => Type::Any,
+        1 => out.pop().expect("checked len"),
+        _ => Type::Union(out),
+    }
 }

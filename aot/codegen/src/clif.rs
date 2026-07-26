@@ -51,7 +51,14 @@ pub enum ClifError {
 
 impl From<ModuleError> for ClifError {
     fn from(err: ModuleError) -> Self {
-        ClifError::Module(err.to_string())
+        // `Display` on a `ModuleError::Compilation(Verifier(..))` collapses the
+        // whole report to the words "Verifier errors", which tells a CI failure
+        // reader nothing about which instruction is malformed. `Debug` carries
+        // the per-instruction list.
+        match &err {
+            ModuleError::Compilation(inner) => ClifError::Module(format!("{err}: {inner:?}")),
+            _ => ClifError::Module(err.to_string()),
+        }
     }
 }
 
@@ -142,9 +149,6 @@ impl ModuleCtx<'_> {
         params: &[types::Type],
         returns: &[types::Type],
     ) -> Result<ClifFuncId, ClifError> {
-        if let Some(id) = self.abi_ids.get(symbol) {
-            return Ok(*id);
-        }
         let cc = self.module.isa().default_call_conv();
         let mut sig = Signature::new(cc);
         for t in params {
@@ -153,6 +157,13 @@ impl ModuleCtx<'_> {
         for t in returns {
             sig.returns.push(AbiParam::new(*t));
         }
+        // Re-declaring is how a signature conflict is detected: `declare_function`
+        // returns the existing id for a matching signature and
+        // `ModuleError::IncompatibleSignature` otherwise. Silently returning the
+        // cached id — this cached by symbol name alone — is how a second request
+        // with a different signature became a malformed call that only the
+        // Cranelift verifier noticed, reported against a machine call site with no
+        // way back to the symbol.
         let id = self.module.declare_function(symbol, Linkage::Import, &sig)?;
         self.abi_ids.insert(symbol, id);
         Ok(id)
@@ -599,6 +610,21 @@ impl Lower {
         args: &[Value],
     ) -> Result<(), ClifError> {
         let func_ref = mctx.module.declare_func_in_func(callee, b.func);
+        // Checked here rather than left to the Cranelift verifier: the verifier
+        // reports the *machine* call ("got 2, expected 1") with no way back to
+        // the callee, which is unreadable in a CI log. A mismatch means the
+        // machine-value expansion at the call site disagrees with the signature
+        // the callee was declared with (a `DynVal` is a register pair).
+        let expected = b.func.dfg.signatures[b.func.dfg.ext_funcs[func_ref].signature]
+            .params
+            .len();
+        if expected != args.len() {
+            let name = b.func.dfg.ext_funcs[func_ref].name.display(None).to_string();
+            return Err(ClifError::Module(format!(
+                "call to {name} passes {} machine argument(s), declared with {expected}",
+                args.len()
+            )));
+        }
         let call = b.ins().call(func_ref, args);
         if let Some(dst) = dst {
             let results = b.inst_results(call);
@@ -752,6 +778,22 @@ impl Lower {
             Inst::Call { dst, callee, args } => {
                 let abi = callee.resolve().ok_or(ClifError::Unsupported("unknown ABI function"))?;
                 let a = self.args_v(args)?;
+                // Named here, where the callee is still known: a mismatch means a
+                // MIR argument expanded to a different number of machine values
+                // than the schema declares (a `DynVal` is a register pair), and
+                // the Cranelift verifier can only report the machine call site.
+                let mut declared = 0usize;
+                for p in abi.params {
+                    declared += abi_ty_clif_parts(*p)?.len();
+                }
+                if declared != a.len() {
+                    return Err(ClifError::Module(format!(
+                        "{}.{} takes {declared} machine argument(s) per the ABI schema, call site passes {}",
+                        abi.module,
+                        abi.name,
+                        a.len()
+                    )));
+                }
                 let dst_pair = matches!(abi.result, lk_aot_abi::AbiType::DynVal);
                 let clif_id = mctx.abi_func(abi)?;
                 return self.call_raw(b, mctx, clif_id, *dst, dst_pair, &a);

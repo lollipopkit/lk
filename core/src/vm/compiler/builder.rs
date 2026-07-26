@@ -182,7 +182,7 @@ impl Compiler {
         }
         // Checked rather than `as i16`: a protected region longer than the
         // signed-bx range must fail the compile, not wrap into a jump to
-        // somewhere else. (`patch_branch` above still truncates — TODO.)
+        // somewhere else.
         let offset = i16::try_from(jump_offset(pc, target)?)
             .map_err(|_| anyhow!("Compiler try region at pc {pc} is too large to encode a handler offset"))?;
         self.function.code[pc] = Instr::as_bx(Opcode::TryBegin, instr.a(), offset);
@@ -330,7 +330,12 @@ impl Compiler {
         ) {
             bail!("Compiler expected branch at patch pc {pc}");
         }
-        self.function.code[pc] = Instr::as_bx(instr.opcode(), instr.a(), jump_offset(pc, target)? as i16);
+        // Checked, not `as i16`: a branch target outside the signed-bx range
+        // silently wrapped into a jump somewhere else instead of failing the
+        // compile. (`patch_try_begin` below was written this way from the start.)
+        let offset = i16::try_from(jump_offset(pc, target)?)
+            .map_err(|_| anyhow!("Compiler branch at pc {pc} is too far to encode ({target})"))?;
+        self.function.code[pc] = Instr::as_bx(instr.opcode(), instr.a(), offset);
         Ok(())
     }
 
