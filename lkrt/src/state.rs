@@ -1,15 +1,39 @@
-use std::{
-    cell::RefCell,
-    collections::{HashMap, HashSet},
-    ffi::{CString, c_char, c_void},
-    net::TcpStream,
+// `alloc`, not the std prelude: part of the computation-only subset.
+#[allow(unused_imports)]
+use alloc::{
+    borrow::ToOwned,
+    boxed::Box,
+    format,
+    string::{String, ToString},
+    vec,
+    vec::Vec,
 };
 
+use alloc::ffi::CString;
+use core::ffi::{c_char, c_void};
+
+use hashbrown::{HashMap, HashSet};
 use rustc_hash::FxBuildHasher;
 
+#[cfg(feature = "std")]
+use core::cell::RefCell;
+#[cfg(feature = "std")]
+use std::net::TcpStream;
+
+#[cfg(feature = "std")]
 thread_local! {
     static RUNTIME: RefCell<RuntimeState> = const { RefCell::new(RuntimeState::new()) };
 }
+
+/// Bare metal has no thread-local storage, so the arena is a single global
+/// behind a spin lock.
+///
+/// The lock is not protecting against threads — there are none — but against
+/// an interrupt handler that reached the runtime. Uncontended on a single core
+/// it is one atomic operation, which keeps the hot path (arena registration on
+/// every dynamic string and container) close to the thread-local cost.
+#[cfg(not(feature = "std"))]
+static RUNTIME: spin::Mutex<RuntimeState> = spin::Mutex::new(RuntimeState::new());
 
 /// Frees one arena-registered container handle of its concrete type.
 type ContainerDrop = unsafe fn(*mut c_void);
@@ -43,13 +67,20 @@ struct ContainerEntry {
 ///
 /// A spawned thread reclaims its own arena on exit (see the [`Drop`] impl on
 /// [`RuntimeState`]); `lkrt_cleanup()` covers the main thread.
+#[cfg(feature = "std")]
 pub(crate) fn with_runtime<R>(f: impl FnOnce(&mut RuntimeState) -> R) -> R {
     RUNTIME.with(|state| f(&mut state.borrow_mut()))
+}
+
+#[cfg(not(feature = "std"))]
+pub(crate) fn with_runtime<R>(f: impl FnOnce(&mut RuntimeState) -> R) -> R {
+    f(&mut RUNTIME.lock())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum HandleKind {
     Bytes,
+    #[cfg(feature = "std")]
     TcpStream,
 }
 
@@ -78,6 +109,7 @@ impl RuntimeState {
 
 enum Resource {
     Bytes(Vec<u8>),
+    #[cfg(feature = "std")]
     TcpStream(TcpStream),
 }
 
@@ -85,18 +117,21 @@ impl Resource {
     fn kind(&self) -> HandleKind {
         match self {
             Resource::Bytes(_) => HandleKind::Bytes,
+            #[cfg(feature = "std")]
             Resource::TcpStream(_) => HandleKind::TcpStream,
         }
     }
 }
 
 impl RuntimeState {
+    #[cfg(feature = "std")]
     pub(crate) fn insert_stream(&mut self, stream: TcpStream) -> i64 {
         let handle = self.next_handle();
         self.resources.insert(handle, Resource::TcpStream(stream));
         handle
     }
 
+    #[cfg(feature = "std")]
     pub(crate) fn stream(&self, handle: i64) -> Result<&TcpStream, String> {
         match self.resources.get(&handle) {
             Some(Resource::TcpStream(stream)) => Ok(stream),
@@ -117,6 +152,8 @@ impl RuntimeState {
         };
         match resource {
             Resource::Bytes(bytes) => Ok(bytes),
+            // Unreachable without `std`: `Bytes` is the only variant there.
+            #[cfg(feature = "std")]
             other => {
                 let actual = other.kind();
                 self.resources.insert(handle, other);

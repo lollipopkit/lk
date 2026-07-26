@@ -6,4 +6,8 @@ edition = "2024"
 [lib]
 name = "lk_aot_abi"
 
+[features]
+default = ["std"]
+std = []
+
 [dependencies]

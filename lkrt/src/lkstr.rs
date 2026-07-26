@@ -309,7 +309,7 @@ pub unsafe extern "C" fn lkrt_str_substring(s: *const c_char, start: i64, length
         return arena_c_string(CString::default());
     }
     let Some(sliced) = text.get(start..end) else {
-        eprintln!("string.substring() index is not a char boundary");
+        crate::rt_eprintln!("string.substring() index is not a char boundary");
         crate::panic::raise_str("runtime error");
     };
     arena_c_string(CString::new(sliced).unwrap_or_default())

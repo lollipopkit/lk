@@ -265,16 +265,33 @@ pub extern "C" fn lkrt_dyn_as_bool(v: LkDyn) -> i64 {
 // identity lives in a side registry keyed by the arena handle. Handles are
 // never freed before process exit, so a mark can't dangle or alias.
 
+// Thread-local under std, a spin-locked global on bare metal (no TLS there).
+#[cfg(feature = "std")]
 std::thread_local! {
     static OBJ_TYPE_MARKS: core::cell::RefCell<crate::lkmap::FxMap<usize, i64>> =
         core::cell::RefCell::new(crate::lkmap::FxMap::default());
+}
+
+#[cfg(not(feature = "std"))]
+static OBJ_TYPE_MARKS_CELL: spin::Mutex<Option<crate::lkmap::FxMap<usize, i64>>> = spin::Mutex::new(None);
+
+/// Runs `f` with the object type-mark table, however it is stored.
+#[cfg(feature = "std")]
+fn with_obj_type_marks<R>(f: impl FnOnce(&mut crate::lkmap::FxMap<usize, i64>) -> R) -> R {
+    OBJ_TYPE_MARKS.with(|marks| f(&mut marks.borrow_mut()))
+}
+
+#[cfg(not(feature = "std"))]
+fn with_obj_type_marks<R>(f: impl FnOnce(&mut crate::lkmap::FxMap<usize, i64>) -> R) -> R {
+    let mut slot = OBJ_TYPE_MARKS_CELL.lock();
+    f(slot.get_or_insert_with(crate::lkmap::FxMap::default))
 }
 
 /// Marks a freshly built struct-instance map with its lowering-assigned
 /// type id (`NewObject` of a type that has trait impls).
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_lkmap_obj_mark(handle: *mut c_void, type_id: i64) {
-    OBJ_TYPE_MARKS.with(|marks| marks.borrow_mut().insert(handle as usize, type_id));
+    with_obj_type_marks(|marks| marks.insert(handle as usize, type_id));
 }
 
 /// Reads a boxed value's struct type mark; `0` = unmarked (not a struct
@@ -284,7 +301,7 @@ pub extern "C" fn lkrt_dyn_obj_type_id(v: LkDyn) -> i64 {
     if v.tag != DYN_MAP {
         return 0;
     }
-    OBJ_TYPE_MARKS.with(|marks| marks.borrow().get(&(v.payload as usize)).copied().unwrap_or(0))
+    with_obj_type_marks(|marks| marks.get(&(v.payload as usize)).copied().unwrap_or(0))
 }
 
 /// Dispatch fall-through: no registered impl matched the receiver's mark —
@@ -932,7 +949,7 @@ pub unsafe extern "C" fn lkrt_lklist_dyn_reduce_fn(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_lklist_dyn_chunk(handle: *mut c_void, size: i64) -> *mut c_void {
     if size <= 0 {
-        eprintln!("list.chunk() size must be positive");
+        crate::rt_eprintln!("list.chunk() size must be positive");
         crate::panic::raise_str("runtime type error");
     }
     let chunks: Vec<LkDyn> = dyn_slice(handle)

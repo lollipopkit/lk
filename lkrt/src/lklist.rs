@@ -231,7 +231,7 @@ pub unsafe extern "C" fn lkrt_lklist_i64_unique(handle: *mut c_void) -> *mut c_v
         // SAFETY: `handle` addresses a `Vec<i64>` from `lkrt_lklist_i64_new`.
         unsafe { &*(handle as *mut Vec<i64>) }
     };
-    let mut seen = rustc_hash::FxHashSet::default();
+    let mut seen = crate::lkmap::FxSet::default();
     let mut out = Vec::new();
     for &v in values {
         if seen.insert(v) {

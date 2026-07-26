@@ -1648,6 +1648,7 @@ dependencies = [
  "rustc-hash",
  "serde_json",
  "serde_yaml",
+ "spin",
  "toml",
 ]
 

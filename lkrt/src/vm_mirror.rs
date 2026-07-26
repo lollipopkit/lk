@@ -24,6 +24,7 @@
 // subset that builds without an OS.
 #[allow(unused_imports)]
 use alloc::{
+    borrow::ToOwned,
     boxed::Box,
     format,
     string::{String, ToString},

@@ -118,6 +118,7 @@ pub unsafe extern "C" fn lkrt_json_parse(text: *const c_char) -> LkDyn {
     }
 }
 
+#[cfg(feature = "std")]
 fn yaml_to_dyn(value: serde_yaml::Value) -> LkDyn {
     match value {
         serde_yaml::Value::Null => LkDyn::NIL,
@@ -146,6 +147,7 @@ fn yaml_to_dyn(value: serde_yaml::Value) -> LkDyn {
 ///
 /// # Safety
 /// `text` must be a valid C string, or null.
+#[cfg(feature = "std")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_yaml_parse(text: *const c_char) -> LkDyn {
     match serde_yaml::from_str::<serde_yaml::Value>(input(text)) {
@@ -154,6 +156,7 @@ pub unsafe extern "C" fn lkrt_yaml_parse(text: *const c_char) -> LkDyn {
     }
 }
 
+#[cfg(feature = "std")]
 fn toml_to_dyn(value: toml::Value) -> LkDyn {
     match value {
         toml::Value::String(value) => dyn_str_of(&value),
@@ -170,6 +173,7 @@ fn toml_to_dyn(value: toml::Value) -> LkDyn {
 ///
 /// # Safety
 /// `text` must be a valid C string, or null.
+#[cfg(feature = "std")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_toml_parse(text: *const c_char) -> LkDyn {
     match toml::from_str::<toml::Value>(input(text)) {

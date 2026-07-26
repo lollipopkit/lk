@@ -9,10 +9,10 @@ use alloc::{
     vec::Vec,
 };
 
-use std::{
-    cell::RefCell,
-    ffi::{CStr, CString, c_char},
-};
+use alloc::ffi::CString;
+#[cfg(feature = "std")]
+use core::cell::RefCell;
+use core::ffi::{CStr, c_char};
 
 use crate::state::with_runtime;
 
@@ -27,7 +27,16 @@ unsafe extern "C" {
 /// first (`fflush(NULL)` flushes every open stream).
 pub(crate) fn flush_and_abort() -> ! {
     flush_c_stdio();
-    std::process::abort()
+    #[cfg(feature = "std")]
+    {
+        std::process::abort()
+    }
+    // Bare metal has no process to abort. Panicking is the portable stop:
+    // the binary supplies a panic handler, and `panic = "abort"` makes it one.
+    #[cfg(not(feature = "std"))]
+    {
+        panic!("lkrt: unrecoverable runtime failure")
+    }
 }
 
 /// Flushes every C stdio stream (`fflush(NULL)`). Rust-side writers that share
@@ -52,8 +61,28 @@ pub(crate) use lk_aot_abi::ABI_VERSION;
 pub(crate) const LKRT_STATUS_OK: i64 = 0;
 pub(crate) const LKRT_STATUS_ERR: i64 = -1;
 
+// Thread-local under std, a spin-locked global on bare metal.
+//
+// Bare metal has no TLS. The lock is not guarding against threads — there are
+// none — but against an interrupt handler reaching the runtime. Uncontended on
+// a single core it is one atomic operation.
+#[cfg(feature = "std")]
 thread_local! {
     static LAST_ERROR: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+#[cfg(not(feature = "std"))]
+static LAST_ERROR: spin::Mutex<Option<String>> = spin::Mutex::new(None);
+
+/// Runs `f` with the last-error slot, however it is stored.
+#[cfg(feature = "std")]
+fn with_last_error<R>(f: impl FnOnce(&mut Option<String>) -> R) -> R {
+    LAST_ERROR.with(|slot| f(&mut slot.borrow_mut()))
+}
+
+#[cfg(not(feature = "std"))]
+fn with_last_error<R>(f: impl FnOnce(&mut Option<String>) -> R) -> R {
+    f(&mut LAST_ERROR.lock())
 }
 
 #[unsafe(no_mangle)]
@@ -69,22 +98,20 @@ pub extern "C" fn lkrt_abi_version() -> i64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_abi_check(expected: i64) {
     if expected != ABI_VERSION {
-        eprintln!("lkrt ABI mismatch: binary built for ABI v{expected}, linked lkrt is v{ABI_VERSION}");
+        crate::rt_eprintln!("lkrt ABI mismatch: binary built for ABI v{expected}, linked lkrt is v{ABI_VERSION}");
         flush_and_abort();
     }
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_last_error() -> *mut c_char {
-    let error = LAST_ERROR.with(|slot| slot.borrow().clone().unwrap_or_default());
+    let error = with_last_error(|slot| slot.clone().unwrap_or_default());
     owned_c_string_lossy(error)
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_error_clear() {
-    LAST_ERROR.with(|slot| {
-        *slot.borrow_mut() = None;
-    });
+    with_last_error(|slot| *slot = None);
 }
 
 #[unsafe(no_mangle)]
@@ -128,7 +155,7 @@ pub unsafe extern "C" fn lkrt_panic(message: *const c_char) {
         // SAFETY: non-null message pointers are NUL-terminated per the ABI.
         unsafe { CStr::from_ptr(message) }.to_string_lossy().into_owned()
     };
-    eprintln!("{text}");
+    crate::rt_eprintln!("{text}");
     flush_and_abort();
 }
 
@@ -171,7 +198,7 @@ pub(crate) fn c_str(ptr: *const c_char, context: &str) -> Result<String, String>
     let value = unsafe { CStr::from_ptr(ptr) };
     value
         .to_str()
-        .map(str::to_owned)
+        .map(alloc::borrow::ToOwned::to_owned)
         .map_err(|err| format!("{context} is not valid UTF-8: {err}"))
 }
 
@@ -188,16 +215,14 @@ pub(crate) fn aborting<T>(f: impl FnOnce() -> Result<T, String>) -> T {
         Ok(value) => value,
         Err(error) => {
             set_last_error(error.clone());
-            eprintln!("lkrt error: {error}");
+            crate::rt_eprintln!("lkrt error: {error}");
             flush_and_abort();
         }
     }
 }
 
 pub(crate) fn set_last_error(error: impl Into<String>) {
-    LAST_ERROR.with(|slot| {
-        *slot.borrow_mut() = Some(error.into());
-    });
+    with_last_error(|slot| *slot = Some(error.into()));
 }
 
 pub(crate) fn status(f: impl FnOnce() -> Result<(), String>) -> i64 {

@@ -1,3 +1,6 @@
+//! The ABI table is data, not behaviour, so it builds without std —
+//! `lkrt` needs it on bare metal.
+#![cfg_attr(not(feature = "std"), no_std)]
 //! Single-source-of-truth ABI schema shared by the AOT codegen and `lkrt`.
 //!
 //! This crate is deliberately dependency-free (no `lk-core`, no `lk-stdlib`, no

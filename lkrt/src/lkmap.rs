@@ -32,6 +32,9 @@ use crate::lklist::{LkMaybeF64, LkMaybeI64};
 // deep-coverage plan's "mirror the Fx order" adjudication. Do not swap either
 // piece independently of `core/src/util/fast_map.rs`.
 pub(crate) type FxMap<K, V> = hashbrown::HashMap<K, V, rustc_hash::FxBuildHasher>;
+/// The set counterpart of [`FxMap`]. hashbrown rather than std so the same
+/// type serves both builds — `rustc_hash::FxHashSet` is an alias for std's.
+pub(crate) type FxSet<T> = hashbrown::HashSet<T, rustc_hash::FxBuildHasher>;
 type StrI64Map = FxMap<String, i64>;
 type I64I64Map = FxMap<i64, i64>;
 type StrF64Map = FxMap<String, f64>;

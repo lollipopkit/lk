@@ -1,3 +1,4 @@
+#![cfg_attr(not(feature = "std"), no_std)]
 //! Typed native runtime support for LK LLVM AOT binaries.
 //!
 //! This crate is intentionally not the LK VM. It may provide low-level typed
@@ -6,14 +7,38 @@
 
 extern crate alloc;
 
+/// `eprintln!` where there is a stderr, a no-op where there is not.
+///
+/// Bare metal has no standard error. These messages report link-time or
+/// invariant failures that are followed by an abort, so losing the text costs
+/// diagnosis, not correctness — and a board that wants them can see them by
+/// building with `std` under a debugger, or by reading the abort itself.
+#[macro_export]
+macro_rules! rt_eprintln {
+    ($($arg:tt)*) => {{
+        #[cfg(feature = "std")]
+        {
+            std::eprintln!($($arg)*);
+        }
+        #[cfg(not(feature = "std"))]
+        {
+            // Consume the arguments so they cannot go stale unnoticed.
+            let _ = format_args!($($arg)*);
+        }
+    }};
+}
+
 mod abi;
 #[cfg(test)]
 mod abi_conformance_test;
 mod arith;
+#[cfg(feature = "std")]
 mod chan;
 mod cpu;
 mod encoding;
+#[cfg(feature = "std")]
 mod host;
+#[cfg(feature = "std")]
 mod io;
 mod lkdyn;
 mod lklist;
@@ -21,6 +46,7 @@ mod lkmap;
 mod lkset;
 mod lkstr;
 mod mmio;
+#[cfg(feature = "std")]
 mod net;
 mod panic;
 mod state;
@@ -31,6 +57,7 @@ pub use abi::{
     lkrt_last_error, lkrt_panic, lkrt_string_free,
 };
 pub use arith::{lkrt_f64_div_checked, lkrt_f64_mod_checked, lkrt_i64_div_checked, lkrt_i64_mod_checked};
+#[cfg(feature = "std")]
 pub use chan::{
     lkrt_chan_close, lkrt_chan_is_closed, lkrt_chan_len, lkrt_chan_new, lkrt_chan_recv, lkrt_chan_select,
     lkrt_chan_send, lkrt_chan_try_recv, lkrt_chan_try_send, lkrt_spawn_arg, lkrt_spawn_args_new, lkrt_spawn_args_push,
@@ -39,9 +66,12 @@ pub use chan::{
 pub use cpu::{
     lkrt_cpu_barrier, lkrt_cpu_compiler_barrier, lkrt_cpu_irq_restore, lkrt_cpu_irq_save, lkrt_cpu_wait_for_interrupt,
 };
-pub use encoding::{lkrt_json_parse, lkrt_toml_parse, lkrt_yaml_parse};
+pub use encoding::lkrt_json_parse;
+#[cfg(feature = "std")]
+pub use encoding::{lkrt_toml_parse, lkrt_yaml_parse};
 // Re-exported at the crate root because the ABI conformance macro checks
 // signatures as `crate::$symbol`.
+#[cfg(feature = "std")]
 pub use host::{
     lkrt_datetime_day_of_week, lkrt_datetime_day_of_year, lkrt_datetime_format, lkrt_datetime_is_weekend,
     lkrt_datetime_now, lkrt_datetime_parse, lkrt_env_get, lkrt_env_get_or, lkrt_env_has, lkrt_env_remove, lkrt_env_set,
@@ -51,9 +81,11 @@ pub use host::{
     lkrt_math_pow, lkrt_math_round, lkrt_math_sin, lkrt_math_sqrt, lkrt_os_arch, lkrt_os_clock, lkrt_os_epoch,
     lkrt_os_hostname, lkrt_os_name, lkrt_path_temp_dir, lkrt_process_cwd, lkrt_time_now_ms, lkrt_time_sleep_ms,
 };
+#[cfg(feature = "std")]
 pub use host::{
     lkrt_math_cbrt, lkrt_math_hypot, lkrt_math_is_nan, lkrt_math_sign_f64, lkrt_math_sign_i64, lkrt_path_sep,
 };
+#[cfg(feature = "std")]
 pub use io::{lkrt_io_std_flush, lkrt_io_std_read_to_string, lkrt_io_std_write};
 pub use lkdyn::{
     DYN_BOOL, DYN_F64, DYN_I64, DYN_LIST, DYN_MAP, DYN_NIL, DYN_STR, LkDyn, lkrt_dyn_add, lkrt_dyn_as_bool,
@@ -115,6 +147,7 @@ pub use mmio::{
     lkrt_mmio_read_u8, lkrt_mmio_read_u16, lkrt_mmio_read_u32, lkrt_mmio_read_u64, lkrt_mmio_write_u8,
     lkrt_mmio_write_u16, lkrt_mmio_write_u32, lkrt_mmio_write_u64,
 };
+#[cfg(feature = "std")]
 pub use net::{
     lkrt_bytes_free, lkrt_bytes_to_string_utf8, lkrt_handle_close, lkrt_socket_addr, lkrt_tcp_close, lkrt_tcp_connect,
     lkrt_tcp_read, lkrt_tcp_write_bytes, lkrt_tcp_write_str,

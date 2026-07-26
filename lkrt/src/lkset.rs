@@ -8,6 +8,7 @@
 // subset that builds without an OS.
 #[allow(unused_imports)]
 use alloc::{
+    borrow::ToOwned,
     boxed::Box,
     format,
     string::{String, ToString},
@@ -17,7 +18,7 @@ use alloc::{
 
 use core::ffi::{CStr, c_char, c_void};
 
-use rustc_hash::FxHashSet;
+use crate::lkmap::FxSet;
 
 use crate::lkdyn::{DYN_BOOL, DYN_F64, DYN_I64, DYN_NIL, DYN_STR, LkDyn};
 
@@ -32,7 +33,7 @@ enum RtKey {
     Str(String),
 }
 
-type LkSet = FxHashSet<RtKey>;
+type LkSet = FxSet<RtKey>;
 
 fn key_from_dyn(v: LkDyn) -> RtKey {
     match v.tag {
