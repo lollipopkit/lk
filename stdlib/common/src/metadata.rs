@@ -1,7 +1,18 @@
 use anyhow::{Result, bail};
 use lk_core::compat::once::OnceLock;
+// From `alloc` directly, not `lk_core::compat::prelude`: feature
+// unification can give lk-core `std` while this crate stays no_std, and
+// then that prelude does not exist.
 #[cfg(not(feature = "std"))]
-use lk_core::compat::prelude::*;
+#[allow(unused_imports)]
+use alloc::{
+    borrow::ToOwned,
+    boxed::Box,
+    format,
+    string::{String, ToString},
+    vec,
+    vec::Vec,
+};
 use lk_core::compat::sync::Mutex;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

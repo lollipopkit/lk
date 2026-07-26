@@ -10,8 +10,13 @@
 pub fn next() -> u64 {
     let mut seed = load();
     if seed == 0 {
-        // Only reachable if something zeroed the state — xorshift never
-        // produces 0 from a non-zero one.
+        // TODO(pre-existing): unreachable in practice — the state starts at
+        // `INITIAL` and xorshift never produces 0 from a non-zero one, so the
+        // std build's clock reseed below has never actually run. Starting the
+        // state at 0 instead would make `math.random()` differ per process,
+        // which is probably what was intended, but that is a behaviour change
+        // to the std build and does not belong in the no_std port. Decide it
+        // separately.
         seed = reseed();
     }
     seed ^= seed << 13;

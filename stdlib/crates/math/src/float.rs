@@ -9,6 +9,7 @@
 //! Compiled only under no_std: with std present the inherent methods win and
 //! this module would be dead weight.
 
+#[allow(dead_code)]
 pub trait FloatExt {
     fn sqrt(self) -> f64;
     fn cbrt(self) -> f64;

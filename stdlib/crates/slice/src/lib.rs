@@ -2,8 +2,20 @@
 
 extern crate alloc;
 
+// From `alloc` directly, not `lk_core::compat::prelude`: feature
+// unification can give lk-core `std` while this crate stays no_std, and
+// then that prelude does not exist. What alloc provides does not depend
+// on anyone else's features.
 #[cfg(not(feature = "std"))]
-use lk_core::compat::prelude::*;
+#[allow(unused_imports)]
+use alloc::{
+    borrow::ToOwned,
+    boxed::Box,
+    format,
+    string::{String, ToString},
+    vec,
+    vec::Vec,
+};
 
 use alloc::sync::Arc;
 

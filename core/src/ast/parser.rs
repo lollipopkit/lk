@@ -290,18 +290,43 @@ impl<'a> Parser<'a> {
         Ok(exp.fold_constants())
     }
 
-    /// Every nested expression form routes back through here, so this is the
-    /// one place the recursion has to be bounded.
-    fn parse_expr(&mut self) -> Result<Expr> {
+    /// Runs `parse` one level deeper, refusing to go past [`MAX_EXPR_DEPTH`].
+    ///
+    /// Every recursive descent that can nest without bound has to go through
+    /// here, not just `parse_expr`: prefix operators recurse into themselves
+    /// (`!!!…x`) and `match` arms recurse into `parse_conditional` directly,
+    /// so bounding only `parse_expr` left both able to overflow the stack.
+    fn deeper<T>(&mut self, parse: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
         if self.depth >= MAX_EXPR_DEPTH {
             return Err(anyhow!(self.err("Expression nesting too deep")));
         }
         self.depth += 1;
         // Decremented on the error path too — a bounded parse that fails must
         // not leave the counter raised for whatever the caller tries next.
-        let parsed = self.parse_conditional();
+        let parsed = parse(self);
         self.depth -= 1;
         parsed
+    }
+
+    /// A parser over a token sub-slice that continues *this* parser's depth
+    /// budget. A nested parse is still nesting even when it gets its own
+    /// `Parser`, so starting the sub-parser back at zero would hand a
+    /// deeply-nested construct an unbounded budget one slice at a time.
+    fn sub_parser<'b>(&self, tokens: &'b [Token]) -> Parser<'b> {
+        let mut parser = Parser::new(tokens);
+        parser.depth = self.depth;
+        parser
+    }
+
+    fn sub_parser_with_spans<'b>(&self, tokens: &'b [Token], spans: &'b [Span]) -> Parser<'b> {
+        let mut parser = Parser::new_with_spans(tokens, spans);
+        parser.depth = self.depth;
+        parser
+    }
+
+    /// Every nested expression form routes back through here.
+    fn parse_expr(&mut self) -> Result<Expr> {
+        self.deeper(Self::parse_conditional)
     }
 
     /// - `cond ? then : else` (ternary conditional)
@@ -518,12 +543,12 @@ impl<'a> Parser<'a> {
         match token {
             Token::Not => {
                 self.pos += 1;
-                let expr = self.parse_unary()?;
+                let expr = self.deeper(Self::parse_unary)?;
                 Ok(Expr::Unary(UnaryOp::Not, Box::new(expr)))
             }
             Token::BitNot => {
                 self.pos += 1;
-                let expr = self.parse_unary()?;
+                let expr = self.deeper(Self::parse_unary)?;
                 Ok(Self::builtin_call("__lk_bit_not", vec![expr]))
             }
             _ => self.parse_postfix(),
@@ -1036,9 +1061,9 @@ impl<'a> Parser<'a> {
         let value_tokens = &self.tokens[start_pos..i];
         let value_spans = self.token_spans.map(|sp| &sp[start_pos..i]);
         let mut sub = if let Some(spans) = value_spans {
-            Parser::new_with_spans(value_tokens, spans)
+            self.sub_parser_with_spans(value_tokens, spans)
         } else {
-            Parser::new(value_tokens)
+            self.sub_parser(value_tokens)
         };
         let value = Box::new(sub.parse_expr()?);
         self.pos = i;
@@ -1059,8 +1084,10 @@ impl<'a> Parser<'a> {
             }
             self.pos += 1;
 
-            // Parse body expression
-            let body = Box::new(self.parse_conditional()?);
+            // Parse body expression. Through `parse_expr`, not
+            // `parse_conditional`: the arm body is where `match` nests into
+            // itself, so it has to be counted.
+            let body = Box::new(self.parse_expr()?);
 
             arms.push(MatchArm { pattern, body });
 
@@ -1111,7 +1138,7 @@ impl<'a> Parser<'a> {
                         };
 
                         if !expr_tokens.is_empty() {
-                            let mut expr_parser = Parser::new(&expr_tokens);
+                            let mut expr_parser = self.sub_parser(&expr_tokens);
                             match expr_parser.parse_expr() {
                                 Ok(expr) => parts.push(TemplateStringPart::Expr(Box::new(expr))),
                                 Err(e) => {

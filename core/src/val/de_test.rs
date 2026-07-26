@@ -127,6 +127,14 @@ tags = ["read", "write"]
             assert_eq!(map.get_str("key"), Some(short("value")));
             assert_eq!(map.get_str("other"), Some(RuntimeVal::Int(123)));
         }
+
+        // Without std these must *reject*, not silently fall back to JSON and
+        // produce something wrong-but-plausible.
+        #[cfg(not(feature = "std"))]
+        {
+            assert!(parse_runtime_with_format("key: value\nother: 123", Some(Format::Yaml)).is_err());
+            assert!(parse_runtime_with_format("key = \"value\"", Some(Format::Toml)).is_err());
+        }
     }
 
     #[test]

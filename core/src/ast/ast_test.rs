@@ -616,6 +616,40 @@ mod test {
         assert!(err.to_string().contains("too deep"), "{err}");
     }
 
+    /// Prefix operators recurse into `parse_unary`, not `parse_expr`, so
+    /// bounding only the latter left this able to abort the process.
+    #[test]
+    fn deeply_nested_unary_operators_error_instead_of_overflowing_the_stack() {
+        let source = "!".repeat(20_000) + "true";
+        let tokens = Tokenizer::tokenize(&source).expect("tokenizes");
+        let err = Parser::new(&tokens).parse().expect_err("must not abort");
+        assert!(err.to_string().contains("too deep"), "{err}");
+    }
+
+    /// `match` arms used to recurse straight into `parse_conditional`, which
+    /// skipped the budget entirely.
+    #[test]
+    fn deeply_nested_match_arms_error_instead_of_overflowing_the_stack() {
+        let depth = 2_000;
+        let source = "match 1 { _ => ".repeat(depth) + "1" + &" }".repeat(depth);
+        let tokens = Tokenizer::tokenize(&source).expect("tokenizes");
+        let err = Parser::new(&tokens).parse().expect_err("must not abort");
+        assert!(err.to_string().contains("too deep"), "{err}");
+    }
+
+    /// A `match` value is parsed by its own `Parser`; without inheriting the
+    /// budget, nesting there would get a fresh allowance each level.
+    #[test]
+    fn nested_parsers_inherit_the_depth_budget() {
+        let mut source = String::from("1");
+        for _ in 0..2_000 {
+            source = alloc::format!("match {source} {{ _ => 1 }}");
+        }
+        let tokens = Tokenizer::tokenize(&source).expect("tokenizes");
+        let err = Parser::new(&tokens).parse().expect_err("must not abort");
+        assert!(err.to_string().contains("too deep"), "{err}");
+    }
+
     /// The cap must not be so tight that ordinary nesting trips it.
     #[test]
     fn ordinary_nesting_stays_under_the_depth_cap() {

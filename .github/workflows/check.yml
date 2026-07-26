@@ -46,6 +46,12 @@ jobs:
             cargo build -p "lk-stdlib-$m" --no-default-features --target thumbv7em-none-eabi
           done
           cargo build -p lk-stdlib-bare --target thumbv7em-none-eabi
+          # A no_std stdlib crate must not assume lk-core is also no_std:
+          # feature unification can give lk-core `std` while the crate itself
+          # stays no_std. Building one of each together is what catches it —
+          # `--workspace` does not, because there the union enables `std`
+          # everywhere.
+          cargo check -p lk-stdlib-bare -p lk-stdlib-string
       - name: bare-metal QEMU smoke (LK actually runs with no OS)
         # Building for thumbv7em proves the code compiles; it does not prove the
         # VM works without std. This boots a real Cortex-M image under QEMU,
@@ -64,10 +70,44 @@ jobs:
             compile bytecode bare-metal/demo.lk
           cd bare-metal
           cargo build --release
+          # Assert on the output, not just the exit status: if semihosting
+          # silently stopped working the program would print nothing and still
+          # exit 0. The timeout is because a fault parks the core in `wfi`
+          # rather than exiting, which would otherwise hang the job.
+          assert_printed() {
+            printf '%s' "$1" | grep -qF -- "$2" || {
+              echo "::error::$3 did not print: $2"
+              exit 1
+            }
+          }
           for image in lk-bare-metal artifact_only; do
-            qemu-system-arm -cpu cortex-m4 -machine mps2-an386 -nographic \
-              -semihosting-config enable=on,target=native \
-              -kernel "target/thumbv7em-none-eabi/release/$image"
+            if ! output=$(timeout 120 qemu-system-arm -cpu cortex-m4 -machine mps2-an386 -nographic \
+                -semihosting-config enable=on,target=native \
+                -kernel "target/thumbv7em-none-eabi/release/$image" 2>&1); then
+              echo "$output"
+              echo "::error::$image failed or timed out"
+              exit 1
+            fi
+            echo "$output"
+            # One line per module surface, so a module silently dropping out of
+            # the registry fails here instead of passing quietly.
+            assert_printed "$output" "sum(fib(0..9)) = 88" "$image"
+            assert_printed "$output" "sqrt(144) = 12" "$image"
+            assert_printed "$output" "upper = BARE METAL" "$image"
+            assert_printed "$output" "bytes.len = 2" "$image"
+            assert_printed "$output" "doubled = [2,4,6]" "$image"
+            assert_printed "$output" "crc32 = 1391562372" "$image"
+            assert_printed "$output" "json.n = 42" "$image"
+            assert_printed "$output" "base64 = bGs=" "$image"
+            assert_printed "$output" "hex = 6c6b" "$image"
+            # Each image reports under its own name, so a build that ran the
+            # wrong binary twice cannot pass.
+            case "$image" in
+              lk-bare-metal) ok="OK: lk ran on bare metal, returned 88" ;;
+              artifact_only) ok="OK: artifact ran on bare metal, returned 88" ;;
+              *) echo "::error::unknown image $image"; exit 1 ;;
+            esac
+            assert_printed "$output" "$ok" "$image"
           done
       - name: AOT native-lowering coverage gate
         # A lowering regression does not fail any differential test: the

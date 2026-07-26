@@ -2,15 +2,33 @@
 
 extern crate alloc;
 
+// From `alloc` directly, not `lk_core::compat::prelude`: feature
+// unification can give lk-core `std` while this crate stays no_std, and
+// then that prelude does not exist. What alloc provides does not depend
+// on anyone else's features.
 #[cfg(not(feature = "std"))]
-use lk_core::compat::prelude::*;
+#[allow(unused_imports)]
+use alloc::{
+    borrow::ToOwned,
+    boxed::Box,
+    format,
+    string::{String, ToString},
+    vec,
+    vec::Vec,
+};
 
 // std's inherent f64 maths methods do not exist under no_std; this restores
 // them by the same names so the call sites below are identical in both builds.
+//
+// `allow(unused)`: `#![no_std]` only stops *this* crate writing `std::` — it
+// does not stop a dependency linking std in. When feature unification does
+// that, the inherent methods resolve after all and the shim goes unused. On a
+// real bare-metal target nothing links std, and this is what makes math build.
 #[cfg(not(feature = "std"))]
 mod float;
 mod seed;
 #[cfg(not(feature = "std"))]
+#[allow(unused_imports)]
 use float::FloatExt as _;
 
 use anyhow::{Result, anyhow, bail};
