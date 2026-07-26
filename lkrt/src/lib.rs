@@ -9,6 +9,7 @@ mod abi;
 mod abi_conformance_test;
 mod arith;
 mod chan;
+mod cpu;
 mod encoding;
 mod host;
 mod io;
@@ -32,6 +33,9 @@ pub use chan::{
     lkrt_chan_close, lkrt_chan_is_closed, lkrt_chan_len, lkrt_chan_new, lkrt_chan_recv, lkrt_chan_select,
     lkrt_chan_send, lkrt_chan_try_recv, lkrt_chan_try_send, lkrt_spawn_arg, lkrt_spawn_args_new, lkrt_spawn_args_push,
     lkrt_spawn0, lkrt_spawn1, lkrt_spawn2, lkrt_spawn3, lkrt_spawn4, lkrt_task_await,
+};
+pub use cpu::{
+    lkrt_cpu_barrier, lkrt_cpu_compiler_barrier, lkrt_cpu_irq_restore, lkrt_cpu_irq_save, lkrt_cpu_wait_for_interrupt,
 };
 pub use encoding::{lkrt_json_parse, lkrt_toml_parse, lkrt_yaml_parse};
 // Re-exported at the crate root because the ABI conformance macro checks

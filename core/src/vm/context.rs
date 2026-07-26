@@ -388,6 +388,26 @@ impl VmContext {
         self.install_runtime_builtin("Set", NativeFunction::Plain(core_set_builtin), NativeEntry::VARIADIC);
         self.install_runtime_builtin("__lk_set_field", NativeFunction::Plain(core_set_field_builtin), 3);
         self.install_runtime_builtin("__lk_merge_fields", NativeFunction::Plain(core_merge_fields_builtin), 2);
+        // CPU control. Meaningless under the interpreter for the same reason
+        // as MMIO: there is no core to mask interrupts on, and a barrier
+        // orders accesses the VM never makes.
+        self.install_runtime_builtin("cpu_barrier", NativeFunction::Plain(core_cpu_unavailable_builtin), 0);
+        self.install_runtime_builtin(
+            "cpu_compiler_barrier",
+            NativeFunction::Plain(core_cpu_unavailable_builtin),
+            0,
+        );
+        self.install_runtime_builtin("cpu_irq_save", NativeFunction::Plain(core_cpu_unavailable_builtin), 0);
+        self.install_runtime_builtin(
+            "cpu_irq_restore",
+            NativeFunction::Plain(core_cpu_unavailable_builtin),
+            1,
+        );
+        self.install_runtime_builtin(
+            "cpu_wait_for_interrupt",
+            NativeFunction::Plain(core_cpu_unavailable_builtin),
+            0,
+        );
         // Volatile MMIO access. The bytecode VM has no address space, so
         // these exist only to *fail loudly* there — a driver reading a
         // register under the interpreter must not get a plausible zero.
@@ -1160,6 +1180,22 @@ fn core_bit_not_builtin(
         args.get(0).expect("arity checked"),
         "__lk_bit_not",
     )?))
+}
+
+/// The VM side of the `cpu_*` intrinsics.
+///
+/// Raises for the same reason the volatile ones do: under the interpreter there
+/// is no core whose interrupts could be masked, and a barrier would order
+/// accesses that are not happening. Silently succeeding would let a driver's
+/// critical section "work" on the VM and then race on hardware.
+fn core_cpu_unavailable_builtin(
+    _args: NativeArgs<'_>,
+    _runtime: &mut NativeRuntime<'_>,
+) -> anyhow::Result<crate::val::RuntimeVal> {
+    Err(anyhow!(
+        "CPU control (barriers, interrupt masking, wait-for-interrupt) requires native execution; \
+         the bytecode VM has no core to apply it to. Compile with the AOT backend to run this."
+    ))
 }
 
 /// The VM side of `volatile_read_*` / `volatile_write_*`.

@@ -403,6 +403,38 @@ pub(crate) fn lower_builtin_call(
                 free_owned_str(insts, msg);
             }
         }
+        Builtin::Cpu(entry, arity) => {
+            if argc != usize::from(arity) {
+                return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+            }
+            let mut call_args = Vec::with_capacity(argc);
+            for index in 0..argc {
+                let slot = base.wrapping_add(1 + index as u8);
+                let (value, ty) = ssa.read(slot, block, pc)?;
+                if !matches!(ty, Ty::I64) {
+                    return Err(Unsupported::TypeMismatch { pc });
+                }
+                call_args.push(value);
+            }
+            // `irq_save` is the only one that produces a value.
+            if entry == "irq_save" {
+                let dst = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(dst),
+                    callee: AbiRef::new("cpu", entry),
+                    args: call_args,
+                });
+                ssa.write(base, block, (dst, Ty::I64));
+                // Early return: the tail writes nil to base, which would
+                // clobber this.
+                return Ok(());
+            }
+            insts.push(Inst::Call {
+                dst: None,
+                callee: AbiRef::new("cpu", entry),
+                args: call_args,
+            });
+        }
         Builtin::VolatileRead(bits) => {
             // `volatile_read_uN(ptr)`. The address is an `I64` — a pointer is
             // just an address, and the type checker has already established

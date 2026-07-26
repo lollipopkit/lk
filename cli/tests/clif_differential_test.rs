@@ -482,3 +482,75 @@ fn volatile_reads_are_not_collapsed() {
     let accesses = body.matches("lkrt_mmio_read_u32").count();
     assert_eq!(accesses, 2, "expected two volatile reads, got {accesses}:\n{body}");
 }
+
+/// A critical section lowers to the right sequence, in the right order.
+///
+/// Order is the whole point and it is invisible in the return value: masking
+/// interrupts *after* the register write, or dropping the barrier, produces a
+/// program that returns the same number and races on real hardware. So this
+/// checks the emitted call sequence rather than the result.
+#[test]
+fn critical_section_emits_its_instructions_in_order() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let source = dir.path().join("critical.lk");
+    std::fs::write(
+        &source,
+        "fn critical(addr: usize) -> Int {\n\
+         \x20   let reg = addr as *mut u32;\n\
+         \x20   let saved = unsafe { cpu_irq_save() };\n\
+         \x20   unsafe { volatile_write_u32(reg, 1 as u32); };\n\
+         \x20   unsafe { cpu_barrier(); };\n\
+         \x20   let v = unsafe { volatile_read_u32(reg) };\n\
+         \x20   unsafe { cpu_irq_restore(saved); };\n\
+         \x20   return v;\n\
+         }\n\
+         return critical(0x1000);\n",
+    )
+    .expect("write source");
+
+    let exe = dir.path().join("critical");
+    let status = std::process::Command::new(env!("CARGO_BIN_EXE_lk"))
+        .args(["compile", source.to_str().expect("utf-8 path")])
+        .arg("--output")
+        .arg(exe.to_str().expect("utf-8 path"))
+        .env("LK_AOT_NO_FALLBACK", "1")
+        .env("LK_AOT_HYBRID", "0")
+        .status()
+        .expect("run lk compile");
+    assert!(status.success(), "a critical section must lower natively");
+
+    let Ok(disassembly) = std::process::Command::new("objdump")
+        .args(["-d", exe.to_str().expect("utf-8 path")])
+        .output()
+    else {
+        return; // objdump is not everywhere; the compile above still ran.
+    };
+    let text = String::from_utf8_lossy(&disassembly.stdout);
+    let body: Vec<&str> = text
+        .lines()
+        .skip_while(|line| !line.contains("<lk_fn_1>:"))
+        .take_while(|line| !line.trim().is_empty())
+        .collect();
+
+    let expected = [
+        "lkrt_cpu_irq_save",
+        "lkrt_mmio_write_u32",
+        "lkrt_cpu_barrier",
+        "lkrt_mmio_read_u32",
+        "lkrt_cpu_irq_restore",
+    ];
+    let mut remaining = expected.iter();
+    let mut wanted = remaining.next();
+    for line in &body {
+        if let Some(name) = wanted
+            && line.contains(name)
+        {
+            wanted = remaining.next();
+        }
+    }
+    assert!(
+        wanted.is_none(),
+        "missing or out-of-order: still looking for {wanted:?} in:\n{}",
+        body.join("\n")
+    );
+}

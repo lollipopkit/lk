@@ -148,6 +148,41 @@ impl TypeChecker {
         Ok(Type::Any)
     }
 
+    /// The `cpu_*` intrinsics: barriers, interrupt masking, wait-for-interrupt.
+    ///
+    /// These need `unsafe` for a different reason than pointers do — nothing
+    /// here can corrupt memory. Masking interrupts or parking the core changes
+    /// the machine's state in a way the rest of the program's correctness may
+    /// depend on, and getting the nesting wrong deadlocks rather than crashes.
+    /// Marking it makes the region auditable.
+    fn check_cpu_builtin(&mut self, name: &str, args: &[Box<Expr>]) -> Result<Option<Type>> {
+        let (arity, result) = match name {
+            "cpu_barrier" | "cpu_compiler_barrier" | "cpu_wait_for_interrupt" => (0, Type::Nil),
+            "cpu_irq_save" => (0, Type::Int),
+            "cpu_irq_restore" => (1, Type::Nil),
+            _ => return Ok(None),
+        };
+        if args.len() != arity {
+            return Err(anyhow!("{name} expects {arity} argument(s), got {}", args.len()));
+        }
+        if !self.in_unsafe() {
+            return Err(anyhow!(
+                "{name} requires an `unsafe` block: it changes machine state the rest of the \
+                 program's correctness can depend on"
+            ));
+        }
+        if name == "cpu_irq_restore" {
+            let saved = self.check_expr(&args[0])?;
+            if !self.is_assignable(&saved, &Type::Int) {
+                return Err(anyhow!(
+                    "cpu_irq_restore expects the value returned by cpu_irq_save, got {}",
+                    saved.display()
+                ));
+            }
+        }
+        Ok(Some(result))
+    }
+
     /// `volatile_read_uN(ptr)` / `volatile_write_uN(ptr, value)`.
     ///
     /// Returns `None` for any other name, so ordinary calls fall through.
@@ -158,6 +193,9 @@ impl TypeChecker {
     /// instead. It also makes the volatile-ness explicit, which `*p` never is
     /// in any language.
     fn check_volatile_builtin(&mut self, name: &str, args: &[Box<Expr>]) -> Result<Option<Type>> {
+        if let Some(result) = self.check_cpu_builtin(name, args)? {
+            return Ok(Some(result));
+        }
         let Some((is_write, kind)) = parse_volatile_builtin(name) else {
             return Ok(None);
         };

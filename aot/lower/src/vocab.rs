@@ -10,6 +10,9 @@ pub(crate) enum Builtin {
     /// Width rides in the variant because that is where the source puts it —
     /// the compiler cannot ask the type checker for a pointee type, which is
     /// why these are intrinsics rather than `*p` syntax.
+    /// `cpu_*` — barriers, interrupt masking, wait-for-interrupt. The payload
+    /// is the ABI entry name under the `cpu` module.
+    Cpu(&'static str, u8),
     VolatileRead(u8),
     VolatileWrite(u8),
     Println,

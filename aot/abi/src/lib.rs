@@ -109,6 +109,14 @@ pub struct AbiFn {
 macro_rules! for_each_abi_fn {
     ($callback:ident) => {
         $callback! {
+            // CPU control. All `WritesHost`: a barrier's entire content is
+            // its effect on *other* accesses' ordering, so marking one pure
+            // would license the optimiser to drop the very thing it is for.
+            ("cpu", "barrier", lkrt_cpu_barrier, WritesHost, [], Nil);
+            ("cpu", "compiler_barrier", lkrt_cpu_compiler_barrier, WritesHost, [], Nil);
+            ("cpu", "irq_save", lkrt_cpu_irq_save, WritesHost, [], I64);
+            ("cpu", "irq_restore", lkrt_cpu_irq_restore, WritesHost, [I64], Nil);
+            ("cpu", "wait_for_interrupt", lkrt_cpu_wait_for_interrupt, WritesHost, [], Nil);
             // Volatile MMIO. `WritesHost` even for the reads: the effect
             // annotation is what drives CSE, and a device read that can change
             // state or return a different value each time is not pure. These
