@@ -227,10 +227,117 @@ pub struct FunctionNamedParamType {
     pub has_default: bool,
 }
 
+/// A machine integer: fixed width, wrapping arithmetic, no boxing.
+///
+/// Deliberately *not* a refinement of [`Type::Int`]. `Int` is the language's
+/// general-purpose integer — 64-bit, and the only thing the bytecode VM's
+/// `RuntimeVal::Int` carries. These are what driver and MMIO code needs: a
+/// `u32` register write has to be exactly 32 bits wide and has to wrap rather
+/// than promote. Keeping them separate means ordinary LK code is unaffected,
+/// and it makes the conversions explicit at the boundary where width matters.
+///
+/// The lowercase spelling (`i32`, not `I32`) marks the distinction visually:
+/// capitalised names are the language's own types, lowercase ones are machine
+/// types, matching how C, Rust and Zig all spell them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum IntKind {
+    I8,
+    I16,
+    I32,
+    I64,
+    U8,
+    U16,
+    U32,
+    U64,
+    /// Pointer-width, signed. Concrete width depends on the target.
+    Isize,
+    /// Pointer-width, unsigned. Concrete width depends on the target.
+    Usize,
+}
+
+impl IntKind {
+    /// Whether `value` fits this width.
+    ///
+    /// Pointer-width kinds answer `true` for anything that fits 32 bits, since
+    /// the real width is the target's and the narrower target is the binding
+    /// one — a literal that fits everywhere is the only one that is portably
+    /// safe to accept without a cast.
+    pub fn accepts_literal(self, value: i128) -> bool {
+        match self.range() {
+            Some((lo, hi)) => value >= lo && value <= hi,
+            None => {
+                let probe = if self.is_signed() { Self::I32 } else { Self::U32 };
+                probe.accepts_literal(value)
+            }
+        }
+    }
+
+    pub fn parse(name: &str) -> Option<Self> {
+        Some(match name {
+            "i8" => Self::I8,
+            "i16" => Self::I16,
+            "i32" => Self::I32,
+            "i64" => Self::I64,
+            "u8" => Self::U8,
+            "u16" => Self::U16,
+            "u32" => Self::U32,
+            "u64" => Self::U64,
+            "isize" => Self::Isize,
+            "usize" => Self::Usize,
+            _ => return None,
+        })
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::I8 => "i8",
+            Self::I16 => "i16",
+            Self::I32 => "i32",
+            Self::I64 => "i64",
+            Self::U8 => "u8",
+            Self::U16 => "u16",
+            Self::U32 => "u32",
+            Self::U64 => "u64",
+            Self::Isize => "isize",
+            Self::Usize => "usize",
+        }
+    }
+
+    /// Width in bits, or `None` for the pointer-width kinds, whose width is a
+    /// property of the target rather than of the type.
+    pub fn bits(self) -> Option<u32> {
+        Some(match self {
+            Self::I8 | Self::U8 => 8,
+            Self::I16 | Self::U16 => 16,
+            Self::I32 | Self::U32 => 32,
+            Self::I64 | Self::U64 => 64,
+            Self::Isize | Self::Usize => return None,
+        })
+    }
+
+    pub fn is_signed(self) -> bool {
+        matches!(self, Self::I8 | Self::I16 | Self::I32 | Self::I64 | Self::Isize)
+    }
+
+    /// Inclusive value range, or `None` for pointer-width kinds. Used to reject
+    /// out-of-range literals at compile time.
+    pub fn range(self) -> Option<(i128, i128)> {
+        let bits = self.bits()?;
+        Some(if self.is_signed() {
+            let max = (1i128 << (bits - 1)) - 1;
+            (-(1i128 << (bits - 1)), max)
+        } else {
+            (0, (1i128 << bits) - 1)
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Type {
     /// Primitive types
     Int,
+    /// Fixed-width machine integer (`i32`, `u8`, `usize`, …). See [`IntKind`].
+    MachineInt(IntKind),
     Float,
     String,
     Bool,
@@ -292,6 +399,10 @@ impl Type {
             "Nil" => return Some(Type::Nil),
             "Any" => return Some(Type::Any),
             _ => {}
+        }
+
+        if let Some(kind) = IntKind::parse(s) {
+            return Some(Type::MachineInt(kind));
         }
 
         // Handle type variables: 'T, 'K, 'V
@@ -424,6 +535,7 @@ impl Type {
     pub fn display(&self) -> String {
         match self {
             Type::Int => "Int".to_string(),
+            Type::MachineInt(kind) => kind.name().to_string(),
             Type::Float => "Float".to_string(),
             Type::String => "String".to_string(),
             Type::Bool => "Bool".to_string(),
@@ -508,6 +620,12 @@ impl Type {
             (Type::Boxed(inner), Type::Boxed(expected)) => inner.is_assignable_to(expected),
             (Type::Boxed(inner), expected) => inner.is_assignable_to(expected),
             (actual, Type::Boxed(expected)) => actual.is_assignable_to(expected),
+            // Machine integers convert only explicitly, in either direction and
+            // even between two machine widths. Systems code is exactly where an
+            // implicit narrowing or sign change is a bug rather than a
+            // convenience, and `u8 -> Int` silently promoting would defeat the
+            // point of asking for a fixed width. `as` is the way across.
+            (Type::MachineInt(_), _) | (_, Type::MachineInt(_)) => false,
             // Numeric hierarchy: allow Int -> Float, Float -> Boxed, etc.
             (lhs, rhs) if lhs.numeric_class().is_some() && rhs.numeric_class().is_some() => {
                 let lhs_class = lhs.numeric_class().unwrap();
@@ -840,7 +958,7 @@ fn split_top_level(s: &str, delimiter: char) -> Vec<&str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ShortStr, ShortStrOrStr};
+    use super::{IntKind, ShortStr, ShortStrOrStr, Type};
 
     #[test]
     fn short_str_concat_int_falls_back_when_prefix_fills_inline_buffer() {
@@ -852,5 +970,73 @@ mod tests {
             ShortStrOrStr::Str(value) => assert_eq!(value, "answer=42"),
             ShortStrOrStr::Short(value) => panic!("expected heap string fallback, got {}", value.as_str()),
         }
+    }
+
+    #[test]
+    fn machine_int_kinds_round_trip_through_their_spelling() {
+        for kind in [
+            IntKind::I8,
+            IntKind::I16,
+            IntKind::I32,
+            IntKind::I64,
+            IntKind::U8,
+            IntKind::U16,
+            IntKind::U32,
+            IntKind::U64,
+            IntKind::Isize,
+            IntKind::Usize,
+        ] {
+            assert_eq!(IntKind::parse(kind.name()), Some(kind), "{}", kind.name());
+            assert_eq!(
+                Type::parse(kind.name()),
+                Some(Type::MachineInt(kind)),
+                "{}",
+                kind.name()
+            );
+            assert_eq!(Type::MachineInt(kind).display(), kind.name());
+        }
+    }
+
+    #[test]
+    fn machine_int_ranges_match_their_width() {
+        assert_eq!(IntKind::U8.range(), Some((0, 255)));
+        assert_eq!(IntKind::I8.range(), Some((-128, 127)));
+        assert_eq!(IntKind::U32.range(), Some((0, 4_294_967_295)));
+        assert_eq!(IntKind::I32.range(), Some((-2_147_483_648, 2_147_483_647)));
+        // Pointer width is a property of the target, not of the type.
+        assert_eq!(IntKind::Usize.bits(), None);
+        assert_eq!(IntKind::Usize.range(), None);
+    }
+
+    /// Machine integers convert only explicitly. An implicit narrowing or sign
+    /// change is a bug in exactly the code that asks for a fixed width, and an
+    /// implicit widening to `Int` would defeat the point of asking.
+    #[test]
+    fn machine_ints_never_convert_implicitly() {
+        let u8_ = Type::MachineInt(IntKind::U8);
+        let u32_ = Type::MachineInt(IntKind::U32);
+        let i32_ = Type::MachineInt(IntKind::I32);
+
+        // Not even the lossless widening.
+        assert!(!u8_.is_assignable_to(&u32_));
+        assert!(!u8_.is_assignable_to(&Type::Int));
+        assert!(!Type::Int.is_assignable_to(&u8_));
+        // Nor across signedness at equal width.
+        assert!(!i32_.is_assignable_to(&u32_));
+        assert!(!u32_.is_assignable_to(&i32_));
+        // Nor into the float hierarchy.
+        assert!(!i32_.is_assignable_to(&Type::Float));
+
+        // Identity still holds.
+        assert!(u8_.is_assignable_to(&u8_));
+    }
+
+    /// `Any` is the dynamic escape hatch and stays above the rule, otherwise a
+    /// machine int could never flow through untyped code at all.
+    #[test]
+    fn machine_ints_still_interoperate_with_any() {
+        let u8_ = Type::MachineInt(IntKind::U8);
+        assert!(u8_.is_assignable_to(&Type::Any));
+        assert!(Type::Any.is_assignable_to(&u8_));
     }
 }

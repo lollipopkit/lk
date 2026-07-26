@@ -90,7 +90,29 @@ impl Stmt {
                 let expr_type = value.type_check(type_checker)?;
 
                 // 如果有类型注解，验证类型匹配
-                if let Some(expected_type) = type_annotation
+                //
+                // A machine-int annotation *retypes* an integer literal rather
+                // than rejecting it — `let x: u8 = 5` is the common case, and
+                // requiring `5 as u8` there would make the feature unusable.
+                // This is Rust's literal-inference rule, narrowed to the one
+                // place it is needed until the checker becomes bidirectional.
+                // The range is checked here because having one is the whole
+                // point of a fixed width.
+                if let Some(Type::MachineInt(kind)) = type_annotation
+                    && let Some(literal) = int_literal_value(value)
+                {
+                    if !kind.accepts_literal(literal) {
+                        let error_msg = alloc::format!(
+                            "literal {literal} is out of range for {}",
+                            Type::MachineInt(*kind).display()
+                        );
+                        return if let Some(span) = span {
+                            Err(anyhow!(ParseError::with_span(error_msg, span.clone())))
+                        } else {
+                            Err(anyhow!(error_msg))
+                        };
+                    }
+                } else if let Some(expected_type) = type_annotation
                     && !type_checker.is_assignable(&expr_type, expected_type)
                 {
                     let error_msg = format!(
@@ -895,5 +917,21 @@ fn union_of(types: impl IntoIterator<Item = Type>) -> Type {
         0 => Type::Any,
         1 => out.pop().expect("checked len"),
         _ => Type::Union(out),
+    }
+}
+
+/// The integer value of a literal expression.
+///
+/// A leading minus needs no special case: the lexer folds it into the literal
+/// (`Token::Int(-5)`), and constant folding has already run by the time the
+/// checker sees the expression, so `1 + 2` arrives here as `3`.
+fn int_literal_value(expr: &crate::expr::Expr) -> Option<i128> {
+    use crate::expr::Expr;
+    use crate::val::LiteralVal;
+
+    match expr {
+        Expr::Literal(LiteralVal::Int(value)) => Some(i128::from(*value)),
+        Expr::Paren(inner) => int_literal_value(inner),
+        _ => None,
     }
 }

@@ -277,9 +277,14 @@ impl TypeChecker {
                 }
             }
             Type::Boxed(inner) => Type::Boxed(Box::new(self.resolve_aliases_internal(inner, visiting))),
-            Type::Any | Type::Int | Type::Float | Type::String | Type::Bool | Type::Nil | Type::Variable(_) => {
-                ty.clone()
-            }
+            Type::Any
+            | Type::Int
+            | Type::MachineInt(_)
+            | Type::Float
+            | Type::String
+            | Type::Bool
+            | Type::Nil
+            | Type::Variable(_) => ty.clone(),
         }
     }
 
