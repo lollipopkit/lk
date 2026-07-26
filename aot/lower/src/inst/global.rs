@@ -266,6 +266,14 @@ pub(super) fn lower(
 /// is what makes the next `Builtin` addition safe by default.
 pub(crate) fn builtin_for_name(name: &str) -> Option<Builtin> {
     Some(match name {
+        "volatile_read_u8" => Builtin::VolatileRead(8),
+        "volatile_read_u16" => Builtin::VolatileRead(16),
+        "volatile_read_u32" => Builtin::VolatileRead(32),
+        "volatile_read_u64" => Builtin::VolatileRead(64),
+        "volatile_write_u8" => Builtin::VolatileWrite(8),
+        "volatile_write_u16" => Builtin::VolatileWrite(16),
+        "volatile_write_u32" => Builtin::VolatileWrite(32),
+        "volatile_write_u64" => Builtin::VolatileWrite(64),
         "println" => Builtin::Println,
         "print" => Builtin::Print,
         "assert" => Builtin::Assert,

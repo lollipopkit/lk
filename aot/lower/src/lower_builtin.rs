@@ -403,6 +403,41 @@ pub(crate) fn lower_builtin_call(
                 free_owned_str(insts, msg);
             }
         }
+        Builtin::VolatileRead(bits) => {
+            // `volatile_read_uN(ptr)`. The address is an `I64` — a pointer is
+            // just an address, and the type checker has already established
+            // that this argument is a pointer of the matching width.
+            if argc != 1 {
+                return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+            }
+            let (addr, ty) = ssa.read(base.wrapping_add(1), block, pc)?;
+            if !matches!(ty, Ty::I64) {
+                return Err(Unsupported::TypeMismatch { pc });
+            }
+            let dst = ssa.new_val();
+            insts.push(Inst::VolatileLoad { dst, addr, bits });
+            // The VM writes a builtin's result to the call-window base.
+            //
+            // `return`, not `break`: this function ends by writing `nil` to
+            // base for the builtins that produce nothing, which would clobber
+            // the value just stored there. `Typeof` returns early for the same
+            // reason.
+            ssa.write(base, block, (dst, Ty::I64));
+            return Ok(());
+        }
+        Builtin::VolatileWrite(bits) => {
+            if argc != 2 {
+                return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+            }
+            let (addr, addr_ty) = ssa.read(base.wrapping_add(1), block, pc)?;
+            let (value, value_ty) = ssa.read(base.wrapping_add(2), block, pc)?;
+            if !matches!(addr_ty, Ty::I64) || !matches!(value_ty, Ty::I64) {
+                return Err(Unsupported::TypeMismatch { pc });
+            }
+            insts.push(Inst::VolatileStore { addr, value, bits });
+            // A write produces nothing, so the shared nil-return tail below is
+            // exactly right — fall through to it rather than duplicating it.
+        }
         Builtin::Typeof => {
             // `typeof(x)` — the VM's type name from the statically proven MIR
             // type. Maybe carriers select between the scalar name and `Nil` at

@@ -5,6 +5,13 @@ use super::*;
 /// any use other than a call rejects (reads find the register undefined).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Builtin {
+    /// `volatile_read_uN(ptr)` / `volatile_write_uN(ptr, value)`.
+    ///
+    /// Width rides in the variant because that is where the source puts it —
+    /// the compiler cannot ask the type checker for a pointee type, which is
+    /// why these are intrinsics rather than `*p` syntax.
+    VolatileRead(u8),
+    VolatileWrite(u8),
     Println,
     Print,
     Assert,

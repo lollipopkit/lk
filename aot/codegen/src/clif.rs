@@ -818,6 +818,29 @@ impl Lower {
                 let v = b.ins().fcvt_from_sint(types::F64, s);
                 self.set1(*dst, v);
             }
+            // Volatile MMIO access — not yet lowerable to inline loads.
+            //
+            // Cranelift has no volatile flag. `MemFlags` offers `notrap`,
+            // `aligned`, `readonly`, `can_move`, endianness and an alias
+            // region, and none of them means "this access must happen exactly
+            // as written". `can_move` only forbids *moving* the access; it does
+            // not stop the egraph pass from proving two loads of the same
+            // address equal and keeping one. Measured, not assumed: two
+            // `volatile_read_u32` calls on one address compiled to a single
+            // `mov (%rdi),%esi` followed by `lea (%rsi,%rsi,1)` — the second
+            // read gone and `a + b` folded into `a * 2`.
+            //
+            // The fix is to route these through opaque `lkrt` calls, whose
+            // Rust bodies use `read_volatile`/`write_volatile`. Until that
+            // lands, rejecting is the honest answer: the program falls back to
+            // the VM, which raises a clear "requires native execution" rather
+            // than silently reading a register once and pretending it read it
+            // twice.
+            Inst::VolatileLoad { .. } | Inst::VolatileStore { .. } => {
+                return Err(ClifError::Unsupported(
+                    "volatile access needs opaque lkrt calls; Cranelift has no volatile MemFlag",
+                ));
+            }
             Inst::ZextBool { dst, src } => {
                 let s = self.v(*src)?;
                 let v = b.ins().uextend(types::I64, s);
