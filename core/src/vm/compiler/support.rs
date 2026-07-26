@@ -256,7 +256,7 @@ fn collect_mutated_names(stmt: &Stmt, names: &mut HashSet<String>) {
 
 fn collect_mutated_names_in_expr(expr: &Expr, names: &mut HashSet<String>) {
     match expr {
-        Expr::Paren(inner) | Expr::Unary(_, inner) | Expr::Cast(inner, _) => {
+        Expr::Paren(inner) | Expr::Unary(_, inner) | Expr::Cast(inner, _) | Expr::Unsafe(inner) => {
             collect_mutated_names_in_expr(inner, names)
         }
         Expr::Bin(lhs, _, rhs)

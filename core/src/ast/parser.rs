@@ -533,6 +533,20 @@ impl<'a> Parser<'a> {
         Ok(expr)
     }
 
+    /// `unsafe { … }`.
+    ///
+    /// The braces are required — there is no bare `unsafe expr` form — so the
+    /// region a reader has to audit is always delimited, and the parse never
+    /// has to guess how far the marker reaches.
+    fn parse_unsafe_block(&mut self) -> Result<Expr> {
+        self.pos += 1;
+        if self.eof() || self.tokens[self.pos] != Token::LBrace {
+            return Err(anyhow!(self.err("Expecting '{' after 'unsafe'")));
+        }
+        let block = self.parse_brace_block(support::BlockTail::Value)?;
+        Ok(Expr::Unsafe(Box::new(block)))
+    }
+
     /// The type after `as`.
     ///
     /// Only a bare type name, not the full annotation grammar the statement
@@ -938,6 +952,7 @@ impl<'a> Parser<'a> {
             Token::LBracket => self.parse_list(),
             Token::LBrace => self.parse_map(),
             Token::Select => self.parse_select(),
+            Token::Unsafe => self.parse_unsafe_block(),
             Token::Match => self.parse_match(),
             Token::LParen => self.parse_paren(),
             Token::Fn => self.parse_fn_closure(),

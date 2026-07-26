@@ -140,6 +140,15 @@ impl TypeChecker {
             // Explicit conversion
             Expr::Cast(inner, target) => self.check_cast(inner, target),
 
+            // `unsafe { … }` — the block's own type, checked with the
+            // unchecked operations permitted inside it.
+            Expr::Unsafe(inner) => {
+                self.enter_unsafe();
+                let result = self.check_expr(inner);
+                self.exit_unsafe();
+                result
+            }
+
             // Binary operations
             Expr::Bin(_, _, _) => self.check_binary_op_iter(expr),
             Expr::And(left, right) => self.check_logical_op(left, right, Type::Bool),

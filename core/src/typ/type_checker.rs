@@ -73,6 +73,11 @@ pub struct TypeChecker {
     options: TypeCheckerOptions,
     /// Active `impl` target type for the current method being checked
     impl_self_type: Option<Type>,
+    /// Nesting depth of enclosing `unsafe` blocks.
+    ///
+    /// A depth rather than a flag because `unsafe` blocks nest, and leaving one
+    /// must restore the enclosing state rather than clear it outright.
+    unsafe_depth: usize,
     /// Recorded method signatures keyed by (receiver_type, method_name)
     method_sigs: HashMap<(String, String), Type>,
     /// Function strict-Any checks delayed until the whole program contributes call-site constraints.
@@ -163,6 +168,7 @@ impl TypeChecker {
             function_sigs: HashMap::new(),
             options,
             impl_self_type: None,
+            unsafe_depth: 0,
             method_sigs: HashMap::new(),
             pending_strict_functions: Vec::new(),
             defer_strict_function_checks: false,
@@ -200,6 +206,22 @@ impl TypeChecker {
     }
 
     /// Resolve all type aliases contained in `ty`, returning a canonical representation.
+    /// Whether the checker is currently inside an `unsafe` block.
+    ///
+    /// The unchecked operations (raw pointer access, volatile, inline assembly)
+    /// consult this and reject outside one, so they cannot appear by accident.
+    pub fn in_unsafe(&self) -> bool {
+        self.unsafe_depth > 0
+    }
+
+    pub fn enter_unsafe(&mut self) {
+        self.unsafe_depth += 1;
+    }
+
+    pub fn exit_unsafe(&mut self) {
+        self.unsafe_depth = self.unsafe_depth.saturating_sub(1);
+    }
+
     pub fn resolve_aliases(&self, ty: &Type) -> Type {
         let mut visiting = HashSet::new();
         self.resolve_aliases_internal(ty, &mut visiting)

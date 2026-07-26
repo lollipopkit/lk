@@ -66,6 +66,13 @@ pub enum Token {
     Catch,    // catch (try's error handler)
     Case,     // case
     Default,  // default
+    /// `unsafe` — opts into the operations whose correctness the compiler
+    /// cannot check: raw pointers, volatile access, inline assembly.
+    ///
+    /// Note this is *not* the same as "cannot run on the VM". The unchecked
+    /// operations themselves are what the bytecode backend has no meaning for;
+    /// ordinary arithmetic inside an `unsafe` block runs there like any other.
+    Unsafe,
     // Concurrency keywords
     Select, // select
     Go,     // go (spawn a goroutine, Go-style)
@@ -685,6 +692,10 @@ impl<'a> Tokenizer<'a> {
         }
         if let Some(sp) = match_kw(self, "match") {
             self.push_span_only(Token::Match, sp);
+            return Ok(());
+        }
+        if let Some(sp) = match_kw(self, "unsafe") {
+            self.push_span_only(Token::Unsafe, sp);
             return Ok(());
         }
         if let Some(sp) = match_kw(self, "try") {

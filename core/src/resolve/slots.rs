@@ -419,7 +419,7 @@ impl ResolverCore {
                 self.resolve_expr(l);
                 self.resolve_expr(r);
             }
-            Expr::Unary(_, e) | Expr::Cast(e, _) => self.resolve_expr(e),
+            Expr::Unary(_, e) | Expr::Cast(e, _) | Expr::Unsafe(e) => self.resolve_expr(e),
             Expr::Conditional(c, t, e) => {
                 self.resolve_expr(c);
                 self.resolve_expr(t);

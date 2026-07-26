@@ -73,6 +73,7 @@ pub fn token_lexeme(token: &Token) -> String {
         Token::For => "for".to_string(),
         Token::Match => "match".to_string(),
         Token::Try => "try".to_string(),
+        Token::Unsafe => "unsafe".to_string(),
         Token::Catch => "catch".to_string(),
         Token::Case => "case".to_string(),
         Token::Default => "default".to_string(),

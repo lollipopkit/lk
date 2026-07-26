@@ -111,6 +111,8 @@ impl Compiler {
         match expr {
             Expr::Paren(inner) => self.lower_expr(inner),
             Expr::Cast(inner, ty) => self.lower_cast(inner, ty),
+            // No runtime cost: the marker exists for the type checker.
+            Expr::Unsafe(inner) => self.lower_expr(inner),
             Expr::Literal(value) => self.lower_val(value),
             Expr::Var(name) => self.lower_var(name),
             Expr::List(elements) => self.lower_list(elements),

@@ -654,6 +654,45 @@ mod test {
         assert!(err.to_string().contains("too deep"), "{err}");
     }
 
+    /// An `unsafe` block evaluates to its final expression and *continues*.
+    ///
+    /// The obvious implementation reuses the closure-body parser, which
+    /// rewrites the last statement into a `return`. That is not a type error:
+    /// `let x = unsafe { 1 }; println(x);` compiles, returns 1 from the
+    /// enclosing function, and silently never prints. Hence a test on the
+    /// shape rather than on the value alone.
+    #[test]
+    fn unsafe_block_is_a_value_not_a_return() {
+        use crate::stmt::Stmt;
+
+        let tokens = Tokenizer::tokenize("unsafe { 1 }").expect("tokenizes");
+        let parsed = Parser::new(&tokens).parse().expect("parses");
+        let Expr::Unsafe(block) = parsed else {
+            panic!("expected an unsafe block, got {parsed:?}");
+        };
+        let Expr::Block(statements) = *block else {
+            panic!("unsafe should wrap a block");
+        };
+        assert!(
+            matches!(statements.last().map(|s| s.as_ref()), Some(Stmt::Expr(_))),
+            "the tail must stay an expression, not become a return: {statements:?}"
+        );
+    }
+
+    #[test]
+    fn unsafe_blocks_nest() {
+        let tokens = Tokenizer::tokenize("unsafe { unsafe { 1 } }").expect("tokenizes");
+        let parsed = Parser::new(&tokens).parse().expect("parses");
+        assert!(matches!(parsed, Expr::Unsafe(_)), "{parsed:?}");
+    }
+
+    #[test]
+    fn unsafe_requires_braces() {
+        let tokens = Tokenizer::tokenize("unsafe 1").expect("tokenizes");
+        let err = Parser::new(&tokens).parse().expect_err("bare unsafe must not parse");
+        assert!(err.to_string().contains("Expecting '{'"), "{err}");
+    }
+
     /// The cap must not be so tight that ordinary nesting trips it.
     #[test]
     fn ordinary_nesting_stays_under_the_depth_cap() {

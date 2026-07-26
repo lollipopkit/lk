@@ -694,6 +694,10 @@ fn collect_generated_expr_origins(expr: &Expr, span: Option<Span>, origins: &mut
             push_generated_statement_origin("expr unary_operand", span.clone(), origins);
             collect_generated_expr_origins(inner, span, origins);
         }
+        Expr::Unsafe(inner) => {
+            push_generated_statement_origin("expr unsafe", span.clone(), origins);
+            collect_generated_expr_origins(inner, span, origins);
+        }
         Expr::Cast(inner, ty) => {
             push_generated_statement_origin("expr cast", span.clone(), origins);
             collect_generated_type_origins(ty, span.clone(), origins);
