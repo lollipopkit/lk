@@ -849,6 +849,14 @@ impl Lower {
                 let v = b.ins().fcvt_from_sint(types::F64, s);
                 self.set1(*dst, v);
             }
+            Inst::FloatToInt { dst, src } => {
+                let s = self.v(*src)?;
+                // `_sat`, not the trapping form: Rust's `as` saturates and maps
+                // NaN to 0, and the VM casts with Rust's `as`. The trapping
+                // conversion would abort where the VM returns a number.
+                let v = b.ins().fcvt_to_sint_sat(types::I64, s);
+                self.set1(*dst, v);
+            }
             Inst::ZextBool { dst, src } => {
                 let s = self.v(*src)?;
                 let v = b.ins().uextend(types::I64, s);

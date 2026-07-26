@@ -442,10 +442,11 @@ pub(crate) fn lower_builtin_call(
             if argc != 1 {
                 return Err(Unsupported::Opcode { pc, op: Opcode::Call });
             }
-            let (addr, ty) = ssa.read(base.wrapping_add(1), block, pc)?;
-            if !matches!(ty, Ty::I64) {
-                return Err(Unsupported::TypeMismatch { pc });
-            }
+            // `read_scalar`, not a bare read: an address that came out of a
+            // container arrives as a `Maybe` carrier, and MMIO is a scalar
+            // consumer — absent aborts, exactly as `nil` arithmetic does in
+            // the VM.
+            let addr = read_typed_scalar(ssa, insts, base.wrapping_add(1), block, Ty::I64, pc)?;
             let dst = ssa.new_val();
             // An opaque `lkrt` call, not an inline load: Cranelift has no
             // volatile flag, and its egraph pass will happily collapse two
@@ -469,11 +470,11 @@ pub(crate) fn lower_builtin_call(
             if argc != 2 {
                 return Err(Unsupported::Opcode { pc, op: Opcode::Call });
             }
-            let (addr, addr_ty) = ssa.read(base.wrapping_add(1), block, pc)?;
-            let (value, value_ty) = ssa.read(base.wrapping_add(2), block, pc)?;
-            if !matches!(addr_ty, Ty::I64) || !matches!(value_ty, Ty::I64) {
-                return Err(Unsupported::TypeMismatch { pc });
-            }
+            // Both operands through `read_scalar` — see the read arm above.
+            // Iterating a list and writing each element is the ordinary shape
+            // of a driver's output loop, and its elements are `Maybe` carriers.
+            let addr = read_typed_scalar(ssa, insts, base.wrapping_add(1), block, Ty::I64, pc)?;
+            let value = read_typed_scalar(ssa, insts, base.wrapping_add(2), block, Ty::I64, pc)?;
             insts.push(Inst::Call {
                 dst: None,
                 callee: AbiRef::new("mmio", mmio_write_name(bits)),

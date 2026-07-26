@@ -122,6 +122,38 @@ jobs:
             esac
             assert_printed "$output" "$ok" "$image"
           done
+      - name: aarch64 native bare-metal QEMU smoke (compiled LK, no OS)
+        # The step above runs LK's *interpreter* on a board. This one runs its
+        # *compiled output*: `lk compile object:aarch64-unknown-none` emits a
+        # relocatable object, an ordinary embedded build links it, and the
+        # resulting image drives a PL011 UART from a driver written in LK. It
+        # catches what neither the differential tests nor the coverage gate can
+        # — that the cross-compiled object actually links and executes on a
+        # target the host is not.
+        run: |
+          rustup target add aarch64-unknown-none
+          sudo apt-get update && sudo apt-get install -y qemu-system-arm clang
+          cargo build -p lkrt-cabi
+          cargo build -p lk-cli --features aot
+          cd bare-metal-native
+          LK_BIN=../target/debug/lk cargo build --release
+          # A fault parks the core rather than exiting, so the timeout is what
+          # turns a hang into a failure.
+          output=$(timeout 120 qemu-system-aarch64 -M virt -cpu cortex-a53 \
+            -display none -serial stdio \
+            -kernel target/aarch64-unknown-none/release/lk-bare-metal-native 2>&1 || true)
+          echo "$output"
+          # The first line comes out of LK's own PL011 driver — compiled
+          # `volatile_write_u32` against 0x0900_0000, no runtime involved. The
+          # last proves control returned from compiled code to the board.
+          for expected in \
+            "native LK drives the PL011: sum(fib(0..9)) = 88" \
+            "[lk returned to the board, status 0000000000000000]"; do
+            printf '%s' "$output" | grep -qF -- "$expected" || {
+              echo "::error::aarch64 native image did not print: $expected"
+              exit 1
+            }
+          done
       - name: AOT native-lowering coverage gate
         # A lowering regression does not fail any differential test: the
         # program silently drops to the hybrid bridge or the Tier 0 VM bundle

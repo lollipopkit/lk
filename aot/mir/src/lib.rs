@@ -183,6 +183,12 @@ pub enum Inst {
     },
     /// `dst = sitofp(src)` — widen an `I64` value to `F64`.
     IntToFloat { dst: ValueId, src: ValueId },
+    /// `dst = fptosi(src)` — an `F64` truncated toward zero into `I64`.
+    ///
+    /// Saturating, and NaN maps to 0: those are Rust's `as` semantics, which is
+    /// what the VM performs (`value as i64`), so the two backends agree on the
+    /// out-of-range cases rather than only on the ordinary ones.
+    FloatToInt { dst: ValueId, src: ValueId },
     /// `dst = src` reduced to `bits` and widened back to `I64` by `signed`.
     ///
     /// Machine integers do not get their own MIR type. The VM carries them in
@@ -760,6 +766,7 @@ fn render_inst(inst: &Inst) -> String {
             )
         }
         Inst::IntToFloat { dst, src } => format!("{} = sitofp {}", v(*dst), v(*src)),
+        Inst::FloatToInt { dst, src } => format!("{} = fptosi {}", v(*dst), v(*src)),
         Inst::ZextBool { dst, src } => format!("{} = zext.bool {}", v(*dst), v(*src)),
         Inst::IntTruncate { dst, src, bits, signed } => format!(
             "{} = trunc.i{} {} ({})",
@@ -892,6 +899,7 @@ pub(crate) fn inst_def(inst: &Inst) -> Option<ValueId> {
         | Inst::FloatBin { dst, .. }
         | Inst::Cmp { dst, .. }
         | Inst::IntToFloat { dst, .. }
+        | Inst::FloatToInt { dst, .. }
         | Inst::ZextBool { dst, .. }
         | Inst::IntTruncate { dst, .. }
         | Inst::Not { dst, .. }
@@ -927,6 +935,7 @@ fn inst_uses(inst: &Inst) -> Vec<ValueId> {
             vec![*lhs, *rhs]
         }
         Inst::IntToFloat { src, .. }
+        | Inst::FloatToInt { src, .. }
         | Inst::ZextBool { src, .. }
         | Inst::IntTruncate { src, .. }
         | Inst::Not { src, .. }

@@ -17,6 +17,10 @@ SECTIONS
            address of the image, and the reset path has no vector table to
            redirect it. */
         KEEP(*(.text.boot))
+        /* `VBAR_EL1` only holds a 2 KiB-aligned address — the low bits are not
+           storage, so a misplaced table silently points somewhere else. */
+        . = ALIGN(2048);
+        KEEP(*(.text.vectors))
         *(.text .text.*)
     }
 
@@ -28,6 +32,13 @@ SECTIONS
         *(.bss .bss.* COMMON)
         __bss_end = .;
     }
+
+    /* The level 1 translation table. `TTBR0_EL1` holds a physical address with
+       no low bits, so it must be page aligned; it is written by the boot stub
+       rather than zero-filled, so it lives outside `.bss`. */
+    . = ALIGN(4096);
+    __page_table = .;
+    . = . + 4096;
 
     /* The stack grows down from here. 64 KiB is generous for this demo and
        cheap on a machine with 128 MiB of RAM. */

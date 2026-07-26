@@ -384,6 +384,34 @@ fn machine_int_cast_differential() {
             new("identity_i64", "let x = (0 - 1) as i64;\nreturn x;\n"),
             // Pointer width follows the carrier on a 64-bit host.
             new("usize_passthrough", "let x = 42 as usize;\nreturn x;\n"),
+            // Float and bool sources: the VM converts them (truncating toward
+            // zero, 0/1) before reducing to width, so the native path needs
+            // the same conversion rather than only accepting integers.
+            new("float_source", "let x = 3.9 as i32;\nreturn x;\n"),
+            new("float_source_negative", "let x = (0.0 - 3.9) as i32;\nreturn x;\n"),
+            // Out of range: Rust's `as` saturates before the width reduction,
+            // on both sides — the case a trapping conversion would abort on.
+            new("float_source_saturates", "let x = 1.0e30 as i64;\nreturn x;\n"),
+            new("bool_source", "let x = true as u8;\nreturn x;\n"),
+            // A source that came out of a container is boxed, so the native
+            // path unboxes through `dyn.cast_to_i64` rather than reading a
+            // register — a different mechanism from the register case above,
+            // and the one an output loop in a driver actually hits.
+            new(
+                "boxed_source_from_list",
+                "let xs = [300, 255];\nlet out = 0 as u8;\nfor x in xs { out = out + (x as u8); }\nreturn out;\n",
+            ),
+            // The boxed path must truncate a Float toward zero and read a Bool
+            // as 0/1, exactly as the VM's `cast_source_to_i64` does — the two
+            // cases where an `as_i64`-style unbox would raise instead.
+            new(
+                "boxed_source_float",
+                "let xs = [3.9, 0.0 - 3.9];\nfor x in xs { println(x as i32); }\nreturn 0;\n",
+            ),
+            new(
+                "boxed_source_bool",
+                "let xs = [true, false];\nlet out = 0 as u8;\nfor x in xs { out = out + (x as u8); }\nreturn out;\n",
+            ),
         ],
         NativePath::PureCranelift,
     );

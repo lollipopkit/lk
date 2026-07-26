@@ -71,16 +71,58 @@ unsafe extern "C" {
     fn main() -> i64;
 }
 
-/// QEMU's `virt` machine puts a PL011 UART here. Writing a byte to the data
-/// register transmits it; nothing else needs configuring because the firmware
-/// has already brought the device up.
+/// QEMU's `virt` machine puts a PL011 UART here; so does most Arm hardware,
+/// at some address the board tells you. `boot.rs` enables it.
 const UART0_DR: *mut u32 = 0x0900_0000 as *mut u32;
+/// Flag register. Bit 5 (`TXFF`) is set while the transmit FIFO is full.
+const UART0_FR: *const u32 = 0x0900_0018 as *const u32;
 
-/// The sink `lkrt` prints through.
+/// The sink `lkrt` prints through: a PL011 driver, three instructions long.
+///
+/// This is the real output path — a device on a bus, not a debugger service —
+/// which is the point of the demo. Semihosting was useful while the boot path
+/// was still suspect precisely because it bypasses the device; now that the
+/// device works, using it keeps the image honest about running on hardware.
 fn uart_write(text: &str) {
     for byte in text.bytes() {
-        // SAFETY: the address is the board's UART, mapped by the machine model.
-        unsafe { core::ptr::write_volatile(UART0_DR, u32::from(byte)) };
+        // SAFETY: the board's UART, mapped Device by the boot page table.
+        unsafe {
+            while core::ptr::read_volatile(UART0_FR) & (1 << 5) != 0 {}
+            core::ptr::write_volatile(UART0_DR, u32::from(byte));
+        }
+    }
+}
+
+/// Write a value as 16 hex digits, so a fault report needs no formatting
+/// machinery (`core::fmt` in a fault handler is a good way to fault again).
+fn write_hex(value: u64) {
+    let digits = b"0123456789abcdef";
+    let mut buf = [0u8; 16];
+    for (i, slot) in buf.iter_mut().enumerate() {
+        *slot = digits[((value >> (60 - i * 4)) & 0xf) as usize];
+    }
+    // SAFETY: every byte written above came from an ASCII digit table.
+    uart_write(unsafe { core::str::from_utf8_unchecked(&buf) });
+}
+
+/// Where the vector table sends every exception.
+///
+/// It reports and halts rather than trying to recover: nothing here knows how
+/// to resume a faulted program, and a fault that prints its cause is the whole
+/// difference between a debuggable board and a board that stops.
+#[unsafe(no_mangle)]
+pub extern "C" fn fault_report(kind: u64, esr: u64, far: u64, elr: u64) -> ! {
+    uart_write("\n!! fault kind=");
+    write_hex(kind);
+    uart_write(" esr=");
+    write_hex(esr);
+    uart_write(" far=");
+    write_hex(far);
+    uart_write(" elr=");
+    write_hex(elr);
+    uart_write("\n");
+    loop {
+        core::hint::spin_loop();
     }
 }
 
@@ -105,6 +147,11 @@ pub extern "C" fn kernel_main() -> ! {
     // SAFETY: `main` is the object emitted by `lk compile object:`, linked by
     // build.rs, and takes no arguments.
     let result = unsafe { main() };
+    // Control coming back here is the other half of the demo: the compiled
+    // program is a callable, not a takeover.
+    uart_write("[lk returned to the board, status ");
+    write_hex(result as u64);
+    uart_write("]\n");
     unsafe {
         core::ptr::write_volatile(addr_of_mut!(LK_RESULT), result);
     }

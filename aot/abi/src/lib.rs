@@ -418,6 +418,7 @@ macro_rules! for_each_abi_fn {
             // is the VM's loud type error.
             ("dyn", "not", lkrt_dyn_not, ReadsHost, [DynVal], I64);
             ("dyn", "as_i64", lkrt_dyn_as_i64, ReadsHost, [DynVal], I64);
+            ("dyn", "cast_to_i64", lkrt_dyn_cast_to_i64, ReadsHost, [DynVal], I64);
             ("dyn", "as_f64", lkrt_dyn_as_f64, ReadsHost, [DynVal], F64);
             ("dyn", "as_str", lkrt_dyn_as_str, ReadsHost, [DynVal], StrPtr);
             // Deliberately `Retained`: this returns the *existing* handle held

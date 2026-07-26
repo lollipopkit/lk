@@ -224,6 +224,24 @@ pub extern "C" fn lkrt_dyn_as_i64(v: LkDyn) -> i64 {
     v.payload
 }
 
+/// `x as <integer>` where `x` is boxed: the source conversion the VM's
+/// `cast_source_to_i64` performs, so a cast lowers natively even when its
+/// operand came out of a container. Int passes through, Float truncates toward
+/// zero, Bool is 0/1, and anything else raises with the VM's wording — the
+/// width reduction itself stays in generated code.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_dyn_cast_to_i64(v: LkDyn) -> i64 {
+    match v.tag {
+        DYN_I64 => v.payload,
+        DYN_F64 => v.f64_value() as i64,
+        DYN_BOOL => v.payload,
+        DYN_STR => crate::panic::raise_str("cannot cast String to an integer"),
+        DYN_LIST => crate::panic::raise_str("cannot cast List to an integer"),
+        DYN_MAP => crate::panic::raise_str("cannot cast Map to an integer"),
+        _ => crate::panic::raise_str("cannot cast Nil to an integer"),
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_dyn_as_f64(v: LkDyn) -> f64 {
     match v.tag {

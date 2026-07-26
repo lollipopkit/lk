@@ -41,16 +41,37 @@ qemu-system-aarch64 -M virt -cpu cortex-a53 -display none -serial stdio \
   -kernel target/aarch64-unknown-none/release/lk-bare-metal-native
 ```
 
-**Status: the image boots and runs, but its serial output is not working yet.**
-QEMU's execution log (`-d in_asm`) shows the reset path executing from
-`0x4008_0000` — the CPU-id check, the stack setup and the UART writes all run —
-so the compile, link and boot chain is sound. What has not been made to work is
-getting bytes out of the PL011 at `0x0900_0000`: writes to its data register
-produce nothing on the serial line. The device is initialised in `boot.rs`
-(baud divisors, 8N1, `UARTEN | TXE`), which is the usual sequence, so the
-remaining fault is somewhere narrower — the machine's UART wiring, the
-`-serial` plumbing, or something between them. Until it is found, the value
-`main` returns is only observable in `LK_RESULT` under a debugger.
+```
+native LK drives the PL011: sum(fib(0..9)) = 88
+88
+[lk returned to the board, status 0000000000000000]
+```
+
+The first line is written by `program.lk`'s own PL011 driver — LK code, compiled
+to aarch64 instructions, doing `volatile_write_u32` against `0x0900_0000`. The
+`88` after it is the script's result value, echoed by `lkrt` through the sink
+`kernel_main` installs; both reach the same device by different routes.
+
+## What the reset path has to do before compiled code is legal
+
+Three things, each of which showed up as a fault rather than as a warning:
+
+**Enable the MMU.** With the MMU off, every access is Device-nGnRnE, and Device
+memory does not support the exclusive instructions that back atomics — so the
+first lock or atomic counter aborts. The abort is reported as an *alignment*
+fault (`ESR_EL1` = `0x9600_0021`), which points at the wrong thing entirely.
+`boot.rs` installs a four-entry identity map: peripherals Device, RAM Normal
+write-back.
+
+**Clear `CPACR_EL1.FPEN`'s trap.** Floating point and SIMD are trapped at reset
+(`ESR_EL1` EC = `0x07`), on the assumption that an OS wants to know before it
+has to save those registers. LK numbers are `f64`, so a program faults on its
+first arithmetic without this.
+
+**Install a vector table.** `VBAR_EL1` is 0 at reset, where nothing is mapped,
+so any fault becomes a jump into unmapped memory and the board simply stops.
+The table here reports `ESR_EL1`/`FAR_EL1`/`ELR_EL1` over the UART and halts —
+which is how the two faults above were identified rather than guessed at.
 
 ## Why the pieces are shaped this way
 
