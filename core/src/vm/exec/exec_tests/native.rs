@@ -675,14 +675,12 @@ fn execute_caller_handler_catches_raise_from_runtime_callable() {
 
     let result = execute_module_with_globals_heap_and_ctx(&caller_module, vec![global], heap, &mut ctx)
         .expect("caller handler catches runtime raise");
-    let RuntimeVal::Obj(handle) = result.returns.first().expect("return") else {
-        panic!("handler return should be error object");
-    };
-    let Some(HeapValue::ErrorVal(error)) = result.state.heap.get(*handle) else {
-        panic!("handler return should be ErrorVal");
-    };
-
-    assert_eq!(error.message.as_ref(), "boom");
+    // A message-only raise binds the message *string* — the same contract as a
+    // raise inside the frame or from a plain callee.
+    assert_eq!(
+        result.returns.first().expect("return"),
+        &RuntimeVal::ShortStr(crate::val::ShortStr::new("boom").expect("short"))
+    );
 }
 
 #[test]

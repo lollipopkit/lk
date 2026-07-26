@@ -1,5 +1,28 @@
 use super::*;
 
+/// Which flavor of recoverable raise an error is, if any.
+///
+/// The two bind different things in a `catch`: a message-only raise binds the
+/// message string, an `error(v)` raise binds `v` itself (see
+/// `Executor::caught_message_value`). Keeping the distinction in one place is
+/// what stops a catch site from silently handling only the first kind.
+enum RaiseKind {
+    Message(alloc::sync::Arc<str>),
+    Value(crate::val::RuntimeVal),
+}
+
+impl RaiseKind {
+    fn of(error: &anyhow::Error) -> Option<Self> {
+        if let Some(raise) = error.downcast_ref::<LanguageRaise>() {
+            return Some(Self::Message(raise.message.clone()));
+        }
+        error
+            .root_cause()
+            .downcast_ref::<super::handler::LkRaisedValue>()
+            .map(|raised| Self::Value(raised.value))
+    }
+}
+
 impl Executor {
     pub fn run_function(self, function: &Function) -> Result<ExecResult> {
         let mut ctx = None;
@@ -306,13 +329,18 @@ impl Executor {
             }
             let frame = self.frames.pop().expect("checked frames.len() above");
             self.exit_lk_call();
-            let raise_message = error.downcast_ref::<LanguageRaise>().map(|raise| raise.message.clone());
+            // Both raise flavors are catchable, and they bind different things:
+            // a message-only raise binds the message *string*, an `error(v)`
+            // raise binds `v` itself (see `Executor::caught_message_value`).
+            // Only `LanguageRaise` used to be looked for here, so a first-class
+            // raise crossing a frame boundary escaped every `TryBegin` handler.
+            let raised = RaiseKind::of(&error);
             let mut caught = None;
-            if let Some(message) = raise_message {
+            if let Some(raised) = raised {
                 self.handler_stack.truncate(frame.handler_depth);
                 if let Some(handler) = self.handler_stack.pop() {
-                    caught = Some((handler, message));
-                } else {
+                    caught = Some((handler, raised));
+                } else if let RaiseKind::Message(message) = raised {
                     // Mirrors `handle_language_raise`'s `bail!` conversion:
                     // once the immediate caller's own try-stack has been
                     // checked and found no match, this is no longer a
@@ -332,12 +360,13 @@ impl Executor {
             self.state.stack_top = frame.stack_top;
             self.captures = frame.captures;
             match caught {
-                Some((handler, message)) => {
-                    let error_val = RuntimeVal::Obj(self.alloc_heap_value(HeapValue::ErrorVal(crate::val::ErrorVal {
-                        message,
-                        trace: Vec::new(),
-                    })));
-                    self.write(handler.catch_reg, error_val)?;
+                Some((handler, raised)) => {
+                    let value = match raised {
+                        RaiseKind::Message(message) => self.caught_message_value(message.as_ref()),
+                        RaiseKind::Value(value) => value,
+                    };
+                    self.state.set_pending_raise_root(None);
+                    self.write(handler.catch_reg, value)?;
                     self.pc = handler.catch_pc;
                     return Ok(frame.function_index);
                 }
