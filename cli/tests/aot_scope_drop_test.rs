@@ -26,29 +26,41 @@ for i in 0..300000 {\n\
 }\n\
 println(n);\n";
 
-/// Peak RSS in KiB of a finished child, read from `/proc` accounting via
-/// `getrusage`-style reporting. Linux-only, which the test guards on.
+/// Peak RSS in KiB of a finished child, taken from the kernel's own accounting
+/// for that child (`wait4`'s `ru_maxrss`). Linux-only, which the test guards on.
+///
+/// Not sampled. Polling `/proc/<pid>/status` from a shell loop measures nothing
+/// when the child outruns the first sample — this program finishes in single-
+/// digit milliseconds natively, so on a loaded runner the sampler could report
+/// 0 and fail the assertion below as if scope drop had regressed. `wait4`
+/// reports the true peak no matter how short the run is, and costs one syscall
+/// instead of an `awk` process per iteration.
 #[cfg(target_os = "linux")]
+// The child *is* reaped, by `wait4` below rather than through the handle —
+// which is the whole point, since `Child::wait` consumes the exit status and
+// throws the resource usage away with it.
+#[allow(clippy::zombie_processes)]
 fn peak_rss_kib(exe: &std::path::Path) -> u64 {
-    // `/usr/bin/time -v` is not guaranteed present; run the child and read its
-    // own peak from /proc/self/status by wrapping in a shell that reports it.
-    // The executable goes in as a positional argument, never interpolated into
-    // the script: a temp dir with a space in it would otherwise split into two
-    // words and the sampler would measure nothing.
-    let output = Command::new("sh")
-        .arg("-c")
-        .arg(
-            "\"$1\" >/dev/null & pid=$!; peak=0; \
-             while kill -0 $pid 2>/dev/null; do \
-               cur=$(awk '/VmHWM/ {print $2}' /proc/$pid/status 2>/dev/null); \
-               [ -n \"$cur\" ] && [ \"$cur\" -gt \"$peak\" ] && peak=$cur; \
-             done; wait $pid; echo $peak",
-        )
-        .arg("sh")
-        .arg(exe)
-        .output()
-        .expect("run child under rss sampling");
-    String::from_utf8_lossy(&output.stdout).trim().parse().unwrap_or(0)
+    let child = Command::new(exe)
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn child for rss measurement");
+    let pid = child.id() as libc::pid_t;
+    // Reaped here rather than through `Child::wait`, which would consume the
+    // exit status and discard the resource usage along with it. `Child` has no
+    // `Drop` that waits, so reaping it out from under the handle is safe as
+    // long as nothing calls `wait`/`kill` on it afterwards — nothing does.
+    let mut status: libc::c_int = 0;
+    let mut usage: libc::rusage = unsafe { core::mem::zeroed() };
+    // SAFETY: `pid` is our direct child, and both out-params are live locals.
+    let waited = unsafe { libc::wait4(pid, &mut status, 0, &mut usage) };
+    assert_eq!(waited, pid, "wait4 on the measured child failed");
+    assert!(
+        libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0,
+        "measured child exited abnormally (status {status})"
+    );
+    // `ru_maxrss` is KiB on Linux.
+    usage.ru_maxrss as u64
 }
 
 #[test]

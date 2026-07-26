@@ -185,6 +185,72 @@ pub fn call_runtime_value_runtime_with_receiver_list_args(
     call_runtime_value_with_map_args(callee, pos, None, state, module, ctx)
 }
 
+/// The `Type::method` a dispatch was resolved from, carried for diagnostics
+/// only: the table entry itself is just an index, which says nothing useful in
+/// an error message.
+#[derive(Clone, Copy)]
+pub struct TraitMethodRef<'a> {
+    pub type_name: &'a str,
+    pub method: &'a str,
+}
+
+/// Invokes a trait-impl method straight from the runtime method table.
+///
+/// This is the only way a `MethodImpl` is called. Both variants used to be
+/// materialized into a heap `Callable` first, which
+/// `call_runtime_value_with_map_args` then immediately destructured back
+/// into `(function_index, captures)` — one heap object per dispatch, allocated
+/// through `HeapStore::alloc` directly, which (unlike
+/// `Executor::alloc_heap_value`) does not even arm the collector. A loop
+/// calling a trait method grew ~130 bytes per call and never gave any of it
+/// back. Dispatching from the table entry skips the round trip entirely.
+pub fn call_trait_method(
+    method: &crate::vm::MethodImpl,
+    name: TraitMethodRef<'_>,
+    receiver: &RuntimeVal,
+    args: Option<HeapRef>,
+    state: &mut RuntimeModuleState,
+    module: Option<&Module>,
+    ctx: Option<&mut VmContext>,
+) -> Result<RuntimeVal> {
+    let pos = match args {
+        Some(handle) => RuntimePositionalArgs::PrefixedList {
+            first: receiver,
+            rest: handle,
+        },
+        None => RuntimePositionalArgs::Prefixed {
+            first: receiver,
+            rest: &[],
+        },
+    };
+    match method {
+        crate::vm::MethodImpl::Local {
+            module: declaring,
+            function,
+        } => {
+            let executing = module.ok_or_else(|| anyhow!("trait method dispatch requires Module context"))?;
+            if !core::ptr::eq(Arc::as_ptr(declaring), executing as *const Module) {
+                // The index is only meaningful against `declaring`, and running
+                // that body here would read the *executing* module's globals.
+                // Doing it properly needs the declaring module's state, which
+                // is owned by an executor further up the Rust stack and cannot
+                // be reached from here — see `docs/vm-cross-module-dispatch.md`.
+                bail!(
+                    "trait method `{}::{}` is declared in a different module than the one currently executing, \
+                     so it cannot be dispatched here: move the `impl` into the module that calls the method, or \
+                     pass the method in as a value (see docs/vm-cross-module-dispatch.md)",
+                    name.type_name,
+                    name.method
+                );
+            }
+            call_closure_value(*function, Arc::new(Vec::new()), pos, state, Some(executing), ctx)
+        }
+        crate::vm::MethodImpl::Imported(callable) => {
+            call_runtime_callable_runtime_positional(callable.as_ref(), pos, &mut state.heap, ctx)
+        }
+    }
+}
+
 pub fn call_runtime_value_runtime_list_args(
     callee: RuntimeVal,
     args: Option<HeapRef>,

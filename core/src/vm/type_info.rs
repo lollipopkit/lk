@@ -43,8 +43,9 @@
 //! globals, stack, pending raise, and host roots) — safe only by accident,
 //! because a method was registered while its closure still sat in a register.
 //! The registry now stores function *indices*, so it holds no handles at all
-//! and the question does not arise; closures are materialized on demand by
-//! [`method_callable`].
+//! and the question does not arise. Nothing is materialized on the way to a
+//! call either: `vm::call_trait_method` dispatches straight from the table
+//! entry, because an index plus its module is already everything a call needs.
 
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
@@ -111,18 +112,4 @@ impl TypeInfo {
                     .map(|method| method.function)
             })
     }
-}
-
-/// Builds the callable for a registered trait-impl method.
-///
-/// The registry stores a compiled body index rather than a closure (see
-/// [`crate::typ::TraitImpl`]); this materializes one on demand, in the heap
-/// that is about to call it. Impl methods never capture, so the closure's
-/// capture list is always empty.
-pub fn method_callable(function_index: u32, heap: &mut crate::val::HeapStore) -> crate::val::RuntimeVal {
-    use crate::val::{CallableValue, HeapValue, RuntimeVal};
-    RuntimeVal::Obj(heap.alloc(HeapValue::Callable(CallableValue::Closure {
-        function_index,
-        captures: alloc::sync::Arc::new(Vec::new()),
-    })))
 }

@@ -144,7 +144,7 @@ fn execute_compiled_module_with_ctx_full(
     // Trait/impl declarations come from the artifact, not from executing
     // registration calls, so the method table is ready before any user code
     // runs (`VmContext::register_module_types`).
-    ctx.register_module_types(&module.type_info)?;
+    ctx.register_module_types(&module)?;
     let mut seed_heap = HeapStore::new();
     if let Some(gc_threshold) = gc_threshold {
         seed_heap.set_gc_threshold(gc_threshold);
@@ -247,6 +247,12 @@ pub fn call_module_function_with_ctx(
 /// functions touch no user globals (the lowering proves it), so per-call state
 /// is semantically invisible. The state rides along in the outcome so callers
 /// can read heap-backed results before dropping it.
+///
+/// **The caller registers `module`'s trait/impl declarations once**, via
+/// [`VmContext::register_module_types`], before the first call — this entry is
+/// a per-call hot path (a native loop can reach it millions of times) and one
+/// `ctx` outlives the whole process, so registering here re-registered the
+/// module's impls on every single call.
 pub fn call_module_function_with_ctx_keep_state(
     module: &crate::vm::Module,
     function_index: u32,
@@ -263,10 +269,6 @@ pub fn call_module_function_with_ctx_keep_state(
         );
     }
     ctx.truncate_call_stack(0);
-    // Trait/impl declarations come from the artifact, not from executing
-    // registration calls, so the method table is ready before any user code
-    // runs (`VmContext::register_module_types`).
-    ctx.register_module_types(&module.type_info)?;
     let mut seed_heap = HeapStore::new();
     let globals = seed_module_globals(&module.globals, ctx, &mut seed_heap)?;
     let mut state = crate::vm::RuntimeModuleState::new(seed_heap, globals);

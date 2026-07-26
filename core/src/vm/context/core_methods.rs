@@ -11,8 +11,7 @@ use self::list_dispatch::*;
 use crate::{
     val::{HeapRef, HeapStore, HeapValue, RuntimeMapKey, RuntimeSet, RuntimeVal, ShortStr, Type, TypedList},
     vm::{
-        NativeArgs, NativeRuntime, call_runtime_value_runtime_list_args,
-        call_runtime_value_runtime_named_map_list_args, call_runtime_value_runtime_with_receiver_list_args,
+        NativeArgs, NativeRuntime, call_runtime_value_runtime_list_args, call_runtime_value_runtime_named_map_list_args,
     },
 };
 
@@ -1009,21 +1008,16 @@ fn call_trait_method_runtime(
     // Dispatch on the *declared* type name (`Sq`), not the diagnostic one
     // (`runtime_type_name` reports the heap kind, i.e. "Object", for any
     // struct instance).
-    let Some(impl_ref) = ctx.trait_method(&receiver_type.display(), method.as_str()).cloned() else {
+    let declared_type = receiver_type.display();
+    let Some(impl_ref) = ctx.trait_method(&declared_type, method.as_str()).cloned() else {
         bail!("{} has no method '{}'", receiver_type_name, method);
     };
-    let method_val = match impl_ref {
-        crate::vm::MethodImpl::Local(function_index) => crate::vm::method_callable(function_index, state.heap_mut()),
-        // An imported method runs against its own module/heap, so it is
-        // materialized as a `Runtime` callable rather than a local closure.
-        crate::vm::MethodImpl::Imported(callable) => RuntimeVal::Obj(
-            state
-                .heap_mut()
-                .alloc(HeapValue::Callable(crate::val::CallableValue::Runtime(callable))),
-        ),
-    };
-    call_runtime_value_runtime_with_receiver_list_args(
-        method_val,
+    crate::vm::call_trait_method(
+        &impl_ref,
+        crate::vm::TraitMethodRef {
+            type_name: &declared_type,
+            method: method.as_str(),
+        },
         &receiver,
         positional.handle(),
         state,

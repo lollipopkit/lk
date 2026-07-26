@@ -63,7 +63,7 @@ use lk_core::{
     },
     vm::{
         NativeArgs, NativeEntry, NativeFunction, NativeRuntime, call_runtime_callable_runtime,
-        call_runtime_value_runtime, call_runtime_value_runtime_with_receiver, copy_runtime_value_same_module,
+        call_runtime_value_runtime, copy_runtime_value_same_module,
     },
 };
 pub use lk_stdlib_common::metadata::{
@@ -1110,17 +1110,18 @@ fn runtime_display_show(value: &RuntimeVal, runtime: &mut NativeRuntime<'_>) -> 
     let Some(impl_ref) = ctx.trait_method(receiver_type_name, "show").cloned() else {
         return Ok(None);
     };
-    let method = match impl_ref {
-        lk_core::vm::MethodImpl::Local(function_index) => {
-            lk_core::vm::method_callable(function_index, state.heap_mut())
-        }
-        lk_core::vm::MethodImpl::Imported(callable) => RuntimeVal::Obj(
-            state
-                .heap_mut()
-                .alloc(HeapValue::Callable(lk_core::val::CallableValue::Runtime(callable))),
-        ),
-    };
-    let result = call_runtime_value_runtime_with_receiver(method, value, &[], state, module, Some(ctx))?;
+    let result = lk_core::vm::call_trait_method(
+        &impl_ref,
+        lk_core::vm::TraitMethodRef {
+            type_name: receiver_type_name,
+            method: "show",
+        },
+        value,
+        None,
+        state,
+        module,
+        Some(ctx),
+    )?;
     runtime_string_maybe(&result, state.heap()).map(|value| value.map(|value| value.to_string()))
 }
 

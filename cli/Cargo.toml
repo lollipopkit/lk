@@ -44,3 +44,7 @@ sha2 = { workspace = true }
 assert_cmd = "2"
 predicates = "3"
 tempfile = { workspace = true }
+
+# `wait4` for the scope-drop test's peak-RSS measurement (tests/aot_scope_drop_test.rs).
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+libc = "0.2"

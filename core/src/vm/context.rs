@@ -10,7 +10,8 @@ use crate::module::runtime_export_from_runtime_native;
 use crate::typ::TypeChecker;
 use crate::val::{HeapStore, HeapValue, RuntimeMapKey, RuntimeObject, RuntimeVal, ShortStr, Type, TypedMap};
 use crate::vm::{
-    NativeArgs, NativeEntry, NativeFunction, NativeRuntime, RuntimeCallable, RuntimeExport, collect_runtime_export,
+    Module, NativeArgs, NativeEntry, NativeFunction, NativeRuntime, RuntimeCallable, RuntimeExport,
+    collect_runtime_export,
 };
 
 use crate::typ::{TraitDef, TraitImpl};
@@ -27,8 +28,17 @@ use core_methods::{core_call_method_builtin, core_call_method_named_builtin, cor
 /// and heap it was compiled and run in.
 #[derive(Debug, Clone)]
 pub enum MethodImpl {
-    /// Index into the currently executing module's function table.
-    Local(u32),
+    /// A method declared by `module`, addressed by index into *its* function
+    /// table.
+    ///
+    /// The module is carried rather than implied. A function index is only
+    /// meaningful against the table it was compiled into, and this table is
+    /// keyed by type name alone — shared by every module running under one
+    /// context. Resolving the index against whoever happens to be executing
+    /// silently ran an unrelated function of the same index: an `impl` in the
+    /// entry module, dispatched inside a function imported from another file,
+    /// recursed into that file's function #N until the stack overflowed.
+    Local { module: Arc<Module>, function: u32 },
     /// A callable carrying its own module and runtime state. `Arc` because
     /// `RuntimeCallable` owns shared state and a cloned context must keep
     /// pointing at the same module, not a copy of it.
@@ -382,7 +392,8 @@ impl VmContext {
     /// user code runs, needs no bytecode, and holds no heap handles — the
     /// registry was never a GC root, so storing closures there was only safe
     /// while they happened to still be live in a register.
-    pub fn register_module_types(&mut self, type_info: &crate::vm::TypeInfo) -> anyhow::Result<()> {
+    pub fn register_module_types(&mut self, module: &Arc<Module>) -> anyhow::Result<()> {
+        let type_info = &module.type_info;
         if type_info.is_empty() {
             return Ok(());
         }
@@ -425,12 +436,18 @@ impl VmContext {
                 checker.registry_mut().register_trait_impl(impl_def);
             }
         }
-        // The dispatch table itself: local methods resolve against whichever
-        // module is executing, so only the index is recorded.
+        // The dispatch table itself, each entry bound to the module that
+        // declared it (see `MethodImpl::Local`).
         for decl in &type_info.impls {
             let by_method = self.methods.entry(decl.type_name.clone()).or_default();
             for method in &decl.methods {
-                by_method.insert(method.name.clone(), MethodImpl::Local(method.function));
+                by_method.insert(
+                    method.name.clone(),
+                    MethodImpl::Local {
+                        module: Arc::clone(module),
+                        function: method.function,
+                    },
+                );
             }
         }
         Ok(())
@@ -959,6 +976,87 @@ mod tests {
     use super::*;
     use crate::util::fast_map::fast_hash_map_from_iter;
     use crate::vm::{Module, RuntimeModuleState};
+
+    fn module_with_impl(type_name: &str, method: &str, function: u32) -> Arc<Module> {
+        Arc::new(Module {
+            type_info: crate::vm::TypeInfo {
+                traits: vec![crate::vm::TraitDecl {
+                    name: "Area".to_string(),
+                    methods: vec![(method.to_string(), "Function".to_string())],
+                }],
+                impls: vec![crate::vm::ImplDecl {
+                    trait_name: "Area".to_string(),
+                    type_name: type_name.to_string(),
+                    methods: vec![crate::vm::ImplMethod {
+                        name: method.to_string(),
+                        function,
+                        ty: "Function".to_string(),
+                    }],
+                }],
+            },
+            ..Module::default()
+        })
+    }
+
+    #[test]
+    fn dispatch_entry_records_the_module_that_declared_the_impl() {
+        // A function index means nothing without the table it indexes. Two
+        // modules registering `Sq::area` under one context must stay
+        // distinguishable, or dispatch resolves the index against whichever
+        // module happens to be executing.
+        let mut ctx = VmContext::new_without_core_vm_builtins();
+        let first = module_with_impl("Sq", "area", 3);
+        ctx.register_module_types(&first).expect("register first module");
+
+        let Some(MethodImpl::Local { module, function }) = ctx.trait_method("Sq", "area") else {
+            panic!("a locally declared impl registers as `Local`");
+        };
+        assert_eq!(*function, 3);
+        assert!(Arc::ptr_eq(module, &first));
+
+        let second = module_with_impl("Sq", "area", 9);
+        ctx.register_module_types(&second).expect("register second module");
+        let Some(MethodImpl::Local { module, function }) = ctx.trait_method("Sq", "area") else {
+            panic!("still `Local`");
+        };
+        assert_eq!(*function, 9);
+        assert!(Arc::ptr_eq(module, &second), "the entry follows its declaring module");
+    }
+
+    #[test]
+    fn registering_the_same_module_twice_does_not_grow_the_type_registry() {
+        // The hybrid bridge and the REPL both reuse one context for the life of
+        // the process; re-registration must be idempotent or the impl list
+        // grows once per call.
+        let mut ctx = VmContext::new();
+        let module = module_with_impl("Sq", "area", 0);
+        for _ in 0..64 {
+            ctx.register_module_types(&module).expect("register");
+        }
+        let checker = ctx.type_checker.as_ref().expect("checker present");
+        let target = crate::val::Type::Named("Sq".to_string());
+        assert!(checker.registry().implements_trait(&target, "Area"));
+        assert_eq!(
+            checker.registry().trait_impl_count(&target),
+            1,
+            "re-registering an impl must replace it, not stack another copy"
+        );
+    }
+
+    #[test]
+    fn dispatch_table_is_populated_without_a_type_checker() {
+        // `new_without_core_vm_builtins` (goroutine fallback, low-level tests)
+        // has no checker. Returning early on that used to skip the dispatch
+        // table too, silently making every trait method unreachable.
+        let mut ctx = VmContext::new_without_core_vm_builtins();
+        assert!(ctx.type_checker.is_none());
+        ctx.register_module_types(&module_with_impl("Sq", "area", 1))
+            .expect("register without a checker");
+        assert!(matches!(
+            ctx.trait_method("Sq", "area"),
+            Some(MethodImpl::Local { function: 1, .. })
+        ));
+    }
 
     #[test]
     fn deep_call_stack_report_is_truncated() {

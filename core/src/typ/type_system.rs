@@ -90,10 +90,24 @@ impl TypeRegistry {
         self.traits.insert(trait_def.name.clone(), trait_def);
     }
 
-    /// Register a trait implementation
+    /// Register a trait implementation.
+    ///
+    /// Re-registering `impl Trait for Type` **replaces** the existing entry
+    /// instead of stacking another copy behind it. A registry is reused across
+    /// runs (the REPL's context, the hybrid bridge's process-lifetime context),
+    /// and every lookup here is a linear scan of the type's impl list, so
+    /// pushing made both memory and dispatch cost grow with the number of runs
+    /// while the extra copies could never be reached.
     pub fn register_trait_impl(&mut self, impl_def: TraitImpl) {
         let type_name = Self::type_to_string(&impl_def.target_type);
-        self.implementations.entry(type_name).or_default().push(impl_def);
+        let impls = self.implementations.entry(type_name).or_default();
+        match impls
+            .iter_mut()
+            .find(|existing| existing.trait_name == impl_def.trait_name)
+        {
+            Some(existing) => *existing = impl_def,
+            None => impls.push(impl_def),
+        }
     }
 
     /// Resolve a named type to its concrete type
@@ -116,6 +130,15 @@ impl TypeRegistry {
         None
     }
 
+    /// How many impls are registered against `typ`. Every dispatch lookup is a
+    /// linear scan of this list, so it staying flat across repeated
+    /// registrations is a property worth asserting.
+    pub fn trait_impl_count(&self, typ: &Type) -> usize {
+        self.implementations
+            .get(&Self::type_to_string(typ))
+            .map_or(0, |impls| impls.len())
+    }
+
     /// Check if a type implements a trait
     pub fn implements_trait(&self, typ: &Type, trait_name: &str) -> bool {
         let type_name = Self::type_to_string(typ);
@@ -128,8 +151,9 @@ impl TypeRegistry {
 
     /// Get the method implementation for a type and method name
     /// The compiled body index of `typ::method_name`, searching impls in
-    /// registration order (first match wins). Callers turn the index into a
-    /// callable with [`crate::vm::method_callable`].
+    /// registration order (first match wins). The index is only meaningful
+    /// against the module that compiled it; the runtime dispatch table
+    /// (`VmContext::methods`) is what carries that module alongside it.
     pub fn get_method(&self, typ: &Type, method_name: &str) -> Option<u32> {
         let type_name = Self::type_to_string(typ);
         let impls = self.implementations.get(&type_name)?;

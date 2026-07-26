@@ -471,6 +471,10 @@ impl HybridModule {
         let resolver = Arc::new(ModuleResolver::with_registry(registry));
         let mut ctx = VmContext::new().with_resolver(Arc::clone(&resolver));
         lk_core::vm::execute_imports(&imports, resolver.as_ref(), &mut ctx)?;
+        // Once, here — not per bridged call. `ctx` lives as long as the process
+        // (the `HYBRID` `OnceLock`), so a per-call registration accumulated the
+        // module's impls in the type registry for the lifetime of the program.
+        ctx.register_module_types(&module)?;
         Ok(Self { module, ctx })
     }
 

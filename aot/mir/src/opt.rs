@@ -188,16 +188,19 @@ fn block_local_handles(func: &MirFunction, bi: usize) -> Vec<ValueId> {
     let block = &func.blocks[bi];
     let mut created: Vec<ValueId> = Vec::new();
     for inst in &block.insts {
-        // `constructs_handle` alone is the audited safety contract; the module
-        // allowlist on top of it is a deliberate *scope* limit, not a second
-        // safety check. `str.chars`/`str.split` are also `Constructs` and would
-        // be safe to release, but they are not the allocation the measurements
-        // above are about, so they stay on the arena's exit reclaim until a
-        // measurement says otherwise.
+        // `constructs_handle` is the whole condition: the ABI schema's
+        // `Constructs` annotation is the audited contract that a call returns a
+        // fresh arena handle, and every constructor registers it the same way
+        // (`lkrt::state::arena_handle`), so `rt.handle_release` — an
+        // address-keyed lookup of the drop function stored at registration —
+        // releases any of them. Filtering by module name on top of it only hid
+        // constructors from the pass: `str.split`/`str.chars` are annotated
+        // `Constructs` too, so `for l in lines { let parts = l.split(","); }`
+        // retained every temporary list, which is the exact shape this pass
+        // exists for.
         if let Inst::Call {
             dst: Some(dst), callee, ..
         } = inst
-            && matches!(callee.module, "list_h" | "map_h" | "set")
             && constructs_handle(callee)
         {
             created.push(*dst);
