@@ -399,9 +399,12 @@ impl Executor {
                     if let Some(ctx) = ctx.as_deref_mut() {
                         ctx.truncate_call_stack(0);
                     }
-                    self.state.set_pending_raise_root(None);
-                    self.write(handler.catch_reg, value)?;
-                    self.pc = handler.catch_pc;
+                    // Same entry as the same-frame catch above. `frame_base` is
+                    // already `handler.frame_base` (the guard above required
+                    // them equal); `stack_top` narrows from the call site's to
+                    // the region's, which is the temporaries discard the
+                    // same-frame path has always done.
+                    self.enter_handler(handler, value)?;
                     return Ok(frame.function_index);
                 }
                 None => {

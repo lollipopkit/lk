@@ -355,6 +355,16 @@ impl Stmt {
                         Stmt::For { body, .. } => {
                             collect_return_types(body, tc, out)?;
                         }
+                        // A `try` body's `return` returns from *this* function
+                        // (that is what `Stmt::Try` fixed), so both sides have to
+                        // be collected or the declared return type goes
+                        // unchecked: `fn f() -> Int { try { return "s"; } … }`
+                        // passed `lk check` silently.
+                        Stmt::Try { body, handler, .. } => {
+                            for s in body.iter().chain(handler) {
+                                collect_return_types(s, tc, out)?;
+                            }
+                        }
                         Stmt::Block { statements } => {
                             for s in statements {
                                 collect_return_types(s, tc, out)?;

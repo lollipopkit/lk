@@ -824,6 +824,43 @@ fn test_try_catch_is_a_statement_not_a_closure() {
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "3");
 
+    // 4. A `return` inside the body returns from the enclosing function, so it
+    //    has to take part in return-type checking. It did not, so an ill-typed
+    //    `return` inside a `try` passed `lk check` silently.
+    write_file(
+        &dir,
+        "rettype.lk",
+        "fn f() -> Int {\n  try { return \"not an int\"; } catch e { return 2; }\n}\nprintln(f());\n",
+    );
+    let out = run_cli(&dir, ["check", "rettype.lk"]).output().expect("spawn check");
+    assert!(
+        !out.status.success(),
+        "an ill-typed return inside `try` must be rejected"
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("Return type mismatch"),
+        "got: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // 5. A catch name shadowing a local that a closure promoted to a capture
+    //    cell: the binding is fresh (so the handler must not read it through
+    //    `LoadCellVal`) and the outer mark must come back afterwards (so the
+    //    shadowed local must not read as the raw cell).
+    write_file(
+        &dir,
+        "shadow.lk",
+        "fn f() {\n  let e = 0;\n  let bump = || { e = e + 1; };\n  bump();\n\
+         try { 1 / 0; } catch e { println(\"caught\"); }\n  println(e);\n}\nf();\n",
+    );
+    let out = run_cli(&dir, ["shadow.lk"]).output().expect("spawn run");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim().lines().collect::<Vec<_>>(),
+        ["caught", "1"],
+        "the catch binding is fresh, and the shadowed cell local survives the scope"
+    );
+
     // The value a catch binds is unchanged from the `pcall` era: the raised
     // value itself for `error(v)`, the message string for anything else.
     write_file(

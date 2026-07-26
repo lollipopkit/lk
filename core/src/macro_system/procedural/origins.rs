@@ -460,12 +460,20 @@ fn collect_generated_expr_origins_from_stmt(
                 collect_generated_expr_origins_from_stmt(statement, span.clone(), origins);
             }
         }
-        Stmt::Try { body, handler, .. } => {
+        Stmt::Try {
+            body,
+            catch_var,
+            handler,
+        } => {
             push_generated_statement_origin("stmt try", span.clone(), origins);
             for statement in body {
                 collect_generated_expr_origins_from_stmt(statement, span.clone(), origins);
             }
             push_generated_statement_origin("stmt try_catch", span.clone(), origins);
+            // The caught name is a binding this statement introduces, like a
+            // parameter or a `let` — recorded so a macro-generated `catch e`
+            // resolves to its origin.
+            push_generated_reference_origin("binding", catch_var, span.clone(), origins);
             for statement in handler {
                 collect_generated_expr_origins_from_stmt(statement, span.clone(), origins);
             }

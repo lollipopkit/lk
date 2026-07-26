@@ -73,9 +73,17 @@ impl Compiler {
 
         let handler_start = self.function.code.len();
         self.patch_try_begin(region, handler_start)?;
+        // The caught name is its own scope, and both halves of the restore
+        // matter. `insert_fresh_local` (not `insert_local`) drops a cell mark
+        // inherited from a same-named outer local it shadows — keeping it made
+        // the handler read its plain string binding through `LoadCellVal`
+        // ("expected UpvalCell, got String"). And the outer mark has to come
+        // back afterwards, or the shadowed local reads as the raw cell object.
         let locals = self.locals.clone();
-        self.insert_local(catch_var.to_string(), catch_reg);
+        let cell_locals = self.cell_locals.clone();
+        self.insert_fresh_local(catch_var.to_string(), catch_reg);
         let handler_returns = self.lower_scoped_stmt_sequence(handler, catch_reg)?;
+        self.cell_locals = self.scope_restored_cell_locals(&locals, cell_locals);
         self.locals = locals;
 
         if let Some(jmp_end) = jmp_end {
