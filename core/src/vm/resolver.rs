@@ -8,7 +8,10 @@
 //! `stmt::import` now holds only the syntax (`ImportStmt` and friends) and the
 //! AST walk that collects them.
 
-use crate::compat::path::{Path, PathBuf};
+use crate::compat::path::PathBuf;
+// File loading — and therefore every `Path` use — is a `std` surface.
+#[cfg(feature = "std")]
+use crate::compat::path::Path;
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
 use crate::compat::shared_map::SharedMap;
@@ -31,7 +34,11 @@ use std::path::Component;
 pub struct ModuleResolver {
     /// Standard library registry
     stdlib_registry: Arc<ModuleRegistry>,
-    /// Loaded file modules as new VM runtime exports.
+    /// Loaded file modules as new VM runtime exports. Only ever read by the
+    /// `std`-gated file-loading path; without `std` there are no files to load,
+    /// so the map stays empty rather than the field being conditional (that
+    /// would have to be threaded through every constructor and clone).
+    #[cfg_attr(not(feature = "std"), allow(dead_code))]
     runtime_file_modules: Arc<SharedMap<PathBuf, RuntimeExport>>,
     /// Search paths for module resolution
     search_paths: Vec<PathBuf>,
