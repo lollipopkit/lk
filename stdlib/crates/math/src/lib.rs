@@ -1,17 +1,32 @@
+#![cfg_attr(not(feature = "std"), no_std)]
+
+extern crate alloc;
+
+#[cfg(not(feature = "std"))]
+use lk_core::compat::prelude::*;
+
+// std's inherent f64 maths methods do not exist under no_std; this restores
+// them by the same names so the call sites below are identical in both builds.
+#[cfg(not(feature = "std"))]
+mod float;
+mod seed;
+#[cfg(not(feature = "std"))]
+use float::FloatExt as _;
+
 use anyhow::{Result, anyhow, bail};
+use lk_core::compat::collections::HashSet;
 use lk_core::{
     val::RuntimeVal,
     vm::{NativeArgs, NativeRuntime},
 };
-use std::collections::HashSet;
 
 #[derive(Debug, Default, lk_stdlib_common::StdlibModule)]
 #[stdlib_module(name = "math", docs = "Mathematical functions and constants")]
 pub struct MathModule;
 
 #[lk_stdlib_common::stdlib_exports(module = "math")]
-#[stdlib_value("pi" => RuntimeVal::Float(std::f64::consts::PI))]
-#[stdlib_value("e" => RuntimeVal::Float(std::f64::consts::E))]
+#[stdlib_value("pi" => RuntimeVal::Float(core::f64::consts::PI))]
+#[stdlib_value("e" => RuntimeVal::Float(core::f64::consts::E))]
 #[stdlib_value("inf" => RuntimeVal::Float(f64::INFINITY))]
 #[stdlib_value("nan" => RuntimeVal::Float(f64::NAN))]
 #[stdlib_value("max_int" => RuntimeVal::Int(i64::MAX))]
@@ -62,26 +77,7 @@ impl MathModule {
 
     #[stdlib_export(params(), returns = Float)]
     fn random(_args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-        use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-
-        static SEED: AtomicU64 = AtomicU64::new(0x12345678_9ABCDEF0);
-        static COUNTER: AtomicU32 = AtomicU32::new(0);
-
-        let mut seed = SEED.load(Ordering::Relaxed);
-        if seed == 0 {
-            seed = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64;
-            if seed == 0 {
-                seed = 1;
-            }
-        }
-        seed ^= seed << 13;
-        seed ^= seed >> 7;
-        seed ^= seed << 17;
-        SEED.store(seed, Ordering::Relaxed);
-        seed = seed.wrapping_add(COUNTER.fetch_add(1, Ordering::Relaxed) as u64);
+        let seed = crate::seed::next();
         Ok(RuntimeVal::Float((seed >> 11) as f64 / (1u64 << 53) as f64))
     }
 

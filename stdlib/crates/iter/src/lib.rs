@@ -1,4 +1,11 @@
-use std::sync::Arc;
+#![cfg_attr(not(feature = "std"), no_std)]
+
+extern crate alloc;
+
+#[cfg(not(feature = "std"))]
+use lk_core::compat::prelude::*;
+
+use alloc::sync::Arc;
 
 use anyhow::{Result, anyhow, bail};
 use lk_core::{
@@ -52,7 +59,7 @@ impl IterModule {
             let value = item.into_runtime_value(runtime.heap_mut());
             let keep = call_callable(
                 &values[1],
-                std::slice::from_ref(&value),
+                core::slice::from_ref(&value),
                 runtime,
                 "iter.filter second argument",
             )?;
@@ -74,7 +81,7 @@ impl IterModule {
         let mut acc = values[1];
         input.for_each_item(|item| {
             let value = item.into_runtime_value(runtime.heap_mut());
-            let previous = std::mem::replace(&mut acc, RuntimeVal::Nil);
+            let previous = core::mem::replace(&mut acc, RuntimeVal::Nil);
             // Pin the accumulator only for the callback that consumes it
             // (per-iteration mark/truncate keeps `host_roots` O(1)).
             let iteration_mark = runtime.host_roots_mark();
@@ -661,12 +668,12 @@ where
     out
 }
 
-fn unique_arc_values(values: &[std::sync::Arc<str>]) -> Vec<std::sync::Arc<str>> {
+fn unique_arc_values(values: &[alloc::sync::Arc<str>]) -> Vec<alloc::sync::Arc<str>> {
     let mut out = Vec::with_capacity(values.len());
     for value in values {
         if !out
             .iter()
-            .any(|existing: &std::sync::Arc<str>| existing.as_ref() == value.as_ref())
+            .any(|existing: &alloc::sync::Arc<str>| existing.as_ref() == value.as_ref())
         {
             out.push(Arc::clone(value));
         }

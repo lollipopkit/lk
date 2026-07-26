@@ -1,5 +1,12 @@
-use std::collections::HashSet;
-use std::sync::Arc;
+#![cfg_attr(not(feature = "std"), no_std)]
+
+extern crate alloc;
+
+#[cfg(not(feature = "std"))]
+use lk_core::compat::prelude::*;
+
+use alloc::sync::Arc;
+use lk_core::compat::collections::HashSet;
 
 use anyhow::{Result, anyhow, bail};
 use lk_core::{
@@ -139,7 +146,7 @@ impl StringModule {
         if start > value.len() {
             bail!("substring() start index out of bounds");
         }
-        let end = std::cmp::min(start + length, value.len());
+        let end = core::cmp::min(start + length, value.len());
         Ok(runtime_string_value(&value[start..end], runtime.heap_mut()))
     }
 

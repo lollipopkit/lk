@@ -77,20 +77,10 @@ fn semihosting_output(text: &str) {
 
 // --- the program under test ----------------------------------------------
 
-/// Exercises recursion, loops, arithmetic, a local and a stdlib global, so a
-/// broken compiler or executor surfaces as a wrong answer rather than a crash.
-const SOURCE: &str = r#"
-fn fib(n) {
-    if (n < 2) { return n; }
-    return fib(n - 1) + fib(n - 2);
-}
-let total = 0;
-for i in 0..10 {
-    total = total + fib(i);
-}
-println("sum(fib(0..9)) = {}", total);
-return total;
-"#;
+/// The same source the artifact-only image runs precompiled. Beyond language
+/// features it uses the stdlib modules that work without an OS, so a run
+/// exercises the whole bare-metal module surface, not just the VM.
+const SOURCE: &str = include_str!("../demo.lk");
 
 /// 0+1+1+2+3+5+8+13+21+34
 const EXPECTED: i64 = 88;

@@ -10,7 +10,28 @@ license = "Apache-2.0"
 name = "lk_stdlib_bare"
 crate-type = ["rlib"]
 
+[features]
+# Every module is opt-in: on an MCU flash is the scarce resource, so a
+# board should pay only for what it imports. `default` is the full
+# no_std-capable set; pick a subset with `default-features = false`.
+default = ["bytes", "hash", "iter", "math", "slice", "string"]
+bytes = ["dep:lk-stdlib-bytes"]
+hash = ["dep:lk-stdlib-hash"]
+iter = ["dep:lk-stdlib-iter"]
+math = ["dep:lk-stdlib-math"]
+slice = ["dep:lk-stdlib-slice"]
+string = ["dep:lk-stdlib-string"]
+
 [dependencies]
 anyhow = { version = "1", default-features = false }
 lk-core = { path = "../../core", default-features = false }
 lk-stdlib-common = { path = "../common", default-features = false }
+
+# The computation-only modules. Everything needing an OS stays out; see
+# UNSUPPORTED_MODULES in src/lib.rs.
+lk-stdlib-bytes = { path = "../crates/bytes", default-features = false, optional = true }
+lk-stdlib-hash = { path = "../crates/hash", default-features = false, optional = true }
+lk-stdlib-iter = { path = "../crates/iter", default-features = false, optional = true }
+lk-stdlib-math = { path = "../crates/math", default-features = false, optional = true }
+lk-stdlib-slice = { path = "../crates/slice", default-features = false, optional = true }
+lk-stdlib-string = { path = "../crates/string", default-features = false, optional = true }

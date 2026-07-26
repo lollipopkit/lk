@@ -39,6 +39,12 @@ jobs:
           # Full VM core on bare metal (M5.2): parser/compiler/verifier/
           # executor/GC build with no std anywhere in the crate graph.
           cargo build -p lk-core --no-default-features --target thumbv7em-none-eabi
+          # The computation-only stdlib modules must cross-compile too, each
+          # on its own: a crate that only builds because a sibling happened to
+          # enable `std` for it is not actually no_std.
+          for m in bytes hash iter math slice string; do
+            cargo build -p "lk-stdlib-$m" --no-default-features --target thumbv7em-none-eabi
+          done
           cargo build -p lk-stdlib-bare --target thumbv7em-none-eabi
       - name: bare-metal QEMU smoke (LK actually runs with no OS)
         # Building for thumbv7em proves the code compiles; it does not prove the

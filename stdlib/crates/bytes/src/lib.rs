@@ -1,4 +1,11 @@
-use std::sync::Arc;
+#![cfg_attr(not(feature = "std"), no_std)]
+
+extern crate alloc;
+
+#[cfg(not(feature = "std"))]
+use lk_core::compat::prelude::*;
+
+use alloc::sync::Arc;
 
 use anyhow::{Result, anyhow, bail};
 use lk_core::{
@@ -119,7 +126,7 @@ impl BytesModule {
             runtime.heap(),
             "bytes.to_string_utf8()",
         )?;
-        let value = std::str::from_utf8(&bytes).map_err(|err| anyhow!("bytes are not valid UTF-8: {err}"))?;
+        let value = core::str::from_utf8(&bytes).map_err(|err| anyhow!("bytes are not valid UTF-8: {err}"))?;
         Ok(runtime_string_value(value, runtime.heap_mut()))
     }
 

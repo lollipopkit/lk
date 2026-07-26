@@ -6,11 +6,24 @@ edition = "2024"
 authors = ["lollipopkit <a@lpkt.cn>"]
 license = "Apache-2.0"
 
+[features]
+default = ["std"]
+# Off => no_std + alloc, so this module can be offered on bare metal.
+std = [
+    "lk-core/std",
+    "lk-stdlib-common/std",
+    "lk-stdlib-bytes/std",
+    "anyhow/std",
+    "sha1/std",
+    "sha2/std",
+    "crc32fast/std",
+]
+
 [dependencies]
-anyhow = { workspace = true }
-crc32fast = { workspace = true }
+anyhow = { version = "1", default-features = false }
+crc32fast = { version = "1", default-features = false }
 lk-core = { path = "../../../core", default-features = false }
-lk-stdlib-bytes = { path = "../bytes" }
-lk-stdlib-common = { path = "../../common" }
-sha1 = { workspace = true }
-sha2 = { workspace = true }
+lk-stdlib-bytes = { path = "../bytes", default-features = false }
+lk-stdlib-common = { path = "../../common", default-features = false }
+sha1 = { version = "0.10", default-features = false }
+sha2 = { version = "0.10", default-features = false }

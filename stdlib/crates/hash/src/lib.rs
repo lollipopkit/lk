@@ -1,3 +1,10 @@
+#![cfg_attr(not(feature = "std"), no_std)]
+
+extern crate alloc;
+
+#[cfg(not(feature = "std"))]
+use lk_core::compat::prelude::*;
+
 use anyhow::Result;
 use lk_core::{
     val::RuntimeVal,
@@ -51,6 +58,6 @@ impl HashModule {
     }
 }
 
-fn data_arg(args: NativeArgs<'_>, runtime: &NativeRuntime<'_>, name: &str) -> Result<std::sync::Arc<[u8]>> {
+fn data_arg(args: NativeArgs<'_>, runtime: &NativeRuntime<'_>, name: &str) -> Result<alloc::sync::Arc<[u8]>> {
     runtime_bytes_or_string_arg(args.get(0).expect("checked arity"), runtime.heap(), name)
 }

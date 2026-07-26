@@ -1330,7 +1330,13 @@ version = "0.1.3"
 dependencies = [
  "anyhow",
  "lk-core",
+ "lk-stdlib-bytes",
  "lk-stdlib-common",
+ "lk-stdlib-hash",
+ "lk-stdlib-iter",
+ "lk-stdlib-math",
+ "lk-stdlib-slice",
+ "lk-stdlib-string",
 ]
 
 [[package]]
@@ -1462,6 +1468,7 @@ name = "lk-stdlib-math"
 version = "0.1.3"
 dependencies = [
  "anyhow",
+ "libm",
  "lk-core",
  "lk-stdlib-common",
 ]

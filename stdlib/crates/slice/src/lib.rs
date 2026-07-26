@@ -1,4 +1,11 @@
-use std::sync::Arc;
+#![cfg_attr(not(feature = "std"), no_std)]
+
+extern crate alloc;
+
+#[cfg(not(feature = "std"))]
+use lk_core::compat::prelude::*;
+
+use alloc::sync::Arc;
 
 use anyhow::{Result, anyhow, bail};
 use lk_core::{
@@ -144,7 +151,7 @@ impl SliceModule {
                 let text = runtime_string_arg(&slice.source, runtime.heap(), "slice.to_string() source")?;
                 let bytes = &text.as_bytes()[slice.start..slice.start + slice.len];
                 let value =
-                    std::str::from_utf8(bytes).map_err(|_| anyhow!("slice.to_string() range is not valid UTF-8"))?;
+                    core::str::from_utf8(bytes).map_err(|_| anyhow!("slice.to_string() range is not valid UTF-8"))?;
                 Ok(runtime_string_value(value, runtime.heap_mut()))
             }
             SliceKind::List => bail!("slice.to_string() expects a string slice"),

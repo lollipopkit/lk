@@ -54,6 +54,23 @@ fn emit(text: &str) {
     }
 }
 
+/// The computation-only modules, which work unchanged without an OS. Each is
+/// a cargo feature so a board pays flash only for what it imports.
+const BARE_MODULES: &[fn(&mut ModuleRegistry) -> Result<()>] = &[
+    #[cfg(feature = "bytes")]
+    lk_stdlib_bytes::register,
+    #[cfg(feature = "hash")]
+    lk_stdlib_hash::register,
+    #[cfg(feature = "iter")]
+    lk_stdlib_iter::register,
+    #[cfg(feature = "math")]
+    lk_stdlib_math::register,
+    #[cfg(feature = "slice")]
+    lk_stdlib_slice::register,
+    #[cfg(feature = "string")]
+    lk_stdlib_string::register,
+];
+
 /// Modules that exist in LK but cannot be backed by anything on bare metal.
 /// Kept explicit so the error names the reason rather than the symptom.
 const UNSUPPORTED_MODULES: &[&str] = &[
@@ -61,8 +78,9 @@ const UNSUPPORTED_MODULES: &[&str] = &[
     "uuid",
 ];
 
-/// Registers the globals (`print`, `println`, `panic`, `assert*`) plus the
-/// unavailable-module placeholders.
+/// Registers the globals (`print`, `println`, `panic`, `assert*`), the
+/// computation-only modules, and placeholders for the ones an OS would be
+/// needed for.
 pub fn register_bare_stdlib(registry: &mut ModuleRegistry) -> Result<()> {
     register_bare_stdlib_globals(registry);
     register_bare_stdlib_modules(registry)
@@ -82,6 +100,9 @@ pub fn register_bare_stdlib_globals(registry: &mut ModuleRegistry) {
 }
 
 pub fn register_bare_stdlib_modules(registry: &mut ModuleRegistry) -> Result<()> {
+    for register in BARE_MODULES {
+        register(registry)?;
+    }
     for name in UNSUPPORTED_MODULES {
         registry.register_module(name, Box::new(UnsupportedBareModule { name }))?;
     }
