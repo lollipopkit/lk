@@ -728,5 +728,8 @@ pub(crate) fn lower_function(
         entry: BlockId(0),
         ret,
         blocks: mir_blocks,
+        // The entry already has a fixed exported name (`main`), so an
+        // `#[export]` on it would be a second name for the same symbol.
+        export_name: if is_entry { None } else { func.export_name.clone() },
     })
 }

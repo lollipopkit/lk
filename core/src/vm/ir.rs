@@ -763,6 +763,14 @@ pub struct Function {
     /// kept purely for diagnostics / tracebacks. `None` for anonymous lambdas.
     /// The executor never reads it, so it is zero-cost on the hot path.
     pub debug_name: Option<Arc<str>>,
+    /// The C symbol this function is exported under, from `#[export]` /
+    /// `#[export("name")]`. `None` — the usual case — means the native backend
+    /// gives it internal linkage under a generated name.
+    ///
+    /// The VM ignores this: an exported function is still an ordinary LK
+    /// function to it. It matters to the AOT path, where a board's reset stub
+    /// or interrupt vector has to be able to *name* the compiled code it calls.
+    pub export_name: Option<Arc<str>>,
 }
 
 #[derive(Clone, Debug, Default)]

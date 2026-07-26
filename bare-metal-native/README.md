@@ -43,6 +43,7 @@ qemu-system-aarch64 -M virt -cpu cortex-a53 -display none -serial stdio \
 
 ```
 native LK drives the PL011: sum(fib(0..9)) = 88
+...........
 88
 [lk returned to the board, status 0000000000000000]
 ```
@@ -51,6 +52,47 @@ The first line is written by `program.lk`'s own PL011 driver — LK code, compil
 to aarch64 instructions, doing `volatile_write_u32` against `0x0900_0000`. The
 `88` after it is the script's result value, echoed by `lkrt` through the sink
 `kernel_main` installs; both reach the same device by different routes.
+
+## Interrupts
+
+Each `.` is a timer interrupt **handled by an LK function**:
+
+```lk
+#[export("lk_timer_isr")]
+fn on_tick() {
+    uart_putc(46);
+}
+```
+
+`#[export]` is what makes this possible: it gives the compiled function a C
+symbol, so the board's IRQ vector can name it. Without it every function but
+the entry gets internal linkage under a generated `lk_fn_N`, which nothing
+outside the module can reach — and an interrupt handler has no caller *inside*
+the module, so it would also be pruned as unreachable. Both are handled: an
+exported function is a root of the reachability walk.
+
+The division of labour is the ordinary one. The board's trampoline
+(`boot.rs`, `irq_dispatch`) spills every caller-saved register, acknowledges
+the interrupt at the GIC, rearms the timer and signals completion. What a tick
+*means* is the program's, and that part is LK.
+
+The handler and the main program share a device, so `program.lk` masks
+interrupts around the lines it does not want spliced:
+
+```lk
+let irq = unsafe { cpu_irq_save() };
+uart_write(/* … */);
+unsafe { cpu_irq_restore(irq); };
+```
+
+`cpu_irq_save` returns the *previous* state rather than a flag, so nesting one
+critical section inside another does not re-enable interrupts early on the way
+out.
+
+Two things the handler must not do, both because an interrupt lands between any
+two instructions of the interrupted program — including instructions inside the
+runtime: allocate, or take a lock. `on_tick` only performs volatile MMIO, which
+goes straight to `lkrt`'s stateless `mmio` helpers.
 
 ## What the reset path has to do before compiled code is legal
 

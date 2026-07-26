@@ -9,6 +9,7 @@ use crate::{
     expr::{Expr, Pattern},
     operator::BinOp,
     stmt::{NamedParamDecl, Program, Stmt},
+    token::Token,
     val::{LiteralVal, RuntimeMapKey, ShortStr},
     vm::ConstRuntimeValue,
 };
@@ -55,6 +56,42 @@ pub(super) struct FunctionInlineBody {
     pub(super) params: Vec<String>,
     pub(super) named_param_count: usize,
     pub(super) body: Stmt,
+}
+
+/// The C symbol a declaration asks to be exported under.
+///
+/// `#[export]` uses the LK name; `#[export("sym")]` names the symbol
+/// explicitly, which is what an interrupt vector or an existing C header
+/// usually forces. Anything else in that position is rejected rather than
+/// ignored: a silently-dropped export produces a link error somewhere else
+/// entirely.
+pub(super) fn export_name_from_attributes(stmt: &Stmt, default_name: &str) -> Result<Option<Arc<str>>> {
+    let Stmt::Attributed { attributes, item } = stmt else {
+        return Ok(None);
+    };
+    let mut found = None;
+    for attribute in attributes {
+        let tokens = attribute.tokens.as_slice();
+        match tokens {
+            [Token::Id(name)] if name == "export" => {
+                found = Some(Arc::<str>::from(default_name));
+            }
+            [Token::Id(name), Token::LParen, Token::Str(symbol), Token::RParen] if name == "export" => {
+                if symbol.is_empty() {
+                    bail!("`#[export(\"\")]` needs a symbol name");
+                }
+                found = Some(Arc::<str>::from(symbol.as_str()));
+            }
+            [Token::Id(name), ..] if name == "export" => {
+                bail!("`#[export]` takes either no argument or one string literal symbol name");
+            }
+            _ => {}
+        }
+    }
+    if found.is_some() && !matches!(item_without_attributes(item), Stmt::Function { .. }) {
+        bail!("`#[export]` applies to functions");
+    }
+    Ok(found)
 }
 
 pub(super) fn item_without_attributes(stmt: &Stmt) -> &Stmt {

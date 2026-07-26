@@ -425,6 +425,11 @@ pub struct MirFunction {
     pub blocks: Vec<Block>,
     pub entry: BlockId,
     pub ret: Ty,
+    /// The C symbol from `#[export]`, if the source asked for one. Codegen
+    /// gives such a function external linkage under this name instead of the
+    /// generated `lk_fn_N`, so a board's vector table or an existing C caller
+    /// can reach it.
+    pub export_name: Option<String>,
 }
 
 impl MirFunction {
@@ -1026,6 +1031,7 @@ mod tests {
                 params: vec![],
                 entry: BlockId(0),
                 ret: Ty::I64,
+                export_name: None,
                 blocks: vec![Block {
                     id: BlockId(0),
                     params: vec![],

@@ -81,6 +81,18 @@ fn uart_put_int(value: Int) {
     }
 }
 
+// The timer interrupt handler, written in LK.
+//
+// `#[export]` gives it a C symbol so the board's IRQ vector can name it; the
+// board acknowledges the interrupt and rearms the timer, and this decides what
+// a tick *means*. It transmits directly and allocates nothing, because an
+// interrupt lands between any two instructions of the interrupted program —
+// including instructions inside the runtime's allocator.
+#[export("lk_timer_isr")]
+fn on_tick() {
+    uart_putc(46); // '.'
+}
+
 fn fib(n: Int) -> Int {
     if (n < 2) { return n; }
     return fib(n - 1) + fib(n - 2);
@@ -88,16 +100,39 @@ fn fib(n: Int) -> Int {
 
 uart_init();
 
-// "native LK drives the PL011: sum(fib(0..9)) = "
-uart_write([110, 97, 116, 105, 118, 101, 32, 76, 75, 32, 100, 114, 105, 118, 101, 115,
-            32, 116, 104, 101, 32, 80, 76, 48, 49, 49, 58, 32, 115, 117, 109, 40,
-            102, 105, 98, 40, 48, 46, 46, 57, 41, 41, 32, 61, 32]);
-
 let total = 0;
 for i in 0..10 {
     total = total + fib(i);
 }
+
+// A critical section, written in LK.
+//
+// The handler above transmits on the same device this line does, and an
+// interrupt lands between any two instructions — so without masking, a tick
+// would splice a '.' into the middle of the message. `cpu_irq_save` returns the
+// previous state rather than a flag, so nesting one of these inside another
+// does not enable interrupts early on the way out.
+let irq = unsafe { cpu_irq_save() };
+// "native LK drives the PL011: sum(fib(0..9)) = "
+uart_write([110, 97, 116, 105, 118, 101, 32, 76, 75, 32, 100, 114, 105, 118, 101, 115,
+            32, 116, 104, 101, 32, 80, 76, 48, 49, 49, 58, 32, 115, 117, 109, 40,
+            102, 105, 98, 40, 48, 46, 46, 57, 41, 41, 32, 61, 32]);
 uart_put_int(total);
+uart_putc(10);
+unsafe { cpu_irq_restore(irq); };
+
+// Enough work for a few timer periods to elapse. Every '.' after this point
+// came from the LK handler above, running in interrupt context while this loop
+// was mid-computation.
+let spin = 0;
+for i in 0..10000000 {
+    spin = spin + 1;
+}
+// Masked and deliberately not restored: the program is finished, and what runs
+// after this is the runtime's epilogue echoing the script's value. A tick
+// landing in the middle of that would splice a '.' into a line no LK code is
+// in a position to protect.
+unsafe { cpu_irq_save(); };
 uart_putc(10);
 
 return total;

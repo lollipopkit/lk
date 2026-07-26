@@ -14,6 +14,7 @@ fn one_block(insts: Vec<Inst>, ret: Option<ValueId>) -> MirFunction {
         }],
         entry: BlockId(0),
         ret: Ty::I64,
+        export_name: None,
     }
 }
 
@@ -125,6 +126,7 @@ fn cse_rewrites_uses_in_later_blocks_and_terminators() {
         ],
         entry: BlockId(0),
         ret: Ty::I64,
+        export_name: None,
     };
     assert_eq!(cse_pure_calls(&mut func), 1);
     assert!(
@@ -292,6 +294,7 @@ fn loop_func(insts: Vec<Inst>, cond: ValueId, extra_args: Vec<ValueId>) -> MirFu
         ],
         entry: BlockId(0),
         ret: Ty::I64,
+        export_name: None,
     }
 }
 
@@ -488,6 +491,7 @@ fn cse_collapses_across_blocks_when_the_first_call_dominates() {
         ],
         entry: BlockId(0),
         ret: Ty::I64,
+        export_name: None,
     };
     assert_eq!(cse_pure_calls(&mut func), 1);
     assert!(func.blocks[1].insts.is_empty(), "the dominated repeat is gone");
@@ -538,6 +542,7 @@ fn cse_does_not_collapse_across_sibling_branches() {
         ],
         entry: BlockId(0),
         ret: Ty::I64,
+        export_name: None,
     };
     assert_eq!(cse_pure_calls(&mut func), 0, "sibling arms must keep their own call");
     assert_eq!(func.blocks[1].insts.len(), 1);
@@ -591,6 +596,7 @@ fn cse_does_not_hoist_out_of_a_loop_body_into_a_later_block() {
         ],
         entry: BlockId(0),
         ret: Ty::I64,
+        export_name: None,
     };
     assert_eq!(cse_pure_calls(&mut func), 0);
     assert_eq!(func.blocks[2].insts.len(), 1, "the post-loop call must stay");

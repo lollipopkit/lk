@@ -16,6 +16,25 @@ global_asm!(
     "   mrs     x0, mpidr_el1",
     "   and     x0, x0, #0xff",
     "   cbnz    x0, 2f",
+    // Bring the PL011 up before anything else.
+    //
+    // `program.lk`'s driver configures it too, with the same values — this is
+    // not a substitute for it. It is here because the timer interrupt is armed
+    // before the LK program starts running, and its handler transmits: the
+    // device has to be able to transmit from reset, or a tick landing in the
+    // window before `uart_init()` would write to a disabled UART.
+    //   +0x24 IBRD, +0x28 FBRD, +0x2c LCR_H (8N1, FIFOs), +0x30 CR (UARTEN|TXE)
+    "   mov     x9, #0x09000000",
+    "   mov     w10, #0",
+    "   str     w10, [x9, #0x30]",
+    "   mov     w10, #1",
+    "   str     w10, [x9, #0x24]",
+    "   mov     w10, #40",
+    "   str     w10, [x9, #0x28]",
+    "   mov     w10, #0x70",
+    "   str     w10, [x9, #0x2c]",
+    "   mov     w10, #0x301",
+    "   str     w10, [x9, #0x30]",
     // Let floating point and SIMD execute. `CPACR_EL1.FPEN` traps them at
     // reset, on the assumption that an OS wants to know before it has to save
     // those registers on a context switch. Compiled code uses them freely — LK
@@ -98,9 +117,9 @@ global_asm!(
 //
 // Sixteen entries of 0x80 bytes: four exception kinds (synchronous, IRQ, FIQ,
 // SError) for each of four sources (EL1 with SP0, EL1 with SPx, and 64- and
-// 32-bit lower ELs). Every one lands in the same reporter — this board has no
-// interrupt handling yet, so the only useful thing any of them can do is say
-// what went wrong.
+// 32-bit lower ELs). Everything except the IRQ we actually take lands in the
+// reporter — the useful thing an unexpected exception can do is say what it
+// was, rather than vanish.
 global_asm!(
     ".section .text.vectors",
     ".align 11",
@@ -111,13 +130,17 @@ global_asm!(
     "   b       __fault_trampoline",
     ".align 7",
     ".endm",
+    ".macro IRQ_ENTRY",
+    "   b       __irq_trampoline",
+    ".align 7",
+    ".endm",
     ".align 7",
     "VEC_ENTRY 0",  // current EL, SP0: synchronous
     "VEC_ENTRY 1",  // current EL, SP0: IRQ
     "VEC_ENTRY 2",  // current EL, SP0: FIQ
     "VEC_ENTRY 3",  // current EL, SP0: SError
     "VEC_ENTRY 4",  // current EL, SPx: synchronous
-    "VEC_ENTRY 5",
+    "IRQ_ENTRY",    // current EL, SPx: IRQ — the one the timer arrives on
     "VEC_ENTRY 6",
     "VEC_ENTRY 7",
     "VEC_ENTRY 8",  // lower EL, aarch64
@@ -136,4 +159,61 @@ global_asm!(
     "   mrs     x2, far_el1",
     "   mrs     x3, elr_el1",
     "   b       fault_report",
+    // The IRQ path, which unlike the fault path has to *return*.
+    //
+    // An interrupt can land between any two instructions of the interrupted
+    // program, so every register the called code is allowed to clobber must be
+    // saved: x0-x18 and x29/x30 on the integer side, v0-v7 and v16-v31 on the
+    // floating-point side. Missing one corrupts a value in the interrupted
+    // computation — a wrong answer rather than a crash, which is the hardest
+    // kind of bug to find.
+    "__irq_trampoline:",
+    "   stp     x0, x1, [sp, #-16]!",
+    "   stp     x2, x3, [sp, #-16]!",
+    "   stp     x4, x5, [sp, #-16]!",
+    "   stp     x6, x7, [sp, #-16]!",
+    "   stp     x8, x9, [sp, #-16]!",
+    "   stp     x10, x11, [sp, #-16]!",
+    "   stp     x12, x13, [sp, #-16]!",
+    "   stp     x14, x15, [sp, #-16]!",
+    "   stp     x16, x17, [sp, #-16]!",
+    "   stp     x18, x29, [sp, #-16]!",
+    "   str     x30, [sp, #-16]!",
+    "   stp     q0, q1, [sp, #-32]!",
+    "   stp     q2, q3, [sp, #-32]!",
+    "   stp     q4, q5, [sp, #-32]!",
+    "   stp     q6, q7, [sp, #-32]!",
+    "   stp     q16, q17, [sp, #-32]!",
+    "   stp     q18, q19, [sp, #-32]!",
+    "   stp     q20, q21, [sp, #-32]!",
+    "   stp     q22, q23, [sp, #-32]!",
+    "   stp     q24, q25, [sp, #-32]!",
+    "   stp     q26, q27, [sp, #-32]!",
+    "   stp     q28, q29, [sp, #-32]!",
+    "   stp     q30, q31, [sp, #-32]!",
+    "   bl      irq_dispatch",
+    "   ldp     q30, q31, [sp], #32",
+    "   ldp     q28, q29, [sp], #32",
+    "   ldp     q26, q27, [sp], #32",
+    "   ldp     q24, q25, [sp], #32",
+    "   ldp     q22, q23, [sp], #32",
+    "   ldp     q20, q21, [sp], #32",
+    "   ldp     q18, q19, [sp], #32",
+    "   ldp     q16, q17, [sp], #32",
+    "   ldp     q6, q7, [sp], #32",
+    "   ldp     q4, q5, [sp], #32",
+    "   ldp     q2, q3, [sp], #32",
+    "   ldp     q0, q1, [sp], #32",
+    "   ldr     x30, [sp], #16",
+    "   ldp     x18, x29, [sp], #16",
+    "   ldp     x16, x17, [sp], #16",
+    "   ldp     x14, x15, [sp], #16",
+    "   ldp     x12, x13, [sp], #16",
+    "   ldp     x10, x11, [sp], #16",
+    "   ldp     x8, x9, [sp], #16",
+    "   ldp     x6, x7, [sp], #16",
+    "   ldp     x4, x5, [sp], #16",
+    "   ldp     x2, x3, [sp], #16",
+    "   ldp     x0, x1, [sp], #16",
+    "   eret",
 );

@@ -146,8 +146,14 @@ jobs:
           # The first line comes out of LK's own PL011 driver — compiled
           # `volatile_write_u32` against 0x0900_0000, no runtime involved. The
           # last proves control returned from compiled code to the board.
+          # The '...' are timer interrupts handled by an LK function: three in
+          # a row means the GIC, the timer and the exported handler are all
+          # working, where one could be a fluke of ordering. The headline is
+          # intact because `program.lk` masks interrupts around it — an
+          # unprotected line would have dots spliced into it.
           for expected in \
             "native LK drives the PL011: sum(fib(0..9)) = 88" \
+            "..." \
             "[lk returned to the board, status 0000000000000000]"; do
             printf '%s' "$output" | grep -qF -- "$expected" || {
               echo "::error::aarch64 native image did not print: $expected"

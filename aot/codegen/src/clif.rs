@@ -239,6 +239,11 @@ pub fn compile_module(mir: &MirModule, isa: std::sync::Arc<dyn TargetIsa>) -> Re
     for func in &mir.functions {
         let (sym, linkage, sig) = if func.id == mir.entry {
             ("main".to_string(), Linkage::Export, main_signature(cc))
+        } else if let Some(exported) = &func.export_name {
+            // `#[export]`: an external symbol under the source's chosen name,
+            // with the function's own signature. This is how a board names LK
+            // code — an interrupt vector or a C caller cannot reach `lk_fn_7`.
+            (exported.clone(), Linkage::Export, signature_of(func, cc)?)
         } else {
             (format!("lk_fn_{}", func.id.0), Linkage::Local, signature_of(func, cc)?)
         };
@@ -1537,6 +1542,7 @@ mod tests {
                 }],
                 entry: BlockId(0),
                 ret: Ty::I64,
+                export_name: None,
             }],
         }
     }
@@ -1605,6 +1611,7 @@ mod tests {
             blocks: vec![block],
             entry: BlockId(0),
             ret: Ty::I64,
+            export_name: None,
         };
         compile_ok(vec![func]).expect("scalar arithmetic must compile");
     }
@@ -1648,6 +1655,7 @@ mod tests {
             blocks: vec![entry, join],
             entry: BlockId(0),
             ret: Ty::I64,
+            export_name: None,
         };
         compile_ok(vec![func]).expect("block-param control flow must compile");
     }
@@ -1672,6 +1680,7 @@ mod tests {
             }],
             entry: BlockId(0),
             ret: Ty::I64,
+            export_name: None,
         };
         // fn caller(x) -> i64 { return callee(x, 3) }
         let caller = MirFunction {
@@ -1695,6 +1704,7 @@ mod tests {
             }],
             entry: BlockId(0),
             ret: Ty::I64,
+            export_name: None,
         };
         compile_ok(vec![caller, callee]).expect("div + direct call must compile");
     }
@@ -1719,6 +1729,7 @@ mod tests {
             }],
             entry: BlockId(0),
             ret: Ty::I64,
+            export_name: None,
         };
         compile_ok(vec![func]).expect("scalar ABI call must compile");
     }
@@ -1746,6 +1757,7 @@ mod tests {
             }],
             entry: BlockId(0),
             ret: Ty::I64,
+            export_name: None,
         };
         // fn() -> str { return "hi" }
         let get_str = MirFunction {
@@ -1762,6 +1774,7 @@ mod tests {
             }],
             entry: BlockId(0),
             ret: Ty::Str,
+            export_name: None,
         };
         let mir = MirModule {
             abi_version: 0,
@@ -1798,6 +1811,7 @@ mod tests {
             }],
             entry: BlockId(0),
             ret: Ty::Nil,
+            export_name: None,
         };
         let mir = MirModule {
             abi_version: 0,
@@ -1836,6 +1850,7 @@ mod tests {
             }],
             entry: BlockId(0),
             ret: Ty::Nil,
+            export_name: None,
         };
         let mir = MirModule {
             abi_version: 1,
@@ -1865,6 +1880,7 @@ mod tests {
             }],
             entry: BlockId(0),
             ret: Ty::I64,
+            export_name: None,
         };
         let mir = MirModule {
             abi_version: 1,
@@ -1894,6 +1910,7 @@ mod tests {
             }],
             entry: BlockId(0),
             ret: Ty::Nil,
+            export_name: None,
         };
         assert!(matches!(compile_ok(vec![func]), Err(ClifError::Unsupported(_))));
     }
@@ -1925,6 +1942,7 @@ mod tests {
             }],
             entry: BlockId(0),
             ret: Ty::Nil,
+            export_name: None,
         };
         let mir = MirModule {
             abi_version: 0,
@@ -1955,6 +1973,7 @@ mod tests {
             }],
             entry: BlockId(0),
             ret: Ty::Dyn,
+            export_name: None,
         };
         compile_ok(vec![func]).expect("Dyn pair identity must compile");
     }

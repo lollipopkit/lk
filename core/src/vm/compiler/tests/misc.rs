@@ -1137,3 +1137,75 @@ fn tuple_annotation_parses_as_the_tuple_type() {
         ]))
     );
 }
+
+/// `#[export]` names a compiled function for the native backend.
+///
+/// The VM ignores the attribute, so the only place a mistake shows up is a
+/// missing or misnamed symbol at link time — far from the source. These check
+/// the name reaches `Function::export_name`, which is what codegen reads.
+#[test]
+fn export_attribute_defaults_to_the_source_name() {
+    let module = compile_module(&parse_program(
+        r#"
+        #[export]
+        fn tick() { return 1; }
+        return tick();
+        "#,
+    ))
+    .expect("compile module");
+    let exported: Vec<_> = module
+        .functions
+        .iter()
+        .filter_map(|function| function.export_name.as_deref())
+        .collect();
+    assert_eq!(exported, vec!["tick"]);
+}
+
+#[test]
+fn export_attribute_takes_an_explicit_symbol() {
+    let module = compile_module(&parse_program(
+        r#"
+        #[export("timer_isr")]
+        fn tick() { return 1; }
+        return tick();
+        "#,
+    ))
+    .expect("compile module");
+    let exported: Vec<_> = module
+        .functions
+        .iter()
+        .filter_map(|function| function.export_name.as_deref())
+        .collect();
+    assert_eq!(exported, vec!["timer_isr"]);
+}
+
+/// A function with no `#[export]` stays internal — otherwise every function in
+/// a program would land in the symbol table.
+#[test]
+fn functions_are_not_exported_by_default() {
+    let module = compile_module(&parse_program(
+        r#"
+        fn tick() { return 1; }
+        return tick();
+        "#,
+    ))
+    .expect("compile module");
+    assert!(module.functions.iter().all(|function| function.export_name.is_none()));
+}
+
+/// A malformed `#[export]` is an error rather than a silently ignored
+/// attribute: ignoring it produces an undefined symbol somewhere unrelated.
+#[test]
+fn malformed_export_attribute_is_rejected() {
+    for source in [
+        "#[export(timer_isr)]\nfn tick() { return 1; }\nreturn tick();",
+        "#[export(\"\")]\nfn tick() { return 1; }\nreturn tick();",
+        "#[export(1)]\nfn tick() { return 1; }\nreturn tick();",
+    ] {
+        let error = compile_module(&parse_program(source)).expect_err("malformed export must fail");
+        assert!(
+            error.to_string().contains("export"),
+            "unexpected error for {source:?}: {error}"
+        );
+    }
+}

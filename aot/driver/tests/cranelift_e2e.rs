@@ -38,6 +38,7 @@ fn println_program(text: &str) -> MirModule {
         }],
         entry: BlockId(0),
         ret: Ty::Nil,
+        export_name: None,
     };
     MirModule {
         abi_version: lk_aot_abi::ABI_VERSION,

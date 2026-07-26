@@ -126,6 +126,106 @@ pub extern "C" fn fault_report(kind: u64, esr: u64, far: u64, elr: u64) -> ! {
     }
 }
 
+// The GICv2 on QEMU's `virt` machine: a distributor (which interrupts exist and
+// who they go to) and a per-CPU interface (acknowledge and end-of-interrupt).
+const GICD_BASE: usize = 0x0800_0000;
+const GICC_BASE: usize = 0x0801_0000;
+const GICD_CTLR: *mut u32 = GICD_BASE as *mut u32;
+const GICD_ISENABLER: *mut u32 = (GICD_BASE + 0x100) as *mut u32;
+const GICD_IPRIORITYR: *mut u8 = (GICD_BASE + 0x400) as *mut u8;
+const GICC_CTLR: *mut u32 = GICC_BASE as *mut u32;
+const GICC_PMR: *mut u32 = (GICC_BASE + 0x004) as *mut u32;
+const GICC_IAR: *const u32 = (GICC_BASE + 0x00c) as *const u32;
+const GICC_EOIR: *mut u32 = (GICC_BASE + 0x010) as *mut u32;
+
+/// The EL1 physical timer's private peripheral interrupt.
+const TIMER_IRQ: u32 = 30;
+
+/// How often the timer fires, as a fraction of the counter frequency.
+/// `CNTFRQ_EL0` is 62.5 MHz on this machine, so this is a millisecond.
+const TICK_DIVISOR: u64 = 1000;
+
+unsafe extern "C" {
+    /// The interrupt handler, written in LK.
+    ///
+    /// `#[export("lk_timer_isr")]` in `program.lk` is what makes this name
+    /// exist: without it the function would be a local `lk_fn_N` that no vector
+    /// table could reach.
+    fn lk_timer_isr();
+}
+
+/// Route the timer interrupt to this core and let it through the priority mask.
+fn gic_init() {
+    // SAFETY: the GIC's registers, mapped Device by the boot page table.
+    unsafe {
+        core::ptr::write_volatile(GICD_CTLR, 1);
+        // Priority 0 is the highest; the mask below has to be numerically
+        // greater or the interrupt is never delivered.
+        core::ptr::write_volatile(GICD_IPRIORITYR.add(TIMER_IRQ as usize), 0x80);
+        core::ptr::write_volatile(
+            GICD_ISENABLER.add((TIMER_IRQ / 32) as usize),
+            1 << (TIMER_IRQ % 32),
+        );
+        core::ptr::write_volatile(GICC_PMR, 0xff);
+        core::ptr::write_volatile(GICC_CTLR, 1);
+    }
+}
+
+/// Arm the EL1 physical timer and unmask IRQs.
+fn timer_start() {
+    // SAFETY: system-register access on the core we are running on.
+    unsafe {
+        let freq: u64;
+        core::arch::asm!("mrs {}, cntfrq_el0", out(reg) freq, options(nomem, nostack));
+        core::arch::asm!("msr cntp_tval_el0, {}", in(reg) freq / TICK_DIVISOR, options(nomem, nostack));
+        // ENABLE, with IMASK clear.
+        core::arch::asm!("msr cntp_ctl_el0, {}", in(reg) 1u64, options(nomem, nostack));
+        // Until this the interrupt is pending but not taken.
+        core::arch::asm!("msr daifclr, #2", options(nomem, nostack));
+    }
+}
+
+/// Rearm the timer for another period. A countdown timer stays fired until its
+/// counter is reloaded, so without this the first interrupt is also the last —
+/// and, since it is never deasserted, the core would spin in the handler.
+fn timer_rearm() {
+    // SAFETY: system-register access on the core we are running on.
+    unsafe {
+        let freq: u64;
+        core::arch::asm!("mrs {}, cntfrq_el0", out(reg) freq, options(nomem, nostack));
+        core::arch::asm!("msr cntp_tval_el0, {}", in(reg) freq / TICK_DIVISOR, options(nomem, nostack));
+    }
+}
+
+/// Mask interrupts and disable the timer, in that order: disabling first would
+/// leave a pending interrupt to be taken the moment anything else unmasks.
+fn timer_stop() {
+    // SAFETY: system-register access on the core we are running on.
+    unsafe {
+        core::arch::asm!("msr daifset, #2", options(nomem, nostack));
+        core::arch::asm!("msr cntp_ctl_el0, {}", in(reg) 0u64, options(nomem, nostack));
+    }
+}
+
+/// Called from the IRQ vector with every caller-saved register already spilled.
+///
+/// The board's share of an interrupt is acknowledging it, rearming the device
+/// and signalling completion; what the tick *means* is the program's, and that
+/// part is LK code.
+#[unsafe(no_mangle)]
+pub extern "C" fn irq_dispatch() {
+    // SAFETY: the GIC CPU interface, mapped Device by the boot page table.
+    let ack = unsafe { core::ptr::read_volatile(GICC_IAR) };
+    if ack & 0x3ff == TIMER_IRQ {
+        timer_rearm();
+        // SAFETY: `lk_timer_isr` is the LK function `#[export]`ed under that
+        // name, compiled to a `void(void)` by the same build.
+        unsafe { lk_timer_isr() };
+    }
+    // SAFETY: as above. The write must carry the value `IAR` returned.
+    unsafe { core::ptr::write_volatile(GICC_EOIR, ack) };
+}
+
 /// Where the compiled code's result is left, so it cannot be optimised away and
 /// a debugger or test harness can read it.
 #[unsafe(no_mangle)]
@@ -144,9 +244,18 @@ pub extern "C" fn kernel_main() -> ! {
     // but not much use for a demo.
     lkrt::set_output(uart_write);
 
+    // The handler transmits, and it can fire from here on — which is why the
+    // boot stub already brought the UART up rather than leaving it to
+    // `program.lk`'s `uart_init()`.
+    gic_init();
+    timer_start();
+
     // SAFETY: `main` is the object emitted by `lk compile object:`, linked by
     // build.rs, and takes no arguments.
     let result = unsafe { main() };
+    // Stop the clock before reporting. The handler is still armed, and a tick
+    // landing mid-line would splice a '.' into it.
+    timer_stop();
     // Control coming back here is the other half of the demo: the compiled
     // program is a callable, not a takeover.
     uart_write("[lk returned to the board, status ");
