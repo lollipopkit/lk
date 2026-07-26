@@ -138,6 +138,10 @@ macro_rules! for_each_abi_fn {
             ("rt", "cell_set", lkrt_rt_cell_set, WritesHost, [Ptr, DynVal], Nil);
             // Early release of an arena container proven dead (scope drop).
             ("rt", "handle_release", lkrt_rt_handle_release, WritesHost, [Ptr], Nil);
+            // Same, plus the arena strings the container itself created — only
+            // emitted when the pass has proven no element ever left it
+            // (`lk_aot_mir::opt`).
+            ("rt", "handle_release_deep", lkrt_rt_handle_release_deep, WritesHost, [Ptr], Nil);
             // Native channels + goroutine threads (plan H: OS threads +
             // deep-copy isolate channels; ids are i64). Blocking send/recv,
             // Go close semantics (buffer drains, then raises), snapshot

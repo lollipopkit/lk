@@ -333,7 +333,14 @@ pub unsafe extern "C" fn lkrt_str_split(s: *const c_char, sep: *const c_char) ->
         .split(sep)
         .map(|part| crate::lkstr::arena_c_string(CString::new(part).unwrap_or_default()) as *const c_char)
         .collect();
-    crate::state::arena_handle(parts)
+    // Every element was minted right here and is reachable from nowhere else,
+    // so a proven-dead list can take them with it (`handle_release_deep`).
+    unsafe fn owned(ptr: *mut c_void) -> Vec<*mut c_char> {
+        // SAFETY: registered with this exact element type below.
+        let parts = unsafe { &*(ptr as *const Vec<*const c_char>) };
+        parts.iter().map(|part| *part as *mut c_char).collect()
+    }
+    crate::state::arena_handle_owning_strings(parts, owned)
 }
 
 /// `xs.reduce(init, f)` over an `i64` list: left fold with `f(acc, element)`.

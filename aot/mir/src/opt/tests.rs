@@ -296,16 +296,56 @@ fn loop_func(insts: Vec<Inst>, cond: ValueId, extra_args: Vec<ValueId>) -> MirFu
 }
 
 fn released_handles(func: &MirFunction) -> Vec<ValueId> {
+    releases(func).into_iter().map(|(_, handle)| handle).collect()
+}
+
+/// Every emitted release as `(entry name, handle)` — the name matters because
+/// the *deep* variant also frees the arena strings the container minted, which
+/// is only sound when no element escaped.
+fn releases(func: &MirFunction) -> Vec<(&'static str, ValueId)> {
     func.blocks
         .iter()
         .flat_map(|b| b.insts.iter())
         .filter_map(|inst| match inst {
-            Inst::Call { callee, args, .. } if callee.module == "rt" && callee.name == "handle_release" => {
-                args.first().copied()
+            Inst::Call { callee, args, .. } if callee.module == "rt" && callee.name.starts_with("handle_release") => {
+                args.first().copied().map(|handle| (callee.name, handle))
             }
             _ => None,
         })
         .collect()
+}
+
+#[test]
+fn scope_drop_takes_element_strings_only_when_no_element_could_escape() {
+    // `let parts = s.split("-"); parts.len()` — the only use returns `I64`, so
+    // no element pointer can have left the container and the release may free
+    // the strings `split` minted along with the list.
+    let mut func = loop_func(
+        vec![call(10, "str", "split", &[]), call(11, "list_h", "str_len", &[10])],
+        ValueId(0),
+        Vec::new(),
+    );
+    assert_eq!(scope_drop_block_locals(&mut func), 1);
+    assert_eq!(
+        releases(&func),
+        vec![("handle_release_deep", ValueId(10))],
+        "a container whose elements were never read takes its strings with it"
+    );
+
+    // Same shape, but the use returns `StrPtr` — that *is* an element handed
+    // back, and freeing the strings would leave it dangling. The container is
+    // still released; its strings wait for the arena's exit reclaim.
+    let mut func = loop_func(
+        vec![call(10, "str", "split", &[]), call(11, "list_h", "str_at", &[10])],
+        ValueId(0),
+        Vec::new(),
+    );
+    assert_eq!(scope_drop_block_locals(&mut func), 1);
+    assert_eq!(
+        releases(&func),
+        vec![("handle_release", ValueId(10))],
+        "an element read must degrade to the shallow release"
+    );
 }
 
 #[test]
@@ -328,11 +368,15 @@ fn scope_drop_releases_a_loop_local_container() {
     );
     assert_eq!(scope_drop_block_locals(&mut func), 1);
     assert_eq!(released_handles(&func), vec![ValueId(10)]);
-    // The release is the last instruction, i.e. after every use.
+    // The release is the last instruction, i.e. after every use. It is the
+    // *deep* entry because the pass answers only "could an element have
+    // escaped" — here nothing but `i64_len` reads the handle, so no. Whether
+    // the container actually owns any arena strings is lkrt's question, and an
+    // `i64` list owns none, so the deep entry does exactly the shallow work.
     let body = &func.blocks[1].insts;
     assert!(matches!(
         body.last(),
-        Some(Inst::Call { callee, .. }) if callee.name == "handle_release"
+        Some(Inst::Call { callee, .. }) if callee.name == "handle_release_deep"
     ));
 }
 

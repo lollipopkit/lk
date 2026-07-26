@@ -235,6 +235,42 @@ pub unsafe extern "C" fn lkrt_rt_handle_release(handle: *mut c_void) {
     }
 }
 
+/// [`lkrt_rt_handle_release`] plus the arena strings the container created
+/// itself (`str.split`, `str.chars` — see
+/// `lkrt::state::arena_handle_owning_strings`).
+///
+/// Emitted only where the scope-drop pass proved no element ever left the
+/// container, which is what makes freeing the elements sound. On a container
+/// with no registered element strings this is exactly the shallow release, so a
+/// mis-emitted deep release degrades to the safe one rather than freeing
+/// something it should not.
+///
+/// # Safety
+/// As [`lkrt_rt_handle_release`], and no element read out of `handle` may still
+/// be in use.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_rt_handle_release_deep(handle: *mut c_void) {
+    if handle.is_null() {
+        return;
+    }
+    // The strings come out while the container is still alive — reading them is
+    // what needs it — and the arena registration is already gone, so a
+    // concurrent release cannot see the same entry.
+    let released = crate::state::with_runtime(|rt| rt.unregister_container_deep(handle));
+    let Some((drop_fn, strings)) = released else {
+        return;
+    };
+    for string in strings {
+        // SAFETY: each pointer came from `CString::into_raw` and was registered
+        // in the arena, which `unregister_container_deep` just removed it from,
+        // so this is the only owner left.
+        drop(unsafe { CString::from_raw(string) });
+    }
+    // SAFETY: as in the shallow release — the drop function was stored with the
+    // pointer and matches its concrete type.
+    unsafe { drop_fn(handle) };
+}
+
 #[cfg(all(test, not(miri)))]
 mod tests {
     use super::*;
