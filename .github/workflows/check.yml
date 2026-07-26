@@ -181,8 +181,9 @@ jobs:
           # rather than failing. The '...' are timer interrupts handled by an
           # LK function — three in a row, where one could be a fluke.
           for expected in \
-            "native LK drives COM1: sum(fib(0..9)) = 88" \
-            "half = 44" \
+            "display at pci slot" \
+            "framebuffer 0xfd000000" \
+            "pixels 00000040 007f7f40 00fefd40" \
             "..." \
             "[lk returned to the board]"; do
             printf '%s' "$output" | grep -qF -- "$expected" || {
@@ -204,6 +205,14 @@ jobs:
             echo "::error::the exception reporter did not report the faulting address"
             exit 1
           }
+          # Reading the framebuffer back proves the writes reached the device's
+          # memory; it does not prove the mode was set, because an unconfigured
+          # card still accepts them. Only what QEMU scans out shows that.
+          LK_BIN=../target/debug/lk cargo build --release
+          llvm-objcopy -O elf32-i386 \
+            target/x86_64-unknown-none/release/lk-bare-metal-x86 \
+            target/x86_64-unknown-none/release/lk-bare-metal-x86.multiboot
+          timeout 120 python3 check_screen.py
         env:
           LK_BIN: ../target/debug/lk
       - name: AOT native-lowering coverage gate

@@ -1209,3 +1209,44 @@ fn malformed_export_attribute_is_rejected() {
         );
     }
 }
+
+/// A top-level `let`/`const` used inside a function's `for` body is still a
+/// global.
+///
+/// Whether a top-level binding becomes a module global is decided by scanning
+/// each function for free variables. That scan had no `for` arm, so a name used
+/// only inside a loop body was invisible: the binding stayed a local of the
+/// entry function and the reference compiled to "undefined local/global" —
+/// pointing at the use, with nothing to say the loop was what hid it.
+///
+/// One case per statement kind that owns a body, because the same omission is
+/// possible in each and none of them fails loudly.
+#[test]
+fn top_level_bindings_are_visible_through_every_nested_body() {
+    for (kind, source) in [
+        (
+            "for",
+            "const A = 5;\nfn f() -> Int { let s = 0; for i in 0..3 { s = s + A; } return s; }\nreturn f();\n",
+        ),
+        (
+            "while",
+            "const A = 5;\nfn f() -> Int { let s = 0; let i = 0; while (i < 3) { s = s + A; i = i + 1; } return s; }\nreturn f();\n",
+        ),
+        (
+            "if",
+            "const A = 15;\nfn f() -> Int { if (1 < 2) { return A; } return 0; }\nreturn f();\n",
+        ),
+        (
+            "try",
+            "const A = 15;\nfn f() -> Int { try { return A; } catch e { return 0; } }\nreturn f();\n",
+        ),
+    ] {
+        let module = compile_module(&parse_program(source)).unwrap_or_else(|error| panic!("{kind}: {error}"));
+        let result = execute_module(&module).unwrap_or_else(|error| panic!("{kind}: {error}"));
+        assert_eq!(
+            result.returns,
+            vec![crate::val::RuntimeVal::Int(15)],
+            "{kind} body did not see the top-level binding"
+        );
+    }
+}

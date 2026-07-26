@@ -30,27 +30,35 @@ global_asm!(
     // No interrupts until there is an IDT; the loader leaves the PIC armed.
     "   cli",
     "   mov esp, offset __stack_top",
-    // Identity-map the first gigabyte with 2 MiB pages.
+    // Identity-map the first four gigabytes with 2 MiB pages.
+    //
+    // Four rather than one because a PCI device's framebuffer is mapped near
+    // the top of the 32-bit physical range — a driver cannot reach it through
+    // a map that stops at 1 GiB.
     //
     // 2 MiB rather than 1 GiB pages because `PDPE1GB` is a CPUID feature and
-    // this has to work on whatever the machine turns out to be; 512 entries is
-    // a short enough loop not to care.
+    // this has to work on whatever the machine turns out to be; 2048 entries
+    // is a short enough loop not to care.
     //   PD[i]   = i * 2 MiB | PRESENT | WRITABLE | PAGE_SIZE
-    //   PDPT[0] = PD   | PRESENT | WRITABLE
+    //   PDPT[g] = PD_g | PRESENT | WRITABLE
     //   PML4[0] = PDPT | PRESENT | WRITABLE
     "   mov edi, offset __pd",
     "   mov eax, 0x83",
-    "   mov ecx, 512",
+    "   mov ecx, 2048",
     "1: mov [edi], eax",
     "   mov dword ptr [edi + 4], 0",
     "   add eax, 0x200000",
     "   add edi, 8",
     "   loop 1b",
+    "   mov edi, offset __pdpt",
     "   mov eax, offset __pd",
     "   or eax, 3",
-    "   mov edi, offset __pdpt",
-    "   mov [edi], eax",
+    "   mov ecx, 4",
+    "2: mov [edi], eax",
     "   mov dword ptr [edi + 4], 0",
+    "   add eax, 0x1000",
+    "   add edi, 8",
+    "   loop 2b",
     "   mov eax, offset __pdpt",
     "   or eax, 3",
     "   mov edi, offset __pml4",
@@ -109,8 +117,8 @@ global_asm!(
     "   rep stosb",
     "   call kernel_main",
     // `kernel_main` does not return; if it somehow does, park.
-    "2: hlt",
-    "   jmp 2b",
+    "3: hlt",
+    "   jmp 3b",
 );
 
 // A minimal GDT. Long mode ignores the base and limit of a code segment, but a

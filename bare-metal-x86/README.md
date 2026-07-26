@@ -5,7 +5,8 @@ runs on a board. This one exists because **x86 devices are not memory-mapped**:
 they live in a separate 64 KiB address space reached only by the `in` and `out`
 instructions. A kernel here cannot say anything at all until it can execute
 those, so `program.lk` drives a 16550 UART through `port_in_u8` /
-`port_out_u8`.
+`port_out_u8` — and then goes on to find the display controller in PCI
+configuration space and draw to its framebuffer.
 
 ```bash
 rustup target add x86_64-unknown-none
@@ -14,16 +15,27 @@ LK_BIN=../target/debug/lk ./run.sh
 ```
 
 ```
-.native LK drives COM1: sum(fib(0..9)) = 88
-half = 44
-.............
-88
+....display at pci slot 2
+framebuffer 0xfd000000
+pixels 00000040 007f7f40 00fefd40
+.2
 [lk returned to the board]
 ```
 
-The first line is written by LK's own driver, compiled to x86-64 `in`/`out`
-instructions. The `88` after it is the script's result value, echoed by `lkrt`
-through the sink `kernel_main` installs.
+Every line of that came from LK code driving three devices by three different
+mechanisms:
+
+| device | mechanism | what the program does |
+| --- | --- | --- |
+| COM1, a 16550 UART | port I/O (`in`/`out`) | configures the divisor and line control, polls the status register, transmits |
+| PCI configuration space | the 0xCF8/0xCFC port pair | walks bus 0, finds the display controller by class code, reads BAR0, enables memory cycles |
+| the framebuffer | volatile MMIO | sets a mode over the Bochs VBE ports, then writes 64000 pixels |
+
+`check_screen.py` screenshots the machine through QEMU's monitor and checks the
+pixels. That is a separate claim from the `pixels …` line: reading the
+framebuffer back proves the writes reached the device's memory, but an
+unconfigured card accepts those too. Only what QEMU scans out shows that the
+mode was actually set.
 
 ## Port I/O
 
@@ -127,7 +139,7 @@ build that takes the path, a broken reporter looks exactly like a working one.
 x86-64 cannot enter long mode in one step: long mode requires paging, paging
 requires page tables, and the tables have to be built by 32-bit code. So a
 multiboot loader hands control to `_start` in 32-bit protected mode, and
-`boot.rs` identity-maps the first gigabyte with 2 MiB pages, enables PAE, sets
+`boot.rs` identity-maps the first **four** gigabytes with 2 MiB pages, enables PAE, sets
 `EFER.LME`, turns paging on, and far-jumps through a 64-bit code descriptor.
 
 Two things there are worth knowing because both fail silently:
@@ -141,6 +153,10 @@ Linux/PVH path with a confusing message about ELF notes.
 is zeroed, so tables inside it get wiped out from under the CPU and the next
 TLB miss triple-faults — a reset loop with no output, whose cause is nowhere
 near where it appears.
+
+Four gigabytes rather than one because a PCI device's framebuffer is mapped
+near the top of the 32-bit physical range — this machine puts it at
+`0xfd000000`, and a driver cannot reach it through a map that stops at 1 GiB.
 
 **QEMU's `-kernel` only accepts ELF32.** The image is 64-bit, so `run.sh`
 converts the ELF class with `objcopy -O elf32-i386` after linking. Every

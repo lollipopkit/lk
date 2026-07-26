@@ -42,8 +42,10 @@ SECTIONS
     . = . + 4096;
     __pdpt = .;
     . = . + 4096;
+    /* Four page directories, one per gigabyte: a device's framebuffer sits
+       near the top of the 32-bit physical range, far outside the first. */
     __pd = .;
-    . = . + 4096;
+    . = . + 4 * 4096;
 
     /* The stack grows down from here. */
     . = ALIGN(16);

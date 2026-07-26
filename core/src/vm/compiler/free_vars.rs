@@ -4,7 +4,7 @@ use crate::compat::prelude::*;
 
 use crate::{
     expr::{Expr, Pattern, TemplateStringPart},
-    stmt::{NamedParamDecl, Stmt},
+    stmt::{ForPattern, NamedParamDecl, Stmt},
 };
 
 pub(super) fn collect_function_free_vars(
@@ -155,11 +155,89 @@ fn collect_stmt_free_vars(statements: &[Box<Stmt>], bound: &mut HashSet<String>,
                 collect_expr_free_vars(condition, bound, free);
                 collect_single_stmt_free_vars(body, &mut bound.clone(), free);
             }
+            Stmt::WhileLet { pattern, value, body } => {
+                collect_expr_free_vars(value, bound, free);
+                let mut body_bound = bound.clone();
+                collect_pattern_bound_vars(pattern, &mut body_bound);
+                collect_single_stmt_free_vars(body, &mut body_bound, free);
+            }
+            Stmt::IfLet {
+                pattern,
+                value,
+                then_stmt,
+                else_stmt,
+            } => {
+                collect_expr_free_vars(value, bound, free);
+                let mut then_bound = bound.clone();
+                collect_pattern_bound_vars(pattern, &mut then_bound);
+                collect_single_stmt_free_vars(then_stmt, &mut then_bound, free);
+                if let Some(else_stmt) = else_stmt {
+                    collect_single_stmt_free_vars(else_stmt, &mut bound.clone(), free);
+                }
+            }
+            Stmt::For {
+                pattern,
+                iterable,
+                body,
+            } => {
+                collect_expr_free_vars(iterable, bound, free);
+                let mut body_bound = bound.clone();
+                collect_for_pattern_bound_vars(pattern, &mut body_bound);
+                collect_single_stmt_free_vars(body, &mut body_bound, free);
+            }
+            Stmt::Try {
+                body,
+                catch_var,
+                handler,
+            } => {
+                collect_stmt_free_vars(body, &mut bound.clone(), free);
+                let mut handler_bound = bound.clone();
+                handler_bound.insert(catch_var.clone());
+                collect_stmt_free_vars(handler, &mut handler_bound, free);
+            }
             Stmt::Block { statements } => collect_stmt_free_vars(statements, &mut bound.clone(), free),
             Stmt::Function { name, .. } => {
                 bound.insert(name.clone());
             }
-            _ => {}
+            // Listed rather than left to a wildcard: a missing arm here does
+            // not fail, it silently drops a name — and a top-level `let` or
+            // `const` that no function is seen to use is never promoted to a
+            // global, so the reference compiles to "undefined local/global"
+            // far from the statement that hid it.
+            Stmt::Import(_) | Stmt::Struct { .. } | Stmt::TypeAlias { .. } | Stmt::Trait { .. } => {}
+            // An `impl` block's methods are compiled separately, like `fn`.
+            Stmt::Impl { .. } => {}
+        }
+    }
+}
+
+/// The names a `for` pattern binds. Separate from [`collect_pattern_bound_vars`]
+/// because loop patterns are their own type (`ForPattern`), not the `match`
+/// pattern grammar.
+fn collect_for_pattern_bound_vars(pattern: &ForPattern, bound: &mut HashSet<String>) {
+    match pattern {
+        ForPattern::Variable(name) => {
+            bound.insert(name.clone());
+        }
+        ForPattern::Ignore => {}
+        ForPattern::Tuple(patterns) => {
+            for pattern in patterns {
+                collect_for_pattern_bound_vars(pattern, bound);
+            }
+        }
+        ForPattern::Array { patterns, rest } => {
+            for pattern in patterns {
+                collect_for_pattern_bound_vars(pattern, bound);
+            }
+            if let Some(rest) = rest {
+                bound.insert(rest.clone());
+            }
+        }
+        // The keys are string literals; only the value positions bind.
+        ForPattern::Object(entries) => {
+            for (_, pattern) in entries {
+                collect_for_pattern_bound_vars(pattern, bound);
+            }
         }
     }
 }

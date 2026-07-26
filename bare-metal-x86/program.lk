@@ -1,19 +1,19 @@
-// A 16550 UART driver, written in LK, compiled to native x86-64 machine code,
+// A display driver, written in LK, compiled to native x86-64 machine code,
 // running with no OS underneath.
 //
-// x86 devices are not memory-mapped: they live in a separate 64 KiB address
-// space reached only by the `in` and `out` instructions. That is why this
-// driver uses `port_in_u8` / `port_out_u8` rather than the `volatile_*`
-// intrinsics the aarch64 demo uses — there is no address to take.
+// Three devices, three mechanisms, all of them the program's own work:
 //
-// COM1's register block, at 0x3f8:
+//   * COM1, a 16550 UART, through port I/O (`in`/`out`) — x86 devices are not
+//     memory-mapped, they live in a separate 64 KiB address space.
+//   * the PCI configuration space, through the 0xCF8/0xCFC port pair, to find
+//     the display controller and ask it where its framebuffer is.
+//   * that framebuffer, through volatile MMIO — a linear array of pixels at a
+//     physical address the boot page tables have to reach.
 //
-//   +0  THR   write transmits a byte (DLL when DLAB is set)
-//   +1  IER   interrupt enable (DLM when DLAB is set)
-//   +2  FCR   FIFO control
-//   +3  LCR   line control; bit 7 is DLAB, the divisor latch switch
-//   +4  MCR   modem control
-//   +5  LSR   line status; bit 5 = transmit holding register empty
+// The timer interrupt handler near the bottom is LK too; `#[export]` gives it
+// a C symbol so the board's IDT can name it.
+
+// ---------------------------------------------------------------- serial ---
 
 const COM1 = 0x3f8;
 
@@ -62,7 +62,8 @@ fn uart_write(bytes: List<Int>) {
     }
 }
 
-// Decimal output without the standard library: bare metal has no formatter.
+// Decimal and hex output without the standard library: bare metal has no
+// formatter, and a driver that can only print constants is not much of one.
 fn uart_put_int(value: Int) {
     if (value == 0) {
         uart_putc(48);
@@ -82,6 +83,150 @@ fn uart_put_int(value: Int) {
     }
 }
 
+fn pow2(bits: Int) -> Int {
+    let value = 1;
+    for i in 0..bits {
+        value = value * 2;
+    }
+    return value;
+}
+
+fn uart_put_hex(value: Int) {
+    let shift = 28;
+    while (shift >= 0) {
+        let nibble = ((value / pow2(shift)) as Int) & 0xf;
+        if (nibble < 10) {
+            uart_putc(48 + nibble);
+        } else {
+            uart_putc(87 + nibble);
+        }
+        shift = shift - 4;
+    }
+}
+
+// ------------------------------------------------------------------- PCI ---
+//
+// Configuration space is reached through two ports: write a
+// (bus, device, function, offset) address to 0xCF8 with bit 31 set to enable
+// the cycle, then read or write the dword at 0xCFC.
+
+const PCI_ADDRESS = 0xcf8;
+const PCI_DATA = 0xcfc;
+
+const PCI_REG_ID = 0x00;
+const PCI_REG_COMMAND = 0x04;
+const PCI_REG_CLASS = 0x08;
+const PCI_REG_BAR0 = 0x10;
+
+const PCI_COMMAND_MEMORY = 0x02;
+const PCI_COMMAND_BUS_MASTER = 0x04;
+
+const PCI_CLASS_DISPLAY = 0x03;
+
+fn pci_address(slot: Int, offset: Int) -> Int {
+    // Bus 0, function 0 — everything this needs is there, and walking the
+    // whole tree would be a lot of code for no more information.
+    return 0x80000000 + slot * 0x800 + (offset & 0xfc);
+}
+
+fn pci_read(slot: Int, offset: Int) -> Int {
+    unsafe { port_out_u32(PCI_ADDRESS, pci_address(slot, offset) as u32); };
+    let value = unsafe { port_in_u32(PCI_DATA) };
+    return value as Int;
+}
+
+fn pci_write(slot: Int, offset: Int, value: Int) {
+    unsafe { port_out_u32(PCI_ADDRESS, pci_address(slot, offset) as u32); };
+    unsafe { port_out_u32(PCI_DATA, value as u32); };
+}
+
+// The slot of the first display controller on bus 0, or -1.
+fn pci_find_display() -> Int {
+    for slot in 0..32 {
+        let id = pci_read(slot, PCI_REG_ID);
+        // An absent slot reads back as all ones — there is nothing there to
+        // drive the bus low.
+        if (id != 0xffffffff) {
+            // The class code is the top byte of the dword at 0x08.
+            let class = ((pci_read(slot, PCI_REG_CLASS) / pow2(24)) as Int) & 0xff;
+            if (class == PCI_CLASS_DISPLAY) {
+                return slot;
+            }
+        }
+    }
+    return 0 - 1;
+}
+
+// ------------------------------------------------------------------- VBE ---
+//
+// The Bochs VBE interface, which QEMU's standard VGA implements: an index port
+// and a data port, both 16-bit. Setting a mode means disabling the device,
+// writing the geometry, then re-enabling it with the linear-framebuffer bit —
+// the device latches the geometry at enable time.
+
+const VBE_INDEX = 0x1ce;
+const VBE_DATA = 0x1cf;
+
+const VBE_XRES = 1;
+const VBE_YRES = 2;
+const VBE_BPP = 3;
+const VBE_ENABLE = 4;
+
+const VBE_DISABLED = 0x00;
+const VBE_ENABLED = 0x01;
+const VBE_LFB = 0x40;
+
+fn vbe_write(index: Int, value: Int) {
+    unsafe { port_out_u16(VBE_INDEX, index as u16); };
+    unsafe { port_out_u16(VBE_DATA, value as u16); };
+}
+
+fn vbe_set_mode(width: Int, height: Int, depth: Int) {
+    vbe_write(VBE_ENABLE, VBE_DISABLED);
+    vbe_write(VBE_XRES, width);
+    vbe_write(VBE_YRES, height);
+    vbe_write(VBE_BPP, depth);
+    vbe_write(VBE_ENABLE, VBE_ENABLED | VBE_LFB);
+}
+
+// --------------------------------------------------------------- drawing ---
+
+const WIDTH = 320;
+const HEIGHT = 200;
+
+fn put_pixel(base: Int, x: Int, y: Int, colour: Int) {
+    let offset = (y * WIDTH + x) * 4;
+    unsafe { volatile_write_u32((base + offset) as *mut u32, colour as u32); };
+}
+
+fn get_pixel(base: Int, x: Int, y: Int) -> Int {
+    let offset = (y * WIDTH + x) * 4;
+    let value = unsafe { volatile_read_u32((base + offset) as *mut u32) };
+    return value as Int;
+}
+
+fn fill_gradient(base: Int) {
+    for y in 0..HEIGHT {
+        // Scaled with integer arithmetic: the pattern only has to be
+        // recognisable, and this keeps the inner loop free of conversions.
+        let green = ((y * 255) as Int) / HEIGHT;
+        for x in 0..WIDTH {
+            let red = ((x * 255) as Int) / WIDTH;
+            put_pixel(base, x, y, red * 0x10000 + green * 0x100 + 0x40);
+        }
+    }
+}
+
+// --------------------------------------------------------------- handler ---
+
+// The timer interrupt handler. It transmits directly and allocates nothing: an
+// interrupt lands between any two instructions of the interrupted program,
+// including instructions inside the runtime's allocator.
+#[export("lk_timer_isr")]
+fn on_tick() {
+    uart_putc(46); // '.'
+}
+
 // The 8253/8254 PIT, programmed from LK.
 //
 //   0x43  command: channel, access mode, operating mode
@@ -96,68 +241,68 @@ const PIT_MODE3_BOTH_BYTES = 0x36;
 fn pit_start(divisor: Int) {
     unsafe { port_out_u8(PIT_COMMAND, PIT_MODE3_BOTH_BYTES as u8); };
     unsafe { port_out_u8(PIT_CHANNEL0, (divisor & 0xff) as u8); };
-    // `/` is float division in LK; the cast keeps the byte an Int.
-    unsafe { port_out_u8(PIT_CHANNEL0, ((divisor / 256) as Int & 0xff) as u8); };
+    unsafe { port_out_u8(PIT_CHANNEL0, (((divisor / 256) as Int) & 0xff) as u8); };
 }
 
-// The timer interrupt handler, written in LK.
-//
-// `#[export]` gives it a C symbol so the IDT can name it. It transmits
-// directly and allocates nothing: an interrupt lands between any two
-// instructions of the interrupted program, including instructions inside the
-// runtime's allocator.
-#[export("lk_timer_isr")]
-fn on_tick() {
-    uart_putc(46); // '.'
-}
-
-fn fib(n: Int) -> Int {
-    if (n < 2) { return n; }
-    return fib(n - 1) + fib(n - 2);
-}
+// ------------------------------------------------------------------ main ---
 
 uart_init();
 // ~1 kHz. The board has already unmasked IRQ0 and enabled interrupts; what
 // this decides is how often it fires.
 pit_start(1193);
 
-let total = 0;
-for i in 0..10 {
-    total = total + fib(i);
-}
+let slot = pci_find_display();
+
+// Base address register 0 holds the framebuffer's physical address; the low
+// four bits are flags describing the region, not part of the address.
+let bar0 = pci_read(slot, PCI_REG_BAR0);
+let framebuffer = bar0 & 0xfffffff0;
+
+// Let the device answer to memory cycles at all. The firmware usually has
+// already, but a driver that depends on that is a driver that works on one
+// machine.
+let command = pci_read(slot, PCI_REG_COMMAND);
+pci_write(slot, PCI_REG_COMMAND, command | PCI_COMMAND_MEMORY | PCI_COMMAND_BUS_MASTER);
+
+vbe_set_mode(WIDTH, HEIGHT, 32);
+fill_gradient(framebuffer);
+
+// Read three pixels back out of the device's memory. Drawing that nobody can
+// see is indistinguishable from drawing that never happened, and a headless
+// machine has no other way to tell — so the proof is that the framebuffer
+// reads back what was written to it.
+let corner = get_pixel(framebuffer, 0, 0);
+let middle = get_pixel(framebuffer, 160, 100);
+let far = get_pixel(framebuffer, 319, 199);
 
 // A critical section, written in LK. The handler transmits on the same device
-// this line does, and an interrupt lands between any two instructions — so
-// without masking, a tick would splice a '.' into the middle of the message.
+// these lines do, and an interrupt lands between any two instructions — so
+// without masking, a tick would splice a '.' into the middle of a message.
 // `cpu_irq_save` returns the previous state rather than a flag, so nesting one
 // of these inside another does not enable interrupts early on the way out.
 let irq = unsafe { cpu_irq_save() };
-// "native LK drives COM1: sum(fib(0..9)) = "
-uart_write([110, 97, 116, 105, 118, 101, 32, 76, 75, 32, 100, 114, 105, 118, 101, 115,
-            32, 67, 79, 77, 49, 58, 32, 115, 117, 109, 40, 102, 105, 98, 40, 48,
-            46, 46, 57, 41, 41, 32, 61, 32]);
-uart_put_int(total);
+// "display at pci slot "
+uart_write([100, 105, 115, 112, 108, 97, 121, 32, 97, 116, 32, 112, 99, 105, 32,
+            115, 108, 111, 116, 32]);
+uart_put_int(slot);
 uart_putc(10);
-// " half = "  — a Float round trip, which is the thing that needs SSE to have
-// been enabled by the boot path. Without it this line faults rather than
-// printing the wrong number.
-uart_write([104, 97, 108, 102, 32, 61, 32]);
-uart_put_int((total / 2.0) as Int);
+// "framebuffer 0x"
+uart_write([102, 114, 97, 109, 101, 98, 117, 102, 102, 101, 114, 32, 48, 120]);
+uart_put_hex(framebuffer);
+uart_putc(10);
+// "pixels "
+uart_write([112, 105, 120, 101, 108, 115, 32]);
+uart_put_hex(corner);
+uart_putc(32);
+uart_put_hex(middle);
+uart_putc(32);
+uart_put_hex(far);
 uart_putc(10);
 unsafe { cpu_irq_restore(irq); };
-
-// Enough work for a few timer periods to elapse. Every '.' after this point
-// came from the LK handler above, running in interrupt context while this loop
-// was mid-computation.
-let spin = 0;
-for i in 0..10000000 {
-    spin = spin + 1;
-}
 
 // Masked and deliberately not restored: what runs after this is the runtime's
 // epilogue echoing the script's value, which no LK code is in a position to
 // protect.
 unsafe { cpu_irq_save(); };
-uart_putc(10);
 
-return total;
+return slot;
