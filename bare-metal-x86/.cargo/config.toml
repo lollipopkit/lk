@@ -1,0 +1,12 @@
+[build]
+target = "x86_64-unknown-none"
+
+# Keeps `lkrt`'s `#[no_mangle]` functions in the link — their callers live in
+# the Cranelift-emitted object, which the linker treats as a separate input, so
+# nothing on the Rust side references them. Same reasoning as the aarch64 demo.
+[target.x86_64-unknown-none]
+# `relocation-model=static`: the Cranelift object is not position independent
+# (a bare-metal image is loaded at a fixed address and has no dynamic loader),
+# and `x86_64-unknown-none` defaults to PIE — which rejects the object's
+# absolute relocations rather than resolving them.
+rustflags = ["-C", "link-dead-code", "-C", "relocation-model=static"]

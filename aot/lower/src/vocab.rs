@@ -15,6 +15,9 @@ pub(crate) enum Builtin {
     Cpu(&'static str, u8),
     VolatileRead(u8),
     VolatileWrite(u8),
+    /// `port_in_uN(port)` / `port_out_uN(port, value)` — x86 port I/O.
+    PortIn(u8),
+    PortOut(u8),
     Println,
     Print,
     Assert,

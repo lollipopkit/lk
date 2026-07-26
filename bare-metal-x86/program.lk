@@ -1,0 +1,104 @@
+// A 16550 UART driver, written in LK, compiled to native x86-64 machine code,
+// running with no OS underneath.
+//
+// x86 devices are not memory-mapped: they live in a separate 64 KiB address
+// space reached only by the `in` and `out` instructions. That is why this
+// driver uses `port_in_u8` / `port_out_u8` rather than the `volatile_*`
+// intrinsics the aarch64 demo uses — there is no address to take.
+//
+// COM1's register block, at 0x3f8:
+//
+//   +0  THR   write transmits a byte (DLL when DLAB is set)
+//   +1  IER   interrupt enable (DLM when DLAB is set)
+//   +2  FCR   FIFO control
+//   +3  LCR   line control; bit 7 is DLAB, the divisor latch switch
+//   +4  MCR   modem control
+//   +5  LSR   line status; bit 5 = transmit holding register empty
+
+const COM1 = 0x3f8;
+
+const REG_DATA = 0;
+const REG_IER = 1;
+const REG_FCR = 2;
+const REG_LCR = 3;
+const REG_MCR = 4;
+const REG_LSR = 5;
+
+const LSR_TX_EMPTY = 0x20;
+const LCR_DLAB = 0x80;
+const LCR_8N1 = 0x03;
+
+fn uart_init() {
+    // No interrupts: this driver polls.
+    unsafe { port_out_u8(COM1 + REG_IER, 0 as u8); };
+    // Baud divisor 3 (38400) behind the DLAB latch, then back to 8N1. The
+    // divisor registers share addresses with THR and IER, which is what DLAB
+    // switches between — so the order here is not stylistic.
+    unsafe { port_out_u8(COM1 + REG_LCR, LCR_DLAB as u8); };
+    unsafe { port_out_u8(COM1 + REG_DATA, 3 as u8); };
+    unsafe { port_out_u8(COM1 + REG_IER, 0 as u8); };
+    unsafe { port_out_u8(COM1 + REG_LCR, LCR_8N1 as u8); };
+    // Enable and clear both FIFOs, 14-byte trigger.
+    unsafe { port_out_u8(COM1 + REG_FCR, 0xc7 as u8); };
+    // DTR + RTS + OUT2.
+    unsafe { port_out_u8(COM1 + REG_MCR, 0x0b as u8); };
+}
+
+fn uart_putc(byte: Int) {
+    // Poll until the transmit holding register is empty. Each iteration has to
+    // read the port again — `port_in_*` is an opaque call for exactly this
+    // reason, so nothing can hoist the read out of the loop.
+    let empty = 0;
+    while (empty == 0) {
+        let status = unsafe { port_in_u8(COM1 + REG_LSR) };
+        empty = (status as Int) & LSR_TX_EMPTY;
+    }
+    unsafe { port_out_u8(COM1 + REG_DATA, byte as u8); };
+}
+
+fn uart_write(bytes: List<Int>) {
+    for byte in bytes {
+        uart_putc(byte);
+    }
+}
+
+// Decimal output without the standard library: bare metal has no formatter.
+fn uart_put_int(value: Int) {
+    if (value == 0) {
+        uart_putc(48);
+        return;
+    }
+    let digits = [];
+    let rest = value;
+    while (rest > 0) {
+        digits.push(48 + rest % 10);
+        // `/` is float division in LK; the cast keeps the counter an Int.
+        rest = (rest / 10) as Int;
+    }
+    let i = digits.len() - 1;
+    while (i >= 0) {
+        uart_putc(digits[i]);
+        i = i - 1;
+    }
+}
+
+fn fib(n: Int) -> Int {
+    if (n < 2) { return n; }
+    return fib(n - 1) + fib(n - 2);
+}
+
+uart_init();
+
+// "native LK drives COM1: sum(fib(0..9)) = "
+uart_write([110, 97, 116, 105, 118, 101, 32, 76, 75, 32, 100, 114, 105, 118, 101, 115,
+            32, 67, 79, 77, 49, 58, 32, 115, 117, 109, 40, 102, 105, 98, 40, 48,
+            46, 46, 57, 41, 41, 32, 61, 32]);
+
+let total = 0;
+for i in 0..10 {
+    total = total + fib(i);
+}
+uart_put_int(total);
+uart_putc(10);
+
+return total;

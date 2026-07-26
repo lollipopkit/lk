@@ -183,6 +183,58 @@ impl TypeChecker {
         Ok(Some(result))
     }
 
+    /// `port_in_uN(port)` / `port_out_uN(port, value)` — x86 port I/O.
+    ///
+    /// A separate address space from memory, reached by the `in`/`out`
+    /// instructions rather than by a load or a store, which is why it cannot
+    /// reuse the volatile intrinsics: there is no pointer to take. The port
+    /// number is 16-bit; the value's width is in the name for the same reason
+    /// it is for `volatile_*`.
+    ///
+    /// x86 only. Other architectures memory-map their devices and have no such
+    /// instructions, so a program that uses these is inherently x86 code — the
+    /// runtime raises there rather than pretending.
+    fn check_port_builtin(&mut self, name: &str, args: &[Box<Expr>]) -> Result<Option<Type>> {
+        let Some((is_write, kind)) = parse_port_builtin(name) else {
+            return Ok(None);
+        };
+        let expected_args = if is_write { 2 } else { 1 };
+        if args.len() != expected_args {
+            return Err(anyhow!(
+                "{name} expects {expected_args} argument(s), got {}",
+                args.len()
+            ));
+        }
+        if !self.in_unsafe() {
+            return Err(anyhow!(
+                "{name} requires an `unsafe` block: the compiler cannot check what device answers \
+                 at that port, or what writing to it does"
+            ));
+        }
+        let port_ty = self.check_expr(&args[0])?;
+        if !self.is_assignable(&port_ty, &Type::Int)
+            && !self.is_assignable(&port_ty, &Type::MachineInt(lk_values::IntKind::U16))
+        {
+            return Err(anyhow!(
+                "{name} expects a port number as its first argument, got {}",
+                port_ty.display()
+            ));
+        }
+        let value_ty = Type::MachineInt(kind);
+        if is_write {
+            let written = self.check_expr(&args[1])?;
+            if !self.is_assignable(&written, &value_ty) {
+                return Err(anyhow!(
+                    "{name} expects a {} value, got {}",
+                    value_ty.display(),
+                    written.display()
+                ));
+            }
+            return Ok(Some(Type::Nil));
+        }
+        Ok(Some(value_ty))
+    }
+
     /// `volatile_read_uN(ptr)` / `volatile_write_uN(ptr, value)`.
     ///
     /// Returns `None` for any other name, so ordinary calls fall through.
@@ -194,6 +246,9 @@ impl TypeChecker {
     /// in any language.
     fn check_volatile_builtin(&mut self, name: &str, args: &[Box<Expr>]) -> Result<Option<Type>> {
         if let Some(result) = self.check_cpu_builtin(name, args)? {
+            return Ok(Some(result));
+        }
+        if let Some(result) = self.check_port_builtin(name, args)? {
             return Ok(Some(result));
         }
         let Some((is_write, kind)) = parse_volatile_builtin(name) else {
@@ -1650,6 +1705,26 @@ fn cast_is_meaningful(source: &Type, target: &Type) -> bool {
         (Type::Ptr { .. }, Type::Ptr { .. }) => true,
         _ => is_scalar(source) && is_scalar(target),
     }
+}
+
+/// Splits a `port_{in,out}_uN` name into its direction and width.
+///
+/// Only 8/16/32 bits: `in`/`out` have no 64-bit form on x86.
+fn parse_port_builtin(name: &str) -> Option<(bool, lk_values::IntKind)> {
+    let (is_write, rest) = if let Some(rest) = name.strip_prefix("port_in_") {
+        (false, rest)
+    } else if let Some(rest) = name.strip_prefix("port_out_") {
+        (true, rest)
+    } else {
+        return None;
+    };
+    let kind = match rest {
+        "u8" => lk_values::IntKind::U8,
+        "u16" => lk_values::IntKind::U16,
+        "u32" => lk_values::IntKind::U32,
+        _ => return None,
+    };
+    Some((is_write, kind))
 }
 
 /// Splits a `volatile_{read,write}_uN` name into its direction and width.

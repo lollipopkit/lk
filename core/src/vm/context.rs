@@ -428,6 +428,14 @@ impl VmContext {
         self.install_runtime_builtin("volatile_write_u32", NativeFunction::Plain(core_volatile_write_u32), 2);
         self.install_runtime_builtin("volatile_read_u64", NativeFunction::Plain(core_volatile_read_u64), 1);
         self.install_runtime_builtin("volatile_write_u64", NativeFunction::Plain(core_volatile_write_u64), 2);
+        // Port I/O: the same bare-metal reasoning, narrowed to x86 — no other
+        // architecture has the instructions.
+        self.install_runtime_builtin("port_in_u8", NativeFunction::Plain(core_port_in_u8), 1);
+        self.install_runtime_builtin("port_out_u8", NativeFunction::Plain(core_port_out_u8), 2);
+        self.install_runtime_builtin("port_in_u16", NativeFunction::Plain(core_port_in_u16), 1);
+        self.install_runtime_builtin("port_out_u16", NativeFunction::Plain(core_port_out_u16), 2);
+        self.install_runtime_builtin("port_in_u32", NativeFunction::Plain(core_port_in_u32), 1);
+        self.install_runtime_builtin("port_out_u32", NativeFunction::Plain(core_port_out_u32), 2);
         self.install_runtime_builtin("__lk_bit_and", NativeFunction::Plain(core_bit_and_builtin), 2);
         self.install_runtime_builtin("__lk_bit_or", NativeFunction::Plain(core_bit_or_builtin), 2);
         self.install_runtime_builtin("__lk_bit_not", NativeFunction::Plain(core_bit_not_builtin), 1);
@@ -1190,6 +1198,12 @@ hardware_builtins! {
     core_volatile_write_u32 => super::hardware::volatile_write_u32;
     core_volatile_read_u64 => super::hardware::volatile_read_u64;
     core_volatile_write_u64 => super::hardware::volatile_write_u64;
+    core_port_in_u8 => super::hardware::port_in_u8;
+    core_port_out_u8 => super::hardware::port_out_u8;
+    core_port_in_u16 => super::hardware::port_in_u16;
+    core_port_out_u16 => super::hardware::port_out_u16;
+    core_port_in_u32 => super::hardware::port_in_u32;
+    core_port_out_u32 => super::hardware::port_out_u32;
 }
 
 #[cfg(test)]

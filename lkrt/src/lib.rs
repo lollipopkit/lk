@@ -51,6 +51,7 @@ mod mmio;
 #[cfg(feature = "std")]
 mod net;
 mod panic;
+mod port;
 mod state;
 mod vm_mirror;
 
@@ -159,6 +160,9 @@ pub use net::{
 pub use panic::{
     lkrt_rt_cell_get, lkrt_rt_cell_new, lkrt_rt_cell_set, lkrt_rt_current_error, lkrt_rt_handle_release,
     lkrt_rt_handle_release_deep, lkrt_rt_raise_dyn, lkrt_rt_raise_msg, lkrt_rt_try_pop, lkrt_rt_try_push,
+};
+pub use port::{
+    lkrt_port_in_u8, lkrt_port_in_u16, lkrt_port_in_u32, lkrt_port_out_u8, lkrt_port_out_u16, lkrt_port_out_u32,
 };
 pub use vm_mirror::{
     lkrt_lkmap_lit_finish_i64_f64, lkrt_lkmap_lit_finish_i64_i64, lkrt_lkmap_lit_finish_str_bool,

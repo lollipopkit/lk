@@ -133,6 +133,15 @@ macro_rules! for_each_abi_fn {
             ("mmio", "write_u16", lkrt_mmio_write_u16, WritesHost, [I64, I64], Nil);
             ("mmio", "write_u32", lkrt_mmio_write_u32, WritesHost, [I64, I64], Nil);
             ("mmio", "write_u64", lkrt_mmio_write_u64, WritesHost, [I64, I64], Nil);
+            // Port I/O — `WritesHost` for the same reason the MMIO reads are:
+            // reading a device port can change its state, so it must not be
+            // collapsed with another read of the same port.
+            ("port", "in_u8", lkrt_port_in_u8, WritesHost, [I64], I64);
+            ("port", "in_u16", lkrt_port_in_u16, WritesHost, [I64], I64);
+            ("port", "in_u32", lkrt_port_in_u32, WritesHost, [I64], I64);
+            ("port", "out_u8", lkrt_port_out_u8, WritesHost, [I64, I64], Nil);
+            ("port", "out_u16", lkrt_port_out_u16, WritesHost, [I64, I64], Nil);
+            ("port", "out_u32", lkrt_port_out_u32, WritesHost, [I64, I64], Nil);
             ("lkrt", "abi_version", lkrt_abi_version, Pure, [], I64);
             ("lkrt", "abi_check", lkrt_abi_check, WritesHost, [I64], Nil);
             ("lkrt", "cleanup", lkrt_cleanup, WritesHost, [], Nil);

@@ -483,6 +483,35 @@ pub(crate) fn lower_builtin_call(
             // A write produces nothing, so the shared nil-return tail below is
             // exactly right — fall through to it rather than duplicating it.
         }
+        Builtin::PortIn(bits) => {
+            // `port_in_uN(port)`. Same shape as the MMIO read: one opaque call,
+            // whose result the VM leaves at the call-window base.
+            if argc != 1 {
+                return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+            }
+            let port = read_typed_scalar(ssa, insts, base.wrapping_add(1), block, Ty::I64, pc)?;
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("port", port_in_name(bits)),
+                args: vec![port],
+            });
+            ssa.write(base, block, (dst, Ty::I64));
+            return Ok(());
+        }
+        Builtin::PortOut(bits) => {
+            if argc != 2 {
+                return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+            }
+            let port = read_typed_scalar(ssa, insts, base.wrapping_add(1), block, Ty::I64, pc)?;
+            let value = read_typed_scalar(ssa, insts, base.wrapping_add(2), block, Ty::I64, pc)?;
+            insts.push(Inst::Call {
+                dst: None,
+                callee: AbiRef::new("port", port_out_name(bits)),
+                args: vec![port, value],
+            });
+            // A write produces nothing — the shared nil-return tail applies.
+        }
         Builtin::Typeof => {
             // `typeof(x)` — the VM's type name from the statically proven MIR
             // type. Maybe carriers select between the scalar name and `Nil` at
@@ -587,6 +616,23 @@ pub(crate) fn lower_builtin_call(
     });
     ssa.write(base, block, (nil, Ty::Nil));
     Ok(())
+}
+
+/// ABI entry names for port I/O, keyed by width.
+fn port_in_name(bits: u8) -> &'static str {
+    match bits {
+        8 => "in_u8",
+        16 => "in_u16",
+        _ => "in_u32",
+    }
+}
+
+fn port_out_name(bits: u8) -> &'static str {
+    match bits {
+        8 => "out_u8",
+        16 => "out_u16",
+        _ => "out_u32",
+    }
 }
 
 /// ABI entry names for volatile access, keyed by width.

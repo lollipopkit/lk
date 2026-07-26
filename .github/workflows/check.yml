@@ -160,6 +160,32 @@ jobs:
               exit 1
             }
           done
+      - name: x86-64 native bare-metal QEMU smoke (port I/O, no OS)
+        # The aarch64 image proves compiled LK drives a memory-mapped device.
+        # x86 devices are not memory-mapped — they answer to `in`/`out` in a
+        # separate address space — so this is the only thing that exercises the
+        # `port_*` intrinsics end to end, from type check through lowering to
+        # instructions a machine actually executes.
+        run: |
+          rustup target add x86_64-unknown-none
+          sudo apt-get update && sudo apt-get install -y qemu-system-x86 llvm
+          cargo build -p lk-cli --features aot
+          cd bare-metal-x86
+          # `isa-debug-exit` makes the machine exit when the kernel is done, so
+          # a hang is a timeout rather than a pass; its exit code for a clean
+          # run is 1, hence the `|| true`.
+          output=$(timeout 120 ./run.sh 2>&1 || true)
+          echo "$output"
+          for expected in \
+            "native LK drives COM1: sum(fib(0..9)) = 88" \
+            "[lk returned to the board]"; do
+            printf '%s' "$output" | grep -qF -- "$expected" || {
+              echo "::error::x86-64 native image did not print: $expected"
+              exit 1
+            }
+          done
+        env:
+          LK_BIN: ../target/debug/lk
       - name: AOT native-lowering coverage gate
         # A lowering regression does not fail any differential test: the
         # program silently drops to the hybrid bridge or the Tier 0 VM bundle

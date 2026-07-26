@@ -582,3 +582,54 @@ fn critical_section_emits_its_instructions_in_order() {
         body.join("\n")
     );
 }
+
+/// Port I/O lowers to opaque `lkrt` calls, and two reads of one port stay two.
+///
+/// The same reasoning as `volatile_reads_are_not_collapsed`, for a different
+/// address space: a UART's status port answers differently on each read, so
+/// collapsing a poll loop's read is a hang rather than a wrong number. The ABI
+/// marks the reads `WritesHost` to prevent it; this checks that it holds after
+/// lowering, not merely that the annotation is present.
+#[test]
+fn port_reads_are_not_collapsed() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let source = dir.path().join("ports.lk");
+    std::fs::write(
+        &source,
+        "fn poll(port: Int) -> Int {\n\
+         \x20   let a = unsafe { port_in_u8(port) };\n\
+         \x20   let b = unsafe { port_in_u8(port) };\n\
+         \x20   return (a as Int) + (b as Int);\n\
+         }\n\
+         return poll(0x3f8);\n",
+    )
+    .expect("write source");
+
+    let exe = dir.path().join("ports");
+    let status = std::process::Command::new(env!("CARGO_BIN_EXE_lk"))
+        .args(["compile", source.to_str().expect("utf-8 path")])
+        .arg("--output")
+        .arg(exe.to_str().expect("utf-8 path"))
+        .env("LK_AOT_NO_FALLBACK", "1")
+        .env("LK_AOT_HYBRID", "0")
+        .status()
+        .expect("run lk compile");
+    assert!(status.success(), "port I/O must lower natively");
+
+    let Ok(disassembly) = std::process::Command::new("objdump")
+        .args(["-d", exe.to_str().expect("utf-8 path")])
+        .output()
+    else {
+        // objdump is not everywhere; the compile above is still meaningful.
+        return;
+    };
+    let text = String::from_utf8_lossy(&disassembly.stdout);
+    let body: String = text
+        .lines()
+        .skip_while(|line| !line.contains("<lk_fn_1>:"))
+        .take_while(|line| !line.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let accesses = body.matches("lkrt_port_in_u8").count();
+    assert_eq!(accesses, 2, "expected two port reads, got {accesses}:\n{body}");
+}

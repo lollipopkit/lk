@@ -90,6 +90,77 @@ volatile_access! {
     volatile_read_u64, volatile_write_u64, u64;
 }
 
+/// x86 port I/O.
+///
+/// A second address space, reached by `in`/`out` rather than by a load or a
+/// store. Gated on both bare metal *and* x86: other architectures have no such
+/// instructions at all, so unlike the volatile intrinsics there is nothing to
+/// perform even on a board — a program using these is x86 code.
+macro_rules! port_access {
+    ($($read:ident, $write:ident, $ty:ty, $reg:tt;)+) => {
+        $(
+            pub(super) fn $read(_args: NativeArgs<'_>) -> Result<RuntimeVal> {
+                #[cfg(all(not(feature = "std"), any(target_arch = "x86_64", target_arch = "x86")))]
+                {
+                    let port = port_operand(&_args, stringify!($read))?;
+                    let value: $ty;
+                    // What device answers at this port, and what reading it
+                    // does, is the caller's claim — made by writing `unsafe`.
+                    unsafe {
+                        core::arch::asm!(
+                            concat!("in ", $reg, ", dx"),
+                            out($reg) value,
+                            in("dx") port,
+                            options(nomem, nostack, preserves_flags),
+                        );
+                    }
+                    return Ok(RuntimeVal::Int(value as i64));
+                }
+                #[allow(unreachable_code)]
+                Err(port_refusal(stringify!($read)))
+            }
+
+            pub(super) fn $write(_args: NativeArgs<'_>) -> Result<RuntimeVal> {
+                #[cfg(all(not(feature = "std"), any(target_arch = "x86_64", target_arch = "x86")))]
+                {
+                    let port = port_operand(&_args, stringify!($write))?;
+                    let value = value_operand(&_args, stringify!($write))? as $ty;
+                    unsafe {
+                        core::arch::asm!(
+                            concat!("out dx, ", $reg),
+                            in("dx") port,
+                            in($reg) value,
+                            options(nomem, nostack, preserves_flags),
+                        );
+                    }
+                    return Ok(RuntimeVal::Nil);
+                }
+                #[allow(unreachable_code)]
+                Err(port_refusal(stringify!($write)))
+            }
+        )+
+    };
+}
+
+/// The port operand as the 16 bits `in`/`out` actually address.
+#[cfg(all(not(feature = "std"), any(target_arch = "x86_64", target_arch = "x86")))]
+fn port_operand(args: &NativeArgs<'_>, name: &str) -> Result<u16> {
+    match args.get(0) {
+        Some(RuntimeVal::Int(port)) => Ok(*port as u16),
+        _ => Err(anyhow!("{name} expects a port number as its first argument")),
+    }
+}
+
+fn port_refusal(name: &str) -> anyhow::Error {
+    anyhow!("{name} requires bare-metal execution on x86: no other architecture has port I/O")
+}
+
+port_access! {
+    port_in_u8, port_out_u8, u8, "al";
+    port_in_u16, port_out_u16, u16, "ax";
+    port_in_u32, port_out_u32, u32, "eax";
+}
+
 /// A full memory barrier.
 ///
 /// `fence(SeqCst)` rather than hand-written assembly: it is `mfence` on x86-64,
