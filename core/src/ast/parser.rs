@@ -4,7 +4,7 @@ use crate::{
     expr::{Expr, MatchArm, Pattern, TemplateStringPart},
     operator::{BinOp, UnaryOp},
     token::{ParseError, Span, Token, Tokenizer, offset_to_position},
-    val::LiteralVal,
+    val::{LiteralVal, Type},
 };
 use anyhow::{Result, anyhow};
 
@@ -518,7 +518,7 @@ impl<'a> Parser<'a> {
     /// - `expr * expr`
     /// - `expr / expr`
     fn parse_mul_div(&mut self) -> Result<Expr> {
-        let mut expr = self.parse_unary()?;
+        let mut expr = self.parse_cast()?;
         while !self.eof() {
             let op = match self.tokens[self.pos] {
                 Token::Mul => BinOp::Mul,
@@ -527,8 +527,43 @@ impl<'a> Parser<'a> {
                 _ => break,
             };
             self.pos += 1;
-            let right = self.parse_unary()?;
+            let right = self.parse_cast()?;
             expr = Expr::Bin(Box::new(expr), op, Box::new(right));
+        }
+        Ok(expr)
+    }
+
+    /// The type after `as`.
+    ///
+    /// Only a bare type name, not the full annotation grammar the statement
+    /// parser handles: a cast target is `u8` or `Int`, never `Map<K, V>` or a
+    /// function type. Keeping it narrow avoids having to disambiguate `<` here
+    /// from a comparison, which is exactly the ambiguity that makes C-style
+    /// casts hard to parse.
+    fn parse_cast_target(&mut self) -> Result<Type> {
+        let Some(Token::Id(name)) = self.tokens.get(self.pos) else {
+            return Err(anyhow!(self.err("Expecting a type name after 'as'")));
+        };
+        let Some(ty) = Type::parse(name) else {
+            let msg = alloc::format!("Unknown type '{name}' after 'as'");
+            return Err(anyhow!(self.err(&msg)));
+        };
+        self.pos += 1;
+        Ok(ty)
+    }
+
+    /// - `expr as T`
+    ///
+    /// Binds tighter than the binary operators and looser than unary, so
+    /// `a * b as u8` is `a * (b as u8)` and `!x as u8` is `(!x) as u8` —
+    /// the same precedence Rust gives it. Left-associative: `x as u8 as u32`
+    /// is `(x as u8) as u32`, which is how a double conversion is written.
+    fn parse_cast(&mut self) -> Result<Expr> {
+        let mut expr = self.parse_unary()?;
+        while !self.eof() && self.tokens[self.pos] == Token::As {
+            self.pos += 1;
+            let ty = self.parse_cast_target()?;
+            expr = Expr::Cast(Box::new(expr), ty);
         }
         Ok(expr)
     }

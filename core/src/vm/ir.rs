@@ -126,7 +126,89 @@ impl InstrFormat {
     }
 }
 
+/// How [`Opcode::CastTo`] encodes its target type in the `C` byte.
+///
+/// A cast's target is static, so it rides in the instruction rather than
+/// costing a constant-pool load.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
+pub enum CastTarget {
+    Int = 0,
+    Float = 1,
+    Bool = 2,
+    I8 = 3,
+    I16 = 4,
+    I32 = 5,
+    I64 = 6,
+    U8 = 7,
+    U16 = 8,
+    U32 = 9,
+    U64 = 10,
+    Isize = 11,
+    Usize = 12,
+}
+
+impl CastTarget {
+    pub fn from_u8(value: u8) -> Option<Self> {
+        Some(match value {
+            0 => Self::Int,
+            1 => Self::Float,
+            2 => Self::Bool,
+            3 => Self::I8,
+            4 => Self::I16,
+            5 => Self::I32,
+            6 => Self::I64,
+            7 => Self::U8,
+            8 => Self::U16,
+            9 => Self::U32,
+            10 => Self::U64,
+            11 => Self::Isize,
+            12 => Self::Usize,
+            _ => return None,
+        })
+    }
+
+    /// The machine-int kind this targets, if any.
+    pub fn int_kind(self) -> Option<crate::val::IntKind> {
+        use crate::val::IntKind;
+        Some(match self {
+            Self::I8 => IntKind::I8,
+            Self::I16 => IntKind::I16,
+            Self::I32 => IntKind::I32,
+            Self::I64 => IntKind::I64,
+            Self::U8 => IntKind::U8,
+            Self::U16 => IntKind::U16,
+            Self::U32 => IntKind::U32,
+            Self::U64 => IntKind::U64,
+            Self::Isize => IntKind::Isize,
+            Self::Usize => IntKind::Usize,
+            Self::Int | Self::Float | Self::Bool => return None,
+        })
+    }
+
+    pub fn from_type(ty: &crate::val::Type) -> Option<Self> {
+        use crate::val::{IntKind, Type};
+        Some(match ty {
+            Type::Int => Self::Int,
+            Type::Float => Self::Float,
+            Type::Bool => Self::Bool,
+            Type::MachineInt(kind) => match kind {
+                IntKind::I8 => Self::I8,
+                IntKind::I16 => Self::I16,
+                IntKind::I32 => Self::I32,
+                IntKind::I64 => Self::I64,
+                IntKind::U8 => Self::U8,
+                IntKind::U16 => Self::U16,
+                IntKind::U32 => Self::U32,
+                IntKind::U64 => Self::U64,
+                IntKind::Isize => Self::Isize,
+                IntKind::Usize => Self::Usize,
+            },
+            _ => return None,
+        })
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Opcode {
     Nop = 0,
@@ -240,6 +322,12 @@ pub enum Opcode {
     /// `GetGlobal __lk_call_method` + `NewList` + `Call` sequence for
     /// positional method calls whose name constant index fits in `b`.
     CallMethodK = 105,
+    /// `A = B as <type encoded in C>` — see `CastTarget`.
+    ///
+    /// One opcode for every conversion rather than one per source/target pair:
+    /// the source type is only known at runtime anyway, so a per-pair opcode
+    /// would not save the dispatch on it.
+    CastTo = 106,
 }
 
 impl Opcode {
@@ -355,6 +443,7 @@ impl Opcode {
             103 => Some(Self::TryEnd),
             104 => Some(Self::Wide),
             105 => Some(Self::CallMethodK),
+            106 => Some(Self::CastTo),
             _ => None,
         }
     }

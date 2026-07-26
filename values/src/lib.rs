@@ -17,7 +17,7 @@ mod strings;
 mod types;
 
 pub use numeric::{NumericClass, NumericHierarchy};
-pub use types::{FunctionNamedParamType, ShortStr, ShortStrOrStr, Type};
+pub use types::{FunctionNamedParamType, IntKind, ShortStr, ShortStrOrStr, Type};
 
 // NOTE: runtime resource-handle values (TaskValue/ChannelValue/StreamValue/
 // StreamCursorValue/SliceValue/ResourceValue/ResourceHandle) live in

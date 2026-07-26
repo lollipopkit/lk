@@ -185,6 +185,29 @@ impl Compiler {
     /// the suspend point) and emit the single-register in/out `Yield` opcode.
     /// The register's static-type fact must be reset: after resuming, it can
     /// hold any type, not whatever `inner` produced.
+    /// `expr as T`.
+    ///
+    /// The target is static, so it rides in the instruction's `C` byte rather
+    /// than costing a constant-pool load. The type checker has already rejected
+    /// targets that are not scalar, so an unencodable one here is a compiler
+    /// bug rather than a user error.
+    pub(super) fn lower_cast(&mut self, inner: &Expr, ty: &crate::val::Type) -> Result<u16> {
+        let Some(target) = crate::vm::ir::CastTarget::from_type(ty) else {
+            anyhow::bail!("internal error: cast target {} reached lowering", ty.display());
+        };
+        let src = self.lower_readonly_operand(inner)?;
+        let dst = self.alloc_reg();
+        self.emit(Instr::abc(
+            Opcode::CastTo,
+            checked_u8("cast dst", dst)?,
+            checked_u8("cast src", src)?,
+            target as u8,
+        ));
+        // A freshly allocated register carries no static-type fact, so there
+        // is nothing to invalidate — same as `lower_unary`.
+        Ok(dst)
+    }
+
     pub(super) fn lower_unary(&mut self, op: &UnaryOp, inner: &Expr) -> Result<u16> {
         let src = self.lower_readonly_operand(inner)?;
         let dst = self.alloc_reg();

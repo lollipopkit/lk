@@ -9,7 +9,7 @@ use crate::expr::Expr;
 use crate::operator::{BinOp, UnaryOp};
 use crate::typ::{NumericClass, NumericHierarchy};
 use crate::val::{FunctionNamedParamType, LiteralVal, Type};
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use hashbrown::HashMap;
 
 impl TypeChecker {
@@ -103,6 +103,31 @@ impl TypeChecker {
         self.check_expr_inner(expr)
     }
 
+    /// `expr as T`.
+    ///
+    /// Casts are only allowed where a bit-level reinterpretation is meaningful:
+    /// between numbers, and between numbers and `Bool`. Casting a `List` to a
+    /// `u8` is a mistake, not a reinterpretation, so it stays an error rather
+    /// than silently producing something.
+    ///
+    /// The source type is checked but does not otherwise constrain the result:
+    /// a cast's whole job is to produce the target type. Range is deliberately
+    /// *not* checked — `300 as u8` is 44, because a driver author writing a
+    /// cast is asking for those bits at that width, not for a bounds check.
+    /// The range check lives on the annotation path instead (`let x: u8 = 300`
+    /// is an error), which is where a mistake is more likely than an intent.
+    fn check_cast(&mut self, inner: &Expr, target: &Type) -> Result<Type> {
+        let source = self.check_expr(inner)?;
+        if !cast_is_meaningful(&source, target) {
+            return Err(anyhow!(
+                "cannot cast {} to {}: casts are only defined between numeric types",
+                source.display(),
+                target.display()
+            ));
+        }
+        Ok(target.clone())
+    }
+
     /// Internal expression checker without recording.
     fn check_expr_inner(&mut self, expr: &Expr) -> Result<Type> {
         match expr {
@@ -111,6 +136,9 @@ impl TypeChecker {
 
             // Variables
             Expr::Var(name) => self.check_identifier(name),
+
+            // Explicit conversion
+            Expr::Cast(inner, target) => self.check_cast(inner, target),
 
             // Binary operations
             Expr::Bin(_, _, _) => self.check_binary_op_iter(expr),
@@ -1411,4 +1439,19 @@ impl TypeChecker {
             _ => self.check_access(expr, field),
         }
     }
+}
+
+/// Whether reinterpreting `source` as `target` has a defined meaning.
+///
+/// `Any` is on both sides because it is the dynamic escape hatch — a value of
+/// unknown type has to be castable, or nothing dynamic could ever reach a
+/// machine-typed boundary.
+fn cast_is_meaningful(source: &Type, target: &Type) -> bool {
+    fn is_scalar(ty: &Type) -> bool {
+        matches!(
+            ty,
+            Type::Int | Type::MachineInt(_) | Type::Float | Type::Bool | Type::Any
+        )
+    }
+    is_scalar(source) && is_scalar(target)
 }

@@ -101,6 +101,7 @@ impl Compiler {
         self.record_expr_analysis(expr);
         match expr {
             Expr::Paren(inner) => self.lower_expr(inner),
+            Expr::Cast(inner, ty) => self.lower_cast(inner, ty),
             Expr::Literal(value) => self.lower_val(value),
             Expr::Var(name) => self.lower_var(name),
             Expr::List(elements) => self.lower_list(elements),
