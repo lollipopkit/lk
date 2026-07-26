@@ -603,7 +603,8 @@ pub(super) fn lower(
                         let dst = ssa.new_val();
                         insts.push(Inst::Cmp {
                             dst,
-                            op: if cop == CmpOp::Eq { CmpOp::Eq } else { CmpOp::Ne },
+                            // `cop` is already restricted to `Eq`/`Ne` above.
+                            op: cop,
                             float: false,
                             lhs: tag,
                             rhs: zero,

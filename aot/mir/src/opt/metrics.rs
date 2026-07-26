@@ -74,10 +74,13 @@ fn loop_blocks(func: &MirFunction, idom: &[Option<usize>]) -> Vec<bool> {
 }
 
 /// Counts loop-invariant `Pure` calls — the candidate set a LICM pass would
-/// hoist. Approximate on purpose (loop body ≈ the block-id span between a
-/// back-edge target and its source, which the lowering's leader-ordered
-/// blocks make sound in practice): it exists to answer "is there anything to
-/// hoist at all", not to drive a transformation.
+/// hoist.
+///
+/// Loop membership comes from [`loop_blocks`], i.e. the natural loops of the
+/// dominator-tree back edges, not from any block-id span or lowering order. A
+/// call counts when it is `Pure` and none of its arguments are defined
+/// anywhere in the loop body. It exists to answer "is there anything to hoist
+/// at all", not to drive a transformation.
 #[doc(hidden)]
 pub fn count_licm_candidates(module: &MirModule) -> usize {
     let mut candidates = 0;
@@ -132,9 +135,18 @@ pub fn count_licm_candidates(module: &MirModule) -> usize {
 /// a long-running loop accumulate in the lkrt arena".
 ///
 /// Returns `(loop_constructions, block_local, cross_block_but_not_escaping)`.
-/// The second is what the current pass releases; the third is what a
-/// cross-block liveness analysis could additionally reach. Anything reaching a
-/// terminator is excluded from both — it may survive an iteration.
+/// Anything reaching a terminator is excluded from the last two — it may
+/// survive an iteration.
+///
+/// Both are *liveness* categories only: unlike
+/// [`super::scope_drop_block_locals`], neither applies the pass's eligibility
+/// filters (the `list_h`/`map_h`/`set` construction allowlist and the
+/// non-retaining-receiver-use requirement). So `block_local` is an **upper
+/// bound** on what the pass releases inside loops, not the set it releases —
+/// expect it to exceed the `scope_drops` figure printed beside it, and note
+/// that `scope_drops` also counts releases outside any loop, which this
+/// counter never sees. The third is likewise an upper bound on what a
+/// cross-block liveness analysis could additionally reach.
 #[doc(hidden)]
 pub fn count_loop_allocations(module: &MirModule) -> (usize, usize, usize) {
     let mut in_loop = 0;

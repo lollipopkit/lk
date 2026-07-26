@@ -157,7 +157,9 @@ fn hybrid_bridges_a_callee_called_with_different_argument_types() {
     assert_eq!(mir.vm_functions.len(), 1, "exactly `report` is VM-executed");
     assert_eq!(mir.vm_functions[0].param_count, 1);
 
-    let mut seen: Vec<lk_aot_mir::Ty> = mir
+    // Not deduped: a duplicated or missing call site is exactly what this
+    // asserts against, and `dedup()` would hide an adjacent repeat.
+    let seen: Vec<lk_aot_mir::Ty> = mir
         .functions
         .iter()
         .flat_map(|f| f.blocks.iter())
@@ -167,7 +169,6 @@ fn hybrid_bridges_a_callee_called_with_different_argument_types() {
             _ => None,
         })
         .collect();
-    seen.dedup();
     assert_eq!(
         seen,
         vec![

@@ -118,10 +118,7 @@ pub(super) fn lower(
             let slot = instr.bx();
             let name = module_globals.get(slot as usize).map(String::as_str);
             if let Some(name) = name
-                && (matches!(
-                    name,
-                    "println" | "print" | "assert" | "assert_eq" | "assert_ne" | "panic" | "typeof" | "Set"
-                ) || module_global(name))
+                && (builtin_for_name(name).is_some() || module_global(name))
             {
                 return Err(Unsupported::Opcode { pc, op: instr.opcode() });
             }
@@ -174,27 +171,7 @@ pub(super) fn lower(
             let slot = instr.bx();
             let name = module_globals.get(slot as usize).map(String::as_str);
             let global_ref = match name {
-                Some("println") => Some(GlobalRef::Builtin(Builtin::Println)),
-                Some("print") => Some(GlobalRef::Builtin(Builtin::Print)),
-                Some("assert") => Some(GlobalRef::Builtin(Builtin::Assert)),
-                Some("assert_eq") => Some(GlobalRef::Builtin(Builtin::AssertEq)),
-                Some("assert_ne") => Some(GlobalRef::Builtin(Builtin::AssertNe)),
-                Some("panic") => Some(GlobalRef::Builtin(Builtin::Panic)),
-                Some("typeof") => Some(GlobalRef::Builtin(Builtin::Typeof)),
-                Some("__lk_call_method") => Some(GlobalRef::Builtin(Builtin::CallMethod)),
-                Some("Set") => Some(GlobalRef::Builtin(Builtin::SetCtor)),
-                Some("try$call") => Some(GlobalRef::Builtin(Builtin::TryCall)),
-                Some("error") => Some(GlobalRef::Builtin(Builtin::ErrorRaise)),
-                Some("__lk_merge_fields") => Some(GlobalRef::Builtin(Builtin::MergeFields)),
-                Some("__lk_make_struct") => Some(GlobalRef::Builtin(Builtin::MakeStruct)),
-                Some("__lk_bit_and") => Some(GlobalRef::Builtin(Builtin::BitAnd)),
-                Some("__lk_bit_or") => Some(GlobalRef::Builtin(Builtin::BitOr)),
-                Some("__lk_bit_not") => Some(GlobalRef::Builtin(Builtin::BitNot)),
-                Some("chan") => Some(GlobalRef::Builtin(Builtin::ChanNew)),
-                Some("send") => Some(GlobalRef::Builtin(Builtin::ChanSend)),
-                Some("recv") => Some(GlobalRef::Builtin(Builtin::ChanRecv)),
-                Some("spawn") => Some(GlobalRef::Builtin(Builtin::Spawn)),
-                Some("select$block") => Some(GlobalRef::Builtin(Builtin::SelectBlock)),
+                Some(name) if let Some(builtin) = builtin_for_name(name) => Some(GlobalRef::Builtin(builtin)),
                 // Two-level stdlib exports arrive as `module::member` global
                 // names (`chan.close(c)` → `GetGlobal "chan::close"`).
                 Some(name) if name.contains("::") => {
@@ -271,4 +248,45 @@ pub(super) fn lower(
         op => return Err(Unsupported::Opcode { pc, op }),
     }
     Ok(())
+}
+
+/// The single table of global *names* this lowering gives a builtin meaning.
+///
+/// `GetGlobal` resolves a read through it and `SetGlobal` rejects a write to
+/// any name in it — two lists that must not drift, because a write the guard
+/// lets through makes a later read resolve to the *builtin* meaning and ignore
+/// the rebinding. They had drifted: the write guard spelled out eight names
+/// while the read arm recognized twenty-one (`error`, `chan`, `send`, `recv`,
+/// `spawn`, `try$call`, the `__lk_*` internals).
+///
+/// Nothing reaches that gap today — the type checker rejects rebinding
+/// `chan`/`send`/`recv`/`spawn`/`println`/`Set`, and the `error`/`panic`/
+/// `typeof` shapes that survive it reject later at the read — so this closes a
+/// latent divergence rather than a reproducible miscompile. Keeping one table
+/// is what makes the next `Builtin` addition safe by default.
+pub(crate) fn builtin_for_name(name: &str) -> Option<Builtin> {
+    Some(match name {
+        "println" => Builtin::Println,
+        "print" => Builtin::Print,
+        "assert" => Builtin::Assert,
+        "assert_eq" => Builtin::AssertEq,
+        "assert_ne" => Builtin::AssertNe,
+        "panic" => Builtin::Panic,
+        "typeof" => Builtin::Typeof,
+        "__lk_call_method" => Builtin::CallMethod,
+        "Set" => Builtin::SetCtor,
+        "try$call" => Builtin::TryCall,
+        "error" => Builtin::ErrorRaise,
+        "__lk_merge_fields" => Builtin::MergeFields,
+        "__lk_make_struct" => Builtin::MakeStruct,
+        "__lk_bit_and" => Builtin::BitAnd,
+        "__lk_bit_or" => Builtin::BitOr,
+        "__lk_bit_not" => Builtin::BitNot,
+        "chan" => Builtin::ChanNew,
+        "send" => Builtin::ChanSend,
+        "recv" => Builtin::ChanRecv,
+        "spawn" => Builtin::Spawn,
+        "select$block" => Builtin::SelectBlock,
+        _ => return None,
+    })
 }

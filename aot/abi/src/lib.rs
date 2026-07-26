@@ -614,6 +614,11 @@ mod tests {
     /// Every entry that returns a raw pointer either declares itself a
     /// constructor or stays `Retained`; a `Borrowed` pointer-returning entry
     /// would be a classification mistake (it hands back a handle nobody owns).
+    ///
+    /// The converse direction matters just as much: `Constructs` is what the
+    /// MIR scope-drop pass reads to decide a value is a fresh, releasable
+    /// handle, so an entry claiming it without returning a pointer would hand
+    /// the pass a non-handle to free.
     #[test]
     fn pointer_returning_entries_are_not_marked_borrowed() {
         for f in ABI_FUNCTIONS {
@@ -622,6 +627,15 @@ mod tests {
                     f.receiver,
                     Receiver::Borrowed,
                     "{}.{} returns a handle but is marked Borrowed",
+                    f.module,
+                    f.name
+                );
+            }
+            if f.receiver == Receiver::Constructs {
+                assert_eq!(
+                    f.result,
+                    AbiType::Ptr,
+                    "{}.{} is marked Constructs but does not return a handle",
                     f.module,
                     f.name
                 );

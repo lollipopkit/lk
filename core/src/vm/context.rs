@@ -47,14 +47,18 @@ pub struct VmContext {
     resolver: Arc<ModuleResolver>,
     type_checker: Option<TypeChecker>,
     structs: FastHashMap<String, FastHashMap<String, Type>>,
-    /// Runtime trait-method table: `(type name, method name)` → implementation.
+    /// Runtime trait-method table: type name → method name → implementation.
     ///
     /// This lives here, not in `TypeChecker`, because it is runtime data: an
     /// imported module's method must be called against *that* module's
     /// function table and heap, which the type system has no business knowing
     /// about. The type checker keeps only what it needs for checking
     /// (`method_sigs`).
-    methods: FastHashMap<(String, String), MethodImpl>,
+    ///
+    /// Nested rather than keyed by `(String, String)` so a lookup borrows both
+    /// halves of the key: the flat map forced two `String` allocations on
+    /// *every* dynamic method dispatch just to build a throwaway probe.
+    methods: FastHashMap<String, FastHashMap<String, MethodImpl>>,
     call_stack: Vec<CallFrameInfo>,
     /// Per-context handle to the async (tokio) runtime. Replaces the former
     /// process-global runtime; clones (spawned tasks, shallow clones) share the
@@ -337,7 +341,7 @@ impl VmContext {
 
     /// Looks up a trait-impl method for `type_name`.
     pub fn trait_method(&self, type_name: &str, method: &str) -> Option<&MethodImpl> {
-        self.methods.get(&(type_name.to_string(), method.to_string()))
+        self.methods.get(type_name)?.get(method)
     }
 
     /// Records an imported module's trait impls, bound to *that* module's
@@ -353,9 +357,10 @@ impl VmContext {
             return;
         }
         for decl in &module.type_info.impls {
+            let by_method = self.methods.entry(decl.type_name.clone()).or_default();
             for method in &decl.methods {
-                self.methods.insert(
-                    (decl.type_name.clone(), method.name.clone()),
+                by_method.insert(
+                    method.name.clone(),
                     MethodImpl::Imported(Arc::new(RuntimeCallable::with_shared_captures(
                         Arc::clone(&module),
                         method.function,
@@ -381,44 +386,51 @@ impl VmContext {
         if type_info.is_empty() {
             return Ok(());
         }
-        let Some(checker) = self.type_checker.as_mut() else {
-            return Ok(());
-        };
-        for decl in &type_info.traits {
-            let methods = decl
-                .methods
-                .iter()
-                .filter_map(|(name, ty)| Type::parse(ty).map(|ty| (name.clone(), ty)))
-                .collect();
-            checker.registry_mut().register_trait(TraitDef {
-                name: decl.name.clone(),
-                methods,
-            });
-        }
-        for decl in &type_info.impls {
-            let target_type = Type::parse(&decl.type_name)
-                .ok_or_else(|| anyhow!("failed to parse impl target type '{}'", decl.type_name))?;
-            let methods = decl
-                .methods
-                .iter()
-                .map(|method| (method.name.clone(), (method.function, Type::parse(&method.ty))))
-                .collect();
-            let impl_def = TraitImpl {
-                trait_name: decl.trait_name.clone(),
-                target_type,
-                methods,
-            };
-            checker.registry().validate_trait_impl(&impl_def)?;
-            checker.registry_mut().register_trait_impl(impl_def);
+        // Checker registration only happens when there *is* a checker; the
+        // dispatch table below is unconditional. Returning early without one
+        // used to skip both, so a context built without a type checker could
+        // execute a module whose own `impl` methods were undispatchable.
+        if let Some(checker) = self.type_checker.as_mut() {
+            for decl in &type_info.traits {
+                let methods = decl
+                    .methods
+                    .iter()
+                    // A signature this build cannot parse degrades to the top
+                    // type rather than vanishing: dropping the entry would
+                    // hide the method from `validate_trait_impl`, so an `impl`
+                    // that never defines it would validate clean. Same choice
+                    // as the impl loop below, which keeps the method with a
+                    // `None` type.
+                    .map(|(name, ty)| (name.clone(), Type::parse(ty).unwrap_or(Type::Any)))
+                    .collect();
+                checker.registry_mut().register_trait(TraitDef {
+                    name: decl.name.clone(),
+                    methods,
+                });
+            }
+            for decl in &type_info.impls {
+                let target_type = Type::parse(&decl.type_name)
+                    .ok_or_else(|| anyhow!("failed to parse impl target type '{}'", decl.type_name))?;
+                let methods = decl
+                    .methods
+                    .iter()
+                    .map(|method| (method.name.clone(), (method.function, Type::parse(&method.ty))))
+                    .collect();
+                let impl_def = TraitImpl {
+                    trait_name: decl.trait_name.clone(),
+                    target_type,
+                    methods,
+                };
+                checker.registry().validate_trait_impl(&impl_def)?;
+                checker.registry_mut().register_trait_impl(impl_def);
+            }
         }
         // The dispatch table itself: local methods resolve against whichever
         // module is executing, so only the index is recorded.
         for decl in &type_info.impls {
+            let by_method = self.methods.entry(decl.type_name.clone()).or_default();
             for method in &decl.methods {
-                self.methods.insert(
-                    (decl.type_name.clone(), method.name.clone()),
-                    MethodImpl::Local(method.function),
-                );
+                by_method.insert(method.name.clone(), MethodImpl::Local(method.function));
             }
         }
         Ok(())

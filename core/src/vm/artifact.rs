@@ -139,6 +139,23 @@ impl ModuleData {
                 functions.len()
             );
         }
+        // Impl-method indices are the runtime dispatch table's only link to a
+        // function body: an out-of-range one from a corrupt or hand-edited
+        // artifact would surface as a panic (or a call to the wrong body) at
+        // the first method dispatch, far from the decode that admitted it.
+        for decl in &self.type_info.impls {
+            for method in &decl.methods {
+                if method.function as usize >= functions.len() {
+                    bail!(
+                        "Module artifact impl method '{}::{}' function {} out of bounds for {} functions",
+                        decl.type_name,
+                        method.name,
+                        method.function,
+                        functions.len()
+                    );
+                }
+            }
+        }
         Ok(Module {
             type_info: self.type_info,
             functions,

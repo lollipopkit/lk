@@ -264,6 +264,7 @@ crates(新增/重构):
 `cli` 的 `llvm` feature 改指 `lk-aot`。`llvm` 老 crate 逐步清空到上述 crate(见 §7)。
 
 **模块层内(以 lk-aot-lower 为例,已落地形态)**:
+
 ```
 lower/
   inst/mod.rs      # 路由表:opcode → 语义家族(唯一的"谁管这条指令"真相)
@@ -277,6 +278,7 @@ lower/
   convert.rs       # 标量上下文读取、数值 coerce、display 转换(Maybe 解包规则)
   prescan.rs sig.rs# 全模块前置事实:参数/返回观测、全局槽类型、桥接资格
 ```
+
 每条 lowering 例程取一个 `LowerCtx`(可变的 ssa/globals/sig + 只读的
 func/funcs/entry/module_globals/capture_params),而不是十二个位置参数。
 

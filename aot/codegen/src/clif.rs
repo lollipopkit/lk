@@ -994,6 +994,12 @@ impl Lower {
         if !mctx.vm_functions.iter().any(|f| f.id == func) {
             return Err(ClifError::Unsupported("CallVm target not in vm_functions"));
         }
+        // `args`/`arg_tys` are parallel by construction, but `argc` below is
+        // taken from `args` alone: a shorter `arg_tys` would leave the tail
+        // slots unmarshaled while still telling the bridge to read them.
+        if args.len() != arg_tys.len() {
+            return Err(ClifError::Unsupported("CallVm args/arg_tys length mismatch"));
+        }
         let argbuf = mctx.hybrid_argbuf.ok_or(ClifError::Unsupported("no hybrid argbuf"))?;
         let buf_gv = mctx.module.declare_data_in_func(argbuf, b.func);
         let buf_addr = b.ins().global_value(types::I64, buf_gv);

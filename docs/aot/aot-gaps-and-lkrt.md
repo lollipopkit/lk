@@ -152,8 +152,10 @@ LLVM 会把 `xs.slice(..)`、`xs.sort()` 等**就地**操作 lower 成 `src == d
 **同一 buffer**。旧手写 IR 用逐元素前向 load/store 天然容忍别名;移植到 Rust 时:
 
 - **禁止**同时持有别名的 `&[T]` 与 `&mut [T]`(即使逻辑正确也是 UB);
-- **禁止**对可能重叠的范围用 `copy_from_slice` / `copy_nonoverlapping`
-  (会触发 `ptr::copy_nonoverlapping` 前置条件 panic);
+- **禁止**对可能重叠的范围用 `copy_from_slice` / `ptr::copy_nonoverlapping`
+  (违反 `copy_nonoverlapping` 的不重叠前置条件 —— 这是 **UB**,不是 panic:
+  不会有任何报错,只会静默写出错误数据;重叠安全的替代是 `ptr::copy`(memmove)
+  与 `slice::copy_within`);
 - 范围移动一律用裸指针 + `ptr::copy`(memmove),且只向**更低或相等**的目标索引
   前向写(`slice`/`push`/`remove_at`/`set` 满足;`insert` 先 memmove 右移尾段);
 - `sort` 先 `ptr::copy` 物化到 `dst`,再取**单一** `&mut` 排序。

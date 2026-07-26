@@ -30,12 +30,18 @@ reasons_file="$(mktemp)"
 tmp_bin="$(mktemp)"
 trap 'rm -f "$reasons_file" "$tmp_bin"' EXIT
 
+stale_allow=""
 for f in examples/syntax/*.lk examples/stdlib/*.lk examples/general/*.lk; do
     total=$((total + 1))
     out=$("$LK_BIN" compile "$f" --output "$tmp_bin" 2>&1)
     if [ $? -eq 0 ]; then
         ok=$((ok + 1))
         echo "OK   $f"
+        # An allow-listed file that now compiles is a fixed exemption: report
+        # it, or the list quietly keeps waiving coverage it no longer needs.
+        case ",$ALLOW," in
+            *",$f,"*) stale_allow="$stale_allow $f" ;;
+        esac
     else
         # Cranelift/lowering rejects surface as "... (clif: <reason>)" or
         # "... (MIR lowering: <reason>)".
@@ -57,6 +63,14 @@ echo "----------------------------------------" >&2
 echo "coverage: $ok/$total" >&2
 echo "blockers by frequency:" >&2
 sort "$reasons_file" | uniq -c | sort -rn >&2
+
+if [ -n "$stale_allow" ]; then
+    echo "" >&2
+    echo "stale AOT_COVERAGE_ALLOW entries (these now lower fully native — drop them):" >&2
+    for f in $stale_allow; do
+        echo "  $f" >&2
+    done
+fi
 
 if [ "$REQUIRE_FULL" = "1" ] && [ "$unexpected" -gt 0 ]; then
     echo "" >&2

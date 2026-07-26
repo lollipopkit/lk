@@ -107,8 +107,9 @@ pub(super) fn lower(
                 // empty dyn list: later pushes box their elements, and the
                 // cross-typed Cmp arms cover `[] == [1, 2]`-style compares.
                 // (Call-window `NewList 0` also lands here; the dead handle
-                // is one no-arg call.) 旧留档顾虑(typed eq lowering)已被
-                // typed↔Dyn 跨型比较解除。
+                // is one no-arg call.) The old concern on file — that this
+                // broke typed eq lowering — was resolved by the typed↔Dyn
+                // cross-type comparison arms.
                 let handle = ssa.new_val();
                 insts.push(Inst::Call {
                     dst: Some(handle),
@@ -569,7 +570,7 @@ pub(super) fn lower(
             // `a` = dst, `b` = base, `c` = field count: `base` holds the type
             // name, fields at `base+1+2k` (constant-string key) / `base+2+2k`
             // (value). A struct instance is carried as a string-keyed Dyn map
-            // (plan M4.2 D4 裁决): `GetFieldK` reads work unchanged, an
+            // (plan M4.2, decision D4): `GetFieldK` reads work unchanged, an
             // absent optional field is `str_dyn_get`'s Nil — matching the
             // VM's absent-Object-field nil. The type name is dropped: whole-
             // object display/`typeof` are not in the native subset.

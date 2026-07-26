@@ -240,7 +240,24 @@ fn optimized_module_still_validates() {
 
 /// A two-block loop: `bb0` jumps to `bb1`, which branches back to itself.
 /// `insts` go in the loop body (`bb1`).
+///
+/// `extra_args` are the values the back edge carries into the next iteration.
+/// `bb1` therefore declares one parameter per entry, and `bb0` seeds the same
+/// number of handles for its own edge in — branch-argument arity has to match
+/// the target's parameter list or [`crate::validate`] rejects the fixture, and
+/// a fixture that cannot validate proves nothing about a pass that must
+/// preserve validity.
 fn loop_func(insts: Vec<Inst>, cond: ValueId, extra_args: Vec<ValueId>) -> MirFunction {
+    let carried = extra_args.len();
+    let seed = |i: usize| ValueId(900 + i as u32);
+    let param = |i: usize| ValueId(950 + i as u32);
+    let mut entry_insts = vec![Inst::Const {
+        dst: cond,
+        value: Const::Bool(true),
+    }];
+    for i in 0..carried {
+        entry_insts.push(call(seed(i).0, "list_h", "dyn_new", &[]));
+    }
     MirFunction {
         id: FuncId(0),
         params: Vec::new(),
@@ -248,18 +265,15 @@ fn loop_func(insts: Vec<Inst>, cond: ValueId, extra_args: Vec<ValueId>) -> MirFu
             Block {
                 id: BlockId(0),
                 params: Vec::new(),
-                insts: vec![Inst::Const {
-                    dst: cond,
-                    value: Const::Bool(true),
-                }],
+                insts: entry_insts,
                 term: Term::Br {
                     target: BlockId(1),
-                    args: Vec::new(),
+                    args: (0..carried).map(seed).collect(),
                 },
             },
             Block {
                 id: BlockId(1),
-                params: Vec::new(),
+                params: (0..carried).map(|i| (param(i), Ty::ListDyn)).collect(),
                 insts,
                 term: Term::CondBr {
                     cond,
@@ -331,6 +345,18 @@ fn scope_drop_skips_a_handle_escaping_through_the_terminator() {
         ValueId(0),
         vec![ValueId(10)],
     );
+    // Locks the carried-argument fixture itself: a `then_args` the target block
+    // has no parameter for is invalid MIR, and the pass would then be reasoning
+    // about a CFG the backend would never see.
+    let module = MirModule {
+        abi_version: lk_aot_abi::ABI_VERSION,
+        functions: vec![func.clone()],
+        entry: FuncId(0),
+        globals: Vec::new(),
+        mutable_globals: Vec::new(),
+        vm_functions: Vec::new(),
+    };
+    crate::validate(&module).expect("the carried-argument fixture is valid MIR");
     assert_eq!(scope_drop_block_locals(&mut func), 0);
     assert!(released_handles(&func).is_empty());
 }

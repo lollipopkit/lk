@@ -111,18 +111,29 @@ pub(super) fn lower(
                     // Auto-Display (plan J1): a struct-instance print argument
                     // with a registered `show` prints its result, like the VM's
                     // `try_runtime_display_show`.
+                    //
+                    // The converted value is a temporary for this print's own
+                    // argument read only: the call-window register keeps its
+                    // original SSA definition, so a later read in this block or
+                    // a successor still sees the struct, not its `show` string.
+                    let mut display_saved: Vec<(u8, (ValueId, Ty))> = Vec::new();
                     if matches!(builtin, Builtin::Println | Builtin::Print) {
                         for i in 0..instr.c() as usize {
                             let reg = base.wrapping_add(1).wrapping_add(i as u8);
                             if let Ok((v, ty)) = ssa.read(reg, block, pc) {
                                 let (nv, nty) = apply_display_show(ssa, insts, funcs, entry, sig, v, ty, pc)?;
                                 if nv != v {
+                                    display_saved.push((reg, (v, ty)));
                                     ssa.write(reg, block, (nv, nty));
                                 }
                             }
                         }
                     }
-                    lower_builtin_call(ssa, insts, globals, builtin, base, instr.c() as usize, block, pc)?;
+                    let printed = lower_builtin_call(ssa, insts, globals, builtin, base, instr.c() as usize, block, pc);
+                    for (reg, original) in display_saved {
+                        ssa.write(reg, block, original);
+                    }
+                    printed?;
                 }
                 Some(GlobalRef::ModuleFn(module, name)) => {
                     // `iter.map(xs, f)`, `iter.take(xs, n)`, … are the

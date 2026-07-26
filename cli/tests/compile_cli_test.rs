@@ -716,7 +716,11 @@ fn test_run_parse_error_returns_non_zero() {
 /// printed the ill-typed value — a silent divergence no differential test
 /// caught, because neither the corpus nor the fuzzer emits an annotation that
 /// contradicts its initializer.
+///
+/// `aot`-gated: without the native backend `lk compile` fails with "native
+/// backend disabled at build time", which is not the type error this asserts.
 #[test]
+#[cfg(feature = "aot")]
 fn test_compile_rejects_what_run_and_check_reject() {
     let dir = unique_tmp_dir("type_check_parity");
     ensure_clean_dir(&dir);

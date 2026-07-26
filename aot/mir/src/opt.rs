@@ -30,7 +30,7 @@
 //! worth having — 5 collapses are block-local, 33 with dominance.
 //!
 //! Scope drop is not an optimization at all but a correctness-of-resources
-//! fix; see [`scope_drop_loop_locals`].
+//! fix; see [`scope_drop_block_locals`].
 //!
 //! None of this closes the ~17% gap to the retired clang `-O2` path. That gap
 //! is in instruction selection and register allocation, not in redundancy.
@@ -183,11 +183,17 @@ fn term_targets(term: &Term) -> Vec<BlockId> {
 
 /// Container handles constructed in block `bi` whose every use is a
 /// non-retaining receiver use inside that same block (see
-/// [`scope_drop_loop_locals`] for why each condition is required).
+/// [`scope_drop_block_locals`] for why each condition is required).
 fn block_local_handles(func: &MirFunction, bi: usize) -> Vec<ValueId> {
     let block = &func.blocks[bi];
     let mut created: Vec<ValueId> = Vec::new();
     for inst in &block.insts {
+        // `constructs_handle` alone is the audited safety contract; the module
+        // allowlist on top of it is a deliberate *scope* limit, not a second
+        // safety check. `str.chars`/`str.split` are also `Constructs` and would
+        // be safe to release, but they are not the allocation the measurements
+        // above are about, so they stay on the arena's exit reclaim until a
+        // measurement says otherwise.
         if let Inst::Call {
             dst: Some(dst), callee, ..
         } = inst

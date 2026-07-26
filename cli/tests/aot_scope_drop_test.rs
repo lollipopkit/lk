@@ -32,16 +32,20 @@ println(n);\n";
 fn peak_rss_kib(exe: &std::path::Path) -> u64 {
     // `/usr/bin/time -v` is not guaranteed present; run the child and read its
     // own peak from /proc/self/status by wrapping in a shell that reports it.
+    // The executable goes in as a positional argument, never interpolated into
+    // the script: a temp dir with a space in it would otherwise split into two
+    // words and the sampler would measure nothing.
     let output = Command::new("sh")
         .arg("-c")
-        .arg(format!(
-            "{} >/dev/null & pid=$!; peak=0; \
+        .arg(
+            "\"$1\" >/dev/null & pid=$!; peak=0; \
              while kill -0 $pid 2>/dev/null; do \
-               cur=$(awk '/VmHWM/ {{print $2}}' /proc/$pid/status 2>/dev/null); \
+               cur=$(awk '/VmHWM/ {print $2}' /proc/$pid/status 2>/dev/null); \
                [ -n \"$cur\" ] && [ \"$cur\" -gt \"$peak\" ] && peak=$cur; \
              done; wait $pid; echo $peak",
-            exe.display()
-        ))
+        )
+        .arg("sh")
+        .arg(exe)
         .output()
         .expect("run child under rss sampling");
     String::from_utf8_lossy(&output.stdout).trim().parse().unwrap_or(0)

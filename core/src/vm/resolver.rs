@@ -72,10 +72,18 @@ impl ModuleResolver {
 
     /// Add a search path for file resolution
     pub fn add_search_path(&mut self, path: impl Into<PathBuf>) {
-        self.search_paths.push(path.into());
+        let path = path.into();
+        if !self.search_paths.contains(&path) {
+            self.search_paths.push(path);
+        }
     }
 
     /// Set the default base directory for relative file imports.
+    ///
+    /// Additive and idempotent: a nested load re-runs this for each file it
+    /// walks through, and appending unconditionally made `search_paths` grow
+    /// with duplicates on every hop (each of which is then re-`exists()`-probed
+    /// per candidate).
     #[cfg(feature = "std")]
     pub fn set_base_dir(&mut self, path: impl Into<PathBuf>) {
         let base = path.into();
@@ -87,9 +95,9 @@ impl ModuleResolver {
         {
             self.search_paths.insert(0, PathBuf::from("."));
         }
-        self.search_paths.push(base.clone());
-        self.search_paths.push(base.join("lib"));
-        self.search_paths.push(base.join("modules"));
+        self.add_search_path(base.clone());
+        self.add_search_path(base.join("lib"));
+        self.add_search_path(base.join("modules"));
     }
 
     /// Register a package root module. `use name;` resolves to this file when
@@ -179,7 +187,12 @@ impl ModuleResolver {
     pub fn resolve_file_path(&self, path: &str) -> Result<PathBuf> {
         let path = Path::new(path);
 
-        // Enforce security: only allow relative, sanitized paths (no absolute, no `..`).
+        // Only relative import paths are accepted. `..` is *not* rejected —
+        // `use "../general/fib";` is supported and used by the examples — so
+        // the `starts_with(root)` checks below are a normalization preference,
+        // not containment: a candidate that escapes its root is still returned.
+        // Tightening that into real containment needs a decision about which
+        // root a `..` import is allowed to escape into. TODO(security): decide.
         if !path.is_relative() {
             return Err(anyhow!(
                 "Absolute paths are not allowed for imports: {}",
@@ -320,6 +333,10 @@ pub fn execute_imports(imports: &[ImportStmt], resolver: &ModuleResolver, env: &
             }
             ImportStmt::ModuleAlias { module, alias } => {
                 let module_export = resolver.resolve_runtime_module(module)?;
+                // Same order as every other variant: an aliased module's trait
+                // impls have to be registered too, or `use shape as s;`
+                // dispatches worse than `use shape;`.
+                env.register_imported_types(&module_export);
                 env.define_runtime_global(alias.clone(), module_export);
             }
         }
