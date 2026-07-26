@@ -50,11 +50,19 @@ jobs:
         run: |
           rustup target add thumbv7em-none-eabi
           sudo apt-get update && sudo apt-get install -y qemu-system-arm
+          # Regenerate the bytecode the artifact-only probe embeds. `.lkm` is
+          # build-locked, so a committed one goes stale the moment the artifact
+          # version is bumped; generating it here keeps the probe honest
+          # instead of failing for an unrelated reason.
+          cargo run -p lk-cli --no-default-features --features stdlib -- \
+            compile bytecode bare-metal/demo.lk
           cd bare-metal
           cargo build --release
-          qemu-system-arm -cpu cortex-m4 -machine mps2-an386 -nographic \
-            -semihosting-config enable=on,target=native \
-            -kernel target/thumbv7em-none-eabi/release/lk-bare-metal
+          for image in lk-bare-metal artifact_only; do
+            qemu-system-arm -cpu cortex-m4 -machine mps2-an386 -nographic \
+              -semihosting-config enable=on,target=native \
+              -kernel "target/thumbv7em-none-eabi/release/$image"
+          done
       - name: AOT native-lowering coverage gate
         # A lowering regression does not fail any differential test: the
         # program silently drops to the hybrid bridge or the Tier 0 VM bundle

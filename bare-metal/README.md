@@ -8,6 +8,13 @@ crate *compiles*, and no differential test can tell you whether the VM actually
 
 ```bash
 rustup target add thumbv7em-none-eabi
+# `.lkm` files are not checked in (see the repo .gitignore), and the
+# artifact_only image embeds one at compile time. Run this once, from the repo
+# root, before the first build:
+cargo run -p lk-cli --no-default-features --features stdlib -- \
+  compile bytecode bare-metal/demo.lk
+
+cd bare-metal
 cargo run --release              # the runner in .cargo/config.toml starts QEMU
 ```
 
@@ -16,6 +23,13 @@ Expected output, and an exit code of 0:
 ```
 sum(fib(0..9)) = 88
 OK: lk ran on bare metal, returned 88
+```
+
+There is a second image, `artifact_only`, which runs the same program from
+precompiled bytecode instead of source — see [Footprint](#footprint):
+
+```bash
+cargo run --release --bin artifact_only
 ```
 
 The first line comes from LK's own `println`, routed through `stdlib/bare` to
@@ -32,23 +46,33 @@ qemu-system-arm -cpu cortex-m4 -machine mps2-an386 -nographic \
 
 ## Footprint
 
-Measured on this demo (`opt-level = "z"`, LTO, `panic = "abort"`):
+Two images are built, differing only in how they get their bytecode. Measured
+with `opt-level = "z"`, LTO, `panic = "abort"`:
 
-| section | size |
-| --- | --- |
-| `.text` | 470 KB |
-| `.rodata` | 91 KB |
-| **flash total** | **~561 KB** |
+| image | what it compiles in | flash (`.text` + `.rodata`) |
+| --- | --- | --- |
+| `lk-bare-metal` | full front end: tokenizer, parser, macro machinery, type checker, VM compiler, executor | **560 KB** |
+| `artifact_only` | precompiled `ModuleArtifact` → executor | **416 KB** |
+
+So the front end costs **144 KB, about 26%**. Both fit an STM32H7/F7-class
+part; neither fits a 256KB-class MCU.
+
+Worth knowing: the artifact-only saving needs **no build configuration**. The
+linker's `--gc-sections` drops the front end on its own once nothing references
+it, which is why there is no `artifact-only` cargo feature — one would make the
+build more explicit without making the binary smaller.
 
 `.bss` is dominated by the 1MB demo heap, which is a knob in `main.rs`, not a
 requirement.
 
-That figure is the *whole front end* — tokenizer, parser, macro machinery, type
-checker, VM compiler and executor. Running a precompiled `ModuleArtifact`
-instead, so the front end can be dropped, measured ~375 KB in a separate probe.
-Neither fits a 256KB-class MCU; both fit an STM32H7/F7-class part. Shrinking the
-artifact-only path further means replacing its `serde_json` decode with a
-binary format — see task 6 in the no_std work.
+Further shrinking means attacking the executor, which dominates what is left,
+or replacing the artifact's JSON decode with a binary format. The latter is a
+cross-cutting change to the `.lkm` format shared with the AOT path, not a
+no_std-local one.
+
+`demo.lkm` is generated from `demo.lk` (see the build steps above) and is
+build-locked to the artifact version, so it must be regenerated after an
+artifact bump. CI regenerates it every run rather than trusting a stale copy.
 
 ## Why MPS2 AN386
 
