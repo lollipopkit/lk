@@ -13,6 +13,7 @@
 extern crate alloc;
 
 mod boot;
+mod interrupts;
 
 use core::alloc::{GlobalAlloc, Layout};
 use core::panic::PanicInfo;
@@ -84,10 +85,28 @@ fn serial_write(text: &str) {
     }
 }
 
+/// Bring COM1 up before interrupts are enabled.
+///
+/// `program.lk`'s driver configures it too, with the same values — this is not
+/// a substitute for it. It is here because the timer handler transmits, and a
+/// tick landing before `uart_init()` would write to an unconfigured device.
+fn serial_init() {
+    // SAFETY: fixed ISA ports. The sequence matches `program.lk`'s.
+    unsafe {
+        port_out_u8(COM1 + 1, 0x00); // interrupts off; this driver polls
+        port_out_u8(COM1 + 3, 0x80); // DLAB: the divisor latch
+        port_out_u8(COM1, 0x03); //     divisor 3 = 38400 baud
+        port_out_u8(COM1 + 1, 0x00);
+        port_out_u8(COM1 + 3, 0x03); // 8N1
+        port_out_u8(COM1 + 2, 0xc7); // FIFOs on and cleared
+        port_out_u8(COM1 + 4, 0x0b); // DTR + RTS + OUT2
+    }
+}
+
 /// # Safety
 ///
 /// The caller must know what device answers at `port`.
-unsafe fn port_in_u8(port: u16) -> u8 {
+pub(crate) unsafe fn port_in_u8(port: u16) -> u8 {
     let value: u8;
     unsafe {
         core::arch::asm!("in al, dx", out("al") value, in("dx") port, options(nomem, nostack, preserves_flags));
@@ -98,7 +117,7 @@ unsafe fn port_in_u8(port: u16) -> u8 {
 /// # Safety
 ///
 /// As [`port_in_u8`], for a write.
-unsafe fn port_out_u8(port: u16, value: u8) {
+pub(crate) unsafe fn port_out_u8(port: u16, value: u8) {
     unsafe {
         core::arch::asm!("out dx, al", in("dx") port, in("al") value, options(nomem, nostack, preserves_flags));
     }
@@ -117,10 +136,17 @@ pub extern "C" fn kernel_main() -> ! {
     // calls into is simply absent.
     let _ = lkrt::link_anchor();
     lkrt::set_output(serial_write);
+    serial_init();
+    // The handler transmits, and it can fire from here on — which is why the
+    // UART is already up.
+    interrupts::init();
 
     // SAFETY: `main` is the object emitted by `lk compile object:`, linked by
     // build.rs, and takes no arguments.
     let result = unsafe { main() };
+    // Stop the clock before reporting: a tick landing mid-line would splice a
+    // '.' into it.
+    interrupts::stop();
     unsafe {
         core::ptr::write_volatile(addr_of_mut!(LK_RESULT), result);
     }

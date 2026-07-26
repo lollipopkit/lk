@@ -9,4 +9,17 @@ target = "x86_64-unknown-none"
 # (a bare-metal image is loaded at a fixed address and has no dynamic loader),
 # and `x86_64-unknown-none` defaults to PIE — which rejects the object's
 # absolute relocations rather than resolving them.
-rustflags = ["-C", "link-dead-code", "-C", "relocation-model=static"]
+# `+sse,+sse2`: `x86_64-unknown-none` is a *soft-float* target — Rust code
+# built for it passes and returns `f64` in integer registers. The
+# Cranelift-emitted LK object uses the ordinary SysV ABI, where floats travel in
+# XMM. Left mismatched, a call like `f64_div_checked` reads its arguments from
+# the wrong registers and the program computes a wrong number *silently*; there
+# is no link error, because the symbol names agree.
+#
+# The boot path enables SSE in CR0/CR4 to match, and the interrupt trampoline
+# saves the XMM registers. Those three have to be decided together.
+rustflags = [
+    "-C", "link-dead-code",
+    "-C", "relocation-model=static",
+    "-C", "target-feature=-soft-float,+sse,+sse2",
+]

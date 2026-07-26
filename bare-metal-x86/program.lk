@@ -82,23 +82,82 @@ fn uart_put_int(value: Int) {
     }
 }
 
+// The 8253/8254 PIT, programmed from LK.
+//
+//   0x43  command: channel, access mode, operating mode
+//   0x40  channel 0 data: the divisor, low byte then high byte
+//
+// The input clock is 1193182 Hz, so the divisor sets the period. Mode 3 is a
+// square wave, which is what a periodic tick wants.
+const PIT_COMMAND = 0x43;
+const PIT_CHANNEL0 = 0x40;
+const PIT_MODE3_BOTH_BYTES = 0x36;
+
+fn pit_start(divisor: Int) {
+    unsafe { port_out_u8(PIT_COMMAND, PIT_MODE3_BOTH_BYTES as u8); };
+    unsafe { port_out_u8(PIT_CHANNEL0, (divisor & 0xff) as u8); };
+    // `/` is float division in LK; the cast keeps the byte an Int.
+    unsafe { port_out_u8(PIT_CHANNEL0, ((divisor / 256) as Int & 0xff) as u8); };
+}
+
+// The timer interrupt handler, written in LK.
+//
+// `#[export]` gives it a C symbol so the IDT can name it. It transmits
+// directly and allocates nothing: an interrupt lands between any two
+// instructions of the interrupted program, including instructions inside the
+// runtime's allocator.
+#[export("lk_timer_isr")]
+fn on_tick() {
+    uart_putc(46); // '.'
+}
+
 fn fib(n: Int) -> Int {
     if (n < 2) { return n; }
     return fib(n - 1) + fib(n - 2);
 }
 
 uart_init();
-
-// "native LK drives COM1: sum(fib(0..9)) = "
-uart_write([110, 97, 116, 105, 118, 101, 32, 76, 75, 32, 100, 114, 105, 118, 101, 115,
-            32, 67, 79, 77, 49, 58, 32, 115, 117, 109, 40, 102, 105, 98, 40, 48,
-            46, 46, 57, 41, 41, 32, 61, 32]);
+// ~1 kHz. The board has already unmasked IRQ0 and enabled interrupts; what
+// this decides is how often it fires.
+pit_start(1193);
 
 let total = 0;
 for i in 0..10 {
     total = total + fib(i);
 }
+
+// A critical section, written in LK. The handler transmits on the same device
+// this line does, and an interrupt lands between any two instructions — so
+// without masking, a tick would splice a '.' into the middle of the message.
+// `cpu_irq_save` returns the previous state rather than a flag, so nesting one
+// of these inside another does not enable interrupts early on the way out.
+let irq = unsafe { cpu_irq_save() };
+// "native LK drives COM1: sum(fib(0..9)) = "
+uart_write([110, 97, 116, 105, 118, 101, 32, 76, 75, 32, 100, 114, 105, 118, 101, 115,
+            32, 67, 79, 77, 49, 58, 32, 115, 117, 109, 40, 102, 105, 98, 40, 48,
+            46, 46, 57, 41, 41, 32, 61, 32]);
 uart_put_int(total);
+uart_putc(10);
+// " half = "  — a Float round trip, which is the thing that needs SSE to have
+// been enabled by the boot path. Without it this line faults rather than
+// printing the wrong number.
+uart_write([104, 97, 108, 102, 32, 61, 32]);
+uart_put_int((total / 2.0) as Int);
+uart_putc(10);
+unsafe { cpu_irq_restore(irq); };
+
+// Enough work for a few timer periods to elapse. Every '.' after this point
+// came from the LK handler above, running in interrupt context while this loop
+// was mid-computation.
+let spin = 0;
+for i in 0..10000000 {
+    spin = spin + 1;
+}
+
+// Masked and deliberately not restored: what runs after this is the runtime's
+// epilogue echoing the script's value, which no LK code is in a position to
+// protect.
+unsafe { cpu_irq_save(); };
 uart_putc(10);
 
 return total;

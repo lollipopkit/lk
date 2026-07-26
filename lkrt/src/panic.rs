@@ -31,7 +31,11 @@ use alloc::ffi::CString;
 use core::cell::Cell;
 #[cfg(feature = "std")]
 use core::cell::RefCell;
-use core::ffi::{c_char, c_int, c_void};
+use core::ffi::{c_char, c_void};
+// `c_int` is only in the `_longjmp` declaration, which is hosted-only — the
+// bare-metal raise path unwinds by other means.
+#[cfg(feature = "std")]
+use core::ffi::c_int;
 
 use crate::lkdyn::LkDyn;
 use crate::lkstr::arena_c_string;

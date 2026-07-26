@@ -86,6 +86,19 @@ global_asm!(
     "   mov ss, ax",
     "   mov fs, ax",
     "   mov gs, ax",
+    // Enable SSE. x86-64 guarantees the *instructions* exist, but they raise
+    // #UD until the OS says it is prepared to save their state: CR0.EM clear
+    // and CR0.MP set (there is a real FPU, do not emulate), CR4.OSFXSR and
+    // CR4.OSXMMEXCPT set. LK numbers are `f64`, so without this the first
+    // floating-point instruction faults — and so does the interrupt
+    // trampoline, which saves the XMM registers.
+    "   mov rax, cr0",
+    "   and rax, ~(1 << 2)",
+    "   or rax, 1 << 1",
+    "   mov cr0, rax",
+    "   mov rax, cr4",
+    "   or rax, (1 << 9) | (1 << 10)",
+    "   mov cr4, rax",
     "   mov rsp, offset __stack_top",
     // Zero `.bss`. Rust assumes it, and the loader guarantees nothing about
     // memory it did not load from the file.

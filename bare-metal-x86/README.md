@@ -14,7 +14,9 @@ LK_BIN=../target/debug/lk ./run.sh
 ```
 
 ```
-native LK drives COM1: sum(fib(0..9)) = 88
+.native LK drives COM1: sum(fib(0..9)) = 88
+half = 44
+.............
 88
 [lk returned to the board]
 ```
@@ -44,6 +46,60 @@ Like the MMIO intrinsics, they lower to opaque `lkrt` calls and are marked
 `WritesHost` in the ABI table *including the reads* — reading a device port can
 change its state (a UART's receive register empties when read), so the
 optimiser must not collapse two reads of one port.
+
+## The float ABI, which is where this went wrong
+
+`x86_64-unknown-none` is a **soft-float** target: Rust code built for it passes
+and returns `f64` in integer registers, on the assumption that a kernel does not
+want to save SSE state. The Cranelift-emitted LK object uses the ordinary SysV
+ABI, where floats travel in XMM. Left mismatched, a call like
+`lkrt_f64_div_checked` reads its arguments from the wrong registers and the
+program computes a **wrong number** — no link error, because the symbol names
+agree. `lk compile object:` now warns about this; the fix is three things that
+have to be decided together:
+
+- `-C target-feature=-soft-float,+sse,+sse2` in `.cargo/config.toml`. Removing
+  `soft-float` is not optional: adding `+sse` while leaving it set puts LLVM in
+  a state where SSE is available but the ABI is still soft, and the result is a
+  hang rather than an error.
+- `boot.rs` clears `CR0.EM`, sets `CR0.MP`, and sets `CR4.OSFXSR` /
+  `CR4.OSXMMEXCPT`. x86-64 guarantees the SSE *instructions* exist, but they
+  raise #UD until the OS says it is prepared to save their state.
+- the interrupt trampoline saves all sixteen XMM registers, because the
+  interrupted computation may now be holding a float in one.
+
+The `half = 44` line in the output exists to keep this honest: it is a `f64`
+round trip across the boundary, so a regression prints `88` instead of failing.
+
+## Interrupts
+
+Each `.` is a timer interrupt **handled by an LK function**:
+
+```lk
+#[export("lk_timer_isr")]
+fn on_tick() {
+    uart_putc(46);
+}
+```
+
+The board's share is an IDT, remapping the 8259 PIC away from the vectors the
+CPU reserves for exceptions, acknowledging the interrupt, and spilling every
+caller-saved register. What a tick *means* is the program's, and that part is
+LK — including programming the PIT's divisor, which `program.lk` does with the
+same `port_out_u8` its UART driver uses.
+
+The handler and the main program share a device, so `program.lk` masks
+interrupts around the lines it does not want spliced:
+
+```lk
+let irq = unsafe { cpu_irq_save() };
+uart_write(/* … */);
+unsafe { cpu_irq_restore(irq); };
+```
+
+Two things the handler must not do, both because an interrupt lands between any
+two instructions of the interrupted program — including instructions inside the
+runtime: allocate, or take a lock.
 
 ## Booting
 

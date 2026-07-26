@@ -176,8 +176,14 @@ jobs:
           # run is 1, hence the `|| true`.
           output=$(timeout 120 ./run.sh 2>&1 || true)
           echo "$output"
+          # `half = 44` is a f64 round trip across the LK/lkrt boundary: this
+          # target is soft-float by default, and a mismatch there prints 88
+          # rather than failing. The '...' are timer interrupts handled by an
+          # LK function — three in a row, where one could be a fluke.
           for expected in \
             "native LK drives COM1: sum(fib(0..9)) = 88" \
+            "half = 44" \
+            "..." \
             "[lk returned to the board]"; do
             printf '%s' "$output" | grep -qF -- "$expected" || {
               echo "::error::x86-64 native image did not print: $expected"

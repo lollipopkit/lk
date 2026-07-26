@@ -110,7 +110,38 @@ pub(super) fn compile_instr_artifact_with_dependencies(path: &Path) -> anyhow::R
 /// error, not a silent Tier 0 bundle. The bundle embeds the interpreter and a
 /// host runtime, which is not something a bare-metal target could link even if
 /// it wanted to.
+/// Warns when the target's *Rust* toolchain defaults to a soft-float ABI.
+///
+/// The emitted object always passes `f64` the hardware way — Cranelift has no
+/// soft-float mode — so linking it against Rust code built with the target's
+/// defaults makes every float that crosses the boundary read the wrong
+/// register. Nothing detects that: the symbol names agree, so it links, and the
+/// program computes wrong numbers.
+///
+/// LK cannot see how the other side is being built, so this is a warning rather
+/// than an error. Saying nothing is the one option that is certainly wrong.
+fn warn_if_soft_float_target(triple: &str) {
+    let soft_float = match triple.split('-').next().unwrap_or_default() {
+        // `*-unknown-none` on x86 sets `+soft-float`, on the assumption that a
+        // kernel does not want to save SSE state.
+        "x86_64" | "i586" | "i686" => triple.contains("-none"),
+        // No F/D extension unless the triple asks for it.
+        arch if arch.starts_with("riscv") => !triple.contains('d') && triple.contains("-none"),
+        _ => false,
+    };
+    if !soft_float {
+        return;
+    }
+    eprintln!(
+        "warning: {triple} defaults to a soft-float ABI, but this object passes floats in \
+         hardware registers.\n         Build the code you link it against with \
+         `-C target-feature=-soft-float,+sse,+sse2` (and enable SSE in your boot path),\n         \
+         or floats crossing the boundary will silently read the wrong registers."
+    );
+}
+
 pub(super) fn compile_object(path: &Path, triple: &str, output: Option<&Path>) -> anyhow::Result<()> {
+    warn_if_soft_float_target(triple);
     let output = output
         .map(Path::to_path_buf)
         .unwrap_or_else(|| path.with_extension("o"));
