@@ -15,6 +15,9 @@ mod compiler;
 mod context;
 mod exec;
 mod gc;
+/// Hardware-touching intrinsics. The one place under `vm/` allowed `unsafe`;
+/// see the module docs and the migration guard's exception list.
+mod hardware;
 mod ir;
 #[cfg(test)]
 mod migration_guard;

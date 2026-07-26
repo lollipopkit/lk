@@ -91,20 +91,28 @@ jobs:
             echo "$output"
             # One line per module surface, so a module silently dropping out of
             # the registry fails here instead of passing quietly.
-            assert_printed "$output" "sum(fib(0..9)) = 88" "$image"
-            assert_printed "$output" "sqrt(144) = 12" "$image"
-            assert_printed "$output" "upper = BARE METAL" "$image"
-            assert_printed "$output" "bytes.len = 2" "$image"
-            assert_printed "$output" "doubled = [2,4,6]" "$image"
-            assert_printed "$output" "crc32 = 1391562372" "$image"
-            assert_printed "$output" "json.n = 42" "$image"
-            assert_printed "$output" "base64 = bGs=" "$image"
-            assert_printed "$output" "hex = 6c6b" "$image"
-            # Each image reports under its own name, so a build that ran the
-            # wrong binary twice cannot pass.
             case "$image" in
-              lk-bare-metal) ok="OK: lk ran on bare metal, returned 88" ;;
-              artifact_only) ok="OK: artifact ran on bare metal, returned 88" ;;
+              # A UART driver written in LK: it configures the device, polls
+              # its status register and transmits. The text arriving on the
+              # serial line is the proof that volatile MMIO reaches hardware —
+              # semihosting is not involved in producing it.
+              lk-bare-metal)
+                assert_printed "$output" "LK drives hardware" "$image"
+                ok="OK: lk ran on bare metal, returned 0"
+                ;;
+              # The language-feature corpus, run from precompiled bytecode.
+              artifact_only)
+                assert_printed "$output" "sum(fib(0..9)) = 88" "$image"
+                assert_printed "$output" "sqrt(144) = 12" "$image"
+                assert_printed "$output" "upper = BARE METAL" "$image"
+                assert_printed "$output" "bytes.len = 2" "$image"
+                assert_printed "$output" "doubled = [2,4,6]" "$image"
+                assert_printed "$output" "crc32 = 1391562372" "$image"
+                assert_printed "$output" "json.n = 42" "$image"
+                assert_printed "$output" "base64 = bGs=" "$image"
+                assert_printed "$output" "hex = 6c6b" "$image"
+                ok="OK: artifact ran on bare metal, returned 88"
+                ;;
               *) echo "::error::unknown image $image"; exit 1 ;;
             esac
             assert_printed "$output" "$ok" "$image"

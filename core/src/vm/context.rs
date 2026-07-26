@@ -391,68 +391,43 @@ impl VmContext {
         // CPU control. Meaningless under the interpreter for the same reason
         // as MMIO: there is no core to mask interrupts on, and a barrier
         // orders accesses the VM never makes.
-        self.install_runtime_builtin("cpu_barrier", NativeFunction::Plain(core_cpu_unavailable_builtin), 0);
+        self.install_runtime_builtin("cpu_barrier", NativeFunction::Plain(core_cpu_barrier_builtin), 0);
         self.install_runtime_builtin(
             "cpu_compiler_barrier",
-            NativeFunction::Plain(core_cpu_unavailable_builtin),
+            NativeFunction::Plain(core_cpu_compiler_barrier_builtin),
             0,
         );
-        self.install_runtime_builtin("cpu_irq_save", NativeFunction::Plain(core_cpu_unavailable_builtin), 0);
+        self.install_runtime_builtin("cpu_irq_save", NativeFunction::Plain(core_cpu_irq_save_builtin), 0);
         self.install_runtime_builtin(
             "cpu_irq_restore",
-            NativeFunction::Plain(core_cpu_unavailable_builtin),
+            NativeFunction::Plain(core_cpu_irq_restore_builtin),
             1,
         );
         self.install_runtime_builtin(
             "cpu_wait_for_interrupt",
-            NativeFunction::Plain(core_cpu_unavailable_builtin),
+            NativeFunction::Plain(core_cpu_wait_for_interrupt_builtin),
             0,
         );
-        // Volatile MMIO access. The bytecode VM has no address space, so
-        // these exist only to *fail loudly* there — a driver reading a
-        // register under the interpreter must not get a plausible zero.
-        // The AOT path lowers them to real loads and stores instead of
-        // calling these.
-        self.install_runtime_builtin(
-            "volatile_read_u8",
-            NativeFunction::Plain(core_volatile_unavailable_builtin),
-            1,
-        );
-        self.install_runtime_builtin(
-            "volatile_write_u8",
-            NativeFunction::Plain(core_volatile_unavailable_builtin),
-            2,
-        );
-        self.install_runtime_builtin(
-            "volatile_read_u16",
-            NativeFunction::Plain(core_volatile_unavailable_builtin),
-            1,
-        );
-        self.install_runtime_builtin(
-            "volatile_write_u16",
-            NativeFunction::Plain(core_volatile_unavailable_builtin),
-            2,
-        );
-        self.install_runtime_builtin(
-            "volatile_read_u32",
-            NativeFunction::Plain(core_volatile_unavailable_builtin),
-            1,
-        );
-        self.install_runtime_builtin(
-            "volatile_write_u32",
-            NativeFunction::Plain(core_volatile_unavailable_builtin),
-            2,
-        );
-        self.install_runtime_builtin(
-            "volatile_read_u64",
-            NativeFunction::Plain(core_volatile_unavailable_builtin),
-            1,
-        );
-        self.install_runtime_builtin(
-            "volatile_write_u64",
-            NativeFunction::Plain(core_volatile_unavailable_builtin),
-            2,
-        );
+        // Volatile MMIO access.
+        //
+        // Whether this can mean anything depends on where the VM itself is
+        // running, which is why it is feature-gated rather than always a
+        // refusal. Hosted, a raw address belongs to some other allocation or
+        // to nothing, and touching it is a bug — so it raises. On bare metal
+        // the interpreter *is* the thing running on the hardware and the
+        // address space is real, so the access is performed.
+        //
+        // This matters because the bare-metal image runs the VM: refusing here
+        // unconditionally would mean LK could describe a driver but never run
+        // one on the only backend that reaches that hardware.
+        self.install_runtime_builtin("volatile_read_u8", NativeFunction::Plain(core_volatile_read_u8), 1);
+        self.install_runtime_builtin("volatile_write_u8", NativeFunction::Plain(core_volatile_write_u8), 2);
+        self.install_runtime_builtin("volatile_read_u16", NativeFunction::Plain(core_volatile_read_u16), 1);
+        self.install_runtime_builtin("volatile_write_u16", NativeFunction::Plain(core_volatile_write_u16), 2);
+        self.install_runtime_builtin("volatile_read_u32", NativeFunction::Plain(core_volatile_read_u32), 1);
+        self.install_runtime_builtin("volatile_write_u32", NativeFunction::Plain(core_volatile_write_u32), 2);
+        self.install_runtime_builtin("volatile_read_u64", NativeFunction::Plain(core_volatile_read_u64), 1);
+        self.install_runtime_builtin("volatile_write_u64", NativeFunction::Plain(core_volatile_write_u64), 2);
         self.install_runtime_builtin("__lk_bit_and", NativeFunction::Plain(core_bit_and_builtin), 2);
         self.install_runtime_builtin("__lk_bit_or", NativeFunction::Plain(core_bit_or_builtin), 2);
         self.install_runtime_builtin("__lk_bit_not", NativeFunction::Plain(core_bit_not_builtin), 1);
@@ -1182,37 +1157,39 @@ fn core_bit_not_builtin(
     )?))
 }
 
-/// The VM side of the `cpu_*` intrinsics.
+/// The VM side of the `cpu_*` and `volatile_*` intrinsics.
 ///
-/// Raises for the same reason the volatile ones do: under the interpreter there
-/// is no core whose interrupts could be masked, and a barrier would order
-/// accesses that are not happening. Silently succeeding would let a driver's
-/// critical section "work" on the VM and then race on hardware.
-fn core_cpu_unavailable_builtin(
-    _args: NativeArgs<'_>,
-    _runtime: &mut NativeRuntime<'_>,
-) -> anyhow::Result<crate::val::RuntimeVal> {
-    Err(anyhow!(
-        "CPU control (barriers, interrupt masking, wait-for-interrupt) requires native execution; \
-         the bytecode VM has no core to apply it to. Compile with the AOT backend to run this."
-    ))
+/// The implementations live in [`super::hardware`] because they need `unsafe`,
+/// and the VM's migration guard requires this tree to stay safe Rust. Isolating
+/// them there keeps that rule enforceable instead of weakening it: there is one
+/// file to audit, named for what it does.
+macro_rules! hardware_builtins {
+    ($($name:ident => $imp:path;)+) => {
+        $(
+            fn $name(
+                args: NativeArgs<'_>,
+                _runtime: &mut NativeRuntime<'_>,
+            ) -> anyhow::Result<crate::val::RuntimeVal> {
+                $imp(args)
+            }
+        )+
+    };
 }
 
-/// The VM side of `volatile_read_*` / `volatile_write_*`.
-///
-/// Always raises. A raw pointer under the bytecode VM is an address with
-/// nothing behind it: there is no honest value to return, and returning a
-/// plausible one would turn a "this cannot run here" into a wrong answer that
-/// looks right. The AOT backend never calls this — it lowers these builtins to
-/// machine loads and stores.
-fn core_volatile_unavailable_builtin(
-    _args: NativeArgs<'_>,
-    _runtime: &mut NativeRuntime<'_>,
-) -> anyhow::Result<crate::val::RuntimeVal> {
-    Err(anyhow!(
-        "volatile memory access requires native execution: the bytecode VM has no address space \
-         behind a raw pointer. Compile with the AOT backend to run this."
-    ))
+hardware_builtins! {
+    core_cpu_barrier_builtin => super::hardware::cpu_barrier;
+    core_cpu_compiler_barrier_builtin => super::hardware::cpu_compiler_barrier;
+    core_cpu_irq_save_builtin => super::hardware::cpu_irq_save;
+    core_cpu_irq_restore_builtin => super::hardware::cpu_irq_restore;
+    core_cpu_wait_for_interrupt_builtin => super::hardware::cpu_wait_for_interrupt;
+    core_volatile_read_u8 => super::hardware::volatile_read_u8;
+    core_volatile_write_u8 => super::hardware::volatile_write_u8;
+    core_volatile_read_u16 => super::hardware::volatile_read_u16;
+    core_volatile_write_u16 => super::hardware::volatile_write_u16;
+    core_volatile_read_u32 => super::hardware::volatile_read_u32;
+    core_volatile_write_u32 => super::hardware::volatile_write_u32;
+    core_volatile_read_u64 => super::hardware::volatile_read_u64;
+    core_volatile_write_u64 => super::hardware::volatile_write_u64;
 }
 
 #[cfg(test)]

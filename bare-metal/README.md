@@ -21,28 +21,36 @@ cargo run --release              # the runner in .cargo/config.toml starts QEMU
 Expected output, and an exit code of 0:
 
 ```
-sum(fib(0..9)) = 88
-sqrt(144) = 12
-max(3, 7) = 7
-floor(2.7) = 2
-upper = BARE METAL
-split = ["a","b","c"]
-bytes.len = 2
-doubled = [2,4,6]
-crc32 = 1391562372
-json.n = 42
-base64 = bGs=
-hex = 6c6b
-OK: lk ran on bare metal, returned 88
+LK drives hardware
+OK: lk ran on bare metal, returned 0
 ```
 
-That is byte-identical to `lk bare-metal/demo.lk` on a host — including the
-`libm`-computed `sqrt` and the crc32 — which is the point: swapping in `libm`,
-`hashbrown` and spin locks for their std counterparts must not change what a
-program computes.
+That first line does not come from semihosting. It comes from `uart.lk` — a
+UART driver written in LK — configuring the board's CMSDK APB UART, polling its
+status register until the transmit buffer drains, and sending the bytes. The
+text arriving on the serial line is the proof that volatile MMIO from LK reaches
+real hardware:
 
-There is a second image, `artifact_only`, which runs the same program from
-precompiled bytecode instead of source — see [Footprint](#footprint):
+```lk
+fn uart_putc(byte: Int) {
+    let full = 1;
+    while (full != 0) {
+        let state = unsafe { volatile_read_u32((UART0_BASE + REG_STATE) as *mut u32) };
+        full = state & STATE_TX_FULL;
+    }
+    unsafe { volatile_write_u32((UART0_BASE + REG_DATA) as *mut u32, byte as u32); };
+}
+```
+
+That poll is the access a non-volatile load would let the compiler hoist out of
+the loop, hanging it forever.
+
+The second image, `artifact_only`, runs the language-feature corpus
+(`demo.lk`) from precompiled bytecode instead of source. Its output is
+byte-identical to `lk bare-metal/demo.lk` on a host — including the
+`libm`-computed `sqrt` and the crc32 — which is the other half of the guarantee:
+swapping in `libm`, `hashbrown` and spin locks for their std counterparts must
+not change what a program computes. See [Footprint](#footprint):
 
 ```bash
 cargo run --release --bin artifact_only

@@ -80,10 +80,10 @@ fn semihosting_output(text: &str) {
 /// The same source the artifact-only image runs precompiled. Beyond language
 /// features it uses the stdlib modules that work without an OS, so a run
 /// exercises the whole bare-metal module surface, not just the VM.
-const SOURCE: &str = include_str!("../demo.lk");
+const SOURCE: &str = include_str!("../uart.lk");
 
-/// 0+1+1+2+3+5+8+13+21+34
-const EXPECTED: i64 = 88;
+/// The driver returns 0; what it is judged on is the serial output.
+const EXPECTED: i64 = 0;
 
 #[entry]
 fn main() -> ! {

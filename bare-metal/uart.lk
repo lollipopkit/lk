@@ -1,0 +1,55 @@
+// A UART driver, written in LK.
+//
+// The device is the CMSDK APB UART that QEMU's MPS2 boards expose at
+// 0x4000_4000. Its register block is small enough to drive completely:
+//
+//   +0x00  DATA     write transmits a byte
+//   +0x04  STATE    bit 0 = TX buffer full
+//   +0x08  CTRL     bit 0 = TX enable
+//   +0x10  BAUDDIV  divisor; the device requires >= 16
+//
+// Every access goes through `volatile_write_u32` / `volatile_read_u32`. A
+// device register is not memory: an ordinary read could be folded away or
+// reordered against the writes that configure the device, and the status poll
+// below would become an infinite loop the moment its read was hoisted.
+
+const UART0_BASE = 0x40004000;
+
+const REG_DATA = 0x00;
+const REG_STATE = 0x04;
+const REG_CTRL = 0x08;
+const REG_BAUDDIV = 0x10;
+
+const STATE_TX_FULL = 0x01;
+const CTRL_TX_ENABLE = 0x01;
+
+fn uart_init() {
+    // Baud divisor before enabling: the device latches it at enable time.
+    unsafe { volatile_write_u32((UART0_BASE + REG_BAUDDIV) as *mut u32, 16 as u32); };
+    unsafe { volatile_write_u32((UART0_BASE + REG_CTRL) as *mut u32, CTRL_TX_ENABLE as u32); };
+    // Both writes must land before any character is queued.
+    unsafe { cpu_barrier(); };
+}
+
+fn uart_putc(byte: Int) {
+    // Spin while the transmit holding register is full. This read has to
+    // happen on every iteration — it is the canonical access that a
+    // non-volatile load would let the compiler hoist, hanging the loop.
+    let full = 1;
+    while (full != 0) {
+        let state = unsafe { volatile_read_u32((UART0_BASE + REG_STATE) as *mut u32) };
+        full = state & STATE_TX_FULL;
+    }
+    unsafe { volatile_write_u32((UART0_BASE + REG_DATA) as *mut u32, byte as u32); };
+}
+
+fn uart_write(bytes: List<Int>) {
+    for byte in bytes {
+        uart_putc(byte);
+    }
+}
+
+uart_init();
+// "LK drives hardware\n"
+uart_write([76, 75, 32, 100, 114, 105, 118, 101, 115, 32, 104, 97, 114, 100, 119, 97, 114, 101, 10]);
+return 0;
