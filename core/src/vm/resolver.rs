@@ -140,6 +140,8 @@ impl ModuleResolver {
         resolved.as_deref().unwrap_or(candidate).starts_with(root)
     }
 
+    /// `candidate` is expected already canonicalized — the raw join (`././x.lk`)
+    /// says nothing about *which* directory was left.
     #[cfg(feature = "std")]
     fn escaped_containment_root(&self, requested: &Path, candidate: &Path) -> anyhow::Error {
         anyhow!(
@@ -274,37 +276,40 @@ impl ModuleResolver {
         // If the input already contains an extension, also allow it directly.
         let base = PathBuf::from(path);
 
-        // Accepting a candidate is where containment is enforced. The
-        // `starts_with(root)` tests below are a *normalization* preference (use
-        // the canonical form when it stays under the search root) and were never
-        // a boundary — the fallback returned the path either way.
-        let accept = |candidate: PathBuf| -> Result<PathBuf> {
-            if !self.within_containment_root(&candidate) {
-                return Err(self.escaped_containment_root(path, &candidate));
-            }
-            Ok(Self::normalize_path(candidate.canonicalize().unwrap_or(candidate)))
-        };
-
+        // Containment is enforced per candidate, and an out-of-root candidate
+        // *skips* rather than failing the search: `search_paths` always starts
+        // with `.` and `core`, which have nothing to do with the importing file's
+        // directory whenever cwd differs from it. Returning an error on the first
+        // escape meant a name that also existed in cwd shadowed — and hard-failed
+        // — an import whose real target sat under a later root.
+        //
+        // (The `starts_with(root)` tests this replaced were a *normalization*
+        // preference, never a boundary: the fallback returned the path anyway.)
+        let mut escaped: Option<PathBuf> = None;
         for root in &self.search_paths {
-            // If the input already includes .lk and exists under this root, accept it
-            if base.extension().and_then(|s| s.to_str()) == Some("lk") {
-                let p = root.join(&base);
-                if p.exists() {
-                    return accept(p);
+            let candidates = [
+                // The input already includes `.lk`.
+                (base.extension().and_then(|s| s.to_str()) == Some("lk")).then(|| root.join(&base)),
+                Some(root.join(base.with_extension("lk"))),
+                Some(root.join(base.join("mod.lk"))),
+            ];
+            for candidate in candidates.into_iter().flatten() {
+                if !candidate.exists() {
+                    continue;
                 }
+                let resolved = candidate.canonicalize().unwrap_or(candidate);
+                if !self.within_containment_root(&resolved) {
+                    escaped.get_or_insert(resolved);
+                    continue;
+                }
+                return Ok(Self::normalize_path(resolved));
             }
+        }
 
-            // Try ${MOD_NAME}.lk
-            let candidate1 = root.join(base.with_extension("lk"));
-            if candidate1.exists() {
-                return accept(candidate1);
-            }
-
-            // Try ${MOD_NAME}/mod.lk
-            let candidate2 = root.join(base.join("mod.lk"));
-            if candidate2.exists() {
-                return accept(candidate2);
-            }
+        // Nothing in-root matched. If some candidate *did* exist but sat outside,
+        // that is the useful diagnosis — a plain "not found" would hide it.
+        if let Some(escaped) = escaped {
+            return Err(self.escaped_containment_root(path, &escaped));
         }
 
         Err(anyhow!(
@@ -591,6 +596,19 @@ mod tests {
             "the error must say what boundary was crossed"
         );
         assert!(resolver.resolve_file_path("../../outside").is_err());
+
+        // An out-of-root candidate must *skip*, not abort the search: a name that
+        // also exists in cwd (always the first search path) would otherwise
+        // hard-fail an import whose real target sits under a later root.
+        let cwd_shadow = std::env::current_dir()?.join("shadowed.lk");
+        std::fs::write(&cwd_shadow, "return nil;\n")?;
+        std::fs::write(proj.join("sub").join("shadowed.lk"), "return nil;\n")?;
+        let resolved = resolver.resolve_file_path("shadowed");
+        let _ = std::fs::remove_file(&cwd_shadow);
+        assert!(
+            resolved.is_ok(),
+            "the in-root candidate must win over an out-of-root shadow: {resolved:?}"
+        );
 
         // With a manifest above, the package root is the boundary, so the same
         // `..` import now resolves.

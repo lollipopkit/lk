@@ -570,7 +570,11 @@ impl VmContext {
 /// would let it collide with every other module's.
 fn impl_target_scope(target_type: &str, declaring: &crate::vm::TypeScope) -> crate::vm::TypeScope {
     match Type::parse(target_type) {
-        Some(Type::Named(_)) | None => declaring.clone(),
+        // A user *generic* (`Wrapper<Int>` → `Type::Generic`) is as module-local
+        // as a plain `Named`: two modules may each declare their own `Wrapper`.
+        // Lumping it in with the builtins made them share one coherence key and
+        // conflict with each other.
+        Some(Type::Named(_)) | Some(Type::Generic { .. }) | None => declaring.clone(),
         Some(_) => crate::vm::TypeScope::builtin(),
     }
 }

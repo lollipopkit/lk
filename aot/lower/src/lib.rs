@@ -286,14 +286,29 @@ pub fn lower_bundled(
 
     // Compact numbering for the mutable globals the fixpoint discovered; the
     // final pass emits `GlobalGet`/`GlobalSet` against these ids.
-    let mut mutable_globals: Vec<(String, Ty)> = Vec::new();
-    for (slot, ty) in sig.global_tys.clone().into_iter().enumerate() {
-        if let Some(ty) = ty {
-            sig.gvar_of.insert(slot as u16, mutable_globals.len() as u32);
-            let name = sig.global_names.get(slot).cloned().unwrap_or_default();
-            mutable_globals.push((name, ty));
+    //
+    // Recomputed from scratch whenever signatures are re-converged, because
+    // lowering *discovers* globals: `inst/global.rs` fills `global_tys` as it
+    // sees accesses (`None → Some(ty)`, and a second, different observation
+    // widens to `Dyn`). Reusing the pre-rerun numbering would leave a
+    // newly-typed slot with no `gvar_of` entry, and `SigInfer::gvar` falls back
+    // to the raw slot number — which can *collide* with a compacted id and
+    // alias two distinct globals onto one cell, with nothing to reject it
+    // (`validate` only bounds-checks). A widened slot would likewise keep its
+    // stale declared `Ty` while the accessors moved to a register pair.
+    fn compact_mutable_globals(sig: &mut SigInfer) -> Vec<(String, Ty)> {
+        let mut mutable_globals: Vec<(String, Ty)> = Vec::new();
+        sig.gvar_of.clear();
+        for (slot, ty) in sig.global_tys.clone().into_iter().enumerate() {
+            if let Some(ty) = ty {
+                sig.gvar_of.insert(slot as u16, mutable_globals.len() as u32);
+                let name = sig.global_names.get(slot).cloned().unwrap_or_default();
+                mutable_globals.push((name, ty));
+            }
         }
+        mutable_globals
     }
+    let mut mutable_globals = compact_mutable_globals(&mut sig);
 
     // Final pass with stable signatures: produce the real MIR + interned globals for
     // the reachable functions. Any reachable function outside the subset fails the
@@ -402,13 +417,16 @@ pub fn lower_bundled(
             sig.vm_functions
                 .retain(|fidx, _| native_reachable.get(*fidx as usize).copied().unwrap_or(false));
             // Re-converge before emitting: the marks just added changed what
-            // the remaining native functions see.
+            // the remaining native functions see. The global numbering is derived
+            // from that same state, so it is rebuilt too.
             let mut retry_reachable = native_reachable.clone();
             refine_signatures(&mut sig, &mut funcs, &mut retry_reachable);
+            let retry_mutable_globals = compact_mutable_globals(&mut sig);
             let (retry_globals, retry_functions, retry_failures) = final_pass(&mut sig, &retry_reachable, &funcs);
             if retry_failures.is_empty() {
                 globals = retry_globals;
                 functions = retry_functions;
+                mutable_globals = retry_mutable_globals;
                 break;
             }
             if std::env::var_os("LK_AOT_DEBUG_FAILURES").is_some() {

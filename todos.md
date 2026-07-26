@@ -25,6 +25,19 @@ fn g() -> Tuple<Bool, String> { return [true, "x"]; }   // 通过
 2. 列表字面量按**期望类型**推导(双向检查),保留 arity —— 正解,但要把期望类型
    传到字面量处。
 
+### P1.2 两个 anonymous 模块之间的 builtin impl 冲突查不出来
+
+`claim_builtin_impl` 按声明模块的 `TypeScope` 判定归属,而 `TypeScope::anonymous()`
+两两相等,所以两个匿名模块给同一个 builtin 实现同一个 trait 时,后者仍然静默覆盖
+前者 —— 正是这条检查要消掉的 import 顺序依赖,只是换到了内存/REPL 路径上。
+
+**目前在生产路径上不可达**:一次运行里只有入口程序是匿名的,
+`resolve_source_runtime`(唯一另一个匿名来源)没有生产调用方,只有测试用。加一个
+eval API 就会变得可达。
+
+要修得让匿名 scope 彼此可区分(现在 `type_info.rs` 的文档明确写着它"只靠是本次运行
+唯一的匿名 scope 来区分"),那会牵动 artifact 往返与相等性 —— 不是一处小改。
+
 ## P2 · 最大的一件,做完能收回一条硬门禁
 
 ### P2 try/catch 的 AOT 保护区外联

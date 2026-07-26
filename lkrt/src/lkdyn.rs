@@ -834,8 +834,19 @@ pub unsafe extern "C" fn lkrt_lklist_dyn_map_fn(handle: *mut c_void, f: extern "
     // unsound. CLAUDE.md's lkrt rule ("never call a raise-capable function while
     // holding a lock guard or RefCell borrow") is the same rule; a slice borrow
     // is just a third way to hold one.
-    let values = dyn_slice(handle).to_vec();
-    let mapped: Vec<LkDyn> = values.into_iter().map(|v| f(v)).collect();
+    // Indexed, re-dereferencing the handle each step: `f`/`p` re-enters generated
+    // code, which can push to *this* list (reallocating its buffer) or raise and
+    // longjmp past a borrow, so none may be held across the call. Re-deref rather
+    // than a `to_vec()` snapshot — this is the native HOF hot path the perf gate
+    // measures.
+    let len = dyn_slice(handle).len();
+    let mut mapped: Vec<LkDyn> = Vec::with_capacity(len);
+    for index in 0..len {
+        let Some(&value) = dyn_slice(handle).get(index) else {
+            break;
+        };
+        mapped.push(f(value));
+    }
     arena_handle(mapped)
 }
 
@@ -853,8 +864,21 @@ pub unsafe extern "C" fn lkrt_lklist_dyn_filter_fn(
     // unsound. CLAUDE.md's lkrt rule ("never call a raise-capable function while
     // holding a lock guard or RefCell borrow") is the same rule; a slice borrow
     // is just a third way to hold one.
-    let values = dyn_slice(handle).to_vec();
-    let kept: Vec<LkDyn> = values.into_iter().filter(|&v| p(v)).collect();
+    // Indexed, re-dereferencing the handle each step: `f`/`p` re-enters generated
+    // code, which can push to *this* list (reallocating its buffer) or raise and
+    // longjmp past a borrow, so none may be held across the call. Re-deref rather
+    // than a `to_vec()` snapshot — this is the native HOF hot path the perf gate
+    // measures.
+    let len = dyn_slice(handle).len();
+    let mut kept: Vec<LkDyn> = Vec::new();
+    for index in 0..len {
+        let Some(&value) = dyn_slice(handle).get(index) else {
+            break;
+        };
+        if p(value) {
+            kept.push(value);
+        }
+    }
     arena_handle(kept)
 }
 
@@ -873,8 +897,20 @@ pub unsafe extern "C" fn lkrt_lklist_dyn_reduce_fn(
     // unsound. CLAUDE.md's lkrt rule ("never call a raise-capable function while
     // holding a lock guard or RefCell borrow") is the same rule; a slice borrow
     // is just a third way to hold one.
-    let values = dyn_slice(handle).to_vec();
-    values.into_iter().fold(init, |acc, v| f(acc, v))
+    // Indexed, re-dereferencing the handle each step: `f`/`p` re-enters generated
+    // code, which can push to *this* list (reallocating its buffer) or raise and
+    // longjmp past a borrow, so none may be held across the call. Re-deref rather
+    // than a `to_vec()` snapshot — this is the native HOF hot path the perf gate
+    // measures.
+    let len = dyn_slice(handle).len();
+    let mut acc = init;
+    for index in 0..len {
+        let Some(&value) = dyn_slice(handle).get(index) else {
+            break;
+        };
+        acc = f(acc, value);
+    }
+    acc
 }
 
 /// `xs.chunk(size)` — split into `size`-element groups, last group short.

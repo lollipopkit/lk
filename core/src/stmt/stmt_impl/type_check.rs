@@ -859,9 +859,12 @@ fn bind_pattern_types(pattern: &Pattern, value_ty: &Type, is_const: bool, tc: &m
                 bind_pattern_types(sub, &element_type_at(value_ty, index), is_const, tc);
             }
             if let Some(rest) = rest {
-                // The tail keeps the container's own shape: a list of the same
-                // element type. Positions are lost, hence `List`, not `Tuple`.
-                let tail = match element_type_at(value_ty, patterns.len()) {
+                // The tail holds *every* remaining position, so its element type
+                // is their union — taking only position `patterns.len()` typed
+                // `rest` of a `Tuple<Int, String, Bool>` as `List<String>`, which
+                // both rejected `rest[1]` as a `Bool` and accepted `rest` as a
+                // `List<String>`. Positions themselves are lost, hence `List`.
+                let tail = match tail_element_type(value_ty, patterns.len()) {
                     Type::Any => Type::Any,
                     element => Type::List(Box::new(element)),
                 };
@@ -885,6 +888,18 @@ fn bind_pattern_types(pattern: &Pattern, value_ty: &Type, is_const: bool, tc: &m
             }
         }
         Pattern::Literal(_) | Pattern::Wildcard | Pattern::Range { .. } => {}
+    }
+}
+
+/// The element type of everything from position `from` onward — what a `..rest`
+/// binding holds.
+fn tail_element_type(value_ty: &Type, from: usize) -> Type {
+    match value_ty {
+        Type::Tuple(elements) => union_of(elements.iter().skip(from).cloned()),
+        Type::List(element) => (**element).clone(),
+        Type::Optional(inner) => tail_element_type(inner, from),
+        Type::Union(members) => union_of(members.iter().map(|member| tail_element_type(member, from))),
+        _ => Type::Any,
     }
 }
 

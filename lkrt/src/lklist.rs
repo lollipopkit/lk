@@ -13,6 +13,31 @@
 
 use std::ffi::{CStr, CString, c_char, c_void};
 
+/// The live `str`-list behind a handle, re-derived per element so no borrow is
+/// held across a callback into generated code.
+///
+/// # Safety
+/// `handle` must be a live `str` list handle, or null.
+unsafe fn list_str(handle: *mut c_void) -> &'static [*const c_char] {
+    if handle.is_null() {
+        return &[];
+    }
+    // SAFETY: as the callers' contracts state.
+    unsafe { &*(handle as *mut Vec<*const c_char>) }
+}
+
+/// As [`list_str`], for an `i64` list.
+///
+/// # Safety
+/// `handle` must be a live `i64` list handle, or null.
+unsafe fn list_i64(handle: *mut c_void) -> &'static [i64] {
+    if handle.is_null() {
+        return &[];
+    }
+    // SAFETY: as the callers' contracts state.
+    unsafe { &*(handle as *mut Vec<i64>) }
+}
+
 /// Creates a fresh, empty `i64` list handle.
 /// Materializes an integer range (`a..b` / `a..=b`, optional step) as a
 /// `List<i64>` — the VM's `build_int_range` semantics exactly: zero step and
@@ -99,8 +124,23 @@ pub unsafe extern "C" fn lkrt_lklist_str_map_fn(
     // unsound. CLAUDE.md's lkrt rule ("never call a raise-capable function while
     // holding a lock guard or RefCell borrow") is the same rule; a slice borrow
     // is just a third way to hold one.
-    let values = values.to_vec();
-    let mapped: Vec<*const c_char> = values.into_iter().map(|v| f(v)).collect();
+    // Indexed, and the handle is re-dereferenced each step: `f`/`p` re-enters
+    // generated code, which can push to *this* list (reallocating its buffer) or
+    // raise and longjmp past a borrow — so no slice may be held across the call.
+    // CLAUDE.md's lkrt rule ("never call a raise-capable function while holding a
+    // lock guard or RefCell borrow") is the same rule; a slice borrow is a third
+    // way to hold one. Re-deref rather than a `to_vec()` snapshot: this is the
+    // native HOF hot path the perf gate measures, and copying the whole input on
+    // top of the result allocation is not free.
+    let len = values.len();
+    let mut mapped: Vec<*const c_char> = Vec::with_capacity(len);
+    for index in 0..len {
+        // SAFETY: the handle is live per this function's contract.
+        let Some(&value) = unsafe { list_str(handle) }.get(index) else {
+            break;
+        };
+        mapped.push(f(value));
+    }
     crate::state::arena_handle(mapped)
 }
 
@@ -125,8 +165,25 @@ pub unsafe extern "C" fn lkrt_lklist_str_filter_fn(
     // unsound. CLAUDE.md's lkrt rule ("never call a raise-capable function while
     // holding a lock guard or RefCell borrow") is the same rule; a slice borrow
     // is just a third way to hold one.
-    let values = values.to_vec();
-    let kept: Vec<*const c_char> = values.into_iter().filter(|&v| p(v)).collect();
+    // Indexed, and the handle is re-dereferenced each step: `f`/`p` re-enters
+    // generated code, which can push to *this* list (reallocating its buffer) or
+    // raise and longjmp past a borrow — so no slice may be held across the call.
+    // CLAUDE.md's lkrt rule ("never call a raise-capable function while holding a
+    // lock guard or RefCell borrow") is the same rule; a slice borrow is a third
+    // way to hold one. Re-deref rather than a `to_vec()` snapshot: this is the
+    // native HOF hot path the perf gate measures, and copying the whole input on
+    // top of the result allocation is not free.
+    let len = values.len();
+    let mut kept: Vec<*const c_char> = Vec::new();
+    for index in 0..len {
+        // SAFETY: the handle is live per this function's contract.
+        let Some(&value) = unsafe { list_str(handle) }.get(index) else {
+            break;
+        };
+        if p(value) {
+            kept.push(value);
+        }
+    }
     crate::state::arena_handle(kept)
 }
 
@@ -249,8 +306,23 @@ pub unsafe extern "C" fn lkrt_lklist_i64_map_fn(handle: *mut c_void, f: extern "
     // unsound. CLAUDE.md's lkrt rule ("never call a raise-capable function while
     // holding a lock guard or RefCell borrow") is the same rule; a slice borrow
     // is just a third way to hold one.
-    let values = values.to_vec();
-    let mapped: Vec<i64> = values.into_iter().map(|v| f(v)).collect();
+    // Indexed, and the handle is re-dereferenced each step: `f`/`p` re-enters
+    // generated code, which can push to *this* list (reallocating its buffer) or
+    // raise and longjmp past a borrow — so no slice may be held across the call.
+    // CLAUDE.md's lkrt rule ("never call a raise-capable function while holding a
+    // lock guard or RefCell borrow") is the same rule; a slice borrow is a third
+    // way to hold one. Re-deref rather than a `to_vec()` snapshot: this is the
+    // native HOF hot path the perf gate measures, and copying the whole input on
+    // top of the result allocation is not free.
+    let len = values.len();
+    let mut mapped: Vec<i64> = Vec::with_capacity(len);
+    for index in 0..len {
+        // SAFETY: the handle is live per this function's contract.
+        let Some(&value) = unsafe { list_i64(handle) }.get(index) else {
+            break;
+        };
+        mapped.push(f(value));
+    }
     crate::state::arena_handle(mapped)
 }
 
@@ -272,8 +344,25 @@ pub unsafe extern "C" fn lkrt_lklist_i64_filter_fn(handle: *mut c_void, p: exter
     // unsound. CLAUDE.md's lkrt rule ("never call a raise-capable function while
     // holding a lock guard or RefCell borrow") is the same rule; a slice borrow
     // is just a third way to hold one.
-    let values = values.to_vec();
-    let kept: Vec<i64> = values.into_iter().filter(|&v| p(v)).collect();
+    // Indexed, and the handle is re-dereferenced each step: `f`/`p` re-enters
+    // generated code, which can push to *this* list (reallocating its buffer) or
+    // raise and longjmp past a borrow — so no slice may be held across the call.
+    // CLAUDE.md's lkrt rule ("never call a raise-capable function while holding a
+    // lock guard or RefCell borrow") is the same rule; a slice borrow is a third
+    // way to hold one. Re-deref rather than a `to_vec()` snapshot: this is the
+    // native HOF hot path the perf gate measures, and copying the whole input on
+    // top of the result allocation is not free.
+    let len = values.len();
+    let mut kept: Vec<i64> = Vec::new();
+    for index in 0..len {
+        // SAFETY: the handle is live per this function's contract.
+        let Some(&value) = unsafe { list_i64(handle) }.get(index) else {
+            break;
+        };
+        if p(value) {
+            kept.push(value);
+        }
+    }
     crate::state::arena_handle(kept)
 }
 
@@ -393,8 +482,24 @@ pub unsafe extern "C" fn lkrt_lklist_i64_reduce_fn(
     // unsound. CLAUDE.md's lkrt rule ("never call a raise-capable function while
     // holding a lock guard or RefCell borrow") is the same rule; a slice borrow
     // is just a third way to hold one.
-    let values = values.to_vec();
-    values.into_iter().fold(init, |acc, v| f(acc, v))
+    // Indexed, and the handle is re-dereferenced each step: `f`/`p` re-enters
+    // generated code, which can push to *this* list (reallocating its buffer) or
+    // raise and longjmp past a borrow — so no slice may be held across the call.
+    // CLAUDE.md's lkrt rule ("never call a raise-capable function while holding a
+    // lock guard or RefCell borrow") is the same rule; a slice borrow is a third
+    // way to hold one. Re-deref rather than a `to_vec()` snapshot: this is the
+    // native HOF hot path the perf gate measures, and copying the whole input on
+    // top of the result allocation is not free.
+    let len = values.len();
+    let mut acc = init;
+    for index in 0..len {
+        // SAFETY: the handle is live per this function's contract.
+        let Some(&value) = unsafe { list_i64(handle) }.get(index) else {
+            break;
+        };
+        acc = f(acc, value);
+    }
+    acc
 }
 
 /// Renders the list as the VM's display text (`[1,2,3]` — comma separated,
