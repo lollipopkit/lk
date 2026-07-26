@@ -356,3 +356,35 @@ fn try_catch_differential() {
         NativePath::MayDegrade,
     );
 }
+
+/// `as` casts, with the native path pinned: the point of these is that the two
+/// backends agree *bit for bit*, not merely that both produce something.
+///
+/// The VM masks inside its `i64` carrier and sign-extends back; Cranelift does
+/// `ireduce` then `sextend`/`uextend`. Those are different mechanisms, so this
+/// is where a divergence would show up.
+#[test]
+fn machine_int_cast_differential() {
+    run_differential(
+        "machine_int_cast",
+        &[
+            // Narrowing truncates rather than erroring: 300 & 0xFF.
+            new("narrow_u8", "let x = 300 as u8;\nreturn x;\n"),
+            // Sign extension back into the carrier — the case most likely to
+            // diverge between a mask and an `ireduce`.
+            new("sign_extend_i8", "let x = 255 as i8;\nreturn x;\n"),
+            new("sign_extend_i8_min", "let x = 128 as i8;\nreturn x;\n"),
+            new("sign_extend_i16", "let x = 65535 as i16;\nreturn x;\n"),
+            // Negative source, unsigned target: reinterpretation, not clamping.
+            new("negative_to_u32", "let x = (0 - 1) as u32;\nreturn x;\n"),
+            new("negative_to_u8", "let x = (0 - 1) as u8;\nreturn x;\n"),
+            // The second cast must see the first one's result, not the original.
+            new("chained", "let x = 300 as u8 as u32;\nreturn x;\n"),
+            // Full width is a no-op on both sides.
+            new("identity_i64", "let x = (0 - 1) as i64;\nreturn x;\n"),
+            // Pointer width follows the carrier on a 64-bit host.
+            new("usize_passthrough", "let x = 42 as usize;\nreturn x;\n"),
+        ],
+        NativePath::PureCranelift,
+    );
+}

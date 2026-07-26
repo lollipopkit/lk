@@ -823,6 +823,27 @@ impl Lower {
                 let v = b.ins().uextend(types::I64, s);
                 self.set1(*dst, v);
             }
+            // Narrow to the machine width, then widen back into the `i64` the
+            // ABI carries integers in — the same normalisation the VM applies,
+            // so `255 as i8` is -1 on both backends.
+            Inst::IntTruncate { dst, src, bits, signed } => {
+                let s = self.v(*src)?;
+                let narrow = match bits {
+                    8 => types::I8,
+                    16 => types::I16,
+                    32 => types::I32,
+                    // Unreachable: lowering only emits 8/16/32 and drops
+                    // full-width truncations entirely.
+                    _ => return Err(ClifError::Unsupported("IntTruncate width must be 8, 16 or 32")),
+                };
+                let reduced = b.ins().ireduce(narrow, s);
+                let v = if *signed {
+                    b.ins().sextend(types::I64, reduced)
+                } else {
+                    b.ins().uextend(types::I64, reduced)
+                };
+                self.set1(*dst, v);
+            }
             Inst::Not { dst, src } => {
                 let s = self.v(*src)?;
                 let v = b.ins().bxor_imm(s, 1);

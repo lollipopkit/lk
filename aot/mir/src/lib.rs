@@ -183,6 +183,24 @@ pub enum Inst {
     },
     /// `dst = sitofp(src)` — widen an `I64` value to `F64`.
     IntToFloat { dst: ValueId, src: ValueId },
+    /// `dst = src` reduced to `bits` and widened back to `I64` by `signed`.
+    ///
+    /// Machine integers do not get their own MIR type. The VM carries them in
+    /// an `i64` and normalises after every operation, so doing the same here
+    /// makes the two backends agree bit for bit — which is what the
+    /// differential tests check. Giving MIR a real `I32` would instead touch
+    /// every container-handle type for a difference no LK program can observe.
+    ///
+    /// A genuinely 32-bit *memory access* is a different problem, and belongs
+    /// to the volatile/pointer work: that needs a width on the store, not a
+    /// width on the value.
+    IntTruncate {
+        dst: ValueId,
+        src: ValueId,
+        /// 8, 16 or 32. Full-width targets emit no instruction at all.
+        bits: u8,
+        signed: bool,
+    },
     /// `dst = zext(src)` — widen a `Bool` (`i1`) to `I64` (`0`/`1`).
     ZextBool { dst: ValueId, src: ValueId },
     /// `dst = !src` — boolean negation (`xor i1 src, true`).
@@ -743,6 +761,13 @@ fn render_inst(inst: &Inst) -> String {
         }
         Inst::IntToFloat { dst, src } => format!("{} = sitofp {}", v(*dst), v(*src)),
         Inst::ZextBool { dst, src } => format!("{} = zext.bool {}", v(*dst), v(*src)),
+        Inst::IntTruncate { dst, src, bits, signed } => format!(
+            "{} = trunc.i{} {} ({})",
+            v(*dst),
+            bits,
+            v(*src),
+            if *signed { "signed" } else { "unsigned" }
+        ),
         Inst::Not { dst, src } => format!("{} = not {}", v(*dst), v(*src)),
         Inst::BoolAnd { dst, lhs, rhs } => format!("{} = bool.and {}, {}", v(*dst), v(*lhs), v(*rhs)),
         Inst::MaybePresent { dst, src, maybe_ty } => {
@@ -868,6 +893,7 @@ pub(crate) fn inst_def(inst: &Inst) -> Option<ValueId> {
         | Inst::Cmp { dst, .. }
         | Inst::IntToFloat { dst, .. }
         | Inst::ZextBool { dst, .. }
+        | Inst::IntTruncate { dst, .. }
         | Inst::Not { dst, .. }
         | Inst::BoolAnd { dst, .. }
         | Inst::MaybePresent { dst, .. }
@@ -902,6 +928,7 @@ fn inst_uses(inst: &Inst) -> Vec<ValueId> {
         }
         Inst::IntToFloat { src, .. }
         | Inst::ZextBool { src, .. }
+        | Inst::IntTruncate { src, .. }
         | Inst::Not { src, .. }
         | Inst::MaybePresent { src, .. }
         | Inst::UnwrapMaybeI64 { src, .. }
