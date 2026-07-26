@@ -335,14 +335,45 @@ pub fn compile_module(mir: &MirModule, isa: std::sync::Arc<dyn TargetIsa>) -> Re
 /// common case: `lk compile` on the current machine). Link the result against
 /// `lkrt` (see `lk-aot`'s `compile_native_executable_from_object`).
 pub fn compile_host_object(mir: &MirModule) -> Result<Vec<u8>, ClifError> {
+    compile_object_for(mir, &target_lexicon::Triple::host().to_string())
+}
+
+/// Compiles for an explicit target triple.
+///
+/// Cranelift's backends are per-architecture, not per-host: `isa::lookup` will
+/// build an aarch64 or riscv64 ISA on an x86-64 machine. What the *host* fixes
+/// is only the default, which is why this exists separately.
+///
+/// Note the object is only half of a cross build. It still has to be linked
+/// against an `lkrt` compiled for the same target, by a linker that knows it —
+/// see the driver.
+pub fn compile_object_for(mir: &MirModule, triple: &str) -> Result<Vec<u8>, ClifError> {
+    use core::str::FromStr;
     use cranelift_codegen::settings::{self, Configurable};
+
+    let mut triple = target_lexicon::Triple::from_str(triple)
+        .map_err(|e| ClifError::Module(format!("unknown target triple `{triple}`: {e}")))?;
+    let is_bare_metal = matches!(triple.operating_system, target_lexicon::OperatingSystem::None_);
+    // A bare-metal triple names no OS, so nothing implies an object format and
+    // the object writer refuses with "binary format is unknown". ELF is what
+    // every bare-metal ARM and RISC-V toolchain emits, and what the linker
+    // scripts those boards ship expect.
+    if triple.binary_format == target_lexicon::BinaryFormat::Unknown {
+        triple.binary_format = target_lexicon::BinaryFormat::Elf;
+    }
+
     let mut flags = settings::builder();
     let _ = flags.set("opt_level", "speed");
-    // Native executables link the runtime dynamically, so calls to `lkrt_*`
-    // must go through position-independent relocations (GOT/PLT). Without this
-    // macOS' linker rejects the object with "illegal text-relocations".
-    let _ = flags.set("is_pic", "true");
-    let isa = cranelift_native::builder()
+    // Hosted executables link the runtime dynamically, so calls to `lkrt_*` go
+    // through position-independent relocations (GOT/PLT); without this macOS'
+    // linker rejects the object with "illegal text-relocations".
+    //
+    // A bare-metal image has no dynamic loader and is linked to fixed
+    // addresses, so PIC there costs an indirection for nothing — and some
+    // linker scripts cannot satisfy the GOT it asks for.
+    let _ = flags.set("is_pic", if is_bare_metal { "false" } else { "true" });
+
+    let isa = cranelift_codegen::isa::lookup(triple)
         .map_err(|e| ClifError::Module(e.to_string()))?
         .finish(settings::Flags::new(flags))
         .map_err(|e| ClifError::Module(e.to_string()))?;
@@ -1436,6 +1467,71 @@ mod tests {
     use super::*;
     use cranelift_codegen::settings::{self, Configurable};
     use lk_aot_mir::{Block as MirBlock, BlockId, ValueId};
+
+    /// Cranelift's backends are per-architecture, so an x86-64 host can emit
+    /// aarch64. This is what makes a bare-metal cross build possible at all;
+    /// without it the Raspberry Pi could only ever run the interpreter.
+    #[test]
+    fn compiles_for_a_cross_target() {
+        let mir = cross_target_module();
+
+        // `e_machine` in the ELF header, rather than comparing whole objects:
+        // it names the architecture directly, where a byte difference only
+        // shows that *something* changed. Two aarch64 targets that differ only
+        // in PIC produce identical bytes for a function this small — there is
+        // no external reference for a relocation to apply to — so a
+        // whole-object comparison would prove less than it appears to.
+        const EM_AARCH64: u16 = 183;
+        const EM_X86_64: u16 = 62;
+        fn elf_machine(object: &[u8]) -> u16 {
+            u16::from_le_bytes([object[18], object[19]])
+        }
+
+        let bare_arm = compile_object_for(&mir, "aarch64-unknown-none").expect("aarch64 bare metal compiles");
+        assert_eq!(elf_machine(&bare_arm), EM_AARCH64, "bare-metal aarch64 object");
+
+        let linux_arm = compile_object_for(&mir, "aarch64-unknown-linux-gnu").expect("aarch64 linux compiles");
+        assert_eq!(elf_machine(&linux_arm), EM_AARCH64, "hosted aarch64 object");
+
+        let x64 = compile_object_for(&mir, "x86_64-unknown-linux-gnu").expect("x86-64 compiles");
+        assert_eq!(elf_machine(&x64), EM_X86_64, "the triple must select the backend");
+    }
+
+    #[test]
+    fn an_unknown_triple_is_an_error_not_a_silent_host_build() {
+        let err = compile_object_for(&cross_target_module(), "definitely-not-a-target").expect_err("must reject");
+        let message = format!("{err:?}");
+        assert!(message.contains("definitely-not-a-target"), "{message}");
+    }
+
+    /// A minimal module for the target-selection tests: one function that adds
+    /// its arguments, which every backend can lower.
+    fn cross_target_module() -> MirModule {
+        MirModule {
+            abi_version: 0,
+            globals: vec![],
+            mutable_globals: vec![],
+            vm_functions: vec![],
+            entry: FuncId(u32::MAX),
+            functions: vec![MirFunction {
+                id: FuncId(0),
+                params: vec![(vid(0), Ty::I64), (vid(1), Ty::I64)],
+                blocks: vec![MirBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![Inst::IntBin {
+                        dst: vid(2),
+                        op: IntBinOp::Add,
+                        lhs: vid(0),
+                        rhs: vid(1),
+                    }],
+                    term: Term::Ret(Some(vid(2))),
+                }],
+                entry: BlockId(0),
+                ret: Ty::I64,
+            }],
+        }
+    }
 
     fn host_isa() -> std::sync::Arc<dyn TargetIsa> {
         let mut flags = settings::builder();
