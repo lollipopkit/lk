@@ -1,5 +1,7 @@
+# No `rustflags` here on purpose: a `RUSTFLAGS` environment variable replaces
+# this table rather than extending it, so the linker script is passed from
+# build.rs instead (see the comment there).
 [target.thumbv7em-none-eabi]
-rustflags = ["-C", "link-arg=-Tlink.x"]
 runner = "qemu-system-arm -cpu cortex-m4 -machine mps2-an386 -nographic -semihosting-config enable=on,target=native -kernel"
 
 [build]

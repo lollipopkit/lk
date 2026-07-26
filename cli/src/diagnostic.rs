@@ -7,6 +7,9 @@ pub(crate) fn error(message: impl fmt::Display) {
     eprintln!("{} {}", error_label(), message);
 }
 
+// Every caller is in the AOT path (`native_compile`), so without that
+// feature this is genuinely unused rather than accidentally so.
+#[cfg_attr(not(feature = "aot"), allow(dead_code))]
 pub(crate) fn warning(message: impl fmt::Display) {
     eprintln!("{} {}", warning_label(), message);
 }
@@ -37,6 +40,7 @@ fn error_label() -> &'static str {
     }
 }
 
+#[cfg_attr(not(feature = "aot"), allow(dead_code))]
 fn warning_label() -> &'static str {
     if color_enabled() {
         "\x1b[33;1mWarning:\x1b[0m"
