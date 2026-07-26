@@ -32,7 +32,7 @@ pub use artifact::*;
 pub use cache::*;
 pub use call_window::*;
 pub use compiler::*;
-pub use context::{MethodImpl, VmContext};
+pub use context::{MethodImpl, VmContext, receiver_type_scope};
 #[cfg(test)]
 pub use exec::test_support;
 pub use exec::*;

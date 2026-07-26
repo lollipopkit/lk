@@ -121,8 +121,8 @@ impl Executor {
         Ok(values)
     }
 
-    pub(super) fn read_object_fields(&self, base: u8, count: u8) -> Result<RuntimeObject> {
-        let type_name = Arc::<str>::from(self.to_runtime_string(base)?);
+    pub(super) fn read_object_fields(&mut self, base: u8, count: u8) -> Result<RuntimeObject> {
+        let ty = self.declared_type(base)?;
         let field_base = base
             .checked_add(1)
             .ok_or_else(|| anyhow!("object field base overflow"))?;
@@ -142,7 +142,29 @@ impl Executor {
                 *self.read(value_reg)?,
             );
         }
-        Ok(RuntimeObject::new(type_name, fields))
+        Ok(RuntimeObject::new(ty, fields))
+    }
+
+    /// The identity for the type named in register `base`, in the scope of the
+    /// module currently executing.
+    ///
+    /// Memoized on the last one built: a loop constructing the same struct
+    /// names the same type every iteration, so this allocates once for the
+    /// whole loop rather than once per object.
+    fn declared_type(&mut self, base: u8) -> Result<Arc<crate::vm::DeclaredType>> {
+        let name = self.to_runtime_string(base)?;
+        if let Some(cached) = &self.last_declared_type
+            && cached.scope.is_same(&self.type_scope)
+            && *cached.name == *name
+        {
+            return Ok(Arc::clone(cached));
+        }
+        let ty = Arc::new(crate::vm::DeclaredType::new(
+            self.type_scope.clone(),
+            Arc::<str>::from(name),
+        ));
+        self.last_declared_type = Some(Arc::clone(&ty));
+        Ok(ty)
     }
 
     fn get_index_slice(

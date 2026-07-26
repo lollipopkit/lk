@@ -686,6 +686,9 @@ pub struct Module {
     /// by the compiler, consumed by the back ends — none of them has to
     /// reconstruct it from bytecode.
     pub type_info: super::TypeInfo,
+    /// Identity of this module as a *declarer of types* — see
+    /// [`super::TypeScope`].
+    pub type_scope: super::TypeScope,
 }
 
 impl Module {
@@ -697,6 +700,7 @@ impl Module {
             globals: Vec::new(),
             entry: 0,
             type_info: super::TypeInfo::default(),
+            type_scope: super::TypeScope::anonymous(),
         }
     }
 
@@ -936,6 +940,7 @@ mod tests {
             }],
             entry: 0,
             type_info: Default::default(),
+            type_scope: Default::default(),
         };
 
         let text = disassemble_module(&module);

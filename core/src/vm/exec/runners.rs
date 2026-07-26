@@ -224,6 +224,14 @@ impl Executor {
                 function.register_count
             );
         }
+        // Objects built by this activation belong to the module running it.
+        // Cheap pointer compare: the scope only changes when execution actually
+        // crosses into a different module.
+        if let Some(module) = module
+            && !self.type_scope.is_same(&module.type_scope)
+        {
+            self.type_scope = module.type_scope.clone();
+        }
         let base_frame_depth = self.frames.len();
         self.current_function_index = function_index;
         let mut function = function;

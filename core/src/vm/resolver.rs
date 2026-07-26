@@ -164,10 +164,15 @@ impl ModuleResolver {
     }
 
     pub fn resolve_source_runtime(&self, src: &str) -> Result<RuntimeExport> {
-        self.resolve_source_runtime_with_base(src, None)
+        self.resolve_source_runtime_with_base(src, None, crate::vm::TypeScope::anonymous())
     }
 
-    fn resolve_source_runtime_with_base(&self, src: &str, base_dir: Option<PathBuf>) -> Result<RuntimeExport> {
+    fn resolve_source_runtime_with_base(
+        &self,
+        src: &str,
+        base_dir: Option<PathBuf>,
+        type_scope: crate::vm::TypeScope,
+    ) -> Result<RuntimeExport> {
         let program = parse_program_source(
             src,
             ParseOptions {
@@ -177,9 +182,23 @@ impl ModuleResolver {
         )
         .map_err(|e| anyhow!(e.to_string()))?;
         let resolver = Arc::new(self.clone());
-        let mut ctx = VmContext::new().with_resolver(resolver);
+        let mut ctx = VmContext::new().with_resolver(resolver).with_type_scope(type_scope);
         let result = program.execute_with_ctx(&mut ctx)?;
         Ok(result.into_exports())
+    }
+
+    /// Every file module loaded so far, in load order.
+    ///
+    /// The cache behind this is shared by every resolver clone down an import
+    /// chain, so it is the *transitive* closure of what a program pulled in —
+    /// which is what `execute_imports` registers, so that a value built by a
+    /// module its own dependency imported still finds its methods.
+    #[cfg(feature = "std")]
+    pub fn loaded_file_modules(&self) -> Vec<RuntimeExport> {
+        self.runtime_file_modules
+            .iter()
+            .map(|entry| entry.value().shallow_clone_shared())
+            .collect()
     }
 
     /// Resolve file path using search paths
@@ -258,7 +277,14 @@ impl ModuleResolver {
         if let Some(parent) = path.parent() {
             resolver.set_base_dir(parent.to_path_buf());
         }
-        resolver.resolve_source_runtime_with_base(&src, path.parent().map(Path::to_path_buf))
+        // The normalized path is this module's type identity: the compiler has
+        // no idea what file it is compiling, so the loader is the only place
+        // that can supply it (`vm::TypeScope`).
+        resolver.resolve_source_runtime_with_base(
+            &src,
+            path.parent().map(Path::to_path_buf),
+            crate::vm::TypeScope::from_path(&path.to_string_lossy()),
+        )
     }
 }
 
@@ -340,6 +366,17 @@ pub fn execute_imports(imports: &[ImportStmt], resolver: &ModuleResolver, env: &
                 env.define_runtime_global(alias.clone(), module_export);
             }
         }
+    }
+    // The per-import registrations above only reach one level. A value can
+    // arrive from deeper than that — `main` imports `mid`, `mid` imports `c`,
+    // and `mid.passthru()` hands back a `c` struct — and its methods live in a
+    // module `main` never named, so dispatch failed outright ("Object has no
+    // method"). Registering the resolver's whole loaded set closes that: it is
+    // already the transitive closure, and scope-keyed entries mean the extra
+    // modules cannot clobber anything (see `vm::TypeScope`).
+    #[cfg(feature = "std")]
+    for module in resolver.loaded_file_modules() {
+        env.register_imported_types(&module);
     }
     Ok(())
 }

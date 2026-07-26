@@ -119,6 +119,16 @@ pub struct Executor {
     /// of as rare allocation-timing-dependent corruption.
     gc_stress: bool,
     shared_module: Option<Arc<Module>>,
+    /// Scope of the module currently executing, stamped onto every object this
+    /// executor constructs (`NewObject`). Tracked here rather than read off
+    /// `shared_module` because the plain `run_module*` entries pass the module
+    /// by reference and never populate the shared handle.
+    type_scope: crate::vm::TypeScope,
+    /// The identity `NewObject` built last. A loop constructing the same struct
+    /// hits this every iteration, so the shared `Arc` is allocated once instead
+    /// of per object — which also removes the per-object `Arc<str>` the type
+    /// name used to cost.
+    last_declared_type: Option<Arc<crate::vm::DeclaredType>>,
     instruction_budget: Option<u64>,
     instruction_count: u64,
     /// Optional cap on the number of live heap objects (sandbox memory bound).
@@ -181,6 +191,8 @@ impl Executor {
             gc_pending: false,
             gc_stress: gc_stress_enabled(),
             shared_module: None,
+            type_scope: crate::vm::TypeScope::anonymous(),
+            last_declared_type: None,
             instruction_budget: None,
             instruction_count: 0,
             heap_object_limit: None,

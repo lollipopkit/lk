@@ -55,11 +55,13 @@ pub fn compile_program_module_with_ctx(program: &Program, ctx: &mut VmContext) -
         external_globals.push(name.clone());
     }
 
-    Ok(Arc::new(Compiler::compile_module_with_natives_and_globals(
-        program,
-        Vec::new(),
-        external_globals,
-    )?))
+    let mut module = Compiler::compile_module_with_natives_and_globals(program, Vec::new(), external_globals)?;
+    // The compiler has no idea which file it is compiling; the loader does, and
+    // it put that on the context before handing the program over. Stamping here
+    // is what gives this module's declared types an identity distinct from an
+    // identically-named type in any other module (`vm::TypeScope`).
+    module.type_scope = ctx.type_scope().clone();
+    Ok(Arc::new(module))
 }
 
 pub fn execute_program_with_ctx(program: &Program, ctx: &mut VmContext) -> Result<ProgramResult> {
@@ -175,7 +177,11 @@ pub fn execute_source(source: &str) -> Result<ProgramResult> {
     execute_program(&program)
 }
 
-fn seed_module_globals(slots: &[GlobalSlot], ctx: &VmContext, heap: &mut HeapStore) -> Result<Vec<RuntimeVal>> {
+pub(super) fn seed_module_globals(
+    slots: &[GlobalSlot],
+    ctx: &VmContext,
+    heap: &mut HeapStore,
+) -> Result<Vec<RuntimeVal>> {
     let mut globals = Vec::with_capacity(slots.len());
     for slot in slots {
         globals.push(match ctx.get_runtime_global(slot.name.as_ref()) {

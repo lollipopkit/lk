@@ -1098,6 +1098,9 @@ fn runtime_display_show(value: &RuntimeVal, runtime: &mut NativeRuntime<'_>) -> 
     let Some(receiver_type) = runtime_display_receiver_type(value, runtime.heap()) else {
         return Ok(None);
     };
+    // The declaring module is the other half of the receiver's type identity;
+    // read it before `state_ctx_module_mut` takes the heap mutably.
+    let receiver_scope = lk_core::vm::receiver_type_scope(value, runtime.heap());
     let Some((state, ctx, module)) = runtime.state_ctx_module_mut() else {
         return Ok(None);
     };
@@ -1107,7 +1110,7 @@ fn runtime_display_show(value: &RuntimeVal, runtime: &mut NativeRuntime<'_>) -> 
     let Type::Named(receiver_type_name) = &receiver_type else {
         return Ok(None);
     };
-    let Some(impl_ref) = ctx.trait_method(receiver_type_name, "show").cloned() else {
+    let Some(impl_ref) = ctx.trait_method(&receiver_scope, receiver_type_name, "show").cloned() else {
         return Ok(None);
     };
     let result = lk_core::vm::call_trait_method(
@@ -1132,7 +1135,7 @@ fn runtime_display_receiver_type(value: &RuntimeVal, heap: &HeapStore) -> Option
     let Some(HeapValue::Object(object)) = heap.get(*handle) else {
         return None;
     };
-    Some(Type::Named(object.type_name.to_string()))
+    Some(Type::Named(object.type_name().to_string()))
 }
 
 fn runtime_string(value: &RuntimeVal, heap: &HeapStore, context: &str) -> Result<Arc<str>> {

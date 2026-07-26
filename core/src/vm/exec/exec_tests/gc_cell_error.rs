@@ -70,6 +70,7 @@ fn execute_loads_and_stores_upval_cell_values() {
         globals: vec![GlobalSlot { name: "cell".into() }],
         entry: 0,
         type_info: Default::default(),
+        type_scope: Default::default(),
     };
     let mut heap = HeapStore::new();
     let cell = heap.alloc(HeapValue::UpvalCell(RuntimeVal::Int(1)));
@@ -111,6 +112,7 @@ fn execute_store_cell_clones_source_without_move_fact() {
         globals: vec![GlobalSlot { name: "cell".into() }],
         entry: 0,
         type_info: Default::default(),
+        type_scope: Default::default(),
     };
     let mut heap = HeapStore::new();
     let cell = heap.alloc(HeapValue::UpvalCell(RuntimeVal::Nil));
@@ -155,6 +157,7 @@ fn execute_store_cell_move_fact_consumes_source_register() {
         globals: vec![GlobalSlot { name: "cell".into() }],
         entry: 0,
         type_info: Default::default(),
+        type_scope: Default::default(),
     };
     let mut heap = HeapStore::new();
     let cell = heap.alloc(HeapValue::UpvalCell(RuntimeVal::Nil));
@@ -330,6 +333,7 @@ fn execute_caller_handler_catches_raise_from_callee() {
         globals: Vec::new(),
         entry: 0,
         type_info: Default::default(),
+        type_scope: Default::default(),
     };
 
     let result = execute_module(&module).expect("caller handler catches callee raise");
@@ -385,6 +389,7 @@ fn execute_callee_return_unwinds_its_try_handlers_before_next_call() {
         globals: Vec::new(),
         entry: 0,
         type_info: Default::default(),
+        type_scope: Default::default(),
     };
 
     let err = execute_module(&module).expect_err("stale callee handler must not catch later raise");

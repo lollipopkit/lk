@@ -69,11 +69,12 @@ impl Executor {
         let Some(HeapValue::Object(object)) = self.state.heap.get(*handle) else {
             return Ok(None);
         };
-        let type_name = object.type_name.clone();
+        let type_name = Arc::clone(object.type_name());
+        let type_scope = object.type_scope().clone();
         let Some(ctx_ref) = ctx.as_deref_mut() else {
             return Ok(None);
         };
-        let Some(impl_ref) = ctx_ref.trait_method(&type_name, "show").cloned() else {
+        let Some(impl_ref) = ctx_ref.trait_method(&type_scope, &type_name, "show").cloned() else {
             return Ok(None);
         };
         let result = crate::vm::call_trait_method(

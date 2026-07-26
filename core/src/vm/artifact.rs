@@ -37,7 +37,17 @@ use super::{
 // reconstructing them from bytecode, so a v9 artifact would leave a v10
 // consumer with an empty table rather than a wrong one — still a semantic
 // difference, hence the bump.
-pub const MODULE_ARTIFACT_VERSION: u32 = 10;
+// Version 11: `ModuleData.type_scope` carries the identity of the module as a
+// declarer of types (see `super::TypeScope`). A v10 artifact has no scope, so a
+// v11 consumer would file every one of its declared types under the anonymous
+// scope and collide them with the host program's — exactly the wrong-dispatch
+// bug the scope exists to close, hence a rejection rather than a default.
+// Version 12: `ImplMethod.writes_globals` decides whether a method may be
+// dispatched from another module's frame. It defaults to `false` on decode, and
+// `false` is the *permissive* answer — a v11 artifact would let a
+// global-writing method run against a temporary copy of its module's globals
+// and silently drop the write, so this one cannot degrade quietly either.
+pub const MODULE_ARTIFACT_VERSION: u32 = 12;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ModuleArtifact {
@@ -107,6 +117,12 @@ pub struct ModuleData {
     /// nothing in the encoding.
     #[serde(default, skip_serializing_if = "super::TypeInfo::is_empty")]
     pub type_info: super::TypeInfo,
+    /// Identity of this module as a declarer of types; see
+    /// [`super::TypeScope`]. Not skippable — an absent scope would silently
+    /// mean "anonymous", which is a *different* type identity, not a missing
+    /// one.
+    #[serde(default)]
+    pub type_scope: super::TypeScope,
 }
 
 impl ModuleData {
@@ -124,6 +140,7 @@ impl ModuleData {
             globals,
             functions,
             type_info: module.type_info.clone(),
+            type_scope: module.type_scope.clone(),
         }
     }
 
@@ -158,6 +175,7 @@ impl ModuleData {
         }
         Ok(Module {
             type_info: self.type_info,
+            type_scope: self.type_scope,
             functions,
             natives: Vec::new(),
             globals: {
@@ -480,7 +498,7 @@ return 1;\n";
 
     #[test]
     fn module_artifact_rejects_previous_version() {
-        assert_eq!(MODULE_ARTIFACT_VERSION, 10);
+        assert_eq!(MODULE_ARTIFACT_VERSION, 12);
         let source = "return 1;\n";
         let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
         let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
@@ -490,7 +508,16 @@ return 1;\n";
 
         let json = artifact.to_json_string().expect("json");
         let err = ModuleArtifact::from_json_str(&json).expect_err("previous-version artifact should be rejected");
-        assert!(err.to_string().contains("unsupported LK module artifact version 9"));
+        // Derived, not spelled out: the literal silently went stale on the last
+        // bump (it still said 10 while `- 1` had become 11) and only failed on
+        // the bump after that.
+        assert!(
+            err.to_string().contains(&format!(
+                "unsupported LK module artifact version {}",
+                MODULE_ARTIFACT_VERSION - 1
+            )),
+            "unexpected rejection message: {err}"
+        );
     }
 
     #[test]

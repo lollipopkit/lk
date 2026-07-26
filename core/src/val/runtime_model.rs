@@ -9,6 +9,7 @@ use crate::util::fast_map::{FastHashMap, FastHashSet, fast_hash_map_from_iter, f
 use alloc::sync::Arc;
 
 use crate::val::{ShortStr, Type};
+use crate::vm::DeclaredType;
 
 mod heap;
 
@@ -186,22 +187,39 @@ pub enum CallableValue {
 
 #[derive(Clone, Debug)]
 pub struct RuntimeObject {
-    pub type_name: Arc<str>,
+    /// This object's type identity: the declaring module *and* the name. The
+    /// name alone is only unique within one module, so dispatching on it made
+    /// two modules' identically-named structs the same type (see
+    /// [`crate::vm::TypeScope`]).
+    ///
+    /// Shared by `Arc` rather than stored inline — see [`DeclaredType`] for why
+    /// this struct's width is worth caring about.
+    pub ty: Arc<DeclaredType>,
     pub fields: FastHashMap<Arc<str>, RuntimeVal>,
     pub field_slots: Vec<Arc<str>>,
 }
 
 impl RuntimeObject {
-    pub fn new(type_name: Arc<str>, fields: FastHashMap<Arc<str>, RuntimeVal>) -> Self {
+    pub fn new(ty: Arc<DeclaredType>, fields: FastHashMap<Arc<str>, RuntimeVal>) -> Self {
         let mut field_slots = Vec::with_capacity(fields.len());
         for key in fields.keys() {
             field_slots.push(Arc::clone(key));
         }
         Self {
-            type_name,
+            ty,
             fields,
             field_slots,
         }
+    }
+
+    #[inline]
+    pub fn type_name(&self) -> &Arc<str> {
+        &self.ty.name
+    }
+
+    #[inline]
+    pub fn type_scope(&self) -> &crate::vm::TypeScope {
+        &self.ty.scope
     }
 
     pub fn field_slot(&self, key: &str) -> Option<usize> {
@@ -1091,4 +1109,29 @@ pub enum ResourceHandle {
     #[cfg(feature = "std")]
     UdpSocket(std::net::UdpSocket),
     Closed,
+}
+
+#[cfg(test)]
+mod layout {
+    /// `RuntimeObject` is the widest `HeapValue` variant, so its size is the
+    /// size of *every* heap cell — lists, maps and strings included.
+    ///
+    /// This is a real budget, not a style rule. Adding the declaring module to
+    /// an object's identity as a second `Arc<str>` field pushed `HeapValue`
+    /// from 72 to 88 bytes and cost ~1.3% geometric mean on the workload suite,
+    /// on programs that declare no structs at all. Folding both halves behind
+    /// one `Arc<DeclaredType>` brought it to 64.
+    #[test]
+    fn heap_cells_stay_narrow() {
+        assert_eq!(
+            core::mem::size_of::<super::RuntimeObject>(),
+            core::mem::size_of::<super::HeapValue>(),
+            "RuntimeObject still sets the heap cell size; re-read the budget below before widening it"
+        );
+        assert!(
+            core::mem::size_of::<super::HeapValue>() <= 64,
+            "HeapValue grew to {} bytes — every heap cell pays for this",
+            core::mem::size_of::<super::HeapValue>()
+        );
+    }
 }

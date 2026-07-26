@@ -999,6 +999,10 @@ fn call_trait_method_runtime(
 ) -> anyhow::Result<RuntimeVal> {
     let receiver_type = runtime_dispatch_type(&receiver, runtime.heap());
     let receiver_type_name = runtime_type_name(&receiver, runtime.heap());
+    // Taken before `parts_mut` borrows the heap mutably: a struct instance
+    // dispatches in the scope of the module that declared it, which is the
+    // half of its identity the bare type name does not carry.
+    let receiver_scope = super::receiver_type_scope(&receiver, runtime.heap());
     let Some((state, ctx, module)) = runtime.parts_mut() else {
         bail!("{} method '{}' requires full runtime state", receiver_type_name, method);
     };
@@ -1009,7 +1013,10 @@ fn call_trait_method_runtime(
     // (`runtime_type_name` reports the heap kind, i.e. "Object", for any
     // struct instance).
     let declared_type = receiver_type.display();
-    let Some(impl_ref) = ctx.trait_method(&declared_type, method.as_str()).cloned() else {
+    let Some(impl_ref) = ctx
+        .trait_method(&receiver_scope, &declared_type, method.as_str())
+        .cloned()
+    else {
         bail!("{} has no method '{}'", receiver_type_name, method);
     };
     crate::vm::call_trait_method(
@@ -1280,7 +1287,7 @@ fn heap_dispatch_type(value: &HeapValue) -> Type {
         HeapValue::StreamCursor(_) => Type::Named("StreamCursor".to_string()),
         HeapValue::Slice(_) => Type::Named("Slice".to_string()),
         HeapValue::Resource(resource) => Type::Named(resource.kind.to_string()),
-        HeapValue::Object(object) => Type::Named(object.type_name.to_string()),
+        HeapValue::Object(object) => Type::Named(object.type_name().to_string()),
         HeapValue::UpvalCell(_) => Type::Any,
         HeapValue::ErrorVal(_) => Type::Named("Error".to_string()),
     }

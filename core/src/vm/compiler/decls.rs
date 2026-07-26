@@ -52,6 +52,10 @@ impl Compiler {
                 name: name.clone(),
                 function: function_index,
                 ty: method_type_text.clone(),
+                // Filled in by `record_impl_method_global_use` once every
+                // function exists; a method can call one compiled after it.
+                writes_globals: false,
+                reads_globals: Vec::new(),
             });
         }
         self.type_info.impls.push(crate::vm::ImplDecl {

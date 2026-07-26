@@ -50,7 +50,119 @@
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
 
+use alloc::sync::Arc;
 use serde::{Deserialize, Serialize};
+
+/// Identity of the module that *declares* a named type.
+///
+/// # Why a declared type needs more than its name
+///
+/// `struct Point` in `a.lk` and `struct Point` in `b.lk` are different types.
+/// The runtime used to disagree: an object carried only `"Point"` and the
+/// dispatch table was keyed by that bare string, so whichever module registered
+/// last owned the name for the whole context — `a.mk(1).tag()` returned `b`'s
+/// answer. The same missing half made a *transitive* import fail outright: the
+/// importer collected impls one level deep, so a value built by a module its
+/// own dependency imported had no reachable methods at all.
+///
+/// Both are the same hole: identity lived in a name, and a name is only unique
+/// inside one module.
+///
+/// # Why the declaring module is the right scope
+///
+/// A struct literal can only name a type declared in the same compilation unit
+/// — an imported struct is not constructible (`Point { .. }` in the importer is
+/// "Unknown struct 'Point'") and not nameable in an annotation. So the module
+/// executing the construction *is* the module that declared the type, and
+/// stamping the object at construction needs no extra compiler plumbing.
+///
+/// # Representation
+///
+/// The normalized source path for a file module, so the identity is stable
+/// across processes and can ride in a `ModuleArtifact`. Modules with no file
+/// behind them (the entry program, `eval`-style sources, tests) get
+/// [`TypeScope::anonymous`], which is distinct from every path and from other
+/// anonymous scopes only by being the single scope of that run — good enough,
+/// because nothing can import them.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct TypeScope(Arc<str>);
+
+impl TypeScope {
+    /// The scope of a module loaded from `path` (already normalized by the
+    /// resolver).
+    pub fn from_path(path: &str) -> Self {
+        Self(Arc::<str>::from(path))
+    }
+
+    /// The scope of a module with no file behind it.
+    pub fn anonymous() -> Self {
+        Self(Arc::<str>::from("<anon>"))
+    }
+
+    /// The one scope shared by every `impl` whose target is a **builtin** type
+    /// (`impl Doubler for Int`).
+    ///
+    /// A builtin type is not declared by anybody, so it has no declaring module
+    /// to be scoped to and every module means the same `Int`. Filing those
+    /// impls per-module would be wrong in the other direction: the receiver is
+    /// a bare `5` with no module attached, so the lookup could never find them.
+    ///
+    /// TODO(coherence): two modules that both `impl Doubler for Int` still
+    /// collide here, last registration winning, because a global type genuinely
+    /// admits only one impl. Rejecting the overlap needs an orphan rule, which
+    /// is a language decision rather than a dispatch fix.
+    pub fn builtin() -> Self {
+        Self(Arc::<str>::from("<builtin>"))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Pointer identity — the same scope value, not merely an equal one.
+    ///
+    /// Every module hands out clones of one `Arc`, so this answers "still the
+    /// same module?" without a string compare. The executor asks that on every
+    /// activation, which is why it is worth not spelling `==` there.
+    #[inline]
+    pub fn is_same(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Default for TypeScope {
+    fn default() -> Self {
+        Self::anonymous()
+    }
+}
+
+/// The full identity of a declared type: which module declared it, and its
+/// name. Neither half identifies a type on its own.
+///
+/// Kept as one heap-allocated value that instances share by `Arc`, rather than
+/// as two fields on every object. `RuntimeObject` is the largest `HeapValue`
+/// variant and therefore sets the size of *every* heap cell — list, map, string
+/// and all — so widening it by a second fat pointer measurably slowed programs
+/// that contain no structs at all (~1.3% on the workload suite). One thin
+/// pointer instead of the previous bare `Arc<str>` name makes objects smaller
+/// than they were before scoping.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DeclaredType {
+    pub scope: TypeScope,
+    pub name: Arc<str>,
+}
+
+impl DeclaredType {
+    pub fn new(scope: TypeScope, name: Arc<str>) -> Self {
+        Self { scope, name }
+    }
+}
+
+impl core::fmt::Display for TypeScope {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
 
 /// One `trait` declaration: the method names it requires and their declared
 /// types (as display text).
@@ -69,6 +181,35 @@ pub struct ImplMethod {
     pub function: u32,
     /// The method's type as display text (receiver included).
     pub ty: String,
+    /// Whether this body — or anything transitively reachable from it through
+    /// `CallDirect`/`MakeClosure` — executes a `SetGlobal`, **or** can reach
+    /// code the walk cannot see (an indirect call).
+    ///
+    /// Together with [`Self::reads_globals`] this is what decides whether the
+    /// method can be dispatched from a *frame belonging to another module*.
+    /// Such a call runs the body against the current heap with the declaring
+    /// module's globals swapped in, so a *write* would land in that temporary
+    /// table and be dropped on restore — the module's state would silently
+    /// diverge. Refused instead.
+    ///
+    /// Computed as a post-pass over the finished function table
+    /// (`Compiler::record_impl_method_global_use`) because a method may call a
+    /// function compiled after it.
+    #[serde(default)]
+    pub writes_globals: bool,
+    /// The global slots this body's reachable subtree reads, sorted and
+    /// deduplicated. Meaningful only when [`Self::writes_globals`] is `false`,
+    /// which is also what makes it *complete*: the same walk treats an
+    /// unresolvable call as writing, so a method that passes that test has no
+    /// unseen code left to read a slot this list omits.
+    ///
+    /// A cross-module dispatch seeds exactly these slots. Seeding the whole
+    /// table is not an option: a module's globals include its imports, and
+    /// importing one means reading the exporting module's heap — which is
+    /// checked out of its `Arc<Mutex>` whenever that module is the one
+    /// executing, i.e. exactly the situation a cross-module dispatch is in.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reads_globals: Vec<u16>,
 }
 
 /// One `impl Trait for Type` block.
@@ -96,6 +237,18 @@ impl TypeInfo {
     /// cheap so callers can skip work entirely.
     pub fn is_empty(&self) -> bool {
         self.traits.is_empty() && self.impls.is_empty()
+    }
+
+    /// The declaration of whichever impl method compiled to `function`.
+    ///
+    /// Used on the cross-module dispatch path to recover the global-use facts
+    /// that `MethodImpl::Local` deliberately does not carry. A linear scan is
+    /// right here: the path is cold, and a module has a handful of impls.
+    pub fn method_by_function(&self, function: u32) -> Option<&ImplMethod> {
+        self.impls
+            .iter()
+            .flat_map(|decl| decl.methods.iter())
+            .find(|method| method.function == function)
     }
 
     /// Looks up the compiled body of `type_name::method_name`, searching the

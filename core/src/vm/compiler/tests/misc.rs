@@ -946,3 +946,75 @@ fn compiler_lowers_compound_assign_break_and_continue_in_while() {
 
     assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(18)]);
 }
+
+/// The global-use facts a cross-module dispatch reads
+/// (`ImplMethod::{writes_globals, reads_globals}`). They are computed as a
+/// post-pass, so what this pins is that the post-pass ran at all and that its
+/// conservative side is on the safe end.
+#[test]
+fn impl_methods_record_how_their_subtree_uses_globals() {
+    let module = crate::vm::Compiler::compile_source_module(
+        r#"
+        let counter = 0;
+        fn bump() { counter = counter + 1; }
+        fn twice(n: Int) -> Int { return n + n; }
+        struct P { v: Int }
+        trait T {
+            fn pure(self) -> Int;
+            fn reads(self) -> Int;
+            fn writes(self) -> Int;
+            fn indirect(self) -> Int;
+        }
+        impl T for P {
+            fn pure(self) -> Int { return twice(self.v); }
+            fn reads(self) -> Int { return self.v + counter; }
+            fn writes(self) -> Int { counter = 7; return counter; }
+            fn indirect(self) -> Int { let g = twice; return g(self.v); }
+        }
+        return 0;
+        "#,
+    )
+    .expect("compile module");
+
+    let method = |name: &str| {
+        module
+            .type_info
+            .impls
+            .iter()
+            .flat_map(|decl| decl.methods.iter())
+            .find(|method| method.name == name)
+            .unwrap_or_else(|| panic!("impl method `{name}` present"))
+    };
+
+    // Calls a named function through `CallDirect`, which the walk follows.
+    let pure = method("pure");
+    assert!(!pure.writes_globals);
+    assert!(pure.reads_globals.is_empty());
+
+    // A read is fine and gets recorded: the dispatch seeds exactly this slot.
+    let reads = method("reads");
+    assert!(!reads.writes_globals);
+    assert_eq!(reads.reads_globals.len(), 1, "`counter` is the one slot read");
+
+    // A write cannot be supported across the boundary at all.
+    assert!(method("writes").writes_globals);
+
+    // `g` is a function *value* in a register, so the call is a generic `Call`
+    // and the walk cannot see where it goes — conservatively "writes", which is
+    // what keeps `reads_globals` complete for everything it clears.
+    let indirect = method("indirect");
+    assert!(indirect.writes_globals);
+    assert!(
+        indirect.reads_globals.is_empty(),
+        "an unresolvable subtree reports no read list rather than a partial one"
+    );
+
+    // The lookup the dispatch path uses must find the same declaration.
+    assert_eq!(
+        module
+            .type_info
+            .method_by_function(pure.function)
+            .map(|m| m.name.as_str()),
+        Some("pure")
+    );
+}
