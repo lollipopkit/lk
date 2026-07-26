@@ -63,6 +63,11 @@ impl Compiler {
                 methods,
             } => self.lower_impl_decl(trait_name, target_type, methods)?,
             Stmt::Function { name, .. } => self.lower_function_decl(name)?,
+            Stmt::Try {
+                body,
+                catch_var,
+                handler,
+            } => self.lower_try(body, catch_var, handler)?,
             Stmt::Block { statements } => {
                 let watermark = self.next_reg;
                 let locals = self.locals.clone();

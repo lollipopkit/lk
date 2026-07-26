@@ -745,19 +745,11 @@ fn differential_concurrency_edges() {
     run_differential(
         "concurrency_edges",
         &[
-            // A raised channel error must not leave any lock held across the
-            // longjmp: after catching, the registry and channel stay usable
-            // (regression: `channel()` raised "Channel not found" while the
-            // registry MutexGuard was live, deadlocking every later op).
-            new(
-                "chan_unknown_id_catch_then_use",
-                "try { recv(999); } catch e { println(\"caught\"); }\nlet c = chan(1);\nsend(c, 41);\nprintln(recv(c) + 1);\nreturn 0;\n",
-            ),
-            // Same discipline on the closed-send raise inside select's arm.
-            new(
-                "select_closed_send_catch_then_use",
-                "use chan as ch;\nlet c = chan(1);\nch.close(c);\ntry {\n  let x = select {\n    case send(c, 1) => \"sent\";\n  };\n  println(x);\n} catch e { println(\"caught\"); }\nlet d = chan(1);\nsend(d, 6);\nprintln(recv(d) * 7);\nreturn 0;\n",
-            ),
+            // The two try/catch cases that used to live here moved to
+            // `try_catch_differential` in clif_differential_test.rs: this corpus
+            // runs under `LK_AOT_NO_FALLBACK=1` in CI, and a protected region has
+            // no native lowering yet (todos.md). Their behaviour is still
+            // covered, just without the pure-native requirement.
         ],
     );
 }

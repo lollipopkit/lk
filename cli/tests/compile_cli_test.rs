@@ -780,6 +780,67 @@ fn test_trait_impl_from_imported_file_dispatches() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+/// `try`/`catch` is a statement, not a closure — three things that were wrong
+/// while it was rewritten in the parser into `try$call(|| { body })`.
+///
+/// All three are the same cause (the body was a *closure*), and all three were
+/// silent or hard failures rather than diagnostics.
+#[test]
+fn test_try_catch_is_a_statement_not_a_closure() {
+    let dir = unique_tmp_dir("try_catch_statement");
+    ensure_clean_dir(&dir);
+
+    // 1. `return` inside the body returns from the enclosing function. It used
+    //    to return from the closure, so this printed the catch's value.
+    write_file(
+        &dir,
+        "ret.lk",
+        "fn f(x: Int) -> Int {\n  try { return 42; } catch e { return 1; }\n}\nprintln(f(1));\n",
+    );
+    let out = run_cli(&dir, ["ret.lk"]).output().expect("spawn run");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "42");
+
+    // 2. A top-level body writing an outer local. This failed at runtime in the
+    //    cell-capture machinery: "StoreCellVal expected UpvalCell object".
+    write_file(
+        &dir,
+        "outer.lk",
+        "let t = 0;\nfor i in 0..100 {\n  try { t += i / 0; } catch e { t += 1; }\n}\nprintln(t);\n",
+    );
+    let out = run_cli(&dir, ["outer.lk"]).output().expect("spawn run");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "100");
+
+    // 3. A top-level `let` was not even *visible* inside the body — the closure
+    //    put it out of reach and this failed to compile with
+    //    "Compiler undefined local/global `acc`".
+    write_file(
+        &dir,
+        "visible.lk",
+        "let acc = [];\ntry { for i in 0..3 { acc.push(i); } } catch e {}\nprintln(acc.len());\n",
+    );
+    let out = run_cli(&dir, ["visible.lk"]).output().expect("spawn run");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "3");
+
+    // The value a catch binds is unchanged from the `pcall` era: the raised
+    // value itself for `error(v)`, the message string for anything else.
+    write_file(
+        &dir,
+        "bind.lk",
+        "try { error([1, 2]); } catch e { println(typeof(e)); }\ntry { 1 / 0; } catch e { println(typeof(e)); }\n",
+    );
+    let out = run_cli(&dir, ["bind.lk"]).output().expect("spawn run");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim().lines().collect::<Vec<_>>(),
+        ["List", "String"]
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
 /// The reverse direction: an `impl` declared *here*, dispatched inside a
 /// function imported from another file.
 ///

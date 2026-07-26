@@ -1,25 +1,29 @@
 use super::*;
 
-/// Which flavor of recoverable raise an error is, if any.
+/// What a `catch` binds for a given error.
 ///
-/// The two bind different things in a `catch`: a message-only raise binds the
-/// message string, an `error(v)` raise binds `v` itself (see
-/// `Executor::caught_message_value`). Keeping the distinction in one place is
-/// what stops a catch site from silently handling only the first kind.
+/// Three cases, and the distinction is observable: an `error(v)` raise binds
+/// `v` itself, a `raise`/message raise binds the message string, and **any other
+/// runtime error** also binds its message. That last case is not an extra: the
+/// parse-time desugar ran the body under `pcall`, which catches every `Err`, so
+/// `try { 1 / 0 } catch e` has always been caught even though `DivInt divisor is
+/// zero` is a plain `bail!` and not a raise at all.
 enum RaiseKind {
     Message(alloc::sync::Arc<str>),
     Value(crate::val::RuntimeVal),
 }
 
 impl RaiseKind {
-    fn of(error: &anyhow::Error) -> Option<Self> {
+    fn of(error: &anyhow::Error) -> Self {
         if let Some(raise) = error.downcast_ref::<LanguageRaise>() {
-            return Some(Self::Message(raise.message.clone()));
+            return Self::Message(raise.message.clone());
         }
-        error
-            .root_cause()
-            .downcast_ref::<super::handler::LkRaisedValue>()
-            .map(|raised| Self::Value(raised.value))
+        if let Some(raised) = error.root_cause().downcast_ref::<super::handler::LkRaisedValue>() {
+            return Self::Value(raised.value);
+        }
+        // The call machinery adds context, so the deepest cause is the message a
+        // user sees — the same one `pcall` hands back.
+        Self::Message(alloc::sync::Arc::<str>::from(error.root_cause().to_string().as_str()))
     }
 }
 
@@ -316,13 +320,33 @@ impl Executor {
     /// invoked `run_function_inner_impl`, exactly as today).
     pub(in crate::vm::exec) fn unwind_flat_run(
         &mut self,
-        mut error: anyhow::Error,
+        error: anyhow::Error,
         errored_function: &Function,
         module: Option<&Module>,
         ctx: &mut Option<&mut VmContext>,
         base_frame_depth: usize,
     ) -> Result<u32> {
         let mut errored_function = errored_function;
+        // First: a handler installed in the frame that actually faulted. Nothing
+        // is popped in that case, so the loop below would never see it — this is
+        // the `try { 1 / 0 } catch e` shape, where the error is a plain `bail!`
+        // from the arithmetic opcode rather than a raise.
+        if let Some(index) = self
+            .handler_stack
+            .iter()
+            .rposition(|handler| handler.frame_base == self.frame_base)
+        {
+            let handler = self.handler_stack.remove(index);
+            let value = match RaiseKind::of(&error) {
+                RaiseKind::Message(message) => self.caught_message_value(message.as_ref()),
+                RaiseKind::Value(value) => value,
+            };
+            if let Some(ctx) = ctx.as_deref_mut() {
+                ctx.truncate_call_stack(0);
+            }
+            self.enter_handler(handler, value)?;
+            return Ok(self.current_function_index);
+        }
         loop {
             if self.frames.len() == base_frame_depth {
                 return Err(error);
@@ -334,22 +358,26 @@ impl Executor {
             // raise binds `v` itself (see `Executor::caught_message_value`).
             // Only `LanguageRaise` used to be looked for here, so a first-class
             // raise crossing a frame boundary escaped every `TryBegin` handler.
-            let raised = RaiseKind::of(&error);
-            let mut caught = None;
-            if let Some(raised) = raised {
-                self.handler_stack.truncate(frame.handler_depth);
-                if let Some(handler) = self.handler_stack.pop() {
-                    caught = Some((handler, raised));
-                } else if let RaiseKind::Message(message) = raised {
-                    // Mirrors `handle_language_raise`'s `bail!` conversion:
-                    // once the immediate caller's own try-stack has been
-                    // checked and found no match, this is no longer a
-                    // catchable `LanguageRaise` for any further (still
-                    // flattened) caller — only the single immediate hop ever
-                    // got a chance, exactly like the old per-Rust-frame check.
-                    error = anyhow!("{message}");
-                }
-            }
+            // Every popped frame gets a chance, at any depth. The old code let
+            // only the *immediate* caller catch and then rewrote the error so no
+            // outer frame could — but the desugar wrapped the whole protected
+            // body in `pcall`, which catches from arbitrarily deep inside it, so
+            // limiting it to one hop would lose catches that work today.
+            //
+            // A handler may only fire in the frame that installed it, which the
+            // one-hop version got for free. Without the check, unwinding a deep
+            // recursion consumed the entry frame's handler at the *first* pop and
+            // ran the catch block against the wrong frame (the call-depth cap
+            // then looked like it had never raised at all).
+            self.handler_stack.truncate(frame.handler_depth);
+            let caught = self
+                .handler_stack
+                .last()
+                .is_some_and(|handler| handler.frame_base == frame.frame_base)
+                .then(|| {
+                    let handler = self.handler_stack.pop().expect("checked above");
+                    (handler, RaiseKind::of(&error))
+                });
             if caught.is_none() {
                 push_traceback_frame(ctx, errored_function);
                 self.handler_stack.truncate(frame.handler_depth);
@@ -365,6 +393,12 @@ impl Executor {
                         RaiseKind::Message(message) => self.caught_message_value(message.as_ref()),
                         RaiseKind::Value(value) => value,
                     };
+                    // A caught error leaves no traceback behind, exactly as
+                    // `pcall` truncated it — a later *uncaught* error must not
+                    // report frames from this one.
+                    if let Some(ctx) = ctx.as_deref_mut() {
+                        ctx.truncate_call_stack(0);
+                    }
                     self.state.set_pending_raise_root(None);
                     self.write(handler.catch_reg, value)?;
                     self.pc = handler.catch_pc;

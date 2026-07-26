@@ -186,6 +186,12 @@ fn collect_stmt_scalar_consts(stmt: &Stmt, keys: &mut Vec<ScalarLoopConstKey>) {
                 collect_stmt_scalar_consts(else_stmt, keys);
             }
         }
+        // A try/catch is a two-way branch, so it is walked like `If`.
+        Stmt::Try { body, handler, .. } => {
+            for stmt in body.iter().chain(handler) {
+                collect_stmt_scalar_consts(stmt, keys);
+            }
+        }
         Stmt::IfLet {
             value,
             then_stmt,
@@ -361,6 +367,14 @@ fn collect_stmt_folded_int_consts(stmt: &Stmt, locals: &mut HashMap<String, i64>
             collect_stmt_folded_int_consts(then_stmt, &mut locals.clone(), keys);
             if let Some(else_stmt) = else_stmt {
                 collect_stmt_folded_int_consts(else_stmt, &mut locals.clone(), keys);
+            }
+        }
+        // Cloned per side exactly as for `If`, and for a stronger reason: a
+        // `try` body can stop part-way, so nothing it assigns may be folded into
+        // the enclosing scope's known values.
+        Stmt::Try { body, handler, .. } => {
+            for stmt in body.iter().chain(handler) {
+                collect_stmt_folded_int_consts(stmt, &mut locals.clone(), keys);
             }
         }
         Stmt::IfLet {
@@ -551,6 +565,11 @@ fn collect_stmt_inline_call_scalar_consts(
             collect_stmt_inline_call_scalar_consts(then_stmt, bodies, visiting, keys);
             if let Some(else_stmt) = else_stmt {
                 collect_stmt_inline_call_scalar_consts(else_stmt, bodies, visiting, keys);
+            }
+        }
+        Stmt::Try { body, handler, .. } => {
+            for stmt in body.iter().chain(handler) {
+                collect_stmt_inline_call_scalar_consts(stmt, bodies, visiting, keys);
             }
         }
         Stmt::IfLet {
@@ -750,6 +769,11 @@ fn collect_stmt_const_map_get_scalar_consts(
             collect_stmt_const_map_get_scalar_consts(then_stmt, const_maps, keys)?;
             if let Some(else_stmt) = else_stmt {
                 collect_stmt_const_map_get_scalar_consts(else_stmt, const_maps, keys)?;
+            }
+        }
+        Stmt::Try { body, handler, .. } => {
+            for stmt in body.iter().chain(handler) {
+                collect_stmt_const_map_get_scalar_consts(stmt, const_maps, keys)?;
             }
         }
         Stmt::IfLet {

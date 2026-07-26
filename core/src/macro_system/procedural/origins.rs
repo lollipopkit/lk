@@ -460,6 +460,16 @@ fn collect_generated_expr_origins_from_stmt(
                 collect_generated_expr_origins_from_stmt(statement, span.clone(), origins);
             }
         }
+        Stmt::Try { body, handler, .. } => {
+            push_generated_statement_origin("stmt try", span.clone(), origins);
+            for statement in body {
+                collect_generated_expr_origins_from_stmt(statement, span.clone(), origins);
+            }
+            push_generated_statement_origin("stmt try_catch", span.clone(), origins);
+            for statement in handler {
+                collect_generated_expr_origins_from_stmt(statement, span.clone(), origins);
+            }
+        }
         Stmt::Struct { name, fields } => {
             origins.push(AstGeneratedMemberOrigin {
                 label: format!("struct {name}"),

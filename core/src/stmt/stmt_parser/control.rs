@@ -2,25 +2,13 @@ use super::StmtParser;
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
 use crate::{
-    expr::{Expr, Pattern},
-    operator::UnaryOp,
+    expr::Expr,
     stmt::{ForPattern, Stmt},
     token::Token,
 };
 use anyhow::{Result, anyhow, bail};
 
 impl<'a> StmtParser<'a> {
-    /// Parse `try { BODY } catch e { HANDLER }`. Desugars to a block that runs the
-    /// body under `pcall` and, on failure, binds the error value and runs the
-    /// handler — reusing the (verified) recoverable-error primitive (plan M2.4):
-    ///
-    /// ```text
-    /// let [__try_ok, e] = pcall(fn() { BODY });
-    /// if (!__try_ok) { HANDLER }
-    /// ```
-    ///
-    /// Note: `return` inside a `try` body returns from the desugared closure, not
-    /// the enclosing function (a known limitation of the desugaring).
     /// `go <expr>;` — Go-style fire-and-forget goroutine. Parse-time sugar
     /// (same treatment as try/catch → pcall): the operand is wrapped in a
     /// zero-param closure and handed to the `spawn` builtin, discarding the
@@ -62,30 +50,10 @@ impl<'a> StmtParser<'a> {
             bail!("`catch` body must be a block");
         };
 
-        let closure = Expr::Closure {
-            params: Vec::new(),
-            body: Box::new(Expr::Block(body_stmts)),
-        };
-        let protected = Expr::Call("try$call".to_string(), vec![Box::new(closure)]);
-        let let_result = Stmt::Let {
-            pattern: Pattern::List {
-                patterns: vec![Pattern::Variable("__try_ok".to_string()), Pattern::Variable(catch_var)],
-                rest: None,
-            },
-            type_annotation: None,
-            value: Box::new(protected),
-            span: None,
-            is_const: false,
-        };
-        let on_error = Stmt::If {
-            condition: Box::new(Expr::Unary(UnaryOp::Not, Box::new(Expr::Var("__try_ok".to_string())))),
-            then_stmt: Box::new(Stmt::Block {
-                statements: handler_stmts,
-            }),
-            else_stmt: None,
-        };
-        Ok(Stmt::Block {
-            statements: vec![Box::new(let_result), Box::new(on_error)],
+        Ok(Stmt::Try {
+            body: body_stmts,
+            catch_var,
+            handler: handler_stmts,
         })
     }
 

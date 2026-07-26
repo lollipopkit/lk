@@ -199,3 +199,22 @@ removed the "all call sites must agree on a parameter's type" restriction.
 Bridged return values (needs return-type proof), container/closure
 marshaling, global sync, VM→native calls, fuel/heap sandboxing inside hybrid
 binaries (Tier 0 has none either), and any change to `lkrt`.
+
+## 欠账:try/catch 的保护区没有原生降级
+
+`try`/`catch` 现在是真语句,VM 编译器发射 `TryBegin`/`TryEnd`(见
+`core/src/vm/compiler/control_flow.rs::lower_try`)。MIR lowering **没有**这两个
+opcode 的处理,优雅降级成 `Unsupported`,所以:
+
+- 含 try 的程序掉到 hybrid 桥或 Tier 0 bundle。try 在**入口函数**里时 hybrid 不桥
+  接入口,于是整程序 Tier 0;
+- `AOT_COVERAGE_REQUIRE_FULL=1` 48/51,三个 `examples/syntax/{try_catch,
+  error_unwrap,error_model_edges}.lk` 列在 check.yml 的 `AOT_COVERAGE_ALLOW` 里;
+- 输出仍与 VM 一致,由 `cli/tests/clif_differential_test.rs::try_catch_differential`
+  钉住(它允许降级,只断言等价)。
+
+补齐要做的:在 MIR lowering 里把保护区**外联**成函数 —— Cranelift 没有异常,lkrt
+靠 longjmp,setjmp 必须待在不会返回的帧里,所以保护区不能留在原函数内联。外联函数
+要返回三态(正常值 / raise / **外层函数要 return**);第三态是关键,`return` 在 try
+体里必须从外层函数返回,这正是旧去糖搞错的地方。live-in 寄存器变参数,region 内写
+且 region 之后仍活的值要传回来。

@@ -88,7 +88,7 @@ impl super::Executor {
     /// about to be bound by a live register, mirroring what `pcall` does when it
     /// catches (plan M2.2): the pin exists only to carry a heap error through
     /// unwinding.
-    fn enter_handler(&mut self, handler: ErrorHandler, value: RuntimeVal) -> Result<()> {
+    pub(super) fn enter_handler(&mut self, handler: ErrorHandler, value: RuntimeVal) -> Result<()> {
         self.state.set_pending_raise_root(None);
         self.frame_base = handler.frame_base;
         self.state.stack_top = handler.stack_top;

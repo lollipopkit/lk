@@ -160,6 +160,22 @@ pub enum Stmt {
     },
     /// expression;
     Expr(Box<Expr>),
+    /// `try { body } catch name { handler }`
+    ///
+    /// A real statement rather than parse-time sugar. It used to be rewritten in
+    /// the parser into `let [ok, e] = try$call(|| { body }); if !ok { handler }`,
+    /// so every later stage — name resolution, the type checker, both back ends —
+    /// saw a closure and a destructuring `let` instead of a protected region.
+    /// Three separate wrong answers came out of that shape: a `return` inside
+    /// the body returned from the *closure*, an assignment to an annotated local
+    /// inside the body lost its type, and a top-level body writing an outer
+    /// local failed at runtime in the cell-capture machinery.
+    Try {
+        body: Vec<Box<Stmt>>,
+        /// The name the handler binds the caught error to.
+        catch_var: String,
+        handler: Vec<Box<Stmt>>,
+    },
     /// { statements }
     Block { statements: Vec<Box<Stmt>> },
     /// 空语句 (用于处理解析时的占位)

@@ -41,6 +41,75 @@ impl Compiler {
         Ok(())
     }
 
+    /// Lowers `try { body } catch e { handler }` into a protected region:
+    ///
+    /// ```text
+    ///     TryBegin catch_reg, →HANDLER
+    ///     <body>
+    ///     TryEnd
+    ///     Jmp →END
+    /// HANDLER:
+    ///     <handler>          ; the caught value is already in catch_reg
+    /// END:
+    /// ```
+    ///
+    /// The opcodes have been in the executor (and the bytecode verifier) all
+    /// along; nothing emitted them, because try/catch was rewritten in the
+    /// parser into `try$call(|| body)` instead. Emitting them is what makes
+    /// `return` inside the body return from *this* function — with a closure in
+    /// the way it returned from the closure, silently — and what removes the
+    /// cell-capture of outer locals that made a top-level `try` writing an outer
+    /// variable fail at runtime.
+    pub(super) fn lower_try(&mut self, body: &[Box<Stmt>], catch_var: &str, handler: &[Box<Stmt>]) -> Result<()> {
+        // Allocated before the region opens: the handler reads it after the
+        // body's registers have been recycled, so it must sit below them.
+        let catch_reg = self.alloc_reg();
+        let region = self.emit_try_begin_placeholder(catch_reg)?;
+
+        let body_returns = self.lower_scoped_stmt_sequence(body, catch_reg)?;
+        self.emit(Instr::ax(Opcode::TryEnd, 0));
+        // A body that always returns never reaches the jump over the handler.
+        let jmp_end = (!body_returns).then(|| self.emit_jmp_placeholder());
+
+        let handler_start = self.function.code.len();
+        self.patch_try_begin(region, handler_start)?;
+        let locals = self.locals.clone();
+        self.insert_local(catch_var.to_string(), catch_reg);
+        let handler_returns = self.lower_scoped_stmt_sequence(handler, catch_reg)?;
+        self.locals = locals;
+
+        if let Some(jmp_end) = jmp_end {
+            let end = self.function.code.len();
+            self.patch_jmp(jmp_end, end)?;
+        }
+        // Only if *both* paths return does control never fall through.
+        self.emitted_return = body_returns && handler_returns;
+        Ok(())
+    }
+
+    /// Lowers `statements` as their own scope, restoring the enclosing bindings
+    /// and register floor afterwards. Returns whether the sequence always
+    /// returned. `keep_reg` stays allocated across the restore.
+    fn lower_scoped_stmt_sequence(&mut self, statements: &[Box<Stmt>], keep_reg: u16) -> Result<bool> {
+        let locals = self.locals.clone();
+        let cell_locals = self.cell_locals.clone();
+        let const_map_locals = self.const_map_locals.clone();
+        self.emitted_return = false;
+        self.local_rebind_suppression += 1;
+        self.lower_stmt_sequence(statements)?;
+        self.local_rebind_suppression -= 1;
+        let returns = self.emitted_return;
+        // Same restore as `Stmt::Block`: an in-region promotion of an *outer*
+        // local must survive, or later reads load the raw cell object.
+        self.cell_locals = self.scope_restored_cell_locals(&locals, cell_locals);
+        self.locals = locals;
+        self.const_map_locals = const_map_locals;
+        if !returns {
+            self.next_reg = self.live_register_floor().max(keep_reg + 1);
+        }
+        Ok(returns)
+    }
+
     pub(super) fn try_lower_min_max_if(
         &mut self,
         condition: &Expr,

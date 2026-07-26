@@ -3,37 +3,27 @@
 本轮 review + 修复过程中确认下来的开口项。每条都带复现或证据;没有复现过的会写明。
 做完一条就删掉它,不要在这里留"已完成"。
 
-## 需要先拍板的
+## 已定方向、待补齐的
 
-### try/catch 变成真语句 —— AOT 侧欠账
+### try/catch 的 AOT 保护区外联
 
-`try`/`catch` 已经从解析期去糖(`try$call(|| body)` + 解构 `let`)改成真语句
-`Stmt::Try`,VM 编译器发射 `TryBegin`/`TryEnd`。VM 侧完成并全绿。
+`try`/`catch` 已经是真语句(`Stmt::Try` → `TryBegin`/`TryEnd`),VM 侧完成。
+**AOT lowering 没有这两个 opcode 的处理**,优雅降级成 `Unsupported`。
 
-**AOT lowering 没有这两个 opcode 的处理**。它优雅降级成 `Unsupported`(不会崩),
-后果是:
+已经按"先落 VM 侧、把回归写响"处理:
 
-- `AOT_COVERAGE_REQUIRE_FULL=1 scripts/aot_coverage.sh` 从 51/51 掉到 **48/51**;
-- `cli/tests/clif_differential_test.rs::clif_differential_try_catch` 红(它用
-  `LK_AOT_NO_FALLBACK=1` 强制纯原生)。
+- `AOT_COVERAGE_REQUIRE_FULL=1` **48/51**,三个 `examples/syntax/{try_catch,
+  error_unwrap,error_model_edges}.lk` 列在 `.github/workflows/check.yml` 的
+  `AOT_COVERAGE_ALLOW` 里,带理由;
+- `clif_differential_try_catch` 改名 `try_catch_differential`,允许降级、仍然断言
+  VM/native 输出一致 —— 保住的是等价,失去的是"走过 Cranelift";
+- 设计与欠账记在 `docs/aot/tier1-hybrid.md` 末尾。
 
-**正确性不受影响,已验证**:`examples/syntax/{try_catch,error_unwrap,error_model_edges}.lk`
-降级后输出与 VM 逐字节一致。但降级是**整程序** Tier 0
-(`self-contained; embeds the VM`)而不是部分降级 —— 这三个例子的 try 在入口函数
-里,而 hybrid 桥不桥接入口。try 在非入口函数里的程序才会走 hybrid 部分降级。
+**补齐之后要做的清理**:删掉 check.yml 里那三条 allow、把
+`try_catch_differential` 改回 `NativePath::PureCranelift`、删掉本条。
 
-两条路,选一条:
-
-1. **先落 VM 侧,把回归写响**(建议):`AOT_COVERAGE_ALLOW` 加那 3 个路径 + 理由 +
-   写清 51/51 → 48/51;`clif_differential_try_catch` **不要删**,改成允许 fallback
-   的 VM/native 等价测试并改名(它真正保的是等价,不是"走过 Cranelift");
-   `docs/aot/` 记下外联设计。
-2. **先补 AOT,两边一起落**:代价是整件事里最大的一块,且在它做完之前 try/catch
-   一直是坏的(见下面"编译器拒绝普通代码")。
-
-补 AOT 要做的:在 MIR lowering 里把保护区**外联**成函数(Cranelift 没有异常、
-lkrt 靠 longjmp、setjmp 必须待在不会返回的帧里),外联函数返回三态(正常值 /
-raise / 外层要 return),live-in 变参数、region 内写且 region 后仍活的值传回来。
+降级不影响正确性(三个例子输出与 VM 逐字节一致),但降级是**整程序** Tier 0
+而不是部分降级:它们的 try 在入口函数里,hybrid 桥不桥接入口。
 
 ## 开着的 bug
 
@@ -55,8 +45,8 @@ fn f() -> Int { let r: Int = 0; r = 7; return r; }   // expected Int, got 'T0
 很清楚:外联出来的 `f1` 签名是 `-> i64`,但 `bb9` 上有一条裸 `ret`,去糖丢掉了
 "body 返回了"这个情况。
 
-`feat/try-catch-statement` 上**未复验**(那条分支上 try 不进 AOT)。真语句化 + AOT
-外联做完之后应该一起消失,做完要回来确认。
+真语句化之后**未复验**(现在 try 不进 AOT)。AOT 外联做完之后应该一起消失,
+做完要回来确认。
 
 ### scope drop 的跨块限制
 
