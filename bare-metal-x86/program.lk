@@ -1,246 +1,35 @@
-// A display driver, written in LK, compiled to native x86-64 machine code,
+// A small kernel, written in LK, compiled to native x86-64 machine code and
 // running with no OS underneath.
 //
-// Three devices, three mechanisms, all of them the program's own work:
+// The device drivers are modules under `drivers/` — a UART, PCI configuration
+// space, the VBE display interface, a framebuffer, the PS/2 keyboard, the
+// interval timer. Each is self-contained and knows nothing about this program;
+// what is left here is the part that is not reusable: which devices to bring
+// up, in what order, and what a keystroke means.
 //
-//   * COM1, a 16550 UART, through port I/O (`in`/`out`) — x86 devices are not
-//     memory-mapped, they live in a separate 64 KiB address space.
-//   * the PCI configuration space, through the 0xCF8/0xCFC port pair, to find
-//     the display controller and ask it where its framebuffer is.
-//   * that framebuffer, through volatile MMIO — a linear array of pixels at a
-//     physical address the boot page tables have to reach.
-//
-// The timer and keyboard interrupt handlers are LK too; `#[export]` gives them
-// C symbols so the board's IDT can name them. Reading a key back out of the
-// PS/2 controller and drawing a square for it is the whole input half of a
-// user interface, in the same language as the output half.
+// The two interrupt handlers are `#[export]`ed so the board's IDT can name
+// them. They live here rather than in the driver modules for the same reason:
+// a driver decodes a scancode, but only the program knows what to do with it.
 
-// ---------------------------------------------------------------- serial ---
-
-const COM1 = 0x3f8;
-
-const REG_DATA = 0;
-const REG_IER = 1;
-const REG_FCR = 2;
-const REG_LCR = 3;
-const REG_MCR = 4;
-const REG_LSR = 5;
-
-const LSR_TX_EMPTY = 0x20;
-const LCR_DLAB = 0x80;
-const LCR_8N1 = 0x03;
-
-fn uart_init() {
-    // No interrupts: this driver polls.
-    unsafe { port_out_u8(COM1 + REG_IER, 0 as u8); };
-    // Baud divisor 3 (38400) behind the DLAB latch, then back to 8N1. The
-    // divisor registers share addresses with THR and IER, which is what DLAB
-    // switches between — so the order here is not stylistic.
-    unsafe { port_out_u8(COM1 + REG_LCR, LCR_DLAB as u8); };
-    unsafe { port_out_u8(COM1 + REG_DATA, 3 as u8); };
-    unsafe { port_out_u8(COM1 + REG_IER, 0 as u8); };
-    unsafe { port_out_u8(COM1 + REG_LCR, LCR_8N1 as u8); };
-    // Enable and clear both FIFOs, 14-byte trigger.
-    unsafe { port_out_u8(COM1 + REG_FCR, 0xc7 as u8); };
-    // DTR + RTS + OUT2.
-    unsafe { port_out_u8(COM1 + REG_MCR, 0x0b as u8); };
-}
-
-fn uart_putc(byte: Int) {
-    // Poll until the transmit holding register is empty. Each iteration has to
-    // read the port again — `port_in_*` is an opaque call for exactly this
-    // reason, so nothing can hoist the read out of the loop.
-    let empty = 0;
-    while (empty == 0) {
-        let status = unsafe { port_in_u8(COM1 + REG_LSR) };
-        empty = (status as Int) & LSR_TX_EMPTY;
-    }
-    unsafe { port_out_u8(COM1 + REG_DATA, byte as u8); };
-}
-
-fn uart_write(bytes: List<Int>) {
-    for byte in bytes {
-        uart_putc(byte);
-    }
-}
-
-// Decimal and hex output without the standard library: bare metal has no
-// formatter, and a driver that can only print constants is not much of one.
-fn uart_put_int(value: Int) {
-    if (value == 0) {
-        uart_putc(48);
-        return;
-    }
-    let digits = [];
-    let rest = value;
-    while (rest > 0) {
-        digits.push(48 + rest % 10);
-        // `/` is float division in LK; the cast keeps the counter an Int.
-        rest = (rest / 10) as Int;
-    }
-    let i = digits.len() - 1;
-    while (i >= 0) {
-        uart_putc(digits[i]);
-        i = i - 1;
-    }
-}
-
-fn pow2(bits: Int) -> Int {
-    let value = 1;
-    for i in 0..bits {
-        value = value * 2;
-    }
-    return value;
-}
-
-fn uart_put_hex(value: Int) {
-    let shift = 28;
-    while (shift >= 0) {
-        let nibble = ((value / pow2(shift)) as Int) & 0xf;
-        if (nibble < 10) {
-            uart_putc(48 + nibble);
-        } else {
-            uart_putc(87 + nibble);
-        }
-        shift = shift - 4;
-    }
-}
-
-// ------------------------------------------------------------------- PCI ---
-//
-// Configuration space is reached through two ports: write a
-// (bus, device, function, offset) address to 0xCF8 with bit 31 set to enable
-// the cycle, then read or write the dword at 0xCFC.
-
-const PCI_ADDRESS = 0xcf8;
-const PCI_DATA = 0xcfc;
-
-const PCI_REG_ID = 0x00;
-const PCI_REG_COMMAND = 0x04;
-const PCI_REG_CLASS = 0x08;
-const PCI_REG_BAR0 = 0x10;
-
-const PCI_COMMAND_MEMORY = 0x02;
-const PCI_COMMAND_BUS_MASTER = 0x04;
-
-const PCI_CLASS_DISPLAY = 0x03;
-
-fn pci_address(slot: Int, offset: Int) -> Int {
-    // Bus 0, function 0 — everything this needs is there, and walking the
-    // whole tree would be a lot of code for no more information.
-    return 0x80000000 + slot * 0x800 + (offset & 0xfc);
-}
-
-fn pci_read(slot: Int, offset: Int) -> Int {
-    unsafe { port_out_u32(PCI_ADDRESS, pci_address(slot, offset) as u32); };
-    let value = unsafe { port_in_u32(PCI_DATA) };
-    return value as Int;
-}
-
-fn pci_write(slot: Int, offset: Int, value: Int) {
-    unsafe { port_out_u32(PCI_ADDRESS, pci_address(slot, offset) as u32); };
-    unsafe { port_out_u32(PCI_DATA, value as u32); };
-}
-
-// The slot of the first display controller on bus 0, or -1.
-fn pci_find_display() -> Int {
-    for slot in 0..32 {
-        let id = pci_read(slot, PCI_REG_ID);
-        // An absent slot reads back as all ones — there is nothing there to
-        // drive the bus low.
-        if (id != 0xffffffff) {
-            // The class code is the top byte of the dword at 0x08.
-            let class = ((pci_read(slot, PCI_REG_CLASS) / pow2(24)) as Int) & 0xff;
-            if (class == PCI_CLASS_DISPLAY) {
-                return slot;
-            }
-        }
-    }
-    return 0 - 1;
-}
-
-// ------------------------------------------------------------------- VBE ---
-//
-// The Bochs VBE interface, which QEMU's standard VGA implements: an index port
-// and a data port, both 16-bit. Setting a mode means disabling the device,
-// writing the geometry, then re-enabling it with the linear-framebuffer bit —
-// the device latches the geometry at enable time.
-
-const VBE_INDEX = 0x1ce;
-const VBE_DATA = 0x1cf;
-
-const VBE_XRES = 1;
-const VBE_YRES = 2;
-const VBE_BPP = 3;
-const VBE_ENABLE = 4;
-
-const VBE_DISABLED = 0x00;
-const VBE_ENABLED = 0x01;
-const VBE_LFB = 0x40;
-
-fn vbe_write(index: Int, value: Int) {
-    unsafe { port_out_u16(VBE_INDEX, index as u16); };
-    unsafe { port_out_u16(VBE_DATA, value as u16); };
-}
-
-fn vbe_set_mode(width: Int, height: Int, depth: Int) {
-    vbe_write(VBE_ENABLE, VBE_DISABLED);
-    vbe_write(VBE_XRES, width);
-    vbe_write(VBE_YRES, height);
-    vbe_write(VBE_BPP, depth);
-    vbe_write(VBE_ENABLE, VBE_ENABLED | VBE_LFB);
-}
-
-// --------------------------------------------------------------- drawing ---
-
-// Ask PCI where the framebuffer is. Cheap enough to repeat (two port
-// accesses), and repeating it keeps the interrupt handler independent of what
-// the main flow has or has not done yet.
-fn framebuffer_address() -> Int {
-    let slot = pci_find_display();
-    return pci_read(slot, PCI_REG_BAR0) & 0xfffffff0;
-}
-
+use { uart_init, uart_putc, uart_write, uart_put_int, uart_put_hex } from "drivers/serial";
+use { pci_read, pci_write, pci_find_display, PCI_REG_BAR0, PCI_REG_COMMAND,
+      PCI_COMMAND_MEMORY, PCI_COMMAND_BUS_MASTER } from "drivers/pci";
+use { vbe_set_mode } from "drivers/vbe";
+use { put_pixel, get_pixel, fill_rect, fill_gradient } from "drivers/framebuffer";
+use { read_scancode, is_release, key_code } from "drivers/keyboard";
+use { start as pit_start } from "drivers/pit";
+use { read as shared_read, write as shared_write, bump as shared_bump } from "drivers/shared";
 
 const WIDTH = 320;
 const HEIGHT = 200;
 
-fn put_pixel(base: Int, x: Int, y: Int, colour: Int) {
-    let offset = (y * WIDTH + x) * 4;
-    unsafe { volatile_write_u32((base + offset) as *mut u32, colour as u32); };
-}
-
-fn get_pixel(base: Int, x: Int, y: Int) -> Int {
-    let offset = (y * WIDTH + x) * 4;
-    let value = unsafe { volatile_read_u32((base + offset) as *mut u32) };
-    return value as Int;
-}
-
-fn fill_gradient(base: Int) {
-    for y in 0..HEIGHT {
-        // Scaled with integer arithmetic: the pattern only has to be
-        // recognisable, and this keeps the inner loop free of conversions.
-        let green = ((y * 255) as Int) / HEIGHT;
-        for x in 0..WIDTH {
-            let red = ((x * 255) as Int) / WIDTH;
-            put_pixel(base, x, y, red * 0x10000 + green * 0x100 + 0x40);
-        }
-    }
-}
-
-// -------------------------------------------------------------- keyboard ---
-//
-// The PS/2 controller: 0x60 is the data port, 0x64 the status/command port.
-// A key press produces a scancode; the release of the same key produces the
-// same code with bit 7 set, which is how a driver tells them apart.
-
-const PS2_DATA = 0x60;
-const PS2_STATUS = 0x64;
-
-const PS2_RELEASE = 0x80;
-
-// Scancode set 1, enough of it to spell things. Index is the scancode; 0 means
-// "nothing printable", which covers modifiers and the keys not listed.
+// Free RAM: the image, its heap, its stack and the page tables all live below
+// 2 MiB. Crude, and deliberately so — a kernel with no memory manager yet has
+// exactly this much to work with.
+// Scancode set 1 for a US layout, enough of it to spell things. Index is the
+// scancode; 0 means "nothing printable", which covers modifiers and the keys
+// not listed. It lives here rather than in the driver because it is a layout
+// choice, and because a container constant cannot yet cross a bundled import.
 const SCANCODE_ASCII = [
     0, 0, 49, 50, 51, 52, 53, 54, 55, 56, 57, 48, 45, 61, 8, 9,
     113, 119, 101, 114, 116, 121, 117, 105, 111, 112, 91, 93, 10, 0,
@@ -248,105 +37,60 @@ const SCANCODE_ASCII = [
     122, 120, 99, 118, 98, 110, 109, 44, 46, 47, 0, 42, 0, 32,
 ];
 
-// Where the handler and the main flow meet.
-//
-// A plain global would not do: the compiler may keep one in a register across
-// the polling loop, and an interrupt writing memory would never be seen. This
-// is the same reason a device register needs `volatile` — the value changes
-// behind the code's back. The address is free RAM: the image, its heap, its
-// stack and the page tables all live below 2 MiB.
 const SHARED_KEY_COUNT = 0x00300000;
 const SHARED_LAST_KEY = 0x00300004;
 const SHARED_TICKS = 0x00300008;
 
-fn shared_read(address: Int) -> Int {
-    let value = unsafe { volatile_read_u32(address as *mut u32) };
-    return value as Int;
+// Ask PCI where the framebuffer is. Two port accesses, cheap enough to repeat —
+// and repeating it keeps the interrupt handler independent of whether the main
+// flow has run yet.
+fn framebuffer_address() -> Int {
+    let slot = pci_find_display();
+    return pci_read(slot, PCI_REG_BAR0) & 0xfffffff0;
 }
 
-fn shared_write(address: Int, value: Int) {
-    unsafe { volatile_write_u32(address as *mut u32, value as u32); };
-}
-
-// A filled square, so a key press is visible on the screen and not only on the
-// serial line.
-fn fill_rect(base: Int, left: Int, top: Int, size: Int, colour: Int) {
-    for y in 0..size {
-        for x in 0..size {
-            put_pixel(base, left + x, top + y, colour);
-        }
-    }
-}
-
-// The keyboard interrupt handler, written in LK.
+// The timer interrupt handler.
 //
-// It reads the controller's data port itself: what the board owes the device
-// is the acknowledgement, but the scancode is the driver's business, and the
-// driver is this file.
-#[export("lk_key_isr")]
-fn on_key() {
-    let scancode = (unsafe { port_in_u8(PS2_DATA) }) as Int;
-    // Releases arrive as the press code with bit 7 set. Counting both would
-    // report every keystroke twice.
-    if ((scancode & PS2_RELEASE) != 0) {
-        return;
-    }
-    if (scancode >= SCANCODE_ASCII.len()) {
-        return;
-    }
-    let ascii = SCANCODE_ASCII[scancode];
-    if (ascii == 0) {
-        return;
-    }
-    let count = shared_read(SHARED_KEY_COUNT) + 1;
-    shared_write(SHARED_KEY_COUNT, count);
-    shared_write(SHARED_LAST_KEY, ascii);
-    uart_putc(ascii);
-    // One square per key, marching left to right along the bottom of the
-    // screen. The framebuffer address is recomputed rather than shared,
-    // because a handler that depends on the main flow having run is a handler
-    // that works only some of the time.
-    let base = framebuffer_address();
-    let column = (count - 1) % 20;
-    fill_rect(base, column * 16, HEIGHT - 20, 12, ascii * 0x10101);
-}
-
-// --------------------------------------------------------------- handler ---
-
-// The timer interrupt handler. It transmits directly and allocates nothing: an
-// interrupt lands between any two instructions of the interrupted program,
-// including instructions inside the runtime's allocator.
+// Divided down: at a kilohertz, one character per tick is thousands of them.
+// The counter lives in the shared page because a handler's state has to
+// survive between invocations, and it is the only state this one keeps.
 #[export("lk_timer_isr")]
 fn on_tick() {
-    // Divided down: at a kilohertz, one character per tick is thousands of
-    // them. The counter lives in the shared page for the same reason the key
-    // count does — a handler's state has to survive between invocations, and
-    // it is the only state this one keeps.
-    let ticks = shared_read(SHARED_TICKS) + 1;
-    shared_write(SHARED_TICKS, ticks);
+    let ticks = shared_bump(SHARED_TICKS);
     if (ticks % 500 == 0) {
         uart_putc(46); // '.'
     }
 }
 
-// The 8253/8254 PIT, programmed from LK.
+// The keyboard interrupt handler.
 //
-//   0x43  command: channel, access mode, operating mode
-//   0x40  channel 0 data: the divisor, low byte then high byte
-//
-// The input clock is 1193182 Hz, so the divisor sets the period. Mode 3 is a
-// square wave, which is what a periodic tick wants.
-const PIT_COMMAND = 0x43;
-const PIT_CHANNEL0 = 0x40;
-const PIT_MODE3_BOTH_BYTES = 0x36;
-
-fn pit_start(divisor: Int) {
-    unsafe { port_out_u8(PIT_COMMAND, PIT_MODE3_BOTH_BYTES as u8); };
-    unsafe { port_out_u8(PIT_CHANNEL0, (divisor & 0xff) as u8); };
-    unsafe { port_out_u8(PIT_CHANNEL0, (((divisor / 256) as Int) & 0xff) as u8); };
+// It reads the controller itself: what the board owes the device is the
+// acknowledgement, but the scancode is the driver's business. It transmits
+// directly and allocates nothing — an interrupt lands between any two
+// instructions of the interrupted program, including instructions inside the
+// runtime's allocator.
+#[export("lk_key_isr")]
+fn on_key() {
+    let scancode = read_scancode();
+    if (is_release(scancode)) {
+        return;
+    }
+    let code = key_code(scancode);
+    if (code >= SCANCODE_ASCII.len()) {
+        return;
+    }
+    let ascii = SCANCODE_ASCII[code];
+    if (ascii == 0) {
+        return;
+    }
+    let count = shared_bump(SHARED_KEY_COUNT);
+    shared_write(SHARED_LAST_KEY, ascii);
+    uart_putc(ascii);
+    // One square per key, marching left to right along the bottom.
+    let base = framebuffer_address();
+    let column = (count - 1) % 20;
+    fill_rect(base, WIDTH, column * 16, HEIGHT - 20, 12, 12, ascii * 0x10101);
 }
-
-// ------------------------------------------------------------------ main ---
 
 uart_init();
 // ~1 kHz. The board has already unmasked IRQ0 and enabled interrupts; what
@@ -354,11 +98,7 @@ uart_init();
 pit_start(1193);
 
 let slot = pci_find_display();
-
-// Base address register 0 holds the framebuffer's physical address; the low
-// four bits are flags describing the region, not part of the address.
-let bar0 = pci_read(slot, PCI_REG_BAR0);
-let framebuffer = bar0 & 0xfffffff0;
+let framebuffer = framebuffer_address();
 
 // Let the device answer to memory cycles at all. The firmware usually has
 // already, but a driver that depends on that is a driver that works on one
@@ -367,17 +107,16 @@ let command = pci_read(slot, PCI_REG_COMMAND);
 pci_write(slot, PCI_REG_COMMAND, command | PCI_COMMAND_MEMORY | PCI_COMMAND_BUS_MASTER);
 
 vbe_set_mode(WIDTH, HEIGHT, 32);
-fill_gradient(framebuffer);
+fill_gradient(framebuffer, WIDTH, HEIGHT, 0x40);
 
 // Read three pixels back out of the device's memory. Drawing that nobody can
 // see is indistinguishable from drawing that never happened, and a headless
-// machine has no other way to tell — so the proof is that the framebuffer
-// reads back what was written to it.
-let corner = get_pixel(framebuffer, 0, 0);
-let middle = get_pixel(framebuffer, 160, 100);
-let far = get_pixel(framebuffer, 319, 199);
+// machine has no other way to tell.
+let corner = get_pixel(framebuffer, WIDTH, 0, 0);
+let middle = get_pixel(framebuffer, WIDTH, 160, 100);
+let far = get_pixel(framebuffer, WIDTH, 319, 199);
 
-// A critical section, written in LK. The handler transmits on the same device
+// A critical section, written in LK. The handlers transmit on the same device
 // these lines do, and an interrupt lands between any two instructions — so
 // without masking, a tick would splice a '.' into the middle of a message.
 // `cpu_irq_save` returns the previous state rather than a flag, so nesting one

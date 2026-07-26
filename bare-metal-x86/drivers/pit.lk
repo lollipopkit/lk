@@ -1,0 +1,18 @@
+// The 8253/8254 programmable interval timer.
+//
+//   0x43  command: channel, access mode, operating mode
+//   0x40  channel 0 data: the divisor, low byte then high byte
+//
+// The input clock is 1193182 Hz, so the divisor sets the period. Mode 3 is a
+// square wave, which is what a periodic tick wants.
+
+const PIT_COMMAND = 0x43;
+const PIT_CHANNEL0 = 0x40;
+const PIT_MODE3_BOTH_BYTES = 0x36;
+
+fn start(divisor: Int) {
+    unsafe { port_out_u8(PIT_COMMAND, PIT_MODE3_BOTH_BYTES as u8); };
+    unsafe { port_out_u8(PIT_CHANNEL0, (divisor & 0xff) as u8); };
+    // `/` is float division in LK; the cast keeps the byte an Int.
+    unsafe { port_out_u8(PIT_CHANNEL0, (((divisor / 256) as Int) & 0xff) as u8); };
+}

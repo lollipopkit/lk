@@ -633,3 +633,73 @@ fn port_reads_are_not_collapsed() {
     let accesses = body.matches("lkrt_port_in_u8").count();
     assert_eq!(accesses, 2, "expected two port reads, got {accesses}:\n{body}");
 }
+
+/// A file import that carries constants as well as functions.
+///
+/// The native path bundles imports at compile time, and a bundled module's
+/// entry — the only code that would run its top-level assignments — is the one
+/// function the merge drops. So its constants are folded into each read
+/// instead. That is a rewrite of the program, and the only thing that shows it
+/// was faithful is the two backends still agreeing.
+#[test]
+fn bundled_import_constants_match_the_vm() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    std::fs::write(
+        dir.path().join("dep.lk"),
+        "const BASE = 0x3f8;\n\
+         const SCALE = 2.5;\n\
+         const LABEL = \"dep\";\n\
+         const ON = true;\n\
+         fn offset(n: Int) -> Int { return BASE + n; }\n\
+         fn scaled(n: Int) -> Float { return n * SCALE; }\n\
+         fn label() -> String { return LABEL; }\n\
+         fn flag() -> Bool { return ON; }\n",
+    )
+    .expect("write dep");
+    let main = dir.path().join("main.lk");
+    std::fs::write(
+        &main,
+        "use { offset, scaled, label, flag, BASE } from \"dep\";\n\
+         println(offset(8));\n\
+         println(scaled(4));\n\
+         println(label());\n\
+         println(flag());\n\
+         println(BASE);\n\
+         return 0;\n",
+    )
+    .expect("write main");
+
+    let vm = Command::new(bin_path())
+        .current_dir(dir.path())
+        .arg("main.lk")
+        .output()
+        .expect("spawn vm run");
+    assert!(
+        vm.status.success(),
+        "vm run failed: {}",
+        String::from_utf8_lossy(&vm.stderr)
+    );
+
+    let exe = dir.path().join("main");
+    let compile = Command::new(bin_path())
+        .current_dir(dir.path())
+        .args(["compile", "main.lk"])
+        .arg("--output")
+        .arg(&exe)
+        .env("LK_AOT_NO_FALLBACK", "1")
+        .env("LK_AOT_HYBRID", "0")
+        .output()
+        .expect("spawn native compile");
+    assert!(
+        compile.status.success(),
+        "a module of constants and functions must lower natively: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let native = Command::new(&exe).output().expect("spawn compiled executable");
+
+    assert_eq!(
+        String::from_utf8_lossy(&vm.stdout),
+        String::from_utf8_lossy(&native.stdout),
+        "bundled constants diverged between the backends"
+    );
+}

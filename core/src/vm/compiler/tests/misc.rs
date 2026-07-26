@@ -1250,3 +1250,29 @@ fn top_level_bindings_are_visible_through_every_nested_body() {
         );
     }
 }
+
+/// A top-level `const` is a module global even when this file never reads it.
+///
+/// Whether a top-level binding is promoted is decided by scanning the file's
+/// functions for free variables — which is right for `let` (a script's local)
+/// and wrong for `const`. A module that declares register numbers *for its
+/// importers* uses none of them itself, so they stayed entry-locals, never
+/// reached the export map, and `use { REG } from "…"` failed with "not found
+/// in runtime module" — pointing at the import rather than at the rule.
+#[test]
+fn unread_top_level_consts_are_still_module_globals() {
+    let module = compile_module(&parse_program(
+        "const EXPORTED = 0x3f8;\nlet unused_let = 1;\nfn f() -> Int { return 1; }\nreturn f();\n",
+    ))
+    .expect("compile module");
+    let globals: Vec<&str> = module.globals.iter().map(|slot| slot.name.as_ref()).collect();
+    assert!(
+        globals.contains(&"EXPORTED"),
+        "a top-level const must be a module global: {globals:?}"
+    );
+    // `let` keeps the old rule: nothing reads it, so it stays a local.
+    assert!(
+        !globals.contains(&"unused_let"),
+        "an unread top-level `let` should not become a global: {globals:?}"
+    );
+}

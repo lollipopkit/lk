@@ -146,7 +146,17 @@ pub(super) fn compile_object(path: &Path, triple: &str, output: Option<&Path>) -
         .map(Path::to_path_buf)
         .unwrap_or_else(|| path.with_extension("o"));
     let compiled = compile_instr_artifact_with_dependencies(path)?;
-    let object = lk_aot::compile_object_for_target(&compiled.artifact, triple)?;
+    // File imports merge into the artifact exactly as they do for an
+    // executable. A driver split into modules is the ordinary shape of
+    // embedded code; without this every `use "…"` fails to lower, and the
+    // reason it gives ("opcode GetGlobal is not natively lowerable") points at
+    // the symptom rather than at the missing bundling.
+    let bundled = bundle_file_imports(path, &compiled.artifact)?;
+    let (artifact, bundles): (&ModuleArtifact, Vec<lk_aot::BundledImport>) = match &bundled {
+        Some((merged, bundles)) => (merged, bundles.clone()),
+        None => (&compiled.artifact, Vec::new()),
+    };
+    let object = lk_aot::compile_object_for_target(artifact, &bundles, triple)?;
     std::fs::write(&output, object).with_context(|| format!("write object {}", output.display()))?;
     println!("{}", output.display());
     Ok(())

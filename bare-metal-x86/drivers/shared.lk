@@ -1,0 +1,25 @@
+// A word an interrupt handler and the main flow can both see.
+//
+// A plain global would not do: the compiler may keep one in a register across
+// a polling loop, and an interrupt writing memory would never be seen. So
+// these go through `volatile_read_u32` / `volatile_write_u32` — the same
+// reason a device register needs `volatile`, applied to ordinary memory that
+// changes behind the code's back.
+//
+// The addresses are the caller's to choose, and on a board with no memory
+// manager they are simply free RAM.
+
+fn read(address: Int) -> Int {
+    let value = unsafe { volatile_read_u32(address as *mut u32) };
+    return value as Int;
+}
+
+fn write(address: Int, value: Int) {
+    unsafe { volatile_write_u32(address as *mut u32, value as u32); };
+}
+
+fn bump(address: Int) -> Int {
+    let next = read(address) + 1;
+    write(address, next);
+    return next;
+}

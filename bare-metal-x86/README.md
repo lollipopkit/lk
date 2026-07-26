@@ -22,7 +22,7 @@ pixels 00000040 007f7f40 00fefd40
 [lk returned to the board]
 ```
 
-Every line of that came from LK code driving three devices by three different
+Every line of that came from LK code driving four devices by three different
 mechanisms:
 
 | device | mechanism | what the program does |
@@ -37,6 +37,37 @@ pixels. That is a separate claim from the `pixels …` line: reading the
 framebuffer back proves the writes reached the device's memory, but an
 unconfigured card accepts those too. Only what QEMU scans out shows that the
 mode was actually set.
+
+## The drivers are modules
+
+```
+drivers/serial.lk        a 16550 UART
+drivers/pci.lk           configuration space
+drivers/vbe.lk           the Bochs VBE display interface
+drivers/framebuffer.lk   pixels, given a base and a stride
+drivers/keyboard.lk      the PS/2 controller
+drivers/pit.lk           the interval timer
+drivers/shared.lk        a word an interrupt handler and the main flow share
+program.lk               which devices to bring up, and what a keystroke means
+```
+
+Each driver is self-contained and knows nothing about the program. What stays
+in `program.lk` is the part that is not reusable — the order things are brought
+up in, the scancode table (a *layout*, not a property of the controller), and
+the two interrupt handlers, because a driver decodes a scancode but only the
+program knows what to do with it.
+
+`lk compile object:` bundles file imports at compile time, the same way the
+executable path does. Two limits are worth knowing, because both fail at
+compile time with a message rather than at runtime:
+
+- **A bundled module cannot import another file.** The drivers here are
+  therefore flat; anything shared goes in the importing file.
+- **A bundled module's `const` may be a scalar but not a container.** A scalar
+  folds into each use, which is what `const` means. A container is *shared and
+  mutable* in LK (`const xs = []; xs.push(1)` works), so folding would give
+  each read its own copy — the module's initialiser has to run instead, and the
+  native bundler does not do that yet.
 
 ## Port I/O
 

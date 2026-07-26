@@ -1047,25 +1047,99 @@ fn bundle_file_imports(
         // pairs and the implicit return. Anything else is a top-level effect
         // the bundle would silently skip — reject instead.
         let mut reg_fn: std::collections::HashMap<u8, u32> = std::collections::HashMap::new();
+        let mut reg_const: std::collections::HashMap<u8, BundledConst> = std::collections::HashMap::new();
         let mut fns: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
         let mut pairs: Vec<(String, u32)> = Vec::new();
-        for raw_instr in &dep.module.functions[dep_entry].code {
+        let mut dep_consts: Vec<(String, BundledConst)> = Vec::new();
+        let dep_entry_fn = &dep.module.functions[dep_entry];
+        for raw_instr in &dep_entry_fn.code {
             let instr = Instr::try_from_raw(*raw_instr)
                 .map_err(|_| anyhow::anyhow!("bundled import '{import_path}': bad instruction"))?;
             match instr.opcode() {
                 Opcode::LoadFunction => {
                     reg_fn.insert(instr.a(), u32::from(instr.bx()));
                 }
+                // A scalar top-level binding — `const COM1 = 0x3f8;`. Every
+                // driver has these, so refusing them would mean a module can
+                // hold functions but not the register numbers they operate on.
+                Opcode::LoadInt => {
+                    let value = dep_entry_fn
+                        .consts
+                        .ints
+                        .get(instr.bx() as usize)
+                        .copied()
+                        .ok_or_else(|| anyhow::anyhow!("bundled import '{import_path}': bad int constant"))?;
+                    reg_const.insert(instr.a(), BundledConst::Int(value));
+                }
+                Opcode::LoadFloat => {
+                    let value = dep_entry_fn
+                        .consts
+                        .floats
+                        .get(instr.bx() as usize)
+                        .copied()
+                        .ok_or_else(|| anyhow::anyhow!("bundled import '{import_path}': bad float constant"))?;
+                    reg_const.insert(instr.a(), BundledConst::Float(value));
+                }
+                Opcode::LoadString => {
+                    let value = dep_entry_fn
+                        .consts
+                        .strings
+                        .get(instr.bx() as usize)
+                        .cloned()
+                        .ok_or_else(|| anyhow::anyhow!("bundled import '{import_path}': bad string constant"))?;
+                    reg_const.insert(instr.a(), BundledConst::Str(value));
+                }
+                Opcode::LoadBool => {
+                    reg_const.insert(instr.a(), BundledConst::Bool(instr.b() != 0));
+                }
+                Opcode::LoadNil => {
+                    reg_const.insert(instr.a(), BundledConst::Nil);
+                }
                 Opcode::SetGlobal => {
-                    let Some(&fidx) = reg_fn.get(&instr.a()) else {
-                        anyhow::bail!("bundled import '{import_path}' has a non-function top-level binding");
-                    };
                     let name = dep.module.globals.get(instr.bx() as usize).cloned().unwrap_or_default();
-                    pairs.push((name, fidx));
+                    if let Some(&fidx) = reg_fn.get(&instr.a()) {
+                        pairs.push((name, fidx));
+                    } else if let Some(value) = reg_const.get(&instr.a()) {
+                        dep_consts.push((name, value.clone()));
+                    } else {
+                        anyhow::bail!(
+                            "bundled import '{import_path}' has a top-level binding that is neither a function \
+                             nor a constant"
+                        );
+                    }
                 }
                 Opcode::Return0 => {}
+                // A container constant cannot be folded the way a scalar can.
+                // `LoadHeapConst` materialises a *fresh* object per execution,
+                // so the module's single shared list would become one list per
+                // read — and LK's `const` containers are mutable, which makes
+                // that difference observable.
+                Opcode::LoadHeapConst => anyhow::bail!(
+                    "bundled import '{import_path}' has a container constant at its top level. \
+                     Scalars fold into their uses, but a container is shared and mutable, so it \
+                     needs the module's initialiser to run — which the native bundler does not \
+                     do yet. Move it to the importing file, or return it from a function."
+                ),
                 other => {
                     anyhow::bail!("bundled import '{import_path}' has top-level effects (opcode {other:?})")
+                }
+            }
+        }
+        // A binding the *main* module also writes would leave two definitions
+        // sharing one merged slot, because the merge maps globals by name.
+        // Refuse rather than pick one.
+        for (name, _) in &dep_consts {
+            if let Some(slot) = artifact.module.globals.iter().position(|g| g == name) {
+                let main_entry = artifact.module.entry as usize;
+                let written = artifact.module.functions[main_entry].code.iter().any(|raw| {
+                    Instr::try_from_raw(*raw)
+                        .map(|i| i.opcode() == Opcode::SetGlobal && i.bx() as usize == slot)
+                        .unwrap_or(false)
+                });
+                if written {
+                    anyhow::bail!(
+                        "bundled import '{import_path}' defines `{name}`, which the importing file also defines"
+                    );
                 }
             }
         }
@@ -1143,7 +1217,92 @@ fn bundle_file_imports(
                 .ok_or_else(|| anyhow::anyhow!("bundled import '{import_path}': dangling fn binding"))?;
             fns.insert(name, merged_fidx);
         }
+        // A bundled module's constants have no initialiser in the merged
+        // program: its entry — the only code that would have run the
+        // assignment — is the one function the merge drops. Rather than splice
+        // an initialiser into the importing entry (which would shift every pc
+        // and invalidate the pc-keyed facts), fold the value into each read.
+        // They are constants; substituting them is what `const` means.
+        if !dep_consts.is_empty() {
+            let const_slots: std::collections::HashMap<u16, BundledConst> = dep_consts
+                .into_iter()
+                .map(|(name, value)| (slot_of(&name, &mut merged.module.globals), value))
+                .collect();
+            for function in &mut merged.module.functions {
+                fold_global_constants(function, &const_slots)
+                    .with_context(|| format!("bundled import '{import_path}': folding constants"))?;
+            }
+        }
+
         bundles.push(lk_aot::BundledImport { path: import_path, fns });
     }
     Ok(Some((merged, bundles)))
+}
+
+/// A scalar a bundled module binds at its top level.
+#[cfg(feature = "aot")]
+#[derive(Clone, Debug)]
+enum BundledConst {
+    Int(i64),
+    Float(f64),
+    Str(String),
+    Bool(bool),
+    Nil,
+}
+
+/// Rewrites every `GetGlobal` of a bundled constant into a load of its value.
+///
+/// One instruction replaces one instruction, so pcs — and the facts keyed by
+/// them — are untouched. The value goes into the reading function's own
+/// constant pool, since pools are per function.
+#[cfg(feature = "aot")]
+fn fold_global_constants(
+    function: &mut lk_core::vm::FunctionData,
+    const_slots: &std::collections::HashMap<u16, BundledConst>,
+) -> anyhow::Result<()> {
+    use lk_core::vm::{Instr, Opcode};
+
+    for index in 0..function.code.len() {
+        let Ok(instr) = Instr::try_from_raw(function.code[index]) else {
+            continue;
+        };
+        if instr.opcode() != Opcode::GetGlobal {
+            continue;
+        }
+        let Some(value) = const_slots.get(&instr.bx()) else {
+            continue;
+        };
+        let replacement = match value {
+            BundledConst::Int(value) => {
+                let slot = pool_index(&mut function.consts.ints, *value)?;
+                Instr::abx(Opcode::LoadInt, instr.a(), slot)
+            }
+            BundledConst::Float(value) => {
+                let slot = pool_index_by(&mut function.consts.floats, *value, |a, b| a.to_bits() == b.to_bits())?;
+                Instr::abx(Opcode::LoadFloat, instr.a(), slot)
+            }
+            BundledConst::Str(value) => {
+                let slot = pool_index(&mut function.consts.strings, value.clone())?;
+                Instr::abx(Opcode::LoadString, instr.a(), slot)
+            }
+            BundledConst::Bool(value) => Instr::abc(Opcode::LoadBool, instr.a(), u8::from(*value), 0),
+            BundledConst::Nil => Instr::abc(Opcode::LoadNil, instr.a(), 0, 0),
+        };
+        function.code[index] = replacement.raw();
+    }
+    Ok(())
+}
+
+#[cfg(feature = "aot")]
+fn pool_index<T: PartialEq>(pool: &mut Vec<T>, value: T) -> anyhow::Result<u16> {
+    pool_index_by(pool, value, |a, b| a == b)
+}
+
+#[cfg(feature = "aot")]
+fn pool_index_by<T>(pool: &mut Vec<T>, value: T, eq: impl Fn(&T, &T) -> bool) -> anyhow::Result<u16> {
+    if let Some(index) = pool.iter().position(|existing| eq(existing, &value)) {
+        return u16::try_from(index).map_err(|_| anyhow::anyhow!("constant pool index overflow"));
+    }
+    pool.push(value);
+    u16::try_from(pool.len() - 1).map_err(|_| anyhow::anyhow!("constant pool index overflow"))
 }
