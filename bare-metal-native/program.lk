@@ -1,0 +1,11 @@
+// Compiled to native aarch64 machine code, not interpreted.
+fn fib(n: Int) -> Int {
+    if (n < 2) { return n; }
+    return fib(n - 1) + fib(n - 2);
+}
+
+let total = 0;
+for i in 0..10 {
+    total = total + fib(i);
+}
+return total;

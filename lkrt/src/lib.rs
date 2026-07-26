@@ -40,6 +40,8 @@ mod encoding;
 mod host;
 #[cfg(feature = "std")]
 mod io;
+#[cfg(not(feature = "std"))]
+mod io_bare;
 mod lkdyn;
 mod lklist;
 mod lkmap;
@@ -87,6 +89,8 @@ pub use host::{
 };
 #[cfg(feature = "std")]
 pub use io::{lkrt_io_std_flush, lkrt_io_std_read_to_string, lkrt_io_std_write};
+#[cfg(not(feature = "std"))]
+pub use io_bare::{lkrt_io_std_flush, lkrt_io_std_read_to_string, lkrt_io_std_write, set_output};
 pub use lkdyn::{
     DYN_BOOL, DYN_F64, DYN_I64, DYN_LIST, DYN_MAP, DYN_NIL, DYN_STR, LkDyn, lkrt_dyn_add, lkrt_dyn_as_bool,
     lkrt_dyn_as_f64, lkrt_dyn_as_i64, lkrt_dyn_as_list, lkrt_dyn_as_map, lkrt_dyn_as_str, lkrt_dyn_display,

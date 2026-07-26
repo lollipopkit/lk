@@ -8,7 +8,9 @@ license = "Apache-2.0"
 
 [lib]
 name = "lkrt"
-crate-type = ["rlib", "staticlib"]
+# rlib only. The staticlib form lives in `lkrt-cabi`; see that crate for why
+# they cannot share one target.
+crate-type = ["rlib"]
 
 [features]
 default = ["std"]

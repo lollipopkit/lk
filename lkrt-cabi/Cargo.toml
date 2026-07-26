@@ -1,0 +1,22 @@
+[package]
+name = "lkrt-cabi"
+description = "The C-ABI static library form of lkrt, for the AOT linker"
+version = "0.1.3"
+edition = "2024"
+authors = ["lollipopkit <a@lpkt.cn>"]
+license = "Apache-2.0"
+publish = false
+
+[lib]
+name = "lkrt_cabi"
+# staticlib only. Splitting this out of `lkrt` is the point of the crate: a
+# `staticlib` target must be self-contained (its own allocator and panic
+# handler), which a bare-metal binary cannot satisfy from the outside — so
+# depending on an `lkrt` that also built a staticlib failed even when the
+# binary supplied both itself.
+crate-type = ["staticlib"]
+
+[dependencies]
+# Always with `std`: this archive exists for hosted AOT executables. A
+# bare-metal image links the rlib directly and brings its own runtime.
+lkrt = { path = "../lkrt" }

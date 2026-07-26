@@ -40,6 +40,7 @@ use crate::lkstr::arena_c_string;
 // what the generated IR declares (`returns_twice`), `_longjmp` is called
 // from the raise path here. A glibc x86-64 `jmp_buf` is 200 bytes; the
 // buffer is oversized and 16-aligned for safety across libcs.
+#[cfg(feature = "std")]
 unsafe extern "C" {
     fn _longjmp(env: *mut c_void, val: c_int) -> !;
 }
@@ -200,9 +201,22 @@ fn raise_current(value: LkDyn) -> ! {
         // Park (not free) the buffer: the longjmp still reads it. Bounded at
         // one parked buffer per thread; reclaimed at the next push/park/
         // thread end (see `SpareJmpBuf`).
-        Some(buf) => {
-            let raw = with_spare_buf(|spare| spare.park(buf));
-            unsafe { _longjmp(raw as *mut c_void, 1) }
+        Some(_buf) => {
+            #[cfg(feature = "std")]
+            {
+                let raw = with_spare_buf(|spare| spare.park(_buf));
+                unsafe { _longjmp(raw as *mut c_void, 1) }
+            }
+            // Bare metal has no libc `setjmp`/`longjmp`, and the native
+            // lowering does not support `try`/`catch` there either — the
+            // trampoline that would make it work is skipped for those targets
+            // (see lkrt/build.rs). A handler cannot have been pushed, so this
+            // is unreachable in practice; aborting is the honest answer if it
+            // somehow is not.
+            #[cfg(not(feature = "std"))]
+            {
+                crate::abi::flush_and_abort()
+            }
         }
         // Uncaught: surface the error before dying — the VM prints its
         // uncaught message to stderr, a silent abort loses it. (Only the

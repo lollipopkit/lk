@@ -183,14 +183,17 @@ fn lkrt_staticlib_path() -> Option<PathBuf> {
     }
     let exe = std::env::current_exe().ok()?;
     let dir = exe.parent()?;
+    // `lkrt-cabi`, not `lkrt`: the staticlib was split into its own crate so a
+    // bare-metal binary can depend on the rlib without cargo also building a
+    // staticlib it cannot satisfy. See `lkrt-cabi`'s crate docs.
     let file = if cfg!(target_os = "windows") {
-        "lkrt.lib"
+        "lkrt_cabi.lib"
     } else {
-        "liblkrt.a"
+        "liblkrt_cabi.a"
     };
     let mut candidates = vec![dir.join(file)];
     // The `lk` CLI runs from `target/<profile>/`, whose `deps` subdir holds the
-    // hashed `liblkrt-<hash>.a`; a `cargo test` binary runs from
+    // hashed `liblkrt_cabi-<hash>.a`; a `cargo test` binary runs from
     // `target/<profile>/deps/` itself, where that hashed archive sits right
     // beside it. Search both so either launcher resolves the staticlib.
     for search in [dir.to_path_buf(), dir.join("deps")] {
@@ -204,9 +207,9 @@ fn lkrt_staticlib_path() -> Option<PathBuf> {
 fn latest_lkrt_staticlib_in(deps_dir: &Path) -> Option<PathBuf> {
     let entries = std::fs::read_dir(deps_dir).ok()?;
     let prefix = if cfg!(target_os = "windows") {
-        "lkrt-"
+        "lkrt_cabi-"
     } else {
-        "liblkrt-"
+        "liblkrt_cabi-"
     };
     let suffix = if cfg!(target_os = "windows") { ".lib" } else { ".a" };
     entries

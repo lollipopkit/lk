@@ -16,6 +16,7 @@ use core::ffi::{CStr, c_char};
 
 use crate::state::with_runtime;
 
+#[cfg(feature = "std")]
 unsafe extern "C" {
     fn fflush(stream: *mut core::ffi::c_void) -> i32;
 }
@@ -43,6 +44,9 @@ pub(crate) fn flush_and_abort() -> ! {
 /// a stream with generated `printf` output call this first so the two buffers
 /// cannot interleave out of order.
 pub(crate) fn flush_c_stdio() {
+    // Bare metal has no C stdio to flush — no libc, and whatever the board
+    // prints through goes out synchronously anyway.
+    #[cfg(feature = "std")]
     // SAFETY: fflush(NULL) is defined by C99 to flush all open output streams.
     unsafe {
         fflush(core::ptr::null_mut());
