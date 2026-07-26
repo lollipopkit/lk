@@ -21,7 +21,34 @@ pub struct Parser<'a> {
     /// Monotonic id for parse-time desugars (`select`, postfix `!`), so
     /// nested instances don't shadow each other's synthesized locals.
     pub(super) desugar_counter: usize,
+    /// Live nesting depth of `parse_expr`, bounded by [`MAX_EXPR_DEPTH`].
+    ///
+    /// Expression parsing is recursive descent, so nesting depth in the source
+    /// is Rust stack depth. Without a bound, `((((…1…))))` overflows the stack
+    /// and *aborts the process* — 500 levels was enough in a debug build. On a
+    /// host that abort is at least clean (the guard page traps); on bare metal
+    /// there is no guard page, so the same input silently walks off the stack
+    /// into whatever is below it.
+    pub(super) depth: usize,
 }
+
+/// Cap on expression nesting depth (see [`Parser::depth`]).
+///
+/// Hand-written code does not approach this — the bound exists to turn a
+/// pathological or hostile input into a syntax error instead of an abort.
+///
+/// The value is set from measurement, not taste. One level of *source* nesting
+/// costs about 18KiB of debug stack, because it unwinds the whole precedence
+/// chain (`conditional` → `nullish` → `or` → … → `postfix` → `primary` →
+/// `paren`) rather than one frame. A debug `lk check` (8MiB main stack) aborts
+/// somewhere between 400 and 500 levels; a libtest thread only gets 2MiB, so
+/// its ceiling is nearer 110. 64 sits under that with room to spare and is
+/// still far past anything real code nests to.
+#[cfg(feature = "std")]
+pub(super) const MAX_EXPR_DEPTH: usize = 64;
+/// An MCU stack is kilobytes, not megabytes, so bare metal gets a tighter cap.
+#[cfg(not(feature = "std"))]
+pub(super) const MAX_EXPR_DEPTH: usize = 16;
 
 struct StructLiteralParts {
     fields: Vec<(String, Box<Expr>)>,
@@ -263,8 +290,18 @@ impl<'a> Parser<'a> {
         Ok(exp.fold_constants())
     }
 
+    /// Every nested expression form routes back through here, so this is the
+    /// one place the recursion has to be bounded.
     fn parse_expr(&mut self) -> Result<Expr> {
-        self.parse_conditional()
+        if self.depth >= MAX_EXPR_DEPTH {
+            return Err(anyhow!(self.err("Expression nesting too deep")));
+        }
+        self.depth += 1;
+        // Decremented on the error path too — a bounded parse that fails must
+        // not leave the counter raised for whatever the caller tries next.
+        let parsed = self.parse_conditional();
+        self.depth -= 1;
+        parsed
     }
 
     /// - `cond ? then : else` (ternary conditional)

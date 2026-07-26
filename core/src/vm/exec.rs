@@ -150,7 +150,17 @@ pub struct Executor {
 /// 1000), small enough that infinite recursion errors before exhausting
 /// memory on stack segments. `LK_MAX_CALL_DEPTH` overrides it (consulted only
 /// on the exceed path, so the hot path never reads the environment).
+#[cfg(feature = "std")]
 const DEFAULT_MAX_CALL_DEPTH: usize = 100_000;
+/// Bare metal cannot afford the host default. LK frames live on the heap
+/// (plan M2.5 moved them off the Rust stack), so 100k frames is a heap
+/// commitment an MCU does not have — and exhausting a no_std heap means
+/// `handle_alloc_error`, i.e. a silent hang, not the catchable
+/// "call depth limit exceeded" this cap is supposed to produce. 1024 still
+/// dwarfs any real recursion depth. `LK_MAX_CALL_DEPTH` does not apply here:
+/// there is no environment to read.
+#[cfg(not(feature = "std"))]
+const DEFAULT_MAX_CALL_DEPTH: usize = 1024;
 
 /// Red zone / segment size (rustc's `ensure_sufficient_stack` pattern): when
 /// fewer than 128KiB of Rust stack remain, run on a fresh 2MiB segment
@@ -160,8 +170,11 @@ const DEFAULT_MAX_CALL_DEPTH: usize = 100_000;
 /// `run_module_function_with_state_recoverable` native-entry boundary, which
 /// can still nest if a host callback re-enters the VM from inside a native
 /// call. Deep *LK* recursion measured before the M2.5 flattening: ~150 frames
-/// (debug) / ~4000 (release) to a hard abort. no_std targets keep plain
-/// recursion (their stack discipline is platform-specific).
+/// (debug) / ~4000 (release) to a hard abort. no_std keeps plain recursion —
+/// stack discipline there is the platform's, not ours — and leans on the much
+/// tighter `DEFAULT_MAX_CALL_DEPTH` instead. The parser gets the same
+/// treatment via `MAX_EXPR_DEPTH`, since recursive descent turns source
+/// nesting into Rust stack depth with nothing to catch it on bare metal.
 #[cfg(feature = "std")]
 #[inline]
 fn grow_stack_if_needed<R>(f: impl FnOnce() -> R) -> R {
@@ -243,8 +256,16 @@ impl Executor {
                 return Ok(());
             }
         }
+        // no_std has no environment to read, so pointing at an env var there
+        // would be advice the caller cannot act on.
+        #[cfg(feature = "std")]
         bail!(
             "call depth limit exceeded ({}); set LK_MAX_CALL_DEPTH to raise it",
+            self.max_call_depth
+        );
+        #[cfg(not(feature = "std"))]
+        bail!(
+            "call depth limit exceeded ({}); raise it with Executor::with_max_call_depth",
             self.max_call_depth
         )
     }

@@ -19,6 +19,7 @@ impl<'a> Parser<'a> {
             token_spans: None,
             prefix_mode: false,
             desugar_counter: 0,
+            depth: 0,
         }
     }
 
@@ -32,6 +33,7 @@ impl<'a> Parser<'a> {
             token_spans: Some(spans),
             prefix_mode: false,
             desugar_counter: 0,
+            depth: 0,
         }
     }
 

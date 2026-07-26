@@ -594,4 +594,33 @@ mod test {
         );
         assert_eq!(parsed, expected);
     }
+
+    /// Deeply nested expressions used to overflow the Rust stack and abort the
+    /// process (500 levels sufficed in a debug build). A host traps that on a
+    /// guard page; bare metal has none, so the bound is what keeps a hostile
+    /// input from walking off an MCU stack.
+    #[test]
+    fn deeply_nested_expressions_error_instead_of_overflowing_the_stack() {
+        let depth = 10_000;
+        let mut source = String::new();
+        for _ in 0..depth {
+            source.push('(');
+        }
+        source.push('1');
+        for _ in 0..depth {
+            source.push(')');
+        }
+
+        let tokens = Tokenizer::tokenize(&source).expect("tokenizes");
+        let err = Parser::new(&tokens).parse().expect_err("must not abort");
+        assert!(err.to_string().contains("too deep"), "{err}");
+    }
+
+    /// The cap must not be so tight that ordinary nesting trips it.
+    #[test]
+    fn ordinary_nesting_stays_under_the_depth_cap() {
+        let source = "((((1 + 2) * 3) - 4) / 5)";
+        let tokens = Tokenizer::tokenize(source).expect("tokenizes");
+        Parser::new(&tokens).parse().expect("ordinary nesting parses");
+    }
 }
