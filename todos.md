@@ -80,12 +80,38 @@ native 43.6 MB vs VM 22.7 MB,而 `LK_AOT_OPT_STATS=1` 报 `scope drops = 0` —�
 与 VM 输出不一致(`[a-b,a-b]` vs `["a-b","a-b"]`)。既存,main 上同样。新加的严格
 native 差分 CI 的语料没覆盖到。**本人未复验**,来自第一轮 review 报告。
 
+### ASan 下 `lkrt_lklist_i64_filter_fn` 报 stack-use-after-scope
+
+main 的 CI("differential corpora with an ASan-instrumented lkrt" job)在
+`aot_differential_test::differential_builtins` /
+`builtins/list_hof_map_filter_reduce` 上失败:
+
+```
+AddressSanitizer: stack-use-after-scope
+  #0 <Copied<Iter<*const i8>> as Iterator>::size_hint
+  #1 <Vec<i64> as SpecFromIterNested<…, lkrt_lklist_i64_filter_fn::{closure#0}>>::from_iter
+  #2 lkrt_lklist_i64_filter_fn
+```
+
+`lkrt_lklist_i64_filter_fn` 在 `values.iter().copied().filter(|&v| p(v)).collect()`
+里跨着**回调进生成代码**持有源列表的 `&[i64]` 借用。两种可能:回调改动了同一个
+列表(Vec 重分配 → 迭代器悬空),或者回调 raise 时 longjmp 越过了 Rust 作用域
+而 ASan 的 poison 没被 `__asan_handle_no_return` 清掉(后者是**误报**,但同样红)。
+先分清是哪一种再决定改法。CLAUDE.md 里 lkrt 那条纪律("绝不在持有 lock guard /
+RefCell borrow 时调用可 raise 的函数")对**切片借用**同样适用,只是没写进去。
+
+**本地用仓库自己的 `scripts/build_lkrt_asan.sh` 构出 ASan lkrt 后不复现**,需要在
+CI 环境上查。
+
 ### ASan 下 hybrid 程序的 fuzz 差分失败
 
 `aot_fuzz_differential_test` 在 `LK_NATIVE_SANITIZE` 下报 "AOT compile failed
 without a graceful Unsupported reason"。既存(stash 掉改动同样复现):ASan 版 lkrt
 与未插桩的 lk-api staticlib 混链,`scripts/build_lkrt_asan.sh` 自己的注释警告过这种
 ABI 混用。不是 PR 门禁,优先级低。
+
+**注意**:这条的观察早于 `fix: hybrid 标记之后重新收敛签名`。那个提交修的正是
+"codegen 硬失败而非优雅降级",所以这条可能已经一并消失 —— 未复验。
 
 ## 已记档的覆盖上限(不是 bug)
 
