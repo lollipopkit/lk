@@ -371,7 +371,6 @@ impl TypeChecker {
         &mut self.registry
     }
 
-    /// Enter a new scope for local variables
     /// Opens a return-collection frame for a function or closure body.
     pub fn push_return_frame(&mut self) {
         self.return_frames.push(Vec::new());
@@ -390,6 +389,7 @@ impl TypeChecker {
         }
     }
 
+    /// Enter a new scope for local variables
     pub fn push_scope(&mut self) {
         // Snapshot current locals; modifications in the new scope are discarded on pop
         self.scope_stack.push(self.local_types.clone());

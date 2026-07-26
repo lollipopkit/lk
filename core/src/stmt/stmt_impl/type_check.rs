@@ -315,9 +315,13 @@ impl Stmt {
                 // traversal *after* the body sees every nested `if`/`while`/`for`/
                 // `try` scope already popped, which is why an annotated local
                 // returned from inside one came back as a fresh type variable.
+                // Popped on both paths, like the closure case: propagating the
+                // body's error through `?` before popping would leave a dead frame
+                // on the stack for an enclosing function's returns to land in.
                 type_checker.push_return_frame();
-                body.type_check(type_checker)?;
+                let body_checked = body.type_check(type_checker);
                 let collected_returns = type_checker.pop_return_frame();
+                body_checked?;
 
                 fn normalize_union(mut tys: Vec<Type>) -> Type {
                     let mut flat: Vec<Type> = Vec::new();
