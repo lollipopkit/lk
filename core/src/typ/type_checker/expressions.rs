@@ -444,8 +444,14 @@ impl TypeChecker {
                 for _ in params {
                     param_types.push(self.inference_engine.fresh_type_var());
                 }
-                // Body type is inferred by checking the body expression
-                let ret_type = self.check_expr(body)?;
+                // Body type is inferred by checking the body expression. Its own
+                // return frame: a `return` inside a closure body belongs to the
+                // closure, and must not be collected as a return of the enclosing
+                // function (whose declared type it would then have to satisfy).
+                self.push_return_frame();
+                let ret_type = self.check_expr(body);
+                let _ = self.pop_return_frame();
+                let ret_type = ret_type?;
                 Ok(Type::Function {
                     params: param_types,
                     named_params: Vec::new(),

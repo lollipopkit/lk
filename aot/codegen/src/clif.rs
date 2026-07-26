@@ -157,20 +157,13 @@ impl ModuleCtx<'_> {
         for t in returns {
             sig.returns.push(AbiParam::new(*t));
         }
-        if let Some(id) = self.abi_ids.get(symbol) {
-            // A symbol has exactly one signature in a module, so a second
-            // request with a different one is a codegen bug — and silently
-            // returning the first declaration is how it became a malformed call
-            // that only the Cranelift verifier noticed, reported against a
-            // machine call site with no way back to the symbol.
-            let declared = &self.module.declarations().get_function_decl(*id).signature;
-            if declared != &sig {
-                return Err(ClifError::Module(format!(
-                    "{symbol} already declared as {declared:?}, now requested as {sig:?}"
-                )));
-            }
-            return Ok(*id);
-        }
+        // Re-declaring is how a signature conflict is detected: `declare_function`
+        // returns the existing id for a matching signature and
+        // `ModuleError::IncompatibleSignature` otherwise. Silently returning the
+        // cached id — this cached by symbol name alone — is how a second request
+        // with a different signature became a malformed call that only the
+        // Cranelift verifier noticed, reported against a machine call site with no
+        // way back to the symbol.
         let id = self.module.declare_function(symbol, Linkage::Import, &sig)?;
         self.abi_ids.insert(symbol, id);
         Ok(id)

@@ -13,29 +13,58 @@
 
 use std::ffi::{CStr, CString, c_char, c_void};
 
-/// The live `str`-list behind a handle, re-derived per element so no borrow is
-/// held across a callback into generated code.
+/// Length of the `str` list behind a handle; `0` for null.
+///
+/// Length and element reads are separate calls, and each *copies out*, so a
+/// caller cannot hold a reference into the list across a callback into generated
+/// code — the whole point of reading this way. Returning a slice would have to
+/// invent a lifetime for a borrow of an opaque pointer.
 ///
 /// # Safety
 /// `handle` must be a live `str` list handle, or null.
-unsafe fn list_str(handle: *mut c_void) -> &'static [*const c_char] {
+unsafe fn list_str_len(handle: *mut c_void) -> usize {
     if handle.is_null() {
-        return &[];
+        return 0;
     }
-    // SAFETY: as the callers' contracts state.
-    unsafe { &*(handle as *mut Vec<*const c_char>) }
+    // SAFETY: as the caller's contract states.
+    unsafe { &*(handle as *mut Vec<*const c_char>) }.len()
 }
 
-/// As [`list_str`], for an `i64` list.
+/// Element `index` of the `str` list behind a handle, copied out. `None` past the
+/// end (which a callback that shrank the list can produce).
+///
+/// # Safety
+/// As [`list_str_len`].
+unsafe fn list_str_at(handle: *mut c_void, index: usize) -> Option<*const c_char> {
+    if handle.is_null() {
+        return None;
+    }
+    // SAFETY: as the caller's contract states.
+    unsafe { &*(handle as *mut Vec<*const c_char>) }.get(index).copied()
+}
+
+/// As [`list_str_len`], for an `i64` list.
 ///
 /// # Safety
 /// `handle` must be a live `i64` list handle, or null.
-unsafe fn list_i64(handle: *mut c_void) -> &'static [i64] {
+unsafe fn list_i64_len(handle: *mut c_void) -> usize {
     if handle.is_null() {
-        return &[];
+        return 0;
     }
-    // SAFETY: as the callers' contracts state.
-    unsafe { &*(handle as *mut Vec<i64>) }
+    // SAFETY: as the caller's contract states.
+    unsafe { &*(handle as *mut Vec<i64>) }.len()
+}
+
+/// As [`list_str_at`], for an `i64` list.
+///
+/// # Safety
+/// As [`list_i64_len`].
+unsafe fn list_i64_at(handle: *mut c_void, index: usize) -> Option<i64> {
+    if handle.is_null() {
+        return None;
+    }
+    // SAFETY: as the caller's contract states.
+    unsafe { &*(handle as *mut Vec<i64>) }.get(index).copied()
 }
 
 /// Creates a fresh, empty `i64` list handle.
@@ -112,12 +141,6 @@ pub unsafe extern "C" fn lkrt_lklist_str_map_fn(
     handle: *mut c_void,
     f: extern "C" fn(*const c_char) -> *const c_char,
 ) -> *mut c_void {
-    let values: &[*const c_char] = if handle.is_null() {
-        &[]
-    } else {
-        // SAFETY: `handle` addresses a `Vec<*const c_char>` from `lkrt_lklist_str_new`.
-        unsafe { &*(handle as *mut Vec<*const c_char>) }
-    };
     // Snapshotted before the callback runs. `f`/`p` re-enters generated code,
     // which can push to *this* list (reallocating its buffer) or raise and
     // longjmp past the borrow — either way a slice held across the call is
@@ -132,11 +155,12 @@ pub unsafe extern "C" fn lkrt_lklist_str_map_fn(
     // way to hold one. Re-deref rather than a `to_vec()` snapshot: this is the
     // native HOF hot path the perf gate measures, and copying the whole input on
     // top of the result allocation is not free.
-    let len = values.len();
+    // SAFETY: the handle is live per this function's contract.
+    let len = unsafe { list_str_len(handle) };
     let mut mapped: Vec<*const c_char> = Vec::with_capacity(len);
     for index in 0..len {
         // SAFETY: the handle is live per this function's contract.
-        let Some(&value) = unsafe { list_str(handle) }.get(index) else {
+        let Some(value) = (unsafe { list_str_at(handle, index) }) else {
             break;
         };
         mapped.push(f(value));
@@ -153,12 +177,6 @@ pub unsafe extern "C" fn lkrt_lklist_str_filter_fn(
     handle: *mut c_void,
     p: extern "C" fn(*const c_char) -> bool,
 ) -> *mut c_void {
-    let values: &[*const c_char] = if handle.is_null() {
-        &[]
-    } else {
-        // SAFETY: as above.
-        unsafe { &*(handle as *mut Vec<*const c_char>) }
-    };
     // Snapshotted before the callback runs. `f`/`p` re-enters generated code,
     // which can push to *this* list (reallocating its buffer) or raise and
     // longjmp past the borrow — either way a slice held across the call is
@@ -173,11 +191,12 @@ pub unsafe extern "C" fn lkrt_lklist_str_filter_fn(
     // way to hold one. Re-deref rather than a `to_vec()` snapshot: this is the
     // native HOF hot path the perf gate measures, and copying the whole input on
     // top of the result allocation is not free.
-    let len = values.len();
+    // SAFETY: the handle is live per this function's contract.
+    let len = unsafe { list_str_len(handle) };
     let mut kept: Vec<*const c_char> = Vec::new();
     for index in 0..len {
         // SAFETY: the handle is live per this function's contract.
-        let Some(&value) = unsafe { list_str(handle) }.get(index) else {
+        let Some(value) = (unsafe { list_str_at(handle, index) }) else {
             break;
         };
         if p(value) {
@@ -294,12 +313,6 @@ pub extern "C" fn lkrt_lklist_i64_new() -> *mut c_void {
 /// valid `extern "C" fn(i64) -> i64` (a lowered `@lk_fn_N`).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_lklist_i64_map_fn(handle: *mut c_void, f: extern "C" fn(i64) -> i64) -> *mut c_void {
-    let values: &[i64] = if handle.is_null() {
-        &[]
-    } else {
-        // SAFETY: `handle` addresses a `Vec<i64>` created by `lkrt_lklist_i64_new`.
-        unsafe { &*(handle as *mut Vec<i64>) }
-    };
     // Snapshotted before the callback runs. `f`/`p` re-enters generated code,
     // which can push to *this* list (reallocating its buffer) or raise and
     // longjmp past the borrow — either way a slice held across the call is
@@ -314,11 +327,12 @@ pub unsafe extern "C" fn lkrt_lklist_i64_map_fn(handle: *mut c_void, f: extern "
     // way to hold one. Re-deref rather than a `to_vec()` snapshot: this is the
     // native HOF hot path the perf gate measures, and copying the whole input on
     // top of the result allocation is not free.
-    let len = values.len();
+    // SAFETY: the handle is live per this function's contract.
+    let len = unsafe { list_i64_len(handle) };
     let mut mapped: Vec<i64> = Vec::with_capacity(len);
     for index in 0..len {
         // SAFETY: the handle is live per this function's contract.
-        let Some(&value) = unsafe { list_i64(handle) }.get(index) else {
+        let Some(value) = (unsafe { list_i64_at(handle, index) }) else {
             break;
         };
         mapped.push(f(value));
@@ -332,12 +346,6 @@ pub unsafe extern "C" fn lkrt_lklist_i64_map_fn(handle: *mut c_void, f: extern "
 /// See [`lkrt_lklist_i64_map_fn`]; `p` returns the lambda's `Bool`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_lklist_i64_filter_fn(handle: *mut c_void, p: extern "C" fn(i64) -> bool) -> *mut c_void {
-    let values: &[i64] = if handle.is_null() {
-        &[]
-    } else {
-        // SAFETY: as above.
-        unsafe { &*(handle as *mut Vec<i64>) }
-    };
     // Snapshotted before the callback runs. `f`/`p` re-enters generated code,
     // which can push to *this* list (reallocating its buffer) or raise and
     // longjmp past the borrow — either way a slice held across the call is
@@ -352,11 +360,12 @@ pub unsafe extern "C" fn lkrt_lklist_i64_filter_fn(handle: *mut c_void, p: exter
     // way to hold one. Re-deref rather than a `to_vec()` snapshot: this is the
     // native HOF hot path the perf gate measures, and copying the whole input on
     // top of the result allocation is not free.
-    let len = values.len();
+    // SAFETY: the handle is live per this function's contract.
+    let len = unsafe { list_i64_len(handle) };
     let mut kept: Vec<i64> = Vec::new();
     for index in 0..len {
         // SAFETY: the handle is live per this function's contract.
-        let Some(&value) = unsafe { list_i64(handle) }.get(index) else {
+        let Some(value) = (unsafe { list_i64_at(handle, index) }) else {
             break;
         };
         if p(value) {
@@ -470,12 +479,6 @@ pub unsafe extern "C" fn lkrt_lklist_i64_reduce_fn(
     init: i64,
     f: extern "C" fn(i64, i64) -> i64,
 ) -> i64 {
-    let values: &[i64] = if handle.is_null() {
-        &[]
-    } else {
-        // SAFETY: as above.
-        unsafe { &*(handle as *mut Vec<i64>) }
-    };
     // Snapshotted before the callback runs. `f`/`p` re-enters generated code,
     // which can push to *this* list (reallocating its buffer) or raise and
     // longjmp past the borrow — either way a slice held across the call is
@@ -490,11 +493,12 @@ pub unsafe extern "C" fn lkrt_lklist_i64_reduce_fn(
     // way to hold one. Re-deref rather than a `to_vec()` snapshot: this is the
     // native HOF hot path the perf gate measures, and copying the whole input on
     // top of the result allocation is not free.
-    let len = values.len();
+    // SAFETY: the handle is live per this function's contract.
+    let len = unsafe { list_i64_len(handle) };
     let mut acc = init;
     for index in 0..len {
         // SAFETY: the handle is live per this function's contract.
-        let Some(&value) = unsafe { list_i64(handle) }.get(index) else {
+        let Some(value) = (unsafe { list_i64_at(handle, index) }) else {
             break;
         };
         acc = f(acc, value);

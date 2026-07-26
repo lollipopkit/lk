@@ -79,6 +79,15 @@ pub struct TypeChecker {
     pending_strict_functions: Vec<PendingStrictFunction>,
     /// Program-level type checking enables this so later call sites can refine earlier function declarations.
     defer_strict_function_checks: bool,
+    /// Return types observed while checking the body of the function (or closure)
+    /// currently being checked, innermost last.
+    ///
+    /// Collected *during* the walk because that is the only time a `return`'s
+    /// scope is still live. A second traversal afterwards sees every nested
+    /// `if`/`while`/`for`/`try` scope already popped, so
+    /// `fn f() -> Int { if c { let r: Int = 7; return r; } … }` inferred `r` as a
+    /// fresh type variable and rejected valid code.
+    return_frames: Vec<Vec<Type>>,
 }
 
 impl Default for TypeChecker {
@@ -157,6 +166,7 @@ impl TypeChecker {
             method_sigs: HashMap::new(),
             pending_strict_functions: Vec::new(),
             defer_strict_function_checks: false,
+            return_frames: Vec::new(),
         }
     }
 
@@ -362,6 +372,24 @@ impl TypeChecker {
     }
 
     /// Enter a new scope for local variables
+    /// Opens a return-collection frame for a function or closure body.
+    pub fn push_return_frame(&mut self) {
+        self.return_frames.push(Vec::new());
+    }
+
+    /// Closes the innermost frame and yields the return types seen in it.
+    pub fn pop_return_frame(&mut self) -> Vec<Type> {
+        self.return_frames.pop().unwrap_or_default()
+    }
+
+    /// Records a `return`'s type against the innermost frame. Outside any
+    /// function body (a top-level `return`) there is nothing to collect.
+    pub fn record_return(&mut self, ty: Type) {
+        if let Some(frame) = self.return_frames.last_mut() {
+            frame.push(ty);
+        }
+    }
+
     pub fn push_scope(&mut self) {
         // Snapshot current locals; modifications in the new scope are discarded on pop
         self.scope_stack.push(self.local_types.clone());

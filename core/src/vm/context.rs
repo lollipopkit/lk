@@ -488,6 +488,13 @@ impl VmContext {
         if type_info.is_empty() {
             return Ok(());
         }
+        // Coherence first, before *any* registry mutation: `register_trait_impl`
+        // below writes into the checker, so claiming ownership from the dispatch
+        // loop afterwards left a rejected module half-registered.
+        for decl in &type_info.impls {
+            let scope = impl_target_scope(&decl.type_name, &module.type_scope);
+            self.claim_builtin_impl(&scope, &module.type_scope, &decl.type_name, &decl.trait_name)?;
+        }
         // Checker registration only happens when there *is* a checker; the
         // dispatch table below is unconditional. Returning early without one
         // used to skip both, so a context built without a type checker could
@@ -532,7 +539,6 @@ impl VmContext {
         // scope, so an identically-named type elsewhere keeps its own entry.
         for decl in &type_info.impls {
             let scope = impl_target_scope(&decl.type_name, &module.type_scope);
-            self.claim_builtin_impl(&scope, &module.type_scope, &decl.type_name, &decl.trait_name)?;
             let by_method = self
                 .methods
                 .entry(scope)

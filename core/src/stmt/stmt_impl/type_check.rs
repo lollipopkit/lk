@@ -310,85 +310,14 @@ impl Stmt {
                     },
                 );
 
-                // A function body's block scope *is* the function scope, so its
-                // statements are checked directly here rather than through
-                // `Stmt::Block` — which pushes a scope and pops it, discarding
-                // the body's bindings before `collect_return_types` below runs.
-                // That is why an annotated local came back as a fresh type
-                // variable: `fn f() -> Int { let r: Int = 0; r = 7; return r; }`
-                // reported "expected Int, got 'T0", because `r` was unknown by
-                // the time `return r` was inferred. The function's own scope
-                // (pushed above, popped below) still bounds the bindings.
-                match body.as_ref() {
-                    Stmt::Block { statements } => {
-                        for stmt in statements {
-                            stmt.type_check(type_checker)?;
-                        }
-                    }
-                    other => other.type_check(type_checker)?,
-                }
-
-                fn collect_return_types(stmt: &Stmt, tc: &mut TypeChecker, out: &mut Vec<Type>) -> anyhow::Result<()> {
-                    match stmt {
-                        Stmt::Return { value } => {
-                            if let Some(expr) = value {
-                                let ty = expr.type_check(tc)?;
-                                out.push(ty);
-                            } else {
-                                out.push(Type::Nil);
-                            }
-                        }
-                        Stmt::If {
-                            condition,
-                            then_stmt,
-                            else_stmt,
-                        } => {
-                            let _ = condition.type_check(tc)?;
-                            collect_return_types(then_stmt, tc, out)?;
-                            if let Some(es) = else_stmt.as_deref() {
-                                collect_return_types(es, tc, out)?;
-                            }
-                        }
-                        Stmt::IfLet {
-                            then_stmt,
-                            else_stmt,
-                            value: _,
-                            pattern: _,
-                        } => {
-                            collect_return_types(then_stmt, tc, out)?;
-                            if let Some(es) = else_stmt.as_deref() {
-                                collect_return_types(es, tc, out)?;
-                            }
-                        }
-                        Stmt::While { condition, body } => {
-                            let _ = condition.type_check(tc)?;
-                            collect_return_types(body, tc, out)?;
-                        }
-                        Stmt::WhileLet { body, .. } => {
-                            collect_return_types(body, tc, out)?;
-                        }
-                        Stmt::For { body, .. } => {
-                            collect_return_types(body, tc, out)?;
-                        }
-                        // A `try` body's `return` returns from *this* function
-                        // (that is what `Stmt::Try` fixed), so both sides have to
-                        // be collected or the declared return type goes
-                        // unchecked: `fn f() -> Int { try { return "s"; } … }`
-                        // passed `lk check` silently.
-                        Stmt::Try { body, handler, .. } => {
-                            for s in body.iter().chain(handler) {
-                                collect_return_types(s, tc, out)?;
-                            }
-                        }
-                        Stmt::Block { statements } => {
-                            for s in statements {
-                                collect_return_types(s, tc, out)?;
-                            }
-                        }
-                        _ => {}
-                    }
-                    Ok(())
-                }
+                // The frame collects every `return` as it is checked, while its
+                // scope is still live (see `TypeChecker::push_return_frame`). A
+                // traversal *after* the body sees every nested `if`/`while`/`for`/
+                // `try` scope already popped, which is why an annotated local
+                // returned from inside one came back as a fresh type variable.
+                type_checker.push_return_frame();
+                body.type_check(type_checker)?;
+                let collected_returns = type_checker.pop_return_frame();
 
                 fn normalize_union(mut tys: Vec<Type>) -> Type {
                     let mut flat: Vec<Type> = Vec::new();
@@ -410,9 +339,6 @@ impl Stmt {
                         Type::Union(uniq)
                     }
                 }
-
-                let mut collected_returns: Vec<Type> = Vec::new();
-                collect_return_types(body, type_checker, &mut collected_returns)?;
 
                 if return_was_annotated {
                     for ty in &collected_returns {
@@ -724,7 +650,18 @@ impl Stmt {
                 // Use 语句暂时不需要类型检查
                 Ok(())
             }
-            Stmt::Break | Stmt::Continue | Stmt::Return { .. } => {
+            Stmt::Return { value } => {
+                // Recorded here rather than by a traversal after the body: this is
+                // the only point at which the returned expression's scope is still
+                // live (see `TypeChecker::push_return_frame`).
+                let ty = match value {
+                    Some(expr) => expr.type_check(type_checker)?,
+                    None => Type::Nil,
+                };
+                type_checker.record_return(ty);
+                Ok(())
+            }
+            Stmt::Break | Stmt::Continue => {
                 // 控制流语句暂时不需要类型检查
                 Ok(())
             }
@@ -907,7 +844,16 @@ fn tail_element_type(value_ty: &Type, from: usize) -> Type {
 fn element_type_at(value_ty: &Type, index: usize) -> Type {
     match value_ty {
         Type::Tuple(elements) => elements.get(index).cloned().unwrap_or(Type::Any),
-        Type::List(element) => (**element).clone(),
+        // A `List<T>`'s element type applies to every position — except when `T`
+        // is itself a union, which is the *join* over positions rather than what
+        // any one of them holds (a heterogeneous literal can infer
+        // `List<Int | String>`). Claiming the union per position would reject
+        // `let [first, _] = [1, {…}]; first + 1`, so the honest answer for a lost
+        // per-position type is `Any`.
+        Type::List(element) => match &**element {
+            Type::Union(_) => Type::Any,
+            element => element.clone(),
+        },
         Type::Optional(inner) => element_type_at(inner, index),
         Type::Union(members) => union_of(members.iter().map(|member| element_type_at(member, index))),
         _ => Type::Any,
@@ -916,7 +862,13 @@ fn element_type_at(value_ty: &Type, index: usize) -> Type {
 
 fn map_value_type(value_ty: &Type) -> Type {
     match value_ty {
-        Type::Map(_, value) => (**value).clone(),
+        // As with a list's element type: a union value type is the join over *all*
+        // keys, not what the key this pattern names holds, so binding the union
+        // would reject legitimate uses of the extracted value.
+        Type::Map(_, value) => match &**value {
+            Type::Union(_) => Type::Any,
+            value => value.clone(),
+        },
         Type::Optional(inner) => map_value_type(inner),
         Type::Union(members) => union_of(members.iter().map(map_value_type)),
         _ => Type::Any,

@@ -1038,11 +1038,32 @@ fn annotated_local_is_visible_to_the_declared_return_type() {
             .expect("an annotated local satisfies the declared return type");
     }
 
-    // Still rejects a genuinely wrong return, including inside a `try` body
-    // (whose `return` returns from this function).
+    // Every nested body too: returns are collected as each one is checked, so a
+    // local declared inside an `if`/`while`/`for`/`try` is still in scope when its
+    // `return` is inferred. A traversal after the body saw them all popped.
+    for nested in [
+        "if (1 == 1) { let r: Int = 7; return r; } return 0;",
+        "while (1 == 1) { let r: Int = 7; return r; } return 0;",
+        "for i in 0..1 { let r: Int = 7; return r; } return 0;",
+        "try { let r: Int = 7; return r; } catch e { return 0; }",
+    ] {
+        let src = format!("fn f() -> Int {{ {nested} }}\nreturn f();\n");
+        let program = crate::syntax::parse_program_source(&src, crate::syntax::ParseOptions::default()).expect("parse");
+        let mut tc = crate::typ::TypeChecker::new();
+        program
+            .statements
+            .iter()
+            .try_for_each(|stmt| stmt.type_check(&mut tc))
+            .unwrap_or_else(|err| panic!("`{nested}` should type-check: {err}"));
+    }
+
+    // Still rejects a genuinely wrong return, from any nesting depth.
     for bad in [
         "fn f() -> Int { let r: Int = 0; return \"s\"; }\nreturn 0;\n",
         "fn f() -> Int { try { return \"s\"; } catch e { return 1; } }\nreturn 0;\n",
+        "fn f() -> Int { if (1 == 1) { return \"s\"; } return 0; }\nreturn 0;\n",
+        "fn f() -> Int { for i in 0..1 { return \"s\"; } return 0; }\nreturn 0;\n",
+        "fn f() -> Int { while (1 == 1) { return \"s\"; } return 0; }\nreturn 0;\n",
     ] {
         let program = crate::syntax::parse_program_source(bad, crate::syntax::ParseOptions::default()).expect("parse");
         let mut tc = crate::typ::TypeChecker::new();
