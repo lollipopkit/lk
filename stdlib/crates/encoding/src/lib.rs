@@ -1,27 +1,47 @@
-use anyhow::{Result, anyhow, bail};
+#![cfg_attr(not(feature = "std"), no_std)]
+
+extern crate alloc;
+
+#[cfg(not(feature = "std"))]
+use lk_core::compat::prelude::*;
+
+#[cfg(feature = "std")]
+use alloc::sync::Arc;
+#[cfg(feature = "std")]
+use anyhow::bail;
+use anyhow::{Result, anyhow};
 use base64::Engine as _;
+#[cfg(feature = "std")]
+use lk_core::util::fast_map::fast_hash_map_new;
+#[cfg(feature = "std")]
+use lk_core::val::{HeapValue, TypedMap};
 use lk_core::{
-    util::fast_map::fast_hash_map_new,
-    val::{HeapValue, RuntimeVal, TypedMap, de},
+    val::{RuntimeVal, de},
     vm::{NativeArgs, NativeRuntime},
 };
 use lk_stdlib_bytes::{runtime_bytes_or_string_arg, runtime_bytes_value};
 use lk_stdlib_common::runtime_native::{parse_format, runtime_string_arg, runtime_string_value};
-use std::sync::Arc;
 
 #[derive(Debug, Default, lk_stdlib_common::StdlibModule)]
 #[stdlib_module(name = "encoding", docs = "Encoding and data format helpers")]
 pub struct EncodingModule;
 
-#[lk_stdlib_common::stdlib_exports(
-    children(
+// The child list is a proc-macro argument, so `#[cfg]` cannot prune entries
+// from inside it; both sets are spelled out instead.
+#[cfg_attr(
+    feature = "std",
+    lk_stdlib_common::stdlib_exports(children(
         json = JsonModule,
         yaml = YamlModule,
         toml = TomlModule,
         base64 = Base64Module,
         hex = HexModule,
         url = UrlEncodingModule,
-    )
+    ))
+)]
+#[cfg_attr(
+    not(feature = "std"),
+    lk_stdlib_common::stdlib_exports(children(json = JsonModule, base64 = Base64Module, hex = HexModule,))
 )]
 impl EncodingModule {}
 
@@ -37,10 +57,12 @@ impl JsonModule {
     }
 }
 
+#[cfg(feature = "std")]
 #[derive(Debug, Default, lk_stdlib_common::StdlibModule)]
 #[stdlib_module(name = "yaml", docs = "YAML parser")]
 struct YamlModule;
 
+#[cfg(feature = "std")]
 #[lk_stdlib_common::stdlib_exports(module = "encoding.yaml")]
 impl YamlModule {
     #[stdlib_export(params(source: String), returns = Value)]
@@ -49,10 +71,12 @@ impl YamlModule {
     }
 }
 
+#[cfg(feature = "std")]
 #[derive(Debug, Default, lk_stdlib_common::StdlibModule)]
 #[stdlib_module(name = "toml", docs = "TOML parser")]
 struct TomlModule;
 
+#[cfg(feature = "std")]
 #[lk_stdlib_common::stdlib_exports(module = "encoding.toml")]
 impl TomlModule {
     #[stdlib_export(params(source: String), returns = Value)]
@@ -122,10 +146,12 @@ impl HexModule {
     }
 }
 
+#[cfg(feature = "std")]
 #[derive(Debug, Default, lk_stdlib_common::StdlibModule)]
 #[stdlib_module(name = "url", docs = "URL encoding helpers")]
 struct UrlEncodingModule;
 
+#[cfg(feature = "std")]
 #[lk_stdlib_common::stdlib_exports(module = "encoding.url")]
 impl UrlEncodingModule {
     #[stdlib_export(params(value: String), returns = String)]
@@ -186,6 +212,8 @@ impl UrlEncodingModule {
     }
 }
 
+/// Only used by the `url` child, which is std-only.
+#[cfg(feature = "std")]
 fn percent_decode_component(value: &str) -> Result<String> {
     let bytes = value.as_bytes();
     let mut decoded = Vec::with_capacity(bytes.len());
@@ -208,6 +236,8 @@ fn percent_decode_component(value: &str) -> Result<String> {
     String::from_utf8(decoded).map_err(|err| anyhow!("invalid percent-encoded UTF-8: {err}"))
 }
 
+/// Only used by the `url` child, which is std-only.
+#[cfg(feature = "std")]
 fn string_map_arg(value: &RuntimeVal, runtime: &NativeRuntime<'_>, context: &str) -> Result<Vec<(String, String)>> {
     let RuntimeVal::Obj(handle) = value else {
         bail!("{context} expects map");

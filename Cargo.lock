@@ -1332,6 +1332,7 @@ dependencies = [
  "lk-core",
  "lk-stdlib-bytes",
  "lk-stdlib-common",
+ "lk-stdlib-encoding",
  "lk-stdlib-hash",
  "lk-stdlib-iter",
  "lk-stdlib-math",

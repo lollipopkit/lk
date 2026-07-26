@@ -8,6 +8,7 @@ use string;
 use bytes;
 use iter;
 use hash;
+use { json, base64, hex } from encoding;
 
 fn fib(n) {
     if (n < 2) { return n; }
@@ -39,5 +40,12 @@ println("doubled = {}", doubled);
 
 // hash: sha2/crc32fast are no_std-capable, so these need no special casing.
 println("crc32 = {}", hash.crc32("lk"));
+
+// encoding: json/base64/hex work without an OS. yaml/toml/url do not and are
+// not registered here.
+let parsed = json.parse("{\"n\": 42}");
+println("json.n = {}", parsed["n"]);
+println("base64 = {}", base64.encode("lk"));
+println("hex = {}", hex.encode("lk"));
 
 return total;

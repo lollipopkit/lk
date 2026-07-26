@@ -42,7 +42,7 @@ jobs:
           # The computation-only stdlib modules must cross-compile too, each
           # on its own: a crate that only builds because a sibling happened to
           # enable `std` for it is not actually no_std.
-          for m in bytes hash iter math slice string; do
+          for m in bytes encoding hash iter math slice string; do
             cargo build -p "lk-stdlib-$m" --no-default-features --target thumbv7em-none-eabi
           done
           cargo build -p lk-stdlib-bare --target thumbv7em-none-eabi

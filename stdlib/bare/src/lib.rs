@@ -59,6 +59,8 @@ fn emit(text: &str) {
 const BARE_MODULES: &[fn(&mut ModuleRegistry) -> Result<()>] = &[
     #[cfg(feature = "bytes")]
     lk_stdlib_bytes::register,
+    #[cfg(feature = "encoding")]
+    lk_stdlib_encoding::register,
     #[cfg(feature = "hash")]
     lk_stdlib_hash::register,
     #[cfg(feature = "iter")]

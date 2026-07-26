@@ -30,6 +30,9 @@ split = ["a","b","c"]
 bytes.len = 2
 doubled = [2,4,6]
 crc32 = 1391562372
+json.n = 42
+base64 = bGs=
+hex = 6c6b
 OK: lk ran on bare metal, returned 88
 ```
 
@@ -64,11 +67,11 @@ with `opt-level = "z"`, LTO, `panic = "abort"`:
 
 | image | what it compiles in | flash (`.text` + `.rodata`) |
 | --- | --- | --- |
-| `lk-bare-metal` | full front end: tokenizer, parser, macro machinery, type checker, VM compiler, executor | **677 KB** |
-| `artifact_only` | precompiled `ModuleArtifact` → executor | **540 KB** |
+| `lk-bare-metal` | full front end: tokenizer, parser, macro machinery, type checker, VM compiler, executor | **705 KB** |
+| `artifact_only` | precompiled `ModuleArtifact` → executor | **560 KB** |
 
-Both include the six stdlib modules listed below. The front end costs
-**137 KB, about 20%**. Both fit an STM32H7/F7-class part; neither fits a
+Both include the seven stdlib modules listed below. The front end costs
+**145 KB, about 21%**. Both fit an STM32H7/F7-class part; neither fits a
 256KB-class MCU.
 
 ### What each stdlib module costs
@@ -77,15 +80,16 @@ Every module in `stdlib/bare` is a cargo feature, because on an MCU flash is
 the scarce resource and a board should pay only for what it imports. Measured
 against a 561 KB image with no modules at all:
 
-| module | added flash |
-| --- | --- |
-| `math` | +36 KB |
-| `hash` | +30 KB |
-| `string` | +23 KB |
-| `iter` | +23 KB |
-| `bytes` | +12 KB |
-| `slice` | +11 KB |
-| all six | +116 KB |
+| module | added flash | notes |
+| --- | --- | --- |
+| `math` | +36 KB | `libm` supplies what std's inherent `f64` methods would |
+| `encoding` | +33 KB | `json` / `base64` / `hex` only |
+| `hash` | +30 KB | sha256 / sha1 / crc32 / fnv64 |
+| `string` | +23 KB | |
+| `iter` | +23 KB | |
+| `bytes` | +12 KB | |
+| `slice` | +11 KB | |
+| all seven | +144 KB | |
 
 (The individual numbers sum to more than the total because the modules share
 code.) Pick a subset in your own board crate:
@@ -94,9 +98,25 @@ code.) Pick a subset in your own board crate:
 lk-stdlib-bare = { path = "…", default-features = false, features = ["math", "string"] }
 ```
 
-Everything else — `fs`, `net`, `env`, `time`, `task`, … — is registered as
-present-but-unavailable, so importing one fails with a reason rather than
-"unknown module".
+Everything else is registered as present-but-unavailable, so importing one
+fails with a reason rather than "unknown module". Why each is out:
+
+- `fs`, `io`, `net`, `http`, `env`, `os`, `process`, `task`, `chan`, `stream` —
+  need an OS.
+- `time`, `datetime` — need a clock. A board with an RTC would have to supply
+  one; `stdlib/bare` does not guess.
+- `random` — needs an entropy source (`rand` wants the OS RNG). Note that
+  `math.random()` *is* available, but on bare metal it is a deterministic
+  sequence from a fixed seed.
+- `uuid` — `parse`/`is_valid` would work, but `v4` (the reason to use it) needs
+  entropy, so shipping a half-module was judged worse than shipping none.
+- `regex` — the `regex` crate needs std; a no_std build means moving to
+  `regex-automata`, which is a rewrite rather than a port.
+- `path` — depends on `std::path` semantics (`components`, `with_extension`,
+  `MAIN_SEPARATOR`) that would have to be reimplemented, for little value with
+  no filesystem to address.
+- `encoding.yaml` / `encoding.toml` / `encoding.url` — YAML and TOML decoding
+  is std-gated in lk-core itself; `url` pulls in `idna`, which needs std.
 
 Worth knowing: the artifact-only saving needs **no build configuration**. The
 linker's `--gc-sections` drops the front end on its own once nothing references
