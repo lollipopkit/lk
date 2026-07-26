@@ -93,7 +93,14 @@ pub unsafe extern "C" fn lkrt_lklist_str_map_fn(
         // SAFETY: `handle` addresses a `Vec<*const c_char>` from `lkrt_lklist_str_new`.
         unsafe { &*(handle as *mut Vec<*const c_char>) }
     };
-    let mapped: Vec<*const c_char> = values.iter().map(|&v| f(v)).collect();
+    // Snapshotted before the callback runs. `f`/`p` re-enters generated code,
+    // which can push to *this* list (reallocating its buffer) or raise and
+    // longjmp past the borrow — either way a slice held across the call is
+    // unsound. CLAUDE.md's lkrt rule ("never call a raise-capable function while
+    // holding a lock guard or RefCell borrow") is the same rule; a slice borrow
+    // is just a third way to hold one.
+    let values = values.to_vec();
+    let mapped: Vec<*const c_char> = values.into_iter().map(|v| f(v)).collect();
     crate::state::arena_handle(mapped)
 }
 
@@ -112,7 +119,14 @@ pub unsafe extern "C" fn lkrt_lklist_str_filter_fn(
         // SAFETY: as above.
         unsafe { &*(handle as *mut Vec<*const c_char>) }
     };
-    let kept: Vec<*const c_char> = values.iter().copied().filter(|&v| p(v)).collect();
+    // Snapshotted before the callback runs. `f`/`p` re-enters generated code,
+    // which can push to *this* list (reallocating its buffer) or raise and
+    // longjmp past the borrow — either way a slice held across the call is
+    // unsound. CLAUDE.md's lkrt rule ("never call a raise-capable function while
+    // holding a lock guard or RefCell borrow") is the same rule; a slice borrow
+    // is just a third way to hold one.
+    let values = values.to_vec();
+    let kept: Vec<*const c_char> = values.into_iter().filter(|&v| p(v)).collect();
     crate::state::arena_handle(kept)
 }
 
@@ -229,7 +243,14 @@ pub unsafe extern "C" fn lkrt_lklist_i64_map_fn(handle: *mut c_void, f: extern "
         // SAFETY: `handle` addresses a `Vec<i64>` created by `lkrt_lklist_i64_new`.
         unsafe { &*(handle as *mut Vec<i64>) }
     };
-    let mapped: Vec<i64> = values.iter().map(|&v| f(v)).collect();
+    // Snapshotted before the callback runs. `f`/`p` re-enters generated code,
+    // which can push to *this* list (reallocating its buffer) or raise and
+    // longjmp past the borrow — either way a slice held across the call is
+    // unsound. CLAUDE.md's lkrt rule ("never call a raise-capable function while
+    // holding a lock guard or RefCell borrow") is the same rule; a slice borrow
+    // is just a third way to hold one.
+    let values = values.to_vec();
+    let mapped: Vec<i64> = values.into_iter().map(|v| f(v)).collect();
     crate::state::arena_handle(mapped)
 }
 
@@ -245,7 +266,14 @@ pub unsafe extern "C" fn lkrt_lklist_i64_filter_fn(handle: *mut c_void, p: exter
         // SAFETY: as above.
         unsafe { &*(handle as *mut Vec<i64>) }
     };
-    let kept: Vec<i64> = values.iter().copied().filter(|&v| p(v)).collect();
+    // Snapshotted before the callback runs. `f`/`p` re-enters generated code,
+    // which can push to *this* list (reallocating its buffer) or raise and
+    // longjmp past the borrow — either way a slice held across the call is
+    // unsound. CLAUDE.md's lkrt rule ("never call a raise-capable function while
+    // holding a lock guard or RefCell borrow") is the same rule; a slice borrow
+    // is just a third way to hold one.
+    let values = values.to_vec();
+    let kept: Vec<i64> = values.into_iter().filter(|&v| p(v)).collect();
     crate::state::arena_handle(kept)
 }
 
@@ -359,7 +387,14 @@ pub unsafe extern "C" fn lkrt_lklist_i64_reduce_fn(
         // SAFETY: as above.
         unsafe { &*(handle as *mut Vec<i64>) }
     };
-    values.iter().fold(init, |acc, &v| f(acc, v))
+    // Snapshotted before the callback runs. `f`/`p` re-enters generated code,
+    // which can push to *this* list (reallocating its buffer) or raise and
+    // longjmp past the borrow — either way a slice held across the call is
+    // unsound. CLAUDE.md's lkrt rule ("never call a raise-capable function while
+    // holding a lock guard or RefCell borrow") is the same rule; a slice borrow
+    // is just a third way to hold one.
+    let values = values.to_vec();
+    values.into_iter().fold(init, |acc, v| f(acc, v))
 }
 
 /// Renders the list as the VM's display text (`[1,2,3]` — comma separated,

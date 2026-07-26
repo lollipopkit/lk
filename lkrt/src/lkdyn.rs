@@ -828,7 +828,14 @@ pub unsafe extern "C" fn lkrt_lklist_dyn_chain(a: *mut c_void, b: *mut c_void) -
 /// `handle` must be a live dyn-list handle (or null); `f` a compiled lambda.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_lklist_dyn_map_fn(handle: *mut c_void, f: extern "C" fn(LkDyn) -> LkDyn) -> *mut c_void {
-    let mapped: Vec<LkDyn> = dyn_slice(handle).iter().map(|&v| f(v)).collect();
+    // Snapshotted before the callback runs. `f`/`p` re-enters generated code,
+    // which can push to *this* list (reallocating its buffer) or raise and
+    // longjmp past the borrow — either way a slice held across the call is
+    // unsound. CLAUDE.md's lkrt rule ("never call a raise-capable function while
+    // holding a lock guard or RefCell borrow") is the same rule; a slice borrow
+    // is just a third way to hold one.
+    let values = dyn_slice(handle).to_vec();
+    let mapped: Vec<LkDyn> = values.into_iter().map(|v| f(v)).collect();
     arena_handle(mapped)
 }
 
@@ -840,7 +847,14 @@ pub unsafe extern "C" fn lkrt_lklist_dyn_filter_fn(
     handle: *mut c_void,
     p: extern "C" fn(LkDyn) -> bool,
 ) -> *mut c_void {
-    let kept: Vec<LkDyn> = dyn_slice(handle).iter().copied().filter(|&v| p(v)).collect();
+    // Snapshotted before the callback runs. `f`/`p` re-enters generated code,
+    // which can push to *this* list (reallocating its buffer) or raise and
+    // longjmp past the borrow — either way a slice held across the call is
+    // unsound. CLAUDE.md's lkrt rule ("never call a raise-capable function while
+    // holding a lock guard or RefCell borrow") is the same rule; a slice borrow
+    // is just a third way to hold one.
+    let values = dyn_slice(handle).to_vec();
+    let kept: Vec<LkDyn> = values.into_iter().filter(|&v| p(v)).collect();
     arena_handle(kept)
 }
 
@@ -853,7 +867,14 @@ pub unsafe extern "C" fn lkrt_lklist_dyn_reduce_fn(
     init: LkDyn,
     f: extern "C" fn(LkDyn, LkDyn) -> LkDyn,
 ) -> LkDyn {
-    dyn_slice(handle).iter().fold(init, |acc, &v| f(acc, v))
+    // Snapshotted before the callback runs. `f`/`p` re-enters generated code,
+    // which can push to *this* list (reallocating its buffer) or raise and
+    // longjmp past the borrow — either way a slice held across the call is
+    // unsound. CLAUDE.md's lkrt rule ("never call a raise-capable function while
+    // holding a lock guard or RefCell borrow") is the same rule; a slice borrow
+    // is just a third way to hold one.
+    let values = dyn_slice(handle).to_vec();
+    values.into_iter().fold(init, |acc, v| f(acc, v))
 }
 
 /// `xs.chunk(size)` — split into `size`-element groups, last group short.
