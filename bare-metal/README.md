@@ -22,6 +22,7 @@ Expected output, and an exit code of 0:
 
 ```
 LK drives hardware
+....................................................................
 OK: lk ran on bare metal, returned 0
 ```
 
@@ -44,6 +45,26 @@ fn uart_putc(byte: Int) {
 
 That poll is the access a non-volatile load would let the compiler hoist out of
 the loop, hanging it forever.
+
+Each `.` after it is a SysTick interrupt. The timer is armed from LK too —
+reload value, counter clear, then enable with the interrupt bit set:
+
+```lk
+fn systick_start(reload: Int) {
+    unsafe { volatile_write_u32(SYST_RVR as *mut u32, reload as u32); };
+    unsafe { volatile_write_u32(SYST_CVR as *mut u32, 0 as u32); };
+    unsafe { cpu_barrier(); };
+    let csr = SYST_ENABLE | SYST_TICKINT | SYST_CLKSOURCE;
+    unsafe { volatile_write_u32(SYST_CSR as *mut u32, csr as u32); };
+}
+```
+
+The handler itself is Rust (`#[exception] fn SysTick`) and writes the character
+straight to the UART. It does *not* call back into the VM: an interrupt can land
+in the middle of any bytecode instruction, and the executor is not re-entrant.
+Touching only hardware from the handler sidesteps that, which is the usual shape
+for the fast half of an interrupt anyway — acknowledge, do the minimum, leave
+the rest to the main loop.
 
 The second image, `artifact_only`, runs the language-feature corpus
 (`demo.lk`) from precompiled bytecode instead of source. Its output is

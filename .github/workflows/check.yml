@@ -98,6 +98,11 @@ jobs:
               # semihosting is not involved in producing it.
               lk-bare-metal)
                 assert_printed "$output" "LK drives hardware" "$image"
+                # Each '.' is a SysTick interrupt firing, from a timer the LK
+                # code armed itself. Three in a row means the interrupt
+                # controller was programmed correctly and is running free —
+                # a single one could be a fluke of ordering.
+                assert_printed "$output" "..." "$image"
                 ok="OK: lk ran on bare metal, returned 0"
                 ;;
               # The language-feature corpus, run from precompiled bytecode.

@@ -49,7 +49,41 @@ fn uart_write(bytes: List<Int>) {
     }
 }
 
+// The SysTick timer, a Cortex-M core peripheral. Programming it is the other
+// half of driving hardware: not just reading and writing a device, but arming
+// the interrupt controller so the device can interrupt *us*.
+//
+//   0xE000_E010  CSR  bit 0 enable, bit 1 interrupt enable, bit 2 core clock
+//   0xE000_E014  RVR  reload value (counts down from here)
+//   0xE000_E018  CVR  current value; any write clears it
+const SYST_CSR = 0xE000E010;
+const SYST_RVR = 0xE000E014;
+const SYST_CVR = 0xE000E018;
+
+const SYST_ENABLE = 0x01;
+const SYST_TICKINT = 0x02;
+const SYST_CLKSOURCE = 0x04;
+
+fn systick_start(reload: Int) {
+    unsafe { volatile_write_u32(SYST_RVR as *mut u32, reload as u32); };
+    // Clearing CVR is required before enabling, or the first period is
+    // whatever the counter happened to hold.
+    unsafe { volatile_write_u32(SYST_CVR as *mut u32, 0 as u32); };
+    unsafe { cpu_barrier(); };
+    let csr = SYST_ENABLE | SYST_TICKINT | SYST_CLKSOURCE;
+    unsafe { volatile_write_u32(SYST_CSR as *mut u32, csr as u32); };
+}
+
 uart_init();
 // "LK drives hardware\n"
 uart_write([76, 75, 32, 100, 114, 105, 118, 101, 115, 32, 104, 97, 114, 100, 119, 97, 114, 101, 10]);
+
+// Arm the timer, then do enough work for a few periods to elapse. Each tick
+// prints a '.' from the interrupt handler.
+systick_start(20000);
+let spin = 0;
+for i in 0..200000 {
+    spin = spin + 1;
+}
+uart_putc(10);
 return 0;
