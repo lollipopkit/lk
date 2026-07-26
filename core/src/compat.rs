@@ -36,12 +36,14 @@ pub mod sync {
     pub struct Mutex<T: ?Sized>(spin::Mutex<T>);
 
     impl<T> Mutex<T> {
+        // `const` so callers can hold one in a `static` — both backing types
+        // have a const constructor, the wrapper just has to not drop it.
         #[cfg(feature = "std")]
-        pub fn new(value: T) -> Self {
+        pub const fn new(value: T) -> Self {
             Mutex(std::sync::Mutex::new(value))
         }
         #[cfg(not(feature = "std"))]
-        pub fn new(value: T) -> Self {
+        pub const fn new(value: T) -> Self {
             Mutex(spin::Mutex::new(value))
         }
     }
@@ -58,6 +60,43 @@ pub mod sync {
         #[allow(clippy::result_unit_err)]
         pub fn lock(&self) -> Result<spin::MutexGuard<'_, T>, core::convert::Infallible> {
             Ok(self.0.lock())
+        }
+    }
+}
+
+/// A `OnceLock` with std's shape (`get_or_init`), backed by `spin::Once`
+/// under no_std. Lazily-initialised process-wide registries are the main user.
+pub mod once {
+    #[cfg(feature = "std")]
+    #[derive(Debug)]
+    pub struct OnceLock<T>(std::sync::OnceLock<T>);
+    #[cfg(not(feature = "std"))]
+    #[derive(Debug)]
+    pub struct OnceLock<T>(spin::Once<T>);
+
+    impl<T> OnceLock<T> {
+        #[cfg(feature = "std")]
+        pub const fn new() -> Self {
+            OnceLock(std::sync::OnceLock::new())
+        }
+        #[cfg(not(feature = "std"))]
+        pub const fn new() -> Self {
+            OnceLock(spin::Once::new())
+        }
+
+        #[cfg(feature = "std")]
+        pub fn get_or_init<F: FnOnce() -> T>(&self, init: F) -> &T {
+            self.0.get_or_init(init)
+        }
+        #[cfg(not(feature = "std"))]
+        pub fn get_or_init<F: FnOnce() -> T>(&self, init: F) -> &T {
+            self.0.call_once(init)
+        }
+    }
+
+    impl<T> Default for OnceLock<T> {
+        fn default() -> Self {
+            Self::new()
         }
     }
 }

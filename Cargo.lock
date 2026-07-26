@@ -1325,6 +1325,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "lk-stdlib-bare"
+version = "0.1.3"
+dependencies = [
+ "anyhow",
+ "lk-core",
+ "lk-stdlib-common",
+]
+
+[[package]]
 name = "lk-stdlib-bytes"
 version = "0.1.3"
 dependencies = [

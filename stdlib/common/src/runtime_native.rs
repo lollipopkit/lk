@@ -1,4 +1,8 @@
+use alloc::sync::Arc;
 use anyhow::{Result, anyhow, bail};
+use core::fmt::Write as _;
+#[cfg(not(feature = "std"))]
+use lk_core::compat::prelude::*;
 use lk_core::{
     module::{RuntimeNativeExport, RuntimeValueExport},
     util::fast_map::fast_hash_map_new,
@@ -7,7 +11,6 @@ use lk_core::{
     },
     vm::{NativeArgs, NativeRuntime, RuntimeExport, import_runtime_export},
 };
-use std::{fmt::Write as _, sync::Arc};
 
 pub fn runtime_native_export(
     module: &dyn lk_core::module::ModuleProvider,
@@ -300,8 +303,8 @@ fn quote_string(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use alloc::sync::Arc;
     use lk_core::util::fast_map::fast_hash_map_from_iter;
-    use std::sync::Arc;
 
     use super::*;
     use lk_core::val::TypedMap;

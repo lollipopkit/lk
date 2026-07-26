@@ -39,6 +39,22 @@ jobs:
           # Full VM core on bare metal (M5.2): parser/compiler/verifier/
           # executor/GC build with no std anywhere in the crate graph.
           cargo build -p lk-core --no-default-features --target thumbv7em-none-eabi
+          cargo build -p lk-stdlib-bare --target thumbv7em-none-eabi
+      - name: bare-metal QEMU smoke (LK actually runs with no OS)
+        # Building for thumbv7em proves the code compiles; it does not prove the
+        # VM works without std. This boots a real Cortex-M image under QEMU,
+        # runs an LK program through parse → type-check → execute, and checks
+        # the answer. LK's own `println` goes through stdlib/bare to
+        # semihosting, so the module surface is exercised too. A wrong answer or
+        # a raise exits non-zero.
+        run: |
+          rustup target add thumbv7em-none-eabi
+          sudo apt-get update && sudo apt-get install -y qemu-system-arm
+          cd bare-metal
+          cargo build --release
+          qemu-system-arm -cpu cortex-m4 -machine mps2-an386 -nographic \
+            -semihosting-config enable=on,target=native \
+            -kernel target/thumbv7em-none-eabi/release/lk-bare-metal
       - name: AOT native-lowering coverage gate
         # A lowering regression does not fail any differential test: the
         # program silently drops to the hybrid bridge or the Tier 0 VM bundle

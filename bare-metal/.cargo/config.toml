@@ -1,0 +1,6 @@
+[target.thumbv7em-none-eabi]
+rustflags = ["-C", "link-arg=-Tlink.x"]
+runner = "qemu-system-arm -cpu cortex-m4 -machine mps2-an386 -nographic -semihosting-config enable=on,target=native -kernel"
+
+[build]
+target = "thumbv7em-none-eabi"

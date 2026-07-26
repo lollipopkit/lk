@@ -1,3 +1,15 @@
+//! Shared runtime helpers for LK standard library modules.
+//!
+//! Builds no_std (+ alloc) under `--no-default-features` so that the
+//! computation-only stdlib modules can be offered on bare metal. See
+//! `stdlib/bare`.
+#![cfg_attr(not(feature = "std"), no_std)]
+
+extern crate alloc;
+
+#[cfg(not(feature = "std"))]
+use lk_core::compat::prelude::*;
+
 pub mod metadata;
 pub mod resource;
 pub mod runtime_native;
@@ -41,11 +53,11 @@ macro_rules! stdlib_register_runtime_builtins {
     };
 }
 
+use alloc::sync::Arc;
 use lk_core::{
     val,
     val::{HeapStore, HeapValue, RuntimeVal, TypedList},
 };
-use std::sync::Arc;
 
 pub fn typed_list_from_values(values: Vec<RuntimeVal>, heap: &HeapStore) -> TypedList {
     if values.is_empty() {

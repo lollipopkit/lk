@@ -1,5 +1,8 @@
 use anyhow::{Result, bail};
-use std::sync::{Mutex, OnceLock};
+use lk_core::compat::once::OnceLock;
+#[cfg(not(feature = "std"))]
+use lk_core::compat::prelude::*;
+use lk_core::compat::sync::Mutex;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StdlibExportKind {
