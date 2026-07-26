@@ -38,4 +38,10 @@ fn main() {
     // the environment — the same reason the interpreter demo passes its linker
     // script this way.
     println!("cargo:rustc-link-arg={}", object.display());
+
+    // The memory map. Without it the linker picks its own base address and the
+    // image loads somewhere the boot protocol does not jump to.
+    let script = std::fs::canonicalize("link.ld").expect("link.ld exists");
+    println!("cargo:rerun-if-changed=link.ld");
+    println!("cargo:rustc-link-arg=-T{}", script.display());
 }

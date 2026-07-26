@@ -1,4 +1,7 @@
-// Compiled to native aarch64 machine code, not interpreted.
+// Compiled to native aarch64 machine code and run with no OS underneath.
+//
+// `println` reaches the board's UART through a sink the host installs; nothing
+// here knows about the hardware.
 fn fib(n: Int) -> Int {
     if (n < 2) { return n; }
     return fib(n - 1) + fib(n - 2);
@@ -8,4 +11,5 @@ let total = 0;
 for i in 0..10 {
     total = total + fib(i);
 }
+println("native LK on bare metal: sum(fib(0..9)) = {}", total);
 return total;

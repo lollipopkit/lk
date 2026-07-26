@@ -6,14 +6,17 @@
 //! object beside `lkrt`. What executes is real instructions, not a dispatch
 //! loop — which is the reason the AOT path exists.
 //!
-//! What this binary supplies is what a bare-metal image always must: an
-//! allocator, a panic handler and an entry point. `lkrt` needs the first two
-//! because it manages arena-allocated strings and containers.
+//! What this binary supplies is what a bare-metal image always must: a reset
+//! path (`boot.rs`), a memory map (`link.ld`), an allocator and a panic
+//! handler. `lkrt` needs the last two because it manages arena-allocated
+//! strings and containers.
 
 #![no_std]
 #![no_main]
 
 extern crate alloc;
+
+mod boot;
 
 use core::alloc::{GlobalAlloc, Layout};
 use core::panic::PanicInfo;
@@ -68,17 +71,36 @@ unsafe extern "C" {
     fn main() -> i64;
 }
 
+/// QEMU's `virt` machine puts a PL011 UART here. Writing a byte to the data
+/// register transmits it; nothing else needs configuring because the firmware
+/// has already brought the device up.
+const UART0_DR: *mut u32 = 0x0900_0000 as *mut u32;
+
+/// The sink `lkrt` prints through.
+fn uart_write(text: &str) {
+    for byte in text.bytes() {
+        // SAFETY: the address is the board's UART, mapped by the machine model.
+        unsafe { core::ptr::write_volatile(UART0_DR, u32::from(byte)) };
+    }
+}
+
 /// Where the compiled code's result is left, so it cannot be optimised away and
 /// a debugger or test harness can read it.
 #[unsafe(no_mangle)]
 pub static mut LK_RESULT: i64 = 0;
 
+/// Called from the boot stub once there is a stack and `.bss` is zeroed.
 #[unsafe(no_mangle)]
-pub extern "C" fn _start() -> ! {
+pub extern "C" fn kernel_main() -> ! {
     // Referencing `lkrt` is what puts its rlib on the link line at all. Without
     // it cargo sees an unused dependency and the runtime the compiled object
     // calls into is simply absent.
     let _ = lkrt::link_anchor();
+
+    // Give the runtime somewhere to print. Until this is installed `println`
+    // is discarded rather than an error, which is right for a headless board
+    // but not much use for a demo.
+    lkrt::set_output(uart_write);
 
     // SAFETY: `main` is the object emitted by `lk compile object:`, linked by
     // build.rs, and takes no arguments.

@@ -29,14 +29,28 @@ lk_fn_1:                          # program.lk's fib
 `.text` here is ~145 KB against ~705 KB for the interpreter image, because none
 of the front end or the dispatch loop is present.
 
-## What it does not yet do
+## Booting
 
-**It links, but it does not boot.** There is no linker script and no startup
-code, so nothing sets up a stack, a vector table or a memory map — all of which
-are properties of the board rather than of LK. `_start` is a plain symbol here,
-not something a reset vector reaches. Running this on hardware or in QEMU needs
-those pieces added the way `bare-metal/` does for Cortex-M (a `memory.x` and
-`cortex-m-rt`), which is deliberately left to the board's own build.
+`link.ld` places the image at `0x4008_0000` — where the Arm Linux boot protocol
+puts a kernel, and where QEMU's `-kernel` jumps. `boot.rs` is the reset path: it
+parks every core but the first, sets a stack, zeroes `.bss`, and calls
+`kernel_main`.
+
+```bash
+qemu-system-aarch64 -M virt -cpu cortex-a53 -display none -serial stdio \
+  -kernel target/aarch64-unknown-none/release/lk-bare-metal-native
+```
+
+**Status: the image boots and runs, but its serial output is not working yet.**
+QEMU's execution log (`-d in_asm`) shows the reset path executing from
+`0x4008_0000` — the CPU-id check, the stack setup and the UART writes all run —
+so the compile, link and boot chain is sound. What has not been made to work is
+getting bytes out of the PL011 at `0x0900_0000`: writes to its data register
+produce nothing on the serial line. The device is initialised in `boot.rs`
+(baud divisors, 8N1, `UARTEN | TXE`), which is the usual sequence, so the
+remaining fault is somewhere narrower — the machine's UART wiring, the
+`-serial` plumbing, or something between them. Until it is found, the value
+`main` returns is only observable in `LK_RESULT` under a debugger.
 
 ## Why the pieces are shaped this way
 
