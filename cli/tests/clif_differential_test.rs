@@ -193,6 +193,61 @@ fn clif_differential_higher_order() {
 }
 
 /// A hybrid program (a helper that doesn't lower natively bridges to the VM):
+/// A value that came back from the bridge, fed to a *native* helper, whose result
+/// is then interpolated.
+///
+/// Marking a function VM-executed changes the type lattice, and signatures have
+/// to re-converge before the module is emitted. They did not: the final pass
+/// never wrote `ret_types` back, so `helper` — a native callee whose parameter
+/// widens to `Dyn` because its argument is bridge-tainted — kept its
+/// pre-marking return type at the call site. Interpolating that result emitted
+/// `str.from_i64` on a register pair, which only the Cranelift verifier caught,
+/// as an unreadable "Verifier errors". Found by the nightly fresh-seed fuzz
+/// (`LK_FUZZ_SEED=30198012768`), reduced here to compile in seconds.
+#[test]
+fn clif_differential_bridge_taint_reconverges_ret_types() {
+    let dir = unique_tmp_dir("bridge_taint");
+    let _ = fs::remove_dir_all(&dir);
+    create_dir_all(&dir).expect("create tmp dir");
+    let file = "taint.lk";
+    let src = "fn bridged(x) { let f = \"v={}\".trim(); println(f, x); return [x, x + 1]; }\n\
+               fn helper(a, b) { return (b - 25); }\n\
+               let got = bridged(1);\n\
+               let picked = helper(2, got[0]);\n\
+               println(\"p={}\", picked);\n\
+               return 0;\n";
+    File::create(dir.join(file))
+        .and_then(|mut f| f.write_all(src.as_bytes()))
+        .expect("write program");
+
+    let vm = run_cli(&dir, [file]).env("LK_FORCE_VM", "1").output().expect("vm run");
+    let vm_stdout = String::from_utf8_lossy(&vm.stdout).into_owned();
+
+    let compile = run_cli(&dir, ["compile", file])
+        .env("LK_AOT_NO_FALLBACK", "1")
+        .env("LK_AOT_HYBRID", "1")
+        .output()
+        .expect("hybrid compile");
+    let compile_stderr = String::from_utf8_lossy(&compile.stderr).into_owned();
+    assert!(compile.status.success(), "hybrid compile failed: {compile_stderr}");
+    assert!(
+        compile_stderr.contains("Tier 1 hybrid"),
+        "expected the hybrid link path, got: {compile_stderr}"
+    );
+
+    let native = Command::new(dir.join("taint"))
+        .env("ASAN_OPTIONS", "detect_leaks=0")
+        .output()
+        .expect("run executable");
+    assert_eq!(
+        vm_stdout,
+        String::from_utf8_lossy(&native.stdout),
+        "stdout must match the VM"
+    );
+    assert_eq!(vm.status.success(), native.status.success());
+    let _ = fs::remove_dir_all(&dir);
+}
+
 /// compiled through Cranelift with `LK_AOT_HYBRID` on and forced clif-only, the
 /// stderr must show the Cranelift hybrid link (not a fallback) and stdout must
 /// match the VM — including native/VM print ordering across the bridge.

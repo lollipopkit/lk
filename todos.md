@@ -48,33 +48,6 @@ fn f() -> Int { let r: Int = 0; r = 7; return r; }   // expected Int, got 'T0
 真语句化之后**未复验**(现在 try 不进 AOT)。AOT 外联做完之后应该一起消失,
 做完要回来确认。
 
-### AOT 直接调用的返回类型有两个真相源
-
-夜跑 fuzz 抓到的,`LK_FUZZ_SEED=30198012768 LK_FUZZ_CASES=500` 稳定复现
-(case `fuzz_476`;程序里 `fn fn_helper1(p0, p1) { return (p1 - 25); }` 的第二个
-参数被推成 `dyn`,于是返回也是 `dyn`)。
-
-MIR:
-
-```
-v114 = call f2(v105, v113)     ; f2(v0: i64, v1: dyn) -> dyn  → v114 是 dyn(寄存器对)
-v118 = call str.from_i64(v114) ; 却按 i64 处理 → 传 2 个机器参数给 1 参数的入口
-```
-
-调用点的结果类型取自 `sig.ret_types[callee]`
-(`lower_call.rs` 里 `let ret = sig.ret_types.get(callee_idx).copied().unwrap_or(Ty::I64)`),
-而 CLIF 声明取自被调函数自己的 `MirFunction::ret`。两者在收敛后仍然不一致,
-`lib.rs` 的定点循环没有消掉这个分歧(`sig.ret_types[fi] = mf.ret` 只在
-`!is_entry` 且本轮 `Ok` 时写回,而调用点在 entry 里)。
-
-要做的:让调用点的结果类型和 CLIF 声明来自同一处。
-
-诊断已经不需要再挖:两处新加的守卫会直接点名
-—— `Inst::Call` 处比对 ABI schema 的机器参数个数并报
-`str.from_i64 takes 1 machine argument(s) …, call site passes 2`,
-`raw_func` 处比对同名符号的签名冲突。在此之前 Cranelift 只会说
-`Module("Compilation error: Verifier errors")`。
-
 ### scope drop 的跨块限制
 
 实测 `for i in 0..200000 { let parts = s.split("-"); if parts[0] == "alpha" {…} }`:
