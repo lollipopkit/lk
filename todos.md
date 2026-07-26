@@ -62,25 +62,9 @@ longjmp、setjmp 必须待在不会返回的帧里),外联函数返回三态(正
 
 ---
 
-## P3 · 先要一个语言决策,决定完实现很小
+## P3 · 只影响内存/性能
 
-### P3.1 `resolve_file_path` 的 `..` 不做真包含检查
-
-`core/src/vm/resolver.rs`,代码里有 `TODO(security)`。`starts_with(root)` 只是归一化
-偏好,逃出 root 的候选照样返回。要先定"`..` import 允许逃到哪个 root"—— 定完之后
-实现是几行。
-
-### P3.2 builtin 类型的 impl 跨模块撞车
-
-`impl D for Int` 这类 impl 全部落在 `TypeScope::builtin()` 一个 scope 里,最后注册
-的赢(静默的错答案)。代码里有 `TODO(coherence)`。要一条 orphan rule 才能拒绝重叠
-—— 是语言决策,不是分派修复。
-
----
-
-## P4 · 只影响内存/性能
-
-### P4.1 scope drop 的跨块限制
+### P3.1 scope drop 的跨块限制
 
 实测 `for i in 0..200000 { let parts = s.split("-"); if parts[0] == "alpha" {…} }`:
 native 43.6 MB vs VM 22.7 MB,而 `LK_AOT_OPT_STATS=1` 报 `scope drops = 0` ——

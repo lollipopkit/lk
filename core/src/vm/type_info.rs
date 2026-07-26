@@ -115,6 +115,12 @@ impl TypeScope {
         Self(Arc::<str>::from("<builtin>"))
     }
 
+    /// Whether this is the shared scope for builtin types (see
+    /// [`Self::builtin`]), which admits only one impl per trait.
+    pub fn is_builtin(&self) -> bool {
+        self.0.as_ref() == "<builtin>"
+    }
+
     pub fn as_str(&self) -> &str {
         &self.0
     }

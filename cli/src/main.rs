@@ -901,9 +901,16 @@ pub(crate) fn build_vm_context(path: &Path) -> anyhow::Result<VmContext> {
     let mut registry = ModuleRegistry::new();
     register_enabled_stdlib(&mut registry)?;
     let mut resolver = ModuleResolver::with_registry(registry);
-    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-        resolver.set_base_dir(parent.to_path_buf());
-    }
+    // A bare `lk main.lk` has an empty parent; that still means "the current
+    // directory", and it has to be set — the base directory is what establishes
+    // the import containment root, so skipping it disabled containment for
+    // exactly the most common invocation.
+    let base = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    resolver.set_base_dir(base);
     configure_package_resolver(&mut resolver, path)?;
     let resolver = Arc::new(resolver);
     Ok(VmContext::new()

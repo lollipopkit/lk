@@ -86,6 +86,16 @@ pub struct VmContext {
     /// on every object it constructs. Set by the loader, which knows the path;
     /// the compiler does not (see [`crate::vm::TypeScope`]).
     type_scope: crate::vm::TypeScope,
+    /// Which module declared each `impl Trait for <builtin>` — keyed by
+    /// `(type name, trait name)`.
+    ///
+    /// A builtin type has no declaring module, so every module's impls for it
+    /// share one scope (see [`crate::vm::TypeScope::builtin`]) and the later
+    /// registration used to overwrite the earlier one *silently*: with two
+    /// modules implementing `Doubler for Int`, `(5).dbl()` answered whichever
+    /// was imported last, so moving a `use` line changed the result. Recording
+    /// the owner turns the overlap into an error at registration.
+    builtin_impl_owner: FastHashMap<(String, String), crate::vm::TypeScope>,
     call_stack: Vec<CallFrameInfo>,
     /// Per-context handle to the async (tokio) runtime. Replaces the former
     /// process-global runtime; clones (spawned tasks, shallow clones) share the
@@ -129,6 +139,7 @@ impl VmContext {
             structs: fast_hash_map_new(),
             methods: fast_hash_map_new(),
             type_scope: crate::vm::TypeScope::anonymous(),
+            builtin_impl_owner: fast_hash_map_new(),
             call_stack: Vec::new(),
             async_runtime: crate::rt::AsyncRuntimeHandle::new(),
         }
@@ -153,6 +164,7 @@ impl VmContext {
             structs: self.structs.clone(),
             methods: self.methods.clone(),
             type_scope: self.type_scope.clone(),
+            builtin_impl_owner: self.builtin_impl_owner.clone(),
             call_stack: self.call_stack.clone(),
             // Share the same async runtime so spawned tasks run on one reactor.
             async_runtime: self.async_runtime.clone(),
@@ -391,6 +403,40 @@ impl VmContext {
         self.methods.get(scope)?.get(type_name)?.get(method)
     }
 
+    /// Records `decl` as the owner of `impl <trait> for <builtin type>`, or fails
+    /// if a *different* module already owns it.
+    ///
+    /// Only builtin targets need this: a declared type is scoped to its own
+    /// module, so two modules' `Point` impls never meet. `Int`/`List`/… have no
+    /// declaring module, so the pair is global and admits exactly one impl.
+    /// Re-registering the same module (REPL, hybrid bridge, transitive imports)
+    /// is fine — it is the *same* owner.
+    fn claim_builtin_impl(
+        &mut self,
+        scope: &crate::vm::TypeScope,
+        declaring: &crate::vm::TypeScope,
+        type_name: &str,
+        trait_name: &str,
+    ) -> Result<()> {
+        if !scope.is_builtin() {
+            return Ok(());
+        }
+        let key = (type_name.to_string(), trait_name.to_string());
+        match self.builtin_impl_owner.get(&key) {
+            Some(owner) if owner != declaring => Err(anyhow!(
+                "conflicting `impl {trait_name} for {type_name}`: already implemented by {}, now by {}. \
+                 A builtin type has no declaring module, so one trait can be implemented for it only once \
+                 — otherwise which one runs depends on import order",
+                owner.as_str(),
+                declaring.as_str()
+            )),
+            _ => {
+                self.builtin_impl_owner.insert(key, declaring.clone());
+                Ok(())
+            }
+        }
+    }
+
     /// Records an imported module's trait impls, bound to *that* module's
     /// function table and heap.
     ///
@@ -398,15 +444,17 @@ impl VmContext {
     /// importer executed the file in a throwaway `VmContext` and kept only its
     /// exported values, so `use { make } from "./shape.lk"; make(4).area()`
     /// failed with "Object has no method 'area'".
-    pub fn register_imported_types(&mut self, export: &RuntimeExport) {
+    pub fn register_imported_types(&mut self, export: &RuntimeExport) -> Result<()> {
         let module = export.shared_module();
         if module.type_info.is_empty() {
-            return;
+            return Ok(());
         }
         for decl in &module.type_info.impls {
+            let scope = impl_target_scope(&decl.type_name, &module.type_scope);
+            self.claim_builtin_impl(&scope, &module.type_scope, &decl.type_name, &decl.trait_name)?;
             let by_method = self
                 .methods
-                .entry(impl_target_scope(&decl.type_name, &module.type_scope))
+                .entry(scope)
                 .or_default()
                 .entry(decl.type_name.clone())
                 .or_default();
@@ -422,6 +470,7 @@ impl VmContext {
                 );
             }
         }
+        Ok(())
     }
 
     /// Populates the runtime method table from the module's compiled
@@ -482,9 +531,11 @@ impl VmContext {
         // declared it (see `MethodImpl::Local`) and filed under that module's
         // scope, so an identically-named type elsewhere keeps its own entry.
         for decl in &type_info.impls {
+            let scope = impl_target_scope(&decl.type_name, &module.type_scope);
+            self.claim_builtin_impl(&scope, &module.type_scope, &decl.type_name, &decl.trait_name)?;
             let by_method = self
                 .methods
-                .entry(impl_target_scope(&decl.type_name, &module.type_scope))
+                .entry(scope)
                 .or_default()
                 .entry(decl.type_name.clone())
                 .or_default();

@@ -780,6 +780,60 @@ fn test_trait_impl_from_imported_file_dispatches() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+/// One trait may be implemented for a builtin type only once across the whole
+/// program.
+///
+/// A builtin has no declaring module, so every module's impls for it share one
+/// scope and the later registration silently overwrote the earlier: with two
+/// modules implementing `Doubler for Int`, `(5).dbl()` answered whichever was
+/// imported *last*, so moving a `use` line changed the result.
+#[test]
+fn test_overlapping_builtin_impl_is_rejected() {
+    let dir = unique_tmp_dir("builtin_impl_overlap");
+    ensure_clean_dir(&dir);
+    for (file, factor) in [("modA.lk", 2), ("modB.lk", 3)] {
+        write_file(
+            &dir,
+            file,
+            &format!(
+                "trait Doubler {{ fn dbl(self) -> Int; }}\n\
+                 impl Doubler for Int {{ fn dbl(self) -> Int {{ return self * {factor}; }} }}\n\
+                 fn mk() -> Int {{ return 1; }}\n"
+            ),
+        );
+    }
+
+    // One module implementing it is fine.
+    write_file(
+        &dir,
+        "one.lk",
+        "use * as A from \"./modA\";\nprintln(A.mk());\nprintln((5).dbl());\n",
+    );
+    let out = run_cli(&dir, ["one.lk"]).output().expect("spawn run");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim().lines().collect::<Vec<_>>(),
+        ["1", "10"]
+    );
+
+    // Two is the overlap, and it must be reported rather than resolved by
+    // import order.
+    write_file(
+        &dir,
+        "both.lk",
+        "use * as A from \"./modA\";\nuse * as B from \"./modB\";\nprintln((5).dbl());\n",
+    );
+    let out = run_cli(&dir, ["both.lk"]).output().expect("spawn run");
+    assert!(!out.status.success(), "an overlapping builtin impl must not run");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("conflicting `impl Doubler for Int`"),
+        "the error must name the trait and the type, got: {stderr}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
 /// `try`/`catch` is a statement, not a closure — three things that were wrong
 /// while it was rewritten in the parser into `try$call(|| { body })`.
 ///
