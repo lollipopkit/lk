@@ -88,6 +88,18 @@ fn parse_compile_mode(raw: &str) -> anyhow::Result<Option<CompileMode>> {
     let target = raw.to_ascii_lowercase();
     match target.as_str() {
         "bytecode" => Ok(Some(CompileMode::Bytecode)),
+        // `object:<triple>` rather than a separate flag: the triple is not
+        // optional for this mode, and pairing them makes an incomplete
+        // invocation unrepresentable.
+        other if other.starts_with("object:") => {
+            let triple = other.trim_start_matches("object:").trim();
+            if triple.is_empty() {
+                anyhow::bail!("`object:` needs a target triple, e.g. `object:aarch64-unknown-none`");
+            }
+            Ok(Some(CompileMode::Object {
+                triple: triple.to_string(),
+            }))
+        }
         "llvm" => anyhow::bail!(
             "`lk compile llvm` was removed with the LLVM-text backend; native executables are emitted via Cranelift (`lk compile [FILE]`)"
         ),

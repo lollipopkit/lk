@@ -93,3 +93,23 @@ pub fn compile_artifact_to_clif_object(
         Err(error) => bail!("Cranelift codegen failed: {error:?}"),
     }
 }
+
+/// Compiles an artifact to a relocatable object for an explicit target.
+///
+/// Unlike the executable path there is no fallback: a shape that cannot lower
+/// natively is an error. The Tier 0 bundle embeds the interpreter and a hosted
+/// runtime, which a bare-metal target could not link even if it wanted to, so
+/// degrading silently would just move the failure to link time with a worse
+/// message. Hybrid is off for the same reason — the bridge lives in lk-api.
+pub fn compile_object_for_target(artifact: &ModuleArtifact, triple: &str) -> Result<Vec<u8>> {
+    let mut mir = lk_aot_lower::lower_bundled(artifact, &[], false)
+        .map_err(|unsupported| anyhow::anyhow!("cannot lower natively for {triple}: {unsupported}"))?;
+    if let Err(error) = lk_aot_mir::validate(&mir) {
+        bail!("internal AOT error: MIR validation failed after lowering: {error:?}");
+    }
+    if std::env::var_os("LK_AOT_NO_OPT").is_none() {
+        lk_aot_mir::opt::optimize(&mut mir);
+    }
+    lk_aot_codegen::clif::compile_object_for(&mir, triple)
+        .map_err(|error| anyhow::anyhow!("codegen for {triple}: {error:?}"))
+}

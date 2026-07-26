@@ -98,6 +98,29 @@ pub(super) fn compile_instr_artifact_with_dependencies(path: &Path) -> anyhow::R
 }
 
 #[cfg(feature = "aot")]
+/// Emits a relocatable object for `triple` and stops.
+///
+/// No linking, deliberately. A bare-metal image's linker script, entry point
+/// and memory map belong to the board rather than to the language, and every
+/// embedded toolchain already has a way to place an object. Emitting one lets
+/// LK be consumed the way a C library is — by a `build.rs`, a Makefile, or
+/// whatever the board's build already uses.
+///
+/// Nothing falls back here either: a shape that cannot lower natively is an
+/// error, not a silent Tier 0 bundle. The bundle embeds the interpreter and a
+/// host runtime, which is not something a bare-metal target could link even if
+/// it wanted to.
+pub(super) fn compile_object(path: &Path, triple: &str, output: Option<&Path>) -> anyhow::Result<()> {
+    let output = output
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| path.with_extension("o"));
+    let compiled = compile_instr_artifact_with_dependencies(path)?;
+    let object = lk_aot::compile_object_for_target(&compiled.artifact, triple)?;
+    std::fs::write(&output, object).with_context(|| format!("write object {}", output.display()))?;
+    println!("{}", output.display());
+    Ok(())
+}
+
 pub(super) fn compile_executable(path: &Path, output: Option<&Path>) -> anyhow::Result<()> {
     let output = output.map(Path::to_path_buf).unwrap_or_else(|| path.with_extension(""));
     // Parse + compile up front so genuine source errors (syntax/type) surface

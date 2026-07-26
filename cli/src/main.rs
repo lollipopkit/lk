@@ -8,7 +8,7 @@ use std::sync::{Arc, Once};
 static PERF_TRACE_INIT: Once = Once::new();
 const DEFAULT_TRACE_FILTER: &str = "lk::vm::alloc=trace,lk::vm::slowpath=debug,lk_core=info,lk_cli=info";
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand};
 #[cfg(feature = "aot")]
 use lk_core::macro_system::{ProcMacroDependencyFingerprint, fingerprint_proc_macro_dependencies};
 use lk_core::{
@@ -71,7 +71,7 @@ struct CliArgs {
     file: Option<PathBuf>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CompileMode {
     /// Emit a `.lkm` bytecode module. This is an INTERNAL artifact (version-locked
     /// to this build, like Python's `.pyc`), not a distribution format — ship
@@ -79,6 +79,17 @@ pub(crate) enum CompileMode {
     Bytecode,
     /// Emit a native executable (default).
     Exe,
+    /// Emit a relocatable object file for a given target, and stop.
+    ///
+    /// This is the bare-metal path. LK does not link those images itself, and
+    /// should not: the linker script, entry point and memory map belong to the
+    /// board, not to the language. Emitting an object lets an existing
+    /// embedded build (cargo + build.rs + a linker script, or a Makefile) place
+    /// it — the same way a C library is consumed.
+    Object {
+        /// Target triple, e.g. `aarch64-unknown-none`.
+        triple: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -412,14 +423,28 @@ fn main() -> anyhow::Result<()> {
                 let compile_mode = pos_target;
 
                 #[cfg(feature = "aot")]
-                if compile_mode != CompileMode::Exe && output.is_some() {
-                    anyhow::bail!("--output is only supported for `lk compile <FILE>`");
+                if matches!(compile_mode, CompileMode::Bytecode) && output.is_some() {
+                    anyhow::bail!("--output is only supported for `lk compile <FILE>` and `object:<triple>`");
                 }
 
                 match compile_mode {
                     CompileMode::Bytecode => {
                         compile_instr_module(&safe)?;
                         return Ok(());
+                    }
+                    CompileMode::Object { triple } => {
+                        #[cfg(not(feature = "aot"))]
+                        {
+                            let _ = triple;
+                            anyhow::bail!(
+                                "native backend disabled at build time; rebuild with `--features aot` to emit objects"
+                            );
+                        }
+                        #[cfg(feature = "aot")]
+                        {
+                            compile_object(&safe, &triple, output.as_deref())?;
+                            return Ok(());
+                        }
                     }
                     CompileMode::Exe => {
                         #[cfg(not(feature = "aot"))]
