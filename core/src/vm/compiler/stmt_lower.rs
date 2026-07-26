@@ -23,7 +23,12 @@ impl Compiler {
                     self.emit_empty_return();
                 }
             }
-            Stmt::Let { pattern, value, .. } => self.lower_let(pattern, value)?,
+            Stmt::Let {
+                pattern,
+                type_annotation,
+                value,
+                ..
+            } => self.lower_let(pattern, type_annotation.as_ref(), value)?,
             Stmt::Define { name, value } => self.lower_define(name, value)?,
             Stmt::Assign { name, value, .. } => {
                 let watermark = self.next_reg;

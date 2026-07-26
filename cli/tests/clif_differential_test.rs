@@ -388,3 +388,41 @@ fn machine_int_cast_differential() {
         NativePath::PureCranelift,
     );
 }
+
+/// Machine-int *arithmetic* wraps to its width, on both backends.
+///
+/// The wrap is emitted as a normalisation after the 64-bit operation, reusing
+/// the same cast path — so what this really checks is that every lowering
+/// entry point (plain, lower-into-register, compound assignment) applies it.
+/// A missing one produces a plainly wrong number rather than a crash, which is
+/// why it needs a test rather than an assertion.
+#[test]
+fn machine_int_arithmetic_wraps_differential() {
+    run_differential(
+        "machine_int_arith",
+        &[
+            // 300 & 0xFF
+            new("add_u8", "let a: u8 = 200;\nlet b: u8 = 100;\nreturn a + b;\n"),
+            // 600 & 0xFF
+            new("mul_u8", "let a: u8 = 200;\nreturn a * (3 as u8);\n"),
+            // 200 sign-extended from 8 bits
+            new(
+                "add_i8_overflows_negative",
+                "let a: i8 = 100;\nreturn a + (100 as i8);\n",
+            ),
+            // Borrowing past zero on an unsigned width.
+            new("sub_u8_underflows", "let a: u8 = 10;\nreturn a - (20 as u8);\n"),
+            // 70000 & 0xFFFF
+            new("add_u16", "let a: u16 = 60000;\nreturn a + (10000 as u16);\n"),
+            // The wrap has to apply at each step, not just the last one.
+            new(
+                "chained_arithmetic_wraps_each_step",
+                "let a: u8 = 200;\nlet b: u8 = 100;\nlet c = a + b;\nreturn c + b;\n",
+            ),
+            // Division keeps the width rather than promoting to Float the way
+            // `Int / Int` does.
+            new("div_keeps_width", "let a: u8 = 200;\nreturn a / (3 as u8);\n"),
+        ],
+        NativePath::PureCranelift,
+    );
+}

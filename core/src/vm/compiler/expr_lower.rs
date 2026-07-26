@@ -204,7 +204,9 @@ impl Compiler {
             target as u8,
         ));
         // A freshly allocated register carries no static-type fact, so there
-        // is nothing to invalidate — same as `lower_unary`.
+        // is nothing to invalidate — same as `lower_unary`. The width, though,
+        // is worth remembering: it is how arithmetic downstream knows to wrap.
+        self.note_machine_reg(dst, Some(ty));
         Ok(dst)
     }
 

@@ -72,6 +72,15 @@ pub struct Compiler {
     capture_names: HashMap<String, u16>,
     capture_cells: HashSet<String>,
     cell_locals: HashSet<String>,
+    /// Registers proven to hold a machine integer, and of which width.
+    ///
+    /// The compiler has no access to the type checker, so it learns this the
+    /// only two ways a machine int can enter a register: an annotated `let`,
+    /// and an `as` cast. That is enough for the code this exists to serve —
+    /// driver-ish code annotates its widths — and anything it cannot prove
+    /// simply does not get the wrap, which the type checker has already
+    /// rejected by then.
+    machine_regs: HashMap<u16, crate::val::IntKind>,
     /// Loop-pattern variables of the enclosing `for` loops: the fused loop
     /// opcodes own the raw register, so a capture takes a fresh snapshot cell
     /// per capture site instead of re-binding the register (per-iteration
@@ -133,6 +142,46 @@ impl Compiler {
               // (try/catch → pcall, select → select$block) never reaches here
               // as a dedicated node.
         }
+    }
+
+    /// Remember that `reg` holds a machine integer of `ty`'s width, if it does.
+    ///
+    /// Anything else clears the note: a register reused for a different value
+    /// must not keep an old width, or arithmetic would wrap to a type the
+    /// value no longer has.
+    pub(super) fn note_machine_reg(&mut self, reg: u16, ty: Option<&crate::val::Type>) {
+        match ty {
+            Some(crate::val::Type::MachineInt(kind)) => {
+                self.machine_regs.insert(reg, *kind);
+            }
+            _ => {
+                self.machine_regs.remove(&reg);
+            }
+        }
+    }
+
+    /// The machine width both operands share, if they have one.
+    ///
+    /// Returns `None` when either side is unproven or the widths differ — the
+    /// type checker rejects mixed widths, so a disagreement here means the
+    /// compiler simply could not prove it, and the safe answer is not to wrap.
+    pub(super) fn shared_machine_width(&self, lhs: u16, rhs: u16) -> Option<crate::val::IntKind> {
+        let left = self.machine_regs.get(&lhs).copied()?;
+        let right = self.machine_regs.get(&rhs).copied()?;
+        (left == right).then_some(left)
+    }
+
+    /// Normalise `reg` to `kind`'s width in place, reusing the `as` path so the
+    /// VM and Cranelift agree by construction rather than by two parallel
+    /// implementations of the same masking.
+    pub(super) fn emit_machine_wrap(&mut self, reg: u16, kind: crate::val::IntKind) -> Result<()> {
+        let Some(target) = super::ir::CastTarget::from_type(&crate::val::Type::MachineInt(kind)) else {
+            return Ok(());
+        };
+        let encoded = checked_u8("wrap reg", reg)?;
+        self.emit(Instr::abc(super::ir::Opcode::CastTo, encoded, encoded, target as u8));
+        self.machine_regs.insert(reg, kind);
+        Ok(())
     }
 
     pub(super) fn record_expr_analysis(&mut self, expr: &Expr) {
@@ -541,7 +590,35 @@ impl Compiler {
         self.emit_bin_op_to_register_with_flavor(dst, op, lhs, rhs, flavor)
     }
 
+    /// Every binary-arithmetic lowering path converges here — `lower_bin`, the
+    /// lower-into-register fast path, compound assignment — which is why the
+    /// machine-int wrap lives at this point rather than at any one caller.
     pub(in crate::vm::compiler) fn emit_bin_op_to_register_with_flavor(
+        &mut self,
+        dst: u16,
+        op: &BinOp,
+        lhs: u16,
+        rhs: u16,
+        flavor: NumericFlavor,
+    ) -> Result<u16> {
+        let machine_width = self.shared_machine_width(lhs, rhs);
+        let dst = self.emit_bin_op_unwrapped(dst, op, lhs, rhs, flavor)?;
+        // Machine-int arithmetic wraps to its width. The operation itself runs
+        // at 64 bits and is normalised afterwards, reusing the `as` path: two
+        // hand-written maskings (one per backend) would be two places to
+        // disagree, and that kind of divergence is invisible without the
+        // differential tests.
+        if let Some(kind) = machine_width {
+            self.emit_machine_wrap(dst, kind)?;
+        } else {
+            // The result is not a machine int; a register reused here must not
+            // keep a stale width.
+            self.machine_regs.remove(&dst);
+        }
+        Ok(dst)
+    }
+
+    fn emit_bin_op_unwrapped(
         &mut self,
         dst: u16,
         op: &BinOp,

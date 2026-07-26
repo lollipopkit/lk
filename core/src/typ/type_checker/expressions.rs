@@ -732,6 +732,40 @@ impl TypeChecker {
         let resolved_left = self.resolve_aliases(left_ty);
         let resolved_right = self.resolve_aliases(right_ty);
 
+        // Machine integers stay in their own width: `u8 + u8` is `u8`, wrapping
+        // on overflow. Mixing widths or signedness is an error rather than a
+        // promotion — the same reason they do not convert implicitly. Promoting
+        // to `Int` here would silently give the operation 64-bit semantics,
+        // which is exactly what a driver author asked not to have.
+        if let (Type::MachineInt(left_kind), Type::MachineInt(right_kind)) = (&resolved_left, &resolved_right) {
+            if left_kind != right_kind {
+                return Err(Self::type_err(
+                    "machine integer operands must have the same type",
+                    Some(Type::MachineInt(*left_kind)),
+                    Some(Type::MachineInt(*right_kind)),
+                    Some(right_expr.clone()),
+                ));
+            }
+            // Division still yields the same width, unlike `Int / Int -> Float`:
+            // a fixed-width type has no float to promote to, and integer
+            // division is what the hardware does.
+            return Ok(Type::MachineInt(*left_kind));
+        }
+        // A machine integer on one side only is a width mistake, not a promotion.
+        if matches!(resolved_left, Type::MachineInt(_)) || matches!(resolved_right, Type::MachineInt(_)) {
+            let (offending, expr) = if matches!(resolved_left, Type::MachineInt(_)) {
+                (&resolved_right, right_expr)
+            } else {
+                (&resolved_left, left_expr)
+            };
+            return Err(Self::type_err(
+                "machine integers do not mix with other numeric types; cast explicitly",
+                Some(Type::MachineInt(lk_values::IntKind::U8)),
+                Some(offending.clone()),
+                Some(expr.clone()),
+            ));
+        }
+
         let left_class = self.classify_numeric_operand(left_ty, &resolved_left, left_expr, "左侧")?;
         let right_class = self.classify_numeric_operand(right_ty, &resolved_right, right_expr, "右侧")?;
 
