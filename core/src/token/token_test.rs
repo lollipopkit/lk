@@ -864,4 +864,47 @@ line2""#,
         ];
         assert_eq!(tokens, expected);
     }
+
+    /// Driver code names hardware in hex and register fields in binary;
+    /// transcribing those into decimal is how addresses get typo'd.
+    #[test]
+    fn radix_prefixed_integer_literals() {
+        assert_eq!(
+            Tokenizer::tokenize("0x3F200000").unwrap(),
+            vec![Token::Int(0x3F20_0000)]
+        );
+        assert_eq!(Tokenizer::tokenize("0xff").unwrap(), vec![Token::Int(255)]);
+        assert_eq!(Tokenizer::tokenize("0XFF").unwrap(), vec![Token::Int(255)]);
+        assert_eq!(Tokenizer::tokenize("0b1010").unwrap(), vec![Token::Int(10)]);
+        assert_eq!(Tokenizer::tokenize("0o755").unwrap(), vec![Token::Int(493)]);
+    }
+
+    #[test]
+    fn radix_literals_allow_group_separators() {
+        assert_eq!(
+            Tokenizer::tokenize("0x3F20_0000").unwrap(),
+            vec![Token::Int(0x3F20_0000)]
+        );
+        assert_eq!(
+            Tokenizer::tokenize("0b1010_0000").unwrap(),
+            vec![Token::Int(0b1010_0000)]
+        );
+    }
+
+    /// A full-width mask is a bit pattern, not an out-of-range number. Refusing
+    /// the top bit would make `0xFFFF_FFFF_FFFF_FFFF` unwritable.
+    #[test]
+    fn radix_literals_accept_the_full_bit_pattern() {
+        assert_eq!(Tokenizer::tokenize("0xFFFFFFFFFFFFFFFF").unwrap(), vec![Token::Int(-1)]);
+        assert_eq!(
+            Tokenizer::tokenize("0x8000000000000000").unwrap(),
+            vec![Token::Int(i64::MIN)]
+        );
+    }
+
+    #[test]
+    fn radix_prefix_without_digits_is_an_error() {
+        assert!(Tokenizer::tokenize("0x").is_err());
+        assert!(Tokenizer::tokenize("0b").is_err());
+    }
 }

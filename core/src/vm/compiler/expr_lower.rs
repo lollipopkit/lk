@@ -192,6 +192,20 @@ impl Compiler {
     /// targets that are not scalar, so an unencodable one here is a compiler
     /// bug rather than a user error.
     pub(super) fn lower_cast(&mut self, inner: &Expr, ty: &crate::val::Type) -> Result<u16> {
+        // A pointer *is* an address, so converting to one is a type-system
+        // event with no runtime content — the bits are already right.
+        //
+        // TODO(32-bit targets): on a 32-bit deployment target a pointer is
+        // narrower than the `i64` carrier, so this will need the same
+        // truncation a `u32` gets. Harmless while both backends are 64-bit,
+        // and wrong the moment the AOT path cross-compiles to thumb/arm32.
+        if matches!(ty, crate::val::Type::Ptr { .. }) {
+            let src = self.lower_readonly_operand(inner)?;
+            // The result is an address, not a machine integer of some width:
+            // arithmetic on it must not inherit the operand's wrap.
+            self.machine_regs.remove(&src);
+            return Ok(src);
+        }
         let Some(target) = crate::vm::ir::CastTarget::from_type(ty) else {
             anyhow::bail!("internal error: cast target {} reached lowering", ty.display());
         };

@@ -555,6 +555,20 @@ impl<'a> Parser<'a> {
     /// from a comparison, which is exactly the ambiguity that makes C-style
     /// casts hard to parse.
     fn parse_cast_target(&mut self) -> Result<Type> {
+        // A pointer prefix: `as *mut u32`. `*` after `as` is unambiguous —
+        // a type position never holds a multiplication.
+        if matches!(self.tokens.get(self.pos), Some(Token::Mul)) {
+            self.pos += 1;
+            let mutable = matches!(self.tokens.get(self.pos), Some(Token::Id(name)) if name == "mut");
+            if mutable {
+                self.pos += 1;
+            }
+            let pointee = self.parse_cast_target()?;
+            return Ok(Type::Ptr {
+                pointee: Box::new(pointee),
+                mutable,
+            });
+        }
         let Some(Token::Id(name)) = self.tokens.get(self.pos) else {
             return Err(anyhow!(self.err("Expecting a type name after 'as'")));
         };

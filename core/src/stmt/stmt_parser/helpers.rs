@@ -121,6 +121,10 @@ impl<'a> StmtParser<'a> {
                 | Token::Assign
                 | Token::FnArrow
                 | Token::Question
+                // `*` starts a pointer type (`*u8`, `*mut u32`). It is the same
+                // token as multiplication, but a type position never contains
+                // one, so there is nothing to disambiguate.
+                | Token::Mul
                 | Token::Pipe => {
                     type_tokens.push(&self.tokens[self.pos]);
                     self.pos += 1;
@@ -531,6 +535,8 @@ impl<'a> StmtParser<'a> {
             Token::FnArrow => "->".to_string(),
             Token::Lt => "<".to_string(),
             Token::Gt => ">".to_string(),
+            // Pointer types: `*u8`, `*mut u32`.
+            Token::Mul => "*".to_string(),
             _ => format!("{:?}", token),
         }
     }

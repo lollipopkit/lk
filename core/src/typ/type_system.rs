@@ -175,6 +175,14 @@ impl TypeRegistry {
             Type::Named(name) => name.clone(),
             Type::Int => "Int".to_string(),
             Type::MachineInt(kind) => kind.name().to_string(),
+            Type::Ptr { pointee, mutable } => {
+                let inner = Self::type_to_string(pointee);
+                if *mutable {
+                    format!("*mut {inner}")
+                } else {
+                    format!("*{inner}")
+                }
+            }
             Type::Float => "Float".to_string(),
             Type::String => "String".to_string(),
             Type::Bool => "Bool".to_string(),

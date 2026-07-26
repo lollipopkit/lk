@@ -270,6 +270,10 @@ fn collect_generated_type_origins(ty: &Type, span: Option<Span>, origins: &mut V
         Type::Int => push_generated_statement_origin("type_expr int", span, origins),
         // Machine ints report under their own spelling so a macro-generated
         // `u8` is distinguishable from a generated `Int` in origin traces.
+        Type::Ptr { pointee, .. } => {
+            push_generated_statement_origin("type_expr ptr", span.clone(), origins);
+            collect_generated_type_origins(pointee, span, origins);
+        }
         Type::MachineInt(kind) => {
             push_generated_statement_origin(&alloc::format!("type_expr {}", kind.name()), span, origins)
         }

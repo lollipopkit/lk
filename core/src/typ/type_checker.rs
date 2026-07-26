@@ -242,6 +242,10 @@ impl TypeChecker {
                 }
             }
             Type::List(inner) => Type::List(Box::new(self.resolve_aliases_internal(inner, visiting))),
+            Type::Ptr { pointee, mutable } => Type::Ptr {
+                pointee: Box::new(self.resolve_aliases_internal(pointee, visiting)),
+                mutable: *mutable,
+            },
             Type::Map(key, value) => Type::Map(
                 Box::new(self.resolve_aliases_internal(key, visiting)),
                 Box::new(self.resolve_aliases_internal(value, visiting)),

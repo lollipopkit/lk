@@ -1496,5 +1496,20 @@ fn cast_is_meaningful(source: &Type, target: &Type) -> bool {
             Type::Int | Type::MachineInt(_) | Type::Float | Type::Bool | Type::Any
         )
     }
-    is_scalar(source) && is_scalar(target)
+    fn is_integral(ty: &Type) -> bool {
+        matches!(ty, Type::Int | Type::MachineInt(_) | Type::Any)
+    }
+
+    match (source, target) {
+        // Address ↔ pointer. This is how a hardware register gets named at all:
+        // `0x3F20_0000 as *mut u32`. Only integers convert — a `Float` address
+        // is meaningless, and building one from a `Bool` is a mistake.
+        (integral, Type::Ptr { .. }) if is_integral(integral) => true,
+        (Type::Ptr { .. }, integral) if is_integral(integral) => true,
+        // Retyping a pointer: `*u8` to `*mut u32`. The pointee and mutability
+        // are the programmer's claim to make, which is why this needs `unsafe`
+        // at the point of *use* rather than here.
+        (Type::Ptr { .. }, Type::Ptr { .. }) => true,
+        _ => is_scalar(source) && is_scalar(target),
+    }
 }

@@ -336,6 +336,20 @@ impl IntKind {
 pub enum Type {
     /// Primitive types
     Int,
+    /// A raw pointer: `*T` (read-only) or `*mut T`.
+    ///
+    /// The pointer *value* is just an address, so it exists on both backends
+    /// and can be built, passed and compared under the bytecode VM. What the VM
+    /// has no meaning for is *dereferencing* one — there is no address space
+    /// behind it — so that operation, not the type, is what fails there.
+    ///
+    /// Two levels of mutability rather than Rust's `*const`/`*mut` spelling:
+    /// `*T` reads, `*mut T` writes. The distinction is what stops a register
+    /// marked read-only from being written by accident.
+    Ptr {
+        pointee: Box<Type>,
+        mutable: bool,
+    },
     /// Fixed-width machine integer (`i32`, `u8`, `usize`, …). See [`IntKind`].
     MachineInt(IntKind),
     Float,
@@ -403,6 +417,28 @@ impl Type {
 
         if let Some(kind) = IntKind::parse(s) {
             return Some(Type::MachineInt(kind));
+        }
+
+        // The annotation parser joins tokens with spaces, so `*mut u32` can
+        // arrive as `* mut u32`. Normalise the marker before matching, but keep
+        // the space that separates `mut` from the pointee.
+        let pointer_form = s.strip_prefix('*').map(|rest| alloc::format!("*{}", rest.trim_start()));
+        let s = pointer_form.as_deref().unwrap_or(s);
+
+        // `*mut T` before `*T`: the former's prefix is a superset.
+        if let Some(rest) = s.strip_prefix("*mut ").or_else(|| s.strip_prefix("*mut")) {
+            let pointee = Type::parse(rest.trim())?;
+            return Some(Type::Ptr {
+                pointee: Box::new(pointee),
+                mutable: true,
+            });
+        }
+        if let Some(rest) = s.strip_prefix('*') {
+            let pointee = Type::parse(rest.trim())?;
+            return Some(Type::Ptr {
+                pointee: Box::new(pointee),
+                mutable: false,
+            });
         }
 
         // Handle type variables: 'T, 'K, 'V
@@ -536,6 +572,13 @@ impl Type {
         match self {
             Type::Int => "Int".to_string(),
             Type::MachineInt(kind) => kind.name().to_string(),
+            Type::Ptr { pointee, mutable } => {
+                if *mutable {
+                    format!("*mut {}", pointee.display())
+                } else {
+                    format!("*{}", pointee.display())
+                }
+            }
             Type::Float => "Float".to_string(),
             Type::String => "String".to_string(),
             Type::Bool => "Bool".to_string(),
@@ -959,6 +1002,7 @@ fn split_top_level(s: &str, delimiter: char) -> Vec<&str> {
 #[cfg(test)]
 mod tests {
     use super::{IntKind, ShortStr, ShortStrOrStr, Type};
+    use alloc::boxed::Box;
 
     #[test]
     fn short_str_concat_int_falls_back_when_prefix_fills_inline_buffer() {
@@ -1029,6 +1073,46 @@ mod tests {
 
         // Identity still holds.
         assert!(u8_.is_assignable_to(&u8_));
+    }
+
+    #[test]
+    fn pointer_types_round_trip_through_their_spelling() {
+        let u8_ptr = Type::Ptr {
+            pointee: Box::new(Type::MachineInt(IntKind::U8)),
+            mutable: false,
+        };
+        let u32_mut = Type::Ptr {
+            pointee: Box::new(Type::MachineInt(IntKind::U32)),
+            mutable: true,
+        };
+        assert_eq!(Type::parse("*u8"), Some(u8_ptr.clone()));
+        assert_eq!(Type::parse("*mut u32"), Some(u32_mut.clone()));
+        assert_eq!(u8_ptr.display(), "*u8");
+        assert_eq!(u32_mut.display(), "*mut u32");
+        // The annotation parser joins tokens with spaces.
+        assert_eq!(Type::parse("* mut u32"), Some(u32_mut));
+    }
+
+    #[test]
+    fn pointers_nest() {
+        let nested = Type::parse("*mut *u8").expect("parses");
+        let Type::Ptr { pointee, mutable } = &nested else {
+            panic!("expected a pointer, got {nested:?}");
+        };
+        assert!(mutable);
+        assert!(matches!(pointee.as_ref(), Type::Ptr { mutable: false, .. }));
+        assert_eq!(nested.display(), "*mut *u8");
+    }
+
+    /// Mutability is part of the type: a read-only pointer must not satisfy a
+    /// `*mut` annotation, or a register marked read-only could be written.
+    #[test]
+    fn pointer_mutability_is_not_assignable_away() {
+        let read = Type::parse("*u32").expect("parses");
+        let write = Type::parse("*mut u32").expect("parses");
+        assert!(!read.is_assignable_to(&write));
+        assert!(!write.is_assignable_to(&read));
+        assert!(read.is_assignable_to(&read));
     }
 
     /// `Any` is the dynamic escape hatch and stays above the rule, otherwise a
