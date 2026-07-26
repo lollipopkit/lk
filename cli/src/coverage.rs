@@ -1,3 +1,4 @@
+use lk_core::vm::ProgramExec;
 use std::collections::BTreeMap;
 use std::path::Path;
 

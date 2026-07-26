@@ -3,7 +3,7 @@
 //! (stdout + success/failure). Examples the pipeline rejects are recorded as
 //! coverage gaps, not failures — this doubles as a lowering-coverage snapshot
 //! over real programs instead of hand-written differential cases only.
-#![cfg(feature = "llvm")]
+#![cfg(feature = "aot")]
 
 use std::ffi::OsStr;
 use std::fs::{self, File};

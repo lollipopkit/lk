@@ -500,7 +500,7 @@ fn test_compile_with_import_writes_module_artifact_output() {
     let _ = fs::remove_dir_all(&dir);
 }
 
-#[cfg(feature = "llvm")]
+#[cfg(feature = "aot")]
 #[test]
 fn test_source_run_defaults_to_vm_and_cached_native_is_opt_in() {
     let dir = unique_tmp_dir("native_cache_run");
@@ -703,6 +703,351 @@ fn test_run_parse_error_returns_non_zero() {
     assert!(!out.status.success(), "expected parse failure");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("Error:"), "expected parse diagnostics, got: {stderr}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// `lk FILE`, `lk check FILE` and `lk compile FILE` must agree on whether a
+/// program is valid.
+///
+/// They did not: `Program::execute_with_ctx` type-checks before running, but
+/// the compile path went straight to codegen. A program the VM rejected at run
+/// time therefore compiled to a native binary that *ran successfully* and
+/// printed the ill-typed value — a silent divergence no differential test
+/// caught, because neither the corpus nor the fuzzer emits an annotation that
+/// contradicts its initializer.
+///
+/// `aot`-gated: without the native backend `lk compile` fails with "native
+/// backend disabled at build time", which is not the type error this asserts.
+#[test]
+#[cfg(feature = "aot")]
+fn test_compile_rejects_what_run_and_check_reject() {
+    let dir = unique_tmp_dir("type_check_parity");
+    ensure_clean_dir(&dir);
+    write_file(&dir, "bad.lk", "let x: Int = \"s\";\nprintln(x);\n");
+
+    let run = run_cli(&dir, ["bad.lk"]).output().expect("spawn run");
+    let check = run_cli(&dir, ["check", "bad.lk"]).output().expect("spawn check");
+    let compile = run_cli(&dir, ["compile", "bad.lk"]).output().expect("spawn compile");
+
+    for (name, out) in [("run", &run), ("check", &check), ("compile", &compile)] {
+        assert!(!out.status.success(), "`lk {name}` accepted an ill-typed program");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("Type mismatch"),
+            "`lk {name}` should report the type error, got: {stderr}"
+        );
+    }
+    // And nothing was produced for the rejected program.
+    assert!(!dir.join("bad").exists(), "a rejected program must not leave a binary");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// A `trait` implemented in an imported file must dispatch in the importer.
+///
+/// It did not: the importer executes an imported file in a throwaway
+/// `VmContext` and keeps only its exported *values*, so the module's `impl`
+/// blocks were dropped on the floor and `make(4).area()` failed with
+/// "Object has no method 'area'". The method table now travels with the
+/// import, bound to the imported module's own function table and heap.
+#[test]
+fn test_trait_impl_from_imported_file_dispatches() {
+    let dir = unique_tmp_dir("cross_module_impl");
+    ensure_clean_dir(&dir);
+    write_file(
+        &dir,
+        "shape.lk",
+        "trait Area { fn area(self) -> Int; }\n\
+         struct Sq { s: Int }\n\
+         impl Area for Sq { fn area(self) -> Int { return self.s * self.s; } }\n\
+         fn make(n: Int) -> Sq { return Sq { s: n }; }\n",
+    );
+    write_file(
+        &dir,
+        "main.lk",
+        "use { make } from \"./shape.lk\";\nlet sq = make(4);\nprintln(sq.area());\n",
+    );
+
+    let out = run_cli(&dir, ["main.lk"]).output().expect("spawn run");
+    assert!(
+        out.status.success(),
+        "cross-module trait dispatch failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "16");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// `try`/`catch` is a statement, not a closure — three things that were wrong
+/// while it was rewritten in the parser into `try$call(|| { body })`.
+///
+/// All three are the same cause (the body was a *closure*), and all three were
+/// silent or hard failures rather than diagnostics.
+#[test]
+fn test_try_catch_is_a_statement_not_a_closure() {
+    let dir = unique_tmp_dir("try_catch_statement");
+    ensure_clean_dir(&dir);
+
+    // 1. `return` inside the body returns from the enclosing function. It used
+    //    to return from the closure, so this printed the catch's value.
+    write_file(
+        &dir,
+        "ret.lk",
+        "fn f(x: Int) -> Int {\n  try { return 42; } catch e { return 1; }\n}\nprintln(f(1));\n",
+    );
+    let out = run_cli(&dir, ["ret.lk"]).output().expect("spawn run");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "42");
+
+    // 2. A top-level body writing an outer local. This failed at runtime in the
+    //    cell-capture machinery: "StoreCellVal expected UpvalCell object".
+    write_file(
+        &dir,
+        "outer.lk",
+        "let t = 0;\nfor i in 0..100 {\n  try { t += i / 0; } catch e { t += 1; }\n}\nprintln(t);\n",
+    );
+    let out = run_cli(&dir, ["outer.lk"]).output().expect("spawn run");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "100");
+
+    // 3. A top-level `let` was not even *visible* inside the body — the closure
+    //    put it out of reach and this failed to compile with
+    //    "Compiler undefined local/global `acc`".
+    write_file(
+        &dir,
+        "visible.lk",
+        "let acc = [];\ntry { for i in 0..3 { acc.push(i); } } catch e {}\nprintln(acc.len());\n",
+    );
+    let out = run_cli(&dir, ["visible.lk"]).output().expect("spawn run");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "3");
+
+    // 4. A `return` inside the body returns from the enclosing function, so it
+    //    has to take part in return-type checking. It did not, so an ill-typed
+    //    `return` inside a `try` passed `lk check` silently.
+    write_file(
+        &dir,
+        "rettype.lk",
+        "fn f() -> Int {\n  try { return \"not an int\"; } catch e { return 2; }\n}\nprintln(f());\n",
+    );
+    let out = run_cli(&dir, ["check", "rettype.lk"]).output().expect("spawn check");
+    assert!(
+        !out.status.success(),
+        "an ill-typed return inside `try` must be rejected"
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("Return type mismatch"),
+        "got: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // 5. A catch name shadowing a local that a closure promoted to a capture
+    //    cell: the binding is fresh (so the handler must not read it through
+    //    `LoadCellVal`) and the outer mark must come back afterwards (so the
+    //    shadowed local must not read as the raw cell).
+    write_file(
+        &dir,
+        "shadow.lk",
+        "fn f() {\n  let e = 0;\n  let bump = || { e = e + 1; };\n  bump();\n\
+         try { 1 / 0; } catch e { println(\"caught\"); }\n  println(e);\n}\nf();\n",
+    );
+    let out = run_cli(&dir, ["shadow.lk"]).output().expect("spawn run");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim().lines().collect::<Vec<_>>(),
+        ["caught", "1"],
+        "the catch binding is fresh, and the shadowed cell local survives the scope"
+    );
+
+    // The value a catch binds is unchanged from the `pcall` era: the raised
+    // value itself for `error(v)`, the message string for anything else.
+    write_file(
+        &dir,
+        "bind.lk",
+        "try { error([1, 2]); } catch e { println(typeof(e)); }\ntry { 1 / 0; } catch e { println(typeof(e)); }\n",
+    );
+    let out = run_cli(&dir, ["bind.lk"]).output().expect("spawn run");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim().lines().collect::<Vec<_>>(),
+        ["List", "String"]
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// The reverse direction: an `impl` declared *here*, dispatched inside a
+/// function imported from another file.
+///
+/// The body belongs to this module, the executing frame belongs to the other
+/// one, and a function index means nothing outside its own table — so index *N*
+/// used to be resolved against the imported module and this exact program
+/// recursed into `render` itself until the stack overflowed. It now runs the
+/// right body, with the declaring module's globals swapped in for the call
+/// (`docs/vm-cross-module-dispatch.md`).
+#[test]
+fn test_local_trait_impl_dispatches_inside_an_imported_function() {
+    let dir = unique_tmp_dir("foreign_frame_impl");
+    ensure_clean_dir(&dir);
+    write_file(&dir, "render.lk", "fn render(q) { return q.area(); }\n");
+    write_file(
+        &dir,
+        "main.lk",
+        "use { render } from \"./render.lk\";\n\
+         struct Sq { s: Int }\n\
+         trait Area { fn area(self) -> Int; }\n\
+         impl Area for Sq { fn area(self) -> Int { return self.s * self.s; } }\n\
+         println(render(Sq { s: 4 }));\n",
+    );
+
+    let out = run_cli(&dir, ["main.lk"]).output().expect("spawn run");
+    assert!(
+        out.status.success(),
+        "dispatch from a foreign frame failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "16");
+
+    // A method that *writes* a module global cannot cross the boundary: the
+    // write would land in the temporary global table the call runs against and
+    // be dropped on restore. That is reported, not approximated.
+    write_file(
+        &dir,
+        "main.lk",
+        "use { render } from \"./render.lk\";\n\
+         let counter = 0;\n\
+         struct Sq { s: Int }\n\
+         trait Area { fn area(self) -> Int; }\n\
+         impl Area for Sq { fn area(self) -> Int { counter = counter + 1; return counter; } }\n\
+         println(render(Sq { s: 4 }));\n",
+    );
+    let out = run_cli(&dir, ["main.lk"]).output().expect("spawn run");
+    assert!(!out.status.success(), "a global-writing method must not silently run");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("Sq::area") && stderr.contains("writes a module global"),
+        "the refusal must name the method and the reason, got: {stderr}"
+    );
+
+    // Same method, dispatched from its own module's frame: unaffected.
+    write_file(
+        &dir,
+        "main.lk",
+        "let counter = 0;\n\
+         struct Sq { s: Int }\n\
+         trait Area { fn area(self) -> Int; }\n\
+         impl Area for Sq { fn area(self) -> Int { counter = counter + 1; return counter; } }\n\
+         let q = Sq { s: 4 };\n\
+         println(q.area());\n\
+         println(q.area());\n",
+    );
+    let out = run_cli(&dir, ["main.lk"]).output().expect("spawn run");
+    assert!(
+        out.status.success(),
+        "same-module dispatch must be unaffected: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim().lines().collect::<Vec<_>>(),
+        ["1", "2"]
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// Two modules may each declare their own `Point`, and each must keep its own
+/// methods.
+///
+/// They did not. Objects carried a bare `"Point"` and the dispatch table was
+/// keyed by that name alone, so whichever module registered last owned the name
+/// for the whole context: `A.mk(1).tag()` answered `"B"`. A locally declared
+/// `Point` hijacked the imported one the same way. Both halves of a declared
+/// type's identity — the declaring module and the name — now travel with the
+/// value (`lk_core::vm::TypeScope`).
+#[test]
+fn test_same_type_name_in_two_modules_dispatches_separately() {
+    let dir = unique_tmp_dir("type_scope_collision");
+    ensure_clean_dir(&dir);
+    for (file, tag) in [("a.lk", "A"), ("b.lk", "B")] {
+        write_file(
+            &dir,
+            file,
+            &format!(
+                "struct Point {{ v: Int }}\n\
+                 trait Tagged {{ fn tag(self) -> String; }}\n\
+                 impl Tagged for Point {{ fn tag(self) -> String {{ return \"{tag}\"; }} }}\n\
+                 fn mk(v: Int) -> Point {{ return Point {{ v: v }}; }}\n"
+            ),
+        );
+    }
+    write_file(
+        &dir,
+        "main.lk",
+        "use * as A from \"./a\";\n\
+         use * as B from \"./b\";\n\
+         struct Point { v: Int }\n\
+         trait Tagged { fn tag(self) -> String; }\n\
+         impl Tagged for Point { fn tag(self) -> String { return \"LOCAL\"; } }\n\
+         println(A.mk(1).tag());\n\
+         println(B.mk(2).tag());\n\
+         println(Point { v: 3 }.tag());\n",
+    );
+
+    let out = run_cli(&dir, ["main.lk"]).output().expect("spawn run");
+    assert!(
+        out.status.success(),
+        "same-named types across modules failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim().lines().collect::<Vec<_>>(),
+        ["A", "B", "LOCAL"],
+        "each `Point` must run its own module's `tag`"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// An impl reaches the importer even when the value comes from *deeper* than
+/// the modules it named.
+///
+/// `main` imports `mid`, `mid` imports `leaf`, and `mid.passthru()` hands back
+/// a `leaf` struct. The importer collected impls one level deep, so `leaf`'s
+/// module was never registered and the call failed outright with "Object has no
+/// method 'depth'". Registration now covers the resolver's transitive closure,
+/// which is safe precisely because entries are scoped and cannot collide.
+#[test]
+fn test_trait_impl_from_a_transitive_import_dispatches() {
+    let dir = unique_tmp_dir("transitive_impl");
+    ensure_clean_dir(&dir);
+    write_file(
+        &dir,
+        "leaf.lk",
+        "struct Deep { v: Int }\n\
+         trait Depth { fn depth(self) -> Int; }\n\
+         impl Depth for Deep { fn depth(self) -> Int { return self.v * 10; } }\n\
+         fn mk(v: Int) -> Deep { return Deep { v: v }; }\n",
+    );
+    write_file(
+        &dir,
+        "mid.lk",
+        "use * as L from \"./leaf\";\nfn passthru(v: Int) -> Deep { return L.mk(v); }\n",
+    );
+    write_file(
+        &dir,
+        "main.lk",
+        "use * as M from \"./mid\";\nprintln(M.passthru(3).depth());\n",
+    );
+
+    let out = run_cli(&dir, ["main.lk"]).output().expect("spawn run");
+    assert!(
+        out.status.success(),
+        "transitive trait dispatch failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "30");
 
     let _ = fs::remove_dir_all(&dir);
 }

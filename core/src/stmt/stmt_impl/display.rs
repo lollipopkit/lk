@@ -2,10 +2,10 @@ use super::{ForPattern, Stmt};
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
 use crate::{
-    macro_system::token_lexeme,
     operator::BinOp,
     stmt::{ImportSource, ImportStmt},
     token::Token,
+    token::token_lexeme,
 };
 use core::fmt::{self, Display};
 
@@ -212,6 +212,21 @@ impl Display for Stmt {
             Stmt::Block { statements } => {
                 writeln!(f, "{{")?;
                 for stmt in statements {
+                    writeln!(f, "  {}", stmt)?;
+                }
+                write!(f, "}}")
+            }
+            Stmt::Try {
+                body,
+                catch_var,
+                handler,
+            } => {
+                writeln!(f, "try {{")?;
+                for stmt in body {
+                    writeln!(f, "  {}", stmt)?;
+                }
+                writeln!(f, "}} catch {catch_var} {{")?;
+                for stmt in handler {
                     writeln!(f, "  {}", stmt)?;
                 }
                 write!(f, "}}")

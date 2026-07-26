@@ -29,7 +29,7 @@ void lk_vm_free(LkVm *vm);
 /* Free a string returned by lk_vm_eval. */
 void lk_string_free(char *s);
 
-/* ---- Tier 1 hybrid bridge (docs/llvm/tier1-hybrid.md) --------------------
+/* ---- Tier 1 hybrid bridge (docs/aot/tier1-hybrid.md) --------------------
  * A hybrid native binary embeds its module artifact and calls VM-executed
  * functions through this one-way bridge. Process-singleton by design.
  */
@@ -37,11 +37,14 @@ void lk_string_free(char *s);
 #include <stddef.h>
 #include <stdint.h>
 
-/* Argument tags. LK_HYBRID_ARG_BOOL reads the `i` field as 0/1. */
+/* Argument tags. LK_HYBRID_ARG_BOOL reads the `i` field as 0/1;
+   LK_HYBRID_ARG_NIL has no payload. Tags are per *argument*, not per
+   parameter: two call sites may pass different types for one parameter. */
 #define LK_HYBRID_ARG_I64 0
 #define LK_HYBRID_ARG_F64 1
 #define LK_HYBRID_ARG_BOOL 2
 #define LK_HYBRID_ARG_STR 3
+#define LK_HYBRID_ARG_NIL 4
 
 typedef struct LkHybridArg {
     uint8_t tag;

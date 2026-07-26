@@ -456,7 +456,18 @@ pub unsafe extern "C" fn lkrt_str_chars(s: *const c_char) -> *mut std::ffi::c_vo
             crate::lkdyn::lkrt_dyn_from_str(owned)
         })
         .collect();
-    crate::state::arena_handle(elements)
+    // As in `str.split`: each element string is minted here and reachable from
+    // nowhere else, so a proven-dead list can release them with it.
+    unsafe fn owned(ptr: *mut std::ffi::c_void) -> Vec<*mut c_char> {
+        // SAFETY: registered with this exact element type below.
+        let elements = unsafe { &*(ptr as *const Vec<crate::lkdyn::LkDyn>) };
+        elements
+            .iter()
+            .filter(|element| element.tag == crate::lkdyn::DYN_STR)
+            .map(|element| element.payload as *mut c_char)
+            .collect()
+    }
+    crate::state::arena_handle_owning_strings(elements, owned)
 }
 
 /// `s[i]` — single-char read as a Dyn (char-indexed; out of bounds is nil,

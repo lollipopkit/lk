@@ -27,20 +27,42 @@ jobs:
       - name: wasm32 smoke (L0 no_std crates + browser playground)
         run: |
           rustup target add wasm32-unknown-unknown
-          cargo build -p lk-hal --target wasm32-unknown-unknown
           cargo build -p lk-values --target wasm32-unknown-unknown
           cargo build -p lk-wasm --target wasm32-unknown-unknown
       - name: thumbv7em MCU smoke (bare + alloc L0 profiles on bare-metal ARM)
         # Proves the L0 foundations cross-compile to a real Cortex-M MCU target
-        # (no OS, no allocator provided): lk-hal is the `bare` profile, lk-values
-        # the `alloc` profile (plan M5.1 profiles / M5.2 MCU smoke).
+        # (no OS, no allocator provided): lk-values is the `alloc` profile
+        # (plan M5.1 profiles / M5.2 MCU smoke).
         run: |
           rustup target add thumbv7em-none-eabi
-          cargo build -p lk-hal --target thumbv7em-none-eabi
           cargo build -p lk-values --target thumbv7em-none-eabi
           # Full VM core on bare metal (M5.2): parser/compiler/verifier/
           # executor/GC build with no std anywhere in the crate graph.
           cargo build -p lk-core --no-default-features --target thumbv7em-none-eabi
+      - name: AOT native-lowering coverage gate
+        # A lowering regression does not fail any differential test: the
+        # program silently drops to the hybrid bridge or the Tier 0 VM bundle
+        # and still produces correct output, just ~3x slower. This scan (hybrid
+        # pinned off, no fallback) is the only thing that catches it. Add a
+        # file to AOT_COVERAGE_ALLOW if it legitimately cannot lower.
+        run: |
+          cargo build -p lk-cli --features aot
+          # 48/51. The three allowed files are the try/catch corpus: `try`/`catch`
+          # became a real statement (`Stmt::Try` → `TryBegin`/`TryEnd`) to fix
+          # three silent wrong answers on the VM path, and the MIR lowering has no
+          # handler-region support yet, so they degrade to the Tier 0 VM bundle.
+          # Output stays VM-identical (see `try_catch_differential` in
+          # cli/tests/clif_differential_test.rs); what lapses is *native*
+          # lowering. Drop these entries when the region outlining lands —
+          # see todos.md.
+          AOT_COVERAGE_REQUIRE_FULL=1 \
+          AOT_COVERAGE_ALLOW=examples/syntax/try_catch.lk,examples/syntax/error_unwrap.lk,examples/syntax/error_model_edges.lk \
+          bash scripts/aot_coverage.sh
+      - name: strict native-only differential (no Tier 0 fallback)
+        # Complements the scan above: the corpora must not just *compile*
+        # native, they must produce VM-identical output while pinned to the
+        # native path.
+        run: LK_AOT_NO_FALLBACK=1 cargo test -p lk-cli --test aot_differential_test --test clif_differential_test
       - name: lk-core builds as no_std (VM core no-std guard)
         # `--no-default-features` drops the `std` feature, which now makes
         # lk-core `#![no_std]` (+ alloc). The VM core (token/ast/expr/stmt/typ/

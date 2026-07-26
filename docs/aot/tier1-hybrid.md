@@ -9,7 +9,7 @@ the architecture decisions; the staged sub-steps at the bottom are the
 implementation record. Key anchors today: `aot/lower/src/lib.rs`
 (eligibility + mark/rerun fixpoint), `aot/mir` (`Inst::CallVm { dst }`),
 `aot/codegen` (bridge marshaling + call lowering), `api/src/lib.rs::ffi`
-(`lk_hybrid_*`), `llvm/src/native_executable.rs` (hybrid wrapper + link).
+(`lk_hybrid_*`), `aot/driver/src/native_executable.rs` (hybrid wrapper + link).
 
 > **Codegen backend note:** `aot/codegen` no longer renders LLVM text — the
 > string-IR renderer was replaced by the **Cranelift** backend
@@ -49,11 +49,18 @@ native and executes only the unsupported ones on the VM, inside one binary.
    the IR. The VM enters at link time: a hybrid executable links `liblkrt.a`
    *and* `liblk_api.a`.
 
-4. **Eligibility (v1) — a reachable non-entry function `f` may be marked
+4. **Eligibility — a reachable non-entry function `f` may be marked
    VM-executed instead of failing the module when:**
-   - every `CallDirect` site passes subset-typed arguments (`SigInfer`
-     already infers these from call sites — parameter types need no new
-     analysis);
+   - every `CallDirect` site passes subset-typed arguments. **Updated since
+     v1:** the *types need not agree across sites*. The bridge tags each
+     argument individually and the VM is dynamically typed, so `report(1)`
+     and `report("a")` marshal fine against one parameter. v1 required one
+     observed scalar type per parameter (a `Dyn` join failed eligibility),
+     which rejected such callees for no ABI reason — and a rejected callee
+     infects its callers up to a whole-module Tier 0 fallback. Marshalability
+     is now decided per call site in the lowering, where the argument's type
+     is actually known, and recorded in `Inst::CallVm::arg_tys`;
+     `VmFunction` therefore carries only a `param_count`;
    - the call result is **discarded at every site** (the `dead_writes` fact
      for the result register's write, re-checked in the lowering). This
      sidesteps the hard problem: a body that does not lower has no inferable
@@ -65,10 +72,13 @@ native and executes only the unsupported ones on the VM, inside one binary.
      state. Global sync is a later slice, not v1;
    - `f` has no captures (`capture_count == 0`) and is not lambda-specialized
      (clone machinery stays out of v1);
-   - argument marshaling is scalar-only: `I64`/`F64`/`Bool`/`Str`. Container
-     handles (`list_h`/`map_h`) are **not** bridgeable in v1 — a native
-     handle and a VM heap object are different worlds; copying is a later,
-     explicit decision.
+   - argument marshaling is scalar-only: `I64`/`F64`/`Bool`/`Str`/`Nil`
+     (`LK_HYBRID_ARG_NIL` carries no payload). Container handles
+     (`list_h`/`map_h`) and boxed `Dyn` are **not** bridgeable inward — a
+     native handle and a VM heap object are different worlds, and a `Dyn`
+     may hold a container at runtime, so accepting it would mean shipping a
+     handle *reader* into lk-api the way the return path ships builders.
+     That is the next slice, not this one.
    A function that fails eligibility infects its *callers* (they become
    VM-executed candidates in turn); infection reaching the entry means the
    program is not hybrid-lowerable and falls back to Tier 0 — the existing
@@ -155,10 +165,15 @@ LkHybridDyn lk_hybrid_call_r(uint32_t func_index, const LkHybridArg *args, size_
   needs) — so marking and re-lowering iterate until no new function marks
   (≤ one iteration per function).
 
-Later slices, in order of unlock value: a typed-list Dyn tag (unlocks quoted
-string-list returns); `Dyn`-typed bridge *arguments* (today only scalars
-marshal in); opaque `Any` value handles (native code moves them between
-bridge calls without inspecting them); mutable-global snapshot/sync.
+Later slices, in order of unlock value: `Dyn`-typed bridge *arguments* —
+needs a container reader injected into lk-api, mirroring the builders the
+return path already injects, since a `Dyn` may hold a list or map; a
+typed-list Dyn tag (unlocks quoted string-list returns); opaque `Any` value
+handles (native code moves them between bridge calls without inspecting
+them); mutable-global snapshot/sync.
+
+Done since v2: **per-call-site argument tagging** (decision 4 above), which
+removed the "all call sites must agree on a parameter's type" restriction.
 
 ## Staged sub-steps (each independently committable and gated)
 
@@ -184,3 +199,22 @@ bridge calls without inspecting them); mutable-global snapshot/sync.
 Bridged return values (needs return-type proof), container/closure
 marshaling, global sync, VM→native calls, fuel/heap sandboxing inside hybrid
 binaries (Tier 0 has none either), and any change to `lkrt`.
+
+## 欠账:try/catch 的保护区没有原生降级
+
+`try`/`catch` 现在是真语句,VM 编译器发射 `TryBegin`/`TryEnd`(见
+`core/src/vm/compiler/control_flow.rs::lower_try`)。MIR lowering **没有**这两个
+opcode 的处理,优雅降级成 `Unsupported`,所以:
+
+- 含 try 的程序掉到 hybrid 桥或 Tier 0 bundle。try 在**入口函数**里时 hybrid 不桥
+  接入口,于是整程序 Tier 0;
+- `AOT_COVERAGE_REQUIRE_FULL=1` 48/51,三个 `examples/syntax/{try_catch,
+  error_unwrap,error_model_edges}.lk` 列在 check.yml 的 `AOT_COVERAGE_ALLOW` 里;
+- 输出仍与 VM 一致,由 `cli/tests/clif_differential_test.rs::try_catch_differential`
+  钉住(它允许降级,只断言等价)。
+
+补齐要做的:在 MIR lowering 里把保护区**外联**成函数 —— Cranelift 没有异常,lkrt
+靠 longjmp,setjmp 必须待在不会返回的帧里,所以保护区不能留在原函数内联。外联函数
+要返回三态(正常值 / raise / **外层函数要 return**);第三态是关键,`return` 在 try
+体里必须从外层函数返回,这正是旧去糖搞错的地方。live-in 寄存器变参数,region 内写
+且 region 之后仍活的值要传回来。

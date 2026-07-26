@@ -2,6 +2,7 @@
 use crate::compat::prelude::*;
 #[cfg(test)]
 mod tests {
+    use crate::vm::ProgramExec;
     use crate::{
         expr::Pattern,
         stmt::{Program, Stmt, stmt_parser::StmtParser},

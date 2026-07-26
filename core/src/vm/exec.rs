@@ -28,8 +28,10 @@ mod value_ops;
 
 pub use super::RuntimeCallable;
 pub use imports::import_runtime_export;
+#[cfg(test)]
+pub use program::test_support;
 pub use program::{
-    ModuleFunctionArg, ModuleFunctionCall, ModuleFunctionOutcome, call_module_function_with_ctx,
+    ModuleFunctionArg, ModuleFunctionCall, ModuleFunctionOutcome, ProgramExec, call_module_function_with_ctx,
     call_module_function_with_ctx_keep_state, compile_program_module_with_ctx, execute_compiled_module_with_ctx,
     execute_module_artifact_with_ctx, execute_program, execute_program_with_ctx, execute_program_with_ctx_and_budget,
     execute_program_with_ctx_and_gc_threshold, execute_program_with_ctx_and_limits, execute_source,
@@ -37,10 +39,10 @@ pub use program::{
 #[cfg(test)]
 pub(crate) use runtime_callable::call_runtime_callable_test;
 pub use runtime_callable::{
-    call_runtime_callable_runtime, call_runtime_value_runtime, call_runtime_value_runtime_list_args,
+    TraitMethodRef, call_runtime_callable_runtime, call_runtime_value_runtime, call_runtime_value_runtime_list_args,
     call_runtime_value_runtime_named_map, call_runtime_value_runtime_named_map_list_args,
-    call_runtime_value_runtime_with_receiver, call_runtime_value_runtime_with_receiver_list_args, copy_runtime_value,
-    copy_runtime_value_same_module, runtime_value_to_callable_shared,
+    call_runtime_value_runtime_with_receiver, call_runtime_value_runtime_with_receiver_list_args, call_trait_method,
+    copy_runtime_value, copy_runtime_value_same_module, runtime_value_to_callable_shared,
 };
 
 use crate::util::fast_map::{FastHashMap, fast_hash_map_new};
@@ -117,6 +119,16 @@ pub struct Executor {
     /// of as rare allocation-timing-dependent corruption.
     gc_stress: bool,
     shared_module: Option<Arc<Module>>,
+    /// Scope of the module currently executing, stamped onto every object this
+    /// executor constructs (`NewObject`). Tracked here rather than read off
+    /// `shared_module` because the plain `run_module*` entries pass the module
+    /// by reference and never populate the shared handle.
+    type_scope: crate::vm::TypeScope,
+    /// The identity `NewObject` built last. A loop constructing the same struct
+    /// hits this every iteration, so the shared `Arc` is allocated once instead
+    /// of per object — which also removes the per-object `Arc<str>` the type
+    /// name used to cost.
+    last_declared_type: Option<Arc<crate::vm::DeclaredType>>,
     instruction_budget: Option<u64>,
     instruction_count: u64,
     /// Optional cap on the number of live heap objects (sandbox memory bound).
@@ -179,6 +191,8 @@ impl Executor {
             gc_pending: false,
             gc_stress: gc_stress_enabled(),
             shared_module: None,
+            type_scope: crate::vm::TypeScope::anonymous(),
+            last_declared_type: None,
             instruction_budget: None,
             instruction_count: 0,
             heap_object_limit: None,

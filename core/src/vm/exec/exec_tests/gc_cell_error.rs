@@ -69,6 +69,8 @@ fn execute_loads_and_stores_upval_cell_values() {
         natives: Vec::new(),
         globals: vec![GlobalSlot { name: "cell".into() }],
         entry: 0,
+        type_info: Default::default(),
+        type_scope: Default::default(),
     };
     let mut heap = HeapStore::new();
     let cell = heap.alloc(HeapValue::UpvalCell(RuntimeVal::Int(1)));
@@ -109,6 +111,8 @@ fn execute_store_cell_clones_source_without_move_fact() {
         natives: Vec::new(),
         globals: vec![GlobalSlot { name: "cell".into() }],
         entry: 0,
+        type_info: Default::default(),
+        type_scope: Default::default(),
     };
     let mut heap = HeapStore::new();
     let cell = heap.alloc(HeapValue::UpvalCell(RuntimeVal::Nil));
@@ -152,6 +156,8 @@ fn execute_store_cell_move_fact_consumes_source_register() {
         natives: Vec::new(),
         globals: vec![GlobalSlot { name: "cell".into() }],
         entry: 0,
+        type_info: Default::default(),
+        type_scope: Default::default(),
     };
     let mut heap = HeapStore::new();
     let cell = heap.alloc(HeapValue::UpvalCell(RuntimeVal::Nil));
@@ -213,21 +219,76 @@ fn execute_raise_jumps_to_try_handler_with_error_value() {
     };
 
     let result = execute(&function).expect("raise handled");
-    let RuntimeVal::Obj(handle) = result.returns.first().expect("return") else {
-        panic!("handler return should be error object");
-    };
-    let Some(HeapValue::ErrorVal(error)) = result.state.heap.get(*handle) else {
-        panic!("handler return should be ErrorVal");
-    };
+    // A message-only raise binds the message *string*, which is what
+    // `typeof(e) == "String"` in `try { 1/0 } catch e` reports today. It used to
+    // bind an `ErrorVal` here, disagreeing with the `pcall` path this replaces.
+    assert_eq!(
+        result.returns.first().expect("return"),
+        &RuntimeVal::ShortStr(crate::val::ShortStr::new("boom").expect("short"))
+    );
+}
 
-    assert_eq!(error.message.as_ref(), "boom");
+/// A raise message that cannot be an inline `ShortStr`, so the value a `catch`
+/// binds is a heap object the collector has to keep alive.
+const RAISE_MESSAGE_OVER_INLINE: &str = "boom-well-past-seven-bytes";
+
+/// A first-class `error(v)` raise binds **`v` itself**, not its rendering.
+///
+/// This is the round trip `pcall` has always guaranteed (plan M2.2). The opcode
+/// path did not implement it *at all*: every catch site downcast `LanguageRaise`
+/// only, so a `LkRaisedValue` crossing a `TryBegin` handler escaped it. Driven
+/// directly here because nothing emits these opcodes yet — the end-to-end path
+/// arrives with the compiler change.
+#[test]
+fn caught_first_class_raise_binds_the_raised_value() {
+    let function = Function {
+        code: vec![
+            Instr::as_bx(Opcode::TryBegin, 0, 1),
+            Instr::abc(Opcode::LoadNil, 0, 0, 0),
+            Instr::abc(Opcode::Return, 0, 1, 0),
+        ],
+        register_count: 1,
+        param_count: 0,
+        positional_param_count: 0,
+        param_names: Vec::new(),
+        capture_count: 0,
+        ..Function::default()
+    };
+    let mut executor = Executor::new(function.register_count);
+    executor
+        .state
+        .stack
+        .resize(function.register_count as usize, RuntimeVal::Nil);
+    executor.state.stack_top = function.register_count as usize;
+    // The handler the `TryBegin` above would install.
+    executor.begin_try(0, 1).expect("install handler");
+
+    let raised = crate::vm::LkRaisedValue {
+        value: RuntimeVal::Int(7),
+        rendered: alloc::sync::Arc::<str>::from("7"),
+    };
+    executor
+        .handle_raised_value(&raised)
+        .expect("first-class raise is caught");
+
+    assert_eq!(
+        executor.read(0).expect("catch register"),
+        &RuntimeVal::Int(7),
+        "the catch binds the raised value, not its rendering"
+    );
+    assert!(
+        executor.state.pending_raise_root.is_none(),
+        "the GC pin is dropped once a live register holds the value"
+    );
 }
 
 #[test]
 fn execute_gc_keeps_caught_raise_error_value_alive() {
     let function = Function {
         consts: ConstPool {
-            strings: vec!["boom".into()],
+            // Longer than `ShortStr`'s 7 inline bytes on purpose: the caught
+            // value must land on the heap for this test to be about GC at all.
+            strings: vec![RAISE_MESSAGE_OVER_INLINE.into()],
             ..ConstPool::default()
         },
         code: vec![
@@ -254,11 +315,11 @@ fn execute_gc_keeps_caught_raise_error_value_alive() {
     let RuntimeVal::Obj(handle) = result.returns.first().expect("return") else {
         panic!("handler return should be error object");
     };
-    let Some(HeapValue::ErrorVal(error)) = result.state.heap.get(*handle) else {
-        panic!("handler return should survive GC as ErrorVal");
+    let Some(HeapValue::String(message)) = result.state.heap.get(*handle) else {
+        panic!("handler return should survive GC as a heap string");
     };
 
-    assert_eq!(error.message.as_ref(), "boom");
+    assert_eq!(message.as_ref(), RAISE_MESSAGE_OVER_INLINE);
     let unreused_garbage = if *handle == first_garbage {
         second_garbage
     } else {
@@ -326,17 +387,16 @@ fn execute_caller_handler_catches_raise_from_callee() {
         natives: Vec::new(),
         globals: Vec::new(),
         entry: 0,
+        type_info: Default::default(),
+        type_scope: Default::default(),
     };
 
     let result = execute_module(&module).expect("caller handler catches callee raise");
-    let RuntimeVal::Obj(handle) = result.returns.first().expect("return") else {
-        panic!("handler return should be error object");
-    };
-    let Some(HeapValue::ErrorVal(error)) = result.state.heap.get(*handle) else {
-        panic!("handler return should be ErrorVal");
-    };
-
-    assert_eq!(error.message.as_ref(), "boom");
+    // Same value contract across a frame boundary as within one frame.
+    assert_eq!(
+        result.returns.first().expect("return"),
+        &RuntimeVal::ShortStr(crate::val::ShortStr::new("boom").expect("short"))
+    );
 }
 
 #[test]
@@ -380,6 +440,8 @@ fn execute_callee_return_unwinds_its_try_handlers_before_next_call() {
         natives: Vec::new(),
         globals: Vec::new(),
         entry: 0,
+        type_info: Default::default(),
+        type_scope: Default::default(),
     };
 
     let err = execute_module(&module).expect_err("stale callee handler must not catch later raise");

@@ -14,12 +14,35 @@ thread_local! {
 /// Frees one arena-registered container handle of its concrete type.
 type ContainerDrop = unsafe fn(*mut c_void);
 
-/// Runs `f` with this thread's runtime state. The state is thread-local rather
-/// than a process-global mutex: AOT binaries are single-threaded (the lowered
-/// subset has no threading), so string/container arena registration sits on the
-/// hot path of every dynamic string operation and must not pay for locking.
-/// Handles and arena strings must not cross threads (unit tests get per-thread
-/// isolation for free).
+/// Collects the arena strings a container *itself* created, so releasing the
+/// container can release them too.
+///
+/// Only the constructors that mint their own strings register one (`str.split`,
+/// `str.chars`): their elements are freshly arena-allocated in the same call and
+/// reachable from nowhere else. Every other container holds strings it did not
+/// create and must not free.
+type ContainerOwnedStrings = unsafe fn(*mut c_void) -> Vec<*mut c_char>;
+
+struct ContainerEntry {
+    drop: ContainerDrop,
+    owned_strings: Option<ContainerOwnedStrings>,
+}
+
+/// Runs `f` with this thread's runtime state.
+///
+/// The state is thread-local rather than a process-global mutex because arena
+/// registration sits on the hot path of every dynamic string and container
+/// operation and must not pay for locking.
+///
+/// **Native binaries are not single-threaded** — `spawn`/`go` create real OS
+/// threads (`std::thread::spawn` in `chan.rs`). What makes the lock-free choice
+/// sound is the isolation, not an absence of threads: each thread owns its own
+/// arena, and values never cross a thread boundary because channels deep-copy
+/// (the isolate model). A handle or arena string must therefore never be passed
+/// between threads — doing so would free it on the wrong arena.
+///
+/// A spawned thread reclaims its own arena on exit (see the [`Drop`] impl on
+/// [`RuntimeState`]); `lkrt_cleanup()` covers the main thread.
 pub(crate) fn with_runtime<R>(f: impl FnOnce(&mut RuntimeState) -> R) -> R {
     RUNTIME.with(|state| f(&mut state.borrow_mut()))
 }
@@ -36,7 +59,10 @@ pub(crate) struct RuntimeState {
     owned_strings: HashSet<usize, FxBuildHasher>,
     /// Container handles (lists/maps) with their typed drop functions — the
     /// default arena of RFC aot-redesign §3.4, reclaimed by [`Self::cleanup`].
-    owned_containers: Vec<(usize, ContainerDrop)>,
+    /// Keyed by address so the scope-drop pass can release a loop-local
+    /// container early (`lkrt_rt_handle_release`) in O(1); without that a
+    /// long-running loop grows this table once per iteration.
+    owned_containers: HashMap<usize, ContainerEntry, FxBuildHasher>,
 }
 
 impl RuntimeState {
@@ -45,7 +71,7 @@ impl RuntimeState {
             next_handle: 0,
             resources: HashMap::with_hasher(FxBuildHasher),
             owned_strings: HashSet::with_hasher(FxBuildHasher),
-            owned_containers: Vec::new(),
+            owned_containers: HashMap::with_hasher(FxBuildHasher),
         }
     }
 }
@@ -130,10 +156,44 @@ impl RuntimeState {
         self.owned_strings.remove(&(ptr as usize))
     }
 
-    pub(crate) fn register_container(&mut self, ptr: *mut c_void, drop_fn: ContainerDrop) {
+    pub(crate) fn register_container(
+        &mut self,
+        ptr: *mut c_void,
+        drop: ContainerDrop,
+        owned_strings: Option<ContainerOwnedStrings>,
+    ) {
         if !ptr.is_null() {
-            self.owned_containers.push((ptr as usize, drop_fn));
+            self.owned_containers
+                .insert(ptr as usize, ContainerEntry { drop, owned_strings });
         }
+    }
+
+    /// Removes `ptr` from the arena, returning its drop function. `None` when
+    /// the handle is unknown (already released, or never arena-owned) — the
+    /// caller must then leave it alone.
+    pub(crate) fn unregister_container(&mut self, ptr: *mut c_void) -> Option<ContainerDrop> {
+        self.owned_containers.remove(&(ptr as usize)).map(|entry| entry.drop)
+    }
+
+    /// Removes `ptr` from the arena and, if the container minted its own arena
+    /// strings, deregisters and returns them so the caller can free them
+    /// alongside it. The strings must be freed *before* the container is
+    /// dropped: reading them out is what needs the container alive.
+    pub(crate) fn unregister_container_deep(&mut self, ptr: *mut c_void) -> Option<(ContainerDrop, Vec<*mut c_char>)> {
+        let entry = self.owned_containers.remove(&(ptr as usize))?;
+        let strings = match entry.owned_strings {
+            // SAFETY: registered by `arena_handle_owning_strings` with the
+            // collector matching this handle's concrete type, and the box is
+            // still alive (only its arena registration was removed).
+            Some(collect) => unsafe { collect(ptr) }
+                .into_iter()
+                // A pointer the arena does not own (already freed, or never
+                // registered) is left alone rather than double-freed.
+                .filter(|string| self.owned_strings.remove(&(*string as usize)))
+                .collect(),
+            None => Vec::new(),
+        };
+        Some((entry.drop, strings))
     }
 
     pub(crate) fn cleanup(&mut self) {
@@ -145,14 +205,33 @@ impl RuntimeState {
                 drop(CString::from_raw(ptr as *mut c_char));
             }
         }
-        for (ptr, drop_fn) in self.owned_containers.drain(..) {
+        for (ptr, entry) in self.owned_containers.drain() {
             // SAFETY: Each entry was registered by `arena_handle` with the drop
             // function matching the handle's concrete type; generated code never
             // uses a handle after `lkrt_cleanup` (it is the last call before exit).
+            // Element strings need no separate pass here: they were registered in
+            // `owned_strings`, which the loop above already drained.
             unsafe {
-                drop_fn(ptr as *mut c_void);
+                (entry.drop)(ptr as *mut c_void);
             }
         }
+    }
+}
+
+/// Reclaims a thread's arena when the thread ends.
+///
+/// Without this, a spawned thread's containers and strings are leaked at exit:
+/// dropping the tables frees the tables, not what they point at. `lkrt_cleanup`
+/// only ever runs on the main thread, so every `spawn`/`go` used to leak
+/// whatever it still held.
+///
+/// Safe to run here because the isolate model keeps values thread-local
+/// (channels deep-copy), so nothing outside this thread can still reference
+/// them. Running twice is harmless — `cleanup` drains, so the main thread's
+/// explicit `lkrt_cleanup()` leaves nothing for this to free.
+impl Drop for RuntimeState {
+    fn drop(&mut self) {
+        self.cleanup();
     }
 }
 
@@ -160,12 +239,32 @@ impl RuntimeState {
 /// function, and returns it as an opaque pointer. All container `new` entry
 /// points allocate through here so `lkrt_cleanup` can reclaim them.
 pub(crate) fn arena_handle<T>(value: T) -> *mut c_void {
-    unsafe fn drop_impl<T>(ptr: *mut c_void) {
-        // SAFETY: `ptr` came from `Box::into_raw` with this exact `T`.
-        drop(unsafe { Box::from_raw(ptr as *mut T) });
-    }
     let ptr = Box::into_raw(Box::new(value)) as *mut c_void;
-    with_runtime(|rt| rt.register_container(ptr, drop_impl::<T>));
+    with_runtime(|rt| rt.register_container(ptr, drop_impl::<T>, None));
+    ptr
+}
+
+unsafe fn drop_impl<T>(ptr: *mut c_void) {
+    // SAFETY: `ptr` came from `Box::into_raw` with this exact `T`.
+    drop(unsafe { Box::from_raw(ptr as *mut T) });
+}
+
+/// [`arena_handle`] for a container whose elements are arena strings **it
+/// created itself** — `str.split`, `str.chars`.
+///
+/// Registering `collect` is what lets `lkrt_rt_handle_release_deep` free those
+/// strings along with the container. Without it, releasing the container early
+/// reclaimed the list and left every element string in the arena until exit,
+/// which is most of what a `for l in lines { l.split(",") }` loop retains.
+///
+/// # Safety contract
+///
+/// `collect` must return exactly the arena strings this container owns
+/// exclusively. A string reachable from anywhere else must not be listed: the
+/// deep release frees them outright.
+pub(crate) fn arena_handle_owning_strings<T>(value: T, collect: ContainerOwnedStrings) -> *mut c_void {
+    let ptr = Box::into_raw(Box::new(value)) as *mut c_void;
+    with_runtime(|rt| rt.register_container(ptr, drop_impl::<T>, Some(collect)));
     ptr
 }
 

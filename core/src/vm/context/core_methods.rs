@@ -11,8 +11,7 @@ use self::list_dispatch::*;
 use crate::{
     val::{HeapRef, HeapStore, HeapValue, RuntimeMapKey, RuntimeSet, RuntimeVal, ShortStr, Type, TypedList},
     vm::{
-        NativeArgs, NativeRuntime, call_runtime_value_runtime_list_args,
-        call_runtime_value_runtime_named_map_list_args, call_runtime_value_runtime_with_receiver_list_args,
+        NativeArgs, NativeRuntime, call_runtime_value_runtime_list_args, call_runtime_value_runtime_named_map_list_args,
     },
 };
 
@@ -1000,21 +999,32 @@ fn call_trait_method_runtime(
 ) -> anyhow::Result<RuntimeVal> {
     let receiver_type = runtime_dispatch_type(&receiver, runtime.heap());
     let receiver_type_name = runtime_type_name(&receiver, runtime.heap());
+    // Taken before `parts_mut` borrows the heap mutably: a struct instance
+    // dispatches in the scope of the module that declared it, which is the
+    // half of its identity the bare type name does not carry.
+    let receiver_scope = super::receiver_type_scope(&receiver, runtime.heap());
     let Some((state, ctx, module)) = runtime.parts_mut() else {
         bail!("{} method '{}' requires full runtime state", receiver_type_name, method);
     };
     let Some(ctx) = ctx else {
         bail!("{} has no method '{}'", receiver_type_name, method);
     };
-    let Some(method_val) = ctx
-        .type_checker()
-        .as_ref()
-        .and_then(|tc| tc.registry().get_method(&receiver_type, method.as_str()).cloned())
+    // Dispatch on the *declared* type name (`Sq`), not the diagnostic one
+    // (`runtime_type_name` reports the heap kind, i.e. "Object", for any
+    // struct instance).
+    let declared_type = receiver_type.display();
+    let Some(impl_ref) = ctx
+        .trait_method(&receiver_scope, &declared_type, method.as_str())
+        .cloned()
     else {
         bail!("{} has no method '{}'", receiver_type_name, method);
     };
-    call_runtime_value_runtime_with_receiver_list_args(
-        method_val,
+    crate::vm::call_trait_method(
+        &impl_ref,
+        crate::vm::TraitMethodRef {
+            type_name: &declared_type,
+            method: method.as_str(),
+        },
         &receiver,
         positional.handle(),
         state,
@@ -1277,7 +1287,7 @@ fn heap_dispatch_type(value: &HeapValue) -> Type {
         HeapValue::StreamCursor(_) => Type::Named("StreamCursor".to_string()),
         HeapValue::Slice(_) => Type::Named("Slice".to_string()),
         HeapValue::Resource(resource) => Type::Named(resource.kind.to_string()),
-        HeapValue::Object(object) => Type::Named(object.type_name.to_string()),
+        HeapValue::Object(object) => Type::Named(object.type_name().to_string()),
         HeapValue::UpvalCell(_) => Type::Any,
         HeapValue::ErrorVal(_) => Type::Named("Error".to_string()),
     }

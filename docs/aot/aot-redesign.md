@@ -2,8 +2,9 @@
 
 > 状态:**已实现,legacy text 后端已退役**(核心设计 §2-§6 全部落地,MIR 管线为
 > **唯一后端**;实现记录见 §9.5。§7 约定的 legacy 退役已完成:约 -4.8 万行,
-> `use_mir_pipeline`/`allow_legacy_fallback`/`LK_AOT_MIR`/`LK_AOT_LEGACY` 开关一并移除;
-> 剩余项均为 §1 划定的非目标——阶段 4 闭包/间接调用/可变全局/方法分派与模块 builtin)。目标是把当前 LLVM
+> `use_mir_pipeline`/`allow_legacy_fallback`/`LK_AOT_MIR`/`LK_AOT_LEGACY` 开关一并移除。
+> §7 阶段 4(原列为非目标)的可变全局/方法分派/函数地址/`try` 事后也已落地,纯原生
+> 覆盖 51/51 examples;当前剩余待办见 §9.5 末尾三条)。目标是把当前 LLVM
 > AOT 后端从"文本 IR 拼接 + 分析发射交织 + 逐 shape 手写"重构为"类型化中间表示(MIR)+
 > 结构化 SSA 发射 + 单一真相 ABI + 句柄化运行时"。要求:**高性能、现代设计规范、
 > 清晰项目结构、优雅**。
@@ -262,15 +263,24 @@ crates(新增/重构):
 
 `cli` 的 `llvm` feature 改指 `lk-aot`。`llvm` 老 crate 逐步清空到上述 crate(见 §7)。
 
-**模块层内(以 lk-aot-lower 为例)**:
+**模块层内(以 lk-aot-lower 为例,已落地形态)**:
+
 ```
 lower/
-  scalar.rs      # 标量 op -> Inst(除零→checked)
-  containers.rs  # 容器 op -> Call{AbiFn}(取代 dynamic_containers/ 全部逐 shape)
-  control.rs     # 块/分支 -> Block/Term(SSA 块参数)
-  calls.rs       # 直接调用解析;间接/闭包在此返回 Unsupported(扩展点)
-  facts.rs       # 类型事实(移自 core::vm::analysis / 现 scalar/facts)
+  inst/mod.rs      # 路由表:opcode → 语义家族(唯一的"谁管这条指令"真相)
+  inst/scalar.rs   # 常量/move/类型谓词/算术/比较(除零→checked helper)
+  inst/string.rs   # 字面量/display 转换/拼接/split/join
+  inst/call.rs     # 直接调用、方法分派、闭包构造、间接调用去虚化
+  inst/global.rs   # 可变模块全局 + 捕获 cell
+  inst/container.rs# list/map/object 构造、索引、变更 → Call{AbiFn}
+  inst/control.rs  # 非终结符的控制流 op(Raise);终结符在 function.rs
+  function.rs cfg.rs ssa.rs  # 块切分/终结符/按需 SSA 构造
+  convert.rs       # 标量上下文读取、数值 coerce、display 转换(Maybe 解包规则)
+  prescan.rs sig.rs# 全模块前置事实:参数/返回观测、全局槽类型、桥接资格
 ```
+
+每条 lowering 例程取一个 `LowerCtx`(可变的 ssa/globals/sig + 只读的
+func/funcs/entry/module_globals/capture_params),而不是十二个位置参数。
 
 ---
 
@@ -457,13 +467,60 @@ differential harness 直接解决"emit 签名 == helper 签名 == 运行结果 =
     7 个 CLI 集成测试改写为 MIR 路径断言。**差分测试当场抓出并修复 legacy 后端一个真实分歧**:
     `return nil;` legacy native 打印 `nil`,VM 与 MIR 管线都打印空——改写后的 CLI 测试现在锁定
     正确(VM)行为。
-- **RFC 状态:核心设计(§2-§6)全部落地;按 §1 非目标划界的剩余项**:
-  1. 闭包/间接调用/可变全局(§7 阶段 4)= **本 RFC 明确的非目标**,扩展点已就位
-     (`Ty` 封闭枚举加变体 + lower 加 arm 即可);`__lk_call_method` 动态方法分派
-     (list `.sort()`/`.pop()` 等)同属此类,现回退 legacy。
-  2. 删除 legacy text 后端(§7 "旧路径在被完全替换前保留为 fallback 对拍基准"):
-     待 MIR 覆盖吸收 legacy 独有形状(方法分派/对象/try 等)后整体退役,连同其 34 个
-     pinned 结构断言测试与 `dynamic_containers/`(预计 -2~4 万行)。
+- **§7 阶段 4(原列为"非目标")— ✅ 事后已落地**:可变全局(`Inst::GlobalGet`/
+  `GlobalSet` + 全局载体)、方法分派(`Inst::TraitDispatch`)、函数地址
+  (`Const::FnAddr`)、`try`(`Inst::TryCall`,lkrt C `setjmp` trampoline)均已进 MIR,
+  正如 §3.1 所预期的"加枚举变体 + 加 lower arm"。legacy text 后端也已整体退役
+  (见下条 Cranelift 迁移)。纯原生覆盖(`scripts/aot_coverage.sh`,hybrid 关)
+  **51/51 examples,零 blocker**。
+- **RFC 状态:核心设计(§2-§6)全部落地。剩余待办(均有明确后继归属,非遗漏)**:
+  1. **hybrid 桥的后续切片**(见 `tier1-hybrid.md` "Later slices"):typed-list Dyn tag
+     (quoted 字符串列表返回)、`Dyn` 类型的桥**参数**(今天只 marshal 标量入桥)、
+     opaque `Any` 值句柄、可变全局 snapshot/sync(`prescan.rs` 遇 `SetGlobal` 即判不合格)。
+  2. **§3.4 分级所有权:arena + 字符串 eager free + 循环局部容器 scope drop**。
+     - 全局 arena 仍是默认;concat 链中已知死亡的字符串走 eager `lkrt_string_free`。
+     - **块局部容器已加 scope drop**(`opt::scope_drop_block_locals`):每一次使用都是
+       "非保留接收者调用"(schema 的 `Receiver` 契约,默认保守为"会保留")、不经
+       终结符/其他块逃逸的容器句柄,在块尾发 `rt.handle_release`。
+       **"必须在循环体内"这个条件已去掉**——它是收益启发不是安全性质,而且恰好漏掉
+       最常见的形态:`try` 体被 lower 成独立函数,循环在调用者里,函数自身看不到循环。
+       实测 20 万次 `try { let tmp = [i, i+1]; … }`:带循环条件时每个临时表都活着
+       (76MB),去掉后 54MB / 0.11s→0.08s;语料里释放点 9 → **259**。lkrt 的 arena 记账随之从 `Vec` 改为按地址索引的
+       `HashMap`,释放才是 O(1)。
+       **动机是实测的 VM/native 行为差异**:`for i in 0..2_000_000 { let tmp = [i, i+1, i+2]; … }`
+       每次迭代的临时表全部留在 arena。加 scope drop 前后(dist 构建):
+       0.45s / 250MB → **0.03s / 2.9MB**(VM 参照:0.11s / 8.8MB)。**时间差来自
+       记账本身**——注册两百万个存活句柄比循环干的活还贵。容器真逃逸的程序不受影响
+       (30 万个逃逸 list:native 44MB vs VM 48MB)。
+     - 句柄语义是 ABI schema 的一等标注(`Receiver::{Retained,Borrowed,Constructs}`,
+       **默认 Retained**),不是名字匹配。逐条对着 lkrt 实现审计过 130 条,审计当场
+       抓出两个按名字必错的条目:`map_h.obj_mark` 把句柄**地址**记进全局
+       `OBJ_TYPE_MARKS`(释放后地址复用会串味),`dyn.as_list` 返回的是**既有**句柄
+       而非新句柄(当成构造函数会释放别人的容器)。两条都显式留在 `Retained` 并写明
+       原因;另有 `i64_sort`/`i64_reverse`(clone 后返回新句柄)、`*_keys`/`*_values`/
+       `*_iter_pairs`(经 `pair_list` 间接 `arena_handle`)是按名字会漏掉的构造函数。
+     - 循环识别用**教科书定义**(回边 = `b → h` 且 `h` 支配 `b`;循环体 = `h` 加上
+       不经 `h` 就能到达 `b` 的块),不是"块号顺序"近似。换掉近似后循环内构造
+       18 → 30 处、实际释放 3 → **9 处**——近似漏掉了整片循环块。
+     - **跨块一般化经测量后不做**:循环内构造里块内局部的部分已覆盖,
+       **0 处**是"跨块但不经终结符"。原因是结构性的:SSA 里跨块传值必须走块参数,
+       而经块参数就意味着可能跨迭代存活——块作用域就是这个分析的天花板,不是近似。
+       `opt::count_loop_allocations` 可随时重测。
+  3. **§5 性能要点 2 已落地(收益实测有限)/要点 3 未落地**:
+     - `Pure` 不再是死元数据 —— `aot/mir/src/opt.rs` 在 MIR 层做 `Pure` 调用 CSE + DCE
+       (Cranelift 无法对不透明 `lkrt` 符号做这件事,只有 ABI schema 知道它纯)。
+       CSE 按**支配关系**定界(在支配树上带作用域表 DFS),而非按块:块内只能折叠
+       5 处,支配定界折叠 **33** 处;非支配的兄弟分支/循环体→循环后 一律保留
+       (三个单测分别钉住这三种形态)。**实测**:examples 语料删死指令 1085 条;但
+       `bench/workloads_business_algorithms.lk` 开关此 pass 产出**逐字节相同**的
+       可执行文件、运行时间相同——Cranelift 自己已消除死的纯 CLIF 指令,所以 DCE 那半
+       只买到"MIR 更干净",CSE 那半才是 Cranelift 覆盖不到的能力。**两者都不是那
+       ~17% 差距的来源**(差距在指令选择/寄存器分配)。
+     - **LICM 经测量后决定不做**:全 51 个 example 的循环不变 `Pure` 调用候选 = **0**
+       (`opt::count_licm_candidates`)。结构性原因:循环内的 `Pure` 调用几乎总以循环
+       变量为参数。且提升需要比 `Pure` 更强的"不 abort"性质(0 次迭代的循环会被引入
+       abort),ABI schema 目前没有这一位。
+     - MIR 逃逸分析(非逃逸容器栈/bump 分配)仍无实现。
 - **codegen 后端迁移到 Cranelift ✅(字符串 IR 渲染器退役)**:§3.2 预留的"codegen 后端可替换"
   兑现——`lk-aot-codegen` 的 `render_module`(MIR → LLVM 文本 → clang)由 **Cranelift**
   (`clif.rs`:`MIR → Cranelift IR(typed FunctionBuilder + verifier)→ 原生 object`)取代。

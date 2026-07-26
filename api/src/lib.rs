@@ -6,11 +6,12 @@
 //! global state — this is exactly what the M0 "去全局状态" work enabled. Add a
 //! fuel budget to sandbox execution (the instruction-budget knob of M2.6).
 
+use lk_core::vm::ModuleResolver;
+use lk_core::vm::ProgramExec;
 use std::sync::Arc;
 
 use anyhow::Result;
 use lk_core::module::ModuleRegistry;
-use lk_core::stmt::ModuleResolver;
 use lk_core::syntax::{ParseOptions, parse_program_source};
 use lk_core::typ::TypeChecker;
 use lk_core::vm::{NativeFunction, VmContext, execute_program_with_ctx_and_limits};
@@ -445,7 +446,7 @@ impl HostModule {
 /// Scalar argument for [`HybridModule::call_discard`] (re-exported core type).
 pub use lk_core::vm::ModuleFunctionArg as HybridArg;
 
-/// Tier 1 hybrid bridge (`docs/llvm/tier1-hybrid.md`): a decoded module
+/// Tier 1 hybrid bridge (`docs/aot/tier1-hybrid.md`): a decoded module
 /// artifact plus an isolated VM context, so a native binary can execute
 /// individual VM-only functions of the *same* module it was compiled from.
 /// The artifact goes through the verified decode path (`from_json_str` →
@@ -469,7 +470,11 @@ impl HybridModule {
         lk_stdlib::register_stdlib_modules(&mut registry)?;
         let resolver = Arc::new(ModuleResolver::with_registry(registry));
         let mut ctx = VmContext::new().with_resolver(Arc::clone(&resolver));
-        lk_core::stmt::import::execute_imports(&imports, resolver.as_ref(), &mut ctx)?;
+        lk_core::vm::execute_imports(&imports, resolver.as_ref(), &mut ctx)?;
+        // Once, here — not per bridged call. `ctx` lives as long as the process
+        // (the `HYBRID` `OnceLock`), so a per-call registration accumulated the
+        // module's impls in the type registry for the lifetime of the program.
+        ctx.register_module_types(&module)?;
         Ok(Self { module, ctx })
     }
 
@@ -492,7 +497,7 @@ impl HybridModule {
     /// Call function `function_index` and keep the per-call state alive so
     /// heap-backed results (returned *or raised*) stay readable — the v2
     /// bridge marshals them into native memory before dropping the outcome
-    /// (`docs/llvm/tier1-hybrid.md` v2).
+    /// (`docs/aot/tier1-hybrid.md` v2).
     pub fn call_keep_state(
         &mut self,
         function_index: u32,
@@ -511,6 +516,7 @@ impl Default for Vm {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lk_core::vm::ModuleResolver;
 
     #[test]
     fn eval_returns_value() {
@@ -864,7 +870,7 @@ pub mod ffi {
         }
     }
 
-    // ---- Tier 1 hybrid bridge (docs/llvm/tier1-hybrid.md) -------------------
+    // ---- Tier 1 hybrid bridge (docs/aot/tier1-hybrid.md) -------------------
     //
     // Process-singleton by design: a hybrid native binary embeds exactly one
     // module artifact, and threading a handle through every generated function
@@ -883,11 +889,16 @@ pub mod ffi {
     static HYBRID: OnceLock<Mutex<HybridModule>> = OnceLock::new();
 
     /// Argument tags for [`LkHybridArg`]. Tag 2 (bool) reads the `i` union
-    /// field as 0/1.
+    /// field as 0/1; tag 4 (nil) has no payload and ignores the union.
+    ///
+    /// Tagging is *per argument*, not per parameter: the same VM function may
+    /// be called with an `Int` from one site and a `Str` from another, which
+    /// is why the lowering records argument types per `CallVm` site.
     pub const LK_HYBRID_ARG_I64: u8 = 0;
     pub const LK_HYBRID_ARG_F64: u8 = 1;
     pub const LK_HYBRID_ARG_BOOL: u8 = 2;
     pub const LK_HYBRID_ARG_STR: u8 = 3;
+    pub const LK_HYBRID_ARG_NIL: u8 = 4;
 
     /// Payload of one bridge argument (matches the `lk.h` union).
     #[repr(C)]
@@ -961,6 +972,7 @@ pub mod ffi {
                 LK_HYBRID_ARG_I64 => HybridArg::Int(unsafe { arg.value.i }),
                 LK_HYBRID_ARG_F64 => HybridArg::Float(unsafe { arg.value.f }),
                 LK_HYBRID_ARG_BOOL => HybridArg::Bool(unsafe { arg.value.i } != 0),
+                LK_HYBRID_ARG_NIL => HybridArg::Nil,
                 LK_HYBRID_ARG_STR => {
                     let ptr = unsafe { arg.value.s };
                     if ptr.is_null() {

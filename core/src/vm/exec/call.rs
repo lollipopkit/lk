@@ -94,15 +94,28 @@ impl Executor {
     }
 
     pub(super) fn handle_call_error(&mut self, error: anyhow::Error) -> Result<RuntimeVal> {
-        if let Some(raise) = error.downcast_ref::<super::LanguageRaise>() {
-            if let Err(error) = self.handle_language_raise(raise) {
-                self.safepoint()?;
-                return Err(error);
-            }
-            Ok(RuntimeVal::Nil)
+        // Both raise flavors are catchable: a message-only one binds the
+        // message string, an `error(v)` one binds `v` itself (see
+        // `Executor::caught_message_value`). Downcasting only `LanguageRaise`
+        // here left a first-class raise uncatchable by a `TryBegin` handler.
+        let caught = if let Some(raise) = error.downcast_ref::<super::LanguageRaise>() {
+            Some(self.handle_language_raise(raise))
         } else {
-            self.safepoint()?;
-            Err(error)
+            error
+                .root_cause()
+                .downcast_ref::<super::handler::LkRaisedValue>()
+                .map(|raised| self.handle_raised_value(&raised.clone()))
+        };
+        match caught {
+            Some(Ok(())) => Ok(RuntimeVal::Nil),
+            Some(Err(error)) => {
+                self.safepoint()?;
+                Err(error)
+            }
+            None => {
+                self.safepoint()?;
+                Err(error)
+            }
         }
     }
 

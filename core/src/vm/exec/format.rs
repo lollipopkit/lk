@@ -25,7 +25,7 @@ pub(super) fn format_runtime_val(value: &RuntimeVal, heap: &HeapStore, depth: us
                     if depth < MAX_DEPTH {
                         let mut out = String::new();
                         out.push('<');
-                        out.push_str(&obj.type_name);
+                        out.push_str(obj.type_name());
                         out.push_str(" {");
                         let mut first = true;
                         for (key, value) in &obj.fields {
@@ -40,7 +40,7 @@ pub(super) fn format_runtime_val(value: &RuntimeVal, heap: &HeapStore, depth: us
                         out.push_str("}>");
                         out
                     } else {
-                        format!("<{} {{...}}>", obj.type_name)
+                        format!("<{} {{...}}>", obj.type_name())
                     }
                 }
                 _ => "<value>".to_string(),

@@ -159,6 +159,36 @@ impl Compiler {
         pc
     }
 
+    /// Opens a protected region: `TryBegin catch_reg, →handler`, with the
+    /// handler offset patched once the handler's address is known.
+    pub(super) fn emit_try_begin_placeholder(&mut self, catch_reg: u16) -> Result<usize> {
+        let pc = self.function.code.len();
+        self.emit(Instr::as_bx(
+            Opcode::TryBegin,
+            checked_u8("try catch register", catch_reg)?,
+            0,
+        ));
+        Ok(pc)
+    }
+
+    pub(super) fn patch_try_begin(&mut self, pc: usize, target: usize) -> Result<()> {
+        let instr = *self
+            .function
+            .code
+            .get(pc)
+            .ok_or_else(|| anyhow!("Compiler try patch pc {pc} out of bounds"))?;
+        if instr.opcode() != Opcode::TryBegin {
+            bail!("Compiler expected TryBegin at patch pc {pc}");
+        }
+        // Checked rather than `as i16`: a protected region longer than the
+        // signed-bx range must fail the compile, not wrap into a jump to
+        // somewhere else. (`patch_branch` above still truncates — TODO.)
+        let offset = i16::try_from(jump_offset(pc, target)?)
+            .map_err(|_| anyhow!("Compiler try region at pc {pc} is too large to encode a handler offset"))?;
+        self.function.code[pc] = Instr::as_bx(Opcode::TryBegin, instr.a(), offset);
+        Ok(())
+    }
+
     pub(super) fn emit_branch_placeholder(&mut self, opcode: Opcode, condition: u16) -> Result<usize> {
         let pc = self.function.code.len();
         self.emit(Instr::as_bx(opcode, checked_u8("branch condition", condition)?, 0));

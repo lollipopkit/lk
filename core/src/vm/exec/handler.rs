@@ -4,7 +4,7 @@ use alloc::sync::Arc;
 
 use anyhow::{Result, anyhow, bail};
 
-use crate::val::{ErrorVal, HeapValue, RuntimeVal};
+use crate::val::{HeapValue, RuntimeVal};
 
 #[derive(Clone, Debug)]
 pub(super) struct LanguageRaise {
@@ -67,6 +67,36 @@ impl ErrorHandler {
 }
 
 impl super::Executor {
+    /// The value a `catch` binds for a message-only raise.
+    ///
+    /// A **string**, not an `ErrorVal`. This is the observable contract of
+    /// today's try/catch (`try { 1/0 } catch e` → `typeof(e) == "String"`),
+    /// which the parse-time desugar implements through `pcall`. These opcodes
+    /// are the path that replaces it, so they have to bind the same thing —
+    /// binding an `ErrorVal` here would silently change `typeof(e)` the moment
+    /// the compiler starts emitting them.
+    pub(super) fn caught_message_value(&mut self, message: &str) -> RuntimeVal {
+        match crate::val::ShortStr::new(message) {
+            Some(short) => RuntimeVal::ShortStr(short),
+            None => RuntimeVal::Obj(self.alloc_heap_value(HeapValue::String(Arc::<str>::from(message)))),
+        }
+    }
+
+    /// Hands `value` to `handler` and resumes at its catch block.
+    ///
+    /// Also drops the GC-root pin on a first-class error value now that it is
+    /// about to be bound by a live register, mirroring what `pcall` does when it
+    /// catches (plan M2.2): the pin exists only to carry a heap error through
+    /// unwinding.
+    pub(super) fn enter_handler(&mut self, handler: ErrorHandler, value: RuntimeVal) -> Result<()> {
+        self.state.set_pending_raise_root(None);
+        self.frame_base = handler.frame_base;
+        self.state.stack_top = handler.stack_top;
+        self.write(handler.catch_reg, value)?;
+        self.pc = handler.catch_pc;
+        Ok(())
+    }
+
     pub(super) fn raise_language_message(&mut self, message: &str) -> Result<()> {
         if let Some(handler_index) = self
             .handler_stack
@@ -74,20 +104,33 @@ impl super::Executor {
             .rposition(|handler| handler.frame_base == self.frame_base)
         {
             let handler = self.handler_stack.remove(handler_index);
-            let error = RuntimeVal::Obj(self.alloc_heap_value(HeapValue::ErrorVal(ErrorVal {
-                message: Arc::<str>::from(message),
-                trace: Vec::new(),
-            })));
-            self.frame_base = handler.frame_base;
-            self.state.stack_top = handler.stack_top;
-            self.write(handler.catch_reg, error)?;
-            self.pc = handler.catch_pc;
-            Ok(())
+            let value = self.caught_message_value(message);
+            self.enter_handler(handler, value)
         } else {
             Err(anyhow!(LanguageRaise {
                 message: Arc::<str>::from(message),
             }))
         }
+    }
+
+    /// Catches an `error(v)` raise in the current frame, binding **`v` itself**
+    /// rather than its rendering — the round-trip `pcall` guarantees (plan M2.2)
+    /// and the other half of the value contract described on
+    /// [`Self::caught_message_value`].
+    ///
+    /// Without this, a first-class raise crossing these opcodes was not
+    /// catchable at all: every catch site downcast `LanguageRaise` only, so
+    /// `try { error([1, 2]) } catch e` escaped an opcode-emitted handler.
+    pub(super) fn handle_raised_value(&mut self, raised: &LkRaisedValue) -> Result<()> {
+        let Some(handler_index) = self
+            .handler_stack
+            .iter()
+            .rposition(|handler| handler.frame_base == self.frame_base)
+        else {
+            return Err(anyhow!(raised.clone()));
+        };
+        let handler = self.handler_stack.remove(handler_index);
+        self.enter_handler(handler, raised.value)
     }
 
     pub(super) fn begin_try(&mut self, catch_reg: u8, catch_offset: i32) -> Result<()> {
@@ -111,14 +154,7 @@ impl super::Executor {
         let Some(handler) = self.handler_stack.pop() else {
             bail!("{}", raise.message);
         };
-        let error = RuntimeVal::Obj(self.alloc_heap_value(HeapValue::ErrorVal(ErrorVal {
-            message: raise.message.clone(),
-            trace: Vec::new(),
-        })));
-        self.frame_base = handler.frame_base;
-        self.state.stack_top = handler.stack_top;
-        self.write(handler.catch_reg, error)?;
-        self.pc = handler.catch_pc;
-        Ok(())
+        let value = self.caught_message_value(raise.message.as_ref());
+        self.enter_handler(handler, value)
     }
 }

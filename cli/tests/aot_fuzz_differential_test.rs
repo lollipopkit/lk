@@ -10,7 +10,7 @@
 //!
 //! Deterministic by default; scale with `LK_FUZZ_CASES`, reseed with
 //! `LK_FUZZ_SEED`. Failures print the seed and full program source.
-#![cfg(feature = "llvm")]
+#![cfg(feature = "aot")]
 
 use std::fmt::Write as _;
 use std::fs::{self, File};
@@ -656,7 +656,7 @@ impl Generator {
         }
     }
 
-    /// Tier 1 hybrid shape (`docs/llvm/tier1-hybrid.md`): an *eligible-but-
+    /// Tier 1 hybrid shape (`docs/aot/tier1-hybrid.md`): an *eligible-but-
     /// unsupported* helper — its body prints through a *dynamic format
     /// string* (the documented println reject; try/catch used to be the
     /// ingredient until plan G lowered it natively and silently degraded the
@@ -988,10 +988,18 @@ fn fuzz_differential_vm_vs_native() {
         let case_seed = seed.wrapping_add(case);
         let mut generator = Generator::new(case_seed);
         let (source, expect_hybrid) = generator.program();
-        let outcome = run_case(&dir, &format!("fuzz_{case}"), &source, case_seed, expect_hybrid);
+        let name = format!("fuzz_{case}");
+        let outcome = run_case(&dir, &name, &source, case_seed, expect_hybrid);
         if outcome.compared {
             compared += 1;
         }
+        // Drop this case's artifacts before generating the next one. Keeping
+        // them all until the end costs ~30 MB per case under a sanitizer, so a
+        // default 800-case run filled a 24 GB tmpfs and then failed with a
+        // *link* error that looks like a lowering bug.
+        let _ = fs::remove_file(dir.join(format!("{name}.lk")));
+        let _ = fs::remove_file(dir.join(&name));
+        let _ = fs::remove_file(dir.join(format!("{name}.lkm")));
     }
 
     println!("fuzz differential: {compared}/{cases} cases natively compared (seed {seed:#x})");

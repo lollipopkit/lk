@@ -48,6 +48,10 @@ pub(super) fn stmt_uses_for_binding_value(stmt: &Stmt, name: &str) -> bool {
         Stmt::For { iterable, body, .. } => {
             expr_uses_for_binding_value(iterable, name) || stmt_uses_for_binding_value(body, name)
         }
+        Stmt::Try { body, handler, .. } => body
+            .iter()
+            .chain(handler)
+            .any(|stmt| stmt_uses_for_binding_value(stmt, name)),
         Stmt::Block { statements } => {
             for stmt in statements {
                 if stmt_uses_for_binding_value(stmt, name) {
@@ -194,6 +198,18 @@ pub(super) fn stmt_shadows_name_deep(stmt: &Stmt, name: &str) -> bool {
             stmt_shadows_name_deep(body, name)
         }
         Stmt::Block { statements } => statements.iter().any(|stmt| stmt_shadows_name_deep(stmt, name)),
+        // The caught name shadows too, and both sides are searched.
+        Stmt::Try {
+            body,
+            catch_var,
+            handler,
+        } => {
+            catch_var == name
+                || body
+                    .iter()
+                    .chain(handler)
+                    .any(|stmt| stmt_shadows_name_deep(stmt, name))
+        }
         Stmt::Impl { methods, .. } => methods.iter().any(|method| stmt_shadows_name_deep(method, name)),
         Stmt::Function { .. } => false,
         Stmt::Empty

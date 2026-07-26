@@ -4,8 +4,8 @@ use alloc::sync::Arc;
 
 use anyhow::{Result, anyhow, bail};
 
-use crate::val::{HeapValue, RuntimeVal, ShortStr, Type, TypedList};
-use crate::vm::{Module, VmContext, call_runtime_value_runtime_with_receiver};
+use crate::val::{HeapValue, RuntimeVal, ShortStr, TypedList};
+use crate::vm::{Module, VmContext};
 
 use super::{Executor, heap_kind};
 
@@ -69,19 +69,26 @@ impl Executor {
         let Some(HeapValue::Object(object)) = self.state.heap.get(*handle) else {
             return Ok(None);
         };
-        let receiver_type = Type::Named(object.type_name.to_string());
+        let type_name = Arc::clone(object.type_name());
+        let type_scope = object.type_scope().clone();
         let Some(ctx_ref) = ctx.as_deref_mut() else {
             return Ok(None);
         };
-        let Some(method) = ctx_ref
-            .type_checker()
-            .as_ref()
-            .and_then(|tc| tc.registry().get_method(&receiver_type, "show").cloned())
-        else {
+        let Some(impl_ref) = ctx_ref.trait_method(&type_scope, &type_name, "show").cloned() else {
             return Ok(None);
         };
-        let result =
-            call_runtime_value_runtime_with_receiver(method, value, &[], &mut self.state, module, Some(ctx_ref))?;
+        let result = crate::vm::call_trait_method(
+            &impl_ref,
+            crate::vm::TraitMethodRef {
+                type_name: &type_name,
+                method: "show",
+            },
+            value,
+            None,
+            &mut self.state,
+            module,
+            Some(ctx_ref),
+        )?;
         self.runtime_value_to_plain_string_maybe(&result)
     }
 

@@ -19,9 +19,11 @@ mod ir;
 #[cfg(test)]
 mod migration_guard;
 mod repl;
+mod resolver;
 mod runtime;
 #[allow(dead_code)]
 pub(crate) mod ssa;
+mod type_info;
 pub mod verify;
 #[cfg(all(test, feature = "std"))]
 mod verify_fuzz_tests;
@@ -30,12 +32,16 @@ pub use artifact::*;
 pub use cache::*;
 pub use call_window::*;
 pub use compiler::*;
-pub use context::VmContext;
+pub use context::{MethodImpl, VmContext, receiver_type_scope};
+#[cfg(test)]
+pub use exec::test_support;
 pub use exec::*;
 pub use gc::*;
 pub use ir::*;
 pub use repl::*;
+pub use resolver::*;
 pub use runtime::*;
+pub use type_info::*;
 
 pub use analysis::{
     VM_INDEX_KEY_METRIC_NAMES, VM_REGISTER_WRITE_SOURCE_NAMES, VmRuntimeMetrics, vm_runtime_metrics_enabled,

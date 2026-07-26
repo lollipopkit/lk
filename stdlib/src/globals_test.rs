@@ -1,14 +1,15 @@
 #[cfg(test)]
 mod tests {
+    use lk_core::vm::ProgramExec;
     use std::sync::Arc;
 
     use anyhow::Result;
     use lk_core::{
-        module, stmt,
-        stmt::import::ModuleResolver,
+        module,
         stmt::stmt_parser::StmtParser,
         token::Tokenizer,
         val::{CallableValue, HeapValue, RuntimeVal},
+        vm::ModuleResolver,
         vm::{self, NativeFunction},
     };
 
@@ -21,7 +22,7 @@ mod tests {
         crate::register_stdlib_modules(&mut registry)?;
         crate::register_stdlib_globals(&mut registry);
 
-        let resolver = Arc::new(stmt::ModuleResolver::with_registry(registry));
+        let resolver = Arc::new(vm::ModuleResolver::with_registry(registry));
         let mut env = vm::VmContext::new().with_resolver(resolver);
         program.execute_with_ctx(&mut env)
     }
@@ -45,7 +46,7 @@ mod tests {
         crate::register_stdlib_modules(&mut registry)?;
         crate::register_stdlib_globals(&mut registry);
 
-        let resolver = Arc::new(stmt::ModuleResolver::with_registry(registry));
+        let resolver = Arc::new(vm::ModuleResolver::with_registry(registry));
         let mut env = vm::VmContext::new().with_resolver(resolver);
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -201,7 +202,7 @@ mod tests {
         crate::register_stdlib_modules(&mut registry)?;
         crate::register_stdlib_globals(&mut registry);
 
-        let resolver = Arc::new(stmt::ModuleResolver::with_registry(registry));
+        let resolver = Arc::new(vm::ModuleResolver::with_registry(registry));
         let mut env = vm::VmContext::new().with_resolver(resolver);
 
         let result = program.execute_with_ctx(&mut env)?;

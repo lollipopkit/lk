@@ -1,12 +1,14 @@
 #[cfg(test)]
 mod tests {
+    use lk_core::vm::ModuleResolver;
+    use lk_core::vm::ProgramExec;
     use std::sync::Arc;
 
     use crate::{math::MathModule, register_stdlib_modules};
     use anyhow::{Result, anyhow};
     use lk_core::{
         module::ModuleRegistry,
-        stmt::{ModuleResolver, stmt_parser::StmtParser},
+        stmt::stmt_parser::StmtParser,
         token::Tokenizer,
         val::{HeapStore, HeapValue, RuntimeVal, ShortStr, TypedList},
         vm::{NativeArgs, NativeEntry, NativeFunction, NativeRuntime, ProgramResult, RuntimeModuleState, VmContext},

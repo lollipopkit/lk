@@ -3,6 +3,7 @@ use crate::compat::path::{Path, PathBuf};
 use crate::compat::prelude::*;
 #[cfg(feature = "std")]
 use crate::package::PackageGraph;
+use crate::token::token_lexeme;
 use crate::{
     token::{ParseError, Token, Tokenizer},
     util::fast_map::FastHashMap,
@@ -10,7 +11,7 @@ use crate::{
 
 use super::{
     MacroDef, MacroExportItem, MacroRegistry, SourceToken, error_at, expect_id, find_group, macro_rules_start_at,
-    parse_macro_def, parse_macro_export_list_at, token_lexeme,
+    parse_macro_def, parse_macro_export_list_at,
 };
 
 const BUILTIN_MACRO_MODULE: &str = "macros";
@@ -736,10 +737,11 @@ fn resolve_macro_import_path(base_dir: &Path, raw: &str) -> Result<PathBuf, Stri
 
 #[cfg(test)]
 mod tests {
+    use crate::vm::ModuleResolver;
+    use crate::vm::ProgramExec;
     use std::{fs, path::Path};
 
     use crate::{
-        stmt::ModuleResolver,
         syntax::{ParseOptions, expand_source, parse_program_source, render_tokens},
         vm::{VmContext, execute_source},
     };

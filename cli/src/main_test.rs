@@ -125,7 +125,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "llvm")]
+    #[cfg(feature = "aot")]
     #[test]
     fn direct_source_execution_defaults_to_vm_and_native_is_opt_in() {
         assert!(!native_run_enabled_from_flags(false, false, false, false));
@@ -138,7 +138,7 @@ mod tests {
         assert!(!native_run_enabled_from_flags(false, false, true, true));
     }
 
-    #[cfg(feature = "llvm")]
+    #[cfg(feature = "aot")]
     #[test]
     fn native_cache_proc_macro_dependency_metadata_stales_on_file_change() {
         let dir = tempfile::tempdir().expect("temp dir");

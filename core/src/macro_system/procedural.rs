@@ -12,8 +12,8 @@ use self::origins::{generated_item_origins, stmt_label};
 use crate::compat::collections::{HashMap, HashSet};
 use crate::compat::path::PathBuf;
 use crate::{
-    macro_system::token_lexeme,
     stmt::{Attribute, Program, Stmt, StmtParser},
+    token::token_lexeme,
     token::{ParseError, Position, Span, Token, Tokenizer},
 };
 use core::fmt;

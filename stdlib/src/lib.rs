@@ -63,7 +63,7 @@ use lk_core::{
     },
     vm::{
         NativeArgs, NativeEntry, NativeFunction, NativeRuntime, call_runtime_callable_runtime,
-        call_runtime_value_runtime, call_runtime_value_runtime_with_receiver, copy_runtime_value_same_module,
+        call_runtime_value_runtime, copy_runtime_value_same_module,
     },
 };
 pub use lk_stdlib_common::metadata::{
@@ -1098,20 +1098,33 @@ fn runtime_display_show(value: &RuntimeVal, runtime: &mut NativeRuntime<'_>) -> 
     let Some(receiver_type) = runtime_display_receiver_type(value, runtime.heap()) else {
         return Ok(None);
     };
+    // The declaring module is the other half of the receiver's type identity;
+    // read it before `state_ctx_module_mut` takes the heap mutably.
+    let receiver_scope = lk_core::vm::receiver_type_scope(value, runtime.heap());
     let Some((state, ctx, module)) = runtime.state_ctx_module_mut() else {
         return Ok(None);
     };
     let Some(ctx) = ctx else {
         return Ok(None);
     };
-    let Some(method) = ctx
-        .type_checker()
-        .as_ref()
-        .and_then(|tc| tc.registry().get_method(&receiver_type, "show").cloned())
-    else {
+    let Type::Named(receiver_type_name) = &receiver_type else {
         return Ok(None);
     };
-    let result = call_runtime_value_runtime_with_receiver(method, value, &[], state, module, Some(ctx))?;
+    let Some(impl_ref) = ctx.trait_method(&receiver_scope, receiver_type_name, "show").cloned() else {
+        return Ok(None);
+    };
+    let result = lk_core::vm::call_trait_method(
+        &impl_ref,
+        lk_core::vm::TraitMethodRef {
+            type_name: receiver_type_name,
+            method: "show",
+        },
+        value,
+        None,
+        state,
+        module,
+        Some(ctx),
+    )?;
     runtime_string_maybe(&result, state.heap()).map(|value| value.map(|value| value.to_string()))
 }
 
@@ -1122,7 +1135,7 @@ fn runtime_display_receiver_type(value: &RuntimeVal, heap: &HeapStore) -> Option
     let Some(HeapValue::Object(object)) = heap.get(*handle) else {
         return None;
     };
-    Some(Type::Named(object.type_name.to_string()))
+    Some(Type::Named(object.type_name().to_string()))
 }
 
 fn runtime_string(value: &RuntimeVal, heap: &HeapStore, context: &str) -> Result<Arc<str>> {

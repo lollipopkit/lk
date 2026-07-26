@@ -1,6 +1,7 @@
 use super::*;
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
+use crate::vm::ProgramExec;
 
 #[test]
 fn derive_debug_generates_runtime_show_for_template_display() {

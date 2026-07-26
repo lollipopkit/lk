@@ -5,9 +5,7 @@ use crate::{
     operator::BinOp,
     stmt::ImportStmt,
     token::Span,
-    typ::TypeChecker,
     val::Type,
-    vm::VmContext,
 };
 use anyhow::Result;
 
@@ -162,6 +160,22 @@ pub enum Stmt {
     },
     /// expression;
     Expr(Box<Expr>),
+    /// `try { body } catch name { handler }`
+    ///
+    /// A real statement rather than parse-time sugar. It used to be rewritten in
+    /// the parser into `let [ok, e] = try$call(|| { body }); if !ok { handler }`,
+    /// so every later stage — name resolution, the type checker, both back ends —
+    /// saw a closure and a destructuring `let` instead of a protected region.
+    /// Three separate wrong answers came out of that shape: a `return` inside
+    /// the body returned from the *closure*, an assignment to an annotated local
+    /// inside the body lost its type, and a top-level body writing an outer
+    /// local failed at runtime in the cell-capture machinery.
+    Try {
+        body: Vec<Box<Stmt>>,
+        /// The name the handler binds the caught error to.
+        catch_var: String,
+        handler: Vec<Box<Stmt>>,
+    },
     /// { statements }
     Block { statements: Vec<Box<Stmt>> },
     /// 空语句 (用于处理解析时的占位)
@@ -177,16 +191,5 @@ pub struct Program {
 impl Program {
     pub fn new(statements: Vec<Box<Stmt>>) -> Result<Self> {
         Ok(Program { statements })
-    }
-
-    pub fn execute(&self) -> Result<crate::vm::ProgramResult> {
-        let mut ctx = VmContext::new();
-        self.execute_with_ctx(&mut ctx)
-    }
-
-    pub fn execute_with_ctx(&self, ctx: &mut VmContext) -> Result<crate::vm::ProgramResult> {
-        let mut type_checker = TypeChecker::new();
-        self.type_check(&mut type_checker)?;
-        crate::vm::execute_program_with_ctx(self, ctx)
     }
 }

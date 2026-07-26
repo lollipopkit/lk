@@ -416,6 +416,10 @@ fn inline_call_expr_uses_runtime_method_helper(callee: &Expr) -> bool {
 pub(super) fn stmt_contains_call_to(stmt: &Stmt, target: &str) -> bool {
     match stmt {
         Stmt::Attributed { item, .. } => stmt_contains_call_to(item, target),
+        Stmt::Try { body, handler, .. } => body
+            .iter()
+            .chain(handler)
+            .any(|stmt| stmt_contains_call_to(stmt, target)),
         Stmt::If {
             condition,
             then_stmt,

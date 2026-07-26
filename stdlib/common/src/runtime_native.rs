@@ -133,7 +133,7 @@ fn runtime_display_heap_value(value: &HeapValue, heap: &HeapStore) -> Result<Str
         HeapValue::Set(values) => runtime_display_set(values),
         HeapValue::Callable(value) => Ok(runtime_display_callable(value)),
         HeapValue::Object(value) => {
-            let mut out = value.type_name.to_string();
+            let mut out = value.type_name().to_string();
             append_display_entries(
                 &mut out,
                 value

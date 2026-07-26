@@ -1,5 +1,6 @@
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
+use crate::token::token_lexeme;
 use alloc::collections::BTreeSet;
 
 use crate::token::{Position, Span, Token};
@@ -7,7 +8,6 @@ use crate::token::{Position, Span, Token};
 use super::{
     MacroRegistry, SourceToken,
     imports::{self, MacroRuntimeAnchorSource},
-    token_lexeme,
 };
 
 pub(super) fn rewrite_anchor_runtime_refs(tokens: Vec<SourceToken>, registry: &MacroRegistry) -> Vec<SourceToken> {

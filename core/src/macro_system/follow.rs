@@ -1,8 +1,9 @@
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
+use crate::token::token_lexeme;
 use crate::token::{ParseError, Token};
 
-use super::{FragmentKind, PatternElem, RepeatOp, SourceToken, error_at, token_lexeme, token_matches};
+use super::{FragmentKind, PatternElem, RepeatOp, SourceToken, error_at, token_matches};
 
 #[derive(Debug, Clone)]
 enum FollowAtom {

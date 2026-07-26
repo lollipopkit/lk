@@ -1,4 +1,4 @@
-//! Tier 1 hybrid lowering tests (`docs/llvm/tier1-hybrid.md`): with hybrid
+//! Tier 1 hybrid lowering tests (`docs/aot/tier1-hybrid.md`): with hybrid
 //! mode on, a reachable non-entry function whose body does not lower is marked
 //! VM-executed when bridge-eligible (scalar params, no captures, transitively
 //! user-global-free) and its call sites become `call.vm`; anything outside
@@ -39,10 +39,21 @@ fn hybrid_marks_eligible_unlowerable_callee_as_vm_executed() {
     let mir = lk_aot_lower::lower_with_hybrid(&artifact, true).expect("hybrid lowering succeeds");
     lk_aot_mir::validate(&mir).expect("hybrid module validates");
     assert_eq!(mir.vm_functions.len(), 1, "exactly `report` is VM-executed");
-    assert_eq!(
-        mir.vm_functions[0].params,
-        vec![lk_aot_mir::Ty::I64],
-        "the bridge marshals report's parameter as i64"
+    assert_eq!(mir.vm_functions[0].param_count, 1, "report takes one parameter");
+    // The marshaling type is recorded per call site, not per callee.
+    let arg_tys: Vec<_> = mir
+        .functions
+        .iter()
+        .flat_map(|f| f.blocks.iter())
+        .flat_map(|b| b.insts.iter())
+        .filter_map(|inst| match inst {
+            lk_aot_mir::Inst::CallVm { arg_tys, .. } => Some(arg_tys.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        arg_tys.iter().all(|tys| tys == &vec![lk_aot_mir::Ty::I64]),
+        "every call site marshals report's argument as i64, got {arg_tys:?}"
     );
     let rendered = lk_aot_mir::render(&mir);
     assert!(
@@ -123,4 +134,50 @@ fn hybrid_on_by_default() {
         let mir = lk_aot_lower::lower(&artifact).expect("hybrid is on by default");
         assert_eq!(mir.vm_functions.len(), 1, "the helper bridges by default");
     }
+}
+
+#[test]
+fn hybrid_bridges_a_callee_called_with_different_argument_types() {
+    // The same VM-executed helper is called with an Int, a Str, a Float and a
+    // Bool. The bridge tags each argument at its own call site, so this needs
+    // no agreement between sites — v1 required one observed scalar type per
+    // parameter and rejected the whole module here (the reject then infected
+    // the entry, dropping the program to Tier 0).
+    let artifact = artifact(
+        "fn report(x) { let f = \"v={}\".trim(); println(f, x); }\n\
+         report(1);\n\
+         report(\"a\");\n\
+         report(2.5);\n\
+         report(true);\n\
+         report(nil);\n\
+         return 0;\n",
+    );
+    let mir = lk_aot_lower::lower_with_hybrid(&artifact, true).expect("mixed-typed call sites bridge");
+    lk_aot_mir::validate(&mir).expect("module validates");
+    assert_eq!(mir.vm_functions.len(), 1, "exactly `report` is VM-executed");
+    assert_eq!(mir.vm_functions[0].param_count, 1);
+
+    // Not deduped: a duplicated or missing call site is exactly what this
+    // asserts against, and `dedup()` would hide an adjacent repeat.
+    let seen: Vec<lk_aot_mir::Ty> = mir
+        .functions
+        .iter()
+        .flat_map(|f| f.blocks.iter())
+        .flat_map(|b| b.insts.iter())
+        .filter_map(|inst| match inst {
+            lk_aot_mir::Inst::CallVm { arg_tys, .. } => arg_tys.first().copied(),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        seen,
+        vec![
+            lk_aot_mir::Ty::I64,
+            lk_aot_mir::Ty::Str,
+            lk_aot_mir::Ty::F64,
+            lk_aot_mir::Ty::Bool,
+            lk_aot_mir::Ty::Nil,
+        ],
+        "each call site records its own marshaling type"
+    );
 }

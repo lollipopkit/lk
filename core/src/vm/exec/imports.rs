@@ -106,7 +106,11 @@ fn import_heap_value(
                     )?,
                 );
             }
-            HeapValue::Object(RuntimeObject::new(object.type_name.clone(), fields))
+            // The scope travels with the value. Crossing a heap boundary does
+            // not change what type the object *is*, and dropping it here would
+            // make every imported object anonymous — the importer would then
+            // dispatch its methods against its own declarations.
+            HeapValue::Object(RuntimeObject::new(Arc::clone(&object.ty), fields))
         }
         HeapValue::Callable(CallableValue::RuntimeNative { name, arity, function }) => {
             HeapValue::Callable(CallableValue::RuntimeNative {

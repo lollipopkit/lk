@@ -62,6 +62,15 @@ pub(super) fn compile_instr_artifact(path: &Path) -> anyhow::Result<ModuleArtifa
 
 pub(super) fn compile_instr_artifact_with_dependencies(path: &Path) -> anyhow::Result<CompiledInstrArtifact> {
     let expansion = expand_program_file(path)?;
+    // Type-check before compiling, exactly as `Program::execute_with_ctx` does
+    // for `lk FILE`. Without this the two paths disagreed on which programs are
+    // valid: `let x: Int = "s"; println(x);` failed at run time under the VM but
+    // compiled and *ran* fine as a native binary, printing `s`.
+    let mut type_checker = lk_core::typ::TypeChecker::new();
+    expansion
+        .program
+        .type_check(&mut type_checker)
+        .with_context(|| format!("type-check {}", path.display()))?;
     let mut ctx = build_vm_context(path)?;
     let module = compile_program_module_with_ctx(&expansion.program, &mut ctx)
         .with_context(|| format!("compile Instr module for {}", path.display()))?;
@@ -71,7 +80,7 @@ pub(super) fn compile_instr_artifact_with_dependencies(path: &Path) -> anyhow::R
     })
 }
 
-#[cfg(feature = "llvm")]
+#[cfg(feature = "aot")]
 pub(super) fn compile_executable(path: &Path, output: Option<&Path>) -> anyhow::Result<()> {
     let output = output.map(Path::to_path_buf).unwrap_or_else(|| path.with_extension(""));
     // Parse + compile up front so genuine source errors (syntax/type) surface
@@ -119,7 +128,7 @@ pub(super) fn compile_executable(path: &Path, output: Option<&Path>) -> anyhow::
 /// failure (missing clang, lk-api build, link error, codegen bug) — the latter
 /// is returned as the function's `Err` and must propagate, not silently fall
 /// back to the VM bundle.
-#[cfg(feature = "llvm")]
+#[cfg(feature = "aot")]
 pub(super) enum NativeOutcome {
     Compiled,
     Unsupported(String),
@@ -129,20 +138,20 @@ pub(super) enum NativeOutcome {
 /// Cranelift backend (the sole native codegen). `Ok(Unsupported)` marks a shape
 /// the backend does not cover (caller may fall back to the Tier 0 VM bundle);
 /// `Err` is an operational failure that must propagate unchanged.
-#[cfg(feature = "llvm")]
+#[cfg(feature = "aot")]
 pub(super) fn compile_native_executable_from_artifact(
     path: &Path,
     output: &Path,
     artifact: &ModuleArtifact,
 ) -> anyhow::Result<NativeOutcome> {
     let bundled = bundle_file_imports(path, artifact)?;
-    let (artifact, bundles): (&ModuleArtifact, Vec<lk_llvm::BundledImport>) = match &bundled {
+    let (artifact, bundles): (&ModuleArtifact, Vec<lk_aot::BundledImport>) = match &bundled {
         Some((merged, bundles)) => (merged, bundles.clone()),
         None => (artifact, Vec::new()),
     };
     // Inner `Err(reason)` = Unsupported shape (fall back); outer `?` = internal
     // codegen/validation bug (propagate).
-    let clif = match lk_llvm::compile_artifact_to_clif_object(artifact, &bundles)? {
+    let clif = match lk_aot::compile_artifact_to_clif_object(artifact, &bundles)? {
         Ok(clif) => clif,
         Err(reason) => return Ok(NativeOutcome::Unsupported(reason)),
     };
@@ -160,22 +169,22 @@ pub(super) fn compile_native_executable_from_artifact(
             "note: {} function(s) run on the embedded VM (Tier 1 hybrid)",
             clif.vm_function_count
         );
-        lk_llvm::compile_native_executable_from_object_hybrid(
+        lk_aot::compile_native_executable_from_object_hybrid(
             path,
             output,
             &clif.object,
-            lk_llvm::HybridLink {
+            lk_aot::HybridLink {
                 module_artifact_json: &artifact_json,
                 lk_api_staticlib: &staticlib,
             },
         )?;
     } else {
-        lk_llvm::compile_native_executable_from_object(path, output, &clif.object)?;
+        lk_aot::compile_native_executable_from_object(path, output, &clif.object)?;
     }
     Ok(NativeOutcome::Compiled)
 }
 
-#[cfg(feature = "llvm")]
+#[cfg(feature = "aot")]
 pub(super) fn compile_executable_to_path_with_dependencies(
     path: &Path,
     output: &Path,
@@ -191,7 +200,7 @@ pub(super) fn compile_executable_to_path_with_dependencies(
     }
 }
 
-#[cfg(feature = "llvm")]
+#[cfg(feature = "aot")]
 pub(super) fn try_execute_cached_native(path: &Path, source: &[u8]) -> anyhow::Result<bool> {
     if !native_run_enabled() {
         return Ok(false);
@@ -263,7 +272,7 @@ pub(super) fn try_execute_cached_native(path: &Path, source: &[u8]) -> anyhow::R
     anyhow::bail!("cached native executable exited with status {status}");
 }
 
-#[cfg(feature = "llvm")]
+#[cfg(feature = "aot")]
 pub(super) fn native_run_enabled() -> bool {
     native_run_enabled_from_flags(
         env_flag("LK_FORCE_VM"),
@@ -273,17 +282,17 @@ pub(super) fn native_run_enabled() -> bool {
     )
 }
 
-#[cfg(feature = "llvm")]
+#[cfg(feature = "aot")]
 pub(super) fn native_run_enabled_from_flags(force_vm: bool, vm_only: bool, vm_profile: bool, native_run: bool) -> bool {
     native_run && !(force_vm || vm_only || vm_profile)
 }
 
-#[cfg(feature = "llvm")]
+#[cfg(feature = "aot")]
 pub(super) fn native_trace_enabled() -> bool {
     env_flag("LK_NATIVE_TRACE")
 }
 
-#[cfg(feature = "llvm")]
+#[cfg(feature = "aot")]
 pub(super) fn env_flag(name: &str) -> bool {
     matches!(
         std::env::var(name).as_deref(),
@@ -291,7 +300,7 @@ pub(super) fn env_flag(name: &str) -> bool {
     )
 }
 
-#[cfg(feature = "llvm")]
+#[cfg(feature = "aot")]
 pub(super) fn cached_native_executable_path(path: &Path, source: &[u8]) -> anyhow::Result<Option<PathBuf>> {
     let cache_dir = std::env::var_os("LK_NATIVE_CACHE_DIR")
         .map(PathBuf::from)
@@ -323,14 +332,14 @@ pub(super) fn cached_native_executable_path(path: &Path, source: &[u8]) -> anyho
     Ok(Some(cache_dir.join(format!("lk-native-{:016x}", hash.finish()))))
 }
 
-#[cfg(feature = "llvm")]
+#[cfg(feature = "aot")]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(super) struct NativeCacheProcMacroDependencies {
     dependencies: Vec<ProcMacroDependency>,
     fingerprint: ProcMacroDependencyFingerprint,
 }
 
-#[cfg(feature = "llvm")]
+#[cfg(feature = "aot")]
 pub(super) fn native_cache_proc_macro_dependencies_fresh(source_path: &Path, output: &Path) -> bool {
     let metadata_path = native_cache_proc_macro_dependencies_path(output);
     let Ok(raw) = std::fs::read_to_string(&metadata_path) else {
@@ -356,7 +365,7 @@ pub(super) fn native_cache_proc_macro_dependencies_fresh(source_path: &Path, out
         .is_current(&metadata.dependencies, source_path.parent())
 }
 
-#[cfg(feature = "llvm")]
+#[cfg(feature = "aot")]
 pub(super) fn write_native_cache_proc_macro_dependencies(
     source_path: &Path,
     output: &Path,
@@ -371,19 +380,19 @@ pub(super) fn write_native_cache_proc_macro_dependencies(
         .with_context(|| format!("write native cache dependency metadata {}", metadata_path.display()))
 }
 
-#[cfg(feature = "llvm")]
+#[cfg(feature = "aot")]
 pub(super) fn native_cache_proc_macro_dependencies_path(output: &Path) -> PathBuf {
     let file = output.file_name().and_then(|file| file.to_str()).unwrap_or("lk-native");
     output.with_file_name(format!("{file}.proc-macro-deps.json"))
 }
 
-#[cfg(feature = "llvm")]
+#[cfg(feature = "aot")]
 pub(super) fn native_cache_tmp_path(output: &Path) -> PathBuf {
     let file = output.file_name().and_then(|file| file.to_str()).unwrap_or("lk-native");
     output.with_file_name(format!("{file}.tmp-{}", std::process::id()))
 }
 
-#[cfg(feature = "llvm")]
+#[cfg(feature = "aot")]
 pub(super) fn hash_modified(hash: &mut Fnv64, meta: &std::fs::Metadata) {
     if let Ok(modified) = meta.modified()
         && let Ok(duration) = modified.duration_since(std::time::UNIX_EPOCH)
@@ -393,10 +402,10 @@ pub(super) fn hash_modified(hash: &mut Fnv64, meta: &std::fs::Metadata) {
     }
 }
 
-#[cfg(feature = "llvm")]
+#[cfg(feature = "aot")]
 pub(super) struct Fnv64(u64);
 
-#[cfg(feature = "llvm")]
+#[cfg(feature = "aot")]
 impl Fnv64 {
     fn new() -> Self {
         Self(0xcbf29ce484222325)

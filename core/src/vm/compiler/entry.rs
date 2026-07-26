@@ -59,6 +59,10 @@ impl Compiler {
             natives,
             globals: global_slots_from_names(&global_names),
             entry: 0,
+            type_info: crate::vm::TypeInfo::default(),
+            // Stamped by the caller, which knows what file this is
+            // (`compile_program_module_with_ctx`); the compiler does not.
+            type_scope: crate::vm::TypeScope::anonymous(),
         };
 
         let mut entry = Self::with_names(
@@ -72,6 +76,7 @@ impl Compiler {
         entry.user_let_globals = user_let_globals.clone();
         entry.dynamic_function_base = module.functions.len() as u32;
         entry.lower_program_statements(program)?;
+        module.type_info = core::mem::take(&mut entry.type_info);
         module.functions[0] = entry.finish()?;
         module.functions.extend(entry.pending_functions);
 
@@ -106,6 +111,10 @@ impl Compiler {
             }
         }
 
+        // Needs the whole function table, so it cannot happen in
+        // `lower_impl_decl`: a method may call a function compiled after it.
+        Self::record_impl_method_global_use(&mut module);
+
         // The load-time bytecode verifier (`vm::verify`) must accept every
         // module this compiler emits; running it here in debug builds turns the
         // whole test suite into a guard against both compiler-invariant
@@ -114,6 +123,56 @@ impl Compiler {
         super::super::verify::verify_module(&module)?;
 
         Ok(module)
+    }
+
+    /// Records, per impl method, how its reachable subtree uses module globals
+    /// (see [`crate::vm::ImplMethod::writes_globals`] and
+    /// [`reads_globals`](crate::vm::ImplMethod::reads_globals)).
+    ///
+    /// Reachability follows `CallDirect` and `MakeClosure`, the two opcodes that
+    /// name a function index statically — the same edges the AOT hybrid prescan
+    /// walks. An indirect call (a closure through a register, a builtin loaded
+    /// into one, a method dispatch) is *not* followed, so it counts as
+    /// `writes_globals`: that keeps the read list complete for every method the
+    /// flag clears, which is what a cross-module dispatch relies on.
+    fn record_impl_method_global_use(module: &mut Module) {
+        use super::super::ir::Opcode;
+
+        /// A call this walk cannot follow to a named function index.
+        fn is_opaque_call(op: Opcode) -> bool {
+            matches!(op, Opcode::Call | Opcode::CallNamed | Opcode::CallMethodK)
+        }
+
+        let walk = |root: u32| -> (bool, Vec<u16>) {
+            let mut reads: Vec<u16> = Vec::new();
+            let mut seen = vec![false; module.functions.len()];
+            let mut stack = vec![root as usize];
+            while let Some(index) = stack.pop() {
+                if index >= module.functions.len() || core::mem::replace(&mut seen[index], true) {
+                    continue;
+                }
+                for instr in &module.functions[index].code {
+                    match instr.opcode() {
+                        Opcode::SetGlobal => return (true, Vec::new()),
+                        op if is_opaque_call(op) => return (true, Vec::new()),
+                        Opcode::GetGlobal => reads.push(instr.bx()),
+                        Opcode::CallDirect | Opcode::MakeClosure => stack.push(instr.b() as usize),
+                        _ => {}
+                    }
+                }
+            }
+            reads.sort_unstable();
+            reads.dedup();
+            (false, reads)
+        };
+
+        for decl in &mut module.type_info.impls {
+            for method in &mut decl.methods {
+                let (writes_globals, reads_globals) = walk(method.function);
+                method.writes_globals = writes_globals;
+                method.reads_globals = reads_globals;
+            }
+        }
     }
 
     pub fn compile_source(source: &str) -> Result<Function> {

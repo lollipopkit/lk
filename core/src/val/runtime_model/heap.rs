@@ -358,7 +358,10 @@ mod tests {
             RuntimeVal::Obj(list),
         )]))));
         let object = heap.alloc(HeapValue::Object(crate::val::RuntimeObject::new(
-            Arc::<str>::from("Box"),
+            Arc::new(crate::vm::DeclaredType::new(
+                crate::vm::TypeScope::anonymous(),
+                Arc::<str>::from("Box"),
+            )),
             fast_hash_map_from_iter([(Arc::<str>::from("map"), RuntimeVal::Obj(map))]),
         )));
         let closure = heap.alloc(HeapValue::Callable(CallableValue::Closure {

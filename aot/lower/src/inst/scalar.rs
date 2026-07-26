@@ -1,20 +1,17 @@
-use super::*;
+//! Scalar opcodes: constants, moves, type predicates, arithmetic, comparisons.
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn lower_inst(
-    ssa: &mut Ssa,
+use super::LowerCtx;
+use crate::*;
+
+pub(super) fn lower(
+    ctx: &mut LowerCtx<'_>,
     block: usize,
     insts: &mut Vec<Inst>,
-    func: &FunctionData,
-    funcs: &[FunctionData],
-    entry: u32,
-    globals: &mut Vec<String>,
-    module_globals: &[String],
-    sig: &mut SigInfer,
-    capture_params: &[(ValueId, Ty)],
     instr: &Instr,
     pc: usize,
 ) -> Result<(), Unsupported> {
+    let ssa = &mut *ctx.ssa;
+    let func = ctx.func;
     match instr.opcode() {
         Opcode::LoadInt => {
             let value = *func
@@ -397,173 +394,6 @@ pub(crate) fn lower_inst(
                 _ => return Err(Unsupported::TypeMismatch { pc }),
             }
         }
-        Opcode::NewList => {
-            // `a` = dst, `b` = base, `c` = count: a register-window list. The
-            // compiler also uses this to box method-call arguments, so the raw
-            // elements are always recorded as an ArgList ref; a homogeneous
-            // scalar window additionally materializes a real list handle.
-            let count = instr.c() as usize;
-            let mut elems = Vec::with_capacity(count);
-            for i in 0..count {
-                let reg = instr.b().wrapping_add(i as u8);
-                elems.push(ssa.read(reg, block, pc)?);
-            }
-            let all = |t: Ty| elems.iter().all(|&(_, ty)| ty == t);
-            let materialized = if !elems.is_empty() && all(Ty::I64) {
-                Some(("i64_new", "i64_push", Ty::ListI64))
-            } else if !elems.is_empty() && all(Ty::F64) {
-                Some(("f64_new", "f64_push", Ty::ListF64))
-            } else if !elems.is_empty() && all(Ty::Str) {
-                Some(("str_new", "str_push", Ty::ListStr))
-            } else {
-                None
-            };
-            if let Some((new_fn, push_fn, list_ty)) = materialized {
-                let handle = ssa.new_val();
-                insts.push(Inst::Call {
-                    dst: Some(handle),
-                    callee: AbiRef::new("list_h", new_fn),
-                    args: Vec::new(),
-                });
-                for &(v, _) in &elems {
-                    insts.push(Inst::Call {
-                        dst: None,
-                        callee: AbiRef::new("list_h", push_fn),
-                        args: vec![handle, v],
-                    });
-                }
-                ssa.list_len.insert(handle, elems.len() as i64);
-                ssa.list_base_len.insert(handle, elems.len() as i64);
-                ssa.write(instr.a(), block, (handle, list_ty));
-            } else if !elems.is_empty()
-                && elems.iter().all(|&(_, ty)| {
-                    matches!(
-                        ty,
-                        Ty::I64
-                            | Ty::F64
-                            | Ty::Str
-                            | Ty::Bool
-                            | Ty::Nil
-                            | Ty::Dyn
-                            | Ty::ListI64
-                            | Ty::ListF64
-                            | Ty::ListStr
-                            | Ty::ListDyn
-                            | Ty::MapStrDyn
-                    )
-                })
-            {
-                // Mixed (or Dyn-carrying) elements: materialize a boxed-dynamic
-                // list (plan M4.2), same as the constant mixed-list path but
-                // boxing runtime values via `to_dyn`.
-                let handle = ssa.new_val();
-                insts.push(Inst::Call {
-                    dst: Some(handle),
-                    callee: AbiRef::new("list_h", "dyn_new"),
-                    args: Vec::new(),
-                });
-                // A repeated element boxes once: the VM pushes the same heap
-                // handle twice (`[l, l]` dedups under `unique()`), so the
-                // boxed views must share pointer identity too.
-                let mut boxed_memo: std::collections::HashMap<ValueId, ValueId> = std::collections::HashMap::new();
-                for &(v, ty) in &elems {
-                    let boxed = match boxed_memo.get(&v) {
-                        Some(&cached) => cached,
-                        None => {
-                            let boxed = to_dyn(ssa, insts, v, ty, pc)?;
-                            boxed_memo.insert(v, boxed);
-                            boxed
-                        }
-                    };
-                    insts.push(Inst::Call {
-                        dst: None,
-                        callee: AbiRef::new("list_h", "dyn_push"),
-                        args: vec![handle, boxed],
-                    });
-                }
-                ssa.list_len.insert(handle, elems.len() as i64);
-                ssa.list_base_len.insert(handle, elems.len() as i64);
-                ssa.write(instr.a(), block, (handle, Ty::ListDyn));
-            } else if elems.is_empty() {
-                // An empty literal (`let flat = [];`) materializes as an
-                // empty dyn list: later pushes box their elements, and the
-                // cross-typed Cmp arms cover `[] == [1, 2]`-style compares.
-                // (Call-window `NewList 0` also lands here; the dead handle
-                // is one no-arg call.) 旧留档顾虑(typed eq lowering)已被
-                // typed↔Dyn 跨型比较解除。
-                let handle = ssa.new_val();
-                insts.push(Inst::Call {
-                    dst: Some(handle),
-                    callee: AbiRef::new("list_h", "dyn_new"),
-                    args: Vec::new(),
-                });
-                ssa.list_len.insert(handle, 0);
-                ssa.list_base_len.insert(handle, 0);
-                ssa.write(instr.a(), block, (handle, Ty::ListDyn));
-            }
-            // Recorded after the write (which clears the slot) so both views
-            // coexist: SSA reads see the handle, method dispatch sees elements.
-            ssa.builtin_regs.insert((block, instr.a()), GlobalRef::ArgList(elems));
-        }
-        Opcode::GetIndexStrI | Opcode::SetIndexStrI => {
-            // Composite string-int key access (`m["n${i}"]`): the key is the
-            // compiler-proven constant prefix plus the decimal suffix register.
-            // A store passes (prefix, suffix) straight to the `set_ik` ABI (key
-            // built on the stack inside lkrt, nothing to free); a load builds
-            // the key via `concat_i64` in one allocation, and the fresh
-            // temporary frees right after the map call.
-            let Some(key_fact) = func.performance.known_key(pc).and_then(|fact| fact.string_int) else {
-                return Err(Unsupported::Opcode { pc, op: instr.opcode() });
-            };
-            let prefix = func
-                .consts
-                .strings
-                .get(key_fact.prefix_key as usize)
-                .ok_or(Unsupported::BadConst { pc })?;
-            let prefix_v = materialize_key(ssa, insts, globals, prefix);
-            let is_set = instr.opcode() == Opcode::SetIndexStrI;
-            let (map_reg, suffix_reg) = if is_set {
-                (instr.a(), instr.b())
-            } else {
-                (instr.b(), instr.c())
-            };
-            let (handle, map_ty) = ssa.read(map_reg, block, pc)?;
-            let suffix = ssa.read_typed(suffix_reg, block, Ty::I64, pc)?;
-            if is_set {
-                let (value, value_ty) = ssa.read(instr.c(), block, pc)?;
-                let set_fn = match (map_ty, value_ty) {
-                    (Ty::MapStrI64, Ty::I64) => "str_i64_set_ik",
-                    (Ty::MapStrF64, Ty::F64) => "str_f64_set_ik",
-                    _ => return Err(Unsupported::TypeMismatch { pc }),
-                };
-                insts.push(Inst::Call {
-                    dst: None,
-                    callee: AbiRef::new("map_h", set_fn),
-                    args: vec![handle, prefix_v, suffix, value],
-                });
-            } else {
-                let key = ssa.new_val();
-                insts.push(Inst::Call {
-                    dst: Some(key),
-                    callee: AbiRef::new("str", "concat_i64"),
-                    args: vec![prefix_v, suffix],
-                });
-                let dst = ssa.new_val();
-                let maybe_ty = match map_ty {
-                    Ty::MapStrI64 => {
-                        insts.push(Inst::MapGetMaybe { dst, handle, key });
-                        Ty::MaybeI64
-                    }
-                    Ty::MapStrF64 => {
-                        insts.push(Inst::MapGetMaybeStrF64 { dst, handle, key });
-                        Ty::MaybeF64
-                    }
-                    _ => return Err(Unsupported::TypeMismatch { pc }),
-                };
-                free_owned_str(insts, key);
-                ssa.write(instr.a(), block, (dst, maybe_ty));
-            }
-        }
         Opcode::MidInt => {
             // `a = (b + c) / 2` — wrapping add then truncated division
             // (`wrapping_add / 2` in the VM; the guarded div helper's
@@ -705,22 +535,267 @@ pub(crate) fn lower_inst(
             });
             ssa.write(instr.a(), block, (dst, Ty::F64));
         }
-        _ => {
-            return lower_inst_b(
-                ssa,
-                block,
-                insts,
-                func,
-                funcs,
-                entry,
-                globals,
-                module_globals,
-                sig,
-                capture_params,
-                instr,
-                pc,
-            );
+        op @ (Opcode::CmpInt
+        | Opcode::CmpNeInt
+        | Opcode::CmpLtInt
+        | Opcode::CmpLeInt
+        | Opcode::CmpGtInt
+        | Opcode::CmpGeInt) => {
+            // Like arithmetic, comparisons dispatch on runtime operand type: two
+            // ints → integer compare; any float operand → float compare (coercing);
+            // two strings → a `strcmp`-style helper compared to 0. A `Maybe` operand
+            // (dynamic index result) unwraps to `I64` here.
+            //
+            // `== nil` / `!= nil` resolves *before* the scalar read (which would
+            // unwrap a Maybe, aborting on absent): a Maybe operand tests its
+            // present bit, a concrete-typed operand folds to a constant (values
+            // of non-Maybe types are never nil). Ordered nil comparisons are VM
+            // errors, so they reject.
+            let (lv_raw, lty_raw) = ssa.read(instr.b(), block, pc)?;
+            let (rv_raw, rty_raw) = ssa.read(instr.c(), block, pc)?;
+            if lty_raw == Ty::Nil || rty_raw == Ty::Nil {
+                let cop = cmp_op(op);
+                if !matches!(cop, CmpOp::Eq | CmpOp::Ne) {
+                    return Err(Unsupported::TypeMismatch { pc });
+                }
+                let (other_v, other_ty) = if lty_raw == Ty::Nil {
+                    (rv_raw, rty_raw)
+                } else {
+                    (lv_raw, lty_raw)
+                };
+                match other_ty {
+                    Ty::Nil => {
+                        let dst = ssa.new_val();
+                        insts.push(Inst::Const {
+                            dst,
+                            value: Const::Bool(cop == CmpOp::Eq),
+                        });
+                        ssa.write(instr.a(), block, (dst, Ty::Bool));
+                    }
+                    Ty::MaybeI64 | Ty::MaybeF64 | Ty::MaybeStr | Ty::MaybeBool => {
+                        let present = ssa.new_val();
+                        insts.push(Inst::MaybePresent {
+                            dst: present,
+                            src: other_v,
+                            maybe_ty: other_ty,
+                        });
+                        if cop == CmpOp::Ne {
+                            ssa.write(instr.a(), block, (present, Ty::Bool));
+                        } else {
+                            let dst = ssa.new_val();
+                            insts.push(Inst::Not { dst, src: present });
+                            ssa.write(instr.a(), block, (dst, Ty::Bool));
+                        }
+                    }
+                    // A boxed Dyn: nil-ness is its tag (`0` = Nil).
+                    Ty::Dyn => {
+                        let tag = ssa.new_val();
+                        insts.push(Inst::Call {
+                            dst: Some(tag),
+                            callee: AbiRef::new("dyn", "tag"),
+                            args: vec![other_v],
+                        });
+                        let zero = ssa.new_val();
+                        insts.push(Inst::Const {
+                            dst: zero,
+                            value: Const::I64(0),
+                        });
+                        let dst = ssa.new_val();
+                        insts.push(Inst::Cmp {
+                            dst,
+                            // `cop` is already restricted to `Eq`/`Ne` above.
+                            op: cop,
+                            float: false,
+                            lhs: tag,
+                            rhs: zero,
+                        });
+                        ssa.write(instr.a(), block, (dst, Ty::Bool));
+                    }
+                    _ => {
+                        let dst = ssa.new_val();
+                        insts.push(Inst::Const {
+                            dst,
+                            value: Const::Bool(cop == CmpOp::Ne),
+                        });
+                        ssa.write(instr.a(), block, (dst, Ty::Bool));
+                    }
+                }
+                return Ok(());
+            }
+            // A Dyn (or mixed-list) operand: box the other side and compare
+            // through the `dyn.*` helpers (VM equality semantics live in
+            // lkrt; ordered compares are numeric-only there, aborting like
+            // the VM — which also errors on ordered list compares).
+            if matches!(lty_raw, Ty::Dyn | Ty::ListDyn) || matches!(rty_raw, Ty::Dyn | Ty::ListDyn) {
+                let lhs = to_dyn(ssa, insts, lv_raw, lty_raw, pc)?;
+                let rhs = to_dyn(ssa, insts, rv_raw, rty_raw, pc)?;
+                let (helper, negate) = match cmp_op(op) {
+                    CmpOp::Eq => ("eq", false),
+                    CmpOp::Ne => ("eq", true),
+                    CmpOp::Lt => ("lt", false),
+                    CmpOp::Le => ("le", false),
+                    CmpOp::Gt => ("gt", false),
+                    CmpOp::Ge => ("ge", false),
+                };
+                let raw = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(raw),
+                    callee: AbiRef::new("dyn", helper),
+                    args: vec![lhs, rhs],
+                });
+                let zero = ssa.new_val();
+                insts.push(Inst::Const {
+                    dst: zero,
+                    value: Const::I64(0),
+                });
+                let dst = ssa.new_val();
+                insts.push(Inst::Cmp {
+                    dst,
+                    op: if negate { CmpOp::Eq } else { CmpOp::Ne },
+                    float: false,
+                    lhs: raw,
+                    rhs: zero,
+                });
+                ssa.write(instr.a(), block, (dst, Ty::Bool));
+                return Ok(());
+            }
+            let (lv, lty) = read_scalar(ssa, insts, instr.b(), block, pc)?;
+            let (rv, rty) = read_scalar(ssa, insts, instr.c(), block, pc)?;
+            let (float, lhs, rhs) = match (lty, rty) {
+                (Ty::I64, Ty::I64) => (false, lv, rv),
+                // Bool equality (`b == true`): widen to i64 (the integer
+                // compare renders `icmp … i64`); ordered comparisons on Bools
+                // are VM errors, so they reject.
+                (Ty::Bool, Ty::Bool) => {
+                    if !matches!(cmp_op(op), CmpOp::Eq | CmpOp::Ne) {
+                        return Err(Unsupported::TypeMismatch { pc });
+                    }
+                    let lw = ssa.new_val();
+                    insts.push(Inst::ZextBool { dst: lw, src: lv });
+                    let rw = ssa.new_val();
+                    insts.push(Inst::ZextBool { dst: rw, src: rv });
+                    (false, lw, rw)
+                }
+                (Ty::F64, Ty::F64) | (Ty::I64, Ty::F64) | (Ty::F64, Ty::I64) => (
+                    true,
+                    coerce_to_f64(ssa, insts, lv, lty),
+                    coerce_to_f64(ssa, insts, rv, rty),
+                ),
+                // List structural equality: same length + element-wise `==` via
+                // an lkrt helper returning 1/0, compared against 1 (so `!=`
+                // reuses the same op). Int/Float lists compare with numeric
+                // coercion (`[1] == [1.0]` is true); other cross-typed pairs
+                // reject — folding them to `false` would be wrong for two
+                // empty lists, which the VM deems equal regardless of type.
+                (Ty::ListI64, Ty::ListI64)
+                | (Ty::ListF64, Ty::ListF64)
+                | (Ty::ListStr, Ty::ListStr)
+                | (Ty::ListI64, Ty::ListF64)
+                | (Ty::ListF64, Ty::ListI64) => {
+                    if !matches!(cmp_op(op), CmpOp::Eq | CmpOp::Ne) {
+                        return Err(Unsupported::TypeMismatch { pc });
+                    }
+                    let (helper, a, b) = match (lty, rty) {
+                        (Ty::ListI64, Ty::ListI64) => ("i64_eq", lv, rv),
+                        (Ty::ListF64, Ty::ListF64) => ("f64_eq", lv, rv),
+                        (Ty::ListStr, Ty::ListStr) => ("str_eq", lv, rv),
+                        // The mixed helper takes (ints, floats).
+                        (Ty::ListI64, Ty::ListF64) => ("i64_f64_eq", lv, rv),
+                        _ => ("i64_f64_eq", rv, lv),
+                    };
+                    let eq = ssa.new_val();
+                    insts.push(Inst::Call {
+                        dst: Some(eq),
+                        callee: AbiRef::new("list_h", helper),
+                        args: vec![a, b],
+                    });
+                    let one = ssa.new_val();
+                    insts.push(Inst::Const {
+                        dst: one,
+                        value: Const::I64(1),
+                    });
+                    (false, eq, one)
+                }
+                // A dyn list against any list: both sides normalize to dyn
+                // lists and compare structurally (`dyn_eq` recurses with the
+                // VM's numeric coercion).
+                (Ty::ListDyn, Ty::ListDyn | Ty::ListI64 | Ty::ListF64 | Ty::ListStr)
+                | (Ty::ListI64 | Ty::ListF64 | Ty::ListStr, Ty::ListDyn) => {
+                    if !matches!(cmp_op(op), CmpOp::Eq | CmpOp::Ne) {
+                        return Err(Unsupported::TypeMismatch { pc });
+                    }
+                    let a = to_dyn_list_handle(ssa, insts, lv, lty, pc)?;
+                    let b = to_dyn_list_handle(ssa, insts, rv, rty, pc)?;
+                    let eq = ssa.new_val();
+                    insts.push(Inst::Call {
+                        dst: Some(eq),
+                        callee: AbiRef::new("list_h", "dyn_eq"),
+                        args: vec![a, b],
+                    });
+                    let one = ssa.new_val();
+                    insts.push(Inst::Const {
+                        dst: one,
+                        value: Const::I64(1),
+                    });
+                    (false, eq, one)
+                }
+                // Cross-typed list pairs beyond Int/Float can only be equal
+                // when *both* are empty (the VM compares structurally
+                // regardless of the typed-list representation). With both
+                // proven non-empty at materialization (lengths never shrink),
+                // the comparison folds; an unproven side could be empty at
+                // runtime, so it rejects instead of guessing.
+                (Ty::ListI64 | Ty::ListF64 | Ty::ListStr, Ty::ListI64 | Ty::ListF64 | Ty::ListStr) => {
+                    if !matches!(cmp_op(op), CmpOp::Eq | CmpOp::Ne) {
+                        return Err(Unsupported::TypeMismatch { pc });
+                    }
+                    let lbase = ssa.list_base_len.get(&lv).copied().unwrap_or(0);
+                    let rbase = ssa.list_base_len.get(&rv).copied().unwrap_or(0);
+                    if lbase < 1 || rbase < 1 {
+                        return Err(Unsupported::TypeMismatch { pc });
+                    }
+                    let dst = ssa.new_val();
+                    insts.push(Inst::Const {
+                        dst,
+                        value: Const::Bool(cmp_op(op) == CmpOp::Ne),
+                    });
+                    ssa.write(instr.a(), block, (dst, Ty::Bool));
+                    return Ok(());
+                }
+                (Ty::Str, Ty::Str) => {
+                    // The VM only supports `==`/`!=` on strings (ordered comparisons
+                    // are a runtime error), so reject the rest — falling back rather
+                    // than computing an order the VM would refuse.
+                    if !matches!(cmp_op(op), CmpOp::Eq | CmpOp::Ne) {
+                        return Err(Unsupported::TypeMismatch { pc });
+                    }
+                    // `str_cmp(a, b)` returns -1/0/1; comparing to 0 realizes `==`/`!=`.
+                    let cmp = ssa.new_val();
+                    insts.push(Inst::Call {
+                        dst: Some(cmp),
+                        callee: AbiRef::new("str", "cmp"),
+                        args: vec![lv, rv],
+                    });
+                    let zero = ssa.new_val();
+                    insts.push(Inst::Const {
+                        dst: zero,
+                        value: Const::I64(0),
+                    });
+                    (false, cmp, zero)
+                }
+                _ => return Err(Unsupported::TypeMismatch { pc }),
+            };
+            let dst = ssa.new_val();
+            insts.push(Inst::Cmp {
+                dst,
+                op: cmp_op(op),
+                float,
+                lhs,
+                rhs,
+            });
+            ssa.write(instr.a(), block, (dst, Ty::Bool));
         }
+        op => return Err(Unsupported::Opcode { pc, op }),
     }
     Ok(())
 }

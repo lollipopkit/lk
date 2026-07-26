@@ -185,6 +185,153 @@ pub fn call_runtime_value_runtime_with_receiver_list_args(
     call_runtime_value_with_map_args(callee, pos, None, state, module, ctx)
 }
 
+/// The `Type::method` a dispatch was resolved from, carried for diagnostics
+/// only: the table entry itself is just an index, which says nothing useful in
+/// an error message.
+#[derive(Clone, Copy)]
+pub struct TraitMethodRef<'a> {
+    pub type_name: &'a str,
+    pub method: &'a str,
+}
+
+/// Invokes a trait-impl method straight from the runtime method table.
+///
+/// This is the only way a `MethodImpl` is called. Both variants used to be
+/// materialized into a heap `Callable` first, which
+/// `call_runtime_value_with_map_args` then immediately destructured back
+/// into `(function_index, captures)` — one heap object per dispatch, allocated
+/// through `HeapStore::alloc` directly, which (unlike
+/// `Executor::alloc_heap_value`) does not even arm the collector. A loop
+/// calling a trait method grew ~130 bytes per call and never gave any of it
+/// back. Dispatching from the table entry skips the round trip entirely.
+pub fn call_trait_method(
+    method: &crate::vm::MethodImpl,
+    name: TraitMethodRef<'_>,
+    receiver: &RuntimeVal,
+    args: Option<HeapRef>,
+    state: &mut RuntimeModuleState,
+    module: Option<&Module>,
+    ctx: Option<&mut VmContext>,
+) -> Result<RuntimeVal> {
+    let pos = match args {
+        Some(handle) => RuntimePositionalArgs::PrefixedList {
+            first: receiver,
+            rest: handle,
+        },
+        None => RuntimePositionalArgs::Prefixed {
+            first: receiver,
+            rest: &[],
+        },
+    };
+    match method {
+        crate::vm::MethodImpl::Local {
+            module: declaring,
+            function,
+        } => {
+            let executing = module.ok_or_else(|| anyhow!("trait method dispatch requires Module context"))?;
+            if core::ptr::eq(Arc::as_ptr(declaring), executing as *const Module) {
+                return call_closure_value(*function, Arc::new(Vec::new()), pos, state, Some(executing), ctx);
+            }
+            call_foreign_module_method(declaring, *function, name, pos, state, ctx)
+        }
+        crate::vm::MethodImpl::Imported(callable) => {
+            call_runtime_callable_runtime_positional(callable.as_ref(), pos, &mut state.heap, ctx)
+        }
+    }
+}
+
+/// Dispatches an impl method whose body lives in a module *other* than the one
+/// whose frame is executing — an `impl` in one file, reached inside a function
+/// imported from another.
+///
+/// The receiver already lives in this heap, and the body's constants come from
+/// its own `Function`, so the only things tying a function index to its module
+/// are the global table and the `pc`-keyed inline caches. Both are swapped for
+/// the duration of the call:
+///
+/// - **Globals** get a table of the declaring module's shape with only the slots
+///   the body is proven to read filled in (`ImplMethod::reads_globals`) — for
+///   most methods, none. A *write* cannot be supported at all: it would land in
+///   this temporary table and vanish on restore, so a body that writes globals
+///   (or that can reach code this analysis cannot see) is refused instead.
+/// - **Inline caches** are keyed by `pc` alone, and a foreign function's pcs
+///   mean nothing here. A fresh scope for the call keeps the two sets from
+///   mixing; the host's caches are restored untouched afterwards.
+#[cold]
+fn call_foreign_module_method(
+    declaring: &Arc<Module>,
+    function: u32,
+    name: TraitMethodRef<'_>,
+    pos: RuntimePositionalArgs<'_>,
+    state: &mut RuntimeModuleState,
+    ctx: Option<&mut VmContext>,
+) -> Result<RuntimeVal> {
+    let decl = declaring.type_info.method_by_function(function).ok_or_else(|| {
+        anyhow!(
+            "trait method `{}::{}` is not declared by its module",
+            name.type_name,
+            name.method
+        )
+    })?;
+    if decl.writes_globals {
+        bail!(
+            "trait method `{}::{}` is declared in a different module than the one currently executing and is not \
+             dispatchable across that boundary: it writes a module global (or makes a call whose target cannot be \
+             resolved statically), and the write would be made against a temporary copy of its module's globals \
+             and lost. Move the `impl` into the module that calls the method, or pass the method in as a value \
+             (see docs/vm-cross-module-dispatch.md)",
+            name.type_name,
+            name.method
+        );
+    }
+    let globals = {
+        let ctx_ref = ctx
+            .as_deref()
+            .ok_or_else(|| anyhow!("cross-module trait method dispatch requires a VM context"))?;
+        seed_foreign_globals(declaring, &decl.reads_globals, ctx_ref, &mut state.heap)?
+    };
+    let saved_globals = core::mem::replace(&mut state.globals, globals);
+    let saved_caches = core::mem::take(&mut state.inline_caches);
+    // The host frame's globals are off the root set while they sit in this
+    // local, and the call below can collect. Pin them the way any host holding
+    // heap references across a re-entrant VM call has to.
+    let roots_mark = state.host_roots_mark();
+    state.host_roots_extend(&saved_globals);
+    let result = call_closure_value(
+        function,
+        Arc::new(Vec::new()),
+        pos,
+        state,
+        Some(declaring.as_ref()),
+        ctx,
+    );
+    state.host_roots_truncate(roots_mark);
+    state.globals = saved_globals;
+    state.inline_caches = saved_caches;
+    result
+}
+
+/// A global table shaped like `module`'s, with only `slots` imported into
+/// `heap`. Every other entry is `Nil` and unreachable: the caller has proven
+/// the body reads nothing else.
+fn seed_foreign_globals(
+    module: &Module,
+    slots: &[u16],
+    ctx: &VmContext,
+    heap: &mut HeapStore,
+) -> Result<Vec<RuntimeVal>> {
+    let mut globals = vec![RuntimeVal::Nil; module.globals.len()];
+    for &slot in slots {
+        let Some(name) = module.globals.get(slot as usize).map(|slot| &slot.name) else {
+            bail!("impl method reads global slot {slot} out of bounds for its module");
+        };
+        if let Some(export) = ctx.get_runtime_global(name.as_ref()) {
+            globals[slot as usize] = super::imports::import_runtime_export(export, heap)?;
+        }
+    }
+    Ok(globals)
+}
+
 pub fn call_runtime_value_runtime_list_args(
     callee: RuntimeVal,
     args: Option<HeapRef>,
@@ -1068,7 +1215,7 @@ fn copy_heap_value(
                     copy_runtime_value_with(value, source_heap, dest_heap, mode)?,
                 );
             }
-            HeapValue::Object(RuntimeObject::new(Arc::clone(&object.type_name), fields))
+            HeapValue::Object(RuntimeObject::new(Arc::clone(&object.ty), fields))
         }
         HeapValue::Callable(CallableValue::RuntimeNative { name, arity, function }) => {
             HeapValue::Callable(CallableValue::RuntimeNative {

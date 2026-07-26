@@ -1145,6 +1145,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
 
 [[package]]
+name = "lk-aot"
+version = "0.1.3"
+dependencies = [
+ "anyhow",
+ "lk-aot-abi",
+ "lk-aot-codegen",
+ "lk-aot-lower",
+ "lk-aot-mir",
+ "lk-core",
+ "lkrt",
+]
+
+[[package]]
 name = "lk-aot-abi"
 version = "0.1.0"
 
@@ -1197,9 +1210,10 @@ dependencies = [
  "anyhow",
  "assert_cmd",
  "clap",
+ "libc",
+ "lk-aot",
  "lk-completion",
  "lk-core",
- "lk-llvm",
  "lk-stdlib",
  "nu-ansi-term",
  "predicates",
@@ -1244,29 +1258,6 @@ dependencies = [
  "stacker",
  "tempfile",
  "tokio",
- "toml",
-]
-
-[[package]]
-name = "lk-hal"
-version = "0.1.0"
-
-[[package]]
-name = "lk-llvm"
-version = "0.1.3"
-dependencies = [
- "anyhow",
- "chrono",
- "lk-aot-abi",
- "lk-aot-codegen",
- "lk-aot-lower",
- "lk-aot-mir",
- "lk-core",
- "lk-stdlib",
- "lkrt",
- "llvm-tools",
- "serde_json",
- "serde_yaml",
  "toml",
 ]
 
@@ -1642,12 +1633,6 @@ dependencies = [
  "serde_yaml",
  "toml",
 ]
-
-[[package]]
-name = "llvm-tools"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "955be5d0ca0465caf127165acb47964f911e2bc26073e865deb8be7189302faf"
 
 [[package]]
 name = "lock_api"

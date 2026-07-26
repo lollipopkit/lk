@@ -1,22 +1,54 @@
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
 use crate::util::fast_map::{FastHashMap, fast_hash_map_new};
+use crate::vm::ModuleResolver;
 use alloc::sync::Arc;
 
 use anyhow::{Result, anyhow};
 
 use crate::module::runtime_export_from_runtime_native;
-use crate::stmt::ModuleResolver;
 use crate::typ::TypeChecker;
-use crate::val::{HeapStore, HeapValue, RuntimeMapKey, RuntimeObject, RuntimeVal, ShortStr, Type, TypedList, TypedMap};
-use crate::vm::{NativeArgs, NativeEntry, NativeFunction, NativeRuntime, RuntimeExport, collect_runtime_export};
+use crate::val::{HeapStore, HeapValue, RuntimeMapKey, RuntimeObject, RuntimeVal, ShortStr, Type, TypedMap};
+use crate::vm::{
+    Module, NativeArgs, NativeEntry, NativeFunction, NativeRuntime, RuntimeCallable, RuntimeExport,
+    collect_runtime_export,
+};
 
 use crate::typ::{TraitDef, TraitImpl};
-use hashbrown::HashMap;
 
 mod core_methods;
 pub(crate) use core_methods::core_call_method_windowed;
 use core_methods::{core_call_method_builtin, core_call_method_named_builtin, core_set_builtin};
+
+/// Where a trait-impl method's body lives.
+///
+/// The distinction is the whole point of this table: a method declared in the
+/// module being executed is addressed by index against that module, while a
+/// method that arrived through an `import` must be called against the module
+/// and heap it was compiled and run in.
+#[derive(Debug, Clone)]
+pub enum MethodImpl {
+    /// A method declared by `module`, addressed by index into *its* function
+    /// table.
+    ///
+    /// The module is carried rather than implied. A function index is only
+    /// meaningful against the table it was compiled into, and this table is
+    /// shared by every module running under one context. Resolving the index
+    /// against whoever happens to be executing silently ran an unrelated
+    /// function of the same index: an `impl` in the entry module, dispatched
+    /// inside a function imported from another file, recursed into that file's
+    /// function #N until the stack overflowed.
+    ///
+    /// Whether a cross-frame dispatch may proceed is decided from
+    /// `module.type_info` on the cold path rather than carried here: this enum
+    /// is cloned out of the table on *every* dynamic method call, so it stays
+    /// two words (see `vm::exec::call_trait_method`).
+    Local { module: Arc<Module>, function: u32 },
+    /// A callable carrying its own module and runtime state. `Arc` because
+    /// `RuntimeCallable` owns shared state and a cloned context must keep
+    /// pointing at the same module, not a copy of it.
+    Imported(Arc<RuntimeCallable>),
+}
 
 /// VM runtime context.
 ///
@@ -30,6 +62,30 @@ pub struct VmContext {
     resolver: Arc<ModuleResolver>,
     type_checker: Option<TypeChecker>,
     structs: FastHashMap<String, FastHashMap<String, Type>>,
+    /// Runtime trait-method table: declaring module → type name → method name
+    /// → implementation.
+    ///
+    /// This lives here, not in `TypeChecker`, because it is runtime data: an
+    /// imported module's method must be called against *that* module's
+    /// function table and heap, which the type system has no business knowing
+    /// about. The type checker keeps only what it needs for checking
+    /// (`method_sigs`).
+    ///
+    /// The outer key is what makes the table *correct* rather than merely fast.
+    /// Keyed by type name alone, two modules that both declare `Point` shared
+    /// one entry and the later registration silently won for both of them (see
+    /// [`crate::vm::TypeScope`]). Scoping it also makes registration
+    /// order-independent, which is what lets the transitive closure of loaded
+    /// modules be registered wholesale without any of them clobbering another.
+    ///
+    /// Nested rather than tuple-keyed so a lookup borrows every part of the
+    /// key: a flat map forced two `String` allocations on *every* dynamic
+    /// method dispatch just to build a throwaway probe.
+    methods: FastHashMap<crate::vm::TypeScope, FastHashMap<String, FastHashMap<String, MethodImpl>>>,
+    /// Identity to stamp on the module compiled in this context, and therefore
+    /// on every object it constructs. Set by the loader, which knows the path;
+    /// the compiler does not (see [`crate::vm::TypeScope`]).
+    type_scope: crate::vm::TypeScope,
     call_stack: Vec<CallFrameInfo>,
     /// Per-context handle to the async (tokio) runtime. Replaces the former
     /// process-global runtime; clones (spawned tasks, shallow clones) share the
@@ -71,6 +127,8 @@ impl VmContext {
             resolver: Arc::new(ModuleResolver::default()),
             type_checker: None,
             structs: fast_hash_map_new(),
+            methods: fast_hash_map_new(),
+            type_scope: crate::vm::TypeScope::anonymous(),
             call_stack: Vec::new(),
             async_runtime: crate::rt::AsyncRuntimeHandle::new(),
         }
@@ -93,6 +151,8 @@ impl VmContext {
             resolver: Arc::clone(&self.resolver),
             type_checker: self.type_checker.clone(),
             structs: self.structs.clone(),
+            methods: self.methods.clone(),
+            type_scope: self.type_scope.clone(),
             call_stack: self.call_stack.clone(),
             // Share the same async runtime so spawned tasks run on one reactor.
             async_runtime: self.async_runtime.clone(),
@@ -145,6 +205,19 @@ impl VmContext {
     pub fn with_type_checker(mut self, type_checker: Option<TypeChecker>) -> Self {
         self.type_checker = type_checker;
         self
+    }
+
+    /// Identity to stamp on the module compiled here (see
+    /// [`crate::vm::TypeScope`]). The loader sets this before compiling a file
+    /// module; anything else keeps the anonymous scope.
+    pub fn with_type_scope(mut self, type_scope: crate::vm::TypeScope) -> Self {
+        self.type_scope = type_scope;
+        self
+    }
+
+    #[inline]
+    pub fn type_scope(&self) -> &crate::vm::TypeScope {
+        &self.type_scope
     }
 
     #[inline]
@@ -289,16 +362,6 @@ impl VmContext {
 
     fn install_core_vm_builtins(&mut self) {
         self.install_runtime_builtin(
-            "__lk_register_trait",
-            NativeFunction::Plain(core_register_trait_builtin),
-            2,
-        );
-        self.install_runtime_builtin(
-            "__lk_register_trait_impl",
-            NativeFunction::Plain(core_register_trait_impl_builtin),
-            3,
-        );
-        self.install_runtime_builtin(
             "__lk_call_method",
             NativeFunction::FullState(core_call_method_builtin),
             3,
@@ -318,6 +381,126 @@ impl VmContext {
         self.install_runtime_builtin("__lk_bit_not", NativeFunction::Plain(core_bit_not_builtin), 1);
     }
 
+    /// Looks up a trait-impl method for the type `type_name` **as declared by
+    /// `scope`**.
+    ///
+    /// The scope is not optional and there is deliberately no name-only
+    /// fallback: falling back would re-admit exactly the cross-module
+    /// collision this key exists to prevent, and would do it silently.
+    pub fn trait_method(&self, scope: &crate::vm::TypeScope, type_name: &str, method: &str) -> Option<&MethodImpl> {
+        self.methods.get(scope)?.get(type_name)?.get(method)
+    }
+
+    /// Records an imported module's trait impls, bound to *that* module's
+    /// function table and heap.
+    ///
+    /// Without this an `impl` in an imported file was simply invisible: the
+    /// importer executed the file in a throwaway `VmContext` and kept only its
+    /// exported values, so `use { make } from "./shape.lk"; make(4).area()`
+    /// failed with "Object has no method 'area'".
+    pub fn register_imported_types(&mut self, export: &RuntimeExport) {
+        let module = export.shared_module();
+        if module.type_info.is_empty() {
+            return;
+        }
+        for decl in &module.type_info.impls {
+            let by_method = self
+                .methods
+                .entry(impl_target_scope(&decl.type_name, &module.type_scope))
+                .or_default()
+                .entry(decl.type_name.clone())
+                .or_default();
+            for method in &decl.methods {
+                by_method.insert(
+                    method.name.clone(),
+                    MethodImpl::Imported(Arc::new(RuntimeCallable::with_shared_captures(
+                        Arc::clone(&module),
+                        method.function,
+                        Arc::new(Vec::new()),
+                        export.shared_state(),
+                    ))),
+                );
+            }
+        }
+    }
+
+    /// Populates the runtime method table from the module's compiled
+    /// declarations.
+    ///
+    /// This replaces the previous scheme, where the compiler emitted
+    /// `__lk_register_trait_impl` calls that the entry function executed to
+    /// build the same table from string literals and closures. Reading
+    /// [`crate::vm::TypeInfo`] instead means the table is available before any
+    /// user code runs, needs no bytecode, and holds no heap handles — the
+    /// registry was never a GC root, so storing closures there was only safe
+    /// while they happened to still be live in a register.
+    pub fn register_module_types(&mut self, module: &Arc<Module>) -> anyhow::Result<()> {
+        let type_info = &module.type_info;
+        if type_info.is_empty() {
+            return Ok(());
+        }
+        // Checker registration only happens when there *is* a checker; the
+        // dispatch table below is unconditional. Returning early without one
+        // used to skip both, so a context built without a type checker could
+        // execute a module whose own `impl` methods were undispatchable.
+        if let Some(checker) = self.type_checker.as_mut() {
+            for decl in &type_info.traits {
+                let methods = decl
+                    .methods
+                    .iter()
+                    // A signature this build cannot parse degrades to the top
+                    // type rather than vanishing: dropping the entry would
+                    // hide the method from `validate_trait_impl`, so an `impl`
+                    // that never defines it would validate clean. Same choice
+                    // as the impl loop below, which keeps the method with a
+                    // `None` type.
+                    .map(|(name, ty)| (name.clone(), Type::parse(ty).unwrap_or(Type::Any)))
+                    .collect();
+                checker.registry_mut().register_trait(TraitDef {
+                    name: decl.name.clone(),
+                    methods,
+                });
+            }
+            for decl in &type_info.impls {
+                let target_type = Type::parse(&decl.type_name)
+                    .ok_or_else(|| anyhow!("failed to parse impl target type '{}'", decl.type_name))?;
+                let methods = decl
+                    .methods
+                    .iter()
+                    .map(|method| (method.name.clone(), (method.function, Type::parse(&method.ty))))
+                    .collect();
+                let impl_def = TraitImpl {
+                    trait_name: decl.trait_name.clone(),
+                    target_type,
+                    methods,
+                };
+                checker.registry().validate_trait_impl(&impl_def)?;
+                checker.registry_mut().register_trait_impl(impl_def);
+            }
+        }
+        // The dispatch table itself, each entry bound to the module that
+        // declared it (see `MethodImpl::Local`) and filed under that module's
+        // scope, so an identically-named type elsewhere keeps its own entry.
+        for decl in &type_info.impls {
+            let by_method = self
+                .methods
+                .entry(impl_target_scope(&decl.type_name, &module.type_scope))
+                .or_default()
+                .entry(decl.type_name.clone())
+                .or_default();
+            for method in &decl.methods {
+                by_method.insert(
+                    method.name.clone(),
+                    MethodImpl::Local {
+                        module: Arc::clone(module),
+                        function: method.function,
+                    },
+                );
+            }
+        }
+        Ok(())
+    }
+
     fn install_runtime_builtin(&mut self, name: &str, function: NativeFunction, arity: u16) {
         if self.runtime_globals.contains_key(name) {
             return;
@@ -327,196 +510,30 @@ impl VmContext {
     }
 }
 
-fn core_register_trait_builtin(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> anyhow::Result<RuntimeVal> {
-    if args.len() != 2 {
-        return Err(anyhow!(
-            "__lk_register_trait expects 2 arguments: name and methods list"
-        ));
+/// Which scope an `impl` for `target_type` is filed under.
+///
+/// A user-declared type (`Type::Named`) belongs to the module that declared it;
+/// anything else is a builtin, shared by every module (see
+/// [`crate::vm::TypeScope::builtin`]). An unparseable target is treated as
+/// declared — the conservative side, since filing it under the builtin scope
+/// would let it collide with every other module's.
+fn impl_target_scope(target_type: &str, declaring: &crate::vm::TypeScope) -> crate::vm::TypeScope {
+    match Type::parse(target_type) {
+        Some(Type::Named(_)) | None => declaring.clone(),
+        Some(_) => crate::vm::TypeScope::builtin(),
     }
-    let name = runtime_string_arg(
-        args.get(0).expect("arity checked"),
-        runtime.heap(),
-        "__lk_register_trait",
-    )?
-    .to_string();
-    let method_count = runtime_list_len(
-        args.get(1).expect("arity checked"),
-        runtime.heap(),
-        "__lk_register_trait methods",
-    )?;
-    let mut methods = HashMap::with_capacity(method_count);
-    for index in 0..method_count {
-        let entry = runtime_list_item(
-            args.get(1).expect("arity checked"),
-            index,
-            runtime,
-            "__lk_register_trait methods",
-        )?;
-        let (method_name_value, type_value) = runtime_list_pair(&entry, runtime, "trait method entry")?;
-        let method_name = runtime_string_arg(&method_name_value, runtime.heap(), "trait method name")?.to_string();
-        let type_str = runtime_string_arg(&type_value, runtime.heap(), "trait method type")?;
-        let ty = Type::parse(type_str.as_ref())
-            .ok_or_else(|| anyhow!("failed to parse trait method type '{}'", type_str))?;
-        methods.insert(method_name, ty);
-    }
-    let ctx = runtime
-        .ctx_mut()
-        .ok_or_else(|| anyhow!("__lk_register_trait requires VmContext"))?;
-    let type_checker = ctx
-        .get_type_checker_mut()
-        .ok_or_else(|| anyhow!("type checker not available for trait registration"))?;
-    type_checker.registry_mut().register_trait(TraitDef { name, methods });
-    Ok(RuntimeVal::Nil)
 }
 
-fn core_register_trait_impl_builtin(
-    args: NativeArgs<'_>,
-    runtime: &mut NativeRuntime<'_>,
-) -> anyhow::Result<RuntimeVal> {
-    if args.len() != 3 {
-        return Err(anyhow!(
-            "__lk_register_trait_impl expects 3 arguments: trait_name, target_type, methods"
-        ));
-    }
-    let trait_name = runtime_string_arg(
-        args.get(0).expect("arity checked"),
-        runtime.heap(),
-        "__lk_register_trait_impl",
-    )?
-    .to_string();
-    let target_type_str = runtime_string_arg(
-        args.get(1).expect("arity checked"),
-        runtime.heap(),
-        "__lk_register_trait_impl",
-    )?;
-    let target_type = Type::parse(target_type_str.as_ref())
-        .ok_or_else(|| anyhow!("failed to parse target type '{}'", target_type_str))?;
-    let method_count = runtime_list_len(
-        args.get(2).expect("arity checked"),
-        runtime.heap(),
-        "__lk_register_trait_impl methods",
-    )?;
-    let mut method_map: HashMap<String, (RuntimeVal, Option<Type>)> = HashMap::with_capacity(method_count);
-    for index in 0..method_count {
-        let entry = runtime_list_item(
-            args.get(2).expect("arity checked"),
-            index,
-            runtime,
-            "__lk_register_trait_impl methods",
-        )?;
-        let inner_len = runtime_list_len(&entry, runtime.heap(), "trait impl entry")?;
-        if inner_len != 3 {
-            return Err(anyhow!(
-                "trait impl entry must contain [name, closure, type], found {} items",
-                inner_len
-            ));
-        }
-        let method_name = runtime_string_arg(
-            &runtime_list_item(&entry, 0, runtime, "trait impl entry")?,
-            runtime.heap(),
-            "trait impl method name",
-        )?
-        .to_string();
-        let method_value = runtime_list_item(&entry, 1, runtime, "trait impl entry")?;
-        ensure_runtime_callable(&method_value, runtime, "trait impl method")?;
-        let signature_value = runtime_list_item(&entry, 2, runtime, "trait impl entry")?;
-        let signature_ty = match &signature_value {
-            RuntimeVal::Nil => None,
-            value => {
-                let type_str = runtime_string_arg(value, runtime.heap(), "trait impl method type")?;
-                Some(
-                    Type::parse(type_str.as_ref())
-                        .ok_or_else(|| anyhow!("failed to parse method type '{}'", type_str))?,
-                )
-            }
-        };
-        method_map.insert(method_name, (method_value, signature_ty));
-    }
-    let ctx = runtime
-        .ctx_mut()
-        .ok_or_else(|| anyhow!("__lk_register_trait_impl requires VmContext"))?;
-    let type_checker = ctx
-        .get_type_checker_mut()
-        .ok_or_else(|| anyhow!("type checker not available for trait implementation"))?;
-    let impl_def = TraitImpl {
-        trait_name,
-        target_type,
-        methods: method_map,
-    };
-    type_checker.registry().validate_trait_impl(&impl_def)?;
-    type_checker.registry_mut().register_trait_impl(impl_def);
-    Ok(RuntimeVal::Nil)
-}
-
-fn runtime_list_len(value: &RuntimeVal, heap: &HeapStore, helper: &str) -> anyhow::Result<usize> {
-    let RuntimeVal::Obj(handle) = value else {
-        return Err(anyhow!("{helper} expects list, got {:?}", value.kind()));
-    };
-    let list = heap
-        .get(*handle)
-        .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?;
-    let HeapValue::List(list) = list else {
-        return Err(anyhow!("{helper} expects list, got {}", list.type_name()));
-    };
-    Ok(list.len())
-}
-
-fn runtime_list_item(
-    value: &RuntimeVal,
-    index: usize,
-    runtime: &mut NativeRuntime<'_>,
-    helper: &str,
-) -> anyhow::Result<RuntimeVal> {
-    let RuntimeVal::Obj(handle) = value else {
-        return Err(anyhow!("{helper} expects list, got {:?}", value.kind()));
-    };
-    let item = match runtime
-        .heap()
-        .get(*handle)
-        .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
+/// The scope to dispatch `receiver`'s methods in: its own, if it is a declared
+/// type; the builtin scope otherwise. Only a heap `Object` carries a declared
+/// type — every other receiver is an `Int`, a `List`, a string, and so on.
+pub fn receiver_type_scope(receiver: &RuntimeVal, heap: &HeapStore) -> crate::vm::TypeScope {
+    if let RuntimeVal::Obj(handle) = receiver
+        && let Some(HeapValue::Object(object)) = heap.get(*handle)
     {
-        HeapValue::List(TypedList::Mixed(values)) => values.get(index).cloned(),
-        HeapValue::List(TypedList::Int(values)) => values.get(index).copied().map(RuntimeVal::Int),
-        HeapValue::List(TypedList::Float(values)) => values.get(index).copied().map(RuntimeVal::Float),
-        HeapValue::List(TypedList::Bool(values)) => values.get(index).copied().map(RuntimeVal::Bool),
-        HeapValue::List(TypedList::String(values)) => {
-            let value = values.get(index).cloned();
-            return value
-                .map(|value| runtime_string_value(&value, runtime.heap_mut()))
-                .ok_or_else(|| anyhow!("{helper} index {index} out of bounds"));
-        }
-        other => return Err(anyhow!("{helper} expects list, got {}", other.type_name())),
-    };
-    item.ok_or_else(|| anyhow!("{helper} index {index} out of bounds"))
-}
-
-fn runtime_list_pair(
-    value: &RuntimeVal,
-    runtime: &mut NativeRuntime<'_>,
-    helper: &str,
-) -> anyhow::Result<(RuntimeVal, RuntimeVal)> {
-    let len = runtime_list_len(value, runtime.heap(), helper)?;
-    if len != 2 {
-        return Err(anyhow!("{helper} must contain [name, type], found {len} items"));
+        return object.type_scope().clone();
     }
-    Ok((
-        runtime_list_item(value, 0, runtime, helper)?,
-        runtime_list_item(value, 1, runtime, helper)?,
-    ))
-}
-
-fn ensure_runtime_callable(value: &RuntimeVal, runtime: &NativeRuntime<'_>, helper: &str) -> anyhow::Result<()> {
-    let RuntimeVal::Obj(handle) = value else {
-        return Err(anyhow!("{helper} must be callable, got {:?}", value.kind()));
-    };
-    match runtime
-        .heap()
-        .get(*handle)
-        .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
-    {
-        HeapValue::Callable(_) => Ok(()),
-        other => Err(anyhow!("{helper} must be callable, got {}", other.type_name())),
-    }
+    crate::vm::TypeScope::builtin()
 }
 
 fn core_make_struct_builtin(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> anyhow::Result<RuntimeVal> {
@@ -527,6 +544,14 @@ fn core_make_struct_builtin(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_
     }
 
     let type_name = runtime_string_arg(args.get(0).expect("arity checked"), runtime.heap(), "__lk_make_struct")?;
+    // The type belongs to the module running this construction: a struct
+    // literal can only name a type declared in its own compilation unit (an
+    // imported struct is neither constructible nor nameable), so "who is
+    // executing" and "who declared it" are the same module here.
+    let type_scope = runtime
+        .module()
+        .map(|module| module.type_scope.clone())
+        .unwrap_or_default();
 
     let fields = match args.get(1).expect("arity checked") {
         RuntimeVal::Nil => fast_hash_map_new(),
@@ -551,10 +576,11 @@ fn core_make_struct_builtin(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_
         }
     };
 
+    let ty = Arc::new(crate::vm::DeclaredType::new(type_scope, type_name));
     Ok(RuntimeVal::Obj(
         runtime
             .heap_mut()
-            .alloc(HeapValue::Object(RuntimeObject::new(type_name, fields))),
+            .alloc(HeapValue::Object(RuntimeObject::new(ty, fields))),
     ))
 }
 
@@ -675,7 +701,9 @@ fn set_string_field_on_object(object: &RuntimeObject, key: Arc<str>, value: Runt
     }
 
     RuntimeObject {
-        type_name: Arc::clone(&object.type_name),
+        // Setting a field produces the same object with one value replaced —
+        // same type, so the identity is shared, not rebuilt.
+        ty: Arc::clone(&object.ty),
         fields,
         field_slots,
     }
@@ -1034,6 +1062,144 @@ mod tests {
     use crate::util::fast_map::fast_hash_map_from_iter;
     use crate::vm::{Module, RuntimeModuleState};
 
+    fn module_with_impl(type_name: &str, method: &str, function: u32) -> Arc<Module> {
+        scoped_module_with_impl(crate::vm::TypeScope::anonymous(), type_name, method, function)
+    }
+
+    fn scoped_module_with_impl(
+        type_scope: crate::vm::TypeScope,
+        type_name: &str,
+        method: &str,
+        function: u32,
+    ) -> Arc<Module> {
+        Arc::new(Module {
+            type_scope,
+            type_info: crate::vm::TypeInfo {
+                traits: vec![crate::vm::TraitDecl {
+                    name: "Area".to_string(),
+                    methods: vec![(method.to_string(), "Function".to_string())],
+                }],
+                impls: vec![crate::vm::ImplDecl {
+                    trait_name: "Area".to_string(),
+                    type_name: type_name.to_string(),
+                    methods: vec![crate::vm::ImplMethod {
+                        name: method.to_string(),
+                        function,
+                        ty: "Function".to_string(),
+                        writes_globals: false,
+                        reads_globals: Vec::new(),
+                    }],
+                }],
+            },
+            ..Module::default()
+        })
+    }
+
+    #[test]
+    fn dispatch_entry_records_the_module_that_declared_the_impl() {
+        // A function index means nothing without the table it indexes, so the
+        // entry has to name the module it indexes into. Re-registering the
+        // *same* scope replaces the entry (the REPL and the hybrid bridge both
+        // do it); it must still point at the module it came from.
+        let scope = crate::vm::TypeScope::from_path("a.lk");
+        let mut ctx = VmContext::new_without_core_vm_builtins();
+        let first = scoped_module_with_impl(scope.clone(), "Sq", "area", 3);
+        ctx.register_module_types(&first).expect("register first module");
+
+        let Some(MethodImpl::Local { module, function, .. }) = ctx.trait_method(&scope, "Sq", "area") else {
+            panic!("a locally declared impl registers as `Local`");
+        };
+        assert_eq!(*function, 3);
+        assert!(Arc::ptr_eq(module, &first));
+
+        let second = scoped_module_with_impl(scope.clone(), "Sq", "area", 9);
+        ctx.register_module_types(&second).expect("register second module");
+        let Some(MethodImpl::Local { module, function, .. }) = ctx.trait_method(&scope, "Sq", "area") else {
+            panic!("still `Local`");
+        };
+        assert_eq!(*function, 9);
+        assert!(Arc::ptr_eq(module, &second), "the entry follows its declaring module");
+    }
+
+    #[test]
+    fn same_type_name_in_two_modules_keeps_two_entries() {
+        // `struct Point` in `a.lk` and in `b.lk` are different types. Keyed by
+        // the bare name they shared one slot and the later registration won for
+        // both, so `a`'s value ran `b`'s method body (see `vm::TypeScope`).
+        let a = crate::vm::TypeScope::from_path("a.lk");
+        let b = crate::vm::TypeScope::from_path("b.lk");
+        let mut ctx = VmContext::new_without_core_vm_builtins();
+        let from_a = scoped_module_with_impl(a.clone(), "Point", "tag", 3);
+        let from_b = scoped_module_with_impl(b.clone(), "Point", "tag", 9);
+        ctx.register_module_types(&from_a).expect("register a");
+        ctx.register_module_types(&from_b).expect("register b");
+
+        let Some(MethodImpl::Local { module, function, .. }) = ctx.trait_method(&a, "Point", "tag") else {
+            panic!("a's impl survives b's registration");
+        };
+        assert_eq!(*function, 3, "a's value must not reach b's body");
+        assert!(Arc::ptr_eq(module, &from_a));
+
+        let Some(MethodImpl::Local { function, .. }) = ctx.trait_method(&b, "Point", "tag") else {
+            panic!("b's impl is registered too");
+        };
+        assert_eq!(*function, 9);
+    }
+
+    #[test]
+    fn an_impl_on_a_builtin_type_is_not_scoped_to_its_module() {
+        // `impl Doubler for Int` has no declaring module to be scoped to — the
+        // receiver is a bare `5` — so it is filed under the shared builtin
+        // scope and found from anywhere.
+        let declaring = crate::vm::TypeScope::from_path("a.lk");
+        let mut ctx = VmContext::new_without_core_vm_builtins();
+        ctx.register_module_types(&scoped_module_with_impl(declaring.clone(), "Int", "dbl", 2))
+            .expect("register");
+        assert!(
+            ctx.trait_method(&declaring, "Int", "dbl").is_none(),
+            "a builtin target does not belong to the declaring module's scope"
+        );
+        assert!(matches!(
+            ctx.trait_method(&crate::vm::TypeScope::builtin(), "Int", "dbl"),
+            Some(MethodImpl::Local { function: 2, .. })
+        ));
+    }
+
+    #[test]
+    fn registering_the_same_module_twice_does_not_grow_the_type_registry() {
+        // The hybrid bridge and the REPL both reuse one context for the life of
+        // the process; re-registration must be idempotent or the impl list
+        // grows once per call.
+        let mut ctx = VmContext::new();
+        let module = module_with_impl("Sq", "area", 0);
+        for _ in 0..64 {
+            ctx.register_module_types(&module).expect("register");
+        }
+        let checker = ctx.type_checker.as_ref().expect("checker present");
+        let target = crate::val::Type::Named("Sq".to_string());
+        assert!(checker.registry().implements_trait(&target, "Area"));
+        assert_eq!(
+            checker.registry().trait_impl_count(&target),
+            1,
+            "re-registering an impl must replace it, not stack another copy"
+        );
+    }
+
+    #[test]
+    fn dispatch_table_is_populated_without_a_type_checker() {
+        // `new_without_core_vm_builtins` (goroutine fallback, low-level tests)
+        // has no checker. Returning early on that used to skip the dispatch
+        // table too, silently making every trait method unreachable.
+        let mut ctx = VmContext::new_without_core_vm_builtins();
+        assert!(ctx.type_checker.is_none());
+        ctx.register_module_types(&module_with_impl("Sq", "area", 1))
+            .expect("register without a checker");
+        assert!(matches!(
+            ctx.trait_method(&crate::vm::TypeScope::anonymous(), "Sq", "area"),
+            Some(MethodImpl::Local { function: 1, .. })
+        ));
+    }
+
     #[test]
     fn deep_call_stack_report_is_truncated() {
         let mut ctx = VmContext::new_without_core_vm_builtins();
@@ -1091,8 +1257,6 @@ mod tests {
     fn core_vm_builtins_use_runtime_native() {
         let ctx = VmContext::new();
         for name in [
-            "__lk_register_trait",
-            "__lk_register_trait_impl",
             "__lk_call_method",
             "__lk_call_method_named",
             "__lk_make_struct",

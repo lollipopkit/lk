@@ -1,7 +1,6 @@
 [workspace]
 members = [
     "core",
-    "hal",
     "values",
     "api",
     "cli",
@@ -10,7 +9,7 @@ members = [
     "aot/mir",
     "aot/codegen",
     "aot/lower",
-    "llvm",
+    "aot/driver",
     "stdlib",
     "stdlib/common",
     "stdlib/macros",
@@ -83,7 +82,6 @@ dashmap = "6"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tempfile = "3"
-llvm-tools = "0.1"
 arcstr = { version = "1", features = ["serde"] }
 ureq = "2"
 url = "2"

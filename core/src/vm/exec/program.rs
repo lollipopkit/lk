@@ -4,17 +4,41 @@ use alloc::sync::Arc;
 
 use anyhow::Result;
 
+use crate::vm::execute_imports;
 use crate::{
-    stmt::{
-        Program,
-        import::{collect_program_imports, execute_imports},
-    },
+    stmt::{Program, import::collect_program_imports},
     syntax::{ParseOptions, parse_program_source},
     val::{HeapStore, RuntimeVal},
     vm::{Compiler, GlobalSlot, ModuleArtifact, VmContext},
 };
 
 use super::{Executor, ProgramResult, imports::import_runtime_export};
+
+/// Running a program from its AST.
+///
+/// These used to be inherent methods on `Program`, which made the AST layer
+/// (`stmt`) depend on the execution layer (`vm`) — a cycle that existed only
+/// for call-site convenience. As an extension trait the convenience is kept
+/// while the dependency points the right way (`vm` → `stmt`).
+pub trait ProgramExec {
+    /// Type-checks and runs the program in a fresh context.
+    fn execute(&self) -> Result<ProgramResult>;
+    /// Type-checks and runs the program in `ctx`.
+    fn execute_with_ctx(&self, ctx: &mut VmContext) -> Result<ProgramResult>;
+}
+
+impl ProgramExec for Program {
+    fn execute(&self) -> Result<ProgramResult> {
+        let mut ctx = VmContext::new();
+        self.execute_with_ctx(&mut ctx)
+    }
+
+    fn execute_with_ctx(&self, ctx: &mut VmContext) -> Result<ProgramResult> {
+        let mut type_checker = crate::typ::TypeChecker::new();
+        self.type_check(&mut type_checker)?;
+        execute_program_with_ctx(self, ctx)
+    }
+}
 
 pub fn execute_program(program: &Program) -> Result<ProgramResult> {
     let mut ctx = VmContext::new();
@@ -31,11 +55,13 @@ pub fn compile_program_module_with_ctx(program: &Program, ctx: &mut VmContext) -
         external_globals.push(name.clone());
     }
 
-    Ok(Arc::new(Compiler::compile_module_with_natives_and_globals(
-        program,
-        Vec::new(),
-        external_globals,
-    )?))
+    let mut module = Compiler::compile_module_with_natives_and_globals(program, Vec::new(), external_globals)?;
+    // The compiler has no idea which file it is compiling; the loader does, and
+    // it put that on the context before handing the program over. Stamping here
+    // is what gives this module's declared types an identity distinct from an
+    // identically-named type in any other module (`vm::TypeScope`).
+    module.type_scope = ctx.type_scope().clone();
+    Ok(Arc::new(module))
 }
 
 pub fn execute_program_with_ctx(program: &Program, ctx: &mut VmContext) -> Result<ProgramResult> {
@@ -117,6 +143,10 @@ fn execute_compiled_module_with_ctx_full(
     // Start each top-level run with an empty traceback so a reused context
     // (REPL / embedded `Vm`) does not carry frames from a previous error.
     ctx.truncate_call_stack(0);
+    // Trait/impl declarations come from the artifact, not from executing
+    // registration calls, so the method table is ready before any user code
+    // runs (`VmContext::register_module_types`).
+    ctx.register_module_types(&module)?;
     let mut seed_heap = HeapStore::new();
     if let Some(gc_threshold) = gc_threshold {
         seed_heap.set_gc_threshold(gc_threshold);
@@ -147,7 +177,11 @@ pub fn execute_source(source: &str) -> Result<ProgramResult> {
     execute_program(&program)
 }
 
-fn seed_module_globals(slots: &[GlobalSlot], ctx: &VmContext, heap: &mut HeapStore) -> Result<Vec<RuntimeVal>> {
+pub(super) fn seed_module_globals(
+    slots: &[GlobalSlot],
+    ctx: &VmContext,
+    heap: &mut HeapStore,
+) -> Result<Vec<RuntimeVal>> {
     let mut globals = Vec::with_capacity(slots.len());
     for slot in slots {
         globals.push(match ctx.get_runtime_global(slot.name.as_ref()) {
@@ -160,7 +194,7 @@ fn seed_module_globals(slots: &[GlobalSlot], ctx: &VmContext, heap: &mut HeapSto
 
 /// A scalar argument for [`call_module_function_with_ctx`]. The Tier 1 hybrid
 /// bridge marshals native scalars into VM values with these tags — containers
-/// and closures are deliberately absent (see `docs/llvm/tier1-hybrid.md`).
+/// and closures are deliberately absent (see `docs/aot/tier1-hybrid.md`).
 #[derive(Debug, Clone, PartialEq)]
 pub enum ModuleFunctionArg {
     Nil,
@@ -213,12 +247,18 @@ pub fn call_module_function_with_ctx(
 }
 
 /// Call one function of a compiled module with positional scalar arguments —
-/// the Tier 1 hybrid bridge entry (`docs/llvm/tier1-hybrid.md`): globals and
+/// the Tier 1 hybrid bridge entry (`docs/aot/tier1-hybrid.md`): globals and
 /// builtins are seeded exactly like a module run, but `function_index` is
 /// invoked instead of the entry, against a fresh per-call state. Bridge-eligible
 /// functions touch no user globals (the lowering proves it), so per-call state
 /// is semantically invisible. The state rides along in the outcome so callers
 /// can read heap-backed results before dropping it.
+///
+/// **The caller registers `module`'s trait/impl declarations once**, via
+/// [`VmContext::register_module_types`], before the first call — this entry is
+/// a per-call hot path (a native loop can reach it millions of times) and one
+/// `ctx` outlives the whole process, so registering here re-registered the
+/// module's impls on every single call.
 pub fn call_module_function_with_ctx_keep_state(
     module: &crate::vm::Module,
     function_index: u32,
@@ -525,5 +565,27 @@ mod tests {
         let result = execute_compiled_module_with_ctx_and_budget(module, &mut enough_ctx, 5)
             .expect("budget should count each batched Move and complete");
         assert_eq!(result.returns.first(), Some(&RuntimeVal::Int(7)));
+    }
+}
+
+/// Test helpers for running a parsed program.
+///
+/// They live in the VM layer (and are re-exported from `stmt` for the existing
+/// call sites) because running a program is execution: keeping them in `stmt`
+/// meant the AST module depended on the executor even in test builds, which is
+/// exactly the cycle this move removes.
+#[cfg(test)]
+pub mod test_support {
+    use super::{ProgramExec, ProgramResult, VmContext};
+    use crate::stmt::Program;
+    use anyhow::Result;
+
+    pub fn run_program(program: &Program, ctx: &mut VmContext) -> Result<ProgramResult> {
+        program.execute_with_ctx(ctx)
+    }
+
+    pub fn run_program_default(program: &Program) -> Result<ProgramResult> {
+        let mut ctx = VmContext::new();
+        run_program(program, &mut ctx)
     }
 }

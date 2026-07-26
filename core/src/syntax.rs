@@ -1,13 +1,14 @@
 use crate::compat::path::PathBuf;
 #[cfg(not(feature = "std"))]
 use crate::compat::prelude::*;
+use crate::token::token_lexeme;
 use crate::{
     ast::Parser as ExprParser,
     expr::Expr,
     macro_system::{
         AstMacroOrigin, MacroExpandOptions, MacroTokenOrigin, MacroTrace, ProcMacroDependency,
         ProcMacroDependencyRecorder, ProcMacroOptions, ProcMacroProviders, expand_ast_macros_with_metadata,
-        expand_macros, token_lexeme,
+        expand_macros,
     },
     stmt::{Program, StmtParser},
     token::{ParseError, Token, Tokenizer},

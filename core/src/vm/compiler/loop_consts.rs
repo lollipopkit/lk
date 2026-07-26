@@ -186,6 +186,12 @@ fn collect_stmt_scalar_consts(stmt: &Stmt, keys: &mut Vec<ScalarLoopConstKey>) {
                 collect_stmt_scalar_consts(else_stmt, keys);
             }
         }
+        // A try/catch is a two-way branch, so it is walked like `If`.
+        Stmt::Try { body, handler, .. } => {
+            for stmt in body.iter().chain(handler) {
+                collect_stmt_scalar_consts(stmt, keys);
+            }
+        }
         Stmt::IfLet {
             value,
             then_stmt,
@@ -361,6 +367,22 @@ fn collect_stmt_folded_int_consts(stmt: &Stmt, locals: &mut HashMap<String, i64>
             collect_stmt_folded_int_consts(then_stmt, &mut locals.clone(), keys);
             if let Some(else_stmt) = else_stmt {
                 collect_stmt_folded_int_consts(else_stmt, &mut locals.clone(), keys);
+            }
+        }
+        // One map per side, exactly as for `If`: cloned so nothing either side
+        // assigns folds into the enclosing scope (a `try` body can also stop
+        // part-way), but *reused* across that side's statements so an earlier
+        // assignment still invalidates a later fold within it. Cloning per
+        // statement would have let every statement fold against pre-branch
+        // values.
+        Stmt::Try { body, handler, .. } => {
+            let mut body_locals = locals.clone();
+            for stmt in body {
+                collect_stmt_folded_int_consts(stmt, &mut body_locals, keys);
+            }
+            let mut handler_locals = locals.clone();
+            for stmt in handler {
+                collect_stmt_folded_int_consts(stmt, &mut handler_locals, keys);
             }
         }
         Stmt::IfLet {
@@ -551,6 +573,11 @@ fn collect_stmt_inline_call_scalar_consts(
             collect_stmt_inline_call_scalar_consts(then_stmt, bodies, visiting, keys);
             if let Some(else_stmt) = else_stmt {
                 collect_stmt_inline_call_scalar_consts(else_stmt, bodies, visiting, keys);
+            }
+        }
+        Stmt::Try { body, handler, .. } => {
+            for stmt in body.iter().chain(handler) {
+                collect_stmt_inline_call_scalar_consts(stmt, bodies, visiting, keys);
             }
         }
         Stmt::IfLet {
@@ -750,6 +777,11 @@ fn collect_stmt_const_map_get_scalar_consts(
             collect_stmt_const_map_get_scalar_consts(then_stmt, const_maps, keys)?;
             if let Some(else_stmt) = else_stmt {
                 collect_stmt_const_map_get_scalar_consts(else_stmt, const_maps, keys)?;
+            }
+        }
+        Stmt::Try { body, handler, .. } => {
+            for stmt in body.iter().chain(handler) {
+                collect_stmt_const_map_get_scalar_consts(stmt, const_maps, keys)?;
             }
         }
         Stmt::IfLet {

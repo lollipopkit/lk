@@ -15,15 +15,19 @@ path = "src/main.rs"
 default-run = "lk"
 
 [features]
-default = ["llvm", "stdlib"]
-llvm = ["dep:lk-llvm"]
+default = ["aot", "stdlib"]
+aot = ["dep:lk-aot"]
+# TODO(migration): `llvm` is a compatibility alias kept for external callers of
+# `--features llvm`; the backend has been Cranelift since #27. Delete it once
+# downstream build scripts have moved to `aot`.
+llvm = ["aot"]
 stdlib = ["dep:lk-stdlib", "lk-completion/stdlib"]
 vm-profile = ["lk-core/vm-profile"]
 
 [dependencies]
 lk-core = { path = "../core" }
 lk-completion = { path = "../completion", default-features = false }
-lk-llvm = { path = "../llvm", optional = true }
+lk-aot = { path = "../aot/driver", optional = true }
 lk-stdlib = { path = "../stdlib", optional = true }
 anyhow = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
@@ -40,3 +44,7 @@ sha2 = { workspace = true }
 assert_cmd = "2"
 predicates = "3"
 tempfile = { workspace = true }
+
+# `wait4` for the scope-drop test's peak-RSS measurement (tests/aot_scope_drop_test.rs).
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+libc = "0.2"

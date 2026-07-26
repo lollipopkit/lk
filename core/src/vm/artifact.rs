@@ -32,7 +32,22 @@ use super::{
 // Version 9: `Yield` removed again (v2 direction: coroutines/`yield` dropped
 // in favor of Go-style go/spawn concurrency) — v8 artifacts may contain an
 // opcode this runtime no longer decodes.
-pub const MODULE_ARTIFACT_VERSION: u32 = 9;
+// Version 10: `ModuleData.type_info` carries the compiler's `trait`/`impl`
+// declarations (see `super::TypeInfo`). Back ends read them instead of
+// reconstructing them from bytecode, so a v9 artifact would leave a v10
+// consumer with an empty table rather than a wrong one — still a semantic
+// difference, hence the bump.
+// Version 11: `ModuleData.type_scope` carries the identity of the module as a
+// declarer of types (see `super::TypeScope`). A v10 artifact has no scope, so a
+// v11 consumer would file every one of its declared types under the anonymous
+// scope and collide them with the host program's — exactly the wrong-dispatch
+// bug the scope exists to close, hence a rejection rather than a default.
+// Version 12: `ImplMethod.writes_globals` decides whether a method may be
+// dispatched from another module's frame. It defaults to `false` on decode, and
+// `false` is the *permissive* answer — a v11 artifact would let a
+// global-writing method run against a temporary copy of its module's globals
+// and silently drop the write, so this one cannot degrade quietly either.
+pub const MODULE_ARTIFACT_VERSION: u32 = 12;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ModuleArtifact {
@@ -97,6 +112,17 @@ pub struct ModuleData {
     pub entry: u32,
     pub globals: Vec<String>,
     pub functions: Vec<FunctionData>,
+    /// Static `trait`/`impl` declarations from the compiler; see
+    /// [`super::TypeInfo`]. Defaulted so a module without declarations costs
+    /// nothing in the encoding.
+    #[serde(default, skip_serializing_if = "super::TypeInfo::is_empty")]
+    pub type_info: super::TypeInfo,
+    /// Identity of this module as a declarer of types; see
+    /// [`super::TypeScope`]. Not skippable — an absent scope would silently
+    /// mean "anonymous", which is a *different* type identity, not a missing
+    /// one.
+    #[serde(default)]
+    pub type_scope: super::TypeScope,
 }
 
 impl ModuleData {
@@ -113,6 +139,8 @@ impl ModuleData {
             entry: module.entry,
             globals,
             functions,
+            type_info: module.type_info.clone(),
+            type_scope: module.type_scope.clone(),
         }
     }
 
@@ -128,7 +156,26 @@ impl ModuleData {
                 functions.len()
             );
         }
+        // Impl-method indices are the runtime dispatch table's only link to a
+        // function body: an out-of-range one from a corrupt or hand-edited
+        // artifact would surface as a panic (or a call to the wrong body) at
+        // the first method dispatch, far from the decode that admitted it.
+        for decl in &self.type_info.impls {
+            for method in &decl.methods {
+                if method.function as usize >= functions.len() {
+                    bail!(
+                        "Module artifact impl method '{}::{}' function {} out of bounds for {} functions",
+                        decl.type_name,
+                        method.name,
+                        method.function,
+                        functions.len()
+                    );
+                }
+            }
+        }
         Ok(Module {
+            type_info: self.type_info,
+            type_scope: self.type_scope,
             functions,
             natives: Vec::new(),
             globals: {
@@ -409,9 +456,49 @@ mod tests {
         assert_eq!(decoded_module.functions[0].code, module.functions[0].code);
     }
 
+    /// The compiler's `trait`/`impl` knowledge must survive into the artifact
+    /// in structured form — that is the whole point of `TypeInfo`. Before this,
+    /// the only encoding was string literals inside a registration call, which
+    /// every back end had to decode again.
+    #[test]
+    fn module_artifact_carries_trait_impl_declarations() {
+        let source = "\
+trait Show { fn show(self) -> String; }\n\
+struct Point { x: Int }\n\
+impl Show for Point { fn show(self) -> String { return \"p\"; } }\n\
+return 1;\n";
+        let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
+        let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
+        let module = Compiler::compile_module(&program).expect("compile");
+
+        let info = &module.type_info;
+        assert_eq!(info.traits.len(), 1, "the trait declaration is recorded");
+        assert_eq!(info.traits[0].name, "Show");
+        assert_eq!(info.impls.len(), 1, "the impl block is recorded");
+        assert_eq!(info.impls[0].trait_name, "Show");
+        assert_eq!(info.impls[0].type_name, "Point");
+        assert_eq!(info.impls[0].methods.len(), 1);
+        assert_eq!(info.impls[0].methods[0].name, "show");
+        // The method points at a real compiled body, by index — not a runtime
+        // value, which is what makes this serializable.
+        let target = info.impls[0].methods[0].function as usize;
+        assert!(
+            target < module.functions.len(),
+            "method index addresses a compiled body"
+        );
+        assert_eq!(info.impl_method("Point", "show"), Some(target as u32));
+        assert_eq!(info.impl_method("Point", "missing"), None);
+
+        // And it round-trips through the serialized boundary unchanged.
+        let artifact = ModuleArtifact::new(Vec::new(), &module).expect("artifact");
+        let json = artifact.to_json_string().expect("json");
+        let decoded = ModuleArtifact::from_json_str(&json).expect("decode");
+        assert_eq!(decoded.module.type_info, module.type_info);
+    }
+
     #[test]
     fn module_artifact_rejects_previous_version() {
-        assert_eq!(MODULE_ARTIFACT_VERSION, 9);
+        assert_eq!(MODULE_ARTIFACT_VERSION, 12);
         let source = "return 1;\n";
         let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
         let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
@@ -421,7 +508,16 @@ mod tests {
 
         let json = artifact.to_json_string().expect("json");
         let err = ModuleArtifact::from_json_str(&json).expect_err("previous-version artifact should be rejected");
-        assert!(err.to_string().contains("unsupported LK module artifact version 8"));
+        // Derived, not spelled out: the literal silently went stale on the last
+        // bump (it still said 10 while `- 1` had become 11) and only failed on
+        // the bump after that.
+        assert!(
+            err.to_string().contains(&format!(
+                "unsupported LK module artifact version {}",
+                MODULE_ARTIFACT_VERSION - 1
+            )),
+            "unexpected rejection message: {err}"
+        );
     }
 
     #[test]
