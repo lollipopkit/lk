@@ -641,9 +641,13 @@ mod test {
     /// budget, nesting there would get a fresh allowance each level.
     #[test]
     fn nested_parsers_inherit_the_depth_budget() {
+        // The value is parenthesised so each level nests as the *value* of the
+        // enclosing `match`. Without the parens `match match … { … } { … }`
+        // does not parse at all, and the test would pass on a syntax error
+        // rather than on the depth bound.
         let mut source = String::from("1");
         for _ in 0..2_000 {
-            source = alloc::format!("match {source} {{ _ => 1 }}");
+            source = alloc::format!("match ({source}) {{ _ => 1 }}");
         }
         let tokens = Tokenizer::tokenize(&source).expect("tokenizes");
         let err = Parser::new(&tokens).parse().expect_err("must not abort");
