@@ -79,3 +79,13 @@ jobs:
         # scaffolding (see the `extern crate std` in core/src/lib.rs); every
         # non-test item is still compiled `#![no_std]`.
         run: cargo test -p lk-core --no-default-features
+      - name: lk-core feature matrix
+        # `cargo test --all-features` and the no_std build above only exercise
+        # the two endpoints. The combinations in between drift unnoticed: until
+        # `async-runtime` was made to imply `std`, enabling it alone failed with
+        # 24 errors, because tokio/futures cannot build without std.
+        run: |
+          cargo check -p lk-core --no-default-features
+          cargo check -p lk-core --no-default-features --features std
+          cargo check -p lk-core --no-default-features --features async-runtime
+          cargo check -p lk-core --no-default-features --features std,async-runtime

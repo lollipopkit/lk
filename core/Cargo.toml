@@ -28,7 +28,10 @@ std = [
     "serde/std",
     "serde_json/std",
 ]
-async-runtime = ["dep:futures", "dep:tokio"]
+# tokio/futures are std-only, so this implies `std` rather than silently
+# producing a configuration that cannot compile (`--no-default-features
+# --features async-runtime` used to fail with 24 errors).
+async-runtime = ["std", "dep:futures", "dep:tokio"]
 vm-profile = []
 
 [dependencies]
