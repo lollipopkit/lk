@@ -30,6 +30,7 @@ mechanisms:
 | COM1, a 16550 UART | port I/O (`in`/`out`) | configures the divisor and line control, polls the status register, transmits |
 | PCI configuration space | the 0xCF8/0xCFC port pair | walks bus 0, finds the display controller by class code, reads BAR0, enables memory cycles |
 | the framebuffer | volatile MMIO | sets a mode over the Bochs VBE ports, then writes 64000 pixels |
+| the PS/2 keyboard | port I/O, from an interrupt handler | reads the scancode, decodes it, echoes the character and draws a square |
 
 `check_screen.py` screenshots the machine through QEMU's monitor and checks the
 pixels. That is a separate claim from the `pixels …` line: reading the
@@ -80,8 +81,26 @@ have to be decided together:
 - the interrupt trampoline saves all sixteen XMM registers, because the
   interrupted computation may now be holding a float in one.
 
-The `half = 44` line in the output exists to keep this honest: it is a `f64`
-round trip across the boundary, so a regression prints `88` instead of failing.
+`program.lk`'s arithmetic crosses this boundary constantly, so a regression
+shows up as wrong numbers rather than as a failure.
+
+**This rests on something rustc says it does not support.** Building emits:
+
+```
+warning: target feature `soft-float` cannot be disabled with `-Ctarget-feature`:
+         use a soft-float target instead
+```
+
+The supported answer is a target whose spec has hard float, which for bare
+metal means a custom target JSON — and that needs `-Zbuild-std`, so it needs
+nightly. The alternative is to take `f64` off the LK/`lkrt` boundary entirely
+by passing bit patterns in integers; that works, but it costs a pair of
+register moves on every float call *on the hosted path too*, which is the one
+with a performance gate. Neither trade is worth making today.
+
+What makes this acceptable rather than merely convenient is the failure mode:
+if rustc turns that warning into an error, the build stops. It does not go
+back to computing wrong numbers silently.
 
 ## Interrupts
 
@@ -112,6 +131,25 @@ unsafe { cpu_irq_restore(irq); };
 Two things the handler must not do, both because an interrupt lands between any
 two instructions of the interrupted program — including instructions inside the
 runtime: allocate, or take a lock.
+
+### Sharing state with a handler
+
+The keyboard handler counts keystrokes and the main flow reads that count. A
+plain global would not do: the compiler may keep one in a register across the
+polling loop, and an interrupt writing memory would never be seen. So the
+count lives at a fixed address reached through `volatile_read_u32` /
+`volatile_write_u32` — the same reason a device register needs `volatile`,
+applied to ordinary memory that changes behind the code's back.
+
+The address is free RAM: the image, its heap, its stack and the page tables all
+live below 2 MiB, so 0x0030_0000 is untouched. That is crude, and deliberately
+so — a kernel with no memory manager yet has exactly this much to work with,
+and pretending otherwise would hide what the program is actually doing.
+
+`check_keyboard.py` types at the machine through QEMU's monitor. `sendkey`
+puts a real scancode into the emulated controller, so the test covers IRQ1, the
+LK handler, the scancode table and the echo — the one part memory inspection
+cannot show.
 
 ## Exceptions
 

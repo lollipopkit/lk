@@ -10,8 +10,10 @@
 //   * that framebuffer, through volatile MMIO — a linear array of pixels at a
 //     physical address the boot page tables have to reach.
 //
-// The timer interrupt handler near the bottom is LK too; `#[export]` gives it
-// a C symbol so the board's IDT can name it.
+// The timer and keyboard interrupt handlers are LK too; `#[export]` gives them
+// C symbols so the board's IDT can name them. Reading a key back out of the
+// PS/2 controller and drawing a square for it is the whole input half of a
+// user interface, in the same language as the output half.
 
 // ---------------------------------------------------------------- serial ---
 
@@ -191,6 +193,15 @@ fn vbe_set_mode(width: Int, height: Int, depth: Int) {
 
 // --------------------------------------------------------------- drawing ---
 
+// Ask PCI where the framebuffer is. Cheap enough to repeat (two port
+// accesses), and repeating it keeps the interrupt handler independent of what
+// the main flow has or has not done yet.
+fn framebuffer_address() -> Int {
+    let slot = pci_find_display();
+    return pci_read(slot, PCI_REG_BAR0) & 0xfffffff0;
+}
+
+
 const WIDTH = 320;
 const HEIGHT = 200;
 
@@ -217,6 +228,89 @@ fn fill_gradient(base: Int) {
     }
 }
 
+// -------------------------------------------------------------- keyboard ---
+//
+// The PS/2 controller: 0x60 is the data port, 0x64 the status/command port.
+// A key press produces a scancode; the release of the same key produces the
+// same code with bit 7 set, which is how a driver tells them apart.
+
+const PS2_DATA = 0x60;
+const PS2_STATUS = 0x64;
+
+const PS2_RELEASE = 0x80;
+
+// Scancode set 1, enough of it to spell things. Index is the scancode; 0 means
+// "nothing printable", which covers modifiers and the keys not listed.
+const SCANCODE_ASCII = [
+    0, 0, 49, 50, 51, 52, 53, 54, 55, 56, 57, 48, 45, 61, 8, 9,
+    113, 119, 101, 114, 116, 121, 117, 105, 111, 112, 91, 93, 10, 0,
+    97, 115, 100, 102, 103, 104, 106, 107, 108, 59, 39, 96, 0, 92,
+    122, 120, 99, 118, 98, 110, 109, 44, 46, 47, 0, 42, 0, 32,
+];
+
+// Where the handler and the main flow meet.
+//
+// A plain global would not do: the compiler may keep one in a register across
+// the polling loop, and an interrupt writing memory would never be seen. This
+// is the same reason a device register needs `volatile` — the value changes
+// behind the code's back. The address is free RAM: the image, its heap, its
+// stack and the page tables all live below 2 MiB.
+const SHARED_KEY_COUNT = 0x00300000;
+const SHARED_LAST_KEY = 0x00300004;
+const SHARED_TICKS = 0x00300008;
+
+fn shared_read(address: Int) -> Int {
+    let value = unsafe { volatile_read_u32(address as *mut u32) };
+    return value as Int;
+}
+
+fn shared_write(address: Int, value: Int) {
+    unsafe { volatile_write_u32(address as *mut u32, value as u32); };
+}
+
+// A filled square, so a key press is visible on the screen and not only on the
+// serial line.
+fn fill_rect(base: Int, left: Int, top: Int, size: Int, colour: Int) {
+    for y in 0..size {
+        for x in 0..size {
+            put_pixel(base, left + x, top + y, colour);
+        }
+    }
+}
+
+// The keyboard interrupt handler, written in LK.
+//
+// It reads the controller's data port itself: what the board owes the device
+// is the acknowledgement, but the scancode is the driver's business, and the
+// driver is this file.
+#[export("lk_key_isr")]
+fn on_key() {
+    let scancode = (unsafe { port_in_u8(PS2_DATA) }) as Int;
+    // Releases arrive as the press code with bit 7 set. Counting both would
+    // report every keystroke twice.
+    if ((scancode & PS2_RELEASE) != 0) {
+        return;
+    }
+    if (scancode >= SCANCODE_ASCII.len()) {
+        return;
+    }
+    let ascii = SCANCODE_ASCII[scancode];
+    if (ascii == 0) {
+        return;
+    }
+    let count = shared_read(SHARED_KEY_COUNT) + 1;
+    shared_write(SHARED_KEY_COUNT, count);
+    shared_write(SHARED_LAST_KEY, ascii);
+    uart_putc(ascii);
+    // One square per key, marching left to right along the bottom of the
+    // screen. The framebuffer address is recomputed rather than shared,
+    // because a handler that depends on the main flow having run is a handler
+    // that works only some of the time.
+    let base = framebuffer_address();
+    let column = (count - 1) % 20;
+    fill_rect(base, column * 16, HEIGHT - 20, 12, ascii * 0x10101);
+}
+
 // --------------------------------------------------------------- handler ---
 
 // The timer interrupt handler. It transmits directly and allocates nothing: an
@@ -224,7 +318,15 @@ fn fill_gradient(base: Int) {
 // including instructions inside the runtime's allocator.
 #[export("lk_timer_isr")]
 fn on_tick() {
-    uart_putc(46); // '.'
+    // Divided down: at a kilohertz, one character per tick is thousands of
+    // them. The counter lives in the shared page for the same reason the key
+    // count does — a handler's state has to survive between invocations, and
+    // it is the only state this one keeps.
+    let ticks = shared_read(SHARED_TICKS) + 1;
+    shared_write(SHARED_TICKS, ticks);
+    if (ticks % 500 == 0) {
+        uart_putc(46); // '.'
+    }
 }
 
 // The 8253/8254 PIT, programmed from LK.
@@ -300,9 +402,31 @@ uart_put_hex(far);
 uart_putc(10);
 unsafe { cpu_irq_restore(irq); };
 
+// Wait for keystrokes. `cpu_wait_for_interrupt` parks the core instead of
+// spinning: on a real board that is the difference between idling and burning
+// a watt, and on a virtualised one it stops starving the sibling. The timer
+// wakes it every millisecond, so this is a bounded wait however few keys
+// arrive.
+let waited = 0;
+while (waited < 4000 && shared_read(SHARED_KEY_COUNT) < 4) {
+    unsafe { cpu_wait_for_interrupt(); };
+    waited = waited + 1;
+}
+
+let keys = shared_read(SHARED_KEY_COUNT);
+let last = shared_read(SHARED_LAST_KEY);
+
 // Masked and deliberately not restored: what runs after this is the runtime's
 // epilogue echoing the script's value, which no LK code is in a position to
 // protect.
 unsafe { cpu_irq_save(); };
+uart_putc(10);
+// "keys "
+uart_write([107, 101, 121, 115, 32]);
+uart_put_int(keys);
+// " last "
+uart_write([32, 108, 97, 115, 116, 32]);
+uart_put_int(last);
+uart_putc(10);
 
-return slot;
+return keys;

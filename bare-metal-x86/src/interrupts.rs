@@ -45,6 +45,9 @@ static mut IDT: [Gate; 256] = [Gate {
 /// remaps it before enabling interrupts.
 const PIT_VECTOR: usize = 0x20;
 
+/// The PS/2 keyboard is IRQ1, one past the timer.
+const KEYBOARD_VECTOR: usize = 0x21;
+
 /// The 8259 pair's command and data ports.
 const PIC1_CMD: u16 = 0x20;
 const PIC1_DATA: u16 = 0x21;
@@ -52,8 +55,9 @@ const PIC2_CMD: u16 = 0xa0;
 const PIC2_DATA: u16 = 0xa1;
 
 unsafe extern "C" {
-    /// The assembly trampoline below.
+    /// The assembly trampolines below.
     fn __pit_trampoline();
+    fn __keyboard_trampoline();
 }
 
 /// Fills in one gate.
@@ -96,6 +100,11 @@ pub fn init() {
             set_gate(idt, vector, (stubs + vector * STUB_STRIDE) as u64);
         }
         set_gate(idt, PIT_VECTOR, handler);
+        set_gate(
+            idt,
+            KEYBOARD_VECTOR,
+            __keyboard_trampoline as *const () as usize as u64,
+        );
         let descriptor = Descriptor {
             limit: (core::mem::size_of_val(&*idt) - 1) as u16,
             base: idt as u64,
@@ -112,9 +121,10 @@ pub fn init() {
         crate::port_out_u8(PIC2_DATA, 0x02);
         crate::port_out_u8(PIC1_DATA, 0x01); // ICW4: 8086 mode
         crate::port_out_u8(PIC2_DATA, 0x01);
-        // Mask everything but IRQ0. An unmasked line with no handler is a
-        // vector into a zeroed IDT entry, which is a triple fault.
-        crate::port_out_u8(PIC1_DATA, 0xfe);
+        // Unmask the timer and the keyboard, mask the rest. An unmasked line
+        // with no handler is a vector into a zeroed IDT entry, which is a
+        // triple fault.
+        crate::port_out_u8(PIC1_DATA, 0xfc);
         crate::port_out_u8(PIC2_DATA, 0xff);
 
         core::arch::asm!("sti", options(nomem, nostack));
@@ -132,9 +142,10 @@ pub fn stop() {
 }
 
 unsafe extern "C" {
-    /// The interrupt handler, written in LK. `#[export("lk_timer_isr")]` in
-    /// `program.lk` is what makes this name exist.
+    /// The interrupt handlers, written in LK. `#[export("…")]` in `program.lk`
+    /// is what makes these names exist.
     fn lk_timer_isr();
+    fn lk_key_isr();
 }
 
 /// Called from the trampoline with every caller-saved register already spilled.
@@ -144,6 +155,19 @@ pub extern "C" fn pit_dispatch() {
     // `void(void)` by the same build.
     unsafe { lk_timer_isr() };
     // End-of-interrupt. Without it the PIC never delivers IRQ0 again.
+    // SAFETY: a fixed ISA port.
+    unsafe { crate::port_out_u8(PIC1_CMD, 0x20) };
+}
+
+/// As [`pit_dispatch`], for the keyboard.
+///
+/// The scancode is deliberately *not* read here: the controller's data port is
+/// the driver's business, and the driver is LK. What the board owes the device
+/// is the acknowledgement.
+#[unsafe(no_mangle)]
+pub extern "C" fn keyboard_dispatch() {
+    // SAFETY: as `pit_dispatch`.
+    unsafe { lk_key_isr() };
     // SAFETY: a fixed ISA port.
     unsafe { crate::port_out_u8(PIC1_CMD, 0x20) };
 }
@@ -160,8 +184,10 @@ pub extern "C" fn pit_dispatch() {
 // XMM area and restores the alignment `call` expects.
 global_asm!(
     ".section .text, \"ax\"",
-    ".global __pit_trampoline",
-    "__pit_trampoline:",
+    // The spill/restore is identical for every IRQ, so it lives in a macro
+    // rather than being copied per vector — a register missing from one copy
+    // corrupts a value only when that particular interrupt lands.
+    ".macro IRQ_SAVE",
     "   push rax",
     "   push rcx",
     "   push rdx",
@@ -188,7 +214,8 @@ global_asm!(
     "   movups [rsp + 208], xmm13",
     "   movups [rsp + 224], xmm14",
     "   movups [rsp + 240], xmm15",
-    "   call pit_dispatch",
+    ".endm",
+    ".macro IRQ_RESTORE",
     "   movups xmm0, [rsp + 0]",
     "   movups xmm1, [rsp + 16]",
     "   movups xmm2, [rsp + 32]",
@@ -215,6 +242,18 @@ global_asm!(
     "   pop rdx",
     "   pop rcx",
     "   pop rax",
+    ".endm",
+    ".global __pit_trampoline",
+    "__pit_trampoline:",
+    "   IRQ_SAVE",
+    "   call pit_dispatch",
+    "   IRQ_RESTORE",
+    "   iretq",
+    ".global __keyboard_trampoline",
+    "__keyboard_trampoline:",
+    "   IRQ_SAVE",
+    "   call keyboard_dispatch",
+    "   IRQ_RESTORE",
     "   iretq",
 );
 
