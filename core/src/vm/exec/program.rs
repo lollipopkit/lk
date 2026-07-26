@@ -329,6 +329,8 @@ pub fn call_module_function_with_ctx_keep_state(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(not(feature = "std"))]
+    use crate::compat::prelude::*;
     use alloc::sync::Arc;
 
     use crate::{

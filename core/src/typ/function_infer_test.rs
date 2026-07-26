@@ -1,7 +1,7 @@
-#[cfg(not(feature = "std"))]
-use crate::compat::prelude::*;
 #[cfg(test)]
 mod tests {
+    #[cfg(not(feature = "std"))]
+    use crate::compat::prelude::*;
     use anyhow::Result;
     use crate::{
         stmt::stmt_parser::StmtParser,

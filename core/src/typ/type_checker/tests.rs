@@ -1,6 +1,4 @@
 use super::*;
-#[cfg(not(feature = "std"))]
-use crate::compat::prelude::*;
 use crate::{
     expr::Pattern,
     operator::BinOp,

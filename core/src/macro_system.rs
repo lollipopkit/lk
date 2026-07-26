@@ -27,7 +27,9 @@ mod validation;
 #[cfg(test)]
 mod hygiene_tests;
 
-#[cfg(test)]
+// The validation corpus drives macro *file* imports and proc-macro
+// providers, both std-only leaves.
+#[cfg(all(test, feature = "std"))]
 mod validation_tests;
 
 pub use origin::{MacroOriginFrame, MacroOriginKind, MacroTokenOrigin};
@@ -897,10 +899,10 @@ fn error_at(tokens: &[SourceToken], index: usize, message: &str) -> ParseError {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 mod origin_tests;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 mod tests {
     use std::fs;
 

@@ -63,11 +63,19 @@ jobs:
         # native, they must produce VM-identical output while pinned to the
         # native path.
         run: LK_AOT_NO_FALLBACK=1 cargo test -p lk-cli --test aot_differential_test --test clif_differential_test
-      - name: lk-core builds as no_std (VM core no-std guard)
+      - name: lk-core builds and *tests* as no_std (VM core no-std guard)
         # `--no-default-features` drops the `std` feature, which now makes
         # lk-core `#![no_std]` (+ alloc). The VM core (token/ast/expr/stmt/typ/
         # val/vm/gc/resolve/macro-expansion) compiles without std; std-only
         # leaves (package manager, file imports, proc-macro processes, fs-based
         # macro/module resolution, tokio) are `std`-feature-gated. This guards
         # the no_std profiles (plan M0.7/8, M5.1).
-        run: cargo build -p lk-core --no-default-features
+        #
+        # Running the tests — not just building the lib — is the point: until
+        # this ran, the no_std configuration's *behaviour* had never been
+        # executed once, only type-checked. The no_std-only branches (spin
+        # Mutex for std Mutex, the fs-less resolver, gc-stress off) had zero
+        # coverage. libtest is std-only, so the test build links std as
+        # scaffolding (see the `extern crate std` in core/src/lib.rs); every
+        # non-test item is still compiled `#![no_std]`.
+        run: cargo test -p lk-core --no-default-features

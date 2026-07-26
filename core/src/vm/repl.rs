@@ -214,6 +214,8 @@ fn exports_from_state(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(not(feature = "std"))]
+    use crate::compat::prelude::*;
     use crate::{
         stmt::StmtParser,
         token::Tokenizer,

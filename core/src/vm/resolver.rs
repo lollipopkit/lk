@@ -446,7 +446,9 @@ fn resolve_runtime_import_source(source: &ImportSource, resolver: &ModuleResolve
     }
 }
 
-#[cfg(test)]
+// Module resolution under test means resolving *files*; the no_std build
+// has no filesystem to resolve against.
+#[cfg(all(test, feature = "std"))]
 mod tests {
     use super::*;
     use crate::module::ModuleRegistry;

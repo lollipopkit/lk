@@ -1,6 +1,4 @@
 use super::*;
-#[cfg(not(feature = "std"))]
-use crate::compat::prelude::*;
 
 #[test]
 fn compiler_for_over_local_string_does_not_clone_iterable_local() {
