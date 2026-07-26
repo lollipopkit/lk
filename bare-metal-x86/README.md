@@ -101,6 +101,27 @@ Two things the handler must not do, both because an interrupt lands between any
 two instructions of the interrupted program — including instructions inside the
 runtime: allocate, or take a lock.
 
+## Exceptions
+
+Vectors 0-31 are the CPU's own faults. Without gates for them a fault becomes a
+double fault becomes a triple fault, which on this machine is a **silent reset
+loop** — the failure mode with the least information possible, and the one that
+cost the most time getting this demo working. All 32 now report:
+
+```
+!! exception #PF page fault vector=000000000000000e error=0000000000000002 \
+   rip=0000000000100729 cr2=0000000900000000
+```
+
+The CPU pushes an error code for some vectors and not others, and tells the
+handler nothing about which one fired. So there are 32 stubs, each pushing a
+dummy zero where there is no error code and then its own number; after that the
+stack layout is identical and one common tail reads it. They are padded to a
+fixed stride so their addresses are computable, rather than needing 32 labels.
+
+`--features fault-probe` builds an image that faults on purpose. Without a
+build that takes the path, a broken reporter looks exactly like a working one.
+
 ## Booting
 
 x86-64 cannot enter long mode in one step: long mode requires paging, paging

@@ -13,6 +13,12 @@ path = "src/main.rs"
 test = false
 bench = false
 
+[features]
+# Faults on purpose after the boot path is up, so CI can check that the
+# exception reporter says what happened instead of the machine resetting
+# silently. Never on for the ordinary build.
+fault-probe = []
+
 [dependencies]
 # The rlib, not the staticlib: this binary supplies the allocator and panic
 # handler itself. (`lkrt-cabi` is the archive the hosted AOT path links.)

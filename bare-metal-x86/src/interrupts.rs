@@ -56,14 +56,15 @@ unsafe extern "C" {
     fn __pit_trampoline();
 }
 
-/// Builds the IDT, remaps the PIC, unmasks the timer and enables interrupts.
-pub fn init() {
-    let handler = __pit_trampoline as *const () as usize as u64;
-    // SAFETY: single-threaded boot path; nothing else touches the IDT, and
-    // interrupts are still masked until the `sti` at the end.
+/// Fills in one gate.
+///
+/// # Safety
+///
+/// `handler` must be a function the CPU can enter with an interrupt frame on
+/// the stack — one of the stubs in this file, not an ordinary Rust function.
+unsafe fn set_gate(idt: *mut [Gate; 256], vector: usize, handler: u64) {
     unsafe {
-        let idt = &raw mut IDT;
-        (*idt)[PIT_VECTOR] = Gate {
+        (*idt)[vector] = Gate {
             offset_low: handler as u16,
             // The 64-bit code selector the boot GDT defines.
             selector: 0x08,
@@ -76,6 +77,25 @@ pub fn init() {
             offset_high: (handler >> 32) as u32,
             reserved: 0,
         };
+    }
+}
+
+/// Builds the IDT, remaps the PIC, unmasks the timer and enables interrupts.
+pub fn init() {
+    let handler = __pit_trampoline as *const () as usize as u64;
+    // SAFETY: single-threaded boot path; nothing else touches the IDT, and
+    // interrupts are still masked until the `sti` at the end.
+    unsafe {
+        let idt = &raw mut IDT;
+        // Vectors 0-31 are the CPU's own exceptions. Without gates for them a
+        // fault becomes a double fault becomes a triple fault, which on this
+        // machine is a silent reset loop — the failure mode that tells you
+        // nothing at all. One stub each, so the report can name the vector.
+        let stubs = &raw const ISR_STUBS as usize;
+        for vector in 0..32 {
+            set_gate(idt, vector, (stubs + vector * STUB_STRIDE) as u64);
+        }
+        set_gate(idt, PIT_VECTOR, handler);
         let descriptor = Descriptor {
             limit: (core::mem::size_of_val(&*idt) - 1) as u16,
             base: idt as u64,
@@ -196,4 +216,105 @@ global_asm!(
     "   pop rcx",
     "   pop rax",
     "   iretq",
+);
+
+/// Each stub is padded to this, so their addresses are computable rather than
+/// needing 32 labels. A stub is at most nine bytes: two `push imm8` and a
+/// `jmp rel32`.
+const STUB_STRIDE: usize = 16;
+
+unsafe extern "C" {
+    /// The first of the 32 exception stubs.
+    static ISR_STUBS: u8;
+}
+
+/// Where every CPU exception ends up.
+///
+/// It reports and halts rather than trying to recover: nothing here knows how
+/// to resume a faulted program, and a fault that prints its cause is the whole
+/// difference between a debuggable board and a board that stops.
+#[unsafe(no_mangle)]
+pub extern "C" fn exception_report(vector: u64, error: u64, rip: u64, cr2: u64) -> ! {
+    // Interrupts off first: the timer handler transmits on this same device.
+    // SAFETY: a flag instruction.
+    unsafe { core::arch::asm!("cli", options(nomem, nostack)) };
+    crate::serial_write("\n!! exception ");
+    crate::serial_write(vector_name(vector));
+    crate::serial_write(" vector=");
+    crate::write_hex(vector);
+    crate::serial_write(" error=");
+    crate::write_hex(error);
+    crate::serial_write(" rip=");
+    crate::write_hex(rip);
+    // CR2 holds the faulting address for a page fault and stale data
+    // otherwise; printing it unconditionally is still better than a second
+    // build to find out.
+    crate::serial_write(" cr2=");
+    crate::write_hex(cr2);
+    crate::serial_write("\n");
+    // End the machine rather than parking, so a fault under a test harness
+    // fails in seconds instead of hitting its timeout. QEMU's `isa-debug-exit`
+    // is at 0xf4; a machine without it ignores the write and falls through to
+    // the halt below.
+    // SAFETY: a fixed ISA port.
+    unsafe { crate::port_out_u8(0xf4, 1) };
+    loop {
+        // SAFETY: parks the core rather than spinning.
+        unsafe { core::arch::asm!("hlt", options(nomem, nostack)) };
+    }
+}
+
+/// The names worth recognising at a glance. The rest report as their number.
+fn vector_name(vector: u64) -> &'static str {
+    match vector {
+        0 => "#DE divide error",
+        3 => "#BP breakpoint",
+        6 => "#UD invalid opcode",
+        8 => "#DF double fault",
+        11 => "#NP segment not present",
+        12 => "#SS stack fault",
+        13 => "#GP general protection",
+        14 => "#PF page fault",
+        16 => "#MF x87 fault",
+        17 => "#AC alignment check",
+        19 => "#XM SIMD fault",
+        _ => "exception",
+    }
+}
+
+// The 32 exception stubs, and the tail they share.
+//
+// The CPU pushes an error code for some vectors and not others, and tells the
+// handler nothing about which vector fired. So each stub pushes a dummy zero
+// where there is no error code, then its own number — after which the stack
+// layout is the same for all 32 and one common tail can read it.
+//
+// `.byte 0x6a, n` is `push imm8`: writing the opcode directly avoids the
+// assembler treating a `.set` symbol as an address.
+global_asm!(
+    ".section .text, \"ax\"",
+    ".global ISR_STUBS",
+    ".set ERRMASK, (1<<8)|(1<<10)|(1<<11)|(1<<12)|(1<<13)|(1<<14)|(1<<17)|(1<<21)|(1<<29)|(1<<30)",
+    ".align 16",
+    "ISR_STUBS:",
+    ".set vec, 0",
+    ".rept 32",
+    "   .align 16",
+    "   .if ((ERRMASK >> vec) & 1) == 0",
+    "   .byte 0x6a, 0",
+    "   .endif",
+    "   .byte 0x6a, vec",
+    "   jmp __exception_common",
+    "   .set vec, vec + 1",
+    ".endr",
+    "__exception_common:",
+    // [rsp] = vector, +8 = error code, +16 = faulting RIP.
+    "   mov rdi, [rsp]",
+    "   mov rsi, [rsp + 8]",
+    "   mov rdx, [rsp + 16]",
+    "   mov rcx, cr2",
+    // The frame leaves RSP 8 off what the ABI wants at a call. This never
+    // returns, so realigning by clobbering RSP is free.
+    "   and rsp, -16",
+    "   call exception_report",
 );

@@ -11,7 +11,7 @@ cd "$(dirname "$0")"
 BIN=target/x86_64-unknown-none/release/lk-bare-metal-x86
 OBJCOPY=${OBJCOPY:-llvm-objcopy}
 
-LK_BIN=${LK_BIN:-../target/debug/lk} cargo build --release
+LK_BIN=${LK_BIN:-../target/debug/lk} cargo build --release ${CARGO_FLAGS:-}
 "$OBJCOPY" -O elf32-i386 "$BIN" "$BIN.multiboot"
 
 # `isa-debug-exit` ends the machine when the kernel writes to port 0xf4, so

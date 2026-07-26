@@ -73,7 +73,7 @@ const COM1: u16 = 0x3f8;
 /// `program.lk` has its own copy of this — that one is the demo. This exists
 /// because `lkrt` needs a sink for the value a script evaluates to, and it
 /// cannot call back into LK.
-fn serial_write(text: &str) {
+pub(crate) fn serial_write(text: &str) {
     for byte in text.bytes() {
         // SAFETY: COM1 is a fixed ISA port; `in`/`out` on it cannot touch
         // memory. Waiting on bit 5 of the line status (transmit holding
@@ -123,6 +123,18 @@ pub(crate) unsafe fn port_out_u8(port: u16, value: u8) {
     }
 }
 
+/// Write a value as 16 hex digits, so a fault report needs no formatting
+/// machinery (`core::fmt` in a fault handler is a good way to fault again).
+pub(crate) fn write_hex(value: u64) {
+    let digits = b"0123456789abcdef";
+    let mut buf = [0u8; 16];
+    for (i, slot) in buf.iter_mut().enumerate() {
+        *slot = digits[((value >> (60 - i * 4)) & 0xf) as usize];
+    }
+    // SAFETY: every byte written above came from an ASCII digit table.
+    serial_write(unsafe { core::str::from_utf8_unchecked(&buf) });
+}
+
 /// Where the compiled code's result is left, so it cannot be optimised away and
 /// a debugger or test harness can read it.
 #[unsafe(no_mangle)]
@@ -141,6 +153,13 @@ pub extern "C" fn kernel_main() -> ! {
     // UART is already up.
     interrupts::init();
 
+    // A deliberate fault, so the exception path is exercised rather than
+    // merely present. Without a build that takes it, a broken reporter looks
+    // exactly like a working one — right up to the day something faults.
+    #[cfg(feature = "fault-probe")]
+    unsafe {
+        core::ptr::write_volatile(0x9_0000_0000u64 as *mut u64, 1)
+    };
     // SAFETY: `main` is the object emitted by `lk compile object:`, linked by
     // build.rs, and takes no arguments.
     let result = unsafe { main() };

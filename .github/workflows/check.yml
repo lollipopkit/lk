@@ -190,6 +190,20 @@ jobs:
               exit 1
             }
           done
+          # A build that faults on purpose. Without it a broken exception
+          # reporter looks exactly like a working one — the machine would
+          # simply reset in silence, which is the failure mode with the least
+          # information possible.
+          faulted=$(CARGO_FLAGS=--features=fault-probe timeout 120 ./run.sh 2>&1 || true)
+          echo "$faulted"
+          printf '%s' "$faulted" | grep -qF -- "#PF page fault" || {
+            echo "::error::the exception reporter did not name the fault"
+            exit 1
+          }
+          printf '%s' "$faulted" | grep -qF -- "cr2=0000000900000000" || {
+            echo "::error::the exception reporter did not report the faulting address"
+            exit 1
+          }
         env:
           LK_BIN: ../target/debug/lk
       - name: AOT native-lowering coverage gate
