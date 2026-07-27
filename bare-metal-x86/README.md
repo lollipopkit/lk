@@ -115,6 +115,25 @@ There is no privilege boundary here to cross: LK and the kernel are one binary
 at ring 0. What this is, is the direction `#[export]` did not cover — the
 program asking the board for something only the board can do.
 
+### Sharing the screen between them
+
+The spinner and the shell do not overwrite each other's pixels. Until this
+round that was because their coordinates happened not to overlap — an
+arrangement, not a guarantee. `drivers/window.lk` makes it one: every write
+goes through a rectangle, is translated into it, and is *dropped* if it falls
+outside.
+
+Dropped rather than refused. A refusal has to be reported to someone, and the
+caller is often an interrupt handler with nowhere to report to. A counter says
+the same thing without needing anyone to be listening — and it is what tells
+"did not draw outside" apart from "was not asked to", which is why the spinner
+deliberately draws one glyph to the left of its window on every frame. `win`
+reports the count; `check_tasks.py` screenshots those pixels and requires them
+to still be background.
+
+Both halves of that check are load-bearing, and both have been seen to fail:
+replacing `window_put` with a direct `put_pixel` lights 35 of them.
+
 ### Sharing state between them
 
 Read, add, write is three steps. An interrupt landing between the read and the

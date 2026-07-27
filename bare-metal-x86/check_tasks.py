@@ -21,7 +21,25 @@ import time
 # The spinner's cell: `text_columns() - 2` of 53 columns, on the top row.
 CELL_X, CELL_Y = 51 * 6, 0
 GLYPH_W, GLYPH_H = 5, 7
-SAMPLES = 4
+SAMPLES = 6
+
+# Where the spinner deliberately draws *outside* its window, one glyph plus a
+# gap to the left. Those pixels belong to the shell, and the window rectangle
+# is the only thing stopping them: without it the same code would light them.
+OUTSIDE_X = CELL_X - GLYPH_W - 1
+BACKGROUND = 0x00
+
+
+def region(path, x0, y0, w, h):
+    with open(path, "rb") as handle:
+        data = handle.read()
+    _magic, dimensions, _maxval, pixels = data.split(b"\n", 3)
+    width, _height = (int(value) for value in dimensions.split())
+    return [
+        tuple(pixels[((y0 + dy) * width + (x0 + dx)) * 3 : ((y0 + dy) * width + (x0 + dx)) * 3 + 3])
+        for dy in range(h)
+        for dx in range(w)
+    ]
 
 
 def glyph_at(path):
@@ -62,24 +80,39 @@ def main():
             time.sleep(0.3)
             connection.recv(65536)
             seen = []
+            outside = []
             for index in range(SAMPLES):
                 shot = os.path.join(workdir, f"screen{index}.ppm")
                 connection.sendall(f"screendump {shot}\n".encode())
-                time.sleep(1.2)
+                time.sleep(0.8)
                 seen.append(glyph_at(shot))
+                outside.append(region(shot, OUTSIDE_X, CELL_Y, GLYPH_W, GLYPH_H))
             connection.sendall(b"quit\n")
             connection.close()
         finally:
             qemu.terminate()
             qemu.wait(timeout=10)
 
+    # Deterministic first: if the task never ran, nothing was ever drawn in the
+    # corner and every sample is background.
+    if all(all(byte == 0x28 for byte in frame) for frame in seen):
+        raise SystemExit("the corner is untouched: the second task never ran at all")
     distinct = len(set(seen))
     if distinct < 2:
         raise SystemExit(
             f"the spinner drew the same glyph in all {SAMPLES} screenshots: "
             "the second task never ran, or never got the CPU back"
         )
-    print(f"OK: the spinner advanced ({distinct} distinct frames) while the shell waited")
+    lit = [pixel for frame in outside for pixel in frame if pixel != (0x00, 0x14, 0x28)]
+    if lit:
+        raise SystemExit(
+            f"{len(lit)} pixel(s) outside the spinner's window were written: "
+            "the rectangle did not contain it"
+        )
+    print(
+        f"OK: the spinner advanced ({distinct} distinct frames) while the shell waited, "
+        "and its out-of-window writes were dropped"
+    )
 
 
 if __name__ == "__main__":

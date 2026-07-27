@@ -20,6 +20,9 @@ use { draw_glyph, draw_cells, clear, scroll_up, draw_cursor, CELL_WIDTH, CELL_HE
 use { read_scancode, is_release, key_code } from "drivers/keyboard";
 use { start as pit_start } from "drivers/pit";
 use { acquire as lock, release as unlock } from "drivers/lock";
+use { define as window_define, put as window_put, fill as window_fill,
+      dropped as window_dropped } from "drivers/window";
+use { glyph_row, glyph_width, glyph_rows } from "drivers/text";
 use { has_mmap, mem_upper_kb, entry_count, entry_at, entry_base, entry_length,
       entry_is_available } from "drivers/multiboot";
 use { init as pages_init, alloc as page_alloc, free as pages_free,
@@ -127,6 +130,10 @@ const SHARED_SLICE = 0x00300028;
 // leaves them different, which no amount of interleaving can otherwise do.
 const SHARED_PAIR_A = 0x0030002c;
 const SHARED_PAIR_B = 0x00300030;
+// Window descriptors: slot 0 is the shell's, slot 1 the spinner's.
+const SHARED_WINDOWS = 0x00300040;
+const WINDOW_SHELL = 0;
+const WINDOW_SPINNER = 1;
 const SHARED_LINE = 0x00300100;
 const LINE_CAPACITY = 48;
 
@@ -364,11 +371,12 @@ fn run_command(base: Int) -> Int {
     }
     if (line_starts_with([104, 101, 108, 112])) {          // "help"
         // "help clear echo keys exit"
-        // "help clear echo keys mem page sync yield exit"
+        // "help clear echo keys mem page sync yield win exit"
         emit(base, [104, 101, 108, 112, 32, 99, 108, 101, 97, 114, 32, 101, 99,
                     104, 111, 32, 107, 101, 121, 115, 32, 109, 101, 109, 32,
                     112, 97, 103, 101, 32, 115, 121, 110, 99, 32,
-                    121, 105, 101, 108, 100, 32, 101, 120, 105, 116]);
+                    121, 105, 101, 108, 100, 32, 119, 105, 110, 32,
+                    101, 120, 105, 116]);
         return 1;
     }
     if (line_starts_with([99, 108, 101, 97, 114])) {       // "clear"
@@ -412,6 +420,10 @@ fn run_command(base: Int) -> Int {
         emit(base, [98, 97, 99, 107]);
         return 1;
     }
+    if (line_starts_with([119, 105, 110])) {               // "win"
+        emit(base, decimal(window_dropped(SHARED_WINDOWS, WINDOW_SPINNER)));
+        return 1;
+    }
     if (line_starts_with([101, 120, 105, 116])) {          // "exit"
         // "bye"
         emit(base, [98, 121, 101]);
@@ -437,6 +449,26 @@ fn run_command(base: Int) -> Int {
 // something the program does not contain cannot be.
 #[extern("kernel_yield")]
 fn task_yield() {
+}
+
+// Draws a glyph inside a window, in window coordinates.
+//
+// The glyph's bit rows come from `drivers/text`; the pixels go through
+// `drivers/window`, so anything outside the rectangle is dropped rather than
+// landing in someone else's part of the screen.
+fn draw_glyph_in_window(base: Int, slot: Int, index: Int, x: Int, y: Int) {
+    for row in 0..glyph_rows() {
+        let bits = glyph_row(FONT, index, row);
+        for column in 0..glyph_width() {
+            let shift = glyph_width() - 1 - column;
+            let lit = ((bits / pow2(shift)) as Int) & 1;
+            let colour = BACKGROUND;
+            if (lit != 0) {
+                colour = TITLE_COLOUR;
+            }
+            window_put(base, WIDTH, SHARED_WINDOWS, slot, x + column, y + row, colour);
+        }
+    }
 }
 
 // Bumps the two words that must agree, as one indivisible step.
@@ -488,16 +520,29 @@ fn task_b() {
         // allocate, and a task may not — `lkrt` has a single arena with no
         // lock around it, so two tasks inside it at once corrupt it.
         let phase = step % 4;
-        let face = 40;       // '-'
+        // Four *distinct* glyphs: a repeat would make consecutive frames
+        // compare equal, which is exactly what a test for "it advanced" reads.
+        let face = 40;                   // '-'
         if (phase == 1) { face = 12; }   // 'L'
         if (phase == 2) { face = 11; }   // 'K'
-        if (phase == 3) { face = 40; }
-        draw_glyph(framebuffer_address(), WIDTH, FONT, face,
-                   (text_columns() - 2) * CELL_WIDTH, 0, TITLE_COLOUR, BACKGROUND);
+        if (phase == 3) { face = 39; }   // ':'
+
+        // Through the window, in window coordinates. The spinner owns one
+        // cell; everything it draws is either inside that cell or dropped.
+        let base = framebuffer_address();
+        draw_glyph_in_window(base, WINDOW_SPINNER, face, 0, 0);
+        // And deliberately one cell to the left, which is *not* its window.
+        // Without the rectangle this would land in the shell's text; with it,
+        // the pixels are counted and discarded.
+        draw_glyph_in_window(base, WINDOW_SPINNER, face, 0 - glyph_width() - 1, 0);
         // Contend with the timer handler on the same pair of words for a
         // while — this task exists to be interrupted, and to be interrupted
         // *in the middle of an update*.
-        for i in 0..20000 {
+        // Enough to have the timer land inside an update many times over,
+        // but short enough that the face advances several times a second —
+        // a test that samples the screen needs the change to be visible
+        // without waiting.
+        for i in 0..4000 {
             bump_pair();
         }
         // Then hand the CPU back rather than waiting to be taken off it.
@@ -607,6 +652,14 @@ if (usable_base < 0x00400000) {
     usable_base = 0x00400000;
 }
 pages_init(SHARED_PAGES, usable_base, ram_length - (usable_base - ram_base));
+
+// Two windows: the shell owns everything but the corner cell the spinner has.
+// Nothing enforces that they were carved up sensibly — what the rectangles buy
+// is that neither can write into the other's, however wrong the coordinates
+// inside them are.
+window_define(SHARED_WINDOWS, WINDOW_SHELL, 0, 0, WIDTH, HEIGHT);
+window_define(SHARED_WINDOWS, WINDOW_SPINNER,
+              (text_columns() - 2) * CELL_WIDTH, 0, CELL_WIDTH, CELL_HEIGHT);
 
 // The cursor starts after the prompt.
 place_cursor(framebuffer, 3, 5);

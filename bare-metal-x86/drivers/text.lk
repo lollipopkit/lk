@@ -30,6 +30,17 @@ fn pow2(bits: Int) -> Int {
     return value;
 }
 
+// One row of a glyph, as five bits with the leftmost pixel in bit 4.
+//
+// Exposed so a caller that writes pixels differently — clipped to a window,
+// say — does not need its own copy of the layout.
+fn glyph_row(font: List<Int>, index: Int, row: Int) -> Int {
+    return font[index * GLYPH_STRIDE + row];
+}
+
+fn glyph_width() -> Int { return GLYPH_WIDTH; }
+fn glyph_rows() -> Int { return GLYPH_ROWS; }
+
 // Draws one glyph with its top-left corner at (x, y).
 //
 // `font` is only ever read, which is what keeps this module bundlable: a

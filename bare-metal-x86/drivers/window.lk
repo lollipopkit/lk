@@ -1,0 +1,66 @@
+// Rectangles of the screen, one per owner.
+//
+// Two tasks drawing on one framebuffer do not conflict here because their
+// coordinates happen not to overlap — that is an arrangement, not a
+// guarantee. A window makes it one: every write goes through a rectangle, is
+// translated into it, and is *dropped* if it falls outside.
+//
+// Dropped rather than refused. A refusal has to be reported to someone, and
+// the caller is often an interrupt handler with nowhere to report to; a
+// counter says the same thing without needing anyone to be listening. The
+// count is what a test reads to tell "did not draw outside" apart from "was
+// not asked to".
+//
+// A descriptor is five words at a caller-chosen address, because interrupt
+// handlers and tasks both have to see the same ones:
+//
+//   +0  left    +4  top    +8  width    +12 height    +16 pixels dropped
+
+use { put_pixel } from "framebuffer";
+
+const DESCRIPTOR_STRIDE = 24;
+
+fn read(address: Int) -> Int {
+    let value = unsafe { volatile_read_u32(address as *mut u32) };
+    return value as Int;
+}
+
+fn write(address: Int, value: Int) {
+    unsafe { volatile_write_u32(address as *mut u32, value as u32); };
+}
+
+fn descriptor(table: Int, slot: Int) -> Int {
+    return table + slot * DESCRIPTOR_STRIDE;
+}
+
+fn define(table: Int, slot: Int, left: Int, top: Int, width: Int, height: Int) {
+    let at = descriptor(table, slot);
+    write(at, left);
+    write(at + 4, top);
+    write(at + 8, width);
+    write(at + 12, height);
+    write(at + 16, 0);
+}
+
+fn dropped(table: Int, slot: Int) -> Int {
+    return read(descriptor(table, slot) + 16);
+}
+
+// Writes one pixel in window coordinates. Outside the window it is counted and
+// discarded.
+fn put(base: Int, stride: Int, table: Int, slot: Int, x: Int, y: Int, colour: Int) {
+    let at = descriptor(table, slot);
+    if (x < 0 || y < 0 || x >= read(at + 8) || y >= read(at + 12)) {
+        write(at + 16, read(at + 16) + 1);
+        return;
+    }
+    put_pixel(base, stride, read(at) + x, read(at + 1 * 4) + y, colour);
+}
+
+fn fill(base: Int, stride: Int, table: Int, slot: Int, x: Int, y: Int, width: Int, height: Int, colour: Int) {
+    for row in 0..height {
+        for column in 0..width {
+            put(base, stride, table, slot, x + column, y + row, colour);
+        }
+    }
+}
