@@ -61,7 +61,8 @@ use { table_zero, table_set, index_of, switch_to as space_switch,
       PAGE_PRESENT, PAGE_WRITE, PAGE_USER, SHIFT_PML4, SHIFT_PDPT,
       SHIFT_DIRECTORY, SHIFT_TABLE } from "drivers/paging";
 use { init as pages_init, alloc as page_alloc, free as pages_free,
-      total as pages_total, PAGE_SIZE } from "drivers/pages";
+      release_page as page_release, release_run as pages_release_run,
+      total as pages_total, PAGE_SIZE, PAGES_STATE_SIZE } from "drivers/pages";
 use { read_sector as ata_read_sector, write_sector as ata_write_sector,
       identify as ata_identify, identify_sectors as ata_identify_sectors,
       ATA_OK, ATA_TIMEOUT, ATA_ERROR_BIT, ATA_NO_DRIVE, ATA_BAD_LBA } from "drivers/ata";
@@ -181,10 +182,16 @@ const SHARED_LINE_READY = SHARED_LINE_LEN + WORD;
 // it, this program reads it; the address appears in both files, and changing
 // one without the other is the hazard.
 const SHARED_MULTIBOOT = SHARED_LINE_READY + WORD;
-// The page allocator's three words.
+// The page allocator's state, whose size is the allocator's to say.
+//
+// It said three words until it grew a free list, and the fourth landed on
+// `SHARED_SPIN` — which is the spinner task's step, so what broke was the
+// *network card*, three files away, by way of an allocator handing out a page
+// whose bookkeeping the scheduler was incrementing. A neighbour's size written
+// down here as a literal is a dependency that only exists in a comment.
 const SHARED_PAGES = SHARED_MULTIBOOT + WORD;
 // The spinner task's step, and the scheduler's own counter.
-const SHARED_SPIN = SHARED_PAGES + 3 * WORD;
+const SHARED_SPIN = SHARED_PAGES + PAGES_STATE_SIZE;
 const SHARED_SLICE = SHARED_SPIN + WORD;
 // Two words that must always agree. Both the timer handler and the spinner
 // task bump the pair; a lost update — an increment that read a stale value —
@@ -907,12 +914,38 @@ fn report_net(base: Int) {
         emit_text(base, "net: no memory");
         return;
     }
-    let buffers = alloc_contiguous(RX_COUNT * RX_BUFFER_SIZE);
+    let buffers = alloc_contiguous(NET_BUFFER_PAGES * PAGE_SIZE);
     if (buffers == 0) {
+        page_release(SHARED_PAGES, scratch);
         emit_text(base, "net: no memory");
         return;
     }
 
+    // Released on the way out, on every path. The rings and buffers exist for
+    // one exchange run: without this, a dozen `net` commands leak sixty pages,
+    // which is where the allocator's free list came from.
+    let outcome = net_exchange(base, mmio, bdf, scratch, buffers);
+    // Reverse order of allocation, and that is a rule rather than a style.
+    //
+    // The free list is last-in-first-out, so what is released last is handed out
+    // first. Releasing in *allocation* order means the next run takes them in a
+    // different order than it took them the first time — and this caller wants
+    // its four buffer pages contiguous, so it got the scratch page in the middle
+    // of the run and reported "no memory" with five pages free.
+    pages_release_run(SHARED_PAGES, buffers, NET_BUFFER_PAGES);
+    page_release(SHARED_PAGES, scratch);
+    // `outcome` is not consulted: `net_exchange` has already said what happened,
+    // on the same console. What it is for is making the release unconditional.
+    let _done = outcome;
+}
+
+// The exchange itself, with the memory already in hand.
+//
+// Split out so the release above happens once rather than at each of the seven
+// places this gives up. A failure path that forgets to free is the ordinary way
+// an allocator leaks, and it is invisible: the command reports the failure it
+// was looking for and the pages are simply gone.
+fn net_exchange(base: Int, mmio: Int, bdf: Int, scratch: Int, buffers: Int) -> Bool {
     let tx_ring = scratch;
     let rx_ring = scratch + TX_COUNT * DESC_SIZE;
     let state = rx_ring + RX_COUNT * DESC_SIZE;
@@ -923,14 +956,14 @@ fn report_net(base: Int) {
 
     if (!e1000_mac(mmio, mac)) {
         emit_text(base, "net: no eeprom");
-        return;
+        return false;
     }
     e1000_init(state, mmio, tx_ring, rx_ring, buffers);
     e1000_set_mac(mmio, mac);
 
     if (!e1000_link_up(mmio)) {
         emit_text(base, "net: no link");
-        return;
+        return false;
     }
 
     // The addresses an emulated user-mode network hands out: the guest is .15
@@ -941,33 +974,63 @@ fn report_net(base: Int) {
     write_ipv4(sender_ip, 10, 0, 2, 15);
     write_ipv4(target_ip, 10, 0, 2, 2);
 
-    let length = arp_build_request(frame, mac, sender_ip, target_ip);
-    if (!e1000_transmit(state, frame, length)) {
-        emit_text(base, "net: tx");
-        return;
+    // The exchange, more times than either ring has entries.
+    //
+    // Once proves the rings work. Twelve proves they *wrap*: both are eight
+    // entries, the card wraps its own index, and the driver has to wrap its
+    // idea of where the card has got to in step with it. An off-by-one there
+    // survives the first pass and every pass until the eighth — which is to say
+    // it survives any test that runs the command a few times, because each
+    // command re-initialises the rings and starts the count again.
+    let exchanges = 0;
+    for _round in 0..NET_EXCHANGES {
+        let length = arp_build_request(frame, mac, sender_ip, target_ip);
+        if (!e1000_transmit(state, frame, length)) {
+            emit_text(base, "net: tx");
+            return false;
+        }
+        if (!net_await_reply(state, reply, mac, target_ip, answer)) {
+            emit_text(base, "net: no reply");
+            return false;
+        }
+        exchanges = exchanges + 1;
     }
 
-    // Several frames may arrive before the one being waited for — the segment
-    // carries whatever else the host is doing — so this takes them until one
-    // matches or the budget runs out.
-    //
-    // The budget is the *whole* wait, not a wait per frame. The first version
-    // gave up the moment a polling window came back empty, which made the loop
-    // around it decorative: a reply that had not arrived within the first
-    // window was reported as absent. An empty window means "not yet", and only
-    // the exhausted budget means "not coming".
+    // "net: ok N/N " + our MAC + " -> " + the gateway's
+    emit(base, text_bytes("net: ok ")
+        .chain(decimal(exchanges))
+        .chain(text_bytes("/"))
+        .chain(decimal(NET_EXCHANGES))
+        .chain(text_bytes(" "))
+        .chain(mac_text(mac))
+        .chain(text_bytes(" -> "))
+        .chain(mac_text(answer)));
+    return true;
+}
+
+// How many times `net` runs the exchange. Larger than either ring so both wrap.
+const NET_EXCHANGES = 12;
+
+// The receive buffers, as pages. Named because the release has to give back
+// exactly what the allocation took, and two expressions that must agree are two
+// places to get it wrong.
+const NET_BUFFER_PAGES = 4;
+
+// Waits for the reply to the request just sent.
+//
+// The budget is the *whole* wait, not a wait per frame. An empty polling window
+// means "not yet"; only the exhausted budget means "not coming". Several frames
+// may arrive before the one being waited for — the segment carries whatever else
+// the host is doing — so a frame that does not match is dropped and the wait
+// goes on.
+fn net_await_reply(state: Int, reply: Int, mac: Int, target_ip: Int, answer: Int) -> Bool {
     for _attempt in 0..200 {
         let received = e1000_receive_within(state, reply, 256, 100000);
         if (received > 0 && arp_match_reply(reply, received, mac, target_ip, answer)) {
-            // "net: ok " + our MAC + " -> " + the gateway's
-            emit(base, text_bytes("net: ok ")
-                .chain(mac_text(mac))
-                .chain(text_bytes(" -> "))
-                .chain(mac_text(answer)));
-            return;
+            return true;
         }
     }
-    emit_text(base, "net: no reply");
+    return false;
 }
 
 fn write_ipv4(address: Int, a: Int, b: Int, c: Int, d: Int) {
@@ -1003,6 +1066,14 @@ fn alloc_contiguous(bytes: Int) -> Int {
     for index in 1..pages {
         let page = page_alloc(SHARED_PAGES);
         if (page != base + index * PAGE_SIZE) {
+            // Give back what was taken, including the page that broke the run.
+            //
+            // Failing without this is how an allocator with a free list leaks
+            // worse than one without: the caller sees "no memory", tries again,
+            // and each attempt keeps a few more pages. The odd page goes back
+            // first so the run stays together at the head of the list.
+            page_release(SHARED_PAGES, page);
+            pages_release_run(SHARED_PAGES, base, index);
             return 0;
         }
     }

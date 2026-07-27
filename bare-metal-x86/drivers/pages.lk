@@ -1,24 +1,45 @@
-// A page allocator: hand out 4 KiB pages from a range, and never take them
-// back.
+// A page allocator: hand out 4 KiB pages from a range, and take them back.
 //
-// Bump allocation, deliberately. A kernel this young has nothing that frees —
-// the page tables, the heap and the framebuffer mapping all live for the whole
-// run — and a free list would be machinery in service of a case that does not
-// exist yet. What it does have to be is *honest about the range it was given*,
-// which is why the caller passes one in rather than this file guessing.
+// A bump pointer for pages that have never been handed out, and an intrusive
+// free list for pages that have been given back. Intrusive because a free page
+// is memory nobody is using: the address of the next free one lives in the first
+// word of the page itself, so the list costs nothing but the pages it holds.
 //
-// The state is three words at an address the caller chooses, because the
+// It began as a bump pointer alone, on the grounds that nothing in this kernel
+// freed — the page tables, the heap and the framebuffer mapping all live for the
+// whole run. That stopped being true when drivers started allocating rings and
+// buffers per invocation: running `net` a dozen times leaked sixty pages, and a
+// task that exits should give back its stack. A bump-only allocator is not a
+// simpler allocator at that point, it is a leak with a rationale.
+//
+// The state is four words at an address the caller chooses, because the
 // interrupt handlers and the main flow both have to see the same allocator and
 // a global would not be visible across that boundary.
 //
-//   +0  next page to hand out
+//   +0  next page never yet handed out
 //   +4  one past the last page
-//   +8  pages handed out so far
+//   +8  pages currently handed out
+//   +12 first page on the free list, or 0
+//
+// One property is load-bearing and easy to lose. `release_run` gives a run back
+// in *descending* order, and the list is last-in-first-out, so the run comes
+// back off it ascending — which means a caller that needs contiguous pages can
+// get the same run again. Push it ascending instead and the list hands it back
+// reversed, and the next contiguous request fails while the memory to satisfy it
+// is sitting right there.
 
 // The page size is the MMU's, not the allocator's: this file hands out pages of
 // whatever size the hardware walks. Importing it from `paging` is the
 // dependency in the direction it actually runs.
 use { PAGE_SIZE } from "paging";
+
+// How much room the state needs, said by the file that decides it.
+//
+// Exported because a caller has to place it, and a caller that writes the number
+// down instead is a caller that will not be edited when this grows. It grew
+// once: a fourth word for the free list, onto a neighbour that had `+ 3 * WORD`
+// written in it, and what failed was a network driver three files away.
+const PAGES_STATE_SIZE = 16;
 
 fn pages_word(address: Int) -> Int {
     let value = unsafe { volatile_read_u32(address as *mut u32) };
@@ -37,12 +58,28 @@ fn init(state: Int, base: Int, length: Int) {
     pages_set_word(state, first);
     pages_set_word(state + 4, last);
     pages_set_word(state + 8, 0);
+    pages_set_word(state + 12, 0);
 }
 
-// The next page's physical address, or 0 when the range is exhausted. Zero is
-// unambiguous: page 0 is never in a range this hands out, because the first
-// megabyte is not usable memory.
+// A page's physical address, or 0 when there is none. Zero is unambiguous: page
+// 0 is never in a range this hands out, because the first megabyte is not usable
+// memory — which is also what lets it terminate the free list.
+//
+// The free list first, so a kernel that allocates and releases in a cycle never
+// advances the bump pointer at all. Taking from the bump pointer first would
+// exhaust the range while every page handed back sat unused.
 fn alloc(state: Int) -> Int {
+    let recycled = pages_word(state + 12);
+    if (recycled != 0) {
+        pages_set_word(state + 12, page_link(recycled));
+        pages_set_word(state + 8, pages_word(state + 8) + 1);
+        // Cleared, so a page never carries the list pointer into its new life.
+        // Not for tidiness: the first word of a fresh page is where a descriptor
+        // ring's first buffer address goes, and a stale pointer there is a
+        // device told to write into the allocator's own bookkeeping.
+        set_page_link(recycled, 0);
+        return recycled;
+    }
     let next = pages_word(state);
     if (next >= pages_word(state + 4)) {
         return 0;
@@ -52,12 +89,67 @@ fn alloc(state: Int) -> Int {
     return next * PAGE_SIZE;
 }
 
+// Gives one page back.
+//
+// Page 0 is not a page this ever handed out, so it is refused rather than
+// pushed: it is the value `alloc` answers when there is nothing left, and a
+// caller that released its failed allocation would terminate the list with a
+// page that is not one.
+// Named for the page rather than for the operation: `release` is what a
+// give-it-back helper wants to be called, and the lock next door got there
+// first. Bundling flattens every module into one namespace, so the second one to
+// want a name is the one that has to say what it is about.
+fn release_page(state: Int, page: Int) {
+    if (page == 0) {
+        return;
+    }
+    set_page_link(page, pages_word(state + 12));
+    pages_set_word(state + 12, page);
+    pages_set_word(state + 8, pages_word(state + 8) - 1);
+}
+
+// Gives a run of pages back, highest first.
+//
+// The order is the whole reason this exists rather than a loop at each call
+// site: the list is last-in-first-out, so pushing a run descending is what makes
+// it come back ascending, and a caller that needs the run again gets it. See the
+// note at the top of this file.
+fn release_run(state: Int, base: Int, count: Int) {
+    let index = count - 1;
+    while (index >= 0) {
+        release_page(state, base + index * PAGE_SIZE);
+        index = index - 1;
+    }
+}
+
+// The list pointer, which lives in the page itself.
+fn page_link(page: Int) -> Int {
+    let value = unsafe { volatile_read_u32(page as *mut u32) };
+    return value as Int;
+}
+
+fn set_page_link(page: Int, next: Int) {
+    unsafe { volatile_write_u32(page as *mut u32, next as u32); };
+}
+
 fn used(state: Int) -> Int {
     return pages_word(state + 8);
 }
 
+// How many pages could still be handed out: the ones never touched, plus the
+// ones given back.
 fn free(state: Int) -> Int {
-    return pages_word(state + 4) - pages_word(state);
+    let untouched = pages_word(state + 4) - pages_word(state);
+    let recycled = 0;
+    let page = pages_word(state + 12);
+    // Walked rather than counted in a word. A count would have to be kept in
+    // step with two operations that can each fail to; the list is the truth, and
+    // this is a report rather than a fast path.
+    while (page != 0) {
+        recycled = recycled + 1;
+        page = page_link(page);
+    }
+    return untouched + recycled;
 }
 
 fn total(state: Int) -> Int {

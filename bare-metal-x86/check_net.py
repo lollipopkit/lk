@@ -121,11 +121,21 @@ def main():
             connection.connect(monitor)
             time.sleep(0.3)
             connection.recv(65536)
+            # The page count on either side of the sessions. The driver takes
+            # five pages for its rings and buffers and gives them back, and an
+            # allocator that could only ever hand pages out would show it here.
+            send_line(connection, "mem")
             send_line(connection, "net")
-            # Twice: the second exchange goes round rings the first left
+            # Twice: the second session goes round rings the first left
             # part-way through, so a driver that advanced an index wrongly
             # passes once and then never receives again.
+            #
+            # Each session is itself twelve exchanges, which is what makes the
+            # *wrap* reachable: both rings hold eight entries, and running the
+            # command repeatedly could never find an off-by-one there because
+            # every command re-initialises the rings and starts the count again.
             send_line(connection, "net")
+            send_line(connection, "mem")
             connection.sendall(b"quit\n")
             connection.close()
         finally:
@@ -144,7 +154,7 @@ def main():
         # machine being preemptive, not a fault to detect. Anchoring to the
         # start of a line made this pass or fail on where a `.` happened to
         # land.
-        answers = re.findall(r"net: ok ([0-9a-f]{12}) -> ([0-9a-f]{12})", transcript)
+        answers = re.findall(r"net: ok (\d+)/(\d+) ([0-9a-f]{12}) -> ([0-9a-f]{12})", transcript)
         if len(answers) < 2:
             step = re.search(r"net: (?!ok)\S+", transcript)
             failures.append(
@@ -152,13 +162,30 @@ def main():
                 else f"`net` completed {len(answers)} of 2 exchanges"
             )
         else:
-            for card_mac, gateway_mac in answers:
+            for done, wanted, card_mac, gateway_mac in answers:
+                if done != wanted:
+                    failures.append(f"only {done} of {wanted} exchanges completed")
+                if int(wanted) <= 8:
+                    failures.append(
+                        f"{wanted} exchanges does not reach either ring's wrap (8 entries)"
+                    )
                 if gateway_mac != GATEWAY_MAC:
                     failures.append(
                         f"the reply came from {gateway_mac}, not the gateway's {GATEWAY_MAC}"
                     )
             if len(set(answers)) != 1:
-                failures.append(f"the two exchanges disagreed: {answers}")
+                failures.append(f"the two sessions disagreed: {answers}")
+
+        # The pages come back. Two sessions of five pages each, and the count
+        # has to be the number it started at — not close to it. A free list that
+        # loses a page on a failure path, or a caller that releases in the wrong
+        # order and then cannot re-take its run, both show up as a number that
+        # drifts.
+        counts = re.findall(r"pages (\d+)/(\d+)", transcript)
+        if len(counts) < 2:
+            failures.append(f"expected a page count before and after, got {counts}")
+        elif len(set(counts)) != 1:
+            failures.append(f"the page count did not come back: {counts}")
 
         if "exception #" in transcript:
             fault = re.search(r"!! exception .*", transcript)
@@ -169,7 +196,7 @@ def main():
         # a driver that read the EEPROM wrong and framed consistently would pass
         # the guest-side check on its own.
         captured = frames(capture)
-        card_mac = bytes.fromhex(answers[0][0]) if answers else None
+        card_mac = bytes.fromhex(answers[0][2]) if answers else None
         requests = [
             frame for frame in captured
             if (parsed := arp_of(frame))
@@ -184,13 +211,18 @@ def main():
             and parsed[0] == ARP_REPLY
             and parsed[2] == GATEWAY_IP
         ]
-        if len(requests) < 2:
+        # Two sessions of twelve. The wire is where a driver that reported
+        # success without transmitting would be caught.
+        wanted = 2 * int(answers[0][1]) if answers else 2
+        if len(requests) < wanted:
             failures.append(
-                f"the wire carried {len(requests)} well-formed ARP requests from the card, not 2 "
-                f"(of {len(captured)} frames)"
+                f"the wire carried {len(requests)} well-formed ARP requests from the card, "
+                f"not {wanted} (of {len(captured)} frames)"
             )
-        if len(replies) < 2:
-            failures.append(f"the wire carried {len(replies)} ARP replies for the gateway, not 2")
+        if len(replies) < wanted:
+            failures.append(
+                f"the wire carried {len(replies)} ARP replies for the gateway, not {wanted}"
+            )
         # Ethernet's minimum is 60 bytes and an ARP request is 42. The card pads,
         # but only because `TCTL_PSP` is set — without it the frame that leaves
         # is a runt, which some paths carry and some discard.
@@ -204,8 +236,9 @@ def main():
             print("--- transcript ---")
             print(transcript)
             return 1
-        print("OK: read the card's MAC out of its EEPROM, fed two descriptor rings, "
-              "put a well-formed ARP request on the wire, and received the gateway's reply")
+        print("OK: read the card's MAC out of its EEPROM, fed two descriptor rings "
+              "twelve exchanges past their wrap, put well-formed ARP requests on the "
+              "wire, received the gateway's replies, and gave every page back")
         return 0
 
 
