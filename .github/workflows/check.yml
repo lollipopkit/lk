@@ -188,7 +188,9 @@ jobs:
           # `isa-debug-exit` makes the machine exit when the kernel is done, so
           # a hang is a timeout rather than a pass; its exit code for a clean
           # run is 1, hence the `|| true`.
-          output=$(timeout 120 ./run.sh 2>&1 || true)
+          # The kernel's own bound is a minute of ticks; this is the outer
+          # limit for a runner that boots slowly, not the expected duration.
+          output=$(timeout 180 ./run.sh 2>&1 || true)
           echo "$output"
           # `half 44` is a f64 round trip across the LK/lkrt boundary: this
           # target is soft-float by default, and a mismatch there prints 88
@@ -212,7 +214,7 @@ jobs:
           # reporter looks exactly like a working one — the machine would
           # simply reset in silence, which is the failure mode with the least
           # information possible.
-          faulted=$(CARGO_FLAGS=--features=fault-probe timeout 120 ./run.sh 2>&1 || true)
+          faulted=$(CARGO_FLAGS=--features=fault-probe timeout 180 ./run.sh 2>&1 || true)
           echo "$faulted"
           printf '%s' "$faulted" | grep -qF -- "#PF page fault" || {
             echo "::error::the exception reporter did not name the fault"

@@ -1868,14 +1868,18 @@ unsafe { cpu_irq_restore(irq); };
 // virtualised one it stops starving the sibling. The handler wakes it, and
 // raises a flag when a line is complete.
 //
-// The bound counts *interrupts*, not milliseconds — a keystroke is two of them
-// and a scroll delays the next tick — so it is generous rather than exact. Its
-// job is only to make an unattended board finish.
+// The bound is a *deadline in ticks*, not a count of loop iterations.
+//
+// It used to count iterations, which quietly meant "however long that takes":
+// once a third task existed, the shell got a third of the slices and the same
+// 60000 iterations became three minutes instead of one. The unattended CI run
+// then timed out, having done nothing wrong. Ticks are what the number was
+// always trying to say — the timer runs at about 1 kHz, so this is a minute —
+// and it stays a minute however many tasks share the CPU.
 let running = 1;
-let waited = 0;
-while (running == 1 && waited < 60000) {
+let deadline = shared_read(SHARED_TICKS) + 60000;
+while (running == 1 && shared_read(SHARED_TICKS) < deadline) {
     unsafe { cpu_wait_for_interrupt(); };
-    waited = waited + 1;
 
     // The pointer, and what a click means.
     //
