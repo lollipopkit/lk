@@ -175,9 +175,14 @@ const SHARED_FB = SHARED_DRAWN_FOCUS + WORD;
 // each, and the chain is what keeps the next entry clear of them.
 const SHARED_WINDOWS = SHARED_FB + WORD;
 const WINDOW_STRIDE = 24;
-const WINDOW_COUNT = 2;
+const WINDOW_COUNT = 3;
 const WINDOW_SHELL = 0;
 const WINDOW_SPINNER = 1;
+// A window whose contents are a pure function of state: the tick counter. That
+// makes it the cheapest possible thing to repaint — there is nothing to
+// remember, only something to recompute — which is exactly what a window that
+// can be uncovered at any moment needs to be.
+const WINDOW_CLOCK = 2;
 // Which framebuffer row the top of the screen currently shows.
 const SHARED_PAN = SHARED_WINDOWS + WINDOW_COUNT * WINDOW_STRIDE;
 // One input ring per window: a header and 32 bytes of payload each.
@@ -228,6 +233,17 @@ const SHARED_CURSOR_X = SHARED_CURSOR_SAVE + CURSOR_SAVE_WORDS * WORD;
 const SHARED_CURSOR_Y = SHARED_CURSOR_X + WORD;
 const SHARED_CURSOR_DRAWN = SHARED_CURSOR_Y + WORD;
 
+// The stacking order: window slots from the bottom up, so the last entry is
+// the one a click reaches first and the one drawn last.
+//
+// An order, not a per-window "depth" number: depths have to be renumbered when
+// one changes, and two windows can end up sharing one. A list can only ever say
+// one thing about who is above whom.
+// What second the clock window is currently showing, so it is only redrawn
+// when the answer changed.
+const SHARED_CLOCK_SHOWN = SHARED_CURSOR_DRAWN + WORD;
+const SHARED_Z_ORDER = SHARED_CLOCK_SHOWN + WORD;
+
 // Which window the pointer is dragging, and where inside it the drag began.
 // -1 when nothing is being dragged; the offset is what keeps the window from
 // jumping so its corner sits under the pointer.
@@ -241,7 +257,7 @@ const SHARED_CURSOR_DRAWN = SHARED_CURSOR_Y + WORD;
 // sentinel that survives the round trip is the fix; the shape of the bug is
 // the lesson.
 const DRAG_NONE = WINDOW_COUNT;
-const SHARED_DRAG_SLOT = SHARED_CURSOR_DRAWN + WORD;
+const SHARED_DRAG_SLOT = SHARED_Z_ORDER + WINDOW_COUNT * WORD;
 const SHARED_DRAG_DX = SHARED_DRAG_SLOT + WORD;
 const SHARED_DRAG_DY = SHARED_DRAG_DX + WORD;
 
@@ -1207,6 +1223,107 @@ fn move_cursor(base: Int) {
 // is the only row it has.
 const TITLE_HEIGHT = 4;
 
+// The spinner's current face, as a glyph index.
+//
+// Four *distinct* glyphs chosen with an `if` chain rather than a list, because
+// a task may not allocate — `lkrt` has one arena with no lock, so two tasks
+// inside it at once corrupt it. Distinct because a repeat would make
+// consecutive frames compare equal, which is what a test for "it advanced"
+// reads.
+fn spinner_glyph() -> Int {
+    let phase = shared_read(SHARED_SPIN) % 4;
+    if (phase == 1) { return 12; }   // 'L'
+    if (phase == 2) { return 11; }   // 'K'
+    if (phase == 3) { return 39; }   // ':'
+    return 40;                       // '-'
+}
+
+// The clock window's contents: seconds since boot, from the tick counter.
+//
+// The timer runs at about 1 kHz, so a tick is a millisecond and the division is
+// the whole of the clock. Nothing is stored: the window can be redrawn at any
+// moment from a counter that was going to be incremented anyway, which is what
+// makes it cheap to uncover.
+fn draw_clock(base: Int) {
+    let seconds = ((shared_read(SHARED_TICKS) / 1000) as Int);
+    let digits = decimal(seconds);
+    let column = 1;
+    for code in digits {
+        draw_glyph_in_window(base, WINDOW_CLOCK, glyph_index((code) as Int), column * CELL_WIDTH - 5, 1);
+        column = column + 1;
+    }
+    // "S" after the number, so a screenshot can tell the clock from any other
+    // run of digits.
+    draw_glyph_in_window(base, WINDOW_CLOCK, 19, column * CELL_WIDTH - 5, 1);
+}
+
+// Draws a window's own contents, from state rather than from memory of the
+// screen.
+//
+// This is what makes overlapping windows possible at all. A window that can
+// only *append* to the screen cannot be uncovered — there is nothing to put
+// back. So each window here is defined by something it can be redrawn from:
+// the terminal from its character grid, the spinner from its step counter, the
+// clock from the tick count. None of them remember pixels.
+fn repaint_window(base: Int, slot: Int) {
+    if (slot == WINDOW_SHELL) {
+        // The terminal's whole area, from the grid.
+        repaint_cells(base, 0, 0, WIDTH, HEIGHT);
+        repaint_frame(base, WINDOW_SHELL);
+        return;
+    }
+    window_fill(base, WIDTH, SHARED_WINDOWS, slot, 0, 0,
+                window_width(SHARED_WINDOWS, slot), window_height(SHARED_WINDOWS, slot), BACKGROUND);
+    if (slot == WINDOW_SPINNER) {
+        draw_glyph_in_window(base, WINDOW_SPINNER, spinner_glyph(), 1, 1);
+    }
+    if (slot == WINDOW_CLOCK) {
+        draw_clock(base);
+    }
+    repaint_frame(base, slot);
+}
+
+// Redraws whatever sits above `slot` and touches it.
+//
+// A window drawing its own contents is not enough: it has no idea what is on
+// top of it, and drawing over that is how a window that was raised gets buried
+// again a moment later by a clock tick. Every path that repaints one window
+// ends here.
+fn repaint_above(base: Int, slot: Int) {
+    let above = false;
+    for index in 0..WINDOW_COUNT {
+        let other = z_slot(index);
+        if (above && other != WINDOW_SHELL
+            && overlaps(other, window_left(SHARED_WINDOWS, slot), window_top(SHARED_WINDOWS, slot),
+                        window_width(SHARED_WINDOWS, slot), window_height(SHARED_WINDOWS, slot))) {
+            repaint_window(base, other);
+        }
+        if (other == slot) {
+            above = true;
+        }
+    }
+}
+
+// Repairs a rectangle: the background, then every window that touches it, from
+// the bottom of the stack up.
+//
+// Bottom-up and whole windows rather than clipped ones: the windows are small,
+// and clipping each redraw to the damage is an optimisation that would have to
+// be right in every window's own drawing code. Being right once, slowly, is the
+// better trade at this size — and `window_put` clips every pixel anyway, so
+// nothing escapes its rectangle.
+fn repaint_damage(base: Int, left: Int, top: Int, width: Int, height: Int) {
+    fill_rect(base, WIDTH, left, top, width, height, BACKGROUND);
+    repaint_cells(base, left, top, width, height);
+    for index in 0..WINDOW_COUNT {
+        let slot = z_slot(index);
+        if (slot != WINDOW_SHELL && overlaps(slot, left, top, width, height)) {
+            repaint_window(base, slot);
+        }
+    }
+    repaint_frame(base, WINDOW_SHELL);
+}
+
 // Moves a window, repairing what it uncovers.
 //
 // The repair is the whole difficulty. There is no backing store for what a
@@ -1227,32 +1344,76 @@ fn move_window(base: Int, slot: Int, left: Int, top: Int) {
     // the screen first, or its saved pixels are of the picture about to be
     // replaced.
     hide_cursor(base);
-    // Uncover: blank the pixels, then put the terminal's characters back.
-    fill_rect(base, WIDTH, old_left, old_top, width, height, BACKGROUND);
-    repaint_cells(base, old_left, old_top, width, height);
+    // Move first, then repair where it was: the repair walks the stack and
+    // redraws every window that touches the damage, and this one must already
+    // be at its new place when that happens or it would be drawn back over the
+    // hole it just left.
     window_define(SHARED_WINDOWS, slot, left, top, width, height);
+    repaint_damage(base, old_left, old_top, width, height);
+    repaint_window(base, slot);
     // The frame belongs to the window and moved with it, so it is redrawn on
     // the owner's next turn rather than here.
     shared_write(SHARED_DRAWN_FOCUS, 0 - 1);
 }
 
-// Which window the pointer is over, or -1.
+// The stacking order, bottom-up: `z_slot(0)` is the furthest back.
+fn z_slot(index: Int) -> Int {
+    return shared_read(SHARED_Z_ORDER + index * WORD);
+}
+
+fn z_set(index: Int, slot: Int) {
+    shared_write(SHARED_Z_ORDER + index * WORD, slot);
+}
+
+// Brings a window to the front, keeping everything else in order.
 //
-// Walks the descriptors rather than asking each window, because the answer has
-// to be one window: two overlapping rectangles would otherwise both claim the
-// click. Last defined wins, which is the nearest thing to a z-order this has.
-fn window_at(x: Int, y: Int) -> Int {
-    let found = 0 - 1;
-    for slot in 0..WINDOW_COUNT {
-        let left = window_left(SHARED_WINDOWS, slot);
-        let top = window_top(SHARED_WINDOWS, slot);
-        if (x >= left && y >= top
-            && x < left + window_width(SHARED_WINDOWS, slot)
-            && y < top + window_height(SHARED_WINDOWS, slot)) {
-            found = slot;
+// Order-preserving because the alternative — swapping with the top — reorders
+// windows the user did not touch, and a stack that shuffles itself is one
+// nobody can predict.
+fn raise_window(slot: Int) {
+    let at = 0 - 1;
+    for index in 0..WINDOW_COUNT {
+        if (z_slot(index) == slot) {
+            at = index;
         }
     }
-    return found;
+    if (at < 0 || at == WINDOW_COUNT - 1) {
+        return;
+    }
+    for index in at..WINDOW_COUNT - 1 {
+        z_set(index, z_slot(index + 1));
+    }
+    z_set(WINDOW_COUNT - 1, slot);
+}
+
+fn covers(slot: Int, x: Int, y: Int) -> Bool {
+    let left = window_left(SHARED_WINDOWS, slot);
+    let top = window_top(SHARED_WINDOWS, slot);
+    return x >= left && y >= top
+        && x < left + window_width(SHARED_WINDOWS, slot)
+        && y < top + window_height(SHARED_WINDOWS, slot);
+}
+
+// Which window the pointer is over: the topmost one, which is the only answer
+// that matches what the eye sees.
+fn window_at(x: Int, y: Int) -> Int {
+    let index = WINDOW_COUNT - 1;
+    while (index >= 0) {
+        let slot = z_slot(index);
+        if (covers(slot, x, y)) {
+            return slot;
+        }
+        index = index - 1;
+    }
+    return 0 - 1;
+}
+
+// Do two rectangles share any pixel?
+fn overlaps(slot: Int, left: Int, top: Int, width: Int, height: Int) -> Bool {
+    let wl = window_left(SHARED_WINDOWS, slot);
+    let wt = window_top(SHARED_WINDOWS, slot);
+    return wl < left + width && left < wl + window_width(SHARED_WINDOWS, slot)
+        && wt < top + height && top < wt + window_height(SHARED_WINDOWS, slot);
 }
 
 // Bumps the two words that must agree, as one indivisible step.
@@ -1317,17 +1478,8 @@ fn task_b() {
         }
         unlock(irq_in);
 
-        let step = shared_bump(SHARED_SPIN);
-        // Four glyph indices, chosen without a list: building one here would
-        // allocate, and a task may not — `lkrt` has a single arena with no
-        // lock around it, so two tasks inside it at once corrupt it.
-        let phase = step % 4;
-        // Four *distinct* glyphs: a repeat would make consecutive frames
-        // compare equal, which is exactly what a test for "it advanced" reads.
-        let face = 40;                   // '-'
-        if (phase == 1) { face = 12; }   // 'L'
-        if (phase == 2) { face = 11; }   // 'K'
-        if (phase == 3) { face = 39; }   // ':'
+        shared_bump(SHARED_SPIN);
+        let face = spinner_glyph();
 
         // Through the window, in window coordinates. The spinner owns one
         // cell; everything it draws is either inside that cell or dropped.
@@ -1337,6 +1489,9 @@ fn task_b() {
         // Without the rectangle this would land in the shell's text; with it,
         // the pixels are counted and discarded.
         draw_glyph_in_window(base, WINDOW_SPINNER, face, 0 - glyph_width() - 1, 1);
+        // Anything stacked above this window goes back on top. Without it the
+        // spinner would erase a window covering it, four times a second.
+        repaint_above(base, WINDOW_SPINNER);
         // Contend with the timer handler on the same pair of words for a
         // while — this task exists to be interrupted, and to be interrupted
         // *in the middle of an update*.
@@ -1489,8 +1644,18 @@ window_define(SHARED_WINDOWS, WINDOW_SHELL, 0, 0, WIDTH, HEIGHT);
 // draws for itself does not eat into a glyph.
 window_define(SHARED_WINDOWS, WINDOW_SPINNER,
               (text_columns() - 11) * CELL_WIDTH, 0, 10 * CELL_WIDTH + 2, 2 * CELL_HEIGHT + 2);
+// A third window, further down the right-hand side: 8 cells for a number and
+// its unit.
+window_define(SHARED_WINDOWS, WINDOW_CLOCK,
+              (text_columns() - 11) * CELL_WIDTH, 3 * CELL_HEIGHT, 8 * CELL_WIDTH + 2, CELL_HEIGHT + 2);
+// Bottom of the stack to the top: the shell is the desktop, and the two panes
+// sit on it in the order they were defined until a click says otherwise.
+z_set(0, WINDOW_SHELL);
+z_set(1, WINDOW_SPINNER);
+z_set(2, WINDOW_CLOCK);
 queue_reset(SHARED_QUEUES + WINDOW_SHELL * QUEUE_STRIDE);
 queue_reset(SHARED_QUEUES + WINDOW_SPINNER * QUEUE_STRIDE);
+queue_reset(SHARED_QUEUES + WINDOW_CLOCK * QUEUE_STRIDE);
 shared_write(SHARED_FOCUS, WINDOW_SHELL);
 shared_write(SHARED_PANE_COL, 0);
 shared_write(SHARED_DRAWN_FOCUS, 0 - 1);
@@ -1589,6 +1754,20 @@ while (running == 1 && waited < 60000) {
     unsafe { cpu_wait_for_interrupt(); };
     waited = waited + 1;
 
+    // The clock, once a second. Redrawn from the tick count rather than
+    // remembered, so the same call serves both the passing of time and being
+    // uncovered by a window that moved.
+    let now = ((shared_read(SHARED_TICKS) / 1000) as Int);
+    if (now != shared_read(SHARED_CLOCK_SHOWN)) {
+        shared_write(SHARED_CLOCK_SHOWN, now);
+        let irq_clock = lock();
+        let surface = framebuffer_origin();
+        hide_cursor(surface);
+        repaint_window(surface, WINDOW_CLOCK);
+        repaint_above(surface, WINDOW_CLOCK);
+        unlock(irq_clock);
+    }
+
     // The pointer, and what a click means.
     //
     // Both are done here rather than in the handler: drawing from an interrupt
@@ -1610,6 +1789,16 @@ while (running == 1 && waited < 60000) {
             let hit = window_at(pointer_x, pointer_y);
             if (hit >= 0 && hit != shared_read(SHARED_FOCUS)) {
                 shared_write(SHARED_FOCUS, hit);
+            }
+            // Clicking a window brings it to the front, and the shell — the
+            // desktop — stays where it is: raising it would put it over
+            // everything, which is not what clicking on the background means.
+            if (hit > WINDOW_SHELL) {
+                let irq_raise = lock();
+                raise_window(hit);
+                hide_cursor(framebuffer_origin());
+                repaint_window(framebuffer_origin(), hit);
+                unlock(irq_raise);
             }
             // A press on a window's title bar starts a drag. The shell is
             // excluded: it is the whole screen, so "moving" it would mean

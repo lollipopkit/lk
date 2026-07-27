@@ -227,6 +227,34 @@ Three things this turned up:
   layout rather than of dragging, and it is the kind of thing to fix by giving
   the terminal an inset once there is a reason to.
 
+### Which one is on top
+
+Three windows now, and they may overlap: the shell (the desktop), the spinner,
+and a clock. Clicking one brings it to the front; dragging one moves it over
+whatever is beneath.
+
+The stacking order is a **list of slots, bottom-up**, not a depth number per
+window. Depths have to be renumbered when one changes and two windows can end up
+sharing one; a list can only ever say one thing about who is above whom.
+
+What overlap actually demands is that **every window can redraw itself from
+state**, because being uncovered can happen at any moment and there are no saved
+pixels to put back. Each window here is defined by something it can be recomputed
+from:
+
+| window | redrawn from |
+| --- | --- |
+| the shell | the terminal's character grid |
+| the spinner | its step counter |
+| the clock | the tick count |
+
+The clock is the one that made the remaining problem obvious. A window drawing
+its own contents has no idea what is above it — so a clock that redraws itself
+once a second buries whatever was just raised, about a second after the click.
+Every path that repaints one window therefore ends in `repaint_above`, which
+puts back whatever sits on top of it. `check_stack.py` waits three seconds
+before looking, because a raise that a tick undoes is not a raise.
+
 ### Seeing which one has it
 
 Each window draws its own one-pixel frame, focused or idle, and repaints when

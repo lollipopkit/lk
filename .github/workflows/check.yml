@@ -261,6 +261,10 @@ jobs:
           # comes back — and it is only possible because the terminal keeps its
           # characters in a grid rather than only on the screen.
           timeout 400 python3 check_drag.py
+          # Overlap, and who is on top. A window drawing its own contents has
+          # no idea what is above it, so the check waits for a clock tick — a
+          # raise that a periodic redraw undoes is not a raise.
+          timeout 400 python3 check_stack.py
         env:
           LK_BIN: ../target/debug/lk
       - name: AOT native-lowering coverage gate
