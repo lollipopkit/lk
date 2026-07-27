@@ -6,6 +6,11 @@ memory. It does *not* prove the mode was set: an unconfigured card still accepts
 writes to its BAR. Only what QEMU scans out can show that, which is what this
 checks — and it is the closest thing to "the screen showed the right thing"
 available on a machine with no screen.
+
+It also checks a *glyph*: the title is drawn by LK's own text renderer from a
+font this repository wrote, so a lit pixel where a letter's stroke belongs is
+the difference between "text rendering works" and "something was written to
+memory".
 """
 
 import os
@@ -16,14 +21,16 @@ import tempfile
 import time
 
 WIDTH, HEIGHT = 320, 200
-# What `program.lk`'s gradient puts at the corners and the middle: red rising
-# left to right, green rising top to bottom, blue constant.
+# What `program.lk` draws: a dark background, a title in amber at cell (1,1),
+# and a prompt in green at cell (1,3). The checked points are the background
+# well away from any text, and the top-left pixel of the title's first glyph
+# (`L`), which that glyph lights.
+BACKGROUND = (0x00, 0x14, 0x28)
+TITLE = (0xff, 0xc0, 0x40)
 EXPECTED = [
-    ((0, 0), (0, 0, 64)),
-    ((WIDTH // 2, HEIGHT // 2), (127, 127, 64)),
-    ((WIDTH - 1, HEIGHT - 1), (254, 253, 64)),
+    ((WIDTH - 1, HEIGHT - 1), BACKGROUND),
+    ((1 * 6, 1 * 8), TITLE),
 ]
-
 
 def read_ppm(path):
     with open(path, "rb") as handle:
@@ -82,7 +89,7 @@ def main():
                 failures.append(f"({x},{y}) is {actual}, expected {expected}")
         if failures:
             raise SystemExit("screen contents wrong:\n  " + "\n  ".join(failures))
-    print(f"OK: {WIDTH}x{HEIGHT}, gradient scanned out as drawn")
+    print(f"OK: {WIDTH}x{HEIGHT}, text scanned out as drawn")
 
 
 if __name__ == "__main__":

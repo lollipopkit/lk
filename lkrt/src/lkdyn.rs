@@ -635,6 +635,25 @@ pub unsafe extern "C" fn lkrt_dyn_field(v: LkDyn, key: *const c_char) -> LkDyn {
 /// Index into a Dyn: a List tag indexes like `lkrt_lklist_dyn_at`
 /// (negative-from-tail, OOB → Nil); any non-container tag is the VM's
 /// "index on a non-container" loud failure.
+/// `container[key]` where *both* are boxed.
+///
+/// The static types say nothing about which access this is, so the tag decides
+/// — which is what the VM does. An integer key indexes, a string key reads a
+/// field, and anything else is the VM's error.
+///
+/// # Safety
+///
+/// `key`'s payload must be a valid interned string when its tag says so, which
+/// is the runtime's own invariant for a `DYN_STR`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_dyn_get(v: LkDyn, key: LkDyn) -> LkDyn {
+    match key.tag {
+        DYN_I64 => lkrt_dyn_index(v, key.payload),
+        DYN_STR => unsafe { lkrt_dyn_field(v, key.payload as *const c_char) },
+        _ => crate::panic::raise_str("runtime type error"),
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_dyn_index(v: LkDyn, index: i64) -> LkDyn {
     if v.tag != DYN_LIST {

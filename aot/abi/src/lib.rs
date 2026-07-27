@@ -447,6 +447,7 @@ macro_rules! for_each_abi_fn {
             ("dyn", "gt", lkrt_dyn_gt, ReadsHost, [DynVal, DynVal], I64);
             ("dyn", "ge", lkrt_dyn_ge, ReadsHost, [DynVal, DynVal], I64);
             ("dyn", "index", lkrt_dyn_index, ReadsHost, [DynVal, I64], DynVal);
+            ("dyn", "get", lkrt_dyn_get, ReadsHost, [DynVal, DynVal], DynVal);
             ("dyn", "from_map", lkrt_dyn_from_map, Pure, [Ptr], DynVal);
             ("dyn", "field", lkrt_dyn_field, ReadsHost, [DynVal, StrPtr], DynVal);
             ("dyn", "len_of", lkrt_dyn_len_of, ReadsHost, [DynVal], I64);

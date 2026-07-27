@@ -15,13 +15,73 @@ use { uart_init, uart_putc, uart_write, uart_put_int, uart_put_hex } from "drive
 use { pci_read, pci_write, pci_find_display, PCI_REG_BAR0, PCI_REG_COMMAND,
       PCI_COMMAND_MEMORY, PCI_COMMAND_BUS_MASTER } from "drivers/pci";
 use { vbe_set_mode } from "drivers/vbe";
-use { put_pixel, get_pixel, fill_rect, fill_gradient } from "drivers/framebuffer";
+use { get_pixel } from "drivers/framebuffer";
+use { draw_glyph, draw_cells, clear, CELL_WIDTH, CELL_HEIGHT } from "drivers/text";
 use { read_scancode, is_release, key_code } from "drivers/keyboard";
 use { start as pit_start } from "drivers/pit";
 use { read as shared_read, write as shared_write, bump as shared_bump } from "drivers/shared";
 
 const WIDTH = 320;
 const HEIGHT = 200;
+
+const BACKGROUND = 0x001428;
+const FOREGROUND = 0x40ff90;
+const TITLE_COLOUR = 0xffc040;
+
+// A 5x7 font in an 8-row cell, one row per integer with the leftmost pixel in
+// bit 4. Written for this program rather than taken from anywhere, so the
+// repository carries no third-party font data.
+//
+// It lives here rather than in `drivers/text` because a container at a
+// module's top level cannot cross a bundled import without changing what the
+// VM would do — see that module's comment.
+const FONT = [
+     0,  0,  0,  0,  0,  0,  0,  0,  // space
+    14, 17, 17, 31, 17, 17, 17,  0,  // A
+    30, 17, 30, 17, 17, 17, 30,  0,  // B
+    15, 16, 16, 16, 16, 16, 15,  0,  // C
+    30, 17, 17, 17, 17, 17, 30,  0,  // D
+    31, 16, 30, 16, 16, 16, 31,  0,  // E
+    31, 16, 30, 16, 16, 16, 16,  0,  // F
+    15, 16, 16, 19, 17, 17, 15,  0,  // G
+    17, 17, 31, 17, 17, 17, 17,  0,  // H
+    14,  4,  4,  4,  4,  4, 14,  0,  // I
+     7,  2,  2,  2,  2, 18, 12,  0,  // J
+    17, 18, 20, 24, 20, 18, 17,  0,  // K
+    16, 16, 16, 16, 16, 16, 31,  0,  // L
+    17, 27, 21, 17, 17, 17, 17,  0,  // M
+    17, 25, 21, 19, 17, 17, 17,  0,  // N
+    14, 17, 17, 17, 17, 17, 14,  0,  // O
+    30, 17, 17, 30, 16, 16, 16,  0,  // P
+    14, 17, 17, 17, 21, 18, 13,  0,  // Q
+    30, 17, 17, 30, 20, 18, 17,  0,  // R
+    15, 16, 16, 14,  1,  1, 30,  0,  // S
+    31,  4,  4,  4,  4,  4,  4,  0,  // T
+    17, 17, 17, 17, 17, 17, 14,  0,  // U
+    17, 17, 17, 17, 17, 10,  4,  0,  // V
+    17, 17, 17, 17, 21, 27, 17,  0,  // W
+    17, 17, 10,  4, 10, 17, 17,  0,  // X
+    17, 17, 10,  4,  4,  4,  4,  0,  // Y
+    31,  1,  2,  4,  8, 16, 31,  0,  // Z
+    14, 17, 19, 21, 25, 17, 14,  0,  // 0
+     4, 12,  4,  4,  4,  4, 14,  0,  // 1
+    14, 17,  1,  2,  4,  8, 31,  0,  // 2
+    31,  2,  6,  1,  1, 17, 14,  0,  // 3
+     2,  6, 10, 18, 31,  2,  2,  0,  // 4
+    31, 16, 30,  1,  1, 17, 14,  0,  // 5
+     6,  8, 16, 30, 17, 17, 14,  0,  // 6
+    31,  1,  2,  4,  8,  8,  8,  0,  // 7
+    14, 17, 17, 14, 17, 17, 14,  0,  // 8
+    14, 17, 17, 15,  1,  2, 12,  0,  // 9
+     0,  0,  0,  0,  0, 12, 12,  0,  // .
+     0,  0,  0,  0, 12, 12,  8,  0,  // ,
+     0, 12, 12,  0, 12, 12,  0,  0,  // :
+     0,  0,  0, 31,  0,  0,  0,  0,  // -
+     4,  4,  4,  4,  4,  0,  4,  0,  // !
+    14, 17,  1,  2,  4,  0,  4,  0,  // ?
+     0,  0, 31,  0, 31,  0,  0,  0,  // =
+     0, 16,  8,  4,  8, 16,  0,  0,  // >
+];
 
 // Free RAM: the image, its heap, its stack and the page tables all live below
 // 2 MiB. Crude, and deliberately so — a kernel with no memory manager yet has
@@ -40,6 +100,29 @@ const SCANCODE_ASCII = [
 const SHARED_KEY_COUNT = 0x00300000;
 const SHARED_LAST_KEY = 0x00300004;
 const SHARED_TICKS = 0x00300008;
+const SHARED_CURSOR_COL = 0x0030000c;
+const SHARED_CURSOR_ROW = 0x00300010;
+
+// Where a character sits in FONT. The font has one case, so lower-case maps to
+// the upper-case glyph; anything it does not cover renders as a space, which
+// is what a terminal with a small font should do rather than drawing noise.
+fn glyph_index(ascii: Int) -> Int {
+    if (ascii >= 65 && ascii <= 90) { return 1 + ascii - 65; }
+    if (ascii >= 97 && ascii <= 122) { return 1 + ascii - 97; }
+    if (ascii >= 48 && ascii <= 57) { return 27 + ascii - 48; }
+    if (ascii == 46) { return 37; }
+    if (ascii == 44) { return 38; }
+    if (ascii == 58) { return 39; }
+    if (ascii == 45) { return 40; }
+    if (ascii == 33) { return 41; }
+    if (ascii == 63) { return 42; }
+    if (ascii == 61) { return 43; }
+    if (ascii == 62) { return 44; }
+    return 0;
+}
+
+fn text_columns() -> Int { return ((WIDTH / CELL_WIDTH) as Int); }
+fn text_rows() -> Int { return ((HEIGHT / CELL_HEIGHT) as Int); }
 
 // Ask PCI where the framebuffer is. Two port accesses, cheap enough to repeat —
 // and repeating it keeps the interrupt handler independent of whether the main
@@ -79,17 +162,38 @@ fn on_key() {
     if (code >= SCANCODE_ASCII.len()) {
         return;
     }
-    let ascii = SCANCODE_ASCII[code];
+    // `as Int` is not decoration. A global that an `#[export]`ed function
+    // reads is treated as dynamic — nothing proves the entry ran before an
+    // interrupt did — so the table's element arrives boxed. The cast is where
+    // the program states what it knows.
+    let ascii = (SCANCODE_ASCII[code]) as Int;
     if (ascii == 0) {
         return;
     }
-    let count = shared_bump(SHARED_KEY_COUNT);
+    shared_bump(SHARED_KEY_COUNT);
     shared_write(SHARED_LAST_KEY, ascii);
     uart_putc(ascii);
-    // One square per key, marching left to right along the bottom.
+
+    // Echo at the cursor. Newline moves down and back to the left margin;
+    // running off the right does the same, which is all the line handling a
+    // terminal needs before it has scrolling.
     let base = framebuffer_address();
-    let column = (count - 1) % 20;
-    fill_rect(base, WIDTH, column * 16, HEIGHT - 20, 12, 12, ascii * 0x10101);
+    let column = shared_read(SHARED_CURSOR_COL);
+    let row = shared_read(SHARED_CURSOR_ROW);
+    if (ascii == 10) {
+        shared_write(SHARED_CURSOR_COL, 0);
+        shared_write(SHARED_CURSOR_ROW, (row + 1) % text_rows());
+        return;
+    }
+    draw_glyph(base, WIDTH, FONT, glyph_index(ascii),
+               column * CELL_WIDTH, row * CELL_HEIGHT, FOREGROUND, BACKGROUND);
+    let next = column + 1;
+    if (next >= text_columns()) {
+        shared_write(SHARED_CURSOR_COL, 0);
+        shared_write(SHARED_CURSOR_ROW, (row + 1) % text_rows());
+    } else {
+        shared_write(SHARED_CURSOR_COL, next);
+    }
 }
 
 uart_init();
@@ -107,14 +211,28 @@ let command = pci_read(slot, PCI_REG_COMMAND);
 pci_write(slot, PCI_REG_COMMAND, command | PCI_COMMAND_MEMORY | PCI_COMMAND_BUS_MASTER);
 
 vbe_set_mode(WIDTH, HEIGHT, 32);
-fill_gradient(framebuffer, WIDTH, HEIGHT, 0x40);
+clear(framebuffer, WIDTH, HEIGHT, BACKGROUND);
+
+// Glyph indices rather than ASCII: these are constants, so translating them at
+// run time would be work the program already knows the answer to.
+//   "LK ON BARE METAL"
+draw_cells(framebuffer, WIDTH, FONT,
+           [12, 11, 0, 15, 14, 0, 2, 1, 18, 5, 0, 13, 5, 20, 1, 12],
+           1, 1, TITLE_COLOUR, BACKGROUND);
+//   "TYPE:"
+draw_cells(framebuffer, WIDTH, FONT, [20, 25, 16, 5, 39], 1, 3, FOREGROUND, BACKGROUND);
+
+// The cursor starts after the prompt.
+shared_write(SHARED_CURSOR_COL, 7);
+shared_write(SHARED_CURSOR_ROW, 3);
 
 // Read three pixels back out of the device's memory. Drawing that nobody can
 // see is indistinguishable from drawing that never happened, and a headless
 // machine has no other way to tell.
-let corner = get_pixel(framebuffer, WIDTH, 0, 0);
-let middle = get_pixel(framebuffer, WIDTH, 160, 100);
-let far = get_pixel(framebuffer, WIDTH, 319, 199);
+// The background, and a pixel inside the title's first glyph (`L`, whose
+// top-left is lit).
+let empty = get_pixel(framebuffer, WIDTH, WIDTH - 1, HEIGHT - 1);
+let title = get_pixel(framebuffer, WIDTH, 6, 8);
 
 // A critical section, written in LK. The handlers transmit on the same device
 // these lines do, and an interrupt lands between any two instructions — so
@@ -133,11 +251,9 @@ uart_put_hex(framebuffer);
 uart_putc(10);
 // "pixels "
 uart_write([112, 105, 120, 101, 108, 115, 32]);
-uart_put_hex(corner);
+uart_put_hex(empty);
 uart_putc(32);
-uart_put_hex(middle);
-uart_putc(32);
-uart_put_hex(far);
+uart_put_hex(title);
 uart_putc(10);
 unsafe { cpu_irq_restore(irq); };
 

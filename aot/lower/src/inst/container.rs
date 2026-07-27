@@ -824,6 +824,10 @@ pub(super) fn lower(
                 let (helper, key) = match kty {
                     Ty::I64 => ("index", kv),
                     Ty::Str => ("field", kv),
+                    // Both boxed: nothing static says whether this indexes a
+                    // list or reads a map's field, so the tag decides at run
+                    // time — which is what the VM does.
+                    Ty::Dyn => ("get", kv),
                     _ => return Err(Unsupported::TypeMismatch { pc }),
                 };
                 let dst = ssa.new_val();

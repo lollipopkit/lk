@@ -72,7 +72,7 @@ def main():
         raise SystemExit(f"keyboard: never saw {remaining} echoed, in order, in the output")
     if EXPECTED_REPORT not in output:
         raise SystemExit(f"keyboard: expected {EXPECTED_REPORT!r} in the output")
-    print(f"OK: {len(KEYS)} keystrokes decoded by LK and echoed back")
+    print(f"OK: {len(KEYS)} keystrokes decoded by LK, echoed to serial and drawn on screen")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,70 @@
+// Text on a framebuffer.
+//
+// A glyph is seven rows of five pixels, packed one row per integer with the
+// leftmost pixel in bit 4. Eight rows are stored per glyph — the eighth is the
+// blank line that separates one text row from the next — so glyph `i` starts
+// at `i * 8`.
+//
+// The font itself is *not* here, and neither is the character-to-glyph
+// mapping. A container at a module's top level cannot cross a bundled import
+// without changing what the VM would do, and which glyph a character maps to
+// is a keyboard-layout question rather than a rendering one. This module is
+// handed both.
+
+use { put_pixel, fill_rect } from "framebuffer";
+
+const GLYPH_WIDTH = 5;
+const GLYPH_ROWS = 7;
+const GLYPH_STRIDE = 8;
+
+// A cell is one pixel wider and one taller than the glyph, so adjacent
+// characters and lines do not touch.
+const CELL_WIDTH = 6;
+const CELL_HEIGHT = 8;
+
+fn pow2(bits: Int) -> Int {
+    let value = 1;
+    for i in 0..bits {
+        value = value * 2;
+    }
+    return value;
+}
+
+// Draws one glyph with its top-left corner at (x, y).
+//
+// `font` is only ever read, which is what keeps this module bundlable: a
+// module that *wrote* through a container parameter would be handed the
+// caller's list under a flattened build and a copy under the VM.
+fn draw_glyph(base: Int, stride: Int, font: List<Int>, index: Int, x: Int, y: Int, fg: Int, bg: Int) {
+    let start = index * GLYPH_STRIDE;
+    for row in 0..GLYPH_ROWS {
+        let bits = font[start + row];
+        for column in 0..GLYPH_WIDTH {
+            // Leftmost pixel is the high bit, so the picture in the source
+            // reads the same way round as the picture on the screen.
+            let shift = GLYPH_WIDTH - 1 - column;
+            // `/` is float division in LK; the cast is what makes `&` an
+            // integer operation rather than one on a float.
+            let lit = ((bits / pow2(shift)) as Int) & 1;
+            let colour = bg;
+            if (lit != 0) {
+                colour = fg;
+            }
+            put_pixel(base, stride, x + column, y + row, colour);
+        }
+    }
+}
+
+// Draws a run of glyph indices starting at a character cell.
+fn draw_cells(base: Int, stride: Int, font: List<Int>, indices: List<Int>, column: Int, row: Int, fg: Int, bg: Int) {
+    let at = column;
+    for index in indices {
+        draw_glyph(base, stride, font, index, at * CELL_WIDTH, row * CELL_HEIGHT, fg, bg);
+        at = at + 1;
+    }
+}
+
+// Clears the whole screen to one colour.
+fn clear(base: Int, width: Int, height: Int, colour: Int) {
+    fill_rect(base, width, 0, 0, width, height, colour);
+}

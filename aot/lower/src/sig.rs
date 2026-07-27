@@ -103,20 +103,14 @@ pub(crate) struct SigInfer {
 impl SigInfer {
     /// The type a parameter is believed to hold.
     ///
-    /// With no observation at all for the function — nothing calls it, which is
-    /// ordinary for a module that exports more than one importer uses — every
-    /// parameter is `Dyn` rather than `I64`. `I64` is a guess that happens to
-    /// be right for scalars and wrong for everything else, and it fails the
-    /// *whole module* on a function that never runs. `Dyn` is what is actually
-    /// known: nothing.
+    /// An unobserved parameter defaults to `I64` rather than `Dyn`. `Dyn`
+    /// looks like the honest answer for a function nothing calls, but such a
+    /// function still *makes* calls, and a `Dyn` argument at one of those is
+    /// recorded as an observation — so a dead export widens the parameters of
+    /// the live functions it happens to call. A function that cannot lower on
+    /// the `I64` guess is dropped instead, provided nothing reaches it.
     pub(crate) fn param_ty(&self, func: usize, i: usize) -> Ty {
-        if let Some(observed) = self.param_obs[func].get(i).copied().flatten() {
-            return observed;
-        }
-        if self.param_obs[func].iter().all(Option::is_none) {
-            return Ty::Dyn;
-        }
-        Ty::I64
+        self.param_obs[func].get(i).copied().flatten().unwrap_or(Ty::I64)
     }
 
     /// Records one call-site observation of `callee`'s parameter `slot_idx`

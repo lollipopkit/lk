@@ -15,12 +15,16 @@ LK_BIN=../target/debug/lk ./run.sh
 ```
 
 ```
-....display at pci slot 2
+.display at pci slot 2
 framebuffer 0xfd000000
-pixels 00000040 007f7f40 00fefd40
-.2
-[lk returned to the board]
+pixels 00001428 00ffc040
+....lkos
+keys 4 last 115
 ```
+
+...and on the screen, `LK ON BARE METAL` over a `TYPE:` prompt with the typed
+characters after it — drawn by LK's own text renderer from a font this
+repository wrote.
 
 Every line of that came from LK code driving four devices by three different
 mechanisms:
@@ -29,8 +33,8 @@ mechanisms:
 | --- | --- | --- |
 | COM1, a 16550 UART | port I/O (`in`/`out`) | configures the divisor and line control, polls the status register, transmits |
 | PCI configuration space | the 0xCF8/0xCFC port pair | walks bus 0, finds the display controller by class code, reads BAR0, enables memory cycles |
-| the framebuffer | volatile MMIO | sets a mode over the Bochs VBE ports, then writes 64000 pixels |
-| the PS/2 keyboard | port I/O, from an interrupt handler | reads the scancode, decodes it, echoes the character and draws a square |
+| the framebuffer | volatile MMIO | sets a mode over the Bochs VBE ports, clears it, and draws text |
+| the PS/2 keyboard | port I/O, from an interrupt handler | reads the scancode, decodes it, echoes the character to the serial line and draws it at the cursor |
 
 `check_screen.py` screenshots the machine through QEMU's monitor and checks the
 pixels. That is a separate claim from the `pixels …` line: reading the
@@ -199,6 +203,26 @@ and pretending otherwise would hide what the program is actually doing.
 puts a real scancode into the emulated controller, so the test covers IRQ1, the
 LK handler, the scancode table and the echo — the one part memory inspection
 cannot show.
+
+## Text
+
+`drivers/text.lk` renders a 5x7 font into 6x8 cells. The font is a table of
+integers, one row of pixels each, written for this program — the repository
+carries no third-party font data — and it lives in `program.lk` rather than in
+the renderer: a container at a module's top level cannot cross a bundled
+import, and which glyph a character maps to is a keyboard-layout question
+rather than a rendering one.
+
+One thing in `program.lk` looks like decoration and is not:
+
+```lk
+let ascii = (SCANCODE_ASCII[code]) as Int;
+```
+
+A global that an `#[export]`ed function reads is treated as dynamic: nothing
+proves the entry function ran before an interrupt did, so the compiler cannot
+assume the table is initialised, and its elements arrive boxed. The cast is
+where the program states what it knows.
 
 ## Exceptions
 
