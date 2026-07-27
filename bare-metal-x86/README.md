@@ -255,6 +255,35 @@ Every path that repaints one window therefore ends in `repaint_above`, which
 puts back whatever sits on top of it. `check_stack.py` waits three seconds
 before looking, because a raise that a tick undoes is not a raise.
 
+### Windows say what draws them
+
+`repaint_window` does not know what any window contains. It holds an address per
+slot and calls it:
+
+```lk
+fn repaint_window(base: Int, slot: Int) {
+    let painter = shared_read(SHARED_WINDOW_PAINT + slot * WORD);
+    unsafe { call_address_2(painter, base, slot) };
+}
+```
+
+That is a **driver table**, and it needed two things the language did not have:
+`symbol_address("name")`, which is an `#[export]`ed function's address, and
+`call_address_2(addr, a, b)`, which calls through one. Both are native-only —
+the VM refuses rather than inventing an address, the same choice `port_in_u8`
+makes, because a fake address is a program that runs interpreted and jumps into
+nothing when compiled. The name must be a literal: a relocation is a name
+resolved at link time, and a kernel has no symbol table to look one up in.
+
+The alternative is the chain of `if slot == …` this replaced, sitting in the
+middle of the window manager and edited every time a window is added. Kernels
+have driver tables for exactly this reason: what a device does belongs to the
+device, and dispatch should not have to learn its name.
+
+The signature is the table's, not each window's: two integers in, one out. A
+table of function pointers is a single signature by definition — that is what
+makes it a table.
+
 ### Seeing which one has it
 
 Each window draws its own one-pixel frame, focused or idle, and repaints when
