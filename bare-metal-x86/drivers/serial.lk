@@ -45,6 +45,18 @@ fn uart_putc(byte: Int) {
     unsafe { port_out_u8(COM1 + REG_DATA, byte as u8); };
 }
 
+// The same, for a message written as a message.
+//
+// `byte_at` is the string read that allocates nothing, which is what makes this
+// usable where `uart_write` was: on the path that reports a failure, before
+// there is a heap, and from inside an interrupt. Every line this kernel printed
+// used to be an array of ASCII numbers because there was no such read.
+fn uart_text(text: String) {
+    for index in 0..text.len() {
+        uart_putc(text.byte_at(index));
+    }
+}
+
 fn uart_write(bytes: List<Int>) {
     for byte in bytes {
         uart_putc(byte);

@@ -11,7 +11,7 @@
 // them. They live here rather than in the driver modules for the same reason:
 // a driver decodes a scancode, but only the program knows what to do with it.
 
-use { uart_init, uart_putc, uart_write, uart_put_int, uart_put_hex } from "drivers/serial";
+use { uart_init, uart_putc, uart_write, uart_text, uart_put_int, uart_put_hex } from "drivers/serial";
 use { pci_find_display, pci_devices, pci_vendor, pci_device_id, pci_class,
       pci_subclass, pci_bar, pci_bar_size, pci_bar_is_io, pci_bdf_device,
       pci_bdf_function, pci_command_set,
@@ -704,6 +704,41 @@ fn scroll_view() {
 //
 // Interrupts are masked by the caller: this shares the cursor with the key
 // handler, and the two interleaving would splice the output.
+// A literal's bytes, for a line built out of more than one piece.
+//
+// The lines that interleave text with numbers — `"7 devices"`, `"edu: ident "`
+// then a hex value — are still assembled as lists, because that is what
+// `decimal` and `hex` answer. What changes is that the literal parts of them are
+// written as literals.
+fn text_bytes(text: String) -> List<Int> {
+    let out = [0];
+    for index in 0..text.len() {
+        out.push(text.byte_at(index));
+    }
+    return out.slice(1, out.len());
+}
+
+// The same, for a message written as a message.
+//
+// Every line this kernel printed used to be an array of ASCII numbers: the
+// literal `110, 101, 116, 58, 32, 111, 107` is what "net: ok" was written as,
+// eighty-six times over. Not for effect — a string had no way to give up its
+// bytes without allocating one per character, and a kernel cannot allocate on
+// the path where it reports that allocation failed.
+//
+// `byte_at` is that way: one byte, as a number, no allocation, and pure enough
+// that the optimizer may hoist it. It is the whole difference between a
+// language that can write this layer and one that can only be compiled for it.
+fn emit_text(base: Int, text: String) {
+    for index in 0..text.len() {
+        let code = text.byte_at(index);
+        uart_putc(code);
+        put_char(base, code);
+    }
+    uart_putc(10);
+    put_char(base, 10);
+}
+
 fn emit(base: Int, text: List<Int>) {
     for code in text {
         let ascii = (code) as Int;
@@ -815,15 +850,14 @@ fn largest_available_length() -> Int {
 
 fn report_memory(base: Int) {
     if (!has_mmap()) {
-        // "no map"
-        emit(base, [110, 111, 32, 109, 97, 112]);
+        emit_text(base, "no map");
         return;
     }
     // "upper " KiB
-    let upper = [117, 112, 112, 101, 114, 32];
-    emit(base, upper.chain(decimal(mem_upper_kb())).chain([32, 107, 98]));
+    let upper = text_bytes("upper ");
+    emit(base, upper.chain(decimal(mem_upper_kb())).chain(text_bytes(" kb")));
     // "pages " free "/" total
-    let pages = [112, 97, 103, 101, 115, 32];
+    let pages = text_bytes("pages ");
     emit(base, pages.chain(decimal(pages_free(SHARED_PAGES)))
                     .chain([47])
                     .chain(decimal(pages_total(SHARED_PAGES))));
@@ -853,14 +887,12 @@ fn report_memory(base: Int) {
 fn report_net(base: Int) {
     let bdf = e1000_find();
     if (bdf < 0) {
-        // "net: absent"
-        emit(base, [110, 101, 116, 58, 32, 97, 98, 115, 101, 110, 116]);
+        emit_text(base, "net: absent");
         return;
     }
     let mmio = e1000_open(bdf);
     if (mmio == 0) {
-        // "net: no bar"
-        emit(base, [110, 101, 116, 58, 32, 110, 111, 32, 98, 97, 114]);
+        emit_text(base, "net: no bar");
         return;
     }
 
@@ -872,14 +904,12 @@ fn report_net(base: Int) {
     // move.
     let scratch = page_alloc(SHARED_PAGES);
     if (scratch == 0) {
-        // "net: no memory"
-        emit(base, [110, 101, 116, 58, 32, 110, 111, 32, 109, 101, 109, 111, 114, 121]);
+        emit_text(base, "net: no memory");
         return;
     }
     let buffers = alloc_contiguous(RX_COUNT * RX_BUFFER_SIZE);
     if (buffers == 0) {
-        // "net: no memory"
-        emit(base, [110, 101, 116, 58, 32, 110, 111, 32, 109, 101, 109, 111, 114, 121]);
+        emit_text(base, "net: no memory");
         return;
     }
 
@@ -892,16 +922,14 @@ fn report_net(base: Int) {
     let answer = reply + 256;
 
     if (!e1000_mac(mmio, mac)) {
-        // "net: no eeprom"
-        emit(base, [110, 101, 116, 58, 32, 110, 111, 32, 101, 101, 112, 114, 111, 109]);
+        emit_text(base, "net: no eeprom");
         return;
     }
     e1000_init(state, mmio, tx_ring, rx_ring, buffers);
     e1000_set_mac(mmio, mac);
 
     if (!e1000_link_up(mmio)) {
-        // "net: no link"
-        emit(base, [110, 101, 116, 58, 32, 110, 111, 32, 108, 105, 110, 107]);
+        emit_text(base, "net: no link");
         return;
     }
 
@@ -915,8 +943,7 @@ fn report_net(base: Int) {
 
     let length = arp_build_request(frame, mac, sender_ip, target_ip);
     if (!e1000_transmit(state, frame, length)) {
-        // "net: tx"
-        emit(base, [110, 101, 116, 58, 32, 116, 120]);
+        emit_text(base, "net: tx");
         return;
     }
 
@@ -933,15 +960,14 @@ fn report_net(base: Int) {
         let received = e1000_receive_within(state, reply, 256, 100000);
         if (received > 0 && arp_match_reply(reply, received, mac, target_ip, answer)) {
             // "net: ok " + our MAC + " -> " + the gateway's
-            emit(base, [110, 101, 116, 58, 32, 111, 107, 32]
+            emit(base, text_bytes("net: ok ")
                 .chain(mac_text(mac))
-                .chain([32, 45, 62, 32])
+                .chain(text_bytes(" -> "))
                 .chain(mac_text(answer)));
             return;
         }
     }
-    // "net: no reply"
-    emit(base, [110, 101, 116, 58, 32, 110, 111, 32, 114, 101, 112, 108, 121]);
+    emit_text(base, "net: no reply");
 }
 
 fn write_ipv4(address: Int, a: Int, b: Int, c: Int, d: Int) {
@@ -1002,21 +1028,21 @@ fn report_pci(base: Int) {
             .chain(hex(pci_vendor(bdf)).slice(4, 8))
             .chain([58])
             .chain(hex(pci_device_id(bdf)).slice(4, 8))
-            .chain([32, 99])
+            .chain(text_bytes(" c"))
             .chain(hex(pci_class(bdf)).slice(6, 8))
             .chain([47])
             .chain(hex(pci_subclass(bdf)).slice(6, 8));
         // A device with no memory BAR 0 — the bridges — says so by omission
         // rather than by printing a zero that looks like an address.
         if (pci_bar(bdf, 0) != 0 && !pci_bar_is_io(bdf, 0)) {
-            line = line.chain([32, 64]) // " @"
+            line = line.chain(text_bytes(" @")) // " @"
                 .chain(hex(pci_bar(bdf, 0)))
                 .chain([43])
                 .chain(hex(pci_bar_size(bdf, 0)));
         }
         emit(base, line);
     }
-    emit(base, decimal(devices.len()).chain([32, 100, 101, 118, 105, 99, 101, 115])); // " devices"
+    emit(base, decimal(devices.len()).chain(text_bytes(" devices"))); // " devices"
 }
 
 // The PCI device, driven through all three of the things a PCI device does.
@@ -1034,21 +1060,19 @@ fn report_pci(base: Int) {
 fn report_edu(base: Int) {
     let bdf = edu_find();
     if (bdf < 0) {
-        // "edu: absent"
-        emit(base, [101, 100, 117, 58, 32, 97, 98, 115, 101, 110, 116]);
+        emit_text(base, "edu: absent");
         return;
     }
     let mmio = edu_open(bdf);
     if (mmio == 0) {
-        // "edu: no bar"
-        emit(base, [101, 100, 117, 58, 32, 110, 111, 32, 98, 97, 114]);
+        emit_text(base, "edu: no bar");
         return;
     }
 
     let ident = edu_identify(mmio);
     if (ident != EDU_IDENT) {
         // "edu: ident " + what came back
-        emit(base, [101, 100, 117, 58, 32, 105, 100, 101, 110, 116, 32].chain(hex(ident)));
+        emit(base, text_bytes("edu: ident ").chain(hex(ident)));
         return;
     }
 
@@ -1056,34 +1080,32 @@ fn report_edu(base: Int) {
     let live = edu_liveness(mmio, 0x0f0f0f0f);
     if (live != 0xf0f0f0f0) {
         // "edu: live " + what came back
-        emit(base, [101, 100, 117, 58, 32, 108, 105, 118, 101, 32].chain(hex(live)));
+        emit(base, text_bytes("edu: live ").chain(hex(live)));
         return;
     }
 
     let factorial = edu_factorial(mmio, 5);
     if (factorial != 120) {
         // "edu: fact " + what came back
-        emit(base, [101, 100, 117, 58, 32, 102, 97, 99, 116, 32].chain(hex(factorial)));
+        emit(base, text_bytes("edu: fact ").chain(hex(factorial)));
         return;
     }
 
     if (!edu_round_trip(mmio)) {
-        // "edu: dma"
-        emit(base, [101, 100, 117, 58, 32, 100, 109, 97]);
+        emit_text(base, "edu: dma");
         return;
     }
 
     let irq = edu_irq_line(bdf);
     if (!edu_interrupt(mmio, irq)) {
-        // "edu: irq"
-        emit(base, [101, 100, 117, 58, 32, 105, 114, 113]);
+        emit_text(base, "edu: irq");
         return;
     }
 
     // "edu: ok irq " + the line the firmware routed it to
-    emit(base, [101, 100, 117, 58, 32, 111, 107, 32, 105, 114, 113, 32]
+    emit(base, text_bytes("edu: ok irq ")
         .chain(decimal(irq))
-        .chain([32, 98, 97, 114, 32]) // " bar "
+        .chain(text_bytes(" bar ")) // " bar "
         .chain(hex(edu_bar_size(bdf))));
 }
 
@@ -1210,7 +1232,7 @@ fn report_disk(base: Int) {
 // from outside by reading the image file after the machine has stopped.
 fn write_disk(base: Int) {
     // "LK-WROTE-SECTOR1", then zeros to the end of the sector.
-    let text = [76, 75, 45, 87, 82, 79, 84, 69, 45, 83, 69, 67, 84, 79, 82, 49];
+    let text = text_bytes("LK-WROTE-SECTOR1");
     for i in 0..SECTOR_SIZE {
         shared_write_byte(SHARED_SECTOR + i, 0);
     }
@@ -1321,13 +1343,13 @@ fn report_heap(base: Int) {
     heap_release(SHARED_HEAP, d);
     let after = heap_blocks(SHARED_HEAP);
     // "blocks <before>/<after> reused <0|1> used <bytes>"
-    emit(base, [98, 108, 111, 99, 107, 115, 32]
+    emit(base, text_bytes("blocks ")
                .chain(decimal(before))
                .chain([47])
                .chain(decimal(after))
-               .chain([32, 114, 101, 117, 115, 101, 100, 32])
+               .chain(text_bytes(" reused "))
                .chain(decimal(reused))
-               .chain([32, 117, 115, 101, 100, 32])
+               .chain(text_bytes(" used "))
                .chain(decimal(heap_used(SHARED_HEAP))));
 }
 
@@ -1372,8 +1394,7 @@ fn run_file(base: Int, name: List<Int>) {
     let lba = shared_read(SHARED_FILE);
     let size = shared_read(SHARED_FILE + WORD);
     if (size > SOURCE_MAX) {
-        // "too big"
-        emit(base, [116, 111, 111, 32, 98, 105, 103]);
+        emit_text(base, "too big");
         return;
     }
     let copied = 0;
@@ -1404,18 +1425,18 @@ fn run_file(base: Int, name: List<Int>) {
     unsafe { cpu_irq_save() };
     if (outcome != 0) {
         // "failed " then the stage the board reported.
-        emit(base, [102, 97, 105, 108, 101, 100, 32].chain(decimal(0 - outcome)));
+        emit(base, text_bytes("failed ").chain(decimal(0 - outcome)));
     }
 }
 
 fn file_error(outcome: Int) -> List<Int> {
     if (outcome == TAR_NOT_FOUND) {
         // "no file"
-        return [110, 111, 32, 102, 105, 108, 101];
+        return text_bytes("no file");
     }
     if (outcome == TAR_READ_FAILED) {
         // "read failed"
-        return [114, 101, 97, 100, 32, 102, 97, 105, 108, 101, 100];
+        return text_bytes("read failed");
     }
     // "?"
     return [63];
@@ -1427,19 +1448,19 @@ fn file_error(outcome: Int) -> List<Int> {
 fn disk_error(outcome: Int) -> List<Int> {
     if (outcome == ATA_NO_DRIVE) {
         // "no disk"
-        return [110, 111, 32, 100, 105, 115, 107];
+        return text_bytes("no disk");
     }
     if (outcome == ATA_TIMEOUT) {
         // "timeout"
-        return [116, 105, 109, 101, 111, 117, 116];
+        return text_bytes("timeout");
     }
     if (outcome == ATA_ERROR_BIT) {
         // "drive error"
-        return [100, 114, 105, 118, 101, 32, 101, 114, 114, 111, 114];
+        return text_bytes("drive error");
     }
     if (outcome == ATA_BAD_LBA) {
         // "bad sector"
-        return [98, 97, 100, 32, 115, 101, 99, 116, 111, 114];
+        return text_bytes("bad sector");
     }
     // "?"
     return [63];
@@ -1450,45 +1471,38 @@ fn run_command(base: Int) -> Int {
     if (length == 0) {
         return 1;
     }
-    if (line_starts_with([104, 101, 108, 112])) {          // "help"
+    if (line_starts_with(text_bytes("help"))) {          // "help"
         // "help clear echo keys exit"
-        // "... time disk cat run heap exit"
-        emit(base, [104, 101, 108, 112, 32, 99, 108, 101, 97, 114, 32, 101, 99,
-                    104, 111, 32, 107, 101, 121, 115, 32, 109, 101, 109, 32,
-                    112, 97, 103, 101, 32, 115, 121, 110, 99, 32,
-                    121, 105, 101, 108, 100, 32, 119, 105, 110, 32,
-                    116, 105, 109, 101, 32, 100, 105, 115, 107, 32, 99, 97, 116, 32, 114, 117, 110, 32, 104, 101, 97, 112, 32, 117, 115, 101, 114, 32, 108, 115, 32,
-                    101, 120, 105, 116]);
+        emit_text(base, "help clear echo keys mem page sync yield win time disk cat run heap user ls exit");
         return 1;
     }
-    if (line_starts_with([99, 108, 101, 97, 114])) {       // "clear"
+    if (line_starts_with(text_bytes("clear"))) {       // "clear"
         clear(base, WIDTH, HEIGHT, BACKGROUND);
         place_cursor(base, 0, 0);
         return 1;
     }
-    if (line_starts_with([101, 99, 104, 111])) {           // "echo"
+    if (line_starts_with(text_bytes("echo"))) {           // "echo"
         emit(base, line_tail(5));
         return 1;
     }
-    if (line_starts_with([107, 101, 121, 115])) {          // "keys"
+    if (line_starts_with(text_bytes("keys"))) {          // "keys"
         emit(base, decimal(shared_read(SHARED_KEY_COUNT)));
         return 1;
     }
-    if (line_starts_with([109, 101, 109])) {               // "mem"
+    if (line_starts_with(text_bytes("mem"))) {               // "mem"
         report_memory(base);
         return 1;
     }
-    if (line_starts_with([112, 97, 103, 101])) {           // "page"
+    if (line_starts_with(text_bytes("page"))) {           // "page"
         let address = page_alloc(SHARED_PAGES);
         if (address == 0) {
-            // "none"
-            emit(base, [110, 111, 110, 101]);
+            emit_text(base, "none");
         } else {
             emit(base, hex(address));
         }
         return 1;
     }
-    if (line_starts_with([115, 121, 110, 99])) {           // "sync"
+    if (line_starts_with(text_bytes("sync"))) {           // "sync"
         let state = lock();
         let a = shared_read(SHARED_PAIR_A);
         let b = shared_read(SHARED_PAIR_B);
@@ -1496,17 +1510,16 @@ fn run_command(base: Int) -> Int {
         emit(base, decimal(a).chain([47]).chain(decimal(b)));
         return 1;
     }
-    if (line_starts_with([121, 105, 101, 108, 100])) {     // "yield"
+    if (line_starts_with(text_bytes("yield"))) {     // "yield"
         task_yield();
-        // "back"
-        emit(base, [98, 97, 99, 107]);
+        emit_text(base, "back");
         return 1;
     }
-    if (line_starts_with([119, 105, 110])) {               // "win"
+    if (line_starts_with(text_bytes("win"))) {               // "win"
         emit(base, decimal(window_dropped(SHARED_WINDOWS, WINDOW_SPINNER)));
         return 1;
     }
-    if (line_starts_with([116, 105, 109, 101])) {          // "time"
+    if (line_starts_with(text_bytes("time"))) {          // "time"
         // Measure the two things this program does that are not cheap: a
         // scroll moves the whole picture a pixel row at a time, and a focus
         // change repaints both frames. Both run with interrupts masked, so
@@ -1520,76 +1533,75 @@ fn run_command(base: Int) -> Int {
         let t2 = unsafe { cpu_timestamp() };
         unlock(irq_time);
         // "scroll " cycles " frames " cycles
-        emit(base, [115, 99, 114, 111, 108, 108, 32]
+        emit(base, text_bytes("scroll ")
                    .chain(decimal((t1 as Int) - (t0 as Int)))
-                   .chain([32, 102, 114, 97, 109, 101, 115, 32])
+                   .chain(text_bytes(" frames "))
                    .chain(decimal((t2 as Int) - (t1 as Int))));
         return 1;
     }
-    if (line_starts_with([109, 115])) {                    // "ms"
+    if (line_starts_with(text_bytes("ms"))) {                    // "ms"
         // "<x>,<y> b<buttons> p<phase>"
         emit(base, decimal(shared_read(SHARED_MOUSE_X))
                    .chain([44])
                    .chain(decimal(shared_read(SHARED_MOUSE_Y)))
-                   .chain([32, 98])
+                   .chain(text_bytes(" b"))
                    .chain(decimal(shared_read(SHARED_MOUSE_BUTTONS)))
-                   .chain([32, 112])
+                   .chain(text_bytes(" p"))
                    .chain(decimal(shared_read(SHARED_MOUSE_PHASE)))
-                   .chain([32, 102])
+                   .chain(text_bytes(" f"))
                    .chain(decimal(shared_read(SHARED_MOUSE_FLAGS)))
-                   .chain([32, 100])
+                   .chain(text_bytes(" d"))
                    .chain(decimal(shared_read(SHARED_MOUSE_DX))));
         return 1;
     }
-    if (line_starts_with([117, 115, 101, 114])) {          // "user"
+    if (line_starts_with(text_bytes("user"))) {          // "user"
         // "ring3" then the machine leaves for ring 3 and does not return: the
         // program there prints through a syscall and then deliberately writes
         // an address it is not allowed to, which the exception reporter names.
-        emit(base, [114, 105, 110, 103, 51]);
+        emit_text(base, "ring3");
         enter_user(unsafe { symbol_address("__user_program") },
                    (unsafe { symbol_address("__user_shell_stack") } as Int) + PAGE_SIZE - 8,
                    USER_CODE_SELECTOR, USER_DATA_SELECTOR);
         return 1;
     }
-    if (line_starts_with([104, 101, 97, 112])) {           // "heap"
+    if (line_starts_with(text_bytes("heap"))) {           // "heap"
         report_heap(base);
         return 1;
     }
-    if (line_starts_with([114, 117, 110])) {               // "run"
+    if (line_starts_with(text_bytes("run"))) {               // "run"
         run_file(base, line_tail(4));
         return 1;
     }
-    if (line_starts_with([108, 115])) {                    // "ls"
+    if (line_starts_with(text_bytes("ls"))) {                    // "ls"
         list_files(base);
         return 1;
     }
-    if (line_starts_with([99, 97, 116])) {                 // "cat"
+    if (line_starts_with(text_bytes("cat"))) {                 // "cat"
         print_file(base, line_tail(4));
         return 1;
     }
-    if (line_starts_with([100, 105, 115, 107, 32, 119])) { // "disk w"
+    if (line_starts_with(text_bytes("disk w"))) { // "disk w"
         write_disk(base);
         return 1;
     }
-    if (line_starts_with([100, 105, 115, 107])) {          // "disk"
+    if (line_starts_with(text_bytes("disk"))) {          // "disk"
         report_disk(base);
         return 1;
     }
-    if (line_starts_with([112, 99, 105])) {                // "pci"
+    if (line_starts_with(text_bytes("pci"))) {                // "pci"
         report_pci(base);
         return 1;
     }
-    if (line_starts_with([101, 100, 117])) {               // "edu"
+    if (line_starts_with(text_bytes("edu"))) {               // "edu"
         report_edu(base);
         return 1;
     }
-    if (line_starts_with([110, 101, 116])) {               // "net"
+    if (line_starts_with(text_bytes("net"))) {               // "net"
         report_net(base);
         return 1;
     }
-    if (line_starts_with([101, 120, 105, 116])) {          // "exit"
-        // "bye"
-        emit(base, [98, 121, 101]);
+    if (line_starts_with(text_bytes("exit"))) {          // "exit"
+        emit_text(base, "bye");
         return 0;
     }
     // "?"
@@ -2147,8 +2159,7 @@ fn install_device_handler(vector: Int, handler: Int) {
     let stubs = unsafe { symbol_address("lkrt_isr_stubs") };
     let span = unsafe { symbol_address("lkrt_isr_stubs_end") } - stubs;
     if ((span % VECTOR_COUNT) != 0) {
-        // "bad isr stride"
-        uart_write([98, 97, 100, 32, 105, 115, 114, 32, 115, 116, 114, 105, 100, 101, 10]);
+        uart_text("bad isr stride\n");
         halt();
     }
     let stride = ((span / VECTOR_COUNT) as Int);
@@ -2173,8 +2184,7 @@ fn install_interrupt_table() {
     // gate but the first pointed into the middle of the stub before it. The
     // check costs one modulo at boot and is the thing that would have said so.
     if ((span % EXCEPTION_COUNT) != 0) {
-        // "bad isr stride"
-        uart_write([98, 97, 100, 32, 105, 115, 114, 32, 115, 116, 114, 105, 100, 101, 10]);
+        uart_text("bad isr stride\n");
         halt();
     }
     let stride = ((span / EXCEPTION_COUNT) as Int);
@@ -2842,8 +2852,7 @@ if (display < 0) {
     // No display on bus 0. Say so on the line that does exist and stop, rather
     // than programming a configuration address made of the `-1` sentinel and
     // drawing into whatever it names.
-    // "no display"
-    uart_write([110, 111, 32, 100, 105, 115, 112, 108, 97, 121, 10]);
+    uart_text("no display\n");
     halt();
 }
 
@@ -2911,8 +2920,7 @@ if (heap_pages_ok) {
     // An empty arena: every heap call then reports "nothing fits" instead of
     // writing somewhere it was never given.
     heap_init(SHARED_HEAP, 0, 0);
-    // "no heap"
-    uart_write([110, 111, 32, 104, 101, 97, 112, 10]);
+    uart_text("no heap\n");
 }
 
 // Two windows: the shell owns everything but the corner cell the spinner has.
@@ -2974,8 +2982,7 @@ let user_task_b = spawn_user_task(unsafe { symbol_address("__user_task_b") },
 // a scheduler naming a slot that was never spawned.
 unlock(irq_spawn);
 if (spinner_task < 0 || clock_task < 0 || user_task < 0 || user_task_b < 0) {
-    // "no tasks"
-    uart_write([110, 111, 32, 116, 97, 115, 107, 115, 10]);
+    uart_text("no tasks\n");
 }
 
 // The mouse, if there is one. A machine without it is a report rather than a
@@ -2991,8 +2998,7 @@ grid_clear();
 // They have to agree; if they ever stop, every line wraps one cell early and
 // the repaint puts characters in the wrong place.
 if (GRID_COLUMNS != text_columns() || GRID_ROWS != text_rows()) {
-    // "grid mismatch"
-    uart_write([103, 114, 105, 100, 32, 109, 105, 115, 109, 97, 116, 99, 104, 10]);
+    uart_text("grid mismatch\n");
     halt();
 }
 // Masked for the whole sequence. Every mouse command answers with an ACK, and
@@ -3004,8 +3010,7 @@ let irq_mouse = lock();
 let mouse_present = mouse_init();
 unlock(irq_mouse);
 if (mouse_present == 0) {
-    // "no mouse"
-    uart_write([110, 111, 32, 109, 111, 117, 115, 101, 10]);
+    uart_text("no mouse\n");
 }
 
 // The cursor starts after the prompt.
@@ -3021,7 +3026,7 @@ place_cursor(framebuffer, 3, 5);
 // is the same claim checked at run time, on the machine, after the boot path
 // has enabled SSE in CR0/CR4.
 // "half " then the answer
-uart_write([104, 97, 108, 102, 32]);
+uart_text("half ");
 uart_put_int(((88 / 2.0) as Int));
 uart_putc(10);
 
@@ -3046,17 +3051,15 @@ let irq = unsafe { cpu_irq_save() };
 // the whole stack calls a BDF. Printing it in the form `pci` lists — SS.F —
 // rather than as the packed integer, because the two lines are about the same
 // device and a reader should not have to divide by 0x800 to see that.
-uart_write([100, 105, 115, 112, 108, 97, 121, 32, 97, 116, 32, 112, 99, 105, 32]);
+uart_text("display at pci ");
 uart_put_int(pci_bdf_device(display));
 uart_putc(46); // '.'
 uart_put_int(pci_bdf_function(display));
 uart_putc(10);
-// "framebuffer 0x"
-uart_write([102, 114, 97, 109, 101, 98, 117, 102, 102, 101, 114, 32, 48, 120]);
+uart_text("framebuffer 0x");
 uart_put_hex(framebuffer);
 uart_putc(10);
-// "pixels "
-uart_write([112, 105, 120, 101, 108, 115, 32]);
+uart_text("pixels ");
 uart_put_hex(empty);
 uart_putc(32);
 uart_put_hex(title);
@@ -3218,11 +3221,9 @@ let last = shared_read(SHARED_LAST_KEY);
 unsafe { cpu_irq_save(); };
 pic_mask(0xff, 0xff);
 uart_putc(10);
-// "keys "
-uart_write([107, 101, 121, 115, 32]);
+uart_text("keys ");
 uart_put_int(keys);
-// " last "
-uart_write([32, 108, 97, 115, 116, 32]);
+uart_text(" last ");
 uart_put_int(last);
 uart_putc(10);
 
