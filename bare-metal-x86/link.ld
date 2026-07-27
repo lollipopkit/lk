@@ -9,6 +9,38 @@
  * section, placed first. */
 ENTRY(_start)
 
+/* The machine's memory, decided here and nowhere else.
+ *
+ * Here because this file already decides where the image goes, and because it
+ * is the one place *both* languages can read: Rust takes the address of an
+ * `extern static`, and LK asks `symbol_address`. It used to be a table in a doc
+ * comment plus a literal in each of them — `0x00380000` was written down twice
+ * and cross-checked at run time by `kernel_run` refusing any other address,
+ * which is a way of noticing the two had drifted, not a way of stopping it.
+ *
+ * The relations are written as relations, so "the arena starts where the run
+ * heap ends" is a statement rather than an arithmetic coincidence between two
+ * constants nobody recomputed.
+ *
+ *   0x00100000  the image, and its .bss (below, by ASSERT)
+ *   0x00300000  the shared page, which the program and its handlers agree on
+ *   0x00380000  64 KiB staging for a source file read off the disk
+ *   0x00400000  the interpreter's heap
+ *   0x00800000  the arena a hosted run allocates from, reset per run
+ *   0x02000000  the LK page allocator's arena
+ *
+ * The sizes are symbols too. A linker symbol is an address, and an address is a
+ * number: `__heap_size` is simply a symbol whose number happens to be a length.
+ */
+__shared_base = 0x00300000;
+__source_base = 0x00380000;
+__source_max = 0x00010000;
+__heap_base = 0x00400000;
+__heap_size = 0x00400000;
+__run_heap_base = __heap_base + __heap_size;
+__run_heap_size = 0x01800000;
+__page_arena_base = __run_heap_base + __run_heap_size;
+
 SECTIONS
 {
     . = 0x100000;
@@ -121,8 +153,8 @@ SECTIONS
      * top of the kernel's own data. Since the interpreter went in, the image is
      * ten times the size it was, so this is a real bound rather than a
      * theoretical one. */
-    ASSERT(__bss_end < 0x300000,
-           "the image has grown into the shared page at 0x300000 (see SHARED_BASE in program.lk)")
+    ASSERT(__bss_end < __shared_base,
+           "the image has grown into the shared page (see the memory map at the top of this file)")
 
     /DISCARD/ : { *(.eh_frame*) *(.comment) }
 }

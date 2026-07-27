@@ -850,6 +850,39 @@ everyone" from "isolated from the last one spawned".
 Adding the task is half an hour. Deciding what it would demonstrate is the part
 worth doing first.
 
+## The memory map, in one place
+
+Three things want RAM and none of them can ask: the kernel image, the Rust heap
+the interpreter allocates from, and the page allocator the LK program hands out.
+So the map has to be written down — and the place it is written down has to be
+one both languages can read. `link.ld` is that place:
+
+```
+__shared_base = 0x00300000;
+__source_base = 0x00380000;
+__heap_base   = 0x00400000;
+__heap_size   = 0x00400000;
+__run_heap_base = __heap_base + __heap_size;
+__page_arena_base = __run_heap_base + __run_heap_size;
+```
+
+Rust takes the address of an `extern static`; LK asks `symbol_address`. The
+relations are written as relations, so "the page arena starts where the run heap
+ends" is a statement rather than an arithmetic coincidence between two constants
+nobody recomputed.
+
+It used to be a table in a doc comment plus a literal in each language.
+`0x00380000` was written twice, and `kernel_run` cross-checked them by refusing
+any address but its own — which notices that the two have drifted rather than
+preventing it.
+
+The note that had to go with it was this file's own: that `program.lk` and the
+interrupt handlers agree on `0x300000` "by writing the number down, not by
+asking the linker — an interrupt handler cannot look anything up". That was true
+of a *run-time* lookup and never true of this one. A symbol's address is
+resolved when the image is linked, so what the handler executes is an immediate
+either way.
+
 ## Memory that comes back
 
 `drivers/pages.lk` never reclaims, which was honest while nothing freed.

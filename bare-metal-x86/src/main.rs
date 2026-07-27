@@ -37,41 +37,41 @@ use core::panic::PanicInfo;
 use core::ptr::addr_of_mut;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-/// The machine's memory, decided here and nowhere else.
+/// The machine's memory, decided in `link.ld` and read from here.
 ///
-/// Written down because three things now want RAM and none of them can ask: the
-/// kernel image, the Rust heap the interpreter allocates from, and the page
-/// allocator the LK program hands out. A heap in `.bss` would have been simpler
-/// until it grew — `.bss` follows the image, and at a few megabytes it reaches
-/// up over the shared page at 0x300000, which is a fixed address the program
-/// and the interrupt handlers agree on. Fixed regions cannot creep.
+/// Not a table in this comment any more. Three things want RAM and none of them
+/// can ask — the kernel image, the Rust heap the interpreter allocates from,
+/// and the page allocator the LK program hands out — so the map has to be
+/// written down somewhere, and the somewhere has to be a place *both* languages
+/// can read. A linker script is that place: Rust takes the address of an
+/// `extern static`, LK asks `symbol_address`, and there is one answer.
 ///
-/// | region | what |
-/// | --- | --- |
-/// | `0x00100000`.. | this image, and its `.bss` |
-/// | `0x00300000`.. | the shared page (`SHARED_BASE` in `program.lk`) |
-/// | `0x00380000`.. | 64 KiB staging for a source file read off the disk |
-/// | `0x00400000`.. | the interpreter's heap, 28 MiB |
-/// | `0x02000000`.. | the LK page allocator's arena |
-/// The kernel's own arena, and the interpreter's.
+/// It used to be a doc table here plus a literal in each language. `0x00380000`
+/// in particular was written twice and cross-checked at run time by
+/// `kernel_run` refusing any other address — which notices the drift rather
+/// than preventing it.
+unsafe extern "C" {
+    static __heap_base: u8;
+    static __heap_size: u8;
+    static __run_heap_base: u8;
+    static __run_heap_size: u8;
+    static __source_base: u8;
+    static __source_max: u8;
+}
+
+/// A linker symbol's value. It is an address, and an address is a number — the
+/// size symbols are ones whose number happens to be a length.
 ///
-/// Two regions rather than one, because they have different lifetimes and a
-/// bump allocator cannot tell them apart otherwise. The kernel's LK code
-/// allocates a little per command (a list of bytes to print) and keeps some of
-/// it; a hosted program allocates an AST, a module registry and a whole VM
-/// heap, and keeps *none* of it — the only thing that crosses back is an
-/// `i64`. With one region, `run` would be a leak with a bound: about a dozen
-/// invocations before 28 MiB was gone, and nothing to say why.
+/// # Safety
 ///
-/// So a run allocates from the second region, which is reset at the start of
-/// each run. That is sound only because nothing allocated during a run
-/// outlives it: output leaves through `lk_console_byte` as it is produced, and
-/// the tasks that can preempt a run — the timer's scheduler and the spinner —
-/// are the ones already forbidden to allocate.
-const HEAP_BASE: usize = 0x0040_0000;
-const HEAP_SIZE: usize = 4 * 1024 * 1024;
-const RUN_HEAP_BASE: usize = HEAP_BASE + HEAP_SIZE;
-const RUN_HEAP_SIZE: usize = 24 * 1024 * 1024;
+/// Taking a symbol's address reads nothing, so this is safe for any of them.
+macro_rules! linker_value {
+    ($name:ident) => {
+        // SAFETY: taking the address of a linker-placed symbol reads no memory.
+        unsafe { (&raw const $name) as usize }
+    };
+}
+
 static OFFSET: AtomicUsize = AtomicUsize::new(0);
 static RUN_OFFSET: AtomicUsize = AtomicUsize::new(0);
 /// Set for the duration of a hosted run, so allocation goes to the run's arena.
@@ -83,9 +83,9 @@ unsafe impl GlobalAlloc for Bump {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let running = RUNNING.load(Ordering::Relaxed) != 0;
         let (base, size, offset) = if running {
-            (RUN_HEAP_BASE, RUN_HEAP_SIZE, &RUN_OFFSET)
+            (linker_value!(__run_heap_base), linker_value!(__run_heap_size), &RUN_OFFSET)
         } else {
-            (HEAP_BASE, HEAP_SIZE, &OFFSET)
+            (linker_value!(__heap_base), linker_value!(__heap_size), &OFFSET)
         };
         let mut cur = offset.load(Ordering::Relaxed);
         loop {
@@ -266,11 +266,6 @@ pub extern "C" fn kernel_main() -> ! {
 
 // ------------------------------------------------------------ the interpreter
 
-/// Where a source file read off the disk is staged, and how much of one this
-/// kernel will take. See the memory map above.
-const SOURCE_BASE: usize = 0x0038_0000;
-const SOURCE_MAX: usize = 64 * 1024;
-
 unsafe extern "C" {
     /// The console, which belongs to the LK program: it owns the cursor, the
     /// window rectangles and the serial line. Rust holds the interpreter and
@@ -299,7 +294,10 @@ fn console_write(text: &str) {
 /// failure and a runtime failure want different next steps.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_run(address: i64, length: i64) -> i64 {
-    if address as usize != SOURCE_BASE || length < 0 || length as usize > SOURCE_MAX {
+    // The address is checked rather than trusted, and it is checked against the
+    // *same symbol* the program staged into — one answer, not two that agree.
+    if address as usize != linker_value!(__source_base) || length < 0 || length as usize > linker_value!(__source_max)
+    {
         return -1;
     }
     let bytes = unsafe { core::slice::from_raw_parts(address as *const u8, length as usize) };

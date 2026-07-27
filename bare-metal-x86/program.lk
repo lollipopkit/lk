@@ -150,7 +150,13 @@ const SCANCODE_ASCII = [
 //
 // This is what a systems language owes a shared page when it has no allocator:
 // not safety, but an arrangement in which the mistake is not expressible.
-const SHARED_BASE = 0x00300000;
+// Asked of the linker rather than written down, because `link.ld` is where the
+// machine's memory map lives and it is the one place the board reads it from
+// too. The old note here said an interrupt handler "cannot look anything up" —
+// which was true of a run-time lookup and never true of this one: a symbol's
+// address is resolved when the image is linked, so what the handler executes is
+// an immediate either way.
+const SHARED_BASE: Int = unsafe { symbol_address("__shared_base") };
 const WORD = 4;
 
 const SHARED_KEY_COUNT = SHARED_BASE;
@@ -232,8 +238,8 @@ const SCRATCH_SECTOR = 32;
 // commands here and small enough that the failure it is meant to demonstrate —
 // running out, and recovering by freeing — happens within a session.
 const HEAP_PAGES = 16;
-const SOURCE_BASE = 0x00380000;
-const SOURCE_MAX = 0x10000;
+const SOURCE_BASE: Int = unsafe { symbol_address("__source_base") };
+const SOURCE_MAX: Int = unsafe { symbol_address("__source_max") };
 // Two words the filesystem answers through: the first data sector of a file it
 // found, and the file's size.
 const SHARED_FILE = SHARED_SECTOR + SECTOR_SIZE;
@@ -2414,10 +2420,13 @@ draw_cells(framebuffer, WIDTH, FONT, [44], 1, 5, FOREGROUND, BACKGROUND);
 let ram_base = largest_available_base();
 let ram_length = largest_available_length();
 let usable_base = ram_base;
-// Above the interpreter's heap, which `src/main.rs` places at 4 MiB and sizes
-// at 28 MiB. Two allocators on one machine agree by arrangement or not at all.
-if (usable_base < 0x02000000) {
-    usable_base = 0x02000000;
+// Above the interpreter's heap. Two allocators on one machine agree by
+// arrangement or not at all, and the arrangement is `link.ld` — which places
+// this floor exactly where the run arena ends, so the two are adjacent by
+// construction rather than by two numbers that were once added up correctly.
+let arena_floor: Int = unsafe { symbol_address("__page_arena_base") };
+if (usable_base < arena_floor) {
+    usable_base = arena_floor;
 }
 pages_init(SHARED_PAGES, usable_base, ram_length - (usable_base - ram_base));
 
