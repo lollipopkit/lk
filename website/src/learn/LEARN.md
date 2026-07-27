@@ -608,10 +608,10 @@ time.since(start, time.now());
 
 ### Formatting
 
-`lk fmt` is the style: 4-space indent, one trailing newline, no trailing whitespace. The
-answer does not depend on your editor's settings — the LSP formats a document exactly the
-way the CLI does, so a file formatted on save also passes `lk fmt --check` in CI. Every
-example in this guide is `lk fmt` output.
+`lk fmt` defines the style and enforces it: 4-space indent, one trailing newline, no
+trailing whitespace. Its output does not depend on your editor's settings — the LSP
+formats a document exactly the way the CLI does, so a file formatted on save also passes
+`lk fmt --check` in CI. Every example in this guide is `lk fmt` output.
 
 ## Type Annotations
 
