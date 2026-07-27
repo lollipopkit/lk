@@ -242,7 +242,10 @@ const SHARED_CURSOR_DRAWN = SHARED_CURSOR_Y + WORD;
 // What second the clock window is currently showing, so it is only redrawn
 // when the answer changed.
 const SHARED_CLOCK_SHOWN = SHARED_CURSOR_DRAWN + WORD;
-const SHARED_Z_ORDER = SHARED_CLOCK_SHOWN + WORD;
+// How many tasks exist. Written by the program when it spawns them; read by
+// the scheduler, which runs in an interrupt and cannot ask the board.
+const SHARED_TASK_COUNT = SHARED_CLOCK_SHOWN + WORD;
+const SHARED_Z_ORDER = SHARED_TASK_COUNT + WORD;
 // One repaint function per window, by address.
 //
 // This is a driver table, and it is here for the reason kernels have them: the
@@ -1100,6 +1103,29 @@ fn on_mouse() {
 
 // ---------------------------------------------------------------- tasks ---
 
+// A task that owns the clock window.
+//
+// Spawned by address rather than named in the board's task table, which is the
+// point of this round: adding something that runs is a call, not an edit to
+// `src/tasks.rs`. It allocates nothing — the digits are drawn by dividing, not
+// by building a list — because `lkrt` has one arena with no lock around it.
+#[export("lk_task_clock")]
+fn task_clock() {
+    while (true) {
+        let now = ((shared_read(SHARED_TICKS) / 1000) as Int);
+        if (now != shared_read(SHARED_CLOCK_SHOWN)) {
+            shared_write(SHARED_CLOCK_SHOWN, now);
+            let irq = lock();
+            let surface = framebuffer_origin();
+            hide_cursor(surface);
+            repaint_window(surface, WINDOW_CLOCK);
+            repaint_above(surface, WINDOW_CLOCK);
+            unlock(irq);
+        }
+        task_yield();
+    }
+}
+
 // Give up the rest of this task's slice.
 //
 // `#[extern]` is the mirror of `#[export]`: the board implements this, and a
@@ -1111,6 +1137,16 @@ fn on_mouse() {
 // That also means this function is where the two back ends stop agreeing by
 // construction. Everything else in LK is checked against the VM; a call to
 // something the program does not contain cannot be.
+// Starts a task at an address, on a stack the board owns. The program decides
+// what runs; the board supplies stacks and the switch.
+// Named `spawn_task`, not `spawn`: the language already has a `spawn` for its
+// own concurrency, which returns a `Task`. Two things called spawn in one
+// program is a question every reader would have to answer twice.
+#[extern("lk_spawn")]
+fn spawn_task(entry: Int) -> Int {
+    return 0 - 1;
+}
+
 #[extern("kernel_yield")]
 fn task_yield() {
 }
@@ -1252,17 +1288,29 @@ fn spinner_glyph() -> Int {
 // the whole of the clock. Nothing is stored: the window can be redrawn at any
 // moment from a counter that was going to be incremented anyway, which is what
 // makes it cheap to uncover.
+// Without building a list of digits, because a *task* draws this now and a task
+// may not allocate. Right to left, dividing as it goes: the same arithmetic the
+// list version did, with the intermediate list left out.
 fn draw_clock(base: Int) {
     let seconds = ((shared_read(SHARED_TICKS) / 1000) as Int);
-    let digits = decimal(seconds);
-    let column = 1;
-    for code in digits {
-        draw_glyph_in_window(base, WINDOW_CLOCK, glyph_index((code) as Int), column * CELL_WIDTH - 5, 1);
-        column = column + 1;
-    }
+    // Digit glyph indices are 27..36 ('0'..'9') in this font, so a digit's
+    // index is 27 + the digit.
+    let column = 5;
+    let value = seconds;
     // "S" after the number, so a screenshot can tell the clock from any other
     // run of digits.
     draw_glyph_in_window(base, WINDOW_CLOCK, 19, column * CELL_WIDTH - 5, 1);
+    column = column - 1;
+    if (value == 0) {
+        draw_glyph_in_window(base, WINDOW_CLOCK, 27, column * CELL_WIDTH - 5, 1);
+        return;
+    }
+    while (value > 0 && column >= 0) {
+        let digit = value % 10;
+        draw_glyph_in_window(base, WINDOW_CLOCK, 27 + digit, column * CELL_WIDTH - 5, 1);
+        value = ((value / 10) as Int);
+        column = column - 1;
+    }
 }
 
 // Draws a window's own contents, from state rather than from memory of the
@@ -1480,10 +1528,15 @@ fn schedule(current: Int) -> Int {
     if (slice % 8 != 0) {
         return current;
     }
-    if (current == 0) {
-        return 1;
+    // Round robin over the tasks that exist. The count comes from the shared
+    // page because this runs in an interrupt: it cannot call the board, and
+    // the board is not the one that decided how many tasks there are — the
+    // program spawned them.
+    let count = shared_read(SHARED_TASK_COUNT);
+    if (count <= 1) {
+        return current;
     }
-    return 0;
+    return (current + 1) % count;
 }
 
 // The second task: a spinner in the top-right corner.
@@ -1698,6 +1751,20 @@ shared_write(SHARED_FOCUS, WINDOW_SHELL);
 shared_write(SHARED_PANE_COL, 0);
 shared_write(SHARED_DRAWN_FOCUS, 0 - 1);
 
+// The tasks. Spawned by address, with interrupts masked: the scheduler reads
+// the table from a timer interrupt, and a slot published before its stack is
+// ready is a jump to zero.
+let irq_spawn = lock();
+let spinner_task = spawn_task(unsafe { symbol_address("lk_task_b") });
+let clock_task = spawn_task(unsafe { symbol_address("lk_task_clock") });
+// The scheduler round-robins over what exists, so it has to be told.
+shared_write(SHARED_TASK_COUNT, 3);
+unlock(irq_spawn);
+if (spinner_task < 0 || clock_task < 0) {
+    // "no tasks"
+    uart_write([110, 111, 32, 116, 97, 115, 107, 115, 10]);
+}
+
 // The mouse, if there is one. A machine without it is a report rather than a
 // hang: `mouse_init` bounds every wait it makes.
 shared_write(SHARED_MOUSE_X, ((WIDTH / 2) as Int));
@@ -1791,20 +1858,6 @@ let waited = 0;
 while (running == 1 && waited < 60000) {
     unsafe { cpu_wait_for_interrupt(); };
     waited = waited + 1;
-
-    // The clock, once a second. Redrawn from the tick count rather than
-    // remembered, so the same call serves both the passing of time and being
-    // uncovered by a window that moved.
-    let now = ((shared_read(SHARED_TICKS) / 1000) as Int);
-    if (now != shared_read(SHARED_CLOCK_SHOWN)) {
-        shared_write(SHARED_CLOCK_SHOWN, now);
-        let irq_clock = lock();
-        let surface = framebuffer_origin();
-        hide_cursor(surface);
-        repaint_window(surface, WINDOW_CLOCK);
-        repaint_above(surface, WINDOW_CLOCK);
-        unlock(irq_clock);
-    }
 
     // The pointer, and what a click means.
     //

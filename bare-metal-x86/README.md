@@ -89,6 +89,34 @@ the same reason: `lkrt` has one arena and no lock around it. The spinner picks
 its glyph with an `if` chain rather than indexing a list, because building the
 list would allocate.
 
+### Starting one
+
+The board does not know what tasks exist. `src/tasks.rs` owns stacks, the saved
+stack pointers and the switch; *which* code runs on them is the program's:
+
+```lk
+let irq = lock();
+let spinner = spawn_task(unsafe { symbol_address("lk_task_b") });
+let clock = spawn_task(unsafe { symbol_address("lk_task_clock") });
+shared_write(SHARED_TASK_COUNT, 3);
+unlock(irq);
+```
+
+`TASK_COUNT` became `TASK_CAPACITY`: the stacks are still static, because
+nothing here can grow a table an interrupt is reading, but which slots are in
+use is decided at run time. Two details decide whether this works at all:
+
+- **Spawning runs with interrupts masked**, and the slot is published *last*.
+  The scheduler reads the table from a timer interrupt; a slot visible before
+  its stack is prepared is a jump to zero.
+- **The scheduler is clamped against what is spawned**, not against the
+  capacity — naming an empty slot resumes a stack that was never built.
+
+The clock task is also where "a task may not allocate" stopped being a rule
+about the spinner and became a rule about everything: drawing the seconds used
+to build a list of digits, which allocates, so it now divides right-to-left and
+draws as it goes. Same arithmetic, no intermediate list.
+
 ### Asking the kernel for something
 
 `#[extern]` is the mirror of `#[export]`: the board implements the function,

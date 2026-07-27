@@ -265,6 +265,10 @@ jobs:
           # no idea what is above it, so the check waits for a clock tick — a
           # raise that a periodic redraw undoes is not a raise.
           timeout 400 python3 check_stack.py
+          # Three tasks, two of them spawned by the program from an address it
+          # looked up by name. The board supplies stacks and the switch; which
+          # code runs on them is no longer in `src/tasks.rs` at all.
+          timeout 300 python3 check_spawn.py
         env:
           LK_BIN: ../target/debug/lk
       - name: AOT native-lowering coverage gate

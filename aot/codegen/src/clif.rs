@@ -108,6 +108,8 @@ struct ModuleCtx<'a> {
     /// Symbols an `#[extern]` declaration names. Keyed by `String` rather than
     /// `&'static str` because the name comes from the source, not this file.
     extern_ids: &'a mut HashMap<String, ClifFuncId>,
+    /// `#[export]`ed functions of *this* module, by their exported name.
+    exported_ids: &'a HashMap<String, ClifFuncId>,
     /// Interned string-constant data symbols (`lk_str_{i}`), by [`GlobalId`] index.
     str_data: &'a HashMap<u32, DataId>,
     /// Mutable module-global data symbols (`lk_gvar_{i}`) + their MIR type.
@@ -269,6 +271,11 @@ pub fn compile_module(mir: &MirModule, isa: std::sync::Arc<dyn TargetIsa>) -> Re
     // `lk_fn_N` with their MIR signatures.
     let mut fn_ids = HashMap::new();
     let mut fn_rets = HashMap::new();
+    // Exported LK functions by the name the source gave them, so
+    // `symbol_address("name")` can take the address of *this* function rather
+    // than declaring an import that would have to guess a signature — and
+    // guess it wrong, since a table's signature is not each entry's.
+    let mut exported_ids: HashMap<String, ClifFuncId> = HashMap::new();
     for func in &mir.functions {
         let (sym, linkage, sig) = if func.id == mir.entry {
             ("main".to_string(), Linkage::Export, main_signature(cc))
@@ -281,6 +288,9 @@ pub fn compile_module(mir: &MirModule, isa: std::sync::Arc<dyn TargetIsa>) -> Re
             (format!("lk_fn_{}", func.id.0), Linkage::Local, signature_of(func, cc)?)
         };
         let id = module.declare_function(&sym, linkage, &sig)?;
+        if func.export_name.is_some() {
+            exported_ids.insert(sym.clone(), id);
+        }
         fn_ids.insert(func.id, id);
         fn_rets.insert(func.id, func.ret);
     }
@@ -356,6 +366,7 @@ pub fn compile_module(mir: &MirModule, isa: std::sync::Arc<dyn TargetIsa>) -> Re
                 helpers: &helpers,
                 abi_ids: &mut abi_ids,
                 extern_ids: &mut extern_ids,
+                exported_ids: &exported_ids,
                 str_data: &str_data,
                 gvar_data: &gvar_data,
                 hybrid_argbuf,
@@ -838,11 +849,16 @@ impl Lower {
                 self.set1(*dst, v);
             }
             Inst::SymbolAddr { dst, symbol } => {
-                // Declared with the signature the indirect call will use, so
-                // the two agree by construction. The symbol is an `#[export]`ed
-                // LK function or something the board provides; either way it is
-                // an import here, resolved by the linker.
-                let callee = mctx.extern_func(symbol, &[Ty::I64, Ty::I64], Ty::I64)?;
+                // An `#[export]`ed function of this module is taken by its own
+                // id: declaring it again under a made-up signature is what
+                // Cranelift rejects, and rightly — a table's signature is not
+                // each entry's. Anything else is the board's, and is imported
+                // with the table's signature, which is the only thing this side
+                // can know about it.
+                let callee = match mctx.exported_ids.get(symbol) {
+                    Some(id) => *id,
+                    None => mctx.extern_func(symbol, &[Ty::I64, Ty::I64], Ty::I64)?,
+                };
                 let reference = mctx.module.declare_func_in_func(callee, b.func);
                 let address = b.ins().func_addr(types::I64, reference);
                 self.set1(*dst, address);

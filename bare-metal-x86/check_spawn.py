@@ -1,0 +1,113 @@
+#!/usr/bin/env python3
+"""Boot and check that three tasks are running, two of them spawned by name.
+
+The board no longer knows what tasks exist. `src/tasks.rs` supplies stacks and
+the switch; *which* code runs on them is decided by the program, which calls
+`spawn_task(symbol_address("lk_task_..."))` — a code address, from a table, the
+way a kernel starts anything.
+
+What that is checked by is the screen. Two windows are owned by two different
+tasks — a spinner and a clock — and the shell is a third. If either window stops
+changing while the shell sits idle at its prompt, either the task was never
+started or the scheduler stopped reaching it; both are the same failure from
+here, and both are what this catches.
+
+The clock is the sharper of the two: it is driven by the tick count, so it
+changing means a task ran *and* the timer interrupt is still being delivered
+while other tasks hold the CPU.
+"""
+
+import os
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+
+# The two windows, as `program.lk` places them: the spinner at the top right and
+# the clock three rows below it. Sampled inside their frames.
+SPINNER = (254, 2, 30, 8)
+CLOCK = (254, 26, 44, 8)
+# Long enough for the clock to have moved a whole second on.
+SETTLE = 3.0
+
+
+def read_ppm(path):
+    with open(path, "rb") as handle:
+        data = handle.read()
+    _magic, dimensions, _maxval, pixels = data.split(b"\n", 3)
+    width, height = (int(value) for value in dimensions.split())
+    return width, height, pixels
+
+
+def region(path, rect):
+    left, top, width, height = rect
+    image_width, _height, pixels = read_ppm(path)
+    return b"".join(
+        pixels[((y * image_width + x) * 3):((y * image_width + x) * 3 + 3)]
+        for y in range(top, top + height)
+        for x in range(left, left + width)
+    )
+
+
+def main():
+    image = sys.argv[1] if len(sys.argv) > 1 else (
+        "target/x86_64-unknown-none/release/lk-bare-metal-x86.multiboot"
+    )
+    with tempfile.TemporaryDirectory() as workdir:
+        monitor = os.path.join(workdir, "monitor")
+        serial = os.path.join(workdir, "serial.txt")
+        qemu = subprocess.Popen(
+            [
+                "qemu-system-x86_64",
+                "-kernel", image,
+                "-display", "none",
+                "-serial", "file:" + serial,
+                "-monitor", f"unix:{monitor},server,nowait",
+            ]
+        )
+        try:
+            for _ in range(100):
+                if os.path.exists(monitor):
+                    break
+                time.sleep(0.1)
+            time.sleep(3)
+            connection = socket.socket(socket.AF_UNIX)
+            connection.connect(monitor)
+            time.sleep(0.3)
+            connection.recv(65536)
+
+            def screenshot(name):
+                path = os.path.join(workdir, name)
+                connection.sendall(f"screendump {path}\n".encode())
+                time.sleep(1.0)
+                return path
+
+            first = screenshot("first.ppm")
+            time.sleep(SETTLE)
+            second = screenshot("second.ppm")
+            connection.sendall(b"quit\n")
+            connection.close()
+        finally:
+            qemu.terminate()
+            qemu.wait(timeout=10)
+
+        with open(serial, errors="replace") as handle:
+            transcript = handle.read()
+
+        failures = []
+        if "no tasks" in transcript:
+            failures.append("the program reported that a task could not be spawned")
+        if region(first, SPINNER) == region(second, SPINNER):
+            failures.append("the spinner task's window never changed")
+        if region(first, CLOCK) == region(second, CLOCK):
+            failures.append("the clock task's window never changed")
+        if failures:
+            raise SystemExit(
+                "spawning wrong:\n  " + "\n  ".join(failures) + "\n--- serial ---\n" + transcript[-400:]
+            )
+    print("OK: three tasks, two of them spawned from an address the program looked up by name")
+
+
+if __name__ == "__main__":
+    main()

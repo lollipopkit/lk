@@ -17,9 +17,10 @@
 
 use core::arch::global_asm;
 
-/// How many tasks the board runs. Fixed, because nothing here can grow a table
-/// while interrupts are using it.
-pub const TASK_COUNT: usize = 2;
+/// How many tasks the board can hold. A capacity, not a count: the stacks are
+/// static because nothing here can grow a table while interrupts are reading
+/// it, but which of them are in use is decided at run time by `lk_spawn`.
+pub const TASK_CAPACITY: usize = 4;
 
 const STACK_SIZE: usize = 32 * 1024;
 
@@ -34,17 +35,22 @@ struct Stack([u8; STACK_SIZE]);
 
 /// One stack per task past the first. Task 0 keeps the stack the boot path
 /// gave it — it is the one already running when the first interrupt lands.
-static mut TASK_STACKS: [Stack; TASK_COUNT - 1] = [const { Stack([0; STACK_SIZE]) }; TASK_COUNT - 1];
+static mut TASK_STACKS: [Stack; TASK_CAPACITY - 1] = [const { Stack([0; STACK_SIZE]) }; TASK_CAPACITY - 1];
 
 /// Each task's saved stack pointer, valid while it is *not* running.
-static mut TASK_RSP: [u64; TASK_COUNT] = [0; TASK_COUNT];
+static mut TASK_RSP: [u64; TASK_CAPACITY] = [0; TASK_CAPACITY];
+
+/// How many slots are in use. One at boot: the task already running, whose
+/// stack the boot path gave it.
+static mut TASK_USED: usize = 1;
 
 /// Which entry of `TASK_RSP` belongs to the task currently on the CPU.
 static mut CURRENT: usize = 0;
 
 unsafe extern "C" {
-    /// The task bodies and the scheduler, written in LK.
-    fn lk_task_b();
+    /// The scheduler, written in LK. The task *bodies* are no longer named
+    /// here: a program spawns them by address, so the board does not have to
+    /// know what they are called.
     fn lk_schedule(current: i64) -> i64;
 }
 
@@ -59,7 +65,7 @@ unsafe extern "C" {
 ///
 /// `top` must be the high end of a writable, 16-byte-aligned stack that
 /// nothing else uses.
-unsafe fn prepare_stack(top: *mut u8, entry: unsafe extern "C" fn()) -> u64 {
+unsafe fn prepare_stack(top: *mut u8, entry: u64) -> u64 {
     // The CPU's frame, pushed high to low: SS, RSP, RFLAGS, CS, RIP.
     let mut sp = top as u64;
     let mut push = |value: u64| {
@@ -75,7 +81,7 @@ unsafe fn prepare_stack(top: *mut u8, entry: unsafe extern "C" fn()) -> u64 {
     push(top as u64 - 8); // RSP the task resumes with
     push(0x202); // RFLAGS: interrupts enabled, bit 1 always set
     push(0x08); // CS — the boot GDT's 64-bit code selector
-    push(entry as usize as u64); // RIP
+    push(entry); // RIP
     // The saved registers, in the order `IRQ_RESTORE` pops them — that is,
     // the reverse of the order `IRQ_SAVE` pushes.
     for _ in 0..15 {
@@ -104,21 +110,41 @@ pub extern "C" fn kernel_yield() {
     unsafe { core::arch::asm!("int 0x30", options(nomem, nostack)) };
 }
 
-/// Prepares every task past the first. Call once, before interrupts.
-pub fn init() {
-    for index in 0..TASK_COUNT - 1 {
-        // SAFETY: single-threaded boot path, before any interrupt can run.
-        let top = unsafe {
-            let stacks = &raw mut TASK_STACKS;
-            (*stacks)[index].0.as_mut_ptr().add(STACK_SIZE)
-        };
-        // SAFETY: `top` is the high end of a stack nothing else uses.
-        let sp = unsafe { prepare_stack(top, lk_task_b) };
-        // SAFETY: as above.
-        unsafe {
-            let rsp = &raw mut TASK_RSP;
-            (*rsp)[index + 1] = sp;
+/// Starts a task at `entry`, on a stack of its own. Returns its slot, or -1.
+///
+/// The address comes from `symbol_address` on the LK side, which is what makes
+/// this a *table* rather than a list the board has to know the names in: the
+/// program decides what runs, the board only supplies stacks and the switch.
+///
+/// The caller must have interrupts masked. The scheduler reads `TASK_USED` from
+/// an interrupt, so publishing a slot before its stack is prepared would let a
+/// timer tick resume a task that does not exist yet — which is a jump to zero.
+///
+/// # Safety
+///
+/// Called from LK with a code address; a value that is not one is a jump to
+/// wherever it points. That is what `unsafe` in the LK source is claiming.
+#[unsafe(no_mangle)]
+pub extern "C" fn lk_spawn(entry: i64) -> i64 {
+    if entry == 0 {
+        return -1;
+    }
+    // SAFETY: the caller holds interrupts masked, so nothing else is reading
+    // or writing these while this runs.
+    unsafe {
+        let used = *(&raw const TASK_USED);
+        if used >= TASK_CAPACITY {
+            return -1;
         }
+        let stacks = &raw mut TASK_STACKS;
+        let top = (*stacks)[used - 1].0.as_mut_ptr().add(STACK_SIZE);
+        let sp = prepare_stack(top, entry as u64);
+        let rsp = &raw mut TASK_RSP;
+        (*rsp)[used] = sp;
+        // Published last: the stack has to be complete before the scheduler
+        // can pick the slot.
+        *(&raw mut TASK_USED) = used + 1;
+        used as i64
     }
 }
 
@@ -138,7 +164,10 @@ pub unsafe extern "C" fn schedule_from_interrupt(rsp: u64) -> u64 {
         let table = &raw mut TASK_RSP;
         (*table)[current] = rsp;
         let next = lk_schedule(current as i64) as usize;
-        let next = if next < TASK_COUNT { next } else { current };
+        // Clamped against what is *spawned*, not against the capacity: a
+        // scheduler that names an empty slot would resume a stack that was
+        // never prepared.
+        let next = if next < *(&raw const TASK_USED) { next } else { current };
         *(&raw mut CURRENT) = next;
         (*table)[next]
     }

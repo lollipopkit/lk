@@ -207,9 +207,8 @@ pub extern "C" fn kernel_main() -> ! {
     let _ = lkrt::link_anchor();
     lkrt::set_output(serial_write);
     serial_init();
-    // Task stacks before interrupts: the first tick may switch away, and it
-    // can only do that to a stack that already looks like a saved task.
-    tasks::init();
+    // No task table to prepare any more: the program spawns what it wants by
+    // address (`lk_spawn`), and until it does there is one task — this one.
     // The handler transmits, and it can fire from here on — which is why the
     // UART is already up.
     interrupts::init();
