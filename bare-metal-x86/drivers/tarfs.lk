@@ -112,3 +112,41 @@ fn find(name: List<Int>, buffer: Int, out: Int) -> Int {
     }
     return TAR_NOT_FOUND;
 }
+
+// The sector the entry after `lba` starts at, or 0 at the end of the archive.
+//
+// Walking is the only way to enumerate a tar: an entry's length is in its own
+// header, so the next one's position is not known until this one is read. That
+// is the same walk `find` does, exposed so a caller can do something other than
+// compare names — listing, for one.
+//
+// Zero for "no more", which is unambiguous: sector 0 is the first header, so no
+// *following* entry can be there.
+fn next_entry(lba: Int, buffer: Int) -> Int {
+    if (read_sector(lba, buffer) != ATA_OK) {
+        return 0;
+    }
+    if (byte_at(buffer, TAR_NAME) == 0) {
+        return 0;
+    }
+    return lba + 1 + sectors_for(header_size(buffer));
+}
+
+// The length of the name in the header now in `buffer`.
+fn name_length(buffer: Int) -> Int {
+    let length = 0;
+    while (length < TAR_NAME_MAX && byte_at(buffer, TAR_NAME + length) != 0) {
+        length = length + 1;
+    }
+    return length;
+}
+
+// The `index`th byte of that name.
+fn name_byte(buffer: Int, index: Int) -> Int {
+    return byte_at(buffer, TAR_NAME + index);
+}
+
+// The size the header records, for a caller that wants to print it.
+fn entry_size(buffer: Int) -> Int {
+    return header_size(buffer);
+}

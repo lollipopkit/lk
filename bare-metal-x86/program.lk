@@ -39,7 +39,9 @@ use { init as pages_init, alloc as page_alloc, free as pages_free,
 use { read_sector as ata_read_sector, write_sector as ata_write_sector,
       identify as ata_identify, identify_sectors as ata_identify_sectors,
       ATA_OK, ATA_TIMEOUT, ATA_ERROR_BIT, ATA_NO_DRIVE, ATA_BAD_LBA } from "drivers/ata";
-use { find as tar_find, TAR_OK, TAR_NOT_FOUND, TAR_READ_FAILED } from "drivers/tarfs";
+use { find as tar_find, next_entry as tar_next, name_length as tar_name_length,
+      name_byte as tar_name_byte, entry_size as tar_entry_size,
+      TAR_OK, TAR_NOT_FOUND, TAR_READ_FAILED } from "drivers/tarfs";
 use { read as shared_read, write as shared_write, bump as shared_bump,
       read_byte as shared_read_byte, write_byte as shared_write_byte } from "drivers/shared";
 
@@ -874,6 +876,32 @@ fn report_heap(base: Int) {
                .chain(decimal(heap_used(SHARED_HEAP))));
 }
 
+// Lists what is on the disk: one line per entry, name and size.
+//
+// The walk is the filesystem's, not this function's — an entry's length lives
+// in its own header, so where the next one starts is not known until this one
+// has been read. What is here is only what to do with each: read the name a
+// byte at a time, because a name in a header is bytes and this program has no
+// strings.
+fn list_files(base: Int) {
+    let lba = 0;
+    for entry in 0..64 {
+        let next = tar_next(lba, SHARED_SECTOR);
+        if (next == 0) {
+            return;
+        }
+        // `tar_next` left this entry's header in the buffer.
+        let line = [0];
+        line = [];
+        let length = tar_name_length(SHARED_SECTOR);
+        for i in 0..length {
+            line = line.chain([tar_name_byte(SHARED_SECTOR, i)]);
+        }
+        emit(base, line.chain([32]).chain(decimal(tar_entry_size(SHARED_SECTOR))));
+        lba = next;
+    }
+}
+
 // Reads a file off the disk and asks the board to run it.
 //
 // The kernel is compiled LK; what it starts here is an *interpreter* for LK,
@@ -974,7 +1002,7 @@ fn run_command(base: Int) -> Int {
                     104, 111, 32, 107, 101, 121, 115, 32, 109, 101, 109, 32,
                     112, 97, 103, 101, 32, 115, 121, 110, 99, 32,
                     121, 105, 101, 108, 100, 32, 119, 105, 110, 32,
-                    116, 105, 109, 101, 32, 100, 105, 115, 107, 32, 99, 97, 116, 32, 114, 117, 110, 32, 104, 101, 97, 112, 32, 117, 115, 101, 114, 32,
+                    116, 105, 109, 101, 32, 100, 105, 115, 107, 32, 99, 97, 116, 32, 114, 117, 110, 32, 104, 101, 97, 112, 32, 117, 115, 101, 114, 32, 108, 115, 32,
                     101, 120, 105, 116]);
         return 1;
     }
@@ -1072,6 +1100,10 @@ fn run_command(base: Int) -> Int {
     }
     if (line_starts_with([114, 117, 110])) {               // "run"
         run_file(base, line_tail(4));
+        return 1;
+    }
+    if (line_starts_with([108, 115])) {                    // "ls"
+        list_files(base);
         return 1;
     }
     if (line_starts_with([99, 97, 116])) {                 // "cat"

@@ -107,6 +107,11 @@ def main():
             connection.connect(monitor)
             time.sleep(0.3)
             connection.recv(65536)
+            # `ls` walks the archive: an entry's length is in its own header,
+            # so where the next one starts is not known until this one is read.
+            # Both entries and both sizes, because a walk that stops after the
+            # first would still print something.
+            send_line(connection, "ls")
             send_line(connection, "disk")
             send_line(connection, "cat hello.txt")
             send_line(connection, "disk w")
@@ -119,6 +124,9 @@ def main():
         with open(serial, errors="replace") as handle:
             transcript = handle.read()
         failures = []
+        for expected in (f"{FILE_NAME} {len(FILE_BODY)}", "motd 6"):
+            if expected not in transcript:
+                failures.append(f"`ls` did not list {expected!r}")
         expected_read = f"{SECTORS} {PLANTED.decode()}"
         if expected_read not in transcript:
             failures.append(f"`disk` did not report {expected_read!r}")
