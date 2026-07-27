@@ -67,6 +67,23 @@
 //! nothing reads the register afterwards, the write is invisible either way and
 //! the cell is pure waste — waste that then rejects the whole region.
 //!
+//! ## One answer that was tried and is wrong
+//!
+//! The obvious repair is to stop rejecting and hand the value back as `Dyn`:
+//! the cell holds a boxed value, `Dyn` is "a boxed value of unknown type", and
+//! the register after the region is genuinely one of two things — what the body
+//! assigned, or what it held going in if the body raised first. That reasoning
+//! is sound and the change is four lines. It also makes the five-line case
+//! above compile and moves both example files past this rejection to the next
+//! one.
+//!
+//! It is still wrong. `clif_differential_test`'s
+//! `select_closed_send_catch_then_use` goes from printing `caught / 42 / 0` to
+//! aborting with "uncaught error: runtime type error" — a compile-time
+//! rejection turned into a runtime abort, which is strictly worse than not
+//! compiling. Whatever the seed's `Nil` means in that program, it is not "no
+//! observable value".
+//!
 //! So the criterion is too coarse, and the missing half is the one the
 //! paragraph below has always named: *is anything reading this register after
 //! the region?* That is a liveness question, and the reason it has not simply
