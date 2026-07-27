@@ -28,6 +28,10 @@ SAMPLES = 6
 # gap to the left. Those pixels belong to the shell, and the window rectangle
 # is the only thing stopping them: without it the same code would light them.
 OUTSIDE_X = CELL_X - GLYPH_W - 1
+# From y=1, not y=0: the shell window's own frame runs along the top row of the
+# screen, so row 0 there is legitimately drawn. The spinner's overreach is at
+# window y=1, which is where it would land if it were not clipped.
+OUTSIDE_Y = 1
 BACKGROUND = 0x00
 
 
@@ -87,7 +91,7 @@ def main():
                 connection.sendall(f"screendump {shot}\n".encode())
                 time.sleep(0.8)
                 seen.append(glyph_at(shot))
-                outside.append(region(shot, OUTSIDE_X, CELL_Y, GLYPH_W, GLYPH_H))
+                outside.append(region(shot, OUTSIDE_X, OUTSIDE_Y, GLYPH_W, GLYPH_H))
             connection.sendall(b"quit\n")
             connection.close()
         finally:

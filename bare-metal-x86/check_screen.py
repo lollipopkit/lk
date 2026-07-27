@@ -28,7 +28,9 @@ WIDTH, HEIGHT = 320, 200
 BACKGROUND = (0x00, 0x14, 0x28)
 TITLE = (0xff, 0xc0, 0x40)
 EXPECTED = [
-    ((WIDTH - 1, HEIGHT - 1), BACKGROUND),
+    # Well inside the shell window: its frame occupies the outermost pixels
+    # now, so a corner is no longer background.
+    ((WIDTH // 2, HEIGHT - 20), BACKGROUND),
     ((1 * 6, 1 * 8), TITLE),
 ]
 

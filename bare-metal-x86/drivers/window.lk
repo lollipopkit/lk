@@ -64,3 +64,24 @@ fn fill(base: Int, stride: Int, table: Int, slot: Int, x: Int, y: Int, width: In
         }
     }
 }
+
+// Draws the window's own one-pixel frame, in window coordinates.
+//
+// Inside the rectangle rather than around it, so it goes through `put` like
+// everything else and is clipped by the same rule. The alternative — a frame
+// owned by something above the windows — needs a window manager, and there is
+// none here: each window is responsible for its own edges, which also means
+// nothing can draw a frame around someone else's.
+fn outline(base: Int, stride: Int, table: Int, slot: Int, colour: Int) {
+    let at = descriptor(table, slot);
+    let width = read(at + 8);
+    let height = read(at + 12);
+    for x in 0..width {
+        put(base, stride, table, slot, x, 0, colour);
+        put(base, stride, table, slot, x, height - 1, colour);
+    }
+    for y in 0..height {
+        put(base, stride, table, slot, 0, y, colour);
+        put(base, stride, table, slot, width - 1, y, colour);
+    }
+}

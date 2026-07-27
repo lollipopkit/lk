@@ -223,6 +223,11 @@ jobs:
           # interleaved output would show that both ran, not that either was
           # interrupted mid-work.
           timeout 200 python3 check_tasks.py
+          # Which window has the keyboard, made visible. Each window repaints
+          # its own frame on its own turn — the key handler that moved the
+          # focus only writes a word, because drawing from an interrupt would
+          # put a window's appearance in the hands of whatever it interrupted.
+          timeout 200 python3 check_focus.py
         env:
           LK_BIN: ../target/debug/lk
       - name: AOT native-lowering coverage gate

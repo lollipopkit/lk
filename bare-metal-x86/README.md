@@ -154,6 +154,23 @@ someone who may not be listening.
 shell to have answered exactly **once**. Routing every key to the shell makes it
 answer twice, which is what the check says when it fails.
 
+### Seeing which one has it
+
+Each window draws its own one-pixel frame, focused or idle, and repaints when
+the focus moves. The frame is *inside* the rectangle rather than around it, so
+it goes through the same clipped write as everything else — the alternative, a
+frame owned by something above the windows, needs a window manager, and there
+is none here.
+
+Who repaints is the question this raises, and the answer is the owner. The key
+handler that moves the focus only writes a word; each window notices on its own
+turn and redraws itself. Drawing from an interrupt would put a window's
+appearance in the hands of whatever it happened to interrupt.
+
+`check_focus.py` screenshots before and after Tab and requires the two frames
+to have swapped colours. Removing the repaint — leaving the handler's word
+written but nothing acting on it — makes it fail, which is what it is for.
+
 ### Sharing state between them
 
 Read, add, write is three steps. An interrupt landing between the read and the

@@ -21,7 +21,7 @@ use { read_scancode, is_release, key_code } from "drivers/keyboard";
 use { start as pit_start } from "drivers/pit";
 use { acquire as lock, release as unlock } from "drivers/lock";
 use { define as window_define, put as window_put, fill as window_fill,
-      dropped as window_dropped } from "drivers/window";
+      dropped as window_dropped, outline as window_outline } from "drivers/window";
 use { glyph_row, glyph_width, glyph_rows } from "drivers/text";
 use { reset as queue_reset, push as queue_push, pop as queue_pop,
       is_empty as queue_empty } from "drivers/queue";
@@ -143,6 +143,13 @@ const SHARED_QUEUES = 0x00300200;
 const QUEUE_STRIDE = 64;
 // Where the spinner window's own echo has got to, in its own coordinates.
 const SHARED_PANE_COL = 0x00300038;
+// What each window last drew its frame as. Repainting is the owner's job — the
+// key handler only records that the focus moved, because a handler has no
+// business drawing someone else's chrome.
+const SHARED_DRAWN_FOCUS = 0x0030003c;
+
+const FRAME_IDLE = 0x203040;
+const FRAME_FOCUSED = 0xffc040;
 const SHARED_LINE = 0x00300100;
 const LINE_CAPACITY = 48;
 
@@ -460,6 +467,20 @@ fn run_command(base: Int) -> Int {
 fn task_yield() {
 }
 
+// Repaints a window's frame if the focus has moved since it last did.
+//
+// Each window does this for itself, on its own turn. The key handler that
+// moved the focus only wrote a word: drawing from an interrupt would put a
+// window's appearance in the hands of whatever happened to be interrupted.
+fn repaint_frame(base: Int, slot: Int) {
+    let focus = shared_read(SHARED_FOCUS);
+    let colour = FRAME_IDLE;
+    if (focus == slot) {
+        colour = FRAME_FOCUSED;
+    }
+    window_outline(base, WIDTH, SHARED_WINDOWS, slot, colour);
+}
+
 // Draws a glyph inside a window, in window coordinates.
 //
 // The glyph's bit rows come from `drivers/text`; the pixels go through
@@ -535,7 +556,7 @@ fn task_b() {
                 column = 0;
             } else {
                 draw_glyph_in_window(framebuffer_address(), WINDOW_SPINNER,
-                                     glyph_index(typed), column * CELL_WIDTH, CELL_HEIGHT);
+                                     glyph_index(typed), 1 + column * CELL_WIDTH, CELL_HEIGHT + 1);
                 column = column + 1;
             }
             shared_write(SHARED_PANE_COL, column % 10);
@@ -557,11 +578,11 @@ fn task_b() {
         // Through the window, in window coordinates. The spinner owns one
         // cell; everything it draws is either inside that cell or dropped.
         let base = framebuffer_address();
-        draw_glyph_in_window(base, WINDOW_SPINNER, face, 0, 0);
+        draw_glyph_in_window(base, WINDOW_SPINNER, face, 1, 1);
         // And deliberately one cell to the left, which is *not* its window.
         // Without the rectangle this would land in the shell's text; with it,
         // the pixels are counted and discarded.
-        draw_glyph_in_window(base, WINDOW_SPINNER, face, 0 - glyph_width() - 1, 0);
+        draw_glyph_in_window(base, WINDOW_SPINNER, face, 0 - glyph_width() - 1, 1);
         // Contend with the timer handler on the same pair of words for a
         // while — this task exists to be interrupted, and to be interrupted
         // *in the middle of an update*.
@@ -683,12 +704,15 @@ pages_init(SHARED_PAGES, usable_base, ram_length - (usable_base - ram_base));
 window_define(SHARED_WINDOWS, WINDOW_SHELL, 0, 0, WIDTH, HEIGHT);
 // Ten cells wide and two tall: the top row is the spinner, the row below is
 // what this pane echoes when it has the focus.
+// Two pixels wider and taller than its content, so the one-pixel frame it
+// draws for itself does not eat into a glyph.
 window_define(SHARED_WINDOWS, WINDOW_SPINNER,
-              (text_columns() - 11) * CELL_WIDTH, 0, 10 * CELL_WIDTH, 2 * CELL_HEIGHT);
+              (text_columns() - 11) * CELL_WIDTH, 0, 10 * CELL_WIDTH + 2, 2 * CELL_HEIGHT + 2);
 queue_reset(SHARED_QUEUES + WINDOW_SHELL * QUEUE_STRIDE);
 queue_reset(SHARED_QUEUES + WINDOW_SPINNER * QUEUE_STRIDE);
 shared_write(SHARED_FOCUS, WINDOW_SHELL);
 shared_write(SHARED_PANE_COL, 0);
+shared_write(SHARED_DRAWN_FOCUS, 0 - 1);
 
 // The cursor starts after the prompt.
 place_cursor(framebuffer, 3, 5);
@@ -739,6 +763,18 @@ let waited = 0;
 while (running == 1 && waited < 60000) {
     unsafe { cpu_wait_for_interrupt(); };
     waited = waited + 1;
+
+    // Repaint the frame when the focus has moved. Cheap enough to check every
+    // wake; the drawing only happens when the answer changed.
+    let seen_focus = shared_read(SHARED_DRAWN_FOCUS);
+    let focus_now = shared_read(SHARED_FOCUS);
+    if (seen_focus != focus_now) {
+        let irq_frame = lock();
+        repaint_frame(framebuffer, WINDOW_SHELL);
+        repaint_frame(framebuffer, WINDOW_SPINNER);
+        shared_write(SHARED_DRAWN_FOCUS, focus_now);
+        unlock(irq_frame);
+    }
 
     // Drain whatever the handler routed here. Building the line is this
     // window's business now, not the handler's: the handler does not know
