@@ -102,6 +102,28 @@ pub struct Compiler {
     const_map_locals: HashMap<String, FastHashMap<RuntimeMapKey, ConstRuntimeValue>>,
     local_rebind_suppression: u16,
     top_level: bool,
+    /// The one register every top-level `fn` declaration publishes through.
+    ///
+    /// A declaration is `LoadFunction r; SetGlobal r, slot` — the register is
+    /// dead the instant the store lands, so 236 declarations paying 236
+    /// registers is 235 more than the work needs. That is not a rounding error:
+    /// registers are `u8` in the encoding, so the top level has 256, and
+    /// `bare-metal-x86/program.lk` with its drivers bundled in declares 236
+    /// functions. It ran out on the *constants* that came afterwards, which is
+    /// nowhere near the cause.
+    ///
+    /// One shared register rather than a recycled one, and the difference
+    /// matters. Recycling — handing the register back so anything may use it
+    /// next — is wrong here for a reason outside this compiler: the AOT
+    /// lowering tracks what a register *means* keyed by `(block, register)`
+    /// with no notion of time, so a register that once held a function value
+    /// keeps that meaning. A later `SetGlobal` from it is then read as
+    /// declaration bookkeeping and elided — a global write silently dropped.
+    /// A register that only ever holds a function value being published cannot
+    /// have that happen to it, because its meaning never changes.
+    // TODO: make the AOT lowering's `builtin_regs` time-aware, and this can go
+    // back to being an ordinary watermark like every other statement's.
+    fn_publish_reg: Option<u16>,
     emitted_return: bool,
 }
 

@@ -2,13 +2,29 @@ use super::*;
 
 impl Compiler {
     pub(super) fn lower_function_decl(&mut self, name: &str) -> Result<()> {
-        let function = self.load_function_by_name(name)?;
+        // Publishing a top-level `fn` to its global slot goes through one
+        // shared register — see `Compiler::fn_publish_reg` for why it is shared
+        // rather than recycled. Every declaration overwrites it and then stores
+        // it, so nothing ever reads a stale value out of it.
         if self.top_level
             && let Some(slot) = self.global_names.get(name).copied()
         {
-            self.emit_set_global(function, slot)?;
+            let dst = match self.fn_publish_reg {
+                Some(reg) => reg,
+                None => {
+                    let reg = self.alloc_reg();
+                    self.fn_publish_reg = Some(reg);
+                    reg
+                }
+            };
+            self.load_function_into(dst, name)?;
+            self.emit_set_global(dst, slot)?;
             return Ok(());
         }
+        // A declaration that binds a *local* — nested inside a function, or a
+        // name this module does not export — needs a register of its own,
+        // because the binding is the register.
+        let function = self.load_function_by_name(name)?;
         self.insert_local(name.to_string(), function);
         Ok(())
     }
@@ -119,11 +135,17 @@ impl Compiler {
     }
 
     pub(super) fn load_function_by_name(&mut self, name: &str) -> Result<u16> {
+        let dst = self.alloc_reg();
+        self.load_function_into(dst, name)?;
+        Ok(dst)
+    }
+
+    /// As [`Self::load_function_by_name`], into a register the caller chose.
+    pub(super) fn load_function_into(&mut self, dst: u16, name: &str) -> Result<()> {
         let function_index = *self
             .function_names
             .get(name)
             .ok_or_else(|| anyhow!("Compiler undefined function `{name}`"))?;
-        let dst = self.alloc_reg();
         let function_index = u16::try_from(function_index)
             .map_err(|_| anyhow!("Compiler function index {function_index} exceeds u16"))?;
         self.emit(Instr::abx(
@@ -138,7 +160,7 @@ impl Compiler {
                 ..PerfRegisterFact::default()
             },
         );
-        Ok(dst)
+        Ok(())
     }
 
     pub(super) fn load_native_by_name(&mut self, name: &str) -> Result<u16> {

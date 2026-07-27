@@ -471,7 +471,32 @@ naming them again. Two answers to that question that disagreed would mean an
 `iretq` into a segment other than the one intended, and if that segment happened
 to be a ring-0 descriptor there would be no ring boundary at all.
 
-### The wall this hit, which was the compiler's
+### The second wall, which was also the compiler's
+
+The first was constants; this one was declarations. Publishing a top-level `fn`
+is `LoadFunction r; SetGlobal r, slot`, and the register is dead the instant the
+store lands — but it used to be a fresh register every time. `program.lk` with
+its drivers bundled in declares **236 functions**, out of the 256 a `u8`
+register field allows, so the top level had about twenty registers left for
+everything else. Adding the syscall constants used them up, and the error named
+a constant.
+
+The fix is one register shared by every declaration, rather than a register
+recycled after each. The difference is not stylistic. Recycling — handing it
+back for anything to use next — is wrong here for a reason outside the bytecode
+compiler entirely: **the AOT lowering tracks what a register means keyed by
+`(block, register)`, with no notion of time.** A register that once held a
+function value keeps that meaning, so a later `SetGlobal` from it reads as
+declaration bookkeeping and gets elided — a global write silently dropped.
+
+That was not hypothetical. The recycling version was written first, and it made
+`program.lk` stop lowering natively with "returns disagree on the value type" —
+the same stale-meaning problem surfacing as a signature conflict instead. A
+register that only ever holds a function value being published cannot have any
+of that happen to it, because its meaning never changes. There is a test for the
+shape, not just the outcome, and a TODO on the lowering.
+
+### The first wall, which was the compiler's
 
 Adding the GDT and TSS constants made `program.lk` stop compiling:
 
@@ -630,6 +655,38 @@ CR3 changes before the stack pointer is handed back, not after: the value the
 switch returns is read by the CPU *after* this returns, and it has to mean the
 same thing in whichever space is current by then. It does, because the kernel is
 mapped identically in both — which makes the order safe rather than lucky.
+
+### Whose list of holes it is
+
+The syscall dispatcher is `program.lk`'s. What a user task may ask for is a list
+of holes in the wall the ring boundary just built, and deciding what goes on
+that list is not the board's business — nor is deciding whether to believe a
+pointer:
+
+```lk
+fn user_range_is_valid(address: Int, length: Int) -> Bool {
+    if (length <= 0 || length > MAX_WRITE) { return false; }
+    let end = address + length;
+    if (end < address) { return false; }
+    return address >= user_section_start() && end <= user_section_end();
+}
+```
+
+An `Int` is signed, which does half the work for free: an address with its top
+bit set arrives negative and fails the lower bound. The other end still needs
+the wrap check — an address just under the maximum wraps `address + length` to a
+negative number, which would then pass `end <= limit`. LK's addition wraps
+rather than trapping, so the wrap is what that comparison looks for.
+
+The board answers where the user section is, because the linker is the only
+thing that knows and the board is the only side that can ask it.
+
+**The syscall trampoline now saves the SSE registers**, which it did not before.
+The handler is compiled LK, LK numbers are `f64`, and the System V ABI lets a
+called function clobber every XMM register — which the ring-3 caller never
+agreed to. Nothing would have gone wrong yet: the user programs here are
+assembly that touches no XMM at all. That is exactly why it is worth writing
+down rather than waiting for the first one that does.
 
 ### A pointer the kernel does not believe
 

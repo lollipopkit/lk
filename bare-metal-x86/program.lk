@@ -303,6 +303,16 @@ const SHARED_DRAG_SLOT = SHARED_WINDOW_PAINT + WINDOW_COUNT * WORD;
 const SHARED_DRAG_DX = SHARED_DRAG_SLOT + WORD;
 const SHARED_DRAG_DY = SHARED_DRAG_DX + WORD;
 
+// Set when a ring-3 task asks to exit, which is how "the excursion finished"
+// is told apart from "the excursion faulted". The user program makes that call
+// *before* it tries the forbidden thing, so the two are distinguishable at all.
+//
+// TODO: nothing reads this yet — the ring-3 checks assert on what reached the
+// serial line instead. It is recorded rather than dropped because it is the
+// only evidence of the difference; a `user` command that reported it would make
+// the evidence reachable.
+const SHARED_USER_EXITED = SHARED_DRAG_DY + WORD;
+
 // The terminal's characters, one byte per cell.
 //
 // The screen was the only record of what had been typed, which is fine until
@@ -313,7 +323,7 @@ const SHARED_DRAG_DY = SHARED_DRAG_DX + WORD;
 //
 // ASCII, not glyph indices: the same bytes the shell already handles, so the
 // grid and the line buffer say the same thing about a character.
-const SHARED_GRID = SHARED_DRAG_DY + WORD;
+const SHARED_GRID = SHARED_USER_EXITED + WORD;
 const GRID_COLUMNS = 53;
 const GRID_ROWS = 25;
 
@@ -1307,6 +1317,109 @@ fn enter_user() -> Int {
 #[extern("lk_spawn_user")]
 fn spawn_user_task(entry: Int, stack: Int, stack_virtual: Int, cr3: Int) -> Int {
     return 0 - 1;
+}
+
+// What a ring-3 task may ask the kernel for.
+//
+// One number per call, in `rax`. Deliberately few: every entry here is a hole
+// in the wall the ring boundary just built, and the way to keep the wall
+// meaningful is to have few holes and to know what each one lets through.
+const SYS_WRITE = 1;
+const SYS_EXIT = 2;
+const SYS_WRITE_STR = 3;
+
+// The answer to a call the kernel refuses. The ring-3 programs compare against
+// `-1`, which is the same bits either side reads it as.
+//
+// Read back with `as Int` at every use, and that is not decoration: a constant
+// this far down the file is past the point where the compiler keeps top-level
+// bindings in registers, so a function reads it through the global table and
+// gets it *dynamically typed*. Returning it beside a plain `0` is then two
+// return types in one function, which the native lowering refuses. The cast is
+// where the program states what it already knows.
+const SYS_REFUSED = 0 - 1;
+
+// How long a string the kernel will accept in one call.
+//
+// A bound, not a guess: without one a user task can hand over a length that
+// keeps the kernel inside the syscall for as long as it likes — with interrupts
+// on, so the machine survives, but the caller's own slice is spent in kernel
+// code where nothing can preempt the loop's *effects*.
+const MAX_WRITE = 4096;
+
+// The bounds of everything ring 3 may reach, from the linker script — so from
+// the board, which is the only side that can ask the linker anything.
+#[extern("lk_user_section_start")]
+fn user_section_start() -> Int {
+    return 0;
+}
+
+#[extern("lk_user_section_end")]
+fn user_section_end() -> Int {
+    return 0;
+}
+
+// Is `[address, address + length)` memory the caller is allowed to hand over?
+//
+// The only region ring 3 can reach is its own section, so that is the whole
+// test — and it is a test the *kernel* performs, not a promise the caller
+// makes. Without it, `write(0x100010, 64)` has the kernel read out its own code
+// on request, which is the shape of every "the kernel followed a pointer it was
+// given" bug there has ever been.
+//
+// The arithmetic is checked too. An `Int` is signed, which does half the work
+// for free: an address with the top bit set arrives negative and fails the
+// lower bound. What it does not cover is the other end — an address just under
+// the maximum wraps `address + length` to a negative number, which would then
+// pass `end <= limit`. LK's addition wraps rather than trapping, so the wrap is
+// what the comparison below looks for.
+fn user_range_is_valid(address: Int, length: Int) -> Bool {
+    if (length <= 0 || length > MAX_WRITE) {
+        return false;
+    }
+    let end = address + length;
+    if (end < address) {
+        return false;
+    }
+    return address >= user_section_start() && end <= user_section_end();
+}
+
+// The syscall handler, entered from the board's trampoline with the number in
+// `rax` and the arguments in `rdi` and `rsi`.
+//
+// Returning a value rather than writing registers: the trampoline puts the
+// answer back in `rax`, which keeps the register discipline in one place.
+#[export("lk_syscall_dispatch")]
+fn syscall_dispatch(number: Int, arg: Int, arg2: Int) -> Int {
+    // Deliberately a *byte*, not a pointer: one byte per call is slow and
+    // honest, and it was the first call precisely because it needs no decision
+    // about whether to believe an address.
+    if (number == SYS_WRITE) {
+        console_byte(arg & 0xff);
+        return 0 as Int;
+    }
+    // The kernel checks, copies, and only then uses. Printing straight out of
+    // user memory would be one instruction shorter and would leave the window
+    // between the check and the use open — which on a machine with more than
+    // one CPU is not a window but a race. Reading a byte and printing it before
+    // reading the next is that copy, at the smallest granularity there is.
+    if (number == SYS_WRITE_STR) {
+        if (!user_range_is_valid(arg, arg2)) {
+            return SYS_REFUSED as Int;
+        }
+        for offset in 0..arg2 {
+            let byte = unsafe { volatile_read_u8((arg + offset) as *mut u8) };
+            console_byte(byte as Int);
+        }
+        return arg2 as Int;
+    }
+    if (number == SYS_EXIT) {
+        shared_write(SHARED_USER_EXITED, 1);
+        return 0 as Int;
+    }
+    // An unknown number is not a crash: a kernel that dies on a bad syscall is
+    // one that any program can take down.
+    return SYS_REFUSED as Int;
 }
 
 // The kernel's four page directories, one per gigabyte.

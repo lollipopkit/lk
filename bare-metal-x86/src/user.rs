@@ -28,107 +28,27 @@ use core::arch::global_asm;
 // the only gate with DPL 3, which is what makes it the one vector ring 3 can
 // raise and every other one a general protection fault.
 
-/// What a user task can ask for.
-///
-/// One number per call, in `rax`. Deliberately small: every entry here is a
-/// hole in the wall the ring boundary just built, and the way to keep the wall
-/// meaningful is to have few holes and know what each one lets through.
-const SYS_WRITE: u64 = 1;
-const SYS_EXIT: u64 = 2;
-/// Write a run of bytes: `rdi` is an address in the caller's memory, `rsi` its
-/// length. The first call that takes a *pointer*, and therefore the first one
-/// that has to decide whether to believe it.
-const SYS_WRITE_STR: u64 = 3;
-
-/// How long a string the kernel will accept in one call.
-///
-/// A bound, not a guess: without one, a user task can hand over a length that
-/// keeps the kernel inside the syscall for as long as it likes — with
-/// interrupts on, so the machine survives, but the caller's own timer slice
-/// is spent in kernel code where nothing can preempt the loop's *effects*.
-const MAX_WRITE: u64 = 4096;
-
 unsafe extern "C" {
-    /// The console, which belongs to the LK program.
-    fn lk_console_byte(byte: i64);
-    /// The bounds of everything ring 3 may reach, from the linker script.
+    /// The bounds of everything ring 3 may reach, placed by the linker script.
     static __user_start: u8;
     static __user_end: u8;
 }
 
-/// Is `[address, address + length)` memory the caller is allowed to hand over?
+/// The bounds of everything ring 3 may reach, from the linker script.
 ///
-/// The only region ring 3 can reach is its own section, so that is the whole
-/// test — and it is a test the kernel performs rather than a promise the caller
-/// makes. Without it, `write(0x100010, 64)` would have the kernel read its own
-/// code and print it, which is the shape of every "the kernel followed a
-/// pointer it was given" bug there has ever been.
-///
-/// The arithmetic is checked too: a length near `u64::MAX` would wrap the end
-/// back below the start and make any address look contained.
-fn user_range_is_valid(address: u64, length: u64) -> bool {
-    if length == 0 || length > MAX_WRITE {
-        return false;
-    }
-    let Some(end) = address.checked_add(length) else {
-        return false;
-    };
-    let start = (&raw const __user_start) as u64;
-    let limit = (&raw const __user_end) as u64;
-    address >= start && end <= limit
-}
-
-/// Set when a user task asks to exit, so the kernel knows the ring-3 excursion
-/// finished rather than faulted.
-static USER_EXITED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
-
-pub fn user_exited() -> bool {
-    USER_EXITED.load(core::sync::atomic::Ordering::Relaxed)
-}
-
-/// The syscall handler, called from the trampoline with the number in `rax` and
-/// one argument in `rdi`.
-///
-/// Returning a value rather than writing registers: the trampoline puts the
-/// answer back in `rax`, which keeps the register discipline in one place.
+/// Answered rather than reached into: `program.lk` checks every pointer a user
+/// task hands over against this range, and the linker is the only thing that
+/// knows where the section landed. The board is the only side that can ask it.
 #[unsafe(no_mangle)]
-pub extern "C" fn syscall_dispatch(number: u64, arg: u64, arg2: u64) -> u64 {
-    match number {
-        // Deliberately a *byte*, not a pointer: a pointer from ring 3 is an
-        // address the kernel would have to check before following, and there is
-        // no page-level user/kernel split here yet to check it against. One
-        // byte per call is slow and honest; a buffer would be fast and wrong.
-        SYS_WRITE => {
-            // SAFETY: an `#[export]`ed LK function taking one integer.
-            unsafe { lk_console_byte((arg & 0xff) as i64) };
-            0
-        }
-        // The kernel checks, copies, and only then uses. Printing straight out
-        // of user memory would be one instruction shorter and would leave the
-        // window where the caller can change the bytes between the check and
-        // the use — which on a machine with more than one CPU is not a window
-        // but a race.
-        SYS_WRITE_STR => {
-            if !user_range_is_valid(arg, arg2) {
-                return u64::MAX;
-            }
-            for offset in 0..arg2 {
-                // SAFETY: the range was just checked to lie inside the user
-                // section, which is mapped and present.
-                let byte = unsafe { (arg as *const u8).add(offset as usize).read_volatile() };
-                // SAFETY: an `#[export]`ed LK function taking one integer.
-                unsafe { lk_console_byte(i64::from(byte)) };
-            }
-            arg2
-        }
-        SYS_EXIT => {
-            USER_EXITED.store(true, core::sync::atomic::Ordering::Relaxed);
-            0
-        }
-        // An unknown number is not a crash: a kernel that dies on a bad syscall
-        // is one any program can take down.
-        _ => u64::MAX,
-    }
+pub extern "C" fn lk_user_section_start() -> i64 {
+    // SAFETY: a linker-placed symbol; taking its address reads nothing.
+    unsafe { (&raw const __user_start) as i64 }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn lk_user_section_end() -> i64 {
+    // SAFETY: as above.
+    unsafe { (&raw const __user_end) as i64 }
 }
 
 global_asm!(
@@ -144,12 +64,62 @@ global_asm!(
     "   push r9",
     "   push r10",
     "   push r11",
-    // The ABI: number in `rax`, arguments in `rdi` and `rsi`, which the C call
+    // And the SSE registers, which this did not use to save.
+    //
+    // The handler is a compiled LK function now, and LK numbers are `f64`: the
+    // System V ABI lets it clobber every XMM register, and the ring-3 caller
+    // never agreed to that. Today's user programs are assembly that touches no
+    // XMM at all, so nothing would have gone wrong yet — which is the whole
+    // problem with leaving it out. The interrupt trampolines next door save
+    // these for exactly this reason; the syscall path had a Rust handler that
+    // did integer work, and now it does not.
+    //
+    // The CPU aligns RSP to 16 on the way in and seven pushes leave it eight
+    // off, so the 264 both reserves the area and restores the alignment `call`
+    // expects.
+    "   sub rsp, 264",
+    "   movups [rsp + 0], xmm0",
+    "   movups [rsp + 16], xmm1",
+    "   movups [rsp + 32], xmm2",
+    "   movups [rsp + 48], xmm3",
+    "   movups [rsp + 64], xmm4",
+    "   movups [rsp + 80], xmm5",
+    "   movups [rsp + 96], xmm6",
+    "   movups [rsp + 112], xmm7",
+    "   movups [rsp + 128], xmm8",
+    "   movups [rsp + 144], xmm9",
+    "   movups [rsp + 160], xmm10",
+    "   movups [rsp + 176], xmm11",
+    "   movups [rsp + 192], xmm12",
+    "   movups [rsp + 208], xmm13",
+    "   movups [rsp + 224], xmm14",
+    "   movups [rsp + 240], xmm15",
+    // The ABI: number in `rax`, arguments in `rdi` and `rsi`, which the call
     // wants in `rdi`, `rsi` and `rdx`. One shuffle, in one place.
     "   mov rdx, rsi",
     "   mov rsi, rdi",
     "   mov rdi, rax",
-    "   call syscall_dispatch",
+    // The dispatcher is `program.lk`'s: what a user task may ask for is a list
+    // of holes in the wall the ring boundary just built, and deciding what is
+    // on that list is not the board's business.
+    "   call lk_syscall_dispatch",
+    "   movups xmm0, [rsp + 0]",
+    "   movups xmm1, [rsp + 16]",
+    "   movups xmm2, [rsp + 32]",
+    "   movups xmm3, [rsp + 48]",
+    "   movups xmm4, [rsp + 64]",
+    "   movups xmm5, [rsp + 80]",
+    "   movups xmm6, [rsp + 96]",
+    "   movups xmm7, [rsp + 112]",
+    "   movups xmm8, [rsp + 128]",
+    "   movups xmm9, [rsp + 144]",
+    "   movups xmm10, [rsp + 160]",
+    "   movups xmm11, [rsp + 176]",
+    "   movups xmm12, [rsp + 192]",
+    "   movups xmm13, [rsp + 208]",
+    "   movups xmm14, [rsp + 224]",
+    "   movups xmm15, [rsp + 240]",
+    "   add rsp, 264",
     "   pop r11",
     "   pop r10",
     "   pop r9",

@@ -435,6 +435,82 @@ fn compiler_compiles_more_top_level_constants_than_registers() {
     assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(798)]);
 }
 
+/// A program with more top-level `fn` declarations than there are registers
+/// still compiles, and the functions still work.
+///
+/// Publishing a declaration is `LoadFunction r; SetGlobal r, slot`, and the
+/// register is dead the moment the store lands — but it used to be a fresh one
+/// every time, so a program paid one register per `fn` for the whole of its top
+/// level. `bare-metal-x86/program.lk` with its drivers bundled in declares 236
+/// functions, which is most of the 256 a `u8` register field allows, and it ran
+/// out on the *constants* that came afterwards.
+///
+/// 300 rather than 257 so the shared register is doing real work rather than
+/// just crossing the line, and two of them are called so the test fails on a
+/// register that stopped meaning what the caller thought.
+#[test]
+fn compiler_compiles_more_top_level_functions_than_registers() {
+    let mut source = String::new();
+    for index in 0..300 {
+        source.push_str(&format!("fn f{index}() {{ return {index}; }}\n"));
+    }
+    source.push_str("return f0() + f299();\n");
+
+    let module = compile_source_module(&source).expect("compile module");
+    let result = execute_module(&module).expect("execute module");
+
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(299)]);
+}
+
+/// The register those declarations share is *only* ever a function value.
+///
+/// Not a nicety: the AOT lowering tracks what a register means keyed by
+/// `(block, register)` with no notion of time, so a register that once held a
+/// function value keeps that meaning for the rest of the block. Recycling it —
+/// handing it back for a later `let` to use — makes the next `SetGlobal` from
+/// it read as declaration bookkeeping, and a global write is silently elided.
+///
+/// So this asserts the shape rather than the outcome: after the declarations,
+/// a top-level binding must not land on the register they published through.
+#[test]
+fn compiler_does_not_reuse_the_function_publish_register() {
+    let module = compile_source_module(
+        r#"
+        fn a() { return 1; }
+        fn b() { return 2; }
+        answer := 40;
+        fn read() { return answer + 2; }
+        return read();
+        "#,
+    )
+    .expect("compile module");
+
+    // Every `SetGlobal` whose source register also appears as a `LoadFunction`
+    // destination is a declaration; no other `SetGlobal` may share one.
+    let code = &module.functions[module.entry as usize].code;
+    let mut function_regs = std::collections::HashSet::new();
+    for instr in code {
+        if instr.opcode() == crate::vm::Opcode::LoadFunction {
+            function_regs.insert(instr.a());
+        }
+    }
+    assert!(!function_regs.is_empty(), "no function declarations were emitted");
+    for instr in code {
+        if instr.opcode() == crate::vm::Opcode::SetGlobal {
+            let name = module.globals[instr.bx() as usize].name.as_ref();
+            if name == "answer" {
+                assert!(
+                    !function_regs.contains(&instr.a()),
+                    "a value global is stored from the register function declarations publish through"
+                );
+            }
+        }
+    }
+
+    let result = execute_module(&module).expect("execute module");
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
+}
+
 #[test]
 fn compiler_keeps_top_level_let_in_entry_frame() {
     let module = compile_source_module(
