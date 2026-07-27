@@ -10,6 +10,7 @@ use anyhow::Result;
 use hashbrown::HashMap;
 
 mod expressions;
+pub use expressions::builtin_machine_result;
 mod patterns;
 
 #[cfg(test)]

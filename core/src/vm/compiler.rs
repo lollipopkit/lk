@@ -81,6 +81,10 @@ pub struct Compiler {
     /// simply does not get the wrap, which the type checker has already
     /// rejected by then.
     machine_regs: HashMap<u16, crate::val::IntKind>,
+    /// Top-level functions that declare a machine-int return, by name. Collected
+    /// once so a `let` bound to a call can learn its width — see
+    /// [`Compiler::initializer_machine_width`].
+    function_machine_returns: HashMap<String, crate::val::IntKind>,
     /// Loop-pattern variables of the enclosing `for` loops: the fused loop
     /// opcodes own the raw register, so a capture takes a fresh snapshot cell
     /// per capture site instead of re-binding the register (per-iteration
@@ -173,6 +177,63 @@ impl Compiler {
     /// Anything else clears the note: a register reused for a different value
     /// must not keep an old width, or arithmetic would wrap to a type the
     /// value no longer has.
+    /// The machine width a `let`'s initializer produces, when it has one and
+    /// nobody wrote it down.
+    ///
+    /// Machine-int arithmetic wraps to its width, and the wrap is emitted where
+    /// the width is *proven*. Proof used to come from exactly two places: an
+    /// annotation, and an `as` cast. Everything else was left unproven, on the
+    /// grounds that not wrapping is the safe answer — but not wrapping is a
+    /// different answer, and the type checker had already decided which one is
+    /// right:
+    ///
+    /// ```lk
+    /// fn read() -> u32 { return 4000000000 as u32; }
+    /// let a = read();  let b = read();  println(a + b);   // 8000000000
+    /// let c: u32 = 4000000000;  let d: u32 = 4000000000;
+    /// println(c + d);                                     // 3705032704
+    /// ```
+    ///
+    /// Same types, same values, and the answer turned on whether a width had
+    /// been typed out. This closes the three ways it can be known without one:
+    /// a call to a function that declares a machine return, a builtin whose
+    /// name *is* the width (`volatile_read_u32`, `port_in_u8`), and a read of a
+    /// local already known to hold one.
+    ///
+    /// Deliberately not a general inference pass. Everything it does not
+    /// recognize stays unproven and unwrapped, exactly as before — this widens
+    /// what can be proven, it does not change what proof means.
+    pub(super) fn initializer_machine_width(&self, expr: &Expr) -> Option<crate::val::IntKind> {
+        match expr {
+            Expr::Paren(inner) => self.initializer_machine_width(inner),
+            Expr::Var(name) => self
+                .locals
+                .get(name)
+                .and_then(|reg| self.machine_regs.get(reg))
+                .copied(),
+            // Both shapes, because name resolution rewrites a plain call:
+            // `read()` is `Call("read", …)` in the parser's output and
+            // `CallExpr(Var("read"), …)` by the time the compiler sees it.
+            // Matching only the first is why the first version of this looked
+            // correct and changed nothing.
+            Expr::Call(name, _) => self.call_machine_width(name),
+            Expr::CallExpr(callee, _) => match callee.as_ref() {
+                Expr::Var(name) => self.call_machine_width(name),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// The width a call to `name` produces: a user function that declares one,
+    /// or a builtin whose name *is* one.
+    fn call_machine_width(&self, name: &str) -> Option<crate::val::IntKind> {
+        self.function_machine_returns
+            .get(name)
+            .copied()
+            .or_else(|| crate::typ::builtin_machine_result(name))
+    }
+
     pub(super) fn note_machine_reg(&mut self, reg: u16, ty: Option<&crate::val::Type>) {
         match ty {
             Some(crate::val::Type::MachineInt(kind)) => {

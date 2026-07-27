@@ -62,9 +62,20 @@ impl Compiler {
                 self.next_reg = self.live_register_floor().max(watermark);
                 return Ok(());
             }
-            // An annotated width is one of the two ways the compiler learns a
-            // register holds a machine integer (the other is `as`).
-            self.note_machine_reg(slot, type_annotation);
+            // How the compiler learns a register holds a machine integer: the
+            // annotation if there is one, and otherwise what the initializer
+            // itself produces. Before the second half existed, `let a = read();`
+            // and `let a: u32 = read();` computed different sums from the same
+            // `fn read() -> u32` — see `initializer_machine_width`.
+            match type_annotation {
+                Some(_) => self.note_machine_reg(slot, type_annotation),
+                None => match self.initializer_machine_width(value) {
+                    Some(kind) => {
+                        self.machine_regs.insert(slot, kind);
+                    }
+                    None => self.note_machine_reg(slot, None),
+                },
+            }
             self.insert_fresh_local(name.clone(), slot);
             self.next_reg = self.live_register_floor().max(watermark).max(slot + 1);
             return Ok(());

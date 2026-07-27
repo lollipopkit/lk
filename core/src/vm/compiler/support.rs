@@ -110,6 +110,27 @@ pub(super) fn item_without_attributes(stmt: &Stmt) -> &Stmt {
     }
 }
 
+/// Top-level functions whose declared return type is a machine int.
+///
+/// The compiler needs this to know when arithmetic on a call's result has to
+/// wrap: `fn read() -> u32` makes `let a = read(); a + b` `u32` arithmetic, and
+/// before this the width was simply lost unless somebody wrote it down again at
+/// the binding.
+pub(super) fn collect_function_machine_returns(program: &Program) -> HashMap<String, crate::val::IntKind> {
+    let mut widths = HashMap::new();
+    for stmt in &program.statements {
+        if let Stmt::Function {
+            name,
+            return_type: Some(crate::val::Type::MachineInt(kind)),
+            ..
+        } = item_without_attributes(stmt)
+        {
+            widths.insert(name.clone(), *kind);
+        }
+    }
+    widths
+}
+
 pub(super) fn collect_function_names(program: &Program) -> Result<HashMap<String, u32>> {
     let mut names = HashMap::new();
     let mut next = 1_u32;

@@ -292,3 +292,42 @@ fn compiler_keeps_global_compound_add_semantics_when_rhs_reads_target() {
     let result = execute_module(&module).expect("execute module");
     assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(30)]);
 }
+
+/// A machine int wraps whether or not its width was written down.
+///
+/// The wrap is emitted where the width is *proven*, and proof used to come from
+/// exactly two places: an annotation and an `as` cast. A value whose width came
+/// from anywhere else — a function that declares a machine return, a builtin
+/// whose name is a width, a read of a local already known to hold one — was
+/// left unproven and did not wrap.
+///
+/// So these two computed different numbers from the same types and the same
+/// values, and which one you got depended on whether a width had been typed
+/// out. 4000000000 + 4000000000 is 8000000000, and as a `u32` it is 3705032704.
+#[test]
+fn compiler_wraps_machine_ints_whose_width_was_inferred() {
+    let module = compile_source_module(
+        r#"
+        fn read() -> u32 { return 4000000000 as u32; }
+        let inferred_a = read();
+        let inferred_b = read();
+        let annotated_a: u32 = 4000000000;
+        let annotated_b: u32 = 4000000000;
+        let through_a = annotated_a;
+        let through_b = annotated_b;
+        // Summed rather than listed, so the assertion is one number: any of
+        // the three failing to wrap makes it too big by a known amount.
+        return (inferred_a + inferred_b) as Int
+             + (annotated_a + annotated_b) as Int
+             + (through_a + through_b) as Int;
+        "#,
+    )
+    .expect("compile module");
+
+    let result = execute_module(&module).expect("execute module");
+    assert_eq!(
+        result.returns,
+        vec![crate::val::RuntimeVal::Int(3 * 3_705_032_704)],
+        "a u32 sum must wrap the same way however its width was learned"
+    );
+}

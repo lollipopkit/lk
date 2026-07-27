@@ -1899,6 +1899,24 @@ fn parse_port_builtin(name: &str) -> Option<(bool, lk_values::IntKind)> {
 }
 
 /// Splits a `volatile_{read,write}_uN` name into its direction and width.
+/// The machine width a builtin's *name* declares, for the ones whose result is
+/// a machine int.
+///
+/// Exposed for the bytecode compiler, which needs the same answer to know when
+/// arithmetic on the result has to wrap. Derived from the name by the same
+/// parsers the checks above use, rather than a second table — a second table is
+/// one entry away from a value that wraps in the type system and not in the
+/// program.
+pub fn builtin_machine_result(name: &str) -> Option<crate::val::IntKind> {
+    if let Some((is_write, kind)) = parse_volatile_builtin(name) {
+        return (!is_write).then_some(kind);
+    }
+    if let Some((is_write, kind)) = parse_port_builtin(name) {
+        return (!is_write).then_some(kind);
+    }
+    None
+}
+
 fn parse_volatile_builtin(name: &str) -> Option<(bool, lk_values::IntKind)> {
     let (is_write, rest) = match name.strip_prefix("volatile_read_") {
         Some(rest) => (false, rest),

@@ -108,6 +108,7 @@ impl Compiler {
             self.native_names.clone(),
             self.global_names.clone(),
             self.user_let_globals.clone(),
+            self.function_machine_returns.clone(),
             HashMap::new(),
             function_index + 1,
         )?;

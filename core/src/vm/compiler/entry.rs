@@ -12,10 +12,10 @@ use crate::{
 
 use super::{
     CompiledFunction, Compiler, Function, FunctionSignature, HashSet, Module, NativeEntry,
-    collect_function_inline_bodies, collect_function_names, collect_function_signatures,
-    collect_function_visible_let_names, collect_global_names_with_external, collect_native_names,
-    export_name_from_attributes, extern_name_from_attributes, function_frame_params, global_slots_from_names,
-    item_without_attributes,
+    collect_function_inline_bodies, collect_function_machine_returns, collect_function_names,
+    collect_function_signatures, collect_function_visible_let_names, collect_global_names_with_external,
+    collect_native_names, export_name_from_attributes, extern_name_from_attributes, function_frame_params,
+    global_slots_from_names, item_without_attributes,
 };
 
 impl Compiler {
@@ -55,6 +55,7 @@ impl Compiler {
         let native_names = collect_native_names(&natives)?;
         let global_names = collect_global_names_with_external(program, external_globals)?;
         let user_let_globals = collect_function_visible_let_names(program);
+        let machine_returns = collect_function_machine_returns(program);
         let mut module = Module {
             functions: vec![Function::default(); function_names.len() + 1],
             natives,
@@ -75,6 +76,7 @@ impl Compiler {
             true,
         );
         entry.user_let_globals = user_let_globals.clone();
+        entry.function_machine_returns = machine_returns.clone();
         entry.dynamic_function_base = module.functions.len() as u32;
         entry.lower_program_statements(program)?;
         module.type_info = core::mem::take(&mut entry.type_info);
@@ -103,6 +105,7 @@ impl Compiler {
                     native_names.clone(),
                     global_names.clone(),
                     user_let_globals.clone(),
+                    machine_returns.clone(),
                     HashMap::new(),
                     module.functions.len() as u32,
                 )?;
@@ -222,6 +225,7 @@ impl Compiler {
         native_names: HashMap<String, u32>,
         global_names: HashMap<String, u32>,
         user_let_globals: HashSet<String>,
+        machine_returns: HashMap<String, crate::val::IntKind>,
         capture_names: HashMap<String, u16>,
         dynamic_function_base: u32,
     ) -> Result<CompiledFunction> {
@@ -238,6 +242,7 @@ impl Compiler {
             false,
         );
         compiler.user_let_globals = user_let_globals;
+        compiler.function_machine_returns = machine_returns;
         compiler.capture_names = capture_names;
         compiler.dynamic_function_base = dynamic_function_base;
         compiler.function.param_count = frame_params.len() as u16;

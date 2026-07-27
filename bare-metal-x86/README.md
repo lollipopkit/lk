@@ -1177,6 +1177,37 @@ Refusing the shape is what stops a native build computing something the VM
 would not. A container that is built inside a function is fine — it is fresh
 per call, so there is nothing to share.
 
+## The width that was only real if you typed it
+
+Giving `unsafe` blocks a type made a second thing visible, and it was worse than
+the first:
+
+```lk
+fn read() -> u32 { return 4000000000 as u32; }
+let a = read();  let b = read();  println(a + b);   // 8000000000
+let c: u32 = 4000000000;  let d: u32 = 4000000000;
+println(c + d);                                     // 3705032704
+```
+
+Same types, same values, two answers — and which one you got depended on whether
+the width had been *written down*. Machine-int arithmetic wraps to its width,
+and the wrap is emitted where the compiler can prove the width; proof came from
+exactly two places, an annotation and an `as` cast. Everything else was left
+unproven, on the stated grounds that not wrapping is the safe answer. It is not:
+it is a different answer, and the type checker had already decided which one is
+right.
+
+Proof now also comes from what the initializer *produces*: a call to a function
+that declares a machine return, a builtin whose name is a width
+(`volatile_read_u32`), and a read of a local already known to hold one. Nothing
+else — this widens what can be proven, it does not change what proof means.
+
+The first attempt looked correct and changed nothing, which is the part worth
+keeping. It matched `Expr::Call`, and by the time the compiler sees a call to a
+plain function, name resolution has rewritten it to `CallExpr(Var(name), …)`.
+The test that caught it is the one that compares the two spellings against each
+other rather than against a number.
+
 ## `unsafe { … }` has a type now
 
 It used to have none — every `unsafe` block type-checked to `Any`, with a note
