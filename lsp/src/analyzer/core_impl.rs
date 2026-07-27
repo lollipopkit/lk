@@ -954,6 +954,22 @@ impl LkAnalyzer {
         Ok(entry)
     }
 
+    /// A diagnostic covering the first line, for errors that carry no usable span.
+    fn first_line_diagnostic(content: &str, message: String) -> Diagnostic {
+        Diagnostic::new(
+            Range::new(
+                Position::new(0, 0),
+                Position::new(0, content.lines().next().map_or(0, |line| line.len() as u32)),
+            ),
+            Some(DiagnosticSeverity::ERROR),
+            None,
+            Some("lk".to_string()),
+            message,
+            None,
+            None,
+        )
+    }
+
     /// Analyze LK code and return diagnostics, symbols, and identifier roots
     pub fn analyze(&mut self, content: &str) -> AnalysisResult {
         let mut result = AnalysisResult {
@@ -1027,6 +1043,20 @@ impl LkAnalyzer {
                 let nad = self.collect_named_call_diagnostics(content, tokens, spans);
                 if !nad.is_empty() {
                     result.diagnostics.extend(nad);
+                }
+
+                // Type-check the expression itself. The statement path gets this from
+                // `collect_type_diagnostics` below; this branch parsed the whole document
+                // as one expression, so it is the only place that checks it. Checking the
+                // already-parsed `expr` rather than re-parsing the source keeps `analyze`
+                // to a single tokenize+parse.
+                if result.diagnostics.is_empty() {
+                    let mut checker = TypeChecker::new_strict();
+                    if let Err(err) = expr.type_check(&mut checker) {
+                        result
+                            .diagnostics
+                            .push(Self::first_line_diagnostic(content, err.to_string()));
+                    }
                 }
             }
             Err(expr_err) => {
@@ -1229,44 +1259,6 @@ impl LkAnalyzer {
                         result.diagnostics.extend(collected);
                         // Also attempt use diagnostics if tokens parsed
                         self.add_import_diagnostics(tokens, spans, &mut result);
-                    }
-                }
-            }
-        }
-
-        // Run strict type checking when parsing succeeded to surface semantic diagnostics
-        if result.diagnostics.is_empty() {
-            if let Ok((tokens, spans)) = Tokenizer::tokenize_enhanced_with_spans(content) {
-                let mut parser = StmtParser::new_with_spans(&tokens, &spans);
-                if let Ok(program) = parser.parse_program_with_enhanced_errors(content) {
-                    let has_complex_items = program
-                        .statements
-                        .iter()
-                        .any(|stmt| matches!(stmt_without_attributes(stmt), Stmt::Import(_) | Stmt::Function { .. }));
-                    if has_complex_items {
-                        // Skip type checking when imports/functions are present since additional context is required.
-                        // TODO: enrich analyzer with module resolution to support complex programs.
-                        self.dedup_diagnostics(&mut result.diagnostics);
-                        return result;
-                    }
-                    let mut checker = TypeChecker::new_strict();
-                    if let Err(err) = program.type_check(&mut checker) {
-                        let mut diag = Diagnostic::new(
-                            Range::new(Position::new(0, 0), Position::new(0, 0)),
-                            Some(DiagnosticSeverity::ERROR),
-                            None,
-                            Some("lk".to_string()),
-                            err.to_string(),
-                            None,
-                            None,
-                        );
-                        if diag.range.end.line == 0 && diag.range.end.character == 0 {
-                            diag.range = Range::new(
-                                Position::new(0, 0),
-                                Position::new(0, content.lines().next().map_or(0, |l| l.len() as u32)),
-                            );
-                        }
-                        result.diagnostics.push(diag);
                     }
                 }
             }

@@ -206,11 +206,13 @@ printf '{"protocol_version":1,"output_tokens":[{"kind":"Int","lexeme":"%s","span
     let first = first_entry
         .parse_program_expansion_arc(content)
         .expect("first expansion");
-    assert!(first
-        .source
-        .tokens
-        .iter()
-        .any(|token| matches!(token, token::Token::Int(1))));
+    assert!(
+        first
+            .source
+            .tokens
+            .iter()
+            .any(|token| matches!(token, token::Token::Int(1)))
+    );
 
     fs::write(&schema, "2").expect("rewrite schema");
 
@@ -219,16 +221,20 @@ printf '{"protocol_version":1,"output_tokens":[{"kind":"Int","lexeme":"%s","span
         .parse_program_expansion_arc(content)
         .expect("second expansion");
 
-    assert!(second
-        .source
-        .tokens
-        .iter()
-        .any(|token| matches!(token, token::Token::Int(2))));
-    assert!(!second
-        .source
-        .tokens
-        .iter()
-        .any(|token| matches!(token, token::Token::Int(1))));
+    assert!(
+        second
+            .source
+            .tokens
+            .iter()
+            .any(|token| matches!(token, token::Token::Int(2)))
+    );
+    assert!(
+        !second
+            .source
+            .tokens
+            .iter()
+            .any(|token| matches!(token, token::Token::Int(1)))
+    );
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -259,11 +265,13 @@ fn analyzer_token_cache_invalidates_program_expansion_when_file_import_changes()
     let first = first_entry
         .parse_program_expansion_arc(content)
         .expect("first expansion");
-    assert!(first
-        .source
-        .tokens
-        .iter()
-        .any(|token| matches!(token, token::Token::Int(1))));
+    assert!(
+        first
+            .source
+            .tokens
+            .iter()
+            .any(|token| matches!(token, token::Token::Int(1)))
+    );
 
     fs::write(
         &macros,
@@ -280,16 +288,20 @@ fn analyzer_token_cache_invalidates_program_expansion_when_file_import_changes()
         .parse_program_expansion_arc(content)
         .expect("second expansion");
 
-    assert!(second
-        .source
-        .tokens
-        .iter()
-        .any(|token| matches!(token, token::Token::Int(2))));
-    assert!(!second
-        .source
-        .tokens
-        .iter()
-        .any(|token| matches!(token, token::Token::Int(1))));
+    assert!(
+        second
+            .source
+            .tokens
+            .iter()
+            .any(|token| matches!(token, token::Token::Int(2)))
+    );
+    assert!(
+        !second
+            .source
+            .tokens
+            .iter()
+            .any(|token| matches!(token, token::Token::Int(1)))
+    );
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -302,9 +314,11 @@ fn test_collect_named_call_diagnostics_for_missing_required() {
     "#;
     let (tokens, spans) = Tokenizer::tokenize_enhanced_with_spans(content).unwrap();
     let diagnostics = analyzer.collect_named_call_diagnostics(content, &tokens, &spans);
-    assert!(diagnostics
-        .iter()
-        .any(|diag| diag.message.contains("Missing required named argument: y")));
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diag| diag.message.contains("Missing required named argument: y"))
+    );
 }
 
 #[test]
@@ -469,14 +483,18 @@ fn test_generate_semantic_tokens_match_or_pattern() {
 
     let token_texts = semantic_token_texts(content, &tokens);
 
-    assert!(token_texts
-        .iter()
-        .any(|(text, ty)| text == "match" && *ty == KEYWORD_IDX));
+    assert!(
+        token_texts
+            .iter()
+            .any(|(text, ty)| text == "match" && *ty == KEYWORD_IDX)
+    );
     assert!(token_texts.iter().any(|(text, ty)| text == "|" && *ty == OPERATOR_IDX));
     assert!(token_texts.iter().any(|(text, ty)| text == "=>" && *ty == OPERATOR_IDX));
-    assert!(token_texts
-        .iter()
-        .any(|(text, ty)| text == "\"weekend\"" && *ty == STRING_IDX));
+    assert!(
+        token_texts
+            .iter()
+            .any(|(text, ty)| text == "\"weekend\"" && *ty == STRING_IDX)
+    );
     assert!(!token_texts.iter().any(|(text, ty)| text == "_" && *ty == VARIABLE_IDX));
 }
 
@@ -553,6 +571,27 @@ fn test_type_inlay_hints_let_and_define() {
     hints.extend(analyzer.compute_define_type_hints(src, full_range(src)));
     assert!(!hints.is_empty(), "expected type hints for let/define, got none");
     assert!(hints.iter().all(|h| h.kind == Some(InlayHintKind::TYPE)));
+}
+
+#[test]
+fn test_expression_document_is_type_checked_once() {
+    let mut analyzer = create_analyzer();
+    // A document that parses as a single expression never reaches the statement
+    // path, so its type check lives in the expression branch of `analyze`.
+    let result = analyzer.analyze("1 ? 2 : 3");
+
+    assert_eq!(
+        result.diagnostics.len(),
+        1,
+        "expected exactly one type diagnostic, got {:?}",
+        result.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    assert_eq!(result.diagnostics[0].severity, Some(DiagnosticSeverity::ERROR));
+    assert!(
+        result.diagnostics[0].message.contains("Type Error"),
+        "unexpected message: {}",
+        result.diagnostics[0].message
+    );
 }
 
 #[test]
