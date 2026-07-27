@@ -145,12 +145,20 @@ pub(crate) fn lower_function(
         // not visible to the scan above, because nothing in this function
         // defines them — the body does.
         let body_index = body_index_of(sig, func_index, region.begin_pc)?;
+        // What the body rebound, as the body itself reported. Until it has been
+        // lowered once there is no report, and the syntactic scan stands in —
+        // conservative, and replaced on the next pass.
+        let body_writes: Vec<u8> = match sig.try_body_rebound.get(&body_index) {
+            Some(set) => {
+                let mut v: Vec<u8> = set.iter().copied().collect();
+                v.sort_unstable();
+                v
+            }
+            None => crate::try_region::written_registers(&instrs, region.body_start, region.body_end),
+        };
         if let Some(extra) = sig.try_body_extra_cells.get(&body_index) {
             for &reg in extra {
-                if reg != region.catch_reg
-                    && !cells.contains(&reg)
-                    && crate::try_region::written_registers(&instrs, region.body_start, region.body_end).contains(&reg)
-                {
+                if reg != region.catch_reg && !cells.contains(&reg) && body_writes.contains(&reg) {
                     cells.push(reg);
                 }
             }
@@ -314,6 +322,10 @@ pub(crate) fn lower_function(
     // ordinary trailing parameters. They are all `I64` because the trampoline
     // passes machine words; a body that needs something wider rejects when it
     // reads it, which is the honest failure.
+    // Whether this function *is* a region's body, which is what makes the
+    // per-register snapshot below worth taking.
+    let is_try_body = sig.try_bodies.values().any(|&b| b == func_index);
+    let mut rebound: std::collections::HashSet<u8> = std::collections::HashSet::new();
     let try_params: Vec<u8> = sig.try_body_params.get(&func_index).cloned().unwrap_or_default();
     for &reg in &try_params {
         let ty = sig
@@ -402,6 +414,12 @@ pub(crate) fn lower_function(
                 .iter()
                 .map(|(reg, _)| ssa.current_def[bi][*reg as usize])
                 .collect();
+            // And the same question asked of *every* register, which is what
+            // tells the parent which of them this body rebound. A mutation
+            // through a shared handle changes no `current_def` and so does not
+            // appear here — which is the whole difference the `a` field could
+            // not express.
+            let before_all: Vec<Option<Reg>> = (0..ssa.reg_count).map(|r| ssa.current_def[bi][r]).collect();
             lower_inst(
                 &mut LowerCtx {
                     ssa: &mut ssa,
@@ -418,6 +436,13 @@ pub(crate) fn lower_function(
                 &instrs[pc],
                 pc,
             )?;
+            if is_try_body {
+                for r in 0..ssa.reg_count {
+                    if ssa.current_def[bi][r] != before_all[r] {
+                        rebound.insert(r as u8);
+                    }
+                }
+            }
             for (index, (reg, handle)) in cell_handles.iter().enumerate() {
                 let now = ssa.current_def[bi][*reg as usize];
                 if now == before[index] {
@@ -614,14 +639,22 @@ pub(crate) fn lower_function(
                 //
                 // After the write-backs, so a register that *was* carried back
                 // keeps the definition it was just given.
-                if let Some(span) = regions
-                    .iter()
-                    .find(|r| sig.try_bodies.get(&(func_index, r.begin_pc)) == Some(&body))
-                {
-                    for reg in crate::try_region::written_registers(&instrs, span.body_start, span.body_end) {
-                        if reg != catch_reg && !cell_regs.contains(&reg) {
-                            ssa.poison(reg, bi);
-                        }
+                // The same set the cells were chosen from: registers the body
+                // *rebound*. A container it merely mutated is not among them,
+                // and must not be — poisoning it would make the next read
+                // report itself, the fixpoint would give it a cell, and the
+                // round trip a cell implies is what loses the mutation.
+                let rebound: Vec<u8> = match sig.try_body_rebound.get(&body) {
+                    Some(set) => set.iter().copied().collect(),
+                    None => regions
+                        .iter()
+                        .find(|r| sig.try_bodies.get(&(func_index, r.begin_pc)) == Some(&body))
+                        .map(|span| crate::try_region::written_registers(&instrs, span.body_start, span.body_end))
+                        .unwrap_or_default(),
+                };
+                for reg in rebound {
+                    if reg != catch_reg && !cell_regs.contains(&reg) {
+                        ssa.poison(reg, bi);
                     }
                 }
                 let caught = ssa.new_val();
@@ -1073,6 +1106,9 @@ pub(crate) fn lower_function(
         )
     {
         return Err(Unsupported::ReturnTypeConflict);
+    }
+    if is_try_body {
+        sig.try_body_rebound.insert(func_index, rebound);
     }
     Ok(MirFunction {
         id: FuncId(func_index),

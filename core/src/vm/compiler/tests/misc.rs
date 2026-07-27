@@ -1419,4 +1419,3 @@ fn a_call_above_its_definition_still_knows_the_signature() {
         assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(2)], "{order}");
     }
 }
-

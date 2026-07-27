@@ -289,16 +289,16 @@ jobs:
         # file to AOT_COVERAGE_ALLOW if it legitimately cannot lower.
         run: |
           cargo build -p lk-cli --features aot
-          # 48/51. The three allowed files are the try/catch corpus: `try`/`catch`
-          # became a real statement (`Stmt::Try` → `TryBegin`/`TryEnd`) to fix
-          # three silent wrong answers on the VM path, and the MIR lowering has no
-          # handler-region support yet, so they degrade to the Tier 0 VM bundle.
-          # Output stays VM-identical (see `try_catch_differential` in
-          # cli/tests/clif_differential_test.rs); what lapses is *native*
-          # lowering. Drop these entries when the region outlining lands —
-          # see todos.md.
+          # 49/51. The two allowed files are what is left of the try/catch
+          # corpus: `try_catch.lk` now lowers natively and computes what the VM
+          # computes, so it is no longer here. The other two fail on shapes named
+          # in `aot/lower/src/try_region.rs` — a container the body rebinds, and
+          # a loop-header phi — each with its own measured reproduction there.
+          # Output stays VM-identical either way (see `try_catch_differential`
+          # in cli/tests/clif_differential_test.rs); what lapses is *native*
+          # lowering.
           AOT_COVERAGE_REQUIRE_FULL=1 \
-          AOT_COVERAGE_ALLOW=examples/syntax/try_catch.lk,examples/syntax/error_unwrap.lk,examples/syntax/error_model_edges.lk \
+          AOT_COVERAGE_ALLOW=examples/syntax/error_unwrap.lk,examples/syntax/error_model_edges.lk \
           bash scripts/aot_coverage.sh
       - name: strict native-only differential (no Tier 0 fallback)
         # Complements the scan above: the corpora must not just *compile*

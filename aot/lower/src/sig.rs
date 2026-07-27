@@ -34,6 +34,20 @@ pub(crate) struct SigInfer {
     /// no table of which operand each opcode reads, which is the kind of table
     /// that is wrong in one entry and produces a wrong answer.
     pub(crate) try_body_params: std::collections::HashMap<u32, Vec<u8>>,
+    /// Registers a body actually **rebound**, as opposed to objects it mutated
+    /// through a handle it shares with the parent.
+    ///
+    /// Recorded while the body is lowered, by comparing the SSA's `current_def`
+    /// before and after each instruction — the same device the body already
+    /// uses to notice a cell's value changing, widened from the tracked cells
+    /// to every register.
+    ///
+    /// It replaces reading the instruction's `a` field as "the register this
+    /// writes", which is not true of every opcode: `log.push(2)` lowers to
+    /// `ListPush a=log`, where `a` is the *receiver*. Counting that as a
+    /// rebinding gave the register a cell, and the `dyn.from_list` /
+    /// `dyn.as_list` round trip a cell implies is what loses the mutation.
+    pub(crate) try_body_rebound: std::collections::HashMap<u32, std::collections::HashSet<u8>>,
     /// What type each of those inputs travels as, when it is not `I64`.
     ///
     /// The trampoline marshals a body's inputs as machine words in a stack

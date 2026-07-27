@@ -141,6 +141,7 @@ pub fn lower_bundled(
         try_bodies: std::collections::HashMap::new(),
         try_body_params: std::collections::HashMap::new(),
         try_body_param_tys: std::collections::HashMap::new(),
+        try_body_rebound: std::collections::HashMap::new(),
         try_body_cells: std::collections::HashMap::new(),
         try_body_extra_cells: std::collections::HashMap::new(),
         conflict: false,
@@ -240,6 +241,7 @@ pub fn lower_bundled(
                     .map(std::collections::HashSet::len)
                     .sum::<usize>(),
                 sig.try_body_param_tys.clone(),
+                sig.try_body_rebound.clone(),
             );
             // Call-site facts are re-derived every pass: an argument register
             // that resolves to a closure ref only once a summary lands (e.g. a
@@ -341,7 +343,8 @@ pub fn lower_bundled(
                 && snapshot.7 == sig.global_tys
                 && snapshot.8 == sig.spawned_isolate.len()
                 && snapshot.9 == sig.force_dyn_globals.len()
-                && snapshot.11 == sig.try_body_param_tys;
+                && snapshot.11 == sig.try_body_param_tys
+                && snapshot.12 == sig.try_body_rebound;
             // Each retriable discovery (Dyn loop phi, empty-list re-guess,
             // boxed-returns function) legitimately consumes one extra pass, so
             // the safety valve budgets for them on top of the type lattice.
