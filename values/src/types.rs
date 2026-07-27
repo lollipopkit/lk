@@ -656,6 +656,22 @@ impl Type {
             (_, Type::Any) => true,
             // Any can flow into any type (dynamic fallback)
             (Type::Any, _) => true,
+            // A value whose type is still a free variable can become what is
+            // expected of it. `let xs: List<Int> = [];` is the case that
+            // matters: an empty literal has no element to infer from, so its
+            // type is `List<'T>`, and recursing into the element compared `'T`
+            // against `Int` and fell through to "no rule" — an annotation being
+            // *rejected* by the very absence of information it was written to
+            // supply.
+            //
+            // Source side only. A variable here means the value has not been
+            // decided yet, which is a thing an annotation may decide; a
+            // variable on the *target* side would mean the annotation itself is
+            // undetermined, and accepting anything into it would make a generic
+            // parameter a hole rather than a constraint. This is not where
+            // unification happens either way — the constraint solver runs after
+            // and is what rejects a variable that two uses pull apart.
+            (Type::Variable(_), _) => true,
             // Same types are assignable
             (a, b) if a == b => true,
             // Boxed types act as transparent wrappers — must come before numeric hierarchy
