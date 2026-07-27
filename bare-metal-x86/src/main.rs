@@ -31,25 +31,26 @@ mod boot;
 mod interrupts;
 mod tasks;
 mod user;
+mod user_programs;
 
 use core::alloc::{GlobalAlloc, Layout};
 use core::panic::PanicInfo;
 use core::ptr::addr_of_mut;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-/// The machine's memory, decided in `link.ld` and read from here.
-///
-/// Not a table in this comment any more. Three things want RAM and none of them
-/// can ask — the kernel image, the Rust heap the interpreter allocates from,
-/// and the page allocator the LK program hands out — so the map has to be
-/// written down somewhere, and the somewhere has to be a place *both* languages
-/// can read. A linker script is that place: Rust takes the address of an
-/// `extern static`, LK asks `symbol_address`, and there is one answer.
-///
-/// It used to be a doc table here plus a literal in each language. `0x00380000`
-/// in particular was written twice and cross-checked at run time by
-/// `kernel_run` refusing any other address — which notices the drift rather
-/// than preventing it.
+// The machine's memory, decided in `link.ld` and read from here.
+//
+// Not a table in this comment any more. Three things want RAM and none of them
+// can ask — the kernel image, the Rust heap the interpreter allocates from,
+// and the page allocator the LK program hands out — so the map has to be
+// written down somewhere, and the somewhere has to be a place *both* languages
+// can read. A linker script is that place: Rust takes the address of an
+// `extern static`, LK asks `symbol_address`, and there is one answer.
+//
+// It used to be a doc table here plus a literal in each language. `0x00380000`
+// in particular was written twice and cross-checked at run time by
+// `kernel_run` refusing any other address — which notices the drift rather
+// than preventing it.
 unsafe extern "C" {
     static __heap_base: u8;
     static __heap_size: u8;

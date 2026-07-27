@@ -1082,6 +1082,39 @@ framebuffer back proves the writes reached the device's memory, but an
 unconfigured card accepts those too. Only what QEMU scans out shows that the
 mode was actually set.
 
+## What is Rust, and why — the whole list
+
+The point of this demo is what LK can be made to do, so the interesting number
+is what it still cannot. Every line below is here because of a specific thing
+the language cannot say, and the reason is the entry, not the file:
+
+| file | lines | why it is not LK |
+| --- | --- | --- |
+| `main.rs` | 346 | Hosts the *interpreter*: a Rust bump allocator, and the parse-and-run entry the `run` command calls. A language cannot be its own host. |
+| `boot.rs` | 205 | The multiboot header, and 32-bit code that reaches long mode. It runs before there is a stack, a GDT, or paging — before anything compiled could. |
+| `user.rs` | 182 | `iretq`, the syscall trampoline's register spill, and `ltr`'s frame. No instruction lowers privilege directly, and an interrupt is not a call. |
+| `interrupts.rs` | 144 | The 32 exception stubs, and a fault reporter whose whole design is to depend on as little as possible. |
+| `user_programs.rs` | 121 | Three ring-3 programs. Assembly because a ring-3 program must not reach for a runtime, and `int` takes its vector as an immediate. |
+| `tasks.rs` | 110 | Returning on a *different* stack, which is what a task switch is. |
+
+Against roughly 5,000 lines of LK: every driver, the interrupt table, the
+descriptor table, the task state segment, the page tables and address spaces,
+the task table, the scheduler, the syscall dispatcher, the window manager, the
+shell.
+
+Two of those rows are worth reading twice, because they are the ones that stopped
+being about the language:
+
+**`interrupts.rs` no longer has a trampoline per device.** `lkrt` carries 256
+stubs and a handler table, so installing a driver's interrupt is two stores from
+LK. What is left here is the *exception* stubs, which differ — each pushes a
+dummy error code where the CPU does not — and the reporter.
+
+**`user.rs` no longer answers questions.** It used to hold a row of small
+functions telling the program where the linker had put things. `symbol_address`
+works on data symbols, so the program asks the linker itself; and the memory map
+moved into `link.ld`, which is the one file both languages read.
+
 ## The drivers are modules
 
 ```
