@@ -21,6 +21,18 @@ pub enum Token {
     Semicolon,         // ;
     Dollar,            // $
     Hash,              // #
+    /// `@`, which the grammar gives no meaning to.
+    ///
+    /// It exists so `macro_rules!` can use it the way Rust's do: as the marker
+    /// on an internal rule (`(@from $prev:expr, …)`), where the point is a token
+    /// that is legal in a token stream and illegal in every position a user
+    /// would write by hand — so a caller cannot reach the internal rules by
+    /// accident. LK's macros are Rust-shaped, and a macro ported from Rust hits
+    /// this within the first ten minutes.
+    ///
+    /// Outside a macro it is still an error; it is a *parse* error now rather
+    /// than a lexer one, which is the same answer with a better message.
+    At,                // @
     Assign,            // =
     AddAssign,         // +=
     SubAssign,         // -=
@@ -880,6 +892,13 @@ impl<'a> Tokenizer<'a> {
                 self.push_with_span(Token::Hash, start, end);
                 Ok(())
             }
+            '@' => {
+                let start = self.current_position();
+                self.advance_char();
+                let end = self.current_position();
+                self.push_with_span(Token::At, start, end);
+                Ok(())
+            }
             ',' => {
                 let start = self.current_position();
                 self.advance_char();
@@ -1110,7 +1129,6 @@ impl<'a> Tokenizer<'a> {
                     Ok(())
                 }
             }
-            // Removed '@' context access; treat as unknown punctuation.
             '=' => {
                 let start = self.current_position();
                 if self.expect("==") {
@@ -1224,7 +1242,7 @@ impl<'a> Tokenizer<'a> {
     fn is_punctuation(&self, c: char) -> bool {
         matches!(
             c,
-            '(' | ')'
+            '@' | '(' | ')'
                 | '{'
                 | '}'
                 | '['
@@ -1266,6 +1284,7 @@ impl<'a> Tokenizer<'a> {
                 | Token::Semicolon
                 | Token::Dollar
                 | Token::Hash
+                | Token::At
                 | Token::Assign
                 | Token::AddAssign
                 | Token::SubAssign

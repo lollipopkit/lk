@@ -367,6 +367,9 @@ impl TestLanguageServer {
             T::And => "Operator: &&".to_string(),
             T::Or => "Operator: ||".to_string(),
             T::Not => "Operator: !".to_string(),
+            // Not an operator: the grammar gives it no meaning, and it exists so
+            // a `macro_rules!` can mark its internal rules the way Rust's do.
+            T::At => "Macro internal-rule marker: @".to_string(),
             T::In => "Operator: in".to_string(),
             T::Assign => "Operator: =".to_string(),
             T::Add => "Operator: +".to_string(),

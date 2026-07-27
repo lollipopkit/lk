@@ -1,0 +1,78 @@
+// Internal macro rules, marked with `@` the way Rust's are.
+//
+// A declarative macro cannot add numbers up: there is no accumulator, only
+// patterns. The way that is done is a recursive rule that carries the running
+// total in its own argument list — and to keep a caller from reaching that rule
+// by accident it is marked with a token nobody writes by hand.
+//
+// Rust uses `@`. LK does too, and for the same reason: it is legal in a token
+// stream and illegal in every position a person would write one, so
+// `layout!(@from …)` cannot be confused with a real invocation, and a rule that
+// begins with it cannot be matched by `layout! { A: 8, … }`.
+//
+// The example is the one that motivated it. A structure in memory is a list of
+// widths, and what the code needs is the offsets — which is the widths added up.
+// Written by hand that is a column of numbers where inserting a field changes
+// every line below it, and where the size at the end is the one number nothing
+// checks.
+
+macro_rules! layout {
+    // The end of the run: the accumulated offset *is* the size, so it cannot
+    // disagree with the fields above it.
+    (@from $prev:expr, => $size:ident) => {
+        const $size = $prev;
+    };
+    // One field starts where the run has got to, and the run advances by its
+    // width.
+    (@from $prev:expr, $name:ident : $width:expr, $($rest:tt)*) => {
+        const $name = $prev;
+        layout!(@from ($prev) + ($width), $($rest)*);
+    };
+    // What a caller writes. A layout begins at zero: an offset is measured from
+    // whatever base the caller supplies.
+    ($($body:tt)*) => {
+        layout!(@from 0, $($body)*);
+    };
+}
+
+// An Ethernet header, which is the case worth checking by hand: two six-byte
+// addresses and a two-byte type. A reader who assumed machine words would get
+// every one of these wrong.
+layout! {
+    ETH_DEST: 6,
+    ETH_SOURCE: 6,
+    ETH_TYPE: 2,
+    => ETH_HEADER_SIZE
+}
+
+// And a mixed one, where the odd widths are the point: the two single bytes in
+// the middle make every offset after them look wrong and be right.
+layout! {
+    ARP_HTYPE: 2,
+    ARP_PTYPE: 2,
+    ARP_HLEN: 1,
+    ARP_PLEN: 1,
+    ARP_OPER: 2,
+    ARP_SENDER_MAC: 6,
+    => ARP_SENDER_IP_OFFSET
+}
+
+println(ETH_DEST);
+println(ETH_SOURCE);
+println(ETH_TYPE);
+println(ETH_HEADER_SIZE);
+
+println(ARP_HLEN);
+println(ARP_PLEN);
+println(ARP_OPER);
+println(ARP_SENDER_MAC);
+println(ARP_SENDER_IP_OFFSET);
+
+// The offsets are constants by the time anything runs, so they can be used the
+// way any other constant is.
+fn field_at(base: Int, offset: Int) -> Int {
+    return base + offset;
+}
+
+println(field_at(0x1000, ETH_TYPE));
+println(field_at(0x1000, ARP_SENDER_MAC));

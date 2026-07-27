@@ -61,6 +61,43 @@ hygiene.rs`);展开产物中的控制流、参数名、语义名各有针对性�
 (见 `hygiene_tests/`)。`$crate` 锚在定义时解析为定义方的绝对包名
 (`runtime_anchor.rs`),跨包展开不会错绑。
 
+## 内部规则与 `@`
+
+声明宏没有累加器,只有模式匹配。要把一串宽度加成偏移,做法是一条**调用自己**的规则,
+把running 的总和放在自己的参数表里带着走 —— 而那条规则不能被调用方够到,否则
+`layout! { A: 8 }` 会匹配上它。
+
+标记它的是 `@`,和 Rust 一样,理由也一样:它在 token 流里合法,在任何一个人会手写的
+位置上都不合法。这门语言此前没给 `@` 任何含义,这正是它合适的原因。
+
+```lk
+export macro_rules! layout {
+    // 一段的结尾:累加出来的偏移*就是*大小,所以它不可能和上面的字段不一致
+    (@from $prev:expr, => $size:ident) => {
+        const $size = $prev;
+    };
+    // 一个字段从这一段走到的地方开始,然后这一段前进它的宽度
+    (@from $prev:expr, $name:ident : $width:expr, $($rest:tt)*) => {
+        const $name = $prev;
+        layout!(@from ($prev) + ($width), $($rest)*);
+    };
+    // 调用方写的形式
+    ($($body:tt)*) => {
+        layout!(@from 0, $($body)*);
+    };
+}
+
+layout! {
+    ETH_DEST: 6,
+    ETH_SOURCE: 6,
+    ETH_TYPE: 2,
+    => ETH_HEADER_SIZE      // 14,不是 3 个机器字
+}
+```
+
+宏外面的 `@` 仍然是错误 —— 一个语法错误而不是词法错误,同一个答案配一条更好的消息。
+完整例子见 `examples/syntax/macro_internal_rules.lk`。
+
 ## 宏导入与导出
 
 宏是编译期实体,用普通 `use` 语法导入,但在宏展开阶段消费:
