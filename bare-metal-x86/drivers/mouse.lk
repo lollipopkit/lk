@@ -1,0 +1,255 @@
+// The PS/2 mouse.
+//
+// Same controller as the keyboard — one chip, two devices — which is most of
+// what makes this driver awkward. Commands for the mouse have to be prefixed
+// with 0xD4 ("send the next byte to the auxiliary port"), the controller's own
+// configuration byte has to be edited to let the mouse interrupt at all, and
+// every one of those steps has to wait for the right status bit or the byte is
+// written into a full buffer and lost.
+//
+// The device reports in three-byte packets, and there is no framing: the only
+// thing that says a byte is the first of a packet is bit 3 of that byte, which
+// is always set. A driver that trusts its own counter instead drifts by one
+// after a single dropped byte and never recovers — the cursor then moves in a
+// direction unrelated to the hand.
+
+// The controller's ports. Named `AUX_*` here because `drivers/keyboard` names
+// the same two ports `PS2_*`: they are one chip, and bundling flattens the
+// modules into one namespace, so two files cannot both define the name. Which
+// is the right complaint to get — the alternative is two definitions of one
+// port that are free to drift apart.
+const AUX_DATA = 0x60;
+const AUX_STATUS = 0x64;
+const AUX_COMMAND = 0x64;
+
+// Status bits: output buffer full (there is a byte to read), input buffer full
+// (the controller is not ready for a write yet).
+const PS2_OUT_FULL = 0x01;
+const PS2_IN_FULL = 0x02;
+// Set in the status byte when the pending byte came from the mouse rather than
+// the keyboard.
+const PS2_FROM_AUX = 0x20;
+
+const PS2_CMD_ENABLE_AUX = 0xa8;
+const PS2_CMD_READ_CONFIG = 0x20;
+const PS2_CMD_WRITE_CONFIG = 0x60;
+const PS2_CMD_TO_AUX = 0xd4;
+
+const MOUSE_CMD_SET_DEFAULTS = 0xf6;
+const MOUSE_CMD_ENABLE = 0xf4;
+const MOUSE_ACK = 0xfa;
+
+// Config-byte bits: interrupt on an auxiliary byte, and the clock line the
+// controller disables while it is being configured.
+const CONFIG_AUX_IRQ = 0x02;
+const CONFIG_AUX_CLOCK_OFF = 0x20;
+
+// Packet byte 0: which buttons are down, and the sign bits for the two
+// movement bytes. Bit 3 is always set, which is the only framing there is.
+const PACKET_LEFT = 0x01;
+const PACKET_RIGHT = 0x02;
+const PACKET_MIDDLE = 0x04;
+const PACKET_ALWAYS = 0x08;
+const PACKET_X_SIGN = 0x10;
+const PACKET_Y_SIGN = 0x20;
+// Set when the movement overflowed a byte. The value is then meaningless, so
+// the packet's movement is dropped rather than believed.
+const PACKET_X_OVERFLOW = 0x40;
+const PACKET_Y_OVERFLOW = 0x80;
+
+// How many status reads to spend waiting. Bounded for the same reason the disk
+// driver's waits are: a device that never answers must not take the machine
+// with it.
+const PS2_SPIN_LIMIT = 100000;
+
+fn aux_status() -> Int {
+    let value = unsafe { port_in_u8(AUX_STATUS) };
+    return value as Int;
+}
+
+fn aux_data() -> Int {
+    let value = unsafe { port_in_u8(AUX_DATA) };
+    return value as Int;
+}
+
+// Waits until the controller will accept a write. Returns 0 on timeout.
+fn aux_wait_writable() -> Int {
+    let spins = 0;
+    while (spins < PS2_SPIN_LIMIT) {
+        if ((aux_status() & PS2_IN_FULL) == 0) {
+            return 1;
+        }
+        spins = spins + 1;
+    }
+    return 0;
+}
+
+// Waits until there is a byte to read. Returns 0 on timeout.
+fn aux_wait_readable() -> Int {
+    let spins = 0;
+    while (spins < PS2_SPIN_LIMIT) {
+        if ((aux_status() & PS2_OUT_FULL) != 0) {
+            return 1;
+        }
+        spins = spins + 1;
+    }
+    return 0;
+}
+
+fn aux_command(byte: Int) -> Int {
+    if (aux_wait_writable() == 0) {
+        return 0;
+    }
+    unsafe { port_out_u8(AUX_COMMAND, byte as u8) };
+    return 1;
+}
+
+fn aux_write(byte: Int) -> Int {
+    if (aux_wait_writable() == 0) {
+        return 0;
+    }
+    unsafe { port_out_u8(AUX_DATA, byte as u8) };
+    return 1;
+}
+
+// Sends a command to the mouse itself and reads its acknowledgement.
+//
+// Every mouse command answers 0xFA. Reading it is not optional politeness: the
+// byte is in the buffer either way, and leaving it there means the next read —
+// which the interrupt handler will make — takes an ACK for the first byte of a
+// packet.
+fn to_mouse(byte: Int) -> Int {
+    if (aux_command(PS2_CMD_TO_AUX) == 0 || aux_write(byte) == 0) {
+        return 0;
+    }
+    if (aux_wait_readable() == 0) {
+        return 0;
+    }
+    if (aux_data() != MOUSE_ACK) {
+        return 0;
+    }
+    return 1;
+}
+
+// Brings the mouse up: power the auxiliary port, let it interrupt, reset the
+// device to a known state, and start the stream.
+//
+// Returns 0 if any step timed out, so a machine with no mouse is a report
+// rather than a hang or a cursor that never moves for no stated reason.
+fn mouse_init() -> Int {
+    if (aux_command(PS2_CMD_ENABLE_AUX) == 0) {
+        return 0;
+    }
+    if (aux_command(PS2_CMD_READ_CONFIG) == 0 || aux_wait_readable() == 0) {
+        return 0;
+    }
+    let config = aux_data();
+    // Enable the auxiliary interrupt, and make sure the clock is not held off.
+    config = (config | CONFIG_AUX_IRQ) & (0xff - CONFIG_AUX_CLOCK_OFF);
+    if (aux_command(PS2_CMD_WRITE_CONFIG) == 0 || aux_write(config) == 0) {
+        return 0;
+    }
+    if (to_mouse(MOUSE_CMD_SET_DEFAULTS) == 0) {
+        return 0;
+    }
+    if (to_mouse(MOUSE_CMD_ENABLE) == 0) {
+        return 0;
+    }
+    // Drain whatever is still in the controller's output buffer.
+    //
+    // Anything left there is from before the stream started — a stale byte, or
+    // the tail of a command exchange — and the handler would take it as the
+    // first byte of a packet. Being one byte out is not a small error: the
+    // flags byte then lands where a movement byte belongs, and the overflow
+    // bits it happens to contain make every movement read as zero. The cursor
+    // sits still while the packets arrive, which looks like a dead device.
+    let spins = 0;
+    while (spins < PS2_SPIN_LIMIT && (aux_status() & PS2_OUT_FULL) != 0) {
+        aux_data();
+        spins = spins + 1;
+    }
+    return 1;
+}
+
+// Is the byte waiting for us the mouse's?
+//
+// The two devices share the data port, so a handler that reads without asking
+// steals the other one's byte. This is what tells them apart.
+fn has_packet_byte() -> Int {
+    let s = aux_status();
+    if ((s & PS2_OUT_FULL) == 0) {
+        return 0;
+    }
+    if ((s & PS2_FROM_AUX) == 0) {
+        return 0;
+    }
+    return 1;
+}
+
+fn read_packet_byte() -> Int {
+    return aux_data();
+}
+
+// Is this byte plausibly the first of a packet?
+//
+// Bit 3 is always set in byte 0 — but it can also be set in a movement byte,
+// so that alone is not enough to resynchronise on. The overflow bits are the
+// second filter: a real first byte for ordinary movement has them clear, and a
+// movement byte large enough to look like flags almost always does not. It is
+// a heuristic, and it is the one every PS/2 driver uses, because the protocol
+// gives nothing better.
+fn is_first_byte(byte: Int) -> Int {
+    if ((byte & PACKET_ALWAYS) == 0) {
+        return 0;
+    }
+    if ((byte & (PACKET_X_OVERFLOW | PACKET_Y_OVERFLOW)) != 0) {
+        return 0;
+    }
+    return 1;
+}
+
+// The movement a packet reports, as a signed value.
+//
+// The magnitude is a byte and the sign is a bit in the flags — a nine-bit
+// two's-complement number split across two places, which is what has to be put
+// back together here rather than at every call site.
+fn mouse_delta(flags: Int, magnitude: Int, sign_bit: Int) -> Int {
+    if ((flags & sign_bit) == 0) {
+        return magnitude;
+    }
+    return magnitude - 256;
+}
+
+fn dx_of(flags: Int, byte: Int) -> Int {
+    if ((flags & PACKET_X_OVERFLOW) != 0) {
+        return 0;
+    }
+    return mouse_delta(flags, byte, PACKET_X_SIGN);
+}
+
+// Y is reported *up*-positive by the device and drawn down-positive on a
+// screen, so the sign is flipped here — once, rather than in every caller that
+// forgets.
+fn dy_of(flags: Int, byte: Int) -> Int {
+    if ((flags & PACKET_Y_OVERFLOW) != 0) {
+        return 0;
+    }
+    return 0 - mouse_delta(flags, byte, PACKET_Y_SIGN);
+}
+
+// Reported as 0/1 rather than as a Bool: these cross into the shared page,
+// where everything is a word, and converting at the boundary keeps one
+// representation instead of two.
+fn left_down(flags: Int) -> Int {
+    if ((flags & PACKET_LEFT) != 0) {
+        return 1;
+    }
+    return 0;
+}
+
+fn right_down(flags: Int) -> Int {
+    if ((flags & PACKET_RIGHT) != 0) {
+        return 1;
+    }
+    return 0;
+}

@@ -48,6 +48,12 @@ const PIT_VECTOR: usize = 0x20;
 /// The PS/2 keyboard is IRQ1, one past the timer.
 const KEYBOARD_VECTOR: usize = 0x21;
 
+/// The PS/2 mouse is IRQ12, which is on the *slave* PIC — vector 0x20 + 8 + 4.
+/// Its interrupts reach the CPU through the master's IRQ2 cascade line, so
+/// unmasking IRQ12 alone does nothing: IRQ2 has to be unmasked as well, and
+/// its end-of-interrupt has to be sent to both chips.
+const MOUSE_VECTOR: usize = 0x2c;
+
 /// The 8259 pair's command and data ports.
 const PIC1_CMD: u16 = 0x20;
 const PIC1_DATA: u16 = 0x21;
@@ -59,6 +65,7 @@ unsafe extern "C" {
     /// returning on a *different* stack is what a task switch is.
     fn __task_trampoline();
     fn __keyboard_trampoline();
+    fn __mouse_trampoline();
     fn __yield_trampoline();
 }
 
@@ -107,6 +114,7 @@ pub fn init() {
             KEYBOARD_VECTOR,
             __keyboard_trampoline as *const () as usize as u64,
         );
+        set_gate(idt, MOUSE_VECTOR, __mouse_trampoline as *const () as usize as u64);
         // The vector a task uses to ask for a reschedule. No device is behind
         // it, so it can only arrive from an `int` instruction.
         set_gate(
@@ -130,11 +138,13 @@ pub fn init() {
         crate::port_out_u8(PIC2_DATA, 0x02);
         crate::port_out_u8(PIC1_DATA, 0x01); // ICW4: 8086 mode
         crate::port_out_u8(PIC2_DATA, 0x01);
-        // Unmask the timer and the keyboard, mask the rest. An unmasked line
-        // with no handler is a vector into a zeroed IDT entry, which is a
-        // triple fault.
-        crate::port_out_u8(PIC1_DATA, 0xfc);
-        crate::port_out_u8(PIC2_DATA, 0xff);
+        // Unmask the timer, the keyboard and the cascade; mask the rest. An
+        // unmasked line with no handler is a vector into a zeroed IDT entry,
+        // which is a triple fault. The cascade (IRQ2) is not a device — it is
+        // how the slave chip reaches the CPU at all, so the mouse's IRQ12 is
+        // invisible without it.
+        crate::port_out_u8(PIC1_DATA, 0xf8);
+        crate::port_out_u8(PIC2_DATA, 0xef);
 
         core::arch::asm!("sti", options(nomem, nostack));
     }
@@ -166,6 +176,24 @@ pub extern "C" fn pit_dispatch() {
     // End-of-interrupt. Without it the PIC never delivers IRQ0 again.
     // SAFETY: a fixed ISA port.
     unsafe { crate::port_out_u8(PIC1_CMD, 0x20) };
+}
+
+/// As [`pit_dispatch`], for the mouse — with the slave chip's end-of-interrupt
+/// as well as the master's. Acknowledging only the master leaves the slave
+/// believing the interrupt is still in service, and it never raises another:
+/// the mouse moves once and then stops, with nothing to say why.
+#[unsafe(no_mangle)]
+pub extern "C" fn mouse_dispatch() {
+    unsafe extern "C" {
+        fn lk_mouse();
+    }
+    // SAFETY: the LK handler is an `#[export]`ed function with no arguments.
+    unsafe { lk_mouse() };
+    // SAFETY: fixed ISA ports.
+    unsafe {
+        crate::port_out_u8(PIC2_CMD, 0x20);
+        crate::port_out_u8(PIC1_CMD, 0x20);
+    }
 }
 
 /// As [`pit_dispatch`], for the keyboard.
@@ -252,6 +280,10 @@ global_asm!(
     "   pop rcx",
     "   pop rax",
     ".endm",
+    ".global __mouse_trampoline",
+    "__mouse_trampoline:",
+    "   call mouse_dispatch",
+    "   iretq",
     ".global __keyboard_trampoline",
     "__keyboard_trampoline:",
     "   IRQ_SAVE",

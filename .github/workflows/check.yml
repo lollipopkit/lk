@@ -251,6 +251,11 @@ jobs:
           # is read off the disk — and neither the answer nor the loop that
           # computes it appears anywhere in the kernel.
           timeout 400 python3 check_run.py
+          # The PS/2 mouse: three-byte packets on the keyboard's controller,
+          # IRQ12 through the slave PIC's cascade. Checked on the screen — the
+          # cursor follows and leaves no trail — and by what a click does, which
+          # is hand the keyboard to the window under it.
+          timeout 300 python3 check_mouse.py
         env:
           LK_BIN: ../target/debug/lk
       - name: AOT native-lowering coverage gate

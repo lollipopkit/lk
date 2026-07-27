@@ -15,9 +15,11 @@ use { uart_init, uart_putc, uart_write, uart_put_int, uart_put_hex } from "drive
 use { pci_read, pci_write, pci_find_display, PCI_REG_BAR0, PCI_REG_COMMAND,
       PCI_COMMAND_MEMORY, PCI_COMMAND_BUS_MASTER } from "drivers/pci";
 use { vbe_set_mode_virtual, vbe_set_pan } from "drivers/vbe";
-use { get_pixel, fill_rect, copy_rows } from "drivers/framebuffer";
+use { get_pixel, put_pixel, fill_rect, copy_rows } from "drivers/framebuffer";
 use { draw_glyph, draw_cells, clear, scroll_up, draw_cursor, CELL_WIDTH, CELL_HEIGHT } from "drivers/text";
 use { read_scancode, is_release, key_code } from "drivers/keyboard";
+use { mouse_init, has_packet_byte, read_packet_byte as mouse_byte, is_first_byte,
+      dx_of, dy_of, left_down } from "drivers/mouse";
 use { start as pit_start } from "drivers/pit";
 use { acquire as lock, release as unlock } from "drivers/lock";
 use { define as window_define, put as window_put, fill as window_fill,
@@ -48,6 +50,7 @@ const BACKGROUND = 0x001428;
 const FOREGROUND = 0x40ff90;
 const TITLE_COLOUR = 0xffc040;
 const CURSOR_COLOUR = 0x205070;
+const POINTER_COLOUR = 0xff4060;
 
 // A 5x7 font in an 8-row cell, one row per integer with the leftmost pixel in
 // bit 4. Written for this program rather than taken from anywhere, so the
@@ -206,8 +209,27 @@ const SHARED_FILE = SHARED_SECTOR + SECTOR_SIZE;
 // a heap with a hard-coded address is a heap that collides with the next thing
 // given one.
 const SHARED_HEAP = SHARED_FILE + 2 * WORD;
+// The mouse: where the pointer is, which buttons are down, how far through a
+// packet the handler is, and the two bytes it has seen so far. All of it in the
+// shared page because the handler and the shell both need it, and a handler
+// cannot own state anywhere else.
+const SHARED_MOUSE_X = SHARED_HEAP + 3 * WORD;
+const SHARED_MOUSE_Y = SHARED_MOUSE_X + WORD;
+const SHARED_MOUSE_BUTTONS = SHARED_MOUSE_Y + WORD;
+const SHARED_MOUSE_PHASE = SHARED_MOUSE_BUTTONS + WORD;
+const SHARED_MOUSE_FLAGS = SHARED_MOUSE_PHASE + WORD;
+const SHARED_MOUSE_DX = SHARED_MOUSE_FLAGS + WORD;
+// What the cursor last covered, so it can be put back before the pointer moves
+// on. Four pixels of a 2x2 block; a bigger cursor wants a bigger save area and
+// nothing else changes.
+const SHARED_CURSOR_SAVE = SHARED_MOUSE_DX + WORD;
+const CURSOR_SAVE_WORDS = 4;
+const SHARED_CURSOR_X = SHARED_CURSOR_SAVE + CURSOR_SAVE_WORDS * WORD;
+const SHARED_CURSOR_Y = SHARED_CURSOR_X + WORD;
+const SHARED_CURSOR_DRAWN = SHARED_CURSOR_Y + WORD;
+
 // The end of what is spoken for. Anything added goes here, not into a gap.
-const SHARED_END = SHARED_HEAP + 3 * WORD;
+const SHARED_END = SHARED_CURSOR_DRAWN + WORD;
 
 // The framebuffer is twice the screen's height. Scrolling moves the *view*
 // down through it; only when the view reaches the bottom does anything have to
@@ -833,6 +855,21 @@ fn run_command(base: Int) -> Int {
                    .chain(decimal((t2 as Int) - (t1 as Int))));
         return 1;
     }
+    if (line_starts_with([109, 115])) {                    // "ms"
+        // "<x>,<y> b<buttons> p<phase>"
+        emit(base, decimal(shared_read(SHARED_MOUSE_X))
+                   .chain([44])
+                   .chain(decimal(shared_read(SHARED_MOUSE_Y)))
+                   .chain([32, 98])
+                   .chain(decimal(shared_read(SHARED_MOUSE_BUTTONS)))
+                   .chain([32, 112])
+                   .chain(decimal(shared_read(SHARED_MOUSE_PHASE)))
+                   .chain([32, 102])
+                   .chain(decimal(shared_read(SHARED_MOUSE_FLAGS)))
+                   .chain([32, 100])
+                   .chain(decimal(shared_read(SHARED_MOUSE_DX))));
+        return 1;
+    }
     if (line_starts_with([104, 101, 97, 112])) {           // "heap"
         report_heap(base);
         return 1;
@@ -892,6 +929,48 @@ fn kernel_run(address: Int, length: Int) -> Int {
 fn halt() {
     while (true) {
         unsafe { cpu_wait_for_interrupt(); };
+    }
+}
+
+// The mouse interrupt handler: one byte per interrupt, three to a packet.
+//
+// Assembling the packet *here* rather than queueing raw bytes for the shell is
+// the same split the keyboard uses in reverse. A keystroke means nothing until
+// someone decides what it means, so the handler queues it; a mouse packet is
+// three bytes that are meaningless apart, so the handler assembles them and
+// publishes the result. What it never does is draw — the cursor is chrome, and
+// chrome belongs to whoever owns the screen.
+#[export("lk_mouse")]
+fn on_mouse() {
+    while (has_packet_byte() == 1) {
+        let byte = mouse_byte();
+        let phase = shared_read(SHARED_MOUSE_PHASE);
+        if (phase == 0) {
+            // Resynchronise rather than count: bit 3 is the only framing the
+            // protocol has, and a driver that trusts its own counter drifts by
+            // one after a single dropped byte and never recovers.
+            if (is_first_byte(byte) == 1) {
+                shared_write(SHARED_MOUSE_FLAGS, byte);
+                shared_write(SHARED_MOUSE_PHASE, 1);
+            }
+        } else {
+            if (phase == 1) {
+                shared_write(SHARED_MOUSE_DX, byte);
+                shared_write(SHARED_MOUSE_PHASE, 2);
+            } else {
+                let flags = shared_read(SHARED_MOUSE_FLAGS);
+                let x = shared_read(SHARED_MOUSE_X) + dx_of(flags, shared_read(SHARED_MOUSE_DX));
+                let y = shared_read(SHARED_MOUSE_Y) + dy_of(flags, byte);
+                if (x < 0) { x = 0; }
+                if (y < 0) { y = 0; }
+                if (x > WIDTH - 1) { x = WIDTH - 1; }
+                if (y > HEIGHT - 1) { y = HEIGHT - 1; }
+                shared_write(SHARED_MOUSE_X, x);
+                shared_write(SHARED_MOUSE_Y, y);
+                shared_write(SHARED_MOUSE_BUTTONS, left_down(flags));
+                shared_write(SHARED_MOUSE_PHASE, 0);
+            }
+        }
     }
 }
 
@@ -956,6 +1035,64 @@ fn draw_glyph_in_window(base: Int, slot: Int, index: Int, x: Int, y: Int) {
     if (drops > 0) {
         window_drop_count(SHARED_WINDOWS, slot, drops);
     }
+}
+
+// Puts the cursor on the screen at the pointer's position, having put back
+// whatever the last one covered.
+//
+// Save-under rather than XOR: XOR is one operation instead of three and needs
+// no memory, and it produces a cursor whose colour depends on what is beneath
+// it — which over this program's own amber-on-blue is sometimes the background.
+// A cursor you cannot see is worse than a slow one.
+fn move_cursor(base: Int) {
+    if (shared_read(SHARED_CURSOR_DRAWN) == 1) {
+        let old_x = shared_read(SHARED_CURSOR_X);
+        let old_y = shared_read(SHARED_CURSOR_Y);
+        let i = 0;
+        for row in 0..2 {
+            for column in 0..2 {
+                put_pixel(base, WIDTH, old_x + column, old_y + row,
+                          shared_read(SHARED_CURSOR_SAVE + i * WORD));
+                i = i + 1;
+            }
+        }
+    }
+    let x = shared_read(SHARED_MOUSE_X);
+    let y = shared_read(SHARED_MOUSE_Y);
+    let i = 0;
+    for row in 0..2 {
+        for column in 0..2 {
+            let px = x + column;
+            let py = y + row;
+            if (px < WIDTH && py < HEIGHT) {
+                shared_write(SHARED_CURSOR_SAVE + i * WORD, get_pixel(base, WIDTH, px, py));
+                put_pixel(base, WIDTH, px, py, POINTER_COLOUR);
+            }
+            i = i + 1;
+        }
+    }
+    shared_write(SHARED_CURSOR_X, x);
+    shared_write(SHARED_CURSOR_Y, y);
+    shared_write(SHARED_CURSOR_DRAWN, 1);
+}
+
+// Which window the pointer is over, or -1.
+//
+// Walks the descriptors rather than asking each window, because the answer has
+// to be one window: two overlapping rectangles would otherwise both claim the
+// click. Last defined wins, which is the nearest thing to a z-order this has.
+fn window_at(x: Int, y: Int) -> Int {
+    let found = 0 - 1;
+    for slot in 0..WINDOW_COUNT {
+        let left = window_left(SHARED_WINDOWS, slot);
+        let top = window_top(SHARED_WINDOWS, slot);
+        if (x >= left && y >= top
+            && x < left + window_width(SHARED_WINDOWS, slot)
+            && y < top + window_height(SHARED_WINDOWS, slot)) {
+            found = slot;
+        }
+    }
+    return found;
 }
 
 // Bumps the two words that must agree, as one indivisible step.
@@ -1198,6 +1335,26 @@ shared_write(SHARED_FOCUS, WINDOW_SHELL);
 shared_write(SHARED_PANE_COL, 0);
 shared_write(SHARED_DRAWN_FOCUS, 0 - 1);
 
+// The mouse, if there is one. A machine without it is a report rather than a
+// hang: `mouse_init` bounds every wait it makes.
+shared_write(SHARED_MOUSE_X, ((WIDTH / 2) as Int));
+shared_write(SHARED_MOUSE_Y, ((HEIGHT / 2) as Int));
+shared_write(SHARED_MOUSE_PHASE, 0);
+shared_write(SHARED_MOUSE_BUTTONS, 0);
+shared_write(SHARED_CURSOR_DRAWN, 0);
+// Masked for the whole sequence. Every mouse command answers with an ACK, and
+// IRQ12 is already unmasked by the time this runs — so the acknowledgement
+// raises an interrupt, the handler reads the byte as if it were packet data,
+// and the initialisation waits for a byte that has already been taken. The
+// symptom is "no mouse" on a machine that has one.
+let irq_mouse = lock();
+let mouse_present = mouse_init();
+unlock(irq_mouse);
+if (mouse_present == 0) {
+    // "no mouse"
+    uart_write([110, 111, 32, 109, 111, 117, 115, 101, 10]);
+}
+
 // The cursor starts after the prompt.
 place_cursor(framebuffer, 3, 5);
 
@@ -1261,6 +1418,26 @@ let waited = 0;
 while (running == 1 && waited < 60000) {
     unsafe { cpu_wait_for_interrupt(); };
     waited = waited + 1;
+
+    // The pointer, and what a click means.
+    //
+    // Both are done here rather than in the handler: drawing from an interrupt
+    // would put the screen in the hands of whatever it interrupted, and
+    // deciding that a click *means* "focus this window" is a policy — the same
+    // reason the key handler routes bytes but does not run commands.
+    if (shared_read(SHARED_MOUSE_X) != shared_read(SHARED_CURSOR_X)
+        || shared_read(SHARED_MOUSE_Y) != shared_read(SHARED_CURSOR_Y)
+        || shared_read(SHARED_CURSOR_DRAWN) == 0) {
+        let irq_cursor = lock();
+        move_cursor(framebuffer_origin());
+        unlock(irq_cursor);
+    }
+    if (shared_read(SHARED_MOUSE_BUTTONS) == 1) {
+        let hit = window_at(shared_read(SHARED_MOUSE_X), shared_read(SHARED_MOUSE_Y));
+        if (hit >= 0 && hit != shared_read(SHARED_FOCUS)) {
+            shared_write(SHARED_FOCUS, hit);
+        }
+    }
 
     // Repaint the frame when the focus has moved. Cheap enough to check every
     // wake; the drawing only happens when the answer changed.

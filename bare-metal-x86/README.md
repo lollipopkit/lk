@@ -154,6 +154,41 @@ someone who may not be listening.
 shell to have answered exactly **once**. Routing every key to the shell makes it
 answer twice, which is what the check says when it fails.
 
+### Pointing at one
+
+`drivers/mouse.lk` drives the PS/2 mouse — the same controller as the keyboard,
+which is most of what makes it awkward: commands for the mouse are prefixed with
+0xD4, the controller's own configuration byte has to be edited before it will
+interrupt, and IRQ12 is on the *slave* PIC, so it is invisible until IRQ2 (the
+cascade, which is not a device) is unmasked too and its end-of-interrupt goes to
+both chips.
+
+Clicking a window gives it the keyboard, which is `check_focus.py`'s claim
+reached the other way.
+
+Three failures worth writing down, because each looked like a dead device:
+
+- **The initialisation has to run with interrupts masked.** Every mouse command
+  answers `0xFA`, and IRQ12 is unmasked by then — so the acknowledgement raises
+  an interrupt, the handler reads the byte as packet data, and the
+  initialisation waits for a byte that has already been taken.
+- **The controller's output buffer has to be drained afterwards.** A byte left
+  from before the stream started becomes byte 0 of the first packet, and being
+  one byte out is not a small error: the flags land where a movement byte
+  belongs, and the overflow bits they happen to contain make *every* movement
+  read as zero. The cursor sits still while packets arrive.
+- **The handler must not allocate.** Printing the packet to the serial line for
+  debugging used `uart_put_int`, which builds a list — and the fault was a #GP
+  inside the allocator. The rule was already written down for tasks; the mouse
+  is where it was tested.
+
+The cursor is drawn by the shell, not the handler: the handler assembles packets
+and publishes a position, because drawing from an interrupt would put the screen
+in the hands of whatever it interrupted. It saves the pixels it covers and puts
+them back before moving — XOR would be one operation instead of three, and would
+produce a cursor whose colour depends on what is under it, which over this
+program's own amber-on-blue is sometimes the background.
+
 ### Seeing which one has it
 
 Each window draws its own one-pixel frame, focused or idle, and repaints when
@@ -454,6 +489,7 @@ mechanisms:
 | PCI configuration space | the 0xCF8/0xCFC port pair | walks bus 0, finds the display controller by class code, reads BAR0, enables memory cycles |
 | the framebuffer | volatile MMIO | sets a mode over the Bochs VBE ports, clears it, draws text, and scrolls by panning the view rather than moving pixels |
 | the PS/2 keyboard | port I/O, from an interrupt handler | reads the scancode, decodes it, echoes the character to the serial line and draws it at the cursor |
+| the PS/2 mouse | port I/O on the same controller, IRQ12 through the cascade | configures the auxiliary port, assembles three-byte packets, publishes a position and button state |
 | an IDE disk | port I/O with status polling | IDENTIFY for the geometry, then reads and writes 512-byte sectors, with bounded waits |
 
 `check_screen.py` screenshots the machine through QEMU's monitor and checks the
@@ -474,6 +510,7 @@ drivers/pit.lk           the interval timer
 drivers/ata.lk           an IDE disk, PIO mode (read, write, IDENTIFY)
 drivers/tarfs.lk         read-only tar, straight off sectors
 drivers/heap.lk          a free-list allocator: alloc, free, and coalesce
+drivers/mouse.lk         the PS/2 mouse: packets, buttons, and a position
 drivers/shared.lk        a word an interrupt handler and the main flow share
 program.lk               which devices to bring up, and what a keystroke means
 ```
