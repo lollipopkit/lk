@@ -98,7 +98,7 @@ stack pointers and the switch; *which* code runs on them is the program's:
 let irq = lock();
 let spinner = spawn_task(unsafe { symbol_address("lk_task_b") });
 let clock = spawn_task(unsafe { symbol_address("lk_task_clock") });
-shared_write(SHARED_TASK_COUNT, 3);
+shared_write(SHARED_TASK_COUNT, clock + 1);
 unlock(irq);
 ```
 

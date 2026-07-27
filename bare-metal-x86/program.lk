@@ -188,10 +188,21 @@ const SHARED_PAN = SHARED_WINDOWS + WINDOW_COUNT * WINDOW_STRIDE;
 // One input ring per window: a header and 32 bytes of payload each.
 const SHARED_QUEUES = SHARED_PAN + WORD;
 const QUEUE_STRIDE = 64;
+// The line the shell is collecting, one byte per character — a handler cannot
+// allocate, so it is bytes at an address.
+//
+// Written as `0x00300100` until it was computed: by then the chain above it had
+// grown past that address and the line buffer sat *inside* the second window's
+// input ring. Nothing failed loudly; typing into one window would have quietly
+// rewritten the other's queued bytes. This is the same mistake `SHARED_PAN`
+// made, in the one place the chain had not reached.
+const LINE_CAPACITY = 48;
+const SHARED_LINE = SHARED_QUEUES + WINDOW_COUNT * QUEUE_STRIDE;
+
 // One sector, which is where the disk driver puts what it read. It lives in
 // the shared page rather than in a page from the allocator because a command
 // has to be able to run before there is any memory management at all.
-const SHARED_SECTOR = SHARED_QUEUES + WINDOW_COUNT * QUEUE_STRIDE;
+const SHARED_SECTOR = SHARED_LINE + LINE_CAPACITY;
 const SECTOR_SIZE = 512;
 // Where `disk w` writes. Past anything a filesystem on the same disk would be
 // using, because a demonstration that destroys the medium it demonstrates on is
@@ -296,8 +307,6 @@ const VIRTUAL_HEIGHT = 400;
 
 const FRAME_IDLE = 0x203040;
 const FRAME_FOCUSED = 0xffc040;
-const SHARED_LINE = 0x00300100;
-const LINE_CAPACITY = 48;
 
 // Where a character sits in FONT. The font has one case, so lower-case maps to
 // the upper-case glyph; anything it does not cover renders as a space, which
@@ -1229,18 +1238,8 @@ fn hide_cursor(base: Int) {
 }
 
 fn move_cursor(base: Int) {
-    if (shared_read(SHARED_CURSOR_DRAWN) == 1) {
-        let old_x = shared_read(SHARED_CURSOR_X);
-        let old_y = shared_read(SHARED_CURSOR_Y);
-        let i = 0;
-        for row in 0..2 {
-            for column in 0..2 {
-                put_pixel(base, WIDTH, old_x + column, old_y + row,
-                          shared_read(SHARED_CURSOR_SAVE + i * WORD));
-                i = i + 1;
-            }
-        }
-    }
+    // Take the old one off first — the same operation, so it is the same code.
+    hide_cursor(base);
     let x = shared_read(SHARED_MOUSE_X);
     let y = shared_read(SHARED_MOUSE_Y);
     let i = 0;
@@ -1715,10 +1714,26 @@ pages_init(SHARED_PAGES, usable_base, ram_length - (usable_base - ram_base));
 // that a chain of constants prevents inside the shared page has the same shape
 // out here in RAM.
 let heap_base = page_alloc(SHARED_PAGES);
+// The pages have to be *contiguous* — the heap is one arena, not a list — and
+// the allocator only bumps, so they are. Checked rather than assumed: an
+// exhausted range returns 0, and initialising an arena on a zero base would
+// hand out addresses starting at zero.
+let heap_pages_ok = heap_base != 0;
 for i in 1..HEAP_PAGES {
-    page_alloc(SHARED_PAGES);
+    let page = page_alloc(SHARED_PAGES);
+    if (page != heap_base + i * PAGE_SIZE) {
+        heap_pages_ok = false;
+    }
 }
-heap_init(SHARED_HEAP, heap_base, HEAP_PAGES * PAGE_SIZE);
+if (heap_pages_ok) {
+    heap_init(SHARED_HEAP, heap_base, HEAP_PAGES * PAGE_SIZE);
+} else {
+    // An empty arena: every heap call then reports "nothing fits" instead of
+    // writing somewhere it was never given.
+    heap_init(SHARED_HEAP, 0, 0);
+    // "no heap"
+    uart_write([110, 111, 32, 104, 101, 97, 112, 10]);
+}
 
 // Two windows: the shell owns everything but the corner cell the spinner has.
 // Nothing enforces that they were carved up sensibly — what the rectangles buy
@@ -1757,8 +1772,11 @@ shared_write(SHARED_DRAWN_FOCUS, 0 - 1);
 let irq_spawn = lock();
 let spinner_task = spawn_task(unsafe { symbol_address("lk_task_b") });
 let clock_task = spawn_task(unsafe { symbol_address("lk_task_clock") });
-// The scheduler round-robins over what exists, so it has to be told.
-shared_write(SHARED_TASK_COUNT, 3);
+// Derived from the last slot handed out, not written as a number: a literal
+// here is a second place that has to be edited whenever a task is added, and
+// the failure when it is not — a scheduler naming a slot that was never
+// spawned — is a jump to zero.
+shared_write(SHARED_TASK_COUNT, clock_task + 1);
 unlock(irq_spawn);
 if (spinner_task < 0 || clock_task < 0) {
     // "no tasks"

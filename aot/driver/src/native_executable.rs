@@ -191,6 +191,15 @@ fn lkrt_staticlib_path() -> Option<PathBuf> {
     } else {
         "liblkrt_cabi.a"
     };
+    // Refresh before searching. A *stale* archive is worse than a missing one:
+    // it links partially, or — as happened the day the toolchain moved — brings
+    // a second copy of libstd built by another rustc and collides on
+    // `rust_eh_personality`, with a message that names neither archive as the
+    // old one. Under cargo's fingerprinting a rebuild is a sub-second no-op;
+    // where there is no workspace to build in (an installed `lk`), it fails and
+    // the search below still finds whatever was shipped. Same rule the CLI
+    // already follows for `lk-api`.
+    let _ = build_lkrt_staticlib();
     let mut candidates = vec![dir.join(file)];
     // The `lk` CLI runs from `target/<profile>/`, whose `deps` subdir holds the
     // hashed `liblkrt_cabi-<hash>.a`; a `cargo test` binary runs from
@@ -204,18 +213,21 @@ fn lkrt_staticlib_path() -> Option<PathBuf> {
     newest_existing_path(candidates).or_else(build_lkrt_staticlib)
 }
 
-/// Builds `lkrt-cabi` when no archive is on disk.
+/// Builds `lkrt-cabi`, whether or not an archive is already on disk.
 ///
-/// `cargo test` never produces one: for a `staticlib`-only crate a test run
+/// Two failures made this necessary, and only the first is obvious. `cargo
+/// test` never produces a staticlib: for a `staticlib`-only crate a test run
 /// compiles the crate as a test harness and emits no `.a`, so a fresh clone —
 /// or a CI job with a cold cache — reaches the linker with nothing to link
-/// against. What that looks like is `undefined reference to lkrt_abi_check`,
-/// which names neither the archive nor the reason; the suite appeared to pass
-/// only because some *later* step had built the archive on a previous run and
-/// the cache carried it forward.
+/// against, and the message names symbols rather than the missing archive.
 ///
-/// Building it here is the rule the CLI already follows for `lk-api`: an
-/// archive the link needs is the link's business to produce.
+/// The second is why this runs *unconditionally*: an archive left by an older
+/// toolchain still exists, so a build-if-missing check is satisfied by it, and
+/// the link then pulls in two different libstds and fails on `multiple
+/// definition of rust_eh_personality`.
+///
+/// Both are the rule the CLI already follows for `lk-api`: an archive the link
+/// needs is the link's business to produce, every time.
 fn build_lkrt_staticlib() -> Option<PathBuf> {
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent()?.parent()?;
     eprintln!("building lkrt staticlib (one-time)…");

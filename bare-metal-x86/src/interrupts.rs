@@ -282,7 +282,15 @@ global_asm!(
     ".endm",
     ".global __mouse_trampoline",
     "__mouse_trampoline:",
+    // The same full save as the keyboard's, and for the same reason: an
+    // interrupt is not a call. The code it lands in never agreed to lose its
+    // caller-saved registers, and the handler is compiled LK — it uses them,
+    // and the SSE ones. The first version of this did `call` and `iretq` with
+    // nothing in between, which corrupts whatever it interrupted at a moment
+    // nothing can predict.
+    "   IRQ_SAVE",
     "   call mouse_dispatch",
+    "   IRQ_RESTORE",
     "   iretq",
     ".global __keyboard_trampoline",
     "__keyboard_trampoline:",

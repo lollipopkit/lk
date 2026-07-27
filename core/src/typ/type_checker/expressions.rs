@@ -1778,12 +1778,9 @@ fn cast_is_meaningful(source: &Type, target: &Type) -> bool {
 ///
 /// Only 8/16/32 bits: `in`/`out` have no 64-bit form on x86.
 fn parse_port_builtin(name: &str) -> Option<(bool, lk_values::IntKind)> {
-    let (is_write, rest) = if let Some(rest) = name.strip_prefix("port_in_") {
-        (false, rest)
-    } else if let Some(rest) = name.strip_prefix("port_out_") {
-        (true, rest)
-    } else {
-        return None;
+    let (is_write, rest) = match name.strip_prefix("port_in_") {
+        Some(rest) => (false, rest),
+        None => (true, name.strip_prefix("port_out_")?),
     };
     let kind = match rest {
         "u8" => lk_values::IntKind::U8,
@@ -1796,12 +1793,9 @@ fn parse_port_builtin(name: &str) -> Option<(bool, lk_values::IntKind)> {
 
 /// Splits a `volatile_{read,write}_uN` name into its direction and width.
 fn parse_volatile_builtin(name: &str) -> Option<(bool, lk_values::IntKind)> {
-    let (is_write, rest) = if let Some(rest) = name.strip_prefix("volatile_read_") {
-        (false, rest)
-    } else if let Some(rest) = name.strip_prefix("volatile_write_") {
-        (true, rest)
-    } else {
-        return None;
+    let (is_write, rest) = match name.strip_prefix("volatile_read_") {
+        Some(rest) => (false, rest),
+        None => (true, name.strip_prefix("volatile_write_")?),
     };
     // Only unsigned widths: a hardware register is a bit pattern, and a signed
     // reading of one is the caller's interpretation, made with a cast.

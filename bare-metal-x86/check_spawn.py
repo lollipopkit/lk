@@ -28,8 +28,8 @@ import time
 # the clock three rows below it. Sampled inside their frames.
 SPINNER = (254, 2, 30, 8)
 CLOCK = (254, 26, 44, 8)
-# Long enough for the clock to have moved a whole second on.
-SETTLE = 3.0
+# Between samples: long enough for the clock to have moved a whole second on.
+SETTLE = 1.4
 
 
 def read_ppm(path):
@@ -80,12 +80,15 @@ def main():
             def screenshot(name):
                 path = os.path.join(workdir, name)
                 connection.sendall(f"screendump {path}\n".encode())
-                time.sleep(1.0)
+                time.sleep(SETTLE)
                 return path
 
-            first = screenshot("first.ppm")
-            time.sleep(SETTLE)
-            second = screenshot("second.ppm")
+            # Several samples rather than two. Both windows change *periodically*
+            # — the clock once a second, the spinner once a slice — so two shots
+            # can land on the same phase and show no difference on a machine
+            # where everything is working. Asking "did it ever change" over a
+            # series is the same claim without the coin flip.
+            shots = [screenshot(f"sample{i}.ppm") for i in range(4)]
             connection.sendall(b"quit\n")
             connection.close()
         finally:
@@ -98,10 +101,10 @@ def main():
         failures = []
         if "no tasks" in transcript:
             failures.append("the program reported that a task could not be spawned")
-        if region(first, SPINNER) == region(second, SPINNER):
-            failures.append("the spinner task's window never changed")
-        if region(first, CLOCK) == region(second, CLOCK):
-            failures.append("the clock task's window never changed")
+        for name, rect in [("spinner", SPINNER), ("clock", CLOCK)]:
+            seen = {region(shot, rect) for shot in shots}
+            if len(seen) < 2:
+                failures.append(f"the {name} task's window never changed across {len(shots)} samples")
         if failures:
             raise SystemExit(
                 "spawning wrong:\n  " + "\n  ".join(failures) + "\n--- serial ---\n" + transcript[-400:]

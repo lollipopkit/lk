@@ -14,12 +14,13 @@
 //
 //   +0  size of the payload, in bytes
 //   +4  1 when in use, 0 when free
-//   +8  offset of the next block, or 0 at the end
+//   +8  address of the next block, or 0 at the end
 //   +12 payload starts here
 //
-// Offsets rather than addresses: the arena can then be described by a base and
-// a length, and a block's own words say nothing about where the arena happens
-// to be.
+// Addresses, not offsets, and stored in 32-bit words — so this arena has to
+// live below 4 GiB. It does: the kernel takes it from the page allocator, whose
+// range is the low memory the loader reported. A heap above that line needs the
+// words widened, which is the one change this layout would need.
 //
 // Address-ordered and singly linked, which makes free O(n) in the number of
 // blocks. That is the right trade at this size: a doubly-linked list with size
@@ -62,9 +63,17 @@ fn heap_align_up(value: Int) -> Int {
 fn heap_init(state: Int, base: Int, length: Int) {
     let start = heap_align_up(base);
     let usable = length - (start - base);
-    heap_set_word(state + STATE_BASE, start);
     heap_set_word(state + STATE_LENGTH, usable);
     heap_set_word(state + STATE_USED, 0);
+    // An arena too small for one block gets an empty chain rather than a block
+    // with a negative size. Every reader here walks from the base, so a base of
+    // zero *is* "no blocks" — alloc finds nothing, release has nothing to
+    // release, and the counts are zero.
+    if (usable < HEADER + ALIGN) {
+        heap_set_word(state + STATE_BASE, 0);
+        return;
+    }
+    heap_set_word(state + STATE_BASE, start);
     heap_set_word(start + OFF_SIZE, usable - HEADER);
     heap_set_word(start + OFF_USED, 0);
     heap_set_word(start + OFF_NEXT, 0);

@@ -232,6 +232,10 @@ pub(super) fn cpu_irq_save(_args: NativeArgs<'_>) -> Result<RuntimeVal> {
     {
         let flags: u64;
         unsafe {
+            // No `nostack`: `pushfq` and `pop` are exactly a write to and a
+            // read from the stack. A refactor that adds it "for consistency"
+            // with the ARM arms below is telling the compiler something false
+            // about a sequence it may then schedule a red-zone access into.
             core::arch::asm!("pushfq", "pop {}", "cli", out(reg) flags);
         }
         // IF is bit 9, and set means *enabled* — the opposite sense from ARM's

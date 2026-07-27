@@ -233,11 +233,6 @@ pub enum Inst {
         func: FuncId,
         args: Vec<ValueId>,
     },
-    /// `dst = symbol(args)` — a call to a function implemented *outside* the
-    /// program, named by `#[extern]`.
-    ///
-    /// Unlike an `AbiRef` call, the signature is not in a table: it comes from
-    /// the declaration, so it travels with the instruction.
     /// The address of an `#[export]`ed symbol, as an integer.
     ///
     /// What a driver table is made of. A kernel dispatches through arrays of
@@ -254,6 +249,11 @@ pub enum Inst {
         callee: ValueId,
         args: Vec<ValueId>,
     },
+    /// `dst = symbol(args)` — a call to a function implemented *outside* the
+    /// program, named by `#[extern]`.
+    ///
+    /// Unlike an `AbiRef` call, the signature is not in a table: it comes from
+    /// the declaration, so it travels with the instruction.
     CallExtern {
         dst: Option<ValueId>,
         symbol: String,

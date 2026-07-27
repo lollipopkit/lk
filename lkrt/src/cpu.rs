@@ -64,6 +64,9 @@ pub extern "C" fn lkrt_cpu_irq_save() -> i64 {
     {
         let flags: u64;
         unsafe {
+            // No `nostack`: `pushfq` and `pop` are a write to and a read from
+            // the stack. Adding it "for consistency" with the AArch64 arm below
+            // would tell the compiler something false about this sequence.
             core::arch::asm!("pushfq", "pop {}", "cli", out(reg) flags, options(preserves_flags));
         }
         // IF is bit 9 of RFLAGS.

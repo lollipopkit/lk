@@ -236,6 +236,11 @@ impl Stmt {
                 type_checker.push_scope();
                 // A body runs after the whole top level, so it may read a
                 // binding declared below it.
+                // Suspended for the body, and restored on *every* way out —
+                // see the restore below. An early `?` inside the body check
+                // would otherwise leave the set empty for the rest of the
+                // file, quietly disabling the use-before-definition check for
+                // every statement after a function that failed to type-check.
                 let pending = type_checker.suspend_pending_top_level();
 
                 let mut positional_tys: Vec<Type> = Vec::with_capacity(params.len());
