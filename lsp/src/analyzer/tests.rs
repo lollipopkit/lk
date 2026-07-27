@@ -206,13 +206,11 @@ printf '{"protocol_version":1,"output_tokens":[{"kind":"Int","lexeme":"%s","span
     let first = first_entry
         .parse_program_expansion_arc(content)
         .expect("first expansion");
-    assert!(
-        first
-            .source
-            .tokens
-            .iter()
-            .any(|token| matches!(token, token::Token::Int(1)))
-    );
+    assert!(first
+        .source
+        .tokens
+        .iter()
+        .any(|token| matches!(token, token::Token::Int(1))));
 
     fs::write(&schema, "2").expect("rewrite schema");
 
@@ -221,20 +219,16 @@ printf '{"protocol_version":1,"output_tokens":[{"kind":"Int","lexeme":"%s","span
         .parse_program_expansion_arc(content)
         .expect("second expansion");
 
-    assert!(
-        second
-            .source
-            .tokens
-            .iter()
-            .any(|token| matches!(token, token::Token::Int(2)))
-    );
-    assert!(
-        !second
-            .source
-            .tokens
-            .iter()
-            .any(|token| matches!(token, token::Token::Int(1)))
-    );
+    assert!(second
+        .source
+        .tokens
+        .iter()
+        .any(|token| matches!(token, token::Token::Int(2))));
+    assert!(!second
+        .source
+        .tokens
+        .iter()
+        .any(|token| matches!(token, token::Token::Int(1))));
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -265,13 +259,11 @@ fn analyzer_token_cache_invalidates_program_expansion_when_file_import_changes()
     let first = first_entry
         .parse_program_expansion_arc(content)
         .expect("first expansion");
-    assert!(
-        first
-            .source
-            .tokens
-            .iter()
-            .any(|token| matches!(token, token::Token::Int(1)))
-    );
+    assert!(first
+        .source
+        .tokens
+        .iter()
+        .any(|token| matches!(token, token::Token::Int(1))));
 
     fs::write(
         &macros,
@@ -288,20 +280,16 @@ fn analyzer_token_cache_invalidates_program_expansion_when_file_import_changes()
         .parse_program_expansion_arc(content)
         .expect("second expansion");
 
-    assert!(
-        second
-            .source
-            .tokens
-            .iter()
-            .any(|token| matches!(token, token::Token::Int(2)))
-    );
-    assert!(
-        !second
-            .source
-            .tokens
-            .iter()
-            .any(|token| matches!(token, token::Token::Int(1)))
-    );
+    assert!(second
+        .source
+        .tokens
+        .iter()
+        .any(|token| matches!(token, token::Token::Int(2))));
+    assert!(!second
+        .source
+        .tokens
+        .iter()
+        .any(|token| matches!(token, token::Token::Int(1))));
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -314,11 +302,9 @@ fn test_collect_named_call_diagnostics_for_missing_required() {
     "#;
     let (tokens, spans) = Tokenizer::tokenize_enhanced_with_spans(content).unwrap();
     let diagnostics = analyzer.collect_named_call_diagnostics(content, &tokens, &spans);
-    assert!(
-        diagnostics
-            .iter()
-            .any(|diag| diag.message.contains("Missing required named argument: y"))
-    );
+    assert!(diagnostics
+        .iter()
+        .any(|diag| diag.message.contains("Missing required named argument: y")));
 }
 
 #[test]
@@ -483,18 +469,14 @@ fn test_generate_semantic_tokens_match_or_pattern() {
 
     let token_texts = semantic_token_texts(content, &tokens);
 
-    assert!(
-        token_texts
-            .iter()
-            .any(|(text, ty)| text == "match" && *ty == KEYWORD_IDX)
-    );
+    assert!(token_texts
+        .iter()
+        .any(|(text, ty)| text == "match" && *ty == KEYWORD_IDX));
     assert!(token_texts.iter().any(|(text, ty)| text == "|" && *ty == OPERATOR_IDX));
     assert!(token_texts.iter().any(|(text, ty)| text == "=>" && *ty == OPERATOR_IDX));
-    assert!(
-        token_texts
-            .iter()
-            .any(|(text, ty)| text == "\"weekend\"" && *ty == STRING_IDX)
-    );
+    assert!(token_texts
+        .iter()
+        .any(|(text, ty)| text == "\"weekend\"" && *ty == STRING_IDX));
     assert!(!token_texts.iter().any(|(text, ty)| text == "_" && *ty == VARIABLE_IDX));
 }
 
