@@ -16,7 +16,26 @@ fn get_pixel(base: Int, stride: Int, x: Int, y: Int) -> Int {
     return value as Int;
 }
 
+// Fills a rectangle, two pixels at a time where it can.
+//
+// A pixel is four bytes and the framebuffer is contiguous, so a 64-bit write
+// covers two of them — but only where the pair is aligned, which needs an even
+// left edge and an even width. The odd cases still go a pixel at a time rather
+// than being rejected: a caller that fills an odd rectangle wants it filled,
+// not diagnosed. `0x100000000` is `1 << 32` written as a multiplication
+// because LK has no shift operators yet.
+// TODO: use `<<` here once the language has it.
 fn fill_rect(base: Int, stride: Int, left: Int, top: Int, width: Int, height: Int, colour: Int) {
+    if ((left & 1) == 0 && (width & 1) == 0) {
+        let pair = colour * 0x100000000 + colour;
+        let pairs = ((width / 2) as Int);
+        for y in 0..height {
+            for p in 0..pairs {
+                put_pixel_pair(base, stride, left + p * 2, top + y, pair);
+            }
+        }
+        return;
+    }
     for y in 0..height {
         for x in 0..width {
             put_pixel(base, stride, left + x, top + y, colour);

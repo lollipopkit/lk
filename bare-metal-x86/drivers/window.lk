@@ -42,6 +42,31 @@ fn define(table: Int, slot: Int, left: Int, top: Int, width: Int, height: Int) {
     write(at + 16, 0);
 }
 
+// The rectangle, one field at a time, for callers that draw a shape and want
+// to read the descriptor once rather than per pixel. Four calls instead of one
+// that returns four values, because a container crossing a bundled import is
+// not the same thing in the two back ends — see `drivers/text`.
+fn left(table: Int, slot: Int) -> Int {
+    return read(descriptor(table, slot));
+}
+
+fn top(table: Int, slot: Int) -> Int {
+    return read(descriptor(table, slot) + 4);
+}
+
+fn width(table: Int, slot: Int) -> Int {
+    return read(descriptor(table, slot) + 8);
+}
+
+fn height(table: Int, slot: Int) -> Int {
+    return read(descriptor(table, slot) + 12);
+}
+
+fn drop_count(table: Int, slot: Int, count: Int) {
+    let at = descriptor(table, slot);
+    write(at + 16, read(at + 16) + count);
+}
+
 fn dropped(table: Int, slot: Int) -> Int {
     return read(descriptor(table, slot) + 16);
 }
@@ -57,11 +82,43 @@ fn put(base: Int, stride: Int, table: Int, slot: Int, x: Int, y: Int, colour: In
     put_pixel(base, stride, read(at) + x, read(at + 1 * 4) + y, colour);
 }
 
+// Writes one pixel into a rectangle the caller has already read.
+//
+// Same rule as `put` — outside is dropped — but the rectangle arrives in
+// registers instead of being re-read from memory for every pixel. The
+// descriptor is shared with interrupt handlers, so reading it is a volatile
+// load that nothing may cache across a call; a filled rectangle paid five of
+// them per pixel, which is most of what drawing one cost. Anything that draws
+// more than a pixel at a time reads the descriptor once and comes here.
+//
+// `drops` is returned rather than written, so a loop can add up what it
+// discarded and record it once. Counting inside would put a read-modify-write
+// on the shared page in the inner loop, which is both the cost this is removing
+// and a race with the handlers.
+fn put_within(base: Int, stride: Int, left: Int, top: Int, width: Int, height: Int,
+              x: Int, y: Int, colour: Int) -> Int {
+    if (x < 0 || y < 0 || x >= width || y >= height) {
+        return 1;
+    }
+    put_pixel(base, stride, left + x, top + y, colour);
+    return 0;
+}
+
 fn fill(base: Int, stride: Int, table: Int, slot: Int, x: Int, y: Int, width: Int, height: Int, colour: Int) {
+    let at = descriptor(table, slot);
+    let left = read(at);
+    let top = read(at + 4);
+    let limit_x = read(at + 8);
+    let limit_y = read(at + 12);
+    let drops = 0;
     for row in 0..height {
         for column in 0..width {
-            put(base, stride, table, slot, x + column, y + row, colour);
+            drops = drops + put_within(base, stride, left, top, limit_x, limit_y,
+                                       x + column, y + row, colour);
         }
+    }
+    if (drops > 0) {
+        write(at + 16, read(at + 16) + drops);
     }
 }
 
@@ -74,14 +131,16 @@ fn fill(base: Int, stride: Int, table: Int, slot: Int, x: Int, y: Int, width: In
 // nothing can draw a frame around someone else's.
 fn outline(base: Int, stride: Int, table: Int, slot: Int, colour: Int) {
     let at = descriptor(table, slot);
+    let left = read(at);
+    let top = read(at + 4);
     let width = read(at + 8);
     let height = read(at + 12);
     for x in 0..width {
-        put(base, stride, table, slot, x, 0, colour);
-        put(base, stride, table, slot, x, height - 1, colour);
+        put_within(base, stride, left, top, width, height, x, 0, colour);
+        put_within(base, stride, left, top, width, height, x, height - 1, colour);
     }
     for y in 0..height {
-        put(base, stride, table, slot, 0, y, colour);
-        put(base, stride, table, slot, width - 1, y, colour);
+        put_within(base, stride, left, top, width, height, 0, y, colour);
+        put_within(base, stride, left, top, width, height, width - 1, y, colour);
     }
 }

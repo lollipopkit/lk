@@ -184,7 +184,7 @@ what they cost is time the other task does not get:
 
 ```
 >time
-scroll 376552 frames 518450
+scroll 289404 frames 170354
 ```
 
 The first measurement said `scroll 8126964`. Scrolling moved the picture a
@@ -202,17 +202,27 @@ the pan is folded into the base address by `framebuffer_origin()`, because the
 framebuffer is linear and `base + pan * width * 4` *is* the visible origin.
 Only when the view reaches the bottom of the framebuffer does anything get
 copied, and then once per screenful rather than once per line. **376k cycles,
-21× the first measurement.**
+21× the first measurement.** What was left of it was not the scrolling at all:
+it was clearing the one row of pixels that had just come into view, so
+`fill_rect` now writes that band two pixels at a time as well — 289k.
 
 What that does not buy is free scrolling overall, and the honest number is the
 sum. Panning moves *everything*, chrome included, so both window frames have to
-be drawn again at the new origin — the 518k above, which now happens once per
-scroll. Scrolling a line costs about 0.9M cycles all told: still 9× better than
-where this started, and 4.6× better than the pair-copy version, but the chrome
-is now the larger half. That is where the next measurement points. It costs
-what it costs because `window_put` re-reads the descriptor and re-checks the
-bounds for each of the 1040 pixels in the two frames — about 500 cycles a pixel
-— which is a fault in the window layer, not in the panning.
+be drawn again at the new origin, and that now happens once per scroll. It
+measured 518k, which the same measurement said was a fault in the window layer
+rather than in the panning: `window_put` re-read the descriptor and re-checked
+the bounds for each of the 1040 pixels in the two frames, five volatile loads
+from the shared page per pixel. Reading the rectangle once per *shape* and
+passing it in registers (`put_within`) took it to 170k without weakening the
+clipping — every pixel is still checked, and what falls outside is still
+counted, just added up in a register and recorded once at the end instead of a
+read-modify-write on the shared page in the inner loop.
+
+Scrolling a line therefore costs about **460k cycles all told, against 8.13M
+where this started** — 17×. The remaining cost is spread evenly enough between
+the two halves that the next thing worth doing is not another constant factor:
+it is not repainting chrome that did not need to move, which needs the drawing
+to know what changed.
 
 A word of warning that this round paid for: the pan lives in the shared page,
 and the first address chosen for it, `0x00300044`, was *inside* the window

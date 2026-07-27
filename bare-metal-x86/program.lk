@@ -21,7 +21,10 @@ use { read_scancode, is_release, key_code } from "drivers/keyboard";
 use { start as pit_start } from "drivers/pit";
 use { acquire as lock, release as unlock } from "drivers/lock";
 use { define as window_define, put as window_put, fill as window_fill,
-      dropped as window_dropped, outline as window_outline } from "drivers/window";
+      dropped as window_dropped, outline as window_outline,
+      put_within as window_put_within, drop_count as window_drop_count,
+      left as window_left, top as window_top, width as window_width,
+      height as window_height } from "drivers/window";
 use { glyph_row, glyph_width, glyph_rows } from "drivers/text";
 use { reset as queue_reset, push as queue_push, pop as queue_pop,
       is_empty as queue_empty } from "drivers/queue";
@@ -557,6 +560,14 @@ fn repaint_frame(base: Int, slot: Int) {
 // `drivers/window`, so anything outside the rectangle is dropped rather than
 // landing in someone else's part of the screen.
 fn draw_glyph_in_window(base: Int, slot: Int, index: Int, x: Int, y: Int) {
+    // The window's rectangle is read once for the whole glyph rather than once
+    // per pixel: the descriptor lives in the shared page, so each read is a
+    // volatile load, and 48 pixels through `window_put` paid five of them each.
+    let left = window_left(SHARED_WINDOWS, slot);
+    let top = window_top(SHARED_WINDOWS, slot);
+    let limit_x = window_width(SHARED_WINDOWS, slot);
+    let limit_y = window_height(SHARED_WINDOWS, slot);
+    let drops = 0;
     for row in 0..glyph_rows() {
         let bits = glyph_row(FONT, index, row);
         for column in 0..glyph_width() {
@@ -566,8 +577,12 @@ fn draw_glyph_in_window(base: Int, slot: Int, index: Int, x: Int, y: Int) {
             if (lit != 0) {
                 colour = TITLE_COLOUR;
             }
-            window_put(base, WIDTH, SHARED_WINDOWS, slot, x + column, y + row, colour);
+            drops = drops + window_put_within(base, WIDTH, left, top, limit_x, limit_y,
+                                              x + column, y + row, colour);
         }
+    }
+    if (drops > 0) {
+        window_drop_count(SHARED_WINDOWS, slot, drops);
     }
 }
 
