@@ -242,6 +242,30 @@ pub enum Inst {
     /// VM equivalent: an interpreter has no code addresses to hand out, so the
     /// builtin refuses there rather than inventing one.
     SymbolAddr { dst: ValueId, symbol: String },
+    /// `dst = volatile load.uN [addr]` — a device read, zero-extended to `I64`.
+    ///
+    /// A real machine load, not a call into the runtime. What made this a call
+    /// before was that Cranelift has no volatile flag and its alias analysis
+    /// will collapse two loads of one address into one — for a device register,
+    /// whose two reads can legitimately differ and whose reads can have side
+    /// effects, a miscompile. The way out is not a flag but a *`sequence_point`
+    /// before each access*: it emits no machine code at all, and the alias pass
+    /// treats it as a fence, so the second load's "last store" differs from the
+    /// first's and the two are no longer the same memory location to it.
+    ///
+    /// `bits` is the width of the *access*, which is not a property of the
+    /// value: the VM carries every machine integer in an `i64`, so the width
+    /// has to ride on the instruction. That is the distinction this enum's
+    /// `IntTruncate` doc anticipated.
+    VolatileLoad { dst: ValueId, addr: ValueId, bits: u8 },
+    /// `volatile store.uN [addr], value` — a device write.
+    ///
+    /// As [`Inst::VolatileLoad`], and the elimination it has to survive is the
+    /// mirror image: the alias pass drops a store of a value a location is
+    /// already known to hold. Two identical writes to one port — a command
+    /// register that counts them, say — are not one write, and the preceding
+    /// `sequence_point` is what keeps them two.
+    VolatileStore { addr: ValueId, value: ValueId, bits: u8 },
     /// Calls through an address held in a value, with a fixed integer
     /// signature. The other half of a driver table.
     CallIndirect {
@@ -834,6 +858,8 @@ fn render_inst(inst: &Inst) -> String {
             }
         }
         Inst::SymbolAddr { dst, symbol } => format!("{} = symbol.addr {symbol}", v(*dst)),
+        Inst::VolatileLoad { dst, addr, bits } => format!("{} = volatile.load.u{bits} [{}]", v(*dst), v(*addr)),
+        Inst::VolatileStore { addr, value, bits } => format!("volatile.store.u{bits} [{}], {}", v(*addr), v(*value)),
         Inst::TryRegionCall { dst, func, args: a } => {
             format!("{} = try.region f{}({})", v(*dst), func.0, args(a))
         }
@@ -985,12 +1011,12 @@ pub(crate) fn inst_def(inst: &Inst) -> Option<ValueId> {
         | Inst::MaybeWrap { dst, .. }
         | Inst::Select { dst, .. }
         | Inst::GlobalGet { dst, .. } => Some(*dst),
-        Inst::SymbolAddr { dst, .. } | Inst::TryRegionCall { dst, .. } => Some(*dst),
+        Inst::SymbolAddr { dst, .. } | Inst::TryRegionCall { dst, .. } | Inst::VolatileLoad { dst, .. } => Some(*dst),
         Inst::CallIndirect { dst, .. } => *dst,
         Inst::Call { dst, .. } | Inst::CallFn { dst, .. } | Inst::CallExtern { dst, .. } | Inst::CallVm { dst, .. } => {
             *dst
         }
-        Inst::PrintStr { .. } | Inst::GlobalSet { .. } => None,
+        Inst::PrintStr { .. } | Inst::GlobalSet { .. } | Inst::VolatileStore { .. } => None,
         Inst::TryCall { dst, .. } | Inst::TraitDispatch { dst, .. } => Some(*dst),
     }
 }
@@ -1029,6 +1055,8 @@ fn inst_uses(inst: &Inst) -> Vec<ValueId> {
             vec![*handle, *key]
         }
         Inst::SymbolAddr { .. } => vec![],
+        Inst::VolatileLoad { addr, .. } => vec![*addr],
+        Inst::VolatileStore { addr, value, .. } => vec![*addr, *value],
         Inst::TryRegionCall { args, .. } => args.clone(),
         Inst::CallIndirect { callee, args, .. } => {
             let mut values = vec![*callee];

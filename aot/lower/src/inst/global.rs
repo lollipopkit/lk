@@ -268,13 +268,19 @@ pub(super) fn lower(
 /// latent divergence rather than a reproducible miscompile. Keeping one table
 /// is what makes the next `Builtin` addition safe by default.
 pub(crate) fn builtin_for_name(name: &str) -> Option<Builtin> {
+    // `cpu_*` is a rule, not a list: the LK name is `cpu_` followed by the
+    // entry's name under the ABI table's `cpu` module, and the table already
+    // knows which those are. Spelled out one arm per intrinsic, this was
+    // fourteen copies of that rule, and the fifteenth `cpu` entry would compile
+    // and link with no native meaning at all — the arm nobody remembered to
+    // add. The `&'static str` comes back out of the table rather than from
+    // `name`, which is also what gives the payload its lifetime.
+    if let Some(entry) = name.strip_prefix("cpu_")
+        && let Some(abi) = lk_aot_abi::find("cpu", entry)
+    {
+        return Some(Builtin::Cpu(abi.name));
+    }
     Some(match name {
-        "cpu_barrier" => Builtin::Cpu("barrier", 0),
-        "cpu_compiler_barrier" => Builtin::Cpu("compiler_barrier", 0),
-        "cpu_irq_save" => Builtin::Cpu("irq_save", 0),
-        "cpu_irq_restore" => Builtin::Cpu("irq_restore", 1),
-        "cpu_wait_for_interrupt" => Builtin::Cpu("wait_for_interrupt", 0),
-        "cpu_timestamp" => Builtin::Cpu("timestamp", 0),
         "symbol_address" => Builtin::SymbolAddress,
         "call_address_2" => Builtin::CallAddress2,
         "volatile_read_u8" => Builtin::VolatileRead(8),

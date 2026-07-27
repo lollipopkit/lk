@@ -620,10 +620,15 @@ fn machine_int_arithmetic_wraps_differential() {
 /// effects. This is a *disassembly* test rather than a differential one because
 /// the failure is invisible at the value level — with the reads collapsed the
 /// program still returns a plausible number, just one derived from a single
-/// access. That is exactly how the first implementation passed by inspection
-/// and failed here: inline Cranelift loads compiled to one `mov` and a `lea`
-/// doubling it, because Cranelift has no volatile flag and its egraph pass
-/// proved the two loads equal.
+/// access.
+///
+/// The failure it guards is not hypothetical and not historical: removing the
+/// `sequence_point` that `Inst::VolatileLoad` emits still compiles this to one
+/// `mov` and a `lea` doubling it. Cranelift has no volatile flag; what keeps
+/// both accesses is that its alias analysis keys every access by the last store
+/// before it, and a sequence point — which assembles to nothing — moves that
+/// key. So the assertion counts *instructions*, which is the thing at risk. It
+/// used to count calls into `lkrt`, back when a device read was a call.
 #[test]
 fn volatile_reads_are_not_collapsed() {
     let dir = tempfile::tempdir().expect("temp dir");
@@ -665,8 +670,109 @@ fn volatile_reads_are_not_collapsed() {
         .take_while(|line| !line.trim().is_empty())
         .collect::<Vec<_>>()
         .join("\n");
-    let accesses = body.matches("lkrt_mmio_read_u32").count();
+    let accesses = count_loads(&body);
     assert_eq!(accesses, 2, "expected two volatile reads, got {accesses}:\n{body}");
+}
+
+/// Two identical writes to one address must stay two writes.
+///
+/// The mirror image of `volatile_reads_are_not_collapsed`, and a distinct
+/// mechanism: what eliminates this one is the alias pass's *idempotent store*
+/// rule, which drops a store of a value the location is already known to hold.
+/// It compares SSA values, not runtime ones, so two `write(port, 7)` lines in a
+/// row are exactly its target — and a command register that counts writes is
+/// exactly the device for which one write is not two. Measured: without the
+/// sequence point, `movb $0x7,(%rdi)` is emitted once for a source that says it
+/// twice.
+#[test]
+fn identical_volatile_writes_are_not_collapsed() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let source = dir.path().join("volatile_write_twice.lk");
+    std::fs::write(
+        &source,
+        "fn kick_twice(addr: usize) {\n\
+         \x20   let reg = addr as *mut u8;\n\
+         \x20   unsafe { volatile_write_u8(reg, 7 as u8); };\n\
+         \x20   unsafe { volatile_write_u8(reg, 7 as u8); };\n\
+         }\n\
+         kick_twice(0x1000);\n\
+         return 0;\n",
+    )
+    .expect("write source");
+
+    let exe = dir.path().join("volatile_write_twice");
+    let status = std::process::Command::new(env!("CARGO_BIN_EXE_lk"))
+        .args(["compile", source.to_str().expect("utf-8 path")])
+        .arg("--output")
+        .arg(exe.to_str().expect("utf-8 path"))
+        .env("LK_AOT_NO_FALLBACK", "1")
+        .env("LK_AOT_HYBRID", "0")
+        .status()
+        .expect("run lk compile");
+    assert!(status.success(), "volatile writes must lower natively");
+
+    let Some(body) = native_body(&exe, "lk_fn_1") else {
+        return; // objdump is not everywhere; the compile above still ran.
+    };
+    let writes = count_stores(&body);
+    assert_eq!(writes, 2, "expected two volatile writes, got {writes}:\n{body}");
+}
+
+/// The disassembly of one function of a compiled executable, or `None` when
+/// there is no `objdump` to ask.
+fn native_body(exe: &std::path::Path, symbol: &str) -> Option<String> {
+    let output = std::process::Command::new("objdump")
+        .args(["-d", exe.to_str().expect("utf-8 path")])
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let marker = format!("<{symbol}>:");
+    Some(
+        text.lines()
+            .skip_while(|line| !line.contains(&marker))
+            .take_while(|line| !line.trim().is_empty())
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+}
+
+/// Counts loads through a bare register-indirect address — `mov (%rdi),%esi`
+/// and its width variants.
+///
+/// Deliberately narrow. A device access is emitted as exactly this shape, while
+/// the prologue and epilogue move between registers (`mov %rsp,%rbp`) and a
+/// spill would carry a frame-pointer offset. Counting every `mov` would pass
+/// for the wrong reason.
+fn count_loads(body: &str) -> usize {
+    body.lines()
+        .filter_map(mov_operands)
+        .filter(|operands| operands.starts_with("(%r") && operands.contains("),%"))
+        .count()
+}
+
+/// The operand text of one `objdump -d` line, when its mnemonic is a `mov`.
+///
+/// The line is `address:\tbytes\tmnemonic operands`, so the instruction is the
+/// last tab-separated field and the operands are what follows its first run of
+/// whitespace. Splitting on the *first* tab instead lands in the middle of the
+/// raw bytes, which is a silent zero rather than an error.
+///
+/// The `mov` restriction is not decoration: `lea (%r8,%rdi,1),%rax` has operands
+/// shaped exactly like a load's and touches no memory at all. Matching on the
+/// operand shape alone counted the address arithmetic that *follows* two device
+/// reads as a third read.
+fn mov_operands(line: &str) -> Option<&str> {
+    let instruction = line.rsplit('\t').next()?.trim();
+    let (mnemonic, rest) = instruction.split_once(char::is_whitespace)?;
+    mnemonic.starts_with("mov").then(|| rest.trim())
+}
+
+/// Counts stores to a bare register-indirect address — `movb $0x7,(%rdi)`.
+fn count_stores(body: &str) -> usize {
+    body.lines()
+        .filter_map(mov_operands)
+        .filter(|operands| operands.ends_with(')') && operands.contains(",(%r"))
+        .count()
 }
 
 /// A critical section lowers to the right sequence, in the right order.
@@ -718,22 +824,40 @@ fn critical_section_emits_its_instructions_in_order() {
         .take_while(|line| !line.trim().is_empty())
         .collect();
 
+    // Two of the five are instructions rather than calls, which is the whole
+    // change: a device access no longer goes through `lkrt`. What is being
+    // checked is unchanged — that the mask, the write, the barrier, the read
+    // and the restore appear in the order the source puts them.
+    enum Step {
+        Call(&'static str),
+        Load,
+        Store,
+    }
     let expected = [
-        "lkrt_cpu_irq_save",
-        "lkrt_mmio_write_u32",
-        "lkrt_cpu_barrier",
-        "lkrt_mmio_read_u32",
-        "lkrt_cpu_irq_restore",
+        Step::Call("lkrt_cpu_irq_save"),
+        Step::Store,
+        Step::Call("lkrt_cpu_barrier"),
+        Step::Load,
+        Step::Call("lkrt_cpu_irq_restore"),
     ];
     let mut remaining = expected.iter();
     let mut wanted = remaining.next();
     for line in &body {
-        if let Some(name) = wanted
-            && line.contains(name)
-        {
+        let matched = match wanted {
+            Some(Step::Call(name)) => line.contains(name),
+            Some(Step::Load) => count_loads(line) == 1,
+            Some(Step::Store) => count_stores(line) == 1,
+            None => false,
+        };
+        if matched {
             wanted = remaining.next();
         }
     }
+    let wanted = wanted.map(|step| match step {
+        Step::Call(name) => name,
+        Step::Load => "a load through a register-indirect address",
+        Step::Store => "a store through a register-indirect address",
+    });
     assert!(
         wanted.is_none(),
         "missing or out-of-order: still looking for {wanted:?} in:\n{}",

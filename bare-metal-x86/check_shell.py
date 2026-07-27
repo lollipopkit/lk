@@ -48,6 +48,21 @@ KEYS = (
     + ["ret"] * 22
     + ["e", "x", "i", "t", "ret"]
 )
+# What the *other* writers on this serial line leave behind.
+#
+# Three tasks share it: the timer prints a '.' every half-second, and the two
+# ring-3 tasks print 'A' and 'B' forever. None of them ends a line, so their
+# marks land in the middle of whatever the shell is saying — including in the
+# middle of a number. Removing them is lossless for a decimal counter, because
+# none of them is a digit.
+#
+# The 'A'/'B' half was added after this check started failing on a build that
+# only changed *timing*: a device access became an instruction instead of a
+# call, the shell got faster, and the ring-3 tasks landed a byte inside the
+# counter line for the first time. The counters agreed — `B5106885/5106885` —
+# and the check said they had not been printed at all. A check whose answer
+# depends on which task wins a race is not checking what it claims to.
+OTHER_WRITERS = ".AB"
 # Lines the shell must answer with. `help` lists the commands it knows, `echo`
 # repeats its argument, `exit` says goodbye — each proving a different part:
 # the byte-wise command match, the argument tail, and the loop ending.
@@ -127,13 +142,20 @@ def main():
     # both bump, under one critical section. They can only differ if an
     # increment read a stale value — which is exactly what happens without the
     # section, and what nothing else in the system can cause.
-    pair = next((line for line in output.splitlines() if "/" in line and line.strip("./0123456789") == ""), None)
+    def counters(line):
+        """The line with the other tasks' marks removed, if it is a counter pair."""
+        stripped = "".join(c for c in line if c not in OTHER_WRITERS)
+        parts = stripped.split("/")
+        return parts if len(parts) == 2 and all(p.isdigit() and p for p in parts) else None
+
+    pair = next((c for c in map(counters, output.splitlines()) if c is not None), None)
     if pair is None:
         raise SystemExit("shell: `sync` printed no counter pair")
-    # Every dot, not just the ends: the timer prints one on whatever line is
-    # current, and `31.710/31712` would otherwise split into two counters that
-    # differ — a passing run reported as a lost update.
-    left, right = pair.replace(".", "").split("/")
+    # The marks are removed everywhere in the line, not just at its ends: they
+    # land wherever the writer happened to be, and `31.710/31712` would
+    # otherwise split into two counters that differ — a passing run reported as
+    # a lost update.
+    left, right = pair
     if left != right:
         raise SystemExit(f"shared counters diverged ({left} != {right}): an update was lost")
     if int(left) == 0:

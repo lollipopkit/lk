@@ -148,18 +148,25 @@ impl TypeChecker {
         Ok(Type::Any)
     }
 
-    /// The `cpu_*` intrinsics: barriers, interrupt masking, wait-for-interrupt.
+    /// The `cpu_*` intrinsics: barriers, interrupt masking, wait-for-interrupt,
+    /// and the system-control instructions (descriptor tables, CR2/CR3, the
+    /// TLB).
     ///
-    /// These need `unsafe` for a different reason than pointers do — nothing
-    /// here can corrupt memory. Masking interrupts or parking the core changes
+    /// These need `unsafe` for a different reason than pointers do — a barrier
+    /// cannot corrupt memory. Masking interrupts or parking the core changes
     /// the machine's state in a way the rest of the program's correctness may
     /// depend on, and getting the nesting wrong deadlocks rather than crashes.
     /// Marking it makes the region auditable.
+    ///
+    /// The system-control half earns the same keyword far more directly: a
+    /// malformed descriptor table is not a fault the kernel gets to report,
+    /// because the CPU faults trying to report it and the machine resets.
     fn check_cpu_builtin(&mut self, name: &str, args: &[Box<Expr>]) -> Result<Option<Type>> {
         let (arity, result) = match name {
             "cpu_barrier" | "cpu_compiler_barrier" | "cpu_wait_for_interrupt" => (0, Type::Nil),
-            "cpu_irq_save" | "cpu_timestamp" => (0, Type::Int),
-            "cpu_irq_restore" => (1, Type::Nil),
+            "cpu_irq_save" | "cpu_timestamp" | "cpu_read_cr2" | "cpu_read_cr3" => (0, Type::Int),
+            "cpu_irq_restore" | "cpu_load_task_register" | "cpu_write_cr3" | "cpu_invalidate_page" => (1, Type::Nil),
+            "cpu_load_idt" | "cpu_load_gdt" | "cpu_reload_segments" => (2, Type::Nil),
             _ => return Ok(None),
         };
         if args.len() != arity {
@@ -171,12 +178,27 @@ impl TypeChecker {
                  program's correctness can depend on"
             ));
         }
-        if name == "cpu_irq_restore" {
-            let saved = self.check_expr(&args[0])?;
-            if !self.is_assignable(&saved, &Type::Int) {
+        // Every operand of every one of these is a machine word — a port, a
+        // selector, a physical address, a saved flag. Checked in one loop
+        // rather than per intrinsic: the arm that gets forgotten is the one
+        // whose argument is never visited by the checker at all, and the
+        // lowering then rejects it as a type mismatch with no source location.
+        for (index, arg) in args.iter().enumerate() {
+            let actual = self.check_expr(arg)?;
+            if !self.is_assignable(&actual, &Type::Int) {
+                // `cpu_irq_restore` says where the value should have come
+                // from; the nesting discipline is the thing being got wrong
+                // when this fires, and naming the type is no help.
+                if name == "cpu_irq_restore" {
+                    return Err(anyhow!(
+                        "cpu_irq_restore expects the value returned by cpu_irq_save, got {}",
+                        actual.display()
+                    ));
+                }
                 return Err(anyhow!(
-                    "cpu_irq_restore expects the value returned by cpu_irq_save, got {}",
-                    saved.display()
+                    "{name} expects Int for argument {}, got {}",
+                    index + 1,
+                    actual.display()
                 ));
             }
         }

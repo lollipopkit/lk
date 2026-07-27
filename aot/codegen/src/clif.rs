@@ -243,6 +243,23 @@ fn ty_clif_parts(ty: Ty) -> Result<Vec<types::Type>, ClifError> {
     })
 }
 
+/// The CLIF type for a volatile access `bits` wide, and whether that is already
+/// the full machine word.
+///
+/// The width belongs to the access, not to the value: a value is always the
+/// `i64` the VM carries every machine integer in, and an 8-bit device register
+/// is still eight bits. The bool spares both call sites an `if bits == 64`
+/// spelled next to a `match` that has already decided the same thing.
+fn access_type(bits: u8) -> Result<(cranelift_codegen::ir::Type, bool), ClifError> {
+    Ok(match bits {
+        8 => (types::I8, false),
+        16 => (types::I16, false),
+        32 => (types::I32, false),
+        64 => (types::I64, true),
+        _ => return Err(ClifError::Unsupported("volatile access width must be 8, 16, 32 or 64")),
+    })
+}
+
 /// Whether a MIR type is a two-register `{i64,i64}` carrier (see [`Slot`]).
 fn ty_is_pair(ty: Ty) -> bool {
     matches!(ty, Ty::Dyn | Ty::MaybeI64 | Ty::MaybeF64 | Ty::MaybeBool | Ty::MaybeStr)
@@ -895,6 +912,46 @@ impl Lower {
                 let reference = mctx.module.declare_func_in_func(callee, b.func);
                 let address = b.ins().func_addr(types::I64, reference);
                 self.set1(*dst, address);
+                return Ok(());
+            }
+            Inst::VolatileLoad { dst, addr, bits } => {
+                let address = self.v(*addr)?;
+                // The `sequence_point` is the whole mechanism, and it emits no
+                // machine code at all — the x64 backend's `Inst::SequencePoint`
+                // assembles to nothing. What it does is count as a fence to
+                // Cranelift's alias analysis, which keys every access by the
+                // last store before it. Two reads of one device register
+                // therefore never share a key, and are never collapsed into
+                // one. That is what makes an ordinary `load` volatile here.
+                //
+                // Measured, and the counterfactual measured too: without this
+                // line, `volatile_read_u32(p) + volatile_read_u32(p)` compiles
+                // to a single `mov` followed by `lea (%rsi,%rsi,1)` — one read,
+                // and the sum folded to a doubling.
+                b.ins().sequence_point();
+                let (ty, wide) = access_type(*bits)?;
+                // `notrap` but *not* `aligned`: on a board a device register is
+                // mapped and a load of it cannot fault, so trap metadata is
+                // dead weight. Alignment is the caller's business, and claiming
+                // it would be a promise this side cannot keep.
+                let raw = b.ins().load(ty, MemFlagsData::new().with_notrap(), address, 0);
+                let value = if wide { raw } else { b.ins().uextend(types::I64, raw) };
+                self.set1(*dst, value);
+                return Ok(());
+            }
+            Inst::VolatileStore { addr, value, bits } => {
+                let address = self.v(*addr)?;
+                let word = self.v(*value)?;
+                // As the load: without this, two identical writes to one port
+                // become one — measured, `movb $0x7,(%rdi)` emitted once for a
+                // source that says it twice.
+                b.ins().sequence_point();
+                let (ty, wide) = access_type(*bits)?;
+                // The narrowing is the access width doing its job: the value
+                // arrives as the `i64` every machine integer is carried in, and
+                // an 8-bit register wants the low byte of it, not a rejection.
+                let narrowed = if wide { word } else { b.ins().ireduce(ty, word) };
+                b.ins().store(MemFlagsData::new().with_notrap(), narrowed, address, 0);
                 return Ok(());
             }
             Inst::CallIndirect { dst, callee, args } => {

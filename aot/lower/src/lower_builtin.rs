@@ -425,8 +425,16 @@ pub(crate) fn lower_builtin_call(
                 free_owned_str(insts, msg);
             }
         }
-        Builtin::Cpu(entry, arity) => {
-            if argc != usize::from(arity) {
+        Builtin::Cpu(entry) => {
+            // Arity and result come from the ABI table, which is the schema
+            // these calls are emitted against. Spelling either out here would
+            // be a second copy of a signature — and the failure of a copy that
+            // disagrees is not a build error but a call with the wrong number
+            // of arguments, or a result quietly overwritten with nil below.
+            let Some(abi) = lk_aot_abi::find("cpu", entry) else {
+                return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+            };
+            if argc != abi.params.len() {
                 return Err(Unsupported::Opcode { pc, op: Opcode::Call });
             }
             let mut call_args = Vec::with_capacity(argc);
@@ -438,8 +446,7 @@ pub(crate) fn lower_builtin_call(
                 }
                 call_args.push(value);
             }
-            // The two that produce a value; the rest are pure effect.
-            if entry == "irq_save" || entry == "timestamp" {
+            if abi.result != lk_aot_abi::AbiType::Nil {
                 let dst = ssa.new_val();
                 insts.push(Inst::Call {
                     dst: Some(dst),
@@ -501,15 +508,13 @@ pub(crate) fn lower_builtin_call(
             // the VM.
             let addr = read_typed_scalar(ssa, insts, base.wrapping_add(1), block, Ty::I64, pc)?;
             let dst = ssa.new_val();
-            // An opaque `lkrt` call, not an inline load: Cranelift has no
-            // volatile flag, and its egraph pass will happily collapse two
-            // loads of one address into one. A call it cannot see through
-            // keeps both accesses. See lkrt/src/mmio.rs.
-            insts.push(Inst::Call {
-                dst: Some(dst),
-                callee: AbiRef::new("mmio", mmio_read_name(bits)),
-                args: vec![addr],
-            });
+            // A real machine load. This used to be an opaque `lkrt` call, on
+            // the grounds that Cranelift has no volatile flag and its alias
+            // analysis collapses two loads of one address into one — which was
+            // measured, and true of a plain load. The way out is not a flag:
+            // `Inst::VolatileLoad` emits a `sequence_point` first, which costs
+            // no machine code and defeats the collapse. See its doc comment.
+            insts.push(Inst::VolatileLoad { dst, addr, bits });
             // The VM writes a builtin's result to the call-window base.
             //
             // `return`, not `break`: this function ends by writing `nil` to
@@ -528,11 +533,7 @@ pub(crate) fn lower_builtin_call(
             // of a driver's output loop, and its elements are `Maybe` carriers.
             let addr = read_typed_scalar(ssa, insts, base.wrapping_add(1), block, Ty::I64, pc)?;
             let value = read_typed_scalar(ssa, insts, base.wrapping_add(2), block, Ty::I64, pc)?;
-            insts.push(Inst::Call {
-                dst: None,
-                callee: AbiRef::new("mmio", mmio_write_name(bits)),
-                args: vec![addr, value],
-            });
+            insts.push(Inst::VolatileStore { addr, value, bits });
             // A write produces nothing, so the shared nil-return tail below is
             // exactly right — fall through to it rather than duplicating it.
         }
@@ -685,27 +686,5 @@ fn port_out_name(bits: u8) -> &'static str {
         8 => "out_u8",
         16 => "out_u16",
         _ => "out_u32",
-    }
-}
-
-/// ABI entry names for volatile access, keyed by width.
-///
-/// The widths are fixed by the intrinsic names the front end accepts, so an
-/// unknown one here is a lowering bug rather than a user error.
-fn mmio_read_name(bits: u8) -> &'static str {
-    match bits {
-        8 => "read_u8",
-        16 => "read_u16",
-        32 => "read_u32",
-        _ => "read_u64",
-    }
-}
-
-fn mmio_write_name(bits: u8) -> &'static str {
-    match bits {
-        8 => "write_u8",
-        16 => "write_u16",
-        32 => "write_u32",
-        _ => "write_u64",
     }
 }

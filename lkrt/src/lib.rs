@@ -55,12 +55,12 @@ mod lklist;
 mod lkmap;
 mod lkset;
 mod lkstr;
-mod mmio;
 #[cfg(feature = "std")]
 mod net;
 mod panic;
 mod port;
 mod state;
+mod system;
 mod vm_mirror;
 
 pub use abi::{
@@ -160,10 +160,6 @@ pub use lkstr::{
     lkrt_str_reverse, lkrt_str_slice_chars, lkrt_str_starts_with, lkrt_str_strip_prefix, lkrt_str_strip_suffix,
     lkrt_str_substring, lkrt_str_title, lkrt_str_trim, lkrt_str_upper,
 };
-pub use mmio::{
-    lkrt_mmio_read_u8, lkrt_mmio_read_u16, lkrt_mmio_read_u32, lkrt_mmio_read_u64, lkrt_mmio_write_u8,
-    lkrt_mmio_write_u16, lkrt_mmio_write_u32, lkrt_mmio_write_u64,
-};
 #[cfg(feature = "std")]
 pub use net::{
     lkrt_bytes_free, lkrt_bytes_to_string_utf8, lkrt_handle_close, lkrt_socket_addr, lkrt_tcp_close, lkrt_tcp_connect,
@@ -175,6 +171,10 @@ pub use panic::{
 };
 pub use port::{
     lkrt_port_in_u8, lkrt_port_in_u16, lkrt_port_in_u32, lkrt_port_out_u8, lkrt_port_out_u16, lkrt_port_out_u32,
+};
+pub use system::{
+    lkrt_cpu_invalidate_page, lkrt_cpu_load_gdt, lkrt_cpu_load_idt, lkrt_cpu_load_task_register, lkrt_cpu_read_cr2,
+    lkrt_cpu_read_cr3, lkrt_cpu_reload_segments, lkrt_cpu_write_cr3,
 };
 pub use vm_mirror::{
     lkrt_lkmap_lit_finish_i64_f64, lkrt_lkmap_lit_finish_i64_i64, lkrt_lkmap_lit_finish_str_bool,

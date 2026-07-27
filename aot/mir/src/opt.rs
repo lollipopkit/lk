@@ -585,6 +585,10 @@ fn is_removable(inst: &Inst) -> bool {
         // follows the ordinary rule and may be dropped when nothing reads it.
         Inst::CallIndirect { .. } => false,
         Inst::SymbolAddr { .. } => true,
+        // A device access is the effect. A read whose result nothing uses is
+        // still a read — of a UART's receive register it is what empties the
+        // FIFO — so neither of these is ever dead.
+        Inst::VolatileLoad { .. } | Inst::VolatileStore { .. } => false,
         // Running the body is the point; its outcome flag being unread does not
         // make the call dead.
         Inst::TryRegionCall { .. } => false,
@@ -633,6 +637,8 @@ fn uses_mut(inst: &mut Inst) -> Vec<&mut ValueId> {
         Inst::Const { .. } | Inst::GlobalGet { .. } => vec![],
         Inst::CallExtern { args, .. } => args.iter_mut().collect(),
         Inst::SymbolAddr { .. } => vec![],
+        Inst::VolatileLoad { addr, .. } => vec![addr],
+        Inst::VolatileStore { addr, value, .. } => vec![addr, value],
         Inst::TryRegionCall { args, .. } => args.iter_mut().collect(),
         Inst::CallIndirect { callee, args, .. } => {
             let mut values: Vec<&mut ValueId> = vec![callee];

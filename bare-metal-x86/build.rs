@@ -30,6 +30,20 @@ fn main() {
 
     // An explicit path in CI, otherwise whatever is installed.
     let lk = std::env::var("LK_BIN").unwrap_or_else(|_| "lk".to_string());
+    // The compiler's *contents*, not just which one was named. Tracking only
+    // `LK_BIN` left a gap the size of the ordinary development loop: rebuild
+    // `lk`, rebuild the image, and cargo sees the same env var and the same
+    // sources and keeps the object the *previous* compiler emitted. That is the
+    // failure the note above says must not happen, and it happened — a codegen
+    // change appeared to leave the image working right up until a stale object
+    // failed to link against a runtime that had moved on.
+    //
+    // Only when it names a file that exists: `lk` resolved through `PATH` is
+    // not a path cargo can stat, and pointing `rerun-if-changed` at a missing
+    // one makes every build a rebuild.
+    if std::path::Path::new(&lk).is_file() {
+        println!("cargo:rerun-if-changed={lk}");
+    }
     let status = Command::new(&lk)
         .arg("compile")
         .arg(format!("object:{target}"))

@@ -121,19 +121,25 @@ macro_rules! for_each_abi_fn {
             ("cpu", "irq_restore", lkrt_cpu_irq_restore, WritesHost, [I64], Nil);
             ("cpu", "timestamp", lkrt_cpu_timestamp, WritesHost, [], I64);
             ("cpu", "wait_for_interrupt", lkrt_cpu_wait_for_interrupt, WritesHost, [], Nil);
-            // Volatile MMIO. `WritesHost` even for the reads: the effect
-            // annotation is what drives CSE, and a device read that can change
-            // state or return a different value each time is not pure. These
-            // are calls rather than inline loads because Cranelift has no
-            // volatile flag — see lkrt/src/mmio.rs.
-            ("mmio", "read_u8", lkrt_mmio_read_u8, WritesHost, [I64], I64);
-            ("mmio", "read_u16", lkrt_mmio_read_u16, WritesHost, [I64], I64);
-            ("mmio", "read_u32", lkrt_mmio_read_u32, WritesHost, [I64], I64);
-            ("mmio", "read_u64", lkrt_mmio_read_u64, WritesHost, [I64], I64);
-            ("mmio", "write_u8", lkrt_mmio_write_u8, WritesHost, [I64, I64], Nil);
-            ("mmio", "write_u16", lkrt_mmio_write_u16, WritesHost, [I64, I64], Nil);
-            ("mmio", "write_u32", lkrt_mmio_write_u32, WritesHost, [I64, I64], Nil);
-            ("mmio", "write_u64", lkrt_mmio_write_u64, WritesHost, [I64, I64], Nil);
+            // System control: descriptor tables, CR2/CR3, the TLB. x86 only,
+            // and `WritesHost` including the reads — CR2 changes behind the
+            // code's back on every fault, which is its entire purpose, so two
+            // reads of it must not be collapsed into one. See lkrt/src/system.rs.
+            ("cpu", "load_idt", lkrt_cpu_load_idt, WritesHost, [I64, I64], Nil);
+            ("cpu", "load_gdt", lkrt_cpu_load_gdt, WritesHost, [I64, I64], Nil);
+            ("cpu", "reload_segments", lkrt_cpu_reload_segments, WritesHost, [I64, I64], Nil);
+            ("cpu", "load_task_register", lkrt_cpu_load_task_register, WritesHost, [I64], Nil);
+            ("cpu", "read_cr2", lkrt_cpu_read_cr2, WritesHost, [], I64);
+            ("cpu", "read_cr3", lkrt_cpu_read_cr3, WritesHost, [], I64);
+            ("cpu", "write_cr3", lkrt_cpu_write_cr3, WritesHost, [I64], Nil);
+            ("cpu", "invalidate_page", lkrt_cpu_invalidate_page, WritesHost, [I64], Nil);
+            // Volatile MMIO has no entries here any more, and that absence is
+            // the point: `volatile_read_uN`/`volatile_write_uN` lower to a real
+            // machine load and store (`Inst::VolatileLoad`), not to a call.
+            // What made them calls was that Cranelift has no volatile flag and
+            // its alias analysis collapses two accesses to one address; what
+            // replaced them is a `sequence_point` before each access, which
+            // emits nothing and moves the key that analysis works from.
             // Port I/O — `WritesHost` for the same reason the MMIO reads are:
             // reading a device port can change its state, so it must not be
             // collapsed with another read of the same port.

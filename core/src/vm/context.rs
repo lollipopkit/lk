@@ -409,6 +409,30 @@ impl VmContext {
             NativeFunction::Plain(core_cpu_wait_for_interrupt_builtin),
             0,
         );
+        // System control: descriptor tables, CR2/CR3, the TLB. Gated like port
+        // I/O rather than always refused — the bare-metal x86 kernel hosts this
+        // interpreter, and a program it loads off a disk reaches the same
+        // builtins the compiled kernel does.
+        self.install_runtime_builtin("cpu_load_idt", NativeFunction::Plain(core_cpu_load_idt_builtin), 2);
+        self.install_runtime_builtin("cpu_load_gdt", NativeFunction::Plain(core_cpu_load_gdt_builtin), 2);
+        self.install_runtime_builtin(
+            "cpu_reload_segments",
+            NativeFunction::Plain(core_cpu_reload_segments_builtin),
+            2,
+        );
+        self.install_runtime_builtin(
+            "cpu_load_task_register",
+            NativeFunction::Plain(core_cpu_load_task_register_builtin),
+            1,
+        );
+        self.install_runtime_builtin("cpu_read_cr2", NativeFunction::Plain(core_cpu_read_cr2_builtin), 0);
+        self.install_runtime_builtin("cpu_read_cr3", NativeFunction::Plain(core_cpu_read_cr3_builtin), 0);
+        self.install_runtime_builtin("cpu_write_cr3", NativeFunction::Plain(core_cpu_write_cr3_builtin), 1);
+        self.install_runtime_builtin(
+            "cpu_invalidate_page",
+            NativeFunction::Plain(core_cpu_invalidate_page_builtin),
+            1,
+        );
         // Volatile MMIO access.
         //
         // Whether this can mean anything depends on where the VM itself is
@@ -1234,6 +1258,14 @@ hardware_builtins! {
     core_cpu_irq_restore_builtin => super::hardware::cpu_irq_restore;
     core_cpu_wait_for_interrupt_builtin => super::hardware::cpu_wait_for_interrupt;
     core_cpu_timestamp_builtin => super::hardware::cpu_timestamp;
+    core_cpu_load_idt_builtin => super::hardware::cpu_load_idt;
+    core_cpu_load_gdt_builtin => super::hardware::cpu_load_gdt;
+    core_cpu_reload_segments_builtin => super::hardware::cpu_reload_segments;
+    core_cpu_load_task_register_builtin => super::hardware::cpu_load_task_register;
+    core_cpu_read_cr2_builtin => super::hardware::cpu_read_cr2;
+    core_cpu_read_cr3_builtin => super::hardware::cpu_read_cr3;
+    core_cpu_write_cr3_builtin => super::hardware::cpu_write_cr3;
+    core_cpu_invalidate_page_builtin => super::hardware::cpu_invalidate_page;
     core_symbol_address_builtin => super::hardware::symbol_address;
     core_call_address_2_builtin => super::hardware::call_address_2;
     core_volatile_read_u8 => super::hardware::volatile_read_u8;

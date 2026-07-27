@@ -10,9 +10,19 @@ pub(crate) enum Builtin {
     /// Width rides in the variant because that is where the source puts it —
     /// the compiler cannot ask the type checker for a pointee type, which is
     /// why these are intrinsics rather than `*p` syntax.
-    /// `cpu_*` — barriers, interrupt masking, wait-for-interrupt. The payload
-    /// is the ABI entry name under the `cpu` module.
-    Cpu(&'static str, u8),
+    /// `cpu_*` — barriers, interrupt masking, wait-for-interrupt, and the
+    /// system-control instructions. The payload is the ABI entry name under the
+    /// `cpu` module, and *only* that: how many arguments the entry takes and
+    /// whether it produces a value are read back out of the ABI table at
+    /// lowering time.
+    ///
+    /// Carrying the arity here as well is what this used to do, alongside a
+    /// hard-coded list of the entries that return something. Both were copies
+    /// of what the table already says, and a copy of a signature is the shape
+    /// this repo has been bitten by: an entry whose arity disagreed would lower
+    /// a call with the wrong number of arguments, and one missing from the
+    /// returns-a-value list would have its result overwritten with nil.
+    Cpu(&'static str),
     VolatileRead(u8),
     VolatileWrite(u8),
     /// `port_in_uN(port)` / `port_out_uN(port, value)` — x86 port I/O.

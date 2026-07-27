@@ -161,6 +161,183 @@ port_access! {
     port_in_u32, port_out_u32, u32, "eax";
 }
 
+/// The system-control instructions: descriptor tables, CR2/CR3, the TLB.
+///
+/// Gated exactly like port I/O, and for the same reason stated at the top of
+/// this file: the bare-metal x86 kernel *hosts this interpreter*, and a program
+/// it loads off a disk reaches the same builtins the compiled kernel does.
+/// Answering "unsupported" on the one architecture the machine actually is
+/// would mean LK could describe a kernel but never run one on the only backend
+/// that reaches the hardware.
+///
+/// These duplicate the bodies in `lkrt/src/system.rs`, as `cpu_irq_save` here
+/// already duplicates `lkrt/src/cpu.rs`. The two crates cannot share them:
+/// `lkrt` must not depend on `lk-core`, and `lk-core` depending on `lkrt` would
+/// close the loop the other way. What keeps the copies honest is that they are
+/// each three lines of assembly with the instruction named in the function name.
+#[cfg(all(not(feature = "std"), target_arch = "x86_64"))]
+mod system {
+    /// The operand `lidt`/`lgdt` take: a limit and a base, packed. Built here
+    /// rather than by the caller — the layout is `#[repr(packed)]`, which no LK
+    /// type describes, and the CPU reads it only during the instruction.
+    #[repr(C, packed)]
+    pub(super) struct PseudoDescriptor {
+        pub(super) limit: u16,
+        pub(super) base: u64,
+    }
+}
+
+/// One operand as a machine word. Gated with the instructions that read it —
+/// on a hosted build every caller is compiled out, and CI builds with
+/// `-D warnings`.
+#[cfg(all(not(feature = "std"), target_arch = "x86_64"))]
+fn word_operand(args: &NativeArgs<'_>, index: usize, name: &str) -> Result<i64> {
+    match args.get(index) {
+        Some(RuntimeVal::Int(value)) => Ok(*value),
+        _ => Err(anyhow!("{name} expects an integer as argument {}", index + 1)),
+    }
+}
+
+fn system_refusal(name: &str) -> anyhow::Error {
+    anyhow!("{name} requires bare-metal execution on x86-64: no other target has this instruction")
+}
+
+pub(super) fn cpu_load_idt(_args: NativeArgs<'_>) -> Result<RuntimeVal> {
+    #[cfg(all(not(feature = "std"), target_arch = "x86_64"))]
+    {
+        let descriptor = system::PseudoDescriptor {
+            base: word_operand(&_args, 0, "cpu_load_idt")? as u64,
+            limit: word_operand(&_args, 1, "cpu_load_idt")? as u16,
+        };
+        unsafe {
+            core::arch::asm!("lidt [{}]", in(reg) &descriptor, options(preserves_flags));
+        }
+        return Ok(RuntimeVal::Nil);
+    }
+    #[allow(unreachable_code)]
+    Err(system_refusal("cpu_load_idt"))
+}
+
+pub(super) fn cpu_load_gdt(_args: NativeArgs<'_>) -> Result<RuntimeVal> {
+    #[cfg(all(not(feature = "std"), target_arch = "x86_64"))]
+    {
+        let descriptor = system::PseudoDescriptor {
+            base: word_operand(&_args, 0, "cpu_load_gdt")? as u64,
+            limit: word_operand(&_args, 1, "cpu_load_gdt")? as u16,
+        };
+        unsafe {
+            core::arch::asm!("lgdt [{}]", in(reg) &descriptor, options(preserves_flags));
+        }
+        return Ok(RuntimeVal::Nil);
+    }
+    #[allow(unreachable_code)]
+    Err(system_refusal("cpu_load_gdt"))
+}
+
+/// Reloads CS and the data segments — the half of a GDT load that `lgdt` does
+/// not do, because the segment registers hold cached descriptors.
+pub(super) fn cpu_reload_segments(_args: NativeArgs<'_>) -> Result<RuntimeVal> {
+    #[cfg(all(not(feature = "std"), target_arch = "x86_64"))]
+    {
+        let code = word_operand(&_args, 0, "cpu_reload_segments")? as u64;
+        let data = word_operand(&_args, 1, "cpu_reload_segments")? as u64;
+        unsafe {
+            // A far return, because CS cannot be written by `mov`: push the
+            // selector and the address to continue at, and `retfq` loads both.
+            // FS and GS are left alone — writing either zeroes its base.
+            core::arch::asm!(
+                "push {code}",
+                "lea {tmp}, [rip + 2f]",
+                "push {tmp}",
+                "retfq",
+                "2:",
+                "mov ds, {data:x}",
+                "mov es, {data:x}",
+                "mov ss, {data:x}",
+                code = in(reg) code,
+                data = in(reg) data,
+                tmp = lateout(reg) _,
+            );
+        }
+        return Ok(RuntimeVal::Nil);
+    }
+    #[allow(unreachable_code)]
+    Err(system_refusal("cpu_reload_segments"))
+}
+
+pub(super) fn cpu_load_task_register(_args: NativeArgs<'_>) -> Result<RuntimeVal> {
+    #[cfg(all(not(feature = "std"), target_arch = "x86_64"))]
+    {
+        let selector = word_operand(&_args, 0, "cpu_load_task_register")? as u16;
+        unsafe {
+            core::arch::asm!("ltr {0:x}", in(reg) selector, options(nostack, preserves_flags));
+        }
+        return Ok(RuntimeVal::Nil);
+    }
+    #[allow(unreachable_code)]
+    Err(system_refusal("cpu_load_task_register"))
+}
+
+/// The address whose access caused the last page fault. Only the CPU writes it.
+pub(super) fn cpu_read_cr2(_args: NativeArgs<'_>) -> Result<RuntimeVal> {
+    #[cfg(all(not(feature = "std"), target_arch = "x86_64"))]
+    {
+        let value: u64;
+        unsafe {
+            core::arch::asm!("mov {}, cr2", out(reg) value, options(nostack, preserves_flags));
+        }
+        return Ok(RuntimeVal::Int(value as i64));
+    }
+    #[allow(unreachable_code)]
+    Err(system_refusal("cpu_read_cr2"))
+}
+
+pub(super) fn cpu_read_cr3(_args: NativeArgs<'_>) -> Result<RuntimeVal> {
+    #[cfg(all(not(feature = "std"), target_arch = "x86_64"))]
+    {
+        let value: u64;
+        unsafe {
+            core::arch::asm!("mov {}, cr3", out(reg) value, options(nostack, preserves_flags));
+        }
+        return Ok(RuntimeVal::Int(value as i64));
+    }
+    #[allow(unreachable_code)]
+    Err(system_refusal("cpu_read_cr3"))
+}
+
+/// Switches address spaces, flushing the TLB in doing so. The code after it
+/// must be mapped in the new space at the same address — which is why a kernel
+/// is mapped into every one.
+pub(super) fn cpu_write_cr3(_args: NativeArgs<'_>) -> Result<RuntimeVal> {
+    #[cfg(all(not(feature = "std"), target_arch = "x86_64"))]
+    {
+        let value = word_operand(&_args, 0, "cpu_write_cr3")? as u64;
+        // No `nomem`: this invalidates every cached translation, so it orders
+        // against essentially all memory.
+        unsafe {
+            core::arch::asm!("mov cr3, {}", in(reg) value, options(nostack, preserves_flags));
+        }
+        return Ok(RuntimeVal::Nil);
+    }
+    #[allow(unreachable_code)]
+    Err(system_refusal("cpu_write_cr3"))
+}
+
+/// Drops one page's cached translation. The page table is not what the CPU
+/// consults — the TLB is, and it does not notice a write behind it.
+pub(super) fn cpu_invalidate_page(_args: NativeArgs<'_>) -> Result<RuntimeVal> {
+    #[cfg(all(not(feature = "std"), target_arch = "x86_64"))]
+    {
+        let address = word_operand(&_args, 0, "cpu_invalidate_page")? as u64;
+        unsafe {
+            core::arch::asm!("invlpg [{}]", in(reg) address, options(preserves_flags));
+        }
+        return Ok(RuntimeVal::Nil);
+    }
+    #[allow(unreachable_code)]
+    Err(system_refusal("cpu_invalidate_page"))
+}
+
 /// A full memory barrier.
 ///
 /// `fence(SeqCst)` rather than hand-written assembly: it is `mfence` on x86-64,
