@@ -476,16 +476,25 @@ rather than an error when they do not:
   bit has to be set at *every* level of the walk, because the CPU takes their
   conjunction.
 
-The page granted is the first 2 MiB, and only it. That is coarse — the rest of
-the image is in that page, so ring 3 can read the kernel's code — and it is
-written down rather than papered over: fixing it means 4 KiB tables for the
-user's regions instead of 2 MiB ones. What it does buy is the property being
-tested, because the shared page is in the *next* 2 MiB.
+What ring 3 is granted is **its own pages, and nothing else**. The first 2 MiB
+has 4 KiB granularity — one page table instead of one big page — and the U bit
+is set only on the pages between `__user_start` and `__user_end`, a section the
+linker script page-aligns at both ends. Everything else in that range, which is
+most of the kernel, stays kernel-only.
 
-Getting that wrong is instructive: an early version set the U bit on the second
-directory entry too, and the forbidden write simply succeeded. The check
-therefore asserts the *error code*, not just the address — a fault at that
-address from ring 0 would be a kernel bug with the same `cr2`.
+That granularity is what the check is aimed at. The forbidden access is a *read*
+of `0x100010` — the kernel's first instruction, in the same 2 MiB as the user
+program. While the range was one user-accessible page, that read succeeded and
+told nobody; now it faults. "Ring 3 cannot reach the shared page two megabytes
+away" is a much weaker claim than "ring 3 cannot reach the kernel", and only the
+second one is worth making.
+
+Two mistakes on the way, both instructive. An early version set the U bit on the
+second directory entry as well, and the forbidden write simply succeeded — which
+is why the check asserts the *error code*, not just the address: a fault there
+from ring 0 would be a kernel bug with the same `cr2`. And the U bit has to be
+set at every level of the walk, because the CPU takes their conjunction; a user
+page under a kernel-only directory is still kernel-only.
 
 ### And back again
 

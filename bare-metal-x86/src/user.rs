@@ -249,6 +249,7 @@ pub unsafe fn enter(entry: u64, stack: u64) -> ! {
 /// framebuffer directly, which is the instruction the ring boundary has to
 /// stop.
 global_asm!(
+    ".section .user, \"ax\"",
     ".global __user_program",
     "__user_program:",
     // "USER" through the syscall, one byte per call.
@@ -268,12 +269,15 @@ global_asm!(
     // check can tell "ring 3 ran" from "ring 3 was stopped".
     "   mov rax, 2",
     "   int 0x80",
-    // And now the forbidden thing: a write to the kernel's own data. At ring 3
-    // this is a page fault, reported by the exception handler and never
-    // executed. A kernel where this *worked* would have a ring boundary in
-    // name only.
-    "   mov rax, 0x300000",
-    "   mov qword ptr [rax], 0",
+    // And now the forbidden thing — a *read* of the kernel's own code, at an
+    // address inside the same 2 MiB as this program.
+    //
+    // Deliberately a read, and deliberately near: while the first 2 MiB was one
+    // user-accessible page, this succeeded and told nobody. With 4 KiB pages it
+    // faults, which is the difference between "ring 3 cannot reach the shared
+    // page two megabytes away" and "ring 3 cannot reach the kernel".
+    "   mov rax, 0x100010",
+    "   mov rax, qword ptr [rax]",
     // Unreachable: the fault above does not return.
     "2:  jmp 2b",
 );
@@ -286,6 +290,7 @@ global_asm!(
 /// the claim. The earlier `user` command could not show that, because it had
 /// no way back at all.
 global_asm!(
+    ".section .user, \"ax\"",
     ".global __user_task",
     "__user_task:",
     "3: mov rax, 1",
@@ -308,6 +313,7 @@ unsafe extern "C" {
 /// different tasks and must not share a stack.
 #[repr(align(16))]
 struct UserTaskStack([u8; 8 * 1024]);
+#[unsafe(link_section = ".user")]
 static mut USER_TASK_STACK: UserTaskStack = UserTaskStack([0; 8 * 1024]);
 
 /// The task's entry and stack, for the program to spawn it with.
@@ -330,6 +336,7 @@ pub extern "C" fn lk_user_task_stack() -> i64 {
 /// The stack the user program runs on.
 #[repr(align(16))]
 struct UserStack([u8; 8 * 1024]);
+#[unsafe(link_section = ".user")]
 static mut USER_STACK: UserStack = UserStack([0; 8 * 1024]);
 
 /// The top of that stack, one word down — the phase a function expects.

@@ -22,6 +22,17 @@ SECTIONS
         *(.text .text.*)
     }
 
+    /* Everything ring 3 may reach, on its own pages.
+     *
+     * Page-aligned at both ends because permission is granted per page: a user
+     * region sharing a page with kernel code would hand ring 3 that code too,
+     * which is exactly what the first version of this did with a 2 MiB page. */
+    . = ALIGN(4096);
+    __user_start = .;
+    .user : { *(.user .user.*) }
+    . = ALIGN(4096);
+    __user_end = .;
+
     .rodata : { *(.rodata .rodata.*) }
     .data   : { *(.data .data.*) }
 
@@ -46,6 +57,10 @@ SECTIONS
        near the top of the 32-bit physical range, far outside the first. */
     __pd = .;
     . = . + 4 * 4096;
+    /* One 4 KiB-granular table for the first 2 MiB, so the user pages can be
+       marked separately from the kernel ones sharing that range. */
+    __pt0 = .;
+    . = . + 4096;
 
     /* The stack grows down from here. */
     . = ALIGN(16);

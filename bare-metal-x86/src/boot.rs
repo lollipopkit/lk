@@ -74,21 +74,40 @@ global_asm!(
     "   add eax, 0x1000",
     "   add edi, 8",
     "   loop 2b",
-    // The first 2 MiB, and only it, is reachable from ring 3.
+    // The first 2 MiB gets 4 KiB granularity, so ring 3 can be given the pages
+    // it needs and *only* those.
     //
-    // The user program and its stack live in this image, which means they live
-    // in this page — so the U bit has to be here for ring 3 to execute at all.
-    // Everything above it stays kernel-only, which is what makes the boundary
-    // testable: the shared page at 0x300000 is in the *next* 2 MiB, and a user
-    // task writing there faults.
-    //
-    // Coarse, and knowingly so: the rest of this image is in the same page, so
-    // ring 3 can read the kernel's own code and data. Fixing that means 4 KiB
-    // tables for the user's pages rather than 2 MiB ones — a page table per
-    // user region, which is the shape this wants once there is more than one
-    // user program.
+    // Every page kernel-only to start with; then the ones between
+    // `__user_start` and `__user_end` — the linker script's own section — get
+    // the U bit. The directory entry above them needs it too, because the CPU
+    // takes the conjunction of the U bits along the walk: a user page under a
+    // kernel-only directory is still kernel-only.
+    "   mov edi, offset __pt0",
+    "   mov eax, 0x03",               // present | writable, no user
+    "   mov ecx, 512",
+    "5: mov [edi], eax",
+    "   mov dword ptr [edi + 4], 0",
+    "   add eax, 0x1000",
+    "   add edi, 8",
+    "   loop 5b",
+    "   mov esi, offset __user_start",
+    "   shr esi, 12",                 // first user page
+    "   mov edx, offset __user_end",
+    "   add edx, 0xfff",
+    "   shr edx, 12",
+    "   sub edx, esi",                // how many
+    "   jz 7f",                       // nothing to grant
+    "   mov edi, offset __pt0",
+    "   lea edi, [edi + esi*8]",
+    "6: or dword ptr [edi], 4",       // user-accessible
+    "   add edi, 8",
+    "   dec edx",
+    "   jnz 6b",
+    "7: mov eax, offset __pt0",
+    "   or eax, 7",                   // present | writable | user
     "   mov edi, offset __pd",
-    "   mov dword ptr [edi], 0x87",   // present | writable | 2 MiB | user
+    "   mov [edi], eax",
+    "   mov dword ptr [edi + 4], 0",
     "   mov eax, offset __pdpt",
     "   or eax, 7",
     "   mov edi, offset __pml4",

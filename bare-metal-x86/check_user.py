@@ -7,11 +7,12 @@ Three claims, and the second is the one that makes the first mean anything:
 1. **A ring-3 program can talk to the kernel.** It prints `USER` a byte at a
    time through `int 0x80` — the only vector whose gate has DPL 3, so it is the
    only instruction that takes a user task into the kernel on purpose.
-2. **It cannot touch the kernel's memory.** Immediately after, it writes to
-   `0x300000` — the shared page every interrupt handler uses — and the CPU
-   faults with `cr2=0x300000` and a user-mode error code. Until this existed,
-   "the program does not touch the framebuffer" was a fact about the program;
-   now it is a fact about the page tables.
+2. **It cannot touch the kernel's memory** — including the kernel *next to it*.
+   Immediately after, it reads `0x100010`: the kernel's first instruction, in
+   the same 2 MiB as the program itself. The CPU faults with a user-mode error
+   code. That address is the point: while the first 2 MiB was one
+   user-accessible page, this read succeeded and told nobody, and only a
+   4 KiB-granular table makes it the fault it should be.
 
 3. **A ring-3 task can be preempted.** A separate task, spawned into ring 3 at
    boot, prints `3` for ever and never yields — and the shell answers a command
@@ -33,10 +34,13 @@ import time
 # What the ring-3 program prints through the syscall, and where it then tries to
 # write. Both are in `src/user.rs`.
 GREETING = "USER"
-FORBIDDEN = "cr2=0000000000300000"
-# present | write | user: the access was a write, from ring 3, to a page that is
-# there but not user-accessible.
-USER_WRITE_FAULT = "error=0000000000000007"
+# The kernel's first instruction — in the same 2 MiB as the user program, which
+# is what makes it the interesting address to be refused.
+FORBIDDEN = "cr2=0000000000100010"
+# present | user: a read, from ring 3, of a page that is there but not marked
+# user-accessible. Bit 2 is the whole claim — the same fault from ring 0 would
+# be a kernel bug with the same `cr2`.
+USER_WRITE_FAULT = "error=0000000000000005"
 
 
 def main():
@@ -99,14 +103,15 @@ def main():
         if "#PF page fault" not in transcript:
             failures.append("the forbidden write did not fault: the ring boundary is not enforced")
         if FORBIDDEN not in transcript:
-            failures.append(f"the fault was not at the shared page ({FORBIDDEN})")
+            failures.append(f"the fault was not at the kernel's own code ({FORBIDDEN})")
         if USER_WRITE_FAULT not in transcript:
-            failures.append(f"the fault was not a ring-3 write ({USER_WRITE_FAULT})")
+            failures.append(f"the fault was not a ring-3 access ({USER_WRITE_FAULT})")
         if failures:
             raise SystemExit(
                 "ring 3 wrong:\n  " + "\n  ".join(failures) + "\n--- serial ---\n" + transcript[-400:]
             )
-    print("OK: ring 3 spoke through a syscall, was preempted while never yielding, and was refused kernel memory")
+    print("OK: ring 3 spoke through a syscall, was preempted while never yielding, "
+        "and was refused the kernel page next to its own")
 
 
 if __name__ == "__main__":
