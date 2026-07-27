@@ -20,7 +20,7 @@ use core::arch::global_asm;
 /// How many tasks the board can hold. A capacity, not a count: the stacks are
 /// static because nothing here can grow a table while interrupts are reading
 /// it, but which of them are in use is decided at run time by `lk_spawn`.
-pub const TASK_CAPACITY: usize = 4;
+pub const TASK_CAPACITY: usize = 6;
 
 const STACK_SIZE: usize = 32 * 1024;
 
@@ -51,6 +51,11 @@ static mut TASK_USED: usize = 1;
 /// with one space would be two threads, and the difference between a thread and
 /// a process is exactly this word.
 static mut TASK_CR3: [u64; TASK_CAPACITY] = [0; TASK_CAPACITY];
+
+/// How many user address spaces exist. The linker script reserves two sets of
+/// tables; a third user task is refused rather than given someone else's.
+static mut USER_SPACES: usize = 0;
+const USER_SPACE_CAPACITY: usize = 2;
 
 /// Which entry of `TASK_RSP` belongs to the task currently on the CPU.
 static mut CURRENT: usize = 0;
@@ -184,6 +189,10 @@ pub extern "C" fn lk_spawn_user(entry: i64, user_stack: i64, user_stack_virtual:
     if entry == 0 || user_stack == 0 {
         return -1;
     }
+    // SAFETY: read under the caller's interrupt mask.
+    if unsafe { *(&raw const USER_SPACES) } >= USER_SPACE_CAPACITY {
+        return -1;
+    }
     // SAFETY: the caller masks interrupts, as `lk_spawn` requires.
     unsafe {
         let used = *(&raw const TASK_USED);
@@ -201,7 +210,9 @@ pub extern "C" fn lk_spawn_user(entry: i64, user_stack: i64, user_stack_virtual:
         (*rsp)[used] = sp;
         // Its own address space, in which that stack address means something.
         let cr3 = &raw mut TASK_CR3;
-        (*cr3)[used] = crate::user::build_address_space(user_stack as u64 & !0xfff);
+        // One space per user task, indexed by how many exist already.
+        (*cr3)[used] = crate::user::build_address_space(*(&raw const USER_SPACES), user_stack as u64 & !0xfff);
+        *(&raw mut USER_SPACES) += 1;
         *(&raw mut TASK_USED) = used + 1;
         used as i64
     }

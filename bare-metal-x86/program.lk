@@ -1258,6 +1258,16 @@ fn spawn_user_task(entry: Int, stack: Int, stack_virtual: Int) -> Int {
 
 // Where that stack is in the task's own address space — a different number for
 // the same memory.
+#[extern("lk_user_task_entry_b")]
+fn user_task_entry_b() -> Int {
+    return 0;
+}
+
+#[extern("lk_user_task_stack_b")]
+fn user_task_stack_b() -> Int {
+    return 0;
+}
+
 #[extern("lk_user_task_stack_virtual")]
 fn user_task_stack_virtual() -> Int {
     return 0;
@@ -1920,13 +1930,16 @@ let clock_task = spawn_task(unsafe { symbol_address("lk_task_clock") });
 // And one that runs in ring 3. It never yields; the timer is what takes the
 // CPU back, which is the whole difference from the one-shot `user` command.
 let user_task = spawn_user_task(user_task_entry(), user_task_stack(), user_task_stack_virtual());
+// A second one, with a stack at the *same* virtual address in a space of its
+// own: if they shared a space, one would overwrite the other's memory.
+let user_task_b = spawn_user_task(user_task_entry_b(), user_task_stack_b(), user_task_stack_virtual());
 // Derived from the last slot handed out, not written as a number: a literal
 // here is a second place that has to be edited whenever a task is added, and
 // the failure when it is not — a scheduler naming a slot that was never
 // spawned — is a jump to zero.
-shared_write(SHARED_TASK_COUNT, user_task + 1);
+shared_write(SHARED_TASK_COUNT, user_task_b + 1);
 unlock(irq_spawn);
-if (spinner_task < 0 || clock_task < 0 || user_task < 0) {
+if (spinner_task < 0 || clock_task < 0 || user_task < 0 || user_task_b < 0) {
     // "no tasks"
     uart_write([110, 111, 32, 116, 97, 115, 107, 115, 10]);
 }

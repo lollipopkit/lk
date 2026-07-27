@@ -233,13 +233,15 @@ pub const USER_STACK_VIRTUAL: u64 = 0x4000_0000;
 /// # Safety
 ///
 /// Called once, at boot, before any of these tables is in use.
-pub unsafe fn build_address_space(stack_physical: u64) -> u64 {
+pub unsafe fn build_address_space(space: usize, stack_physical: u64) -> u64 {
     // SAFETY: boot path; nothing walks these tables until CR3 names them.
     unsafe {
-        let pml4 = &raw mut __user_pml4;
-        let pdpt = &raw mut __user_pdpt;
-        let pd = &raw mut __user_pd;
-        let pt = &raw mut __user_pt;
+        // One set of tables per space, side by side.
+        let offset = space * 512;
+        let pml4 = (&raw mut __user_pml4).add(offset);
+        let pdpt = (&raw mut __user_pdpt).add(offset);
+        let pd = (&raw mut __user_pd).add(offset);
+        let pt = (&raw mut __user_pt).add(offset);
         for i in 0..512 {
             pml4.add(i).write(0);
             pdpt.add(i).write(0);
@@ -434,10 +436,24 @@ global_asm!(
 /// no way back at all.
 global_asm!(
     ".section .user, \"ax\"",
-    ".global __user_task",
-    "__user_task:",
+    // Two tasks, one body, one difference: the letter each writes into its own
+    // stack. Both stacks are at the same *virtual* address, so if they shared
+    // an address space the second write would land on the first's and both
+    // would print the same letter for ever after. They print A and B.
+    ".global __user_task_a",
+    "__user_task_a:",
+    "   mov rbx, 65",       // 'A'
+    "   jmp __user_task_body",
+    ".global __user_task_b",
+    "__user_task_b:",
+    "   mov rbx, 66",       // 'B'
+    "__user_task_body:",
+    // Write it into this task's own stack page, then read it back from there
+    // every time round: a task that prints its letter is one whose memory
+    // still says what it wrote.
+    "   mov [rsp - 16], bl",
     "3: mov rax, 1",
-    "   mov rdi, 51",       // '3'
+    "   movzx rdi, byte ptr [rsp - 16]",
     "   int 0x80",
     "   mov rcx, 40000000",
     "4: dec rcx",
@@ -448,21 +464,40 @@ global_asm!(
 unsafe extern "C" {
     /// The ring-3 program's first instruction.
     pub fn __user_program();
-    /// The preemptible ring-3 task's.
-    pub fn __user_task();
+    /// The two preemptible ring-3 tasks'.
+    pub fn __user_task_a();
+    pub fn __user_task_b();
 }
 
 /// A stack for the ring-3 task, distinct from the one-shot program's: they are
 /// different tasks and must not share a stack.
-#[repr(align(16))]
+#[repr(align(4096))]
 struct UserTaskStack([u8; 8 * 1024]);
 #[unsafe(link_section = ".user")]
 static mut USER_TASK_STACK: UserTaskStack = UserTaskStack([0; 8 * 1024]);
+#[unsafe(link_section = ".user")]
+static mut USER_TASK_STACK_B: UserTaskStack = UserTaskStack([0; 8 * 1024]);
 
 /// The task's entry and stack, for the program to spawn it with.
 #[unsafe(no_mangle)]
 pub extern "C" fn lk_user_task_entry() -> i64 {
-    __user_task as *const () as i64
+    __user_task_a as *const () as i64
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn lk_user_task_entry_b() -> i64 {
+    __user_task_b as *const () as i64
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn lk_user_task_stack_b() -> i64 {
+    // SAFETY: a static array's own end.
+    unsafe {
+        (&raw mut USER_TASK_STACK_B)
+            .cast::<u8>()
+            .add(size_of::<UserTaskStack>())
+            .sub(4096) as i64
+    }
 }
 
 /// The physical page that backs the ring-3 task's stack.

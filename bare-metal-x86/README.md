@@ -511,9 +511,16 @@ and copying the entries would work today and drift the first time a mapping is
 added to one and not the other. Only the second gigabyte is the task's own, and
 it holds one page: its stack.
 
-That it works is the evidence. QEMU's default machine has 128 MiB, so
-`0x4000_0000` is backed by nothing in the kernel's identity map; a task running
-there at all means the tables that give it meaning are the ones in force.
+There are two of them, which is what makes it a claim rather than a permission:
+both tasks keep a stack at *the same* virtual address, each writes one letter
+into it, and each prints what it reads back — for ever, interleaved by the
+timer. `ABABAB…`. One address space would mean the second write landed on the
+first's page and both letters were the same from then on.
+
+That it works at all is the other half of the evidence. QEMU's default machine
+has 128 MiB, so `0x4000_0000` is backed by nothing in the kernel's identity map;
+a task running there means the tables that give it meaning are the ones in
+force.
 
 CR3 changes before the stack pointer is handed back, not after: the value the
 switch returns is read by the CPU *after* this returns, and it has to mean the

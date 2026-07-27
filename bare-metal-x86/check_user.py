@@ -17,10 +17,14 @@ Three claims, and the second is the one that makes the first mean anything:
    user-accessible page, this read succeeded and told nobody, and only a
    4 KiB-granular table makes it the fault it should be.
 
-3. **A ring-3 task can be preempted.** A separate task, spawned into ring 3 at
-   boot, prints `3` for ever and never yields — and the shell answers a command
-   while it runs. The timer took the CPU from ring 3 and gave it back, which the
-   one-shot program above cannot show because it has no way back at all.
+3. **Two ring-3 tasks, preempted, in address spaces of their own.** Both are
+   spawned at boot, both never yield, and both keep a stack at the *same*
+   virtual address — `0x4000_0000`, which the kernel's own space maps to memory
+   this machine does not have. Each writes one letter into its stack and prints
+   what it reads back for ever: `A` and `B`. Sharing a space would mean the
+   second write landed on the first's page and both printed the same letter.
+   That the shell answers in the middle of it is the preemption claim; the
+   one-shot program above cannot show it, having no way back at all.
 
 The error code is checked, not just the address: bit 2 is what says the access
 came from ring 3. A fault at that address from ring 0 would be a kernel bug
@@ -101,8 +105,12 @@ def main():
         failures = []
         # The ring-3 task's own output, and the shell answering in the middle
         # of it: either alone proves nothing.
-        if while_running.count("3") < 5:
-            failures.append("the ring-3 task never ran")
+        if while_running.count("A") < 3 or while_running.count("B") < 3:
+            failures.append("both ring-3 tasks did not run")
+        # Interleaved, not one after the other: a task that ran to completion
+        # before the other started would say nothing about preemption.
+        if "AB" not in while_running and "BA" not in while_running:
+            failures.append("the two ring-3 tasks never interleaved")
         if "\n5\n" not in while_running and "\n6\n" not in while_running:
             failures.append("the shell did not answer while the ring-3 task was running")
         if GREETING not in transcript:
