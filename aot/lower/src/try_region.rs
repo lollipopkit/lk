@@ -13,6 +13,29 @@
 //! — each one is a shape whose meaning would change if it were called instead
 //! of inlined, and every one of them names itself rather than falling out as
 //! "opcode TryBegin is not natively lowerable yet".
+//!
+//! # What is still rejected, and why it is hard
+//!
+//! The three `try`/`catch` files in `AOT_COVERAGE_ALLOW` no longer fail on
+//! anything in this module. What stops them is a *handler* shape: a register
+//! the handler defines, needed as a block argument where the handler and the
+//! region's other edge meet. The region edge has no definition for it, and the
+//! phi demands one.
+//!
+//! The tempting fix is to supply a placeholder — zero, say — on the region
+//! edge. Do not, without first establishing that the value is unobservable:
+//! in the VM that register holds whatever it held before the region, and
+//! "whatever it held" is a real value that a program could read. A placeholder
+//! would be a *wrong* answer wearing the clothes of a missing one, and this
+//! feature has already produced two silent wrong answers (see the commits for
+//! the body's writes and for the parameter list) — both from inferring
+//! something the SSA could have been asked.
+//!
+//! The shape of an answer that does not guess: find what actually reads the
+//! register after the join. If nothing does, the phi should not exist, and the
+//! question is why it was created. If something does, the value it needs is the
+//! one from *before* the region, which the parent can pass in and the handler
+//! edge can shadow.
 
 use lk_core::vm::{FunctionData, Instr, Opcode};
 

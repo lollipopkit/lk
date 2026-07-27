@@ -563,6 +563,18 @@ task's own kernel stack on every switch. Two user tasks sharing one would have
 the second's interrupt frame land on the first's, and the first would resume
 into whatever was left.
 
+### What a third one would need
+
+The tables are there for four address spaces and the task table holds six tasks,
+so a third user process costs nothing structural. What it needs is a *claim*: two
+tasks printing `A` and `B` prove they cannot see each other, and a third printing
+`C` proves nothing further unless it is arranged to fail differently — sharing a
+space with exactly one of the others, say, so the check can tell "isolated from
+everyone" from "isolated from the last one spawned".
+
+Adding the task is half an hour. Deciding what it would demonstrate is the part
+worth doing first.
+
 ## Memory that comes back
 
 `drivers/pages.lk` never reclaims, which was honest while nothing freed.
