@@ -62,23 +62,11 @@ SECTIONS
     __pt0 = .;
     . = . + 4096;
 
-    /* A second address space, for a user task: its own PML4 and the two tables
-       that differ from the kernel's. Everything else is shared by pointing at
-       the kernel's own tables — the kernel has to be mapped in every space, or
-       an interrupt during ring 3 would have nowhere to land. */
-    /* One address space per user task, up to the task table's own capacity.
-       Two was what proved the point — one space is indistinguishable from a
-       permission — but two is also a number nothing justifies keeping, and a
-       third user task being refused for want of 16 KiB is an arbitrary limit
-       rather than a decided one. */
-    __user_pml4 = .;
-    . = . + 4 * 4096;
-    __user_pdpt = .;
-    . = . + 4 * 4096;
-    __user_pd = .;
-    . = . + 4 * 4096;
-    __user_pt = .;
-    . = . + 4 * 4096;
+    /* No user page tables reserved here any more. `program.lk` builds an
+       address space out of pages from its own allocator, so how many there can
+       be is bounded by memory rather than by a number written down here — and
+       the number written down here was four, which was never justified by
+       anything except that two had been. */
 
     /* The stack grows down from here. */
     . = ALIGN(16);

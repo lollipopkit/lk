@@ -88,6 +88,14 @@ def main():
             # can land on the same phase and show no difference on a machine
             # where everything is working. Asking "did it ever change" over a
             # series is the same claim without the coin flip.
+            #
+            # It is still wall-clock, though, and that makes it the one check
+            # here sensitive to what else the *host* is doing: with a compile
+            # running alongside, four samples 1.4s apart have all landed inside
+            # one spinner phase and reported both windows frozen. Three such
+            # failures in a row once looked exactly like a real regression and
+            # were not — the same build passed 4/4 on an idle machine. Re-run a
+            # failure here on a quiet host before believing it.
             shots = [screenshot(f"sample{i}.ppm") for i in range(4)]
             connection.sendall(b"quit\n")
             connection.close()

@@ -15,7 +15,10 @@
 //   +4  one past the last page
 //   +8  pages handed out so far
 
-const PAGE_SIZE = 4096;
+// The page size is the MMU's, not the allocator's: this file hands out pages of
+// whatever size the hardware walks. Importing it from `paging` is the
+// dependency in the direction it actually runs.
+use { PAGE_SIZE } from "paging";
 
 fn pages_word(address: Int) -> Int {
     let value = unsafe { volatile_read_u32(address as *mut u32) };

@@ -71,10 +71,17 @@ EXPECTED_LINES = [
     "lk",
     "A!_",
     # Two pages handed out in order, from the range the loader reported. The
-    # addresses are what proves the allocator rather than a counter. They start
-    # past the kernel heap's sixteen pages, which startup took first.
-    "02010000",
-    "02011000",
+    # addresses are what proves the allocator rather than a counter — a counter
+    # would print two numbers just as happily.
+    #
+    # They start past what startup already took: the kernel heap's sixteen
+    # pages, and then eight more for the two user address spaces (four tables
+    # each). That second group is why these numbers moved — the page tables
+    # used to be reserved in the linker script, and are now allocated like
+    # anything else, which is what removed the fixed ceiling on how many
+    # address spaces there can be.
+    "02018000",
+    "02019000",
     # The heap allocates three blocks, frees the middle one, allocates one that
     # only fits the hole, then frees everything. All three numbers are claims:
     # the block count must come *back* to what it was (holes joined on both

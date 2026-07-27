@@ -52,14 +52,6 @@ static mut TASK_USED: usize = 1;
 /// a process is exactly this word.
 static mut TASK_CR3: [u64; TASK_CAPACITY] = [0; TASK_CAPACITY];
 
-/// How many user address spaces exist.
-///
-/// Bounded by the tables the linker script reserves, not by anything about the
-/// design: a user task past this is refused rather than handed someone else's
-/// space, which is the one answer that is never a silent wrong one.
-static mut USER_SPACES: usize = 0;
-const USER_SPACE_CAPACITY: usize = 4;
-
 /// Which entry of `TASK_RSP` belongs to the task currently on the CPU.
 static mut CURRENT: usize = 0;
 
@@ -188,12 +180,14 @@ pub extern "C" fn lk_spawn(entry: i64) -> i64 {
 /// `entry` must be code in a user-accessible page, and `user_stack` a
 /// user-accessible, 16-byte-aligned stack of its own.
 #[unsafe(no_mangle)]
-pub extern "C" fn lk_spawn_user(entry: i64, user_stack: i64, user_stack_virtual: i64) -> i64 {
+pub extern "C" fn lk_spawn_user(entry: i64, user_stack: i64, user_stack_virtual: i64, cr3: i64) -> i64 {
     if entry == 0 || user_stack == 0 {
         return -1;
     }
-    // SAFETY: read under the caller's interrupt mask.
-    if unsafe { *(&raw const USER_SPACES) } >= USER_SPACE_CAPACITY {
+    // An address space it cannot run in is not a task it can refuse later: the
+    // program answers 0 when it has no pages left, and a CR3 of 0 would be a
+    // walk from page zero on the first instruction.
+    if cr3 == 0 {
         return -1;
     }
     // SAFETY: the caller masks interrupts, as `lk_spawn` requires.
@@ -212,10 +206,11 @@ pub extern "C" fn lk_spawn_user(entry: i64, user_stack: i64, user_stack_virtual:
         let rsp = &raw mut TASK_RSP;
         (*rsp)[used] = sp;
         // Its own address space, in which that stack address means something.
-        let cr3 = &raw mut TASK_CR3;
-        // One space per user task, indexed by how many exist already.
-        (*cr3)[used] = crate::user::build_address_space(*(&raw const USER_SPACES), user_stack as u64 & !0xfff);
-        *(&raw mut USER_SPACES) += 1;
+        // Built by the program and handed over: what a space *contains* is a
+        // decision, and the board's share of it is the page directories it
+        // filled in before long mode.
+        let table = &raw mut TASK_CR3;
+        (*table)[used] = cr3 as u64;
         *(&raw mut TASK_USED) = used + 1;
         used as i64
     }

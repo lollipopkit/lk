@@ -170,11 +170,11 @@ struct KernelStack([u8; 16 * 1024]);
 static mut RING0_STACK: KernelStack = KernelStack([0; 16 * 1024]);
 
 unsafe extern "C" {
-    static mut __user_pml4: u64;
-    static mut __user_pdpt: u64;
-    static mut __user_pd: u64;
-    static mut __user_pt: u64;
-    static __pdpt: u64;
+    /// The kernel's page directories, placed by the linker script. The user
+    /// address spaces that used to sit beside them are gone: `program.lk`
+    /// allocates its page tables from its own page allocator now, so how many
+    /// address spaces there can be is bounded by memory rather than by four
+    /// reservations in a linker script.
     static __pd: u64;
 }
 
@@ -186,51 +186,19 @@ unsafe extern "C" {
 /// spaces rather than one with extra permissions.
 pub const USER_STACK_VIRTUAL: u64 = 0x4000_0000;
 
-/// Builds the user address space and answers its CR3.
+/// Where the kernel's four page directories are, one per gigabyte.
 ///
-/// Everything except the second gigabyte is *shared with the kernel* by
-/// pointing at the kernel's own tables rather than copying them: the kernel has
-/// to be mapped in every space, because an interrupt during ring 3 lands in
-/// kernel code and would otherwise have nowhere to go. Copying would work today
-/// and drift tomorrow — a mapping added to one and not the other.
-///
-/// # Safety
-///
-/// Called once, at boot, before any of these tables is in use.
-pub unsafe fn build_address_space(space: usize, stack_physical: u64) -> u64 {
-    // SAFETY: boot path; nothing walks these tables until CR3 names them.
-    unsafe {
-        // One set of tables per space, side by side.
-        let offset = space * 512;
-        let pml4 = (&raw mut __user_pml4).add(offset);
-        let pdpt = (&raw mut __user_pdpt).add(offset);
-        let pd = (&raw mut __user_pd).add(offset);
-        let pt = (&raw mut __user_pt).add(offset);
-        for i in 0..512 {
-            pml4.add(i).write(0);
-            pdpt.add(i).write(0);
-            pd.add(i).write(0);
-            pt.add(i).write(0);
-        }
-        let kernel_pdpt = (&raw const __pdpt) as u64;
-        let kernel_pd = (&raw const __pd) as u64;
-
-        // The first, third and fourth gigabytes: the kernel's own directories,
-        // shared. The framebuffer is in the fourth.
-        pdpt.write(kernel_pd | 0x7);
-        pdpt.add(2).write((kernel_pd + 2 * 4096) | 0x7);
-        pdpt.add(3).write((kernel_pd + 3 * 4096) | 0x7);
-        // The second: this space's own, holding one page of stack.
-        pdpt.add(1).write((pd as u64) | 0x7);
-        pd.write((pt as u64) | 0x7);
-        // One 4 KiB page at the bottom of that gigabyte, user-writable, backed
-        // by the physical stack the kernel allocated.
-        pt.write(stack_physical | 0x7);
-
-        pml4.write((pdpt as u64) | 0x7);
-        let _ = kernel_pdpt;
-        pml4 as u64
-    }
+/// Answered rather than reached into, because they are the *board's*: the
+/// 32-bit boot code fills them in before long mode, which is before any of the
+/// program exists. A user address space points at them instead of copying them
+/// — the kernel has to be mapped in every space, since an interrupt during ring
+/// 3 lands in kernel code, and a copy would work today and drift on the day a
+/// mapping is added to one and not the other.
+#[unsafe(no_mangle)]
+pub extern "C" fn lk_kernel_page_directories() -> i64 {
+    // SAFETY: a linker-placed array of page directories; taking its address
+    // reads nothing.
+    unsafe { (&raw const __pd) as i64 }
 }
 
 /// The ring-0 stack the CPU switches to on the *first* interrupt from ring 3.

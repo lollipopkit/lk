@@ -555,6 +555,51 @@ from ring 0 would be a kernel bug with the same `cr2`. And the U bit has to be
 set at every level of the walk, because the CPU takes their conjunction; a user
 page under a kernel-only directory is still kernel-only.
 
+### An address space of its own, built by the program
+
+`program.lk` builds it, out of pages from its own allocator:
+
+```lk
+fn build_user_space(stack_physical: Int) -> Int {
+    let pml4 = page_alloc(SHARED_PAGES);
+    …
+    table_set(pdpt, index_of(stack_virtual, SHIFT_PDPT), directory, shared);
+```
+
+Every index is *computed from the virtual address* rather than written down. The
+old version had `pdpt.add(1)`, `pd.write(…)`, `pt.write(…)` — 1, 0 and 0, all
+correct, and correct only because the stack happens to sit at the bottom of the
+second gigabyte. Numbers like that go on looking right after they stop being
+true.
+
+Two things follow from the pages coming out of the allocator. The linker script
+no longer reserves four sets of tables, so the ceiling on how many address
+spaces there can be is "how much memory is left" rather than a number nobody
+justified — the previous one was four, and four was only there because two had
+been. And `check_shell.py`'s expected page addresses moved by eight pages, which
+is the two spaces being allocated like anything else; that check asserts the
+*addresses* precisely so that a counter pretending to be an allocator would not
+pass it.
+
+### The failure that was not one
+
+Removing the linker reservations made `check_spawn.py` report both the spinner
+and the clock windows frozen — three runs in a row, deterministic-looking, and
+the reservation being the only difference. Restoring it passed. Doubling the
+kernel stack instead also passed. The obvious story was a stack that had been
+overflowing into 64 KiB of unused reservations and now overflowed into `__pt0`.
+
+It was none of that. The same build passes 4/4 on an idle machine. Every one of
+those failures happened with a `cargo build` running alongside, and
+`check_spawn` is the one check here that is wall-clock: four screenshots 1.4 s
+apart, asking whether a window that changes once a slice ever changed. A starved
+guest makes them all land in one phase.
+
+Recorded here and in the check itself because roughly forty minutes went into a
+hypothesis that a second look would have killed — and because the next person
+reading a red `check_spawn` should re-run it on a quiet host before believing
+it.
+
 ### An address space of its own
 
 The ring-3 task's stack is at `0x4000_0000` — *in its own address space*. In the
@@ -839,6 +884,7 @@ mode was actually set.
 drivers/idt.lk           the interrupt descriptor table: gates, and `lidt`
 drivers/pic.lk           the 8259 pair: remap, mask, end-of-interrupt
 drivers/gdt.lk           segment descriptors, `lgdt`, and reloading CS
+drivers/paging.lk        four-level page tables, CR3, and the TLB
 drivers/tss.lk           the one field long mode kept: the ring-0 stack
 drivers/serial.lk        a 16550 UART
 drivers/pci.lk           configuration space
