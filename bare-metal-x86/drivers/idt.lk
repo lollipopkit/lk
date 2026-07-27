@@ -18,8 +18,13 @@
 // allocator's state is: a driver that picks an address is a driver that
 // collides with the next one.
 
-const GATE_SIZE = 16;
-const GATE_COUNT = 256;
+// Exported so a caller laying out fixed memory can say where this table ends
+// without naming 4096. The size is a product of the two, and a product is an
+// instruction — which a bundled module's top level may not emit — so the
+// multiplication happens in `table_size()` and, for the caller, at its own top
+// level where it is allowed.
+const IDT_GATE_SIZE = 16;
+const IDT_GATE_COUNT = 256;
 
 // Present, ring 0, 64-bit *interrupt* gate.
 //
@@ -38,11 +43,11 @@ const TYPE_INTERRUPT = 0x8e;
 //
 // A function rather than a `const`, and not by preference: a bundled module's
 // top level may hold literal scalars but must emit no instructions, and
-// `GATE_COUNT * GATE_SIZE` is a multiply. Writing 4096 instead would be the one
+// `IDT_GATE_COUNT * IDT_GATE_SIZE` is a multiply. Writing 4096 instead would be the one
 // thing this file argues against everywhere else — a number that agrees with
 // two others until one of them changes.
 fn table_size() -> Int {
-    return GATE_COUNT * GATE_SIZE;
+    return IDT_GATE_COUNT * IDT_GATE_SIZE;
 }
 
 // Zeroes every gate.
@@ -78,7 +83,7 @@ fn zero(base: Int) {
 // `int 0x21` would otherwise be a way to fake a keystroke. Three for exactly
 // the syscall, which is the door the ring boundary exists to make the only one.
 fn set_gate(base: Int, vector: Int, handler: Int, selector: Int, dpl: Int) {
-    let at = base + vector * GATE_SIZE;
+    let at = base + vector * IDT_GATE_SIZE;
     let low = (handler & 0xffff)
         | (selector << 16)
         | ((TYPE_INTERRUPT | (dpl << 5)) << 40)

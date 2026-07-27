@@ -28,6 +28,7 @@ impl Compiler {
             // loop (`sort_words`' inner scan). The general path still uses
             // the cache: the literal store becomes a register move.
             let watermark = self.next_reg;
+            let cacheable = self.top_level_binding_is_cacheable(name);
             let slot = if let Some(slot) = self.locals.get(name).copied() {
                 if self.active_loop_binding_slot(name) == Some(slot) || self.cell_locals.contains(name) {
                     // A fresh binding must not write the old register in
@@ -54,6 +55,13 @@ impl Compiler {
                 self.emit_set_global(slot, global_slot)?;
             }
             self.record_const_map_local_from_expr(name, value)?;
+            // Past the cache limit the binding is only a global; the register
+            // goes back and reads resolve through `GetGlobal`.
+            if !cacheable {
+                self.clear_const_map_local(name);
+                self.next_reg = self.live_register_floor().max(watermark);
+                return Ok(());
+            }
             // An annotated width is one of the two ways the compiler learns a
             // register holds a machine integer (the other is `as`).
             self.note_machine_reg(slot, type_annotation);

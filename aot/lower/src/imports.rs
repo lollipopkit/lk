@@ -83,6 +83,26 @@ impl ImportEnv {
                             ImportSource::Module(module) => {
                                 env.module_items.insert(bound, (module.clone(), item.name.clone()));
                             }
+                            // Functions only, which is a real limit and not an
+                            // obvious one: `use { SIZE as TSS_SIZE } from
+                            // "drivers/tss"` binds nothing here, because a
+                            // `const` is not in `fns`. The *unrenamed* form
+                            // works by accident — bundling flattens the
+                            // module's constants into the program's globals
+                            // under their own names, so `SIZE` resolves as an
+                            // ordinary global and `TSS_SIZE` resolves as
+                            // nothing.
+                            //
+                            // Not a wrong answer: the read rejects with
+                            // "does not resolve to anything natively
+                            // lowerable", which is an error under `compile
+                            // object:` and a fall back to the VM otherwise.
+                            // The VM does bind it, so the two backends differ
+                            // in *coverage*, not in what they compute.
+                            // TODO: carry each bundle's top-level constants
+                            // (name → global slot) alongside `fns` and bind the
+                            // alias to the slot, so a renamed constant import
+                            // lowers like a renamed function one.
                             ImportSource::File(path) => {
                                 if let Some(fidx) = bundle_by_path(path)
                                     .and_then(|b| bundles[b].fns.get(&item.name))

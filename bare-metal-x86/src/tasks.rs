@@ -262,7 +262,10 @@ pub unsafe extern "C" fn schedule_from_interrupt(rsp: u64) -> u64 {
         if next > 0 {
             let stacks = &raw mut TASK_STACKS;
             let top = (*stacks)[next - 1].0.as_mut_ptr().add(STACK_SIZE);
-            crate::user::set_kernel_stack(top as u64);
+            // The segment is the program's; this is a call into it. It happens
+            // inside the timer gate with interrupts masked, which is what makes
+            // writing a word the CPU reads on a ring change safe here.
+            crate::user::lk_set_kernel_stack(top as i64);
         }
         (*table)[next]
     }

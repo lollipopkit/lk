@@ -194,7 +194,6 @@ pub(crate) fn write_hex(value: u64) {
     serial_write(unsafe { core::str::from_utf8_unchecked(&buf) });
 }
 
-
 /// A deliberate fault, so the exception path is exercised rather than merely
 /// present. Without a build that takes it, a broken reporter looks exactly like
 /// a working one — right up until the day something faults.
@@ -239,7 +238,11 @@ pub extern "C" fn kernel_main() -> ! {
     // address (`lk_spawn`), and until it does there is one task — this one.
     // The TSS before the IDT: a gate that can be raised from ring 3 needs a
     // ring-0 stack to switch to, and the CPU reads that from the TSS.
-    user::init();
+    // No `user::init()` either: the descriptor table and the task state
+    // segment are the program's now, built in `install_descriptor_table()`
+    // right after the interrupt table. The board's share of them is one static
+    // (`lk_boot_kernel_stack`), because a ring-0 stack has to exist before
+    // there is an allocator to ask for one.
     // No `interrupts::init()` here any more. The interrupt table is the
     // program's — `program.lk` builds its own gates and loads them — so the
     // board cannot enable interrupts before it, and does not try. What the

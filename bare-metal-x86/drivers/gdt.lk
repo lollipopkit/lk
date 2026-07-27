@@ -1,0 +1,85 @@
+// The global descriptor table.
+//
+// In long mode almost everything a segment descriptor says is ignored: the base
+// and the limit do not apply, and a "flat" model is the only one there is. What
+// is *not* ignored is the handful of bits that decide whether a segment is
+// 64-bit code, and what privilege level it runs at — which is why ring 3 needs
+// its own pair of descriptors rather than a flag somewhere. Privilege is a
+// property of the segment, and a segment is an entry in this table.
+//
+// The boot stub has a table of its own and always will: entering long mode
+// requires a `lgdt` and a far jump through a 64-bit code descriptor, and both
+// happen before any compiled code exists. That one is deliberately the minimum
+// — null, ring-0 code, ring-0 data — and says nothing about policy. This is the
+// one the machine runs on afterwards, and it is the program's, so adding a
+// segment is an edit here rather than an edit to a boot path nobody wants to
+// touch.
+
+const GDT_ENTRY_SIZE = 8;
+
+// One ordinary descriptor, as the single 64-bit value it is.
+//
+// The caller passes the whole word rather than fields, and that is the honest
+// interface: with base and limit ignored, the meaningful part of a long-mode
+// descriptor is a bit pattern in the middle of it that no field decomposition
+// makes clearer. Naming `0x00AF9A000000FFFF` "64-bit code, ring 0" is what a
+// comment is for.
+fn set_entry(base: Int, index: Int, value: Int) {
+    unsafe { volatile_write_u64((base + index * GDT_ENTRY_SIZE) as *mut u64, value as u64); };
+}
+
+// The TSS descriptor, which is sixteen bytes rather than eight.
+//
+// A *system* descriptor in long mode is two entries wide: the familiar 32-bit
+// layout, plus the base's upper word in the half after it. The fields are
+// scattered across it for reasons that are purely historical — the base is in
+// three pieces, the limit in two — which is why this is written out rather than
+// computed. There is no rule to express.
+//
+// Type 9 is "available 64-bit TSS". Type 11 is the same TSS marked *busy*, and
+// loading a busy one faults; that is what makes `ltr` something to do once.
+fn set_tss_entry(base: Int, index: Int, tss_base: Int, tss_limit: Int) {
+    let low = (tss_limit & 0xffff)
+        | ((tss_base & 0xffffff) << 16)
+        | (0x89 << 40)
+        | (((tss_limit >> 16) & 0xf) << 48)
+        | (((tss_base >> 24) & 0xff) << 56);
+    let high = (tss_base >> 32) & 0xffffffff;
+    set_entry(base, index, low);
+    set_entry(base, index + 1, high);
+}
+
+// Points the CPU at the table.
+//
+// The limit is bytes minus one, as everywhere else the hardware holds one. The
+// entry count is the caller's because the table's contents are: this file knows
+// how wide an entry is and nothing about how many there should be.
+//
+// **Not sufficient on its own.** The segment registers hold descriptors that
+// were *cached* when each was last written; this changes the table they came
+// from and nothing else. Until `reload` runs, the CPU is still using the boot
+// stub's descriptors — which works exactly as long as the two agree, and stops
+// working silently on the day they do not.
+fn load(base: Int, entries: Int) {
+    unsafe { cpu_load_gdt(base, entries * GDT_ENTRY_SIZE - 1); };
+}
+
+// Reloads CS and the data segments from the table just installed.
+//
+// CS cannot be written by `mov` at all — the only ways to change it are a far
+// jump, a far call, a far return, or an interrupt return — so this is a far
+// return the intrinsic builds out of the stack. FS and GS are deliberately left
+// alone: writing either zeroes its 64-bit base, which on a kernel keeping
+// per-CPU state there would silently point every access at zero.
+fn reload(code: Int, data: Int) {
+    unsafe { cpu_reload_segments(code, data); };
+}
+
+// Loads the task register, which is the CPU's one pointer to a TSS.
+//
+// Without it ring 3 is unreachable, and not because anything refuses: the first
+// interrupt taken from ring 3 would have no ring-0 stack to switch to, and the
+// CPU would push its frame onto the *user's* stack — which the user can rewrite.
+fn load_task_register(selector: Int) {
+    unsafe { cpu_load_task_register(selector); };
+}

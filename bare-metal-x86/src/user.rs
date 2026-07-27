@@ -160,38 +160,6 @@ global_asm!(
     "   iretq",
 );
 
-/// The Task State Segment.
-///
-/// Almost all of it is dead weight in long mode — the register-save fields a
-/// 32-bit TSS had are gone, and hardware task switching with them. What is left
-/// that matters is `rsp0`: the stack the CPU switches to when an interrupt or a
-/// syscall takes the machine from ring 3 back to ring 0.
-#[repr(C, packed)]
-struct TaskStateSegment {
-    _reserved0: u32,
-    rsp: [u64; 3],
-    _reserved1: u64,
-    ist: [u64; 7],
-    _reserved2: u64,
-    _reserved3: u16,
-    io_map_base: u16,
-}
-
-static mut TSS: TaskStateSegment = TaskStateSegment {
-    _reserved0: 0,
-    rsp: [0; 3],
-    _reserved1: 0,
-    ist: [0; 7],
-    _reserved2: 0,
-    _reserved3: 0,
-    // Past the end of the segment: an I/O permission bitmap that starts beyond
-    // the TSS limit means "no ports are permitted", which is what ring 3 should
-    // be able to do — nothing. Leaving this zero would point the CPU at the
-    // start of the TSS and let a user task read the bitmap out of its own
-    // fields, which is a permission map made of whatever happened to be there.
-    io_map_base: core::mem::size_of::<TaskStateSegment>() as u16,
-};
-
 /// The kernel stack an interrupt from ring 3 lands on.
 ///
 /// Its own stack, not the interrupted task's: a user task's stack pointer is a
@@ -202,7 +170,6 @@ struct KernelStack([u8; 16 * 1024]);
 static mut RING0_STACK: KernelStack = KernelStack([0; 16 * 1024]);
 
 unsafe extern "C" {
-    static mut __gdt_tss: u64;
     static mut __user_pml4: u64;
     static mut __user_pdpt: u64;
     static mut __user_pd: u64;
@@ -266,56 +233,32 @@ pub unsafe fn build_address_space(space: usize, stack_physical: u64) -> u64 {
     }
 }
 
-/// Fills in the TSS descriptor and loads it. Call once, before entering ring 3.
-pub fn init() {
-    // SAFETY: single-threaded boot path; nothing else touches the GDT or the
-    // TSS while this runs.
-    unsafe {
-        let stack_top = (&raw mut RING0_STACK).cast::<u8>().add(size_of::<KernelStack>());
-        let tss = &raw mut TSS;
-        (*tss).rsp[0] = stack_top as u64;
-
-        // A system descriptor in long mode is sixteen bytes: the familiar
-        // 32-bit layout, plus the base's upper word in the half after it. The
-        // fields are scattered across it for reasons that are purely
-        // historical, which is why this is written out rather than computed.
-        let base = tss as u64;
-        let limit = (size_of::<TaskStateSegment>() - 1) as u64;
-        let low = limit & 0xFFFF
-            | (base & 0xFF_FFFF) << 16
-            | 0x89u64 << 40                       // present, type 9 = available 64-bit TSS
-            | ((limit >> 16) & 0xF) << 48
-            | ((base >> 24) & 0xFF) << 56;
-        let high = base >> 32;
-        let slot = &raw mut __gdt_tss;
-        slot.write(low);
-        slot.add(1).write(high);
-
-        core::arch::asm!("ltr {0:x}", in(reg) TSS_SELECTOR, options(nostack, preserves_flags));
-    }
-}
-
-/// Points the CPU at the ring-0 stack it should switch to on the next
-/// interrupt from ring 3.
+/// The ring-0 stack the CPU switches to on the *first* interrupt from ring 3.
 ///
-/// Per task, not once: two user tasks sharing one kernel stack would have the
-/// second one's interrupt frame land on top of the first one's, and the first
-/// would resume into whatever was left. The scheduler calls this on every
-/// switch, which is the only place that knows whose stack is next.
-pub fn set_kernel_stack(top: u64) {
-    // SAFETY: a plain word in a static the CPU reads only on a ring change,
-    // which cannot happen while this runs (interrupts are masked inside the
-    // gate this is called from).
-    unsafe {
-        (&raw mut TSS).cast::<u8>().add(4).cast::<u64>().write_unaligned(top);
-    }
+/// The board's, and only this one: it has to exist before there is an allocator
+/// to ask, so it is a static in the image. `program.lk` reads it once while
+/// building the TSS, and every switch after that replaces it with the kernel
+/// stack of whichever task is next — which is the scheduler's business, not
+/// this one's.
+#[unsafe(no_mangle)]
+pub extern "C" fn lk_boot_kernel_stack() -> i64 {
+    // SAFETY: a static array's own end.
+    unsafe { (&raw mut RING0_STACK).cast::<u8>().add(size_of::<KernelStack>()) as i64 }
 }
 
-/// Where the TSS descriptor sits in the GDT.
-const TSS_SELECTOR: u16 = 0x28;
-/// Ring-3 code and data, with the requested privilege level in the low bits.
-const USER_CODE_SELECTOR: u64 = 0x18 | 3;
-const USER_DATA_SELECTOR: u64 = 0x20 | 3;
+unsafe extern "C" {
+    /// The ring-3 selectors, asked of the program rather than named here.
+    ///
+    /// `program.lk` builds the descriptor table these index, so it is the one
+    /// place that knows what sits at 0x18 and 0x20. A copy on this side would
+    /// be a second answer to a question with one, and two that disagreed would
+    /// mean an `iretq` into a segment other than the one intended — which, if
+    /// it happened to be a ring-0 descriptor, is no ring boundary at all.
+    fn lk_user_code_selector() -> i64;
+    fn lk_user_data_selector() -> i64;
+    /// The TSS's `rsp0`, which the program owns. Called on every task switch.
+    pub(crate) fn lk_set_kernel_stack(top: i64);
+}
 
 /// Enters ring 3 at `entry`, on `stack`, and does not come back.
 ///
@@ -329,6 +272,7 @@ const USER_DATA_SELECTOR: u64 = 0x20 | 3;
 /// `entry` must be code the user segment can reach and `stack` a mapped,
 /// writable, 16-byte-aligned stack. Both are user-visible from here on.
 pub unsafe fn enter(entry: u64, stack: u64) -> ! {
+    let (code, data) = user_frame_selectors();
     // SAFETY: the caller's claim, plus a frame this function builds itself.
     unsafe {
         core::arch::asm!(
@@ -347,9 +291,9 @@ pub unsafe fn enter(entry: u64, stack: u64) -> ! {
             "push {code}",
             "push {entry}",
             "iretq",
-            data = in(reg) USER_DATA_SELECTOR,
+            data = in(reg) data,
             stack = in(reg) stack,
-            code = in(reg) USER_CODE_SELECTOR,
+            code = in(reg) code,
             entry = in(reg) entry,
             options(noreturn),
         )
@@ -370,16 +314,16 @@ global_asm!(
     "__user_program:",
     // "USER" through the syscall, one byte per call.
     "   mov rax, 1",
-    "   mov rdi, 85",       // 'U'
+    "   mov rdi, 85", // 'U'
     "   int 0x80",
     "   mov rax, 1",
-    "   mov rdi, 83",       // 'S'
+    "   mov rdi, 83", // 'S'
     "   int 0x80",
     "   mov rax, 1",
-    "   mov rdi, 69",       // 'E'
+    "   mov rdi, 69", // 'E'
     "   int 0x80",
     "   mov rax, 1",
-    "   mov rdi, 82",       // 'R'
+    "   mov rdi, 82", // 'R'
     "   int 0x80",
     // A string, through the call that takes a pointer. The kernel checks the
     // range before following it — this one is inside the user section, so it
@@ -400,9 +344,9 @@ global_asm!(
     "   int 0x80",
     "   cmp rax, -1",
     "   je 5f",
-    "   mov rdi, 89",       // 'Y' — the kernel followed it
+    "   mov rdi, 89", // 'Y' — the kernel followed it
     "   jmp 6f",
-    "5: mov rdi, 78",       // 'N' — refused
+    "5: mov rdi, 78", // 'N' — refused
     "6: mov rax, 1",
     "   int 0x80",
     // Say the excursion finished *before* trying anything forbidden, so the
@@ -439,11 +383,11 @@ global_asm!(
     // would print the same letter for ever after. They print A and B.
     ".global __user_task_a",
     "__user_task_a:",
-    "   mov rbx, 65",       // 'A'
+    "   mov rbx, 65", // 'A'
     "   jmp __user_task_body",
     ".global __user_task_b",
     "__user_task_b:",
-    "   mov rbx, 66",       // 'B'
+    "   mov rbx, 66", // 'B'
     "__user_task_body:",
     // Write it into this task's own stack page, then read it back from there
     // every time round: a task that prints its letter is one whose memory
@@ -540,7 +484,9 @@ pub fn user_stack_top() -> u64 {
 /// whole difference between a user task and a kernel one: not what it runs, but
 /// which four numbers are in that frame.
 pub fn user_frame_selectors() -> (u64, u64) {
-    (USER_CODE_SELECTOR, USER_DATA_SELECTOR)
+    // SAFETY: `#[export]`ed LK functions taking nothing and returning an
+    // integer, compiled into this image by the same build.
+    unsafe { (lk_user_code_selector() as u64, lk_user_data_selector() as u64) }
 }
 
 /// Runs the ring-3 program, and does not come back.

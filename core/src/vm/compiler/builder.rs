@@ -9,7 +9,40 @@ use crate::vm::analysis::{
 
 use super::{Compiler, ConstHeapValue, Function, Instr, Opcode, support::*};
 
+/// How many registers the top level may spend caching its global-backed
+/// bindings before it stops.
+///
+/// Not a tuning number so much as a division of a fixed budget. Registers are
+/// `u8` in the instruction encoding, so a function has 256 of them and the top
+/// level is a function; half is more working set than any single statement here
+/// has ever needed, and the other half is what a program gets to keep. Below
+/// this nothing changes at all.
+const TOP_LEVEL_CACHE_LIMIT: u16 = 128;
+
 impl Compiler {
+    /// Whether a top-level binding may keep its register as a cache of the
+    /// global slot it was just written to.
+    ///
+    /// Worth caching, and it was cached unconditionally right up until a
+    /// program had more than 255 top-level bindings. A kernel reaches that the
+    /// ordinary way: `bare-metal-x86/program.lk` plus the drivers bundled into
+    /// it declare 256 constants between them, none of the files anywhere near
+    /// unusual, and the failure was `Compiler global dst register 256 exceeds
+    /// u8 encoding` naming whichever `const` happened to be added last.
+    ///
+    /// So the cache gets an eviction rule. Past the limit the binding is *only*
+    /// a global — reads cost a `GetGlobal` and the register goes back. Nothing
+    /// about the meaning changes: the value was already in the global slot,
+    /// which is the one place a *function* could ever see it from.
+    ///
+    /// Asked *before* the initializer is lowered, never after. The register
+    /// file runs out on the temporaries of the statement that follows the last
+    /// binding, not on the binding itself, so a check that comes afterwards
+    /// still overflows — which is how the first version of this failed.
+    pub(super) fn top_level_binding_is_cacheable(&self, name: &str) -> bool {
+        !self.top_level || self.next_reg < TOP_LEVEL_CACHE_LIMIT || !self.global_names.contains_key(name)
+    }
+
     #[inline]
     pub(super) fn alloc_reg(&mut self) -> u16 {
         let reg = self.next_reg;

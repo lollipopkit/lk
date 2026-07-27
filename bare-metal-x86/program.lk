@@ -23,8 +23,13 @@ use { mouse_init, has_packet_byte, read_packet_byte as mouse_byte, is_first_byte
 use { start as pit_start } from "drivers/pit";
 use { remap as pic_remap, mask as pic_mask,
       eoi_master as pic_eoi_master, eoi_slave as pic_eoi_slave } from "drivers/pic";
-use { table_size as idt_table_size, zero as idt_zero, set_gate as idt_set_gate,
-      install as idt_install } from "drivers/idt";
+use { zero as idt_zero, set_gate as idt_set_gate, install as idt_install,
+      IDT_GATE_COUNT, IDT_GATE_SIZE } from "drivers/idt";
+use { set_entry as gdt_set_entry, set_tss_entry as gdt_set_tss_entry,
+      load as gdt_load, reload as gdt_reload,
+      load_task_register as gdt_load_task_register, GDT_ENTRY_SIZE } from "drivers/gdt";
+use { prepare as tss_prepare, set_kernel_stack as tss_set_kernel_stack,
+      TSS_SIZE } from "drivers/tss";
 use { acquire as lock, release as unlock } from "drivers/lock";
 use { define as window_define, put as window_put, fill as window_fill,
       dropped as window_dropped, outline as window_outline,
@@ -324,8 +329,22 @@ const SHARED_END = SHARED_GRID + GRID_COLUMNS * GRID_ROWS;
 // Rounded up to sixteen: a gate is sixteen bytes, and a table that starts
 // mid-gate is one where every entry straddles two of them. The CPU does not
 // require the alignment, which is exactly why nothing would report its absence.
-// Anything added after this one starts at `IDT_BASE + idt_table_size()`.
 const IDT_BASE = (((SHARED_END + 15) / 16) as Int) * 16;
+const IDT_SIZE = IDT_GATE_COUNT * IDT_GATE_SIZE;
+
+// The descriptor table the machine runs on, and the task state segment it
+// names. Both after the interrupt table, sized from the same numbers the
+// drivers use rather than from a literal: the next thing added starts at
+// `TSS_BASE + TSS_SIZE`, and every one of these bases is a sum rather than a
+// typed address, which is the arrangement this file argues for at
+// `SHARED_BASE`.
+//
+// Seven entries: null, ring-0 code and data, ring-3 code and data, and the two
+// that make up the TSS descriptor — a system descriptor in long mode is sixteen
+// bytes, so it occupies two.
+const GDT_ENTRIES = 7;
+const GDT_BASE = IDT_BASE + IDT_SIZE;
+const TSS_BASE = GDT_BASE + GDT_ENTRIES * GDT_ENTRY_SIZE;
 
 // The framebuffer is twice the screen's height. Scrolling moves the *view*
 // down through it; only when the view reaches the bottom does anything have to
@@ -1351,10 +1370,88 @@ const VECTOR_MOUSE = 0x2c;
 // program's, and its gate is the only one a ring-3 caller may raise.
 const VECTOR_YIELD = 0x30;
 const VECTOR_SYSCALL = 0x80;
-// The 64-bit code selector the boot GDT defines, which every gate enters
-// through.
-const KERNEL_CODE_SELECTOR = 0x08;
 const EXCEPTION_COUNT = 32;
+
+// The selectors, which are byte offsets into the descriptor table plus the
+// privilege the *caller* is requesting in the low two bits. Ring 3's carry a 3
+// there, which is what makes a ring-3 `iretq` frame a ring-3 one.
+const KERNEL_CODE_SELECTOR = 0x08;
+const KERNEL_DATA_SELECTOR = 0x10;
+const USER_CODE_SELECTOR = 0x18 | 3;
+const USER_DATA_SELECTOR = 0x20 | 3;
+const TSS_SELECTOR = 0x28;
+
+// The descriptors themselves, as the 64-bit words they are.
+//
+// In long mode the base and the limit in each of these are ignored — the FFFF
+// and the zeros are there because the format has the fields, not because
+// anything reads them. What is read is the middle byte: 0x9A is executable and
+// readable, 0x92 is writable data, and 0xFA and 0xF2 are the same two with DPL
+// 3. Privilege is a property of the segment, which is why ring 3 needs its own
+// pair rather than a flag somewhere else.
+const DESCRIPTOR_KERNEL_CODE = 0x00AF9A000000FFFF;
+const DESCRIPTOR_KERNEL_DATA = 0x00AF92000000FFFF;
+const DESCRIPTOR_USER_CODE = 0x00AFFA000000FFFF;
+const DESCRIPTOR_USER_DATA = 0x00AFF2000000FFFF;
+
+// The ring-0 stack the CPU switches to on the first interrupt from ring 3.
+//
+// The board's, and only this one: it is a static in the image, because it has
+// to exist before there is an allocator to ask. Every switch after the first
+// replaces it with the stack of whatever task is next, which is the scheduler's
+// business and not this one's.
+#[extern("lk_boot_kernel_stack")]
+fn boot_kernel_stack() -> Int {
+    return 0;
+}
+
+// Builds the descriptor table the machine runs on, and the segment it names.
+//
+// The boot stub has a table of its own and always will — entering long mode
+// takes a `lgdt` and a far jump through a 64-bit code descriptor, both before
+// any compiled code exists. That one is the minimum needed to get here and says
+// nothing about policy. This one says what segments the machine has, which is a
+// decision, so it is the program's.
+fn install_descriptor_table() {
+    gdt_set_entry(GDT_BASE, 0, 0);
+    gdt_set_entry(GDT_BASE, 1, DESCRIPTOR_KERNEL_CODE);
+    gdt_set_entry(GDT_BASE, 2, DESCRIPTOR_KERNEL_DATA);
+    gdt_set_entry(GDT_BASE, 3, DESCRIPTOR_USER_CODE);
+    gdt_set_entry(GDT_BASE, 4, DESCRIPTOR_USER_DATA);
+
+    tss_prepare(TSS_BASE);
+    tss_set_kernel_stack(TSS_BASE, boot_kernel_stack());
+    // The limit is the segment's last valid byte, so one less than its size.
+    gdt_set_tss_entry(GDT_BASE, 5, TSS_BASE, TSS_SIZE - 1);
+
+    gdt_load(GDT_BASE, GDT_ENTRIES);
+    // The reload changes nothing today, and is here anyway: the two tables
+    // agree on 0x08 and 0x10, so the cached descriptors are already right. What
+    // it buys is that they stay right when this table stops matching the boot
+    // stub's — which is the entire reason for having a second one.
+    gdt_reload(KERNEL_CODE_SELECTOR, KERNEL_DATA_SELECTOR);
+    gdt_load_task_register(TSS_SELECTOR);
+}
+
+// The scheduler's hook into the segment above. Called from the board on every
+// task switch, because the board is where the scheduler still lives.
+#[export("lk_set_kernel_stack")]
+fn set_kernel_stack(top: Int) {
+    tss_set_kernel_stack(TSS_BASE, top);
+}
+
+// The two selectors that make a frame a ring-3 frame. The board builds those
+// frames — `iretq` is the only way into ring 3 — and asks here which numbers
+// they are, rather than holding a second copy of this table's layout.
+#[export("lk_user_code_selector")]
+fn user_code_selector() -> Int {
+    return USER_CODE_SELECTOR;
+}
+
+#[export("lk_user_data_selector")]
+fn user_data_selector() -> Int {
+    return USER_DATA_SELECTOR;
+}
 
 // Builds the interrupt table and loads it.
 //
@@ -1943,6 +2040,10 @@ uart_init();
 install_interrupt_table();
 // And immediately, on a probe build, something that faults.
 fault_probe();
+// Then the segments. After the table rather than before it because a fault in
+// here should be reportable, and the boot stub's descriptors are enough to run
+// on until this replaces them.
+install_descriptor_table();
 // Then the chip that raises them, and the flag that lets them through. In that
 // order: an interrupt taken before the table was loaded goes wherever the
 // previous table said, and there is no previous table.

@@ -399,6 +399,42 @@ fn compiler_lowers_top_level_define_to_global_slot() {
     assert!(matches!(result.state.globals[1], crate::val::RuntimeVal::Obj(_)));
 }
 
+/// A program with more top-level constants than there are registers still
+/// compiles, and still computes with them.
+///
+/// The register file is 256 deep — they are `u8` in the instruction encoding —
+/// and the top level is one function. Every global-backed top-level binding
+/// used to keep one register permanently as a cache of its global slot, so at
+/// 256 of them the next statement's temporaries had nowhere to go and the
+/// compiler reported `Compiler global dst register 256 exceeds u8 encoding`,
+/// naming whichever constant happened to be added last.
+///
+/// That is not an exotic program. It is what `bare-metal-x86/program.lk` became
+/// once its drivers — each a file of perfectly ordinary constants — were
+/// bundled into it, and adding one more driver was enough.
+///
+/// 400 rather than 257: the cache limit leaves the rest of the register file
+/// for one statement's working set, so a test that only just crosses it would
+/// pass with the eviction rule doing nothing. This one has three hundred
+/// bindings past the point where caching stops, and reads the first and the
+/// last of them from a function — which can only see them through the global
+/// slots, the thing the cache was ever a cache *of*.
+#[test]
+fn compiler_compiles_more_top_level_constants_than_registers() {
+    let mut source = String::new();
+    for index in 0..400 {
+        source.push_str(&format!("const K{index} = {index};\n"));
+    }
+    source.push_str("fn ends() { return K0 + K399; }\n");
+    source.push_str("return ends() + K1 + K398;\n");
+
+    let module = compile_source_module(&source).expect("compile module");
+    let result = execute_module(&module).expect("execute module");
+
+    // 0 + 399 from the function, 1 + 398 from the top level.
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(798)]);
+}
+
 #[test]
 fn compiler_keeps_top_level_let_in_entry_frame() {
     let module = compile_source_module(

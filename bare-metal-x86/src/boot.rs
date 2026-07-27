@@ -17,12 +17,12 @@ global_asm!(
     // finds the header and falls back to the Linux/PVH path.
     ".section .multiboot, \"a\"",
     ".align 4",
-    ".long 0x1BADB002",           // magic
+    ".long 0x1BADB002", // magic
     // Flags bit 0 asks the loader for memory information: how much there is,
     // and the map of which ranges are usable. Without it a kernel knows only
     // what it can guess.
-    ".long 0x00000001",           // flags: MEMORY_INFO
-    ".long -(0x1BADB002 + 1)",    // checksum
+    ".long 0x00000001",        // flags: MEMORY_INFO
+    ".long -(0x1BADB002 + 1)", // checksum
 );
 
 global_asm!(
@@ -83,7 +83,7 @@ global_asm!(
     // takes the conjunction of the U bits along the walk: a user page under a
     // kernel-only directory is still kernel-only.
     "   mov edi, offset __pt0",
-    "   mov eax, 0x03",               // present | writable, no user
+    "   mov eax, 0x03", // present | writable, no user
     "   mov ecx, 512",
     "5: mov [edi], eax",
     "   mov dword ptr [edi + 4], 0",
@@ -91,20 +91,20 @@ global_asm!(
     "   add edi, 8",
     "   loop 5b",
     "   mov esi, offset __user_start",
-    "   shr esi, 12",                 // first user page
+    "   shr esi, 12", // first user page
     "   mov edx, offset __user_end",
     "   add edx, 0xfff",
     "   shr edx, 12",
-    "   sub edx, esi",                // how many
-    "   jz 7f",                       // nothing to grant
+    "   sub edx, esi", // how many
+    "   jz 7f",        // nothing to grant
     "   mov edi, offset __pt0",
     "   lea edi, [edi + esi*8]",
-    "6: or dword ptr [edi], 4",       // user-accessible
+    "6: or dword ptr [edi], 4", // user-accessible
     "   add edi, 8",
     "   dec edx",
     "   jnz 6b",
     "7: mov eax, offset __pt0",
-    "   or eax, 7",                   // present | writable | user
+    "   or eax, 7", // present | writable | user
     "   mov edi, offset __pd",
     "   mov [edi], eax",
     "   mov dword ptr [edi + 4], 0",
@@ -170,19 +170,27 @@ global_asm!(
     "   jmp 3b",
 );
 
-// The GDT. Long mode ignores a code segment's base and limit, but a descriptor
-// still has to exist and say "64-bit code" (the L bit) — that is what the far
-// jump above selects.
+// The GDT that gets this code as far as long mode, and no further.
 //
-// Six entries now rather than three, because privilege is a property of the
-// *segment*: ring 3 needs its own code and data descriptors (DPL 3), and the
-// CPU needs a TSS to know which stack to switch to when it comes back to ring
-// 0. Their order is not free either — `sysret` and `iretq` both read the
-// selectors as an index pair, and the ring-3 pair has to sit where the
-// convention expects it.
+// Long mode ignores a code segment's base and limit, but a descriptor still has
+// to exist and say "64-bit code" (the L bit) — that is what the far jump above
+// selects. So this table cannot be avoided: entering long mode takes a `lgdt`
+// and a far jump, both before any compiled code exists to do them.
 //
-// It lives in `.data`, not `.rodata`: the TSS descriptor is filled in at boot,
-// because a base address is not known until the TSS has one.
+// Three entries, and deliberately three. It once had six — the ring-3 pair and
+// a TSS descriptor as well — and that was a table describing the machine's
+// *policy*, written in the one file least able to say why. `program.lk` builds
+// the table the machine actually runs on (`install_descriptor_table`), with
+// whatever segments it has decided to have; this one only has to be enough to
+// reach the code that does that.
+//
+// Which makes the ring-3 test a proof rather than a demonstration: there is no
+// ring-3 descriptor anywhere in this image except the one the program writes at
+// run time. A user task that runs at all is a user task running on the
+// program's table.
+//
+// `.rodata` would do now that nothing is filled in at boot, and `.data` is kept
+// only because a descriptor table is a thing the machine may yet want to write.
 global_asm!(
     ".section .data, \"aw\"",
     ".align 16",
@@ -191,12 +199,6 @@ global_asm!(
     "   .quad 0",                  // 0x00: null descriptor
     "   .quad 0x00AF9A000000FFFF", // 0x08: 64-bit code, ring 0
     "   .quad 0x00AF92000000FFFF", // 0x10: data, ring 0
-    "   .quad 0x00AFFA000000FFFF", // 0x18: 64-bit code, ring 3 (DPL 3)
-    "   .quad 0x00AFF2000000FFFF", // 0x20: data, ring 3 (DPL 3)
-    ".global __gdt_tss",
-    "__gdt_tss:",
-    "   .quad 0",                  // 0x28: TSS descriptor, low half (filled at boot)
-    "   .quad 0",                  //       and high half — a system descriptor is 16 bytes
     "__gdt_descriptor:",
     "   .word __gdt_descriptor - __gdt - 1",
     "   .quad __gdt",

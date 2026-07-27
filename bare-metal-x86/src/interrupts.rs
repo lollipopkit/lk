@@ -107,7 +107,6 @@ global_asm!(
     "   iretq",
 );
 
-
 /// Where every CPU exception ends up.
 ///
 /// It reports and halts rather than trying to recover: nothing here knows how

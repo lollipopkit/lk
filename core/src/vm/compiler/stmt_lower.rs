@@ -276,6 +276,7 @@ impl Compiler {
         // The general path below still consumes the cache: the literal store
         // becomes a register move instead of a constant load.
         let watermark = self.next_reg;
+        let cacheable = self.top_level_binding_is_cacheable(name);
         let slot = if let Some(slot) = self.locals.get(name).copied() {
             if self.active_loop_binding_slot(name) == Some(slot) || self.cell_locals.contains(name) {
                 // A fresh binding must not write the old register in place:
@@ -302,6 +303,15 @@ impl Compiler {
             self.emit_set_global(slot, global_slot)?;
         }
         self.record_const_map_local_from_expr(name, value)?;
+        // Past the limit the binding is only a global: the register goes back,
+        // and reads resolve through `GetGlobal` — which is the one place a
+        // *function* could ever see this value from, so nothing about its
+        // meaning changes.
+        if !cacheable {
+            self.clear_const_map_local(name);
+            self.next_reg = self.live_register_floor().max(watermark);
+            return Ok(());
+        }
         self.insert_fresh_local(name.to_string(), slot);
         self.next_reg = self.live_register_floor().max(watermark).max(slot + 1);
         Ok(())

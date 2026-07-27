@@ -440,6 +440,65 @@ stating:
   show the difference. `check_disk.py` therefore makes its third assertion from
   *outside*, after QEMU has exited: the image file must hold what was written.
 
+## The descriptor table, and how to tell whose it is
+
+`program.lk` builds the GDT the machine runs on — null, ring-0 code and data,
+ring-3 code and data, and the sixteen-byte TSS descriptor — loads it with
+`lgdt`, reloads CS through a far return, and points the task register at the
+TSS it just built.
+
+The boot stub still has a table, and always will: entering long mode takes a
+`lgdt` and a far jump through a 64-bit code descriptor, both before any compiled
+code exists to do them. What changed is that it is now **three entries** — null,
+ring-0 code, ring-0 data — and nothing else. Enough to reach the code that
+builds the real one.
+
+That shrink is what turns the ring-3 test from a demonstration into a proof.
+There is no ring-3 descriptor anywhere in the image except the one the program
+writes at run time; a user task that runs at all is a user task running on the
+program's table. `check_user.py` passes unchanged, which is the claim.
+
+The TSS is `drivers/tss.lk`, and it is one field wearing a hundred bytes of
+history: `rsp0`, the stack the CPU switches to when an interrupt takes the
+machine from ring 3 back to ring 0. The scheduler writes it on every switch —
+two user tasks sharing one kernel stack would have the second one's interrupt
+frame land on the first one's — so the board calls back into the program for
+that one word.
+
+The selectors travel the same way. `program.lk` defines the table, so it is the
+one place that knows what is at 0x18 and 0x20; `src/user.rs` asks it rather than
+naming them again. Two answers to that question that disagreed would mean an
+`iretq` into a segment other than the one intended, and if that segment happened
+to be a ring-0 descriptor there would be no ring boundary at all.
+
+### The wall this hit, which was the compiler's
+
+Adding the GDT and TSS constants made `program.lk` stop compiling:
+
+```
+Compiler global dst register 256 exceeds u8 encoding
+```
+
+Registers are `u8` in the instruction encoding, so a function has 256 of them
+and the top level is a function. Every global-backed top-level binding kept one
+register permanently, as a *cache* of the global slot it had just been written
+to — worth having, and unconditional. `program.lk` plus the drivers bundled into
+it declare 256 constants between them; none of the files is anywhere near
+unusual, and the error named whichever constant was added last.
+
+The cache now has an eviction rule, which a cache should have had. Past 128
+registers a top-level binding is only a global: reads cost a `GetGlobal` and the
+register goes back. Nothing about the meaning changes — the value was already in
+the global slot, which is the one place a *function* could ever see it from.
+
+Two details are load-bearing. The question is asked *before* the initializer is
+lowered, because the register file runs out on the temporaries of the statement
+after the last binding rather than on the binding itself, and a check that comes
+afterwards still overflows — which is how the first attempt failed. And the
+limit is half the file rather than all of it, so what is left is one statement's
+working set. Below 128 nothing changes at all, which is why the benchmark
+workloads (five top-level bindings) emit byte-identical code.
+
 ## Ring 3
 
 Everything else here runs at ring 0, where a wrong address is a fault and a
@@ -779,6 +838,8 @@ mode was actually set.
 ```
 drivers/idt.lk           the interrupt descriptor table: gates, and `lidt`
 drivers/pic.lk           the 8259 pair: remap, mask, end-of-interrupt
+drivers/gdt.lk           segment descriptors, `lgdt`, and reloading CS
+drivers/tss.lk           the one field long mode kept: the ring-0 stack
 drivers/serial.lk        a 16550 UART
 drivers/pci.lk           configuration space
 drivers/vbe.lk           the Bochs VBE display interface, including panning
