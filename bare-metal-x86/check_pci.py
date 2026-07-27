@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """A PCI device, driven by LK: found on the bus, reached through its BAR, made
-to compute, and made to write RAM by itself.
+to compute, made to write RAM by itself, and made to interrupt.
 
 Every other device this kernel drives is a fixed-port ISA relic. They are found
 by knowing their address, spoken to with `in`/`out`, and they never touch memory
 on their own — so none of them shows whether LK can write the kind of driver a
-modern machine actually needs. This one does, in four claims:
+modern machine actually needs. This one does, in five claims:
 
 1. `pci` lists what is on the bus. The list has to *contain* the device this
    script attached and not be a fixed set of lines: the script passes
@@ -21,6 +21,11 @@ modern machine actually needs. This one does, in four claims:
    back to a *different* address, which is the only one of the four that no
    amount of port I/O could have done — the bytes at the second address can
    only be there if the device's DMA engine put them there.
+5. It interrupts, and the driver installs the gate for it *itself*, at the line
+   configuration space named — a kernel that installed every handler at startup
+   could not drive a device it had not been told about. `edu` is run twice: a
+   handler that acknowledged the device but not the chip, or the chip but not
+   the device, passes the first run and hangs or refaults on the second.
 
 The whole driver is `drivers/pci.lk` and `drivers/edu.lk`; the board contributes
 nothing to this path.
@@ -79,6 +84,9 @@ def main():
             connection.recv(65536)
             send_line(connection, "pci")
             send_line(connection, "edu")
+            # Twice. An interrupt path that leaves either end still asserting
+            # looks identical to a working one until it is asked again.
+            send_line(connection, "edu")
             connection.sendall(b"quit\n")
             connection.close()
         finally:
@@ -113,12 +121,24 @@ def main():
         elif int(counted.group(1)) < 3:
             failures.append(f"`pci` found only {counted.group(1)} devices")
 
-        # (2)(3)(4) The driver reports which step failed, so this can too.
-        if "edu: ok" not in transcript:
-            step = re.search(r"^edu: .*$", transcript, re.M)
+        # (2)(3)(4)(5) The driver reports which step failed, so this can too.
+        completed = re.findall(r"^edu: ok .*$", transcript, re.M)
+        if len(completed) < 2:
+            step = re.search(r"^edu: (?!ok).*$", transcript, re.M)
             failures.append(
-                f"`edu` did not complete: {step.group(0)!r}" if step else "`edu` printed nothing"
+                f"`edu` did not complete: {step.group(0)!r}" if step
+                else f"`edu` completed {len(completed)} of 2 runs"
             )
+
+        # An unclaimed vector is a general protection fault raised from inside an
+        # interrupt, and the 8259 delivers one on a line nothing is using
+        # whenever a request disappears before the CPU acknowledges it. Masking
+        # a line while its request is pending — which is what giving up on a
+        # wait does — is enough. Checked here because the machine goes on
+        # running afterwards and the transcript still looks plausible.
+        if "exception #" in transcript:
+            fault = re.search(r"^!! exception .*$", transcript, re.M)
+            failures.append(f"the machine faulted: {fault.group(0)!r}")
 
         if failures:
             print("\n".join(failures))
@@ -126,7 +146,8 @@ def main():
             print(transcript)
             return 1
         print("OK: found a PCI device by enumeration, reached it through its BAR, "
-              "made it compute 5!, and made it DMA a pattern into RAM")
+              "made it compute 5!, made it DMA a pattern into RAM, and took its "
+              "interrupt on a gate the driver installed for itself")
         return 0
 
 

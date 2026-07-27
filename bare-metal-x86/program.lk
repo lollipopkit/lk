@@ -17,7 +17,8 @@ use { pci_find_display, pci_devices, pci_vendor, pci_device_id, pci_class,
       pci_bdf_function, pci_command_set,
       PCI_COMMAND_MEMORY, PCI_COMMAND_BUS_MASTER } from "drivers/pci";
 use { edu_find, edu_open, edu_identify, edu_liveness, edu_factorial, edu_dma,
-      edu_irq_line, edu_bar_size, EDU_IDENT } from "drivers/edu";
+      edu_irq_line, edu_bar_size, edu_raise, edu_acknowledge, edu_irq_status,
+      EDU_IDENT, EDU_IRQ_TEST } from "drivers/edu";
 use { vbe_set_mode_virtual, vbe_set_pan } from "drivers/vbe";
 use { get_pixel, put_pixel, fill_rect, copy_rows } from "drivers/framebuffer";
 use { draw_glyph, draw_cells, clear, scroll_up, draw_cursor, CELL_WIDTH, CELL_HEIGHT } from "drivers/text";
@@ -25,7 +26,8 @@ use { read_scancode, is_release, key_code, is_shift, is_caps_lock } from "driver
 use { mouse_init, has_packet_byte, read_packet_byte as mouse_byte, is_first_byte,
       dx_of, dy_of, left_down } from "drivers/mouse";
 use { start as pit_start } from "drivers/pit";
-use { remap as pic_remap, mask as pic_mask,
+use { remap as pic_remap, mask as pic_mask, unmask as pic_unmask,
+      mask_line as pic_mask_line, eoi as pic_eoi, in_service as pic_in_service,
       eoi_master as pic_eoi_master, eoi_slave as pic_eoi_slave } from "drivers/pic";
 use { zero as idt_zero, set_gate as idt_set_gate, install as idt_install,
       IDT_GATE_COUNT, IDT_GATE_SIZE } from "drivers/idt";
@@ -336,7 +338,22 @@ const SHARED_USER_EXITED = SHARED_DRAG_DY + WORD;
 //
 // ASCII, not glyph indices: the same bytes the shell already handles, so the
 // grid and the line buffer say the same thing about a character.
-const SHARED_GRID = SHARED_USER_EXITED + WORD;
+// Where the PCI device's registers are, and what its handler last saw.
+//
+// The handler needs the first because an interrupt entry takes no arguments but
+// its vector, and the device's BAR is not knowable until configuration space
+// has been read — which happens long after the program's globals are laid out.
+// A shared word is how every other handler here reaches state it did not
+// receive.
+//
+// `SHARED_EDU_SEEN` is written by the handler and read by the shell, so it is
+// the ordinary shape of a completion flag: 0 until an interrupt arrives, then
+// the bits the device said it raised. Read through `shared_read`, which is
+// volatile — a poll the compiler hoisted is a wait that never ends.
+const SHARED_EDU_MMIO = SHARED_USER_EXITED + WORD;
+const SHARED_EDU_SEEN = SHARED_EDU_MMIO + WORD;
+
+const SHARED_GRID = SHARED_EDU_SEEN + WORD;
 const GRID_COLUMNS = 53;
 const GRID_ROWS = 25;
 
@@ -905,11 +922,74 @@ fn report_edu(base: Int) {
         return;
     }
 
+    let irq = edu_irq_line(bdf);
+    if (!edu_interrupt(mmio, irq)) {
+        // "edu: irq"
+        emit(base, [101, 100, 117, 58, 32, 105, 114, 113]);
+        return;
+    }
+
     // "edu: ok irq " + the line the firmware routed it to
     emit(base, [101, 100, 117, 58, 32, 111, 107, 32, 105, 114, 113, 32]
-        .chain(decimal(edu_irq_line(bdf)))
+        .chain(decimal(irq))
         .chain([32, 98, 97, 114, 32]) // " bar "
         .chain(hex(edu_bar_size(bdf))));
+}
+
+// Makes the device interrupt, and waits for the handler to say it did.
+//
+// The driver installs its own gate here rather than at boot, and that is the
+// point: a PCI device does not know its interrupt line until configuration
+// space has been read, so a kernel that installed every handler in one place at
+// startup could not have a driver for a device it had not been told about.
+// Installing a handler is two stores — a gate, and an address in the runtime's
+// table — so a driver can do it for itself when it knows what it needs.
+//
+// The order matters at both ends. The MMIO base is published *before* the gate
+// exists, because an interrupt arriving between the two would find a handler
+// that cannot reach the device to quieten it; and the line is unmasked last,
+// because a line opened before its gate is filled is an interrupt into a
+// not-present descriptor, which is a fault raised from inside an interrupt.
+fn edu_interrupt(mmio: Int, irq: Int) -> Bool {
+    shared_write(SHARED_EDU_SEEN, 0);
+    shared_write(SHARED_EDU_MMIO, mmio);
+    install_device_handler(VECTOR_IRQ_BASE + irq, unsafe { symbol_address("lk_edu_isr") });
+    pic_unmask(irq);
+
+    // A value with a bit the device has no other reason to set, so what the
+    // handler reports back is traceable to this request and not to some other
+    // condition that happened to be pending.
+    edu_raise(mmio, EDU_IRQ_TEST);
+
+    // Interrupts on for the wait, and masked again after.
+    //
+    // `run_command` is called with them masked — right for a command that
+    // touches a few shared words and returns — and a wait for an interrupt is
+    // the one thing that cannot be done that way. The first version of this
+    // omitted it and reported `edu: irq`, correctly: the device had raised, the
+    // CPU never took it, and masking the line afterwards turned the still-
+    // pending request into the chip's spurious vector, which is how this kernel
+    // came to need `lk_spurious_isr`.
+    let saved = unsafe { cpu_irq_save() };
+    unsafe { cpu_irq_restore(1); };
+
+    // Bounded, and long enough to be an answer rather than a race: an interrupt
+    // that has not arrived after this many polls is not slow, it is not coming.
+    for _attempt in 0..1000000 {
+        let seen = shared_read(SHARED_EDU_SEEN);
+        if (seen != 0) {
+            // The line goes back to masked, and the device's own bit is already
+            // cleared by the handler: this is a probe, and leaving a line open
+            // behind it means the next thing that happens to raise it lands in
+            // a handler that is no longer expecting anything.
+            pic_mask_line(irq);
+            unsafe { cpu_irq_restore(saved); };
+            return (seen & EDU_IRQ_TEST) != 0;
+        }
+    }
+    pic_mask_line(irq);
+    unsafe { cpu_irq_restore(saved); };
+    return false;
 }
 
 // A pattern out to the device and back to a different address.
@@ -1803,6 +1883,17 @@ fn fault_probe() {
 // machine — the only constraint the hardware imposes is that 0..32 belong to
 // the CPU's own exceptions, which is why the PIC is remapped away from them at
 // all.
+// Where the PIC's lines land. Line n arrives as vector `VECTOR_IRQ_BASE + n`,
+// which is the same number `remap` was given — named here because a driver that
+// discovers its line at runtime has to do that arithmetic in both directions:
+// forwards to find its gate, backwards to know which chip to acknowledge.
+const VECTOR_IRQ_BASE = 0x20;
+
+// The two lines the chips deliver when they have nothing real to deliver. See
+// `in_service` in the PIC driver for why they exist at all.
+const IRQ_SPURIOUS_MASTER = 7;
+const IRQ_SPURIOUS_SLAVE = 15;
+
 const VECTOR_TIMER = 0x20;
 const VECTOR_KEYBOARD = 0x21;
 // IRQ12, on the *slave* chip: 0x20 + 8 + 4. Its interrupts reach the CPU
@@ -1954,6 +2045,13 @@ fn install_interrupt_table() {
     // nothing to do with.
     install_device_handler(VECTOR_KEYBOARD, unsafe { symbol_address("lk_key_isr") });
     install_device_handler(VECTOR_MOUSE, unsafe { symbol_address("lk_mouse") });
+    // The chips' own two vectors, installed whether or not anything uses those
+    // lines — the point of a spurious interrupt is that it arrives on a line
+    // nothing is using.
+    install_device_handler(VECTOR_IRQ_BASE + IRQ_SPURIOUS_MASTER,
+                           unsafe { symbol_address("lk_spurious_isr") });
+    install_device_handler(VECTOR_IRQ_BASE + IRQ_SPURIOUS_SLAVE,
+                           unsafe { symbol_address("lk_spurious_isr") });
     // The one gate with DPL 3, and the whole reason the others have DPL 0: a
     // ring-3 task can raise this vector and no other. `int 0x21` from ring 3
     // would otherwise be a way to fake a keystroke.
@@ -2413,6 +2511,67 @@ fn on_tick() {
     if (ticks % 500 == 0) {
         uart_putc(46); // '.'
     }
+}
+
+// The two vectors a PIC delivers when it has nothing to deliver.
+//
+// Not a defensive nicety: a spurious interrupt is a documented behaviour of the
+// chip, it arrives on a vector nothing here claims, and a vector with no gate
+// is a general protection fault raised from inside an interrupt — which is how
+// this kernel reported the first PCI interrupt probe that timed out. Masking a
+// line while its request is pending is enough to cause one, and a driver that
+// gives up waiting does exactly that.
+//
+// Two rules, and the second is the one that is easy to get wrong. A spurious
+// interrupt was never in service, so it must *not* be acknowledged — an EOI for
+// something not in service clears whatever is. But a spurious interrupt from
+// the slave still reached the CPU through the master's cascade line, which the
+// master does consider in service; so the master, and only the master, is told.
+#[export("lk_spurious_isr")]
+fn isr_spurious(vector: Int) {
+    let irq = vector - VECTOR_IRQ_BASE;
+    if (pic_in_service(irq)) {
+        // A real interrupt, on a line this kernel has no driver for. Nothing to
+        // do but acknowledge it, or the chip holds the line in service and
+        // everything below it in priority goes quiet.
+        pic_eoi(irq);
+        return;
+    }
+    if (irq >= 8) {
+        pic_eoi_master();
+    }
+}
+
+// The PCI device's interrupt handler.
+//
+// The last of the four things a PCI device does, and the only one that runs
+// with the program suspended somewhere it did not choose. Three obligations,
+// and dropping any of them looks like different broken hardware:
+//
+//   * ask the device *what* it raised, before clearing anything
+//   * clear it at the device, which is what makes it stop asserting its line —
+//     an interrupt acknowledged only at the PIC re-arrives immediately, for ever
+//   * acknowledge the PIC, by line number, which for a line above 7 means both
+//     chips
+//
+// It takes its vector, which the runtime's shared entry passes: one handler can
+// serve several gates, and the line to acknowledge is derivable from the vector
+// rather than being a second thing to keep in step. It allocates nothing, for
+// the same reason the keyboard's does not — an interrupt lands between any two
+// instructions, including instructions inside the allocator.
+#[export("lk_edu_isr")]
+fn isr_edu(vector: Int) {
+    let mmio = shared_read(SHARED_EDU_MMIO);
+    if (mmio != 0) {
+        let raised = edu_irq_status(mmio);
+        edu_acknowledge(mmio, raised);
+        // Recorded after the acknowledgement, so a shell that sees this word
+        // set knows the device has already been quietened. `| 1` because the
+        // device may legitimately raise a value of zero bits and the shell
+        // needs to tell "arrived" from "not yet".
+        shared_write(SHARED_EDU_SEEN, raised | 1);
+    }
+    pic_eoi(vector - VECTOR_IRQ_BASE);
 }
 
 // The keyboard interrupt handler.

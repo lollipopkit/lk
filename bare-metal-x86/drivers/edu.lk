@@ -66,6 +66,12 @@ const EDU_DMA_SIZE = 4096;
 // interrupt status register.
 const EDU_IRQ_DMA = 0x100;
 
+// A bit with no other meaning to the device, for a driver that wants to check
+// its handler works without waiting for a transfer to be slow. The raise
+// register puts whatever it is given into the status register, so what comes
+// back out is traceable to the request that asked for it.
+const EDU_IRQ_TEST = 0x40;
+
 // ----------------------------------------------------------------- registers
 
 // A register, by its offset from the BAR.

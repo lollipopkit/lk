@@ -60,6 +60,98 @@ fn mask(master: Int, slave: Int) {
     unsafe { port_out_u8(PIC2_DATA, slave as u8); };
 }
 
+// The master's line the slave arrives on. Unmasking any of lines 8-15 without
+// this one open is a device that raises an interrupt the CPU never sees.
+const CASCADE_LINE = 2;
+
+// The interrupt mask register reads back, which is what makes it possible to
+// open one line without knowing what else is open.
+//
+// `mask` above takes both bytes at once, and that is right for a kernel setting
+// up the machine — it knows every line it intends to allow. It is wrong for a
+// *driver*: a PCI device does not learn its interrupt line until it reads
+// configuration space, by which time the masks are already set, and a driver
+// that wrote a whole byte would silently close every line it did not know
+// about. Read, clear one bit, write back.
+fn unmask(irq: Int) {
+    if (irq < 8) {
+        let current = unsafe { port_in_u8(PIC1_DATA) } as Int;
+        unsafe { port_out_u8(PIC1_DATA, (current & (0xff - bit_of(irq))) as u8); };
+        return;
+    }
+    let current = unsafe { port_in_u8(PIC2_DATA) } as Int;
+    unsafe { port_out_u8(PIC2_DATA, (current & (0xff - bit_of(irq - 8))) as u8); };
+    // The slave reaches the CPU through the master, so opening one of its lines
+    // means opening the cascade too. Done here rather than left to the caller
+    // because a caller that forgets sees a device that raises nothing, with the
+    // mask register showing its line open.
+    let master = unsafe { port_in_u8(PIC1_DATA) } as Int;
+    unsafe { port_out_u8(PIC1_DATA, (master & (0xff - bit_of(CASCADE_LINE))) as u8); };
+}
+
+// Closes one line, leaving the others as they are.
+fn mask_line(irq: Int) {
+    if (irq < 8) {
+        let current = unsafe { port_in_u8(PIC1_DATA) } as Int;
+        unsafe { port_out_u8(PIC1_DATA, (current | bit_of(irq)) as u8); };
+        return;
+    }
+    let current = unsafe { port_in_u8(PIC2_DATA) } as Int;
+    unsafe { port_out_u8(PIC2_DATA, (current | bit_of(irq - 8)) as u8); };
+}
+
+// 1 << n, for n in 0..8. A table rather than a shift because these are the only
+// eight values that exist here and the loop that would compute them is longer
+// than the answer.
+fn bit_of(line: Int) -> Int {
+    if (line == 0) { return 0x01; }
+    if (line == 1) { return 0x02; }
+    if (line == 2) { return 0x04; }
+    if (line == 3) { return 0x08; }
+    if (line == 4) { return 0x10; }
+    if (line == 5) { return 0x20; }
+    if (line == 6) { return 0x40; }
+    return 0x80;
+}
+
+// Whether the chip really has this line in service.
+//
+// The 8259 has a documented way of lying. If a line's request disappears
+// between the chip raising INTR and the CPU acknowledging — a glitch, or a line
+// masked while its request was pending — the chip has already committed to
+// delivering *something*, so it delivers its lowest-priority line: 7 on the
+// master, 15 on the slave. That is a "spurious interrupt", and it arrives on a
+// vector a kernel may otherwise have no reason to give a gate to, which turns
+// it into a general protection fault raised from inside an interrupt.
+//
+// The in-service register is how to tell one from the other, and it is the only
+// way: a spurious interrupt is indistinguishable from a real one at the vector.
+// OCW3 selects which register the command port reads back.
+fn in_service(irq: Int) -> Bool {
+    if (irq < 8) {
+        unsafe { port_out_u8(PIC1_CMD, 0x0b as u8); };
+        let register = unsafe { port_in_u8(PIC1_CMD) } as Int;
+        return (register & bit_of(irq)) != 0;
+    }
+    unsafe { port_out_u8(PIC2_CMD, 0x0b as u8); };
+    let register = unsafe { port_in_u8(PIC2_CMD) } as Int;
+    return (register & bit_of(irq - 8)) != 0;
+}
+
+// Acknowledges by line number, which is what a driver has.
+//
+// The two functions below are the chip's contract; this is the one a driver
+// should call. Which chip to tell is a property of the line, not a decision the
+// driver should be making — and getting it wrong is the failure that looks like
+// the device broke.
+fn eoi(irq: Int) {
+    if (irq < 8) {
+        eoi_master();
+        return;
+    }
+    eoi_slave();
+}
+
 // Acknowledges an interrupt from one of the master's own lines (0-7).
 fn eoi_master() {
     unsafe { port_out_u8(PIC1_CMD, EOI as u8); };
