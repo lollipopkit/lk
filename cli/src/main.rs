@@ -1119,6 +1119,75 @@ fn bundle_file_imports(source: &Path, artifact: &ModuleArtifact) -> anyhow::Resu
                         );
                     }
                 }
+                // A constant derived from constants.
+                //
+                // A module's top level is already required to be effect-free —
+                // that is what everything else in this scan enforces. What was
+                // missing was the ability to *evaluate* a pure one, so
+                // `const FRAME = HEADER + BODY;` was rejected as an effect
+                // while `const FRAME = 42;` was not. Deriving one constant from
+                // two others is the ordinary shape of a protocol header, and
+                // the alternative is the same number written twice.
+                //
+                // Folded rather than deferred: the value has to be known here,
+                // because what crosses the bundle boundary is a value and not
+                // an expression — `rewrite_bundled_globals` replaces each
+                // `GetGlobal` in the importer with a load.
+                Opcode::GetGlobal => {
+                    let name = dep.module.globals.get(instr.bx() as usize).cloned().unwrap_or_default();
+                    match dep_consts.iter().rev().find(|(known, _)| *known == name) {
+                        Some((_, value)) => {
+                            reg_const.insert(instr.a(), value.clone());
+                        }
+                        None => anyhow::bail!(
+                            "bundled import '{import_path}' reads `{name}` at its top level, which is not                              a constant defined above it"
+                        ),
+                    }
+                }
+                Opcode::Move => {
+                    if let Some(value) = reg_const.get(&instr.b()).cloned() {
+                        reg_const.insert(instr.a(), value);
+                    } else if let Some(&fidx) = reg_fn.get(&instr.b()) {
+                        reg_fn.insert(instr.a(), fidx);
+                    } else {
+                        anyhow::bail!(
+                            "bundled import '{import_path}' moves a top-level register that holds                              neither a function nor a constant"
+                        )
+                    }
+                }
+                // Integer arithmetic on values already known.
+                //
+                // These three and their immediate forms, and deliberately not
+                // division: `/` is float division in LK, so an integer divide
+                // here is a cast the front end proved, and matching its exact
+                // truncation and its behaviour at zero is a second
+                // implementation of a thing worth having only one of. A header
+                // constant that needs one gets the diagnostic below, naming the
+                // opcode.
+                //
+                // Wrapping, because that is what the executor does — a fold
+                // that panicked where the VM wrapped would be a compiler that
+                // rejects a program the VM runs.
+                Opcode::AddInt | Opcode::SubInt | Opcode::MulInt => {
+                    let lhs = int_operand(&reg_const, instr.b(), &import_path)?;
+                    let rhs = int_operand(&reg_const, instr.c(), &import_path)?;
+                    let value = match instr.opcode() {
+                        Opcode::AddInt => lhs.wrapping_add(rhs),
+                        Opcode::SubInt => lhs.wrapping_sub(rhs),
+                        _ => lhs.wrapping_mul(rhs),
+                    };
+                    reg_const.insert(instr.a(), BundledConst::Int(value));
+                }
+                Opcode::AddIntI | Opcode::MulIntI => {
+                    let lhs = int_operand(&reg_const, instr.b(), &import_path)?;
+                    let rhs = instr.sc() as i64;
+                    let value = if instr.opcode() == Opcode::AddIntI {
+                        lhs.wrapping_add(rhs)
+                    } else {
+                        lhs.wrapping_mul(rhs)
+                    };
+                    reg_const.insert(instr.a(), BundledConst::Int(value));
+                }
                 Opcode::Return0 => {}
                 // A container at a module's top level cannot cross this
                 // boundary and keep the VM's meaning.
@@ -1610,6 +1679,28 @@ enum BundledConst {
     Str(String),
     Bool(bool),
     Nil,
+}
+
+/// One integer operand of a top-level fold, or a diagnostic naming what it was.
+///
+/// A register holding a float or a string here is not a bug in the scan — it is
+/// a module whose top level does arithmetic this does not evaluate, and saying
+/// which register held what is the difference between "fix your constant" and
+/// "the bundler is broken".
+fn int_operand(
+    reg_const: &std::collections::HashMap<u8, BundledConst>,
+    reg: u8,
+    import_path: &str,
+) -> anyhow::Result<i64> {
+    match reg_const.get(&reg) {
+        Some(BundledConst::Int(value)) => Ok(*value),
+        Some(other) => anyhow::bail!(
+            "bundled import '{import_path}' does integer arithmetic at its top level on a              {other:?}, which is not a constant this can evaluate"
+        ),
+        None => anyhow::bail!(
+            "bundled import '{import_path}' does integer arithmetic at its top level on a value              that is not a constant"
+        ),
+    }
 }
 
 /// Rewrites every `GetGlobal` of a bundled constant into a load of its value.
