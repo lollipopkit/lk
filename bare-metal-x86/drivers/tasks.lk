@@ -1,0 +1,107 @@
+// The task table, and the frame a task starts life on.
+//
+// A task, on this machine, is three words: where its stack pointer is while it
+// is *not* running, which address space it runs in, and which kernel stack an
+// interrupt from it should land on. Everything else about switching is one
+// instruction — point RSP at another task's stack and let the same restore
+// sequence run — and that instruction is in the board's trampoline, because a
+// language cannot express "return on a different stack".
+//
+// The table lives at an address the caller chooses, for the reason every table
+// here does: a driver that picks an address is a driver that collides with the
+// next one. It is read from inside an interrupt, so every access goes through
+// `volatile_*` — a value the compiler kept in a register across a poll would be
+// a task table that never changes.
+
+// Two header words, then one slot per task.
+//
+//   header +0   how many slots are in use
+//   header +8   which slot is on the CPU right now
+//
+//   slot   +0   the saved stack pointer, valid while the task is not running
+//   slot   +8   its address space, as the value CR3 takes (0 = the kernel's)
+//   slot   +16  the ring-0 stack an interrupt from it lands on (0 = none)
+const TASK_HEADER_SIZE = 16;
+const TASK_SLOT_SIZE = 24;
+const TASK_USED_OFFSET = 0;
+const TASK_CURRENT_OFFSET = 8;
+const TASK_RSP_OFFSET = 0;
+const TASK_CR3_OFFSET = 8;
+const TASK_STACK_OFFSET = 16;
+
+// How many words a starting frame is: fifteen saved registers under the five
+// the CPU itself pushes.
+//
+// Named because the two halves have to agree with the board's `SAVE_TASK` and
+// with the CPU, and a frame that is short by one is not a compile error — it is
+// a resume that reads its RIP out of whatever the next slot held.
+const TASK_FRAME_SAVED = 15;
+
+fn task_table_size(capacity: Int) -> Int {
+    return TASK_HEADER_SIZE + capacity * TASK_SLOT_SIZE;
+}
+
+// Every access goes through these two, and through `volatile_*` inside them.
+// The table is read from an interrupt handler, so a value the compiler decided
+// to keep in a register across a poll would be a table that never changes.
+fn task_word(address: Int) -> Int {
+    let value = unsafe { volatile_read_u64(address as *mut u64) };
+    return value as Int;
+}
+
+fn task_set_word(address: Int, value: Int) {
+    unsafe { volatile_write_u64(address as *mut u64, value as u64); };
+}
+
+// A slot's field, by the named offset it lives at.
+//
+// One pair rather than a wrapper per field, and not only for brevity: a
+// bundled program is flattened into one function table whose call instruction
+// names its target in a *byte*, so functions are a resource with a ceiling.
+// Six one-line wrappers cost six of them to say what an offset already says.
+fn task_field(base: Int, slot: Int, offset: Int) -> Int {
+    return task_word(base + TASK_HEADER_SIZE + slot * TASK_SLOT_SIZE + offset);
+}
+
+fn task_set_field(base: Int, slot: Int, offset: Int, value: Int) {
+    task_set_word(base + TASK_HEADER_SIZE + slot * TASK_SLOT_SIZE + offset, value);
+}
+
+// One task at boot: the one already running, on the stack the boot path gave
+// it. It is slot 0, and it never gets an address space of its own.
+fn task_table_init(base: Int, capacity: Int) {
+    for offset in 0..((task_table_size(capacity) / 8) as Int) {
+        task_set_word(base + offset * 8, 0);
+    }
+    task_set_word(base + TASK_USED_OFFSET, 1);
+}
+
+// Builds the stack a task starts life on, and answers the stack pointer that
+// resumes it.
+//
+// It is the exact picture the interrupt path leaves behind, because that is
+// what the restore sequence will read: fifteen saved registers, and under them
+// the frame the CPU itself pushes — SS, RSP, RFLAGS, CS, RIP, high to low.
+// Getting the order wrong is not an error anything reports; it is a jump to
+// whatever the wrong slot held.
+//
+// `code` and `data` are what make a task a *user* task. Not what it runs, not
+// where its stack is — four numbers in this frame.
+fn task_prepare_frame(top: Int, entry: Int, code: Int, data: Int, resume_sp: Int) -> Int {
+    let sp = top;
+    sp = sp - 8;
+    task_set_word(sp, data);          // SS
+    sp = sp - 8;
+    task_set_word(sp, resume_sp);     // the RSP the task resumes with
+    sp = sp - 8;
+    task_set_word(sp, 0x202);         // RFLAGS: interrupts enabled, bit 1 always set
+    sp = sp - 8;
+    task_set_word(sp, code);          // CS
+    sp = sp - 8;
+    task_set_word(sp, entry);         // RIP
+    for _slot in 0..TASK_FRAME_SAVED {
+        sp = sp - 8;
+        task_set_word(sp, 0);
+    }
+    return sp;
+}

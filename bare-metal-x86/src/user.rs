@@ -194,8 +194,6 @@ unsafe extern "C" {
     /// it happened to be a ring-0 descriptor, is no ring boundary at all.
     fn lk_user_code_selector() -> i64;
     fn lk_user_data_selector() -> i64;
-    /// The TSS's `rsp0`, which the program owns. Called on every task switch.
-    pub(crate) fn lk_set_kernel_stack(top: i64);
 }
 
 /// Enters ring 3 at `entry`, on `stack`, and does not come back.

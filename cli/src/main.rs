@@ -1183,6 +1183,26 @@ fn bundle_file_imports(source: &Path, artifact: &ModuleArtifact) -> anyhow::Resu
                 let instr = Instr::try_from_raw(*raw_instr)
                     .map_err(|_| anyhow::anyhow!("bundled import '{import_path}': bad instruction"))?;
                 let rewritten = match instr.opcode() {
+                    // A ceiling, and the one that binds first as a program
+                    // grows: `CallDirect`/`MakeClosure` name their target in
+                    // the instruction's `b` field, which is a byte, so a
+                    // bundled program may hold at most 256 functions.
+                    //
+                    // The *compiler* has no such limit — `direct_function_index_u8`
+                    // answers `None` past 255 and the call lowers generically —
+                    // but a dep's instructions are already emitted by the time
+                    // they get here, and rewriting one into two would move
+                    // every jump offset after it.
+                    //
+                    // `bare-metal-x86/program.lk` with its drivers reached 260
+                    // and had to give some back. The failure is loud, which is
+                    // the only good thing about it.
+                    // TODO: number the merged table so that direct-call targets
+                    // take the low indices — the set is discoverable by scanning
+                    // each dep's code for these two opcodes — which moves the
+                    // ceiling from "256 functions" to "256 functions that are
+                    // called directly". A wider field is the real fix and needs
+                    // an instruction-encoding change.
                     Opcode::CallDirect | Opcode::MakeClosure => {
                         let fidx = instr.b() as usize;
                         let new = remap

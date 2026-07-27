@@ -43,6 +43,9 @@ use { has_mmap, mem_upper_kb, entry_count, entry_at, entry_base, entry_length,
       entry_is_available } from "drivers/multiboot";
 use { heap_init, heap_alloc, heap_release,
       used_bytes as heap_used, block_count as heap_blocks, largest_free as heap_largest } from "drivers/heap";
+use { task_table_init, task_word, task_set_word, task_field, task_set_field,
+      task_prepare_frame, TASK_USED_OFFSET, TASK_CURRENT_OFFSET, TASK_RSP_OFFSET,
+      TASK_CR3_OFFSET, TASK_STACK_OFFSET } from "drivers/tasks";
 use { table_zero, table_set, index_of, switch_to as space_switch,
       PAGE_PRESENT, PAGE_WRITE, PAGE_USER, SHIFT_PML4, SHIFT_PDPT,
       SHIFT_DIRECTORY, SHIFT_TABLE } from "drivers/paging";
@@ -358,6 +361,23 @@ const IDT_SIZE = IDT_GATE_COUNT * IDT_GATE_SIZE;
 const GDT_ENTRIES = 7;
 const GDT_BASE = IDT_BASE + IDT_SIZE;
 const TSS_BASE = GDT_BASE + GDT_ENTRIES * GDT_ENTRY_SIZE;
+
+// The task table.
+//
+// How many slots is a decided number rather than a discovered one: the table is
+// a fixed region, so it needs a size, and sixteen slots cost four hundred
+// bytes. It used to be six, which was "the tasks that exist, plus one" — a
+// number that says nothing except that nobody had needed a seventh. What the
+// capacity is *not* any more is a bound on memory: the stacks come from the
+// page allocator now, so a task past this is refused because the table is full,
+// not because a linker script reserved four of something.
+const TASK_CAPACITY = 16;
+const TASK_TABLE_BASE = TSS_BASE + TSS_SIZE;
+
+// A task's stack, in pages. 32 KiB, which is what the board's static array was:
+// compiled LK spills SSE registers, and an interrupt lands on top of whatever
+// depth the task had already reached.
+const TASK_STACK_PAGES = 8;
 
 // The framebuffer is twice the screen's height. Scrolling moves the *view*
 // down through it; only when the view reaches the bottom does anything have to
@@ -1312,11 +1332,122 @@ fn enter_user() -> Int {
     return 0;
 }
 
-// A ring-3 task: same table and same scheduler as any other, entered on a frame
-// whose selectors say ring 3, and running on the address space it is handed.
-#[extern("lk_spawn_user")]
-fn spawn_user_task(entry: Int, stack: Int, stack_virtual: Int, cr3: Int) -> Int {
-    return 0 - 1;
+// A stack for a task, out of the page allocator, and its high end.
+//
+// Contiguous because the allocator is a bump: consecutive pages are
+// consecutive addresses, which the heap's own startup already depends on and
+// checks. Answers 0 when it cannot get all of them — a stack that is short by a
+// page is not a stack, it is a task that overruns into whatever is next.
+fn alloc_task_stack() -> Int {
+    let base = page_alloc(SHARED_PAGES);
+    if (base == 0) {
+        return 0;
+    }
+    for index in 1..TASK_STACK_PAGES {
+        let page = page_alloc(SHARED_PAGES);
+        if (page != base + index * PAGE_SIZE) {
+            return 0;
+        }
+    }
+    return base + TASK_STACK_PAGES * PAGE_SIZE;
+}
+
+// Publishes a prepared slot. The count goes last, and that ordering is the
+// whole of the locking here: the scheduler reads it from a timer interrupt, so
+// a slot announced before its stack is complete is a resume into zero.
+fn publish_task(slot: Int, rsp: Int, cr3: Int, kernel_stack: Int) -> Int {
+    task_set_field(TASK_TABLE_BASE, slot, TASK_RSP_OFFSET, rsp);
+    task_set_field(TASK_TABLE_BASE, slot, TASK_CR3_OFFSET, cr3);
+    task_set_field(TASK_TABLE_BASE, slot, TASK_STACK_OFFSET, kernel_stack);
+    task_set_word(TASK_TABLE_BASE + TASK_USED_OFFSET, slot + 1);
+    shared_write(SHARED_TASK_COUNT, slot + 1);
+    return slot;
+}
+
+// Starts a task at `entry`, on a stack of its own.
+//
+// The caller must have interrupts masked, for the reason `publish_task` states.
+fn spawn_task(entry: Int) -> Int {
+    if (entry == 0) {
+        return 0 - 1;
+    }
+    let slot = task_word(TASK_TABLE_BASE + TASK_USED_OFFSET);
+    if (slot >= TASK_CAPACITY) {
+        return 0 - 1;
+    }
+    let top = alloc_task_stack();
+    if (top == 0) {
+        return 0 - 1;
+    }
+    // One word below the top, so the task begins with the stack in the phase a
+    // function expects: the ABI assumes a `call` has just pushed a return
+    // address, and `iretq` pushes nothing. Without the offset the first aligned
+    // SSE spill inside the task faults, in whatever it happened to call.
+    let rsp = task_prepare_frame(top, entry, KERNEL_CODE_SELECTOR, KERNEL_DATA_SELECTOR, top - 8);
+    return publish_task(slot, rsp, 0, top);
+}
+
+// A ring-3 task: same table, same switch and same scheduler as any other,
+// entered on a frame whose selectors say ring 3, and running in the address
+// space it is handed.
+//
+// The stack it resumes on is the *virtual* one — the task runs in its own
+// space, where that address is its stack and the kernel's space has something
+// else entirely there. The kernel stack published beside it is a different
+// stack again: its own, because two user tasks sharing one would have the
+// second one's interrupt frame land on top of the first one's.
+fn spawn_user_task(entry: Int, stack_virtual: Int, cr3: Int) -> Int {
+    if (entry == 0 || cr3 == 0) {
+        return 0 - 1;
+    }
+    let slot = task_word(TASK_TABLE_BASE + TASK_USED_OFFSET);
+    if (slot >= TASK_CAPACITY) {
+        return 0 - 1;
+    }
+    let top = alloc_task_stack();
+    if (top == 0) {
+        return 0 - 1;
+    }
+    let rsp = task_prepare_frame(top, entry, USER_CODE_SELECTOR, USER_DATA_SELECTOR, stack_virtual);
+    return publish_task(slot, rsp, cr3, top);
+}
+
+// Which task runs next, and everything that has to be true before it does.
+//
+// Called from the board's trampoline with the interrupted task's stack pointer,
+// and answering the one to resume on. Everything between is bookkeeping this
+// program owns: which slot was running, which is next, whose address space, and
+// whose kernel stack.
+#[export("lk_schedule_from_interrupt")]
+fn schedule_from_interrupt(rsp: Int) -> Int {
+    let current = task_word(TASK_TABLE_BASE + TASK_CURRENT_OFFSET);
+    task_set_field(TASK_TABLE_BASE, current, TASK_RSP_OFFSET, rsp);
+
+    let next = schedule(current);
+    // Clamped against what is *spawned*, not against the capacity: a scheduler
+    // naming an empty slot would resume a stack that was never prepared.
+    if (next < 0 || next >= task_word(TASK_TABLE_BASE + TASK_USED_OFFSET)) {
+        next = current;
+    }
+
+    // The address space before the stack pointer, and that order is the point:
+    // the value returned below is a pointer the CPU reads *after* this returns,
+    // so it has to still mean the same thing in whatever space is current then.
+    // It does, because the kernel is mapped identically in every space — which
+    // is what makes this order safe rather than lucky.
+    let want = task_field(TASK_TABLE_BASE, next, TASK_CR3_OFFSET);
+    if (want != 0 && want != unsafe { cpu_read_cr3() }) {
+        space_switch(want);
+    }
+    task_set_word(TASK_TABLE_BASE + TASK_CURRENT_OFFSET, next);
+
+    // The ring-0 stack the *next* task will be interrupted onto. Task 0 keeps
+    // the boot stack and never runs at ring 3, so it has none.
+    let kernel_stack = task_field(TASK_TABLE_BASE, next, TASK_STACK_OFFSET);
+    if (kernel_stack != 0) {
+        tss_set_kernel_stack(TSS_BASE, kernel_stack);
+    }
+    return task_field(TASK_TABLE_BASE, next, TASK_RSP_OFFSET);
 }
 
 // What a ring-3 task may ask the kernel for.
@@ -1510,11 +1641,6 @@ fn user_task_entry() -> Int {
 #[extern("lk_user_task_stack")]
 fn user_task_stack() -> Int {
     return 0;
-}
-
-#[extern("lk_spawn")]
-fn spawn_task(entry: Int) -> Int {
-    return 0 - 1;
 }
 
 #[extern("kernel_yield")]
@@ -2223,6 +2349,10 @@ fault_probe();
 // here should be reportable, and the boot stub's descriptors are enough to run
 // on until this replaces them.
 install_descriptor_table();
+// And the table the scheduler reads. Before interrupts are enabled, because
+// the timer handler reads it and a table of zeros names task 0 forever — which
+// looks like a working machine with one task, not like an uninitialised table.
+task_table_init(TASK_TABLE_BASE, TASK_CAPACITY);
 // Then the chip that raises them, and the flag that lets them through. In that
 // order: an interrupt taken before the table was loaded goes wherever the
 // previous table said, and there is no previous table.
@@ -2362,18 +2492,16 @@ let clock_task = spawn_task(unsafe { symbol_address("lk_task_clock") });
 // there can be is now "how many pages are left", which is a bound with a
 // reason, unlike the four the linker script used to reserve.
 let user_space = build_user_space(user_task_stack());
-let user_task = spawn_user_task(user_task_entry(), user_task_stack(),
-                                user_task_stack_virtual(), user_space);
+let user_task = spawn_user_task(user_task_entry(), user_task_stack_virtual(), user_space);
 // A second one, with a stack at the *same* virtual address in a space of its
 // own: if they shared a space, one would overwrite the other's memory.
 let user_space_b = build_user_space(user_task_stack_b());
-let user_task_b = spawn_user_task(user_task_entry_b(), user_task_stack_b(),
-                                  user_task_stack_virtual(), user_space_b);
-// Derived from the last slot handed out, not written as a number: a literal
-// here is a second place that has to be edited whenever a task is added, and
-// the failure when it is not — a scheduler naming a slot that was never
-// spawned — is a jump to zero.
-shared_write(SHARED_TASK_COUNT, user_task_b + 1);
+let user_task_b = spawn_user_task(user_task_entry_b(), user_task_stack_virtual(), user_space_b);
+// The count is no longer written here: `publish_task` writes it as the last
+// step of every spawn, which is the only moment at which it is true. Writing it
+// afterwards from the last slot handed out was correct and was also a second
+// place to edit whenever a task was added — and the failure when it was not is
+// a scheduler naming a slot that was never spawned.
 unlock(irq_spawn);
 if (spinner_task < 0 || clock_task < 0 || user_task < 0 || user_task_b < 0) {
     // "no tasks"

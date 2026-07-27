@@ -61,6 +61,56 @@ than setting a flag someone has to remember to check.
 
 ## Tasks
 
+The table is the program's, and so is everything that decides with it.
+`drivers/tasks.lk` holds what a task *is* — three words: where its stack pointer
+is while it is not running, which address space it runs in, and which ring-0
+stack an interrupt from it lands on. `program.lk` holds spawning, the starting
+frame, and the switch bookkeeping:
+
+```lk
+#[export("lk_schedule_from_interrupt")]
+fn schedule_from_interrupt(rsp: Int) -> Int {
+    let current = task_word(TASK_TABLE_BASE + TASK_CURRENT_OFFSET);
+    task_set_field(TASK_TABLE_BASE, current, TASK_RSP_OFFSET, rsp);
+    …
+}
+```
+
+What is left in `src/tasks.rs` is 110 lines: the register spill either side of
+that call, and the software interrupt a task uses to ask for it. Those are the
+one thing a language cannot say — *return on a different stack* — and the
+trampoline is where it is said.
+
+Task stacks come from the page allocator too, so `TASK_CAPACITY` is now a
+property of the table's fixed region rather than of five static arrays.
+
+### The ceiling this is heading for
+
+Adding `drivers/tasks.lk` did not compile:
+
+```
+bundled import 'drivers/serial': function index overflow
+```
+
+`CallDirect` and `MakeClosure` name their target in the instruction's `b`
+field, which is a byte, so a **bundled program may hold at most 256
+functions**. With the new driver, `program.lk` and its drivers came to 260.
+
+The compiler itself has no such limit — past 255 it lowers a call generically —
+but a dep's instructions are already emitted by the time the bundler renumbers
+them, and rewriting one instruction into two would move every jump offset after
+it. So the ceiling is real, and it is the first one this direction will hit
+again: every subsystem that moves out of Rust arrives as a file of functions.
+
+This round bought room by collapsing six one-line field accessors into one pair
+keyed by a named offset — which reads better anyway, and is the right shape when
+functions are a resource with a bound. That is not a fix. The fix is either
+numbering the merged table so direct-call targets take the low indices (moving
+the ceiling to "256 functions *called directly*"), or a wider field, which is an
+instruction-encoding change. Both are written down at the code.
+
+
+
 Two tasks, preempted by the timer. The shell is one; the other spins a glyph in
 the top-right corner and never yields — the CPU is taken away from it.
 
@@ -942,6 +992,7 @@ drivers/idt.lk           the interrupt descriptor table: gates, and `lidt`
 drivers/pic.lk           the 8259 pair: remap, mask, end-of-interrupt
 drivers/gdt.lk           segment descriptors, `lgdt`, and reloading CS
 drivers/paging.lk        four-level page tables, CR3, and the TLB
+drivers/tasks.lk         the task table, and the frame a task starts life on
 drivers/tss.lk           the one field long mode kept: the ring-0 stack
 drivers/serial.lk        a 16550 UART
 drivers/pci.lk           configuration space

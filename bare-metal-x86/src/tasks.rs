@@ -7,108 +7,18 @@
 //! on the interrupted task's stack, a switch is one instruction — point RSP at
 //! another task's stack and let the same restore sequence run.
 //!
-//! What lives here is the mechanics: stacks, the frame a task starts life
-//! with, and the register bookkeeping. *Which* task runs next is
-//! `lk_schedule`, an `#[export]`ed LK function — policy is the program's.
+//! What is left here is the one thing a language cannot say: *return on a
+//! different stack*. Everything else has moved to `program.lk` and
+//! `drivers/tasks.lk` — the table, the frame a task starts life on, which slot
+//! runs next, whose address space, whose kernel stack. This file supplies the
+//! register spill either side of that decision, and the software interrupt a
+//! task uses to ask for it.
 //!
 //! A task may not allocate. `lkrt` has one arena and no locks around it, so two
 //! tasks in it at once would corrupt it; the same rule the interrupt handlers
 //! already follow, for the same reason.
 
 use core::arch::global_asm;
-
-/// How many tasks the board can hold. A capacity, not a count: the stacks are
-/// static because nothing here can grow a table while interrupts are reading
-/// it, but which of them are in use is decided at run time by `lk_spawn`.
-pub const TASK_CAPACITY: usize = 6;
-
-const STACK_SIZE: usize = 32 * 1024;
-
-/// A task stack.
-///
-/// The alignment is not decoration: compiled LK code spills SSE registers with
-/// `movaps`, which faults on a stack that is not 16-byte aligned. A plain
-/// `[u8; N]` has alignment 1, and the fault it produces is a #GP inside the
-/// task, nowhere near the array.
-#[repr(align(16))]
-struct Stack([u8; STACK_SIZE]);
-
-/// One stack per task past the first. Task 0 keeps the stack the boot path
-/// gave it — it is the one already running when the first interrupt lands.
-static mut TASK_STACKS: [Stack; TASK_CAPACITY - 1] = [const { Stack([0; STACK_SIZE]) }; TASK_CAPACITY - 1];
-
-/// Each task's saved stack pointer, valid while it is *not* running.
-static mut TASK_RSP: [u64; TASK_CAPACITY] = [0; TASK_CAPACITY];
-
-/// How many slots are in use. One at boot: the task already running, whose
-/// stack the boot path gave it.
-static mut TASK_USED: usize = 1;
-
-/// Each task's address space, as the value CR3 takes.
-///
-/// Zero means "the kernel's", which is what every task had until one of them
-/// got its own. Kept per task rather than per privilege level: two user tasks
-/// with one space would be two threads, and the difference between a thread and
-/// a process is exactly this word.
-static mut TASK_CR3: [u64; TASK_CAPACITY] = [0; TASK_CAPACITY];
-
-/// Which entry of `TASK_RSP` belongs to the task currently on the CPU.
-static mut CURRENT: usize = 0;
-
-unsafe extern "C" {
-    /// The scheduler, written in LK. The task *bodies* are no longer named
-    /// here: a program spawns them by address, so the board does not have to
-    /// know what they are called.
-    fn lk_schedule(current: i64) -> i64;
-}
-
-/// Builds the stack a task starts life on.
-///
-/// It is the exact picture the interrupt path leaves behind, because that is
-/// what the restore sequence will read: fifteen saved registers, then the
-/// frame the CPU itself pushes. Getting the order wrong here is not a compile
-/// error — it is a jump to whatever the wrong slot held.
-///
-/// # Safety
-///
-/// `top` must be the high end of a writable, 16-byte-aligned stack that
-/// nothing else uses.
-unsafe fn prepare_stack(top: *mut u8, entry: u64) -> u64 {
-    // SAFETY: as this function's own contract.
-    unsafe { prepare_stack_in(top, entry, 0x08, 0x10, top as u64 - 8) }
-}
-
-/// As [`prepare_stack`], with the selectors and stack the frame resumes on
-/// spelled out — which is what makes a task a *user* task.
-///
-/// # Safety
-///
-/// As [`prepare_stack`], and `resume_sp` must be a stack the target privilege
-/// level can write.
-unsafe fn prepare_stack_in(top: *mut u8, entry: u64, code: u64, data: u64, resume_sp: u64) -> u64 {
-    // The CPU's frame, pushed high to low: SS, RSP, RFLAGS, CS, RIP.
-    let mut sp = top as u64;
-    let mut push = |value: u64| {
-        sp -= 8;
-        // SAFETY: within the caller's stack, which is ours to write.
-        unsafe { core::ptr::write_volatile(sp as *mut u64, value) };
-    };
-    push(data); // SS
-    // One word below the top, so the task begins with the stack in the phase a
-    // function expects: the ABI assumes a `call` has just pushed a return
-    // address, and `iretq` pushes nothing. Without the offset the first
-    // aligned SSE spill in the task faults, inside whatever it called.
-    push(resume_sp); // RSP the task resumes with
-    push(0x202); // RFLAGS: interrupts enabled, bit 1 always set
-    push(code); // CS
-    push(entry); // RIP
-    // The saved registers, in the order `IRQ_RESTORE` pops them — that is,
-    // the reverse of the order `IRQ_SAVE` pushes.
-    for _ in 0..15 {
-        push(0);
-    }
-    sp
-}
 
 /// Gives up the rest of this task's slice.
 ///
@@ -128,142 +38,6 @@ pub extern "C" fn kernel_yield() {
     // SAFETY: the vector has a gate — `program.lk` installs it before it asks
     // the board to enable interrupts, which is the only order that works.
     unsafe { core::arch::asm!("int 0x30", options(nomem, nostack)) };
-}
-
-/// Starts a task at `entry`, on a stack of its own. Returns its slot, or -1.
-///
-/// The address comes from `symbol_address` on the LK side, which is what makes
-/// this a *table* rather than a list the board has to know the names in: the
-/// program decides what runs, the board only supplies stacks and the switch.
-///
-/// The caller must have interrupts masked. The scheduler reads `TASK_USED` from
-/// an interrupt, so publishing a slot before its stack is prepared would let a
-/// timer tick resume a task that does not exist yet — which is a jump to zero.
-///
-/// # Safety
-///
-/// Called from LK with a code address; a value that is not one is a jump to
-/// wherever it points. That is what `unsafe` in the LK source is claiming.
-#[unsafe(no_mangle)]
-pub extern "C" fn lk_spawn(entry: i64) -> i64 {
-    if entry == 0 {
-        return -1;
-    }
-    // SAFETY: the caller holds interrupts masked, so nothing else is reading
-    // or writing these while this runs.
-    unsafe {
-        let used = *(&raw const TASK_USED);
-        if used >= TASK_CAPACITY {
-            return -1;
-        }
-        let stacks = &raw mut TASK_STACKS;
-        let top = (*stacks)[used - 1].0.as_mut_ptr().add(STACK_SIZE);
-        let sp = prepare_stack(top, entry as u64);
-        let rsp = &raw mut TASK_RSP;
-        (*rsp)[used] = sp;
-        // Published last: the stack has to be complete before the scheduler
-        // can pick the slot.
-        *(&raw mut TASK_USED) = used + 1;
-        used as i64
-    }
-}
-
-/// Starts a task that runs in *ring 3*.
-///
-/// Same table, same switch, same scheduler — the difference is four numbers in
-/// the frame it starts on, and a stack the user can write. The kernel stack it
-/// will be interrupted onto is its own slot's, which `schedule_from_interrupt`
-/// hands to the TSS on every switch.
-///
-/// # Safety
-///
-/// `entry` must be code in a user-accessible page, and `user_stack` a
-/// user-accessible, 16-byte-aligned stack of its own.
-#[unsafe(no_mangle)]
-pub extern "C" fn lk_spawn_user(entry: i64, user_stack: i64, user_stack_virtual: i64, cr3: i64) -> i64 {
-    if entry == 0 || user_stack == 0 {
-        return -1;
-    }
-    // An address space it cannot run in is not a task it can refuse later: the
-    // program answers 0 when it has no pages left, and a CR3 of 0 would be a
-    // walk from page zero on the first instruction.
-    if cr3 == 0 {
-        return -1;
-    }
-    // SAFETY: the caller masks interrupts, as `lk_spawn` requires.
-    unsafe {
-        let used = *(&raw const TASK_USED);
-        if used >= TASK_CAPACITY {
-            return -1;
-        }
-        let stacks = &raw mut TASK_STACKS;
-        let top = (*stacks)[used - 1].0.as_mut_ptr().add(STACK_SIZE);
-        let (code, data) = crate::user::user_frame_selectors();
-        // The *virtual* address is what the frame resumes on: the task runs in
-        // its own space, where its stack is somewhere the kernel's space has
-        // something else entirely.
-        let sp = prepare_stack_in(top, entry as u64, code, data, user_stack_virtual as u64);
-        let rsp = &raw mut TASK_RSP;
-        (*rsp)[used] = sp;
-        // Its own address space, in which that stack address means something.
-        // Built by the program and handed over: what a space *contains* is a
-        // decision, and the board's share of it is the page directories it
-        // filled in before long mode.
-        let table = &raw mut TASK_CR3;
-        (*table)[used] = cr3 as u64;
-        *(&raw mut TASK_USED) = used + 1;
-        used as i64
-    }
-}
-
-/// Called from the trampoline with every register already on the interrupted
-/// task's stack. Returns the stack to resume on.
-///
-/// # Safety
-///
-/// `rsp` must be the interrupted task's stack pointer, with a complete saved
-/// frame at it.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn schedule_from_interrupt(rsp: u64) -> u64 {
-    // SAFETY: interrupts are masked inside an interrupt gate, so nothing else
-    // is touching these while this runs.
-    unsafe {
-        let current = *(&raw const CURRENT);
-        let table = &raw mut TASK_RSP;
-        (*table)[current] = rsp;
-        let next = lk_schedule(current as i64) as usize;
-        // Clamped against what is *spawned*, not against the capacity: a
-        // scheduler that names an empty slot would resume a stack that was
-        // never prepared.
-        let next = if next < *(&raw const TASK_USED) { next } else { current };
-        // The address space, before the stack: the value returned below is a
-        // pointer the CPU will read *after* this returns, and it has to be
-        // valid in whatever space is current then. Both are mapped identically
-        // for the kernel, which is why this order is safe rather than lucky.
-        let spaces = &raw const TASK_CR3;
-        let want = (*spaces)[next];
-        if want != 0 {
-            let current_cr3: u64;
-            core::arch::asm!("mov {}, cr3", out(reg) current_cr3, options(nomem, nostack));
-            if current_cr3 != want {
-                core::arch::asm!("mov cr3, {}", in(reg) want, options(nostack));
-            }
-        }
-        *(&raw mut CURRENT) = next;
-        // The kernel stack the *next* task will be interrupted onto. Task 0
-        // keeps the boot stack and never runs at ring 3, so its slot has no
-        // array entry; the rest get their own, which is what keeps two user
-        // tasks from landing on one stack.
-        if next > 0 {
-            let stacks = &raw mut TASK_STACKS;
-            let top = (*stacks)[next - 1].0.as_mut_ptr().add(STACK_SIZE);
-            // The segment is the program's; this is a call into it. It happens
-            // inside the timer gate with interrupts masked, which is what makes
-            // writing a word the CPU reads on a ring change safe here.
-            crate::user::lk_set_kernel_stack(top as i64);
-        }
-        (*table)[next]
-    }
 }
 
 // The timer's trampoline, extended to switch tasks.
@@ -315,7 +89,7 @@ global_asm!(
     "__yield_trampoline:",
     "   SAVE_TASK",
     "   mov rdi, rsp",
-    "   call schedule_from_interrupt",
+    "   call lk_schedule_from_interrupt",
     "   mov rsp, rax",
     "   RESTORE_TASK",
     "   iretq",
@@ -329,7 +103,7 @@ global_asm!(
     // the driver's.
     "   call lk_timer_isr",
     "   mov rdi, rsp",
-    "   call schedule_from_interrupt",
+    "   call lk_schedule_from_interrupt",
     "   mov rsp, rax",
     "   RESTORE_TASK",
     "   iretq",
