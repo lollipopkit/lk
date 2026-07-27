@@ -1123,9 +1123,13 @@ impl LkAnalyzer {
         origins: Option<&[macro_system::MacroTokenOrigin]>,
     ) -> Vec<Diagnostic> {
         let mut checker = TypeChecker::new_strict();
-        match program.type_check(&mut checker) {
-            Ok(_) => Vec::new(),
-            Err(err) => {
+        // Every bad statement, not just the first one: an editor that hides
+        // forty errors behind the topmost makes the reader fix them one round
+        // trip at a time.
+        program
+            .type_check_collecting(&mut checker)
+            .into_iter()
+            .map(|err| {
                 let range = Self::type_error_range(&err, tokens, spans, content);
                 let mut message = Self::type_error_from_anyhow(&err)
                     .map(|type_error| type_error.message.clone())
@@ -1148,9 +1152,9 @@ impl LkAnalyzer {
                     None,
                 );
                 diagnostic.code = Some(NumberOrString::String("lk_type_error".to_string()));
-                vec![diagnostic]
-            }
-        }
+                diagnostic
+            })
+            .collect()
     }
 
     pub(crate) fn type_error_range(

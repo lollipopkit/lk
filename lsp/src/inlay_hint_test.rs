@@ -162,7 +162,7 @@ mod inlay_hint_tests {
             let x = 1;
             y := 1.0;
         "#;
-        let analyzer = LkAnalyzer::new();
+        let mut analyzer = LkAnalyzer::new();
         let mut hints = analyzer.compute_type_inlay_hints(src, full_range(src));
         hints.extend(analyzer.compute_define_type_hints(src, full_range(src)));
         assert!(!hints.is_empty(), "expected type hints for let/define, got none");
@@ -183,7 +183,7 @@ mod inlay_hint_tests {
             let x: Int = 1;
             let y = 2;
         "#;
-        let analyzer = LkAnalyzer::new();
+        let mut analyzer = LkAnalyzer::new();
         let hints = analyzer.compute_type_inlay_hints(src, full_range(src));
         // Should only hint for y, not for the annotated x
         let labels: Vec<String> = hints
@@ -233,7 +233,7 @@ mod inlay_hint_tests {
 
         // Collect both parameter and type hints as the server would before filtering
         let mut combined: Vec<InlayHint> = compute_inlay_hints(src, full_range(src));
-        let analyzer = LkAnalyzer::new();
+        let mut analyzer = LkAnalyzer::new();
         combined.extend(analyzer.compute_type_inlay_hints(src, full_range(src)));
         combined.extend(analyzer.compute_define_type_hints(src, full_range(src)));
 
@@ -286,7 +286,7 @@ mod inlay_hint_tests {
             }
             fn consts() { return 42; }
         "#;
-        let analyzer = LkAnalyzer::new();
+        let mut analyzer = LkAnalyzer::new();
         let hints = analyzer.compute_function_return_type_hints(src, full_range(src));
         assert!(!hints.is_empty(), "expected function return type hints");
         // Should include TYPE kind hints with labels like " -> Int" (at least for the const function)
@@ -312,7 +312,7 @@ mod inlay_hint_tests {
                 }
             }
         "#;
-        let analyzer = LkAnalyzer::new();
+        let mut analyzer = LkAnalyzer::new();
         let hints = analyzer.compute_function_return_type_hints(src, full_range(src));
         assert!(!hints.is_empty(), "expected function return type hint for union");
         let labs = labels(&hints);

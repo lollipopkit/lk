@@ -14,6 +14,7 @@ impl<'a> StmtParser<'a> {
     }
 
     fn parse_binding_stmt(&mut self, keyword: Token, keyword_str: &'static str, is_const: bool) -> Result<Stmt> {
+        let keyword_pos = self.pos;
         self.expect_token(keyword)?;
 
         // Parse pattern for binding statement until a top-level ':' (type annotation)
@@ -97,7 +98,12 @@ impl<'a> StmtParser<'a> {
             pattern,
             type_annotation,
             value: Box::new(value),
-            span: self.current_span(),
+            // `let` keyword through the end of the pattern — the statement's own
+            // position. This used to be `self.current_span()`, taken *after* the
+            // whole statement was consumed: it named the token that follows, so
+            // a `let`'s type error pointed at the next statement, and the last
+            // statement in a file had no span at all.
+            span: self.span_covering(keyword_pos, end_pos.saturating_sub(1)),
             is_const,
         })
     }

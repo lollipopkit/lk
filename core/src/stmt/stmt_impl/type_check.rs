@@ -139,6 +139,11 @@ impl Stmt {
                 let bound_type = type_annotation.clone().unwrap_or(expr_type);
                 bind_pattern_types(pattern, &bound_type, *is_const, type_checker);
 
+                if let Some(span) = span {
+                    let names = pattern_names(pattern);
+                    type_checker.record_bindings(span, type_annotation.is_some(), names.iter().map(String::as_str));
+                }
+
                 Ok(())
             }
             Stmt::Assign { name, value, span } => {
@@ -899,6 +904,41 @@ impl Program {
             stmt.type_check(type_checker)?;
         }
         Ok(())
+    }
+
+    /// Type-check every statement, reporting all the errors instead of the first.
+    ///
+    /// `type_check` stops at the first failure, which is what a compiler wants:
+    /// the program is not going to run either way. A tool wants the opposite —
+    /// one mistyped line should not take the diagnostics for the other forty
+    /// with it, nor the types recorded for them (see
+    /// `TypeChecker::observe_bindings`).
+    pub fn type_check_collecting(&self, type_checker: &mut TypeChecker) -> Vec<anyhow::Error> {
+        self.predeclare_function_signatures(type_checker);
+        type_checker.set_pending_top_level(self.top_level_binding_names());
+
+        let strict = type_checker.strict_any();
+        let previous_defer = strict.then(|| type_checker.begin_deferred_strict_function_checks());
+
+        let depth = type_checker.scope_depth();
+        let mut errors = Vec::new();
+        for stmt in &self.statements {
+            if let Err(err) = stmt.type_check(type_checker) {
+                errors.push(err);
+                // The failed statement returned through the `?` that would have
+                // closed its scopes; leaving them open would check the next
+                // statement against bindings it cannot see.
+                type_checker.unwind_scopes_to(depth);
+            }
+        }
+
+        if let Some(previous_defer) = previous_defer {
+            if let Err(err) = type_checker.finalize_deferred_strict_function_checks() {
+                errors.push(err);
+            }
+            type_checker.restore_deferred_strict_function_checks(previous_defer);
+        }
+        errors
     }
 }
 

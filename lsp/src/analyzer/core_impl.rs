@@ -194,139 +194,57 @@ impl LkAnalyzer {
         }
     }
 
-    /// Compute type inlay hints for simple `let name = expr;` without explicit annotations.
-    /// Places a TYPE hint like `: Int` right after the pattern (before '=').
-    #[cfg(test)]
-    pub fn compute_type_inlay_hints(&self, content: &str, range: Range) -> Vec<InlayHint> {
-        let (tokens, spans) = match Tokenizer::tokenize_enhanced_with_spans(content) {
-            Ok(pair) => pair,
-            Err(_) => return Vec::new(),
+    /// Type hints for `let` bindings whose type the source leaves unwritten.
+    ///
+    /// Reads the types the checker recorded while checking the whole document
+    /// (`observed_bindings`) instead of re-deriving them here. What that buys
+    /// is not tidiness: this used to slice the token stream, re-parse the
+    /// right-hand side on its own, and infer it in a *fresh* checker with no
+    /// variables, no functions and no imports in scope — so `y := x + 1` got
+    /// no hint, and neither did anything else that mentioned a name.
+    pub fn compute_type_inlay_hints(&mut self, content: &str, range: Range) -> Vec<InlayHint> {
+        let Ok(entry) = self.tokenize_with_spans_cached(content) else {
+            return Vec::new();
         };
-        self.compute_type_inlay_hints_from_tokens(&tokens, &spans, range)
-    }
+        let observed = entry.observed_bindings(content);
 
-    /// Variant that reuses a pre-tokenized buffer for performance.
-    pub fn compute_type_inlay_hints_from_tokens(
-        &self,
-        tokens: &[token::Token],
-        spans: &[Span],
-        range: Range,
-    ) -> Vec<InlayHint> {
-        let mut hints: Vec<InlayHint> = Vec::new();
-        use token::Token as T;
-        let mut i = 0usize;
-        while i < tokens.len() {
-            if !matches!(tokens[i], T::Let) {
-                i += 1;
-                continue;
-            }
-            let let_idx = i;
-            i += 1;
-
-            // Capture pattern region until top-level ':' (annotation) or '=' (assignment)
-            let start_pat = i;
-            let mut end_pat = i;
-            let mut paren = 0i32;
-            let mut bracket = 0i32;
-            let mut brace = 0i32;
-            let mut saw_colon = false;
-            let mut found_assign = false;
-            while i < tokens.len() {
-                match &tokens[i] {
-                    T::LParen => paren += 1,
-                    T::RParen => {
-                        if paren > 0 {
-                            paren -= 1;
-                        }
-                    }
-                    T::LBracket => bracket += 1,
-                    T::RBracket => {
-                        if bracket > 0 {
-                            bracket -= 1;
-                        }
-                    }
-                    T::LBrace => brace += 1,
-                    T::RBrace => {
-                        if brace > 0 {
-                            brace -= 1;
-                        }
-                    }
-                    T::Assign if paren == 0 && bracket == 0 && brace == 0 => {
-                        found_assign = true;
-                        break;
-                    }
-                    T::Colon if paren == 0 && bracket == 0 && brace == 0 => {
-                        saw_colon = true;
-                        break;
-                    }
-                    _ => {}
-                }
-                end_pat = i;
-                i += 1;
-            }
-            if !found_assign || saw_colon {
-                // Skip cases without '=' or with explicit annotation
-                continue;
-            }
-
-            // Determine RHS expression token range: after '=' until next top-level ';'
-            let mut j = i + 1; // i at '='
-            let mut depth = 0i32;
-            let mut end_expr = j;
-            while j < tokens.len() {
-                match &tokens[j] {
-                    T::LParen | T::LBracket | T::LBrace => depth += 1,
-                    T::RParen | T::RBracket | T::RBrace => depth -= 1,
-                    T::Semicolon if depth == 0 => break,
-                    _ => {}
-                }
-                end_expr = j;
-                j += 1;
-            }
-            if end_expr > i {
-                // Parse expression and infer type
-                let expr_tokens = &tokens[i + 1..=end_expr];
-                if !expr_tokens.is_empty() {
-                    if let Ok(expr) = ExprParser::new(expr_tokens).parse() {
-                        let mut checker = TypeChecker::new_strict();
-                        if let Ok(typ) = checker.infer_resolved_type(&expr) {
-                            // Place hint at end of pattern
-                            let pat_tok_idx = if end_pat >= start_pat { end_pat } else { start_pat };
-                            if pat_tok_idx < spans.len() {
-                                let sp = &spans[pat_tok_idx];
-                                let pos = Position::new(sp.end.line - 1, sp.end.column.saturating_sub(1));
-                                if pos.line >= range.start.line && pos.line <= range.end.line {
-                                    let label = format!(": {}", typ.display());
-                                    hints.push(InlayHint {
-                                        position: pos,
-                                        label: InlayHintLabel::from(label),
-                                        kind: Some(InlayHintKind::TYPE),
-                                        text_edits: None,
-                                        tooltip: None,
-                                        padding_left: Some(true),
-                                        padding_right: Some(false),
-                                        data: None,
-                                    });
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Advance to end of statement
-            i = j;
-            while i < tokens.len() && !matches!(tokens[i], T::Semicolon) {
-                i += 1;
-            }
-            if i < tokens.len() {
-                i += 1;
-            }
-            // Prevent infinite loop on invalid sequences
-            if i <= let_idx {
-                i = let_idx + 1;
-            }
+        // Group by binding site: a destructuring `let` records one entry per
+        // name, and there is no single type to write at the end of `[a, b]`.
+        let mut by_site: HashMap<(u32, u32), Vec<&lk_core::typ::ObservedBinding>> = HashMap::new();
+        for binding in observed.iter() {
+            by_site
+                .entry((binding.span.end.line, binding.span.end.column))
+                .or_default()
+                .push(binding);
         }
+
+        let mut hints: Vec<InlayHint> = Vec::new();
+        for bindings in by_site.values() {
+            let [binding] = bindings[..] else {
+                continue;
+            };
+            if binding.annotated {
+                continue;
+            }
+            let position = Position::new(
+                binding.span.end.line.saturating_sub(1),
+                binding.span.end.column.saturating_sub(1),
+            );
+            if position.line < range.start.line || position.line > range.end.line {
+                continue;
+            }
+            hints.push(InlayHint {
+                position,
+                label: InlayHintLabel::from(format!(": {}", binding.ty.display())),
+                kind: Some(InlayHintKind::TYPE),
+                text_edits: None,
+                tooltip: None,
+                data: None,
+                padding_left: Some(true),
+                padding_right: Some(false),
+            });
+        }
+        hints.sort_by_key(|hint| (hint.position.line, hint.position.character));
         hints
     }
 

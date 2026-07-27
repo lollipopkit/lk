@@ -15,7 +15,7 @@ use lk_core::{
     token,
     token::{Span, Tokenizer},
     typ,
-    typ::TypeChecker,
+    typ::{ObservedBinding, TypeChecker},
     val,
 };
 use lk_core::{stmt::NamedParamDecl, util::fast_map::FastHashMap};
@@ -60,6 +60,7 @@ pub(crate) struct TokenCacheEntry {
     project_dependencies: Arc<Vec<PathBuf>>,
     project_dependency_fingerprint: macro_system::ProcMacroDependencyFingerprint,
     named_param_decls: OnceCell<Arc<HashMap<String, Vec<NamedParamDecl>>>>,
+    observed_bindings: OnceCell<Arc<Vec<ObservedBinding>>>,
     program_expansion: OnceCell<CachedProgramExpansion>,
     program_ast: OnceCell<Arc<Program>>,
     expr_ast: OnceCell<Arc<Expr>>,
@@ -87,6 +88,7 @@ impl TokenCacheEntry {
             project_dependencies: Arc::new(project_dependencies),
             project_dependency_fingerprint,
             named_param_decls: OnceCell::new(),
+            observed_bindings: OnceCell::new(),
             program_expansion: OnceCell::new(),
             program_ast: OnceCell::new(),
             expr_ast: OnceCell::new(),
@@ -102,6 +104,26 @@ impl TokenCacheEntry {
         self.program_ast
             .get_or_try_init(|| parse_program_source(content, self.parse_options.clone()).map(Arc::new))
             .cloned()
+    }
+
+    /// Every binding in the document with the type the checker gave it.
+    ///
+    /// One program-wide check per document revision, shared by every feature
+    /// that wants a type. It uses `type_check_collecting` rather than
+    /// `type_check` so a single bad statement does not take the types for the
+    /// rest of the file with it.
+    fn observed_bindings(&self, content: &str) -> Arc<Vec<ObservedBinding>> {
+        self.observed_bindings
+            .get_or_init(|| {
+                let Ok(program) = self.parse_program_arc(content) else {
+                    return Arc::new(Vec::new());
+                };
+                let mut checker = TypeChecker::new_strict();
+                checker.observe_bindings();
+                let _ = program.type_check_collecting(&mut checker);
+                Arc::new(checker.take_observations())
+            })
+            .clone()
     }
 
     fn parse_program_expansion_arc(

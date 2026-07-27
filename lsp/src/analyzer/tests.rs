@@ -544,7 +544,7 @@ fn test_validate_semantic_tokens_rejects_bad_ranges_and_legend_indexes() {
 
 #[test]
 fn test_type_inlay_hints_let_and_define() {
-    let analyzer = LkAnalyzer::new();
+    let mut analyzer = LkAnalyzer::new();
     let src = r#"
         let x = 1;
         y := 1.0;
@@ -553,6 +553,60 @@ fn test_type_inlay_hints_let_and_define() {
     hints.extend(analyzer.compute_define_type_hints(src, full_range(src)));
     assert!(!hints.is_empty(), "expected type hints for let/define, got none");
     assert!(hints.iter().all(|h| h.kind == Some(InlayHintKind::TYPE)));
+}
+
+fn hint_labels(hints: &[InlayHint]) -> Vec<String> {
+    hints
+        .iter()
+        .map(|hint| match &hint.label {
+            tower_lsp::lsp_types::InlayHintLabel::String(label) => label.clone(),
+            _ => String::new(),
+        })
+        .collect()
+}
+
+#[test]
+fn test_type_hints_cover_bindings_that_name_other_things() {
+    let mut analyzer = LkAnalyzer::new();
+    let src = "fn greet(name: String) -> String {\n    return name;\n}\nlet who = greet(\"lk\");\n";
+
+    let hints = analyzer.compute_type_inlay_hints(src, full_range(src));
+
+    // A fresh per-expression checker has never heard of `greet`, so this hint
+    // could not exist before the types came from one document-wide check.
+    assert!(
+        hint_labels(&hints).iter().any(|label| label == ": String"),
+        "expected `who: String`, got {:?}",
+        hint_labels(&hints)
+    );
+}
+
+#[test]
+fn test_type_hints_use_stdlib_signatures() {
+    let mut analyzer = LkAnalyzer::new();
+    let src = "use string;\nlet parts = string.split(\"a,b\", \",\");\n";
+
+    let hints = analyzer.compute_type_inlay_hints(src, full_range(src));
+
+    assert!(
+        hint_labels(&hints).iter().any(|label| label == ": List<String>"),
+        "expected the declared return type of string.split, got {:?}",
+        hint_labels(&hints)
+    );
+}
+
+#[test]
+fn test_one_bad_statement_does_not_cost_the_rest_their_hints() {
+    let mut analyzer = LkAnalyzer::new();
+    let src = "let bad: Int = \"x\";\nlet good = 41 + 1;\n";
+
+    let hints = analyzer.compute_type_inlay_hints(src, full_range(src));
+
+    assert!(
+        hint_labels(&hints).iter().any(|label| label == ": Int"),
+        "the statement after a type error still has a type, got {:?}",
+        hint_labels(&hints)
+    );
 }
 
 #[test]

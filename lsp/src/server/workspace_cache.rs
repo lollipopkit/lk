@@ -350,8 +350,8 @@ fn compute_full_inlay_hints(content: &str) -> Vec<InlayHint> {
     let range = full_range(content);
     let mut hints = compute_inlay_hints_with_margin(content, range, 0);
     if let Ok((tokens, spans)) = Tokenizer::tokenize_enhanced_with_spans(content) {
-        let analyzer = LkAnalyzer::new_light();
-        hints.extend(analyzer.compute_type_inlay_hints_from_tokens(&tokens, &spans, range));
+        let mut analyzer = LkAnalyzer::new_light();
+        hints.extend(analyzer.compute_type_inlay_hints(content, range));
         hints.extend(analyzer.compute_define_type_hints_from_tokens(&tokens, &spans, range));
         hints.extend(analyzer.compute_function_return_type_hints_from_tokens(&tokens, &spans, range));
     }

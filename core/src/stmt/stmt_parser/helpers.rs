@@ -435,6 +435,14 @@ impl<'a> StmtParser<'a> {
         format!("Syntax error: {} ({})", msg, ctx)
     }
 
+    /// The span covering tokens `from..=to`.
+    pub(super) fn span_covering(&self, from: usize, to: usize) -> Option<Span> {
+        let spans = self.token_spans.as_ref()?;
+        let start = spans.get(from)?;
+        let end = spans.get(to.max(from))?;
+        Some(Span::new(start.start.clone(), end.end.clone()))
+    }
+
     pub(super) fn current_span(&self) -> Option<Span> {
         if let Some(spans) = &self.token_spans {
             if self.pos < spans.len() {

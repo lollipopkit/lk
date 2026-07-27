@@ -973,8 +973,8 @@ impl LanguageServer for LkLanguageServer {
             if want_types {
                 // Tokenize once and reuse across individual computations
                 if let Ok((tokens, spans)) = Tokenizer::tokenize_enhanced_with_spans(&content) {
-                    let analyzer = LkAnalyzer::new_light();
-                    let mut h1 = analyzer.compute_type_inlay_hints_from_tokens(&tokens, &spans, range);
+                    let mut analyzer = LkAnalyzer::new_light();
+                    let mut h1 = analyzer.compute_type_inlay_hints(&content, range);
                     let mut h2 = analyzer.compute_define_type_hints_from_tokens(&tokens, &spans, range);
                     let mut h3 = analyzer.compute_function_return_type_hints_from_tokens(&tokens, &spans, range);
                     hints.append(&mut h1);

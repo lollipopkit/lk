@@ -9,6 +9,8 @@ mod type_system;
 #[cfg(test)]
 mod function_infer_test;
 #[cfg(test)]
+mod observation_test;
+#[cfg(test)]
 mod or_pattern_binding_test;
 #[cfg(test)]
 mod stdlib_sig_test;

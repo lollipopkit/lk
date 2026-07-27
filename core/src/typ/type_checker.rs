@@ -3,6 +3,7 @@ use crate::compat::collections::HashSet;
 use crate::compat::prelude::*;
 use crate::{
     expr::Expr,
+    token::Span,
     typ::{TypeInferenceEngine, TypeRegistry},
     val::{FunctionNamedParamType, Type},
 };
@@ -27,6 +28,20 @@ impl TypeCheckerOptions {
     pub const fn strict() -> Self {
         Self { strict_any: true }
     }
+}
+
+/// A binding and the type it was bound to, at the position it was written.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ObservedBinding {
+    /// The `let`/`const` keyword through the end of the pattern.
+    pub span: Span,
+    pub name: String,
+    pub ty: Type,
+    /// True when the source already spells this type out.
+    ///
+    /// An inlay hint exists to show what was left unwritten, so it skips these;
+    /// hover wants them all.
+    pub annotated: bool,
 }
 
 /// Type checking error with location information
@@ -95,6 +110,17 @@ pub struct TypeChecker {
     pending_strict_functions: Vec<PendingStrictFunction>,
     /// Program-level type checking enables this so later call sites can refine earlier function declarations.
     defer_strict_function_checks: bool,
+    /// Bindings recorded as they are bound, when a caller asked to be told.
+    ///
+    /// `None` for the compiler's own runs: a check exists to produce an error or
+    /// nothing, and recording every binding would be work for a result nobody
+    /// reads. An editor wants exactly the opposite — the types, at their
+    /// positions, for a file that may not even check cleanly.
+    ///
+    /// Recorded *during* the walk for the same reason `return_frames` is: it is
+    /// the only time the binding's scope is still live. A traversal afterwards
+    /// sees every nested scope already popped and every local gone with it.
+    observations: Option<Vec<ObservedBinding>>,
     /// Return types observed while checking the body of the function (or closure)
     /// currently being checked, innermost last.
     ///
@@ -184,7 +210,62 @@ impl TypeChecker {
             method_sigs: HashMap::new(),
             pending_strict_functions: Vec::new(),
             defer_strict_function_checks: false,
+            observations: None,
             return_frames: Vec::new(),
+        }
+    }
+
+    /// Start recording every binding this checker binds, with its position.
+    pub fn observe_bindings(&mut self) {
+        self.observations = Some(Vec::new());
+    }
+
+    /// Take what was recorded, leaving recording on.
+    pub fn take_observations(&mut self) -> Vec<ObservedBinding> {
+        match &mut self.observations {
+            Some(observations) => core::mem::take(observations),
+            None => Vec::new(),
+        }
+    }
+
+    /// Record the types just bound by a pattern at `span`.
+    ///
+    /// Reads the types back out of the environment rather than taking one: a
+    /// pattern distributes its value's type over its names, so `let [a, b] = f()`
+    /// binds two different types and neither of them is the type of `f()`.
+    pub fn record_bindings<'a>(&mut self, span: &Span, annotated: bool, names: impl Iterator<Item = &'a str>) {
+        if self.observations.is_none() {
+            return;
+        }
+        let recorded: Vec<ObservedBinding> = names
+            .filter_map(|name| {
+                self.local_types.get(name).map(|ty| ObservedBinding {
+                    span: span.clone(),
+                    name: name.to_string(),
+                    ty: ty.clone(),
+                    annotated,
+                })
+            })
+            .collect();
+        if let Some(observations) = &mut self.observations {
+            observations.extend(recorded);
+        }
+    }
+
+    /// How deep the scope stack is, for unwinding after a failed statement.
+    pub fn scope_depth(&self) -> usize {
+        self.scope_stack.len()
+    }
+
+    /// Pop scopes until the stack is `depth` deep.
+    ///
+    /// A statement that fails mid-body leaves its scopes open — it returned
+    /// through the `?` that would have popped them. Without this the *next*
+    /// statement is checked inside the failed one's scope, and reports errors
+    /// about bindings that are not in fact visible to it.
+    pub fn unwind_scopes_to(&mut self, depth: usize) {
+        while self.scope_stack.len() > depth {
+            self.pop_scope();
         }
     }
 
