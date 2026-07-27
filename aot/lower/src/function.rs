@@ -11,13 +11,30 @@ use super::*;
 /// Boxing into a `Dyn` works for everything; coming back out is per type, and
 /// the ones missing here are missing on purpose — a `Maybe` carrier, a channel,
 /// a closure. Guessing at one produces a wrong value, so their regions reject.
-fn unbox_from_dyn(ty: Ty) -> Option<(&'static str, &'static str)> {
+/// How a register's value comes back out of the cell it travelled in.
+///
+/// `None` means it cannot, and the region rejects.
+/// See [`unbox_from_dyn`].
+enum CellReadBack {
+    /// The cell's content is the value; nothing to do.
+    Identity,
+    /// The ABI entry that takes the value back out.
+    Unbox(&'static str, &'static str),
+}
+
+fn unbox_from_dyn(ty: Ty) -> Option<CellReadBack> {
     Some(match ty {
-        Ty::I64 => ("dyn", "as_i64"),
+        // Already a boxed value: what the cell holds *is* the register's
+        // value, so there is nothing to convert. Not the same shape as the
+        // typed cases below — those name an ABI entry that reinterprets the
+        // cell's contents, and a container reinterpreted that way loses the
+        // mutation it travelled to carry (see this module's docs).
+        Ty::Dyn => CellReadBack::Identity,
+        Ty::I64 => CellReadBack::Unbox("dyn", "as_i64"),
         // Answers 0/1 in an `i64`, so the caller narrows it back to a `Bool`.
-        Ty::Bool => ("dyn", "as_bool"),
-        Ty::F64 => ("dyn", "as_f64"),
-        Ty::Str => ("dyn", "as_str"),
+        Ty::Bool => CellReadBack::Unbox("dyn", "as_bool"),
+        Ty::F64 => CellReadBack::Unbox("dyn", "as_f64"),
+        Ty::Str => CellReadBack::Unbox("dyn", "as_str"),
         // Containers come back as an untyped handle (`dyn.as_list` /
         // `dyn.as_map` answer `Ptr`), and which *typed* handle that is depends
         // on the register. Getting it wrong is a container read as the wrong
@@ -600,13 +617,18 @@ pub(crate) fn lower_function(
                         callee: AbiRef::new("rt", "cell_get"),
                         args: vec![handle],
                     });
-                    let raw = ssa.new_val();
-                    let (module, name) = unbox_from_dyn(ty).expect("checked above");
-                    insts.push(Inst::Call {
-                        dst: Some(raw),
-                        callee: AbiRef::new(module, name),
-                        args: vec![got],
-                    });
+                    let raw = match unbox_from_dyn(ty).expect("checked above") {
+                        CellReadBack::Identity => got,
+                        CellReadBack::Unbox(module, name) => {
+                            let raw = ssa.new_val();
+                            insts.push(Inst::Call {
+                                dst: Some(raw),
+                                callee: AbiRef::new(module, name),
+                                args: vec![got],
+                            });
+                            raw
+                        }
+                    };
                     // `dyn.as_bool` answers an `i64`; the register holds a
                     // `Bool`, which is a narrower machine type. Writing the
                     // wide value back under the narrow type is what the

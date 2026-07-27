@@ -289,15 +289,17 @@ jobs:
         # file to AOT_COVERAGE_ALLOW if it legitimately cannot lower.
         run: |
           cargo build -p lk-cli --features aot
-          # 50/51. One file left of the try/catch corpus, and one shape: a
-          # container the body *rebinds* (as opposed to mutates, which needs no
-          # cell and now works). `aot/lower/src/try_region.rs` has the measured
-          # reproduction and the two answers that were tried and refuted.
-          # Output stays VM-identical either way (see `try_catch_differential`
-          # in cli/tests/clif_differential_test.rs); what lapses is *native*
-          # lowering.
+          # 51/51, and no allow list. The try/catch corpus was the last thing
+          # on it; each of the three came off by a different fix, and each was
+          # checked by *running* it against the VM rather than by the fact that
+          # it compiled — see `aot/lower/src/try_region.rs`, where the two
+          # answers that compiled and computed the wrong thing are also
+          # recorded.
+          #
+          # An example that legitimately cannot lower goes back on this list
+          # with a rationale. It is empty now, which means a regression has
+          # nowhere to hide.
           AOT_COVERAGE_REQUIRE_FULL=1 \
-          AOT_COVERAGE_ALLOW=examples/syntax/error_model_edges.lk \
           bash scripts/aot_coverage.sh
       - name: strict native-only differential (no Tier 0 fallback)
         # Complements the scan above: the corpora must not just *compile*

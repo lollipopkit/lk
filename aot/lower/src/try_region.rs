@@ -14,188 +14,59 @@
 //! of inlined, and every one of them names itself rather than falling out as
 //! "opcode TryBegin is not natively lowerable yet".
 //!
-//! # What is still rejected, and why — measured, not remembered
+//! # Nothing is rejected here any more, and what it took
 //!
-//! The three `try`/`catch` files in `AOT_COVERAGE_ALLOW` no longer fail on
-//! anything in this module. What this note said they failed on — a handler
-//! shape, a register the handler defines needed as a block argument where the
-//! handler and the region's other edge meet — is no longer what happens. The
-//! blockers moved as the surrounding work landed, and a stale map is worse than
-//! none, so here is what they are today:
+//! The three `try`/`catch` files that sat in `AOT_COVERAGE_ALLOW` all lower
+//! natively now, and each came off by a different fix. The reason to write that
+//! down is the two that did *not* work, because both looked right:
 //!
-//! | file | rejection |
-//! | --- | --- |
-//! | `error_model_edges.lk` | the cell write-back at pc 11: a register the body assigns whose value *before* the region has type `Nil` |
-//! | `error_unwrap.lk` | the same, at pc 36 |
-//! | `try_catch.lk` | not a region shape at all: "an operand at pc 0 has a type outside the natively lowerable subset" |
+//! - **A placeholder on the edge that has no definition.** In the VM that
+//!   register holds whatever it held before the region, which is a real value a
+//!   program could read.
 //!
-//! The first two are one thing. A register the body assigns is passed in as a
-//! cell, seeded with what it holds now — because a body that raises before
-//! assigning must leave it alone. The seed is boxed on the way in and unboxed
-//! on the way out, and `Nil` has no unboxer, so it rejects.
+//! - **Reading a container back out of a cell as the register's own type.** The
+//!   type is not a guess — it comes from the SSA, and the type checker refuses
+//!   `let a = 0; try { a = "s"; }` — and it makes `try_catch.lk` compile. It
+//!   also makes it print `Assertion failed` where the VM prints `try/catch: ok`.
+//!   A container does not need a cell: the parent and the body hold the *same
+//!   handle*, so a mutation is already visible, and the `dyn.from_list` /
+//!   `dyn.as_list` round trip is what loses it.
 //!
-//! What it is *not*: a value whose type changes across the region. That would
-//! unbox as the seed's type and answer wrongly, and it cannot happen — the type
-//! checker refuses `let a = 0; try { a = "s"; }` before any of this runs.
+//! What did work, in order:
 //!
-//! It reproduces in five lines:
+//! 1. **Cells are discovered, not predicted.** A region carries nothing back to
+//!    begin with; every register its body rebound and did not carry back is
+//!    poisoned at the region's exit, and a later read of one fails naming
+//!    itself. That error is how the fixpoint already finds a cell, so the set
+//!    ends up containing exactly the registers something reads. `Ssa::poisoned`
+//!    exists because `current_def = None` is not an absence — the read falls
+//!    through to the predecessors and finds the stale value.
 //!
-//! ```lk
-//! fn add(a, b) { return a + b; }
-//! let ok = 0;
-//! try { ok = add(2, 3); } catch e { ok = -1; }
-//! assert(ok == 5);
-//! try { 1 + 2; } catch t { }      // ← this region is the one that rejects
-//! ```
+//! 2. **A body may be handed a container.** The trampoline marshals inputs as
+//!    machine words, and a handle *is* a machine word; declaring them all `I64`
+//!    rejected a body that merely looked at a list the parent owned.
 //!
-//! The message names pc 11, which is the *second* region — the one the last
-//! line adds. (An earlier version of this note read it as the first and built a
-//! story about a later region breaking an earlier one. It does not; the pc was
-//! simply not what it looked like.)
+//! 3. **What a body rebound is reported by the body.** Reading the `a` field as
+//!    "the register this instruction writes" is not true of every opcode —
+//!    `log.push(2)` is `ListPush a=log`, where `a` is the receiver. The body
+//!    already compares the SSA's `current_def` before and after each
+//!    instruction to notice a cell changing; widening that to every register
+//!    answers the question without a table of operand roles.
 //!
-//! What actually happens, measured:
+//! 4. **A retriable discovery made in the final pass has somewhere to go.** The
+//!    fixpoint converges, `refine_signatures` runs once, and the final pass
+//!    lowers against refined signatures — where a function that was clean every
+//!    pass can fail, with nothing after it to retry.
 //!
-//! 1. The second region's body writes `r4` — a temporary for `1 + 2`.
-//! 2. The parent also wrote `r4` before the region, in the call window for
-//!    `assert(ok == 5)`.
-//! 3. So the test below — "the body assigns a register the parent already had"
-//!    — says yes, and `r4` is given a cell.
-//! 4. Nothing reads `r4` after the region. It is a dead temporary, its value at
-//!    the region has type `Nil`, `Nil` has no unboxer, and the region rejects.
+//! 5. **An already-boxed value comes back as itself.** `Dyn` needs no unboxing:
+//!    what the cell holds *is* the register's value. Unlike (the refuted)
+//!    container case, nothing is reinterpreted.
 //!
-//! The cell exists to make a body's write visible to the parent afterwards. If
-//! nothing reads the register afterwards, the write is invisible either way and
-//! the cell is pure waste — waste that then rejects the whole region.
+//! The through-line: every one of these replaced an inference about what a
+//! value *must be* with a question put to the SSA — and the two that were
+//! refuted were the two that inferred. Compiling was never the test; agreeing
+//! with the VM was, and the refutations were found by running the program.
 //!
-//! ## How the cells are found now
-//!
-//! By being asked. A region carries nothing back to begin with; every register
-//! its body wrote and did not carry back is **poisoned** at the region's exit,
-//! and a later read of a poisoned register fails with `UndefinedOperand` naming
-//! itself. That error is already how the fixpoint discovers a cell, so the set
-//! fills in over passes and contains exactly the registers something reads.
-//!
-//! What it replaced was "the parent wrote this register before the region" — an
-//! over-approximation of the question that matters, and one that paid for
-//! itself twice over: a dead call-window temporary the body happened to reuse
-//! got a cell, its value at the region had no type that could come back out,
-//! and the whole region rejected.
-//!
-//! The poison is not `current_def = None`. That falls through to
-//! `read_recursive`, which walks predecessors and finds the pre-region
-//! definition — the stale value, returned silently. It is a separate flag
-//! checked before both, cleared by a write. See `Ssa::poisoned`.
-//!
-//! The point of the shape: "does anything read this after the region" is a
-//! liveness question, and answering it by inspection needs a table of every
-//! opcode's read operands — the shape this feature has been burned by twice.
-//! The SSA already knows. This asks it.
-//!
-//! ## What a body may be handed
-//!
-//! The trampoline marshals a body's inputs as machine words in a stack buffer,
-//! and the inputs used to be declared `I64` on both sides because of it. That
-//! read the constraint one step too strictly: a container *handle* is a
-//! pointer, and a pointer is a machine word. A body that merely looked at a
-//! list the parent owned — `try { log.push(2); }` — rejected on its first
-//! instruction.
-//!
-//! The caller now records what each input actually is and the body declares it,
-//! discovered by the same fixpoint that finds *which* registers are inputs.
-//! What still may not cross is what a word genuinely cannot hold: the
-//! two-register carriers (`Dyn`, the `Maybe`s), and `F64`, which the ABI passes
-//! in XMM while the trampoline passes integers.
-//!
-//! ## The assumption underneath both of them
-//!
-//! `written_registers` — which decides what a body "assigns" — is a syntactic
-//! scan: `instrs[start..end].map(|i| i.a())`. It reads the `a` field as *the
-//! register this instruction writes*, and that is not true of every opcode.
-//! `log.push(2)` lowers to `ListPush a=log b=value`, where `a` is the
-//! **receiver**: the list is mutated, the register is not rebound.
-//!
-//! So a body that only *mutates* a container is recorded as assigning it, gets
-//! a cell, and takes the `dyn.from_list` / `dyn.as_list` round trip that loses
-//! the mutation. The rejection above and the wrong answer below are the same
-//! mistake seen from two sides.
-//!
-//! This is the last syntactic operand assumption left in this feature, and it
-//! has now been wrong twice — `writes_register_before` counted another region's
-//! body as the parent's writes, and this counts a receiver as a destination.
-//! The answer is not a table of which opcodes write their `a`: a missing entry
-//! there is a register that silently keeps a stale value.
-//!
-//! The answer is the one the body already uses on itself. Lowering a body
-//! notices a cell's value changing by *comparing the SSA's `current_def` before
-//! and after each instruction* — "ask the SSA what changed", as the comment
-//! there puts it. Widening that snapshot from the tracked cells to every
-//! register would give the parent the real set: registers the body **rebound**,
-//! as opposed to objects it mutated through a handle it shares with the parent.
-//! A container that is only mutated would then need no cell at all, and would
-//! only need to cross as a parameter — which it now can.
-//!
-//! ## A second answer that was tried and is wrong
-//!
-//! The remaining rejection for two of the three files is a container the body
-//! assigns, which has no way back out of a cell: `dyn.as_list` and
-//! `dyn.as_map` answer an untyped `Ptr`, and which typed handle that is depends
-//! on the register.
-//!
-//! That looks answerable now. The type is the register's own, read out of the
-//! SSA rather than guessed, and the type checker has already refused
-//! `let a = 0; try { a = "s"; }` — so the value in the cell is the type the
-//! register is declared to hold, whichever edge it came from. Reading it back
-//! as that type makes `try_catch.lk` lower natively.
-//!
-//! And it computes the wrong answer: the program prints `try/catch: ok` under
-//! the VM and aborts with `Assertion failed` natively. Compiling is not the
-//! test; the test is agreeing with the VM, and this was caught by running it.
-//!
-//! The likely reason is worth writing down, because it points somewhere else
-//! entirely: a container does not need a cell. A cell exists so the parent can
-//! see a value the body wrote into its own frame — but the parent and the body
-//! hold the *same handle*, so `log.push(2)` is already visible without one. The
-//! round trip through `dyn.from_list` and `dyn.as_list` is not carrying the
-//! mutation, it is what loses it. What a container assignment would need a cell
-//! for is *rebinding* — `log = [something else]` — which is a different and
-//! rarer shape than the one these files contain.
-//!
-//! ## One answer that was tried and is wrong
-//!
-//! The obvious repair is to stop rejecting and hand the value back as `Dyn`:
-//! the cell holds a boxed value, `Dyn` is "a boxed value of unknown type", and
-//! the register after the region is genuinely one of two things — what the body
-//! assigned, or what it held going in if the body raised first. That reasoning
-//! is sound and the change is four lines. It also makes the five-line case
-//! above compile and moves both example files past this rejection to the next
-//! one.
-//!
-//! It is still wrong. `clif_differential_test`'s
-//! `select_closed_send_catch_then_use` goes from printing `caught / 42 / 0` to
-//! aborting with "uncaught error: runtime type error" — a compile-time
-//! rejection turned into a runtime abort, which is strictly worse than not
-//! compiling. Whatever the seed's `Nil` means in that program, it is not "no
-//! observable value".
-//!
-//! So the criterion is too coarse, and the missing half is the one the
-//! paragraph below has always named: *is anything reading this register after
-//! the region?* That is a liveness question, and the reason it has not simply
-//! been answered is that answering it by inspection needs a table of which
-//! operands each opcode reads — the shape this feature has been burned by
-//! twice. The discovery mechanism that already exists (a read with no reaching
-//! definition names its own register, and the fixpoint lowers again) answers
-//! the *other* direction: registers the parent reads but never defined. What is
-//! needed here is registers the parent defined but never reads again, and no
-//! error announces those.
-//!
-//! And the note that still stands, from whoever wrote the previous version of
-//! this section: do not supply a placeholder for a value an edge does not
-//! define. In the VM that register holds whatever it held before the region,
-//! and "whatever it held" is a real value a program could read. A placeholder
-//! would be a wrong answer wearing the clothes of a missing one, and this
-//! feature has already produced two silent wrong answers — both from inferring
-//! something the SSA could have been asked.
-
 use lk_core::vm::{FunctionData, Instr, Opcode};
 
 use crate::Unsupported;
