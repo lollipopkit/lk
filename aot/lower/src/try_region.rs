@@ -91,6 +91,21 @@
 //! opcode's read operands — the shape this feature has been burned by twice.
 //! The SSA already knows. This asks it.
 //!
+//! ## What a body may be handed
+//!
+//! The trampoline marshals a body's inputs as machine words in a stack buffer,
+//! and the inputs used to be declared `I64` on both sides because of it. That
+//! read the constraint one step too strictly: a container *handle* is a
+//! pointer, and a pointer is a machine word. A body that merely looked at a
+//! list the parent owned — `try { log.push(2); }` — rejected on its first
+//! instruction.
+//!
+//! The caller now records what each input actually is and the body declares it,
+//! discovered by the same fixpoint that finds *which* registers are inputs.
+//! What still may not cross is what a word genuinely cannot hold: the
+//! two-register carriers (`Dyn`, the `Maybe`s), and `F64`, which the ABI passes
+//! in XMM while the trampoline passes integers.
+//!
 //! ## One answer that was tried and is wrong
 //!
 //! The obvious repair is to stop rejecting and hand the value back as `Dyn`:

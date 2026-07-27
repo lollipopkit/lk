@@ -37,6 +37,31 @@ fn body_index_of(sig: &SigInfer, func_index: u32, begin_pc: usize) -> Result<u32
         })
 }
 
+/// Can a value of this type travel through the trampoline's argument buffer?
+///
+/// The buffer is machine words, so the test is "does one word hold it": an
+/// integer, and a container handle, which is a pointer. `F64` cannot — the ABI
+/// passes it in XMM while the trampoline passes integers — and neither can the
+/// two-register carriers (`Dyn`, the `Maybe`s), which have no single word to be.
+fn crosses_as_word(ty: Ty) -> bool {
+    matches!(
+        ty,
+        Ty::I64
+            | Ty::Str
+            | Ty::ListI64
+            | Ty::ListF64
+            | Ty::ListStr
+            | Ty::ListDyn
+            | Ty::MapStrI64
+            | Ty::MapI64I64
+            | Ty::MapStrF64
+            | Ty::MapI64F64
+            | Ty::MapStrBool
+            | Ty::MapStrDyn
+            | Ty::Set
+    )
+}
+
 /// Lowers a single function to a [`MirFunction`]. User (non-entry) functions use
 /// the `(i64, ...) -> i64` ABI in this slice: params and return are `I64`, verified
 /// via typed reads / a return-type check — a mismatch rejects (falls back) rather
@@ -291,9 +316,14 @@ pub(crate) fn lower_function(
     // reads it, which is the honest failure.
     let try_params: Vec<u8> = sig.try_body_params.get(&func_index).cloned().unwrap_or_default();
     for &reg in &try_params {
+        let ty = sig
+            .try_body_param_tys
+            .get(&(func_index, reg))
+            .copied()
+            .unwrap_or(Ty::I64);
         let pv = ssa.new_val();
-        ssa.current_def[0][reg as usize] = Some((pv, Ty::I64));
-        fn_params.push((pv, Ty::I64));
+        ssa.current_def[0][reg as usize] = Some((pv, ty));
+        fn_params.push((pv, ty));
     }
     // The cells this body writes through, in the same order the caller passes
     // them. They are handles, not values: the register keeps its own value in
@@ -485,8 +515,22 @@ pub(crate) fn lower_function(
                 // machine words, and a body wanting something wider rejects
                 // when it reads it.
                 let mut call_args = Vec::new();
-                for &reg in sig.try_body_params.get(&body).into_iter().flatten() {
-                    call_args.push(ssa.read_typed(reg, bi, Ty::I64, start)?);
+                for &reg in sig.try_body_params.get(&body).cloned().unwrap_or_default().iter() {
+                    // Read as whatever it is, then decide whether it can cross.
+                    // Forcing `I64` here is what used to reject a body that
+                    // merely *looked at* a list the parent owned — a handle is a
+                    // machine word, and the buffer the trampoline marshals into
+                    // is machine words.
+                    let (v, ty) = ssa.read(reg, bi, start)?;
+                    if crosses_as_word(ty) {
+                        sig.try_body_param_tys.insert((body, reg), ty);
+                        call_args.push(v);
+                    } else {
+                        // Not a word: the honest failure is the body rejecting
+                        // when it reads it, which is what `I64` produces.
+                        sig.try_body_param_tys.remove(&(body, reg));
+                        call_args.push(ssa.read_typed(reg, bi, Ty::I64, start)?);
+                    }
                 }
                 // One cell per register the body assigns that this function
                 // already had. Seeded with the value it holds now, because a

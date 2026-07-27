@@ -34,6 +34,18 @@ pub(crate) struct SigInfer {
     /// no table of which operand each opcode reads, which is the kind of table
     /// that is wrong in one entry and produces a wrong answer.
     pub(crate) try_body_params: std::collections::HashMap<u32, Vec<u8>>,
+    /// What type each of those inputs travels as, when it is not `I64`.
+    ///
+    /// The trampoline marshals a body's inputs as machine words in a stack
+    /// buffer, so anything a word can hold may cross: an integer, and a
+    /// container handle, which *is* a pointer. What may not are the carriers
+    /// that occupy two registers (`Dyn`, the `Maybe`s) and `F64`, which the ABI
+    /// passes in XMM while the trampoline passes integers.
+    ///
+    /// Recorded by the caller, which is where the register's real type is
+    /// known, and read by the body on the next pass — the same fixpoint that
+    /// discovers *which* registers are inputs at all.
+    pub(crate) try_body_param_tys: std::collections::HashMap<(u32, u8), Ty>,
     /// A try body's *outputs*: registers of the enclosing function that the
     /// body assigns and the enclosing function goes on to read.
     ///
