@@ -118,6 +118,9 @@ const SHARED_LINE_READY = 0x00300018;
 const SHARED_MULTIBOOT = 0x0030001c;
 // The page allocator's three words.
 const SHARED_PAGES = 0x00300020;
+// The spinner task's step, and the scheduler's own counter.
+const SHARED_SPIN = 0x00300024;
+const SHARED_SLICE = 0x00300028;
 const SHARED_LINE = 0x00300100;
 const LINE_CAPACITY = 48;
 
@@ -396,6 +399,59 @@ fn run_command(base: Int) -> Int {
     // "?"
     emit(base, [63]);
     return 1;
+}
+
+// ---------------------------------------------------------------- tasks ---
+
+// Which task runs next.
+//
+// The board owns the registers and the stacks; this owns the policy. Round
+// robin, because there is nothing yet to prioritise — but the *shape* is where
+// a real policy would go, and it is LK.
+//
+// Called from the timer interrupt with everything already saved, so it must
+// not allocate: `lkrt` has one arena and no lock around it.
+#[export("lk_schedule")]
+fn schedule(current: Int) -> Int {
+    // Give each task a few ticks rather than switching every millisecond: a
+    // switch costs a stack's worth of pushes, and a slice this short would
+    // spend more time switching than running.
+    let slice = shared_bump(SHARED_SLICE);
+    if (slice % 8 != 0) {
+        return current;
+    }
+    if (current == 0) {
+        return 1;
+    }
+    return 0;
+}
+
+// The second task: a spinner in the top-right corner.
+//
+// It never returns and never yields — the timer takes the CPU away from it.
+// That is what makes it a demonstration rather than a callback: nothing here
+// cooperates.
+#[export("lk_task_b")]
+fn task_b() {
+    while (true) {
+        let step = shared_bump(SHARED_SPIN);
+        // Four glyph indices, chosen without a list: building one here would
+        // allocate, and a task may not — `lkrt` has a single arena with no
+        // lock around it, so two tasks inside it at once corrupt it.
+        let phase = step % 4;
+        let face = 40;       // '-'
+        if (phase == 1) { face = 12; }   // 'L'
+        if (phase == 2) { face = 11; }   // 'K'
+        if (phase == 3) { face = 40; }
+        draw_glyph(framebuffer_address(), WIDTH, FONT, face,
+                   (text_columns() - 2) * CELL_WIDTH, 0, TITLE_COLOUR, BACKGROUND);
+        // Burn the rest of the slice. A real task would wait for something;
+        // this one exists to be interrupted.
+        let spin = 0;
+        for i in 0..200000 {
+            spin = spin + 1;
+        }
+    }
 }
 
 // The timer interrupt handler.

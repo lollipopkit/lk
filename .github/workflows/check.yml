@@ -218,6 +218,11 @@ jobs:
           # and the shell answers. It also checks the screen scrolled rather
           # than wrapped, which the serial line cannot show.
           timeout 250 python3 check_shell.py
+          # Two tasks, one of which never yields: the timer takes the CPU away
+          # from it. Checked on screen rather than on the serial line, because
+          # interleaved output would show that both ran, not that either was
+          # interrupted mid-work.
+          timeout 200 python3 check_tasks.py
         env:
           LK_BIN: ../target/debug/lk
       - name: AOT native-lowering coverage gate

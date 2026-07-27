@@ -14,6 +14,7 @@ extern crate alloc;
 
 mod boot;
 mod interrupts;
+mod tasks;
 
 use core::alloc::{GlobalAlloc, Layout};
 use core::panic::PanicInfo;
@@ -149,6 +150,9 @@ pub extern "C" fn kernel_main() -> ! {
     let _ = lkrt::link_anchor();
     lkrt::set_output(serial_write);
     serial_init();
+    // Task stacks before interrupts: the first tick may switch away, and it
+    // can only do that to a stack that already looks like a saved task.
+    tasks::init();
     // The handler transmits, and it can fire from here on — which is why the
     // UART is already up.
     interrupts::init();

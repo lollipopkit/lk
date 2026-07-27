@@ -59,6 +59,40 @@ runs before there is a heap or after, which is the property a kernel wants.
 `run_command` returns whether to keep going, so `exit` ends the loop rather
 than setting a flag someone has to remember to check.
 
+## Tasks
+
+Two tasks, preempted by the timer. The shell is one; the other spins a glyph in
+the top-right corner and never yields — the CPU is taken away from it.
+
+The split follows what an interrupt can and cannot decide. `src/tasks.rs` owns
+the mechanics: a stack per task, the frame a task starts life on, and the
+register bookkeeping. *Which* task runs next is `lk_schedule`, an `#[export]`ed
+LK function — round robin today, but the shape is where a policy goes, and it
+is the program's.
+
+The timer's trampoline saves **every** register rather than only the
+caller-saved ones. What is on the stack has to be a whole task, because the
+stack the handler returns on may not be the one it arrived on.
+
+Two things about a task's first stack, both of which fail as a fault somewhere
+else entirely:
+
+- **The stack must be 16-byte aligned.** Compiled LK code spills SSE registers
+  with `movaps`; a `[u8; N]` has alignment 1, and the fault lands inside
+  whatever the task called.
+- **Its initial RSP is one word below the top.** The ABI assumes a `call` has
+  just pushed a return address, and `iretq` pushes nothing — so without the
+  offset the stack is in the wrong phase and the first aligned spill faults.
+
+A task may not allocate, the same rule the interrupt handlers follow and for
+the same reason: `lkrt` has one arena and no lock around it. The spinner picks
+its glyph with an `if` chain rather than indexing a list, because building the
+list would allocate.
+
+`check_tasks.py` screenshots the corner four times and requires the glyph to
+change. On the serial line, interleaved output would show that both tasks
+*ran*; only the screen shows that one was interrupted mid-work.
+
 ## Memory
 
 ```

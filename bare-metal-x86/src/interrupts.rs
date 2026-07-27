@@ -55,8 +55,9 @@ const PIC2_CMD: u16 = 0xa0;
 const PIC2_DATA: u16 = 0xa1;
 
 unsafe extern "C" {
-    /// The assembly trampolines below.
-    fn __pit_trampoline();
+    /// The assembly trampolines. The timer's lives in `tasks`, because
+    /// returning on a *different* stack is what a task switch is.
+    fn __task_trampoline();
     fn __keyboard_trampoline();
 }
 
@@ -86,7 +87,7 @@ unsafe fn set_gate(idt: *mut [Gate; 256], vector: usize, handler: u64) {
 
 /// Builds the IDT, remaps the PIC, unmasks the timer and enables interrupts.
 pub fn init() {
-    let handler = __pit_trampoline as *const () as usize as u64;
+    let handler = __task_trampoline as *const () as usize as u64;
     // SAFETY: single-threaded boot path; nothing else touches the IDT, and
     // interrupts are still masked until the `sti` at the end.
     unsafe {
@@ -243,12 +244,6 @@ global_asm!(
     "   pop rcx",
     "   pop rax",
     ".endm",
-    ".global __pit_trampoline",
-    "__pit_trampoline:",
-    "   IRQ_SAVE",
-    "   call pit_dispatch",
-    "   IRQ_RESTORE",
-    "   iretq",
     ".global __keyboard_trampoline",
     "__keyboard_trampoline:",
     "   IRQ_SAVE",
