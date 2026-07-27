@@ -1876,9 +1876,15 @@ unsafe { cpu_irq_restore(irq); };
 // then timed out, having done nothing wrong. Ticks are what the number was
 // always trying to say — the timer runs at about 1 kHz, so this is a minute —
 // and it stays a minute however many tasks share the CPU.
+//
+// Elapsed, not "the counter reached N": the tick word is 32 bits and wraps
+// after about 50 days of uptime. Comparing against `start + 60000` is wrong
+// across that wrap, and masking the *difference* to 32 bits is right on both
+// sides of it — which is also what the sentence "a minute has passed" means.
+const TICK_MASK = 0xffffffff;
 let running = 1;
-let deadline = shared_read(SHARED_TICKS) + 60000;
-while (running == 1 && shared_read(SHARED_TICKS) < deadline) {
+let started = shared_read(SHARED_TICKS);
+while (running == 1 && ((shared_read(SHARED_TICKS) - started) & TICK_MASK) < 60000) {
     unsafe { cpu_wait_for_interrupt(); };
 
     // The pointer, and what a click means.
