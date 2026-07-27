@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Boot the image, type at it through QEMU's monitor, and check what it saw.
+"""Boot the image, type at its shell through QEMU's monitor, and check the answers.
 
 Also checks the *screen* afterwards. Enough newlines to reach the bottom push the title off the
 top, so a screen that still shows it wrapped to the first line instead of
@@ -22,13 +22,20 @@ import time
 # `x` then backspace, so the echo shows the correction; then enough newlines
 # to push the title off the top, which is what proves scrolling rather than
 # wrapping.
-# The cursor starts on text row 3 of 25, so it takes 22 newlines to reach the
-# bottom and one more to scroll. A few spare.
-KEYS = ["l", "k", "x", "backspace", "o", "s"] + ["ret"] * 26
-# What reaches the serial line: `backspace` is ASCII 8 and `ret` is 10, neither
-# of which prints, so only the letters show.
-TYPED = ["l", "k", "x", "o", "s"]
-# The last key is Enter, whose code the program reports.
+# A session: a mistyped command corrected with backspace, then `echo`, then
+# enough blank lines to push the banner off the top — which is what tells
+# scrolling apart from wrapping — and finally `exit`.
+KEYS = (
+    ["h", "e", "l", "x", "backspace", "p", "ret"]
+    + ["e", "c", "h", "o", "spc", "l", "k", "ret"]
+    + ["ret"] * 22
+    + ["e", "x", "i", "t", "ret"]
+)
+# Lines the shell must answer with. `help` lists the commands it knows, `echo`
+# repeats its argument, `exit` says goodbye — each proving a different part:
+# the byte-wise command match, the argument tail, and the loop ending.
+EXPECTED_LINES = ["help clear echo keys exit", "lk", "bye"]
+
 EXPECTED_REPORT = f"keys {len(KEYS)} last 10"
 
 
@@ -79,16 +86,14 @@ def main():
             data = handle.read()
 
     print(output)
-    # In order, but not necessarily adjacent: the timer handler is transmitting
-    # on the same line, so its output interleaves with the echoed keys.
-    remaining = list(TYPED)
-    for char in output:
-        if remaining and char == remaining[0]:
-            remaining.pop(0)
-    if remaining:
-        raise SystemExit(f"keyboard: never saw {remaining} echoed, in order, in the output")
+    # The shell's answers. Checked as substrings because the timer handler
+    # prints a '.' every half-second on the same line.
+    for expected in EXPECTED_LINES:
+        if expected not in output:
+            raise SystemExit(f"shell: expected {expected!r} in the output")
     if EXPECTED_REPORT not in output:
-        raise SystemExit(f"keyboard: expected {EXPECTED_REPORT!r} in the output")
+        raise SystemExit(f"shell: expected {EXPECTED_REPORT!r} in the output")
+
     _magic, dimensions, _maxval, pixels = data.split(b"\n", 3)
     width, _height = (int(value) for value in dimensions.split())
     # The title was amber at cell (1,1). After scrolling, that row is either
@@ -96,7 +101,7 @@ def main():
     offset = ((1 * 8) * width + (1 * 6)) * 3
     if tuple(pixels[offset:offset + 3]) == (0xFF, 0xC0, 0x40):
         raise SystemExit("the title is still at the top: the screen wrapped instead of scrolling")
-    print(f"OK: {len(KEYS)} keystrokes decoded by LK, echoed, drawn, and the screen scrolled")
+    print(f"OK: {len(KEYS)} keystrokes; commands answered and the screen scrolled")
 
 
 if __name__ == "__main__":

@@ -22,14 +22,42 @@ pixels 00001428 00ffc040
 keys 4 last 115
 ```
 
-...and on the screen, `LK ON BARE METAL` over a `TYPE:` prompt with the typed
-characters after it, a block cursor where the next one will land, and the
-picture scrolling up when the last line fills — all drawn by LK's own text
-renderer from a font this repository wrote.
+...and on the screen, a shell:
+
+```
+LK ON BARE METAL
+TYPE HELP
+
+>help
+help clear echo keys exit
+>echo lk
+lk
+>_
+```
 
 Backspace stops at the left margin rather than wrapping to the previous line:
-the handler has no record of where that line ended, and inventing one would be
-a guess.
+nothing records where that line ended, and inventing it would be a guess.
+
+## The shell
+
+The split is the one an interrupt forces. The key handler decodes a scancode,
+draws it, and appends the byte to a line in the shared page — it cannot
+allocate, so the line is bytes at a fixed address rather than a string. When
+Enter arrives it raises a flag and stops there. The main loop, which is allowed
+to allocate and print, takes the line and runs it.
+
+Commands are matched byte-wise against literal spellings:
+
+```lk
+if (line_starts_with([101, 99, 104, 111])) {   // "echo"
+    emit(base, line_tail(5));
+```
+
+That is not a workaround for missing strings — it is the same code whether it
+runs before there is a heap or after, which is the property a kernel wants.
+
+`run_command` returns whether to keep going, so `exit` ends the loop rather
+than setting a flag someone has to remember to check.
 
 Every line of that came from LK code driving four devices by three different
 mechanisms:

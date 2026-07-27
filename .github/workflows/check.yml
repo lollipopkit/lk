@@ -213,10 +213,11 @@ jobs:
             target/x86_64-unknown-none/release/lk-bare-metal-x86 \
             target/x86_64-unknown-none/release/lk-bare-metal-x86.multiboot
           timeout 120 python3 check_screen.py
-          # The input half. `sendkey` puts a real scancode into the emulated
-          # PS/2 controller, so this exercises IRQ1 through the LK handler that
-          # decodes it — the one thing memory inspection cannot show.
-          timeout 180 python3 check_keyboard.py
+          # The input half, end to end: `sendkey` puts real scancodes into the
+          # emulated PS/2 controller, the LK handler decodes them into a line,
+          # and the shell answers. It also checks the screen scrolled rather
+          # than wrapped, which the serial line cannot show.
+          timeout 250 python3 check_shell.py
         env:
           LK_BIN: ../target/debug/lk
       - name: AOT native-lowering coverage gate

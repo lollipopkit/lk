@@ -19,7 +19,8 @@ use { get_pixel } from "drivers/framebuffer";
 use { draw_glyph, draw_cells, clear, scroll_up, draw_cursor, CELL_WIDTH, CELL_HEIGHT } from "drivers/text";
 use { read_scancode, is_release, key_code } from "drivers/keyboard";
 use { start as pit_start } from "drivers/pit";
-use { read as shared_read, write as shared_write, bump as shared_bump } from "drivers/shared";
+use { read as shared_read, write as shared_write, bump as shared_bump,
+      read_byte as shared_read_byte, write_byte as shared_write_byte } from "drivers/shared";
 
 const WIDTH = 320;
 const HEIGHT = 200;
@@ -103,6 +104,12 @@ const SHARED_LAST_KEY = 0x00300004;
 const SHARED_TICKS = 0x00300008;
 const SHARED_CURSOR_COL = 0x0030000c;
 const SHARED_CURSOR_ROW = 0x00300010;
+const SHARED_LINE_LEN = 0x00300014;
+const SHARED_LINE_READY = 0x00300018;
+// The line the handler is collecting. One byte per character, because a
+// handler cannot allocate.
+const SHARED_LINE = 0x00300100;
+const LINE_CAPACITY = 48;
 
 // Where a character sits in FONT. The font has one case, so lower-case maps to
 // the upper-case glyph; anything it does not cover renders as a space, which
@@ -133,6 +140,46 @@ fn framebuffer_address() -> Int {
     return pci_read(slot, PCI_REG_BAR0) & 0xfffffff0;
 }
 
+// Draws one character at the cursor and moves it, or acts on backspace and
+// newline.
+//
+// Shared by the interrupt handler and the command output, because "put a
+// character on the screen" is the same operation whoever asks. Callers that
+// are not the handler mask interrupts around it: the two would otherwise
+// interleave on the cursor.
+fn put_char(base: Int, ascii: Int) {
+    let column = shared_read(SHARED_CURSOR_COL);
+    let row = shared_read(SHARED_CURSOR_ROW);
+    // Erase the cursor before anything moves it, so the block never gets left
+    // behind on the cell it used to occupy.
+    draw_cursor(base, WIDTH, column, row, BACKGROUND);
+
+    if (ascii == 8) {
+        // Backspace stops at the left margin rather than wrapping to the
+        // previous line: nothing here records where that line ended.
+        if (column > 0) {
+            let back = column - 1;
+            draw_glyph(base, WIDTH, FONT, 0, back * CELL_WIDTH, row * CELL_HEIGHT, FOREGROUND, BACKGROUND);
+            place_cursor(base, back, row);
+        } else {
+            place_cursor(base, column, row);
+        }
+        return;
+    }
+    if (ascii == 10) {
+        advance_line(base, row);
+        return;
+    }
+    draw_glyph(base, WIDTH, FONT, glyph_index(ascii),
+               column * CELL_WIDTH, row * CELL_HEIGHT, FOREGROUND, BACKGROUND);
+    let next = column + 1;
+    if (next >= text_columns()) {
+        advance_line(base, row);
+    } else {
+        place_cursor(base, next, row);
+    }
+}
+
 // Records the cursor position and draws it.
 fn place_cursor(base: Int, column: Int, row: Int) {
     shared_write(SHARED_CURSOR_COL, column);
@@ -152,6 +199,112 @@ fn advance_line(base: Int, row: Int) {
     } else {
         place_cursor(base, 0, next);
     }
+}
+
+// ------------------------------------------------------------- commands ---
+//
+// The line the handler collected is a run of bytes in the shared page, so the
+// commands are matched byte-wise against literal spellings rather than through
+// string values. That is not a workaround: it is the same code whether it runs
+// before there is a heap or after.
+
+// Writes a run of ASCII to both the screen and the serial line.
+//
+// Interrupts are masked by the caller: this shares the cursor with the key
+// handler, and the two interleaving would splice the output.
+fn emit(base: Int, text: List<Int>) {
+    for code in text {
+        let ascii = (code) as Int;
+        uart_putc(ascii);
+        put_char(base, ascii);
+    }
+    uart_putc(10);
+    put_char(base, 10);
+}
+
+// Whether the collected line starts with `word`, and what follows it.
+fn line_starts_with(word: List<Int>) -> Bool {
+    let length = shared_read(SHARED_LINE_LEN);
+    if (length < word.len()) {
+        return false;
+    }
+    for i in 0..word.len() {
+        if (shared_read_byte(SHARED_LINE + i) != ((word[i]) as Int)) {
+            return false;
+        }
+    }
+    // A prefix only counts as the whole word when the line ends there or a
+    // space follows — otherwise `echoes` would answer to `echo`.
+    if (length == word.len()) {
+        return true;
+    }
+    return shared_read_byte(SHARED_LINE + word.len()) == 32;
+}
+
+// The line's bytes from `start` onwards. (`from` is a keyword.)
+fn line_tail(start: Int) -> List<Int> {
+    let out = [0];
+    let length = shared_read(SHARED_LINE_LEN);
+    let i = start;
+    while (i < length) {
+        out.push(shared_read_byte(SHARED_LINE + i));
+        i = i + 1;
+    }
+    return out.slice(1, out.len());
+}
+
+fn decimal(value: Int) -> List<Int> {
+    if (value == 0) {
+        return [48];
+    }
+    let digits = [0];
+    let rest = value;
+    while (rest > 0) {
+        digits.push(48 + rest % 10);
+        rest = (rest / 10) as Int;
+    }
+    let out = [0];
+    let i = digits.len() - 1;
+    while (i >= 1) {
+        out.push((digits[i]) as Int);
+        i = i - 1;
+    }
+    return out.slice(1, out.len());
+}
+
+// Runs the collected line. Returns 1 to keep going, 0 to stop.
+fn run_command(base: Int) -> Int {
+    let length = shared_read(SHARED_LINE_LEN);
+    if (length == 0) {
+        return 1;
+    }
+    if (line_starts_with([104, 101, 108, 112])) {          // "help"
+        // "help clear echo keys exit"
+        emit(base, [104, 101, 108, 112, 32, 99, 108, 101, 97, 114, 32, 101, 99,
+                    104, 111, 32, 107, 101, 121, 115, 32, 101, 120, 105, 116]);
+        return 1;
+    }
+    if (line_starts_with([99, 108, 101, 97, 114])) {       // "clear"
+        clear(base, WIDTH, HEIGHT, BACKGROUND);
+        place_cursor(base, 0, 0);
+        return 1;
+    }
+    if (line_starts_with([101, 99, 104, 111])) {           // "echo"
+        emit(base, line_tail(5));
+        return 1;
+    }
+    if (line_starts_with([107, 101, 121, 115])) {          // "keys"
+        emit(base, decimal(shared_read(SHARED_KEY_COUNT)));
+        return 1;
+    }
+    if (line_starts_with([101, 120, 105, 116])) {          // "exit"
+        // "bye"
+        emit(base, [98, 121, 101]);
+        return 0;
+    }
+    // "?"
+    emit(base, [63]);
+    return 1;
 }
 
 // The timer interrupt handler.
@@ -196,39 +349,26 @@ fn on_key() {
     shared_write(SHARED_LAST_KEY, ascii);
     uart_putc(ascii);
 
-    let base = framebuffer_address();
-    let column = shared_read(SHARED_CURSOR_COL);
-    let row = shared_read(SHARED_CURSOR_ROW);
-    // Erase the cursor before anything moves it, so the block never gets left
-    // behind on the cell it used to occupy.
-    draw_cursor(base, WIDTH, column, row, BACKGROUND);
-
-    if (ascii == 8) {
-        // Backspace stops at the left margin rather than wrapping to the
-        // previous line: this handler has no record of where that line ended.
-        if (column > 0) {
-            let back = column - 1;
-            draw_glyph(base, WIDTH, FONT, 0, back * CELL_WIDTH, row * CELL_HEIGHT, FOREGROUND, BACKGROUND);
-            place_cursor(base, back, row);
-        } else {
-            place_cursor(base, column, row);
-        }
-        return;
-    }
-
+    // Collect the line. What to *do* with it is not the handler's business:
+    // it raises a flag, and the main loop — where allocating and printing are
+    // allowed — takes it from there.
+    let length = shared_read(SHARED_LINE_LEN);
     if (ascii == 10) {
-        advance_line(base, row);
-        return;
+        shared_write(SHARED_LINE_READY, 1);
+    } else {
+        if (ascii == 8) {
+            if (length > 0) {
+                shared_write(SHARED_LINE_LEN, length - 1);
+            }
+        } else {
+            if (length < LINE_CAPACITY) {
+                shared_write_byte(SHARED_LINE + length, ascii);
+                shared_write(SHARED_LINE_LEN, length + 1);
+            }
+        }
     }
 
-    draw_glyph(base, WIDTH, FONT, glyph_index(ascii),
-               column * CELL_WIDTH, row * CELL_HEIGHT, FOREGROUND, BACKGROUND);
-    let next = column + 1;
-    if (next >= text_columns()) {
-        advance_line(base, row);
-    } else {
-        place_cursor(base, next, row);
-    }
+    put_char(framebuffer_address(), ascii);
 }
 
 uart_init();
@@ -254,11 +394,12 @@ clear(framebuffer, WIDTH, HEIGHT, BACKGROUND);
 draw_cells(framebuffer, WIDTH, FONT,
            [12, 11, 0, 15, 14, 0, 2, 1, 18, 5, 0, 13, 5, 20, 1, 12],
            1, 1, TITLE_COLOUR, BACKGROUND);
-//   "TYPE:"
-draw_cells(framebuffer, WIDTH, FONT, [20, 25, 16, 5, 39], 1, 3, FOREGROUND, BACKGROUND);
+//   "TYPE HELP" then the prompt on the next line
+draw_cells(framebuffer, WIDTH, FONT, [20, 25, 16, 5, 0, 8, 5, 12, 16], 1, 3, FOREGROUND, BACKGROUND);
+draw_cells(framebuffer, WIDTH, FONT, [44], 1, 5, FOREGROUND, BACKGROUND);
 
 // The cursor starts after the prompt.
-place_cursor(framebuffer, 7, 3);
+place_cursor(framebuffer, 3, 5);
 
 // Read three pixels back out of the device's memory. Drawing that nobody can
 // see is indistinguishable from drawing that never happened, and a headless
@@ -291,17 +432,36 @@ uart_put_hex(title);
 uart_putc(10);
 unsafe { cpu_irq_restore(irq); };
 
-// Wait for keystrokes. `cpu_wait_for_interrupt` parks the core instead of
-// spinning: on a real board that is the difference between idling and burning
-// a watt, and on a virtualised one it stops starving the sibling.
+// The shell loop.
+//
+// `cpu_wait_for_interrupt` parks the core instead of spinning: on a real board
+// that is the difference between idling and burning a watt, and on a
+// virtualised one it stops starving the sibling. The handler wakes it, and
+// raises a flag when a line is complete.
 //
 // The bound counts *interrupts*, not milliseconds — a keystroke is two of them
-// (press and release) and a scroll delays the next tick — so it is generous
-// rather than exact. Its job is only to make an unattended board finish.
+// and a scroll delays the next tick — so it is generous rather than exact. Its
+// job is only to make an unattended board finish.
+let running = 1;
 let waited = 0;
-while (waited < 40000 && shared_read(SHARED_KEY_COUNT) < 32) {
+while (running == 1 && waited < 60000) {
     unsafe { cpu_wait_for_interrupt(); };
     waited = waited + 1;
+    if (shared_read(SHARED_LINE_READY) == 1) {
+        // Mask around the whole exchange: the handler shares the cursor and
+        // the line buffer, and a keystroke arriving mid-command would splice
+        // its echo into the output and its byte into the next line.
+        let irq = unsafe { cpu_irq_save() };
+        running = run_command(framebuffer);
+        shared_write(SHARED_LINE_LEN, 0);
+        shared_write(SHARED_LINE_READY, 0);
+        if (running == 1) {
+            // "> "
+            uart_putc(62);
+            put_char(framebuffer, 62);
+        }
+        unsafe { cpu_irq_restore(irq); };
+    }
 }
 
 let keys = shared_read(SHARED_KEY_COUNT);

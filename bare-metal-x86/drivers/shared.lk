@@ -23,3 +23,18 @@ fn bump(address: Int) -> Int {
     write(address, next);
     return next;
 }
+
+// Byte-wide access, for the character buffers an interrupt handler fills.
+//
+// A handler cannot allocate — an interrupt lands between any two instructions,
+// including instructions inside the runtime's allocator — so a line of text it
+// collects has to live somewhere fixed, one byte at a time.
+
+fn read_byte(address: Int) -> Int {
+    let value = unsafe { volatile_read_u8(address as *mut u8) };
+    return value as Int;
+}
+
+fn write_byte(address: Int, value: Int) {
+    unsafe { volatile_write_u8(address as *mut u8, value as u8); };
+}
