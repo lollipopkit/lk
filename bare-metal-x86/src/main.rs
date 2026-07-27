@@ -10,6 +10,21 @@
 #![no_std]
 #![no_main]
 
+// The float ABI this image is built with, asserted rather than assumed.
+//
+// `x86_64-unknown-none` is a soft-float target: without the override in
+// `.cargo/config.toml`, Rust passes `f64` in integer registers while the
+// Cranelift-emitted LK object passes them in XMM. Nothing fails to link — the
+// symbol names agree — and the program computes wrong numbers. A `RUSTFLAGS`
+// environment variable replaces that table rather than extending it, so the
+// override is one `env RUSTFLAGS=...` away from being lost; this turns that
+// into a compile error that says where to look.
+#[cfg(not(target_feature = "sse2"))]
+compile_error!(
+    "this image must be built with `-C target-feature=-soft-float,+sse,+sse2` (see .cargo/config.toml). \
+     A RUSTFLAGS environment variable replaces that table rather than extending it — clear it for this crate."
+);
+
 extern crate alloc;
 
 mod boot;

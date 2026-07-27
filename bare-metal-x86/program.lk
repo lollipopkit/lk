@@ -1139,6 +1139,20 @@ shared_write(SHARED_DRAWN_FOCUS, 0 - 1);
 // The cursor starts after the prompt.
 place_cursor(framebuffer, 3, 5);
 
+// A float round trip across the LK/lkrt boundary, printed because nothing else
+// here would notice it going wrong.
+//
+// `x86_64-unknown-none` is a soft-float target: Rust passes `f64` in integer
+// registers, the Cranelift-emitted object passes them in XMM. Mismatched, this
+// prints 88 instead of 44 — no crash, no link error, just a wrong number. The
+// build refuses to compile without the override (see `src/main.rs`), and this
+// is the same claim checked at run time, on the machine, after the boot path
+// has enabled SSE in CR0/CR4.
+// "half " then the answer
+uart_write([104, 97, 108, 102, 32]);
+uart_put_int(((88 / 2.0) as Int));
+uart_putc(10);
+
 // Read three pixels back out of the device's memory. Drawing that nobody can
 // see is indistinguishable from drawing that never happened, and a headless
 // machine has no other way to tell.

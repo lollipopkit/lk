@@ -736,6 +736,7 @@ mod tests {
         Ok(())
     }
 
+    #[test]
     fn test_resolve_examples_fib_exports_iterative() -> Result<()> {
         let mut resolver = ModuleResolver::new();
         resolver.add_search_path("..");

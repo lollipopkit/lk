@@ -136,7 +136,12 @@ jobs:
           cargo build -p lkrt-cabi
           cargo build -p lk-cli --features aot
           cd bare-metal-native
-          LK_BIN=../target/debug/lk cargo build --release
+          # Cleared, not inherited: the toolchain action sets `RUSTFLAGS=-D
+          # warnings` for the whole job, and a `RUSTFLAGS` environment variable
+          # *replaces* the crate's `.cargo/config.toml` rustflags table rather
+          # than extending it. What that table carries is not style — it is
+          # `link-dead-code`, without which the image does not link.
+          RUSTFLAGS= LK_BIN=../target/debug/lk cargo build --release
           # A fault parks the core rather than exiting, so the timeout is what
           # turns a hang into a failure.
           output=$(timeout 120 qemu-system-aarch64 -M virt -cpu cortex-a53 \
@@ -171,19 +176,27 @@ jobs:
           sudo apt-get update && sudo apt-get install -y qemu-system-x86 llvm
           cargo build -p lk-cli --features aot
           cd bare-metal-x86
+          # Same reason as the aarch64 step: this crate's rustflags table
+          # carries `relocation-model=static` and the float-ABI override, and a
+          # job-wide `RUSTFLAGS` would replace it. `src/main.rs` also refuses to
+          # compile without SSE, so a future step that forgets this says why.
+          export RUSTFLAGS=
           # `isa-debug-exit` makes the machine exit when the kernel is done, so
           # a hang is a timeout rather than a pass; its exit code for a clean
           # run is 1, hence the `|| true`.
           output=$(timeout 120 ./run.sh 2>&1 || true)
           echo "$output"
-          # `half = 44` is a f64 round trip across the LK/lkrt boundary: this
+          # `half 44` is a f64 round trip across the LK/lkrt boundary: this
           # target is soft-float by default, and a mismatch there prints 88
-          # rather than failing. The '...' are timer interrupts handled by an
-          # LK function — three in a row, where one could be a fluke.
+          # rather than failing. `pixels` is read back out of the device's own
+          # memory — the background and a lit pixel of the title, so it also
+          # says the font renderer drew. The '...' are timer interrupts handled
+          # by an LK function — three in a row, where one could be a fluke.
           for expected in \
             "display at pci slot" \
             "framebuffer 0xfd000000" \
-            "pixels 00000040 007f7f40 00fefd40" \
+            "half 44" \
+            "pixels 00001428 00ffc040" \
             "..." \
             "[lk returned to the board]"; do
             printf '%s' "$output" | grep -qF -- "$expected" || {

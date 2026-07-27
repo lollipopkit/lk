@@ -130,28 +130,6 @@ pub extern "C" fn lkrt_cpu_wait_for_interrupt() {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The barriers are callable and emit no observable effect on their own.
-    /// There is little to assert beyond that — a barrier's whole content is
-    /// what it forbids, which shows up in *other* code's ordering.
-    #[test]
-    fn barriers_are_callable() {
-        lkrt_cpu_barrier();
-        lkrt_cpu_compiler_barrier();
-    }
-
-    /// A restore of "was masked" must not enable interrupts. This is the case
-    /// that makes nesting safe, and the one a naive `irq_enable()` gets wrong.
-    #[test]
-    fn restoring_a_masked_state_is_a_no_op() {
-        // Safe to call under a hosted OS precisely because it does nothing.
-        lkrt_cpu_irq_restore(0);
-    }
-}
-
 /// A monotonically increasing count of core cycles.
 ///
 /// `WritesHost` in the ABI table, like the MMIO reads: two reads of a clock
@@ -178,5 +156,27 @@ pub extern "C" fn lkrt_cpu_timestamp() -> i64 {
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     {
         unimplemented!("cpu_timestamp is not implemented for this architecture")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The barriers are callable and emit no observable effect on their own.
+    /// There is little to assert beyond that — a barrier's whole content is
+    /// what it forbids, which shows up in *other* code's ordering.
+    #[test]
+    fn barriers_are_callable() {
+        lkrt_cpu_barrier();
+        lkrt_cpu_compiler_barrier();
+    }
+
+    /// A restore of "was masked" must not enable interrupts. This is the case
+    /// that makes nesting safe, and the one a naive `irq_enable()` gets wrong.
+    #[test]
+    fn restoring_a_masked_state_is_a_no_op() {
+        // Safe to call under a hosted OS precisely because it does nothing.
+        lkrt_cpu_irq_restore(0);
     }
 }

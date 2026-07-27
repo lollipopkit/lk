@@ -1,4 +1,12 @@
 #![cfg_attr(not(feature = "std"), no_std)]
+// The no_std profile compiles the same ABI surface but reaches only the
+// computation subset of it: with `fs`/`net`/`io` gated out, their helpers
+// (status codes, C-string conversion, the handle table's typed accessors) have
+// no callers. That is the profile working as intended, not an oversight — and
+// CI builds with `-D warnings`, so without this the bare-metal images fail to
+// build on dead code that is dead by design. The `std` build keeps the lint,
+// which is where an actually-unused helper would show up.
+#![cfg_attr(not(feature = "std"), allow(dead_code))]
 //! Typed native runtime support for LK LLVM AOT binaries.
 //!
 //! This crate is intentionally not the LK VM. It may provide low-level typed

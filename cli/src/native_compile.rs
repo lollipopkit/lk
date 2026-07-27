@@ -147,6 +147,11 @@ fn warn_if_soft_float_target(triple: &str) {
     );
 }
 
+/// `lk compile object:<triple>` — the bare-metal path, and part of the AOT
+/// surface: it bundles imports and lowers through the same pipeline. Gated with
+/// the rest of it, or a build without `aot` fails on the bundler types rather
+/// than simply not offering the command.
+#[cfg(feature = "aot")]
 pub(super) fn compile_object(path: &Path, triple: &str, output: Option<&Path>) -> anyhow::Result<()> {
     warn_if_soft_float_target(triple);
     let output = output
@@ -174,6 +179,8 @@ pub(super) fn compile_object(path: &Path, triple: &str, output: Option<&Path>) -
     Ok(())
 }
 
+/// `lk compile` — likewise part of the AOT surface (see `compile_object`).
+#[cfg(feature = "aot")]
 pub(super) fn compile_executable(path: &Path, output: Option<&Path>) -> anyhow::Result<()> {
     let output = output.map(Path::to_path_buf).unwrap_or_else(|| path.with_extension(""));
     // Parse + compile up front so genuine source errors (syntax/type) surface

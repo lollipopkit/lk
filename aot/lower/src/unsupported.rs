@@ -13,6 +13,12 @@ pub enum Unsupported {
         pc: usize,
         op: Opcode,
     },
+    /// Two bundled modules define the same top-level name. Reported rather than
+    /// resolved: the bundle flattens them into one namespace, so one would
+    /// silently shadow the other for every nested read.
+    BundledNameCollision {
+        name: String,
+    },
     /// A global read that resolved to nothing the lowering knows: not a
     /// builtin, not a module, not an import binding, not a proven-initialized
     /// scalar. Carries the *name*, because "opcode GetGlobal is not natively
@@ -20,12 +26,6 @@ pub enum Unsupported {
     /// answer is almost always a specific name that did not resolve — a
     /// mistyped import, a function defined in a module that was not bundled, or
     /// a global written on a path the lowering cannot see.
-    /// Two bundled modules define the same top-level name. Reported rather than
-    /// resolved: the bundle flattens them into one namespace, so one would
-    /// silently shadow the other for every nested read.
-    BundledNameCollision {
-        name: String,
-    },
     UnresolvedGlobal {
         pc: usize,
         name: String,

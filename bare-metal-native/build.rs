@@ -10,12 +10,9 @@ use std::process::Command;
 
 fn main() {
     println!("cargo:rerun-if-changed=program.lk");
-    // The drivers `program.lk` imports are part of the input. Watching only the
-    // entry file meant editing a driver left `program.o` stale — a rebuild that
-    // silently ran the *previous* driver, which is worse than not rebuilding.
-    for entry in std::fs::read_dir("drivers").into_iter().flatten().flatten() {
-        println!("cargo:rerun-if-changed={}", entry.path().display());
-    }
+    // No `drivers/` here: this program is a single file. (The x86 image next
+    // door imports a directory of them and watches it — naming a path that does
+    // not exist would make cargo rebuild every time instead.)
     println!("cargo:rerun-if-changed=build.rs");
 
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR is set by cargo"));
