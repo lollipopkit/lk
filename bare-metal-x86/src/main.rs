@@ -254,9 +254,11 @@ pub extern "C" fn kernel_main() -> ! {
     // SAFETY: `main` is the object emitted by `lk compile object:`, linked by
     // build.rs, and takes no arguments.
     let result = unsafe { main() };
-    // Stop the clock before reporting: a tick landing mid-line would splice a
-    // '.' into it.
-    interrupts::stop();
+    // The clock is already stopped, and by the program: masking the flag and
+    // then the chip is the last thing `program.lk` does. That is where it
+    // belongs now that the chip is the program's — and the board could not do
+    // it here without naming the PIC's ports a second time, for the sake of a
+    // line the program has already handled.
     unsafe {
         core::ptr::write_volatile(addr_of_mut!(LK_RESULT), result);
     }

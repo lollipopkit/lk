@@ -1,133 +1,20 @@
-//! Interrupts: an IDT, the legacy 8259 PIC, and the trampoline that reaches
-//! the LK handler.
+//! What is left of interrupts on the board's side: the trampolines, and the
+//! exception reporter.
 //!
-//! The division of labour matches the aarch64 demo. The board decides *which
-//! vector* an interrupt lands on and does the acknowledging; what a tick
-//! *means* is the program's, and that part is LK.
+//! Everything that is a *decision* has moved to LK. The table lives in
+//! `drivers/idt.lk`, the vector map and the install order in `program.lk`, the
+//! 8259 and its end-of-interrupt in `drivers/pic.lk`. What could not move is
+//! here, and the line is sharp: an interrupt is not a call. The code it lands
+//! in never agreed to lose its caller-saved registers, so a compiled handler
+//! has to be entered through a stub that spills every one of them and leaves
+//! with `iretq`. There is no language in which that is not assembly.
+//!
+//! The exception reporter stays for a second reason. It runs *after* something
+//! has already gone wrong, and the two things an LK handler must never do —
+//! allocate, or take a lock — are exactly what formatting a report in LK would
+//! need. `write_hex` here writes into a fixed buffer and touches no allocator.
 
 use core::arch::global_asm;
-
-/// The 8259 pair's command and data ports.
-const PIC1_CMD: u16 = 0x20;
-const PIC1_DATA: u16 = 0x21;
-const PIC2_CMD: u16 = 0xa0;
-const PIC2_DATA: u16 = 0xa1;
-
-unsafe extern "C" {
-    /// The assembly trampolines. The timer's lives in `tasks`, because
-    /// returning on a *different* stack is what a task switch is.
-    fn __task_trampoline();
-    fn __keyboard_trampoline();
-    fn __mouse_trampoline();
-    fn __syscall_trampoline();
-    fn __yield_trampoline();
-}
-
-/// Remaps the PIC, unmasks the lines that have handlers, and enables interrupts.
-///
-/// Called *from `program.lk`*, not from `kernel_main`, and the order is the
-/// reason: the program builds its own interrupt table now, and enabling
-/// interrupts before it has been loaded would take the first tick through
-/// whatever the old table said. Naming this from LK is how that order becomes
-/// something the program states rather than something two files agree about.
-///
-/// What is left here is what the 8259 is: a chip with a four-write
-/// initialisation sequence and a mask register. It moves next, together with
-/// the end-of-interrupt its handlers send — those are one decision, and
-/// splitting them across the boundary would put the command port in two files.
-// TODO: move the PIC to `drivers/pic.lk` along with the EOI in the dispatch
-// functions below, and delete this.
-#[unsafe(no_mangle)]
-pub extern "C" fn lk_interrupts_start(pic_base: i64) {
-    // SAFETY: fixed ISA ports, and a flag instruction on a single-threaded
-    // boot path whose interrupt table is already loaded.
-    unsafe {
-        // Remap the PIC. The initialisation sequence is four writes per chip,
-        // in order, and the chip latches them as ICW1-ICW4.
-        crate::port_out_u8(PIC1_CMD, 0x11); // ICW1: begin init, expect ICW4
-        crate::port_out_u8(PIC2_CMD, 0x11);
-        // ICW2: where each chip's eight lines land. The number comes from the
-        // caller because the caller is what decides it: `program.lk` builds the
-        // gates, so it is the one place that knows which vector means the timer.
-        // Naming it here as well would be a second answer to a question with
-        // one, and the failure of the two disagreeing is a device raising a
-        // vector nothing filled in.
-        crate::port_out_u8(PIC1_DATA, pic_base as u8);
-        crate::port_out_u8(PIC2_DATA, pic_base as u8 + 8);
-        crate::port_out_u8(PIC1_DATA, 0x04); // ICW3: slave on IRQ2
-        crate::port_out_u8(PIC2_DATA, 0x02);
-        crate::port_out_u8(PIC1_DATA, 0x01); // ICW4: 8086 mode
-        crate::port_out_u8(PIC2_DATA, 0x01);
-        // Unmask the timer, the keyboard and the cascade; mask the rest. An
-        // unmasked line with no handler is a vector into a not-present gate,
-        // which is a general protection fault inside an interrupt. The cascade
-        // (IRQ2) is not a device — it is how the slave chip reaches the CPU at
-        // all, so the mouse's IRQ12 is invisible without it.
-        crate::port_out_u8(PIC1_DATA, 0xf8);
-        crate::port_out_u8(PIC2_DATA, 0xef);
-
-        core::arch::asm!("sti", options(nomem, nostack));
-    }
-}
-
-/// Masks the timer and disables interrupts, in that order — disabling first
-/// would leave a pending interrupt to be taken the moment anything unmasks.
-pub fn stop() {
-    // SAFETY: fixed ISA ports and a flag instruction.
-    unsafe {
-        crate::port_out_u8(PIC1_DATA, 0xff);
-        core::arch::asm!("cli", options(nomem, nostack));
-    }
-}
-
-unsafe extern "C" {
-    /// The interrupt handlers, written in LK. `#[export("…")]` in `program.lk`
-    /// is what makes these names exist.
-    fn lk_timer_isr();
-    fn lk_key_isr();
-}
-
-/// Called from the trampoline with every caller-saved register already spilled.
-#[unsafe(no_mangle)]
-pub extern "C" fn pit_dispatch() {
-    // SAFETY: the LK function `#[export]`ed under that name, compiled to a
-    // `void(void)` by the same build.
-    unsafe { lk_timer_isr() };
-    // End-of-interrupt. Without it the PIC never delivers IRQ0 again.
-    // SAFETY: a fixed ISA port.
-    unsafe { crate::port_out_u8(PIC1_CMD, 0x20) };
-}
-
-/// As [`pit_dispatch`], for the mouse — with the slave chip's end-of-interrupt
-/// as well as the master's. Acknowledging only the master leaves the slave
-/// believing the interrupt is still in service, and it never raises another:
-/// the mouse moves once and then stops, with nothing to say why.
-#[unsafe(no_mangle)]
-pub extern "C" fn mouse_dispatch() {
-    unsafe extern "C" {
-        fn lk_mouse();
-    }
-    // SAFETY: the LK handler is an `#[export]`ed function with no arguments.
-    unsafe { lk_mouse() };
-    // SAFETY: fixed ISA ports.
-    unsafe {
-        crate::port_out_u8(PIC2_CMD, 0x20);
-        crate::port_out_u8(PIC1_CMD, 0x20);
-    }
-}
-
-/// As [`pit_dispatch`], for the keyboard.
-///
-/// The scancode is deliberately *not* read here: the controller's data port is
-/// the driver's business, and the driver is LK. What the board owes the device
-/// is the acknowledgement.
-#[unsafe(no_mangle)]
-pub extern "C" fn keyboard_dispatch() {
-    // SAFETY: as `pit_dispatch`.
-    unsafe { lk_key_isr() };
-    // SAFETY: a fixed ISA port.
-    unsafe { crate::port_out_u8(PIC1_CMD, 0x20) };
-}
 
 // An interrupt lands between any two instructions of the interrupted program,
 // so every register the called code may clobber has to be saved: the System V
@@ -209,13 +96,13 @@ global_asm!(
     // nothing in between, which corrupts whatever it interrupted at a moment
     // nothing can predict.
     "   IRQ_SAVE",
-    "   call mouse_dispatch",
+    "   call lk_mouse",
     "   IRQ_RESTORE",
     "   iretq",
     ".global __keyboard_trampoline",
     "__keyboard_trampoline:",
     "   IRQ_SAVE",
-    "   call keyboard_dispatch",
+    "   call lk_key_isr",
     "   IRQ_RESTORE",
     "   iretq",
 );

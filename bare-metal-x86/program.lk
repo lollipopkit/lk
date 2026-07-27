@@ -21,6 +21,8 @@ use { read_scancode, is_release, key_code, is_shift, is_caps_lock } from "driver
 use { mouse_init, has_packet_byte, read_packet_byte as mouse_byte, is_first_byte,
       dx_of, dy_of, left_down } from "drivers/mouse";
 use { start as pit_start } from "drivers/pit";
+use { remap as pic_remap, mask as pic_mask,
+      eoi_master as pic_eoi_master, eoi_slave as pic_eoi_slave } from "drivers/pic";
 use { table_size as idt_table_size, zero as idt_zero, set_gate as idt_set_gate,
       install as idt_install } from "drivers/idt";
 use { acquire as lock, release as unlock } from "drivers/lock";
@@ -1185,7 +1187,19 @@ fn halt() {
 // three bytes that are meaningless apart, so the handler assembles them and
 // publishes the result. What it never does is draw — the cursor is chrome, and
 // chrome belongs to whoever owns the screen.
+// Acknowledging the chip is the driver's job, and it is a *wrapper* rather than
+// a last line, in all three cases, for one reason: an end-of-interrupt that a
+// `return` can skip is an end-of-interrupt that will be skipped. `on_key`
+// already returns early from four places. Written this way the property is
+// structural — there is nowhere for the acknowledgement to not happen — instead
+// of something the next edit has to remember.
 #[export("lk_mouse")]
+fn isr_mouse() {
+    on_mouse();
+    // IRQ12 is the slave's, so both chips are told.
+    pic_eoi_slave();
+}
+
 fn on_mouse() {
     while (has_packet_byte() == 1) {
         let byte = mouse_byte();
@@ -1309,15 +1323,7 @@ fn spawn_task(entry: Int) -> Int {
 fn task_yield() {
 }
 
-// Brings up the 8259 and lets interrupts through.
-//
-// The board's, because the PIC's initialisation sequence and its mask register
-// are the last thing here that has no LK spelling yet. It takes the base vector
-// as an argument rather than knowing one: this file decides what each vector
-// means, so this file is where that number lives.
-#[extern("lk_interrupts_start")]
-fn interrupts_start(pic_base: Int) {
-}
+
 
 // A deliberate fault, when the image was built with the `fault-probe` feature;
 // nothing otherwise.
@@ -1844,6 +1850,11 @@ fn task_b() {
 // The counter lives in the shared page because a handler's state has to
 // survive between invocations, and it is the only state this one keeps.
 #[export("lk_timer_isr")]
+fn isr_tick() {
+    on_tick();
+    pic_eoi_master();
+}
+
 fn on_tick() {
     bump_pair();
     let ticks = shared_bump(SHARED_TICKS);
@@ -1860,6 +1871,11 @@ fn on_tick() {
 // instructions of the interrupted program, including instructions inside the
 // runtime's allocator.
 #[export("lk_key_isr")]
+fn isr_key() {
+    on_key();
+    pic_eoi_master();
+}
+
 fn on_key() {
     let scancode = read_scancode();
     let code = key_code(scancode);
@@ -1927,10 +1943,20 @@ uart_init();
 install_interrupt_table();
 // And immediately, on a probe build, something that faults.
 fault_probe();
-// Now the chip that raises them, and the flag that lets them through. In that
+// Then the chip that raises them, and the flag that lets them through. In that
 // order: an interrupt taken before the table was loaded goes wherever the
 // previous table said, and there is no previous table.
-interrupts_start(VECTOR_TIMER);
+pic_remap(VECTOR_TIMER);
+// The timer, the keyboard, and the cascade — a zero bit is a line allowed to
+// raise something. The cascade (line 2) is not a device: it is how the slave
+// chip reaches the CPU at all, so the mouse's IRQ12 is invisible without it.
+// Every other line stays masked, because an unmasked line with no gate is a
+// fault raised from inside an interrupt.
+pic_mask(0xf8, 0xef);
+// `cpu_irq_restore(1)` is `sti`, and the shape is right rather than merely
+// convenient: this says "put the machine in the state where interrupts are
+// enabled". There is no nesting to get wrong here — they have never been on.
+unsafe { cpu_irq_restore(1); };
 // ~1 kHz. IRQ0 is unmasked and interrupts are on; what this decides is how
 // often it fires.
 pit_start(1193);
@@ -2289,10 +2315,14 @@ while (running == 1 && ((shared_read(SHARED_TICKS) - started) & TICK_MASK) < 600
 let keys = shared_read(SHARED_KEY_COUNT);
 let last = shared_read(SHARED_LAST_KEY);
 
-// Masked and deliberately not restored: what runs after this is the runtime's
-// epilogue echoing the script's value, which no LK code is in a position to
-// protect.
+// Both halves, and in this order. Masking the flag stops the CPU taking
+// anything; masking the chip stops it raising anything, which is what keeps a
+// pending tick from being delivered the moment something else enables the flag.
+// Deliberately not restored: what runs after this is the runtime's epilogue
+// echoing the script's value, which no LK code is in a position to protect —
+// and a tick landing mid-line would splice a '.' into it.
 unsafe { cpu_irq_save(); };
+pic_mask(0xff, 0xff);
 uart_putc(10);
 // "keys "
 uart_write([107, 101, 121, 115, 32]);

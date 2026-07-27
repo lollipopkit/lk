@@ -324,9 +324,12 @@ global_asm!(
     ".global __task_trampoline",
     "__task_trampoline:",
     "   SAVE_TASK",
-    // The handler's own work (the LK tick, the end-of-interrupt) happens
-    // before the switch, on the interrupted task's stack.
-    "   call pit_dispatch",
+    // The handler's own work — the LK tick, and the end-of-interrupt it sends
+    // itself — happens before the switch, on the interrupted task's stack.
+    // Called directly rather than through a forwarding function on this side:
+    // there is nothing left for one to add now that acknowledging the chip is
+    // the driver's.
+    "   call lk_timer_isr",
     "   mov rdi, rsp",
     "   call schedule_from_interrupt",
     "   mov rsp, rax",

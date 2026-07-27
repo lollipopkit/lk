@@ -778,6 +778,7 @@ mode was actually set.
 
 ```
 drivers/idt.lk           the interrupt descriptor table: gates, and `lidt`
+drivers/pic.lk           the 8259 pair: remap, mask, end-of-interrupt
 drivers/serial.lk        a 16550 UART
 drivers/pci.lk           configuration space
 drivers/vbe.lk           the Bochs VBE display interface, including panning
@@ -922,9 +923,37 @@ lose its caller-saved registers — so a compiled handler has to be entered
 through a stub that spills all of them and leaves with `iretq`. That is
 assembly in any language.
 
-The 8259 is still Rust: its four-write initialisation sequence and its mask
-register, plus the end-of-interrupt each handler sends. Those are one decision
-and they move together, or the command port ends up named in two files.
+**The 8259 is LK's too**, both halves of it — `drivers/pic.lk` holds the
+four-write initialisation sequence, the mask register, and the end-of-interrupt.
+Those had to move together: bringing the chip up decides which vector each line
+lands on, acknowledging decides which chip is told the handler is done, and
+split across the boundary they become two files naming one command port.
+
+The acknowledgement is a *wrapper* around each handler rather than its last
+line:
+
+```lk
+#[export("lk_key_isr")]
+fn isr_key() {
+    on_key();
+    pic_eoi_master();
+}
+```
+
+`on_key` returns early from four places. An end-of-interrupt a `return` can skip
+is one that will be skipped — and the symptom is a device that works once and
+then goes silent, which is what an unacknowledged 8259 line does. Written this
+way there is nowhere for it not to happen.
+
+Stopping is the program's as well. `program.lk` masks the flag and then the
+chip as its last act, in that order: the flag stops the CPU taking anything, the
+chip stops it raising anything, and a tick landing between the two would splice
+a `.` into the line the board prints afterwards.
+
+What is left in `src/interrupts.rs` is the trampolines and the exception
+reporter — the reporter because it runs *after* something has gone wrong, and
+the two things a handler must never do (allocate, take a lock) are exactly what
+formatting a report in LK would need.
 
 What a tick *means* has always been the program's, including programming the
 PIT's divisor, which `program.lk` does with the same `port_out_u8` its UART

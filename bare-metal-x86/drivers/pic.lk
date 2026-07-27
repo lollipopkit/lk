@@ -1,0 +1,78 @@
+// The 8259 interrupt controller pair.
+//
+// Two chips, cascaded: eight lines on the master, eight more on the slave,
+// which reaches the CPU through the master's line 2. That arrangement is from
+// 1981 and every x86 still boots into it, so a kernel deals with it before it
+// deals with anything else that raises an interrupt.
+//
+// This file holds both halves of the chip's contract, and holds them together
+// on purpose. Bringing it up decides which vector each line lands on;
+// acknowledging an interrupt decides which chip is told the handler is done.
+// Those are one decision, and split across a language boundary they become two
+// files naming the same command port — which is exactly how the mouse stopped
+// after one packet the first time, from an end-of-interrupt sent to the master
+// and not the slave.
+
+// Command and data ports. The chip has two registers per chip and which one a
+// write means depends on where in the initialisation sequence it arrives,
+// which is why the sequence below is written as a sequence.
+const PIC1_CMD = 0x20;
+const PIC1_DATA = 0x21;
+const PIC2_CMD = 0xa0;
+const PIC2_DATA = 0xa1;
+
+// "The handler is finished." Until this arrives the chip believes the line is
+// still in service and raises nothing further on it — a device that works once
+// and then goes quiet, with nothing anywhere to say why.
+const EOI = 0x20;
+
+// Points the chips at `base` and `base + 8`.
+//
+// Four writes per chip, in order, latched as ICW1-ICW4. The order is the
+// protocol: the chip has no register addresses for these, only a position in
+// the sequence, so a write out of place is not an error but a different
+// meaning.
+//
+// `base` matters because the power-on default overlaps the vectors the CPU
+// reserves for its own exceptions — an interrupt from the timer would arrive
+// as a double fault. Remapping away from them is the first thing every x86
+// kernel does, and the number to remap to belongs to whoever builds the
+// interrupt table, which is not this file.
+fn remap(base: Int) {
+    unsafe { port_out_u8(PIC1_CMD, 0x11 as u8); };   // ICW1: begin init, expect ICW4
+    unsafe { port_out_u8(PIC2_CMD, 0x11 as u8); };
+    unsafe { port_out_u8(PIC1_DATA, base as u8); };  // ICW2: vector offsets
+    unsafe { port_out_u8(PIC2_DATA, (base + 8) as u8); };
+    unsafe { port_out_u8(PIC1_DATA, 0x04 as u8); };  // ICW3: slave on line 2
+    unsafe { port_out_u8(PIC2_DATA, 0x02 as u8); };
+    unsafe { port_out_u8(PIC1_DATA, 0x01 as u8); };  // ICW4: 8086 mode
+    unsafe { port_out_u8(PIC2_DATA, 0x01 as u8); };
+}
+
+// Which lines are allowed to raise anything. A set bit is masked *off*.
+//
+// An unmasked line with no gate behind it is an interrupt into a not-present
+// descriptor, which is a general protection fault raised from inside an
+// interrupt — so the mask and the table have to agree, and the caller is the
+// one that knows both.
+fn mask(master: Int, slave: Int) {
+    unsafe { port_out_u8(PIC1_DATA, master as u8); };
+    unsafe { port_out_u8(PIC2_DATA, slave as u8); };
+}
+
+// Acknowledges an interrupt from one of the master's own lines (0-7).
+fn eoi_master() {
+    unsafe { port_out_u8(PIC1_CMD, EOI as u8); };
+}
+
+// Acknowledges an interrupt from the slave's lines (8-15) — to *both* chips,
+// slave first.
+//
+// The master never saw the device; what it saw was the cascade line, and it is
+// still in service until told otherwise. Acknowledging only one of the two is
+// the shape of a bug that looks like the device broke: it delivers exactly one
+// interrupt and then nothing, forever.
+fn eoi_slave() {
+    unsafe { port_out_u8(PIC2_CMD, EOI as u8); };
+    unsafe { port_out_u8(PIC1_CMD, EOI as u8); };
+}
