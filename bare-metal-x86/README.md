@@ -1177,6 +1177,40 @@ Refusing the shape is what stops a native build computing something the VM
 would not. A container that is built inside a function is fine — it is fresh
 per call, so there is nothing to share.
 
+## `unsafe { … }` has a type now
+
+It used to have none — every `unsafe` block type-checked to `Any`, with a note
+in the checker saying a block that evaluates to a typed value was "a separate
+change". The executor had never agreed: it already evaluates a block to its last
+statement's value, trailing semicolon included, so `unsafe { 7; }` is 7. The
+type has caught up with the value.
+
+`Any` spreads, and where it spread was exactly the kind of code this demo is
+made of. Measuring the stride of an array of interrupt stubs is two addresses
+subtracted; with both of them `Any`, the result had no `as Int` out of it and
+the error named the cast rather than the missing type. It cost real time twice.
+
+The other half of that fix: `symbol_address` and `call_address_2` had no entry
+in the type checker at all, so a call to either produced `Any` and neither its
+arity nor its arguments were checked. They do now, and `symbol_address` also
+insists its name is a *literal* — a relocation is a name resolved when the image
+is linked, and there is nothing to look one up in at run time. Passing a
+variable used to type-check, run under the VM (which refuses), and fail to lower
+natively with a message about an opcode.
+
+Closing the hole immediately found two real errors, both in this repository's
+own test fixtures:
+
+```lk
+let a = unsafe { volatile_read_u32(reg) };
+let b = unsafe { volatile_read_u32(reg) };
+return a + b;              // from a function returning Int
+```
+
+A 32-bit read is a `u32`, and two of them added is not an `Int` until something
+says so. The drivers here had always written the cast; the fixtures had not,
+because `Any` did not make them.
+
 ## Port I/O
 
 ```lk

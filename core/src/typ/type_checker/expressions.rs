@@ -136,15 +136,42 @@ impl TypeChecker {
     /// hole in the type system: precisely the construct that needs *more*
     /// scrutiny would get none. So the statements are checked here.
     ///
-    /// The block's own type stays `Any` for now, matching `Expr::Block`; a
-    /// block that evaluates to a typed value is a separate change.
+    /// The block's *type* is its last statement's, when that statement is an
+    /// expression — which is not a new rule but the type catching up with one.
+    /// The executor already evaluates an `unsafe` block to exactly that value,
+    /// trailing semicolon included: `unsafe { 7; }` is 7.
+    ///
+    /// Typing it `Any` instead had a cost that shows up wherever this construct
+    /// is actually used. Every device read in a driver is one:
+    ///
+    /// ```lk
+    /// let value = unsafe { volatile_read_u32(address as *mut u32) };
+    /// return value as Int;
+    /// ```
+    ///
+    /// The binding and the cast are both laundering — there to turn `Any` back
+    /// into the `Int` the read always produced. A cast written to satisfy the
+    /// checker rather than to state something is a cast that will one day be
+    /// wrong and say nothing, which is the opposite of what `unsafe` is for.
+    ///
+    /// A last statement that is *not* an expression leaves the block `Any`, as
+    /// before. Those shapes (`unsafe { let x = …; }`) have no value the
+    /// executor promises, and inventing one here would be a claim rather than a
+    /// description.
     fn check_unsafe_body(&mut self, inner: &Expr) -> Result<Type> {
         let Expr::Block(statements) = inner else {
             return self.check_expr(inner);
         };
-        for stmt in statements {
+        let Some((last, leading)) = statements.split_last() else {
+            return Ok(Type::Any);
+        };
+        for stmt in leading {
             stmt.type_check(self)?;
         }
+        if let crate::stmt::Stmt::Expr(expr) = last.as_ref() {
+            return self.check_expr(expr);
+        }
+        last.type_check(self)?;
         Ok(Type::Any)
     }
 
@@ -266,11 +293,69 @@ impl TypeChecker {
     /// compiler has no access to the type checker — the width lives in the name
     /// instead. It also makes the volatile-ness explicit, which `*p` never is
     /// in any language.
+    /// `symbol_address("name")` and `call_address_2(addr, a, b)` — the two
+    /// halves of a driver table.
+    ///
+    /// They had no entry here at all, which meant a call to either produced
+    /// `Any` and neither its arity nor its arguments were checked. `Any`
+    /// spreads: subtracting two addresses to measure a stride gave something
+    /// with no `as Int` out of it, and the error named the cast rather than the
+    /// missing type. Both of those cost real time in this repository.
+    ///
+    /// The name has to be a *literal*, and saying so here is the point. A
+    /// relocation is a name resolved at link time; there is nothing to look one
+    /// up in at run time, so a variable name cannot work — and without this it
+    /// type-checked, ran under the VM (which refuses), and failed to lower
+    /// natively with a message about an unsupported opcode.
+    fn check_address_builtin(&mut self, name: &str, args: &[Box<Expr>]) -> Result<Option<Type>> {
+        let arity = match name {
+            "symbol_address" => 1,
+            "call_address_2" => 3,
+            _ => return Ok(None),
+        };
+        if args.len() != arity {
+            return Err(anyhow!("{name} expects {arity} argument(s), got {}", args.len()));
+        }
+        if !self.in_unsafe() {
+            return Err(anyhow!(
+                "{name} requires an `unsafe` block: a code address is a number, and nothing here \
+                 can check that the one you have is code"
+            ));
+        }
+        if name == "symbol_address" {
+            if !matches!(
+                args[0].as_ref(),
+                Expr::Literal(crate::val::LiteralVal::String(_) | crate::val::LiteralVal::ShortStr(_))
+            ) {
+                return Err(anyhow!(
+                    "symbol_address needs a literal name: it becomes a relocation, which is a name \
+                     resolved when the image is linked, and there is nothing to look one up in at \
+                     run time"
+                ));
+            }
+        } else {
+            for (index, arg) in args.iter().enumerate() {
+                let actual = self.check_expr(arg)?;
+                if !self.is_assignable(&actual, &Type::Int) {
+                    return Err(anyhow!(
+                        "call_address_2 expects Int for argument {}, got {}",
+                        index + 1,
+                        actual.display()
+                    ));
+                }
+            }
+        }
+        Ok(Some(Type::Int))
+    }
+
     fn check_volatile_builtin(&mut self, name: &str, args: &[Box<Expr>]) -> Result<Option<Type>> {
         if let Some(result) = self.check_cpu_builtin(name, args)? {
             return Ok(Some(result));
         }
         if let Some(result) = self.check_port_builtin(name, args)? {
+            return Ok(Some(result));
+        }
+        if let Some(result) = self.check_address_builtin(name, args)? {
             return Ok(Some(result));
         }
         let Some((is_write, kind)) = parse_volatile_builtin(name) else {

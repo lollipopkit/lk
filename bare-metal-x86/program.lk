@@ -1530,9 +1530,8 @@ fn user_range_is_valid(address: Int, length: Int) -> Bool {
     if (end < address) {
         return false;
     }
-    let start: Int = unsafe { symbol_address("__user_start") };
-    let limit: Int = unsafe { symbol_address("__user_end") };
-    return address >= start && end <= limit;
+    return address >= unsafe { symbol_address("__user_start") }
+        && end <= unsafe { symbol_address("__user_end") };
 }
 
 // The syscall handler, entered from the board's trampoline with the number in
@@ -1609,7 +1608,7 @@ fn build_user_space(stack_physical: Int) -> Int {
     // therefore before any of this existed — but "where did the linker put it"
     // is a question this language can ask. A user space points *at* them rather
     // than copying them, which is what keeps the two from drifting.
-    let kernel_directories: Int = unsafe { symbol_address("__pd") };
+    let kernel_directories = unsafe { symbol_address("__pd") };
     // The first, third and fourth gigabytes: the kernel's, named not copied.
     // The framebuffer is in the fourth.
     table_set(pdpt, 0, kernel_directories, shared);
@@ -1712,7 +1711,7 @@ fn install_descriptor_table() {
     // last. The `user` command enters ring 3 from task 0, and an interrupt
     // during that excursion would have landed its frame on another task's
     // kernel stack.
-    let boot_stack: Int = unsafe { symbol_address("__ring0_stack_top") };
+    let boot_stack = unsafe { symbol_address("__ring0_stack_top") };
     task_set_field(TASK_TABLE_BASE, 0, TASK_STACK_OFFSET, boot_stack);
     tss_set_kernel_stack(TSS_BASE, boot_stack);
     // The limit is the segment's last valid byte, so one less than its size.
@@ -1748,9 +1747,8 @@ fn set_kernel_stack(top: Int) {
 // is: the assembler's `.align` decides it, and a copy of that number on this
 // side would be a copy nothing checks.
 fn install_device_handler(vector: Int, handler: Int) {
-    let stubs: Int = unsafe { symbol_address("lkrt_isr_stubs") };
-    let stubs_end: Int = unsafe { symbol_address("lkrt_isr_stubs_end") };
-    let span = stubs_end - stubs;
+    let stubs = unsafe { symbol_address("lkrt_isr_stubs") };
+    let span = unsafe { symbol_address("lkrt_isr_stubs_end") } - stubs;
     if ((span % VECTOR_COUNT) != 0) {
         // "bad isr stride"
         uart_write([98, 97, 100, 32, 105, 115, 114, 32, 115, 116, 114, 105, 100, 101, 10]);
@@ -1758,7 +1756,7 @@ fn install_device_handler(vector: Int, handler: Int) {
     }
     let stride = ((span / VECTOR_COUNT) as Int);
     idt_set_gate(IDT_BASE, vector, stubs + vector * stride, KERNEL_CODE_SELECTOR, 0);
-    let table: Int = unsafe { symbol_address("lkrt_isr_handlers") };
+    let table = unsafe { symbol_address("lkrt_isr_handlers") };
     unsafe { volatile_write_u64((table + vector * 8) as *mut u64, handler as u64); };
 }
 
@@ -1770,12 +1768,8 @@ fn install_interrupt_table() {
     // fixed stride — and the stride is *measured* here rather than named,
     // because the assembler's `.align` is what decides it and a copy of that
     // number on this side would be a copy nothing checks.
-    // The annotations are not decoration: an `unsafe` block's type is `Any`,
-    // and arithmetic on two of them produces something with no `as Int` out of
-    // it. Saying what the program knows at the binding is where it belongs.
-    let stubs: Int = unsafe { symbol_address("ISR_STUBS") };
-    let stubs_end: Int = unsafe { symbol_address("ISR_STUBS_END") };
-    let span = stubs_end - stubs;
+    let stubs = unsafe { symbol_address("ISR_STUBS") };
+    let span = unsafe { symbol_address("ISR_STUBS_END") } - stubs;
     // The stride is only derivable if the array really is 32 equal slots. It
     // was not, once: the assembler padded the *front* of each stub and not the
     // back, so the span was 505 and this division gave 15 — after which every

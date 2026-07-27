@@ -637,8 +637,8 @@ fn volatile_reads_are_not_collapsed() {
         &source,
         "fn read_twice(addr: usize) -> Int {\n\
          \x20   let reg = addr as *mut u32;\n\
-         \x20   let a = unsafe { volatile_read_u32(reg) };\n\
-         \x20   let b = unsafe { volatile_read_u32(reg) };\n\
+         \x20   let a = unsafe { volatile_read_u32(reg) } as Int;\n\
+         \x20   let b = unsafe { volatile_read_u32(reg) } as Int;\n\
          \x20   return a + b;\n\
          }\n\
          return read_twice(0x1000);\n",
@@ -792,7 +792,7 @@ fn critical_section_emits_its_instructions_in_order() {
          \x20   let saved = unsafe { cpu_irq_save() };\n\
          \x20   unsafe { volatile_write_u32(reg, 1 as u32); };\n\
          \x20   unsafe { cpu_barrier(); };\n\
-         \x20   let v = unsafe { volatile_read_u32(reg) };\n\
+         \x20   let v = unsafe { volatile_read_u32(reg) } as Int;\n\
          \x20   unsafe { cpu_irq_restore(saved); };\n\
          \x20   return v;\n\
          }\n\
