@@ -38,12 +38,34 @@
 //! unbox as the seed's type and answer wrongly, and it cannot happen — the type
 //! checker refuses `let a = 0; try { a = "s"; }` before any of this runs.
 //!
-//! Two things are worth knowing before attacking it. The obvious shape
-//! compiles: `let ok = 0; try { ok = add(2, 3); } catch e { ok = -1; }` on its
-//! own lowers natively, cell and all. So the `Nil` seed is not "an assignment
-//! in a body"; it is something about these files that makes the register hold
-//! `Nil` at the region, and finding out *what* is the first step rather than
-//! reaching for an unboxer for `Nil`.
+//! It reproduces in five lines, and the shape is not what the message says:
+//!
+//! ```lk
+//! fn add(a, b) { return a + b; }
+//! let ok = 0;
+//! try { ok = add(2, 3); } catch e { ok = -1; }
+//! assert(ok == 5);
+//! try { 1 + 2; } catch t { }      // ← this line breaks the region above it
+//! ```
+//!
+//! Without the last line it lowers natively, cell and all. With
+//! `try { } catch t { }` — an *empty* body — it still lowers. A second region
+//! whose body produces a value is what does it, and **the rejection is reported
+//! against the first region**, whose source did not change.
+//!
+//! So this is not "the body assigns something unboxable". The first region's
+//! cell set is `[4]`, and register 4 holds `Nil` before it — which it did not
+//! when that region was the only one in the function. The set of registers a
+//! body is deemed to assign is discovered by comparing the SSA's `current_def`
+//! before and after each instruction, and what registers those *are* depends on
+//! the enclosing function's allocation, which the second region changes.
+//!
+//! The question to answer first is therefore not "what unboxes a `Nil`" but
+//! "is register 4 a variable the parent reads after the region, or a call-window
+//! temporary the body happened to clobber?" If it is the latter, cell-ifying it
+//! is unnecessary work whose only effect is this rejection, and the fix is the
+//! one the paragraph below already describes: find what actually reads the
+//! register after the join.
 //!
 //! And the note that still stands, from whoever wrote the previous version of
 //! this section: do not supply a placeholder for a value an edge does not
