@@ -308,6 +308,42 @@ fn clif_differential_hybrid_bridge() {
 /// artifact behaves exactly like the VM. The property that lapsed (it went
 /// *through Cranelift*) is a recorded debt tracked in todos.md and pinned by
 /// `AOT_COVERAGE_ALLOW` in check.yml, not something to be silently dropped here.
+/// `s.byte_at(i)` — the one string read that allocates nothing.
+///
+/// It exists for freestanding code: `char_at` next to it answers a *string* of
+/// one character, which means an allocation, which means it cannot be used from
+/// an interrupt handler or before there is a heap. What is pinned here is that
+/// the native path answers what the VM answers, including at the two edges
+/// where "out of range" has to be a value rather than a raise — a kernel's
+/// print loop is bounded by `len`, and a raise per character would be a cost
+/// paid on every message that is not a mistake.
+#[test]
+fn string_byte_at_differential() {
+    run_differential(
+        "string_byte_at",
+        &[
+            new(
+                "sum_of_bytes",
+                "let s = \"net: ok\";\nlet sum = 0;\nfor i in 0..s.len() { sum = sum + s.byte_at(i); }\nreturn sum;\n",
+            ),
+            new("first_byte", "let s = \"net\";\nreturn s.byte_at(0);\n"),
+            new("last_byte", "let s = \"net\";\nreturn s.byte_at(s.len() - 1);\n"),
+            // Both edges answer -1 rather than raising, and both have to answer
+            // the *same* -1 on both backends.
+            new("past_the_end", "let s = \"net\";\nreturn s.byte_at(99);\n"),
+            new("before_the_start", "let s = \"net\";\nreturn s.byte_at(0 - 1);\n"),
+            new("empty_string", "let s = \"\";\nreturn s.byte_at(0);\n"),
+            // A byte past ASCII: the answer is a byte, not a character, so a
+            // two-byte character is two answers.
+            new(
+                "multibyte_is_bytes",
+                "let s = \"é\";\nreturn s.len() * 1000 + s.byte_at(0);\n",
+            ),
+        ],
+        NativePath::PureCranelift,
+    );
+}
+
 #[test]
 fn try_catch_differential() {
     run_differential(

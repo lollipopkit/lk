@@ -666,6 +666,23 @@ fn dispatch_string_builtin_method(
             let handle = heap.alloc(HeapValue::List(TypedList::String(parts)));
             Ok(Some(RuntimeVal::Obj(handle)))
         }
+        "byte_at" => {
+            if positional.len() != 1 {
+                bail!("string.byte_at() expects 1 argument (index), got {}", positional.len());
+            }
+            let index = match &positional[0] {
+                RuntimeVal::Int(value) => *value,
+                other => bail!("string.byte_at() index must be an Int, got {:?}", other.kind()),
+            };
+            let bytes = s.as_bytes();
+            // -1 past either end, matching the native path: the caller is a loop
+            // bounded by `len`, and a raise would be a cost paid on every
+            // iteration of the case that is not a mistake.
+            if index < 0 || index >= bytes.len() as i64 {
+                return Ok(Some(RuntimeVal::Int(-1)));
+            }
+            Ok(Some(RuntimeVal::Int(bytes[index as usize] as i64)))
+        }
         "starts_with" => {
             if positional.len() != 1 {
                 bail!(

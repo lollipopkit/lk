@@ -807,6 +807,19 @@ pub(crate) fn lower_method_dispatch(
             });
             (nil, Ty::Nil)
         }
+        // `s.byte_at(i)` — one byte as a number, the only string read that
+        // allocates nothing. `Pure`, so the optimizer may hoist it out of a loop
+        // that reads the same index twice; `char_at` next to it cannot be,
+        // because it builds a string.
+        (Ty::Str, "byte_at", [(index, Ty::I64)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("str", "byte_at"),
+                args: vec![receiver, *index],
+            });
+            (dst, Ty::I64)
+        }
         // `s.starts_with(prefix)` — byte-prefix test, exactly Rust/VM semantics.
         (Ty::Str, "starts_with", [(prefix, Ty::Str)]) => {
             let dst = ssa.new_val();

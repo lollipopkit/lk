@@ -377,6 +377,7 @@ macro_rules! for_each_abi_fn {
             // The *module* `string.len` counts bytes (`str::len`), unlike the
             // `.len()` method's char count.
             ("str", "byte_len", lkrt_str_byte_len, Pure, [StrPtr], I64);
+            ("str", "byte_at", lkrt_str_byte_at, Pure, [StrPtr, I64], I64);
             ("str", "starts_with", lkrt_str_starts_with, Pure, [StrPtr, StrPtr], I64);
             ("str", "contains", lkrt_str_contains, Pure, [StrPtr, StrPtr], I64);
             ("str", "slice_chars", lkrt_str_slice_chars, WritesHost, [StrPtr, I64, I64], StrPtr);
