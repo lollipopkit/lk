@@ -777,6 +777,7 @@ mode was actually set.
 ## The drivers are modules
 
 ```
+drivers/idt.lk           the interrupt descriptor table: gates, and `lidt`
 drivers/serial.lk        a 16550 UART
 drivers/pci.lk           configuration space
 drivers/vbe.lk           the Bochs VBE display interface, including panning
@@ -902,11 +903,72 @@ fn on_tick() {
 }
 ```
 
-The board's share is an IDT, remapping the 8259 PIC away from the vectors the
-CPU reserves for exceptions, acknowledging the interrupt, and spilling every
-caller-saved register. What a tick *means* is the program's, and that part is
-LK — including programming the PIT's divisor, which `program.lk` does with the
-same `port_out_u8` its UART driver uses.
+**The table those interrupts come through is LK's too.** `drivers/idt.lk`
+builds all 256 gates and loads them with `cpu_load_idt`; `program.lk` decides
+which vector means what:
+
+```lk
+idt_set_gate(IDT_BASE, VECTOR_KEYBOARD,
+             unsafe { symbol_address("__keyboard_trampoline") }, KERNEL_CODE_SELECTOR, 0);
+```
+
+That is not a rewrite for its own sake. A gate is sixteen bytes of *decision* —
+which vector, which handler, and which privilege level may raise it — and the
+only reason it used to be Rust is that there was no way to say `lidt` in LK.
+There is now, so the decisions live where the rest of the program's decisions
+do. The board's remaining share is the thing this genuinely cannot be: the
+trampolines. An interrupt is not a call — the code it lands in never agreed to
+lose its caller-saved registers — so a compiled handler has to be entered
+through a stub that spills all of them and leaves with `iretq`. That is
+assembly in any language.
+
+The 8259 is still Rust: its four-write initialisation sequence and its mask
+register, plus the end-of-interrupt each handler sends. Those are one decision
+and they move together, or the command port ends up named in two files.
+
+What a tick *means* has always been the program's, including programming the
+PIT's divisor, which `program.lk` does with the same `port_out_u8` its UART
+driver uses.
+
+### The stride that was derived wrong
+
+The 32 exception stubs are a `.rept` in the board's assembly, padded to a fixed
+stride, and `program.lk` computes a stub's address from it. It asks the
+assembler for the stride rather than naming 16 — `(ISR_STUBS_END - ISR_STUBS) /
+32` — because a copy of that number on the LK side is a copy nothing checks.
+
+Deriving it was right and the derivation was wrong. `.align 16` sits at the
+*top* of each iteration, so the array ended nine bytes into its final slot:
+span 505, stride 15, and every gate but the first pointed into the middle of the
+stub before it. The `fault-probe` build reported a page fault as **vector 2**,
+with the faulting address sitting in the error-code field.
+
+Two fixes, and the second is the useful one. The assembly now pads after the
+last stub as well. And `program.lk` checks that the span divides by 32 before
+dividing, which costs one modulo at boot and is the thing that would have said
+so out loud:
+
+```lk
+if ((span % EXCEPTION_COUNT) != 0) {
+    uart_write(/* "bad isr stride" */);
+    halt();
+}
+```
+
+### Which comes first
+
+The program installs its table before anything can fault, and the board no
+longer touches interrupts at boot at all — `kernel_main` calls `main()` and the
+program asks for the PIC when it is ready. Between the two there is a window
+with no gate for any vector, and a fault with no gate is a triple fault, which
+on this machine is a silent reset.
+
+That window is why the deliberate fault moved. It used to be a `write_volatile`
+in `kernel_main`, which is now *before* the table exists — the probe stopped
+reporting anything and the machine simply reset, which is exactly the failure
+the probe exists to make impossible. It is an `#[extern]` the program calls
+immediately after installing the table, so what it lands in is the table the
+program actually built.
 
 The handler and the main program share a device, so `program.lk` masks
 interrupts around the lines it does not want spliced:

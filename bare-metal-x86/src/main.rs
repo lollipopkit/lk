@@ -194,6 +194,33 @@ pub(crate) fn write_hex(value: u64) {
     serial_write(unsafe { core::str::from_utf8_unchecked(&buf) });
 }
 
+
+/// A deliberate fault, so the exception path is exercised rather than merely
+/// present. Without a build that takes it, a broken reporter looks exactly like
+/// a working one — right up until the day something faults.
+///
+/// Called from `program.lk`, immediately after it installs its interrupt table,
+/// and that is not a detail: the table is the program's now, so before `main()`
+/// there is no gate for anything. Faulting here used to be a report; faulting
+/// there is a triple fault, which on this machine is a silent reset — the exact
+/// failure this probe exists to make impossible. Moving the probe to the other
+/// side of the install also makes it a stronger claim, because the table it
+/// lands in is the one the program actually built.
+///
+/// Empty without the feature, rather than absent: `program.lk` calls it either
+/// way, and a call that does nothing costs less than two versions of the
+/// program's boot sequence.
+#[unsafe(no_mangle)]
+pub extern "C" fn lk_fault_probe() {
+    #[cfg(feature = "fault-probe")]
+    // SAFETY: nothing about this is safe — that is the point. The address is
+    // 36 bits wide, far past the identity map, so the access cannot land on
+    // anything real.
+    unsafe {
+        core::ptr::write_volatile(0x9_0000_0000u64 as *mut u64, 1)
+    };
+}
+
 /// Where the compiled code's result is left, so it cannot be optimised away and
 /// a debugger or test harness can read it.
 #[unsafe(no_mangle)]
@@ -213,17 +240,17 @@ pub extern "C" fn kernel_main() -> ! {
     // The TSS before the IDT: a gate that can be raised from ring 3 needs a
     // ring-0 stack to switch to, and the CPU reads that from the TSS.
     user::init();
-    // The handler transmits, and it can fire from here on — which is why the
-    // UART is already up.
-    interrupts::init();
+    // No `interrupts::init()` here any more. The interrupt table is the
+    // program's — `program.lk` builds its own gates and loads them — so the
+    // board cannot enable interrupts before it, and does not try. What the
+    // board still owns is `interrupts::stop()` below, because it runs after
+    // the program has returned and there is no program left to ask.
+    //
+    // The window this opens is real and was already there: between here and
+    // the program's `idt_install()` a fault has no gate, and a fault with no
+    // gate is a triple fault, which on this machine is a silent reset. It is
+    // the first thing `program.lk` does for exactly that reason.
 
-    // A deliberate fault, so the exception path is exercised rather than
-    // merely present. Without a build that takes it, a broken reporter looks
-    // exactly like a working one — right up to the day something faults.
-    #[cfg(feature = "fault-probe")]
-    unsafe {
-        core::ptr::write_volatile(0x9_0000_0000u64 as *mut u64, 1)
-    };
     // SAFETY: `main` is the object emitted by `lk compile object:`, linked by
     // build.rs, and takes no arguments.
     let result = unsafe { main() };

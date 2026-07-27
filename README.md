@@ -69,8 +69,11 @@ PS/2 keyboard and mouse, an ATA disk, a read-only tar filesystem, a free-list
 allocator, a window manager with dragging and stacking — and ring 3, with
 checked syscalls and an address space per user task.
 
-The drivers are LK modules (`drivers/*.lk`); what is Rust is the part a language
-should not own: the linker script, the boot path, the interrupt trampolines.
+The drivers are LK modules (`drivers/*.lk`), and so is the interrupt table
+itself — LK builds all 256 gates and loads them with `lidt`. What is Rust is the
+part a language should not own: the linker script, the boot path, and the
+interrupt trampolines, because an interrupt is not a call and the code it lands
+in has to have every register spilled before a compiled handler can run.
 
 Eleven QEMU checks run in CI, and each asserts what the machine *scanned out* or
 what the disk image holds afterwards — not what the program believes it did.

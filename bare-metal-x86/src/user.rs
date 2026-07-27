@@ -23,13 +23,10 @@
 
 use core::arch::global_asm;
 
-/// The vector a user task asks the kernel through.
-///
-/// 0x80 by tradition, and past the PIC's remapped range so no device can raise
-/// it. Its gate is the only one with DPL 3: every other vector is the kernel's,
-/// and a ring-3 `int` at one of them is a general protection fault rather than a
-/// way in.
-pub const SYSCALL_VECTOR: usize = 0x80;
+// The syscall vector is 0x80, spelled as an immediate in the ring-3 programs
+// below and named `VECTOR_SYSCALL` in `program.lk`, which installs its gate —
+// the only gate with DPL 3, which is what makes it the one vector ring 3 can
+// raise and every other one a general protection fault.
 
 /// What a user task can ask for.
 ///

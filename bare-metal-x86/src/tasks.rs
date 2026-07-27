@@ -118,12 +118,6 @@ unsafe fn prepare_stack_in(top: *mut u8, entry: u64, code: u64, data: u64, resum
     sp
 }
 
-/// The vector a task uses to ask for a reschedule.
-///
-/// Past the PIC's remapped range, so it can only arrive from an `int`
-/// instruction — there is no device behind it, and nothing to acknowledge.
-pub const YIELD_VECTOR: usize = 0x30;
-
 /// Gives up the rest of this task's slice.
 ///
 /// A software interrupt rather than a direct call: the switch has to happen
@@ -134,7 +128,13 @@ pub const YIELD_VECTOR: usize = 0x30;
 /// program asks the board for something the board alone can do.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_yield() {
-    // SAFETY: the vector has a gate, installed before interrupts were enabled.
+    // The number is a literal here and named `VECTOR_YIELD` in `program.lk`,
+    // which is the file that installs its gate. Two spellings of one number,
+    // and this is the side that cannot avoid it: `int` takes its vector as an
+    // immediate, so there is no operand to pass one in through.
+    //
+    // SAFETY: the vector has a gate — `program.lk` installs it before it asks
+    // the board to enable interrupts, which is the only order that works.
     unsafe { core::arch::asm!("int 0x30", options(nomem, nostack)) };
 }
 

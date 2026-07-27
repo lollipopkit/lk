@@ -21,6 +21,8 @@ use { read_scancode, is_release, key_code, is_shift, is_caps_lock } from "driver
 use { mouse_init, has_packet_byte, read_packet_byte as mouse_byte, is_first_byte,
       dx_of, dy_of, left_down } from "drivers/mouse";
 use { start as pit_start } from "drivers/pit";
+use { table_size as idt_table_size, zero as idt_zero, set_gate as idt_set_gate,
+      install as idt_install } from "drivers/idt";
 use { acquire as lock, release as unlock } from "drivers/lock";
 use { define as window_define, put as window_put, fill as window_fill,
       dropped as window_dropped, outline as window_outline,
@@ -307,6 +309,21 @@ const GRID_ROWS = 25;
 
 // The end of what is spoken for. Anything added goes here, not into a gap.
 const SHARED_END = SHARED_GRID + GRID_COLUMNS * GRID_ROWS;
+
+// The interrupt descriptor table.
+//
+// Not a shared word like everything above — nothing in this program reads it.
+// The *CPU* reads it, on every interrupt, at the address `lidt` was given. It
+// is here because this is the region the memory map set aside for things with
+// no allocator behind them, and because the rule this file states about that
+// region ("anything added goes here, not into a gap") is what keeps two of them
+// from landing on each other.
+//
+// Rounded up to sixteen: a gate is sixteen bytes, and a table that starts
+// mid-gate is one where every entry straddles two of them. The CPU does not
+// require the alignment, which is exactly why nothing would report its absence.
+// Anything added after this one starts at `IDT_BASE + idt_table_size()`.
+const IDT_BASE = (((SHARED_END + 15) / 16) as Int) * 16;
 
 // The framebuffer is twice the screen's height. Scrolling moves the *view*
 // down through it; only when the view reaches the bottom does anything have to
@@ -1292,6 +1309,102 @@ fn spawn_task(entry: Int) -> Int {
 fn task_yield() {
 }
 
+// Brings up the 8259 and lets interrupts through.
+//
+// The board's, because the PIC's initialisation sequence and its mask register
+// are the last thing here that has no LK spelling yet. It takes the base vector
+// as an argument rather than knowing one: this file decides what each vector
+// means, so this file is where that number lives.
+#[extern("lk_interrupts_start")]
+fn interrupts_start(pic_base: Int) {
+}
+
+// A deliberate fault, when the image was built with the `fault-probe` feature;
+// nothing otherwise.
+//
+// Called immediately after the table is installed, because that is the earliest
+// moment there is a gate to land in — and because the table it lands in should
+// be the one this file just built. A reporter that is never made to report is
+// indistinguishable from one that cannot.
+#[extern("lk_fault_probe")]
+fn fault_probe() {
+}
+
+// The vector map. Which number means what is a decision, not a property of the
+// machine — the only constraint the hardware imposes is that 0..32 belong to
+// the CPU's own exceptions, which is why the PIC is remapped away from them at
+// all.
+const VECTOR_TIMER = 0x20;
+const VECTOR_KEYBOARD = 0x21;
+// IRQ12, on the *slave* chip: 0x20 + 8 + 4. Its interrupts reach the CPU
+// through the master's IRQ2 cascade line.
+const VECTOR_MOUSE = 0x2c;
+// Past the PIC's remapped range, so no device can raise either: there is
+// nothing behind them but an `int` instruction. The reschedule one is the
+// board's own (`kernel_yield` executes `int 0x30`); the syscall is the ring-3
+// program's, and its gate is the only one a ring-3 caller may raise.
+const VECTOR_YIELD = 0x30;
+const VECTOR_SYSCALL = 0x80;
+// The 64-bit code selector the boot GDT defines, which every gate enters
+// through.
+const KERNEL_CODE_SELECTOR = 0x08;
+const EXCEPTION_COUNT = 32;
+
+// Builds the interrupt table and loads it.
+//
+// The first thing the program does, and it has to be: until this runs there is
+// no gate for any vector, and a fault with no gate is a triple fault — which on
+// this machine is a reset with nothing printed. Every line below this one is
+// covered; nothing above it is.
+fn install_interrupt_table() {
+    idt_zero(IDT_BASE);
+
+    // The CPU's own exceptions, one stub each so the report can name the
+    // vector. The stubs are a `.rept` in the board's assembly, padded to a
+    // fixed stride — and the stride is *measured* here rather than named,
+    // because the assembler's `.align` is what decides it and a copy of that
+    // number on this side would be a copy nothing checks.
+    // The annotations are not decoration: an `unsafe` block's type is `Any`,
+    // and arithmetic on two of them produces something with no `as Int` out of
+    // it. Saying what the program knows at the binding is where it belongs.
+    let stubs: Int = unsafe { symbol_address("ISR_STUBS") };
+    let stubs_end: Int = unsafe { symbol_address("ISR_STUBS_END") };
+    let span = stubs_end - stubs;
+    // The stride is only derivable if the array really is 32 equal slots. It
+    // was not, once: the assembler padded the *front* of each stub and not the
+    // back, so the span was 505 and this division gave 15 — after which every
+    // gate but the first pointed into the middle of the stub before it. The
+    // check costs one modulo at boot and is the thing that would have said so.
+    if ((span % EXCEPTION_COUNT) != 0) {
+        // "bad isr stride"
+        uart_write([98, 97, 100, 32, 105, 115, 114, 32, 115, 116, 114, 105, 100, 101, 10]);
+        halt();
+    }
+    let stride = ((span / EXCEPTION_COUNT) as Int);
+    for vector in 0..EXCEPTION_COUNT {
+        idt_set_gate(IDT_BASE, vector, stubs + vector * stride, KERNEL_CODE_SELECTOR, 0);
+    }
+
+    // The devices. Each names a trampoline: an interrupt is not a call, so the
+    // gate cannot point at a compiled function directly — it points at the stub
+    // that spills every caller-saved register first and leaves with `iretq`.
+    idt_set_gate(IDT_BASE, VECTOR_TIMER,
+                 unsafe { symbol_address("__task_trampoline") }, KERNEL_CODE_SELECTOR, 0);
+    idt_set_gate(IDT_BASE, VECTOR_KEYBOARD,
+                 unsafe { symbol_address("__keyboard_trampoline") }, KERNEL_CODE_SELECTOR, 0);
+    idt_set_gate(IDT_BASE, VECTOR_MOUSE,
+                 unsafe { symbol_address("__mouse_trampoline") }, KERNEL_CODE_SELECTOR, 0);
+    idt_set_gate(IDT_BASE, VECTOR_YIELD,
+                 unsafe { symbol_address("__yield_trampoline") }, KERNEL_CODE_SELECTOR, 0);
+    // The one gate with DPL 3, and the whole reason the others have DPL 0: a
+    // ring-3 task can raise this vector and no other. `int 0x21` from ring 3
+    // would otherwise be a way to fake a keystroke.
+    idt_set_gate(IDT_BASE, VECTOR_SYSCALL,
+                 unsafe { symbol_address("__syscall_trampoline") }, KERNEL_CODE_SELECTOR, 3);
+
+    idt_install(IDT_BASE);
+}
+
 // Repaints a window's frame if the focus has moved since it last did.
 //
 // Each window does this for itself, on its own turn. The key handler that
@@ -1810,8 +1923,16 @@ fn on_key() {
 }
 
 uart_init();
-// ~1 kHz. The board has already unmasked IRQ0 and enabled interrupts; what
-// this decides is how often it fires.
+// Before anything that can fault, and before anything that can be interrupted.
+install_interrupt_table();
+// And immediately, on a probe build, something that faults.
+fault_probe();
+// Now the chip that raises them, and the flag that lets them through. In that
+// order: an interrupt taken before the table was loaded goes wherever the
+// previous table said, and there is no previous table.
+interrupts_start(VECTOR_TIMER);
+// ~1 kHz. IRQ0 is unmasked and interrupts are on; what this decides is how
+// often it fires.
 pit_start(1193);
 
 let slot = pci_find_display();

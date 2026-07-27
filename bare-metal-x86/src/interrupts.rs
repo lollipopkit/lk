@@ -7,53 +7,6 @@
 
 use core::arch::global_asm;
 
-/// One IDT entry. The handler address is split across three fields because the
-/// layout predates 64-bit addresses and was extended twice.
-#[repr(C)]
-#[derive(Clone, Copy, Default)]
-struct Gate {
-    offset_low: u16,
-    selector: u16,
-    ist: u8,
-    type_attr: u8,
-    offset_mid: u16,
-    offset_high: u32,
-    reserved: u32,
-}
-
-#[repr(C, packed)]
-struct Descriptor {
-    limit: u16,
-    base: u64,
-}
-
-/// 256 entries because the CPU indexes this table by vector number and will
-/// read whatever is at the index it computes — a short table is a fault that
-/// reads past the end.
-static mut IDT: [Gate; 256] = [Gate {
-    offset_low: 0,
-    selector: 0,
-    ist: 0,
-    type_attr: 0,
-    offset_mid: 0,
-    offset_high: 0,
-    reserved: 0,
-}; 256];
-
-/// Where the PIC's IRQ0 is remapped to. 0-31 are reserved for CPU exceptions,
-/// and the PIC's power-on default overlaps them — which is why every kernel
-/// remaps it before enabling interrupts.
-const PIT_VECTOR: usize = 0x20;
-
-/// The PS/2 keyboard is IRQ1, one past the timer.
-const KEYBOARD_VECTOR: usize = 0x21;
-
-/// The PS/2 mouse is IRQ12, which is on the *slave* PIC — vector 0x20 + 8 + 4.
-/// Its interrupts reach the CPU through the master's IRQ2 cascade line, so
-/// unmasking IRQ12 alone does nothing: IRQ2 has to be unmasked as well, and
-/// its end-of-interrupt has to be sent to both chips.
-const MOUSE_VECTOR: usize = 0x2c;
-
 /// The 8259 pair's command and data ports.
 const PIC1_CMD: u16 = 0x20;
 const PIC1_DATA: u16 = 0x21;
@@ -70,102 +23,46 @@ unsafe extern "C" {
     fn __yield_trampoline();
 }
 
-/// Fills in one gate.
+/// Remaps the PIC, unmasks the lines that have handlers, and enables interrupts.
 ///
-/// # Safety
+/// Called *from `program.lk`*, not from `kernel_main`, and the order is the
+/// reason: the program builds its own interrupt table now, and enabling
+/// interrupts before it has been loaded would take the first tick through
+/// whatever the old table said. Naming this from LK is how that order becomes
+/// something the program states rather than something two files agree about.
 ///
-/// `handler` must be a function the CPU can enter with an interrupt frame on
-/// the stack — one of the stubs in this file, not an ordinary Rust function.
-unsafe fn set_gate(idt: *mut [Gate; 256], vector: usize, handler: u64) {
-    // SAFETY: as the caller's.
-    unsafe { set_gate_dpl(idt, vector, handler, 0) }
-}
-
-/// As [`set_gate`], with the privilege level a caller must have to raise the
-/// vector with an `int` instruction.
-///
-/// Zero for everything a *device* raises: a ring-3 `int 0x21` would otherwise
-/// let a user task fake a keystroke. Three for exactly one vector, which is the
-/// syscall — the door the ring boundary exists to make the only one.
-///
-/// # Safety
-///
-/// As [`set_gate`].
-unsafe fn set_gate_dpl(idt: *mut [Gate; 256], vector: usize, handler: u64, dpl: u8) {
+/// What is left here is what the 8259 is: a chip with a four-write
+/// initialisation sequence and a mask register. It moves next, together with
+/// the end-of-interrupt its handlers send — those are one decision, and
+/// splitting them across the boundary would put the command port in two files.
+// TODO: move the PIC to `drivers/pic.lk` along with the EOI in the dispatch
+// functions below, and delete this.
+#[unsafe(no_mangle)]
+pub extern "C" fn lk_interrupts_start(pic_base: i64) {
+    // SAFETY: fixed ISA ports, and a flag instruction on a single-threaded
+    // boot path whose interrupt table is already loaded.
     unsafe {
-        (*idt)[vector] = Gate {
-            offset_low: handler as u16,
-            // The 64-bit code selector the boot GDT defines.
-            selector: 0x08,
-            ist: 0,
-            // Present, ring 0, 64-bit interrupt gate. "Interrupt" rather than
-            // "trap" matters: it clears IF on entry, so the handler cannot be
-            // re-entered by the same interrupt before it acknowledges.
-            type_attr: 0x8e | (dpl << 5),
-            offset_mid: (handler >> 16) as u16,
-            offset_high: (handler >> 32) as u32,
-            reserved: 0,
-        };
-    }
-}
-
-/// Builds the IDT, remaps the PIC, unmasks the timer and enables interrupts.
-pub fn init() {
-    let handler = __task_trampoline as *const () as usize as u64;
-    // SAFETY: single-threaded boot path; nothing else touches the IDT, and
-    // interrupts are still masked until the `sti` at the end.
-    unsafe {
-        let idt = &raw mut IDT;
-        // Vectors 0-31 are the CPU's own exceptions. Without gates for them a
-        // fault becomes a double fault becomes a triple fault, which on this
-        // machine is a silent reset loop — the failure mode that tells you
-        // nothing at all. One stub each, so the report can name the vector.
-        let stubs = &raw const ISR_STUBS as usize;
-        for vector in 0..32 {
-            set_gate(idt, vector, (stubs + vector * STUB_STRIDE) as u64);
-        }
-        set_gate(idt, PIT_VECTOR, handler);
-        set_gate(
-            idt,
-            KEYBOARD_VECTOR,
-            __keyboard_trampoline as *const () as usize as u64,
-        );
-        set_gate(idt, MOUSE_VECTOR, __mouse_trampoline as *const () as usize as u64);
-        // The one gate a ring-3 task may raise itself.
-        set_gate_dpl(
-            idt,
-            crate::user::SYSCALL_VECTOR,
-            __syscall_trampoline as *const () as usize as u64,
-            3,
-        );
-        // The vector a task uses to ask for a reschedule. No device is behind
-        // it, so it can only arrive from an `int` instruction.
-        set_gate(
-            idt,
-            crate::tasks::YIELD_VECTOR,
-            __yield_trampoline as *const () as usize as u64,
-        );
-        let descriptor = Descriptor {
-            limit: (core::mem::size_of_val(&*idt) - 1) as u16,
-            base: idt as u64,
-        };
-        core::arch::asm!("lidt [{}]", in(reg) &descriptor, options(readonly, nostack, preserves_flags));
-
         // Remap the PIC. The initialisation sequence is four writes per chip,
         // in order, and the chip latches them as ICW1-ICW4.
         crate::port_out_u8(PIC1_CMD, 0x11); // ICW1: begin init, expect ICW4
         crate::port_out_u8(PIC2_CMD, 0x11);
-        crate::port_out_u8(PIC1_DATA, PIT_VECTOR as u8); // ICW2: vector offsets
-        crate::port_out_u8(PIC2_DATA, PIT_VECTOR as u8 + 8);
+        // ICW2: where each chip's eight lines land. The number comes from the
+        // caller because the caller is what decides it: `program.lk` builds the
+        // gates, so it is the one place that knows which vector means the timer.
+        // Naming it here as well would be a second answer to a question with
+        // one, and the failure of the two disagreeing is a device raising a
+        // vector nothing filled in.
+        crate::port_out_u8(PIC1_DATA, pic_base as u8);
+        crate::port_out_u8(PIC2_DATA, pic_base as u8 + 8);
         crate::port_out_u8(PIC1_DATA, 0x04); // ICW3: slave on IRQ2
         crate::port_out_u8(PIC2_DATA, 0x02);
         crate::port_out_u8(PIC1_DATA, 0x01); // ICW4: 8086 mode
         crate::port_out_u8(PIC2_DATA, 0x01);
         // Unmask the timer, the keyboard and the cascade; mask the rest. An
-        // unmasked line with no handler is a vector into a zeroed IDT entry,
-        // which is a triple fault. The cascade (IRQ2) is not a device — it is
-        // how the slave chip reaches the CPU at all, so the mouse's IRQ12 is
-        // invisible without it.
+        // unmasked line with no handler is a vector into a not-present gate,
+        // which is a general protection fault inside an interrupt. The cascade
+        // (IRQ2) is not a device — it is how the slave chip reaches the CPU at
+        // all, so the mouse's IRQ12 is invisible without it.
         crate::port_out_u8(PIC1_DATA, 0xf8);
         crate::port_out_u8(PIC2_DATA, 0xef);
 
@@ -323,15 +220,6 @@ global_asm!(
     "   iretq",
 );
 
-/// Each stub is padded to this, so their addresses are computable rather than
-/// needing 32 labels. A stub is at most nine bytes: two `push imm8` and a
-/// `jmp rel32`.
-const STUB_STRIDE: usize = 16;
-
-unsafe extern "C" {
-    /// The first of the 32 exception stubs.
-    static ISR_STUBS: u8;
-}
 
 /// Where every CPU exception ends up.
 ///
@@ -412,6 +300,22 @@ global_asm!(
     "   jmp __exception_common",
     "   .set vec, vec + 1",
     ".endr",
+    // Past the *padding* of the last stub, not past its last instruction.
+    //
+    // The `.align 16` above is at the top of each iteration, so without this
+    // one the array ends nine bytes into its final slot and `end - start` is
+    // 505 rather than 512. The caller divides by 32 to get the stride, gets 15,
+    // and every stub after the first is entered at an address inside the one
+    // before it. That is what happened: a deliberate page fault reported itself
+    // as vector 2, with the faulting address in the error-code field.
+    ".align 16",
+    // One past the last stub. `program.lk` needs the stride to compute a
+    // stub's address, and this is what lets it *derive* one — `(end - start)
+    // / 32` — instead of naming 16 a second time. The `.align 16` above is
+    // what decides the stride, and a copy of it on the other side of the
+    // language boundary would be a number nothing checks.
+    ".global ISR_STUBS_END",
+    "ISR_STUBS_END:",
     "__exception_common:",
     // [rsp] = vector, +8 = error code, +16 = faulting RIP.
     "   mov rdi, [rsp]",
