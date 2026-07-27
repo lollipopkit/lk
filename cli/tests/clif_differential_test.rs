@@ -981,3 +981,57 @@ fn a_module_that_only_reads_a_parameter_still_bundles() {
         "a read-only bundled module diverged"
     );
 }
+
+/// An imported function's signature is visible to the type checker.
+///
+/// Without it the name is `Any`: a range bound, a condition and a cast all
+/// need better than that, so a program that reads perfectly well needs
+/// annotations that say nothing — and a call with the wrong number of
+/// arguments is not checked at all, surfacing much later from the native
+/// lowering as "opcode CallDirect is not natively lowerable", which names
+/// neither the call nor the reason.
+#[test]
+fn an_imported_signature_is_checked() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    std::fs::write(
+        dir.path().join("lib.lk"),
+        "fn add(a: Int, b: Int) -> Int { return a + b; }\nfn count() -> Int { return 3; }\n",
+    )
+    .expect("write dep");
+    // A range bound and a cast, neither of which accepts `Any`.
+    std::fs::write(
+        dir.path().join("ok.lk"),
+        "use { add, count } from \"lib\";\n\
+         let total = 0;\n\
+         for i in 0..count() { total = total + add(i, 1); }\n\
+         return total;\n",
+    )
+    .expect("write ok");
+    std::fs::write(dir.path().join("bad.lk"), "use { add } from \"lib\";\nreturn add(1);\n").expect("write bad");
+
+    let ok = Command::new(bin_path())
+        .current_dir(dir.path())
+        .args(["check", "ok.lk"])
+        .output()
+        .expect("spawn check");
+    assert!(
+        ok.status.success(),
+        "an imported signature should make annotations unnecessary: {}",
+        String::from_utf8_lossy(&ok.stderr)
+    );
+
+    let bad = Command::new(bin_path())
+        .current_dir(dir.path())
+        .args(["check", "bad.lk"])
+        .output()
+        .expect("spawn check");
+    assert!(
+        !bad.status.success(),
+        "a wrong-arity call across a module must be caught"
+    );
+    let stderr = String::from_utf8_lossy(&bad.stderr);
+    assert!(
+        stderr.contains("arguments"),
+        "the error should be about the call, not an opcode: {stderr}"
+    );
+}

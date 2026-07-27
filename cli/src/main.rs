@@ -566,6 +566,16 @@ fn main() -> anyhow::Result<()> {
     let macro_free = expansion.proc_macro_dependencies.is_empty();
     let program = expansion.program;
 
+    // Cross-file signatures, checked here rather than inside the VM: the type
+    // check `execute_with_ctx` runs has no path to resolve imports against, so
+    // this is the only place a running program gets the same checking that
+    // `lk check` and `lk compile` give it.
+    {
+        let mut checker = TypeChecker::new();
+        seed_imports(&program, &safe, &mut checker);
+        program.type_check(&mut checker)?;
+    }
+
     let mut base_env = build_vm_context(&safe)?;
 
     let profile_enabled = vm_profile_enabled();
@@ -779,6 +789,7 @@ fn run_type_check(path: &Path) -> anyhow::Result<()> {
         anyhow::anyhow!(parse_err.to_string())
     })?;
     let mut checker = TypeChecker::new_strict();
+    seed_imports(&expanded.program, path, &mut checker);
     if let Err(err) = expanded.program.type_check(&mut checker) {
         let mut message = err.to_string();
         if let Some(span) = type_error_span(&err, &expanded.source.tokens, &expanded.source.spans)
@@ -1529,4 +1540,15 @@ fn pool_index_by<T>(pool: &mut Vec<T>, value: T, eq: impl Fn(&T, &T) -> bool) ->
     }
     pool.push(value);
     u16::try_from(pool.len() - 1).map_err(|_| anyhow::anyhow!("constant pool index overflow"))
+}
+
+/// Gives the checker the signatures of everything `path`'s program imports
+/// from other files.
+///
+/// Without it those names are `Any`, and a call across a module boundary is
+/// not checked at all — the error surfaces much later, from the native
+/// lowering, naming an opcode rather than the call.
+fn seed_imports(program: &lk_core::stmt::Program, path: &Path, checker: &mut TypeChecker) {
+    let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
+    lk_core::typ::seed_imported_signatures(program, base_dir, checker);
 }

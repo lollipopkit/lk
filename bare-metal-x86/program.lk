@@ -11,7 +11,7 @@
 // them. They live here rather than in the driver modules for the same reason:
 // a driver decodes a scancode, but only the program knows what to do with it.
 
-use { uart_init, uart_putc, uart_write, uart_put_int, uart_put_hex } from "drivers/serial";
+use { uart_init, uart_putc, uart_write, uart_put_int, uart_put_hex, pow2 } from "drivers/serial";
 use { pci_read, pci_write, pci_find_display, PCI_REG_BAR0, PCI_REG_COMMAND,
       PCI_COMMAND_MEMORY, PCI_COMMAND_BUS_MASTER } from "drivers/pci";
 use { vbe_set_mode } from "drivers/vbe";
@@ -263,21 +263,11 @@ fn line_tail(start: Int) -> List<Int> {
     return out.slice(1, out.len());
 }
 
-// Local rather than imported: an imported function's result is `Any` to the
-// type checker, and a cast needs a numeric type to start from.
-fn power_of_two(bits: Int) -> Int {
-    let value = 1;
-    for i in 0..bits {
-        value = value * 2;
-    }
-    return value;
-}
-
 fn hex(value: Int) -> List<Int> {
     let out = [0];
     let shift = 28;
     while (shift >= 0) {
-        let nibble = ((value / power_of_two(shift)) as Int) & 0xf;
+        let nibble = ((value / pow2(shift)) as Int) & 0xf;
         if (nibble < 10) {
             out.push(48 + nibble);
         } else {
@@ -314,12 +304,10 @@ fn decimal(value: Int) -> List<Int> {
 fn largest_available_base() -> Int {
     let best_base = 0;
     let best_length = 0;
-    let count: Int = entry_count();
-    for i in 0..count {
-        let entry: Int = entry_at(i);
-        let available: Bool = entry_is_available(entry);
-        if (entry >= 0 && available) {
-            let length: Int = entry_length(entry);
+    for i in 0..entry_count() {
+        let entry = entry_at(i);
+        if (entry >= 0 && entry_is_available(entry)) {
+            let length = entry_length(entry);
             if (length > best_length) {
                 best_length = length;
                 best_base = entry_base(entry);
@@ -331,12 +319,10 @@ fn largest_available_base() -> Int {
 
 fn largest_available_length() -> Int {
     let best_length = 0;
-    let count: Int = entry_count();
-    for i in 0..count {
-        let entry: Int = entry_at(i);
-        let available: Bool = entry_is_available(entry);
-        if (entry >= 0 && available) {
-            let length: Int = entry_length(entry);
+    for i in 0..entry_count() {
+        let entry = entry_at(i);
+        if (entry >= 0 && entry_is_available(entry)) {
+            let length = entry_length(entry);
             if (length > best_length) {
                 best_length = length;
             }
@@ -346,8 +332,7 @@ fn largest_available_length() -> Int {
 }
 
 fn report_memory(base: Int) {
-    let mapped: Bool = has_mmap();
-    if (!mapped) {
+    if (!has_mmap()) {
         // "no map"
         emit(base, [110, 111, 32, 109, 97, 112]);
         return;
@@ -394,7 +379,7 @@ fn run_command(base: Int) -> Int {
         return 1;
     }
     if (line_starts_with([112, 97, 103, 101])) {           // "page"
-        let address: Int = page_alloc(SHARED_PAGES);
+        let address = page_alloc(SHARED_PAGES);
         if (address == 0) {
             // "none"
             emit(base, [110, 111, 110, 101]);

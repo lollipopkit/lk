@@ -90,19 +90,17 @@ The pointer's address appears in `boot.rs` and in `program.lk` as
 `SHARED_MULTIBOOT`. A bare number, because an LK program has no way to name a
 linker symbol — changing one without the other is the hazard.
 
-## A note on types across modules
+## Types across modules
 
-Several places in `program.lk` annotate a local that looks like it needs no
-annotation:
+An imported function's signature is visible to the type checker, so
+`for i in 0..entry_count()` needs no annotation and a call with the wrong
+number of arguments is caught where it is written. What the checker reads is
+only what the imported file *states* — its annotations — not what inference
+would derive from its bodies.
 
-```lk
-let count: Int = entry_count();
-```
-
-An imported function's signature is not visible to the type checker, so its
-result is `Any` — and a range bound, a condition, and a cast all need something
-better than that. The annotation is where the program supplies it. This is a
-gap in the checker rather than a property of the language.
+Argument *types* are still unchecked, across a module and within one: LK
+accepts `add(1, "x")` for `fn add(a: Int, b: Int)`. That is a property of the
+checker today, not of module boundaries.
 
 Every line of that came from LK code driving four devices by three different
 mechanisms:

@@ -84,6 +84,13 @@ pub(super) fn compile_instr_artifact_with_dependencies(path: &Path) -> anyhow::R
     // valid: `let x: Int = "s"; println(x);` failed at run time under the VM but
     // compiled and *ran* fine as a native binary, printing `s`.
     let mut type_checker = lk_core::typ::TypeChecker::new();
+    // Cross-file signatures first: without them an imported call is unchecked
+    // here and fails much later in the lowering, naming an opcode.
+    lk_core::typ::seed_imported_signatures(
+        &expansion.program,
+        path.parent().unwrap_or_else(|| Path::new(".")),
+        &mut type_checker,
+    );
     expansion
         .program
         .type_check(&mut type_checker)
