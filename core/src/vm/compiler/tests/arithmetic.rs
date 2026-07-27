@@ -331,3 +331,45 @@ fn compiler_wraps_machine_ints_whose_width_was_inferred() {
         "a u32 sum must wrap the same way however its width was learned"
     );
 }
+
+/// A width fact does not outlive the value it described.
+///
+/// `machine_regs` is keyed by register, and registers are recycled: the one a
+/// `u32` lived in inside a branch is handed to the next binding after it. If
+/// the fact stayed, an unrelated `Int` would inherit it and wrap — a wrong
+/// answer with nothing to point at, which is what the note in
+/// `emit_bin_op_to_register_with_flavor` has always warned about.
+///
+/// Every site that writes a register used to be responsible for remembering to
+/// clear. Now a binding clears its destination *before* anything is lowered
+/// into it, and a move carries the source's width or clears it — so the fact is
+/// established by whatever landed in the register, not by whatever was there
+/// before.
+#[test]
+fn compiler_does_not_let_a_machine_width_outlive_its_value() {
+    let module = compile_source_module(
+        r#"
+        fn narrow(flag: Bool) -> Int {
+            if (flag) {
+                let x: u32 = 4000000000;
+                let y: u32 = 4000000000;
+                return (x + y) as Int;
+            }
+            // The same registers, now holding plain integers. 8000000000 fits
+            // in an Int and must not come back as a u32 sum.
+            let p = 4000000000;
+            let q = 4000000000;
+            return p + q;
+        }
+        return narrow(false) + narrow(true);
+        "#,
+    )
+    .expect("compile module");
+
+    let result = execute_module(&module).expect("execute module");
+    assert_eq!(
+        result.returns,
+        vec![crate::val::RuntimeVal::Int(8_000_000_000 + 3_705_032_704)],
+        "the Int branch must not inherit the u32 branch's width"
+    );
+}

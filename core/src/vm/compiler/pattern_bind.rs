@@ -29,6 +29,13 @@ impl Compiler {
             // the cache: the literal store becomes a register move.
             let watermark = self.next_reg;
             let cacheable = self.top_level_binding_is_cacheable(name);
+            // The destination stops claiming a width before anything is lowered
+            // into it. What lands there then establishes its own — a move
+            // carries the source's, arithmetic sets or clears it — and the
+            // annotation, if there is one, has the last word. Clearing first is
+            // what makes a width fact impossible to outlive its value: the
+            // register may have held a `u32` in a branch that has since been
+            // recycled.
             let slot = if let Some(slot) = self.locals.get(name).copied() {
                 if self.active_loop_binding_slot(name) == Some(slot) || self.cell_locals.contains(name) {
                     // A fresh binding must not write the old register in
@@ -44,6 +51,7 @@ impl Compiler {
             } else {
                 self.alloc_reg()
             };
+            self.machine_regs.remove(&slot);
             if !self.try_lower_expr_to_register(slot, value)? {
                 let value = self.lower_expr(value)?;
                 let move_source = !self.is_current_local_slot(value);
@@ -69,12 +77,15 @@ impl Compiler {
             // `fn read() -> u32` — see `initializer_machine_width`.
             match type_annotation {
                 Some(_) => self.note_machine_reg(slot, type_annotation),
-                None => match self.initializer_machine_width(value) {
-                    Some(kind) => {
+                // A call establishes nothing on its own, so its declared width
+                // is applied here. Anything else keeps whatever the value that
+                // landed in the register established, which is now the answer
+                // rather than a guess.
+                None => {
+                    if let Some(kind) = self.initializer_machine_width(value) {
                         self.machine_regs.insert(slot, kind);
                     }
-                    None => self.note_machine_reg(slot, None),
-                },
+                }
             }
             self.insert_fresh_local(name.clone(), slot);
             self.next_reg = self.live_register_floor().max(watermark).max(slot + 1);

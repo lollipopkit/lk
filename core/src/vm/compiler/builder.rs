@@ -89,6 +89,24 @@ impl Compiler {
         if dst == src {
             return Ok(());
         }
+        // A machine int keeps its width when it is moved, and a register that
+        // receives a value of no particular width stops claiming one.
+        //
+        // Both halves in one place, because a width fact is only ever about the
+        // value *currently* in a register: the second half is what makes a
+        // stale width impossible rather than merely absent. Every site that
+        // wrote a register used to be responsible for remembering, and the
+        // comment in `emit_bin_op_to_register_with_flavor` says what forgetting
+        // costs — "a stale width fact that a later, unrelated value in the same
+        // register would inherit".
+        match self.machine_regs.get(&src).copied() {
+            Some(kind) => {
+                self.machine_regs.insert(dst, kind);
+            }
+            None => {
+                self.machine_regs.remove(&dst);
+            }
+        }
         let pc = self.function.code.len();
         self.emit(Instr::abc(
             Opcode::Move,

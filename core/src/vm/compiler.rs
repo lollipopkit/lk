@@ -80,7 +80,7 @@ pub struct Compiler {
     /// driver-ish code annotates its widths — and anything it cannot prove
     /// simply does not get the wrap, which the type checker has already
     /// rejected by then.
-    machine_regs: HashMap<u16, crate::val::IntKind>,
+    pub(super) machine_regs: HashMap<u16, crate::val::IntKind>,
     /// Top-level functions that declare a machine-int return, by name. Collected
     /// once so a `let` bound to a call can learn its width — see
     /// [`Compiler::initializer_machine_width`].
@@ -206,11 +206,6 @@ impl Compiler {
     pub(super) fn initializer_machine_width(&self, expr: &Expr) -> Option<crate::val::IntKind> {
         match expr {
             Expr::Paren(inner) => self.initializer_machine_width(inner),
-            Expr::Var(name) => self
-                .locals
-                .get(name)
-                .and_then(|reg| self.machine_regs.get(reg))
-                .copied(),
             // Both shapes, because name resolution rewrites a plain call:
             // `read()` is `Call("read", …)` in the parser's output and
             // `CallExpr(Var("read"), …)` by the time the compiler sees it.
