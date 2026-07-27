@@ -34,6 +34,11 @@ KEYS = (
     + ["s", "y", "n", "c", "ret"]
     + ["y", "i", "e", "l", "d", "ret"]
     + ["w", "i", "n", "ret"]
+    # Focus moves to the other pane, `help` is typed there, focus comes back.
+    # The shell must not answer the second one: that is the whole claim.
+    + ["tab"]
+    + ["h", "e", "l", "p", "ret"]
+    + ["tab"]
     + ["ret"] * 22
     + ["e", "x", "i", "t", "ret"]
 )
@@ -122,6 +127,12 @@ def main():
             raise SystemExit(f"shell: expected {expected!r} in the output")
     if EXPECTED_REPORT not in output:
         raise SystemExit(f"shell: expected {EXPECTED_REPORT!r} in the output")
+    answered = output.count("help clear echo")
+    if answered != 1:
+        raise SystemExit(
+            f"the shell answered `help` {answered} times, expected 1: "
+            "the second one was typed with the focus on another window"
+        )
 
     _magic, dimensions, _maxval, pixels = data.split(b"\n", 3)
     width, _height = (int(value) for value in dimensions.split())

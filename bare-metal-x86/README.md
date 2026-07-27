@@ -134,6 +134,26 @@ to still be background.
 Both halves of that check are load-bearing, and both have been seen to fail:
 replacing `window_put` with a direct `put_pixel` lights 35 of them.
 
+### Who gets the keyboard
+
+Tab moves the focus between the two windows. The key handler does not know what
+a keystroke *means* — only who it belongs to: it decodes the scancode and puts
+the byte in the focused window's ring (`drivers/queue.lk`), and stops there.
+Building a command line out of those bytes is the shell's own work, done in its
+task where allocating and printing are allowed.
+
+That split is what makes a second interactive window cost nothing extra. The
+pane beside the spinner drains its own ring and draws into its own rectangle;
+neither window can reach the other's pixels or the other's input.
+
+The ring drops bytes when it is full rather than blocking. A handler has no one
+to wait for, and the count of what it dropped is the only report it can make to
+someone who may not be listening.
+
+`check_shell.py` types `help`, presses Tab, types `help` again, and requires the
+shell to have answered exactly **once**. Routing every key to the shell makes it
+answer twice, which is what the check says when it fails.
+
 ### Sharing state between them
 
 Read, add, write is three steps. An interrupt landing between the read and the

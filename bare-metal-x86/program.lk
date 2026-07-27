@@ -23,6 +23,8 @@ use { acquire as lock, release as unlock } from "drivers/lock";
 use { define as window_define, put as window_put, fill as window_fill,
       dropped as window_dropped } from "drivers/window";
 use { glyph_row, glyph_width, glyph_rows } from "drivers/text";
+use { reset as queue_reset, push as queue_push, pop as queue_pop,
+      is_empty as queue_empty } from "drivers/queue";
 use { has_mmap, mem_upper_kb, entry_count, entry_at, entry_base, entry_length,
       entry_is_available } from "drivers/multiboot";
 use { init as pages_init, alloc as page_alloc, free as pages_free,
@@ -134,6 +136,13 @@ const SHARED_PAIR_B = 0x00300030;
 const SHARED_WINDOWS = 0x00300040;
 const WINDOW_SHELL = 0;
 const WINDOW_SPINNER = 1;
+// Which window the keyboard belongs to. Tab moves it.
+const SHARED_FOCUS = 0x00300034;
+// One input ring per window, 64 bytes apart.
+const SHARED_QUEUES = 0x00300200;
+const QUEUE_STRIDE = 64;
+// Where the spinner window's own echo has got to, in its own coordinates.
+const SHARED_PANE_COL = 0x00300038;
 const SHARED_LINE = 0x00300100;
 const LINE_CAPACITY = 48;
 
@@ -515,6 +524,24 @@ fn schedule(current: Int) -> Int {
 #[export("lk_task_b")]
 fn task_b() {
     while (true) {
+        // Its own input, when it has the focus. Drawn in its own window, in
+        // its own coordinates — nothing here can reach the shell's pixels
+        // even if the arithmetic is wrong.
+        let irq_in = lock();
+        while (!queue_empty(SHARED_QUEUES + WINDOW_SPINNER * QUEUE_STRIDE)) {
+            let typed = queue_pop(SHARED_QUEUES + WINDOW_SPINNER * QUEUE_STRIDE);
+            let column = shared_read(SHARED_PANE_COL);
+            if (typed == 10) {
+                column = 0;
+            } else {
+                draw_glyph_in_window(framebuffer_address(), WINDOW_SPINNER,
+                                     glyph_index(typed), column * CELL_WIDTH, CELL_HEIGHT);
+                column = column + 1;
+            }
+            shared_write(SHARED_PANE_COL, column % 10);
+        }
+        unlock(irq_in);
+
         let step = shared_bump(SHARED_SPIN);
         // Four glyph indices, chosen without a list: building one here would
         // allocate, and a task may not — `lkrt` has a single arena with no
@@ -593,26 +620,22 @@ fn on_key() {
     shared_write(SHARED_LAST_KEY, ascii);
     uart_putc(ascii);
 
-    // Collect the line. What to *do* with it is not the handler's business:
-    // it raises a flag, and the main loop — where allocating and printing are
-    // allowed — takes it from there.
-    let length = shared_read(SHARED_LINE_LEN);
-    if (ascii == 10) {
-        shared_write(SHARED_LINE_READY, 1);
-    } else {
-        if (ascii == 8) {
-            if (length > 0) {
-                shared_write(SHARED_LINE_LEN, length - 1);
-            }
+    // Tab is the board's, not any window's: it moves the focus.
+    if (ascii == 9) {
+        let focus = shared_read(SHARED_FOCUS);
+        if (focus == WINDOW_SHELL) {
+            shared_write(SHARED_FOCUS, WINDOW_SPINNER);
         } else {
-            if (length < LINE_CAPACITY) {
-                shared_write_byte(SHARED_LINE + length, ascii);
-                shared_write(SHARED_LINE_LEN, length + 1);
-            }
+            shared_write(SHARED_FOCUS, WINDOW_SHELL);
         }
+        return;
     }
 
-    put_char(framebuffer_address(), ascii);
+    // Everything else goes to whoever has the focus. The handler does not know
+    // what a keystroke *means* — that is the window's business, and the window
+    // runs in a task where allocating and printing are allowed.
+    let focus = shared_read(SHARED_FOCUS);
+    queue_push(SHARED_QUEUES + focus * QUEUE_STRIDE, ascii);
 }
 
 uart_init();
@@ -658,8 +681,14 @@ pages_init(SHARED_PAGES, usable_base, ram_length - (usable_base - ram_base));
 // is that neither can write into the other's, however wrong the coordinates
 // inside them are.
 window_define(SHARED_WINDOWS, WINDOW_SHELL, 0, 0, WIDTH, HEIGHT);
+// Ten cells wide and two tall: the top row is the spinner, the row below is
+// what this pane echoes when it has the focus.
 window_define(SHARED_WINDOWS, WINDOW_SPINNER,
-              (text_columns() - 2) * CELL_WIDTH, 0, CELL_WIDTH, CELL_HEIGHT);
+              (text_columns() - 11) * CELL_WIDTH, 0, 10 * CELL_WIDTH, 2 * CELL_HEIGHT);
+queue_reset(SHARED_QUEUES + WINDOW_SHELL * QUEUE_STRIDE);
+queue_reset(SHARED_QUEUES + WINDOW_SPINNER * QUEUE_STRIDE);
+shared_write(SHARED_FOCUS, WINDOW_SHELL);
+shared_write(SHARED_PANE_COL, 0);
 
 // The cursor starts after the prompt.
 place_cursor(framebuffer, 3, 5);
@@ -710,6 +739,32 @@ let waited = 0;
 while (running == 1 && waited < 60000) {
     unsafe { cpu_wait_for_interrupt(); };
     waited = waited + 1;
+
+    // Drain whatever the handler routed here. Building the line is this
+    // window's business now, not the handler's: the handler does not know
+    // what a keystroke means, only who it belongs to.
+    let irq_in = lock();
+    while (!queue_empty(SHARED_QUEUES + WINDOW_SHELL * QUEUE_STRIDE)) {
+        let ascii = queue_pop(SHARED_QUEUES + WINDOW_SHELL * QUEUE_STRIDE);
+        let length = shared_read(SHARED_LINE_LEN);
+        if (ascii == 10) {
+            shared_write(SHARED_LINE_READY, 1);
+        } else {
+            if (ascii == 8) {
+                if (length > 0) {
+                    shared_write(SHARED_LINE_LEN, length - 1);
+                }
+            } else {
+                if (length < LINE_CAPACITY) {
+                    shared_write_byte(SHARED_LINE + length, ascii);
+                    shared_write(SHARED_LINE_LEN, length + 1);
+                }
+            }
+        }
+        put_char(framebuffer, ascii);
+    }
+    unlock(irq_in);
+
     if (shared_read(SHARED_LINE_READY) == 1) {
         // Mask around the whole exchange: the handler shares the cursor and
         // the line buffer, and a keystroke arriving mid-command would splice

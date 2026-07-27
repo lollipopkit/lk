@@ -18,8 +18,9 @@ import sys
 import tempfile
 import time
 
-# The spinner's cell: `text_columns() - 2` of 53 columns, on the top row.
-CELL_X, CELL_Y = 51 * 6, 0
+# The spinner's cell: the top-left of its window, which starts at
+# `text_columns() - 11` of 53 columns.
+CELL_X, CELL_Y = 42 * 6, 0
 GLYPH_W, GLYPH_H = 5, 7
 SAMPLES = 6
 
