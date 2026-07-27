@@ -6,6 +6,19 @@ pub enum Unsupported {
     NoEntry,
     EntryHasParams(u16),
     EntryHasCaptures(u16),
+    /// Which function the blocker below is in.
+    ///
+    /// Every other variant names a `pc`, which is an index into one function's
+    /// code — and a program that is a kernel has hundreds. A pc alone sends the
+    /// reader looking through every one of them; the name turns the same
+    /// diagnostic into a line to open. Wrapped rather than a field on each
+    /// variant because the name is known at one place — the failure list, which
+    /// already carries the function index — and not at the dozens of places
+    /// that construct a blocker.
+    In {
+        function: String,
+        inner: Box<Unsupported>,
+    },
     BadInstr {
         pc: usize,
     },
@@ -92,6 +105,7 @@ impl Unsupported {
             Unsupported::NoEntry => "the module has no entry function".to_string(),
             Unsupported::EntryHasParams(n) => format!("the entry function takes {n} parameter(s)"),
             Unsupported::EntryHasCaptures(n) => format!("the entry function captures {n} value(s)"),
+            Unsupported::In { function, inner } => format!("in `{function}`: {inner}"),
             Unsupported::BadInstr { pc } => format!("undecodable instruction at pc {pc}"),
             Unsupported::Opcode { pc, op } => {
                 format!("opcode {op:?} (at pc {pc}) is not natively lowerable yet")

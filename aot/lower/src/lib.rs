@@ -515,7 +515,7 @@ pub fn lower_bundled(
                 eprintln!("lk-aot-lower: final-pass failure: fn{fi}: {err:?}");
             }
         }
-        let first_error = failures[0].1.clone();
+        let first_error = name_failure(&failures[0], &funcs);
         if !hybrid {
             return Err(first_error);
         }
@@ -557,7 +557,7 @@ pub fn lower_bundled(
             if !marked_any {
                 return Err(current_failures
                     .first()
-                    .map(|(_, err)| err.clone())
+                    .map(|failure| name_failure(failure, &funcs))
                     .unwrap_or(first_error));
             }
             let native_reachable = native_reachable_functions(&funcs, module.entry, &sig.vm_functions);
@@ -623,6 +623,23 @@ pub fn lower_bundled(
 
 /// Every function id the emitted code can reach: direct calls, protected
 /// calls, and function addresses taken as constants.
+/// Attaches the failing function's name to its blocker.
+///
+/// The name is what the front end recorded, and a function that has none — an
+/// outlined `try` body, a lambda — keeps the bare blocker rather than being
+/// given a made-up name: `fn41` is not more informative than the pc already is,
+/// and it reads like something the reader could go and look up.
+fn name_failure(failure: &(usize, Unsupported), funcs: &[FunctionData]) -> Unsupported {
+    let (fi, err) = failure;
+    match funcs.get(*fi).and_then(|f| f.debug_name.clone()) {
+        Some(function) => Unsupported::In {
+            function,
+            inner: Box::new(err.clone()),
+        },
+        None => err.clone(),
+    }
+}
+
 fn referenced_functions(functions: &[MirFunction]) -> std::collections::HashSet<FuncId> {
     let mut referenced = std::collections::HashSet::new();
     for function in functions {
