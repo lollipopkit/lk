@@ -1,0 +1,235 @@
+// The QEMU `edu` device: a PCI device that does the three things a PCI device
+// does.
+//
+// Every other device this kernel drives is a fixed-port ISA relic — the UART,
+// the PIC, the PIT, the keyboard controller, the ATA ports. They are found by
+// knowing their address, they are spoken to with `in`/`out`, and they never
+// touch memory on their own. None of them exercises what a driver on this
+// architecture actually has to do:
+//
+//   * be *found*, by walking configuration space rather than by being known
+//   * be reached through a BAR the firmware assigned, with volatile loads and
+//     stores rather than port cycles
+//   * write into RAM by itself, at a physical address the driver hands it
+//   * and say it is finished by raising an interrupt
+//
+// `edu` is a device QEMU ships for exactly this: it has a handful of MMIO
+// registers, a DMA engine with 4 KiB of its own memory, and an interrupt, and
+// every one of them has an answer that can be checked. A driver that computes
+// 5! = 120 through it has done a full MMIO round trip; a driver that DMAs a
+// pattern out and back has proved the device wrote RAM.
+//
+// It is not a device anyone ships. That is the point: it is the smallest thing
+// that tells the difference between a language that can drive PCI hardware and
+// one that can only toggle ports.
+
+use { pci_find, pci_bar, pci_bar_size, pci_command_set, pci_interrupt_line,
+      PCI_COMMAND_MEMORY, PCI_COMMAND_BUS_MASTER } from "pci";
+
+const EDU_VENDOR = 0x1234;
+const EDU_DEVICE = 0x11e8;
+
+// What the identification register answers for version 1.0. Checked rather
+// than printed: a driver that found *a* device at 1234:11e8 and got something
+// else back has found a device whose registers are somewhere else.
+const EDU_IDENT = 0x010000ed;
+
+const EDU_REG_IDENT = 0x00;
+const EDU_REG_LIVENESS = 0x04;
+const EDU_REG_FACTORIAL = 0x08;
+const EDU_REG_STATUS = 0x20;
+const EDU_REG_IRQ_STATUS = 0x24;
+const EDU_REG_IRQ_RAISE = 0x60;
+const EDU_REG_IRQ_ACK = 0x64;
+const EDU_REG_DMA_SOURCE = 0x80;
+const EDU_REG_DMA_DEST = 0x88;
+const EDU_REG_DMA_COUNT = 0x90;
+const EDU_REG_DMA_COMMAND = 0x98;
+
+const EDU_STATUS_COMPUTING = 0x01;
+const EDU_STATUS_IRQ_ON_DONE = 0x80;
+
+const EDU_DMA_START = 0x01;
+const EDU_DMA_TO_RAM = 0x02;
+const EDU_DMA_IRQ = 0x04;
+
+// The device's own memory, in the address space its DMA engine uses. A transfer
+// names both ends in that space, and RAM appears in it at its physical address
+// — so a driver hands over the *physical* address of its buffer, not a virtual
+// one. On this machine the identity map makes those the same number, which is a
+// coincidence worth naming: a kernel with a real address space has to translate
+// here, and the place to do it is this driver.
+const EDU_DMA_BASE = 0x40000;
+const EDU_DMA_SIZE = 4096;
+
+// The interrupt the DMA engine raises when asked, and the bit it sets in the
+// interrupt status register.
+const EDU_IRQ_DMA = 0x100;
+
+// ----------------------------------------------------------------- registers
+
+// A register, by its offset from the BAR.
+//
+// Every access is volatile: an MMIO read is a *request to the device*, not a
+// load of a value that was already there, and a compiler that hoisted the
+// status poll out of the loop below would spin for ever on the first answer it
+// got. This is the same reason every table in this kernel goes through
+// `volatile_*`, arrived at from the other direction.
+fn edu_read(base: Int, offset: Int) -> Int {
+    let value = unsafe { volatile_read_u32((base + offset) as *mut u32) };
+    return value as Int;
+}
+
+fn edu_write(base: Int, offset: Int, value: Int) {
+    unsafe { volatile_write_u32((base + offset) as *mut u32, value as u32); };
+}
+
+// The DMA registers are 64 bits wide and must be written as one access — the
+// device latches the whole register, so two dword writes would start a transfer
+// against a half-updated address.
+fn edu_read64(base: Int, offset: Int) -> Int {
+    let value = unsafe { volatile_read_u64((base + offset) as *mut u64) };
+    return value as Int;
+}
+
+fn edu_write64(base: Int, offset: Int, value: Int) {
+    unsafe { volatile_write_u64((base + offset) as *mut u64, value as u64); };
+}
+
+// ------------------------------------------------------------------- finding
+
+// The device's BDF, or -1.
+fn edu_find() -> Int {
+    return pci_find(EDU_VENDOR, EDU_DEVICE);
+}
+
+// Where the device's registers are, after enabling it.
+//
+// Both bits, and both needed: `MEMORY` is what makes the BAR answer at all, and
+// `BUS_MASTER` is what lets the DMA engine issue its own cycles. Firmware often
+// sets the first and never the second, so a driver that skipped this would work
+// through every MMIO test and then hang on the first transfer.
+fn edu_open(bdf: Int) -> Int {
+    pci_command_set(bdf, PCI_COMMAND_MEMORY | PCI_COMMAND_BUS_MASTER);
+    return pci_bar(bdf, 0);
+}
+
+fn edu_identify(base: Int) -> Int {
+    return edu_read(base, EDU_REG_IDENT);
+}
+
+// The liveness register inverts what is written to it. A round trip through it
+// is the cheapest possible proof that the BAR is mapped where the driver thinks
+// and that both directions work — a read-only register would pass a driver that
+// could not write.
+fn edu_liveness(base: Int, value: Int) -> Int {
+    edu_write(base, EDU_REG_LIVENESS, value);
+    return edu_read(base, EDU_REG_LIVENESS);
+}
+
+// ----------------------------------------------------------------- factorial
+
+// n!, computed by the device.
+//
+// The protocol is the interesting part, and it is the shape of every real
+// offload: write the operand, and the *device* sets a busy bit, which the
+// driver polls until it clears. The answer replaces the operand in the same
+// register. Bounded rather than a bare `while`: a device that never clears its
+// busy bit is a hung machine, and a driver that cannot tell "slow" from "gone"
+// is one that hangs with it.
+fn edu_factorial(base: Int, n: Int) -> Int {
+    // Clear the raise-on-done bit: this path polls, and an interrupt with no
+    // handler installed would be a fault rather than an answer.
+    edu_write(base, EDU_REG_STATUS, edu_read(base, EDU_REG_STATUS) & (0xffffffff - EDU_STATUS_IRQ_ON_DONE));
+    edu_write(base, EDU_REG_FACTORIAL, n);
+    for _attempt in 0..1000000 {
+        if ((edu_read(base, EDU_REG_STATUS) & EDU_STATUS_COMPUTING) == 0) {
+            return edu_read(base, EDU_REG_FACTORIAL);
+        }
+    }
+    return 0 - 1;
+}
+
+// ----------------------------------------------------------------------- DMA
+
+// Whether a transfer of `count` bytes at `device_offset` stays inside the
+// device's buffer.
+//
+// Checked here rather than trusted: the device's address register takes any
+// number, and a transfer that runs off the end of its 4 KiB is one QEMU
+// refuses silently — the driver sees a completed transfer and wrong data.
+fn edu_dma_in_range(device_offset: Int, count: Int) -> Bool {
+    return device_offset >= 0 && count > 0 && device_offset + count <= EDU_DMA_SIZE;
+}
+
+// Runs one transfer and waits for it.
+//
+// `to_ram` picks the direction; `physical` is the RAM end, and it is physical
+// because that is the address space the device's bus cycles land in.
+//
+// The command register write is last, and that ordering is the contract: the
+// device starts on the write to 0x98 and reads the other three registers as it
+// goes. Volatile is what keeps them in this order — without it a compiler is
+// free to sink the address stores past the start bit, which is a transfer
+// against whatever the registers held before.
+fn edu_dma(base: Int, physical: Int, device_offset: Int, count: Int, to_ram: Bool) -> Bool {
+    if (!edu_dma_in_range(device_offset, count)) {
+        return false;
+    }
+    let device_address = EDU_DMA_BASE + device_offset;
+    if (to_ram) {
+        edu_write64(base, EDU_REG_DMA_SOURCE, device_address);
+        edu_write64(base, EDU_REG_DMA_DEST, physical);
+    } else {
+        edu_write64(base, EDU_REG_DMA_SOURCE, physical);
+        edu_write64(base, EDU_REG_DMA_DEST, device_address);
+    }
+    edu_write64(base, EDU_REG_DMA_COUNT, count);
+
+    let command = EDU_DMA_START;
+    if (to_ram) {
+        command = command | EDU_DMA_TO_RAM;
+    }
+    edu_write64(base, EDU_REG_DMA_COMMAND, command);
+
+    // The start bit clears when the engine is done. Same bounded wait as the
+    // factorial, for the same reason.
+    for _attempt in 0..1000000 {
+        if ((edu_read64(base, EDU_REG_DMA_COMMAND) & EDU_DMA_START) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// ---------------------------------------------------------------- interrupts
+
+// Ask the device to raise `value`, which arrives as that value in the interrupt
+// status register. A device that can be made to interrupt on demand is how a
+// handler gets tested without waiting for a transfer to be slow.
+fn edu_raise(base: Int, value: Int) {
+    edu_write(base, EDU_REG_IRQ_RAISE, value);
+}
+
+// Clearing a bit from the status register is what stops the device asserting
+// its line. Not doing it from the handler is the classic way to hang: the PIC
+// is told the interrupt is over, the device is still asserting, and the machine
+// re-enters the handler for ever.
+fn edu_acknowledge(base: Int, value: Int) {
+    edu_write(base, EDU_REG_IRQ_ACK, value);
+}
+
+fn edu_irq_status(base: Int) -> Int {
+    return edu_read(base, EDU_REG_IRQ_STATUS);
+}
+
+// The IRQ the firmware routed this device to.
+fn edu_irq_line(bdf: Int) -> Int {
+    return pci_interrupt_line(bdf);
+}
+
+// The size of the register window, for a caller that wants to check the BAR is
+// the shape it expects.
+fn edu_bar_size(bdf: Int) -> Int {
+    return pci_bar_size(bdf, 0);
+}

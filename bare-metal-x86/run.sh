@@ -18,4 +18,5 @@ LK_BIN=${LK_BIN:-../target/debug/lk} cargo build --release ${CARGO_FLAGS:-}
 # this returns instead of needing a timeout to decide it is finished. Its exit
 # code is `(value << 1) | 1`, so a clean run is 1.
 exec qemu-system-x86_64 -kernel "$BIN.multiboot" -display none -serial stdio \
-    -device isa-debug-exit,iobase=0xf4,iosize=0x04 "$@"
+    -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
+    -device edu "$@"

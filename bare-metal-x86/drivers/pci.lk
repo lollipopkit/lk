@@ -1,8 +1,14 @@
-// PCI configuration space.
+// PCI configuration space: finding devices, and finding where they live.
 //
 // Configuration space is reached through two ports: write a
 // (bus, device, function, offset) address to 0xCF8 with bit 31 set to enable
 // the cycle, then read or write the dword at 0xCFC.
+//
+// A device is named here by a single Int — the encoded (bus, device, function)
+// triple, which every real stack calls a BDF. One number rather than three
+// arguments everywhere: a BDF is what enumeration *produces*, and threading it
+// as a triple means every function that merely passes a device along has to
+// know how a device is addressed.
 
 const PCI_ADDRESS = 0xcf8;
 const PCI_DATA = 0xcfc;
@@ -10,43 +16,252 @@ const PCI_DATA = 0xcfc;
 const PCI_REG_ID = 0x00;
 const PCI_REG_COMMAND = 0x04;
 const PCI_REG_CLASS = 0x08;
+const PCI_REG_HEADER = 0x0c;
 const PCI_REG_BAR0 = 0x10;
+const PCI_REG_INTERRUPT = 0x3c;
 
+const PCI_COMMAND_IO = 0x01;
 const PCI_COMMAND_MEMORY = 0x02;
 const PCI_COMMAND_BUS_MASTER = 0x04;
 
 const PCI_CLASS_DISPLAY = 0x03;
 
-fn pci_address(slot: Int, offset: Int) -> Int {
-    // Bus 0, function 0 — everything this needs is there, and walking the
-    // whole tree would be a lot of code for no more information.
-    return 0x80000000 + slot * 0x800 + (offset & 0xfc);
+// An absent device reads back as all ones: nothing is there to drive the bus
+// low. Every enumeration loop turns on this one value.
+const PCI_NO_DEVICE = 0xffffffff;
+
+// A BDF, packed the way the address register wants it: bus in bits 16..24,
+// device in 11..16, function in 8..11.
+fn pci_bdf(bus: Int, device: Int, function: Int) -> Int {
+    return bus * 0x10000 + device * 0x800 + function * 0x100;
 }
 
-fn pci_read(slot: Int, offset: Int) -> Int {
-    unsafe { port_out_u32(PCI_ADDRESS, pci_address(slot, offset) as u32); };
+fn pci_bdf_bus(bdf: Int) -> Int {
+    return (bdf / 0x10000) & 0xff;
+}
+
+fn pci_bdf_device(bdf: Int) -> Int {
+    return (bdf / 0x800) & 0x1f;
+}
+
+fn pci_bdf_function(bdf: Int) -> Int {
+    return (bdf / 0x100) & 0x07;
+}
+
+// The enable bit, the BDF, and a dword-aligned offset.
+//
+// The offset is masked rather than checked: the low two bits of the address
+// register are hardwired to zero on the bus anyway, so a caller that asks for
+// 0x0a gets the dword at 0x08 either way. Masking here makes that visible
+// instead of leaving it to the chipset.
+fn pci_config_address(bdf: Int, offset: Int) -> Int {
+    return 0x80000000 + bdf + (offset & 0xfc);
+}
+
+fn pci_read(bdf: Int, offset: Int) -> Int {
+    unsafe { port_out_u32(PCI_ADDRESS, pci_config_address(bdf, offset) as u32); };
     let value = unsafe { port_in_u32(PCI_DATA) };
     return value as Int;
 }
 
-fn pci_write(slot: Int, offset: Int, value: Int) {
-    unsafe { port_out_u32(PCI_ADDRESS, pci_address(slot, offset) as u32); };
+fn pci_write(bdf: Int, offset: Int, value: Int) {
+    unsafe { port_out_u32(PCI_ADDRESS, pci_config_address(bdf, offset) as u32); };
     unsafe { port_out_u32(PCI_DATA, value as u32); };
 }
 
-// The slot of the first display controller on bus 0, or -1.
-fn pci_find_display() -> Int {
-    for slot in 0..32 {
-        let id = pci_read(slot, PCI_REG_ID);
-        // An absent slot reads back as all ones — there is nothing there to
-        // drive the bus low.
-        if (id != 0xffffffff) {
-            // The class code is the top byte of the dword at 0x08.
-            let class = ((pci_read(slot, PCI_REG_CLASS) / 0x1000000) as Int) & 0xff;
-            if (class == PCI_CLASS_DISPLAY) {
-                return slot;
+// Configuration space is addressable only in dwords, so a byte or a word is a
+// dword read and a shift. Written out because the alternative is every caller
+// doing it inline and one of them getting the shift wrong.
+fn pci_read_u16(bdf: Int, offset: Int) -> Int {
+    let dword = pci_read(bdf, offset);
+    return (dword / pci_shift_of(offset, 2)) & 0xffff;
+}
+
+fn pci_read_u8(bdf: Int, offset: Int) -> Int {
+    let dword = pci_read(bdf, offset);
+    return (dword / pci_shift_of(offset, 3)) & 0xff;
+}
+
+// How much to divide a dword by to bring `offset`'s field down to bit 0.
+//
+// Division rather than a shift operator, and a table rather than exponentiation:
+// the only widths that exist here are 2 and 4 bytes, so the whole answer is six
+// cases. `mask` is the count of low offset bits that matter — 2 for a word
+// (offset 0 or 2), 3 for a byte (0..3).
+fn pci_shift_of(offset: Int, mask: Int) -> Int {
+    let byte = offset & mask;
+    if (byte == 0) { return 1; }
+    if (byte == 1) { return 0x100; }
+    if (byte == 2) { return 0x10000; }
+    return 0x1000000;
+}
+
+fn pci_vendor(bdf: Int) -> Int {
+    return pci_read(bdf, PCI_REG_ID) & 0xffff;
+}
+
+fn pci_device_id(bdf: Int) -> Int {
+    return (pci_read(bdf, PCI_REG_ID) / 0x10000) & 0xffff;
+}
+
+// The class code is the top byte of the dword at 0x08; the subclass is the one
+// under it.
+fn pci_class(bdf: Int) -> Int {
+    return (pci_read(bdf, PCI_REG_CLASS) / 0x1000000) & 0xff;
+}
+
+fn pci_subclass(bdf: Int) -> Int {
+    return (pci_read(bdf, PCI_REG_CLASS) / 0x10000) & 0xff;
+}
+
+fn pci_present(bdf: Int) -> Bool {
+    let id = pci_read(bdf, PCI_REG_ID);
+    // 0 as well as all-ones: a slot that decodes but has no vendor is not a
+    // device either, and QEMU's bridges leave both shapes about.
+    return id != PCI_NO_DEVICE && id != 0;
+}
+
+// Whether a device has functions past 0. Only function 0 answers this, and a
+// device that says no must not be probed further — on real hardware a
+// single-function device aliases every function to itself, so probing finds
+// eight copies of it.
+fn pci_multifunction(bdf: Int) -> Bool {
+    return (pci_read_u8(bdf, PCI_REG_HEADER + 2) & 0x80) != 0;
+}
+
+// The IRQ line the firmware routed this device to, as the PIC numbers them.
+fn pci_interrupt_line(bdf: Int) -> Int {
+    return pci_read_u8(bdf, PCI_REG_INTERRUPT);
+}
+
+fn pci_command_set(bdf: Int, bits: Int) {
+    pci_write(bdf, PCI_REG_COMMAND, pci_read(bdf, PCI_REG_COMMAND) | bits);
+}
+
+// ------------------------------------------------------------- base addresses
+
+// A BAR's register offset. `index` is 0..6.
+fn pci_bar_offset(index: Int) -> Int {
+    return PCI_REG_BAR0 + index * 4;
+}
+
+fn pci_bar_is_io(bdf: Int, index: Int) -> Bool {
+    return (pci_read(bdf, pci_bar_offset(index)) & 0x01) != 0;
+}
+
+// Whether a memory BAR is the 64-bit kind, in which case it eats the *next*
+// BAR as its high half and an enumerator must skip that one.
+fn pci_bar_is_64(bdf: Int, index: Int) -> Bool {
+    let low = pci_read(bdf, pci_bar_offset(index));
+    return (low & 0x01) == 0 && (low & 0x06) == 0x04;
+}
+
+// Where a BAR points.
+//
+// The low bits are flags, not address: four of them for a memory BAR, two for
+// an I/O one. A 64-bit BAR's high half is the next register, and it is read
+// unconditionally when present rather than assumed zero — QEMU puts a device
+// above 4 GiB the moment the machine has enough RAM, and a driver that took
+// only the low half would map the wrong page and see all ones.
+fn pci_bar(bdf: Int, index: Int) -> Int {
+    let low = pci_read(bdf, pci_bar_offset(index));
+    if ((low & 0x01) != 0) {
+        return low & 0xfffffffc;
+    }
+    let base = low & 0xfffffff0;
+    if (pci_bar_is_64(bdf, index)) {
+        let high = pci_read(bdf, pci_bar_offset(index + 1));
+        return base + high * 0x100000000;
+    }
+    return base;
+}
+
+// How large a BAR's region is.
+//
+// There is no register that says. The bus answers it by *writing* all ones and
+// reading back: the bits the device leaves clear are the ones it does not
+// decode, so the lowest bit still set is the size. That write destroys the
+// address, which is why the original goes back before returning — a driver that
+// sized a BAR and forgot to restore it has just unmapped the device.
+//
+// Only the low half is sized here. A 64-bit BAR whose size needs the high half
+// is a region of at least 4 GiB, which this machine has nowhere to put.
+fn pci_bar_size(bdf: Int, index: Int) -> Int {
+    let offset = pci_bar_offset(index);
+    let original = pci_read(bdf, offset);
+    pci_write(bdf, offset, 0xffffffff);
+    let probed = pci_read(bdf, offset);
+    pci_write(bdf, offset, original);
+
+    let mask = 0xfffffff0;
+    if ((original & 0x01) != 0) {
+        mask = 0xfffffffc;
+    }
+    let bits = probed & mask;
+    if (bits == 0) {
+        return 0;
+    }
+    // The size is the value of the lowest set bit: ~bits + 1, done in 32 bits
+    // because that is the width the register answered in.
+    return ((0xffffffff - bits) + 1) & 0xffffffff;
+}
+
+// -------------------------------------------------------------- enumeration
+
+// Every device on bus 0, as a list of BDFs.
+//
+// Bus 0 only, and deliberately: walking bridges means recursion and a
+// secondary-bus register, and on this machine every device is on bus 0. What
+// this does do properly is *functions* — a multifunction device is eight
+// devices sharing a slot, and stopping at function 0 is how a driver misses the
+// second port of a two-port card.
+fn pci_devices() -> List<Int> {
+    let found: List<Int> = [];
+    for device in 0..32 {
+        let base = pci_bdf(0, device, 0);
+        if (pci_present(base)) {
+            found.push(base);
+            if (pci_multifunction(base)) {
+                for function in 1..8 {
+                    let bdf = pci_bdf(0, device, function);
+                    if (pci_present(bdf)) {
+                        found.push(bdf);
+                    }
+                }
             }
         }
     }
+    return found;
+}
+
+// The first device answering to a vendor and device id, or -1.
+fn pci_find(vendor: Int, device: Int) -> Int {
+    let devices = pci_devices();
+    for index in 0..devices.len() {
+        let bdf = (devices[index]) as Int;
+        if (pci_vendor(bdf) == vendor && pci_device_id(bdf) == device) {
+            return bdf;
+        }
+    }
     return 0 - 1;
+}
+
+// The first device of a class, or -1.
+fn pci_find_class(class: Int) -> Int {
+    let devices = pci_devices();
+    for index in 0..devices.len() {
+        let bdf = (devices[index]) as Int;
+        if (pci_class(bdf) == class) {
+            return bdf;
+        }
+    }
+    return 0 - 1;
+}
+
+// The BDF of the first display controller, or -1.
+//
+// Kept as its own name because that is what the framebuffer path asks for, and
+// because "the display" is a thing this kernel has exactly one of.
+fn pci_find_display() -> Int {
+    return pci_find_class(PCI_CLASS_DISPLAY);
 }

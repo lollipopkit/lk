@@ -12,8 +12,12 @@
 // a driver decodes a scancode, but only the program knows what to do with it.
 
 use { uart_init, uart_putc, uart_write, uart_put_int, uart_put_hex } from "drivers/serial";
-use { pci_read, pci_write, pci_find_display, PCI_REG_BAR0, PCI_REG_COMMAND,
+use { pci_find_display, pci_devices, pci_vendor, pci_device_id, pci_class,
+      pci_subclass, pci_bar, pci_bar_size, pci_bar_is_io, pci_bdf_device,
+      pci_bdf_function, pci_command_set,
       PCI_COMMAND_MEMORY, PCI_COMMAND_BUS_MASTER } from "drivers/pci";
+use { edu_find, edu_open, edu_identify, edu_liveness, edu_factorial, edu_dma,
+      edu_irq_line, edu_bar_size, EDU_IDENT } from "drivers/edu";
 use { vbe_set_mode_virtual, vbe_set_pan } from "drivers/vbe";
 use { get_pixel, put_pixel, fill_rect, copy_rows } from "drivers/framebuffer";
 use { draw_glyph, draw_cells, clear, scroll_up, draw_cursor, CELL_WIDTH, CELL_HEIGHT } from "drivers/text";
@@ -493,11 +497,11 @@ fn framebuffer_address() -> Int {
 // different, invalid request — the kind of value that produces a plausible
 // number instead of an error.
 fn probe_framebuffer() -> Int {
-    let slot = pci_find_display();
-    if (slot < 0) {
+    let display = pci_find_display();
+    if (display < 0) {
         return 0;
     }
-    return pci_read(slot, PCI_REG_BAR0) & 0xfffffff0;
+    return pci_bar(display, 0);
 }
 
 // The address of the pixel the screen shows at its top-left.
@@ -811,6 +815,136 @@ fn report_memory(base: Int) {
 // medium — a checksum is equally consistent with a bug that reads the same
 // wrong thing every time. Unprintable bytes become '.', the same convention a
 // hex dump uses.
+// Every device on the bus, one line each.
+//
+// A kernel that can say what is plugged into the machine is a kernel that found
+// them rather than knew them. The line is deliberately the same shape a real
+// `lspci` prints — slot.function, vendor:device, class, and where its first BAR
+// lives — because what is being checked is that each of those came out of
+// configuration space and not out of a constant.
+fn report_pci(base: Int) {
+    let devices = pci_devices();
+    for index in 0..devices.len() {
+        let bdf = (devices[index]) as Int;
+        // "SS.F VVVV:DDDD cCC/SS"
+        let line = hex(pci_bdf_device(bdf)).slice(6, 8)
+            .chain([46])
+            .chain(decimal(pci_bdf_function(bdf)))
+            .chain([32])
+            .chain(hex(pci_vendor(bdf)).slice(4, 8))
+            .chain([58])
+            .chain(hex(pci_device_id(bdf)).slice(4, 8))
+            .chain([32, 99])
+            .chain(hex(pci_class(bdf)).slice(6, 8))
+            .chain([47])
+            .chain(hex(pci_subclass(bdf)).slice(6, 8));
+        // A device with no memory BAR 0 — the bridges — says so by omission
+        // rather than by printing a zero that looks like an address.
+        if (pci_bar(bdf, 0) != 0 && !pci_bar_is_io(bdf, 0)) {
+            line = line.chain([32, 64]) // " @"
+                .chain(hex(pci_bar(bdf, 0)))
+                .chain([43])
+                .chain(hex(pci_bar_size(bdf, 0)));
+        }
+        emit(base, line);
+    }
+    emit(base, decimal(devices.len()).chain([32, 100, 101, 118, 105, 99, 101, 115])); // " devices"
+}
+
+// The PCI device, driven through all three of the things a PCI device does.
+//
+// Four checks, and each one fails differently on purpose. Identification proves
+// the BAR is mapped where configuration space said; liveness proves writes
+// arrive; the factorial proves the device *computes* on a value the driver gave
+// it and hands it back through the busy protocol; and the DMA proves the device
+// wrote RAM by itself, which is the only one of the four that no amount of port
+// I/O could have done.
+//
+// It reports which step failed rather than a single yes/no: "edu: dma" and
+// "edu: ident" are different machines, and a check that says only "no" makes
+// them the same.
+fn report_edu(base: Int) {
+    let bdf = edu_find();
+    if (bdf < 0) {
+        // "edu: absent"
+        emit(base, [101, 100, 117, 58, 32, 97, 98, 115, 101, 110, 116]);
+        return;
+    }
+    let mmio = edu_open(bdf);
+    if (mmio == 0) {
+        // "edu: no bar"
+        emit(base, [101, 100, 117, 58, 32, 110, 111, 32, 98, 97, 114]);
+        return;
+    }
+
+    let ident = edu_identify(mmio);
+    if (ident != EDU_IDENT) {
+        // "edu: ident " + what came back
+        emit(base, [101, 100, 117, 58, 32, 105, 100, 101, 110, 116, 32].chain(hex(ident)));
+        return;
+    }
+
+    // The register inverts what it is given, in 32 bits.
+    let live = edu_liveness(mmio, 0x0f0f0f0f);
+    if (live != 0xf0f0f0f0) {
+        // "edu: live " + what came back
+        emit(base, [101, 100, 117, 58, 32, 108, 105, 118, 101, 32].chain(hex(live)));
+        return;
+    }
+
+    let factorial = edu_factorial(mmio, 5);
+    if (factorial != 120) {
+        // "edu: fact " + what came back
+        emit(base, [101, 100, 117, 58, 32, 102, 97, 99, 116, 32].chain(hex(factorial)));
+        return;
+    }
+
+    if (!edu_round_trip(mmio)) {
+        // "edu: dma"
+        emit(base, [101, 100, 117, 58, 32, 100, 109, 97]);
+        return;
+    }
+
+    // "edu: ok irq " + the line the firmware routed it to
+    emit(base, [101, 100, 117, 58, 32, 111, 107, 32, 105, 114, 113, 32]
+        .chain(decimal(edu_irq_line(bdf)))
+        .chain([32, 98, 97, 114, 32]) // " bar "
+        .chain(hex(edu_bar_size(bdf))));
+}
+
+// A pattern out to the device and back to a different address.
+//
+// Back to a *different* address, and that is the whole test: reading into the
+// buffer it was sent from would pass even if the device never touched RAM,
+// because the bytes were already there. Two buffers means the second one can
+// only hold the pattern if the device's own DMA engine put it there.
+//
+// The addresses are physical, which on this machine equals virtual — see
+// `edu.lk`'s note on why that is a coincidence and not a rule.
+fn edu_round_trip(mmio: Int) -> Bool {
+    let out = SHARED_SECTOR;
+    let back = SHARED_SECTOR + 256;
+    let count = 64;
+
+    for i in 0..count {
+        shared_write_byte(out + i, (i * 7 + 3) & 0xff);
+        shared_write_byte(back + i, 0);
+    }
+
+    if (!edu_dma(mmio, out, 0, count, false)) {
+        return false;
+    }
+    if (!edu_dma(mmio, back, 0, count, true)) {
+        return false;
+    }
+    for i in 0..count {
+        if (shared_read_byte(back + i) != ((i * 7 + 3) & 0xff)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 fn report_disk(base: Int) {
     let outcome = ata_identify(SHARED_SECTOR);
     if (outcome != ATA_OK) {
@@ -1208,6 +1342,14 @@ fn run_command(base: Int) -> Int {
     }
     if (line_starts_with([100, 105, 115, 107])) {          // "disk"
         report_disk(base);
+        return 1;
+    }
+    if (line_starts_with([112, 99, 105])) {                // "pci"
+        report_pci(base);
+        return 1;
+    }
+    if (line_starts_with([101, 100, 117])) {               // "edu"
+        report_edu(base);
         return 1;
     }
     if (line_starts_with([101, 120, 105, 116])) {          // "exit"
@@ -2381,8 +2523,8 @@ unsafe { cpu_irq_restore(1); };
 // often it fires.
 pit_start(1193);
 
-let slot = pci_find_display();
-if (slot < 0) {
+let display = pci_find_display();
+if (display < 0) {
     // No display on bus 0. Say so on the line that does exist and stop, rather
     // than programming a configuration address made of the `-1` sentinel and
     // drawing into whatever it names.
@@ -2394,8 +2536,7 @@ if (slot < 0) {
 // Let the device answer to memory cycles at all. The firmware usually has
 // already, but a driver that depends on that is a driver that works on one
 // machine.
-let command = pci_read(slot, PCI_REG_COMMAND);
-pci_write(slot, PCI_REG_COMMAND, command | PCI_COMMAND_MEMORY | PCI_COMMAND_BUS_MASTER);
+pci_command_set(display, PCI_COMMAND_MEMORY | PCI_COMMAND_BUS_MASTER);
 
 // Find the framebuffer once and remember it: everything that draws reads this
 // word, and an interrupt handler cannot walk a bus.
@@ -2584,10 +2725,17 @@ let title = get_pixel(framebuffer, WIDTH, 6, 8);
 // `cpu_irq_save` returns the previous state rather than a flag, so nesting one
 // of these inside another does not enable interrupts early on the way out.
 let irq = unsafe { cpu_irq_save() };
-// "display at pci slot "
-uart_write([100, 105, 115, 112, 108, 97, 121, 32, 97, 116, 32, 112, 99, 105, 32,
-            115, 108, 111, 116, 32]);
-uart_put_int(slot);
+// "display at pci " then the device's own address on the bus.
+//
+// The address, not a slot number: enumeration now walks functions as well as
+// devices, so what identifies a device is the (bus, device, function) triple
+// the whole stack calls a BDF. Printing it in the form `pci` lists — SS.F —
+// rather than as the packed integer, because the two lines are about the same
+// device and a reader should not have to divide by 0x800 to see that.
+uart_write([100, 105, 115, 112, 108, 97, 121, 32, 97, 116, 32, 112, 99, 105, 32]);
+uart_put_int(pci_bdf_device(display));
+uart_putc(46); // '.'
+uart_put_int(pci_bdf_function(display));
 uart_putc(10);
 // "framebuffer 0x"
 uart_write([102, 114, 97, 109, 101, 98, 117, 102, 102, 101, 114, 32, 48, 120]);
