@@ -1,0 +1,21 @@
+// A critical section.
+//
+// The only thing that takes the CPU away here is an interrupt: the scheduler
+// runs inside the timer handler, so masking interrupts also stops a task
+// switch. That is why masking is enough, and it is also the assumption that
+// would break first — on a second core, another CPU would still be running and
+// this would protect nothing. When that day comes this file is where the
+// spinlock goes, and every caller already goes through it.
+//
+// `acquire` returns the previous interrupt state rather than a flag, so
+// nesting one section inside another does not re-enable interrupts early on
+// the way out.
+
+fn acquire() -> Int {
+    let state = unsafe { cpu_irq_save() };
+    return state as Int;
+}
+
+fn release(state: Int) {
+    unsafe { cpu_irq_restore(state); };
+}

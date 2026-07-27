@@ -89,6 +89,31 @@ the same reason: `lkrt` has one arena and no lock around it. The spinner picks
 its glyph with an `if` chain rather than indexing a list, because building the
 list would allocate.
 
+### Sharing state between them
+
+Read, add, write is three steps. An interrupt landing between the read and the
+write discards whatever happened in between, and with a task switch inside that
+interrupt the window is wide. `drivers/lock.lk` is the critical section:
+
+```lk
+let state = lock();
+shared_bump(SHARED_PAIR_A);
+shared_bump(SHARED_PAIR_B);
+unlock(state);
+```
+
+Masking interrupts is enough here *because the scheduler runs inside the timer
+handler* — stopping interrupts stops a task switch. That is also the assumption
+that breaks first: on a second core the other CPU keeps running and this
+protects nothing. The file says so, and every caller already goes through it,
+so that is where a spinlock would go.
+
+`sync` reports two counters that the timer handler and the spinner both bump
+under one section. They can only differ if an increment read a stale value, so
+`check_shell.py` requires them equal. Removing the lock and rerunning is worth
+doing once: they diverge within seconds — and the counts nearly double, which
+is what the section costs.
+
 `check_tasks.py` screenshots the corner four times and requires the glyph to
 change. On the serial line, interleaved output would show that both tasks
 *ran*; only the screen shows that one was interrupted mid-work.

@@ -18,6 +18,11 @@ fn write(address: Int, value: Int) {
     unsafe { volatile_write_u32(address as *mut u32, value as u32); };
 }
 
+// Read, add, write — three steps that an interrupt can land between, and the
+// increment that lands there is lost. The caller holds a critical section, so
+// this does not take one itself: a bump is usually part of a larger update
+// that has to be atomic as a whole, and a lock per word would give the false
+// impression that each is.
 fn bump(address: Int) -> Int {
     let next = read(address) + 1;
     write(address, next);

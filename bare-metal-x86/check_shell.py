@@ -31,6 +31,7 @@ KEYS = (
     + ["p", "a", "g", "e", "ret"]
     + ["p", "a", "g", "e", "ret"]
     + ["m", "e", "m", "ret"]
+    + ["s", "y", "n", "c", "ret"]
     + ["ret"] * 22
     + ["e", "x", "i", "t", "ret"]
 )
@@ -38,7 +39,7 @@ KEYS = (
 # repeats its argument, `exit` says goodbye — each proving a different part:
 # the byte-wise command match, the argument tail, and the loop ending.
 EXPECTED_LINES = [
-    "help clear echo keys mem page exit",
+    "help clear echo keys mem page sync exit",
     "lk",
     # Two pages handed out in order, from the range the loader reported. The
     # addresses are what proves the allocator rather than a counter.
@@ -97,6 +98,18 @@ def main():
             data = handle.read()
 
     print(output)
+    # `sync` reports two counters that the timer handler and the spinner task
+    # both bump, under one critical section. They can only differ if an
+    # increment read a stale value — which is exactly what happens without the
+    # section, and what nothing else in the system can cause.
+    pair = next((line for line in output.splitlines() if "/" in line and line.strip("./0123456789") == ""), None)
+    if pair is None:
+        raise SystemExit("shell: `sync` printed no counter pair")
+    left, right = pair.strip(".").split("/")
+    if left != right:
+        raise SystemExit(f"shared counters diverged ({left} != {right}): an update was lost")
+    if int(left) == 0:
+        raise SystemExit("shared counters never moved: the tasks are not contending")
     # The shell's answers. Checked as substrings because the timer handler
     # prints a '.' every half-second on the same line.
     for expected in EXPECTED_LINES:

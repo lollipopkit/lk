@@ -19,6 +19,7 @@ use { get_pixel } from "drivers/framebuffer";
 use { draw_glyph, draw_cells, clear, scroll_up, draw_cursor, CELL_WIDTH, CELL_HEIGHT } from "drivers/text";
 use { read_scancode, is_release, key_code } from "drivers/keyboard";
 use { start as pit_start } from "drivers/pit";
+use { acquire as lock, release as unlock } from "drivers/lock";
 use { has_mmap, mem_upper_kb, entry_count, entry_at, entry_base, entry_length,
       entry_is_available } from "drivers/multiboot";
 use { init as pages_init, alloc as page_alloc, free as pages_free,
@@ -121,6 +122,11 @@ const SHARED_PAGES = 0x00300020;
 // The spinner task's step, and the scheduler's own counter.
 const SHARED_SPIN = 0x00300024;
 const SHARED_SLICE = 0x00300028;
+// Two words that must always agree. Both the timer handler and the spinner
+// task bump the pair; a lost update — an increment that read a stale value —
+// leaves them different, which no amount of interleaving can otherwise do.
+const SHARED_PAIR_A = 0x0030002c;
+const SHARED_PAIR_B = 0x00300030;
 const SHARED_LINE = 0x00300100;
 const LINE_CAPACITY = 48;
 
@@ -358,10 +364,11 @@ fn run_command(base: Int) -> Int {
     }
     if (line_starts_with([104, 101, 108, 112])) {          // "help"
         // "help clear echo keys exit"
-        // "help clear echo keys mem page exit"
+        // "help clear echo keys mem page sync exit"
         emit(base, [104, 101, 108, 112, 32, 99, 108, 101, 97, 114, 32, 101, 99,
                     104, 111, 32, 107, 101, 121, 115, 32, 109, 101, 109, 32,
-                    112, 97, 103, 101, 32, 101, 120, 105, 116]);
+                    112, 97, 103, 101, 32, 115, 121, 110, 99, 32,
+                    101, 120, 105, 116]);
         return 1;
     }
     if (line_starts_with([99, 108, 101, 97, 114])) {       // "clear"
@@ -391,6 +398,14 @@ fn run_command(base: Int) -> Int {
         }
         return 1;
     }
+    if (line_starts_with([115, 121, 110, 99])) {           // "sync"
+        let state = lock();
+        let a = shared_read(SHARED_PAIR_A);
+        let b = shared_read(SHARED_PAIR_B);
+        unlock(state);
+        emit(base, decimal(a).chain([47]).chain(decimal(b)));
+        return 1;
+    }
     if (line_starts_with([101, 120, 105, 116])) {          // "exit"
         // "bye"
         emit(base, [98, 121, 101]);
@@ -402,6 +417,19 @@ fn run_command(base: Int) -> Int {
 }
 
 // ---------------------------------------------------------------- tasks ---
+
+// Bumps the two words that must agree, as one indivisible step.
+//
+// The pair exists to make a lost update *visible*. Read-modify-write is three
+// steps; an interrupt landing between the read and the write discards whatever
+// happened in between. With both parties doing it under the same section, the
+// two words can only ever come out equal.
+fn bump_pair() {
+    let state = lock();
+    shared_bump(SHARED_PAIR_A);
+    shared_bump(SHARED_PAIR_B);
+    unlock(state);
+}
 
 // Which task runs next.
 //
@@ -445,11 +473,12 @@ fn task_b() {
         if (phase == 3) { face = 40; }
         draw_glyph(framebuffer_address(), WIDTH, FONT, face,
                    (text_columns() - 2) * CELL_WIDTH, 0, TITLE_COLOUR, BACKGROUND);
-        // Burn the rest of the slice. A real task would wait for something;
-        // this one exists to be interrupted.
-        let spin = 0;
-        for i in 0..200000 {
-            spin = spin + 1;
+        // Burn the rest of the slice bumping the pair, so the timer handler
+        // and this task are contending on the same words for the whole slice.
+        // A real task would wait for something; this one exists to be
+        // interrupted, and to be interrupted *in the middle of an update*.
+        for i in 0..20000 {
+            bump_pair();
         }
     }
 }
@@ -461,6 +490,7 @@ fn task_b() {
 // survive between invocations, and it is the only state this one keeps.
 #[export("lk_timer_isr")]
 fn on_tick() {
+    bump_pair();
     let ticks = shared_bump(SHARED_TICKS);
     if (ticks % 500 == 0) {
         uart_putc(46); // '.'
