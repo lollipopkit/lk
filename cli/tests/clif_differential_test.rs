@@ -885,3 +885,99 @@ fn a_boxed_container_index_matches_the_vm() {
         ],
     );
 }
+
+/// A module that writes through a container parameter is not bundled.
+///
+/// Bundling flattens the modules together, so the callee would get the
+/// caller's container by reference; the VM runs them as separate modules with
+/// separate heaps and copies arguments across the boundary (see
+/// `copy_runtime_positional_args_to_frame`). The two disagree the moment the
+/// callee writes — `xs[0]` reads 0 under the VM and 7 under a flattened build
+/// — and nothing reports it. So the bundler declines.
+///
+/// What is checked here is the refusal and its wording. That the fallback then
+/// produces the VM's answer is the Tier 0 path's own guarantee, and exercising
+/// it here would drag a cargo build of the embedded runtime into a unit test.
+#[test]
+fn a_module_that_mutates_a_parameter_is_not_bundled() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    std::fs::write(
+        dir.path().join("m.lk"),
+        "fn put(xs: List<Int>, i: Int, v: Int) { xs[i] = v; }\n",
+    )
+    .expect("write dep");
+    std::fs::write(
+        dir.path().join("main.lk"),
+        "use { put } from \"m\";\nlet xs = [0, 0, 0];\nput(xs, 0, 7);\nprintln(xs[0]);\nreturn 0;\n",
+    )
+    .expect("write main");
+
+    // An object build has no fallback to take, so the refusal has to name the
+    // cause rather than the unlowerable instruction it would otherwise become.
+    let strict = Command::new(bin_path())
+        .current_dir(dir.path())
+        .args(["compile", "object:x86_64-unknown-none", "main.lk"])
+        .arg("--output")
+        .arg(dir.path().join("main.o"))
+        .output()
+        .expect("spawn object compile");
+    assert!(!strict.status.success(), "a shared container must not compile silently");
+    let stderr = String::from_utf8_lossy(&strict.stderr);
+    assert!(
+        stderr.contains("container parameter"),
+        "the refusal should say what is wrong: {stderr}"
+    );
+}
+
+/// A module that only *reads* its container parameters still bundles.
+///
+/// The refusal above has to be narrow, or every library that takes a list
+/// stops compiling natively.
+#[test]
+fn a_module_that_only_reads_a_parameter_still_bundles() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    std::fs::write(
+        dir.path().join("m.lk"),
+        "fn total(xs: List<Int>) -> Int { let s = 0; for x in xs { s = s + x; } return s; }\n\
+         fn at(xs: List<Int>, i: Int) -> Int { return xs[i]; }\n\
+         fn size(xs: List<Int>) -> Int { return xs.len(); }\n",
+    )
+    .expect("write dep");
+    std::fs::write(
+        dir.path().join("main.lk"),
+        "use { total, at, size } from \"m\";\n\
+         let xs = [1, 2, 3];\n\
+         println(total(xs));\n\
+         println(at(xs, 1));\n\
+         println(size(xs));\n\
+         return 0;\n",
+    )
+    .expect("write main");
+
+    let vm = Command::new(bin_path())
+        .current_dir(dir.path())
+        .arg("main.lk")
+        .output()
+        .expect("spawn vm run");
+    let exe = dir.path().join("main");
+    let compile = Command::new(bin_path())
+        .current_dir(dir.path())
+        .args(["compile", "main.lk"])
+        .arg("--output")
+        .arg(&exe)
+        .env("LK_AOT_NO_FALLBACK", "1")
+        .env("LK_AOT_HYBRID", "0")
+        .output()
+        .expect("spawn native compile");
+    assert!(
+        compile.status.success(),
+        "a read-only module must still bundle: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let native = Command::new(&exe).output().expect("spawn compiled executable");
+    assert_eq!(
+        String::from_utf8_lossy(&vm.stdout),
+        String::from_utf8_lossy(&native.stdout),
+        "a read-only bundled module diverged"
+    );
+}

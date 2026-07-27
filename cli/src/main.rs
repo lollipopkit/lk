@@ -983,11 +983,21 @@ fn register_package_modules(resolver: &ModuleResolver, modules: &[PackageModule]
 /// binding map goes to the lowering. Only *pure function-definition* modules
 /// bundle (an entry with top-level effects, nested file imports, or non-file
 /// import forms in the dep fails → the caller falls back to Tier 0).
+/// What `bundle_file_imports` concluded.
 #[cfg(feature = "aot")]
-fn bundle_file_imports(
-    source: &Path,
-    artifact: &ModuleArtifact,
-) -> anyhow::Result<Option<(ModuleArtifact, Vec<lk_aot::BundledImport>)>> {
+pub(crate) enum BundleOutcome {
+    /// No file imports to bundle.
+    Nothing,
+    /// Bundling would change the program's meaning. The string says why, in a
+    /// form worth showing a user: the executable path falls back silently, but
+    /// `compile object:` has no fallback and would otherwise report a symptom
+    /// (an unlowerable `GetGlobal`) rather than a cause.
+    Declined(String),
+    Bundled(ModuleArtifact, Vec<lk_aot::BundledImport>),
+}
+
+#[cfg(feature = "aot")]
+fn bundle_file_imports(source: &Path, artifact: &ModuleArtifact) -> anyhow::Result<BundleOutcome> {
     use lk_core::vm::{Instr, Opcode};
 
     let base_dir = source.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
@@ -1000,7 +1010,7 @@ fn bundle_file_imports(
         .map(|path| resolve_bundled_import(&base_dir, &path).map(|resolved| (path, resolved)))
         .collect::<anyhow::Result<Vec<_>>>()?;
     if queue.is_empty() {
-        return Ok(None);
+        return Ok(BundleOutcome::Nothing);
     }
     let mut visited: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
 
@@ -1013,6 +1023,18 @@ fn bundle_file_imports(
         }
 
         let dep = compile_instr_artifact_with_dependencies(&dep_path)?.artifact;
+        // Bundling this module would give its functions a *reference* to the
+        // caller's containers where the VM hands them a copy. Rather than
+        // produce a program that computes something the VM would not, decline
+        // to bundle: the caller falls back, and `compile object:` — which has
+        // no fallback — reports it.
+        if module_may_mutate_a_parameter(&dep.module) {
+            return Ok(BundleOutcome::Declined(format!(
+                "'{import_path}' has a function that writes through a container parameter, keeps one, \
+                 or calls a method on one. Bundling would hand it the caller's container by reference, \
+                 while the VM gives each module its own copy — so the two would disagree"
+            )));
+        }
         // The dep's own file imports resolve relative to *its* directory, not
         // the importing file's.
         let dep_dir = dep_path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
@@ -1222,7 +1244,7 @@ fn bundle_file_imports(
 
         bundles.push(lk_aot::BundledImport { path: import_path, fns });
     }
-    Ok(Some((merged, bundles)))
+    Ok(BundleOutcome::Bundled(merged, bundles))
 }
 
 /// The file imports (`use "path"` in any of its forms) a module declares.
@@ -1267,6 +1289,178 @@ fn resolve_bundled_import(base_dir: &Path, import_path: &str) -> anyhow::Result<
         .into_iter()
         .find(|candidate| candidate.exists())
         .ok_or_else(|| anyhow::anyhow!("bundled import not found: {import_path}"))
+}
+
+/// Whether any function in a module can mutate or retain a container that came
+/// in as a parameter.
+///
+/// Bundling flattens the modules into one program, so an argument reaches the
+/// callee by reference. The VM runs them as separate modules with separate
+/// heaps and *copies* arguments across the boundary — deliberately: see
+/// `copy_runtime_positional_args_to_frame` and the `cross_heap` tests. The two
+/// therefore disagree the moment a callee writes through a parameter, and the
+/// disagreement is silent:
+///
+/// ```lk
+/// // m.lk:  fn put(xs: List<Int>, i: Int, v: Int) { xs[i] = v; }
+/// let xs = [0, 0, 0];
+/// put(xs, 0, 7);
+/// xs[0]        // VM: 0 (the module got a copy).  Bundled: 7.
+/// ```
+///
+/// So a module that might do this is not bundled at all. The caller then falls
+/// back (or, for `compile object:`, reports it), which is the outcome that
+/// cannot be wrong.
+///
+/// Reads are fine and stay bundlable: indexing, iterating, `len`. What counts
+/// as unsafe is writing through a parameter, storing one in a global, calling
+/// a method on one (the method table is not enumerated here, so an unknown
+/// method is assumed to mutate), or passing one to a function that does — the
+/// last of which is why this is a fixpoint over the module's own functions.
+#[cfg(feature = "aot")]
+fn module_may_mutate_a_parameter(module: &lk_core::vm::ModuleData) -> bool {
+    use lk_core::vm::{Instr, Opcode};
+
+    // `unsafe_params[f][i]`: function `f` may mutate or retain its parameter
+    // `i`. Grows monotonically, so the fixpoint terminates.
+    let mut unsafe_params: Vec<Vec<bool>> = module
+        .functions
+        .iter()
+        .map(|function| vec![false; function.param_count as usize])
+        .collect();
+
+    // Only a *container* parameter can be aliased into the caller — a scalar is
+    // copied either way. The bytecode carries no parameter types, so
+    // container-ness is read off the operations: a register a container opcode
+    // touches is one. Over-approximate on purpose; guessing "container" for
+    // something that is not costs a needlessly unbundled module, and guessing
+    // the other way costs a wrong answer.
+    let container_regs: Vec<std::collections::HashSet<u8>> = module
+        .functions
+        .iter()
+        .map(|function| {
+            let mut regs = std::collections::HashSet::new();
+            for raw in &function.code {
+                let Ok(instr) = Instr::try_from_raw(*raw) else {
+                    continue;
+                };
+                if matches!(
+                    instr.opcode(),
+                    Opcode::GetIndex
+                        | Opcode::GetList
+                        | Opcode::SetIndex
+                        | Opcode::SetIndexStrI
+                        | Opcode::GetIndexStrI
+                        | Opcode::GetFieldK
+                        | Opcode::SetFieldK
+                        | Opcode::ListPush
+                        | Opcode::ToIter
+                        | Opcode::Len
+                        | Opcode::Contains
+                        | Opcode::SliceFrom
+                        | Opcode::CallMethodK
+                ) {
+                    regs.insert(instr.a());
+                    regs.insert(instr.b());
+                    regs.insert(instr.c());
+                }
+            }
+            regs
+        })
+        .collect();
+
+    loop {
+        let mut changed = false;
+        for (fi, function) in module.functions.iter().enumerate() {
+            // A parameter arrives in the register with its own index.
+            let mut tainted: std::collections::HashMap<u8, usize> = (0..function.param_count)
+                .filter_map(|i| u8::try_from(i).ok().map(|reg| (reg, i as usize)))
+                .filter(|(reg, _)| container_regs[fi].contains(reg))
+                .collect();
+            let mark = |slot: usize, unsafe_params: &mut Vec<Vec<bool>>, changed: &mut bool| {
+                if let Some(flag) = unsafe_params[fi].get_mut(slot)
+                    && !*flag
+                {
+                    *flag = true;
+                    *changed = true;
+                }
+            };
+            for raw in &function.code {
+                let Ok(instr) = Instr::try_from_raw(*raw) else {
+                    continue;
+                };
+                match instr.opcode() {
+                    // A handle copied into another register carries the taint;
+                    // anything else that writes a register produces a *new*
+                    // value, so it does not.
+                    Opcode::Move => {
+                        if let Some(&slot) = tainted.get(&instr.b()) {
+                            tainted.insert(instr.a(), slot);
+                        } else {
+                            tainted.remove(&instr.a());
+                        }
+                    }
+                    // Writes through the container in `a`.
+                    Opcode::SetIndex | Opcode::SetIndexStrI | Opcode::SetFieldK | Opcode::ListPush => {
+                        if let Some(&slot) = tainted.get(&instr.a()) {
+                            mark(slot, &mut unsafe_params, &mut changed);
+                        }
+                    }
+                    // Outliving the call is as observable as mutating.
+                    Opcode::SetGlobal => {
+                        if let Some(&slot) = tainted.get(&instr.a()) {
+                            mark(slot, &mut unsafe_params, &mut changed);
+                        }
+                    }
+                    // The receiver is `a`. `len` and indexing are opcodes of
+                    // their own, so what reaches here is the long tail — and
+                    // the safe assumption about a method this does not know is
+                    // that it writes.
+                    Opcode::CallMethodK => {
+                        if let Some(&slot) = tainted.get(&instr.a()) {
+                            mark(slot, &mut unsafe_params, &mut changed);
+                        }
+                    }
+                    // A direct call passes registers `b+1..b+1+argc`; taint
+                    // flows to the callee's parameter of the same position.
+                    Opcode::CallDirect => {
+                        let callee = instr.b() as usize;
+                        let base = instr.a();
+                        let argc = instr.c() as usize;
+                        for arg in 0..argc {
+                            let Some(reg) = base.checked_add(1).and_then(|r| r.checked_add(arg as u8)) else {
+                                continue;
+                            };
+                            let Some(&slot) = tainted.get(&reg) else {
+                                continue;
+                            };
+                            if unsafe_params.get(callee).and_then(|p| p.get(arg)).copied() == Some(true) {
+                                mark(slot, &mut unsafe_params, &mut changed);
+                            }
+                        }
+                    }
+                    // An indirect call could be anything, including a closure
+                    // that keeps the handle.
+                    Opcode::Call | Opcode::CallNamed => {
+                        let base = instr.a();
+                        for offset in 1..=instr.c() {
+                            if let Some(reg) = base.checked_add(offset)
+                                && let Some(&slot) = tainted.get(&reg)
+                            {
+                                mark(slot, &mut unsafe_params, &mut changed);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    unsafe_params.iter().any(|params| params.iter().any(|flag| *flag))
 }
 
 /// A scalar a bundled module binds at its top level.

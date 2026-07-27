@@ -153,8 +153,13 @@ pub(super) fn compile_object(path: &Path, triple: &str, output: Option<&Path>) -
     // the symptom rather than at the missing bundling.
     let bundled = bundle_file_imports(path, &compiled.artifact)?;
     let (artifact, bundles): (&ModuleArtifact, Vec<lk_aot::BundledImport>) = match &bundled {
-        Some((merged, bundles)) => (merged, bundles.clone()),
-        None => (&compiled.artifact, Vec::new()),
+        crate::BundleOutcome::Bundled(merged, bundles) => (merged, bundles.clone()),
+        // There is no fallback here, so a decline is the answer rather than a
+        // detour: report the cause instead of the symptom it would become.
+        crate::BundleOutcome::Declined(reason) => {
+            anyhow::bail!("cannot compile {} for {triple}: {reason}", path.display())
+        }
+        crate::BundleOutcome::Nothing => (&compiled.artifact, Vec::new()),
     };
     let object = lk_aot::compile_object_for_target(artifact, &bundles, triple)?;
     std::fs::write(&output, object).with_context(|| format!("write object {}", output.display()))?;
@@ -227,8 +232,14 @@ pub(super) fn compile_native_executable_from_artifact(
 ) -> anyhow::Result<NativeOutcome> {
     let bundled = bundle_file_imports(path, artifact)?;
     let (artifact, bundles): (&ModuleArtifact, Vec<lk_aot::BundledImport>) = match &bundled {
-        Some((merged, bundles)) => (merged, bundles.clone()),
-        None => (artifact, Vec::new()),
+        crate::BundleOutcome::Bundled(merged, bundles) => (merged, bundles.clone()),
+        crate::BundleOutcome::Declined(reason) => {
+            if native_trace_enabled() {
+                eprintln!("clif: not bundling imports of {}: {reason}", path.display());
+            }
+            (artifact, Vec::new())
+        }
+        crate::BundleOutcome::Nothing => (artifact, Vec::new()),
     };
     // Inner `Err(reason)` = Unsupported shape (fall back); outer `?` = internal
     // codegen/validation bug (propagate).

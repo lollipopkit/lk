@@ -60,13 +60,21 @@ program knows what to do with it.
 `lk compile object:` bundles file imports at compile time, the same way the
 executable path does. A module may import another module; the bundler walks the whole graph.
 
-One limit is worth knowing, and it fails at compile time with a message rather
-than at runtime: **a bundled module's top level may hold scalar constants but
-not containers.** That is not an arbitrary restriction on what a module may
-contain — it is what keeps the two backends agreeing. Bundling *flattens* the
-modules into one, so a container the module exposes becomes shared with the
-importer; the VM gives each module its own heap and copies a container that
-crosses the boundary. The difference is measurable:
+Two limits are worth knowing. Both fail at compile time with a message rather
+than at runtime, and both have the same cause: **bundling flattens the modules
+into one program, while the VM runs them as separate modules with separate
+heaps and copies containers across the boundary.**
+
+**A bundled module may not write through a container parameter**, keep one, or
+call a method on one. Under a flattened build the callee holds the caller's
+container; under the VM it holds a copy, so `fn put(xs, i, v) { xs[i] = v; }`
+changes the caller's list in one and not the other. A module that might do this
+is not bundled at all — the program falls back, and an object build, which has
+no fallback, reports it. Reading, indexing, iterating and `len` are unaffected,
+which is what the drivers here do.
+
+**A bundled module's top level may hold scalar constants but not containers.** Same reasoning, applied to what the module
+exposes rather than what it is handed:
 
 ```lk
 // module: const NAMES = ["a", "b"];  fn get() -> List<String> { return NAMES; }
