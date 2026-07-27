@@ -42,11 +42,14 @@ pub(super) fn lower(
                 pc,
             )?;
         }
-        // Direct calls address the callee by index, so the loaded function
-        // value itself only flows into the compiler's global-table storage
-        // (`SetGlobal`), which stays a no-op.
+        // A function value in a register. Usually the compiler's global-table
+        // bookkeeping, which is a no-op natively — but also how a call to a
+        // function past index 255 is spelled, because `CallDirect` names its
+        // target in a byte. The index rides along so the `Call` arm can
+        // devirtualize it.
         Opcode::LoadFunction => {
-            ssa.builtin_regs.insert((block, instr.a()), GlobalRef::UserFn);
+            ssa.builtin_regs
+                .insert((block, instr.a()), GlobalRef::UserFn(u32::from(instr.bx())));
         }
         Opcode::MakeClosure => {
             // `a` = dst, `b` = function index, `c` = capture window base. A
@@ -233,9 +236,25 @@ pub(super) fn lower(
                         pc,
                     )?;
                 }
+                // A plain function value, called through the register the
+                // bytecode had to load it into. No captures: a `fn` has none.
+                Some(GlobalRef::UserFn(fidx)) => {
+                    lower_user_call(
+                        ssa,
+                        insts,
+                        funcs,
+                        entry,
+                        sig,
+                        fidx as usize,
+                        base,
+                        instr.c() as usize,
+                        &[],
+                        block,
+                        pc,
+                    )?;
+                }
                 Some(GlobalRef::Module(_))
                 | Some(GlobalRef::UserModule(_))
-                | Some(GlobalRef::UserFn)
                 | Some(GlobalRef::ArgList(_))
                 | Some(GlobalRef::Cell(_))
                 | Some(GlobalRef::CellParam(_))

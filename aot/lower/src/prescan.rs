@@ -306,7 +306,8 @@ pub(crate) fn reachable_functions(module: &lk_core::vm::ModuleData, extra_roots:
         }
     }
     while let Some(fi) = stack.pop() {
-        for raw in &module.functions[fi].code {
+        let code = &module.functions[fi].code;
+        for (pc, raw) in code.iter().enumerate() {
             let Ok(instr) = Instr::try_from_raw(*raw) else {
                 continue;
             };
@@ -314,6 +315,31 @@ pub(crate) fn reachable_functions(module: &lk_core::vm::ModuleData, extra_roots:
             // refs), so it must be lowered/emitted too.
             let callee = match instr.opcode() {
                 Opcode::CallDirect | Opcode::MakeClosure => instr.b() as usize,
+                // A function *value*, which is two different things.
+                //
+                // Almost always it is the compiler publishing a top-level `fn`
+                // to its global slot — `LoadFunction r; SetGlobal r, slot`,
+                // always adjacent — and that stores a value nothing calls.
+                // Following those would mark every declared function reachable
+                // and leave nothing for this pass to prune.
+                //
+                // Anything else loading a function value can call it, and one
+                // shape in particular does: a call to a function past index 255
+                // cannot be a `CallDirect`, because that names its target in a
+                // byte, so the compiler spells it `LoadFunction` + `Call`.
+                // Missing that edge pruned the callee and then lowered a call
+                // to it — a function with no entry block, reported as failed
+                // MIR validation with nothing to say which function.
+                Opcode::LoadFunction => {
+                    let published = code
+                        .get(pc + 1)
+                        .and_then(|next| Instr::try_from_raw(*next).ok())
+                        .is_some_and(|next| next.opcode() == Opcode::SetGlobal && next.a() == instr.a());
+                    if published {
+                        continue;
+                    }
+                    instr.bx() as usize
+                }
                 _ => continue,
             };
             if callee < n && !reachable[callee] {

@@ -84,7 +84,7 @@ trampoline is where it is said.
 Task stacks come from the page allocator too, so `TASK_CAPACITY` is now a
 property of the table's fixed region rather than of five static arrays.
 
-### The ceiling this is heading for
+### The ceiling this hit, and what was actually behind it
 
 Adding `drivers/tasks.lk` did not compile:
 
@@ -92,22 +92,43 @@ Adding `drivers/tasks.lk` did not compile:
 bundled import 'drivers/serial': function index overflow
 ```
 
-`CallDirect` and `MakeClosure` name their target in the instruction's `b`
-field, which is a byte, so a **bundled program may hold at most 256
-functions**. With the new driver, `program.lk` and its drivers came to 260.
+`CallDirect` and `MakeClosure` name their target in the instruction's `b` field,
+which is a byte. With the new driver, `program.lk` and its drivers came to 260
+functions.
 
-The compiler itself has no such limit — past 255 it lowers a call generically —
-but a dep's instructions are already emitted by the time the bundler renumbers
-them, and rewriting one instruction into two would move every jump offset after
-it. So the ceiling is real, and it is the first one this direction will hit
-again: every subsystem that moves out of Rust arrives as a file of functions.
+It turned out to be **three** limits wearing one error message, and none of them
+is the one the message named.
 
-This round bought room by collapsing six one-line field accessors into one pair
-keyed by a named offset — which reads better anyway, and is the right shape when
-functions are a resource with a bound. That is not a fix. The fix is either
-numbering the merged table so direct-call targets take the low indices (moving
-the ceiling to "256 functions *called directly*"), or a wider field, which is an
-instruction-encoding change. Both are written down at the code.
+**The merge numbered functions as they arrived.** A dep's instructions are
+already emitted by the time it renumbers them — rewriting one into two would
+move every jump offset after it — so anything a dep calls directly has to land
+below 256. But most functions are not called that way: of the 159 driver
+functions here, **52** are, and the rest are reached by name from the importing
+program, which the lowering resolves through a `u32`. So directly-called
+functions are numbered first, and what is bounded is now "the importing file's
+functions, plus the ones a dep calls directly" — 144 here, against 256.
+
+**A call past index 255 did not lower natively.** The compiler handles it
+correctly: past 255 it emits `LoadFunction` + `Call` instead of `CallDirect`.
+The native lowering rejected that shape, so 256 functions was a ceiling on the
+native path too, by a completely different mechanism. The function value in the
+register now carries the function it names, which is the same devirtualization a
+capture-free closure already got.
+
+**Reachability did not follow `LoadFunction`.** With the call lowering fixed,
+the callee turned out never to have been lowered at all: the prescan followed
+`CallDirect` and `MakeClosure` and nothing else, so a function reached only the
+new way was pruned, and the module then failed MIR validation with a function
+that had no entry block. The edge is there now — except for the one shape that
+is *not* a call, `LoadFunction` immediately followed by `SetGlobal`, which is
+how the compiler publishes a top-level `fn`. Following those would mark every
+declared function reachable and leave the pass nothing to prune.
+
+Three tests pin the three, each isolating one: a bundle past 256 with no direct
+calls at all, a bundle whose dep-local indices all fit but whose *merged* ones
+do not, and a single file with no bundling where the 300th function is called.
+Each compares the native build against the VM, because a numbering invented
+wrongly computes a different answer without failing anything.
 
 
 

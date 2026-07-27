@@ -55,10 +55,13 @@ fn task_set_word(address: Int, value: Int) {
 
 // A slot's field, by the named offset it lives at.
 //
-// One pair rather than a wrapper per field, and not only for brevity: a
-// bundled program is flattened into one function table whose call instruction
-// names its target in a *byte*, so functions are a resource with a ceiling.
-// Six one-line wrappers cost six of them to say what an offset already says.
+// One pair rather than a wrapper per field: the offset already says which field
+// it is, and a wrapper per field is six functions saying the same thing again.
+//
+// This was written when a bundled program could hold only 256 functions and six
+// of them were worth saving. That ceiling has since moved — the merge numbers
+// directly-called functions first — so what is left is the reason that survives
+// it, which is the only one worth writing down.
 fn task_field(base: Int, slot: Int, offset: Int) -> Int {
     return task_word(base + TASK_HEADER_SIZE + slot * TASK_SLOT_SIZE + offset);
 }

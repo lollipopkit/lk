@@ -103,10 +103,18 @@ pub(crate) enum GlobalRef {
     /// Its only consumer is a constant-name member read, which resolves to
     /// [`GlobalRef::Lambda`] of the merged function.
     UserModule(usize),
-    /// A user function value (`LoadFunction`); its only supported consumer is
-    /// the compiler's `SetGlobal` storage of top-level `fn` declarations
-    /// (direct calls address the callee by index instead).
-    UserFn,
+    /// A user function value (`LoadFunction`), with the function it names.
+    ///
+    /// Two consumers. The compiler's `SetGlobal` storage of a top-level `fn`
+    /// declaration, which is a no-op natively. And a `Call` through the
+    /// register, which is a direct call the bytecode could not spell that way:
+    /// `CallDirect` names its target in a byte, so a module whose 256th
+    /// function calls its 257th gets `LoadFunction` + `Call` instead. That used
+    /// to reject, which made 256 functions a *native* ceiling as well as a
+    /// bytecode one — reached the ordinary way, by a program with a lot of
+    /// drivers. The index is what makes the call lowerable; it is the same
+    /// devirtualization `Lambda` already gets.
+    UserFn(u32),
     /// A capture-free closure (`MakeClosure` with `capture_count == 0`) — a
     /// statically known function reference. Supported consumers: an indirect
     /// `Call` through the register (lowered as a direct call) and the entry

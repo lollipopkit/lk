@@ -98,7 +98,7 @@ pub(super) fn lower(
         Opcode::SetGlobal => {
             // Storing a function value into the global table is the compiler's
             // top-level `fn` bookkeeping — a no-op natively.
-            if let Some(GlobalRef::UserFn) = ssa.builtin_regs.get(&(block, instr.a())) {
+            if let Some(GlobalRef::UserFn(_)) = ssa.builtin_regs.get(&(block, instr.a())) {
                 return Ok(());
             }
             // A top-level `let f = |x| …` stores a lambda ref: a no-op when the

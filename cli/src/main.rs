@@ -972,6 +972,18 @@ pub(crate) enum BundleOutcome {
 }
 
 #[cfg(feature = "aot")]
+/// One validated dependency, held until the merge knows how to number it.
+#[cfg(feature = "aot")]
+struct PendingBundle {
+    import_path: String,
+    canonical: PathBuf,
+    dep: ModuleArtifact,
+    dep_entry: usize,
+    /// Exported name → the dep's own function index.
+    pairs: Vec<(String, u32)>,
+    dep_consts: Vec<(String, BundledConst)>,
+}
+
 fn bundle_file_imports(source: &Path, artifact: &ModuleArtifact) -> anyhow::Result<BundleOutcome> {
     use lk_core::vm::{Instr, Opcode};
 
@@ -993,8 +1005,7 @@ fn bundle_file_imports(source: &Path, artifact: &ModuleArtifact) -> anyhow::Resu
     // by a driver next to it are the same file under two names; recording only
     // the first left the second one's `use { .. }` resolving to nothing, which
     // the lowering reports as an unresolved global far from the cause.
-    let mut bundled_fns: std::collections::HashMap<PathBuf, std::collections::HashMap<String, u32>> =
-        std::collections::HashMap::new();
+    let mut bundled_fns: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
     // Every constant any bundled module defined, and which module defined it.
     // Two deps exporting the same name would both fold into one merged slot,
     // and the first one popped off the queue would win for the importer's
@@ -1005,15 +1016,21 @@ fn bundle_file_imports(source: &Path, artifact: &ModuleArtifact) -> anyhow::Resu
 
     let mut merged = artifact.clone();
     let mut bundles: Vec<lk_aot::BundledImport> = Vec::new();
+    // Validated deps, waiting to be numbered. Nothing is appended inside the
+    // loop: which merged index each function gets depends on every dep, so the
+    // numbering is decided once, afterwards.
+    let mut pending: Vec<PendingBundle> = Vec::new();
+    // Import paths naming a file some other path already brought in. They add
+    // no functions, only a binding table — which does not exist until the
+    // numbering does.
+    let mut aliases: Vec<(String, PathBuf)> = Vec::new();
     while let Some((import_path, dep_path)) = queue.pop() {
         let canonical = std::fs::canonicalize(&dep_path).unwrap_or_else(|_| dep_path.clone());
-        if let Some(fns) = bundled_fns.get(&canonical) {
-            bundles.push(lk_aot::BundledImport {
-                path: import_path,
-                fns: fns.clone(),
-            });
+        if bundled_fns.contains(&canonical) {
+            aliases.push((import_path, canonical));
             continue;
         }
+        bundled_fns.insert(canonical.clone());
 
         let dep = compile_instr_artifact_with_dependencies(&dep_path)?.artifact;
         // Bundling this module would give its functions a *reference* to the
@@ -1046,7 +1063,6 @@ fn bundle_file_imports(source: &Path, artifact: &ModuleArtifact) -> anyhow::Resu
         // why this restriction is what keeps the two backends agreeing.
         let mut reg_fn: std::collections::HashMap<u8, u32> = std::collections::HashMap::new();
         let mut reg_const: std::collections::HashMap<u8, BundledConst> = std::collections::HashMap::new();
-        let mut fns: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
         let mut pairs: Vec<(String, u32)> = Vec::new();
         let mut dep_consts: Vec<(String, BundledConst)> = Vec::new();
         let dep_entry_fn = &dep.module.functions[dep_entry];
@@ -1153,18 +1169,90 @@ fn bundle_file_imports(source: &Path, artifact: &ModuleArtifact) -> anyhow::Resu
             }
         }
 
-        // Merge: append every dep function except its entry; function indices
-        // and global slots (by name) rewrite in place — pcs are unchanged, so
-        // pc-keyed facts stay valid.
-        let base = merged.module.functions.len() as u32;
-        let mut remap: Vec<Option<u32>> = vec![None; dep.module.functions.len()];
-        let mut next = base;
-        for (i, slot) in remap.iter_mut().enumerate() {
-            if i != dep_entry {
-                *slot = Some(next);
+        // Nothing is merged yet: the numbering the merge hands out depends on
+        // every dep, so it is decided once, after all of them are known.
+        pending.push(PendingBundle {
+            import_path,
+            canonical,
+            dep,
+            dep_entry,
+            pairs,
+            dep_consts,
+        });
+    }
+
+    // The numbering, and the reason it is not simply "append in the order they
+    // arrived".
+    //
+    // A `CallDirect` or `MakeClosure` names its target in the instruction's `b`
+    // field, which is a byte. A dep's instructions are already emitted by the
+    // time they reach here — rewriting one into two would move every jump
+    // offset after it — so any dep function that one of those names has to land
+    // below 256. Appending in arrival order made that a bound on the *whole*
+    // program, and `bare-metal-x86/program.lk` with its drivers hit it at 260.
+    //
+    // But most functions are not named that way. Of 159 driver functions there,
+    // 52 are: the rest are reached by name from the importing program, which
+    // the lowering resolves through `BundledImport::fns` — a `u32`. So the
+    // targets go first and the bound becomes "the importing file's functions,
+    // plus the ones a dep calls directly", which for that program is 144.
+    //
+    // What still has no answer is a program that crosses *that*. The honest fix
+    // is a wider field, and that is an instruction-encoding change.
+    let mut targets: Vec<std::collections::HashSet<usize>> = Vec::with_capacity(pending.len());
+    for entry in &pending {
+        let mut set = std::collections::HashSet::new();
+        for (index, function) in entry.dep.module.functions.iter().enumerate() {
+            if index == entry.dep_entry {
+                continue;
+            }
+            for raw in &function.code {
+                let instr = Instr::try_from_raw(*raw)
+                    .map_err(|_| anyhow::anyhow!("bundled import '{}': bad instruction", entry.import_path))?;
+                if matches!(instr.opcode(), Opcode::CallDirect | Opcode::MakeClosure) {
+                    set.insert(instr.b() as usize);
+                }
+            }
+        }
+        targets.push(set);
+    }
+
+    let base = merged.module.functions.len() as u32;
+    let mut remaps: Vec<Vec<Option<u32>>> = pending
+        .iter()
+        .map(|entry| vec![None; entry.dep.module.functions.len()])
+        .collect();
+    let mut next = base;
+    // Directly-called functions first, across every dep, then everything else.
+    for directly_called in [true, false] {
+        for (which, entry) in pending.iter().enumerate() {
+            for index in 0..entry.dep.module.functions.len() {
+                if index == entry.dep_entry || targets[which].contains(&index) != directly_called {
+                    continue;
+                }
+                remaps[which][index] = Some(next);
                 next += 1;
             }
         }
+    }
+
+    // Laid out by merged index rather than pushed as they are rewritten: the
+    // two passes above interleave the deps, so arrival order is no longer
+    // append order.
+    let mut placed: Vec<Option<lk_core::vm::FunctionData>> = (base..next).map(|_| None).collect();
+    let mut canonical_fns: std::collections::HashMap<PathBuf, std::collections::HashMap<String, u32>> =
+        std::collections::HashMap::new();
+    let mut all_consts: Vec<(String, Vec<(String, BundledConst)>)> = Vec::new();
+    for (which, entry) in pending.into_iter().enumerate() {
+        let PendingBundle {
+            import_path,
+            canonical,
+            dep,
+            dep_entry,
+            pairs,
+            dep_consts,
+        } = entry;
+        let remap = &remaps[which];
         let slot_of = |name: &str, globals: &mut Vec<String>| -> u16 {
             match globals.iter().position(|g| g == name) {
                 Some(slot) => slot as u16,
@@ -1174,8 +1262,8 @@ fn bundle_file_imports(source: &Path, artifact: &ModuleArtifact) -> anyhow::Resu
                 }
             }
         };
-        for (i, function) in dep.module.functions.iter().enumerate() {
-            if i == dep_entry {
+        for (index, function) in dep.module.functions.iter().enumerate() {
+            if index == dep_entry {
                 continue;
             }
             let mut function = function.clone();
@@ -1183,26 +1271,6 @@ fn bundle_file_imports(source: &Path, artifact: &ModuleArtifact) -> anyhow::Resu
                 let instr = Instr::try_from_raw(*raw_instr)
                     .map_err(|_| anyhow::anyhow!("bundled import '{import_path}': bad instruction"))?;
                 let rewritten = match instr.opcode() {
-                    // A ceiling, and the one that binds first as a program
-                    // grows: `CallDirect`/`MakeClosure` name their target in
-                    // the instruction's `b` field, which is a byte, so a
-                    // bundled program may hold at most 256 functions.
-                    //
-                    // The *compiler* has no such limit — `direct_function_index_u8`
-                    // answers `None` past 255 and the call lowers generically —
-                    // but a dep's instructions are already emitted by the time
-                    // they get here, and rewriting one into two would move
-                    // every jump offset after it.
-                    //
-                    // `bare-metal-x86/program.lk` with its drivers reached 260
-                    // and had to give some back. The failure is loud, which is
-                    // the only good thing about it.
-                    // TODO: number the merged table so that direct-call targets
-                    // take the low indices — the set is discoverable by scanning
-                    // each dep's code for these two opcodes — which moves the
-                    // ceiling from "256 functions" to "256 functions that are
-                    // called directly". A wider field is the real fix and needs
-                    // an instruction-encoding change.
                     Opcode::CallDirect | Opcode::MakeClosure => {
                         let fidx = instr.b() as usize;
                         let new = remap
@@ -1210,8 +1278,17 @@ fn bundle_file_imports(source: &Path, artifact: &ModuleArtifact) -> anyhow::Resu
                             .copied()
                             .flatten()
                             .ok_or_else(|| anyhow::anyhow!("bundled import '{import_path}' calls its entry"))?;
-                        let new = u8::try_from(new)
-                            .map_err(|_| anyhow::anyhow!("bundled import '{import_path}': function index overflow"))?;
+                        // The numbering above put every one of these below 256.
+                        // Reaching here means the *importing* file plus every
+                        // directly-called dep function came to more than that,
+                        // which is the ceiling this layout postponed rather
+                        // than removed.
+                        let new = u8::try_from(new).map_err(|_| {
+                            anyhow::anyhow!(
+                                "bundled import '{import_path}': more than 256 directly-called functions — \
+                                 the call instruction names its target in a byte"
+                            )
+                        })?;
                         Some(Instr::abc(instr.opcode(), instr.a(), new, instr.c()))
                     }
                     Opcode::LoadFunction => {
@@ -1236,8 +1313,10 @@ fn bundle_file_imports(source: &Path, artifact: &ModuleArtifact) -> anyhow::Resu
                     *raw_instr = instr.raw();
                 }
             }
-            merged.module.functions.push(function);
+            let at = remap[index].expect("every non-entry function was numbered") - base;
+            placed[at as usize] = Some(function);
         }
+        let mut fns: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
         for (name, fidx) in pairs {
             let merged_fidx = remap
                 .get(fidx as usize)
@@ -1246,25 +1325,62 @@ fn bundle_file_imports(source: &Path, artifact: &ModuleArtifact) -> anyhow::Resu
                 .ok_or_else(|| anyhow::anyhow!("bundled import '{import_path}': dangling fn binding"))?;
             fns.insert(name, merged_fidx);
         }
-        // A bundled module's constants have no initialiser in the merged
-        // program: its entry — the only code that would have run the
-        // assignment — is the one function the merge drops. Rather than splice
-        // an initialiser into the importing entry (which would shift every pc
-        // and invalidate the pc-keyed facts), fold the value into each read.
-        // They are constants; substituting them is what `const` means.
+        canonical_fns.insert(canonical, fns.clone());
+        bundles.push(lk_aot::BundledImport {
+            path: import_path.clone(),
+            fns,
+        });
         if !dep_consts.is_empty() {
-            let const_slots: std::collections::HashMap<u16, BundledConst> = dep_consts
-                .into_iter()
-                .map(|(name, value)| (slot_of(&name, &mut merged.module.globals), value))
-                .collect();
-            for function in &mut merged.module.functions {
-                fold_global_constants(function, &const_slots)
-                    .with_context(|| format!("bundled import '{import_path}': folding constants"))?;
-            }
+            all_consts.push((import_path, dep_consts));
         }
+    }
+    for (which, function) in placed.into_iter().enumerate() {
+        merged.module.functions.push(
+            function
+                .ok_or_else(|| anyhow::anyhow!("bundled merge left function {} unfilled", base as usize + which))?,
+        );
+    }
 
-        bundled_fns.insert(canonical, fns.clone());
+    // A second import path for a file already merged: same functions, its own
+    // binding table.
+    for (import_path, canonical) in aliases {
+        let fns = canonical_fns
+            .get(&canonical)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("bundled import '{import_path}': no merged module to bind to"))?;
         bundles.push(lk_aot::BundledImport { path: import_path, fns });
+    }
+
+    // A bundled module's constants have no initialiser in the merged program:
+    // its entry — the only code that would have run the assignment — is the one
+    // function the merge drops. Rather than splice an initialiser into the
+    // importing entry (which would shift every pc and invalidate the pc-keyed
+    // facts), fold the value into each read. They are constants; substituting
+    // them is what `const` means.
+    //
+    // After every function is in place, which is also a fix: folding used to
+    // happen as each dep landed, so a dep merged *later* had its reads of an
+    // earlier dep's constant left as a `GetGlobal` of a slot nothing ever
+    // initialises. Nothing depended on that yet — a driver importing another
+    // driver's constant is what would have found it.
+    for (import_path, dep_consts) in all_consts {
+        let slot_of = |name: &str, globals: &mut Vec<String>| -> u16 {
+            match globals.iter().position(|g| g == name) {
+                Some(slot) => slot as u16,
+                None => {
+                    globals.push(name.to_string());
+                    (globals.len() - 1) as u16
+                }
+            }
+        };
+        let const_slots: std::collections::HashMap<u16, BundledConst> = dep_consts
+            .into_iter()
+            .map(|(name, value)| (slot_of(&name, &mut merged.module.globals), value))
+            .collect();
+        for function in &mut merged.module.functions {
+            fold_global_constants(function, &const_slots)
+                .with_context(|| format!("bundled import '{import_path}': folding constants"))?;
+        }
     }
     Ok(BundleOutcome::Bundled(merged, bundles))
 }
