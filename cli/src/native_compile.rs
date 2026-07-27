@@ -245,12 +245,24 @@ pub(super) fn compile_native_executable_from_artifact(
     artifact: &ModuleArtifact,
 ) -> anyhow::Result<NativeOutcome> {
     let bundled = bundle_file_imports(path, artifact)?;
+    // Why the imports were not bundled, if they were not.
+    //
+    // Kept because the failure it causes names a symptom. Without bundling, a
+    // call into an imported module is a `GetGlobal` that resolves to nothing, so
+    // the program falls back and the warning says "global `extend` does not
+    // resolve" — sending the reader to look for a missing import when the cause
+    // is a module that was deliberately not merged, and for a specific reason
+    // that was known one function ago. `compile object:` already reports the
+    // cause because it has no fallback; this path had the same answer and
+    // discarded it.
+    let mut declined: Option<String> = None;
     let (artifact, bundles): (&ModuleArtifact, Vec<lk_aot::BundledImport>) = match &bundled {
         crate::BundleOutcome::Bundled(merged, bundles) => (merged, bundles.clone()),
         crate::BundleOutcome::Declined(reason) => {
             if native_trace_enabled() {
                 eprintln!("clif: not bundling imports of {}: {reason}", path.display());
             }
+            declined = Some(reason.clone());
             (artifact, Vec::new())
         }
         crate::BundleOutcome::Nothing => (artifact, Vec::new()),
@@ -259,7 +271,19 @@ pub(super) fn compile_native_executable_from_artifact(
     // codegen/validation bug (propagate).
     let clif = match lk_aot::compile_artifact_to_clif_object(artifact, &bundles)? {
         Ok(clif) => clif,
-        Err(reason) => return Ok(NativeOutcome::Unsupported(reason)),
+        Err(reason) => {
+            // The decline goes with it. Without bundling, a call into an
+            // imported module is a `GetGlobal` that resolves to nothing, so what
+            // the user is about to be told is "global `extend` does not resolve"
+            // — a symptom that sends them looking for a missing import, when the
+            // cause is a module deliberately not merged for a reason that was
+            // known one function ago. `compile object:` already says the cause,
+            // because it has no fallback to hide behind.
+            return Ok(NativeOutcome::Unsupported(match declined {
+                Some(why) => format!("{reason}; the imports were not bundled because {why}"),
+                None => reason,
+            }));
+        }
     };
     if native_trace_enabled() {
         eprintln!("clif: native object for {}", path.display());

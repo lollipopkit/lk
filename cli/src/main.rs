@@ -1498,6 +1498,33 @@ fn resolve_bundled_import(base_dir: &Path, import_path: &str) -> anyhow::Result<
         .ok_or_else(|| anyhow::anyhow!("bundled import not found: {import_path}"))
 }
 
+/// Whether a method provably neither writes through its receiver nor keeps it.
+///
+/// An allow list, and short on purpose: everything not named here is assumed to
+/// write, which is the same default the rest of this scan takes. Each of these
+/// answers a number or a bool computed from the receiver's current contents and
+/// holds on to nothing.
+///
+/// `user_methods` is what makes the list safe rather than a guess. A name an
+/// `impl` in this module defines could dispatch to anything — a type may have
+/// its own `contains` that sorts first — so a name that is also a user method is
+/// not treated as the builtin it resembles.
+fn reads_only(name: &str, user_methods: &std::collections::HashSet<&str>) -> bool {
+    const PURE_READS: &[&str] = &[
+        "len",
+        "byte_at",
+        "char_at",
+        "starts_with",
+        "ends_with",
+        "contains",
+        "find",
+        "index_of",
+        "count",
+        "is_empty",
+    ];
+    PURE_READS.contains(&name) && !user_methods.contains(name)
+}
+
 /// Whether any function in a module can mutate or retain a container that came
 /// in as a parameter.
 ///
@@ -1576,6 +1603,19 @@ fn module_may_mutate_a_parameter(module: &lk_core::vm::ModuleData) -> bool {
         })
         .collect();
 
+    // Every method name an `impl` in this module defines.
+    //
+    // A name in here is not necessarily the builtin it looks like: nothing stops
+    // a type from having its own `len` that rearranges the receiver, and the
+    // bytecode carries no types, so a name that could dispatch to user code has
+    // to be treated as if it does.
+    let user_methods: std::collections::HashSet<&str> = module
+        .type_info
+        .impls
+        .iter()
+        .flat_map(|decl| decl.methods.iter().map(|method| method.name.as_str()))
+        .collect();
+
     loop {
         let mut changed = false;
         for (fi, function) in module.functions.iter().enumerate() {
@@ -1623,8 +1663,33 @@ fn module_may_mutate_a_parameter(module: &lk_core::vm::ModuleData) -> bool {
                     // their own, so what reaches here is the long tail — and
                     // the safe assumption about a method this does not know is
                     // that it writes.
+                    //
+                    // Except for the ones that provably do not. What bundling
+                    // changes is that the module gets the caller's container
+                    // rather than a copy of it, and that difference is
+                    // observable only through a *write* — either this function's
+                    // own, or someone else's through a handle it kept. A method
+                    // that reads and returns a number can do neither.
+                    //
+                    // Without this, a bundled module could not have a function
+                    // that takes a `String` and looks at it: strings are
+                    // immutable, so every string method is a read, and
+                    // `fn log(message: String)` in a driver is the most ordinary
+                    // thing there is. It was `uart_text(text: String)` calling
+                    // `text.byte_at(i)` that found this.
                     Opcode::CallMethodK => {
-                        if let Some(&slot) = tainted.get(&instr.a()) {
+                        // `b`, not `bx`: the receiver is `a` and the argument
+                        // count is `c`, so the method-name constant only has a
+                        // byte to live in.
+                        let name = function
+                            .consts
+                            .strings
+                            .get(instr.b() as usize)
+                            .map(|s| s.as_ref())
+                            .unwrap_or("");
+                        if !reads_only(name, &user_methods)
+                            && let Some(&slot) = tainted.get(&instr.a())
+                        {
                             mark(slot, &mut unsafe_params, &mut changed);
                         }
                     }
