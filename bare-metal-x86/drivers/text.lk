@@ -11,7 +11,7 @@
 // is a keyboard-layout question rather than a rendering one. This module is
 // handed both.
 
-use { put_pixel, fill_rect } from "framebuffer";
+use { put_pixel, get_pixel, fill_rect } from "framebuffer";
 
 const GLYPH_WIDTH = 5;
 const GLYPH_ROWS = 7;
@@ -67,4 +67,27 @@ fn draw_cells(base: Int, stride: Int, font: List<Int>, indices: List<Int>, colum
 // Clears the whole screen to one colour.
 fn clear(base: Int, width: Int, height: Int, colour: Int) {
     fill_rect(base, width, 0, 0, width, height, colour);
+}
+
+// Moves the picture up by one text row and clears the line that opens at the
+// bottom.
+//
+// Pixel by pixel through the same volatile accessors as everything else: the
+// framebuffer is device memory, so there is no memmove to reach for. At this
+// size that is around 60000 read/write pairs, which is well under a timer
+// period — and an interrupt gate has already masked interrupts, so a long
+// handler delays the next tick rather than re-entering.
+fn scroll_up(base: Int, width: Int, height: Int, background: Int) {
+    let shift = CELL_HEIGHT;
+    for y in 0..(height - shift) {
+        for x in 0..width {
+            put_pixel(base, width, x, y, get_pixel(base, width, x, y + shift));
+        }
+    }
+    fill_rect(base, width, 0, height - shift, width, shift, background);
+}
+
+// A filled cell, for showing where the next character will land.
+fn draw_cursor(base: Int, stride: Int, column: Int, row: Int, colour: Int) {
+    fill_rect(base, stride, column * CELL_WIDTH, row * CELL_HEIGHT, GLYPH_WIDTH, GLYPH_ROWS, colour);
 }

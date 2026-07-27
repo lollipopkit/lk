@@ -23,8 +23,13 @@ keys 4 last 115
 ```
 
 ...and on the screen, `LK ON BARE METAL` over a `TYPE:` prompt with the typed
-characters after it — drawn by LK's own text renderer from a font this
-repository wrote.
+characters after it, a block cursor where the next one will land, and the
+picture scrolling up when the last line fills — all drawn by LK's own text
+renderer from a font this repository wrote.
+
+Backspace stops at the left margin rather than wrapping to the previous line:
+the handler has no record of where that line ended, and inventing one would be
+a guess.
 
 Every line of that came from LK code driving four devices by three different
 mechanisms:
@@ -206,7 +211,14 @@ cannot show.
 
 ## Text
 
-`drivers/text.lk` renders a 5x7 font into 6x8 cells. The font is a table of
+`drivers/text.lk` renders a 5x7 font into 6x8 cells, and scrolls.
+
+Scrolling moves the picture pixel by pixel through the same volatile accessors
+as everything else — the framebuffer is device memory, so there is no `memmove`
+to reach for. At this size that is around 60000 read/write pairs per line,
+comfortably inside a timer period; and since an interrupt gate has already
+masked interrupts, a long handler delays the next tick rather than re-entering.
+ The font is a table of
 integers, one row of pixels each, written for this program — the repository
 carries no third-party font data — and it lives in `program.lk` rather than in
 the renderer: a container at a module's top level cannot cross a bundled
