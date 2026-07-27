@@ -201,7 +201,39 @@ fn lkrt_staticlib_path() -> Option<PathBuf> {
             candidates.push(path);
         }
     }
-    newest_existing_path(candidates)
+    newest_existing_path(candidates).or_else(build_lkrt_staticlib)
+}
+
+/// Builds `lkrt-cabi` when no archive is on disk.
+///
+/// `cargo test` never produces one: for a `staticlib`-only crate a test run
+/// compiles the crate as a test harness and emits no `.a`, so a fresh clone —
+/// or a CI job with a cold cache — reaches the linker with nothing to link
+/// against. What that looks like is `undefined reference to lkrt_abi_check`,
+/// which names neither the archive nor the reason; the suite appeared to pass
+/// only because some *later* step had built the archive on a previous run and
+/// the cache carried it forward.
+///
+/// Building it here is the rule the CLI already follows for `lk-api`: an
+/// archive the link needs is the link's business to produce.
+fn build_lkrt_staticlib() -> Option<PathBuf> {
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent()?.parent()?;
+    eprintln!("building lkrt staticlib (one-time)…");
+    let status = std::process::Command::new("cargo")
+        .current_dir(workspace)
+        .args(["build", "-p", "lkrt-cabi"])
+        .status()
+        .ok()?;
+    if !status.success() {
+        return None;
+    }
+    let file = if cfg!(target_os = "windows") {
+        "lkrt_cabi.lib"
+    } else {
+        "liblkrt_cabi.a"
+    };
+    let built = workspace.join("target/debug").join(file);
+    built.exists().then_some(built)
 }
 
 fn latest_lkrt_staticlib_in(deps_dir: &Path) -> Option<PathBuf> {
