@@ -38,34 +38,45 @@
 //! unbox as the seed's type and answer wrongly, and it cannot happen — the type
 //! checker refuses `let a = 0; try { a = "s"; }` before any of this runs.
 //!
-//! It reproduces in five lines, and the shape is not what the message says:
+//! It reproduces in five lines:
 //!
 //! ```lk
 //! fn add(a, b) { return a + b; }
 //! let ok = 0;
 //! try { ok = add(2, 3); } catch e { ok = -1; }
 //! assert(ok == 5);
-//! try { 1 + 2; } catch t { }      // ← this line breaks the region above it
+//! try { 1 + 2; } catch t { }      // ← this region is the one that rejects
 //! ```
 //!
-//! Without the last line it lowers natively, cell and all. With
-//! `try { } catch t { }` — an *empty* body — it still lowers. A second region
-//! whose body produces a value is what does it, and **the rejection is reported
-//! against the first region**, whose source did not change.
+//! The message names pc 11, which is the *second* region — the one the last
+//! line adds. (An earlier version of this note read it as the first and built a
+//! story about a later region breaking an earlier one. It does not; the pc was
+//! simply not what it looked like.)
 //!
-//! So this is not "the body assigns something unboxable". The first region's
-//! cell set is `[4]`, and register 4 holds `Nil` before it — which it did not
-//! when that region was the only one in the function. The set of registers a
-//! body is deemed to assign is discovered by comparing the SSA's `current_def`
-//! before and after each instruction, and what registers those *are* depends on
-//! the enclosing function's allocation, which the second region changes.
+//! What actually happens, measured:
 //!
-//! The question to answer first is therefore not "what unboxes a `Nil`" but
-//! "is register 4 a variable the parent reads after the region, or a call-window
-//! temporary the body happened to clobber?" If it is the latter, cell-ifying it
-//! is unnecessary work whose only effect is this rejection, and the fix is the
-//! one the paragraph below already describes: find what actually reads the
-//! register after the join.
+//! 1. The second region's body writes `r4` — a temporary for `1 + 2`.
+//! 2. The parent also wrote `r4` before the region, in the call window for
+//!    `assert(ok == 5)`.
+//! 3. So the test below — "the body assigns a register the parent already had"
+//!    — says yes, and `r4` is given a cell.
+//! 4. Nothing reads `r4` after the region. It is a dead temporary, its value at
+//!    the region has type `Nil`, `Nil` has no unboxer, and the region rejects.
+//!
+//! The cell exists to make a body's write visible to the parent afterwards. If
+//! nothing reads the register afterwards, the write is invisible either way and
+//! the cell is pure waste — waste that then rejects the whole region.
+//!
+//! So the criterion is too coarse, and the missing half is the one the
+//! paragraph below has always named: *is anything reading this register after
+//! the region?* That is a liveness question, and the reason it has not simply
+//! been answered is that answering it by inspection needs a table of which
+//! operands each opcode reads — the shape this feature has been burned by
+//! twice. The discovery mechanism that already exists (a read with no reaching
+//! definition names its own register, and the fixpoint lowers again) answers
+//! the *other* direction: registers the parent reads but never defined. What is
+//! needed here is registers the parent defined but never reads again, and no
+//! error announces those.
 //!
 //! And the note that still stands, from whoever wrote the previous version of
 //! this section: do not supply a placeholder for a value an edge does not

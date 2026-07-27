@@ -37,8 +37,35 @@ fn body_index_of(sig: &SigInfer, func_index: u32, begin_pc: usize) -> Result<u32
         })
 }
 
-fn writes_register_before(instrs: &[Instr], pc: usize, reg: u8) -> bool {
-    instrs[..pc].iter().any(|instr| instr.a() == reg)
+/// Did the enclosing function itself define `reg` before `pc`?
+///
+/// "Itself" is the whole question, and getting it wrong is what this used to
+/// do. Another region's body sits in the same instruction stream up to the
+/// moment it is outlined, so a plain scan counts *its* writes as the parent's.
+/// The parent then carries back a register it has no value for: the seed is
+/// `Nil`, `Nil` has no unboxer, and the region rejects — with a message about
+/// the body assigning something unboxable, which is not what happened.
+///
+/// It takes two regions to see. One region has no earlier body to be confused
+/// by, which is why this survived until a file had two:
+///
+/// ```lk
+/// let ok = 0;
+/// try { ok = add(2, 3); } catch e { ok = -1; }   // writes r4 as a call argument
+/// try { 1 + 2; } catch t { }                     // r4 again — and "the parent had it"
+/// ```
+///
+/// The `a()` field as *the* written register stays an approximation, and a
+/// deliberate one: it over-approximates "the parent had it", which is the safe
+/// direction — an unnecessary cell costs a load, while a missing one is a write
+/// the parent never sees.
+fn writes_register_before(instrs: &[Instr], pc: usize, reg: u8, regions: &[crate::try_region::TryRegionShape]) -> bool {
+    (0..pc).any(|at| {
+        instrs[at].a() == reg
+            && !regions
+                .iter()
+                .any(|other| at >= other.body_start && at < other.body_end)
+    })
 }
 
 /// Lowers a single function to a [`MirFunction`]. User (non-entry) functions use
@@ -110,7 +137,7 @@ pub(crate) fn lower_function(
         // before raising.
         let mut cells: Vec<u8> = Vec::new();
         for reg in crate::try_region::written_registers(&instrs, region.body_start, region.body_end) {
-            if reg != region.catch_reg && writes_register_before(&instrs, region.begin_pc, reg) {
+            if reg != region.catch_reg && writes_register_before(&instrs, region.begin_pc, reg, &regions) {
                 cells.push(reg);
             }
         }
