@@ -12,6 +12,10 @@ const VBE_XRES = 1;
 const VBE_YRES = 2;
 const VBE_BPP = 3;
 const VBE_ENABLE = 4;
+const VBE_VIRT_WIDTH = 6;
+const VBE_VIRT_HEIGHT = 7;
+const VBE_X_OFFSET = 8;
+const VBE_Y_OFFSET = 9;
 
 const VBE_DISABLED = 0x00;
 const VBE_ENABLED = 0x01;
@@ -22,10 +26,41 @@ fn vbe_write(index: Int, value: Int) {
     unsafe { port_out_u16(VBE_DATA, value as u16); };
 }
 
+// Reads a register back.
+//
+// Worth having because the device does not simply store what it is told: on
+// enable it recomputes the virtual geometry from the mode and the amount of
+// video memory, and an offset it considers out of range it may refuse. Panning
+// that silently does half of what was asked looks exactly like a drawing bug
+// until this is read back.
+fn vbe_read(index: Int) -> Int {
+    unsafe { port_out_u16(VBE_INDEX, index as u16); };
+    let value = unsafe { port_in_u16(VBE_DATA) };
+    return value as Int;
+}
+
 fn vbe_set_mode(width: Int, height: Int, depth: Int) {
+    vbe_set_mode_virtual(width, height, depth, height);
+}
+
+// A mode whose framebuffer is taller than the screen.
+//
+// The extra rows are what makes scrolling cheap: instead of moving every
+// pixel up, the driver moves *where the screen starts reading*. The device
+// pans; memory does not.
+fn vbe_set_mode_virtual(width: Int, height: Int, depth: Int, virtual_height: Int) {
     vbe_write(VBE_ENABLE, VBE_DISABLED);
     vbe_write(VBE_XRES, width);
     vbe_write(VBE_YRES, height);
     vbe_write(VBE_BPP, depth);
+    vbe_write(VBE_VIRT_WIDTH, width);
+    vbe_write(VBE_VIRT_HEIGHT, virtual_height);
     vbe_write(VBE_ENABLE, VBE_ENABLED | VBE_LFB);
+    vbe_write(VBE_X_OFFSET, 0);
+    vbe_write(VBE_Y_OFFSET, 0);
+}
+
+// Which framebuffer row the top of the screen shows.
+fn vbe_set_pan(row: Int) {
+    vbe_write(VBE_Y_OFFSET, row);
 }

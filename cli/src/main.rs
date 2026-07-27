@@ -801,6 +801,20 @@ fn run_type_check(path: &Path) -> anyhow::Result<()> {
         diagnostic::error(anyhow::anyhow!(message));
         std::process::exit(1);
     }
+    // Then compile it, without running it.
+    //
+    // Type checking answers "do the types agree", not "can this be built": a
+    // call to a name that does not exist anywhere passes the type check (the
+    // callee is `Any`) and fails in the compiler with `undefined callable`.
+    // Without this step `lk check` reported success for a program that could
+    // not be compiled at all — the one thing a check command must not do. The
+    // compiler is reused rather than a second undefined-name analysis written
+    // here, so the two cannot drift apart about what counts as defined.
+    let mut ctx = build_vm_context(path)?;
+    if let Err(err) = compile_program_module_with_ctx(&expanded.program, &mut ctx) {
+        diagnostic::error(anyhow::anyhow!(err.to_string()));
+        std::process::exit(1);
+    }
     Ok(())
 }
 

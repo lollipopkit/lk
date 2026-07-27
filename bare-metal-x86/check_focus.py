@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Boot the image, press Tab, and check that the focus is visible.
+"""Boot the image, scroll it, press Tab, and check that the focus is visible.
 
 Which window has the keyboard was previously something you could only find out
 by typing at it. Each window draws its own frame — idle or focused — and
@@ -70,6 +70,15 @@ def main():
                 time.sleep(1.2)
                 return path
 
+            # Scroll past the end of the framebuffer first. Panning moves the
+            # whole picture, chrome included, and the view wraps back to the
+            # top once per screenful — so a frame that is still in the right
+            # place afterwards is one that was repainted at the new origin,
+            # not one that happened not to move.
+            for _ in range(30):
+                connection.sendall(b"sendkey ret\n")
+                time.sleep(0.08)
+            time.sleep(1.5)
             before = screenshot("before.ppm")
             connection.sendall(b"sendkey tab\n")
             time.sleep(1.5)

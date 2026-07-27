@@ -14,8 +14,8 @@
 use { uart_init, uart_putc, uart_write, uart_put_int, uart_put_hex, pow2 } from "drivers/serial";
 use { pci_read, pci_write, pci_find_display, PCI_REG_BAR0, PCI_REG_COMMAND,
       PCI_COMMAND_MEMORY, PCI_COMMAND_BUS_MASTER } from "drivers/pci";
-use { vbe_set_mode } from "drivers/vbe";
-use { get_pixel } from "drivers/framebuffer";
+use { vbe_set_mode_virtual, vbe_set_pan } from "drivers/vbe";
+use { get_pixel, fill_rect, copy_rows } from "drivers/framebuffer";
 use { draw_glyph, draw_cells, clear, scroll_up, draw_cursor, CELL_WIDTH, CELL_HEIGHT } from "drivers/text";
 use { read_scancode, is_release, key_code } from "drivers/keyboard";
 use { start as pit_start } from "drivers/pit";
@@ -132,7 +132,12 @@ const SHARED_SLICE = 0x00300028;
 // leaves them different, which no amount of interleaving can otherwise do.
 const SHARED_PAIR_A = 0x0030002c;
 const SHARED_PAIR_B = 0x00300030;
-// Window descriptors: slot 0 is the shell's, slot 1 the spinner's.
+// Window descriptors: slot 0 is the shell's, slot 1 the spinner's. Two slots of
+// 24 bytes, so this reserves 0x00300040..0x0030006f — the next thing placed
+// after it starts at 0x00300070. A word put inside that range is not a
+// neighbouring variable but a *field*: `SHARED_PAN` at 0x00300044 was the shell
+// window's `top`, which made every frame draw at twice the pan and looked for
+// all the world like a panning bug.
 const SHARED_WINDOWS = 0x00300040;
 const WINDOW_SHELL = 0;
 const WINDOW_SPINNER = 1;
@@ -147,6 +152,14 @@ const SHARED_PANE_COL = 0x00300038;
 // key handler only records that the focus moved, because a handler has no
 // business drawing someone else's chrome.
 const SHARED_DRAWN_FOCUS = 0x0030003c;
+// Which framebuffer row the top of the screen currently shows. Past the window
+// table's 48 bytes — see above.
+const SHARED_PAN = 0x00300070;
+
+// The framebuffer is twice the screen's height. Scrolling moves the *view*
+// down through it; only when the view reaches the bottom does anything have to
+// be copied, and then once for a whole screenful of scrolling.
+const VIRTUAL_HEIGHT = 400;
 
 const FRAME_IDLE = 0x203040;
 const FRAME_FOCUSED = 0xffc040;
@@ -180,6 +193,17 @@ fn text_rows() -> Int { return ((HEIGHT / CELL_HEIGHT) as Int); }
 fn framebuffer_address() -> Int {
     let slot = pci_find_display();
     return pci_read(slot, PCI_REG_BAR0) & 0xfffffff0;
+}
+
+// The address of the pixel the screen shows at its top-left.
+//
+// Panning is folded into the base rather than added to every y coordinate:
+// the framebuffer is linear, so `base + pan * width * 4` *is* the visible
+// origin, and every drawing routine keeps taking screen coordinates. Threading
+// an offset through each of them would have been the same arithmetic written
+// in a dozen places.
+fn framebuffer_origin() -> Int {
+    return framebuffer_address() + shared_read(SHARED_PAN) * WIDTH * 4;
 }
 
 // Draws one character at the cursor and moves it, or acts on backspace and
@@ -236,11 +260,37 @@ fn place_cursor(base: Int, column: Int, row: Int) {
 fn advance_line(base: Int, row: Int) {
     let next = row + 1;
     if (next >= text_rows()) {
-        scroll_up(base, WIDTH, HEIGHT, BACKGROUND);
-        place_cursor(base, 0, text_rows() - 1);
+        scroll_view();
+        place_cursor(framebuffer_origin(), 0, text_rows() - 1);
     } else {
         place_cursor(base, 0, next);
     }
+}
+
+// Scrolls by moving the view, not the picture.
+//
+// One register write, plus clearing the row of pixels that just came into
+// view. When the view reaches the bottom of the framebuffer it starts over at
+// the top, which costs one screen-sized copy — once per screenful of
+// scrolling rather than once per line.
+fn scroll_view() {
+    let pan = shared_read(SHARED_PAN) + CELL_HEIGHT;
+    let physical = framebuffer_address();
+    if (pan + HEIGHT > VIRTUAL_HEIGHT) {
+        // Bring what is visible back to the top. Source and destination do not
+        // overlap, because the view is a whole screen below where it lands.
+        copy_rows(physical, WIDTH, pan, 0, HEIGHT - CELL_HEIGHT);
+        pan = 0;
+    }
+    shared_write(SHARED_PAN, pan);
+    vbe_set_pan(pan);
+    // The row that just came into view holds whatever was there before.
+    fill_rect(physical, WIDTH, 0, pan + HEIGHT - CELL_HEIGHT, WIDTH, CELL_HEIGHT, BACKGROUND);
+    // Panning moves *everything*, including the parts that are supposed to
+    // stay put. The window frames are chrome, not content, so they have to be
+    // drawn again at the new origin — marked here and done by their owners,
+    // for the same reason a focus change is.
+    shared_write(SHARED_DRAWN_FOCUS, 0 - 1);
 }
 
 // ------------------------------------------------------------- commands ---
@@ -447,7 +497,7 @@ fn run_command(base: Int) -> Int {
         // what they cost is time the other task does not get.
         let irq_time = lock();
         let t0 = unsafe { cpu_timestamp() };
-        scroll_up(base, WIDTH, HEIGHT, BACKGROUND);
+        scroll_view();
         let t1 = unsafe { cpu_timestamp() };
         repaint_frame(base, WINDOW_SHELL);
         repaint_frame(base, WINDOW_SPINNER);
@@ -575,7 +625,7 @@ fn task_b() {
             if (typed == 10) {
                 column = 0;
             } else {
-                draw_glyph_in_window(framebuffer_address(), WINDOW_SPINNER,
+                draw_glyph_in_window(framebuffer_origin(), WINDOW_SPINNER,
                                      glyph_index(typed), 1 + column * CELL_WIDTH, CELL_HEIGHT + 1);
                 column = column + 1;
             }
@@ -597,7 +647,7 @@ fn task_b() {
 
         // Through the window, in window coordinates. The spinner owns one
         // cell; everything it draws is either inside that cell or dropped.
-        let base = framebuffer_address();
+        let base = framebuffer_origin();
         draw_glyph_in_window(base, WINDOW_SPINNER, face, 1, 1);
         // And deliberately one cell to the left, which is *not* its window.
         // Without the rectangle this would land in the shell's text; with it,
@@ -685,7 +735,6 @@ uart_init();
 pit_start(1193);
 
 let slot = pci_find_display();
-let framebuffer = framebuffer_address();
 
 // Let the device answer to memory cycles at all. The firmware usually has
 // already, but a driver that depends on that is a driver that works on one
@@ -693,7 +742,11 @@ let framebuffer = framebuffer_address();
 let command = pci_read(slot, PCI_REG_COMMAND);
 pci_write(slot, PCI_REG_COMMAND, command | PCI_COMMAND_MEMORY | PCI_COMMAND_BUS_MASTER);
 
-vbe_set_mode(WIDTH, HEIGHT, 32);
+shared_write(SHARED_PAN, 0);
+vbe_set_mode_virtual(WIDTH, HEIGHT, 32, VIRTUAL_HEIGHT);
+// After the mode is set and the pan is known, not before: the origin depends
+// on both.
+let framebuffer = framebuffer_origin();
 clear(framebuffer, WIDTH, HEIGHT, BACKGROUND);
 
 // Glyph indices rather than ASCII: these are constants, so translating them at
@@ -790,8 +843,11 @@ while (running == 1 && waited < 60000) {
     let focus_now = shared_read(SHARED_FOCUS);
     if (seen_focus != focus_now) {
         let irq_frame = lock();
-        repaint_frame(framebuffer, WINDOW_SHELL);
-        repaint_frame(framebuffer, WINDOW_SPINNER);
+        // Re-read the origin: a scroll moved it, and the value captured before
+        // the loop describes where the screen used to start.
+        let surface = framebuffer_origin();
+        repaint_frame(surface, WINDOW_SHELL);
+        repaint_frame(surface, WINDOW_SPINNER);
         shared_write(SHARED_DRAWN_FOCUS, focus_now);
         unlock(irq_frame);
     }
@@ -817,7 +873,7 @@ while (running == 1 && waited < 60000) {
                 }
             }
         }
-        put_char(framebuffer, ascii);
+        put_char(framebuffer_origin(), ascii);
     }
     unlock(irq_in);
 
@@ -826,13 +882,13 @@ while (running == 1 && waited < 60000) {
         // the line buffer, and a keystroke arriving mid-command would splice
         // its echo into the output and its byte into the next line.
         let irq = unsafe { cpu_irq_save() };
-        running = run_command(framebuffer);
+        running = run_command(framebuffer_origin());
         shared_write(SHARED_LINE_LEN, 0);
         shared_write(SHARED_LINE_READY, 0);
         if (running == 1) {
             // "> "
             uart_putc(62);
-            put_char(framebuffer, 62);
+            put_char(framebuffer_origin(), 62);
         }
         unsafe { cpu_irq_restore(irq); };
     }

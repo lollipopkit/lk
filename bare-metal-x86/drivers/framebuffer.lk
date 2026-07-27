@@ -55,3 +55,19 @@ fn put_pixel_pair(base: Int, stride: Int, x: Int, y: Int, pair: Int) {
     let offset = (y * stride + x) * 4;
     unsafe { volatile_write_u64((base + offset) as *mut u64, pair as u64); };
 }
+
+// Copies a band of rows from one framebuffer row to another.
+//
+// Used when a panning view runs out of virtual rows and has to start over at
+// the top. That happens once every screenful of scrolling rather than once per
+// line, which is the whole point of panning.
+fn copy_rows(base: Int, stride: Int, from_row: Int, to_row: Int, rows: Int) {
+    let pairs = ((stride / 2) as Int);
+    for row in 0..rows {
+        for pair in 0..pairs {
+            let x = pair * 2;
+            put_pixel_pair(base, stride, x, to_row + row,
+                           get_pixel_pair(base, stride, x, from_row + row));
+        }
+    }
+}

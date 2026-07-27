@@ -167,9 +167,13 @@ handler that moves the focus only writes a word; each window notices on its own
 turn and redraws itself. Drawing from an interrupt would put a window's
 appearance in the hands of whatever it happened to interrupt.
 
-`check_focus.py` screenshots before and after Tab and requires the two frames
-to have swapped colours. Removing the repaint — leaving the handler's word
-written but nothing acting on it — makes it fail, which is what it is for.
+`check_focus.py` scrolls the screen thirty lines first, then screenshots before
+and after Tab and requires the two frames to have swapped colours. Removing the
+repaint — leaving the handler's word written but nothing acting on it — makes
+it fail, which is what it is for. The scrolling is not incidental: the view
+pans and wraps in those thirty lines, so a frame still in the right place
+afterwards is one that was repainted at the new origin rather than one that
+happened not to move.
 
 ### What it costs
 
@@ -180,25 +184,42 @@ what they cost is time the other task does not get:
 
 ```
 >time
-scroll 4184050 frames 480210
+scroll 376552 frames 518450
 ```
 
-The first measurement said `scroll 8126964`. Scrolling moves the picture a
+The first measurement said `scroll 8126964`. Scrolling moved the picture a
 pixel at a time through opaque runtime calls — they have to be opaque, or the
-optimiser would collapse repeated reads of device memory — so the cost is
+optimiser would collapse repeated reads of device memory — so the cost was
 mostly the *number* of calls. A pixel is four bytes and the framebuffer is
 contiguous, so a 64-bit access carries two of them; halving the calls halved
-the cost, which is what the numbers say and what the model predicted.
+the cost to 4.18M, which is what the numbers said and what the model predicted.
 
-It also says where to go next, and it is not where this round started out
-believing. Repainting both window frames is 480k cycles against the scroll's
-4.1M — **eight times cheaper**, so dirty-rectangle bookkeeping for repaints
-would be effort spent on the smaller number. The scroll is the one worth
-another order of magnitude, and the way to get it is not to move pixels at all:
-the Bochs VBE can pan, so a framebuffer taller than the screen turns a scroll
-into one register write. That needs every draw to go through logical
-coordinates, which is a change to every drawing entry point rather than a
-driver addition, so it is its own piece of work.
+The second order of magnitude came from not moving pixels at all. The
+framebuffer is allocated twice as tall as the screen (`VIRTUAL_HEIGHT = 400`)
+and scrolling moves *where the screen starts reading*: one write to the Bochs
+VBE `Y_OFFSET` register. Every drawing routine still takes screen coordinates —
+the pan is folded into the base address by `framebuffer_origin()`, because the
+framebuffer is linear and `base + pan * width * 4` *is* the visible origin.
+Only when the view reaches the bottom of the framebuffer does anything get
+copied, and then once per screenful rather than once per line. **376k cycles,
+21× the first measurement.**
+
+What that does not buy is free scrolling overall, and the honest number is the
+sum. Panning moves *everything*, chrome included, so both window frames have to
+be drawn again at the new origin — the 518k above, which now happens once per
+scroll. Scrolling a line costs about 0.9M cycles all told: still 9× better than
+where this started, and 4.6× better than the pair-copy version, but the chrome
+is now the larger half. That is where the next measurement points. It costs
+what it costs because `window_put` re-reads the descriptor and re-checks the
+bounds for each of the 1040 pixels in the two frames — about 500 cycles a pixel
+— which is a fault in the window layer, not in the panning.
+
+A word of warning that this round paid for: the pan lives in the shared page,
+and the first address chosen for it, `0x00300044`, was *inside* the window
+descriptor table at `0x00300040` — it was the shell window's `top` field. Every
+frame was then drawn at twice the pan, which looks exactly like a panning bug
+and is not one. The shared page has no allocator; the comments above each
+constant are the whole defence, so a block of them states its length.
 
 ### Sharing state between them
 
@@ -285,7 +306,7 @@ mechanisms:
 | --- | --- | --- |
 | COM1, a 16550 UART | port I/O (`in`/`out`) | configures the divisor and line control, polls the status register, transmits |
 | PCI configuration space | the 0xCF8/0xCFC port pair | walks bus 0, finds the display controller by class code, reads BAR0, enables memory cycles |
-| the framebuffer | volatile MMIO | sets a mode over the Bochs VBE ports, clears it, and draws text |
+| the framebuffer | volatile MMIO | sets a mode over the Bochs VBE ports, clears it, draws text, and scrolls by panning the view rather than moving pixels |
 | the PS/2 keyboard | port I/O, from an interrupt handler | reads the scancode, decodes it, echoes the character to the serial line and draws it at the cursor |
 
 `check_screen.py` screenshots the machine through QEMU's monitor and checks the
@@ -299,7 +320,7 @@ mode was actually set.
 ```
 drivers/serial.lk        a 16550 UART
 drivers/pci.lk           configuration space
-drivers/vbe.lk           the Bochs VBE display interface
+drivers/vbe.lk           the Bochs VBE display interface, including panning
 drivers/framebuffer.lk   pixels, given a base and a stride
 drivers/keyboard.lk      the PS/2 controller
 drivers/pit.lk           the interval timer
