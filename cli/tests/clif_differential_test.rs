@@ -1035,3 +1035,54 @@ fn an_imported_signature_is_checked() {
         "the error should be about the call, not an opcode: {stderr}"
     );
 }
+
+/// An argument's type is checked against an *annotated* parameter.
+///
+/// The distinction matters more than the check: an unannotated parameter also
+/// ends up with a type, because inference gives it one from the body, but that
+/// is a derivation rather than a claim. `fn scale(x) { return x * 2.5; }` may
+/// settle on `Int` for `x`, and rejecting `scale(4.0)` against it would reject
+/// on something the program never said.
+#[test]
+fn argument_types_are_checked_against_annotations() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let check = |name: &str, source: &str| {
+        std::fs::write(dir.path().join(name), source).expect("write source");
+        Command::new(bin_path())
+            .current_dir(dir.path())
+            .args(["check", name])
+            .output()
+            .expect("spawn check")
+    };
+
+    let annotated = check(
+        "annotated.lk",
+        "fn add(a: Int, b: Int) -> Int { return a + b; }\nreturn add(1, \"x\");\n",
+    );
+    assert!(!annotated.status.success(), "a wrong argument type must be caught");
+    let stderr = String::from_utf8_lossy(&annotated.stderr);
+    assert!(
+        stderr.contains("Argument 2") && stderr.contains("expected Int"),
+        "the error should name the position and the types: {stderr}"
+    );
+
+    let inferred = check("inferred.lk", "fn scale(x) { return x * 2.5; }\nreturn scale(4.0);\n");
+    assert!(
+        inferred.status.success(),
+        "an inferred parameter type is not a claim to check against: {}",
+        String::from_utf8_lossy(&inferred.stderr)
+    );
+
+    // A machine-integer parameter takes an integer literal without a cast.
+    // They do not convert implicitly — that is what makes `u8 + Int` an error
+    // — but a literal has no type of its own to preserve.
+    let literal = check(
+        "literal.lk",
+        "fn port(number: u16) -> Int { return number as Int; }\nreturn port(0x3f8);\n",
+    );
+    assert!(
+        literal.status.success(),
+        "an integer literal should reach a machine-int parameter: {}",
+        String::from_utf8_lossy(&literal.stderr)
+    );
+}

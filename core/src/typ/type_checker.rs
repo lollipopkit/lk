@@ -497,6 +497,14 @@ pub struct FunctionSig {
     pub positional: Vec<Type>,
     pub named: Vec<NamedParamSig>,
     pub return_type: Option<Type>,
+    /// Which positional parameters the source *annotated*, in order.
+    ///
+    /// Only those can be checked against at a call site. An unannotated
+    /// parameter still ends up with a type — inference gives it one from the
+    /// body — but that type is a derivation, not a claim: `fn scale(x) { return
+    /// x * 2.5; }` may settle on `Int` for `x`, and rejecting `scale(4.0)`
+    /// against it would be rejecting on something the program never said.
+    pub annotated: Vec<bool>,
 }
 
 impl FunctionSig {

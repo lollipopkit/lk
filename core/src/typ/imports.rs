@@ -108,6 +108,9 @@ fn signature_of(program: &Program, name: &str) -> Option<(FunctionSig, Type)> {
         let positional: Vec<Type> = (0..params.len())
             .map(|i| param_types.get(i).cloned().flatten().unwrap_or(Type::Any))
             .collect();
+        let annotated: Vec<bool> = (0..params.len())
+            .map(|i| param_types.get(i).cloned().flatten().is_some())
+            .collect();
         let named: Vec<NamedParamSig> = named_params
             .iter()
             .map(|param| NamedParamSig {
@@ -135,6 +138,7 @@ fn signature_of(program: &Program, name: &str) -> Option<(FunctionSig, Type)> {
                 positional,
                 named,
                 return_type: Some(returns),
+                annotated,
             },
             function_type,
         ));

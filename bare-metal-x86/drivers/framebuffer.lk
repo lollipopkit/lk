@@ -25,13 +25,14 @@ fn fill_rect(base: Int, stride: Int, left: Int, top: Int, width: Int, height: In
 }
 
 // A red/green ramp: red rises left to right, green top to bottom. Integer
-// arithmetic throughout — the pattern only has to be recognisable, and this
-// keeps the inner loop free of conversions.
+// `/` is float division in LK, so each ramp is cast back — without that the
+// colour reaching `put_pixel` is a Float where an Int was declared, which the
+// type checker now says so about.
 fn fill_gradient(base: Int, width: Int, height: Int, blue: Int) {
     for y in 0..height {
-        let green = ((y * 255) as Int) / height;
+        let green = (((y * 255) as Int) / height) as Int;
         for x in 0..width {
-            let red = ((x * 255) as Int) / width;
+            let red = (((x * 255) as Int) / width) as Int;
             put_pixel(base, width, x, y, red * 0x10000 + green * 0x100 + blue);
         }
     }

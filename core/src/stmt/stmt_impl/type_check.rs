@@ -329,6 +329,7 @@ impl Stmt {
                         positional: positional_tys.clone(),
                         named: named_sigs.clone(),
                         return_type: Some(return_placeholder.clone()),
+                        annotated: positional_origin.clone(),
                     },
                 );
 
@@ -425,6 +426,7 @@ impl Stmt {
                             positional: positional_tys,
                             named: named_sigs,
                             return_type: Some(inferred_return.clone()),
+                            annotated: positional_origin.clone(),
                         },
                     );
                     type_checker.add_pending_strict_function(PendingStrictFunction {
@@ -510,6 +512,7 @@ impl Stmt {
                         positional: resolved_positional,
                         named: resolved_named_sigs,
                         return_type: Some(resolved_return),
+                        annotated: positional_origin.clone(),
                     },
                 );
 
@@ -822,6 +825,9 @@ impl Program {
             let positional: Vec<Type> = (0..params.len())
                 .map(|i| param_types.get(i).cloned().flatten().unwrap_or(Type::Any))
                 .collect();
+            let annotated: Vec<bool> = (0..params.len())
+                .map(|i| param_types.get(i).cloned().flatten().is_some())
+                .collect();
             let named: Vec<NamedParamSig> = named_params
                 .iter()
                 .map(|param| NamedParamSig {
@@ -853,6 +859,7 @@ impl Program {
                     positional,
                     named,
                     return_type: Some(returns),
+                    annotated,
                 },
             );
         }

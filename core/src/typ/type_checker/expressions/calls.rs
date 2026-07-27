@@ -44,9 +44,12 @@ impl TypeChecker {
                             None,
                         ));
                     }
-                    for (param_type, arg) in remaining_params.iter().zip(args.iter()) {
+                    for (index, (param_type, arg)) in remaining_params.iter().zip(args.iter()).enumerate() {
                         let arg_type = self.check_expr(arg)?;
-                        self.inference_engine.add_constraint(param_type.clone(), arg_type);
+                        // +1: the receiver occupies position 0 of the
+                        // signature, so the caller's first argument is the
+                        // second parameter.
+                        self.check_argument(param_type, &arg_type, index + 1, arg)?;
                     }
                     for decl in named_params {
                         let is_optional = matches!(decl.ty, Type::Optional(_)) || decl.has_default;
@@ -222,16 +225,36 @@ impl TypeChecker {
                 ));
             }
 
-            for (param_type, arg) in params.iter().zip(args.iter()) {
+            // Only the positions the callee *annotated* are checked. An
+            // unannotated parameter also has a type by now — inference gave it
+            // one from the body — but that is a derivation rather than a
+            // claim, and rejecting against it rejects on something the program
+            // never said.
+            let annotated = match func {
+                Expr::Var(name) => self.get_function_sig(name).map(|sig| sig.annotated.clone()),
+                _ => None,
+            };
+            for (index, (param_type, arg)) in params.iter().zip(args.iter()).enumerate() {
                 let arg_type = self.check_expr(arg)?;
-                self.inference_engine.add_constraint(param_type.clone(), arg_type);
+                let declared = annotated
+                    .as_ref()
+                    .is_some_and(|mask| mask.get(index).copied().unwrap_or(false));
+                if declared {
+                    self.check_argument(param_type, &arg_type, index, arg)?;
+                } else {
+                    self.inference_engine.add_constraint(param_type.clone(), arg_type);
+                }
             }
 
             let supplied_named = args.len() - params.len();
             for (index, decl) in named_params.iter().enumerate() {
                 if index < supplied_named {
-                    let arg_type = self.check_expr(&args[params.len() + index])?;
-                    self.inference_engine.add_constraint(decl.ty.clone(), arg_type);
+                    let arg = &args[params.len() + index];
+                    let arg_type = self.check_expr(arg)?;
+                    // A named parameter's declaration always carries a type or
+                    // a default, so unlike a positional one there is nothing
+                    // inferred to mistake for a claim.
+                    self.check_named_argument(&decl.name, &decl.ty, &arg_type, arg)?;
                     continue;
                 }
                 let is_optional = matches!(decl.ty, Type::Optional(_)) || decl.has_default;
@@ -292,4 +315,89 @@ impl TypeChecker {
             )),
         }
     }
+}
+
+impl TypeChecker {
+    /// Checks one positional argument against the parameter it fills.
+    ///
+    /// A *concrete* parameter type is checked; an unannotated one (a fresh
+    /// type variable, or `Any`) keeps the old behaviour of feeding inference,
+    /// because there is nothing to check it against. That distinction is the
+    /// whole design: annotate a parameter and the calls to it are checked,
+    /// leave it off and they are not.
+    fn check_argument(&mut self, param_type: &Type, arg_type: &Type, index: usize, arg: &Expr) -> Result<()> {
+        // An argument whose own type is still unresolved says nothing to check
+        // against either: feeding inference is the only sound thing to do with
+        // it.
+        if matches!(self.resolve_aliases(arg_type), Type::Variable(_)) {
+            self.inference_engine
+                .add_constraint(param_type.clone(), arg_type.clone());
+            return Ok(());
+        }
+        if !self.is_concrete_parameter(param_type) {
+            self.inference_engine
+                .add_constraint(param_type.clone(), arg_type.clone());
+            return Ok(());
+        }
+        if self.is_assignable(arg_type, param_type) || literal_fits_machine_int(param_type, arg) {
+            return Ok(());
+        }
+        Err(Self::type_err(
+            &format!("Argument {} has the wrong type", index + 1),
+            Some(param_type.clone()),
+            Some(arg_type.clone()),
+            Some(arg.clone()),
+        ))
+    }
+
+    /// [`check_argument`] for a named parameter, which is identified by name
+    /// rather than position.
+    fn check_named_argument(&mut self, name: &str, param_type: &Type, arg_type: &Type, arg: &Expr) -> Result<()> {
+        if matches!(self.resolve_aliases(arg_type), Type::Variable(_)) {
+            self.inference_engine
+                .add_constraint(param_type.clone(), arg_type.clone());
+            return Ok(());
+        }
+        if !self.is_concrete_parameter(param_type) {
+            self.inference_engine
+                .add_constraint(param_type.clone(), arg_type.clone());
+            return Ok(());
+        }
+        if self.is_assignable(arg_type, param_type) || literal_fits_machine_int(param_type, arg) {
+            return Ok(());
+        }
+        Err(Self::type_err(
+            &format!("Named argument '{name}' has the wrong type"),
+            Some(param_type.clone()),
+            Some(arg_type.clone()),
+            Some(arg.clone()),
+        ))
+    }
+
+    /// Whether a parameter's type says enough to check an argument against.
+    ///
+    /// `Any` and type variables do not: the first accepts everything by
+    /// definition, and the second is what an unannotated parameter gets, so
+    /// rejecting against it would reject on an invented type.
+    fn is_concrete_parameter(&self, param_type: &Type) -> bool {
+        !matches!(self.resolve_aliases(param_type), Type::Any | Type::Variable(_))
+    }
+}
+
+/// Whether `arg` is an integer *literal* that fits a machine-integer
+/// parameter.
+///
+/// Machine integers do not convert implicitly — that is the rule that makes
+/// `u8 + Int` an error rather than a silent widening — but a literal has no
+/// type of its own to preserve. `f(0x3f8)` for `fn f(port: u16)` is the
+/// ordinary way to call a driver, and requiring `0x3f8 as u16` there would be
+/// ceremony without a reader.
+fn literal_fits_machine_int(param_type: &Type, arg: &Expr) -> bool {
+    let Type::MachineInt(kind) = param_type else {
+        return false;
+    };
+    let Expr::Literal(crate::val::LiteralVal::Int(value)) = arg else {
+        return false;
+    };
+    kind.accepts_literal(i128::from(*value))
 }

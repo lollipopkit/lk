@@ -98,9 +98,15 @@ number of arguments is caught where it is written. What the checker reads is
 only what the imported file *states* — its annotations — not what inference
 would derive from its bodies.
 
-Argument *types* are still unchecked, across a module and within one: LK
-accepts `add(1, "x")` for `fn add(a: Int, b: Int)`. That is a property of the
-checker today, not of module boundaries.
+Argument types are checked too, against *annotated* parameters. An unannotated
+one also ends up with a type — inference derives one from the body — but that
+is not a claim the program made, so calls are not judged against it. Annotate a
+parameter and its callers are checked; leave it off and they are not.
+
+An integer literal reaches a machine-integer parameter without a cast:
+`port(0x3f8)` for `fn port(number: u16)`. Machine integers do not convert
+implicitly — that is what makes `u8 + Int` an error rather than a silent
+widening — but a literal has no type of its own to preserve.
 
 Every line of that came from LK code driving four devices by three different
 mechanisms:
