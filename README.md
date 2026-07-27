@@ -60,6 +60,25 @@ See `docs/concurrency.md` and `docs/semantics.md` for the full semantics.
 
 Details: [lang.lollipopkit.com](https://lang.lollipopkit.com).
 
+## On bare metal
+
+LK compiles to a kernel. `bare-metal-x86/` boots on QEMU with no OS underneath
+and no `std` in the graph: long mode, interrupts, preemptive tasks whose
+*scheduling policy is LK*, PCI, a framebuffer with a font this repository wrote,
+PS/2 keyboard and mouse, an ATA disk, a read-only tar filesystem, a free-list
+allocator, a window manager with dragging and stacking — and ring 3, with
+checked syscalls and an address space per user task.
+
+The drivers are LK modules (`drivers/*.lk`); what is Rust is the part a language
+should not own: the linker script, the boot path, the interrupt trampolines.
+
+Eleven QEMU checks run in CI, and each asserts what the machine *scanned out* or
+what the disk image holds afterwards — not what the program believes it did.
+`bare-metal-x86/README.md` is the long version, including the mistakes: a
+soft-float ABI that computed wrong numbers in silence, a shared-page constant
+that overlapped a window descriptor, a mouse packet misframed into permanent
+stillness.
+
 ## Installation
 
 Install the latest GitHub release:

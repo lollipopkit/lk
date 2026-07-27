@@ -60,6 +60,22 @@ println("{} (total: {})", status, m["total"]!);   // ok (total: 30)
 
 细节： [lang.lollipopkit.com](https://lang.lollipopkit.com)
 
+## 在裸机上
+
+LK 能编译成内核。`bare-metal-x86/` 在 QEMU 上启动,底下没有操作系统,依赖图里
+没有 `std`:长模式、中断、抢占式任务(*调度策略是 LK 写的*)、PCI、帧缓冲与本仓库
+自己写的字体、PS/2 键盘与鼠标、ATA 磁盘、只读 tar 文件系统、空闲链表分配器、
+可拖动可层叠的窗口管理器 —— 以及 ring 3、受检的系统调用、每个用户任务自己的
+地址空间。
+
+驱动是 LK 模块(`drivers/*.lk`);用 Rust 写的是语言不该拥有的那部分:链接脚本、
+启动路径、中断蹦床。
+
+CI 里跑十一个 QEMU 检查,每一个断言的都是机器*扫描输出*了什么、或者磁盘镜像事后
+留下了什么 —— 而不是程序自以为做了什么。`bare-metal-x86/README.md` 是长
+版本,包括那些错误:静默算错数的 soft-float ABI、与窗口描述符重叠的共享页常量、
+一个错帧之后再也不动的鼠标。
+
 ## 安装
 
 安装 GitHub 最新 release：
