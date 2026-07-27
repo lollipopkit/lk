@@ -67,38 +67,29 @@
 //! nothing reads the register afterwards, the write is invisible either way and
 //! the cell is pure waste — waste that then rejects the whole region.
 //!
-//! ## The shape of an answer that asks instead of inferring
+//! ## How the cells are found now
 //!
-//! The liveness question has a third form, and it is the one this repository
-//! already uses everywhere else: *make the absence observable and let the
-//! fixpoint report it.*
+//! By being asked. A region carries nothing back to begin with; every register
+//! its body wrote and did not carry back is **poisoned** at the region's exit,
+//! and a later read of a poisoned register fails with `UndefinedOperand` naming
+//! itself. That error is already how the fixpoint discovers a cell, so the set
+//! fills in over passes and contains exactly the registers something reads.
 //!
-//! Today a register is given a cell because the parent wrote it before the
-//! region — an over-approximation of "the parent will read it after". Invert
-//! it. Give no cell up front; instead, at the region's exit, **poison** every
-//! register the body wrote. A later read of a poisoned register fails with
-//! `UndefinedOperand`, which names the register, which the existing discovery
-//! turns into an extra cell and re-lowers. A register nothing reads is never
-//! reported and never gets a cell — which is exactly the dead temporary that
-//! rejects today.
+//! What it replaced was "the parent wrote this register before the region" — an
+//! over-approximation of the question that matters, and one that paid for
+//! itself twice over: a dead call-window temporary the body happened to reuse
+//! got a cell, its value at the region had no type that could come back out,
+//! and the whole region rejected.
 //!
-//! No opcode read-operand table, no inference about what a value "must be":
-//! the SSA answers, as it already does for the mirror-image question
-//! (registers the parent reads but never defined).
+//! The poison is not `current_def = None`. That falls through to
+//! `read_recursive`, which walks predecessors and finds the pre-region
+//! definition — the stale value, returned silently. It is a separate flag
+//! checked before both, cleared by a write. See `Ssa::poisoned`.
 //!
-//! Two things to know before writing it:
-//!
-//! - **`current_def[block][slot] = None` is not a poison.** `read_slot` falls
-//!   through to `read_recursive`, which walks predecessors and finds the
-//!   pre-region definition. The marker has to survive that walk — a
-//!   `poisoned` set consulted by `read_slot` *and* by the predecessor walk and
-//!   phi-operand collection — and a write must clear it.
-//!
-//! - The discovery attributes a register to **every** region in the function,
-//!   not the one it came from (see the `UndefinedOperand` arm in `lib.rs`).
-//!   That is harmless while few registers are discovered and will not be once
-//!   this drives every cell: the read's `pc` is already in the error, and the
-//!   region it belongs to is the nearest one before it.
+//! The point of the shape: "does anything read this after the region" is a
+//! liveness question, and answering it by inspection needs a table of every
+//! opcode's read operands — the shape this feature has been burned by twice.
+//! The SSA already knows. This asks it.
 //!
 //! ## One answer that was tried and is wrong
 //!

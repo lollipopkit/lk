@@ -342,8 +342,18 @@ pub fn lower_bundled(
             // Each retriable discovery (Dyn loop phi, empty-list re-guess,
             // boxed-returns function) legitimately consumes one extra pass, so
             // the safety valve budgets for them on top of the type lattice.
-            let discovery_budget =
-                sig.dyn_loop_phis.len() + sig.dyn_empty_lists.len() + sig.dyn_rets.len() + sig.force_dyn_globals.len();
+            // Extra cells count too, now that they are how *every* cell is
+            // found: a region carries nothing back until a read reports that it
+            // must, and each report costs a pass.
+            let discovery_budget = sig.dyn_loop_phis.len()
+                + sig.dyn_empty_lists.len()
+                + sig.dyn_rets.len()
+                + sig.force_dyn_globals.len()
+                + sig
+                    .try_body_extra_cells
+                    .values()
+                    .map(std::collections::HashSet::len)
+                    .sum::<usize>();
             if converged || passes > 2 * funcs.len() + 2 + discovery_budget {
                 break;
             }

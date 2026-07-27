@@ -177,6 +177,22 @@ pub(crate) struct Ssa {
     pub(crate) spawned_isolate: bool,
     pub(crate) preds: Vec<Vec<usize>>,
     pub(crate) current_def: Vec<Vec<Option<Reg>>>,
+    /// Slots a block ends with *no* value in, whatever its predecessors say.
+    ///
+    /// A `try` region's body runs in its own frame, so a register it wrote and
+    /// did not carry back through a cell holds, in the parent, neither the
+    /// body's value nor reliably the parent's old one. `current_def = None`
+    /// cannot express that: the read falls through to `read_recursive`, which
+    /// walks predecessors and finds the pre-region definition — the stale value
+    /// that would be a wrong answer.
+    ///
+    /// So the absence is recorded rather than inferred, and a read of it fails
+    /// with `UndefinedOperand` naming the register. That error is already how
+    /// the fixpoint discovers which registers need a cell, so poisoning turns
+    /// "is anything reading this after the region?" — a liveness question that
+    /// would otherwise need a table of every opcode's read operands — into a
+    /// question the SSA answers by being asked.
+    pub(crate) poisoned: Vec<Vec<bool>>,
     pub(crate) sealed: Vec<bool>,
     pub(crate) filled: Vec<bool>,
     pub(crate) phis: Vec<Vec<Phi>>,
@@ -254,6 +270,7 @@ impl Ssa {
             spawned_isolate: false,
             preds,
             current_def: vec![vec![None; slot_count]; total_blocks],
+            poisoned: vec![vec![false; slot_count]; total_blocks],
             sealed: vec![false; total_blocks],
             filled: vec![false; total_blocks],
             phis: (0..total_blocks).map(|_| Vec::new()).collect(),
@@ -289,6 +306,8 @@ impl Ssa {
 
     pub(crate) fn write_slot(&mut self, slot: usize, block: usize, value: Reg) {
         if slot < self.slot_count {
+            // A write is a definition, so it clears the absence.
+            self.poisoned[block][slot] = false;
             self.current_def[block][slot] = Some(value);
             if slot < self.reg_count {
                 self.builtin_regs.remove(&(block, slot as u8));
@@ -301,10 +320,29 @@ impl Ssa {
     }
 
     pub(crate) fn read_slot(&mut self, slot: usize, block: usize, pc: usize) -> Result<Reg, Unsupported> {
+        // Checked before `current_def`, and before the predecessor walk inside
+        // `read_recursive` — which is the whole point: the stale value is
+        // reachable through the predecessors, and it is exactly what must not
+        // be returned.
+        if self.poisoned[block][slot] {
+            return Err(Unsupported::UndefinedOperand { pc, reg: slot });
+        }
         if let Some(v) = self.current_def[block][slot] {
             return Ok(v);
         }
         self.read_recursive(slot, block, pc)
+    }
+
+    /// Marks `slot` as having no value at the end of `block`.
+    ///
+    /// See [`Ssa::poisoned`]. Applied after a `try` region's write-backs, so a
+    /// register the region *did* carry back keeps the definition it was just
+    /// given.
+    pub(crate) fn poison(&mut self, reg: u8, block: usize) {
+        if (reg as usize) < self.reg_count {
+            self.current_def[block][reg as usize] = None;
+            self.poisoned[block][reg as usize] = true;
+        }
     }
 
     /// The virtual slot holding cell `cid`'s content.

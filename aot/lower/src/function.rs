@@ -37,37 +37,6 @@ fn body_index_of(sig: &SigInfer, func_index: u32, begin_pc: usize) -> Result<u32
         })
 }
 
-/// Did the enclosing function itself define `reg` before `pc`?
-///
-/// "Itself" is the whole question, and getting it wrong is what this used to
-/// do. Another region's body sits in the same instruction stream up to the
-/// moment it is outlined, so a plain scan counts *its* writes as the parent's.
-/// The parent then carries back a register it has no value for: the seed is
-/// `Nil`, `Nil` has no unboxer, and the region rejects — with a message about
-/// the body assigning something unboxable, which is not what happened.
-///
-/// It takes two regions to see. One region has no earlier body to be confused
-/// by, which is why this survived until a file had two:
-///
-/// ```lk
-/// let ok = 0;
-/// try { ok = add(2, 3); } catch e { ok = -1; }   // writes r4 as a call argument
-/// try { 1 + 2; } catch t { }                     // r4 again — and "the parent had it"
-/// ```
-///
-/// The `a()` field as *the* written register stays an approximation, and a
-/// deliberate one: it over-approximates "the parent had it", which is the safe
-/// direction — an unnecessary cell costs a load, while a missing one is a write
-/// the parent never sees.
-fn writes_register_before(instrs: &[Instr], pc: usize, reg: u8, regions: &[crate::try_region::TryRegionShape]) -> bool {
-    (0..pc).any(|at| {
-        instrs[at].a() == reg
-            && !regions
-                .iter()
-                .any(|other| at >= other.body_start && at < other.body_end)
-    })
-}
-
 /// Lowers a single function to a [`MirFunction`]. User (non-entry) functions use
 /// the `(i64, ...) -> i64` ABI in this slice: params and return are `I64`, verified
 /// via typed reads / a return-type check — a mismatch rejects (falls back) rather
@@ -135,12 +104,18 @@ pub(crate) fn lower_function(
         // invisible here otherwise — and on the raise path the body never
         // returns to hand anything back, while the VM still shows what it wrote
         // before raising.
+        // No cell is created on the strength of "the parent wrote this
+        // register before the region". That was an over-approximation of the
+        // question that matters — *does anything read it after* — and it paid
+        // for the approximation twice: a dead call-window temporary the body
+        // happened to reuse got a cell, and its value at the region had no type
+        // that could come back out, so the whole region rejected.
+        //
+        // Instead every register the body writes and does not carry back is
+        // poisoned at the region's exit, and a later read of one fails naming
+        // itself. That error is what the fixpoint already turns into a cell.
+        // So the set below starts empty and is filled by being asked.
         let mut cells: Vec<u8> = Vec::new();
-        for reg in crate::try_region::written_registers(&instrs, region.body_start, region.body_end) {
-            if reg != region.catch_reg && writes_register_before(&instrs, region.begin_pc, reg, &regions) {
-                cells.push(reg);
-            }
-        }
         // Registers a later read proved the body had to write back: they are
         // not visible to the scan above, because nothing in this function
         // defines them — the body does.
@@ -587,6 +562,23 @@ pub(crate) fn lower_function(
                         raw
                     };
                     ssa.write(reg, bi, (value, ty));
+                }
+                // Everything else the body wrote is gone: it was written in the
+                // body's frame, and nothing carried it back. Saying so is what
+                // makes a later read report itself instead of silently reading
+                // the value the parent had before the region.
+                //
+                // After the write-backs, so a register that *was* carried back
+                // keeps the definition it was just given.
+                if let Some(span) = regions
+                    .iter()
+                    .find(|r| sig.try_bodies.get(&(func_index, r.begin_pc)) == Some(&body))
+                {
+                    for reg in crate::try_region::written_registers(&instrs, span.body_start, span.body_end) {
+                        if reg != catch_reg && !cell_regs.contains(&reg) {
+                            ssa.poison(reg, bi);
+                        }
+                    }
                 }
                 let caught = ssa.new_val();
                 insts.push(Inst::Call {
