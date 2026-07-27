@@ -32,6 +32,9 @@ use { has_mmap, mem_upper_kb, entry_count, entry_at, entry_base, entry_length,
       entry_is_available } from "drivers/multiboot";
 use { init as pages_init, alloc as page_alloc, free as pages_free,
       total as pages_total, PAGE_SIZE } from "drivers/pages";
+use { read_sector as ata_read_sector, write_sector as ata_write_sector,
+      identify as ata_identify, identify_sectors as ata_identify_sectors,
+      ATA_OK, ATA_TIMEOUT, ATA_ERROR_BIT, ATA_NO_DRIVE } from "drivers/ata";
 use { read as shared_read, write as shared_write, bump as shared_bump,
       read_byte as shared_read_byte, write_byte as shared_write_byte } from "drivers/shared";
 
@@ -112,52 +115,69 @@ const SCANCODE_ASCII = [
     122, 120, 99, 118, 98, 110, 109, 44, 46, 47, 0, 42, 0, 32,
 ];
 
-const SHARED_KEY_COUNT = 0x00300000;
-const SHARED_LAST_KEY = 0x00300004;
-const SHARED_TICKS = 0x00300008;
-const SHARED_CURSOR_COL = 0x0030000c;
-const SHARED_CURSOR_ROW = 0x00300010;
-const SHARED_LINE_LEN = 0x00300014;
-const SHARED_LINE_READY = 0x00300018;
-// The line the handler is collecting. One byte per character, because a
-// handler cannot allocate.
+// The shared page, laid out as a chain rather than a list of addresses.
+//
+// Each entry is the previous one plus its own size, so two of them cannot
+// overlap however the block is edited — which is not hypothetical: `SHARED_PAN`
+// was once written as the literal `0x00300044`, and that address is *inside*
+// the window descriptor table, where it is the shell window's `top` field.
+// Every window frame was then drawn at twice the pan, which looks exactly like
+// a bug in the panning and is not one. Addresses that are computed cannot make
+// that mistake; addresses that are typed can, and did.
+//
+// This is what a systems language owes a shared page when it has no allocator:
+// not safety, but an arrangement in which the mistake is not expressible.
+const SHARED_BASE = 0x00300000;
+const WORD = 4;
+
+const SHARED_KEY_COUNT = SHARED_BASE;
+const SHARED_LAST_KEY = SHARED_KEY_COUNT + WORD;
+const SHARED_TICKS = SHARED_LAST_KEY + WORD;
+const SHARED_CURSOR_COL = SHARED_TICKS + WORD;
+const SHARED_CURSOR_ROW = SHARED_CURSOR_COL + WORD;
+const SHARED_LINE_LEN = SHARED_CURSOR_ROW + WORD;
+const SHARED_LINE_READY = SHARED_LINE_LEN + WORD;
 // Where `boot.rs` stashed the multiboot information pointer. The board writes
 // it, this program reads it; the address appears in both files, and changing
 // one without the other is the hazard.
-const SHARED_MULTIBOOT = 0x0030001c;
+const SHARED_MULTIBOOT = SHARED_LINE_READY + WORD;
 // The page allocator's three words.
-const SHARED_PAGES = 0x00300020;
+const SHARED_PAGES = SHARED_MULTIBOOT + WORD;
 // The spinner task's step, and the scheduler's own counter.
-const SHARED_SPIN = 0x00300024;
-const SHARED_SLICE = 0x00300028;
+const SHARED_SPIN = SHARED_PAGES + 3 * WORD;
+const SHARED_SLICE = SHARED_SPIN + WORD;
 // Two words that must always agree. Both the timer handler and the spinner
 // task bump the pair; a lost update — an increment that read a stale value —
 // leaves them different, which no amount of interleaving can otherwise do.
-const SHARED_PAIR_A = 0x0030002c;
-const SHARED_PAIR_B = 0x00300030;
-// Window descriptors: slot 0 is the shell's, slot 1 the spinner's. Two slots of
-// 24 bytes, so this reserves 0x00300040..0x0030006f — the next thing placed
-// after it starts at 0x00300070. A word put inside that range is not a
-// neighbouring variable but a *field*: `SHARED_PAN` at 0x00300044 was the shell
-// window's `top`, which made every frame draw at twice the pan and looked for
-// all the world like a panning bug.
-const SHARED_WINDOWS = 0x00300040;
-const WINDOW_SHELL = 0;
-const WINDOW_SPINNER = 1;
+const SHARED_PAIR_A = SHARED_SLICE + WORD;
+const SHARED_PAIR_B = SHARED_PAIR_A + WORD;
 // Which window the keyboard belongs to. Tab moves it.
-const SHARED_FOCUS = 0x00300034;
-// One input ring per window, 64 bytes apart.
-const SHARED_QUEUES = 0x00300200;
-const QUEUE_STRIDE = 64;
+const SHARED_FOCUS = SHARED_PAIR_B + WORD;
 // Where the spinner window's own echo has got to, in its own coordinates.
-const SHARED_PANE_COL = 0x00300038;
+const SHARED_PANE_COL = SHARED_FOCUS + WORD;
 // What each window last drew its frame as. Repainting is the owner's job — the
 // key handler only records that the focus moved, because a handler has no
 // business drawing someone else's chrome.
-const SHARED_DRAWN_FOCUS = 0x0030003c;
-// Which framebuffer row the top of the screen currently shows. Past the window
-// table's 48 bytes — see above.
-const SHARED_PAN = 0x00300070;
+const SHARED_DRAWN_FOCUS = SHARED_PANE_COL + WORD;
+// Window descriptors: slot 0 is the shell's, slot 1 the spinner's. Six words
+// each, and the chain is what keeps the next entry clear of them.
+const SHARED_WINDOWS = SHARED_DRAWN_FOCUS + WORD;
+const WINDOW_STRIDE = 24;
+const WINDOW_COUNT = 2;
+const WINDOW_SHELL = 0;
+const WINDOW_SPINNER = 1;
+// Which framebuffer row the top of the screen currently shows.
+const SHARED_PAN = SHARED_WINDOWS + WINDOW_COUNT * WINDOW_STRIDE;
+// One input ring per window: a header and 32 bytes of payload each.
+const SHARED_QUEUES = SHARED_PAN + WORD;
+const QUEUE_STRIDE = 64;
+// One sector, which is where the disk driver puts what it read. It lives in
+// the shared page rather than in a page from the allocator because a command
+// has to be able to run before there is any memory management at all.
+const SHARED_SECTOR = SHARED_QUEUES + WINDOW_COUNT * QUEUE_STRIDE;
+const SECTOR_SIZE = 512;
+// The end of what is spoken for. Anything added goes here, not into a gap.
+const SHARED_END = SHARED_SECTOR + SECTOR_SIZE;
 
 // The framebuffer is twice the screen's height. Scrolling moves the *view*
 // down through it; only when the view reaches the bottom does anything have to
@@ -433,6 +453,104 @@ fn report_memory(base: Int) {
 }
 
 // Runs the collected line. Returns 1 to keep going, 0 to stop.
+// Reads sector 0 and says what came back.
+//
+// Printed as the sector's first bytes rather than a checksum, because the point
+// of a disk driver's first outing is to show that *these* bytes came off *that*
+// medium — a checksum is equally consistent with a bug that reads the same
+// wrong thing every time. Unprintable bytes become '.', the same convention a
+// hex dump uses.
+fn report_disk(base: Int) {
+    let outcome = ata_identify(SHARED_SECTOR);
+    if (outcome != ATA_OK) {
+        emit(base, disk_error(outcome));
+        return;
+    }
+    let sectors = ata_identify_sectors(SHARED_SECTOR);
+    let read = ata_read_sector(0, SHARED_SECTOR);
+    if (read != ATA_OK) {
+        emit(base, disk_error(read));
+        return;
+    }
+    // "<sectors> " then the first 16 bytes of sector 0.
+    let line = decimal(sectors).chain([32]);
+    for i in 0..16 {
+        let byte = shared_read_byte(SHARED_SECTOR + i);
+        if (byte < 32 || byte > 126) {
+            line = line.chain([46]);
+        } else {
+            line = line.chain([byte]);
+        }
+    }
+    emit(base, line);
+}
+
+// Writes a sector and reads it back.
+//
+// Read-back is the only check available: the drive acknowledges a write long
+// before the bytes are on the medium, which is what the flush in the driver is
+// for. What this proves is the round trip through the controller; that they
+// survive a power cut is the flush's business, and the check script confirms it
+// from outside by reading the image file after the machine has stopped.
+fn write_disk(base: Int) {
+    // "LK-WROTE-SECTOR1", then zeros to the end of the sector.
+    let text = [76, 75, 45, 87, 82, 79, 84, 69, 45, 83, 69, 67, 84, 79, 82, 49];
+    for i in 0..SECTOR_SIZE {
+        shared_write_byte(SHARED_SECTOR + i, 0);
+    }
+    let at = 0;
+    for code in text {
+        shared_write_byte(SHARED_SECTOR + at, (code) as Int);
+        at = at + 1;
+    }
+    let wrote = ata_write_sector(1, SHARED_SECTOR);
+    if (wrote != ATA_OK) {
+        emit(base, disk_error(wrote));
+        return;
+    }
+    // Clear the buffer before reading back, or a read that did nothing at all
+    // would still show the right bytes.
+    for i in 0..SECTOR_SIZE {
+        shared_write_byte(SHARED_SECTOR + i, 0);
+    }
+    let read = ata_read_sector(1, SHARED_SECTOR);
+    if (read != ATA_OK) {
+        emit(base, disk_error(read));
+        return;
+    }
+    let line = [0];
+    line = [];
+    for i in 0..16 {
+        let byte = shared_read_byte(SHARED_SECTOR + i);
+        if (byte < 32 || byte > 126) {
+            line = line.chain([46]);
+        } else {
+            line = line.chain([byte]);
+        }
+    }
+    emit(base, line);
+}
+
+// The driver's four outcomes, spelled rather than numbered: a status code
+// printed as a digit is a thing to look up, and there is nothing to look it up
+// in on a machine with no documentation on it.
+fn disk_error(outcome: Int) -> List<Int> {
+    if (outcome == ATA_NO_DRIVE) {
+        // "no disk"
+        return [110, 111, 32, 100, 105, 115, 107];
+    }
+    if (outcome == ATA_TIMEOUT) {
+        // "timeout"
+        return [116, 105, 109, 101, 111, 117, 116];
+    }
+    if (outcome == ATA_ERROR_BIT) {
+        // "drive error"
+        return [100, 114, 105, 118, 101, 32, 101, 114, 114, 111, 114];
+    }
+    // "?"
+    return [63];
+}
+
 fn run_command(base: Int) -> Int {
     let length = shared_read(SHARED_LINE_LEN);
     if (length == 0) {
@@ -440,12 +558,13 @@ fn run_command(base: Int) -> Int {
     }
     if (line_starts_with([104, 101, 108, 112])) {          // "help"
         // "help clear echo keys exit"
-        // "help clear echo keys mem page sync yield win time exit"
+        // "help clear echo keys mem page sync yield win time disk exit"
         emit(base, [104, 101, 108, 112, 32, 99, 108, 101, 97, 114, 32, 101, 99,
                     104, 111, 32, 107, 101, 121, 115, 32, 109, 101, 109, 32,
                     112, 97, 103, 101, 32, 115, 121, 110, 99, 32,
                     121, 105, 101, 108, 100, 32, 119, 105, 110, 32,
-                    116, 105, 109, 101, 32, 101, 120, 105, 116]);
+                    116, 105, 109, 101, 32, 100, 105, 115, 107, 32,
+                    101, 120, 105, 116]);
         return 1;
     }
     if (line_starts_with([99, 108, 101, 97, 114])) {       // "clear"
@@ -511,6 +630,14 @@ fn run_command(base: Int) -> Int {
                    .chain(decimal((t1 as Int) - (t0 as Int)))
                    .chain([32, 102, 114, 97, 109, 101, 115, 32])
                    .chain(decimal((t2 as Int) - (t1 as Int))));
+        return 1;
+    }
+    if (line_starts_with([100, 105, 115, 107, 32, 119])) { // "disk w"
+        write_disk(base);
+        return 1;
+    }
+    if (line_starts_with([100, 105, 115, 107])) {          // "disk"
+        report_disk(base);
         return 1;
     }
     if (line_starts_with([101, 120, 105, 116])) {          // "exit"

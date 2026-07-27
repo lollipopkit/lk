@@ -1,0 +1,223 @@
+// The ATA (IDE) disk controller, in PIO mode.
+//
+// The first driver here that has to *wait for hardware*. A UART transmits when
+// asked and a framebuffer accepts a write immediately; a disk takes milliseconds
+// and says so through a status register. Every function below therefore has a
+// bounded spin: it gives up and reports rather than hanging the machine, which
+// on a board with no operating system is the difference between a failed read
+// and a dead computer.
+//
+// LBA28 and one sector at a time. That is the least the interface allows and
+// enough to read a filesystem; DMA, the secondary bus, and 48-bit addressing
+// are all the same shape with more registers.
+
+// The primary bus's command block, and its control register.
+const ATA_DATA = 0x1f0;
+const ATA_ERROR = 0x1f1;
+const ATA_SECTOR_COUNT = 0x1f2;
+const ATA_LBA_LOW = 0x1f3;
+const ATA_LBA_MID = 0x1f4;
+const ATA_LBA_HIGH = 0x1f5;
+const ATA_DRIVE = 0x1f6;
+const ATA_STATUS = 0x1f7;
+const ATA_COMMAND = 0x1f7;
+const ATA_CONTROL = 0x3f6;
+
+// Status bits. BSY and DRQ are the two the driver waits on; ERR and DF are how
+// the drive refuses.
+const ATA_STATUS_ERR = 0x01;
+const ATA_STATUS_DRQ = 0x08;
+const ATA_STATUS_DF = 0x20;
+const ATA_STATUS_RDY = 0x40;
+const ATA_STATUS_BSY = 0x80;
+
+const ATA_CMD_READ_SECTORS = 0x20;
+const ATA_CMD_WRITE_SECTORS = 0x30;
+const ATA_CMD_FLUSH = 0xe7;
+const ATA_CMD_IDENTIFY = 0xec;
+
+// How many status reads to spend before declaring the drive stuck. Reading a
+// port is hundreds of cycles, so this is milliseconds rather than an exact
+// duration — a timeout on a machine with no clock yet can only be a count.
+const ATA_SPIN_LIMIT = 500000;
+
+// Every result is one of these, so a caller can tell "no disk" from "the disk
+// said no" without a second mechanism.
+const ATA_OK = 0;
+const ATA_TIMEOUT = 1;
+const ATA_ERROR_BIT = 2;
+const ATA_NO_DRIVE = 3;
+
+fn status() -> Int {
+    let value = unsafe { port_in_u8(ATA_STATUS) };
+    return value as Int;
+}
+
+// Reads the alternate status register four times.
+//
+// The specification's own delay: the status a drive presents immediately after
+// a command is not yet meaningful, and the alternate register at 0x3f6 is the
+// one that can be read without clearing a pending interrupt.
+fn settle() {
+    for i in 0..4 {
+        unsafe { port_in_u8(ATA_CONTROL) };
+    }
+}
+
+// Spins until BSY clears, then reports what the drive settled into.
+fn wait_not_busy() -> Int {
+    let spins = 0;
+    while (spins < ATA_SPIN_LIMIT) {
+        let s = status();
+        if ((s & ATA_STATUS_BSY) == 0) {
+            if ((s & (ATA_STATUS_ERR | ATA_STATUS_DF)) != 0) {
+                return ATA_ERROR_BIT;
+            }
+            return ATA_OK;
+        }
+        spins = spins + 1;
+    }
+    return ATA_TIMEOUT;
+}
+
+// Spins until the drive has a block of data for us (DRQ), or refuses.
+fn wait_data() -> Int {
+    let spins = 0;
+    while (spins < ATA_SPIN_LIMIT) {
+        let s = status();
+        if ((s & ATA_STATUS_ERR) != 0 || (s & ATA_STATUS_DF) != 0) {
+            return ATA_ERROR_BIT;
+        }
+        if ((s & ATA_STATUS_BSY) == 0 && (s & ATA_STATUS_DRQ) != 0) {
+            return ATA_OK;
+        }
+        spins = spins + 1;
+    }
+    return ATA_TIMEOUT;
+}
+
+// Is there a drive on the primary bus at all?
+//
+// A floating bus — nothing attached — reads back 0xff, which no real status
+// register produces (BSY and RDY set at once is not a state a drive is in).
+// Without this check the first read spins out the full timeout instead of
+// saying there is no disk.
+fn present() -> Int {
+    // Select the master drive first. Before a selection the command block does
+    // not belong to any drive and reads back 0 — indistinguishable from an
+    // empty bus, which is how this check first reported "no disk" for a disk
+    // that was there.
+    unsafe { port_out_u8(ATA_DRIVE, 0xa0 as u8) };
+    settle();
+    let s = status();
+    if (s == 0xff || s == 0) {
+        return 0;
+    }
+    return 1;
+}
+
+// Selects the master drive and addresses a sector, LBA28.
+//
+// The top four address bits share the drive register with the "use LBA" bit,
+// which is the part of this interface that most looks like what it is: a 1980s
+// register map extended twice.
+fn address(lba: Int, count: Int) {
+    unsafe { port_out_u8(ATA_DRIVE, (0xe0 | ((lba >> 24) & 0x0f)) as u8) };
+    settle();
+    unsafe { port_out_u8(ATA_SECTOR_COUNT, count as u8) };
+    unsafe { port_out_u8(ATA_LBA_LOW, (lba & 0xff) as u8) };
+    unsafe { port_out_u8(ATA_LBA_MID, ((lba >> 8) & 0xff) as u8) };
+    unsafe { port_out_u8(ATA_LBA_HIGH, ((lba >> 16) & 0xff) as u8) };
+}
+
+// Reads one 512-byte sector into memory at `buffer`.
+//
+// The data register is 16 bits wide and delivers 256 words per sector; they are
+// written straight to memory in little-endian order, so the bytes land the way
+// the disk holds them.
+fn read_sector(lba: Int, buffer: Int) -> Int {
+    if (present() == 0) {
+        return ATA_NO_DRIVE;
+    }
+    let ready = wait_not_busy();
+    if (ready != ATA_OK) {
+        return ready;
+    }
+    address(lba, 1);
+    unsafe { port_out_u8(ATA_COMMAND, ATA_CMD_READ_SECTORS as u8) };
+    settle();
+    let armed = wait_data();
+    if (armed != ATA_OK) {
+        return armed;
+    }
+    for word in 0..256 {
+        let value = unsafe { port_in_u16(ATA_DATA) };
+        unsafe { volatile_write_u16((buffer + word * 2) as *mut u16, value) };
+    }
+    return ATA_OK;
+}
+
+// Writes one 512-byte sector from memory at `buffer`, then flushes the drive's
+// write cache — without the flush the data is acknowledged but not necessarily
+// on the medium, and a reset loses it.
+fn write_sector(lba: Int, buffer: Int) -> Int {
+    if (present() == 0) {
+        return ATA_NO_DRIVE;
+    }
+    let ready = wait_not_busy();
+    if (ready != ATA_OK) {
+        return ready;
+    }
+    address(lba, 1);
+    unsafe { port_out_u8(ATA_COMMAND, ATA_CMD_WRITE_SECTORS as u8) };
+    settle();
+    let armed = wait_data();
+    if (armed != ATA_OK) {
+        return armed;
+    }
+    for word in 0..256 {
+        let value = unsafe { volatile_read_u16((buffer + word * 2) as *mut u16) };
+        unsafe { port_out_u16(ATA_DATA, value) };
+    }
+    unsafe { port_out_u8(ATA_COMMAND, ATA_CMD_FLUSH as u8) };
+    return wait_not_busy();
+}
+
+// Asks the drive to describe itself, into 512 bytes at `buffer`.
+//
+// Word 60/61 of the answer is the LBA28 sector count, which is how a driver
+// finds out how big the disk is rather than being told.
+fn identify(buffer: Int) -> Int {
+    if (present() == 0) {
+        return ATA_NO_DRIVE;
+    }
+    unsafe { port_out_u8(ATA_DRIVE, 0xa0 as u8) };
+    settle();
+    unsafe { port_out_u8(ATA_SECTOR_COUNT, 0 as u8) };
+    unsafe { port_out_u8(ATA_LBA_LOW, 0 as u8) };
+    unsafe { port_out_u8(ATA_LBA_MID, 0 as u8) };
+    unsafe { port_out_u8(ATA_LBA_HIGH, 0 as u8) };
+    unsafe { port_out_u8(ATA_COMMAND, ATA_CMD_IDENTIFY as u8) };
+    settle();
+    // Status 0 after IDENTIFY means the bus is empty, which is different from a
+    // drive that answered and said something.
+    if (status() == 0) {
+        return ATA_NO_DRIVE;
+    }
+    let armed = wait_data();
+    if (armed != ATA_OK) {
+        return armed;
+    }
+    for word in 0..256 {
+        let value = unsafe { port_in_u16(ATA_DATA) };
+        unsafe { volatile_write_u16((buffer + word * 2) as *mut u16, value) };
+    }
+    return ATA_OK;
+}
+
+// The LBA28 sector count from an IDENTIFY answer: words 60 and 61, low first.
+fn identify_sectors(buffer: Int) -> Int {
+    let low = unsafe { volatile_read_u16((buffer + 60 * 2) as *mut u16) };
+    let high = unsafe { volatile_read_u16((buffer + 61 * 2) as *mut u16) };
+    return (high as Int) << 16 | (low as Int);
+}

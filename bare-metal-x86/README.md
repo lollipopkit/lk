@@ -231,7 +231,40 @@ frame was then drawn at twice the pan, which looks exactly like a panning bug
 and is not one. The shared page has no allocator; the comments above each
 constant are the whole defence, so a block of them states its length.
 
-### Sharing state between them
+## A block device
+
+`drivers/ata.lk` is the first driver here that has to **wait for hardware**. A
+UART transmits when asked and a framebuffer accepts a write immediately; a disk
+takes milliseconds and says so through a status register. Every function in it
+therefore has a bounded spin and reports a timeout rather than hanging — on a
+board with no operating system that is the difference between a failed read and
+a dead computer.
+
+```
+>disk
+64 LK-DISK-OK-01234
+>disk w
+LK-WROTE-SECTOR1
+```
+
+The first line is IDENTIFY's own sector count and the first sixteen bytes of
+sector 0. Printed as bytes rather than as a checksum on purpose: the point of a
+disk driver's first outing is that *these* bytes came off *that* medium, and a
+checksum is equally consistent with a bug that reads the same wrong thing every
+time.
+
+Two details of the interface cost a debugging session each and are worth
+stating:
+
+- **Select the drive before reading status.** Before a selection the command
+  block belongs to no drive and reads back 0 — indistinguishable from an empty
+  bus. The presence check reported "no disk" for a disk that was plainly there.
+- **A write is acknowledged long before it is on the medium**, which is what the
+  `FLUSH CACHE` command after it is for. Read-back through the controller cannot
+  show the difference. `check_disk.py` therefore makes its third assertion from
+  *outside*, after QEMU has exited: the image file must hold what was written.
+
+## Sharing state between them
 
 Read, add, write is three steps. An interrupt landing between the read and the
 write discards whatever happened in between, and with a task switch inside that
@@ -318,6 +351,7 @@ mechanisms:
 | PCI configuration space | the 0xCF8/0xCFC port pair | walks bus 0, finds the display controller by class code, reads BAR0, enables memory cycles |
 | the framebuffer | volatile MMIO | sets a mode over the Bochs VBE ports, clears it, draws text, and scrolls by panning the view rather than moving pixels |
 | the PS/2 keyboard | port I/O, from an interrupt handler | reads the scancode, decodes it, echoes the character to the serial line and draws it at the cursor |
+| an IDE disk | port I/O with status polling | IDENTIFY for the geometry, then reads and writes 512-byte sectors, with bounded waits |
 
 `check_screen.py` screenshots the machine through QEMU's monitor and checks the
 pixels. That is a separate claim from the `pixels …` line: reading the
@@ -334,6 +368,7 @@ drivers/vbe.lk           the Bochs VBE display interface, including panning
 drivers/framebuffer.lk   pixels, given a base and a stride
 drivers/keyboard.lk      the PS/2 controller
 drivers/pit.lk           the interval timer
+drivers/ata.lk           an IDE disk, PIO mode (read, write, IDENTIFY)
 drivers/shared.lk        a word an interrupt handler and the main flow share
 program.lk               which devices to bring up, and what a keystroke means
 ```

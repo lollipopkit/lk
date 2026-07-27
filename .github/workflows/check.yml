@@ -228,6 +228,11 @@ jobs:
           # focus only writes a word, because drawing from an interrupt would
           # put a window's appearance in the hands of whatever it interrupted.
           timeout 200 python3 check_focus.py
+          # A real block device: IDENTIFY, a sector read, a sector write. The
+          # third assertion is the one that needs the machine stopped — after
+          # QEMU exits, the image *file* must hold what was written, because a
+          # drive acknowledges a write long before it is on the medium.
+          timeout 300 python3 check_disk.py
         env:
           LK_BIN: ../target/debug/lk
       - name: AOT native-lowering coverage gate
