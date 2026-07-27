@@ -89,6 +89,14 @@ pub struct StdlibModuleMetadata {
     pub name: &'static str,
     pub docs: Option<&'static str>,
     pub callables: &'static [StdlibCallableMetadata],
+    /// The same exports' declared types, for the type checker.
+    ///
+    /// Kept beside `callables` rather than inside them because the two cross
+    /// different boundaries: `callables` is consumed inside the standard
+    /// library (catalog, hover, lowering keys), while this is handed to
+    /// `lk_core`'s checker — which is also why it holds type *text* instead of
+    /// `Type`. Both come out of one `#[stdlib_export]`, so they cannot drift.
+    pub signatures: &'static [lk_core::typ::StdlibCallableSig],
 }
 
 impl StdlibModuleMetadata {
@@ -96,8 +104,14 @@ impl StdlibModuleMetadata {
         name: &'static str,
         docs: Option<&'static str>,
         callables: &'static [StdlibCallableMetadata],
+        signatures: &'static [lk_core::typ::StdlibCallableSig],
     ) -> Self {
-        Self { name, docs, callables }
+        Self {
+            name,
+            docs,
+            callables,
+            signatures,
+        }
     }
 }
 
@@ -136,7 +150,9 @@ macro_rules! stdlib_module_metadata {
                 ),
             )*
         ];
-        $crate::metadata::StdlibModuleMetadata::new(stringify!($module), None, CALLABLES)
+        // No signatures: this macro declares return *kinds* for lowering, not
+        // parameter types, so it has nothing to tell the type checker.
+        $crate::metadata::StdlibModuleMetadata::new(stringify!($module), None, CALLABLES, &[])
     }};
 }
 
@@ -206,6 +222,11 @@ pub fn register_stdlib_module_metadata(metadata: StdlibModuleMetadata) -> Result
         }
     }
     registry.modules.push(metadata);
+    // Hand the declared types to the type checker here rather than at each call
+    // site: registration is the one path every module takes, nested ones
+    // included, so a module cannot be typed by the checker and absent from the
+    // catalog or the reverse.
+    lk_core::typ::register_stdlib_signatures(metadata.signatures);
     Ok(())
 }
 

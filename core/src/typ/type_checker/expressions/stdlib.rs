@@ -20,6 +20,29 @@ impl TypeChecker {
             return Ok(Some(Type::Int));
         }
 
+        if let Some(declared) = crate::typ::stdlib_signature(&format!("{module}.{field}")) {
+            let required = declared.required_params();
+            if args.len() < required || args.len() > declared.params.len() {
+                return Err(Self::type_err(
+                    &format!("Function expects {}", describe_arity(required, declared.params.len())),
+                    None,
+                    None,
+                    Some(func.clone()),
+                ));
+            }
+            for (param, arg) in declared.params.iter().zip(args.iter()) {
+                let arg_type = self.check_expr(arg)?;
+                // An optional parameter is left unconstrained: the declaration
+                // says what it accepts when present, not that the argument in
+                // that position *is* one — several exports let a named
+                // parameter be passed positionally too.
+                if !param.optional && param.ty != Type::Any {
+                    self.inference_engine.add_constraint(param.ty.clone(), arg_type);
+                }
+            }
+            return Ok(Some(declared.return_type));
+        }
+
         let Some((params, named_params, return_type)) = stdlib_function_signature(&module, &field) else {
             return Ok(None);
         };
@@ -67,6 +90,18 @@ impl TypeChecker {
     }
 
     fn stdlib_function_type(&self, module: &str, field: &str) -> Option<Type> {
+        if let Some(declared) = crate::typ::stdlib_signature(&format!("{module}.{field}")) {
+            return Some(Type::Function {
+                params: declared
+                    .params
+                    .iter()
+                    .filter(|param| !param.named)
+                    .map(|param| param.ty.clone())
+                    .collect(),
+                named_params: declared.named_params(),
+                return_type: Box::new(declared.return_type),
+            });
+        }
         let (params, named_params, return_type) = stdlib_function_signature(module, field)?;
         Some(Type::Function {
             params,
@@ -114,6 +149,22 @@ impl TypeChecker {
     }
 }
 
+fn describe_arity(required: usize, max: usize) -> String {
+    if required == max {
+        format!("exactly {required} argument{}", if required == 1 { "" } else { "s" })
+    } else {
+        format!("{required} to {max} arguments")
+    }
+}
+
+/// What the checker knows about the standard library when no standard library
+/// is linked in: `core`'s own tests, and targets that ship a different module
+/// set (`stdlib/bare`, `stdlib/web`).
+///
+/// The declarations in `stdlib/crates` are the real source — they cover all 23
+/// modules and reach the checker through `register_stdlib_signatures`, which
+/// takes priority over everything here. This table only has to keep `core`
+/// standing on its own.
 fn stdlib_function_signature(module: &str, field: &str) -> Option<(Vec<Type>, Vec<FunctionNamedParamType>, Type)> {
     let any = || Type::Any;
     let unary_any = || vec![Type::Any];

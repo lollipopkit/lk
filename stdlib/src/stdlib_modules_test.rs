@@ -164,6 +164,13 @@ mod tests {
             time_since.signature.as_deref(),
             Some("time.since(start_ms: Int | Float, end_ms: Int | Float) -> Int")
         );
+        let string_split = catalog.export_path(&["string", "split"]).expect("string.split export");
+        assert_eq!(
+            string_split.signature.as_deref(),
+            // Angle brackets, because that is how the language spells a generic:
+            // a signature shown on hover has to be one the reader can write down.
+            Some("string.split(text: String, separator: String) -> List<String>")
+        );
         let stream_collect = catalog
             .export_path(&["stream", "collect"])
             .expect("stream.collect export");
@@ -263,7 +270,9 @@ mod tests {
                 && bytes.to_string_utf8(encoding.hex.decode("6869")) == "hi"
                 && hash.sha256("abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
                 && regex.is_match("[0-9]+", "a12")
-                && regex.find("[0-9]+", "a12").text == "12"
+                // `regex.find` is declared `Map?` — it finds nothing for some
+                // inputs — so the field access has to go through `?.`.
+                && regex.find("[0-9]+", "a12")?.text == "12"
                 && random.int(1, 3) >= 1
                 && random.int(1, 3) <= 3
                 && uuid.is_valid(id)
@@ -278,5 +287,59 @@ mod tests {
         assert!(run("use json; return json.parse(\"{}\");").is_err());
         assert!(run("use yaml; return yaml.parse(\"a: 1\");").is_err());
         assert!(run("use toml; return toml.parse(\"a = 1\");").is_err());
+    }
+
+    /// Type texts the checker is allowed not to understand.
+    ///
+    /// Every one of these names a runtime handle the type system has no variant
+    /// for, so widening it to `Any` is the honest answer. A text that reaches
+    /// `Any` *without* being on this list is a declaration the checker silently
+    /// gave up on — a typo, or a spelling the alias table has not been taught —
+    /// and the export it belongs to would be untyped for no stated reason.
+    const UNDERSTOOD_AS_ANY: &[&str] = &[
+        "Any", "Bytes", "Resource", "Stream", "Cursor", "Slice", "Value", "Fn", "Task", "Channel",
+    ];
+
+    fn is_understood(text: &str) -> bool {
+        let text = text.trim().trim_end_matches('?').trim();
+        if UNDERSTOOD_AS_ANY.contains(&text) {
+            return true;
+        }
+        if lk_core::typ::type_from_text(text) != lk_core::val::Type::Any {
+            return true;
+        }
+        // A union is understood when each arm is: `Bytes | String` resolves to
+        // `Any` as a whole precisely *because* one arm is opaque.
+        text.contains('|') && text.split('|').all(is_understood)
+    }
+
+    #[test]
+    fn every_declared_stdlib_type_is_understood_by_the_checker() {
+        let mut registry = ModuleRegistry::new();
+        register_stdlib_modules(&mut registry).expect("register stdlib modules");
+
+        let mut unknown: Vec<String> = Vec::new();
+        for name in crate::STDLIB_MODULES.iter().map(|entry| entry.name) {
+            let Some(metadata) = crate::registered_stdlib_module_metadata(name) else {
+                continue;
+            };
+            for signature in metadata.signatures {
+                for param in signature.params {
+                    if !is_understood(param.ty) {
+                        unknown.push(format!("{}({}: {})", signature.path, param.name, param.ty));
+                    }
+                }
+                if !is_understood(signature.returns) {
+                    unknown.push(format!("{} -> {}", signature.path, signature.returns));
+                }
+            }
+        }
+        unknown.sort();
+
+        assert!(
+            unknown.is_empty(),
+            "stdlib declares types the checker cannot act on:\n  {}",
+            unknown.join("\n  ")
+        );
     }
 }

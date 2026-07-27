@@ -63,6 +63,7 @@ fn expand_stdlib_exports(args: StdlibExportsArgs, impl_item: &mut ItemImpl) -> R
     let register_fn = format_ident!("register");
     let mut exports = Vec::new();
     let mut metadata_exports = Vec::new();
+    let mut signature_exports = Vec::new();
     let mut wrapper_functions = Vec::new();
     let mut value_exports = Vec::new();
 
@@ -121,6 +122,16 @@ fn expand_stdlib_exports(args: StdlibExportsArgs, impl_item: &mut ItemImpl) -> R
                 #docs_tokens,
             )
         });
+        let (signature_params, single_arity) = params.signature_param_tokens(&export.named);
+        let returns_text = &returns.display;
+        signature_exports.push(quote! {
+            ::lk_core::typ::StdlibCallableSig {
+                path: concat!(#module_ident, ".", #name),
+                params: #signature_params,
+                returns: #returns_text,
+                single_arity: #single_arity,
+            }
+        });
     }
 
     for attr in impl_item.attrs.iter() {
@@ -166,6 +177,16 @@ fn expand_stdlib_exports(args: StdlibExportsArgs, impl_item: &mut ItemImpl) -> R
                 Some(#signature),
                 #docs_tokens,
             )
+        });
+        let (signature_params, single_arity) = params.signature_param_tokens(&export.named);
+        let returns_text = &returns.display;
+        signature_exports.push(quote! {
+            ::lk_core::typ::StdlibCallableSig {
+                path: concat!(#module_ident, ".", #name),
+                params: #signature_params,
+                returns: #returns_text,
+                single_arity: #single_arity,
+            }
         });
     }
     impl_item.attrs.retain(|attr| !attr.path().is_ident("stdlib_export"));
@@ -250,10 +271,14 @@ fn expand_stdlib_exports(args: StdlibExportsArgs, impl_item: &mut ItemImpl) -> R
                 const CALLABLES: &[::lk_stdlib_common::metadata::StdlibCallableMetadata] = &[
                     #(#metadata_exports),*
                 ];
+                const SIGNATURES: &[::lk_core::typ::StdlibCallableSig] = &[
+                    #(#signature_exports),*
+                ];
                 ::lk_stdlib_common::metadata::StdlibModuleMetadata::new(
                     #module_ident,
                     <#self_ty>::stdlib_module_docs(),
                     CALLABLES,
+                    SIGNATURES,
                 )
             }
         }
@@ -602,6 +627,34 @@ impl ParamList {
         } else {
             Arity::Fixed(signature.params.len() as u16)
         }
+    }
+
+    /// The declared parameter types, as `lk_core`'s checker wants them.
+    ///
+    /// The second element is false when this declaration has no single type to
+    /// give: more than one parameter list, or a variadic tail. Handing the
+    /// checker one arm of an overload would make calls to the other arms fail,
+    /// so it is told nothing and falls back to inference.
+    fn signature_param_tokens(&self, named: &[String]) -> (proc_macro2::TokenStream, bool) {
+        let single_arity = self.signatures.len() == 1 && !self.signatures[0].params.iter().any(|param| param.variadic);
+        let params: &[ParamSpec] = if single_arity { &self.signatures[0].params } else { &[] };
+        let entries = params.iter().map(|param| {
+            let name = &param.name;
+            let ty = &param.ty;
+            let optional = param.optional;
+            let is_named = named.iter().any(|entry| entry == &param.name);
+            let has_default = param.default.is_some();
+            quote! {
+                ::lk_core::typ::StdlibParamSig {
+                    name: #name,
+                    ty: #ty,
+                    optional: #optional,
+                    named: #is_named,
+                    has_default: #has_default,
+                }
+            }
+        });
+        (quote!(&[#(#entries),*]), single_arity)
     }
 
     fn signature(&self, name: &str, returns: &str) -> String {

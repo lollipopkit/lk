@@ -87,7 +87,7 @@ impl FsModule {
         ))
     }
 
-    #[stdlib_export(params(path: String), returns = List[String])]
+    #[stdlib_export(params(path: String), returns = List<String>)]
     fn read_dir(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let path = path_arg(args.get(0).expect("checked arity"), runtime, "fs.read_dir path")?;
         let mut entries = Vec::new();

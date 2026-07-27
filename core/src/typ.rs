@@ -2,6 +2,7 @@
 /// without a filesystem has no file imports to resolve.
 #[cfg(feature = "std")]
 mod imports;
+mod stdlib_sig;
 mod type_checker;
 mod type_system;
 
@@ -9,6 +10,8 @@ mod type_system;
 mod function_infer_test;
 #[cfg(test)]
 mod or_pattern_binding_test;
+#[cfg(test)]
+mod stdlib_sig_test;
 #[cfg(test)]
 mod type_checker_test;
 #[cfg(test)]
@@ -20,5 +23,9 @@ mod type_system_test;
 pub use crate::val::{NumericClass, NumericHierarchy};
 #[cfg(feature = "std")]
 pub use imports::seed_imported_signatures;
+pub use stdlib_sig::{
+    ResolvedStdlibSig, StdlibCallableSig, StdlibParamSig, has_stdlib_signatures, register_stdlib_signatures,
+    stdlib_signature, type_from_text,
+};
 pub use type_checker::*;
 pub use type_system::*;

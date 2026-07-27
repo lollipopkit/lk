@@ -166,7 +166,7 @@ impl StringModule {
         Ok(runtime_string_value(&value[start..end], runtime.heap_mut()))
     }
 
-    #[stdlib_export(params(text: String, separator: String), returns = List[String])]
+    #[stdlib_export(params(text: String, separator: String), returns = List<String>)]
     fn split(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let (value, delimiter) = two_strings(args, runtime, "split()")?;
         let mut parts = Vec::new();
@@ -237,7 +237,7 @@ impl StringModule {
             .map_or(RuntimeVal::Nil, |value| RuntimeVal::Int(*value as i64)))
     }
 
-    #[stdlib_export(params(text: String), returns = List[String])]
+    #[stdlib_export(params(text: String), returns = List<String>)]
     fn chars(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let value = one_string(args, runtime, "chars()")?;
         let mut chars = Vec::new();
