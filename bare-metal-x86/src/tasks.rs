@@ -52,10 +52,13 @@ static mut TASK_USED: usize = 1;
 /// a process is exactly this word.
 static mut TASK_CR3: [u64; TASK_CAPACITY] = [0; TASK_CAPACITY];
 
-/// How many user address spaces exist. The linker script reserves two sets of
-/// tables; a third user task is refused rather than given someone else's.
+/// How many user address spaces exist.
+///
+/// Bounded by the tables the linker script reserves, not by anything about the
+/// design: a user task past this is refused rather than handed someone else's
+/// space, which is the one answer that is never a silent wrong one.
 static mut USER_SPACES: usize = 0;
-const USER_SPACE_CAPACITY: usize = 2;
+const USER_SPACE_CAPACITY: usize = 4;
 
 /// Which entry of `TASK_RSP` belongs to the task currently on the CPU.
 static mut CURRENT: usize = 0;
