@@ -249,6 +249,10 @@ fn emit(input: &str, facts: &LineFacts, options: FormatOptions) -> String {
         .map(|idx| if lines[idx].ends_with('\r') { "\r\n" } else { "\n" })
         .unwrap_or("\n");
 
+    // Level of the last line actually indented, so a line can never jump more
+    // than one level past the one before it (see below).
+    let mut prev_level = 0usize;
+
     for (idx, raw_line) in lines.iter().enumerate() {
         let raw = raw_line.strip_suffix('\r').unwrap_or(raw_line);
         if facts.protected[idx] {
@@ -256,10 +260,19 @@ fn emit(input: &str, facts: &LineFacts, options: FormatOptions) -> String {
         } else {
             let trimmed = raw.trim();
             if !trimmed.is_empty() {
-                let level =
+                let depth =
                     (indent - facts.leading_closers[idx] as i32).max(0) as usize + usize::from(facts.continuation[idx]);
+                // One line can open several brackets — `unless!(cond {`, or
+                // `foo(bar(`. Bracket depth says the next line is two levels in,
+                // but nothing was ever written at the level in between, so that
+                // is just an indent nobody asked for. Advance one level at a
+                // time; the closing line dedents by its own closers, so the
+                // running depth (`indent`) stays exact and files still return
+                // to column 0.
+                let level = depth.min(prev_level + 1);
                 push_indent(&mut out, level, options);
                 out.push_str(trimmed);
+                prev_level = level;
             }
         }
         out.push_str(eol);

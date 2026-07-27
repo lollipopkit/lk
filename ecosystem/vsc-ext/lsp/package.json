@@ -123,6 +123,12 @@
         }
       }
     ],
+    "configurationDefaults": {
+      "[lk]": {
+        "editor.insertSpaces": true,
+        "editor.tabSize": 4
+      }
+    },
     "configuration": {
       "type": "object",
       "title": "LK Configuration",

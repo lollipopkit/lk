@@ -73,8 +73,8 @@ Blocks `{ ... }` introduce a new scope:
 ```lk
 let a = 1;
 {
-  let a = 2;
-  println(a);     // 2
+    let a = 2;
+    println(a);     // 2
 }
 println(a);       // 1
 ```
@@ -220,11 +220,11 @@ Parentheses are optional. `false` and `nil` are falsy; everything else (includin
 
 ```lk
 if score > 90 {
-  println("A");
+    println("A");
 } else if score > 80 {
-  println("B");
+    println("B");
 } else {
-  println("C");
+    println("C");
 }
 ```
 
@@ -233,19 +233,19 @@ if score > 90 {
 ```lk
 let i = 0;
 while i < 5 {
-  i += 1;
+    i += 1;
 }
 
 for item in [1, 2, 3] {
-  println(item);
+    println(item);
 }
 
 for ch in "hello" {
-  println(ch);
+    println(ch);
 }
 
 for entry in { "a": 1, "b": 2 } {
-  println(entry);  // ["a", 1]
+    println(entry);  // ["a", 1]
 }
 ```
 
@@ -253,16 +253,16 @@ for entry in { "a": 1, "b": 2 } {
 
 ```lk
 for item in [1, 2, 3] {
-  if item == 2 { continue; }
-  if item == 3 { break; }
-  println(item);
+    if item == 2 { continue; }
+    if item == 3 { break; }
+    println(item);
 }
 
 fn first_positive(list) {
-  for item in list {
-    if item > 0 { return item; }
-  }
-  return nil;
+    for item in list {
+        if item > 0 { return item; }
+    }
+    return nil;
 }
 ```
 
@@ -272,10 +272,10 @@ fn first_positive(list) {
 
 ```lk
 let label = match 404 {
-  200 => "OK",
-  301 | 302 => "Redirect",
-  404 => "Not Found",
-  _ => "Unknown",
+    200 => "OK",
+    301 | 302 => "Redirect",
+    404 => "Not Found",
+    _ => "Unknown",
 };
 ```
 
@@ -293,12 +293,12 @@ let { "name": n, "age": a, ..other } = { "name": "LK", "age": 1, "lang": "script
 
 ```lk
 if let { "user": { "id": uid } } = payload {
-  println("User ID: {}", uid);
+    println("User ID: {}", uid);
 }
 
 while let [item, ..tail] = remaining {
-  println(item);
-  remaining := tail;
+    println(item);
+    remaining := tail;
 }
 ```
 
@@ -306,10 +306,10 @@ while let [item, ..tail] = remaining {
 
 ```lk
 match score {
-  n if n >= 90 => "A",
-  n if n >= 80 => "B",
-  1..59 => "F",
-  _ => "C",
+    n if n >= 90 => "A",
+    n if n >= 80 => "B",
+    1..59 => "F",
+    _ => "C",
 }
 ```
 
@@ -319,11 +319,11 @@ match score {
 
 ```lk
 fn add(a, b) {
-  return a + b;
+    return a + b;
 }
 
 fn greet(name, greeting = "hello") {
-  return "${greeting}, ${name}!";
+    return "${greeting}, ${name}!";
 }
 
 greet("LK")              // "hello, LK!"
@@ -336,7 +336,7 @@ Named parameters live in a trailing block and require type annotations:
 
 ```lk
 fn draw_rect(x: Int, y: Int, { width: Int, height: Int? = 100 }) -> Int {
-  return width * (height ?? 0);
+    return width * (height ?? 0);
 }
 
 draw_rect(0, 0, width: 50);
@@ -369,7 +369,7 @@ Function-literal form: `fn(a, b) => a + b`
 
 ```lk
 fn apply(f, x) {
-  return f(x);
+    return f(x);
 }
 
 apply(|n| n * 3, 7)  // 21
@@ -396,13 +396,13 @@ let bigger = Rect { ..shape, h: 10 };
 
 ```lk
 trait Area {
-  fn area(self) -> Int;
+    fn area(self) -> Int;
 }
 
 impl Area for Rect {
-  fn area(self) -> Int {
-    return self.w * self.h;
-  }
+    fn area(self) -> Int {
+        return self.w * self.h;
+    }
 }
 
 shape.area()   // 40
@@ -412,8 +412,8 @@ Auto-display: implement `show`, `display`, or `to_string` and `println("{}")` an
 
 ```lk
 impl Area for Rect {
-  fn area(self) -> Int { return self.w * self.h; }
-  fn show(self) -> String { return "Rect(${self.w}x${self.h})"; }
+    fn area(self) -> Int { return self.w * self.h; }
+    fn show(self) -> String { return "Rect(${self.w}x${self.h})"; }
 }
 
 println("shape = {}", shape);  // shape = Rect(8x5)
@@ -480,10 +480,10 @@ use stream;
 
 let s = stream.from_list([1, 2, 3, 4, 5]);
 let cursor = stream.subscribe(
-  stream.filter(
-    stream.map(s, |n| n * 10),
-    |n| n > 20
-  )
+    stream.filter(
+        stream.map(s, |n| n * 10),
+        |n| n > 20
+    )
 );
 stream.collect(cursor)  // [30, 40, 50]
 ```
@@ -525,7 +525,7 @@ CLI commands: `lk pkg init`, `lk pkg fetch`, `lk pkg check`, `lk pkg publish`, `
 
 ```lk
 macro_rules! vec {
-  ($($value:expr),*) => { [$($value),*] };
+    ($($value:expr),*) => { [$($value),*] };
 }
 
 let values = vec![1, 2 + 3, 4];  // [1, 5, 4]
@@ -566,7 +566,7 @@ Concurrency features require a feature gate:
 ```lk
 // spawn creates a task
 let handle = spawn(|| {
-  return 42;
+    return 42;
 });
 
 // chan creates a channel
@@ -576,9 +576,9 @@ let [ok, val] = recv(ch);
 
 // select chooses
 select {
-  case value <- recv(ch) => println("got {}", value),
-  case send(ch, 42) => println("sent"),
-  default => println("none ready"),
+    case value <- recv(ch) => println("got {}", value),
+    case send(ch, 42) => println("sent"),
+    default => println("none ready"),
 }
 ```
 
@@ -605,6 +605,13 @@ time.since(start, time.now());
 | `lk fmt [PATH...]` | Format sources in place (no path = whole project; `--check` for CI) |
 | `lk macro expand FILE` | Expand macros |
 | `lk pkg init/fetch/check/publish/tree` | Package management |
+
+### Formatting
+
+`lk fmt` is the style: 4-space indent, one trailing newline, no trailing whitespace. The
+answer does not depend on your editor's settings — the LSP formats a document exactly the
+way the CLI does, so a file formatted on save also passes `lk fmt --check` in CI. Every
+example in this guide is `lk fmt` output.
 
 ## Type Annotations
 

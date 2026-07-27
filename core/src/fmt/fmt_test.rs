@@ -105,6 +105,34 @@ fn leading_negative_list_elements_are_not_continuations() {
     assert_eq!(fmt(src), "let xs = [\n    1,\n    -2,\n    -x,\n];\n");
 }
 
+/// A line that opens two brackets still costs exactly one level: bracket depth
+/// would say two, but nothing is ever written at the level in between.
+#[test]
+fn a_line_opening_two_brackets_indents_one_level() {
+    // `docs/macros.md` — a macro invocation whose argument is a block.
+    let src = "unless!(x == 9 {\nprintln(\"not nine\");\n});\n";
+    let out = fmt(src);
+    assert_eq!(out, "unless!(x == 9 {\n    println(\"not nine\");\n});\n");
+    assert_eq!(fmt(&out), out);
+
+    let call = "foo(bar(\nbaz,\n));\n";
+    assert_eq!(fmt(call), "foo(bar(\n    baz,\n));\n");
+}
+
+/// The clamp must not lose the *real* depth: closing both brackets on separate
+/// lines still walks back down one level at a time, ending at column 0.
+#[test]
+fn stepwise_nesting_keeps_every_level() {
+    let src = "foo(\nbar(\na\n)\n);\nlet after = 1;\n";
+    assert_eq!(fmt(src), "foo(\n    bar(\n        a\n    )\n);\nlet after = 1;\n");
+}
+
+#[test]
+fn statement_after_a_multi_bracket_block_returns_to_column_zero() {
+    let src = "unless!(x == 9 {\nprintln(1);\n});\nlet after = 1;\n";
+    assert_eq!(fmt(src), "unless!(x == 9 {\n    println(1);\n});\nlet after = 1;\n");
+}
+
 #[test]
 fn normalizes_trailing_whitespace_and_final_newline() {
     assert_eq!(fmt("let x = 1;   \n\n\n"), "let x = 1;\n");
