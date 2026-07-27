@@ -44,6 +44,14 @@ static mut TASK_RSP: [u64; TASK_CAPACITY] = [0; TASK_CAPACITY];
 /// stack the boot path gave it.
 static mut TASK_USED: usize = 1;
 
+/// Each task's address space, as the value CR3 takes.
+///
+/// Zero means "the kernel's", which is what every task had until one of them
+/// got its own. Kept per task rather than per privilege level: two user tasks
+/// with one space would be two threads, and the difference between a thread and
+/// a process is exactly this word.
+static mut TASK_CR3: [u64; TASK_CAPACITY] = [0; TASK_CAPACITY];
+
 /// Which entry of `TASK_RSP` belongs to the task currently on the CPU.
 static mut CURRENT: usize = 0;
 
@@ -172,7 +180,7 @@ pub extern "C" fn lk_spawn(entry: i64) -> i64 {
 /// `entry` must be code in a user-accessible page, and `user_stack` a
 /// user-accessible, 16-byte-aligned stack of its own.
 #[unsafe(no_mangle)]
-pub extern "C" fn lk_spawn_user(entry: i64, user_stack: i64) -> i64 {
+pub extern "C" fn lk_spawn_user(entry: i64, user_stack: i64, user_stack_virtual: i64) -> i64 {
     if entry == 0 || user_stack == 0 {
         return -1;
     }
@@ -185,9 +193,15 @@ pub extern "C" fn lk_spawn_user(entry: i64, user_stack: i64) -> i64 {
         let stacks = &raw mut TASK_STACKS;
         let top = (*stacks)[used - 1].0.as_mut_ptr().add(STACK_SIZE);
         let (code, data) = crate::user::user_frame_selectors();
-        let sp = prepare_stack_in(top, entry as u64, code, data, user_stack as u64);
+        // The *virtual* address is what the frame resumes on: the task runs in
+        // its own space, where its stack is somewhere the kernel's space has
+        // something else entirely.
+        let sp = prepare_stack_in(top, entry as u64, code, data, user_stack_virtual as u64);
         let rsp = &raw mut TASK_RSP;
         (*rsp)[used] = sp;
+        // Its own address space, in which that stack address means something.
+        let cr3 = &raw mut TASK_CR3;
+        (*cr3)[used] = crate::user::build_address_space(user_stack as u64 & !0xfff);
         *(&raw mut TASK_USED) = used + 1;
         used as i64
     }
@@ -213,6 +227,19 @@ pub unsafe extern "C" fn schedule_from_interrupt(rsp: u64) -> u64 {
         // scheduler that names an empty slot would resume a stack that was
         // never prepared.
         let next = if next < *(&raw const TASK_USED) { next } else { current };
+        // The address space, before the stack: the value returned below is a
+        // pointer the CPU will read *after* this returns, and it has to be
+        // valid in whatever space is current then. Both are mapped identically
+        // for the kernel, which is why this order is safe rather than lucky.
+        let spaces = &raw const TASK_CR3;
+        let want = (*spaces)[next];
+        if want != 0 {
+            let current_cr3: u64;
+            core::arch::asm!("mov {}, cr3", out(reg) current_cr3, options(nomem, nostack));
+            if current_cr3 != want {
+                core::arch::asm!("mov cr3, {}", in(reg) want, options(nostack));
+            }
+        }
         *(&raw mut CURRENT) = next;
         // The kernel stack the *next* task will be interrupted onto. Task 0
         // keeps the boot stack and never runs at ring 3, so its slot has no

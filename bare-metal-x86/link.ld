@@ -62,6 +62,19 @@ SECTIONS
     __pt0 = .;
     . = . + 4096;
 
+    /* A second address space, for a user task: its own PML4 and the two tables
+       that differ from the kernel's. Everything else is shared by pointing at
+       the kernel's own tables — the kernel has to be mapped in every space, or
+       an interrupt during ring 3 would have nowhere to land. */
+    __user_pml4 = .;
+    . = . + 4096;
+    __user_pdpt = .;
+    . = . + 4096;
+    __user_pd = .;
+    . = . + 4096;
+    __user_pt = .;
+    . = . + 4096;
+
     /* The stack grows down from here. */
     . = ALIGN(16);
     . = . + 0x10000;

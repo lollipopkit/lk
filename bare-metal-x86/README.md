@@ -496,6 +496,30 @@ from ring 0 would be a kernel bug with the same `cr2`. And the U bit has to be
 set at every level of the walk, because the CPU takes their conjunction; a user
 page under a kernel-only directory is still kernel-only.
 
+### An address space of its own
+
+The ring-3 task's stack is at `0x4000_0000` — *in its own address space*. In the
+kernel's, that address is identity-mapped RAM that does not exist on this
+machine. Two spaces, not one with extra permissions, and the difference between
+a thread and a process is the one word per task that says which.
+
+Almost all of it is shared, and shared by *pointing* rather than copying: the
+task's PML4 names the kernel's own page directories for three of the four
+gigabytes. The kernel has to be mapped in every space — an interrupt during
+ring 3 lands in kernel code, and there would otherwise be nowhere for it to go —
+and copying the entries would work today and drift the first time a mapping is
+added to one and not the other. Only the second gigabyte is the task's own, and
+it holds one page: its stack.
+
+That it works is the evidence. QEMU's default machine has 128 MiB, so
+`0x4000_0000` is backed by nothing in the kernel's identity map; a task running
+there at all means the tables that give it meaning are the ones in force.
+
+CR3 changes before the stack pointer is handed back, not after: the value the
+switch returns is read by the CPU *after* this returns, and it has to mean the
+same thing in whichever space is current by then. It does, because the kernel is
+mapped identically in both — which makes the order safe rather than lucky.
+
 ### A pointer the kernel does not believe
 
 The first syscall took a byte per call, which was slow and deliberate: a pointer

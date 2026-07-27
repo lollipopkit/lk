@@ -206,6 +206,65 @@ static mut RING0_STACK: KernelStack = KernelStack([0; 16 * 1024]);
 
 unsafe extern "C" {
     static mut __gdt_tss: u64;
+    static mut __user_pml4: u64;
+    static mut __user_pdpt: u64;
+    static mut __user_pd: u64;
+    static mut __user_pt: u64;
+    static __pdpt: u64;
+    static __pd: u64;
+}
+
+/// Where a user task's stack lives *in its own address space*.
+///
+/// A virtual address the kernel's space does not map to the same thing: in the
+/// kernel's tables 0x4000_0000 is identity-mapped RAM that nothing uses, and in
+/// the user's it is the stack. That difference is what makes them two address
+/// spaces rather than one with extra permissions.
+pub const USER_STACK_VIRTUAL: u64 = 0x4000_0000;
+
+/// Builds the user address space and answers its CR3.
+///
+/// Everything except the second gigabyte is *shared with the kernel* by
+/// pointing at the kernel's own tables rather than copying them: the kernel has
+/// to be mapped in every space, because an interrupt during ring 3 lands in
+/// kernel code and would otherwise have nowhere to go. Copying would work today
+/// and drift tomorrow — a mapping added to one and not the other.
+///
+/// # Safety
+///
+/// Called once, at boot, before any of these tables is in use.
+pub unsafe fn build_address_space(stack_physical: u64) -> u64 {
+    // SAFETY: boot path; nothing walks these tables until CR3 names them.
+    unsafe {
+        let pml4 = &raw mut __user_pml4;
+        let pdpt = &raw mut __user_pdpt;
+        let pd = &raw mut __user_pd;
+        let pt = &raw mut __user_pt;
+        for i in 0..512 {
+            pml4.add(i).write(0);
+            pdpt.add(i).write(0);
+            pd.add(i).write(0);
+            pt.add(i).write(0);
+        }
+        let kernel_pdpt = (&raw const __pdpt) as u64;
+        let kernel_pd = (&raw const __pd) as u64;
+
+        // The first, third and fourth gigabytes: the kernel's own directories,
+        // shared. The framebuffer is in the fourth.
+        pdpt.write(kernel_pd | 0x7);
+        pdpt.add(2).write((kernel_pd + 2 * 4096) | 0x7);
+        pdpt.add(3).write((kernel_pd + 3 * 4096) | 0x7);
+        // The second: this space's own, holding one page of stack.
+        pdpt.add(1).write((pd as u64) | 0x7);
+        pd.write((pt as u64) | 0x7);
+        // One 4 KiB page at the bottom of that gigabyte, user-writable, backed
+        // by the physical stack the kernel allocated.
+        pt.write(stack_physical | 0x7);
+
+        pml4.write((pdpt as u64) | 0x7);
+        let _ = kernel_pdpt;
+        pml4 as u64
+    }
 }
 
 /// Fills in the TSS descriptor and loads it. Call once, before entering ring 3.
@@ -406,15 +465,28 @@ pub extern "C" fn lk_user_task_entry() -> i64 {
     __user_task as *const () as i64
 }
 
+/// The physical page that backs the ring-3 task's stack.
+///
+/// One page, at the *end* of the static array so the stack grows down inside
+/// it. What the task sees is `USER_STACK_VIRTUAL`, which is where this page is
+/// mapped in the task's own space — the two numbers are the same memory and
+/// different addresses, which is the whole point of the exercise.
 #[unsafe(no_mangle)]
 pub extern "C" fn lk_user_task_stack() -> i64 {
-    // SAFETY: a static array's own end, one word down for the ABI's phase.
+    // SAFETY: a static array's own end.
     unsafe {
         (&raw mut USER_TASK_STACK)
             .cast::<u8>()
             .add(size_of::<UserTaskStack>())
-            .sub(8) as i64
+            .sub(4096) as i64
     }
+}
+
+/// The address that stack has in the task's own address space, one word down
+/// for the ABI's phase.
+#[unsafe(no_mangle)]
+pub extern "C" fn lk_user_task_stack_virtual() -> i64 {
+    (USER_STACK_VIRTUAL + 4096 - 8) as i64
 }
 
 /// The stack the user program runs on.
