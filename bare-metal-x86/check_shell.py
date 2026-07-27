@@ -78,16 +78,21 @@ EXPECTED_LINES = [
     #
     #   16 pages  the kernel heap
     #    8 pages  two user address spaces, four page tables each
-    #   32 pages  four task stacks, eight pages each
+    #   40 pages  five task stacks, eight pages each
     #   ------
-    #   56 pages  = 0x38000, so the first free page is 0x02038000
+    #   64 pages  = 0x40000, so the first free page is 0x02040000
     #
-    # Spelled out because these two numbers have moved three times, once per
+    # Spelled out because these two numbers have moved four times, once per
     # thing that stopped being reserved somewhere fixed and started being
     # allocated like anything else. Recomputing them should be arithmetic, not
     # archaeology.
-    "02038000",
-    "02039000",
+    #
+    # The fifth stack is the idle task's. It is spawned before anything else so
+    # that there is somewhere to go the moment a task can block — a scheduler
+    # with every task waiting and no idle task would resume one of the waiting
+    # ones, which is running a task it has just been told is not runnable.
+    "02040000",
+    "02041000",
     # The heap allocates three blocks, frees the middle one, allocates one that
     # only fits the hole, then frees everything. All three numbers are claims:
     # the block count must come *back* to what it was (holes joined on both

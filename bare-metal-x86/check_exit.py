@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""A task that ends, and gets everything back.
+"""A task's whole life: it waits without spending anything, it ends, and
+everything it held comes back.
 
 `check_spawn.py` next door proves tasks *run*: a spinner and a clock, both
 `while (true)`, both preempted by the timer. That is half a scheduler. Every task
@@ -25,6 +26,13 @@ Four numbers, and each one fails differently:
 * **The free-page count is the number it started at.** Not close to it. Each task
   takes a stack; a reclaim that marked the slot free without releasing the pages
   looks exactly like success from every other angle.
+* **A sleep takes as long as it says.** Ten sleeps of fifty ticks have to take
+  about five hundred ticks — not none, which is what a `task_sleep` that
+  returned immediately would take, and which is exactly what the first version
+  did: the scheduler's slice shortcut handed back the current task on seven
+  ticks out of eight without asking whether it was still runnable, so a task
+  that had just marked itself blocked was resumed anyway. Every wake was
+  counted, every number looked right, and only the elapsed time gave it away.
 * **The work actually happened.** Each task bumps a counter 200,000 times, so
   `ran` has to be twenty times that. Without it, "every task ended" is also what
   a kernel that never scheduled them would report — which is what the first
@@ -45,6 +53,10 @@ ROUNDS = 20
 STEPS_PER_TASK = 200000
 # `TASK_CAPACITY` in the program. Fewer than the rounds, on purpose.
 CAPACITY = 16
+# The scheduler's slice, in ticks: a woken task runs at the next decision, so
+# each wake may be up to this late.
+SLICE_TICKS = 8
+SLEEP_SLACK = 60
 
 
 def send_line(connection, text):
@@ -88,6 +100,7 @@ def main():
             # back, so anything the reclaim got subtly wrong shows here rather
             # than in a first run that had untouched memory to draw on.
             send_line(connection, "task")
+            send_line(connection, "sleep")
             connection.sendall(b"quit\n")
             connection.close()
         finally:
@@ -132,6 +145,24 @@ def main():
                     f"they were not all scheduled"
                 )
 
+        # The waiting half. The lower bound is what separates sleeping from
+        # returning immediately; the upper bound is what catches a wake that was
+        # missed and had to wait out another whole period. The slack is the
+        # scheduling granularity — a woken task runs at the next decision, which
+        # is up to one slice away, once per wake.
+        slept = re.search(r"sleep wakes (\d+)/(\d+) ticks (\d+) want (\d+)", transcript)
+        if not slept:
+            step = re.search(r"sleep: .*", transcript)
+            failures.append(f"`sleep` did not report: {step.group(0) if step else 'nothing'}")
+        else:
+            woke, rounds, ticks, want = (int(g) for g in slept.groups())
+            if woke != rounds:
+                failures.append(f"the sleeper woke {woke} times, not {rounds}")
+            if ticks < want:
+                failures.append(f"{rounds} sleeps took {ticks} ticks, less than the {want} asked for")
+            if ticks > want + rounds * SLICE_TICKS + SLEEP_SLACK:
+                failures.append(f"{rounds} sleeps took {ticks} ticks, far more than the {want} asked for")
+
         if "exception #" in transcript:
             fault = re.search(r"!! exception .*", transcript)
             failures.append(f"the machine faulted: {fault.group(0)!r}")
@@ -141,8 +172,9 @@ def main():
             print("--- transcript ---")
             print(transcript)
             return 1
-        print(f"OK: {ROUNDS} tasks ran to completion and returned, through {CAPACITY} slots, "
-              f"giving back every slot and every stack page")
+        print(f"OK: a task slept for the time it asked for, and {ROUNDS} tasks ran to "
+              f"completion and returned through {CAPACITY} slots, giving back every slot "
+              f"and every stack page")
         return 0
 
 

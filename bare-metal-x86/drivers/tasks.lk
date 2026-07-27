@@ -23,7 +23,8 @@ use { mmio_layout } from "layout";
 //   slot   +0   the saved stack pointer, valid while the task is not running
 //   slot   +8   its address space, as the value CR3 takes (0 = the kernel's)
 //   slot   +16  the ring-0 stack an interrupt from it lands on (0 = none)
-//   slot   +24  free, ready, or dead-and-waiting-to-be-reclaimed
+//   slot   +24  free, ready, blocked, idle, or dead-and-waiting-to-be-reclaimed
+//   slot   +32  the tick a blocked task becomes ready at
 mmio_layout! {
     TASK_USED_OFFSET: 8,
     TASK_CURRENT_OFFSET: 8,
@@ -35,6 +36,7 @@ mmio_layout! {
     TASK_CR3_OFFSET: 8,
     TASK_STACK_OFFSET: 8,
     TASK_STATE_OFFSET: 8,
+    TASK_WAKE_OFFSET: 8,
     => TASK_SLOT_SIZE
 }
 
@@ -52,6 +54,23 @@ mmio_layout! {
 const TASK_FREE = 0;
 const TASK_READY = 1;
 const TASK_DEAD = 2;
+// Waiting for a moment that has not arrived. `TASK_WAKE_OFFSET` says which one,
+// as a tick count; whoever counts ticks is the one that puts the task back.
+//
+// A blocked task is the difference between a scheduler and a round-robin. Until
+// now every wait in this kernel was a spin with interrupts on — which works, and
+// which means the machine is at full tilt doing nothing, and which means a task
+// waiting a second is a second of every other task's time.
+const TASK_BLOCKED = 3;
+// The task that runs when there is nothing to run.
+//
+// Its own state rather than a slot number kept somewhere, because the two
+// questions the scheduler asks are "may I rotate onto this?" and "is this where
+// I go when nothing else will have me?" — and both are answered by the field it
+// is already reading. A kernel with no idle task and every task blocked has
+// nowhere to go: the last one out would be resumed anyway, which is a scheduler
+// running a task it has just been told is not runnable.
+const TASK_IDLE = 4;
 
 fn task_table_size(capacity: Int) -> Int {
     return TASK_HEADER_SIZE + capacity * TASK_SLOT_SIZE;
@@ -119,6 +138,38 @@ fn task_state(base: Int, slot: Int) -> Int {
 
 fn task_set_state(base: Int, slot: Int, state: Int) {
     task_set_field(base, slot, TASK_STATE_OFFSET, state);
+}
+
+// Marks a slot as waiting until `tick`.
+//
+// The deadline before the state, and that ordering is the same contract as
+// everywhere else in this table: the state is the word the waker reads to decide
+// this slot is its business, and a slot announced blocked before its deadline is
+// written is one that wakes at whatever the field last held.
+fn task_block_until(base: Int, slot: Int, tick: Int) {
+    task_set_field(base, slot, TASK_WAKE_OFFSET, tick);
+    task_set_field(base, slot, TASK_STATE_OFFSET, TASK_BLOCKED);
+}
+
+// Puts back every task whose moment has come. Answers how many.
+//
+// Swept rather than kept in a sorted queue: the table is sixteen slots and this
+// runs on a timer, so the scan is cheaper than the bookkeeping a queue would
+// need to stay correct across a task that is reaped while queued.
+fn task_wake_due(base: Int, watermark: Int, now: Int) -> Int {
+    let woken = 0;
+    for slot in 0..watermark {
+        if (task_field(base, slot, TASK_STATE_OFFSET) != TASK_BLOCKED) {
+            continue;
+        }
+        if (task_field(base, slot, TASK_WAKE_OFFSET) > now) {
+            continue;
+        }
+        task_set_field(base, slot, TASK_WAKE_OFFSET, 0);
+        task_set_field(base, slot, TASK_STATE_OFFSET, TASK_READY);
+        woken = woken + 1;
+    }
+    return woken;
 }
 
 // Builds the stack a task starts life on, and answers the stack pointer that

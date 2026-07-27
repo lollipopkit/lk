@@ -58,7 +58,8 @@ use { task_table_init, task_word, task_set_word, task_field, task_set_field,
       task_prepare_frame, task_find_free, task_state, task_set_state,
       TASK_USED_OFFSET, TASK_CURRENT_OFFSET, TASK_RSP_OFFSET,
       TASK_CR3_OFFSET, TASK_STACK_OFFSET,
-      TASK_FREE, TASK_READY, TASK_DEAD } from "drivers/tasks";
+      task_block_until, task_wake_due,
+      TASK_FREE, TASK_READY, TASK_DEAD, TASK_BLOCKED, TASK_IDLE } from "drivers/tasks";
 use { table_zero, table_set, index_of, switch_to as space_switch,
       PAGE_PRESENT, PAGE_WRITE, PAGE_USER, SHIFT_PML4, SHIFT_PDPT,
       SHIFT_DIRECTORY, SHIFT_TABLE } from "drivers/paging";
@@ -368,7 +369,10 @@ const SHARED_USER_EXITED = SHARED_DRAG_DY + WORD;
 // task ran and ended" from "the task was never scheduled".
 const SHARED_BRIEF_TICKS = SHARED_USER_EXITED + WORD;
 
-const SHARED_EDU_MMIO = SHARED_BRIEF_TICKS + WORD;
+// How many times the sleeping task has woken.
+const SHARED_SLEEP_WAKES = SHARED_BRIEF_TICKS + WORD;
+
+const SHARED_EDU_MMIO = SHARED_SLEEP_WAKES + WORD;
 const SHARED_EDU_SEEN = SHARED_EDU_MMIO + WORD;
 
 const SHARED_GRID = SHARED_EDU_SEEN + WORD;
@@ -1093,6 +1097,45 @@ fn alloc_contiguous(bytes: Int) -> Int {
 // `lspci` prints — slot.function, vendor:device, class, and where its first BAR
 // lives — because what is being checked is that each of those came out of
 // configuration space and not out of a constant.
+// Starts a task that sleeps, and says how long it took.
+//
+// The elapsed tick count is the claim, and it is the only one that separates
+// waiting from spinning. Ten sleeps of fifty ticks have to take about five
+// hundred ticks: a `task_sleep` that returned immediately would finish in
+// almost none, and one that spun would finish in about the same time while
+// taking every other task's slice to do it.
+fn report_sleep(base: Int) {
+    let before_wakes = shared_read(SHARED_SLEEP_WAKES);
+    let before_ticks = shared_read(SHARED_TICKS);
+
+    let saved = unsafe { cpu_irq_save() };
+    unsafe { cpu_irq_restore(0); };
+    let slot = spawn_task(unsafe { symbol_address("lk_task_sleeper") });
+    unsafe { cpu_irq_restore(1); };
+    if (slot < 0) {
+        unsafe { cpu_irq_restore(saved); };
+        emit_text(base, "sleep: no slot");
+        return;
+    }
+    // The shell waits for it the same way anything waits here — and with
+    // interrupts on, because nothing schedules without the timer.
+    for _wait in 0..20000000 {
+        if (task_state(TASK_TABLE_BASE, slot) == TASK_FREE) {
+            break;
+        }
+    }
+    unsafe { cpu_irq_restore(saved); };
+
+    emit(base, text_bytes("sleep wakes ")
+        .chain(decimal(shared_read(SHARED_SLEEP_WAKES) - before_wakes))
+        .chain(text_bytes("/"))
+        .chain(decimal(TASK_SLEEP_ROUNDS))
+        .chain(text_bytes(" ticks "))
+        .chain(decimal(shared_read(SHARED_TICKS) - before_ticks))
+        .chain(text_bytes(" want "))
+        .chain(decimal(TASK_SLEEP_ROUNDS * TASK_SLEEP_TICKS)));
+}
+
 // Starts several tasks that end, and says what came back.
 //
 // The numbers are the claim. A slot count that does not return to what it was
@@ -1738,6 +1781,10 @@ fn run_command(base: Int) -> Int {
         report_edu(base);
         return 1;
     }
+    if (line_starts_with(text_bytes("sleep"))) {           // "sleep"
+        report_sleep(base);
+        return 1;
+    }
     if (line_starts_with(text_bytes("task"))) {             // "task"
         report_tasks(base);
         return 1;
@@ -2031,11 +2078,70 @@ fn task_saved_words() -> Int {
 // slot and a stack come back, because they never do. This one counts to a number
 // and returns, and returning is the whole point: no exit call, no cooperation
 // with the scheduler, just a function that finishes the way any function does.
+// The task that runs when nothing else will.
+//
+// `hlt` rather than a spin, because that is the only difference that matters: a
+// machine with nothing to do should be stopped until the next interrupt, not
+// burning through a loop. On real hardware it is the difference between a fan
+// that is on and one that is not; here it is what makes "everything is blocked"
+// a thing the scheduler can express at all.
+//
+// It never ends and never blocks, so it is always somewhere to go.
+#[export("lk_task_idle")]
+fn task_idle() {
+    while (true) {
+        unsafe { cpu_wait_for_interrupt(); };
+    }
+}
+
+// A task that sleeps rather than spins.
+//
+// It wakes `TASK_SLEEP_ROUNDS` times, waiting `TASK_SLEEP_TICKS` between, and
+// counts each wake. What that proves is not that it woke — a spin would also
+// "wake" — but *when*: the elapsed ticks have to be the product, which a spin
+// could not produce because a spinning task would be preempted and resumed long
+// before its deadline.
+#[export("lk_task_sleeper")]
+fn task_sleeper() {
+    for _round in 0..TASK_SLEEP_ROUNDS {
+        task_sleep(TASK_SLEEP_TICKS);
+        shared_bump(SHARED_SLEEP_WAKES);
+    }
+}
+
+const TASK_SLEEP_ROUNDS = 10;
+const TASK_SLEEP_TICKS = 50;
+
 #[export("lk_task_brief")]
 fn task_brief() {
     for _step in 0..200000 {
         shared_bump(SHARED_BRIEF_TICKS);
     }
+}
+
+// Waits `ticks` timer interrupts without using the CPU.
+//
+// The difference between this and the spin loops elsewhere in this file is the
+// whole point of a blocked state: a spin waits at full tilt and takes its slice
+// of every other task's time, while this leaves the rotation entirely and comes
+// back when the timer says so.
+//
+// The state goes on with interrupts masked, because between reading the clock
+// and announcing the deadline a tick would be one the waker had already passed.
+// The yield is *after* they are back on: yielding with them masked would switch
+// to a task that then runs with interrupts off.
+fn task_sleep(ticks: Int) {
+    if (ticks <= 0) {
+        return;
+    }
+    let irq = unsafe { cpu_irq_save() };
+    let current = task_word(TASK_TABLE_BASE + TASK_CURRENT_OFFSET);
+    task_block_until(TASK_TABLE_BASE, current, shared_read(SHARED_TICKS) + ticks);
+    unsafe { cpu_irq_restore(irq); };
+    // Hands the CPU over now rather than at the end of the slice. Not required —
+    // the next tick would switch away from a slot that is no longer ready — but
+    // a task that has said it is waiting should not go on running.
+    task_yield();
 }
 
 // Where a task goes when its body returns.
@@ -2096,15 +2202,25 @@ fn schedule_from_interrupt(rsp: Int) -> Int {
     let current = task_word(TASK_TABLE_BASE + TASK_CURRENT_OFFSET);
     task_set_field(TASK_TABLE_BASE, current, TASK_RSP_OFFSET, rsp);
 
+    // Every tick, before anything is chosen: a task whose moment has come has to
+    // be runnable by the time the choice is made, or it waits an extra slice for
+    // no reason. Cheaper than it looks — the watermark is at most the table's
+    // sixteen slots, and this is the only place that reads the clock against
+    // them.
+    let watermark = task_word(TASK_TABLE_BASE + TASK_USED_OFFSET);
+    task_wake_due(TASK_TABLE_BASE, watermark, shared_read(SHARED_TICKS));
+
     let next = schedule(current);
     // Clamped against the watermark, not the capacity: a scheduler naming a slot
     // above everything ever spawned would resume a stack that was never
     // prepared. And clamped against the slot's *state*, because since tasks can
-    // end, a slot inside the watermark is not necessarily one to resume.
-    if (next < 0 || next >= task_word(TASK_TABLE_BASE + TASK_USED_OFFSET)) {
+    // end and can wait, a slot inside the watermark is not necessarily one to
+    // resume.
+    if (next < 0 || next >= watermark) {
         next = current;
     }
-    if (task_state(TASK_TABLE_BASE, next) != TASK_READY) {
+    let chosen = task_state(TASK_TABLE_BASE, next);
+    if (chosen != TASK_READY && chosen != TASK_IDLE) {
         next = current;
     }
     reap_dead_tasks(current, next);
@@ -2843,7 +2959,17 @@ fn schedule(current: Int) -> Int {
     // switch costs a stack's worth of pushes, and a slice this short would
     // spend more time switching than running.
     let slice = shared_bump(SHARED_SLICE);
-    if (slice % 8 != 0) {
+    // Stay on the current task for the rest of its slice — but only if it is
+    // still one that may run.
+    //
+    // The state check is not a nicety. This shortcut used to fire on seven ticks
+    // out of eight and hand back `current` without looking at it, which meant a
+    // task that had just marked itself blocked was resumed anyway: `task_sleep`
+    // set its deadline, yielded, and the yield came straight back. Every sleep
+    // returned immediately, the wake count was still right, and the only thing
+    // that gave it away was the elapsed time — ten sleeps of fifty ticks taking
+    // eighty ticks in total.
+    if (slice % 8 != 0 && task_state(TASK_TABLE_BASE, current) == TASK_READY) {
         return current;
     }
     // Round robin over the tasks that exist. The count comes from the shared
@@ -2861,11 +2987,31 @@ fn schedule(current: Int) -> Int {
     // Bounded by the range rather than by "until we find one": every slot may be
     // dead but the one running, and a loop with no bound would be a scheduler
     // that never returns from a timer interrupt.
+    // The next slot that is *ready*, not simply the next slot. Since a task can
+    // end and can wait, the range below the watermark has holes in it, and
+    // handing one to the switch would resume a stack that has been given back or
+    // a task that said it is waiting.
+    //
+    // Bounded by the range rather than by "until we find one": a loop with no
+    // bound would be a scheduler that never returns from a timer interrupt.
+    let idle = 0 - 1;
     for step in 1..(count + 1) {
         let candidate = (current + step) % count;
-        if (task_state(TASK_TABLE_BASE, candidate) == TASK_READY) {
+        let state = task_state(TASK_TABLE_BASE, candidate);
+        if (state == TASK_READY) {
             return candidate;
         }
+        if (state == TASK_IDLE) {
+            idle = candidate;
+        }
+    }
+    // Nothing is runnable. The idle task is where that goes — and it is found
+    // here rather than remembered in a word because the rotation has just walked
+    // past it. Staying on `current` instead would be resuming a task the loop
+    // above has just decided is not runnable, which for a blocked task means it
+    // wakes early and for a dead one means it runs after it ended.
+    if (idle >= 0) {
+        return idle;
     }
     return current;
 }
@@ -3224,6 +3370,16 @@ shared_write(SHARED_DRAWN_FOCUS, 0 - 1);
 // the table from a timer interrupt, and a slot published before its stack is
 // ready is a jump to zero.
 let irq_spawn = lock();
+// The idle task first, so there is somewhere to go before anything can block.
+//
+// It is an ordinary task in an ordinary slot; what makes it the idle one is its
+// state, which is set after `spawn_task` has published it ready. The rotation
+// skips that state and falls back to it, so it costs nothing while anything else
+// is runnable.
+let idle_task = spawn_task(unsafe { symbol_address("lk_task_idle") });
+if (idle_task >= 0) {
+    task_set_state(TASK_TABLE_BASE, idle_task, TASK_IDLE);
+}
 let spinner_task = spawn_task(unsafe { symbol_address("lk_task_b") });
 let clock_task = spawn_task(unsafe { symbol_address("lk_task_clock") });
 // And one that runs in ring 3. It never yields; the timer is what takes the
