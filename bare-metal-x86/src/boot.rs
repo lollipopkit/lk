@@ -64,15 +64,33 @@ global_asm!(
     "   loop 1b",
     "   mov edi, offset __pdpt",
     "   mov eax, offset __pd",
-    "   or eax, 3",
+    // User-accessible at this level too: the CPU takes the *conjunction* of the
+    // U bits along the walk, so a user page under a kernel-only directory is
+    // still kernel-only.
+    "   or eax, 7",
     "   mov ecx, 4",
     "2: mov [edi], eax",
     "   mov dword ptr [edi + 4], 0",
     "   add eax, 0x1000",
     "   add edi, 8",
     "   loop 2b",
+    // The first 2 MiB, and only it, is reachable from ring 3.
+    //
+    // The user program and its stack live in this image, which means they live
+    // in this page — so the U bit has to be here for ring 3 to execute at all.
+    // Everything above it stays kernel-only, which is what makes the boundary
+    // testable: the shared page at 0x300000 is in the *next* 2 MiB, and a user
+    // task writing there faults.
+    //
+    // Coarse, and knowingly so: the rest of this image is in the same page, so
+    // ring 3 can read the kernel's own code and data. Fixing that means 4 KiB
+    // tables for the user's pages rather than 2 MiB ones — a page table per
+    // user region, which is the shape this wants once there is more than one
+    // user program.
+    "   mov edi, offset __pd",
+    "   mov dword ptr [edi], 0x87",   // present | writable | 2 MiB | user
     "   mov eax, offset __pdpt",
-    "   or eax, 3",
+    "   or eax, 7",
     "   mov edi, offset __pml4",
     "   mov [edi], eax",
     "   mov dword ptr [edi + 4], 0",
@@ -133,16 +151,33 @@ global_asm!(
     "   jmp 3b",
 );
 
-// A minimal GDT. Long mode ignores the base and limit of a code segment, but a
-// descriptor still has to exist and say "64-bit code" (the L bit) — that is
-// what the far jump above selects.
+// The GDT. Long mode ignores a code segment's base and limit, but a descriptor
+// still has to exist and say "64-bit code" (the L bit) — that is what the far
+// jump above selects.
+//
+// Six entries now rather than three, because privilege is a property of the
+// *segment*: ring 3 needs its own code and data descriptors (DPL 3), and the
+// CPU needs a TSS to know which stack to switch to when it comes back to ring
+// 0. Their order is not free either — `sysret` and `iretq` both read the
+// selectors as an index pair, and the ring-3 pair has to sit where the
+// convention expects it.
+//
+// It lives in `.data`, not `.rodata`: the TSS descriptor is filled in at boot,
+// because a base address is not known until the TSS has one.
 global_asm!(
-    ".section .rodata, \"a\"",
+    ".section .data, \"aw\"",
     ".align 16",
+    ".global __gdt",
     "__gdt:",
-    "   .quad 0",                  // null descriptor
+    "   .quad 0",                  // 0x00: null descriptor
     "   .quad 0x00AF9A000000FFFF", // 0x08: 64-bit code, ring 0
     "   .quad 0x00AF92000000FFFF", // 0x10: data, ring 0
+    "   .quad 0x00AFFA000000FFFF", // 0x18: 64-bit code, ring 3 (DPL 3)
+    "   .quad 0x00AFF2000000FFFF", // 0x20: data, ring 3 (DPL 3)
+    ".global __gdt_tss",
+    "__gdt_tss:",
+    "   .quad 0",                  // 0x28: TSS descriptor, low half (filled at boot)
+    "   .quad 0",                  //       and high half — a system descriptor is 16 bytes
     "__gdt_descriptor:",
     "   .word __gdt_descriptor - __gdt - 1",
     "   .quad __gdt",

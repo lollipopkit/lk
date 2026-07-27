@@ -974,7 +974,7 @@ fn run_command(base: Int) -> Int {
                     104, 111, 32, 107, 101, 121, 115, 32, 109, 101, 109, 32,
                     112, 97, 103, 101, 32, 115, 121, 110, 99, 32,
                     121, 105, 101, 108, 100, 32, 119, 105, 110, 32,
-                    116, 105, 109, 101, 32, 100, 105, 115, 107, 32, 99, 97, 116, 32, 114, 117, 110, 32, 104, 101, 97, 112, 32,
+                    116, 105, 109, 101, 32, 100, 105, 115, 107, 32, 99, 97, 116, 32, 114, 117, 110, 32, 104, 101, 97, 112, 32, 117, 115, 101, 114, 32,
                     101, 120, 105, 116]);
         return 1;
     }
@@ -1056,6 +1056,14 @@ fn run_command(base: Int) -> Int {
                    .chain(decimal(shared_read(SHARED_MOUSE_FLAGS)))
                    .chain([32, 100])
                    .chain(decimal(shared_read(SHARED_MOUSE_DX))));
+        return 1;
+    }
+    if (line_starts_with([117, 115, 101, 114])) {          // "user"
+        // "ring3" then the machine leaves for ring 3 and does not return: the
+        // program there prints through a syscall and then deliberately writes
+        // an address it is not allowed to, which the exception reporter names.
+        emit(base, [114, 105, 110, 103, 51]);
+        enter_user();
         return 1;
     }
     if (line_starts_with([104, 101, 97, 112])) {           // "heap"
@@ -1203,6 +1211,12 @@ fn task_clock() {
 // Named `spawn_task`, not `spawn`: the language already has a `spawn` for its
 // own concurrency, which returns a `Task`. Two things called spawn in one
 // program is a question every reader would have to answer twice.
+// Leaves for ring 3 and does not come back — see `src/user.rs`.
+#[extern("lk_enter_user")]
+fn enter_user() -> Int {
+    return 0;
+}
+
 #[extern("lk_spawn")]
 fn spawn_task(entry: Int) -> Int {
     return 0 - 1;

@@ -440,6 +440,58 @@ stating:
   show the difference. `check_disk.py` therefore makes its third assertion from
   *outside*, after QEMU has exited: the image file must hold what was written.
 
+## Ring 3
+
+Everything else here runs at ring 0, where a wrong address is a fault and a
+right one is whatever the hardware does. That was fine while all the code was
+the kernel's own — and stopped being fine the moment the kernel started running
+*programs*, because "the program cannot touch the framebuffer" was a fact about
+the program.
+
+```
+>user
+ring3
+USER
+!! exception #PF page fault vector=…e error=…7 rip=…10062e cr2=0000000000300000
+```
+
+`USER` is printed a byte at a time by ring-3 code through `int 0x80`, the only
+gate with DPL 3. What follows is the same program writing to `0x300000` — the
+shared page every interrupt handler uses — and the CPU refusing, with an error
+code whose bit 2 says the access came from ring 3.
+
+Three structures had to exist first, and two of them fail as a triple fault
+rather than an error when they do not:
+
+- a **TSS**, because the CPU needs a ring-0 stack to switch to when an interrupt
+  arrives during ring 3. Without `rsp0` it pushes the interrupt frame onto the
+  *user* stack, which the user can then rewrite. Its `io_map_base` points past
+  the segment on purpose: a bitmap that starts beyond the limit means "no ports
+  at all", where zero would point at the TSS's own fields and make a permission
+  map out of whatever was there.
+- **ring-3 descriptors**, because privilege is a property of the segment.
+- a **user-accessible page**. This one produced the first failure: the ring-3
+  program could not execute at all, faulting on its own first instruction with
+  error code 5 — a user-mode access to a page the tables do not mark user. The U
+  bit has to be set at *every* level of the walk, because the CPU takes their
+  conjunction.
+
+The page granted is the first 2 MiB, and only it. That is coarse — the rest of
+the image is in that page, so ring 3 can read the kernel's code — and it is
+written down rather than papered over: fixing it means 4 KiB tables for the
+user's regions instead of 2 MiB ones. What it does buy is the property being
+tested, because the shared page is in the *next* 2 MiB.
+
+Getting that wrong is instructive: an early version set the U bit on the second
+directory entry too, and the forbidden write simply succeeded. The check
+therefore asserts the *error code*, not just the address — a fault at that
+address from ring 0 would be a kernel bug with the same `cr2`.
+
+There is no way back: the only exits from ring 3 here are a syscall (which
+returns into ring 3) and a fault (which halts). Making that survivable means
+entering ring 3 on a task of its own and letting the timer take the CPU back,
+which needs the scheduler to know about privilege — and it does not yet.
+
 ## Memory that comes back
 
 `drivers/pages.lk` never reclaims, which was honest while nothing freed.

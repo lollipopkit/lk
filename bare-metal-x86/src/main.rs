@@ -30,6 +30,7 @@ extern crate alloc;
 mod boot;
 mod interrupts;
 mod tasks;
+mod user;
 
 use core::alloc::{GlobalAlloc, Layout};
 use core::panic::PanicInfo;
@@ -209,6 +210,9 @@ pub extern "C" fn kernel_main() -> ! {
     serial_init();
     // No task table to prepare any more: the program spawns what it wants by
     // address (`lk_spawn`), and until it does there is one task — this one.
+    // The TSS before the IDT: a gate that can be raised from ring 3 needs a
+    // ring-0 stack to switch to, and the CPU reads that from the TSS.
+    user::init();
     // The handler transmits, and it can fire from here on — which is why the
     // UART is already up.
     interrupts::init();

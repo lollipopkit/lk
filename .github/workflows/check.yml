@@ -275,6 +275,10 @@ jobs:
           # looked up by name. The board supplies stacks and the switch; which
           # code runs on them is no longer in `src/tasks.rs` at all.
           timeout 300 python3 check_spawn.py
+          # Ring 3. The program prints through a syscall and is then refused a
+          # write to kernel memory — the boundary becoming a property of the
+          # machine rather than of the program's good manners.
+          timeout 300 python3 check_user.py
         env:
           LK_BIN: ../target/debug/lk
       - name: AOT native-lowering coverage gate

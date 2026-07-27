@@ -66,6 +66,7 @@ unsafe extern "C" {
     fn __task_trampoline();
     fn __keyboard_trampoline();
     fn __mouse_trampoline();
+    fn __syscall_trampoline();
     fn __yield_trampoline();
 }
 
@@ -76,6 +77,21 @@ unsafe extern "C" {
 /// `handler` must be a function the CPU can enter with an interrupt frame on
 /// the stack — one of the stubs in this file, not an ordinary Rust function.
 unsafe fn set_gate(idt: *mut [Gate; 256], vector: usize, handler: u64) {
+    // SAFETY: as the caller's.
+    unsafe { set_gate_dpl(idt, vector, handler, 0) }
+}
+
+/// As [`set_gate`], with the privilege level a caller must have to raise the
+/// vector with an `int` instruction.
+///
+/// Zero for everything a *device* raises: a ring-3 `int 0x21` would otherwise
+/// let a user task fake a keystroke. Three for exactly one vector, which is the
+/// syscall — the door the ring boundary exists to make the only one.
+///
+/// # Safety
+///
+/// As [`set_gate`].
+unsafe fn set_gate_dpl(idt: *mut [Gate; 256], vector: usize, handler: u64, dpl: u8) {
     unsafe {
         (*idt)[vector] = Gate {
             offset_low: handler as u16,
@@ -85,7 +101,7 @@ unsafe fn set_gate(idt: *mut [Gate; 256], vector: usize, handler: u64) {
             // Present, ring 0, 64-bit interrupt gate. "Interrupt" rather than
             // "trap" matters: it clears IF on entry, so the handler cannot be
             // re-entered by the same interrupt before it acknowledges.
-            type_attr: 0x8e,
+            type_attr: 0x8e | (dpl << 5),
             offset_mid: (handler >> 16) as u16,
             offset_high: (handler >> 32) as u32,
             reserved: 0,
@@ -115,6 +131,13 @@ pub fn init() {
             __keyboard_trampoline as *const () as usize as u64,
         );
         set_gate(idt, MOUSE_VECTOR, __mouse_trampoline as *const () as usize as u64);
+        // The one gate a ring-3 task may raise itself.
+        set_gate_dpl(
+            idt,
+            crate::user::SYSCALL_VECTOR,
+            __syscall_trampoline as *const () as usize as u64,
+            3,
+        );
         // The vector a task uses to ask for a reschedule. No device is behind
         // it, so it can only arrive from an `int` instruction.
         set_gate(
