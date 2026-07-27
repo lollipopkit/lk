@@ -6,6 +6,12 @@ mod type_checker;
 mod type_system;
 
 #[cfg(test)]
+mod function_infer_test;
+#[cfg(test)]
+mod or_pattern_binding_test;
+#[cfg(test)]
+mod type_checker_test;
+#[cfg(test)]
 mod type_system_test;
 
 // NumericClass/NumericHierarchy live with `Type` in `crate::val`; re-exported

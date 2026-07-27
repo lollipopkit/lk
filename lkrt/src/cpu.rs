@@ -54,11 +54,17 @@ pub extern "C" fn lkrt_cpu_compiler_barrier() {
 /// meaningful only in a kernel or on bare metal.
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_cpu_irq_save() -> i64 {
+    // No `nomem` on any of these: masking interrupts is a *memory ordering*
+    // statement, not just an instruction. With `nomem` the compiler is free to
+    // move loads and stores across the `cli`, which is precisely the thing the
+    // critical section exists to prevent — the guarded read-modify-write could
+    // be emitted outside it, and nothing about the resulting bug would point
+    // here.
     #[cfg(target_arch = "x86_64")]
     {
         let flags: u64;
         unsafe {
-            core::arch::asm!("pushfq", "pop {}", "cli", out(reg) flags, options(nomem, preserves_flags));
+            core::arch::asm!("pushfq", "pop {}", "cli", out(reg) flags, options(preserves_flags));
         }
         // IF is bit 9 of RFLAGS.
         i64::from(flags & (1 << 9) != 0)
@@ -67,7 +73,7 @@ pub extern "C" fn lkrt_cpu_irq_save() -> i64 {
     {
         let daif: u64;
         unsafe {
-            core::arch::asm!("mrs {}, daif", "msr daifset, #2", out(reg) daif, options(nomem, nostack));
+            core::arch::asm!("mrs {}, daif", "msr daifset, #2", out(reg) daif, options(nostack));
         }
         // I is bit 7 of DAIF; set means *masked*, so enabled is the inverse.
         i64::from(daif & (1 << 7) == 0)
@@ -93,11 +99,11 @@ pub extern "C" fn lkrt_cpu_irq_restore(was_enabled: i64) {
     }
     #[cfg(target_arch = "x86_64")]
     unsafe {
-        core::arch::asm!("sti", options(nomem, nostack, preserves_flags));
+        core::arch::asm!("sti", options(nostack, preserves_flags));
     }
     #[cfg(target_arch = "aarch64")]
     unsafe {
-        core::arch::asm!("msr daifclr, #2", options(nomem, nostack));
+        core::arch::asm!("msr daifclr, #2", options(nostack));
     }
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     {
@@ -118,11 +124,11 @@ pub extern "C" fn lkrt_cpu_irq_restore(was_enabled: i64) {
 pub extern "C" fn lkrt_cpu_wait_for_interrupt() {
     #[cfg(target_arch = "x86_64")]
     unsafe {
-        core::arch::asm!("hlt", options(nomem, nostack, preserves_flags));
+        core::arch::asm!("hlt", options(nostack, preserves_flags));
     }
     #[cfg(target_arch = "aarch64")]
     unsafe {
-        core::arch::asm!("wfi", options(nomem, nostack));
+        core::arch::asm!("wfi", options(nostack));
     }
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     {
@@ -136,12 +142,19 @@ pub extern "C" fn lkrt_cpu_wait_for_interrupt() {
 /// legitimately differ, so collapsing them would turn a measurement into zero.
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_cpu_timestamp() -> i64 {
+    // A *raw* counter read, and documented as one: `rdtsc` is not a
+    // serializing instruction, so the core may execute it out of order with
+    // respect to the work being measured. Ordering it (`lfence`, or `rdtscp`)
+    // costs tens of cycles, which matters for measuring a few hundred and is
+    // noise for the hundreds of thousands this is used on. Dropping `nomem` is
+    // what it does buy: the *compiler* may no longer move memory operations
+    // across the read, so the region measured is the region written.
     #[cfg(target_arch = "x86_64")]
     {
         let low: u32;
         let high: u32;
         unsafe {
-            core::arch::asm!("rdtsc", out("eax") low, out("edx") high, options(nomem, nostack));
+            core::arch::asm!("rdtsc", out("eax") low, out("edx") high, options(nostack));
         }
         ((u64::from(high) << 32) | u64::from(low)) as i64
     }
@@ -149,7 +162,7 @@ pub extern "C" fn lkrt_cpu_timestamp() -> i64 {
     {
         let count: u64;
         unsafe {
-            core::arch::asm!("mrs {}, cntvct_el0", out(reg) count, options(nomem, nostack));
+            core::arch::asm!("mrs {}, cntvct_el0", out(reg) count, options(nostack));
         }
         count as i64
     }

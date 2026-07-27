@@ -3,8 +3,8 @@ mod tests {
     #[cfg(not(feature = "std"))]
     use crate::compat::prelude::*;
     use crate::expr::Pattern;
-    use crate::val::Type;
     use crate::typ::TypeChecker;
+    use crate::val::Type;
 
     #[test]
     fn test_or_pattern_common_bindings_union_types() {
@@ -12,8 +12,14 @@ mod tests {
 
         // Pattern: [x] | {"name": x}
         let pat = Pattern::Or(vec![
-            Pattern::List { patterns: vec![Pattern::Variable("x".to_string())], rest: None },
-            Pattern::Map { patterns: vec![("name".to_string(), Pattern::Variable("x".to_string()))], rest: None },
+            Pattern::List {
+                patterns: vec![Pattern::Variable("x".to_string())],
+                rest: None,
+            },
+            Pattern::Map {
+                patterns: vec![("name".to_string(), Pattern::Variable("x".to_string()))],
+                rest: None,
+            },
         ]);
 
         // Provide unknown value type; binder will introduce type variables as needed
@@ -21,7 +27,9 @@ mod tests {
         tc.add_bindings_for_pattern(&pat, &value_ty).unwrap();
 
         // Expect `x` to be present with a Union type (two alternatives)
-        let Some(x_ty) = tc.get_local_type("x") else { panic!("x not bound") };
+        let Some(x_ty) = tc.get_local_type("x") else {
+            panic!("x not bound")
+        };
         match x_ty {
             Type::Union(ts) => {
                 // At least two different type variants should be present
@@ -31,4 +39,3 @@ mod tests {
         }
     }
 }
-

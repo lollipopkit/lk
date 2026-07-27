@@ -2,13 +2,8 @@
 mod tests {
     #[cfg(not(feature = "std"))]
     use crate::compat::prelude::*;
+    use crate::{stmt::stmt_parser::StmtParser, token::Tokenizer, typ::TypeChecker, val::Type};
     use anyhow::Result;
-    use crate::{
-        stmt::stmt_parser::StmtParser,
-        token::Tokenizer,
-        typ::TypeChecker,
-        val::Type,
-    };
 
     #[test]
     fn test_infer_function_return_simple_int() -> Result<()> {

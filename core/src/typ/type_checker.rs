@@ -78,6 +78,16 @@ pub struct TypeChecker {
     /// A depth rather than a flag because `unsafe` blocks nest, and leaving one
     /// must restore the enclosing state rather than clear it outright.
     unsafe_depth: usize,
+    /// Top-level bindings declared *below* the statement being checked.
+    ///
+    /// The top level runs in order, so a statement there cannot read a `const`
+    /// or `let` that comes after it — it reads nil, and what surfaces is
+    /// whatever the nil then breaks ("Add expected numbers, got Nil and Int"),
+    /// naming neither the binding nor the order. A function body is the
+    /// opposite case and must not be caught by this: it runs after the whole
+    /// top level, so reading a `const` declared below it is ordinary. Bodies
+    /// therefore take this set away for their duration and give it back.
+    pending_top_level: HashSet<String>,
     /// Recorded method signatures keyed by (receiver_type, method_name)
     method_sigs: HashMap<(String, String), Type>,
     /// Function strict-Any checks delayed until the whole program contributes call-site constraints.
@@ -169,6 +179,7 @@ impl TypeChecker {
             options,
             impl_self_type: None,
             unsafe_depth: 0,
+            pending_top_level: HashSet::new(),
             method_sigs: HashMap::new(),
             pending_strict_functions: Vec::new(),
             defer_strict_function_checks: false,
@@ -212,6 +223,30 @@ impl TypeChecker {
     /// consult this and reject outside one, so they cannot appear by accident.
     pub fn in_unsafe(&self) -> bool {
         self.unsafe_depth > 0
+    }
+
+    /// Records the top-level bindings not yet reached (see the field docs).
+    pub fn set_pending_top_level(&mut self, names: HashSet<String>) {
+        self.pending_top_level = names;
+    }
+
+    /// Marks a top-level binding as reached, so later statements may read it.
+    pub fn define_top_level(&mut self, name: &str) {
+        self.pending_top_level.remove(name);
+    }
+
+    /// Takes the set away for the duration of a function or closure body, which
+    /// runs after the top level and may read anything it declares.
+    pub fn suspend_pending_top_level(&mut self) -> HashSet<String> {
+        core::mem::take(&mut self.pending_top_level)
+    }
+
+    pub fn restore_pending_top_level(&mut self, pending: HashSet<String>) {
+        self.pending_top_level = pending;
+    }
+
+    pub(crate) fn is_pending_top_level(&self, name: &str) -> bool {
+        self.pending_top_level.contains(name)
     }
 
     pub fn enter_unsafe(&mut self) {

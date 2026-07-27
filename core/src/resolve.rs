@@ -3,3 +3,5 @@
 //! Currently contains a slots-based name resolution scaffold.
 
 pub mod slots;
+#[cfg(test)]
+mod slots_test;

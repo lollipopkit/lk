@@ -9,5 +9,7 @@ mod expr_test;
 mod match_parsing_test;
 #[cfg(test)]
 mod match_test;
+#[cfg(test)]
+mod select_guard_parsing_test;
 
 pub use expr_impl::*;

@@ -679,7 +679,12 @@ impl TypeChecker {
                 // closure, and must not be collected as a return of the enclosing
                 // function (whose declared type it would then have to satisfy).
                 self.push_return_frame();
+                // Like a named function's body: a closure runs when it is
+                // called, which is after the top level has finished, so it may
+                // read a binding declared below it.
+                let pending = self.suspend_pending_top_level();
                 let ret_type = self.check_expr(body);
+                self.restore_pending_top_level(pending);
                 let _ = self.pop_return_frame();
                 let ret_type = ret_type?;
                 Ok(Type::Function {
@@ -755,6 +760,18 @@ impl TypeChecker {
         // Check local variables first
         if let Some(typ) = self.local_types.get(name) {
             return Ok(typ.clone());
+        }
+
+        // A top-level binding declared further down the file. The top level
+        // runs in order, so this read gets nil — and the error that eventually
+        // surfaces is about nil, not about order.
+        if self.is_pending_top_level(name) {
+            return Err(Self::type_err(
+                &format!("`{name}` is used before it is defined; move its definition above this statement"),
+                None,
+                None,
+                Some(Expr::Var(name.to_string())),
+            ));
         }
 
         // Check type registry for named types

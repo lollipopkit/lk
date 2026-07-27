@@ -88,6 +88,11 @@ impl Stmt {
             } => {
                 // 检查表达式的类型
                 let expr_type = value.type_check(type_checker)?;
+                // Reached: statements below this one may read it. Done after
+                // the value, so `const A = A + 1;` still reports the read.
+                for name in pattern_names(pattern) {
+                    type_checker.define_top_level(&name);
+                }
 
                 // 如果有类型注解，验证类型匹配
                 //
@@ -229,6 +234,9 @@ impl Stmt {
                 named_params,
             } => {
                 type_checker.push_scope();
+                // A body runs after the whole top level, so it may read a
+                // binding declared below it.
+                let pending = type_checker.suspend_pending_top_level();
 
                 let mut positional_tys: Vec<Type> = Vec::with_capacity(params.len());
                 let mut positional_origin: Vec<bool> = Vec::with_capacity(params.len());
@@ -384,6 +392,7 @@ impl Stmt {
                 }
 
                 type_checker.pop_scope();
+                type_checker.restore_pending_top_level(pending);
 
                 let inferred_return = if return_was_annotated {
                     return_placeholder.clone()
@@ -868,6 +877,7 @@ impl Program {
     /// 类型检查程序
     pub fn type_check(&self, type_checker: &mut TypeChecker) -> Result<()> {
         self.predeclare_function_signatures(type_checker);
+        type_checker.set_pending_top_level(self.top_level_binding_names());
         if type_checker.strict_any() {
             let previous_defer = type_checker.begin_deferred_strict_function_checks();
             let result = (|| {
@@ -884,6 +894,54 @@ impl Program {
             stmt.type_check(type_checker)?;
         }
         Ok(())
+    }
+}
+
+impl Program {
+    /// Every name bound by a top-level `let`/`const`, in any pattern.
+    ///
+    /// Used to catch a read of one from *above* its definition — see
+    /// `TypeChecker::pending_top_level`. Function declarations are not in here:
+    /// they are hoisted, and calling one declared below is ordinary.
+    fn top_level_binding_names(&self) -> crate::compat::collections::HashSet<String> {
+        let mut names = crate::compat::collections::HashSet::new();
+        for stmt in &self.statements {
+            if let Stmt::Let { pattern, .. } = item_of(stmt) {
+                collect_pattern_names(pattern, &mut names);
+            }
+        }
+        names
+    }
+}
+
+fn pattern_names(pattern: &Pattern) -> crate::compat::collections::HashSet<String> {
+    let mut names = crate::compat::collections::HashSet::new();
+    collect_pattern_names(pattern, &mut names);
+    names
+}
+
+fn collect_pattern_names(pattern: &Pattern, out: &mut crate::compat::collections::HashSet<String>) {
+    match pattern {
+        Pattern::Variable(name) => {
+            out.insert(name.clone());
+        }
+        Pattern::List { patterns, rest } => {
+            for item in patterns {
+                collect_pattern_names(item, out);
+            }
+            if let Some(rest) = rest {
+                out.insert(rest.clone());
+            }
+        }
+        Pattern::Map { patterns, rest } => {
+            for (_, value) in patterns {
+                collect_pattern_names(value, out);
+            }
+            if let Some(rest) = rest {
+                out.insert(rest.clone());
+            }
+        }
+        _ => {}
     }
 }
 

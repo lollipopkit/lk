@@ -82,9 +82,11 @@ mod tests {
         assert_eq!(closure.decls[0].name, "x");
         assert!(closure.decls[0].is_param);
         assert_eq!(closure.decls[0].index, 0);
-        assert!(closure
-            .uses
-            .iter()
-            .any(|u| u.name == "x" && u.slot.depth == 0 && u.slot.index == 0));
+        assert!(
+            closure
+                .uses
+                .iter()
+                .any(|u| u.name == "x" && u.slot.depth == 0 && u.slot.index == 0)
+        );
     }
 }

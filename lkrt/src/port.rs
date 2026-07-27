@@ -10,6 +10,12 @@
 //! change its state (a UART's receive register empties when read), so it is not
 //! pure no matter what it returns.
 //!
+//! No `nomem` on the asm, deliberately. It would be *true* — port I/O does not
+//! touch memory — and it would let the compiler move a memory write across an
+//! `out`, which is exactly the ordering a driver depends on: fill the buffer,
+//! then kick the device. Without it the kick can be emitted first. The claim
+//! `nomem` buys is worth less than the ordering it gives up.
+//!
 //! Unlike `mmio`, they are architecture-gated: no other ISA has these
 //! instructions, so there is nothing to emit rather than something that would
 //! merely be unusual. Elsewhere they raise.
@@ -33,7 +39,7 @@ pub extern "C" fn lkrt_port_in_u8(port: i64) -> i64 {
                 "in al, dx",
                 out("al") value,
                 in("dx") port as u16,
-                options(nomem, nostack, preserves_flags),
+                options(nostack, preserves_flags),
             );
         }
         i64::from(value)
@@ -58,7 +64,7 @@ pub extern "C" fn lkrt_port_in_u16(port: i64) -> i64 {
                 "in ax, dx",
                 out("ax") value,
                 in("dx") port as u16,
-                options(nomem, nostack, preserves_flags),
+                options(nostack, preserves_flags),
             );
         }
         i64::from(value)
@@ -83,7 +89,7 @@ pub extern "C" fn lkrt_port_in_u32(port: i64) -> i64 {
                 "in eax, dx",
                 out("eax") value,
                 in("dx") port as u16,
-                options(nomem, nostack, preserves_flags),
+                options(nostack, preserves_flags),
             );
         }
         i64::from(value)
@@ -106,7 +112,7 @@ pub extern "C" fn lkrt_port_out_u8(port: i64, value: i64) {
             "out dx, al",
             in("dx") port as u16,
             in("al") value as u8,
-            options(nomem, nostack, preserves_flags),
+            options(nostack, preserves_flags),
         );
     }
     #[cfg(not(any(target_arch = "x86_64", target_arch = "x86")))]
@@ -127,7 +133,7 @@ pub extern "C" fn lkrt_port_out_u16(port: i64, value: i64) {
             "out dx, ax",
             in("dx") port as u16,
             in("ax") value as u16,
-            options(nomem, nostack, preserves_flags),
+            options(nostack, preserves_flags),
         );
     }
     #[cfg(not(any(target_arch = "x86_64", target_arch = "x86")))]
@@ -148,7 +154,7 @@ pub extern "C" fn lkrt_port_out_u32(port: i64, value: i64) {
             "out dx, eax",
             in("dx") port as u16,
             in("eax") value as u32,
-            options(nomem, nostack, preserves_flags),
+            options(nostack, preserves_flags),
         );
     }
     #[cfg(not(any(target_arch = "x86_64", target_arch = "x86")))]

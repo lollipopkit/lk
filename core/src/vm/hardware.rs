@@ -111,7 +111,7 @@ macro_rules! port_access {
                             concat!("in ", $reg, ", dx"),
                             out($reg) value,
                             in("dx") port,
-                            options(nomem, nostack, preserves_flags),
+                            options(nostack, preserves_flags),
                         );
                     }
                     return Ok(RuntimeVal::Int(value as i64));
@@ -130,7 +130,7 @@ macro_rules! port_access {
                             concat!("out dx, ", $reg),
                             in("dx") port,
                             in($reg) value,
-                            options(nomem, nostack, preserves_flags),
+                            options(nostack, preserves_flags),
                         );
                     }
                     return Ok(RuntimeVal::Nil);
@@ -209,7 +209,7 @@ pub(super) fn cpu_irq_save(_args: NativeArgs<'_>) -> Result<RuntimeVal> {
     {
         let primask: u32;
         unsafe {
-            core::arch::asm!("mrs {}, primask", "cpsid i", out(reg) primask, options(nomem, nostack));
+            core::arch::asm!("mrs {}, primask", "cpsid i", out(reg) primask, options(nostack));
         }
         // PRIMASK bit 0 set means interrupts are *masked*.
         return Ok(RuntimeVal::Int(i64::from(primask & 1 == 0)));
@@ -218,7 +218,7 @@ pub(super) fn cpu_irq_save(_args: NativeArgs<'_>) -> Result<RuntimeVal> {
     {
         let daif: u64;
         unsafe {
-            core::arch::asm!("mrs {}, daif", "msr daifset, #2", out(reg) daif, options(nomem, nostack));
+            core::arch::asm!("mrs {}, daif", "msr daifset, #2", out(reg) daif, options(nostack));
         }
         // DAIF bit 7 (I) set means masked.
         return Ok(RuntimeVal::Int(i64::from(daif & (1 << 7) == 0)));
@@ -232,7 +232,7 @@ pub(super) fn cpu_irq_save(_args: NativeArgs<'_>) -> Result<RuntimeVal> {
     {
         let flags: u64;
         unsafe {
-            core::arch::asm!("pushfq", "pop {}", "cli", out(reg) flags, options(nomem));
+            core::arch::asm!("pushfq", "pop {}", "cli", out(reg) flags);
         }
         // IF is bit 9, and set means *enabled* — the opposite sense from ARM's
         // mask bits, which is why each architecture computes the answer rather
@@ -252,11 +252,11 @@ pub(super) fn cpu_irq_restore(_args: NativeArgs<'_>) -> Result<RuntimeVal> {
         if was_enabled {
             #[cfg(target_arch = "arm")]
             unsafe {
-                core::arch::asm!("cpsie i", options(nomem, nostack));
+                core::arch::asm!("cpsie i", options(nostack));
             }
             #[cfg(target_arch = "aarch64")]
             unsafe {
-                core::arch::asm!("msr daifclr, #2", options(nomem, nostack));
+                core::arch::asm!("msr daifclr, #2", options(nostack));
             }
         }
         return Ok(RuntimeVal::Nil);
@@ -266,7 +266,7 @@ pub(super) fn cpu_irq_restore(_args: NativeArgs<'_>) -> Result<RuntimeVal> {
         let was_enabled = matches!(_args.get(0), Some(RuntimeVal::Int(value)) if *value != 0);
         if was_enabled {
             unsafe {
-                core::arch::asm!("sti", options(nomem, nostack));
+                core::arch::asm!("sti", options(nostack));
             }
         }
         return Ok(RuntimeVal::Nil);
@@ -288,7 +288,7 @@ pub(super) fn cpu_timestamp(_args: NativeArgs<'_>) -> Result<RuntimeVal> {
         let low: u32;
         let high: u32;
         unsafe {
-            core::arch::asm!("rdtsc", out("eax") low, out("edx") high, options(nomem, nostack));
+            core::arch::asm!("rdtsc", out("eax") low, out("edx") high, options(nostack));
         }
         return Ok(RuntimeVal::Int(((u64::from(high) << 32) | u64::from(low)) as i64));
     }
@@ -296,7 +296,7 @@ pub(super) fn cpu_timestamp(_args: NativeArgs<'_>) -> Result<RuntimeVal> {
     {
         let count: u64;
         unsafe {
-            core::arch::asm!("mrs {}, cntvct_el0", out(reg) count, options(nomem, nostack));
+            core::arch::asm!("mrs {}, cntvct_el0", out(reg) count, options(nostack));
         }
         return Ok(RuntimeVal::Int(count as i64));
     }
@@ -314,14 +314,14 @@ pub(super) fn cpu_wait_for_interrupt(_args: NativeArgs<'_>) -> Result<RuntimeVal
     #[cfg(all(not(feature = "std"), any(target_arch = "arm", target_arch = "aarch64")))]
     {
         unsafe {
-            core::arch::asm!("wfi", options(nomem, nostack));
+            core::arch::asm!("wfi", options(nostack));
         }
         return Ok(RuntimeVal::Nil);
     }
     #[cfg(all(not(feature = "std"), target_arch = "x86_64"))]
     {
         unsafe {
-            core::arch::asm!("hlt", options(nomem, nostack));
+            core::arch::asm!("hlt", options(nostack));
         }
         return Ok(RuntimeVal::Nil);
     }

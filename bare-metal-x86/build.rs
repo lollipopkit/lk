@@ -17,6 +17,12 @@ fn main() {
     // being added or removed too, which listing today's files cannot.
     println!("cargo:rerun-if-changed=drivers");
     println!("cargo:rerun-if-changed=build.rs");
+    // Which `lk` compiles the program is an input too: pointing `LK_BIN` at a
+    // different build must regenerate the object, or the image keeps whatever
+    // the previous compiler produced. (`PATH` is not tracked: it differs
+    // between shells for reasons that have nothing to do with this build, and
+    // making every one of those a rebuild would train people to ignore it.)
+    println!("cargo:rerun-if-env-changed=LK_BIN");
 
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR is set by cargo"));
     let object = out_dir.join("program.o");
