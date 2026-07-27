@@ -264,6 +264,46 @@ stating:
   show the difference. `check_disk.py` therefore makes its third assertion from
   *outside*, after QEMU has exited: the image file must hold what was written.
 
+## Memory that comes back
+
+`drivers/pages.lk` never reclaims, which was honest while nothing freed.
+Something does now — a shell that reads files, a program the kernel runs,
+anything that lives for less than the machine does — and a bump allocator meets
+that with "out of memory" while holding a megabyte of dead blocks.
+
+`drivers/heap.lk` is a free-list allocator written in LK. Every block, free or
+in use, stays in one address-ordered chain, and the chain lives *in the blocks*
+— there is no side table because there is nowhere to put one: an allocator
+cannot allocate.
+
+```
+>heap
+blocks 1/1 reused 1 used 0
+```
+
+Three numbers, three claims. `heap` takes three blocks, frees the middle one,
+takes one that only fits the hole, then frees everything:
+
+- **the block count comes back** to what it started at, which only happens if
+  freeing joins holes on *both* sides. Joining forward only is the tempting
+  shortcut — it is half the code — and it leaves a heap that fragments in one
+  direction and never recovers;
+- **the hole was reused** rather than bumped past;
+- **the byte count balances** to zero.
+
+Two decisions worth stating, because both are the kind that look like
+oversights:
+
+- **Address-ordered, singly linked, first fit.** Freeing is therefore O(n) in
+  the number of blocks: the block *before* one being freed has to be found by
+  walking. Size buckets and a doubly-linked list would fix that, at four times
+  the code, and their win starts where a kernel has thousands of live blocks.
+  This one is nowhere near, and the check above is what will say when it is.
+- **The arena is taken from the page allocator at startup**, not fixed at an
+  address here. An address written into a source file is one nothing else can
+  be told about — the same collision the shared page's chain of constants
+  prevents, one layer out.
+
 ## A filesystem, of sorts
 
 `drivers/tarfs.lk` reads files by name off the disk. tar is chosen for what it
@@ -433,6 +473,7 @@ drivers/keyboard.lk      the PS/2 controller
 drivers/pit.lk           the interval timer
 drivers/ata.lk           an IDE disk, PIO mode (read, write, IDENTIFY)
 drivers/tarfs.lk         read-only tar, straight off sectors
+drivers/heap.lk          a free-list allocator: alloc, free, and coalesce
 drivers/shared.lk        a word an interrupt handler and the main flow share
 program.lk               which devices to bring up, and what a keystroke means
 ```

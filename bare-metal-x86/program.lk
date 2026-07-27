@@ -30,6 +30,8 @@ use { reset as queue_reset, push as queue_push, pop as queue_pop,
       is_empty as queue_empty } from "drivers/queue";
 use { has_mmap, mem_upper_kb, entry_count, entry_at, entry_base, entry_length,
       entry_is_available } from "drivers/multiboot";
+use { heap_init, heap_alloc, heap_release,
+      used_bytes as heap_used, block_count as heap_blocks, largest_free as heap_largest } from "drivers/heap";
 use { init as pages_init, alloc as page_alloc, free as pages_free,
       total as pages_total, PAGE_SIZE } from "drivers/pages";
 use { read_sector as ata_read_sector, write_sector as ata_write_sector,
@@ -190,13 +192,22 @@ const SCRATCH_SECTOR = 32;
 // Where the board stages a source file, and how big one may be. The address is
 // agreed with `src/main.rs`, which refuses anything else — see the memory map
 // there.
+// How much of RAM the kernel heap gets. Sixteen pages is enough for the
+// commands here and small enough that the failure it is meant to demonstrate —
+// running out, and recovering by freeing — happens within a session.
+const HEAP_PAGES = 16;
 const SOURCE_BASE = 0x00380000;
 const SOURCE_MAX = 0x10000;
 // Two words the filesystem answers through: the first data sector of a file it
 // found, and the file's size.
 const SHARED_FILE = SHARED_SECTOR + SECTOR_SIZE;
+// The kernel heap's three words, and the arena they describe. The arena is
+// carved out of the page allocator's range at startup rather than fixed here:
+// a heap with a hard-coded address is a heap that collides with the next thing
+// given one.
+const SHARED_HEAP = SHARED_FILE + 2 * WORD;
 // The end of what is spoken for. Anything added goes here, not into a gap.
-const SHARED_END = SHARED_FILE + 2 * WORD;
+const SHARED_END = SHARED_HEAP + 3 * WORD;
 
 // The framebuffer is twice the screen's height. Scrolling moves the *view*
 // down through it; only when the view reaches the bottom does anything have to
@@ -617,6 +628,42 @@ fn print_file(base: Int, name: List<Int>) {
     }
 }
 
+// Exercises the heap and reports what it did.
+//
+// A command rather than a test written elsewhere, because the interesting
+// property is not "alloc returns an address" — it is that a heap which has
+// been fragmented comes back. So: take three blocks, give back the middle one,
+// take one that only fits in the hole, give everything back, and report the
+// block count. It must end where it started; a heap that does not join its
+// holes ends with more.
+fn report_heap(base: Int) {
+    let before = heap_blocks(SHARED_HEAP);
+    let a = heap_alloc(SHARED_HEAP, 512);
+    let b = heap_alloc(SHARED_HEAP, 512);
+    let c = heap_alloc(SHARED_HEAP, 512);
+    heap_release(SHARED_HEAP, b);
+    // Fits exactly the hole `b` left, so a heap that reuses gets it and one
+    // that only ever bumps takes fresh space.
+    let d = heap_alloc(SHARED_HEAP, 512);
+    let reused = 0;
+    if (d == b) {
+        reused = 1;
+    }
+    heap_release(SHARED_HEAP, a);
+    heap_release(SHARED_HEAP, c);
+    heap_release(SHARED_HEAP, d);
+    let after = heap_blocks(SHARED_HEAP);
+    // "blocks <before>/<after> reused <0|1> used <bytes>"
+    emit(base, [98, 108, 111, 99, 107, 115, 32]
+               .chain(decimal(before))
+               .chain([47])
+               .chain(decimal(after))
+               .chain([32, 114, 101, 117, 115, 101, 100, 32])
+               .chain(decimal(reused))
+               .chain([32, 117, 115, 101, 100, 32])
+               .chain(decimal(heap_used(SHARED_HEAP))));
+}
+
 // Reads a file off the disk and asks the board to run it.
 //
 // The kernel is compiled LK; what it starts here is an *interpreter* for LK,
@@ -712,12 +759,12 @@ fn run_command(base: Int) -> Int {
     }
     if (line_starts_with([104, 101, 108, 112])) {          // "help"
         // "help clear echo keys exit"
-        // "help clear echo keys mem page sync yield win time disk cat run exit"
+        // "... time disk cat run heap exit"
         emit(base, [104, 101, 108, 112, 32, 99, 108, 101, 97, 114, 32, 101, 99,
                     104, 111, 32, 107, 101, 121, 115, 32, 109, 101, 109, 32,
                     112, 97, 103, 101, 32, 115, 121, 110, 99, 32,
                     121, 105, 101, 108, 100, 32, 119, 105, 110, 32,
-                    116, 105, 109, 101, 32, 100, 105, 115, 107, 32, 99, 97, 116, 32, 114, 117, 110, 32,
+                    116, 105, 109, 101, 32, 100, 105, 115, 107, 32, 99, 97, 116, 32, 114, 117, 110, 32, 104, 101, 97, 112, 32,
                     101, 120, 105, 116]);
         return 1;
     }
@@ -784,6 +831,10 @@ fn run_command(base: Int) -> Int {
                    .chain(decimal((t1 as Int) - (t0 as Int)))
                    .chain([32, 102, 114, 97, 109, 101, 115, 32])
                    .chain(decimal((t2 as Int) - (t1 as Int))));
+        return 1;
+    }
+    if (line_starts_with([104, 101, 97, 112])) {           // "heap"
+        report_heap(base);
         return 1;
     }
     if (line_starts_with([114, 117, 110])) {               // "run"
@@ -1118,6 +1169,17 @@ if (usable_base < 0x02000000) {
     usable_base = 0x02000000;
 }
 pages_init(SHARED_PAGES, usable_base, ram_length - (usable_base - ram_base));
+
+// The kernel heap: sixteen pages taken from the page allocator, once, at
+// startup. Taken rather than declared at a fixed address, because an address
+// written here is an address nothing else can be told about — the collision
+// that a chain of constants prevents inside the shared page has the same shape
+// out here in RAM.
+let heap_base = page_alloc(SHARED_PAGES);
+for i in 1..HEAP_PAGES {
+    page_alloc(SHARED_PAGES);
+}
+heap_init(SHARED_HEAP, heap_base, HEAP_PAGES * PAGE_SIZE);
 
 // Two windows: the shell owns everything but the corner cell the spinner has.
 // Nothing enforces that they were carved up sensibly — what the rectangles buy

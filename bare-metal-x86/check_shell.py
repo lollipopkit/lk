@@ -34,6 +34,7 @@ KEYS = (
     + ["s", "y", "n", "c", "ret"]
     + ["y", "i", "e", "l", "d", "ret"]
     + ["w", "i", "n", "ret"]
+    + ["h", "e", "a", "p", "ret"]
     # Focus moves to the other pane, `help` is typed there, focus comes back.
     # The shell must not answer the second one: that is the whole claim.
     + ["tab"]
@@ -46,12 +47,20 @@ KEYS = (
 # repeats its argument, `exit` says goodbye — each proving a different part:
 # the byte-wise command match, the argument tail, and the loop ending.
 EXPECTED_LINES = [
-    "help clear echo keys mem page sync yield win time disk cat run exit",
+    "help clear echo keys mem page sync yield win time disk cat run heap exit",
     "lk",
     # Two pages handed out in order, from the range the loader reported. The
-    # addresses are what proves the allocator rather than a counter.
-    "02000000",
-    "02001000",
+    # addresses are what proves the allocator rather than a counter. They start
+    # past the kernel heap's sixteen pages, which startup took first.
+    "02010000",
+    "02011000",
+    # The heap allocates three blocks, frees the middle one, allocates one that
+    # only fits the hole, then frees everything. All three numbers are claims:
+    # the block count must come *back* to what it was (holes joined on both
+    # sides — joining forward only leaves a heap that fragments one way and
+    # never recovers), the hole must have been reused rather than bumped past,
+    # and the byte count must balance to zero.
+    "blocks 1/1 reused 1 used 0",
     # `yield` leaves LK, enters the kernel through a software interrupt, is
     # rescheduled, and comes back. Printing at all is the proof.
     "back",
