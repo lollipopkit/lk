@@ -848,3 +848,40 @@ fn an_unused_bundled_function_does_not_fail_the_module() {
         String::from_utf8_lossy(&compile.stderr)
     );
 }
+
+/// A boxed container index lowers, rather than failing the module.
+///
+/// Iterating a list yields a `Maybe` carrier; passing that as an argument
+/// boxes it. So `fn at(xs, i) { return xs[i]; }` called from `for i in idx`
+/// sees a `Dyn` index — an ordinary shape that had no lowering, which made a
+/// two-function library fail to compile with an error naming neither function.
+#[test]
+fn a_boxed_container_index_matches_the_vm() {
+    run_clif_differential(
+        "boxed_index",
+        &[
+            new(
+                "read",
+                "fn at(xs: List<Int>, i: Int) -> Int { return xs[i]; }\n\
+                 let xs = [10, 20, 30];\n\
+                 let idx = [0, 2];\n\
+                 let total = 0;\n\
+                 for i in idx { total = total + at(xs, i); }\n\
+                 return total;\n",
+            ),
+            new(
+                "write",
+                "fn put(xs: List<Int>, i: Int, v: Int) { xs[i] = v; }\n\
+                 let xs = [0, 0, 0];\n\
+                 let idx = [0, 2];\n\
+                 for i in idx { put(xs, i, 7); }\n\
+                 return xs[0] + xs[2];\n",
+            ),
+            // A non-integer index is rejected by the type checker before it
+            // reaches the lowering, so the unbox only ever sees an integer in
+            // a well-typed program. It still goes through the runtime's tag
+            // check rather than reading the payload blind, because `Dyn` is
+            // also what an untyped path produces.
+        ],
+    );
+}

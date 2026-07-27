@@ -63,6 +63,36 @@ pub(crate) fn read_scalar(
     }
 }
 
+/// Reads a container index as an `I64`, unboxing a `Dyn` through the runtime's
+/// tag check.
+///
+/// A `Dyn` index is ordinary: iterating a list yields a `Maybe` carrier, and
+/// passing that as an argument boxes it, so `fn at(xs, i) { return xs[i]; }`
+/// called from `for i in idx` sees one. `dyn.as_i64` raises for a non-integer
+/// tag, which is what the VM does for `xs["a"]` or `xs[1.0]` — error for error.
+pub(crate) fn read_index_scalar(
+    ssa: &mut Ssa,
+    insts: &mut Vec<Inst>,
+    reg: u8,
+    block: usize,
+    pc: usize,
+) -> Result<ValueId, Unsupported> {
+    let (v, ty) = read_scalar(ssa, insts, reg, block, pc)?;
+    match ty {
+        Ty::I64 => Ok(v),
+        Ty::Dyn => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("dyn", "as_i64"),
+                args: vec![v],
+            });
+            Ok(dst)
+        }
+        _ => Err(Unsupported::TypeMismatch { pc }),
+    }
+}
+
 /// [`read_scalar`] that also requires a specific type (the unwrap-aware counterpart
 /// of `Ssa::read_typed`).
 pub(crate) fn read_typed_scalar(

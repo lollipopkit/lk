@@ -887,8 +887,9 @@ pub(super) fn lower(
                 return Ok(());
             }
             // Lists / int-keyed maps index with an `I64` (a `Maybe` index —
-            // `xs[ys[j]]` — unwraps first).
-            let index_val = read_typed_scalar(ssa, insts, instr.c(), block, Ty::I64, pc)?;
+            // `xs[ys[j]]` — unwraps first, a boxed one goes through the tag
+            // check).
+            let index_val = read_index_scalar(ssa, insts, instr.c(), block, pc)?;
             // Fast path: a **provably in-range** access (constant list of known
             // length indexed by a constant in `[0, len)`) is a clean scalar `at`.
             let const_in_range = match (ssa.list_len.get(&handle), ssa.const_int.get(&index_val)) {
@@ -1015,7 +1016,10 @@ pub(super) fn lower(
                 });
                 return Ok(());
             }
-            let index = read_typed_scalar(ssa, insts, instr.b(), block, Ty::I64, pc)?;
+            // A boxed index unboxes through the tag check, as it does on the
+            // read side: a store from a loop over a list has exactly the same
+            // shape as a load.
+            let index = read_index_scalar(ssa, insts, instr.b(), block, pc)?;
             match list_ty {
                 Ty::ListI64 => {
                     let value = read_typed_scalar(ssa, insts, instr.c(), block, Ty::I64, pc)?;
