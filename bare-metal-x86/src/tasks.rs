@@ -49,6 +49,31 @@ global_asm!(
     ".section .text, \"ax\"",
     // A whole task's registers, not just the caller-saved ones: what is on
     // this stack may be resumed on a different one.
+    // NOTE: this saves fifteen integer registers and *no* SSE state, and it is
+    // the only interrupt path here that does not.
+    //
+    // Every other one — the keyboard's and the mouse's before they moved into
+    // `lkrt`, `lkrt`'s generic stubs, the syscall trampoline — saves all
+    // sixteen XMM registers, for the reason written next to them: a compiled LK
+    // handler may clobber any of them under the System V ABI, LK numbers are
+    // `f64`, and the interrupted computation may hold one. This path calls two
+    // compiled LK functions (`lk_timer_isr` and `lk_schedule_from_interrupt`)
+    // with none of that saved, a thousand times a second, and it is also the
+    // one that switches tasks — so a task's SSE state is not part of what
+    // travels with it either.
+    //
+    // Nothing has gone wrong yet because today's tick and scheduler do integer
+    // work only. That is a property of the handlers, not of the boundary, and
+    // it is the same shape as the syscall trampoline before its XMM save was
+    // added.
+    //
+    // TODO: save them here too. Not done in the same breath as noticing it,
+    // because the stack alignment has to be *measured* rather than derived: the
+    // arithmetic that explains why the device path's `sub rsp, 264` lands
+    // aligned does not also explain why this path's fifteen pushes do, and a
+    // `call` into compiled LK on a misaligned stack faults on the first
+    // `movaps` rather than saying anything. Boot it, break in the handler, and
+    // read RSP.
     ".macro SAVE_TASK",
     "   push rax",
     "   push rcx",
