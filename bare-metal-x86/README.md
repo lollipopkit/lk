@@ -496,6 +496,26 @@ from ring 0 would be a kernel bug with the same `cr2`. And the U bit has to be
 set at every level of the walk, because the CPU takes their conjunction; a user
 page under a kernel-only directory is still kernel-only.
 
+### A pointer the kernel does not believe
+
+The first syscall took a byte per call, which was slow and deliberate: a pointer
+from ring 3 is a *number*, and following one without checking is the shape of
+every "the kernel read out its own memory on request" bug there has ever been.
+
+There is a checked one now. `write(ptr, len)` verifies the range lies inside the
+user section — the only memory ring 3 can reach — before reading a byte of it,
+and the check is the kernel's, not a promise the caller makes. The arithmetic is
+checked too, because a length near `u64::MAX` wraps the end back below the start
+and makes any address look contained.
+
+The user program does both: it prints `str` through the checked call, then hands
+the same call the kernel's own address and prints what came back. `N` means
+refused. A `Y` there would mean the boundary is decoration.
+
+The kernel copies each byte out before using it rather than printing from user
+memory in place. One instruction shorter would leave a window between the check
+and the use — on one CPU a small one, on two a race.
+
 ### And back again
 
 `user` has no way back — its only exits are a syscall (which returns *into* ring

@@ -4,9 +4,12 @@ program's good manners.
 
 Three claims, and the second is the one that makes the first mean anything:
 
-1. **A ring-3 program can talk to the kernel.** It prints `USER` a byte at a
-   time through `int 0x80` — the only vector whose gate has DPL 3, so it is the
-   only instruction that takes a user task into the kernel on purpose.
+1. **A ring-3 program can talk to the kernel**, and the kernel does not believe
+   what it is told. `USER` comes out a byte at a time through `int 0x80` — the
+   only vector whose gate has DPL 3. `str` comes out through a call that takes a
+   *pointer*, which the kernel checks against the bounds of the user section
+   before following. `N` is the same call handed the kernel's own address and
+   refusing it; a `Y` would mean the kernel printed its own memory on request.
 2. **It cannot touch the kernel's memory** — including the kernel *next to it*.
    Immediately after, it reads `0x100010`: the kernel's first instruction, in
    the same 2 MiB as the program itself. The CPU faults with a user-mode error
@@ -33,7 +36,11 @@ import time
 
 # What the ring-3 program prints through the syscall, and where it then tries to
 # write. Both are in `src/user.rs`.
-GREETING = "USER"
+# `USER` is the byte-at-a-time call; `str` is the same text through the call
+# that takes a *pointer*, which the kernel checked before following; `N` is that
+# call refusing a kernel pointer. A `Y` there would mean the kernel read its own
+# memory because a user task asked it to.
+GREETING = "USERstrN"
 # The kernel's first instruction — in the same 2 MiB as the user program, which
 # is what makes it the interesting address to be refused.
 FORBIDDEN = "cr2=0000000000100010"
@@ -99,7 +106,9 @@ def main():
         if "\n5\n" not in while_running and "\n6\n" not in while_running:
             failures.append("the shell did not answer while the ring-3 task was running")
         if GREETING not in transcript:
-            failures.append(f"ring 3 did not print {GREETING!r} through the syscall")
+            failures.append(
+                f"expected {GREETING!r}: the syscalls, the checked pointer, and the refusal of a kernel one"
+            )
         if "#PF page fault" not in transcript:
             failures.append("the forbidden write did not fault: the ring boundary is not enforced")
         if FORBIDDEN not in transcript:

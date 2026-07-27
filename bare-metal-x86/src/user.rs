@@ -38,10 +38,47 @@ pub const SYSCALL_VECTOR: usize = 0x80;
 /// meaningful is to have few holes and know what each one lets through.
 const SYS_WRITE: u64 = 1;
 const SYS_EXIT: u64 = 2;
+/// Write a run of bytes: `rdi` is an address in the caller's memory, `rsi` its
+/// length. The first call that takes a *pointer*, and therefore the first one
+/// that has to decide whether to believe it.
+const SYS_WRITE_STR: u64 = 3;
+
+/// How long a string the kernel will accept in one call.
+///
+/// A bound, not a guess: without one, a user task can hand over a length that
+/// keeps the kernel inside the syscall for as long as it likes — with
+/// interrupts on, so the machine survives, but the caller's own timer slice
+/// is spent in kernel code where nothing can preempt the loop's *effects*.
+const MAX_WRITE: u64 = 4096;
 
 unsafe extern "C" {
     /// The console, which belongs to the LK program.
     fn lk_console_byte(byte: i64);
+    /// The bounds of everything ring 3 may reach, from the linker script.
+    static __user_start: u8;
+    static __user_end: u8;
+}
+
+/// Is `[address, address + length)` memory the caller is allowed to hand over?
+///
+/// The only region ring 3 can reach is its own section, so that is the whole
+/// test — and it is a test the kernel performs rather than a promise the caller
+/// makes. Without it, `write(0x100010, 64)` would have the kernel read its own
+/// code and print it, which is the shape of every "the kernel followed a
+/// pointer it was given" bug there has ever been.
+///
+/// The arithmetic is checked too: a length near `u64::MAX` would wrap the end
+/// back below the start and make any address look contained.
+fn user_range_is_valid(address: u64, length: u64) -> bool {
+    if length == 0 || length > MAX_WRITE {
+        return false;
+    }
+    let Some(end) = address.checked_add(length) else {
+        return false;
+    };
+    let start = (&raw const __user_start) as u64;
+    let limit = (&raw const __user_end) as u64;
+    address >= start && end <= limit
 }
 
 /// Set when a user task asks to exit, so the kernel knows the ring-3 excursion
@@ -58,7 +95,7 @@ pub fn user_exited() -> bool {
 /// Returning a value rather than writing registers: the trampoline puts the
 /// answer back in `rax`, which keeps the register discipline in one place.
 #[unsafe(no_mangle)]
-pub extern "C" fn syscall_dispatch(number: u64, arg: u64) -> u64 {
+pub extern "C" fn syscall_dispatch(number: u64, arg: u64, arg2: u64) -> u64 {
     match number {
         // Deliberately a *byte*, not a pointer: a pointer from ring 3 is an
         // address the kernel would have to check before following, and there is
@@ -68,6 +105,24 @@ pub extern "C" fn syscall_dispatch(number: u64, arg: u64) -> u64 {
             // SAFETY: an `#[export]`ed LK function taking one integer.
             unsafe { lk_console_byte((arg & 0xff) as i64) };
             0
+        }
+        // The kernel checks, copies, and only then uses. Printing straight out
+        // of user memory would be one instruction shorter and would leave the
+        // window where the caller can change the bytes between the check and
+        // the use — which on a machine with more than one CPU is not a window
+        // but a race.
+        SYS_WRITE_STR => {
+            if !user_range_is_valid(arg, arg2) {
+                return u64::MAX;
+            }
+            for offset in 0..arg2 {
+                // SAFETY: the range was just checked to lie inside the user
+                // section, which is mapped and present.
+                let byte = unsafe { (arg as *const u8).add(offset as usize).read_volatile() };
+                // SAFETY: an `#[export]`ed LK function taking one integer.
+                unsafe { lk_console_byte(i64::from(byte)) };
+            }
+            arg2
         }
         SYS_EXIT => {
             USER_EXITED.store(true, core::sync::atomic::Ordering::Relaxed);
@@ -92,6 +147,9 @@ global_asm!(
     "   push r9",
     "   push r10",
     "   push r11",
+    // The ABI: number in `rax`, arguments in `rdi` and `rsi`, which the C call
+    // wants in `rdi`, `rsi` and `rdx`. One shuffle, in one place.
+    "   mov rdx, rsi",
     "   mov rsi, rdi",
     "   mov rdi, rax",
     "   call syscall_dispatch",
@@ -265,6 +323,30 @@ global_asm!(
     "   mov rax, 1",
     "   mov rdi, 82",       // 'R'
     "   int 0x80",
+    // A string, through the call that takes a pointer. The kernel checks the
+    // range before following it — this one is inside the user section, so it
+    // prints.
+    "   mov rax, 3",
+    "   lea rdi, [rip + __user_message]",
+    "   mov rsi, 3",
+    "   int 0x80",
+    // And the same call with a *kernel* pointer. The kernel must answer with an
+    // error rather than printing its own memory: a pointer from ring 3 is a
+    // number, and believing it is how a kernel reads out its own secrets on
+    // request. The reply lands in `rax`, which the program then hands back
+    // through the byte-at-a-time call so the check can see it: 'N' for
+    // refused, 'Y' for followed.
+    "   mov rax, 3",
+    "   mov rdi, 0x100010",
+    "   mov rsi, 8",
+    "   int 0x80",
+    "   cmp rax, -1",
+    "   je 5f",
+    "   mov rdi, 89",       // 'Y' — the kernel followed it
+    "   jmp 6f",
+    "5: mov rdi, 78",       // 'N' — refused
+    "6: mov rax, 1",
+    "   int 0x80",
     // Say the excursion finished *before* trying anything forbidden, so the
     // check can tell "ring 3 ran" from "ring 3 was stopped".
     "   mov rax, 2",
@@ -280,6 +362,8 @@ global_asm!(
     "   mov rax, qword ptr [rax]",
     // Unreachable: the fault above does not return.
     "2:  jmp 2b",
+    "__user_message:",
+    "   .ascii \"str\"",
 );
 
 /// A ring-3 task that never yields.
