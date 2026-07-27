@@ -233,6 +233,18 @@ pub enum Inst {
         func: FuncId,
         args: Vec<ValueId>,
     },
+    /// `dst = symbol(args)` — a call to a function implemented *outside* the
+    /// program, named by `#[extern]`.
+    ///
+    /// Unlike an `AbiRef` call, the signature is not in a table: it comes from
+    /// the declaration, so it travels with the instruction.
+    CallExtern {
+        dst: Option<ValueId>,
+        symbol: String,
+        args: Vec<ValueId>,
+        arg_tys: Vec<Ty>,
+        ret: Ty,
+    },
     /// `dst = try.call f{func}(args)` — a native protected call (`try$call`,
     /// plan G): codegen expands to `rt.try_push` + `_setjmp` + a conditional
     /// call of the try-body function (which returns `Dyn`), joining into the
@@ -792,6 +804,15 @@ fn render_inst(inst: &Inst) -> String {
                 None => call,
             }
         }
+        Inst::CallExtern {
+            dst, symbol, args: a, ..
+        } => {
+            let target = format!("{symbol}({})", args(a));
+            match dst {
+                Some(dst) => format!("{} = extern.call {target}", v(*dst)),
+                None => format!("extern.call {target}"),
+            }
+        }
         Inst::CallFn { dst, func, args: a } => {
             let call = format!("call f{}({})", func.0, args(a));
             match dst {
@@ -924,7 +945,9 @@ pub(crate) fn inst_def(inst: &Inst) -> Option<ValueId> {
         | Inst::MaybeWrap { dst, .. }
         | Inst::Select { dst, .. }
         | Inst::GlobalGet { dst, .. } => Some(*dst),
-        Inst::Call { dst, .. } | Inst::CallFn { dst, .. } | Inst::CallVm { dst, .. } => *dst,
+        Inst::Call { dst, .. } | Inst::CallFn { dst, .. } | Inst::CallExtern { dst, .. } | Inst::CallVm { dst, .. } => {
+            *dst
+        }
         Inst::PrintStr { .. } | Inst::GlobalSet { .. } => None,
         Inst::TryCall { dst, .. } | Inst::TraitDispatch { dst, .. } => Some(*dst),
     }
@@ -965,6 +988,7 @@ fn inst_uses(inst: &Inst) -> Vec<ValueId> {
         }
         Inst::Call { args, .. }
         | Inst::CallFn { args, .. }
+        | Inst::CallExtern { args, .. }
         | Inst::CallVm { args, .. }
         | Inst::TryCall { args, .. } => args.clone(),
         Inst::TraitDispatch { self_arg, .. } => vec![*self_arg],

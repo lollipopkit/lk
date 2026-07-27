@@ -447,6 +447,9 @@ pub(crate) fn lower_user_call(
         return Ok(());
     }
     let mut args = Vec::with_capacity(argc + captures.len());
+    // Kept alongside, for an `#[extern]` callee: its signature is not in any
+    // table, so the call site is where the argument types come from.
+    let mut arg_tys: Vec<Ty> = Vec::with_capacity(argc + captures.len());
     let mut env_args: Vec<(ValueId, Ty)> = Vec::new();
     for (i, id) in identity.iter().enumerate() {
         let arg_reg = dst_reg.wrapping_add(1).wrapping_add(i as u8);
@@ -481,6 +484,7 @@ pub(crate) fn lower_user_call(
         // scalar-context unwrap abort.
         let (aval, aty) = ssa.read(arg_reg, block, pc)?;
         let want = sig.observe_param(callee_idx, i, aty);
+        arg_tys.push(want);
         args.push(coerce_arg(ssa, insts, aval, aty, want, pc)?);
     }
     // Hidden trailing arguments, in signature order: the erased closures'
@@ -488,14 +492,48 @@ pub(crate) fn lower_user_call(
     // refine the same monomorphization lattice as visible parameters.
     for (k, &(ev, ety)) in env_args.iter().enumerate() {
         let want = sig.observe_param(callee_idx, argc + k, ety);
+        arg_tys.push(want);
         args.push(coerce_arg(ssa, insts, ev, ety, want, pc)?);
     }
     let env_total = env_args.len();
     for (k, &(cval, cty)) in captures.iter().enumerate() {
         let want = sig.observe_param(callee_idx, argc + env_total + k, cty);
+        arg_tys.push(want);
         args.push(coerce_arg(ssa, insts, cval, cty, want, pc)?);
     }
     let ret = sig.ret_types.get(callee_idx).copied().unwrap_or(Ty::I64);
+    // A callee the source marked `#[extern]` is implemented outside the
+    // program: the call goes to that symbol and its body is never emitted. The
+    // body is not dead — it is what the interpreter runs — but nothing native
+    // uses it.
+    if let Some(symbol) = funcs.get(callee_idx).and_then(|f| f.extern_name.clone()) {
+        if ret == Ty::Nil {
+            insts.push(Inst::CallExtern {
+                dst: None,
+                symbol,
+                args,
+                arg_tys,
+                ret,
+            });
+            let nil = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: nil,
+                value: Const::Nil,
+            });
+            ssa.write(dst_reg, block, (nil, Ty::Nil));
+        } else {
+            let dst = ssa.new_val();
+            insts.push(Inst::CallExtern {
+                dst: Some(dst),
+                symbol,
+                args,
+                arg_tys,
+                ret,
+            });
+            ssa.write(dst_reg, block, (dst, ret));
+        }
+        return Ok(());
+    }
     if ret == Ty::Nil {
         insts.push(Inst::CallFn {
             dst: None,

@@ -65,7 +65,16 @@ pub(super) struct FunctionInlineBody {
 /// usually forces. Anything else in that position is rejected rather than
 /// ignored: a silently-dropped export produces a link error somewhere else
 /// entirely.
+pub(super) fn extern_name_from_attributes(stmt: &Stmt, default_name: &str) -> Result<Option<Arc<str>>> {
+    attribute_symbol(stmt, default_name, "extern")
+}
+
 pub(super) fn export_name_from_attributes(stmt: &Stmt, default_name: &str) -> Result<Option<Arc<str>>> {
+    attribute_symbol(stmt, default_name, "export")
+}
+
+/// The symbol a `#[word]` / `#[word("sym")]` attribute names.
+fn attribute_symbol(stmt: &Stmt, default_name: &str, word: &str) -> Result<Option<Arc<str>>> {
     let Stmt::Attributed { attributes, item } = stmt else {
         return Ok(None);
     };
@@ -73,23 +82,23 @@ pub(super) fn export_name_from_attributes(stmt: &Stmt, default_name: &str) -> Re
     for attribute in attributes {
         let tokens = attribute.tokens.as_slice();
         match tokens {
-            [Token::Id(name)] if name == "export" => {
+            [Token::Id(name)] if name == word => {
                 found = Some(Arc::<str>::from(default_name));
             }
-            [Token::Id(name), Token::LParen, Token::Str(symbol), Token::RParen] if name == "export" => {
+            [Token::Id(name), Token::LParen, Token::Str(symbol), Token::RParen] if name == word => {
                 if symbol.is_empty() {
-                    bail!("`#[export(\"\")]` needs a symbol name");
+                    bail!("`#[{word}(\"\")]` needs a symbol name");
                 }
                 found = Some(Arc::<str>::from(symbol.as_str()));
             }
-            [Token::Id(name), ..] if name == "export" => {
-                bail!("`#[export]` takes either no argument or one string literal symbol name");
+            [Token::Id(name), ..] if name == word => {
+                bail!("`#[{word}]` takes either no argument or one string literal symbol name");
             }
             _ => {}
         }
     }
     if found.is_some() && !matches!(item_without_attributes(item), Stmt::Function { .. }) {
-        bail!("`#[export]` applies to functions");
+        bail!("`#[{word}]` applies to functions");
     }
     Ok(found)
 }

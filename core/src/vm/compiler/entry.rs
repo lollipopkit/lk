@@ -14,7 +14,8 @@ use super::{
     CompiledFunction, Compiler, Function, FunctionSignature, HashSet, Module, NativeEntry,
     collect_function_inline_bodies, collect_function_names, collect_function_signatures,
     collect_function_visible_let_names, collect_global_names_with_external, collect_native_names,
-    export_name_from_attributes, function_frame_params, global_slots_from_names, item_without_attributes,
+    export_name_from_attributes, extern_name_from_attributes, function_frame_params, global_slots_from_names,
+    item_without_attributes,
 };
 
 impl Compiler {
@@ -107,6 +108,7 @@ impl Compiler {
                 )?;
                 compiled.function.debug_name = Some(alloc::sync::Arc::<str>::from(name.as_str()));
                 compiled.function.export_name = export_name_from_attributes(stmt, name)?;
+                compiled.function.extern_name = extern_name_from_attributes(stmt, name)?;
                 module.functions[function_index as usize] = compiled.function;
                 module.functions.append(&mut compiled.pending_functions);
             }

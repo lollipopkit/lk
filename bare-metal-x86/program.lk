@@ -364,11 +364,11 @@ fn run_command(base: Int) -> Int {
     }
     if (line_starts_with([104, 101, 108, 112])) {          // "help"
         // "help clear echo keys exit"
-        // "help clear echo keys mem page sync exit"
+        // "help clear echo keys mem page sync yield exit"
         emit(base, [104, 101, 108, 112, 32, 99, 108, 101, 97, 114, 32, 101, 99,
                     104, 111, 32, 107, 101, 121, 115, 32, 109, 101, 109, 32,
                     112, 97, 103, 101, 32, 115, 121, 110, 99, 32,
-                    101, 120, 105, 116]);
+                    121, 105, 101, 108, 100, 32, 101, 120, 105, 116]);
         return 1;
     }
     if (line_starts_with([99, 108, 101, 97, 114])) {       // "clear"
@@ -406,6 +406,12 @@ fn run_command(base: Int) -> Int {
         emit(base, decimal(a).chain([47]).chain(decimal(b)));
         return 1;
     }
+    if (line_starts_with([121, 105, 101, 108, 100])) {     // "yield"
+        task_yield();
+        // "back"
+        emit(base, [98, 97, 99, 107]);
+        return 1;
+    }
     if (line_starts_with([101, 120, 105, 116])) {          // "exit"
         // "bye"
         emit(base, [98, 121, 101]);
@@ -417,6 +423,21 @@ fn run_command(base: Int) -> Int {
 }
 
 // ---------------------------------------------------------------- tasks ---
+
+// Give up the rest of this task's slice.
+//
+// `#[extern]` is the mirror of `#[export]`: the board implements this, and a
+// native build calls that symbol. The body below is what the *interpreter*
+// runs — it has no way to reach the outside implementation — so it does the
+// only honest thing a single-threaded interpreter can do about yielding, which
+// is nothing.
+//
+// That also means this function is where the two back ends stop agreeing by
+// construction. Everything else in LK is checked against the VM; a call to
+// something the program does not contain cannot be.
+#[extern("kernel_yield")]
+fn task_yield() {
+}
 
 // Bumps the two words that must agree, as one indivisible step.
 //
@@ -473,13 +494,14 @@ fn task_b() {
         if (phase == 3) { face = 40; }
         draw_glyph(framebuffer_address(), WIDTH, FONT, face,
                    (text_columns() - 2) * CELL_WIDTH, 0, TITLE_COLOUR, BACKGROUND);
-        // Burn the rest of the slice bumping the pair, so the timer handler
-        // and this task are contending on the same words for the whole slice.
-        // A real task would wait for something; this one exists to be
-        // interrupted, and to be interrupted *in the middle of an update*.
+        // Contend with the timer handler on the same pair of words for a
+        // while — this task exists to be interrupted, and to be interrupted
+        // *in the middle of an update*.
         for i in 0..20000 {
             bump_pair();
         }
+        // Then hand the CPU back rather than waiting to be taken off it.
+        task_yield();
     }
 }
 

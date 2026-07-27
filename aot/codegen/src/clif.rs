@@ -105,6 +105,9 @@ struct ModuleCtx<'a> {
     /// a program that never calls one does not force its — possibly `DynVal` —
     /// signature to lower).
     abi_ids: &'a mut HashMap<&'static str, ClifFuncId>,
+    /// Symbols an `#[extern]` declaration names. Keyed by `String` rather than
+    /// `&'static str` because the name comes from the source, not this file.
+    extern_ids: &'a mut HashMap<String, ClifFuncId>,
     /// Interned string-constant data symbols (`lk_str_{i}`), by [`GlobalId`] index.
     str_data: &'a HashMap<u32, DataId>,
     /// Mutable module-global data symbols (`lk_gvar_{i}`) + their MIR type.
@@ -136,6 +139,31 @@ impl ModuleCtx<'_> {
         }
         let id = self.module.declare_function(abi.symbol, Linkage::Import, &sig)?;
         self.abi_ids.insert(abi.symbol, id);
+        Ok(id)
+    }
+
+    /// Declare (once) a symbol an `#[extern]` declaration names.
+    ///
+    /// Re-declaring is how a signature conflict is caught: two declarations of
+    /// one symbol with different types would otherwise become a malformed call
+    /// that only the Cranelift verifier notices, reported against a machine
+    /// call site with no way back to the name.
+    fn extern_func(&mut self, symbol: &str, arg_tys: &[Ty], ret: Ty) -> Result<ClifFuncId, ClifError> {
+        if let Some(id) = self.extern_ids.get(symbol) {
+            return Ok(*id);
+        }
+        let cc = self.module.isa().default_call_conv();
+        let mut sig = Signature::new(cc);
+        for ty in arg_tys {
+            for part in ty_clif_parts(*ty)? {
+                sig.params.push(AbiParam::new(part));
+            }
+        }
+        for part in ty_clif_parts(ret)? {
+            sig.returns.push(AbiParam::new(part));
+        }
+        let id = self.module.declare_function(symbol, Linkage::Import, &sig)?;
+        self.extern_ids.insert(symbol.to_string(), id);
         Ok(id)
     }
 
@@ -304,6 +332,7 @@ pub fn compile_module(mir: &MirModule, isa: std::sync::Arc<dyn TargetIsa>) -> Re
 
     // ABI runtime symbols are declared lazily but must dedup across functions.
     let mut abi_ids: HashMap<&'static str, ClifFuncId> = HashMap::new();
+    let mut extern_ids: HashMap<String, ClifFuncId> = HashMap::new();
 
     for func in &mir.functions {
         let is_entry = func.id == mir.entry;
@@ -321,6 +350,7 @@ pub fn compile_module(mir: &MirModule, isa: std::sync::Arc<dyn TargetIsa>) -> Re
                 fn_rets: &fn_rets,
                 helpers: &helpers,
                 abi_ids: &mut abi_ids,
+                extern_ids: &mut extern_ids,
                 str_data: &str_data,
                 gvar_data: &gvar_data,
                 hybrid_argbuf,
@@ -801,6 +831,17 @@ impl Lower {
                     FloatBinOp::Mod => return self.call(b, mctx, mctx.helpers.f64_mod, Some(*dst), &[l, r]),
                 };
                 self.set1(*dst, v);
+            }
+            Inst::CallExtern {
+                dst,
+                symbol,
+                args,
+                arg_tys,
+                ret,
+            } => {
+                let a = self.args_v(args)?;
+                let callee = mctx.extern_func(symbol, arg_tys, *ret)?;
+                return self.call_raw(b, mctx, callee, *dst, ty_is_pair(*ret), &a);
             }
             Inst::CallFn { dst, func, args } => {
                 let a = self.args_v(args)?;

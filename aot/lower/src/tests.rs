@@ -22,6 +22,7 @@ fn artifact(consts: ConstPoolData, code: Vec<u32>, register_count: u16) -> Modul
                 capture_count: 0,
                 debug_name: None,
                 export_name: None,
+                extern_name: None,
             }],
         },
     }
@@ -57,6 +58,7 @@ fn func(consts: ConstPoolData, code: Vec<u32>, register_count: u16, param_count:
         capture_count: 0,
         debug_name: None,
         export_name: None,
+        extern_name: None,
     }
 }
 

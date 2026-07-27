@@ -89,6 +89,32 @@ the same reason: `lkrt` has one arena and no lock around it. The spinner picks
 its glyph with an `if` chain rather than indexing a list, because building the
 list would allocate.
 
+### Asking the kernel for something
+
+`#[extern]` is the mirror of `#[export]`: the board implements the function,
+and a native build calls that symbol.
+
+```lk
+#[extern("kernel_yield")]
+fn task_yield() {
+}
+```
+
+The body is what the *interpreter* runs — it has no way to reach the outside
+implementation — so a fallback goes there. That also makes this the one
+construct whose two back ends are not checked against each other: the thing
+being called is not in the program.
+
+`kernel_yield` is a software interrupt (`int 0x30`) rather than a plain call.
+The switch needs a complete interrupt frame on the stack, because that is what
+the resume path expects to find; `int` builds one and a `call` does not. The
+vector is past the PIC's remapped range, so nothing but an `int` can raise it
+— there is no device to acknowledge.
+
+There is no privilege boundary here to cross: LK and the kernel are one binary
+at ring 0. What this is, is the direction `#[export]` did not cover — the
+program asking the board for something only the board can do.
+
 ### Sharing state between them
 
 Read, add, write is three steps. An interrupt landing between the read and the

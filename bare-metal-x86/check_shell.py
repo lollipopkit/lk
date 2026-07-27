@@ -32,6 +32,7 @@ KEYS = (
     + ["p", "a", "g", "e", "ret"]
     + ["m", "e", "m", "ret"]
     + ["s", "y", "n", "c", "ret"]
+    + ["y", "i", "e", "l", "d", "ret"]
     + ["ret"] * 22
     + ["e", "x", "i", "t", "ret"]
 )
@@ -39,12 +40,15 @@ KEYS = (
 # repeats its argument, `exit` says goodbye — each proving a different part:
 # the byte-wise command match, the argument tail, and the loop ending.
 EXPECTED_LINES = [
-    "help clear echo keys mem page sync exit",
+    "help clear echo keys mem page sync yield exit",
     "lk",
     # Two pages handed out in order, from the range the loader reported. The
     # addresses are what proves the allocator rather than a counter.
     "00400000",
     "00401000",
+    # `yield` leaves LK, enters the kernel through a software interrupt, is
+    # rescheduled, and comes back. Printing at all is the proof.
+    "back",
     "bye",
 ]
 

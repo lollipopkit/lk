@@ -84,6 +84,26 @@ unsafe fn prepare_stack(top: *mut u8, entry: unsafe extern "C" fn()) -> u64 {
     sp
 }
 
+/// The vector a task uses to ask for a reschedule.
+///
+/// Past the PIC's remapped range, so it can only arrive from an `int`
+/// instruction — there is no device behind it, and nothing to acknowledge.
+pub const YIELD_VECTOR: usize = 0x30;
+
+/// Gives up the rest of this task's slice.
+///
+/// A software interrupt rather than a direct call: the switch has to happen
+/// with a complete interrupt frame on the stack, because that is what the
+/// resume path expects to find. `int` builds one; a call does not.
+///
+/// This is what an `#[extern]` declaration in `program.lk` names — the LK
+/// program asks the board for something the board alone can do.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_yield() {
+    // SAFETY: the vector has a gate, installed before interrupts were enabled.
+    unsafe { core::arch::asm!("int 0x30", options(nomem, nostack)) };
+}
+
 /// Prepares every task past the first. Call once, before interrupts.
 pub fn init() {
     for index in 0..TASK_COUNT - 1 {
@@ -131,8 +151,9 @@ pub unsafe extern "C" fn schedule_from_interrupt(rsp: u64) -> u64 {
 // the one it arrived on.
 global_asm!(
     ".section .text, \"ax\"",
-    ".global __task_trampoline",
-    "__task_trampoline:",
+    // A whole task's registers, not just the caller-saved ones: what is on
+    // this stack may be resumed on a different one.
+    ".macro SAVE_TASK",
     "   push rax",
     "   push rcx",
     "   push rdx",
@@ -148,12 +169,8 @@ global_asm!(
     "   push r13",
     "   push r14",
     "   push r15",
-    // The handler's own work (the LK tick, the end-of-interrupt) happens
-    // before the switch, on the interrupted task's stack.
-    "   call pit_dispatch",
-    "   mov rdi, rsp",
-    "   call schedule_from_interrupt",
-    "   mov rsp, rax",
+    ".endm",
+    ".macro RESTORE_TASK",
     "   pop r15",
     "   pop r14",
     "   pop r13",
@@ -169,5 +186,26 @@ global_asm!(
     "   pop rdx",
     "   pop rcx",
     "   pop rax",
+    ".endm",
+    // The yield path is the timer path without the device work: nothing
+    // arrived, so there is nothing to acknowledge and no tick to count.
+    ".global __yield_trampoline",
+    "__yield_trampoline:",
+    "   SAVE_TASK",
+    "   mov rdi, rsp",
+    "   call schedule_from_interrupt",
+    "   mov rsp, rax",
+    "   RESTORE_TASK",
+    "   iretq",
+    ".global __task_trampoline",
+    "__task_trampoline:",
+    "   SAVE_TASK",
+    // The handler's own work (the LK tick, the end-of-interrupt) happens
+    // before the switch, on the interrupted task's stack.
+    "   call pit_dispatch",
+    "   mov rdi, rsp",
+    "   call schedule_from_interrupt",
+    "   mov rsp, rax",
+    "   RESTORE_TASK",
     "   iretq",
 );

@@ -59,6 +59,7 @@ unsafe extern "C" {
     /// returning on a *different* stack is what a task switch is.
     fn __task_trampoline();
     fn __keyboard_trampoline();
+    fn __yield_trampoline();
 }
 
 /// Fills in one gate.
@@ -105,6 +106,13 @@ pub fn init() {
             idt,
             KEYBOARD_VECTOR,
             __keyboard_trampoline as *const () as usize as u64,
+        );
+        // The vector a task uses to ask for a reschedule. No device is behind
+        // it, so it can only arrive from an `int` instruction.
+        set_gate(
+            idt,
+            crate::tasks::YIELD_VECTOR,
+            __yield_trampoline as *const () as usize as u64,
         );
         let descriptor = Descriptor {
             limit: (core::mem::size_of_val(&*idt) - 1) as u16,

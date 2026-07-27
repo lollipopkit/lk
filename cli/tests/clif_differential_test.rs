@@ -1086,3 +1086,58 @@ fn argument_types_are_checked_against_annotations() {
         String::from_utf8_lossy(&literal.stderr)
     );
 }
+
+/// `#[extern]` names a function implemented outside the program.
+///
+/// The mirror of `#[export]`. A native build calls the symbol and never emits
+/// the body; the interpreter, which cannot reach outside, runs the body. That
+/// asymmetry is the point and also the cost: this is the one construct whose
+/// two back ends are not checked against each other, because the thing being
+/// called is not in the program.
+#[test]
+fn an_extern_function_calls_the_named_symbol() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let source = dir.path().join("ext.lk");
+    std::fs::write(
+        &source,
+        "#[extern(\"kernel_double\")]\n\
+         fn kernel_double(value: Int) -> Int { return value * 2; }\n\
+         println(kernel_double(21));\n\
+         return 0;\n",
+    )
+    .expect("write source");
+
+    // The interpreter runs the body.
+    let vm = Command::new(bin_path())
+        .current_dir(dir.path())
+        .arg("ext.lk")
+        .output()
+        .expect("spawn vm run");
+    assert!(
+        vm.status.success(),
+        "vm run failed: {}",
+        String::from_utf8_lossy(&vm.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&vm.stdout), "42\n0\n");
+
+    // The object refers to the symbol and leaves it to the linker.
+    let object = dir.path().join("ext.o");
+    let compile = Command::new(bin_path())
+        .current_dir(dir.path())
+        .args(["compile", "object:x86_64-unknown-none", "ext.lk"])
+        .arg("--output")
+        .arg(&object)
+        .output()
+        .expect("spawn object compile");
+    assert!(
+        compile.status.success(),
+        "an extern call must lower: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let bytes = std::fs::read(&object).expect("read object");
+    let needle = b"kernel_double";
+    assert!(
+        bytes.windows(needle.len()).any(|window| window == needle),
+        "the object should name the symbol it calls"
+    );
+}

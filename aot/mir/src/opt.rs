@@ -577,6 +577,9 @@ fn is_removable(inst: &Inst) -> bool {
     match inst {
         // Divide-by-zero aborts (matching the VM), so a dead division is still
         // a program-visible check.
+        // A call to something outside the program can do anything, so it is
+        // never dead — the same reasoning as a host call.
+        Inst::CallExtern { .. } => false,
         Inst::IntBin { op, .. } => !matches!(op, IntBinOp::Div | IntBinOp::Mod),
         Inst::FloatBin { op, .. } => !matches!(op, FloatBinOp::Div | FloatBinOp::Mod),
         Inst::Const { .. }
@@ -620,6 +623,7 @@ fn is_removable(inst: &Inst) -> bool {
 fn uses_mut(inst: &mut Inst) -> Vec<&mut ValueId> {
     match inst {
         Inst::Const { .. } | Inst::GlobalGet { .. } => vec![],
+        Inst::CallExtern { args, .. } => args.iter_mut().collect(),
         Inst::IntBin { lhs, rhs, .. }
         | Inst::FloatBin { lhs, rhs, .. }
         | Inst::Cmp { lhs, rhs, .. }

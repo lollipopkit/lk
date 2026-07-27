@@ -211,6 +211,11 @@ pub struct FunctionData {
     /// no exports, which is what it meant.
     #[serde(default)]
     pub export_name: Option<String>,
+    /// `#[extern("name")]`'s symbol. `#[serde(default)]`: an artifact written
+    /// before this field had no external implementations, which is what its
+    /// absence means.
+    #[serde(default)]
+    pub extern_name: Option<String>,
 }
 
 impl FunctionData {
@@ -234,6 +239,7 @@ impl FunctionData {
             capture_count: function.capture_count,
             debug_name: function.debug_name.as_ref().map(|name| name.to_string()),
             export_name: function.export_name.as_ref().map(|name| name.to_string()),
+            extern_name: function.extern_name.as_ref().map(|name| name.to_string()),
         }
     }
 
@@ -262,6 +268,7 @@ impl FunctionData {
             capture_count: self.capture_count,
             debug_name: self.debug_name.map(Arc::<str>::from),
             export_name: self.export_name.map(Arc::<str>::from),
+            extern_name: self.extern_name.map(Arc::<str>::from),
         })
     }
 }

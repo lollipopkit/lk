@@ -771,6 +771,14 @@ pub struct Function {
     /// function to it. It matters to the AOT path, where a board's reset stub
     /// or interrupt vector has to be able to *name* the compiled code it calls.
     pub export_name: Option<Arc<str>>,
+    /// The C symbol this function is *implemented by*, from `#[extern]` /
+    /// `#[extern("name")]` — the mirror of `export_name`.
+    ///
+    /// The native backend turns calls to it into calls to that symbol and
+    /// never emits the body. The body is not dead, though: it is what the
+    /// interpreter runs, which is the only sensible thing for a function whose
+    /// real implementation is outside the program.
+    pub extern_name: Option<Arc<str>>,
 }
 
 #[derive(Clone, Debug, Default)]
