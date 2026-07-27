@@ -23,6 +23,7 @@ use { mmio_layout } from "layout";
 //   slot   +0   the saved stack pointer, valid while the task is not running
 //   slot   +8   its address space, as the value CR3 takes (0 = the kernel's)
 //   slot   +16  the ring-0 stack an interrupt from it lands on (0 = none)
+//   slot   +24  free, ready, or dead-and-waiting-to-be-reclaimed
 mmio_layout! {
     TASK_USED_OFFSET: 8,
     TASK_CURRENT_OFFSET: 8,
@@ -33,8 +34,24 @@ mmio_layout! {
     TASK_RSP_OFFSET: 8,
     TASK_CR3_OFFSET: 8,
     TASK_STACK_OFFSET: 8,
+    TASK_STATE_OFFSET: 8,
     => TASK_SLOT_SIZE
 }
+
+// What a slot is.
+//
+// A slot used to be either "below the count" or "above it", which is another way
+// of saying a task could be born and never die. A kernel where nothing exits is
+// a kernel where the table is a watermark; giving a task an end means a slot has
+// to be reusable, and reusable means a slot has to say what it is.
+//
+// `DEAD` is a state and not a step, and that is the whole design. A task cannot
+// release the stack it is standing on — the release would hand back the pages
+// holding the very frame that is about to return. So an exiting task marks
+// itself and stops, and something that is *not it* gives the pages back later.
+const TASK_FREE = 0;
+const TASK_READY = 1;
+const TASK_DEAD = 2;
 
 fn task_table_size(capacity: Int) -> Int {
     return TASK_HEADER_SIZE + capacity * TASK_SLOT_SIZE;
@@ -75,7 +92,33 @@ fn task_table_init(base: Int, capacity: Int) {
     for offset in 0..((task_table_size(capacity) / 8) as Int) {
         task_set_word(base + offset * 8, 0);
     }
+    // Slot 0 is the task already running, on the stack the boot path gave it.
+    // `TASK_FREE` is zero, so every other slot is already free from the zeroing
+    // above — which is why this only has to say what slot 0 is.
+    task_set_field(base, 0, TASK_STATE_OFFSET, TASK_READY);
     task_set_word(base + TASK_USED_OFFSET, 1);
+}
+
+// The lowest slot nothing is using, or -1.
+//
+// Lowest rather than next: the point of an exit is that the slot comes back, and
+// a table that only ever grew would not need to look. The watermark is raised
+// when a slot past it is taken, so the scheduler still has a bound to sweep.
+fn task_find_free(base: Int, capacity: Int) -> Int {
+    for slot in 0..capacity {
+        if (task_field(base, slot, TASK_STATE_OFFSET) == TASK_FREE) {
+            return slot;
+        }
+    }
+    return 0 - 1;
+}
+
+fn task_state(base: Int, slot: Int) -> Int {
+    return task_field(base, slot, TASK_STATE_OFFSET);
+}
+
+fn task_set_state(base: Int, slot: Int, state: Int) {
+    task_set_field(base, slot, TASK_STATE_OFFSET, state);
 }
 
 // Builds the stack a task starts life on, and answers the stack pointer that

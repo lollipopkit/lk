@@ -55,8 +55,10 @@ use { has_mmap, mem_upper_kb, entry_count, entry_at, entry_base, entry_length,
 use { heap_init, heap_alloc, heap_release,
       used_bytes as heap_used, block_count as heap_blocks, largest_free as heap_largest } from "drivers/heap";
 use { task_table_init, task_word, task_set_word, task_field, task_set_field,
-      task_prepare_frame, TASK_USED_OFFSET, TASK_CURRENT_OFFSET, TASK_RSP_OFFSET,
-      TASK_CR3_OFFSET, TASK_STACK_OFFSET } from "drivers/tasks";
+      task_prepare_frame, task_find_free, task_state, task_set_state,
+      TASK_USED_OFFSET, TASK_CURRENT_OFFSET, TASK_RSP_OFFSET,
+      TASK_CR3_OFFSET, TASK_STACK_OFFSET,
+      TASK_FREE, TASK_READY, TASK_DEAD } from "drivers/tasks";
 use { table_zero, table_set, index_of, switch_to as space_switch,
       PAGE_PRESENT, PAGE_WRITE, PAGE_USER, SHIFT_PML4, SHIFT_PDPT,
       SHIFT_DIRECTORY, SHIFT_TABLE } from "drivers/paging";
@@ -362,7 +364,11 @@ const SHARED_USER_EXITED = SHARED_DRAG_DY + WORD;
 // the ordinary shape of a completion flag: 0 until an interrupt arrives, then
 // the bits the device said it raised. Read through `shared_read`, which is
 // volatile — a poll the compiler hoisted is a wait that never ends.
-const SHARED_EDU_MMIO = SHARED_USER_EXITED + WORD;
+// How much work the short-lived tasks got through, so the shell can tell "the
+// task ran and ended" from "the task was never scheduled".
+const SHARED_BRIEF_TICKS = SHARED_USER_EXITED + WORD;
+
+const SHARED_EDU_MMIO = SHARED_BRIEF_TICKS + WORD;
 const SHARED_EDU_SEEN = SHARED_EDU_MMIO + WORD;
 
 const SHARED_GRID = SHARED_EDU_SEEN + WORD;
@@ -1087,6 +1093,71 @@ fn alloc_contiguous(bytes: Int) -> Int {
 // `lspci` prints — slot.function, vendor:device, class, and where its first BAR
 // lives — because what is being checked is that each of those came out of
 // configuration space and not out of a constant.
+// Starts several tasks that end, and says what came back.
+//
+// The numbers are the claim. A slot count that does not return to what it was
+// means a task ended without its slot being reusable; a page count that does not
+// return means the stack was not given back. Both are invisible from the outside
+// — the machine goes on running perfectly well while it runs out.
+fn report_tasks(base: Int) {
+    let before_slots = task_word(TASK_TABLE_BASE + TASK_USED_OFFSET);
+    let before_pages = pages_free(SHARED_PAGES);
+    let before_ticks = shared_read(SHARED_BRIEF_TICKS);
+
+    // Interrupts on for the whole cycle, and masked again after.
+    //
+    // `run_command` is called with them masked, which is right for a command
+    // that touches a few shared words and returns. Waiting for a *task* is not
+    // that: nothing schedules without the timer, so the first version of this
+    // spawned twenty tasks that never ran, never returned, and never gave
+    // anything back — and reported it as the table filling up. The same shape as
+    // waiting for a device interrupt with interrupts off.
+    let saved = unsafe { cpu_irq_save() };
+
+    let started = 0;
+    for _round in 0..TASK_BRIEF_ROUNDS {
+        unsafe { cpu_irq_restore(0); };
+        let slot = spawn_task(unsafe { symbol_address("lk_task_brief") });
+        unsafe { cpu_irq_restore(1); };
+        if (slot < 0) {
+            break;
+        }
+        started = started + 1;
+        // Wait for it to finish and be reclaimed before starting the next.
+        //
+        // One at a time, deliberately: the point is that the *same* slot and the
+        // *same* pages come back and get used again. Starting all of them at
+        // once would only show that the table is big enough.
+        for _wait in 0..2000000 {
+            if (task_state(TASK_TABLE_BASE, slot) == TASK_FREE) {
+                break;
+            }
+        }
+    }
+
+    unsafe { cpu_irq_restore(saved); };
+
+    let ran = shared_read(SHARED_BRIEF_TICKS) - before_ticks;
+    emit(base, text_bytes("task ")
+        .chain(decimal(started))
+        .chain(text_bytes("/"))
+        .chain(decimal(TASK_BRIEF_ROUNDS))
+        .chain(text_bytes(" slots "))
+        .chain(decimal(before_slots))
+        .chain(text_bytes("->"))
+        .chain(decimal(task_word(TASK_TABLE_BASE + TASK_USED_OFFSET)))
+        .chain(text_bytes(" pages "))
+        .chain(decimal(before_pages))
+        .chain(text_bytes("->"))
+        .chain(decimal(pages_free(SHARED_PAGES)))
+        .chain(text_bytes(" ran "))
+        .chain(decimal(ran)));
+}
+
+// More rounds than the table has spare slots, so a slot that never came back
+// would run the table out rather than merely look tidy.
+const TASK_BRIEF_ROUNDS = 20;
+
 fn report_pci(base: Int) {
     let devices = pci_devices();
     for index in 0..devices.len() {
@@ -1667,6 +1738,10 @@ fn run_command(base: Int) -> Int {
         report_edu(base);
         return 1;
     }
+    if (line_starts_with(text_bytes("task"))) {             // "task"
+        report_tasks(base);
+        return 1;
+    }
     if (line_starts_with(text_bytes("net"))) {               // "net"
         report_net(base);
         return 1;
@@ -1827,17 +1902,21 @@ fn enter_user(entry: Int, stack: Int, code: Int, data: Int) -> Int {
 // checks. Answers 0 when it cannot get all of them — a stack that is short by a
 // page is not a stack, it is a task that overruns into whatever is next.
 fn alloc_task_stack() -> Int {
-    let base = page_alloc(SHARED_PAGES);
+    let base = alloc_contiguous(TASK_STACK_PAGES * PAGE_SIZE);
     if (base == 0) {
         return 0;
     }
-    for index in 1..TASK_STACK_PAGES {
-        let page = page_alloc(SHARED_PAGES);
-        if (page != base + index * PAGE_SIZE) {
-            return 0;
-        }
-    }
     return base + TASK_STACK_PAGES * PAGE_SIZE;
+}
+
+// Gives a stack back, by the top the spawner was handed.
+//
+// The top rather than the base, because the top is what the table holds — a task
+// slot records where the stack *ends*, since that is what the frame was built
+// down from. Converting here rather than at the two call sites keeps the one
+// piece of arithmetic that has to match `alloc_task_stack` next to it.
+fn release_task_stack(top: Int) {
+    pages_release_run(SHARED_PAGES, top - TASK_STACK_PAGES * PAGE_SIZE, TASK_STACK_PAGES);
 }
 
 // Publishes a prepared slot. The count goes last, and that ordering is the
@@ -1847,8 +1926,19 @@ fn publish_task(slot: Int, rsp: Int, cr3: Int, kernel_stack: Int) -> Int {
     task_set_field(TASK_TABLE_BASE, slot, TASK_RSP_OFFSET, rsp);
     task_set_field(TASK_TABLE_BASE, slot, TASK_CR3_OFFSET, cr3);
     task_set_field(TASK_TABLE_BASE, slot, TASK_STACK_OFFSET, kernel_stack);
-    task_set_word(TASK_TABLE_BASE + TASK_USED_OFFSET, slot + 1);
-    shared_write(SHARED_TASK_COUNT, slot + 1);
+    // The state last, and that ordering is the contract: this is the word the
+    // scheduler reads to decide the slot is worth resuming, so a slot announced
+    // ready before its stack pointer is written is a resume into zero. It is the
+    // same reason the count used to go last, made per-slot.
+    task_set_state(TASK_TABLE_BASE, slot, TASK_READY);
+    // The watermark: one past the highest slot ever taken, which is how far the
+    // scheduler has to sweep. It only rises — a slot that comes free stays
+    // inside the swept range, and shrinking it would mean proving nothing above
+    // is live, which is a scan to save a scan.
+    if (slot + 1 > task_word(TASK_TABLE_BASE + TASK_USED_OFFSET)) {
+        task_set_word(TASK_TABLE_BASE + TASK_USED_OFFSET, slot + 1);
+        shared_write(SHARED_TASK_COUNT, slot + 1);
+    }
     return slot;
 }
 
@@ -1859,20 +1949,35 @@ fn spawn_task(entry: Int) -> Int {
     if (entry == 0) {
         return 0 - 1;
     }
-    let slot = task_word(TASK_TABLE_BASE + TASK_USED_OFFSET);
-    if (slot >= TASK_CAPACITY) {
+    let slot = task_find_free(TASK_TABLE_BASE, TASK_CAPACITY);
+    if (slot < 0) {
         return 0 - 1;
     }
     let top = alloc_task_stack();
     if (top == 0) {
         return 0 - 1;
     }
+    // Where the task goes when its body returns.
+    //
+    // The very top word of the stack, and the frame is built *below* it. That
+    // ordering is the whole of it: `task_prepare_frame` writes downward from
+    // whatever it is given, and its first write is the frame's SS — so writing
+    // the exit address at `top - 8` and then building the frame from `top` puts
+    // the selector on top of it. The first version did exactly that, and the
+    // task returned into `0x10` and took a #UD at address 0x13.
+    //
+    // The word has to exist because the ABI assumes a `call` has just pushed a
+    // return address, and `iretq` pushes nothing. Left zero, a task that simply
+    // finished would `ret` into address zero. A task with no way to return is
+    // not a task, it is a loop that was started.
+    let exit_slot = top - 8;
+    task_set_word(exit_slot, unsafe { symbol_address("lk_task_exit") } as Int);
     // One word below the top, so the task begins with the stack in the phase a
     // function expects: the ABI assumes a `call` has just pushed a return
     // address, and `iretq` pushes nothing. Without the offset the first aligned
     // SSE spill inside the task faults, in whatever it happened to call.
-    let rsp = task_prepare_frame(top, entry, KERNEL_CODE_SELECTOR, KERNEL_DATA_SELECTOR, top - 8,
-                                 task_saved_words());
+    let rsp = task_prepare_frame(exit_slot, entry, KERNEL_CODE_SELECTOR, KERNEL_DATA_SELECTOR,
+                                 exit_slot, task_saved_words());
     return publish_task(slot, rsp, 0, top);
 }
 
@@ -1889,14 +1994,18 @@ fn spawn_user_task(entry: Int, stack_virtual: Int, cr3: Int) -> Int {
     if (entry == 0 || cr3 == 0) {
         return 0 - 1;
     }
-    let slot = task_word(TASK_TABLE_BASE + TASK_USED_OFFSET);
-    if (slot >= TASK_CAPACITY) {
+    let slot = task_find_free(TASK_TABLE_BASE, TASK_CAPACITY);
+    if (slot < 0) {
         return 0 - 1;
     }
     let top = alloc_task_stack();
     if (top == 0) {
         return 0 - 1;
     }
+    // No exit address for a ring-3 task: the word below the top of *this* stack
+    // is in the kernel's space, and the task returns onto its own virtual stack
+    // in its own space. A user task that runs off the end faults, which is the
+    // boundary doing its job — ending it is what the syscall is for.
     let rsp = task_prepare_frame(top, entry, USER_CODE_SELECTOR, USER_DATA_SELECTOR, stack_virtual,
                                  task_saved_words());
     return publish_task(slot, rsp, cr3, top);
@@ -1915,17 +2024,90 @@ fn task_saved_words() -> Int {
 // and answering the one to resume on. Everything between is bookkeeping this
 // program owns: which slot was running, which is next, whose address space, and
 // whose kernel stack.
+// A task that does a little work and then ends.
+//
+// It exists to prove the end. Every other task in this kernel is a `while (true)`
+// — which is honest for a spinner and a clock, and useless for showing that a
+// slot and a stack come back, because they never do. This one counts to a number
+// and returns, and returning is the whole point: no exit call, no cooperation
+// with the scheduler, just a function that finishes the way any function does.
+#[export("lk_task_brief")]
+fn task_brief() {
+    for _step in 0..200000 {
+        shared_bump(SHARED_BRIEF_TICKS);
+    }
+}
+
+// Where a task goes when its body returns.
+//
+// It marks its own slot dead and then stops. It cannot do the rest: releasing
+// the stack would hand back the pages holding the frame this is standing on, and
+// the very next interrupt would land on memory the allocator had given away. So
+// this is half an exit, and `reap_dead_tasks` below is the other half — run by
+// something that is not this task.
+//
+// The wait is `hlt` rather than a spin: there is nothing to do, and the only
+// thing that can end it is the timer, which is exactly what `hlt` waits for.
+#[export("lk_task_exit")]
+fn task_exit() {
+    let irq = unsafe { cpu_irq_save() };
+    let current = task_word(TASK_TABLE_BASE + TASK_CURRENT_OFFSET);
+    task_set_state(TASK_TABLE_BASE, current, TASK_DEAD);
+    unsafe { cpu_irq_restore(irq); };
+    while (true) {
+        unsafe { cpu_wait_for_interrupt(); };
+    }
+}
+
+// Gives back the stacks of tasks that have ended.
+//
+// Run from the scheduler, and it skips two slots on purpose: the one the CPU is
+// on and the one it is about to be on. A dead task is still standing on its
+// stack until something else is running, so the first switch away from it can
+// only mark it — the pages come back a tick later, when it is neither.
+//
+// That is why `DEAD` is a state rather than a step. There is no moment inside
+// the exiting task where the release is safe.
+fn reap_dead_tasks(current: Int, next: Int) {
+    let watermark = task_word(TASK_TABLE_BASE + TASK_USED_OFFSET);
+    for slot in 0..watermark {
+        if (slot == current || slot == next) {
+            continue;
+        }
+        if (task_state(TASK_TABLE_BASE, slot) != TASK_DEAD) {
+            continue;
+        }
+        let top = task_field(TASK_TABLE_BASE, slot, TASK_STACK_OFFSET);
+        if (top != 0) {
+            release_task_stack(top);
+        }
+        task_set_field(TASK_TABLE_BASE, slot, TASK_STACK_OFFSET, 0);
+        task_set_field(TASK_TABLE_BASE, slot, TASK_RSP_OFFSET, 0);
+        task_set_field(TASK_TABLE_BASE, slot, TASK_CR3_OFFSET, 0);
+        // Free last: it is what makes the slot takeable, and a slot handed to a
+        // spawner before its stack is back is a spawner that allocates while
+        // this one is still releasing.
+        task_set_state(TASK_TABLE_BASE, slot, TASK_FREE);
+    }
+}
+
 #[export("lk_schedule_from_interrupt")]
 fn schedule_from_interrupt(rsp: Int) -> Int {
     let current = task_word(TASK_TABLE_BASE + TASK_CURRENT_OFFSET);
     task_set_field(TASK_TABLE_BASE, current, TASK_RSP_OFFSET, rsp);
 
     let next = schedule(current);
-    // Clamped against what is *spawned*, not against the capacity: a scheduler
-    // naming an empty slot would resume a stack that was never prepared.
+    // Clamped against the watermark, not the capacity: a scheduler naming a slot
+    // above everything ever spawned would resume a stack that was never
+    // prepared. And clamped against the slot's *state*, because since tasks can
+    // end, a slot inside the watermark is not necessarily one to resume.
     if (next < 0 || next >= task_word(TASK_TABLE_BASE + TASK_USED_OFFSET)) {
         next = current;
     }
+    if (task_state(TASK_TABLE_BASE, next) != TASK_READY) {
+        next = current;
+    }
+    reap_dead_tasks(current, next);
 
     // The address space before the stack pointer, and that order is the point:
     // the value returned below is a pointer the CPU reads *after* this returns,
@@ -2672,7 +2854,20 @@ fn schedule(current: Int) -> Int {
     if (count <= 1) {
         return current;
     }
-    return (current + 1) % count;
+    // The next slot that is *ready*, not simply the next slot. Since a task can
+    // end, the range below the watermark has holes in it, and handing one to the
+    // switch would resume a stack that has been given back.
+    //
+    // Bounded by the range rather than by "until we find one": every slot may be
+    // dead but the one running, and a loop with no bound would be a scheduler
+    // that never returns from a timer interrupt.
+    for step in 1..(count + 1) {
+        let candidate = (current + step) % count;
+        if (task_state(TASK_TABLE_BASE, candidate) == TASK_READY) {
+            return candidate;
+        }
+    }
+    return current;
 }
 
 // The second task: a spinner in the top-right corner.
