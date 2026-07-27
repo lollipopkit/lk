@@ -63,6 +63,14 @@ pub(crate) enum Builtin {
     // build blocks mid-instruction; a call per shift is the price of the check.
     Shl,
     Shr,
+    /// `symbol_address("name")` — the address of an `#[export]`ed function, and
+    /// `call_address_2(addr, a, b)` — a call through one. Together they are
+    /// what a driver table is made of: an array of function pointers, indexed
+    /// by device or by window, instead of an `if` chain edited for every new
+    /// entry. The name must be a literal, because a relocation is a name at
+    /// link time and there is nothing to look one up in at run time.
+    SymbolAddress,
+    CallAddress2,
     /// `select$block(types, chans, values, guards, has_default)`.
     SelectBlock,
 }

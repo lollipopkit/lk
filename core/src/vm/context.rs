@@ -440,6 +440,11 @@ impl VmContext {
         self.install_runtime_builtin("__lk_bit_and", NativeFunction::Plain(core_bit_and_builtin), 2);
         self.install_runtime_builtin("__lk_bit_or", NativeFunction::Plain(core_bit_or_builtin), 2);
         self.install_runtime_builtin("__lk_bit_not", NativeFunction::Plain(core_bit_not_builtin), 1);
+        // Function pointers: the address of an exported function, and a call
+        // through one. Native-only, like the rest of `hardware` — the VM
+        // refuses instead of inventing an address.
+        self.install_runtime_builtin("symbol_address", NativeFunction::Plain(core_symbol_address_builtin), 1);
+        self.install_runtime_builtin("call_address_2", NativeFunction::Plain(core_call_address_2_builtin), 3);
         self.install_runtime_builtin("__lk_shl", NativeFunction::Plain(core_shl_builtin), 2);
         self.install_runtime_builtin("__lk_shr", NativeFunction::Plain(core_shr_builtin), 2);
     }
@@ -1229,6 +1234,8 @@ hardware_builtins! {
     core_cpu_irq_restore_builtin => super::hardware::cpu_irq_restore;
     core_cpu_wait_for_interrupt_builtin => super::hardware::cpu_wait_for_interrupt;
     core_cpu_timestamp_builtin => super::hardware::cpu_timestamp;
+    core_symbol_address_builtin => super::hardware::symbol_address;
+    core_call_address_2_builtin => super::hardware::call_address_2;
     core_volatile_read_u8 => super::hardware::volatile_read_u8;
     core_volatile_write_u8 => super::hardware::volatile_write_u8;
     core_volatile_read_u16 => super::hardware::volatile_read_u16;

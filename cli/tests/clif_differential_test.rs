@@ -363,6 +363,59 @@ fn try_catch_differential() {
 /// The VM masks inside its `i64` carrier and sign-extends back; Cranelift does
 /// `ireduce` then `sextend`/`uextend`. Those are different mechanisms, so this
 /// is where a divergence would show up.
+/// Function pointers: an exported function's address, and a call through it.
+///
+/// Not a *differential* test in the usual sense — the VM refuses both builtins,
+/// because an interpreter has no code addresses to hand out and returning a
+/// fake one would produce a program that runs interpreted and jumps into
+/// nothing when compiled. What is checked is that the native side computes the
+/// answer, which is the whole of the feature: a driver table is an array of
+/// these.
+#[test]
+fn function_pointers_are_native_only() {
+    use std::process::Command;
+
+    let dir = std::env::temp_dir().join(format!("lk_fnptr_{}", std::process::id()));
+    let _ = fs::create_dir_all(&dir);
+    let source = dir.join("fnptr.lk");
+    fs::write(
+        &source,
+        "#[export(\"probe_add\")]\nfn probe_add(a: Int, b: Int) -> Int {\n    return a + b;\n}\n\n\
+         let p = unsafe { symbol_address(\"probe_add\") };\nprintln(unsafe { call_address_2(p, 20, 22) });\n",
+    )
+    .expect("write source");
+
+    // The VM refuses, by name.
+    let vm = Command::new(env!("CARGO_BIN_EXE_lk"))
+        .arg(&source)
+        .output()
+        .expect("run vm");
+    let message = String::from_utf8_lossy(&vm.stderr);
+    assert!(!vm.status.success(), "the VM must refuse: {message}");
+    assert!(
+        message.contains("symbol_address requires native compilation"),
+        "the refusal must name the builtin: {message}"
+    );
+
+    // Compiled, it answers.
+    let exe = dir.join("fnptr");
+    let compile = Command::new(env!("CARGO_BIN_EXE_lk"))
+        .args(["compile"])
+        .arg(&source)
+        .env("LK_AOT_NO_FALLBACK", "1")
+        .env("LK_AOT_HYBRID", "0")
+        .output()
+        .expect("compile");
+    assert!(
+        compile.status.success(),
+        "compile failed: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let run = Command::new(&exe).output().expect("run native");
+    assert_eq!(String::from_utf8_lossy(&run.stdout).trim(), "42");
+    let _ = fs::remove_dir_all(&dir);
+}
+
 /// `<<` and `>>`, which lower to the range-checked `lkrt` helpers rather than
 /// to a machine shift. Both halves matter: the values have to agree, and so
 /// does the *failure* — a shift amount out of range raises on both sides, and

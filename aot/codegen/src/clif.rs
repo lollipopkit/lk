@@ -837,6 +837,37 @@ impl Lower {
                 };
                 self.set1(*dst, v);
             }
+            Inst::SymbolAddr { dst, symbol } => {
+                // Declared with the signature the indirect call will use, so
+                // the two agree by construction. The symbol is an `#[export]`ed
+                // LK function or something the board provides; either way it is
+                // an import here, resolved by the linker.
+                let callee = mctx.extern_func(symbol, &[Ty::I64, Ty::I64], Ty::I64)?;
+                let reference = mctx.module.declare_func_in_func(callee, b.func);
+                let address = b.ins().func_addr(types::I64, reference);
+                self.set1(*dst, address);
+                return Ok(());
+            }
+            Inst::CallIndirect { dst, callee, args } => {
+                let target = self.v(*callee)?;
+                let a = self.args_v(args)?;
+                let cc = mctx.module.isa().default_call_conv();
+                let mut sig = Signature::new(cc);
+                for _ in &a {
+                    sig.params.push(AbiParam::new(types::I64));
+                }
+                sig.returns.push(AbiParam::new(types::I64));
+                let sig_ref = b.import_signature(sig);
+                let call = b.ins().call_indirect(sig_ref, target, &a);
+                if let Some(d) = dst {
+                    let result = *b
+                        .inst_results(call)
+                        .first()
+                        .ok_or(ClifError::Unsupported("indirect call returned nothing"))?;
+                    self.set1(*d, result);
+                }
+                return Ok(());
+            }
             Inst::CallExtern {
                 dst,
                 symbol,

@@ -457,6 +457,37 @@ pub(crate) fn lower_builtin_call(
                 args: call_args,
             });
         }
+        Builtin::SymbolAddress => {
+            // The name has to be a literal: a relocation is a name resolved at
+            // link time, and a kernel has no symbol table to look one up in.
+            if argc != 1 {
+                return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+            }
+            let (name_value, _) = ssa.read(base.wrapping_add(1), block, pc)?;
+            let Some(symbol) = ssa.const_strs.get(&name_value).cloned() else {
+                return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+            };
+            let dst = ssa.new_val();
+            insts.push(Inst::SymbolAddr { dst, symbol });
+            ssa.write(base, block, (dst, Ty::I64));
+            return Ok(());
+        }
+        Builtin::CallAddress2 => {
+            if argc != 3 {
+                return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+            }
+            let callee = read_index_scalar(ssa, insts, base.wrapping_add(1), block, pc)?;
+            let first = read_index_scalar(ssa, insts, base.wrapping_add(2), block, pc)?;
+            let second = read_index_scalar(ssa, insts, base.wrapping_add(3), block, pc)?;
+            let dst = ssa.new_val();
+            insts.push(Inst::CallIndirect {
+                dst: Some(dst),
+                callee,
+                args: vec![first, second],
+            });
+            ssa.write(base, block, (dst, Ty::I64));
+            return Ok(());
+        }
         Builtin::VolatileRead(bits) => {
             // `volatile_read_uN(ptr)`. The address is an `I64` — a pointer is
             // just an address, and the type checker has already established

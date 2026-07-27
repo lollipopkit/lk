@@ -243,6 +243,14 @@ const SHARED_CURSOR_DRAWN = SHARED_CURSOR_Y + WORD;
 // when the answer changed.
 const SHARED_CLOCK_SHOWN = SHARED_CURSOR_DRAWN + WORD;
 const SHARED_Z_ORDER = SHARED_CLOCK_SHOWN + WORD;
+// One repaint function per window, by address.
+//
+// This is a driver table, and it is here for the reason kernels have them: the
+// alternative is a chain of `if slot == ...` in the middle of the window
+// manager, edited every time a window is added, so that adding a window means
+// changing code that has nothing to do with it. With a table, a window
+// registers what draws it and the manager never learns its name.
+const SHARED_WINDOW_PAINT = SHARED_Z_ORDER + WINDOW_COUNT * WORD;
 
 // Which window the pointer is dragging, and where inside it the drag began.
 // -1 when nothing is being dragged; the offset is what keeps the window from
@@ -257,7 +265,7 @@ const SHARED_Z_ORDER = SHARED_CLOCK_SHOWN + WORD;
 // sentinel that survives the round trip is the fix; the shape of the bug is
 // the lesson.
 const DRAG_NONE = WINDOW_COUNT;
-const SHARED_DRAG_SLOT = SHARED_Z_ORDER + WINDOW_COUNT * WORD;
+const SHARED_DRAG_SLOT = SHARED_WINDOW_PAINT + WINDOW_COUNT * WORD;
 const SHARED_DRAG_DX = SHARED_DRAG_SLOT + WORD;
 const SHARED_DRAG_DY = SHARED_DRAG_DX + WORD;
 
@@ -1265,22 +1273,48 @@ fn draw_clock(base: Int) {
 // back. So each window here is defined by something it can be redrawn from:
 // the terminal from its character grid, the spinner from its step counter, the
 // clock from the tick count. None of them remember pixels.
-fn repaint_window(base: Int, slot: Int) {
-    if (slot == WINDOW_SHELL) {
-        // The terminal's whole area, from the grid.
-        repaint_cells(base, 0, 0, WIDTH, HEIGHT);
-        repaint_frame(base, WINDOW_SHELL);
-        return;
-    }
+// Each window's own painter, exported so its address can go in the table.
+//
+// The signature is the table's, not each window's: two integers in, one out.
+// A table of function pointers is a *single* signature by definition — that is
+// what makes it a table — and the return value is unused here, present because
+// one uniform shape costs less than two.
+#[export("lk_paint_shell")]
+fn paint_shell(base: Int, slot: Int) -> Int {
+    repaint_cells(base, 0, 0, WIDTH, HEIGHT);
+    repaint_frame(base, WINDOW_SHELL);
+    return 0;
+}
+
+#[export("lk_paint_spinner")]
+fn paint_spinner(base: Int, slot: Int) -> Int {
     window_fill(base, WIDTH, SHARED_WINDOWS, slot, 0, 0,
                 window_width(SHARED_WINDOWS, slot), window_height(SHARED_WINDOWS, slot), BACKGROUND);
-    if (slot == WINDOW_SPINNER) {
-        draw_glyph_in_window(base, WINDOW_SPINNER, spinner_glyph(), 1, 1);
-    }
-    if (slot == WINDOW_CLOCK) {
-        draw_clock(base);
-    }
+    draw_glyph_in_window(base, WINDOW_SPINNER, spinner_glyph(), 1, 1);
     repaint_frame(base, slot);
+    return 0;
+}
+
+#[export("lk_paint_clock")]
+fn paint_clock(base: Int, slot: Int) -> Int {
+    window_fill(base, WIDTH, SHARED_WINDOWS, slot, 0, 0,
+                window_width(SHARED_WINDOWS, slot), window_height(SHARED_WINDOWS, slot), BACKGROUND);
+    draw_clock(base);
+    repaint_frame(base, slot);
+    return 0;
+}
+
+// Draws a window, by asking the window how.
+//
+// The window manager does not know what any of them contain: it holds an
+// address per slot and calls it. Adding a window is registering a painter, not
+// editing this function.
+fn repaint_window(base: Int, slot: Int) {
+    let painter = shared_read(SHARED_WINDOW_PAINT + slot * WORD);
+    if (painter == 0) {
+        return;
+    }
+    unsafe { call_address_2(painter, base, slot) };
 }
 
 // Redraws whatever sits above `slot` and touches it.
@@ -1650,6 +1684,10 @@ window_define(SHARED_WINDOWS, WINDOW_CLOCK,
               (text_columns() - 11) * CELL_WIDTH, 3 * CELL_HEIGHT, 8 * CELL_WIDTH + 2, CELL_HEIGHT + 2);
 // Bottom of the stack to the top: the shell is the desktop, and the two panes
 // sit on it in the order they were defined until a click says otherwise.
+// Each window says what draws it, once, here.
+shared_write(SHARED_WINDOW_PAINT + WINDOW_SHELL * WORD, unsafe { symbol_address("lk_paint_shell") });
+shared_write(SHARED_WINDOW_PAINT + WINDOW_SPINNER * WORD, unsafe { symbol_address("lk_paint_spinner") });
+shared_write(SHARED_WINDOW_PAINT + WINDOW_CLOCK * WORD, unsafe { symbol_address("lk_paint_clock") });
 z_set(0, WINDOW_SHELL);
 z_set(1, WINDOW_SPINNER);
 z_set(2, WINDOW_CLOCK);

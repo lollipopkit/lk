@@ -238,6 +238,22 @@ pub enum Inst {
     ///
     /// Unlike an `AbiRef` call, the signature is not in a table: it comes from
     /// the declaration, so it travels with the instruction.
+    /// The address of an `#[export]`ed symbol, as an integer.
+    ///
+    /// What a driver table is made of. A kernel dispatches through arrays of
+    /// function pointers — interrupt vectors, device operations, per-window
+    /// repaint — and the alternative in a language without them is a chain of
+    /// `if`s that has to be edited every time a device is added. There is no
+    /// VM equivalent: an interpreter has no code addresses to hand out, so the
+    /// builtin refuses there rather than inventing one.
+    SymbolAddr { dst: ValueId, symbol: String },
+    /// Calls through an address held in a value, with a fixed integer
+    /// signature. The other half of a driver table.
+    CallIndirect {
+        dst: Option<ValueId>,
+        callee: ValueId,
+        args: Vec<ValueId>,
+    },
     CallExtern {
         dst: Option<ValueId>,
         symbol: String,
@@ -804,6 +820,14 @@ fn render_inst(inst: &Inst) -> String {
                 None => call,
             }
         }
+        Inst::SymbolAddr { dst, symbol } => format!("{} = symbol.addr {symbol}", v(*dst)),
+        Inst::CallIndirect { dst, callee, args: a } => {
+            let call = format!("call.indirect v{}({})", callee.0, args(a));
+            match dst {
+                Some(d) => format!("{} = {call}", v(*d)),
+                None => call,
+            }
+        }
         Inst::CallExtern {
             dst, symbol, args: a, ..
         } => {
@@ -945,6 +969,8 @@ pub(crate) fn inst_def(inst: &Inst) -> Option<ValueId> {
         | Inst::MaybeWrap { dst, .. }
         | Inst::Select { dst, .. }
         | Inst::GlobalGet { dst, .. } => Some(*dst),
+        Inst::SymbolAddr { dst, .. } => Some(*dst),
+        Inst::CallIndirect { dst, .. } => *dst,
         Inst::Call { dst, .. } | Inst::CallFn { dst, .. } | Inst::CallExtern { dst, .. } | Inst::CallVm { dst, .. } => {
             *dst
         }
@@ -985,6 +1011,12 @@ fn inst_uses(inst: &Inst) -> Vec<ValueId> {
         | Inst::MapGetMaybeStrF64 { handle, key, .. }
         | Inst::MapGetMaybeI64F64 { handle, key, .. } => {
             vec![*handle, *key]
+        }
+        Inst::SymbolAddr { .. } => vec![],
+        Inst::CallIndirect { callee, args, .. } => {
+            let mut values = vec![*callee];
+            values.extend(args.iter().copied());
+            values
         }
         Inst::Call { args, .. }
         | Inst::CallFn { args, .. }

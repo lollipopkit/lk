@@ -580,6 +580,11 @@ fn is_removable(inst: &Inst) -> bool {
         // A call to something outside the program can do anything, so it is
         // never dead — the same reasoning as a host call.
         Inst::CallExtern { .. } => false,
+        // A call through an address is a call to something unknown: it can do
+        // anything, so it is never dead. Taking an address is pure, so it
+        // follows the ordinary rule and may be dropped when nothing reads it.
+        Inst::CallIndirect { .. } => false,
+        Inst::SymbolAddr { .. } => true,
         Inst::IntBin { op, .. } => !matches!(op, IntBinOp::Div | IntBinOp::Mod),
         Inst::FloatBin { op, .. } => !matches!(op, FloatBinOp::Div | FloatBinOp::Mod),
         Inst::Const { .. }
@@ -624,6 +629,12 @@ fn uses_mut(inst: &mut Inst) -> Vec<&mut ValueId> {
     match inst {
         Inst::Const { .. } | Inst::GlobalGet { .. } => vec![],
         Inst::CallExtern { args, .. } => args.iter_mut().collect(),
+        Inst::SymbolAddr { .. } => vec![],
+        Inst::CallIndirect { callee, args, .. } => {
+            let mut values: Vec<&mut ValueId> = vec![callee];
+            values.extend(args.iter_mut());
+            values
+        }
         Inst::IntBin { lhs, rhs, .. }
         | Inst::FloatBin { lhs, rhs, .. }
         | Inst::Cmp { lhs, rhs, .. }

@@ -277,6 +277,34 @@ pub(super) fn cpu_irq_restore(_args: NativeArgs<'_>) -> Result<RuntimeVal> {
     ))
 }
 
+/// The address of an `#[export]`ed function, as an integer.
+///
+/// A driver table is an array of these. A kernel dispatches through one for
+/// interrupt vectors, device operations, per-window repaint — and the
+/// alternative in a language without function pointers is a chain of `if`s that
+/// has to be edited every time a device is added.
+///
+/// The VM refuses rather than inventing an answer: an interpreter has no code
+/// addresses to give out, and returning a fake one would produce a program that
+/// runs under the VM and jumps into nothing when compiled. Refusing is the same
+/// choice `port_in_u8` makes, for the same reason.
+pub(super) fn symbol_address(_args: NativeArgs<'_>) -> Result<RuntimeVal> {
+    Err(anyhow!(
+        "symbol_address requires native compilation: the VM has no code addresses to hand out"
+    ))
+}
+
+/// Calls through an address, with two integer arguments.
+///
+/// The other half of a driver table. Two arguments because that is what the
+/// callers here need and every argument count is a separate signature at the
+/// machine level; more can be added when something wants them.
+pub(super) fn call_address_2(_args: NativeArgs<'_>) -> Result<RuntimeVal> {
+    Err(anyhow!(
+        "call_address_2 requires native compilation: the VM cannot call through an address"
+    ))
+}
+
 /// A monotonically increasing count of core cycles.
 ///
 /// For measuring, which a kernel needs before it can honestly claim anything
