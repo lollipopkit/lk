@@ -52,5 +52,17 @@ SECTIONS
     . = . + 0x10000;
     __stack_top = .;
 
+    /* The image must stop below the shared page.
+     *
+     * `program.lk` and the interrupt handlers agree on 0x300000 by writing the
+     * number down, not by asking the linker — an interrupt handler cannot look
+     * anything up. Growing the image past it would not fail to build and would
+     * not fail to boot: it would quietly put the key handler's line buffer on
+     * top of the kernel's own data. Since the interpreter went in, the image is
+     * ten times the size it was, so this is a real bound rather than a
+     * theoretical one. */
+    ASSERT(__bss_end < 0x300000,
+           "the image has grown into the shared page at 0x300000 (see SHARED_BASE in program.lk)")
+
     /DISCARD/ : { *(.eh_frame*) *(.comment) }
 }

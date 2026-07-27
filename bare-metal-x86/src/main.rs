@@ -21,17 +21,31 @@ use core::panic::PanicInfo;
 use core::ptr::addr_of_mut;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-/// Bump allocation: enough for a one-shot program, and it keeps the demo about
-/// the compiled code rather than about allocator choice.
-const HEAP_SIZE: usize = 256 * 1024;
-static mut HEAP: [u8; HEAP_SIZE] = [0; HEAP_SIZE];
+/// The machine's memory, decided here and nowhere else.
+///
+/// Written down because three things now want RAM and none of them can ask: the
+/// kernel image, the Rust heap the interpreter allocates from, and the page
+/// allocator the LK program hands out. A heap in `.bss` would have been simpler
+/// until it grew — `.bss` follows the image, and at a few megabytes it reaches
+/// up over the shared page at 0x300000, which is a fixed address the program
+/// and the interrupt handlers agree on. Fixed regions cannot creep.
+///
+/// | region | what |
+/// | --- | --- |
+/// | `0x00100000`.. | this image, and its `.bss` |
+/// | `0x00300000`.. | the shared page (`SHARED_BASE` in `program.lk`) |
+/// | `0x00380000`.. | 64 KiB staging for a source file read off the disk |
+/// | `0x00400000`.. | the interpreter's heap, 28 MiB |
+/// | `0x02000000`.. | the LK page allocator's arena |
+const HEAP_BASE: usize = 0x0040_0000;
+const HEAP_SIZE: usize = 28 * 1024 * 1024;
 static OFFSET: AtomicUsize = AtomicUsize::new(0);
 
 struct Bump;
 
 unsafe impl GlobalAlloc for Bump {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let base = addr_of_mut!(HEAP) as usize;
+        let base = HEAP_BASE;
         let mut cur = OFFSET.load(Ordering::Relaxed);
         loop {
             let start = (base + cur + layout.align() - 1) & !(layout.align() - 1);
@@ -180,5 +194,76 @@ pub extern "C" fn kernel_main() -> ! {
     unsafe { port_out_u8(0xf4, 0) };
     loop {
         core::hint::spin_loop();
+    }
+}
+
+// ------------------------------------------------------------ the interpreter
+
+/// Where a source file read off the disk is staged, and how much of one this
+/// kernel will take. See the memory map above.
+const SOURCE_BASE: usize = 0x0038_0000;
+const SOURCE_MAX: usize = 64 * 1024;
+
+unsafe extern "C" {
+    /// The console, which belongs to the LK program: it owns the cursor, the
+    /// window rectangles and the serial line. Rust holds the interpreter and
+    /// nothing else — output goes back the way it came.
+    fn lk_console_byte(byte: i64);
+}
+
+/// The `println` sink the bare stdlib writes through.
+fn console_write(text: &str) {
+    for byte in text.bytes() {
+        unsafe { lk_console_byte(i64::from(byte)) };
+    }
+}
+
+/// Runs an LK program the kernel read off the disk.
+///
+/// This is the direction the whole demo has been pointing at: the kernel is
+/// compiled LK, and what it now hosts is an *interpreter* for LK, running a
+/// program that was not part of the image. Nothing about the program is known
+/// at build time — it arrives as bytes on a disk, is parsed here, and prints
+/// through the kernel's own console.
+///
+/// Returns 0 on success, or a negative code naming the stage that failed. A
+/// code rather than a message because the caller is LK code with no way to own
+/// a string this side made, and because the stage is the useful part: a parse
+/// failure and a runtime failure want different next steps.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_run(address: i64, length: i64) -> i64 {
+    use alloc::sync::Arc;
+    use lk_core::module::ModuleRegistry;
+    use lk_core::syntax::{ParseOptions, parse_program_source};
+    use lk_core::vm::{ModuleResolver, VmContext, execute_program_with_ctx};
+
+    if address as usize != SOURCE_BASE || length < 0 || length as usize > SOURCE_MAX {
+        return -1;
+    }
+    let bytes = unsafe { core::slice::from_raw_parts(address as *const u8, length as usize) };
+    let Ok(source) = core::str::from_utf8(bytes) else {
+        return -2;
+    };
+
+    lk_stdlib_bare::set_output(console_write);
+    let options = ParseOptions {
+        // Macro expansion resolves imports through a filesystem the parser
+        // knows how to reach, and there is none here — the one this kernel has
+        // is its own, three layers down in `drivers/tarfs.lk`.
+        expand_macros: false,
+        ..Default::default()
+    };
+    let Ok(program) = parse_program_source(source, options) else {
+        return -3;
+    };
+
+    let mut registry = ModuleRegistry::new();
+    if lk_stdlib_bare::register_bare_stdlib(&mut registry).is_err() {
+        return -4;
+    }
+    let mut ctx = VmContext::new().with_resolver(Arc::new(ModuleResolver::with_registry(registry)));
+    match execute_program_with_ctx(&program, &mut ctx) {
+        Ok(_) => 0,
+        Err(_) => -5,
     }
 }

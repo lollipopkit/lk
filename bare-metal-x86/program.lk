@@ -181,6 +181,11 @@ const SECTOR_SIZE = 512;
 // using, because a demonstration that destroys the medium it demonstrates on is
 // a demonstration nobody runs twice.
 const SCRATCH_SECTOR = 32;
+// Where the board stages a source file, and how big one may be. The address is
+// agreed with `src/main.rs`, which refuses anything else — see the memory map
+// there.
+const SOURCE_BASE = 0x00380000;
+const SOURCE_MAX = 0x10000;
 // Two words the filesystem answers through: the first data sector of a file it
 // found, and the file's size.
 const SHARED_FILE = SHARED_SECTOR + SECTOR_SIZE;
@@ -587,6 +592,46 @@ fn print_file(base: Int, name: List<Int>) {
     }
 }
 
+// Reads a file off the disk and asks the board to run it.
+//
+// The kernel is compiled LK; what it starts here is an *interpreter* for LK,
+// on a program that was not part of the image and is not known until it is
+// read. Everything it prints comes back through `lk_console_byte`, so it
+// scrolls in the same window as the shell that started it.
+fn run_file(base: Int, name: List<Int>) {
+    let found = tar_find(name, SHARED_SECTOR, SHARED_FILE);
+    if (found != TAR_OK) {
+        emit(base, file_error(found));
+        return;
+    }
+    let lba = shared_read(SHARED_FILE);
+    let size = shared_read(SHARED_FILE + WORD);
+    if (size > SOURCE_MAX) {
+        // "too big"
+        emit(base, [116, 111, 111, 32, 98, 105, 103]);
+        return;
+    }
+    let copied = 0;
+    while (copied < size) {
+        if (ata_read_sector(lba, SHARED_SECTOR) != ATA_OK) {
+            emit(base, disk_error(ATA_ERROR_BIT));
+            return;
+        }
+        let i = 0;
+        while (i < SECTOR_SIZE && copied + i < size) {
+            shared_write_byte(SOURCE_BASE + copied + i, shared_read_byte(SHARED_SECTOR + i));
+            i = i + 1;
+        }
+        copied = copied + i;
+        lba = lba + 1;
+    }
+    let outcome = kernel_run(SOURCE_BASE, size);
+    if (outcome != 0) {
+        // "failed " then the stage the board reported.
+        emit(base, [102, 97, 105, 108, 101, 100, 32].chain(decimal(0 - outcome)));
+    }
+}
+
 fn file_error(outcome: Int) -> List<Int> {
     if (outcome == TAR_NOT_FOUND) {
         // "no file"
@@ -627,12 +672,12 @@ fn run_command(base: Int) -> Int {
     }
     if (line_starts_with([104, 101, 108, 112])) {          // "help"
         // "help clear echo keys exit"
-        // "help clear echo keys mem page sync yield win time disk cat exit"
+        // "help clear echo keys mem page sync yield win time disk cat run exit"
         emit(base, [104, 101, 108, 112, 32, 99, 108, 101, 97, 114, 32, 101, 99,
                     104, 111, 32, 107, 101, 121, 115, 32, 109, 101, 109, 32,
                     112, 97, 103, 101, 32, 115, 121, 110, 99, 32,
                     121, 105, 101, 108, 100, 32, 119, 105, 110, 32,
-                    116, 105, 109, 101, 32, 100, 105, 115, 107, 32, 99, 97, 116, 32,
+                    116, 105, 109, 101, 32, 100, 105, 115, 107, 32, 99, 97, 116, 32, 114, 117, 110, 32,
                     101, 120, 105, 116]);
         return 1;
     }
@@ -701,6 +746,10 @@ fn run_command(base: Int) -> Int {
                    .chain(decimal((t2 as Int) - (t1 as Int))));
         return 1;
     }
+    if (line_starts_with([114, 117, 110])) {               // "run"
+        run_file(base, line_tail(4));
+        return 1;
+    }
     if (line_starts_with([99, 97, 116])) {                 // "cat"
         print_file(base, line_tail(4));
         return 1;
@@ -721,6 +770,27 @@ fn run_command(base: Int) -> Int {
     // "?"
     emit(base, [63]);
     return 1;
+}
+
+// The console, for the interpreter the board hosts.
+//
+// Exported rather than handed over as a function pointer: the console is this
+// program's — it owns the cursor, the window rectangles and the serial line —
+// and what the board needs is only a way to push a byte into it. A program the
+// kernel runs therefore prints exactly the way the kernel does, through the
+// same scrolling and the same window.
+#[export("lk_console_byte")]
+fn console_byte(byte: Int) {
+    uart_putc(byte);
+    put_char(framebuffer_origin(), byte);
+}
+
+// Runs a program the board has staged in memory. Implemented by `src/main.rs`,
+// which owns the interpreter; the body is what the *bytecode* VM would run, and
+// there is no interpreter to reach from inside one.
+#[extern("kernel_run")]
+fn kernel_run(address: Int, length: Int) -> Int {
+    return 0 - 1;
 }
 
 // ---------------------------------------------------------------- tasks ---
@@ -980,8 +1050,10 @@ draw_cells(framebuffer, WIDTH, FONT, [44], 1, 5, FOREGROUND, BACKGROUND);
 let ram_base = largest_available_base();
 let ram_length = largest_available_length();
 let usable_base = ram_base;
-if (usable_base < 0x00400000) {
-    usable_base = 0x00400000;
+// Above the interpreter's heap, which `src/main.rs` places at 4 MiB and sizes
+// at 28 MiB. Two allocators on one machine agree by arrangement or not at all.
+if (usable_base < 0x02000000) {
+    usable_base = 0x02000000;
 }
 pages_init(SHARED_PAGES, usable_base, ram_length - (usable_base - ram_base));
 

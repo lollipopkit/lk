@@ -46,12 +46,12 @@ KEYS = (
 # repeats its argument, `exit` says goodbye — each proving a different part:
 # the byte-wise command match, the argument tail, and the loop ending.
 EXPECTED_LINES = [
-    "help clear echo keys mem page sync yield win time disk cat exit",
+    "help clear echo keys mem page sync yield win time disk cat run exit",
     "lk",
     # Two pages handed out in order, from the range the loader reported. The
     # addresses are what proves the allocator rather than a counter.
-    "00400000",
-    "00401000",
+    "02000000",
+    "02001000",
     # `yield` leaves LK, enters the kernel through a software interrupt, is
     # rescheduled, and comes back. Printing at all is the proof.
     "back",

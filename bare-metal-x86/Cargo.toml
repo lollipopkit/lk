@@ -23,6 +23,11 @@ fault-probe = []
 # The rlib, not the staticlib: this binary supplies the allocator and panic
 # handler itself. (`lkrt-cabi` is the archive the hosted AOT path links.)
 lkrt = { path = "../lkrt", default-features = false }
+# The interpreter, so the kernel can run a program it read off the disk. Same
+# no_std build the Cortex-M demo uses; `stdlib/bare` supplies the module surface
+# that works without an OS, with this kernel's own console as the output sink.
+lk-core = { path = "../core", default-features = false }
+lk-stdlib-bare = { path = "../stdlib/bare", default-features = false, features = ["math","string","bytes","iter","slice","hash","encoding"] }
 
 [profile.release]
 panic = "abort"

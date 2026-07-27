@@ -233,6 +233,11 @@ jobs:
           # QEMU exits, the image *file* must hold what was written, because a
           # drive acknowledges a write long before it is on the medium.
           timeout 300 python3 check_disk.py
+          # The kernel is compiled LK; this checks that it also *hosts an
+          # interpreter* for LK. The program it runs is not in the image — it
+          # is read off the disk — and neither the answer nor the loop that
+          # computes it appears anywhere in the kernel.
+          timeout 400 python3 check_run.py
         env:
           LK_BIN: ../target/debug/lk
       - name: AOT native-lowering coverage gate

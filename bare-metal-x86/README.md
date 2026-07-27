@@ -289,6 +289,44 @@ The archive `check_disk.py` builds comes from Python's `tarfile`, so what the
 kernel walks is a real archive written by something else — not a layout invented
 to be easy to parse.
 
+## The kernel runs a program it was not built with
+
+The kernel is compiled LK. It now also **hosts an interpreter** for LK:
+
+```
+>run sq.lk
+SUM OF SQUARES
+385
+```
+
+`sq.lk` is on the disk, not in the image. The shell finds it through
+`drivers/tarfs.lk`, copies it into a staging area, and calls `kernel_run` — an
+`#[extern]` the board implements in `src/main.rs`, which parses, type-checks and
+runs it on the no_std bytecode VM. Everything it prints comes back through
+`lk_console_byte`, an `#[export]`ed LK function, so a program the kernel started
+scrolls in the same window as the shell that started it.
+
+Both directions of the boundary are therefore in use at once, which is what they
+were built for: the board asks the program for a console, and the program asks
+the board for an interpreter.
+
+Two consequences worth stating:
+
+- **The image is ten times the size it was** (150 KB → 1.5 MB): the whole front
+  end — lexer, parser, type checker, compiler, VM — is now in it. `link.ld`
+  asserts that it still stops below the shared page at `0x300000`, because
+  growing past that would not fail to build and would not fail to boot; it would
+  quietly put the key handler's line buffer on top of the kernel's own data.
+- **Memory is now a map, not a habit.** Three things want RAM and none can ask
+  for it: the image, the interpreter's heap, and the LK page allocator. The map
+  is written down in `src/main.rs` and the numbers are agreed in `program.lk` —
+  two allocators on one machine agree by arrangement or not at all.
+
+Bad input is a report, not a crash: `run nope.lk` says `no file`, and a program
+that does not parse comes back as `failed 3` — the stage, because a parse
+failure and a runtime failure want different next steps. A kernel that dies on a
+bad file is not one you can put a disk in.
+
 ## Sharing state between them
 
 Read, add, write is three steps. An interrupt landing between the read and the
