@@ -28,13 +28,24 @@ import time
 KEYS = (
     ["h", "e", "l", "x", "backspace", "p", "ret"]
     + ["e", "c", "h", "o", "spc", "l", "k", "ret"]
+    + ["p", "a", "g", "e", "ret"]
+    + ["p", "a", "g", "e", "ret"]
+    + ["m", "e", "m", "ret"]
     + ["ret"] * 22
     + ["e", "x", "i", "t", "ret"]
 )
 # Lines the shell must answer with. `help` lists the commands it knows, `echo`
 # repeats its argument, `exit` says goodbye — each proving a different part:
 # the byte-wise command match, the argument tail, and the loop ending.
-EXPECTED_LINES = ["help clear echo keys exit", "lk", "bye"]
+EXPECTED_LINES = [
+    "help clear echo keys mem page exit",
+    "lk",
+    # Two pages handed out in order, from the range the loader reported. The
+    # addresses are what proves the allocator rather than a counter.
+    "00400000",
+    "00401000",
+    "bye",
+]
 
 EXPECTED_REPORT = f"keys {len(KEYS)} last 10"
 

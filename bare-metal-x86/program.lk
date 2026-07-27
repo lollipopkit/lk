@@ -19,6 +19,10 @@ use { get_pixel } from "drivers/framebuffer";
 use { draw_glyph, draw_cells, clear, scroll_up, draw_cursor, CELL_WIDTH, CELL_HEIGHT } from "drivers/text";
 use { read_scancode, is_release, key_code } from "drivers/keyboard";
 use { start as pit_start } from "drivers/pit";
+use { has_mmap, mem_upper_kb, entry_count, entry_at, entry_base, entry_length,
+      entry_is_available } from "drivers/multiboot";
+use { init as pages_init, alloc as page_alloc, free as pages_free,
+      total as pages_total, PAGE_SIZE } from "drivers/pages";
 use { read as shared_read, write as shared_write, bump as shared_bump,
       read_byte as shared_read_byte, write_byte as shared_write_byte } from "drivers/shared";
 
@@ -108,6 +112,12 @@ const SHARED_LINE_LEN = 0x00300014;
 const SHARED_LINE_READY = 0x00300018;
 // The line the handler is collecting. One byte per character, because a
 // handler cannot allocate.
+// Where `boot.rs` stashed the multiboot information pointer. The board writes
+// it, this program reads it; the address appears in both files, and changing
+// one without the other is the hazard.
+const SHARED_MULTIBOOT = 0x0030001c;
+// The page allocator's three words.
+const SHARED_PAGES = 0x00300020;
 const SHARED_LINE = 0x00300100;
 const LINE_CAPACITY = 48;
 
@@ -253,6 +263,31 @@ fn line_tail(start: Int) -> List<Int> {
     return out.slice(1, out.len());
 }
 
+// Local rather than imported: an imported function's result is `Any` to the
+// type checker, and a cast needs a numeric type to start from.
+fn power_of_two(bits: Int) -> Int {
+    let value = 1;
+    for i in 0..bits {
+        value = value * 2;
+    }
+    return value;
+}
+
+fn hex(value: Int) -> List<Int> {
+    let out = [0];
+    let shift = 28;
+    while (shift >= 0) {
+        let nibble = ((value / power_of_two(shift)) as Int) & 0xf;
+        if (nibble < 10) {
+            out.push(48 + nibble);
+        } else {
+            out.push(87 + nibble);
+        }
+        shift = shift - 4;
+    }
+    return out.slice(1, out.len());
+}
+
 fn decimal(value: Int) -> List<Int> {
     if (value == 0) {
         return [48];
@@ -272,6 +307,61 @@ fn decimal(value: Int) -> List<Int> {
     return out.slice(1, out.len());
 }
 
+// The largest available range the loader reported, as (base, length).
+//
+// Largest rather than first: the map's usable ranges are the one below 640 KiB
+// and the one above 1 MiB, and only the second is worth allocating from.
+fn largest_available_base() -> Int {
+    let best_base = 0;
+    let best_length = 0;
+    let count: Int = entry_count();
+    for i in 0..count {
+        let entry: Int = entry_at(i);
+        let available: Bool = entry_is_available(entry);
+        if (entry >= 0 && available) {
+            let length: Int = entry_length(entry);
+            if (length > best_length) {
+                best_length = length;
+                best_base = entry_base(entry);
+            }
+        }
+    }
+    return best_base;
+}
+
+fn largest_available_length() -> Int {
+    let best_length = 0;
+    let count: Int = entry_count();
+    for i in 0..count {
+        let entry: Int = entry_at(i);
+        let available: Bool = entry_is_available(entry);
+        if (entry >= 0 && available) {
+            let length: Int = entry_length(entry);
+            if (length > best_length) {
+                best_length = length;
+            }
+        }
+    }
+    return best_length;
+}
+
+fn report_memory(base: Int) {
+    let mapped: Bool = has_mmap();
+    if (!mapped) {
+        // "no map"
+        emit(base, [110, 111, 32, 109, 97, 112]);
+        return;
+    }
+    // "upper " KiB
+    let upper = [117, 112, 112, 101, 114, 32];
+    emit(base, upper.chain(decimal(mem_upper_kb())).chain([32, 107, 98]));
+    // "pages " free "/" total
+    let pages = [112, 97, 103, 101, 115, 32];
+    emit(base, pages.chain(decimal(pages_free(SHARED_PAGES)))
+                    .chain([47])
+                    .chain(decimal(pages_total(SHARED_PAGES))));
+}
+
 // Runs the collected line. Returns 1 to keep going, 0 to stop.
 fn run_command(base: Int) -> Int {
     let length = shared_read(SHARED_LINE_LEN);
@@ -280,8 +370,10 @@ fn run_command(base: Int) -> Int {
     }
     if (line_starts_with([104, 101, 108, 112])) {          // "help"
         // "help clear echo keys exit"
+        // "help clear echo keys mem page exit"
         emit(base, [104, 101, 108, 112, 32, 99, 108, 101, 97, 114, 32, 101, 99,
-                    104, 111, 32, 107, 101, 121, 115, 32, 101, 120, 105, 116]);
+                    104, 111, 32, 107, 101, 121, 115, 32, 109, 101, 109, 32,
+                    112, 97, 103, 101, 32, 101, 120, 105, 116]);
         return 1;
     }
     if (line_starts_with([99, 108, 101, 97, 114])) {       // "clear"
@@ -295,6 +387,20 @@ fn run_command(base: Int) -> Int {
     }
     if (line_starts_with([107, 101, 121, 115])) {          // "keys"
         emit(base, decimal(shared_read(SHARED_KEY_COUNT)));
+        return 1;
+    }
+    if (line_starts_with([109, 101, 109])) {               // "mem"
+        report_memory(base);
+        return 1;
+    }
+    if (line_starts_with([112, 97, 103, 101])) {           // "page"
+        let address: Int = page_alloc(SHARED_PAGES);
+        if (address == 0) {
+            // "none"
+            emit(base, [110, 111, 110, 101]);
+        } else {
+            emit(base, hex(address));
+        }
         return 1;
     }
     if (line_starts_with([101, 120, 105, 116])) {          // "exit"
@@ -397,6 +503,17 @@ draw_cells(framebuffer, WIDTH, FONT,
 //   "TYPE HELP" then the prompt on the next line
 draw_cells(framebuffer, WIDTH, FONT, [20, 25, 16, 5, 0, 8, 5, 12, 16], 1, 3, FOREGROUND, BACKGROUND);
 draw_cells(framebuffer, WIDTH, FONT, [44], 1, 5, FOREGROUND, BACKGROUND);
+
+// Hand the page allocator the biggest usable range the loader reported. The
+// image, its stack and its page tables all sit below 2 MiB, so the range is
+// trimmed to start there rather than on top of them.
+let ram_base = largest_available_base();
+let ram_length = largest_available_length();
+let usable_base = ram_base;
+if (usable_base < 0x00400000) {
+    usable_base = 0x00400000;
+}
+pages_init(SHARED_PAGES, usable_base, ram_length - (usable_base - ram_base));
 
 // The cursor starts after the prompt.
 place_cursor(framebuffer, 3, 5);

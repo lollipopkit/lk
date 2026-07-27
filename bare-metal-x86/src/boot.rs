@@ -17,9 +17,12 @@ global_asm!(
     // finds the header and falls back to the Linux/PVH path.
     ".section .multiboot, \"a\"",
     ".align 4",
-    ".long 0x1BADB002",  // magic
-    ".long 0",           // flags
-    ".long -0x1BADB002", // checksum
+    ".long 0x1BADB002",           // magic
+    // Flags bit 0 asks the loader for memory information: how much there is,
+    // and the map of which ranges are usable. Without it a kernel knows only
+    // what it can guess.
+    ".long 0x00000001",           // flags: MEMORY_INFO
+    ".long -(0x1BADB002 + 1)",    // checksum
 );
 
 global_asm!(
@@ -30,6 +33,15 @@ global_asm!(
     // No interrupts until there is an IDT; the loader leaves the PIC armed.
     "   cli",
     "   mov esp, offset __stack_top",
+    // The loader leaves its information structure's address in EBX, and
+    // nothing preserves it across the long-mode transition — so stash it now.
+    //
+    // The address is a bare number because the LK program has no way to name a
+    // linker symbol. It is the same shared page the program uses for the state
+    // its interrupt handlers share, at the offset `program.lk` documents as
+    // SHARED_MULTIBOOT. Changing one without the other is the hazard, hence
+    // this paragraph.
+    "   mov dword ptr [0x0030001c], ebx",
     // Identity-map the first four gigabytes with 2 MiB pages.
     //
     // Four rather than one because a PCI device's framebuffer is mapped near

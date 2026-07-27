@@ -59,6 +59,51 @@ runs before there is a heap or after, which is the property a kernel wants.
 `run_command` returns whether to keep going, so `exit` ends the loop rather
 than setting a flag someone has to remember to check.
 
+## Memory
+
+```
+>mem
+upper 129920 kb
+pages 31710/31712
+>page
+00400000
+>page
+00401000
+```
+
+The numbers come from the machine, not from this file. The multiboot header
+asks the loader for memory information; `boot.rs` stashes the pointer it
+leaves in EBX (nothing preserves a register across the long-mode transition);
+`drivers/multiboot.lk` walks the map — a *chain*, not an array, since each
+entry's `size` field says how far the next one is — and `drivers/pages.lk`
+hands out 4 KiB pages from the largest usable range. Booting with `-m 64`
+against `-m 256` changes every number.
+
+The allocator is a bump: nothing in this kernel frees, and a free list would be
+machinery for a case that does not exist. What it does have to be is honest
+about the range it was given, which is why the caller passes one in rather than
+this file guessing. It is also handed a base trimmed to 4 MiB, because the
+image, its stack and its page tables sit below 2 MiB and the loader's map does
+not know that.
+
+The pointer's address appears in `boot.rs` and in `program.lk` as
+`SHARED_MULTIBOOT`. A bare number, because an LK program has no way to name a
+linker symbol — changing one without the other is the hazard.
+
+## A note on types across modules
+
+Several places in `program.lk` annotate a local that looks like it needs no
+annotation:
+
+```lk
+let count: Int = entry_count();
+```
+
+An imported function's signature is not visible to the type checker, so its
+result is `Any` — and a range bound, a condition, and a cast all need something
+better than that. The annotation is where the program supplies it. This is a
+gap in the checker rather than a property of the language.
+
 Every line of that came from LK code driving four devices by three different
 mechanisms:
 
