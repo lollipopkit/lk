@@ -61,6 +61,7 @@ mod tables;
 #[cfg(test)]
 mod tests;
 mod trait_env;
+mod try_region;
 mod unsupported;
 mod vocab;
 

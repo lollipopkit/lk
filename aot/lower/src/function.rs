@@ -32,6 +32,17 @@ pub(crate) fn lower_function(
         .map(|(pc, raw)| Instr::try_from_raw(*raw).map_err(|_| Unsupported::BadInstr { pc }))
         .collect::<Result<Vec<_>, _>>()?;
 
+    // 0. Protected regions: recognised here so a `try` reports *which* region
+    //    cannot be outlined and why, rather than "opcode TryBegin is not
+    //    natively lowerable". The outlining itself is the next piece of work;
+    //    until it exists every region is a rejection, but a legible one.
+    if let Some(region) = crate::try_region::scan(func, &instrs)?.first() {
+        return Err(Unsupported::TryRegion {
+            pc: region.begin_pc,
+            reason: "outlining the body is not implemented yet",
+        });
+    }
+
     // 1. Classify control-flow exits; a fused `TestXxx`+`Jmp` consumes the `Jmp`.
     let mut consumed = vec![false; code_len];
     let exits: Vec<Option<Exit>> = (0..code_len)

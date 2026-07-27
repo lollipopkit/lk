@@ -13,6 +13,14 @@ pub enum Unsupported {
         pc: usize,
         op: Opcode,
     },
+    /// A `try` region whose shape would change meaning if the body were called
+    /// instead of run in place. Carries *why*, because "opcode TryBegin is not
+    /// natively lowerable" is what this replaces: it named a feature where the
+    /// answer is always a specific property of one region.
+    TryRegion {
+        pc: usize,
+        reason: &'static str,
+    },
     /// Two bundled modules define the same top-level name. Reported rather than
     /// resolved: the bundle flattens them into one namespace, so one would
     /// silently shadow the other for every nested read.
@@ -87,6 +95,9 @@ impl Unsupported {
             Unsupported::BadInstr { pc } => format!("undecodable instruction at pc {pc}"),
             Unsupported::Opcode { pc, op } => {
                 format!("opcode {op:?} (at pc {pc}) is not natively lowerable yet")
+            }
+            Unsupported::TryRegion { pc, reason } => {
+                format!("the try region at pc {pc} cannot be outlined: {reason}")
             }
             Unsupported::BundledNameCollision { name } => format!(
                 "two bundled modules both define `{name}`. Bundling flattens them into one namespace, \
