@@ -106,6 +106,34 @@
 //! two-register carriers (`Dyn`, the `Maybe`s), and `F64`, which the ABI passes
 //! in XMM while the trampoline passes integers.
 //!
+//! ## The assumption underneath both of them
+//!
+//! `written_registers` — which decides what a body "assigns" — is a syntactic
+//! scan: `instrs[start..end].map(|i| i.a())`. It reads the `a` field as *the
+//! register this instruction writes*, and that is not true of every opcode.
+//! `log.push(2)` lowers to `ListPush a=log b=value`, where `a` is the
+//! **receiver**: the list is mutated, the register is not rebound.
+//!
+//! So a body that only *mutates* a container is recorded as assigning it, gets
+//! a cell, and takes the `dyn.from_list` / `dyn.as_list` round trip that loses
+//! the mutation. The rejection above and the wrong answer below are the same
+//! mistake seen from two sides.
+//!
+//! This is the last syntactic operand assumption left in this feature, and it
+//! has now been wrong twice — `writes_register_before` counted another region's
+//! body as the parent's writes, and this counts a receiver as a destination.
+//! The answer is not a table of which opcodes write their `a`: a missing entry
+//! there is a register that silently keeps a stale value.
+//!
+//! The answer is the one the body already uses on itself. Lowering a body
+//! notices a cell's value changing by *comparing the SSA's `current_def` before
+//! and after each instruction* — "ask the SSA what changed", as the comment
+//! there puts it. Widening that snapshot from the tracked cells to every
+//! register would give the parent the real set: registers the body **rebound**,
+//! as opposed to objects it mutated through a handle it shares with the parent.
+//! A container that is only mutated would then need no cell at all, and would
+//! only need to cross as a parameter — which it now can.
+//!
 //! ## A second answer that was tried and is wrong
 //!
 //! The remaining rejection for two of the three files is a container the body
