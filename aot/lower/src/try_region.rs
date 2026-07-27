@@ -14,28 +14,44 @@
 //! of inlined, and every one of them names itself rather than falling out as
 //! "opcode TryBegin is not natively lowerable yet".
 //!
-//! # What is still rejected, and why it is hard
+//! # What is still rejected, and why — measured, not remembered
 //!
 //! The three `try`/`catch` files in `AOT_COVERAGE_ALLOW` no longer fail on
-//! anything in this module. What stops them is a *handler* shape: a register
-//! the handler defines, needed as a block argument where the handler and the
-//! region's other edge meet. The region edge has no definition for it, and the
-//! phi demands one.
+//! anything in this module. What this note said they failed on — a handler
+//! shape, a register the handler defines needed as a block argument where the
+//! handler and the region's other edge meet — is no longer what happens. The
+//! blockers moved as the surrounding work landed, and a stale map is worse than
+//! none, so here is what they are today:
 //!
-//! The tempting fix is to supply a placeholder — zero, say — on the region
-//! edge. Do not, without first establishing that the value is unobservable:
-//! in the VM that register holds whatever it held before the region, and
-//! "whatever it held" is a real value that a program could read. A placeholder
-//! would be a *wrong* answer wearing the clothes of a missing one, and this
-//! feature has already produced two silent wrong answers (see the commits for
-//! the body's writes and for the parameter list) — both from inferring
+//! | file | rejection |
+//! | --- | --- |
+//! | `error_model_edges.lk` | the cell write-back at pc 11: a register the body assigns whose value *before* the region has type `Nil` |
+//! | `error_unwrap.lk` | the same, at pc 36 |
+//! | `try_catch.lk` | not a region shape at all: "an operand at pc 0 has a type outside the natively lowerable subset" |
+//!
+//! The first two are one thing. A register the body assigns is passed in as a
+//! cell, seeded with what it holds now — because a body that raises before
+//! assigning must leave it alone. The seed is boxed on the way in and unboxed
+//! on the way out, and `Nil` has no unboxer, so it rejects.
+//!
+//! What it is *not*: a value whose type changes across the region. That would
+//! unbox as the seed's type and answer wrongly, and it cannot happen — the type
+//! checker refuses `let a = 0; try { a = "s"; }` before any of this runs.
+//!
+//! Two things are worth knowing before attacking it. The obvious shape
+//! compiles: `let ok = 0; try { ok = add(2, 3); } catch e { ok = -1; }` on its
+//! own lowers natively, cell and all. So the `Nil` seed is not "an assignment
+//! in a body"; it is something about these files that makes the register hold
+//! `Nil` at the region, and finding out *what* is the first step rather than
+//! reaching for an unboxer for `Nil`.
+//!
+//! And the note that still stands, from whoever wrote the previous version of
+//! this section: do not supply a placeholder for a value an edge does not
+//! define. In the VM that register holds whatever it held before the region,
+//! and "whatever it held" is a real value a program could read. A placeholder
+//! would be a wrong answer wearing the clothes of a missing one, and this
+//! feature has already produced two silent wrong answers — both from inferring
 //! something the SSA could have been asked.
-//!
-//! The shape of an answer that does not guess: find what actually reads the
-//! register after the join. If nothing does, the phi should not exist, and the
-//! question is why it was created. If something does, the value it needs is the
-//! one from *before* the region, which the parent can pass in and the handler
-//! edge can shadow.
 
 use lk_core::vm::{FunctionData, Instr, Opcode};
 
