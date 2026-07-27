@@ -34,6 +34,16 @@ pub(crate) struct SigInfer {
     /// no table of which operand each opcode reads, which is the kind of table
     /// that is wrong in one entry and produces a wrong answer.
     pub(crate) try_body_params: std::collections::HashMap<u32, Vec<u8>>,
+    /// A try body's *outputs*: registers of the enclosing function that the
+    /// body assigns and the enclosing function goes on to read.
+    ///
+    /// They cannot travel in registers. The body runs in a frame of its own, so
+    /// a write there leaves the parent's copy alone — and on the raise path the
+    /// body never returns at all, while the VM still shows whatever it managed
+    /// to write. So each one becomes a cell: the parent makes it, the body
+    /// writes through it as it goes, and the parent reads it back on both
+    /// edges.
+    pub(crate) try_body_cells: std::collections::HashMap<u32, Vec<u8>>,
     /// Empty-`[]` literals whose guessed element type a consumer
     /// contradicted (`(function, pc)`): the next fixpoint pass materializes
     /// them as Dyn lists.

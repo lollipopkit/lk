@@ -6,6 +6,17 @@ use super::*;
 /// table is being built, before any block exists to ask about. The same
 /// over-approximation as `written_registers` applies, and in the same
 /// direction — a false positive costs a rejection.
+/// The function a region's body became, or a rejection naming the region.
+fn body_index_of(sig: &SigInfer, func_index: u32, begin_pc: usize) -> Result<u32, Unsupported> {
+    sig.try_bodies
+        .get(&(func_index, begin_pc))
+        .copied()
+        .ok_or(Unsupported::TryRegion {
+            pc: begin_pc,
+            reason: "the body was not outlined",
+        })
+}
+
 fn writes_register_before(instrs: &[Instr], pc: usize, reg: u8) -> bool {
     instrs[..pc].iter().any(|instr| instr.a() == reg)
 }
@@ -72,14 +83,33 @@ pub(crate) fn lower_function(
         // them, and a later read of one is undefined, which rejects on its own.
         // Carrying a write back out needs the value to live in memory rather
         // than a register, which is the next piece of work.
+        // Registers the body assigns that the enclosing function already had:
+        // they travel through cells, because a write in the body's own frame is
+        // invisible here otherwise — and on the raise path the body never
+        // returns to hand anything back, while the VM still shows what it wrote
+        // before raising.
+        let mut cells: Vec<u8> = Vec::new();
         for reg in crate::try_region::written_registers(&instrs, region.body_start, region.body_end) {
             if reg != region.catch_reg && writes_register_before(&instrs, region.begin_pc, reg) {
-                return Err(Unsupported::TryRegion {
-                    pc: region.begin_pc,
-                    reason: "the body assigns something declared outside it",
-                });
+                cells.push(reg);
             }
         }
+        // The trampoline passes machine words and the arity switch caps them;
+        // inputs and cells share that budget.
+        if cells.len()
+            + sig
+                .try_body_params
+                .get(&body_index_of(sig, func_index, region.begin_pc)?)
+                .map_or(0, Vec::len)
+            > 8
+        {
+            return Err(Unsupported::TryRegion {
+                pc: region.begin_pc,
+                reason: "too many values cross the region boundary",
+            });
+        }
+        sig.try_body_cells
+            .insert(body_index_of(sig, func_index, region.begin_pc)?, cells);
         let body = sig
             .try_bodies
             .get(&(func_index, region.begin_pc))
@@ -229,6 +259,17 @@ pub(crate) fn lower_function(
         ssa.current_def[0][reg as usize] = Some((pv, Ty::I64));
         fn_params.push((pv, Ty::I64));
     }
+    // The cells this body writes through, in the same order the caller passes
+    // them. They are handles, not values: the register keeps its own value in
+    // SSA, and every change to it is *also* written to the cell, so the caller
+    // sees it whether the body returned or raised.
+    let try_cells: Vec<u8> = sig.try_body_cells.get(&func_index).cloned().unwrap_or_default();
+    let mut cell_handles: Vec<(u8, ValueId)> = Vec::with_capacity(try_cells.len());
+    for &reg in &try_cells {
+        let pv = ssa.new_val();
+        fn_params.push((pv, Ty::Cell));
+        cell_handles.push((reg, pv));
+    }
 
     // An erased *capturing* closure argument: its environment (resolved at
     // the call site) arrives as hidden trailing parameters, one block per
@@ -287,6 +328,14 @@ pub(crate) fn lower_function(
         let mut insts = Vec::new();
         #[allow(clippy::needless_range_loop)] // `pc` is the semantic bytecode index
         for pc in start..body_end {
+            // What the tracked registers held before this instruction, so a
+            // change can be noticed afterwards. Asking the SSA what changed is
+            // the same device the inputs use: no table of which opcode writes
+            // where, and therefore no entry in such a table to get wrong.
+            let before: Vec<Option<Reg>> = cell_handles
+                .iter()
+                .map(|(reg, _)| ssa.current_def[bi][*reg as usize])
+                .collect();
             lower_inst(
                 &mut LowerCtx {
                     ssa: &mut ssa,
@@ -303,6 +352,23 @@ pub(crate) fn lower_function(
                 &instrs[pc],
                 pc,
             )?;
+            for (index, (reg, handle)) in cell_handles.iter().enumerate() {
+                let now = ssa.current_def[bi][*reg as usize];
+                if now == before[index] {
+                    continue;
+                }
+                let Some((value, ty)) = now else { continue };
+                // Written immediately, not at the end of the body: a raise can
+                // happen in the next call, and the VM shows whatever was
+                // assigned before it. Storing only on the way out would lose
+                // exactly the writes a handler is most likely to look at.
+                let boxed = crate::dyn_box::to_dyn_any(&mut ssa, &mut insts, value, ty, pc)?;
+                insts.push(Inst::Call {
+                    dst: None,
+                    callee: AbiRef::new("rt", "cell_set"),
+                    args: vec![*handle, boxed],
+                });
+            }
         }
         // Resolve the terminator's value reads while this block is current.
         match exit {
@@ -386,12 +452,56 @@ pub(crate) fn lower_function(
                 for &reg in sig.try_body_params.get(&body).into_iter().flatten() {
                     call_args.push(ssa.read_typed(reg, bi, Ty::I64, start)?);
                 }
+                // One cell per register the body assigns that this function
+                // already had. Seeded with the value it holds now, because a
+                // body that raises before assigning must leave it alone.
+                let cell_regs: Vec<u8> = sig.try_body_cells.get(&body).cloned().unwrap_or_default();
+                let mut cell_values: Vec<(u8, ValueId, Ty)> = Vec::with_capacity(cell_regs.len());
+                for &reg in &cell_regs {
+                    let (v, ty) = ssa.read(reg, bi, start)?;
+                    // Only `I64` crosses back for now. Every other type would
+                    // need its own unboxing on the way out, and getting one of
+                    // them wrong is a wrong value rather than a rejection.
+                    if ty != Ty::I64 {
+                        return Err(Unsupported::TryRegion {
+                            pc: start,
+                            reason: "the body assigns something that is not an integer",
+                        });
+                    }
+                    let boxed = crate::dyn_box::to_dyn_any(&mut ssa, &mut insts, v, ty, start)?;
+                    let handle = ssa.new_val();
+                    insts.push(Inst::Call {
+                        dst: Some(handle),
+                        callee: AbiRef::new("rt", "cell_new"),
+                        args: vec![boxed],
+                    });
+                    call_args.push(handle);
+                    cell_values.push((reg, handle, ty));
+                }
                 let ok = ssa.new_val();
                 insts.push(Inst::TryRegionCall {
                     dst: ok,
                     func: FuncId(body),
                     args: call_args,
                 });
+                // Read every cell back, before the branch, so both edges see
+                // what the body managed to write — including a body that
+                // raised half way through, which is what the VM shows.
+                for (reg, handle, ty) in cell_values {
+                    let got = ssa.new_val();
+                    insts.push(Inst::Call {
+                        dst: Some(got),
+                        callee: AbiRef::new("rt", "cell_get"),
+                        args: vec![handle],
+                    });
+                    let unboxed = ssa.new_val();
+                    insts.push(Inst::Call {
+                        dst: Some(unboxed),
+                        callee: AbiRef::new("dyn", "as_i64"),
+                        args: vec![got],
+                    });
+                    ssa.write(reg, bi, (unboxed, ty));
+                }
                 let caught = ssa.new_val();
                 insts.push(Inst::Call {
                     dst: Some(caught),

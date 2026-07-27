@@ -397,6 +397,19 @@ fn try_region_differential() {
                 "fn checked(a: Int, b: Int) -> Int {\n  if (b == 0) { error(\"zero\"); }\n  return a - b;\n}\n\
                  let x = 10;\nlet y = 3;\nlet out = 0;\ntry { checked(x, y); } catch e { out = 1; }\nreturn out;\n",
             ),
+            // The body *assigns* an enclosing local. It cannot travel in a
+            // register — the body runs in a frame of its own — so it goes
+            // through a cell, written as the body goes rather than on the way
+            // out: a raise half way through must leave behind what was already
+            // assigned, which is what the VM shows.
+            new(
+                "writes_outer_local",
+                "fn fine() { return 7; }\nlet a = 0;\ntry { fine(); a = 1; } catch e { a = 2; }\nreturn a;\n",
+            ),
+            new(
+                "writes_then_raises",
+                "fn boom() { error(\"x\"); return 0; }\nlet a = 0;\ntry { a = 5; boom(); a = 9; } catch e { }\nreturn a;\n",
+            ),
             // A raise from two frames down still lands in the nearest handler:
             // the trampoline's frame is what `longjmp` targets, not the body's.
             new(

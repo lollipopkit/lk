@@ -140,6 +140,7 @@ pub fn lower_bundled(
         ret_known: vec![false; n],
         try_bodies: std::collections::HashMap::new(),
         try_body_params: std::collections::HashMap::new(),
+        try_body_cells: std::collections::HashMap::new(),
         conflict: false,
         dyn_loop_phis: std::collections::HashSet::new(),
         dyn_rets: std::collections::HashSet::new(),
