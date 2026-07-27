@@ -58,16 +58,26 @@ the two interrupt handlers, because a driver decodes a scancode but only the
 program knows what to do with it.
 
 `lk compile object:` bundles file imports at compile time, the same way the
-executable path does. Two limits are worth knowing, because both fail at
-compile time with a message rather than at runtime:
+executable path does. A module may import another module; the bundler walks the whole graph.
 
-- **A bundled module cannot import another file.** The drivers here are
-  therefore flat; anything shared goes in the importing file.
-- **A bundled module's `const` may be a scalar but not a container.** A scalar
-  folds into each use, which is what `const` means. A container is *shared and
-  mutable* in LK (`const xs = []; xs.push(1)` works), so folding would give
-  each read its own copy — the module's initialiser has to run instead, and the
-  native bundler does not do that yet.
+One limit is worth knowing, and it fails at compile time with a message rather
+than at runtime: **a bundled module's top level may hold scalar constants but
+not containers.** That is not an arbitrary restriction on what a module may
+contain — it is what keeps the two backends agreeing. Bundling *flattens* the
+modules into one, so a container the module exposes becomes shared with the
+importer; the VM gives each module its own heap and copies a container that
+crosses the boundary. The difference is measurable:
+
+```lk
+// module: const NAMES = ["a", "b"];  fn get() -> List<String> { return NAMES; }
+let xs = get();
+xs.push("z");
+count()   // VM: 2 (the module kept its own copy).  Flattened: 3.
+```
+
+Refusing the shape is what stops a native build computing something the VM
+would not. A container that is built inside a function is fine — it is fresh
+per call, so there is nothing to share.
 
 ## Port I/O
 

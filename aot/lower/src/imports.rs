@@ -32,6 +32,17 @@ impl ImportEnv {
             bundles: bundles.to_vec(),
             ..ImportEnv::default()
         };
+        // Every bundled module's top-level functions are reachable by name.
+        // The merge puts them all in one namespace, and a *nested* import — a
+        // driver that imports another driver — has no other way to resolve:
+        // its `GetGlobal` names never appear in the importing file's own
+        // import list. Explicit imports are processed after this, so an alias
+        // still wins where the two disagree.
+        for bundle in bundles {
+            for (name, fidx) in &bundle.fns {
+                env.file_items.insert(name.clone(), *fidx);
+            }
+        }
         let bundle_by_path = |path: &str| bundles.iter().position(|b| b.path == path);
         for import in imports {
             match import {

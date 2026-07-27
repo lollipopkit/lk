@@ -988,64 +988,47 @@ fn bundle_file_imports(
     source: &Path,
     artifact: &ModuleArtifact,
 ) -> anyhow::Result<Option<(ModuleArtifact, Vec<lk_aot::BundledImport>)>> {
-    use lk_core::stmt::{ImportSource, ImportStmt};
     use lk_core::vm::{Instr, Opcode};
 
-    let mut paths: Vec<String> = Vec::new();
-    for import in &artifact.imports {
-        let path = match import {
-            ImportStmt::File { path } => Some(path),
-            ImportStmt::Items {
-                source: ImportSource::File(path),
-                ..
-            }
-            | ImportStmt::Namespace {
-                source: ImportSource::File(path),
-                ..
-            } => Some(path),
-            _ => None,
-        };
-        if let Some(path) = path
-            && !paths.contains(path)
-        {
-            paths.push(path.clone());
-        }
-    }
-    if paths.is_empty() {
+    let base_dir = source.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
+    // Depth-first over the import graph, so a driver may import another
+    // driver. Keyed by resolved path rather than by the text of the import,
+    // because two files can name the same module differently — and because
+    // that is also what makes a cycle terminate.
+    let mut queue: Vec<(String, PathBuf)> = file_import_paths(&artifact.imports)
+        .into_iter()
+        .map(|path| resolve_bundled_import(&base_dir, &path).map(|resolved| (path, resolved)))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    if queue.is_empty() {
         return Ok(None);
     }
+    let mut visited: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
 
-    let base_dir = source.parent().unwrap_or_else(|| Path::new("."));
     let mut merged = artifact.clone();
-    let mut bundles = Vec::with_capacity(paths.len());
-    for import_path in paths {
-        let raw = Path::new(&import_path);
-        // Mirror the runtime resolver's candidates: `p` (already .lk),
-        // `p.lk`, `p/mod.lk`, under the importing file's directory.
-        let mut candidates = Vec::new();
-        if raw.extension().and_then(|e| e.to_str()) == Some("lk") {
-            candidates.push(base_dir.join(raw));
+    let mut bundles: Vec<lk_aot::BundledImport> = Vec::new();
+    while let Some((import_path, dep_path)) = queue.pop() {
+        let canonical = std::fs::canonicalize(&dep_path).unwrap_or_else(|_| dep_path.clone());
+        if !visited.insert(canonical) {
+            continue;
         }
-        candidates.push(base_dir.join(raw.with_extension("lk")));
-        candidates.push(base_dir.join(raw).join("mod.lk"));
-        let dep_path = candidates
-            .into_iter()
-            .find(|c| c.exists())
-            .ok_or_else(|| anyhow::anyhow!("bundled import not found: {import_path}"))?;
 
         let dep = compile_instr_artifact_with_dependencies(&dep_path)?.artifact;
-        // v1 guards: no nested file imports, no item/alias imports (their
-        // bindings would need the dep's own import environment).
-        for dep_import in &dep.imports {
-            match dep_import {
-                ImportStmt::Module { .. } => {}
-                other => anyhow::bail!("bundled import '{import_path}' has an unsupported nested import: {other:?}"),
-            }
+        // The dep's own file imports resolve relative to *its* directory, not
+        // the importing file's.
+        let dep_dir = dep_path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
+        for nested in file_import_paths(&dep.imports) {
+            let resolved = resolve_bundled_import(&dep_dir, &nested)
+                .with_context(|| format!("nested import of '{import_path}'"))?;
+            queue.push((nested, resolved));
         }
         let dep_entry = dep.module.entry as usize;
         // The dep entry must be pure `fn` bookkeeping: LoadFunction+SetGlobal
         // pairs and the implicit return. Anything else is a top-level effect
         // the bundle would silently skip — reject instead.
+        // The dep's entry must be pure binding: `fn` definitions, which the
+        // merge performs directly, and scalar constants, which fold into their
+        // uses. Anything else is rejected — see the container case below for
+        // why this restriction is what keeps the two backends agreeing.
         let mut reg_fn: std::collections::HashMap<u8, u32> = std::collections::HashMap::new();
         let mut reg_const: std::collections::HashMap<u8, BundledConst> = std::collections::HashMap::new();
         let mut fns: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
@@ -1059,9 +1042,6 @@ fn bundle_file_imports(
                 Opcode::LoadFunction => {
                     reg_fn.insert(instr.a(), u32::from(instr.bx()));
                 }
-                // A scalar top-level binding — `const COM1 = 0x3f8;`. Every
-                // driver has these, so refusing them would mean a module can
-                // hold functions but not the register numbers they operate on.
                 Opcode::LoadInt => {
                     let value = dep_entry_fn
                         .consts
@@ -1104,27 +1084,33 @@ fn bundle_file_imports(
                     } else {
                         anyhow::bail!(
                             "bundled import '{import_path}' has a top-level binding that is neither a function \
-                             nor a constant"
+                             nor a scalar constant"
                         );
                     }
                 }
                 Opcode::Return0 => {}
-                // A container constant cannot be folded the way a scalar can.
-                // `LoadHeapConst` materialises a *fresh* object per execution,
-                // so the module's single shared list would become one list per
-                // read — and LK's `const` containers are mutable, which makes
-                // that difference observable.
+                // A container at a module's top level cannot cross this
+                // boundary and keep the VM's meaning.
+                //
+                // Bundling *flattens* the modules into one, so a container the
+                // module exposes becomes shared with the importer. The VM
+                // gives each module its own heap and copies a container that
+                // crosses the boundary — measurably: with `const NAMES = […]`
+                // in a module, `let xs = get(); xs.push(…)` changes what the
+                // module sees under a flattened build and does not under the
+                // VM. Rejecting here is what keeps the two backends agreeing;
+                // it is not an arbitrary limit on what a module may hold.
                 Opcode::LoadHeapConst => anyhow::bail!(
-                    "bundled import '{import_path}' has a container constant at its top level. \
-                     Scalars fold into their uses, but a container is shared and mutable, so it \
-                     needs the module's initialiser to run — which the native bundler does not \
-                     do yet. Move it to the importing file, or return it from a function."
+                    "bundled import '{import_path}' has a container at its top level. Bundling flattens \
+                     modules together, which would share it with the importer, while the VM gives each \
+                     module its own copy. Move it to the importing file, or build it inside a function."
                 ),
                 other => {
                     anyhow::bail!("bundled import '{import_path}' has top-level effects (opcode {other:?})")
                 }
             }
         }
+
         // A binding the *main* module also writes would leave two definitions
         // sharing one merged slot, because the merge maps globals by name.
         // Refuse rather than pick one.
@@ -1237,6 +1223,50 @@ fn bundle_file_imports(
         bundles.push(lk_aot::BundledImport { path: import_path, fns });
     }
     Ok(Some((merged, bundles)))
+}
+
+/// The file imports (`use "path"` in any of its forms) a module declares.
+#[cfg(feature = "aot")]
+fn file_import_paths(imports: &[lk_core::stmt::ImportStmt]) -> Vec<String> {
+    use lk_core::stmt::{ImportSource, ImportStmt};
+    let mut paths = Vec::new();
+    for import in imports {
+        let path = match import {
+            ImportStmt::File { path } => Some(path),
+            ImportStmt::Items {
+                source: ImportSource::File(path),
+                ..
+            }
+            | ImportStmt::Namespace {
+                source: ImportSource::File(path),
+                ..
+            } => Some(path),
+            _ => None,
+        };
+        if let Some(path) = path
+            && !paths.contains(path)
+        {
+            paths.push(path.clone());
+        }
+    }
+    paths
+}
+
+/// Mirrors the runtime resolver's candidates: `p` (already `.lk`), `p.lk`, and
+/// `p/mod.lk`, under the importing file's directory.
+#[cfg(feature = "aot")]
+fn resolve_bundled_import(base_dir: &Path, import_path: &str) -> anyhow::Result<PathBuf> {
+    let raw = Path::new(import_path);
+    let mut candidates = Vec::new();
+    if raw.extension().and_then(|e| e.to_str()) == Some("lk") {
+        candidates.push(base_dir.join(raw));
+    }
+    candidates.push(base_dir.join(raw.with_extension("lk")));
+    candidates.push(base_dir.join(raw).join("mod.lk"));
+    candidates
+        .into_iter()
+        .find(|candidate| candidate.exists())
+        .ok_or_else(|| anyhow::anyhow!("bundled import not found: {import_path}"))
 }
 
 /// A scalar a bundled module binds at its top level.

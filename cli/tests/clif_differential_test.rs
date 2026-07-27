@@ -703,3 +703,109 @@ fn bundled_import_constants_match_the_vm() {
         "bundled constants diverged between the backends"
     );
 }
+
+/// A bundled module may import another file.
+///
+/// The bundler walks the import graph rather than one level of it, and the
+/// lowering resolves a nested module's names — which never appear in the
+/// importing file's own import list — through the flattened namespace the
+/// merge produces.
+#[test]
+fn nested_bundled_imports_match_the_vm() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    std::fs::create_dir(dir.path().join("lib")).expect("mkdir lib");
+    std::fs::write(
+        dir.path().join("lib/bits.lk"),
+        "const MASK = 0xff;\nfn low_byte(v: Int) -> Int { return v & MASK; }\n",
+    )
+    .expect("write bits");
+    std::fs::write(
+        dir.path().join("lib/dev.lk"),
+        "use { low_byte } from \"bits\";\n\
+         const BASE = 0x3f8;\n\
+         fn reg(offset: Int) -> Int { return low_byte(BASE + offset); }\n",
+    )
+    .expect("write dev");
+    std::fs::write(
+        dir.path().join("main.lk"),
+        "use { reg } from \"lib/dev\";\n\
+         use { low_byte } from \"lib/bits\";\n\
+         println(reg(5));\n\
+         println(low_byte(0x1234));\n\
+         return 0;\n",
+    )
+    .expect("write main");
+
+    let vm = Command::new(bin_path())
+        .current_dir(dir.path())
+        .arg("main.lk")
+        .output()
+        .expect("spawn vm run");
+    assert!(
+        vm.status.success(),
+        "vm run failed: {}",
+        String::from_utf8_lossy(&vm.stderr)
+    );
+
+    let exe = dir.path().join("main");
+    let compile = Command::new(bin_path())
+        .current_dir(dir.path())
+        .args(["compile", "main.lk"])
+        .arg("--output")
+        .arg(&exe)
+        .env("LK_AOT_NO_FALLBACK", "1")
+        .env("LK_AOT_HYBRID", "0")
+        .output()
+        .expect("spawn native compile");
+    assert!(
+        compile.status.success(),
+        "a module importing another module must lower natively: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let native = Command::new(&exe).output().expect("spawn compiled executable");
+    assert_eq!(
+        String::from_utf8_lossy(&vm.stdout),
+        String::from_utf8_lossy(&native.stdout),
+        "a nested import diverged between the backends"
+    );
+}
+
+/// A container at a bundled module's top level is refused, not flattened.
+///
+/// Bundling merges modules into one, which would *share* the container with
+/// the importer; the VM gives each module its own copy. The two answers differ
+/// as soon as anything mutates it, so the bundler rejects the shape rather
+/// than producing a program that computes something the VM would not.
+#[test]
+fn bundled_module_container_constants_are_refused() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    std::fs::write(
+        dir.path().join("table.lk"),
+        "const NAMES = [\"zero\", \"one\"];\nfn get() -> List<String> { return NAMES; }\n",
+    )
+    .expect("write dep");
+    std::fs::write(
+        dir.path().join("main.lk"),
+        "use { get } from \"table\";\nprintln(get().len());\nreturn 0;\n",
+    )
+    .expect("write main");
+
+    let compile = Command::new(bin_path())
+        .current_dir(dir.path())
+        .args(["compile", "main.lk"])
+        .arg("--output")
+        .arg(dir.path().join("main"))
+        .env("LK_AOT_NO_FALLBACK", "1")
+        .env("LK_AOT_HYBRID", "0")
+        .output()
+        .expect("spawn native compile");
+    assert!(
+        !compile.status.success(),
+        "a shared container must not compile silently"
+    );
+    let stderr = String::from_utf8_lossy(&compile.stderr);
+    assert!(
+        stderr.contains("container at its top level"),
+        "the refusal should say what is wrong: {stderr}"
+    );
+}
