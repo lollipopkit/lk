@@ -189,6 +189,44 @@ them back before moving — XOR would be one operation instead of three, and wou
 produce a cursor whose colour depends on what is under it, which over this
 program's own amber-on-blue is sometimes the background.
 
+### Moving one
+
+A window can be dragged by its title bar — the top four pixels — and the
+question that answers is not "how do you move a rectangle" but **what happens to
+what it covered**.
+
+There is no backing store for pixels, and there is not going to be one: at
+320x200x32 a full screen is 256 KiB, and a kernel that keeps a copy per window
+has given its memory to the window manager. What there is instead is the
+terminal's own **character grid**: 53x25 bytes in the shared page saying what
+belongs at each cell. The screen was the only record of what had been typed
+until this, which is fine right up until something covers it.
+
+So `move_window` blanks the rectangle a window is leaving and asks the terminal
+to redraw the cells it touched. `check_drag.py` types `help`, drags the pane
+onto the answer, checks the text is gone, drags it off, and checks that every
+one of the 132 lit pixels came back.
+
+Three things this turned up:
+
+- **The pointer has to be taken off the screen before anything redraws.** The
+  cursor's saved pixels describe the screen as it was when the cursor was drawn;
+  redraw underneath it and those pixels become a small rectangle of the old
+  picture, which the next cursor move stamps back onto the new one. A few
+  characters never came back, and that was why.
+- **`-1` does not survive the shared page.** The words are 32-bit and a read
+  comes back *unsigned*, so `-1` returns as 4294967295 — which is not less than
+  zero. The drag slot used -1 for "nothing", took 4294967295 for a window
+  number, and computed a descriptor address of `0x18_0030_003c`. The page fault
+  named the address; the only clue in it was that 24, the descriptor stride,
+  appeared in the high half. Sentinels here are out-of-range *values*, not
+  negative ones.
+- **The shell's frame and the terminal's first column share a pixel.** A
+  full-screen window with a one-pixel frame has its left edge exactly where cell
+  column 0 begins, and whichever is drawn last wins. It is a property of the
+  layout rather than of dragging, and it is the kind of thing to fix by giving
+  the terminal an inset once there is a reason to.
+
 ### Seeing which one has it
 
 Each window draws its own one-pixel frame, focused or idle, and repaints when

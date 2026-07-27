@@ -256,6 +256,11 @@ jobs:
           # cursor follows and leaves no trail — and by what a click does, which
           # is hand the keyboard to the window under it.
           timeout 300 python3 check_mouse.py
+          # Dragging a window over the terminal and off it again. The claim is
+          # the one a window manager lives or dies on — what a window covers
+          # comes back — and it is only possible because the terminal keeps its
+          # characters in a grid rather than only on the screen.
+          timeout 400 python3 check_drag.py
         env:
           LK_BIN: ../target/debug/lk
       - name: AOT native-lowering coverage gate

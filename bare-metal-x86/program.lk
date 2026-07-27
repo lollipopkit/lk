@@ -228,8 +228,39 @@ const SHARED_CURSOR_X = SHARED_CURSOR_SAVE + CURSOR_SAVE_WORDS * WORD;
 const SHARED_CURSOR_Y = SHARED_CURSOR_X + WORD;
 const SHARED_CURSOR_DRAWN = SHARED_CURSOR_Y + WORD;
 
+// Which window the pointer is dragging, and where inside it the drag began.
+// -1 when nothing is being dragged; the offset is what keeps the window from
+// jumping so its corner sits under the pointer.
+// "nothing is being dragged", as a slot number rather than as -1.
+//
+// The shared page is 32-bit words, and a word read back is *unsigned*: -1
+// written here comes back as 4294967295, which is not less than zero. The
+// first version tested `dragging < 0`, took 4294967295 for a window number,
+// and computed a descriptor address of 0x18_0030_003c — a page fault whose
+// only clue was that 24 (the descriptor stride) appeared in the high half. A
+// sentinel that survives the round trip is the fix; the shape of the bug is
+// the lesson.
+const DRAG_NONE = WINDOW_COUNT;
+const SHARED_DRAG_SLOT = SHARED_CURSOR_DRAWN + WORD;
+const SHARED_DRAG_DX = SHARED_DRAG_SLOT + WORD;
+const SHARED_DRAG_DY = SHARED_DRAG_DX + WORD;
+
+// The terminal's characters, one byte per cell.
+//
+// The screen was the only record of what had been typed, which is fine until
+// something covers part of it: a window moved over the text erases it, and
+// there is nothing to put back. A grid is the smallest thing that answers
+// "what belongs at this cell" — 53x25 bytes, a page and a bit — and it is what
+// makes a damaged rectangle repairable rather than permanently blank.
+//
+// ASCII, not glyph indices: the same bytes the shell already handles, so the
+// grid and the line buffer say the same thing about a character.
+const SHARED_GRID = SHARED_DRAG_DY + WORD;
+const GRID_COLUMNS = 53;
+const GRID_ROWS = 25;
+
 // The end of what is spoken for. Anything added goes here, not into a gap.
-const SHARED_END = SHARED_CURSOR_DRAWN + WORD;
+const SHARED_END = SHARED_GRID + GRID_COLUMNS * GRID_ROWS;
 
 // The framebuffer is twice the screen's height. Scrolling moves the *view*
 // down through it; only when the view reaches the bottom does anything have to
@@ -300,6 +331,71 @@ fn framebuffer_origin() -> Int {
     return framebuffer_address() + shared_read(SHARED_PAN) * WIDTH * 4;
 }
 
+// The grid: what belongs at each cell, and how to put it back.
+//
+// `text_columns()` is derived from the screen width and `GRID_COLUMNS` is a
+// constant, because a constant is what a shared-page offset can be computed
+// from. They must agree, and the startup check below is what says so — a grid
+// narrower than the screen would silently wrap every line by one cell.
+fn grid_at(column: Int, row: Int) -> Int {
+    return SHARED_GRID + row * GRID_COLUMNS + column;
+}
+
+fn grid_read(column: Int, row: Int) -> Int {
+    if (column < 0 || row < 0 || column >= GRID_COLUMNS || row >= GRID_ROWS) {
+        return 32;
+    }
+    return shared_read_byte(grid_at(column, row));
+}
+
+fn grid_write(column: Int, row: Int, ascii: Int) {
+    if (column < 0 || row < 0 || column >= GRID_COLUMNS || row >= GRID_ROWS) {
+        return;
+    }
+    shared_write_byte(grid_at(column, row), ascii);
+}
+
+fn grid_clear() {
+    for row in 0..GRID_ROWS {
+        for column in 0..GRID_COLUMNS {
+            grid_write(column, row, 32);
+        }
+    }
+}
+
+// Moves every row up one and blanks the last, to match a scroll.
+fn grid_scroll() {
+    for row in 1..GRID_ROWS {
+        for column in 0..GRID_COLUMNS {
+            grid_write(column, row - 1, grid_read(column, row));
+        }
+    }
+    for column in 0..GRID_COLUMNS {
+        grid_write(column, GRID_ROWS - 1, 32);
+    }
+}
+
+// Redraws the cells a pixel rectangle touches, from the grid.
+//
+// The repair a window manager needs: whatever covered this area is gone, and
+// the text that belongs there goes back. Cells rather than pixels because the
+// grid holds characters — the parts of a cell a covering window only partly
+// overlapped are redrawn too, which is why the rectangle is rounded outward.
+fn repaint_cells(base: Int, left: Int, top: Int, width: Int, height: Int) {
+    let first_column = ((left / CELL_WIDTH) as Int);
+    let first_row = ((top / CELL_HEIGHT) as Int);
+    let last_column = (((left + width - 1) / CELL_WIDTH) as Int);
+    let last_row = (((top + height - 1) / CELL_HEIGHT) as Int);
+    for row in first_row..last_row + 1 {
+        for column in first_column..last_column + 1 {
+            if (column >= 0 && row >= 0 && column < text_columns() && row < text_rows()) {
+                draw_glyph(base, WIDTH, FONT, glyph_index(grid_read(column, row)),
+                           column * CELL_WIDTH, row * CELL_HEIGHT, FOREGROUND, BACKGROUND);
+            }
+        }
+    }
+}
+
 // Draws one character at the cursor and moves it, or acts on backspace and
 // newline.
 //
@@ -320,6 +416,7 @@ fn put_char(base: Int, ascii: Int) {
         if (column > 0) {
             let back = column - 1;
             draw_glyph(base, WIDTH, FONT, 0, back * CELL_WIDTH, row * CELL_HEIGHT, FOREGROUND, BACKGROUND);
+            grid_write(back, row, 32);
             place_cursor(base, back, row);
         } else {
             place_cursor(base, column, row);
@@ -332,6 +429,7 @@ fn put_char(base: Int, ascii: Int) {
     }
     draw_glyph(base, WIDTH, FONT, glyph_index(ascii),
                column * CELL_WIDTH, row * CELL_HEIGHT, FOREGROUND, BACKGROUND);
+    grid_write(column, row, ascii);
     let next = column + 1;
     if (next >= text_columns()) {
         advance_line(base, row);
@@ -368,6 +466,7 @@ fn advance_line(base: Int, row: Int) {
 // the top, which costs one screen-sized copy — once per screenful of
 // scrolling rather than once per line.
 fn scroll_view() {
+    hide_cursor(framebuffer_origin());
     let pan = shared_read(SHARED_PAN) + CELL_HEIGHT;
     let physical = framebuffer_address();
     if (pan + HEIGHT > VIRTUAL_HEIGHT) {
@@ -376,6 +475,7 @@ fn scroll_view() {
         copy_rows(physical, WIDTH, pan, 0, HEIGHT - CELL_HEIGHT);
         pan = 0;
     }
+    grid_scroll();
     shared_write(SHARED_PAN, pan);
     vbe_set_pan(pan);
     // The row that just came into view holds whatever was there before.
@@ -1044,6 +1144,30 @@ fn draw_glyph_in_window(base: Int, slot: Int, index: Int, x: Int, y: Int) {
 // no memory, and it produces a cursor whose colour depends on what is beneath
 // it — which over this program's own amber-on-blue is sometimes the background.
 // A cursor you cannot see is worse than a slow one.
+// Takes the cursor off the screen, putting back what it covered.
+//
+// Anything that redraws an area has to do this first. The cursor's saved
+// pixels describe the screen *as it was when the cursor was drawn*; redraw
+// underneath it and those pixels become a small rectangle of the old picture,
+// which the next cursor move then stamps back on top of the new one. The
+// symptom is a few characters of text that never come back after a window is
+// dragged over them — which is how this was found.
+fn hide_cursor(base: Int) {
+    if (shared_read(SHARED_CURSOR_DRAWN) == 0) {
+        return;
+    }
+    let x = shared_read(SHARED_CURSOR_X);
+    let y = shared_read(SHARED_CURSOR_Y);
+    let i = 0;
+    for row in 0..2 {
+        for column in 0..2 {
+            put_pixel(base, WIDTH, x + column, y + row, shared_read(SHARED_CURSOR_SAVE + i * WORD));
+            i = i + 1;
+        }
+    }
+    shared_write(SHARED_CURSOR_DRAWN, 0);
+}
+
 fn move_cursor(base: Int) {
     if (shared_read(SHARED_CURSOR_DRAWN) == 1) {
         let old_x = shared_read(SHARED_CURSOR_X);
@@ -1074,6 +1198,42 @@ fn move_cursor(base: Int) {
     shared_write(SHARED_CURSOR_X, x);
     shared_write(SHARED_CURSOR_Y, y);
     shared_write(SHARED_CURSOR_DRAWN, 1);
+}
+
+// How tall a window's title bar is: the strip that drags it.
+//
+// Four pixels — the frame plus a little. A whole cell would be easier to hit
+// and would eat the first row of the window's own content, which for the pane
+// is the only row it has.
+const TITLE_HEIGHT = 4;
+
+// Moves a window, repairing what it uncovers.
+//
+// The repair is the whole difficulty. There is no backing store for what a
+// window covers, and the shell underneath cannot be asked to redraw an
+// arbitrary rectangle from nothing — so the text it holds comes back from the
+// grid, and everything else in that rectangle (there is nothing else yet) does
+// not. A window manager with overlapping windows needs each window to be able
+// to do this for itself; this is that, for the one window that can.
+fn move_window(base: Int, slot: Int, left: Int, top: Int) {
+    let old_left = window_left(SHARED_WINDOWS, slot);
+    let old_top = window_top(SHARED_WINDOWS, slot);
+    let width = window_width(SHARED_WINDOWS, slot);
+    let height = window_height(SHARED_WINDOWS, slot);
+    if (left == old_left && top == old_top) {
+        return;
+    }
+    // The pointer is over the window being dragged, by definition. Take it off
+    // the screen first, or its saved pixels are of the picture about to be
+    // replaced.
+    hide_cursor(base);
+    // Uncover: blank the pixels, then put the terminal's characters back.
+    fill_rect(base, WIDTH, old_left, old_top, width, height, BACKGROUND);
+    repaint_cells(base, old_left, old_top, width, height);
+    window_define(SHARED_WINDOWS, slot, left, top, width, height);
+    // The frame belongs to the window and moved with it, so it is redrawn on
+    // the owner's next turn rather than here.
+    shared_write(SHARED_DRAWN_FOCUS, 0 - 1);
 }
 
 // Which window the pointer is over, or -1.
@@ -1342,6 +1502,16 @@ shared_write(SHARED_MOUSE_Y, ((HEIGHT / 2) as Int));
 shared_write(SHARED_MOUSE_PHASE, 0);
 shared_write(SHARED_MOUSE_BUTTONS, 0);
 shared_write(SHARED_CURSOR_DRAWN, 0);
+shared_write(SHARED_DRAG_SLOT, DRAG_NONE);
+grid_clear();
+// The grid's width is a constant and the terminal's is derived from the screen.
+// They have to agree; if they ever stop, every line wraps one cell early and
+// the repaint puts characters in the wrong place.
+if (GRID_COLUMNS != text_columns() || GRID_ROWS != text_rows()) {
+    // "grid mismatch"
+    uart_write([103, 114, 105, 100, 32, 109, 105, 115, 109, 97, 116, 99, 104, 10]);
+    halt();
+}
 // Masked for the whole sequence. Every mouse command answers with an ACK, and
 // IRQ12 is already unmasked by the time this runs — so the acknowledgement
 // raises an interrupt, the handler reads the byte as if it were packet data,
@@ -1432,11 +1602,41 @@ while (running == 1 && waited < 60000) {
         move_cursor(framebuffer_origin());
         unlock(irq_cursor);
     }
+    let pointer_x = shared_read(SHARED_MOUSE_X);
+    let pointer_y = shared_read(SHARED_MOUSE_Y);
     if (shared_read(SHARED_MOUSE_BUTTONS) == 1) {
-        let hit = window_at(shared_read(SHARED_MOUSE_X), shared_read(SHARED_MOUSE_Y));
-        if (hit >= 0 && hit != shared_read(SHARED_FOCUS)) {
-            shared_write(SHARED_FOCUS, hit);
+        let dragging = shared_read(SHARED_DRAG_SLOT);
+        if (dragging >= DRAG_NONE) {
+            let hit = window_at(pointer_x, pointer_y);
+            if (hit >= 0 && hit != shared_read(SHARED_FOCUS)) {
+                shared_write(SHARED_FOCUS, hit);
+            }
+            // A press on a window's title bar starts a drag. The shell is
+            // excluded: it is the whole screen, so "moving" it would mean
+            // moving everything, and there is nowhere for it to go.
+            if (hit > WINDOW_SHELL
+                && pointer_y < window_top(SHARED_WINDOWS, hit) + TITLE_HEIGHT) {
+                shared_write(SHARED_DRAG_SLOT, hit);
+                shared_write(SHARED_DRAG_DX, pointer_x - window_left(SHARED_WINDOWS, hit));
+                shared_write(SHARED_DRAG_DY, pointer_y - window_top(SHARED_WINDOWS, hit));
+            }
+        } else {
+            let want_left = pointer_x - shared_read(SHARED_DRAG_DX);
+            let want_top = pointer_y - shared_read(SHARED_DRAG_DY);
+            // Clamped so a window cannot be dragged off the screen and left
+            // unreachable — there is no way to bring one back.
+            let max_left = WIDTH - window_width(SHARED_WINDOWS, dragging);
+            let max_top = HEIGHT - window_height(SHARED_WINDOWS, dragging);
+            if (want_left < 0) { want_left = 0; }
+            if (want_top < 0) { want_top = 0; }
+            if (want_left > max_left) { want_left = max_left; }
+            if (want_top > max_top) { want_top = max_top; }
+            let irq_drag = lock();
+            move_window(framebuffer_origin(), dragging, want_left, want_top);
+            unlock(irq_drag);
         }
+    } else {
+        shared_write(SHARED_DRAG_SLOT, DRAG_NONE);
     }
 
     // Repaint the frame when the focus has moved. Cheap enough to check every
