@@ -37,3 +37,21 @@ fn fill_gradient(base: Int, width: Int, height: Int, blue: Int) {
         }
     }
 }
+
+// Two adjacent pixels at once.
+//
+// A pixel is four bytes and the framebuffer is contiguous, so a 64-bit access
+// carries two of them. Each of these accessors is an opaque call into the
+// runtime — they have to be, or the optimiser would collapse repeated reads of
+// device memory — so halving the *number* of calls halves most of the cost of
+// moving a picture around.
+fn get_pixel_pair(base: Int, stride: Int, x: Int, y: Int) -> Int {
+    let offset = (y * stride + x) * 4;
+    let value = unsafe { volatile_read_u64((base + offset) as *mut u64) };
+    return value as Int;
+}
+
+fn put_pixel_pair(base: Int, stride: Int, x: Int, y: Int, pair: Int) {
+    let offset = (y * stride + x) * 4;
+    unsafe { volatile_write_u64((base + offset) as *mut u64, pair as u64); };
+}

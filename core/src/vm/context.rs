@@ -392,6 +392,7 @@ impl VmContext {
         // as MMIO: there is no core to mask interrupts on, and a barrier
         // orders accesses the VM never makes.
         self.install_runtime_builtin("cpu_barrier", NativeFunction::Plain(core_cpu_barrier_builtin), 0);
+        self.install_runtime_builtin("cpu_timestamp", NativeFunction::Plain(core_cpu_timestamp_builtin), 0);
         self.install_runtime_builtin(
             "cpu_compiler_barrier",
             NativeFunction::Plain(core_cpu_compiler_barrier_builtin),
@@ -1190,6 +1191,7 @@ hardware_builtins! {
     core_cpu_irq_save_builtin => super::hardware::cpu_irq_save;
     core_cpu_irq_restore_builtin => super::hardware::cpu_irq_restore;
     core_cpu_wait_for_interrupt_builtin => super::hardware::cpu_wait_for_interrupt;
+    core_cpu_timestamp_builtin => super::hardware::cpu_timestamp;
     core_volatile_read_u8 => super::hardware::volatile_read_u8;
     core_volatile_write_u8 => super::hardware::volatile_write_u8;
     core_volatile_read_u16 => super::hardware::volatile_read_u16;

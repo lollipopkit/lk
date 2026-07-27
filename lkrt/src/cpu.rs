@@ -151,3 +151,32 @@ mod tests {
         lkrt_cpu_irq_restore(0);
     }
 }
+
+/// A monotonically increasing count of core cycles.
+///
+/// `WritesHost` in the ABI table, like the MMIO reads: two reads of a clock
+/// legitimately differ, so collapsing them would turn a measurement into zero.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_cpu_timestamp() -> i64 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        let low: u32;
+        let high: u32;
+        unsafe {
+            core::arch::asm!("rdtsc", out("eax") low, out("edx") high, options(nomem, nostack));
+        }
+        ((u64::from(high) << 32) | u64::from(low)) as i64
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        let count: u64;
+        unsafe {
+            core::arch::asm!("mrs {}, cntvct_el0", out(reg) count, options(nomem, nostack));
+        }
+        count as i64
+    }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    {
+        unimplemented!("cpu_timestamp is not implemented for this architecture")
+    }
+}

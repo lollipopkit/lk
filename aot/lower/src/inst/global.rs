@@ -271,6 +271,7 @@ pub(crate) fn builtin_for_name(name: &str) -> Option<Builtin> {
         "cpu_irq_save" => Builtin::Cpu("irq_save", 0),
         "cpu_irq_restore" => Builtin::Cpu("irq_restore", 1),
         "cpu_wait_for_interrupt" => Builtin::Cpu("wait_for_interrupt", 0),
+        "cpu_timestamp" => Builtin::Cpu("timestamp", 0),
         "volatile_read_u8" => Builtin::VolatileRead(8),
         "volatile_read_u16" => Builtin::VolatileRead(16),
         "volatile_read_u32" => Builtin::VolatileRead(32),

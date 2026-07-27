@@ -171,6 +171,35 @@ appearance in the hands of whatever it happened to interrupt.
 to have swapped colours. Removing the repaint — leaving the handler's word
 written but nothing acting on it — makes it fail, which is what it is for.
 
+### What it costs
+
+`cpu_timestamp()` reads the core's cycle counter, which is what a kernel needs
+before it can claim anything got faster. `time` measures the two things this
+program does that are not cheap, both of which run with interrupts masked — so
+what they cost is time the other task does not get:
+
+```
+>time
+scroll 4184050 frames 480210
+```
+
+The first measurement said `scroll 8126964`. Scrolling moves the picture a
+pixel at a time through opaque runtime calls — they have to be opaque, or the
+optimiser would collapse repeated reads of device memory — so the cost is
+mostly the *number* of calls. A pixel is four bytes and the framebuffer is
+contiguous, so a 64-bit access carries two of them; halving the calls halved
+the cost, which is what the numbers say and what the model predicted.
+
+It also says where to go next, and it is not where this round started out
+believing. Repainting both window frames is 480k cycles against the scroll's
+4.1M — **eight times cheaper**, so dirty-rectangle bookkeeping for repaints
+would be effort spent on the smaller number. The scroll is the one worth
+another order of magnitude, and the way to get it is not to move pixels at all:
+the Bochs VBE can pan, so a framebuffer taller than the screen turns a scroll
+into one register write. That needs every draw to go through logical
+coordinates, which is a change to every drawing entry point rather than a
+driver addition, so it is its own piece of work.
+
 ### Sharing state between them
 
 Read, add, write is three steps. An interrupt landing between the read and the

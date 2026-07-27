@@ -67,7 +67,8 @@ pub use chan::{
     lkrt_spawn0, lkrt_spawn1, lkrt_spawn2, lkrt_spawn3, lkrt_spawn4, lkrt_task_await,
 };
 pub use cpu::{
-    lkrt_cpu_barrier, lkrt_cpu_compiler_barrier, lkrt_cpu_irq_restore, lkrt_cpu_irq_save, lkrt_cpu_wait_for_interrupt,
+    lkrt_cpu_barrier, lkrt_cpu_compiler_barrier, lkrt_cpu_irq_restore, lkrt_cpu_irq_save, lkrt_cpu_timestamp,
+    lkrt_cpu_wait_for_interrupt,
 };
 pub use encoding::lkrt_json_parse;
 #[cfg(feature = "std")]

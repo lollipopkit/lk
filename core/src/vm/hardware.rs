@@ -251,6 +251,35 @@ pub(super) fn cpu_irq_restore(_args: NativeArgs<'_>) -> Result<RuntimeVal> {
     ))
 }
 
+/// A monotonically increasing count of core cycles.
+///
+/// For measuring, which a kernel needs before it can honestly claim anything
+/// got faster. The unit is whatever the core counts in — comparable with
+/// itself, not across machines, which is exactly what a before/after needs.
+pub(super) fn cpu_timestamp(_args: NativeArgs<'_>) -> Result<RuntimeVal> {
+    #[cfg(all(not(feature = "std"), target_arch = "x86_64"))]
+    {
+        let low: u32;
+        let high: u32;
+        unsafe {
+            core::arch::asm!("rdtsc", out("eax") low, out("edx") high, options(nomem, nostack));
+        }
+        return Ok(RuntimeVal::Int(((u64::from(high) << 32) | u64::from(low)) as i64));
+    }
+    #[cfg(all(not(feature = "std"), target_arch = "aarch64"))]
+    {
+        let count: u64;
+        unsafe {
+            core::arch::asm!("mrs {}, cntvct_el0", out(reg) count, options(nomem, nostack));
+        }
+        return Ok(RuntimeVal::Int(count as i64));
+    }
+    #[allow(unreachable_code)]
+    Err(anyhow!(
+        "cpu_timestamp requires bare-metal execution on a supported architecture"
+    ))
+}
+
 /// Parks the core until an interrupt arrives.
 ///
 /// An idle loop should call this rather than spinning: spinning burns power

@@ -387,12 +387,12 @@ fn run_command(base: Int) -> Int {
     }
     if (line_starts_with([104, 101, 108, 112])) {          // "help"
         // "help clear echo keys exit"
-        // "help clear echo keys mem page sync yield win exit"
+        // "help clear echo keys mem page sync yield win time exit"
         emit(base, [104, 101, 108, 112, 32, 99, 108, 101, 97, 114, 32, 101, 99,
                     104, 111, 32, 107, 101, 121, 115, 32, 109, 101, 109, 32,
                     112, 97, 103, 101, 32, 115, 121, 110, 99, 32,
                     121, 105, 101, 108, 100, 32, 119, 105, 110, 32,
-                    101, 120, 105, 116]);
+                    116, 105, 109, 101, 32, 101, 120, 105, 116]);
         return 1;
     }
     if (line_starts_with([99, 108, 101, 97, 114])) {       // "clear"
@@ -438,6 +438,26 @@ fn run_command(base: Int) -> Int {
     }
     if (line_starts_with([119, 105, 110])) {               // "win"
         emit(base, decimal(window_dropped(SHARED_WINDOWS, WINDOW_SPINNER)));
+        return 1;
+    }
+    if (line_starts_with([116, 105, 109, 101])) {          // "time"
+        // Measure the two things this program does that are not cheap: a
+        // scroll moves the whole picture a pixel row at a time, and a focus
+        // change repaints both frames. Both run with interrupts masked, so
+        // what they cost is time the other task does not get.
+        let irq_time = lock();
+        let t0 = unsafe { cpu_timestamp() };
+        scroll_up(base, WIDTH, HEIGHT, BACKGROUND);
+        let t1 = unsafe { cpu_timestamp() };
+        repaint_frame(base, WINDOW_SHELL);
+        repaint_frame(base, WINDOW_SPINNER);
+        let t2 = unsafe { cpu_timestamp() };
+        unlock(irq_time);
+        // "scroll " cycles " frames " cycles
+        emit(base, [115, 99, 114, 111, 108, 108, 32]
+                   .chain(decimal((t1 as Int) - (t0 as Int)))
+                   .chain([32, 102, 114, 97, 109, 101, 115, 32])
+                   .chain(decimal((t2 as Int) - (t1 as Int))));
         return 1;
     }
     if (line_starts_with([101, 120, 105, 116])) {          // "exit"

@@ -119,6 +119,7 @@ macro_rules! for_each_abi_fn {
             ("cpu", "compiler_barrier", lkrt_cpu_compiler_barrier, WritesHost, [], Nil);
             ("cpu", "irq_save", lkrt_cpu_irq_save, WritesHost, [], I64);
             ("cpu", "irq_restore", lkrt_cpu_irq_restore, WritesHost, [I64], Nil);
+            ("cpu", "timestamp", lkrt_cpu_timestamp, WritesHost, [], I64);
             ("cpu", "wait_for_interrupt", lkrt_cpu_wait_for_interrupt, WritesHost, [], Nil);
             // Volatile MMIO. `WritesHost` even for the reads: the effect
             // annotation is what drives CSE, and a device read that can change

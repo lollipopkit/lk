@@ -158,7 +158,7 @@ impl TypeChecker {
     fn check_cpu_builtin(&mut self, name: &str, args: &[Box<Expr>]) -> Result<Option<Type>> {
         let (arity, result) = match name {
             "cpu_barrier" | "cpu_compiler_barrier" | "cpu_wait_for_interrupt" => (0, Type::Nil),
-            "cpu_irq_save" => (0, Type::Int),
+            "cpu_irq_save" | "cpu_timestamp" => (0, Type::Int),
             "cpu_irq_restore" => (1, Type::Nil),
             _ => return Ok(None),
         };

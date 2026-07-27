@@ -416,8 +416,8 @@ pub(crate) fn lower_builtin_call(
                 }
                 call_args.push(value);
             }
-            // `irq_save` is the only one that produces a value.
-            if entry == "irq_save" {
+            // The two that produce a value; the rest are pure effect.
+            if entry == "irq_save" || entry == "timestamp" {
                 let dst = ssa.new_val();
                 insts.push(Inst::Call {
                     dst: Some(dst),
