@@ -132,6 +132,14 @@ const COM1: u16 = 0x3f8;
 /// `program.lk` has its own copy of this — that one is the demo. This exists
 /// because `lkrt` needs a sink for the value a script evaluates to, and it
 /// cannot call back into LK.
+///
+/// It does *not* configure the device, and no longer needs to. The board used
+/// to bring COM1 up before `main()` because it enabled interrupts itself, and a
+/// tick landing before the program's `uart_init()` would have transmitted
+/// through an unconfigured UART. The program owns interrupts now and turns them
+/// on long after its own first statement, which is `uart_init()`. A fault
+/// earlier than that has no gate to land in either, so there is nothing left
+/// for a second initialisation to protect.
 pub(crate) fn serial_write(text: &str) {
     for byte in text.bytes() {
         // SAFETY: COM1 is a fixed ISA port; `in`/`out` on it cannot touch
@@ -141,24 +149,6 @@ pub(crate) fn serial_write(text: &str) {
             while port_in_u8(COM1 + 5) & 0x20 == 0 {}
             port_out_u8(COM1, byte);
         }
-    }
-}
-
-/// Bring COM1 up before interrupts are enabled.
-///
-/// `program.lk`'s driver configures it too, with the same values — this is not
-/// a substitute for it. It is here because the timer handler transmits, and a
-/// tick landing before `uart_init()` would write to an unconfigured device.
-fn serial_init() {
-    // SAFETY: fixed ISA ports. The sequence matches `program.lk`'s.
-    unsafe {
-        port_out_u8(COM1 + 1, 0x00); // interrupts off; this driver polls
-        port_out_u8(COM1 + 3, 0x80); // DLAB: the divisor latch
-        port_out_u8(COM1, 0x03); //     divisor 3 = 38400 baud
-        port_out_u8(COM1 + 1, 0x00);
-        port_out_u8(COM1 + 3, 0x03); // 8N1
-        port_out_u8(COM1 + 2, 0xc7); // FIFOs on and cleared
-        port_out_u8(COM1 + 4, 0x0b); // DTR + RTS + OUT2
     }
 }
 
@@ -233,7 +223,6 @@ pub extern "C" fn kernel_main() -> ! {
     // calls into is simply absent.
     let _ = lkrt::link_anchor();
     lkrt::set_output(serial_write);
-    serial_init();
     // No task table to prepare any more: the program spawns what it wants by
     // address (`lk_spawn`), and until it does there is one task — this one.
     // The TSS before the IDT: a gate that can be raised from ring 3 needs a

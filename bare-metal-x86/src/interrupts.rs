@@ -9,103 +9,32 @@
 //! has to be entered through a stub that spills every one of them and leaves
 //! with `iretq`. There is no language in which that is not assembly.
 //!
-//! The exception reporter stays for a second reason. It runs *after* something
-//! has already gone wrong, and the two things an LK handler must never do —
-//! allocate, or take a lock — are exactly what formatting a report in LK would
-//! need. `write_hex` here writes into a fixed buffer and touches no allocator.
+//! The exception reporter stays for a different reason, and the one first given
+//! for it was wrong. It was "formatting a report in LK would allocate", which
+//! the clock task disproves — that one draws its digits by dividing, and
+//! allocates nothing.
+//!
+//! The real reason is that **every dependency a fault reporter has is a way for
+//! the report not to happen**. This one has two: a sixteen-byte buffer on its
+//! own stack, and `out` to a port. It does not read the shared page, call
+//! through a table, or touch an allocator — so a fault that damaged any of
+//! those still gets reported. Moving it would trade that for making the list of
+//! named vectors editable in LK, which is a small thing to want and a large
+//! thing to pay for.
+//!
+//! The same argument says where the line is: if this ever needs to do something
+//! a fault does not already guarantee is possible, it is doing too much.
 
 use core::arch::global_asm;
 
-// An interrupt lands between any two instructions of the interrupted program,
-// so every register the called code may clobber has to be saved: the System V
-// caller-saved integer registers, and all sixteen XMM registers because LK
-// numbers are `f64` and the interrupted computation may hold one. Missing a
-// register corrupts a value rather than crashing, which is the hardest kind of
-// bug to find.
+// The keyboard's and the mouse's trampolines used to be here, one hand-written
+// copy each of a spill/restore that is identical for every device interrupt.
+// They are `lkrt`'s now — 256 stubs and a handler table, so a kernel points a
+// gate at one and writes an address into the other. Adding a device stopped
+// being an edit to this file.
 //
-// The CPU aligns RSP to 16 bytes when it takes an interrupt in 64-bit mode.
-// Nine 8-byte pushes leave it misaligned, so the `sub` below both reserves the
-// XMM area and restores the alignment `call` expects.
-global_asm!(
-    ".section .text, \"ax\"",
-    // The spill/restore is identical for every IRQ, so it lives in a macro
-    // rather than being copied per vector — a register missing from one copy
-    // corrupts a value only when that particular interrupt lands.
-    ".macro IRQ_SAVE",
-    "   push rax",
-    "   push rcx",
-    "   push rdx",
-    "   push rsi",
-    "   push rdi",
-    "   push r8",
-    "   push r9",
-    "   push r10",
-    "   push r11",
-    "   sub rsp, 264",
-    "   movups [rsp + 0], xmm0",
-    "   movups [rsp + 16], xmm1",
-    "   movups [rsp + 32], xmm2",
-    "   movups [rsp + 48], xmm3",
-    "   movups [rsp + 64], xmm4",
-    "   movups [rsp + 80], xmm5",
-    "   movups [rsp + 96], xmm6",
-    "   movups [rsp + 112], xmm7",
-    "   movups [rsp + 128], xmm8",
-    "   movups [rsp + 144], xmm9",
-    "   movups [rsp + 160], xmm10",
-    "   movups [rsp + 176], xmm11",
-    "   movups [rsp + 192], xmm12",
-    "   movups [rsp + 208], xmm13",
-    "   movups [rsp + 224], xmm14",
-    "   movups [rsp + 240], xmm15",
-    ".endm",
-    ".macro IRQ_RESTORE",
-    "   movups xmm0, [rsp + 0]",
-    "   movups xmm1, [rsp + 16]",
-    "   movups xmm2, [rsp + 32]",
-    "   movups xmm3, [rsp + 48]",
-    "   movups xmm4, [rsp + 64]",
-    "   movups xmm5, [rsp + 80]",
-    "   movups xmm6, [rsp + 96]",
-    "   movups xmm7, [rsp + 112]",
-    "   movups xmm8, [rsp + 128]",
-    "   movups xmm9, [rsp + 144]",
-    "   movups xmm10, [rsp + 160]",
-    "   movups xmm11, [rsp + 176]",
-    "   movups xmm12, [rsp + 192]",
-    "   movups xmm13, [rsp + 208]",
-    "   movups xmm14, [rsp + 224]",
-    "   movups xmm15, [rsp + 240]",
-    "   add rsp, 264",
-    "   pop r11",
-    "   pop r10",
-    "   pop r9",
-    "   pop r8",
-    "   pop rdi",
-    "   pop rsi",
-    "   pop rdx",
-    "   pop rcx",
-    "   pop rax",
-    ".endm",
-    ".global __mouse_trampoline",
-    "__mouse_trampoline:",
-    // The same full save as the keyboard's, and for the same reason: an
-    // interrupt is not a call. The code it lands in never agreed to lose its
-    // caller-saved registers, and the handler is compiled LK — it uses them,
-    // and the SSE ones. The first version of this did `call` and `iretq` with
-    // nothing in between, which corrupts whatever it interrupted at a moment
-    // nothing can predict.
-    "   IRQ_SAVE",
-    "   call lk_mouse",
-    "   IRQ_RESTORE",
-    "   iretq",
-    ".global __keyboard_trampoline",
-    "__keyboard_trampoline:",
-    "   IRQ_SAVE",
-    "   call lk_key_isr",
-    "   IRQ_RESTORE",
-    "   iretq",
-);
+// What could not go is the timer's, next door in `tasks`: returning on a
+// *different* stack is what a task switch is, and no shared tail can do that.
 
 /// Where every CPU exception ends up.
 ///

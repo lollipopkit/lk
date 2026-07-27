@@ -1659,6 +1659,8 @@ const VECTOR_MOUSE = 0x2c;
 const VECTOR_YIELD = 0x30;
 const VECTOR_SYSCALL = 0x80;
 const EXCEPTION_COUNT = 32;
+// Every vector the CPU can raise; the runtime has a stub for each.
+const VECTOR_COUNT = 256;
 
 // The selectors, which are byte offsets into the descriptor table plus the
 // privilege the *caller* is requesting in the low two bits. Ring 3's carry a 3
@@ -1734,6 +1736,26 @@ fn set_kernel_stack(top: Int) {
 // no gate for any vector, and a fault with no gate is a triple fault — which on
 // this machine is a reset with nothing printed. Every line below this one is
 // covered; nothing above it is.
+// Points a vector at the runtime's generic entry, and says what it should call.
+//
+// The stride is measured rather than named, the same way the exception stubs'
+// is: the assembler's `.align` decides it, and a copy of that number on this
+// side would be a copy nothing checks.
+fn install_device_handler(vector: Int, handler: Int) {
+    let stubs: Int = unsafe { symbol_address("lkrt_isr_stubs") };
+    let stubs_end: Int = unsafe { symbol_address("lkrt_isr_stubs_end") };
+    let span = stubs_end - stubs;
+    if ((span % VECTOR_COUNT) != 0) {
+        // "bad isr stride"
+        uart_write([98, 97, 100, 32, 105, 115, 114, 32, 115, 116, 114, 105, 100, 101, 10]);
+        halt();
+    }
+    let stride = ((span / VECTOR_COUNT) as Int);
+    idt_set_gate(IDT_BASE, vector, stubs + vector * stride, KERNEL_CODE_SELECTOR, 0);
+    let table: Int = unsafe { symbol_address("lkrt_isr_handlers") };
+    unsafe { volatile_write_u64((table + vector * 8) as *mut u64, handler as u64); };
+}
+
 fn install_interrupt_table() {
     idt_zero(IDT_BASE);
 
@@ -1763,17 +1785,24 @@ fn install_interrupt_table() {
         idt_set_gate(IDT_BASE, vector, stubs + vector * stride, KERNEL_CODE_SELECTOR, 0);
     }
 
-    // The devices. Each names a trampoline: an interrupt is not a call, so the
-    // gate cannot point at a compiled function directly — it points at the stub
-    // that spills every caller-saved register first and leaves with `iretq`.
+    // The two vectors whose entry path is their own. The timer's has to return
+    // on a *different* stack, which is what a task switch is; the reschedule
+    // vector is the same path without the device work. Neither fits a shared
+    // tail, so both stay the board's.
     idt_set_gate(IDT_BASE, VECTOR_TIMER,
                  unsafe { symbol_address("__task_trampoline") }, KERNEL_CODE_SELECTOR, 0);
-    idt_set_gate(IDT_BASE, VECTOR_KEYBOARD,
-                 unsafe { symbol_address("__keyboard_trampoline") }, KERNEL_CODE_SELECTOR, 0);
-    idt_set_gate(IDT_BASE, VECTOR_MOUSE,
-                 unsafe { symbol_address("__mouse_trampoline") }, KERNEL_CODE_SELECTOR, 0);
     idt_set_gate(IDT_BASE, VECTOR_YIELD,
                  unsafe { symbol_address("__yield_trampoline") }, KERNEL_CODE_SELECTOR, 0);
+
+    // The ordinary device interrupts, through the runtime's generic entry.
+    //
+    // One stub per vector because the CPU does not tell a handler which one
+    // arrived; a shared tail because after that they are identical. Installing
+    // a driver's interrupt is now two stores from here — a gate, and a handler
+    // address — rather than a hand-written trampoline in a file the driver has
+    // nothing to do with.
+    install_device_handler(VECTOR_KEYBOARD, unsafe { symbol_address("lk_key_isr") });
+    install_device_handler(VECTOR_MOUSE, unsafe { symbol_address("lk_mouse") });
     // The one gate with DPL 3, and the whole reason the others have DPL 0: a
     // ring-3 task can raise this vector and no other. `int 0x21` from ring 3
     // would otherwise be a way to fake a keystroke.

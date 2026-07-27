@@ -50,6 +50,7 @@ mod host;
 mod io;
 #[cfg(not(feature = "std"))]
 mod io_bare;
+mod isr;
 mod lkdyn;
 mod lklist;
 mod lkmap;

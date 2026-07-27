@@ -1057,6 +1057,9 @@ drivers/pic.lk           the 8259 pair: remap, mask, end-of-interrupt
 drivers/gdt.lk           segment descriptors, `lgdt`, and reloading CS
 drivers/paging.lk        four-level page tables, CR3, and the TLB
 drivers/tasks.lk         the task table, and the frame a task starts life on
+
+`lkrt` supplies one thing no driver can: 256 interrupt stubs and a handler
+table, so a gate can reach a compiled LK function at all.
 drivers/tss.lk           the one field long mode kept: the ring-0 stack
 drivers/serial.lk        a 16550 UART
 drivers/pci.lk           configuration space
@@ -1202,7 +1205,38 @@ lose its caller-saved registers — so a compiled handler has to be entered
 through a stub that spills all of them and leaves with `iretq`. That is
 assembly in any language.
 
-**The 8259 is LK's too**, both halves of it — `drivers/pic.lk` holds the
+**### Adding an interrupt stopped being a Rust edit
+
+A gate points at a stub, not at a handler, and that will always be true: the
+code an interrupt lands in never agreed to lose its caller-saved registers, so
+something has to spill them and leave with `iretq`. What was *not* inevitable is
+that every vector needed its own hand-written stub in the board's Rust — adding
+a device meant editing a file the driver has nothing to do with.
+
+`lkrt` now carries 256 of them and a handler table, so installing one is two
+stores from LK:
+
+```lk
+fn install_device_handler(vector: Int, handler: Int) {
+    …
+    idt_set_gate(IDT_BASE, vector, stubs + vector * stride, KERNEL_CODE_SELECTOR, 0);
+    unsafe { volatile_write_u64((table + vector * 8) as *mut u64, handler as u64); };
+}
+```
+
+The keyboard's and the mouse's trampolines are gone from `src/interrupts.rs`.
+The timer's is not, and cannot be: returning on a *different* stack is what a
+task switch is, and no shared tail does that. Nor is the syscall's, which has to
+put a value back in `rax`.
+
+Two details in the shared tail are worth the words. Each stub pushes its vector
+as `push imm32`, not `imm8` — the byte form sign-extends, so vector 200 would
+arrive as −56, on exactly the vectors nobody tests. And a handler of zero is
+checked for rather than called: a vector arriving with nothing installed is a
+spurious interrupt, and answering it with a call to address zero turns a
+diagnosable event into a fault inside a fault.
+
+The 8259 is LK's too**, both halves of it — `drivers/pic.lk` holds the
 four-write initialisation sequence, the mask register, and the end-of-interrupt.
 Those had to move together: bringing the chip up decides which vector each line
 lands on, acknowledging decides which chip is told the handler is done, and
