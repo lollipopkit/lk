@@ -2,12 +2,14 @@
 mod tests {
     #[cfg(not(feature = "std"))]
     use crate::compat::prelude::*;
-    use crate::{
-        ast::Parser as ExprParser,
-        token::Tokenizer,
-        val::Type,
-        typ::TypeChecker,
-    };
+    use crate::{ast::Parser as ExprParser, token::Tokenizer, typ::TypeChecker, val::Type};
+
+    /// Type-checks a whole program, as `lk check` does.
+    fn check_program(src: &str) -> anyhow::Result<()> {
+        let program = crate::syntax::parse_program_source(src, Default::default()).expect("parse program");
+        let mut tc = TypeChecker::new();
+        program.type_check(&mut tc)
+    }
 
     fn infer(src: &str) -> Type {
         let tokens = Tokenizer::tokenize(src).expect("tokenize");
@@ -28,20 +30,23 @@ mod tests {
         assert_eq!(infer("x + \"!\""), Type::String);
     }
 
+    /// A literal with mixed element types is a `Tuple`, not a `List` of the
+    /// union.
+    ///
+    /// This test asserted the union until it was mounted and run for the first
+    /// time (it, and four other files, had never been compiled). The language
+    /// moved under it: a literal has a known length and a known type per
+    /// position, and keeping both is strictly more information than collapsing
+    /// them — `[1, 2.0][0]` is `Int`, where the union would only promise
+    /// `Int | Float`.
     #[test]
-    fn test_list_union_element_type() {
-        // Mixed numeric list should infer union element type
+    fn test_list_literal_with_mixed_elements_is_a_tuple() {
         let ty = infer("[1, 2.0, 3]");
         match ty {
-            Type::List(inner) => match *inner {
-                Type::Union(ts) => {
-                    // Expect Int and Float members
-                    assert!(ts.contains(&Type::Int));
-                    assert!(ts.contains(&Type::Float));
-                }
-                _ => panic!("expected union element type, got {:?}", *inner),
-            },
-            _ => panic!("expected List<...>, got {:?}", ty),
+            Type::Tuple(items) => {
+                assert_eq!(items, vec![Type::Int, Type::Float, Type::Int], "per-position types");
+            }
+            _ => panic!("expected Tuple<...>, got {:?}", ty),
         }
     }
 
@@ -65,15 +70,41 @@ mod tests {
     }
 
     #[test]
-    fn test_indexing_preserves_union_element_type() {
-        // Indexing a mixed-element list should yield the union element type
-        let ty = infer("([1, 2.0])[0]");
-        match ty {
-            Type::Union(ts) => {
-                assert!(ts.contains(&Type::Int));
-                assert!(ts.contains(&Type::Float));
-            }
-            _ => panic!("expected union type, got {:?}", ty),
-        }
+    fn test_indexing_a_literal_gives_the_position_type() {
+        // A constant index into a tuple gives that position's type exactly.
+        assert_eq!(infer("([1, 2.0])[0]"), Type::Int);
+        assert_eq!(infer("([1, 2.0])[1]"), Type::Float);
+    }
+
+    /// The top level runs in order, so a statement there cannot read a binding
+    /// declared below it — it reads nil, and the error that used to surface
+    /// was about nil ("Add expected numbers, got Nil and Int"), naming neither
+    /// the binding nor the order.
+    #[test]
+    fn top_level_read_before_definition_is_reported() {
+        let err = check_program("const B = A + 4;\nconst A = 1;\n").expect_err("must be reported");
+        let message = err.to_string();
+        assert!(message.contains("`A` is used before it is defined"), "{message}");
+    }
+
+    /// A function body is the opposite case: it runs after the whole top level,
+    /// so reading a `const` declared below it is ordinary — and the bare-metal
+    /// programs do it throughout.
+    #[test]
+    fn a_function_body_may_read_a_later_binding() {
+        check_program("fn f() { return LATER; }\nconst LATER = 7;\n").expect("a body may read it");
+    }
+
+    /// Same for a closure, for the same reason.
+    #[test]
+    fn a_closure_body_may_read_a_later_binding() {
+        check_program("let g = fn() => TAIL;\nconst TAIL = 9;\n").expect("a closure may read it");
+    }
+
+    /// The read in a binding's own initializer still counts.
+    #[test]
+    fn a_binding_may_not_read_itself() {
+        let err = check_program("const A = A + 1;\n").expect_err("must be reported");
+        assert!(err.to_string().contains("`A` is used before it is defined"), "{err}");
     }
 }

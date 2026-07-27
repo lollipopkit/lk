@@ -5,6 +5,19 @@ use super::*;
 /// any use other than a call rejects (reads find the register undefined).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Builtin {
+    /// `volatile_read_uN(ptr)` / `volatile_write_uN(ptr, value)`.
+    ///
+    /// Width rides in the variant because that is where the source puts it —
+    /// the compiler cannot ask the type checker for a pointee type, which is
+    /// why these are intrinsics rather than `*p` syntax.
+    /// `cpu_*` — barriers, interrupt masking, wait-for-interrupt. The payload
+    /// is the ABI entry name under the `cpu` module.
+    Cpu(&'static str, u8),
+    VolatileRead(u8),
+    VolatileWrite(u8),
+    /// `port_in_uN(port)` / `port_out_uN(port, value)` — x86 port I/O.
+    PortIn(u8),
+    PortOut(u8),
     Println,
     Print,
     Assert,
@@ -41,6 +54,23 @@ pub(crate) enum Builtin {
     BitAnd,
     BitOr,
     BitNot,
+    /// `__lk_shl(l, r)` / `__lk_shr(l, r)` — the `<<`/`>>` desugars. Unlike the
+    /// other bitwise operators these do not lower to a machine instruction:
+    /// the shift amount has to be range-checked, and the check lives in
+    /// `lkrt`'s `i64_sh*_checked` so the VM and the native build raise the same
+    /// error rather than one masking where the other refuses.
+    // TODO: inline the shift with a cold branch to the raise, once codegen can
+    // build blocks mid-instruction; a call per shift is the price of the check.
+    Shl,
+    Shr,
+    /// `symbol_address("name")` — the address of an `#[export]`ed function, and
+    /// `call_address_2(addr, a, b)` — a call through one. Together they are
+    /// what a driver table is made of: an array of function pointers, indexed
+    /// by device or by window, instead of an `if` chain edited for every new
+    /// entry. The name must be a literal, because a relocation is a name at
+    /// link time and there is nothing to look one up in at run time.
+    SymbolAddress,
+    CallAddress2,
     /// `select$block(types, chans, values, guards, has_default)`.
     SelectBlock,
 }

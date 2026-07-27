@@ -388,9 +388,65 @@ impl VmContext {
         self.install_runtime_builtin("Set", NativeFunction::Plain(core_set_builtin), NativeEntry::VARIADIC);
         self.install_runtime_builtin("__lk_set_field", NativeFunction::Plain(core_set_field_builtin), 3);
         self.install_runtime_builtin("__lk_merge_fields", NativeFunction::Plain(core_merge_fields_builtin), 2);
+        // CPU control. Meaningless under the interpreter for the same reason
+        // as MMIO: there is no core to mask interrupts on, and a barrier
+        // orders accesses the VM never makes.
+        self.install_runtime_builtin("cpu_barrier", NativeFunction::Plain(core_cpu_barrier_builtin), 0);
+        self.install_runtime_builtin("cpu_timestamp", NativeFunction::Plain(core_cpu_timestamp_builtin), 0);
+        self.install_runtime_builtin(
+            "cpu_compiler_barrier",
+            NativeFunction::Plain(core_cpu_compiler_barrier_builtin),
+            0,
+        );
+        self.install_runtime_builtin("cpu_irq_save", NativeFunction::Plain(core_cpu_irq_save_builtin), 0);
+        self.install_runtime_builtin(
+            "cpu_irq_restore",
+            NativeFunction::Plain(core_cpu_irq_restore_builtin),
+            1,
+        );
+        self.install_runtime_builtin(
+            "cpu_wait_for_interrupt",
+            NativeFunction::Plain(core_cpu_wait_for_interrupt_builtin),
+            0,
+        );
+        // Volatile MMIO access.
+        //
+        // Whether this can mean anything depends on where the VM itself is
+        // running, which is why it is feature-gated rather than always a
+        // refusal. Hosted, a raw address belongs to some other allocation or
+        // to nothing, and touching it is a bug — so it raises. On bare metal
+        // the interpreter *is* the thing running on the hardware and the
+        // address space is real, so the access is performed.
+        //
+        // This matters because the bare-metal image runs the VM: refusing here
+        // unconditionally would mean LK could describe a driver but never run
+        // one on the only backend that reaches that hardware.
+        self.install_runtime_builtin("volatile_read_u8", NativeFunction::Plain(core_volatile_read_u8), 1);
+        self.install_runtime_builtin("volatile_write_u8", NativeFunction::Plain(core_volatile_write_u8), 2);
+        self.install_runtime_builtin("volatile_read_u16", NativeFunction::Plain(core_volatile_read_u16), 1);
+        self.install_runtime_builtin("volatile_write_u16", NativeFunction::Plain(core_volatile_write_u16), 2);
+        self.install_runtime_builtin("volatile_read_u32", NativeFunction::Plain(core_volatile_read_u32), 1);
+        self.install_runtime_builtin("volatile_write_u32", NativeFunction::Plain(core_volatile_write_u32), 2);
+        self.install_runtime_builtin("volatile_read_u64", NativeFunction::Plain(core_volatile_read_u64), 1);
+        self.install_runtime_builtin("volatile_write_u64", NativeFunction::Plain(core_volatile_write_u64), 2);
+        // Port I/O: the same bare-metal reasoning, narrowed to x86 — no other
+        // architecture has the instructions.
+        self.install_runtime_builtin("port_in_u8", NativeFunction::Plain(core_port_in_u8), 1);
+        self.install_runtime_builtin("port_out_u8", NativeFunction::Plain(core_port_out_u8), 2);
+        self.install_runtime_builtin("port_in_u16", NativeFunction::Plain(core_port_in_u16), 1);
+        self.install_runtime_builtin("port_out_u16", NativeFunction::Plain(core_port_out_u16), 2);
+        self.install_runtime_builtin("port_in_u32", NativeFunction::Plain(core_port_in_u32), 1);
+        self.install_runtime_builtin("port_out_u32", NativeFunction::Plain(core_port_out_u32), 2);
         self.install_runtime_builtin("__lk_bit_and", NativeFunction::Plain(core_bit_and_builtin), 2);
         self.install_runtime_builtin("__lk_bit_or", NativeFunction::Plain(core_bit_or_builtin), 2);
         self.install_runtime_builtin("__lk_bit_not", NativeFunction::Plain(core_bit_not_builtin), 1);
+        // Function pointers: the address of an exported function, and a call
+        // through one. Native-only, like the rest of `hardware` — the VM
+        // refuses instead of inventing an address.
+        self.install_runtime_builtin("symbol_address", NativeFunction::Plain(core_symbol_address_builtin), 1);
+        self.install_runtime_builtin("call_address_2", NativeFunction::Plain(core_call_address_2_builtin), 3);
+        self.install_runtime_builtin("__lk_shl", NativeFunction::Plain(core_shl_builtin), 2);
+        self.install_runtime_builtin("__lk_shr", NativeFunction::Plain(core_shr_builtin), 2);
     }
 
     /// Looks up a trait-impl method for the type `type_name` **as declared by
@@ -1104,6 +1160,41 @@ fn core_bit_or_builtin(
     ))
 }
 
+/// The shift amount both shifts accept.
+///
+/// Out of range is an error rather than a wrap or a zero. The hardware masks it
+/// to 63, Rust panics, C calls it undefined — of those only the error says the
+/// same thing on every target, and a shift by a variable that turned out to be
+/// 64 is a bug wherever it happens. The native path raises from
+/// `lkrt_i64_sh*_checked`, so both back ends fail identically.
+fn shift_amount(value: &crate::val::RuntimeVal, func: &str) -> anyhow::Result<u32> {
+    let amount = bit_arg(value, func)?;
+    if !(0..64).contains(&amount) {
+        return Err(anyhow!("{func} shift amount {amount} is out of range 0..63"));
+    }
+    Ok(amount as u32)
+}
+
+fn core_shl_builtin(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> anyhow::Result<crate::val::RuntimeVal> {
+    if args.len() != 2 {
+        return Err(anyhow!("__lk_shl(left, right) expects exactly 2 arguments"));
+    }
+    let lhs = bit_arg(args.get(0).expect("arity checked"), "__lk_shl")?;
+    let rhs = shift_amount(args.get(1).expect("arity checked"), "__lk_shl")?;
+    Ok(crate::val::RuntimeVal::Int(lhs.wrapping_shl(rhs)))
+}
+
+/// Arithmetic, not logical: LK's `Int` is signed, so the sign bit is what a
+/// right shift has to preserve for `x >> n` to keep meaning `x / 2^n`.
+fn core_shr_builtin(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> anyhow::Result<crate::val::RuntimeVal> {
+    if args.len() != 2 {
+        return Err(anyhow!("__lk_shr(left, right) expects exactly 2 arguments"));
+    }
+    let lhs = bit_arg(args.get(0).expect("arity checked"), "__lk_shr")?;
+    let rhs = shift_amount(args.get(1).expect("arity checked"), "__lk_shr")?;
+    Ok(crate::val::RuntimeVal::Int(lhs.wrapping_shr(rhs)))
+}
+
 fn core_bit_not_builtin(
     args: NativeArgs<'_>,
     _runtime: &mut NativeRuntime<'_>,
@@ -1115,6 +1206,50 @@ fn core_bit_not_builtin(
         args.get(0).expect("arity checked"),
         "__lk_bit_not",
     )?))
+}
+
+/// The VM side of the `cpu_*` and `volatile_*` intrinsics.
+///
+/// The implementations live in [`super::hardware`] because they need `unsafe`,
+/// and the VM's migration guard requires this tree to stay safe Rust. Isolating
+/// them there keeps that rule enforceable instead of weakening it: there is one
+/// file to audit, named for what it does.
+macro_rules! hardware_builtins {
+    ($($name:ident => $imp:path;)+) => {
+        $(
+            fn $name(
+                args: NativeArgs<'_>,
+                _runtime: &mut NativeRuntime<'_>,
+            ) -> anyhow::Result<crate::val::RuntimeVal> {
+                $imp(args)
+            }
+        )+
+    };
+}
+
+hardware_builtins! {
+    core_cpu_barrier_builtin => super::hardware::cpu_barrier;
+    core_cpu_compiler_barrier_builtin => super::hardware::cpu_compiler_barrier;
+    core_cpu_irq_save_builtin => super::hardware::cpu_irq_save;
+    core_cpu_irq_restore_builtin => super::hardware::cpu_irq_restore;
+    core_cpu_wait_for_interrupt_builtin => super::hardware::cpu_wait_for_interrupt;
+    core_cpu_timestamp_builtin => super::hardware::cpu_timestamp;
+    core_symbol_address_builtin => super::hardware::symbol_address;
+    core_call_address_2_builtin => super::hardware::call_address_2;
+    core_volatile_read_u8 => super::hardware::volatile_read_u8;
+    core_volatile_write_u8 => super::hardware::volatile_write_u8;
+    core_volatile_read_u16 => super::hardware::volatile_read_u16;
+    core_volatile_write_u16 => super::hardware::volatile_write_u16;
+    core_volatile_read_u32 => super::hardware::volatile_read_u32;
+    core_volatile_write_u32 => super::hardware::volatile_write_u32;
+    core_volatile_read_u64 => super::hardware::volatile_read_u64;
+    core_volatile_write_u64 => super::hardware::volatile_write_u64;
+    core_port_in_u8 => super::hardware::port_in_u8;
+    core_port_out_u8 => super::hardware::port_out_u8;
+    core_port_in_u16 => super::hardware::port_in_u16;
+    core_port_out_u16 => super::hardware::port_out_u16;
+    core_port_in_u32 => super::hardware::port_in_u32;
+    core_port_out_u32 => super::hardware::port_out_u32;
 }
 
 #[cfg(test)]

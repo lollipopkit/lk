@@ -55,6 +55,15 @@ pub struct ModuleResolver {
     /// own root, not the importer's.
     #[cfg(feature = "std")]
     containment_root: Option<PathBuf>,
+    /// The file modules currently being loaded, innermost last.
+    ///
+    /// The cache above is only written once a module has finished loading, so
+    /// without this a circular import recurses until the stack runs out — the
+    /// process aborts with "stack overflow" and says nothing about which files
+    /// are involved. Shared through every clone down an import chain, which is
+    /// what makes it see the whole chain rather than one link.
+    #[cfg(feature = "std")]
+    loading: Arc<crate::compat::sync::Mutex<Vec<PathBuf>>>,
 }
 
 impl PartialEq for ModuleResolver {
@@ -79,6 +88,8 @@ impl ModuleResolver {
             package_modules: Arc::new(SharedMap::new()),
             #[cfg(feature = "std")]
             containment_root: None,
+            #[cfg(feature = "std")]
+            loading: Arc::new(crate::compat::sync::Mutex::new(Vec::new())),
         }
     }
 
@@ -210,7 +221,23 @@ impl ModuleResolver {
         if let Some(module) = self.runtime_file_modules.get(&resolved_path) {
             return Ok(module.value().shallow_clone_shared());
         }
-        let module = self.load_file_runtime_module(&resolved_path)?;
+        {
+            let mut loading = self
+                .loading
+                .lock()
+                .map_err(|_| anyhow!("module loading state poisoned"))?;
+            if let Some(start) = loading.iter().position(|path| path == &resolved_path) {
+                let mut chain: Vec<String> = loading[start..].iter().map(|path| path.display().to_string()).collect();
+                chain.push(resolved_path.display().to_string());
+                return Err(anyhow!("circular import: {}", chain.join(" -> ")));
+            }
+            loading.push(resolved_path.clone());
+        }
+        let loaded = self.load_file_runtime_module(&resolved_path);
+        if let Ok(mut loading) = self.loading.lock() {
+            loading.pop();
+        }
+        let module = loaded?;
         self.runtime_file_modules
             .insert(resolved_path.clone(), module.shallow_clone_shared());
         Ok(module)
@@ -673,6 +700,39 @@ mod tests {
             map.get_str("inc"),
             Some(RuntimeVal::Obj(handle)) if matches!(state.heap.get(handle), Some(HeapValue::Callable(_)))
         ));
+        Ok(())
+    }
+
+    /// A circular import reports the cycle instead of overflowing the stack.
+    ///
+    /// The module cache is only written once a load finishes, so without the
+    /// in-progress stack the resolver recurses until the process aborts with
+    /// "stack overflow" — which names neither file.
+    #[test]
+    #[cfg(feature = "std")]
+    fn circular_file_imports_are_reported() -> Result<()> {
+        // Unique per run: the pid alone collides when the suite runs the same
+        // test binary under more than one feature set.
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!("lk_cycle_{}_{nanos}", std::process::id()));
+        std::fs::create_dir_all(&dir)?;
+        std::fs::write(dir.join("a.lk"), "use { g } from \"b\";\nfn f() -> Int { return 1; }\n")?;
+        std::fs::write(dir.join("b.lk"), "use { f } from \"a\";\nfn g() -> Int { return 2; }\n")?;
+
+        // Imports resolve relative to a search path; absolute ones are refused
+        // outright, which is a different rule from the one under test.
+        let mut resolver = ModuleResolver::new();
+        resolver.add_search_path(dir.clone());
+        let error = resolver
+            .resolve_runtime_file("a.lk")
+            .expect_err("a cycle must be an error");
+        let message = format!("{error:#}");
+        assert!(message.contains("circular import"), "unexpected error: {message}");
+
+        let _ = std::fs::remove_dir_all(&dir);
         Ok(())
     }
 

@@ -1,0 +1,155 @@
+// Rectangles of the screen, one per owner.
+//
+// Two tasks drawing on one framebuffer do not conflict here because their
+// coordinates happen not to overlap — that is an arrangement, not a
+// guarantee. A window makes it one: every write goes through a rectangle, is
+// translated into it, and is *dropped* if it falls outside.
+//
+// Dropped rather than refused. A refusal has to be reported to someone, and
+// the caller is often an interrupt handler with nowhere to report to; a
+// counter says the same thing without needing anyone to be listening. The
+// count is what a test reads to tell "did not draw outside" apart from "was
+// not asked to".
+//
+// A descriptor is five words at a caller-chosen address, because interrupt
+// handlers and tasks both have to see the same ones:
+//
+//   +0  left    +4  top    +8  width    +12 height    +16 pixels dropped
+
+use { put_pixel } from "framebuffer";
+
+const DESCRIPTOR_STRIDE = 24;
+
+fn window_word(address: Int) -> Int {
+    let value = unsafe { volatile_read_u32(address as *mut u32) };
+    return value as Int;
+}
+
+fn window_set_word(address: Int, value: Int) {
+    unsafe { volatile_write_u32(address as *mut u32, value as u32); };
+}
+
+fn descriptor(table: Int, slot: Int) -> Int {
+    return table + slot * DESCRIPTOR_STRIDE;
+}
+
+fn define(table: Int, slot: Int, left: Int, top: Int, width: Int, height: Int) {
+    let at = descriptor(table, slot);
+    window_set_word(at, left);
+    window_set_word(at + 4, top);
+    window_set_word(at + 8, width);
+    window_set_word(at + 12, height);
+    window_set_word(at + 16, 0);
+}
+
+// The rectangle, one field at a time, for callers that draw a shape and want
+// to read the descriptor once rather than per pixel. Four calls instead of one
+// that returns four values, because a container crossing a bundled import is
+// not the same thing in the two back ends — see `drivers/text`.
+fn left(table: Int, slot: Int) -> Int {
+    return window_word(descriptor(table, slot));
+}
+
+fn top(table: Int, slot: Int) -> Int {
+    return window_word(descriptor(table, slot) + 4);
+}
+
+fn width(table: Int, slot: Int) -> Int {
+    return window_word(descriptor(table, slot) + 8);
+}
+
+fn height(table: Int, slot: Int) -> Int {
+    return window_word(descriptor(table, slot) + 12);
+}
+
+// Adds to the dropped counter as one indivisible step.
+//
+// Read, add, write is three steps, and the descriptor is shared: the spinner
+// task and the shell both draw, and a timer interrupt lands between any two
+// instructions. A lost update here does not corrupt a picture — it undercounts
+// the thing a test reads to tell "did not draw outside" from "was not asked
+// to", which is worse than a wrong pixel because it makes a check pass.
+fn drop_count(table: Int, slot: Int, count: Int) {
+    let at = descriptor(table, slot);
+    let state = unsafe { cpu_irq_save() };
+    window_set_word(at + 16, window_word(at + 16) + count);
+    unsafe { cpu_irq_restore(state); };
+}
+
+fn dropped(table: Int, slot: Int) -> Int {
+    return window_word(descriptor(table, slot) + 16);
+}
+
+// Writes one pixel in window coordinates. Outside the window it is counted and
+// discarded.
+fn put(base: Int, stride: Int, table: Int, slot: Int, x: Int, y: Int, colour: Int) {
+    let at = descriptor(table, slot);
+    if (x < 0 || y < 0 || x >= window_word(at + 8) || y >= window_word(at + 12)) {
+        drop_count(table, slot, 1);
+        return;
+    }
+    put_pixel(base, stride, window_word(at) + x, window_word(at + 1 * 4) + y, colour);
+}
+
+// Writes one pixel into a rectangle the caller has already read.
+//
+// Same rule as `put` — outside is dropped — but the rectangle arrives in
+// registers instead of being re-read from memory for every pixel. The
+// descriptor is shared with interrupt handlers, so reading it is a volatile
+// load that nothing may cache across a call; a filled rectangle paid five of
+// them per pixel, which is most of what drawing one cost. Anything that draws
+// more than a pixel at a time reads the descriptor once and comes here.
+//
+// `drops` is returned rather than written, so a loop can add up what it
+// discarded and record it once. Counting inside would put a read-modify-write
+// on the shared page in the inner loop, which is both the cost this is removing
+// and a race with the handlers.
+fn put_within(base: Int, stride: Int, left: Int, top: Int, width: Int, height: Int,
+              x: Int, y: Int, colour: Int) -> Int {
+    if (x < 0 || y < 0 || x >= width || y >= height) {
+        return 1;
+    }
+    put_pixel(base, stride, left + x, top + y, colour);
+    return 0;
+}
+
+fn fill(base: Int, stride: Int, table: Int, slot: Int, x: Int, y: Int, width: Int, height: Int, colour: Int) {
+    let at = descriptor(table, slot);
+    let left = window_word(at);
+    let top = window_word(at + 4);
+    let limit_x = window_word(at + 8);
+    let limit_y = window_word(at + 12);
+    let drops = 0;
+    for row in 0..height {
+        for column in 0..width {
+            drops = drops + put_within(base, stride, left, top, limit_x, limit_y,
+                                       x + column, y + row, colour);
+        }
+    }
+    if (drops > 0) {
+        drop_count(table, slot, drops);
+    }
+}
+
+// Draws the window's own one-pixel frame, in window coordinates.
+//
+// Inside the rectangle rather than around it, so it goes through `put` like
+// everything else and is clipped by the same rule. The alternative — a frame
+// owned by something above the windows — needs a window manager, and there is
+// none here: each window is responsible for its own edges, which also means
+// nothing can draw a frame around someone else's.
+fn outline(base: Int, stride: Int, table: Int, slot: Int, colour: Int) {
+    let at = descriptor(table, slot);
+    let left = window_word(at);
+    let top = window_word(at + 4);
+    let width = window_word(at + 8);
+    let height = window_word(at + 12);
+    for x in 0..width {
+        put_within(base, stride, left, top, width, height, x, 0, colour);
+        put_within(base, stride, left, top, width, height, x, height - 1, colour);
+    }
+    for y in 0..height {
+        put_within(base, stride, left, top, width, height, 0, y, colour);
+        put_within(base, stride, left, top, width, height, width - 1, y, colour);
+    }
+}

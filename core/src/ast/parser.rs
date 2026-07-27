@@ -4,7 +4,7 @@ use crate::{
     expr::{Expr, MatchArm, Pattern, TemplateStringPart},
     operator::{BinOp, UnaryOp},
     token::{ParseError, Span, Token, Tokenizer, offset_to_position},
-    val::LiteralVal,
+    val::{LiteralVal, Type},
 };
 use anyhow::{Result, anyhow};
 
@@ -424,6 +424,47 @@ impl<'a> Parser<'a> {
         Ok(expr)
     }
 
+    /// `expr << expr` / `expr >> expr`
+    ///
+    /// Shifts are two adjacent comparison tokens rather than tokens of their
+    /// own, because the lexer has no way to tell `List<List<Int>>` from a right
+    /// shift — Rust has the same problem and splits the token back apart in
+    /// type position. Recognising the pair *here*, in the expression grammar,
+    /// means the type parser never sees anything new: it goes on consuming one
+    /// `>` at a time, and no generic annotation can be broken by this.
+    ///
+    /// Adjacency is required when spans are available, so `a < < b` is not
+    /// silently a shift. Between comparison and addition, as in Rust: `a + b <<
+    /// c` shifts the sum, and `a << b == c` compares the shift.
+    fn parse_shift(&mut self) -> Result<Expr> {
+        let mut expr = self.parse_add_sub()?;
+        while let Some(builtin) = self.peek_shift() {
+            self.pos += 2;
+            let right = self.parse_add_sub()?;
+            expr = Self::builtin_call(builtin, vec![expr, right]);
+        }
+        Ok(expr)
+    }
+
+    /// `<<` or `>>` at the cursor, as a pair of adjacent tokens.
+    fn peek_shift(&self) -> Option<&'static str> {
+        if self.pos + 1 >= self.len {
+            return None;
+        }
+        let builtin = match (&self.tokens[self.pos], &self.tokens[self.pos + 1]) {
+            (Token::Lt, Token::Lt) => "__lk_shl",
+            (Token::Gt, Token::Gt) => "__lk_shr",
+            _ => return None,
+        };
+        if let Some(spans) = self.token_spans
+            && let (Some(first), Some(second)) = (spans.get(self.pos), spans.get(self.pos + 1))
+            && first.end.offset != second.start.offset
+        {
+            return None;
+        }
+        Some(builtin)
+    }
+
     /// - `expr == expr`
     /// - `expr != expr`
     ///   ...
@@ -452,7 +493,7 @@ impl<'a> Parser<'a> {
     /// - `expr..expr..step` (explicit step)
     /// - `expr..=expr..step` (inclusive with explicit step)
     fn parse_range(&mut self) -> Result<Expr> {
-        let mut expr = self.parse_add_sub()?;
+        let mut expr = self.parse_shift()?;
 
         if !self.eof() && (self.tokens[self.pos] == Token::Range || self.tokens[self.pos] == Token::RangeInclusive) {
             let inclusive = self.tokens[self.pos] == Token::RangeInclusive;
@@ -460,7 +501,7 @@ impl<'a> Parser<'a> {
 
             // Check if there's an end expression
             let end = if !self.eof() && !self.is_range_terminator() {
-                Some(Box::new(self.parse_add_sub()?))
+                Some(Box::new(self.parse_shift()?))
             } else {
                 None
             };
@@ -471,7 +512,7 @@ impl<'a> Parser<'a> {
                 if self.eof() || self.is_range_terminator() {
                     return Err(anyhow!(self.err("Expected step expression after '..'")));
                 }
-                Some(Box::new(self.parse_add_sub()?))
+                Some(Box::new(self.parse_shift()?))
             } else {
                 None
             };
@@ -518,7 +559,7 @@ impl<'a> Parser<'a> {
     /// - `expr * expr`
     /// - `expr / expr`
     fn parse_mul_div(&mut self) -> Result<Expr> {
-        let mut expr = self.parse_unary()?;
+        let mut expr = self.parse_cast()?;
         while !self.eof() {
             let op = match self.tokens[self.pos] {
                 Token::Mul => BinOp::Mul,
@@ -527,8 +568,71 @@ impl<'a> Parser<'a> {
                 _ => break,
             };
             self.pos += 1;
-            let right = self.parse_unary()?;
+            let right = self.parse_cast()?;
             expr = Expr::Bin(Box::new(expr), op, Box::new(right));
+        }
+        Ok(expr)
+    }
+
+    /// `unsafe { … }`.
+    ///
+    /// The braces are required — there is no bare `unsafe expr` form — so the
+    /// region a reader has to audit is always delimited, and the parse never
+    /// has to guess how far the marker reaches.
+    fn parse_unsafe_block(&mut self) -> Result<Expr> {
+        self.pos += 1;
+        if self.eof() || self.tokens[self.pos] != Token::LBrace {
+            return Err(anyhow!(self.err("Expecting '{' after 'unsafe'")));
+        }
+        let block = self.parse_brace_block(support::BlockTail::Value)?;
+        Ok(Expr::Unsafe(Box::new(block)))
+    }
+
+    /// The type after `as`.
+    ///
+    /// Only a bare type name, not the full annotation grammar the statement
+    /// parser handles: a cast target is `u8` or `Int`, never `Map<K, V>` or a
+    /// function type. Keeping it narrow avoids having to disambiguate `<` here
+    /// from a comparison, which is exactly the ambiguity that makes C-style
+    /// casts hard to parse.
+    fn parse_cast_target(&mut self) -> Result<Type> {
+        // A pointer prefix: `as *mut u32`. `*` after `as` is unambiguous —
+        // a type position never holds a multiplication.
+        if matches!(self.tokens.get(self.pos), Some(Token::Mul)) {
+            self.pos += 1;
+            let mutable = matches!(self.tokens.get(self.pos), Some(Token::Id(name)) if name == "mut");
+            if mutable {
+                self.pos += 1;
+            }
+            let pointee = self.parse_cast_target()?;
+            return Ok(Type::Ptr {
+                pointee: Box::new(pointee),
+                mutable,
+            });
+        }
+        let Some(Token::Id(name)) = self.tokens.get(self.pos) else {
+            return Err(anyhow!(self.err("Expecting a type name after 'as'")));
+        };
+        let Some(ty) = Type::parse(name) else {
+            let msg = alloc::format!("Unknown type '{name}' after 'as'");
+            return Err(anyhow!(self.err(&msg)));
+        };
+        self.pos += 1;
+        Ok(ty)
+    }
+
+    /// - `expr as T`
+    ///
+    /// Binds tighter than the binary operators and looser than unary, so
+    /// `a * b as u8` is `a * (b as u8)` and `!x as u8` is `(!x) as u8` —
+    /// the same precedence Rust gives it. Left-associative: `x as u8 as u32`
+    /// is `(x as u8) as u32`, which is how a double conversion is written.
+    fn parse_cast(&mut self) -> Result<Expr> {
+        let mut expr = self.parse_unary()?;
+        while !self.eof() && self.tokens[self.pos] == Token::As {
+            self.pos += 1;
+            let ty = self.parse_cast_target()?;
+            expr = Expr::Cast(Box::new(expr), ty);
         }
         Ok(expr)
     }
@@ -903,6 +1007,7 @@ impl<'a> Parser<'a> {
             Token::LBracket => self.parse_list(),
             Token::LBrace => self.parse_map(),
             Token::Select => self.parse_select(),
+            Token::Unsafe => self.parse_unsafe_block(),
             Token::Match => self.parse_match(),
             Token::LParen => self.parse_paren(),
             Token::Fn => self.parse_fn_closure(),

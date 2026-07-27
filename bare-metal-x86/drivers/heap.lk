@@ -1,0 +1,190 @@
+// A free-list allocator: hand out bytes, take them back, and put adjacent
+// holes together again.
+//
+// The page allocator next door never reclaims, which was honest while nothing
+// freed. Something does now — a shell that reads files, a program the kernel
+// runs, anything that lives for less than the machine does — and a bump
+// allocator meets that with "out of memory" while holding a megabyte of dead
+// blocks. What changes here is not the interface but the *bookkeeping*: every
+// block, free or not, stays in one address-ordered chain, so freeing is finding
+// the neighbours and joining them.
+//
+// The chain lives in the blocks themselves. There is no side table because
+// there is nowhere to put one: an allocator cannot allocate. A block is
+//
+//   +0  size of the payload, in bytes
+//   +4  1 when in use, 0 when free
+//   +8  address of the next block, or 0 at the end
+//   +12 payload starts here
+//
+// Addresses, not offsets, and stored in 32-bit words — so this arena has to
+// live below 4 GiB. It does: the kernel takes it from the page allocator, whose
+// range is the low memory the loader reported. A heap above that line needs the
+// words widened, which is the one change this layout would need.
+//
+// Address-ordered and singly linked, which makes free O(n) in the number of
+// blocks. That is the right trade at this size: a doubly-linked list with size
+// buckets is four times the code and its win begins where a kernel has
+// thousands of live blocks, which this one is nowhere near. When it is, the
+// tests here are what will say so.
+
+const HEADER = 12;
+const ALIGN = 8;
+
+const OFF_SIZE = 0;
+const OFF_USED = 4;
+const OFF_NEXT = 8;
+
+// The arena's own three words, at an address the caller picks — the same
+// arrangement the page allocator uses, and for the same reason: an interrupt
+// handler cannot see a global.
+//
+//   +0  arena base
+//   +4  arena length
+//   +8  bytes currently handed out
+const STATE_BASE = 0;
+const STATE_LENGTH = 4;
+const STATE_USED = 8;
+
+fn heap_word(address: Int) -> Int {
+    let value = unsafe { volatile_read_u32(address as *mut u32) };
+    return value as Int;
+}
+
+fn heap_set_word(address: Int, value: Int) {
+    unsafe { volatile_write_u32(address as *mut u32, value as u32); };
+}
+
+fn heap_align_up(value: Int) -> Int {
+    return (value + ALIGN - 1) & (0 - ALIGN);
+}
+
+// Lays out one free block covering the whole arena.
+fn heap_init(state: Int, base: Int, length: Int) {
+    let start = heap_align_up(base);
+    let usable = length - (start - base);
+    heap_set_word(state + STATE_LENGTH, usable);
+    heap_set_word(state + STATE_USED, 0);
+    // An arena too small for one block gets an empty chain rather than a block
+    // with a negative size. Every reader here walks from the base, so a base of
+    // zero *is* "no blocks" — alloc finds nothing, release has nothing to
+    // release, and the counts are zero.
+    if (usable < HEADER + ALIGN) {
+        heap_set_word(state + STATE_BASE, 0);
+        return;
+    }
+    heap_set_word(state + STATE_BASE, start);
+    heap_set_word(start + OFF_SIZE, usable - HEADER);
+    heap_set_word(start + OFF_USED, 0);
+    heap_set_word(start + OFF_NEXT, 0);
+}
+
+// Splits `block` when what is left over could hold a block of its own.
+//
+// Without the check a request one byte smaller than a block would leave a
+// header with no payload, which is a block that can never be used and never
+// goes away.
+fn heap_split(block: Int, want: Int) {
+    let size = heap_word(block + OFF_SIZE);
+    if (size < want + HEADER + ALIGN) {
+        return;
+    }
+    let rest = block + HEADER + want;
+    heap_set_word(rest + OFF_SIZE, size - want - HEADER);
+    heap_set_word(rest + OFF_USED, 0);
+    heap_set_word(rest + OFF_NEXT, heap_word(block + OFF_NEXT));
+    heap_set_word(block + OFF_SIZE, want);
+    heap_set_word(block + OFF_NEXT, rest);
+}
+
+// The address of `bytes` of payload, or 0 when nothing fits.
+//
+// First fit, walking the chain in address order. Best fit would waste less and
+// cost a full walk on every request; first fit's fragmentation is what the
+// coalescing in `release` is for.
+fn heap_alloc(state: Int, bytes: Int) -> Int {
+    if (bytes <= 0) {
+        return 0;
+    }
+    let want = heap_align_up(bytes);
+    let block = heap_word(state + STATE_BASE);
+    while (block != 0) {
+        if (heap_word(block + OFF_USED) == 0 && heap_word(block + OFF_SIZE) >= want) {
+            heap_split(block, want);
+            heap_set_word(block + OFF_USED, 1);
+            heap_set_word(state + STATE_USED, heap_word(state + STATE_USED) + heap_word(block + OFF_SIZE));
+            return block + HEADER;
+        }
+        block = heap_word(block + OFF_NEXT);
+    }
+    return 0;
+}
+
+// Gives a payload back, joining it with a free neighbour on either side.
+//
+// Both sides matter, and only the forward one is easy: the chain is singly
+// linked, so the block before is found by walking. That walk is why `release`
+// is O(n) — and why joining forward only, which is the tempting shortcut,
+// leaves a heap that fragments in one direction and never recovers.
+fn heap_release(state: Int, payload: Int) {
+    if (payload == 0) {
+        return;
+    }
+    let block = payload - HEADER;
+    if (heap_word(block + OFF_USED) == 0) {
+        // Freeing twice would double-count the arena's used bytes and, worse,
+        // merge a block that someone else has since been handed.
+        return;
+    }
+    heap_set_word(block + OFF_USED, 0);
+    heap_set_word(state + STATE_USED, heap_word(state + STATE_USED) - heap_word(block + OFF_SIZE));
+
+    // Forward: absorb the next block if it is free.
+    let next = heap_word(block + OFF_NEXT);
+    if (next != 0 && heap_word(next + OFF_USED) == 0) {
+        heap_set_word(block + OFF_SIZE, heap_word(block + OFF_SIZE) + HEADER + heap_word(next + OFF_SIZE));
+        heap_set_word(block + OFF_NEXT, heap_word(next + OFF_NEXT));
+    }
+
+    // Backward: find the block whose `next` is this one, and absorb into it.
+    let previous = heap_word(state + STATE_BASE);
+    while (previous != 0 && heap_word(previous + OFF_NEXT) != block) {
+        previous = heap_word(previous + OFF_NEXT);
+    }
+    if (previous != 0 && previous != block && heap_word(previous + OFF_USED) == 0) {
+        heap_set_word(previous + OFF_SIZE, heap_word(previous + OFF_SIZE) + HEADER + heap_word(block + OFF_SIZE));
+        heap_set_word(previous + OFF_NEXT, heap_word(block + OFF_NEXT));
+    }
+}
+
+fn used_bytes(state: Int) -> Int {
+    return heap_word(state + STATE_USED);
+}
+
+// How many blocks the chain holds, free and in use.
+//
+// The number a fragmentation problem shows up in: a heap that allocates and
+// frees the same sizes forever should come back to the block count it started
+// with, and one that does not is one whose holes are not being joined.
+fn block_count(state: Int) -> Int {
+    let count = 0;
+    let block = heap_word(state + STATE_BASE);
+    while (block != 0) {
+        count = count + 1;
+        block = heap_word(block + OFF_NEXT);
+    }
+    return count;
+}
+
+// The largest payload a single request could still get.
+fn largest_free(state: Int) -> Int {
+    let best = 0;
+    let block = heap_word(state + STATE_BASE);
+    while (block != 0) {
+        if (heap_word(block + OFF_USED) == 0 && heap_word(block + OFF_SIZE) > best) {
+            best = heap_word(block + OFF_SIZE);
+        }
+        block = heap_word(block + OFF_NEXT);
+    }
+    return best;
+}

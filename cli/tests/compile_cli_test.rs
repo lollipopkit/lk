@@ -1105,3 +1105,66 @@ fn test_trait_impl_from_a_transitive_import_dispatches() {
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+/// `lk compile object:<triple>` emits a relocatable object for that target and
+/// stops, without linking.
+///
+/// This is the bare-metal path: the linker script, entry point and memory map
+/// belong to the board, so LK hands over an object the way a C library does and
+/// lets the board's existing build place it.
+///
+/// The architecture is read out of the ELF header rather than by shelling out
+/// to a disassembler — the host's `objdump` is usually x86-only and cannot even
+/// read an aarch64 object, which is precisely the situation this feature is for.
+#[test]
+#[cfg(feature = "aot")]
+fn compile_emits_an_object_for_a_cross_target() {
+    let dir = unique_tmp_dir("compile_object_cross");
+    ensure_clean_dir(&dir);
+    write_file(
+        &dir,
+        "add.lk",
+        "fn add(a: Int, b: Int) -> Int { return a + b; }\nreturn add(2, 3);\n",
+    );
+
+    let output = run_cli(&dir, ["compile", "object:aarch64-unknown-none", "add.lk"])
+        .output()
+        .expect("run lk compile");
+    assert!(
+        output.status.success(),
+        "compile failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let object = std::fs::read(dir.join("add.o")).expect("object was written");
+    assert_eq!(&object[..4], b"\x7fELF", "not an ELF object");
+    // e_machine: 183 is EM_AARCH64.
+    assert_eq!(
+        u16::from_le_bytes([object[18], object[19]]),
+        183,
+        "object is not aarch64"
+    );
+
+    // The runtime calls stay undefined — they are resolved when the board links
+    // this against an `lkrt` built for the same target.
+    let symbols = String::from_utf8_lossy(&object);
+    assert!(symbols.contains("lkrt_"), "expected unresolved lkrt references");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// An unknown triple must fail loudly rather than quietly building for the host.
+#[test]
+#[cfg(feature = "aot")]
+fn compile_object_rejects_an_unknown_triple() {
+    let dir = unique_tmp_dir("compile_object_bad_triple");
+    ensure_clean_dir(&dir);
+    write_file(&dir, "x.lk", "return 1;\n");
+
+    let output = run_cli(&dir, ["compile", "object:not-a-real-triple", "x.lk"])
+        .output()
+        .expect("run lk compile");
+    assert!(!output.status.success(), "an unknown triple must not succeed");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

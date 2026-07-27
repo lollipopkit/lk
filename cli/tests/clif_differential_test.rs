@@ -356,3 +356,875 @@ fn try_catch_differential() {
         NativePath::MayDegrade,
     );
 }
+
+/// `as` casts, with the native path pinned: the point of these is that the two
+/// backends agree *bit for bit*, not merely that both produce something.
+///
+/// The VM masks inside its `i64` carrier and sign-extends back; Cranelift does
+/// `ireduce` then `sextend`/`uextend`. Those are different mechanisms, so this
+/// is where a divergence would show up.
+/// Function pointers: an exported function's address, and a call through it.
+///
+/// Not a *differential* test in the usual sense — the VM refuses both builtins,
+/// because an interpreter has no code addresses to hand out and returning a
+/// fake one would produce a program that runs interpreted and jumps into
+/// nothing when compiled. What is checked is that the native side computes the
+/// answer, which is the whole of the feature: a driver table is an array of
+/// these.
+#[test]
+fn function_pointers_are_native_only() {
+    use std::process::Command;
+
+    let dir = std::env::temp_dir().join(format!("lk_fnptr_{}", std::process::id()));
+    let _ = fs::create_dir_all(&dir);
+    let source = dir.join("fnptr.lk");
+    fs::write(
+        &source,
+        "#[export(\"probe_add\")]\nfn probe_add(a: Int, b: Int) -> Int {\n    return a + b;\n}\n\n\
+         let p = unsafe { symbol_address(\"probe_add\") };\nprintln(unsafe { call_address_2(p, 20, 22) });\n",
+    )
+    .expect("write source");
+
+    // The VM refuses, by name.
+    let vm = Command::new(env!("CARGO_BIN_EXE_lk"))
+        .arg(&source)
+        .output()
+        .expect("run vm");
+    let message = String::from_utf8_lossy(&vm.stderr);
+    assert!(!vm.status.success(), "the VM must refuse: {message}");
+    assert!(
+        message.contains("symbol_address requires native compilation"),
+        "the refusal must name the builtin: {message}"
+    );
+
+    // Compiled, it answers.
+    let exe = dir.join("fnptr");
+    let compile = Command::new(env!("CARGO_BIN_EXE_lk"))
+        .args(["compile"])
+        .arg(&source)
+        .env("LK_AOT_NO_FALLBACK", "1")
+        .env("LK_AOT_HYBRID", "0")
+        .output()
+        .expect("compile");
+    assert!(
+        compile.status.success(),
+        "compile failed: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let run = Command::new(&exe).output().expect("run native");
+    assert_eq!(String::from_utf8_lossy(&run.stdout).trim(), "42");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// `<<` and `>>`, which lower to the range-checked `lkrt` helpers rather than
+/// to a machine shift. Both halves matter: the values have to agree, and so
+/// does the *failure* — a shift amount out of range raises on both sides, and
+/// masking it (what the hardware would do) would show up here as a native run
+/// that succeeded where the VM refused.
+#[test]
+fn shift_differential() {
+    run_differential(
+        "shift",
+        &[
+            new("shl_const", "return 3 << 8;\n"),
+            new("shr_const", "return 1024 >> 5;\n"),
+            // Arithmetic, not logical: the sign bit is replicated.
+            new("shr_negative", "return (0 - 16) >> 2;\n"),
+            // Variable amounts: the value is not a constant the lowering can fold.
+            new("shl_variable", "let n = 5;\nreturn 1 << n;\n"),
+            new("shr_variable", "let n = 3;\nreturn 4096 >> n;\n"),
+            // Precedence: tighter than comparison, looser than `+` (Rust's).
+            new("precedence_add", "return 1 << 2 + 3;\n"),
+            new("precedence_cmp", "if (8 >> 1 == 4) { return 1; }\nreturn 0;\n"),
+            // Mixed with the other bitwise operators, which lower to machine
+            // instructions — so this is the two paths meeting.
+            new("with_mask", "let v = 0xdeadbeef;\nreturn (1 << 12) - 1 & v;\n"),
+            // The edges of the accepted range.
+            new("shl_zero", "return 7 << 0;\n"),
+            new("shl_63", "return 1 << 63;\n"),
+            // Out of range: both sides must refuse, not mask.
+            new("shl_out_of_range", "let n = 64;\nreturn 1 << n;\n"),
+            new("shr_negative_amount", "let n = 0 - 1;\nreturn 1 >> n;\n"),
+        ],
+        NativePath::PureCranelift,
+    );
+}
+
+#[test]
+fn machine_int_cast_differential() {
+    run_differential(
+        "machine_int_cast",
+        &[
+            // Narrowing truncates rather than erroring: 300 & 0xFF.
+            new("narrow_u8", "let x = 300 as u8;\nreturn x;\n"),
+            // Sign extension back into the carrier — the case most likely to
+            // diverge between a mask and an `ireduce`.
+            new("sign_extend_i8", "let x = 255 as i8;\nreturn x;\n"),
+            new("sign_extend_i8_min", "let x = 128 as i8;\nreturn x;\n"),
+            new("sign_extend_i16", "let x = 65535 as i16;\nreturn x;\n"),
+            // Negative source, unsigned target: reinterpretation, not clamping.
+            new("negative_to_u32", "let x = (0 - 1) as u32;\nreturn x;\n"),
+            new("negative_to_u8", "let x = (0 - 1) as u8;\nreturn x;\n"),
+            // The second cast must see the first one's result, not the original.
+            new("chained", "let x = 300 as u8 as u32;\nreturn x;\n"),
+            // Full width is a no-op on both sides.
+            new("identity_i64", "let x = (0 - 1) as i64;\nreturn x;\n"),
+            // Pointer width follows the carrier on a 64-bit host.
+            new("usize_passthrough", "let x = 42 as usize;\nreturn x;\n"),
+            // Float and bool sources: the VM converts them (truncating toward
+            // zero, 0/1) before reducing to width, so the native path needs
+            // the same conversion rather than only accepting integers.
+            new("float_source", "let x = 3.9 as i32;\nreturn x;\n"),
+            new("float_source_negative", "let x = (0.0 - 3.9) as i32;\nreturn x;\n"),
+            // Out of range: Rust's `as` saturates before the width reduction,
+            // on both sides — the case a trapping conversion would abort on.
+            new("float_source_saturates", "let x = 1.0e30 as i64;\nreturn x;\n"),
+            new("bool_source", "let x = true as u8;\nreturn x;\n"),
+            // A source that came out of a container is boxed, so the native
+            // path unboxes through `dyn.cast_to_i64` rather than reading a
+            // register — a different mechanism from the register case above,
+            // and the one an output loop in a driver actually hits.
+            new(
+                "boxed_source_from_list",
+                "let xs = [300, 255];\nlet out = 0 as u8;\nfor x in xs { out = out + (x as u8); }\nreturn out;\n",
+            ),
+            // The boxed path must truncate a Float toward zero and read a Bool
+            // as 0/1, exactly as the VM's `cast_source_to_i64` does — the two
+            // cases where an `as_i64`-style unbox would raise instead.
+            new(
+                "boxed_source_float",
+                "let xs = [3.9, 0.0 - 3.9];\nfor x in xs { println(x as i32); }\nreturn 0;\n",
+            ),
+            new(
+                "boxed_source_bool",
+                "let xs = [true, false];\nlet out = 0 as u8;\nfor x in xs { out = out + (x as u8); }\nreturn out;\n",
+            ),
+        ],
+        NativePath::PureCranelift,
+    );
+}
+
+/// Machine-int *arithmetic* wraps to its width, on both backends.
+///
+/// The wrap is emitted as a normalisation after the 64-bit operation, reusing
+/// the same cast path — so what this really checks is that every lowering
+/// entry point (plain, lower-into-register, compound assignment) applies it.
+/// A missing one produces a plainly wrong number rather than a crash, which is
+/// why it needs a test rather than an assertion.
+#[test]
+fn machine_int_arithmetic_wraps_differential() {
+    run_differential(
+        "machine_int_arith",
+        &[
+            // 300 & 0xFF
+            new("add_u8", "let a: u8 = 200;\nlet b: u8 = 100;\nreturn a + b;\n"),
+            // 600 & 0xFF
+            new("mul_u8", "let a: u8 = 200;\nreturn a * (3 as u8);\n"),
+            // 200 sign-extended from 8 bits
+            new(
+                "add_i8_overflows_negative",
+                "let a: i8 = 100;\nreturn a + (100 as i8);\n",
+            ),
+            // Borrowing past zero on an unsigned width.
+            new("sub_u8_underflows", "let a: u8 = 10;\nreturn a - (20 as u8);\n"),
+            // 70000 & 0xFFFF
+            new("add_u16", "let a: u16 = 60000;\nreturn a + (10000 as u16);\n"),
+            // The wrap has to apply at each step, not just the last one.
+            new(
+                "chained_arithmetic_wraps_each_step",
+                "let a: u8 = 200;\nlet b: u8 = 100;\nlet c = a + b;\nreturn c + b;\n",
+            ),
+            // Division keeps the width rather than promoting to Float the way
+            // `Int / Int` does.
+            new("div_keeps_width", "let a: u8 = 200;\nreturn a / (3 as u8);\n"),
+        ],
+        NativePath::PureCranelift,
+    );
+}
+
+/// A volatile read must survive optimisation.
+///
+/// Reading one address twice has to produce two accesses: a device register can
+/// return different values on consecutive reads, and reading it can have side
+/// effects. This is a *disassembly* test rather than a differential one because
+/// the failure is invisible at the value level — with the reads collapsed the
+/// program still returns a plausible number, just one derived from a single
+/// access. That is exactly how the first implementation passed by inspection
+/// and failed here: inline Cranelift loads compiled to one `mov` and a `lea`
+/// doubling it, because Cranelift has no volatile flag and its egraph pass
+/// proved the two loads equal.
+#[test]
+fn volatile_reads_are_not_collapsed() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let source = dir.path().join("volatile_twice.lk");
+    std::fs::write(
+        &source,
+        "fn read_twice(addr: usize) -> Int {\n\
+         \x20   let reg = addr as *mut u32;\n\
+         \x20   let a = unsafe { volatile_read_u32(reg) };\n\
+         \x20   let b = unsafe { volatile_read_u32(reg) };\n\
+         \x20   return a + b;\n\
+         }\n\
+         return read_twice(0x1000);\n",
+    )
+    .expect("write source");
+
+    let exe = dir.path().join("volatile_twice");
+    let status = std::process::Command::new(env!("CARGO_BIN_EXE_lk"))
+        .args(["compile", source.to_str().expect("utf-8 path")])
+        .arg("--output")
+        .arg(exe.to_str().expect("utf-8 path"))
+        .env("LK_AOT_NO_FALLBACK", "1")
+        .env("LK_AOT_HYBRID", "0")
+        .status()
+        .expect("run lk compile");
+    assert!(status.success(), "volatile must lower natively");
+
+    let disassembly = std::process::Command::new("objdump")
+        .args(["-d", exe.to_str().expect("utf-8 path")])
+        .output();
+    let Ok(disassembly) = disassembly else {
+        // objdump is not everywhere; the compile above is still meaningful.
+        return;
+    };
+    let text = String::from_utf8_lossy(&disassembly.stdout);
+    let body: String = text
+        .lines()
+        .skip_while(|line| !line.contains("<lk_fn_1>:"))
+        .take_while(|line| !line.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let accesses = body.matches("lkrt_mmio_read_u32").count();
+    assert_eq!(accesses, 2, "expected two volatile reads, got {accesses}:\n{body}");
+}
+
+/// A critical section lowers to the right sequence, in the right order.
+///
+/// Order is the whole point and it is invisible in the return value: masking
+/// interrupts *after* the register write, or dropping the barrier, produces a
+/// program that returns the same number and races on real hardware. So this
+/// checks the emitted call sequence rather than the result.
+#[test]
+fn critical_section_emits_its_instructions_in_order() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let source = dir.path().join("critical.lk");
+    std::fs::write(
+        &source,
+        "fn critical(addr: usize) -> Int {\n\
+         \x20   let reg = addr as *mut u32;\n\
+         \x20   let saved = unsafe { cpu_irq_save() };\n\
+         \x20   unsafe { volatile_write_u32(reg, 1 as u32); };\n\
+         \x20   unsafe { cpu_barrier(); };\n\
+         \x20   let v = unsafe { volatile_read_u32(reg) };\n\
+         \x20   unsafe { cpu_irq_restore(saved); };\n\
+         \x20   return v;\n\
+         }\n\
+         return critical(0x1000);\n",
+    )
+    .expect("write source");
+
+    let exe = dir.path().join("critical");
+    let status = std::process::Command::new(env!("CARGO_BIN_EXE_lk"))
+        .args(["compile", source.to_str().expect("utf-8 path")])
+        .arg("--output")
+        .arg(exe.to_str().expect("utf-8 path"))
+        .env("LK_AOT_NO_FALLBACK", "1")
+        .env("LK_AOT_HYBRID", "0")
+        .status()
+        .expect("run lk compile");
+    assert!(status.success(), "a critical section must lower natively");
+
+    let Ok(disassembly) = std::process::Command::new("objdump")
+        .args(["-d", exe.to_str().expect("utf-8 path")])
+        .output()
+    else {
+        return; // objdump is not everywhere; the compile above still ran.
+    };
+    let text = String::from_utf8_lossy(&disassembly.stdout);
+    let body: Vec<&str> = text
+        .lines()
+        .skip_while(|line| !line.contains("<lk_fn_1>:"))
+        .take_while(|line| !line.trim().is_empty())
+        .collect();
+
+    let expected = [
+        "lkrt_cpu_irq_save",
+        "lkrt_mmio_write_u32",
+        "lkrt_cpu_barrier",
+        "lkrt_mmio_read_u32",
+        "lkrt_cpu_irq_restore",
+    ];
+    let mut remaining = expected.iter();
+    let mut wanted = remaining.next();
+    for line in &body {
+        if let Some(name) = wanted
+            && line.contains(name)
+        {
+            wanted = remaining.next();
+        }
+    }
+    assert!(
+        wanted.is_none(),
+        "missing or out-of-order: still looking for {wanted:?} in:\n{}",
+        body.join("\n")
+    );
+}
+
+/// Port I/O lowers to opaque `lkrt` calls, and two reads of one port stay two.
+///
+/// The same reasoning as `volatile_reads_are_not_collapsed`, for a different
+/// address space: a UART's status port answers differently on each read, so
+/// collapsing a poll loop's read is a hang rather than a wrong number. The ABI
+/// marks the reads `WritesHost` to prevent it; this checks that it holds after
+/// lowering, not merely that the annotation is present.
+#[test]
+fn port_reads_are_not_collapsed() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let source = dir.path().join("ports.lk");
+    std::fs::write(
+        &source,
+        "fn poll(port: Int) -> Int {\n\
+         \x20   let a = unsafe { port_in_u8(port) };\n\
+         \x20   let b = unsafe { port_in_u8(port) };\n\
+         \x20   return (a as Int) + (b as Int);\n\
+         }\n\
+         return poll(0x3f8);\n",
+    )
+    .expect("write source");
+
+    let exe = dir.path().join("ports");
+    let status = std::process::Command::new(env!("CARGO_BIN_EXE_lk"))
+        .args(["compile", source.to_str().expect("utf-8 path")])
+        .arg("--output")
+        .arg(exe.to_str().expect("utf-8 path"))
+        .env("LK_AOT_NO_FALLBACK", "1")
+        .env("LK_AOT_HYBRID", "0")
+        .status()
+        .expect("run lk compile");
+    assert!(status.success(), "port I/O must lower natively");
+
+    let Ok(disassembly) = std::process::Command::new("objdump")
+        .args(["-d", exe.to_str().expect("utf-8 path")])
+        .output()
+    else {
+        // objdump is not everywhere; the compile above is still meaningful.
+        return;
+    };
+    let text = String::from_utf8_lossy(&disassembly.stdout);
+    let body: String = text
+        .lines()
+        .skip_while(|line| !line.contains("<lk_fn_1>:"))
+        .take_while(|line| !line.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let accesses = body.matches("lkrt_port_in_u8").count();
+    assert_eq!(accesses, 2, "expected two port reads, got {accesses}:\n{body}");
+}
+
+/// A file import that carries constants as well as functions.
+///
+/// The native path bundles imports at compile time, and a bundled module's
+/// entry — the only code that would run its top-level assignments — is the one
+/// function the merge drops. So its constants are folded into each read
+/// instead. That is a rewrite of the program, and the only thing that shows it
+/// was faithful is the two backends still agreeing.
+#[test]
+fn bundled_import_constants_match_the_vm() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    std::fs::write(
+        dir.path().join("dep.lk"),
+        "const BASE = 0x3f8;\n\
+         const SCALE = 2.5;\n\
+         const LABEL = \"dep\";\n\
+         const ON = true;\n\
+         fn offset(n: Int) -> Int { return BASE + n; }\n\
+         fn scaled(n: Int) -> Float { return n * SCALE; }\n\
+         fn label() -> String { return LABEL; }\n\
+         fn flag() -> Bool { return ON; }\n",
+    )
+    .expect("write dep");
+    let main = dir.path().join("main.lk");
+    std::fs::write(
+        &main,
+        "use { offset, scaled, label, flag, BASE } from \"dep\";\n\
+         println(offset(8));\n\
+         println(scaled(4));\n\
+         println(label());\n\
+         println(flag());\n\
+         println(BASE);\n\
+         return 0;\n",
+    )
+    .expect("write main");
+
+    let vm = Command::new(bin_path())
+        .current_dir(dir.path())
+        .arg("main.lk")
+        .output()
+        .expect("spawn vm run");
+    assert!(
+        vm.status.success(),
+        "vm run failed: {}",
+        String::from_utf8_lossy(&vm.stderr)
+    );
+
+    let exe = dir.path().join("main");
+    let compile = Command::new(bin_path())
+        .current_dir(dir.path())
+        .args(["compile", "main.lk"])
+        .arg("--output")
+        .arg(&exe)
+        .env("LK_AOT_NO_FALLBACK", "1")
+        .env("LK_AOT_HYBRID", "0")
+        .output()
+        .expect("spawn native compile");
+    assert!(
+        compile.status.success(),
+        "a module of constants and functions must lower natively: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let native = Command::new(&exe).output().expect("spawn compiled executable");
+
+    assert_eq!(
+        String::from_utf8_lossy(&vm.stdout),
+        String::from_utf8_lossy(&native.stdout),
+        "bundled constants diverged between the backends"
+    );
+}
+
+/// A bundled module may import another file.
+///
+/// The bundler walks the import graph rather than one level of it, and the
+/// lowering resolves a nested module's names — which never appear in the
+/// importing file's own import list — through the flattened namespace the
+/// merge produces.
+#[test]
+fn nested_bundled_imports_match_the_vm() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    std::fs::create_dir(dir.path().join("lib")).expect("mkdir lib");
+    std::fs::write(
+        dir.path().join("lib/bits.lk"),
+        "const MASK = 0xff;\nfn low_byte(v: Int) -> Int { return v & MASK; }\n",
+    )
+    .expect("write bits");
+    std::fs::write(
+        dir.path().join("lib/dev.lk"),
+        "use { low_byte } from \"bits\";\n\
+         const BASE = 0x3f8;\n\
+         fn reg(offset: Int) -> Int { return low_byte(BASE + offset); }\n",
+    )
+    .expect("write dev");
+    std::fs::write(
+        dir.path().join("main.lk"),
+        "use { reg } from \"lib/dev\";\n\
+         use { low_byte } from \"lib/bits\";\n\
+         println(reg(5));\n\
+         println(low_byte(0x1234));\n\
+         return 0;\n",
+    )
+    .expect("write main");
+
+    let vm = Command::new(bin_path())
+        .current_dir(dir.path())
+        .arg("main.lk")
+        .output()
+        .expect("spawn vm run");
+    assert!(
+        vm.status.success(),
+        "vm run failed: {}",
+        String::from_utf8_lossy(&vm.stderr)
+    );
+
+    let exe = dir.path().join("main");
+    let compile = Command::new(bin_path())
+        .current_dir(dir.path())
+        .args(["compile", "main.lk"])
+        .arg("--output")
+        .arg(&exe)
+        .env("LK_AOT_NO_FALLBACK", "1")
+        .env("LK_AOT_HYBRID", "0")
+        .output()
+        .expect("spawn native compile");
+    assert!(
+        compile.status.success(),
+        "a module importing another module must lower natively: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let native = Command::new(&exe).output().expect("spawn compiled executable");
+    assert_eq!(
+        String::from_utf8_lossy(&vm.stdout),
+        String::from_utf8_lossy(&native.stdout),
+        "a nested import diverged between the backends"
+    );
+}
+
+/// A container at a bundled module's top level is refused, not flattened.
+///
+/// Bundling merges modules into one, which would *share* the container with
+/// the importer; the VM gives each module its own copy. The two answers differ
+/// as soon as anything mutates it, so the bundler rejects the shape rather
+/// than producing a program that computes something the VM would not.
+#[test]
+fn bundled_module_container_constants_are_refused() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    std::fs::write(
+        dir.path().join("table.lk"),
+        "const NAMES = [\"zero\", \"one\"];\nfn get() -> List<String> { return NAMES; }\n",
+    )
+    .expect("write dep");
+    std::fs::write(
+        dir.path().join("main.lk"),
+        "use { get } from \"table\";\nprintln(get().len());\nreturn 0;\n",
+    )
+    .expect("write main");
+
+    let compile = Command::new(bin_path())
+        .current_dir(dir.path())
+        .args(["compile", "main.lk"])
+        .arg("--output")
+        .arg(dir.path().join("main"))
+        .env("LK_AOT_NO_FALLBACK", "1")
+        .env("LK_AOT_HYBRID", "0")
+        .output()
+        .expect("spawn native compile");
+    assert!(
+        !compile.status.success(),
+        "a shared container must not compile silently"
+    );
+    let stderr = String::from_utf8_lossy(&compile.stderr);
+    assert!(
+        stderr.contains("container at its top level"),
+        "the refusal should say what is wrong: {stderr}"
+    );
+}
+
+/// An exported-but-unused function in a bundled module does not fail the build.
+///
+/// Bundled functions are reached by name, which the bytecode reachability scan
+/// cannot follow, so they were all rooted. A module exports more than any one
+/// importer uses, and lowering a function nothing calls can fail the whole
+/// module for a shape that never runs — its parameter types have no call site
+/// to be observed from, so they are not even known.
+#[test]
+fn an_unused_bundled_function_does_not_fail_the_module() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    std::fs::write(
+        dir.path().join("lib.lk"),
+        // `each` is never called: its list parameter has no observed type.
+        "fn used(n: Int) -> Int { return n + 1; }\n\
+         fn each(xs: List<Int>) -> Int { let s = 0; for x in xs { s = s + x; } return s; }\n",
+    )
+    .expect("write dep");
+    std::fs::write(
+        dir.path().join("main.lk"),
+        "use { used } from \"lib\";\nprintln(used(1));\nreturn 0;\n",
+    )
+    .expect("write main");
+
+    let compile = Command::new(bin_path())
+        .current_dir(dir.path())
+        .args(["compile", "main.lk"])
+        .arg("--output")
+        .arg(dir.path().join("main"))
+        .env("LK_AOT_NO_FALLBACK", "1")
+        .env("LK_AOT_HYBRID", "0")
+        .output()
+        .expect("spawn native compile");
+    assert!(
+        compile.status.success(),
+        "an unused export must not fail the module: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+}
+
+/// A boxed container index lowers, rather than failing the module.
+///
+/// Iterating a list yields a `Maybe` carrier; passing that as an argument
+/// boxes it. So `fn at(xs, i) { return xs[i]; }` called from `for i in idx`
+/// sees a `Dyn` index — an ordinary shape that had no lowering, which made a
+/// two-function library fail to compile with an error naming neither function.
+#[test]
+fn a_boxed_container_index_matches_the_vm() {
+    run_clif_differential(
+        "boxed_index",
+        &[
+            new(
+                "read",
+                "fn at(xs: List<Int>, i: Int) -> Int { return xs[i]; }\n\
+                 let xs = [10, 20, 30];\n\
+                 let idx = [0, 2];\n\
+                 let total = 0;\n\
+                 for i in idx { total = total + at(xs, i); }\n\
+                 return total;\n",
+            ),
+            new(
+                "write",
+                "fn put(xs: List<Int>, i: Int, v: Int) { xs[i] = v; }\n\
+                 let xs = [0, 0, 0];\n\
+                 let idx = [0, 2];\n\
+                 for i in idx { put(xs, i, 7); }\n\
+                 return xs[0] + xs[2];\n",
+            ),
+            // A non-integer index is rejected by the type checker before it
+            // reaches the lowering, so the unbox only ever sees an integer in
+            // a well-typed program. It still goes through the runtime's tag
+            // check rather than reading the payload blind, because `Dyn` is
+            // also what an untyped path produces.
+        ],
+    );
+}
+
+/// A module that writes through a container parameter is not bundled.
+///
+/// Bundling flattens the modules together, so the callee would get the
+/// caller's container by reference; the VM runs them as separate modules with
+/// separate heaps and copies arguments across the boundary (see
+/// `copy_runtime_positional_args_to_frame`). The two disagree the moment the
+/// callee writes — `xs[0]` reads 0 under the VM and 7 under a flattened build
+/// — and nothing reports it. So the bundler declines.
+///
+/// What is checked here is the refusal and its wording. That the fallback then
+/// produces the VM's answer is the Tier 0 path's own guarantee, and exercising
+/// it here would drag a cargo build of the embedded runtime into a unit test.
+#[test]
+fn a_module_that_mutates_a_parameter_is_not_bundled() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    std::fs::write(
+        dir.path().join("m.lk"),
+        "fn put(xs: List<Int>, i: Int, v: Int) { xs[i] = v; }\n",
+    )
+    .expect("write dep");
+    std::fs::write(
+        dir.path().join("main.lk"),
+        "use { put } from \"m\";\nlet xs = [0, 0, 0];\nput(xs, 0, 7);\nprintln(xs[0]);\nreturn 0;\n",
+    )
+    .expect("write main");
+
+    // An object build has no fallback to take, so the refusal has to name the
+    // cause rather than the unlowerable instruction it would otherwise become.
+    let strict = Command::new(bin_path())
+        .current_dir(dir.path())
+        .args(["compile", "object:x86_64-unknown-none", "main.lk"])
+        .arg("--output")
+        .arg(dir.path().join("main.o"))
+        .output()
+        .expect("spawn object compile");
+    assert!(!strict.status.success(), "a shared container must not compile silently");
+    let stderr = String::from_utf8_lossy(&strict.stderr);
+    assert!(
+        stderr.contains("container parameter"),
+        "the refusal should say what is wrong: {stderr}"
+    );
+}
+
+/// A module that only *reads* its container parameters still bundles.
+///
+/// The refusal above has to be narrow, or every library that takes a list
+/// stops compiling natively.
+#[test]
+fn a_module_that_only_reads_a_parameter_still_bundles() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    std::fs::write(
+        dir.path().join("m.lk"),
+        "fn total(xs: List<Int>) -> Int { let s = 0; for x in xs { s = s + x; } return s; }\n\
+         fn at(xs: List<Int>, i: Int) -> Int { return xs[i]; }\n\
+         fn size(xs: List<Int>) -> Int { return xs.len(); }\n",
+    )
+    .expect("write dep");
+    std::fs::write(
+        dir.path().join("main.lk"),
+        "use { total, at, size } from \"m\";\n\
+         let xs = [1, 2, 3];\n\
+         println(total(xs));\n\
+         println(at(xs, 1));\n\
+         println(size(xs));\n\
+         return 0;\n",
+    )
+    .expect("write main");
+
+    let vm = Command::new(bin_path())
+        .current_dir(dir.path())
+        .arg("main.lk")
+        .output()
+        .expect("spawn vm run");
+    let exe = dir.path().join("main");
+    let compile = Command::new(bin_path())
+        .current_dir(dir.path())
+        .args(["compile", "main.lk"])
+        .arg("--output")
+        .arg(&exe)
+        .env("LK_AOT_NO_FALLBACK", "1")
+        .env("LK_AOT_HYBRID", "0")
+        .output()
+        .expect("spawn native compile");
+    assert!(
+        compile.status.success(),
+        "a read-only module must still bundle: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let native = Command::new(&exe).output().expect("spawn compiled executable");
+    assert_eq!(
+        String::from_utf8_lossy(&vm.stdout),
+        String::from_utf8_lossy(&native.stdout),
+        "a read-only bundled module diverged"
+    );
+}
+
+/// An imported function's signature is visible to the type checker.
+///
+/// Without it the name is `Any`: a range bound, a condition and a cast all
+/// need better than that, so a program that reads perfectly well needs
+/// annotations that say nothing — and a call with the wrong number of
+/// arguments is not checked at all, surfacing much later from the native
+/// lowering as "opcode CallDirect is not natively lowerable", which names
+/// neither the call nor the reason.
+#[test]
+fn an_imported_signature_is_checked() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    std::fs::write(
+        dir.path().join("lib.lk"),
+        "fn add(a: Int, b: Int) -> Int { return a + b; }\nfn count() -> Int { return 3; }\n",
+    )
+    .expect("write dep");
+    // A range bound and a cast, neither of which accepts `Any`.
+    std::fs::write(
+        dir.path().join("ok.lk"),
+        "use { add, count } from \"lib\";\n\
+         let total = 0;\n\
+         for i in 0..count() { total = total + add(i, 1); }\n\
+         return total;\n",
+    )
+    .expect("write ok");
+    std::fs::write(dir.path().join("bad.lk"), "use { add } from \"lib\";\nreturn add(1);\n").expect("write bad");
+
+    let ok = Command::new(bin_path())
+        .current_dir(dir.path())
+        .args(["check", "ok.lk"])
+        .output()
+        .expect("spawn check");
+    assert!(
+        ok.status.success(),
+        "an imported signature should make annotations unnecessary: {}",
+        String::from_utf8_lossy(&ok.stderr)
+    );
+
+    let bad = Command::new(bin_path())
+        .current_dir(dir.path())
+        .args(["check", "bad.lk"])
+        .output()
+        .expect("spawn check");
+    assert!(
+        !bad.status.success(),
+        "a wrong-arity call across a module must be caught"
+    );
+    let stderr = String::from_utf8_lossy(&bad.stderr);
+    assert!(
+        stderr.contains("arguments"),
+        "the error should be about the call, not an opcode: {stderr}"
+    );
+}
+
+/// An argument's type is checked against an *annotated* parameter.
+///
+/// The distinction matters more than the check: an unannotated parameter also
+/// ends up with a type, because inference gives it one from the body, but that
+/// is a derivation rather than a claim. `fn scale(x) { return x * 2.5; }` may
+/// settle on `Int` for `x`, and rejecting `scale(4.0)` against it would reject
+/// on something the program never said.
+#[test]
+fn argument_types_are_checked_against_annotations() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let check = |name: &str, source: &str| {
+        std::fs::write(dir.path().join(name), source).expect("write source");
+        Command::new(bin_path())
+            .current_dir(dir.path())
+            .args(["check", name])
+            .output()
+            .expect("spawn check")
+    };
+
+    let annotated = check(
+        "annotated.lk",
+        "fn add(a: Int, b: Int) -> Int { return a + b; }\nreturn add(1, \"x\");\n",
+    );
+    assert!(!annotated.status.success(), "a wrong argument type must be caught");
+    let stderr = String::from_utf8_lossy(&annotated.stderr);
+    assert!(
+        stderr.contains("Argument 2") && stderr.contains("expected Int"),
+        "the error should name the position and the types: {stderr}"
+    );
+
+    let inferred = check("inferred.lk", "fn scale(x) { return x * 2.5; }\nreturn scale(4.0);\n");
+    assert!(
+        inferred.status.success(),
+        "an inferred parameter type is not a claim to check against: {}",
+        String::from_utf8_lossy(&inferred.stderr)
+    );
+
+    // A machine-integer parameter takes an integer literal without a cast.
+    // They do not convert implicitly — that is what makes `u8 + Int` an error
+    // — but a literal has no type of its own to preserve.
+    let literal = check(
+        "literal.lk",
+        "fn port(number: u16) -> Int { return number as Int; }\nreturn port(0x3f8);\n",
+    );
+    assert!(
+        literal.status.success(),
+        "an integer literal should reach a machine-int parameter: {}",
+        String::from_utf8_lossy(&literal.stderr)
+    );
+}
+
+/// `#[extern]` names a function implemented outside the program.
+///
+/// The mirror of `#[export]`. A native build calls the symbol and never emits
+/// the body; the interpreter, which cannot reach outside, runs the body. That
+/// asymmetry is the point and also the cost: this is the one construct whose
+/// two back ends are not checked against each other, because the thing being
+/// called is not in the program.
+#[test]
+fn an_extern_function_calls_the_named_symbol() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let source = dir.path().join("ext.lk");
+    std::fs::write(
+        &source,
+        "#[extern(\"kernel_double\")]\n\
+         fn kernel_double(value: Int) -> Int { return value * 2; }\n\
+         println(kernel_double(21));\n\
+         return 0;\n",
+    )
+    .expect("write source");
+
+    // The interpreter runs the body.
+    let vm = Command::new(bin_path())
+        .current_dir(dir.path())
+        .arg("ext.lk")
+        .output()
+        .expect("spawn vm run");
+    assert!(
+        vm.status.success(),
+        "vm run failed: {}",
+        String::from_utf8_lossy(&vm.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&vm.stdout), "42\n0\n");
+
+    // The object refers to the symbol and leaves it to the linker.
+    let object = dir.path().join("ext.o");
+    let compile = Command::new(bin_path())
+        .current_dir(dir.path())
+        .args(["compile", "object:x86_64-unknown-none", "ext.lk"])
+        .arg("--output")
+        .arg(&object)
+        .output()
+        .expect("spawn object compile");
+    assert!(
+        compile.status.success(),
+        "an extern call must lower: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let bytes = std::fs::read(&object).expect("read object");
+    let needle = b"kernel_double";
+    assert!(
+        bytes.windows(needle.len()).any(|window| window == needle),
+        "the object should name the symbol it calls"
+    );
+}

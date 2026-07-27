@@ -1,0 +1,110 @@
+// The multiboot 1 information structure.
+//
+// The loader leaves a pointer to it in EBX; the board's reset path stashes
+// that at a fixed address, because an LK program has no way to name a linker
+// symbol. Everything here is a read of physical memory the boot page tables
+// already cover.
+//
+// Layout (the fields this needs):
+//
+//   +0   flags
+//   +4   mem_lower   (KiB below 1 MiB)      valid when flags bit 0 is set
+//   +8   mem_upper   (KiB above 1 MiB)      valid when flags bit 0 is set
+//   +44  mmap_length (bytes)                valid when flags bit 6 is set
+//   +48  mmap_addr
+//
+// A map entry is *not* fixed size — its own `size` field says how far the next
+// one is, which is how the format leaves room for longer entries:
+//
+//   +0   size (bytes after this field)
+//   +4   base_addr (64-bit)
+//   +12  length    (64-bit)
+//   +20  type      (1 = available)
+
+// Where the reset path stashed the pointer. `program.lk` documents the same
+// address as part of its shared page; `boot.rs` writes it.
+const INFO_POINTER = 0x0030001c;
+
+const FLAG_MEMORY = 0x01;
+const FLAG_MMAP = 0x40;
+
+const TYPE_AVAILABLE = 1;
+
+fn read32(address: Int) -> Int {
+    let value = unsafe { volatile_read_u32(address as *mut u32) };
+    return value as Int;
+}
+
+fn read64(address: Int) -> Int {
+    let value = unsafe { volatile_read_u64(address as *mut u64) };
+    return value as Int;
+}
+
+fn info() -> Int {
+    return read32(INFO_POINTER);
+}
+
+fn flags() -> Int {
+    return read32(info());
+}
+
+fn has_mmap() -> Bool {
+    return (flags() & FLAG_MMAP) != 0;
+}
+
+// Kilobytes of memory above 1 MiB, as the loader counted it. Cruder than the
+// map — it stops at the first hole — but present even when the map is not.
+fn mem_upper_kb() -> Int {
+    if ((flags() & FLAG_MEMORY) == 0) {
+        return 0;
+    }
+    return read32(info() + 8);
+}
+
+fn mmap_start() -> Int {
+    return read32(info() + 48);
+}
+
+fn mmap_end() -> Int {
+    return mmap_start() + read32(info() + 44);
+}
+
+// The entries are a chain, not an array, so walking to the nth means walking
+// past the ones before it. There are a handful, so that is cheaper than
+// keeping a table of offsets somewhere.
+fn entry_at(index: Int) -> Int {
+    let at = mmap_start();
+    let seen = 0;
+    let last = mmap_end();
+    while (at < last) {
+        if (seen == index) {
+            return at;
+        }
+        at = at + read32(at) + 4;
+        seen = seen + 1;
+    }
+    return 0 - 1;
+}
+
+fn entry_count() -> Int {
+    let at = mmap_start();
+    let count = 0;
+    let last = mmap_end();
+    while (at < last) {
+        at = at + read32(at) + 4;
+        count = count + 1;
+    }
+    return count;
+}
+
+fn entry_base(entry: Int) -> Int {
+    return read64(entry + 4);
+}
+
+fn entry_length(entry: Int) -> Int {
+    return read64(entry + 12);
+}
+
+fn entry_is_available(entry: Int) -> Bool {
+    return read32(entry + 20) == TYPE_AVAILABLE;
+}

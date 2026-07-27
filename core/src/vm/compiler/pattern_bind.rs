@@ -13,7 +13,12 @@ use super::{
 };
 
 impl Compiler {
-    pub(super) fn lower_let(&mut self, pattern: &Pattern, value: &Expr) -> Result<()> {
+    pub(super) fn lower_let(
+        &mut self,
+        pattern: &Pattern,
+        type_annotation: Option<&crate::val::Type>,
+        value: &Expr,
+    ) -> Result<()> {
         if let Pattern::Variable(name) = pattern {
             // NOTE: never alias the binding to a shared loop-literal cache
             // register (the old fast path here): a later reassignment
@@ -49,6 +54,9 @@ impl Compiler {
                 self.emit_set_global(slot, global_slot)?;
             }
             self.record_const_map_local_from_expr(name, value)?;
+            // An annotated width is one of the two ways the compiler learns a
+            // register holds a machine integer (the other is `as`).
+            self.note_machine_reg(slot, type_annotation);
             self.insert_fresh_local(name.clone(), slot);
             self.next_reg = self.live_register_floor().max(watermark).max(slot + 1);
             return Ok(());

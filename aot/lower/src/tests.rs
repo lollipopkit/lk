@@ -21,6 +21,8 @@ fn artifact(consts: ConstPoolData, code: Vec<u32>, register_count: u16) -> Modul
                 param_names: Vec::new(),
                 capture_count: 0,
                 debug_name: None,
+                export_name: None,
+                extern_name: None,
             }],
         },
     }
@@ -55,6 +57,8 @@ fn func(consts: ConstPoolData, code: Vec<u32>, register_count: u16, param_count:
         param_names: Vec::new(),
         capture_count: 0,
         debug_name: None,
+        export_name: None,
+        extern_name: None,
     }
 }
 

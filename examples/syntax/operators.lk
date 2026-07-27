@@ -65,4 +65,19 @@ let float_val = int_val + 2.5;
 assert(float_val > 42.0);
 assert(float_val < 43.0);
 
+// 11. Bitwise operators and shifts
+// `&`, `|` and `~` are Int-only; `<<` and `>>` are two adjacent comparison
+// tokens rather than tokens of their own, so that a generic annotation like
+// `Map<String, List<Int>>` still ends with two separate `>`.
+assert((0b1100 & 0b1010) == 0b1000);
+assert((0b1100 | 0b1010) == 0b1110);
+assert((1 << 8) == 256);
+// Arithmetic, not logical: Int is signed, so the sign bit is replicated.
+assert((0 - 16) >> 2 == 0 - 4);
+// Precedence is Rust's: tighter than comparison, looser than `+`.
+assert(1 << 2 + 3 == 32);
+assert(8 >> 1 == 4);
+// A shift amount outside 0..63 is an error rather than a mask or a wrap —
+// the hardware would mask it to 63 and return a number nobody asked for.
+
 println("operators: all assertions passed");

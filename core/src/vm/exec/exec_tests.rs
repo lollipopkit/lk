@@ -13,6 +13,7 @@ use crate::{
 mod attributes;
 mod basic;
 mod calls;
+mod cast;
 mod container;
 mod cross_heap;
 mod gc_cell_error;

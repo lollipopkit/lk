@@ -1137,3 +1137,173 @@ fn tuple_annotation_parses_as_the_tuple_type() {
         ]))
     );
 }
+
+/// `#[export]` names a compiled function for the native backend.
+///
+/// The VM ignores the attribute, so the only place a mistake shows up is a
+/// missing or misnamed symbol at link time — far from the source. These check
+/// the name reaches `Function::export_name`, which is what codegen reads.
+#[test]
+fn export_attribute_defaults_to_the_source_name() {
+    let module = compile_module(&parse_program(
+        r#"
+        #[export]
+        fn tick() { return 1; }
+        return tick();
+        "#,
+    ))
+    .expect("compile module");
+    let exported: Vec<_> = module
+        .functions
+        .iter()
+        .filter_map(|function| function.export_name.as_deref())
+        .collect();
+    assert_eq!(exported, vec!["tick"]);
+}
+
+#[test]
+fn export_attribute_takes_an_explicit_symbol() {
+    let module = compile_module(&parse_program(
+        r#"
+        #[export("timer_isr")]
+        fn tick() { return 1; }
+        return tick();
+        "#,
+    ))
+    .expect("compile module");
+    let exported: Vec<_> = module
+        .functions
+        .iter()
+        .filter_map(|function| function.export_name.as_deref())
+        .collect();
+    assert_eq!(exported, vec!["timer_isr"]);
+}
+
+/// A function with no `#[export]` stays internal — otherwise every function in
+/// a program would land in the symbol table.
+#[test]
+fn functions_are_not_exported_by_default() {
+    let module = compile_module(&parse_program(
+        r#"
+        fn tick() { return 1; }
+        return tick();
+        "#,
+    ))
+    .expect("compile module");
+    assert!(module.functions.iter().all(|function| function.export_name.is_none()));
+}
+
+/// A malformed `#[export]` is an error rather than a silently ignored
+/// attribute: ignoring it produces an undefined symbol somewhere unrelated.
+#[test]
+fn malformed_export_attribute_is_rejected() {
+    for source in [
+        "#[export(timer_isr)]\nfn tick() { return 1; }\nreturn tick();",
+        "#[export(\"\")]\nfn tick() { return 1; }\nreturn tick();",
+        "#[export(1)]\nfn tick() { return 1; }\nreturn tick();",
+    ] {
+        let error = compile_module(&parse_program(source)).expect_err("malformed export must fail");
+        assert!(
+            error.to_string().contains("export"),
+            "unexpected error for {source:?}: {error}"
+        );
+    }
+}
+
+/// A top-level `let`/`const` used inside a function's `for` body is still a
+/// global.
+///
+/// Whether a top-level binding becomes a module global is decided by scanning
+/// each function for free variables. That scan had no `for` arm, so a name used
+/// only inside a loop body was invisible: the binding stayed a local of the
+/// entry function and the reference compiled to "undefined local/global" —
+/// pointing at the use, with nothing to say the loop was what hid it.
+///
+/// One case per statement kind that owns a body, because the same omission is
+/// possible in each and none of them fails loudly.
+#[test]
+fn top_level_bindings_are_visible_through_every_nested_body() {
+    for (kind, source) in [
+        (
+            "for",
+            "const A = 5;\nfn f() -> Int { let s = 0; for i in 0..3 { s = s + A; } return s; }\nreturn f();\n",
+        ),
+        (
+            "while",
+            "const A = 5;\nfn f() -> Int { let s = 0; let i = 0; while (i < 3) { s = s + A; i = i + 1; } return s; }\nreturn f();\n",
+        ),
+        (
+            "if",
+            "const A = 15;\nfn f() -> Int { if (1 < 2) { return A; } return 0; }\nreturn f();\n",
+        ),
+        (
+            "try",
+            "const A = 15;\nfn f() -> Int { try { return A; } catch e { return 0; } }\nreturn f();\n",
+        ),
+    ] {
+        let module = compile_module(&parse_program(source)).unwrap_or_else(|error| panic!("{kind}: {error}"));
+        let result = execute_module(&module).unwrap_or_else(|error| panic!("{kind}: {error}"));
+        assert_eq!(
+            result.returns,
+            vec![crate::val::RuntimeVal::Int(15)],
+            "{kind} body did not see the top-level binding"
+        );
+    }
+}
+
+/// A top-level `const` is a module global even when this file never reads it.
+///
+/// Whether a top-level binding is promoted is decided by scanning the file's
+/// functions for free variables — which is right for `let` (a script's local)
+/// and wrong for `const`. A module that declares register numbers *for its
+/// importers* uses none of them itself, so they stayed entry-locals, never
+/// reached the export map, and `use { REG } from "…"` failed with "not found
+/// in runtime module" — pointing at the import rather than at the rule.
+#[test]
+fn unread_top_level_consts_are_still_module_globals() {
+    let module = compile_module(&parse_program(
+        "const EXPORTED = 0x3f8;\nlet unused_let = 1;\nfn f() -> Int { return 1; }\nreturn f();\n",
+    ))
+    .expect("compile module");
+    let globals: Vec<&str> = module.globals.iter().map(|slot| slot.name.as_ref()).collect();
+    assert!(
+        globals.contains(&"EXPORTED"),
+        "a top-level const must be a module global: {globals:?}"
+    );
+    // `let` keeps the old rule: nothing reads it, so it stays a local.
+    assert!(
+        !globals.contains(&"unused_let"),
+        "an unread top-level `let` should not become a global: {globals:?}"
+    );
+}
+
+/// A function may be called above its definition.
+///
+/// Functions are hoisted at run time — the compiler builds the whole function
+/// table before the entry executes — but the type checker walked statements in
+/// order, so a call above the definition found no signature and produced
+/// `Any`. The error then surfaced somewhere else: the cast below failed with
+/// "cannot cast Box<Any> to Int" when the callee happened to be defined
+/// further down, and checked cleanly when it was defined above.
+#[test]
+fn a_call_above_its_definition_still_knows_the_signature() {
+    for (order, source) in [
+        (
+            "callee after",
+            "fn a(n: Int) -> Int { return ((n / b(2)) as Int); }\nfn b(n: Int) -> Int { return n * 2; }\nreturn a(8);\n",
+        ),
+        (
+            "callee before",
+            "fn b(n: Int) -> Int { return n * 2; }\nfn a(n: Int) -> Int { return ((n / b(2)) as Int); }\nreturn a(8);\n",
+        ),
+    ] {
+        let program = parse_program(source);
+        let mut checker = crate::typ::TypeChecker::new();
+        program
+            .type_check(&mut checker)
+            .unwrap_or_else(|error| panic!("{order}: {error}"));
+        let module = compile_module(&program).unwrap_or_else(|error| panic!("{order}: {error}"));
+        let result = execute_module(&module).unwrap_or_else(|error| panic!("{order}: {error}"));
+        assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(2)], "{order}");
+    }
+}

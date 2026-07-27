@@ -227,7 +227,10 @@ pub(super) fn lower(
             let initialized = sig.initialized_globals.get(slot as usize).copied().unwrap_or(false);
             let ty = sig.global_tys.get(slot as usize).copied().flatten();
             let Some(ty) = ty else {
-                return Err(Unsupported::Opcode { pc, op: instr.opcode() });
+                return Err(Unsupported::UnresolvedGlobal {
+                    pc,
+                    name: name.unwrap_or("<unnamed slot>").to_string(),
+                });
             };
             // A typed slot read before its entry-prefix initialization could
             // observe native zero where the VM has nil. A `Dyn` slot is
@@ -266,6 +269,28 @@ pub(super) fn lower(
 /// is what makes the next `Builtin` addition safe by default.
 pub(crate) fn builtin_for_name(name: &str) -> Option<Builtin> {
     Some(match name {
+        "cpu_barrier" => Builtin::Cpu("barrier", 0),
+        "cpu_compiler_barrier" => Builtin::Cpu("compiler_barrier", 0),
+        "cpu_irq_save" => Builtin::Cpu("irq_save", 0),
+        "cpu_irq_restore" => Builtin::Cpu("irq_restore", 1),
+        "cpu_wait_for_interrupt" => Builtin::Cpu("wait_for_interrupt", 0),
+        "cpu_timestamp" => Builtin::Cpu("timestamp", 0),
+        "symbol_address" => Builtin::SymbolAddress,
+        "call_address_2" => Builtin::CallAddress2,
+        "volatile_read_u8" => Builtin::VolatileRead(8),
+        "volatile_read_u16" => Builtin::VolatileRead(16),
+        "volatile_read_u32" => Builtin::VolatileRead(32),
+        "volatile_read_u64" => Builtin::VolatileRead(64),
+        "volatile_write_u8" => Builtin::VolatileWrite(8),
+        "volatile_write_u16" => Builtin::VolatileWrite(16),
+        "volatile_write_u32" => Builtin::VolatileWrite(32),
+        "volatile_write_u64" => Builtin::VolatileWrite(64),
+        "port_in_u8" => Builtin::PortIn(8),
+        "port_in_u16" => Builtin::PortIn(16),
+        "port_in_u32" => Builtin::PortIn(32),
+        "port_out_u8" => Builtin::PortOut(8),
+        "port_out_u16" => Builtin::PortOut(16),
+        "port_out_u32" => Builtin::PortOut(32),
         "println" => Builtin::Println,
         "print" => Builtin::Print,
         "assert" => Builtin::Assert,
@@ -282,6 +307,8 @@ pub(crate) fn builtin_for_name(name: &str) -> Option<Builtin> {
         "__lk_bit_and" => Builtin::BitAnd,
         "__lk_bit_or" => Builtin::BitOr,
         "__lk_bit_not" => Builtin::BitNot,
+        "__lk_shl" => Builtin::Shl,
+        "__lk_shr" => Builtin::Shr,
         "chan" => Builtin::ChanNew,
         "send" => Builtin::ChanSend,
         "recv" => Builtin::ChanRecv,

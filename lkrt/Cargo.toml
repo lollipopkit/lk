@@ -8,18 +8,31 @@ license = "Apache-2.0"
 
 [lib]
 name = "lkrt"
-crate-type = ["rlib", "staticlib"]
+# rlib only. The staticlib form lives in `lkrt-cabi`; see that crate for why
+# they cannot share one target.
+crate-type = ["rlib"]
+
+[features]
+default = ["std"]
+# Off => the computation-only subset that builds without an OS: value
+# representation, arithmetic, MMIO and CPU control. Files, processes, threads,
+# sockets and the clock drop out — there is nothing on bare metal for them to
+# call.
+std = ["lk-aot-abi/std", "serde_json/std", "dep:serde_yaml", "dep:toml", "dep:chrono"]
 
 [dependencies]
-lk-aot-abi = { path = "../aot/abi" }
-rustc-hash = { version = "2" }
-hashbrown = { version = "0.15" }
-serde_json = { version = "1" }
-serde_yaml = { version = "0.9" }
-toml = { version = "1" }
+lk-aot-abi = { path = "../aot/abi", default-features = false }
+rustc-hash = { version = "2", default-features = false }
+hashbrown = { version = "0.15", default-features = false, features = ["default-hasher", "inline-more"] }
+# Bare metal has no thread-local storage; the arena lives behind a spin lock
+# there instead. Uncontended on a single core, so the hot path stays cheap.
+spin = { version = "0.9", default-features = false, features = ["mutex", "spin_mutex"] }
+serde_json = { version = "1", default-features = false, features = ["alloc"] }
+serde_yaml = { version = "0.9", optional = true }
+toml = { version = "1", optional = true }
 # Same crate the stdlib datetime module uses, so native formatting/weekday
 # results are byte-identical to the VM.
-chrono = { workspace = true }
+chrono = { workspace = true, optional = true }
 
 [build-dependencies]
 # Compiles the native protected-call `setjmp` trampoline (`src/try_trampoline.c`)

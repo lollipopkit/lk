@@ -1,0 +1,10 @@
+[build]
+target = "aarch64-unknown-none"
+
+# Keeps `lkrt`'s `#[no_mangle]` functions in the link. Their callers live in the
+# Cranelift-emitted object, which the linker treats as a separate input, so
+# nothing on the Rust side references them and they would otherwise be dropped.
+# The hosted path solves this by force-loading `liblkrt_cabi.a`; an rlib
+# dependency has no equivalent.
+[target.aarch64-unknown-none]
+rustflags = ["-C", "link-dead-code"]

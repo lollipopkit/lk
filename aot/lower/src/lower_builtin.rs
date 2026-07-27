@@ -51,12 +51,34 @@ pub(crate) fn lower_builtin_call(
             ssa.write(base, block, (nil, Ty::Nil));
             return Ok(());
         }
+        Builtin::Shl | Builtin::Shr => {
+            if argc != 2 {
+                return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+            }
+            let lhs = read_index_scalar(ssa, insts, base.wrapping_add(1), block, pc)?;
+            let rhs = read_index_scalar(ssa, insts, base.wrapping_add(2), block, pc)?;
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new(
+                    "arith",
+                    if matches!(builtin, Builtin::Shl) {
+                        "i64_shl"
+                    } else {
+                        "i64_shr"
+                    },
+                ),
+                args: vec![lhs, rhs],
+            });
+            ssa.write(base, block, (dst, Ty::I64));
+            return Ok(());
+        }
         Builtin::BitAnd | Builtin::BitOr => {
             if argc != 2 {
                 return Err(Unsupported::Opcode { pc, op: Opcode::Call });
             }
-            let lhs = read_typed_scalar(ssa, insts, base.wrapping_add(1), block, Ty::I64, pc)?;
-            let rhs = read_typed_scalar(ssa, insts, base.wrapping_add(2), block, Ty::I64, pc)?;
+            let lhs = read_index_scalar(ssa, insts, base.wrapping_add(1), block, pc)?;
+            let rhs = read_index_scalar(ssa, insts, base.wrapping_add(2), block, pc)?;
             let dst = ssa.new_val();
             insts.push(Inst::IntBin {
                 dst,
@@ -76,7 +98,7 @@ pub(crate) fn lower_builtin_call(
             if argc != 1 {
                 return Err(Unsupported::Opcode { pc, op: Opcode::Call });
             }
-            let v = read_typed_scalar(ssa, insts, base.wrapping_add(1), block, Ty::I64, pc)?;
+            let v = read_index_scalar(ssa, insts, base.wrapping_add(1), block, pc)?;
             let minus_one = ssa.new_val();
             insts.push(Inst::Const {
                 dst: minus_one,
@@ -403,6 +425,146 @@ pub(crate) fn lower_builtin_call(
                 free_owned_str(insts, msg);
             }
         }
+        Builtin::Cpu(entry, arity) => {
+            if argc != usize::from(arity) {
+                return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+            }
+            let mut call_args = Vec::with_capacity(argc);
+            for index in 0..argc {
+                let slot = base.wrapping_add(1 + index as u8);
+                let (value, ty) = ssa.read(slot, block, pc)?;
+                if !matches!(ty, Ty::I64) {
+                    return Err(Unsupported::TypeMismatch { pc });
+                }
+                call_args.push(value);
+            }
+            // The two that produce a value; the rest are pure effect.
+            if entry == "irq_save" || entry == "timestamp" {
+                let dst = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(dst),
+                    callee: AbiRef::new("cpu", entry),
+                    args: call_args,
+                });
+                ssa.write(base, block, (dst, Ty::I64));
+                // Early return: the tail writes nil to base, which would
+                // clobber this.
+                return Ok(());
+            }
+            insts.push(Inst::Call {
+                dst: None,
+                callee: AbiRef::new("cpu", entry),
+                args: call_args,
+            });
+        }
+        Builtin::SymbolAddress => {
+            // The name has to be a literal: a relocation is a name resolved at
+            // link time, and a kernel has no symbol table to look one up in.
+            if argc != 1 {
+                return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+            }
+            let (name_value, _) = ssa.read(base.wrapping_add(1), block, pc)?;
+            let Some(symbol) = ssa.const_strs.get(&name_value).cloned() else {
+                return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+            };
+            let dst = ssa.new_val();
+            insts.push(Inst::SymbolAddr { dst, symbol });
+            ssa.write(base, block, (dst, Ty::I64));
+            return Ok(());
+        }
+        Builtin::CallAddress2 => {
+            if argc != 3 {
+                return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+            }
+            let callee = read_index_scalar(ssa, insts, base.wrapping_add(1), block, pc)?;
+            let first = read_index_scalar(ssa, insts, base.wrapping_add(2), block, pc)?;
+            let second = read_index_scalar(ssa, insts, base.wrapping_add(3), block, pc)?;
+            let dst = ssa.new_val();
+            insts.push(Inst::CallIndirect {
+                dst: Some(dst),
+                callee,
+                args: vec![first, second],
+            });
+            ssa.write(base, block, (dst, Ty::I64));
+            return Ok(());
+        }
+        Builtin::VolatileRead(bits) => {
+            // `volatile_read_uN(ptr)`. The address is an `I64` — a pointer is
+            // just an address, and the type checker has already established
+            // that this argument is a pointer of the matching width.
+            if argc != 1 {
+                return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+            }
+            // `read_scalar`, not a bare read: an address that came out of a
+            // container arrives as a `Maybe` carrier, and MMIO is a scalar
+            // consumer — absent aborts, exactly as `nil` arithmetic does in
+            // the VM.
+            let addr = read_typed_scalar(ssa, insts, base.wrapping_add(1), block, Ty::I64, pc)?;
+            let dst = ssa.new_val();
+            // An opaque `lkrt` call, not an inline load: Cranelift has no
+            // volatile flag, and its egraph pass will happily collapse two
+            // loads of one address into one. A call it cannot see through
+            // keeps both accesses. See lkrt/src/mmio.rs.
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("mmio", mmio_read_name(bits)),
+                args: vec![addr],
+            });
+            // The VM writes a builtin's result to the call-window base.
+            //
+            // `return`, not `break`: this function ends by writing `nil` to
+            // base for the builtins that produce nothing, which would clobber
+            // the value just stored there. `Typeof` returns early for the same
+            // reason.
+            ssa.write(base, block, (dst, Ty::I64));
+            return Ok(());
+        }
+        Builtin::VolatileWrite(bits) => {
+            if argc != 2 {
+                return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+            }
+            // Both operands through `read_scalar` — see the read arm above.
+            // Iterating a list and writing each element is the ordinary shape
+            // of a driver's output loop, and its elements are `Maybe` carriers.
+            let addr = read_typed_scalar(ssa, insts, base.wrapping_add(1), block, Ty::I64, pc)?;
+            let value = read_typed_scalar(ssa, insts, base.wrapping_add(2), block, Ty::I64, pc)?;
+            insts.push(Inst::Call {
+                dst: None,
+                callee: AbiRef::new("mmio", mmio_write_name(bits)),
+                args: vec![addr, value],
+            });
+            // A write produces nothing, so the shared nil-return tail below is
+            // exactly right — fall through to it rather than duplicating it.
+        }
+        Builtin::PortIn(bits) => {
+            // `port_in_uN(port)`. Same shape as the MMIO read: one opaque call,
+            // whose result the VM leaves at the call-window base.
+            if argc != 1 {
+                return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+            }
+            let port = read_typed_scalar(ssa, insts, base.wrapping_add(1), block, Ty::I64, pc)?;
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("port", port_in_name(bits)),
+                args: vec![port],
+            });
+            ssa.write(base, block, (dst, Ty::I64));
+            return Ok(());
+        }
+        Builtin::PortOut(bits) => {
+            if argc != 2 {
+                return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+            }
+            let port = read_typed_scalar(ssa, insts, base.wrapping_add(1), block, Ty::I64, pc)?;
+            let value = read_typed_scalar(ssa, insts, base.wrapping_add(2), block, Ty::I64, pc)?;
+            insts.push(Inst::Call {
+                dst: None,
+                callee: AbiRef::new("port", port_out_name(bits)),
+                args: vec![port, value],
+            });
+            // A write produces nothing — the shared nil-return tail applies.
+        }
         Builtin::Typeof => {
             // `typeof(x)` — the VM's type name from the statically proven MIR
             // type. Maybe carriers select between the scalar name and `Nil` at
@@ -507,4 +669,43 @@ pub(crate) fn lower_builtin_call(
     });
     ssa.write(base, block, (nil, Ty::Nil));
     Ok(())
+}
+
+/// ABI entry names for port I/O, keyed by width.
+fn port_in_name(bits: u8) -> &'static str {
+    match bits {
+        8 => "in_u8",
+        16 => "in_u16",
+        _ => "in_u32",
+    }
+}
+
+fn port_out_name(bits: u8) -> &'static str {
+    match bits {
+        8 => "out_u8",
+        16 => "out_u16",
+        _ => "out_u32",
+    }
+}
+
+/// ABI entry names for volatile access, keyed by width.
+///
+/// The widths are fixed by the intrinsic names the front end accepts, so an
+/// unknown one here is a lowering bug rather than a user error.
+fn mmio_read_name(bits: u8) -> &'static str {
+    match bits {
+        8 => "read_u8",
+        16 => "read_u16",
+        32 => "read_u32",
+        _ => "read_u64",
+    }
+}
+
+fn mmio_write_name(bits: u8) -> &'static str {
+    match bits {
+        8 => "write_u8",
+        16 => "write_u16",
+        32 => "write_u32",
+        _ => "write_u64",
+    }
 }

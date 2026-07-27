@@ -1,0 +1,2023 @@
+// A small kernel, written in LK, compiled to native x86-64 machine code and
+// running with no OS underneath.
+//
+// The device drivers are modules under `drivers/` — a UART, PCI configuration
+// space, the VBE display interface, a framebuffer, the PS/2 keyboard, the
+// interval timer. Each is self-contained and knows nothing about this program;
+// what is left here is the part that is not reusable: which devices to bring
+// up, in what order, and what a keystroke means.
+//
+// The two interrupt handlers are `#[export]`ed so the board's IDT can name
+// them. They live here rather than in the driver modules for the same reason:
+// a driver decodes a scancode, but only the program knows what to do with it.
+
+use { uart_init, uart_putc, uart_write, uart_put_int, uart_put_hex } from "drivers/serial";
+use { pci_read, pci_write, pci_find_display, PCI_REG_BAR0, PCI_REG_COMMAND,
+      PCI_COMMAND_MEMORY, PCI_COMMAND_BUS_MASTER } from "drivers/pci";
+use { vbe_set_mode_virtual, vbe_set_pan } from "drivers/vbe";
+use { get_pixel, put_pixel, fill_rect, copy_rows } from "drivers/framebuffer";
+use { draw_glyph, draw_cells, clear, scroll_up, draw_cursor, CELL_WIDTH, CELL_HEIGHT } from "drivers/text";
+use { read_scancode, is_release, key_code } from "drivers/keyboard";
+use { mouse_init, has_packet_byte, read_packet_byte as mouse_byte, is_first_byte,
+      dx_of, dy_of, left_down } from "drivers/mouse";
+use { start as pit_start } from "drivers/pit";
+use { acquire as lock, release as unlock } from "drivers/lock";
+use { define as window_define, put as window_put, fill as window_fill,
+      dropped as window_dropped, outline as window_outline,
+      put_within as window_put_within, drop_count as window_drop_count,
+      left as window_left, top as window_top, width as window_width,
+      height as window_height } from "drivers/window";
+use { glyph_row, glyph_width, glyph_rows } from "drivers/text";
+use { reset as queue_reset, push as queue_push, pop as queue_pop,
+      is_empty as queue_empty } from "drivers/queue";
+use { has_mmap, mem_upper_kb, entry_count, entry_at, entry_base, entry_length,
+      entry_is_available } from "drivers/multiboot";
+use { heap_init, heap_alloc, heap_release,
+      used_bytes as heap_used, block_count as heap_blocks, largest_free as heap_largest } from "drivers/heap";
+use { init as pages_init, alloc as page_alloc, free as pages_free,
+      total as pages_total, PAGE_SIZE } from "drivers/pages";
+use { read_sector as ata_read_sector, write_sector as ata_write_sector,
+      identify as ata_identify, identify_sectors as ata_identify_sectors,
+      ATA_OK, ATA_TIMEOUT, ATA_ERROR_BIT, ATA_NO_DRIVE, ATA_BAD_LBA } from "drivers/ata";
+use { find as tar_find, TAR_OK, TAR_NOT_FOUND, TAR_READ_FAILED } from "drivers/tarfs";
+use { read as shared_read, write as shared_write, bump as shared_bump,
+      read_byte as shared_read_byte, write_byte as shared_write_byte } from "drivers/shared";
+
+const WIDTH = 320;
+const HEIGHT = 200;
+
+const BACKGROUND = 0x001428;
+const FOREGROUND = 0x40ff90;
+const TITLE_COLOUR = 0xffc040;
+const CURSOR_COLOUR = 0x205070;
+const POINTER_COLOUR = 0xff4060;
+
+// A 5x7 font in an 8-row cell, one row per integer with the leftmost pixel in
+// bit 4. Written for this program rather than taken from anywhere, so the
+// repository carries no third-party font data.
+//
+// It lives here rather than in `drivers/text` because a container at a
+// module's top level cannot cross a bundled import without changing what the
+// VM would do — see that module's comment.
+const FONT = [
+     0,  0,  0,  0,  0,  0,  0,  0,  // space
+    14, 17, 17, 31, 17, 17, 17,  0,  // A
+    30, 17, 30, 17, 17, 17, 30,  0,  // B
+    15, 16, 16, 16, 16, 16, 15,  0,  // C
+    30, 17, 17, 17, 17, 17, 30,  0,  // D
+    31, 16, 30, 16, 16, 16, 31,  0,  // E
+    31, 16, 30, 16, 16, 16, 16,  0,  // F
+    15, 16, 16, 19, 17, 17, 15,  0,  // G
+    17, 17, 31, 17, 17, 17, 17,  0,  // H
+    14,  4,  4,  4,  4,  4, 14,  0,  // I
+     7,  2,  2,  2,  2, 18, 12,  0,  // J
+    17, 18, 20, 24, 20, 18, 17,  0,  // K
+    16, 16, 16, 16, 16, 16, 31,  0,  // L
+    17, 27, 21, 17, 17, 17, 17,  0,  // M
+    17, 25, 21, 19, 17, 17, 17,  0,  // N
+    14, 17, 17, 17, 17, 17, 14,  0,  // O
+    30, 17, 17, 30, 16, 16, 16,  0,  // P
+    14, 17, 17, 17, 21, 18, 13,  0,  // Q
+    30, 17, 17, 30, 20, 18, 17,  0,  // R
+    15, 16, 16, 14,  1,  1, 30,  0,  // S
+    31,  4,  4,  4,  4,  4,  4,  0,  // T
+    17, 17, 17, 17, 17, 17, 14,  0,  // U
+    17, 17, 17, 17, 17, 10,  4,  0,  // V
+    17, 17, 17, 17, 21, 27, 17,  0,  // W
+    17, 17, 10,  4, 10, 17, 17,  0,  // X
+    17, 17, 10,  4,  4,  4,  4,  0,  // Y
+    31,  1,  2,  4,  8, 16, 31,  0,  // Z
+    14, 17, 19, 21, 25, 17, 14,  0,  // 0
+     4, 12,  4,  4,  4,  4, 14,  0,  // 1
+    14, 17,  1,  2,  4,  8, 31,  0,  // 2
+    31,  2,  6,  1,  1, 17, 14,  0,  // 3
+     2,  6, 10, 18, 31,  2,  2,  0,  // 4
+    31, 16, 30,  1,  1, 17, 14,  0,  // 5
+     6,  8, 16, 30, 17, 17, 14,  0,  // 6
+    31,  1,  2,  4,  8,  8,  8,  0,  // 7
+    14, 17, 17, 14, 17, 17, 14,  0,  // 8
+    14, 17, 17, 15,  1,  2, 12,  0,  // 9
+     0,  0,  0,  0,  0, 12, 12,  0,  // .
+     0,  0,  0,  0, 12, 12,  8,  0,  // ,
+     0, 12, 12,  0, 12, 12,  0,  0,  // :
+     0,  0,  0, 31,  0,  0,  0,  0,  // -
+     4,  4,  4,  4,  4,  0,  4,  0,  // !
+    14, 17,  1,  2,  4,  0,  4,  0,  // ?
+     0,  0, 31,  0, 31,  0,  0,  0,  // =
+     0, 16,  8,  4,  8, 16,  0,  0,  // >
+];
+
+// Free RAM: the image, its heap, its stack and the page tables all live below
+// 2 MiB. Crude, and deliberately so — a kernel with no memory manager yet has
+// exactly this much to work with.
+// Scancode set 1 for a US layout, enough of it to spell things. Index is the
+// scancode; 0 means "nothing printable", which covers modifiers and the keys
+// not listed. It lives here rather than in the driver because it is a layout
+// choice, and because a container constant cannot yet cross a bundled import.
+const SCANCODE_ASCII = [
+    0, 0, 49, 50, 51, 52, 53, 54, 55, 56, 57, 48, 45, 61, 8, 9,
+    113, 119, 101, 114, 116, 121, 117, 105, 111, 112, 91, 93, 10, 0,
+    97, 115, 100, 102, 103, 104, 106, 107, 108, 59, 39, 96, 0, 92,
+    122, 120, 99, 118, 98, 110, 109, 44, 46, 47, 0, 42, 0, 32,
+];
+
+// The shared page, laid out as a chain rather than a list of addresses.
+//
+// Each entry is the previous one plus its own size, so two of them cannot
+// overlap however the block is edited — which is not hypothetical: `SHARED_PAN`
+// was once written as the literal `0x00300044`, and that address is *inside*
+// the window descriptor table, where it is the shell window's `top` field.
+// Every window frame was then drawn at twice the pan, which looks exactly like
+// a bug in the panning and is not one. Addresses that are computed cannot make
+// that mistake; addresses that are typed can, and did.
+//
+// This is what a systems language owes a shared page when it has no allocator:
+// not safety, but an arrangement in which the mistake is not expressible.
+const SHARED_BASE = 0x00300000;
+const WORD = 4;
+
+const SHARED_KEY_COUNT = SHARED_BASE;
+const SHARED_LAST_KEY = SHARED_KEY_COUNT + WORD;
+const SHARED_TICKS = SHARED_LAST_KEY + WORD;
+const SHARED_CURSOR_COL = SHARED_TICKS + WORD;
+const SHARED_CURSOR_ROW = SHARED_CURSOR_COL + WORD;
+const SHARED_LINE_LEN = SHARED_CURSOR_ROW + WORD;
+const SHARED_LINE_READY = SHARED_LINE_LEN + WORD;
+// Where `boot.rs` stashed the multiboot information pointer. The board writes
+// it, this program reads it; the address appears in both files, and changing
+// one without the other is the hazard.
+const SHARED_MULTIBOOT = SHARED_LINE_READY + WORD;
+// The page allocator's three words.
+const SHARED_PAGES = SHARED_MULTIBOOT + WORD;
+// The spinner task's step, and the scheduler's own counter.
+const SHARED_SPIN = SHARED_PAGES + 3 * WORD;
+const SHARED_SLICE = SHARED_SPIN + WORD;
+// Two words that must always agree. Both the timer handler and the spinner
+// task bump the pair; a lost update — an increment that read a stale value —
+// leaves them different, which no amount of interleaving can otherwise do.
+const SHARED_PAIR_A = SHARED_SLICE + WORD;
+const SHARED_PAIR_B = SHARED_PAIR_A + WORD;
+// Which window the keyboard belongs to. Tab moves it.
+const SHARED_FOCUS = SHARED_PAIR_B + WORD;
+// Where the spinner window's own echo has got to, in its own coordinates.
+const SHARED_PANE_COL = SHARED_FOCUS + WORD;
+// What each window last drew its frame as. Repainting is the owner's job — the
+// key handler only records that the focus moved, because a handler has no
+// business drawing someone else's chrome.
+const SHARED_DRAWN_FOCUS = SHARED_PANE_COL + WORD;
+// The display's framebuffer address, found once. `pci_find_display` walks bus
+// 0, which is a few hundred port accesses; `framebuffer_origin` is on the
+// drawing path and is called per character, per scroll and per spinner frame,
+// all with interrupts masked. The BAR cannot change on this machine, so the
+// scan is a startup cost and the drawing path is a load.
+const SHARED_FB = SHARED_DRAWN_FOCUS + WORD;
+// Window descriptors: slot 0 is the shell's, slot 1 the spinner's. Six words
+// each, and the chain is what keeps the next entry clear of them.
+const SHARED_WINDOWS = SHARED_FB + WORD;
+const WINDOW_STRIDE = 24;
+const WINDOW_COUNT = 3;
+const WINDOW_SHELL = 0;
+const WINDOW_SPINNER = 1;
+// A window whose contents are a pure function of state: the tick counter. That
+// makes it the cheapest possible thing to repaint — there is nothing to
+// remember, only something to recompute — which is exactly what a window that
+// can be uncovered at any moment needs to be.
+const WINDOW_CLOCK = 2;
+// Which framebuffer row the top of the screen currently shows.
+const SHARED_PAN = SHARED_WINDOWS + WINDOW_COUNT * WINDOW_STRIDE;
+// One input ring per window: a header and 32 bytes of payload each.
+const SHARED_QUEUES = SHARED_PAN + WORD;
+const QUEUE_STRIDE = 64;
+// The line the shell is collecting, one byte per character — a handler cannot
+// allocate, so it is bytes at an address.
+//
+// Written as `0x00300100` until it was computed: by then the chain above it had
+// grown past that address and the line buffer sat *inside* the second window's
+// input ring. Nothing failed loudly; typing into one window would have quietly
+// rewritten the other's queued bytes. This is the same mistake `SHARED_PAN`
+// made, in the one place the chain had not reached.
+const LINE_CAPACITY = 48;
+const SHARED_LINE = SHARED_QUEUES + WINDOW_COUNT * QUEUE_STRIDE;
+
+// One sector, which is where the disk driver puts what it read. It lives in
+// the shared page rather than in a page from the allocator because a command
+// has to be able to run before there is any memory management at all.
+const SHARED_SECTOR = SHARED_LINE + LINE_CAPACITY;
+const SECTOR_SIZE = 512;
+// Where `disk w` writes. Past anything a filesystem on the same disk would be
+// using, because a demonstration that destroys the medium it demonstrates on is
+// a demonstration nobody runs twice.
+const SCRATCH_SECTOR = 32;
+// Where the board stages a source file, and how big one may be. The address is
+// agreed with `src/main.rs`, which refuses anything else — see the memory map
+// there.
+// How much of RAM the kernel heap gets. Sixteen pages is enough for the
+// commands here and small enough that the failure it is meant to demonstrate —
+// running out, and recovering by freeing — happens within a session.
+const HEAP_PAGES = 16;
+const SOURCE_BASE = 0x00380000;
+const SOURCE_MAX = 0x10000;
+// Two words the filesystem answers through: the first data sector of a file it
+// found, and the file's size.
+const SHARED_FILE = SHARED_SECTOR + SECTOR_SIZE;
+// The kernel heap's three words, and the arena they describe. The arena is
+// carved out of the page allocator's range at startup rather than fixed here:
+// a heap with a hard-coded address is a heap that collides with the next thing
+// given one.
+const SHARED_HEAP = SHARED_FILE + 2 * WORD;
+// The mouse: where the pointer is, which buttons are down, how far through a
+// packet the handler is, and the two bytes it has seen so far. All of it in the
+// shared page because the handler and the shell both need it, and a handler
+// cannot own state anywhere else.
+const SHARED_MOUSE_X = SHARED_HEAP + 3 * WORD;
+const SHARED_MOUSE_Y = SHARED_MOUSE_X + WORD;
+const SHARED_MOUSE_BUTTONS = SHARED_MOUSE_Y + WORD;
+const SHARED_MOUSE_PHASE = SHARED_MOUSE_BUTTONS + WORD;
+const SHARED_MOUSE_FLAGS = SHARED_MOUSE_PHASE + WORD;
+const SHARED_MOUSE_DX = SHARED_MOUSE_FLAGS + WORD;
+// What the cursor last covered, so it can be put back before the pointer moves
+// on. Four pixels of a 2x2 block; a bigger cursor wants a bigger save area and
+// nothing else changes.
+const SHARED_CURSOR_SAVE = SHARED_MOUSE_DX + WORD;
+const CURSOR_SAVE_WORDS = 4;
+const SHARED_CURSOR_X = SHARED_CURSOR_SAVE + CURSOR_SAVE_WORDS * WORD;
+const SHARED_CURSOR_Y = SHARED_CURSOR_X + WORD;
+const SHARED_CURSOR_DRAWN = SHARED_CURSOR_Y + WORD;
+
+// The stacking order: window slots from the bottom up, so the last entry is
+// the one a click reaches first and the one drawn last.
+//
+// An order, not a per-window "depth" number: depths have to be renumbered when
+// one changes, and two windows can end up sharing one. A list can only ever say
+// one thing about who is above whom.
+// What second the clock window is currently showing, so it is only redrawn
+// when the answer changed.
+const SHARED_CLOCK_SHOWN = SHARED_CURSOR_DRAWN + WORD;
+// How many tasks exist. Written by the program when it spawns them; read by
+// the scheduler, which runs in an interrupt and cannot ask the board.
+const SHARED_TASK_COUNT = SHARED_CLOCK_SHOWN + WORD;
+const SHARED_Z_ORDER = SHARED_TASK_COUNT + WORD;
+// One repaint function per window, by address.
+//
+// This is a driver table, and it is here for the reason kernels have them: the
+// alternative is a chain of `if slot == ...` in the middle of the window
+// manager, edited every time a window is added, so that adding a window means
+// changing code that has nothing to do with it. With a table, a window
+// registers what draws it and the manager never learns its name.
+const SHARED_WINDOW_PAINT = SHARED_Z_ORDER + WINDOW_COUNT * WORD;
+
+// Which window the pointer is dragging, and where inside it the drag began.
+// -1 when nothing is being dragged; the offset is what keeps the window from
+// jumping so its corner sits under the pointer.
+// "nothing is being dragged", as a slot number rather than as -1.
+//
+// The shared page is 32-bit words, and a word read back is *unsigned*: -1
+// written here comes back as 4294967295, which is not less than zero. The
+// first version tested `dragging < 0`, took 4294967295 for a window number,
+// and computed a descriptor address of 0x18_0030_003c — a page fault whose
+// only clue was that 24 (the descriptor stride) appeared in the high half. A
+// sentinel that survives the round trip is the fix; the shape of the bug is
+// the lesson.
+const DRAG_NONE = WINDOW_COUNT;
+const SHARED_DRAG_SLOT = SHARED_WINDOW_PAINT + WINDOW_COUNT * WORD;
+const SHARED_DRAG_DX = SHARED_DRAG_SLOT + WORD;
+const SHARED_DRAG_DY = SHARED_DRAG_DX + WORD;
+
+// The terminal's characters, one byte per cell.
+//
+// The screen was the only record of what had been typed, which is fine until
+// something covers part of it: a window moved over the text erases it, and
+// there is nothing to put back. A grid is the smallest thing that answers
+// "what belongs at this cell" — 53x25 bytes, a page and a bit — and it is what
+// makes a damaged rectangle repairable rather than permanently blank.
+//
+// ASCII, not glyph indices: the same bytes the shell already handles, so the
+// grid and the line buffer say the same thing about a character.
+const SHARED_GRID = SHARED_DRAG_DY + WORD;
+const GRID_COLUMNS = 53;
+const GRID_ROWS = 25;
+
+// The end of what is spoken for. Anything added goes here, not into a gap.
+const SHARED_END = SHARED_GRID + GRID_COLUMNS * GRID_ROWS;
+
+// The framebuffer is twice the screen's height. Scrolling moves the *view*
+// down through it; only when the view reaches the bottom does anything have to
+// be copied, and then once for a whole screenful of scrolling.
+const VIRTUAL_HEIGHT = 400;
+
+const FRAME_IDLE = 0x203040;
+const FRAME_FOCUSED = 0xffc040;
+
+// Where a character sits in FONT. The font has one case, so lower-case maps to
+// the upper-case glyph; anything it does not cover renders as a space, which
+// is what a terminal with a small font should do rather than drawing noise.
+fn glyph_index(ascii: Int) -> Int {
+    if (ascii >= 65 && ascii <= 90) { return 1 + ascii - 65; }
+    if (ascii >= 97 && ascii <= 122) { return 1 + ascii - 97; }
+    if (ascii >= 48 && ascii <= 57) { return 27 + ascii - 48; }
+    if (ascii == 46) { return 37; }
+    if (ascii == 44) { return 38; }
+    if (ascii == 58) { return 39; }
+    if (ascii == 45) { return 40; }
+    if (ascii == 33) { return 41; }
+    if (ascii == 63) { return 42; }
+    if (ascii == 61) { return 43; }
+    if (ascii == 62) { return 44; }
+    return 0;
+}
+
+fn text_columns() -> Int { return ((WIDTH / CELL_WIDTH) as Int); }
+fn text_rows() -> Int { return ((HEIGHT / CELL_HEIGHT) as Int); }
+
+// Ask PCI where the framebuffer is. Two port accesses, cheap enough to repeat —
+// and repeating it keeps the interrupt handler independent of whether the main
+// flow has run yet.
+// The framebuffer's base, as cached at startup.
+//
+// Read from the shared page rather than found again: an interrupt handler can
+// read a word, and it cannot afford a bus walk. `probe_framebuffer` below is
+// what does the finding, once.
+fn framebuffer_address() -> Int {
+    return shared_read(SHARED_FB);
+}
+
+// Walks bus 0 for a display controller and returns its framebuffer base, or 0
+// when there is none.
+//
+// Zero rather than the driver's `-1`: `-1` fed back into `pci_read` forms a
+// configuration address with every bit set, which is not "no device" but a
+// different, invalid request — the kind of value that produces a plausible
+// number instead of an error.
+fn probe_framebuffer() -> Int {
+    let slot = pci_find_display();
+    if (slot < 0) {
+        return 0;
+    }
+    return pci_read(slot, PCI_REG_BAR0) & 0xfffffff0;
+}
+
+// The address of the pixel the screen shows at its top-left.
+//
+// Panning is folded into the base rather than added to every y coordinate:
+// the framebuffer is linear, so `base + pan * width * 4` *is* the visible
+// origin, and every drawing routine keeps taking screen coordinates. Threading
+// an offset through each of them would have been the same arithmetic written
+// in a dozen places.
+fn framebuffer_origin() -> Int {
+    return framebuffer_address() + shared_read(SHARED_PAN) * WIDTH * 4;
+}
+
+// The grid: what belongs at each cell, and how to put it back.
+//
+// `text_columns()` is derived from the screen width and `GRID_COLUMNS` is a
+// constant, because a constant is what a shared-page offset can be computed
+// from. They must agree, and the startup check below is what says so — a grid
+// narrower than the screen would silently wrap every line by one cell.
+fn grid_at(column: Int, row: Int) -> Int {
+    return SHARED_GRID + row * GRID_COLUMNS + column;
+}
+
+fn grid_read(column: Int, row: Int) -> Int {
+    if (column < 0 || row < 0 || column >= GRID_COLUMNS || row >= GRID_ROWS) {
+        return 32;
+    }
+    return shared_read_byte(grid_at(column, row));
+}
+
+fn grid_write(column: Int, row: Int, ascii: Int) {
+    if (column < 0 || row < 0 || column >= GRID_COLUMNS || row >= GRID_ROWS) {
+        return;
+    }
+    shared_write_byte(grid_at(column, row), ascii);
+}
+
+fn grid_clear() {
+    for row in 0..GRID_ROWS {
+        for column in 0..GRID_COLUMNS {
+            grid_write(column, row, 32);
+        }
+    }
+}
+
+// Moves every row up one and blanks the last, to match a scroll.
+fn grid_scroll() {
+    for row in 1..GRID_ROWS {
+        for column in 0..GRID_COLUMNS {
+            grid_write(column, row - 1, grid_read(column, row));
+        }
+    }
+    for column in 0..GRID_COLUMNS {
+        grid_write(column, GRID_ROWS - 1, 32);
+    }
+}
+
+// Redraws the cells a pixel rectangle touches, from the grid.
+//
+// The repair a window manager needs: whatever covered this area is gone, and
+// the text that belongs there goes back. Cells rather than pixels because the
+// grid holds characters — the parts of a cell a covering window only partly
+// overlapped are redrawn too, which is why the rectangle is rounded outward.
+fn repaint_cells(base: Int, left: Int, top: Int, width: Int, height: Int) {
+    let first_column = ((left / CELL_WIDTH) as Int);
+    let first_row = ((top / CELL_HEIGHT) as Int);
+    let last_column = (((left + width - 1) / CELL_WIDTH) as Int);
+    let last_row = (((top + height - 1) / CELL_HEIGHT) as Int);
+    for row in first_row..last_row + 1 {
+        for column in first_column..last_column + 1 {
+            if (column >= 0 && row >= 0 && column < text_columns() && row < text_rows()) {
+                draw_glyph(base, WIDTH, FONT, glyph_index(grid_read(column, row)),
+                           column * CELL_WIDTH, row * CELL_HEIGHT, FOREGROUND, BACKGROUND);
+            }
+        }
+    }
+}
+
+// Draws one character at the cursor and moves it, or acts on backspace and
+// newline.
+//
+// Shared by the interrupt handler and the command output, because "put a
+// character on the screen" is the same operation whoever asks. Callers that
+// are not the handler mask interrupts around it: the two would otherwise
+// interleave on the cursor.
+fn put_char(base: Int, ascii: Int) {
+    let column = shared_read(SHARED_CURSOR_COL);
+    let row = shared_read(SHARED_CURSOR_ROW);
+    // Erase the cursor before anything moves it, so the block never gets left
+    // behind on the cell it used to occupy.
+    draw_cursor(base, WIDTH, column, row, BACKGROUND);
+
+    if (ascii == 8) {
+        // Backspace stops at the left margin rather than wrapping to the
+        // previous line: nothing here records where that line ended.
+        if (column > 0) {
+            let back = column - 1;
+            draw_glyph(base, WIDTH, FONT, 0, back * CELL_WIDTH, row * CELL_HEIGHT, FOREGROUND, BACKGROUND);
+            grid_write(back, row, 32);
+            place_cursor(base, back, row);
+        } else {
+            place_cursor(base, column, row);
+        }
+        return;
+    }
+    if (ascii == 10) {
+        advance_line(base, row);
+        return;
+    }
+    draw_glyph(base, WIDTH, FONT, glyph_index(ascii),
+               column * CELL_WIDTH, row * CELL_HEIGHT, FOREGROUND, BACKGROUND);
+    grid_write(column, row, ascii);
+    let next = column + 1;
+    if (next >= text_columns()) {
+        advance_line(base, row);
+    } else {
+        place_cursor(base, next, row);
+    }
+}
+
+// Records the cursor position and draws it.
+fn place_cursor(base: Int, column: Int, row: Int) {
+    shared_write(SHARED_CURSOR_COL, column);
+    shared_write(SHARED_CURSOR_ROW, row);
+    draw_cursor(base, WIDTH, column, row, CURSOR_COLOUR);
+}
+
+// Moves to the start of the next line, scrolling when there is no next line.
+//
+// Scrolling rather than wrapping to the top: a terminal that overwrites its
+// own first line is harder to read than one that loses the oldest.
+fn advance_line(base: Int, row: Int) {
+    let next = row + 1;
+    if (next >= text_rows()) {
+        scroll_view();
+        place_cursor(framebuffer_origin(), 0, text_rows() - 1);
+    } else {
+        place_cursor(base, 0, next);
+    }
+}
+
+// Scrolls by moving the view, not the picture.
+//
+// One register write, plus clearing the row of pixels that just came into
+// view. When the view reaches the bottom of the framebuffer it starts over at
+// the top, which costs one screen-sized copy — once per screenful of
+// scrolling rather than once per line.
+fn scroll_view() {
+    hide_cursor(framebuffer_origin());
+    let pan = shared_read(SHARED_PAN) + CELL_HEIGHT;
+    let physical = framebuffer_address();
+    if (pan + HEIGHT > VIRTUAL_HEIGHT) {
+        // Bring what is visible back to the top. Source and destination do not
+        // overlap, because the view is a whole screen below where it lands.
+        copy_rows(physical, WIDTH, pan, 0, HEIGHT - CELL_HEIGHT);
+        pan = 0;
+    }
+    grid_scroll();
+    shared_write(SHARED_PAN, pan);
+    vbe_set_pan(pan);
+    // The row that just came into view holds whatever was there before.
+    fill_rect(physical, WIDTH, 0, pan + HEIGHT - CELL_HEIGHT, WIDTH, CELL_HEIGHT, BACKGROUND);
+    // Panning moves *everything*, including the parts that are supposed to
+    // stay put. The window frames are chrome, not content, so they have to be
+    // drawn again at the new origin — marked here and done by their owners,
+    // for the same reason a focus change is.
+    shared_write(SHARED_DRAWN_FOCUS, 0 - 1);
+}
+
+// ------------------------------------------------------------- commands ---
+//
+// The line the handler collected is a run of bytes in the shared page, so the
+// commands are matched byte-wise against literal spellings rather than through
+// string values. That is not a workaround: it is the same code whether it runs
+// before there is a heap or after.
+
+// Writes a run of ASCII to both the screen and the serial line.
+//
+// Interrupts are masked by the caller: this shares the cursor with the key
+// handler, and the two interleaving would splice the output.
+fn emit(base: Int, text: List<Int>) {
+    for code in text {
+        let ascii = (code) as Int;
+        uart_putc(ascii);
+        put_char(base, ascii);
+    }
+    uart_putc(10);
+    put_char(base, 10);
+}
+
+// Whether the collected line starts with `word`, and what follows it.
+fn line_starts_with(word: List<Int>) -> Bool {
+    let length = shared_read(SHARED_LINE_LEN);
+    if (length < word.len()) {
+        return false;
+    }
+    for i in 0..word.len() {
+        if (shared_read_byte(SHARED_LINE + i) != ((word[i]) as Int)) {
+            return false;
+        }
+    }
+    // A prefix only counts as the whole word when the line ends there or a
+    // space follows — otherwise `echoes` would answer to `echo`.
+    if (length == word.len()) {
+        return true;
+    }
+    return shared_read_byte(SHARED_LINE + word.len()) == 32;
+}
+
+// The line's bytes from `start` onwards. (`from` is a keyword.)
+fn line_tail(start: Int) -> List<Int> {
+    let out = [0];
+    let length = shared_read(SHARED_LINE_LEN);
+    let i = start;
+    while (i < length) {
+        out.push(shared_read_byte(SHARED_LINE + i));
+        i = i + 1;
+    }
+    return out.slice(1, out.len());
+}
+
+fn hex(value: Int) -> List<Int> {
+    let out = [0];
+    let shift = 28;
+    while (shift >= 0) {
+        let nibble = (value >> shift) & 0xf;
+        if (nibble < 10) {
+            out.push(48 + nibble);
+        } else {
+            out.push(87 + nibble);
+        }
+        shift = shift - 4;
+    }
+    return out.slice(1, out.len());
+}
+
+fn decimal(value: Int) -> List<Int> {
+    if (value == 0) {
+        return [48];
+    }
+    let digits = [0];
+    let rest = value;
+    while (rest > 0) {
+        digits.push(48 + rest % 10);
+        rest = (rest / 10) as Int;
+    }
+    let out = [0];
+    let i = digits.len() - 1;
+    while (i >= 1) {
+        out.push((digits[i]) as Int);
+        i = i - 1;
+    }
+    return out.slice(1, out.len());
+}
+
+// The largest available range the loader reported, as (base, length).
+//
+// Largest rather than first: the map's usable ranges are the one below 640 KiB
+// and the one above 1 MiB, and only the second is worth allocating from.
+fn largest_available_base() -> Int {
+    let best_base = 0;
+    let best_length = 0;
+    for i in 0..entry_count() {
+        let entry = entry_at(i);
+        if (entry >= 0 && entry_is_available(entry)) {
+            let length = entry_length(entry);
+            if (length > best_length) {
+                best_length = length;
+                best_base = entry_base(entry);
+            }
+        }
+    }
+    return best_base;
+}
+
+fn largest_available_length() -> Int {
+    let best_length = 0;
+    for i in 0..entry_count() {
+        let entry = entry_at(i);
+        if (entry >= 0 && entry_is_available(entry)) {
+            let length = entry_length(entry);
+            if (length > best_length) {
+                best_length = length;
+            }
+        }
+    }
+    return best_length;
+}
+
+fn report_memory(base: Int) {
+    if (!has_mmap()) {
+        // "no map"
+        emit(base, [110, 111, 32, 109, 97, 112]);
+        return;
+    }
+    // "upper " KiB
+    let upper = [117, 112, 112, 101, 114, 32];
+    emit(base, upper.chain(decimal(mem_upper_kb())).chain([32, 107, 98]));
+    // "pages " free "/" total
+    let pages = [112, 97, 103, 101, 115, 32];
+    emit(base, pages.chain(decimal(pages_free(SHARED_PAGES)))
+                    .chain([47])
+                    .chain(decimal(pages_total(SHARED_PAGES))));
+}
+
+// Runs the collected line. Returns 1 to keep going, 0 to stop.
+// Reads sector 0 and says what came back.
+//
+// Printed as the sector's first bytes rather than a checksum, because the point
+// of a disk driver's first outing is to show that *these* bytes came off *that*
+// medium — a checksum is equally consistent with a bug that reads the same
+// wrong thing every time. Unprintable bytes become '.', the same convention a
+// hex dump uses.
+fn report_disk(base: Int) {
+    let outcome = ata_identify(SHARED_SECTOR);
+    if (outcome != ATA_OK) {
+        emit(base, disk_error(outcome));
+        return;
+    }
+    let sectors = ata_identify_sectors(SHARED_SECTOR);
+    let read = ata_read_sector(0, SHARED_SECTOR);
+    if (read != ATA_OK) {
+        emit(base, disk_error(read));
+        return;
+    }
+    // "<sectors> " then the first 16 bytes of sector 0.
+    let line = decimal(sectors).chain([32]);
+    for i in 0..16 {
+        let byte = shared_read_byte(SHARED_SECTOR + i);
+        if (byte < 32 || byte > 126) {
+            line = line.chain([46]);
+        } else {
+            line = line.chain([byte]);
+        }
+    }
+    emit(base, line);
+}
+
+// Writes a sector and reads it back.
+//
+// Read-back is the only check available: the drive acknowledges a write long
+// before the bytes are on the medium, which is what the flush in the driver is
+// for. What this proves is the round trip through the controller; that they
+// survive a power cut is the flush's business, and the check script confirms it
+// from outside by reading the image file after the machine has stopped.
+fn write_disk(base: Int) {
+    // "LK-WROTE-SECTOR1", then zeros to the end of the sector.
+    let text = [76, 75, 45, 87, 82, 79, 84, 69, 45, 83, 69, 67, 84, 79, 82, 49];
+    for i in 0..SECTOR_SIZE {
+        shared_write_byte(SHARED_SECTOR + i, 0);
+    }
+    let at = 0;
+    for code in text {
+        shared_write_byte(SHARED_SECTOR + at, (code) as Int);
+        at = at + 1;
+    }
+    let wrote = ata_write_sector(SCRATCH_SECTOR, SHARED_SECTOR);
+    if (wrote != ATA_OK) {
+        emit(base, disk_error(wrote));
+        return;
+    }
+    // Clear the buffer before reading back, or a read that did nothing at all
+    // would still show the right bytes.
+    for i in 0..SECTOR_SIZE {
+        shared_write_byte(SHARED_SECTOR + i, 0);
+    }
+    let read = ata_read_sector(SCRATCH_SECTOR, SHARED_SECTOR);
+    if (read != ATA_OK) {
+        emit(base, disk_error(read));
+        return;
+    }
+    let line = [0];
+    line = [];
+    for i in 0..16 {
+        let byte = shared_read_byte(SHARED_SECTOR + i);
+        if (byte < 32 || byte > 126) {
+            line = line.chain([46]);
+        } else {
+            line = line.chain([byte]);
+        }
+    }
+    emit(base, line);
+}
+
+// Prints a file from the archive on the disk.
+//
+// The whole path is here in one function because there is nothing in between:
+// no open file, no descriptor, no buffering. `tar_find` walks the archive's
+// headers on the medium, and then this reads the contents a sector at a time
+// into the one sector-sized buffer the program has, printing as it goes. A file
+// larger than memory is therefore not a problem; a file with no name is.
+fn print_file(base: Int, name: List<Int>) {
+    let found = tar_find(name, SHARED_SECTOR, SHARED_FILE);
+    if (found != TAR_OK) {
+        emit(base, file_error(found));
+        return;
+    }
+    let lba = shared_read(SHARED_FILE);
+    let size = shared_read(SHARED_FILE + WORD);
+    let printed = 0;
+    while (printed < size) {
+        if (ata_read_sector(lba, SHARED_SECTOR) != ATA_OK) {
+            emit(base, disk_error(ATA_ERROR_BIT));
+            return;
+        }
+        let line = [0];
+        line = [];
+        let i = 0;
+        while (i < SECTOR_SIZE && printed + i < size) {
+            let byte = shared_read_byte(SHARED_SECTOR + i);
+            // Newlines end a line rather than becoming a dot: a text file
+            // printed as one run would scroll past whatever it had to say.
+            if (byte == 10) {
+                emit(base, line);
+                line = [];
+            } else {
+                if (byte < 32 || byte > 126) {
+                    line = line.chain([46]);
+                } else {
+                    line = line.chain([byte]);
+                }
+            }
+            i = i + 1;
+        }
+        if (line.len() > 0) {
+            emit(base, line);
+        }
+        printed = printed + i;
+        lba = lba + 1;
+    }
+}
+
+// Exercises the heap and reports what it did.
+//
+// A command rather than a test written elsewhere, because the interesting
+// property is not "alloc returns an address" — it is that a heap which has
+// been fragmented comes back. So: take three blocks, give back the middle one,
+// take one that only fits in the hole, give everything back, and report the
+// block count. It must end where it started; a heap that does not join its
+// holes ends with more.
+fn report_heap(base: Int) {
+    let before = heap_blocks(SHARED_HEAP);
+    let a = heap_alloc(SHARED_HEAP, 512);
+    let b = heap_alloc(SHARED_HEAP, 512);
+    let c = heap_alloc(SHARED_HEAP, 512);
+    heap_release(SHARED_HEAP, b);
+    // Fits exactly the hole `b` left, so a heap that reuses gets it and one
+    // that only ever bumps takes fresh space.
+    let d = heap_alloc(SHARED_HEAP, 512);
+    let reused = 0;
+    if (d == b) {
+        reused = 1;
+    }
+    heap_release(SHARED_HEAP, a);
+    heap_release(SHARED_HEAP, c);
+    heap_release(SHARED_HEAP, d);
+    let after = heap_blocks(SHARED_HEAP);
+    // "blocks <before>/<after> reused <0|1> used <bytes>"
+    emit(base, [98, 108, 111, 99, 107, 115, 32]
+               .chain(decimal(before))
+               .chain([47])
+               .chain(decimal(after))
+               .chain([32, 114, 101, 117, 115, 101, 100, 32])
+               .chain(decimal(reused))
+               .chain([32, 117, 115, 101, 100, 32])
+               .chain(decimal(heap_used(SHARED_HEAP))));
+}
+
+// Reads a file off the disk and asks the board to run it.
+//
+// The kernel is compiled LK; what it starts here is an *interpreter* for LK,
+// on a program that was not part of the image and is not known until it is
+// read. Everything it prints comes back through `lk_console_byte`, so it
+// scrolls in the same window as the shell that started it.
+fn run_file(base: Int, name: List<Int>) {
+    let found = tar_find(name, SHARED_SECTOR, SHARED_FILE);
+    if (found != TAR_OK) {
+        emit(base, file_error(found));
+        return;
+    }
+    let lba = shared_read(SHARED_FILE);
+    let size = shared_read(SHARED_FILE + WORD);
+    if (size > SOURCE_MAX) {
+        // "too big"
+        emit(base, [116, 111, 111, 32, 98, 105, 103]);
+        return;
+    }
+    let copied = 0;
+    while (copied < size) {
+        if (ata_read_sector(lba, SHARED_SECTOR) != ATA_OK) {
+            emit(base, disk_error(ATA_ERROR_BIT));
+            return;
+        }
+        let i = 0;
+        while (i < SECTOR_SIZE && copied + i < size) {
+            shared_write_byte(SOURCE_BASE + copied + i, shared_read_byte(SHARED_SECTOR + i));
+            i = i + 1;
+        }
+        copied = copied + i;
+        lba = lba + 1;
+    }
+    // Interrupts back on for the duration of the run, and masked again after.
+    //
+    // `run_command` is called with them masked, which is right for a command
+    // that touches a few shared words and returns. A whole parse and execution
+    // of an arbitrary program is not that: it takes seconds, and holding the
+    // mask across it stops the timer, starves the other task, and drops every
+    // keystroke that arrives meanwhile. What the mask protects — the cursor and
+    // the line buffer — is not touched by anything that can preempt this: the
+    // key handler only queues bytes, and the spinner draws in its own window.
+    unsafe { cpu_irq_restore(1); };
+    let outcome = kernel_run(SOURCE_BASE, size);
+    unsafe { cpu_irq_save() };
+    if (outcome != 0) {
+        // "failed " then the stage the board reported.
+        emit(base, [102, 97, 105, 108, 101, 100, 32].chain(decimal(0 - outcome)));
+    }
+}
+
+fn file_error(outcome: Int) -> List<Int> {
+    if (outcome == TAR_NOT_FOUND) {
+        // "no file"
+        return [110, 111, 32, 102, 105, 108, 101];
+    }
+    if (outcome == TAR_READ_FAILED) {
+        // "read failed"
+        return [114, 101, 97, 100, 32, 102, 97, 105, 108, 101, 100];
+    }
+    // "?"
+    return [63];
+}
+
+// The driver's four outcomes, spelled rather than numbered: a status code
+// printed as a digit is a thing to look up, and there is nothing to look it up
+// in on a machine with no documentation on it.
+fn disk_error(outcome: Int) -> List<Int> {
+    if (outcome == ATA_NO_DRIVE) {
+        // "no disk"
+        return [110, 111, 32, 100, 105, 115, 107];
+    }
+    if (outcome == ATA_TIMEOUT) {
+        // "timeout"
+        return [116, 105, 109, 101, 111, 117, 116];
+    }
+    if (outcome == ATA_ERROR_BIT) {
+        // "drive error"
+        return [100, 114, 105, 118, 101, 32, 101, 114, 114, 111, 114];
+    }
+    if (outcome == ATA_BAD_LBA) {
+        // "bad sector"
+        return [98, 97, 100, 32, 115, 101, 99, 116, 111, 114];
+    }
+    // "?"
+    return [63];
+}
+
+fn run_command(base: Int) -> Int {
+    let length = shared_read(SHARED_LINE_LEN);
+    if (length == 0) {
+        return 1;
+    }
+    if (line_starts_with([104, 101, 108, 112])) {          // "help"
+        // "help clear echo keys exit"
+        // "... time disk cat run heap exit"
+        emit(base, [104, 101, 108, 112, 32, 99, 108, 101, 97, 114, 32, 101, 99,
+                    104, 111, 32, 107, 101, 121, 115, 32, 109, 101, 109, 32,
+                    112, 97, 103, 101, 32, 115, 121, 110, 99, 32,
+                    121, 105, 101, 108, 100, 32, 119, 105, 110, 32,
+                    116, 105, 109, 101, 32, 100, 105, 115, 107, 32, 99, 97, 116, 32, 114, 117, 110, 32, 104, 101, 97, 112, 32,
+                    101, 120, 105, 116]);
+        return 1;
+    }
+    if (line_starts_with([99, 108, 101, 97, 114])) {       // "clear"
+        clear(base, WIDTH, HEIGHT, BACKGROUND);
+        place_cursor(base, 0, 0);
+        return 1;
+    }
+    if (line_starts_with([101, 99, 104, 111])) {           // "echo"
+        emit(base, line_tail(5));
+        return 1;
+    }
+    if (line_starts_with([107, 101, 121, 115])) {          // "keys"
+        emit(base, decimal(shared_read(SHARED_KEY_COUNT)));
+        return 1;
+    }
+    if (line_starts_with([109, 101, 109])) {               // "mem"
+        report_memory(base);
+        return 1;
+    }
+    if (line_starts_with([112, 97, 103, 101])) {           // "page"
+        let address = page_alloc(SHARED_PAGES);
+        if (address == 0) {
+            // "none"
+            emit(base, [110, 111, 110, 101]);
+        } else {
+            emit(base, hex(address));
+        }
+        return 1;
+    }
+    if (line_starts_with([115, 121, 110, 99])) {           // "sync"
+        let state = lock();
+        let a = shared_read(SHARED_PAIR_A);
+        let b = shared_read(SHARED_PAIR_B);
+        unlock(state);
+        emit(base, decimal(a).chain([47]).chain(decimal(b)));
+        return 1;
+    }
+    if (line_starts_with([121, 105, 101, 108, 100])) {     // "yield"
+        task_yield();
+        // "back"
+        emit(base, [98, 97, 99, 107]);
+        return 1;
+    }
+    if (line_starts_with([119, 105, 110])) {               // "win"
+        emit(base, decimal(window_dropped(SHARED_WINDOWS, WINDOW_SPINNER)));
+        return 1;
+    }
+    if (line_starts_with([116, 105, 109, 101])) {          // "time"
+        // Measure the two things this program does that are not cheap: a
+        // scroll moves the whole picture a pixel row at a time, and a focus
+        // change repaints both frames. Both run with interrupts masked, so
+        // what they cost is time the other task does not get.
+        let irq_time = lock();
+        let t0 = unsafe { cpu_timestamp() };
+        scroll_view();
+        let t1 = unsafe { cpu_timestamp() };
+        repaint_frame(base, WINDOW_SHELL);
+        repaint_frame(base, WINDOW_SPINNER);
+        let t2 = unsafe { cpu_timestamp() };
+        unlock(irq_time);
+        // "scroll " cycles " frames " cycles
+        emit(base, [115, 99, 114, 111, 108, 108, 32]
+                   .chain(decimal((t1 as Int) - (t0 as Int)))
+                   .chain([32, 102, 114, 97, 109, 101, 115, 32])
+                   .chain(decimal((t2 as Int) - (t1 as Int))));
+        return 1;
+    }
+    if (line_starts_with([109, 115])) {                    // "ms"
+        // "<x>,<y> b<buttons> p<phase>"
+        emit(base, decimal(shared_read(SHARED_MOUSE_X))
+                   .chain([44])
+                   .chain(decimal(shared_read(SHARED_MOUSE_Y)))
+                   .chain([32, 98])
+                   .chain(decimal(shared_read(SHARED_MOUSE_BUTTONS)))
+                   .chain([32, 112])
+                   .chain(decimal(shared_read(SHARED_MOUSE_PHASE)))
+                   .chain([32, 102])
+                   .chain(decimal(shared_read(SHARED_MOUSE_FLAGS)))
+                   .chain([32, 100])
+                   .chain(decimal(shared_read(SHARED_MOUSE_DX))));
+        return 1;
+    }
+    if (line_starts_with([104, 101, 97, 112])) {           // "heap"
+        report_heap(base);
+        return 1;
+    }
+    if (line_starts_with([114, 117, 110])) {               // "run"
+        run_file(base, line_tail(4));
+        return 1;
+    }
+    if (line_starts_with([99, 97, 116])) {                 // "cat"
+        print_file(base, line_tail(4));
+        return 1;
+    }
+    if (line_starts_with([100, 105, 115, 107, 32, 119])) { // "disk w"
+        write_disk(base);
+        return 1;
+    }
+    if (line_starts_with([100, 105, 115, 107])) {          // "disk"
+        report_disk(base);
+        return 1;
+    }
+    if (line_starts_with([101, 120, 105, 116])) {          // "exit"
+        // "bye"
+        emit(base, [98, 121, 101]);
+        return 0;
+    }
+    // "?"
+    emit(base, [63]);
+    return 1;
+}
+
+// The console, for the interpreter the board hosts.
+//
+// Exported rather than handed over as a function pointer: the console is this
+// program's — it owns the cursor, the window rectangles and the serial line —
+// and what the board needs is only a way to push a byte into it. A program the
+// kernel runs therefore prints exactly the way the kernel does, through the
+// same scrolling and the same window.
+#[export("lk_console_byte")]
+fn console_byte(byte: Int) {
+    uart_putc(byte);
+    put_char(framebuffer_origin(), byte);
+}
+
+// Runs a program the board has staged in memory. Implemented by `src/main.rs`,
+// which owns the interpreter; the body is what the *bytecode* VM would run, and
+// there is no interpreter to reach from inside one.
+#[extern("kernel_run")]
+fn kernel_run(address: Int, length: Int) -> Int {
+    return 0 - 1;
+}
+
+// Stops the machine, for a failure there is no way forward from.
+//
+// A loop of `wait_for_interrupt` rather than a `return`: returning from the
+// top level of a kernel means returning to nothing, and the board's epilogue
+// would go on to program a display that was just reported missing.
+fn halt() {
+    while (true) {
+        unsafe { cpu_wait_for_interrupt(); };
+    }
+}
+
+// The mouse interrupt handler: one byte per interrupt, three to a packet.
+//
+// Assembling the packet *here* rather than queueing raw bytes for the shell is
+// the same split the keyboard uses in reverse. A keystroke means nothing until
+// someone decides what it means, so the handler queues it; a mouse packet is
+// three bytes that are meaningless apart, so the handler assembles them and
+// publishes the result. What it never does is draw — the cursor is chrome, and
+// chrome belongs to whoever owns the screen.
+#[export("lk_mouse")]
+fn on_mouse() {
+    while (has_packet_byte() == 1) {
+        let byte = mouse_byte();
+        let phase = shared_read(SHARED_MOUSE_PHASE);
+        if (phase == 0) {
+            // Resynchronise rather than count: bit 3 is the only framing the
+            // protocol has, and a driver that trusts its own counter drifts by
+            // one after a single dropped byte and never recovers.
+            if (is_first_byte(byte) == 1) {
+                shared_write(SHARED_MOUSE_FLAGS, byte);
+                shared_write(SHARED_MOUSE_PHASE, 1);
+            }
+        } else {
+            if (phase == 1) {
+                shared_write(SHARED_MOUSE_DX, byte);
+                shared_write(SHARED_MOUSE_PHASE, 2);
+            } else {
+                let flags = shared_read(SHARED_MOUSE_FLAGS);
+                let x = shared_read(SHARED_MOUSE_X) + dx_of(flags, shared_read(SHARED_MOUSE_DX));
+                let y = shared_read(SHARED_MOUSE_Y) + dy_of(flags, byte);
+                if (x < 0) { x = 0; }
+                if (y < 0) { y = 0; }
+                if (x > WIDTH - 1) { x = WIDTH - 1; }
+                if (y > HEIGHT - 1) { y = HEIGHT - 1; }
+                shared_write(SHARED_MOUSE_X, x);
+                shared_write(SHARED_MOUSE_Y, y);
+                shared_write(SHARED_MOUSE_BUTTONS, left_down(flags));
+                shared_write(SHARED_MOUSE_PHASE, 0);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------- tasks ---
+
+// A task that owns the clock window.
+//
+// Spawned by address rather than named in the board's task table, which is the
+// point of this round: adding something that runs is a call, not an edit to
+// `src/tasks.rs`. It allocates nothing — the digits are drawn by dividing, not
+// by building a list — because `lkrt` has one arena with no lock around it.
+#[export("lk_task_clock")]
+fn task_clock() {
+    while (true) {
+        let now = ((shared_read(SHARED_TICKS) / 1000) as Int);
+        if (now != shared_read(SHARED_CLOCK_SHOWN)) {
+            shared_write(SHARED_CLOCK_SHOWN, now);
+            let irq = lock();
+            let surface = framebuffer_origin();
+            hide_cursor(surface);
+            repaint_window(surface, WINDOW_CLOCK);
+            repaint_above(surface, WINDOW_CLOCK);
+            unlock(irq);
+        }
+        task_yield();
+    }
+}
+
+// Give up the rest of this task's slice.
+//
+// `#[extern]` is the mirror of `#[export]`: the board implements this, and a
+// native build calls that symbol. The body below is what the *interpreter*
+// runs — it has no way to reach the outside implementation — so it does the
+// only honest thing a single-threaded interpreter can do about yielding, which
+// is nothing.
+//
+// That also means this function is where the two back ends stop agreeing by
+// construction. Everything else in LK is checked against the VM; a call to
+// something the program does not contain cannot be.
+// Starts a task at an address, on a stack the board owns. The program decides
+// what runs; the board supplies stacks and the switch.
+// Named `spawn_task`, not `spawn`: the language already has a `spawn` for its
+// own concurrency, which returns a `Task`. Two things called spawn in one
+// program is a question every reader would have to answer twice.
+#[extern("lk_spawn")]
+fn spawn_task(entry: Int) -> Int {
+    return 0 - 1;
+}
+
+#[extern("kernel_yield")]
+fn task_yield() {
+}
+
+// Repaints a window's frame if the focus has moved since it last did.
+//
+// Each window does this for itself, on its own turn. The key handler that
+// moved the focus only wrote a word: drawing from an interrupt would put a
+// window's appearance in the hands of whatever happened to be interrupted.
+fn repaint_frame(base: Int, slot: Int) {
+    let focus = shared_read(SHARED_FOCUS);
+    let colour = FRAME_IDLE;
+    if (focus == slot) {
+        colour = FRAME_FOCUSED;
+    }
+    window_outline(base, WIDTH, SHARED_WINDOWS, slot, colour);
+}
+
+// Draws a glyph inside a window, in window coordinates.
+//
+// The glyph's bit rows come from `drivers/text`; the pixels go through
+// `drivers/window`, so anything outside the rectangle is dropped rather than
+// landing in someone else's part of the screen.
+fn draw_glyph_in_window(base: Int, slot: Int, index: Int, x: Int, y: Int) {
+    // The window's rectangle is read once for the whole glyph rather than once
+    // per pixel: the descriptor lives in the shared page, so each read is a
+    // volatile load, and 48 pixels through `window_put` paid five of them each.
+    let left = window_left(SHARED_WINDOWS, slot);
+    let top = window_top(SHARED_WINDOWS, slot);
+    let limit_x = window_width(SHARED_WINDOWS, slot);
+    let limit_y = window_height(SHARED_WINDOWS, slot);
+    let drops = 0;
+    for row in 0..glyph_rows() {
+        let bits = glyph_row(FONT, index, row);
+        for column in 0..glyph_width() {
+            let shift = glyph_width() - 1 - column;
+            let lit = (bits >> shift) & 1;
+            let colour = BACKGROUND;
+            if (lit != 0) {
+                colour = TITLE_COLOUR;
+            }
+            drops = drops + window_put_within(base, WIDTH, left, top, limit_x, limit_y,
+                                              x + column, y + row, colour);
+        }
+    }
+    if (drops > 0) {
+        window_drop_count(SHARED_WINDOWS, slot, drops);
+    }
+}
+
+// Puts the cursor on the screen at the pointer's position, having put back
+// whatever the last one covered.
+//
+// Save-under rather than XOR: XOR is one operation instead of three and needs
+// no memory, and it produces a cursor whose colour depends on what is beneath
+// it — which over this program's own amber-on-blue is sometimes the background.
+// A cursor you cannot see is worse than a slow one.
+// Takes the cursor off the screen, putting back what it covered.
+//
+// Anything that redraws an area has to do this first. The cursor's saved
+// pixels describe the screen *as it was when the cursor was drawn*; redraw
+// underneath it and those pixels become a small rectangle of the old picture,
+// which the next cursor move then stamps back on top of the new one. The
+// symptom is a few characters of text that never come back after a window is
+// dragged over them — which is how this was found.
+fn hide_cursor(base: Int) {
+    if (shared_read(SHARED_CURSOR_DRAWN) == 0) {
+        return;
+    }
+    let x = shared_read(SHARED_CURSOR_X);
+    let y = shared_read(SHARED_CURSOR_Y);
+    let i = 0;
+    for row in 0..2 {
+        for column in 0..2 {
+            put_pixel(base, WIDTH, x + column, y + row, shared_read(SHARED_CURSOR_SAVE + i * WORD));
+            i = i + 1;
+        }
+    }
+    shared_write(SHARED_CURSOR_DRAWN, 0);
+}
+
+fn move_cursor(base: Int) {
+    // Take the old one off first — the same operation, so it is the same code.
+    hide_cursor(base);
+    let x = shared_read(SHARED_MOUSE_X);
+    let y = shared_read(SHARED_MOUSE_Y);
+    let i = 0;
+    for row in 0..2 {
+        for column in 0..2 {
+            let px = x + column;
+            let py = y + row;
+            if (px < WIDTH && py < HEIGHT) {
+                shared_write(SHARED_CURSOR_SAVE + i * WORD, get_pixel(base, WIDTH, px, py));
+                put_pixel(base, WIDTH, px, py, POINTER_COLOUR);
+            }
+            i = i + 1;
+        }
+    }
+    shared_write(SHARED_CURSOR_X, x);
+    shared_write(SHARED_CURSOR_Y, y);
+    shared_write(SHARED_CURSOR_DRAWN, 1);
+}
+
+// How tall a window's title bar is: the strip that drags it.
+//
+// Four pixels — the frame plus a little. A whole cell would be easier to hit
+// and would eat the first row of the window's own content, which for the pane
+// is the only row it has.
+const TITLE_HEIGHT = 4;
+
+// The spinner's current face, as a glyph index.
+//
+// Four *distinct* glyphs chosen with an `if` chain rather than a list, because
+// a task may not allocate — `lkrt` has one arena with no lock, so two tasks
+// inside it at once corrupt it. Distinct because a repeat would make
+// consecutive frames compare equal, which is what a test for "it advanced"
+// reads.
+fn spinner_glyph() -> Int {
+    let phase = shared_read(SHARED_SPIN) % 4;
+    if (phase == 1) { return 12; }   // 'L'
+    if (phase == 2) { return 11; }   // 'K'
+    if (phase == 3) { return 39; }   // ':'
+    return 40;                       // '-'
+}
+
+// The clock window's contents: seconds since boot, from the tick counter.
+//
+// The timer runs at about 1 kHz, so a tick is a millisecond and the division is
+// the whole of the clock. Nothing is stored: the window can be redrawn at any
+// moment from a counter that was going to be incremented anyway, which is what
+// makes it cheap to uncover.
+// Without building a list of digits, because a *task* draws this now and a task
+// may not allocate. Right to left, dividing as it goes: the same arithmetic the
+// list version did, with the intermediate list left out.
+fn draw_clock(base: Int) {
+    let seconds = ((shared_read(SHARED_TICKS) / 1000) as Int);
+    // Digit glyph indices are 27..36 ('0'..'9') in this font, so a digit's
+    // index is 27 + the digit.
+    let column = 5;
+    let value = seconds;
+    // "S" after the number, so a screenshot can tell the clock from any other
+    // run of digits.
+    draw_glyph_in_window(base, WINDOW_CLOCK, 19, column * CELL_WIDTH - 5, 1);
+    column = column - 1;
+    if (value == 0) {
+        draw_glyph_in_window(base, WINDOW_CLOCK, 27, column * CELL_WIDTH - 5, 1);
+        return;
+    }
+    while (value > 0 && column >= 0) {
+        let digit = value % 10;
+        draw_glyph_in_window(base, WINDOW_CLOCK, 27 + digit, column * CELL_WIDTH - 5, 1);
+        value = ((value / 10) as Int);
+        column = column - 1;
+    }
+}
+
+// Draws a window's own contents, from state rather than from memory of the
+// screen.
+//
+// This is what makes overlapping windows possible at all. A window that can
+// only *append* to the screen cannot be uncovered — there is nothing to put
+// back. So each window here is defined by something it can be redrawn from:
+// the terminal from its character grid, the spinner from its step counter, the
+// clock from the tick count. None of them remember pixels.
+// Each window's own painter, exported so its address can go in the table.
+//
+// The signature is the table's, not each window's: two integers in, one out.
+// A table of function pointers is a *single* signature by definition — that is
+// what makes it a table — and the return value is unused here, present because
+// one uniform shape costs less than two.
+#[export("lk_paint_shell")]
+fn paint_shell(base: Int, slot: Int) -> Int {
+    repaint_cells(base, 0, 0, WIDTH, HEIGHT);
+    repaint_frame(base, WINDOW_SHELL);
+    return 0;
+}
+
+#[export("lk_paint_spinner")]
+fn paint_spinner(base: Int, slot: Int) -> Int {
+    window_fill(base, WIDTH, SHARED_WINDOWS, slot, 0, 0,
+                window_width(SHARED_WINDOWS, slot), window_height(SHARED_WINDOWS, slot), BACKGROUND);
+    draw_glyph_in_window(base, WINDOW_SPINNER, spinner_glyph(), 1, 1);
+    repaint_frame(base, slot);
+    return 0;
+}
+
+#[export("lk_paint_clock")]
+fn paint_clock(base: Int, slot: Int) -> Int {
+    window_fill(base, WIDTH, SHARED_WINDOWS, slot, 0, 0,
+                window_width(SHARED_WINDOWS, slot), window_height(SHARED_WINDOWS, slot), BACKGROUND);
+    draw_clock(base);
+    repaint_frame(base, slot);
+    return 0;
+}
+
+// Draws a window, by asking the window how.
+//
+// The window manager does not know what any of them contain: it holds an
+// address per slot and calls it. Adding a window is registering a painter, not
+// editing this function.
+fn repaint_window(base: Int, slot: Int) {
+    let painter = shared_read(SHARED_WINDOW_PAINT + slot * WORD);
+    if (painter == 0) {
+        return;
+    }
+    unsafe { call_address_2(painter, base, slot) };
+}
+
+// Redraws whatever sits above `slot` and touches it.
+//
+// A window drawing its own contents is not enough: it has no idea what is on
+// top of it, and drawing over that is how a window that was raised gets buried
+// again a moment later by a clock tick. Every path that repaints one window
+// ends here.
+fn repaint_above(base: Int, slot: Int) {
+    let above = false;
+    for index in 0..WINDOW_COUNT {
+        let other = z_slot(index);
+        if (above && other != WINDOW_SHELL
+            && overlaps(other, window_left(SHARED_WINDOWS, slot), window_top(SHARED_WINDOWS, slot),
+                        window_width(SHARED_WINDOWS, slot), window_height(SHARED_WINDOWS, slot))) {
+            repaint_window(base, other);
+        }
+        if (other == slot) {
+            above = true;
+        }
+    }
+}
+
+// Repairs a rectangle: the background, then every window that touches it, from
+// the bottom of the stack up.
+//
+// Bottom-up and whole windows rather than clipped ones: the windows are small,
+// and clipping each redraw to the damage is an optimisation that would have to
+// be right in every window's own drawing code. Being right once, slowly, is the
+// better trade at this size — and `window_put` clips every pixel anyway, so
+// nothing escapes its rectangle.
+fn repaint_damage(base: Int, left: Int, top: Int, width: Int, height: Int) {
+    fill_rect(base, WIDTH, left, top, width, height, BACKGROUND);
+    repaint_cells(base, left, top, width, height);
+    for index in 0..WINDOW_COUNT {
+        let slot = z_slot(index);
+        if (slot != WINDOW_SHELL && overlaps(slot, left, top, width, height)) {
+            repaint_window(base, slot);
+        }
+    }
+    repaint_frame(base, WINDOW_SHELL);
+}
+
+// Moves a window, repairing what it uncovers.
+//
+// The repair is the whole difficulty. There is no backing store for what a
+// window covers, and the shell underneath cannot be asked to redraw an
+// arbitrary rectangle from nothing — so the text it holds comes back from the
+// grid, and everything else in that rectangle (there is nothing else yet) does
+// not. A window manager with overlapping windows needs each window to be able
+// to do this for itself; this is that, for the one window that can.
+fn move_window(base: Int, slot: Int, left: Int, top: Int) {
+    let old_left = window_left(SHARED_WINDOWS, slot);
+    let old_top = window_top(SHARED_WINDOWS, slot);
+    let width = window_width(SHARED_WINDOWS, slot);
+    let height = window_height(SHARED_WINDOWS, slot);
+    if (left == old_left && top == old_top) {
+        return;
+    }
+    // The pointer is over the window being dragged, by definition. Take it off
+    // the screen first, or its saved pixels are of the picture about to be
+    // replaced.
+    hide_cursor(base);
+    // Move first, then repair where it was: the repair walks the stack and
+    // redraws every window that touches the damage, and this one must already
+    // be at its new place when that happens or it would be drawn back over the
+    // hole it just left.
+    window_define(SHARED_WINDOWS, slot, left, top, width, height);
+    repaint_damage(base, old_left, old_top, width, height);
+    repaint_window(base, slot);
+    // The frame belongs to the window and moved with it, so it is redrawn on
+    // the owner's next turn rather than here.
+    shared_write(SHARED_DRAWN_FOCUS, 0 - 1);
+}
+
+// The stacking order, bottom-up: `z_slot(0)` is the furthest back.
+fn z_slot(index: Int) -> Int {
+    return shared_read(SHARED_Z_ORDER + index * WORD);
+}
+
+fn z_set(index: Int, slot: Int) {
+    shared_write(SHARED_Z_ORDER + index * WORD, slot);
+}
+
+// Brings a window to the front, keeping everything else in order.
+//
+// Order-preserving because the alternative — swapping with the top — reorders
+// windows the user did not touch, and a stack that shuffles itself is one
+// nobody can predict.
+fn raise_window(slot: Int) {
+    let at = 0 - 1;
+    for index in 0..WINDOW_COUNT {
+        if (z_slot(index) == slot) {
+            at = index;
+        }
+    }
+    if (at < 0 || at == WINDOW_COUNT - 1) {
+        return;
+    }
+    for index in at..WINDOW_COUNT - 1 {
+        z_set(index, z_slot(index + 1));
+    }
+    z_set(WINDOW_COUNT - 1, slot);
+}
+
+fn covers(slot: Int, x: Int, y: Int) -> Bool {
+    let left = window_left(SHARED_WINDOWS, slot);
+    let top = window_top(SHARED_WINDOWS, slot);
+    return x >= left && y >= top
+        && x < left + window_width(SHARED_WINDOWS, slot)
+        && y < top + window_height(SHARED_WINDOWS, slot);
+}
+
+// Which window the pointer is over: the topmost one, which is the only answer
+// that matches what the eye sees.
+fn window_at(x: Int, y: Int) -> Int {
+    let index = WINDOW_COUNT - 1;
+    while (index >= 0) {
+        let slot = z_slot(index);
+        if (covers(slot, x, y)) {
+            return slot;
+        }
+        index = index - 1;
+    }
+    return 0 - 1;
+}
+
+// Do two rectangles share any pixel?
+fn overlaps(slot: Int, left: Int, top: Int, width: Int, height: Int) -> Bool {
+    let wl = window_left(SHARED_WINDOWS, slot);
+    let wt = window_top(SHARED_WINDOWS, slot);
+    return wl < left + width && left < wl + window_width(SHARED_WINDOWS, slot)
+        && wt < top + height && top < wt + window_height(SHARED_WINDOWS, slot);
+}
+
+// Bumps the two words that must agree, as one indivisible step.
+//
+// The pair exists to make a lost update *visible*. Read-modify-write is three
+// steps; an interrupt landing between the read and the write discards whatever
+// happened in between. With both parties doing it under the same section, the
+// two words can only ever come out equal.
+fn bump_pair() {
+    let state = lock();
+    shared_bump(SHARED_PAIR_A);
+    shared_bump(SHARED_PAIR_B);
+    unlock(state);
+}
+
+// Which task runs next.
+//
+// The board owns the registers and the stacks; this owns the policy. Round
+// robin, because there is nothing yet to prioritise — but the *shape* is where
+// a real policy would go, and it is LK.
+//
+// Called from the timer interrupt with everything already saved, so it must
+// not allocate: `lkrt` has one arena and no lock around it.
+#[export("lk_schedule")]
+fn schedule(current: Int) -> Int {
+    // Give each task a few ticks rather than switching every millisecond: a
+    // switch costs a stack's worth of pushes, and a slice this short would
+    // spend more time switching than running.
+    let slice = shared_bump(SHARED_SLICE);
+    if (slice % 8 != 0) {
+        return current;
+    }
+    // Round robin over the tasks that exist. The count comes from the shared
+    // page because this runs in an interrupt: it cannot call the board, and
+    // the board is not the one that decided how many tasks there are — the
+    // program spawned them.
+    let count = shared_read(SHARED_TASK_COUNT);
+    if (count <= 1) {
+        return current;
+    }
+    return (current + 1) % count;
+}
+
+// The second task: a spinner in the top-right corner.
+//
+// It never returns and never yields — the timer takes the CPU away from it.
+// That is what makes it a demonstration rather than a callback: nothing here
+// cooperates.
+#[export("lk_task_b")]
+fn task_b() {
+    while (true) {
+        // Its own input, when it has the focus. Drawn in its own window, in
+        // its own coordinates — nothing here can reach the shell's pixels
+        // even if the arithmetic is wrong.
+        let irq_in = lock();
+        while (!queue_empty(SHARED_QUEUES + WINDOW_SPINNER * QUEUE_STRIDE)) {
+            let typed = queue_pop(SHARED_QUEUES + WINDOW_SPINNER * QUEUE_STRIDE);
+            let column = shared_read(SHARED_PANE_COL);
+            if (typed == 10) {
+                column = 0;
+            } else {
+                draw_glyph_in_window(framebuffer_origin(), WINDOW_SPINNER,
+                                     glyph_index(typed), 1 + column * CELL_WIDTH, CELL_HEIGHT + 1);
+                column = column + 1;
+            }
+            shared_write(SHARED_PANE_COL, column % 10);
+        }
+        unlock(irq_in);
+
+        shared_bump(SHARED_SPIN);
+        let face = spinner_glyph();
+
+        // Through the window, in window coordinates. The spinner owns one
+        // cell; everything it draws is either inside that cell or dropped.
+        let base = framebuffer_origin();
+        draw_glyph_in_window(base, WINDOW_SPINNER, face, 1, 1);
+        // And deliberately one cell to the left, which is *not* its window.
+        // Without the rectangle this would land in the shell's text; with it,
+        // the pixels are counted and discarded.
+        draw_glyph_in_window(base, WINDOW_SPINNER, face, 0 - glyph_width() - 1, 1);
+        // Anything stacked above this window goes back on top. Without it the
+        // spinner would erase a window covering it, four times a second.
+        repaint_above(base, WINDOW_SPINNER);
+        // Contend with the timer handler on the same pair of words for a
+        // while — this task exists to be interrupted, and to be interrupted
+        // *in the middle of an update*.
+        // Enough to have the timer land inside an update many times over,
+        // but short enough that the face advances several times a second —
+        // a test that samples the screen needs the change to be visible
+        // without waiting.
+        for i in 0..4000 {
+            bump_pair();
+        }
+        // Then hand the CPU back rather than waiting to be taken off it.
+        task_yield();
+    }
+}
+
+// The timer interrupt handler.
+//
+// Divided down: at a kilohertz, one character per tick is thousands of them.
+// The counter lives in the shared page because a handler's state has to
+// survive between invocations, and it is the only state this one keeps.
+#[export("lk_timer_isr")]
+fn on_tick() {
+    bump_pair();
+    let ticks = shared_bump(SHARED_TICKS);
+    if (ticks % 500 == 0) {
+        uart_putc(46); // '.'
+    }
+}
+
+// The keyboard interrupt handler.
+//
+// It reads the controller itself: what the board owes the device is the
+// acknowledgement, but the scancode is the driver's business. It transmits
+// directly and allocates nothing — an interrupt lands between any two
+// instructions of the interrupted program, including instructions inside the
+// runtime's allocator.
+#[export("lk_key_isr")]
+fn on_key() {
+    let scancode = read_scancode();
+    if (is_release(scancode)) {
+        return;
+    }
+    let code = key_code(scancode);
+    if (code >= SCANCODE_ASCII.len()) {
+        return;
+    }
+    // `as Int` is not decoration. A global that an `#[export]`ed function
+    // reads is treated as dynamic — nothing proves the entry ran before an
+    // interrupt did — so the table's element arrives boxed. The cast is where
+    // the program states what it knows.
+    let ascii = (SCANCODE_ASCII[code]) as Int;
+    if (ascii == 0) {
+        return;
+    }
+    shared_bump(SHARED_KEY_COUNT);
+    shared_write(SHARED_LAST_KEY, ascii);
+    uart_putc(ascii);
+
+    // Tab is the board's, not any window's: it moves the focus.
+    if (ascii == 9) {
+        let focus = shared_read(SHARED_FOCUS);
+        if (focus == WINDOW_SHELL) {
+            shared_write(SHARED_FOCUS, WINDOW_SPINNER);
+        } else {
+            shared_write(SHARED_FOCUS, WINDOW_SHELL);
+        }
+        return;
+    }
+
+    // Everything else goes to whoever has the focus. The handler does not know
+    // what a keystroke *means* — that is the window's business, and the window
+    // runs in a task where allocating and printing are allowed.
+    let focus = shared_read(SHARED_FOCUS);
+    queue_push(SHARED_QUEUES + focus * QUEUE_STRIDE, ascii);
+}
+
+uart_init();
+// ~1 kHz. The board has already unmasked IRQ0 and enabled interrupts; what
+// this decides is how often it fires.
+pit_start(1193);
+
+let slot = pci_find_display();
+if (slot < 0) {
+    // No display on bus 0. Say so on the line that does exist and stop, rather
+    // than programming a configuration address made of the `-1` sentinel and
+    // drawing into whatever it names.
+    // "no display"
+    uart_write([110, 111, 32, 100, 105, 115, 112, 108, 97, 121, 10]);
+    halt();
+}
+
+// Let the device answer to memory cycles at all. The firmware usually has
+// already, but a driver that depends on that is a driver that works on one
+// machine.
+let command = pci_read(slot, PCI_REG_COMMAND);
+pci_write(slot, PCI_REG_COMMAND, command | PCI_COMMAND_MEMORY | PCI_COMMAND_BUS_MASTER);
+
+// Find the framebuffer once and remember it: everything that draws reads this
+// word, and an interrupt handler cannot walk a bus.
+shared_write(SHARED_FB, probe_framebuffer());
+shared_write(SHARED_PAN, 0);
+vbe_set_mode_virtual(WIDTH, HEIGHT, 32, VIRTUAL_HEIGHT);
+// After the mode is set and the pan is known, not before: the origin depends
+// on both.
+let framebuffer = framebuffer_origin();
+clear(framebuffer, WIDTH, HEIGHT, BACKGROUND);
+
+// Glyph indices rather than ASCII: these are constants, so translating them at
+// run time would be work the program already knows the answer to.
+//   "LK ON BARE METAL"
+draw_cells(framebuffer, WIDTH, FONT,
+           [12, 11, 0, 15, 14, 0, 2, 1, 18, 5, 0, 13, 5, 20, 1, 12],
+           1, 1, TITLE_COLOUR, BACKGROUND);
+//   "TYPE HELP" then the prompt on the next line
+draw_cells(framebuffer, WIDTH, FONT, [20, 25, 16, 5, 0, 8, 5, 12, 16], 1, 3, FOREGROUND, BACKGROUND);
+draw_cells(framebuffer, WIDTH, FONT, [44], 1, 5, FOREGROUND, BACKGROUND);
+
+// Hand the page allocator the biggest usable range the loader reported. The
+// image, its stack and its page tables all sit below 2 MiB, so the range is
+// trimmed to start there rather than on top of them.
+let ram_base = largest_available_base();
+let ram_length = largest_available_length();
+let usable_base = ram_base;
+// Above the interpreter's heap, which `src/main.rs` places at 4 MiB and sizes
+// at 28 MiB. Two allocators on one machine agree by arrangement or not at all.
+if (usable_base < 0x02000000) {
+    usable_base = 0x02000000;
+}
+pages_init(SHARED_PAGES, usable_base, ram_length - (usable_base - ram_base));
+
+// The kernel heap: sixteen pages taken from the page allocator, once, at
+// startup. Taken rather than declared at a fixed address, because an address
+// written here is an address nothing else can be told about — the collision
+// that a chain of constants prevents inside the shared page has the same shape
+// out here in RAM.
+let heap_base = page_alloc(SHARED_PAGES);
+// The pages have to be *contiguous* — the heap is one arena, not a list — and
+// the allocator only bumps, so they are. Checked rather than assumed: an
+// exhausted range returns 0, and initialising an arena on a zero base would
+// hand out addresses starting at zero.
+let heap_pages_ok = heap_base != 0;
+for i in 1..HEAP_PAGES {
+    let page = page_alloc(SHARED_PAGES);
+    if (page != heap_base + i * PAGE_SIZE) {
+        heap_pages_ok = false;
+    }
+}
+if (heap_pages_ok) {
+    heap_init(SHARED_HEAP, heap_base, HEAP_PAGES * PAGE_SIZE);
+} else {
+    // An empty arena: every heap call then reports "nothing fits" instead of
+    // writing somewhere it was never given.
+    heap_init(SHARED_HEAP, 0, 0);
+    // "no heap"
+    uart_write([110, 111, 32, 104, 101, 97, 112, 10]);
+}
+
+// Two windows: the shell owns everything but the corner cell the spinner has.
+// Nothing enforces that they were carved up sensibly — what the rectangles buy
+// is that neither can write into the other's, however wrong the coordinates
+// inside them are.
+window_define(SHARED_WINDOWS, WINDOW_SHELL, 0, 0, WIDTH, HEIGHT);
+// Ten cells wide and two tall: the top row is the spinner, the row below is
+// what this pane echoes when it has the focus.
+// Two pixels wider and taller than its content, so the one-pixel frame it
+// draws for itself does not eat into a glyph.
+window_define(SHARED_WINDOWS, WINDOW_SPINNER,
+              (text_columns() - 11) * CELL_WIDTH, 0, 10 * CELL_WIDTH + 2, 2 * CELL_HEIGHT + 2);
+// A third window, further down the right-hand side: 8 cells for a number and
+// its unit.
+window_define(SHARED_WINDOWS, WINDOW_CLOCK,
+              (text_columns() - 11) * CELL_WIDTH, 3 * CELL_HEIGHT, 8 * CELL_WIDTH + 2, CELL_HEIGHT + 2);
+// Bottom of the stack to the top: the shell is the desktop, and the two panes
+// sit on it in the order they were defined until a click says otherwise.
+// Each window says what draws it, once, here.
+shared_write(SHARED_WINDOW_PAINT + WINDOW_SHELL * WORD, unsafe { symbol_address("lk_paint_shell") });
+shared_write(SHARED_WINDOW_PAINT + WINDOW_SPINNER * WORD, unsafe { symbol_address("lk_paint_spinner") });
+shared_write(SHARED_WINDOW_PAINT + WINDOW_CLOCK * WORD, unsafe { symbol_address("lk_paint_clock") });
+z_set(0, WINDOW_SHELL);
+z_set(1, WINDOW_SPINNER);
+z_set(2, WINDOW_CLOCK);
+queue_reset(SHARED_QUEUES + WINDOW_SHELL * QUEUE_STRIDE);
+queue_reset(SHARED_QUEUES + WINDOW_SPINNER * QUEUE_STRIDE);
+queue_reset(SHARED_QUEUES + WINDOW_CLOCK * QUEUE_STRIDE);
+shared_write(SHARED_FOCUS, WINDOW_SHELL);
+shared_write(SHARED_PANE_COL, 0);
+shared_write(SHARED_DRAWN_FOCUS, 0 - 1);
+
+// The tasks. Spawned by address, with interrupts masked: the scheduler reads
+// the table from a timer interrupt, and a slot published before its stack is
+// ready is a jump to zero.
+let irq_spawn = lock();
+let spinner_task = spawn_task(unsafe { symbol_address("lk_task_b") });
+let clock_task = spawn_task(unsafe { symbol_address("lk_task_clock") });
+// Derived from the last slot handed out, not written as a number: a literal
+// here is a second place that has to be edited whenever a task is added, and
+// the failure when it is not — a scheduler naming a slot that was never
+// spawned — is a jump to zero.
+shared_write(SHARED_TASK_COUNT, clock_task + 1);
+unlock(irq_spawn);
+if (spinner_task < 0 || clock_task < 0) {
+    // "no tasks"
+    uart_write([110, 111, 32, 116, 97, 115, 107, 115, 10]);
+}
+
+// The mouse, if there is one. A machine without it is a report rather than a
+// hang: `mouse_init` bounds every wait it makes.
+shared_write(SHARED_MOUSE_X, ((WIDTH / 2) as Int));
+shared_write(SHARED_MOUSE_Y, ((HEIGHT / 2) as Int));
+shared_write(SHARED_MOUSE_PHASE, 0);
+shared_write(SHARED_MOUSE_BUTTONS, 0);
+shared_write(SHARED_CURSOR_DRAWN, 0);
+shared_write(SHARED_DRAG_SLOT, DRAG_NONE);
+grid_clear();
+// The grid's width is a constant and the terminal's is derived from the screen.
+// They have to agree; if they ever stop, every line wraps one cell early and
+// the repaint puts characters in the wrong place.
+if (GRID_COLUMNS != text_columns() || GRID_ROWS != text_rows()) {
+    // "grid mismatch"
+    uart_write([103, 114, 105, 100, 32, 109, 105, 115, 109, 97, 116, 99, 104, 10]);
+    halt();
+}
+// Masked for the whole sequence. Every mouse command answers with an ACK, and
+// IRQ12 is already unmasked by the time this runs — so the acknowledgement
+// raises an interrupt, the handler reads the byte as if it were packet data,
+// and the initialisation waits for a byte that has already been taken. The
+// symptom is "no mouse" on a machine that has one.
+let irq_mouse = lock();
+let mouse_present = mouse_init();
+unlock(irq_mouse);
+if (mouse_present == 0) {
+    // "no mouse"
+    uart_write([110, 111, 32, 109, 111, 117, 115, 101, 10]);
+}
+
+// The cursor starts after the prompt.
+place_cursor(framebuffer, 3, 5);
+
+// A float round trip across the LK/lkrt boundary, printed because nothing else
+// here would notice it going wrong.
+//
+// `x86_64-unknown-none` is a soft-float target: Rust passes `f64` in integer
+// registers, the Cranelift-emitted object passes them in XMM. Mismatched, this
+// prints 88 instead of 44 — no crash, no link error, just a wrong number. The
+// build refuses to compile without the override (see `src/main.rs`), and this
+// is the same claim checked at run time, on the machine, after the boot path
+// has enabled SSE in CR0/CR4.
+// "half " then the answer
+uart_write([104, 97, 108, 102, 32]);
+uart_put_int(((88 / 2.0) as Int));
+uart_putc(10);
+
+// Read three pixels back out of the device's memory. Drawing that nobody can
+// see is indistinguishable from drawing that never happened, and a headless
+// machine has no other way to tell.
+// The background, and a pixel inside the title's first glyph (`L`, whose
+// top-left is lit).
+let empty = get_pixel(framebuffer, WIDTH, WIDTH - 1, HEIGHT - 1);
+let title = get_pixel(framebuffer, WIDTH, 6, 8);
+
+// A critical section, written in LK. The handlers transmit on the same device
+// these lines do, and an interrupt lands between any two instructions — so
+// without masking, a tick would splice a '.' into the middle of a message.
+// `cpu_irq_save` returns the previous state rather than a flag, so nesting one
+// of these inside another does not enable interrupts early on the way out.
+let irq = unsafe { cpu_irq_save() };
+// "display at pci slot "
+uart_write([100, 105, 115, 112, 108, 97, 121, 32, 97, 116, 32, 112, 99, 105, 32,
+            115, 108, 111, 116, 32]);
+uart_put_int(slot);
+uart_putc(10);
+// "framebuffer 0x"
+uart_write([102, 114, 97, 109, 101, 98, 117, 102, 102, 101, 114, 32, 48, 120]);
+uart_put_hex(framebuffer);
+uart_putc(10);
+// "pixels "
+uart_write([112, 105, 120, 101, 108, 115, 32]);
+uart_put_hex(empty);
+uart_putc(32);
+uart_put_hex(title);
+uart_putc(10);
+unsafe { cpu_irq_restore(irq); };
+
+// The shell loop.
+//
+// `cpu_wait_for_interrupt` parks the core instead of spinning: on a real board
+// that is the difference between idling and burning a watt, and on a
+// virtualised one it stops starving the sibling. The handler wakes it, and
+// raises a flag when a line is complete.
+//
+// The bound is a *deadline in ticks*, not a count of loop iterations.
+//
+// It used to count iterations, which quietly meant "however long that takes":
+// once a third task existed, the shell got a third of the slices and the same
+// 60000 iterations became three minutes instead of one. The unattended CI run
+// then timed out, having done nothing wrong. Ticks are what the number was
+// always trying to say — the timer runs at about 1 kHz, so this is a minute —
+// and it stays a minute however many tasks share the CPU.
+//
+// Elapsed, not "the counter reached N": the tick word is 32 bits and wraps
+// after about 50 days of uptime. Comparing against `start + 60000` is wrong
+// across that wrap, and masking the *difference* to 32 bits is right on both
+// sides of it — which is also what the sentence "a minute has passed" means.
+const TICK_MASK = 0xffffffff;
+let running = 1;
+let started = shared_read(SHARED_TICKS);
+while (running == 1 && ((shared_read(SHARED_TICKS) - started) & TICK_MASK) < 60000) {
+    unsafe { cpu_wait_for_interrupt(); };
+
+    // The pointer, and what a click means.
+    //
+    // Both are done here rather than in the handler: drawing from an interrupt
+    // would put the screen in the hands of whatever it interrupted, and
+    // deciding that a click *means* "focus this window" is a policy — the same
+    // reason the key handler routes bytes but does not run commands.
+    if (shared_read(SHARED_MOUSE_X) != shared_read(SHARED_CURSOR_X)
+        || shared_read(SHARED_MOUSE_Y) != shared_read(SHARED_CURSOR_Y)
+        || shared_read(SHARED_CURSOR_DRAWN) == 0) {
+        let irq_cursor = lock();
+        move_cursor(framebuffer_origin());
+        unlock(irq_cursor);
+    }
+    let pointer_x = shared_read(SHARED_MOUSE_X);
+    let pointer_y = shared_read(SHARED_MOUSE_Y);
+    if (shared_read(SHARED_MOUSE_BUTTONS) == 1) {
+        let dragging = shared_read(SHARED_DRAG_SLOT);
+        if (dragging >= DRAG_NONE) {
+            let hit = window_at(pointer_x, pointer_y);
+            if (hit >= 0 && hit != shared_read(SHARED_FOCUS)) {
+                shared_write(SHARED_FOCUS, hit);
+            }
+            // Clicking a window brings it to the front, and the shell — the
+            // desktop — stays where it is: raising it would put it over
+            // everything, which is not what clicking on the background means.
+            if (hit > WINDOW_SHELL) {
+                let irq_raise = lock();
+                raise_window(hit);
+                hide_cursor(framebuffer_origin());
+                repaint_window(framebuffer_origin(), hit);
+                unlock(irq_raise);
+            }
+            // A press on a window's title bar starts a drag. The shell is
+            // excluded: it is the whole screen, so "moving" it would mean
+            // moving everything, and there is nowhere for it to go.
+            if (hit > WINDOW_SHELL
+                && pointer_y < window_top(SHARED_WINDOWS, hit) + TITLE_HEIGHT) {
+                shared_write(SHARED_DRAG_SLOT, hit);
+                shared_write(SHARED_DRAG_DX, pointer_x - window_left(SHARED_WINDOWS, hit));
+                shared_write(SHARED_DRAG_DY, pointer_y - window_top(SHARED_WINDOWS, hit));
+            }
+        } else {
+            let want_left = pointer_x - shared_read(SHARED_DRAG_DX);
+            let want_top = pointer_y - shared_read(SHARED_DRAG_DY);
+            // Clamped so a window cannot be dragged off the screen and left
+            // unreachable — there is no way to bring one back.
+            let max_left = WIDTH - window_width(SHARED_WINDOWS, dragging);
+            let max_top = HEIGHT - window_height(SHARED_WINDOWS, dragging);
+            if (want_left < 0) { want_left = 0; }
+            if (want_top < 0) { want_top = 0; }
+            if (want_left > max_left) { want_left = max_left; }
+            if (want_top > max_top) { want_top = max_top; }
+            let irq_drag = lock();
+            move_window(framebuffer_origin(), dragging, want_left, want_top);
+            unlock(irq_drag);
+        }
+    } else {
+        shared_write(SHARED_DRAG_SLOT, DRAG_NONE);
+    }
+
+    // Repaint the frame when the focus has moved. Cheap enough to check every
+    // wake; the drawing only happens when the answer changed.
+    let seen_focus = shared_read(SHARED_DRAWN_FOCUS);
+    let focus_now = shared_read(SHARED_FOCUS);
+    if (seen_focus != focus_now) {
+        let irq_frame = lock();
+        // Re-read the origin: a scroll moved it, and the value captured before
+        // the loop describes where the screen used to start.
+        let surface = framebuffer_origin();
+        repaint_frame(surface, WINDOW_SHELL);
+        repaint_frame(surface, WINDOW_SPINNER);
+        shared_write(SHARED_DRAWN_FOCUS, focus_now);
+        unlock(irq_frame);
+    }
+
+    // Drain whatever the handler routed here. Building the line is this
+    // window's business now, not the handler's: the handler does not know
+    // what a keystroke means, only who it belongs to.
+    let irq_in = lock();
+    while (!queue_empty(SHARED_QUEUES + WINDOW_SHELL * QUEUE_STRIDE)) {
+        let ascii = queue_pop(SHARED_QUEUES + WINDOW_SHELL * QUEUE_STRIDE);
+        let length = shared_read(SHARED_LINE_LEN);
+        if (ascii == 10) {
+            shared_write(SHARED_LINE_READY, 1);
+        } else {
+            if (ascii == 8) {
+                if (length > 0) {
+                    shared_write(SHARED_LINE_LEN, length - 1);
+                }
+            } else {
+                if (length < LINE_CAPACITY) {
+                    shared_write_byte(SHARED_LINE + length, ascii);
+                    shared_write(SHARED_LINE_LEN, length + 1);
+                }
+            }
+        }
+        put_char(framebuffer_origin(), ascii);
+    }
+    unlock(irq_in);
+
+    if (shared_read(SHARED_LINE_READY) == 1) {
+        // Mask around the whole exchange: the handler shares the cursor and
+        // the line buffer, and a keystroke arriving mid-command would splice
+        // its echo into the output and its byte into the next line.
+        let irq = unsafe { cpu_irq_save() };
+        running = run_command(framebuffer_origin());
+        shared_write(SHARED_LINE_LEN, 0);
+        shared_write(SHARED_LINE_READY, 0);
+        if (running == 1) {
+            // "> "
+            uart_putc(62);
+            put_char(framebuffer_origin(), 62);
+        }
+        unsafe { cpu_irq_restore(irq); };
+    }
+}
+
+let keys = shared_read(SHARED_KEY_COUNT);
+let last = shared_read(SHARED_LAST_KEY);
+
+// Masked and deliberately not restored: what runs after this is the runtime's
+// epilogue echoing the script's value, which no LK code is in a position to
+// protect.
+unsafe { cpu_irq_save(); };
+uart_putc(10);
+// "keys "
+uart_write([107, 101, 121, 115, 32]);
+uart_put_int(keys);
+// " last "
+uart_write([32, 108, 97, 115, 116, 32]);
+uart_put_int(last);
+uart_putc(10);
+
+return keys;

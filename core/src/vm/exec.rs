@@ -644,6 +644,11 @@ impl Executor {
                 Opcode::Not => {
                     self.dispatch_cold(Opcode::Not, function, module, instr, ctx, collect_metrics)?;
                 }
+                // Casts are a cold path: driver-ish code does them at
+                // boundaries, not in inner loops.
+                Opcode::CastTo => {
+                    self.dispatch_cold(Opcode::CastTo, function, module, instr, ctx, collect_metrics)?;
+                }
                 Opcode::IsNil => {
                     self.dispatch_cold(Opcode::IsNil, function, module, instr, ctx, collect_metrics)?;
                 }

@@ -123,6 +123,7 @@ assert_eq!(result.display_first_return(), "true");
 - 进入 REPL：`lk`
 - 执行源码或模块产物：`lk FILE`（支持 `.lk` 和 `.lkm`）
 - 仅做静态类型检查：`lk check FILE`（输出编译期诊断信息）
+- 原地格式化源码：`lk fmt [PATH...]`（不给路径则格式化整个项目；`--check` 只报告不改写，供 CI 使用）
 - 编译为 native 可执行文件：`lk compile [FILE]`（Cranelift 后端；省略 `FILE` 时使用当前目录的 `main.lk`、package 的 `src/main.lk`，或单一 workspace app 入口；超出原生切片的形状回退到 Tier 0 VM bundle）
 - 编译为 bytecode 模块产物：`lk compile bytecode [FILE]` → `FILE.lkm`
 - 创建包并管理去中心化 git + lockfile 依赖（无中心 registry）：`lk pkg init`、`lk pkg add`、`lk pkg fetch`、`lk pkg update`、`lk pkg check`、`lk pkg tree`（详见 [docs/packages.md](docs/packages.md)）

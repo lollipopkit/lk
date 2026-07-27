@@ -1,0 +1,102 @@
+// Text on a framebuffer.
+//
+// A glyph is seven rows of five pixels, packed one row per integer with the
+// leftmost pixel in bit 4. Eight rows are stored per glyph — the eighth is the
+// blank line that separates one text row from the next — so glyph `i` starts
+// at `i * 8`.
+//
+// The font itself is *not* here, and neither is the character-to-glyph
+// mapping. A container at a module's top level cannot cross a bundled import
+// without changing what the VM would do, and which glyph a character maps to
+// is a keyboard-layout question rather than a rendering one. This module is
+// handed both.
+
+use { put_pixel, get_pixel, fill_rect, get_pixel_pair, put_pixel_pair } from "framebuffer";
+
+const GLYPH_WIDTH = 5;
+const GLYPH_ROWS = 7;
+const GLYPH_STRIDE = 8;
+
+// A cell is one pixel wider and one taller than the glyph, so adjacent
+// characters and lines do not touch.
+const CELL_WIDTH = 6;
+const CELL_HEIGHT = 8;
+
+// One row of a glyph, as five bits with the leftmost pixel in bit 4.
+//
+// Exposed so a caller that writes pixels differently — clipped to a window,
+// say — does not need its own copy of the layout.
+fn glyph_row(font: List<Int>, index: Int, row: Int) -> Int {
+    return font[index * GLYPH_STRIDE + row];
+}
+
+fn glyph_width() -> Int { return GLYPH_WIDTH; }
+fn glyph_rows() -> Int { return GLYPH_ROWS; }
+
+// Draws one glyph with its top-left corner at (x, y).
+//
+// `font` is only ever read, which is what keeps this module bundlable: a
+// module that *wrote* through a container parameter would be handed the
+// caller's list under a flattened build and a copy under the VM.
+fn draw_glyph(base: Int, stride: Int, font: List<Int>, index: Int, x: Int, y: Int, fg: Int, bg: Int) {
+    let start = index * GLYPH_STRIDE;
+    for row in 0..GLYPH_ROWS {
+        let bits = font[start + row];
+        for column in 0..GLYPH_WIDTH {
+            // Leftmost pixel is the high bit, so the picture in the source
+            // reads the same way round as the picture on the screen.
+            let shift = GLYPH_WIDTH - 1 - column;
+            let lit = (bits >> shift) & 1;
+            let colour = bg;
+            if (lit != 0) {
+                colour = fg;
+            }
+            put_pixel(base, stride, x + column, y + row, colour);
+        }
+    }
+}
+
+// Draws a run of glyph indices starting at a character cell.
+fn draw_cells(base: Int, stride: Int, font: List<Int>, indices: List<Int>, column: Int, row: Int, fg: Int, bg: Int) {
+    let at = column;
+    for index in indices {
+        draw_glyph(base, stride, font, index, at * CELL_WIDTH, row * CELL_HEIGHT, fg, bg);
+        at = at + 1;
+    }
+}
+
+// Clears the whole screen to one colour.
+fn clear(base: Int, width: Int, height: Int, colour: Int) {
+    fill_rect(base, width, 0, 0, width, height, colour);
+}
+
+// Moves the picture up by one text row and clears the line that opens at the
+// bottom.
+//
+// Pixel by pixel through the same volatile accessors as everything else: the
+// framebuffer is device memory, so there is no memmove to reach for. At this
+// size that is around 60000 read/write pairs, which is well under a timer
+// period — and an interrupt gate has already masked interrupts, so a long
+// handler delays the next tick rather than re-entering.
+fn scroll_up(base: Int, width: Int, height: Int, background: Int) {
+    let shift = CELL_HEIGHT;
+    // Two pixels per access. The width is even here; an odd one would leave a
+    // column behind, so the loop bound is written to make that impossible to
+    // miss rather than assumed.
+    let pairs = ((width / 2) as Int);
+    for y in 0..(height - shift) {
+        for pair in 0..pairs {
+            let x = pair * 2;
+            put_pixel_pair(base, width, x, y, get_pixel_pair(base, width, x, y + shift));
+        }
+        if (pairs * 2 < width) {
+            put_pixel(base, width, width - 1, y, get_pixel(base, width, width - 1, y + shift));
+        }
+    }
+    fill_rect(base, width, 0, height - shift, width, shift, background);
+}
+
+// A filled cell, for showing where the next character will land.
+fn draw_cursor(base: Int, stride: Int, column: Int, row: Int, colour: Int) {
+    fill_rect(base, stride, column * CELL_WIDTH, row * CELL_HEIGHT, GLYPH_WIDTH, GLYPH_ROWS, colour);
+}

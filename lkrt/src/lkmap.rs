@@ -10,7 +10,18 @@
 //! (`present = 0`), modelled by the caller as `Maybe<Int>`. A store always
 //! inserts-or-updates (never an error), unlike a list store.
 
-use std::ffi::{CStr, c_char, c_void};
+// `alloc`, not the std prelude: this module is part of the computation-only
+// subset that builds without an OS.
+#[allow(unused_imports)]
+use alloc::{
+    boxed::Box,
+    format,
+    string::{String, ToString},
+    vec,
+    vec::Vec,
+};
+
+use core::ffi::{CStr, c_char, c_void};
 
 use crate::lklist::{LkMaybeF64, LkMaybeI64};
 
@@ -21,6 +32,9 @@ use crate::lklist::{LkMaybeF64, LkMaybeI64};
 // deep-coverage plan's "mirror the Fx order" adjudication. Do not swap either
 // piece independently of `core/src/util/fast_map.rs`.
 pub(crate) type FxMap<K, V> = hashbrown::HashMap<K, V, rustc_hash::FxBuildHasher>;
+/// The set counterpart of [`FxMap`]. hashbrown rather than std so the same
+/// type serves both builds — `rustc_hash::FxHashSet` is an alias for std's.
+pub(crate) type FxSet<T> = hashbrown::HashSet<T, rustc_hash::FxBuildHasher>;
 type StrI64Map = FxMap<String, i64>;
 type I64I64Map = FxMap<i64, i64>;
 type StrF64Map = FxMap<String, f64>;
@@ -65,7 +79,7 @@ unsafe fn with_ik_key<R>(prefix: *const c_char, suffix: i64, f: impl FnOnce(&str
     };
     bytes[..prefix.len()].copy_from_slice(prefix);
     bytes[prefix.len()..].copy_from_slice(digits);
-    f(std::str::from_utf8(bytes).unwrap_or(""))
+    f(core::str::from_utf8(bytes).unwrap_or(""))
 }
 
 /// Borrows the key as a `&str` (empty on null / invalid UTF-8).
@@ -269,7 +283,7 @@ pub unsafe extern "C" fn lkrt_lkmap_str_dyn_rebuild(src: *mut c_void) -> *mut c_
 // returns Mixed lists — bare-text display).
 
 fn boxed_str_key(key: &str) -> crate::lkdyn::LkDyn {
-    let owned = crate::lkstr::arena_c_string(std::ffi::CString::new(key).unwrap_or_default());
+    let owned = crate::lkstr::arena_c_string(alloc::ffi::CString::new(key).unwrap_or_default());
     crate::lkdyn::LkDyn {
         tag: crate::lkdyn::DYN_STR,
         payload: owned as i64,
@@ -697,7 +711,7 @@ pub unsafe extern "C" fn lkrt_lkmap_str_dyn_len(handle: *mut c_void) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::CString;
+    use alloc::ffi::CString;
 
     #[test]
     fn i64_f64_set_get_missing() {

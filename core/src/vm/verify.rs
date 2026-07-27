@@ -270,7 +270,8 @@ impl FunctionVerifier<'_> {
                 | Opcode::Not
                 | Opcode::IsNil
                 | Opcode::IsList
-                | Opcode::IsMap => {
+                | Opcode::IsMap
+                | Opcode::CastTo => {
                     self.check_reg(pc, "a", instr.a())?;
                     self.check_reg(pc, "b", instr.b())?;
                 }

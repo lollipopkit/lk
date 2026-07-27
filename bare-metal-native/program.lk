@@ -1,0 +1,138 @@
+// A PL011 UART driver, written in LK, compiled to native aarch64 machine code,
+// running with no OS underneath.
+//
+// The device is the PL011 that QEMU's `virt` machine — and most Arm hardware —
+// exposes. Its transmit path needs four registers:
+//
+//   +0x00  DR    write transmits a byte
+//   +0x18  FR    bit 5 = transmit FIFO full
+//   +0x24  IBRD  baud rate divisor, integer part
+//   +0x28  FBRD  baud rate divisor, fractional part
+//   +0x2c  LCRH  line control: word length, FIFO enable
+//   +0x30  CR    bit 0 = UART enable, bit 8 = transmit enable
+//
+// Every access goes through `volatile_read_u32` / `volatile_write_u32`. A
+// device register is not memory: an ordinary read could be folded away or
+// reordered against the writes that configure the device, and the status poll
+// in `uart_putc` would become an infinite loop the moment its read was hoisted
+// out of the loop.
+
+const UART0_BASE = 0x09000000;
+
+const REG_DR = 0x00;
+const REG_FR = 0x18;
+const REG_IBRD = 0x24;
+const REG_FBRD = 0x28;
+const REG_LCRH = 0x2c;
+const REG_CR = 0x30;
+
+const FR_TX_FULL = 0x20;
+const LCRH_8BIT_FIFO = 0x70;
+const CR_ENABLE_TX = 0x301;
+
+fn uart_init() {
+    // Disable while reconfiguring: the device latches the divisors and line
+    // control at enable time, and changing them under a live UART is undefined.
+    unsafe { volatile_write_u32((UART0_BASE + REG_CR) as *mut u32, 0 as u32); };
+    unsafe { volatile_write_u32((UART0_BASE + REG_IBRD) as *mut u32, 1 as u32); };
+    unsafe { volatile_write_u32((UART0_BASE + REG_FBRD) as *mut u32, 40 as u32); };
+    unsafe { volatile_write_u32((UART0_BASE + REG_LCRH) as *mut u32, LCRH_8BIT_FIFO as u32); };
+    // Every configuration write must land before the enable does.
+    unsafe { cpu_barrier(); };
+    unsafe { volatile_write_u32((UART0_BASE + REG_CR) as *mut u32, CR_ENABLE_TX as u32); };
+}
+
+fn uart_putc(byte: Int) {
+    // Spin while the transmit FIFO is full. This read has to happen on every
+    // iteration — it is the canonical access a non-volatile load would let the
+    // compiler hoist, hanging the loop.
+    let full = 1;
+    while (full != 0) {
+        let flags = unsafe { volatile_read_u32((UART0_BASE + REG_FR) as *mut u32) };
+        full = flags & FR_TX_FULL;
+    }
+    unsafe { volatile_write_u32((UART0_BASE + REG_DR) as *mut u32, byte as u32); };
+}
+
+fn uart_write(bytes: List<Int>) {
+    for byte in bytes {
+        uart_putc(byte);
+    }
+}
+
+// Decimal output without the standard library: bare metal has no formatter, and
+// a driver that can only print constants is not much of a driver.
+fn uart_put_int(value: Int) {
+    if (value == 0) {
+        uart_putc(48);
+        return;
+    }
+    let digits = [];
+    let rest = value;
+    while (rest > 0) {
+        digits.push(48 + rest % 10);
+        // `/` is float division in LK; the cast keeps the counter an Int.
+        rest = (rest / 10) as Int;
+    }
+    let i = digits.len() - 1;
+    while (i >= 0) {
+        uart_putc(digits[i]);
+        i = i - 1;
+    }
+}
+
+// The timer interrupt handler, written in LK.
+//
+// `#[export]` gives it a C symbol so the board's IRQ vector can name it; the
+// board acknowledges the interrupt and rearms the timer, and this decides what
+// a tick *means*. It transmits directly and allocates nothing, because an
+// interrupt lands between any two instructions of the interrupted program —
+// including instructions inside the runtime's allocator.
+#[export("lk_timer_isr")]
+fn on_tick() {
+    uart_putc(46); // '.'
+}
+
+fn fib(n: Int) -> Int {
+    if (n < 2) { return n; }
+    return fib(n - 1) + fib(n - 2);
+}
+
+uart_init();
+
+let total = 0;
+for i in 0..10 {
+    total = total + fib(i);
+}
+
+// A critical section, written in LK.
+//
+// The handler above transmits on the same device this line does, and an
+// interrupt lands between any two instructions — so without masking, a tick
+// would splice a '.' into the middle of the message. `cpu_irq_save` returns the
+// previous state rather than a flag, so nesting one of these inside another
+// does not enable interrupts early on the way out.
+let irq = unsafe { cpu_irq_save() };
+// "native LK drives the PL011: sum(fib(0..9)) = "
+uart_write([110, 97, 116, 105, 118, 101, 32, 76, 75, 32, 100, 114, 105, 118, 101, 115,
+            32, 116, 104, 101, 32, 80, 76, 48, 49, 49, 58, 32, 115, 117, 109, 40,
+            102, 105, 98, 40, 48, 46, 46, 57, 41, 41, 32, 61, 32]);
+uart_put_int(total);
+uart_putc(10);
+unsafe { cpu_irq_restore(irq); };
+
+// Enough work for a few timer periods to elapse. Every '.' after this point
+// came from the LK handler above, running in interrupt context while this loop
+// was mid-computation.
+let spin = 0;
+for i in 0..10000000 {
+    spin = spin + 1;
+}
+// Masked and deliberately not restored: the program is finished, and what runs
+// after this is the runtime's epilogue echoing the script's value. A tick
+// landing in the middle of that would splice a '.' into a line no LK code is
+// in a position to protect.
+unsafe { cpu_irq_save(); };
+uart_putc(10);
+
+return total;

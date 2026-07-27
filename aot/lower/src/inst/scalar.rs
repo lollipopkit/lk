@@ -2,6 +2,7 @@
 
 use super::LowerCtx;
 use crate::*;
+use lk_core::vm::CastTarget;
 
 pub(super) fn lower(
     ctx: &mut LowerCtx<'_>,
@@ -220,6 +221,104 @@ pub(super) fn lower(
                 value: Const::Bool(is_map),
             });
             ssa.write(instr.a(), block, (dst, Ty::Bool));
+        }
+        Opcode::CastTo => {
+            // `a = b as <c>`. The VM normalises machine ints inside an `i64`
+            // carrier, and this mirrors that exactly — the differential tests
+            // compare the two backends' output, so the bit patterns have to
+            // agree, not merely the intent.
+            // `read_scalar`: a cast is a scalar consumer, so a value that came
+            // out of a container (a `Maybe` carrier) narrows here rather than
+            // refusing to lower. Without this, `for b in bytes { p(b as u32) }`
+            // — an ordinary driver loop — falls off the native path.
+            let (v, ty) = read_scalar(ssa, insts, instr.b(), block, pc)?;
+            let Some(target) = CastTarget::from_u8(instr.c()) else {
+                return Err(Unsupported::Opcode { pc, op: instr.opcode() });
+            };
+            let dst = ssa.new_val();
+
+            match target {
+                // Float and Bool targets need the source's runtime type to pick
+                // a conversion; only the statically-known cases lower natively,
+                // the rest falls back rather than guessing.
+                CastTarget::Float => match ty {
+                    Ty::I64 => {
+                        insts.push(Inst::IntToFloat { dst, src: v });
+                        ssa.write(instr.a(), block, (dst, Ty::F64));
+                    }
+                    Ty::F64 => {
+                        ssa.write(instr.a(), block, (v, Ty::F64));
+                    }
+                    _ => return Err(Unsupported::TypeMismatch { pc }),
+                },
+                CastTarget::Bool => match ty {
+                    Ty::Bool => ssa.write(instr.a(), block, (v, Ty::Bool)),
+                    Ty::I64 => {
+                        let zero = ssa.new_val();
+                        insts.push(Inst::Const {
+                            dst: zero,
+                            value: Const::I64(0),
+                        });
+                        insts.push(Inst::Cmp {
+                            dst,
+                            op: CmpOp::Ne,
+                            float: false,
+                            lhs: v,
+                            rhs: zero,
+                        });
+                        ssa.write(instr.a(), block, (dst, Ty::Bool));
+                    }
+                    _ => return Err(Unsupported::TypeMismatch { pc }),
+                },
+                integer => {
+                    // A boxed source goes through the runtime's cast helper,
+                    // which performs exactly the VM's `cast_source_to_i64`
+                    // (Int through, Float truncated toward zero, Bool 0/1,
+                    // anything else a raise). Doing it here rather than
+                    // refusing keeps `for b in bytes { p(b as u32) }` native.
+                    let v = match ty {
+                        Ty::I64 => v,
+                        // A float truncates toward zero and a bool is 0/1 —
+                        // the same source conversion the VM's
+                        // `cast_source_to_i64` performs.
+                        Ty::F64 => {
+                            let truncated = ssa.new_val();
+                            insts.push(Inst::FloatToInt { dst: truncated, src: v });
+                            truncated
+                        }
+                        Ty::Bool => {
+                            let widened = ssa.new_val();
+                            insts.push(Inst::ZextBool { dst: widened, src: v });
+                            widened
+                        }
+                        Ty::Dyn => {
+                            let unboxed = ssa.new_val();
+                            insts.push(Inst::Call {
+                                dst: Some(unboxed),
+                                callee: AbiRef::new("dyn", "cast_to_i64"),
+                                args: vec![v],
+                            });
+                            unboxed
+                        }
+                        _ => return Err(Unsupported::TypeMismatch { pc }),
+                    };
+                    match integer.int_kind().and_then(|kind| kind.bits()) {
+                        // Full width, or pointer width on a 64-bit target:
+                        // the carrier already holds exactly these bits.
+                        None | Some(64) => ssa.write(instr.a(), block, (v, Ty::I64)),
+                        Some(bits) => {
+                            let signed = integer.int_kind().expect("machine target").is_signed();
+                            insts.push(Inst::IntTruncate {
+                                dst,
+                                src: v,
+                                bits: bits as u8,
+                                signed,
+                            });
+                            ssa.write(instr.a(), block, (dst, Ty::I64));
+                        }
+                    }
+                }
+            }
         }
         Opcode::Not => {
             // `!x`: `a` = dst, `b` = src. The VM negates a `Bool` and treats `Nil` as

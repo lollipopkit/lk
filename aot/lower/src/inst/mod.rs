@@ -67,7 +67,7 @@ pub(crate) fn lower_inst(
         LoadInt | LoadFloat | LoadBool | LoadNil | Move | Move2 | IsNil | IsList | IsMap | Not | AddInt | SubInt
         | MulInt | DivInt | ModInt | MidInt | MinInt | MaxInt | AddMulInt | Add2Int | AddListInt | SubListInt
         | AddIntI | MulIntI | ModIntI | AddFloat | SubFloat | MulFloat | DivFloat | ModFloat | CmpInt | CmpNeInt
-        | CmpLtInt | CmpLeInt | CmpGtInt | CmpGeInt => scalar::lower(ctx, block, insts, instr, pc),
+        | CmpLtInt | CmpLeInt | CmpGtInt | CmpGeInt | CastTo => scalar::lower(ctx, block, insts, instr, pc),
 
         LoadString | ToString | ConcatString | ConcatN | ListJoin | StringSplit => {
             string::lower(ctx, block, insts, instr, pc)

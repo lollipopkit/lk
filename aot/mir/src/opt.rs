@@ -577,12 +577,22 @@ fn is_removable(inst: &Inst) -> bool {
     match inst {
         // Divide-by-zero aborts (matching the VM), so a dead division is still
         // a program-visible check.
+        // A call to something outside the program can do anything, so it is
+        // never dead — the same reasoning as a host call.
+        Inst::CallExtern { .. } => false,
+        // A call through an address is a call to something unknown: it can do
+        // anything, so it is never dead. Taking an address is pure, so it
+        // follows the ordinary rule and may be dropped when nothing reads it.
+        Inst::CallIndirect { .. } => false,
+        Inst::SymbolAddr { .. } => true,
         Inst::IntBin { op, .. } => !matches!(op, IntBinOp::Div | IntBinOp::Mod),
         Inst::FloatBin { op, .. } => !matches!(op, FloatBinOp::Div | FloatBinOp::Mod),
         Inst::Const { .. }
         | Inst::Cmp { .. }
         | Inst::IntToFloat { .. }
+        | Inst::FloatToInt { .. }
         | Inst::ZextBool { .. }
+        | Inst::IntTruncate { .. }
         | Inst::Not { .. }
         | Inst::BoolAnd { .. }
         | Inst::MaybePresent { .. }
@@ -618,12 +628,21 @@ fn is_removable(inst: &Inst) -> bool {
 fn uses_mut(inst: &mut Inst) -> Vec<&mut ValueId> {
     match inst {
         Inst::Const { .. } | Inst::GlobalGet { .. } => vec![],
+        Inst::CallExtern { args, .. } => args.iter_mut().collect(),
+        Inst::SymbolAddr { .. } => vec![],
+        Inst::CallIndirect { callee, args, .. } => {
+            let mut values: Vec<&mut ValueId> = vec![callee];
+            values.extend(args.iter_mut());
+            values
+        }
         Inst::IntBin { lhs, rhs, .. }
         | Inst::FloatBin { lhs, rhs, .. }
         | Inst::Cmp { lhs, rhs, .. }
         | Inst::BoolAnd { lhs, rhs, .. } => vec![lhs, rhs],
         Inst::IntToFloat { src, .. }
+        | Inst::FloatToInt { src, .. }
         | Inst::ZextBool { src, .. }
+        | Inst::IntTruncate { src, .. }
         | Inst::Not { src, .. }
         | Inst::MaybePresent { src, .. }
         | Inst::MaybeValue { src, .. }

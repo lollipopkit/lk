@@ -91,24 +91,192 @@ jobs:
             echo "$output"
             # One line per module surface, so a module silently dropping out of
             # the registry fails here instead of passing quietly.
-            assert_printed "$output" "sum(fib(0..9)) = 88" "$image"
-            assert_printed "$output" "sqrt(144) = 12" "$image"
-            assert_printed "$output" "upper = BARE METAL" "$image"
-            assert_printed "$output" "bytes.len = 2" "$image"
-            assert_printed "$output" "doubled = [2,4,6]" "$image"
-            assert_printed "$output" "crc32 = 1391562372" "$image"
-            assert_printed "$output" "json.n = 42" "$image"
-            assert_printed "$output" "base64 = bGs=" "$image"
-            assert_printed "$output" "hex = 6c6b" "$image"
-            # Each image reports under its own name, so a build that ran the
-            # wrong binary twice cannot pass.
             case "$image" in
-              lk-bare-metal) ok="OK: lk ran on bare metal, returned 88" ;;
-              artifact_only) ok="OK: artifact ran on bare metal, returned 88" ;;
+              # A UART driver written in LK: it configures the device, polls
+              # its status register and transmits. The text arriving on the
+              # serial line is the proof that volatile MMIO reaches hardware —
+              # semihosting is not involved in producing it.
+              lk-bare-metal)
+                assert_printed "$output" "LK drives hardware" "$image"
+                # Each '.' is a SysTick interrupt firing, from a timer the LK
+                # code armed itself. Three in a row means the interrupt
+                # controller was programmed correctly and is running free —
+                # a single one could be a fluke of ordering.
+                assert_printed "$output" "..." "$image"
+                ok="OK: lk ran on bare metal, returned 0"
+                ;;
+              # The language-feature corpus, run from precompiled bytecode.
+              artifact_only)
+                assert_printed "$output" "sum(fib(0..9)) = 88" "$image"
+                assert_printed "$output" "sqrt(144) = 12" "$image"
+                assert_printed "$output" "upper = BARE METAL" "$image"
+                assert_printed "$output" "bytes.len = 2" "$image"
+                assert_printed "$output" "doubled = [2,4,6]" "$image"
+                assert_printed "$output" "crc32 = 1391562372" "$image"
+                assert_printed "$output" "json.n = 42" "$image"
+                assert_printed "$output" "base64 = bGs=" "$image"
+                assert_printed "$output" "hex = 6c6b" "$image"
+                ok="OK: artifact ran on bare metal, returned 88"
+                ;;
               *) echo "::error::unknown image $image"; exit 1 ;;
             esac
             assert_printed "$output" "$ok" "$image"
           done
+      - name: aarch64 native bare-metal QEMU smoke (compiled LK, no OS)
+        # The step above runs LK's *interpreter* on a board. This one runs its
+        # *compiled output*: `lk compile object:aarch64-unknown-none` emits a
+        # relocatable object, an ordinary embedded build links it, and the
+        # resulting image drives a PL011 UART from a driver written in LK. It
+        # catches what neither the differential tests nor the coverage gate can
+        # — that the cross-compiled object actually links and executes on a
+        # target the host is not.
+        run: |
+          rustup target add aarch64-unknown-none
+          sudo apt-get update && sudo apt-get install -y qemu-system-arm clang
+          cargo build -p lkrt-cabi
+          cargo build -p lk-cli --features aot
+          cd bare-metal-native
+          # *Unset*, not set to empty: the toolchain action sets `RUSTFLAGS=-D
+          # warnings` for the whole job, and a `RUSTFLAGS` environment variable
+          # *replaces* the crate's `.cargo/config.toml` rustflags table rather
+          # than extending it — and an empty-but-present variable replaces it
+          # just as thoroughly as a full one. What that table carries is not
+          # style: it is `link-dead-code`, without which the image does not
+          # link.
+          env -u RUSTFLAGS LK_BIN=../target/debug/lk cargo build --release
+          # A fault parks the core rather than exiting, so the timeout is what
+          # turns a hang into a failure.
+          output=$(timeout 120 qemu-system-aarch64 -M virt -cpu cortex-a53 \
+            -display none -serial stdio \
+            -kernel target/aarch64-unknown-none/release/lk-bare-metal-native 2>&1 || true)
+          echo "$output"
+          # The first line comes out of LK's own PL011 driver — compiled
+          # `volatile_write_u32` against 0x0900_0000, no runtime involved. The
+          # last proves control returned from compiled code to the board.
+          # The '...' are timer interrupts handled by an LK function: three in
+          # a row means the GIC, the timer and the exported handler are all
+          # working, where one could be a fluke of ordering. The headline is
+          # intact because `program.lk` masks interrupts around it — an
+          # unprotected line would have dots spliced into it.
+          for expected in \
+            "native LK drives the PL011: sum(fib(0..9)) = 88" \
+            "..." \
+            "[lk returned to the board, status 0000000000000000]"; do
+            printf '%s' "$output" | grep -qF -- "$expected" || {
+              echo "::error::aarch64 native image did not print: $expected"
+              exit 1
+            }
+          done
+      - name: x86-64 native bare-metal QEMU smoke (port I/O, no OS)
+        # The aarch64 image proves compiled LK drives a memory-mapped device.
+        # x86 devices are not memory-mapped — they answer to `in`/`out` in a
+        # separate address space — so this is the only thing that exercises the
+        # `port_*` intrinsics end to end, from type check through lowering to
+        # instructions a machine actually executes.
+        run: |
+          rustup target add x86_64-unknown-none
+          sudo apt-get update && sudo apt-get install -y qemu-system-x86 llvm
+          cargo build -p lk-cli --features aot
+          cd bare-metal-x86
+          # Same reason as the aarch64 step: this crate's rustflags table
+          # carries `relocation-model=static` and the float-ABI override, and a
+          # job-wide `RUSTFLAGS` would replace it — including an empty one, so
+          # this unsets the variable rather than clearing it. `src/main.rs`
+          # refuses to compile without SSE, which is how this was caught: an
+          # `export RUSTFLAGS=` looked like it worked and did not.
+          unset RUSTFLAGS
+          # `isa-debug-exit` makes the machine exit when the kernel is done, so
+          # a hang is a timeout rather than a pass; its exit code for a clean
+          # run is 1, hence the `|| true`.
+          # The kernel's own bound is a minute of ticks; this is the outer
+          # limit for a runner that boots slowly, not the expected duration.
+          output=$(timeout 180 ./run.sh 2>&1 || true)
+          echo "$output"
+          # `half 44` is a f64 round trip across the LK/lkrt boundary: this
+          # target is soft-float by default, and a mismatch there prints 88
+          # rather than failing. `pixels` is read back out of the device's own
+          # memory — the background and a lit pixel of the title, so it also
+          # says the font renderer drew. The '...' are timer interrupts handled
+          # by an LK function — three in a row, where one could be a fluke.
+          for expected in \
+            "display at pci slot" \
+            "framebuffer 0xfd000000" \
+            "half 44" \
+            "pixels 00001428 00ffc040" \
+            "..." \
+            "[lk returned to the board]"; do
+            printf '%s' "$output" | grep -qF -- "$expected" || {
+              echo "::error::x86-64 native image did not print: $expected"
+              exit 1
+            }
+          done
+          # A build that faults on purpose. Without it a broken exception
+          # reporter looks exactly like a working one — the machine would
+          # simply reset in silence, which is the failure mode with the least
+          # information possible.
+          faulted=$(CARGO_FLAGS=--features=fault-probe timeout 180 ./run.sh 2>&1 || true)
+          echo "$faulted"
+          printf '%s' "$faulted" | grep -qF -- "#PF page fault" || {
+            echo "::error::the exception reporter did not name the fault"
+            exit 1
+          }
+          printf '%s' "$faulted" | grep -qF -- "cr2=0000000900000000" || {
+            echo "::error::the exception reporter did not report the faulting address"
+            exit 1
+          }
+          # Reading the framebuffer back proves the writes reached the device's
+          # memory; it does not prove the mode was set, because an unconfigured
+          # card still accepts them. Only what QEMU scans out shows that.
+          LK_BIN=../target/debug/lk cargo build --release
+          llvm-objcopy -O elf32-i386 \
+            target/x86_64-unknown-none/release/lk-bare-metal-x86 \
+            target/x86_64-unknown-none/release/lk-bare-metal-x86.multiboot
+          timeout 120 python3 check_screen.py
+          # The input half, end to end: `sendkey` puts real scancodes into the
+          # emulated PS/2 controller, the LK handler decodes them into a line,
+          # and the shell answers. It also checks the screen scrolled rather
+          # than wrapped, which the serial line cannot show.
+          timeout 250 python3 check_shell.py
+          # Two tasks, one of which never yields: the timer takes the CPU away
+          # from it. Checked on screen rather than on the serial line, because
+          # interleaved output would show that both ran, not that either was
+          # interrupted mid-work.
+          timeout 200 python3 check_tasks.py
+          # Which window has the keyboard, made visible. Each window repaints
+          # its own frame on its own turn — the key handler that moved the
+          # focus only writes a word, because drawing from an interrupt would
+          # put a window's appearance in the hands of whatever it interrupted.
+          timeout 200 python3 check_focus.py
+          # A real block device: IDENTIFY, a sector read, a sector write. The
+          # third assertion is the one that needs the machine stopped — after
+          # QEMU exits, the image *file* must hold what was written, because a
+          # drive acknowledges a write long before it is on the medium.
+          timeout 300 python3 check_disk.py
+          # The kernel is compiled LK; this checks that it also *hosts an
+          # interpreter* for LK. The program it runs is not in the image — it
+          # is read off the disk — and neither the answer nor the loop that
+          # computes it appears anywhere in the kernel.
+          timeout 400 python3 check_run.py
+          # The PS/2 mouse: three-byte packets on the keyboard's controller,
+          # IRQ12 through the slave PIC's cascade. Checked on the screen — the
+          # cursor follows and leaves no trail — and by what a click does, which
+          # is hand the keyboard to the window under it.
+          timeout 300 python3 check_mouse.py
+          # Dragging a window over the terminal and off it again. The claim is
+          # the one a window manager lives or dies on — what a window covers
+          # comes back — and it is only possible because the terminal keeps its
+          # characters in a grid rather than only on the screen.
+          timeout 400 python3 check_drag.py
+          # Overlap, and who is on top. A window drawing its own contents has
+          # no idea what is above it, so the check waits for a clock tick — a
+          # raise that a periodic redraw undoes is not a raise.
+          timeout 400 python3 check_stack.py
+          # Three tasks, two of them spawned by the program from an address it
+          # looked up by name. The board supplies stacks and the switch; which
+          # code runs on them is no longer in `src/tasks.rs` at all.
+          timeout 300 python3 check_spawn.py
+        env:
+          LK_BIN: ../target/debug/lk
       - name: AOT native-lowering coverage gate
         # A lowering regression does not fail any differential test: the
         # program silently drops to the hybrid bridge or the Tier 0 VM bundle

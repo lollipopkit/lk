@@ -6,13 +6,7 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::{
-        ast::Parser,
-        expr::Expr,
-        stmt::Stmt,
-        token::Tokenizer,
-        val::LiteralVal,
-    };
+    use crate::{ast::Parser, expr::Expr, stmt::Stmt, token::Tokenizer, val::LiteralVal};
 
     fn parse(code: &str) -> Expr {
         let tokens = Tokenizer::tokenize(code).unwrap();
@@ -123,7 +117,13 @@ mod tests {
         );
         let rendered = format!("{expr:?}");
         // Two desugar instances → two distinct counters in synthesized names.
-        assert!(rendered.contains("__select1_r"), "outer or inner select id 1: {rendered}");
-        assert!(rendered.contains("__select2_r"), "outer or inner select id 2: {rendered}");
+        assert!(
+            rendered.contains("__select1_r"),
+            "outer or inner select id 1: {rendered}"
+        );
+        assert!(
+            rendered.contains("__select2_r"),
+            "outer or inner select id 2: {rendered}"
+        );
     }
 }

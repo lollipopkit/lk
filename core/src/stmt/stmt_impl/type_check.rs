@@ -88,9 +88,36 @@ impl Stmt {
             } => {
                 // 检查表达式的类型
                 let expr_type = value.type_check(type_checker)?;
+                // Reached: statements below this one may read it. Done after
+                // the value, so `const A = A + 1;` still reports the read.
+                for name in pattern_names(pattern) {
+                    type_checker.define_top_level(&name);
+                }
 
                 // 如果有类型注解，验证类型匹配
-                if let Some(expected_type) = type_annotation
+                //
+                // A machine-int annotation *retypes* an integer literal rather
+                // than rejecting it — `let x: u8 = 5` is the common case, and
+                // requiring `5 as u8` there would make the feature unusable.
+                // This is Rust's literal-inference rule, narrowed to the one
+                // place it is needed until the checker becomes bidirectional.
+                // The range is checked here because having one is the whole
+                // point of a fixed width.
+                if let Some(Type::MachineInt(kind)) = type_annotation
+                    && let Some(literal) = int_literal_value(value)
+                {
+                    if !kind.accepts_literal(literal) {
+                        let error_msg = alloc::format!(
+                            "literal {literal} is out of range for {}",
+                            Type::MachineInt(*kind).display()
+                        );
+                        return if let Some(span) = span {
+                            Err(anyhow!(ParseError::with_span(error_msg, span.clone())))
+                        } else {
+                            Err(anyhow!(error_msg))
+                        };
+                    }
+                } else if let Some(expected_type) = type_annotation
                     && !type_checker.is_assignable(&expr_type, expected_type)
                 {
                     let error_msg = format!(
@@ -207,6 +234,14 @@ impl Stmt {
                 named_params,
             } => {
                 type_checker.push_scope();
+                // A body runs after the whole top level, so it may read a
+                // binding declared below it.
+                // Suspended for the body, and restored on *every* way out —
+                // see the restore below. An early `?` inside the body check
+                // would otherwise leave the set empty for the rest of the
+                // file, quietly disabling the use-before-definition check for
+                // every statement after a function that failed to type-check.
+                let pending = type_checker.suspend_pending_top_level();
 
                 let mut positional_tys: Vec<Type> = Vec::with_capacity(params.len());
                 let mut positional_origin: Vec<bool> = Vec::with_capacity(params.len());
@@ -307,6 +342,7 @@ impl Stmt {
                         positional: positional_tys.clone(),
                         named: named_sigs.clone(),
                         return_type: Some(return_placeholder.clone()),
+                        annotated: positional_origin.clone(),
                     },
                 );
 
@@ -361,6 +397,7 @@ impl Stmt {
                 }
 
                 type_checker.pop_scope();
+                type_checker.restore_pending_top_level(pending);
 
                 let inferred_return = if return_was_annotated {
                     return_placeholder.clone()
@@ -403,6 +440,7 @@ impl Stmt {
                             positional: positional_tys,
                             named: named_sigs,
                             return_type: Some(inferred_return.clone()),
+                            annotated: positional_origin.clone(),
                         },
                     );
                     type_checker.add_pending_strict_function(PendingStrictFunction {
@@ -488,6 +526,7 @@ impl Stmt {
                         positional: resolved_positional,
                         named: resolved_named_sigs,
                         return_type: Some(resolved_return),
+                        annotated: positional_origin.clone(),
                     },
                 );
 
@@ -763,8 +802,87 @@ impl Stmt {
 }
 
 impl Program {
+    /// Registers every top-level function's signature before any body is
+    /// checked.
+    ///
+    /// Functions are hoisted at run time — the compiler builds the whole
+    /// function table before the entry executes — so a call may appear above
+    /// the definition. The checker walked statements in order, so such a call
+    /// found no signature and produced `Any`, and the error surfaced somewhere
+    /// else entirely: `((n / helper(2)) as Int)` failed with "cannot cast
+    /// Box<Any> to Int" if `helper` happened to be defined further down the
+    /// file, and type-checked if it was defined above.
+    ///
+    /// What is registered here is only what the annotations state; an
+    /// unannotated parameter or return is `Any`, exactly as permissive as
+    /// before. The ordered walk replaces each entry with the inferred
+    /// signature when it reaches the definition.
+    fn predeclare_function_signatures(&self, type_checker: &mut TypeChecker) {
+        fn item(stmt: &Stmt) -> &Stmt {
+            match stmt {
+                Stmt::Attributed { item, .. } => self::item_of(item),
+                other => other,
+            }
+        }
+        for stmt in &self.statements {
+            let Stmt::Function {
+                name,
+                params,
+                param_types,
+                named_params,
+                return_type,
+                ..
+            } = item(stmt)
+            else {
+                continue;
+            };
+            let positional: Vec<Type> = (0..params.len())
+                .map(|i| param_types.get(i).cloned().flatten().unwrap_or(Type::Any))
+                .collect();
+            let annotated: Vec<bool> = (0..params.len())
+                .map(|i| param_types.get(i).cloned().flatten().is_some())
+                .collect();
+            let named: Vec<NamedParamSig> = named_params
+                .iter()
+                .map(|param| NamedParamSig {
+                    name: param.name.clone(),
+                    ty: param.type_annotation.clone().unwrap_or(Type::Any),
+                    has_default: param.default.is_some(),
+                })
+                .collect();
+            let returns = return_type.clone().unwrap_or(Type::Any);
+            let named_annos: Vec<FunctionNamedParamType> = named
+                .iter()
+                .map(|param| FunctionNamedParamType {
+                    name: param.name.clone(),
+                    ty: param.ty.clone(),
+                    has_default: param.has_default,
+                })
+                .collect();
+            type_checker.add_local_type(
+                name.clone(),
+                Type::Function {
+                    params: positional.clone(),
+                    named_params: named_annos,
+                    return_type: Box::new(returns.clone()),
+                },
+            );
+            type_checker.add_function_sig(
+                name.clone(),
+                FunctionSig {
+                    positional,
+                    named,
+                    return_type: Some(returns),
+                    annotated,
+                },
+            );
+        }
+    }
+
     /// 类型检查程序
     pub fn type_check(&self, type_checker: &mut TypeChecker) -> Result<()> {
+        self.predeclare_function_signatures(type_checker);
+        type_checker.set_pending_top_level(self.top_level_binding_names());
         if type_checker.strict_any() {
             let previous_defer = type_checker.begin_deferred_strict_function_checks();
             let result = (|| {
@@ -781,6 +899,62 @@ impl Program {
             stmt.type_check(type_checker)?;
         }
         Ok(())
+    }
+}
+
+impl Program {
+    /// Every name bound by a top-level `let`/`const`, in any pattern.
+    ///
+    /// Used to catch a read of one from *above* its definition — see
+    /// `TypeChecker::pending_top_level`. Function declarations are not in here:
+    /// they are hoisted, and calling one declared below is ordinary.
+    fn top_level_binding_names(&self) -> crate::compat::collections::HashSet<String> {
+        let mut names = crate::compat::collections::HashSet::new();
+        for stmt in &self.statements {
+            if let Stmt::Let { pattern, .. } = item_of(stmt) {
+                collect_pattern_names(pattern, &mut names);
+            }
+        }
+        names
+    }
+}
+
+fn pattern_names(pattern: &Pattern) -> crate::compat::collections::HashSet<String> {
+    let mut names = crate::compat::collections::HashSet::new();
+    collect_pattern_names(pattern, &mut names);
+    names
+}
+
+fn collect_pattern_names(pattern: &Pattern, out: &mut crate::compat::collections::HashSet<String>) {
+    match pattern {
+        Pattern::Variable(name) => {
+            out.insert(name.clone());
+        }
+        Pattern::List { patterns, rest } => {
+            for item in patterns {
+                collect_pattern_names(item, out);
+            }
+            if let Some(rest) = rest {
+                out.insert(rest.clone());
+            }
+        }
+        Pattern::Map { patterns, rest } => {
+            for (_, value) in patterns {
+                collect_pattern_names(value, out);
+            }
+            if let Some(rest) = rest {
+                out.insert(rest.clone());
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The declaration an attribute wraps, however many attributes there are.
+fn item_of(stmt: &Stmt) -> &Stmt {
+    match stmt {
+        Stmt::Attributed { item, .. } => item_of(item),
+        other => other,
     }
 }
 
@@ -895,5 +1069,21 @@ fn union_of(types: impl IntoIterator<Item = Type>) -> Type {
         0 => Type::Any,
         1 => out.pop().expect("checked len"),
         _ => Type::Union(out),
+    }
+}
+
+/// The integer value of a literal expression.
+///
+/// A leading minus needs no special case: the lexer folds it into the literal
+/// (`Token::Int(-5)`), and constant folding has already run by the time the
+/// checker sees the expression, so `1 + 2` arrives here as `3`.
+fn int_literal_value(expr: &crate::expr::Expr) -> Option<i128> {
+    use crate::expr::Expr;
+    use crate::val::LiteralVal;
+
+    match expr {
+        Expr::Literal(LiteralVal::Int(value)) => Some(i128::from(*value)),
+        Expr::Paren(inner) => int_literal_value(inner),
+        _ => None,
     }
 }

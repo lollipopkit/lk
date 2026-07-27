@@ -183,6 +183,30 @@ pub enum Inst {
     },
     /// `dst = sitofp(src)` — widen an `I64` value to `F64`.
     IntToFloat { dst: ValueId, src: ValueId },
+    /// `dst = fptosi(src)` — an `F64` truncated toward zero into `I64`.
+    ///
+    /// Saturating, and NaN maps to 0: those are Rust's `as` semantics, which is
+    /// what the VM performs (`value as i64`), so the two backends agree on the
+    /// out-of-range cases rather than only on the ordinary ones.
+    FloatToInt { dst: ValueId, src: ValueId },
+    /// `dst = src` reduced to `bits` and widened back to `I64` by `signed`.
+    ///
+    /// Machine integers do not get their own MIR type. The VM carries them in
+    /// an `i64` and normalises after every operation, so doing the same here
+    /// makes the two backends agree bit for bit — which is what the
+    /// differential tests check. Giving MIR a real `I32` would instead touch
+    /// every container-handle type for a difference no LK program can observe.
+    ///
+    /// A genuinely 32-bit *memory access* is a different problem, and belongs
+    /// to the volatile/pointer work: that needs a width on the store, not a
+    /// width on the value.
+    IntTruncate {
+        dst: ValueId,
+        src: ValueId,
+        /// 8, 16 or 32. Full-width targets emit no instruction at all.
+        bits: u8,
+        signed: bool,
+    },
     /// `dst = zext(src)` — widen a `Bool` (`i1`) to `I64` (`0`/`1`).
     ZextBool { dst: ValueId, src: ValueId },
     /// `dst = !src` — boolean negation (`xor i1 src, true`).
@@ -208,6 +232,34 @@ pub enum Inst {
         dst: Option<ValueId>,
         func: FuncId,
         args: Vec<ValueId>,
+    },
+    /// The address of an `#[export]`ed symbol, as an integer.
+    ///
+    /// What a driver table is made of. A kernel dispatches through arrays of
+    /// function pointers — interrupt vectors, device operations, per-window
+    /// repaint — and the alternative in a language without them is a chain of
+    /// `if`s that has to be edited every time a device is added. There is no
+    /// VM equivalent: an interpreter has no code addresses to hand out, so the
+    /// builtin refuses there rather than inventing one.
+    SymbolAddr { dst: ValueId, symbol: String },
+    /// Calls through an address held in a value, with a fixed integer
+    /// signature. The other half of a driver table.
+    CallIndirect {
+        dst: Option<ValueId>,
+        callee: ValueId,
+        args: Vec<ValueId>,
+    },
+    /// `dst = symbol(args)` — a call to a function implemented *outside* the
+    /// program, named by `#[extern]`.
+    ///
+    /// Unlike an `AbiRef` call, the signature is not in a table: it comes from
+    /// the declaration, so it travels with the instruction.
+    CallExtern {
+        dst: Option<ValueId>,
+        symbol: String,
+        args: Vec<ValueId>,
+        arg_tys: Vec<Ty>,
+        ret: Ty,
     },
     /// `dst = try.call f{func}(args)` — a native protected call (`try$call`,
     /// plan G): codegen expands to `rt.try_push` + `_setjmp` + a conditional
@@ -401,6 +453,11 @@ pub struct MirFunction {
     pub blocks: Vec<Block>,
     pub entry: BlockId,
     pub ret: Ty,
+    /// The C symbol from `#[export]`, if the source asked for one. Codegen
+    /// gives such a function external linkage under this name instead of the
+    /// generated `lk_fn_N`, so a board's vector table or an existing C caller
+    /// can reach it.
+    pub export_name: Option<String>,
 }
 
 impl MirFunction {
@@ -742,7 +799,15 @@ fn render_inst(inst: &Inst) -> String {
             )
         }
         Inst::IntToFloat { dst, src } => format!("{} = sitofp {}", v(*dst), v(*src)),
+        Inst::FloatToInt { dst, src } => format!("{} = fptosi {}", v(*dst), v(*src)),
         Inst::ZextBool { dst, src } => format!("{} = zext.bool {}", v(*dst), v(*src)),
+        Inst::IntTruncate { dst, src, bits, signed } => format!(
+            "{} = trunc.i{} {} ({})",
+            v(*dst),
+            bits,
+            v(*src),
+            if *signed { "signed" } else { "unsigned" }
+        ),
         Inst::Not { dst, src } => format!("{} = not {}", v(*dst), v(*src)),
         Inst::BoolAnd { dst, lhs, rhs } => format!("{} = bool.and {}, {}", v(*dst), v(*lhs), v(*rhs)),
         Inst::MaybePresent { dst, src, maybe_ty } => {
@@ -753,6 +818,23 @@ fn render_inst(inst: &Inst) -> String {
             match dst {
                 Some(d) => format!("{} = {call}", v(*d)),
                 None => call,
+            }
+        }
+        Inst::SymbolAddr { dst, symbol } => format!("{} = symbol.addr {symbol}", v(*dst)),
+        Inst::CallIndirect { dst, callee, args: a } => {
+            let call = format!("call.indirect v{}({})", callee.0, args(a));
+            match dst {
+                Some(d) => format!("{} = {call}", v(*d)),
+                None => call,
+            }
+        }
+        Inst::CallExtern {
+            dst, symbol, args: a, ..
+        } => {
+            let target = format!("{symbol}({})", args(a));
+            match dst {
+                Some(dst) => format!("{} = extern.call {target}", v(*dst)),
+                None => format!("extern.call {target}"),
             }
         }
         Inst::CallFn { dst, func, args: a } => {
@@ -867,7 +949,9 @@ pub(crate) fn inst_def(inst: &Inst) -> Option<ValueId> {
         | Inst::FloatBin { dst, .. }
         | Inst::Cmp { dst, .. }
         | Inst::IntToFloat { dst, .. }
+        | Inst::FloatToInt { dst, .. }
         | Inst::ZextBool { dst, .. }
+        | Inst::IntTruncate { dst, .. }
         | Inst::Not { dst, .. }
         | Inst::BoolAnd { dst, .. }
         | Inst::MaybePresent { dst, .. }
@@ -885,7 +969,11 @@ pub(crate) fn inst_def(inst: &Inst) -> Option<ValueId> {
         | Inst::MaybeWrap { dst, .. }
         | Inst::Select { dst, .. }
         | Inst::GlobalGet { dst, .. } => Some(*dst),
-        Inst::Call { dst, .. } | Inst::CallFn { dst, .. } | Inst::CallVm { dst, .. } => *dst,
+        Inst::SymbolAddr { dst, .. } => Some(*dst),
+        Inst::CallIndirect { dst, .. } => *dst,
+        Inst::Call { dst, .. } | Inst::CallFn { dst, .. } | Inst::CallExtern { dst, .. } | Inst::CallVm { dst, .. } => {
+            *dst
+        }
         Inst::PrintStr { .. } | Inst::GlobalSet { .. } => None,
         Inst::TryCall { dst, .. } | Inst::TraitDispatch { dst, .. } => Some(*dst),
     }
@@ -901,7 +989,9 @@ fn inst_uses(inst: &Inst) -> Vec<ValueId> {
             vec![*lhs, *rhs]
         }
         Inst::IntToFloat { src, .. }
+        | Inst::FloatToInt { src, .. }
         | Inst::ZextBool { src, .. }
+        | Inst::IntTruncate { src, .. }
         | Inst::Not { src, .. }
         | Inst::MaybePresent { src, .. }
         | Inst::UnwrapMaybeI64 { src, .. }
@@ -922,8 +1012,15 @@ fn inst_uses(inst: &Inst) -> Vec<ValueId> {
         | Inst::MapGetMaybeI64F64 { handle, key, .. } => {
             vec![*handle, *key]
         }
+        Inst::SymbolAddr { .. } => vec![],
+        Inst::CallIndirect { callee, args, .. } => {
+            let mut values = vec![*callee];
+            values.extend(args.iter().copied());
+            values
+        }
         Inst::Call { args, .. }
         | Inst::CallFn { args, .. }
+        | Inst::CallExtern { args, .. }
         | Inst::CallVm { args, .. }
         | Inst::TryCall { args, .. } => args.clone(),
         Inst::TraitDispatch { self_arg, .. } => vec![*self_arg],
@@ -990,6 +1087,7 @@ mod tests {
                 params: vec![],
                 entry: BlockId(0),
                 ret: Ty::I64,
+                export_name: None,
                 blocks: vec![Block {
                     id: BlockId(0),
                     params: vec![],

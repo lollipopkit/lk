@@ -1,3 +1,6 @@
+//! The ABI table is data, not behaviour, so it builds without std —
+//! `lkrt` needs it on bare metal.
+#![cfg_attr(not(feature = "std"), no_std)]
 //! Single-source-of-truth ABI schema shared by the AOT codegen and `lkrt`.
 //!
 //! This crate is deliberately dependency-free (no `lk-core`, no `lk-stdlib`, no
@@ -109,6 +112,37 @@ pub struct AbiFn {
 macro_rules! for_each_abi_fn {
     ($callback:ident) => {
         $callback! {
+            // CPU control. All `WritesHost`: a barrier's entire content is
+            // its effect on *other* accesses' ordering, so marking one pure
+            // would license the optimiser to drop the very thing it is for.
+            ("cpu", "barrier", lkrt_cpu_barrier, WritesHost, [], Nil);
+            ("cpu", "compiler_barrier", lkrt_cpu_compiler_barrier, WritesHost, [], Nil);
+            ("cpu", "irq_save", lkrt_cpu_irq_save, WritesHost, [], I64);
+            ("cpu", "irq_restore", lkrt_cpu_irq_restore, WritesHost, [I64], Nil);
+            ("cpu", "timestamp", lkrt_cpu_timestamp, WritesHost, [], I64);
+            ("cpu", "wait_for_interrupt", lkrt_cpu_wait_for_interrupt, WritesHost, [], Nil);
+            // Volatile MMIO. `WritesHost` even for the reads: the effect
+            // annotation is what drives CSE, and a device read that can change
+            // state or return a different value each time is not pure. These
+            // are calls rather than inline loads because Cranelift has no
+            // volatile flag — see lkrt/src/mmio.rs.
+            ("mmio", "read_u8", lkrt_mmio_read_u8, WritesHost, [I64], I64);
+            ("mmio", "read_u16", lkrt_mmio_read_u16, WritesHost, [I64], I64);
+            ("mmio", "read_u32", lkrt_mmio_read_u32, WritesHost, [I64], I64);
+            ("mmio", "read_u64", lkrt_mmio_read_u64, WritesHost, [I64], I64);
+            ("mmio", "write_u8", lkrt_mmio_write_u8, WritesHost, [I64, I64], Nil);
+            ("mmio", "write_u16", lkrt_mmio_write_u16, WritesHost, [I64, I64], Nil);
+            ("mmio", "write_u32", lkrt_mmio_write_u32, WritesHost, [I64, I64], Nil);
+            ("mmio", "write_u64", lkrt_mmio_write_u64, WritesHost, [I64, I64], Nil);
+            // Port I/O — `WritesHost` for the same reason the MMIO reads are:
+            // reading a device port can change its state, so it must not be
+            // collapsed with another read of the same port.
+            ("port", "in_u8", lkrt_port_in_u8, WritesHost, [I64], I64);
+            ("port", "in_u16", lkrt_port_in_u16, WritesHost, [I64], I64);
+            ("port", "in_u32", lkrt_port_in_u32, WritesHost, [I64], I64);
+            ("port", "out_u8", lkrt_port_out_u8, WritesHost, [I64, I64], Nil);
+            ("port", "out_u16", lkrt_port_out_u16, WritesHost, [I64, I64], Nil);
+            ("port", "out_u32", lkrt_port_out_u32, WritesHost, [I64, I64], Nil);
             ("lkrt", "abi_version", lkrt_abi_version, Pure, [], I64);
             ("lkrt", "abi_check", lkrt_abi_check, WritesHost, [I64], Nil);
             ("lkrt", "cleanup", lkrt_cleanup, WritesHost, [], Nil);
@@ -394,6 +428,7 @@ macro_rules! for_each_abi_fn {
             // is the VM's loud type error.
             ("dyn", "not", lkrt_dyn_not, ReadsHost, [DynVal], I64);
             ("dyn", "as_i64", lkrt_dyn_as_i64, ReadsHost, [DynVal], I64);
+            ("dyn", "cast_to_i64", lkrt_dyn_cast_to_i64, ReadsHost, [DynVal], I64);
             ("dyn", "as_f64", lkrt_dyn_as_f64, ReadsHost, [DynVal], F64);
             ("dyn", "as_str", lkrt_dyn_as_str, ReadsHost, [DynVal], StrPtr);
             // Deliberately `Retained`: this returns the *existing* handle held
@@ -413,6 +448,7 @@ macro_rules! for_each_abi_fn {
             ("dyn", "gt", lkrt_dyn_gt, ReadsHost, [DynVal, DynVal], I64);
             ("dyn", "ge", lkrt_dyn_ge, ReadsHost, [DynVal, DynVal], I64);
             ("dyn", "index", lkrt_dyn_index, ReadsHost, [DynVal, I64], DynVal);
+            ("dyn", "get", lkrt_dyn_get, ReadsHost, [DynVal, DynVal], DynVal);
             ("dyn", "from_map", lkrt_dyn_from_map, Pure, [Ptr], DynVal);
             ("dyn", "field", lkrt_dyn_field, ReadsHost, [DynVal, StrPtr], DynVal);
             ("dyn", "len_of", lkrt_dyn_len_of, ReadsHost, [DynVal], I64);
@@ -517,6 +553,8 @@ macro_rules! for_each_abi_fn {
             ("arith", "i64_mod", lkrt_i64_mod_checked, ReadsHost, [I64, I64], I64);
             ("arith", "f64_div", lkrt_f64_div_checked, ReadsHost, [F64, F64], F64);
             ("arith", "f64_mod", lkrt_f64_mod_checked, ReadsHost, [F64, F64], F64);
+            ("arith", "i64_shl", lkrt_i64_shl_checked, ReadsHost, [I64, I64], I64);
+            ("arith", "i64_shr", lkrt_i64_shr_checked, ReadsHost, [I64, I64], I64);
         }
     };
 }

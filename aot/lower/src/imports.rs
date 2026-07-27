@@ -26,12 +26,40 @@ pub(crate) struct ImportEnv {
 }
 
 impl ImportEnv {
-    pub(crate) fn build(imports: &[lk_core::stmt::ImportStmt], bundles: &[BundledImport]) -> Self {
+    pub(crate) fn build(
+        imports: &[lk_core::stmt::ImportStmt],
+        bundles: &[BundledImport],
+    ) -> Result<Self, crate::Unsupported> {
         use lk_core::stmt::{ImportSource, ImportStmt};
         let mut env = ImportEnv {
             bundles: bundles.to_vec(),
             ..ImportEnv::default()
         };
+        // Every bundled module's top-level functions are reachable by name.
+        // The merge puts them all in one namespace, and a *nested* import — a
+        // driver that imports another driver — has no other way to resolve:
+        // its `GetGlobal` names never appear in the importing file's own
+        // import list. Explicit imports are processed after this, so an alias
+        // still wins where the two disagree.
+        //
+        // Two bundles defining the same name is refused rather than resolved:
+        // whichever came last in iteration order would silently win for every
+        // nested read, so a driver could end up calling another driver's
+        // `init`/`read`/`write` with nothing said. Under the VM each module
+        // keeps its own namespace, so this is a divergence, and the rule
+        // everywhere else in this bundler applies — report the cause, do not
+        // pick one. (The same file reached under two import paths appears
+        // twice with identical indices; that is not a collision.)
+        for bundle in bundles {
+            for (name, fidx) in &bundle.fns {
+                if let Some(existing) = env.file_items.get(name)
+                    && existing != fidx
+                {
+                    return Err(crate::Unsupported::BundledNameCollision { name: name.clone() });
+                }
+                env.file_items.insert(name.clone(), *fidx);
+            }
+        }
         let bundle_by_path = |path: &str| bundles.iter().position(|b| b.path == path);
         for import in imports {
             match import {
@@ -79,6 +107,6 @@ impl ImportEnv {
                 ImportStmt::Module { .. } => {}
             }
         }
-        env
+        Ok(env)
     }
 }

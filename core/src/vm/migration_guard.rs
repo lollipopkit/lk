@@ -53,6 +53,17 @@ fn collect_violations(path: &Path, manifest_dir: &Path, violations: &mut Vec<Str
     if path.extension().and_then(|ext| ext.to_str()) != Some("rs") || path.ends_with("migration_guard.rs") {
         return;
     }
+    // `vm/hardware.rs` is exempt from the no-`unsafe` rule.
+    //
+    // That rule exists because a memory error inside the interpreter is
+    // unfindable. The reasoning does not reach volatile MMIO and interrupt
+    // masking: touching a device register *is* the operation, and there is no
+    // safe spelling of it. Since the exception must exist, it is confined to
+    // one small file named for what it holds, rather than letting `unsafe`
+    // spread through the executor. Nothing else under `vm/` may contain it.
+    if path.ends_with("hardware.rs") {
+        return;
+    }
     let source = fs::read_to_string(path).expect("read source file");
     let relative = path.strip_prefix(manifest_dir).unwrap_or(path);
     for (token, reason) in FORBIDDEN_TOKENS {

@@ -9,6 +9,7 @@ use crate::{
     expr::{Expr, Pattern},
     operator::BinOp,
     stmt::{NamedParamDecl, Program, Stmt},
+    token::Token,
     val::{LiteralVal, RuntimeMapKey, ShortStr},
     vm::ConstRuntimeValue,
 };
@@ -55,6 +56,51 @@ pub(super) struct FunctionInlineBody {
     pub(super) params: Vec<String>,
     pub(super) named_param_count: usize,
     pub(super) body: Stmt,
+}
+
+/// The C symbol a declaration asks to be exported under.
+///
+/// `#[export]` uses the LK name; `#[export("sym")]` names the symbol
+/// explicitly, which is what an interrupt vector or an existing C header
+/// usually forces. Anything else in that position is rejected rather than
+/// ignored: a silently-dropped export produces a link error somewhere else
+/// entirely.
+pub(super) fn extern_name_from_attributes(stmt: &Stmt, default_name: &str) -> Result<Option<Arc<str>>> {
+    attribute_symbol(stmt, default_name, "extern")
+}
+
+pub(super) fn export_name_from_attributes(stmt: &Stmt, default_name: &str) -> Result<Option<Arc<str>>> {
+    attribute_symbol(stmt, default_name, "export")
+}
+
+/// The symbol a `#[word]` / `#[word("sym")]` attribute names.
+fn attribute_symbol(stmt: &Stmt, default_name: &str, word: &str) -> Result<Option<Arc<str>>> {
+    let Stmt::Attributed { attributes, item } = stmt else {
+        return Ok(None);
+    };
+    let mut found = None;
+    for attribute in attributes {
+        let tokens = attribute.tokens.as_slice();
+        match tokens {
+            [Token::Id(name)] if name == word => {
+                found = Some(Arc::<str>::from(default_name));
+            }
+            [Token::Id(name), Token::LParen, Token::Str(symbol), Token::RParen] if name == word => {
+                if symbol.is_empty() {
+                    bail!("`#[{word}(\"\")]` needs a symbol name");
+                }
+                found = Some(Arc::<str>::from(symbol.as_str()));
+            }
+            [Token::Id(name), ..] if name == word => {
+                bail!("`#[{word}]` takes either no argument or one string literal symbol name");
+            }
+            _ => {}
+        }
+    }
+    if found.is_some() && !matches!(item_without_attributes(item), Stmt::Function { .. }) {
+        bail!("`#[{word}]` applies to functions");
+    }
+    Ok(found)
 }
 
 pub(super) fn item_without_attributes(stmt: &Stmt) -> &Stmt {
@@ -256,7 +302,9 @@ fn collect_mutated_names(stmt: &Stmt, names: &mut HashSet<String>) {
 
 fn collect_mutated_names_in_expr(expr: &Expr, names: &mut HashSet<String>) {
     match expr {
-        Expr::Paren(inner) | Expr::Unary(_, inner) => collect_mutated_names_in_expr(inner, names),
+        Expr::Paren(inner) | Expr::Unary(_, inner) | Expr::Cast(inner, _) | Expr::Unsafe(inner) => {
+            collect_mutated_names_in_expr(inner, names)
+        }
         Expr::Bin(lhs, _, rhs)
         | Expr::And(lhs, rhs)
         | Expr::Or(lhs, rhs)
@@ -447,9 +495,32 @@ fn collect_top_level_let_name(stmt: &Stmt, names: &mut HashSet<String>) {
 fn collect_callable_visible_top_level_lets(program: &Program, top_level_lets: &HashSet<String>) -> HashSet<String> {
     let mut visible = HashSet::new();
     for stmt in &program.statements {
+        // A top-level `const` is a module global whether or not this file uses
+        // it. `let` still has to be reached from a function to be promoted —
+        // it is a script's local — but a `const` is a declaration, and a file
+        // that declares one for its *importers* is the ordinary shape of a
+        // driver module. Without this, `use { PCI_REG_BAR0 } from "…"` fails
+        // with "not found in runtime module", pointing at the import rather
+        // than at the rule that hid the name.
+        if let Some(name) = top_level_const_name(stmt) {
+            visible.insert(name);
+        }
         collect_callable_visible_top_level_lets_from_stmt(stmt, &mut visible, top_level_lets);
     }
     visible
+}
+
+/// The name a top-level `const NAME = …;` binds, if the statement is one.
+fn top_level_const_name(stmt: &Stmt) -> Option<String> {
+    match stmt {
+        Stmt::Attributed { item, .. } => top_level_const_name(item),
+        Stmt::Let {
+            pattern: Pattern::Variable(name),
+            is_const: true,
+            ..
+        } => Some(name.clone()),
+        _ => None,
+    }
 }
 
 fn collect_callable_visible_top_level_lets_from_stmt(

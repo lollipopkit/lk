@@ -112,6 +112,9 @@ pub fn lower_bundled(
     // Bundled file-module functions are reached through import bindings
     // (`GetGlobal` → Lambda), invisible to the bytecode scan: root them too
     // (the BFS then covers their own callees).
+    // Bundled file-module functions are reached through import bindings
+    // (`GetGlobal` → Lambda), invisible to the bytecode scan: root them too
+    // (the BFS then covers their own callees).
     let mut bundle_roots: Vec<usize> = bundles
         .iter()
         .flat_map(|b| b.fns.values().map(|&fidx| fidx as usize))
@@ -137,7 +140,7 @@ pub fn lower_bundled(
         conflict: false,
         dyn_loop_phis: std::collections::HashSet::new(),
         dyn_rets: std::collections::HashSet::new(),
-        imports: ImportEnv::build(&artifact.imports, bundles),
+        imports: ImportEnv::build(&artifact.imports, bundles)?,
         traits,
         force_dyn_globals: std::collections::HashSet::new(),
         spawned_isolate: std::collections::HashSet::new(),
@@ -357,6 +360,32 @@ pub fn lower_bundled(
         (globals, functions, failures)
     };
     let (mut globals, mut functions, failures) = final_pass(&mut sig, &reachable, &funcs);
+    // A bundled module exports more than any one importer uses, and those
+    // extras are rooted speculatively — their names are reached by a lookup
+    // the bytecode scan cannot follow, so there is no telling in advance which
+    // are live. A dead one may still fail to lower (with no call site, its
+    // parameter types were never observed), and failing the whole module for a
+    // function nothing can call is the wrong answer. Drop those; anything the
+    // emitted code still references is a real failure — as is anything
+    // `#[export]`ed, which is referenced from *outside* the module, so nothing
+    // in here names it.
+    let referenced = referenced_functions(&functions);
+    let speculative: std::collections::HashSet<usize> = bundles
+        .iter()
+        .flat_map(|b| b.fns.values().map(|&fidx| fidx as usize))
+        .collect();
+    let failures: Vec<(usize, Unsupported)> = failures
+        .into_iter()
+        .filter(|(fi, _)| {
+            // Only a speculatively-rooted bundled function may be dropped, and
+            // only when nothing reaches it: everything else that failed is
+            // still a real failure, and in a hybrid build the failure list is
+            // what decides which functions the VM bridge takes over.
+            !speculative.contains(fi)
+                || referenced.contains(&FuncId(*fi as u32))
+                || funcs.get(*fi).is_some_and(|f| f.export_name.is_some())
+        })
+        .collect();
     if !failures.is_empty() {
         // `LK_AOT_DEBUG_FAILURES=1` lists every failing function (the
         // returned error is only the first; a callee's real blocker often
@@ -470,4 +499,29 @@ pub fn lower_bundled(
         return Err(Unsupported::InvalidMir);
     }
     Ok(lowered)
+}
+
+/// Every function id the emitted code can reach: direct calls, protected
+/// calls, and function addresses taken as constants.
+fn referenced_functions(functions: &[MirFunction]) -> std::collections::HashSet<FuncId> {
+    let mut referenced = std::collections::HashSet::new();
+    for function in functions {
+        for block in &function.blocks {
+            for inst in &block.insts {
+                match inst {
+                    Inst::CallFn { func, .. } | Inst::TryCall { func, .. } => {
+                        referenced.insert(*func);
+                    }
+                    Inst::Const {
+                        value: Const::FnAddr(func),
+                        ..
+                    } => {
+                        referenced.insert(*func);
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    referenced
 }

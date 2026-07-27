@@ -105,6 +105,11 @@ struct ModuleCtx<'a> {
     /// a program that never calls one does not force its — possibly `DynVal` —
     /// signature to lower).
     abi_ids: &'a mut HashMap<&'static str, ClifFuncId>,
+    /// Symbols an `#[extern]` declaration names. Keyed by `String` rather than
+    /// `&'static str` because the name comes from the source, not this file.
+    extern_ids: &'a mut HashMap<String, ClifFuncId>,
+    /// `#[export]`ed functions of *this* module, by their exported name.
+    exported_ids: &'a HashMap<String, ClifFuncId>,
     /// Interned string-constant data symbols (`lk_str_{i}`), by [`GlobalId`] index.
     str_data: &'a HashMap<u32, DataId>,
     /// Mutable module-global data symbols (`lk_gvar_{i}`) + their MIR type.
@@ -136,6 +141,36 @@ impl ModuleCtx<'_> {
         }
         let id = self.module.declare_function(abi.symbol, Linkage::Import, &sig)?;
         self.abi_ids.insert(abi.symbol, id);
+        Ok(id)
+    }
+
+    /// Declare (once) a symbol an `#[extern]` declaration names.
+    ///
+    /// Re-declaring is how a signature conflict is caught: two declarations of
+    /// one symbol with different types would otherwise become a malformed call
+    /// that only the Cranelift verifier notices, reported against a machine
+    /// call site with no way back to the name.
+    fn extern_func(&mut self, symbol: &str, arg_tys: &[Ty], ret: Ty) -> Result<ClifFuncId, ClifError> {
+        let cc = self.module.isa().default_call_conv();
+        let mut sig = Signature::new(cc);
+        for ty in arg_tys {
+            for part in ty_clif_parts(*ty)? {
+                sig.params.push(AbiParam::new(part));
+            }
+        }
+        for part in ty_clif_parts(ret)? {
+            sig.returns.push(AbiParam::new(part));
+        }
+        // Declared again on every use rather than served from the cache: that
+        // *is* the conflict check the doc comment claims. `declare_function`
+        // returns the existing id for a matching signature and
+        // `ModuleError::IncompatibleSignature` otherwise, so short-circuiting on
+        // a cache hit — which the first version of this did — would have let a
+        // second `#[extern]` of the same symbol with different types reuse the
+        // first id and become a malformed call. The table stays only so the
+        // symbol is declared once per *distinct* signature request.
+        let id = self.module.declare_function(symbol, Linkage::Import, &sig)?;
+        self.extern_ids.insert(symbol.to_string(), id);
         Ok(id)
     }
 
@@ -236,13 +271,26 @@ pub fn compile_module(mir: &MirModule, isa: std::sync::Arc<dyn TargetIsa>) -> Re
     // `lk_fn_N` with their MIR signatures.
     let mut fn_ids = HashMap::new();
     let mut fn_rets = HashMap::new();
+    // Exported LK functions by the name the source gave them, so
+    // `symbol_address("name")` can take the address of *this* function rather
+    // than declaring an import that would have to guess a signature — and
+    // guess it wrong, since a table's signature is not each entry's.
+    let mut exported_ids: HashMap<String, ClifFuncId> = HashMap::new();
     for func in &mir.functions {
         let (sym, linkage, sig) = if func.id == mir.entry {
             ("main".to_string(), Linkage::Export, main_signature(cc))
+        } else if let Some(exported) = &func.export_name {
+            // `#[export]`: an external symbol under the source's chosen name,
+            // with the function's own signature. This is how a board names LK
+            // code — an interrupt vector or a C caller cannot reach `lk_fn_7`.
+            (exported.clone(), Linkage::Export, signature_of(func, cc)?)
         } else {
             (format!("lk_fn_{}", func.id.0), Linkage::Local, signature_of(func, cc)?)
         };
         let id = module.declare_function(&sym, linkage, &sig)?;
+        if func.export_name.is_some() {
+            exported_ids.insert(sym.clone(), id);
+        }
         fn_ids.insert(func.id, id);
         fn_rets.insert(func.id, func.ret);
     }
@@ -299,6 +347,7 @@ pub fn compile_module(mir: &MirModule, isa: std::sync::Arc<dyn TargetIsa>) -> Re
 
     // ABI runtime symbols are declared lazily but must dedup across functions.
     let mut abi_ids: HashMap<&'static str, ClifFuncId> = HashMap::new();
+    let mut extern_ids: HashMap<String, ClifFuncId> = HashMap::new();
 
     for func in &mir.functions {
         let is_entry = func.id == mir.entry;
@@ -316,6 +365,8 @@ pub fn compile_module(mir: &MirModule, isa: std::sync::Arc<dyn TargetIsa>) -> Re
                 fn_rets: &fn_rets,
                 helpers: &helpers,
                 abi_ids: &mut abi_ids,
+                extern_ids: &mut extern_ids,
+                exported_ids: &exported_ids,
                 str_data: &str_data,
                 gvar_data: &gvar_data,
                 hybrid_argbuf,
@@ -335,14 +386,45 @@ pub fn compile_module(mir: &MirModule, isa: std::sync::Arc<dyn TargetIsa>) -> Re
 /// common case: `lk compile` on the current machine). Link the result against
 /// `lkrt` (see `lk-aot`'s `compile_native_executable_from_object`).
 pub fn compile_host_object(mir: &MirModule) -> Result<Vec<u8>, ClifError> {
+    compile_object_for(mir, &target_lexicon::Triple::host().to_string())
+}
+
+/// Compiles for an explicit target triple.
+///
+/// Cranelift's backends are per-architecture, not per-host: `isa::lookup` will
+/// build an aarch64 or riscv64 ISA on an x86-64 machine. What the *host* fixes
+/// is only the default, which is why this exists separately.
+///
+/// Note the object is only half of a cross build. It still has to be linked
+/// against an `lkrt` compiled for the same target, by a linker that knows it —
+/// see the driver.
+pub fn compile_object_for(mir: &MirModule, triple: &str) -> Result<Vec<u8>, ClifError> {
+    use core::str::FromStr;
     use cranelift_codegen::settings::{self, Configurable};
+
+    let mut triple = target_lexicon::Triple::from_str(triple)
+        .map_err(|e| ClifError::Module(format!("unknown target triple `{triple}`: {e}")))?;
+    let is_bare_metal = matches!(triple.operating_system, target_lexicon::OperatingSystem::None_);
+    // A bare-metal triple names no OS, so nothing implies an object format and
+    // the object writer refuses with "binary format is unknown". ELF is what
+    // every bare-metal ARM and RISC-V toolchain emits, and what the linker
+    // scripts those boards ship expect.
+    if triple.binary_format == target_lexicon::BinaryFormat::Unknown {
+        triple.binary_format = target_lexicon::BinaryFormat::Elf;
+    }
+
     let mut flags = settings::builder();
     let _ = flags.set("opt_level", "speed");
-    // Native executables link the runtime dynamically, so calls to `lkrt_*`
-    // must go through position-independent relocations (GOT/PLT). Without this
-    // macOS' linker rejects the object with "illegal text-relocations".
-    let _ = flags.set("is_pic", "true");
-    let isa = cranelift_native::builder()
+    // Hosted executables link the runtime dynamically, so calls to `lkrt_*` go
+    // through position-independent relocations (GOT/PLT); without this macOS'
+    // linker rejects the object with "illegal text-relocations".
+    //
+    // A bare-metal image has no dynamic loader and is linked to fixed
+    // addresses, so PIC there costs an indirection for nothing — and some
+    // linker scripts cannot satisfy the GOT it asks for.
+    let _ = flags.set("is_pic", if is_bare_metal { "false" } else { "true" });
+
+    let isa = cranelift_codegen::isa::lookup(triple)
         .map_err(|e| ClifError::Module(e.to_string()))?
         .finish(settings::Flags::new(flags))
         .map_err(|e| ClifError::Module(e.to_string()))?;
@@ -766,6 +848,53 @@ impl Lower {
                 };
                 self.set1(*dst, v);
             }
+            Inst::SymbolAddr { dst, symbol } => {
+                // An `#[export]`ed function of this module is taken by its own
+                // id: declaring it again under a made-up signature is what
+                // Cranelift rejects, and rightly — a table's signature is not
+                // each entry's. Anything else is the board's, and is imported
+                // with the table's signature, which is the only thing this side
+                // can know about it.
+                let callee = match mctx.exported_ids.get(symbol) {
+                    Some(id) => *id,
+                    None => mctx.extern_func(symbol, &[Ty::I64, Ty::I64], Ty::I64)?,
+                };
+                let reference = mctx.module.declare_func_in_func(callee, b.func);
+                let address = b.ins().func_addr(types::I64, reference);
+                self.set1(*dst, address);
+                return Ok(());
+            }
+            Inst::CallIndirect { dst, callee, args } => {
+                let target = self.v(*callee)?;
+                let a = self.args_v(args)?;
+                let cc = mctx.module.isa().default_call_conv();
+                let mut sig = Signature::new(cc);
+                for _ in &a {
+                    sig.params.push(AbiParam::new(types::I64));
+                }
+                sig.returns.push(AbiParam::new(types::I64));
+                let sig_ref = b.import_signature(sig);
+                let call = b.ins().call_indirect(sig_ref, target, &a);
+                if let Some(d) = dst {
+                    let result = *b
+                        .inst_results(call)
+                        .first()
+                        .ok_or(ClifError::Unsupported("indirect call returned nothing"))?;
+                    self.set1(*d, result);
+                }
+                return Ok(());
+            }
+            Inst::CallExtern {
+                dst,
+                symbol,
+                args,
+                arg_tys,
+                ret,
+            } => {
+                let a = self.args_v(args)?;
+                let callee = mctx.extern_func(symbol, arg_tys, *ret)?;
+                return self.call_raw(b, mctx, callee, *dst, ty_is_pair(*ret), &a);
+            }
             Inst::CallFn { dst, func, args } => {
                 let a = self.args_v(args)?;
                 let callee = *mctx
@@ -818,9 +947,38 @@ impl Lower {
                 let v = b.ins().fcvt_from_sint(types::F64, s);
                 self.set1(*dst, v);
             }
+            Inst::FloatToInt { dst, src } => {
+                let s = self.v(*src)?;
+                // `_sat`, not the trapping form: Rust's `as` saturates and maps
+                // NaN to 0, and the VM casts with Rust's `as`. The trapping
+                // conversion would abort where the VM returns a number.
+                let v = b.ins().fcvt_to_sint_sat(types::I64, s);
+                self.set1(*dst, v);
+            }
             Inst::ZextBool { dst, src } => {
                 let s = self.v(*src)?;
                 let v = b.ins().uextend(types::I64, s);
+                self.set1(*dst, v);
+            }
+            // Narrow to the machine width, then widen back into the `i64` the
+            // ABI carries integers in — the same normalisation the VM applies,
+            // so `255 as i8` is -1 on both backends.
+            Inst::IntTruncate { dst, src, bits, signed } => {
+                let s = self.v(*src)?;
+                let narrow = match bits {
+                    8 => types::I8,
+                    16 => types::I16,
+                    32 => types::I32,
+                    // Unreachable: lowering only emits 8/16/32 and drops
+                    // full-width truncations entirely.
+                    _ => return Err(ClifError::Unsupported("IntTruncate width must be 8, 16 or 32")),
+                };
+                let reduced = b.ins().ireduce(narrow, s);
+                let v = if *signed {
+                    b.ins().sextend(types::I64, reduced)
+                } else {
+                    b.ins().uextend(types::I64, reduced)
+                };
                 self.set1(*dst, v);
             }
             Inst::Not { dst, src } => {
@@ -1416,6 +1574,72 @@ mod tests {
     use cranelift_codegen::settings::{self, Configurable};
     use lk_aot_mir::{Block as MirBlock, BlockId, ValueId};
 
+    /// Cranelift's backends are per-architecture, so an x86-64 host can emit
+    /// aarch64. This is what makes a bare-metal cross build possible at all;
+    /// without it the Raspberry Pi could only ever run the interpreter.
+    #[test]
+    fn compiles_for_a_cross_target() {
+        let mir = cross_target_module();
+
+        // `e_machine` in the ELF header, rather than comparing whole objects:
+        // it names the architecture directly, where a byte difference only
+        // shows that *something* changed. Two aarch64 targets that differ only
+        // in PIC produce identical bytes for a function this small — there is
+        // no external reference for a relocation to apply to — so a
+        // whole-object comparison would prove less than it appears to.
+        const EM_AARCH64: u16 = 183;
+        const EM_X86_64: u16 = 62;
+        fn elf_machine(object: &[u8]) -> u16 {
+            u16::from_le_bytes([object[18], object[19]])
+        }
+
+        let bare_arm = compile_object_for(&mir, "aarch64-unknown-none").expect("aarch64 bare metal compiles");
+        assert_eq!(elf_machine(&bare_arm), EM_AARCH64, "bare-metal aarch64 object");
+
+        let linux_arm = compile_object_for(&mir, "aarch64-unknown-linux-gnu").expect("aarch64 linux compiles");
+        assert_eq!(elf_machine(&linux_arm), EM_AARCH64, "hosted aarch64 object");
+
+        let x64 = compile_object_for(&mir, "x86_64-unknown-linux-gnu").expect("x86-64 compiles");
+        assert_eq!(elf_machine(&x64), EM_X86_64, "the triple must select the backend");
+    }
+
+    #[test]
+    fn an_unknown_triple_is_an_error_not_a_silent_host_build() {
+        let err = compile_object_for(&cross_target_module(), "definitely-not-a-target").expect_err("must reject");
+        let message = format!("{err:?}");
+        assert!(message.contains("definitely-not-a-target"), "{message}");
+    }
+
+    /// A minimal module for the target-selection tests: one function that adds
+    /// its arguments, which every backend can lower.
+    fn cross_target_module() -> MirModule {
+        MirModule {
+            abi_version: 0,
+            globals: vec![],
+            mutable_globals: vec![],
+            vm_functions: vec![],
+            entry: FuncId(u32::MAX),
+            functions: vec![MirFunction {
+                id: FuncId(0),
+                params: vec![(vid(0), Ty::I64), (vid(1), Ty::I64)],
+                blocks: vec![MirBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![Inst::IntBin {
+                        dst: vid(2),
+                        op: IntBinOp::Add,
+                        lhs: vid(0),
+                        rhs: vid(1),
+                    }],
+                    term: Term::Ret(Some(vid(2))),
+                }],
+                entry: BlockId(0),
+                ret: Ty::I64,
+                export_name: None,
+            }],
+        }
+    }
+
     fn host_isa() -> std::sync::Arc<dyn TargetIsa> {
         let mut flags = settings::builder();
         flags.set("opt_level", "speed").unwrap();
@@ -1480,6 +1704,7 @@ mod tests {
             blocks: vec![block],
             entry: BlockId(0),
             ret: Ty::I64,
+            export_name: None,
         };
         compile_ok(vec![func]).expect("scalar arithmetic must compile");
     }
@@ -1523,6 +1748,7 @@ mod tests {
             blocks: vec![entry, join],
             entry: BlockId(0),
             ret: Ty::I64,
+            export_name: None,
         };
         compile_ok(vec![func]).expect("block-param control flow must compile");
     }
@@ -1547,6 +1773,7 @@ mod tests {
             }],
             entry: BlockId(0),
             ret: Ty::I64,
+            export_name: None,
         };
         // fn caller(x) -> i64 { return callee(x, 3) }
         let caller = MirFunction {
@@ -1570,6 +1797,7 @@ mod tests {
             }],
             entry: BlockId(0),
             ret: Ty::I64,
+            export_name: None,
         };
         compile_ok(vec![caller, callee]).expect("div + direct call must compile");
     }
@@ -1594,6 +1822,7 @@ mod tests {
             }],
             entry: BlockId(0),
             ret: Ty::I64,
+            export_name: None,
         };
         compile_ok(vec![func]).expect("scalar ABI call must compile");
     }
@@ -1621,6 +1850,7 @@ mod tests {
             }],
             entry: BlockId(0),
             ret: Ty::I64,
+            export_name: None,
         };
         // fn() -> str { return "hi" }
         let get_str = MirFunction {
@@ -1637,6 +1867,7 @@ mod tests {
             }],
             entry: BlockId(0),
             ret: Ty::Str,
+            export_name: None,
         };
         let mir = MirModule {
             abi_version: 0,
@@ -1673,6 +1904,7 @@ mod tests {
             }],
             entry: BlockId(0),
             ret: Ty::Nil,
+            export_name: None,
         };
         let mir = MirModule {
             abi_version: 0,
@@ -1711,6 +1943,7 @@ mod tests {
             }],
             entry: BlockId(0),
             ret: Ty::Nil,
+            export_name: None,
         };
         let mir = MirModule {
             abi_version: 1,
@@ -1740,6 +1973,7 @@ mod tests {
             }],
             entry: BlockId(0),
             ret: Ty::I64,
+            export_name: None,
         };
         let mir = MirModule {
             abi_version: 1,
@@ -1769,6 +2003,7 @@ mod tests {
             }],
             entry: BlockId(0),
             ret: Ty::Nil,
+            export_name: None,
         };
         assert!(matches!(compile_ok(vec![func]), Err(ClifError::Unsupported(_))));
     }
@@ -1800,6 +2035,7 @@ mod tests {
             }],
             entry: BlockId(0),
             ret: Ty::Nil,
+            export_name: None,
         };
         let mir = MirModule {
             abi_version: 0,
@@ -1830,6 +2066,7 @@ mod tests {
             }],
             entry: BlockId(0),
             ret: Ty::Dyn,
+            export_name: None,
         };
         compile_ok(vec![func]).expect("Dyn pair identity must compile");
     }

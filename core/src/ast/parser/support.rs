@@ -9,6 +9,16 @@ use crate::{
     token::{ParseError, Span, Token},
 };
 
+/// What a `{ … }` block's final expression means.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum BlockTail {
+    /// A closure body: the last expression is the closure's return value.
+    Return,
+    /// A block used as a value: the last expression is the block's value, and
+    /// control continues after it.
+    Value,
+}
+
 impl<'a> Parser<'a> {
     pub fn new(tokens: &'a [Token]) -> Self {
         let len = tokens.len();
@@ -151,7 +161,18 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn parse_closure_block_expr(&mut self) -> Result<Expr> {
+    pub(super) fn parse_closure_block_expr(&mut self) -> Result<Expr> {
+        self.parse_brace_block(BlockTail::Return)
+    }
+
+    /// Parse `{ … }` into an `Expr::Block`.
+    ///
+    /// `tail` decides what the final expression means. A closure body *returns*
+    /// it; a block used as a value merely evaluates to it. Getting this wrong is
+    /// not a type error — `unsafe { 1 }` compiled with `BlockTail::Return`
+    /// returns from the enclosing function instead, so the rest of the program
+    /// silently never runs.
+    pub(super) fn parse_brace_block(&mut self, tail: BlockTail) -> Result<Expr> {
         self.pos += 1;
         let start = self.pos;
         let mut paren = 0usize;
@@ -215,7 +236,8 @@ impl<'a> Parser<'a> {
         let mut stmt_parser = StmtParser::new(&inner);
         let program = stmt_parser.parse_program()?;
         let mut statements = program.statements;
-        if let Some(last) = statements.last_mut()
+        if tail == BlockTail::Return
+            && let Some(last) = statements.last_mut()
             && let Stmt::Expr(expr) = last.as_ref()
         {
             let value = expr.clone();

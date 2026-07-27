@@ -15,9 +15,27 @@
 //! stay set) — the raise paths below touch only their own `RefCell`s, and
 //! every ABI entry that can raise takes care to drop runtime borrows first.
 
-use core::ffi::{c_char, c_int, c_void};
-use std::cell::{Cell, RefCell};
-use std::ffi::CString;
+// `alloc`, not the std prelude: this module is part of the computation-only
+// subset that builds without an OS.
+#[allow(unused_imports)]
+use alloc::{
+    borrow::ToOwned,
+    boxed::Box,
+    format,
+    string::{String, ToString},
+    vec,
+    vec::Vec,
+};
+
+use alloc::ffi::CString;
+use core::cell::Cell;
+#[cfg(feature = "std")]
+use core::cell::RefCell;
+use core::ffi::{c_char, c_void};
+// `c_int` is only in the `_longjmp` declaration, which is hosted-only — the
+// bare-metal raise path unwinds by other means.
+#[cfg(feature = "std")]
+use core::ffi::c_int;
 
 use crate::lkdyn::LkDyn;
 use crate::lkstr::arena_c_string;
@@ -26,6 +44,7 @@ use crate::lkstr::arena_c_string;
 // what the generated IR declares (`returns_twice`), `_longjmp` is called
 // from the raise path here. A glibc x86-64 `jmp_buf` is 200 bytes; the
 // buffer is oversized and 16-aligned for safety across libcs.
+#[cfg(feature = "std")]
 unsafe extern "C" {
     fn _longjmp(env: *mut c_void, val: c_int) -> !;
 }
@@ -82,6 +101,10 @@ impl Drop for SpareJmpBuf {
     }
 }
 
+// Thread-local under std, spin-locked globals on bare metal, which has no TLS.
+// The lock guards against an interrupt handler reaching the runtime, not
+// against threads — on a single core there are none.
+#[cfg(feature = "std")]
 thread_local! {
     /// Live `try` frames, innermost last. The boxing is load-bearing (not a
     /// `vec_box` accident): `_setjmp` captured the buffer's address, which
@@ -94,13 +117,66 @@ thread_local! {
     static SPARE_BUF: SpareJmpBuf = const { SpareJmpBuf(Cell::new(core::ptr::null_mut())) };
 }
 
+#[cfg(not(feature = "std"))]
+#[allow(clippy::vec_box)]
+static HANDLERS_CELL: spin::Mutex<Vec<Box<JmpBuf>>> = spin::Mutex::new(Vec::new());
+#[cfg(not(feature = "std"))]
+static CURRENT_ERROR_CELL: spin::Mutex<LkDyn> = spin::Mutex::new(LkDyn::NIL);
+#[cfg(not(feature = "std"))]
+/// SAFETY: the pointer is only ever handed back to the runtime that allocated
+/// it, and the mutex serialises every access to the slot.
+#[cfg(not(feature = "std"))]
+struct SpareSlot(*mut JmpBuf);
+#[cfg(not(feature = "std"))]
+unsafe impl Send for SpareSlot {}
+#[cfg(not(feature = "std"))]
+static SPARE_BUF_CELL: spin::Mutex<SpareSlot> = spin::Mutex::new(SpareSlot(core::ptr::null_mut()));
+
+/// Runs `f` with the handler stack, however it is stored.
+#[cfg(feature = "std")]
+fn with_handlers<R>(f: impl FnOnce(&mut Vec<Box<JmpBuf>>) -> R) -> R {
+    HANDLERS.with(|handlers| f(&mut handlers.borrow_mut()))
+}
+
+#[cfg(not(feature = "std"))]
+fn with_handlers<R>(f: impl FnOnce(&mut Vec<Box<JmpBuf>>) -> R) -> R {
+    f(&mut HANDLERS_CELL.lock())
+}
+
+#[cfg(feature = "std")]
+fn with_current_error<R>(f: impl FnOnce(&Cell<LkDyn>) -> R) -> R {
+    CURRENT_ERROR.with(f)
+}
+
+#[cfg(not(feature = "std"))]
+fn with_current_error<R>(f: impl FnOnce(&Cell<LkDyn>) -> R) -> R {
+    let mut slot = CURRENT_ERROR_CELL.lock();
+    let cell = Cell::new(*slot);
+    let result = f(&cell);
+    *slot = cell.get();
+    result
+}
+
+#[cfg(feature = "std")]
+fn with_spare_buf<R>(f: impl FnOnce(&SpareJmpBuf) -> R) -> R {
+    SPARE_BUF.with(f)
+}
+
+#[cfg(not(feature = "std"))]
+fn with_spare_buf<R>(f: impl FnOnce(&SpareJmpBuf) -> R) -> R {
+    let mut slot = SPARE_BUF_CELL.lock();
+    let spare = SpareJmpBuf(Cell::new(slot.0));
+    let result = f(&spare);
+    slot.0 = spare.0.get();
+    result
+}
+
 /// Enters a `try` frame: pushes a fresh jump buffer and returns its address
 /// (the generated code passes it to `_setjmp`).
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_rt_try_push() -> *mut c_void {
-    let fresh = SPARE_BUF.with(SpareJmpBuf::take_or_alloc);
-    HANDLERS.with(|handlers| {
-        let mut handlers = handlers.borrow_mut();
+    let fresh = with_spare_buf(SpareJmpBuf::take_or_alloc);
+    with_handlers(|handlers| {
         handlers.push(fresh);
         let buf: &mut JmpBuf = handlers.last_mut().expect("just pushed");
         buf as *mut JmpBuf as *mut c_void
@@ -111,34 +187,47 @@ pub extern "C" fn lkrt_rt_try_push() -> *mut c_void {
 /// inside [`raise_current`] before the jump).
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_rt_try_pop() {
-    HANDLERS.with(|handlers| {
-        handlers.borrow_mut().pop();
+    with_handlers(|handlers| {
+        handlers.pop();
     });
 }
 
 /// The value of the raise that just landed (read in the catch arm).
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_rt_current_error() -> LkDyn {
-    CURRENT_ERROR.with(|slot| slot.get())
+    with_current_error(|slot| slot.get())
 }
 
 fn raise_current(value: LkDyn) -> ! {
-    CURRENT_ERROR.with(|slot| slot.set(value));
-    let target = HANDLERS.with(|handlers| handlers.borrow_mut().pop());
+    with_current_error(|slot| slot.set(value));
+    let target = with_handlers(|handlers| handlers.pop());
     match target {
         // Park (not free) the buffer: the longjmp still reads it. Bounded at
         // one parked buffer per thread; reclaimed at the next push/park/
         // thread end (see `SpareJmpBuf`).
-        Some(buf) => {
-            let raw = SPARE_BUF.with(|spare| spare.park(buf));
-            unsafe { _longjmp(raw as *mut c_void, 1) }
+        Some(_buf) => {
+            #[cfg(feature = "std")]
+            {
+                let raw = with_spare_buf(|spare| spare.park(_buf));
+                unsafe { _longjmp(raw as *mut c_void, 1) }
+            }
+            // Bare metal has no libc `setjmp`/`longjmp`, and the native
+            // lowering does not support `try`/`catch` there either — the
+            // trampoline that would make it work is skipped for those targets
+            // (see lkrt/build.rs). A handler cannot have been pushed, so this
+            // is unreachable in practice; aborting is the honest answer if it
+            // somehow is not.
+            #[cfg(not(feature = "std"))]
+            {
+                crate::abi::flush_and_abort()
+            }
         }
         // Uncaught: surface the error before dying — the VM prints its
         // uncaught message to stderr, a silent abort loses it. (Only the
         // stderr *text* differs across backends; the differential contract
         // compares stdout + success only.)
         None => {
-            eprintln!("lk: uncaught error: {}", crate::lkdyn::display_for_diagnostics(value));
+            crate::rt_eprintln!("lk: uncaught error: {}", crate::lkdyn::display_for_diagnostics(value));
             crate::abi::flush_and_abort()
         }
     }

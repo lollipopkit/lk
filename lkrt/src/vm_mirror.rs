@@ -20,6 +20,18 @@
 //! lkrt order-conformance test compares against `lk-core` directly, so a
 //! drift in any of these assumptions fails loudly.
 
+// `alloc`, not the std prelude: this module is part of the computation-only
+// subset that builds without an OS.
+#[allow(unused_imports)]
+use alloc::{
+    borrow::ToOwned,
+    boxed::Box,
+    format,
+    string::{String, ToString},
+    vec,
+    vec::Vec,
+};
+
 use core::ffi::{CStr, c_char, c_void};
 
 use crate::lkdyn::{DYN_BOOL, DYN_F64, DYN_I64, DYN_NIL, DYN_STR, LkDyn};
@@ -245,7 +257,7 @@ mod tests {
     use super::*;
     use crate::lkdyn::{lkrt_dyn_from_i64, lkrt_dyn_from_str};
     use crate::lkstr::arena_c_string;
-    use std::ffi::CString;
+    use alloc::ffi::CString;
 
     fn str_key(text: &str) -> LkDyn {
         let ptr = arena_c_string(CString::new(text).unwrap());

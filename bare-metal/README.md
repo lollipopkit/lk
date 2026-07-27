@@ -21,28 +21,57 @@ cargo run --release              # the runner in .cargo/config.toml starts QEMU
 Expected output, and an exit code of 0:
 
 ```
-sum(fib(0..9)) = 88
-sqrt(144) = 12
-max(3, 7) = 7
-floor(2.7) = 2
-upper = BARE METAL
-split = ["a","b","c"]
-bytes.len = 2
-doubled = [2,4,6]
-crc32 = 1391562372
-json.n = 42
-base64 = bGs=
-hex = 6c6b
-OK: lk ran on bare metal, returned 88
+LK drives hardware
+....................................................................
+OK: lk ran on bare metal, returned 0
 ```
 
-That is byte-identical to `lk bare-metal/demo.lk` on a host — including the
-`libm`-computed `sqrt` and the crc32 — which is the point: swapping in `libm`,
-`hashbrown` and spin locks for their std counterparts must not change what a
-program computes.
+That first line does not come from semihosting. It comes from `uart.lk` — a
+UART driver written in LK — configuring the board's CMSDK APB UART, polling its
+status register until the transmit buffer drains, and sending the bytes. The
+text arriving on the serial line is the proof that volatile MMIO from LK reaches
+real hardware:
 
-There is a second image, `artifact_only`, which runs the same program from
-precompiled bytecode instead of source — see [Footprint](#footprint):
+```lk
+fn uart_putc(byte: Int) {
+    let full = 1;
+    while (full != 0) {
+        let state = unsafe { volatile_read_u32((UART0_BASE + REG_STATE) as *mut u32) };
+        full = state & STATE_TX_FULL;
+    }
+    unsafe { volatile_write_u32((UART0_BASE + REG_DATA) as *mut u32, byte as u32); };
+}
+```
+
+That poll is the access a non-volatile load would let the compiler hoist out of
+the loop, hanging it forever.
+
+Each `.` after it is a SysTick interrupt. The timer is armed from LK too —
+reload value, counter clear, then enable with the interrupt bit set:
+
+```lk
+fn systick_start(reload: Int) {
+    unsafe { volatile_write_u32(SYST_RVR as *mut u32, reload as u32); };
+    unsafe { volatile_write_u32(SYST_CVR as *mut u32, 0 as u32); };
+    unsafe { cpu_barrier(); };
+    let csr = SYST_ENABLE | SYST_TICKINT | SYST_CLKSOURCE;
+    unsafe { volatile_write_u32(SYST_CSR as *mut u32, csr as u32); };
+}
+```
+
+The handler itself is Rust (`#[exception] fn SysTick`) and writes the character
+straight to the UART. It does *not* call back into the VM: an interrupt can land
+in the middle of any bytecode instruction, and the executor is not re-entrant.
+Touching only hardware from the handler sidesteps that, which is the usual shape
+for the fast half of an interrupt anyway — acknowledge, do the minimum, leave
+the rest to the main loop.
+
+The second image, `artifact_only`, runs the language-feature corpus
+(`demo.lk`) from precompiled bytecode instead of source. Its output is
+byte-identical to `lk bare-metal/demo.lk` on a host — including the
+`libm`-computed `sqrt` and the crc32 — which is the other half of the guarantee:
+swapping in `libm`, `hashbrown` and spin locks for their std counterparts must
+not change what a program computes. See [Footprint](#footprint):
 
 ```bash
 cargo run --release --bin artifact_only

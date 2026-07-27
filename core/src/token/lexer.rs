@@ -66,6 +66,13 @@ pub enum Token {
     Catch,    // catch (try's error handler)
     Case,     // case
     Default,  // default
+    /// `unsafe` — opts into the operations whose correctness the compiler
+    /// cannot check: raw pointers, volatile access, inline assembly.
+    ///
+    /// Note this is *not* the same as "cannot run on the VM". The unchecked
+    /// operations themselves are what the bytecode backend has no meaning for;
+    /// ordinary arithmetic inside an `unsafe` block runs there like any other.
+    Unsafe,
     // Concurrency keywords
     Select, // select
     Go,     // go (spawn a goroutine, Go-style)
@@ -113,9 +120,6 @@ const fn build_ascii_class() -> [u8; 256] {
         if c == b'_' {
             table[i] |= ASCII_IDENT_START | ASCII_IDENT_CONT;
         }
-        if c == b'-' {
-            table[i] |= ASCII_IDENT_CONT;
-        }
         i += 1;
     }
     table
@@ -144,7 +148,7 @@ fn is_ident_continue(c: char) -> bool {
     if flags != 0 {
         flags & ASCII_IDENT_CONT != 0
     } else {
-        c.is_alphanumeric() || matches!(c, '_' | '-')
+        c.is_alphanumeric() || c == '_'
     }
 }
 
@@ -499,6 +503,22 @@ impl<'a> Tokenizer<'a> {
         let mut dot_count = 0;
         let mut has_exp = false;
 
+        // Radix-prefixed integers. Driver code names hardware in hex
+        // (`0x3F20_0000`) and describes register fields in binary
+        // (`0b1010_0000`); writing those in decimal is how transcription
+        // errors happen.
+        if self.chars[self.idx] == '0' && self.idx + 1 < self.len {
+            let radix = match self.chars[self.idx + 1] {
+                'x' | 'X' => Some(16),
+                'b' | 'B' => Some(2),
+                'o' | 'O' => Some(8),
+                _ => None,
+            };
+            if let Some(radix) = radix {
+                return self.parse_radix_int(radix, start_pos);
+            }
+        }
+
         while !self.eof() {
             let c = self.chars[self.idx];
             if c.is_ascii_digit() {
@@ -687,6 +707,10 @@ impl<'a> Tokenizer<'a> {
             self.push_span_only(Token::Match, sp);
             return Ok(());
         }
+        if let Some(sp) = match_kw(self, "unsafe") {
+            self.push_span_only(Token::Unsafe, sp);
+            return Ok(());
+        }
         if let Some(sp) = match_kw(self, "try") {
             self.push_span_only(Token::Try, sp);
             return Ok(());
@@ -749,6 +773,39 @@ impl<'a> Tokenizer<'a> {
         };
         let end_pos = self.current_position();
         self.push_with_span(parsed, start_pos, end_pos);
+        Ok(())
+    }
+
+    /// `0x…` / `0b…` / `0o…`, with `_` allowed as a group separator.
+    ///
+    /// Parsed as `u64` and reinterpreted, so `0xFFFF_FFFF_FFFF_FFFF` is `-1`
+    /// rather than an overflow error: at these radices the programmer is
+    /// writing a bit pattern, and refusing the top bit would make every
+    /// all-ones mask unwritable.
+    fn parse_radix_int(&mut self, radix: u32, start_pos: crate::token::Position) -> Result<()> {
+        self.advance_char(); // '0'
+        self.advance_char(); // radix marker
+        let mut digits = String::new();
+        while !self.eof() {
+            let c = self.chars[self.idx];
+            if c == '_' {
+                self.advance_char();
+                continue;
+            }
+            if c.is_digit(radix) {
+                digits.push(c);
+                self.advance_char();
+            } else {
+                break;
+            }
+        }
+        if digits.is_empty() {
+            return Err(anyhow!(self.err("Expected digits after the radix prefix")));
+        }
+        let value = u64::from_str_radix(&digits, radix)
+            .map_err(|_| anyhow!("{}: {}", self.err("Integer literal out of range"), digits))?;
+        let end_pos = self.current_position();
+        self.push_with_span(Token::Int(value as i64), start_pos, end_pos);
         Ok(())
     }
 

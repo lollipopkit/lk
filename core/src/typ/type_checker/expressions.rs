@@ -9,7 +9,7 @@ use crate::expr::Expr;
 use crate::operator::{BinOp, UnaryOp};
 use crate::typ::{NumericClass, NumericHierarchy};
 use crate::val::{FunctionNamedParamType, LiteralVal, Type};
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use hashbrown::HashMap;
 
 impl TypeChecker {
@@ -103,6 +103,208 @@ impl TypeChecker {
         self.check_expr_inner(expr)
     }
 
+    /// `expr as T`.
+    ///
+    /// Casts are only allowed where a bit-level reinterpretation is meaningful:
+    /// between numbers, and between numbers and `Bool`. Casting a `List` to a
+    /// `u8` is a mistake, not a reinterpretation, so it stays an error rather
+    /// than silently producing something.
+    ///
+    /// The source type is checked but does not otherwise constrain the result:
+    /// a cast's whole job is to produce the target type. Range is deliberately
+    /// *not* checked — `300 as u8` is 44, because a driver author writing a
+    /// cast is asking for those bits at that width, not for a bounds check.
+    /// The range check lives on the annotation path instead (`let x: u8 = 300`
+    /// is an error), which is where a mistake is more likely than an intent.
+    fn check_cast(&mut self, inner: &Expr, target: &Type) -> Result<Type> {
+        let source = self.check_expr(inner)?;
+        if !cast_is_meaningful(&source, target) {
+            return Err(anyhow!(
+                "cannot cast {} to {}: casts are only defined between numeric types",
+                source.display(),
+                target.display()
+            ));
+        }
+        Ok(target.clone())
+    }
+
+    /// Checks an `unsafe` block's contents.
+    ///
+    /// `Expr::Block` on its own type-checks to `Any` without looking inside —
+    /// blocks are mostly produced by desugars, which are checked before they
+    /// are built. That is fine for those, but it would make `unsafe { … }` a
+    /// hole in the type system: precisely the construct that needs *more*
+    /// scrutiny would get none. So the statements are checked here.
+    ///
+    /// The block's own type stays `Any` for now, matching `Expr::Block`; a
+    /// block that evaluates to a typed value is a separate change.
+    fn check_unsafe_body(&mut self, inner: &Expr) -> Result<Type> {
+        let Expr::Block(statements) = inner else {
+            return self.check_expr(inner);
+        };
+        for stmt in statements {
+            stmt.type_check(self)?;
+        }
+        Ok(Type::Any)
+    }
+
+    /// The `cpu_*` intrinsics: barriers, interrupt masking, wait-for-interrupt.
+    ///
+    /// These need `unsafe` for a different reason than pointers do — nothing
+    /// here can corrupt memory. Masking interrupts or parking the core changes
+    /// the machine's state in a way the rest of the program's correctness may
+    /// depend on, and getting the nesting wrong deadlocks rather than crashes.
+    /// Marking it makes the region auditable.
+    fn check_cpu_builtin(&mut self, name: &str, args: &[Box<Expr>]) -> Result<Option<Type>> {
+        let (arity, result) = match name {
+            "cpu_barrier" | "cpu_compiler_barrier" | "cpu_wait_for_interrupt" => (0, Type::Nil),
+            "cpu_irq_save" | "cpu_timestamp" => (0, Type::Int),
+            "cpu_irq_restore" => (1, Type::Nil),
+            _ => return Ok(None),
+        };
+        if args.len() != arity {
+            return Err(anyhow!("{name} expects {arity} argument(s), got {}", args.len()));
+        }
+        if !self.in_unsafe() {
+            return Err(anyhow!(
+                "{name} requires an `unsafe` block: it changes machine state the rest of the \
+                 program's correctness can depend on"
+            ));
+        }
+        if name == "cpu_irq_restore" {
+            let saved = self.check_expr(&args[0])?;
+            if !self.is_assignable(&saved, &Type::Int) {
+                return Err(anyhow!(
+                    "cpu_irq_restore expects the value returned by cpu_irq_save, got {}",
+                    saved.display()
+                ));
+            }
+        }
+        Ok(Some(result))
+    }
+
+    /// `port_in_uN(port)` / `port_out_uN(port, value)` — x86 port I/O.
+    ///
+    /// A separate address space from memory, reached by the `in`/`out`
+    /// instructions rather than by a load or a store, which is why it cannot
+    /// reuse the volatile intrinsics: there is no pointer to take. The port
+    /// number is 16-bit; the value's width is in the name for the same reason
+    /// it is for `volatile_*`.
+    ///
+    /// x86 only. Other architectures memory-map their devices and have no such
+    /// instructions, so a program that uses these is inherently x86 code — the
+    /// runtime raises there rather than pretending.
+    fn check_port_builtin(&mut self, name: &str, args: &[Box<Expr>]) -> Result<Option<Type>> {
+        let Some((is_write, kind)) = parse_port_builtin(name) else {
+            return Ok(None);
+        };
+        let expected_args = if is_write { 2 } else { 1 };
+        if args.len() != expected_args {
+            return Err(anyhow!(
+                "{name} expects {expected_args} argument(s), got {}",
+                args.len()
+            ));
+        }
+        if !self.in_unsafe() {
+            return Err(anyhow!(
+                "{name} requires an `unsafe` block: the compiler cannot check what device answers \
+                 at that port, or what writing to it does"
+            ));
+        }
+        let port_ty = self.check_expr(&args[0])?;
+        if !self.is_assignable(&port_ty, &Type::Int)
+            && !self.is_assignable(&port_ty, &Type::MachineInt(lk_values::IntKind::U16))
+        {
+            return Err(anyhow!(
+                "{name} expects a port number as its first argument, got {}",
+                port_ty.display()
+            ));
+        }
+        let value_ty = Type::MachineInt(kind);
+        if is_write {
+            let written = self.check_expr(&args[1])?;
+            if !self.is_assignable(&written, &value_ty) {
+                return Err(anyhow!(
+                    "{name} expects a {} value, got {}",
+                    value_ty.display(),
+                    written.display()
+                ));
+            }
+            return Ok(Some(Type::Nil));
+        }
+        Ok(Some(value_ty))
+    }
+
+    /// `volatile_read_uN(ptr)` / `volatile_write_uN(ptr, value)`.
+    ///
+    /// Returns `None` for any other name, so ordinary calls fall through.
+    ///
+    /// These are intrinsics rather than syntax on purpose. `*p` would need the
+    /// *compiler* to know the pointee's width to emit the right load, and the
+    /// compiler has no access to the type checker — the width lives in the name
+    /// instead. It also makes the volatile-ness explicit, which `*p` never is
+    /// in any language.
+    fn check_volatile_builtin(&mut self, name: &str, args: &[Box<Expr>]) -> Result<Option<Type>> {
+        if let Some(result) = self.check_cpu_builtin(name, args)? {
+            return Ok(Some(result));
+        }
+        if let Some(result) = self.check_port_builtin(name, args)? {
+            return Ok(Some(result));
+        }
+        let Some((is_write, kind)) = parse_volatile_builtin(name) else {
+            return Ok(None);
+        };
+        let expected_args = if is_write { 2 } else { 1 };
+        if args.len() != expected_args {
+            return Err(anyhow!(
+                "{name} expects {expected_args} argument(s), got {}",
+                args.len()
+            ));
+        }
+        if !self.in_unsafe() {
+            return Err(anyhow!(
+                "{name} requires an `unsafe` block: the compiler cannot check that the address is \
+                 mapped, aligned, or safe to access"
+            ));
+        }
+
+        let value_ty = Type::MachineInt(kind);
+        let ptr_ty = self.check_expr(&args[0])?;
+        let resolved = self.resolve_aliases(&ptr_ty);
+        let Type::Ptr { pointee, mutable } = &resolved else {
+            return Err(anyhow!(
+                "{name} expects a pointer as its first argument, got {}",
+                ptr_ty.display()
+            ));
+        };
+        if pointee.as_ref() != &value_ty {
+            return Err(anyhow!(
+                "{name} expects a pointer to {}, got {}",
+                value_ty.display(),
+                ptr_ty.display()
+            ));
+        }
+        if is_write && !mutable {
+            return Err(anyhow!(
+                "{name} needs a `*mut` pointer; {} is read-only",
+                ptr_ty.display()
+            ));
+        }
+
+        if is_write {
+            let written = self.check_expr(&args[1])?;
+            if !self.is_assignable(&written, &value_ty) {
+                return Err(anyhow!(
+                    "{name} expects a {} value, got {}",
+                    value_ty.display(),
+                    written.display()
+                ));
+            }
+            return Ok(Some(Type::Nil));
+        }
+        Ok(Some(value_ty))
+    }
+
     /// Internal expression checker without recording.
     fn check_expr_inner(&mut self, expr: &Expr) -> Result<Type> {
         match expr {
@@ -111,6 +313,18 @@ impl TypeChecker {
 
             // Variables
             Expr::Var(name) => self.check_identifier(name),
+
+            // Explicit conversion
+            Expr::Cast(inner, target) => self.check_cast(inner, target),
+
+            // `unsafe { … }` — the block's own type, checked with the
+            // unchecked operations permitted inside it.
+            Expr::Unsafe(inner) => {
+                self.enter_unsafe();
+                let result = self.check_unsafe_body(inner);
+                self.exit_unsafe();
+                result
+            }
 
             // Binary operations
             Expr::Bin(_, _, _) => self.check_binary_op_iter(expr),
@@ -193,11 +407,27 @@ impl TypeChecker {
             }
             // Functions - handle both Call (string name) and CallExpr (expression)
             Expr::Call(func, args) => {
+                // Volatile access is checked here rather than through an
+                // ordinary signature: its argument must be a *pointer of the
+                // matching width*, which a plain `(usize) -> u32` signature
+                // cannot express, and it has to demand `unsafe`.
+                if let Some(result) = self.check_volatile_builtin(func, args)? {
+                    return Ok(result);
+                }
                 // For Call with string name, create a variable expression for the function
                 let func_expr = Expr::Var(func.clone());
                 self.check_function_call(&func_expr, args)
             }
-            Expr::CallExpr(func_expr, args) => self.check_function_call(func_expr, args),
+            Expr::CallExpr(func_expr, args) => {
+                // Source-level calls parse to `CallExpr`; `Call` is only built
+                // by internal desugars.
+                if let Expr::Var(name) = func_expr.as_ref()
+                    && let Some(result) = self.check_volatile_builtin(name, args)?
+                {
+                    return Ok(result);
+                }
+                self.check_function_call(func_expr, args)
+            }
             Expr::CallNamed(callee, pos_args, named_args) => {
                 // Struct constructor sugar: TypeName(field: expr, ...)
                 if let Expr::Var(name) = callee.as_ref()
@@ -449,7 +679,12 @@ impl TypeChecker {
                 // closure, and must not be collected as a return of the enclosing
                 // function (whose declared type it would then have to satisfy).
                 self.push_return_frame();
+                // Like a named function's body: a closure runs when it is
+                // called, which is after the top level has finished, so it may
+                // read a binding declared below it.
+                let pending = self.suspend_pending_top_level();
                 let ret_type = self.check_expr(body);
+                self.restore_pending_top_level(pending);
                 let _ = self.pop_return_frame();
                 let ret_type = ret_type?;
                 Ok(Type::Function {
@@ -527,6 +762,18 @@ impl TypeChecker {
             return Ok(typ.clone());
         }
 
+        // A top-level binding declared further down the file. The top level
+        // runs in order, so this read gets nil — and the error that eventually
+        // surfaces is about nil, not about order.
+        if self.is_pending_top_level(name) {
+            return Err(Self::type_err(
+                &format!("`{name}` is used before it is defined; move its definition above this statement"),
+                None,
+                None,
+                Some(Expr::Var(name.to_string())),
+            ));
+        }
+
         // Check type registry for named types
         if let Some(typ) = self.registry.resolve_type(name) {
             return Ok(typ);
@@ -582,8 +829,7 @@ impl TypeChecker {
                 Ok(Type::Bool)
             }
             BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
-                self.ensure_numeric_operand(&left_type, left_expr, "左侧")?;
-                self.ensure_numeric_operand(&right_type, right_expr, "右侧")?;
+                self.check_ordering_operands(left_expr, &left_type, right_expr, &right_type)?;
                 Ok(Type::Bool)
             }
             BinOp::In => match self.resolve_aliases(&right_type) {
@@ -704,6 +950,40 @@ impl TypeChecker {
         let resolved_left = self.resolve_aliases(left_ty);
         let resolved_right = self.resolve_aliases(right_ty);
 
+        // Machine integers stay in their own width: `u8 + u8` is `u8`, wrapping
+        // on overflow. Mixing widths or signedness is an error rather than a
+        // promotion — the same reason they do not convert implicitly. Promoting
+        // to `Int` here would silently give the operation 64-bit semantics,
+        // which is exactly what a driver author asked not to have.
+        if let (Type::MachineInt(left_kind), Type::MachineInt(right_kind)) = (&resolved_left, &resolved_right) {
+            if left_kind != right_kind {
+                return Err(Self::type_err(
+                    "machine integer operands must have the same type",
+                    Some(Type::MachineInt(*left_kind)),
+                    Some(Type::MachineInt(*right_kind)),
+                    Some(right_expr.clone()),
+                ));
+            }
+            // Division still yields the same width, unlike `Int / Int -> Float`:
+            // a fixed-width type has no float to promote to, and integer
+            // division is what the hardware does.
+            return Ok(Type::MachineInt(*left_kind));
+        }
+        // A machine integer on one side only is a width mistake, not a promotion.
+        if matches!(resolved_left, Type::MachineInt(_)) || matches!(resolved_right, Type::MachineInt(_)) {
+            let (offending, expr) = if matches!(resolved_left, Type::MachineInt(_)) {
+                (&resolved_right, right_expr)
+            } else {
+                (&resolved_left, left_expr)
+            };
+            return Err(Self::type_err(
+                "machine integers do not mix with other numeric types; cast explicitly",
+                Some(Type::MachineInt(lk_values::IntKind::U8)),
+                Some(offending.clone()),
+                Some(expr.clone()),
+            ));
+        }
+
         let left_class = self.classify_numeric_operand(left_ty, &resolved_left, left_expr, "左侧")?;
         let right_class = self.classify_numeric_operand(right_ty, &resolved_right, right_expr, "右侧")?;
 
@@ -735,6 +1015,57 @@ impl TypeChecker {
             Some(resolved.clone()),
             Some(expr.clone()),
         ))
+    }
+
+    /// `<`, `<=`, `>`, `>=` — including machine integers, which the numeric
+    /// hierarchy deliberately does not classify.
+    ///
+    /// Ordering is where the hierarchy's own rule (promote to the wider class)
+    /// is wrong for a fixed-width type: there is nothing to promote to, and
+    /// promoting to `Int` would give the comparison 64-bit semantics. So the
+    /// machine-int cases are answered here — same width compares, mixed widths
+    /// are the same error mixed-width arithmetic gives — and everything else
+    /// goes to the hierarchy unchanged. Without this, `u32 < u32` was rejected
+    /// as "not numeric", which is the one thing it obviously is.
+    fn check_ordering_operands(
+        &mut self,
+        left_expr: &Expr,
+        left_ty: &Type,
+        right_expr: &Expr,
+        right_ty: &Type,
+    ) -> Result<()> {
+        let resolved_left = self.resolve_aliases(left_ty);
+        let resolved_right = self.resolve_aliases(right_ty);
+        match (&resolved_left, &resolved_right) {
+            (Type::MachineInt(left_kind), Type::MachineInt(right_kind)) => {
+                if left_kind != right_kind {
+                    return Err(Self::type_err(
+                        "machine integer operands must have the same type",
+                        Some(Type::MachineInt(*left_kind)),
+                        Some(Type::MachineInt(*right_kind)),
+                        Some(right_expr.clone()),
+                    ));
+                }
+                Ok(())
+            }
+            (Type::MachineInt(kind), other) => Err(Self::type_err(
+                "machine integers do not mix with other numeric types; cast explicitly",
+                Some(Type::MachineInt(*kind)),
+                Some(other.clone()),
+                Some(right_expr.clone()),
+            )),
+            (other, Type::MachineInt(kind)) => Err(Self::type_err(
+                "machine integers do not mix with other numeric types; cast explicitly",
+                Some(Type::MachineInt(*kind)),
+                Some(other.clone()),
+                Some(left_expr.clone()),
+            )),
+            _ => {
+                self.ensure_numeric_operand(left_ty, left_expr, "左侧")?;
+                self.ensure_numeric_operand(right_ty, right_expr, "右侧")?;
+                Ok(())
+            }
+        }
     }
 
     fn ensure_numeric_operand(&mut self, ty: &Type, expr: &Expr, label: &'static str) -> Result<NumericClass> {
@@ -1411,4 +1742,69 @@ impl TypeChecker {
             _ => self.check_access(expr, field),
         }
     }
+}
+
+/// Whether reinterpreting `source` as `target` has a defined meaning.
+///
+/// `Any` is on both sides because it is the dynamic escape hatch — a value of
+/// unknown type has to be castable, or nothing dynamic could ever reach a
+/// machine-typed boundary.
+fn cast_is_meaningful(source: &Type, target: &Type) -> bool {
+    fn is_scalar(ty: &Type) -> bool {
+        matches!(
+            ty,
+            Type::Int | Type::MachineInt(_) | Type::Float | Type::Bool | Type::Any
+        )
+    }
+    fn is_integral(ty: &Type) -> bool {
+        matches!(ty, Type::Int | Type::MachineInt(_) | Type::Any)
+    }
+
+    match (source, target) {
+        // Address ↔ pointer. This is how a hardware register gets named at all:
+        // `0x3F20_0000 as *mut u32`. Only integers convert — a `Float` address
+        // is meaningless, and building one from a `Bool` is a mistake.
+        (integral, Type::Ptr { .. }) if is_integral(integral) => true,
+        (Type::Ptr { .. }, integral) if is_integral(integral) => true,
+        // Retyping a pointer: `*u8` to `*mut u32`. The pointee and mutability
+        // are the programmer's claim to make, which is why this needs `unsafe`
+        // at the point of *use* rather than here.
+        (Type::Ptr { .. }, Type::Ptr { .. }) => true,
+        _ => is_scalar(source) && is_scalar(target),
+    }
+}
+
+/// Splits a `port_{in,out}_uN` name into its direction and width.
+///
+/// Only 8/16/32 bits: `in`/`out` have no 64-bit form on x86.
+fn parse_port_builtin(name: &str) -> Option<(bool, lk_values::IntKind)> {
+    let (is_write, rest) = match name.strip_prefix("port_in_") {
+        Some(rest) => (false, rest),
+        None => (true, name.strip_prefix("port_out_")?),
+    };
+    let kind = match rest {
+        "u8" => lk_values::IntKind::U8,
+        "u16" => lk_values::IntKind::U16,
+        "u32" => lk_values::IntKind::U32,
+        _ => return None,
+    };
+    Some((is_write, kind))
+}
+
+/// Splits a `volatile_{read,write}_uN` name into its direction and width.
+fn parse_volatile_builtin(name: &str) -> Option<(bool, lk_values::IntKind)> {
+    let (is_write, rest) = match name.strip_prefix("volatile_read_") {
+        Some(rest) => (false, rest),
+        None => (true, name.strip_prefix("volatile_write_")?),
+    };
+    // Only unsigned widths: a hardware register is a bit pattern, and a signed
+    // reading of one is the caller's interpretation, made with a cast.
+    let kind = match rest {
+        "u8" => lk_values::IntKind::U8,
+        "u16" => lk_values::IntKind::U16,
+        "u32" => lk_values::IntKind::U32,
+        "u64" => lk_values::IntKind::U64,
+        _ => return None,
+    };
+    Some((is_write, kind))
 }

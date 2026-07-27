@@ -17,7 +17,7 @@ pub(crate) mod vm {
 mod backend;
 mod native_executable;
 
-pub use backend::{ClifArtifact, compile_artifact_to_clif_object};
+pub use backend::{ClifArtifact, compile_artifact_to_clif_object, compile_object_for_target};
 pub use lk_aot_lower::BundledImport;
 pub use native_executable::{
     HybridLink, compile_native_executable_from_object, compile_native_executable_from_object_hybrid,

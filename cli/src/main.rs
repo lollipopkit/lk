@@ -8,7 +8,7 @@ use std::sync::{Arc, Once};
 static PERF_TRACE_INIT: Once = Once::new();
 const DEFAULT_TRACE_FILTER: &str = "lk::vm::alloc=trace,lk::vm::slowpath=debug,lk_core=info,lk_cli=info";
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand};
 #[cfg(feature = "aot")]
 use lk_core::macro_system::{ProcMacroDependencyFingerprint, fingerprint_proc_macro_dependencies};
 use lk_core::{
@@ -30,6 +30,7 @@ use anyhow::Context;
 mod bytecode_cache;
 mod coverage;
 mod diagnostic;
+mod fmt;
 #[cfg(test)]
 mod main_test;
 mod mem;
@@ -47,6 +48,7 @@ mod startup_trace;
 use self::native_compile::*;
 
 use coverage::run_coverage_report;
+use fmt::run_fmt;
 #[cfg(test)]
 use paths::split_compile_args_with_cwd;
 use paths::{expand_program_file, parse_options_for_file, parse_sanitized_path, sanitize_path, split_compile_args};
@@ -71,7 +73,7 @@ struct CliArgs {
     file: Option<PathBuf>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CompileMode {
     /// Emit a `.lkm` bytecode module. This is an INTERNAL artifact (version-locked
     /// to this build, like Python's `.pyc`), not a distribution format — ship
@@ -79,6 +81,17 @@ pub(crate) enum CompileMode {
     Bytecode,
     /// Emit a native executable (default).
     Exe,
+    /// Emit a relocatable object file for a given target, and stop.
+    ///
+    /// This is the bare-metal path. LK does not link those images itself, and
+    /// should not: the linker script, entry point and memory map belong to the
+    /// board, not to the language. Emitting an object lets an existing
+    /// embedded build (cargo + build.rs + a linker script, or a Makefile) place
+    /// it — the same way a C library is consumed.
+    Object {
+        /// Target triple, e.g. `aarch64-unknown-none`.
+        triple: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -99,12 +112,14 @@ enum Commands {
         #[arg(value_name = "FILE", value_parser = parse_sanitized_path)]
         file: PathBuf,
     },
-    /// Format a source file in place (4-space indent). `--check` reports without writing.
+    /// Format LK sources in place (4-space indent). Without a path, formats the
+    /// whole project (nearest `Lk.toml` directory, else the current directory).
+    /// `--check` reports without writing.
     Fmt {
-        /// Source file to format
-        #[arg(value_name = "FILE", value_parser = parse_sanitized_path)]
-        file: PathBuf,
-        /// Do not write; exit non-zero if the file is not already formatted.
+        /// Files or directories to format. Defaults to the whole project.
+        #[arg(value_name = "PATH", value_parser = parse_sanitized_path)]
+        paths: Vec<PathBuf>,
+        /// Do not write; exit non-zero if any file is not already formatted.
         #[arg(long)]
         check: bool,
     },
@@ -412,14 +427,28 @@ fn main() -> anyhow::Result<()> {
                 let compile_mode = pos_target;
 
                 #[cfg(feature = "aot")]
-                if compile_mode != CompileMode::Exe && output.is_some() {
-                    anyhow::bail!("--output is only supported for `lk compile <FILE>`");
+                if matches!(compile_mode, CompileMode::Bytecode) && output.is_some() {
+                    anyhow::bail!("--output is only supported for `lk compile <FILE>` and `object:<triple>`");
                 }
 
                 match compile_mode {
                     CompileMode::Bytecode => {
                         compile_instr_module(&safe)?;
                         return Ok(());
+                    }
+                    CompileMode::Object { triple } => {
+                        #[cfg(not(feature = "aot"))]
+                        {
+                            let _ = triple;
+                            anyhow::bail!(
+                                "native backend disabled at build time; rebuild with `--features aot` to emit objects"
+                            );
+                        }
+                        #[cfg(feature = "aot")]
+                        {
+                            compile_object(&safe, &triple, output.as_deref())?;
+                            return Ok(());
+                        }
                     }
                     CompileMode::Exe => {
                         #[cfg(not(feature = "aot"))]
@@ -438,8 +467,8 @@ fn main() -> anyhow::Result<()> {
                 run_type_check(&file)?;
                 return Ok(());
             }
-            Commands::Fmt { file, check } => {
-                run_fmt(&file, check)?;
+            Commands::Fmt { paths, check } => {
+                run_fmt(&paths, check)?;
                 return Ok(());
             }
             Commands::Bundle { file, output } => {
@@ -540,6 +569,16 @@ fn main() -> anyhow::Result<()> {
     // of the source bytes (external proc-macro output is not).
     let macro_free = expansion.proc_macro_dependencies.is_empty();
     let program = expansion.program;
+
+    // Cross-file signatures, checked here rather than inside the VM: the type
+    // check `execute_with_ctx` runs has no path to resolve imports against, so
+    // this is the only place a running program gets the same checking that
+    // `lk check` and `lk compile` give it.
+    {
+        let mut checker = TypeChecker::new();
+        seed_imports(&program, &safe, &mut checker);
+        program.type_check(&mut checker)?;
+    }
 
     let mut base_env = build_vm_context(&safe)?;
 
@@ -754,6 +793,7 @@ fn run_type_check(path: &Path) -> anyhow::Result<()> {
         anyhow::anyhow!(parse_err.to_string())
     })?;
     let mut checker = TypeChecker::new_strict();
+    seed_imports(&expanded.program, path, &mut checker);
     if let Err(err) = expanded.program.type_check(&mut checker) {
         let mut message = err.to_string();
         if let Some(span) = type_error_span(&err, &expanded.source.tokens, &expanded.source.spans)
@@ -763,6 +803,20 @@ fn run_type_check(path: &Path) -> anyhow::Result<()> {
             message.push_str(&note);
         }
         diagnostic::error(anyhow::anyhow!(message));
+        std::process::exit(1);
+    }
+    // Then compile it, without running it.
+    //
+    // Type checking answers "do the types agree", not "can this be built": a
+    // call to a name that does not exist anywhere passes the type check (the
+    // callee is `Any`) and fails in the compiler with `undefined callable`.
+    // Without this step `lk check` reported success for a program that could
+    // not be compiled at all — the one thing a check command must not do. The
+    // compiler is reused rather than a second undefined-name analysis written
+    // here, so the two cannot drift apart about what counts as defined.
+    let mut ctx = build_vm_context(path)?;
+    if let Err(err) = compile_program_module_with_ctx(&expanded.program, &mut ctx) {
+        diagnostic::error(anyhow::anyhow!(err.to_string()));
         std::process::exit(1);
     }
     Ok(())
@@ -791,60 +845,6 @@ fn heap_object_limit_from_env() -> Option<usize> {
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|&limit| limit > 0)
-}
-
-/// `lk fmt FILE` — normalize indentation of `.lk` source in place (4-space,
-/// brace/paren/bracket aware; blank lines kept blank). Mirrors the LSP document
-/// formatter. `check` reports drift without writing (plan M5.3).
-fn run_fmt(path: &Path, check: bool) -> anyhow::Result<()> {
-    let input = std::fs::read_to_string(path).map_err(|e| anyhow::anyhow!("read {}: {}", path.display(), e))?;
-    let formatted = format_lk_source(&input);
-    if check {
-        if formatted != input {
-            anyhow::bail!("{} is not formatted (run `lk fmt {}`)", path.display(), path.display());
-        }
-        return Ok(());
-    }
-    if formatted != input {
-        std::fs::write(path, &formatted).map_err(|e| anyhow::anyhow!("write {}: {}", path.display(), e))?;
-        println!("formatted {}", path.display());
-    }
-    Ok(())
-}
-
-/// Indentation formatter (idempotent): 4-space, brace/paren/bracket aware.
-fn format_lk_source(input: &str) -> String {
-    const TAB: usize = 4;
-    let mut out = String::with_capacity(input.len() + 16);
-    let mut indent: isize = 0;
-    for raw in input.lines() {
-        let line = raw.trim();
-        let leading_closers = line
-            .chars()
-            .take_while(|c| c.is_whitespace() || matches!(c, '}' | ')' | ']'))
-            .filter(|c| matches!(c, '}' | ')' | ']'))
-            .count();
-        if leading_closers > 0 && indent > 0 {
-            indent = (indent - leading_closers as isize).max(0);
-        }
-        if !line.is_empty() {
-            for _ in 0..(indent.max(0) as usize * TAB) {
-                out.push(' ');
-            }
-            out.push_str(line);
-        }
-        out.push('\n');
-        let delta: isize = line
-            .chars()
-            .map(|c| match c {
-                '{' | '(' | '[' => 1,
-                '}' | ')' | ']' => -1,
-                _ => 0,
-            })
-            .sum();
-        indent = (indent + delta).max(0);
-    }
-    out
 }
 
 /// AOT Tier 0: bundle `source_path` into a self-contained native executable that
@@ -958,89 +958,197 @@ fn register_package_modules(resolver: &ModuleResolver, modules: &[PackageModule]
 /// binding map goes to the lowering. Only *pure function-definition* modules
 /// bundle (an entry with top-level effects, nested file imports, or non-file
 /// import forms in the dep fails → the caller falls back to Tier 0).
+/// What `bundle_file_imports` concluded.
 #[cfg(feature = "aot")]
-fn bundle_file_imports(
-    source: &Path,
-    artifact: &ModuleArtifact,
-) -> anyhow::Result<Option<(ModuleArtifact, Vec<lk_aot::BundledImport>)>> {
-    use lk_core::stmt::{ImportSource, ImportStmt};
+pub(crate) enum BundleOutcome {
+    /// No file imports to bundle.
+    Nothing,
+    /// Bundling would change the program's meaning. The string says why, in a
+    /// form worth showing a user: the executable path falls back silently, but
+    /// `compile object:` has no fallback and would otherwise report a symptom
+    /// (an unlowerable `GetGlobal`) rather than a cause.
+    Declined(String),
+    Bundled(ModuleArtifact, Vec<lk_aot::BundledImport>),
+}
+
+#[cfg(feature = "aot")]
+fn bundle_file_imports(source: &Path, artifact: &ModuleArtifact) -> anyhow::Result<BundleOutcome> {
     use lk_core::vm::{Instr, Opcode};
 
-    let mut paths: Vec<String> = Vec::new();
-    for import in &artifact.imports {
-        let path = match import {
-            ImportStmt::File { path } => Some(path),
-            ImportStmt::Items {
-                source: ImportSource::File(path),
-                ..
-            }
-            | ImportStmt::Namespace {
-                source: ImportSource::File(path),
-                ..
-            } => Some(path),
-            _ => None,
-        };
-        if let Some(path) = path
-            && !paths.contains(path)
-        {
-            paths.push(path.clone());
-        }
+    let base_dir = source.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
+    // Depth-first over the import graph, so a driver may import another
+    // driver. Keyed by resolved path rather than by the text of the import,
+    // because two files can name the same module differently — and because
+    // that is also what makes a cycle terminate.
+    let mut queue: Vec<(String, PathBuf)> = file_import_paths(&artifact.imports)
+        .into_iter()
+        .map(|path| resolve_bundled_import(&base_dir, &path).map(|resolved| (path, resolved)))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    if queue.is_empty() {
+        return Ok(BundleOutcome::Nothing);
     }
-    if paths.is_empty() {
-        return Ok(None);
-    }
+    // Keyed by resolved path, and remembering what each one exported: a file
+    // reached twice is merged once, but *both* import paths still need a
+    // binding table. `drivers/ata` imported by the program and `ata` imported
+    // by a driver next to it are the same file under two names; recording only
+    // the first left the second one's `use { .. }` resolving to nothing, which
+    // the lowering reports as an unresolved global far from the cause.
+    let mut bundled_fns: std::collections::HashMap<PathBuf, std::collections::HashMap<String, u32>> =
+        std::collections::HashMap::new();
+    // Every constant any bundled module defined, and which module defined it.
+    // Two deps exporting the same name would both fold into one merged slot,
+    // and the first one popped off the queue would win for the importer's
+    // reads — silently, and depending on traversal order. Under the VM each
+    // module keeps its own namespace, so that is a divergence rather than a
+    // preference.
+    let mut bundled_consts: std::collections::HashMap<String, String> = std::collections::HashMap::new();
 
-    let base_dir = source.parent().unwrap_or_else(|| Path::new("."));
     let mut merged = artifact.clone();
-    let mut bundles = Vec::with_capacity(paths.len());
-    for import_path in paths {
-        let raw = Path::new(&import_path);
-        // Mirror the runtime resolver's candidates: `p` (already .lk),
-        // `p.lk`, `p/mod.lk`, under the importing file's directory.
-        let mut candidates = Vec::new();
-        if raw.extension().and_then(|e| e.to_str()) == Some("lk") {
-            candidates.push(base_dir.join(raw));
+    let mut bundles: Vec<lk_aot::BundledImport> = Vec::new();
+    while let Some((import_path, dep_path)) = queue.pop() {
+        let canonical = std::fs::canonicalize(&dep_path).unwrap_or_else(|_| dep_path.clone());
+        if let Some(fns) = bundled_fns.get(&canonical) {
+            bundles.push(lk_aot::BundledImport {
+                path: import_path,
+                fns: fns.clone(),
+            });
+            continue;
         }
-        candidates.push(base_dir.join(raw.with_extension("lk")));
-        candidates.push(base_dir.join(raw).join("mod.lk"));
-        let dep_path = candidates
-            .into_iter()
-            .find(|c| c.exists())
-            .ok_or_else(|| anyhow::anyhow!("bundled import not found: {import_path}"))?;
 
         let dep = compile_instr_artifact_with_dependencies(&dep_path)?.artifact;
-        // v1 guards: no nested file imports, no item/alias imports (their
-        // bindings would need the dep's own import environment).
-        for dep_import in &dep.imports {
-            match dep_import {
-                ImportStmt::Module { .. } => {}
-                other => anyhow::bail!("bundled import '{import_path}' has an unsupported nested import: {other:?}"),
-            }
+        // Bundling this module would give its functions a *reference* to the
+        // caller's containers where the VM hands them a copy. Rather than
+        // produce a program that computes something the VM would not, decline
+        // to bundle: the caller falls back, and `compile object:` — which has
+        // no fallback — reports it.
+        if module_may_mutate_a_parameter(&dep.module) {
+            return Ok(BundleOutcome::Declined(format!(
+                "'{import_path}' has a function that writes through a container parameter, keeps one, \
+                 or calls a method on one. Bundling would hand it the caller's container by reference, \
+                 while the VM gives each module its own copy — so the two would disagree"
+            )));
+        }
+        // The dep's own file imports resolve relative to *its* directory, not
+        // the importing file's.
+        let dep_dir = dep_path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
+        for nested in file_import_paths(&dep.imports) {
+            let resolved = resolve_bundled_import(&dep_dir, &nested)
+                .with_context(|| format!("nested import of '{import_path}'"))?;
+            queue.push((nested, resolved));
         }
         let dep_entry = dep.module.entry as usize;
         // The dep entry must be pure `fn` bookkeeping: LoadFunction+SetGlobal
         // pairs and the implicit return. Anything else is a top-level effect
         // the bundle would silently skip — reject instead.
+        // The dep's entry must be pure binding: `fn` definitions, which the
+        // merge performs directly, and scalar constants, which fold into their
+        // uses. Anything else is rejected — see the container case below for
+        // why this restriction is what keeps the two backends agreeing.
         let mut reg_fn: std::collections::HashMap<u8, u32> = std::collections::HashMap::new();
+        let mut reg_const: std::collections::HashMap<u8, BundledConst> = std::collections::HashMap::new();
         let mut fns: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
         let mut pairs: Vec<(String, u32)> = Vec::new();
-        for raw_instr in &dep.module.functions[dep_entry].code {
+        let mut dep_consts: Vec<(String, BundledConst)> = Vec::new();
+        let dep_entry_fn = &dep.module.functions[dep_entry];
+        for raw_instr in &dep_entry_fn.code {
             let instr = Instr::try_from_raw(*raw_instr)
                 .map_err(|_| anyhow::anyhow!("bundled import '{import_path}': bad instruction"))?;
             match instr.opcode() {
                 Opcode::LoadFunction => {
                     reg_fn.insert(instr.a(), u32::from(instr.bx()));
                 }
+                Opcode::LoadInt => {
+                    let value = dep_entry_fn
+                        .consts
+                        .ints
+                        .get(instr.bx() as usize)
+                        .copied()
+                        .ok_or_else(|| anyhow::anyhow!("bundled import '{import_path}': bad int constant"))?;
+                    reg_const.insert(instr.a(), BundledConst::Int(value));
+                }
+                Opcode::LoadFloat => {
+                    let value = dep_entry_fn
+                        .consts
+                        .floats
+                        .get(instr.bx() as usize)
+                        .copied()
+                        .ok_or_else(|| anyhow::anyhow!("bundled import '{import_path}': bad float constant"))?;
+                    reg_const.insert(instr.a(), BundledConst::Float(value));
+                }
+                Opcode::LoadString => {
+                    let value = dep_entry_fn
+                        .consts
+                        .strings
+                        .get(instr.bx() as usize)
+                        .cloned()
+                        .ok_or_else(|| anyhow::anyhow!("bundled import '{import_path}': bad string constant"))?;
+                    reg_const.insert(instr.a(), BundledConst::Str(value));
+                }
+                Opcode::LoadBool => {
+                    reg_const.insert(instr.a(), BundledConst::Bool(instr.b() != 0));
+                }
+                Opcode::LoadNil => {
+                    reg_const.insert(instr.a(), BundledConst::Nil);
+                }
                 Opcode::SetGlobal => {
-                    let Some(&fidx) = reg_fn.get(&instr.a()) else {
-                        anyhow::bail!("bundled import '{import_path}' has a non-function top-level binding");
-                    };
                     let name = dep.module.globals.get(instr.bx() as usize).cloned().unwrap_or_default();
-                    pairs.push((name, fidx));
+                    if let Some(&fidx) = reg_fn.get(&instr.a()) {
+                        pairs.push((name, fidx));
+                    } else if let Some(value) = reg_const.get(&instr.a()) {
+                        dep_consts.push((name, value.clone()));
+                    } else {
+                        anyhow::bail!(
+                            "bundled import '{import_path}' has a top-level binding that is neither a function \
+                             nor a scalar constant"
+                        );
+                    }
                 }
                 Opcode::Return0 => {}
+                // A container at a module's top level cannot cross this
+                // boundary and keep the VM's meaning.
+                //
+                // Bundling *flattens* the modules into one, so a container the
+                // module exposes becomes shared with the importer. The VM
+                // gives each module its own heap and copies a container that
+                // crosses the boundary — measurably: with `const NAMES = […]`
+                // in a module, `let xs = get(); xs.push(…)` changes what the
+                // module sees under a flattened build and does not under the
+                // VM. Rejecting here is what keeps the two backends agreeing;
+                // it is not an arbitrary limit on what a module may hold.
+                Opcode::LoadHeapConst => anyhow::bail!(
+                    "bundled import '{import_path}' has a container at its top level. Bundling flattens \
+                     modules together, which would share it with the importer, while the VM gives each \
+                     module its own copy. Move it to the importing file, or build it inside a function."
+                ),
                 other => {
                     anyhow::bail!("bundled import '{import_path}' has top-level effects (opcode {other:?})")
+                }
+            }
+        }
+
+        // A binding the *main* module also writes would leave two definitions
+        // sharing one merged slot, because the merge maps globals by name.
+        // Refuse rather than pick one.
+        for (name, _) in &dep_consts {
+            if let Some(previous) = bundled_consts.get(name) {
+                anyhow::bail!(
+                    "bundled imports '{previous}' and '{import_path}' both define `{name}`. Bundling merges \
+                     them into one slot, so one definition would silently win; the VM gives each module its \
+                     own. Rename one of them."
+                );
+            }
+            bundled_consts.insert(name.clone(), import_path.clone());
+            if let Some(slot) = artifact.module.globals.iter().position(|g| g == name) {
+                let main_entry = artifact.module.entry as usize;
+                let written = artifact.module.functions[main_entry].code.iter().any(|raw| {
+                    Instr::try_from_raw(*raw)
+                        .map(|i| i.opcode() == Opcode::SetGlobal && i.bx() as usize == slot)
+                        .unwrap_or(false)
+                });
+                if written {
+                    anyhow::bail!(
+                        "bundled import '{import_path}' defines `{name}`, which the importing file also defines"
+                    );
                 }
             }
         }
@@ -1118,7 +1226,320 @@ fn bundle_file_imports(
                 .ok_or_else(|| anyhow::anyhow!("bundled import '{import_path}': dangling fn binding"))?;
             fns.insert(name, merged_fidx);
         }
+        // A bundled module's constants have no initialiser in the merged
+        // program: its entry — the only code that would have run the
+        // assignment — is the one function the merge drops. Rather than splice
+        // an initialiser into the importing entry (which would shift every pc
+        // and invalidate the pc-keyed facts), fold the value into each read.
+        // They are constants; substituting them is what `const` means.
+        if !dep_consts.is_empty() {
+            let const_slots: std::collections::HashMap<u16, BundledConst> = dep_consts
+                .into_iter()
+                .map(|(name, value)| (slot_of(&name, &mut merged.module.globals), value))
+                .collect();
+            for function in &mut merged.module.functions {
+                fold_global_constants(function, &const_slots)
+                    .with_context(|| format!("bundled import '{import_path}': folding constants"))?;
+            }
+        }
+
+        bundled_fns.insert(canonical, fns.clone());
         bundles.push(lk_aot::BundledImport { path: import_path, fns });
     }
-    Ok(Some((merged, bundles)))
+    Ok(BundleOutcome::Bundled(merged, bundles))
+}
+
+/// The file imports (`use "path"` in any of its forms) a module declares.
+#[cfg(feature = "aot")]
+fn file_import_paths(imports: &[lk_core::stmt::ImportStmt]) -> Vec<String> {
+    use lk_core::stmt::{ImportSource, ImportStmt};
+    let mut paths = Vec::new();
+    for import in imports {
+        let path = match import {
+            ImportStmt::File { path } => Some(path),
+            ImportStmt::Items {
+                source: ImportSource::File(path),
+                ..
+            }
+            | ImportStmt::Namespace {
+                source: ImportSource::File(path),
+                ..
+            } => Some(path),
+            _ => None,
+        };
+        if let Some(path) = path
+            && !paths.contains(path)
+        {
+            paths.push(path.clone());
+        }
+    }
+    paths
+}
+
+/// Mirrors the runtime resolver's candidates: `p` (already `.lk`), `p.lk`, and
+/// `p/mod.lk`, under the importing file's directory.
+#[cfg(feature = "aot")]
+fn resolve_bundled_import(base_dir: &Path, import_path: &str) -> anyhow::Result<PathBuf> {
+    let raw = Path::new(import_path);
+    let mut candidates = Vec::new();
+    if raw.extension().and_then(|e| e.to_str()) == Some("lk") {
+        candidates.push(base_dir.join(raw));
+    }
+    candidates.push(base_dir.join(raw.with_extension("lk")));
+    candidates.push(base_dir.join(raw).join("mod.lk"));
+    candidates
+        .into_iter()
+        .find(|candidate| candidate.exists())
+        .ok_or_else(|| anyhow::anyhow!("bundled import not found: {import_path}"))
+}
+
+/// Whether any function in a module can mutate or retain a container that came
+/// in as a parameter.
+///
+/// Bundling flattens the modules into one program, so an argument reaches the
+/// callee by reference. The VM runs them as separate modules with separate
+/// heaps and *copies* arguments across the boundary — deliberately: see
+/// `copy_runtime_positional_args_to_frame` and the `cross_heap` tests. The two
+/// therefore disagree the moment a callee writes through a parameter, and the
+/// disagreement is silent:
+///
+/// ```lk
+/// // m.lk:  fn put(xs: List<Int>, i: Int, v: Int) { xs[i] = v; }
+/// let xs = [0, 0, 0];
+/// put(xs, 0, 7);
+/// xs[0]        // VM: 0 (the module got a copy).  Bundled: 7.
+/// ```
+///
+/// So a module that might do this is not bundled at all. The caller then falls
+/// back (or, for `compile object:`, reports it), which is the outcome that
+/// cannot be wrong.
+///
+/// Reads are fine and stay bundlable: indexing, iterating, `len`. What counts
+/// as unsafe is writing through a parameter, storing one in a global, calling
+/// a method on one (the method table is not enumerated here, so an unknown
+/// method is assumed to mutate), or passing one to a function that does — the
+/// last of which is why this is a fixpoint over the module's own functions.
+#[cfg(feature = "aot")]
+fn module_may_mutate_a_parameter(module: &lk_core::vm::ModuleData) -> bool {
+    use lk_core::vm::{Instr, Opcode};
+
+    // `unsafe_params[f][i]`: function `f` may mutate or retain its parameter
+    // `i`. Grows monotonically, so the fixpoint terminates.
+    let mut unsafe_params: Vec<Vec<bool>> = module
+        .functions
+        .iter()
+        .map(|function| vec![false; function.param_count as usize])
+        .collect();
+
+    // Only a *container* parameter can be aliased into the caller — a scalar is
+    // copied either way. The bytecode carries no parameter types, so
+    // container-ness is read off the operations: a register a container opcode
+    // touches is one. Over-approximate on purpose; guessing "container" for
+    // something that is not costs a needlessly unbundled module, and guessing
+    // the other way costs a wrong answer.
+    let container_regs: Vec<std::collections::HashSet<u8>> = module
+        .functions
+        .iter()
+        .map(|function| {
+            let mut regs = std::collections::HashSet::new();
+            for raw in &function.code {
+                let Ok(instr) = Instr::try_from_raw(*raw) else {
+                    continue;
+                };
+                if matches!(
+                    instr.opcode(),
+                    Opcode::GetIndex
+                        | Opcode::GetList
+                        | Opcode::SetIndex
+                        | Opcode::SetIndexStrI
+                        | Opcode::GetIndexStrI
+                        | Opcode::GetFieldK
+                        | Opcode::SetFieldK
+                        | Opcode::ListPush
+                        | Opcode::ToIter
+                        | Opcode::Len
+                        | Opcode::Contains
+                        | Opcode::SliceFrom
+                        | Opcode::CallMethodK
+                ) {
+                    regs.insert(instr.a());
+                    regs.insert(instr.b());
+                    regs.insert(instr.c());
+                }
+            }
+            regs
+        })
+        .collect();
+
+    loop {
+        let mut changed = false;
+        for (fi, function) in module.functions.iter().enumerate() {
+            // A parameter arrives in the register with its own index.
+            let mut tainted: std::collections::HashMap<u8, usize> = (0..function.param_count)
+                .filter_map(|i| u8::try_from(i).ok().map(|reg| (reg, i as usize)))
+                .filter(|(reg, _)| container_regs[fi].contains(reg))
+                .collect();
+            let mark = |slot: usize, unsafe_params: &mut Vec<Vec<bool>>, changed: &mut bool| {
+                if let Some(flag) = unsafe_params[fi].get_mut(slot)
+                    && !*flag
+                {
+                    *flag = true;
+                    *changed = true;
+                }
+            };
+            for raw in &function.code {
+                let Ok(instr) = Instr::try_from_raw(*raw) else {
+                    continue;
+                };
+                match instr.opcode() {
+                    // A handle copied into another register carries the taint;
+                    // anything else that writes a register produces a *new*
+                    // value, so it does not.
+                    Opcode::Move => {
+                        if let Some(&slot) = tainted.get(&instr.b()) {
+                            tainted.insert(instr.a(), slot);
+                        } else {
+                            tainted.remove(&instr.a());
+                        }
+                    }
+                    // Writes through the container in `a`.
+                    Opcode::SetIndex | Opcode::SetIndexStrI | Opcode::SetFieldK | Opcode::ListPush => {
+                        if let Some(&slot) = tainted.get(&instr.a()) {
+                            mark(slot, &mut unsafe_params, &mut changed);
+                        }
+                    }
+                    // Outliving the call is as observable as mutating.
+                    Opcode::SetGlobal => {
+                        if let Some(&slot) = tainted.get(&instr.a()) {
+                            mark(slot, &mut unsafe_params, &mut changed);
+                        }
+                    }
+                    // The receiver is `a`. `len` and indexing are opcodes of
+                    // their own, so what reaches here is the long tail — and
+                    // the safe assumption about a method this does not know is
+                    // that it writes.
+                    Opcode::CallMethodK => {
+                        if let Some(&slot) = tainted.get(&instr.a()) {
+                            mark(slot, &mut unsafe_params, &mut changed);
+                        }
+                    }
+                    // A direct call passes registers `b+1..b+1+argc`; taint
+                    // flows to the callee's parameter of the same position.
+                    Opcode::CallDirect => {
+                        let callee = instr.b() as usize;
+                        let base = instr.a();
+                        let argc = instr.c() as usize;
+                        for arg in 0..argc {
+                            let Some(reg) = base.checked_add(1).and_then(|r| r.checked_add(arg as u8)) else {
+                                continue;
+                            };
+                            let Some(&slot) = tainted.get(&reg) else {
+                                continue;
+                            };
+                            if unsafe_params.get(callee).and_then(|p| p.get(arg)).copied() == Some(true) {
+                                mark(slot, &mut unsafe_params, &mut changed);
+                            }
+                        }
+                    }
+                    // An indirect call could be anything, including a closure
+                    // that keeps the handle.
+                    Opcode::Call | Opcode::CallNamed => {
+                        let base = instr.a();
+                        for offset in 1..=instr.c() {
+                            if let Some(reg) = base.checked_add(offset)
+                                && let Some(&slot) = tainted.get(&reg)
+                            {
+                                mark(slot, &mut unsafe_params, &mut changed);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    unsafe_params.iter().any(|params| params.iter().any(|flag| *flag))
+}
+
+/// A scalar a bundled module binds at its top level.
+#[cfg(feature = "aot")]
+#[derive(Clone, Debug)]
+enum BundledConst {
+    Int(i64),
+    Float(f64),
+    Str(String),
+    Bool(bool),
+    Nil,
+}
+
+/// Rewrites every `GetGlobal` of a bundled constant into a load of its value.
+///
+/// One instruction replaces one instruction, so pcs — and the facts keyed by
+/// them — are untouched. The value goes into the reading function's own
+/// constant pool, since pools are per function.
+#[cfg(feature = "aot")]
+fn fold_global_constants(
+    function: &mut lk_core::vm::FunctionData,
+    const_slots: &std::collections::HashMap<u16, BundledConst>,
+) -> anyhow::Result<()> {
+    use lk_core::vm::{Instr, Opcode};
+
+    for index in 0..function.code.len() {
+        let Ok(instr) = Instr::try_from_raw(function.code[index]) else {
+            continue;
+        };
+        if instr.opcode() != Opcode::GetGlobal {
+            continue;
+        }
+        let Some(value) = const_slots.get(&instr.bx()) else {
+            continue;
+        };
+        let replacement = match value {
+            BundledConst::Int(value) => {
+                let slot = pool_index(&mut function.consts.ints, *value)?;
+                Instr::abx(Opcode::LoadInt, instr.a(), slot)
+            }
+            BundledConst::Float(value) => {
+                let slot = pool_index_by(&mut function.consts.floats, *value, |a, b| a.to_bits() == b.to_bits())?;
+                Instr::abx(Opcode::LoadFloat, instr.a(), slot)
+            }
+            BundledConst::Str(value) => {
+                let slot = pool_index(&mut function.consts.strings, value.clone())?;
+                Instr::abx(Opcode::LoadString, instr.a(), slot)
+            }
+            BundledConst::Bool(value) => Instr::abc(Opcode::LoadBool, instr.a(), u8::from(*value), 0),
+            BundledConst::Nil => Instr::abc(Opcode::LoadNil, instr.a(), 0, 0),
+        };
+        function.code[index] = replacement.raw();
+    }
+    Ok(())
+}
+
+#[cfg(feature = "aot")]
+fn pool_index<T: PartialEq>(pool: &mut Vec<T>, value: T) -> anyhow::Result<u16> {
+    pool_index_by(pool, value, |a, b| a == b)
+}
+
+#[cfg(feature = "aot")]
+fn pool_index_by<T>(pool: &mut Vec<T>, value: T, eq: impl Fn(&T, &T) -> bool) -> anyhow::Result<u16> {
+    if let Some(index) = pool.iter().position(|existing| eq(existing, &value)) {
+        return u16::try_from(index).map_err(|_| anyhow::anyhow!("constant pool index overflow"));
+    }
+    pool.push(value);
+    u16::try_from(pool.len() - 1).map_err(|_| anyhow::anyhow!("constant pool index overflow"))
+}
+
+/// Gives the checker the signatures of everything `path`'s program imports
+/// from other files.
+///
+/// Without it those names are `Any`, and a call across a module boundary is
+/// not checked at all — the error surfaces much later, from the native
+/// lowering, naming an opcode rather than the call.
+fn seed_imports(program: &lk_core::stmt::Program, path: &Path, checker: &mut TypeChecker) {
+    let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
+    lk_core::typ::seed_imported_signatures(program, base_dir, checker);
 }

@@ -289,6 +289,16 @@ pub(crate) fn reachable_functions(module: &lk_core::vm::ModuleData, extra_roots:
     }
     let mut stack = vec![entry];
     reachable[entry] = true;
+    // An `#[export]`ed function is a root whether or not LK code calls it —
+    // being callable from outside the module is the whole point. Without this
+    // an interrupt handler, which by definition has no call site in the
+    // program, is pruned and the link fails on an undefined symbol.
+    for (fi, function) in module.functions.iter().enumerate() {
+        if function.export_name.is_some() && !reachable[fi] {
+            reachable[fi] = true;
+            stack.push(fi);
+        }
+    }
     for &root in extra_roots {
         if root < n && !reachable[root] {
             reachable[root] = true;

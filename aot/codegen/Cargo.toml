@@ -7,7 +7,12 @@ edition = "2024"
 name = "lk_aot_codegen"
 
 [dependencies]
-cranelift-codegen = "0.133.1"
+# `all-arch` rather than the default host-only backend set. Cranelift compiles
+# a backend per architecture and gates each behind a feature; without this,
+# asking for an aarch64 ISA fails at run time with "Support for this target is
+# disabled" — supporting a target and having it *built in* are different
+# things. The cost is compile time for backends a given build may not use.
+cranelift-codegen = { version = "0.133.1", features = ["all-arch"] }
 cranelift-frontend = "0.133.1"
 cranelift-module = "0.133.1"
 cranelift-native = "0.133.1"

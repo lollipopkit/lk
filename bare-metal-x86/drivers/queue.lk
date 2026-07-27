@@ -1,0 +1,77 @@
+// A byte ring in shared memory.
+//
+// An interrupt handler cannot allocate, and it cannot block waiting for a
+// reader either — so what it produces has to go somewhere fixed, and be
+// dropped rather than queued forever when the reader falls behind. That is the
+// whole design: one writer (the handler), one reader (a task), no locking
+// beyond the critical section the caller already holds.
+//
+// Layout at a caller-chosen address:
+//
+//   +0  head (next slot to read)    +4  tail (next slot to write)
+//   +8  dropped
+//   +16 CAPACITY bytes
+//
+// `head == tail` means empty, so one slot is always left unused — the
+// alternative is a separate count, which is a second thing to keep in step.
+
+const CAPACITY = 32;
+const DATA = 16;
+
+fn read_word(address: Int) -> Int {
+    let value = unsafe { volatile_read_u32(address as *mut u32) };
+    return value as Int;
+}
+
+fn write_word(address: Int, value: Int) {
+    unsafe { volatile_write_u32(address as *mut u32, value as u32); };
+}
+
+fn queue_byte(address: Int) -> Int {
+    let value = unsafe { volatile_read_u8(address as *mut u8) };
+    return value as Int;
+}
+
+fn queue_set_byte(address: Int, value: Int) {
+    unsafe { volatile_write_u8(address as *mut u8, value as u8); };
+}
+
+fn reset(ring: Int) {
+    write_word(ring, 0);
+    write_word(ring + 4, 0);
+    write_word(ring + 8, 0);
+}
+
+fn is_empty(ring: Int) -> Bool {
+    return read_word(ring) == read_word(ring + 4);
+}
+
+fn drop_total(ring: Int) -> Int {
+    return read_word(ring + 8);
+}
+
+// Appends a byte, or counts it as dropped when the ring is full. Dropping is
+// the only option a handler has: there is no one to wait for.
+fn push(ring: Int, value: Int) {
+    let tail = read_word(ring + 4);
+    let next = (tail + 1) % CAPACITY;
+    if (next == read_word(ring)) {
+        write_word(ring + 8, read_word(ring + 8) + 1);
+        return;
+    }
+    queue_set_byte(ring + DATA + tail, value);
+    write_word(ring + 4, next);
+}
+
+// The next byte, or 0 when empty. Callers check `is_empty` first; 0 is
+// returned rather than raising because the reader is often a task loop where
+// an error has nowhere to go either.
+fn pop(ring: Int) -> Int {
+    let head = read_word(ring);
+    if (head == read_word(ring + 4)) {
+        return 0;
+    }
+    let value = queue_byte(ring + DATA + head);
+    write_word(ring, (head + 1) % CAPACITY);
+    return value;
+}

@@ -84,6 +84,13 @@ pub(super) fn compile_instr_artifact_with_dependencies(path: &Path) -> anyhow::R
     // valid: `let x: Int = "s"; println(x);` failed at run time under the VM but
     // compiled and *ran* fine as a native binary, printing `s`.
     let mut type_checker = lk_core::typ::TypeChecker::new();
+    // Cross-file signatures first: without them an imported call is unchecked
+    // here and fails much later in the lowering, naming an opcode.
+    lk_core::typ::seed_imported_signatures(
+        &expansion.program,
+        path.parent().unwrap_or_else(|| Path::new(".")),
+        &mut type_checker,
+    );
     expansion
         .program
         .type_check(&mut type_checker)
@@ -97,6 +104,82 @@ pub(super) fn compile_instr_artifact_with_dependencies(path: &Path) -> anyhow::R
     })
 }
 
+#[cfg(feature = "aot")]
+/// Emits a relocatable object for `triple` and stops.
+///
+/// No linking, deliberately. A bare-metal image's linker script, entry point
+/// and memory map belong to the board rather than to the language, and every
+/// embedded toolchain already has a way to place an object. Emitting one lets
+/// LK be consumed the way a C library is — by a `build.rs`, a Makefile, or
+/// whatever the board's build already uses.
+///
+/// Nothing falls back here either: a shape that cannot lower natively is an
+/// error, not a silent Tier 0 bundle. The bundle embeds the interpreter and a
+/// host runtime, which is not something a bare-metal target could link even if
+/// it wanted to.
+/// Warns when the target's *Rust* toolchain defaults to a soft-float ABI.
+///
+/// The emitted object always passes `f64` the hardware way — Cranelift has no
+/// soft-float mode — so linking it against Rust code built with the target's
+/// defaults makes every float that crosses the boundary read the wrong
+/// register. Nothing detects that: the symbol names agree, so it links, and the
+/// program computes wrong numbers.
+///
+/// LK cannot see how the other side is being built, so this is a warning rather
+/// than an error. Saying nothing is the one option that is certainly wrong.
+fn warn_if_soft_float_target(triple: &str) {
+    let soft_float = match triple.split('-').next().unwrap_or_default() {
+        // `*-unknown-none` on x86 sets `+soft-float`, on the assumption that a
+        // kernel does not want to save SSE state.
+        "x86_64" | "i586" | "i686" => triple.contains("-none"),
+        // No F/D extension unless the triple asks for it.
+        arch if arch.starts_with("riscv") => !triple.contains('d') && triple.contains("-none"),
+        _ => false,
+    };
+    if !soft_float {
+        return;
+    }
+    eprintln!(
+        "warning: {triple} defaults to a soft-float ABI, but this object passes floats in \
+         hardware registers.\n         Build the code you link it against with \
+         `-C target-feature=-soft-float,+sse,+sse2` (and enable SSE in your boot path),\n         \
+         or floats crossing the boundary will silently read the wrong registers."
+    );
+}
+
+/// `lk compile object:<triple>` — the bare-metal path, and part of the AOT
+/// surface: it bundles imports and lowers through the same pipeline. Gated with
+/// the rest of it, or a build without `aot` fails on the bundler types rather
+/// than simply not offering the command.
+#[cfg(feature = "aot")]
+pub(super) fn compile_object(path: &Path, triple: &str, output: Option<&Path>) -> anyhow::Result<()> {
+    warn_if_soft_float_target(triple);
+    let output = output
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| path.with_extension("o"));
+    let compiled = compile_instr_artifact_with_dependencies(path)?;
+    // File imports merge into the artifact exactly as they do for an
+    // executable. A driver split into modules is the ordinary shape of
+    // embedded code; without this every `use "…"` fails to lower, and the
+    // reason it gives ("opcode GetGlobal is not natively lowerable") points at
+    // the symptom rather than at the missing bundling.
+    let bundled = bundle_file_imports(path, &compiled.artifact)?;
+    let (artifact, bundles): (&ModuleArtifact, Vec<lk_aot::BundledImport>) = match &bundled {
+        crate::BundleOutcome::Bundled(merged, bundles) => (merged, bundles.clone()),
+        // There is no fallback here, so a decline is the answer rather than a
+        // detour: report the cause instead of the symptom it would become.
+        crate::BundleOutcome::Declined(reason) => {
+            anyhow::bail!("cannot compile {} for {triple}: {reason}", path.display())
+        }
+        crate::BundleOutcome::Nothing => (&compiled.artifact, Vec::new()),
+    };
+    let object = lk_aot::compile_object_for_target(artifact, &bundles, triple)?;
+    std::fs::write(&output, object).with_context(|| format!("write object {}", output.display()))?;
+    println!("{}", output.display());
+    Ok(())
+}
+
+/// `lk compile` — likewise part of the AOT surface (see `compile_object`).
 #[cfg(feature = "aot")]
 pub(super) fn compile_executable(path: &Path, output: Option<&Path>) -> anyhow::Result<()> {
     let output = output.map(Path::to_path_buf).unwrap_or_else(|| path.with_extension(""));
@@ -163,8 +246,14 @@ pub(super) fn compile_native_executable_from_artifact(
 ) -> anyhow::Result<NativeOutcome> {
     let bundled = bundle_file_imports(path, artifact)?;
     let (artifact, bundles): (&ModuleArtifact, Vec<lk_aot::BundledImport>) = match &bundled {
-        Some((merged, bundles)) => (merged, bundles.clone()),
-        None => (artifact, Vec::new()),
+        crate::BundleOutcome::Bundled(merged, bundles) => (merged, bundles.clone()),
+        crate::BundleOutcome::Declined(reason) => {
+            if native_trace_enabled() {
+                eprintln!("clif: not bundling imports of {}: {reason}", path.display());
+            }
+            (artifact, Vec::new())
+        }
+        crate::BundleOutcome::Nothing => (artifact, Vec::new()),
     };
     // Inner `Err(reason)` = Unsupported shape (fall back); outer `?` = internal
     // codegen/validation bug (propagate).

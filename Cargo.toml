@@ -39,13 +39,14 @@ members = [
     "stdlib/crates/time",
     "stdlib/crates/uuid",
     "lkrt",
+    "lkrt-cabi",
     "lsp",
     "ecosystem/tree-sitter-lk",
     "wasm",
 ]
 # `bare-metal` only builds for a bare-metal target (thumbv7em) and pulls in
 # cortex-m crates, so it must not be part of a host `cargo build --workspace`.
-exclude = ["ecosystem/zed-ext", "bare-metal"]
+exclude = ["ecosystem/zed-ext", "bare-metal", "bare-metal-native", "bare-metal-x86"]
 resolver = "2"
 
 [workspace.package]

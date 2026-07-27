@@ -123,6 +123,59 @@ impl Executor {
     }
 
     #[cold]
+    /// `A = B as <C>`.
+    ///
+    /// Machine-int targets truncate to the width and then sign- or zero-extend
+    /// back into the `i64` the VM carries. Truncation is deliberate: `300 as
+    /// u8` is 44, because a cast is a request for *those bits at that width*,
+    /// not a range check. The annotation path (`let x: u8 = 300`) is where a
+    /// range error is reported, since there a mistake is more likely than an
+    /// intent.
+    ///
+    /// The i64 carrier is why the extension step exists at all: a `u8` is
+    /// stored as `0..=255` and an `i8` as `-128..=127`, so that two values
+    /// which are equal as `u8` compare equal as `RuntimeVal::Int` too.
+    pub(super) fn dispatch_cast(&mut self, instr: Instr) -> Result<()> {
+        use crate::vm::ir::CastTarget;
+
+        let index = self.stack_index_unchecked(instr.b());
+        let source = self.state.stack[index];
+        let Some(target) = CastTarget::from_u8(instr.c()) else {
+            bail!("CastTo has an unknown target encoding {}", instr.c());
+        };
+
+        let result = match target {
+            CastTarget::Bool => RuntimeVal::Bool(match source {
+                RuntimeVal::Bool(value) => value,
+                RuntimeVal::Int(value) => value != 0,
+                RuntimeVal::Float(value) => value != 0.0,
+                RuntimeVal::Nil => false,
+                other => bail!("cannot cast {:?} to Bool", other.kind()),
+            }),
+            CastTarget::Float => RuntimeVal::Float(match source {
+                RuntimeVal::Float(value) => value,
+                RuntimeVal::Int(value) => value as f64,
+                RuntimeVal::Bool(value) => {
+                    if value {
+                        1.0
+                    } else {
+                        0.0
+                    }
+                }
+                other => bail!("cannot cast {:?} to Float", other.kind()),
+            }),
+            CastTarget::Int => RuntimeVal::Int(cast_source_to_i64(&source)?),
+            machine => {
+                let kind = machine.int_kind().expect("non-scalar targets handled above");
+                RuntimeVal::Int(truncate_to_width(cast_source_to_i64(&source)?, kind))
+            }
+        };
+
+        self.write_unchecked(instr.a(), result);
+        self.pc += 1;
+        Ok(())
+    }
+
     pub(super) fn dispatch_not(&mut self, function: &Function, instr: Instr) -> Result<()> {
         let index = self.stack_index_unchecked(instr.b());
         let value = match &self.state.stack[index] {
@@ -578,6 +631,9 @@ impl Executor {
             Opcode::Not => {
                 self.dispatch_not(function, instr)?;
             }
+            Opcode::CastTo => {
+                self.dispatch_cast(instr)?;
+            }
             Opcode::IsNil => {
                 self.dispatch_is_nil(function, instr)?;
             }
@@ -716,5 +772,38 @@ impl Executor {
         self.write_string(instr.a(), result)?;
         self.pc += 1;
         Ok(())
+    }
+}
+
+/// The `i64` a cast source contributes before any width is applied.
+fn cast_source_to_i64(source: &RuntimeVal) -> Result<i64> {
+    Ok(match source {
+        RuntimeVal::Int(value) => *value,
+        // Truncates toward zero, like every other language's float-to-int cast.
+        RuntimeVal::Float(value) => *value as i64,
+        RuntimeVal::Bool(value) => i64::from(*value),
+        other => bail!("cannot cast {:?} to an integer", other.kind()),
+    })
+}
+
+/// Reduce `value` to `kind`'s width, then widen it back into the `i64` carrier
+/// by `kind`'s signedness.
+///
+/// Pointer-width kinds are treated as 64-bit here. That is the width on every
+/// target the VM itself runs on; a 32-bit *deployment* target gets its real
+/// width from the AOT path, which lowers to a genuine `i32`.
+fn truncate_to_width(value: i64, kind: crate::val::IntKind) -> i64 {
+    let Some(bits) = kind.bits() else {
+        return value;
+    };
+    if bits >= 64 {
+        return value;
+    }
+    let masked = (value as u64) & ((1u64 << bits) - 1);
+    if kind.is_signed() {
+        // Sign-extend: shift the sign bit up to bit 63 and back down.
+        ((masked << (64 - bits)) as i64) >> (64 - bits)
+    } else {
+        masked as i64
     }
 }

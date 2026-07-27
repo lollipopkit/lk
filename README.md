@@ -123,6 +123,7 @@ assert_eq!(result.display_first_return(), "true");
 - Run REPL: `lk`
 - Execute a source file or module artifact: `lk FILE` (supports `.lk` and `.lkm`)
 - Type-check without executing: `lk check FILE` (reports compile-time diagnostics)
+- Format sources in place: `lk fmt [PATH...]` (no path = the whole project; `--check` reports instead of writing, for CI)
 - Compile to a native executable: `lk compile [FILE]` (Cranelift backend; omitting `FILE` uses `./main.lk`, package `./src/main.lk`, or a single workspace app entry; shapes outside the native slice fall back to the Tier 0 VM bundle)
 - Compile to a bytecode module artifact: `lk compile bytecode [FILE]` → `FILE.lkm`
 - Create packages and manage decentralized git + lockfile dependencies (no central registry): `lk pkg init`, `lk pkg add`, `lk pkg fetch`, `lk pkg update`, `lk pkg check`, `lk pkg tree` (see [docs/packages.md](docs/packages.md))

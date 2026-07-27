@@ -11,7 +11,19 @@
 //! and an out-of-range index yields "absent" (`present = 0`) rather than a value —
 //! the caller models the result as `Maybe<Int>`.
 
-use std::ffi::{CStr, CString, c_char, c_void};
+// `alloc`, not the std prelude: this module is part of the computation-only
+// subset that builds without an OS.
+#[allow(unused_imports)]
+use alloc::{
+    boxed::Box,
+    format,
+    string::{String, ToString},
+    vec,
+    vec::Vec,
+};
+
+use alloc::ffi::CString;
+use core::ffi::{CStr, c_char, c_void};
 
 /// Length of the `str` list behind a handle; `0` for null.
 ///
@@ -219,7 +231,7 @@ pub unsafe extern "C" fn lkrt_lklist_i64_unique(handle: *mut c_void) -> *mut c_v
         // SAFETY: `handle` addresses a `Vec<i64>` from `lkrt_lklist_i64_new`.
         unsafe { &*(handle as *mut Vec<i64>) }
     };
-    let mut seen = rustc_hash::FxHashSet::default();
+    let mut seen = crate::lkmap::FxSet::default();
     let mut out = Vec::new();
     for &v in values {
         if seen.insert(v) {
@@ -573,7 +585,7 @@ fn display_joined(parts: impl Iterator<Item = String>) -> *mut c_char {
         out.push_str(&part);
     }
     out.push(']');
-    crate::lkstr::arena_c_string(std::ffi::CString::new(out).unwrap_or_default())
+    crate::lkstr::arena_c_string(alloc::ffi::CString::new(out).unwrap_or_default())
 }
 
 /// Appends `value` to the list.
@@ -719,7 +731,7 @@ pub struct LkMaybeStr {
 pub unsafe extern "C" fn lkrt_lklist_str_get_pair(handle: *mut c_void, index: i64) -> LkMaybeStr {
     if handle.is_null() {
         return LkMaybeStr {
-            value: std::ptr::null(),
+            value: core::ptr::null(),
             present: 0,
         };
     }
@@ -728,7 +740,7 @@ pub unsafe extern "C" fn lkrt_lklist_str_get_pair(handle: *mut c_void, index: i6
     let idx = if index < 0 { values.len() as i64 + index } else { index };
     if idx < 0 || idx as usize >= values.len() {
         LkMaybeStr {
-            value: std::ptr::null(),
+            value: core::ptr::null(),
             present: 0,
         }
     } else {
@@ -1062,11 +1074,11 @@ pub unsafe extern "C" fn lkrt_lklist_str_len(handle: *mut c_void) -> i64 {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_lklist_str_at(handle: *mut c_void, index: i64) -> *const c_char {
     if handle.is_null() || index < 0 {
-        return std::ptr::null();
+        return core::ptr::null();
     }
     // SAFETY: as above.
     let values = unsafe { &*(handle as *mut Vec<*const c_char>) };
-    values.get(index as usize).copied().unwrap_or(std::ptr::null())
+    values.get(index as usize).copied().unwrap_or(core::ptr::null())
 }
 
 /// Joins the string elements with `separator`, returning a freshly allocated,
@@ -1076,7 +1088,7 @@ pub unsafe extern "C" fn lkrt_lklist_str_at(handle: *mut c_void, index: i64) -> 
 /// `handle` as above; `separator` a valid C string (or null → empty).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_lklist_str_join(handle: *mut c_void, separator: *const c_char) -> *mut c_char {
-    use std::ffi::CString;
+    use alloc::ffi::CString;
     let sep = if separator.is_null() {
         ""
     } else {
@@ -1204,7 +1216,7 @@ mod tests {
 
     #[test]
     fn list_structural_eq() {
-        use std::ffi::CString;
+        use alloc::ffi::CString;
         unsafe {
             let a = lkrt_lklist_i64_new();
             let b = lkrt_lklist_i64_new();
@@ -1215,7 +1227,7 @@ mod tests {
             assert_eq!(lkrt_lklist_i64_eq(a, b), 1);
             lkrt_lklist_i64_push(b, 4);
             assert_eq!(lkrt_lklist_i64_eq(a, b), 0);
-            assert_eq!(lkrt_lklist_i64_eq(std::ptr::null_mut(), std::ptr::null_mut()), 1);
+            assert_eq!(lkrt_lklist_i64_eq(core::ptr::null_mut(), core::ptr::null_mut()), 1);
 
             let f = lkrt_lklist_f64_new();
             lkrt_lklist_f64_push(f, 1.0);
@@ -1251,7 +1263,7 @@ mod tests {
 
     #[test]
     fn list_display_exact_bytes() {
-        use std::ffi::CString;
+        use alloc::ffi::CString;
         let text = |ptr: *mut c_char| {
             // SAFETY: display returns a NUL-terminated arena C string.
             unsafe { CStr::from_ptr(ptr) }.to_str().expect("utf8").to_string()
@@ -1288,7 +1300,7 @@ mod tests {
 
     #[test]
     fn str_list_join() {
-        use std::ffi::CString;
+        use alloc::ffi::CString;
         unsafe {
             let h = lkrt_lklist_str_new();
             let a = CString::new("a").unwrap();
@@ -1307,7 +1319,7 @@ mod tests {
 
     #[test]
     fn str_get_pair_matches_vm_semantics() {
-        use std::ffi::CString;
+        use alloc::ffi::CString;
         unsafe {
             let h = lkrt_lklist_str_new();
             let a = CString::new("foo").unwrap();
@@ -1361,7 +1373,7 @@ mod tests {
             assert_eq!(lkrt_lklist_i64_get_pair(h, 7).present, 0);
             assert_eq!(lkrt_lklist_i64_get_pair(h, -4).present, 0);
             // null handle -> absent
-            assert_eq!(lkrt_lklist_i64_get_pair(std::ptr::null_mut(), 0).present, 0);
+            assert_eq!(lkrt_lklist_i64_get_pair(core::ptr::null_mut(), 0).present, 0);
         }
     }
 
@@ -1425,7 +1437,7 @@ mod tests {
             assert_eq!(lkrt_lklist_i64_get(kept, 0, &mut present), 2);
             assert_eq!(present, 1);
             assert_eq!(lkrt_lklist_i64_reduce_fn(xs, 0, add), 15);
-            assert_eq!(lkrt_lklist_i64_reduce_fn(std::ptr::null_mut(), 7, add), 7);
+            assert_eq!(lkrt_lklist_i64_reduce_fn(core::ptr::null_mut(), 7, add), 7);
         }
     }
 }

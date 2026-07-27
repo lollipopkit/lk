@@ -654,11 +654,110 @@ mod test {
         assert!(err.to_string().contains("too deep"), "{err}");
     }
 
+    /// An `unsafe` block evaluates to its final expression and *continues*.
+    ///
+    /// The obvious implementation reuses the closure-body parser, which
+    /// rewrites the last statement into a `return`. That is not a type error:
+    /// `let x = unsafe { 1 }; println(x);` compiles, returns 1 from the
+    /// enclosing function, and silently never prints. Hence a test on the
+    /// shape rather than on the value alone.
+    #[test]
+    fn unsafe_block_is_a_value_not_a_return() {
+        use crate::stmt::Stmt;
+
+        let tokens = Tokenizer::tokenize("unsafe { 1 }").expect("tokenizes");
+        let parsed = Parser::new(&tokens).parse().expect("parses");
+        let Expr::Unsafe(block) = parsed else {
+            panic!("expected an unsafe block, got {parsed:?}");
+        };
+        let Expr::Block(statements) = *block else {
+            panic!("unsafe should wrap a block");
+        };
+        assert!(
+            matches!(statements.last().map(|s| s.as_ref()), Some(Stmt::Expr(_))),
+            "the tail must stay an expression, not become a return: {statements:?}"
+        );
+    }
+
+    #[test]
+    fn unsafe_blocks_nest() {
+        let tokens = Tokenizer::tokenize("unsafe { unsafe { 1 } }").expect("tokenizes");
+        let parsed = Parser::new(&tokens).parse().expect("parses");
+        assert!(matches!(parsed, Expr::Unsafe(_)), "{parsed:?}");
+    }
+
+    #[test]
+    fn unsafe_requires_braces() {
+        let tokens = Tokenizer::tokenize("unsafe 1").expect("tokenizes");
+        let err = Parser::new(&tokens).parse().expect_err("bare unsafe must not parse");
+        assert!(err.to_string().contains("Expecting '{'"), "{err}");
+    }
+
     /// The cap must not be so tight that ordinary nesting trips it.
     #[test]
     fn ordinary_nesting_stays_under_the_depth_cap() {
         let source = "((((1 + 2) * 3) - 4) / 5)";
         let tokens = Tokenizer::tokenize(source).expect("tokenizes");
         Parser::new(&tokens).parse().expect("ordinary nesting parses");
+    }
+    /// `<<` and `>>` are two adjacent comparison tokens, not tokens of their
+    /// own — the lexer cannot tell a right shift from the end of
+    /// `List<List<Int>>`. These pin both halves of that trade.
+    #[test]
+    fn shifts_parse_as_builtin_calls() {
+        for (source, builtin) in [("1 << 3", "__lk_shl"), ("16 >> 2", "__lk_shr")] {
+            let tokens = Tokenizer::tokenize(source).expect("tokenizes");
+            let parsed = Parser::new(&tokens).parse().expect("parses");
+            let Expr::Call(name, args) = &parsed else {
+                panic!("expected a builtin call for {source}, got {parsed:?}");
+            };
+            assert_eq!(name, builtin, "{source}");
+            assert_eq!(args.len(), 2, "{source}");
+        }
+    }
+
+    /// Rust's precedence: tighter than comparison, looser than `+`.
+    #[test]
+    fn shift_binds_looser_than_addition() {
+        let tokens = Tokenizer::tokenize("1 << 2 + 3").expect("tokenizes");
+        let parsed = Parser::new(&tokens).parse().expect("parses");
+        let Expr::Call(name, args) = &parsed else {
+            panic!("expected a shift at the root, got {parsed:?}");
+        };
+        assert_eq!(name, "__lk_shl");
+        // The parser folds the constant sum, so what matters is that the sum
+        // ended up *inside* the shift rather than the shift inside the sum.
+        assert!(
+            matches!(
+                args[1].as_ref(),
+                Expr::Bin(_, BinOp::Add, _) | Expr::Literal(LiteralVal::Int(5))
+            ),
+            "the right operand should be the sum: {:?}",
+            args[1]
+        );
+    }
+
+    #[test]
+    fn comparison_sees_the_shift_as_an_operand() {
+        let tokens = Tokenizer::tokenize("8 >> 1 == 4").expect("tokenizes");
+        let parsed = Parser::new(&tokens).parse().expect("parses");
+        let Expr::Bin(left, BinOp::Eq, _) = &parsed else {
+            panic!("expected a comparison at the root, got {parsed:?}");
+        };
+        assert!(
+            matches!(left.as_ref(), Expr::Call(name, _) if name == "__lk_shr"),
+            "the left operand should be the shift: {left:?}"
+        );
+    }
+
+    /// Separated by a space it is two comparisons, not a shift — which is a
+    /// parse error here, and deliberately not silently a shift.
+    #[test]
+    fn separated_comparisons_are_not_a_shift() {
+        let (tokens, spans) = Tokenizer::tokenize_enhanced_with_spans("1 < < 3").expect("tokenizes");
+        assert!(
+            Parser::new_with_spans(&tokens, &spans).parse().is_err(),
+            "`1 < < 3` must not parse as a shift"
+        );
     }
 }

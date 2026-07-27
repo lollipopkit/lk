@@ -183,14 +183,26 @@ fn lkrt_staticlib_path() -> Option<PathBuf> {
     }
     let exe = std::env::current_exe().ok()?;
     let dir = exe.parent()?;
+    // `lkrt-cabi`, not `lkrt`: the staticlib was split into its own crate so a
+    // bare-metal binary can depend on the rlib without cargo also building a
+    // staticlib it cannot satisfy. See `lkrt-cabi`'s crate docs.
     let file = if cfg!(target_os = "windows") {
-        "lkrt.lib"
+        "lkrt_cabi.lib"
     } else {
-        "liblkrt.a"
+        "liblkrt_cabi.a"
     };
+    // Refresh before searching. A *stale* archive is worse than a missing one:
+    // it links partially, or — as happened the day the toolchain moved — brings
+    // a second copy of libstd built by another rustc and collides on
+    // `rust_eh_personality`, with a message that names neither archive as the
+    // old one. Under cargo's fingerprinting a rebuild is a sub-second no-op;
+    // where there is no workspace to build in (an installed `lk`), it fails and
+    // the search below still finds whatever was shipped. Same rule the CLI
+    // already follows for `lk-api`.
+    let _ = build_lkrt_staticlib();
     let mut candidates = vec![dir.join(file)];
     // The `lk` CLI runs from `target/<profile>/`, whose `deps` subdir holds the
-    // hashed `liblkrt-<hash>.a`; a `cargo test` binary runs from
+    // hashed `liblkrt_cabi-<hash>.a`; a `cargo test` binary runs from
     // `target/<profile>/deps/` itself, where that hashed archive sits right
     // beside it. Search both so either launcher resolves the staticlib.
     for search in [dir.to_path_buf(), dir.join("deps")] {
@@ -198,15 +210,50 @@ fn lkrt_staticlib_path() -> Option<PathBuf> {
             candidates.push(path);
         }
     }
-    newest_existing_path(candidates)
+    newest_existing_path(candidates).or_else(build_lkrt_staticlib)
+}
+
+/// Builds `lkrt-cabi`, whether or not an archive is already on disk.
+///
+/// Two failures made this necessary, and only the first is obvious. `cargo
+/// test` never produces a staticlib: for a `staticlib`-only crate a test run
+/// compiles the crate as a test harness and emits no `.a`, so a fresh clone —
+/// or a CI job with a cold cache — reaches the linker with nothing to link
+/// against, and the message names symbols rather than the missing archive.
+///
+/// The second is why this runs *unconditionally*: an archive left by an older
+/// toolchain still exists, so a build-if-missing check is satisfied by it, and
+/// the link then pulls in two different libstds and fails on `multiple
+/// definition of rust_eh_personality`.
+///
+/// Both are the rule the CLI already follows for `lk-api`: an archive the link
+/// needs is the link's business to produce, every time.
+fn build_lkrt_staticlib() -> Option<PathBuf> {
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent()?.parent()?;
+    eprintln!("building lkrt staticlib (one-time)…");
+    let status = std::process::Command::new("cargo")
+        .current_dir(workspace)
+        .args(["build", "-p", "lkrt-cabi"])
+        .status()
+        .ok()?;
+    if !status.success() {
+        return None;
+    }
+    let file = if cfg!(target_os = "windows") {
+        "lkrt_cabi.lib"
+    } else {
+        "liblkrt_cabi.a"
+    };
+    let built = workspace.join("target/debug").join(file);
+    built.exists().then_some(built)
 }
 
 fn latest_lkrt_staticlib_in(deps_dir: &Path) -> Option<PathBuf> {
     let entries = std::fs::read_dir(deps_dir).ok()?;
     let prefix = if cfg!(target_os = "windows") {
-        "lkrt-"
+        "lkrt_cabi-"
     } else {
-        "liblkrt-"
+        "liblkrt_cabi-"
     };
     let suffix = if cfg!(target_os = "windows") { ".lib" } else { ".a" };
     entries

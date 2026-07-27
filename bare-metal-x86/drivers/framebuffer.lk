@@ -1,0 +1,102 @@
+// A linear framebuffer.
+//
+// Nothing device-specific: given a base address and a stride, this is an array
+// of 32-bit pixels reached through volatile MMIO. Which device it belongs to,
+// and what mode it is in, are the caller's business — see `drivers/vbe` and
+// `drivers/pci`.
+
+fn put_pixel(base: Int, stride: Int, x: Int, y: Int, colour: Int) {
+    let offset = (y * stride + x) * 4;
+    unsafe { volatile_write_u32((base + offset) as *mut u32, colour as u32); };
+}
+
+fn get_pixel(base: Int, stride: Int, x: Int, y: Int) -> Int {
+    let offset = (y * stride + x) * 4;
+    let value = unsafe { volatile_read_u32((base + offset) as *mut u32) };
+    return value as Int;
+}
+
+// Fills a rectangle, two pixels at a time where it can.
+//
+// A pixel is four bytes and the framebuffer is contiguous, so a 64-bit write
+// covers two of them — but only where the pair is aligned, which needs an even
+// stride as well as an even left edge and width: with an odd stride every other
+// row starts at an odd pixel, and a `*mut u64` there is unaligned. The odd cases still go a pixel at a time rather
+// than being rejected: a caller that fills an odd rectangle wants it filled,
+// not diagnosed.
+fn fill_rect(base: Int, stride: Int, left: Int, top: Int, width: Int, height: Int, colour: Int) {
+    if ((stride & 1) == 0 && (left & 1) == 0 && (width & 1) == 0) {
+        let pair = (colour << 32) + colour;
+        let pairs = ((width / 2) as Int);
+        for y in 0..height {
+            for p in 0..pairs {
+                put_pixel_pair(base, stride, left + p * 2, top + y, pair);
+            }
+        }
+        return;
+    }
+    for y in 0..height {
+        for x in 0..width {
+            put_pixel(base, stride, left + x, top + y, colour);
+        }
+    }
+}
+
+// A red/green ramp: red rises left to right, green top to bottom. Integer
+// `/` is float division in LK, so each ramp is cast back — without that the
+// colour reaching `put_pixel` is a Float where an Int was declared, which the
+// type checker now says so about.
+fn fill_gradient(base: Int, width: Int, height: Int, blue: Int) {
+    for y in 0..height {
+        let green = (((y * 255) as Int) / height) as Int;
+        for x in 0..width {
+            let red = (((x * 255) as Int) / width) as Int;
+            put_pixel(base, width, x, y, (red << 16) + (green << 8) + blue);
+        }
+    }
+}
+
+// Two adjacent pixels at once.
+//
+// A pixel is four bytes and the framebuffer is contiguous, so a 64-bit access
+// carries two of them. Each of these accessors is an opaque call into the
+// runtime — they have to be, or the optimiser would collapse repeated reads of
+// device memory — so halving the *number* of calls halves most of the cost of
+// moving a picture around.
+fn get_pixel_pair(base: Int, stride: Int, x: Int, y: Int) -> Int {
+    let offset = (y * stride + x) * 4;
+    let value = unsafe { volatile_read_u64((base + offset) as *mut u64) };
+    return value as Int;
+}
+
+fn put_pixel_pair(base: Int, stride: Int, x: Int, y: Int, pair: Int) {
+    let offset = (y * stride + x) * 4;
+    unsafe { volatile_write_u64((base + offset) as *mut u64, pair as u64); };
+}
+
+// Copies a band of rows from one framebuffer row to another.
+//
+// Used when a panning view runs out of virtual rows and has to start over at
+// the top. That happens once every screenful of scrolling rather than once per
+// line, which is the whole point of panning.
+fn copy_rows(base: Int, stride: Int, from_row: Int, to_row: Int, rows: Int) {
+    // An odd stride has no whole number of pairs — `stride / 2` would drop each
+    // row's last pixel — and its odd rows are unaligned besides. Copy those a
+    // pixel at a time rather than quietly losing a column.
+    if ((stride & 1) != 0) {
+        for row in 0..rows {
+            for x in 0..stride {
+                put_pixel(base, stride, x, to_row + row, get_pixel(base, stride, x, from_row + row));
+            }
+        }
+        return;
+    }
+    let pairs = ((stride / 2) as Int);
+    for row in 0..rows {
+        for pair in 0..pairs {
+            let x = pair * 2;
+            put_pixel_pair(base, stride, x, to_row + row,
+                           get_pixel_pair(base, stride, x, from_row + row));
+        }
+    }
+}

@@ -15,8 +15,19 @@
 //! array would differ, which the differential gates would catch if the
 //! corpus exercised it).
 
+// `alloc`, not the std prelude: this module is part of the computation-only
+// subset that builds without an OS.
+#[allow(unused_imports)]
+use alloc::{
+    boxed::Box,
+    format,
+    string::{String, ToString},
+    vec,
+    vec::Vec,
+};
+
+use alloc::ffi::CString;
 use core::ffi::{CStr, c_char};
-use std::ffi::CString;
 
 use crate::lkdyn::{DYN_BOOL, DYN_F64, DYN_I64, DYN_LIST, DYN_MAP, LkDyn};
 use crate::lkstr::arena_c_string;
@@ -107,6 +118,7 @@ pub unsafe extern "C" fn lkrt_json_parse(text: *const c_char) -> LkDyn {
     }
 }
 
+#[cfg(feature = "std")]
 fn yaml_to_dyn(value: serde_yaml::Value) -> LkDyn {
     match value {
         serde_yaml::Value::Null => LkDyn::NIL,
@@ -135,6 +147,7 @@ fn yaml_to_dyn(value: serde_yaml::Value) -> LkDyn {
 ///
 /// # Safety
 /// `text` must be a valid C string, or null.
+#[cfg(feature = "std")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_yaml_parse(text: *const c_char) -> LkDyn {
     match serde_yaml::from_str::<serde_yaml::Value>(input(text)) {
@@ -143,6 +156,7 @@ pub unsafe extern "C" fn lkrt_yaml_parse(text: *const c_char) -> LkDyn {
     }
 }
 
+#[cfg(feature = "std")]
 fn toml_to_dyn(value: toml::Value) -> LkDyn {
     match value {
         toml::Value::String(value) => dyn_str_of(&value),
@@ -159,6 +173,7 @@ fn toml_to_dyn(value: toml::Value) -> LkDyn {
 ///
 /// # Safety
 /// `text` must be a valid C string, or null.
+#[cfg(feature = "std")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_toml_parse(text: *const c_char) -> LkDyn {
     match toml::from_str::<toml::Value>(input(text)) {

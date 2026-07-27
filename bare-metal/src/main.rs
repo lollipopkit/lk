@@ -20,7 +20,7 @@ use core::ptr::addr_of_mut;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use cortex_m::asm;
-use cortex_m_rt::entry;
+use cortex_m_rt::{entry, exception};
 use cortex_m_semihosting::{debug, hprint, hprintln};
 
 // --- allocator ------------------------------------------------------------
@@ -75,15 +75,38 @@ fn semihosting_output(text: &str) {
     hprint!("{}", text);
 }
 
+// --- interrupts -----------------------------------------------------------
+
+/// The board's UART data register. The handler writes through it directly
+/// rather than calling back into the VM.
+///
+/// Re-entering the interpreter from an interrupt would need it to be
+/// re-entrant — an interrupt can land in the middle of any bytecode
+/// instruction, and the executor's state is not built for that. A handler that
+/// touches only hardware sidesteps the question entirely, which is the usual
+/// shape for the fast half of an interrupt anyway: acknowledge, do the minimum,
+/// leave the rest to the main loop.
+const UART0_DATA: *mut u32 = 0x4000_4000 as *mut u32;
+
+/// SysTick fires because `uart.lk` configured it. Seeing this character proves
+/// the LK code programmed the interrupt controller correctly — the timer, its
+/// reload value and its interrupt enable are all set from LK.
+#[exception]
+fn SysTick() {
+    unsafe {
+        core::ptr::write_volatile(UART0_DATA, u32::from(b'.'));
+    }
+}
+
 // --- the program under test ----------------------------------------------
 
 /// The same source the artifact-only image runs precompiled. Beyond language
 /// features it uses the stdlib modules that work without an OS, so a run
 /// exercises the whole bare-metal module surface, not just the VM.
-const SOURCE: &str = include_str!("../demo.lk");
+const SOURCE: &str = include_str!("../uart.lk");
 
-/// 0+1+1+2+3+5+8+13+21+34
-const EXPECTED: i64 = 88;
+/// The driver returns 0; what it is judged on is the serial output.
+const EXPECTED: i64 = 0;
 
 #[entry]
 fn main() -> ! {

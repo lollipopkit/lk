@@ -1,0 +1,52 @@
+// PCI configuration space.
+//
+// Configuration space is reached through two ports: write a
+// (bus, device, function, offset) address to 0xCF8 with bit 31 set to enable
+// the cycle, then read or write the dword at 0xCFC.
+
+const PCI_ADDRESS = 0xcf8;
+const PCI_DATA = 0xcfc;
+
+const PCI_REG_ID = 0x00;
+const PCI_REG_COMMAND = 0x04;
+const PCI_REG_CLASS = 0x08;
+const PCI_REG_BAR0 = 0x10;
+
+const PCI_COMMAND_MEMORY = 0x02;
+const PCI_COMMAND_BUS_MASTER = 0x04;
+
+const PCI_CLASS_DISPLAY = 0x03;
+
+fn pci_address(slot: Int, offset: Int) -> Int {
+    // Bus 0, function 0 — everything this needs is there, and walking the
+    // whole tree would be a lot of code for no more information.
+    return 0x80000000 + slot * 0x800 + (offset & 0xfc);
+}
+
+fn pci_read(slot: Int, offset: Int) -> Int {
+    unsafe { port_out_u32(PCI_ADDRESS, pci_address(slot, offset) as u32); };
+    let value = unsafe { port_in_u32(PCI_DATA) };
+    return value as Int;
+}
+
+fn pci_write(slot: Int, offset: Int, value: Int) {
+    unsafe { port_out_u32(PCI_ADDRESS, pci_address(slot, offset) as u32); };
+    unsafe { port_out_u32(PCI_DATA, value as u32); };
+}
+
+// The slot of the first display controller on bus 0, or -1.
+fn pci_find_display() -> Int {
+    for slot in 0..32 {
+        let id = pci_read(slot, PCI_REG_ID);
+        // An absent slot reads back as all ones — there is nothing there to
+        // drive the bus low.
+        if (id != 0xffffffff) {
+            // The class code is the top byte of the dword at 0x08.
+            let class = ((pci_read(slot, PCI_REG_CLASS) / 0x1000000) as Int) & 0xff;
+            if (class == PCI_CLASS_DISPLAY) {
+                return slot;
+            }
+        }
+    }
+    return 0 - 1;
+}

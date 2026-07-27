@@ -268,6 +268,15 @@ fn collect_generated_type_origins(ty: &Type, span: Option<Span>, origins: &mut V
             });
         }
         Type::Int => push_generated_statement_origin("type_expr int", span, origins),
+        // Machine ints report under their own spelling so a macro-generated
+        // `u8` is distinguishable from a generated `Int` in origin traces.
+        Type::Ptr { pointee, .. } => {
+            push_generated_statement_origin("type_expr ptr", span.clone(), origins);
+            collect_generated_type_origins(pointee, span, origins);
+        }
+        Type::MachineInt(kind) => {
+            push_generated_statement_origin(&alloc::format!("type_expr {}", kind.name()), span, origins)
+        }
         Type::Float => push_generated_statement_origin("type_expr float", span, origins),
         Type::String => push_generated_statement_origin("type_expr string", span, origins),
         Type::Bool => push_generated_statement_origin("type_expr bool", span, origins),
@@ -687,6 +696,16 @@ fn collect_generated_expr_origins(expr: &Expr, span: Option<Span>, origins: &mut
             push_generated_statement_origin("expr unary", span.clone(), origins);
             push_generated_statement_origin(generated_unary_origin_label(op), span.clone(), origins);
             push_generated_statement_origin("expr unary_operand", span.clone(), origins);
+            collect_generated_expr_origins(inner, span, origins);
+        }
+        Expr::Unsafe(inner) => {
+            push_generated_statement_origin("expr unsafe", span.clone(), origins);
+            collect_generated_expr_origins(inner, span, origins);
+        }
+        Expr::Cast(inner, ty) => {
+            push_generated_statement_origin("expr cast", span.clone(), origins);
+            collect_generated_type_origins(ty, span.clone(), origins);
+            push_generated_statement_origin("expr cast_operand", span.clone(), origins);
             collect_generated_expr_origins(inner, span, origins);
         }
         Expr::Paren(inner) => {

@@ -73,6 +73,21 @@ pub struct TypeChecker {
     options: TypeCheckerOptions,
     /// Active `impl` target type for the current method being checked
     impl_self_type: Option<Type>,
+    /// Nesting depth of enclosing `unsafe` blocks.
+    ///
+    /// A depth rather than a flag because `unsafe` blocks nest, and leaving one
+    /// must restore the enclosing state rather than clear it outright.
+    unsafe_depth: usize,
+    /// Top-level bindings declared *below* the statement being checked.
+    ///
+    /// The top level runs in order, so a statement there cannot read a `const`
+    /// or `let` that comes after it — it reads nil, and what surfaces is
+    /// whatever the nil then breaks ("Add expected numbers, got Nil and Int"),
+    /// naming neither the binding nor the order. A function body is the
+    /// opposite case and must not be caught by this: it runs after the whole
+    /// top level, so reading a `const` declared below it is ordinary. Bodies
+    /// therefore take this set away for their duration and give it back.
+    pending_top_level: HashSet<String>,
     /// Recorded method signatures keyed by (receiver_type, method_name)
     method_sigs: HashMap<(String, String), Type>,
     /// Function strict-Any checks delayed until the whole program contributes call-site constraints.
@@ -163,6 +178,8 @@ impl TypeChecker {
             function_sigs: HashMap::new(),
             options,
             impl_self_type: None,
+            unsafe_depth: 0,
+            pending_top_level: HashSet::new(),
             method_sigs: HashMap::new(),
             pending_strict_functions: Vec::new(),
             defer_strict_function_checks: false,
@@ -200,6 +217,46 @@ impl TypeChecker {
     }
 
     /// Resolve all type aliases contained in `ty`, returning a canonical representation.
+    /// Whether the checker is currently inside an `unsafe` block.
+    ///
+    /// The unchecked operations (raw pointer access, volatile, inline assembly)
+    /// consult this and reject outside one, so they cannot appear by accident.
+    pub fn in_unsafe(&self) -> bool {
+        self.unsafe_depth > 0
+    }
+
+    /// Records the top-level bindings not yet reached (see the field docs).
+    pub fn set_pending_top_level(&mut self, names: HashSet<String>) {
+        self.pending_top_level = names;
+    }
+
+    /// Marks a top-level binding as reached, so later statements may read it.
+    pub fn define_top_level(&mut self, name: &str) {
+        self.pending_top_level.remove(name);
+    }
+
+    /// Takes the set away for the duration of a function or closure body, which
+    /// runs after the top level and may read anything it declares.
+    pub fn suspend_pending_top_level(&mut self) -> HashSet<String> {
+        core::mem::take(&mut self.pending_top_level)
+    }
+
+    pub fn restore_pending_top_level(&mut self, pending: HashSet<String>) {
+        self.pending_top_level = pending;
+    }
+
+    pub(crate) fn is_pending_top_level(&self, name: &str) -> bool {
+        self.pending_top_level.contains(name)
+    }
+
+    pub fn enter_unsafe(&mut self) {
+        self.unsafe_depth += 1;
+    }
+
+    pub fn exit_unsafe(&mut self) {
+        self.unsafe_depth = self.unsafe_depth.saturating_sub(1);
+    }
+
     pub fn resolve_aliases(&self, ty: &Type) -> Type {
         let mut visiting = HashSet::new();
         self.resolve_aliases_internal(ty, &mut visiting)
@@ -220,6 +277,10 @@ impl TypeChecker {
                 }
             }
             Type::List(inner) => Type::List(Box::new(self.resolve_aliases_internal(inner, visiting))),
+            Type::Ptr { pointee, mutable } => Type::Ptr {
+                pointee: Box::new(self.resolve_aliases_internal(pointee, visiting)),
+                mutable: *mutable,
+            },
             Type::Map(key, value) => Type::Map(
                 Box::new(self.resolve_aliases_internal(key, visiting)),
                 Box::new(self.resolve_aliases_internal(value, visiting)),
@@ -277,9 +338,14 @@ impl TypeChecker {
                 }
             }
             Type::Boxed(inner) => Type::Boxed(Box::new(self.resolve_aliases_internal(inner, visiting))),
-            Type::Any | Type::Int | Type::Float | Type::String | Type::Bool | Type::Nil | Type::Variable(_) => {
-                ty.clone()
-            }
+            Type::Any
+            | Type::Int
+            | Type::MachineInt(_)
+            | Type::Float
+            | Type::String
+            | Type::Bool
+            | Type::Nil
+            | Type::Variable(_) => ty.clone(),
         }
     }
 
@@ -466,6 +532,14 @@ pub struct FunctionSig {
     pub positional: Vec<Type>,
     pub named: Vec<NamedParamSig>,
     pub return_type: Option<Type>,
+    /// Which positional parameters the source *annotated*, in order.
+    ///
+    /// Only those can be checked against at a call site. An unannotated
+    /// parameter still ends up with a type — inference gives it one from the
+    /// body — but that type is a derivation, not a claim: `fn scale(x) { return
+    /// x * 2.5; }` may settle on `Int` for `x`, and rejecting `scale(4.0)`
+    /// against it would be rejecting on something the program never said.
+    pub annotated: Vec<bool>,
 }
 
 impl FunctionSig {

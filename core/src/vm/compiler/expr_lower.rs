@@ -185,6 +185,45 @@ impl Compiler {
     /// the suspend point) and emit the single-register in/out `Yield` opcode.
     /// The register's static-type fact must be reset: after resuming, it can
     /// hold any type, not whatever `inner` produced.
+    /// `expr as T`.
+    ///
+    /// The target is static, so it rides in the instruction's `C` byte rather
+    /// than costing a constant-pool load. The type checker has already rejected
+    /// targets that are not scalar, so an unencodable one here is a compiler
+    /// bug rather than a user error.
+    pub(super) fn lower_cast(&mut self, inner: &Expr, ty: &crate::val::Type) -> Result<u16> {
+        // A pointer *is* an address, so converting to one is a type-system
+        // event with no runtime content — the bits are already right.
+        //
+        // TODO(32-bit targets): on a 32-bit deployment target a pointer is
+        // narrower than the `i64` carrier, so this will need the same
+        // truncation a `u32` gets. Harmless while both backends are 64-bit,
+        // and wrong the moment the AOT path cross-compiles to thumb/arm32.
+        if matches!(ty, crate::val::Type::Ptr { .. }) {
+            let src = self.lower_readonly_operand(inner)?;
+            // The result is an address, not a machine integer of some width:
+            // arithmetic on it must not inherit the operand's wrap.
+            self.machine_regs.remove(&src);
+            return Ok(src);
+        }
+        let Some(target) = crate::vm::ir::CastTarget::from_type(ty) else {
+            anyhow::bail!("internal error: cast target {} reached lowering", ty.display());
+        };
+        let src = self.lower_readonly_operand(inner)?;
+        let dst = self.alloc_reg();
+        self.emit(Instr::abc(
+            Opcode::CastTo,
+            checked_u8("cast dst", dst)?,
+            checked_u8("cast src", src)?,
+            target as u8,
+        ));
+        // A freshly allocated register carries no static-type fact, so there
+        // is nothing to invalidate — same as `lower_unary`. The width, though,
+        // is worth remembering: it is how arithmetic downstream knows to wrap.
+        self.note_machine_reg(dst, Some(ty));
+        Ok(dst)
+    }
+
     pub(super) fn lower_unary(&mut self, op: &UnaryOp, inner: &Expr) -> Result<u16> {
         let src = self.lower_readonly_operand(inner)?;
         let dst = self.alloc_reg();

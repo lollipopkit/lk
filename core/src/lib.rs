@@ -22,6 +22,7 @@ pub mod compat;
 
 pub mod ast;
 pub mod expr;
+pub mod fmt;
 pub mod macro_system;
 pub mod mem;
 pub mod module;

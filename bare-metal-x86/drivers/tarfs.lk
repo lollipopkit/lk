@@ -1,0 +1,114 @@
+// A read-only tar filesystem, straight off sectors.
+//
+// tar is chosen for what it does *not* need: no allocation, no cache, no free
+// list, no write path, and no in-memory index. An entry is a 512-byte header
+// followed by its contents rounded up to a whole number of sectors, and the
+// next entry follows it — so finding a file is walking that chain, and reading
+// one is reading sectors. A kernel that cannot yet manage memory can still read
+// its own files.
+//
+// What it gives up is everything a filesystem is otherwise for: no directories
+// (a name is a path, matched whole), no rewriting in place, no ordering better
+// than linear. Those all want data structures, and data structures want an
+// allocator.
+
+use { read_sector, ATA_OK } from "ata";
+
+// tar's block size, which the format fixes at 512 — the same number as a disk
+// sector, and not the same fact. Named separately because they are free to
+// disagree on a medium with 4K sectors.
+const TAR_BLOCK = 512;
+// Offsets inside the header block, from the ustar layout.
+const TAR_NAME = 0;
+const TAR_NAME_MAX = 100;
+const TAR_SIZE = 124;
+const TAR_SIZE_DIGITS = 11;
+const TAR_TYPE = 156;
+const TAR_TYPE_FILE = 48;
+const TAR_TYPE_FILE_ALT = 0;
+
+// How far into the archive to look before giving up. A malformed header would
+// otherwise be an unbounded walk, and there is nobody to interrupt it.
+const TAR_MAX_ENTRIES = 256;
+
+const TAR_OK = 0;
+const TAR_NOT_FOUND = 1;
+const TAR_READ_FAILED = 2;
+
+fn byte_at(buffer: Int, offset: Int) -> Int {
+    let value = unsafe { volatile_read_u8((buffer + offset) as *mut u8) };
+    return value as Int;
+}
+
+// The size field: octal digits in ASCII, ending at the first space or NUL.
+//
+// Written this way in tar because the format predates any agreement about byte
+// order, and an ASCII number has none.
+fn header_size(buffer: Int) -> Int {
+    let total = 0;
+    for i in 0..TAR_SIZE_DIGITS {
+        let digit = byte_at(buffer, TAR_SIZE + i);
+        if (digit < 48 || digit > 55) {
+            return total;
+        }
+        total = total * 8 + (digit - 48);
+    }
+    return total;
+}
+
+// Does the header's name equal `name`, in full?
+//
+// Whole-name matching, not a prefix: a prefix match would make `a` find
+// `abc`, and there is no second mechanism here to disambiguate with.
+fn name_matches(buffer: Int, name: List<Int>) -> Int {
+    let i = 0;
+    for code in name {
+        if (i >= TAR_NAME_MAX) {
+            return 0;
+        }
+        if (byte_at(buffer, TAR_NAME + i) != (code) as Int) {
+            return 0;
+        }
+        i = i + 1;
+    }
+    // The stored name must end where the given one does.
+    if (i < TAR_NAME_MAX && byte_at(buffer, TAR_NAME + i) != 0) {
+        return 0;
+    }
+    return 1;
+}
+
+// How many sectors an entry's contents occupy.
+// `/` is float division in LK, so the cast is what makes this a sector count
+// rather than a fraction of one.
+fn sectors_for(size: Int) -> Int {
+    return ((size + TAR_BLOCK - 1) / TAR_BLOCK) as Int;
+}
+
+// Finds `name`, writing its first data sector to `out` and its size to
+// `out + 4`.
+//
+// Two words through memory rather than a returned pair: a kernel path that
+// cannot allocate cannot build one, and the caller has a scratch word anyway.
+fn find(name: List<Int>, buffer: Int, out: Int) -> Int {
+    let lba = 0;
+    for entry in 0..TAR_MAX_ENTRIES {
+        if (read_sector(lba, buffer) != ATA_OK) {
+            return TAR_READ_FAILED;
+        }
+        // Two consecutive empty headers end an archive; one empty name is
+        // enough to stop looking, because nothing follows it either.
+        if (byte_at(buffer, TAR_NAME) == 0) {
+            return TAR_NOT_FOUND;
+        }
+        let size = header_size(buffer);
+        let kind = byte_at(buffer, TAR_TYPE);
+        if ((kind == TAR_TYPE_FILE || kind == TAR_TYPE_FILE_ALT) && name_matches(buffer, name) == 1) {
+            unsafe { volatile_write_u32(out as *mut u32, (lba + 1) as u32) };
+            unsafe { volatile_write_u32((out + 4) as *mut u32, size as u32) };
+            return TAR_OK;
+        }
+        lba = lba + 1 + sectors_for(size);
+    }
+    return TAR_NOT_FOUND;
+}

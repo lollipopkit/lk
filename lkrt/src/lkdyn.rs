@@ -9,8 +9,20 @@
 //! VM's loud failures — `flush_and_abort()` (the contract compares only
 //! `success()` + stdout, not stderr text).
 
+// `alloc`, not the std prelude: this module is part of the computation-only
+// subset that builds without an OS.
+#[allow(unused_imports)]
+use alloc::{
+    boxed::Box,
+    format,
+    string::{String, ToString},
+    vec,
+    vec::Vec,
+};
+
+use alloc::ffi::CString;
+use core::ffi::CStr;
 use core::ffi::{c_char, c_void};
-use std::ffi::{CStr, CString};
 
 use crate::lkstr::arena_c_string;
 use crate::state::arena_handle;
@@ -212,6 +224,24 @@ pub extern "C" fn lkrt_dyn_as_i64(v: LkDyn) -> i64 {
     v.payload
 }
 
+/// `x as <integer>` where `x` is boxed: the source conversion the VM's
+/// `cast_source_to_i64` performs, so a cast lowers natively even when its
+/// operand came out of a container. Int passes through, Float truncates toward
+/// zero, Bool is 0/1, and anything else raises with the VM's wording — the
+/// width reduction itself stays in generated code.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_dyn_cast_to_i64(v: LkDyn) -> i64 {
+    match v.tag {
+        DYN_I64 => v.payload,
+        DYN_F64 => v.f64_value() as i64,
+        DYN_BOOL => v.payload,
+        DYN_STR => crate::panic::raise_str("cannot cast String to an integer"),
+        DYN_LIST => crate::panic::raise_str("cannot cast List to an integer"),
+        DYN_MAP => crate::panic::raise_str("cannot cast Map to an integer"),
+        _ => crate::panic::raise_str("cannot cast Nil to an integer"),
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_dyn_as_f64(v: LkDyn) -> f64 {
     match v.tag {
@@ -253,16 +283,33 @@ pub extern "C" fn lkrt_dyn_as_bool(v: LkDyn) -> i64 {
 // identity lives in a side registry keyed by the arena handle. Handles are
 // never freed before process exit, so a mark can't dangle or alias.
 
+// Thread-local under std, a spin-locked global on bare metal (no TLS there).
+#[cfg(feature = "std")]
 std::thread_local! {
     static OBJ_TYPE_MARKS: core::cell::RefCell<crate::lkmap::FxMap<usize, i64>> =
         core::cell::RefCell::new(crate::lkmap::FxMap::default());
+}
+
+#[cfg(not(feature = "std"))]
+static OBJ_TYPE_MARKS_CELL: spin::Mutex<Option<crate::lkmap::FxMap<usize, i64>>> = spin::Mutex::new(None);
+
+/// Runs `f` with the object type-mark table, however it is stored.
+#[cfg(feature = "std")]
+fn with_obj_type_marks<R>(f: impl FnOnce(&mut crate::lkmap::FxMap<usize, i64>) -> R) -> R {
+    OBJ_TYPE_MARKS.with(|marks| f(&mut marks.borrow_mut()))
+}
+
+#[cfg(not(feature = "std"))]
+fn with_obj_type_marks<R>(f: impl FnOnce(&mut crate::lkmap::FxMap<usize, i64>) -> R) -> R {
+    let mut slot = OBJ_TYPE_MARKS_CELL.lock();
+    f(slot.get_or_insert_with(crate::lkmap::FxMap::default))
 }
 
 /// Marks a freshly built struct-instance map with its lowering-assigned
 /// type id (`NewObject` of a type that has trait impls).
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_lkmap_obj_mark(handle: *mut c_void, type_id: i64) {
-    OBJ_TYPE_MARKS.with(|marks| marks.borrow_mut().insert(handle as usize, type_id));
+    with_obj_type_marks(|marks| marks.insert(handle as usize, type_id));
 }
 
 /// Reads a boxed value's struct type mark; `0` = unmarked (not a struct
@@ -272,7 +319,7 @@ pub extern "C" fn lkrt_dyn_obj_type_id(v: LkDyn) -> i64 {
     if v.tag != DYN_MAP {
         return 0;
     }
-    OBJ_TYPE_MARKS.with(|marks| marks.borrow().get(&(v.payload as usize)).copied().unwrap_or(0))
+    with_obj_type_marks(|marks| marks.get(&(v.payload as usize)).copied().unwrap_or(0))
 }
 
 /// Dispatch fall-through: no registered impl matched the receiver's mark —
@@ -588,6 +635,25 @@ pub unsafe extern "C" fn lkrt_dyn_field(v: LkDyn, key: *const c_char) -> LkDyn {
 /// Index into a Dyn: a List tag indexes like `lkrt_lklist_dyn_at`
 /// (negative-from-tail, OOB → Nil); any non-container tag is the VM's
 /// "index on a non-container" loud failure.
+/// `container[key]` where *both* are boxed.
+///
+/// The static types say nothing about which access this is, so the tag decides
+/// — which is what the VM does. An integer key indexes, a string key reads a
+/// field, and anything else is the VM's error.
+///
+/// # Safety
+///
+/// `key`'s payload must be a valid interned string when its tag says so, which
+/// is the runtime's own invariant for a `DYN_STR`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lkrt_dyn_get(v: LkDyn, key: LkDyn) -> LkDyn {
+    match key.tag {
+        DYN_I64 => lkrt_dyn_index(v, key.payload),
+        DYN_STR => unsafe { lkrt_dyn_field(v, key.payload as *const c_char) },
+        _ => crate::panic::raise_str("runtime type error"),
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn lkrt_dyn_index(v: LkDyn, index: i64) -> LkDyn {
     if v.tag != DYN_LIST {
@@ -920,7 +986,7 @@ pub unsafe extern "C" fn lkrt_lklist_dyn_reduce_fn(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_lklist_dyn_chunk(handle: *mut c_void, size: i64) -> *mut c_void {
     if size <= 0 {
-        eprintln!("list.chunk() size must be positive");
+        crate::rt_eprintln!("list.chunk() size must be positive");
         crate::panic::raise_str("runtime type error");
     }
     let chunks: Vec<LkDyn> = dyn_slice(handle)
@@ -1049,7 +1115,7 @@ mod tests {
         let f = lkrt_dyn_from_maybe_f64(1.5, 1);
         assert_eq!(f.tag, DYN_F64);
         assert_eq!(f.f64_value(), 1.5);
-        assert_eq!(lkrt_dyn_from_maybe_str(std::ptr::null(), 0).tag, DYN_NIL);
+        assert_eq!(lkrt_dyn_from_maybe_str(core::ptr::null(), 0).tag, DYN_NIL);
         let b = lkrt_dyn_from_maybe_bool(1, 1);
         assert_eq!((b.tag, b.payload), (DYN_BOOL, 1));
     }

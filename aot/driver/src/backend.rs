@@ -93,3 +93,39 @@ pub fn compile_artifact_to_clif_object(
         Err(error) => bail!("Cranelift codegen failed: {error:?}"),
     }
 }
+
+/// Compiles an artifact to a relocatable object for an explicit target.
+///
+/// `bundles` carries the file imports the caller merged into `artifact`, the same
+/// way the executable path does — a driver split across modules is the ordinary
+/// shape of embedded code, and without them every `use "…"` fails to lower.
+///
+/// Unlike the executable path there is no fallback: a shape that cannot lower
+/// natively is an error. The Tier 0 bundle embeds the interpreter and a hosted
+/// runtime, which a bare-metal target could not link even if it wanted to, so
+/// degrading silently would just move the failure to link time with a worse
+/// message. Hybrid is off for the same reason — the bridge lives in lk-api.
+pub fn compile_object_for_target(
+    artifact: &ModuleArtifact,
+    bundles: &[lk_aot_lower::BundledImport],
+    triple: &str,
+) -> Result<Vec<u8>> {
+    let mut mir = lk_aot_lower::lower_bundled(artifact, bundles, false)
+        .map_err(|unsupported| anyhow::anyhow!("cannot lower natively for {triple}: {unsupported}"))?;
+    if let Err(error) = lk_aot_mir::validate(&mir) {
+        bail!("internal AOT error: MIR validation failed after lowering: {error:?}");
+    }
+    if std::env::var_os("LK_AOT_NO_OPT").is_none() {
+        lk_aot_mir::opt::optimize(&mut mir);
+        // Same rule as the hosted path: optimization must preserve MIR
+        // validity, and a violation is our bug rather than a limit of the
+        // program. Without this the cross-target path fed unvalidated MIR
+        // straight to codegen, where the symptom is a Cranelift panic instead
+        // of a sentence naming what is wrong.
+        if let Err(error) = lk_aot_mir::validate(&mir) {
+            bail!("internal AOT error: MIR validation failed after optimization: {error:?}");
+        }
+    }
+    lk_aot_codegen::clif::compile_object_for(&mir, triple)
+        .map_err(|error| anyhow::anyhow!("codegen for {triple}: {error:?}"))
+}

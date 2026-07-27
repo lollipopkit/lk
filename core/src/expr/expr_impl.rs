@@ -103,6 +103,22 @@ pub enum Expr {
     Bin(Box<Expr>, BinOp, Box<Expr>),
     /// !expr
     Unary(UnaryOp, Box<Expr>),
+    /// `unsafe { … }` — opts into the unchecked operations.
+    ///
+    /// A marker, not a construct: it carries no runtime cost and lowers to the
+    /// block inside it. What it does is make the *type checker* willing to
+    /// accept raw pointer and assembly operations, so those cannot appear by
+    /// accident. It is deliberately not a "native only" marker — ordinary code
+    /// inside an `unsafe` block runs on the bytecode VM like any other.
+    Unsafe(Box<Expr>),
+    /// `expr as T` — an explicit conversion.
+    ///
+    /// Machine integers never convert implicitly (see `IntKind`), so this is
+    /// the only way across a width or signedness boundary. Narrowing truncates
+    /// and widening sign- or zero-extends by the source's signedness, matching
+    /// what the hardware does — a cast is where a driver author expects to be
+    /// told "these bits, that width", not to get a range check.
+    Cast(Box<Expr>, Type),
     /// cond ? then_expr : else_expr
     Conditional(Box<Expr>, Box<Expr>, Box<Expr>),
     /// expr && expr
@@ -187,7 +203,7 @@ impl Expr {
                 l.collect_ctx_names(names);
                 r.collect_ctx_names(names);
             }
-            Expr::Unary(_, expr) => {
+            Expr::Unary(_, expr) | Expr::Cast(expr, _) | Expr::Unsafe(expr) => {
                 expr.collect_ctx_names(names);
             }
             Expr::And(l, r) | Expr::Or(l, r) | Expr::NullishCoalescing(l, r) => {
@@ -318,6 +334,12 @@ impl Expr {
                 }
                 Expr::Unary(op, Box::new(inner))
             }
+            // The operand folds, but the cast itself does not: evaluating it
+            // needs the target width's truncation semantics, which live in the
+            // executor rather than here.
+            Expr::Cast(expr_box, ty) => Expr::Cast(Box::new((*expr_box).fold_constants()), ty),
+            // The marker survives folding; it is what the checker reads.
+            Expr::Unsafe(expr_box) => Expr::Unsafe(Box::new((*expr_box).fold_constants())),
             Expr::And(e1_box, e2_box) => {
                 let e1 = (*e1_box).fold_constants();
                 // Short-circuit constant false: left side constant false, then entire AND is constant false
@@ -563,6 +585,8 @@ impl Display for Expr {
         match self {
             Expr::Bin(left, op, right) => write!(f, "{left} {op:?} {right}"),
             Expr::Unary(op, expr) => write!(f, "{op:?}{expr}"),
+            Expr::Cast(expr, ty) => write!(f, "{expr} as {}", ty.display()),
+            Expr::Unsafe(expr) => write!(f, "unsafe {expr}"),
             Expr::Conditional(c, t, e) => write!(f, "{} ? {} : {}", c, t, e),
             Expr::And(left, right) => write!(f, "{left} && {right}"),
             Expr::Or(left, right) => write!(f, "{left} || {right}"),

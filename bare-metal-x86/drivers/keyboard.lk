@@ -1,0 +1,31 @@
+// The PS/2 keyboard controller.
+//
+// 0x60 is the data port, 0x64 the status/command port. A key press produces a
+// scancode; the release of the same key produces the same code with bit 7 set,
+// which is how a driver tells them apart.
+//
+// What a scancode *means* is a keyboard layout, not a property of the
+// controller, so the translation table lives with the program rather than
+// here. This module reads and classifies; the program decides.
+
+const PS2_DATA = 0x60;
+const PS2_STATUS = 0x64;
+
+const PS2_RELEASE = 0x80;
+
+// The raw scancode waiting in the controller's output buffer.
+fn read_scancode() -> Int {
+    let code = unsafe { port_in_u8(PS2_DATA) };
+    return code as Int;
+}
+
+// Releases arrive as the press code with bit 7 set. Counting them as presses
+// would report every keystroke twice.
+fn is_release(scancode: Int) -> Bool {
+    return (scancode & PS2_RELEASE) != 0;
+}
+
+// The press code a scancode carries, with the release bit removed.
+fn key_code(scancode: Int) -> Int {
+    return scancode & 0x7f;
+}
