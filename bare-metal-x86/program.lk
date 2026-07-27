@@ -17,7 +17,7 @@ use { pci_read, pci_write, pci_find_display, PCI_REG_BAR0, PCI_REG_COMMAND,
 use { vbe_set_mode_virtual, vbe_set_pan } from "drivers/vbe";
 use { get_pixel, put_pixel, fill_rect, copy_rows } from "drivers/framebuffer";
 use { draw_glyph, draw_cells, clear, scroll_up, draw_cursor, CELL_WIDTH, CELL_HEIGHT } from "drivers/text";
-use { read_scancode, is_release, key_code } from "drivers/keyboard";
+use { read_scancode, is_release, key_code, is_shift, is_caps_lock } from "drivers/keyboard";
 use { mouse_init, has_packet_byte, read_packet_byte as mouse_byte, is_first_byte,
       dx_of, dy_of, left_down } from "drivers/mouse";
 use { start as pit_start } from "drivers/pit";
@@ -252,7 +252,13 @@ const SHARED_CURSOR_DRAWN = SHARED_CURSOR_Y + WORD;
 // one thing about who is above whom.
 // What second the clock window is currently showing, so it is only redrawn
 // when the answer changed.
-const SHARED_CLOCK_SHOWN = SHARED_CURSOR_DRAWN + WORD;
+// The modifier keys' state. In the shared page because the handler is the only
+// thing that sees a key event, and the same handler has to read it back on the
+// next one.
+const SHARED_SHIFT = SHARED_CURSOR_DRAWN + WORD;
+const SHARED_CAPS = SHARED_SHIFT + WORD;
+
+const SHARED_CLOCK_SHOWN = SHARED_CAPS + WORD;
 // How many tasks exist. Written by the program when it spawns them; read by
 // the scheduler, which runs in an interrupt and cannot ask the board.
 const SHARED_TASK_COUNT = SHARED_CLOCK_SHOWN + WORD;
@@ -307,6 +313,52 @@ const VIRTUAL_HEIGHT = 400;
 
 const FRAME_IDLE = 0x203040;
 const FRAME_FOCUSED = 0xffc040;
+
+// What a key produces once the modifiers are applied.
+//
+// Two different rules, which is why this is not one table: caps lock affects
+// *letters only*, and shift affects everything — a keyboard where CapsLock
+// turned `1` into `!` would be one nobody could type on. Letters therefore ask
+// "is exactly one of shift and caps in effect", and the rest ask only about
+// shift.
+fn shifted(ascii: Int, shift: Bool, caps: Bool) -> Int {
+    if (ascii >= 97 && ascii <= 122) {
+        // Upper case when exactly one of them is on: both on is lower again,
+        // which is what a shifted letter does under caps lock.
+        if (shift != caps) {
+            return ascii - 32;
+        }
+        return ascii;
+    }
+    if (!shift) {
+        return ascii;
+    }
+    // The US layout's shifted punctuation, spelled out rather than computed:
+    // there is no arithmetic relation between `1` and `!`, only a convention,
+    // and writing the convention down is the honest way to say so.
+    if (ascii == 49) { return 33; }   // 1 -> !
+    if (ascii == 50) { return 64; }   // 2 -> @
+    if (ascii == 51) { return 35; }   // 3 -> #
+    if (ascii == 52) { return 36; }   // 4 -> $
+    if (ascii == 53) { return 37; }   // 5 -> %
+    if (ascii == 54) { return 94; }   // 6 -> ^
+    if (ascii == 55) { return 38; }   // 7 -> &
+    if (ascii == 56) { return 42; }   // 8 -> *
+    if (ascii == 57) { return 40; }   // 9 -> (
+    if (ascii == 48) { return 41; }   // 0 -> )
+    if (ascii == 45) { return 95; }   // - -> _
+    if (ascii == 61) { return 43; }   // = -> +
+    if (ascii == 91) { return 123; }  // [ -> {
+    if (ascii == 93) { return 125; }  // ] -> }
+    if (ascii == 92) { return 124; }  // \ -> |
+    if (ascii == 59) { return 58; }   // ; -> :
+    if (ascii == 39) { return 34; }   // ' -> "
+    if (ascii == 44) { return 60; }   // , -> <
+    if (ascii == 46) { return 62; }   // . -> >
+    if (ascii == 47) { return 63; }   // / -> ?
+    if (ascii == 96) { return 126; }  // ` -> ~
+    return ascii;
+}
 
 // Where a character sits in FONT. The font has one case, so lower-case maps to
 // the upper-case glyph; anything it does not cover renders as a space, which
@@ -1617,10 +1669,32 @@ fn on_tick() {
 #[export("lk_key_isr")]
 fn on_key() {
     let scancode = read_scancode();
+    let code = key_code(scancode);
+    // Shift is a *state*, so both edges matter: the release is what ends it.
+    // Every other key ignores releases, which is why they are dropped below
+    // rather than here.
+    if (is_shift(code)) {
+        if (is_release(scancode)) {
+            shared_write(SHARED_SHIFT, 0);
+        } else {
+            shared_write(SHARED_SHIFT, 1);
+        }
+        return;
+    }
     if (is_release(scancode)) {
         return;
     }
-    let code = key_code(scancode);
+    // Caps lock toggles on press and does nothing on release — the lock is the
+    // key's whole purpose, and a keyboard that unlocked when you let go would
+    // be a shift key.
+    if (is_caps_lock(code)) {
+        if (shared_read(SHARED_CAPS) == 0) {
+            shared_write(SHARED_CAPS, 1);
+        } else {
+            shared_write(SHARED_CAPS, 0);
+        }
+        return;
+    }
     if (code >= SCANCODE_ASCII.len()) {
         return;
     }
@@ -1632,6 +1706,7 @@ fn on_key() {
     if (ascii == 0) {
         return;
     }
+    let ascii = shifted(ascii, shared_read(SHARED_SHIFT) == 1, shared_read(SHARED_CAPS) == 1);
     shared_bump(SHARED_KEY_COUNT);
     shared_write(SHARED_LAST_KEY, ascii);
     uart_putc(ascii);

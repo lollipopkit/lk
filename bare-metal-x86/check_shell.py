@@ -28,6 +28,11 @@ import time
 KEYS = (
     ["h", "e", "l", "x", "backspace", "p", "ret"]
     + ["e", "c", "h", "o", "spc", "l", "k", "ret"]
+    # Shift is a *state*, not a character: the handler tracks its press and
+    # release, and applies it to whatever key arrives between them. Upper case
+    # and shifted punctuation take different rules — caps lock affects letters
+    # only — so both are typed here.
+    + ["e", "c", "h", "o", "spc", "shift-a", "shift-1", "shift-minus", "ret"]
     + ["p", "a", "g", "e", "ret"]
     + ["p", "a", "g", "e", "ret"]
     + ["m", "e", "m", "ret"]
@@ -49,6 +54,7 @@ KEYS = (
 EXPECTED_LINES = [
     "help clear echo keys mem page sync yield win time disk cat run heap exit",
     "lk",
+    "A!_",
     # Two pages handed out in order, from the range the loader reported. The
     # addresses are what proves the allocator rather than a counter. They start
     # past the kernel heap's sixteen pages, which startup took first.

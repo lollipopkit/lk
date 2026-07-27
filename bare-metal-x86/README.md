@@ -162,6 +162,24 @@ to still be background.
 Both halves of that check are load-bearing, and both have been seen to fail:
 replacing `window_put` with a direct `put_pixel` lights 35 of them.
 
+### Shift, and what a modifier is
+
+A modifier key is a key like any other: the controller has no notion of one, and
+reports a press and a release for `Shift` exactly as it does for `A`. What makes
+it a modifier is that the *program* keeps its state instead of translating it —
+which is why `drivers/keyboard.lk` only names the three scancodes and the
+handler does the rest.
+
+Both edges matter for `Shift`, and only one for `CapsLock`: the release is what
+ends a shift, while a lock that ended when you let go would be a shift key. And
+they compose differently — caps lock affects letters only (a keyboard where it
+turned `1` into `!` is one nobody could type on), so a letter asks "is exactly
+one of them in effect" while everything else asks only about shift.
+
+The shifted punctuation is a table of literals rather than arithmetic. There is
+no relation between `1` and `!` beyond a convention, and writing the convention
+down is the honest way to say so.
+
 ### Who gets the keyboard
 
 Tab moves the focus between the two windows. The key handler does not know what
