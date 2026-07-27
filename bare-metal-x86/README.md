@@ -595,6 +595,49 @@ limit is half the file rather than all of it, so what is left is one statement's
 working set. Below 128 nothing changes at all, which is why the benchmark
 workloads (five top-level bindings) emit byte-identical code.
 
+## What the board still answers, and what it stopped answering
+
+A row of small Rust functions used to exist only to tell the program where the
+linker had put something: the user section's bounds, the kernel's page
+directories, each ring-3 task's entry and stack. Every one of them was a
+question with an address for an answer, and `symbol_address` — which the window
+manager already used for its painter table — turns out to answer it directly:
+
+```lk
+let kernel_directories: Int = unsafe { symbol_address("__pd") };
+```
+
+It works on a *data* symbol as well as a function, which is the whole point:
+"where did the linker put this" is a question a systems language can ask. The
+two ring-3 task stacks moved from `static mut [u8; N]` in Rust into linker
+reservations for the same reason — a static array and a reserved range are the
+same thing, and only one of them has a name every language can say.
+
+Moving them tightened something, too. The task stacks now sit *outside*
+`__user_start..__user_end`, because each task maps its own at
+`USER_STACK_VIRTUAL` in its own address space and needs no U bit in the kernel's
+tables. That range is what `write(ptr, len)` checks against, so one ring-3 task
+can no longer hand the kernel a pointer into the other one's stack.
+
+`lk_enter_user` takes all four numbers now — what runs, on which stack, through
+which two descriptors — instead of asking the program back for the selectors.
+What the board contributes is the one thing that cannot be said in LK: `iretq`,
+which is the only way *into* ring 3, because no instruction lowers privilege
+directly.
+
+### A stack task 0 never had
+
+Task 0 pre-exists the table — it is the one already running when the first
+interrupt lands — so nothing ever published a ring-0 stack for it, and a switch
+*back* to it left `rsp0` pointing at whichever task ran last. The `user` command
+enters ring 3 from task 0, and an interrupt during that excursion would have
+pushed its frame onto another task's kernel stack.
+
+Now the table's slot 0 carries the boot ring-0 stack like any other, so every
+switch sets `rsp0` to a stack that belongs to the task being switched to. Found
+by asking what `lk_boot_kernel_stack` was still for once every other accessor
+had gone.
+
 ## Ring 3
 
 Everything else here runs at ring 0, where a wrong address is a fault and a

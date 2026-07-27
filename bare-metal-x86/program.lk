@@ -362,6 +362,19 @@ const GDT_ENTRIES = 7;
 const GDT_BASE = IDT_BASE + IDT_SIZE;
 const TSS_BASE = GDT_BASE + GDT_ENTRIES * GDT_ENTRY_SIZE;
 
+// Where a user task's stack lives *in its own address space*.
+//
+// A virtual address the kernel's space does not map to the same thing: in the
+// kernel's tables 0x4000_0000 is identity-mapped RAM that nothing uses, and in
+// the task's it is the stack. That difference is what makes them two address
+// spaces rather than one with extra permissions.
+//
+// The `- 8` is the ABI's phase: a function assumes a `call` has just pushed a
+// return address, and `iretq` pushes nothing. Without it the first aligned SSE
+// spill inside the task faults, in whatever it happened to call.
+const USER_STACK_VIRTUAL = 0x40000000;
+const USER_STACK_RESUME = USER_STACK_VIRTUAL + PAGE_SIZE - 8;
+
 // The task table.
 //
 // How many slots is a decided number rather than a discovered one: the table is
@@ -1162,7 +1175,9 @@ fn run_command(base: Int) -> Int {
         // program there prints through a syscall and then deliberately writes
         // an address it is not allowed to, which the exception reporter names.
         emit(base, [114, 105, 110, 103, 51]);
-        enter_user();
+        enter_user(unsafe { symbol_address("__user_program") },
+                   (unsafe { symbol_address("__user_shell_stack") } as Int) + PAGE_SIZE - 8,
+                   USER_CODE_SELECTOR, USER_DATA_SELECTOR);
         return 1;
     }
     if (line_starts_with([104, 101, 97, 112])) {           // "heap"
@@ -1327,8 +1342,15 @@ fn task_clock() {
 // own concurrency, which returns a `Task`. Two things called spawn in one
 // program is a question every reader would have to answer twice.
 // Leaves for ring 3 and does not come back — see `src/user.rs`.
+// Enters ring 3, and does not come back.
+//
+// Every number is this file's: what runs, on which stack, and through which two
+// descriptors. What the board contributes is the one thing that cannot be said
+// here — `iretq`, the only way *into* ring 3, because no instruction lowers
+// privilege directly. There is no return value because there is no return: the
+// only ways out are a syscall (which returns *into* ring 3) and a fault.
 #[extern("lk_enter_user")]
-fn enter_user() -> Int {
+fn enter_user(entry: Int, stack: Int, code: Int, data: Int) -> Int {
     return 0;
 }
 
@@ -1480,16 +1502,6 @@ const MAX_WRITE = 4096;
 
 // The bounds of everything ring 3 may reach, from the linker script — so from
 // the board, which is the only side that can ask the linker anything.
-#[extern("lk_user_section_start")]
-fn user_section_start() -> Int {
-    return 0;
-}
-
-#[extern("lk_user_section_end")]
-fn user_section_end() -> Int {
-    return 0;
-}
-
 // Is `[address, address + length)` memory the caller is allowed to hand over?
 //
 // The only region ring 3 can reach is its own section, so that is the whole
@@ -1512,7 +1524,9 @@ fn user_range_is_valid(address: Int, length: Int) -> Bool {
     if (end < address) {
         return false;
     }
-    return address >= user_section_start() && end <= user_section_end();
+    let start: Int = unsafe { symbol_address("__user_start") };
+    let limit: Int = unsafe { symbol_address("__user_end") };
+    return address >= start && end <= limit;
 }
 
 // The syscall handler, entered from the board's trampoline with the number in
@@ -1553,17 +1567,6 @@ fn syscall_dispatch(number: Int, arg: Int, arg2: Int) -> Int {
     return SYS_REFUSED as Int;
 }
 
-// The kernel's four page directories, one per gigabyte.
-//
-// Named by the board because the board built them: they are filled in by the
-// 32-bit boot code, before long mode and therefore before any of this exists.
-// A user address space points *at* them rather than copying them, which is the
-// thing that keeps the two from drifting.
-#[extern("lk_kernel_page_directories")]
-fn kernel_page_directories() -> Int {
-    return 0;
-}
-
 // Builds an address space for a user task, and answers its CR3.
 //
 // Almost all of it is shared with the kernel, and shared by *pointing at* the
@@ -1595,7 +1598,12 @@ fn build_user_space(stack_physical: Int) -> Int {
     table_zero(table);
 
     let shared = PAGE_PRESENT | PAGE_WRITE | PAGE_USER;
-    let kernel_directories = kernel_page_directories();
+    // The kernel's four page directories, one per gigabyte, asked of the
+    // linker directly. The 32-bit boot code filled them in before long mode and
+    // therefore before any of this existed — but "where did the linker put it"
+    // is a question this language can ask. A user space points *at* them rather
+    // than copying them, which is what keeps the two from drifting.
+    let kernel_directories: Int = unsafe { symbol_address("__pd") };
     // The first, third and fourth gigabytes: the kernel's, named not copied.
     // The framebuffer is in the fourth.
     table_set(pdpt, 0, kernel_directories, shared);
@@ -1607,7 +1615,7 @@ fn build_user_space(stack_physical: Int) -> Int {
     // written as a number — a hand-written 0 here is right only because the
     // stack happens to sit at the start of its gigabyte, and would go on
     // looking right after it stopped being true.
-    let stack_virtual = user_task_stack_virtual();
+    let stack_virtual = USER_STACK_RESUME;
     table_set(pdpt, index_of(stack_virtual, SHIFT_PDPT), directory, shared);
     table_set(directory, index_of(stack_virtual, SHIFT_DIRECTORY), table, shared);
     table_set(table, index_of(stack_virtual, SHIFT_TABLE), stack_physical, shared);
@@ -1618,31 +1626,6 @@ fn build_user_space(stack_physical: Int) -> Int {
 
 // Where that stack is in the task's own address space — a different number for
 // the same memory.
-#[extern("lk_user_task_entry_b")]
-fn user_task_entry_b() -> Int {
-    return 0;
-}
-
-#[extern("lk_user_task_stack_b")]
-fn user_task_stack_b() -> Int {
-    return 0;
-}
-
-#[extern("lk_user_task_stack_virtual")]
-fn user_task_stack_virtual() -> Int {
-    return 0;
-}
-
-#[extern("lk_user_task_entry")]
-fn user_task_entry() -> Int {
-    return 0;
-}
-
-#[extern("lk_user_task_stack")]
-fn user_task_stack() -> Int {
-    return 0;
-}
-
 #[extern("kernel_yield")]
 fn task_yield() {
 }
@@ -1699,17 +1682,6 @@ const DESCRIPTOR_KERNEL_DATA = 0x00AF92000000FFFF;
 const DESCRIPTOR_USER_CODE = 0x00AFFA000000FFFF;
 const DESCRIPTOR_USER_DATA = 0x00AFF2000000FFFF;
 
-// The ring-0 stack the CPU switches to on the first interrupt from ring 3.
-//
-// The board's, and only this one: it is a static in the image, because it has
-// to exist before there is an allocator to ask. Every switch after the first
-// replaces it with the stack of whatever task is next, which is the scheduler's
-// business and not this one's.
-#[extern("lk_boot_kernel_stack")]
-fn boot_kernel_stack() -> Int {
-    return 0;
-}
-
 // Builds the descriptor table the machine runs on, and the segment it names.
 //
 // The boot stub has a table of its own and always will — entering long mode
@@ -1725,7 +1697,16 @@ fn install_descriptor_table() {
     gdt_set_entry(GDT_BASE, 4, DESCRIPTOR_USER_DATA);
 
     tss_prepare(TSS_BASE);
-    tss_set_kernel_stack(TSS_BASE, boot_kernel_stack());
+    // Task 0's ring-0 stack, and it belongs in the table as well as in the
+    // segment. Task 0 pre-exists the table — it is the one already running when
+    // the first interrupt lands — so nothing ever published a stack for it, and
+    // a switch *back* to it used to leave `rsp0` pointing at whichever task ran
+    // last. The `user` command enters ring 3 from task 0, and an interrupt
+    // during that excursion would have landed its frame on another task's
+    // kernel stack.
+    let boot_stack: Int = unsafe { symbol_address("__ring0_stack_top") };
+    task_set_field(TASK_TABLE_BASE, 0, TASK_STACK_OFFSET, boot_stack);
+    tss_set_kernel_stack(TSS_BASE, boot_stack);
     // The limit is the segment's last valid byte, so one less than its size.
     gdt_set_tss_entry(GDT_BASE, 5, TSS_BASE, TSS_SIZE - 1);
 
@@ -1745,18 +1726,7 @@ fn set_kernel_stack(top: Int) {
     tss_set_kernel_stack(TSS_BASE, top);
 }
 
-// The two selectors that make a frame a ring-3 frame. The board builds those
-// frames — `iretq` is the only way into ring 3 — and asks here which numbers
-// they are, rather than holding a second copy of this table's layout.
-#[export("lk_user_code_selector")]
-fn user_code_selector() -> Int {
-    return USER_CODE_SELECTOR;
-}
 
-#[export("lk_user_data_selector")]
-fn user_data_selector() -> Int {
-    return USER_DATA_SELECTOR;
-}
 
 // Builds the interrupt table and loads it.
 //
@@ -2348,11 +2318,13 @@ fault_probe();
 // Then the segments. After the table rather than before it because a fault in
 // here should be reportable, and the boot stub's descriptors are enough to run
 // on until this replaces them.
-install_descriptor_table();
-// And the table the scheduler reads. Before interrupts are enabled, because
-// the timer handler reads it and a table of zeros names task 0 forever — which
-// looks like a working machine with one task, not like an uninitialised table.
+// The task table first: the descriptor table's setup publishes task 0's own
+// ring-0 stack into it, and before interrupts are enabled either way — the
+// timer handler reads the table, and a table of zeros names task 0 forever,
+// which looks like a working machine with one task rather than an
+// uninitialised table.
 task_table_init(TASK_TABLE_BASE, TASK_CAPACITY);
+install_descriptor_table();
 // Then the chip that raises them, and the flag that lets them through. In that
 // order: an interrupt taken before the table was loaded goes wherever the
 // previous table said, and there is no previous table.
@@ -2491,12 +2463,14 @@ let clock_task = spawn_task(unsafe { symbol_address("lk_task_clock") });
 // is the four page directories it filled in before long mode. How many spaces
 // there can be is now "how many pages are left", which is a bound with a
 // reason, unlike the four the linker script used to reserve.
-let user_space = build_user_space(user_task_stack());
-let user_task = spawn_user_task(user_task_entry(), user_task_stack_virtual(), user_space);
+let user_space = build_user_space(unsafe { symbol_address("__user_task_stack_a") });
+let user_task = spawn_user_task(unsafe { symbol_address("__user_task_a") },
+                                USER_STACK_RESUME, user_space);
 // A second one, with a stack at the *same* virtual address in a space of its
 // own: if they shared a space, one would overwrite the other's memory.
-let user_space_b = build_user_space(user_task_stack_b());
-let user_task_b = spawn_user_task(user_task_entry_b(), user_task_stack_virtual(), user_space_b);
+let user_space_b = build_user_space(unsafe { symbol_address("__user_task_stack_b") });
+let user_task_b = spawn_user_task(unsafe { symbol_address("__user_task_b") },
+                                  USER_STACK_RESUME, user_space_b);
 // The count is no longer written here: `publish_task` writes it as the last
 // step of every spawn, which is the only moment at which it is true. Writing it
 // afterwards from the last slot handed out was correct and was also a second

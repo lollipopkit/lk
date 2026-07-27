@@ -29,26 +29,8 @@ use core::arch::global_asm;
 // raise and every other one a general protection fault.
 
 unsafe extern "C" {
-    /// The bounds of everything ring 3 may reach, placed by the linker script.
-    static __user_start: u8;
-    static __user_end: u8;
-}
-
-/// The bounds of everything ring 3 may reach, from the linker script.
-///
-/// Answered rather than reached into: `program.lk` checks every pointer a user
-/// task hands over against this range, and the linker is the only thing that
-/// knows where the section landed. The board is the only side that can ask it.
-#[unsafe(no_mangle)]
-pub extern "C" fn lk_user_section_start() -> i64 {
-    // SAFETY: a linker-placed symbol; taking its address reads nothing.
-    unsafe { (&raw const __user_start) as i64 }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn lk_user_section_end() -> i64 {
-    // SAFETY: as above.
-    unsafe { (&raw const __user_end) as i64 }
+    /// The one-shot ring-3 program's stack, placed by the linker script.
+    static __user_shell_stack: u8;
 }
 
 global_asm!(
@@ -130,71 +112,13 @@ global_asm!(
     "   iretq",
 );
 
-/// The kernel stack an interrupt from ring 3 lands on.
-///
-/// Its own stack, not the interrupted task's: a user task's stack pointer is a
-/// value the user chose, and an interrupt that pushed onto it would be handing
-/// the frame it is about to `iretq` from to the program it interrupted.
-#[repr(align(16))]
-struct KernelStack([u8; 16 * 1024]);
-static mut RING0_STACK: KernelStack = KernelStack([0; 16 * 1024]);
-
-unsafe extern "C" {
-    /// The kernel's page directories, placed by the linker script. The user
-    /// address spaces that used to sit beside them are gone: `program.lk`
-    /// allocates its page tables from its own page allocator now, so how many
-    /// address spaces there can be is bounded by memory rather than by four
-    /// reservations in a linker script.
-    static __pd: u64;
-}
-
 /// Where a user task's stack lives *in its own address space*.
 ///
 /// A virtual address the kernel's space does not map to the same thing: in the
 /// kernel's tables 0x4000_0000 is identity-mapped RAM that nothing uses, and in
 /// the user's it is the stack. That difference is what makes them two address
 /// spaces rather than one with extra permissions.
-pub const USER_STACK_VIRTUAL: u64 = 0x4000_0000;
 
-/// Where the kernel's four page directories are, one per gigabyte.
-///
-/// Answered rather than reached into, because they are the *board's*: the
-/// 32-bit boot code fills them in before long mode, which is before any of the
-/// program exists. A user address space points at them instead of copying them
-/// — the kernel has to be mapped in every space, since an interrupt during ring
-/// 3 lands in kernel code, and a copy would work today and drift on the day a
-/// mapping is added to one and not the other.
-#[unsafe(no_mangle)]
-pub extern "C" fn lk_kernel_page_directories() -> i64 {
-    // SAFETY: a linker-placed array of page directories; taking its address
-    // reads nothing.
-    unsafe { (&raw const __pd) as i64 }
-}
-
-/// The ring-0 stack the CPU switches to on the *first* interrupt from ring 3.
-///
-/// The board's, and only this one: it has to exist before there is an allocator
-/// to ask, so it is a static in the image. `program.lk` reads it once while
-/// building the TSS, and every switch after that replaces it with the kernel
-/// stack of whichever task is next — which is the scheduler's business, not
-/// this one's.
-#[unsafe(no_mangle)]
-pub extern "C" fn lk_boot_kernel_stack() -> i64 {
-    // SAFETY: a static array's own end.
-    unsafe { (&raw mut RING0_STACK).cast::<u8>().add(size_of::<KernelStack>()) as i64 }
-}
-
-unsafe extern "C" {
-    /// The ring-3 selectors, asked of the program rather than named here.
-    ///
-    /// `program.lk` builds the descriptor table these index, so it is the one
-    /// place that knows what sits at 0x18 and 0x20. A copy on this side would
-    /// be a second answer to a question with one, and two that disagreed would
-    /// mean an `iretq` into a segment other than the one intended — which, if
-    /// it happened to be a ring-0 descriptor, is no ring boundary at all.
-    fn lk_user_code_selector() -> i64;
-    fn lk_user_data_selector() -> i64;
-}
 
 /// Enters ring 3 at `entry`, on `stack`, and does not come back.
 ///
@@ -207,8 +131,7 @@ unsafe extern "C" {
 ///
 /// `entry` must be code the user segment can reach and `stack` a mapped,
 /// writable, 16-byte-aligned stack. Both are user-visible from here on.
-pub unsafe fn enter(entry: u64, stack: u64) -> ! {
-    let (code, data) = user_frame_selectors();
+pub unsafe fn enter(entry: u64, stack: u64, code: u64, data: u64) -> ! {
     // SAFETY: the caller's claim, plus a frame this function builds itself.
     unsafe {
         core::arch::asm!(
@@ -346,85 +269,6 @@ unsafe extern "C" {
     pub fn __user_task_b();
 }
 
-/// A stack for the ring-3 task, distinct from the one-shot program's: they are
-/// different tasks and must not share a stack.
-#[repr(align(4096))]
-struct UserTaskStack([u8; 8 * 1024]);
-#[unsafe(link_section = ".user")]
-static mut USER_TASK_STACK: UserTaskStack = UserTaskStack([0; 8 * 1024]);
-#[unsafe(link_section = ".user")]
-static mut USER_TASK_STACK_B: UserTaskStack = UserTaskStack([0; 8 * 1024]);
-
-/// The task's entry and stack, for the program to spawn it with.
-#[unsafe(no_mangle)]
-pub extern "C" fn lk_user_task_entry() -> i64 {
-    __user_task_a as *const () as i64
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn lk_user_task_entry_b() -> i64 {
-    __user_task_b as *const () as i64
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn lk_user_task_stack_b() -> i64 {
-    // SAFETY: a static array's own end.
-    unsafe {
-        (&raw mut USER_TASK_STACK_B)
-            .cast::<u8>()
-            .add(size_of::<UserTaskStack>())
-            .sub(4096) as i64
-    }
-}
-
-/// The physical page that backs the ring-3 task's stack.
-///
-/// One page, at the *end* of the static array so the stack grows down inside
-/// it. What the task sees is `USER_STACK_VIRTUAL`, which is where this page is
-/// mapped in the task's own space — the two numbers are the same memory and
-/// different addresses, which is the whole point of the exercise.
-#[unsafe(no_mangle)]
-pub extern "C" fn lk_user_task_stack() -> i64 {
-    // SAFETY: a static array's own end.
-    unsafe {
-        (&raw mut USER_TASK_STACK)
-            .cast::<u8>()
-            .add(size_of::<UserTaskStack>())
-            .sub(4096) as i64
-    }
-}
-
-/// The address that stack has in the task's own address space, one word down
-/// for the ABI's phase.
-#[unsafe(no_mangle)]
-pub extern "C" fn lk_user_task_stack_virtual() -> i64 {
-    (USER_STACK_VIRTUAL + 4096 - 8) as i64
-}
-
-/// The stack the user program runs on.
-#[repr(align(16))]
-struct UserStack([u8; 8 * 1024]);
-#[unsafe(link_section = ".user")]
-static mut USER_STACK: UserStack = UserStack([0; 8 * 1024]);
-
-/// The top of that stack, one word down — the phase a function expects.
-pub fn user_stack_top() -> u64 {
-    // SAFETY: a static array's own end.
-    unsafe { (&raw mut USER_STACK).cast::<u8>().add(size_of::<UserStack>()).sub(8) as u64 }
-}
-
-/// The frame a *user* task starts life on, for `tasks::prepare_stack`.
-///
-/// Same shape as a kernel task's — fifteen saved registers under the frame the
-/// CPU itself pushes — with the selectors that make it ring 3. Which is the
-/// whole difference between a user task and a kernel one: not what it runs, but
-/// which four numbers are in that frame.
-pub fn user_frame_selectors() -> (u64, u64) {
-    // SAFETY: `#[export]`ed LK functions taking nothing and returning an
-    // integer, compiled into this image by the same build.
-    unsafe { (lk_user_code_selector() as u64, lk_user_data_selector() as u64) }
-}
-
 /// Runs the ring-3 program, and does not come back.
 ///
 /// Called from LK through `#[extern]`. There is no return: the only ways out of
@@ -436,8 +280,12 @@ pub fn user_frame_selectors() -> (u64, u64) {
 /// own stack, and let the timer take the CPU back. That needs the scheduler to
 /// know about privilege, which it does not yet.
 #[unsafe(no_mangle)]
-pub extern "C" fn lk_enter_user() -> ! {
-    // SAFETY: `__user_program` is code in this image, and the stack is a static
-    // array of its own.
-    unsafe { enter(__user_program as *const () as u64, user_stack_top()) }
+pub extern "C" fn lk_enter_user(entry: i64, stack: i64, code: i64, data: i64) -> ! {
+    // Every number comes from the program, and that is the point: what runs,
+    // on which stack, and through which two descriptors. This side contributes
+    // the one thing the program cannot say — `iretq`, which is the only way
+    // into ring 3, because no instruction lowers privilege directly.
+    //
+    // SAFETY: the caller's claim, made by writing `unsafe` in the LK source.
+    unsafe { enter(entry as u64, stack as u64, code as u64, data as u64) }
 }
