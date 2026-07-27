@@ -106,6 +106,32 @@
 //! two-register carriers (`Dyn`, the `Maybe`s), and `F64`, which the ABI passes
 //! in XMM while the trampoline passes integers.
 //!
+//! ## A second answer that was tried and is wrong
+//!
+//! The remaining rejection for two of the three files is a container the body
+//! assigns, which has no way back out of a cell: `dyn.as_list` and
+//! `dyn.as_map` answer an untyped `Ptr`, and which typed handle that is depends
+//! on the register.
+//!
+//! That looks answerable now. The type is the register's own, read out of the
+//! SSA rather than guessed, and the type checker has already refused
+//! `let a = 0; try { a = "s"; }` — so the value in the cell is the type the
+//! register is declared to hold, whichever edge it came from. Reading it back
+//! as that type makes `try_catch.lk` lower natively.
+//!
+//! And it computes the wrong answer: the program prints `try/catch: ok` under
+//! the VM and aborts with `Assertion failed` natively. Compiling is not the
+//! test; the test is agreeing with the VM, and this was caught by running it.
+//!
+//! The likely reason is worth writing down, because it points somewhere else
+//! entirely: a container does not need a cell. A cell exists so the parent can
+//! see a value the body wrote into its own frame — but the parent and the body
+//! hold the *same handle*, so `log.push(2)` is already visible without one. The
+//! round trip through `dyn.from_list` and `dyn.as_list` is not carrying the
+//! mutation, it is what loses it. What a container assignment would need a cell
+//! for is *rebinding* — `log = [something else]` — which is a different and
+//! rarer shape than the one these files contain.
+//!
 //! ## One answer that was tried and is wrong
 //!
 //! The obvious repair is to stop rejecting and hand the value back as `Dyn`:
