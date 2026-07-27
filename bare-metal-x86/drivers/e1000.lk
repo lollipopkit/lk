@@ -28,6 +28,7 @@
 // rings is a complete driver, and one that also has to explain interrupt
 // coalescing is a worse illustration, not a better one.
 
+use { mmio_layout } from "layout";
 use { pci_find, pci_bar, pci_command_set,
       PCI_COMMAND_MEMORY, PCI_COMMAND_BUS_MASTER } from "pci";
 
@@ -145,13 +146,15 @@ const RX_STATUS_EOP = 0x02;
 // a driver that picks its own address is a driver that collides with the next
 // one, and a driver with globals cannot be instantiated twice for a machine with
 // two cards.
-const STATE_MMIO = 0;
-const STATE_TX_RING = 8;
-const STATE_RX_RING = 16;
-const STATE_TX_TAIL = 24;
-const STATE_RX_HEAD = 32;
-const STATE_RX_BUFFERS = 40;
-const STATE_SIZE = 48;
+mmio_layout! {
+    STATE_MMIO: 8,
+    STATE_TX_RING: 8,
+    STATE_RX_RING: 8,
+    STATE_TX_TAIL: 8,
+    STATE_RX_HEAD: 8,
+    STATE_RX_BUFFERS: 8,
+    => STATE_SIZE
+}
 
 fn state_get(state: Int, offset: Int) -> Int {
     let value = unsafe { volatile_read_u64((state + offset) as *mut u64) };

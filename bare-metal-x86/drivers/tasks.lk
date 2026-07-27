@@ -1,3 +1,5 @@
+use { mmio_layout } from "layout";
+
 // The task table, and the frame a task starts life on.
 //
 // A task, on this machine, is three words: where its stack pointer is while it
@@ -21,13 +23,18 @@
 //   slot   +0   the saved stack pointer, valid while the task is not running
 //   slot   +8   its address space, as the value CR3 takes (0 = the kernel's)
 //   slot   +16  the ring-0 stack an interrupt from it lands on (0 = none)
-const TASK_HEADER_SIZE = 16;
-const TASK_SLOT_SIZE = 24;
-const TASK_USED_OFFSET = 0;
-const TASK_CURRENT_OFFSET = 8;
-const TASK_RSP_OFFSET = 0;
-const TASK_CR3_OFFSET = 8;
-const TASK_STACK_OFFSET = 16;
+mmio_layout! {
+    TASK_USED_OFFSET: 8,
+    TASK_CURRENT_OFFSET: 8,
+    => TASK_HEADER_SIZE
+}
+
+mmio_layout! {
+    TASK_RSP_OFFSET: 8,
+    TASK_CR3_OFFSET: 8,
+    TASK_STACK_OFFSET: 8,
+    => TASK_SLOT_SIZE
+}
 
 fn task_table_size(capacity: Int) -> Int {
     return TASK_HEADER_SIZE + capacity * TASK_SLOT_SIZE;
