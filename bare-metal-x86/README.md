@@ -84,6 +84,36 @@ trampoline is where it is said.
 Task stacks come from the page allocator too, so `TASK_CAPACITY` is now a
 property of the table's fixed region rather than of five static arrays.
 
+### The one interrupt path that did not save SSE
+
+Found by reading, not by a check: `SAVE_TASK` — the timer's — saved fifteen
+integer registers and **no** XMM registers, and it was the only interrupt path
+here that did not. Every other one says why beside itself: a compiled LK handler
+may clobber any XMM register under the System V ABI, LK numbers are `f64`, and
+the interrupted computation may hold one.
+
+The timer path calls two compiled LK functions a thousand times a second, and it
+is also the one that switches tasks — so a task's SSE state was not part of what
+travelled with it either. Nothing had gone wrong because today's tick and
+scheduler do integer work only, which is a property of the *handlers*, not of
+the boundary.
+
+The alignment question that made this look hard dissolves once stated properly.
+`sub rsp, 256` is a multiple of sixteen, so it *preserves* whatever alignment
+the pushes above produced — and that alignment already works, because this path
+calls compiled LK today. The device path's 264 is 256 plus the eight its nine
+pushes need; neither number has to be derived from first principles, and trying
+to derive them was the whole difference between "hard" and "ten minutes".
+
+The half that is easy to forget is the other one: a task that has never run
+needs the same area reserved on its starting frame, because the board restores
+from that frame before it `iretq`s and restores the SSE registers *first*, from
+the lowest addresses. So `task_prepare_frame` now asks the board how many words
+its save sequence leaves (`lk_task_saved_words`) rather than counting them again
+in LK. That is the one number that must not drift: a frame short by a word is
+not an error anything reports, it is a resume that reads its RIP out of whatever
+the next slot held.
+
 ### The ceiling this hit, and what was actually behind it
 
 Adding `drivers/tasks.lk` did not compile:

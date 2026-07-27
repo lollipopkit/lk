@@ -1411,7 +1411,8 @@ fn spawn_task(entry: Int) -> Int {
     // function expects: the ABI assumes a `call` has just pushed a return
     // address, and `iretq` pushes nothing. Without the offset the first aligned
     // SSE spill inside the task faults, in whatever it happened to call.
-    let rsp = task_prepare_frame(top, entry, KERNEL_CODE_SELECTOR, KERNEL_DATA_SELECTOR, top - 8);
+    let rsp = task_prepare_frame(top, entry, KERNEL_CODE_SELECTOR, KERNEL_DATA_SELECTOR, top - 8,
+                                 task_saved_words());
     return publish_task(slot, rsp, 0, top);
 }
 
@@ -1436,8 +1437,16 @@ fn spawn_user_task(entry: Int, stack_virtual: Int, cr3: Int) -> Int {
     if (top == 0) {
         return 0 - 1;
     }
-    let rsp = task_prepare_frame(top, entry, USER_CODE_SELECTOR, USER_DATA_SELECTOR, stack_virtual);
+    let rsp = task_prepare_frame(top, entry, USER_CODE_SELECTOR, USER_DATA_SELECTOR, stack_virtual,
+                                 task_saved_words());
     return publish_task(slot, rsp, cr3, top);
+}
+
+// How much the board's save sequence leaves on a task's stack. Its number, not
+// this file's: the assembly that pushes those registers is what decides it.
+#[extern("lk_task_saved_words")]
+fn task_saved_words() -> Int {
+    return 0;
 }
 
 // Which task runs next, and everything that has to be true before it does.

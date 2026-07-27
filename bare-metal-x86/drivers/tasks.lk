@@ -29,14 +29,6 @@ const TASK_RSP_OFFSET = 0;
 const TASK_CR3_OFFSET = 8;
 const TASK_STACK_OFFSET = 16;
 
-// How many words a starting frame is: fifteen saved registers under the five
-// the CPU itself pushes.
-//
-// Named because the two halves have to agree with the board's `SAVE_TASK` and
-// with the CPU, and a frame that is short by one is not a compile error — it is
-// a resume that reads its RIP out of whatever the next slot held.
-const TASK_FRAME_SAVED = 15;
-
 fn task_table_size(capacity: Int) -> Int {
     return TASK_HEADER_SIZE + capacity * TASK_SLOT_SIZE;
 }
@@ -90,7 +82,13 @@ fn task_table_init(base: Int, capacity: Int) {
 //
 // `code` and `data` are what make a task a *user* task. Not what it runs, not
 // where its stack is — four numbers in this frame.
-fn task_prepare_frame(top: Int, entry: Int, code: Int, data: Int, resume_sp: Int) -> Int {
+// `saved_words` is how much the board's own save sequence leaves on the stack,
+// and it is asked of the board rather than counted here: that sequence is what
+// decides it, and a register added there has to appear in the frame a task
+// *starts* on too. Two numbers in two languages would be two places to add it,
+// and a frame short by one word is not an error anything reports — it is a
+// resume that reads its RIP out of whatever the next slot held.
+fn task_prepare_frame(top: Int, entry: Int, code: Int, data: Int, resume_sp: Int, saved_words: Int) -> Int {
     let sp = top;
     sp = sp - 8;
     task_set_word(sp, data);          // SS
@@ -102,7 +100,10 @@ fn task_prepare_frame(top: Int, entry: Int, code: Int, data: Int, resume_sp: Int
     task_set_word(sp, code);          // CS
     sp = sp - 8;
     task_set_word(sp, entry);         // RIP
-    for _slot in 0..TASK_FRAME_SAVED {
+    // Zeroed rather than merely reserved: the first restore loads whatever is
+    // here into the saved registers, and a task should not begin life holding
+    // another task's numbers.
+    for _word in 0..saved_words {
         sp = sp - 8;
         task_set_word(sp, 0);
     }

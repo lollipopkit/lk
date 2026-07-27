@@ -45,35 +45,24 @@ pub extern "C" fn kernel_yield() {
 // Every register is saved, not just the caller-saved ones: what is on this
 // stack has to be a *whole* task, because the stack this returns on may not be
 // the one it arrived on.
+/// How many eight-byte words `SAVE_TASK` leaves on the stack.
+///
+/// Fifteen integer registers and sixteen XMM registers of sixteen bytes each.
+/// Asked of the board rather than counted again in LK, because the macro below
+/// is the thing that decides it: a register added there has to appear in the
+/// frame a task *starts* on too, and two numbers in two languages are two
+/// places to add it. A frame short by one word is not an error anything
+/// reports — it is a resume that reads its RIP out of whatever the next slot
+/// held.
+#[unsafe(no_mangle)]
+pub extern "C" fn lk_task_saved_words() -> i64 {
+    15 + 256 / 8
+}
+
 global_asm!(
     ".section .text, \"ax\"",
     // A whole task's registers, not just the caller-saved ones: what is on
     // this stack may be resumed on a different one.
-    // NOTE: this saves fifteen integer registers and *no* SSE state, and it is
-    // the only interrupt path here that does not.
-    //
-    // Every other one — the keyboard's and the mouse's before they moved into
-    // `lkrt`, `lkrt`'s generic stubs, the syscall trampoline — saves all
-    // sixteen XMM registers, for the reason written next to them: a compiled LK
-    // handler may clobber any of them under the System V ABI, LK numbers are
-    // `f64`, and the interrupted computation may hold one. This path calls two
-    // compiled LK functions (`lk_timer_isr` and `lk_schedule_from_interrupt`)
-    // with none of that saved, a thousand times a second, and it is also the
-    // one that switches tasks — so a task's SSE state is not part of what
-    // travels with it either.
-    //
-    // Nothing has gone wrong yet because today's tick and scheduler do integer
-    // work only. That is a property of the handlers, not of the boundary, and
-    // it is the same shape as the syscall trampoline before its XMM save was
-    // added.
-    //
-    // TODO: save them here too. Not done in the same breath as noticing it,
-    // because the stack alignment has to be *measured* rather than derived: the
-    // arithmetic that explains why the device path's `sub rsp, 264` lands
-    // aligned does not also explain why this path's fifteen pushes do, and a
-    // `call` into compiled LK on a misaligned stack faults on the first
-    // `movaps` rather than saying anything. Boot it, break in the handler, and
-    // read RSP.
     ".macro SAVE_TASK",
     "   push rax",
     "   push rcx",
@@ -90,8 +79,57 @@ global_asm!(
     "   push r13",
     "   push r14",
     "   push r15",
+    // And the SSE registers, which this used to leave to whoever was
+    // interrupted. Every other interrupt path here saves them, for the reason
+    // written beside those: a compiled LK handler may clobber any XMM register
+    // under the System V ABI, LK numbers are `f64`, and the interrupted
+    // computation may hold one. This path calls two of them a thousand times a
+    // second — and it is also the one that switches tasks, so without this a
+    // task's SSE state is not part of what travels with it.
+    //
+    // 256 rather than the device path's 264, and the difference is the whole
+    // alignment question. A multiple of sixteen *preserves* whatever alignment
+    // the pushes above produced, and that alignment already works: this path
+    // calls compiled LK today. The device path adds the extra eight because its
+    // nine pushes leave it needing them; deriving either number from first
+    // principles is not required, and trying to was what made this look harder
+    // than it is.
+    "   sub rsp, 256",
+    "   movups [rsp + 0], xmm0",
+    "   movups [rsp + 16], xmm1",
+    "   movups [rsp + 32], xmm2",
+    "   movups [rsp + 48], xmm3",
+    "   movups [rsp + 64], xmm4",
+    "   movups [rsp + 80], xmm5",
+    "   movups [rsp + 96], xmm6",
+    "   movups [rsp + 112], xmm7",
+    "   movups [rsp + 128], xmm8",
+    "   movups [rsp + 144], xmm9",
+    "   movups [rsp + 160], xmm10",
+    "   movups [rsp + 176], xmm11",
+    "   movups [rsp + 192], xmm12",
+    "   movups [rsp + 208], xmm13",
+    "   movups [rsp + 224], xmm14",
+    "   movups [rsp + 240], xmm15",
     ".endm",
     ".macro RESTORE_TASK",
+    "   movups xmm0, [rsp + 0]",
+    "   movups xmm1, [rsp + 16]",
+    "   movups xmm2, [rsp + 32]",
+    "   movups xmm3, [rsp + 48]",
+    "   movups xmm4, [rsp + 64]",
+    "   movups xmm5, [rsp + 80]",
+    "   movups xmm6, [rsp + 96]",
+    "   movups xmm7, [rsp + 112]",
+    "   movups xmm8, [rsp + 128]",
+    "   movups xmm9, [rsp + 144]",
+    "   movups xmm10, [rsp + 160]",
+    "   movups xmm11, [rsp + 176]",
+    "   movups xmm12, [rsp + 192]",
+    "   movups xmm13, [rsp + 208]",
+    "   movups xmm14, [rsp + 224]",
+    "   movups xmm15, [rsp + 240]",
+    "   add rsp, 256",
     "   pop r15",
     "   pop r14",
     "   pop r13",
