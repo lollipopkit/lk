@@ -602,6 +602,7 @@ time.since(start, time.now());
 | `lk compile bytecode [FILE]` | 编译为 `.lkm` bytecode 产物 |
 | `lk FILE.lkm` | 执行 bytecode 产物 |
 | `lk check FILE` | 类型检查 |
+| `lk fmt [PATH...]` | 原地格式化源码（不给路径 = 整个项目；`--check` 供 CI） |
 | `lk macro expand FILE` | 宏展开 |
 | `lk pkg init/fetch/check/publish/tree` | 包管理 |
 

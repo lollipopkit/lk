@@ -602,6 +602,7 @@ time.since(start, time.now());
 | `lk compile bytecode [FILE]` | Compile to `.lkm` bytecode artifact |
 | `lk FILE.lkm` | Execute bytecode artifact |
 | `lk check FILE` | Type check |
+| `lk fmt [PATH...]` | Format sources in place (no path = whole project; `--check` for CI) |
 | `lk macro expand FILE` | Expand macros |
 | `lk pkg init/fetch/check/publish/tree` | Package management |
 

@@ -30,6 +30,7 @@ use anyhow::Context;
 mod bytecode_cache;
 mod coverage;
 mod diagnostic;
+mod fmt;
 #[cfg(test)]
 mod main_test;
 mod mem;
@@ -47,6 +48,7 @@ mod startup_trace;
 use self::native_compile::*;
 
 use coverage::run_coverage_report;
+use fmt::run_fmt;
 #[cfg(test)]
 use paths::split_compile_args_with_cwd;
 use paths::{expand_program_file, parse_options_for_file, parse_sanitized_path, sanitize_path, split_compile_args};
@@ -110,12 +112,14 @@ enum Commands {
         #[arg(value_name = "FILE", value_parser = parse_sanitized_path)]
         file: PathBuf,
     },
-    /// Format a source file in place (4-space indent). `--check` reports without writing.
+    /// Format LK sources in place (4-space indent). Without a path, formats the
+    /// whole project (nearest `Lk.toml` directory, else the current directory).
+    /// `--check` reports without writing.
     Fmt {
-        /// Source file to format
-        #[arg(value_name = "FILE", value_parser = parse_sanitized_path)]
-        file: PathBuf,
-        /// Do not write; exit non-zero if the file is not already formatted.
+        /// Files or directories to format. Defaults to the whole project.
+        #[arg(value_name = "PATH", value_parser = parse_sanitized_path)]
+        paths: Vec<PathBuf>,
+        /// Do not write; exit non-zero if any file is not already formatted.
         #[arg(long)]
         check: bool,
     },
@@ -463,8 +467,8 @@ fn main() -> anyhow::Result<()> {
                 run_type_check(&file)?;
                 return Ok(());
             }
-            Commands::Fmt { file, check } => {
-                run_fmt(&file, check)?;
+            Commands::Fmt { paths, check } => {
+                run_fmt(&paths, check)?;
                 return Ok(());
             }
             Commands::Bundle { file, output } => {
@@ -841,60 +845,6 @@ fn heap_object_limit_from_env() -> Option<usize> {
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|&limit| limit > 0)
-}
-
-/// `lk fmt FILE` — normalize indentation of `.lk` source in place (4-space,
-/// brace/paren/bracket aware; blank lines kept blank). Mirrors the LSP document
-/// formatter. `check` reports drift without writing (plan M5.3).
-fn run_fmt(path: &Path, check: bool) -> anyhow::Result<()> {
-    let input = std::fs::read_to_string(path).map_err(|e| anyhow::anyhow!("read {}: {}", path.display(), e))?;
-    let formatted = format_lk_source(&input);
-    if check {
-        if formatted != input {
-            anyhow::bail!("{} is not formatted (run `lk fmt {}`)", path.display(), path.display());
-        }
-        return Ok(());
-    }
-    if formatted != input {
-        std::fs::write(path, &formatted).map_err(|e| anyhow::anyhow!("write {}: {}", path.display(), e))?;
-        println!("formatted {}", path.display());
-    }
-    Ok(())
-}
-
-/// Indentation formatter (idempotent): 4-space, brace/paren/bracket aware.
-fn format_lk_source(input: &str) -> String {
-    const TAB: usize = 4;
-    let mut out = String::with_capacity(input.len() + 16);
-    let mut indent: isize = 0;
-    for raw in input.lines() {
-        let line = raw.trim();
-        let leading_closers = line
-            .chars()
-            .take_while(|c| c.is_whitespace() || matches!(c, '}' | ')' | ']'))
-            .filter(|c| matches!(c, '}' | ')' | ']'))
-            .count();
-        if leading_closers > 0 && indent > 0 {
-            indent = (indent - leading_closers as isize).max(0);
-        }
-        if !line.is_empty() {
-            for _ in 0..(indent.max(0) as usize * TAB) {
-                out.push(' ');
-            }
-            out.push_str(line);
-        }
-        out.push('\n');
-        let delta: isize = line
-            .chars()
-            .map(|c| match c {
-                '{' | '(' | '[' => 1,
-                '}' | ')' | ']' => -1,
-                _ => 0,
-            })
-            .sum();
-        indent = (indent + delta).max(0);
-    }
-    out
 }
 
 /// AOT Tier 0: bundle `source_path` into a self-contained native executable that

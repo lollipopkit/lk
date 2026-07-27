@@ -1,0 +1,166 @@
+use super::{FormatOptions, format_source};
+
+fn fmt(src: &str) -> String {
+    format_source(src, FormatOptions::default()).expect("source should tokenize")
+}
+
+#[test]
+fn indents_nested_blocks() {
+    let src = "fn main() {\nlet x = 1;\nif x > 0 {\nprintln(x);\n}\n}\n";
+    assert_eq!(
+        fmt(src),
+        "fn main() {\n    let x = 1;\n    if x > 0 {\n        println(x);\n    }\n}\n"
+    );
+}
+
+#[test]
+fn dedents_else_arm_without_losing_body_indent() {
+    let src = "fn main() {\nif a {\nb();\n} else {\nc();\n}\n}\n";
+    assert_eq!(
+        fmt(src),
+        "fn main() {\n    if a {\n        b();\n    } else {\n        c();\n    }\n}\n"
+    );
+}
+
+#[test]
+fn is_idempotent() {
+    let src = "fn main() {\n  let m = { \"a\": [1, 2] };\n      if true {\n print(m);\n}\n}\n";
+    let once = fmt(src);
+    assert_eq!(fmt(&once), once);
+}
+
+#[test]
+fn braces_inside_strings_do_not_move_the_indent() {
+    let src = "fn main() {\nlet s = \"}}}\";\nlet t = '{{{';\nprintln(s);\n}\n";
+    assert_eq!(
+        fmt(src),
+        "fn main() {\n    let s = \"}}}\";\n    let t = '{{{';\n    println(s);\n}\n"
+    );
+}
+
+#[test]
+fn braces_inside_comments_do_not_move_the_indent() {
+    let src = "fn main() {\n// closes here }\nlet x = 1; /* { */\nprintln(x);\n}\n";
+    assert_eq!(
+        fmt(src),
+        "fn main() {\n    // closes here }\n    let x = 1; /* { */\n    println(x);\n}\n"
+    );
+}
+
+#[test]
+fn interpolation_braces_are_string_content() {
+    let src = "fn main() {\nlet s = \"${a} and ${b}\";\nprintln(s);\n}\n";
+    assert_eq!(
+        fmt(src),
+        "fn main() {\n    let s = \"${a} and ${b}\";\n    println(s);\n}\n"
+    );
+}
+
+#[test]
+fn multiline_raw_string_content_is_verbatim() {
+    let src = "fn main() {\nlet s = r#\"\n   keep   me\n      indented }\n\"#;\nprintln(s);\n}\n";
+    let out = fmt(src);
+    assert!(out.contains("\n   keep   me\n      indented }\n"), "{out}");
+    assert_eq!(
+        out,
+        "fn main() {\n    let s = r#\"\n   keep   me\n      indented }\n\"#;\n    println(s);\n}\n"
+    );
+}
+
+#[test]
+fn block_comment_body_is_verbatim() {
+    let src = "fn main() {\n/* box\n *  art\n */\nlet x = 1;\n}\n";
+    assert_eq!(fmt(src), "fn main() {\n    /* box\n *  art\n */\n    let x = 1;\n}\n");
+}
+
+#[test]
+fn comment_lines_between_statements_are_reindented() {
+    let src = "fn main() {\nlet a = 1;\n// leading comment\nlet b = 2;\n}\n";
+    assert_eq!(
+        fmt(src),
+        "fn main() {\n    let a = 1;\n    // leading comment\n    let b = 2;\n}\n"
+    );
+}
+
+#[test]
+fn indents_method_chain_continuations_one_level() {
+    let src = "let r = [1, 2, 3]\n.filter(|x| x > 1)\n.map(|x| x * x);\n";
+    let out = fmt(src);
+    assert_eq!(out, "let r = [1, 2, 3]\n    .filter(|x| x > 1)\n    .map(|x| x * x);\n");
+    assert_eq!(fmt(&out), out);
+}
+
+#[test]
+fn continuation_indent_stacks_on_block_depth_not_on_itself() {
+    let src = "fn main() {\nlet r = xs\n.map(f)\n.sum();\n}\n";
+    assert_eq!(
+        fmt(src),
+        "fn main() {\n    let r = xs\n        .map(f)\n        .sum();\n}\n"
+    );
+}
+
+#[test]
+fn leading_negative_list_elements_are_not_continuations() {
+    let src = "let xs = [\n1,\n-2,\n-x,\n];\n";
+    assert_eq!(fmt(src), "let xs = [\n    1,\n    -2,\n    -x,\n];\n");
+}
+
+#[test]
+fn normalizes_trailing_whitespace_and_final_newline() {
+    assert_eq!(fmt("let x = 1;   \n\n\n"), "let x = 1;\n");
+    assert_eq!(fmt("let x = 1;"), "let x = 1;\n");
+    assert_eq!(fmt(""), "");
+    assert_eq!(fmt("\n  \n"), "");
+}
+
+#[test]
+fn blank_lines_between_statements_survive_without_indent() {
+    assert_eq!(
+        fmt("fn main() {\nlet a = 1;\n\nlet b = 2;\n}\n"),
+        "fn main() {\n    let a = 1;\n\n    let b = 2;\n}\n"
+    );
+}
+
+#[test]
+fn preserves_crlf_line_endings() {
+    let out = fmt("fn main() {\r\nlet x = 1;\r\n}\r\n");
+    assert_eq!(out, "fn main() {\r\n    let x = 1;\r\n}\r\n");
+}
+
+#[test]
+fn honors_indent_width_and_tabs() {
+    let src = "fn main() {\nlet x = 1;\n}\n";
+    let two = format_source(
+        src,
+        FormatOptions {
+            indent_width: 2,
+            use_tabs: false,
+        },
+    )
+    .unwrap();
+    assert_eq!(two, "fn main() {\n  let x = 1;\n}\n");
+    let tabs = format_source(
+        src,
+        FormatOptions {
+            indent_width: 4,
+            use_tabs: true,
+        },
+    )
+    .unwrap();
+    assert_eq!(tabs, "fn main() {\n\tlet x = 1;\n}\n");
+}
+
+#[test]
+fn rejects_sources_that_do_not_tokenize() {
+    assert!(format_source("let s = \"unterminated;\n", FormatOptions::default()).is_err());
+    assert!(format_source("/* never closed\n", FormatOptions::default()).is_err());
+}
+
+#[test]
+fn multibyte_source_keeps_byte_exact_content() {
+    let src = "fn main() {\nlet s = \"中文字符串 }\";\n// 注释 {\nprintln(s);\n}\n";
+    assert_eq!(
+        fmt(src),
+        "fn main() {\n    let s = \"中文字符串 }\";\n    // 注释 {\n    println(s);\n}\n"
+    );
+}
