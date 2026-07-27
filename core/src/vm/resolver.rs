@@ -703,7 +703,6 @@ mod tests {
         Ok(())
     }
 
-    #[test]
     /// A circular import reports the cycle instead of overflowing the stack.
     ///
     /// The module cache is only written once a load finishes, so without the

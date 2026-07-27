@@ -223,6 +223,22 @@ pub(super) fn cpu_irq_save(_args: NativeArgs<'_>) -> Result<RuntimeVal> {
         // DAIF bit 7 (I) set means masked.
         return Ok(RuntimeVal::Int(i64::from(daif & (1 << 7) == 0)));
     }
+    // x86 keeps the flag in RFLAGS, which is only reachable through the stack:
+    // there is no "read interrupt flag" instruction. Needed here because the
+    // x86-64 kernel now *hosts* this VM — a program it runs off a disk reaches
+    // the same builtins the compiled kernel does, and answering "unsupported
+    // architecture" on the one architecture the machine is would be absurd.
+    #[cfg(all(not(feature = "std"), target_arch = "x86_64"))]
+    {
+        let flags: u64;
+        unsafe {
+            core::arch::asm!("pushfq", "pop {}", "cli", out(reg) flags, options(nomem));
+        }
+        // IF is bit 9, and set means *enabled* — the opposite sense from ARM's
+        // mask bits, which is why each architecture computes the answer rather
+        // than sharing one expression.
+        return Ok(RuntimeVal::Int(i64::from(flags & (1 << 9) != 0)));
+    }
     #[allow(unreachable_code)]
     Err(anyhow!(
         "interrupt masking requires bare-metal execution on a supported architecture"
@@ -241,6 +257,16 @@ pub(super) fn cpu_irq_restore(_args: NativeArgs<'_>) -> Result<RuntimeVal> {
             #[cfg(target_arch = "aarch64")]
             unsafe {
                 core::arch::asm!("msr daifclr, #2", options(nomem, nostack));
+            }
+        }
+        return Ok(RuntimeVal::Nil);
+    }
+    #[cfg(all(not(feature = "std"), target_arch = "x86_64"))]
+    {
+        let was_enabled = matches!(_args.get(0), Some(RuntimeVal::Int(value)) if *value != 0);
+        if was_enabled {
+            unsafe {
+                core::arch::asm!("sti", options(nomem, nostack));
             }
         }
         return Ok(RuntimeVal::Nil);
@@ -289,6 +315,13 @@ pub(super) fn cpu_wait_for_interrupt(_args: NativeArgs<'_>) -> Result<RuntimeVal
     {
         unsafe {
             core::arch::asm!("wfi", options(nomem, nostack));
+        }
+        return Ok(RuntimeVal::Nil);
+    }
+    #[cfg(all(not(feature = "std"), target_arch = "x86_64"))]
+    {
+        unsafe {
+            core::arch::asm!("hlt", options(nomem, nostack));
         }
         return Ok(RuntimeVal::Nil);
     }

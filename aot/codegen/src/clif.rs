@@ -149,9 +149,6 @@ impl ModuleCtx<'_> {
     /// that only the Cranelift verifier notices, reported against a machine
     /// call site with no way back to the name.
     fn extern_func(&mut self, symbol: &str, arg_tys: &[Ty], ret: Ty) -> Result<ClifFuncId, ClifError> {
-        if let Some(id) = self.extern_ids.get(symbol) {
-            return Ok(*id);
-        }
         let cc = self.module.isa().default_call_conv();
         let mut sig = Signature::new(cc);
         for ty in arg_tys {
@@ -162,6 +159,14 @@ impl ModuleCtx<'_> {
         for part in ty_clif_parts(ret)? {
             sig.returns.push(AbiParam::new(part));
         }
+        // Declared again on every use rather than served from the cache: that
+        // *is* the conflict check the doc comment claims. `declare_function`
+        // returns the existing id for a matching signature and
+        // `ModuleError::IncompatibleSignature` otherwise, so short-circuiting on
+        // a cache hit — which the first version of this did — would have let a
+        // second `#[extern]` of the same symbol with different types reuse the
+        // first id and become a malformed call. The table stays only so the
+        // symbol is declared once per *distinct* signature request.
         let id = self.module.declare_function(symbol, Linkage::Import, &sig)?;
         self.extern_ids.insert(symbol.to_string(), id);
         Ok(id)

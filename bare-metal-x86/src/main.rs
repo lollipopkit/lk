@@ -37,29 +37,57 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 /// | `0x00380000`.. | 64 KiB staging for a source file read off the disk |
 /// | `0x00400000`.. | the interpreter's heap, 28 MiB |
 /// | `0x02000000`.. | the LK page allocator's arena |
+/// The kernel's own arena, and the interpreter's.
+///
+/// Two regions rather than one, because they have different lifetimes and a
+/// bump allocator cannot tell them apart otherwise. The kernel's LK code
+/// allocates a little per command (a list of bytes to print) and keeps some of
+/// it; a hosted program allocates an AST, a module registry and a whole VM
+/// heap, and keeps *none* of it — the only thing that crosses back is an
+/// `i64`. With one region, `run` would be a leak with a bound: about a dozen
+/// invocations before 28 MiB was gone, and nothing to say why.
+///
+/// So a run allocates from the second region, which is reset at the start of
+/// each run. That is sound only because nothing allocated during a run
+/// outlives it: output leaves through `lk_console_byte` as it is produced, and
+/// the tasks that can preempt a run — the timer's scheduler and the spinner —
+/// are the ones already forbidden to allocate.
 const HEAP_BASE: usize = 0x0040_0000;
-const HEAP_SIZE: usize = 28 * 1024 * 1024;
+const HEAP_SIZE: usize = 4 * 1024 * 1024;
+const RUN_HEAP_BASE: usize = HEAP_BASE + HEAP_SIZE;
+const RUN_HEAP_SIZE: usize = 24 * 1024 * 1024;
 static OFFSET: AtomicUsize = AtomicUsize::new(0);
+static RUN_OFFSET: AtomicUsize = AtomicUsize::new(0);
+/// Set for the duration of a hosted run, so allocation goes to the run's arena.
+static RUNNING: AtomicUsize = AtomicUsize::new(0);
 
 struct Bump;
 
 unsafe impl GlobalAlloc for Bump {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let base = HEAP_BASE;
-        let mut cur = OFFSET.load(Ordering::Relaxed);
+        let running = RUNNING.load(Ordering::Relaxed) != 0;
+        let (base, size, offset) = if running {
+            (RUN_HEAP_BASE, RUN_HEAP_SIZE, &RUN_OFFSET)
+        } else {
+            (HEAP_BASE, HEAP_SIZE, &OFFSET)
+        };
+        let mut cur = offset.load(Ordering::Relaxed);
         loop {
             let start = (base + cur + layout.align() - 1) & !(layout.align() - 1);
             let end = start - base + layout.size();
-            if end > HEAP_SIZE {
+            if end > size {
                 return core::ptr::null_mut();
             }
-            match OFFSET.compare_exchange_weak(cur, end, Ordering::Relaxed, Ordering::Relaxed) {
+            match offset.compare_exchange_weak(cur, end, Ordering::Relaxed, Ordering::Relaxed) {
                 Ok(_) => return start as *mut u8,
                 Err(actual) => cur = actual,
             }
         }
     }
 
+    /// Neither arena reclaims. The kernel's is sized for a session; the run
+    /// arena is reset wholesale at the start of each run, which is the only
+    /// point at which nothing in it is live.
     unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {}
 }
 
@@ -232,11 +260,6 @@ fn console_write(text: &str) {
 /// failure and a runtime failure want different next steps.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_run(address: i64, length: i64) -> i64 {
-    use alloc::sync::Arc;
-    use lk_core::module::ModuleRegistry;
-    use lk_core::syntax::{ParseOptions, parse_program_source};
-    use lk_core::vm::{ModuleResolver, VmContext, execute_program_with_ctx};
-
     if address as usize != SOURCE_BASE || length < 0 || length as usize > SOURCE_MAX {
         return -1;
     }
@@ -244,6 +267,22 @@ pub extern "C" fn kernel_run(address: i64, length: i64) -> i64 {
     let Ok(source) = core::str::from_utf8(bytes) else {
         return -2;
     };
+
+    // A fresh arena for this run. Everything the last one allocated is dead —
+    // its output has already been printed and its result was an `i64`.
+    RUN_OFFSET.store(0, Ordering::Relaxed);
+    RUNNING.store(1, Ordering::Relaxed);
+    let outcome = run_program(source);
+    RUNNING.store(0, Ordering::Relaxed);
+    outcome
+}
+
+/// The run itself, split out so the arena flag is cleared on every path out.
+fn run_program(source: &str) -> i64 {
+    use alloc::sync::Arc;
+    use lk_core::module::ModuleRegistry;
+    use lk_core::syntax::{ParseOptions, parse_program_source};
+    use lk_core::vm::{ModuleResolver, VmContext, execute_program_with_ctx};
 
     lk_stdlib_bare::set_output(console_write);
     let options = ParseOptions {

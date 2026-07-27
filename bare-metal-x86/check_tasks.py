@@ -100,7 +100,10 @@ def main():
 
     # Deterministic first: if the task never ran, nothing was ever drawn in the
     # corner and every sample is background.
-    if all(all(byte == 0x28 for byte in frame) for frame in seen):
+    # `glyph_at` samples the *red* byte of each pixel, so the background is
+    # its red channel — comparing against 0x28 (the blue one) made this guard
+    # unable to fire at all.
+    if all(all(byte == BACKGROUND for byte in frame) for frame in seen):
         raise SystemExit("the corner is untouched: the second task never ran at all")
     distinct = len(set(seen))
     if distinct < 2:

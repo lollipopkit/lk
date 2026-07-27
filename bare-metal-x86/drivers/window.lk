@@ -20,12 +20,12 @@ use { put_pixel } from "framebuffer";
 
 const DESCRIPTOR_STRIDE = 24;
 
-fn read(address: Int) -> Int {
+fn window_word(address: Int) -> Int {
     let value = unsafe { volatile_read_u32(address as *mut u32) };
     return value as Int;
 }
 
-fn write(address: Int, value: Int) {
+fn window_set_word(address: Int, value: Int) {
     unsafe { volatile_write_u32(address as *mut u32, value as u32); };
 }
 
@@ -35,11 +35,11 @@ fn descriptor(table: Int, slot: Int) -> Int {
 
 fn define(table: Int, slot: Int, left: Int, top: Int, width: Int, height: Int) {
     let at = descriptor(table, slot);
-    write(at, left);
-    write(at + 4, top);
-    write(at + 8, width);
-    write(at + 12, height);
-    write(at + 16, 0);
+    window_set_word(at, left);
+    window_set_word(at + 4, top);
+    window_set_word(at + 8, width);
+    window_set_word(at + 12, height);
+    window_set_word(at + 16, 0);
 }
 
 // The rectangle, one field at a time, for callers that draw a shape and want
@@ -47,39 +47,48 @@ fn define(table: Int, slot: Int, left: Int, top: Int, width: Int, height: Int) {
 // that returns four values, because a container crossing a bundled import is
 // not the same thing in the two back ends — see `drivers/text`.
 fn left(table: Int, slot: Int) -> Int {
-    return read(descriptor(table, slot));
+    return window_word(descriptor(table, slot));
 }
 
 fn top(table: Int, slot: Int) -> Int {
-    return read(descriptor(table, slot) + 4);
+    return window_word(descriptor(table, slot) + 4);
 }
 
 fn width(table: Int, slot: Int) -> Int {
-    return read(descriptor(table, slot) + 8);
+    return window_word(descriptor(table, slot) + 8);
 }
 
 fn height(table: Int, slot: Int) -> Int {
-    return read(descriptor(table, slot) + 12);
+    return window_word(descriptor(table, slot) + 12);
 }
 
+// Adds to the dropped counter as one indivisible step.
+//
+// Read, add, write is three steps, and the descriptor is shared: the spinner
+// task and the shell both draw, and a timer interrupt lands between any two
+// instructions. A lost update here does not corrupt a picture — it undercounts
+// the thing a test reads to tell "did not draw outside" from "was not asked
+// to", which is worse than a wrong pixel because it makes a check pass.
 fn drop_count(table: Int, slot: Int, count: Int) {
     let at = descriptor(table, slot);
-    write(at + 16, read(at + 16) + count);
+    let state = unsafe { cpu_irq_save() };
+    window_set_word(at + 16, window_word(at + 16) + count);
+    unsafe { cpu_irq_restore(state); };
 }
 
 fn dropped(table: Int, slot: Int) -> Int {
-    return read(descriptor(table, slot) + 16);
+    return window_word(descriptor(table, slot) + 16);
 }
 
 // Writes one pixel in window coordinates. Outside the window it is counted and
 // discarded.
 fn put(base: Int, stride: Int, table: Int, slot: Int, x: Int, y: Int, colour: Int) {
     let at = descriptor(table, slot);
-    if (x < 0 || y < 0 || x >= read(at + 8) || y >= read(at + 12)) {
-        write(at + 16, read(at + 16) + 1);
+    if (x < 0 || y < 0 || x >= window_word(at + 8) || y >= window_word(at + 12)) {
+        drop_count(table, slot, 1);
         return;
     }
-    put_pixel(base, stride, read(at) + x, read(at + 1 * 4) + y, colour);
+    put_pixel(base, stride, window_word(at) + x, window_word(at + 1 * 4) + y, colour);
 }
 
 // Writes one pixel into a rectangle the caller has already read.
@@ -106,10 +115,10 @@ fn put_within(base: Int, stride: Int, left: Int, top: Int, width: Int, height: I
 
 fn fill(base: Int, stride: Int, table: Int, slot: Int, x: Int, y: Int, width: Int, height: Int, colour: Int) {
     let at = descriptor(table, slot);
-    let left = read(at);
-    let top = read(at + 4);
-    let limit_x = read(at + 8);
-    let limit_y = read(at + 12);
+    let left = window_word(at);
+    let top = window_word(at + 4);
+    let limit_x = window_word(at + 8);
+    let limit_y = window_word(at + 12);
     let drops = 0;
     for row in 0..height {
         for column in 0..width {
@@ -118,7 +127,7 @@ fn fill(base: Int, stride: Int, table: Int, slot: Int, x: Int, y: Int, width: In
         }
     }
     if (drops > 0) {
-        write(at + 16, read(at + 16) + drops);
+        drop_count(table, slot, drops);
     }
 }
 
@@ -131,10 +140,10 @@ fn fill(base: Int, stride: Int, table: Int, slot: Int, x: Int, y: Int, width: In
 // nothing can draw a frame around someone else's.
 fn outline(base: Int, stride: Int, table: Int, slot: Int, colour: Int) {
     let at = descriptor(table, slot);
-    let left = read(at);
-    let top = read(at + 4);
-    let width = read(at + 8);
-    let height = read(at + 12);
+    let left = window_word(at);
+    let top = window_word(at + 4);
+    let width = window_word(at + 8);
+    let height = window_word(at + 12);
     for x in 0..width {
         put_within(base, stride, left, top, width, height, x, 0, colour);
         put_within(base, stride, left, top, width, height, x, height - 1, colour);

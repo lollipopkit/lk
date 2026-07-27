@@ -115,7 +115,10 @@ def main():
     pair = next((line for line in output.splitlines() if "/" in line and line.strip("./0123456789") == ""), None)
     if pair is None:
         raise SystemExit("shell: `sync` printed no counter pair")
-    left, right = pair.strip(".").split("/")
+    # Every dot, not just the ends: the timer prints one on whatever line is
+    # current, and `31.710/31712` would otherwise split into two counters that
+    # differ — a passing run reported as a lost update.
+    left, right = pair.replace(".", "").split("/")
     if left != right:
         raise SystemExit(f"shared counters diverged ({left} != {right}): an update was lost")
     if int(left) == 0:

@@ -17,12 +17,12 @@
 
 const PAGE_SIZE = 4096;
 
-fn read(address: Int) -> Int {
+fn pages_word(address: Int) -> Int {
     let value = unsafe { volatile_read_u32(address as *mut u32) };
     return value as Int;
 }
 
-fn write(address: Int, value: Int) {
+fn pages_set_word(address: Int, value: Int) {
     unsafe { volatile_write_u32(address as *mut u32, value as u32); };
 }
 
@@ -31,30 +31,30 @@ fn write(address: Int, value: Int) {
 fn init(state: Int, base: Int, length: Int) {
     let first = ((base + PAGE_SIZE - 1) / PAGE_SIZE) as Int;
     let last = ((base + length) / PAGE_SIZE) as Int;
-    write(state, first);
-    write(state + 4, last);
-    write(state + 8, 0);
+    pages_set_word(state, first);
+    pages_set_word(state + 4, last);
+    pages_set_word(state + 8, 0);
 }
 
 // The next page's physical address, or 0 when the range is exhausted. Zero is
 // unambiguous: page 0 is never in a range this hands out, because the first
 // megabyte is not usable memory.
 fn alloc(state: Int) -> Int {
-    let next = read(state);
-    if (next >= read(state + 4)) {
+    let next = pages_word(state);
+    if (next >= pages_word(state + 4)) {
         return 0;
     }
-    write(state, next + 1);
-    write(state + 8, read(state + 8) + 1);
+    pages_set_word(state, next + 1);
+    pages_set_word(state + 8, pages_word(state + 8) + 1);
     return next * PAGE_SIZE;
 }
 
 fn used(state: Int) -> Int {
-    return read(state + 8);
+    return pages_word(state + 8);
 }
 
 fn free(state: Int) -> Int {
-    return read(state + 4) - read(state);
+    return pages_word(state + 4) - pages_word(state);
 }
 
 fn total(state: Int) -> Int {

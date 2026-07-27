@@ -117,6 +117,14 @@ pub fn compile_object_for_target(
     }
     if std::env::var_os("LK_AOT_NO_OPT").is_none() {
         lk_aot_mir::opt::optimize(&mut mir);
+        // Same rule as the hosted path: optimization must preserve MIR
+        // validity, and a violation is our bug rather than a limit of the
+        // program. Without this the cross-target path fed unvalidated MIR
+        // straight to codegen, where the symptom is a Cranelift panic instead
+        // of a sentence naming what is wrong.
+        if let Err(error) = lk_aot_mir::validate(&mir) {
+            bail!("internal AOT error: MIR validation failed after optimization: {error:?}");
+        }
     }
     lk_aot_codegen::clif::compile_object_for(&mir, triple)
         .map_err(|error| anyhow::anyhow!("codegen for {triple}: {error:?}"))

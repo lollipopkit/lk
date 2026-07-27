@@ -20,6 +20,12 @@ pub enum Unsupported {
     /// answer is almost always a specific name that did not resolve — a
     /// mistyped import, a function defined in a module that was not bundled, or
     /// a global written on a path the lowering cannot see.
+    /// Two bundled modules define the same top-level name. Reported rather than
+    /// resolved: the bundle flattens them into one namespace, so one would
+    /// silently shadow the other for every nested read.
+    BundledNameCollision {
+        name: String,
+    },
     UnresolvedGlobal {
         pc: usize,
         name: String,
@@ -82,6 +88,10 @@ impl Unsupported {
             Unsupported::Opcode { pc, op } => {
                 format!("opcode {op:?} (at pc {pc}) is not natively lowerable yet")
             }
+            Unsupported::BundledNameCollision { name } => format!(
+                "two bundled modules both define `{name}`. Bundling flattens them into one namespace, \
+                 so one would silently shadow the other — rename one of them"
+            ),
             Unsupported::UnresolvedGlobal { pc, name } => {
                 format!("global `{name}` (read at pc {pc}) does not resolve to anything natively lowerable")
             }

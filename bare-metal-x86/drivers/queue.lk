@@ -27,12 +27,12 @@ fn write_word(address: Int, value: Int) {
     unsafe { volatile_write_u32(address as *mut u32, value as u32); };
 }
 
-fn read_byte(address: Int) -> Int {
+fn queue_byte(address: Int) -> Int {
     let value = unsafe { volatile_read_u8(address as *mut u8) };
     return value as Int;
 }
 
-fn write_byte(address: Int, value: Int) {
+fn queue_set_byte(address: Int, value: Int) {
     unsafe { volatile_write_u8(address as *mut u8, value as u8); };
 }
 
@@ -46,7 +46,7 @@ fn is_empty(ring: Int) -> Bool {
     return read_word(ring) == read_word(ring + 4);
 }
 
-fn dropped(ring: Int) -> Int {
+fn drop_total(ring: Int) -> Int {
     return read_word(ring + 8);
 }
 
@@ -59,7 +59,7 @@ fn push(ring: Int, value: Int) {
         write_word(ring + 8, read_word(ring + 8) + 1);
         return;
     }
-    write_byte(ring + DATA + tail, value);
+    queue_set_byte(ring + DATA + tail, value);
     write_word(ring + 4, next);
 }
 
@@ -71,7 +71,7 @@ fn pop(ring: Int) -> Int {
     if (head == read_word(ring + 4)) {
         return 0;
     }
-    let value = read_byte(ring + DATA + head);
+    let value = queue_byte(ring + DATA + head);
     write_word(ring, (head + 1) % CAPACITY);
     return value;
 }

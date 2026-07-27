@@ -20,11 +20,12 @@ fn get_pixel(base: Int, stride: Int, x: Int, y: Int) -> Int {
 //
 // A pixel is four bytes and the framebuffer is contiguous, so a 64-bit write
 // covers two of them — but only where the pair is aligned, which needs an even
-// left edge and an even width. The odd cases still go a pixel at a time rather
+// stride as well as an even left edge and width: with an odd stride every other
+// row starts at an odd pixel, and a `*mut u64` there is unaligned. The odd cases still go a pixel at a time rather
 // than being rejected: a caller that fills an odd rectangle wants it filled,
 // not diagnosed.
 fn fill_rect(base: Int, stride: Int, left: Int, top: Int, width: Int, height: Int, colour: Int) {
-    if ((left & 1) == 0 && (width & 1) == 0) {
+    if ((stride & 1) == 0 && (left & 1) == 0 && (width & 1) == 0) {
         let pair = (colour << 32) + colour;
         let pairs = ((width / 2) as Int);
         for y in 0..height {
@@ -79,6 +80,17 @@ fn put_pixel_pair(base: Int, stride: Int, x: Int, y: Int, pair: Int) {
 // the top. That happens once every screenful of scrolling rather than once per
 // line, which is the whole point of panning.
 fn copy_rows(base: Int, stride: Int, from_row: Int, to_row: Int, rows: Int) {
+    // An odd stride has no whole number of pairs — `stride / 2` would drop each
+    // row's last pixel — and its odd rows are unaligned besides. Copy those a
+    // pixel at a time rather than quietly losing a column.
+    if ((stride & 1) != 0) {
+        for row in 0..rows {
+            for x in 0..stride {
+                put_pixel(base, stride, x, to_row + row, get_pixel(base, stride, x, from_row + row));
+            }
+        }
+        return;
+    }
     let pairs = ((stride / 2) as Int);
     for row in 0..rows {
         for pair in 0..pairs {

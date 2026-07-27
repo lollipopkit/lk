@@ -603,7 +603,15 @@ impl Compiler {
         rhs: u16,
         flavor: NumericFlavor,
     ) -> Result<u16> {
-        let machine_width = self.shared_machine_width(lhs, rhs);
+        // Only the operators that can *produce* a machine int are wrapped.
+        // A comparison of two `u8`s is a `Bool`, and running it through the
+        // width path both emitted a pointless `CastTo` on a 0/1 and recorded
+        // the destination register as holding a `u8` — a stale width fact that
+        // a later, unrelated value in the same register would inherit.
+        let produces_machine_int = matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod);
+        let machine_width = produces_machine_int
+            .then(|| self.shared_machine_width(lhs, rhs))
+            .flatten();
         let dst = self.emit_bin_op_unwrapped(dst, op, lhs, rhs, flavor)?;
         // Machine-int arithmetic wraps to its width. The operation itself runs
         // at 64 bits and is normalised afterwards, reusing the `as` path: two

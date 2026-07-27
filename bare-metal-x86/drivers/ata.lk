@@ -47,6 +47,12 @@ const ATA_OK = 0;
 const ATA_TIMEOUT = 1;
 const ATA_ERROR_BIT = 2;
 const ATA_NO_DRIVE = 3;
+const ATA_BAD_LBA = 4;
+
+// LBA28 addresses 2^28 sectors. Beyond that the top nibble is simply lost in
+// the drive register — `0x10000000` would program sector 0 — so an out-of-range
+// write would land on unrelated data with nothing said.
+const ATA_LBA28_LIMIT = 0x10000000;
 
 fn status() -> Int {
     let value = unsafe { port_in_u8(ATA_STATUS) };
@@ -139,6 +145,9 @@ fn read_sector(lba: Int, buffer: Int) -> Int {
     if (present() == 0) {
         return ATA_NO_DRIVE;
     }
+    if (lba < 0 || lba >= ATA_LBA28_LIMIT) {
+        return ATA_BAD_LBA;
+    }
     let ready = wait_not_busy();
     if (ready != ATA_OK) {
         return ready;
@@ -164,6 +173,9 @@ fn write_sector(lba: Int, buffer: Int) -> Int {
     if (present() == 0) {
         return ATA_NO_DRIVE;
     }
+    if (lba < 0 || lba >= ATA_LBA28_LIMIT) {
+        return ATA_BAD_LBA;
+    }
     let ready = wait_not_busy();
     if (ready != ATA_OK) {
         return ready;
@@ -179,7 +191,16 @@ fn write_sector(lba: Int, buffer: Int) -> Int {
         let value = unsafe { volatile_read_u16((buffer + word * 2) as *mut u16) };
         unsafe { port_out_u16(ATA_DATA, value) };
     }
+    // The drive is still busy taking the block when the last word goes out.
+    // Issuing FLUSH into a busy command block is a command written to a
+    // register that is not accepting one, which the drive is free to ignore —
+    // and an ignored flush is exactly the case this call exists to rule out.
+    let settled = wait_not_busy();
+    if (settled != ATA_OK) {
+        return settled;
+    }
     unsafe { port_out_u8(ATA_COMMAND, ATA_CMD_FLUSH as u8) };
+    settle();
     return wait_not_busy();
 }
 

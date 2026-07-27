@@ -34,7 +34,7 @@ use { init as pages_init, alloc as page_alloc, free as pages_free,
       total as pages_total, PAGE_SIZE } from "drivers/pages";
 use { read_sector as ata_read_sector, write_sector as ata_write_sector,
       identify as ata_identify, identify_sectors as ata_identify_sectors,
-      ATA_OK, ATA_TIMEOUT, ATA_ERROR_BIT, ATA_NO_DRIVE } from "drivers/ata";
+      ATA_OK, ATA_TIMEOUT, ATA_ERROR_BIT, ATA_NO_DRIVE, ATA_BAD_LBA } from "drivers/ata";
 use { find as tar_find, TAR_OK, TAR_NOT_FOUND, TAR_READ_FAILED } from "drivers/tarfs";
 use { read as shared_read, write as shared_write, bump as shared_bump,
       read_byte as shared_read_byte, write_byte as shared_write_byte } from "drivers/shared";
@@ -160,9 +160,15 @@ const SHARED_PANE_COL = SHARED_FOCUS + WORD;
 // key handler only records that the focus moved, because a handler has no
 // business drawing someone else's chrome.
 const SHARED_DRAWN_FOCUS = SHARED_PANE_COL + WORD;
+// The display's framebuffer address, found once. `pci_find_display` walks bus
+// 0, which is a few hundred port accesses; `framebuffer_origin` is on the
+// drawing path and is called per character, per scroll and per spinner frame,
+// all with interrupts masked. The BAR cannot change on this machine, so the
+// scan is a startup cost and the drawing path is a load.
+const SHARED_FB = SHARED_DRAWN_FOCUS + WORD;
 // Window descriptors: slot 0 is the shell's, slot 1 the spinner's. Six words
 // each, and the chain is what keeps the next entry clear of them.
-const SHARED_WINDOWS = SHARED_DRAWN_FOCUS + WORD;
+const SHARED_WINDOWS = SHARED_FB + WORD;
 const WINDOW_STRIDE = 24;
 const WINDOW_COUNT = 2;
 const WINDOW_SHELL = 0;
@@ -226,8 +232,27 @@ fn text_rows() -> Int { return ((HEIGHT / CELL_HEIGHT) as Int); }
 // Ask PCI where the framebuffer is. Two port accesses, cheap enough to repeat —
 // and repeating it keeps the interrupt handler independent of whether the main
 // flow has run yet.
+// The framebuffer's base, as cached at startup.
+//
+// Read from the shared page rather than found again: an interrupt handler can
+// read a word, and it cannot afford a bus walk. `probe_framebuffer` below is
+// what does the finding, once.
 fn framebuffer_address() -> Int {
+    return shared_read(SHARED_FB);
+}
+
+// Walks bus 0 for a display controller and returns its framebuffer base, or 0
+// when there is none.
+//
+// Zero rather than the driver's `-1`: `-1` fed back into `pci_read` forms a
+// configuration address with every bit set, which is not "no device" but a
+// different, invalid request — the kind of value that produces a plausible
+// number instead of an error.
+fn probe_framebuffer() -> Int {
     let slot = pci_find_display();
+    if (slot < 0) {
+        return 0;
+    }
     return pci_read(slot, PCI_REG_BAR0) & 0xfffffff0;
 }
 
@@ -625,7 +650,18 @@ fn run_file(base: Int, name: List<Int>) {
         copied = copied + i;
         lba = lba + 1;
     }
+    // Interrupts back on for the duration of the run, and masked again after.
+    //
+    // `run_command` is called with them masked, which is right for a command
+    // that touches a few shared words and returns. A whole parse and execution
+    // of an arbitrary program is not that: it takes seconds, and holding the
+    // mask across it stops the timer, starves the other task, and drops every
+    // keystroke that arrives meanwhile. What the mask protects — the cursor and
+    // the line buffer — is not touched by anything that can preempt this: the
+    // key handler only queues bytes, and the spinner draws in its own window.
+    unsafe { cpu_irq_restore(1); };
     let outcome = kernel_run(SOURCE_BASE, size);
+    unsafe { cpu_irq_save() };
     if (outcome != 0) {
         // "failed " then the stage the board reported.
         emit(base, [102, 97, 105, 108, 101, 100, 32].chain(decimal(0 - outcome)));
@@ -660,6 +696,10 @@ fn disk_error(outcome: Int) -> List<Int> {
     if (outcome == ATA_ERROR_BIT) {
         // "drive error"
         return [100, 114, 105, 118, 101, 32, 101, 114, 114, 111, 114];
+    }
+    if (outcome == ATA_BAD_LBA) {
+        // "bad sector"
+        return [98, 97, 100, 32, 115, 101, 99, 116, 111, 114];
     }
     // "?"
     return [63];
@@ -791,6 +831,17 @@ fn console_byte(byte: Int) {
 #[extern("kernel_run")]
 fn kernel_run(address: Int, length: Int) -> Int {
     return 0 - 1;
+}
+
+// Stops the machine, for a failure there is no way forward from.
+//
+// A loop of `wait_for_interrupt` rather than a `return`: returning from the
+// top level of a kernel means returning to nothing, and the board's epilogue
+// would go on to program a display that was just reported missing.
+fn halt() {
+    while (true) {
+        unsafe { cpu_wait_for_interrupt(); };
+    }
 }
 
 // ---------------------------------------------------------------- tasks ---
@@ -1020,6 +1071,14 @@ uart_init();
 pit_start(1193);
 
 let slot = pci_find_display();
+if (slot < 0) {
+    // No display on bus 0. Say so on the line that does exist and stop, rather
+    // than programming a configuration address made of the `-1` sentinel and
+    // drawing into whatever it names.
+    // "no display"
+    uart_write([110, 111, 32, 100, 105, 115, 112, 108, 97, 121, 10]);
+    halt();
+}
 
 // Let the device answer to memory cycles at all. The firmware usually has
 // already, but a driver that depends on that is a driver that works on one
@@ -1027,6 +1086,9 @@ let slot = pci_find_display();
 let command = pci_read(slot, PCI_REG_COMMAND);
 pci_write(slot, PCI_REG_COMMAND, command | PCI_COMMAND_MEMORY | PCI_COMMAND_BUS_MASTER);
 
+// Find the framebuffer once and remember it: everything that draws reads this
+// word, and an interrupt handler cannot walk a bus.
+shared_write(SHARED_FB, probe_framebuffer());
 shared_write(SHARED_PAN, 0);
 vbe_set_mode_virtual(WIDTH, HEIGHT, 32, VIRTUAL_HEIGHT);
 // After the mode is set and the pan is known, not before: the origin depends

@@ -812,8 +812,7 @@ impl TypeChecker {
                 Ok(Type::Bool)
             }
             BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
-                self.ensure_numeric_operand(&left_type, left_expr, "左侧")?;
-                self.ensure_numeric_operand(&right_type, right_expr, "右侧")?;
+                self.check_ordering_operands(left_expr, &left_type, right_expr, &right_type)?;
                 Ok(Type::Bool)
             }
             BinOp::In => match self.resolve_aliases(&right_type) {
@@ -999,6 +998,57 @@ impl TypeChecker {
             Some(resolved.clone()),
             Some(expr.clone()),
         ))
+    }
+
+    /// `<`, `<=`, `>`, `>=` — including machine integers, which the numeric
+    /// hierarchy deliberately does not classify.
+    ///
+    /// Ordering is where the hierarchy's own rule (promote to the wider class)
+    /// is wrong for a fixed-width type: there is nothing to promote to, and
+    /// promoting to `Int` would give the comparison 64-bit semantics. So the
+    /// machine-int cases are answered here — same width compares, mixed widths
+    /// are the same error mixed-width arithmetic gives — and everything else
+    /// goes to the hierarchy unchanged. Without this, `u32 < u32` was rejected
+    /// as "not numeric", which is the one thing it obviously is.
+    fn check_ordering_operands(
+        &mut self,
+        left_expr: &Expr,
+        left_ty: &Type,
+        right_expr: &Expr,
+        right_ty: &Type,
+    ) -> Result<()> {
+        let resolved_left = self.resolve_aliases(left_ty);
+        let resolved_right = self.resolve_aliases(right_ty);
+        match (&resolved_left, &resolved_right) {
+            (Type::MachineInt(left_kind), Type::MachineInt(right_kind)) => {
+                if left_kind != right_kind {
+                    return Err(Self::type_err(
+                        "machine integer operands must have the same type",
+                        Some(Type::MachineInt(*left_kind)),
+                        Some(Type::MachineInt(*right_kind)),
+                        Some(right_expr.clone()),
+                    ));
+                }
+                Ok(())
+            }
+            (Type::MachineInt(kind), other) => Err(Self::type_err(
+                "machine integers do not mix with other numeric types; cast explicitly",
+                Some(Type::MachineInt(*kind)),
+                Some(other.clone()),
+                Some(right_expr.clone()),
+            )),
+            (other, Type::MachineInt(kind)) => Err(Self::type_err(
+                "machine integers do not mix with other numeric types; cast explicitly",
+                Some(Type::MachineInt(*kind)),
+                Some(other.clone()),
+                Some(left_expr.clone()),
+            )),
+            _ => {
+                self.ensure_numeric_operand(left_ty, left_expr, "左侧")?;
+                self.ensure_numeric_operand(right_ty, right_expr, "右侧")?;
+                Ok(())
+            }
+        }
     }
 
     fn ensure_numeric_operand(&mut self, ty: &Type, expr: &Expr, label: &'static str) -> Result<NumericClass> {

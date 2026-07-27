@@ -59,6 +59,23 @@ pub fn seed_imported_signatures(program: &Program, base_dir: &Path, checker: &mu
     }
 }
 
+/// Is `candidate` inside the importing file's package?
+///
+/// The package is the nearest ancestor with an `Lk.toml`, or the importing
+/// file's own directory when there is none — the same rule the module resolver
+/// uses, so the two agree about what "inside" means. `..` is therefore allowed
+/// as a way to reach a sibling directory of the same package, and not as a way
+/// out of it.
+fn within_package(base_dir: &Path, candidate: &Path) -> bool {
+    let anchor = base_dir.canonicalize().unwrap_or_else(|_| base_dir.to_path_buf());
+    let root = crate::package::find_manifest(&anchor)
+        .and_then(|manifest| manifest.parent().map(Path::to_path_buf))
+        .unwrap_or(anchor);
+    let root = root.canonicalize().unwrap_or(root);
+    let resolved = candidate.canonicalize();
+    resolved.as_deref().unwrap_or(candidate).starts_with(&root)
+}
+
 fn item_of(stmt: &Stmt) -> &Stmt {
     match stmt {
         Stmt::Attributed { item, .. } => item_of(item),
@@ -68,15 +85,28 @@ fn item_of(stmt: &Stmt) -> &Stmt {
 
 /// Mirrors the module resolver's candidates: `p` (already `.lk`), `p.lk`, and
 /// `p/mod.lk`, under the importing file's directory.
+///
+/// And its *boundaries*, which matter more here than the candidate list: this
+/// runs during `lk check` and native compilation, before anything is executed,
+/// so a path it accepts is a file those commands read. The runtime resolver
+/// refuses absolute paths and refuses to leave the package (see
+/// `ModuleResolver::resolve_file_path`); reading a file here that a run would
+/// refuse to import would make type checking answer questions about a file
+/// outside the boundary.
 fn load(base_dir: &Path, import_path: &str) -> Option<Program> {
     let raw = Path::new(import_path);
+    if !raw.is_relative() {
+        return None;
+    }
     let mut candidates: Vec<PathBuf> = Vec::new();
     if raw.extension().and_then(|extension| extension.to_str()) == Some("lk") {
         candidates.push(base_dir.join(raw));
     }
     candidates.push(base_dir.join(raw.with_extension("lk")));
     candidates.push(base_dir.join(raw).join("mod.lk"));
-    let path = candidates.into_iter().find(|candidate| candidate.exists())?;
+    let path = candidates
+        .into_iter()
+        .find(|candidate| candidate.exists() && within_package(base_dir, candidate))?;
     let source = std::fs::read_to_string(&path).ok()?;
     parse_program_source(
         &source,

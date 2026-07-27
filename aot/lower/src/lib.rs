@@ -140,7 +140,7 @@ pub fn lower_bundled(
         conflict: false,
         dyn_loop_phis: std::collections::HashSet::new(),
         dyn_rets: std::collections::HashSet::new(),
-        imports: ImportEnv::build(&artifact.imports, bundles),
+        imports: ImportEnv::build(&artifact.imports, bundles)?,
         traits,
         force_dyn_globals: std::collections::HashSet::new(),
         spawned_isolate: std::collections::HashSet::new(),

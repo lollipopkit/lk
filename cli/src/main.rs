@@ -1045,6 +1045,13 @@ fn bundle_file_imports(source: &Path, artifact: &ModuleArtifact) -> anyhow::Resu
     // the lowering reports as an unresolved global far from the cause.
     let mut bundled_fns: std::collections::HashMap<PathBuf, std::collections::HashMap<String, u32>> =
         std::collections::HashMap::new();
+    // Every constant any bundled module defined, and which module defined it.
+    // Two deps exporting the same name would both fold into one merged slot,
+    // and the first one popped off the queue would win for the importer's
+    // reads — silently, and depending on traversal order. Under the VM each
+    // module keeps its own namespace, so that is a divergence rather than a
+    // preference.
+    let mut bundled_consts: std::collections::HashMap<String, String> = std::collections::HashMap::new();
 
     let mut merged = artifact.clone();
     let mut bundles: Vec<lk_aot::BundledImport> = Vec::new();
@@ -1173,6 +1180,14 @@ fn bundle_file_imports(source: &Path, artifact: &ModuleArtifact) -> anyhow::Resu
         // sharing one merged slot, because the merge maps globals by name.
         // Refuse rather than pick one.
         for (name, _) in &dep_consts {
+            if let Some(previous) = bundled_consts.get(name) {
+                anyhow::bail!(
+                    "bundled imports '{previous}' and '{import_path}' both define `{name}`. Bundling merges \
+                     them into one slot, so one definition would silently win; the VM gives each module its \
+                     own. Rename one of them."
+                );
+            }
+            bundled_consts.insert(name.clone(), import_path.clone());
             if let Some(slot) = artifact.module.globals.iter().position(|g| g == name) {
                 let main_entry = artifact.module.entry as usize;
                 let written = artifact.module.functions[main_entry].code.iter().any(|raw| {
