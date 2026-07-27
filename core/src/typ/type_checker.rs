@@ -110,6 +110,13 @@ pub struct TypeChecker {
     pending_strict_functions: Vec<PendingStrictFunction>,
     /// Program-level type checking enables this so later call sites can refine earlier function declarations.
     defer_strict_function_checks: bool,
+    /// Members of a namespace bound by `use "lib";` or `use * as m from "lib";`,
+    /// keyed by the binding then the member name.
+    ///
+    /// Separate from `function_sigs` because the name that reaches the checker
+    /// is `m.f`, not `f`: two namespaces may each export an `f`, and neither of
+    /// them is a free function.
+    imported_members: HashMap<String, HashMap<String, Type>>,
     /// Bindings recorded as they are bound, when a caller asked to be told.
     ///
     /// `None` for the compiler's own runs: a check exists to produce an error or
@@ -210,9 +217,23 @@ impl TypeChecker {
             method_sigs: HashMap::new(),
             pending_strict_functions: Vec::new(),
             defer_strict_function_checks: false,
+            imported_members: HashMap::new(),
             observations: None,
             return_frames: Vec::new(),
         }
+    }
+
+    /// Record what `namespace.member` is, for a namespace bound by an import.
+    pub fn add_imported_member(&mut self, namespace: &str, member: String, ty: Type) {
+        self.imported_members
+            .entry(namespace.to_string())
+            .or_default()
+            .insert(member, ty);
+    }
+
+    /// The type of `namespace.member`, if the namespace was imported.
+    pub fn imported_member_type(&self, namespace: &str, member: &str) -> Option<Type> {
+        self.imported_members.get(namespace)?.get(member).cloned()
     }
 
     /// Start recording every binding this checker binds, with its position.

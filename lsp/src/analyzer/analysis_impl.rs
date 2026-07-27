@@ -1121,8 +1121,15 @@ impl LkAnalyzer {
         spans: &[Span],
         content: &str,
         origins: Option<&[macro_system::MacroTokenOrigin]>,
+        base_dir: Option<&std::path::Path>,
     ) -> Vec<Diagnostic> {
         let mut checker = TypeChecker::new_strict();
+        // Types for names this file imports from another one, exactly as
+        // `lk check` seeds them. Skipping it here would make the editor report
+        // an error the compiler does not, or miss one it does.
+        if let Some(base_dir) = base_dir {
+            lk_core::typ::seed_imported_signatures(program, base_dir, &mut checker);
+        }
         // Every bad statement, not just the first one: an editor that hides
         // forty errors behind the topmost makes the reader fix them one round
         // trip at a time.

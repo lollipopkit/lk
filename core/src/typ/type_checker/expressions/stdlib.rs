@@ -232,7 +232,7 @@ fn access_segments(expr: &Expr) -> Option<Vec<&str>> {
     }
 }
 
-fn segment_name(expr: &Expr) -> Option<&str> {
+pub(super) fn segment_name(expr: &Expr) -> Option<&str> {
     match expr {
         Expr::Var(name) => Some(name.as_str()),
         Expr::Literal(value) => value.as_str(),

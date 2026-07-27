@@ -1002,6 +1002,7 @@ impl LkAnalyzer {
                         self.add_import_diagnostics(tokens, spans, &mut result);
 
                         // Run type checking to surface semantic diagnostics (e.g., numeric operand errors)
+                        let base_dir = self.base_dir().map(Path::to_path_buf);
                         let type_diags = match expansion {
                             Some(expansion) => Self::collect_type_diagnostics(
                                 &expansion.program,
@@ -1009,8 +1010,16 @@ impl LkAnalyzer {
                                 &expansion.source.spans,
                                 content,
                                 Some(&expansion.source.origins),
+                                base_dir.as_deref(),
                             ),
-                            None => Self::collect_type_diagnostics(program, tokens, spans, content, None),
+                            None => Self::collect_type_diagnostics(
+                                program,
+                                tokens,
+                                spans,
+                                content,
+                                None,
+                                base_dir.as_deref(),
+                            ),
                         };
                         if !type_diags.is_empty() {
                             result.diagnostics.extend(type_diags);

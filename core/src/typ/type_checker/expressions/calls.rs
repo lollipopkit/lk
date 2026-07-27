@@ -12,6 +12,34 @@ impl TypeChecker {
             return Ok(return_type);
         }
 
+        // `m.f(..)` where `m` is a namespace bound by an import. Checked before
+        // the method path below, which asks what methods the *receiver's type*
+        // has — a namespace is not a value with methods, and its own type says
+        // nothing about what it exports.
+        if let Expr::Access(base, field) = func
+            && let Expr::Var(namespace) = base.as_ref()
+            && let Some(member) = super::stdlib::segment_name(field)
+            && let Some(Type::Function {
+                params,
+                named_params: _,
+                return_type,
+            }) = self.imported_member_type(namespace, member)
+        {
+            if params.len() != args.len() {
+                return Err(Self::type_err(
+                    &format!("Function expects {} arguments", params.len()),
+                    None,
+                    None,
+                    Some(func.clone()),
+                ));
+            }
+            for (index, (param_type, arg)) in params.iter().zip(args.iter()).enumerate() {
+                let arg_type = self.check_expr(arg)?;
+                self.check_argument(param_type, &arg_type, index, arg)?;
+            }
+            return Ok(*return_type);
+        }
+
         if let Expr::Access(obj_expr, field_expr) = func {
             let receiver_ty = self.check_expr(obj_expr)?;
             if let Expr::Literal(field_val) = field_expr.as_ref()

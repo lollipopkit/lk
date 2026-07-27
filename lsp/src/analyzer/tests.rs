@@ -595,6 +595,60 @@ fn test_type_hints_use_stdlib_signatures() {
 }
 
 #[test]
+fn test_type_hints_use_imported_signatures() {
+    let dir = unique_tmp_dir("imported_signature_hints");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    fs::write(
+        dir.join("lib.lk"),
+        "fn greet(name: String) -> String {\n    return name;\n}\n",
+    )
+    .expect("write dependency");
+
+    let mut analyzer = LkAnalyzer::new();
+    analyzer.set_base_dir(dir.clone());
+    let src = "use { greet } from \"lib\";\nlet who = greet(\"lk\");\n";
+
+    let hints = analyzer.compute_type_inlay_hints(src, full_range(src));
+
+    // `lk check` has always seeded these signatures; the editor used to know
+    // strictly less about the file than the compiler did.
+    assert!(
+        hint_labels(&hints).iter().any(|label| label == ": String"),
+        "expected the imported function's declared return type, got {:?}",
+        hint_labels(&hints)
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_type_hints_use_namespace_import_members() {
+    let dir = unique_tmp_dir("namespace_import_hints");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    fs::write(
+        dir.join("lib.lk"),
+        "fn greet(name: String) -> String {\n    return name;\n}\n",
+    )
+    .expect("write dependency");
+
+    let mut analyzer = LkAnalyzer::new();
+    analyzer.set_base_dir(dir.clone());
+
+    // Both spellings bind a namespace whose members are reached as `lib.greet`.
+    for src in [
+        "use \"lib\";\nlet who = lib.greet(\"lk\");\n",
+        "use * as lib from \"lib\";\nlet who = lib.greet(\"lk\");\n",
+    ] {
+        let hints = analyzer.compute_type_inlay_hints(src, full_range(src));
+        assert!(
+            hint_labels(&hints).iter().any(|label| label == ": String"),
+            "expected the namespace member's declared return type for {src:?}, got {:?}",
+            hint_labels(&hints)
+        );
+    }
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn test_one_bad_statement_does_not_cost_the_rest_their_hints() {
     let mut analyzer = LkAnalyzer::new();
     let src = "let bad: Int = \"x\";\nlet good = 41 + 1;\n";

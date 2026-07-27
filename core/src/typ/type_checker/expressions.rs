@@ -1340,6 +1340,12 @@ impl TypeChecker {
         if let Some(function_type) = self.stdlib_access_function_type(expr, field) {
             return Ok(function_type);
         }
+        if let Expr::Var(namespace) = expr
+            && let Some(member) = stdlib::segment_name(field)
+            && let Some(member_type) = self.imported_member_type(namespace, member)
+        {
+            return Ok(member_type);
+        }
 
         let expr_type = self.check_expr(expr)?;
         let field_type = self.check_expr(field)?;

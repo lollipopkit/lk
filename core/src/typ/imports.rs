@@ -50,10 +50,29 @@ pub fn seed_imported_signatures(program: &Program, base_dir: &Path, checker: &mu
                     }
                 }
             }
-            // `use "lib";` and `use * as m from "lib";` bind a namespace, whose
-            // members are reached as `m.f`. Member types are a separate
-            // mechanism from function signatures, so they are left alone here
-            // rather than half-registered under a made-up name.
+            // `use * as m from "lib";` binds a namespace whose members are
+            // reached as `m.f` — not a free `f`, since two namespaces may each
+            // export one.
+            ImportStmt::Namespace {
+                alias,
+                source: ImportSource::File(path),
+            } => {
+                let Some(dep) = load(base_dir, path) else {
+                    continue;
+                };
+                seed_namespace(alias, &dep, checker);
+            }
+            // `use "lib";` binds the file's stem, which is the name the module
+            // resolver defines it under.
+            ImportStmt::File { path } => {
+                let Some(namespace) = Path::new(path).file_stem().and_then(|stem| stem.to_str()) else {
+                    continue;
+                };
+                let Some(dep) = load(base_dir, path) else {
+                    continue;
+                };
+                seed_namespace(namespace, &dep, checker);
+            }
             _ => continue,
         }
     }
@@ -116,6 +135,18 @@ fn load(base_dir: &Path, import_path: &str) -> Option<Program> {
         },
     )
     .ok()
+}
+
+/// Registers every stated function signature in `dep` under `namespace`.
+fn seed_namespace(namespace: &str, dep: &Program, checker: &mut TypeChecker) {
+    for stmt in &dep.statements {
+        let Stmt::Function { name, .. } = item_of(stmt) else {
+            continue;
+        };
+        if let Some((_, function_type)) = signature_of(dep, name) {
+            checker.add_imported_member(namespace, name.clone(), function_type);
+        }
+    }
 }
 
 /// The stated signature of a top-level `fn` in `program`.

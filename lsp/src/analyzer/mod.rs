@@ -120,6 +120,12 @@ impl TokenCacheEntry {
                 };
                 let mut checker = TypeChecker::new_strict();
                 checker.observe_bindings();
+                // The same seeding `lk check` does. Without it the editor knows
+                // strictly less about the file than the compiler does: every
+                // name from `use { f } from "lib";` reads as `Any`.
+                if let Some(base_dir) = self.parse_options.base_dir.as_deref() {
+                    typ::seed_imported_signatures(&program, base_dir, &mut checker);
+                }
                 let _ = program.type_check_collecting(&mut checker);
                 Arc::new(checker.take_observations())
             })
