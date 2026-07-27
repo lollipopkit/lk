@@ -424,6 +424,47 @@ impl<'a> Parser<'a> {
         Ok(expr)
     }
 
+    /// `expr << expr` / `expr >> expr`
+    ///
+    /// Shifts are two adjacent comparison tokens rather than tokens of their
+    /// own, because the lexer has no way to tell `List<List<Int>>` from a right
+    /// shift — Rust has the same problem and splits the token back apart in
+    /// type position. Recognising the pair *here*, in the expression grammar,
+    /// means the type parser never sees anything new: it goes on consuming one
+    /// `>` at a time, and no generic annotation can be broken by this.
+    ///
+    /// Adjacency is required when spans are available, so `a < < b` is not
+    /// silently a shift. Between comparison and addition, as in Rust: `a + b <<
+    /// c` shifts the sum, and `a << b == c` compares the shift.
+    fn parse_shift(&mut self) -> Result<Expr> {
+        let mut expr = self.parse_add_sub()?;
+        while let Some(builtin) = self.peek_shift() {
+            self.pos += 2;
+            let right = self.parse_add_sub()?;
+            expr = Self::builtin_call(builtin, vec![expr, right]);
+        }
+        Ok(expr)
+    }
+
+    /// `<<` or `>>` at the cursor, as a pair of adjacent tokens.
+    fn peek_shift(&self) -> Option<&'static str> {
+        if self.pos + 1 >= self.len {
+            return None;
+        }
+        let builtin = match (&self.tokens[self.pos], &self.tokens[self.pos + 1]) {
+            (Token::Lt, Token::Lt) => "__lk_shl",
+            (Token::Gt, Token::Gt) => "__lk_shr",
+            _ => return None,
+        };
+        if let Some(spans) = self.token_spans
+            && let (Some(first), Some(second)) = (spans.get(self.pos), spans.get(self.pos + 1))
+            && first.end.offset != second.start.offset
+        {
+            return None;
+        }
+        Some(builtin)
+    }
+
     /// - `expr == expr`
     /// - `expr != expr`
     ///   ...
@@ -452,7 +493,7 @@ impl<'a> Parser<'a> {
     /// - `expr..expr..step` (explicit step)
     /// - `expr..=expr..step` (inclusive with explicit step)
     fn parse_range(&mut self) -> Result<Expr> {
-        let mut expr = self.parse_add_sub()?;
+        let mut expr = self.parse_shift()?;
 
         if !self.eof() && (self.tokens[self.pos] == Token::Range || self.tokens[self.pos] == Token::RangeInclusive) {
             let inclusive = self.tokens[self.pos] == Token::RangeInclusive;
@@ -460,7 +501,7 @@ impl<'a> Parser<'a> {
 
             // Check if there's an end expression
             let end = if !self.eof() && !self.is_range_terminator() {
-                Some(Box::new(self.parse_add_sub()?))
+                Some(Box::new(self.parse_shift()?))
             } else {
                 None
             };
@@ -471,7 +512,7 @@ impl<'a> Parser<'a> {
                 if self.eof() || self.is_range_terminator() {
                     return Err(anyhow!(self.err("Expected step expression after '..'")));
                 }
-                Some(Box::new(self.parse_add_sub()?))
+                Some(Box::new(self.parse_shift()?))
             } else {
                 None
             };

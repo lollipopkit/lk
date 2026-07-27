@@ -11,7 +11,7 @@
 // them. They live here rather than in the driver modules for the same reason:
 // a driver decodes a scancode, but only the program knows what to do with it.
 
-use { uart_init, uart_putc, uart_write, uart_put_int, uart_put_hex, pow2 } from "drivers/serial";
+use { uart_init, uart_putc, uart_write, uart_put_int, uart_put_hex } from "drivers/serial";
 use { pci_read, pci_write, pci_find_display, PCI_REG_BAR0, PCI_REG_COMMAND,
       PCI_COMMAND_MEMORY, PCI_COMMAND_BUS_MASTER } from "drivers/pci";
 use { vbe_set_mode_virtual, vbe_set_pan } from "drivers/vbe";
@@ -352,7 +352,7 @@ fn hex(value: Int) -> List<Int> {
     let out = [0];
     let shift = 28;
     while (shift >= 0) {
-        let nibble = ((value / pow2(shift)) as Int) & 0xf;
+        let nibble = (value >> shift) & 0xf;
         if (nibble < 10) {
             out.push(48 + nibble);
         } else {
@@ -572,7 +572,7 @@ fn draw_glyph_in_window(base: Int, slot: Int, index: Int, x: Int, y: Int) {
         let bits = glyph_row(FONT, index, row);
         for column in 0..glyph_width() {
             let shift = glyph_width() - 1 - column;
-            let lit = ((bits / pow2(shift)) as Int) & 1;
+            let lit = (bits >> shift) & 1;
             let colour = BACKGROUND;
             if (lit != 0) {
                 colour = TITLE_COLOUR;

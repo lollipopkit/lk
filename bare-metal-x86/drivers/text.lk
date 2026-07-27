@@ -22,14 +22,6 @@ const GLYPH_STRIDE = 8;
 const CELL_WIDTH = 6;
 const CELL_HEIGHT = 8;
 
-fn pow2(bits: Int) -> Int {
-    let value = 1;
-    for i in 0..bits {
-        value = value * 2;
-    }
-    return value;
-}
-
 // One row of a glyph, as five bits with the leftmost pixel in bit 4.
 //
 // Exposed so a caller that writes pixels differently — clipped to a window,
@@ -54,9 +46,7 @@ fn draw_glyph(base: Int, stride: Int, font: List<Int>, index: Int, x: Int, y: In
             // Leftmost pixel is the high bit, so the picture in the source
             // reads the same way round as the picture on the screen.
             let shift = GLYPH_WIDTH - 1 - column;
-            // `/` is float division in LK; the cast is what makes `&` an
-            // integer operation rather than one on a float.
-            let lit = ((bits / pow2(shift)) as Int) & 1;
+            let lit = (bits >> shift) & 1;
             let colour = bg;
             if (lit != 0) {
                 colour = fg;

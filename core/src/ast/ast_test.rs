@@ -700,4 +700,64 @@ mod test {
         let tokens = Tokenizer::tokenize(source).expect("tokenizes");
         Parser::new(&tokens).parse().expect("ordinary nesting parses");
     }
+    /// `<<` and `>>` are two adjacent comparison tokens, not tokens of their
+    /// own — the lexer cannot tell a right shift from the end of
+    /// `List<List<Int>>`. These pin both halves of that trade.
+    #[test]
+    fn shifts_parse_as_builtin_calls() {
+        for (source, builtin) in [("1 << 3", "__lk_shl"), ("16 >> 2", "__lk_shr")] {
+            let tokens = Tokenizer::tokenize(source).expect("tokenizes");
+            let parsed = Parser::new(&tokens).parse().expect("parses");
+            let Expr::Call(name, args) = &parsed else {
+                panic!("expected a builtin call for {source}, got {parsed:?}");
+            };
+            assert_eq!(name, builtin, "{source}");
+            assert_eq!(args.len(), 2, "{source}");
+        }
+    }
+
+    /// Rust's precedence: tighter than comparison, looser than `+`.
+    #[test]
+    fn shift_binds_looser_than_addition() {
+        let tokens = Tokenizer::tokenize("1 << 2 + 3").expect("tokenizes");
+        let parsed = Parser::new(&tokens).parse().expect("parses");
+        let Expr::Call(name, args) = &parsed else {
+            panic!("expected a shift at the root, got {parsed:?}");
+        };
+        assert_eq!(name, "__lk_shl");
+        // The parser folds the constant sum, so what matters is that the sum
+        // ended up *inside* the shift rather than the shift inside the sum.
+        assert!(
+            matches!(
+                args[1].as_ref(),
+                Expr::Bin(_, BinOp::Add, _) | Expr::Literal(LiteralVal::Int(5))
+            ),
+            "the right operand should be the sum: {:?}",
+            args[1]
+        );
+    }
+
+    #[test]
+    fn comparison_sees_the_shift_as_an_operand() {
+        let tokens = Tokenizer::tokenize("8 >> 1 == 4").expect("tokenizes");
+        let parsed = Parser::new(&tokens).parse().expect("parses");
+        let Expr::Bin(left, BinOp::Eq, _) = &parsed else {
+            panic!("expected a comparison at the root, got {parsed:?}");
+        };
+        assert!(
+            matches!(left.as_ref(), Expr::Call(name, _) if name == "__lk_shr"),
+            "the left operand should be the shift: {left:?}"
+        );
+    }
+
+    /// Separated by a space it is two comparisons, not a shift — which is a
+    /// parse error here, and deliberately not silently a shift.
+    #[test]
+    fn separated_comparisons_are_not_a_shift() {
+        let (tokens, spans) = Tokenizer::tokenize_enhanced_with_spans("1 < < 3").expect("tokenizes");
+        assert!(
+            Parser::new_with_spans(&tokens, &spans).parse().is_err(),
+            "`1 < < 3` must not parse as a shift"
+        );
+    }
 }

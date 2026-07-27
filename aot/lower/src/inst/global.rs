@@ -302,6 +302,8 @@ pub(crate) fn builtin_for_name(name: &str) -> Option<Builtin> {
         "__lk_bit_and" => Builtin::BitAnd,
         "__lk_bit_or" => Builtin::BitOr,
         "__lk_bit_not" => Builtin::BitNot,
+        "__lk_shl" => Builtin::Shl,
+        "__lk_shr" => Builtin::Shr,
         "chan" => Builtin::ChanNew,
         "send" => Builtin::ChanSend,
         "recv" => Builtin::ChanRecv,

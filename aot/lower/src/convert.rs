@@ -63,13 +63,18 @@ pub(crate) fn read_scalar(
     }
 }
 
-/// Reads a container index as an `I64`, unboxing a `Dyn` through the runtime's
-/// tag check.
+/// Reads an operand that must be an `I64`, unboxing a `Dyn` through the
+/// runtime's tag check.
 ///
-/// A `Dyn` index is ordinary: iterating a list yields a `Maybe` carrier, and
+/// A `Dyn` here is ordinary: iterating a list yields a `Maybe` carrier, and
 /// passing that as an argument boxes it, so `fn at(xs, i) { return xs[i]; }`
 /// called from `for i in idx` sees one. `dyn.as_i64` raises for a non-integer
 /// tag, which is what the VM does for `xs["a"]` or `xs[1.0]` — error for error.
+///
+/// Named for the index case it was written for, but the rule is the same
+/// wherever an Int is *required* rather than merely expected: the bitwise
+/// operators and the shifts read their operands through this, so
+/// `font[i] >> 3` lowers natively instead of stopping at the boxed element.
 pub(crate) fn read_index_scalar(
     ssa: &mut Ssa,
     insts: &mut Vec<Inst>,

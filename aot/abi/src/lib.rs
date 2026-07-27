@@ -553,6 +553,8 @@ macro_rules! for_each_abi_fn {
             ("arith", "i64_mod", lkrt_i64_mod_checked, ReadsHost, [I64, I64], I64);
             ("arith", "f64_div", lkrt_f64_div_checked, ReadsHost, [F64, F64], F64);
             ("arith", "f64_mod", lkrt_f64_mod_checked, ReadsHost, [F64, F64], F64);
+            ("arith", "i64_shl", lkrt_i64_shl_checked, ReadsHost, [I64, I64], I64);
+            ("arith", "i64_shr", lkrt_i64_shr_checked, ReadsHost, [I64, I64], I64);
         }
     };
 }

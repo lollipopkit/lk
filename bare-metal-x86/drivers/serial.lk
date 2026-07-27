@@ -72,18 +72,10 @@ fn uart_put_int(value: Int) {
     }
 }
 
-fn pow2(bits: Int) -> Int {
-    let value = 1;
-    for i in 0..bits {
-        value = value * 2;
-    }
-    return value;
-}
-
 fn uart_put_hex(value: Int) {
     let shift = 28;
     while (shift >= 0) {
-        let nibble = ((value / pow2(shift)) as Int) & 0xf;
+        let nibble = (value >> shift) & 0xf;
         if (nibble < 10) {
             uart_putc(48 + nibble);
         } else {

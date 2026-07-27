@@ -32,6 +32,29 @@ pub extern "C" fn lkrt_i64_div_checked(lhs: i64, rhs: i64) -> i64 {
     lhs.wrapping_div(rhs)
 }
 
+/// `lhs << rhs`, raising when the shift amount is not in `0..=63`.
+///
+/// The message is the VM's, word for word — including the offending amount —
+/// because the two back ends have to fail the same way and a differential test
+/// compares the text. The hardware would mask the amount to 63 and produce a
+/// number; that number is not what the program asked for.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_i64_shl_checked(lhs: i64, rhs: i64) -> i64 {
+    if !(0..64).contains(&rhs) {
+        crate::panic::raise_str(&format!("__lk_shl shift amount {rhs} is out of range 0..63"));
+    }
+    lhs.wrapping_shl(rhs as u32)
+}
+
+/// `lhs >> rhs`, arithmetic (the sign bit is replicated), same range rule.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_i64_shr_checked(lhs: i64, rhs: i64) -> i64 {
+    if !(0..64).contains(&rhs) {
+        crate::panic::raise_str(&format!("__lk_shr shift amount {rhs} is out of range 0..63"));
+    }
+    lhs.wrapping_shr(rhs as u32)
+}
+
 /// `lhs % rhs` for integers, aborting on a zero divisor. `i64::MIN % -1` wraps to
 /// `0` instead of overflowing.
 #[unsafe(no_mangle)]

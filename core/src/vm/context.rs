@@ -440,6 +440,8 @@ impl VmContext {
         self.install_runtime_builtin("__lk_bit_and", NativeFunction::Plain(core_bit_and_builtin), 2);
         self.install_runtime_builtin("__lk_bit_or", NativeFunction::Plain(core_bit_or_builtin), 2);
         self.install_runtime_builtin("__lk_bit_not", NativeFunction::Plain(core_bit_not_builtin), 1);
+        self.install_runtime_builtin("__lk_shl", NativeFunction::Plain(core_shl_builtin), 2);
+        self.install_runtime_builtin("__lk_shr", NativeFunction::Plain(core_shr_builtin), 2);
     }
 
     /// Looks up a trait-impl method for the type `type_name` **as declared by
@@ -1151,6 +1153,41 @@ fn core_bit_or_builtin(
         bit_arg(args.get(0).expect("arity checked"), "__lk_bit_or")?
             | bit_arg(args.get(1).expect("arity checked"), "__lk_bit_or")?,
     ))
+}
+
+/// The shift amount both shifts accept.
+///
+/// Out of range is an error rather than a wrap or a zero. The hardware masks it
+/// to 63, Rust panics, C calls it undefined — of those only the error says the
+/// same thing on every target, and a shift by a variable that turned out to be
+/// 64 is a bug wherever it happens. The native path raises from
+/// `lkrt_i64_sh*_checked`, so both back ends fail identically.
+fn shift_amount(value: &crate::val::RuntimeVal, func: &str) -> anyhow::Result<u32> {
+    let amount = bit_arg(value, func)?;
+    if !(0..64).contains(&amount) {
+        return Err(anyhow!("{func} shift amount {amount} is out of range 0..63"));
+    }
+    Ok(amount as u32)
+}
+
+fn core_shl_builtin(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> anyhow::Result<crate::val::RuntimeVal> {
+    if args.len() != 2 {
+        return Err(anyhow!("__lk_shl(left, right) expects exactly 2 arguments"));
+    }
+    let lhs = bit_arg(args.get(0).expect("arity checked"), "__lk_shl")?;
+    let rhs = shift_amount(args.get(1).expect("arity checked"), "__lk_shl")?;
+    Ok(crate::val::RuntimeVal::Int(lhs.wrapping_shl(rhs)))
+}
+
+/// Arithmetic, not logical: LK's `Int` is signed, so the sign bit is what a
+/// right shift has to preserve for `x >> n` to keep meaning `x / 2^n`.
+fn core_shr_builtin(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> anyhow::Result<crate::val::RuntimeVal> {
+    if args.len() != 2 {
+        return Err(anyhow!("__lk_shr(left, right) expects exactly 2 arguments"));
+    }
+    let lhs = bit_arg(args.get(0).expect("arity checked"), "__lk_shr")?;
+    let rhs = shift_amount(args.get(1).expect("arity checked"), "__lk_shr")?;
+    Ok(crate::val::RuntimeVal::Int(lhs.wrapping_shr(rhs)))
 }
 
 fn core_bit_not_builtin(

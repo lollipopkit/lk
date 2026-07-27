@@ -363,6 +363,40 @@ fn try_catch_differential() {
 /// The VM masks inside its `i64` carrier and sign-extends back; Cranelift does
 /// `ireduce` then `sextend`/`uextend`. Those are different mechanisms, so this
 /// is where a divergence would show up.
+/// `<<` and `>>`, which lower to the range-checked `lkrt` helpers rather than
+/// to a machine shift. Both halves matter: the values have to agree, and so
+/// does the *failure* — a shift amount out of range raises on both sides, and
+/// masking it (what the hardware would do) would show up here as a native run
+/// that succeeded where the VM refused.
+#[test]
+fn shift_differential() {
+    run_differential(
+        "shift",
+        &[
+            new("shl_const", "return 3 << 8;\n"),
+            new("shr_const", "return 1024 >> 5;\n"),
+            // Arithmetic, not logical: the sign bit is replicated.
+            new("shr_negative", "return (0 - 16) >> 2;\n"),
+            // Variable amounts: the value is not a constant the lowering can fold.
+            new("shl_variable", "let n = 5;\nreturn 1 << n;\n"),
+            new("shr_variable", "let n = 3;\nreturn 4096 >> n;\n"),
+            // Precedence: tighter than comparison, looser than `+` (Rust's).
+            new("precedence_add", "return 1 << 2 + 3;\n"),
+            new("precedence_cmp", "if (8 >> 1 == 4) { return 1; }\nreturn 0;\n"),
+            // Mixed with the other bitwise operators, which lower to machine
+            // instructions — so this is the two paths meeting.
+            new("with_mask", "let v = 0xdeadbeef;\nreturn (1 << 12) - 1 & v;\n"),
+            // The edges of the accepted range.
+            new("shl_zero", "return 7 << 0;\n"),
+            new("shl_63", "return 1 << 63;\n"),
+            // Out of range: both sides must refuse, not mask.
+            new("shl_out_of_range", "let n = 64;\nreturn 1 << n;\n"),
+            new("shr_negative_amount", "let n = 0 - 1;\nreturn 1 >> n;\n"),
+        ],
+        NativePath::PureCranelift,
+    );
+}
+
 #[test]
 fn machine_int_cast_differential() {
     run_differential(

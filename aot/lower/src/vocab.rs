@@ -54,6 +54,15 @@ pub(crate) enum Builtin {
     BitAnd,
     BitOr,
     BitNot,
+    /// `__lk_shl(l, r)` / `__lk_shr(l, r)` — the `<<`/`>>` desugars. Unlike the
+    /// other bitwise operators these do not lower to a machine instruction:
+    /// the shift amount has to be range-checked, and the check lives in
+    /// `lkrt`'s `i64_sh*_checked` so the VM and the native build raise the same
+    /// error rather than one masking where the other refuses.
+    // TODO: inline the shift with a cold branch to the raise, once codegen can
+    // build blocks mid-instruction; a call per shift is the price of the check.
+    Shl,
+    Shr,
     /// `select$block(types, chans, values, guards, has_default)`.
     SelectBlock,
 }
