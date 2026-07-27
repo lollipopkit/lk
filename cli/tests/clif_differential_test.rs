@@ -809,3 +809,42 @@ fn bundled_module_container_constants_are_refused() {
         "the refusal should say what is wrong: {stderr}"
     );
 }
+
+/// An exported-but-unused function in a bundled module does not fail the build.
+///
+/// Bundled functions are reached by name, which the bytecode reachability scan
+/// cannot follow, so they were all rooted. A module exports more than any one
+/// importer uses, and lowering a function nothing calls can fail the whole
+/// module for a shape that never runs — its parameter types have no call site
+/// to be observed from, so they are not even known.
+#[test]
+fn an_unused_bundled_function_does_not_fail_the_module() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    std::fs::write(
+        dir.path().join("lib.lk"),
+        // `each` is never called: its list parameter has no observed type.
+        "fn used(n: Int) -> Int { return n + 1; }\n\
+         fn each(xs: List<Int>) -> Int { let s = 0; for x in xs { s = s + x; } return s; }\n",
+    )
+    .expect("write dep");
+    std::fs::write(
+        dir.path().join("main.lk"),
+        "use { used } from \"lib\";\nprintln(used(1));\nreturn 0;\n",
+    )
+    .expect("write main");
+
+    let compile = Command::new(bin_path())
+        .current_dir(dir.path())
+        .args(["compile", "main.lk"])
+        .arg("--output")
+        .arg(dir.path().join("main"))
+        .env("LK_AOT_NO_FALLBACK", "1")
+        .env("LK_AOT_HYBRID", "0")
+        .output()
+        .expect("spawn native compile");
+    assert!(
+        compile.status.success(),
+        "an unused export must not fail the module: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+}

@@ -785,8 +785,82 @@ impl Stmt {
 }
 
 impl Program {
+    /// Registers every top-level function's signature before any body is
+    /// checked.
+    ///
+    /// Functions are hoisted at run time — the compiler builds the whole
+    /// function table before the entry executes — so a call may appear above
+    /// the definition. The checker walked statements in order, so such a call
+    /// found no signature and produced `Any`, and the error surfaced somewhere
+    /// else entirely: `((n / helper(2)) as Int)` failed with "cannot cast
+    /// Box<Any> to Int" if `helper` happened to be defined further down the
+    /// file, and type-checked if it was defined above.
+    ///
+    /// What is registered here is only what the annotations state; an
+    /// unannotated parameter or return is `Any`, exactly as permissive as
+    /// before. The ordered walk replaces each entry with the inferred
+    /// signature when it reaches the definition.
+    fn predeclare_function_signatures(&self, type_checker: &mut TypeChecker) {
+        fn item(stmt: &Stmt) -> &Stmt {
+            match stmt {
+                Stmt::Attributed { item, .. } => self::item_of(item),
+                other => other,
+            }
+        }
+        for stmt in &self.statements {
+            let Stmt::Function {
+                name,
+                params,
+                param_types,
+                named_params,
+                return_type,
+                ..
+            } = item(stmt)
+            else {
+                continue;
+            };
+            let positional: Vec<Type> = (0..params.len())
+                .map(|i| param_types.get(i).cloned().flatten().unwrap_or(Type::Any))
+                .collect();
+            let named: Vec<NamedParamSig> = named_params
+                .iter()
+                .map(|param| NamedParamSig {
+                    name: param.name.clone(),
+                    ty: param.type_annotation.clone().unwrap_or(Type::Any),
+                    has_default: param.default.is_some(),
+                })
+                .collect();
+            let returns = return_type.clone().unwrap_or(Type::Any);
+            let named_annos: Vec<FunctionNamedParamType> = named
+                .iter()
+                .map(|param| FunctionNamedParamType {
+                    name: param.name.clone(),
+                    ty: param.ty.clone(),
+                    has_default: param.has_default,
+                })
+                .collect();
+            type_checker.add_local_type(
+                name.clone(),
+                Type::Function {
+                    params: positional.clone(),
+                    named_params: named_annos,
+                    return_type: Box::new(returns.clone()),
+                },
+            );
+            type_checker.add_function_sig(
+                name.clone(),
+                FunctionSig {
+                    positional,
+                    named,
+                    return_type: Some(returns),
+                },
+            );
+        }
+    }
+
     /// 类型检查程序
     pub fn type_check(&self, type_checker: &mut TypeChecker) -> Result<()> {
+        self.predeclare_function_signatures(type_checker);
         if type_checker.strict_any() {
             let previous_defer = type_checker.begin_deferred_strict_function_checks();
             let result = (|| {
@@ -803,6 +877,14 @@ impl Program {
             stmt.type_check(type_checker)?;
         }
         Ok(())
+    }
+}
+
+/// The declaration an attribute wraps, however many attributes there are.
+fn item_of(stmt: &Stmt) -> &Stmt {
+    match stmt {
+        Stmt::Attributed { item, .. } => item_of(item),
+        other => other,
     }
 }
 

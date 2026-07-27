@@ -1276,3 +1276,34 @@ fn unread_top_level_consts_are_still_module_globals() {
         "an unread top-level `let` should not become a global: {globals:?}"
     );
 }
+
+/// A function may be called above its definition.
+///
+/// Functions are hoisted at run time — the compiler builds the whole function
+/// table before the entry executes — but the type checker walked statements in
+/// order, so a call above the definition found no signature and produced
+/// `Any`. The error then surfaced somewhere else: the cast below failed with
+/// "cannot cast Box<Any> to Int" when the callee happened to be defined
+/// further down, and checked cleanly when it was defined above.
+#[test]
+fn a_call_above_its_definition_still_knows_the_signature() {
+    for (order, source) in [
+        (
+            "callee after",
+            "fn a(n: Int) -> Int { return ((n / b(2)) as Int); }\nfn b(n: Int) -> Int { return n * 2; }\nreturn a(8);\n",
+        ),
+        (
+            "callee before",
+            "fn b(n: Int) -> Int { return n * 2; }\nfn a(n: Int) -> Int { return ((n / b(2)) as Int); }\nreturn a(8);\n",
+        ),
+    ] {
+        let program = parse_program(source);
+        let mut checker = crate::typ::TypeChecker::new();
+        program
+            .type_check(&mut checker)
+            .unwrap_or_else(|error| panic!("{order}: {error}"));
+        let module = compile_module(&program).unwrap_or_else(|error| panic!("{order}: {error}"));
+        let result = execute_module(&module).unwrap_or_else(|error| panic!("{order}: {error}"));
+        assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(2)], "{order}");
+    }
+}

@@ -112,9 +112,52 @@ pub fn lower_bundled(
     // Bundled file-module functions are reached through import bindings
     // (`GetGlobal` → Lambda), invisible to the bytecode scan: root them too
     // (the BFS then covers their own callees).
+    // Bundled functions are reached by name (`GetGlobal` → call), which the
+    // bytecode reachability scan cannot follow — so they are rooted here. Only
+    // the ones some `GetGlobal` actually names, though: a module usually
+    // exports more than any one importer uses, and lowering a function nothing
+    // calls can fail the whole module for a shape that never runs — its
+    // parameter types have no call site to be observed from, so they are not
+    // even known.
+    let read_globals: std::collections::HashSet<u16> = module
+        .functions
+        .iter()
+        .flat_map(|function| function.code.iter())
+        .filter_map(|raw| Instr::try_from_raw(*raw).ok())
+        .filter(|instr| instr.opcode() == Opcode::GetGlobal)
+        .map(|instr| instr.bx())
+        .collect();
+    let named_slot = |name: &str| {
+        module
+            .globals
+            .iter()
+            .position(|global| global == name)
+            .and_then(|slot| u16::try_from(slot).ok())
+    };
+    // A module bound as a *namespace* (`use "fib";` then `fib.iterative(…)`)
+    // reaches its members through the namespace object, so their names never
+    // appear as a `GetGlobal` — nothing narrower than "all of it" is known
+    // about what such a module needs.
+    let namespace_paths: std::collections::HashSet<&str> = artifact
+        .imports
+        .iter()
+        .filter_map(|import| match import {
+            lk_core::stmt::ImportStmt::File { path } => Some(path.as_str()),
+            lk_core::stmt::ImportStmt::Namespace {
+                source: lk_core::stmt::ImportSource::File(path),
+                ..
+            } => Some(path.as_str()),
+            _ => None,
+        })
+        .collect();
     let mut bundle_roots: Vec<usize> = bundles
         .iter()
-        .flat_map(|b| b.fns.values().map(|&fidx| fidx as usize))
+        .flat_map(|b| {
+            let whole = namespace_paths.contains(b.path.as_str());
+            b.fns.iter().map(move |entry| (whole, entry))
+        })
+        .filter(|(whole, (name, _))| *whole || named_slot(name).is_some_and(|slot| read_globals.contains(&slot)))
+        .map(|(_, (_, &fidx))| fidx as usize)
         .collect();
     // Trait impl methods are reached through the lifted registration table
     // (their `LoadFunction` sites are skipped), invisible to the CallDirect/
