@@ -255,6 +255,7 @@ impl<'a> StmtParser<'a> {
 
     pub fn parse_define_stmt_with_id(&mut self, name: String) -> Result<Stmt> {
         // consume Id (already peeked), ':' and '='
+        let name_pos = self.pos;
         self.pos += 1; // Id
         self.expect_token(Token::Colon)?;
         self.expect_token(Token::Assign)?;
@@ -264,6 +265,9 @@ impl<'a> StmtParser<'a> {
         Ok(Stmt::Define {
             name,
             value: Box::new(value),
+            // The name alone: `x := v` has no annotation slot, so a hint goes
+            // right after `x`, which is where the span ends.
+            span: self.span_covering(name_pos, name_pos),
         })
     }
 

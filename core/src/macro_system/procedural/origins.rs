@@ -387,7 +387,7 @@ fn collect_generated_expr_origins_from_stmt(
             push_generated_statement_origin("stmt compound_assign_value", span.clone(), origins);
             collect_generated_expr_origins(value, span, origins);
         }
-        Stmt::Define { name, value } => {
+        Stmt::Define { name, value, .. } => {
             push_generated_statement_origin("stmt define", span.clone(), origins);
             push_generated_reference_origin("binding", name, span.clone(), origins);
             push_generated_statement_origin("stmt initializer", span.clone(), origins);

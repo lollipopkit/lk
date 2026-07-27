@@ -164,7 +164,6 @@ mod inlay_hint_tests {
         "#;
         let mut analyzer = LkAnalyzer::new();
         let mut hints = analyzer.compute_type_inlay_hints(src, full_range(src));
-        hints.extend(analyzer.compute_define_type_hints(src, full_range(src)));
         assert!(!hints.is_empty(), "expected type hints for let/define, got none");
         assert!(hints.iter().all(|h| h.kind == Some(InlayHintKind::TYPE)));
         let labels: Vec<String> = hints
@@ -235,7 +234,6 @@ mod inlay_hint_tests {
         let mut combined: Vec<InlayHint> = compute_inlay_hints(src, full_range(src));
         let mut analyzer = LkAnalyzer::new();
         combined.extend(analyzer.compute_type_inlay_hints(src, full_range(src)));
-        combined.extend(analyzer.compute_define_type_hints(src, full_range(src)));
 
         assert!(!combined.is_empty(), "expected mixed inlay hints present");
 

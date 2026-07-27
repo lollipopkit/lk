@@ -118,8 +118,17 @@ pub enum Stmt {
         value: Box<Expr>,
         span: Option<Span>,
     },
-    /// name = value; (变量定义，类似 Go 的短声明)
-    Define { name: String, value: Box<Expr> },
+    /// name := value; (变量定义，类似 Go 的短声明)
+    ///
+    /// The same binding `let name = value` makes — both lower through
+    /// `lower_define` — so it carries a span for the same reasons `Let` does:
+    /// to place its type error, and to place the type hint an editor writes
+    /// where the annotation would have gone.
+    Define {
+        name: String,
+        value: Box<Expr>,
+        span: Option<Span>,
+    },
     /// break;
     Break,
     /// continue;

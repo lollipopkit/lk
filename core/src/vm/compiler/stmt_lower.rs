@@ -29,7 +29,7 @@ impl Compiler {
                 value,
                 ..
             } => self.lower_let(pattern, type_annotation.as_ref(), value)?,
-            Stmt::Define { name, value } => self.lower_define(name, value)?,
+            Stmt::Define { name, value, .. } => self.lower_define(name, value)?,
             Stmt::Assign { name, value, .. } => {
                 let watermark = self.next_reg;
                 self.lower_assign(name, value)?;

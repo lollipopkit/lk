@@ -167,7 +167,7 @@ impl Compiler {
                 value,
                 ..
             }
-            | Stmt::Define { name, value } => {
+            | Stmt::Define { name, value, .. } => {
                 let slot = self.alloc_reg();
                 if !self.try_lower_expr_to_register(slot, value)? {
                     let value = self.lower_expr(value)?;
@@ -572,7 +572,7 @@ fn collect_assigned_names(stmt: &Stmt, names: &mut HashSet<String>) {
             value,
             ..
         }
-        | Stmt::Define { name, value } => {
+        | Stmt::Define { name, value, .. } => {
             names.insert(name.clone());
             collect_assigned_names_in_expr(value, names);
         }

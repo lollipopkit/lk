@@ -67,6 +67,17 @@ mod tests {
     }
 
     #[test]
+    fn a_short_declaration_types_what_it_binds() {
+        // `:=` used to be skipped by the checker outright, so the name it bound
+        // had no type and everything downstream of it fell back to a fresh type
+        // variable.
+        let observed = observe("x := 2;\nlet doubled = x * 2;");
+
+        assert_eq!(type_of(&observed, "x"), Some(&Type::Int));
+        assert_eq!(type_of(&observed, "doubled"), Some(&Type::Int));
+    }
+
+    #[test]
     fn collecting_reports_every_bad_statement_not_just_the_first() {
         let program = crate::syntax::parse_program_source("let a: Int = \"x\"; let b: Bool = 1;", Default::default())
             .expect("parse program");

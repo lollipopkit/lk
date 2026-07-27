@@ -713,10 +713,21 @@ impl Stmt {
                 // 控制流语句暂时不需要类型检查
                 Ok(())
             }
-            Stmt::Define { .. } | Stmt::Empty => {
-                // Define 语句和空语句暂时不需要类型检查
+            Stmt::Define { name, value, span } => {
+                // `x := v` binds exactly what `let x = v` binds, and lowers
+                // through the same `lower_define`. Skipping it here meant the
+                // name had no type at all: every later read of it went through
+                // `check_identifier`'s last line and got a fresh type variable,
+                // so nothing downstream of a `:=` could be checked either.
+                let value_type = value.type_check(type_checker)?;
+                type_checker.define_top_level(name);
+                type_checker.add_local_type(name.clone(), value_type);
+                if let Some(span) = span {
+                    type_checker.record_bindings(span, false, core::iter::once(name.as_str()));
+                }
                 Ok(())
             }
+            Stmt::Empty => Ok(()),
         }
     }
 

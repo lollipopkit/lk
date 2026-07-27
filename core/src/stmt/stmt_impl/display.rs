@@ -90,7 +90,7 @@ impl Display for Stmt {
                 };
                 write!(f, "{} {} {};", name, op_str, value)
             }
-            Stmt::Define { name, value } => {
+            Stmt::Define { name, value, .. } => {
                 write!(f, "{} = {};", name, value)
             }
             Stmt::Break => {

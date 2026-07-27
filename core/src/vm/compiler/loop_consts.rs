@@ -339,7 +339,7 @@ fn collect_stmt_folded_int_consts(stmt: &Stmt, locals: &mut HashMap<String, i64>
                 }
             }
         }
-        Stmt::Define { name, value } => {
+        Stmt::Define { name, value, .. } => {
             collect_expr_folded_int_consts(value, locals, keys);
             if let Some(value) = folded_int_expr_value(value, locals) {
                 locals.insert(name.clone(), value);

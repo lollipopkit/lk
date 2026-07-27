@@ -312,7 +312,7 @@ impl ResolverCore {
             Stmt::CompoundAssign { value, .. } => {
                 self.resolve_expr(value);
             }
-            Stmt::Define { name, value } => {
+            Stmt::Define { name, value, .. } => {
                 self.resolve_expr(value);
                 let name = name.clone();
                 self.current_fn().define(name, false);

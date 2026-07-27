@@ -130,7 +130,7 @@ fn collect_stmt_free_vars(statements: &[Box<Stmt>], bound: &mut HashSet<String>,
                 collect_expr_free_vars(value, bound, free);
                 collect_pattern_bound_vars(pattern, bound);
             }
-            Stmt::Define { name, value } => {
+            Stmt::Define { name, value, .. } => {
                 collect_expr_free_vars(value, bound, free);
                 bound.insert(name.clone());
             }

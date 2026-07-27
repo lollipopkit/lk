@@ -186,6 +186,8 @@ fn flush_global_stmt(name: String) -> Stmt {
     Stmt::Define {
         name: name.clone(),
         value: Box::new(Expr::Var(name)),
+        // Synthesised to flush a REPL global; it corresponds to no source text.
+        span: None,
     }
 }
 
