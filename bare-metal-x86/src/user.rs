@@ -179,6 +179,22 @@ pub fn init() {
     }
 }
 
+/// Points the CPU at the ring-0 stack it should switch to on the next
+/// interrupt from ring 3.
+///
+/// Per task, not once: two user tasks sharing one kernel stack would have the
+/// second one's interrupt frame land on top of the first one's, and the first
+/// would resume into whatever was left. The scheduler calls this on every
+/// switch, which is the only place that knows whose stack is next.
+pub fn set_kernel_stack(top: u64) {
+    // SAFETY: a plain word in a static the CPU reads only on a ring change,
+    // which cannot happen while this runs (interrupts are masked inside the
+    // gate this is called from).
+    unsafe {
+        (&raw mut TSS).cast::<u8>().add(4).cast::<u64>().write_unaligned(top);
+    }
+}
+
 /// Where the TSS descriptor sits in the GDT.
 const TSS_SELECTOR: u16 = 0x28;
 /// Ring-3 code and data, with the requested privilege level in the low bits.
@@ -262,9 +278,53 @@ global_asm!(
     "2:  jmp 2b",
 );
 
+/// A ring-3 task that never yields.
+///
+/// It prints a `3` through the syscall, spins for a while, and does it again,
+/// for ever. Nothing in it cooperates: if the shell keeps answering while this
+/// runs, the timer took the CPU away from ring 3 and gave it back — which is
+/// the claim. The earlier `user` command could not show that, because it had
+/// no way back at all.
+global_asm!(
+    ".global __user_task",
+    "__user_task:",
+    "3: mov rax, 1",
+    "   mov rdi, 51",       // '3'
+    "   int 0x80",
+    "   mov rcx, 40000000",
+    "4: dec rcx",
+    "   jnz 4b",
+    "   jmp 3b",
+);
+
 unsafe extern "C" {
     /// The ring-3 program's first instruction.
     pub fn __user_program();
+    /// The preemptible ring-3 task's.
+    pub fn __user_task();
+}
+
+/// A stack for the ring-3 task, distinct from the one-shot program's: they are
+/// different tasks and must not share a stack.
+#[repr(align(16))]
+struct UserTaskStack([u8; 8 * 1024]);
+static mut USER_TASK_STACK: UserTaskStack = UserTaskStack([0; 8 * 1024]);
+
+/// The task's entry and stack, for the program to spawn it with.
+#[unsafe(no_mangle)]
+pub extern "C" fn lk_user_task_entry() -> i64 {
+    __user_task as *const () as i64
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn lk_user_task_stack() -> i64 {
+    // SAFETY: a static array's own end, one word down for the ABI's phase.
+    unsafe {
+        (&raw mut USER_TASK_STACK)
+            .cast::<u8>()
+            .add(size_of::<UserTaskStack>())
+            .sub(8) as i64
+    }
 }
 
 /// The stack the user program runs on.
@@ -276,6 +336,16 @@ static mut USER_STACK: UserStack = UserStack([0; 8 * 1024]);
 pub fn user_stack_top() -> u64 {
     // SAFETY: a static array's own end.
     unsafe { (&raw mut USER_STACK).cast::<u8>().add(size_of::<UserStack>()).sub(8) as u64 }
+}
+
+/// The frame a *user* task starts life on, for `tasks::prepare_stack`.
+///
+/// Same shape as a kernel task's — fifteen saved registers under the frame the
+/// CPU itself pushes — with the selectors that make it ring 3. Which is the
+/// whole difference between a user task and a kernel one: not what it runs, but
+/// which four numbers are in that frame.
+pub fn user_frame_selectors() -> (u64, u64) {
+    (USER_CODE_SELECTOR, USER_DATA_SELECTOR)
 }
 
 /// Runs the ring-3 program, and does not come back.

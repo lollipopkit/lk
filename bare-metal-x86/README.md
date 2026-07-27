@@ -487,10 +487,21 @@ directory entry too, and the forbidden write simply succeeded. The check
 therefore asserts the *error code*, not just the address — a fault at that
 address from ring 0 would be a kernel bug with the same `cr2`.
 
-There is no way back: the only exits from ring 3 here are a syscall (which
-returns into ring 3) and a fault (which halts). Making that survivable means
-entering ring 3 on a task of its own and letting the timer take the CPU back,
-which needs the scheduler to know about privilege — and it does not yet.
+### And back again
+
+`user` has no way back — its only exits are a syscall (which returns *into* ring
+3) and a fault. A ring-3 *task* does: one is spawned at boot, prints `3` for
+ever, and never yields. The shell answers a command while it runs, which is the
+claim: the timer took the CPU away from ring 3 and gave it back.
+
+What that needed was one line in the scheduler and a stack per task. The frame a
+task starts on is the same shape either way — fifteen saved registers under the
+frame the CPU pushes — and the only difference between a kernel task and a user
+one is the four numbers in it. What is *not* the same is where an interrupt from
+ring 3 lands: the CPU takes that from the TSS, so `rsp0` is set to the next
+task's own kernel stack on every switch. Two user tasks sharing one would have
+the second's interrupt frame land on the first's, and the first would resume
+into whatever was left.
 
 ## Memory that comes back
 

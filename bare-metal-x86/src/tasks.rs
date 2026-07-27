@@ -66,6 +66,18 @@ unsafe extern "C" {
 /// `top` must be the high end of a writable, 16-byte-aligned stack that
 /// nothing else uses.
 unsafe fn prepare_stack(top: *mut u8, entry: u64) -> u64 {
+    // SAFETY: as this function's own contract.
+    unsafe { prepare_stack_in(top, entry, 0x08, 0x10, top as u64 - 8) }
+}
+
+/// As [`prepare_stack`], with the selectors and stack the frame resumes on
+/// spelled out — which is what makes a task a *user* task.
+///
+/// # Safety
+///
+/// As [`prepare_stack`], and `resume_sp` must be a stack the target privilege
+/// level can write.
+unsafe fn prepare_stack_in(top: *mut u8, entry: u64, code: u64, data: u64, resume_sp: u64) -> u64 {
     // The CPU's frame, pushed high to low: SS, RSP, RFLAGS, CS, RIP.
     let mut sp = top as u64;
     let mut push = |value: u64| {
@@ -73,14 +85,14 @@ unsafe fn prepare_stack(top: *mut u8, entry: u64) -> u64 {
         // SAFETY: within the caller's stack, which is ours to write.
         unsafe { core::ptr::write_volatile(sp as *mut u64, value) };
     };
-    push(0x10); // SS — the boot GDT's data selector
+    push(data); // SS
     // One word below the top, so the task begins with the stack in the phase a
     // function expects: the ABI assumes a `call` has just pushed a return
     // address, and `iretq` pushes nothing. Without the offset the first
     // aligned SSE spill in the task faults, inside whatever it called.
-    push(top as u64 - 8); // RSP the task resumes with
+    push(resume_sp); // RSP the task resumes with
     push(0x202); // RFLAGS: interrupts enabled, bit 1 always set
-    push(0x08); // CS — the boot GDT's 64-bit code selector
+    push(code); // CS
     push(entry); // RIP
     // The saved registers, in the order `IRQ_RESTORE` pops them — that is,
     // the reverse of the order `IRQ_SAVE` pushes.
@@ -148,6 +160,39 @@ pub extern "C" fn lk_spawn(entry: i64) -> i64 {
     }
 }
 
+/// Starts a task that runs in *ring 3*.
+///
+/// Same table, same switch, same scheduler — the difference is four numbers in
+/// the frame it starts on, and a stack the user can write. The kernel stack it
+/// will be interrupted onto is its own slot's, which `schedule_from_interrupt`
+/// hands to the TSS on every switch.
+///
+/// # Safety
+///
+/// `entry` must be code in a user-accessible page, and `user_stack` a
+/// user-accessible, 16-byte-aligned stack of its own.
+#[unsafe(no_mangle)]
+pub extern "C" fn lk_spawn_user(entry: i64, user_stack: i64) -> i64 {
+    if entry == 0 || user_stack == 0 {
+        return -1;
+    }
+    // SAFETY: the caller masks interrupts, as `lk_spawn` requires.
+    unsafe {
+        let used = *(&raw const TASK_USED);
+        if used >= TASK_CAPACITY {
+            return -1;
+        }
+        let stacks = &raw mut TASK_STACKS;
+        let top = (*stacks)[used - 1].0.as_mut_ptr().add(STACK_SIZE);
+        let (code, data) = crate::user::user_frame_selectors();
+        let sp = prepare_stack_in(top, entry as u64, code, data, user_stack as u64);
+        let rsp = &raw mut TASK_RSP;
+        (*rsp)[used] = sp;
+        *(&raw mut TASK_USED) = used + 1;
+        used as i64
+    }
+}
+
 /// Called from the trampoline with every register already on the interrupted
 /// task's stack. Returns the stack to resume on.
 ///
@@ -169,6 +214,15 @@ pub unsafe extern "C" fn schedule_from_interrupt(rsp: u64) -> u64 {
         // never prepared.
         let next = if next < *(&raw const TASK_USED) { next } else { current };
         *(&raw mut CURRENT) = next;
+        // The kernel stack the *next* task will be interrupted onto. Task 0
+        // keeps the boot stack and never runs at ring 3, so its slot has no
+        // array entry; the rest get their own, which is what keeps two user
+        // tasks from landing on one stack.
+        if next > 0 {
+            let stacks = &raw mut TASK_STACKS;
+            let top = (*stacks)[next - 1].0.as_mut_ptr().add(STACK_SIZE);
+            crate::user::set_kernel_stack(top as u64);
+        }
         (*table)[next]
     }
 }

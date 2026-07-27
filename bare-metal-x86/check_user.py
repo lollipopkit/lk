@@ -2,7 +2,7 @@
 """Boot, drop to ring 3, and check that the boundary is the machine's, not the
 program's good manners.
 
-Two claims, and the second is the one that makes the first mean anything:
+Three claims, and the second is the one that makes the first mean anything:
 
 1. **A ring-3 program can talk to the kernel.** It prints `USER` a byte at a
    time through `int 0x80` — the only vector whose gate has DPL 3, so it is the
@@ -12,6 +12,11 @@ Two claims, and the second is the one that makes the first mean anything:
    faults with `cr2=0x300000` and a user-mode error code. Until this existed,
    "the program does not touch the framebuffer" was a fact about the program;
    now it is a fact about the page tables.
+
+3. **A ring-3 task can be preempted.** A separate task, spawned into ring 3 at
+   boot, prints `3` for ever and never yields — and the shell answers a command
+   while it runs. The timer took the CPU from ring 3 and gave it back, which the
+   one-shot program above cannot show because it has no way back at all.
 
 The error code is checked, not just the address: bit 2 is what says the access
 came from ring 3. A fault at that address from ring 0 would be a kernel bug
@@ -60,6 +65,14 @@ def main():
             connection.connect(monitor)
             time.sleep(0.3)
             connection.recv(65536)
+            # First: does the shell still answer while a ring-3 task runs?
+            for key in ["k", "e", "y", "s", "ret"]:
+                connection.sendall(f"sendkey {key}\n".encode())
+                time.sleep(0.3)
+            time.sleep(2)
+            with open(serial, errors="replace") as handle:
+                while_running = handle.read()
+
             for key in ["u", "s", "e", "r", "ret"]:
                 connection.sendall(f"sendkey {key}\n".encode())
                 time.sleep(0.3)
@@ -75,6 +88,12 @@ def main():
             transcript = handle.read()
 
         failures = []
+        # The ring-3 task's own output, and the shell answering in the middle
+        # of it: either alone proves nothing.
+        if while_running.count("3") < 5:
+            failures.append("the ring-3 task never ran")
+        if "\n5\n" not in while_running and "\n6\n" not in while_running:
+            failures.append("the shell did not answer while the ring-3 task was running")
         if GREETING not in transcript:
             failures.append(f"ring 3 did not print {GREETING!r} through the syscall")
         if "#PF page fault" not in transcript:
@@ -87,7 +106,7 @@ def main():
             raise SystemExit(
                 "ring 3 wrong:\n  " + "\n  ".join(failures) + "\n--- serial ---\n" + transcript[-400:]
             )
-    print("OK: ring 3 spoke through a syscall, and the machine refused its write to kernel memory")
+    print("OK: ring 3 spoke through a syscall, was preempted while never yielding, and was refused kernel memory")
 
 
 if __name__ == "__main__":
