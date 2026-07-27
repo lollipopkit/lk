@@ -264,6 +264,31 @@ stating:
   show the difference. `check_disk.py` therefore makes its third assertion from
   *outside*, after QEMU has exited: the image file must hold what was written.
 
+## A filesystem, of sorts
+
+`drivers/tarfs.lk` reads files by name off the disk. tar is chosen for what it
+does **not** need: no allocation, no cache, no free list, no write path, no
+in-memory index. An entry is a 512-byte header followed by its contents rounded
+up to whole sectors, and the next entry follows it — so finding a file is
+walking that chain on the medium, and reading one is reading sectors.
+
+```
+>cat hello.txt
+HELLO FROM DISK
+SECOND LINE
+```
+
+There is no open file, no descriptor, and no buffer beyond the single sector the
+program owns: `print_file` walks the headers, then reads the contents a sector
+at a time and prints as it goes. A file larger than memory is therefore not a
+problem. A file in a directory is: tar has no directories here, a name is
+matched whole, and search is linear. All three of those want data structures,
+and data structures want an allocator.
+
+The archive `check_disk.py` builds comes from Python's `tarfile`, so what the
+kernel walks is a real archive written by something else — not a layout invented
+to be easy to parse.
+
 ## Sharing state between them
 
 Read, add, write is three steps. An interrupt landing between the read and the
@@ -369,6 +394,7 @@ drivers/framebuffer.lk   pixels, given a base and a stride
 drivers/keyboard.lk      the PS/2 controller
 drivers/pit.lk           the interval timer
 drivers/ata.lk           an IDE disk, PIO mode (read, write, IDENTIFY)
+drivers/tarfs.lk         read-only tar, straight off sectors
 drivers/shared.lk        a word an interrupt handler and the main flow share
 program.lk               which devices to bring up, and what a keystroke means
 ```

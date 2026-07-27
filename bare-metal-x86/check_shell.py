@@ -46,7 +46,7 @@ KEYS = (
 # repeats its argument, `exit` says goodbye — each proving a different part:
 # the byte-wise command match, the argument tail, and the loop ending.
 EXPECTED_LINES = [
-    "help clear echo keys mem page sync yield win time disk exit",
+    "help clear echo keys mem page sync yield win time disk cat exit",
     "lk",
     # Two pages handed out in order, from the range the loader reported. The
     # addresses are what proves the allocator rather than a counter.

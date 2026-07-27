@@ -1037,13 +1037,24 @@ fn bundle_file_imports(source: &Path, artifact: &ModuleArtifact) -> anyhow::Resu
     if queue.is_empty() {
         return Ok(BundleOutcome::Nothing);
     }
-    let mut visited: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+    // Keyed by resolved path, and remembering what each one exported: a file
+    // reached twice is merged once, but *both* import paths still need a
+    // binding table. `drivers/ata` imported by the program and `ata` imported
+    // by a driver next to it are the same file under two names; recording only
+    // the first left the second one's `use { .. }` resolving to nothing, which
+    // the lowering reports as an unresolved global far from the cause.
+    let mut bundled_fns: std::collections::HashMap<PathBuf, std::collections::HashMap<String, u32>> =
+        std::collections::HashMap::new();
 
     let mut merged = artifact.clone();
     let mut bundles: Vec<lk_aot::BundledImport> = Vec::new();
     while let Some((import_path, dep_path)) = queue.pop() {
         let canonical = std::fs::canonicalize(&dep_path).unwrap_or_else(|_| dep_path.clone());
-        if !visited.insert(canonical) {
+        if let Some(fns) = bundled_fns.get(&canonical) {
+            bundles.push(lk_aot::BundledImport {
+                path: import_path,
+                fns: fns.clone(),
+            });
             continue;
         }
 
@@ -1267,6 +1278,7 @@ fn bundle_file_imports(source: &Path, artifact: &ModuleArtifact) -> anyhow::Resu
             }
         }
 
+        bundled_fns.insert(canonical, fns.clone());
         bundles.push(lk_aot::BundledImport { path: import_path, fns });
     }
     Ok(BundleOutcome::Bundled(merged, bundles))

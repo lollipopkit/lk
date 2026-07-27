@@ -35,6 +35,7 @@ use { init as pages_init, alloc as page_alloc, free as pages_free,
 use { read_sector as ata_read_sector, write_sector as ata_write_sector,
       identify as ata_identify, identify_sectors as ata_identify_sectors,
       ATA_OK, ATA_TIMEOUT, ATA_ERROR_BIT, ATA_NO_DRIVE } from "drivers/ata";
+use { find as tar_find, TAR_OK, TAR_NOT_FOUND, TAR_READ_FAILED } from "drivers/tarfs";
 use { read as shared_read, write as shared_write, bump as shared_bump,
       read_byte as shared_read_byte, write_byte as shared_write_byte } from "drivers/shared";
 
@@ -176,8 +177,15 @@ const QUEUE_STRIDE = 64;
 // has to be able to run before there is any memory management at all.
 const SHARED_SECTOR = SHARED_QUEUES + WINDOW_COUNT * QUEUE_STRIDE;
 const SECTOR_SIZE = 512;
+// Where `disk w` writes. Past anything a filesystem on the same disk would be
+// using, because a demonstration that destroys the medium it demonstrates on is
+// a demonstration nobody runs twice.
+const SCRATCH_SECTOR = 32;
+// Two words the filesystem answers through: the first data sector of a file it
+// found, and the file's size.
+const SHARED_FILE = SHARED_SECTOR + SECTOR_SIZE;
 // The end of what is spoken for. Anything added goes here, not into a gap.
-const SHARED_END = SHARED_SECTOR + SECTOR_SIZE;
+const SHARED_END = SHARED_FILE + 2 * WORD;
 
 // The framebuffer is twice the screen's height. Scrolling moves the *view*
 // down through it; only when the view reaches the bottom does anything have to
@@ -503,7 +511,7 @@ fn write_disk(base: Int) {
         shared_write_byte(SHARED_SECTOR + at, (code) as Int);
         at = at + 1;
     }
-    let wrote = ata_write_sector(1, SHARED_SECTOR);
+    let wrote = ata_write_sector(SCRATCH_SECTOR, SHARED_SECTOR);
     if (wrote != ATA_OK) {
         emit(base, disk_error(wrote));
         return;
@@ -513,7 +521,7 @@ fn write_disk(base: Int) {
     for i in 0..SECTOR_SIZE {
         shared_write_byte(SHARED_SECTOR + i, 0);
     }
-    let read = ata_read_sector(1, SHARED_SECTOR);
+    let read = ata_read_sector(SCRATCH_SECTOR, SHARED_SECTOR);
     if (read != ATA_OK) {
         emit(base, disk_error(read));
         return;
@@ -529,6 +537,67 @@ fn write_disk(base: Int) {
         }
     }
     emit(base, line);
+}
+
+// Prints a file from the archive on the disk.
+//
+// The whole path is here in one function because there is nothing in between:
+// no open file, no descriptor, no buffering. `tar_find` walks the archive's
+// headers on the medium, and then this reads the contents a sector at a time
+// into the one sector-sized buffer the program has, printing as it goes. A file
+// larger than memory is therefore not a problem; a file with no name is.
+fn print_file(base: Int, name: List<Int>) {
+    let found = tar_find(name, SHARED_SECTOR, SHARED_FILE);
+    if (found != TAR_OK) {
+        emit(base, file_error(found));
+        return;
+    }
+    let lba = shared_read(SHARED_FILE);
+    let size = shared_read(SHARED_FILE + WORD);
+    let printed = 0;
+    while (printed < size) {
+        if (ata_read_sector(lba, SHARED_SECTOR) != ATA_OK) {
+            emit(base, disk_error(ATA_ERROR_BIT));
+            return;
+        }
+        let line = [0];
+        line = [];
+        let i = 0;
+        while (i < SECTOR_SIZE && printed + i < size) {
+            let byte = shared_read_byte(SHARED_SECTOR + i);
+            // Newlines end a line rather than becoming a dot: a text file
+            // printed as one run would scroll past whatever it had to say.
+            if (byte == 10) {
+                emit(base, line);
+                line = [];
+            } else {
+                if (byte < 32 || byte > 126) {
+                    line = line.chain([46]);
+                } else {
+                    line = line.chain([byte]);
+                }
+            }
+            i = i + 1;
+        }
+        if (line.len() > 0) {
+            emit(base, line);
+        }
+        printed = printed + i;
+        lba = lba + 1;
+    }
+}
+
+fn file_error(outcome: Int) -> List<Int> {
+    if (outcome == TAR_NOT_FOUND) {
+        // "no file"
+        return [110, 111, 32, 102, 105, 108, 101];
+    }
+    if (outcome == TAR_READ_FAILED) {
+        // "read failed"
+        return [114, 101, 97, 100, 32, 102, 97, 105, 108, 101, 100];
+    }
+    // "?"
+    return [63];
 }
 
 // The driver's four outcomes, spelled rather than numbered: a status code
@@ -558,12 +627,12 @@ fn run_command(base: Int) -> Int {
     }
     if (line_starts_with([104, 101, 108, 112])) {          // "help"
         // "help clear echo keys exit"
-        // "help clear echo keys mem page sync yield win time disk exit"
+        // "help clear echo keys mem page sync yield win time disk cat exit"
         emit(base, [104, 101, 108, 112, 32, 99, 108, 101, 97, 114, 32, 101, 99,
                     104, 111, 32, 107, 101, 121, 115, 32, 109, 101, 109, 32,
                     112, 97, 103, 101, 32, 115, 121, 110, 99, 32,
                     121, 105, 101, 108, 100, 32, 119, 105, 110, 32,
-                    116, 105, 109, 101, 32, 100, 105, 115, 107, 32,
+                    116, 105, 109, 101, 32, 100, 105, 115, 107, 32, 99, 97, 116, 32,
                     101, 120, 105, 116]);
         return 1;
     }
@@ -630,6 +699,10 @@ fn run_command(base: Int) -> Int {
                    .chain(decimal((t1 as Int) - (t0 as Int)))
                    .chain([32, 102, 114, 97, 109, 101, 115, 32])
                    .chain(decimal((t2 as Int) - (t1 as Int))));
+        return 1;
+    }
+    if (line_starts_with([99, 97, 116])) {                 // "cat"
+        print_file(base, line_tail(4));
         return 1;
     }
     if (line_starts_with([100, 105, 115, 107, 32, 119])) { // "disk w"

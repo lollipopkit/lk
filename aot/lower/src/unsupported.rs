@@ -13,6 +13,17 @@ pub enum Unsupported {
         pc: usize,
         op: Opcode,
     },
+    /// A global read that resolved to nothing the lowering knows: not a
+    /// builtin, not a module, not an import binding, not a proven-initialized
+    /// scalar. Carries the *name*, because "opcode GetGlobal is not natively
+    /// lowerable" sends the reader looking for a missing feature when the
+    /// answer is almost always a specific name that did not resolve — a
+    /// mistyped import, a function defined in a module that was not bundled, or
+    /// a global written on a path the lowering cannot see.
+    UnresolvedGlobal {
+        pc: usize,
+        name: String,
+    },
     BadConst {
         pc: usize,
     },
@@ -70,6 +81,9 @@ impl Unsupported {
             Unsupported::BadInstr { pc } => format!("undecodable instruction at pc {pc}"),
             Unsupported::Opcode { pc, op } => {
                 format!("opcode {op:?} (at pc {pc}) is not natively lowerable yet")
+            }
+            Unsupported::UnresolvedGlobal { pc, name } => {
+                format!("global `{name}` (read at pc {pc}) does not resolve to anything natively lowerable")
             }
             Unsupported::BadConst { pc } => format!("unsupported constant operand at pc {pc}"),
             Unsupported::UndefinedOperand { pc, reg } => {

@@ -227,7 +227,10 @@ pub(super) fn lower(
             let initialized = sig.initialized_globals.get(slot as usize).copied().unwrap_or(false);
             let ty = sig.global_tys.get(slot as usize).copied().flatten();
             let Some(ty) = ty else {
-                return Err(Unsupported::Opcode { pc, op: instr.opcode() });
+                return Err(Unsupported::UnresolvedGlobal {
+                    pc,
+                    name: name.unwrap_or("<unnamed slot>").to_string(),
+                });
             };
             // A typed slot read before its entry-prefix initialization could
             // observe native zero where the VM has nil. A `Dyn` slot is
