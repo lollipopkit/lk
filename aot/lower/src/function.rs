@@ -1,5 +1,15 @@
 use super::*;
 
+/// Did anything before `pc` write `reg`?
+///
+/// A textual scan rather than a question to the SSA: this runs while the exit
+/// table is being built, before any block exists to ask about. The same
+/// over-approximation as `written_registers` applies, and in the same
+/// direction — a false positive costs a rejection.
+fn writes_register_before(instrs: &[Instr], pc: usize, reg: u8) -> bool {
+    instrs[..pc].iter().any(|instr| instr.a() == reg)
+}
+
 /// Lowers a single function to a [`MirFunction`]. User (non-entry) functions use
 /// the `(i64, ...) -> i64` ABI in this slice: params and return are `I64`, verified
 /// via typed reads / a return-type check — a mismatch rejects (falls back) rather
@@ -32,22 +42,59 @@ pub(crate) fn lower_function(
         .map(|(pc, raw)| Instr::try_from_raw(*raw).map_err(|_| Unsupported::BadInstr { pc }))
         .collect::<Result<Vec<_>, _>>()?;
 
-    // 0. Protected regions: recognised here so a `try` reports *which* region
-    //    cannot be outlined and why, rather than "opcode TryBegin is not
-    //    natively lowerable". The outlining itself is the next piece of work;
-    //    until it exists every region is a rejection, but a legible one.
-    if let Some(region) = crate::try_region::scan(func, &instrs)?.first() {
-        return Err(Unsupported::TryRegion {
-            pc: region.begin_pc,
-            reason: "outlining the body is not implemented yet",
-        });
-    }
+    // 0. Protected regions. Each body was outlined into a function of its own
+    //    before this ran (see `lower_module`), so the parent must not see those
+    //    instructions as control flow at all: they are marked consumed, and the
+    //    `TryBegin` becomes one exit with two successors.
+    let regions = crate::try_region::scan(func, &instrs)?;
 
     // 1. Classify control-flow exits; a fused `TestXxx`+`Jmp` consumes the `Jmp`.
     let mut consumed = vec![false; code_len];
-    let exits: Vec<Option<Exit>> = (0..code_len)
+    for region in &regions {
+        for flag in consumed.iter_mut().take(region.body_end + 1).skip(region.body_start) {
+            *flag = true;
+        }
+        // The `Jmp` over the handler belongs to the region, not to the body.
+        if region.body_end + 1 < code_len && instrs[region.body_end + 1].opcode() == Opcode::Jmp {
+            consumed[region.body_end + 1] = true;
+        }
+    }
+    let mut exits: Vec<Option<Exit>> = (0..code_len)
         .map(|pc| exit_of(pc, &instrs, code_len, &mut consumed, &func.performance))
         .collect::<Result<Vec<_>, _>>()?;
+    for region in &regions {
+        // A body that writes a register the enclosing function already defined
+        // would, outlined, write it in the *body's* frame and leave the
+        // parent's copy untouched. The program then computes a different
+        // answer with nothing said — the one outcome worse than not compiling.
+        //
+        // Registers the parent has no definition for are safe: the body owns
+        // them, and a later read of one is undefined, which rejects on its own.
+        // Carrying a write back out needs the value to live in memory rather
+        // than a register, which is the next piece of work.
+        for reg in crate::try_region::written_registers(&instrs, region.body_start, region.body_end) {
+            if reg != region.catch_reg && writes_register_before(&instrs, region.begin_pc, reg) {
+                return Err(Unsupported::TryRegion {
+                    pc: region.begin_pc,
+                    reason: "the body assigns something declared outside it",
+                });
+            }
+        }
+        let body = sig
+            .try_bodies
+            .get(&(func_index, region.begin_pc))
+            .copied()
+            .ok_or(Unsupported::TryRegion {
+                pc: region.begin_pc,
+                reason: "the body was not outlined",
+            })?;
+        exits[region.begin_pc] = Some(Exit::TryRegion {
+            body,
+            catch_reg: region.catch_reg,
+            handler: region.handler,
+            fallthrough: region.fallthrough,
+        });
+    }
 
     // 2. Block leaders.
     let mut leaders = std::collections::BTreeSet::new();
@@ -80,6 +127,12 @@ pub(crate) fn lower_function(
             | Some(Exit::FusedModZero { taken, fallthrough, .. })
             | Some(Exit::NilBranch { taken, fallthrough, .. }) => {
                 mark_target(*taken, code_len, &mut leaders, &mut implicit_ret);
+                mark_target(*fallthrough, code_len, &mut leaders, &mut implicit_ret);
+            }
+            Some(Exit::TryRegion {
+                handler, fallthrough, ..
+            }) => {
+                mark_target(*handler, code_len, &mut leaders, &mut implicit_ret);
                 mark_target(*fallthrough, code_len, &mut leaders, &mut implicit_ret);
             }
         }
@@ -305,6 +358,42 @@ pub(crate) fn lower_function(
                 }
                 // A `Nil` return value renders as `ret void`.
                 ret_val[bi] = if ty == Ty::Nil { None } else { Some(v) };
+            }
+            Some(Exit::TryRegion { body, catch_reg, .. }) => {
+                // Run the body under a handler, and bind what it raised.
+                //
+                // The caught value is written unconditionally, on both edges.
+                // Writing it only on the raise edge would leave the register
+                // undefined on the other one, and SSA has to agree about a
+                // register's definition at a join whether or not the path that
+                // defined it was taken.
+                let ok = ssa.new_val();
+                insts.push(Inst::TryRegionCall {
+                    dst: ok,
+                    func: FuncId(body),
+                });
+                let caught = ssa.new_val();
+                insts.push(Inst::Call {
+                    dst: Some(caught),
+                    callee: AbiRef::new("rt", "current_error"),
+                    args: vec![],
+                });
+                ssa.write(catch_reg, bi, (caught, Ty::Dyn));
+                // The flag is an `i64` (1/0) and the terminator wants a Bool.
+                let flag = ssa.new_val();
+                let zero = ssa.new_val();
+                insts.push(Inst::Const {
+                    dst: zero,
+                    value: Const::I64(0),
+                });
+                insts.push(Inst::Cmp {
+                    dst: flag,
+                    op: CmpOp::Ne,
+                    float: false,
+                    lhs: ok,
+                    rhs: zero,
+                });
+                cond_val[bi] = Some(flag);
             }
             Some(Exit::Cond { cond, .. }) => {
                 // VM truthiness (`truthy_unchecked`): only nil and false are

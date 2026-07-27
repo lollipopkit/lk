@@ -138,6 +138,7 @@ pub fn lower_bundled(
             .collect(),
         ret_types: vec![Ty::I64; n],
         ret_known: vec![false; n],
+        try_bodies: std::collections::HashMap::new(),
         conflict: false,
         dyn_loop_phis: std::collections::HashSet::new(),
         dyn_rets: std::collections::HashSet::new(),
@@ -169,6 +170,42 @@ pub fn lower_bundled(
     // specializations materialized between fixpoint passes (byte-identical
     // bodies whose `lambda_params` erase the lambda parameters).
     let mut funcs: Vec<FunctionData> = module.functions.to_vec();
+
+    // Outline every `try` body into a function of its own, before anything is
+    // lowered.
+    //
+    // Before, because a region's parent has to *call* the body, and a call
+    // needs a function to name. Afterwards the bodies are ordinary entries in
+    // this table: reachable, lowered by the same loop, and subject to the same
+    // signature fixpoint as everything else. A region whose body cannot be
+    // outlined is not recorded here, and the parent's own lowering then reports
+    // it — which is why the scan there runs again rather than trusting this one.
+    for fi in 0..funcs.len() {
+        if !reachable[fi] {
+            continue;
+        }
+        let Ok(instrs) = funcs[fi]
+            .code
+            .iter()
+            .map(|raw| Instr::try_from_raw(*raw))
+            .collect::<Result<Vec<_>, _>>()
+        else {
+            continue;
+        };
+        let Ok(regions) = try_region::scan(&funcs[fi], &instrs) else {
+            continue;
+        };
+        for region in &regions {
+            let body = try_region::outline(&funcs[fi], region);
+            let body_index = funcs.len() as u32;
+            funcs.push(body);
+            reachable.push(true);
+            sig.param_obs.push(Vec::new());
+            sig.ret_types.push(Ty::Nil);
+            sig.ret_known.push(true);
+            sig.try_bodies.insert((fi as u32, region.begin_pc), body_index);
+        }
+    }
 
     // Fixpoint: re-lower every function, refining inferred parameter/return types
     // (bounded — the scalar lattice converges quickly). Transient failures are

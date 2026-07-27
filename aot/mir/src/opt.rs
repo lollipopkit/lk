@@ -585,6 +585,9 @@ fn is_removable(inst: &Inst) -> bool {
         // follows the ordinary rule and may be dropped when nothing reads it.
         Inst::CallIndirect { .. } => false,
         Inst::SymbolAddr { .. } => true,
+        // Running the body is the point; its outcome flag being unread does not
+        // make the call dead.
+        Inst::TryRegionCall { .. } => false,
         Inst::IntBin { op, .. } => !matches!(op, IntBinOp::Div | IntBinOp::Mod),
         Inst::FloatBin { op, .. } => !matches!(op, FloatBinOp::Div | FloatBinOp::Mod),
         Inst::Const { .. }
@@ -629,7 +632,7 @@ fn uses_mut(inst: &mut Inst) -> Vec<&mut ValueId> {
     match inst {
         Inst::Const { .. } | Inst::GlobalGet { .. } => vec![],
         Inst::CallExtern { args, .. } => args.iter_mut().collect(),
-        Inst::SymbolAddr { .. } => vec![],
+        Inst::SymbolAddr { .. } | Inst::TryRegionCall { .. } => vec![],
         Inst::CallIndirect { callee, args, .. } => {
             let mut values: Vec<&mut ValueId> = vec![callee];
             values.extend(args.iter_mut());

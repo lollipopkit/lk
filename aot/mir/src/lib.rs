@@ -261,6 +261,14 @@ pub enum Inst {
         arg_tys: Vec<Ty>,
         ret: Ty,
     },
+    /// `dst = try.region f{func}` — run a `try` body under a fresh handler.
+    ///
+    /// The statement form of `try`, where the body produces no value: `dst` is
+    /// 1 when it returned and 0 when it raised, and the caught value is read
+    /// separately (`rt.current_error`) on the path that wants it. Codegen calls
+    /// `lkrt`'s trampoline, which does the `setjmp` in a C frame — Cranelift
+    /// cannot emit one.
+    TryRegionCall { dst: ValueId, func: FuncId },
     /// `dst = try.call f{func}(args)` — a native protected call (`try$call`,
     /// plan G): codegen expands to `rt.try_push` + `_setjmp` + a conditional
     /// call of the try-body function (which returns `Dyn`), joining into the
@@ -821,6 +829,7 @@ fn render_inst(inst: &Inst) -> String {
             }
         }
         Inst::SymbolAddr { dst, symbol } => format!("{} = symbol.addr {symbol}", v(*dst)),
+        Inst::TryRegionCall { dst, func } => format!("{} = try.region f{}", v(*dst), func.0),
         Inst::CallIndirect { dst, callee, args: a } => {
             let call = format!("call.indirect v{}({})", callee.0, args(a));
             match dst {
@@ -969,7 +978,7 @@ pub(crate) fn inst_def(inst: &Inst) -> Option<ValueId> {
         | Inst::MaybeWrap { dst, .. }
         | Inst::Select { dst, .. }
         | Inst::GlobalGet { dst, .. } => Some(*dst),
-        Inst::SymbolAddr { dst, .. } => Some(*dst),
+        Inst::SymbolAddr { dst, .. } | Inst::TryRegionCall { dst, .. } => Some(*dst),
         Inst::CallIndirect { dst, .. } => *dst,
         Inst::Call { dst, .. } | Inst::CallFn { dst, .. } | Inst::CallExtern { dst, .. } | Inst::CallVm { dst, .. } => {
             *dst
@@ -1012,7 +1021,7 @@ fn inst_uses(inst: &Inst) -> Vec<ValueId> {
         | Inst::MapGetMaybeI64F64 { handle, key, .. } => {
             vec![*handle, *key]
         }
-        Inst::SymbolAddr { .. } => vec![],
+        Inst::SymbolAddr { .. } | Inst::TryRegionCall { .. } => vec![],
         Inst::CallIndirect { callee, args, .. } => {
             let mut values = vec![*callee];
             values.extend(args.iter().copied());

@@ -363,6 +363,37 @@ fn try_catch_differential() {
 /// The VM masks inside its `i64` carrier and sign-extends back; Cranelift does
 /// `ireduce` then `sextend`/`uextend`. Those are different mechanisms, so this
 /// is where a divergence would show up.
+/// `try` regions that lower natively: the body becomes a function, and the
+/// `setjmp` happens in `lkrt`'s C frame because Cranelift cannot emit one.
+///
+/// Both outcomes are here. A body that raises must reach the handler with the
+/// raised value intact, and a body that returns must skip it — a region that
+/// only ever worked on one of those paths would pass half a test.
+#[test]
+fn try_region_differential() {
+    run_differential(
+        "try_region",
+        &[
+            new(
+                "caught",
+                "fn boom() { error(404); return 0; }\nlet b = 0;\ntry { boom(); } catch code { b = code; }\nreturn b;\n",
+            ),
+            new(
+                "not_raised",
+                "fn fine() { return 7; }\nlet b = 0;\ntry { fine(); } catch e { b = 1; }\nreturn b;\n",
+            ),
+            // A raise from two frames down still lands in the nearest handler:
+            // the trampoline's frame is what `longjmp` targets, not the body's.
+            new(
+                "deep",
+                "fn inner() { error(\"deep\"); return 0; }\nfn outer() { return inner(); }\n\
+                 let b = 0;\ntry { outer(); } catch e { b = 1; }\nreturn b;\n",
+            ),
+        ],
+        NativePath::PureCranelift,
+    );
+}
+
 /// Function pointers: an exported function's address, and a call through it.
 ///
 /// Not a *differential* test in the usual sense — the VM refuses both builtins,

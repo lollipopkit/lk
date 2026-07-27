@@ -77,3 +77,27 @@ LkDyn lkrt_rt_try_call(const void *body, long long argc, const long long *argv, 
     *out_ok = 0;
     return lkrt_rt_current_error();
 }
+
+/* Runs `body()` under a fresh try frame, for the `try { … } catch e { … }`
+ * *statement* — where the body produces no value and the only question is
+ * whether it finished.
+ *
+ * Separate from `lkrt_rt_try_call` rather than a special case of it: that one
+ * exists for the old closure desugar and returns the body's `LkDyn`, which
+ * means the body must be a function that returns one. A statement's body
+ * returns nothing, and pretending otherwise would have the trampoline read a
+ * return value out of registers the body never wrote.
+ *
+ * Returns 1 when the body returned, 0 when it raised. The caught value stays
+ * where `lkrt_rt_current_error` can be asked for it, so the caller reads it
+ * only on the path that needs it. */
+long long lkrt_rt_try_region(const void *body) {
+    void *buf = lkrt_rt_try_push();
+    if (_setjmp(buf) == 0) {
+        ((void (*)(void))body)();
+        lkrt_rt_try_pop();
+        return 1;
+    }
+    /* The raise path's pop already happened inside lkrt's raise. */
+    return 0;
+}

@@ -19,6 +19,13 @@ pub(crate) struct SigInfer {
     /// default as a real mismatch.
     pub(crate) ret_known: Vec<bool>,
     pub(crate) conflict: bool,
+    /// `(function, TryBegin pc)` → the function that region's body became.
+    ///
+    /// Filled before any function is lowered, because a region's body has to
+    /// exist as a function *before* the parent can call it — and because the
+    /// bodies are ordinary entries in the function table from then on, lowered
+    /// by the same loop as everything else.
+    pub(crate) try_bodies: std::collections::HashMap<(u32, usize), u32>,
     /// Empty-`[]` literals whose guessed element type a consumer
     /// contradicted (`(function, pc)`): the next fixpoint pass materializes
     /// them as Dyn lists.

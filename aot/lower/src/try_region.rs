@@ -19,13 +19,66 @@ use lk_core::vm::{FunctionData, Instr, Opcode};
 use crate::Unsupported;
 
 /// A `try` region found in a function's bytecode.
-///
-/// Only the `TryBegin`'s own pc for now: it is what a rejection has to name.
-/// The body's bounds, the handler and the caught register are what *outlining*
-/// needs, and they arrive with it — carrying them before then would be fields
-/// nothing reads.
 pub(crate) struct TryRegionShape {
+    /// The `TryBegin` itself: what a rejection names, and where the parent's
+    /// block ends.
     pub(crate) begin_pc: usize,
+    /// The body, `[start, end)` — everything between `TryBegin` and `TryEnd`.
+    pub(crate) body_start: usize,
+    pub(crate) body_end: usize,
+    /// Where the handler begins, and where control resumes after the region.
+    pub(crate) handler: usize,
+    pub(crate) fallthrough: usize,
+    /// The register the handler reads the caught value from.
+    pub(crate) catch_reg: u8,
+}
+
+/// Every register the body might write.
+///
+/// Over-approximated on purpose: it is `a` for every instruction in the body,
+/// whether or not that opcode writes a register at all. `a` is the destination
+/// by convention throughout this instruction set, so this misses nothing; what
+/// it adds are registers an instruction only *read*, and the cost of that is a
+/// region rejected that could have been lowered. The cost of the opposite
+/// mistake is a program that computes a different answer, which is why the
+/// approximation goes this way.
+pub(crate) fn written_registers(instrs: &[Instr], start: usize, end: usize) -> Vec<u8> {
+    let mut written: Vec<u8> = instrs[start..end].iter().map(|instr| instr.a()).collect();
+    written.sort_unstable();
+    written.dedup();
+    written
+}
+
+/// Builds the function a region's body becomes.
+///
+/// The body's instructions verbatim, with a `Return0` appended: it produces no
+/// value, and the only thing the caller wants back is whether it finished.
+/// Register numbering is left alone — the body uses the enclosing function's
+/// registers, so the synthesized function simply declares as many.
+///
+/// `performance` is *not* carried over. Those facts are keyed by pc in the
+/// parent, and the body's pcs are rebased here; a fact read at the wrong pc is
+/// worse than a missing one. The shapes that need a fact (a `for` loop, which
+/// requires one) therefore reject rather than lower wrongly.
+pub(crate) fn outline(parent: &FunctionData, region: &TryRegionShape) -> FunctionData {
+    let mut code: Vec<u32> = parent.code[region.body_start..region.body_end].to_vec();
+    code.push(Instr::abc(Opcode::Return0, 0, 0, 0).raw());
+    FunctionData {
+        consts: parent.consts.clone(),
+        code,
+        performance: Default::default(),
+        register_count: parent.register_count,
+        param_count: 0,
+        positional_param_count: 0,
+        param_names: Vec::new(),
+        capture_count: 0,
+        debug_name: parent
+            .debug_name
+            .as_ref()
+            .map(|name| format!("{name}$try{}", region.begin_pc)),
+        export_name: None,
+        extern_name: None,
+    }
 }
 
 /// Finds every `try` region in a function, in `TryBegin` order.
@@ -71,6 +124,21 @@ fn shape_at(func: &FunctionData, instrs: &[Instr], begin_pc: usize) -> Result<Tr
         reason: "no matching TryEnd",
     })?;
 
+    // `TryBegin catch_reg, →handler`, the offset relative to the next pc.
+    let begin = instrs[begin_pc];
+    let handler =
+        crate::cfg::rel(begin_pc, i32::from(begin.sbx()), code_len).ok_or(Unsupported::BadTarget { pc: begin_pc })?;
+    // What follows `TryEnd` is the jump over the handler, when the body can
+    // fall through at all. A body that always returns has none — but such a
+    // body is rejected below, so this is the ordinary case.
+    let after_end = body_end + 1;
+    let fallthrough = if after_end < code_len && instrs[after_end].opcode() == Opcode::Jmp {
+        crate::cfg::rel(after_end, instrs[after_end].sj_arg(), code_len)
+            .ok_or(Unsupported::BadTarget { pc: after_end })?
+    } else {
+        after_end
+    };
+
     for (pc, instr) in instrs.iter().enumerate().take(body_end).skip(begin_pc + 1) {
         let op = instr.opcode();
         // A `return` inside the body returns from the *enclosing* function.
@@ -110,5 +178,12 @@ fn shape_at(func: &FunctionData, instrs: &[Instr], begin_pc: usize) -> Result<Tr
         }
     }
 
-    Ok(TryRegionShape { begin_pc })
+    Ok(TryRegionShape {
+        begin_pc,
+        body_start: begin_pc + 1,
+        body_end,
+        handler,
+        fallthrough,
+        catch_reg: begin.a(),
+    })
 }

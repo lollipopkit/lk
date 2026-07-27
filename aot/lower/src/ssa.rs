@@ -58,6 +58,23 @@ pub(crate) fn build_term(
                 else_args: args_to(ssa, bi, e as usize),
             }
         }
+        // The body already ran, inside the trampoline; what is branched on is
+        // its *outcome*. True is "returned normally", so true is the
+        // fallthrough and false is the handler.
+        Some(Exit::TryRegion {
+            handler, fallthrough, ..
+        }) => {
+            let ok = cond_val.expect("try outcome resolved");
+            let f = block_id(fallthrough);
+            let h = block_id(handler);
+            Term::CondBr {
+                cond: ok,
+                then_blk: BlockId(f),
+                then_args: args_to(ssa, bi, f as usize),
+                else_blk: BlockId(h),
+                else_args: args_to(ssa, bi, h as usize),
+            }
+        }
         Some(Exit::FusedCmp {
             jump_when,
             taken,

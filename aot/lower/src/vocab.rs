@@ -200,6 +200,22 @@ pub(crate) enum Exit {
         taken: usize,
         fallthrough: usize,
     },
+    /// A `try` region, collapsed into one exit.
+    ///
+    /// The body's instructions are not part of this function: they were
+    /// outlined into a function of their own, because Cranelift cannot emit
+    /// `setjmp` — a call that returns twice has no place in its SSA or its
+    /// register allocator. What is left here is a call whose *outcome* is a
+    /// flag, and this exit is the branch on it: fall through when the body
+    /// returned, into the handler when it raised.
+    TryRegion {
+        /// The function the body became.
+        body: u32,
+        /// The register the handler reads the caught value from.
+        catch_reg: u8,
+        handler: usize,
+        fallthrough: usize,
+    },
     /// Fused `TestEqIntI2` + trailing `Jmp`: `r_a == imm_a && r_b == imm_b`
     /// falls through, anything else branches to `taken`. Consumes the `Jmp`.
     FusedCmp2 {

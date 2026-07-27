@@ -15,14 +15,22 @@ pub(crate) fn mark_target(
 
 /// `(body_end, exit)` for block `[start, end)`. A fused compare-and-branch occupies
 /// the last two slots (`TestXxx` at `end-2`, consumed `Jmp` at `end-1`).
+/// Where a block's instructions stop, and what ends it.
+///
+/// The *first* instruction in the range that has an exit, not the last one. For
+/// every branch and return those are the same instruction, because their
+/// successors are block leaders and nothing can follow them inside a block. A
+/// `try` region is where they differ: its body was outlined, so the pcs after
+/// its `TryBegin` are not in this function's control flow and no leader
+/// separates them from it.
 pub(crate) fn block_span(exits: &[Option<Exit>], consumed: &[bool], start: usize, end: usize) -> (usize, Option<Exit>) {
-    if end >= start + 2 && consumed[end - 1] {
-        return (end - 2, exits[end - 2]);
-    }
-    if end > start
-        && let Some(exit) = exits[end - 1]
-    {
-        return (end - 1, Some(exit));
+    for pc in start..end {
+        if consumed[pc] {
+            continue;
+        }
+        if let Some(exit) = exits[pc] {
+            return (pc, Some(exit));
+        }
     }
     (end, None)
 }
@@ -40,6 +48,11 @@ pub(crate) fn exit_successors(exit: Option<Exit>, fallthrough: usize) -> Vec<usi
         | Some(Exit::NilBranch { taken, fallthrough, .. }) => {
             vec![taken, fallthrough]
         }
+        // The body is not in this function's control flow — it was outlined —
+        // so a region's successors are only where control can be *after* it.
+        Some(Exit::TryRegion {
+            handler, fallthrough, ..
+        }) => vec![handler, fallthrough],
     }
 }
 

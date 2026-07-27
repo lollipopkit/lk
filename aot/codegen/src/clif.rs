@@ -848,6 +848,28 @@ impl Lower {
                 };
                 self.set1(*dst, v);
             }
+            Inst::TryRegionCall { dst, func } => {
+                // `lkrt_rt_try_region(body)`: the trampoline pushes a handler,
+                // `setjmp`s in its own C frame, calls the body, and answers 1
+                // for "returned" / 0 for "raised". The body's address is taken
+                // rather than called here, because what must not appear in this
+                // function is the `setjmp` — a call that returns twice.
+                let callee = *mctx
+                    .fn_ids
+                    .get(func)
+                    .ok_or(ClifError::Unsupported("try body is not a declared function"))?;
+                let reference = mctx.module.declare_func_in_func(callee, b.func);
+                let body_addr = b.ins().func_addr(types::I64, reference);
+                let tramp = mctx.raw_func("lkrt_rt_try_region", &[types::I64], &[types::I64])?;
+                let tramp_ref = mctx.module.declare_func_in_func(tramp, b.func);
+                let call = b.ins().call(tramp_ref, &[body_addr]);
+                let ok = *b
+                    .inst_results(call)
+                    .first()
+                    .ok_or(ClifError::Unsupported("try region returned nothing"))?;
+                self.set1(*dst, ok);
+                return Ok(());
+            }
             Inst::SymbolAddr { dst, symbol } => {
                 // An `#[export]`ed function of this module is taken by its own
                 // id: declaring it again under a made-up signature is what
