@@ -224,9 +224,6 @@ fn protect_block_comments(
 }
 
 fn emit(input: &str, facts: &LineFacts, options: FormatOptions) -> String {
-    // Preserve the file's dominant line ending instead of silently converting
-    // a CRLF checkout to LF.
-    let eol = if input.contains("\r\n") { "\r\n" } else { "\n" };
     let mut out = String::with_capacity(input.len() + 16);
     let mut indent: i32 = 0;
     let mut lines: Vec<&str> = input.split('\n').collect();
@@ -235,6 +232,22 @@ fn emit(input: &str, facts: &LineFacts, options: FormatOptions) -> String {
     if input.ends_with('\n') {
         lines.pop();
     }
+
+    // Preserve the file's line ending instead of silently converting a CRLF
+    // checkout to LF — read from a line the file actually *ends*, not from
+    // whether "\r\n" appears anywhere in it. A `"a\r\nb"` inside a string
+    // literal is content, and letting it decide would rewrite every line of an
+    // LF file. Protected lines are skipped for the same reason, and the last
+    // line only counts when something terminates it.
+    let terminated = if input.ends_with('\n') {
+        lines.len()
+    } else {
+        lines.len().saturating_sub(1)
+    };
+    let eol = (0..terminated)
+        .find(|idx| !facts.protected.get(*idx).copied().unwrap_or(false))
+        .map(|idx| if lines[idx].ends_with('\r') { "\r\n" } else { "\n" })
+        .unwrap_or("\n");
 
     for (idx, raw_line) in lines.iter().enumerate() {
         let raw = raw_line.strip_suffix('\r').unwrap_or(raw_line);

@@ -164,3 +164,18 @@ fn multibyte_source_keeps_byte_exact_content() {
         "fn main() {\n    let s = \"中文字符串 }\";\n    // 注释 {\n    println(s);\n}\n"
     );
 }
+
+/// A CRLF file stays CRLF, and an LF file stays LF even when a string literal
+/// contains the two bytes that spell CRLF.
+///
+/// Deciding by "does `\r\n` appear anywhere" reads content as if it were
+/// structure: one escaped sequence inside a string would rewrite every line
+/// ending in the file, which is the kind of diff nobody can explain.
+#[test]
+fn line_endings_come_from_the_lines_not_the_content() {
+    let crlf = "fn main() {\r\nlet x = 1;\r\n}\r\n";
+    assert_eq!(fmt(crlf), "fn main() {\r\n    let x = 1;\r\n}\r\n");
+
+    let lf_with_crlf_inside_a_string = "let s = \"a\\r\\nb\";\nlet y = 2;\n";
+    assert_eq!(fmt(lf_with_crlf_inside_a_string), "let s = \"a\\r\\nb\";\nlet y = 2;\n");
+}

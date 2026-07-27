@@ -887,13 +887,12 @@ impl LanguageServer for LkLanguageServer {
 
     async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
         let uri = &params.text_document.uri;
-        let options = params.options;
         let content = if let Some(doc) = self.documents.get(uri) {
             doc.content.to_string()
         } else {
             String::new()
         };
-        let formatted = format_lk(&content, &options);
+        let formatted = format_lk(&content);
         if formatted == content {
             return Ok(Some(vec![]));
         }

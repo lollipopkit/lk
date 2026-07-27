@@ -79,7 +79,7 @@ fn explicit_file_argument_ignores_the_extension_filter() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("script.lk.txt");
     fs::write(&path, UNFORMATTED).unwrap();
-    run_fmt(&[path.clone()], false).expect("fmt");
+    run_fmt(std::slice::from_ref(&path), false).expect("fmt");
     assert_eq!(fs::read_to_string(&path).unwrap(), FORMATTED);
 }
 
