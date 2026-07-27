@@ -447,6 +447,39 @@ pub fn lower_bundled(
         (globals, functions, failures)
     };
     let (mut globals, mut functions, failures) = final_pass(&mut sig, &reachable, &funcs);
+    // A retriable discovery made *here* had nowhere to go.
+    //
+    // The fixpoint records them and runs again; `refine_signatures` then runs
+    // once, after convergence, and the final pass lowers against the refined
+    // signatures. A function that lowered cleanly every fixpoint pass can fail
+    // in that final one — refinement changed the types it sees — and its
+    // discovery was simply dropped. `error_unwrap.lk` is exactly that: its
+    // entry succeeds in the only fixpoint pass it needs and then reports a
+    // heterogeneous phi the retry would have fixed, from a pass with no retry
+    // after it.
+    //
+    // So take them and go round once. Once, not to convergence: the second
+    // final pass sees the same refined signatures as the first, so a discovery
+    // it makes is one the first pass could not have made either — and a loop
+    // here would be a loop over a fixed point.
+    let (mut globals, mut functions, failures) = {
+        let retriable: Vec<(usize, usize, usize)> = failures
+            .iter()
+            .filter_map(|(fi, err)| match err {
+                Unsupported::DynLoopPhi { block, slot } => Some((*fi, *block, *slot)),
+                _ => None,
+            })
+            .collect();
+        if retriable.is_empty() {
+            (globals, functions, failures)
+        } else {
+            for (fi, block, slot) in retriable {
+                sig.dyn_loop_phis.insert((fi as u32, block, slot));
+            }
+            refine_signatures(&mut sig, &mut funcs, &mut reachable);
+            final_pass(&mut sig, &reachable, &funcs)
+        }
+    };
     // A bundled module exports more than any one importer uses, and those
     // extras are rooted speculatively — their names are reached by a lookup
     // the bytecode scan cannot follow, so there is no telling in advance which
