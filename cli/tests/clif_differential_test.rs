@@ -382,6 +382,21 @@ fn try_region_differential() {
                 "not_raised",
                 "fn fine() { return 7; }\nlet b = 0;\ntry { fine(); } catch e { b = 1; }\nreturn b;\n",
             ),
+            // The body reads the enclosing function's locals. They are its
+            // *parameters* once it is outlined, discovered by lowering it and
+            // seeing which registers had no definition inside — so an argument
+            // arriving in the wrong order or under the wrong number shows up
+            // here as the wrong branch being taken.
+            new(
+                "reads_outer_locals",
+                "fn checked(a: Int, b: Int) -> Int {\n  if (b == 0) { error(\"zero\"); }\n  return a - b;\n}\n\
+                 let x = 10;\nlet y = 0;\nlet out = 0;\ntry { checked(x, y); } catch e { out = 1; }\nreturn out;\n",
+            ),
+            new(
+                "reads_outer_locals_no_raise",
+                "fn checked(a: Int, b: Int) -> Int {\n  if (b == 0) { error(\"zero\"); }\n  return a - b;\n}\n\
+                 let x = 10;\nlet y = 3;\nlet out = 0;\ntry { checked(x, y); } catch e { out = 1; }\nreturn out;\n",
+            ),
             // A raise from two frames down still lands in the nearest handler:
             // the trampoline's frame is what `longjmp` targets, not the body's.
             new(

@@ -139,6 +139,7 @@ pub fn lower_bundled(
         ret_types: vec![Ty::I64; n],
         ret_known: vec![false; n],
         try_bodies: std::collections::HashMap::new(),
+        try_body_params: std::collections::HashMap::new(),
         conflict: false,
         dyn_loop_phis: std::collections::HashSet::new(),
         dyn_rets: std::collections::HashSet::new(),
@@ -204,6 +205,7 @@ pub fn lower_bundled(
             sig.ret_types.push(Ty::Nil);
             sig.ret_known.push(true);
             sig.try_bodies.insert((fi as u32, region.begin_pc), body_index);
+            discover_try_params(&mut funcs, body_index, module, &mut sig);
         }
     }
 
@@ -562,4 +564,55 @@ fn referenced_functions(functions: &[MirFunction]) -> std::collections::HashSet<
         }
     }
     referenced
+}
+
+/// Finds the registers a try body reads from outside itself, by lowering it.
+///
+/// Each attempt either succeeds or names one register that was read with no
+/// definition; that register is an input, so it is added and the body lowered
+/// again. The loop is bounded by the register file, and it converges because
+/// every iteration adds a register that was previously missing.
+///
+/// Discovery rather than a table: knowing which operands each opcode reads
+/// means writing one entry per opcode, and one wrong entry is a body that reads
+/// a stale value — a wrong answer rather than a rejection. The SSA already
+/// knows; this asks it.
+fn discover_try_params(
+    funcs: &mut [FunctionData],
+    body_index: u32,
+    module: &lk_core::vm::ModuleData,
+    sig: &mut SigInfer,
+) {
+    // The trampoline's arity switch caps this; past it the region rejects.
+    const MAX_PARAMS: usize = 8;
+    let mut params: Vec<u8> = Vec::new();
+    for _ in 0..=MAX_PARAMS {
+        let mut scratch = Vec::new();
+        let attempt = lower_function(
+            &funcs[body_index as usize],
+            funcs,
+            body_index,
+            module.entry,
+            false,
+            &mut scratch,
+            &module.globals,
+            sig,
+        );
+        match attempt {
+            Err(Unsupported::UndefinedOperand { reg, .. }) if reg < 256 && !params.contains(&(reg as u8)) => {
+                params.push(reg as u8);
+                params.sort_unstable();
+                // `param_count` stays 0. It is what binds registers 0..n-1 as
+                // parameters, and these parameters are *not* those registers —
+                // they are whichever ones the body reads from outside. Setting
+                // both is how the body ended up with each input twice: once
+                // under its own number and once under the low numbers.
+                sig.try_body_params.insert(body_index, params.clone());
+            }
+            // Anything else — success, or a failure for another reason — ends
+            // the search. A body that cannot lower for its own reasons is the
+            // parent's rejection to report, with its own message.
+            _ => return,
+        }
+    }
 }

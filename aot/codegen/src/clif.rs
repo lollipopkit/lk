@@ -848,7 +848,7 @@ impl Lower {
                 };
                 self.set1(*dst, v);
             }
-            Inst::TryRegionCall { dst, func } => {
+            Inst::TryRegionCall { dst, func, args } => {
                 // `lkrt_rt_try_region(body)`: the trampoline pushes a handler,
                 // `setjmp`s in its own C frame, calls the body, and answers 1
                 // for "returned" / 0 for "raised". The body's address is taken
@@ -860,9 +860,20 @@ impl Lower {
                     .ok_or(ClifError::Unsupported("try body is not a declared function"))?;
                 let reference = mctx.module.declare_func_in_func(callee, b.func);
                 let body_addr = b.ins().func_addr(types::I64, reference);
-                let tramp = mctx.raw_func("lkrt_rt_try_region", &[types::I64], &[types::I64])?;
+                // The inputs travel as machine words in a stack buffer, which
+                // is what the trampoline's arity switch reads them back out of.
+                let slot_bytes = (args.len().max(1) * 8) as u32;
+                let args_slot =
+                    b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, slot_bytes, 3));
+                for (i, arg) in args.iter().enumerate() {
+                    let word = self.v(*arg)?;
+                    b.ins().stack_store(word, args_slot, (i * 8) as i32);
+                }
+                let argv = b.ins().stack_addr(types::I64, args_slot, 0);
+                let argc = b.ins().iconst(types::I64, args.len() as i64);
+                let tramp = mctx.raw_func("lkrt_rt_try_region", &[types::I64; 3], &[types::I64])?;
                 let tramp_ref = mctx.module.declare_func_in_func(tramp, b.func);
-                let call = b.ins().call(tramp_ref, &[body_addr]);
+                let call = b.ins().call(tramp_ref, &[body_addr, argc, argv]);
                 let ok = *b
                     .inst_results(call)
                     .first()

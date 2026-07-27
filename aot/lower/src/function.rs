@@ -219,6 +219,17 @@ pub(crate) fn lower_function(
         ssa.current_def[0][r] = Some((pv, pty));
         fn_params.push((pv, pty));
     }
+    // A try body's inputs: registers of the *enclosing* function, bound here as
+    // ordinary trailing parameters. They are all `I64` because the trampoline
+    // passes machine words; a body that needs something wider rejects when it
+    // reads it, which is the honest failure.
+    let try_params: Vec<u8> = sig.try_body_params.get(&func_index).cloned().unwrap_or_default();
+    for &reg in &try_params {
+        let pv = ssa.new_val();
+        ssa.current_def[0][reg as usize] = Some((pv, Ty::I64));
+        fn_params.push((pv, Ty::I64));
+    }
+
     // An erased *capturing* closure argument: its environment (resolved at
     // the call site) arrives as hidden trailing parameters, one block per
     // erased parameter in parameter order. The register holds a Closure ref
@@ -367,10 +378,19 @@ pub(crate) fn lower_function(
                 // undefined on the other one, and SSA has to agree about a
                 // register's definition at a join whether or not the path that
                 // defined it was taken.
+                // The body's inputs, read here where the enclosing function's
+                // values are still current. All `I64`: the trampoline passes
+                // machine words, and a body wanting something wider rejects
+                // when it reads it.
+                let mut call_args = Vec::new();
+                for &reg in sig.try_body_params.get(&body).into_iter().flatten() {
+                    call_args.push(ssa.read_typed(reg, bi, Ty::I64, start)?);
+                }
                 let ok = ssa.new_val();
                 insts.push(Inst::TryRegionCall {
                     dst: ok,
                     func: FuncId(body),
+                    args: call_args,
                 });
                 let caught = ssa.new_val();
                 insts.push(Inst::Call {

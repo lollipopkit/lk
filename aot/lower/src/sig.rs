@@ -26,6 +26,14 @@ pub(crate) struct SigInfer {
     /// bodies are ordinary entries in the function table from then on, lowered
     /// by the same loop as everything else.
     pub(crate) try_bodies: std::collections::HashMap<(u32, usize), u32>,
+    /// A try body's parameters, as *registers of the enclosing function*.
+    ///
+    /// Discovered rather than declared: the body is lowered, and a read with no
+    /// definition inside it names the register that has to come in from
+    /// outside. Repeating that until it lowers gives exactly the set it needs —
+    /// no table of which operand each opcode reads, which is the kind of table
+    /// that is wrong in one entry and produces a wrong answer.
+    pub(crate) try_body_params: std::collections::HashMap<u32, Vec<u8>>,
     /// Empty-`[]` literals whose guessed element type a consumer
     /// contradicted (`(function, pc)`): the next fixpoint pass materializes
     /// them as Dyn lists.

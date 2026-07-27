@@ -632,7 +632,8 @@ fn uses_mut(inst: &mut Inst) -> Vec<&mut ValueId> {
     match inst {
         Inst::Const { .. } | Inst::GlobalGet { .. } => vec![],
         Inst::CallExtern { args, .. } => args.iter_mut().collect(),
-        Inst::SymbolAddr { .. } | Inst::TryRegionCall { .. } => vec![],
+        Inst::SymbolAddr { .. } => vec![],
+        Inst::TryRegionCall { args, .. } => args.iter_mut().collect(),
         Inst::CallIndirect { callee, args, .. } => {
             let mut values: Vec<&mut ValueId> = vec![callee];
             values.extend(args.iter_mut());
