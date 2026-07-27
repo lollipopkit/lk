@@ -1,0 +1,456 @@
+// An Intel 82540EM gigabit controller, which is real hardware.
+//
+// The `edu` device next door proves a driver can find a device, reach its
+// registers, and make it touch memory. It proves it against a device invented to
+// make that easy: four registers, one buffer, and a DMA engine that does one
+// transfer at a time when told to.
+//
+// This is what the same four things look like on a card people actually shipped,
+// and the difference is not size. A NIC is not commanded, it is *fed*: the
+// driver and the device share two rings of descriptors in memory, each side
+// owning a moving part of the ring, and the whole protocol is which index each
+// one may advance and when. Nothing is ever waited on by writing a start bit —
+// the card is running continuously, and a driver that thinks in transfers
+// instead of rings will produce something that works once.
+//
+// Three things here have no counterpart in the educational device, and each is a
+// thing the driver layer has to be able to express:
+//
+//   * A ring of descriptors in physical memory, where the *device* writes back
+//     into structures the driver laid out, and ownership is a bit in each entry.
+//   * The card's own MAC address, which is not in a register but in a serial
+//     EEPROM reached through a register — a protocol inside a protocol.
+//   * Link state, which the driver has to ask for and then wait for; a frame
+//     handed to a card whose link is down is accepted and dropped.
+//
+// What is deliberately not here: interrupts. This card raises them and the
+// interrupt path is already proven by `edu.lk`; a NIC driven by polling its own
+// rings is a complete driver, and one that also has to explain interrupt
+// coalescing is a worse illustration, not a better one.
+
+use { pci_find, pci_bar, pci_command_set,
+      PCI_COMMAND_MEMORY, PCI_COMMAND_BUS_MASTER } from "pci";
+
+const E1000_VENDOR = 0x8086;
+const E1000_DEVICE = 0x100e;
+
+// ------------------------------------------------------------------ registers
+
+const REG_CTRL = 0x0000;
+const REG_STATUS = 0x0008;
+const REG_EERD = 0x0014;
+const REG_ICR = 0x00c0;
+const REG_IMC = 0x00d8;
+const REG_RCTL = 0x0100;
+const REG_TCTL = 0x0400;
+const REG_TIPG = 0x0410;
+
+const REG_RDBAL = 0x2800;
+const REG_RDBAH = 0x2804;
+const REG_RDLEN = 0x2808;
+const REG_RDH = 0x2810;
+const REG_RDT = 0x2818;
+
+const REG_TDBAL = 0x3800;
+const REG_TDBAH = 0x3804;
+const REG_TDLEN = 0x3808;
+const REG_TDH = 0x3810;
+const REG_TDT = 0x3818;
+
+// The multicast table: 128 dwords the card indexes by a hash of the destination
+// address. Left zero, but it has to be *written* zero — the card powers on with
+// whatever was there, and a stale table is a card that accepts multicast traffic
+// nobody asked for.
+const REG_MTA = 0x5200;
+const MTA_ENTRIES = 128;
+
+// The card's own address, as the receive filter uses it. Two registers: four
+// bytes and then two, with the valid bit on top.
+const REG_RAL = 0x5400;
+const REG_RAH = 0x5404;
+const RAH_VALID = 0x80000000;
+
+// CTRL: bring the link up, and let the card negotiate speed for itself.
+const CTRL_SLU = 0x00000040;
+const CTRL_ASDE = 0x00000020;
+// STATUS: the link is up. Asked for, not assumed — the card accepts frames on a
+// down link and drops them, which is a driver that works in every way except
+// that nothing arrives.
+const STATUS_LINK_UP = 0x00000002;
+
+// EERD: an EEPROM read is a register write and a poll. The address goes in the
+// high half of the low word, the data comes back in the high word.
+const EERD_START = 0x00000001;
+const EERD_DONE = 0x00000010;
+
+// TCTL: enable, pad short packets, and the two timing constants the datasheet
+// gives for this part. `PSP` matters more than it looks — Ethernet has a 60-byte
+// minimum and an ARP frame is 42, so without it the card transmits a runt that
+// every switch on the path discards.
+const TCTL_EN = 0x00000002;
+const TCTL_PSP = 0x00000008;
+const TCTL_CT = 0x000000f0;     // collision threshold 15, at bit 4
+const TCTL_COLD = 0x00040000;   // collision distance 64, at bit 12
+// Inter-packet gap, as the datasheet's copper values: 10, 8, 6.
+const TIPG_VALUE = 0x0060200a;
+
+// RCTL: enable, accept broadcast, and strip the CRC so a received length is the
+// frame's own length. Unicast and multicast promiscuous as well, because this
+// kernel has no address filter to configure and a driver that silently dropped
+// what it was not expecting would be indistinguishable from one that received
+// nothing.
+const RCTL_EN = 0x00000002;
+const RCTL_UPE = 0x00000008;
+const RCTL_MPE = 0x00000010;
+const RCTL_BAM = 0x00008000;
+const RCTL_SECRC = 0x04000000;
+// Buffer size 2048, which is bits 17:16 = 00. Named as zero on purpose: a
+// constant that is zero still has to appear in the value written, or the next
+// person adds a size and cannot find where the old one was.
+const RCTL_BSIZE_2048 = 0x00000000;
+
+// ---------------------------------------------------------------- descriptors
+
+// Both rings are arrays of 16-byte descriptors. The counts are small and powers
+// of two because the card wraps the index itself and requires the ring length in
+// bytes to be a multiple of 128.
+const DESC_SIZE = 16;
+const TX_COUNT = 8;
+const RX_COUNT = 8;
+const RX_BUFFER_SIZE = 2048;
+
+// Transmit descriptor: address, then length, then the command byte that says
+// what the card should do with it.
+const TX_LENGTH_OFFSET = 8;
+const TX_CMD_OFFSET = 11;
+const TX_STATUS_OFFSET = 12;
+
+const TX_CMD_EOP = 0x01;   // this descriptor ends the packet
+const TX_CMD_IFCS = 0x02;  // insert the frame check sequence
+const TX_CMD_RS = 0x08;    // report status, which is what makes DD appear
+const TX_STATUS_DD = 0x01; // the card is done with this descriptor
+
+// Receive descriptor: address, then the length the card wrote, then its status.
+const RX_LENGTH_OFFSET = 8;
+const RX_STATUS_OFFSET = 12;
+
+const RX_STATUS_DD = 0x01;
+const RX_STATUS_EOP = 0x02;
+
+// ---------------------------------------------------------------- driver state
+
+// Everything the driver remembers, in a block the caller supplies.
+//
+// A block rather than globals, the same as every other table in this kernel:
+// a driver that picks its own address is a driver that collides with the next
+// one, and a driver with globals cannot be instantiated twice for a machine with
+// two cards.
+const STATE_MMIO = 0;
+const STATE_TX_RING = 8;
+const STATE_RX_RING = 16;
+const STATE_TX_TAIL = 24;
+const STATE_RX_HEAD = 32;
+const STATE_RX_BUFFERS = 40;
+const STATE_SIZE = 48;
+
+fn state_get(state: Int, offset: Int) -> Int {
+    let value = unsafe { volatile_read_u64((state + offset) as *mut u64) };
+    return value as Int;
+}
+
+fn state_set(state: Int, offset: Int, value: Int) {
+    unsafe { volatile_write_u64((state + offset) as *mut u64, value as u64); };
+}
+
+// --------------------------------------------------------------------- access
+
+// Registers are 32 bits and volatile, for the same reason the educational
+// device's are: a read is a request to the card, not a load of something already
+// known, and a poll the compiler hoisted is a wait that never ends.
+fn reg_read(mmio: Int, offset: Int) -> Int {
+    let value = unsafe { volatile_read_u32((mmio + offset) as *mut u32) };
+    return value as Int;
+}
+
+fn reg_write(mmio: Int, offset: Int, value: Int) {
+    unsafe { volatile_write_u32((mmio + offset) as *mut u32, value as u32); };
+}
+
+// Descriptor fields. In RAM rather than MMIO, but volatile all the same: the
+// *card* reads and writes these, so they are shared memory with something the
+// compiler cannot see, and the ordering against the tail-register write below is
+// the entire transmit protocol.
+fn desc_u64(address: Int) -> Int {
+    let value = unsafe { volatile_read_u64(address as *mut u64) };
+    return value as Int;
+}
+
+fn desc_set_u64(address: Int, value: Int) {
+    unsafe { volatile_write_u64(address as *mut u64, value as u64); };
+}
+
+fn desc_u16(address: Int) -> Int {
+    let value = unsafe { volatile_read_u16(address as *mut u16) };
+    return value as Int;
+}
+
+fn desc_set_u16(address: Int, value: Int) {
+    unsafe { volatile_write_u16(address as *mut u16, value as u16); };
+}
+
+fn desc_u8(address: Int) -> Int {
+    let value = unsafe { volatile_read_u8(address as *mut u8) };
+    return value as Int;
+}
+
+fn desc_set_u8(address: Int, value: Int) {
+    unsafe { volatile_write_u8(address as *mut u8, value as u8); };
+}
+
+// -------------------------------------------------------------------- finding
+
+fn e1000_find() -> Int {
+    return pci_find(E1000_VENDOR, E1000_DEVICE);
+}
+
+fn e1000_open(bdf: Int) -> Int {
+    // Bus master before anything: every ring access the card makes is a bus
+    // cycle it issues itself, so without this the rings are simply never read.
+    pci_command_set(bdf, PCI_COMMAND_MEMORY | PCI_COMMAND_BUS_MASTER);
+    return pci_bar(bdf, 0);
+}
+
+// --------------------------------------------------------------------- EEPROM
+
+// One 16-bit word from the card's serial EEPROM.
+//
+// A protocol inside a protocol: the register is a doorway, not the data. Write
+// the word address with a start bit, poll a done bit, take the value out of the
+// high half. Returns -1 if the card never answers, which is a real outcome —
+// some variants of this part have no EEPROM at all and the driver then has to
+// find the address elsewhere.
+fn eeprom_read(mmio: Int, word: Int) -> Int {
+    reg_write(mmio, REG_EERD, EERD_START + word * 0x100);
+    for _attempt in 0..100000 {
+        let value = reg_read(mmio, REG_EERD);
+        if ((value & EERD_DONE) != 0) {
+            return ((value / 0x10000) as Int) & 0xffff;
+        }
+    }
+    return 0 - 1;
+}
+
+// The card's MAC address, six bytes, written into `out`.
+//
+// Three EEPROM words, little-endian within each. Returns false if the EEPROM
+// does not answer.
+fn e1000_mac(mmio: Int, out: Int) -> Bool {
+    for index in 0..3 {
+        let word = eeprom_read(mmio, index);
+        if (word < 0) {
+            return false;
+        }
+        desc_set_u8(out + index * 2, word & 0xff);
+        desc_set_u8(out + index * 2 + 1, ((word / 0x100) as Int) & 0xff);
+    }
+    return true;
+}
+
+// ------------------------------------------------------------------ bring-up
+
+// Prepares the card and both rings.
+//
+// `state` is a block of `STATE_SIZE` bytes; `tx_ring`, `rx_ring` and `buffers`
+// are physical addresses the caller allocated. Physical, because the card's own
+// bus cycles land in that address space — the identity map on this machine makes
+// them the same number as the virtual ones, which is a coincidence and not a
+// rule.
+//
+// `buffers` must be `RX_COUNT * RX_BUFFER_SIZE` bytes of contiguous memory.
+fn e1000_init(state: Int, mmio: Int, tx_ring: Int, rx_ring: Int, buffers: Int) {
+    state_set(state, STATE_MMIO, mmio);
+    state_set(state, STATE_TX_RING, tx_ring);
+    state_set(state, STATE_RX_RING, rx_ring);
+    state_set(state, STATE_TX_TAIL, 0);
+    state_set(state, STATE_RX_HEAD, 0);
+    state_set(state, STATE_RX_BUFFERS, buffers);
+
+    // Interrupts off, and the pending cause register read to clear it. This
+    // driver polls; a card left able to interrupt would raise on a line with no
+    // gate behind it.
+    reg_write(mmio, REG_IMC, 0xffffffff);
+    reg_read(mmio, REG_ICR);
+
+    // Ask for the link, and let the card work out the speed. Without this the
+    // card comes up with its link down and transmits into nothing.
+    reg_write(mmio, REG_CTRL, reg_read(mmio, REG_CTRL) | CTRL_SLU | CTRL_ASDE);
+
+    // The multicast table, explicitly zero. See the constant.
+    for index in 0..MTA_ENTRIES {
+        reg_write(mmio, REG_MTA + index * 4, 0);
+    }
+
+    setup_transmit(state, mmio, tx_ring);
+    setup_receive(state, mmio, rx_ring, buffers);
+}
+
+// Installs the card's own address into the receive filter.
+//
+// Separate from `init` because it needs the address, and where the address comes
+// from is not the ring setup's business: on this part it is in the EEPROM, on
+// others the firmware has already left it in these very registers.
+fn e1000_set_mac(mmio: Int, mac: Int) {
+    let low = desc_u8(mac) + desc_u8(mac + 1) * 0x100
+        + desc_u8(mac + 2) * 0x10000 + desc_u8(mac + 3) * 0x1000000;
+    let high = desc_u8(mac + 4) + desc_u8(mac + 5) * 0x100;
+    reg_write(mmio, REG_RAL, low);
+    // The valid bit, without which the filter ignores the entry and the card
+    // receives nothing addressed to it — visible only as silence.
+    reg_write(mmio, REG_RAH, high | RAH_VALID);
+}
+
+fn setup_transmit(state: Int, mmio: Int, ring: Int) {
+    for index in 0..TX_COUNT {
+        let descriptor = ring + index * DESC_SIZE;
+        desc_set_u64(descriptor, 0);
+        desc_set_u64(descriptor + 8, 0);
+    }
+    reg_write(mmio, REG_TDBAL, ring & 0xffffffff);
+    reg_write(mmio, REG_TDBAH, ((ring / 0x100000000) as Int) & 0xffffffff);
+    reg_write(mmio, REG_TDLEN, TX_COUNT * DESC_SIZE);
+    // Head and tail both zero: the ring is empty, and the card advances head as
+    // it consumes what the driver puts between them.
+    reg_write(mmio, REG_TDH, 0);
+    reg_write(mmio, REG_TDT, 0);
+    reg_write(mmio, REG_TIPG, TIPG_VALUE);
+    reg_write(mmio, REG_TCTL, TCTL_EN | TCTL_PSP | TCTL_CT | TCTL_COLD);
+}
+
+fn setup_receive(state: Int, mmio: Int, ring: Int, buffers: Int) {
+    for index in 0..RX_COUNT {
+        let descriptor = ring + index * DESC_SIZE;
+        desc_set_u64(descriptor, buffers + index * RX_BUFFER_SIZE);
+        desc_set_u64(descriptor + 8, 0);
+    }
+    reg_write(mmio, REG_RDBAL, ring & 0xffffffff);
+    reg_write(mmio, REG_RDBAH, ((ring / 0x100000000) as Int) & 0xffffffff);
+    reg_write(mmio, REG_RDLEN, RX_COUNT * DESC_SIZE);
+    reg_write(mmio, REG_RDH, 0);
+    // The tail is the last descriptor the *driver* has given the card, so an
+    // empty-looking ring is in fact a full one: every descriptor from head to
+    // tail is the card's to fill. Setting it to `RX_COUNT - 1` hands over all
+    // but one, which is the most a ring of this shape can hold — head meeting
+    // tail is how "full" is spelled, so one slot always stays back.
+    reg_write(mmio, REG_RDT, RX_COUNT - 1);
+    reg_write(mmio, REG_RCTL, RCTL_EN | RCTL_UPE | RCTL_MPE | RCTL_BAM
+        | RCTL_SECRC | RCTL_BSIZE_2048);
+}
+
+// Whether the card has a link.
+//
+// Polled with a bound rather than assumed: auto-negotiation takes time on real
+// hardware, and a frame handed to a card whose link is down is accepted and
+// discarded — a driver that works in every visible way while nothing arrives.
+fn e1000_link_up(mmio: Int) -> Bool {
+    for _attempt in 0..1000000 {
+        if ((reg_read(mmio, REG_STATUS) & STATUS_LINK_UP) != 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// ------------------------------------------------------------------- transmit
+
+// Hands one frame to the card and waits for it to be taken.
+//
+// The ordering is the protocol, and it is the reverse of the educational
+// device's: there the driver wrote a start bit last, and here it writes an
+// *index* last. Everything about the descriptor has to be in memory before the
+// tail moves, because moving the tail is what tells the card the descriptor
+// exists — a card that reads a descriptor the compiler had not finished writing
+// transmits whatever was there.
+fn e1000_transmit(state: Int, frame: Int, length: Int) -> Bool {
+    let mmio = state_get(state, STATE_MMIO);
+    let ring = state_get(state, STATE_TX_RING);
+    let tail = state_get(state, STATE_TX_TAIL);
+    let descriptor = ring + tail * DESC_SIZE;
+
+    desc_set_u64(descriptor, frame);
+    desc_set_u16(descriptor + TX_LENGTH_OFFSET, length);
+    desc_set_u8(descriptor + TX_CMD_OFFSET, TX_CMD_EOP | TX_CMD_IFCS | TX_CMD_RS);
+    // The status byte is cleared by the driver and set by the card. Clearing it
+    // here rather than trusting it to be clear is what makes the wait below mean
+    // "this transmission finished" instead of "some earlier one did".
+    desc_set_u8(descriptor + TX_STATUS_OFFSET, 0);
+
+    let next = (tail + 1) % TX_COUNT;
+    state_set(state, STATE_TX_TAIL, next);
+    reg_write(mmio, REG_TDT, next);
+
+    for _attempt in 0..1000000 {
+        if ((desc_u8(descriptor + TX_STATUS_OFFSET) & TX_STATUS_DD) != 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// -------------------------------------------------------------------- receive
+
+// Takes one frame if the card has left one, copying it into `out`.
+//
+// Returns its length, 0 if nothing has arrived, and -1 for a frame too long for
+// the buffer offered. Copied out rather than handed over in place, because the
+// descriptor has to go back to the card immediately: a ring the driver holds
+// entries out of is a ring that fills, and a full ring is a card dropping
+// everything with nowhere to say so.
+fn e1000_receive(state: Int, out: Int, capacity: Int) -> Int {
+    let mmio = state_get(state, STATE_MMIO);
+    let ring = state_get(state, STATE_RX_RING);
+    let head = state_get(state, STATE_RX_HEAD);
+    let descriptor = ring + head * DESC_SIZE;
+
+    let status = desc_u8(descriptor + RX_STATUS_OFFSET);
+    if ((status & RX_STATUS_DD) == 0) {
+        return 0;
+    }
+    let length = desc_u16(descriptor + RX_LENGTH_OFFSET);
+    let source = state_get(state, STATE_RX_BUFFERS) + head * RX_BUFFER_SIZE;
+
+    let taken = length;
+    if (taken > capacity) {
+        taken = 0 - 1;
+    } else {
+        for index in 0..taken {
+            desc_set_u8(out + index, desc_u8(source + index));
+        }
+    }
+
+    // The descriptor goes back: status cleared, then the tail advanced to it.
+    // In that order — the tail write is what gives the entry to the card, and an
+    // entry given back with its status still set is one the driver will read as
+    // a frame that never arrived.
+    desc_set_u8(descriptor + RX_STATUS_OFFSET, 0);
+    state_set(state, STATE_RX_HEAD, (head + 1) % RX_COUNT);
+    reg_write(mmio, REG_RDT, head);
+
+    return taken;
+}
+
+// Waits for a frame, bounded.
+//
+// A bound rather than a loop, and the caller's number rather than one here: how
+// long it is reasonable to wait is a property of what was sent, and a driver
+// that decided it for the caller would be deciding whether a reply is late or
+// absent.
+fn e1000_receive_within(state: Int, out: Int, capacity: Int, attempts: Int) -> Int {
+    for _attempt in 0..attempts {
+        let length = e1000_receive(state, out, capacity);
+        if (length != 0) {
+            return length;
+        }
+    }
+    return 0;
+}
+

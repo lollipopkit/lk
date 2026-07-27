@@ -115,16 +115,19 @@ def main():
         # A bus with only the device under test on it would mean enumeration
         # found one thing and stopped. QEMU's default machine has a host bridge
         # and an ISA bridge before anything is attached.
-        counted = re.search(r"^(\d+) devices$", transcript, re.M)
+        # Unanchored: the spinner task writes to the same serial line from a
+        # timer interrupt, so a shell line can arrive with another task's byte
+        # stuck to either end of it.
+        counted = re.search(r"(\d+) devices", transcript)
         if not counted:
             failures.append("`pci` did not report how many devices it found")
         elif int(counted.group(1)) < 3:
             failures.append(f"`pci` found only {counted.group(1)} devices")
 
         # (2)(3)(4)(5) The driver reports which step failed, so this can too.
-        completed = re.findall(r"^edu: ok .*$", transcript, re.M)
+        completed = re.findall(r"edu: ok irq \d+ bar [0-9a-f]{8}", transcript)
         if len(completed) < 2:
-            step = re.search(r"^edu: (?!ok).*$", transcript, re.M)
+            step = re.search(r"edu: (?!ok)\S+", transcript)
             failures.append(
                 f"`edu` did not complete: {step.group(0)!r}" if step
                 else f"`edu` completed {len(completed)} of 2 runs"
@@ -137,7 +140,7 @@ def main():
         # wait does — is enough. Checked here because the machine goes on
         # running afterwards and the transcript still looks plausible.
         if "exception #" in transcript:
-            fault = re.search(r"^!! exception .*$", transcript, re.M)
+            fault = re.search(r"!! exception .*", transcript)
             failures.append(f"the machine faulted: {fault.group(0)!r}")
 
         if failures:

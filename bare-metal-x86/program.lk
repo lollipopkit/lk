@@ -19,6 +19,11 @@ use { pci_find_display, pci_devices, pci_vendor, pci_device_id, pci_class,
 use { edu_find, edu_open, edu_identify, edu_liveness, edu_factorial, edu_dma,
       edu_irq_line, edu_bar_size, edu_raise, edu_acknowledge, edu_irq_status,
       EDU_IDENT, EDU_IRQ_TEST } from "drivers/edu";
+use { e1000_find, e1000_open, e1000_init, e1000_mac, e1000_set_mac,
+      e1000_link_up, e1000_transmit, e1000_receive_within,
+      TX_COUNT, RX_COUNT, RX_BUFFER_SIZE, DESC_SIZE, STATE_SIZE } from "drivers/e1000";
+use { arp_build_request, arp_match_reply, frame_set_byte as net_set_byte,
+      frame_byte as net_byte_at, MAC_SIZE, IP_SIZE } from "drivers/arp";
 use { vbe_set_mode_virtual, vbe_set_pan } from "drivers/vbe";
 use { get_pixel, put_pixel, fill_rect, copy_rows } from "drivers/framebuffer";
 use { draw_glyph, draw_cells, clear, scroll_up, draw_cursor, CELL_WIDTH, CELL_HEIGHT } from "drivers/text";
@@ -832,6 +837,152 @@ fn report_memory(base: Int) {
 // medium — a checksum is equally consistent with a bug that reads the same
 // wrong thing every time. Unprintable bytes become '.', the same convention a
 // hex dump uses.
+// The network card, made to ask a question and hear the answer.
+//
+// This is the same four things `edu` does, on hardware people shipped, and the
+// difference is not size. A NIC is not commanded but *fed*: two rings of
+// descriptors shared with the card, each side owning a moving index, and nothing
+// ever started by writing a start bit. A driver that thinks in transfers instead
+// of rings produces something that works once.
+//
+// What it proves that a transmit alone could not: an ARP reply comes back only
+// if the frame that left was well-formed enough for something on the segment to
+// answer it, and only if the receive ring, the address filter and the card's own
+// MAC are all right. One frame out, one frame back, and every field of the
+// answer checked — see `arp_match_reply` for what each check rules out.
+fn report_net(base: Int) {
+    let bdf = e1000_find();
+    if (bdf < 0) {
+        // "net: absent"
+        emit(base, [110, 101, 116, 58, 32, 97, 98, 115, 101, 110, 116]);
+        return;
+    }
+    let mmio = e1000_open(bdf);
+    if (mmio == 0) {
+        // "net: no bar"
+        emit(base, [110, 101, 116, 58, 32, 110, 111, 32, 98, 97, 114]);
+        return;
+    }
+
+    // One page for the two rings and the driver's state, four for the receive
+    // buffers. Pages rather than the heap because the card reads them by
+    // physical address: a heap block is fine on this machine, where the identity
+    // map makes the two the same, and would stop being fine the moment it did
+    // not — and a driver that quietly depended on that would be one nobody could
+    // move.
+    let scratch = page_alloc(SHARED_PAGES);
+    if (scratch == 0) {
+        // "net: no memory"
+        emit(base, [110, 101, 116, 58, 32, 110, 111, 32, 109, 101, 109, 111, 114, 121]);
+        return;
+    }
+    let buffers = alloc_contiguous(RX_COUNT * RX_BUFFER_SIZE);
+    if (buffers == 0) {
+        // "net: no memory"
+        emit(base, [110, 101, 116, 58, 32, 110, 111, 32, 109, 101, 109, 111, 114, 121]);
+        return;
+    }
+
+    let tx_ring = scratch;
+    let rx_ring = scratch + TX_COUNT * DESC_SIZE;
+    let state = rx_ring + RX_COUNT * DESC_SIZE;
+    let mac = state + STATE_SIZE;
+    let frame = mac + 64;
+    let reply = frame + 256;
+    let answer = reply + 256;
+
+    if (!e1000_mac(mmio, mac)) {
+        // "net: no eeprom"
+        emit(base, [110, 101, 116, 58, 32, 110, 111, 32, 101, 101, 112, 114, 111, 109]);
+        return;
+    }
+    e1000_init(state, mmio, tx_ring, rx_ring, buffers);
+    e1000_set_mac(mmio, mac);
+
+    if (!e1000_link_up(mmio)) {
+        // "net: no link"
+        emit(base, [110, 101, 116, 58, 32, 110, 111, 32, 108, 105, 110, 107]);
+        return;
+    }
+
+    // The addresses an emulated user-mode network hands out: the guest is .15
+    // and the gateway is .2. Written as bytes because that is what a packet
+    // holds — see `arp.lk` on why an IP is an address here and not a number.
+    let sender_ip = answer + MAC_SIZE;
+    let target_ip = sender_ip + IP_SIZE;
+    write_ipv4(sender_ip, 10, 0, 2, 15);
+    write_ipv4(target_ip, 10, 0, 2, 2);
+
+    let length = arp_build_request(frame, mac, sender_ip, target_ip);
+    if (!e1000_transmit(state, frame, length)) {
+        // "net: tx"
+        emit(base, [110, 101, 116, 58, 32, 116, 120]);
+        return;
+    }
+
+    // Several frames may arrive before the one being waited for — the segment
+    // carries whatever else the host is doing — so this takes them until one
+    // matches or the budget runs out.
+    //
+    // The budget is the *whole* wait, not a wait per frame. The first version
+    // gave up the moment a polling window came back empty, which made the loop
+    // around it decorative: a reply that had not arrived within the first
+    // window was reported as absent. An empty window means "not yet", and only
+    // the exhausted budget means "not coming".
+    for _attempt in 0..200 {
+        let received = e1000_receive_within(state, reply, 256, 100000);
+        if (received > 0 && arp_match_reply(reply, received, mac, target_ip, answer)) {
+            // "net: ok " + our MAC + " -> " + the gateway's
+            emit(base, [110, 101, 116, 58, 32, 111, 107, 32]
+                .chain(mac_text(mac))
+                .chain([32, 45, 62, 32])
+                .chain(mac_text(answer)));
+            return;
+        }
+    }
+    // "net: no reply"
+    emit(base, [110, 101, 116, 58, 32, 110, 111, 32, 114, 101, 112, 108, 121]);
+}
+
+fn write_ipv4(address: Int, a: Int, b: Int, c: Int, d: Int) {
+    net_set_byte(address, a);
+    net_set_byte(address + 1, b);
+    net_set_byte(address + 2, c);
+    net_set_byte(address + 3, d);
+}
+
+// A MAC as `aabbccddeeff`. Hex without separators: the six bytes are one
+// identifier, and the colons a reader expects are a convention of `ip link`
+// rather than anything the wire has.
+fn mac_text(mac: Int) -> List<Int> {
+    let out = [0];
+    for index in 0..MAC_SIZE {
+        out = out.chain(hex(net_byte_at(mac + index)).slice(6, 8));
+    }
+    return out.slice(1, out.len());
+}
+
+// A run of pages, contiguous.
+//
+// The allocator hands out one page at a time and happens to hand them out in
+// order, so this asks for as many as it needs and *checks* — the card is given
+// one address and a length, and a run that turned out not to be contiguous would
+// be the card writing frames into whatever was between.
+fn alloc_contiguous(bytes: Int) -> Int {
+    let pages = ((bytes + PAGE_SIZE - 1) / PAGE_SIZE) as Int;
+    let base = page_alloc(SHARED_PAGES);
+    if (base == 0) {
+        return 0;
+    }
+    for index in 1..pages {
+        let page = page_alloc(SHARED_PAGES);
+        if (page != base + index * PAGE_SIZE) {
+            return 0;
+        }
+    }
+    return base;
+}
+
 // Every device on the bus, one line each.
 //
 // A kernel that can say what is plugged into the machine is a kernel that found
@@ -1430,6 +1581,10 @@ fn run_command(base: Int) -> Int {
     }
     if (line_starts_with([101, 100, 117])) {               // "edu"
         report_edu(base);
+        return 1;
+    }
+    if (line_starts_with([110, 101, 116])) {               // "net"
+        report_net(base);
         return 1;
     }
     if (line_starts_with([101, 120, 105, 116])) {          // "exit"
