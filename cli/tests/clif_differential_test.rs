@@ -313,6 +313,47 @@ fn try_catch_differential() {
     run_differential(
         "try_catch",
         &[
+            // The shapes that used to reject, one per fix. Each lowers now, so
+            // what these check is the part lowering cannot: that the answer is
+            // the VM's. Two of the answers tried along the way *compiled* and
+            // computed something else — see `aot/lower/src/try_region.rs`.
+            //
+            // A container the body mutates through a handle it shares with the
+            // parent. It needs no cell: the mutation is already visible. Giving
+            // it one — which reading `ListPush a=log` as a write to `log` did —
+            // sent it round `dyn.from_list` / `dyn.as_list`, which is what lost
+            // the push.
+            new(
+                "body_mutates_outer_list",
+                "let log = [1];\ntry {\n  log.push(2);\n  log.push(3);\n} catch e {\n  log.push(9);\n}\nreturn log.len();\n",
+            ),
+            // The same, with a raise partway: the pushes before it must be
+            // visible, and the handler's must land on the same list.
+            new(
+                "body_mutates_then_raises",
+                "fn boom() { error(\"x\"); return 0; }\nlet log = [1];\ntry {\n  log.push(2);\n  boom();\n  log.push(3);\n} catch e {\n  log.push(9);\n}\nreturn log.len();\n",
+            ),
+            // A container the body only *reads*. It travels in as a parameter,
+            // which needs the trampoline's argument buffer to carry a handle —
+            // a pointer is a machine word, and declaring every input `I64`
+            // rejected this on its first instruction.
+            new(
+                "body_reads_outer_list",
+                "let xs = [4, 5, 6];\nlet n = 0;\ntry {\n  n = xs.len();\n} catch e {\n  n = -1;\n}\nreturn n;\n",
+            ),
+            // A value that comes back out of its cell already boxed: nothing to
+            // unbox, and nothing to reinterpret.
+            new(
+                "body_assigns_dyn_then_raises",
+                "fn boom() { error(\"x\"); return 0; }\nfn pick(f) { if (f) { return 1; } return \"s\"; }\nlet v = pick(true);\ntry {\n  v = pick(false);\n  boom();\n} catch e {\n  v = pick(true);\n}\nreturn typeof(v);\n",
+            ),
+            // Two regions in one function, the second's body writing a register
+            // the first's call window used. The parent's own writes and another
+            // region's body writes are not the same thing.
+            new(
+                "two_regions_sharing_a_temporary",
+                "fn add(a: Int, b: Int) -> Int { return a + b; }\nlet ok = 0;\ntry {\n  ok = add(2, 3);\n} catch e {\n  ok = -1;\n}\nlet mid = ok;\ntry {\n  ok = add(mid, 1);\n} catch e {\n  ok = -2;\n}\nreturn ok;\n",
+            ),
             // A raise crossing the protected region: the success path runs the
             // body, the failure path binds the raised value.
             new(
