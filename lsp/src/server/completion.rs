@@ -18,12 +18,22 @@ impl LkLanguageServer {
         let content = doc.content.to_string();
         let cursor_char = position_to_char_idx(&doc.content, position);
         let base_dir = uri.to_file_path().ok().and_then(|mut path| path.pop().then_some(path));
+        // From the document-wide check the analyzer already ran and cached. A
+        // half-typed line will not parse, and then this is empty and the engine
+        // falls back to reading token shapes.
+        let known_types = self
+            .analyzer
+            .lock()
+            .ok()
+            .map(|mut analyzer| analyzer.binding_types(&content))
+            .unwrap_or_default();
         Some(completion_response_for_source(
             &self.completion_engine,
             &content,
             cursor_char,
             completion_trigger_from_lsp(context),
             base_dir.as_deref(),
+            Some(&known_types),
         ))
     }
 }
@@ -34,6 +44,7 @@ pub(crate) fn completion_response_for_source(
     cursor_char: usize,
     trigger: CompletionTrigger,
     base_dir: Option<&std::path::Path>,
+    known_types: Option<&std::collections::HashMap<String, lk_core::val::Type>>,
 ) -> CompletionResponse {
     let cursor = char_to_byte_idx(content, cursor_char);
     let result = engine.complete_with_metadata(CompletionRequest {
@@ -43,6 +54,7 @@ pub(crate) fn completion_response_for_source(
         trigger,
         session_source: None,
         base_dir,
+        known_types,
     });
     let items = result
         .candidates
@@ -66,6 +78,7 @@ pub(crate) fn completion_items_for_source(
     cursor_char: usize,
     trigger: CompletionTrigger,
     base_dir: Option<&std::path::Path>,
+    known_types: Option<&std::collections::HashMap<String, lk_core::val::Type>>,
 ) -> Vec<CompletionItem> {
     completion_items_from_response(completion_response_for_source(
         engine,
@@ -73,6 +86,7 @@ pub(crate) fn completion_items_for_source(
         cursor_char,
         trigger,
         base_dir,
+        known_types,
     ))
 }
 
@@ -110,7 +124,7 @@ fn completion_items_for_source_invoked(
     cursor_char: usize,
     base_dir: Option<&std::path::Path>,
 ) -> Vec<CompletionItem> {
-    completion_items_for_source(engine, content, cursor_char, CompletionTrigger::Invoked, base_dir)
+    completion_items_for_source(engine, content, cursor_char, CompletionTrigger::Invoked, base_dir, None)
 }
 
 fn completion_item(content: &str, candidate: CompletionCandidate) -> CompletionItem {
@@ -205,8 +219,14 @@ mod tests {
         let engine = lk_completion::CompletionEngine::new().unwrap();
         let content = "if should_run(\"gcd_batch\") {}\nif should_run(\"\") {}";
         let cursor = content.rfind("\"\"").unwrap() + 1;
-        let items =
-            completion_items_for_source(&engine, content, cursor, CompletionTrigger::TriggerCharacter('"'), None);
+        let items = completion_items_for_source(
+            &engine,
+            content,
+            cursor,
+            CompletionTrigger::TriggerCharacter('"'),
+            None,
+            None,
+        );
         let item = items
             .iter()
             .find(|item| item.label == "gcd_batch")
@@ -228,6 +248,7 @@ mod tests {
             content.chars().count(),
             CompletionTrigger::Incomplete,
             None,
+            None,
         );
         assert!(items.iter().any(|item| item.label == "should_run"));
     }
@@ -241,6 +262,7 @@ mod tests {
             content,
             content.chars().count(),
             CompletionTrigger::TriggerCharacter('{'),
+            None,
             None,
         );
         let CompletionResponse::List(list) = response else {

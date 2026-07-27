@@ -1,4 +1,5 @@
 use lk_core::token::{Token, Tokenizer};
+use lk_core::val::Type;
 #[cfg(feature = "stdlib")]
 use lk_stdlib::{StdlibExportKind, StdlibExportSpec, stdlib_catalog};
 use std::{
@@ -95,6 +96,15 @@ pub struct CompletionRequest<'a> {
     pub trigger: CompletionTrigger,
     pub session_source: Option<&'a str>,
     pub base_dir: Option<&'a Path>,
+    /// Types the caller already knows for names in scope, if it knows any.
+    ///
+    /// Passed in rather than inferred here: a caller with a type checker and a
+    /// cache (the LSP) can hand over the result of a check it already ran,
+    /// while one without (the REPL, or a half-typed line that will not parse)
+    /// leaves it `None` and falls back to reading the token shapes. Deciding a
+    /// receiver's methods from "the token after `=` was a `[`" is a guess;
+    /// this is not.
+    pub known_types: Option<&'a HashMap<String, Type>>,
 }
 
 #[derive(Debug)]
@@ -119,7 +129,7 @@ impl CompletionEngine {
         let cursor = request.cursor.min(request.source.len());
         let ctx = CompletionContext::new(request.source, cursor);
         let symbol_source = merged_symbol_source(request.source, request.session_source);
-        let symbols = SymbolIndex::from_source(&symbol_source);
+        let symbols = SymbolIndex::from_source(&symbol_source, request.known_types);
 
         let mut out = Vec::new();
         if request.mode == CompletionMode::Repl && ctx.line_prefix.trim_start().starts_with(':') {
@@ -625,7 +635,21 @@ struct SymbolIndex {
 }
 
 impl SymbolIndex {
-    fn from_source(source: &str) -> Self {
+    fn from_source(source: &str, known_types: Option<&HashMap<String, Type>>) -> Self {
+        let mut index = Self::scan_source(source);
+        // Known types win: the scan above guessed from token shapes, and a
+        // guess should not outrank a check.
+        if let Some(known_types) = known_types {
+            for (name, ty) in known_types {
+                if let Some(receiver) = receiver_type_from_type(ty) {
+                    index.types.insert(name.clone(), receiver);
+                }
+            }
+        }
+        index
+    }
+
+    fn scan_source(source: &str) -> Self {
         let Ok((tokens, _spans)) = Tokenizer::tokenize_enhanced_with_spans(source) else {
             return Self::scan_lines(source);
         };
@@ -898,6 +922,23 @@ fn infer_receiver_type_from_tokens(token: Option<&Token>) -> Option<ReceiverType
         Some(Token::Str(_) | Token::TemplateString(_)) => Some(ReceiverType::String),
         Some(Token::LBracket) => Some(ReceiverType::List),
         Some(Token::LBrace) => Some(ReceiverType::Map),
+        _ => None,
+    }
+}
+
+/// The receiver a checked type completes as.
+///
+/// `Optional` unwraps: `x?.` offers the methods of what is inside. Anything
+/// else — `Any`, a type variable, a struct — has no method set here, and
+/// returning `None` leaves the token-shape guess in place rather than
+/// replacing it with nothing.
+fn receiver_type_from_type(ty: &Type) -> Option<ReceiverType> {
+    match ty {
+        Type::String => Some(ReceiverType::String),
+        Type::List(_) => Some(ReceiverType::List),
+        Type::Map(_, _) => Some(ReceiverType::Map),
+        Type::Set(_) => Some(ReceiverType::Set),
+        Type::Optional(inner) | Type::Boxed(inner) => receiver_type_from_type(inner),
         _ => None,
     }
 }
@@ -1214,6 +1255,40 @@ mod tests {
         items.into_iter().map(|item| item.label).collect()
     }
 
+    #[test]
+    fn a_known_type_narrows_the_member_list() {
+        let engine = CompletionEngine::fallback();
+        let source = "let parts = string.split(\"a,b\", \",\");\nparts.";
+        let request = CompletionRequest {
+            source,
+            cursor: source.len(),
+            mode: CompletionMode::Lsp,
+            trigger: CompletionTrigger::TriggerCharacter('.'),
+            session_source: None,
+            base_dir: None,
+            known_types: None,
+        };
+
+        // Reading token shapes, the value after `=` is a call, which says
+        // nothing — so every receiver's methods are offered at once.
+        let guessed = labels(engine.complete(request));
+        assert!(
+            guessed.contains(&"keys".to_string()) && guessed.contains(&"push".to_string()),
+            "without a type the engine cannot tell a list from a map: {guessed:?}"
+        );
+
+        let known = HashMap::from([("parts".to_string(), Type::List(Box::new(Type::String)))]);
+        let checked = labels(engine.complete(CompletionRequest {
+            known_types: Some(&known),
+            ..request
+        }));
+        assert!(checked.contains(&"push".to_string()), "list methods: {checked:?}");
+        assert!(
+            !checked.contains(&"keys".to_string()),
+            "a list has no `keys`: {checked:?}"
+        );
+    }
+
     #[cfg(feature = "stdlib")]
     #[test]
     fn completes_stdlib_globals_from_registry() {
@@ -1225,6 +1300,7 @@ mod tests {
             trigger: CompletionTrigger::Invoked,
             session_source: None,
             base_dir: None,
+            known_types: None,
         }));
         assert!(got.contains(&"assert".to_string()));
         assert!(got.contains(&"assert_eq".to_string()));
@@ -1242,6 +1318,7 @@ mod tests {
             trigger: CompletionTrigger::Invoked,
             session_source: None,
             base_dir: None,
+            known_types: None,
         }));
         assert!(got.contains(&"read_to_string".to_string()), "{got:?}");
     }
@@ -1256,6 +1333,7 @@ mod tests {
             trigger: CompletionTrigger::Invoked,
             session_source: Some("let user_name = 1;\nfn user_score() { return 1; }"),
             base_dir: None,
+            known_types: None,
         }));
         assert!(got.contains(&"user_name".to_string()));
         assert!(got.contains(&"user_score".to_string()));
@@ -1273,6 +1351,7 @@ mod tests {
             trigger: CompletionTrigger::Invoked,
             session_source: Some(session_source),
             base_dir: None,
+            known_types: None,
         }));
         assert!(drawable.contains(&"Drawable".to_string()));
 
@@ -1283,6 +1362,7 @@ mod tests {
             trigger: CompletionTrigger::Invoked,
             session_source: Some(session_source),
             base_dir: None,
+            known_types: None,
         }));
         assert!(point.contains(&"Point".to_string()));
 
@@ -1293,6 +1373,7 @@ mod tests {
             trigger: CompletionTrigger::Invoked,
             session_source: Some(session_source),
             base_dir: None,
+            known_types: None,
         }));
         assert!(user_id.contains(&"UserId".to_string()));
     }
@@ -1308,6 +1389,7 @@ mod tests {
             trigger: CompletionTrigger::Invoked,
             session_source: None,
             base_dir: None,
+            known_types: None,
         });
         assert!(
             got.iter()
@@ -1326,6 +1408,7 @@ mod tests {
             trigger: CompletionTrigger::Invoked,
             session_source: None,
             base_dir: None,
+            known_types: None,
         });
         assert!(got.iter().any(|item| item.label == "Int"));
         assert!(
@@ -1345,6 +1428,7 @@ mod tests {
             trigger: CompletionTrigger::Invoked,
             session_source: None,
             base_dir: None,
+            known_types: None,
         }));
         assert!(got.contains(&"starts_with".to_string()));
         assert!(!got.contains(&"set".to_string()));
@@ -1362,6 +1446,7 @@ mod tests {
             trigger: CompletionTrigger::Invoked,
             session_source: None,
             base_dir: Some(dir.path()),
+            known_types: None,
         }));
         assert!(got.contains(&"main.lk".to_string()));
     }
@@ -1379,6 +1464,7 @@ mod tests {
             trigger: CompletionTrigger::Invoked,
             session_source: None,
             base_dir: None,
+            known_types: None,
         });
         assert!(got.iter().any(|item| item.label == "prime_trial_division"));
         assert!(!got.iter().any(|item| item.label == "gcd_batch"));
@@ -1399,6 +1485,7 @@ mod tests {
             trigger: CompletionTrigger::Invoked,
             session_source: None,
             base_dir: None,
+            known_types: None,
         }));
         assert!(got.contains(&"should_run".to_string()));
     }
@@ -1414,6 +1501,7 @@ mod tests {
             trigger: CompletionTrigger::Incomplete,
             session_source: None,
             base_dir: None,
+            known_types: None,
         }));
         assert!(got.contains(&"should_run".to_string()));
     }
@@ -1429,6 +1517,7 @@ mod tests {
             trigger: CompletionTrigger::TriggerCharacter('{'),
             session_source: None,
             base_dir: None,
+            known_types: None,
         });
         assert!(got.candidates.is_empty());
         assert!(got.is_incomplete);
@@ -1446,6 +1535,7 @@ mod tests {
             trigger: CompletionTrigger::TriggerCharacter('\''),
             session_source: None,
             base_dir: None,
+            known_types: None,
         }));
         assert_eq!(got, vec!["gcd_batch".to_string()]);
     }
@@ -1461,6 +1551,7 @@ mod tests {
             trigger: CompletionTrigger::TriggerCharacter('{'),
             session_source: None,
             base_dir: None,
+            known_types: None,
         });
         assert!(got.is_empty());
     }
@@ -1477,6 +1568,7 @@ mod tests {
             trigger: CompletionTrigger::TriggerCharacter('{'),
             session_source: None,
             base_dir: None,
+            known_types: None,
         }));
         assert!(!got.is_empty());
     }

@@ -194,6 +194,21 @@ impl LkAnalyzer {
         }
     }
 
+    /// The type of every binding in the document, by name.
+    ///
+    /// Later bindings win, which is what a completion at the end of the file
+    /// wants: a name rebound in an inner scope reads as its most recent type.
+    pub fn binding_types(&mut self, content: &str) -> HashMap<String, val::Type> {
+        let Ok(entry) = self.tokenize_with_spans_cached(content) else {
+            return HashMap::new();
+        };
+        entry
+            .observed_bindings(content)
+            .iter()
+            .map(|binding| (binding.name.clone(), binding.ty.clone()))
+            .collect()
+    }
+
     /// Type hints for `let` bindings whose type the source leaves unwritten.
     ///
     /// Reads the types the checker recorded while checking the whole document
