@@ -410,6 +410,18 @@ fn try_region_differential() {
                 "writes_then_raises",
                 "fn boom() { error(\"x\"); return 0; }\nlet a = 0;\ntry { a = 5; boom(); a = 9; } catch e { }\nreturn a;\n",
             ),
+            // Not just integers: what crosses back out of a cell is decided per
+            // type, and a type with no unboxer rejects rather than guesses.
+            new(
+                "writes_outer_bool",
+                "fn boom() { error(\"x\"); return 0; }\nlet flag = false;\n\
+                 try { flag = true; boom(); } catch e { }\nif (flag) { return 1; }\nreturn 0;\n",
+            ),
+            new(
+                "writes_outer_string",
+                "fn boom() { error(\"x\"); return 0; }\nlet s = \"before\";\n\
+                 try { s = \"during\"; boom(); } catch e { }\nreturn s.len();\n",
+            ),
             // A raise from two frames down still lands in the nearest handler:
             // the trampoline's frame is what `longjmp` targets, not the body's.
             new(

@@ -141,6 +141,7 @@ pub fn lower_bundled(
         try_bodies: std::collections::HashMap::new(),
         try_body_params: std::collections::HashMap::new(),
         try_body_cells: std::collections::HashMap::new(),
+        try_body_extra_cells: std::collections::HashMap::new(),
         conflict: false,
         dyn_loop_phis: std::collections::HashSet::new(),
         dyn_rets: std::collections::HashSet::new(),
@@ -233,6 +234,10 @@ pub fn lower_bundled(
                 sig.global_tys.clone(),
                 sig.spawned_isolate.len(),
                 sig.force_dyn_globals.len(),
+                sig.try_body_extra_cells
+                    .values()
+                    .map(std::collections::HashSet::len)
+                    .sum::<usize>(),
             );
             // Call-site facts are re-derived every pass: an argument register
             // that resolves to a closure ref only once a summary lands (e.g. a
@@ -282,6 +287,30 @@ pub fn lower_bundled(
                     Err(Unsupported::EmptyListGuessWrong { pcs }) => {
                         for pc in pcs {
                             sig.dyn_empty_lists.insert((fi as u32, pc));
+                        }
+                    }
+                    // A register read after a `try` region with no definition
+                    // *here* was defined inside the body — which runs in its own
+                    // frame, so the value never came back. It has to travel
+                    // through a cell, and which registers those are is exactly
+                    // what this error names: record it and let the fixpoint
+                    // lower the function again.
+                    //
+                    // Discovered rather than predicted, for the third time in
+                    // this feature: "does anything after the region read what
+                    // the body wrote" is a liveness question, and the SSA is
+                    // already the thing that answers it.
+                    Err(Unsupported::UndefinedOperand { reg, .. }) if reg < 256 => {
+                        let regions: Vec<usize> = sig
+                            .try_bodies
+                            .keys()
+                            .filter(|(parent, _)| *parent == fi as u32)
+                            .map(|(_, pc)| *pc)
+                            .collect();
+                        for begin_pc in regions {
+                            if let Some(&body) = sig.try_bodies.get(&(fi as u32, begin_pc)) {
+                                sig.try_body_extra_cells.entry(body).or_default().insert(reg as u8);
+                            }
                         }
                     }
                     _ => {}

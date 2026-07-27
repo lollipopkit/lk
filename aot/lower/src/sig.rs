@@ -44,6 +44,14 @@ pub(crate) struct SigInfer {
     /// writes through it as it goes, and the parent reads it back on both
     /// edges.
     pub(crate) try_body_cells: std::collections::HashMap<u32, Vec<u8>>,
+    /// Registers a *later* read proved the body had to write back.
+    ///
+    /// `try_body_cells` is what the region's own scan could see: registers the
+    /// enclosing function had already defined. This is the other half — a
+    /// register first defined *inside* the body and read after it, which the
+    /// scan cannot know about because nothing in the parent defines it. The
+    /// read itself is the evidence, and it arrives as an `UndefinedOperand`.
+    pub(crate) try_body_extra_cells: std::collections::HashMap<u32, std::collections::HashSet<u8>>,
     /// Empty-`[]` literals whose guessed element type a consumer
     /// contradicted (`(function, pc)`): the next fixpoint pass materializes
     /// them as Dyn lists.

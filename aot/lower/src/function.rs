@@ -6,6 +6,26 @@ use super::*;
 /// table is being built, before any block exists to ask about. The same
 /// over-approximation as `written_registers` applies, and in the same
 /// direction — a false positive costs a rejection.
+/// How a value of this type is taken back out of a cell, if it can be.
+///
+/// Boxing into a `Dyn` works for everything; coming back out is per type, and
+/// the ones missing here are missing on purpose — a `Maybe` carrier, a channel,
+/// a closure. Guessing at one produces a wrong value, so their regions reject.
+fn unbox_from_dyn(ty: Ty) -> Option<(&'static str, &'static str)> {
+    Some(match ty {
+        Ty::I64 => ("dyn", "as_i64"),
+        // Answers 0/1 in an `i64`, so the caller narrows it back to a `Bool`.
+        Ty::Bool => ("dyn", "as_bool"),
+        Ty::F64 => ("dyn", "as_f64"),
+        Ty::Str => ("dyn", "as_str"),
+        // Containers come back as an untyped handle (`dyn.as_list` /
+        // `dyn.as_map` answer `Ptr`), and which *typed* handle that is depends
+        // on the register. Getting it wrong is a container read as the wrong
+        // element type, so they wait until there is a test that pins each one.
+        _ => return None,
+    })
+}
+
 /// The function a region's body became, or a rejection naming the region.
 fn body_index_of(sig: &SigInfer, func_index: u32, begin_pc: usize) -> Result<u32, Unsupported> {
     sig.try_bodies
@@ -94,6 +114,21 @@ pub(crate) fn lower_function(
                 cells.push(reg);
             }
         }
+        // Registers a later read proved the body had to write back: they are
+        // not visible to the scan above, because nothing in this function
+        // defines them — the body does.
+        let body_index = body_index_of(sig, func_index, region.begin_pc)?;
+        if let Some(extra) = sig.try_body_extra_cells.get(&body_index) {
+            for &reg in extra {
+                if reg != region.catch_reg
+                    && !cells.contains(&reg)
+                    && crate::try_region::written_registers(&instrs, region.body_start, region.body_end).contains(&reg)
+                {
+                    cells.push(reg);
+                }
+            }
+            cells.sort_unstable();
+        }
         // The trampoline passes machine words and the arity switch caps them;
         // inputs and cells share that budget.
         if cells.len()
@@ -108,8 +143,7 @@ pub(crate) fn lower_function(
                 reason: "too many values cross the region boundary",
             });
         }
-        sig.try_body_cells
-            .insert(body_index_of(sig, func_index, region.begin_pc)?, cells);
+        sig.try_body_cells.insert(body_index, cells);
         let body = sig
             .try_bodies
             .get(&(func_index, region.begin_pc))
@@ -459,13 +493,14 @@ pub(crate) fn lower_function(
                 let mut cell_values: Vec<(u8, ValueId, Ty)> = Vec::with_capacity(cell_regs.len());
                 for &reg in &cell_regs {
                     let (v, ty) = ssa.read(reg, bi, start)?;
-                    // Only `I64` crosses back for now. Every other type would
-                    // need its own unboxing on the way out, and getting one of
-                    // them wrong is a wrong value rather than a rejection.
-                    if ty != Ty::I64 {
+                    // A value crosses back only if it can be taken out of a
+                    // cell again. Boxing is universal; unboxing is per type,
+                    // and a type with no unboxer is a rejection rather than a
+                    // guess.
+                    if unbox_from_dyn(ty).is_none() {
                         return Err(Unsupported::TryRegion {
                             pc: start,
-                            reason: "the body assigns something that is not an integer",
+                            reason: "the body assigns a value that cannot be read back out of a cell",
                         });
                     }
                     let boxed = crate::dyn_box::to_dyn_any(&mut ssa, &mut insts, v, ty, start)?;
@@ -494,13 +529,37 @@ pub(crate) fn lower_function(
                         callee: AbiRef::new("rt", "cell_get"),
                         args: vec![handle],
                     });
-                    let unboxed = ssa.new_val();
+                    let raw = ssa.new_val();
+                    let (module, name) = unbox_from_dyn(ty).expect("checked above");
                     insts.push(Inst::Call {
-                        dst: Some(unboxed),
-                        callee: AbiRef::new("dyn", "as_i64"),
+                        dst: Some(raw),
+                        callee: AbiRef::new(module, name),
                         args: vec![got],
                     });
-                    ssa.write(reg, bi, (unboxed, ty));
+                    // `dyn.as_bool` answers an `i64`; the register holds a
+                    // `Bool`, which is a narrower machine type. Writing the
+                    // wide value back under the narrow type is what the
+                    // Cranelift verifier rejects — "arg has type i64, expected
+                    // i8" — so it is narrowed here.
+                    let value = if ty == Ty::Bool {
+                        let zero = ssa.new_val();
+                        insts.push(Inst::Const {
+                            dst: zero,
+                            value: Const::I64(0),
+                        });
+                        let narrowed = ssa.new_val();
+                        insts.push(Inst::Cmp {
+                            dst: narrowed,
+                            op: CmpOp::Ne,
+                            float: false,
+                            lhs: raw,
+                            rhs: zero,
+                        });
+                        narrowed
+                    } else {
+                        raw
+                    };
+                    ssa.write(reg, bi, (value, ty));
                 }
                 let caught = ssa.new_val();
                 insts.push(Inst::Call {
