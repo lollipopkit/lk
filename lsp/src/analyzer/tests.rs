@@ -595,6 +595,29 @@ fn test_type_hints_use_stdlib_signatures() {
 }
 
 #[test]
+fn test_return_type_hints_come_from_the_checked_signature() {
+    let mut analyzer = LkAnalyzer::new();
+    let src = "fn greet(name: String) -> String {\n    return name;\n}\nfn call_it() {\n    return greet(\"lk\");\n}\n";
+
+    let hints = analyzer.compute_function_return_type_hints(src, full_range(src));
+
+    // `call_it` returns whatever `greet` returns. Deriving that from the token
+    // stream in a fresh checker — what this used to do — could not know `greet`.
+    assert!(
+        hint_labels(&hints).iter().any(|label| label.trim() == "-> String"),
+        "expected `-> String` for call_it, got {:?}",
+        hint_labels(&hints)
+    );
+    // `greet` says its own return type, so it gets no hint.
+    assert_eq!(
+        hint_labels(&hints).len(),
+        1,
+        "an annotated function needs no hint: {:?}",
+        hint_labels(&hints)
+    );
+}
+
+#[test]
 fn test_type_hints_use_imported_signatures() {
     let dir = unique_tmp_dir("imported_signature_hints");
     fs::create_dir_all(&dir).expect("create temp dir");

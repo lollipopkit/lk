@@ -178,9 +178,19 @@ pub fn type_error_span(
     tokens: &[Token],
     spans: &[crate::token::Span],
 ) -> Option<crate::token::Span> {
-    let type_error = err.downcast_ref::<typ::TypeError>()?;
-    let expr = type_error.expr.as_ref()?;
-    span_for_expr(expr, tokens, spans)
+    typed_error_span(err.downcast_ref::<typ::TypeError>()?, tokens, spans)
+}
+
+/// The span of a type error that has already been unwrapped from `anyhow`.
+///
+/// A tool that caches type errors cannot keep the `anyhow::Error` — it is not
+/// `Clone` — but `TypeError` is, and this is all the span lookup ever needed.
+pub fn typed_error_span(
+    type_error: &typ::TypeError,
+    tokens: &[Token],
+    spans: &[crate::token::Span],
+) -> Option<crate::token::Span> {
+    span_for_expr(type_error.expr.as_ref()?, tokens, spans)
 }
 
 fn format_macro_origin_stack(origin: &MacroTokenOrigin) -> String {
@@ -219,7 +229,12 @@ fn span_for_literal(value: &LiteralVal, tokens: &[Token], spans: &[crate::token:
         LiteralVal::Int(expected) => find_token_span(
             tokens,
             spans,
-            |token| matches!(token, Token::Int(actual) if actual == expected),
+            |token| {
+                matches!(token, Token::Int(actual) if actual == expected)
+                    // The bit-pattern spelling of the same carrier: the AST kept
+                    // the `i64`, so this is the token it came from.
+                    || matches!(token, Token::UInt(actual) if *actual as i64 == *expected)
+            },
         ),
         LiteralVal::Float(expected) => find_token_span(
             tokens,

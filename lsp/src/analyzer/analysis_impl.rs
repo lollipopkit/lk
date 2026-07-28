@@ -1115,37 +1115,34 @@ impl LkAnalyzer {
         diags
     }
 
+    /// Diagnostics for a check that already ran.
+    ///
+    /// The errors come from `TokenCacheEntry::document_types`, the one check
+    /// this document gets. Running another one here is what this used to do,
+    /// and it type-checked every file twice per analysis.
     pub(crate) fn collect_type_diagnostics(
-        program: &Program,
+        errors: &[RecordedTypeError],
         tokens: &[token::Token],
         spans: &[Span],
         content: &str,
         origins: Option<&[macro_system::MacroTokenOrigin]>,
-        base_dir: Option<&std::path::Path>,
     ) -> Vec<Diagnostic> {
-        let mut checker = TypeChecker::new_strict();
-        // Types for names this file imports from another one, exactly as
-        // `lk check` seeds them. Skipping it here would make the editor report
-        // an error the compiler does not, or miss one it does.
-        if let Some(base_dir) = base_dir {
-            lk_core::typ::seed_imported_signatures(program, base_dir, &mut checker);
-        }
-        // Every bad statement, not just the first one: an editor that hides
-        // forty errors behind the topmost makes the reader fix them one round
-        // trip at a time.
-        program
-            .type_check_collecting(&mut checker)
-            .into_iter()
-            .map(|err| {
-                let range = Self::type_error_range(&err, tokens, spans, content);
-                let mut message = Self::type_error_from_anyhow(&err)
+        errors
+            .iter()
+            .map(|recorded| {
+                let range = Self::type_error_range(recorded, tokens, spans, content);
+                let mut message = recorded
+                    .typed
+                    .as_ref()
                     .map(|type_error| type_error.message.clone())
-                    .unwrap_or_else(|| err.to_string());
+                    .unwrap_or_else(|| recorded.message.clone());
                 if let Some(origins) = origins {
-                    if let Some(span) = lk_core::syntax::type_error_span(&err, tokens, spans) {
-                        if let Some(note) = macro_origin_note_for_span(origins, &span) {
-                            message.push('\n');
-                            message.push_str(&note);
+                    if let Some(type_error) = recorded.typed.as_ref() {
+                        if let Some(span) = lk_core::syntax::typed_error_span(type_error, tokens, spans) {
+                            if let Some(note) = macro_origin_note_for_span(origins, &span) {
+                                message.push('\n');
+                                message.push_str(&note);
+                            }
                         }
                     }
                 }
@@ -1165,12 +1162,12 @@ impl LkAnalyzer {
     }
 
     pub(crate) fn type_error_range(
-        err: &anyhow::Error,
+        recorded: &RecordedTypeError,
         tokens: &[token::Token],
         spans: &[Span],
         content: &str,
     ) -> Range {
-        if let Some(type_error) = Self::type_error_from_anyhow(err) {
+        if let Some(type_error) = recorded.typed.as_ref() {
             if let Some(expr) = &type_error.expr {
                 if let Some(range) = Self::range_for_expr(expr, tokens, spans) {
                     return range;
@@ -1180,8 +1177,7 @@ impl LkAnalyzer {
                 return range;
             }
         }
-        let message = err.to_string();
-        if let Some(range) = Self::implicit_any_error_range(None, &message, tokens, spans) {
+        if let Some(range) = Self::implicit_any_error_range(None, &recorded.message, tokens, spans) {
             return range;
         }
         Self::default_error_range(content)
@@ -1217,10 +1213,6 @@ impl LkAnalyzer {
         let rest = &message[start..];
         let end = rest.find('\'')?;
         Some(&rest[..end])
-    }
-
-    pub(crate) fn type_error_from_anyhow(err: &anyhow::Error) -> Option<&typ::TypeError> {
-        err.downcast_ref::<typ::TypeError>()
     }
 
     pub(crate) fn range_for_expr(expr: &Expr, tokens: &[token::Token], spans: &[Span]) -> Option<Range> {

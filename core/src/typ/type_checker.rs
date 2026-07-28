@@ -236,6 +236,19 @@ impl TypeChecker {
         self.imported_members.get(namespace)?.get(member).cloned()
     }
 
+    /// Each function's inferred return type, by name.
+    ///
+    /// The signatures are already here — an editor showing `-> String` after a
+    /// parameter list has no reason to re-derive it from the token stream.
+    /// A `Vec` rather than a map so the caller picks its own container — this
+    /// crate's `HashMap` is `hashbrown`'s, which is not the one the LSP holds.
+    pub fn function_return_types(&self) -> Vec<(String, Type)> {
+        self.function_sigs
+            .iter()
+            .filter_map(|(name, sig)| sig.return_type.clone().map(|ty| (name.clone(), ty)))
+            .collect()
+    }
+
     /// Start recording every binding this checker binds, with its position.
     pub fn observe_bindings(&mut self) {
         self.observations = Some(Vec::new());

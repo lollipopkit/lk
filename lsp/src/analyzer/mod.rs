@@ -60,10 +60,40 @@ pub(crate) struct TokenCacheEntry {
     project_dependencies: Arc<Vec<PathBuf>>,
     project_dependency_fingerprint: macro_system::ProcMacroDependencyFingerprint,
     named_param_decls: OnceCell<Arc<HashMap<String, Vec<NamedParamDecl>>>>,
-    observed_bindings: OnceCell<Arc<Vec<ObservedBinding>>>,
+    document_types: OnceCell<Arc<DocumentTypes>>,
     program_expansion: OnceCell<CachedProgramExpansion>,
     program_ast: OnceCell<Arc<Program>>,
     expr_ast: OnceCell<Arc<Expr>>,
+}
+
+/// What one program-wide type check yields, cached per document revision.
+#[derive(Debug, Default)]
+pub(crate) struct DocumentTypes {
+    /// Every binding, with the type it was bound to and where it was written.
+    pub(crate) bindings: Vec<ObservedBinding>,
+    /// Each top-level function's inferred return type, by name.
+    pub(crate) function_returns: HashMap<String, val::Type>,
+    pub(crate) errors: Vec<RecordedTypeError>,
+}
+
+/// A type error, kept in a form that outlives the check that produced it.
+///
+/// `anyhow::Error` is not `Clone`, so it cannot live in a shared cache; the
+/// parts a diagnostic is built from can. `TypeError` carries the expression and
+/// the expected/actual pair that decide where the squiggle goes.
+#[derive(Debug, Clone)]
+pub(crate) struct RecordedTypeError {
+    pub(crate) typed: Option<typ::TypeError>,
+    pub(crate) message: String,
+}
+
+impl RecordedTypeError {
+    fn from_error(error: &anyhow::Error) -> Self {
+        Self {
+            typed: error.downcast_ref::<typ::TypeError>().cloned(),
+            message: error.to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -88,7 +118,7 @@ impl TokenCacheEntry {
             project_dependencies: Arc::new(project_dependencies),
             project_dependency_fingerprint,
             named_param_decls: OnceCell::new(),
-            observed_bindings: OnceCell::new(),
+            document_types: OnceCell::new(),
             program_expansion: OnceCell::new(),
             program_ast: OnceCell::new(),
             expr_ast: OnceCell::new(),
@@ -106,17 +136,20 @@ impl TokenCacheEntry {
             .cloned()
     }
 
-    /// Every binding in the document with the type the checker gave it.
+    /// Everything one program-wide type check produces, for this revision.
     ///
-    /// One program-wide check per document revision, shared by every feature
-    /// that wants a type. It uses `type_check_collecting` rather than
-    /// `type_check` so a single bad statement does not take the types for the
-    /// rest of the file with it.
-    fn observed_bindings(&self, content: &str) -> Arc<Vec<ObservedBinding>> {
-        self.observed_bindings
+    /// One check per document, shared by every feature that wants a type —
+    /// diagnostics, inlay hints, hover, completion. They used to run their own:
+    /// the same file was checked twice per analysis, which is the thing
+    /// `analyze` was cleaned up for one commit before this cache existed.
+    ///
+    /// `type_check_collecting` rather than `type_check`, so one bad statement
+    /// takes neither the diagnostics nor the types of the rest of the file.
+    fn document_types(&self, content: &str) -> Arc<DocumentTypes> {
+        self.document_types
             .get_or_init(|| {
                 let Ok(program) = self.parse_program_arc(content) else {
-                    return Arc::new(Vec::new());
+                    return Arc::new(DocumentTypes::default());
                 };
                 let mut checker = TypeChecker::new_strict();
                 checker.observe_bindings();
@@ -126,8 +159,16 @@ impl TokenCacheEntry {
                 if let Some(base_dir) = self.parse_options.base_dir.as_deref() {
                     typ::seed_imported_signatures(&program, base_dir, &mut checker);
                 }
-                let _ = program.type_check_collecting(&mut checker);
-                Arc::new(checker.take_observations())
+                let errors = program
+                    .type_check_collecting(&mut checker)
+                    .iter()
+                    .map(RecordedTypeError::from_error)
+                    .collect();
+                Arc::new(DocumentTypes {
+                    bindings: checker.take_observations(),
+                    function_returns: checker.function_return_types().into_iter().collect(),
+                    errors,
+                })
             })
             .clone()
     }

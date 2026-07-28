@@ -203,7 +203,8 @@ impl LkAnalyzer {
             return HashMap::new();
         };
         entry
-            .observed_bindings(content)
+            .document_types(content)
+            .bindings
             .iter()
             .map(|binding| (binding.name.clone(), binding.ty.clone()))
             .collect()
@@ -221,7 +222,8 @@ impl LkAnalyzer {
         let Ok(entry) = self.tokenize_with_spans_cached(content) else {
             return Vec::new();
         };
-        let observed = entry.observed_bindings(content);
+        let document_types = entry.document_types(content);
+        let observed = &document_types.bindings;
 
         // Group by binding site: a destructuring `let` records one entry per
         // name, and there is no single type to write at the end of `[a, b]`.
@@ -263,56 +265,52 @@ impl LkAnalyzer {
         hints
     }
 
-    /// Compute type inlay hints for function return types: place a TYPE hint like `-> Int`
-    /// after the parameter list. If multiple return statements exist (e.g., branches),
-    /// the displayed type is a union of all discovered return expression types.
-    #[cfg(test)]
-    pub fn compute_function_return_type_hints(&self, content: &str, range: Range) -> Vec<InlayHint> {
-        let (tokens, spans) = match Tokenizer::tokenize_enhanced_with_spans(content) {
-            Ok(pair) => pair,
-            Err(_) => return Vec::new(),
+    /// `-> T` hints for functions whose return type the source leaves unwritten.
+    ///
+    /// The type comes from `function_sigs`, which the document's one type check
+    /// already filled in. This used to walk the body looking for `return`
+    /// statements, re-parse each returned expression on its own, and infer it in
+    /// a *fresh* checker — so `fn f() { return greet("x"); }` got no hint, for
+    /// exactly the reason `let who = greet("x")` got none.
+    pub fn compute_function_return_type_hints(&mut self, content: &str, range: Range) -> Vec<InlayHint> {
+        let Ok(entry) = self.tokenize_with_spans_cached(content) else {
+            return Vec::new();
         };
-        self.compute_function_return_type_hints_from_tokens(&tokens, &spans, range)
-    }
+        let types = entry.document_types(content);
+        if types.function_returns.is_empty() {
+            return Vec::new();
+        }
+        let tokens = entry.tokens.clone();
+        let spans = entry.spans.clone();
 
-    /// Variant that reuses a pre-tokenized buffer for performance.
-    pub fn compute_function_return_type_hints_from_tokens(
-        &self,
-        tokens: &[token::Token],
-        spans: &[Span],
-        range: Range,
-    ) -> Vec<InlayHint> {
-        let mut hints: Vec<InlayHint> = Vec::new();
         use token::Token as T;
+        let mut hints: Vec<InlayHint> = Vec::new();
         let mut i = 0usize;
         while i < tokens.len() {
             if !matches!(tokens[i], T::Fn) {
                 i += 1;
                 continue;
             }
-            // fn name ( params ) { body }
-            let mut j = i + 1;
-            // Skip function name if present
-            if matches!(tokens.get(j), Some(T::Id(_))) {
-                j += 1;
-            } else {
+            let Some(T::Id(name)) = tokens.get(i + 1) else {
+                i += 1;
+                continue;
+            };
+            if !matches!(tokens.get(i + 2), Some(T::LParen)) {
                 i += 1;
                 continue;
             }
-            // Expect parameter list
-            if !matches!(tokens.get(j), Some(T::LParen)) {
-                i += 1;
-                continue;
-            }
+
+            // Walk to the `)` that closes the parameter list.
             let mut depth = 0i32;
-            // find matching ')'
+            let mut j = i + 2;
+            let mut rparen = None;
             while j < tokens.len() {
                 match &tokens[j] {
                     T::LParen => depth += 1,
                     T::RParen => {
                         depth -= 1;
                         if depth == 0 {
-                            j += 1;
+                            rparen = Some(j);
                             break;
                         }
                     }
@@ -320,105 +318,31 @@ impl LkAnalyzer {
                 }
                 j += 1;
             }
-            let rparen_idx = j.saturating_sub(1);
-            // Expect function body starting '{'
-            if !matches!(tokens.get(j), Some(T::LBrace)) {
-                i = j;
+            let Some(rparen) = rparen else { break };
+            i = rparen + 1;
+
+            // Already annotated: the hint exists to show what was left unwritten.
+            if matches!(tokens.get(rparen + 1), Some(T::FnArrow)) {
                 continue;
             }
-            // Find matching '}' for the body
-            let mut body_depth = 0i32;
-            let body_start = j + 1; // after '{'
-            j += 1;
-            let mut body_end = body_start;
-            while j < tokens.len() {
-                match &tokens[j] {
-                    T::LBrace => body_depth += 1,
-                    T::RBrace => {
-                        if body_depth == 0 {
-                            body_end = j;
-                            break;
-                        }
-                        body_depth -= 1;
-                    }
-                    _ => {}
-                }
-                j += 1;
-            }
-            if body_end <= body_start {
-                i = j + 1;
+            let Some(return_type) = types.function_returns.get(name) else {
+                continue;
+            };
+            let Some(span) = spans.get(rparen) else { continue };
+            let position = Position::new(span.end.line.saturating_sub(1), span.end.column.saturating_sub(1));
+            if position.line < range.start.line || position.line > range.end.line {
                 continue;
             }
-            // Within body, scan for all `return <expr>;` occurrences (including inside branches)
-            let mut k = body_start;
-            let mut return_types: Vec<val::Type> = Vec::new();
-            while k < body_end {
-                if matches!(tokens[k], T::Return) {
-                    // capture expression until next top-level `;` relative to paren/brace depth of this expression
-                    let mut e = k + 1;
-                    let mut expr_depth = 0i32;
-                    let mut last = e;
-                    while e < body_end {
-                        match &tokens[e] {
-                            T::LParen | T::LBracket | T::LBrace => expr_depth += 1,
-                            T::RParen | T::RBracket | T::RBrace => expr_depth -= 1,
-                            T::Semicolon if expr_depth == 0 => break,
-                            _ => {}
-                        }
-                        last = e;
-                        e += 1;
-                    }
-                    if last > k {
-                        let expr_tokens = &tokens[k + 1..=last];
-                        if !expr_tokens.is_empty() {
-                            if let Ok(expr) = ast::Parser::new(expr_tokens).parse() {
-                                let mut checker = typ::TypeChecker::new_strict();
-                                if let Ok(ret_ty) = checker.infer_resolved_type(&expr) {
-                                    return_types.push(ret_ty);
-                                }
-                            }
-                        }
-                    }
-                    // Advance past this statement terminator if present
-                    k = e + 1;
-                    continue;
-                }
-                k += 1;
-            }
-
-            if !return_types.is_empty() {
-                // Deduplicate by display string for stable union label
-                use std::collections::BTreeMap;
-                let mut by_key: BTreeMap<String, val::Type> = BTreeMap::new();
-                for t in return_types {
-                    by_key.entry(t.display()).or_insert(t);
-                }
-                let parts: Vec<String> = by_key.into_keys().collect();
-                let label = if parts.len() == 1 {
-                    format!(" -> {}", parts[0])
-                } else {
-                    format!(" -> {}", parts.join(" | "))
-                };
-
-                // Place hint right after the parameter list, at the end of ')'
-                if rparen_idx < spans.len() {
-                    let sp = &spans[rparen_idx];
-                    let pos = Position::new(sp.end.line - 1, sp.end.column.saturating_sub(1));
-                    if pos.line >= range.start.line && pos.line <= range.end.line {
-                        hints.push(InlayHint {
-                            position: pos,
-                            label: InlayHintLabel::from(label),
-                            kind: Some(InlayHintKind::TYPE),
-                            text_edits: None,
-                            tooltip: None,
-                            padding_left: Some(true),
-                            padding_right: Some(false),
-                            data: None,
-                        });
-                    }
-                }
-            }
-            i = j + 1;
+            hints.push(InlayHint {
+                position,
+                label: InlayHintLabel::from(format!(" -> {}", return_type.display())),
+                kind: Some(InlayHintKind::TYPE),
+                text_edits: None,
+                tooltip: None,
+                padding_left: Some(true),
+                padding_right: Some(false),
+                data: None,
+            });
         }
         hints
     }
@@ -1001,25 +925,22 @@ impl LkAnalyzer {
                         // Add precise use diagnostics using tokens/spans
                         self.add_import_diagnostics(tokens, spans, &mut result);
 
-                        // Run type checking to surface semantic diagnostics (e.g., numeric operand errors)
-                        let base_dir = self.base_dir().map(Path::to_path_buf);
+                        // Diagnostics from the document's one type check. The
+                        // expansion path differs only in which token stream the
+                        // ranges are resolved against — the errors are the same
+                        // ones, produced once.
+                        let document_types = token_entry.document_types(content);
                         let type_diags = match expansion {
                             Some(expansion) => Self::collect_type_diagnostics(
-                                &expansion.program,
+                                &document_types.errors,
                                 &expansion.source.tokens,
                                 &expansion.source.spans,
                                 content,
                                 Some(&expansion.source.origins),
-                                base_dir.as_deref(),
                             ),
-                            None => Self::collect_type_diagnostics(
-                                program,
-                                tokens,
-                                spans,
-                                content,
-                                None,
-                                base_dir.as_deref(),
-                            ),
+                            None => {
+                                Self::collect_type_diagnostics(&document_types.errors, tokens, spans, content, None)
+                            }
                         };
                         if !type_diags.is_empty() {
                             result.diagnostics.extend(type_diags);
