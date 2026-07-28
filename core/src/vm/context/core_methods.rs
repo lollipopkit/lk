@@ -890,6 +890,119 @@ fn list_runtime_items(list: TypedList, heap: &mut HeapStore) -> Vec<RuntimeVal> 
     }
 }
 
+/// The list reversed, in the representation it already has.
+///
+/// `reverse` used to materialize every element — allocating a heap string per
+/// element past seven bytes — reverse the `RuntimeVal`s, and box the result as
+/// `Mixed`. Reversing a `Vec<Arc<str>>` is a pointer shuffle; the old路 cost
+/// about two hundred nanoseconds an element to do the same thing, and left the
+/// list boxed so every later read took the slow path.
+pub(super) fn typed_list_reversed(list: &TypedList) -> TypedList {
+    fn flipped<T: Clone>(values: &[T]) -> Vec<T> {
+        let mut out = values.to_vec();
+        out.reverse();
+        out
+    }
+    match list {
+        TypedList::Mixed(values) => TypedList::Mixed(flipped(values)),
+        TypedList::Int(values) => TypedList::Int(flipped(values)),
+        TypedList::Float(values) => TypedList::Float(flipped(values)),
+        TypedList::Bool(values) => TypedList::Bool(flipped(values)),
+        TypedList::String(values) => TypedList::String(flipped(values)),
+    }
+}
+
+/// The two lists joined, keeping the representation when they share one.
+///
+/// `None` when they do not — the caller falls back to materializing, which is
+/// the only thing that can join an `Int` list to a `String` one.
+pub(super) fn typed_lists_concatenated(left: &TypedList, right: &TypedList) -> Option<TypedList> {
+    fn joined<T: Clone>(left: &[T], right: &[T]) -> Vec<T> {
+        let mut out = Vec::with_capacity(left.len() + right.len());
+        out.extend_from_slice(left);
+        out.extend_from_slice(right);
+        out
+    }
+    Some(match (left, right) {
+        (TypedList::Mixed(left), TypedList::Mixed(right)) => TypedList::Mixed(joined(left, right)),
+        (TypedList::Int(left), TypedList::Int(right)) => TypedList::Int(joined(left, right)),
+        (TypedList::Float(left), TypedList::Float(right)) => TypedList::Float(joined(left, right)),
+        (TypedList::Bool(left), TypedList::Bool(right)) => TypedList::Bool(joined(left, right)),
+        (TypedList::String(left), TypedList::String(right)) => TypedList::String(joined(left, right)),
+        _ => return None,
+    })
+}
+
+/// The list sorted ascending, in the representation it already has.
+///
+/// A typed list sorts its own scalars — an `i64` sort is a comparison, where
+/// the materialized path built a `RuntimeVal` per element first and then
+/// compared through `compare_runtime_values`. The order is the same one:
+/// `compare_runtime_values` on two `Int`s *is* `i64`'s.
+pub(super) fn typed_list_sorted(list: &TypedList, heap: &HeapStore) -> TypedList {
+    match list {
+        TypedList::Int(values) => {
+            let mut out = values.to_vec();
+            out.sort_unstable();
+            TypedList::Int(out)
+        }
+        TypedList::Float(values) => {
+            let mut out = values.to_vec();
+            out.sort_by(|left, right| left.partial_cmp(right).unwrap_or(core::cmp::Ordering::Equal));
+            TypedList::Float(out)
+        }
+        TypedList::Bool(values) => {
+            let mut out = values.to_vec();
+            out.sort_unstable();
+            TypedList::Bool(out)
+        }
+        TypedList::String(values) => {
+            let mut out = values.to_vec();
+            out.sort_by(|left, right| left.as_ref().cmp(right.as_ref()));
+            TypedList::String(out)
+        }
+        // Mixed elements can be anything, including heap values whose order
+        // needs the comparison the executor defines.
+        TypedList::Mixed(values) => {
+            let mut out = values.to_vec();
+            out.sort_by(|left, right| compare_runtime_values(left, right, heap));
+            TypedList::Mixed(out)
+        }
+    }
+}
+
+/// One element of a list, allocating only for that element.
+///
+/// The single-element reads — `first`, `last`, `get`, `pop` — used to call
+/// `list_runtime_items`, which materializes *every* element and allocates a
+/// heap string for each one past seven bytes. Two thousand `pop`s on a
+/// twenty-thousand-element string list therefore did forty million
+/// allocations to return two thousand values.
+///
+/// Out of range is nil, as everywhere else.
+pub(super) fn typed_list_element(list_handle: HeapRef, index: usize, heap: &mut HeapStore) -> RuntimeVal {
+    enum Element {
+        Ready(RuntimeVal),
+        Text(Arc<str>),
+    }
+    let element = match heap.get(list_handle) {
+        Some(HeapValue::List(list)) => match list {
+            TypedList::Mixed(values) => values.get(index).copied().map(Element::Ready),
+            TypedList::Int(values) => values.get(index).copied().map(RuntimeVal::Int).map(Element::Ready),
+            TypedList::Float(values) => values.get(index).copied().map(RuntimeVal::Float).map(Element::Ready),
+            TypedList::Bool(values) => values.get(index).copied().map(RuntimeVal::Bool).map(Element::Ready),
+            // The one case that can allocate — and only for this element.
+            TypedList::String(values) => values.get(index).cloned().map(Element::Text),
+        },
+        _ => None,
+    };
+    match element {
+        Some(Element::Ready(value)) => value,
+        Some(Element::Text(text)) => make_string_val(text.as_ref(), heap),
+        None => RuntimeVal::Nil,
+    }
+}
+
 /// Where `needle` first appears in `list`, or `None`.
 ///
 /// Searches the `TypedList` **in place**. `contains`/`index_of`/`unique` used to
@@ -1186,7 +1299,20 @@ fn runtime_value_is_text(value: &RuntimeVal, text: &str, heap: &HeapStore) -> bo
     }
 }
 
-fn compare_runtime_values(left: &RuntimeVal, right: &RuntimeVal) -> core::cmp::Ordering {
+/// The order `sort` puts values in.
+///
+/// Takes the heap because a string longer than `ShortStr`'s seven inline bytes
+/// lives there, and two of them used to fall through to the by-kind ranking
+/// below — both `Obj`, same rank, therefore *equal*. So sorting long strings
+/// did nothing at all while sorting short ones worked:
+///
+/// ```text
+/// ["zzz", "aaa", "mmm"].sort()                 → ["aaa", "mmm", "zzz"]
+/// ["zzzzzzzzzz", "aaaaaaaaaa", …].sort()       → unchanged
+/// ```
+///
+/// Same seven-byte boundary as the equality and search bugs, in the ordering.
+fn compare_runtime_values(left: &RuntimeVal, right: &RuntimeVal, heap: &HeapStore) -> core::cmp::Ordering {
     match (left, right) {
         (RuntimeVal::Nil, RuntimeVal::Nil) => core::cmp::Ordering::Equal,
         (RuntimeVal::Bool(left), RuntimeVal::Bool(right)) => left.cmp(right),
@@ -1200,8 +1326,11 @@ fn compare_runtime_values(left: &RuntimeVal, right: &RuntimeVal) -> core::cmp::O
         (RuntimeVal::Float(left), RuntimeVal::Int(right)) => {
             left.partial_cmp(&(*right as f64)).unwrap_or(core::cmp::Ordering::Equal)
         }
-        (RuntimeVal::ShortStr(left), RuntimeVal::ShortStr(right)) => left.as_str().cmp(right.as_str()),
-        _ => runtime_val_kind_rank(left).cmp(&runtime_val_kind_rank(right)),
+        _ => match (runtime_value_text(left, heap), runtime_value_text(right, heap)) {
+            // Two strings, wherever each of them lives.
+            (Some(left), Some(right)) => left.cmp(right),
+            _ => runtime_val_kind_rank(left).cmp(&runtime_val_kind_rank(right)),
+        },
     }
 }
 

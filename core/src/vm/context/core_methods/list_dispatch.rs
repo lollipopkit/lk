@@ -20,24 +20,20 @@ pub(super) fn dispatch_list_builtin_method(
             if !positional.is_empty() {
                 bail!("list.first() expects no arguments, got {}", positional.len());
             }
-            let list = clone_list(receiver, heap)?;
-            if list.is_empty() {
-                return Ok(Some(RuntimeVal::Nil));
-            }
-            let first = list_runtime_items(list, heap)
-                .into_iter()
-                .next()
-                .unwrap_or(RuntimeVal::Nil);
-            Ok(Some(first))
+            Ok(Some(typed_list_element(handle, 0, heap)))
         }
         "last" => {
             if !positional.is_empty() {
                 bail!("list.last() expects no arguments, got {}", positional.len());
             }
-            let list = clone_list(receiver, heap)?;
-            let items = list_runtime_items(list, heap);
-            let last = items.into_iter().last().unwrap_or(RuntimeVal::Nil);
-            Ok(Some(last))
+            let Some(HeapValue::List(list)) = heap.get(handle) else {
+                return Ok(None);
+            };
+            let len = list.len();
+            Ok(Some(match len.checked_sub(1) {
+                Some(last) => typed_list_element(handle, last, heap),
+                None => RuntimeVal::Nil,
+            }))
         }
         "get" => {
             if positional.len() != 1 {
@@ -61,8 +57,7 @@ pub(super) fn dispatch_list_builtin_method(
             if index < 0 || index as usize >= list.len() {
                 return Ok(Some(RuntimeVal::Nil));
             }
-            let items = list_runtime_items(list, heap);
-            Ok(Some(items.into_iter().nth(index as usize).unwrap_or(RuntimeVal::Nil)))
+            Ok(Some(typed_list_element(handle, index as usize, heap)))
         }
         "skip" => {
             if positional.len() != 1 {
@@ -142,18 +137,24 @@ pub(super) fn dispatch_list_builtin_method(
             if !positional.is_empty() {
                 bail!("list.reverse() expects no arguments, got {}", positional.len());
             }
-            let mut items = list_runtime_items(clone_list(receiver, heap)?, heap);
-            items.reverse();
-            Ok(Some(RuntimeVal::Obj(
-                heap.alloc(HeapValue::List(TypedList::Mixed(items))),
-            )))
+            let Some(HeapValue::List(list)) = heap.get(handle) else {
+                return Ok(None);
+            };
+            let reversed = typed_list_reversed(list);
+            Ok(Some(RuntimeVal::Obj(heap.alloc(HeapValue::List(reversed)))))
         }
         "pop" => {
             if !positional.is_empty() {
                 bail!("list.pop() expects no arguments, got {}", positional.len());
             }
-            let items = list_runtime_items(clone_list(receiver, heap)?, heap);
-            Ok(Some(items.into_iter().last().unwrap_or(RuntimeVal::Nil)))
+            let Some(HeapValue::List(list)) = heap.get(handle) else {
+                return Ok(None);
+            };
+            let len = list.len();
+            Ok(Some(match len.checked_sub(1) {
+                Some(last) => typed_list_element(handle, last, heap),
+                None => RuntimeVal::Nil,
+            }))
         }
         "push" => {
             if positional.len() != 1 {
@@ -248,22 +249,32 @@ pub(super) fn dispatch_list_builtin_method(
             if !positional.is_empty() {
                 bail!("list.sort() expects no arguments, got {}", positional.len());
             }
-            let mut items = list_runtime_items(clone_list(receiver, heap)?, heap);
-            items.sort_by(compare_runtime_values);
-            Ok(Some(RuntimeVal::Obj(
-                heap.alloc(HeapValue::List(TypedList::Mixed(items))),
-            )))
+            let Some(HeapValue::List(list)) = heap.get(handle) else {
+                return Ok(None);
+            };
+            let sorted = typed_list_sorted(list, heap);
+            Ok(Some(RuntimeVal::Obj(heap.alloc(HeapValue::List(sorted)))))
         }
-        "concat" => {
+        // One operation, two spellings — they had two identical bodies.
+        "concat" | "chain" => {
             if positional.len() != 1 {
-                bail!("list.concat() expects 1 argument (list), got {}", positional.len());
+                bail!("list.{method}() expects 1 argument (list), got {}", positional.len());
             }
-            let lhs = list_runtime_items(clone_list(receiver, heap)?, heap);
-            let rhs = list_runtime_items(clone_list(&positional[0], heap)?, heap);
-            let merged: Vec<RuntimeVal> = lhs.into_iter().chain(rhs).collect();
-            Ok(Some(RuntimeVal::Obj(
-                heap.alloc(HeapValue::List(TypedList::Mixed(merged))),
-            )))
+            let merged = {
+                let left = clone_list(receiver, heap)?;
+                let right = clone_list(&positional[0], heap)?;
+                match typed_lists_concatenated(&left, &right) {
+                    Some(merged) => merged,
+                    // Different representations: materializing is the only
+                    // thing that can join an `Int` list to a `String` one.
+                    None => {
+                        let mut items = list_runtime_items(left, heap);
+                        items.extend(list_runtime_items(right, heap));
+                        TypedList::Mixed(items)
+                    }
+                }
+            };
+            Ok(Some(RuntimeVal::Obj(heap.alloc(HeapValue::List(merged)))))
         }
         "zip" => {
             if positional.len() != 1 {
@@ -338,17 +349,6 @@ pub(super) fn dispatch_list_builtin_method(
             }
             Ok(Some(RuntimeVal::Obj(
                 heap.alloc(HeapValue::List(TypedList::Mixed(pairs))),
-            )))
-        }
-        "chain" => {
-            if positional.len() != 1 {
-                bail!("list.chain() expects 1 argument (list), got {}", positional.len());
-            }
-            let lhs = list_runtime_items(clone_list(receiver, heap)?, heap);
-            let rhs = list_runtime_items(clone_list(&positional[0], heap)?, heap);
-            let merged: Vec<RuntimeVal> = lhs.into_iter().chain(rhs).collect();
-            Ok(Some(RuntimeVal::Obj(
-                heap.alloc(HeapValue::List(TypedList::Mixed(merged))),
             )))
         }
         "join" => {
