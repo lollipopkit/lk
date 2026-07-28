@@ -35,6 +35,8 @@ mod gc_stress_test;
 #[cfg(test)]
 mod globals_test;
 #[cfg(test)]
+mod host_parity_test;
+#[cfg(test)]
 mod math_test;
 #[cfg(test)]
 mod os_test;

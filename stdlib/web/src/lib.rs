@@ -40,7 +40,7 @@ fn recv(_args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<Runti
     unavailable("recv")
 }
 
-const UNSUPPORTED_MODULES: &[&str] = &[
+pub const UNSUPPORTED_MODULES: &[&str] = &[
     "chan", "datetime", "env", "fs", "http", "io", "net", "os", "process", "random", "stream", "task", "time", "uuid",
 ];
 

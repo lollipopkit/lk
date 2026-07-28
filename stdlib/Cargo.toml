@@ -48,3 +48,10 @@ tracing = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 toml = { workspace = true }
+
+[dev-dependencies]
+# Test-only, for the host-conformance check in `src/host_parity_test.rs`: the
+# two alternative hosts are asked what they know, rather than being described by
+# a second list that can drift. Neither links into the shipped `stdlib`.
+lk-stdlib-bare = { path = "bare" }
+lk-stdlib-web = { path = "web" }

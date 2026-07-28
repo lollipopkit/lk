@@ -73,7 +73,7 @@ const BARE_MODULES: &[fn(&mut ModuleRegistry) -> Result<()>] = &[
 
 /// Modules that exist in LK but cannot be backed by anything on bare metal.
 /// Kept explicit so the error names the reason rather than the symptom.
-const UNSUPPORTED_MODULES: &[&str] = &[
+pub const UNSUPPORTED_MODULES: &[&str] = &[
     "chan", "datetime", "env", "fs", "http", "io", "net", "os", "path", "process", "random", "regex", "stream", "task",
     "time", "uuid",
 ];
