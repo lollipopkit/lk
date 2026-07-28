@@ -1211,6 +1211,20 @@ fn int_literal_value(expr: &crate::expr::Expr) -> Option<i128> {
     match expr {
         Expr::Literal(LiteralVal::Int(value)) => Some(i128::from(*value)),
         Expr::Paren(inner) => int_literal_value(inner),
+        // A *negative* carrier cast to `u64` is a 64-bit bit pattern, and it is
+        // measured as one — otherwise `let a: usize = 0xFFFF_FFFF_FFFF_FFFF` is
+        // refused for being a `u64`, which on every target this compiles for is
+        // the same 64 bits.
+        //
+        // The parser builds exactly this shape for a radix literal too wide for
+        // the carrier (see its `Token::UInt` arm), so this is where the two ends
+        // meet. Restricted to a negative carrier on purpose: without that,
+        // `let a: u32 = 5 as u64` would start passing, and an explicit cast
+        // should not be quietly re-typed.
+        Expr::Cast(inner, Type::MachineInt(crate::val::IntKind::U64)) => match inner.as_ref() {
+            Expr::Literal(LiteralVal::Int(value)) if *value < 0 => Some(i128::from(*value as u64)),
+            _ => None,
+        },
         _ => None,
     }
 }

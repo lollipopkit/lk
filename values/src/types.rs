@@ -264,22 +264,36 @@ impl IntKind {
     /// safe to accept without a cast.
     /// Whether a literal fits.
     ///
-    /// One shape is rejected that arguably should not be: a radix literal past
-    /// `i64::MAX`. `let bit: u64 = 0x8000000000000000;` is a perfectly good u64
-    /// — it is the NX bit in a page-table entry, and the high half of a 64-bit
-    /// BAR — but the lexer has already narrowed it to `i64`, so what arrives
-    /// here is `-9223372036854775808` and the range check says so.
+    /// A radix literal past `i64::MAX` arrives here as its unsigned value, not as
+    /// the negative carrier the `i64` would show: `let bit: u64 =
+    /// 0x8000000000000000;` is a perfectly good u64 — the NX bit in a page-table
+    /// entry, the high half of a 64-bit BAR — and the lexer keeps it as a `u64`
+    /// (`Token::UInt`) precisely so this check sees what was written.
     ///
-    /// Reinterpreting a negative value as its unsigned bit pattern is *not* the
-    /// fix: `let y: u8 = -1;` reaches this function too, and is rightly refused.
-    /// The two are indistinguishable once the sign is the only evidence left, so
-    /// the fix belongs in the lexer, where the source text still says which one
-    /// it was.
+    /// Reinterpreting a negative value as its unsigned bit pattern *here* would
+    /// not have worked: `let y: u8 = -1;` reaches this function too and is
+    /// rightly refused, and the two are indistinguishable once the sign is the
+    /// only evidence left. That is why the distinction is made in the lexer,
+    /// where the source text still says which one it was.
     pub fn accepts_literal(self, value: i128) -> bool {
         match self.range() {
             Some((lo, hi)) => value >= lo && value <= hi,
+            // Pointer width, measured at the width this compiles for.
+            //
+            // It used to probe `u32`/`i32` — "assume the smaller, be safe" —
+            // which on a 64-bit target refuses a legal value: `let a: usize =
+            // 0xFFFF_FFFF_FFFF_FFFF` was rejected while the identical `u64` was
+            // accepted. Nothing else in the compiler hedges this way: the
+            // unsigned-operator rewrites treat `usize` as carrier-filling
+            // alongside `u64`, and pointer casts are lowered as 64-bit. The
+            // range check was the only place still guessing, and it guessed
+            // differently from the code it guards.
+            //
+            // TODO(32-bit targets): a 32-bit deployment target needs this — and
+            // the pointer-width cast in `lower_cast` — to follow the target
+            // rather than the host. Same TODO, one decision.
             None => {
-                let probe = if self.is_signed() { Self::I32 } else { Self::U32 };
+                let probe = if self.is_signed() { Self::I64 } else { Self::U64 };
                 probe.accepts_literal(value)
             }
         }

@@ -197,6 +197,97 @@ fn clif_differential_higher_order() {
 /// is then interpolated.
 ///
 /// Marking a function VM-executed changes the type lattice, and signatures have
+/// The whole machine-integer matrix, answers written out.
+///
+/// Six rounds of work went into this family one operator at a time — shift,
+/// compare, divide, modulo, `as Float`, complement, display — each found by a
+/// program that gave a wrong answer rather than by a test. This is the net
+/// underneath all of it: every width, signed and unsigned, at the edge where it
+/// wraps. Absolute, because a compiler-level mistake is made once and both
+/// backends inherit it.
+#[test]
+fn machine_integer_edges_answer_the_same_on_both_engines() {
+    let dir = unique_tmp_dir("int_matrix");
+    let _ = fs::remove_dir_all(&dir);
+    create_dir_all(&dir).expect("create tmp dir");
+    let file = "matrix.lk";
+    // `0 - 1` rather than `-1` where a negative is wanted: this language has no
+    // unary minus, which is also why a negative literal cannot be told from a
+    // wide bit pattern by shape.
+    let src = "let s8: i8 = 127;\n\
+               println(s8 + 1);\n\
+               let s8min: i8 = 0 - 128;\n\
+               println(s8min - 1);\n\
+               let s16: i16 = 32767;\n\
+               println(s16 + 1);\n\
+               let s32: i32 = 2147483647;\n\
+               println(s32 + 1);\n\
+               let neg: i8 = 0 - 1;\n\
+               println(neg >> 1);\n\
+               let u8max: u8 = 255;\n\
+               println(u8max + 1);\n\
+               let u8zero: u8 = 0;\n\
+               println(u8zero - 1);\n\
+               let u16max: u16 = 65535;\n\
+               println(u16max + 1);\n\
+               let u32max: u32 = 4294967295;\n\
+               println(u32max + 1);\n\
+               let u8big: u8 = 200;\n\
+               println(u8big * 2);\n\
+               let top32: u32 = 0x80000000;\n\
+               println(top32 >> 31);\n\
+               println(top32 / 2);\n\
+               let all64: u64 = 0xFFFFFFFFFFFFFFFF;\n\
+               println(all64 / 2);\n\
+               println(all64 % 10);\n\
+               let top64: u64 = 0x8000000000000000;\n\
+               let one64: u64 = 1;\n\
+               println(top64 > one64);\n\
+               println(one64 < top64);\n\
+               println((top64 as u32) as Int);\n\
+               println((all64 as u8) as Int);\n\
+               println(~top32 as Int);\n";
+    let expected = concat!(
+        "-128\n127\n-32768\n-2147483648\n-1\n",
+        "0\n255\n0\n0\n144\n",
+        "1\n1073741824\n9223372036854775807\n5\n",
+        "true\ntrue\n0\n255\n2147483647\n",
+    );
+    File::create(dir.join(file))
+        .and_then(|mut f| f.write_all(src.as_bytes()))
+        .expect("write program");
+
+    let vm = run_cli(&dir, [file]).env("LK_FORCE_VM", "1").output().expect("vm run");
+    assert_eq!(
+        String::from_utf8_lossy(&vm.stdout),
+        expected,
+        "vm stderr: {}",
+        String::from_utf8_lossy(&vm.stderr)
+    );
+
+    let compile = run_cli(&dir, ["compile", file])
+        .env("LK_AOT_NO_FALLBACK", "1")
+        .env("LK_AOT_HYBRID", "0")
+        .output()
+        .expect("native compile");
+    assert!(
+        compile.status.success(),
+        "native compile failed: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let native = Command::new(dir.join("matrix"))
+        .env("ASAN_OPTIONS", "detect_leaks=0")
+        .output()
+        .expect("run executable");
+    assert_eq!(
+        String::from_utf8_lossy(&native.stdout),
+        expected,
+        "native stderr: {}",
+        String::from_utf8_lossy(&native.stderr)
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
 /// A 64-bit mask can be *written*, and still cannot be written where it does not
 /// belong.
 ///
@@ -219,8 +310,16 @@ fn full_width_radix_literals_are_writable() {
                let mask: u64 = 0xFFFF000000000000;\n\
                println(PAGE_NX & mask);\n\
                let which = match ALL_ONES { 0xFFFFFFFFFFFFFFFF => 1, _ => 0 };\n\
-               println(which);\n";
-    let expected = "9223372036854775808\n18446744073709551615\n9223372036854775808\n1\n";
+               println(which);\n\
+               let addr: usize = 0xFFFFFFFFFFFFFFFF;\n\
+               println(addr);\n\
+               let half: usize = 0x8000000000000000;\n\
+               println(half / 2);\n";
+    // `usize` too, and that is not a freebie: the range check used to probe
+    // `u32` for pointer widths — "assume the smaller" — so the identical value
+    // passed as `u64` and was refused as `usize`.
+    let expected = "9223372036854775808\n18446744073709551615\n9223372036854775808\n1\n\
+                    18446744073709551615\n4611686018427387904\n";
     File::create(dir.join(file))
         .and_then(|mut f| f.write_all(src.as_bytes()))
         .expect("write program");
@@ -252,7 +351,9 @@ fn full_width_radix_literals_are_writable() {
     // Still refused, and for the widths a bit pattern genuinely does not fit.
     for (name, source, wanted) in [
         ("neg.lk", "let y: u8 = -1;\n", "out of range"),
-        ("wide_u32.lk", "let y: u32 = 0xFFFFFFFFFFFFFFFF;\n", "Type mismatch"),
+        ("wide_u32.lk", "let y: u32 = 0xFFFFFFFFFFFFFFFF;\n", "out of range for u32"),
+        // Pointer width being 64 bits does not make it signless.
+        ("neg_usize.lk", "let y: usize = 0 - 1;\n", "out of range for usize"),
     ] {
         File::create(dir.join(name))
             .and_then(|mut f| f.write_all(source.as_bytes()))
