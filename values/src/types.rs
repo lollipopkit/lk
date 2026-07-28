@@ -292,6 +292,17 @@ impl IntKind {
             // TODO(32-bit targets): a 32-bit deployment target needs this — and
             // the pointer-width cast in `lower_cast` — to follow the target
             // rather than the host. Same TODO, one decision.
+            //
+            // Not reachable today, and `no_32_bit_target_is_reachable_yet`
+            // (lk-aot-codegen) is what says so: every 32-bit triple is refused
+            // at `isa::lookup`, so there is no target on which this range check
+            // is wrong. That test fails when one arrives, and names this site.
+            //
+            // The checker cannot answer it by threading a target through
+            // either: `lk check` has none, and bytecode is target-agnostic —
+            // the target only exists at `lk compile object:<triple>`. Whatever
+            // the decision turns out to be, it is a decision about *where* the
+            // width comes from, not just what it is.
             None => {
                 let probe = if self.is_signed() { Self::I64 } else { Self::U64 };
                 probe.accepts_literal(value)

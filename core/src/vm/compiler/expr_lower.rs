@@ -219,7 +219,16 @@ impl Compiler {
         // TODO(32-bit targets): on a 32-bit deployment target a pointer is
         // narrower than the `i64` carrier, so this will need the same
         // truncation a `u32` gets. Harmless while both backends are 64-bit,
-        // and wrong the moment the AOT path cross-compiles to thumb/arm32.
+        // and wrong the moment the AOT path cross-compiles to thumb/arm32 —
+        // which it cannot: Cranelift's backend set here has no 32-bit target
+        // (`no_32_bit_target_is_reachable_yet` in lk-aot-codegen fails when
+        // that stops being true, and names this site).
+        //
+        // Note this is the *compiler*, so it cannot follow the target even in
+        // principle: bytecode is target-agnostic, and the triple only appears
+        // at `lk compile object:<triple>`. A truncation here would have to
+        // become one the VM performs at run time, as `truncate_to_width`
+        // already does for `isize`/`usize`.
         if matches!(ty, crate::val::Type::Ptr { .. }) {
             let src = self.lower_readonly_operand(inner)?;
             // The result is an address, not a machine integer of some width:

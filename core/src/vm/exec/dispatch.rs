@@ -789,13 +789,23 @@ fn cast_source_to_i64(source: &RuntimeVal) -> Result<i64> {
 /// Reduce `value` to `kind`'s width, then widen it back into the `i64` carrier
 /// by `kind`'s signedness.
 ///
-/// Pointer-width kinds are treated as 64-bit here. That is the width on every
-/// target the VM itself runs on; a 32-bit *deployment* target gets its real
-/// width from the AOT path, which lowers to a genuine `i32`.
+/// A pointer-width kind takes the width of the machine this VM is *running on*,
+/// which is what `isize`/`usize` mean: on `thumbv7em-none-eabi` — a target this
+/// VM is built for — a `usize` is 32 bits, and a value that does not fit one is
+/// not an address that machine can hold.
+///
+/// This used to leave them unmasked with the note that "a 32-bit deployment
+/// target gets its real width from the AOT path, which lowers to a genuine
+/// `i32`". The AOT path cannot: Cranelift's backend set here has no 32-bit
+/// target, and every 32-bit triple is refused at `isa::lookup`
+/// (`no_32_bit_target_is_reachable_yet` pins that, and names what to fix when
+/// one becomes reachable). So the promise was to a mechanism that does not
+/// exist, and the VM was the only thing that could have kept it.
+///
+/// On a 64-bit host this changes nothing — `usize::BITS` is 64 and the early
+/// return below already covered it.
 fn truncate_to_width(value: i64, kind: crate::val::IntKind) -> i64 {
-    let Some(bits) = kind.bits() else {
-        return value;
-    };
+    let bits = kind.bits().unwrap_or(usize::BITS);
     if bits >= 64 {
         return value;
     }

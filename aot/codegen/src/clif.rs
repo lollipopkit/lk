@@ -1700,6 +1700,44 @@ mod tests {
         assert_eq!(elf_machine(&x64), EM_X86_64, "the triple must select the backend");
     }
 
+    /// No 32-bit target can be compiled for — and three places quietly depend
+    /// on that.
+    ///
+    /// `isize`/`usize` are pointer width *by definition*, and each of these
+    /// treats them as 64 bits:
+    ///
+    ///  - `IntKind::accepts_literal` (lk-values) range-checks them as `i64`/`u64`
+    ///  - `Compiler::lower_cast` (lk-core) makes a cast to a pointer a no-op
+    ///    rather than a truncation
+    ///  - `truncate_to_width` (lk-core) masks them to the *running* machine's
+    ///    width, which is the one of the three that already follows the target
+    ///
+    /// All three are correct while every reachable backend is 64-bit, and this
+    /// is what says so out loud. Cranelift's backend set here is x86-64,
+    /// aarch64, riscv64 and s390x; a 32-bit triple is refused at `isa::lookup`
+    /// before any of it matters.
+    ///
+    /// When a 32-bit backend arrives — a Cranelift bump, or a new one — this
+    /// test fails, and the sites above are what to fix. That is the point: the
+    /// decision arrives when it becomes real instead of waiting to be
+    /// remembered.
+    #[test]
+    fn no_32_bit_target_is_reachable_yet() {
+        let mir = cross_target_module();
+        for triple in [
+            "thumbv7em-none-eabi",
+            "armv7-unknown-linux-gnueabihf",
+            "i686-unknown-linux-gnu",
+            "riscv32imac-unknown-none-elf",
+        ] {
+            assert!(
+                compile_object_for(&mir, triple).is_err(),
+                "`{triple}` compiles now — `isize`/`usize` must stop meaning 64 bits; \
+                 see this test's doc comment for the places that assume it"
+            );
+        }
+    }
+
     #[test]
     fn an_unknown_triple_is_an_error_not_a_silent_host_build() {
         let err = compile_object_for(&cross_target_module(), "definitely-not-a-target").expect_err("must reject");
