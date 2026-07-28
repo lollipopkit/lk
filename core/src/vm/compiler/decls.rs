@@ -112,6 +112,7 @@ impl Compiler {
             self.user_let_globals.clone(),
             self.function_machine_returns.clone(),
             self.struct_field_machine_widths.clone(),
+            self.global_machine_widths.clone(),
             HashMap::new(),
             function_index + 1,
         )?;
@@ -191,6 +192,16 @@ impl Compiler {
     }
 
     pub(super) fn emit_get_global(&mut self, slot: u32) -> Result<u16> {
+        self.emit_get_global_named(slot, None)
+    }
+
+    /// As [`Self::emit_get_global`], told which name it is reading.
+    ///
+    /// The name is what makes a declared width usable: a top-level
+    /// `const MASK: u32` reads through `GetGlobal` into a fresh register, and
+    /// the register is where every machine-integer rule looks. Callers that do
+    /// not have a name pass `None` and get the old behaviour.
+    pub(super) fn emit_get_global_named(&mut self, slot: u32, name: Option<&str>) -> Result<u16> {
         let dst = self.alloc_reg();
         let slot = u16::try_from(slot).map_err(|_| anyhow!("Compiler global slot {slot} exceeds u16"))?;
         let pc = self.function.code.len();
@@ -203,6 +214,10 @@ impl Compiler {
             },
         );
         self.function.performance.clear_register(dst);
+        // The declared width of the global, onto the register it landed in.
+        if let Some(kind) = name.and_then(|name| self.global_machine_widths.get(name).copied()) {
+            self.machine_regs.insert(dst, kind);
+        }
         Ok(dst)
     }
 

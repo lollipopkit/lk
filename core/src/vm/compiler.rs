@@ -85,6 +85,13 @@ pub struct Compiler {
     /// once so a `let` bound to a call can learn its width — see
     /// [`Compiler::initializer_machine_width`].
     function_machine_returns: HashMap<String, crate::val::IntKind>,
+    /// Machine-int widths of the names this closure captured, learned from the
+    /// enclosing scope at the moment the closure was built. A capture is read
+    /// through `LoadCapture` into a fresh register, which carries nothing.
+    capture_machine_widths: HashMap<String, crate::val::IntKind>,
+    /// Machine-int widths of top-level bindings, by name — see
+    /// [`support::collect_top_level_machine_widths`].
+    global_machine_widths: HashMap<String, crate::val::IntKind>,
     /// Machine-int field widths, by struct name then field name — see
     /// [`support::collect_struct_field_machine_widths`].
     struct_field_machine_widths: HashMap<String, HashMap<String, crate::val::IntKind>>,
@@ -670,7 +677,13 @@ impl Compiler {
         let capture_base = self.alloc_regs(captures.len())?;
         let mut capture_names = HashMap::new();
         let mut capture_cells = HashSet::new();
+        let mut capture_widths = HashMap::new();
         for (index, name) in captures.iter().enumerate() {
+            // Asked *before* the capture is lowered, while the name still
+            // resolves to the enclosing scope's register.
+            if let Some(kind) = self.expr_machine_width(&Expr::Var(name.clone())) {
+                capture_widths.insert(name.clone(), kind);
+            }
             let (value, is_cell) = self.lower_capture_value(name)?;
             self.emit_move(capture_base + index as u16, value, "closure capture")?;
             capture_names.insert(name.clone(), index as u16);
@@ -679,8 +692,14 @@ impl Compiler {
             }
         }
 
-        let mut compiled =
-            self.compile_closure_function(params, body, capture_names, capture_cells, function_index + 1)?;
+        let mut compiled = self.compile_closure_function(
+            params,
+            body,
+            capture_names,
+            capture_cells,
+            capture_widths,
+            function_index + 1,
+        )?;
         let dst = self.alloc_reg();
         self.emit(Instr::abc(
             Opcode::MakeClosure,
@@ -699,6 +718,7 @@ impl Compiler {
         body: &Expr,
         capture_names: HashMap<String, u16>,
         capture_cells: HashSet<String>,
+        capture_widths: HashMap<String, crate::val::IntKind>,
         dynamic_function_base: u32,
     ) -> Result<CompiledFunction> {
         if params.len() > u16::MAX as usize {
@@ -715,6 +735,14 @@ impl Compiler {
         compiler.user_let_globals = self.user_let_globals.clone();
         compiler.capture_names = capture_names;
         compiler.capture_cells = capture_cells;
+        compiler.capture_machine_widths = capture_widths;
+        // The width facts a closure body needs are the enclosing compiler's, and
+        // none of them were being inherited: a closure reading a top-level
+        // `const MASK: u32` computed at 64 bits for the same reason a function
+        // body did.
+        compiler.function_machine_returns = self.function_machine_returns.clone();
+        compiler.struct_field_machine_widths = self.struct_field_machine_widths.clone();
+        compiler.global_machine_widths = self.global_machine_widths.clone();
         compiler.dynamic_function_base = dynamic_function_base;
         compiler.function.param_count = params.len() as u16;
         compiler.function.positional_param_count = params.len() as u16;
@@ -810,13 +838,19 @@ impl Compiler {
         }
         if let Some(capture) = self.capture_names.get(name).copied() {
             let cell_or_value = self.emit_load_capture(capture)?;
-            if self.capture_cells.contains(name) {
-                return self.emit_load_cell_value(cell_or_value);
+            let width = self.capture_machine_widths.get(name).copied();
+            let dst = if self.capture_cells.contains(name) {
+                self.emit_load_cell_value(cell_or_value)?
+            } else {
+                cell_or_value
+            };
+            if let Some(kind) = width {
+                self.machine_regs.insert(dst, kind);
             }
-            return Ok(cell_or_value);
+            return Ok(dst);
         }
         if let Some(slot) = self.global_names.get(name).copied() {
-            return self.emit_get_global(slot);
+            return self.emit_get_global_named(slot, Some(name));
         }
         Err(anyhow!("Compiler undefined local/global `{name}`"))
     }

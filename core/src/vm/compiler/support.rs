@@ -158,6 +158,27 @@ pub(super) fn collect_struct_field_machine_widths(
     structs
 }
 
+/// Top-level bindings whose declared type is a machine int.
+///
+/// `const RAH_VALID: u32 = 0x80000000;` is the shape a driver is made of —
+/// `drivers/e1000.lk` alone has two dozen — and a read of one lands in a fresh
+/// register through `GetGlobal`, which carries no width. Without this every use
+/// of a register constant computed at 64 bits.
+pub(super) fn collect_top_level_machine_widths(program: &Program) -> HashMap<String, crate::val::IntKind> {
+    let mut widths = HashMap::new();
+    for stmt in &program.statements {
+        if let Stmt::Let {
+            pattern: crate::expr::Pattern::Variable(name),
+            type_annotation: Some(crate::val::Type::MachineInt(kind)),
+            ..
+        } = item_without_attributes(stmt)
+        {
+            widths.insert(name.clone(), *kind);
+        }
+    }
+    widths
+}
+
 pub(super) fn collect_function_names(program: &Program) -> Result<HashMap<String, u32>> {
     let mut names = HashMap::new();
     let mut next = 1_u32;

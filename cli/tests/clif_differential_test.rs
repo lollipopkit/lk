@@ -223,7 +223,11 @@ fn a_declared_width_crosses_a_function_boundary() {
     // Each helper is small enough to be inlined at the call site *and* is
     // compiled out of line for the module, so both paths are exercised by the
     // same source.
-    let src = "fn add_u8(a: u8) -> u8 { return a + 1; }\n\
+    let src = "const WIDE: u32 = 0xFFFFFFFF;\n\
+               fn from_const() -> u32 { return WIDE + 1; }\n\
+               // A closure inherited none of these facts either.\n\
+               fn in_closure() -> u32 { let f = || WIDE + 1; return f(); }\n\
+               fn add_u8(a: u8) -> u8 { return a + 1; }\n\
                fn mul_u8(a: u8) -> u8 { return a * 2; }\n\
                fn sub_u8(a: u8) -> u8 { return a - 1; }\n\
                fn add_i8(a: i8) -> i8 { return a + 1; }\n\
@@ -247,11 +251,18 @@ fn a_declared_width_crosses_a_function_boundary() {
                struct Reg { value: u32 }\n\
                let r = Reg { value: 0xFFFFFFFF as u32 };\n\
                println(r.value + 1);\n\
-               println(r.value / 2);\n";
+               println(r.value / 2);\n\
+               // A top-level `const`, which is what a driver's register map is\n\
+               // made of — `drivers/e1000.lk` has seventeen — read through\n\
+               // `GetGlobal` into a register that carries nothing.\n\
+               println(WIDE + 1);\n\
+               println(from_const());\n\
+               println(in_closure());\n";
     let expected = concat!(
         "0\n144\n255\n-128\n",
         "4294934528\ntrue\n9223372036854775807\n128\n",
         "0\n2147483647\n",
+        "0\n0\n0\n",
     );
     File::create(dir.join(file))
         .and_then(|mut f| f.write_all(src.as_bytes()))
