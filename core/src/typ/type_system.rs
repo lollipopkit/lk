@@ -438,6 +438,17 @@ impl TypeInferenceEngine {
 
             // Structural unification
             (Type::List(a), Type::List(b)) => self.unify(*a, *b),
+            // A tuple is a list whose element types are known one by one —
+            // there is no tuple at runtime, `HeapValue` has only `List`. This
+            // mirrors the rule in `is_assignable_to`; without it the two
+            // disagreed, and the disagreement was invisible only because the
+            // concrete-concrete rule below swallows whatever reaches it.
+            (Type::Tuple(elems), Type::List(elem)) | (Type::List(elem), Type::Tuple(elems)) => {
+                for tuple_elem in elems {
+                    self.unify(tuple_elem, (*elem).clone())?;
+                }
+                Ok(())
+            }
             (Type::Set(a), Type::Set(b)) => self.unify(*a, *b),
             (Type::Map(ak, av), Type::Map(bk, bv)) => {
                 self.unify(*ak, *bk)?;
