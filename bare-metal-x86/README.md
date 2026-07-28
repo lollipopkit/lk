@@ -1621,6 +1621,7 @@ holds, and five of these were written after the sections above.
 | `check_user.py` | ring 3 spoke through a syscall, was preempted while never yielding, and was refused the kernel page next to its own |
 | `check_disk.py` | a sector read, one written, and the medium checked *after* QEMU exits — a drive acknowledges a write long before it is on the platter |
 | `check_run.py` | a program loaded off that disk and interpreted, on the same machine that compiled the kernel |
+| `check_interpreted_driver.py` | a *driver* loaded off that disk and interpreted: it drives the CMOS clock through port I/O, on a kernel that was compiled before it existed. Everything else here proves LK can be compiled into this layer; this proves it can drive hardware without being compiled at all |
 | `check_pci.py` | a device found by walking configuration space, reached through its BAR, made to compute, made to DMA into RAM, and made to interrupt on a gate the driver installed for itself |
 | `check_net.py` | an Intel NIC: its MAC out of the EEPROM, two descriptor rings fed twelve exchanges past their wrap, a well-formed ARP request on the wire (checked from a pcap, not from the guest), the gateway's reply, every page given back, and the card's own interrupt reaching a handler |
 | `check_exit.py` | a task that *ends* — twenty of them through sixteen slots, every slot and every stack page returning — and one that sleeps for the time it asks for with the CPU halted throughout |
