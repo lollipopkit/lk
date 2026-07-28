@@ -1515,6 +1515,20 @@ impl TypeChecker {
                 }
                 Ok((**elem_type).clone())
             }
+            // A `Bytes` indexes like any other sequence, and its elements are
+            // `Int`. Without this the index fell through to struct-field
+            // access, so `b[0]` reported "Unknown struct 'Bytes'".
+            Type::Named(name) if name == "Bytes" => {
+                if !self.is_assignable(&field_type, &Type::Int) {
+                    return Err(Self::type_err(
+                        "Bytes index must be integer",
+                        Some(Type::Int),
+                        Some(field_type),
+                        None,
+                    ));
+                }
+                Ok(Type::Int)
+            }
             // A window indexes like the list it windows, and yields the same
             // element type — which is the point of `Slice` carrying one.
             Type::Generic { name, params } if name == "Slice" => {

@@ -1201,6 +1201,7 @@ fn receiver_kind_label(kind: lk_core::typ::BuiltinReceiverKind) -> &'static str 
     use lk_core::typ::BuiltinReceiverKind::*;
     match kind {
         List => "List",
+        Bytes => "Bytes",
         Slice => "Slice",
         Map => "Map",
         Set => "Set",

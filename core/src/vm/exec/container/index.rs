@@ -349,6 +349,24 @@ impl Executor {
         self.get_typed_list_element_allocating(source, start + index as usize)
     }
 
+    /// One byte of a `Bytes`, as an `Int`.
+    ///
+    /// Same index rule as every other sequence: a negative counts from the end,
+    /// outside is nil. `Bytes` was not indexable at all until it had this —
+    /// `b[0]` answered "index target object is not indexable".
+    pub(in crate::vm::exec) fn byte_element(&mut self, handle: crate::val::HeapRef, index: i64) -> RuntimeVal {
+        let Some(HeapValue::Bytes(bytes)) = self.state.heap.get(handle) else {
+            return RuntimeVal::Nil;
+        };
+        let index = if index < 0 { bytes.len() as i64 + index } else { index };
+        if index < 0 {
+            return RuntimeVal::Nil;
+        }
+        bytes
+            .get(index as usize)
+            .map_or(RuntimeVal::Nil, |byte| RuntimeVal::Int(*byte as i64))
+    }
+
     /// The same read, allowed to allocate. Used where the fast path declines.
     fn get_typed_list_element_allocating(&mut self, handle: crate::val::HeapRef, index: usize) -> RuntimeVal {
         let Some(HeapValue::List(list)) = self.state.heap.get(handle) else {
@@ -459,6 +477,12 @@ impl Executor {
                     bail!("slice index must be Int");
                 };
                 Ok(self.slice_element(handle, index))
+            }
+            IndexTargetKind::Bytes => {
+                let RuntimeVal::Int(index) = *self.read(key_reg)? else {
+                    bail!("bytes index must be Int");
+                };
+                Ok(self.byte_element(handle, index))
             }
             IndexTargetKind::List => {
                 if let Some(pos) = self.negative_list_index(handle, key_reg) {

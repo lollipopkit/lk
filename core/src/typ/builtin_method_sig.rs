@@ -42,6 +42,11 @@ use crate::val::Type;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuiltinReceiverKind {
     List,
+    /// A `Bytes` handle. A sequence like the two below it, with the *read* half
+    /// of the list surface and none of the transforming half: `map` cannot
+    /// answer a `Bytes`, because a callback may return something that is not a
+    /// byte. `to_list` is the way across.
+    Bytes,
     /// A window over a list (`xs.slice(a, b)`), which is its own type: it has
     /// `to_list` and no `push`.
     Slice,
@@ -94,7 +99,7 @@ pub struct BuiltinMethodSig {
     pub elementwise_callback: Option<usize>,
 }
 
-use BuiltinReceiverKind::{List, Map, Set, Slice, Str};
+use BuiltinReceiverKind::{Bytes, List, Map, Set, Slice, Str};
 
 const fn m(
     receiver: BuiltinReceiverKind,
@@ -300,6 +305,72 @@ pub const BUILTIN_METHODS: &[BuiltinMethodSig] = &[
         "A narrower window, resolved against the original list",
     ),
     m(Slice, "to_list", &[], "List<Elem>", "A copy of the window's elements"),
+    m(
+        Slice,
+        "first",
+        &[],
+        "Elem?",
+        "First element, or nil when the window is empty",
+    ),
+    m(
+        Slice,
+        "last",
+        &[],
+        "Elem?",
+        "Last element, or nil when the window is empty",
+    ),
+    m(
+        Slice,
+        "contains",
+        &[p("value", "Elem")],
+        "Bool",
+        "Whether an element of the window equals `value`",
+    ),
+    m(
+        Slice,
+        "index_of",
+        &[p("value", "Elem")],
+        "Int",
+        "Position within the window of the first equal element, or -1",
+    ),
+    // ---- Bytes ----
+    //
+    // The read half of the list surface, and the elements are `Int`. Every one
+    // of these means on a `Bytes` exactly what it means on a `List`, which is
+    // the test for belonging here.
+    m(Bytes, "len", &[], "Int", "Number of bytes"),
+    m(Bytes, "is_empty", &[], "Bool", "Whether there are no bytes"),
+    m(Bytes, "first", &[], "Int?", "First byte, or nil when empty"),
+    m(Bytes, "last", &[], "Int?", "Last byte, or nil when empty"),
+    m(
+        Bytes,
+        "get",
+        &[p("index", "Int")],
+        "Int?",
+        "Byte at `index` (negative counts from the end), or nil when out of range",
+    ),
+    m(
+        Bytes,
+        "contains",
+        &[p("value", "Int")],
+        "Bool",
+        "Whether a byte equals `value`",
+    ),
+    m(
+        Bytes,
+        "index_of",
+        &[p("value", "Int")],
+        "Int",
+        "Position of the first byte equal to `value`, or -1",
+    ),
+    m(
+        Bytes,
+        "slice",
+        &[p("start", "Int"), opt("end", "Int")],
+        "Bytes",
+        "The bytes in `[start, end)` — a copy, since `Bytes` has no cheap sub-range",
+    ),
+    m(Bytes, "to_list", &[], "List<Int>", "The bytes as a list of numbers"),
     // ---- Map ----
     m(Map, "len", &[], "Int", "Number of entries"),
     m(Map, "is_empty", &[], "Bool", "Whether the map has no entries"),
@@ -532,6 +603,7 @@ fn bind(receiver: &Type) -> Option<Bindings> {
         // A window carries its element type: `xs.slice(..)` on a `List<Int>` is
         // a `Slice<Int>`, and losing that is what made `let s: String = w[0]`
         // type-check for as long as the window was an opaque handle.
+        Type::Named(name) if name == "Bytes" => (Bytes, Type::Int, Type::Any, Type::Any),
         Type::Generic { name, params } if name == "Slice" => (
             Slice,
             params.first().cloned().unwrap_or(Type::Any),
@@ -697,6 +769,7 @@ mod tests {
     fn every_declared_type_resolves() {
         let receivers = [
             (List, list_of(Type::Int)),
+            (Bytes, Type::Named("Bytes".to_string())),
             (Slice, slice_of(Type::Int)),
             (Map, Type::Map(Box::new(Type::String), Box::new(Type::Int))),
             (Set, Type::Set(Box::new(Type::Int))),

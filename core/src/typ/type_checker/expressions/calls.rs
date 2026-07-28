@@ -570,6 +570,7 @@ fn receiver_kind_name(kind: crate::typ::BuiltinReceiverKind) -> &'static str {
     use crate::typ::BuiltinReceiverKind::*;
     match kind {
         List => "List",
+        Bytes => "Bytes",
         Slice => "Slice",
         Map => "Map",
         Set => "Set",

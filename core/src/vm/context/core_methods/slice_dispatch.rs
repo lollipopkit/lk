@@ -77,6 +77,43 @@ pub(super) fn dispatch_slice_builtin_method(
                 },
             ))))))
         }
+        "first" => {
+            if !positional.is_empty() {
+                bail!("slice.first() expects no arguments, got {}", positional.len());
+            }
+            if slice.len == 0 {
+                return Ok(Some(RuntimeVal::Nil));
+            }
+            Ok(Some(slice_item(&slice, 0, heap)))
+        }
+        "last" => {
+            if !positional.is_empty() {
+                bail!("slice.last() expects no arguments, got {}", positional.len());
+            }
+            if slice.len == 0 {
+                return Ok(Some(RuntimeVal::Nil));
+            }
+            Ok(Some(slice_item(&slice, slice.len - 1, heap)))
+        }
+        "contains" | "index_of" => {
+            if positional.len() != 1 {
+                bail!("slice.{method}() expects 1 argument (value), got {}", positional.len());
+            }
+            let needle = positional[0];
+            let mut found = None;
+            for index in 0..slice.len {
+                let item = slice_item(&slice, index, heap);
+                if runtime_values_equal(&item, &needle) {
+                    found = Some(index);
+                    break;
+                }
+            }
+            Ok(Some(if method == "contains" {
+                RuntimeVal::Bool(found.is_some())
+            } else {
+                RuntimeVal::Int(found.map_or(-1, |index| index as i64))
+            }))
+        }
         "to_list" => {
             if !positional.is_empty() {
                 bail!("slice.to_list() expects no arguments, got {}", positional.len());

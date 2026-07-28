@@ -713,6 +713,8 @@ impl Stmt {
                     // 窗口按它自己的长度和索引迭代，两个后端都是如此
                     // （`to_iter` 把 slice 句柄原样交回去，不materialize）。
                     Type::Generic { name, .. } if name == "Slice" => {}
+                    // Bytes 同理：它是一个序列，元素是 Int。
+                    Type::Named(name) if name == "Bytes" => {}
                     // 元组就是列表，`is_assignable_to` 已经这么说了。
                     Type::Tuple(_) => {}
                     _ => {

@@ -5,8 +5,10 @@ use alloc::sync::Arc;
 use anyhow::{anyhow, bail};
 use arcstr::ArcStr;
 
+mod bytes_dispatch;
 mod list_dispatch;
 mod slice_dispatch;
+use self::bytes_dispatch::*;
 use self::list_dispatch::*;
 use self::slice_dispatch::*;
 
@@ -111,6 +113,7 @@ enum BuiltinReceiver {
     Str,
     List,
     Slice,
+    Bytes,
     Other,
 }
 
@@ -123,6 +126,7 @@ fn builtin_receiver_kind(receiver: &RuntimeVal, heap: &HeapStore) -> BuiltinRece
             Some(HeapValue::String(_)) => BuiltinReceiver::Str,
             Some(HeapValue::List(_)) => BuiltinReceiver::List,
             Some(HeapValue::Slice(_)) => BuiltinReceiver::Slice,
+            Some(HeapValue::Bytes(_)) => BuiltinReceiver::Bytes,
             _ => BuiltinReceiver::Other,
         },
         _ => BuiltinReceiver::Other,
@@ -147,6 +151,9 @@ fn dispatch_builtin_method(
         }),
         BuiltinReceiver::Slice => positional.with_slice(runtime.heap_mut(), |positional, heap| {
             dispatch_slice_builtin_method(receiver, method, positional, heap)
+        }),
+        BuiltinReceiver::Bytes => positional.with_slice(runtime.heap_mut(), |positional, heap| {
+            dispatch_bytes_builtin_method(receiver, method, positional, heap)
         }),
         BuiltinReceiver::List => positional.with_slice(runtime.heap_mut(), |positional, heap| {
             dispatch_list_builtin_method(receiver, method, positional, heap)
@@ -230,6 +237,7 @@ fn dispatch_builtin_method_slice(
         BuiltinReceiver::Str => dispatch_string_builtin_method(receiver, method, args, runtime.heap_mut()),
         BuiltinReceiver::List => dispatch_list_builtin_method(receiver, method, args, runtime.heap_mut()),
         BuiltinReceiver::Slice => dispatch_slice_builtin_method(receiver, method, args, runtime.heap_mut()),
+        BuiltinReceiver::Bytes => dispatch_bytes_builtin_method(receiver, method, args, runtime.heap_mut()),
         BuiltinReceiver::Other => Ok(None),
     }
 }

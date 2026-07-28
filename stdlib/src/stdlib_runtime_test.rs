@@ -218,4 +218,65 @@ mod tests {
         assert_eq!(result.first_return(), &RuntimeVal::Bool(true));
         Ok(())
     }
+
+    /// The three sequence types answer the read operations the same way.
+    ///
+    /// They did not: `Bytes` had no methods at all — `b[0]` was "not
+    /// indexable", `for x in b` was a type error — so reading bytes meant
+    /// `bytes.to_list(b)`, a copy that also turns each byte into an eight-byte
+    /// `Int`. The only way to read bytes was to stop having bytes. `Slice` was
+    /// half-way: indexable and iterable, but without `first`/`last`/
+    /// `contains`/`index_of`.
+    ///
+    /// What belongs here is the operations whose meaning does not depend on the
+    /// element type. `map` deliberately does not: it cannot answer a `Bytes`,
+    /// because a callback may return something that is not a byte.
+    #[test]
+    fn the_three_sequences_read_alike() -> Result<()> {
+        let source = r#"
+            let xs = [97, 98, 99];
+            let w = xs.slice(0, 3);
+            let b = "abc".bytes();
+            return xs.len() == 3 && w.len() == 3 && b.len() == 3
+                && xs[0] == 97 && w[0] == 97 && b[0] == 97
+                && xs[-1] == 99 && w[-1] == 99 && b[-1] == 99
+                && xs[9] == nil && w[9] == nil && b[9] == nil
+                && xs.first() == 97 && w.first() == 97 && b.first() == 97
+                && xs.last() == 99 && w.last() == 99 && b.last() == 99
+                && xs.get(1) == 98 && w.get(1) == 98 && b.get(1) == 98
+                && xs.contains(98) && w.contains(98) && b.contains(98)
+                && xs.index_of(99) == 2 && w.index_of(99) == 2 && b.index_of(99) == 2
+                && xs.index_of(1) == 0 - 1 && w.index_of(1) == 0 - 1 && b.index_of(1) == 0 - 1
+                && !xs.is_empty() && !w.is_empty() && !b.is_empty()
+                && w.to_list() == xs && b.to_list() == xs;
+        "#;
+        let result = run(source)?;
+        assert_eq!(result.first_return(), &RuntimeVal::Bool(true));
+        Ok(())
+    }
+
+    /// …including `for`, which is the operation the question started from.
+    #[test]
+    fn all_three_sequences_iterate() -> Result<()> {
+        let source = r#"
+            let xs = [97, 98, 99];
+            let sums = [];
+            for source in [xs, xs.slice(0, 3), "abc".bytes()] {
+                let total = 0;
+                for value in source { total = total + value; }
+                sums.push(total);
+            }
+            return sums;
+        "#;
+        let result = run(source)?;
+        let RuntimeVal::Obj(handle) = result.first_return() else {
+            panic!("expected the sums list");
+        };
+        let sums = match result.state.heap().get(*handle) {
+            Some(HeapValue::List(TypedList::Int(values))) => values.clone(),
+            other => panic!("expected an int list, got {other:?}"),
+        };
+        assert_eq!(sums, vec![294, 294, 294]);
+        Ok(())
+    }
 }

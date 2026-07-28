@@ -28,6 +28,7 @@ enum IndexTargetKind {
     Object,
     String,
     Slice,
+    Bytes,
 }
 
 enum SliceFromPlan {
@@ -264,6 +265,7 @@ impl Executor {
             HeapValue::Object(_) => Ok(IndexTargetKind::Object),
             HeapValue::String(_) => Ok(IndexTargetKind::String),
             HeapValue::Slice(_) => Ok(IndexTargetKind::Slice),
+            HeapValue::Bytes(_) => Ok(IndexTargetKind::Bytes),
             other => bail!("GetIndex target object is not indexable: {:?}", heap_kind(other)),
         }
     }
@@ -455,6 +457,11 @@ impl Executor {
                     // A window is indexable and knows its length, which is all
                     // the loop needs — copying it out would defeat the point.
                     HeapValue::Slice(_) => ToIterPlan::ExistingList(handle),
+                    // Same reasoning: a `Bytes` is indexable and knows its
+                    // length. `for b in data` was a type error until now, so
+                    // reading bytes meant `bytes.to_list(data)` — a copy that
+                    // also turns each byte into an eight-byte `Int`.
+                    HeapValue::Bytes(_) => ToIterPlan::ExistingList(handle),
                     HeapValue::String(value) => ToIterPlan::StringChars(string_chars_to_list(value)),
                     HeapValue::Map(map) => ToIterPlan::Map(typed_map_iter_snapshot(map)),
                     HeapValue::Set(values) => ToIterPlan::Set(values.entries().cloned().collect()),
@@ -638,6 +645,13 @@ impl Executor {
             // a fact for: `Unknown` sends the read down the general path, which
             // resolves it against the source list.
             HeapValue::Slice(_) => Ok(PerfIndexFact {
+                target_kind: PerfIndexTargetKind::Unknown,
+                value_kind: PerfValueKind::Unknown,
+            }),
+            // Same as a window: indexable, no specialised fast path. The
+            // elements *are* known to be `Int`, but `value_kind` describes the
+            // fast path's output and there is none to describe.
+            HeapValue::Bytes(_) => Ok(PerfIndexFact {
                 target_kind: PerfIndexTargetKind::Unknown,
                 value_kind: PerfValueKind::Unknown,
             }),
