@@ -760,7 +760,12 @@ impl ParamList {
         let arms = signature.params.iter().enumerate().filter_map(|(index, param)| {
             named.contains(&param.name.as_str()).then(|| {
                 let name = param.name.as_str();
-                quote!(#name => __lk_slots[#index] = ::core::option::Option::Some(*__lk_named_value),)
+                quote!(#name => {
+                    if __lk_slots[#index].is_some() {
+                        ::anyhow::bail!("{} received duplicate named argument '{}'", #display_name, #name);
+                    }
+                    __lk_slots[#index] = ::core::option::Option::Some(*__lk_named_value);
+                })
             })
         });
         // Defaults are declared as source text (`min?: Int = 0`), and the ones
@@ -785,7 +790,15 @@ impl ParamList {
                 args.try_for_each_named(runtime.heap(), |__lk_named_name, __lk_named_value| {
                     match __lk_named_name {
                         #(#arms)*
-                        _ => {}
+                        // Not a name this function declares. The type checker
+                        // rejects it for a call written in source, but this is
+                        // the only guard for one built any other way — and
+                        // ignoring it silently is how a typo becomes a default.
+                        __lk_other => ::anyhow::bail!(
+                            "{} does not accept named argument '{}'",
+                            #display_name,
+                            __lk_other
+                        ),
                     }
                     Ok(())
                 })?;

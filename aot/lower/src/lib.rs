@@ -446,7 +446,7 @@ pub fn lower_bundled(
         }
         (globals, functions, failures)
     };
-    let (mut globals, mut functions, failures) = final_pass(&mut sig, &reachable, &funcs);
+    let (globals, functions, failures) = final_pass(&mut sig, &reachable, &funcs);
     // A retriable discovery made *here* had nowhere to go.
     //
     // The fixpoint records them and runs again; `refine_signatures` then runs

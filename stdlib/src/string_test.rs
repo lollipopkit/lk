@@ -116,6 +116,13 @@ mod tests {
         Ok(())
     }
 
+    /// Naming an argument means what passing it positionally means.
+    ///
+    /// `replace`'s `all` flag used to default to whether the call *spelled*
+    /// its arguments by name: `replace("aaa", "a", "b")` replaced every
+    /// occurrence and `replace("aaa", pattern: "a", with: "b")` replaced one.
+    /// Same arguments, different answer, decided by punctuation. All three
+    /// spellings below now agree.
     #[test]
     fn test_string_replace_named_arguments() -> Result<()> {
         let source = r#"
@@ -132,7 +139,7 @@ mod tests {
         assert_eq!(
             values.as_slice(),
             &[
-                Arc::<str>::from("xollipop"),
+                Arc::<str>::from("xoxxipop"),
                 Arc::<str>::from("xoxxipop"),
                 Arc::<str>::from("xoxxipop")
             ]

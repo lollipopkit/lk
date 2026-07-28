@@ -153,7 +153,7 @@ mod tests {
             .expect("string.replace export");
         assert_eq!(
             string_replace.signature.as_deref(),
-            Some("string.replace(text: String, pattern?: String, with?: String, all?: Bool) -> String")
+            Some("string.replace(text: String, pattern: String, with: String, all?: Bool = true) -> String")
         );
         let time_since = catalog.export_path(&["time", "since"]).expect("time.since export");
         assert_eq!(

@@ -18,7 +18,6 @@ use alloc::{
 };
 
 use alloc::sync::Arc;
-use lk_core::compat::collections::HashSet;
 
 use anyhow::{Result, anyhow, bail};
 use lk_core::{
@@ -82,67 +81,37 @@ impl StringModule {
         Ok(RuntimeVal::Bool(value.contains(needle.as_ref())))
     }
 
-    #[stdlib_export(params(text: String, pattern?: String, with?: String, all?: Bool), named(pattern, with, all), returns = String)]
+    /// `replace(text, pattern, with, all = true)`.
+    ///
+    /// `all` used to default to whether the *call* spelled its arguments by
+    /// name: `replace("aaa", "a", "b")` answered `"bbb"` and
+    /// `replace("aaa", pattern: "a", with: "b")` answered `"baa"` — the same
+    /// arguments, a different answer, decided by punctuation. Naming an
+    /// argument is supposed to mean exactly what passing it positionally
+    /// means, so there is one default now, and it is the positional one.
+    #[stdlib_export(
+        params(text: String, pattern: String, with: String, all?: Bool = true),
+        named(pattern, with, all),
+        returns = String
+    )]
     fn replace(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+        // Named arguments have already been folded into their positional slots
+        // by the export wrapper, which is also what rejects a duplicate or an
+        // unknown name. This body reads one shape.
         let pos = args.as_slice();
-        if pos.is_empty() {
-            bail!("replace() requires at least the source string as the first argument");
+        if pos.len() < 3 {
+            bail!("replace() requires a source string, a pattern and a replacement");
         }
         if pos.len() > 4 {
             bail!("replace() received too many positional arguments (expected at most 4)");
         }
-
         let source = runtime_string_arg(&pos[0], runtime.heap(), "replace() first argument")?;
-        let mut pattern = None;
-        let mut with = None;
-        let mut all_flag = None;
-        let mut used_named_core = false;
-
-        if pos.len() >= 2 {
-            pattern = Some(runtime_string_arg(
-                &pos[1],
-                runtime.heap(),
-                "replace() second argument (pattern)",
-            )?);
-        }
-        if pos.len() >= 3 {
-            with = Some(runtime_string_arg(
-                &pos[2],
-                runtime.heap(),
-                "replace() third argument (with)",
-            )?);
-        }
-        if pos.len() >= 4 {
-            all_flag = Some(bool_arg(&pos[3], "replace() fourth argument (all flag)")?);
-        }
-
-        let mut seen = HashSet::with_capacity(args.named_len());
-        args.try_for_each_named(runtime.heap(), |name, value| {
-            if !seen.insert(name.to_string()) {
-                bail!("replace() received duplicate named argument '{}'", name);
-            }
-            match name {
-                "pattern" => {
-                    pattern = Some(runtime_string_arg(value, runtime.heap(), "replace() named 'pattern'")?);
-                    used_named_core = true;
-                }
-                "with" => {
-                    with = Some(runtime_string_arg(value, runtime.heap(), "replace() named 'with'")?);
-                    used_named_core = true;
-                }
-                "all" => all_flag = Some(bool_arg(value, "replace() named 'all'")?),
-                other => bail!("replace() does not accept named argument '{}'", other),
-            }
-            Ok(())
-        })?;
-
-        let pattern = pattern.ok_or_else(|| {
-            anyhow!("replace() requires a pattern string (provide it positionally or via named 'pattern')")
-        })?;
-        let with = with.ok_or_else(|| {
-            anyhow!("replace() requires a replacement string (provide it positionally or via named 'with')")
-        })?;
-        let all = all_flag.unwrap_or(!used_named_core);
+        let pattern = runtime_string_arg(&pos[1], runtime.heap(), "replace() second argument (pattern)")?;
+        let with = runtime_string_arg(&pos[2], runtime.heap(), "replace() third argument (with)")?;
+        let all = match pos.get(3) {
+            Some(value) => bool_arg(value, "replace() fourth argument (all flag)")?,
+            None => true,
+        };
         let result = if all {
             source.replace(pattern.as_ref(), with.as_ref())
         } else {
