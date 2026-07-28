@@ -513,7 +513,22 @@ fn e1000_receive(state: Int, out: Int, capacity: Int) -> Int {
     if ((status & RX_STATUS_DD) == 0) {
         return 0;
     }
+    // The length is the *card's* word for how much it wrote, and the only thing
+    // that bounds where it wrote is the buffer this driver gave it. Clamped to
+    // that before it is used as a count, because the check below is the
+    // caller's bound and not this one's: with a caller offering more than
+    // `RX_BUFFER_SIZE`, a card reporting a longer frame would have the copy read
+    // out of the next descriptor's buffer, or past the region entirely on the
+    // last one.
+    //
+    // Not reachable from this kernel today — its caller offers 256 bytes, well
+    // under the 2048 each buffer has — which is exactly why it is worth writing
+    // down: what stops it is a number at the call site, not anything this
+    // function knows.
     let length = desc_u16(descriptor + RX_LENGTH_OFFSET);
+    if (length > RX_BUFFER_SIZE) {
+        length = RX_BUFFER_SIZE;
+    }
     let source = state_get(state, STATE_RX_BUFFERS) + head * RX_BUFFER_SIZE;
 
     let taken = length;
