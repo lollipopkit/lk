@@ -161,23 +161,34 @@ fn resolve(declared: &StdlibCallableSig) -> ResolvedStdlibSig {
 /// opaque to the type system.
 const DOCUMENTED_ALIASES: &[(&str, AliasTarget)] = &[
     ("Number", AliasTarget::IntOrFloat),
-    // Opaque runtime handles: a value of one flows through the program without
-    // the checker having anything to say about it.
-    ("Bytes", AliasTarget::Opaque),
-    ("Resource", AliasTarget::Opaque),
-    ("Stream", AliasTarget::Opaque),
-    ("Cursor", AliasTarget::Opaque),
-    ("Slice", AliasTarget::Opaque),
-    ("Value", AliasTarget::Opaque),
-    ("Fn", AliasTarget::Opaque),
-    ("Task", AliasTarget::Opaque),
-    ("Channel", AliasTarget::Opaque),
+    // Runtime handles. The checker cannot see *into* one, but it can tell them
+    // apart from each other and from everything else, which is the part that
+    // catches `bytes.slice(some_string, …)`. They were `Any` until now, so a
+    // handle stopped being checked the moment it was produced.
+    ("Bytes", AliasTarget::Handle),
+    ("Resource", AliasTarget::Handle),
+    ("Stream", AliasTarget::Handle),
+    ("Cursor", AliasTarget::Handle),
+    ("Slice", AliasTarget::Handle),
+    // These two already have a type of their own; naming them would invent a
+    // second spelling for a type the language can write.
+    ("Task", AliasTarget::TaskOfAny),
+    ("Channel", AliasTarget::ChannelOfAny),
+    // `Value` is whatever `encoding.json.parse` decoded — genuinely any value,
+    // not an opaque handle. `Fn` is a callable whose signature the declaration
+    // does not state.
+    ("Value", AliasTarget::Anything),
+    ("Fn", AliasTarget::Anything),
 ];
 
 #[derive(Clone, Copy)]
 enum AliasTarget {
     IntOrFloat,
-    Opaque,
+    /// A named type with no structure the checker can look inside.
+    Handle,
+    TaskOfAny,
+    ChannelOfAny,
+    Anything,
 }
 
 /// Turn one declaration's type text into a checker type.
@@ -217,10 +228,13 @@ pub fn type_from_text(text: &str) -> Type {
         };
     }
 
-    if let Some((_, target)) = DOCUMENTED_ALIASES.iter().find(|(name, _)| *name == text) {
+    if let Some((name, target)) = DOCUMENTED_ALIASES.iter().find(|(name, _)| *name == text) {
         return match target {
             AliasTarget::IntOrFloat => Type::Union(vec![Type::Int, Type::Float]),
-            AliasTarget::Opaque => Type::Any,
+            AliasTarget::Handle => Type::Named((*name).to_string()),
+            AliasTarget::TaskOfAny => Type::Task(Box::new(Type::Any)),
+            AliasTarget::ChannelOfAny => Type::Channel(Box::new(Type::Any)),
+            AliasTarget::Anything => Type::Any,
         };
     }
 

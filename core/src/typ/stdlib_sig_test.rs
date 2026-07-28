@@ -22,18 +22,29 @@ fn number_is_the_documented_spelling_of_int_or_float() {
 }
 
 #[test]
-fn opaque_runtime_handles_resolve_to_any() {
-    for text in ["Bytes", "Resource", "Stream", "Cursor", "Slice", "Value", "Fn"] {
-        assert_eq!(type_from_text(text), Type::Any, "{text} should not constrain a call");
+fn runtime_handles_are_named_types_not_any() {
+    // The checker cannot see inside a handle, but it can tell one from another
+    // and from everything else — which is what stops `bytes.slice(a_string, …)`.
+    for text in ["Bytes", "Resource", "Stream", "Cursor", "Slice"] {
+        assert_eq!(type_from_text(text), Type::Named(text.to_string()));
     }
+    // `Task`/`Channel` have types of their own; naming them would invent a
+    // second spelling for something the language can already write.
+    assert_eq!(type_from_text("Task"), Type::Task(Box::new(Type::Any)));
+    assert_eq!(type_from_text("Channel"), Type::Channel(Box::new(Type::Any)));
+    // `Value` really is any value — it is what `encoding.json.parse` decoded.
+    assert_eq!(type_from_text("Value"), Type::Any);
+    assert_eq!(type_from_text("Fn"), Type::Any);
 }
 
 #[test]
-fn an_opaque_arm_makes_the_whole_union_any() {
-    // `fs.write(path: String, data: Bytes | String)` must keep accepting a
-    // string. Resolving the arms independently would give `Any | String`, and
-    // a union carrying `Any` is just `Any` — say so directly.
-    assert_eq!(type_from_text("Bytes | String"), Type::Any);
+fn a_union_of_a_handle_and_a_value_keeps_both_arms() {
+    // `fs.write(path: String, data: Bytes | String)` accepts either, and now
+    // says so — the arms used to collapse to `Any` because `Bytes` did.
+    assert_eq!(
+        type_from_text("Bytes | String"),
+        Type::Union(vec![Type::Named("Bytes".to_string()), Type::String])
+    );
 }
 
 #[test]
@@ -46,8 +57,11 @@ fn unknown_text_widens_to_any_rather_than_naming_a_type() {
 }
 
 #[test]
-fn optional_of_an_opaque_type_stays_any() {
-    assert_eq!(type_from_text("Resource?"), Type::Any);
+fn optional_of_a_handle_is_an_optional_handle() {
+    assert_eq!(
+        type_from_text("Resource?"),
+        Type::Optional(Box::new(Type::Named("Resource".to_string())))
+    );
 }
 
 #[test]
