@@ -701,6 +701,35 @@ impl Generator {
             None
         };
 
+        // A container the top level declares and the helpers below mutate.
+        //
+        // This is the shape the generator could not produce, and it is the shape
+        // that miscompiled: a `List<i64>` written to a global slot was boxed,
+        // boxing re-represents a container, and the slot ended up holding a
+        // *second* list while the entry went on reading the first. Both backends
+        // ran, neither complained, and they printed different numbers — a
+        // three-line program, found by accident while writing an example for
+        // something else.
+        //
+        // The generator missed it because a helper's body was built with
+        // `self.vars`, `self.lists` and `self.maps` emptied, so a generated
+        // function could only ever touch its own parameters. Nothing it wrote
+        // shared anything with the top level.
+        let shared_list = if self.rng.chance(60) {
+            let name = self.fresh("shared_xs");
+            let _ = writeln!(out, "let {name}: List<Int> = [];");
+            Some(name)
+        } else {
+            None
+        };
+        let shared_map = if self.rng.chance(40) {
+            let name = self.fresh("shared_m");
+            let _ = writeln!(out, "let {name}: Map<String, Int> = {{}};");
+            Some(name)
+        } else {
+            None
+        };
+
         for _ in 0..self.rng.below(3) {
             let name = self.fresh("fn_helper");
             let arity = 1 + self.rng.below(2) as usize;
@@ -714,6 +743,18 @@ impl Generator {
                 self.vars.push((param.clone(), Ty::I64));
             }
             let body = self.int_expr(2);
+            // Some helpers reach the top level's container instead of only
+            // their parameters. Written before the body's `return` so the
+            // mutation happens on every call.
+            let touches = match (&shared_list, &shared_map) {
+                (Some(list), _) if self.rng.chance(50) => {
+                    format!("{list}.push(p0); ")
+                }
+                (_, Some(map)) if self.rng.chance(50) => {
+                    format!("{map}[\"k\" + p0] = p0; ")
+                }
+                _ => String::new(),
+            };
             self.vars = saved;
             self.lists = saved_lists;
             self.maps = saved_maps;
@@ -721,10 +762,14 @@ impl Generator {
             // A top-level `let f = |…| …` lambda is call-site identical to a
             // named `fn`, but exercises the zero-capture closure lowering
             // (MakeClosure → GlobalRef::Lambda devirtualization).
-            if self.rng.chance(30) {
+            if touches.is_empty() && self.rng.chance(30) {
                 let _ = writeln!(out, "let {name} = |{}| {body};", params.join(", "));
             } else {
-                let _ = writeln!(out, "fn {name}({}) {{ return {body}; }}", params.join(", "));
+                let _ = writeln!(
+                    out,
+                    "fn {name}({}) {{ {touches}return {body}; }}",
+                    params.join(", ")
+                );
             }
             self.fns.push(FnSig { name, arity });
         }
@@ -749,6 +794,19 @@ impl Generator {
                     let _ = writeln!(out, "{name}({arg});");
                 }
             }
+        }
+
+        // What the helpers left behind, read from the top level.
+        //
+        // Read *here*, after the statements have called them, because the whole
+        // question is whether the top level and the functions are looking at the
+        // same container. A program that only wrote it would agree either way.
+        if let Some(list) = &shared_list {
+            let _ = writeln!(out, "println({list}.len());");
+            let _ = writeln!(out, "if ({list}.len() > 0) {{ println({list}[0]); }}");
+        }
+        if let Some(map) = &shared_map {
+            let _ = writeln!(out, "println({map}.len());");
         }
 
         // `println` lowers natively now (GetGlobal builtin + format expansion);

@@ -93,6 +93,27 @@ pub fn compile_native_executable_from_object_hybrid(
     // wrapper references `lk_hybrid_register`, the object references
     // `lk_hybrid_call_*`, which pull the objects in.
     command.arg(hybrid.lk_api_staticlib);
+    // Two archives, one set of crates underneath.
+    //
+    // A hybrid binary links `lkrt` and `lk-api` side by side, and they share
+    // dependencies that neither can drop: `unsafe_libyaml` arrives in `lkrt`
+    // through its YAML parser — which the *pure native* path needs, since
+    // `encoding.yaml_parse` lowers to `lkrt_yaml_parse` — and in `lk-api`
+    // through the stdlib's `encoding` module. Both archives therefore carry the
+    // same crate's objects, and a link that reads both dies on four hundred
+    // multiple definitions.
+    //
+    // `lk-api` already declares `lkrt` a *dev*-dependency so the two do not
+    // collide directly. What collides is the layer under both, which no
+    // dependency edge separates: the objects are the same crate at the same
+    // version out of the same workspace build, so the definitions are identical
+    // and whichever the linker keeps is the same program.
+    //
+    // Only here. The pure-native link reads one archive, where a duplicate
+    // symbol would mean something is actually wrong.
+    if !cfg!(target_os = "macos") {
+        command.arg("-Wl,--allow-multiple-definition");
+    }
     // `pthread`/`dl` are Unix libraries; on Windows they are part of the CRT.
     if !cfg!(target_os = "windows") {
         command.args(["-lpthread", "-ldl"]);
