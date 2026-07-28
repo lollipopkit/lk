@@ -94,7 +94,11 @@ pub(crate) fn read_index_scalar(
             });
             Ok(dst)
         }
-        _ => Err(Unsupported::TypeMismatch { pc }),
+        other => Err(Unsupported::OperandType {
+            pc,
+            want: "i64",
+            got: lk_aot_mir::ty_name(other),
+        }),
     }
 }
 
@@ -131,7 +135,13 @@ pub(crate) fn read_typed_scalar(
         (Ty::Dyn, Ty::F64) => "as_f64",
         (Ty::Dyn, Ty::Bool) => "as_bool",
         (Ty::Dyn, Ty::Str) => "as_str",
-        _ => return Err(Unsupported::TypeMismatch { pc }),
+        _ => {
+            return Err(Unsupported::OperandType {
+                pc,
+                want: lk_aot_mir::ty_name(want),
+                got: lk_aot_mir::ty_name(ty),
+            });
+        }
     };
     let dst = ssa.new_val();
     insts.push(Inst::Call {

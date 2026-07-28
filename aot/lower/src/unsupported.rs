@@ -88,6 +88,22 @@ pub enum Unsupported {
     TypeMismatch {
         pc: usize,
     },
+    /// The same, from a site that knows both types.
+    ///
+    /// Worth a second variant rather than fields on the first: `TypeMismatch`
+    /// is constructed in ninety-odd places, most of them a `_ =>` arm that has
+    /// nothing to say beyond "not this". The handful that *do* know — anything
+    /// reading an operand it requires a specific type for — can say it, and
+    /// that is the difference between "an operand at pc 88 has a type outside
+    /// the natively lowerable subset" and "wanted I64, found Dyn".
+    ///
+    /// The first of those cost a round of patching every construction site with
+    /// a print to find out which one had fired.
+    OperandType {
+        pc: usize,
+        want: &'static str,
+        got: &'static str,
+    },
     NoReturn,
     /// A branch condition register was not a `Bool` (int-truthiness not yet lowered).
     NonBoolCondition {
@@ -138,6 +154,9 @@ impl Unsupported {
             Unsupported::BadConst { pc } => format!("unsupported constant operand at pc {pc}"),
             Unsupported::UndefinedOperand { pc, reg } => {
                 format!("register r{reg} is read at pc {pc} before any definition")
+            }
+            Unsupported::OperandType { pc, want, got } => {
+                format!("an operand at pc {pc} is a {got} where a {want} is required")
             }
             Unsupported::TypeMismatch { pc } => {
                 format!("an operand at pc {pc} has a type outside the natively lowerable subset")

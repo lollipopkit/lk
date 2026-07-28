@@ -774,7 +774,9 @@ pub fn render(module: &MirModule) -> String {
     out
 }
 
-fn ty_name(ty: Ty) -> &'static str {
+/// A type's name, for a diagnostic. Public because the lowering's own errors
+/// name types too, and one spelling beats two.
+pub fn ty_name(ty: Ty) -> &'static str {
     match ty {
         Ty::I64 => "i64",
         Ty::F64 => "f64",
