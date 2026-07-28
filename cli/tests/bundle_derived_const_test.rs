@@ -124,6 +124,65 @@ fn a_bundled_module_with_a_real_top_level_effect_is_still_refused() {
 }
 
 /// Compiles `source` natively, runs it, and checks it says what the VM says.
+/// A constant imported under another name.
+///
+/// The fold is keyed by the constant's *own* name, because that is the name the
+/// bundle flattens it under. `use { SIZE as TSS_SIZE }` reads a different one,
+/// so the read survived as a `GetGlobal` of a slot nothing initialises: an error
+/// under `compile object:` (which is how the bare-metal kernel builds) and a
+/// silent fall back to the VM bundle otherwise. The VM binds it either way, so
+/// what differed was coverage, and the shape that finds it — a driver renaming
+/// another driver's constant to say which driver it came from — is the ordinary
+/// one.
+///
+/// The chain is two deep on purpose: a dep renaming *another dep's* constant is
+/// the case the collection has to walk every module to see.
+#[test]
+fn a_bundled_constant_may_be_imported_under_another_name() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    std::fs::write(
+        dir.path().join("chip.lk"),
+        "const LINE_COUNT = 16;\n         const RESET = 7;\n",
+    )
+    .expect("write chip");
+    std::fs::write(
+        dir.path().join("board.lk"),
+        "use { LINE_COUNT as CHIP_LINES } from \"chip\";\n         fn lines() -> Int { return CHIP_LINES; }\n",
+    )
+    .expect("write board");
+
+    let source = dir.path().join("main.lk");
+    std::fs::write(
+        &source,
+        "use { LINE_COUNT as LINES, RESET } from \"chip\";\n         use { lines } from \"board\";\n         fn fits(irq: Int) -> Bool { return irq < LINES; }\n         println(LINES);\n         println(RESET);\n         println(fits(3));\n         println(fits(20));\n         println(lines());\n",
+    )
+    .expect("write main");
+
+    assert_native_agrees_with_vm(&source, dir.path().join("renamed"));
+}
+
+/// And a binding of its own still shadows the import.
+///
+/// The fold substitutes a value for a slot, so it must not touch a slot the
+/// program *writes*: a module that declares its own `LINES` means that one, and
+/// folding the constant there would answer 16 where the VM answers 3. Under the
+/// VM the local binding shadows the import; this pins that the native build
+/// agrees.
+#[test]
+fn a_local_binding_shadows_a_renamed_constant_import() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    std::fs::write(dir.path().join("chip.lk"), "const LINE_COUNT = 16;\n").expect("write chip");
+
+    let source = dir.path().join("main.lk");
+    std::fs::write(
+        &source,
+        "use { LINE_COUNT as LINES } from \"chip\";\n         let LINES = 3;\n         fn fits(irq: Int) -> Bool { return irq < LINES; }\n         println(LINES);\n         println(fits(5));\n",
+    )
+    .expect("write main");
+
+    assert_native_agrees_with_vm(&source, dir.path().join("shadowed"));
+}
+
 fn assert_native_agrees_with_vm(source: &Path, exe: std::path::PathBuf) {
     let vm = std::process::Command::new(env!("CARGO_BIN_EXE_lk"))
         .arg(source.to_str().expect("utf-8 path"))

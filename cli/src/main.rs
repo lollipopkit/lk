@@ -1011,6 +1011,20 @@ fn bundle_file_imports(source: &Path, artifact: &ModuleArtifact) -> anyhow::Resu
     // driver. Keyed by resolved path rather than by the text of the import,
     // because two files can name the same module differently — and because
     // that is also what makes a cycle terminate.
+    // Every renamed item a file import binds, from any module in the bundle.
+    //
+    // A bundled module's constants fold into their reads by *slot*, and the slot
+    // is the constant's own name. `use { SIZE as TSS_SIZE }` reads a different
+    // name, so the fold missed it and the read survived as a `GetGlobal` of a
+    // slot nothing initialises — "does not resolve to anything natively
+    // lowerable" under `compile object:`, a fall back to the VM otherwise. The
+    // VM binds it, so the two backends differed in coverage.
+    //
+    // Collected from every module because a driver may rename another driver's
+    // constant, which is where this would have been found rather than reasoned
+    // about.
+    let mut renamed_items: Vec<(String, String)> = Vec::new();
+    collect_renamed_file_items(&artifact.imports, &mut renamed_items);
     let mut queue: Vec<(String, PathBuf)> = file_import_paths(&artifact.imports)
         .into_iter()
         .map(|path| resolve_bundled_import(&base_dir, &path).map(|resolved| (path, resolved)))
@@ -1067,6 +1081,7 @@ fn bundle_file_imports(source: &Path, artifact: &ModuleArtifact) -> anyhow::Resu
         // The dep's own file imports resolve relative to *its* directory, not
         // the importing file's.
         let dep_dir = dep_path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
+        collect_renamed_file_items(&dep.imports, &mut renamed_items);
         for nested in file_import_paths(&dep.imports) {
             let resolved = resolve_bundled_import(&dep_dir, &nested)
                 .with_context(|| format!("nested import of '{import_path}'"))?;
@@ -1461,16 +1476,57 @@ fn bundle_file_imports(source: &Path, artifact: &ModuleArtifact) -> anyhow::Resu
                 }
             }
         };
-        let const_slots: std::collections::HashMap<u16, BundledConst> = dep_consts
-            .into_iter()
-            .map(|(name, value)| (slot_of(&name, &mut merged.module.globals), value))
-            .collect();
+        let mut const_slots: std::collections::HashMap<u16, BundledConst> = std::collections::HashMap::new();
+        for (name, value) in dep_consts {
+            // The name every module that did *not* rename it reads.
+            const_slots.insert(slot_of(&name, &mut merged.module.globals), value.clone());
+            // And every name one that did. Skipped when something writes the
+            // alias's slot: a module of its own with that name shadows the
+            // import, which is what the VM does, and folding would answer the
+            // constant where the VM answers the variable.
+            for (alias, original) in renamed_items.iter().filter(|(_, original)| *original == name) {
+                let slot = slot_of(alias, &mut merged.module.globals);
+                let written = merged.module.functions.iter().any(|function| {
+                    function.code.iter().any(|raw| {
+                        Instr::try_from_raw(*raw)
+                            .map(|i| i.opcode() == Opcode::SetGlobal && i.bx() == slot)
+                            .unwrap_or(false)
+                    })
+                });
+                if !written {
+                    const_slots.insert(slot, value.clone());
+                }
+            }
+        }
         for function in &mut merged.module.functions {
             fold_global_constants(function, &const_slots)
                 .with_context(|| format!("bundled import '{import_path}': folding constants"))?;
         }
     }
     Ok(BundleOutcome::Bundled(merged, bundles))
+}
+
+/// The `use { name as alias } from "path"` bindings a module declares, as
+/// `(alias, name)`. Only renamed ones: an unrenamed item already reads the name
+/// the bundle flattened it under.
+#[cfg(feature = "aot")]
+fn collect_renamed_file_items(imports: &[lk_core::stmt::ImportStmt], out: &mut Vec<(String, String)>) {
+    use lk_core::stmt::{ImportSource, ImportStmt};
+    for import in imports {
+        if let ImportStmt::Items {
+            items,
+            source: ImportSource::File(_),
+        } = import
+        {
+            for item in items {
+                if let Some(alias) = &item.alias
+                    && alias != &item.name
+                {
+                    out.push((alias.clone(), item.name.clone()));
+                }
+            }
+        }
+    }
 }
 
 /// The file imports (`use "path"` in any of its forms) a module declares.
