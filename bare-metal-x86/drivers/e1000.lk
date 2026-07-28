@@ -63,6 +63,16 @@ const REG_IMC = 0x00d8;
 // packet.
 const REG_RDTR = 0x2820;
 
+// The other three delays, which is the part a datasheet buries. `RDTR` is the
+// one everybody names; the *absolute* receive delay and the throttle apply on
+// top of it, and a card with any of them set holds an interrupt back for a
+// window the driver never asked for. A driver waiting on a single reply then
+// waits out a timer it did not set — which is indistinguishable from a lost
+// packet, and is what a poll-with-a-deadline quietly papers over.
+const REG_RADV = 0x282c;
+const REG_ITR = 0x00c4;
+const REG_TIDV = 0x3820;
+
 // The causes worth being told about: a packet arrived, the ring is running low,
 // and the ring overflowed. The last two are not needed to receive, but a driver
 // that unmasks only the good news finds out about the ring being full by never
@@ -393,7 +403,12 @@ fn setup_receive(state: Int, mmio: Int, ring: Int, buffers: Int) {
 // waiting on a single reply then waits out a timer it never set, which is
 // indistinguishable from the reply being lost.
 fn e1000_enable_receive_interrupt(mmio: Int) {
+    // Every delay to zero, not just the one with the obvious name. Anything left
+    // set is the card deciding when the driver hears about a frame.
     reg_write(mmio, REG_RDTR, 0);
+    reg_write(mmio, REG_RADV, 0);
+    reg_write(mmio, REG_TIDV, 0);
+    reg_write(mmio, REG_ITR, 0);
     // Read the cause register first: whatever it holds is from before this
     // driver existed, and an unmasked cause that was already pending is an
     // interrupt on the first unmask with nothing behind it.

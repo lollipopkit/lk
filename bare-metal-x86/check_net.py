@@ -155,7 +155,7 @@ def main():
         # start of a line made this pass or fail on where a `.` happened to
         # land.
         answers = re.findall(
-            r"net: ok (\d+)/(\d+) ([0-9a-f]{12}) -> ([0-9a-f]{12}) idle (\d+) irqs (\d+)", transcript
+            r"net: ok (\d+)/(\d+) ([0-9a-f]{12}) -> ([0-9a-f]{12}) idle (\d+) irqs (\d+)/(\d+)", transcript
         )
         if len(answers) < 2:
             step = re.search(r"net: (?!ok)\S+", transcript)
@@ -164,7 +164,7 @@ def main():
                 else f"`net` completed {len(answers)} of 2 exchanges"
             )
         else:
-            for done, wanted, card_mac, gateway_mac, idle, irqs in answers:
+            for done, wanted, card_mac, gateway_mac, idle, irqs, waits in answers:
                 if done != wanted:
                     failures.append(f"only {done} of {wanted} exchanges completed")
                 if int(wanted) <= 8:
@@ -180,9 +180,16 @@ def main():
                 # that scored zero here would be a polling driver with an
                 # interrupt driver's comments, which is what this one was until
                 # the count was added.
+                # `irqs/waits`: how many of the waits the card itself ended.
+                # Not all of them — see below — but a driver that scored zero
+                # would be one whose handler is never reached, with the deadline
+                # carrying the whole thing, which is what this was until the
+                # count was added.
+                if int(waits) < 1:
+                    failures.append(f"the driver never blocked: {waits} waits in {wanted} exchanges")
                 if int(irqs) < 1:
                     failures.append(
-                        f"the card raised {irqs} interrupts: the handler is never reached, "
+                        f"the card ended {irqs} of {waits} waits: the handler is never reached, "
                         f"and the deadline is carrying the whole driver"
                     )
                 # And the machine was asleep while it waited. A poll scores zero:
@@ -196,7 +203,7 @@ def main():
             # Only the parts that must not vary. The idle and interrupt counts
             # are measurements of a running machine and differ run to run; the
             # addresses and the exchange count are claims and must not.
-            stable = {(done, wanted, card, gw) for done, wanted, card, gw, _, _ in answers}
+            stable = {(done, wanted, card, gw) for done, wanted, card, gw, _, _, _ in answers}
             if len(stable) != 1:
                 failures.append(f"the two sessions disagreed: {stable}")
 

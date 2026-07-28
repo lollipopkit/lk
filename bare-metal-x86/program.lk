@@ -405,8 +405,9 @@ const SHARED_NET_CAUSE = SHARED_NET_MMIO + WORD;
 // is load-bearing rather than a safety net. Counting is what turned that from an
 // assumption into a fact; the first version of this driver scored one.
 const SHARED_NET_IRQS = SHARED_NET_CAUSE + WORD;
+const SHARED_NET_WAITS = SHARED_NET_IRQS + WORD;
 
-const SHARED_EDU_MMIO = SHARED_NET_IRQS + WORD;
+const SHARED_EDU_MMIO = SHARED_NET_WAITS + WORD;
 const SHARED_EDU_SEEN = SHARED_EDU_MMIO + WORD;
 
 const SHARED_GRID = SHARED_EDU_SEEN + WORD;
@@ -781,6 +782,18 @@ fn text_bytes(text: String) -> List<Int> {
 // that the optimizer may hoist it. It is the whole difference between a
 // language that can write this layer and one that can only be compiled for it.
 fn emit_text(base: Int, text: String) {
+    // The lock, for the line and not for the command.
+    //
+    // The console has three writers — this task, the spinner and the clock —
+    // and what they contend over is the cursor. Holding the lock for a line is
+    // what that needs. The shell used to get it by masking interrupts around
+    // the *whole* command instead, which protected the same thing and also
+    // stopped the timer, which stopped the scheduler, which meant every command
+    // that waited for anything had to remember to turn them back on. Four
+    // separate waits in this file got that wrong, each in a way that still
+    // produced the right answer: a device that never interrupted, twenty tasks
+    // that never ran, a sleep that took a tenth of the time it asked for.
+    let irq = lock();
     for index in 0..text.len() {
         let code = text.byte_at(index);
         uart_putc(code);
@@ -788,9 +801,11 @@ fn emit_text(base: Int, text: String) {
     }
     uart_putc(10);
     put_char(base, 10);
+    unlock(irq);
 }
 
 fn emit(base: Int, text: List<Int>) {
+    let irq = lock();
     for code in text {
         let ascii = (code) as Int;
         uart_putc(ascii);
@@ -798,6 +813,7 @@ fn emit(base: Int, text: List<Int>) {
     }
     uart_putc(10);
     put_char(base, 10);
+    unlock(irq);
 }
 
 // Whether the collected line starts with `word`, and what follows it.
@@ -1056,20 +1072,10 @@ fn net_exchange(base: Int, mmio: Int, bdf: Int, scratch: Int, buffers: Int) -> B
     // The number is the difference between a driver that waits and one that
     // watches, and it can only be read on a machine where nothing else is
     // watching on purpose.
-    // Interrupts on for the exchange, and back as they were after.
-    //
-    // `run_command` is called with them masked, and every wait in this file has
-    // had to say so — but this one is the case where forgetting is invisible:
-    // the driver has a deadline, so a card whose interrupt never reaches the CPU
-    // still works, just slowly, and reports success. It took counting the
-    // handler's entries to see that twelve exchanges were answering one
-    // interrupt and eleven timeouts.
-    let saved_irq = unsafe { cpu_irq_save() };
-    unsafe { cpu_irq_restore(1); };
-
     suspend_busy_tasks();
     let idle_before = shared_read(SHARED_IDLE_TURNS);
     let irqs_before = shared_read(SHARED_NET_IRQS);
+    let waits_before = shared_read(SHARED_NET_WAITS);
 
     let exchanges = 0;
     for _round in 0..NET_EXCHANGES {
@@ -1078,14 +1084,12 @@ fn net_exchange(base: Int, mmio: Int, bdf: Int, scratch: Int, buffers: Int) -> B
             emit_text(base, "net: tx");
             net_quiesce(mmio, irq);
             resume_busy_tasks();
-            unsafe { cpu_irq_restore(saved_irq); };
             return false;
         }
         if (!net_await_reply(state, reply, mac, target_ip, answer)) {
             emit_text(base, "net: no reply");
             net_quiesce(mmio, irq);
             resume_busy_tasks();
-            unsafe { cpu_irq_restore(saved_irq); };
             return false;
         }
         exchanges = exchanges + 1;
@@ -1104,10 +1108,10 @@ fn net_exchange(base: Int, mmio: Int, bdf: Int, scratch: Int, buffers: Int) -> B
         .chain(decimal(shared_read(SHARED_IDLE_TURNS) - idle_before))
         .chain(text_bytes(" irqs "))
         .chain(decimal(shared_read(SHARED_NET_IRQS) - irqs_before))
-);
+        .chain(text_bytes("/"))
+        .chain(decimal(shared_read(SHARED_NET_WAITS) - waits_before)));
     net_quiesce(mmio, irq);
     resume_busy_tasks();
-    unsafe { cpu_irq_restore(saved_irq); };
     return true;
 }
 
@@ -1168,6 +1172,7 @@ fn net_await_reply(state: Int, reply: Int, mac: Int, target_ip: Int, answer: Int
         // its own announcement and restores what it found, so the mask taken
         // here is still held when it yields — which is what makes the pair
         // atomic against the handler.
+        shared_bump(SHARED_NET_WAITS);
         task_wait_on(NET_WAIT_CHANNEL, NET_WAIT_TICKS);
         unsafe { cpu_irq_restore(irq); };
     }
@@ -1281,12 +1286,13 @@ fn report_sleep(base: Int) {
     // is spinning on purpose.
     suspend_busy_tasks();
 
-    let saved = unsafe { cpu_irq_save() };
-    unsafe { cpu_irq_restore(0); };
+    // The spawn under the lock, because `spawn_task` writes a table the timer
+    // handler reads. The *wait* below is not under it — that is the whole point
+    // of the change that moved masking off the command.
+    let irq = lock();
     let slot = spawn_task(unsafe { symbol_address("lk_task_sleeper") });
-    unsafe { cpu_irq_restore(1); };
+    unlock(irq);
     if (slot < 0) {
-        unsafe { cpu_irq_restore(saved); };
         resume_busy_tasks();
         emit_text(base, "sleep: no slot");
         return;
@@ -1304,7 +1310,6 @@ fn report_sleep(base: Int) {
         }
         task_sleep(WAIT_POLL_TICKS);
     }
-    unsafe { cpu_irq_restore(saved); };
     let idle_turns = shared_read(SHARED_IDLE_TURNS) - before_idle;
     resume_busy_tasks();
 
@@ -1331,21 +1336,16 @@ fn report_tasks(base: Int) {
     let before_pages = pages_free(SHARED_PAGES);
     let before_ticks = shared_read(SHARED_BRIEF_TICKS);
 
-    // Interrupts on for the whole cycle, and masked again after.
-    //
-    // `run_command` is called with them masked, which is right for a command
-    // that touches a few shared words and returns. Waiting for a *task* is not
-    // that: nothing schedules without the timer, so the first version of this
-    // spawned twenty tasks that never ran, never returned, and never gave
-    // anything back — and reported it as the table filling up. The same shape as
-    // waiting for a device interrupt with interrupts off.
-    let saved = unsafe { cpu_irq_save() };
-
     let started = 0;
     for _round in 0..TASK_BRIEF_ROUNDS {
-        unsafe { cpu_irq_restore(0); };
+        // The spawn under the lock — it writes a table the timer handler reads —
+        // and nothing else. A command runs with interrupts on now, so the wait
+        // below simply works; the first version of this masked for the whole
+        // cycle and spawned twenty tasks that never ran, never returned and
+        // never gave anything back, and reported it as the table filling up.
+        let irq = lock();
         let slot = spawn_task(unsafe { symbol_address("lk_task_brief") });
-        unsafe { cpu_irq_restore(1); };
+        unlock(irq);
         if (slot < 0) {
             break;
         }
@@ -1362,8 +1362,6 @@ fn report_tasks(base: Int) {
             task_sleep(WAIT_POLL_TICKS);
         }
     }
-
-    unsafe { cpu_irq_restore(saved); };
 
     let ran = shared_read(SHARED_BRIEF_TICKS) - before_ticks;
     emit(base, text_bytes("task ")
@@ -1780,18 +1778,13 @@ fn run_file(base: Int, name: List<Int>) {
         copied = copied + i;
         lba = lba + 1;
     }
-    // Interrupts back on for the duration of the run, and masked again after.
+    // Nothing to say about interrupts any more.
     //
-    // `run_command` is called with them masked, which is right for a command
-    // that touches a few shared words and returns. A whole parse and execution
-    // of an arbitrary program is not that: it takes seconds, and holding the
-    // mask across it stops the timer, starves the other task, and drops every
-    // keystroke that arrives meanwhile. What the mask protects — the cursor and
-    // the line buffer — is not touched by anything that can preempt this: the
-    // key handler only queues bytes, and the spinner draws in its own window.
-    unsafe { cpu_irq_restore(1); };
+    // This used to turn them back on for the duration and mask again after,
+    // because `run_command` held the mask across the whole command and a whole
+    // parse and execution takes seconds. The mask is gone from the command; what
+    // is left here is a call.
     let outcome = kernel_run(SOURCE_BASE, size);
-    unsafe { cpu_irq_save() };
     if (outcome != 0) {
         // "failed " then the stage the board reported.
         emit(base, text_bytes("failed ").chain(decimal(0 - outcome)));
@@ -3921,11 +3914,26 @@ while (running == 1 && ((shared_read(SHARED_TICKS) - started) & TICK_MASK) < 600
     unlock(irq_in);
 
     if (shared_read(SHARED_LINE_READY) == 1) {
-        // Mask around the whole exchange: the handler shares the cursor and
-        // the line buffer, and a keystroke arriving mid-command would splice
-        // its echo into the output and its byte into the next line.
-        let irq = unsafe { cpu_irq_save() };
+        // With interrupts *on*, which is the only way a command that waits for
+        // anything can work.
+        //
+        // This used to mask around the whole exchange, on the grounds that the
+        // key handler shares the cursor and the line buffer. It shares neither:
+        // the handler only queues bytes, and both the cursor and the buffer are
+        // written by this task. What the mask really protected was the console
+        // against the two drawing *tasks* — which is a lock's job, and `emit`
+        // now takes one for the line it prints.
+        //
+        // The cost of the old shape was not a race. It was that masking
+        // interrupts stops the timer, and stopping the timer stops the
+        // scheduler, so every command that waited for a device, a task or a
+        // deadline had to know to turn them back on. Four of them did not, and
+        // every one of those still printed the right answer.
+        //
+        // A keystroke arriving mid-command now stays in the queue and is read
+        // as the next line, which is what type-ahead is.
         running = run_command(framebuffer_origin());
+        let irq = lock();
         shared_write(SHARED_LINE_LEN, 0);
         shared_write(SHARED_LINE_READY, 0);
         if (running == 1) {
@@ -3933,7 +3941,7 @@ while (running == 1 && ((shared_read(SHARED_TICKS) - started) & TICK_MASK) < 600
             uart_putc(62);
             put_char(framebuffer_origin(), 62);
         }
-        unsafe { cpu_irq_restore(irq); };
+        unlock(irq);
     }
 }
 
