@@ -60,7 +60,14 @@ impl RegexModule {
         Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(list))))
     }
 
-    #[stdlib_export(name = "replace", params(pattern: String, text: String, replacement: String), returns = String)]
+    // Three `String`s in a row, and the subject is the *second* of them (where
+    // `string.replace` puts it first). Nothing positional can rescue that.
+    #[stdlib_export(
+        name = "replace",
+        params(pattern: String, text: String, replacement: String),
+        named(text, replacement),
+        returns = String
+    )]
     fn replace(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let regex = cached_regex(args.get(0).expect("checked arity"), runtime, "regex.replace pattern")?;
         let text = runtime_string_arg(

@@ -79,7 +79,7 @@ fn expand_stdlib_exports(args: StdlibExportsArgs, impl_item: &mut ItemImpl) -> R
         let params = export
             .params
             .ok_or_else(|| syn::Error::new_spanned(fn_ident, "missing export params(...)"))?;
-        let arity = params.arity();
+        let arity = params.arity(&export.named);
         let arity_tokens = arity.tokens();
         let returns = export
             .returns
@@ -148,7 +148,7 @@ fn expand_stdlib_exports(args: StdlibExportsArgs, impl_item: &mut ItemImpl) -> R
         let params = export
             .params
             .ok_or_else(|| syn::Error::new_spanned(attr, "impl-level stdlib_export requires params(...)"))?;
-        let arity = params.arity();
+        let arity = params.arity(&export.named);
         let arity_tokens = arity.tokens();
         let returns = export
             .returns
@@ -421,7 +421,7 @@ fn export_function_path(
             wrapper: Some(wrapper),
         });
     }
-    let arity = params.arity();
+    let arity = params.arity(named);
     let Arity::Fixed(expected_arity) = arity else {
         return Err(syn::Error::new_spanned(
             fn_ident,
@@ -613,8 +613,18 @@ impl ParamList {
         Ok(Self { signatures })
     }
 
-    fn arity(&self) -> Arity {
+    fn arity(&self, named: &[String]) -> Arity {
         if self.signatures.len() != 1 {
+            return Arity::Variadic;
+        }
+        // A named argument does not occupy a positional slot, so a call that
+        // uses one supplies fewer than the declaration lists. The VM checks a
+        // `Fixed` arity against the positional count *before* the export runs,
+        // so declaring one here would reject `substring(s, start: 2, length: 3)`
+        // as "expects 3 positional arguments, got 1" — which is what it did.
+        // The real bounds are checked by the generated precheck, which knows
+        // about the names.
+        if !named.is_empty() {
             return Arity::Variadic;
         }
         let signature = &self.signatures[0];
@@ -715,12 +725,110 @@ impl ParamList {
                 })?;
             }
         };
+        let merge_tokens = self.named_merge_tokens(&named.iter().copied().collect::<Vec<_>>(), display_name);
         quote! {
             let __lk_stdlib_export_arg_len = args.len();
             if !(#(#checks)||*) {
                 ::anyhow::bail!("{} takes {}", #display_name, #expected);
             }
             #named_tokens
+            #merge_tokens
+        }
+    }
+
+    /// Code that folds the named arguments back into the positional slots the
+    /// body reads.
+    ///
+    /// Without this, `named(...)` only *validates* which names are accepted —
+    /// the value never reaches `args.as_slice()`, so a body that reads
+    /// `values[2]` sees nothing and reports "expects 3 positional arguments,
+    /// got 1". That is why two of two hundred and forty exports used named
+    /// parameters: adopting one meant hand-writing fifteen to forty lines of
+    /// merging in the body, which `math.clamp` and `string.replace` both did.
+    ///
+    /// A slot that neither the call nor a declared default fills is an error
+    /// naming the parameter — which is the whole point of having named it.
+    fn named_merge_tokens(&self, named: &[&str], display_name: &str) -> proc_macro2::TokenStream {
+        // One parameter list only: with two, a name does not identify a slot.
+        let Some(signature) = self.signatures.first() else {
+            return quote!();
+        };
+        if named.is_empty() || self.signatures.len() != 1 || signature.params.iter().any(|param| param.variadic) {
+            return quote!();
+        }
+        let count = signature.params.len();
+        let arms = signature.params.iter().enumerate().filter_map(|(index, param)| {
+            named.contains(&param.name.as_str()).then(|| {
+                let name = param.name.as_str();
+                quote!(#name => __lk_slots[#index] = ::core::option::Option::Some(*__lk_named_value),)
+            })
+        });
+        // Defaults are declared as source text (`min?: Int = 0`), and the ones
+        // that can fill a gap are the literals — which is all any of them are.
+        let fills = signature.params.iter().map(|param| {
+            let name = param.name.as_str();
+            match param.default.as_deref().and_then(default_literal_tokens) {
+                Some(literal) => quote!((::core::option::Option::Some(#literal), #name)),
+                None => quote!((::core::option::Option::None, #name)),
+            }
+        });
+        quote! {
+            // A fixed buffer, not a `Vec`: the slot count is known here, and
+            // some of these crates are `no_std` without `alloc` in scope.
+            let mut __lk_buf: [::lk_core::val::RuntimeVal; #count] =
+                [::lk_core::val::RuntimeVal::Nil; #count];
+            let mut __lk_merged = false;
+            let mut __lk_len: usize = 0;
+            if args.named_len() > 0 {
+                let mut __lk_slots: [::core::option::Option<::lk_core::val::RuntimeVal>; #count] =
+                    [::core::option::Option::None; #count];
+                args.try_for_each_named(runtime.heap(), |__lk_named_name, __lk_named_value| {
+                    match __lk_named_name {
+                        #(#arms)*
+                        _ => {}
+                    }
+                    Ok(())
+                })?;
+                let __lk_decl: [(::core::option::Option<::lk_core::val::RuntimeVal>, &str); #count] =
+                    [#(#fills),*];
+                for (__lk_index, __lk_value) in args.as_slice().iter().enumerate() {
+                    __lk_buf[__lk_index] = *__lk_value;
+                    __lk_len = __lk_index + 1;
+                }
+                for __lk_slot in 0..#count {
+                    let ::core::option::Option::Some(__lk_value) = __lk_slots[__lk_slot] else {
+                        continue;
+                    };
+                    if __lk_slot < __lk_len {
+                        ::anyhow::bail!(
+                            "{} received '{}' both positionally and by name",
+                            #display_name,
+                            __lk_decl[__lk_slot].1
+                        );
+                    }
+                    // Slots between the last positional argument and this one
+                    // take their declared default, or say which is missing.
+                    while __lk_len < __lk_slot {
+                        let (__lk_default, __lk_name) = __lk_decl[__lk_len];
+                        let ::core::option::Option::Some(__lk_default) = __lk_default else {
+                            ::anyhow::bail!(
+                                "{} needs '{}' — give it positionally or by name",
+                                #display_name,
+                                __lk_name
+                            );
+                        };
+                        __lk_buf[__lk_len] = __lk_default;
+                        __lk_len += 1;
+                    }
+                    __lk_buf[__lk_len] = __lk_value;
+                    __lk_len += 1;
+                    __lk_merged = true;
+                }
+            }
+            // The named arguments ride along: a body that reads them by name
+            // (`string.replace` decides its `all` default that way) must still
+            // find them after the merge.
+            let args = if __lk_merged { args.with_values(&__lk_buf[..__lk_len]) } else { args };
         }
     }
 
@@ -902,6 +1010,27 @@ fn split_top_level(source: &str, separator: char) -> Vec<String> {
         out.push(item.to_string());
     }
     out
+}
+
+/// A declared default (`min?: Int = 0`) as a `RuntimeVal` the merge can place.
+///
+/// Only literals: a default is written to be read, and every one in the
+/// standard library is a number, a bool or a string. Anything else returns
+/// `None`, which makes that slot one the caller has to fill — an error naming
+/// the parameter rather than a value nobody wrote.
+fn default_literal_tokens(text: &str) -> Option<proc_macro2::TokenStream> {
+    let text = text.trim();
+    if text == "true" || text == "false" {
+        let value: bool = text == "true";
+        return Some(quote!(::lk_core::val::RuntimeVal::Bool(#value)));
+    }
+    if let Ok(value) = text.parse::<i64>() {
+        return Some(quote!(::lk_core::val::RuntimeVal::Int(#value)));
+    }
+    if let Ok(value) = text.parse::<f64>() {
+        return Some(quote!(::lk_core::val::RuntimeVal::Float(#value)));
+    }
+    None
 }
 
 fn normalize_type_display(source: &str) -> String {

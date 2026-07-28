@@ -416,7 +416,7 @@ impl StreamModule {
         create_stream(StreamSpec::FromList(Arc::new(values)), Type::Any, runtime.heap_mut())
     }
 
-    #[stdlib_export(params(start: Int, end?: Int, step?: Int), returns = Stream)]
+    #[stdlib_export(params(start: Int, end?: Int, step?: Int), named(end, step), returns = Stream)]
     fn range(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let values = args.as_slice();
         let (start, end, step) = match values {
@@ -553,7 +553,14 @@ impl StreamModule {
         next_block_cursor(cursor_id, timeout_ms, runtime)
     }
 
-    #[stdlib_export(params(cursor: Stream | Cursor, limit?: Int, timeout_ms?: Int), returns = List, kind = "full_state")]
+    // A count and a duration, both `Int`: swapping them is silent, and one of
+    // them is measured in milliseconds — which only the name says.
+    #[stdlib_export(
+        params(cursor: Stream | Cursor, limit?: Int, timeout_ms?: Int),
+        named(limit, timeout_ms),
+        returns = List,
+        kind = "full_state"
+    )]
     fn collect_block(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let (cursor_id, limit, timeout_ms) = cursor_limit_timeout(args.as_slice(), runtime, "stream.collect_block")?;
         collect_block_cursor(cursor_id, limit, timeout_ms, runtime)

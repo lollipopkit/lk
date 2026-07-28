@@ -105,6 +105,48 @@ fn clamp(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Runtim
 }
 ```
 
+## Named Parameters
+
+A parameter is declared `named(...)` when its **position is not enough to say
+what it means**. Three shapes qualify, and the rule is mechanical enough that
+`every_ambiguous_parameter_is_named` enforces the first one:
+
+1. **Two or more parameters of the same type**, past the first. Nothing at the
+   call site distinguishes them, so swapping them is silent — the program keeps
+   running and answers something else.
+2. **A boolean switch.** `true` at a call site says nothing about which
+   behaviour it selects.
+3. **An optional parameter whose absence changes what happens**, rather than
+   merely supplying a default.
+
+The first parameter — the thing being operated on — is never named.
+`string.len(text: s)` is noise; the subject of a call is what a call is about,
+and its position says so.
+
+Named parameters are **optional at the call site**: `math.clamp(5, 1, 3)` and
+`math.clamp(5, min: 1, max: 3)` are both accepted, so declaring them breaks
+nothing and only gives the caller a way to be explicit.
+
+### Why the rule earns its keep
+
+These three operations are siblings, and the same `(2, 3)` means three things:
+
+```lk
+"abcdef".substring(2, 3)        // "cde"  — the third argument is a *length*
+[1,2,3,4,5,6].slice(2, 3)       // [3]    — the third argument is an *end*
+bytes.slice(b, 2, 3)            // "c"    — the third argument is an *end*
+```
+
+No amount of care at the call site distinguishes `substring(s, 2, 3)` from
+`slice(xs, 2, 3)`; only the declaration knows, and only a name carries the
+declaration to where the code is read. `substring(s, start: 2, length: 3)`
+cannot be misread.
+
+(That `substring` counts a length while its two siblings take an end is a
+separate question — a real inconsistency, and changing it would change what
+existing programs compute. Naming the parameter makes the current answer
+legible; it does not decide the larger question.)
+
 ## Examples
 
 ```lk

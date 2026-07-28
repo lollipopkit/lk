@@ -457,6 +457,25 @@ impl<'a> NativeArgs<'a> {
         }
     }
 
+    /// The same call, with its positional arguments replaced.
+    ///
+    /// The named arguments come along unchanged, which is the point: the
+    /// stdlib export macro merges named arguments into the positional slots so
+    /// a body can read them by index, and a body that reads them *by name* must
+    /// still find them. `string.replace` does both — its `all` default depends
+    /// on whether `pattern`/`with` arrived by name — so dropping them here
+    /// would quietly change what a call means.
+    #[inline]
+    pub fn with_values<'b>(&self, values: &'b [RuntimeVal]) -> NativeArgs<'b>
+    where
+        'a: 'b,
+    {
+        NativeArgs {
+            values,
+            named: self.named,
+        }
+    }
+
     #[inline]
     pub const fn new_with_named_stack(
         values: &'a [RuntimeVal],

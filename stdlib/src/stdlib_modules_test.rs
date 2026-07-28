@@ -338,4 +338,54 @@ mod tests {
             unknown.join("\n  ")
         );
     }
+
+    /// A parameter whose *position* cannot say what it means must be named.
+    ///
+    /// The mechanical half of the convention in `docs/stdlib.md`: two
+    /// parameters of the same type, past the first, are indistinguishable at
+    /// the call site, so swapping them is silent — the program keeps running
+    /// and answers something else.
+    ///
+    /// The evidence this is not hypothetical: `"abcdef".substring(2, 3)` is
+    /// `"cde"` (the third argument is a *length*) while
+    /// `[1,2,3,4,5,6].slice(2, 3)` is `[3]` (an *end*). Two sibling operations,
+    /// identical call sites, different meanings. Only the declaration knows,
+    /// and only a name carries the declaration to where the code is read.
+    ///
+    /// The first parameter is exempt: the subject of a call is what the call is
+    /// about, and its position says so. `string.len(text: s)` would be noise.
+    #[test]
+    fn every_ambiguous_parameter_is_named() {
+        let mut registry = ModuleRegistry::new();
+        register_stdlib_modules(&mut registry).expect("register stdlib modules");
+
+        let mut unnamed: Vec<String> = Vec::new();
+        for name in crate::STDLIB_MODULES.iter().map(|entry| entry.name) {
+            let Some(metadata) = crate::registered_stdlib_module_metadata(name) else {
+                continue;
+            };
+            for signature in metadata.signatures {
+                // Past the first: the subject is identified by being first.
+                let tail = &signature.params[signature.params.len().min(1)..];
+                for (index, param) in tail.iter().enumerate() {
+                    let shares_type = tail
+                        .iter()
+                        .enumerate()
+                        .any(|(other, candidate)| other != index && candidate.ty == param.ty);
+                    if shares_type && !param.named {
+                        unnamed.push(format!("{}({}: {})", signature.path, param.name, param.ty));
+                    }
+                }
+            }
+        }
+        unnamed.sort();
+        unnamed.dedup();
+
+        assert!(
+            unnamed.is_empty(),
+            "these parameters share a type with a sibling and cannot be told apart by position; \
+             declare them `named(...)` (docs/stdlib.md):\n  {}",
+            unnamed.join("\n  ")
+        );
+    }
 }

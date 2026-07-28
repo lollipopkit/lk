@@ -84,7 +84,6 @@ mod tests {
             "starts_with",
             "ends_with",
             "contains",
-            "substring",
             "split",
             "join",
             "reverse",
@@ -105,7 +104,11 @@ mod tests {
                 "{name} should have fixed positional arity"
             );
         }
-        for name in ["replace", "find", "format"] {
+        // `substring` joins these: a named parameter does not occupy a
+        // positional slot, so a call using one supplies fewer arguments than
+        // the declaration lists, and a fixed arity would reject it before the
+        // export ran (`substring(s, start: 2, length: 3)`).
+        for name in ["replace", "find", "format", "substring"] {
             let (arity, function) = string_native(name)?;
             assert!(matches!(function, NativeFunction::Plain(_)));
             assert_eq!(arity, NativeEntry::VARIADIC);

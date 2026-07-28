@@ -104,7 +104,7 @@ impl BytesModule {
             .unwrap_or(RuntimeVal::Nil))
     }
 
-    #[stdlib_export(name = "slice", params(value: Bytes, start: Int, end?: Int), returns = Bytes)]
+    #[stdlib_export(name = "slice", params(value: Bytes, start: Int, end?: Int), named(start, end), returns = Bytes)]
     fn slice(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         if args.len() != 2 && args.len() != 3 {
             bail!("bytes.slice() expects 2 or 3 arguments: bytes, start[, end]");

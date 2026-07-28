@@ -156,7 +156,7 @@ impl StringModule {
     // length)`) and what the method form declares. The name said `end`, so
     // hover and completion told the reader to write `substring(s, 2, 5)` for
     // the substring the language spells `substring(s, 2, 3)`.
-    #[stdlib_export(params(text: String, start: Int, length: Int), returns = String)]
+    #[stdlib_export(params(text: String, start: Int, length: Int), named(start, length), returns = String)]
     fn substring(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let values = args.as_slice();
         let value = runtime_string_arg(&values[0], runtime.heap(), "substring() first argument")?;
