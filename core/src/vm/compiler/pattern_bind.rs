@@ -75,6 +75,10 @@ impl Compiler {
             // itself produces. Before the second half existed, `let a = read();`
             // and `let a: u32 = read();` computed different sums from the same
             // `fn read() -> u32` — see `initializer_machine_width`.
+            // Which struct this local holds, when the initializer says so —
+            // the only type the compiler tracks, and only so that `r.field` has
+            // a declared width to wrap to.
+            self.note_local_struct_type(name, type_annotation, value);
             match type_annotation {
                 Some(_) => self.note_machine_reg(slot, type_annotation),
                 // A call establishes nothing on its own, so its declared width

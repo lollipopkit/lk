@@ -85,6 +85,13 @@ pub struct Compiler {
     /// once so a `let` bound to a call can learn its width — see
     /// [`Compiler::initializer_machine_width`].
     function_machine_returns: HashMap<String, crate::val::IntKind>,
+    /// Machine-int field widths, by struct name then field name — see
+    /// [`support::collect_struct_field_machine_widths`].
+    struct_field_machine_widths: HashMap<String, HashMap<String, crate::val::IntKind>>,
+    /// Which struct a local is known to hold, learned from a struct-literal
+    /// initializer or a declared type. The compiler tracks no other types; this
+    /// exists only to give `r.field` a width to wrap to.
+    local_struct_types: HashMap<String, String>,
     /// Loop-pattern variables of the enclosing `for` loops: the fused loop
     /// opcodes own the raw register, so a capture takes a fresh snapshot cell
     /// per capture site instead of re-binding the register (per-iteration
@@ -302,8 +309,68 @@ impl Compiler {
                 .get(name)
                 .copied()
                 .and_then(|reg| self.machine_regs.get(&reg).copied()),
+            // `r.value` where `value` is declared `u32`.
+            //
+            // The register a field lands in has no width of its own — it came
+            // out of a container — so without this `r.value + 1` on a `u32`
+            // field added at 64 bits and answered 4294967296. Narrow on
+            // purpose: only a local whose struct is known, which is the shape a
+            // register block is read through.
+            Expr::Access(target, key) => self.access_machine_width_of(target, key),
             other => self.initializer_machine_width(other),
         }
+    }
+
+    /// Records that `name` holds a struct, from a literal or a declared type.
+    pub(in crate::vm::compiler) fn note_local_struct_type(
+        &mut self,
+        name: &str,
+        type_annotation: Option<&crate::val::Type>,
+        value: &Expr,
+    ) {
+        let declared = match type_annotation {
+            Some(crate::val::Type::Named(struct_name)) => Some(struct_name.clone()),
+            _ => None,
+        };
+        let from_literal = match value {
+            Expr::StructLiteral { name, .. } => Some(name.clone()),
+            _ => None,
+        };
+        match declared.or(from_literal) {
+            Some(struct_name) => {
+                self.local_struct_types.insert(String::from(name), struct_name);
+            }
+            // Rebinding the name to something else ends the fact, the same way
+            // the width fact ends when a register changes hands.
+            None => {
+                self.local_struct_types.remove(name);
+            }
+        }
+    }
+
+    /// The declared width of `target.key`, when the compiler knows both.
+    pub(in crate::vm::compiler) fn access_machine_width_of(
+        &self,
+        target: &Expr,
+        key: &Expr,
+    ) -> Option<crate::val::IntKind> {
+        let target = match target {
+            Expr::Paren(inner) => inner.as_ref(),
+            other => other,
+        };
+        let Expr::Var(name) = target else {
+            return None;
+        };
+        let field = match key {
+            Expr::Var(field) => field.as_str(),
+            Expr::Literal(value) => value.as_str()?,
+            _ => return None,
+        };
+        let struct_name = self.local_struct_types.get(name.as_str())?;
+        self.struct_field_machine_widths
+            .get(struct_name.as_str())?
+            .get(field)
+            .copied()
     }
 
     /// `__lk_u64_str(expr)` when `expr` is a `u64`/`usize`, otherwise `None`.

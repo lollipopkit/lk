@@ -8,6 +8,27 @@ impl Compiler {
     }
 
     pub(super) fn lower_access_to_register(&mut self, dst: u16, target: &Expr, key: &Expr) -> Result<()> {
+        // A field's declared width, onto the register it lands in.
+        //
+        // The binary paths ask `machine_regs` about *registers*, not about the
+        // expression that filled them, so knowing `r.value` is a `u32` is only
+        // useful once it is written down here. Without it `r.value + 1` on a
+        // `u32` field added at 64 bits and answered 4294967296.
+        //
+        // Recorded before the access lowers rather than after: the lowering
+        // below has several returns, and one of them is a fused opcode.
+        match self.access_machine_width_of(target, key) {
+            Some(kind) => {
+                self.machine_regs.insert(dst, kind);
+            }
+            None => {
+                self.machine_regs.remove(&dst);
+            }
+        }
+        self.lower_access_to_register_inner(dst, target, key)
+    }
+
+    fn lower_access_to_register_inner(&mut self, dst: u16, target: &Expr, key: &Expr) -> Result<()> {
         let target = self.lower_readonly_access_target(target)?;
         let index_fact = index_fact_from_target(&self.function.performance, target);
         if let Some((suffix, key_fact)) = self.try_lower_string_int_key_for_map(index_fact, key)? {

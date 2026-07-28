@@ -240,10 +240,18 @@ fn a_declared_width_crosses_a_function_boundary() {
                println(shr_u64(0xFFFF800000000000 as u64));\n\
                println(gt_u64(0x8000000000000000 as u64, 1 as u64));\n\
                println(half_u64(0xFFFFFFFFFFFFFFFF as u64));\n\
-               println(neg_u32(0xFFFFFF80 as u32));\n";
+               println(neg_u32(0xFFFFFF80 as u32));\n\
+               // A declared field width, which is the same fact one more hop\n\
+               // away: the register a field lands in came out of a container\n\
+               // and carries nothing of its own.\n\
+               struct Reg { value: u32 }\n\
+               let r = Reg { value: 0xFFFFFFFF as u32 };\n\
+               println(r.value + 1);\n\
+               println(r.value / 2);\n";
     let expected = concat!(
         "0\n144\n255\n-128\n",
         "4294934528\ntrue\n9223372036854775807\n128\n",
+        "0\n2147483647\n",
     );
     File::create(dir.join(file))
         .and_then(|mut f| f.write_all(src.as_bytes()))

@@ -131,6 +131,33 @@ pub(super) fn collect_function_machine_returns(program: &Program) -> HashMap<Str
     widths
 }
 
+/// Struct fields whose declared type is a machine int, by struct then field.
+///
+/// The compiler has no type checker to ask, so a field's width has to be
+/// carried the same way a function's return width is: collected once from the
+/// declarations, and looked up by name. Without it `r.value + 1` on a `u32`
+/// field added at 64 bits — the register holding the field has no width, so
+/// nothing wraps.
+pub(super) fn collect_struct_field_machine_widths(
+    program: &Program,
+) -> HashMap<String, HashMap<String, crate::val::IntKind>> {
+    let mut structs: HashMap<String, HashMap<String, crate::val::IntKind>> = HashMap::new();
+    for stmt in &program.statements {
+        if let Stmt::Struct { name, fields } = item_without_attributes(stmt) {
+            let mut widths = HashMap::new();
+            for (field, declared) in fields {
+                if let Some(crate::val::Type::MachineInt(kind)) = declared {
+                    widths.insert(field.clone(), *kind);
+                }
+            }
+            if !widths.is_empty() {
+                structs.insert(name.clone(), widths);
+            }
+        }
+    }
+    structs
+}
+
 pub(super) fn collect_function_names(program: &Program) -> Result<HashMap<String, u32>> {
     let mut names = HashMap::new();
     let mut next = 1_u32;
