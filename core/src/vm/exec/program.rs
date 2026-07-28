@@ -375,6 +375,44 @@ mod tests {
         assert!(matches!(dest_heap.get(imported), Some(HeapValue::String(value)) if value.as_ref() == "external"));
     }
 
+    #[test]
+    fn long_string_elements_survive_every_read_path() {
+        // `ShortStr` inlines up to seven bytes. Every path that reads an
+        // element out of a `TypedList::String` used to assume that was always
+        // enough: the index fast path answered `Nil` for a longer element —
+        // making `xs[0]` disagree with `xs.first()` about the same list — and
+        // the slice path called `ShortStr::new(..).unwrap()` in the branch
+        // reached exactly when it returns `None`, so `xs[0..2]` panicked.
+        let source = "let xs = [\"aaaaaaaaaaaaaaaaaaaa\", \"bb\"];\n\
+                      let seen = [];\n\
+                      for x in xs { seen = seen.concat([x]); }\n\
+                      return [xs[0], xs.get(0), xs.first(), xs[0..1], seen];\n";
+        let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
+        let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
+        let outcome = super::execute_program(&program).expect("run");
+
+        let RuntimeVal::Obj(handle) = *outcome.first_return() else {
+            panic!("expected a list of results");
+        };
+        let Some(HeapValue::List(list)) = outcome.state.heap().get(handle) else {
+            panic!("expected a heap list");
+        };
+        let items = list.collect_owned().expect("results are heap objects, not inline strings");
+
+        let long = |value: &RuntimeVal| -> String {
+            match value {
+                RuntimeVal::Obj(handle) => match outcome.state.heap().get(*handle) {
+                    Some(HeapValue::String(text)) => text.to_string(),
+                    other => panic!("expected a heap string, got {other:?}"),
+                },
+                other => panic!("expected a heap string, got {other:?}"),
+            }
+        };
+        assert_eq!(long(&items[0]), "aaaaaaaaaaaaaaaaaaaa", "xs[0]");
+        assert_eq!(long(&items[1]), "aaaaaaaaaaaaaaaaaaaa", "xs.get(0)");
+        assert_eq!(long(&items[2]), "aaaaaaaaaaaaaaaaaaaa", "xs.first()");
+    }
+
     fn compile_source(source: &str) -> crate::vm::Module {
         let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
         let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
@@ -410,7 +448,7 @@ mod tests {
         let Some(HeapValue::List(list)) = outcome.state.heap().get(handle) else {
             panic!("result handle must stay live in the outcome state");
         };
-        let items = list.collect_owned();
+        let items = list.collect_owned().expect("the result list holds no inline-limited strings");
         assert_eq!(items[0], RuntimeVal::Int(7));
         let RuntimeVal::Obj(text) = items[1] else {
             panic!("expected the long string element on the heap");

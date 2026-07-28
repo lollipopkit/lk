@@ -189,23 +189,26 @@ impl Executor {
                 {
                     HeapValue::String(value) => self.slice_string_general(Arc::clone(value), start, end),
                     HeapValue::List(list) => {
-                        let items = list.collect_owned();
-                        let end = end.unwrap_or(items.len() as i64);
-                        let start = if start < 0 {
-                            (items.len() as i64 + start).max(0)
-                        } else {
-                            start
-                        };
-                        let end = if end < 0 {
-                            (items.len() as i64 + end).max(0)
-                        } else {
-                            end
-                        };
-                        let start = start as usize;
-                        let end = end as usize;
-                        let end = end.min(items.len());
-                        let start = start.min(end);
-                        let slice: Vec<RuntimeVal> = items[start..end].to_vec();
+                        // Cloned first because materializing the window can
+                        // allocate — a string element past the inline limit
+                        // becomes a heap string — and that needs the heap
+                        // mutably while the source is still borrowed from it.
+                        //
+                        // This used to go through `TypedList::collect_owned`,
+                        // which cannot allocate and answered such an element
+                        // with `ShortStr::new(..).unwrap()`: `xs[0..2]` on a
+                        // list of long strings took the process down.
+                        let list = list.clone();
+                        let source_len = list.len() as i64;
+                        let end = end.unwrap_or(source_len);
+                        let start = if start < 0 { (source_len + start).max(0) } else { start };
+                        let end = if end < 0 { (source_len + end).max(0) } else { end };
+                        let end = (end as usize).min(source_len as usize);
+                        let start = (start as usize).min(end);
+                        let mut slice = Vec::with_capacity(end - start);
+                        for index in start..end {
+                            slice.push(self.typed_list_element_allocating(&list, index));
+                        }
                         Ok(RuntimeVal::Obj(
                             self.alloc_heap_value(HeapValue::List(TypedList::Mixed(slice))),
                         ))
@@ -279,6 +282,8 @@ impl Executor {
                 // bytes, and the difference is now something the reader chose
                 // rather than something the implementation decided for them.
                 HeapValue::Bytes(value) => Ok(value.len()),
+                // A window's length is the window's, not the source's.
+                HeapValue::Slice(slice) => Ok(slice.len),
                 HeapValue::List(value) => Ok(value.len()),
                 HeapValue::Map(value) => Ok(value.len()),
                 HeapValue::Set(value) => Ok(value.len()),
@@ -412,6 +417,25 @@ impl Executor {
     }
 
     #[allow(clippy::wrong_self_convention)] // allocates on the heap, so it needs `&mut self`
+    /// One element of a typed list, allocating when the element needs it.
+    ///
+    /// A `TypedList::String` element longer than a `ShortStr` has to become a
+    /// heap string; every read path that can allocate goes through here so that
+    /// none of them has to decide what to do when it cannot.
+    pub(super) fn typed_list_element_allocating(&mut self, list: &TypedList, index: usize) -> RuntimeVal {
+        match list {
+            TypedList::Int(values) => values.get(index).copied().map(RuntimeVal::Int),
+            TypedList::Float(values) => values.get(index).copied().map(RuntimeVal::Float),
+            TypedList::Bool(values) => values.get(index).copied().map(RuntimeVal::Bool),
+            TypedList::Mixed(values) => values.get(index).copied(),
+            TypedList::String(values) => values.get(index).cloned().map(|text| match ShortStr::new(&text) {
+                Some(short) => RuntimeVal::ShortStr(short),
+                None => RuntimeVal::Obj(self.alloc_heap_value(HeapValue::String(text))),
+            }),
+        }
+        .unwrap_or(RuntimeVal::Nil)
+    }
+
     pub(super) fn to_iter(&mut self, register: u8) -> Result<RuntimeVal> {
         match *self.read(register)? {
             RuntimeVal::ShortStr(value) => {

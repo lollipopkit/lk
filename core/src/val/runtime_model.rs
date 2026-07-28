@@ -325,30 +325,35 @@ impl TypedList {
         }
     }
 
-    /// Collect all elements into an owned Vec<RuntimeVal>.
-    pub fn collect_owned(&self) -> Vec<RuntimeVal> {
-        match self {
+    /// Every element as an owned `Vec<RuntimeVal>`, without allocating.
+    ///
+    /// `None` when an element cannot be produced without a heap — a string
+    /// past `ShortStr`'s inline limit. Callers that can allocate should read
+    /// elements through `Executor::typed_list_element_allocating` instead.
+    ///
+    /// This used to answer such an element with `ShortStr::new(..).unwrap()`,
+    /// in the branch reached exactly when that returns `None`. The comment
+    /// beside it admitted the hazard — "longer will fail here. In practice,
+    /// iter/unique strings in examples are short" — and `xs[0..2]` over a list
+    /// of long strings duly panicked.
+    pub fn collect_owned(&self) -> Option<Vec<RuntimeVal>> {
+        Some(match self {
             Self::Mixed(values) => values.clone(),
             Self::Int(values) => values.iter().copied().map(RuntimeVal::Int).collect(),
             Self::Float(values) => values.iter().copied().map(RuntimeVal::Float).collect(),
             Self::Bool(values) => values.iter().copied().map(RuntimeVal::Bool).collect(),
             Self::String(values) => {
                 let mut out = Vec::with_capacity(values.len());
-                for s in values {
-                    if let Some(short) = ShortStr::new(s.as_ref()) {
-                        out.push(RuntimeVal::ShortStr(short));
-                    } else {
-                        // Can't allocate here without &mut HeapStore, use ShortStr or skip
-                        // This path is only used for the core_methods runtime, which will
-                        // re-check ShortStr. Fall back to ShortStr only.
-                        // Short strings up to 11 chars are fine; longer will fail here.
-                        // In practice, iter/unique strings in examples are short.
-                        out.push(RuntimeVal::ShortStr(ShortStr::new(s.as_ref()).unwrap()));
-                    }
+                for text in values {
+                    // An element past the inline limit needs a heap
+                    // allocation, and this method has no `&mut HeapStore`.
+                    // Nothing sensible can be produced for it here, so the
+                    // whole call declines rather than inventing a value.
+                    out.push(RuntimeVal::ShortStr(ShortStr::new(text.as_ref())?));
                 }
                 out
             }
-        }
+        })
     }
 }
 

@@ -14,7 +14,7 @@ use super::{
 
 impl Executor {
     #[inline(always)]
-    pub(in crate::vm::exec) fn get_list_index(&self, target_reg: u8, key_reg: u8) -> Result<RuntimeVal> {
+    pub(in crate::vm::exec) fn get_list_index(&mut self, target_reg: u8, key_reg: u8) -> Result<RuntimeVal> {
         let RuntimeVal::Obj(handle) = self.read_unchecked(target_reg) else {
             bail!("GetList target expected Obj");
         };
@@ -33,7 +33,11 @@ impl Executor {
         } else {
             *index as usize
         };
-        Ok(self.get_typed_list_element(list, index))
+        match self.get_typed_list_element(list, index) {
+            Some(value) => Ok(value),
+            // A long string element: read it again where allocation is allowed.
+            None => Ok(self.get_typed_list_element_allocating(*handle, index)),
+        }
     }
 
     #[inline(always)]
@@ -104,7 +108,7 @@ impl Executor {
         } else {
             *index as usize
         };
-        Some(self.get_typed_list_element(list, index))
+        self.get_typed_list_element(list, index)
     }
 
     #[inline(always)]
@@ -180,7 +184,10 @@ impl Executor {
         if let RuntimeVal::Obj(h) = self.read_unchecked(key_reg)
             && let Some(HeapValue::List(list)) = self.state.heap.get(*h)
         {
-            let items = list.collect_owned();
+            // A materialized range: its elements are the integers `NewRange`
+            // produced, so this never declines. `unwrap_or_default` rather than
+            // an expect because an empty answer is already handled below.
+            let items = list.collect_owned().unwrap_or_default();
             if items.is_empty() {
                 return self.get_index_slice(target_reg, 0, Some(0), None);
             }
@@ -258,7 +265,10 @@ impl Executor {
                     } else {
                         *n as usize
                     };
-                    return Ok(self.get_typed_list_element(list, index));
+                    if let Some(value) = self.get_typed_list_element(list, index) {
+                        return Ok(value);
+                    }
+                    return Ok(self.get_typed_list_element_allocating(handle, index));
                 }
             }
             if fact.target_kind == PerfIndexTargetKind::String {
@@ -283,11 +293,20 @@ impl Executor {
         self.get_heap_index_slow_path(pc, handle, key_reg, known_string_key, index_fact, index_key_metrics)
     }
 
-    /// Read a value from a typed list by index, converting to RuntimeVal.
-    /// Returns RuntimeVal::Nil for out-of-bounds or unsupported types.
+    /// Read a value from a typed list by index, without allocating.
+    ///
+    /// `None` means *this path cannot answer* — not that the element is
+    /// missing. A `TypedList::String` element longer than a `ShortStr` needs a
+    /// heap allocation, and this runs behind `&self` on the index fast path.
+    /// Out of bounds is `Some(Nil)`, which is an answer.
+    ///
+    /// Returning `Nil` for the too-long case, which is what this used to do,
+    /// made `xs[0]` answer nil for an element that was plainly there — while
+    /// `xs.first()`, which allocates, answered correctly. Same list, two
+    /// answers, and only for strings over seven bytes.
     #[inline(always)]
-    fn get_typed_list_element(&self, list: &TypedList, index: usize) -> RuntimeVal {
-        match list {
+    fn get_typed_list_element(&self, list: &TypedList, index: usize) -> Option<RuntimeVal> {
+        Some(match list {
             TypedList::Int(values) => values
                 .get(index)
                 .copied()
@@ -305,12 +324,28 @@ impl Executor {
                 .unwrap_or(RuntimeVal::Nil),
             TypedList::Mixed(values) => values.get(index).cloned().unwrap_or(RuntimeVal::Nil),
             TypedList::String(values) => match values.get(index) {
-                Some(value) => ShortStr::new(value)
-                    .map(RuntimeVal::ShortStr)
-                    .unwrap_or_else(|| RuntimeVal::Nil),
+                Some(value) => RuntimeVal::ShortStr(ShortStr::new(value)?),
                 None => RuntimeVal::Nil,
             },
+        })
+    }
+
+    /// The same read, allowed to allocate. Used where the fast path declines.
+    fn get_typed_list_element_allocating(&mut self, handle: crate::val::HeapRef, index: usize) -> RuntimeVal {
+        let Some(HeapValue::List(list)) = self.state.heap.get(handle) else {
+            return RuntimeVal::Nil;
+        };
+        if let Some(value) = self.get_typed_list_element(list, index) {
+            return value;
         }
+        // Only a long `TypedList::String` element reaches here.
+        let Some(HeapValue::List(TypedList::String(values))) = self.state.heap.get(handle) else {
+            return RuntimeVal::Nil;
+        };
+        let Some(text) = values.get(index).cloned() else {
+            return RuntimeVal::Nil;
+        };
+        RuntimeVal::Obj(self.alloc_heap_value(HeapValue::String(text)))
     }
 
     /// Fast map index lookup that avoids RuntimeMapKey construction.

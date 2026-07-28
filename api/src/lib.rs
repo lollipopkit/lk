@@ -1232,9 +1232,22 @@ pub mod ffi {
         // (registered by the wrapper); handles stay arena-owned.
         unsafe {
             let handle = (rt.list_dyn_new)();
-            for item in list.collect_owned() {
-                let element = marshal_value(item, state, depth + 1);
-                (rt.list_dyn_push)(handle, element);
+            // A `TypedList::String` element past `ShortStr`'s inline limit
+            // cannot become a `RuntimeVal` without a heap allocation, and this
+            // side only has the heap immutably. It does not need one: marshaling
+            // a string only *reads* it.
+            if let lk_core::val::TypedList::String(values) = list {
+                for text in values {
+                    (rt.list_dyn_push)(handle, leaked_c_string(text.as_ref()));
+                }
+            } else {
+                let items = list
+                    .collect_owned()
+                    .expect("only a string list can decline, and that case is handled above");
+                for item in items {
+                    let element = marshal_value(item, state, depth + 1);
+                    (rt.list_dyn_push)(handle, element);
+                }
             }
             LkHybridDyn {
                 tag: LK_HYBRID_DYN_LIST,

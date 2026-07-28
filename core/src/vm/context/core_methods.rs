@@ -6,10 +6,14 @@ use anyhow::{anyhow, bail};
 use arcstr::ArcStr;
 
 mod list_dispatch;
+mod slice_dispatch;
 use self::list_dispatch::*;
+use self::slice_dispatch::*;
 
 use crate::{
-    val::{HeapRef, HeapStore, HeapValue, RuntimeMapKey, RuntimeSet, RuntimeVal, ShortStr, Type, TypedList},
+    val::{
+        HeapRef, HeapStore, HeapValue, RuntimeMapKey, RuntimeSet, RuntimeVal, ShortStr, SliceValue, Type, TypedList,
+    },
     vm::{
         NativeArgs, NativeRuntime, call_runtime_value_runtime_list_args, call_runtime_value_runtime_named_map_list_args,
     },
@@ -106,6 +110,7 @@ enum BuiltinReceiver {
     Set,
     Str,
     List,
+    Slice,
     Other,
 }
 
@@ -117,6 +122,7 @@ fn builtin_receiver_kind(receiver: &RuntimeVal, heap: &HeapStore) -> BuiltinRece
             Some(HeapValue::Set(_)) => BuiltinReceiver::Set,
             Some(HeapValue::String(_)) => BuiltinReceiver::Str,
             Some(HeapValue::List(_)) => BuiltinReceiver::List,
+            Some(HeapValue::Slice(_)) => BuiltinReceiver::Slice,
             _ => BuiltinReceiver::Other,
         },
         _ => BuiltinReceiver::Other,
@@ -138,6 +144,9 @@ fn dispatch_builtin_method(
         }),
         BuiltinReceiver::Str => positional.with_slice(runtime.heap_mut(), |positional, heap| {
             dispatch_string_builtin_method(receiver, method, positional, heap)
+        }),
+        BuiltinReceiver::Slice => positional.with_slice(runtime.heap_mut(), |positional, heap| {
+            dispatch_slice_builtin_method(receiver, method, positional, heap)
         }),
         BuiltinReceiver::List => positional.with_slice(runtime.heap_mut(), |positional, heap| {
             dispatch_list_builtin_method(receiver, method, positional, heap)
@@ -214,6 +223,7 @@ fn dispatch_builtin_method_slice(
         BuiltinReceiver::Set => dispatch_set_builtin_method(receiver, method, args, runtime.heap_mut()),
         BuiltinReceiver::Str => dispatch_string_builtin_method(receiver, method, args, runtime.heap_mut()),
         BuiltinReceiver::List => dispatch_list_builtin_method(receiver, method, args, runtime.heap_mut()),
+        BuiltinReceiver::Slice => dispatch_slice_builtin_method(receiver, method, args, runtime.heap_mut()),
         BuiltinReceiver::Other => Ok(None),
     }
 }
@@ -237,8 +247,11 @@ fn call_method_positional_runtime(
             let items: Vec<RuntimeVal> = list_runtime_items(list, runtime.heap_mut());
             let pos_args: Vec<RuntimeVal> = match &positional {
                 MethodPositionalArgs::Empty => vec![],
-                MethodPositionalArgs::List(handle) => match runtime.heap().get(*handle) {
-                    Some(HeapValue::List(list)) => list.collect_owned(),
+                MethodPositionalArgs::List(handle) => match runtime.heap().get(*handle).cloned() {
+                    // Cloned, then materialized through the allocating path: an
+                    // argument can be a string past the inline limit, and
+                    // `collect_owned` cannot produce one.
+                    Some(HeapValue::List(list)) => list_runtime_items(list, runtime.heap_mut()),
                     _ => vec![],
                 },
             };
@@ -554,19 +567,23 @@ pub(super) fn core_set_builtin(args: NativeArgs<'_>, runtime: &mut NativeRuntime
     }
     let set = match args.get(0) {
         None => RuntimeSet::new(),
-        Some(value) => runtime_set_from_value(value, runtime.heap())?,
+        Some(value) => runtime_set_from_value(value, runtime.heap_mut())?,
     };
     Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::Set(set))))
 }
 
-fn runtime_set_from_value(value: &RuntimeVal, heap: &HeapStore) -> anyhow::Result<RuntimeSet> {
+/// Takes `&mut HeapStore` because a list element can be a string past the
+/// inline limit, which has to be materialized on the heap before it can become
+/// a set key.
+fn runtime_set_from_value(value: &RuntimeVal, heap: &mut HeapStore) -> anyhow::Result<RuntimeSet> {
     let RuntimeVal::Obj(handle) = value else {
         bail!("Set(value) expects List or Set, got {:?}", value.kind());
     };
     match heap.get(*handle) {
         Some(HeapValue::List(list)) => {
+            let list = list.clone();
             let mut set = RuntimeSet::new();
-            for item in list.collect_owned() {
+            for item in list_runtime_items(list, heap) {
                 set.insert(runtime_map_key_from_value(&item, heap, "Set() item")?);
             }
             Ok(set)
