@@ -36,9 +36,27 @@ impl TypeChecker {
                 // says what it accepts when present, not that the argument in
                 // that position *is* one — several exports let a named
                 // parameter be passed positionally too.
-                if !param.optional && param.ty != Type::Any {
-                    self.inference_engine.add_constraint(param.ty.clone(), arg_type);
+                if param.optional || param.ty == Type::Any {
+                    continue;
                 }
+                // Checked here rather than handed to the solver. `unify` ends in
+                // a rule that accepts any two concrete types that disagree, on
+                // the grounds that an *inferred* type may legitimately differ
+                // between call sites in a gradually-typed language. That reason
+                // does not reach this call: the parameter's type was not
+                // inferred, it was declared by whoever wrote the export. Left to
+                // the solver, `string.len(5)` passed.
+                if !arg_type.contains_variables() && !self.is_assignable(&arg_type, &param.ty) {
+                    // The types themselves go in `expected`/`actual`, which
+                    // `TypeError`'s Display already renders.
+                    return Err(Self::type_err(
+                        &format!("Argument '{}' of {module}.{field}", param.name),
+                        Some(param.ty.clone()),
+                        Some(arg_type),
+                        Some(arg.as_ref().clone()),
+                    ));
+                }
+                self.inference_engine.add_constraint(param.ty.clone(), arg_type);
             }
             return Ok(Some(declared.return_type));
         }
