@@ -1257,6 +1257,18 @@ impl TypeChecker {
                 }
                 Ok(())
             }
+            // A literal takes the width of what it is compared against, the same
+            // as in arithmetic: `reg > 0` and `count < 8` are what driver code
+            // is made of, and `reg > (0 as u32)` is the ceremony that gets fixed
+            // widths abandoned. The range is still checked against that width.
+            (Type::MachineInt(kind), _) if Self::int_literal_operand(right_expr).is_some() => {
+                let literal = Self::int_literal_operand(right_expr).expect("checked");
+                Self::machine_literal_result(*kind, literal, right_expr).map(|_| ())
+            }
+            (_, Type::MachineInt(kind)) if Self::int_literal_operand(left_expr).is_some() => {
+                let literal = Self::int_literal_operand(left_expr).expect("checked");
+                Self::machine_literal_result(*kind, literal, left_expr).map(|_| ())
+            }
             (Type::MachineInt(kind), other) => Err(Self::type_err(
                 "machine integers do not mix with other numeric types; cast explicitly",
                 Some(Type::MachineInt(*kind)),

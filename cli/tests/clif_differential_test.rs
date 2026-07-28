@@ -473,6 +473,29 @@ fn machine_int_differential() {
                 "u64_halves_to_one",
                 "let one: u64 = 1;\nlet n = one << 63;\nlet steps = 0;\nwhile (n > one) { n = n / (one + one); steps = steps + 1; }\nreturn steps;\n",
             ),
+            // A literal beside a `u64` joins the *unsigned* operation.
+            //
+            // This is where two correct features composed into a wrong answer.
+            // The checker gives a literal the width of the operand beside it, so
+            // `top / 2` type-checks as a `u64` division — and the compiler asked
+            // for two *proven* operands before choosing the unsigned form, which
+            // a literal never is. It divided signed and answered a negative.
+            new(
+                "u64_divides_a_literal_unsigned",
+                "let one: u64 = 1;\nlet top = one << 63;\nreturn (top / 2) as Int;\n",
+            ),
+            new(
+                "u64_mods_a_literal_unsigned",
+                "let one: u64 = 1;\nlet top = one << 63;\nreturn (top % 3) as Int;\n",
+            ),
+            new(
+                "u64_compares_a_literal_unsigned",
+                "let one: u64 = 1;\nlet top = one << 63;\nif (top > 5) { return 1; }\nreturn 0;\n",
+            ),
+            // `reg > 0` and `count < 8` are what driver code is made of, at every
+            // width.
+            new("u32_compares_a_literal", "let a: u32 = 7;\nif (a > 3) { return 1; }\nreturn 0;\n"),
+            new("u8_compares_a_literal", "let a: u8 = 0;\nif (a > 0) { return 1; }\nreturn 0;\n"),
             // A signed comparison is still signed, which is the property the
             // change must not have taken away.
             new("i64_compares_signed", "let a = 0 - 1;\nif (a < 1) { return 1; }\nreturn 0;\n"),

@@ -773,9 +773,30 @@ impl Compiler {
     /// in both signednesses.
     fn lower_unsigned_bin(&mut self, lhs: &Expr, op: &BinOp, rhs: &Expr) -> Result<Option<u16>> {
         let fills_carrier = |kind| matches!(kind, crate::val::IntKind::U64 | crate::val::IntKind::Usize);
-        if !self.expr_machine_width(lhs).is_some_and(fills_carrier)
-            || !self.expr_machine_width(rhs).is_some_and(fills_carrier)
-        {
+        // One side proven, and the other proven *or a literal*.
+        //
+        // The literal is the case that matters and the one that was missed: the
+        // type checker gives an integer literal the width of the operand beside
+        // it, so `top / 2` type-checks as a `u64` division — and then divided
+        // *signed*, because this asked for two proven operands and a literal is
+        // never proven. Two correct features composing into a wrong answer.
+        //
+        // A literal is safe here because the checker has already measured it
+        // against this width: a value that fits `u64` has the same bits read
+        // either way, so the unsigned operation is the right one.
+        //
+        // Two things in this class are still signed, and both are conversions
+        // rather than operations. `println(top)` on a `u64` with bit 63 set
+        // shows a negative number, and `top as Float` goes through `i64` and
+        // answers a negative float. Neither is reachable by accident — a value
+        // that large has to be built deliberately — and both want the same fix:
+        // a conversion that consults the *static* width rather than the carrier.
+        let proven_or_literal = |this: &Self, expr: &Expr| {
+            this.expr_machine_width(expr).is_some_and(fills_carrier) || support::is_int_literal(expr)
+        };
+        let left_proven = self.expr_machine_width(lhs).is_some_and(fills_carrier);
+        let right_proven = self.expr_machine_width(rhs).is_some_and(fills_carrier);
+        if !(left_proven || right_proven) || !proven_or_literal(self, lhs) || !proven_or_literal(self, rhs) {
             return Ok(None);
         }
         let call = |name: &str, a: &Expr, b: &Expr| {
