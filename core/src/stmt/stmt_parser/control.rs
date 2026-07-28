@@ -224,12 +224,14 @@ impl<'a> StmtParser<'a> {
                 body,
             })
         } else {
-            // Regular while statement
-            self.expect_token(Token::LParen)?;
-
-            let condition = self.parse_expression()?;
-
-            self.expect_token(Token::RParen)?;
+            // Regular `while`.
+            //
+            // The condition stops at the top-level `{` that opens the body,
+            // exactly as `if`'s does. Parentheses used to be *required* here
+            // and optional there, for no reason either form could explain —
+            // `while (i < 3) { … }` still parses, because a parenthesised
+            // expression is an expression.
+            let condition = strip_condition_parens(self.parse_expression_with_options(true)?);
             let body = Box::new(self.parse_statement()?);
 
             Ok(Stmt::While {
@@ -446,4 +448,23 @@ impl<'a> StmtParser<'a> {
             _ => Err(anyhow!(self.err("Expected pattern after 'for'"))),
         }
     }
+}
+
+/// A condition with its outer parentheses removed.
+///
+/// `Expr::Paren` carries no meaning — it exists so the formatter can print the
+/// source back. But the loop analyses match on expression *shape*, and the
+/// wrapper hides it: after `while` stopped requiring parentheses, the
+/// still-legal `while (i < 3)` began parsing as `Paren(i < 3)` where it used
+/// to be `i < 3`, and the constant `3` stopped being recognised as
+/// loop-invariant — it became a loop-carried block parameter, reloaded every
+/// iteration. Nothing was wrong with the answer, only with the code.
+///
+/// The `if` statement never had this because it consumed the parentheses as
+/// tokens; stripping here restores that, for both.
+fn strip_condition_parens(mut condition: Expr) -> Expr {
+    while let Expr::Paren(inner) = condition {
+        condition = *inner;
+    }
+    condition
 }

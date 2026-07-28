@@ -1274,7 +1274,18 @@ impl<'a> Parser<'a> {
             // Parse body expression. Through `parse_expr`, not
             // `parse_conditional`: the arm body is where `match` nests into
             // itself, so it has to be counted.
-            let body = Box::new(self.parse_expr()?);
+            //
+            // A `{` here opens a *block*, as it does after a closure's
+            // parameters — `1 => { work(); }` was a syntax error before,
+            // because postfix parsing read the brace as a map literal and then
+            // found statements inside it. The cost is that an arm whose value
+            // really is a map needs parentheses (`_ => ({"k": 1})`), which is
+            // the trade Rust makes for the same reason.
+            let body = Box::new(if !self.eof() && self.tokens[self.pos] == Token::LBrace {
+                self.parse_brace_block(BlockTail::Value)?
+            } else {
+                self.parse_expr()?
+            });
 
             arms.push(MatchArm { pattern, body });
 

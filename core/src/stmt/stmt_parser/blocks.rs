@@ -27,8 +27,22 @@ impl<'a> StmtParser<'a> {
     }
 
     pub fn parse_expr_stmt(&mut self) -> Result<Stmt> {
-        let expr = self.parse_expression()?;
-        self.expect_token(Token::Semicolon)?;
+        let expr = self.parse_statement_expression()?;
+        // An expression that *ends in a block* needs no `;`.
+        //
+        // `if c { … }` never did, because it was a statement. `match x { … }`
+        // and `unsafe { … }` are expressions, so they did — the same shape on
+        // the page, one of them demanding punctuation the other refuses.
+        // Ending in `}` is the whole rule, so a construct added later inherits
+        // it instead of joining the exception list.
+        let ends_in_block = self.pos > 0 && self.tokens[self.pos - 1] == Token::RBrace;
+        if ends_in_block {
+            if !self.eof() && self.tokens[self.pos] == Token::Semicolon {
+                self.pos += 1;
+            }
+        } else {
+            self.expect_token(Token::Semicolon)?;
+        }
         Ok(Stmt::Expr(Box::new(expr)))
     }
 
@@ -37,6 +51,21 @@ impl<'a> StmtParser<'a> {
     }
 
     pub fn parse_expression_with_options(&mut self, stop_at_for_loop_body: bool) -> Result<Expr> {
+        self.parse_expression_slice(stop_at_for_loop_body, false)
+    }
+
+    /// The expression of an expression *statement*.
+    ///
+    /// Differs from [`Self::parse_expression`] in one way: a leading braced
+    /// construct ends the expression at its closing `}`, because that is where
+    /// the statement ends. As an operand it must not — `return match x { … }
+    /// == nil;` compares the match's value, and stopping at the brace would
+    /// silently drop the comparison.
+    fn parse_statement_expression(&mut self) -> Result<Expr> {
+        self.parse_expression_slice(false, true)
+    }
+
+    fn parse_expression_slice(&mut self, stop_at_for_loop_body: bool, end_at_block: bool) -> Result<Expr> {
         // 找到表达式的结束位置
         let start_pos = self.pos;
         let mut depth = 0;
@@ -47,6 +76,16 @@ impl<'a> StmtParser<'a> {
         // nearest one; only a genuinely dangling `else` ends the slice, which
         // is what this used to assume unconditionally.
         let mut unmatched_ifs = 0usize;
+        // An expression that *begins* with a braced construct also *ends* at
+        // that construct's closing `}` when it stands as a statement:
+        // `match x { … } println("next");` is two statements, not one
+        // expression with leftover tokens. Conditions never reach this — they
+        // stop at the `{` that opens the body (`stop_at_for_loop_body`).
+        let starts_with_block_expr = end_at_block
+            && matches!(
+                self.tokens.get(start_pos),
+                Some(Token::Match | Token::Unsafe | Token::If)
+            );
 
         while end_pos < self.len {
             let token = &self.tokens[end_pos];
@@ -72,6 +111,11 @@ impl<'a> StmtParser<'a> {
                     }
                     depth -= 1;
                     end_pos += 1;
+                    // The construct this expression opened with just closed.
+                    // An `else` may still follow an `if`; nothing else can.
+                    if depth == 0 && starts_with_block_expr && !matches!(self.tokens.get(end_pos), Some(Token::Else)) {
+                        break;
+                    }
                 }
                 Token::RBracket => {
                     depth -= 1;

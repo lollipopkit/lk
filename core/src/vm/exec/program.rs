@@ -465,6 +465,59 @@ mod tests {
         assert_eq!(text(&items[4]), "yes");
     }
 
+    /// The braced constructs agree on punctuation and on parentheses.
+    ///
+    /// Three rules used to differ for no reason any of them could explain:
+    /// `while` *required* parentheses around its condition while `if` and
+    /// `for` did not; and `match x { … }` / `unsafe { … }` as statements
+    /// *required* a trailing `;` while `if c { … }` refused one. Same shape on
+    /// the page, different punctuation.
+    #[test]
+    fn braced_constructs_agree_on_parentheses_and_semicolons() {
+        let source = "let seen = [];\n\
+                      let i = 0;\n\
+                      while i < 3 { i = i + 1; }\n\
+                      while (i < 6) { i = i + 1; }\n\
+                      match i { 6 => { seen = seen.concat([\"matched\"]); }, _ => {} }\n\
+                      unsafe { seen = seen.concat([\"unsafe\"]); }\n\
+                      if i == 6 { seen = seen.concat([\"if\"]); }\n\
+                      return [i, seen];\n";
+        let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
+        let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
+        let outcome = super::execute_program(&program).expect("run");
+
+        let RuntimeVal::Obj(handle) = *outcome.first_return() else {
+            panic!("expected a list of results");
+        };
+        let Some(HeapValue::List(list)) = outcome.state.heap().get(handle) else {
+            panic!("expected a heap list");
+        };
+        let items = list.collect_owned().expect("results are heap objects");
+        assert_eq!(items[0], RuntimeVal::Int(6), "both `while` forms should have run");
+        let RuntimeVal::Obj(seen) = items[1] else {
+            panic!("expected the marker list");
+        };
+        let Some(HeapValue::List(seen)) = outcome.state.heap().get(seen) else {
+            panic!("expected the marker list");
+        };
+        assert_eq!(seen.len(), 3, "each statement after a closing brace should have run");
+    }
+
+    /// A braced construct ends a *statement*, never an operand.
+    ///
+    /// `match x { … } println("next");` is two statements; `return match x
+    /// { … } == nil;` is one comparison. Stopping at the brace in both places
+    /// would silently drop the `== nil` — an answer, not a syntax error.
+    #[test]
+    fn a_block_ends_a_statement_but_not_an_operand() {
+        let source = "let compared = match 99 { 1 => \"one\", _ => nil } == nil;\n\
+                      return compared;\n";
+        let tokens = crate::token::Tokenizer::tokenize(source).expect("tokenize");
+        let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
+        let outcome = super::execute_program(&program).expect("run");
+        assert_eq!(*outcome.first_return(), RuntimeVal::Bool(true));
+    }
+
     /// An `if` *statement* keeps working, and an `else` that belongs to one is
     /// still its own.
     ///

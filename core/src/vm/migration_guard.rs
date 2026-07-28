@@ -66,8 +66,9 @@ fn collect_violations(path: &Path, manifest_dir: &Path, violations: &mut Vec<Str
     }
     let source = fs::read_to_string(path).expect("read source file");
     let relative = path.strip_prefix(manifest_dir).unwrap_or(path);
+    let scannable = scannable_lines(&source);
     for (token, reason) in FORBIDDEN_TOKENS {
-        for (line_index, line) in source.lines().enumerate() {
+        for (line_index, line) in scannable.iter().enumerate() {
             if line.contains(token) {
                 violations.push(format!(
                     "{}:{} contains `{}` ({})",
@@ -79,4 +80,56 @@ fn collect_violations(path: &Path, manifest_dir: &Path, violations: &mut Vec<Str
             }
         }
     }
+}
+
+/// A line reduced to the Rust it actually compiles: string literals blanked,
+/// line comments dropped.
+///
+/// The guard matches raw text, so an LK program *quoted in a test* — or merely
+/// *described in a doc comment* — looked like Rust. `unsafe { … }` is a
+/// construct of the language this crate implements, so neither testing it nor
+/// writing it down was possible anywhere under `vm/`: a hole the guard itself
+/// created, and one that would have silenced the guard by teaching people to
+/// avoid the word.
+///
+/// Quotes are tracked one line at a time, with `\"` escaped. A multi-line raw
+/// string (`r#"…"#`) and a block comment are not understood, so a forbidden
+/// token inside one still reports; that is the safe direction to be wrong in.
+fn scannable_lines(source: &str) -> Vec<String> {
+    // Carried across lines: a Rust string literal may span them with a
+    // trailing `\`, which is how a multi-line LK sample is written in a test.
+    let mut in_string = false;
+    source
+        .lines()
+        .map(|line| scannable_code(line, &mut in_string))
+        .collect()
+}
+
+fn scannable_code(line: &str, in_string: &mut bool) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut escaped = false;
+    for ch in line.chars() {
+        if *in_string {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                *in_string = false;
+            }
+            out.push(' ');
+            continue;
+        }
+        if ch == '"' {
+            *in_string = true;
+            out.push(' ');
+            continue;
+        }
+        if ch == '/' && out.ends_with('/') {
+            out.pop();
+            break;
+        }
+        out.push(ch);
+    }
+    out
 }
