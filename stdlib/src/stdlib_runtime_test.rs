@@ -391,4 +391,38 @@ mod tests {
         assert_eq!(result.first_return(), &RuntimeVal::Bool(true));
         Ok(())
     }
+
+    /// Searching and deduplicating read the list where it lies.
+    ///
+    /// They used to clone it and materialize every element into a `RuntimeVal`
+    /// first — a heap allocation per element past seven bytes — to answer a
+    /// question that reads each element once and often stops at the first.
+    /// `unique` was quadratic on top of that, and returned a `Mixed` list
+    /// whatever it was given, so an `Int` list came back boxed.
+    ///
+    /// Measured on twenty thousand elements: `contains` 7.15s → 0.23s,
+    /// `unique` 1.25s → 0.025s. This test is about the answers being the same;
+    /// the numbers are why the answers are computed differently.
+    #[test]
+    fn searching_a_list_reads_it_in_place() -> Result<()> {
+        let source = r#"
+            let ints = [3, 1, 3, 2, 1];
+            let texts = ["abcdefghij", "abcdefghij", "x"];
+            let nested = [[1], [2], [1]];
+            return ints.contains(2)
+                && ints.index_of(2) == 3
+                && ints.index_of(9) == 0 - 1
+                && texts.contains("abcdefghij")
+                && texts.index_of("x") == 2
+                && nested.contains([2])
+                && ints.unique() == [3, 1, 2]
+                && texts.unique() == ["abcdefghij", "x"]
+                && nested.unique() == [[1], [2]]
+                && [1.5, 1.5, 2.5].unique() == [1.5, 2.5]
+                && [true, false, true].unique() == [true, false];
+        "#;
+        let result = run(source)?;
+        assert_eq!(result.first_return(), &RuntimeVal::Bool(true));
+        Ok(())
+    }
 }

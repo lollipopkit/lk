@@ -380,6 +380,21 @@ mod behaviour {
         // host's and is checked in `formatting` below, template interpolation
         // is not. Confusing the two is how a "parity" case ends up testing
         // nothing (this one did, until the deliberate-break check caught it).
+        // `error(v)` carries `v` itself where it can. The doc on it says a host
+        // without full VM state falls back to the rendered message — so this
+        // asks whether the two alternative hosts have it.
+        (
+            "error carries a list",
+            "try { error([1, 2]); } catch e { return e; } return 0;",
+        ),
+        (
+            "error carries an int",
+            "try { error(42); } catch e { return e; } return 0;",
+        ),
+        (
+            "error carries a long string",
+            r#"try { error("abcdefghij"); } catch e { return e; } return 0;"#,
+        ),
         (
             "interpolation renders in the VM",
             r#"struct P { a: Int }

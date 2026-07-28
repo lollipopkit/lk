@@ -890,6 +890,112 @@ fn list_runtime_items(list: TypedList, heap: &mut HeapStore) -> Vec<RuntimeVal> 
     }
 }
 
+/// Where `needle` first appears in `list`, or `None`.
+///
+/// Searches the `TypedList` **in place**. `contains`/`index_of`/`unique` used to
+/// clone the list and materialize every element into a `RuntimeVal` first —
+/// which allocates a heap string for every element past seven bytes — to answer
+/// a question that reads each element once and often stops at the first. A
+/// twenty-thousand-element string list cost twenty thousand allocations per
+/// call, whatever the answer was.
+///
+/// The typed variants never touch the heap at all: an `Int` list compares
+/// integers, a `String` list compares text against text.
+pub(super) fn typed_list_position(list: &TypedList, needle: &RuntimeVal, heap: &HeapStore) -> Option<usize> {
+    match list {
+        TypedList::Int(values) => match needle {
+            RuntimeVal::Int(needle) => values.iter().position(|value| value == needle),
+            // A float needle can still equal an integer element (`1.0 == 1`),
+            // which is the language's rule for `==`.
+            RuntimeVal::Float(needle) => values.iter().position(|value| *value as f64 == *needle),
+            _ => None,
+        },
+        TypedList::Float(values) => match needle {
+            RuntimeVal::Float(needle) => values.iter().position(|value| value.to_bits() == needle.to_bits()),
+            RuntimeVal::Int(needle) => values.iter().position(|value| *value == *needle as f64),
+            _ => None,
+        },
+        TypedList::Bool(values) => match needle {
+            RuntimeVal::Bool(needle) => values.iter().position(|value| value == needle),
+            _ => None,
+        },
+        TypedList::String(values) => {
+            let needle = runtime_value_text(needle, heap)?;
+            values.iter().position(|value| value.as_ref() == needle)
+        }
+        TypedList::Mixed(values) => values
+            .iter()
+            .position(|value| runtime_values_equal(value, needle, heap)),
+    }
+}
+
+/// The list with later duplicates dropped, order preserved, representation kept.
+///
+/// The typed variants dedup through a hash set — the previous implementation
+/// compared each element against every element already kept, which is O(n²):
+/// twenty thousand elements with five thousand distinct ones took a hundred
+/// million comparisons. It also materialized every element first, and returned
+/// a `Mixed` list whatever it was given, so an `Int` list came back boxed and
+/// every later read of it took the slow path.
+///
+/// `Mixed` keeps the quadratic scan, and has to: its elements are arbitrary
+/// values whose equality needs the heap, and there is no key to hash them by.
+pub(super) fn typed_list_unique(list: &TypedList, heap: &HeapStore) -> TypedList {
+    match list {
+        TypedList::Int(values) => {
+            let mut seen = crate::util::fast_map::fast_hash_set_new();
+            TypedList::Int(values.iter().copied().filter(|value| seen.insert(*value)).collect())
+        }
+        TypedList::Float(values) => {
+            let mut seen = crate::util::fast_map::fast_hash_set_new();
+            // By bits, so that the two zeros stay distinct and two `NaN`s from
+            // one source collapse — the same rule `same_value_or_handle` uses.
+            TypedList::Float(
+                values
+                    .iter()
+                    .copied()
+                    .filter(|value| seen.insert(value.to_bits()))
+                    .collect(),
+            )
+        }
+        TypedList::Bool(values) => {
+            let mut seen = crate::util::fast_map::fast_hash_set_new();
+            TypedList::Bool(values.iter().copied().filter(|value| seen.insert(*value)).collect())
+        }
+        TypedList::String(values) => {
+            let mut seen = crate::util::fast_map::fast_hash_set_new();
+            TypedList::String(
+                values
+                    .iter()
+                    .filter(|value| seen.insert(value.as_ref().to_string()))
+                    .cloned()
+                    .collect(),
+            )
+        }
+        TypedList::Mixed(values) => {
+            let mut unique: Vec<RuntimeVal> = Vec::new();
+            for value in values {
+                if !unique.iter().any(|seen| runtime_values_equal(seen, value, heap)) {
+                    unique.push(*value);
+                }
+            }
+            TypedList::Mixed(unique)
+        }
+    }
+}
+
+/// The text a value holds, without allocating — `None` when it is not a string.
+fn runtime_value_text<'a>(value: &'a RuntimeVal, heap: &'a HeapStore) -> Option<&'a str> {
+    match value {
+        RuntimeVal::ShortStr(value) => Some(value.as_str()),
+        RuntimeVal::Obj(handle) => match heap.get(*handle) {
+            Some(HeapValue::String(value)) => Some(value.as_ref()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// Value equality for the search methods (`contains`, `index_of`, `unique`).
 ///
 /// Two heap values are compared by *what they are*, not by which handle they

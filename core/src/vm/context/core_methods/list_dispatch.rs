@@ -105,38 +105,31 @@ pub(super) fn dispatch_list_builtin_method(
             if !positional.is_empty() {
                 bail!("list.unique() expects no arguments, got {}", positional.len());
             }
-            let items = list_runtime_items(clone_list(receiver, heap)?, heap);
-            let mut unique: Vec<RuntimeVal> = Vec::new();
-            for item in items {
-                if !unique.iter().any(|seen| runtime_values_equal(seen, &item, heap)) {
-                    unique.push(item);
-                }
-            }
-            Ok(Some(RuntimeVal::Obj(
-                heap.alloc(HeapValue::List(TypedList::Mixed(unique))),
-            )))
+            let Some(HeapValue::List(list)) = heap.get(handle) else {
+                return Ok(None);
+            };
+            let unique = typed_list_unique(list, heap);
+            Ok(Some(RuntimeVal::Obj(heap.alloc(HeapValue::List(unique)))))
         }
         "contains" => {
             if positional.len() != 1 {
                 bail!("list.contains() expects 1 argument (value), got {}", positional.len());
             }
-            let items = list_runtime_items(clone_list(receiver, heap)?, heap);
+            let Some(HeapValue::List(list)) = heap.get(handle) else {
+                return Ok(None);
+            };
             Ok(Some(RuntimeVal::Bool(
-                items
-                    .iter()
-                    .any(|item| runtime_values_equal(item, &positional[0], heap)),
+                typed_list_position(list, &positional[0], heap).is_some(),
             )))
         }
         "index_of" => {
             if positional.len() != 1 {
                 bail!("list.index_of() expects 1 argument (value), got {}", positional.len());
             }
-            let items = list_runtime_items(clone_list(receiver, heap)?, heap);
-            let index = items
-                .iter()
-                .position(|item| runtime_values_equal(item, &positional[0], heap))
-                .map(|index| index as i64)
-                .unwrap_or(-1);
+            let Some(HeapValue::List(list)) = heap.get(handle) else {
+                return Ok(None);
+            };
+            let index = typed_list_position(list, &positional[0], heap).map_or(-1, |index| index as i64);
             Ok(Some(RuntimeVal::Int(index)))
         }
         "is_empty" => {

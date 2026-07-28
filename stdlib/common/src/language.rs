@@ -20,7 +20,6 @@
 
 use alloc::sync::Arc;
 use alloc::vec;
-use alloc::vec::Vec;
 
 use anyhow::{Result, anyhow};
 use lk_core::val::{HeapValue, RuntimeVal, TypedList};
