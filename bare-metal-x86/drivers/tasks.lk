@@ -24,7 +24,8 @@ use { mmio_layout } from "layout";
 //   slot   +8   its address space, as the value CR3 takes (0 = the kernel's)
 //   slot   +16  the ring-0 stack an interrupt from it lands on (0 = none)
 //   slot   +24  free, ready, blocked, idle, or dead-and-waiting-to-be-reclaimed
-//   slot   +32  the tick a blocked task becomes ready at
+//   slot   +32  the tick a blocked task becomes ready at, or 0
+//   slot   +40  what a blocked task is waiting to be told, or 0
 mmio_layout! {
     TASK_USED_OFFSET: 8,
     TASK_CURRENT_OFFSET: 8,
@@ -37,6 +38,7 @@ mmio_layout! {
     TASK_STACK_OFFSET: 8,
     TASK_STATE_OFFSET: 8,
     TASK_WAKE_OFFSET: 8,
+    TASK_WAIT_OFFSET: 8,
     => TASK_SLOT_SIZE
 }
 
@@ -140,15 +142,62 @@ fn task_set_state(base: Int, slot: Int, state: Int) {
     task_set_field(base, slot, TASK_STATE_OFFSET, state);
 }
 
-// Marks a slot as waiting until `tick`.
+// Marks a slot as waiting until `tick`, or for `channel` to be signalled, or
+// whichever comes first.
 //
-// The deadline before the state, and that ordering is the same contract as
-// everywhere else in this table: the state is the word the waker reads to decide
-// this slot is its business, and a slot announced blocked before its deadline is
-// written is one that wakes at whatever the field last held.
-fn task_block_until(base: Int, slot: Int, tick: Int) {
+// Two ways to be woken and not one, because a driver needs both and needs them
+// together. A wait with only a channel is a wait that never ends if the device
+// is broken; a wait with only a deadline is a poll with extra steps. What a
+// driver actually wants to say is "until the card answers, but not for ever",
+// and that is one blocked task with two ways out.
+//
+// Zero means "not this one" for both. It is not an address a device lives at
+// and it is not a tick anything waits for, since a deadline is always in the
+// future when it is written.
+//
+// The state last, and that ordering is the same contract as everywhere else in
+// this table: the state is the word a waker reads to decide this slot is its
+// business, so a slot announced blocked before its deadline and channel are
+// written is one that wakes on whatever the fields last held.
+fn task_block_on(base: Int, slot: Int, tick: Int, channel: Int) {
     task_set_field(base, slot, TASK_WAKE_OFFSET, tick);
+    task_set_field(base, slot, TASK_WAIT_OFFSET, channel);
     task_set_field(base, slot, TASK_STATE_OFFSET, TASK_BLOCKED);
+}
+
+// Puts a blocked slot back, clearing both of its reasons for waiting.
+//
+// One function rather than two lines at each waker, because a slot woken with a
+// stale channel still in it is one the *next* signal on that channel wakes
+// again — while it is running, in the middle of something else.
+fn task_unblock(base: Int, slot: Int) {
+    task_set_field(base, slot, TASK_WAKE_OFFSET, 0);
+    task_set_field(base, slot, TASK_WAIT_OFFSET, 0);
+    task_set_field(base, slot, TASK_STATE_OFFSET, TASK_READY);
+}
+
+// Wakes every task waiting to be told about `channel`. Answers how many.
+//
+// Called from interrupt handlers: a device that has something to say signals
+// what it is, and whoever asked wakes. That is the whole of "blocking I/O" —
+// what makes it worth having over a poll is not the code but the machine, which
+// is asleep for the wait rather than turning over.
+fn task_wake_channel(base: Int, watermark: Int, channel: Int) -> Int {
+    if (channel == 0) {
+        return 0;
+    }
+    let woken = 0;
+    for slot in 0..watermark {
+        if (task_field(base, slot, TASK_STATE_OFFSET) != TASK_BLOCKED) {
+            continue;
+        }
+        if (task_field(base, slot, TASK_WAIT_OFFSET) != channel) {
+            continue;
+        }
+        task_unblock(base, slot);
+        woken = woken + 1;
+    }
+    return woken;
 }
 
 // Puts back every task whose moment has come. Answers how many.
@@ -162,11 +211,13 @@ fn task_wake_due(base: Int, watermark: Int, now: Int) -> Int {
         if (task_field(base, slot, TASK_STATE_OFFSET) != TASK_BLOCKED) {
             continue;
         }
-        if (task_field(base, slot, TASK_WAKE_OFFSET) > now) {
+        let deadline = task_field(base, slot, TASK_WAKE_OFFSET);
+        // Zero is "no deadline": this one is waiting to be told something, and
+        // the clock is not the one to tell it.
+        if (deadline == 0 || deadline > now) {
             continue;
         }
-        task_set_field(base, slot, TASK_WAKE_OFFSET, 0);
-        task_set_field(base, slot, TASK_STATE_OFFSET, TASK_READY);
+        task_unblock(base, slot);
         woken = woken + 1;
     }
     return woken;

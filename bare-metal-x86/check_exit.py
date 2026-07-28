@@ -33,6 +33,18 @@ Four numbers, and each one fails differently:
   ticks out of eight without asking whether it was still runnable, so a task
   that had just marked itself blocked was resumed anyway. Every wake was
   counted, every number looked right, and only the elapsed time gave it away.
+* **And costs nothing while it waits.** The idle task counts the turns it is
+  given, so "the machine had nothing to do" is a number: it has to be about the
+  same as the elapsed ticks, which is to say the CPU was halted for essentially
+  the whole wait. A spin would score zero here — a spinning task is runnable,
+  and the rotation never falls through to idle while anything is runnable.
+
+  Three tasks are suspended for the measurement, because this demonstration
+  deliberately runs tasks that never block: a spinner that exists to be
+  interrupted mid-update, and two ring-3 tasks that never yield. Suspending
+  those is itself worth something — two of them are in ring 3, and a ring-3
+  task has no say in it. That is the difference between a kernel and a
+  cooperative loop.
 * **The work actually happened.** Each task bumps a counter 200,000 times, so
   `ran` has to be twenty times that. Without it, "every task ended" is also what
   a kernel that never scheduled them would report — which is what the first
@@ -57,6 +69,9 @@ CAPACITY = 16
 # each wake may be up to this late.
 SLICE_TICKS = 8
 SLEEP_SLACK = 60
+# How much of the wait the CPU has to have been halted for, as a percentage.
+# Below this and something was runnable throughout, which is a spin.
+IDLE_SHARE = 80
 
 
 def send_line(connection, text):
@@ -150,18 +165,25 @@ def main():
         # missed and had to wait out another whole period. The slack is the
         # scheduling granularity — a woken task runs at the next decision, which
         # is up to one slice away, once per wake.
-        slept = re.search(r"sleep wakes (\d+)/(\d+) ticks (\d+) want (\d+)", transcript)
+        slept = re.search(r"sleep wakes (\d+)/(\d+) ticks (\d+) want (\d+) idle (\d+)", transcript)
         if not slept:
             step = re.search(r"sleep: .*", transcript)
             failures.append(f"`sleep` did not report: {step.group(0) if step else 'nothing'}")
         else:
-            woke, rounds, ticks, want = (int(g) for g in slept.groups())
+            woke, rounds, ticks, want, idle = (int(g) for g in slept.groups())
             if woke != rounds:
                 failures.append(f"the sleeper woke {woke} times, not {rounds}")
             if ticks < want:
                 failures.append(f"{rounds} sleeps took {ticks} ticks, less than the {want} asked for")
             if ticks > want + rounds * SLICE_TICKS + SLEEP_SLACK:
                 failures.append(f"{rounds} sleeps took {ticks} ticks, far more than the {want} asked for")
+            # Essentially every tick of the wait. Not all of them: the sleeper
+            # runs for a moment at each wake, and the shell wakes to check on it.
+            if idle < ticks * IDLE_SHARE // 100:
+                failures.append(
+                    f"the machine was idle for {idle} of {ticks} ticks — a task that waits "
+                    f"should not be costing anything"
+                )
 
         if "exception #" in transcript:
             fault = re.search(r"!! exception .*", transcript)
@@ -172,9 +194,9 @@ def main():
             print("--- transcript ---")
             print(transcript)
             return 1
-        print(f"OK: a task slept for the time it asked for, and {ROUNDS} tasks ran to "
-              f"completion and returned through {CAPACITY} slots, giving back every slot "
-              f"and every stack page")
+        print(f"OK: a task slept for the time it asked for with the CPU halted throughout, "
+              f"and {ROUNDS} tasks ran to completion and returned through {CAPACITY} slots, "
+              f"giving back every slot and every stack page")
         return 0
 
 

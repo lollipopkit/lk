@@ -58,7 +58,7 @@ use { task_table_init, task_word, task_set_word, task_field, task_set_field,
       task_prepare_frame, task_find_free, task_state, task_set_state,
       TASK_USED_OFFSET, TASK_CURRENT_OFFSET, TASK_RSP_OFFSET,
       TASK_CR3_OFFSET, TASK_STACK_OFFSET,
-      task_block_until, task_wake_due,
+      task_block_on, task_unblock, task_wake_due, task_wake_channel,
       TASK_FREE, TASK_READY, TASK_DEAD, TASK_BLOCKED, TASK_IDLE } from "drivers/tasks";
 use { table_zero, table_set, index_of, switch_to as space_switch,
       PAGE_PRESENT, PAGE_WRITE, PAGE_USER, SHIFT_PML4, SHIFT_PDPT,
@@ -372,7 +372,21 @@ const SHARED_BRIEF_TICKS = SHARED_USER_EXITED + WORD;
 // How many times the sleeping task has woken.
 const SHARED_SLEEP_WAKES = SHARED_BRIEF_TICKS + WORD;
 
-const SHARED_EDU_MMIO = SHARED_SLEEP_WAKES + WORD;
+// How many times the idle task has been given the CPU. The difference between
+// waiting and spinning, as a number.
+const SHARED_IDLE_TURNS = SHARED_SLEEP_WAKES + WORD;
+
+// The slots of the tasks that never block, so the shell can take them off the
+// CPU when it wants to observe a machine with nothing to do.
+//
+// Three of them, and two are in ring 3. That is not incidental: suspending a
+// task is writing a word in a table the scheduler reads, and it works the same
+// whichever ring the task runs in — a ring-3 task has no say in it, which is the
+// difference between a kernel and a cooperative loop.
+const SHARED_BUSY_SLOTS = SHARED_IDLE_TURNS + WORD;
+const BUSY_SLOT_COUNT = 3;
+
+const SHARED_EDU_MMIO = SHARED_BUSY_SLOTS + BUSY_SLOT_COUNT * WORD;
 const SHARED_EDU_SEEN = SHARED_EDU_MMIO + WORD;
 
 const SHARED_GRID = SHARED_EDU_SEEN + WORD;
@@ -1104,9 +1118,43 @@ fn alloc_contiguous(bytes: Int) -> Int {
 // hundred ticks: a `task_sleep` that returned immediately would finish in
 // almost none, and one that spun would finish in about the same time while
 // taking every other task's slice to do it.
+// The tasks that exist to keep the CPU busy, off and back on.
+//
+// They are the demonstration's, not the kernel's: a spinner that must be
+// interrupted mid-update, and two ring-3 tasks that never yield. While any of
+// them runs there is always something runnable, so "the machine had nothing to
+// do" is not a state this kernel can reach — which is the only reason these
+// exist.
+fn suspend_busy_tasks() {
+    for index in 0..BUSY_SLOT_COUNT {
+        let slot = shared_read(SHARED_BUSY_SLOTS + index * WORD);
+        if (slot > 0) {
+            task_suspend(slot);
+        }
+    }
+}
+
+fn resume_busy_tasks() {
+    for index in 0..BUSY_SLOT_COUNT {
+        let slot = shared_read(SHARED_BUSY_SLOTS + index * WORD);
+        if (slot > 0) {
+            task_resume(slot);
+        }
+    }
+}
+
 fn report_sleep(base: Int) {
     let before_wakes = shared_read(SHARED_SLEEP_WAKES);
     let before_ticks = shared_read(SHARED_TICKS);
+    let before_idle = shared_read(SHARED_IDLE_TURNS);
+
+    // The spinner is deliberately CPU-bound — it exists to be interrupted in
+    // the middle of an update — so while it runs there is always something
+    // runnable and the idle task never gets a turn. Suspended for the
+    // measurement and put back after: the number below is the difference
+    // between waiting and spinning, and it can only be read when nothing else
+    // is spinning on purpose.
+    suspend_busy_tasks();
 
     let saved = unsafe { cpu_irq_save() };
     unsafe { cpu_irq_restore(0); };
@@ -1114,17 +1162,26 @@ fn report_sleep(base: Int) {
     unsafe { cpu_irq_restore(1); };
     if (slot < 0) {
         unsafe { cpu_irq_restore(saved); };
+        resume_busy_tasks();
         emit_text(base, "sleep: no slot");
         return;
     }
-    // The shell waits for it the same way anything waits here — and with
-    // interrupts on, because nothing schedules without the timer.
-    for _wait in 0..20000000 {
+    // The shell waits by *waiting*, not by spinning.
+    //
+    // A busy poll here would work and would also make the measurement below
+    // meaningless: the idle task only gets a turn when nothing else is
+    // runnable, and a spinning shell is runnable. It would also be the thing
+    // this whole change is against — a shell at full tilt while the machine has
+    // nothing to do.
+    for _wait in 0..WAIT_POLLS {
         if (task_state(TASK_TABLE_BASE, slot) == TASK_FREE) {
             break;
         }
+        task_sleep(WAIT_POLL_TICKS);
     }
     unsafe { cpu_irq_restore(saved); };
+    let idle_turns = shared_read(SHARED_IDLE_TURNS) - before_idle;
+    resume_busy_tasks();
 
     emit(base, text_bytes("sleep wakes ")
         .chain(decimal(shared_read(SHARED_SLEEP_WAKES) - before_wakes))
@@ -1133,7 +1190,9 @@ fn report_sleep(base: Int) {
         .chain(text_bytes(" ticks "))
         .chain(decimal(shared_read(SHARED_TICKS) - before_ticks))
         .chain(text_bytes(" want "))
-        .chain(decimal(TASK_SLEEP_ROUNDS * TASK_SLEEP_TICKS)));
+        .chain(decimal(TASK_SLEEP_ROUNDS * TASK_SLEEP_TICKS))
+        .chain(text_bytes(" idle "))
+        .chain(decimal(idle_turns)));
 }
 
 // Starts several tasks that end, and says what came back.
@@ -1171,10 +1230,11 @@ fn report_tasks(base: Int) {
         // One at a time, deliberately: the point is that the *same* slot and the
         // *same* pages come back and get used again. Starting all of them at
         // once would only show that the table is big enough.
-        for _wait in 0..2000000 {
+        for _wait in 0..WAIT_POLLS {
             if (task_state(TASK_TABLE_BASE, slot) == TASK_FREE) {
                 break;
             }
+            task_sleep(WAIT_POLL_TICKS);
         }
     }
 
@@ -1319,36 +1379,35 @@ fn edu_interrupt(mmio: Int, irq: Int) -> Bool {
     // condition that happened to be pending.
     edu_raise(mmio, EDU_IRQ_TEST);
 
-    // Interrupts on for the wait, and masked again after.
+    // Waits to be told, rather than polling until it is.
     //
-    // `run_command` is called with them masked — right for a command that
-    // touches a few shared words and returns — and a wait for an interrupt is
-    // the one thing that cannot be done that way. The first version of this
-    // omitted it and reported `edu: irq`, correctly: the device had raised, the
-    // CPU never took it, and masking the line afterwards turned the still-
-    // pending request into the chip's spurious vector, which is how this kernel
-    // came to need `lk_spurious_isr`.
-    let saved = unsafe { cpu_irq_save() };
-    unsafe { cpu_irq_restore(1); };
-
-    // Bounded, and long enough to be an answer rather than a race: an interrupt
-    // that has not arrived after this many polls is not slow, it is not coming.
-    for _attempt in 0..1000000 {
-        let seen = shared_read(SHARED_EDU_SEEN);
-        if (seen != 0) {
-            // The line goes back to masked, and the device's own bit is already
-            // cleared by the handler: this is a probe, and leaving a line open
-            // behind it means the next thing that happens to raise it lands in
-            // a handler that is no longer expecting anything.
-            pic_mask_line(irq);
-            unsafe { cpu_irq_restore(saved); };
-            return (seen & EDU_IRQ_TEST) != 0;
-        }
-    }
+    // The first version of this spun with interrupts on for a million
+    // iterations. It worked — an interrupt does arrive between any two
+    // instructions — and it meant the CPU was at full tilt for a wait measured
+    // in microseconds. The handler now wakes whoever asked, and this task is off
+    // the rotation entirely until it does.
+    //
+    // The deadline is what makes it usable rather than a hang: a device that
+    // never raises is a real outcome, and a driver that waited on a channel
+    // alone would take the machine with it.
+    task_wait_on(EDU_WAIT_CHANNEL, EDU_WAIT_TICKS);
+    let seen = shared_read(SHARED_EDU_SEEN);
+    // The line goes back to masked, and the device's own bit is already cleared
+    // by the handler: this is a probe, and leaving a line open behind it means
+    // the next thing that happens to raise it lands in a handler that is no
+    // longer expecting anything.
     pic_mask_line(irq);
-    unsafe { cpu_irq_restore(saved); };
-    return false;
+    return (seen & EDU_IRQ_TEST) != 0;
 }
+
+// What the driver listens on, and how long it is prepared to wait.
+//
+// A channel is any number both sides agree on; this one is a constant because
+// there is one such device. A driver for a card that can be plugged in twice
+// would use the card's own address, which is unique by construction and is why
+// a channel is an Int rather than an index into something.
+const EDU_WAIT_CHANNEL = 0xed0;
+const EDU_WAIT_TICKS = 200;
 
 // A pattern out to the device and back to a different address.
 //
@@ -1909,9 +1968,19 @@ fn task_clock() {
             repaint_above(surface, WINDOW_CLOCK);
             unlock(irq);
         }
-        task_yield();
+        // Sleeps rather than yields, and the difference is the whole point of a
+        // blocked state. A `yield` hands over the rest of the slice and comes
+        // straight back: this task is runnable again immediately, so the machine
+        // never has nothing to do, so it never sleeps. A clock that changes once
+        // a second has no business being runnable a thousand times a second.
+        task_sleep(CLOCK_POLL_TICKS);
     }
 }
+
+// A tenth of a second, which is a tenth of the resolution the clock shows. Close
+// enough that a second never visibly arrives late, coarse enough that this task
+// is off the CPU for almost all of it.
+const CLOCK_POLL_TICKS = 100;
 
 // Give up the rest of this task's slice.
 //
@@ -2090,6 +2159,12 @@ fn task_saved_words() -> Int {
 #[export("lk_task_idle")]
 fn task_idle() {
     while (true) {
+        // Counted before the halt, so the number is "times this task was given
+        // the CPU and had nothing to do with it". That is the measurement that
+        // turns "the task waited" into "the task waited without spending
+        // anything": a spin never reaches here, because a spinning task is
+        // always runnable and the rotation never falls through to idle.
+        shared_bump(SHARED_IDLE_TURNS);
         unsafe { cpu_wait_for_interrupt(); };
     }
 }
@@ -2108,6 +2183,13 @@ fn task_sleeper() {
         shared_bump(SHARED_SLEEP_WAKES);
     }
 }
+
+// How the shell waits for something it has no channel for: a short sleep, over
+// and over, with a bound. Sleeping rather than spinning because a spinning
+// waiter is a runnable task, and a runnable task is one the machine stays awake
+// for.
+const WAIT_POLLS = 2000;
+const WAIT_POLL_TICKS = 2;
 
 const TASK_SLEEP_ROUNDS = 10;
 const TASK_SLEEP_TICKS = 50;
@@ -2136,12 +2218,59 @@ fn task_sleep(ticks: Int) {
     }
     let irq = unsafe { cpu_irq_save() };
     let current = task_word(TASK_TABLE_BASE + TASK_CURRENT_OFFSET);
-    task_block_until(TASK_TABLE_BASE, current, shared_read(SHARED_TICKS) + ticks);
+    task_block_on(TASK_TABLE_BASE, current, shared_read(SHARED_TICKS) + ticks, 0);
     unsafe { cpu_irq_restore(irq); };
     // Hands the CPU over now rather than at the end of the slice. Not required —
     // the next tick would switch away from a slot that is no longer ready — but
     // a task that has said it is waiting should not go on running.
     task_yield();
+}
+
+// Waits to be told about `channel`, for at most `ticks`.
+//
+// The pair is what makes this usable by a driver. A wait with only a channel
+// never ends if the device is broken, and a driver that hangs the machine on a
+// bad card is worse than one that polls; a wait with only a deadline is a poll
+// with extra steps. Answers whether it was *told* rather than timed out, which
+// is the one thing the caller cannot work out for itself.
+//
+// The deadline is read and the block announced with interrupts masked, because
+// the thing being waited for is an interrupt: between deciding to wait and
+// saying so, the very signal being waited for could arrive and find nobody
+// waiting — and then the wait is for the next one, which is not coming.
+fn task_wait_on(channel: Int, ticks: Int) -> Bool {
+    let irq = unsafe { cpu_irq_save() };
+    let current = task_word(TASK_TABLE_BASE + TASK_CURRENT_OFFSET);
+    task_block_on(TASK_TABLE_BASE, current, shared_read(SHARED_TICKS) + ticks, channel);
+    unsafe { cpu_irq_restore(irq); };
+    task_yield();
+    // Back on the CPU, so something woke it. Which one is the question, and the
+    // channel field is the answer: a signal clears it, a deadline clears it too
+    // — so the caller is told by whoever set the flag it was waiting for, not by
+    // this. What is returned is the honest weaker claim: the wait is over.
+    return true;
+}
+
+// Takes a task off the CPU until somebody puts it back.
+//
+// Blocked with no deadline and no channel, which is the one combination nothing
+// wakes — it falls out of the two-reason block rather than being a third state,
+// because "waiting for a moment that never comes and a message nobody sends" is
+// exactly what suspended means.
+//
+// Safe to do to a task holding the drawing lock, because that lock is interrupt
+// masking: a task cannot be scheduled away while it holds one, so this takes
+// effect at the next moment it is safe to take effect at.
+fn task_suspend(slot: Int) {
+    let irq = unsafe { cpu_irq_save() };
+    task_block_on(TASK_TABLE_BASE, slot, 0, 0);
+    unsafe { cpu_irq_restore(irq); };
+}
+
+fn task_resume(slot: Int) {
+    let irq = unsafe { cpu_irq_save() };
+    task_unblock(TASK_TABLE_BASE, slot);
+    unsafe { cpu_irq_restore(irq); };
 }
 
 // Where a task goes when its body returns.
@@ -3147,6 +3276,18 @@ fn isr_edu(vector: Int) {
         // device may legitimately raise a value of zero bits and the shell
         // needs to tell "arrived" from "not yet".
         shared_write(SHARED_EDU_SEEN, raised | 1);
+        // And whoever asked. This is what a blocked wait is for: the driver said
+        // which channel it was listening on, and the device's own handler is the
+        // thing that knows the answer has arrived. Waking from here rather than
+        // letting the waiter poll is the difference between a machine that is
+        // halted for the wait and one that is turning over.
+        //
+        // Safe from an interrupt because it is writes to a table of volatile
+        // words and interrupts are already masked; it allocates nothing, which
+        // is the rule every handler here keeps.
+        task_wake_channel(TASK_TABLE_BASE,
+                          task_word(TASK_TABLE_BASE + TASK_USED_OFFSET),
+                          EDU_WAIT_CHANNEL);
     }
     pic_eoi(vector - VECTOR_IRQ_BASE);
 }
@@ -3381,6 +3522,7 @@ if (idle_task >= 0) {
     task_set_state(TASK_TABLE_BASE, idle_task, TASK_IDLE);
 }
 let spinner_task = spawn_task(unsafe { symbol_address("lk_task_b") });
+shared_write(SHARED_BUSY_SLOTS, spinner_task);
 let clock_task = spawn_task(unsafe { symbol_address("lk_task_clock") });
 // And one that runs in ring 3. It never yields; the timer is what takes the
 // CPU back, which is the whole difference from the one-shot `user` command.
@@ -3392,11 +3534,13 @@ let clock_task = spawn_task(unsafe { symbol_address("lk_task_clock") });
 let user_space = build_user_space(unsafe { symbol_address("__user_task_stack_a") });
 let user_task = spawn_user_task(unsafe { symbol_address("__user_task_a") },
                                 USER_STACK_RESUME, user_space);
+shared_write(SHARED_BUSY_SLOTS + WORD, user_task);
 // A second one, with a stack at the *same* virtual address in a space of its
 // own: if they shared a space, one would overwrite the other's memory.
 let user_space_b = build_user_space(unsafe { symbol_address("__user_task_stack_b") });
 let user_task_b = spawn_user_task(unsafe { symbol_address("__user_task_b") },
                                   USER_STACK_RESUME, user_space_b);
+shared_write(SHARED_BUSY_SLOTS + 2 * WORD, user_task_b);
 // The count is no longer written here: `publish_task` writes it as the last
 // step of every spawn, which is the only moment at which it is true. Writing it
 // afterwards from the last slot handed out was correct and was also a second
