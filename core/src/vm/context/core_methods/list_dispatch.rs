@@ -170,7 +170,6 @@ pub(super) fn dispatch_list_builtin_method(
             Ok(Some(RuntimeVal::Obj(heap.alloc(HeapValue::Slice(Arc::new(
                 SliceValue {
                     source: *receiver,
-                    kind: SliceKind::List,
                     start,
                     len: end - start,
                 },

@@ -67,8 +67,6 @@ const BARE_MODULES: &[fn(&mut ModuleRegistry) -> Result<()>] = &[
     lk_stdlib_iter::register,
     #[cfg(feature = "math")]
     lk_stdlib_math::register,
-    #[cfg(feature = "slice")]
-    lk_stdlib_slice::register,
     #[cfg(feature = "string")]
     lk_stdlib_string::register,
 ];

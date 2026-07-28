@@ -114,13 +114,6 @@ mod tests {
             Some("Decodes bytes as UTF-8 and raises an error for invalid input.")
         );
 
-        let slice_from_string = catalog
-            .export_path(&["slice", "from_string"])
-            .expect("slice.from_string export");
-        assert_eq!(
-            slice_from_string.signature.as_deref(),
-            Some("slice.from_string(text: String) -> Slice")
-        );
 
         let encoding = catalog.module("encoding").expect("encoding module");
         assert_eq!(encoding.docs.as_deref(), Some("Encoding and data format helpers"));

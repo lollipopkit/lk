@@ -1049,16 +1049,15 @@ pub struct StreamCursorValue {
     pub roots: Vec<RuntimeVal>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SliceKind {
-    List,
-    String,
-}
-
+/// A window over a list: `source[start .. start + len]`, without copying it.
+///
+/// There used to be a `SliceKind` beside this, distinguishing a list window
+/// from a *byte* window over a string. The byte one went with the `slice`
+/// module: string positions are characters now, and code that wants bytes says
+/// `s.bytes()`. One variant is not a choice, so the field is gone too.
 #[derive(Debug, Clone)]
 pub struct SliceValue {
     pub source: RuntimeVal,
-    pub kind: SliceKind,
     pub start: usize,
     pub len: usize,
 }

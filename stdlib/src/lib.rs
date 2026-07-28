@@ -15,7 +15,6 @@ pub use lk_stdlib_path as path;
 pub use lk_stdlib_process as process;
 pub use lk_stdlib_random as random;
 pub use lk_stdlib_regex as regex;
-pub use lk_stdlib_slice as slice;
 pub use lk_stdlib_stream as stream;
 pub use lk_stdlib_string as string;
 pub use lk_stdlib_task as concurrency_task;
@@ -155,7 +154,6 @@ define_stdlib_modules!(
     "uuid" => uuid::register as register_stdlib_module_uuid,
     "http" => http::register as register_stdlib_module_http,
     "net" => net::register as register_stdlib_module_net,
-    "slice" => slice::register as register_stdlib_module_slice,
     "stream" => stream::register as register_stdlib_module_stream,
     "task" => concurrency_task::register as register_stdlib_module_task,
     "chan" => concurrency_chan::register as register_stdlib_module_chan,

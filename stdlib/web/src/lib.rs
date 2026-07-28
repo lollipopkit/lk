@@ -40,7 +40,6 @@ define_web_modules!(
     lk_stdlib_math::register,
     lk_stdlib_path::register,
     lk_stdlib_regex::register,
-    lk_stdlib_slice::register,
     lk_stdlib_string::register,
 );
 

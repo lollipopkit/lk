@@ -69,7 +69,6 @@ pub(super) fn dispatch_slice_builtin_method(
             Ok(Some(RuntimeVal::Obj(heap.alloc(HeapValue::Slice(Arc::new(
                 SliceValue {
                     source: slice.source,
-                    kind: slice.kind,
                     start: slice.start + start,
                     len: end - start,
                 },

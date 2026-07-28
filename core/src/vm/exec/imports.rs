@@ -146,7 +146,6 @@ fn import_heap_value(
                 source_module,
                 source_state.clone(),
             )?,
-            kind: value.kind,
             start: value.start,
             len: value.len,
         })),

@@ -12,8 +12,7 @@ use self::slice_dispatch::*;
 
 use crate::{
     val::{
-        HeapRef, HeapStore, HeapValue, RuntimeMapKey, RuntimeSet, RuntimeVal, ShortStr, SliceKind, SliceValue, Type,
-        TypedList,
+        HeapRef, HeapStore, HeapValue, RuntimeMapKey, RuntimeSet, RuntimeVal, ShortStr, SliceValue, Type, TypedList,
     },
     vm::{
         NativeArgs, NativeRuntime, call_runtime_value_runtime_list_args, call_runtime_value_runtime_named_map_list_args,

@@ -1249,7 +1249,6 @@ fn copy_heap_value(
         HeapValue::StreamCursor(value) => HeapValue::StreamCursor(value.clone()),
         HeapValue::Slice(value) => HeapValue::Slice(Arc::new(crate::val::SliceValue {
             source: copy_runtime_value_with(&value.source, source_heap, dest_heap, mode)?,
-            kind: value.kind,
             start: value.start,
             len: value.len,
         })),

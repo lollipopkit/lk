@@ -78,16 +78,17 @@ mod tests {
     }
 
     #[test]
-    fn slice_module_keeps_views_until_materialization() -> Result<()> {
+    fn list_windows_stay_views_until_materialized() -> Result<()> {
+        // Was `slice_module_keeps_views_until_materialization`, against a
+        // `slice` module that has been removed: taking a window over a list is
+        // something the list does, not a module you import first.
         let source = r#"
-            use slice;
             let xs = [1, 2, 3, 4];
-            let view = slice.sub(slice.from_list(xs), 1, 3);
-            let bytes = slice.sub(slice.from_string("abcd"), 1, 3);
-            return slice.len(view) == 2
-                && slice.get(view, 0) == 2
-                && slice.to_list(view) == [2, 3]
-                && slice.to_string(bytes) == "bc";
+            let view = xs.slice(1, 3);
+            return view.len() == 2
+                && view[0] == 2
+                && view.to_list() == [2, 3]
+                && view.slice(1, 2).to_list() == [3];
         "#;
         let result = run(source)?;
         assert_eq!(result.first_return(), &RuntimeVal::Bool(true));
