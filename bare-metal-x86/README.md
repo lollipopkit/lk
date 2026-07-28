@@ -1625,6 +1625,7 @@ holds, and five of these were written after the sections above.
 | `check_net.py` | an Intel NIC: its MAC out of the EEPROM, two descriptor rings fed twelve exchanges past their wrap, a well-formed ARP request on the wire (checked from a pcap, not from the guest), the gateway's reply, every page given back, and the card's own interrupt reaching a handler |
 | `check_exit.py` | a task that *ends* — twenty of them through sixteen slots, every slot and every stack page returning — and one that sleeps for the time it asks for with the CPU halted throughout |
 | `check_clock.py` | the CMOS clock, against a base time QEMU was *told*, at a moment where a missing BCD conversion turns November into month 17 |
+| `check_hpet.py` | the high precision timer: its rate computed from the period the chip states about itself, and its 64-bit counter watched to advance — the one clock here that is neither counted nor coarse |
 
 The two that are not scripts:
 

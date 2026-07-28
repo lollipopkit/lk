@@ -37,6 +37,8 @@ use { remap as pic_remap, mask as pic_mask, unmask as pic_unmask,
       set_level_triggered as pic_set_level,
       eoi_master as pic_eoi_master, eoi_slave as pic_eoi_slave,
       line_exists as pic_line_exists } from "drivers/pic";
+use { hpet_present, hpet_start, hpet_frequency, hpet_counter,
+      hpet_elapsed_microseconds } from "drivers/hpet";
 use { zero as idt_zero, set_gate as idt_set_gate, install as idt_install,
       IDT_GATE_COUNT, IDT_GATE_SIZE } from "drivers/idt";
 use { set_entry as gdt_set_entry, set_tss_entry as gdt_set_tss_entry,
@@ -881,6 +883,49 @@ fn decimal(value: Int) -> List<Int> {
         i = i - 1;
     }
     return out;
+}
+
+// The high precision timer: its rate, and that it runs.
+//
+// Two readings with the shell's own busy work between them, because a counter
+// that reads the same twice is the failure this is most likely to have — an
+// address nothing decodes, or a chip whose enable bit was never set. Printing
+// the *difference* rather than the raw value is what makes that visible in one
+// line.
+fn report_hpet(base: Int) {
+    if (!hpet_present()) {
+        emit_text(base, "hpet: no timer at the standard address");
+        return;
+    }
+    if (!hpet_start()) {
+        emit_text(base, "hpet: would not start");
+        return;
+    }
+    let first = hpet_counter();
+    // Something for the counter to count. A `hlt` would wait for the timer
+    // interrupt, which is a different clock and would make this measure that
+    // one instead.
+    let spin = 0;
+    for i in 0..200000 {
+        spin = spin + i;
+    }
+    let second = hpet_counter();
+    let elapsed = hpet_elapsed_microseconds(first, second);
+    emit(base, text_bytes("hpet ")
+        .chain(decimal(u64_as_int(hpet_frequency())))
+        .chain(text_bytes("Hz ticks "))
+        .chain(decimal(u64_as_int(second - first)))
+        .chain(text_bytes(" us "))
+        .chain(decimal(u64_as_int(elapsed))));
+}
+
+// A `u64` the kernel prints as a number.
+//
+// Every value this applies to is a rate or a duration that fits an `Int` many
+// times over; what the cast states is that the *width* stops here, so `decimal`
+// is not handed a value whose top bit means something.
+fn u64_as_int(value: u64) -> Int {
+    return value as Int;
 }
 
 // The largest available range the loader reported, as (base, length).
@@ -2027,6 +2072,10 @@ fn run_command(base: Int) -> Int {
     }
     if (line_starts_with(text_bytes("clock"))) {           // "clock"
         report_clock(base);
+        return 1;
+    }
+    if (line_starts_with(text_bytes("hpet"))) {             // "hpet"
+        report_hpet(base);
         return 1;
     }
     if (line_starts_with(text_bytes("sleep"))) {           // "sleep"
