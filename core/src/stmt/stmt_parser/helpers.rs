@@ -526,6 +526,7 @@ impl<'a> StmtParser<'a> {
             Token::Id(name) => name.clone(),
             Token::Str(s) => format!("\"{}\"", s),
             Token::Int(i) => i.to_string(),
+            Token::UInt(i) => format!("0x{i:X}"),
             Token::Float(f) => f.to_string(),
             Token::Bool(b) => b.to_string(),
             Token::LParen => "(".to_string(),

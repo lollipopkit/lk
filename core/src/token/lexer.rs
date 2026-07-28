@@ -106,6 +106,15 @@ pub enum Token {
     Str(String),            // "abc"
     TemplateString(String), // Formatted string content with ${...}
     Int(i64),               // 1
+    /// A radix literal that needs all 64 bits: `0x8000_0000_0000_0000` upwards.
+    ///
+    /// Separate from `Int` because the carrier cannot hold the distinction. The
+    /// lexer reads `0x…` as a *bit pattern* (see `parse_radix_int`), so a value
+    /// above `i64::MAX` comes back as a negative `i64` — indistinguishable from
+    /// the `-1` a programmer wrote, and this language has no unary minus to tell
+    /// them apart by shape. Keeping the `u64` here is what lets the parser turn
+    /// the first into `… as u64` and leave the second refused.
+    UInt(u64), // 0xFFFF_FFFF_FFFF_FFFF
     Float(f64),             // 1.1
     Bool(bool),             // true, false
     Id(String),             // identifier
@@ -823,7 +832,14 @@ impl<'a> Tokenizer<'a> {
         let value = u64::from_str_radix(&digits, radix)
             .map_err(|_| anyhow!("{}: {}", self.err("Integer literal out of range"), digits))?;
         let end_pos = self.current_position();
-        self.push_with_span(Token::Int(value as i64), start_pos, end_pos);
+        // Above `i64::MAX` the carrier is out of room, and *which* number was
+        // written stops being recoverable from it. `UInt` keeps it — see the
+        // variant's own note.
+        let token = match i64::try_from(value) {
+            Ok(fits) => Token::Int(fits),
+            Err(_) => Token::UInt(value),
+        };
+        self.push_with_span(token, start_pos, end_pos);
         Ok(())
     }
 

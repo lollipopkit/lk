@@ -314,8 +314,7 @@ impl Compiler {
     /// reading and the unsigned one are the same digits.
     pub(in crate::vm::compiler) fn unsigned_rendering_if_carrier_filling(&self, expr: &Expr) -> Option<Expr> {
         let kind = self.expr_machine_width(expr)?;
-        matches!(kind, crate::val::IntKind::U64 | crate::val::IntKind::Usize)
-            .then(|| call::unsigned_rendering_of(expr))
+        matches!(kind, crate::val::IntKind::U64 | crate::val::IntKind::Usize).then(|| call::unsigned_rendering_of(expr))
     }
 
     /// The machine width both operands share, if they have one.

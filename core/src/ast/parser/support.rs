@@ -440,6 +440,7 @@ impl<'a> Parser<'a> {
             Token::Nil
                 | Token::Bool(_)
                 | Token::Int(_)
+                | Token::UInt(_)
                 | Token::Float(_)
                 | Token::Str(_)
                 | Token::Id(_)

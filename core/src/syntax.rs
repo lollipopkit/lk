@@ -226,16 +226,12 @@ fn span_for_literal(value: &LiteralVal, tokens: &[Token], spans: &[crate::token:
             spans,
             |token| matches!(token, Token::Str(lit) if Some(lit.as_str()) == value.as_str()),
         ),
-        LiteralVal::Int(expected) => find_token_span(
-            tokens,
-            spans,
-            |token| {
-                matches!(token, Token::Int(actual) if actual == expected)
+        LiteralVal::Int(expected) => find_token_span(tokens, spans, |token| {
+            matches!(token, Token::Int(actual) if actual == expected)
                     // The bit-pattern spelling of the same carrier: the AST kept
                     // the `i64`, so this is the token it came from.
                     || matches!(token, Token::UInt(actual) if *actual as i64 == *expected)
-            },
-        ),
+        }),
         LiteralVal::Float(expected) => find_token_span(
             tokens,
             spans,

@@ -901,12 +901,27 @@ line2""#,
 
     /// A full-width mask is a bit pattern, not an out-of-range number. Refusing
     /// the top bit would make `0xFFFF_FFFF_FFFF_FFFF` unwritable.
+    ///
+    /// It comes back as `UInt` rather than a wrapped `Int`, and that is the whole
+    /// point: as an `i64` carrier it is `-1`, indistinguishable from the `-1` a
+    /// programmer wrote — and this language has no unary minus to tell the two
+    /// apart by shape. The parser turns `UInt` into `… as u64`, which is why
+    /// `let x: u64 = 0xFFFF_FFFF_FFFF_FFFF` is accepted and `let x: u8 = -1`
+    /// stays refused.
     #[test]
     fn radix_literals_accept_the_full_bit_pattern() {
-        assert_eq!(Tokenizer::tokenize("0xFFFFFFFFFFFFFFFF").unwrap(), vec![Token::Int(-1)]);
+        assert_eq!(
+            Tokenizer::tokenize("0xFFFFFFFFFFFFFFFF").unwrap(),
+            vec![Token::UInt(u64::MAX)]
+        );
         assert_eq!(
             Tokenizer::tokenize("0x8000000000000000").unwrap(),
-            vec![Token::Int(i64::MIN)]
+            vec![Token::UInt(1 << 63)]
+        );
+        // One below is still an `Int`: the carrier has room, so nothing is lost.
+        assert_eq!(
+            Tokenizer::tokenize("0x7FFFFFFFFFFFFFFF").unwrap(),
+            vec![Token::Int(i64::MAX)]
         );
     }
 

@@ -992,6 +992,22 @@ impl<'a> Parser<'a> {
                 self.pos += 1;
                 Ok(Expr::Literal(LiteralVal::Int(*i)))
             }
+            // A radix literal that needs all 64 bits *is* a `u64`, so it is
+            // parsed as one — the same expression `0x8000_0000_0000_0000 as u64`
+            // builds, which already worked and is what the error used to tell
+            // people to write.
+            //
+            // Saying it here rather than relaxing the range check is what keeps
+            // `let y: u8 = -1` refused: the carrier cannot tell those two apart,
+            // and by this point the token still can.
+            Token::UInt(value) => {
+                let value = *value;
+                self.pos += 1;
+                Ok(Expr::Cast(
+                    Box::new(Expr::Literal(LiteralVal::Int(value as i64))),
+                    crate::val::Type::MachineInt(crate::val::IntKind::U64),
+                ))
+            }
             Token::Float(f) => {
                 self.pos += 1;
                 Ok(Expr::Literal(LiteralVal::Float(*f)))

@@ -858,6 +858,7 @@ fn token_matches(expected: &Token, actual: &Token) -> bool {
         (Token::Str(a), Token::Str(b)) => a == b,
         (Token::TemplateString(a), Token::TemplateString(b)) => a == b,
         (Token::Int(a), Token::Int(b)) => a == b,
+        (Token::UInt(a), Token::UInt(b)) => a == b,
         (Token::Float(a), Token::Float(b)) => a == b,
         (Token::Bool(a), Token::Bool(b)) => a == b,
         _ => core::mem::discriminant(expected) == core::mem::discriminant(actual),

@@ -94,6 +94,10 @@ pub fn token_lexeme(token: &Token) -> String {
         Token::Str(value) => format!("\"{}\"", value.escape_default()),
         Token::TemplateString(value) => format!("\"{}\"", value.escape_default()),
         Token::Int(value) => value.to_string(),
+        // Printed back at the radix it was written at: the decimal spelling of
+        // a 64-bit mask is not what anyone wrote, and this text is what
+        // `lk macro expand` shows.
+        Token::UInt(value) => alloc::format!("0x{value:X}"),
         Token::Float(value) => value.to_string(),
         Token::Bool(value) => value.to_string(),
         Token::Id(value) => value.clone(),

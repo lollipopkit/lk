@@ -54,8 +54,18 @@ impl<'a> Parser<'a> {
 
         match &self.tokens[self.pos] {
             // Literal patterns
-            Token::Int(i) => {
-                let start_val = *i;
+            //
+            // `UInt` joins `Int` here rather than becoming a cast the way it does
+            // in expression position: a pattern compares carriers, and the
+            // carrier of `0xFFFF_FFFF_FFFF_FFFF` is the one the scrutinee will
+            // be holding. Leaving it out would turn a pattern that used to mean
+            // *something* into a parse error.
+            Token::Int(_) | Token::UInt(_) => {
+                let start_val = match &self.tokens[self.pos] {
+                    Token::Int(i) => *i,
+                    Token::UInt(i) => *i as i64,
+                    _ => unreachable!("matched just above"),
+                };
                 self.pos += 1;
 
                 // Check if this is a range pattern
