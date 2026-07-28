@@ -62,7 +62,7 @@ use lk_core::{
     },
     vm::{
         NativeArgs, NativeEntry, NativeFunction, NativeRuntime, call_runtime_callable_runtime,
-        call_runtime_value_runtime, copy_runtime_value_same_module,
+        copy_runtime_value_same_module,
     },
 };
 pub use lk_stdlib_common::metadata::{
@@ -469,40 +469,7 @@ fn panic(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Runtim
 /// a stringified message is raised (heap-object first-class values need GC
 /// rooting across unwinding — deferred).
 fn error(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    if let [value] = args.as_slice() {
-        let value = *value;
-        // Capture the display up-front: an uncaught heap error can't be rendered
-        // later (the heap is gone once execution unwinds out) (plan M2.2).
-        let rendered = join_runtime_display(args.as_slice(), runtime)?;
-        // A heap object must be pinned as a GC root so it survives collection at
-        // the native-call safepoints hit while the error unwinds to its `pcall`
-        // (plan M2.2). Primitives are Copy and need no pinning. If full VM state
-        // is unavailable we can't pin, so fall back to a stringified message.
-        let carry_first_class = if matches!(value, RuntimeVal::Obj(_)) {
-            match runtime.state_ctx_module_mut() {
-                Some((state, _, _)) => {
-                    state.set_pending_raise_root(Some(value));
-                    true
-                }
-                None => false,
-            }
-        } else {
-            true
-        };
-        if carry_first_class {
-            return Err(anyhow!(lk_core::vm::LkRaisedValue {
-                value,
-                rendered: Arc::<str>::from(rendered.as_str()),
-            }));
-        }
-        return Err(anyhow!("{rendered}"));
-    }
-    let msg = if args.is_empty() {
-        "error".to_string()
-    } else {
-        join_runtime_display(args.as_slice(), runtime)?
-    };
-    Err(anyhow!("{msg}"))
+    lk_stdlib_common::language::error(args, runtime)
 }
 
 /// `pcall(f, args...) -> [ok, result_or_error]` — a protected call. Invokes `f`
@@ -510,55 +477,7 @@ fn error(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Runtim
 /// `[false, message]` instead of propagating. This is the recoverable-error
 /// primitive (plan M2.1); it catches both `error(...)` and other runtime errors.
 fn pcall(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    let values = args.as_slice();
-    let Some((&callee, call_args)) = values.split_first() else {
-        return Err(anyhow!("pcall expects at least 1 argument: the function to call"));
-    };
-    let call_args = call_args.to_vec();
-    let outcome = {
-        let Some((state, ctx, module)) = runtime.state_ctx_module_mut() else {
-            return Err(anyhow!("pcall requires full VM state"));
-        };
-        call_runtime_value_runtime(callee, &call_args, state, module, ctx)
-    };
-    if outcome.is_err()
-        && let Some((state, ctx, _)) = runtime.state_ctx_module_mut()
-    {
-        // The error is caught here: release the GC-root pin on any first-class
-        // heap error value now that it's about to be handed back (plan M2.2).
-        // The value stays valid — the following `pcall` allocations use the raw
-        // heap (no collection) — but it no longer needs to survive as a stray
-        // root once execution resumes normally.
-        state.set_pending_raise_root(None);
-        // Discard the traceback frames the errored call accumulated — a later
-        // uncaught error should report a clean call stack (plan M2.2). try/catch
-        // desugars to pcall, so this also covers caught language errors.
-        if let Some(ctx) = ctx {
-            ctx.truncate_call_stack(0);
-        }
-    }
-    let (ok, value) = match outcome {
-        Ok(result) => (true, result),
-        Err(err) => {
-            // The call machinery wraps errors with context, so inspect the
-            // deepest cause. A first-class primitive error value round-trips as
-            // itself (M2.2); otherwise the message string is returned.
-            let root = err.root_cause();
-            if let Some(raised) = root.downcast_ref::<lk_core::vm::LkRaisedValue>() {
-                (false, raised.value)
-            } else {
-                let message = root.to_string();
-                let handle = runtime
-                    .heap_mut()
-                    .alloc(HeapValue::String(Arc::<str>::from(message.as_str())));
-                (false, RuntimeVal::Obj(handle))
-            }
-        }
-    };
-    let list = runtime
-        .heap_mut()
-        .alloc(HeapValue::List(TypedList::Mixed(vec![RuntimeVal::Bool(ok), value])));
-    Ok(RuntimeVal::Obj(list))
+    lk_stdlib_common::language::try_call(args, runtime)
 }
 
 fn assert(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {

@@ -61,6 +61,10 @@ pub fn register_web_stdlib_globals(registry: &mut ModuleRegistry) {
             full_state "assert" => assert, NativeEntry::VARIADIC,
             full_state "assert_eq" => assert_eq, NativeEntry::VARIADIC,
             full_state "assert_ne" => assert_ne, NativeEntry::VARIADIC,
+            // `error`, which is what a `catch` catches. Not a module: a host
+            // may leave `fs` out and a program is told so, but a program that
+            // raises on this host was told "undefined function" instead.
+            full_state "error" => lk_stdlib_common::language::error, NativeEntry::VARIADIC,
         ],
     );
 }

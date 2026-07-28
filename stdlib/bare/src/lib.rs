@@ -95,8 +95,38 @@ pub fn register_bare_stdlib_globals(registry: &mut ModuleRegistry) {
             full_state "panic" => panic, NativeEntry::VARIADIC,
             full_state "assert" => assert, NativeEntry::VARIADIC,
             full_state "assert_eq" => assert_eq, NativeEntry::VARIADIC,
+            full_state "assert_ne" => assert_ne, NativeEntry::VARIADIC,
+            // `error`, which is what a `catch` catches.
+            //
+            // Not a module: a host may leave `fs` out and a program importing it
+            // is told so, by name. This is a global the language's own error
+            // handling is written in terms of, and without it every
+            // `try { error(…) } catch` that `bare-metal-x86`'s interpreter ran
+            // failed at run time — after the program had been parsed and
+            // accepted — with a stage code that says only "it raised".
+            full_state "error" => lk_stdlib_common::language::error, NativeEntry::VARIADIC,
+            // `error`, which is what a `catch` catches.
+            //
+            // Not a module: a host may leave `fs` out and a program importing it
+            // is told so, by name. This is a global the language's own error
+            // handling is written in terms of, and without it every
+            // `try { error(…) } catch` that `bare-metal-x86`'s interpreter ran
+            // failed at run time — after the program had been parsed and
+            // accepted — with a stage code that says only "it raised".
         ],
     );
+}
+
+fn assert_ne(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+    let values = args.as_slice();
+    if values.len() < 2 {
+        return Err(anyhow!("assert_ne expects at least 2 arguments"));
+    }
+    if values[0] != values[1] {
+        return Ok(RuntimeVal::Nil);
+    }
+    let rendered = display(&values[0], runtime)?;
+    Err(anyhow!("assertion failed: expected something other than {rendered}"))
 }
 
 pub fn register_bare_stdlib_modules(registry: &mut ModuleRegistry) -> Result<()> {
