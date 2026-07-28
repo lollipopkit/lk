@@ -73,6 +73,23 @@ SECTIONS
     . = . + 4096;
     __user_end = .;
 
+    /* The user region has to fit under 4 MiB, and that is not a preference.
+     *
+     * `boot.rs` grants the U bit by indexing `__pt0` with `__user_start >> 12`
+     * — an *absolute* page number — and `__pt0`/`__pt1` together are 1024
+     * entries, so they describe the first 4 MiB and nothing above it. A user
+     * region past that indexes off the end: nothing is granted, the ring-3
+     * page stays kernel-only, and the first instruction of the program takes a
+     * page fault with `rip == cr2`.
+     *
+     * That is exactly what happened, and what it took to get there was `.text`
+     * growing by one page. `__user_start` had been sitting at 0x1ff000 — one
+     * page from the edge — so any change that made the compiler bigger pushed
+     * the kernel's ring 3 off a cliff, with a page fault as the only symptom.
+     * A link error says which line to read. */
+    ASSERT(__user_end <= 0x400000,
+        "the ring-3 region no longer fits under 4 MiB, where boot.rs's 4 KiB page tables end")
+
     /* The ring-3 tasks' stacks, deliberately *outside* the user region.
      *
      * Each task maps its own at `USER_STACK_VIRTUAL` in its own address space,
@@ -113,9 +130,17 @@ SECTIONS
        near the top of the 32-bit physical range, far outside the first. */
     __pd = .;
     . = . + 4 * 4096;
-    /* One 4 KiB-granular table for the first 2 MiB, so the user pages can be
-       marked separately from the kernel ones sharing that range. */
+    /* Two 4 KiB-granular tables, covering the first 4 MiB, so the user pages
+       can be marked separately from the kernel ones sharing that range.
+
+       Adjacent, and that is load-bearing: `boot.rs` grants the U bit by
+       indexing from `__pt0` with an absolute page number, so the two tables
+       have to read as one 1024-entry array. There was one table, covering
+       2 MiB, and the ring-3 region had drifted to 0x1ff000 — one page below
+       the end of what it describes. */
     __pt0 = .;
+    . = . + 4096;
+    __pt1 = .;
     . = . + 4096;
 
     /* No user page tables reserved here any more. `program.lk` builds an

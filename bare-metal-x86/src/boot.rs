@@ -74,7 +74,7 @@ global_asm!(
     "   add eax, 0x1000",
     "   add edi, 8",
     "   loop 2b",
-    // The first 2 MiB gets 4 KiB granularity, so ring 3 can be given the pages
+    // The first 4 MiB gets 4 KiB granularity, so ring 3 can be given the pages
     // it needs and *only* those.
     //
     // Every page kernel-only to start with; then the ones between
@@ -82,9 +82,18 @@ global_asm!(
     // the U bit. The directory entry above them needs it too, because the CPU
     // takes the conjunction of the U bits along the walk: a user page under a
     // kernel-only directory is still kernel-only.
+    //
+    // Two tables rather than one, filled as a single 1024-entry run because the
+    // linker script places them adjacently. One covered 2 MiB, and `.user` had
+    // drifted to 0x1ff000 — one page below the end of it. Growing `.text` by a
+    // page moved `.user` to 0x200000, the grant loop indexed past `__pt0`, and
+    // the ring-3 program's first instruction took a page fault. Nothing said
+    // so; `rip == cr2` at 0x2000a5 was the whole diagnosis. The linker script
+    // now refuses the layout that does it, and there is 2 MiB of room before
+    // that refusal can happen again.
     "   mov edi, offset __pt0",
     "   mov eax, 0x03", // present | writable, no user
-    "   mov ecx, 512",
+    "   mov ecx, 1024",
     "5: mov [edi], eax",
     "   mov dword ptr [edi + 4], 0",
     "   add eax, 0x1000",
@@ -103,11 +112,18 @@ global_asm!(
     "   add edi, 8",
     "   dec edx",
     "   jnz 6b",
+    // Both tables replace their 2 MiB pages in the directory. The U bit here is
+    // the walk's conjunction again: without it the pages granted above stay
+    // kernel-only.
     "7: mov eax, offset __pt0",
     "   or eax, 7", // present | writable | user
     "   mov edi, offset __pd",
     "   mov [edi], eax",
     "   mov dword ptr [edi + 4], 0",
+    "   mov eax, offset __pt1",
+    "   or eax, 7",
+    "   mov [edi + 8], eax",
+    "   mov dword ptr [edi + 12], 0",
     "   mov eax, offset __pdpt",
     "   or eax, 7",
     "   mov edi, offset __pml4",
