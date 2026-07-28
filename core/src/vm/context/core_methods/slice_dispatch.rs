@@ -41,10 +41,13 @@ pub(super) fn dispatch_slice_builtin_method(
             let RuntimeVal::Int(index) = &positional[0] else {
                 bail!("slice.get() index must be Int");
             };
-            if *index < 0 || *index as usize >= slice.len {
+            // Same rule as `list.get` and as `w[i]`: negative counts from the
+            // window's end (see the note in `list_dispatch.rs`).
+            let index = if *index < 0 { slice.len as i64 + *index } else { *index };
+            if index < 0 || index as usize >= slice.len {
                 return Ok(Some(RuntimeVal::Nil));
             }
-            Ok(Some(slice_item(&slice, *index as usize, heap)))
+            Ok(Some(slice_item(&slice, index as usize, heap)))
         }
         // A window on a window, resolved against the original rather than
         // nested — otherwise a loop that keeps re-slicing builds a chain.
@@ -78,9 +81,7 @@ pub(super) fn dispatch_slice_builtin_method(
             if !positional.is_empty() {
                 bail!("slice.to_list() expects no arguments, got {}", positional.len());
             }
-            let items: Vec<RuntimeVal> = (0..slice.len)
-                .map(|index| slice_item(&slice, index, heap))
-                .collect();
+            let items: Vec<RuntimeVal> = (0..slice.len).map(|index| slice_item(&slice, index, heap)).collect();
             Ok(Some(RuntimeVal::Obj(
                 heap.alloc(HeapValue::List(TypedList::Mixed(items))),
             )))

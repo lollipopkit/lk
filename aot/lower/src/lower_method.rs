@@ -716,12 +716,17 @@ pub(crate) fn lower_method_dispatch(
             });
             (dst, Ty::ListI64)
         }
-        // `w.get(i)` deliberately has no arm. The `Maybe` read this would reuse
-        // counts a negative index from the end, while the VM's `.get()` — on a
-        // window and on a list alike — answers nil for one. Reusing it would
-        // make `w.get(-1)` two different values on the two backends, so the
-        // program falls back instead. (The same mismatch is already there for
-        // `xs.get(-1)` on a plain list: `Ty::ListI64, "get"` below.)
+        // `w.get(i)` — the same read as `w[i]`, answering nil instead of
+        // failing, which is what `.get()` means on a list too.
+        (Ty::SliceI64, "get", [(index, Ty::I64)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::SliceGetMaybe {
+                dst,
+                handle: receiver,
+                index: *index,
+            });
+            (dst, Ty::MaybeI64)
+        }
         // Map iteration family (order = the VM's, layout mirror): keys/
         // values snapshots (Mixed → dyn lists), delete-with-removed-value.
         (Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool | Ty::MapStrDyn, "keys" | "values", []) => {

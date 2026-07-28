@@ -47,11 +47,22 @@ pub(super) fn dispatch_list_builtin_method(
                 bail!("list.get() index must be Int");
             };
             let list = clone_list(receiver, heap)?;
-            if *idx < 0 || *idx as usize >= list.len() {
+            // `.get(i)` is `xs[i]` that answers nil instead of failing, so it
+            // indexes the same way: a negative counts from the end.
+            //
+            // This arm used to reject a negative outright — and never got the
+            // chance to, because the compiler lowers every `x.get(k)` call to
+            // `GetIndex` (`lower_map_get_method_call`). So the rule written
+            // here was not the rule the language had; `xs.get(-1)` answered the
+            // last element, as it still does. Leaving the two spellings
+            // disagreeing meant whichever path a call happened to take decided
+            // its meaning.
+            let index = if *idx < 0 { list.len() as i64 + *idx } else { *idx };
+            if index < 0 || index as usize >= list.len() {
                 return Ok(Some(RuntimeVal::Nil));
             }
             let items = list_runtime_items(list, heap);
-            Ok(Some(items.into_iter().nth(*idx as usize).unwrap_or(RuntimeVal::Nil)))
+            Ok(Some(items.into_iter().nth(index as usize).unwrap_or(RuntimeVal::Nil)))
         }
         "skip" => {
             if positional.len() != 1 {

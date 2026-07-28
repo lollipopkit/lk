@@ -203,6 +203,21 @@ fn clif_differential_list_windows() {
                  println(w[-3]);\n\
                  return w.is_empty();\n",
             ),
+            // `.get(i)` is `[i]` that answers nil rather than failing — same
+            // rule for the index, negative included. The dispatch tables in
+            // `core_methods` used to say a negative was simply out of range,
+            // which no program could observe (the compiler lowers `.get()` to
+            // `GetIndex`) and which neither engine did.
+            new(
+                "get_indexes_like_brackets",
+                "let xs = [10, 20, 30, 40];\n\
+                 let w = xs.slice(1, 3);\n\
+                 println(xs.get(-1));\n\
+                 println(xs.get(4));\n\
+                 println(w.get(0));\n\
+                 println(w.get(-1));\n\
+                 return w.get(5);\n",
+            ),
             // The one that distinguishes a view from a copy.
             new(
                 "window_sees_the_source_change",
