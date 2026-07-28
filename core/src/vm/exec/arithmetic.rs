@@ -871,10 +871,84 @@ impl Executor {
             (HeapValue::String(lhs), HeapValue::String(rhs)) => lhs == rhs,
             (HeapValue::Bytes(lhs), HeapValue::Bytes(rhs)) => lhs == rhs,
             (HeapValue::List(lhs), HeapValue::List(rhs)) => self.typed_lists_equal(lhs, rhs)?,
+            // A window compares by its elements, like everything else that has
+            // elements. It had no arm at all, so it fell to `false` below: a
+            // window printed `[97,98,99]` and compared unequal to
+            // `[97,98,99]` — and, worse, unequal to another window over the
+            // same range of the same list.
+            (HeapValue::Slice(lhs), HeapValue::Slice(rhs)) => {
+                self.slice_ranges_equal(lhs.source, lhs.start, lhs.len, rhs.source, rhs.start, rhs.len)?
+            }
+            (HeapValue::Slice(lhs), HeapValue::List(rhs)) => {
+                self.slice_and_list_equal(lhs.source, lhs.start, lhs.len, rhs)?
+            }
+            (HeapValue::List(lhs), HeapValue::Slice(rhs)) => {
+                self.slice_and_list_equal(rhs.source, rhs.start, rhs.len, lhs)?
+            }
             (HeapValue::Map(lhs), HeapValue::Map(rhs)) => self.typed_maps_equal(lhs, rhs)?,
             (HeapValue::Set(lhs), HeapValue::Set(rhs)) => runtime_sets_equal(lhs, rhs),
             _ => false,
         })
+    }
+
+    /// The list a window reads through to, or `None` if the source is gone.
+    fn slice_source_list(&self, source: RuntimeVal) -> Option<&TypedList> {
+        let RuntimeVal::Obj(handle) = source else {
+            return None;
+        };
+        match self.state.heap.get(handle) {
+            Some(HeapValue::List(list)) => Some(list),
+            _ => None,
+        }
+    }
+
+    /// Two windows, compared element by element through their sources.
+    ///
+    /// Nothing is materialized: `typed_list_items_equal` already compares by
+    /// index, so a window only needs to offset the index it asks for.
+    fn slice_ranges_equal(
+        &self,
+        lhs_source: RuntimeVal,
+        lhs_start: usize,
+        lhs_len: usize,
+        rhs_source: RuntimeVal,
+        rhs_start: usize,
+        rhs_len: usize,
+    ) -> Result<bool> {
+        if lhs_len != rhs_len {
+            return Ok(false);
+        }
+        let (Some(lhs), Some(rhs)) = (self.slice_source_list(lhs_source), self.slice_source_list(rhs_source)) else {
+            return Ok(false);
+        };
+        if lhs_start + lhs_len > lhs.len() || rhs_start + rhs_len > rhs.len() {
+            return Ok(false);
+        }
+        for index in 0..lhs_len {
+            if !self.typed_list_items_equal(lhs, lhs_start + index, rhs, rhs_start + index)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// A window against a whole list.
+    fn slice_and_list_equal(&self, source: RuntimeVal, start: usize, len: usize, other: &TypedList) -> Result<bool> {
+        if len != other.len() {
+            return Ok(false);
+        }
+        let Some(list) = self.slice_source_list(source) else {
+            return Ok(false);
+        };
+        if start + len > list.len() {
+            return Ok(false);
+        }
+        for index in 0..len {
+            if !self.typed_list_items_equal(list, start + index, other, index)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     fn typed_lists_equal(&self, lhs: &TypedList, rhs: &TypedList) -> Result<bool> {

@@ -130,7 +130,7 @@ pub(super) fn dispatch_slice_builtin_method(
             let mut found = None;
             for index in 0..slice.len {
                 let item = slice_item(&slice, index, heap);
-                if runtime_values_equal(&item, &needle) {
+                if runtime_values_equal(&item, &needle, heap) {
                     found = Some(index);
                     break;
                 }

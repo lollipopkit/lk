@@ -318,4 +318,58 @@ mod tests {
         assert_eq!(result.first_return(), &RuntimeVal::Bool(true));
         Ok(())
     }
+
+    /// Searching a list compares values, not handles.
+    ///
+    /// It compared handles, and the boundary that drew was `ShortStr`'s
+    /// seven-byte inline limit — invisible in the source and decisive in the
+    /// answer:
+    ///
+    /// ```text
+    /// ["ab", "cd"].contains("ab")              → true
+    /// ["abcdefghij", …].contains("abcdefghij") → false
+    /// ```
+    ///
+    /// Same shape as the `TypedList::String` read bug, in a different method.
+    /// A list, a map or a set could never be found at all, at any length.
+    #[test]
+    fn a_list_is_searched_by_value_not_by_handle() -> Result<()> {
+        let source = r#"
+            let long = ["abcdefghij", "klmnopqrst"];
+            let nested = [[1], [2]];
+            let maps = [{"a": 1}, {"b": 2}];
+            return long.contains("abcdefghij")
+                && long.index_of("klmnopqrst") == 1
+                && ["ab", "cd"].contains("ab")
+                && nested.contains([1])
+                && nested.index_of([2]) == 1
+                && maps.contains({"b": 2})
+                && ["a", "a", "abcdefghij", "abcdefghij"].unique().len() == 2;
+        "#;
+        let result = run(source)?;
+        assert_eq!(result.first_return(), &RuntimeVal::Bool(true));
+        Ok(())
+    }
+
+    /// A window equals what it holds.
+    ///
+    /// It had no equality arm at all, so it fell through to `false`: a window
+    /// printed `[97,98,99]` and compared unequal to `[97,98,99]` — and unequal
+    /// to another window over the same range of the same list.
+    #[test]
+    fn a_window_equals_the_elements_it_windows() -> Result<()> {
+        let source = r#"
+            let xs = [97, 98, 99];
+            let w = xs.slice(0, 3);
+            return w == xs
+                && xs == w
+                && w == xs.slice(0, 3)
+                && w != xs.slice(0, 2)
+                && xs.slice(1, 3) == [98, 99]
+                && ["abcdefghij", "x"].slice(0, 1) == ["abcdefghij"];
+        "#;
+        let result = run(source)?;
+        assert_eq!(result.first_return(), &RuntimeVal::Bool(true));
+        Ok(())
+    }
 }

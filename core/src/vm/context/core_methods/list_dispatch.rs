@@ -108,7 +108,7 @@ pub(super) fn dispatch_list_builtin_method(
             let items = list_runtime_items(clone_list(receiver, heap)?, heap);
             let mut unique: Vec<RuntimeVal> = Vec::new();
             for item in items {
-                if !unique.iter().any(|seen| runtime_values_equal(seen, &item)) {
+                if !unique.iter().any(|seen| runtime_values_equal(seen, &item, heap)) {
                     unique.push(item);
                 }
             }
@@ -122,7 +122,9 @@ pub(super) fn dispatch_list_builtin_method(
             }
             let items = list_runtime_items(clone_list(receiver, heap)?, heap);
             Ok(Some(RuntimeVal::Bool(
-                items.iter().any(|item| runtime_values_equal(item, &positional[0])),
+                items
+                    .iter()
+                    .any(|item| runtime_values_equal(item, &positional[0], heap)),
             )))
         }
         "index_of" => {
@@ -132,7 +134,7 @@ pub(super) fn dispatch_list_builtin_method(
             let items = list_runtime_items(clone_list(receiver, heap)?, heap);
             let index = items
                 .iter()
-                .position(|item| runtime_values_equal(item, &positional[0]))
+                .position(|item| runtime_values_equal(item, &positional[0], heap))
                 .map(|index| index as i64)
                 .unwrap_or(-1);
             Ok(Some(RuntimeVal::Int(index)))
