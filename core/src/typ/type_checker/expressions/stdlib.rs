@@ -15,11 +15,6 @@ impl TypeChecker {
             return Ok(None);
         };
 
-        if module == "math" && field == "clamp" {
-            self.check_math_clamp_args(args, &[])?;
-            return Ok(Some(Type::Int));
-        }
-
         if let Some(declared) = crate::typ::stdlib_signature(&format!("{module}.{field}")) {
             let required = declared.required_params();
             if args.len() < required || args.len() > declared.params.len() {
@@ -64,9 +59,17 @@ impl TypeChecker {
         let Some((params, named_params, return_type)) = stdlib_function_signature(&module, &field) else {
             return Ok(None);
         };
-        if !named_params.is_empty() || params.len() != args.len() {
+        // A parameter this table lists as *named* may still be passed
+        // positionally — that is what the export wrapper does at runtime — so
+        // the accepted count is a range, not a number. This table is only
+        // reached when no signature has been registered, which is the case in
+        // `lk-core`'s own tests: the stdlib crate is not linked there.
+        if args.len() < params.len() || args.len() > params.len() + named_params.len() {
             return Err(Self::type_err(
-                &format!("Function expects {} arguments", params.len()),
+                &format!(
+                    "Function expects {}",
+                    describe_arity(params.len(), params.len() + named_params.len())
+                ),
                 None,
                 None,
                 Some(func.clone()),
@@ -92,12 +95,115 @@ impl TypeChecker {
             return Ok(None);
         };
 
-        if module == "math" && field == "clamp" {
-            self.check_math_clamp_args(pos_args, named_args)?;
-            return Ok(Some(Type::Int));
+        let Some(declared) = crate::typ::stdlib_signature(&format!("{module}.{field}")) else {
+            return Ok(None);
+        };
+
+        // The rules are the export wrapper's, which is what actually runs: a
+        // parameter listed in `named(...)` may be given positionally *or* by
+        // name, never both. `math.clamp` used to be the only function checked
+        // this way — by a hand-written rule naming it — and every other export
+        // fell through to the generic `Type::Function` path, whose parameter
+        // list has the named-eligible ones *removed*. So a call that mixed the
+        // two spellings, `bytes.slice(b, 0, end: 2)`, was rejected as taking
+        // "1 positional arguments" while `bytes.slice(b, 0, 2)` was fine.
+        if pos_args.len() > declared.params.len() {
+            return Err(Self::type_err(
+                &format!(
+                    "Function expects {}",
+                    describe_arity(declared.required_params(), declared.params.len())
+                ),
+                None,
+                None,
+                Some(callee.clone()),
+            ));
         }
 
-        Ok(None)
+        let mut filled = vec![false; declared.params.len()];
+        for (index, arg) in pos_args.iter().enumerate() {
+            filled[index] = true;
+            let arg_type = self.check_expr(arg)?;
+            self.constrain_stdlib_argument(&declared.params[index], arg_type, arg, &module, &field)?;
+        }
+
+        let mut seen: HashSet<&str> = HashSet::with_capacity(named_args.len());
+        for (name, expr) in named_args {
+            let Some(index) = declared
+                .params
+                .iter()
+                .position(|param| param.named && param.name == *name)
+            else {
+                return Err(Self::type_err(
+                    &format!("Unknown named argument: {}", name),
+                    None,
+                    None,
+                    Some(expr.as_ref().clone()),
+                ));
+            };
+            if !seen.insert(name.as_str()) {
+                return Err(Self::type_err(
+                    &format!("Duplicate named argument: {}", name),
+                    None,
+                    None,
+                    Some(expr.as_ref().clone()),
+                ));
+            }
+            if filled[index] {
+                return Err(Self::type_err(
+                    &format!("Argument '{name}' given both positionally and by name"),
+                    None,
+                    None,
+                    Some(expr.as_ref().clone()),
+                ));
+            }
+            filled[index] = true;
+            let arg_type = self.check_expr(expr)?;
+            self.constrain_stdlib_argument(&declared.params[index], arg_type, expr, &module, &field)?;
+        }
+
+        for (param, filled) in declared.params.iter().zip(filled.iter()) {
+            if !filled && !param.optional && !param.has_default {
+                return Err(Self::type_err(
+                    &format!("Missing required named argument: {}", param.name),
+                    None,
+                    None,
+                    Some(callee.clone()),
+                ));
+            }
+        }
+
+        Ok(Some(declared.return_type))
+    }
+
+    /// One argument against one declared parameter.
+    ///
+    /// Shared by the positional and the named paths so that naming an argument
+    /// cannot type-check differently from passing it in that position.
+    fn constrain_stdlib_argument(
+        &mut self,
+        param: &crate::typ::ResolvedStdlibParam,
+        arg_type: Type,
+        arg: &Expr,
+        module: &str,
+        field: &str,
+    ) -> Result<()> {
+        // An optional parameter is left unconstrained: the declaration says
+        // what it accepts when present, not that the argument *is* one.
+        if param.optional || param.ty == Type::Any {
+            return Ok(());
+        }
+        // Checked here rather than handed to the solver — see the positional
+        // path for why `unify` is too permissive for a *declared* type.
+        if !arg_type.contains_variables() && !self.is_assignable(&arg_type, &param.ty) {
+            return Err(Self::type_err(
+                &format!("Argument '{}' of {module}.{field}", param.name),
+                Some(param.ty.clone()),
+                Some(arg_type),
+                Some(arg.clone()),
+            ));
+        }
+        self.inference_engine.add_constraint(param.ty.clone(), arg_type);
+        Ok(())
     }
 
     pub(super) fn stdlib_access_function_type(&self, expr: &Expr, field: &Expr) -> Option<Type> {
@@ -126,44 +232,6 @@ impl TypeChecker {
             named_params,
             return_type: Box::new(return_type),
         })
-    }
-
-    fn check_math_clamp_args(&mut self, pos_args: &[Box<Expr>], named_args: &[(String, Box<Expr>)]) -> Result<()> {
-        if pos_args.is_empty() || pos_args.len() > 3 {
-            return Err(Self::type_err(
-                "clamp() expects 1..3 positional arguments",
-                None,
-                None,
-                None,
-            ));
-        }
-        for arg in pos_args {
-            let arg_type = self.check_expr(arg)?;
-            self.inference_engine.add_constraint(Type::Int, arg_type);
-        }
-
-        let mut seen = HashSet::with_capacity(named_args.len());
-        for (name, expr) in named_args {
-            if name != "min" && name != "max" {
-                return Err(Self::type_err(
-                    &format!("Unknown named argument: {}", name),
-                    None,
-                    None,
-                    Some(expr.as_ref().clone()),
-                ));
-            }
-            if !seen.insert(name.as_str()) {
-                return Err(Self::type_err(
-                    &format!("Duplicate named argument: {}", name),
-                    None,
-                    None,
-                    Some(expr.as_ref().clone()),
-                ));
-            }
-            let arg_type = self.check_expr(expr)?;
-            self.inference_engine.add_constraint(Type::Int, arg_type);
-        }
-        Ok(())
     }
 }
 

@@ -1121,8 +1121,10 @@ mod tests {
         "#,
         );
         let mut checker = TypeChecker::new_strict();
-        assert!(program.type_check(&mut checker).is_ok());
+        let outcome = program.type_check(&mut checker);
+        assert!(outcome.is_ok(), "strict check failed: {:?}", outcome.err());
     }
+
     /// `go <expr>;` is parse-time sugar: a zero-param closure over the
     /// operand handed to the `spawn` builtin, handle discarded.
     #[test]

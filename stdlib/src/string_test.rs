@@ -116,6 +116,42 @@ mod tests {
         Ok(())
     }
 
+    /// A `named(...)` parameter can be given positionally *or* by name, in any
+    /// mixture — and never both.
+    ///
+    /// The checker used to build a stdlib function's positional list by
+    /// *removing* every named-eligible parameter, so a call that mixed the two
+    /// spellings was rejected: `bytes.slice(b, 0, end: 2)` was told the
+    /// function "expects 1 positional arguments" while `bytes.slice(b, 0, 2)`
+    /// was fine. `math.clamp` was the sole exception, by way of a rule in the
+    /// checker naming it — which is why it alone behaved.
+    #[test]
+    fn named_and_positional_spellings_mix_freely() -> Result<()> {
+        let source = r#"
+            use string;
+            use bytes;
+            let all_positional = string.substring("hello", 1, 2);
+            let all_named = string.substring("hello", start: 1, length: 2);
+            let mixed = string.substring("hello", 1, length: 2);
+            let sliced = bytes.slice(bytes.from_list([1, 2, 3]), 0, end: 2);
+            let window = if sliced.len() == 2 { "two" } else { "wrong" };
+            return [all_positional, all_named, mixed, window];
+        "#;
+        let result = execute_string(source)?;
+        let TypedList::String(values) = runtime_list(result.first_return(), result.state.heap()) else {
+            panic!("expected typed string list");
+        };
+        for (index, value) in values[..3].iter().enumerate() {
+            assert_eq!(value.as_ref(), "el", "spelling {index} should agree with the others");
+        }
+        assert_eq!(
+            values[3].as_ref(),
+            "two",
+            "the mixed-spelling byte window should hold two bytes"
+        );
+        Ok(())
+    }
+
     /// Naming an argument means what passing it positionally means.
     ///
     /// `replace`'s `all` flag used to default to whether the call *spelled*

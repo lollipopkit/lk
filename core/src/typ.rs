@@ -31,8 +31,8 @@ pub use builtin_method_sig::{
 #[cfg(feature = "std")]
 pub use imports::seed_imported_signatures;
 pub use stdlib_sig::{
-    ResolvedStdlibSig, StdlibCallableSig, StdlibParamSig, has_stdlib_signatures, register_stdlib_signatures,
-    stdlib_signature, type_from_text,
+    ResolvedStdlibParam, ResolvedStdlibSig, StdlibCallableSig, StdlibParamSig, has_stdlib_signatures,
+    register_stdlib_signatures, stdlib_signature, type_from_text,
 };
 pub use type_checker::*;
 pub use type_system::*;
