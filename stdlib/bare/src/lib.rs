@@ -17,7 +17,6 @@
 extern crate alloc;
 
 use alloc::boxed::Box;
-use alloc::string::{String, ToString};
 
 use anyhow::{Result, anyhow};
 use lk_core::{
@@ -26,7 +25,6 @@ use lk_core::{
     val::RuntimeVal,
     vm::{NativeArgs, NativeEntry, NativeRuntime, RuntimeExport},
 };
-use lk_stdlib_common::runtime_native::runtime_display_value;
 
 /// Where `print`/`println` go. A plain `fn` pointer rather than a closure so
 /// the slot is `const`-initialisable and needs no allocation before `main`.
@@ -156,12 +154,12 @@ pub fn register_bare_stdlib_modules(registry: &mut ModuleRegistry) -> Result<()>
 }
 
 fn print(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    emit(&format_variadic(args.as_slice(), runtime)?);
+    emit(&lk_stdlib_common::language::format_variadic(args.as_slice(), runtime)?);
     Ok(RuntimeVal::Nil)
 }
 
 fn println(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    let mut text = format_variadic(args.as_slice(), runtime)?;
+    let mut text = lk_stdlib_common::language::format_variadic(args.as_slice(), runtime)?;
     text.push('\n');
     emit(&text);
     Ok(RuntimeVal::Nil)
@@ -183,72 +181,14 @@ fn assert_eq(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Ru
     lk_stdlib_common::language::assert_eq(args, runtime)
 }
 
-fn display(value: &RuntimeVal, runtime: &mut NativeRuntime<'_>) -> Result<String> {
-    runtime_display_value(value, runtime.heap())
-}
-
 /// `println("{} of {}", a, b)`-style formatting: a leading string argument acts
 /// as a template whose `{}` holes consume the rest, and anything left over is
 /// appended space-separated. Without a leading string, all arguments are simply
 /// joined by spaces.
-fn format_variadic(args: &[RuntimeVal], runtime: &mut NativeRuntime<'_>) -> Result<String> {
-    let Some((first, rest)) = args.split_first() else {
-        return Ok(String::new());
-    };
-
-    let Some(template) = string_maybe(first, runtime)? else {
-        return join_with_spaces(args, runtime);
-    };
-
-    let mut out = String::with_capacity(template.len() + rest.len() * 8);
-    let mut chars = template.chars().peekable();
-    let mut next_arg = 0usize;
-    while let Some(ch) = chars.next() {
-        if ch == '{' && chars.peek() == Some(&'}') {
-            chars.next();
-            match rest.get(next_arg) {
-                Some(value) => {
-                    out.push_str(&display(value, runtime)?);
-                    next_arg += 1;
-                }
-                None => out.push_str("{}"),
-            }
-        } else {
-            out.push(ch);
-        }
-    }
-    for value in &rest[next_arg.min(rest.len())..] {
-        out.push(' ');
-        out.push_str(&display(value, runtime)?);
-    }
-    Ok(out)
-}
 
 /// A string argument may be inline (`ShortStr`) or on the heap — only short
 /// ones are inline, so matching just `ShortStr` silently fails to treat any
 /// realistic format string as a template.
-fn string_maybe(value: &RuntimeVal, runtime: &mut NativeRuntime<'_>) -> Result<Option<String>> {
-    Ok(match value {
-        RuntimeVal::ShortStr(value) => Some(value.as_str().to_string()),
-        RuntimeVal::Obj(handle) => match runtime.heap().get(*handle) {
-            Some(lk_core::val::HeapValue::String(value)) => Some(value.to_string()),
-            Some(_) => None,
-            None => return Err(anyhow!("heap object {} out of bounds", handle.index())),
-        },
-        _ => None,
-    })
-}
-
-fn join_with_spaces(args: &[RuntimeVal], runtime: &mut NativeRuntime<'_>) -> Result<String> {
-    let mut out = String::new();
-    for (index, value) in args.iter().enumerate() {
-        if index > 0 {
-            out.push(' ');
-        }
-        out.push_str(&display(value, runtime)?);
-    }
-    Ok(out)
-}
 
 #[derive(Debug)]
 struct UnsupportedBareModule {

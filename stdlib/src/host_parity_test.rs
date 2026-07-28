@@ -302,7 +302,16 @@ mod behaviour {
         let resolver = Arc::new(ModuleResolver::with_registry(registry));
         let mut env = VmContext::new().with_resolver(resolver);
         match program.execute_with_ctx(&mut env) {
-            Ok(result) => format!("ok: {:?}", result.first_return().kind()),
+            // The *value*, not its kind: two hosts both answering "a String" is
+            // not two hosts agreeing. `show is dispatched` below returns a
+            // string on every host and returned a different one on two of them.
+            Ok(result) => match lk_stdlib_common::runtime_native::runtime_display_value(
+                result.first_return(),
+                result.state.heap(),
+            ) {
+                Ok(rendered) => format!("ok: {rendered}"),
+                Err(error) => format!("ok, undisplayable: {error:#}"),
+            },
             // The text, not the type: an error a program can `catch` is a
             // value it can read, so two hosts disagreeing about the words is
             // two hosts disagreeing.
@@ -366,6 +375,17 @@ mod behaviour {
             "catch a raise",
             r#"try { panic("boom"); } catch e { return e; } return 0;"#,
         ),
+        // Interpolation, which the *VM* renders — so this cannot diverge
+        // between hosts and is here to say so: `print`'s rendering is the
+        // host's and is checked in `formatting` below, template interpolation
+        // is not. Confusing the two is how a "parity" case ends up testing
+        // nothing (this one did, until the deliberate-break check caught it).
+        (
+            "interpolation renders in the VM",
+            r#"struct P { a: Int }
+               let p = P { a: 1 };
+               return "${p}";"#,
+        ),
     ];
 
     #[test]
@@ -384,5 +404,80 @@ mod behaviour {
             "hosts disagree about what these programs do:\n  {}",
             differences.join("\n  ")
         );
+    }
+}
+
+/// What `print` renders, checked against the one implementation that renders it.
+///
+/// The formatter lived in all three hosts. They agreed on the interesting parts
+/// — `{}` takes the next argument, a hole with nothing left stays a hole — and
+/// disagreed on one line: the separator before arguments that run past the last
+/// hole. With an empty template, bare metal pushed a space and the other two
+/// did not, so `print("", 1, 2)` was `" 1 2"` there and `"1 2"` everywhere else.
+///
+/// One implementation now (`lk_stdlib_common::language::format_variadic`), so
+/// this checks the *rules* rather than three copies against each other. Run
+/// through the web host because it is the one that can hand its output back.
+#[cfg(test)]
+mod formatting {
+    use lk_core::module::ModuleRegistry;
+    use lk_core::stmt::stmt_parser::StmtParser;
+    use lk_core::token::Tokenizer;
+    use lk_core::vm::{ModuleResolver, ProgramExec, VmContext};
+    use std::sync::Arc;
+
+    fn printed(call_args: &str) -> String {
+        let source = format!("print({call_args});");
+        let tokens = Tokenizer::tokenize(&source).expect("tokenize");
+        let program = StmtParser::new(&tokens).parse_program().expect("parse");
+        let mut registry = ModuleRegistry::new();
+        lk_stdlib_web::register_web_stdlib(&mut registry).expect("web host");
+        let resolver = Arc::new(ModuleResolver::with_registry(registry));
+        let mut env = VmContext::new().with_resolver(resolver);
+        lk_stdlib_web::clear_stdout();
+        program.execute_with_ctx(&mut env).expect("run");
+        lk_stdlib_web::take_stdout()
+    }
+
+    #[test]
+    fn a_template_takes_arguments_and_says_what_is_left_over() {
+        assert_eq!(printed(""), "");
+        assert_eq!(printed(r#""a={}", 1"#), "a=1");
+        // A hole with nothing left stays a hole, rather than closing over
+        // nothing.
+        assert_eq!(printed(r#""a={}""#), "a={}");
+        assert_eq!(printed(r#""a={} b={}", 1"#), "a=1 b={}");
+        assert_eq!(printed(r#""{}{}", 1, 2"#), "12");
+        // Arguments past the last hole are appended, space-separated…
+        assert_eq!(printed(r#""x", 1, 2"#), "x 1 2");
+        // …and with nothing to separate them from, no leading space. The line
+        // the three copies disagreed on.
+        assert_eq!(printed(r#""", 1, 2"#), "1 2");
+        // A first argument that is not a string is not a template.
+        assert_eq!(printed("1, 2"), "1 2");
+    }
+
+    /// `show` decides what printing a struct says.
+    ///
+    /// A language rule — `impl Show for P` is in the program, not in the host —
+    /// and it lived in the desktop host alone. The web and bare hosts rendered
+    /// the raw struct, so the same value printed `P!` on a desktop and `P{a:1}`
+    /// in the browser. This runs through the web host, which is one of the two
+    /// that could not do it.
+    #[test]
+    fn printing_a_struct_asks_its_show_impl() {
+        let source = r#"struct P { a: Int }
+            trait Display { fn show(self) -> String; }
+            impl Display for P { fn show(self) -> String { return "P!"; } }
+            print(P { a: 1 });"#;
+        let tokens = Tokenizer::tokenize(source).expect("tokenize");
+        let program = StmtParser::new(&tokens).parse_program().expect("parse");
+        let mut registry = ModuleRegistry::new();
+        lk_stdlib_web::register_web_stdlib(&mut registry).expect("web host");
+        let resolver = Arc::new(ModuleResolver::with_registry(registry));
+        let mut env = VmContext::new().with_resolver(resolver);
+        lk_stdlib_web::clear_stdout();
+        program.execute_with_ctx(&mut env).expect("run");
+        assert_eq!(lk_stdlib_web::take_stdout(), "P!");
     }
 }

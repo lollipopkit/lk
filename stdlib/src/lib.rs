@@ -58,7 +58,7 @@ use lk_core::{
     module::ModuleRegistry,
     rt::{self, RuntimePayload},
     val,
-    val::{CallableValue, ChannelValue, HeapRef, HeapStore, HeapValue, RuntimeVal, TaskValue, Type, TypedList},
+    val::{CallableValue, ChannelValue, HeapRef, HeapStore, HeapValue, RuntimeVal, TaskValue, TypedList},
     vm::{
         NativeArgs, NativeEntry, NativeFunction, NativeRuntime, call_runtime_callable_runtime,
         copy_runtime_value_same_module,
@@ -440,12 +440,18 @@ fn register_global_metadata(name: &'static str, metadata: Option<StdlibGlobalMet
 }
 
 fn print(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    print!("{}", format_variadic_runtime(args.as_slice(), runtime)?);
+    print!(
+        "{}",
+        lk_stdlib_common::language::format_variadic(args.as_slice(), runtime)?
+    );
     Ok(RuntimeVal::Nil)
 }
 
 fn println(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    println!("{}", format_variadic_runtime(args.as_slice(), runtime)?);
+    println!(
+        "{}",
+        lk_stdlib_common::language::format_variadic(args.as_slice(), runtime)?
+    );
     Ok(RuntimeVal::Nil)
 }
 
@@ -710,105 +716,9 @@ fn select_block(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result
     )
 }
 
-fn format_variadic_runtime(args: &[RuntimeVal], runtime: &mut NativeRuntime<'_>) -> Result<String> {
-    if args.is_empty() {
-        return Ok(String::new());
-    }
-    let Some(format) = runtime_string_maybe(&args[0], runtime.heap())? else {
-        return join_runtime_display(args, runtime);
-    };
-    let rest = &args[1..];
-    let mut out = String::with_capacity(format.len() + rest.len() * 8);
-    let mut chars = format.chars().peekable();
-    let mut arg_index = 0usize;
-    while let Some(ch) = chars.next() {
-        if ch == '{' && chars.peek() == Some(&'}') {
-            chars.next();
-            if let Some(value) = rest.get(arg_index) {
-                out.push_str(&runtime_display(value, runtime)?);
-                arg_index += 1;
-            } else {
-                out.push_str("{}");
-            }
-        } else {
-            out.push(ch);
-        }
-    }
-    if arg_index < rest.len() {
-        if !out.is_empty() {
-            out.push(' ');
-        }
-        out.push_str(&join_runtime_display(&rest[arg_index..], runtime)?);
-    }
-    Ok(out)
-}
-
-fn join_runtime_display(args: &[RuntimeVal], runtime: &mut NativeRuntime<'_>) -> Result<String> {
-    let mut out = String::new();
-    for (index, value) in args.iter().enumerate() {
-        if index > 0 {
-            out.push(' ');
-        }
-        out.push_str(&runtime_display(value, runtime)?);
-    }
-    Ok(out)
-}
-
-fn runtime_display(value: &RuntimeVal, runtime: &mut NativeRuntime<'_>) -> Result<String> {
-    if let Some(value) = runtime_display_show(value, runtime)? {
-        return Ok(value);
-    }
-    runtime_display_value(value, runtime.heap())
-}
-
-fn runtime_display_show(value: &RuntimeVal, runtime: &mut NativeRuntime<'_>) -> Result<Option<String>> {
-    let Some(receiver_type) = runtime_display_receiver_type(value, runtime.heap()) else {
-        return Ok(None);
-    };
-    // The declaring module is the other half of the receiver's type identity;
-    // read it before `state_ctx_module_mut` takes the heap mutably.
-    let receiver_scope = lk_core::vm::receiver_type_scope(value, runtime.heap());
-    let Some((state, ctx, module)) = runtime.state_ctx_module_mut() else {
-        return Ok(None);
-    };
-    let Some(ctx) = ctx else {
-        return Ok(None);
-    };
-    let Type::Named(receiver_type_name) = &receiver_type else {
-        return Ok(None);
-    };
-    let Some(impl_ref) = ctx.trait_method(&receiver_scope, receiver_type_name, "show").cloned() else {
-        return Ok(None);
-    };
-    let result = lk_core::vm::call_trait_method(
-        &impl_ref,
-        lk_core::vm::TraitMethodRef {
-            type_name: receiver_type_name,
-            method: "show",
-        },
-        value,
-        None,
-        state,
-        module,
-        Some(ctx),
-    )?;
-    runtime_string_maybe(&result, state.heap()).map(|value| value.map(|value| value.to_string()))
-}
-
-fn runtime_display_receiver_type(value: &RuntimeVal, heap: &HeapStore) -> Option<Type> {
-    let RuntimeVal::Obj(handle) = value else {
-        return None;
-    };
-    let Some(HeapValue::Object(object)) = heap.get(*handle) else {
-        return None;
-    };
-    Some(Type::Named(object.type_name().to_string()))
-}
-
-fn runtime_string(value: &RuntimeVal, heap: &HeapStore, context: &str) -> Result<Arc<str>> {
-    runtime_string_maybe(value, heap)?.ok_or_else(|| anyhow!("{context} must be a string"))
-}
-
+/// The string a value is, or `None` when it is not one. Distinct from the
+/// formatter's own check (which takes a `NativeRuntime`): this one is for the
+/// module functions that take a heap.
 fn runtime_string_maybe(value: &RuntimeVal, heap: &HeapStore) -> Result<Option<Arc<str>>> {
     match value {
         RuntimeVal::ShortStr(value) => Ok(Some(Arc::<str>::from(value.as_str()))),
@@ -821,6 +731,10 @@ fn runtime_string_maybe(value: &RuntimeVal, heap: &HeapStore) -> Result<Option<A
         },
         _ => Ok(None),
     }
+}
+
+fn runtime_string(value: &RuntimeVal, heap: &HeapStore, context: &str) -> Result<Arc<str>> {
+    runtime_string_maybe(value, heap)?.ok_or_else(|| anyhow!("{context} must be a string"))
 }
 
 /// Resolve a spawn target to a self-contained `RuntimeCallable`. A

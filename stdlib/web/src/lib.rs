@@ -6,7 +6,6 @@ use lk_core::{
     val::RuntimeVal,
     vm::{NativeArgs, NativeEntry, NativeRuntime, RuntimeExport},
 };
-use lk_stdlib_common::runtime_native::runtime_display_value;
 
 thread_local! {
     static STDOUT: RefCell<String> = const { RefCell::new(String::new()) };
@@ -118,13 +117,13 @@ pub fn register_web_stdlib(registry: &mut ModuleRegistry) -> Result<()> {
 }
 
 fn print(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    let text = format_variadic_runtime(args.as_slice(), runtime)?;
+    let text = lk_stdlib_common::language::format_variadic(args.as_slice(), runtime)?;
     STDOUT.with(|stdout| stdout.borrow_mut().push_str(&text));
     Ok(RuntimeVal::Nil)
 }
 
 fn println(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
-    let text = format_variadic_runtime(args.as_slice(), runtime)?;
+    let text = lk_stdlib_common::language::format_variadic(args.as_slice(), runtime)?;
     STDOUT.with(|stdout| {
         let mut stdout = stdout.borrow_mut();
         stdout.push_str(&text);
@@ -151,66 +150,6 @@ fn assert_eq(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<Ru
 
 fn assert_ne(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     lk_stdlib_common::language::assert_ne(args, runtime)
-}
-
-fn format_variadic_runtime(args: &[RuntimeVal], runtime: &mut NativeRuntime<'_>) -> Result<String> {
-    if args.is_empty() {
-        return Ok(String::new());
-    }
-    let Some(format) = runtime_string_maybe(&args[0], runtime)? else {
-        return join_runtime_display(args, runtime);
-    };
-    let rest = &args[1..];
-    let mut out = String::with_capacity(format.len() + rest.len() * 8);
-    let mut chars = format.chars().peekable();
-    let mut arg_index = 0usize;
-    while let Some(ch) = chars.next() {
-        if ch == '{' && chars.peek() == Some(&'}') {
-            chars.next();
-            if let Some(value) = rest.get(arg_index) {
-                out.push_str(&runtime_display(value, runtime)?);
-                arg_index += 1;
-            } else {
-                out.push_str("{}");
-            }
-        } else {
-            out.push(ch);
-        }
-    }
-    if arg_index < rest.len() {
-        if !out.is_empty() {
-            out.push(' ');
-        }
-        out.push_str(&join_runtime_display(&rest[arg_index..], runtime)?);
-    }
-    Ok(out)
-}
-
-fn join_runtime_display(args: &[RuntimeVal], runtime: &mut NativeRuntime<'_>) -> Result<String> {
-    let mut out = String::new();
-    for (index, value) in args.iter().enumerate() {
-        if index > 0 {
-            out.push(' ');
-        }
-        out.push_str(&runtime_display(value, runtime)?);
-    }
-    Ok(out)
-}
-
-fn runtime_display(value: &RuntimeVal, runtime: &mut NativeRuntime<'_>) -> Result<String> {
-    runtime_display_value(value, runtime.heap())
-}
-
-fn runtime_string_maybe(value: &RuntimeVal, runtime: &mut NativeRuntime<'_>) -> Result<Option<String>> {
-    Ok(match value {
-        RuntimeVal::ShortStr(value) => Some(value.as_str().to_string()),
-        RuntimeVal::Obj(handle) => match runtime.heap().get(*handle) {
-            Some(lk_core::val::HeapValue::String(value)) => Some(value.to_string()),
-            Some(_) => None,
-            None => return Err(anyhow!("heap object {} out of bounds", handle.index())),
-        },
-        _ => None,
-    })
 }
 
 #[derive(Debug)]
