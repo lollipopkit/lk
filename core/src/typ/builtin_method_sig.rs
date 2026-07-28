@@ -333,6 +333,45 @@ pub const BUILTIN_METHODS: &[BuiltinMethodSig] = &[
         "Int",
         "Position within the window of the first equal element, or -1",
     ),
+    // A contiguous run of a window is still a window; what `filter` keeps is
+    // not contiguous, so it materializes a list.
+    m(
+        Slice,
+        "take",
+        &[p("count", "Int")],
+        "Self",
+        "The window's first `count` elements",
+    ),
+    m(
+        Slice,
+        "skip",
+        &[p("count", "Int")],
+        "Self",
+        "The window without its first `count` elements",
+    ),
+    hof(
+        Slice,
+        "map",
+        &[p("transform", "Fn")],
+        "List<CallbackResult>",
+        "Each element through `transform`",
+        0,
+    ),
+    hof(
+        Slice,
+        "filter",
+        &[p("predicate", "Fn")],
+        "List<Elem>",
+        "The elements `predicate` keeps",
+        0,
+    ),
+    m(
+        Slice,
+        "reduce",
+        &[p("initial", "Any"), p("accumulate", "Fn")],
+        "Any",
+        "Folds `accumulate` over the window from `initial`",
+    ),
     // ---- Bytes ----
     //
     // The read half of the list surface, and the elements are `Int`. Every one
@@ -371,6 +410,40 @@ pub const BUILTIN_METHODS: &[BuiltinMethodSig] = &[
         "The bytes in `[start, end)` — a copy, since `Bytes` has no cheap sub-range",
     ),
     m(Bytes, "to_list", &[], "List<Int>", "The bytes as a list of numbers"),
+    // Transforms. The rule is whether the result's elements can be something
+    // the receiver could not hold: `filter` keeps a subset, so it is still
+    // `Bytes`; `map` may answer anything, so it is a list.
+    m(Bytes, "take", &[p("count", "Int")], "Bytes", "The first `count` bytes"),
+    m(
+        Bytes,
+        "skip",
+        &[p("count", "Int")],
+        "Bytes",
+        "Everything after the first `count` bytes",
+    ),
+    hof(
+        Bytes,
+        "map",
+        &[p("transform", "Fn")],
+        "List<CallbackResult>",
+        "Each byte through `transform`",
+        0,
+    ),
+    hof(
+        Bytes,
+        "filter",
+        &[p("predicate", "Fn")],
+        "Bytes",
+        "The bytes `predicate` keeps",
+        0,
+    ),
+    m(
+        Bytes,
+        "reduce",
+        &[p("initial", "Any"), p("accumulate", "Fn")],
+        "Any",
+        "Folds `accumulate` over the bytes from `initial`",
+    ),
     // ---- Map ----
     m(Map, "len", &[], "Int", "Number of entries"),
     m(Map, "is_empty", &[], "Bool", "Whether the map has no entries"),

@@ -172,7 +172,10 @@ const DOCUMENTED_ALIASES: &[(&str, AliasTarget)] = &[
     ("Resource", AliasTarget::Handle),
     ("Stream", AliasTarget::Handle),
     ("Cursor", AliasTarget::Handle),
-    ("Slice", AliasTarget::Handle),
+    // A window, parameterised: bare `Slice` means `Slice<Any>`, so a
+    // declaration can accept one over any element type. As `Named("Slice")` it
+    // was a *different type* from the `Slice<Int>` values actually are.
+    ("Slice", AliasTarget::SliceOfAny),
     // These two already have a type of their own; naming them would invent a
     // second spelling for a type the language can write.
     ("Task", AliasTarget::TaskOfAny),
@@ -186,6 +189,7 @@ const DOCUMENTED_ALIASES: &[(&str, AliasTarget)] = &[
 
 #[derive(Clone, Copy)]
 enum AliasTarget {
+    SliceOfAny,
     /// A named type with no structure the checker can look inside.
     Handle,
     TaskOfAny,
@@ -233,6 +237,7 @@ pub fn type_from_text(text: &str) -> Type {
     if let Some((name, target)) = DOCUMENTED_ALIASES.iter().find(|(name, _)| *name == text) {
         return match target {
             AliasTarget::Handle => Type::Named((*name).to_string()),
+            AliasTarget::SliceOfAny => crate::typ::slice_of(Type::Any),
             AliasTarget::TaskOfAny => Type::Task(Box::new(Type::Any)),
             AliasTarget::ChannelOfAny => Type::Channel(Box::new(Type::Any)),
             AliasTarget::Anything => Type::Any,

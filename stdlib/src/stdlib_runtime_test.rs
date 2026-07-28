@@ -279,4 +279,43 @@ mod tests {
         assert_eq!(sums, vec![294, 294, 294]);
         Ok(())
     }
+
+    /// Which transforms keep a sequence's type, and which cannot.
+    ///
+    /// The rule is whether the result's elements can be something the receiver
+    /// could not hold. `filter` keeps a subset, so a filtered `Bytes` is still
+    /// `Bytes` and a `take` of a window is still a window — contiguous, so it
+    /// costs nothing. `map` may answer anything, so it is a list whatever it
+    /// started from; and `filter` on a *window* is a list too, because what it
+    /// keeps is not contiguous.
+    #[test]
+    fn a_transform_keeps_the_sequence_type_only_when_its_elements_must_fit() -> Result<()> {
+        let source = r#"
+            use iter;
+            let b = "abc".bytes();
+            let w = [1, 2, 3, 4].slice(1, 4);
+            return b.map(|x| x + 1) == [98, 99, 100]
+                && w.map(|x| x * 10) == [20, 30, 40]
+                && b.reduce(0, |a, x| a + x) == 294
+                && w.reduce(0, |a, x| a + x) == 9
+                // `filter` on bytes is bytes: comparing to a list would be
+                // comparing two different types.
+                && b.filter(|x| x > 97).to_list() == [98, 99]
+                && b.take(2).to_list() == [97, 98]
+                && b.skip(2).to_list() == [99]
+                // …and on a window it is a list, because what it keeps has
+                // holes in it.
+                && w.filter(|x| x > 2) == [3, 4]
+                && w.take(2).to_list() == [2, 3]
+                && w.skip(2).to_list() == [4]
+                // The module spelling reaches all three for the exports whose
+                // result does not depend on which sequence came in.
+                && iter.map(b, |x| x + 1) == [98, 99, 100]
+                && iter.reduce(w, 0, |a, x| a + x) == 9
+                && iter.next(b) == 97;
+        "#;
+        let result = run(source)?;
+        assert_eq!(result.first_return(), &RuntimeVal::Bool(true));
+        Ok(())
+    }
 }

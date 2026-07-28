@@ -799,6 +799,24 @@ impl Type {
             (Type::List(a), Type::List(b)) => a.is_assignable_to(b),
             (Type::Map(ak, av), Type::Map(bk, bv)) => ak.is_assignable_to(bk) && av.is_assignable_to(bv),
             (Type::Set(a), Type::Set(b)) => a.is_assignable_to(b),
+            // The same covariance for a parameterised named type — `Slice<T>`
+            // is the only one today. Without it `Slice<Int>` was assignable to
+            // nothing but itself, so a declaration could not accept "a window
+            // over anything".
+            (
+                Type::Generic {
+                    name: a_name,
+                    params: a_params,
+                },
+                Type::Generic {
+                    name: b_name,
+                    params: b_params,
+                },
+            ) => {
+                a_name == b_name
+                    && a_params.len() == b_params.len()
+                    && a_params.iter().zip(b_params).all(|(a, b)| a.is_assignable_to(b))
+            }
             (Type::Tuple(as_), Type::Tuple(bs)) => {
                 as_.len() == bs.len() && as_.iter().zip(bs.iter()).all(|(a, b)| a.is_assignable_to(b))
             }

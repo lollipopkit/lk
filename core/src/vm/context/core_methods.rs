@@ -251,14 +251,13 @@ fn call_method_positional_runtime(
     // Try dispatch for methods that need runtime state BEFORE heap closure
     let method_str = method.as_str();
     if is_list_hof(method_str) {
-        // Check if receiver is a list
-        let is_list = match &receiver {
-            RuntimeVal::Obj(h) => matches!(runtime.heap().get(*h), Some(HeapValue::List(_))),
-            _ => false,
-        };
-        if is_list {
-            let list = clone_list(&receiver, runtime.heap_mut())?;
-            let items: Vec<RuntimeVal> = list_runtime_items(list, runtime.heap_mut());
+        // Every sequence, not only a list: a window and a `Bytes` have elements
+        // too, and `map`/`filter`/`reduce` mean the same thing over them. What
+        // the callback loop below needs is the elements, and nothing about it
+        // cares where they came from.
+        let sequence_kind = sequence_receiver_kind(&receiver, runtime.heap());
+        if let Some(sequence_kind) = sequence_kind {
+            let items: Vec<RuntimeVal> = sequence_items(&receiver, sequence_kind, runtime)?;
             let pos_args: Vec<RuntimeVal> = match &positional {
                 MethodPositionalArgs::Empty => vec![],
                 MethodPositionalArgs::List(handle) => match runtime.heap().get(*handle).cloned() {
@@ -283,8 +282,15 @@ fn call_method_positional_runtime(
                     _ => Ok(None),
                 };
                 state.host_roots_truncate(mark);
-                if let Some(r) = result? {
-                    return Ok(r);
+                if let Some(result) = result? {
+                    // `filter` keeps a subset of the elements, so the result is
+                    // still bytes; `map` may produce anything, so it is not.
+                    // That is the whole rule for which operations preserve a
+                    // sequence's type.
+                    if matches!(sequence_kind, SequenceKind::Bytes) && method_str == "filter" {
+                        return rebuild_bytes(&result, runtime);
+                    }
+                    return Ok(result);
                 }
             }
             return call_trait_method_runtime(receiver, ArcStr::from(method.as_str()), positional, runtime);
@@ -1033,6 +1039,79 @@ fn list_reduce(
         acc = result?;
     }
     Ok(Some(acc))
+}
+
+/// A filtered `Bytes` back as `Bytes`.
+///
+/// The callback loop works in `RuntimeVal`s, so it hands back a list; every
+/// element of it came out of a `Bytes` and is therefore a byte again.
+fn rebuild_bytes(filtered: &RuntimeVal, runtime: &mut NativeRuntime<'_>) -> anyhow::Result<RuntimeVal> {
+    let RuntimeVal::Obj(handle) = filtered else {
+        return Ok(*filtered);
+    };
+    let Some(HeapValue::List(list)) = runtime.heap().get(*handle) else {
+        return Ok(*filtered);
+    };
+    let mut bytes = Vec::with_capacity(list.len());
+    for value in list_runtime_items(list.clone(), runtime.heap_mut()) {
+        let RuntimeVal::Int(value) = value else {
+            bail!("bytes.filter() kept a non-byte value");
+        };
+        bytes.push(u8::try_from(value).map_err(|_| anyhow!("bytes.filter() kept {value}, which is not a byte"))?);
+    }
+    Ok(RuntimeVal::Obj(
+        runtime.heap_mut().alloc(HeapValue::Bytes(Arc::<[u8]>::from(bytes))),
+    ))
+}
+
+/// Which sequence a receiver is, for the higher-order methods.
+///
+/// `None` means "not a sequence", and the caller falls through to trait
+/// dispatch — the same answer it gave for everything but a list before windows
+/// and `Bytes` had elements the language could reach.
+#[derive(Clone, Copy)]
+enum SequenceKind {
+    List,
+    Slice,
+    Bytes,
+}
+
+fn sequence_receiver_kind(receiver: &RuntimeVal, heap: &HeapStore) -> Option<SequenceKind> {
+    let RuntimeVal::Obj(handle) = receiver else {
+        return None;
+    };
+    match heap.get(*handle) {
+        Some(HeapValue::List(_)) => Some(SequenceKind::List),
+        Some(HeapValue::Slice(_)) => Some(SequenceKind::Slice),
+        Some(HeapValue::Bytes(_)) => Some(SequenceKind::Bytes),
+        _ => None,
+    }
+}
+
+/// A sequence's elements, materialized for the callback loop.
+///
+/// Materializing is what a callback loop needs either way — it hands each
+/// element to user code — so a window pays here what it saved everywhere else,
+/// and only here.
+fn sequence_items(
+    receiver: &RuntimeVal,
+    kind: SequenceKind,
+    runtime: &mut NativeRuntime<'_>,
+) -> anyhow::Result<Vec<RuntimeVal>> {
+    match kind {
+        SequenceKind::List => {
+            let list = clone_list(receiver, runtime.heap_mut())?;
+            Ok(list_runtime_items(list, runtime.heap_mut()))
+        }
+        SequenceKind::Slice | SequenceKind::Bytes => {
+            // Both answer `to_list`, which is exactly this question, and
+            // answering it twice is how the two would drift apart.
+            let materialized = dispatch_builtin_method_slice(receiver, "to_list", &[], runtime)?
+                .ok_or_else(|| anyhow!("sequence receiver has no to_list"))?;
+            let list = clone_list(&materialized, runtime.heap_mut())?;
+            Ok(list_runtime_items(list, runtime.heap_mut()))
+        }
+    }
 }
 
 fn clone_list(receiver: &RuntimeVal, heap: &mut HeapStore) -> anyhow::Result<TypedList> {

@@ -34,7 +34,11 @@ pub struct IterModule;
 
 #[lk_stdlib_common::stdlib_exports(module = "iter")]
 impl IterModule {
-    #[stdlib_export(params(values: List, f: Fn), returns = List, kind = "full_state")]
+    // `List | Slice | Bytes`, because a window and a `Bytes` have elements too and
+    // this forwards to the method that reads them. Only the exports whose result
+    // does *not* depend on which sequence came in can widen: `take` on a `Bytes`
+    // answers `Bytes`, which no single declared return type can say.
+    #[stdlib_export(params(values: List | Slice | Bytes, f: Fn), returns = List, kind = "full_state")]
     fn map(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         forward("map", args, runtime)
     }
@@ -44,7 +48,7 @@ impl IterModule {
         forward("filter", args, runtime)
     }
 
-    #[stdlib_export(params(values: List, initial: Any, f: Fn), returns = Any, kind = "full_state")]
+    #[stdlib_export(params(values: List | Slice | Bytes, initial: Any, f: Fn), returns = Any, kind = "full_state")]
     fn reduce(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         forward("reduce", args, runtime)
     }
@@ -126,7 +130,7 @@ impl IterModule {
 
     /// `iter.next(xs)` is `xs.first()` — the name is the iterator vocabulary,
     /// the operation is the list one.
-    #[stdlib_export(params(values: List), returns = Any, kind = "full_state")]
+    #[stdlib_export(params(values: List | Slice | Bytes), returns = Any, kind = "full_state")]
     fn next(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         forward("first", args, runtime)
     }

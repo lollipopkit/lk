@@ -107,6 +107,27 @@ pub(super) fn dispatch_bytes_builtin_method(
                 heap.alloc(HeapValue::Bytes(Arc::<[u8]>::from(&bytes[start..end]))),
             )))
         }
+        // A contiguous run of bytes is still bytes.
+        "take" | "skip" => {
+            if positional.len() != 1 {
+                bail!("bytes.{method}() expects 1 argument (count), got {}", positional.len());
+            }
+            let RuntimeVal::Int(count) = &positional[0] else {
+                bail!("bytes.{method}() count must be Int");
+            };
+            if *count < 0 {
+                bail!("bytes.{method}() count must be non-negative, got {count}");
+            }
+            let count = (*count as usize).min(bytes.len());
+            let kept = if method == "take" {
+                &bytes[..count]
+            } else {
+                &bytes[count..]
+            };
+            Ok(Some(RuntimeVal::Obj(
+                heap.alloc(HeapValue::Bytes(Arc::<[u8]>::from(kept))),
+            )))
+        }
         "to_list" => {
             if !positional.is_empty() {
                 bail!("bytes.to_list() expects no arguments, got {}", positional.len());

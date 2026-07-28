@@ -25,9 +25,14 @@ fn number_is_the_documented_spelling_of_int_or_float() {
 fn runtime_handles_are_named_types_not_any() {
     // The checker cannot see inside a handle, but it can tell one from another
     // and from everything else — which is what stops `bytes.slice(a_string, …)`.
-    for text in ["Bytes", "Resource", "Stream", "Cursor", "Slice"] {
+    for text in ["Bytes", "Resource", "Stream", "Cursor"] {
         assert_eq!(type_from_text(text), Type::Named(text.to_string()));
     }
+    // `Slice` is the exception: it is parameterised, and bare means
+    // `Slice<Any>`. As a plain named type it was a *different type* from the
+    // `Slice<Int>` a window actually is, so a declaration written `Slice`
+    // accepted no window at all.
+    assert_eq!(type_from_text("Slice"), crate::typ::slice_of(Type::Any));
     // `Task`/`Channel` have types of their own; naming them would invent a
     // second spelling for something the language can already write.
     assert_eq!(type_from_text("Task"), Type::Task(Box::new(Type::Any)));

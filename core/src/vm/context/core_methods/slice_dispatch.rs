@@ -77,6 +77,33 @@ pub(super) fn dispatch_slice_builtin_method(
                 },
             ))))))
         }
+        // A contiguous run of a window is still a window, so these cost
+        // nothing. `filter` cannot be one — what it keeps is not contiguous —
+        // and materializes a list instead.
+        "take" | "skip" => {
+            if positional.len() != 1 {
+                bail!("slice.{method}() expects 1 argument (count), got {}", positional.len());
+            }
+            let RuntimeVal::Int(count) = &positional[0] else {
+                bail!("slice.{method}() count must be Int");
+            };
+            if *count < 0 {
+                bail!("slice.{method}() count must be non-negative, got {count}");
+            }
+            let count = (*count as usize).min(slice.len);
+            let (start, len) = if method == "take" {
+                (slice.start, count)
+            } else {
+                (slice.start + count, slice.len - count)
+            };
+            Ok(Some(RuntimeVal::Obj(heap.alloc(HeapValue::Slice(Arc::new(
+                SliceValue {
+                    source: slice.source,
+                    start,
+                    len,
+                },
+            ))))))
+        }
         "first" => {
             if !positional.is_empty() {
                 bail!("slice.first() expects no arguments, got {}", positional.len());
