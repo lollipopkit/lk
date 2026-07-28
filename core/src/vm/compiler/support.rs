@@ -800,3 +800,16 @@ pub(super) fn pattern_kind(pattern: &Pattern) -> &'static str {
         Pattern::Range { .. } => "Range",
     }
 }
+
+/// Whether an expression is written as an integer literal, through parentheses.
+///
+/// Used to decide that a literal beside a machine integer should take its width:
+/// a *variable* of another numeric type is a width mistake, and only a literal
+/// is retyped.
+pub(super) fn is_int_literal(expr: &Expr) -> bool {
+    match expr {
+        Expr::Paren(inner) => is_int_literal(inner),
+        Expr::Literal(LiteralVal::Int(_)) => true,
+        _ => false,
+    }
+}

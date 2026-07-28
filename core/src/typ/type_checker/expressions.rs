@@ -982,6 +982,32 @@ impl TypeChecker {
         }
     }
 
+    /// An integer literal's value, seeing through parentheses.
+    fn int_literal_operand(expr: &Expr) -> Option<i128> {
+        match expr {
+            Expr::Literal(crate::val::LiteralVal::Int(value)) => Some(i128::from(*value)),
+            Expr::Paren(inner) => Self::int_literal_operand(inner),
+            _ => None,
+        }
+    }
+
+    /// The result of a machine-int operation whose other operand was a literal.
+    ///
+    /// The range is checked here rather than left to wrap, because having one is
+    /// the whole point of asking for a fixed width — `port + 300` on a `u8` is a
+    /// mistake worth being told about where it was written.
+    fn machine_literal_result(kind: lk_values::IntKind, literal: i128, expr: &Expr) -> Result<Type> {
+        if !kind.accepts_literal(literal) {
+            return Err(Self::type_err(
+                "literal is out of range for the machine integer it is used with",
+                Some(Type::MachineInt(kind)),
+                None,
+                Some(expr.clone()),
+            ));
+        }
+        Ok(Type::MachineInt(kind))
+    }
+
     fn check_string_addition(
         &mut self,
         _left_expr: &Expr,
@@ -1077,25 +1103,38 @@ impl TypeChecker {
             // division is what the hardware does.
             return Ok(Type::MachineInt(*left_kind));
         }
+        // An integer *literal* takes the machine width of the other side.
+        //
+        // `let x: u8 = 5` already works — a literal is retyped rather than
+        // rejected, because requiring `5 as u8` there would make a fixed width
+        // unusable. `reg + 1` is the same need with more force: `reg + (1 as u32)`
+        // at every increment is what gets fixed widths abandoned in favour of
+        // `Int`, which is the opposite of what asking for a width was for.
+        //
+        // This half alone is a *miscompile*, and it was one for a round: the
+        // checker says `u8` while the compiler goes on materialising the literal
+        // as an ordinary `Int` and doing 64-bit arithmetic, so `255u8 + 1`
+        // answers 256 with the type still claiming `u8`. The other half is
+        // `adopt_machine_width_for_literal` in the compiler, which normalises the
+        // literal to that width before the operation, so the wrap that follows
+        // has two proven operands to agree about.
+        //
+        // Only a literal. A *variable* of another numeric type is still a width
+        // mistake — that is the rule this preserves — and a literal out of range
+        // says so, measured against the width it was used with.
+        if let Type::MachineInt(kind) = &resolved_left
+            && !matches!(resolved_right, Type::MachineInt(_))
+            && let Some(literal) = Self::int_literal_operand(right_expr)
+        {
+            return Self::machine_literal_result(*kind, literal, right_expr);
+        }
+        if let Type::MachineInt(kind) = &resolved_right
+            && !matches!(resolved_left, Type::MachineInt(_))
+            && let Some(literal) = Self::int_literal_operand(left_expr)
+        {
+            return Self::machine_literal_result(*kind, literal, left_expr);
+        }
         // A machine integer on one side only is a width mistake, not a promotion.
-        //
-        // Including when the other side is a *literal*, and that is a gap rather
-        // than a decision. `let x: u8 = 5` works — a literal is retyped there,
-        // because requiring `5 as u8` would make a fixed width unusable — and
-        // `reg + 1` is the same need with more force: `reg + (1 as u32)` at every
-        // increment is what gets fixed widths abandoned in favour of `Int`.
-        //
-        // Relaxing it *here alone* is a miscompile, which is worth writing down
-        // because the change is a five-line one and looks complete. The type
-        // checker would say `u8`, and the compiler would go on materialising the
-        // literal as an ordinary `Int` and doing 64-bit arithmetic: `255u8 + 1`
-        // answers 256, with the type still claiming `u8`. Two `u8` *variables*
-        // wrap correctly, because a runtime value carries its own width and the
-        // executor honours it — a literal carries nothing.
-        //
-        // So the fix is in the compiler, not here: the literal has to be
-        // materialised at the width the checker just proved. Until then this
-        // rejects, which is the honest half.
         if matches!(resolved_left, Type::MachineInt(_)) || matches!(resolved_right, Type::MachineInt(_)) {
             let (offending, expr) = if matches!(resolved_left, Type::MachineInt(_)) {
                 (&resolved_right, right_expr)

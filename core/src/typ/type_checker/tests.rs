@@ -363,14 +363,12 @@ fn test_for_statement_type_checking() {
 /// checker refuses three things, and the messages are what a driver author
 /// reads when a width is wrong.
 ///
-/// The middle one is a *gap* rather than a decision, and it is pinned here so
-/// that whoever closes it sees this test rather than discovering the rule by
-/// accident. `reg + 1` is what driver code is made of, and it does not compile;
-/// `let x: u8 = 5` does, because a literal is retyped there. Relaxing the
-/// checker alone is a miscompile — the compiler goes on materialising the
-/// literal as an ordinary `Int`, so `255u8 + 1` answers 256 with the type still
-/// claiming `u8`. The fix belongs in the compiler, and the note at the rule in
-/// `expressions.rs` says so.
+/// What is *not* refused, and used to be: an integer literal beside a machine
+/// integer takes its width. `reg + 1` is what driver code is made of. Relaxing
+/// the checker alone was a miscompile for one round — the compiler went on
+/// materialising the literal as an ordinary `Int`, so `255u8 + 1` answered 256
+/// with the type still claiming `u8` — so the literal is now normalised to the
+/// width first, in `adopt_machine_width_for_literal`.
 #[test]
 fn machine_integers_refuse_to_mix() {
     for (source, expected) in [
@@ -379,8 +377,13 @@ fn machine_integers_refuse_to_mix() {
             "let a: u8 = 5;\nlet n = 3;\nlet c = a + n;\n",
             "machine integers do not mix",
         ),
-        // A literal, which is the gap.
-        ("let a: u8 = 5;\nlet c = a + 1;\n", "machine integers do not mix"),
+        // A literal that does not fit the width it is used with. The literal
+        // itself is fine — `a + 1` compiles now, at the width — and this is the
+        // range check that comes with having a width at all.
+        (
+            "let a: u8 = 5;\nlet c = a + 300;\n",
+            "out of range for the machine integer",
+        ),
         // Two machine integers of different widths.
         (
             "let a: u8 = 5;\nlet b: u16 = 3;\nlet c = a + b;\n",

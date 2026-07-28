@@ -415,6 +415,20 @@ fn machine_int_differential() {
             // Multiplication past the width, which is where a promotion to
             // `Int` would be least visible: the low bits are still right.
             new("u8_multiplies", "let a: u8 = 200;\nlet b: u8 = 3;\nreturn (a * b) as Int;\n"),
+            // A literal beside a machine integer takes its width, and wraps at
+            // it. This is the shape driver code is made of — `reg + 1`,
+            // `count - 1`, `mask << 1` — and it took two halves: the checker
+            // accepting it, and the compiler normalising the literal to the
+            // width *before* the operation. With only the first, `255u8 + 1`
+            // answered 256 while the type said `u8`.
+            new("literal_wraps_up", "let a: u8 = 255;\nreturn (a + 1) as Int;\n"),
+            new("literal_wraps_down", "let a: u8 = 0;\nreturn (a - 1) as Int;\n"),
+            new("literal_on_the_left", "let a: u8 = 255;\nreturn (1 + a) as Int;\n"),
+            new("literal_multiplies", "let a: u8 = 200;\nreturn (a * 3) as Int;\n"),
+            new(
+                "literal_in_a_wider_width",
+                "let a: u32 = 4294967295;\nreturn (a + 2) as Int;\n",
+            ),
             // And through a function, so the width survives a call boundary —
             // the shape every driver helper has.
             new(

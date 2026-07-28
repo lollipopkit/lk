@@ -61,11 +61,21 @@ impl Compiler {
             }
             Expr::Bin(lhs, op, rhs) => {
                 let static_flavor = super::support::numeric_flavor(lhs, op, rhs);
+                // Whether each side is written as an integer literal, before the
+                // names are shadowed by the registers they lower into. A literal
+                // beside a machine integer takes that width — see below.
+                let lhs_is_literal = super::support::is_int_literal(lhs);
+                let rhs_is_literal = super::support::is_int_literal(rhs);
                 if static_flavor == super::support::NumericFlavor::Int
                     && let Some(immediate) = super::support::commuted_int_immediate_operand(op, lhs)
                 {
                     let rhs = self.lower_readonly_operand(rhs)?;
-                    if self.function.performance.value_kind(rhs) == PerfValueKind::Int {
+                    // Not for a machine integer: the immediate form skips the
+                    // width normalisation below, so `1 + reg` would answer at 64
+                    // bits while the type says otherwise.
+                    if self.function.performance.value_kind(rhs) == PerfValueKind::Int
+                        && !self.machine_regs.contains_key(&rhs)
+                    {
                         self.emit_int_immediate_to_register(dst, op, rhs, immediate)?;
                         return Ok(true);
                     }
@@ -74,11 +84,22 @@ impl Compiler {
                 if let Some(immediate) = super::support::int_immediate_operand(op, rhs)
                     && self.function.performance.value_kind(lhs) == PerfValueKind::Int
                     && static_flavor == super::support::NumericFlavor::Int
+                    && !self.machine_regs.contains_key(&lhs)
                 {
                     self.emit_int_immediate_to_register(dst, op, lhs, immediate)?;
                     return Ok(true);
                 }
                 let rhs = self.lower_readonly_operand(rhs)?;
+                // A literal beside a machine integer takes its width.
+                //
+                // `reg + 1` is what driver code is made of, and the type checker
+                // now accepts it. What makes that *correct* is here: the literal
+                // is normalised to the same width first, so the wrap that
+                // follows the operation has two proven operands to agree about.
+                // Without it the checker would say `u8` while the arithmetic ran
+                // at 64 bits — `255u8 + 1` answering 256, which is the shape
+                // this whole path exists to prevent.
+                self.adopt_machine_width_for_literal(lhs, rhs, lhs_is_literal, rhs_is_literal)?;
                 let flavor = super::facts::numeric_flavor_from_register_facts(&self.function.performance, op, lhs, rhs)
                     .unwrap_or(static_flavor);
                 self.emit_bin_op_to_register_with_flavor(dst, op, lhs, rhs, flavor)?;

@@ -251,6 +251,39 @@ impl Compiler {
         (left == right).then_some(left)
     }
 
+    /// Gives an integer literal the machine width of the operand beside it.
+    ///
+    /// Only a literal, and only when the other side is *proven*: a variable of
+    /// another numeric type is a width mistake the type checker rejects, and a
+    /// register whose width the compiler could not prove stays unwrapped, which
+    /// is the safe answer everywhere else in this path.
+    ///
+    /// The literal's range was already checked — the checker measured it against
+    /// this very width — so the normalisation here cannot lose anything the
+    /// program was entitled to.
+    pub(in crate::vm::compiler) fn adopt_machine_width_for_literal(
+        &mut self,
+        lhs: u16,
+        rhs: u16,
+        lhs_is_literal: bool,
+        rhs_is_literal: bool,
+    ) -> Result<()> {
+        let left = self.machine_regs.get(&lhs).copied();
+        let right = self.machine_regs.get(&rhs).copied();
+        match (left, right) {
+            (Some(kind), None) if rhs_is_literal => {
+                self.emit_machine_wrap(rhs, kind)?;
+                self.machine_regs.insert(rhs, kind);
+            }
+            (None, Some(kind)) if lhs_is_literal => {
+                self.emit_machine_wrap(lhs, kind)?;
+                self.machine_regs.insert(lhs, kind);
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     /// Normalise `reg` to `kind`'s width in place, reusing the `as` path so the
     /// VM and Cranelift agree by construction rather than by two parallel
     /// implementations of the same masking.
@@ -636,17 +669,27 @@ impl Compiler {
 
     pub(super) fn lower_bin(&mut self, lhs: &Expr, op: &BinOp, rhs: &Expr) -> Result<u16> {
         let static_flavor = numeric_flavor(lhs, op, rhs);
+        // Whether each side is written as an integer literal, before the names
+        // are shadowed by the registers they lower into.
+        let lhs_is_literal = support::is_int_literal(lhs);
+        let rhs_is_literal = support::is_int_literal(rhs);
         if static_flavor == NumericFlavor::Int
             && let Some(immediate) = support::commuted_int_immediate_operand(op, lhs)
         {
             let rhs = self.lower_readonly_operand(rhs)?;
-            if self.function.performance.value_kind(rhs) == PerfValueKind::Int {
+            // Not for a machine integer: the immediate form skips the width
+            // normalisation below, so `1 + reg` would run at 64 bits while the
+            // type says otherwise.
+            if self.function.performance.value_kind(rhs) == PerfValueKind::Int && !self.machine_regs.contains_key(&rhs)
+            {
                 let dst = self.alloc_reg();
                 return self.emit_int_immediate_to_register(dst, op, rhs, immediate);
             }
         }
         let lhs = self.lower_readonly_operand(lhs)?;
-        if let Some(immediate) = int_immediate_operand(op, rhs) {
+        if let Some(immediate) = int_immediate_operand(op, rhs)
+            && !self.machine_regs.contains_key(&lhs)
+        {
             let dst = self.alloc_reg();
             let flavor = if self.function.performance.value_kind(lhs) == PerfValueKind::Int {
                 Some(NumericFlavor::Int)
@@ -658,6 +701,9 @@ impl Compiler {
             }
         }
         let rhs = self.lower_readonly_operand(rhs)?;
+        // A literal beside a machine integer takes its width, so the wrap below
+        // has two proven operands to agree about.
+        self.adopt_machine_width_for_literal(lhs, rhs, lhs_is_literal, rhs_is_literal)?;
         let dst = self.alloc_reg();
         let flavor =
             numeric_flavor_from_register_facts(&self.function.performance, op, lhs, rhs).unwrap_or(static_flavor);
