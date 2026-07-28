@@ -217,6 +217,17 @@ impl Stmt {
                     } else if expr_type.contains_variables() {
                         // Expression has unresolved type variables; add constraint instead of failing.
                         type_checker.add_constraint(expr_type, var_type.clone());
+                    } else if var_type.contains_variables() {
+                        // The same thing said the other way round, which was
+                        // missing: a *binding* whose type is not yet resolved
+                        // cannot reject an assignment either, because there is
+                        // nothing settled to reject it against.
+                        //
+                        // Nothing hit it while `map.get` was typed `Any`. Once
+                        // it started saying `Val?`, `let v = m.get(k); if v ==
+                        // nil { v = 0; }` — a map read followed by a default —
+                        // reported a mismatch between `'T?` and `Int`.
+                        type_checker.add_constraint(var_type.clone(), expr_type);
                     } else if let Type::MachineInt(kind) = var_type
                         && !matches!(expr_type, Type::MachineInt(_))
                         && let Some(literal) = int_literal_value(value)
@@ -695,10 +706,15 @@ impl Stmt {
                 let iter_type = iterable.type_check(type_checker)?;
 
                 // 验证可迭代类型
-                match iter_type {
+                match &iter_type {
                     Type::List(_) | Type::String | Type::Map(_, _) | Type::Set(_) | Type::Any | Type::Variable(_) => {
                         // 这些类型都是可迭代的（Any和类型变量在运行时确定）
                     }
+                    // 窗口按它自己的长度和索引迭代，两个后端都是如此
+                    // （`to_iter` 把 slice 句柄原样交回去，不materialize）。
+                    Type::Generic { name, .. } if name == "Slice" => {}
+                    // 元组就是列表，`is_assignable_to` 已经这么说了。
+                    Type::Tuple(_) => {}
                     _ => {
                         return Err(anyhow!(format!(
                             "For loop iterable must be List, String, Map, or Set, but got {}",

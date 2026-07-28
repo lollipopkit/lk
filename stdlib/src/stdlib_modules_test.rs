@@ -114,7 +114,6 @@ mod tests {
             Some("Decodes bytes as UTF-8 and raises an error for invalid input.")
         );
 
-
         let encoding = catalog.module("encoding").expect("encoding module");
         assert_eq!(encoding.docs.as_deref(), Some("Encoding and data format helpers"));
         let json = encoding.export("json").expect("encoding.json namespace");

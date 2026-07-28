@@ -1162,64 +1162,50 @@ fn parse_quoted_value(source: &str, mut cursor: usize, quote: u8) -> Option<(Str
     None
 }
 
+/// The methods offered for a receiver, and the detail line each carries.
+///
+/// Derived from `lk_core::typ::BUILTIN_METHODS` rather than listed here. The
+/// list that used to live at this spot had drifted: it offered no `slice`,
+/// `sort`, `pop`, `insert` or `remove_at` on a list, so the completion menu
+/// quietly asserted those did not exist.
 fn method_candidates(receiver_type: Option<ReceiverType>) -> Vec<(&'static str, &'static str)> {
-    const LIST: &[&str] = &[
-        "len",
-        "push",
-        "concat",
-        "join",
-        "get",
-        "first",
-        "last",
-        "map",
-        "filter",
-        "reduce",
-        "take",
-        "skip",
-        "chain",
-        "flatten",
-        "unique",
-        "chunk",
-        "enumerate",
-        "zip",
-        "contains",
-    ];
-    const MAP: &[&str] = &[
-        "len", "keys", "values", "has", "contains", "get", "set", "delete", "clear",
-    ];
-    const SET: &[&str] = &["len", "has", "contains", "insert", "delete", "clear"];
-    const STRING: &[&str] = &[
-        "len",
-        "lower",
-        "upper",
-        "trim",
-        "starts_with",
-        "ends_with",
-        "contains",
-        "replace",
-        "substring",
-        "split",
-        "join",
-        "to_int",
-        "to_float",
-    ];
-    let mut out = Vec::new();
-    let groups: &[(&[&str], &str)] = match receiver_type {
-        Some(ReceiverType::List) => &[(LIST, "List")],
-        Some(ReceiverType::Map) => &[(MAP, "Map")],
-        Some(ReceiverType::Set) => &[(SET, "Set")],
-        Some(ReceiverType::String) => &[(STRING, "String")],
-        None => &[(LIST, "List"), (MAP, "Map"), (SET, "Set"), (STRING, "String")],
+    use lk_core::typ::BuiltinReceiverKind;
+    let kinds: &[BuiltinReceiverKind] = match receiver_type {
+        Some(ReceiverType::List) => &[BuiltinReceiverKind::List, BuiltinReceiverKind::Slice],
+        Some(ReceiverType::Map) => &[BuiltinReceiverKind::Map],
+        Some(ReceiverType::Set) => &[BuiltinReceiverKind::Set],
+        Some(ReceiverType::String) => &[BuiltinReceiverKind::Str],
+        // No receiver type inferred: offer everything, first owner wins, so
+        // the ordering below decides who `len` is attributed to.
+        None => &[
+            BuiltinReceiverKind::List,
+            BuiltinReceiverKind::Map,
+            BuiltinReceiverKind::Set,
+            BuiltinReceiverKind::Str,
+            BuiltinReceiverKind::Slice,
+        ],
     };
+    let mut out = Vec::new();
     let mut seen = BTreeSet::new();
-    for (items, owner) in groups {
-        for item in *items {
-            if seen.insert(*item) {
-                out.push((*item, *owner));
+    for kind in kinds {
+        for sig in lk_core::typ::builtin_methods_for(*kind) {
+            if seen.insert(sig.name) {
+                out.push((sig.name, receiver_kind_label(*kind)));
             }
         }
     }
     out
+}
+
+fn receiver_kind_label(kind: lk_core::typ::BuiltinReceiverKind) -> &'static str {
+    use lk_core::typ::BuiltinReceiverKind::*;
+    match kind {
+        List => "List",
+        Slice => "Slice",
+        Map => "Map",
+        Set => "Set",
+        Str => "String",
+    }
 }
 
 const KEYWORDS: &[&str] = &[
@@ -1572,5 +1558,34 @@ mod tests {
             known_types: None,
         }));
         assert!(!got.is_empty());
+    }
+
+    /// Completion offers exactly the methods the checker knows, because both
+    /// read the one table.
+    ///
+    /// The list this replaced had drifted: no `slice`, `sort`, `pop`,
+    /// `insert`, `remove_at` or `index_of` on a list. A completion menu is a
+    /// claim about what exists, and that one was wrong in six places.
+    #[test]
+    fn every_offered_method_is_one_the_checker_has_a_signature_for() {
+        for (name, _) in method_candidates(Some(ReceiverType::List)) {
+            let list = lk_core::val::Type::List(Box::new(lk_core::val::Type::Int));
+            let window = lk_core::typ::slice_of(lk_core::val::Type::Int);
+            assert!(
+                lk_core::typ::builtin_method_signature(&list, name).is_some()
+                    || lk_core::typ::builtin_method_signature(&window, name).is_some(),
+                "completion offers `{name}` on a list, which the checker has no signature for"
+            );
+        }
+        let offered: Vec<&str> = method_candidates(Some(ReceiverType::List))
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        for expected in ["slice", "sort", "pop", "insert", "remove_at", "index_of"] {
+            assert!(
+                offered.contains(&expected),
+                "a list can `{expected}`, so completion must offer it"
+            );
+        }
     }
 }

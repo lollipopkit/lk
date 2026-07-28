@@ -92,6 +92,10 @@ impl TypeChecker {
                     }
                     return Ok(*return_type);
                 } else if let Some(return_type) =
+                    self.check_declared_builtin_method(&receiver_ty, name.as_ref(), args)?
+                {
+                    return Ok(return_type);
+                } else if let Some(return_type) =
                     self.check_builtin_container_method(&receiver_ty, name.as_ref(), args, func)?
                 {
                     return Ok(return_type);
@@ -346,6 +350,65 @@ impl TypeChecker {
 }
 
 impl TypeChecker {
+    /// Check a call against the built-in method's declared signature
+    /// (`typ::builtin_method_sig`), if it has one.
+    ///
+    /// `Ok(None)` means the table says nothing — an unknown method, or a
+    /// receiver that is not (yet) a known container — and the caller falls
+    /// through to the hand-written arms and then to `Any`. A receiver still
+    /// typed as a variable lands here, which is deliberate: constraining a call
+    /// on it would decide its type from the method name.
+    fn check_declared_builtin_method(
+        &mut self,
+        receiver_ty: &Type,
+        method: &str,
+        args: &[Box<Expr>],
+    ) -> Result<Option<Type>> {
+        let resolved_receiver = self.resolve_aliases(receiver_ty);
+        let Some(sig) = crate::typ::builtin_method_signature(&resolved_receiver, method) else {
+            // A *known* container with no such method is an error, not a
+            // shrug. User and trait methods were already resolved above, so
+            // nothing else can answer this call — the VM will say "List has no
+            // method 'clear'" when it runs, and there is no reason to wait.
+            // (`xs.clear()` type-checked for exactly that long.)
+            //
+            // Except on a map, where `m.f(x)` need not be a method at all: a
+            // map's entries *are* its fields, so `m.score` may hold a function
+            // and calling it is an ordinary property call. Nothing in the map's
+            // type says which keys it has, so there is no such thing here as a
+            // name it cannot answer.
+            if let Some(kind) = crate::typ::receiver_kind(&resolved_receiver)
+                && kind != crate::typ::BuiltinReceiverKind::Map
+            {
+                return Err(Self::type_err(
+                    &format!("{} has no method '{method}'", receiver_kind_name(kind)),
+                    None,
+                    Some(resolved_receiver),
+                    None,
+                ));
+            }
+            return Ok(None);
+        };
+        if args.len() < sig.required || args.len() > sig.params.len() {
+            let expected = if sig.required == sig.params.len() {
+                format!("{}", sig.params.len())
+            } else {
+                format!("{} to {}", sig.required, sig.params.len())
+            };
+            return Err(Self::type_err(
+                &format!("Method {method} expects {expected} argument(s), got {}", args.len()),
+                None,
+                None,
+                None,
+            ));
+        }
+        for (index, ((_, param_type), arg)) in sig.params.iter().zip(args.iter()).enumerate() {
+            let arg_type = self.check_expr(arg)?;
+            self.check_argument(param_type, &arg_type, index, arg)?;
+        }
+        Ok(Some(sig.return_type))
+    }
+
     /// Checks one positional argument against the parameter it fills.
     ///
     /// A *concrete* parameter type is checked; an unannotated one (a fresh
@@ -407,8 +470,23 @@ impl TypeChecker {
     /// `Any` and type variables do not: the first accepts everything by
     /// definition, and the second is what an unannotated parameter gets, so
     /// rejecting against it would reject on an invented type.
+    /// Whether a parameter's type is settled enough to *check* an argument
+    /// against, rather than to learn from it.
+    ///
+    /// "Contains no variable", not "is not a variable". The two differ exactly
+    /// where a generic method takes a container: `xs.chain(ys)` has parameter
+    /// `List<'T>`, which is not a variable and was therefore checked — so
+    /// passing a `List<Int>` reported "expected List<'T0>, got List<Int>"
+    /// instead of binding `'T0` to `Int`. `xs.push(y)` took the other path and
+    /// worked, because *its* parameter is the bare `'T`.
+    ///
+    /// What that cost is visible in `bare-metal-x86/program.lk`, which had to
+    /// write `let line = [0]; line = [];` — build a list with a placeholder
+    /// element so the element type is known, then throw it away — because
+    /// `let line = []; line = line.chain(…)` did not type-check.
     fn is_concrete_parameter(&self, param_type: &Type) -> bool {
-        !matches!(self.resolve_aliases(param_type), Type::Any | Type::Variable(_))
+        let resolved = self.resolve_aliases(param_type);
+        !matches!(resolved, Type::Any) && !resolved.contains_variables()
     }
 }
 
@@ -428,4 +506,17 @@ fn literal_fits_machine_int(param_type: &Type, arg: &Expr) -> bool {
         return false;
     };
     kind.accepts_literal(i128::from(*value))
+}
+
+/// How a receiver kind is named in a diagnostic — the same words the VM uses
+/// when the call reaches it.
+fn receiver_kind_name(kind: crate::typ::BuiltinReceiverKind) -> &'static str {
+    use crate::typ::BuiltinReceiverKind::*;
+    match kind {
+        List => "List",
+        Slice => "Slice",
+        Map => "Map",
+        Set => "Set",
+        Str => "String",
+    }
 }
