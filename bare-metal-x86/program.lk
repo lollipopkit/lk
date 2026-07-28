@@ -20,7 +20,8 @@ use { edu_find, edu_open, edu_identify, edu_liveness, edu_factorial, edu_dma,
       edu_irq_line, edu_bar_size, edu_raise, edu_acknowledge, edu_irq_status,
       EDU_IDENT, EDU_IRQ_TEST } from "drivers/edu";
 use { e1000_find, e1000_open, e1000_init, e1000_mac, e1000_set_mac,
-      e1000_link_up, e1000_transmit, e1000_receive_within,
+      e1000_link_up, e1000_transmit, e1000_receive_within, e1000_receive,
+      e1000_enable_receive_interrupt, e1000_disable_interrupts, e1000_interrupt_cause,
       TX_COUNT, RX_COUNT, RX_BUFFER_SIZE, DESC_SIZE, STATE_SIZE } from "drivers/e1000";
 use { arp_build_request, arp_match_reply, frame_set_byte as net_set_byte,
       frame_byte as net_byte_at, MAC_SIZE, IP_SIZE } from "drivers/arp";
@@ -33,6 +34,7 @@ use { mouse_init, has_packet_byte, read_packet_byte as mouse_byte, is_first_byte
 use { start as pit_start } from "drivers/pit";
 use { remap as pic_remap, mask as pic_mask, unmask as pic_unmask,
       mask_line as pic_mask_line, eoi as pic_eoi, in_service as pic_in_service,
+      set_level_triggered as pic_set_level,
       eoi_master as pic_eoi_master, eoi_slave as pic_eoi_slave } from "drivers/pic";
 use { zero as idt_zero, set_gate as idt_set_gate, install as idt_install,
       IDT_GATE_COUNT, IDT_GATE_SIZE } from "drivers/idt";
@@ -386,7 +388,25 @@ const SHARED_IDLE_TURNS = SHARED_SLEEP_WAKES + WORD;
 const SHARED_BUSY_SLOTS = SHARED_IDLE_TURNS + WORD;
 const BUSY_SLOT_COUNT = 3;
 
-const SHARED_EDU_MMIO = SHARED_BUSY_SLOTS + BUSY_SLOT_COUNT * WORD;
+// Where the network card's registers are, and what its handler last saw. The
+// handler needs the first for the same reason the PCI device's does: an
+// interrupt entry takes no arguments but its vector.
+const SHARED_NET_MMIO = SHARED_BUSY_SLOTS + BUSY_SLOT_COUNT * WORD;
+const SHARED_NET_CAUSE = SHARED_NET_MMIO + WORD;
+// How many interrupts the card actually raised during the exchange.
+//
+// Reported because without it this driver's comments are unfalsifiable. A wait
+// with a deadline works whether or not the interrupt ever arrives — it waits out
+// the timeout and finds the frame already in the ring — so "interrupt-driven"
+// and "polling with extra steps" produce the same output and the same success.
+//
+// The number here is not twelve. On this device model some exchanges are
+// answered by the card and the rest by the deadline, which is why the deadline
+// is load-bearing rather than a safety net. Counting is what turned that from an
+// assumption into a fact; the first version of this driver scored one.
+const SHARED_NET_IRQS = SHARED_NET_CAUSE + WORD;
+
+const SHARED_EDU_MMIO = SHARED_NET_IRQS + WORD;
 const SHARED_EDU_SEEN = SHARED_EDU_MMIO + WORD;
 
 const SHARED_GRID = SHARED_EDU_SEEN + WORD;
@@ -990,6 +1010,26 @@ fn net_exchange(base: Int, mmio: Int, bdf: Int, scratch: Int, buffers: Int) -> B
         return false;
     }
 
+    // The card's own interrupt, installed by the driver at the line
+    // configuration space named — the same shape the PCI device uses, on
+    // hardware people shipped.
+    //
+    // The order is the same and for the same reason: the registers are
+    // published before the gate exists, because an interrupt arriving between
+    // the two would find a handler that cannot reach the card to read its cause;
+    // and the line is unmasked last, because a line opened before its gate is
+    // filled is an interrupt into a not-present descriptor.
+    let irq = edu_irq_line(bdf);
+    shared_write(SHARED_NET_CAUSE, 0);
+    shared_write(SHARED_NET_MMIO, mmio);
+    install_device_handler(VECTOR_IRQ_BASE + irq, unsafe { symbol_address("lk_net_isr") });
+    e1000_enable_receive_interrupt(mmio);
+    // Level, not edge. A PCI device holds its line until the driver has dealt
+    // with it, and the 8259's default is to look for a transition — so without
+    // this the card answers once and then asserts in silence for ever.
+    pic_set_level(irq);
+    pic_unmask(irq);
+
     // The addresses an emulated user-mode network hands out: the guest is .15
     // and the gateway is .2. Written as bytes because that is what a packet
     // holds — see `arp.lk` on why an IP is an address here and not a number.
@@ -1006,15 +1046,46 @@ fn net_exchange(base: Int, mmio: Int, bdf: Int, scratch: Int, buffers: Int) -> B
     // survives the first pass and every pass until the eighth — which is to say
     // it survives any test that runs the command a few times, because each
     // command re-initialises the rings and starts the count again.
+    // What the machine did while it waited.
+    //
+    // A poll scores zero here: a polling task is runnable, and the rotation
+    // never falls through to idle while anything is runnable. So do the three
+    // tasks this demonstration deliberately keeps runnable — a spinner that
+    // exists to be interrupted mid-update and two ring-3 tasks that never yield
+    // — which is why they are suspended for the exchange and put back after.
+    // The number is the difference between a driver that waits and one that
+    // watches, and it can only be read on a machine where nothing else is
+    // watching on purpose.
+    // Interrupts on for the exchange, and back as they were after.
+    //
+    // `run_command` is called with them masked, and every wait in this file has
+    // had to say so — but this one is the case where forgetting is invisible:
+    // the driver has a deadline, so a card whose interrupt never reaches the CPU
+    // still works, just slowly, and reports success. It took counting the
+    // handler's entries to see that twelve exchanges were answering one
+    // interrupt and eleven timeouts.
+    let saved_irq = unsafe { cpu_irq_save() };
+    unsafe { cpu_irq_restore(1); };
+
+    suspend_busy_tasks();
+    let idle_before = shared_read(SHARED_IDLE_TURNS);
+    let irqs_before = shared_read(SHARED_NET_IRQS);
+
     let exchanges = 0;
     for _round in 0..NET_EXCHANGES {
         let length = arp_build_request(frame, mac, sender_ip, target_ip);
         if (!e1000_transmit(state, frame, length)) {
             emit_text(base, "net: tx");
+            net_quiesce(mmio, irq);
+            resume_busy_tasks();
+            unsafe { cpu_irq_restore(saved_irq); };
             return false;
         }
         if (!net_await_reply(state, reply, mac, target_ip, answer)) {
             emit_text(base, "net: no reply");
+            net_quiesce(mmio, irq);
+            resume_busy_tasks();
+            unsafe { cpu_irq_restore(saved_irq); };
             return false;
         }
         exchanges = exchanges + 1;
@@ -1028,8 +1099,28 @@ fn net_exchange(base: Int, mmio: Int, bdf: Int, scratch: Int, buffers: Int) -> B
         .chain(text_bytes(" "))
         .chain(mac_text(mac))
         .chain(text_bytes(" -> "))
-        .chain(mac_text(answer)));
+        .chain(mac_text(answer))
+        .chain(text_bytes(" idle "))
+        .chain(decimal(shared_read(SHARED_IDLE_TURNS) - idle_before))
+        .chain(text_bytes(" irqs "))
+        .chain(decimal(shared_read(SHARED_NET_IRQS) - irqs_before))
+);
+    net_quiesce(mmio, irq);
+    resume_busy_tasks();
+    unsafe { cpu_irq_restore(saved_irq); };
     return true;
+}
+
+// Puts the card's interrupt away.
+//
+// Masked at the card *and* at the chip, and the cause read one last time. Any
+// one of the three left undone is a line still asserted after this driver has
+// stopped listening — and the next thing to unmask that IRQ inherits it, which
+// is a fault in a handler that was expecting something else entirely.
+fn net_quiesce(mmio: Int, irq: Int) {
+    e1000_disable_interrupts(mmio);
+    pic_mask_line(irq);
+    shared_write(SHARED_NET_MMIO, 0);
 }
 
 // How many times `net` runs the exchange. Larger than either ring so both wrap.
@@ -1048,14 +1139,48 @@ const NET_BUFFER_PAGES = 4;
 // the host is doing — so a frame that does not match is dropped and the wait
 // goes on.
 fn net_await_reply(state: Int, reply: Int, mac: Int, target_ip: Int, answer: Int) -> Bool {
-    for _attempt in 0..200 {
-        let received = e1000_receive_within(state, reply, 256, 100000);
-        if (received > 0 && arp_match_reply(reply, received, mac, target_ip, answer)) {
-            return true;
+    for _attempt in 0..NET_WAIT_ROUNDS {
+        // Look, and decide to wait, without letting the interrupt in between.
+        //
+        // This is the lost-wakeup race, and it is the whole reason a blocking
+        // driver is harder than a polling one. Check the ring, find it empty,
+        // and in the instant before saying "I am waiting" the card delivers the
+        // frame and wakes nobody — after which the wait is for the *next* frame,
+        // which is not coming. Checking first narrows the window; holding the
+        // mask across both closes it, because the handler cannot run until this
+        // task has already announced itself.
+        //
+        // Measured, not assumed: with the check outside the mask, six of twelve
+        // exchanges were answered by an interrupt and six by the deadline.
+        let irq = unsafe { cpu_irq_save() };
+        let received = e1000_receive(state, reply, 256);
+        if (received > 0) {
+            unsafe { cpu_irq_restore(irq); };
+            if (arp_match_reply(reply, received, mac, target_ip, answer)) {
+                return true;
+            }
+            // Some other traffic on the segment. Take the next one without
+            // sleeping — there may already be more in the ring.
+            continue;
         }
+        // Nothing there. Off the CPU until the card says otherwise, or until the
+        // deadline says the card is not going to. `task_wait_on` masks around
+        // its own announcement and restores what it found, so the mask taken
+        // here is still held when it yields — which is what makes the pair
+        // atomic against the handler.
+        task_wait_on(NET_WAIT_CHANNEL, NET_WAIT_TICKS);
+        unsafe { cpu_irq_restore(irq); };
     }
     return false;
 }
+
+// What the driver listens on, how long it waits for one frame, and how many
+// frames it is prepared to sift through before giving up. The channel is the
+// card's own BAR address, which is unique by construction — two cards in one
+// machine are two channels without anything having to hand out numbers.
+const NET_WAIT_CHANNEL = 0xe1000;
+const NET_WAIT_TICKS = 100;
+const NET_WAIT_ROUNDS = 200;
 
 fn write_ipv4(address: Int, a: Int, b: Int, c: Int, d: Int) {
     net_set_byte(address, a);
@@ -3257,6 +3382,32 @@ fn isr_spurious(vector: Int) {
     if (irq >= 8) {
         pic_eoi_master();
     }
+}
+
+// The network card's interrupt handler.
+//
+// Three obligations, and this card makes the first one a trap: `ICR` clears on
+// read, so the read *is* the acknowledgement and asking twice gets the answer
+// once. A handler that reads it into a variable and then reads it again to check
+// another bit has already thrown that bit away.
+//
+// It does not touch the rings. A handler's job is to say that something happened
+// — taking the frame out is work, and work belongs to whoever was waiting, on
+// its own stack, with interrupts on. What this does is wake them.
+#[export("lk_net_isr")]
+fn isr_net(vector: Int) {
+    let mmio = shared_read(SHARED_NET_MMIO);
+    if (mmio != 0) {
+        let cause = e1000_interrupt_cause(mmio);
+        if (cause != 0) {
+            shared_write(SHARED_NET_CAUSE, cause);
+            shared_bump(SHARED_NET_IRQS);
+            task_wake_channel(TASK_TABLE_BASE,
+                              task_word(TASK_TABLE_BASE + TASK_USED_OFFSET),
+                              NET_WAIT_CHANNEL);
+        }
+    }
+    pic_eoi(vector - VECTOR_IRQ_BASE);
 }
 
 // The PCI device's interrupt handler.

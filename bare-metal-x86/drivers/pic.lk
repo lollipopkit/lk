@@ -114,6 +114,38 @@ fn bit_of(line: Int) -> Int {
     return 0x80;
 }
 
+// The edge/level control register, which is how a PC says that a line is held
+// rather than pulsed.
+//
+// The 8259 is from 1981 and its lines are edge-triggered: an interrupt is a
+// *transition*, and a device that keeps its line high after being serviced gets
+// exactly one. PCI's INTx is the opposite — a device asserts and holds until the
+// driver has dealt with it — so a PCI line left edge-triggered delivers one
+// interrupt and then goes quiet for ever, while the device sits there asserting.
+//
+// That is not a hypothetical. A network card driven this way answered its first
+// interrupt and none of the eleven after it; the driver still worked, because it
+// had a timeout and the frames were already in the ring, which is a polling
+// driver wearing an interrupt driver's comments. The card's own cause register
+// still read 0x83 when the run finished — the line had been high the whole time.
+//
+// The register is the chipset's, not the chip's: two ports, one byte per PIC,
+// bit n for line n. Only lines 3-7 and 9-12 and 14-15 may be level — the timer,
+// the keyboard and the cascade are edge by construction and writing them is
+// undefined — which is why this takes a line rather than a byte.
+const ELCR1 = 0x4d0;
+const ELCR2 = 0x4d1;
+
+fn set_level_triggered(irq: Int) {
+    if (irq < 8) {
+        let current = unsafe { port_in_u8(ELCR1) } as Int;
+        unsafe { port_out_u8(ELCR1, (current | bit_of(irq)) as u8); };
+        return;
+    }
+    let current = unsafe { port_in_u8(ELCR2) } as Int;
+    unsafe { port_out_u8(ELCR2, (current | bit_of(irq - 8)) as u8); };
+}
+
 // Whether the chip really has this line in service.
 //
 // The 8259 has a documented way of lying. If a line's request disappears

@@ -154,7 +154,9 @@ def main():
         # machine being preemptive, not a fault to detect. Anchoring to the
         # start of a line made this pass or fail on where a `.` happened to
         # land.
-        answers = re.findall(r"net: ok (\d+)/(\d+) ([0-9a-f]{12}) -> ([0-9a-f]{12})", transcript)
+        answers = re.findall(
+            r"net: ok (\d+)/(\d+) ([0-9a-f]{12}) -> ([0-9a-f]{12}) idle (\d+) irqs (\d+)", transcript
+        )
         if len(answers) < 2:
             step = re.search(r"net: (?!ok)\S+", transcript)
             failures.append(
@@ -162,7 +164,7 @@ def main():
                 else f"`net` completed {len(answers)} of 2 exchanges"
             )
         else:
-            for done, wanted, card_mac, gateway_mac in answers:
+            for done, wanted, card_mac, gateway_mac, idle, irqs in answers:
                 if done != wanted:
                     failures.append(f"only {done} of {wanted} exchanges completed")
                 if int(wanted) <= 8:
@@ -173,8 +175,30 @@ def main():
                     failures.append(
                         f"the reply came from {gateway_mac}, not the gateway's {GATEWAY_MAC}"
                     )
-            if len(set(answers)) != 1:
-                failures.append(f"the two sessions disagreed: {answers}")
+                # The card's own interrupt reached a handler the driver
+                # installed. Not once per exchange — see below — but a driver
+                # that scored zero here would be a polling driver with an
+                # interrupt driver's comments, which is what this one was until
+                # the count was added.
+                if int(irqs) < 1:
+                    failures.append(
+                        f"the card raised {irqs} interrupts: the handler is never reached, "
+                        f"and the deadline is carrying the whole driver"
+                    )
+                # And the machine was asleep while it waited. A poll scores zero:
+                # a polling task is runnable, and the rotation never falls
+                # through to idle while anything is runnable.
+                if int(idle) < 1:
+                    failures.append(
+                        f"the machine idled {idle} times during the exchange — the driver is "
+                        f"spinning somewhere"
+                    )
+            # Only the parts that must not vary. The idle and interrupt counts
+            # are measurements of a running machine and differ run to run; the
+            # addresses and the exchange count are claims and must not.
+            stable = {(done, wanted, card, gw) for done, wanted, card, gw, _, _ in answers}
+            if len(stable) != 1:
+                failures.append(f"the two sessions disagreed: {stable}")
 
         # The pages come back. Two sessions of five pages each, and the count
         # has to be the number it started at — not close to it. A free list that

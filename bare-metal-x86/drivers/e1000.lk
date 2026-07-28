@@ -23,10 +23,18 @@
 //   * Link state, which the driver has to ask for and then wait for; a frame
 //     handed to a card whose link is down is accepted and dropped.
 //
-// What is deliberately not here: interrupts. This card raises them and the
-// interrupt path is already proven by `edu.lk`; a NIC driven by polling its own
-// rings is a complete driver, and one that also has to explain interrupt
-// coalescing is a worse illustration, not a better one.
+// And it interrupts, which is the fourth. That was left out at first on the
+// grounds that a NIC driven by polling its own rings is a complete driver — true,
+// and also the reason nobody ships one: a poll is a CPU held at full tilt for a
+// wait measured in microseconds, and a driver that does it has taken the machine
+// away from everything else to look at a ring that has not changed.
+//
+// What makes it worth doing here rather than being a repeat of `edu.lk` is that
+// this card's interrupt is not a doorbell. `ICR` is read-to-clear and holds
+// *why*; the mask is a separate register from the cause; and the receive
+// interrupt is on a timer the driver has to set to zero or the card sits on a
+// packet waiting for company. Each of those is a way to write a handler that
+// works once.
 
 use { mmio_layout } from "layout";
 use { pci_find, pci_bar, pci_command_set,
@@ -40,8 +48,28 @@ const E1000_DEVICE = 0x100e;
 const REG_CTRL = 0x0000;
 const REG_STATUS = 0x0008;
 const REG_EERD = 0x0014;
+// Cause, mask-set and mask-clear are three registers, not one. `ICR` is
+// read-to-clear: reading it says what happened *and* acknowledges it, so a
+// handler that forgets the read leaves the card asserting its line and the
+// machine re-enters the handler for ever.
 const REG_ICR = 0x00c0;
+const REG_IMS = 0x00d0;
 const REG_IMC = 0x00d8;
+
+// The receive delay timer. Zero means "tell me about a packet when it arrives"
+// — anything else is the card waiting to see whether another one turns up so it
+// can report them together. Sensible for throughput, and for a driver waiting on
+// one reply it is a delay with no upper bound that looks exactly like a dropped
+// packet.
+const REG_RDTR = 0x2820;
+
+// The causes worth being told about: a packet arrived, the ring is running low,
+// and the ring overflowed. The last two are not needed to receive, but a driver
+// that unmasks only the good news finds out about the ring being full by never
+// being told anything again.
+const ICR_RXT0 = 0x00000080;
+const ICR_RXDMT0 = 0x00000010;
+const ICR_RXO = 0x00000040;
 const REG_RCTL = 0x0100;
 const REG_TCTL = 0x0400;
 const REG_TIPG = 0x0410;
@@ -354,6 +382,44 @@ fn setup_receive(state: Int, mmio: Int, ring: Int, buffers: Int) {
 // Polled with a bound rather than assumed: auto-negotiation takes time on real
 // hardware, and a frame handed to a card whose link is down is accepted and
 // discarded — a driver that works in every visible way while nothing arrives.
+// Lets the card raise an interrupt when a frame arrives.
+//
+// Separate from `init` because it is a decision rather than a setup: a driver
+// that polls is a complete driver, and the same rings work either way. What this
+// changes is who notices.
+//
+// The delay timer goes to zero first. Left at its power-on value the card holds
+// a received frame back for a while in case another arrives — and a driver
+// waiting on a single reply then waits out a timer it never set, which is
+// indistinguishable from the reply being lost.
+fn e1000_enable_receive_interrupt(mmio: Int) {
+    reg_write(mmio, REG_RDTR, 0);
+    // Read the cause register first: whatever it holds is from before this
+    // driver existed, and an unmasked cause that was already pending is an
+    // interrupt on the first unmask with nothing behind it.
+    reg_read(mmio, REG_ICR);
+    reg_write(mmio, REG_IMS, ICR_RXT0 | ICR_RXDMT0 | ICR_RXO);
+}
+
+// Turns them off again, and says what was pending.
+//
+// A driver that is done listening has to mask *and* clear: a cause left set is a
+// line left asserted, and the next thing to unmask that IRQ inherits it.
+fn e1000_disable_interrupts(mmio: Int) -> Int {
+    reg_write(mmio, REG_IMC, 0xffffffff);
+    return reg_read(mmio, REG_ICR);
+}
+
+// What the card is reporting, and an acknowledgement in the same breath.
+//
+// One function because it is one register access: `ICR` clears on read, so
+// asking twice gets the answer once. A handler that reads it into a variable and
+// then reads it again to check a second bit has already thrown the second bit
+// away.
+fn e1000_interrupt_cause(mmio: Int) -> Int {
+    return reg_read(mmio, REG_ICR);
+}
+
 fn e1000_link_up(mmio: Int) -> Bool {
     for _attempt in 0..1000000 {
         if ((reg_read(mmio, REG_STATUS) & STATUS_LINK_UP) != 0) {
