@@ -59,6 +59,11 @@ for i in 1..=3 {
     squares = squares.chain([i * i]);
 }
 println("SQUARES " + squares.len());
+// And one that is *not* caught, last, so the two assertions above still print.
+// `RAISED HERE` is a string no part of the kernel contains, so seeing it come
+// back proves the message travelled from the interpreter rather than being a
+// stage code the kernel already knew how to print.
+error("RAISED HERE");
 """
 LANGUAGE_ANSWERS = ["CAUGHT", "SQUARES 3"]
 
@@ -138,6 +143,19 @@ def main():
             failures.append("the program's own output is missing")
         if ANSWER not in transcript:
             failures.append(f"the interpreter did not compute {ANSWER}")
+        # A raise says *what* raised, not only that something did.
+        #
+        # `bad.lk` fails to parse, so it reports stage 3 and nothing else — a
+        # parse failure has no message to carry. A program that runs and raises
+        # does, and the kernel prints it through the same console the program
+        # would have printed through. Without that, "failed 5" reads the same
+        # whether the fault is the program's or the host's, which is exactly the
+        # confusion that hid a missing `error` global for a whole round.
+        if "RAISED HERE" not in transcript:
+            failures.append(
+                "no `run: …` line — a program that raises must say what raised, not only that "
+                "it did"
+            )
         for answer in LANGUAGE_ANSWERS:
             if answer not in transcript:
                 failures.append(

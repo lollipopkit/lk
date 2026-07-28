@@ -341,6 +341,25 @@ fn run_program(source: &str) -> i64 {
     let mut ctx = VmContext::new().with_resolver(Arc::new(ModuleResolver::with_registry(registry)));
     match execute_program_with_ctx(&program, &mut ctx) {
         Ok(_) => 0,
-        Err(_) => -5,
+        Err(error) => {
+            // What it said, not just that it said no.
+            //
+            // The stage code alone is `-5`, which means "it ran and raised" and
+            // nothing more. That is enough to know the parser and the type
+            // checker were happy and useless for anything after: a program that
+            // used `try`/`catch` failed here for a whole round before anyone
+            // found out the bare host had no `error` global, because "it
+            // raised" reads the same whether the cause is the program or the
+            // host.
+            //
+            // Printed through the same console the program prints through, so
+            // the report lands where the output the reader was watching for
+            // would have. `{:#}` rather than `{}`: `anyhow` puts the cause
+            // chain behind the alternate flag, and the cause is the useful end.
+            console_write("run: ");
+            console_write(&alloc::format!("{error:#}"));
+            console_write("\n");
+            -5
+        }
     }
 }
