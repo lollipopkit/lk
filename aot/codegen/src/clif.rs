@@ -460,6 +460,7 @@ pub fn ty_to_clif(ty: Ty) -> Result<types::Type, ClifError> {
         // Opaque handles / C-string pointers are pointer-sized.
         Ty::Str
         | Ty::ListI64
+        | Ty::SliceI64
         | Ty::ListF64
         | Ty::ListStr
         | Ty::MapStrI64
@@ -1138,6 +1139,9 @@ impl Lower {
             // entries) return a register pair, bound directly as a [`Slot::Two`].
             Inst::ListGetMaybe { dst, handle, index } => {
                 return self.pair_call(b, mctx, "lkrt_lklist_i64_get_pair", *dst, &[*handle, *index]);
+            }
+            Inst::SliceGetMaybe { dst, handle, index } => {
+                return self.pair_call(b, mctx, "lkrt_lkslice_i64_get_pair", *dst, &[*handle, *index]);
             }
             Inst::ListGetMaybeStr { dst, handle, index } => {
                 return self.pair_call(b, mctx, "lkrt_lklist_str_get_pair", *dst, &[*handle, *index]);

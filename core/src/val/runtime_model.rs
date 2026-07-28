@@ -279,6 +279,26 @@ impl TypedList {
         self.len() == 0
     }
 
+    /// A copy of `[start, start + len)`, clamped to what is actually there.
+    ///
+    /// This is what materializing a [`SliceValue`] costs — the operation the
+    /// window exists to avoid, so callers should be the ones that genuinely
+    /// need every element at once (`to_list`, display).
+    pub fn window(&self, start: usize, len: usize) -> Self {
+        let start = start.min(self.len());
+        let end = (start + len).min(self.len());
+        fn copy<T: Clone>(values: &[T], start: usize, end: usize) -> Vec<T> {
+            values[start..end].to_vec()
+        }
+        match self {
+            Self::Mixed(values) => Self::Mixed(copy(values, start, end)),
+            Self::Int(values) => Self::Int(copy(values, start, end)),
+            Self::Float(values) => Self::Float(copy(values, start, end)),
+            Self::Bool(values) => Self::Bool(copy(values, start, end)),
+            Self::String(values) => Self::String(copy(values, start, end)),
+        }
+    }
+
     pub fn slice_from(&self, start: usize) -> Self {
         match self {
             Self::Mixed(values) => Self::Mixed(copy_slice_tail(values, start)),

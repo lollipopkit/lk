@@ -254,6 +254,20 @@ pub(crate) fn to_display_str(
             });
             Ok((dst, true))
         }
+        // A window prints as the list it windows — the VM renders a
+        // `HeapValue::Slice` through the same list formatter.
+        Ty::SliceI64 => {
+            if !containers {
+                return Err(Unsupported::TypeMismatch { pc });
+            }
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("slice_h", "i64_display"),
+                args: vec![v],
+            });
+            Ok((dst, true))
+        }
         // A boxed Dyn from a mixed-list read: at runtime it is a scalar in
         // D2 (nested containers never box — see LoadHeapConst's scalar_only
         // guard), so the bare display mode is exact for both display paths.

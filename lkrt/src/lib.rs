@@ -55,6 +55,7 @@ mod lkdyn;
 mod lklist;
 mod lkmap;
 mod lkset;
+mod lkslice;
 mod lkstr;
 #[cfg(feature = "std")]
 mod net;
@@ -70,7 +71,7 @@ pub use abi::{
 };
 pub use arith::{
     lkrt_f64_div_checked, lkrt_f64_mod_checked, lkrt_i64_div_checked, lkrt_i64_mod_checked, lkrt_i64_shl_checked,
-    lkrt_i64_shr_checked, lkrt_u64_div, lkrt_u64_lt, lkrt_u64_to_f64, lkrt_u64_rem, lkrt_u64_shr_checked,
+    lkrt_i64_shr_checked, lkrt_u64_div, lkrt_u64_lt, lkrt_u64_rem, lkrt_u64_shr_checked, lkrt_u64_to_f64,
 };
 #[cfg(feature = "std")]
 pub use chan::{
@@ -85,10 +86,10 @@ pub use cpu::{
 // A `cpu_*` intrinsic that lives with the interrupt stubs rather than with the
 // rest of them, because it *is* one of them: `isr.rs` holds both directions of
 // the same obstacle — a vector that cannot be an operand, answered by a table.
-pub use isr::lkrt_cpu_raise_interrupt;
 pub use encoding::lkrt_json_parse;
 #[cfg(feature = "std")]
 pub use encoding::{lkrt_toml_parse, lkrt_yaml_parse};
+pub use isr::lkrt_cpu_raise_interrupt;
 // Re-exported at the crate root because the ABI conformance macro checks
 // signatures as `crate::$symbol`.
 #[cfg(feature = "std")]
@@ -132,11 +133,11 @@ pub use lklist::{
     lkrt_lklist_i64_filter_fn, lkrt_lklist_i64_from_range, lkrt_lklist_i64_get, lkrt_lklist_i64_get_pair,
     lkrt_lklist_i64_len, lkrt_lklist_i64_map_fn, lkrt_lklist_i64_new, lkrt_lklist_i64_push, lkrt_lklist_i64_reduce_fn,
     lkrt_lklist_i64_reverse, lkrt_lklist_i64_set, lkrt_lklist_i64_skip, lkrt_lklist_i64_slice,
-    lkrt_lklist_i64_slice_from, lkrt_lklist_i64_slice_method, lkrt_lklist_i64_sort, lkrt_lklist_i64_take,
-    lkrt_lklist_i64_unique, lkrt_lklist_str_at, lkrt_lklist_str_chain, lkrt_lklist_str_contains,
-    lkrt_lklist_str_display, lkrt_lklist_str_eq, lkrt_lklist_str_filter_fn, lkrt_lklist_str_get_pair,
-    lkrt_lklist_str_join, lkrt_lklist_str_len, lkrt_lklist_str_map_fn, lkrt_lklist_str_new, lkrt_lklist_str_push,
-    lkrt_lklist_str_slice_from, lkrt_maybe_f64_unwrap, lkrt_maybe_i64_unwrap, lkrt_maybe_str_unwrap, lkrt_str_split,
+    lkrt_lklist_i64_slice_from, lkrt_lklist_i64_sort, lkrt_lklist_i64_take, lkrt_lklist_i64_unique, lkrt_lklist_str_at,
+    lkrt_lklist_str_chain, lkrt_lklist_str_contains, lkrt_lklist_str_display, lkrt_lklist_str_eq,
+    lkrt_lklist_str_filter_fn, lkrt_lklist_str_get_pair, lkrt_lklist_str_join, lkrt_lklist_str_len,
+    lkrt_lklist_str_map_fn, lkrt_lklist_str_new, lkrt_lklist_str_push, lkrt_lklist_str_slice_from,
+    lkrt_maybe_f64_unwrap, lkrt_maybe_i64_unwrap, lkrt_maybe_str_unwrap, lkrt_str_split,
 };
 pub use lkmap::{
     lkrt_lkmap_i64_f64_get_pair, lkrt_lkmap_i64_f64_len, lkrt_lkmap_i64_f64_new, lkrt_lkmap_i64_f64_set,
@@ -158,12 +159,16 @@ pub use lkset::{
     lkrt_lkset_add, lkrt_lkset_clear, lkrt_lkset_delete, lkrt_lkset_from_i64_list, lkrt_lkset_from_str_list,
     lkrt_lkset_has, lkrt_lkset_len, lkrt_lkset_new,
 };
+pub use lkslice::{
+    lkrt_lkslice_i64_display, lkrt_lkslice_i64_get_pair, lkrt_lkslice_i64_is_empty, lkrt_lkslice_i64_len,
+    lkrt_lkslice_i64_new, lkrt_lkslice_i64_sub, lkrt_lkslice_i64_to_list,
+};
 pub use lkstr::{
-    lkrt_bool_to_str, lkrt_f64_to_str, lkrt_i64_to_str, lkrt_u64_to_str, lkrt_str_byte_at, lkrt_str_byte_len, lkrt_str_capitalize, lkrt_str_char_at,
-    lkrt_str_char_len, lkrt_str_chars, lkrt_str_cmp, lkrt_str_concat, lkrt_str_concat_i64, lkrt_str_contains,
-    lkrt_str_count, lkrt_str_ends_with, lkrt_str_find, lkrt_str_lower, lkrt_str_repeat, lkrt_str_replace,
-    lkrt_str_reverse, lkrt_str_slice_chars, lkrt_str_starts_with, lkrt_str_strip_prefix, lkrt_str_strip_suffix,
-    lkrt_str_substring, lkrt_str_title, lkrt_str_trim, lkrt_str_upper,
+    lkrt_bool_to_str, lkrt_f64_to_str, lkrt_i64_to_str, lkrt_str_byte_at, lkrt_str_byte_len, lkrt_str_capitalize,
+    lkrt_str_char_at, lkrt_str_char_len, lkrt_str_chars, lkrt_str_cmp, lkrt_str_concat, lkrt_str_concat_i64,
+    lkrt_str_contains, lkrt_str_count, lkrt_str_ends_with, lkrt_str_find, lkrt_str_lower, lkrt_str_repeat,
+    lkrt_str_replace, lkrt_str_reverse, lkrt_str_slice_chars, lkrt_str_starts_with, lkrt_str_strip_prefix,
+    lkrt_str_strip_suffix, lkrt_str_substring, lkrt_str_title, lkrt_str_trim, lkrt_str_upper, lkrt_u64_to_str,
 };
 #[cfg(feature = "std")]
 pub use net::{

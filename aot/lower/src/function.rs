@@ -723,6 +723,7 @@ pub(crate) fn lower_function(
                     | Ty::F64
                     | Ty::Str
                     | Ty::ListI64
+                    | Ty::SliceI64
                     | Ty::ListF64
                     | Ty::ListStr
                     | Ty::ListDyn

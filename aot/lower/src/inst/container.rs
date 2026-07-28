@@ -429,6 +429,8 @@ pub(super) fn lower(
                 // Strings count Unicode scalar values (the VM's char length).
                 Ty::Str => ("str", "char_len"),
                 Ty::ListI64 => ("list_h", "i64_len"),
+                // A window's length is its own, not the source's.
+                Ty::SliceI64 => ("slice_h", "i64_len"),
                 Ty::ListF64 => ("list_h", "f64_len"),
                 Ty::ListStr => ("list_h", "str_len"),
                 Ty::MapStrI64 => ("map_h", "str_i64_len"),
@@ -527,7 +529,11 @@ pub(super) fn lower(
             // (`lkrt vm_mirror.rs`, plan D1/D2).
             let (v, ty) = ssa.read(instr.b(), block, pc)?;
             match ty {
-                Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn => {
+                // A window iterates as itself — `len` and indexing on it are
+                // window-relative, which is exactly what the loop needs. The VM
+                // does the same (`to_iter` hands back the slice handle rather
+                // than materializing it).
+                Ty::ListI64 | Ty::ListF64 | Ty::ListStr | Ty::ListDyn | Ty::SliceI64 => {
                     ssa.write(instr.a(), block, (v, ty));
                 }
                 Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool | Ty::MapStrDyn => {
@@ -947,6 +953,18 @@ pub(super) fn lower(
                     Ty::ListI64 => {
                         let dst = ssa.new_val();
                         insts.push(Inst::ListGetMaybe {
+                            dst,
+                            handle,
+                            index: index_val,
+                        });
+                        ssa.write(instr.a(), block, (dst, Ty::MaybeI64));
+                    }
+                    // `w[i]` on a window: resolved against the window (negative
+                    // counts from *its* end), then read through to the source —
+                    // the VM's `slice_element`.
+                    Ty::SliceI64 => {
+                        let dst = ssa.new_val();
+                        insts.push(Inst::SliceGetMaybe {
                             dst,
                             handle,
                             index: index_val,

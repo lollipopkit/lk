@@ -609,6 +609,7 @@ fn is_removable(inst: &Inst) -> bool {
         // Container reads with `Maybe` semantics never abort (a missing
         // element is `present = 0`), so a dead read is genuinely dead.
         | Inst::ListGetMaybe { .. }
+        | Inst::SliceGetMaybe { .. }
         | Inst::ListGetMaybeF64 { .. }
         | Inst::ListGetMaybeStr { .. }
         | Inst::MapGetMaybe { .. }
@@ -667,6 +668,7 @@ fn uses_mut(inst: &mut Inst) -> Vec<&mut ValueId> {
         | Inst::CallVm { args, .. } => args.iter_mut().collect(),
         Inst::TraitDispatch { self_arg, .. } => vec![self_arg],
         Inst::ListGetMaybe { handle, index, .. }
+        | Inst::SliceGetMaybe { handle, index, .. }
         | Inst::ListGetMaybeF64 { handle, index, .. }
         | Inst::ListGetMaybeStr { handle, index, .. } => vec![handle, index],
         Inst::MapGetMaybe { handle, key, .. }

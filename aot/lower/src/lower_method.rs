@@ -649,16 +649,79 @@ pub(crate) fn lower_method_dispatch(
             });
             (b, Ty::Bool)
         }
-        // `.slice(start[, end])` — negative aborts (VM loud), end clamps.
+        // `.slice(start[, end])` — a **window** over the receiver, not a copy
+        // of it (negative aborts as the VM does; `end` clamps). This returned
+        // `Ty::ListI64` until the VM's `.slice()` became a view: the two
+        // backends then disagreed about whether a write to the source shows
+        // through, and about whether `.to_list()` existed at all.
         (Ty::ListI64, "slice", [(start, Ty::I64), (end, Ty::I64)]) => {
             let dst = ssa.new_val();
             insts.push(Inst::Call {
                 dst: Some(dst),
-                callee: AbiRef::new("list_h", "i64_slice_method"),
+                callee: AbiRef::new("slice_h", "i64_new"),
                 args: vec![receiver, *start, *end],
+            });
+            (dst, Ty::SliceI64)
+        }
+        // A window on a window resolves against the original source rather
+        // than nesting, matching `dispatch_slice_builtin_method`.
+        (Ty::SliceI64, "slice", [(start, Ty::I64), (end, Ty::I64)]) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("slice_h", "i64_sub"),
+                args: vec![receiver, *start, *end],
+            });
+            (dst, Ty::SliceI64)
+        }
+        (Ty::SliceI64, "len", []) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("slice_h", "i64_len"),
+                args: vec![receiver],
+            });
+            (dst, Ty::I64)
+        }
+        (Ty::SliceI64, "is_empty", []) => {
+            let flag = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(flag),
+                callee: AbiRef::new("slice_h", "i64_is_empty"),
+                args: vec![receiver],
+            });
+            let zero = ssa.new_val();
+            insts.push(Inst::Const {
+                dst: zero,
+                value: Const::I64(0),
+            });
+            let dst = ssa.new_val();
+            insts.push(Inst::Cmp {
+                dst,
+                op: CmpOp::Ne,
+                float: false,
+                lhs: flag,
+                rhs: zero,
+            });
+            (dst, Ty::Bool)
+        }
+        // The copy, asked for by name — the operation `.slice()` used to
+        // perform silently.
+        (Ty::SliceI64, "to_list", []) => {
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new("slice_h", "i64_to_list"),
+                args: vec![receiver],
             });
             (dst, Ty::ListI64)
         }
+        // `w.get(i)` deliberately has no arm. The `Maybe` read this would reuse
+        // counts a negative index from the end, while the VM's `.get()` — on a
+        // window and on a list alike — answers nil for one. Reusing it would
+        // make `w.get(-1)` two different values on the two backends, so the
+        // program falls back instead. (The same mismatch is already there for
+        // `xs.get(-1)` on a plain list: `Ty::ListI64, "get"` below.)
         // Map iteration family (order = the VM's, layout mirror): keys/
         // values snapshots (Mixed → dyn lists), delete-with-removed-value.
         (Ty::MapStrI64 | Ty::MapStrF64 | Ty::MapStrBool | Ty::MapStrDyn, "keys" | "values", []) => {

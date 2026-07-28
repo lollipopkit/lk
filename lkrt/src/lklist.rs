@@ -930,27 +930,6 @@ pub unsafe extern "C" fn lkrt_lklist_i64_slice(handle: *mut c_void, start: i64, 
     crate::state::arena_handle(values[start..end].to_vec())
 }
 
-/// `.slice(start, end)` method: negative indexes abort (the VM's loud
-/// non-negative error), `end` clamps to len, `start >= end` yields empty.
-///
-/// # Safety
-/// `handle` must be a live `i64` list handle, or null.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn lkrt_lklist_i64_slice_method(handle: *mut c_void, start: i64, end: i64) -> *mut c_void {
-    if start < 0 || end < 0 {
-        crate::panic::raise_str("runtime error");
-    }
-    let values: &[i64] = if handle.is_null() {
-        &[]
-    } else {
-        // SAFETY: `handle` addresses a `Vec<i64>` from `lkrt_lklist_i64_new`.
-        unsafe { &*(handle as *mut Vec<i64>) }
-    };
-    let end = (end as usize).min(values.len());
-    let start = (start as usize).min(end);
-    crate::state::arena_handle(values[start..end].to_vec())
-}
-
 /// `xs.sort()` — a fresh ascending copy (the VM sorts a snapshot, the
 /// receiver is untouched; integer order equals `compare_runtime_values`).
 ///

@@ -384,6 +384,41 @@ fn scope_drop_releases_a_loop_local_container() {
 }
 
 #[test]
+fn scope_drop_keeps_a_list_that_a_window_still_points_at() {
+    // `let xs = []; xs.push(1); let w = xs.slice(0, 1); w.len()` inside a loop
+    // body. Both handles look block-local, and the window may indeed be
+    // released — but the list may not: the window addresses it on every read,
+    // so freeing it here is a use-after-free that would only misbehave once the
+    // allocator reused the block.
+    //
+    // The one thing standing between this program and that bug is
+    // `slice_h.i64_new` being declared `ConstructsView` rather than
+    // `Constructs`; this test is what notices if it ever changes back.
+    let mut func = loop_func(
+        vec![
+            call(10, "list_h", "i64_new", &[]),
+            konst(11, 1),
+            Inst::Call {
+                dst: None,
+                callee: AbiRef::new("list_h", "i64_push"),
+                args: vec![ValueId(10), ValueId(11)],
+            },
+            konst(12, 0),
+            call(13, "slice_h", "i64_new", &[10, 12, 11]),
+            call(14, "slice_h", "i64_len", &[13]),
+        ],
+        ValueId(0),
+        Vec::new(),
+    );
+    assert_eq!(scope_drop_block_locals(&mut func), 1);
+    assert_eq!(
+        released_handles(&func),
+        vec![ValueId(13)],
+        "the window is releasable; the list it windows is not"
+    );
+}
+
+#[test]
 fn scope_drop_skips_a_handle_escaping_through_the_terminator() {
     // The handle is passed as a block argument to the next iteration — it
     // outlives this block, so releasing it would be a use-after-free.

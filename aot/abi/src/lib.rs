@@ -66,17 +66,28 @@ pub enum Receiver {
     /// Borrows the receiver (or takes none) *and* returns a freshly allocated
     /// arena container handle — the constructors the pass looks for.
     Constructs,
+    /// Returns a freshly allocated handle that **points back into the
+    /// receiver** — `xs.slice(a, b)`, whose window reads through to `xs` on
+    /// every access (`lkrt::lkslice`).
+    ///
+    /// Both halves matter and neither of the other two says both: the result is
+    /// releasable at the end of its scope like any other fresh handle, while
+    /// the receiver is not, because releasing a list that a live window still
+    /// addresses is a use-after-free. Spelling this as `Constructs` would have
+    /// freed the source; spelling it `Retained` would have kept every window
+    /// alive to process exit.
+    ConstructsView,
 }
 
 impl Receiver {
     /// Whether the runtime may hold on to the receiver after the call.
     pub fn retains(self) -> bool {
-        matches!(self, Receiver::Retained)
+        matches!(self, Receiver::Retained | Receiver::ConstructsView)
     }
 
     /// Whether the call's result is a fresh arena container handle.
     pub fn constructs(self) -> bool {
-        matches!(self, Receiver::Constructs)
+        matches!(self, Receiver::Constructs | Receiver::ConstructsView)
     }
 }
 
@@ -338,11 +349,24 @@ macro_rules! for_each_abi_fn {
             ("list_h", "str_join", lkrt_lklist_str_join, WritesHost, [Ptr, StrPtr], StrPtr, Borrowed);
             ("list_h", "str_contains", lkrt_lklist_str_contains, ReadsHost, [Ptr, StrPtr], I64, Borrowed);
             ("list_h", "i64_slice", lkrt_lklist_i64_slice, WritesHost, [Ptr, I64, I64], Ptr, Constructs);
-            // `.slice(start[, end])` method semantics: negative aborts (the
-            // VM's loud non-negative-index error), `end` clamps to len.
-            ("list_h", "i64_slice_method", lkrt_lklist_i64_slice_method, WritesHost, [Ptr, I64, I64], Ptr, Constructs);
+            // `.slice(start[, end])` is a **window**, not a copy — see the
+            // `slice_h` block below. (`i64_slice` above stays a copy: `xs[1..5]`
+            // is a range index, which the VM materializes.)
             ("list_h", "i64_sort", lkrt_lklist_i64_sort, WritesHost, [Ptr], Ptr, Constructs);
             ("list_h", "i64_reverse", lkrt_lklist_i64_reverse, WritesHost, [Ptr], Ptr, Constructs);
+            // List windows (`lkrt::lkslice`): `xs.slice(a, b)` reads through to
+            // `xs` instead of copying it, matching `HeapValue::Slice` in the VM.
+            // `ConstructsView` is what keeps the source alive for as long as the
+            // window can address it. `get_pair` (by-value `Maybe<i64>`) is
+            // declared in codegen, like the list and map variants.
+            ("slice_h", "i64_new", lkrt_lkslice_i64_new, WritesHost, [Ptr, I64, I64], Ptr, ConstructsView);
+            ("slice_h", "i64_sub", lkrt_lkslice_i64_sub, WritesHost, [Ptr, I64, I64], Ptr, ConstructsView);
+            ("slice_h", "i64_len", lkrt_lkslice_i64_len, ReadsHost, [Ptr], I64, Borrowed);
+            ("slice_h", "i64_is_empty", lkrt_lkslice_i64_is_empty, ReadsHost, [Ptr], I64, Borrowed);
+            // The copy, asked for by name. Its result windows nothing, so it is
+            // an ordinary `Constructs`.
+            ("slice_h", "i64_to_list", lkrt_lkslice_i64_to_list, WritesHost, [Ptr], Ptr, Constructs);
+            ("slice_h", "i64_display", lkrt_lkslice_i64_display, WritesHost, [Ptr], StrPtr, Borrowed);
             // String-keyed map handle. `get_pair` (returning a by-value `Maybe<i64>`) is
             // declared directly in codegen, like the list variant.
             ("map_h", "str_i64_new", lkrt_lkmap_str_i64_new, WritesHost, [], Ptr, Constructs);

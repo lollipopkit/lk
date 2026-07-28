@@ -169,6 +169,77 @@ fn clif_differential_containers_and_dyn() {
     );
 }
 
+/// `xs.slice(a, b)` is a **window**, and the two engines have to agree on what
+/// that means — not merely on the elements it reports.
+///
+/// They did not, for a while: the VM returned a view and Cranelift returned a
+/// copy of the same elements. Every one of these cases printed the same thing
+/// on both engines *except* the one that writes to the source, which is the
+/// only one that can tell a view from a copy. That is the shape of divergence a
+/// differential corpus exists to catch, so it is pinned here rather than left
+/// to whoever next reads both lowerings side by side.
+#[test]
+fn clif_differential_list_windows() {
+    run_clif_differential(
+        "windows",
+        &[
+            new(
+                "window_reads",
+                "let xs = [3, 1, 4, 1, 5];\n\
+                 let w = xs.slice(1, 4);\n\
+                 println(w.len());\n\
+                 println(w[0]);\n\
+                 println(w[-1]);\n\
+                 println(w);\n\
+                 return w[2];\n",
+            ),
+            // Out of the window is nil on both sides, never the source's
+            // element at that position.
+            new(
+                "window_out_of_range",
+                "let xs = [3, 1, 4, 1, 5];\n\
+                 let w = xs.slice(1, 3);\n\
+                 println(w[2]);\n\
+                 println(w[-3]);\n\
+                 return w.is_empty();\n",
+            ),
+            // The one that distinguishes a view from a copy.
+            new(
+                "window_sees_the_source_change",
+                "let xs = [10, 20, 30, 40];\n\
+                 let w = xs.slice(1, 3);\n\
+                 println(w[0]);\n\
+                 xs[1] = 99;\n\
+                 println(w[0]);\n\
+                 xs.push(50);\n\
+                 return w.len();\n",
+            ),
+            new(
+                "window_iterates_and_copies",
+                "let xs = [1, 2, 3, 4, 5];\n\
+                 let w = xs.slice(1, 4);\n\
+                 let sum = 0;\n\
+                 for v in w {\n  sum = sum + v;\n}\n\
+                 println(sum);\n\
+                 println(w.to_list());\n\
+                 return w.to_list().len();\n",
+            ),
+            // A window on a window resolves against the original, and bounds
+            // past the end clamp rather than raising.
+            new(
+                "window_of_a_window",
+                "let xs = [0, 1, 2, 3, 4];\n\
+                 let w = xs.slice(1, 99);\n\
+                 let inner = w.slice(1, 3);\n\
+                 println(w.len());\n\
+                 println(inner.len());\n\
+                 println(inner[0]);\n\
+                 return inner[1];\n",
+            ),
+        ],
+    );
+}
+
 #[test]
 fn clif_differential_higher_order() {
     run_clif_differential(
@@ -601,7 +672,11 @@ fn full_width_radix_literals_are_writable() {
     // Still refused, and for the widths a bit pattern genuinely does not fit.
     for (name, source, wanted) in [
         ("neg.lk", "let y: u8 = -1;\n", "out of range"),
-        ("wide_u32.lk", "let y: u32 = 0xFFFFFFFFFFFFFFFF;\n", "out of range for u32"),
+        (
+            "wide_u32.lk",
+            "let y: u32 = 0xFFFFFFFFFFFFFFFF;\n",
+            "out of range for u32",
+        ),
         // Pointer width being 64 bits does not make it signless.
         ("neg_usize.lk", "let y: usize = 0 - 1;\n", "out of range for usize"),
     ] {
@@ -887,21 +962,36 @@ fn machine_int_differential() {
                 "bitwise_and",
                 "let a: u16 = 0xff0f;\nlet b: u16 = 0x0ff0;\nreturn (a & b) as Int;\n",
             ),
-            new("shift_right", "let a: u16 = 0x1234;\nlet b: u16 = 8;\nreturn ((a >> b) & 0xff) as Int;\n"),
-            new("shift_left", "let a: u8 = 0x0f;\nlet b: u8 = 1;\nreturn (a << b) as Int;\n"),
+            new(
+                "shift_right",
+                "let a: u16 = 0x1234;\nlet b: u16 = 8;\nreturn ((a >> b) & 0xff) as Int;\n",
+            ),
+            new(
+                "shift_left",
+                "let a: u8 = 0x0f;\nlet b: u8 = 1;\nreturn (a << b) as Int;\n",
+            ),
             // The width decides, not the arithmetic.
             new("u8_wraps", "let a: u8 = 255;\nlet b: u8 = 1;\nreturn (a + b) as Int;\n"),
-            new("u16_wraps", "let a: u16 = 65535;\nlet b: u16 = 1;\nreturn (a + b) as Int;\n"),
+            new(
+                "u16_wraps",
+                "let a: u16 = 65535;\nlet b: u16 = 1;\nreturn (a + b) as Int;\n",
+            ),
             new(
                 "u32_wraps",
                 "let a: u32 = 4294967295;\nlet b: u32 = 2;\nreturn (a + b) as Int;\n",
             ),
             // Subtraction under zero wraps the same way, which is how a driver
             // computing a ring index one short of the base finds out.
-            new("u8_wraps_down", "let a: u8 = 0;\nlet b: u8 = 1;\nreturn (a - b) as Int;\n"),
+            new(
+                "u8_wraps_down",
+                "let a: u8 = 0;\nlet b: u8 = 1;\nreturn (a - b) as Int;\n",
+            ),
             // Multiplication past the width, which is where a promotion to
             // `Int` would be least visible: the low bits are still right.
-            new("u8_multiplies", "let a: u8 = 200;\nlet b: u8 = 3;\nreturn (a * b) as Int;\n"),
+            new(
+                "u8_multiplies",
+                "let a: u8 = 200;\nlet b: u8 = 3;\nreturn (a * b) as Int;\n",
+            ),
             // A literal beside a machine integer takes its width, and wraps at
             // it. This is the shape driver code is made of — `reg + 1`,
             // `count - 1`, `mask << 1` — and it took two halves: the checker
@@ -981,8 +1071,14 @@ fn machine_int_differential() {
             ),
             // `reg > 0` and `count < 8` are what driver code is made of, at every
             // width.
-            new("u32_compares_a_literal", "let a: u32 = 7;\nif (a > 3) { return 1; }\nreturn 0;\n"),
-            new("u8_compares_a_literal", "let a: u8 = 0;\nif (a > 0) { return 1; }\nreturn 0;\n"),
+            new(
+                "u32_compares_a_literal",
+                "let a: u32 = 7;\nif (a > 3) { return 1; }\nreturn 0;\n",
+            ),
+            new(
+                "u8_compares_a_literal",
+                "let a: u8 = 0;\nif (a > 0) { return 1; }\nreturn 0;\n",
+            ),
             // `u64 as Float` reads the carrier as unsigned. The last conversion
             // in this family, and the one whose result does not *look* wrong
             // until it is compared with zero.
@@ -1024,7 +1120,10 @@ fn machine_int_differential() {
             // because the shape people write is `a & ~b`, where the `&` masks
             // the strays away — and the one that does not, `~mask` on its own,
             // is exactly what a driver writes to clear a field.
-            new("complement_wraps_to_the_width", "let a: u8 = 0x0f;\nreturn (~a) as Int;\n"),
+            new(
+                "complement_wraps_to_the_width",
+                "let a: u8 = 0x0f;\nreturn (~a) as Int;\n",
+            ),
             new("complement_u32", "let a: u32 = 0xff;\nreturn (~a) as Int;\n"),
             new(
                 "complement_clears_a_bit",
@@ -1038,7 +1137,10 @@ fn machine_int_differential() {
             // unnoticed because the shape people write is `a & ~b`, where the
             // `&` masks the strays away — and the one that does not, `~mask` on
             // its own, is exactly what a driver writes to clear a field.
-            new("complement_wraps_to_the_width", "let a: u8 = 0x0f;\nreturn (~a) as Int;\n"),
+            new(
+                "complement_wraps_to_the_width",
+                "let a: u8 = 0x0f;\nreturn (~a) as Int;\n",
+            ),
             new("complement_u32", "let a: u32 = 0xff;\nreturn (~a) as Int;\n"),
             new(
                 "complement_clears_a_bit",
@@ -1047,10 +1149,16 @@ fn machine_int_differential() {
             new("complement_u64", "let one: u64 = 1;\nreturn ((~one) >> 32) as Int;\n"),
             // A signed comparison is still signed, which is the property the
             // change must not have taken away.
-            new("i64_compares_signed", "let a = 0 - 1;\nif (a < 1) { return 1; }\nreturn 0;\n"),
+            new(
+                "i64_compares_signed",
+                "let a = 0 - 1;\nif (a < 1) { return 1; }\nreturn 0;\n",
+            ),
             // And a signed shift is still arithmetic, which is the property the
             // change must not have taken away.
-            new("i8_shifts_arithmetically", "let a: i8 = 0 - 128;\nlet s: i8 = 7;\nreturn (a >> s) as Int;\n"),
+            new(
+                "i8_shifts_arithmetically",
+                "let a: i8 = 0 - 128;\nlet s: i8 = 7;\nreturn (a >> s) as Int;\n",
+            ),
             // And through a function, so the width survives a call boundary —
             // the shape every driver helper has.
             new(

@@ -52,6 +52,10 @@ pub enum Ty {
     /// A growable `List<i64>` handle (opaque `ptr` at the ABI). Phase 2 container
     /// handle-ification; more element types follow.
     ListI64,
+    /// A window over a `List<i64>` (opaque `ptr`): what `xs.slice(a, b)`
+    /// returns. Not a list — it borrows one, and the distinction is the point
+    /// (`lkrt::lkslice`, the VM's `HeapValue::Slice`).
+    SliceI64,
     /// A growable `List<f64>` handle (opaque `ptr` at the ABI).
     ListF64,
     /// A growable `List<str>` handle (elements are `Str` pointers; opaque `ptr`).
@@ -345,6 +349,14 @@ pub enum Inst {
     /// [`Inst::Call`]) because its `{i64, i64}` return is outside the scalar ABI
     /// vocabulary; codegen renders it specially.
     ListGetMaybe {
+        dst: ValueId,
+        handle: ValueId,
+        index: ValueId,
+    },
+    /// `dst = lkrt_lkslice_i64_get_pair(handle, index)` — the [`Ty::SliceI64`]
+    /// analogue of [`Inst::ListGetMaybe`], and a dedicated instruction for the
+    /// same reason: the `{i64, i64}` return is outside the scalar ABI.
+    SliceGetMaybe {
         dst: ValueId,
         handle: ValueId,
         index: ValueId,
@@ -763,6 +775,7 @@ fn ty_name(ty: Ty) -> &'static str {
         Ty::Str => "str",
         Ty::Nil => "nil",
         Ty::ListI64 => "list<i64>",
+        Ty::SliceI64 => "slice<i64>",
         Ty::ListF64 => "list<f64>",
         Ty::ListStr => "list<str>",
         Ty::MapStrI64 => "map<str,i64>",
@@ -916,6 +929,9 @@ fn render_inst(inst: &Inst) -> String {
         Inst::ListGetMaybe { dst, handle, index } => {
             format!("{} = list.i64.get_maybe {}, {}", v(*dst), v(*handle), v(*index))
         }
+        Inst::SliceGetMaybe { dst, handle, index } => {
+            format!("{} = slice.i64.get_maybe {}, {}", v(*dst), v(*handle), v(*index))
+        }
         Inst::UnwrapMaybeI64 { dst, src } => format!("{} = maybe.i64.unwrap {}", v(*dst), v(*src)),
         Inst::ListGetMaybeF64 { dst, handle, index } => {
             format!("{} = list.f64.get_maybe {}, {}", v(*dst), v(*handle), v(*index))
@@ -998,6 +1014,7 @@ pub(crate) fn inst_def(inst: &Inst) -> Option<ValueId> {
         | Inst::BoolAnd { dst, .. }
         | Inst::MaybePresent { dst, .. }
         | Inst::ListGetMaybe { dst, .. }
+        | Inst::SliceGetMaybe { dst, .. }
         | Inst::UnwrapMaybeI64 { dst, .. }
         | Inst::ListGetMaybeF64 { dst, .. }
         | Inst::UnwrapMaybeF64 { dst, .. }
@@ -1044,6 +1061,7 @@ fn inst_uses(inst: &Inst) -> Vec<ValueId> {
             vec![*src]
         }
         Inst::ListGetMaybe { handle, index, .. }
+        | Inst::SliceGetMaybe { handle, index, .. }
         | Inst::ListGetMaybeF64 { handle, index, .. }
         | Inst::ListGetMaybeStr { handle, index, .. } => {
             vec![*handle, *index]

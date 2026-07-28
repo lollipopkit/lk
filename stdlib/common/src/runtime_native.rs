@@ -18,7 +18,8 @@ use lk_core::{
     module::{RuntimeNativeExport, RuntimeValueExport},
     util::fast_map::fast_hash_map_new,
     val::{
-        CallableValue, HeapStore, HeapValue, RuntimeMapKey, RuntimeSet, RuntimeVal, ShortStr, TypedList, TypedMap, de,
+        CallableValue, HeapStore, HeapValue, RuntimeMapKey, RuntimeSet, RuntimeVal, ShortStr, SliceValue, TypedList,
+        TypedMap, de,
     },
     vm::{NativeArgs, NativeRuntime, RuntimeExport, import_runtime_export},
 };
@@ -143,6 +144,7 @@ fn runtime_display_heap_value(value: &HeapValue, heap: &HeapStore) -> Result<Str
         HeapValue::String(value) => Ok(value.to_string()),
         HeapValue::Bytes(value) => Ok(format!("<Bytes {} bytes>", value.len())),
         HeapValue::List(values) => runtime_display_list(values, heap),
+        HeapValue::Slice(slice) => runtime_display_slice(slice, heap),
         HeapValue::Map(values) => runtime_display_map(values, heap),
         HeapValue::Set(values) => runtime_display_set(values),
         HeapValue::Callable(value) => Ok(runtime_display_callable(value)),
@@ -236,6 +238,22 @@ fn runtime_display_list(values: &TypedList, heap: &HeapStore) -> Result<String> 
     }
     out.push(']');
     Ok(out)
+}
+
+/// A window prints as the part of the list it windows — `[1,4,1]`, not
+/// `<Slice>`. It used to fall through to the opaque-handle arm, which is the
+/// right answer for a `Stream` or a `Resource` and the wrong one here: a window
+/// has elements, and every other way of looking at it (`len`, indexing,
+/// `to_list`) already shows them.
+fn runtime_display_slice(slice: &SliceValue, heap: &HeapStore) -> Result<String> {
+    let RuntimeVal::Obj(source) = slice.source else {
+        return Ok("[]".to_string());
+    };
+    let Some(HeapValue::List(values)) = heap.get(source) else {
+        return Ok("[]".to_string());
+    };
+    let window = values.window(slice.start, slice.len);
+    runtime_display_list(&window, heap)
 }
 
 fn runtime_display_map(values: &TypedMap, heap: &HeapStore) -> Result<String> {
