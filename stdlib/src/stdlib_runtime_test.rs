@@ -94,4 +94,62 @@ mod tests {
         assert_eq!(result.first_return(), &RuntimeVal::Bool(true));
         Ok(())
     }
+
+    /// `iter.f(xs, ...)` and `xs.f(...)` are the same operation, and this is
+    /// what says so.
+    ///
+    /// They used to be two implementations — the module's own snapshotting,
+    /// truthiness and result-building beside `core_methods`' — and they agreed
+    /// on everything checked here, which is exactly why nobody noticed that
+    /// `take(-1)` did not: the method form cast `-1` to `usize` and returned
+    /// the whole list, the module form raised. Comparing them element by
+    /// element is the only thing that would have found it, so it lives here
+    /// now rather than in whoever's memory.
+    #[test]
+    fn the_iter_module_is_a_spelling_of_the_list_methods() -> Result<()> {
+        let source = r#"
+            use iter;
+            let xs = [1, 2, 3, 4, 5];
+            let d = [3, 1, 3, 2, 1];
+            let n = [[1, 2], [3], [4, [5, 6]]];
+            return iter.map(xs, |x| x * 2) == xs.map(|x| x * 2)
+                && iter.filter(xs, |x| x % 2 == 0) == xs.filter(|x| x % 2 == 0)
+                && iter.reduce(xs, 0, |a, b| a + b) == xs.reduce(0, |a, b| a + b)
+                && iter.enumerate(xs) == xs.enumerate()
+                && iter.zip(xs, d) == xs.zip(d)
+                && iter.take(xs, 2) == xs.take(2)
+                && iter.take(xs, 99) == xs.take(99)
+                && iter.skip(xs, 2) == xs.skip(2)
+                && iter.skip(xs, 99) == xs.skip(99)
+                && iter.chain(xs, d) == xs.chain(d)
+                && iter.flatten(n) == n.flatten()
+                && iter.unique(d) == d.unique()
+                && iter.chunk(xs, 2) == xs.chunk(2)
+                && iter.next(xs) == xs.first();
+        "#;
+        let result = run(source)?;
+        assert_eq!(result.first_return(), &RuntimeVal::Bool(true));
+        Ok(())
+    }
+
+    /// A count is not an index: there is nothing for a negative one to mean.
+    ///
+    /// Both spellings raise, with the same text — the method form used to
+    /// answer `[1, 2, 3]` here, by way of `-1 as usize`.
+    #[test]
+    fn a_negative_take_or_skip_count_raises_in_both_spellings() {
+        for source in [
+            "let xs = [1, 2, 3]; return xs.take(0 - 1);",
+            "use iter; let xs = [1, 2, 3]; return iter.take(xs, 0 - 1);",
+            "let xs = [1, 2, 3]; return xs.skip(0 - 1);",
+            "use iter; let xs = [1, 2, 3]; return iter.skip(xs, 0 - 1);",
+        ] {
+            let error = run(source).expect_err(&format!("`{source}` must raise"));
+            let text = format!("{error:#}");
+            assert!(
+                text.contains("count must be non-negative, got -1"),
+                "`{source}` raised the wrong thing: {text}"
+            );
+        }
+    }
 }

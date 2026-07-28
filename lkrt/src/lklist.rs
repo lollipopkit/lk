@@ -110,14 +110,17 @@ pub extern "C" fn lkrt_lklist_i64_from_range(start: i64, end: i64, step: i64, in
     crate::state::arena_handle(out)
 }
 
-/// `xs.take(n)` — a fresh list of the first `n` elements. VM edge exactness:
-/// the count casts through `usize` (`take_prefix(n as usize)`), so a negative
-/// `n` wraps huge and takes everything.
+/// `xs.take(n)` — a fresh list of the first `n` elements. A negative count
+/// raises, as in the VM: a count has no negative meaning, and the cast this
+/// used to perform (`-1 as usize`) took the whole list instead.
 ///
 /// # Safety
 /// `handle` must be a live `List<i64>` handle, or null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_lklist_i64_take(handle: *mut c_void, n: i64) -> *mut c_void {
+    if n < 0 {
+        crate::panic::raise_str(&format!("list.take() count must be non-negative, got {n}"));
+    }
     let values: &[i64] = if handle.is_null() {
         &[]
     } else {
@@ -127,19 +130,22 @@ pub unsafe extern "C" fn lkrt_lklist_i64_take(handle: *mut c_void, n: i64) -> *m
     crate::state::arena_handle(values[..count].to_vec())
 }
 
-/// `xs.skip(n)` — a fresh list without the first `n` elements. The VM only
-/// drains for `n > 0` (zero/negative copies everything).
+/// `xs.skip(n)` — a fresh list without the first `n` elements. A negative
+/// count raises, as in the VM (see [`lkrt_lklist_i64_take`]).
 ///
 /// # Safety
 /// `handle` must be a live `List<i64>` handle, or null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_lklist_i64_skip(handle: *mut c_void, n: i64) -> *mut c_void {
+    if n < 0 {
+        crate::panic::raise_str(&format!("list.skip() count must be non-negative, got {n}"));
+    }
     let values: &[i64] = if handle.is_null() {
         &[]
     } else {
         unsafe { &*(handle as *mut Vec<i64>) }
     };
-    let start = if n > 0 { (n as usize).min(values.len()) } else { 0 };
+    let start = (n as usize).min(values.len());
     crate::state::arena_handle(values[start..].to_vec())
 }
 

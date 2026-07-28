@@ -861,18 +861,24 @@ pub unsafe extern "C" fn lkrt_lklist_dyn_slice_from(handle: *mut c_void, start: 
 /// `handle` must be a live handle from [`lkrt_lklist_dyn_new`], or null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_lklist_dyn_take(handle: *mut c_void, n: i64) -> *mut c_void {
+    if n < 0 {
+        crate::panic::raise_str(&format!("list.take() count must be non-negative, got {n}"));
+    }
     let values = dyn_slice(handle);
     let count = (n as usize).min(values.len());
     arena_handle(values[..count].to_vec())
 }
 
-/// `xs.skip(n)` — without the first `n` (zero/negative copies everything).
+/// `xs.skip(n)` — without the first `n`. A negative count raises, as in the VM.
 /// # Safety
 /// `handle` must be a live handle from [`lkrt_lklist_dyn_new`], or null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lkrt_lklist_dyn_skip(handle: *mut c_void, n: i64) -> *mut c_void {
+    if n < 0 {
+        crate::panic::raise_str(&format!("list.skip() count must be non-negative, got {n}"));
+    }
     let values = dyn_slice(handle);
-    let start = if n > 0 { (n as usize).min(values.len()) } else { 0 };
+    let start = (n as usize).min(values.len());
     arena_handle(values[start..].to_vec())
 }
 

@@ -71,10 +71,17 @@ pub(super) fn dispatch_list_builtin_method(
             let RuntimeVal::Int(n) = &positional[0] else {
                 bail!("list.skip() count must be Int");
             };
-            let mut list = clone_list(receiver, heap)?;
-            if *n > 0 {
-                list.drain_prefix(*n as usize);
+            // A count is not an index: there is nothing for a negative one to
+            // mean, so it is an error rather than a value. It used to be
+            // ignored (`if *n > 0`), which turned an off-by-one that computed
+            // `-1` into "the whole list" — the answer most likely to look
+            // right. `iter.skip` has always raised here; the two spellings now
+            // agree.
+            if *n < 0 {
+                bail!("list.skip() count must be non-negative, got {n}");
             }
+            let mut list = clone_list(receiver, heap)?;
+            list.drain_prefix(*n as usize);
             Ok(Some(RuntimeVal::Obj(heap.alloc(HeapValue::List(list)))))
         }
         "take" => {
@@ -84,6 +91,12 @@ pub(super) fn dispatch_list_builtin_method(
             let RuntimeVal::Int(n) = &positional[0] else {
                 bail!("list.take() count must be Int");
             };
+            // As in `skip` — and here the old code was not even ignoring the
+            // negative, it was casting it: `-1 as usize` is `usize::MAX`, so
+            // `take(-1)` took everything by way of an unchecked wrap.
+            if *n < 0 {
+                bail!("list.take() count must be non-negative, got {n}");
+            }
             let list = clone_list(receiver, heap)?;
             let taken = list.take_prefix(*n as usize);
             Ok(Some(RuntimeVal::Obj(heap.alloc(HeapValue::List(taken)))))

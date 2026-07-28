@@ -17,7 +17,7 @@ use crate::vm::{
 use crate::typ::{TraitDef, TraitImpl};
 
 mod core_methods;
-pub(crate) use core_methods::core_call_method_windowed;
+pub use core_methods::core_call_method_windowed;
 use core_methods::{core_call_method_builtin, core_call_method_named_builtin, core_set_builtin};
 
 /// Where a trait-impl method's body lives.

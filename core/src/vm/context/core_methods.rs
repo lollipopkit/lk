@@ -166,7 +166,13 @@ fn is_list_hof(method: &str) -> bool {
 /// consume the slice directly; only the rare tails (callable property, list
 /// HOF, trait method) materialize a heap list, which the generic
 /// `__lk_call_method` shape would have allocated anyway.
-pub(crate) fn core_call_method_windowed(
+///
+/// Public because the standard library calls it: `iter.map(xs, f)` is defined
+/// as `xs.map(f)`, and defining it that way is what makes the two spellings
+/// impossible to drift apart. Everything a module form would otherwise
+/// reimplement — the truthiness rule, the host-root pinning around callbacks,
+/// which list representation comes back — is decided once, here.
+pub fn core_call_method_windowed(
     receiver: RuntimeVal,
     method_name: &str,
     args: &[RuntimeVal],
