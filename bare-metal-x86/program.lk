@@ -928,6 +928,72 @@ fn u64_as_int(value: u64) -> Int {
     return value as Int;
 }
 
+// What `boot.rs` identity-maps: four gigabytes, with 2 MiB pages. Four rather
+// than one because a PCI framebuffer sits near the top of the 32-bit range.
+const MAP_CEILING = 4 * 1024 * 1024 * 1024;
+
+// The largest available range this kernel can actually *reach*, clipped to
+// `[floor, MAP_CEILING)`.
+//
+// Clipped before the comparison rather than after, which is the whole point. The
+// loader reports several ranges, and on a machine with more than four gigabytes
+// the largest is the one above them — an address the page tables have never
+// heard of. Picking it and trimming afterwards leaves nothing; picking it
+// untrimmed faulted on the first page the heap took. `qemu -m 8G` did exactly
+// that, and `-m 3G` did not, which is why nothing noticed.
+//
+// Two functions rather than one returning a pair, matching the two next door:
+// this file has no tuples and the pair would be a list allocated before there is
+// an allocator.
+fn reachable_length(floor: Int) -> Int {
+    let best = 0;
+    for i in 0..entry_count() {
+        let span = clipped_span(entry_at(i), floor);
+        if (span > best) {
+            best = span;
+        }
+    }
+    return best;
+}
+
+fn reachable_base(floor: Int) -> Int {
+    let best = 0;
+    let best_span = 0;
+    for i in 0..entry_count() {
+        let entry = entry_at(i);
+        let span = clipped_span(entry, floor);
+        if (span > best_span) {
+            best_span = span;
+            let start = entry_base(entry);
+            if (start < floor) {
+                start = floor;
+            }
+            best = start;
+        }
+    }
+    return best;
+}
+
+// How much of one entry survives both bounds. Zero for an entry that is not
+// available, or that lies entirely outside them.
+fn clipped_span(entry: Int, floor: Int) -> Int {
+    if (entry < 0 || !entry_is_available(entry)) {
+        return 0;
+    }
+    let start = entry_base(entry);
+    let end = start + entry_length(entry);
+    if (start < floor) {
+        start = floor;
+    }
+    if (end > MAP_CEILING) {
+        end = MAP_CEILING;
+    }
+    if (end <= start) {
+        return 0;
+    }
+    return end - start;
+}
+
 // The largest available range the loader reported, as (base, length).
 //
 // Largest rather than first: the map's usable ranges are the one below 640 KiB
@@ -3751,21 +3817,30 @@ draw_cells(framebuffer, WIDTH, FONT,
 draw_cells(framebuffer, WIDTH, FONT, [20, 25, 16, 5, 0, 8, 5, 12, 16], 1, 3, FOREGROUND, BACKGROUND);
 draw_cells(framebuffer, WIDTH, FONT, [44], 1, 5, FOREGROUND, BACKGROUND);
 
-// Hand the page allocator the biggest usable range the loader reported. The
-// image, its stack and its page tables all sit below 2 MiB, so the range is
-// trimmed to start there rather than on top of them.
-let ram_base = largest_available_base();
-let ram_length = largest_available_length();
-let usable_base = ram_base;
-// Above the interpreter's heap. Two allocators on one machine agree by
-// arrangement or not at all, and the arrangement is `link.ld` — which places
-// this floor exactly where the run arena ends, so the two are adjacent by
-// construction rather than by two numbers that were once added up correctly.
+// Hand the page allocator the biggest usable range it can actually reach.
+//
+// Two bounds, and the second is the one that was missing. The floor is
+// `__page_arena_base`, where `link.ld` puts this arena so it starts exactly
+// where the run heap ends — two allocators on one machine agree by arrangement
+// or not at all. The *ceiling* is what `boot.rs` identity-maps: four gigabytes,
+// with 2 MiB pages, four rather than one because a PCI framebuffer sits near the
+// top of the 32-bit range. An address above that is not mapped, and a page
+// allocator handing one out is a fault the moment anything writes to it.
+//
+// So the range is chosen *after* clipping rather than before. The loader reports
+// several available ranges, and on a machine with more than four gigabytes the
+// largest of them is the one above them — picking that and then trimming leaves
+// nothing, and picking it untrimmed faulted on the first page the heap took.
+// `qemu -m 8G` did exactly that; `-m 3G` was fine, which is why nothing noticed.
 let arena_floor: Int = unsafe { symbol_address("__page_arena_base") };
-if (usable_base < arena_floor) {
-    usable_base = arena_floor;
+let usable_base = reachable_base(arena_floor);
+let usable_length = reachable_length(arena_floor);
+if (usable_length == 0) {
+    // Every range the loader reported lies outside what this kernel can reach.
+    // Saying so beats handing out addresses that fault.
+    uart_text("pages: no usable memory below the identity map\n");
 }
-pages_init(SHARED_PAGES, usable_base, ram_length - (usable_base - ram_base));
+pages_init(SHARED_PAGES, usable_base, usable_length);
 
 // The kernel heap: sixteen pages taken from the page allocator, once, at
 // startup. Taken rather than declared at a fixed address, because an address
