@@ -651,9 +651,15 @@ impl TypeChecker {
                 }
 
                 // If callee is a variable and we have a signature, enforce named rules
+                let mut instantiated_return: Option<Type> = None;
                 if let Expr::Var(name) = callee.as_ref()
-                    && let Some(sig) = self.get_function_sig(name).cloned()
+                    && let Some(declared) = self.get_function_sig(name).cloned()
                 {
+                    // The declared signature, plus this call's own reading of
+                    // its type variables — see the note in `calls.rs`, which
+                    // this mirrors for the named-argument spelling.
+                    let sig = declared;
+                    instantiated_return = sig.return_type.clone();
                     // Check positional arity
                     if sig.positional.len() != pos_types.len() {
                         return Err(Self::type_err(
@@ -668,8 +674,19 @@ impl TypeChecker {
                             None,
                         ));
                     }
-                    // Constrain positional types
+                    // Constrain positional types, and at the same time read
+                    // this instance's variables off the arguments.
+                    //
+                    // The constraint alone is not enough to type the call:
+                    // checking is one pass, and the solver does not run again
+                    // until the enclosing function ends — long after the `let`
+                    // that reads the result has been checked. So the binding is
+                    // also computed here, structurally, which is all an
+                    // *instance* needs: the parameter side is a pattern whose
+                    // variables belong to this call and nothing else.
+                    let mut instance_bindings: HashMap<String, Type> = HashMap::new();
                     for (pt, at) in sig.positional.iter().zip(pos_types.iter()) {
+                        bind_instance_variables(pt, &self.resolve_aliases(at), &mut instance_bindings);
                         self.inference_engine.add_constraint(pt.clone(), at.clone());
                     }
 
@@ -718,9 +735,19 @@ impl TypeChecker {
                     }
                     for (n, at) in &named_types {
                         if let Some(decl_ty) = name_to_ty.get(n.as_str()) {
+                            bind_instance_variables(decl_ty, &self.resolve_aliases(at), &mut instance_bindings);
                             self.inference_engine.add_constraint(decl_ty.clone(), at.clone());
                         }
                     }
+                    instantiated_return =
+                        instantiated_return.map(|ty| substitute_outside_unions(&ty, &instance_bindings));
+                }
+
+                // This call's own return type, from this call's own instance
+                // of the signature. Taking it from `callee_type` instead would
+                // hand back the shared one every call to this function has.
+                if let Some(return_type) = instantiated_return {
+                    return Ok(return_type);
                 }
 
                 // Fall back to callee function type for return
@@ -2119,4 +2146,111 @@ fn parse_volatile_builtin(name: &str) -> Option<(bool, lk_values::IntKind)> {
         _ => return None,
     };
     Some((is_write, kind))
+}
+
+/// Read a call's instance variables off its arguments.
+///
+/// `param` is a *pattern*: a variable in it simply takes whatever the argument
+/// has at that position. The map that comes out belongs to one call and is
+/// thrown away with it, which is what makes it an instantiation — two calls to
+/// the same function read the same variables to different answers without
+/// either one deciding anything for the other.
+///
+/// Deliberately structural and partial: a shape it does not recognise binds
+/// nothing, and the return type keeps the unresolved variable it had before,
+/// which is the answer this whole path used to give for every call.
+pub(super) fn bind_instance_variables(param: &Type, arg: &Type, out: &mut HashMap<String, Type>) {
+    match (param, arg) {
+        (Type::Variable(name), _) => {
+            if !matches!(arg, Type::Variable(_)) {
+                out.entry(name.clone()).or_insert_with(|| arg.clone());
+            }
+        }
+        (Type::List(p), Type::List(a))
+        | (Type::Set(p), Type::Set(a))
+        | (Type::Optional(p), Type::Optional(a))
+        | (Type::Task(p), Type::Task(a))
+        | (Type::Channel(p), Type::Channel(a))
+        | (Type::Boxed(p), Type::Boxed(a)) => bind_instance_variables(p, a, out),
+        // A heterogeneous literal is a `Tuple`, and `[1, 2]` is what a
+        // `List<'a>` parameter is most often handed. Its element type is the
+        // one every position agrees on, or nothing.
+        (Type::List(p), Type::Tuple(elems)) => {
+            if let Some(first) = elems.first()
+                && elems.iter().all(|elem| elem == first)
+            {
+                bind_instance_variables(p, first, out);
+            }
+        }
+        (Type::Map(pk, pv), Type::Map(ak, av)) => {
+            bind_instance_variables(pk, ak, out);
+            bind_instance_variables(pv, av, out);
+        }
+        (Type::Tuple(ps), Type::Tuple(as_)) if ps.len() == as_.len() => {
+            for (p, a) in ps.iter().zip(as_.iter()) {
+                bind_instance_variables(p, a, out);
+            }
+        }
+        (
+            Type::Function {
+                params: ps,
+                return_type: pr,
+                ..
+            },
+            Type::Function {
+                params: as_,
+                return_type: ar,
+                ..
+            },
+        ) => {
+            for (p, a) in ps.iter().zip(as_.iter()) {
+                bind_instance_variables(p, a, out);
+            }
+            bind_instance_variables(pr, ar, out);
+        }
+        (Type::Generic { name: pn, params: ps }, Type::Generic { name: an, params: as_ })
+            if pn == an && ps.len() == as_.len() =>
+        {
+            for (p, a) in ps.iter().zip(as_.iter()) {
+                bind_instance_variables(p, a, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// [`Type::substitute`], except that a union is left exactly as it was.
+///
+/// A map literal's value type is the union of *every key's* value —
+/// `{"name": name, "score": 95}` is `Map<String, 'a | Int>` — so the union
+/// describes several keys at once and no single read is decided by it. Pinning
+/// the parameter's arm there does not make `u.score` any more knowable; it just
+/// turns a vague answer into a confident wrong one, and `u.score + 5` (which
+/// runs fine) starts reporting "left side must be numeric, got String | Int".
+///
+/// The honest fix is for a map literal to keep a type per key rather than one
+/// union across all of them, which the type system has no shape for yet. Until
+/// it does, this is the line between "instantiation tells you more" and
+/// "instantiation tells you something wrong".
+pub(super) fn substitute_outside_unions(ty: &Type, bindings: &HashMap<String, Type>) -> Type {
+    match ty {
+        Type::Union(_) => ty.clone(),
+        Type::List(inner) => Type::List(Box::new(substitute_outside_unions(inner, bindings))),
+        Type::Set(inner) => Type::Set(Box::new(substitute_outside_unions(inner, bindings))),
+        Type::Optional(inner) => Type::Optional(Box::new(substitute_outside_unions(inner, bindings))),
+        Type::Boxed(inner) => Type::Boxed(Box::new(substitute_outside_unions(inner, bindings))),
+        Type::Task(inner) => Type::Task(Box::new(substitute_outside_unions(inner, bindings))),
+        Type::Channel(inner) => Type::Channel(Box::new(substitute_outside_unions(inner, bindings))),
+        Type::Map(k, v) => Type::Map(
+            Box::new(substitute_outside_unions(k, bindings)),
+            Box::new(substitute_outside_unions(v, bindings)),
+        ),
+        Type::Tuple(elems) => Type::Tuple(elems.iter().map(|e| substitute_outside_unions(e, bindings)).collect()),
+        Type::Generic { name, params } => Type::Generic {
+            name: name.clone(),
+            params: params.iter().map(|p| substitute_outside_unions(p, bindings)).collect(),
+        },
+        Type::Variable(name) => bindings.get(name).cloned().unwrap_or_else(|| ty.clone()),
+        other => other.clone(),
+    }
 }

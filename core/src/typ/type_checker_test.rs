@@ -154,4 +154,61 @@ mod tests {
     fn a_closure_body_may_be_a_template_string() {
         assert!(check_program(r#"let f = |x| "n=${x}"; let s: String = f(1);"#).is_ok());
     }
+
+    /// A call to an unannotated function gets *this call's* answer for the
+    /// callee's type variables.
+    ///
+    /// `fn id(x) { return x; }` has the principal type `'a -> 'a`, and every
+    /// call site used to constrain that same `'a` — so two calls with different
+    /// types fought over it and the result was a type nothing could be checked
+    /// against. `let s: String = id(1);` passed.
+    #[test]
+    fn a_call_reads_the_callees_type_variables_for_itself() {
+        assert!(check_program("fn id(x) { return x; } let bad: String = id(1);").is_err());
+        assert!(check_program("fn id(x) { return x; } let ok: Int = id(1);").is_ok());
+        // Two calls at different types, both right, neither deciding for the
+        // other.
+        assert!(check_program(r#"fn id(x) { return x; } let a: Int = id(1); let b: String = id("s");"#).is_ok());
+        // A parameter that appears in the return type carries through it.
+        assert!(check_program(r#"fn pair(x) { return [x, x]; } let bad: Int = pair("s")[0];"#).is_err());
+        assert!(check_program(r#"fn pair(x) { return [x, x]; } let ok: String = pair("s")[0];"#).is_ok());
+    }
+
+    /// The limit of the above, written down because it is not obvious from
+    /// either side.
+    ///
+    /// `fn first(xs) { return xs[0]; }` is `List<'a> -> 'a`, and a call to it
+    /// still learns nothing: what a call site is handed in program mode is the
+    /// *placeholder* signature registered before the body was checked — `'b ->
+    /// 'c`, with the relation between them living only in the solver. Binding
+    /// `'b` to `List<Int>` there says nothing about `'c`.
+    ///
+    /// Registering the solved signature instead was tried and is worse: it
+    /// resolves the placeholders against the body alone, which loses the cases
+    /// that do work today (`id`, `pair`) and costs a corpus example besides.
+    /// Getting this one needs the call site to reach the solver, which is a
+    /// different design than the single pass this checker is.
+    #[test]
+    fn a_parameter_that_only_shapes_the_return_type_is_not_carried_through_yet() {
+        assert!(check_program("fn first(xs) { return xs[0]; } let bad: String = first([1, 2]);").is_ok());
+    }
+
+    /// …but not into a union, which describes several map keys at once.
+    ///
+    /// `{"name": name, "score": 95}` is `Map<String, 'a | Int>`: the union is
+    /// every key's value type run together, so no single read is decided by it.
+    /// Pinning `'a` to `String` there does not make `u.score` more knowable, it
+    /// makes `u.score + 5` — which runs fine — report "left side must be
+    /// numeric, got String | Int".
+    #[test]
+    fn instantiation_stops_at_a_union() {
+        assert!(
+            check_program(
+                r#"fn user(name) { return {"name": name, "score": 95}; }
+                   let u = user("Alice");
+                   let n = u.score + 5;"#
+            )
+            .is_ok()
+        );
+    }
 }

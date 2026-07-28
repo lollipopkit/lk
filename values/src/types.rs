@@ -848,6 +848,61 @@ impl Type {
         }
     }
 
+    /// Every type variable name occurring in this type, in order, without
+    /// duplicates.
+    ///
+    /// [`contains_variables`] answers whether there are any; this answers
+    /// *which*, which is what instantiating a generic signature needs — each
+    /// one gets a fresh copy, consistently across the whole signature so that
+    /// `fn first(xs) { return xs[0]; }`'s `List<'a> -> 'a` stays one relation
+    /// rather than two unrelated holes.
+    ///
+    /// [`contains_variables`]: Type::contains_variables
+    pub fn collect_variables(&self, out: &mut Vec<String>) {
+        match self {
+            Type::Variable(name) => {
+                if !out.iter().any(|seen| seen == name) {
+                    out.push(name.clone());
+                }
+            }
+            Type::List(inner)
+            | Type::Set(inner)
+            | Type::Optional(inner)
+            | Type::Task(inner)
+            | Type::Channel(inner)
+            | Type::Boxed(inner) => inner.collect_variables(out),
+            Type::Ptr { pointee, .. } => pointee.collect_variables(out),
+            Type::Map(k, v) => {
+                k.collect_variables(out);
+                v.collect_variables(out);
+            }
+            Type::Function {
+                params,
+                named_params,
+                return_type,
+            } => {
+                for param in params {
+                    param.collect_variables(out);
+                }
+                for named in named_params {
+                    named.ty.collect_variables(out);
+                }
+                return_type.collect_variables(out);
+            }
+            Type::Union(types) | Type::Tuple(types) => {
+                for ty in types {
+                    ty.collect_variables(out);
+                }
+            }
+            Type::Generic { params, .. } => {
+                for param in params {
+                    param.collect_variables(out);
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// Substitute type variables with concrete types
     pub fn substitute(&self, substitutions: &HashMap<String, Type>) -> Type {
         match self {

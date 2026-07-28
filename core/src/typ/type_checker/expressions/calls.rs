@@ -2,8 +2,10 @@
 use crate::compat::prelude::*;
 use crate::expr::Expr;
 use crate::typ::type_checker::TypeChecker;
+use crate::typ::type_checker::expressions::bind_instance_variables;
 use crate::val::Type;
 use anyhow::Result;
+use hashbrown::HashMap;
 
 impl TypeChecker {
     /// Check function call type
@@ -266,8 +268,41 @@ impl TypeChecker {
                 Expr::Var(name) => self.get_function_sig(name).map(|sig| sig.annotated.clone()),
                 _ => None,
             };
+            // This call's own answer for the callee's type variables.
+            //
+            // `fn id(x) { return x; }` has the principal type `'a -> 'a` once
+            // its own constraints are solved, and every call site constrains
+            // that same `'a` — so `id(1)` and `id("s")` in one program fight
+            // over it, and what the solver makes of the disagreement is a type
+            // nothing can be checked against. That is why `let s: String =
+            // id(1);` passed.
+            //
+            // The map below is *local to this call*: it reads the variables off
+            // the arguments and substitutes them into the return type, which is
+            // instantiation in effect. Doing it by renaming the signature into
+            // fresh variables instead would also work, and would additionally
+            // stop the call sites from constraining the original — but that is
+            // what makes `id` resolve to a concrete type at all, and without it
+            // the strict-Any check reads a generic function as an unannotated
+            // one and demands annotations for it. Keeping the constraints where
+            // they were leaves that judgement exactly as it was.
+            //
+            // The map is also why the constraint alone is not enough: checking
+            // is one pass, and the solver does not run again until the
+            // enclosing function ends — long after the `let` that reads this
+            // call has been checked.
+            let mut bindings: HashMap<String, Type> = HashMap::new();
             for (index, (param_type, arg)) in params.iter().zip(args.iter()).enumerate() {
                 let arg_type = self.check_expr(arg)?;
+                bind_instance_variables(param_type, &self.resolve_aliases(&arg_type), &mut bindings);
+                if std::env::var("LK_DBG").is_ok() {
+                    eprintln!(
+                        "DBG param={:?} arg={:?} bindings={:?}",
+                        param_type,
+                        self.resolve_aliases(&arg_type),
+                        bindings
+                    );
+                }
                 let declared = annotated
                     .as_ref()
                     .is_some_and(|mask| mask.get(index).copied().unwrap_or(false));
@@ -300,7 +335,7 @@ impl TypeChecker {
                 }
             }
 
-            return Ok(*return_type);
+            return Ok(super::substitute_outside_unions(&return_type, &bindings));
         }
 
         match resolved {
