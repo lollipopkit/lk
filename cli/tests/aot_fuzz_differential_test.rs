@@ -18,6 +18,20 @@ use std::io::Write as _;
 use std::path::PathBuf;
 use std::process::Command;
 
+/// What a broken *workspace* looks like on `lk compile`'s stderr, as opposed to
+/// a program the AOT declined to lower.
+///
+/// `rustc`'s own error shapes plus the two the driver prints when the staticlib
+/// step fails. Matched rather than parsed: the point is only to tell "your
+/// checkout does not compile" from "your program does not lower", and any of
+/// these settles that.
+const TOOLCHAIN_FAILURES: &[&str] = &[
+    "error[E",
+    "could not compile",
+    "failed to build lk-api",
+    "linking with `",
+];
+
 fn bin_path() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_lk"))
 }
@@ -772,11 +786,7 @@ impl Generator {
             if touches.is_empty() && self.rng.chance(30) {
                 let _ = writeln!(out, "let {name} = |{}| {body};", params.join(", "));
             } else {
-                let _ = writeln!(
-                    out,
-                    "fn {name}({}) {{ {touches}return {body}; }}",
-                    params.join(", ")
-                );
+                let _ = writeln!(out, "fn {name}({}) {{ {touches}return {body}; }}", params.join(", "));
             }
             self.fns.push(FnSig { name, arity });
         }
@@ -1036,6 +1046,21 @@ fn run_case(dir: &std::path::Path, name: &str, source: &str, seed: u64, expect_h
         context("AOT compile panicked (lower()/codegen must be total)")
     );
     if !exe.status.success() {
+        // A *toolchain* failure is not a compiler answer, and reading it as one
+        // sends the reader to the generated program.
+        //
+        // The prebuild above catches a workspace that was already broken when
+        // the run started. What it cannot catch is one that breaks *during* it:
+        // `lk compile` rebuilds the `lk-api` staticlib on the way, so an edit
+        // landing in another crate mid-run arrives here as "the AOT rejected
+        // your program ungracefully", with `error[E0425]` buried in `stderr`
+        // under a thousand lines of generated program. That happened, and cost
+        // two rounds of reading the program instead of the checkout.
+        assert!(
+            !TOOLCHAIN_FAILURES.iter().any(|marker| exe_stderr.contains(marker)),
+            "the toolchain itself did not build, so this says nothing about the generated \
+             program. Fix the workspace and re-run.\nstderr: {exe_stderr}"
+        );
         assert!(
             exe_stderr.contains("does not support"),
             "{}\nstderr: {exe_stderr}",
