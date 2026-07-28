@@ -172,6 +172,15 @@ pub(super) fn lower(
             // A container that ends up in a `Dyn` slot is the case above that
             // cannot be saved, so it is refused rather than miscompiled.
             //
+            // One shape reaches here for a reason that is not about the program:
+            // `let g = make();` where `make` returns a container. The signature
+            // fixpoint starts every return type at `I64`, so the *first* pass
+            // types the slot `I64`; the pass that learns the real type disagrees
+            // with it, and the map joins to `Dyn` and stays there — it is
+            // monotone on purpose, because a read lowered before the write would
+            // otherwise find the slot untyped. So this falls back today for a
+            // provisional guess rather than for anything the program does.
+            //
             // The slot reaches `Dyn` two ways: two writes that disagree, and a
             // reader that could observe the slot before it is written (only the
             // `Dyn` carrier's zeroinit is nil). Either way the write has to box,

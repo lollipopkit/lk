@@ -1,5 +1,63 @@
 use super::*;
 
+/// Which functions can read a global, directly or through a call.
+///
+/// Conservative in the two ways that matter: a function whose instructions do
+/// not decode counts as a reader, and so does one that calls anything this
+/// cannot name — an indirect call, a closure, a method. The answer is only used
+/// to *skip* a stop, so being wrong in the other direction would let the scan
+/// prove an initialization that a callee could have observed first.
+fn functions_reading_globals(module: &lk_core::vm::ModuleData) -> Vec<bool> {
+    let n = module.functions.len();
+    let mut reads = vec![false; n];
+    let mut calls: Vec<Vec<usize>> = vec![Vec::new(); n];
+    let has_impls = !module.type_info.impls.is_empty();
+    for (fi, func) in module.functions.iter().enumerate() {
+        for raw in &func.code {
+            let Ok(instr) = Instr::try_from_raw(*raw) else {
+                reads[fi] = true;
+                break;
+            };
+            match instr.opcode() {
+                Opcode::GetGlobal => reads[fi] = true,
+                Opcode::CallDirect => calls[fi].push(instr.b() as usize),
+                // An unknown callee could read anything.
+                Opcode::Call | Opcode::CallNamed | Opcode::MakeClosure => {
+                    reads[fi] = true;
+                }
+                // A method call reaches user code only if the module has an
+                // `impl` for it to dispatch to. Without one, `xs.push(1)` is a
+                // builtin on a container and cannot look at a global — and
+                // treating it as if it could was enough to keep every function
+                // that touches a list out of the answer, which is most of them.
+                Opcode::CallMethodK if has_impls => reads[fi] = true,
+                _ => {}
+            }
+        }
+    }
+    // Propagate along the call edges until nothing changes. Monotone — a
+    // function only ever becomes a reader — so it terminates.
+    loop {
+        let mut changed = false;
+        for fi in 0..n {
+            if reads[fi] {
+                continue;
+            }
+            if calls[fi]
+                .iter()
+                .any(|&callee| reads.get(callee).copied().unwrap_or(true))
+            {
+                reads[fi] = true;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    reads
+}
+
 /// Reachability from the entry over `CallDirect`/`MakeClosure` edges that does
 /// **not** descend into VM-executed functions: their bodies (and everything
 /// only they reach) run on the embedded VM, so no native lowering is needed.
@@ -239,6 +297,7 @@ pub(crate) fn prescan_initialized_globals(module: &lk_core::vm::ModuleData, glob
     let Some(entry) = module.functions.get(module.entry as usize) else {
         return initialized;
     };
+    let global_readers = functions_reading_globals(module);
     for raw in &entry.code {
         let Ok(instr) = Instr::try_from_raw(*raw) else {
             break;
@@ -249,6 +308,24 @@ pub(crate) fn prescan_initialized_globals(module: &lk_core::vm::ModuleData, glob
                     *flag = true;
                 }
             }
+            // A call is a stop only if the callee could *look*.
+            //
+            // The scan is proving that a slot is written before any user code
+            // can read it, so a call in the entry prefix used to end it: the
+            // callee runs user code, and that code might read the slot while it
+            // is still native zero. But a function that reads no global —
+            // transitively — cannot observe one, so it is not the reader this is
+            // guarding against.
+            //
+            // What that recovers is `let g = make();` at the top level, which is
+            // an ordinary way to build a container and which the stop rule sent
+            // to the interpreter: the slot was never proven initialized, so it
+            // was widened to `Dyn`, a container in a `Dyn` slot has to be boxed,
+            // and boxing a container copies it — so the write was refused and
+            // the whole program fell back, for a call that never touched a
+            // global.
+            Opcode::CallDirect
+                if !global_readers.get(instr.b() as usize).copied().unwrap_or(true) => {}
             Opcode::Jmp
             | Opcode::Test
             | Opcode::BrFalse

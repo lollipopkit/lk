@@ -774,6 +774,61 @@ impl Generator {
             self.fns.push(FnSig { name, arity });
         }
 
+        // Containers that cross a call boundary, in both directions.
+        //
+        // The generator could not produce these either: a helper's parameters
+        // were always `Int`, so a container never travelled into a function and
+        // never came back out of one. That is the same question the bug found by
+        // accident was about — whether the two sides are looking at one
+        // container or at a copy — asked at the other boundary.
+        //
+        // Each of these is read *after* the call, because a program that only
+        // passes a container agrees whichever answer is right.
+        if self.rng.chance(50) {
+            let taker = self.fresh("fn_taker");
+            let _ = writeln!(
+                out,
+                "fn {taker}(xs: List<Int>, p0: Int) -> Int {{ xs.push(p0); return xs.len(); }}"
+            );
+            let arg = self.fresh("tl");
+            let _ = writeln!(out, "let {arg}: List<Int> = [{}];", self.rng.below(40));
+            let value = self.rng.below(50);
+            let _ = writeln!(out, "println({taker}({arg}, {value}));");
+            let _ = writeln!(out, "println({arg}.len());");
+            let _ = writeln!(out, "println({arg}[{arg}.len() - 1]);");
+        }
+        if self.rng.chance(40) {
+            let maker = self.fresh("fn_maker");
+            let _ = writeln!(
+                out,
+                "fn {maker}(p0: Int) -> List<Int> {{ let out: List<Int> = []; out.push(p0); out.push(p0 + 1); return out; }}"
+            );
+            let made = self.fresh("ml");
+            let seed = self.rng.below(30);
+            let _ = writeln!(out, "let {made} = {maker}({seed});");
+            let _ = writeln!(out, "println({made}.len());");
+            let _ = writeln!(out, "println({made}[1]);");
+            // And mutate what came back, which is where a returned handle that
+            // was really a copy of an already-freed thing would show.
+            let _ = writeln!(out, "{made}.push(7);");
+            let _ = writeln!(out, "println({made}.len());");
+        }
+        // `defer` runs on the way out, whichever way. A generated feature with
+        // no generated coverage is how the next silent difference gets in.
+        if self.rng.chance(40) {
+            let deferred = self.fresh("fn_deferred");
+            let _ = writeln!(
+                out,
+                "fn {deferred}(xs: List<Int>, p0: Int) -> Int {{\n    defer xs.push(0 - 1);\n    if (p0 % 2 == 0) {{ return p0; }}\n    return p0 * 2;\n}}"
+            );
+            let arg = self.fresh("dl");
+            let _ = writeln!(out, "let {arg}: List<Int> = [];");
+            // Both branches, so the release has to happen on both.
+            let _ = writeln!(out, "println({deferred}({arg}, {}));", self.rng.below(20) * 2);
+            let _ = writeln!(out, "println({deferred}({arg}, {}));", self.rng.below(20) * 2 + 1);
+            let _ = writeln!(out, "println({arg}.len());");
+        }
+
         let statements = 3 + self.rng.below(5);
         for _ in 0..statements {
             self.statement(&mut out, "");
