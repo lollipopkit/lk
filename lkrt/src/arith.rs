@@ -71,6 +71,35 @@ pub extern "C" fn lkrt_u64_shr_checked(lhs: i64, rhs: i64) -> i64 {
     ((lhs as u64).wrapping_shr(rhs as u32)) as i64
 }
 
+/// `lhs < rhs`, unsigned. Answers 1 or 0.
+///
+/// The one comparison a `u64` cannot borrow from `Int`. Every value rides an
+/// `i64` carrier, so a `u64` with bit 63 set *is* a negative carrier and a
+/// signed compare puts it below 1. One primitive rather than four: `a > b` is
+/// `b < a`, and the two inclusive forms are those negated.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_u64_lt(lhs: i64, rhs: i64) -> i64 {
+    i64::from((lhs as u64) < (rhs as u64))
+}
+
+/// `lhs / rhs`, unsigned, aborting on a zero divisor.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_u64_div(lhs: i64, rhs: i64) -> i64 {
+    if rhs == 0 {
+        crate::panic::raise_str("division by zero");
+    }
+    ((lhs as u64) / (rhs as u64)) as i64
+}
+
+/// `lhs % rhs`, unsigned, aborting on a zero divisor.
+#[unsafe(no_mangle)]
+pub extern "C" fn lkrt_u64_rem(lhs: i64, rhs: i64) -> i64 {
+    if rhs == 0 {
+        crate::panic::raise_str("modulo by zero");
+    }
+    ((lhs as u64) % (rhs as u64)) as i64
+}
+
 /// `lhs % rhs` for integers, aborting on a zero divisor. `i64::MIN % -1` wraps to
 /// `0` instead of overflowing.
 #[unsafe(no_mangle)]

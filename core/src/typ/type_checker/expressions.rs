@@ -522,6 +522,22 @@ impl TypeChecker {
                 if let Some(result) = self.check_volatile_builtin(func, args)? {
                     return Ok(result);
                 }
+                // A shift keeps the width of what is being shifted.
+                //
+                // The parser desugars `a << b` into `__lk_shl(a, b)` before
+                // anything knows a type, so without this the result of shifting
+                // a `u32` is an ordinary `Int` and the next thing done with it
+                // is a width mistake.
+                //
+                // This is the *last* piece of the unsigned-`u64` work rather than
+                // the first, and the order mattered: on its own it makes
+                // `let top = one << 63; top < one;` type-check, and until the
+                // compiler rewrote that comparison to its unsigned form the
+                // answer was `true`. A rule that turns a compile error into a
+                // wrong answer is worse than the error.
+                if let Some(result) = self.check_shift_builtin(func, args)? {
+                    return Ok(result);
+                }
                 // For Call with string name, create a variable expression for the function
                 let func_expr = Expr::Var(func.clone());
                 self.check_function_call(&func_expr, args)
@@ -529,10 +545,19 @@ impl TypeChecker {
             Expr::CallExpr(func_expr, args) => {
                 // Source-level calls parse to `CallExpr`; `Call` is only built
                 // by internal desugars.
-                if let Expr::Var(name) = func_expr.as_ref()
-                    && let Some(result) = self.check_volatile_builtin(name, args)?
-                {
-                    return Ok(result);
+                if let Expr::Var(name) = func_expr.as_ref() {
+                    if let Some(result) = self.check_volatile_builtin(name, args)? {
+                        return Ok(result);
+                    }
+                    // Both shapes, because name resolution rewrites a plain
+                    // call: `__lk_shl(a, b)` is a `Call` in the parser's output
+                    // and a `CallExpr(Var(…))` by the time this sees it.
+                    // Matching only the first is why the first version of this
+                    // looked correct and changed nothing — the same trap the
+                    // compiler's width inference fell into, in the same words.
+                    if let Some(result) = self.check_shift_builtin(name, args)? {
+                        return Ok(result);
+                    }
                 }
                 self.check_function_call(func_expr, args)
             }
@@ -1006,6 +1031,25 @@ impl TypeChecker {
             ));
         }
         Ok(Type::MachineInt(kind))
+    }
+
+    /// `a << b` / `a >> b`, whose result is `a`'s type when that is a machine
+    /// integer.
+    ///
+    /// The shift *amount* is deliberately not constrained to the same width —
+    /// `flags << 3` is what people write, and requiring `3 as u32` there is the
+    /// ceremony that gets fixed widths abandoned.
+    fn check_shift_builtin(&mut self, func: &str, args: &[Box<Expr>]) -> Result<Option<Type>> {
+        if !matches!(func, "__lk_shl" | "__lk_shr" | "__lk_shr_u") || args.len() != 2 {
+            return Ok(None);
+        }
+        let left = self.check_expr(&args[0])?;
+        let _ = self.check_expr(&args[1])?;
+        let resolved = self.resolve_aliases(&left);
+        Ok(match resolved {
+            Type::MachineInt(_) => Some(resolved),
+            _ => None,
+        })
     }
 
     fn check_string_addition(

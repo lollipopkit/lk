@@ -564,6 +564,9 @@ macro_rules! for_each_abi_fn {
             ("arith", "i64_shl", lkrt_i64_shl_checked, ReadsHost, [I64, I64], I64);
             ("arith", "i64_shr", lkrt_i64_shr_checked, ReadsHost, [I64, I64], I64);
             ("arith", "u64_shr", lkrt_u64_shr_checked, ReadsHost, [I64, I64], I64);
+            ("arith", "u64_lt", lkrt_u64_lt, Pure, [I64, I64], I64);
+            ("arith", "u64_div", lkrt_u64_div, ReadsHost, [I64, I64], I64);
+            ("arith", "u64_rem", lkrt_u64_rem, ReadsHost, [I64, I64], I64);
         }
     };
 }

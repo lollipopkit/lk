@@ -709,6 +709,20 @@ impl Compiler {
     }
 
     pub(super) fn lower_bin(&mut self, lhs: &Expr, op: &BinOp, rhs: &Expr) -> Result<u16> {
+        // `u64` compares and divides unsigned.
+        //
+        // A value with bit 63 set *is* a negative `i64` carrier, so the ordinary
+        // opcodes put `1u64 << 63` below 1 and divide it to a negative. One
+        // comparison primitive covers all four orderings — `a > b` is `b < a`,
+        // and the inclusive forms are those negated — so this rewrite is three
+        // builtins rather than six.
+        //
+        // Rewritten *here*, before anything is lowered, because this is the
+        // first place with both the operator and a proven width, and because a
+        // call cannot easily be emitted from inside the opcode path.
+        if let Some(result) = self.lower_unsigned_bin(lhs, op, rhs)? {
+            return Ok(result);
+        }
         let static_flavor = numeric_flavor(lhs, op, rhs);
         // Whether each side is written as an integer literal, before the names
         // are shadowed by the registers they lower into.
@@ -749,6 +763,53 @@ impl Compiler {
         let flavor =
             numeric_flavor_from_register_facts(&self.function.performance, op, lhs, rhs).unwrap_or(static_flavor);
         self.emit_bin_op_to_register_with_flavor(dst, op, lhs, rhs, flavor)
+    }
+
+    /// The unsigned form of an operator, when both operands fill the carrier.
+    ///
+    /// `u64` and `usize` only: for every narrower width the high bits are zero,
+    /// so the signed opcode has no sign to misread and is both correct and
+    /// faster. Equality is not here either — bit equality is the same question
+    /// in both signednesses.
+    fn lower_unsigned_bin(&mut self, lhs: &Expr, op: &BinOp, rhs: &Expr) -> Result<Option<u16>> {
+        let fills_carrier = |kind| matches!(kind, crate::val::IntKind::U64 | crate::val::IntKind::Usize);
+        if !self.expr_machine_width(lhs).is_some_and(fills_carrier)
+            || !self.expr_machine_width(rhs).is_some_and(fills_carrier)
+        {
+            return Ok(None);
+        }
+        let call = |name: &str, a: &Expr, b: &Expr| {
+            Expr::Call(
+                alloc::string::String::from(name),
+                alloc::vec![Box::new(a.clone()), Box::new(b.clone())],
+            )
+        };
+        let rewritten = match op {
+            BinOp::Lt => call("__lk_lt_u", lhs, rhs),
+            BinOp::Gt => call("__lk_lt_u", rhs, lhs),
+            BinOp::Div => call("__lk_div_u", lhs, rhs),
+            BinOp::Mod => call("__lk_mod_u", lhs, rhs),
+            // `a <= b` is `!(b < a)`, `a >= b` is `!(a < b)`.
+            BinOp::Le => Expr::Unary(crate::operator::UnaryOp::Not, Box::new(call("__lk_lt_u", rhs, lhs))),
+            BinOp::Ge => Expr::Unary(crate::operator::UnaryOp::Not, Box::new(call("__lk_lt_u", lhs, rhs))),
+            _ => return Ok(None),
+        };
+        self.lower_expr(&rewritten).map(Some)
+    }
+
+    /// The same rewrite, for the lower-into-a-given-register path.
+    pub(in crate::vm::compiler) fn lower_unsigned_bin_into(
+        &mut self,
+        dst: u16,
+        lhs: &Expr,
+        op: &BinOp,
+        rhs: &Expr,
+    ) -> Result<Option<()>> {
+        let Some(src) = self.lower_unsigned_bin(lhs, op, rhs)? else {
+            return Ok(None);
+        };
+        self.emit_move(dst, src, "unsigned bin")?;
+        Ok(Some(()))
     }
 
     pub(super) fn emit_bin_op_to_register(&mut self, dst: u16, op: &BinOp, lhs: u16, rhs: u16) -> Result<u16> {

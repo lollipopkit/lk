@@ -77,6 +77,11 @@ pub(crate) enum Builtin {
     /// `u64`, where an arithmetic shift would replicate a bit that is part of
     /// the value rather than its sign.
     ShrU,
+    /// `__lk_lt_u` / `__lk_div_u` / `__lk_mod_u` — the unsigned forms the
+    /// compiler picks when both operands are proven `u64`.
+    LtU,
+    DivU,
+    ModU,
     /// `symbol_address("name")` — the address of an `#[export]`ed function, and
     /// `call_address_2(addr, a, b)` — a call through one. Together they are
     /// what a driver table is made of: an array of function pointers, indexed

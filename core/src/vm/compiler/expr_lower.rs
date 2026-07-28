@@ -312,6 +312,18 @@ impl Compiler {
                 Ok(vec![self.emit_branch_placeholder(Opcode::BrNil, value)?])
             }
             Expr::Bin(lhs, op, rhs) if compare_test_opcode(op).is_some() => {
+                // A `u64` comparison is unsigned, and the fused compare-branch
+                // opcodes below are not.
+                //
+                // This is the *third* path the same rewrite has to reach:
+                // `lower_bin` for a comparison producing a value, the
+                // lower-into-register path for one feeding a call argument, and
+                // this one for a condition. Each was found by a test the
+                // previous fix left failing — `println(a < b)` after
+                // `let c = a / b`, and `if (a > b)` after both.
+                if let Some(value) = self.lower_unsigned_bin(lhs, op, rhs)? {
+                    return Ok(vec![self.emit_branch_placeholder(Opcode::BrFalse, value)?]);
+                }
                 if let Some((opcode, value, immediate)) = self.lower_mod_zero_i4_branch_operands(lhs, op, rhs)? {
                     return Ok(vec![self.emit_i4_branch_placeholder(opcode, value, immediate)?]);
                 }

@@ -453,6 +453,29 @@ fn machine_int_differential() {
                 "width_survives_a_shift",
                 "let one: u32 = 1;\nlet top = one << 31;\nreturn (top >> 31) as Int;\n",
             ),
+            // `u64` compares and divides unsigned, and this needed the rewrite
+            // to reach *three* lowering paths: a comparison producing a value, a
+            // comparison feeding a call argument, and a condition. Each was
+            // found by a case the previous fix left failing.
+            new(
+                "u64_compares_unsigned",
+                "let one: u64 = 1;\nlet top = one << 63;\nif (top > one) { return 1; }\nreturn 0;\n",
+            ),
+            new(
+                "u64_compares_unsigned_as_a_value",
+                "let one: u64 = 1;\nlet top = one << 63;\nif (top < one) { return 1; }\nreturn 0;\n",
+            ),
+            new(
+                "u64_divides_unsigned",
+                "let one: u64 = 1;\nlet top = one << 63;\nlet two: u64 = 2;\nreturn (top / two) as Int;\n",
+            ),
+            new(
+                "u64_halves_to_one",
+                "let one: u64 = 1;\nlet n = one << 63;\nlet steps = 0;\nwhile (n > one) { n = n / (one + one); steps = steps + 1; }\nreturn steps;\n",
+            ),
+            // A signed comparison is still signed, which is the property the
+            // change must not have taken away.
+            new("i64_compares_signed", "let a = 0 - 1;\nif (a < 1) { return 1; }\nreturn 0;\n"),
             // And a signed shift is still arithmetic, which is the property the
             // change must not have taken away.
             new("i8_shifts_arithmetically", "let a: i8 = 0 - 128;\nlet s: i8 = 7;\nreturn (a >> s) as Int;\n"),

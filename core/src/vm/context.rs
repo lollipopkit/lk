@@ -486,6 +486,14 @@ impl VmContext {
         // to be right — a `u64` fills the carrier, and bit 63 is part of the
         // value rather than its sign.
         self.install_runtime_builtin("__lk_shr_u", NativeFunction::Plain(core_shr_unsigned_builtin), 2);
+        // The other three the `i64` carrier cannot answer for a `u64`: a value
+        // with bit 63 set *is* a negative carrier, so a signed compare puts it
+        // below 1 and a signed divide answers a negative. One comparison
+        // primitive rather than four — `a > b` is `b < a`, and the inclusive
+        // forms are those negated.
+        self.install_runtime_builtin("__lk_lt_u", NativeFunction::Plain(core_lt_unsigned_builtin), 2);
+        self.install_runtime_builtin("__lk_div_u", NativeFunction::Plain(core_div_unsigned_builtin), 2);
+        self.install_runtime_builtin("__lk_mod_u", NativeFunction::Plain(core_mod_unsigned_builtin), 2);
     }
 
     /// Looks up a trait-impl method for the type `type_name` **as declared by
@@ -1244,6 +1252,48 @@ fn core_shr_unsigned_builtin(
     let lhs = bit_arg(args.get(0).expect("arity checked"), "__lk_shr_u")?;
     let rhs = shift_amount(args.get(1).expect("arity checked"), "__lk_shr_u")?;
     Ok(crate::val::RuntimeVal::Int(((lhs as u64).wrapping_shr(rhs)) as i64))
+}
+
+fn core_lt_unsigned_builtin(
+    args: NativeArgs<'_>,
+    _runtime: &mut NativeRuntime<'_>,
+) -> anyhow::Result<crate::val::RuntimeVal> {
+    if args.len() != 2 {
+        return Err(anyhow!("__lk_lt_u(left, right) expects exactly 2 arguments"));
+    }
+    let lhs = bit_arg(args.get(0).expect("arity checked"), "__lk_lt_u")? as u64;
+    let rhs = bit_arg(args.get(1).expect("arity checked"), "__lk_lt_u")? as u64;
+    Ok(crate::val::RuntimeVal::Bool(lhs < rhs))
+}
+
+fn core_div_unsigned_builtin(
+    args: NativeArgs<'_>,
+    _runtime: &mut NativeRuntime<'_>,
+) -> anyhow::Result<crate::val::RuntimeVal> {
+    if args.len() != 2 {
+        return Err(anyhow!("__lk_div_u(left, right) expects exactly 2 arguments"));
+    }
+    let lhs = bit_arg(args.get(0).expect("arity checked"), "__lk_div_u")? as u64;
+    let rhs = bit_arg(args.get(1).expect("arity checked"), "__lk_div_u")? as u64;
+    if rhs == 0 {
+        return Err(anyhow!("division by zero"));
+    }
+    Ok(crate::val::RuntimeVal::Int((lhs / rhs) as i64))
+}
+
+fn core_mod_unsigned_builtin(
+    args: NativeArgs<'_>,
+    _runtime: &mut NativeRuntime<'_>,
+) -> anyhow::Result<crate::val::RuntimeVal> {
+    if args.len() != 2 {
+        return Err(anyhow!("__lk_mod_u(left, right) expects exactly 2 arguments"));
+    }
+    let lhs = bit_arg(args.get(0).expect("arity checked"), "__lk_mod_u")? as u64;
+    let rhs = bit_arg(args.get(1).expect("arity checked"), "__lk_mod_u")? as u64;
+    if rhs == 0 {
+        return Err(anyhow!("modulo by zero"));
+    }
+    Ok(crate::val::RuntimeVal::Int((lhs % rhs) as i64))
 }
 
 fn core_bit_not_builtin(

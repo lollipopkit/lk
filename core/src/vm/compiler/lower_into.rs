@@ -60,6 +60,15 @@ impl Compiler {
                 Ok(true)
             }
             Expr::Bin(lhs, op, rhs) => {
+                // `u64` compares and divides unsigned — the same rewrite
+                // `lower_bin` does, because a comparison that feeds a value (as
+                // in `println(a < b)`) arrives here instead. Two lowering paths
+                // for one shape is why the first version of this fixed division
+                // and left the comparison signed.
+                if let Some(result) = self.lower_unsigned_bin_into(dst, lhs, op, rhs)? {
+                    let _ = result;
+                    return Ok(true);
+                }
                 let static_flavor = super::support::numeric_flavor(lhs, op, rhs);
                 // Whether each side is written as an integer literal, before the
                 // names are shadowed by the registers they lower into. A literal

@@ -51,6 +51,48 @@ pub(crate) fn lower_builtin_call(
             ssa.write(base, block, (nil, Ty::Nil));
             return Ok(());
         }
+        Builtin::LtU | Builtin::DivU | Builtin::ModU => {
+            if argc != 2 {
+                return Err(Unsupported::Opcode { pc, op: Opcode::Call });
+            }
+            let lhs = read_index_scalar(ssa, insts, base.wrapping_add(1), block, pc)?;
+            let rhs = read_index_scalar(ssa, insts, base.wrapping_add(2), block, pc)?;
+            let dst = ssa.new_val();
+            insts.push(Inst::Call {
+                dst: Some(dst),
+                callee: AbiRef::new(
+                    "arith",
+                    match builtin {
+                        Builtin::LtU => "u64_lt",
+                        Builtin::DivU => "u64_div",
+                        _ => "u64_rem",
+                    },
+                ),
+                args: vec![lhs, rhs],
+            });
+            // `u64_lt` answers 1 or 0; the comparison's result is a Bool
+            // everywhere else, so it is one here too.
+            let ty = if matches!(builtin, Builtin::LtU) { Ty::Bool } else { Ty::I64 };
+            if matches!(builtin, Builtin::LtU) {
+                let zero = ssa.new_val();
+                insts.push(Inst::Const {
+                    dst: zero,
+                    value: Const::I64(0),
+                });
+                let b = ssa.new_val();
+                insts.push(Inst::Cmp {
+                    dst: b,
+                    op: CmpOp::Ne,
+                    lhs: dst,
+                    rhs: zero,
+                    float: false,
+                });
+                ssa.write(base, block, (b, ty));
+                return Ok(());
+            }
+            ssa.write(base, block, (dst, ty));
+            return Ok(());
+        }
         Builtin::Shl | Builtin::Shr | Builtin::ShrU => {
             if argc != 2 {
                 return Err(Unsupported::Opcode { pc, op: Opcode::Call });

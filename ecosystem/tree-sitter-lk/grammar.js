@@ -445,7 +445,15 @@ module.exports = grammar({
 
     type: $ => $._type,
 
-    primitive_type: $ => choice('Int', 'Float', 'String', 'Bool', 'Nil', 'Any'),
+    // The machine ints belong here because they take no parameters, the same
+    // way `Int` does. `Set`/`Tuple`/`Task`/`Channel`/`Box` do take one
+    // (`Set<T>`), so they want a rule of their own next to `list_type` rather
+    // than a bare keyword here; until then they fall through to
+    // `type_identifier`, which still highlights as a type.
+    primitive_type: $ => choice(
+      'Int', 'Float', 'String', 'Bool', 'Nil', 'Any',
+      'i8', 'i16', 'i32', 'i64', 'u8', 'u16', 'u32', 'u64', 'isize', 'usize',
+    ),
 
     list_type: $ => seq('List', '<', $._type, '>'),
 
