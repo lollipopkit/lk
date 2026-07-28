@@ -1,6 +1,5 @@
 use alloc::sync::Arc;
 use anyhow::{Result, anyhow, bail};
-use core::fmt::Write as _;
 // From `alloc` directly, not `lk_core::compat::prelude`: feature
 // unification can give lk-core `std` while this crate stays no_std, and
 // then that prelude does not exist.
@@ -18,8 +17,7 @@ use lk_core::{
     module::{RuntimeNativeExport, RuntimeValueExport},
     util::fast_map::fast_hash_map_new,
     val::{
-        CallableValue, HeapStore, HeapValue, RuntimeMapKey, RuntimeSet, RuntimeVal, ShortStr, SliceValue, TypedList,
-        TypedMap, de,
+        CallableValue, HeapStore, HeapValue, RuntimeMapKey, RuntimeSet, RuntimeVal, ShortStr, TypedList, TypedMap, de,
     },
     vm::{NativeArgs, NativeRuntime, RuntimeExport, import_runtime_export},
 };
@@ -123,212 +121,11 @@ pub fn runtime_string_value(value: &str, heap: &mut HeapStore) -> RuntimeVal {
     }
 }
 
-pub fn runtime_display_value(value: &RuntimeVal, heap: &HeapStore) -> Result<String> {
-    match value {
-        RuntimeVal::Nil => Ok("nil".to_string()),
-        RuntimeVal::Bool(value) => Ok(value.to_string()),
-        RuntimeVal::Int(value) => Ok(value.to_string()),
-        RuntimeVal::Float(value) => Ok(value.to_string()),
-        RuntimeVal::ShortStr(value) => Ok(value.as_str().to_string()),
-        RuntimeVal::Obj(handle) => {
-            let value = heap
-                .get(*handle)
-                .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?;
-            runtime_display_heap_value(value, heap)
-        }
-    }
-}
-
-fn runtime_display_heap_value(value: &HeapValue, heap: &HeapStore) -> Result<String> {
-    match value {
-        HeapValue::String(value) => Ok(value.to_string()),
-        HeapValue::Bytes(value) => Ok(format!("<Bytes {} bytes>", value.len())),
-        HeapValue::List(values) => runtime_display_list(values, heap),
-        HeapValue::Slice(slice) => runtime_display_slice(slice, heap),
-        HeapValue::Map(values) => runtime_display_map(values, heap),
-        HeapValue::Set(values) => runtime_display_set(values),
-        HeapValue::Callable(value) => Ok(runtime_display_callable(value)),
-        HeapValue::Object(value) => {
-            let mut out = value.type_name().to_string();
-            append_display_entries(
-                &mut out,
-                value
-                    .fields
-                    .iter()
-                    .map(|(key, value)| Ok((key.to_string(), runtime_display_value(value, heap)?))),
-            )?;
-            Ok(out)
-        }
-        other => Ok(format!("<{}>", other.type_name())),
-    }
-}
-
-fn runtime_display_set(values: &RuntimeSet) -> Result<String> {
-    let mut out = String::from("Set(");
-    out.push('[');
-    let mut first = true;
-    let mut entries = values.entries().map(runtime_display_map_key).collect::<Vec<_>>();
-    entries.sort();
-    for key in entries {
-        push_display_sep(&mut out, &mut first);
-        out.push_str(&key);
-    }
-    out.push(']');
-    out.push(')');
-    Ok(out)
-}
-
-fn runtime_display_callable(value: &CallableValue) -> String {
-    match value {
-        CallableValue::Closure {
-            function_index,
-            captures,
-        } => format!("<fn #{}({} captures)>", function_index, captures.len()),
-        CallableValue::RuntimeNative { name, arity, .. } => {
-            if *arity == lk_core::vm::NativeEntry::VARIADIC {
-                format!("<native fn {}(...)>", name)
-            } else {
-                format!("<native fn {}({} args)>", name, arity)
-            }
-        }
-        CallableValue::Runtime(function) => {
-            format!(
-                "<fn {} ({} captures)>",
-                function.display_signature(),
-                function.capture_count()
-            )
-        }
-    }
-}
-
-fn runtime_display_list(values: &TypedList, heap: &HeapStore) -> Result<String> {
-    let mut out = String::from("[");
-    let mut first = true;
-    match values {
-        TypedList::Mixed(values) => {
-            for value in values {
-                push_display_sep(&mut out, &mut first);
-                out.push_str(&runtime_display_value(value, heap)?);
-            }
-        }
-        TypedList::Int(values) => {
-            for value in values {
-                push_display_sep(&mut out, &mut first);
-                write!(&mut out, "{value}").expect("write to String cannot fail");
-            }
-        }
-        TypedList::Float(values) => {
-            for value in values {
-                push_display_sep(&mut out, &mut first);
-                write!(&mut out, "{value}").expect("write to String cannot fail");
-            }
-        }
-        TypedList::Bool(values) => {
-            for value in values {
-                push_display_sep(&mut out, &mut first);
-                write!(&mut out, "{value}").expect("write to String cannot fail");
-            }
-        }
-        TypedList::String(values) => {
-            for value in values {
-                push_display_sep(&mut out, &mut first);
-                out.push_str(&quote_string(value));
-            }
-        }
-    }
-    out.push(']');
-    Ok(out)
-}
-
 /// A window prints as the part of the list it windows — `[1,4,1]`, not
 /// `<Slice>`. It used to fall through to the opaque-handle arm, which is the
 /// right answer for a `Stream` or a `Resource` and the wrong one here: a window
 /// has elements, and every other way of looking at it (`len`, indexing,
 /// `to_list`) already shows them.
-fn runtime_display_slice(slice: &SliceValue, heap: &HeapStore) -> Result<String> {
-    let RuntimeVal::Obj(source) = slice.source else {
-        return Ok("[]".to_string());
-    };
-    let Some(HeapValue::List(values)) = heap.get(source) else {
-        return Ok("[]".to_string());
-    };
-    let window = values.window(slice.start, slice.len);
-    runtime_display_list(&window, heap)
-}
-
-fn runtime_display_map(values: &TypedMap, heap: &HeapStore) -> Result<String> {
-    let mut out = String::new();
-    match values {
-        TypedMap::Mixed(entries) => append_display_entries(
-            &mut out,
-            entries
-                .iter()
-                .map(|(key, value)| Ok((runtime_display_map_key(key), runtime_display_value(value, heap)?))),
-        )?,
-        TypedMap::StringMixed(entries) => append_display_entries(
-            &mut out,
-            entries
-                .iter()
-                .map(|(key, value)| Ok((quote_string(key), runtime_display_value(value, heap)?))),
-        )?,
-        TypedMap::StringInt(entries) => append_display_entries(
-            &mut out,
-            entries
-                .iter()
-                .map(|(key, value)| Ok((quote_string(key), value.to_string()))),
-        )?,
-        TypedMap::StringFloat(entries) => append_display_entries(
-            &mut out,
-            entries
-                .iter()
-                .map(|(key, value)| Ok((quote_string(key), value.to_string()))),
-        )?,
-        TypedMap::StringBool(entries) => append_display_entries(
-            &mut out,
-            entries
-                .iter()
-                .map(|(key, value)| Ok((quote_string(key), value.to_string()))),
-        )?,
-    }
-    Ok(out)
-}
-
-fn runtime_display_map_key(key: &RuntimeMapKey) -> String {
-    match key {
-        RuntimeMapKey::Nil => "nil".to_string(),
-        RuntimeMapKey::Bool(value) => value.to_string(),
-        RuntimeMapKey::Int(value) => value.to_string(),
-        RuntimeMapKey::ShortStr(value) => quote_string(value.as_str()),
-        RuntimeMapKey::String(value) => quote_string(value),
-        RuntimeMapKey::Obj(value) => format!("<object:{}>", value.index()),
-    }
-}
-
-fn append_display_entries(out: &mut String, entries: impl IntoIterator<Item = Result<(String, String)>>) -> Result<()> {
-    out.push('{');
-    let mut first = true;
-    for entry in entries {
-        let (key, value) = entry?;
-        push_display_sep(out, &mut first);
-        out.push_str(&key);
-        out.push(':');
-        out.push_str(&value);
-    }
-    out.push('}');
-    Ok(())
-}
-
-fn push_display_sep(out: &mut String, first: &mut bool) {
-    if *first {
-        *first = false;
-    } else {
-        out.push(',');
-    }
-}
-
-fn quote_string(value: &str) -> String {
-    format!("{value:?}")
-}
 
 #[cfg(test)]
 mod tests {
@@ -570,4 +367,14 @@ fn typed_list_string_item_equal(
         TypedList::String(right) => Ok(left == &right[right_index]),
         _ => Ok(false),
     }
+}
+
+/// How a value looks — `lk_core::vm::display_runtime_value`, which is the one
+/// rendering there is.
+///
+/// This crate used to hold it and the VM had its own, so `println` and the REPL
+/// showed the same value differently. `show` dispatch is a layer above, in
+/// `language::display`: it calls user code, which a renderer cannot.
+pub fn runtime_display_value(value: &RuntimeVal, heap: &HeapStore) -> Result<String> {
+    Ok(lk_core::vm::display_runtime_value(value, heap))
 }

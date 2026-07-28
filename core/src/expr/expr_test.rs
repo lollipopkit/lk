@@ -12,8 +12,8 @@ mod test {
         expect_env("user.name + 'pt'", "lkpt");
         expect_env("user.age + list.0 == 19", "true");
         expect_env("user.name + user.age", "lk18");
-        expect("[1, 2, 3] + [2]", "[1, 2, 3, 2]");
-        expect("[1, 2, 3] - [2]", "[1, 3]");
+        expect("[1, 2, 3] + [2]", "[1,2,3,2]");
+        expect("[1, 2, 3] - [2]", "[1,3]");
         expect_env("list.2 / 2.0", "1.5");
         panic_env("user.name / list");
     }
@@ -148,16 +148,16 @@ mod test {
         expect("[]", "[]");
 
         // Simple list
-        expect("[1, 2, 3]", "[1, 2, 3]");
+        expect("[1,2,3]", "[1,2,3]");
 
         // Mixed types
-        expect(r#"[1, "hello", true]"#, "[1, hello, true]");
+        expect(r#"[1, "hello", true]"#, "[1,\"hello\",true]");
 
         // Nested lists
-        expect("[[1, 2], [3, 4]]", "[[1, 2], [3, 4]]");
+        expect("[[1,2],[3,4]]", "[[1,2],[3,4]]");
 
         // List with expressions
-        expect("[1 + 2, 3 * 4]", "[3, 12]");
+        expect("[1 + 2,3 * 4]", "[3,12]");
 
         // List with variable access
         expect_source(
@@ -166,7 +166,7 @@ mod test {
             let list = [1, 2, 3];
             return [user.age, list.0];
             "#,
-            "[18, 1]",
+            "[18,1]",
         );
     }
 
@@ -253,7 +253,7 @@ mod test {
     #[test]
     fn trailing_commas() {
         // List with trailing comma
-        expect("[1, 2, 3,]", "[1, 2, 3]");
+        expect("[1,2,3,]", "[1,2,3]");
 
         // Map with trailing comma
         expect(r#"{"a": 1, "b": 2,}.a"#, "1");
@@ -360,10 +360,10 @@ mod test {
     #[test]
     fn range_expressions() {
         // Exclusive range
-        expect("1..5", "[1, 2, 3, 4]");
+        expect("1..5", "[1,2,3,4]");
 
         // Inclusive range
-        expect("1..=5", "[1, 2, 3, 4, 5]");
+        expect("1..=5", "[1,2,3,4,5]");
 
         // Single element inclusive range
         expect("1..=1", "[1]");
@@ -372,7 +372,7 @@ mod test {
         expect("5..5", "[]");
 
         // Negative ranges
-        expect("-3..=3", "[-3, -2, -1, 0, 1, 2, 3]");
+        expect("-3..=3", "[-3,-2,-1,0,1,2,3]");
     }
 
     // 缺失 Closure 测试

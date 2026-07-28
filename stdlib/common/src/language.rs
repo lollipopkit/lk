@@ -25,8 +25,6 @@ use anyhow::{Result, anyhow};
 use lk_core::val::{HeapValue, RuntimeVal, TypedList};
 use lk_core::vm::{NativeArgs, NativeRuntime, call_runtime_value_runtime};
 
-use crate::runtime_native::runtime_display_value;
-
 /// `error(value)` — raise, carrying `value` itself where it can be carried.
 ///
 /// A raised heap value has to survive the collection that can happen at any

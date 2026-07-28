@@ -131,7 +131,7 @@ mod tests {
 
     #[test]
     fn test_display_formatting() {
-        expect_expr(r#"[1, "hello", true]"#, "[1, hello, true]");
+        expect_expr(r#"[1, "hello", true]"#, "[1,\"hello\",true]");
         expect_expr(r#"{"name": "Alice", "age": 30}.name"#, "Alice");
     }
 

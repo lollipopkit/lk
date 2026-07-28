@@ -507,21 +507,26 @@ fn display_into_impl(out: &mut String, v: LkDyn, quoted: bool, raise_on_unknown:
             }
         }
         DYN_LIST => {
-            // VM quirk pinned by the differential gate: *mixed* lists render
-            // their string elements bare (`[1,a b,2]`), unlike typed string
-            // lists (`["a","b c"]` via the `{:?}` path). VM is the reference.
+            // A string inside a container is quoted, whatever the container's
+            // representation is. This used to pass `false` here, mirroring a VM
+            // quirk: a *mixed* list rendered its strings bare (`[1,a b,2]`)
+            // while a typed string list quoted them (`["a","b c"]`) — the same
+            // value shown two ways, decided by an internal representation no
+            // program can see. The VM stopped doing that; this follows, and the
+            // differential gate is what noticed.
             out.push('[');
             for (i, &e) in dyn_list(v).iter().enumerate() {
                 if i > 0 {
                     out.push(',');
                 }
-                display_into_impl(out, e, false, raise_on_unknown);
+                display_into_impl(out, e, true, raise_on_unknown);
             }
             out.push(']');
         }
         DYN_MAP => {
-            // VM format: quoted keys, bare values (`{"k":1,"s":txt}`). The
-            // entry order is the Fx layout order — the mirror discipline
+            // Quoted keys *and* values (`{"k":1,"s":"txt"}`) — a value in a
+            // map is inside a container too, and the keys were already quoted.
+            // The entry order is the Fx layout order — the mirror discipline
             // (vm_mirror + insert-order replay) makes it the VM's own order,
             // for bridged returns and mirror-built maps alike. Statically
             // typed map display stays *out of the lowering subset*
@@ -536,7 +541,7 @@ fn display_into_impl(out: &mut String, v: LkDyn, quoted: bool, raise_on_unknown:
                     }
                     out.push_str(&format!("{k:?}"));
                     out.push(':');
-                    display_into_impl(out, e, false, raise_on_unknown);
+                    display_into_impl(out, e, true, raise_on_unknown);
                 }
             }
             out.push('}');
@@ -1180,10 +1185,13 @@ mod tests {
             lkrt_lklist_dyn_push(xs, lkrt_dyn_from_bool(1));
             lkrt_lklist_dyn_push(xs, lkrt_dyn_from_nil());
         }
-        // Comma-separated no spaces; strings {:?}-quoted; 2.0 → "2" (Rust
-        // to_string); bare-vs-quoted only differs for strings.
-        // Mixed lists render string elements bare (VM's Mixed-list path).
-        assert_eq!(text(unsafe { lkrt_lklist_dyn_display(xs) }), "[1,b c,2,true,nil]");
+        // Comma-separated no spaces; `2.0` → "2" (Rust to_string); a string
+        // inside a container is `{:?}`-quoted, whatever the container's
+        // representation is. This asserted the bare form, mirroring a VM quirk
+        // where a *mixed* list rendered strings bare and a typed string list
+        // quoted them — one value, two renderings, decided by an internal
+        // representation no program can see.
+        assert_eq!(text(unsafe { lkrt_lklist_dyn_display(xs) }), "[1,\"b c\",2,true,nil]");
         assert_eq!(text(unsafe { lkrt_dyn_display(s("b c")) }), "b c");
         assert_eq!(text(unsafe { lkrt_dyn_display_quoted(s("b c")) }), "\"b c\"");
     }

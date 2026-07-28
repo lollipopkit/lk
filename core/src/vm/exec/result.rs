@@ -1,4 +1,4 @@
-use super::format::format_runtime_val;
+use super::display::runtime_display_value;
 use super::*;
 
 impl ProgramResult {
@@ -59,6 +59,6 @@ impl ProgramResult {
 
     /// Format the first return value as a human-readable string for REPL/CLI display.
     pub fn display_first_return(&self) -> String {
-        format_runtime_val(self.first_return(), &self.state.heap, 0)
+        runtime_display_value(self.first_return(), &self.state.heap).unwrap_or_else(|_| "<invalid ref>".to_string())
     }
 }

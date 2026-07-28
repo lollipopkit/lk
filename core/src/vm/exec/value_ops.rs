@@ -28,6 +28,22 @@ impl Executor {
         if let Some(text) = self.try_runtime_display_show(&value, module, ctx)? {
             return Ok(text);
         }
+        // A container renders the way `print` renders it. It used to be an
+        // error — "object cannot be converted to string" — so
+        //
+        //     println(xs)            → [1,2]
+        //     println("{}", xs)      → [1,2]
+        //     println("${xs}")       → failed, at run time, after the type
+        //                              checker had approved it
+        //
+        // Three ways to print one value, two of which worked. The reason on
+        // record was a map's iteration order not being portable between the two
+        // backends — but the other two paths already print maps, so the rule
+        // was not buying that, and the AOT declines to *lower* an interpolated
+        // container anyway, which is where portability is actually decided.
+        if matches!(value, RuntimeVal::Obj(_)) {
+            return crate::vm::exec::display::runtime_display_value(&value, &self.state.heap);
+        }
         self.runtime_value_to_plain_string(&value)
     }
 

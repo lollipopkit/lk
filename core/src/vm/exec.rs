@@ -9,7 +9,7 @@ mod cell;
 mod const_load;
 mod container;
 mod dispatch;
-mod format;
+mod display;
 mod frame;
 mod gc;
 mod globals;
@@ -45,17 +45,15 @@ pub use runtime_callable::{
     copy_runtime_value, copy_runtime_value_same_module, runtime_value_to_callable_shared,
 };
 
-use crate::util::fast_map::{FastHashMap, fast_hash_map_new};
+use crate::util::fast_map::fast_hash_map_new;
 use alloc::sync::Arc;
 
 use anyhow::{Result, anyhow, bail};
 
-use crate::val::{
-    HeapStore, HeapValue, RuntimeMapKey, RuntimeSet, RuntimeVal, TypedList, TypedMap, typed_map_from_entries,
-};
+use crate::val::{HeapStore, HeapValue, RuntimeMapKey, RuntimeVal, TypedList, TypedMap, typed_map_from_entries};
 
 use super::{
-    CallWindow, Function, Module, NativeEntry, Opcode, RegisterIndex, RuntimeExport, RuntimeModuleState, VmContext,
+    CallWindow, Function, Module, Opcode, RegisterIndex, RuntimeExport, RuntimeModuleState, VmContext,
     analysis::{
         PerfIndexTargetKind, VmCallMetric, VmContainerMetric, VmRegisterWriteSource, record_call_op_known_enabled,
         record_container_op_known_enabled, vm_runtime_metrics_enabled,
@@ -1441,7 +1439,9 @@ fn gc_stress_enabled() -> bool {
 /// [`HeapStore`] it came from (e.g. `lk-api`'s ergonomic `Value` conversion for
 /// heap kinds without a structured host representation).
 pub fn display_runtime_value(value: &RuntimeVal, heap: &HeapStore) -> String {
-    format::format_runtime_val(value, heap, 0)
+    // The one renderer (`display`), not the VM's old private one: the REPL, a
+    // host embedder and `println` were showing the same value three ways.
+    display::runtime_display_value(value, heap).unwrap_or_else(|_| "<invalid ref>".to_string())
 }
 
 pub fn execute(function: &Function) -> Result<ExecResult> {

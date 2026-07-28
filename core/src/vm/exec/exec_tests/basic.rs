@@ -88,7 +88,16 @@ fn execute_not_rejects_string_operand() {
 }
 
 #[test]
-fn execute_tostring_rejects_list_operand() {
+fn execute_tostring_renders_a_list_like_print_does() {
+    // This asserted the *error* a list used to raise here. Three ways to print
+    // one value, two of which worked:
+    //
+    //     println(xs)          → [1,2]
+    //     println("{}", xs)    → [1,2]
+    //     println("${xs}")     → "object cannot be converted to string"
+    //
+    // …and the third failed at run time, after the type checker had approved
+    // it. A container renders the way `print` renders it now.
     let function = Function {
         consts: ConstPool {
             ints: vec![1],
@@ -108,9 +117,13 @@ fn execute_tostring_rejects_list_operand() {
         ..Function::default()
     };
 
-    let err = execute(&function).expect_err("list tostring operand must be rejected");
-
-    assert!(err.to_string().contains("object cannot be converted to string"));
+    let result = execute(&function).expect("a list renders");
+    // Through the renderer rather than by unwrapping a handle: `"[1]"` is
+    // three bytes, so it arrives inline as a `ShortStr` rather than on the heap.
+    assert_eq!(
+        crate::vm::display_runtime_value(&result.returns[0], &result.state.heap),
+        "[1]"
+    );
 }
 
 #[test]
