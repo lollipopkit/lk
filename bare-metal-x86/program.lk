@@ -765,11 +765,11 @@ fn scroll_view() {
 // `decimal` and `hex` answer. What changes is that the literal parts of them are
 // written as literals.
 fn text_bytes(text: String) -> List<Int> {
-    let out = [0];
+    let out: List<Int> = [];
     for index in 0..text.len() {
         out.push(text.byte_at(index));
     }
-    return out.slice(1, out.len());
+    return out;
 }
 
 // The same, for a message written as a message.
@@ -839,18 +839,18 @@ fn line_starts_with(word: List<Int>) -> Bool {
 
 // The line's bytes from `start` onwards. (`from` is a keyword.)
 fn line_tail(start: Int) -> List<Int> {
-    let out = [0];
+    let out: List<Int> = [];
     let length = shared_read(SHARED_LINE_LEN);
     let i = start;
     while (i < length) {
         out.push(shared_read_byte(SHARED_LINE + i));
         i = i + 1;
     }
-    return out.slice(1, out.len());
+    return out;
 }
 
 fn hex(value: Int) -> List<Int> {
-    let out = [0];
+    let out: List<Int> = [];
     let shift = 28;
     while (shift >= 0) {
         let nibble = (value >> shift) & 0xf;
@@ -861,26 +861,26 @@ fn hex(value: Int) -> List<Int> {
         }
         shift = shift - 4;
     }
-    return out.slice(1, out.len());
+    return out;
 }
 
 fn decimal(value: Int) -> List<Int> {
     if (value == 0) {
         return [48];
     }
-    let digits = [0];
+    let digits: List<Int> = [];
     let rest = value;
     while (rest > 0) {
         digits.push(48 + rest % 10);
         rest = (rest / 10) as Int;
     }
-    let out = [0];
+    let out: List<Int> = [];
     let i = digits.len() - 1;
-    while (i >= 1) {
+    while (i >= 0) {
         out.push((digits[i]) as Int);
         i = i - 1;
     }
-    return out.slice(1, out.len());
+    return out;
 }
 
 // The largest available range the loader reported, as (base, length).
@@ -1211,11 +1211,11 @@ fn write_ipv4(address: Int, a: Int, b: Int, c: Int, d: Int) {
 // identifier, and the colons a reader expects are a convention of `ip link`
 // rather than anything the wire has.
 fn mac_text(mac: Int) -> List<Int> {
-    let out = [0];
+    let out: List<Int> = [];
     for index in 0..MAC_SIZE {
-        out = out.chain(hex(net_byte_at(mac + index)).slice(6, 8));
+        out = out.chain(hex(net_byte_at(mac + index)).slice(6, 8).to_list());
     }
-    return out.slice(1, out.len());
+    return out;
 }
 
 // A run of pages, contiguous.
@@ -1442,17 +1442,17 @@ fn report_pci(base: Int) {
     for index in 0..devices.len() {
         let bdf = (devices[index]) as Int;
         // "SS.F VVVV:DDDD cCC/SS"
-        let line = hex(pci_bdf_device(bdf)).slice(6, 8)
+        let line = hex(pci_bdf_device(bdf)).slice(6, 8).to_list()
             .chain([46])
             .chain(decimal(pci_bdf_function(bdf)))
             .chain([32])
-            .chain(hex(pci_vendor(bdf)).slice(4, 8))
+            .chain(hex(pci_vendor(bdf)).slice(4, 8).to_list())
             .chain([58])
-            .chain(hex(pci_device_id(bdf)).slice(4, 8))
+            .chain(hex(pci_device_id(bdf)).slice(4, 8).to_list())
             .chain(text_bytes(" c"))
-            .chain(hex(pci_class(bdf)).slice(6, 8))
+            .chain(hex(pci_class(bdf)).slice(6, 8).to_list())
             .chain([47])
-            .chain(hex(pci_subclass(bdf)).slice(6, 8));
+            .chain(hex(pci_subclass(bdf)).slice(6, 8).to_list());
         // A device with no memory BAR 0 — the bridges — says so by omission
         // rather than by printing a zero that looks like an address.
         if (pci_bar(bdf, 0) != 0 && !pci_bar_is_io(bdf, 0)) {
