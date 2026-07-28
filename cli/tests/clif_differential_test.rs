@@ -1255,6 +1255,81 @@ fn volatile_reads_are_not_collapsed() {
     assert_eq!(accesses, 2, "expected two volatile reads, got {accesses}:\n{body}");
 }
 
+/// Volatile writes to *different* addresses keep their order.
+///
+/// The two tests around this one guard against accesses being *removed*. This
+/// one guards the property `drivers/e1000.lk` calls "the entire transmit
+/// protocol": a descriptor is filled in, and only then is the card's tail
+/// register bumped to tell it to look. Swap those and the card transmits a
+/// descriptor that was not finished being written — on real hardware, and quite
+/// possibly not in QEMU, which is the worst way for a bug to be shaped.
+///
+/// x86-64 does not reorder stores in hardware, so what is being pinned here is
+/// the *compiler* half: nothing in the MIR passes or in Cranelift's scheduling
+/// may move one volatile store past another. It holds today; nothing else
+/// notices if it stops.
+#[test]
+fn volatile_writes_keep_their_order() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let source = dir.path().join("volatile_order.lk");
+    // Distinct immediates, so the order is readable off the disassembly without
+    // having to decode which address each store names.
+    std::fs::write(
+        &source,
+        "#[export]\n\
+         fn tx(desc: usize, tail: usize) -> Int {\n\
+         \x20   unsafe { volatile_write_u64(desc as *mut u64, 0x1111 as u64); };\n\
+         \x20   unsafe { volatile_write_u32((desc + 8) as *mut u32, 0x2222 as u32); };\n\
+         \x20   unsafe { volatile_write_u32(tail as *mut u32, 0x3333 as u32); };\n\
+         \x20   return 0;\n\
+         }\n\
+         println(0);\n",
+    )
+    .expect("write source");
+
+    let exe = dir.path().join("volatile_order");
+    let status = std::process::Command::new(env!("CARGO_BIN_EXE_lk"))
+        .args(["compile", source.to_str().expect("utf-8 path")])
+        .arg("--output")
+        .arg(exe.to_str().expect("utf-8 path"))
+        .env("LK_AOT_NO_FALLBACK", "1")
+        .env("LK_AOT_HYBRID", "0")
+        .status()
+        .expect("run lk compile");
+    assert!(status.success(), "volatile must lower natively");
+
+    let Ok(disassembly) = std::process::Command::new("objdump")
+        .args(["-d", exe.to_str().expect("utf-8 path")])
+        .output()
+    else {
+        // objdump is not everywhere; the compile above is still meaningful.
+        return;
+    };
+    let text = String::from_utf8_lossy(&disassembly.stdout);
+    // `#[export]` so the symbol is the source's own name rather than a numbered
+    // one that renumbers whenever a function is added above it.
+    let body: String = text
+        .lines()
+        .skip_while(|line| !line.contains("<tx>:"))
+        .skip(1)
+        .take_while(|line| !line.trim().is_empty() && !line.contains(">:"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let positions: Vec<Option<usize>> = ["0x1111", "0x2222", "0x3333"]
+        .iter()
+        .map(|needle| body.find(needle))
+        .collect();
+    for (needle, position) in ["0x1111", "0x2222", "0x3333"].iter().zip(&positions) {
+        assert!(position.is_some(), "{needle} was not written at all:\n{body}");
+    }
+    let positions: Vec<usize> = positions.into_iter().flatten().collect();
+    assert!(
+        positions[0] < positions[1] && positions[1] < positions[2],
+        "the three volatile writes were reordered:\n{body}"
+    );
+}
+
 /// Two identical writes to one address must stay two writes.
 ///
 /// The mirror image of `volatile_reads_are_not_collapsed`, and a distinct

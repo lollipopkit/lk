@@ -13,8 +13,11 @@
 // simpler allocator at that point, it is a leak with a rationale.
 //
 // The state is four words at an address the caller chooses, because the
-// interrupt handlers and the main flow both have to see the same allocator and
-// a global would not be visible across that boundary.
+// interrupt handlers and the main flow both have to see the same allocator, and
+// a global crossing that boundary is not *provably initialised* — a handler can
+// run before the top-level `let` that fills it, so what it reads is dynamic and
+// may be nil. (Visible, though: a handler can read a global, and `program.lk`'s
+// keyboard ISR does. See `drivers/heap.lk` for the longer version.)
 //
 //   +0  next page never yet handed out
 //   +4  one past the last page
