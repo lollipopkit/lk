@@ -56,6 +56,25 @@ impl Compiler {
         // 64-bit target.
         let shift_name = self.unsigned_shift_name(name, args)?;
         let name = shift_name.as_str();
+        // `~x` on a machine integer is *not* that width's complement, and that
+        // is a known gap rather than a decision.
+        //
+        // Every value rides an `i64` carrier, so complementing a `u32` sets the
+        // 32 bits above it too: `~(0xff as u32)` answers `0xFFFFFFFFFFFFFF00`,
+        // which reads back as -256. It stays unnoticed because the shape people
+        // write is `a & ~b`, where the `&` masks the strays away — the one that
+        // does not, `~mask` on its own, is what a driver writes to clear a
+        // field, and that is where it would bite.
+        //
+        // The obvious fix — wrap the result with `emit_machine_wrap`, the way
+        // the arithmetic operators do — was tried and reverted: it costs two
+        // examples their native lowering (`comprehensive.lk`, `os_demo.lk`,
+        // "an operand has a type outside the natively lowerable subset"), which
+        // means the extra `CastTo` changes what the AOT can see about those
+        // values. Dropping the accompanying `machine_regs` note makes it worse,
+        // not better — six examples — so the width fact is load-bearing and the
+        // interaction is not yet understood. A fix that trades a latent wrong
+        // answer for a certain 3x slowdown is not one.
         if let Some(signature) = self.function_signatures.get(name).cloned()
             && !signature.named_params.is_empty()
             && self.function_names.contains_key(name)

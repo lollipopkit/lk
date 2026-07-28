@@ -3477,6 +3477,8 @@ fn isr_edu(vector: Int) {
         // set knows the device has already been quietened. `| 1` because the
         // device may legitimately raise a value of zero bits and the shell
         // needs to tell "arrived" from "not yet".
+        // Out of the register's width and into a shared word: the driver's
+        // types stop where the kernel's `Int` begins.
         shared_write(SHARED_EDU_SEEN, raised | 1);
         // And whoever asked. This is what a blocked wait is for: the driver said
         // which channel it was listening on, and the device's own handler is the
