@@ -129,6 +129,24 @@ pub(super) fn lower(
             let (v, ty) = ssa.read(instr.a(), block, pc)?;
             let obs = match ty {
                 Ty::I64 | Ty::F64 | Ty::Bool | Ty::Str => ty,
+                // A container keeps its own type, and that is a correctness
+                // rule rather than an optimisation.
+                //
+                // Boxing one into a `Dyn` slot *re-represents* it — a
+                // `List<i64>` and a `List<Dyn>` are different memory, so
+                // `list_h.i64_to_dyn` builds a second container and the two
+                // stop being the same list. What that produced was a top-level
+                // `let xs = []` that functions pushed into and the top level
+                // read as empty: the global held the copy, the entry kept the
+                // original, and every backend printed a different number with
+                // no error anywhere.
+                //
+                // Keeping the type stores the handle, so there is one list. A
+                // slot two writes disagree about still falls to `Dyn` below,
+                // and that case *is* a copy — but it is also a slot that has
+                // held two different containers, where identity was already
+                // not a thing the program could rely on.
+                t if container_ty(t) => t,
                 t if dyn_boxable_ty(t) => Ty::Dyn,
                 _ => return Err(Unsupported::TypeMismatch { pc }),
             };
@@ -151,6 +169,22 @@ pub(super) fn lower(
                 Some(Some(prev)) => *prev,
                 None => return Err(Unsupported::Opcode { pc, op: instr.opcode() }),
             };
+            // A container that ends up in a `Dyn` slot is the case above that
+            // cannot be saved, so it is refused rather than miscompiled.
+            //
+            // The slot reaches `Dyn` two ways: two writes that disagree, and a
+            // reader that could observe the slot before it is written (only the
+            // `Dyn` carrier's zeroinit is nil). Either way the write has to box,
+            // boxing re-represents, and the writer's own register goes on
+            // referring to the container nobody else can see. That is a
+            // *silent* wrong answer — the program runs, prints a plausible
+            // number, and no check anywhere fires — which is worth a fallback.
+            if container_ty(ty) && slot_ty == Ty::Dyn {
+                return Err(Unsupported::ContainerGlobalBoxed {
+                    pc,
+                    name: name.unwrap_or("<unnamed slot>").to_string(),
+                });
+            }
             let v = if slot_ty == Ty::Dyn && ty != Ty::Dyn {
                 to_dyn_any(ssa, insts, v, ty, pc)?
             } else {
@@ -251,6 +285,27 @@ pub(super) fn lower(
         op => return Err(Unsupported::Opcode { pc, op }),
     }
     Ok(())
+}
+
+/// Whether a value of this type is a handle to something that can be mutated.
+///
+/// The distinction that matters for a global: a number, a bool or a string can
+/// be copied into a slot and read back with nothing lost, while a container is a
+/// *handle* and copying it into a differently-shaped slot makes a second
+/// container. See the note at the `SetGlobal` arm.
+fn container_ty(ty: Ty) -> bool {
+    matches!(
+        ty,
+        Ty::ListDyn
+            | Ty::ListI64
+            | Ty::ListF64
+            | Ty::ListStr
+            | Ty::MapStrI64
+            | Ty::MapI64I64
+            | Ty::MapStrF64
+            | Ty::MapI64F64
+            | Ty::MapStrBool
+    )
 }
 
 /// The single table of global *names* this lowering gives a builtin meaning.

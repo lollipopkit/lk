@@ -308,6 +308,58 @@ fn clif_differential_hybrid_bridge() {
 /// artifact behaves exactly like the VM. The property that lapsed (it went
 /// *through Cranelift*) is a recorded debt tracked in todos.md and pinned by
 /// `AOT_COVERAGE_ALLOW` in check.yml, not something to be silently dropped here.
+/// A container a top-level `let` holds and functions mutate.
+///
+/// This is the shape that miscompiled, and it did so in the way that is worst:
+/// silently. A `List<i64>` boxed into a `Dyn` global is *re-represented* — the
+/// two are different memory — so `list_h.i64_to_dyn` built a second container,
+/// the global held that one, and the entry went on reading the first. Both
+/// backends ran, neither complained, and they printed different numbers.
+///
+/// A container global keeps its own type now, so the slot holds the handle and
+/// there is one list. Where the slot cannot stay typed the lowering refuses, so
+/// the program falls back and is still right — which is why these cases are
+/// checked against the VM rather than against a lowering outcome.
+#[test]
+fn global_container_differential() {
+    run_differential(
+        "global_container",
+        &[
+            // The reproduction, at its smallest.
+            new(
+                "list_pushed_from_a_function",
+                "let xs: List<Int> = [];\nfn add() { xs.push(1); }\nadd();\nadd();\nreturn xs.len();\n",
+            ),
+            // Non-empty, which is where the two views were both visible: the
+            // native build saw the initial element and none of the pushes.
+            new(
+                "list_starts_non_empty",
+                "let xs: List<Int> = [9];\nfn add() { xs.push(1); }\nadd();\nreturn xs.len();\n",
+            ),
+            // No annotation, so the element type comes from the pushes.
+            new(
+                "list_without_an_annotation",
+                "let xs = [];\nfn add() { xs.push(1); }\nadd();\nreturn xs.len();\n",
+            ),
+            // A map, which has the same handle-versus-copy question.
+            new(
+                "map_written_from_a_function",
+                "let m: Map<String, Int> = {};\nfn put(k: String) { m[k] = 1; }\nput(\"a\");\nput(\"b\");\nreturn m.len();\n",
+            ),
+            // Read back through the function too, so a build where the two
+            // views are swapped fails as loudly as one where they are split.
+            new(
+                "written_and_read_through_the_function",
+                "let xs: List<Int> = [];\nfn add() { xs.push(7); }\nfn total() -> Int {\n  let sum = 0;\n  for i in 0..xs.len() { sum = sum + (xs[i] as Int); }\n  return sum;\n}\nadd();\nadd();\nreturn total();\n",
+            ),
+        ],
+        // Fallback allowed: a slot the lowering cannot keep typed refuses, and
+        // the answer still has to be the VM's. That is the guarantee — not that
+        // every one of these lowers.
+        NativePath::MayDegrade,
+    );
+}
+
 /// `s.byte_at(i)` — the one string read that allocates nothing.
 ///
 /// It exists for freestanding code: `char_at` next to it answers a *string* of

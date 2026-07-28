@@ -19,6 +19,17 @@ pub enum Unsupported {
         function: String,
         inner: Box<Unsupported>,
     },
+    /// A container written to a global slot the lowering had to widen to `Dyn`.
+    ///
+    /// Boxing a container re-represents it — a `List<i64>` and a `List<Dyn>` are
+    /// different memory — so the slot ends up holding a *second* container and
+    /// the writer's own register goes on referring to the first. Nothing after
+    /// that is wrong in a way anything can see: the program runs and prints a
+    /// number. Refusing is what turns it into a fallback.
+    ContainerGlobalBoxed {
+        pc: usize,
+        name: String,
+    },
     BadInstr {
         pc: usize,
     },
@@ -106,6 +117,10 @@ impl Unsupported {
             Unsupported::EntryHasParams(n) => format!("the entry function takes {n} parameter(s)"),
             Unsupported::EntryHasCaptures(n) => format!("the entry function captures {n} value(s)"),
             Unsupported::In { function, inner } => format!("in `{function}`: {inner}"),
+            Unsupported::ContainerGlobalBoxed { pc, name } => format!(
+                "the container written to global `{name}` (at pc {pc}) would have to be boxed, \
+                 which copies it — the slot and the writer would stop being the same container"
+            ),
             Unsupported::BadInstr { pc } => format!("undecodable instruction at pc {pc}"),
             Unsupported::Opcode { pc, op } => {
                 format!("opcode {op:?} (at pc {pc}) is not natively lowerable yet")
